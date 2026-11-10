@@ -405,11 +405,13 @@ TEST_CASE("In mode all the engine's own start of a start-game-enabled quest "
                              Msg(kHeartwoodMill, 20), Msg(kMs13, 10),
                              Msg(kMs13, 20) });
 
-  // a quest both denied and allowed stops at the setting, named, and the
-  // setting in force stays
-  REQUIRE_THROWS(p.SetSharedQuestsSettings(
+  // thuum ADR-068 rung 5 (read 4): allowed is a retired key, read and
+  // ignored, so a quest both denied and allowed is denied and the setting
+  // taken (the rung's server half replaces this case)
+  REQUIRE_NOTHROW(p.SetSharedQuestsSettings(
     R"({"mode":"all","denied":["39645:Skyrim.esm"],"allowed":["39645:Skyrim.esm"]})"));
   REQUIRE(p.SharedQuestsMode() == 1);
+  REQUIRE(p.CheckSharedQuest(FormDesc::FromString("39645:Skyrim.esm")) == 2);
   // mode list is untouched: the first case above records MS13's stage there
   Leave(p);
 }

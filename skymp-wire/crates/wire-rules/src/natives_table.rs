@@ -19,7 +19,11 @@
 // section 7.2(b)) gives every row its look column, Look::Also on the six
 // action rows and Look::Only on SetMotionType and ApplyHavokImpulse, and
 // appends Sound.Play and CreateDetectionEvent, look-only (forty-three rows;
-// their NativeRows.inc lines in the same commit). Included by natives.rs,
+// their NativeRows.inc lines in the same commit). Rung 5 (thuum ADR-068, the
+// two transformations; docs/research/rung5-quests-2026-11-09.md section
+// 8(b)) appends the player's own six, kept as its own record
+// (RecordKind::PlayerOwn, judged by wire-rules player_own); forty-nine rows,
+// their NativeRows.inc lines in the same commit. Included by natives.rs,
 // whose types it names.
 
 /// Every tabled native (thuum ADR-068 decision 3): rung 2's set, the six
@@ -28,8 +32,9 @@
 /// SetMotionType, ApplyHavokImpulse), the first kept as its actor's death
 /// evidence; then rung 4's seven, the standing's six kept as the NPC's record
 /// and ReferenceAlias.Clear beside ForceRefTo; then D-W2's Sound.Play and
-/// CreateDetectionEvent, a firing's looks alone. A native with no row has no
-/// channel. Forty-three rows.
+/// CreateDetectionEvent, a firing's looks alone; then rung 5's six, a
+/// player's own race, spells, shouts and equipment, kept as its own record.
+/// A native with no row has no channel. Forty-nine rows.
 pub const TABLE: &[Row] = &[
     // the actions: relayed to the subject's listeners as the row's relay
     // native, the graph variables' kept on the subject as well
@@ -109,4 +114,22 @@ pub const TABLE: &[Row] = &[
     // the NPCs the host simulates; FunctionsDump's CreateDetectionEvent(Actor
     // akOwner, Int aiSoundLevel). Appended so no earlier row's place moves
     Row { cls: "ObjectReference", func: "CreateDetectionEvent", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Host, relay: Relay::Same, keep: Keep::Nothing, look: Look::Only, params: &[Param::Object, Param::Int] },
+    // ADR-068 rung 5 (Eli's "yes full transformation"; docs/research/
+    // rung5-quests-2026-11-09.md section 8(b)): the six natives a per-player
+    // quest's scripts change their own player by (the vampire's twin, cure
+    // and stage abilities, the werewolf's beast form, its abilities, howl
+    // and skin), each a state row on the seat's own player alone
+    // (Owner::Player, its subject 0x14), kept as the player's own record and
+    // judged by wire-rules player_own (the bound, the twin rule, the
+    // overlay); FunctionsDump's SetRace(Race akRace), AddSpell(SPELL
+    // akSpell, Bool abVerbose), RemoveSpell(SPELL akSpell), AddShout(Shout
+    // akShout), RemoveShout(Shout akShout) and EquipItem(Form akItem, Bool
+    // abPreventRemoval, Bool abSilent). Appended so no earlier row's place
+    // moves
+    Row { cls: "Actor", func: "SetRace", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "AddSpell", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object, Param::Bool] },
+    Row { cls: "Actor", func: "RemoveSpell", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "AddShout", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "RemoveShout", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "EquipItem", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object, Param::Bool, Param::Bool] },
 ];

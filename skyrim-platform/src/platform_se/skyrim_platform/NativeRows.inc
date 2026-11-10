@@ -10,7 +10,10 @@
 // then D-W2 A's Sound.Play and CreateDetectionEvent, a firing's looks alone
 // (docs/research/fifty-fixes-2026-11-07.md section 7.2: Sound.Play's
 // Arg0Method, its subject the first argument and its self the frame's own,
-// the Sound; CreateDetectionEvent on the trigger itself).
+// the Sound; CreateDetectionEvent on the trigger itself), then rung 5's six,
+// a player's own race, spells, shouts and equipment, each a state row on the
+// seat's own player (docs/research/rung5-quests-2026-11-09.md section 8(b);
+// the batching on the seat's own player is the platform's 5b head, B5).
 // kind: Action (the call itself is the message), State (the owner's record
 // carries it), Everyone (no owner, D-F1 C: every seat runs it), Local (never
 // crosses). subject: Self (the frame's self), Arg0 (a static native's first
@@ -60,3 +63,9 @@
 { "ReferenceAlias", "Clear", NativeKind::Everyone, NativeSubject::Self, "none" },
 { "Sound", "Play", NativeKind::Action, NativeSubject::Arg0Method, "same" },
 { "ObjectReference", "CreateDetectionEvent", NativeKind::Action, NativeSubject::Self, "same" },
+{ "Actor", "SetRace", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "AddSpell", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "RemoveSpell", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "AddShout", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "RemoveShout", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "EquipItem", NativeKind::State, NativeSubject::Self, "none" },

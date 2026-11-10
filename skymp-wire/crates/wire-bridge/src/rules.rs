@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, object_animation, placements, player_globals, props, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
+use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, object_animation, placements, player_globals, player_own, props, quest_runs, quest_scope, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, script_variables, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1422,7 +1422,8 @@ mod ffi {
         subject: u32,
         /// The record the row keeps, so the core gathers a record row's
         /// facts (thuum ADR-068 rung 4): 0 none, 1 the ref state, 2 the
-        /// standing, 3 a placement.
+        /// standing, 3 a placement, 4 a player's own (rung 5: its subject
+        /// 0x14, judged by player_own_judge after the owner step).
         record: u8,
         /// The row's look channel, so the core gathers the subject's firing
         /// facts (thuum ADR-068 D-W2 A, wire-rules natives::Look): 0 never,
@@ -1553,7 +1554,11 @@ mod ffi {
         /// 4): 1 the ref state (Enable, EnableNoWait, Disable,
         /// DisableNoWait, Delete), 2 the standing (an NPC's factions, crime
         /// faction and relationships), 3 a placement (PlaceAtMe,
-        /// PlaceActorAtMe); 0 for every other verdict.
+        /// PlaceActorAtMe), 4 a player's own (thuum ADR-068 rung 5:
+        /// Actor.SetRace, AddSpell, RemoveSpell, AddShout, RemoveShout,
+        /// EquipItem on the reporter's own player, `subject` 0x14 and `seq`
+        /// 0, which the core hands player_own_judge); 0 for every other
+        /// verdict.
         record: u8,
         /// The argument naming the call's behavior graph event, for the
         /// "animates" line; -1 for none.
@@ -2071,6 +2076,232 @@ mod ffi {
         previous: u32,
     }
 
+    /// One quest's run on the world's record (thuum ADR-068 rung 5,
+    /// wire-rules quest_runs::QuestRun), the quest by its FormDesc's parts:
+    /// what the journal's questRuns keeps and serves.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct QuestRunRow {
+        /// The quest's form id within its plugin.
+        short_id: u32,
+        /// The plugin, as the load order names it.
+        file: String,
+        /// Recorded running: its last word a start.
+        running: bool,
+        /// The record's sequence for the quest: how many words it took, 1
+        /// at its first.
+        seq: u32,
+    }
+
+    /// The rule's word on one run word (wire-rules quest_runs::Verdict).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct QuestRunVerdict {
+        /// 0 recorded (merge with quest_runs_merge, then relay the word to
+        /// every other seat), 1 folded (nothing written or relayed), 2 held
+        /// (the quest is a seat's churn, `E_QUEST_CHURN`: nothing written or
+        /// relayed), 3 refused (`E_QUEST_RUNS_FULL`).
+        code: u8,
+        /// Held (code 2) by this very word: drop the quest's entry
+        /// (quest_runs_without) and log E_QUEST_CHURN; false for a later
+        /// word of a held quest, which the core says at most once a minute
+        /// per seat.
+        first: bool,
+        /// The stable name for codes 2 and 3, empty otherwise.
+        name: String,
+        /// Why, for the log, code 3 alone; empty otherwise.
+        why: String,
+    }
+
+    /// What a login sends around the stages (wire-rules
+    /// quest_runs::QuestRuns::at_login): served start words for the quests
+    /// recorded running, ahead of the stages, and served stop words for those
+    /// recorded stopped, behind them (stage 0 in each entry).
+    #[derive(Debug, Clone, PartialEq)]
+    struct QuestRunsLogin {
+        /// The quests recorded running, in the record's order.
+        starts: Vec<QuestStageEntry>,
+        /// The quests recorded stopped, in the record's order.
+        stops: Vec<QuestStageEntry>,
+    }
+
+    /// One alias of a quest for its class (thuum ADR-068 rung 5, wire-rules
+    /// quest_scope::Alias), as libespm's QUST::GetQuestAliases reads it, the
+    /// forms in the load order.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct QuestScopeAliasRow {
+        /// The alias's id (ALST, or ALLS's for a location alias).
+        id: u32,
+        /// A location alias (libespm's `locationAlias`, ALLS).
+        location: bool,
+        /// The forced reference (ALFR, `aliasForcedReference`), 0 for none.
+        forced: u32,
+        /// The unique actor's base (ALUA, `aliasUniqueActor`), 0 for none.
+        unique_actor: u32,
+        /// The base it creates (ALCO, `aliasCreatedObject`), 0 for none.
+        created: u32,
+        /// Where it is created (ALCA, `createAt`): the top bit "in", the
+        /// target alias's id in the low half.
+        create_at: u32,
+        /// It fills from another quest's alias (ALEQ `externalAliasReference`
+        /// a quest of the load order and ALEA `externalAlias` one of its
+        /// alias ids) that the core found.
+        external: bool,
+        /// That external alias's own ALFR, 0 for none or no external.
+        external_forced: u32,
+        /// That external alias's own ALUA, 0 for none or no external.
+        external_unique_actor: u32,
+    }
+
+    /// One condition-read variable's key on the watch list a login names
+    /// (thuum ADR-068 rung 5, ScriptVariables 81's `watch`; wire-rules
+    /// script_variables::Key), its form by its FormDesc's parts.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ScriptVarKeyRow {
+        /// The QUST's or REFR's form id within its plugin.
+        short_id: u32,
+        /// The plugin, as the load order names it.
+        file: String,
+        /// The attached script whose chain declares the variable.
+        script: String,
+        /// The variable, as the condition names it.
+        var: String,
+        /// The key is its player's own (its form a player-class quest while
+        /// the scope acts): the seat reports it flagged own, and its value
+        /// is the player's alone.
+        own: bool,
+    }
+
+    /// One variable's entry (thuum ADR-068 rung 5, ScriptVariables 81's
+    /// `entries`; wire-rules script_variables::Entry): a report's, or a
+    /// record's (the journal's scriptVariables for the world's keys, a
+    /// player's change form's for its own), the form by its FormDesc's
+    /// parts. The value is the one field `k` names.
+    #[derive(Debug, Clone, PartialEq)]
+    struct ScriptVarRow {
+        /// The QUST's or REFR's form id within its plugin.
+        short_id: u32,
+        /// The plugin, as the load order names it.
+        file: String,
+        /// The attached script whose chain declares the variable.
+        script: String,
+        /// The variable.
+        var: String,
+        /// A player's own key: flagged own by the report, and a row of a
+        /// player's record.
+        own: bool,
+        /// The folded kind: 3 an int, 4 a float, 5 a bool.
+        k: u8,
+        /// The int (k 3), else 0.
+        i: i32,
+        /// The float (k 4), else 0.
+        f: f32,
+        /// The bool (k 5), else false.
+        b: bool,
+        /// The record's sequence for the key (1 at its first write); 0 on a
+        /// report.
+        seq: u32,
+    }
+
+    /// The rule's word on one reported entry (wire-rules
+    /// script_variables::Verdict).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ScriptVarVerdict {
+        /// 0 recorded (merge, then relay a world key's entry or keep an own
+        /// key's), 1 folded (nothing), 2 refused.
+        code: u8,
+        /// The refusal's stable name (E_SCRIPTVAR_UNLISTED, _PLAYER, _KIND,
+        /// _FULL), empty otherwise.
+        name: String,
+        /// Why, for the log; empty otherwise.
+        why: String,
+    }
+
+    /// The record after a recorded entry and the key's new sequence.
+    #[derive(Debug, Clone, PartialEq)]
+    struct ScriptVarMerge {
+        /// The record after.
+        record: Vec<ScriptVarRow>,
+        /// The key's sequence now, which the relay carries; 0 when the
+        /// record was full and is unchanged.
+        seq: u32,
+    }
+
+    /// One object the calling script's attachment names (thuum ADR-068 rung
+    /// 5, wire-rules player_own::Named): from libespm's VMAD for every
+    /// attachment of the ScriptCall's `caller` script, an object property's
+    /// value (Property::Type::Object 1) or each element of an object array
+    /// property's (ObjectArray 11), with a FormList's entries when the form
+    /// is a FLST (FLST::GetData's formIds, in order).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ScriptPropertyRow {
+        /// The form the property names.
+        form: u32,
+        /// Its FormList entries in order, empty for any other form.
+        members: Vec<u32>,
+    }
+
+    /// What the core knows of one player's own call beside its form
+    /// (wire-rules player_own::Facts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct PlayerOwnFacts {
+        /// The player's race on its change form (its appearance's raceId;
+        /// an overlay never moves it).
+        recorded_race: u32,
+        /// SetRace's form is a RACE with the Playable flag.
+        playable: bool,
+        /// SetRace's form is on `restrictedRaces`.
+        restricted: bool,
+        /// The player's profile is on that race's permit list.
+        permitted: bool,
+        /// The player's record holds the form: a learned spell (AddSpell,
+        /// RemoveSpell), a learned shout (AddShout, RemoveShout), the item in
+        /// its inventory (EquipItem).
+        held: bool,
+    }
+
+    /// A player's overlay (thuum ADR-068 D-T1 A, wire-rules
+    /// player_own::Overlay): the race it wears beyond its record and what
+    /// its scripts added meanwhile, which the core carries on the figure's
+    /// CreateActor and UpdateAppearance and counts at the equipment gate,
+    /// never on the change form.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct PlayerOverlayRow {
+        /// An overlay is open; every other field is empty when false.
+        open: bool,
+        /// The race worn.
+        race: u32,
+        /// The recorded race when it opened, the race its end returns to.
+        base: u32,
+        /// Spells added while open, in order.
+        spells: Vec<u32>,
+        /// Shouts added while open, in order.
+        shouts: Vec<u32>,
+        /// Items equipped while open, in order.
+        items: Vec<u32>,
+    }
+
+    /// The rule's word on one player's own call (wire-rules
+    /// player_own::Verdict).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct PlayerOwnVerdict {
+        /// 0 recorded on the change form (the race, a learned spell or shout
+        /// added or removed, the item into its inventory), 1 held in the
+        /// overlay (opened, its race moved, a form added or removed), 2 the
+        /// overlay ended at the race's return, 3 folded (nothing), 4 refused.
+        code: u8,
+        /// The refusal's stable name (E_SCRIPTCALL_UNNAMED,
+        /// E_SCRIPTCALL_RACE, or E_SCRIPTCALL_ROW for a native that is none
+        /// of the six), empty otherwise.
+        name: String,
+        /// Why, for the log; empty otherwise.
+        why: String,
+        /// The overlay that ended (code 2, or code 0 when a twin or a
+        /// Playable race was taken while one was open), its adds to strip;
+        /// `open` false when none ended.
+        ended: PlayerOverlayRow,
+        /// The player's overlay after the call, `open` false for none.
+        overlay: PlayerOverlayRow,
+    }
+
     extern "Rust" {
         /// A client's first activation of a target `distance` units away,
         /// `target_size` being its bounds' farthest point times its scale.
@@ -2349,26 +2580,42 @@ mod ffi {
 
         /// thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): the quests
         /// server-settings.json's `sharedQuests` makes the world's, by a list
-        /// (mode list) or by `{"mode": "all", "denied": [...], "allowed":
-        /// [...]}` (mode all; `allowed` the start-game-enabled quests that
-        /// cross, memo D62).
+        /// (mode list) or by `{"mode": "all", "denied": [...]}` (mode all;
+        /// rung 5 retired memo D62's `allowed`, read and ignored), less the
+        /// player class composed in (shared_quests_set_player).
         type SharedQuests;
         /// The setting from the block as JSON text (`[]` for none); the
         /// error names the bad entry or shape.
         fn new_shared_quests(settings_json: &str) -> Result<Box<SharedQuests>>;
         /// The sharing mode as the wire carries it: 0 list, 1 all.
         fn shared_quests_mode(self: &SharedQuests) -> u8;
-        /// What the login names, in the settings' order (stage 0): the
-        /// listed quests in mode list (what a client reports), the denied
-        /// quests in mode all (what a client never reports).
+        /// What the login names, in the settings' order (stage 0): in mode
+        /// list the listed quests (what a client reports) less the player
+        /// class; in mode all the denied quests, then the player class's
+        /// (what a client never reports: denied ∪ player).
         fn shared_quests_listed(self: &SharedQuests) -> Vec<QuestStageEntry>;
-        /// Judge a report's quest: 0 the world's, 1 not listed (mode list),
-        /// 2 denied (mode all).
+        /// Judge a report's quest, a stage's or a word's: 0 the world's, 1
+        /// not listed (mode list, E_QUEST_UNLISTED), 2 denied (mode all,
+        /// E_QUEST_DENIED), 3 a player-class quest (E_QUEST_PLAYER, thuum
+        /// ADR-068 rung 5), the mode's own refusal first.
         fn shared_quests_check(self: &SharedQuests, short_id: u32, file: &str) -> u8;
-        /// Whether mode all's `allowed` names the quest (memo D62): a quest
-        /// the game starts by itself that crosses all the same. The flag is
-        /// the record's, read on the C++ side beside the check.
+        /// RETIRED by thuum ADR-068 rung 5 (read 4): `allowed` names nothing
+        /// now, so this answers false for every quest. Its one caller, the
+        /// core's IsSeatsOwnQuest, retires with the OWN_START block in the
+        /// rung's server half (A4); delete this then.
         fn shared_quests_allowed(self: &SharedQuests, short_id: u32, file: &str) -> bool;
+        /// thuum ADR-068 rung 5 (read 4): the line the core logs once at load
+        /// when the block still carries the retired `allowed` key, empty
+        /// when it does not.
+        fn shared_quests_retired(self: &SharedQuests) -> String;
+        /// thuum ADR-068 rung 5 (D-Q1's derivation): compose the player
+        /// class in, the quests quest_scope_class marks 1, each once
+        /// (stage ignored), replacing any composed before. Call it at load
+        /// and only while quest_scope_acting: "off" leaves the setting as
+        /// written. A composed quest is never the world's in either mode,
+        /// the login names it in mode all, its report is code 3, and its
+        /// recorded stages and runs stay unsent at a login.
+        fn shared_quests_set_player(self: &mut SharedQuests, quests: &[QuestStageEntry]);
         /// What the login sends: the recorded stages of quests still the
         /// world's, ascending within each quest.
         fn shared_quests_at_login(self: &SharedQuests, record: &[QuestStageEntry]) -> Vec<QuestStageEntry>;
@@ -2880,10 +3127,122 @@ mod ffi {
         /// A report from `sender` at `epoch`: 0 Current, 1 StaleEpoch, 2
         /// FutureEpoch, 3 NotOwner, the epoch first.
         fn judge(self: &WorldStreamer, sender: u32, epoch: u32) -> u8;
+
+        /// thuum ADR-068 rung 5 (QuestStage 57's word, read 5): what a report
+        /// asks of the records, from its `word` (0 for none; the message's
+        /// std::optional) and its `stage`: 0 a stage (quest_stages), 1 a
+        /// start, 2 a stop (quest_runs), a stage-0 report with no word a
+        /// start; 3 nothing, for a word the wire refuses first.
+        fn quest_report_word(word: u32, stage: u16) -> u8;
+        /// thuum ADR-068 rung 5: the churn counter and the quests held out
+        /// of the run record for the server's run (wire-rules quest_runs).
+        type QuestRuns;
+        /// No counters, nothing held.
+        fn new_quest_runs() -> Box<QuestRuns>;
+        /// One run word (`word` 1 a start, 2 a stop; any other is folded) of
+        /// the quest `short_id` in `file` from `seat`, the reporter's actor,
+        /// at `now_ms` on a monotonic clock, against the journal's `record`:
+        /// a held quest's word is held, then the seat's flip (past
+        /// RUN_FLIPS inside RUN_WINDOW_MS the quest becomes held), the fold,
+        /// and RUN_RECORD_CAP for a quest the record lacks. Ask
+        /// shared_quests_check first: a denied or player-class quest's word
+        /// is refused there, never counted here.
+        fn quest_runs_judge(self: &mut QuestRuns, record: &[QuestRunRow], short_id: u32, file: &str, word: u8, seat: u32, now_ms: u64) -> QuestRunVerdict;
+        /// Whether the quest is held (a seat's churn) for the run.
+        fn quest_runs_held(self: &QuestRuns, short_id: u32, file: &str) -> bool;
+        /// `seat` left: its churn counters go.
+        fn quest_runs_gone(self: &mut QuestRuns, seat: u32);
+        /// What the login sends around the stages: the quests recorded
+        /// running (served starts, ahead of the stages) and stopped (served
+        /// stops, behind them), in the record's order, each still the
+        /// world's by `shared` and not held.
+        fn quest_runs_at_login(self: &QuestRuns, record: &[QuestRunRow], shared: &SharedQuests) -> QuestRunsLogin;
+        /// The record after a recorded word (`word` 1 or 2): the quest's run
+        /// set and its sequence raised, or the quest added last at sequence
+        /// 1 (never past RUN_RECORD_CAP).
+        fn quest_runs_merge(record: &[QuestRunRow], short_id: u32, file: &str, word: u8) -> Vec<QuestRunRow>;
+        /// The record without the quest: a held quest's entry leaves it
+        /// (quest_runs_judge's code 2 with `first`).
+        fn quest_runs_without(record: &[QuestRunRow], short_id: u32, file: &str) -> Vec<QuestRunRow>;
+
+        /// thuum ADR-068 rung 5 (D-Q1's derivation whole): the settings
+        /// `questScope` ("off" measures, "derived" acts) and `playerQuests`
+        /// (the generated list half), wire-rules quest_scope.
+        type QuestScope;
+        /// The settings from their values' JSON texts (pass `"off"` and `[]`
+        /// for a key the file lacks); the error names what is wrong.
+        fn new_quest_scope(mode_json: &str, player_quests_json: &str) -> Result<Box<QuestScope>>;
+        /// Whether the class acts ("derived"): compose the marked quests in
+        /// (shared_quests_set_player, script_variables_set_player) and
+        /// refuse a marked quest's report. False ("off"): log the
+        /// measurement line alone.
+        fn quest_scope_acting(self: &QuestScope) -> bool;
+        /// The list half, in the setting's order (stage 0).
+        fn quest_scope_listed(self: &QuestScope) -> Vec<QuestStageEntry>;
+        /// The class of the quest `short_id` in `file` from its `aliases`
+        /// (every ALST and ALLS of its QUST record, libespm's order): 1
+        /// Player (every alias the player's, or none and the list names
+        /// it), 0 World (a world alias, whatever the list says, or none and
+        /// unlisted).
+        fn quest_scope_class(self: &QuestScope, short_id: u32, file: &str, aliases: &[QuestScopeAliasRow]) -> u8;
+
+        /// thuum ADR-068 rung 5 (D-V1 B, D-T2 B): the condition-read
+        /// variables server-settings.json's `conditionVariables` lists, and
+        /// the player class composed in (wire-rules script_variables).
+        type ScriptVariables;
+        /// The setting from the block as JSON text (`[]` for none): a list
+        /// of {"form": "<hex id>:<plugin>", "script", "var"}; the error
+        /// names the bad entry.
+        fn new_script_variables(settings_json: &str) -> Result<Box<ScriptVariables>>;
+        /// Compose the player class in, while the scope acts: a listed key
+        /// whose form is one of `quests` (stage ignored) is its player's own.
+        fn script_variables_set_player(self: &mut ScriptVariables, quests: &[QuestStageEntry]);
+        /// The watch list a login names, in the setting's order, each key's
+        /// `own` set (the login sends it in ScriptVariables 81's `watch`,
+        /// at most 256 keys a message).
+        fn script_variables_watch(self: &ScriptVariables) -> Vec<ScriptVarKeyRow>;
+        /// One reported entry against `record` (the journal's for an entry
+        /// not flagged own, the reporter's player's change form's for one
+        /// flagged own): 0 recorded, 1 folded, 2 refused (E_SCRIPTVAR_
+        /// UNLISTED, a key the setting does not list; _PLAYER, an own key
+        /// reported as the world's or a world key as own; _KIND, a kind
+        /// other than the record's for the key, or none a condition
+        /// compares; _FULL, a new key past VARIABLE_RECORD_CAP). The
+        /// entry's `seq` is unread (a report's is 0).
+        fn script_variable_judge(self: &ScriptVariables, record: &[ScriptVarRow], entry: &ScriptVarRow) -> ScriptVarVerdict;
+        /// What the login serves of `record`, in its order: the entries
+        /// still listed, the world's half (`own` false, the journal's
+        /// record, to every seat) or a player's own (`own` true, its change
+        /// form's record, to that player alone), each with its sequence.
+        fn script_variables_at_login(self: &ScriptVariables, record: &[ScriptVarRow], own: bool) -> Vec<ScriptVarRow>;
+        /// The record after a recorded entry and the key's new sequence:
+        /// its value replaced and its sequence raised, or the key added
+        /// last at 1; the rows keep the entry's `own`.
+        fn script_variables_merge(record: &[ScriptVarRow], entry: &ScriptVarRow) -> ScriptVarMerge;
+
+        /// thuum ADR-068 rung 5 (the two transformations, D-T1 A): every
+        /// player's overlay, and the player's own rows' rule (wire-rules
+        /// player_own: the bound, the twin rule, the overlay).
+        type PlayerOverlays;
+        /// No overlay open.
+        fn new_player_overlays() -> Box<PlayerOverlays>;
+        /// One player's own call (ScriptCall 75 whose owner step recorded
+        /// it with `record` 4, its subject 0x14) of `func` (SetRace,
+        /// AddSpell, RemoveSpell, AddShout, RemoveShout, EquipItem, names
+        /// without case) by `player`'s seat naming `form` (its first
+        /// argument's form id, 0 for None), over the `properties` of the
+        /// calling script's attachments and the record's `facts`.
+        fn player_own_judge(self: &mut PlayerOverlays, player: u32, func: &str, form: u32, properties: &[ScriptPropertyRow], facts: &PlayerOwnFacts) -> PlayerOwnVerdict;
+        /// The overlay `player` wears now (`open` false for none), for its
+        /// figure's CreateActor and UpdateAppearance and the equipment gate.
+        fn player_overlay(self: &PlayerOverlays, player: u32) -> PlayerOverlayRow;
+        /// `player` left: its overlay ends with the connection, given back
+        /// for the core's line (`open` false for none).
+        fn player_overlay_gone(self: &mut PlayerOverlays, player: u32) -> PlayerOverlayRow;
     }
 }
 
-pub use ffi::{RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarMerge, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -3488,7 +3847,7 @@ impl SharedQuests {
     }
 
     fn shared_quests_listed(&self) -> Vec<QuestStageEntry> {
-        self.0.listed().iter().map(|d| QuestStageEntry { short_id: d.short_id, file: d.file.clone(), stage: 0 }).collect()
+        quest_entries(&self.0.listed())
     }
 
     fn shared_quests_check(&self, short_id: u32, file: &str) -> u8 {
@@ -3496,11 +3855,20 @@ impl SharedQuests {
             Ok(()) => 0,
             Err(quest_stages::Refusal::Unlisted) => 1,
             Err(quest_stages::Refusal::Denied) => 2,
+            Err(quest_stages::Refusal::Player) => 3,
         }
     }
 
-    fn shared_quests_allowed(&self, short_id: u32, file: &str) -> bool {
-        self.0.is_allowed(short_id, file)
+    fn shared_quests_allowed(&self, _short_id: u32, _file: &str) -> bool {
+        false
+    }
+
+    fn shared_quests_retired(&self) -> String {
+        self.0.retired().unwrap_or_default()
+    }
+
+    fn shared_quests_set_player(&mut self, quests: &[QuestStageEntry]) {
+        self.0.set_player(&form_descs(quests));
     }
 
     fn shared_quests_at_login(&self, record: &[QuestStageEntry]) -> Vec<QuestStageEntry> {
@@ -5166,6 +5534,241 @@ fn alias_created_due(marks: &[AliasMarkRow], quest: u32, alias: u32) -> bool {
     alias_fills::due(&parsed, quest, alias)
 }
 
+/// Quests as the bridge's entries name them (stage 0), and back.
+fn quest_entries(quests: &[forms::FormDesc]) -> Vec<QuestStageEntry> {
+    quests.iter().map(|d| QuestStageEntry { short_id: d.short_id, file: d.file.clone(), stage: 0 }).collect()
+}
+
+fn form_descs(entries: &[QuestStageEntry]) -> Vec<forms::FormDesc> {
+    entries.iter().map(|e| forms::FormDesc { short_id: e.short_id, file: e.file.clone() }).collect()
+}
+
+fn quest_report_word(word: u32, stage: u16) -> u8 {
+    let word = if word == 0 { None } else { Some(u8::try_from(word).unwrap_or(u8::MAX)) };
+    match quest_runs::Report::of(word, stage) {
+        Some(quest_runs::Report::Stage(_)) => 0,
+        Some(quest_runs::Report::Word(w)) => w.wire(),
+        None => 3,
+    }
+}
+
+/// thuum ADR-068 rung 5: the churn counter and the held quests (wire-rules
+/// quest_runs).
+#[derive(Debug, Default)]
+pub struct QuestRuns(quest_runs::QuestRuns);
+
+fn new_quest_runs() -> Box<QuestRuns> {
+    Box::default()
+}
+
+fn quest_run_of(r: &QuestRunRow) -> quest_runs::QuestRun {
+    quest_runs::QuestRun { quest: forms::FormDesc { short_id: r.short_id, file: r.file.clone() }, running: r.running, seq: r.seq }
+}
+
+fn quest_run_rows(record: &[quest_runs::QuestRun]) -> Vec<QuestRunRow> {
+    record.iter().map(|r| QuestRunRow { short_id: r.quest.short_id, file: r.quest.file.clone(), running: r.running, seq: r.seq }).collect()
+}
+
+fn run_word(word: u8) -> Option<quest_runs::Word> {
+    match word {
+        1 => Some(quest_runs::Word::Start),
+        2 => Some(quest_runs::Word::Stop),
+        _ => None,
+    }
+}
+
+impl QuestRuns {
+    fn quest_runs_judge(&mut self, record: &[QuestRunRow], short_id: u32, file: &str, word: u8, seat: u32, now_ms: u64) -> QuestRunVerdict {
+        let out = |code, first, name: &str, why: String| QuestRunVerdict { code, first, name: name.to_owned(), why };
+        let Some(word) = run_word(word) else {
+            return out(1, false, "", String::new());
+        };
+        let parsed: Vec<quest_runs::QuestRun> = record.iter().map(quest_run_of).collect();
+        let quest = forms::FormDesc { short_id, file: file.to_owned() };
+        match self.0.judge(&parsed, &quest, word, seat, now_ms) {
+            quest_runs::Verdict::Recorded => out(0, false, "", String::new()),
+            quest_runs::Verdict::Folded => out(1, false, "", String::new()),
+            quest_runs::Verdict::Held { first } => out(2, first, quest_runs::Code::Churn.name(), String::new()),
+            quest_runs::Verdict::Refuse(code, why) => out(3, false, code.name(), why),
+        }
+    }
+
+    fn quest_runs_held(&self, short_id: u32, file: &str) -> bool {
+        self.0.held(&forms::FormDesc { short_id, file: file.to_owned() })
+    }
+
+    fn quest_runs_gone(&mut self, seat: u32) {
+        self.0.gone(seat);
+    }
+
+    fn quest_runs_at_login(&self, record: &[QuestRunRow], shared: &SharedQuests) -> QuestRunsLogin {
+        let parsed: Vec<quest_runs::QuestRun> = record.iter().map(quest_run_of).collect();
+        let (starts, stops) = self.0.at_login(&parsed, &shared.0);
+        let entries = |runs: Vec<&quest_runs::QuestRun>| runs.iter().map(|r| QuestStageEntry { short_id: r.quest.short_id, file: r.quest.file.clone(), stage: 0 }).collect();
+        QuestRunsLogin { starts: entries(starts), stops: entries(stops) }
+    }
+}
+
+fn quest_runs_merge(record: &[QuestRunRow], short_id: u32, file: &str, word: u8) -> Vec<QuestRunRow> {
+    let parsed: Vec<quest_runs::QuestRun> = record.iter().map(quest_run_of).collect();
+    match run_word(word) {
+        Some(word) => quest_run_rows(&quest_runs::merge(&parsed, &forms::FormDesc { short_id, file: file.to_owned() }, word)),
+        None => record.to_vec(),
+    }
+}
+
+fn quest_runs_without(record: &[QuestRunRow], short_id: u32, file: &str) -> Vec<QuestRunRow> {
+    let parsed: Vec<quest_runs::QuestRun> = record.iter().map(quest_run_of).collect();
+    quest_run_rows(&quest_runs::without(&parsed, &forms::FormDesc { short_id, file: file.to_owned() }))
+}
+
+/// thuum ADR-068 rung 5: the quest scope's settings (wire-rules quest_scope).
+pub struct QuestScope(quest_scope::QuestScope);
+
+fn new_quest_scope(mode_json: &str, player_quests_json: &str) -> Result<Box<QuestScope>, clock::SettingsError> {
+    quest_scope::QuestScope::from_settings(mode_json, player_quests_json).map(|s| Box::new(QuestScope(s)))
+}
+
+impl QuestScope {
+    fn quest_scope_acting(&self) -> bool {
+        self.0.mode() == quest_scope::Mode::Derived
+    }
+
+    fn quest_scope_listed(&self) -> Vec<QuestStageEntry> {
+        quest_entries(self.0.listed())
+    }
+
+    fn quest_scope_class(&self, short_id: u32, file: &str, aliases: &[QuestScopeAliasRow]) -> u8 {
+        let parsed: Vec<quest_scope::Alias> = aliases
+            .iter()
+            .map(|a| quest_scope::Alias {
+                id: a.id,
+                location: a.location,
+                forced: a.forced,
+                unique_actor: a.unique_actor,
+                created: a.created,
+                create_at: a.create_at,
+                external: a.external.then_some(quest_scope::External { forced: a.external_forced, unique_actor: a.external_unique_actor }),
+            })
+            .collect();
+        self.0.class(&forms::FormDesc { short_id, file: file.to_owned() }, &parsed).code()
+    }
+}
+
+/// thuum ADR-068 rung 5: the condition-read variables (wire-rules
+/// script_variables).
+pub struct ScriptVariables(script_variables::ScriptVariables);
+
+fn new_script_variables(settings_json: &str) -> Result<Box<ScriptVariables>, clock::SettingsError> {
+    script_variables::ScriptVariables::from_json(settings_json).map(|v| Box::new(ScriptVariables(v)))
+}
+
+fn script_var_key(r: &ScriptVarRow) -> script_variables::Key {
+    script_variables::Key { form: forms::FormDesc { short_id: r.short_id, file: r.file.clone() }, script: r.script.clone(), var: r.var.clone() }
+}
+
+fn script_var_entries(record: &[ScriptVarRow]) -> Vec<script_variables::Entry> {
+    record
+        .iter()
+        .filter_map(|r| script_variables::Value::of(r.k, r.i, r.f, r.b).map(|value| script_variables::Entry { key: script_var_key(r), value, seq: r.seq }))
+        .collect()
+}
+
+fn script_var_row(e: &script_variables::Entry, own: bool) -> ScriptVarRow {
+    let (i, f, b) = match e.value {
+        script_variables::Value::Int(i) => (i, 0.0, false),
+        script_variables::Value::Float(f) => (0, f, false),
+        script_variables::Value::Bool(b) => (0, 0.0, b),
+    };
+    ScriptVarRow { short_id: e.key.form.short_id, file: e.key.form.file.clone(), script: e.key.script.clone(), var: e.key.var.clone(), own, k: e.value.kind(), i, f, b, seq: e.seq }
+}
+
+impl ScriptVariables {
+    fn script_variables_set_player(&mut self, quests: &[QuestStageEntry]) {
+        self.0.set_player(&form_descs(quests));
+    }
+
+    fn script_variables_watch(&self) -> Vec<ScriptVarKeyRow> {
+        self.0
+            .keys()
+            .iter()
+            .map(|k| ScriptVarKeyRow { short_id: k.form.short_id, file: k.form.file.clone(), script: k.script.clone(), var: k.var.clone(), own: self.0.is_own(k) })
+            .collect()
+    }
+
+    fn script_variable_judge(&self, record: &[ScriptVarRow], entry: &ScriptVarRow) -> ScriptVarVerdict {
+        let out = |code, name: &str, why: String| ScriptVarVerdict { code, name: name.to_owned(), why };
+        let Some(value) = script_variables::Value::of(entry.k, entry.i, entry.f, entry.b) else {
+            return out(2, script_variables::Code::Kind.name(), format!("kind {} is none a condition compares (3, 4 or 5)", entry.k));
+        };
+        match self.0.judge(&script_var_entries(record), &script_var_key(entry), value, entry.own) {
+            script_variables::Verdict::Recorded => out(0, "", String::new()),
+            script_variables::Verdict::Folded => out(1, "", String::new()),
+            script_variables::Verdict::Refuse(code, why) => out(2, code.name(), why),
+        }
+    }
+
+    fn script_variables_at_login(&self, record: &[ScriptVarRow], own: bool) -> Vec<ScriptVarRow> {
+        let entries = script_var_entries(record);
+        self.0.at_login(&entries, own).into_iter().map(|e| script_var_row(e, own)).collect()
+    }
+}
+
+fn script_variables_merge(record: &[ScriptVarRow], entry: &ScriptVarRow) -> ScriptVarMerge {
+    let Some(value) = script_variables::Value::of(entry.k, entry.i, entry.f, entry.b) else {
+        return ScriptVarMerge { record: record.to_vec(), seq: 0 };
+    };
+    let (after, seq) = script_variables::merge(&script_var_entries(record), &script_var_key(entry), value);
+    ScriptVarMerge { record: after.iter().map(|e| script_var_row(e, entry.own)).collect(), seq }
+}
+
+/// thuum ADR-068 rung 5: every player's overlay (wire-rules player_own).
+#[derive(Debug, Default)]
+pub struct PlayerOverlays(player_own::PlayerOverlays);
+
+fn new_player_overlays() -> Box<PlayerOverlays> {
+    Box::default()
+}
+
+fn overlay_row(o: Option<&player_own::Overlay>) -> PlayerOverlayRow {
+    match o {
+        Some(o) => PlayerOverlayRow { open: true, race: o.race, base: o.base, spells: o.spells.clone(), shouts: o.shouts.clone(), items: o.items.clone() },
+        None => PlayerOverlayRow { open: false, race: 0, base: 0, spells: Vec::new(), shouts: Vec::new(), items: Vec::new() },
+    }
+}
+
+impl PlayerOverlays {
+    fn player_own_judge(&mut self, player: u32, func: &str, form: u32, properties: &[ScriptPropertyRow], facts: &PlayerOwnFacts) -> PlayerOwnVerdict {
+        let Some(row) = player_own::Row::of("Actor", func) else {
+            return PlayerOwnVerdict {
+                code: 4,
+                name: natives::Code::Row.name().to_owned(),
+                why: format!("Actor.{func} is none of a player's own six rows"),
+                ended: overlay_row(None),
+                overlay: overlay_row(self.0.overlay(player)),
+            };
+        };
+        let named: Vec<player_own::Named> = properties.iter().map(|p| player_own::Named { form: p.form, members: p.members.clone() }).collect();
+        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held };
+        let (code, name, why, ended) = match self.0.judge(player, row, form, &named, f) {
+            player_own::Verdict::Record { ended } => (0, "", String::new(), ended),
+            player_own::Verdict::Overlay => (1, "", String::new(), None),
+            player_own::Verdict::Ended(o) => (2, "", String::new(), Some(o)),
+            player_own::Verdict::Fold => (3, "", String::new(), None),
+            player_own::Verdict::Refuse(code, why) => (4, code.name(), why, None),
+        };
+        PlayerOwnVerdict { code, name: name.to_owned(), why, ended: overlay_row(ended.as_ref()), overlay: overlay_row(self.0.overlay(player)) }
+    }
+
+    fn player_overlay(&self, player: u32) -> PlayerOverlayRow {
+        overlay_row(self.0.overlay(player))
+    }
+
+    fn player_overlay_gone(&mut self, player: u32) -> PlayerOverlayRow {
+        overlay_row(self.0.gone(player).as_ref())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5406,14 +6009,22 @@ mod tests {
         assert!(all.as_ref().is_ok_and(|a| a.shared_quests_check(0x4e50d, "Skyrim.esm") == 2));
         assert!(all.as_ref().is_ok_and(|a| a.shared_quests_at_login(&[e(0x4e50d, 5), e(0x74a84, 20), e(0x74a83, 10)]) == vec![e(0x74a84, 20), e(0x74a83, 10)]));
         assert!(new_shared_quests(r#"{"mode": "list"}"#).is_err());
-        // memo D62: the allowed list beside the denied, for the start-game-enabled
-        // quests that cross (MS13 0x39645 is one); a quest in both is refused
-        assert!(all.as_ref().is_ok_and(|a| !a.shared_quests_allowed(0x39645, "Skyrim.esm")));
+        // thuum ADR-068 rung 5 (read 4): memo D62's allowed list is a
+        // retired key, read, said once and ignored; the stub answers false
+        // until the core's IsSeatsOwnQuest retires with it
         let allowed = new_shared_quests(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"], "allowed": ["039645:Skyrim.esm"]}"#);
-        assert!(allowed.as_ref().is_ok_and(|a| a.shared_quests_allowed(0x39645, "Skyrim.esm") && !a.shared_quests_allowed(0x4e50d, "Skyrim.esm")));
+        assert!(allowed.as_ref().is_ok_and(|a| !a.shared_quests_allowed(0x39645, "Skyrim.esm") && a.shared_quests_retired().starts_with("sharedQuests.allowed is retired")));
         assert!(allowed.as_ref().is_ok_and(|a| a.shared_quests_listed() == vec![e(0x4e50d, 0)] && a.shared_quests_check(0x39645, "Skyrim.esm") == 0));
-        assert!(new_shared_quests(r#"{"mode": "all", "denied": ["039645:Skyrim.esm"], "allowed": ["39645:Skyrim.esm"]}"#).is_err());
-        assert!(list.as_ref().is_ok_and(|l| !l.shared_quests_allowed(0x74a83, "Skyrim.esm")));
+        assert!(new_shared_quests(r#"{"mode": "all", "denied": ["039645:Skyrim.esm"], "allowed": ["39645:Skyrim.esm"]}"#).is_ok_and(|a| a.shared_quests_check(0x39645, "Skyrim.esm") == 2));
+        assert!(all.as_ref().is_ok_and(|a| a.shared_quests_retired().is_empty()));
+        // the player class composed in (D-Q1's derivation): code 3, named in
+        // mode all's login after the denied, never replayed
+        let mut marked = new_shared_quests(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"]}"#).unwrap_or_else(|_| Box::new(SharedQuests(quest_stages::SharedQuests::default())));
+        marked.shared_quests_set_player(&[e(0x2ba16, 0), e(0xeafd5, 0)]);
+        assert_eq!(marked.shared_quests_check(0x2ba16, "Skyrim.esm"), 3);
+        assert_eq!(marked.shared_quests_check(0x4e50d, "Skyrim.esm"), 2);
+        assert_eq!(marked.shared_quests_listed(), vec![e(0x4e50d, 0), e(0x2ba16, 0), e(0xeafd5, 0)]);
+        assert_eq!(marked.shared_quests_at_login(&[e(0xeafd5, 10), e(0x74a83, 10)]), vec![e(0x74a83, 10)]);
         let record = quest_stages_merge(&[e(0x74a83, 20)], &e(0x74a83, 10));
         assert_eq!(record, vec![e(0x74a83, 10), e(0x74a83, 20)]);
         assert!(quest_stage_done(&record, &e(0x74a83, 20)));
@@ -5895,6 +6506,150 @@ mod tests {
         let pillar = ScriptCallFacts { self_id: 0xaa8cb, subject_kind: 1, owner_epoch: 3, ..facts };
         let relayed = s.judge(play.row, &[text], &pillar, 0);
         assert_eq!((relayed.code, relayed.keep_evidence, relayed.seq), (ScriptCallCode::Accepted, false, 1));
+    }
+
+    #[test]
+    fn the_bridge_reads_a_reports_word_and_records_the_runs() {
+        // thuum ADR-068 rung 5 (read 5): a stage-0 report is a start; the
+        // record, the fold, the churn and the login's two halves
+        assert_eq!((quest_report_word(0, 0), quest_report_word(1, 0), quest_report_word(2, 0), quest_report_word(0, 10), quest_report_word(3, 0), quest_report_word(0x101, 0)), (1, 1, 2, 0, 3, 3));
+        let row = |short_id: u32, running: bool, seq: u32| QuestRunRow { short_id, file: "Skyrim.esm".to_owned(), running, seq };
+        let mut runs = new_quest_runs();
+        let v = runs.quest_runs_judge(&[], 0x10d3bb, "Skyrim.esm", 1, 0xff00_0000, 0);
+        assert_eq!((v.code, v.first, v.name.as_str()), (0, false, ""));
+        let record = quest_runs_merge(&[], 0x10d3bb, "Skyrim.esm", 1);
+        assert_eq!(record, vec![row(0x10d3bb, true, 1)]);
+        assert_eq!(runs.quest_runs_judge(&record, 0x10d3bb, "Skyrim.esm", 1, 0xff00_0001, 10).code, 1);
+        assert_eq!(runs.quest_runs_judge(&record, 0x10d3bb, "Skyrim.esm", 9, 0xff00_0001, 10).code, 1, "no run word is nothing");
+        let record = quest_runs_merge(&record, 0x10d3bb, "Skyrim.esm", 2);
+        assert_eq!(record, vec![row(0x10d3bb, false, 2)]);
+        assert_eq!(quest_runs_merge(&record, 0x10d3bb, "Skyrim.esm", 0), record);
+        // one seat's flips past the bound: held, first once, then quiet
+        let mut word = 1;
+        let mut last = QuestRunVerdict { code: 0, first: false, name: String::new(), why: String::new() };
+        for t in 0..=quest_runs::RUN_FLIPS + 1 {
+            last = runs.quest_runs_judge(&[], 0x1a428, "Dawnguard.esm", word, 0xff00_0000, u64::try_from(t).unwrap_or(0));
+            word = 3 - word;
+        }
+        assert_eq!((last.code, last.first, last.name.as_str()), (2, true, "E_QUEST_CHURN"));
+        assert!(runs.quest_runs_held(0x1a428, "Dawnguard.esm"));
+        assert!(!runs.quest_runs_judge(&[], 0x1a428, "Dawnguard.esm", 1, 0xff00_0001, 100).first);
+        let held = vec![QuestRunRow { short_id: 0x1a428, file: "Dawnguard.esm".to_owned(), running: true, seq: 4 }, row(0x10d3bb, false, 2)];
+        assert_eq!(quest_runs_without(&held, 0x1a428, "Dawnguard.esm"), vec![row(0x10d3bb, false, 2)]);
+        runs.quest_runs_gone(0xff00_0000);
+        // the login: starts and stops still shared and not held
+        let all = new_shared_quests(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"]}"#).unwrap_or_else(|_| Box::new(SharedQuests(quest_stages::SharedQuests::default())));
+        let record = vec![row(0x74a83, true, 1), row(0x4e50d, true, 1), row(0x10d3bb, false, 2)];
+        let login = runs.quest_runs_at_login(&record, &all);
+        let e = |short_id: u32| QuestStageEntry { short_id, file: "Skyrim.esm".to_owned(), stage: 0 };
+        assert_eq!((login.starts, login.stops), (vec![e(0x74a83)], vec![e(0x10d3bb)]));
+        // the cap, by name
+        let full: Vec<QuestRunRow> = (1..=u32::try_from(quest_runs::RUN_RECORD_CAP).unwrap_or(0)).map(|q| row(q, true, 1)).collect();
+        let v = runs.quest_runs_judge(&full, 0x0010_0000, "Skyrim.esm", 1, 0xff00_0000, 0);
+        assert_eq!((v.code, v.name.as_str()), (3, "E_QUEST_RUNS_FULL"));
+    }
+
+    #[test]
+    fn the_bridge_classes_a_quest_by_its_aliases_and_the_list() {
+        // thuum ADR-068 rung 5: PlayerWerewolfQuest 0x2ba16's alias by ALUA
+        // 0x7, PlayerVampireQuest 0xeafd5 by the list, MS13 0x39645 World
+        let alias = |id: u32, forced: u32, unique_actor: u32| QuestScopeAliasRow { id, location: false, forced, unique_actor, created: 0, create_at: 0, external: false, external_forced: 0, external_unique_actor: 0 };
+        let scope = new_quest_scope(r#""derived""#, r#"["0eafd5:Skyrim.esm"]"#).unwrap_or_else(|_| Box::new(QuestScope(quest_scope::QuestScope::default())));
+        assert!(scope.quest_scope_acting());
+        assert_eq!(scope.quest_scope_listed(), vec![QuestStageEntry { short_id: 0xeafd5, file: "Skyrim.esm".to_owned(), stage: 0 }]);
+        assert_eq!(scope.quest_scope_class(0x2ba16, "Skyrim.esm", &[alias(0, 0, 7)]), 1);
+        assert_eq!(scope.quest_scope_class(0xeafd5, "Skyrim.esm", &[]), 1);
+        assert_eq!(scope.quest_scope_class(0x39645, "Skyrim.esm", &[alias(1, 0, 0x39646), alias(10, 0x1fc43, 0)]), 0);
+        // a listed quest with a world alias stays World; an external fill
+        // from the player's alias and a creation in the player's are Player
+        assert_eq!(scope.quest_scope_class(0xeafd5, "Skyrim.esm", &[alias(0, 0x1fc43, 0)]), 0);
+        let external = QuestScopeAliasRow { external: true, external_forced: 0x14, ..alias(0, 0, 0) };
+        let created = QuestScopeAliasRow { created: 0x39647, create_at: alias_fills::CREATE_IN, ..alias(1, 0, 0) };
+        assert_eq!(scope.quest_scope_class(0x12345, "Skyrim.esm", &[alias(0, 0x14, 0), created, QuestScopeAliasRow { id: 2, ..external }]), 1);
+        assert_eq!(scope.quest_scope_class(0x12345, "Skyrim.esm", &[alias(0, 0x14, 0), QuestScopeAliasRow { location: true, ..alias(0, 0, 0) }]), 0);
+        let off = new_quest_scope(r#""off""#, "[]");
+        assert!(off.as_ref().is_ok_and(|s| !s.quest_scope_acting() && s.quest_scope_listed().is_empty()));
+        assert!(new_quest_scope(r#""aliases""#, "[]").is_err());
+        assert!(new_quest_scope(r#""off""#, r#"["0eafd5"]"#).is_err());
+    }
+
+    #[test]
+    fn the_bridge_judges_and_merges_the_condition_variables_and_cuts_the_players() {
+        // thuum ADR-068 rung 5 (D-V1 B, D-T2 B): MS13 0x39645's
+        // ::camillaescort_var any seat reports, PlayerVampireQuest
+        // 0xeafd5's ::vampirestatus_var its player's own
+        let settings = r#"[{"form": "039645:Skyrim.esm", "script": "MS13QuestScript", "var": "::camillaescort_var"},
+            {"form": "0eafd5:Skyrim.esm", "script": "PlayerVampireQuestScript", "var": "::vampirestatus_var"}]"#;
+        let mut vars = new_script_variables(settings).unwrap_or_else(|_| Box::new(ScriptVariables(script_variables::ScriptVariables::default())));
+        vars.script_variables_set_player(&[QuestStageEntry { short_id: 0xeafd5, file: "Skyrim.esm".to_owned(), stage: 0 }]);
+        let watch = vars.script_variables_watch();
+        assert_eq!(watch.iter().map(|k| (k.short_id, k.own)).collect::<Vec<_>>(), [(0x39645, false), (0xeafd5, true)]);
+        let entry = |short_id: u32, script: &str, var: &str, own: bool, k: u8, i: i32| ScriptVarRow { short_id, file: "Skyrim.esm".to_owned(), script: script.to_owned(), var: var.to_owned(), own, k, i, f: 0.0, b: false, seq: 0 };
+        let escort = entry(0x39645, "MS13QuestScript", "::camillaescort_var", false, 3, 1);
+        let v = vars.script_variable_judge(&[], &escort);
+        assert_eq!((v.code, v.name.as_str()), (0, ""));
+        let merged = script_variables_merge(&[], &escort);
+        assert_eq!((merged.seq, merged.record.len(), merged.record.first().map(|r| (r.i, r.seq, r.own))), (1, 1, Some((1, 1, false))));
+        assert_eq!(vars.script_variable_judge(&merged.record, &escort).code, 1);
+        let again = script_variables_merge(&merged.record, &ScriptVarRow { i: 2, ..escort.clone() });
+        assert_eq!(again.seq, 2);
+        // the cut, both ways, and a kind no condition compares
+        let status = entry(0xeafd5, "PlayerVampireQuestScript", "::vampirestatus_var", true, 3, 2);
+        assert_eq!(vars.script_variable_judge(&[], &status).code, 0);
+        assert_eq!(vars.script_variable_judge(&[], &ScriptVarRow { own: false, ..status.clone() }).name, "E_SCRIPTVAR_PLAYER");
+        assert_eq!(vars.script_variable_judge(&[], &ScriptVarRow { own: true, ..escort.clone() }).name, "E_SCRIPTVAR_PLAYER");
+        assert_eq!(vars.script_variable_judge(&[], &ScriptVarRow { k: 2, ..escort.clone() }).name, "E_SCRIPTVAR_KIND");
+        assert_eq!(vars.script_variable_judge(&merged.record, &ScriptVarRow { k: 5, b: true, ..escort.clone() }).name, "E_SCRIPTVAR_KIND");
+        assert_eq!(vars.script_variable_judge(&[], &entry(0x74a83, "S", "v", false, 3, 1)).name, "E_SCRIPTVAR_UNLISTED");
+        // the login: the world's half to every seat, the player's own to it alone
+        let own = script_variables_merge(&[], &status).record;
+        assert_eq!(vars.script_variables_at_login(&again.record, false).iter().map(|r| (r.i, r.seq)).collect::<Vec<_>>(), [(2, 2)]);
+        assert_eq!(vars.script_variables_at_login(&own, true).iter().map(|r| (r.short_id, r.own, r.seq)).collect::<Vec<_>>(), [(0xeafd5, true, 1)]);
+        assert!(vars.script_variables_at_login(&own, false).is_empty());
+        assert!(new_script_variables(r#"[{"form": "039645"}]"#).is_err());
+    }
+
+    #[test]
+    fn the_bridge_records_a_players_own_row_and_judges_it_into_its_record_or_its_overlay() {
+        // thuum ADR-068 rung 5 (the two transformations): Ariadne
+        // 0xff000001's VampireChange to KhajiitRaceVampire 0x88845 through
+        // the script call's two steps (record 4, subject 0x14, no
+        // sequence), then the rule over the attachment's FormLists (their
+        // ids and KhajiitRace's illustrative), and rotfern's beast form
+        // (WerewolfBeastRace 0xcdd84) as an overlay
+        let race = ScriptArg { kind: 4, form_id: 0x88845 };
+        let at = script_call_subject("Actor", "SetRace", 0x14, &[race]);
+        assert!(at.row >= 0);
+        assert_eq!((at.subject, at.record), (0x14, 4));
+        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0x14, epoch: 0, subject_kind: 3, cell: 0, owner: 0, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING };
+        let mut s = new_script_calls();
+        let v = s.judge(at.row, &[race], &facts, 0);
+        assert_eq!((v.code, v.subject, v.seq, v.record, v.audience), (ScriptCallCode::Accepted, 0x14, 0, 4, 2));
+        let npc = s.judge(at.row, &[race], &ScriptCallFacts { self_id: 0x800a6, ..facts }, 0);
+        assert_eq!((npc.code, npc.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
+        let lists = [ScriptPropertyRow { form: 0x0d00_1000, members: vec![0x13746, 0x13745] }, ScriptPropertyRow { form: 0x0d00_1001, members: vec![0x88794, 0x88845] }];
+        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false };
+        let mut overlays = new_player_overlays();
+        let v = overlays.player_own_judge(0xff00_0001, "SetRace", 0x88845, &lists, &khajiit);
+        assert_eq!((v.code, v.name.as_str(), v.ended.open, v.overlay.open), (0, "", false, false));
+        let unnamed = overlays.player_own_judge(0xff00_0001, "AddSpell", 0x92c48, &lists, &khajiit);
+        assert_eq!((unnamed.code, unnamed.name.as_str()), (4, "E_SCRIPTCALL_UNNAMED"));
+        let restricted = overlays.player_own_judge(0xff00_0001, "SetRace", 0x88845, &lists, &PlayerOwnFacts { restricted: true, ..khajiit });
+        assert_eq!(restricted.name, "E_SCRIPTCALL_RACE");
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "EquipSpell", 0x88845, &lists, &khajiit).name, "E_SCRIPTCALL_ROW");
+        // the beast form: an overlay, its howl held in it, its return ending it
+        let werewolf = [ScriptPropertyRow { form: 0xcdd84, members: Vec::new() }, ScriptPropertyRow { form: 0x92c48, members: Vec::new() }];
+        let nord = PlayerOwnFacts { recorded_race: 0x13746, ..khajiit };
+        let opened = overlays.player_own_judge(0xff00_0000, "SetRace", 0xcdd84, &werewolf, &nord);
+        assert_eq!((opened.code, opened.overlay.open, opened.overlay.race, opened.overlay.base), (1, true, 0xcdd84, 0x13746));
+        assert_eq!(overlays.player_own_judge(0xff00_0000, "AddShout", 0x92c48, &werewolf, &nord).overlay.shouts, vec![0x92c48]);
+        assert!(overlays.player_overlay(0xff00_0000).open && !overlays.player_overlay(0xff00_0001).open);
+        let back = overlays.player_own_judge(0xff00_0000, "SetRace", 0x13746, &werewolf, &nord);
+        assert_eq!((back.code, back.ended.open, back.ended.shouts.clone(), back.overlay.open), (2, true, vec![0x92c48], false));
+        // a disconnect mid-form ends it
+        assert_eq!(overlays.player_own_judge(0xff00_0000, "SetRace", 0xcdd84, &werewolf, &nord).code, 1);
+        assert_eq!(overlays.player_overlay_gone(0xff00_0000).race, 0xcdd84);
+        assert!(!overlays.player_overlay_gone(0xff00_0000).open);
     }
 
     #[test]

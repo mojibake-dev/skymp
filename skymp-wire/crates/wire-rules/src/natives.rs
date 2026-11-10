@@ -237,17 +237,25 @@ pub enum RecordKind {
     /// `Anchor::SelfRef`), its pose the reporter's through PlacedRequest and
     /// PlacedReport (W3: no observe point on a seat this rung).
     Placement,
+    /// A player's own race, learned spells and shouts and equipment (thuum
+    /// ADR-068 rung 5, the two transformations; docs/research/
+    /// rung5-quests-2026-11-09.md section 8(b)): Actor.SetRace, AddSpell,
+    /// RemoveSpell, AddShout, RemoveShout and EquipItem on the reporter's own
+    /// player alone, judged by wire-rules player_own (the bound, the twin
+    /// rule, the overlay) into its change form or its overlay. R1.
+    PlayerOwn,
 }
 
 impl RecordKind {
     /// The bridge's number for the kind: 1 the ref state, 2 the standing, 3
-    /// a placement; 0 is no record.
+    /// a placement, 4 a player's own; 0 is no record.
     #[must_use]
     pub fn code(self) -> u8 {
         match self {
             RecordKind::RefState => 1,
             RecordKind::Standing => 2,
             RecordKind::Placement => 3,
+            RecordKind::PlayerOwn => 4,
         }
     }
 }
@@ -671,11 +679,15 @@ pub enum Verdict {
     /// Recorded: the owner's call of a row the table keeps as its subject's
     /// record ([`Keep::Record`]), which the core writes and carries as the
     /// record's own word; it takes the subject's next sequence, the one its
-    /// actions share (thuum ADR-068 rung 4).
+    /// actions share (thuum ADR-068 rung 4). A player's own row
+    /// ([`RecordKind::PlayerOwn`], rung 5) takes none: its subject, 0x14, is
+    /// each reporter's own player, and its words ride the player's own
+    /// messages (its appearance, its learned set, its equipment), which no
+    /// receiver orders by an object's sequence.
     Record {
-        /// The subject's form id.
+        /// The subject's form id (0x14 for a player's own row).
         subject: u32,
-        /// The subject's sequence after this call.
+        /// The subject's sequence after this call; 0 for a player's own row.
         seq: u32,
         /// Which record it moves.
         kind: RecordKind,
@@ -809,9 +821,10 @@ const UNSIMULATED: &str = " (an actor nobody simulates, judged by its cell's hos
 /// The owner step on the call of a row kept as its subject's record
 /// ([`Keep::Record`], thuum ADR-068 rung 4; docs/research/
 /// rung4-state-rows-2026-11-07.md section 1(c), `record_owner`). The
-/// reporter's own player is no record row's subject (`E_SCRIPTCALL_ROW`: the
-/// standing's 0x14 waits for rung 5, and a player's own ref state or
-/// placement is its seat's, never the world's). A standing row is an NPC's,
+/// reporter's own player is a player's own row's subject alone (rung 5:
+/// [`RecordKind::PlayerOwn`], every other subject `E_SCRIPTCALL_ROW`) and no
+/// other record row's (`E_SCRIPTCALL_ROW`: a player's own standing, ref
+/// state or placement is its seat's, never the world's). A standing row is an NPC's,
 /// its simulator's, the epoch unread (an actor's owner is its simulator);
 /// any other subject is refused by its row. A ref state's or a placement's
 /// subject: a world object, held, placed by its record, a door or a
@@ -820,6 +833,19 @@ const UNSIMULATED: &str = " (an actor nobody simulates, judged by its cell's hos
 /// and one nobody simulates (an ambush draugr the loader never held, placed
 /// by its ACHR's cell) is its cell's host's at the epoch ([`Facts::host`]).
 fn record_owner(subject: u32, kind: RecordKind, facts: &Facts) -> Result<(), Refusal> {
+    // rung 5: a player's own row is the reporter's own player's alone, the
+    // one record row whose subject 0x14 is; its form and its race are
+    // wire-rules player_own's to judge
+    if kind == RecordKind::PlayerOwn {
+        return if subject == OWN_PLAYER {
+            Ok(())
+        } else {
+            Err(refusal(
+                Code::Row,
+                "a player's own row on another subject: its channel is the reporter's own player alone (an NPC's race, spells and equipment are its change form's)".to_owned(),
+            ))
+        };
+    }
     if subject == OWN_PLAYER {
         return Err(refusal(
             Code::Row,
@@ -844,6 +870,8 @@ fn record_owner(subject: u32, kind: RecordKind, facts: &Facts) -> Result<(), Ref
         (RecordKind::RefState | RecordKind::Placement, SubjectKind::WorldObject | SubjectKind::Record | SubjectKind::DoorOrContainer) => {
             hosts_at_epoch(facts, facts.owner, facts.owner_epoch, placed)
         }
+        // judged above, its subject alone
+        (RecordKind::PlayerOwn, _) => Ok(()),
     }
 }
 
@@ -1089,6 +1117,7 @@ impl ScriptCalls {
             Channel::Evidence => return keep_evidence(subject, facts),
             Channel::Record(kind) => {
                 return match record_owner(subject, kind, facts) {
+                    Ok(()) if kind == RecordKind::PlayerOwn => Verdict::Record { subject, seq: 0, kind },
                     Ok(()) => Verdict::Record { subject, seq: self.next_seq(subject), kind },
                     Err(refused) => Verdict::Refuse(refused),
                 };
@@ -1690,12 +1719,16 @@ mod tests {
     }
 
     #[test]
-    fn the_table_is_rung_fours_and_holds_together() {
+    fn the_table_is_rung_fives_and_holds_together() {
         // the six action rows, the flip's twenty-four, Game.GetPlayer, D-S3's
         // three trap rows, rung 4's seven (the standing's six and
-        // ReferenceAlias.Clear) and D-W2's Sound.Play and
-        // CreateDetectionEvent: "43 of 43 table rows bound"
-        assert_eq!(TABLE.len(), 43);
+        // ReferenceAlias.Clear), D-W2's Sound.Play and CreateDetectionEvent
+        // and rung 5's six player's own rows: "49 of 49 table rows bound"
+        assert_eq!(TABLE.len(), 49);
+        let own: Vec<&str> = TABLE.iter().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| r.func).collect();
+        assert_eq!(own, ["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem"]);
+        assert_eq!(own.iter().map(|f| crate::player_own::Row::of("Actor", f).is_some()).filter(|b| *b).count(), crate::player_own::ROWS.len());
+        assert_eq!(row_index("Actor", "SetRace"), Some(43));
         let actions: Vec<&str> = TABLE.iter().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
         assert_eq!(actions, ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat", "Play", "CreateDetectionEvent"]);
         // D-W2 A's look column: the six action rows also, the two motion rows
@@ -1731,7 +1764,11 @@ mod tests {
                 // ref state and the placements a world object's (the cell's
                 // host), the standing an NPC's (its simulator)
                 assert_eq!((r.kind, r.subject, r.audience, r.relay), (Kind::State, Subject::SelfRef, Audience::Nobody, Relay::Never), "{name}");
-                let owner = if kind == RecordKind::Standing { Owner::Simulator } else { Owner::CellHost };
+                let owner = match kind {
+                    RecordKind::Standing => Owner::Simulator,
+                    RecordKind::PlayerOwn => Owner::Player,
+                    RecordKind::RefState | RecordKind::Placement => Owner::CellHost,
+                };
                 assert_eq!(r.owner, owner, "{name}");
             } else {
                 assert_eq!((r.relay, r.keep), (Relay::Never, Keep::Nothing), "{name}");
@@ -1761,8 +1798,9 @@ mod tests {
         }
         let everyone: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
-        // the flip's nineteen state rows, D-S3's three and the standing's six
-        assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 28);
+        // the flip's nineteen state rows, D-S3's three, the standing's six and
+        // rung 5's six player's own
+        assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 34);
         assert_eq!(row("Game", "GetPlayer").map(|r| r.kind), Some(Kind::Local));
         // the three rows kept as their subject's variable (the fifty fixes'
         // D-C3 A)
@@ -1968,6 +2006,30 @@ mod tests {
         // the reporter's own player is no record row's subject
         assert_eq!(code(&s.judge(enable, &[Arg::Bool], &simulated(0x14), 0)), Some(Code::Row));
         assert_eq!(s.seq_of(DRAUGR), 1);
+    }
+
+    #[test]
+    fn a_players_own_row_is_its_own_players_alone_and_takes_no_sequence() {
+        // rung 5 (the two transformations): RaceCompatibility's
+        // VampireChange on the reporter's own player, its race argument
+        // (KhajiitRaceVampire 0x88845), the werewolf's AddSpell and the skin's
+        // EquipItem; the shape's kinds are FunctionsDump's
+        let mut s = ScriptCalls::default();
+        let own = Facts { sender: GUEST, self_id: OWN_PLAYER, kind: SubjectKind::Actor, ..simulated(OWN_PLAYER) };
+        let set_race = row("Actor", "SetRace");
+        assert_eq!(recorded(&s.judge(set_race, &[Arg::Object(0x88845)], &own, 0)), (OWN_PLAYER, 0, RecordKind::PlayerOwn));
+        assert_eq!(recorded(&s.judge(row("Actor", "AddSpell"), &[Arg::Object(0x92c48), Arg::Bool], &own, 0)), (OWN_PLAYER, 0, RecordKind::PlayerOwn));
+        assert_eq!(recorded(&s.judge(row("Actor", "EquipItem"), &[Arg::Object(0x10d4f9), Arg::Bool, Arg::Bool], &own, 0)), (OWN_PLAYER, 0, RecordKind::PlayerOwn));
+        // a None argument passes the shape (player_own's bound refuses it)
+        assert_eq!(recorded(&s.judge(row("Actor", "RemoveSpell"), &[Arg::Absent], &own, 0)).2, RecordKind::PlayerOwn);
+        assert_eq!(s.seq_of(OWN_PLAYER), 0, "no sequence for a player's own row");
+        // any other subject: an NPC another seat or this one simulates, a world object
+        assert_eq!(code(&s.judge(set_race, &[Arg::Object(0x88845)], &simulated(DRAUGR), 0)), Some(Code::Row));
+        assert_eq!(code(&s.judge(set_race, &[Arg::Object(0x88845)], &hosted(COBWEB), 0)), Some(Code::Row));
+        // the shape's kinds: an AddSpell without its bool, a race as a number
+        assert_eq!(code(&s.judge(row("Actor", "AddSpell"), &[Arg::Object(0x92c48)], &own, 0)), Some(Code::Args));
+        assert_eq!(code(&s.judge(set_race, &[Arg::Number], &own, 0)), Some(Code::Args));
+        assert_eq!(RecordKind::PlayerOwn.code(), 4);
     }
 
     #[test]

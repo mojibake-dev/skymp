@@ -12,15 +12,24 @@
 //! journal: every quest a seat reports is the world's unless denied. The
 //! denied list holds what must stay a seat's own (the main quest's intro
 //! chain, the DLC starts), because replaying their stages onto a fresh
-//! player moves the player and starts scenes. In mode all a quest the game
-//! starts by itself (QUST DNAM's Start Game Enabled: a layer's controller,
-//! MCM, version-tracker and player-alias quests, the alternate start's own,
-//! 330 of Skyrim.esm's 1811) is each seat's own unless `allowed` names it
-//! (memo D62, 2026-10-29); the flag is the record's, so the server reads it
-//! beside this rule and asks `is_allowed` here. The record itself is bounded
+//! player moves the player and starts scenes. The record itself is bounded
 //! at QUEST_RECORD_CAP pairs (rule 12's resource bounds: a client's reports
 //! feed it), and the stage index of a report is the record's to check (QUST
-//! INDX, read beside this rule in the handler as the start flag is).
+//! INDX, read beside this rule in the handler).
+//!
+//! Rung 5 (thuum ADR-068, docs/research/rung5-quests-2026-11-09.md section
+//! 1(b) and 8(a)) retires memo D62's start-game-enabled rule: a quest the
+//! game starts by itself crosses like any other, its stage 0 the start
+//! word's (wire-rules quest_runs), so mode all's `allowed` names nothing any
+//! more. It stays a recognized key of the mode block, read and ignored, and
+//! [`SharedQuests::retired`] gives the core the one line it logs at load
+//! (read 4: every image and T2's copy of the deployed settings carry it, and
+//! an unknown key would refuse the whole setting). What stays each seat's
+//! own beside the denied list is the player class (wire-rules quest_scope,
+//! D-Q1's derivation): composed in by [`SharedQuests::set_player`] when the
+//! scope acts, a player-class quest is never the world's in either mode, the
+//! login names it among what a client never reports, and its report is
+//! refused (`E_QUEST_PLAYER` in the handler, after the mode's own refusal).
 
 use crate::clock::SettingsError;
 use crate::forms::FormDesc;
@@ -73,9 +82,12 @@ pub struct SharedQuests {
     listed: Vec<FormDesc>,
     /// Mode all's exceptions, in the settings' order.
     denied: Vec<FormDesc>,
-    /// Mode all's start-game-enabled quests that cross all the same, in the
-    /// settings' order (memo D62).
-    allowed: Vec<FormDesc>,
+    /// The player-class quests the scope composed in ([`SharedQuests::set_player`]),
+    /// in the order given: never the world's, in either mode.
+    player: Vec<FormDesc>,
+    /// How many quests the block's retired `allowed` key named (rung 5,
+    /// read 4), None when the block carries no such key.
+    retired_allowed: Option<usize>,
 }
 
 /// One stage done on a shared quest.
@@ -95,24 +107,40 @@ pub enum Refusal {
     Unlisted,
     /// A quest the server denies (mode all).
     Denied,
+    /// A player-class quest (rung 5, wire-rules quest_scope): each seat's
+    /// own, in either mode.
+    Player,
+}
+
+impl Refusal {
+    /// The stable name the server logs.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Refusal::Unlisted => "E_QUEST_UNLISTED",
+            Refusal::Denied => "E_QUEST_DENIED",
+            Refusal::Player => "E_QUEST_PLAYER",
+        }
+    }
 }
 
 impl SharedQuests {
     /// The setting from the `sharedQuests` block's JSON text: a list of
     /// "<hex id>:<plugin>" strings (`[]` for none) is mode list; the object
-    /// `{"mode": "all", "denied": [...], "allowed": [...]}` (both lists
-    /// optional, the same strings; `allowed` the start-game-enabled quests
-    /// that cross, memo D62) is mode all. The error names what is wrong: an
-    /// entry that is not such a string, a quest named twice or both denied
-    /// and allowed, a mode other than "all", a field other than the three,
-    /// or a block of another shape.
+    /// `{"mode": "all", "denied": [...]}` (the list optional, the same
+    /// strings) is mode all. The block may still carry rung 5's retired key
+    /// `allowed` (memo D62's start-game-enabled quests that crossed): it is
+    /// read and ignored, whatever it holds, and [`SharedQuests::retired`]
+    /// says so. The error names what is wrong: a denied entry that is not
+    /// such a string, a quest named twice, a mode other than "all", a field
+    /// other than the three, or a block of another shape.
     pub fn from_json(text: &str) -> Result<Self, SettingsError> {
         let block: serde_json::Value = serde_json::from_str(text).map_err(|e| SettingsError(format!("sharedQuests: {e}")))?;
         match block {
-            serde_json::Value::Array(entries) => Ok(Self { mode: Mode::List, listed: parse_quests(&entries, "sharedQuests")?, denied: Vec::new(), allowed: Vec::new() }),
+            serde_json::Value::Array(entries) => Ok(Self { mode: Mode::List, listed: parse_quests(&entries, "sharedQuests")?, ..Self::default() }),
             serde_json::Value::Object(fields) => {
                 if let Some(key) = fields.keys().find(|k| *k != "mode" && *k != "denied" && *k != "allowed") {
-                    return Err(SettingsError(format!("sharedQuests: {key:?} is no field of the mode block (mode, denied, allowed)")));
+                    return Err(SettingsError(format!("sharedQuests: {key:?} is no field of the mode block (mode, denied, and the retired allowed)")));
                 }
                 match fields.get("mode") {
                     Some(serde_json::Value::String(mode)) if mode == "all" => {}
@@ -124,17 +152,12 @@ impl SharedQuests {
                     Some(serde_json::Value::Array(entries)) => parse_quests(entries, "sharedQuests.denied")?,
                     Some(other) => return Err(SettingsError(format!("sharedQuests: denied {other} is not a list of \"<hex id>:<plugin>\""))),
                 };
-                let allowed = match fields.get("allowed") {
-                    None => Vec::new(),
-                    Some(serde_json::Value::Array(entries)) => parse_quests(entries, "sharedQuests.allowed")?,
-                    Some(other) => return Err(SettingsError(format!("sharedQuests: allowed {other} is not a list of \"<hex id>:<plugin>\""))),
-                };
-                if let Some(both) = allowed.iter().find(|a| denied.iter().any(|d| d.is(a.short_id, &a.file))) {
-                    return Err(SettingsError(format!("sharedQuests: {:x}:{} is both denied and allowed", both.short_id, both.file)));
-                }
-                Ok(Self { mode: Mode::All, listed: Vec::new(), denied, allowed })
+                // rung 5 (read 4): a recognized key, retired; its entries are
+                // counted for the load's line and never read as quests
+                let retired_allowed = fields.get("allowed").map(|v| v.as_array().map_or(0, Vec::len));
+                Ok(Self { mode: Mode::All, denied, retired_allowed, ..Self::default() })
             }
-            other => Err(SettingsError(format!("sharedQuests: {other} is neither a list of quests nor {{\"mode\": \"all\", \"denied\": [...], \"allowed\": [...]}}"))),
+            other => Err(SettingsError(format!("sharedQuests: {other} is neither a list of quests nor {{\"mode\": \"all\", \"denied\": [...]}}"))),
         }
     }
 
@@ -144,14 +167,47 @@ impl SharedQuests {
         self.mode
     }
 
+    /// The line the core logs once at load when the block still carries the
+    /// retired `allowed` key (rung 5, read 4; the deploy files drop it in a
+    /// later thuum commit), None when it does not.
+    #[must_use]
+    pub fn retired(&self) -> Option<String> {
+        self.retired_allowed.map(|n| {
+            format!(
+                "sharedQuests.allowed is retired (thuum ADR-068 rung 5): its {n} quest(s) are ignored; a quest the game starts by itself crosses like any other, its stage 0 the start word's"
+            )
+        })
+    }
+
+    /// Compose the player class in (rung 5, wire-rules quest_scope): the
+    /// quests the scope's derivation marks Player, each once, replacing any
+    /// composed before. The core calls it at load, and only while the scope
+    /// acts (`questScope` "derived"), so "off" leaves the setting as written.
+    pub fn set_player(&mut self, quests: &[FormDesc]) {
+        self.player.clear();
+        for q in quests {
+            if !self.is_player(q.short_id, &q.file) {
+                self.player.push(q.clone());
+            }
+        }
+    }
+
+    /// Whether the quest `short_id` in `file` is of the composed player class.
+    #[must_use]
+    pub fn is_player(&self, short_id: u32, file: &str) -> bool {
+        self.player.iter().any(|p| p.is(short_id, file))
+    }
+
     /// Whether the quest `short_id` in `file` is the world's: listed in mode
-    /// list, not denied in mode all.
+    /// list, not denied in mode all, and in either mode not of the player
+    /// class.
     #[must_use]
     pub fn is_shared(&self, short_id: u32, file: &str) -> bool {
-        match self.mode {
+        let by_mode = match self.mode {
             Mode::List => self.listed.iter().any(|l| l.is(short_id, file)),
             Mode::All => !self.is_denied(short_id, file),
-        }
+        };
+        by_mode && !self.is_player(short_id, file)
     }
 
     /// Whether mode all denies the quest `short_id` in `file`.
@@ -160,34 +216,30 @@ impl SharedQuests {
         self.denied.iter().any(|d| d.is(short_id, file))
     }
 
-    /// Whether mode all's `allowed` names the quest `short_id` in `file`: a
-    /// quest the game starts by itself that crosses all the same (memo D62).
-    /// The flag is the record's and the server reads it; this rule holds the
-    /// list, empty in mode list, where the curated list names what crosses.
+    /// What the login names, in the settings' order: in mode list the
+    /// shared quests (what a client reports), the player class left out; in
+    /// mode all the denied quests and then the player class's not denied
+    /// already, each once (what a client never reports: denied ∪ player).
     #[must_use]
-    pub fn is_allowed(&self, short_id: u32, file: &str) -> bool {
-        self.allowed.iter().any(|a| a.is(short_id, file))
-    }
-
-    /// What the login names, in the settings' order: the shared quests in
-    /// mode list (what a client reports), the denied quests in mode all
-    /// (what a client never reports).
-    #[must_use]
-    pub fn listed(&self) -> &[FormDesc] {
+    pub fn listed(&self) -> Vec<FormDesc> {
         match self.mode {
-            Mode::List => &self.listed,
-            Mode::All => &self.denied,
+            Mode::List => self.listed.iter().filter(|l| !self.is_player(l.short_id, &l.file)).cloned().collect(),
+            Mode::All => self.denied.iter().chain(self.player.iter().filter(|p| !self.is_denied(p.short_id, &p.file))).cloned().collect(),
         }
     }
 
-    /// Judge a report's quest: the world's, or refused by the mode's rule.
+    /// Judge a report's quest: the world's, or refused, the mode's own
+    /// refusal first (the setting's word) and then the player class's.
     pub fn check(&self, quest: &FormDesc) -> Result<(), Refusal> {
         match self.mode {
-            Mode::List if self.is_shared(quest.short_id, &quest.file) => Ok(()),
-            Mode::List => Err(Refusal::Unlisted),
-            Mode::All if self.is_denied(quest.short_id, &quest.file) => Err(Refusal::Denied),
-            Mode::All => Ok(()),
+            Mode::List if !self.listed.iter().any(|l| l.is(quest.short_id, &quest.file)) => return Err(Refusal::Unlisted),
+            Mode::All if self.is_denied(quest.short_id, &quest.file) => return Err(Refusal::Denied),
+            Mode::List | Mode::All => {}
         }
+        if self.is_player(quest.short_id, &quest.file) {
+            return Err(Refusal::Player);
+        }
+        Ok(())
     }
 
     /// What the login sends: the recorded stages of quests still the world's
@@ -321,24 +373,59 @@ mod tests {
     }
 
     #[test]
-    fn the_mode_block_takes_an_allowlist_and_refuses_a_quest_both_denied_and_allowed() {
-        // memo D62: MS13 0x39645 is Start Game Enabled (Skyrim.esm 1.6.1170, DNAM main flags 0x11, thuum lab/esm.py), MQ102 0x4e50d is not
-        let all = SharedQuests::from_json(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"], "allowed": ["039645:Skyrim.esm"]}"#);
-        assert!(all.as_ref().is_ok_and(|a| a.mode() == Mode::All && a.is_allowed(0x39645, "Skyrim.esm") && !a.is_allowed(0x39645, "Update.esm") && !a.is_allowed(0x4e50d, "Skyrim.esm")));
-        // the allowed list changes nothing else: the login names the denied alone, the check passes the quest as any other
-        assert!(all.as_ref().is_ok_and(|a| a.listed() == [quest(0x4e50d)] && a.check(&quest(0x39645)) == Ok(()) && a.is_shared(0x39645, "Skyrim.esm")));
-        assert!(SharedQuests::from_json(r#"{"mode": "all", "allowed": ["039645:Skyrim.esm"]}"#).is_ok_and(|a| a.is_allowed(0x39645, "Skyrim.esm") && a.listed().is_empty()));
-        assert!(SharedQuests::from_json(r#"{"mode": "all", "allowed": []}"#).is_ok_and(|a| !a.is_allowed(0x39645, "Skyrim.esm")));
-        assert!(SharedQuests::from_json(r#"{"mode": "all"}"#).is_ok_and(|a| !a.is_allowed(0x39645, "Skyrim.esm")));
-        // mode list has no allowed list: the curated list names what crosses
-        assert!(SharedQuests::from_json(r#"["039645:Skyrim.esm"]"#).is_ok_and(|l| !l.is_allowed(0x39645, "Skyrim.esm")));
-        assert!(!SharedQuests::default().is_allowed(0x39645, "Skyrim.esm"));
-        // the refusals: a quest both denied and allowed (however spelled), a list of another shape, a quest allowed twice, a bad entry, a stray field
-        assert!(SharedQuests::from_json(r#"{"mode": "all", "denied": ["039645:Skyrim.esm"], "allowed": ["39645:Skyrim.esm"]}"#).is_err());
-        assert!(SharedQuests::from_json(r#"{"mode": "all", "allowed": "039645:Skyrim.esm"}"#).is_err());
-        assert!(SharedQuests::from_json(r#"{"mode": "all", "allowed": ["039645:Skyrim.esm", "39645:Skyrim.esm"]}"#).is_err());
-        assert!(SharedQuests::from_json(r#"{"mode": "all", "allowed": ["039645"]}"#).is_err());
+    fn the_retired_allowlist_is_read_said_once_and_ignored() {
+        // rung 5 (read 4): the deploy's block still names memo D62's four
+        // allowed quests (MS13 0x39645 among them, Start Game Enabled); the
+        // key is recognized, its quests change nothing, and the load's line
+        // says how many it named
+        let all = SharedQuests::from_json(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"], "allowed": ["039645:Skyrim.esm", "0e3ea5:Skyrim.esm"]}"#);
+        assert!(all.as_ref().is_ok_and(|a| a.mode() == Mode::All && a.listed() == [quest(0x4e50d)] && a.check(&quest(0x39645)) == Ok(()) && a.is_shared(0x39645, "Skyrim.esm")));
+        assert_eq!(
+            all.as_ref().ok().and_then(SharedQuests::retired).as_deref(),
+            Some("sharedQuests.allowed is retired (thuum ADR-068 rung 5): its 2 quest(s) are ignored; a quest the game starts by itself crosses like any other, its stage 0 the start word's")
+        );
+        // whatever it holds: a quest also denied (memo D62's old conflict), a
+        // malformed entry, a value of another shape; none refuses the block
+        let both = SharedQuests::from_json(r#"{"mode": "all", "denied": ["039645:Skyrim.esm"], "allowed": ["39645:Skyrim.esm"]}"#);
+        assert!(both.as_ref().is_ok_and(|a| a.check(&quest(0x39645)) == Err(Refusal::Denied)));
+        assert!(SharedQuests::from_json(r#"{"mode": "all", "allowed": ["039645"]}"#).is_ok_and(|a| a.retired().is_some() && a.listed().is_empty()));
+        assert!(SharedQuests::from_json(r#"{"mode": "all", "allowed": "039645:Skyrim.esm"}"#).is_ok_and(|a| a.retired().is_some_and(|line| line.contains("its 0 quest(s)"))));
+        // no key, no line; mode list has none to carry
+        assert!(SharedQuests::from_json(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"]}"#).is_ok_and(|a| a.retired().is_none()));
+        assert!(SharedQuests::from_json(r#"["039645:Skyrim.esm"]"#).is_ok_and(|l| l.retired().is_none()));
+        // a stray field still refuses the block, the retired key's misspelling among them
         assert!(SharedQuests::from_json(r#"{"mode": "all", "allow": ["039645:Skyrim.esm"]}"#).is_err());
+    }
+
+    #[test]
+    fn the_player_class_is_never_the_worlds_and_the_login_names_it_in_mode_all() {
+        // rung 5 (D-Q1's derivation): PlayerWerewolfQuest 0x2ba16 and
+        // PlayerVampireQuest 0xeafd5 marked Player (docs/research/
+        // rung5-quests-2026-11-09.md section 7, H-QS1 and H-QS2), MQ102
+        // 0x4e50d denied, MS13 0x39645 the world's
+        let mut all = SharedQuests::from_json(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"]}"#).unwrap_or_default();
+        all.set_player(&[quest(0x2ba16), quest(0xeafd5), quest(0x2ba16)]);
+        assert_eq!(all.listed(), vec![quest(0x4e50d), quest(0x2ba16), quest(0xeafd5)]);
+        assert_eq!(all.check(&quest(0x2ba16)), Err(Refusal::Player));
+        assert_eq!(all.check(&FormDesc { short_id: 0xeafd5, file: "skyrim.esm".to_owned() }), Err(Refusal::Player));
+        assert_eq!(all.check(&quest(0x39645)), Ok(()));
+        assert!(!all.is_shared(0xeafd5, "Skyrim.esm") && all.is_shared(0x39645, "Skyrim.esm"));
+        // the mode's own refusal first: a quest both denied and marked is denied, named once in the list
+        all.set_player(&[quest(0x4e50d), quest(0x2ba16)]);
+        assert_eq!(all.check(&quest(0x4e50d)), Err(Refusal::Denied));
+        assert_eq!(all.listed(), vec![quest(0x4e50d), quest(0x2ba16)]);
+        // an older record's stage of a marked quest stays unsent
+        assert_eq!(all.at_login(&[at(0x2ba16, 10), at(0x39645, 10)]), vec![at(0x39645, 10)]);
+        // mode list: a marked quest on the list is refused and named nowhere
+        let mut list = SharedQuests::from_json(r#"["02ba16:Skyrim.esm", "039645:Skyrim.esm"]"#).unwrap_or_default();
+        list.set_player(&[quest(0x2ba16)]);
+        assert_eq!(list.listed(), vec![quest(0x39645)]);
+        assert_eq!(list.check(&quest(0x2ba16)), Err(Refusal::Player));
+        assert_eq!(list.check(&quest(0xeafd5)), Err(Refusal::Unlisted));
+        // nothing composed (questScope "off"): the setting as written
+        list.set_player(&[]);
+        assert_eq!(list.check(&quest(0x2ba16)), Ok(()));
+        assert_eq!((Refusal::Unlisted.name(), Refusal::Denied.name(), Refusal::Player.name()), ("E_QUEST_UNLISTED", "E_QUEST_DENIED", "E_QUEST_PLAYER"));
     }
 
     #[test]

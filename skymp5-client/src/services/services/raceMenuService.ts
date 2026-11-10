@@ -6,6 +6,7 @@ import { ConnectionMessage } from "../events/connectionMessage";
 import { RaceMenuPresetMessage } from "../messages/raceMenuPresetMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
 import { remoteIdToLocalId } from "../../view/worldViewMisc";
+import { parseRaceOverlay } from "../../sync/raceOverlay";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
 
@@ -311,6 +312,9 @@ export class RaceMenuService extends ClientListener {
             if (actor === me && this.resetPending) {
                 return; // the reset first, tried again on the next pass
             }
+            if (actor !== me && this.wearsOverlayRace(actor)) {
+                return; // a figure on its overlay's race takes no look (rung 5, D-T1 A)
+            }
             const target = actor === me
                 ? this.sp.Game.getPlayer()
                 : this.sp.Actor.from(this.sp.Game.getFormEx(remoteIdToLocalId(actor)));
@@ -446,6 +450,18 @@ export class RaceMenuService extends ClientListener {
         this.applied.delete(this.myId());
         logTrace(this, "the actor's race follows its base's", want.getFormID().toString(16));
         return true;
+    }
+
+    // thuum ADR-068 rung 5, D-T1 A (the fresh review's note 6, H-WW1): a
+    // figure rebuilt on its race overlay's race (WerewolfBeastRace) would get
+    // its owner's human preset loaded with APPLY_ALL, so a player whose model
+    // carries an overlay naming a race takes no RaceMenu look on its figure;
+    // the overlay's end rebuilds the figure on its own race, where the look
+    // goes on again. JS state alone (the world model)
+    private wearsOverlayRace(actor: number): boolean {
+        const form = this.controller.lookupListener(RemoteServer).getWorldModel().forms
+            .find((f) => f !== undefined && f.refrId === actor);
+        return !!form && parseRaceOverlay(form.overlay)?.race !== undefined;
     }
 
     // the player's actor race pointer equals its base's race

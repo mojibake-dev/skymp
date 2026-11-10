@@ -2117,11 +2117,13 @@ mod ffi {
 
     /// What a login sends around the stages (wire-rules
     /// quest_runs::QuestRuns::at_login): served start words for the quests
-    /// recorded running, ahead of the stages, and served stop words for those
+    /// recorded running and for those recorded stopped whose stages the login
+    /// replays (D-Q3 A), ahead of the stages, and served stop words for those
     /// recorded stopped, behind them (stage 0 in each entry).
     #[derive(Debug, Clone, PartialEq)]
     struct QuestRunsLogin {
-        /// The quests recorded running, in the record's order.
+        /// The quests recorded running and the stopped ones whose stages the
+        /// login replays, in the record's order.
         starts: Vec<QuestStageEntry>,
         /// The quests recorded stopped, in the record's order.
         stops: Vec<QuestStageEntry>,
@@ -3230,8 +3232,11 @@ mod ffi {
         /// What the login sends around the stages: the quests recorded
         /// running (served starts, ahead of the stages) and stopped (served
         /// stops, behind them), in the record's order, each still the
-        /// world's by `shared` and not held.
-        fn quest_runs_at_login(self: &QuestRuns, record: &[QuestRunRow], shared: &SharedQuests) -> QuestRunsLogin;
+        /// world's by `shared` and not held; a quest recorded stopped whose
+        /// stages the login replays (`stages`, the journal's stage record)
+        /// is among the starts too (D-Q3 A: its served start names its
+        /// start-up stages, so their fragments never run again on a seat).
+        fn quest_runs_at_login(self: &QuestRuns, record: &[QuestRunRow], shared: &SharedQuests, stages: &[QuestStageEntry]) -> QuestRunsLogin;
         /// The record after a recorded word (`word` 1 or 2): the quest's run
         /// set and its sequence raised, or the quest added last at sequence
         /// 1 (never past RUN_RECORD_CAP).
@@ -5717,9 +5722,9 @@ impl QuestRuns {
         self.0.gone(seat);
     }
 
-    fn quest_runs_at_login(&self, record: &[QuestRunRow], shared: &SharedQuests) -> QuestRunsLogin {
+    fn quest_runs_at_login(&self, record: &[QuestRunRow], shared: &SharedQuests, stages: &[QuestStageEntry]) -> QuestRunsLogin {
         let parsed: Vec<quest_runs::QuestRun> = record.iter().map(quest_run_of).collect();
-        let (starts, stops) = self.0.at_login(&parsed, &shared.0);
+        let (starts, stops) = self.0.at_login(&parsed, &shared.0, &to_stages(stages));
         let entries = |runs: Vec<&quest_runs::QuestRun>| runs.iter().map(|r| QuestStageEntry { short_id: r.quest.short_id, file: r.quest.file.clone(), stage: 0 }).collect();
         QuestRunsLogin { starts: entries(starts), stops: entries(stops) }
     }
@@ -6678,9 +6683,15 @@ mod tests {
         // the login: starts and stops still shared and not held
         let all = new_shared_quests(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"]}"#).unwrap_or_else(|_| Box::new(SharedQuests(quest_stages::SharedQuests::default())));
         let record = vec![row(0x74a83, true, 1), row(0x4e50d, true, 1), row(0x10d3bb, false, 2)];
-        let login = runs.quest_runs_at_login(&record, &all);
+        let login = runs.quest_runs_at_login(&record, &all, &[]);
         let e = |short_id: u32| QuestStageEntry { short_id, file: "Skyrim.esm".to_owned(), stage: 0 };
         assert_eq!((login.starts, login.stops), (vec![e(0x74a83)], vec![e(0x10d3bb)]));
+        // D-Q3 A: the stopped quest with a stage the login replays is started
+        // ahead of it too, still stopped behind it; the denied quest's stage
+        // names nothing
+        let staged = [QuestStageEntry { stage: 10, ..e(0x10d3bb) }, QuestStageEntry { stage: 10, ..e(0x4e50d) }];
+        let login = runs.quest_runs_at_login(&record, &all, &staged);
+        assert_eq!((login.starts, login.stops), (vec![e(0x74a83), e(0x10d3bb)], vec![e(0x10d3bb)]));
         // the cap, by name
         let full: Vec<QuestRunRow> = (1..=u32::try_from(quest_runs::RUN_RECORD_CAP).unwrap_or(0)).map(|q| row(q, true, 1)).collect();
         let v = runs.quest_runs_judge(&full, 0x0010_0000, "Skyrim.esm", 1, 0, 0xff00_0000, 0);
@@ -6715,12 +6726,17 @@ mod tests {
         assert_eq!(runs.quest_runs_judge(&[], 0x74a83, "Skyrim.esm", 1, 2, 0xff00_0000, 0).code, 4, "the cause first");
         let all = new_shared_quests(r#"{"mode": "all"}"#).unwrap_or_else(|_| Box::new(SharedQuests(quest_stages::SharedQuests::default())));
         let record = vec![row(0x74a83, true, 1), row(0xb6fef, true, 1)];
-        let login = runs.quest_runs_at_login(&record, &all);
+        let login = runs.quest_runs_at_login(&record, &all, &[]);
         assert_eq!((login.starts, login.stops), (vec![e(0xb6fef)], vec![]));
+        // a stopped instance with its stage 10 (which crosses): no start
+        // either
+        let stopped = vec![row(0x74a83, false, 2)];
+        let login = runs.quest_runs_at_login(&stopped, &all, &[QuestStageEntry { stage: 10, ..e(0x74a83) }]);
+        assert_eq!((login.starts, login.stops), (vec![], vec![]));
         // "world": judged like any other quest, served at the login
         runs.quest_runs_set_story(&[e(0x74a83)], true);
         assert_eq!(runs.quest_runs_judge(&[], 0x74a83, "Skyrim.esm", 1, 1, 0xff00_0000, 0).code, 0);
-        assert_eq!(runs.quest_runs_at_login(&record, &all).starts, vec![e(0x74a83), e(0xb6fef)]);
+        assert_eq!(runs.quest_runs_at_login(&record, &all, &[]).starts, vec![e(0x74a83), e(0xb6fef)]);
     }
 
     #[test]

@@ -353,7 +353,9 @@ public:
   skymp::rules::ScriptVariables& GetScriptVariableRules();
   skymp::rules::PlayerOverlays& GetPlayerOverlays();
   // the quests a login starts ahead of the stages and stops behind them, in
-  // the run record's order, each still the world's and not held
+  // the run record's order, each still the world's and not held; a quest
+  // recorded stopped whose stages the login replays is among the starts too
+  // (D-Q3 A: its served start names its start-up stages)
   std::pair<std::vector<FormDesc>, std::vector<FormDesc>> QuestRunsAtLogin();
   // D-T1 A: the race overlay `actorId` wears beyond its record, as its
   // figure's CreateActor and UpdateAppearance carry it; none while it wears

@@ -13,6 +13,10 @@
 //! equal to the record is folded (every seat that runs the quest reports the
 //! same start), so nothing is written or relayed for it.
 //!
+//! D-Q3 A at the login: a quest recorded stopped whose stages the login
+//! replays is served its start too, ahead of them, so per quest the replay
+//! reads as its history, start, stages, stop ([`QuestRuns::at_login`]).
+//!
 //! Two controllers restart themselves in bursts on every seat
 //! (DLC1VCController 0x0201a428 thirty-two times about a minute apart, a
 //! layer quest at 0x30002859 about 1.3 times a second; read 5), so a seat
@@ -49,7 +53,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use crate::clock::SettingsError;
 use crate::forms::FormDesc;
-use crate::quest_stages::SharedQuests;
+use crate::quest_stages::{SharedQuests, StageDone};
 
 /// How many times one seat's words for one quest may flip (a start after
 /// its own stop, or a stop after its own start) inside [`RUN_WINDOW_MS`]
@@ -430,10 +434,24 @@ impl QuestRuns {
     /// Manager instance under "seat" (a run recorded before, or under
     /// "world", stays in the record and goes unsent while the setting says
     /// "seat").
+    ///
+    /// D-Q3 A (a served replay's fragments are the world's history and never
+    /// run again on a seat): a quest recorded stopped whose stages the login
+    /// replays (`stages`, the world's stage record, of which
+    /// SharedQuests::at_login replays every stage of a quest still the
+    /// world's) is served a start word too, among the starts. A served stage
+    /// of a quest not running on a seat makes the seat start the quest
+    /// first, and that start runs the fragments of the quest's start-up
+    /// stages unless a start word named them; the served start names them
+    /// (the core stamps its `wordStages`, as on every start it sends), so
+    /// per quest the login reads as its history: its start, its stages
+    /// ascending, its stop. A quest recorded stopped with no stage to replay
+    /// gets its stop alone, as before.
     #[must_use]
-    pub fn at_login<'a>(&self, record: &'a [QuestRun], shared: &SharedQuests) -> (Vec<&'a QuestRun>, Vec<&'a QuestRun>) {
+    pub fn at_login<'a>(&self, record: &'a [QuestRun], shared: &SharedQuests, stages: &[StageDone]) -> (Vec<&'a QuestRun>, Vec<&'a QuestRun>) {
         let sent = |r: &&QuestRun| shared.is_shared(r.quest.short_id, &r.quest.file) && !self.held(&r.quest) && !self.story_instance(&r.quest);
-        let starts = record.iter().filter(sent).filter(|r| r.running).collect();
+        let staged: BTreeSet<(u32, String)> = stages.iter().filter(|s| shared.is_shared(s.quest.short_id, &s.quest.file)).map(|s| held_key(&s.quest)).collect();
+        let starts = record.iter().filter(sent).filter(|r| r.running || staged.contains(&held_key(&r.quest))).collect();
         let stops = record.iter().filter(sent).filter(|r| !r.running).collect();
         (starts, stops)
     }
@@ -565,7 +583,7 @@ mod tests {
         // the login never names a held quest
         let all = SharedQuests::from_json(r#"{"mode": "all"}"#).unwrap_or_default();
         let stale = merge(&[], &q, Word::Start);
-        assert!(runs.at_login(&stale, &all).0.is_empty());
+        assert!(runs.at_login(&stale, &all, &[]).0.is_empty());
     }
 
     #[test]
@@ -626,12 +644,12 @@ mod tests {
         ];
         let mut all = SharedQuests::from_json(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"]}"#).unwrap_or_default();
         all.set_player(&[quest(0x2ba16)]);
-        let (starts, stops) = runs.at_login(&record, &all);
+        let (starts, stops) = runs.at_login(&record, &all, &[]);
         assert_eq!(starts.iter().map(|r| r.quest.short_id).collect::<Vec<_>>(), [LETTER]);
         assert_eq!(stops.iter().map(|r| r.quest.short_id).collect::<Vec<_>>(), [0x74a83]);
         // mode list sends what it lists
         let list = SharedQuests::from_json(r#"["074a83:Skyrim.esm"]"#).unwrap_or_default();
-        let (starts, stops) = runs.at_login(&record, &list);
+        let (starts, stops) = runs.at_login(&record, &list, &[]);
         assert!(starts.is_empty());
         assert_eq!(stops.len(), 1);
     }
@@ -717,7 +735,7 @@ mod tests {
             QuestRun { quest: quest(EMBERSHARD), running: true, seq: 1 },
             QuestRun { quest: quest(CR02), running: false, seq: 2 },
         ];
-        let (starts, stops) = runs.at_login(&record, &all);
+        let (starts, stops) = runs.at_login(&record, &all, &[]);
         assert_eq!((ids(&starts), ids(&stops)), (vec![EMBERSHARD], vec![]));
         // "world": such a quest is judged by its cause like any other and
         // served at the login
@@ -725,7 +743,7 @@ mod tests {
         assert!(runs.story_named(&quest(LETTER_SM)) && !runs.story_instance(&quest(LETTER_SM)));
         assert_eq!(runs.judge_caused(&[], &quest(LETTER_SM), Word::Start, Some(Cause::World), C1, 10), Verdict::Recorded);
         assert!(matches!(runs.judge_caused(&[], &quest(LETTER_SM), Word::Stop, Some(Cause::Seat), C1, 10), Verdict::Refuse(Code::Cause, _)));
-        let (starts, stops) = runs.at_login(&record, &all);
+        let (starts, stops) = runs.at_login(&record, &all, &[]);
         assert_eq!((ids(&starts), ids(&stops)), (vec![LETTER_SM, EMBERSHARD], vec![CR02]));
     }
 
@@ -739,5 +757,66 @@ mod tests {
             let why = StoryInstances::from_json(bad).err().map(|e| e.0);
             assert!(why.as_deref().is_some_and(|w| w.starts_with("questStoryInstances: ")), "{bad}: {why:?}");
         }
+    }
+
+    // D-Q3 A, the login's start of a stopped quest: MS13 0x39645 and its
+    // plain stages 10 and 20 (the C++ QuestStageTest's listed quest; neither
+    // flagged a start-up stage, both recorded as stages there) and
+    // Embershard's stage 40 (its cause case's)
+    const MS13: u32 = 0x39645;
+
+    // the login as the core composes it (ActionListener::SendQuestStages):
+    // the served starts, the stages the record replays, the served stops;
+    // each its quest, its word (0 for a stage) and its stage
+    fn replay(runs: &QuestRuns, record: &[QuestRun], shared: &SharedQuests, stages: &[StageDone]) -> Vec<(u32, u8, u16)> {
+        let (starts, stops) = runs.at_login(record, shared, stages);
+        let words = |list: &[&QuestRun], word: Word| list.iter().map(|r| (r.quest.short_id, word.wire(), 0)).collect::<Vec<(u32, u8, u16)>>();
+        let mut out = words(&starts, Word::Start);
+        out.extend(shared.at_login(stages).iter().map(|s| (s.quest.short_id, 0, s.stage)));
+        out.extend(words(&stops, Word::Stop));
+        out
+    }
+
+    #[test]
+    fn the_login_starts_a_stopped_quest_ahead_of_the_stages_it_replays() {
+        let mut runs = QuestRuns::default();
+        runs.set_story(&[quest(LETTER_SM)], StoryInstances::Seat);
+        let all = SharedQuests::from_json(r#"{"mode": "all"}"#).unwrap_or_default();
+        // Embershard running; MS13 stopped with two stages; the letter quest
+        // stopped with none; A Lovely Letter, a Story Manager instance,
+        // stopped (a run recorded before) with its stage 10, which crosses
+        let record = vec![
+            QuestRun { quest: quest(EMBERSHARD), running: true, seq: 1 },
+            QuestRun { quest: quest(MS13), running: false, seq: 2 },
+            QuestRun { quest: quest(LETTER), running: false, seq: 2 },
+            QuestRun { quest: quest(LETTER_SM), running: false, seq: 2 },
+        ];
+        let at = |short_id: u32, stage: u16| StageDone { quest: quest(short_id), stage };
+        // an older record's order: MS13's 20 ahead of its 10
+        let stages = vec![at(EMBERSHARD, 40), at(MS13, 20), at(MS13, 10), at(LETTER_SM, 10)];
+        // the stopped quest with stages: its start among the starts, its
+        // stages ascending, its stop behind them; the stopped quest with none
+        // its stop alone; the running quest as before; the instance no word
+        assert_eq!(
+            replay(&runs, &record, &all, &stages),
+            vec![(EMBERSHARD, 1, 0), (MS13, 1, 0), (EMBERSHARD, 0, 40), (MS13, 0, 10), (MS13, 0, 20), (LETTER_SM, 0, 10), (MS13, 2, 0), (LETTER, 2, 0)]
+        );
+        let (starts, stops) = runs.at_login(&record, &all, &stages);
+        assert_eq!((ids(&starts), ids(&stops)), (vec![EMBERSHARD, MS13], vec![MS13, LETTER]));
+        // no stage to replay: the login as before, the stopped quests' stops
+        // alone
+        let (starts, stops) = runs.at_login(&record, &all, &[]);
+        assert_eq!((ids(&starts), ids(&stops)), (vec![EMBERSHARD], vec![MS13, LETTER]));
+        // a stage names its quest without the plugin's case, as `is` compares
+        let spelled = vec![StageDone { quest: FormDesc { short_id: MS13, file: "SKYRIM.ESM".to_owned() }, stage: 10 }];
+        assert_eq!(ids(&runs.at_login(&record, &all, &spelled).0), vec![EMBERSHARD, MS13]);
+        // a quest the world no longer shares: no word, and its stages unsent
+        let denied = SharedQuests::from_json(r#"{"mode": "all", "denied": ["039645:Skyrim.esm"]}"#).unwrap_or_default();
+        assert_eq!(replay(&runs, &record, &denied, &stages), vec![(EMBERSHARD, 1, 0), (EMBERSHARD, 0, 40), (LETTER_SM, 0, 10), (LETTER, 2, 0)]);
+        // "world": the Story Manager's quest is a quest like any other, so
+        // its stopped run with a stage is started ahead of it and stopped
+        runs.set_story(&[quest(LETTER_SM)], StoryInstances::World);
+        let (starts, stops) = runs.at_login(&record, &all, &stages);
+        assert_eq!((ids(&starts), ids(&stops)), (vec![EMBERSHARD, MS13, LETTER_SM], vec![MS13, LETTER, LETTER_SM]));
     }
 }

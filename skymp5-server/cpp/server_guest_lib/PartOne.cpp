@@ -4381,9 +4381,18 @@ PartOne::QuestRunsAtLogin()
     record.push_back({ run.quest.shortFormId, rust::String(run.quest.file),
                        run.running, run.seq });
   }
+  // the journal's stages: a quest recorded stopped whose stages the login
+  // replays is started ahead of them too (D-Q3 A)
+  std::vector<skymp::rules::QuestStageEntry> stages;
+  for (const auto& done : GetQuestStages()) {
+    stages.push_back(
+      { done.quest.shortFormId, rust::String(done.quest.file), done.stage });
+  }
   const auto login = pImpl->questRuns->quest_runs_at_login(
     rust::Slice<const skymp::rules::QuestRunRow>(record.data(), record.size()),
-    *pImpl->sharedQuests);
+    *pImpl->sharedQuests,
+    rust::Slice<const skymp::rules::QuestStageEntry>(stages.data(),
+                                                     stages.size()));
   std::pair<std::vector<FormDesc>, std::vector<FormDesc>> out;
   for (const auto& e : login.starts) {
     out.first.push_back(FormDesc(e.short_id, std::string(e.file)));

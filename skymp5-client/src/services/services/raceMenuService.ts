@@ -6,6 +6,7 @@ import { ConnectionMessage } from "../events/connectionMessage";
 import { RaceMenuPresetMessage } from "../messages/raceMenuPresetMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
 import { remoteIdToLocalId } from "../../view/worldViewMisc";
+import { parseRaceOverlay } from "../../sync/raceOverlay";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
 
@@ -220,6 +221,40 @@ export class RaceMenuService extends ClientListener {
         this.menuAfterLook = open ? { open, since: 0 } : null;
     }
 
+    // remoteServer's: every race menu the server opens (`mp racemenu`, and
+    // the login's above once its look is on) goes through RaceMenu's copy of
+    // the player's tints (the fresh review's note 12; playtest 50): while a
+    // tint save is due, the open waits for the pass after its request goes,
+    // or sameLookWaitMs at most, so the menu puts the player's own tints back
+    // as it opens; with none due, or without RaceMenu, it opens now. JS state
+    // alone (a message handler's context: available()'s first read is a
+    // native call, so the pass decides when RaceMenu is not known yet)
+    openRaceMenuWhenTintsSaved(open: () => void) {
+        if (this.raceMenu === false || !this.tintSavePending) {
+            open();
+            return;
+        }
+        this.menuAfterTint = { open, since: Date.now() };
+        logTrace(this, "the race menu's open waits for RaceMenu's copy of the tints");
+    }
+
+    // the open the tint save holds, on the pass after its request (or once
+    // sameLookWaitMs has gone, said)
+    private openRaceMenuIfTintsSaved() {
+        const due = this.menuAfterTint;
+        if (!due) {
+            return;
+        }
+        if (this.available() && this.tintSavePending && Date.now() - due.since < RaceMenuService.sameLookWaitMs) {
+            return;
+        }
+        this.menuAfterTint = null;
+        logTrace(this, this.tintSavePending
+            ? `the race menu opens: RaceMenu's quest took no copy of the tints in ${RaceMenuService.sameLookWaitMs} ms`
+            : "the race menu opens: RaceMenu's copy of the tints taken");
+        due.open();
+    }
+
     // The waiting race menu opens once the passes before this one put the
     // server's look on the player (the reset through, the look applied), or
     // once the player's world has been up sameLookWaitMs without it: the
@@ -270,8 +305,10 @@ export class RaceMenuService extends ClientListener {
         }
         // the race menu a login found open waits for the look the passes
         // before this one put on (openRaceMenuAfterOwnLook), and for the
-        // tint copy a pass before this one asked for
+        // tint copy a pass before this one asked for; so does any other open
+        // the server asked for (openRaceMenuWhenTintsSaved)
         this.openRaceMenuIfLookOn();
+        this.openRaceMenuIfTintsSaved();
         if (this.available()) {
             this.sendTintSaveIfDue();
         }
@@ -310,6 +347,9 @@ export class RaceMenuService extends ClientListener {
         this.wanted.forEach((preset, actor) => {
             if (actor === me && this.resetPending) {
                 return; // the reset first, tried again on the next pass
+            }
+            if (actor !== me && this.wearsOverlayRace(actor)) {
+                return; // a figure on its overlay's race takes no look (rung 5, D-T1 A)
             }
             const target = actor === me
                 ? this.sp.Game.getPlayer()
@@ -448,6 +488,18 @@ export class RaceMenuService extends ClientListener {
         return true;
     }
 
+    // thuum ADR-068 rung 5, D-T1 A (the fresh review's note 6, H-WW1): a
+    // figure rebuilt on its race overlay's race (WerewolfBeastRace) would get
+    // its owner's human preset loaded with APPLY_ALL, so a player whose model
+    // carries an overlay naming a race takes no RaceMenu look on its figure;
+    // the overlay's end rebuilds the figure on its own race, where the look
+    // goes on again. JS state alone (the world model)
+    private wearsOverlayRace(actor: number): boolean {
+        const form = this.controller.lookupListener(RemoteServer).getWorldModel().forms
+            .find((f) => f !== undefined && f.refrId === actor);
+        return !!form && parseRaceOverlay(form.overlay)?.race !== undefined;
+    }
+
     // the player's actor race pointer equals its base's race
     private raceAligned(player: Actor): boolean {
         const base = this.sp.ActorBase.from(player.getBaseObject());
@@ -456,11 +508,13 @@ export class RaceMenuService extends ClientListener {
         return !!want && !!have && have.getFormID() === want.getFormID();
     }
 
-    // remoteServer's: the player's own appearance went on (a login's, a
-    // reconnect's, the server's UpdateAppearance), so RaceMenu's copy of the
-    // tints is due again
+    // remoteServer's, from an update: the player's own appearance went on (a
+    // login's, a reconnect's, the server's UpdateAppearance), so RaceMenu's
+    // copy of the tints is due again (with RaceMenu here alone)
     ownAppearanceApplied() {
-        this.markTintSaveDue("the player's appearance applied");
+        if (this.available()) {
+            this.markTintSaveDue("the player's appearance applied");
+        }
     }
 
     private markTintSaveDue(why: string) {
@@ -673,4 +727,6 @@ export class RaceMenuService extends ClientListener {
     private tintSavePending = false;
     private tintSaveWhy = "";
     private tintQuestSeen = false;
+    // a race menu the server opened, waiting for RaceMenu's copy of the tints
+    private menuAfterTint: { open: () => void; since: number } | null = null;
 }

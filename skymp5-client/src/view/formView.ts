@@ -1287,9 +1287,17 @@ export class FormView {
     if (!ac || ac.isDeleted() || !isFigureBase(ac)) {
       return;
     }
-    applyRaceOverlay(ac, wanted, this.overlayOn);
+    // the key first (the fresh review's note 8): a throw below is tried
+    // again at the next change, never every frame
+    const had = this.overlayOn;
     this.overlayOn = wanted;
     this.overlayKey = key;
+    try {
+      applyRaceOverlay(ac, wanted, had);
+    } catch (e) {
+      printConsole(`figure ${refr.getFormID().toString(16)}: race overlay not applied (${e}) (D-T1 A)`);
+      return;
+    }
     printConsole(wanted
       ? `figure ${refr.getFormID().toString(16)}: race overlay on${wanted.race ? " (race " + wanted.race.toString(16) + ")" : ""}, ${wanted.spells.length} spell(s), ${wanted.shouts.length} shout(s), ${wanted.items.length} item(s) (D-T1 A)`
       : `figure ${refr.getFormID().toString(16)}: race overlay off (D-T1 A)`);

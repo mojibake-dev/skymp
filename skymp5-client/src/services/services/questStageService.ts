@@ -98,7 +98,13 @@ type QuestItem = {
     word?: number;   // WORD_START or WORD_STOP; absent for a stage
     acting?: number; // the server's stamp on a relay
     served: boolean; // apply as a load (the login's replay)
+    wordStages?: number[]; // a word's: the quest's start-up stages (a start) or shut-down stages (a stop)
 };
+
+// the quests whose start-up stages a start word named, kept for the implicit
+// start a stage's apply makes (the stages are the QUST record's, fixed); the
+// oldest goes past this
+const START_UP_MEMORY_MAX = 2048;
 
 // thuum docs/verbs/quest-stage.md (ADR-056, memo D55 B; Eli, playtest 37:
 // "appropriately communicating the worlds shared quest state ... makes sense
@@ -195,10 +201,18 @@ type QuestItem = {
 // waits for the engine's answer to its last (at a login: starts, stages,
 // stops). The setting questRuns false turns the words off both ways; a
 // stage-0 report goes out either way (b-quest-report-dedupe counts it), and
-// the server judges it a start (read 5). Declared: a served
-// start runs the quest's start-up stage fragments, since the mark is per
-// stage and Skyrim Platform's Quest names no start-up stage (UNVERIFIED how
-// often a recorded running quest is not running on a late joiner).
+// the server judges it a start (read 5). D-Q3 A's start-up and shut-down
+// fragments (the fresh review's note 7): a start runs its quest's start-up
+// stages' fragments and a stop may run its shut-down stages', so the server
+// stamps each word with `wordStages` (the QUST record's StartUpStage for a
+// start, ShutDownStage for a stop); before Quest.Start or Quest.Stop each
+// of them gets an echo mark (`applying`, so the stage's event is not reported
+// back) and, when the word's fragment is the world's already
+// (marksFragment: served, or questFragmentLive false), the sink's suppress
+// mark with its safety release, as a replayed stage's. The implicit start a
+// stage's apply makes on a stopped quest uses the start-up stages the
+// quest's last start word named (a login's served starts name every recorded
+// running quest's). An absent field changes nothing.
 export class QuestStageService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -236,7 +250,45 @@ export class QuestStageService extends ClientListener {
         }
         // rule 5: an `acting` that names no player's actor is no stamp
         const acting = typeof m.acting === "number" && Number.isInteger(m.acting) && m.acting >= FIRST_SERVER_ID ? m.acting : undefined;
-        this.pending.push({ quest: m.quest, stage: m.stage, word: m.word, acting, served: m.served === true });
+        // note 7: a word's start-up or shut-down stages, u16s
+        const wordStages = m.word !== undefined && Array.isArray(m.wordStages)
+            ? m.wordStages.filter((s) => Number.isInteger(s) && s >= 0 && s <= 0xffff)
+            : undefined;
+        if (m.word === WORD_START && wordStages !== undefined) {
+            this.rememberStartUp(m.quest, wordStages);
+        }
+        this.pending.push({ quest: m.quest, stage: m.stage, word: m.word, acting, served: m.served === true, wordStages });
+    }
+
+    // a start word's start-up stages, by quest, for a later implicit start
+    private rememberStartUp(questId: number, stages: number[]) {
+        if (!this.startUpStages.has(questId) && this.startUpStages.size >= START_UP_MEMORY_MAX) {
+            const oldest = this.startUpStages.keys().next().value;
+            if (oldest !== undefined) {
+                this.startUpStages.delete(oldest);
+                logTrace(this, "start-up stages kept for", START_UP_MEMORY_MAX, "quests: quest", oldest.toString(16) + "'s let go");
+            }
+        }
+        this.startUpStages.delete(questId);
+        this.startUpStages.set(questId, stages);
+    }
+
+    // note 7 (D-Q3 A): a start's start-up stages or a stop's shut-down
+    // stages, before Quest.Start or Quest.Stop: each an echo mark, and, when
+    // the fragment is the world's already, the sink's suppress mark with its
+    // safety release, as a replayed stage's; none named, nothing
+    private markWordStages(quest: Quest, questId: number, stages: number[] | undefined, served: boolean) {
+        if (!stages || stages.length === 0) {
+            return;
+        }
+        const now = Date.now();
+        const mark = this.marksFragment(served);
+        for (const stage of stages) {
+            this.applying.set(QuestStageService.key(questId, stage), now + BUSY_MAX_MS);
+            if (mark && this.suppressFragment(quest, questId, stage)) {
+                this.fragmentReleases.push({ questId, stage, at: now + FRAGMENT_SAFETY_MS });
+            }
+        }
     }
 
     // one word or stage per update, in the server's order (ascending within a
@@ -330,8 +382,9 @@ export class QuestStageService extends ClientListener {
         const running = quest.isRunning();
         const runKey = QuestStageService.runKey(questId, WORD_START);
         if (!running) {
-            this.applyingRuns.set(runKey, Date.now() + APPLY_ECHO_MS);
+            this.applyingRuns.set(runKey, Date.now() + BUSY_MAX_MS);
             this.nameActing(item, SCOPE_START);
+            this.markWordStages(quest, questId, this.startUpStages.get(questId), item.served);
         }
         this.nameActing(item, stage);
         this.busy.set(questId, Date.now() + BUSY_MAX_MS);
@@ -350,6 +403,7 @@ export class QuestStageService extends ClientListener {
             return this.setStage(questId, stage, key, this.marksFragment(item.served));
         }).catch((err) => {
             this.applying.delete(key);
+            this.applyingRuns.delete(runKey);
             logError(this, "SetStage failed on quest", questId.toString(16), "stage", stage, err);
         }).then(() => {
             this.busy.delete(questId);
@@ -539,8 +593,9 @@ export class QuestStageService extends ClientListener {
                 return; // running here already
             }
             const runKey = QuestStageService.runKey(questId, WORD_START);
-            this.applyingRuns.set(runKey, Date.now() + APPLY_ECHO_MS);
+            this.applyingRuns.set(runKey, Date.now() + BUSY_MAX_MS);
             this.nameActing(item, SCOPE_START);
+            this.markWordStages(quest, questId, item.wordStages, item.served);
             this.busy.set(questId, Date.now() + BUSY_MAX_MS);
             quest.start().then((ok) => {
                 if (ok) {
@@ -564,11 +619,20 @@ export class QuestStageService extends ClientListener {
         if (!quest.isRunning() && !quest.isStarting()) {
             return; // stopped here already
         }
-        this.applyingRuns.set(QuestStageService.runKey(questId, WORD_STOP), Date.now() + APPLY_ECHO_MS);
+        const stopKey = QuestStageService.runKey(questId, WORD_STOP);
+        this.applyingRuns.set(stopKey, Date.now() + BUSY_MAX_MS);
         this.nameActing(item, SCOPE_STOP);
+        this.markWordStages(quest, questId, item.wordStages, item.served);
         // the engine's stop event answers it (onQuestStop)
         this.busy.set(questId, Date.now() + BUSY_MAX_MS);
-        quest.stop();
+        try {
+            quest.stop();
+        } catch (err) {
+            this.applyingRuns.delete(stopKey);
+            this.busy.delete(questId);
+            logError(this, "Quest.Stop failed on quest", questId.toString(16), err);
+            return;
+        }
         logTrace(this, "the world's stop of quest", questId.toString(16), "(" + how + ") applied");
     }
 
@@ -630,14 +694,18 @@ export class QuestStageService extends ClientListener {
         if (item.served || acting === undefined || this.actingExportsMissing || this.isMe(acting)) {
             return;
         }
+        if (typeof this.sp.setActingPlayer !== "function") {
+            this.actingExportsMissing = true;
+            logLab(TAG, "setActingPlayer unavailable on this platform; a relayed request runs as this seat's own player");
+            return;
+        }
         const figure = remoteIdToLocalId(acting);
         try {
             if (this.sp.setActingPlayer(item.quest, scopeStage, figure, acting, ACTING_TTL_MS) !== true) {
                 logError(this, "setActingPlayer refused quest", item.quest.toString(16), "stage", scopeStage, "for", acting.toString(16));
             }
         } catch (err) {
-            this.actingExportsMissing = true;
-            logLab(TAG, `setActingPlayer unavailable on this platform (${err}); a relayed request runs as this seat's own player`);
+            logError(this, "setActingPlayer threw for quest", item.quest.toString(16), "stage", scopeStage, err);
         }
     }
 
@@ -647,12 +715,16 @@ export class QuestStageService extends ClientListener {
         if (this.actingExportsMissing) {
             return undefined;
         }
+        if (typeof this.sp.getActingPlayer !== "function") {
+            this.actingExportsMissing = true;
+            logLab(TAG, "getActingPlayer unavailable on this platform; reports name no acting player");
+            return undefined;
+        }
         let id: unknown;
         try {
             id = this.sp.getActingPlayer(questId, scopeStage);
         } catch (err) {
-            this.actingExportsMissing = true;
-            logLab(TAG, `getActingPlayer unavailable on this platform (${err}); reports name no acting player`);
+            logError(this, "getActingPlayer threw for quest", questId.toString(16), "stage", scopeStage, err);
             return undefined;
         }
         return typeof id === "number" && Number.isInteger(id) && id >= FIRST_SERVER_ID && id <= 0xffffffff ? id : undefined;
@@ -851,14 +923,18 @@ export class QuestStageService extends ClientListener {
         if (this.playerQuestsMissing) {
             return;
         }
+        if (typeof this.sp.setPlayerQuests !== "function") {
+            this.playerQuestsMissing = true;
+            logLab(TAG, "setPlayerQuests unavailable on this platform; this seat's own per-player quests stay behind the gate");
+            return;
+        }
         try {
             if (this.sp.setPlayerQuests([...this.playerQuests]) !== true) {
                 logError(this, "setPlayerQuests refused", this.playerQuests.length, "quest(s)", when);
                 return;
             }
         } catch (err) {
-            this.playerQuestsMissing = true;
-            logLab(TAG, `setPlayerQuests unavailable on this platform (${err}); this seat's own per-player quests stay behind the gate`);
+            logError(this, "setPlayerQuests threw", when, err);
             return;
         }
         if (lab) {
@@ -975,6 +1051,8 @@ export class QuestStageService extends ClientListener {
     private runsOffSaid = false;
     // an older platform without setActingPlayer and getActingPlayer
     private actingExportsMissing = false;
+    // note 7: the start-up stages each quest's last start word named
+    private startUpStages = new Map<number, number[]>();
     // the player-class quests the login named (each seat runs its own
     // player's), and an older platform without setPlayerQuests
     private playerQuests: number[] = [];

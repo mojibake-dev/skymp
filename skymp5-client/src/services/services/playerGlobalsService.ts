@@ -128,13 +128,17 @@ export class PlayerGlobalsService extends ClientListener {
         if (this.exportMissing) {
             return;
         }
+        if (typeof this.sp.setPlayerGlobals !== "function") {
+            this.exportMissing = true;
+            logTrace(this, "setPlayerGlobals unavailable on this platform; a relayed fragment may write this player's own globals here");
+            return;
+        }
         try {
             if (this.sp.setPlayerGlobals([...this.watch]) !== true) {
                 logError(this, "setPlayerGlobals refused the list of", this.watch.length, "globals");
             }
         } catch (e) {
-            this.exportMissing = true;
-            logTrace(this, `setPlayerGlobals unavailable on this platform (${e}); a relayed fragment may write this player's own globals here`);
+            logError(this, "setPlayerGlobals threw for the list of", this.watch.length, "globals", e);
         }
     }
 

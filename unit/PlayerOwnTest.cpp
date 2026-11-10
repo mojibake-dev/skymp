@@ -253,8 +253,9 @@ TEST_CASE("A race neither Playable nor a twin opens the player's overlay: "
   REQUIRE(looks.size() == 2);
   REQUIRE(looks[1]["overlay"]["items"] == nlohmann::json::array({ skin }));
 
-  // the equipment gate keeps the skin the overlay holds (the report as the
-  // seat sends it, so its relay's bytes are the message's)
+  // the equipment gate passes the skin the overlay holds and relays the
+  // report as the seat sent it (its bytes are the message's), but the
+  // change form records it without the skin (the fresh review's note 5)
   UpdateEquipmentMessage equip;
   equip.idx = turned.GetIdx();
   equip.data.numChanges = 3;
@@ -263,10 +264,22 @@ TEST_CASE("A race neither Playable nor a twin opens the player's overlay: "
   equip.data.inv.entries.push_back(Inventory::Entry(skin, 1, worn));
   nlohmann::json report;
   equip.WriteJson(report);
+  p.Messages().clear();
   DoMessage(p, 0, report);
   const auto& entries = turned.GetEquipment().inv.entries;
-  REQUIRE(std::any_of(entries.begin(), entries.end(),
-                      [&](const auto& e) { return e.baseId == skin; }));
+  REQUIRE(std::none_of(entries.begin(), entries.end(),
+                       [&](const auto& e) { return e.baseId == skin; }));
+  REQUIRE(turned.GetEquipment().numChanges == 3);
+  REQUIRE(!turned.GetChangeForm().equipment.inv.HasItem(skin));
+  size_t relayed = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 1 && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::UpdateEquipment)) {
+      REQUIRE(m.j["data"] == report["data"]);
+      ++relayed;
+    }
+  }
+  REQUIRE(relayed == 1);
 
   // a figure created now wears the overlay too
   // (CreateActor props.overlay, the player's own CreateActor never)

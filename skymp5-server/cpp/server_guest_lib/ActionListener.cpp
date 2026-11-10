@@ -1734,9 +1734,10 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spellIdsToRemove = {};
 
   // thuum ADR-068 rung 5 (D-T1 A): what a player's race overlay holds (the
-  // beast form's level abilities, its howl, WolfSkinFXArmor) counts here as
-  // its record's, though it never touches the change form; a hosted actor
-  // has none
+  // beast form's level abilities, its howl, WolfSkinFXArmor) passes the gate
+  // as its record's would, and is relayed as reported, but never reaches the
+  // change form (the fresh review's note 5: recorded below without it); a
+  // hosted actor has none
   const auto overlay = hosted ? std::optional<RaceOverlay>()
                               : partOne.PlayerOverlayOf(actor->GetFormId());
   const auto inOverlay = [&](const std::vector<uint32_t> RaceOverlay::* list,
@@ -2055,7 +2056,39 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
                    actorFormId, keptOutfit);
     }
   }
-  actor->SetEquipment(kept);
+  // D-T1 A (the fresh review's note 5): an entry that passed by the overlay
+  // alone is the figure's, relayed above as reported, and never the
+  // record's, which nothing would strip at the overlay's end
+  Equipment recorded = kept;
+  if (overlay) {
+    const auto overlaySpell = [&](std::optional<uint32_t>& slot) {
+      if (slot && !actor->IsSpellLearned(*slot) &&
+          inOverlay(&RaceOverlay::spells, *slot)) {
+        slot.reset();
+      }
+    };
+    overlaySpell(recorded.leftSpell);
+    overlaySpell(recorded.rightSpell);
+    overlaySpell(recorded.instantSpell);
+    if (recorded.voiceSpell && voiceIsShout) {
+      if (!actor->HasShoutEntry(MpActor::ShoutEntry::Shout,
+                                *recorded.voiceSpell) &&
+          inOverlay(&RaceOverlay::shouts, *recorded.voiceSpell)) {
+        recorded.voiceSpell.reset();
+      }
+    } else {
+      overlaySpell(recorded.voiceSpell);
+    }
+    auto& entries = recorded.inv.entries;
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                 [&](const Inventory::Entry& entry) {
+                                   return !inventory.HasItem(entry.baseId) &&
+                                     inOverlay(&RaceOverlay::items,
+                                               entry.baseId);
+                                 }),
+                  entries.end());
+  }
+  actor->SetEquipment(recorded);
   if (hosted) {
     uint32_t right = 0;
     uint32_t left = 0;

@@ -5,6 +5,7 @@ import { isHandCastEvent } from "../services/services/actionSyncService";
 import { applyAnimationVariablesToActor, armActorFate, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimHeading, setActorAimPitch } from "skyrimPlatform";
 import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
+import { applyRaceOverlay, parseRaceOverlay, RaceOverlay } from "../sync/raceOverlay";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { applyBodyInventory } from "../sync/inventory";
@@ -447,6 +448,9 @@ export class FormView {
         // TODO: reset all states?
         this.eqState = this.getDefaultEquipState();
         this.animState = this.getDefaultAnimState();
+        // a new reference wears no overlay yet (rung 5, D-T1 A)
+        this.overlayOn = undefined;
+        this.overlayKey = "";
 
         this.ready = false;
 
@@ -1115,7 +1119,7 @@ export class FormView {
         this.spellSweepAt = Date.now();
         const figure = Actor.from(refr);
         if (figure && isFigureBase(figure)) {
-          const removed = keepOnlyServerSpells(figure, model.equipment);
+          const removed = keepOnlyServerSpells(figure, model.equipment, FormView.overlaySpells(model));
           if (removed > 0) {
             printConsole(`figure ${refr.getFormID().toString(16)}: ${removed} spell(s) a distributor added removed (ADR-046)`);
           }
@@ -1133,7 +1137,7 @@ export class FormView {
           this.spawnMoment > 0
         ) {
           //if (this.spawnMoment > 0 && Date.now() - this.spawnMoment > 5000) {
-          if (applyEquipment(ac, model.equipment)) {
+          if (applyEquipment(ac, model.equipment, FormView.overlaySpells(model))) {
             this.eqState.lastNumChanges = model.equipment.numChanges;
           }
           this.eqState.lastEqMoment = Date.now();
@@ -1142,6 +1146,12 @@ export class FormView {
           //if (res) this.eqState.lastNumChanges = model.equipment.numChanges;
         }
       }
+    }
+
+    // thuum docs/DECISIONS.md ADR-068 rung 5, D-T1 A: a player's figure wears
+    // its race overlay (sync/raceOverlay.ts)
+    if (!alreadyHosted && !FormView.isNpcModel(model) && this.spawnMoment > 0) {
+      this.applyOverlay(refr, model);
     }
 
     // thuum docs/verbs/self-cast.md (playtest twenty: "yes hide it"): an
@@ -1254,6 +1264,40 @@ export class FormView {
     }
 
     return this.leveledBaseId;
+  }
+
+  // thuum docs/DECISIONS.md ADR-068 rung 5, D-T1 A (sync/raceOverlay.ts):
+  // the overlay the model carries (its CreateActor's props, then each
+  // UpdateAppearance's) goes on the figure whenever the figure, the overlay
+  // or the equipment's apply changed, since that apply takes every item off
+  // (its spells it keeps: overlaySpells), and only once the apply's adds
+  // have had overlayAfterEquipMs to land (setInventory queues them past the
+  // tick, sync/equipment.ts). An overlay gone comes off the figure
+  private applyOverlay(refr: ObjectReference, model: FormModel) {
+    const wanted = parseRaceOverlay(model.overlay);
+    if (!wanted && !this.overlayOn) {
+      return;
+    }
+    const key = wanted ? `${JSON.stringify(wanted)} on ${refr.getFormID()} at ${this.eqState.lastNumChanges}` : "";
+    if (key === this.overlayKey || Date.now() - this.eqState.lastEqMoment < FormView.overlayAfterEquipMs) {
+      return;
+    }
+    const ac = Actor.from(refr);
+    if (!ac || ac.isDeleted() || !isFigureBase(ac)) {
+      return;
+    }
+    applyRaceOverlay(ac, wanted, this.overlayOn);
+    this.overlayOn = wanted;
+    this.overlayKey = key;
+    printConsole(wanted
+      ? `figure ${refr.getFormID().toString(16)}: race overlay on, ${wanted.spells.length} spell(s), ${wanted.items.length} item(s) (D-T1 A)`
+      : `figure ${refr.getFormID().toString(16)}: race overlay off (D-T1 A)`);
+  }
+
+  // the spells a figure's race overlay adds, which its spell strip keeps
+  private static overlaySpells(model: FormModel): number[] {
+    const overlay = parseRaceOverlay(model.overlay);
+    return overlay ? overlay.spells : [];
   }
 
   private getDefaultEquipState() {
@@ -1572,6 +1616,11 @@ export class FormView {
   private state = {};
   private localImmortal = false;
   private spellSweepAt = 0;
+  // rung 5, D-T1 A: the race overlay on the figure now and the key it went
+  // on under (the overlay, the reference, the equipment's apply)
+  private overlayOn: RaceOverlay | undefined = undefined;
+  private overlayKey = "";
+  private static readonly overlayAfterEquipMs = 500;
   // thuum docs/verbs/spell-placed-object.md: for a server form this game's
   // own cast placed, undefined until decided, true while this game's own
   // copy stands at the pose (the server's never placed), false once the

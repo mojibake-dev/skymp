@@ -3,6 +3,7 @@ import { Equipment } from "../../sync/equipment";
 import { Inventory } from "../../sync/inventory";
 import { Transform } from "../../sync/movement";
 import { Animation } from "../../sync/animation";
+import { RaceOverlay } from "../../sync/raceOverlay";
 import { MsgType } from "src/messages";
 
 export interface SetNodeTextureSetEntry {
@@ -86,4 +87,9 @@ export interface CreateActorMessageAdditionalProps {
     // thuum docs/verbs/locks.md: the reference's lock as the server holds it;
     // applied to this game's reference instead of the old strip
     lock?: { level: number; key: number; locked: boolean };
+    // thuum ADR-068 rung 5, D-T1 A (sync/raceOverlay.ts): on another player's
+    // figure, what its non-Playable, non-twin race's scripts added; absent
+    // for none. Never on the player's own CreateActor (a relaunch mid-form
+    // logs in as the player's own race)
+    overlay?: RaceOverlay;
 }

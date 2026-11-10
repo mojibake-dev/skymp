@@ -1111,6 +1111,9 @@ export class RemoteServer extends ClientListener {
     }
 
     form.appearance = msg.data || undefined;
+    // thuum ADR-068 rung 5, D-T1 A: the race overlay that holds with this
+    // look, absent for none (FormView puts it on the figure, or takes it off)
+    form.overlay = msg.overlay;
     if (!form.numAppearanceChanges) {
       form.numAppearanceChanges = 0;
     }

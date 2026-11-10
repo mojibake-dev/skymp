@@ -1064,6 +1064,14 @@ wire_struct! {
         /// Since SCHEMA_VERSION 41: true on the login replay (server to
         /// client only), applied as a load.
         pub served: Option<bool>,
+        /// Since SCHEMA_VERSION 41 (thuum ADR-068 rung 5, the ownership
+        /// rule): on the login's list alone (quest 0, server to client), the
+        /// player-class quests while the server's quest scope acts (the
+        /// `playerQuests` list and the alias-derived class, the whole set
+        /// it judges each player's own), whose scripts each seat runs for
+        /// its own player: the platform admits their events past its gate.
+        /// Absent when none is.
+        pub player: Option<Vec<u32, { cap::SHARED_QUESTS }>>,
     }
 }
 

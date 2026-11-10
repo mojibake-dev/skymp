@@ -618,6 +618,25 @@ TEST_CASE("Under questScope derived a player-class quest's stage and word are "
   REQUIRE(names(kWerewolf));
   REQUIRE(names(kVampire));
   REQUIRE(!names(kVc01));
+  // the ownership rule: the list names the class in `player` too, so each
+  // seat runs its own player's quests' scripts
+  nlohmann::json list;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 1 &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::QuestStage) &&
+        m.j.value("quest", 1u) == 0) {
+      list = m.j;
+    }
+  }
+  REQUIRE(list.contains("player"));
+  const auto& player = list["player"];
+  const auto inPlayer = [&](uint32_t quest) {
+    return std::find(player.begin(), player.end(), quest) != player.end();
+  };
+  REQUIRE(inPlayer(kWerewolf));
+  REQUIRE(inPlayer(kVampire));
+  REQUIRE(!inPlayer(kMq102));
+  REQUIRE(player.size() == p.PlayerClassQuests().size());
   Leave(p);
 }
 
@@ -668,6 +687,10 @@ TEST_CASE("The login sends the list, the running quests' starts, the stages "
   p.SetUserActor(1, kWatcher);
   REQUIRE(SentTo(p, 1).front() ==
           Msg(0, 0, nlohmann::json::array({ kMq102 }), 1));
+  // under off no class is named
+  for (auto& m : p.Messages()) {
+    REQUIRE(!m.j.contains("player"));
+  }
   REQUIRE(WordsTo(p, 1) ==
           std::vector<Word>{ W(kLetterQuest, 0, 1, 0, true),
                              W(kMs13, 10, 0, 0, true),

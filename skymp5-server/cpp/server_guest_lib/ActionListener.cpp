@@ -7461,6 +7461,12 @@ void ActionListener::SendPlayerGlobals(MpActor& actor)
                actor.GetFormId(), message.watch.size(), message.values.size());
 }
 
+namespace {
+// the wire's cap on the login list's player class (wire-schema
+// cap::SHARED_QUESTS, the list's own)
+constexpr size_t kPlayerClassPerList = 256;
+}
+
 void ActionListener::SendQuestStages(MpActor& actor)
 {
   // the login's first message names the sharing mode and its list (memo D58
@@ -7484,6 +7490,24 @@ void ActionListener::SendQuestStages(MpActor& actor)
   }
   if (mode == 0 && list.shared.empty()) {
     return;
+  }
+  // thuum ADR-068 rung 5 (the ownership rule): the player-class quests, whose
+  // scripts each seat runs for its own player (the platform admits their
+  // events past its gate), named while the quest scope acts
+  std::vector<uint32_t> player;
+  for (const auto& quest : partOne.PlayerClassQuests()) {
+    try {
+      const uint32_t id = quest.ToFormId(partOne.worldState.espmFiles);
+      if (player.size() < kPlayerClassPerList &&
+          std::find(player.begin(), player.end(), id) == player.end()) {
+        player.push_back(id);
+      }
+    } catch (const std::exception&) {
+      // a marked quest whose plugin this load order lacks
+    }
+  }
+  if (!player.empty()) {
+    list.player = std::move(player);
   }
   actor.SendToUser(list, true);
 

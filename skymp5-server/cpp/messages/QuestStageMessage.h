@@ -39,7 +39,8 @@ struct QuestStageMessage : public MessageBase<QuestStageMessage>
       .Serialize("mode", mode)
       .Serialize("word", word)
       .Serialize("acting", acting)
-      .Serialize("served", served);
+      .Serialize("served", served)
+      .Serialize("player", player);
   }
 
   uint32_t quest = 0; // the QUST's form id in the load order both ends share
@@ -55,4 +56,8 @@ struct QuestStageMessage : public MessageBase<QuestStageMessage>
   std::optional<uint32_t> acting;
   // server to client only: true on the login replay
   std::optional<bool> served;
+  // thuum ADR-068 rung 5 (the ownership rule): server to client, on the
+  // login's list alone, the player-class quests while the quest scope acts,
+  // whose scripts each seat runs for its own player; absent when none is
+  std::optional<std::vector<uint32_t>> player;
 };

@@ -119,7 +119,9 @@ use bounded::{String, Vec};
 /// CreateActorProps' and UpdateAppearance's optional `overlay` (D-T1 A, a
 /// player's race overlay on its figure), and a ScriptCall object argument at
 /// 0xff000000 and up (a scoped call's figure, its player's actor by its
-/// server id), which the core takes only when it names a connected player.
+/// server id), which the core takes only when it names a connected player;
+/// and QuestStage's optional `player` on the login's list (the player-class
+/// quests, whose scripts each seat runs for its own player).
 pub const SCHEMA_VERSION: u16 = 41;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so

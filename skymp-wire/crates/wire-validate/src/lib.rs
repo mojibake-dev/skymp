@@ -733,9 +733,12 @@ fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
 /// ([`skymp::QUEST_START`], [`skymp::QUEST_STOP`]) with stage 0 on a named
 /// quest, never the login's list, and an acting player is a server id
 /// (0xff000000 and up: the server names players) on a named quest; from a
-/// client nothing is served ([`validate`]). The mode's membership, the
-/// class and the records are the server's rules (wire-rules
-/// `quest_stages`, `quest_scope` and `quest_runs`).
+/// client nothing is served ([`validate`]). The login's list may name the
+/// player-class quests (`player`, thuum ADR-068 rung 5's ownership rule):
+/// on quest 0 alone, never empty when present, each a form of the load
+/// order (never 0 nor 0xff000000 and up) named once, at most the list's own
+/// cap. The mode's membership, the class and the records are the server's
+/// rules (wire-rules `quest_stages`, `quest_scope` and `quest_runs`).
 fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
     if m.mode > 1 {
         return Err(Reject::Range);
@@ -755,6 +758,16 @@ fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
     }
     if m.acting.is_some_and(|acting| acting < PLAYER_FORMS || m.quest == 0) {
         return Err(Reject::Range);
+    }
+    if let Some(player) = &m.player {
+        if m.quest != 0 || player.is_empty() {
+            return Err(Reject::Range);
+        }
+        for (i, q) in player.iter().enumerate() {
+            if *q == 0 || *q >= PLAYER_FORMS || player.iter().take(i).any(|p| p == q) {
+                return Err(Reject::Range);
+            }
+        }
     }
     Ok(())
 }
@@ -4816,6 +4829,31 @@ mod quest_word_and_script_variable_tests {
     // thuum ADR-068 rung 5: a run word, an acting player, the login replay
     fn quest_word(quest: u32, stage: u16, word: Option<u8>, acting: Option<u32>, served: Option<bool>) -> Message {
         Message::QuestStage(wire_schema::skymp::QuestStage { quest, stage, word, acting, served, ..Default::default() })
+    }
+
+    #[test]
+    fn the_logins_list_names_the_player_class_once_each_and_nowhere_else() {
+        // thuum ADR-068 rung 5 (the ownership rule): PlayerWerewolfQuest
+        // 0x2ba16 and PlayerVampireQuest 0xeafd5 beside mode all's denied
+        // MQ102 0x4e50d
+        let list = |quest: u32, player: Option<Vec<u32>>| {
+            Message::QuestStage(wire_schema::skymp::QuestStage {
+                quest,
+                mode: 1,
+                shared: vec![0x4e50d, 0x2ba16, 0xeafd5].try_into().unwrap_or_default(),
+                player: player.map(|p| p.try_into().unwrap_or_default()),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&list(0, Some(vec![0x2ba16, 0xeafd5]))), Ok(()));
+        assert_eq!(validate_server(&list(0, None)), Ok(()));
+        for bad in [vec![], vec![0x2ba16, 0x2ba16], vec![0], vec![0xff00_0000]] {
+            assert_eq!(validate_server(&list(0, Some(bad.clone()))), Err(Reject::Range), "{bad:?}");
+        }
+        // on the login's list alone, never a stage or a word, never a client's
+        assert_eq!(validate_server(&list(0x74a83, Some(vec![0x2ba16]))), Err(Reject::Range));
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&list(0, Some(vec![0x2ba16])), &mut g, 0), Err(Reject::Range));
     }
 
     #[test]

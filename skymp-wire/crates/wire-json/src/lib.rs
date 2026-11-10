@@ -541,6 +541,31 @@ mod tests {
         assert_eq!(rendered.get("stream"), None);
     }
 
+    /// thuum ADR-068 rung 5 (the ownership rule): 57-QuestStage-6 is mode
+    /// all's login list naming MQ102 0x4e50d denied and the player class,
+    /// PlayerWerewolfQuest 0x2ba16 and PlayerVampireQuest 0xeafd5, in
+    /// `player` too; the other QuestStage fixtures carry none and render
+    /// none.
+    #[test]
+    fn the_logins_player_class_validates_and_renders_only_when_present() {
+        use wire_validate::validate_server;
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        match recognize(&read("57-QuestStage-6.json")) {
+            Ok(m @ Message::QuestStage(_)) => {
+                assert_eq!(validate_server(&m), Ok(()));
+                if let Message::QuestStage(q) = m {
+                    assert_eq!(q.player.map(|p| p.to_vec()), Some(vec![0x2ba16, 0xeafd5]));
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+        for n in 0..=5 {
+            let name = format!("57-QuestStage-{n}.json");
+            let m = recognize(&read(&name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!render(&m).unwrap_or_default().contains("\"player\""), "{name}: an absent class is no key");
+        }
+    }
+
     /// thuum ADR-068 rung 5 (D-T1 A): a player's race overlay on another
     /// player's figure. 33-CreateActor-4 is rotfern's figure (0xff000000)
     /// in Bleak Falls Barrow wearing WerewolfBeastRace 0xcdd84 over NordRace

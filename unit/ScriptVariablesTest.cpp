@@ -212,12 +212,34 @@ TEST_CASE("A player-class quest's keys are its player's own: the world's "
   p.SetUserActor(0, kC1);
   const auto served = VarsTo(p, 0);
   REQUIRE(served.size() == 2);
+  // the two listed keys first (the escort the world's, the status the
+  // player's own), then the own keys: the vampire's LastFeedTime and every
+  // player-class quest's registration pair (the masters mark four), each own
   const auto& watch = served[0]["watch"];
-  REQUIRE(watch.size() == 5);
+  REQUIRE(watch.size() >= 5);
+  REQUIRE(watch[0]["var"] == "::camillaescort_var");
   REQUIRE(watch[0]["own"] == false);
+  REQUIRE(watch[1]["var"] == "::VampireStatus_var");
   REQUIRE(watch[1]["own"] == true);
-  REQUIRE(watch[3]["var"] == "<OnUpdateGameTime>");
-  REQUIRE(watch[4]["var"] == "<OnUpdateGameTime:repeat>");
+  const auto watched = [&](uint32_t form, const char* var) {
+    return std::count_if(watch.begin(), watch.end(), [&](const auto& key) {
+             return key["form"] == form && key["var"] == var &&
+               key["own"] == true;
+           }) == 1;
+  };
+  REQUIRE(watched(kVampire, "::LastFeedTime_var"));
+  REQUIRE(watched(kVampire, "<OnUpdateGameTime>"));
+  REQUIRE(watched(kVampire, "<OnUpdateGameTime:repeat>"));
+  size_t reserved = 0;
+  for (size_t i = 1; i < watch.size(); ++i) {
+    REQUIRE(watch[i]["own"] == true);
+    reserved +=
+      watch[i]["var"].get<std::string>().rfind("<OnUpdateGameTime", 0) == 0
+      ? 1
+      : 0;
+  }
+  REQUIRE(reserved % 2 == 0);
+  REQUIRE(watch.size() == 3 + reserved);
   REQUIRE(served[1]["served"] == true);
   REQUIRE(served[1]["entries"].size() == 4);
   REQUIRE(served[1]["entries"][0]["own"] == true);

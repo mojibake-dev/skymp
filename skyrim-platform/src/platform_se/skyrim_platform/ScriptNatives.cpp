@@ -151,12 +151,15 @@ constexpr std::size_t kRowCount = std::size(kRows);
 // Every other state row is counted and, since rung 3, touched (QueueTouch).
 // Since rung 5 (thuum ADR-068 rung 5's full build, Eli's D-Q2 word, "yes
 // full transformation"; docs/research/rung5-quests-2026-11-09.md 8(b)) the
-// transformation's six, a per-player quest's change to its own player:
+// transformation's seven, a per-player quest's change to its own player:
 // Actor.SetRace, AddSpell, RemoveSpell, AddShout, RemoveShout and EquipItem
 // (FunctionsDump.txt: `SetRace(Race akRace)`, `Bool AddSpell(SPELL akSpell,
 // Bool abVerbose)`, `Bool RemoveSpell(SPELL akSpell)`, `Bool AddShout(Shout
 // akShout)`, `Bool RemoveShout(Shout akShout)`, `EquipItem(Form akItem, Bool
-// abPreventRemoval, Bool abSilent)`, none latent), batched with their typed
+// abPreventRemoval, Bool abSilent)`), and since Eli's D-E1 A
+// Actor.ChangeHeadPart, SKSE's (FunctionsDump.txt: `ChangeHeadPart(HeadPart
+// hPart)`, its callback outside the game's module, so InstallHooks binds it
+// from the VM's other bindings), none latent, batched with their typed
 // arguments on the seat's own player alone (OwnedHere's 0x14), so the
 // server records them beside RefState and the standing (R1: the form
 // argument must be one the calling script's attachment names, H-VR1); on any
@@ -198,7 +201,8 @@ constexpr BatchedRowName kBatchedStateRows[] = {
   { "Actor", "RemoveSpell", RecordRow::PlayerOwn },
   { "Actor", "AddShout", RecordRow::PlayerOwn },
   { "Actor", "RemoveShout", RecordRow::PlayerOwn },
-  { "Actor", "EquipItem", RecordRow::PlayerOwn }
+  { "Actor", "EquipItem", RecordRow::PlayerOwn },
+  { "Actor", "ChangeHeadPart", RecordRow::PlayerOwn }
 };
 
 // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
@@ -2217,8 +2221,18 @@ void ScriptNatives::CountPlatformCall(const RE::BSScript::IFunction* fn)
 void ScriptNatives::InstallHooks()
 {
   // the VM's bindings as Hooks.cpp recorded them (class, name, IFunction*,
-  // module base, the callback's offset, the long-signature mark); the game's
-  // own module alone (SKSE's natives are not scripts' consequences here)
+  // module base, the callback's offset, the long-signature mark); a row
+  // binds the game's own module's native (SKSE's natives are not scripts'
+  // consequences here), except a row the game's module binds nothing of its
+  // name for, which binds the VM's latest other binding of it: rung 5's
+  // Actor.ChangeHeadPart, SKSE's (Eli's D-E1 A), the one table row the game
+  // does not hold. HYPOTHESIS H-HP1: SKSE's native reaches this seam's hook,
+  // its IFunction::Call running the game's NativeFunctionBase::Call body
+  // (104651) as CommonLib's own does (src/RE/N/NativeFunctionBase.cpp:
+  // 106-112), its frame read as a game native's and its latency at
+  // NativeFunctionBase's _isLatent (include/RE/N/NativeFunctionBase.h:69);
+  // the census's Actor.ChangeHeadPart row counting a call reads it, and the
+  // latest binding being the one the VM dispatches is part of it
   const auto gameBase = REL::Module::get().base();
   const auto bound = Hooks::GetBoundNatives();
   // the table (NativeRows.inc): each row's IFunction, the `this` of its
@@ -2229,12 +2243,27 @@ void ScriptNatives::InstallHooks()
   for (size_t row = 0; row < kRowCount; ++row) {
     const NativeRow& native = kRows[row];
     const RE::BSScript::IFunction* function = nullptr;
+    const RE::BSScript::IFunction* other = nullptr;
+    std::uintptr_t otherBase = 0;
     for (const auto& [cls, name, func, moduleBase, offset, longSig] : bound) {
-      if (moduleBase == gameBase && _stricmp(cls.c_str(), native.cls) == 0 &&
-          _stricmp(name.c_str(), native.fn) == 0) {
+      if (_stricmp(cls.c_str(), native.cls) != 0 ||
+          _stricmp(name.c_str(), native.fn) != 0) {
+        continue;
+      }
+      if (moduleBase == gameBase) {
         function = func;
         break;
       }
+      other = func;
+      otherBase = moduleBase;
+    }
+    const bool fromOther = !function && other;
+    if (fromOther) {
+      function = other;
+      logger::info("[verb:scripts] table row {}.{}: no binding in the game's "
+                   "module; bound from its binding outside it (allocation "
+                   "base {:x}), the VM's latest of its name (H-HP1)",
+                   native.cls, native.fn, otherBase);
     }
     if (!function) {
       logger::warn("[verb:scripts] table row {}.{} is not among the VM's "

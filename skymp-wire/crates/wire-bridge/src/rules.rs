@@ -2292,6 +2292,14 @@ mod ffi {
         /// the reporter occupies (MpObjectReference::IsContainerOccupant):
         /// its PutItem carries the move.
         into_held_open: bool,
+        /// How many stacks the player's record holds (its Inventory's
+        /// entries), for AddItem's bound (wire-rules
+        /// player_own::INVENTORY_STACKS, the wire's cap::INVENTORY).
+        stacks: usize,
+        /// AddItem's form joins no stack the record holds (no entry of the
+        /// form with no extra data, unworn: Inventory::AddItems' match for a
+        /// plain add), so the add appends a new one.
+        new_stack: bool,
     }
 
     /// A player's overlay (thuum ADR-068 D-T1 A, wire-rules
@@ -2328,7 +2336,9 @@ mod ffi {
         /// The refusal's stable name (E_SCRIPTCALL_ARGS, a form of another
         /// kind than the row's or a count that lands nothing;
         /// E_SCRIPTCALL_UNNAMED; E_SCRIPTCALL_RACE; E_SCRIPTCALL_LEVELED, a
-        /// leveled list's add; or E_SCRIPTCALL_ROW for a native that is none
+        /// leveled list's add; E_SCRIPTCALL_FULL, an add needing a new stack
+        /// once the record holds the wire's stacks in one inventory; or
+        /// E_SCRIPTCALL_ROW for a native that is none
         /// of the nine), empty otherwise.
         name: String,
         /// Why, for the log; empty otherwise.
@@ -5883,7 +5893,7 @@ impl PlayerOverlays {
             };
         };
         let named: Vec<player_own::Named> = properties.iter().map(|p| player_own::Named { form: p.form, members: p.members.clone() }).collect();
-        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind, race_valid: facts.race_valid, leveled: facts.leveled, held_count: facts.held_count, count: player_own::item_count(facts.count), into_held_open: facts.into_held_open };
+        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind, race_valid: facts.race_valid, leveled: facts.leveled, held_count: facts.held_count, count: player_own::item_count(facts.count), into_held_open: facts.into_held_open, stacks: facts.stacks, new_stack: facts.new_stack };
         let (code, name, why, ended, count) = match self.0.judge(player, row, form, &named, f) {
             player_own::Verdict::Record { ended } => (0, "", String::new(), ended, 0),
             player_own::Verdict::Items(n) => (0, "", String::new(), None, n),
@@ -6821,7 +6831,7 @@ mod tests {
         let npc = s.judge(at.row, &[race], &ScriptCallFacts { self_id: 0x800a6, ..facts }, 0);
         assert_eq!((npc.code, npc.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
         let lists = [ScriptPropertyRow { form: 0x0d00_1000, members: vec![0x13746, 0x13745] }, ScriptPropertyRow { form: 0x0d00_1001, members: vec![0x88794, 0x88845] }];
-        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 0, count: 0.0, into_held_open: false };
+        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 0, count: 0.0, into_held_open: false, stacks: 0, new_stack: false };
         let mut overlays = new_player_overlays();
         let v = overlays.player_own_judge(0xff00_0001, "Actor", "SetRace", 0x88845, &lists, &khajiit);
         assert_eq!((v.code, v.name.as_str(), v.ended.open, v.overlay.open), (0, "", false, false));
@@ -6884,6 +6894,21 @@ mod tests {
         let padding = "x".repeat(wire_schema::cap::RACEMENU_PRESET);
         let big = format!(r#"{{"pad": "{padding}", "headParts": [{{"formIdentifier": "rotfern.esp|014C06", "type": 2}}]}}"#);
         assert!(racemenu_with_head_part(&big, &[1], "rotfern.esp", 0x023F0E).is_empty());
+    }
+
+    #[test]
+    fn an_own_add_needing_a_new_stack_stops_at_the_wires_stacks_in_one_inventory() {
+        // the fresh review of the second head (FIX FIRST 2): the record's
+        // bound is the wire's, so every SetInventory and CreateActor of the
+        // player still carries its whole inventory
+        assert_eq!(player_own::INVENTORY_STACKS, wire_schema::cap::INVENTORY);
+        let gold = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 40, count: 25.0, into_held_open: false, stacks: wire_schema::cap::INVENTORY, new_stack: true };
+        let mut overlays = new_player_overlays();
+        let full = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &gold);
+        assert_eq!((full.code, full.name.as_str(), full.count), (4, "E_SCRIPTCALL_FULL", 0));
+        assert!(full.why.contains("4096 stacks"), "{}", full.why);
+        let joins = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &PlayerOwnFacts { new_stack: false, ..gold });
+        assert_eq!((joins.code, joins.count), (0, 25));
     }
 
     #[test]

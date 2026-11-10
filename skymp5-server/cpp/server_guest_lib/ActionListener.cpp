@@ -4728,11 +4728,14 @@ bool NamesFunc(const std::string& fn, const char* name)
 // as the seat reported it, R2 (rule 5's "record it as unvalidated"), with no
 // bound and so no attachment read; the facts are the form's record type (an
 // item, or a leveled list refused by name, E_SCRIPTCALL_LEVELED), the count
-// the record holds, the call's own count and, for a removal, whether its
-// other container is one the player holds open (that container's PutItem
-// moves the item, so the row folds). The record's change sends the player
-// its inventory (MpObjectReference::SendInventoryUpdate, deferred to the
-// tick), which its client's 5 s apply reads from then on.
+// the record holds, the call's own count, the stacks the record holds and
+// whether an add needs a new one (refused by name once the record holds the
+// wire's stacks in one inventory, E_SCRIPTCALL_FULL: the fresh review of the
+// second head, FIX FIRST 2) and, for a removal, whether its other container
+// is one the player holds open (that container's PutItem moves the item, so
+// the row folds). The record's change sends the player its inventory
+// (MpObjectReference::SendInventoryUpdate, deferred to the tick), which its
+// client's 5 s apply reads from then on.
 void RecordPlayerOwn(
   PartOne& partOne, MpActor& reporter, const ScriptCallMessage& msg,
   std::map<std::pair<uint32_t, std::string>,
@@ -4833,6 +4836,19 @@ void RecordPlayerOwn(
     facts.held_count =
       form != 0 ? reporter.GetInventory().GetItemCount(form) : 0;
     facts.count = NumberArgAt(msg, 1);
+    // the bound on the stacks an add mints (wire-rules
+    // player_own::INVENTORY_STACKS, the wire's stacks in one inventory): how
+    // many the record holds, and whether a plain add of the form joins none
+    // of them (Inventory::AddItems appends an item that matches no stack,
+    // its extra data and worn state compared)
+    const auto& inventory = reporter.GetInventory();
+    facts.stacks = inventory.entries.size();
+    const Inventory::Entry plain(form, 0);
+    facts.new_stack =
+      std::none_of(inventory.entries.begin(), inventory.entries.end(),
+                   [&](const Inventory::Entry& entry) {
+                     return entry.EqualExceptCount(plain);
+                   });
     if (const uint32_t other = addItem ? 0 : ObjectArgAt(msg, 3); other != 0) {
       const auto& otherForm = partOne.worldState.LookupFormByIdNoLoad(other);
       const MpObjectReference* container =

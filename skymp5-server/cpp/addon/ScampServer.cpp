@@ -491,6 +491,11 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     partOne->SetPlayerQuestSettings(settingOr("playerQuestGlobals", "{}"),
                                     settingOr("playerQuestVariables", "{}"),
                                     settingOr("playerQuestCallers", "{}"));
+    // D-Q4 C (PENDING ELI'S WORD): whether a quest a Story Manager quest
+    // node names keeps its runs per seat, `questStoryInstances` "seat" (the
+    // default) or "world", a one-line flip of this file
+    partOne->SetQuestStoryInstancesSettings(
+      settingOr("questStoryInstances", "\"seat\""));
     // the objects the server places at an accepted cast of a listed spell
     // (thuum docs/verbs/spell-placed-object.md, ADR-057):
     // `spellPlacedObjects`, the same way

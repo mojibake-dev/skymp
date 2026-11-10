@@ -3467,6 +3467,13 @@ std::vector<MpChangeFormREFR::QuestRun> QuestRunsOf(
 // no quest 0 and no replay: those are the login's, server to client. The
 // memos D62 and D69 rules (a start-game-enabled quest's own start each
 // seat's) retired with the start word, which records that start once.
+// D-Q4 C (SCHEMA_VERSION 43): a report names its cause and its stack's root
+// (R2, logged); a run word, or a report judged a start, whose cause is the
+// seat's own is refused (E_QUEST_CAUSE: the seat cannot tell a start-up
+// stage, the record can), and a run word of a quest a Story Manager quest
+// node names while questStoryInstances is "seat" (E_QUEST_INSTANCE, the
+// node named), each one line a minute per seat and quest; a stage crosses
+// whatever its cause.
 void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                                   const QuestStageMessage& msg)
 {
@@ -3591,14 +3598,49 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     return relayed;
   };
 
+  // thuum ADR-068 rung 5 (D-Q4 C, SCHEMA_VERSION 43): what the seat says
+  // made the report, 1 a world cause, 2 its own, 0 none (an older client;
+  // the wire refuses any other value first), and its stack's root; both the
+  // seat's word (R2), judged by wire-rules quest_runs and named in the lines
+  const uint8_t cause =
+    msg.cause && *msg.cause <= 2 ? static_cast<uint8_t>(*msg.cause) : 0;
+  const std::string causeText = cause == 0
+    ? std::string()
+    : fmt::format(" (cause {}, root {}, R2)", cause == 1 ? "world" : "seat",
+                  msg.root && !msg.root->empty() ? *msg.root : "none");
+
   if (what != 0) {
-    // a run word (wire-rules quest_runs): the churn, the fold, the cap
+    // a run word (wire-rules quest_runs): its cause (D-Q4 C), a Story
+    // Manager instance, the churn, the fold, the cap
     const auto rows = QuestRunRows(partOne.GetQuestRuns());
     const rust::Slice<const skymp::rules::QuestRunRow> record(rows.data(),
                                                               rows.size());
     const auto verdict = partOne.GetQuestRunRules().quest_runs_judge(
-      record, quest.shortFormId, quest.file, what, actor->GetFormId(),
+      record, quest.shortFormId, quest.file, what, cause, actor->GetFormId(),
       MonotonicMs());
+    if (verdict.code == 4 || verdict.code == 5) {
+      // D-Q4 C: the seat's own cause (a start-up stage's report the record
+      // judges a start, from the login's load or an engine start), or a
+      // Story Manager instance under questStoryInstances "seat": nothing
+      // written, relayed or counted; one line a minute per seat and quest,
+      // the rest counted into it
+      const std::string name = std::string(verdict.name);
+      uint32_t since = 0;
+      if (QuestLineDue(questLines, actor->GetFormId(),
+                       name + " " + quest.ToString(), since)) {
+        const std::string nodes =
+          verdict.code == 5 ? partOne.StoryNodesOf(quest) : std::string();
+        spdlog::info("{}: user {} actor {:x} reported the {} of {}{}{}: {}; "
+                     "not recorded, nothing relayed; {} such report(s) of "
+                     "the quest since the last line",
+                     name, rawMsgData.userId, actor->GetFormId(), verb,
+                     quest.ToString(), causeText,
+                     nodes.empty() ? std::string()
+                                   : fmt::format(", named by {}", nodes),
+                     std::string(verdict.why), since);
+      }
+      return;
+    }
     if (verdict.code == 1) {
       return spdlog::debug("QuestStage: user {} actor {:x} reported the {} "
                            "of {}, already the world's",
@@ -3652,13 +3694,14 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     relay.acting = acting;
     StampWordStages(partOne, relay);
     const size_t relayed = relayToOthers(relay);
-    spdlog::info("[verb:quest-stage] {:x} {} {}: recorded, relayed to {}{}",
+    spdlog::info("[verb:quest-stage] {:x} {} {}: recorded, relayed to {}{}{}",
                  actor->GetFormId(), what == 1 ? "starts" : "stops",
                  quest.ToString(), relayed,
                  relay.wordStages
                    ? fmt::format(" with its engine stages {}",
                                  fmt::join(*relay.wordStages, ", "))
-                   : std::string());
+                   : std::string(),
+                 causeText);
     return;
   }
 
@@ -3710,8 +3753,9 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
   }
   const size_t relayed = relayToOthers(relay);
   spdlog::info("[verb:quest-stage] {:x} set {} stage {}: recorded, relayed "
-               "to {}",
-               actor->GetFormId(), quest.ToString(), msg.stage, relayed);
+               "to {}{}",
+               actor->GetFormId(), quest.ToString(), msg.stage, relayed,
+               causeText);
 }
 
 namespace {

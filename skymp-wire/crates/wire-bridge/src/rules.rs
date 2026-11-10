@@ -2098,16 +2098,20 @@ mod ffi {
         /// 0 recorded (merge with quest_runs_merge, then relay the word to
         /// every other seat), 1 folded (nothing written or relayed), 2 held
         /// (the quest is a seat's churn, `E_QUEST_CHURN`: nothing written or
-        /// relayed), 3 refused (`E_QUEST_RUNS_FULL`).
+        /// relayed), 3 refused (`E_QUEST_RUNS_FULL`), 4 refused by its cause
+        /// (D-Q4 C, `E_QUEST_CAUSE`: the seat's own), 5 refused as a Story
+        /// Manager instance (`questStoryInstances` "seat",
+        /// `E_QUEST_INSTANCE`); nothing written, relayed or counted for 3 to
+        /// 5.
         code: u8,
         /// Held (code 2) by this very word: drop the quest's entry
         /// (quest_runs_without) and log E_QUEST_CHURN; false for a later
         /// word of a held quest, which the core says at most once a minute
         /// per seat.
         first: bool,
-        /// The stable name for codes 2 and 3, empty otherwise.
+        /// The stable name for codes 2 to 5, empty otherwise.
         name: String,
-        /// Why, for the log, code 3 alone; empty otherwise.
+        /// Why, for the log, codes 3 to 5; empty otherwise.
         why: String,
     }
 
@@ -3166,13 +3170,32 @@ mod ffi {
         fn new_quest_runs() -> Box<QuestRuns>;
         /// One run word (`word` 1 a start, 2 a stop; any other is folded) of
         /// the quest `short_id` in `file` from `seat`, the reporter's actor,
-        /// at `now_ms` on a monotonic clock, against the journal's `record`:
-        /// a held quest's word is held, then the seat's flip (past
-        /// RUN_FLIPS inside RUN_WINDOW_MS the quest becomes held), the fold,
-        /// and RUN_RECORD_CAP for a quest the record lacks. Ask
+        /// at `now_ms` on a monotonic clock, with the report's `cause` (the
+        /// wire's QuestStage `cause`: 1 world, 2 the seat's own, 0 none from
+        /// an older client), against the journal's `record`: a seat-caused
+        /// word is refused (D-Q4 C, code 4), a Story Manager instance's under
+        /// "seat" (code 5), a held quest's word is held, then the seat's flip
+        /// (past RUN_FLIPS inside RUN_WINDOW_MS the quest becomes held), the
+        /// fold, and RUN_RECORD_CAP for a quest the record lacks. Ask
         /// shared_quests_check first: a denied or player-class quest's word
         /// is refused there, never counted here.
-        fn quest_runs_judge(self: &mut QuestRuns, record: &[QuestRunRow], short_id: u32, file: &str, word: u8, seat: u32, now_ms: u64) -> QuestRunVerdict;
+        #[allow(clippy::too_many_arguments)]
+        fn quest_runs_judge(self: &mut QuestRuns, record: &[QuestRunRow], short_id: u32, file: &str, word: u8, cause: u8, seat: u32, now_ms: u64) -> QuestRunVerdict;
+        /// thuum ADR-068 rung 5, D-Q4 C: the setting `questStoryInstances`
+        /// from its JSON text ("seat", the default, or "world"; the core
+        /// passes `"seat"` for a key the file lacks), true for "world"; an
+        /// error names what is wrong.
+        fn quest_story_instances_world(settings_json: &str) -> Result<bool>;
+        /// The Story Manager's quests (every quest an SMQN node of the game
+        /// files names, the core's read; stage 0 in each entry) and the
+        /// setting (`world`, quest_story_instances_world's answer), both
+        /// replaced whole.
+        fn quest_runs_set_story(self: &mut QuestRuns, quests: &[QuestStageEntry], world: bool);
+        /// Whether a Story Manager quest node names the quest, whatever the
+        /// setting says.
+        fn quest_runs_story_named(self: &QuestRuns, short_id: u32, file: &str) -> bool;
+        /// How many quests the Story Manager's nodes name.
+        fn quest_runs_story_count(self: &QuestRuns) -> usize;
         /// Whether the quest is held (a seat's churn) for the run.
         fn quest_runs_held(self: &QuestRuns, short_id: u32, file: &str) -> bool;
         /// `seat` left: its churn counters go.
@@ -5614,20 +5637,41 @@ fn run_word(word: u8) -> Option<quest_runs::Word> {
     }
 }
 
+fn quest_story_instances_world(settings_json: &str) -> Result<bool, clock::SettingsError> {
+    quest_runs::StoryInstances::from_json(settings_json).map(|s| s == quest_runs::StoryInstances::World)
+}
+
 impl QuestRuns {
-    fn quest_runs_judge(&mut self, record: &[QuestRunRow], short_id: u32, file: &str, word: u8, seat: u32, now_ms: u64) -> QuestRunVerdict {
+    #[allow(clippy::too_many_arguments)]
+    fn quest_runs_judge(&mut self, record: &[QuestRunRow], short_id: u32, file: &str, word: u8, cause: u8, seat: u32, now_ms: u64) -> QuestRunVerdict {
         let out = |code, first, name: &str, why: String| QuestRunVerdict { code, first, name: name.to_owned(), why };
         let Some(word) = run_word(word) else {
             return out(1, false, "", String::new());
         };
         let parsed: Vec<quest_runs::QuestRun> = record.iter().map(quest_run_of).collect();
         let quest = forms::FormDesc { short_id, file: file.to_owned() };
-        match self.0.judge(&parsed, &quest, word, seat, now_ms) {
+        let cause = if cause == 0 { None } else { quest_runs::Cause::of(Some(cause)) };
+        match self.0.judge_caused(&parsed, &quest, word, cause, seat, now_ms) {
             quest_runs::Verdict::Recorded => out(0, false, "", String::new()),
             quest_runs::Verdict::Folded => out(1, false, "", String::new()),
             quest_runs::Verdict::Held { first } => out(2, first, quest_runs::Code::Churn.name(), String::new()),
+            quest_runs::Verdict::Refuse(code @ quest_runs::Code::Cause, why) => out(4, false, code.name(), why),
+            quest_runs::Verdict::Refuse(code @ quest_runs::Code::Instance, why) => out(5, false, code.name(), why),
             quest_runs::Verdict::Refuse(code, why) => out(3, false, code.name(), why),
         }
+    }
+
+    fn quest_runs_set_story(&mut self, quests: &[QuestStageEntry], world: bool) {
+        let instances = if world { quest_runs::StoryInstances::World } else { quest_runs::StoryInstances::Seat };
+        self.0.set_story(&form_descs(quests), instances);
+    }
+
+    fn quest_runs_story_named(&self, short_id: u32, file: &str) -> bool {
+        self.0.story_named(&forms::FormDesc { short_id, file: file.to_owned() })
+    }
+
+    fn quest_runs_story_count(&self) -> usize {
+        self.0.story_count()
     }
 
     fn quest_runs_held(&self, short_id: u32, file: &str) -> bool {
@@ -6572,12 +6616,12 @@ mod tests {
         assert_eq!((quest_report_word(0, 10, true), quest_report_word(0, 20, false), quest_report_word(2, 0, true), quest_report_word(3, 10, true)), (1, 0, 2, 3));
         let row = |short_id: u32, running: bool, seq: u32| QuestRunRow { short_id, file: "Skyrim.esm".to_owned(), running, seq };
         let mut runs = new_quest_runs();
-        let v = runs.quest_runs_judge(&[], 0x10d3bb, "Skyrim.esm", 1, 0xff00_0000, 0);
+        let v = runs.quest_runs_judge(&[], 0x10d3bb, "Skyrim.esm", 1, 0, 0xff00_0000, 0);
         assert_eq!((v.code, v.first, v.name.as_str()), (0, false, ""));
         let record = quest_runs_merge(&[], 0x10d3bb, "Skyrim.esm", 1);
         assert_eq!(record, vec![row(0x10d3bb, true, 1)]);
-        assert_eq!(runs.quest_runs_judge(&record, 0x10d3bb, "Skyrim.esm", 1, 0xff00_0001, 10).code, 1);
-        assert_eq!(runs.quest_runs_judge(&record, 0x10d3bb, "Skyrim.esm", 9, 0xff00_0001, 10).code, 1, "no run word is nothing");
+        assert_eq!(runs.quest_runs_judge(&record, 0x10d3bb, "Skyrim.esm", 1, 0, 0xff00_0001, 10).code, 1);
+        assert_eq!(runs.quest_runs_judge(&record, 0x10d3bb, "Skyrim.esm", 9, 0, 0xff00_0001, 10).code, 1, "no run word is nothing");
         let record = quest_runs_merge(&record, 0x10d3bb, "Skyrim.esm", 2);
         assert_eq!(record, vec![row(0x10d3bb, false, 2)]);
         assert_eq!(quest_runs_merge(&record, 0x10d3bb, "Skyrim.esm", 0), record);
@@ -6585,12 +6629,12 @@ mod tests {
         let mut word = 1;
         let mut last = QuestRunVerdict { code: 0, first: false, name: String::new(), why: String::new() };
         for t in 0..=quest_runs::RUN_FLIPS + 1 {
-            last = runs.quest_runs_judge(&[], 0x1a428, "Dawnguard.esm", word, 0xff00_0000, u64::try_from(t).unwrap_or(0));
+            last = runs.quest_runs_judge(&[], 0x1a428, "Dawnguard.esm", word, 0, 0xff00_0000, u64::try_from(t).unwrap_or(0));
             word = 3 - word;
         }
         assert_eq!((last.code, last.first, last.name.as_str()), (2, true, "E_QUEST_CHURN"));
         assert!(runs.quest_runs_held(0x1a428, "Dawnguard.esm"));
-        assert!(!runs.quest_runs_judge(&[], 0x1a428, "Dawnguard.esm", 1, 0xff00_0001, 100).first);
+        assert!(!runs.quest_runs_judge(&[], 0x1a428, "Dawnguard.esm", 1, 0, 0xff00_0001, 100).first);
         let held = vec![QuestRunRow { short_id: 0x1a428, file: "Dawnguard.esm".to_owned(), running: true, seq: 4 }, row(0x10d3bb, false, 2)];
         assert_eq!(quest_runs_without(&held, 0x1a428, "Dawnguard.esm"), vec![row(0x10d3bb, false, 2)]);
         runs.quest_runs_gone(0xff00_0000);
@@ -6602,8 +6646,44 @@ mod tests {
         assert_eq!((login.starts, login.stops), (vec![e(0x74a83)], vec![e(0x10d3bb)]));
         // the cap, by name
         let full: Vec<QuestRunRow> = (1..=u32::try_from(quest_runs::RUN_RECORD_CAP).unwrap_or(0)).map(|q| row(q, true, 1)).collect();
-        let v = runs.quest_runs_judge(&full, 0x0010_0000, "Skyrim.esm", 1, 0xff00_0000, 0);
+        let v = runs.quest_runs_judge(&full, 0x0010_0000, "Skyrim.esm", 1, 0, 0xff00_0000, 0);
         assert_eq!((v.code, v.name.as_str()), (3, "E_QUEST_RUNS_FULL"));
+    }
+
+    #[test]
+    fn the_bridge_refuses_a_seat_caused_word_and_a_story_instances_run() {
+        // thuum ADR-068 rung 5, D-Q4 C: dunEmbershardQST 0xb6fef, which no
+        // Story Manager quest node names, and FreeformRiverwood01 0x74a83,
+        // which FreeformRiverwoodNode 0xb555d names (the run-cause read's
+        // census of Skyrim.esm, 2026-11-10)
+        let row = |short_id: u32, running: bool, seq: u32| QuestRunRow { short_id, file: "Skyrim.esm".to_owned(), running, seq };
+        let e = |short_id: u32| QuestStageEntry { short_id, file: "Skyrim.esm".to_owned(), stage: 0 };
+        assert_eq!((quest_story_instances_world(r#""seat""#).ok(), quest_story_instances_world(r#""world""#).ok()), (Some(false), Some(true)));
+        assert!(quest_story_instances_world(r#""off""#).is_err());
+        let mut runs = new_quest_runs();
+        // the seat's own cause: refused, nothing counted; a world cause and
+        // an older client's report (no cause) recorded
+        let v = runs.quest_runs_judge(&[], 0xb6fef, "Skyrim.esm", 2, 2, 0xff00_0000, 0);
+        assert_eq!((v.code, v.first, v.name.as_str()), (4, false, "E_QUEST_CAUSE"));
+        assert!(v.why.contains("b6fef:Skyrim.esm"), "{}", v.why);
+        assert_eq!(runs.quest_runs_judge(&[], 0xb6fef, "Skyrim.esm", 1, 1, 0xff00_0000, 0).code, 0);
+        assert_eq!(runs.quest_runs_judge(&[], 0xb6fef, "Skyrim.esm", 1, 0, 0xff00_0000, 0).code, 0);
+        // a Story Manager instance under "seat": refused whatever its cause
+        // says, and the login serves none of its runs
+        runs.quest_runs_set_story(&[e(0x74a83)], false);
+        assert_eq!(runs.quest_runs_story_count(), 1);
+        assert!(runs.quest_runs_story_named(0x74a83, "skyrim.esm") && !runs.quest_runs_story_named(0xb6fef, "Skyrim.esm"));
+        let v = runs.quest_runs_judge(&[], 0x74a83, "Skyrim.esm", 1, 1, 0xff00_0000, 0);
+        assert_eq!((v.code, v.name.as_str()), (5, "E_QUEST_INSTANCE"));
+        assert_eq!(runs.quest_runs_judge(&[], 0x74a83, "Skyrim.esm", 1, 2, 0xff00_0000, 0).code, 4, "the cause first");
+        let all = new_shared_quests(r#"{"mode": "all"}"#).unwrap_or_else(|_| Box::new(SharedQuests(quest_stages::SharedQuests::default())));
+        let record = vec![row(0x74a83, true, 1), row(0xb6fef, true, 1)];
+        let login = runs.quest_runs_at_login(&record, &all);
+        assert_eq!((login.starts, login.stops), (vec![e(0xb6fef)], vec![]));
+        // "world": judged like any other quest, served at the login
+        runs.quest_runs_set_story(&[e(0x74a83)], true);
+        assert_eq!(runs.quest_runs_judge(&[], 0x74a83, "Skyrim.esm", 1, 1, 0xff00_0000, 0).code, 0);
+        assert_eq!(runs.quest_runs_at_login(&record, &all).starts, vec![e(0x74a83), e(0xb6fef)]);
     }
 
     #[test]

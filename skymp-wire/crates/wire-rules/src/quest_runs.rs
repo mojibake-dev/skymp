@@ -25,9 +25,29 @@
 //! [`RUN_RECORD_CAP`] quests (`E_QUEST_RUNS_FULL`, E_QUEST_FULL's sibling)
 //! and the churn's own counters at [`RUN_TRACK_CAP`] pairs (rule 12's
 //! resource bounds: the seats' reports feed both). R0 record, R1 feed.
+//!
+//! D-Q4 C (Eli, 2026-11-10, "Rung 5's stage-eve words"): a run word counts
+//! as the world's only when a script's call with a WORLD cause makes it, not
+//! every engine start and stop (the template save's load, start-game
+//! housekeeping, the Story Manager's per-seat starts). The seat's platform
+//! reads the root of the script stack that called Quest.Start, Quest.Stop or
+//! SetStage and carries its verdict onto the stages and words the call sets;
+//! the seat reports a run word only with a world cause and names the cause
+//! on every report (QuestStage `cause`, since SCHEMA_VERSION 43: the seat's
+//! own word, R2). Here a run word, or a report judged a start, whose cause
+//! is the seat's own is refused ([`Code::Cause`], `E_QUEST_CAUSE`): the
+//! seat cannot tell a start-up stage from any other, the record's INDX
+//! flags can. And a quest a Story Manager quest node names (SMQN NNAM, the
+//! core's read of the game files; CommonLibSSE-NG BGSStoryManagerQuestNode.h
+//! keeps them as `quests`, NNAM) keeps its runs per seat, start and stop,
+//! under the setting `questStoryInstances` "seat" (the default, PENDING
+//! ELI'S WORD; [`Code::Instance`], `E_QUEST_INSTANCE`), since a relayed stop
+//! would cut another seat's own instance; its stages still cross. "world"
+//! judges such a quest by its cause like any other.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
+use crate::clock::SettingsError;
 use crate::forms::FormDesc;
 use crate::quest_stages::SharedQuests;
 
@@ -118,6 +138,85 @@ impl Report {
     }
 }
 
+/// What made a report (QuestStage `cause`, since SCHEMA_VERSION 43; D-Q4
+/// C): the verdict of the script stack that called Quest.Start, Quest.Stop
+/// or SetStage, as the seat's platform read its root frame. The seat's own
+/// word, unvalidated (R2): judged here, logged by the core, never trusted
+/// past the report it rides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    /// A world cause (the wire's 1): a call from a dialogue, scene, package
+    /// or perk fragment, an interaction event, or a stage fragment whose
+    /// stage a world cause or a timer set.
+    World,
+    /// The seat's own (the wire's 2): lifecycle, cell load, the Story
+    /// Manager's events, a direct timer, a magic effect, the UI, an engine
+    /// start's start-up fragment, a stage set inside such a chain, or no
+    /// script call at all.
+    Seat,
+}
+
+impl Cause {
+    /// The wire's value: none for an older client's report, which names no
+    /// cause, and for a value the wire refuses first (wire-validate
+    /// check_quest_stage).
+    #[must_use]
+    pub fn of(wire: Option<u8>) -> Option<Self> {
+        match wire {
+            Some(1) => Some(Cause::World),
+            Some(2) => Some(Cause::Seat),
+            _ => None,
+        }
+    }
+
+    /// The word the log names.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Cause::World => "world",
+            Cause::Seat => "seat",
+        }
+    }
+}
+
+/// Whether a quest a Story Manager quest node names keeps its runs per seat
+/// (`questStoryInstances`, PENDING ELI'S WORD): a one-line flip of the
+/// server's settings either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StoryInstances {
+    /// "seat", the default (the read's recommendation): every run word of
+    /// such a quest is refused (`E_QUEST_INSTANCE`) and the login serves
+    /// none, so a relayed stop never cuts another seat's own instance (a WI,
+    /// WE or ADIA quest, about 35 CLOC dungeon quests, DA10, the CW
+    /// missions, the Favors); its stages still cross.
+    #[default]
+    Seat,
+    /// "world": such a quest is judged by its cause like any other.
+    World,
+}
+
+impl StoryInstances {
+    /// The setting from its JSON text, the string "seat" or "world"; the
+    /// core passes `"seat"` for a key the file lacks. The error names what
+    /// is wrong.
+    pub fn from_json(text: &str) -> Result<Self, SettingsError> {
+        match serde_json::from_str::<serde_json::Value>(text).map_err(|e| SettingsError(format!("questStoryInstances: {e}")))? {
+            serde_json::Value::String(m) if m == "seat" => Ok(StoryInstances::Seat),
+            serde_json::Value::String(m) if m == "world" => Ok(StoryInstances::World),
+            other => Err(SettingsError(format!("questStoryInstances: {other} is neither \"seat\" nor \"world\""))),
+        }
+    }
+
+    /// The setting's word, as the server's settings spell it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            StoryInstances::Seat => "seat",
+            StoryInstances::World => "world",
+        }
+    }
+}
+
 /// One quest's run on the world's record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuestRun {
@@ -137,6 +236,12 @@ pub enum Code {
     Churn,
     /// The record holds RUN_RECORD_CAP quests and not this one.
     Full,
+    /// D-Q4 C: a run word, or a report judged a start, whose cause is the
+    /// seat's own.
+    Cause,
+    /// A Story Manager instance's run word under `questStoryInstances`
+    /// "seat": each seat's own.
+    Instance,
 }
 
 impl Code {
@@ -146,6 +251,8 @@ impl Code {
         match self {
             Code::Churn => "E_QUEST_CHURN",
             Code::Full => "E_QUEST_RUNS_FULL",
+            Code::Cause => "E_QUEST_CAUSE",
+            Code::Instance => "E_QUEST_INSTANCE",
         }
     }
 }
@@ -165,7 +272,9 @@ pub enum Verdict {
         /// This word made the quest held.
         first: bool,
     },
-    /// Refused by the record's bound (`E_QUEST_RUNS_FULL`), with why.
+    /// Refused, with why: by the record's bound (`E_QUEST_RUNS_FULL`), by
+    /// its cause (`E_QUEST_CAUSE`) or as a Story Manager instance
+    /// (`E_QUEST_INSTANCE`). Nothing is written, relayed or counted.
     Refuse(Code, String),
 }
 
@@ -181,13 +290,17 @@ struct Track {
     touched_ms: u64,
 }
 
-/// The churn counter and the quests held for the run. Runtime only: a
-/// restart forgets both, and a held quest's entry is gone from the record
-/// by then ([`without`]).
+/// The churn counter and the quests held for the run, beside the Story
+/// Manager's quests and the setting that says whether they are each seat's
+/// own. Runtime only: a restart forgets the first two, and a held quest's
+/// entry is gone from the record by then ([`without`]); the core sets the
+/// last two from the settings and the game files at every start.
 #[derive(Debug, Default)]
 pub struct QuestRuns {
     tracks: HashMap<(FormDesc, u32), Track>,
     held: BTreeSet<(u32, String)>,
+    story: BTreeSet<(u32, String)>,
+    instances: StoryInstances,
 }
 
 /// A held quest's key: its id and its plugin without case, as FormDesc's
@@ -209,11 +322,62 @@ impl QuestRuns {
         self.held.len()
     }
 
+    /// The Story Manager's quests (every quest an SMQN node of the game
+    /// files names, the core's read) and `questStoryInstances`, both
+    /// replaced whole.
+    pub fn set_story(&mut self, quests: &[FormDesc], instances: StoryInstances) {
+        self.story = quests.iter().map(held_key).collect();
+        self.instances = instances;
+    }
+
+    /// Whether a Story Manager quest node names `quest`, whatever the
+    /// setting says.
+    #[must_use]
+    pub fn story_named(&self, quest: &FormDesc) -> bool {
+        self.story.contains(&held_key(quest))
+    }
+
+    /// Whether `quest` keeps its runs per seat: a Story Manager quest node
+    /// names it and `questStoryInstances` is "seat".
+    #[must_use]
+    pub fn story_instance(&self, quest: &FormDesc) -> bool {
+        self.instances == StoryInstances::Seat && self.story_named(quest)
+    }
+
+    /// How many quests the Story Manager's nodes name.
+    #[must_use]
+    pub fn story_count(&self) -> usize {
+        self.story.len()
+    }
+
+    /// The setting in force.
+    #[must_use]
+    pub fn instances(&self) -> StoryInstances {
+        self.instances
+    }
+
+    /// One run word of `quest` with the report's `cause` (none from an
+    /// older client): a seat-caused word is refused first (D-Q4 C,
+    /// `E_QUEST_CAUSE`), touching neither the record nor the churn counter;
+    /// any other is [`QuestRuns::judge`]d.
+    pub fn judge_caused(&mut self, record: &[QuestRun], quest: &FormDesc, word: Word, cause: Option<Cause>, seat: u32, now_ms: u64) -> Verdict {
+        if cause == Some(Cause::Seat) {
+            let what = if word == Word::Start { "start" } else { "stop" };
+            return Verdict::Refuse(Code::Cause, format!("the {what} of {:x}:{} has the seat's own cause: a run word is the world's only when a script's call with a world cause makes it (D-Q4 C)", quest.short_id, quest.file));
+        }
+        self.judge(record, quest, word, seat, now_ms)
+    }
+
     /// One run word of `quest` from `seat` (the reporter's actor) at
-    /// `now_ms` on a monotonic clock, against the world's `record`: a held
-    /// quest's word is held; then the seat's flip, which may make the quest
-    /// held; then the fold, and the record's bound for a quest it lacks.
+    /// `now_ms` on a monotonic clock, against the world's `record`: a Story
+    /// Manager instance's word is refused under "seat" (`E_QUEST_INSTANCE`),
+    /// touching neither the record nor the churn counter; a held quest's
+    /// word is held; then the seat's flip, which may make the quest held;
+    /// then the fold, and the record's bound for a quest it lacks.
     pub fn judge(&mut self, record: &[QuestRun], quest: &FormDesc, word: Word, seat: u32, now_ms: u64) -> Verdict {
+        if self.story_instance(quest) {
+            return Verdict::Refuse(Code::Instance, format!("{:x}:{} is a quest a Story Manager quest node names: its runs are each seat's own under questStoryInstances \"seat\", its stages still cross", quest.short_id, quest.file));
+        }
         if self.held(quest) {
             return Verdict::Held { first: false };
         }
@@ -262,10 +426,13 @@ impl QuestRuns {
     /// quests recorded running (served start words, ahead of the stages)
     /// and those recorded stopped (served stop words, behind them), each
     /// still the world's by `shared` (a denied or player-class quest, or one
-    /// a mode list no longer names, stays unsent) and not held.
+    /// a mode list no longer names, stays unsent), not held, and no Story
+    /// Manager instance under "seat" (a run recorded before, or under
+    /// "world", stays in the record and goes unsent while the setting says
+    /// "seat").
     #[must_use]
     pub fn at_login<'a>(&self, record: &'a [QuestRun], shared: &SharedQuests) -> (Vec<&'a QuestRun>, Vec<&'a QuestRun>) {
-        let sent = |r: &&QuestRun| shared.is_shared(r.quest.short_id, &r.quest.file) && !self.held(&r.quest);
+        let sent = |r: &&QuestRun| shared.is_shared(r.quest.short_id, &r.quest.file) && !self.held(&r.quest) && !self.story_instance(&r.quest);
         let starts = record.iter().filter(sent).filter(|r| r.running).collect();
         let stops = record.iter().filter(sent).filter(|r| !r.running).collect();
         (starts, stops)
@@ -467,5 +634,110 @@ mod tests {
         let (starts, stops) = runs.at_login(&record, &list);
         assert!(starts.is_empty());
         assert_eq!(stops.len(), 1);
+    }
+
+    // D-Q4 C (the read of 2026-11-10, its census of sky-srv's deployed load
+    // order, qust-facts.tsv): FreeformRiverwood01 0x74a83 (A Lovely Letter)
+    // and CR02 0x25185 are quests SMQN nodes name (FreeformRiverwoodNode
+    // 0xb555d, CompanionsAelaNode 0xbfc77), dunEmbershardQST 0xb6fef one no
+    // node names; all three Skyrim.esm's
+    const LETTER_SM: u32 = 0x74a83;
+    const CR02: u32 = 0x25185;
+    const EMBERSHARD: u32 = 0xb6fef;
+
+    fn flip(word: Word) -> Word {
+        if word == Word::Start { Word::Stop } else { Word::Start }
+    }
+
+    fn ids(runs: &[&QuestRun]) -> Vec<u32> {
+        runs.iter().map(|r| r.quest.short_id).collect()
+    }
+
+    #[test]
+    fn a_report_names_its_cause_as_the_wire_spells_it() {
+        assert_eq!((Cause::of(Some(1)), Cause::of(Some(2)), Cause::of(None)), (Some(Cause::World), Some(Cause::Seat), None));
+        assert_eq!((Cause::of(Some(0)), Cause::of(Some(3)), Cause::of(Some(u8::MAX))), (None, None, None));
+        assert_eq!((Cause::World.name(), Cause::Seat.name()), ("world", "seat"));
+        assert_eq!((Code::Cause.name(), Code::Instance.name()), ("E_QUEST_CAUSE", "E_QUEST_INSTANCE"));
+    }
+
+    #[test]
+    fn a_seat_caused_word_is_refused_before_the_record_and_the_churn_and_a_world_one_is_judged() {
+        let mut runs = QuestRuns::default();
+        let q = quest(EMBERSHARD);
+        match runs.judge_caused(&[], &q, Word::Start, Some(Cause::Seat), C1, 0) {
+            Verdict::Refuse(code, why) => assert_eq!((code, why.as_str()), (Code::Cause, "the start of b6fef:Skyrim.esm has the seat's own cause: a run word is the world's only when a script's call with a world cause makes it (D-Q4 C)")),
+            other => panic!("not refused by its cause: {other:?}"),
+        }
+        // a world cause is judged as every word was, and so is an older
+        // client's report, which names none
+        assert_eq!(runs.judge_caused(&[], &q, Word::Start, Some(Cause::World), C1, 0), Verdict::Recorded);
+        assert_eq!(runs.judge_caused(&[], &q, Word::Start, None, C2, 0), Verdict::Recorded);
+        // a refused word counts no flip: the vampire castle's controller
+        // restarting itself from its own timer (a seat-caused word each time)
+        // never makes the quest held, so its first world-caused word is
+        // recorded
+        let controller = FormDesc { short_id: CONTROLLER, file: "Dawnguard.esm".to_owned() };
+        let mut word = Word::Start;
+        for n in 0..(4 * RUN_FLIPS) {
+            let at = u64::try_from(n).unwrap_or(0);
+            assert!(matches!(runs.judge_caused(&[], &controller, word, Some(Cause::Seat), C1, at), Verdict::Refuse(Code::Cause, _)), "{n}");
+            word = flip(word);
+        }
+        assert!(!runs.held(&controller));
+        assert_eq!(runs.judge_caused(&[], &controller, Word::Start, Some(Cause::World), C1, 100), Verdict::Recorded);
+    }
+
+    #[test]
+    fn a_story_instance_keeps_its_runs_per_seat_unless_the_setting_says_world() {
+        let mut runs = QuestRuns::default();
+        assert_eq!((runs.story_count(), runs.instances()), (0, StoryInstances::Seat));
+        runs.set_story(&[quest(LETTER_SM), quest(CR02)], StoryInstances::Seat);
+        assert_eq!(runs.story_count(), 2);
+        assert!(runs.story_named(&quest(LETTER_SM)) && runs.story_instance(&FormDesc { short_id: LETTER_SM, file: "SKYRIM.ESM".to_owned() }));
+        assert!(!runs.story_named(&quest(EMBERSHARD)) && !runs.story_instance(&quest(EMBERSHARD)));
+        // a world-caused start and stop of an instance: refused, nothing
+        // written, relayed or counted
+        for word in [Word::Start, Word::Stop] {
+            match runs.judge_caused(&[], &quest(LETTER_SM), word, Some(Cause::World), C1, 0) {
+                Verdict::Refuse(code, why) => assert_eq!((code, why.as_str()), (Code::Instance, "74a83:Skyrim.esm is a quest a Story Manager quest node names: its runs are each seat's own under questStoryInstances \"seat\", its stages still cross")),
+                other => panic!("not refused as an instance: {other:?}"),
+            }
+        }
+        // an older client's word too, and a seat-caused one is named by its
+        // cause first
+        assert!(matches!(runs.judge(&[], &quest(CR02), Word::Start, C2, 0), Verdict::Refuse(Code::Instance, _)));
+        assert!(matches!(runs.judge_caused(&[], &quest(CR02), Word::Start, Some(Cause::Seat), C2, 0), Verdict::Refuse(Code::Cause, _)));
+        // a quest no node names crosses
+        assert_eq!(runs.judge_caused(&[], &quest(EMBERSHARD), Word::Start, Some(Cause::World), C1, 0), Verdict::Recorded);
+        // the login serves no instance's run, one recorded before included
+        let all = SharedQuests::from_json(r#"{"mode": "all"}"#).unwrap_or_default();
+        let record = vec![
+            QuestRun { quest: quest(LETTER_SM), running: true, seq: 1 },
+            QuestRun { quest: quest(EMBERSHARD), running: true, seq: 1 },
+            QuestRun { quest: quest(CR02), running: false, seq: 2 },
+        ];
+        let (starts, stops) = runs.at_login(&record, &all);
+        assert_eq!((ids(&starts), ids(&stops)), (vec![EMBERSHARD], vec![]));
+        // "world": such a quest is judged by its cause like any other and
+        // served at the login
+        runs.set_story(&[quest(LETTER_SM), quest(CR02)], StoryInstances::World);
+        assert!(runs.story_named(&quest(LETTER_SM)) && !runs.story_instance(&quest(LETTER_SM)));
+        assert_eq!(runs.judge_caused(&[], &quest(LETTER_SM), Word::Start, Some(Cause::World), C1, 10), Verdict::Recorded);
+        assert!(matches!(runs.judge_caused(&[], &quest(LETTER_SM), Word::Stop, Some(Cause::Seat), C1, 10), Verdict::Refuse(Code::Cause, _)));
+        let (starts, stops) = runs.at_login(&record, &all);
+        assert_eq!((ids(&starts), ids(&stops)), (vec![LETTER_SM, EMBERSHARD], vec![CR02]));
+    }
+
+    #[test]
+    fn the_story_setting_reads_seat_or_world_and_names_what_is_wrong() {
+        assert_eq!(StoryInstances::from_json(r#""seat""#).ok(), Some(StoryInstances::Seat));
+        assert_eq!(StoryInstances::from_json(r#""world""#).ok(), Some(StoryInstances::World));
+        assert_eq!(StoryInstances::default(), StoryInstances::Seat);
+        assert_eq!((StoryInstances::Seat.name(), StoryInstances::World.name()), ("seat", "world"));
+        for bad in [r#""off""#, "1", "{}", r#"["seat"]"#, "seat"] {
+            let why = StoryInstances::from_json(bad).err().map(|e| e.0);
+            assert!(why.as_deref().is_some_and(|w| w.starts_with("questStoryInstances: ")), "{bad}: {why:?}");
+        }
     }
 }

@@ -326,6 +326,19 @@ public:
   void SetPlayerQuestSettings(const std::string& globalsJson,
                               const std::string& variablesJson,
                               const std::string& callersJson);
+  // thuum ADR-068 rung 5 (D-Q4 C, PENDING ELI'S WORD on the setting):
+  // server-settings.json's `questStoryInstances`, its value's JSON text
+  // ("seat", the default, or "world"); a bad value stops the server here,
+  // named. With the game files every quest a Story Manager quest node names
+  // (libespm SMQN, its NNAMs) goes to wire-rules quest_runs, whose judge
+  // keeps such a quest's runs per seat under "seat" (E_QUEST_INSTANCE) and
+  // whose login serves none of them; its stages still cross. One line names
+  // the nodes and quests read
+  void SetQuestStoryInstancesSettings(const std::string& settingJson);
+  // the Story Manager quest nodes naming the quest, "<editor id> <hex id>"
+  // (the first, and how many more), empty for none or without the game
+  // files: the E_QUEST_INSTANCE line's cause
+  std::string StoryNodesOf(const FormDesc& quest);
   // the quests the class marks the player's, measured in either mode; and
   // the ones composed in (empty while the scope does not act)
   const std::vector<FormDesc>& QuestScopeMarked() const;
@@ -1072,6 +1085,8 @@ private:
   // quests, the player globals and the script variables; the player globals
   // alone (the setting's, with the class's while it acts)
   void ComposeQuestScope();
+  // D-Q4 C: the Story Manager's quests and the setting into quest_runs
+  void ComposeStoryQuests();
   void ComposePlayerGlobals();
   void TickWeather();
   void SendWeatherWord(Networking::UserId userId);

@@ -132,7 +132,13 @@ use bounded::{String, Vec};
 /// UpdateAppearance's `overlay`, ScriptCall's figure argument and
 /// QuestStage's `player` changed layouts inside 41 after pipeline 5676's
 /// image carried an earlier 41.
-pub const SCHEMA_VERSION: u16 = 42;
+/// 43: D-Q4 C (thuum ADR-068 rung 5, m4-scripts-5-cause): QuestStage's
+/// optional `cause` (1 a world cause, 2 the seat's own) and `root` (the
+/// root frame of the script stack that made the report, "<Script>.
+/// <Function>") on a seat's report, so the server refuses a run word, or a
+/// report it judges a start, whose cause is the seat's own; R2, the seat's
+/// own word.
+pub const SCHEMA_VERSION: u16 = 43;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -235,6 +241,10 @@ pub mod cap {
     /// the shut-down stages; a quest flags one or two (Skyrim.esm,
     /// lab/esm.py on sky-srv, 2026-11-10).
     pub const WORD_STAGES: usize = 16;
+    /// A report's root frame (thuum ADR-068 rung 5, D-Q4 C), a script and
+    /// one of its functions, "<Script>.<Function>": two [`PAPYRUS_NAME`]s
+    /// and the dot between them.
+    pub const QUEST_ROOT: usize = 2 * PAPYRUS_NAME + 1;
     /// Actor values one actor's running buffs touch: two per effect at most
     /// (a dual value modifier's second).
     pub const EFFECT_MODIFIERS: usize = 2 * MAGIC_EFFECTS;
@@ -1166,10 +1176,15 @@ mod tests {
             served: Some(true),
             player: Some(full()),
             word_stages: Some((0..cap::WORD_STAGES).map(|_| u16::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default()),
+            // SCHEMA_VERSION 43 (D-Q4 C): a report's cause and its root at
+            // the cap
+            cause: Some(u8::MAX),
+            root: Some(core::iter::repeat_n('_', cap::QUEST_ROOT).collect::<alloc::string::String>().as_str().try_into().unwrap_or_default()),
             ..Default::default()
         });
         if let Message::QuestStage(q) = &stage {
             assert_eq!((q.shared.len(), q.player.as_ref().map(|p| p.len()), q.word_stages.as_ref().map(|w| w.len())), (cap::SHARED_QUESTS, Some(cap::SHARED_QUESTS), Some(cap::WORD_STAGES)));
+            assert_eq!(q.root.as_ref().map(|r| r.len()), Some(cap::QUEST_ROOT));
         }
         let bytes = postcard::to_allocvec(&stage).unwrap_or_default();
         assert!(bytes.len() > 2 * KIB && bytes.len() <= 4 * KIB, "{}", bytes.len());
@@ -1380,7 +1395,7 @@ mod tests {
             // the condition-read variables at their caps and a stage word at
             // its longest (thuum ADR-068 rung 5)
             Message::ScriptVariables(script_variables_at_their_caps()),
-            Message::QuestStage(skymp::QuestStage { quest: u32::MAX, stage: u16::MAX, word: Some(u8::MAX), acting: Some(u32::MAX), served: Some(true), word_stages: Some(core::iter::repeat_n(u16::MAX, cap::WORD_STAGES).collect::<alloc::vec::Vec<u16>>().try_into().unwrap_or_default()), ..Default::default() }),
+            Message::QuestStage(skymp::QuestStage { quest: u32::MAX, stage: u16::MAX, word: Some(u8::MAX), acting: Some(u32::MAX), served: Some(true), word_stages: Some(core::iter::repeat_n(u16::MAX, cap::WORD_STAGES).collect::<alloc::vec::Vec<u16>>().try_into().unwrap_or_default()), cause: Some(u8::MAX), root: Some("QF_dunEmbershardQST_000B6FEF.Fragment_16".try_into().unwrap_or_default()), ..Default::default() }),
             // and its relay, the sequence carried (thuum ADR-068)
             Message::SpSnippet(skymp::SpSnippet {
                 class: "ObjectReference".try_into().unwrap_or_default(),

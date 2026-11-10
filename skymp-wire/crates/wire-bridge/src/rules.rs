@@ -2251,7 +2251,7 @@ mod ffi {
 
     /// What the core knows of one player's own call beside its form
     /// (wire-rules player_own::Facts).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
     struct PlayerOwnFacts {
         /// The player's race on its change form (its appearance's raceId;
         /// an overlay never moves it).
@@ -2274,6 +2274,20 @@ mod ffi {
         /// race: its HDPT's valid-race FormList (RNAM) holds the race (Eli's
         /// D-E1 A).
         race_valid: bool,
+        /// AddItem's form is a leveled item list, an LVLI record (Eli's
+        /// D-R1 C: refused by name, the engine's roll unreported).
+        leveled: bool,
+        /// How many of the form the player's record holds over all its
+        /// stacks (Inventory::GetItemCount), for AddItem and RemoveItem.
+        held_count: u32,
+        /// AddItem's and RemoveItem's second argument, aiCount, as the wire
+        /// carried it (a number; 0 for none), judged by wire-rules
+        /// player_own::item_count.
+        count: f64,
+        /// RemoveItem's fourth argument, akOtherContainer, names a reference
+        /// the reporter occupies (MpObjectReference::IsContainerOccupant):
+        /// its PutItem carries the move.
+        into_held_open: bool,
     }
 
     /// A player's overlay (thuum ADR-068 D-T1 A, wire-rules
@@ -2302,14 +2316,16 @@ mod ffi {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct PlayerOwnVerdict {
         /// 0 recorded on the change form (the race, a learned spell or shout
-        /// added or removed; never an item), 1 held in the overlay (opened,
-        /// its race moved, a form added or removed), 2 the overlay ended at
-        /// the race's return, 3 folded (nothing), 4 refused.
+        /// added or removed, a head part; AddItem's and RemoveItem's `count`
+        /// items, D-R1 C), 1 held in the overlay (opened, its race moved, a
+        /// form added or removed), 2 the overlay ended at the race's return,
+        /// 3 folded (nothing), 4 refused.
         code: u8,
         /// The refusal's stable name (E_SCRIPTCALL_ARGS, a form of another
-        /// kind than the row's; E_SCRIPTCALL_UNNAMED; E_SCRIPTCALL_RACE; or
-        /// E_SCRIPTCALL_ROW for a native that is none of the seven), empty
-        /// otherwise.
+        /// kind than the row's or a count that lands nothing;
+        /// E_SCRIPTCALL_UNNAMED; E_SCRIPTCALL_RACE; E_SCRIPTCALL_LEVELED, a
+        /// leveled list's add; or E_SCRIPTCALL_ROW for a native that is none
+        /// of the nine), empty otherwise.
         name: String,
         /// Why, for the log; empty otherwise.
         why: String,
@@ -2319,6 +2335,10 @@ mod ffi {
         ended: PlayerOverlayRow,
         /// The player's overlay after the call, `open` false for none.
         overlay: PlayerOverlayRow,
+        /// Code 0 of AddItem or RemoveItem (D-R1 C): how many of the form
+        /// the core adds to or removes from the player's inventory; 0
+        /// otherwise.
+        count: u32,
     }
 
     extern "Rust" {
@@ -2400,6 +2420,13 @@ mod ffi {
         fn racemenu_look_facts(preset: &str) -> LookAppearance;
         /// thuum ADR-026: the appearance's head parts a look implies.
         fn racemenu_derived_head_parts(parts: &[LookPartFacts]) -> DerivedParts;
+        /// Eli's D-E1 A (ADR-026's one authority): the stored look with the
+        /// head part `plugin`|`id` (its plugin's file name, its id within
+        /// the plugin) in place of its part of the same HDPT type, `same_type`
+        /// one byte per `headParts` entry in order, nonzero for a part of
+        /// that type (wire-rules racemenu::with_head_part); empty when
+        /// nothing changes or the look would pass the wire's preset cap.
+        fn racemenu_with_head_part(preset: &str, same_type: &[u8], plugin: &str, id: u32) -> String;
         /// Whether an actor values report is within bounds, given the
         /// values the server holds (thuum docs/verbs/actor-values.md).
         fn actor_values_report_ok(report: &AvSnapshot, held: &[AvBase]) -> bool;
@@ -3257,12 +3284,14 @@ mod ffi {
         /// No overlay open.
         fn new_player_overlays() -> Box<PlayerOverlays>;
         /// One player's own call (ScriptCall 75 whose owner step recorded
-        /// it with `record` 4, its subject 0x14) of `func` (SetRace,
-        /// AddSpell, RemoveSpell, AddShout, RemoveShout, EquipItem, names
-        /// without case) by `player`'s seat naming `form` (its first
+        /// it with `record` 4, its subject 0x14) of `cls`.`func` (Actor's
+        /// SetRace, AddSpell, RemoveSpell, AddShout, RemoveShout, EquipItem
+        /// and ChangeHeadPart, ObjectReference's AddItem and RemoveItem,
+        /// names without case) by `player`'s seat naming `form` (its first
         /// argument's form id, 0 for None), over the `properties` of the
-        /// calling script's attachments and the record's `facts`.
-        fn player_own_judge(self: &mut PlayerOverlays, player: u32, func: &str, form: u32, properties: &[ScriptPropertyRow], facts: &PlayerOwnFacts) -> PlayerOwnVerdict;
+        /// calling script's attachments (none for AddItem and RemoveItem,
+        /// which have no bound) and the record's `facts`.
+        fn player_own_judge(self: &mut PlayerOverlays, player: u32, cls: &str, func: &str, form: u32, properties: &[ScriptPropertyRow], facts: &PlayerOwnFacts) -> PlayerOwnVerdict;
         /// The overlay `player` wears now (`open` false for none), for its
         /// figure's CreateActor and UpdateAppearance and the equipment gate.
         fn player_overlay(self: &PlayerOverlays, player: u32) -> PlayerOverlayRow;
@@ -3617,6 +3646,12 @@ fn racemenu_derived_head_parts(parts: &[LookPartFacts]) -> DerivedParts {
         Some(parts) => DerivedParts { ok: true, parts },
         None => DerivedParts { ok: false, parts: Vec::new() },
     }
+}
+
+fn racemenu_with_head_part(preset: &str, same_type: &[u8], plugin: &str, id: u32) -> String {
+    let same: Vec<bool> = same_type.iter().map(|&b| b != 0).collect();
+    let part = racemenu::FormRef { plugin: plugin.to_owned(), id };
+    racemenu::with_head_part(preset, &same, &part).filter(|look| look.len() <= wire_schema::cap::RACEMENU_PRESET).unwrap_or_default()
 }
 
 fn av_snapshot(s: &AvSnapshot) -> actor_values::Snapshot {
@@ -5792,26 +5827,28 @@ fn overlay_row(o: Option<&player_own::Overlay>) -> PlayerOverlayRow {
 }
 
 impl PlayerOverlays {
-    fn player_own_judge(&mut self, player: u32, func: &str, form: u32, properties: &[ScriptPropertyRow], facts: &PlayerOwnFacts) -> PlayerOwnVerdict {
-        let Some(row) = player_own::Row::of("Actor", func) else {
+    fn player_own_judge(&mut self, player: u32, cls: &str, func: &str, form: u32, properties: &[ScriptPropertyRow], facts: &PlayerOwnFacts) -> PlayerOwnVerdict {
+        let Some(row) = player_own::Row::of(cls, func) else {
             return PlayerOwnVerdict {
                 code: 4,
                 name: natives::Code::Row.name().to_owned(),
-                why: format!("Actor.{func} is none of a player's own seven rows"),
+                why: format!("{cls}.{func} is none of a player's own nine rows"),
                 ended: overlay_row(None),
                 overlay: overlay_row(self.0.overlay(player)),
+                count: 0,
             };
         };
         let named: Vec<player_own::Named> = properties.iter().map(|p| player_own::Named { form: p.form, members: p.members.clone() }).collect();
-        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind, race_valid: facts.race_valid };
-        let (code, name, why, ended) = match self.0.judge(player, row, form, &named, f) {
-            player_own::Verdict::Record { ended } => (0, "", String::new(), ended),
-            player_own::Verdict::Overlay => (1, "", String::new(), None),
-            player_own::Verdict::Ended(o) => (2, "", String::new(), Some(o)),
-            player_own::Verdict::Fold => (3, "", String::new(), None),
-            player_own::Verdict::Refuse(code, why) => (4, code.name(), why, None),
+        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind, race_valid: facts.race_valid, leveled: facts.leveled, held_count: facts.held_count, count: player_own::item_count(facts.count), into_held_open: facts.into_held_open };
+        let (code, name, why, ended, count) = match self.0.judge(player, row, form, &named, f) {
+            player_own::Verdict::Record { ended } => (0, "", String::new(), ended, 0),
+            player_own::Verdict::Items(n) => (0, "", String::new(), None, n),
+            player_own::Verdict::Overlay => (1, "", String::new(), None, 0),
+            player_own::Verdict::Ended(o) => (2, "", String::new(), Some(o), 0),
+            player_own::Verdict::Fold => (3, "", String::new(), None, 0),
+            player_own::Verdict::Refuse(code, why) => (4, code.name(), why, None, 0),
         };
-        PlayerOwnVerdict { code, name: name.to_owned(), why, ended: overlay_row(ended.as_ref()), overlay: overlay_row(self.0.overlay(player)) }
+        PlayerOwnVerdict { code, name: name.to_owned(), why, ended: overlay_row(ended.as_ref()), overlay: overlay_row(self.0.overlay(player)), count }
     }
 
     fn player_overlay(&self, player: u32) -> PlayerOverlayRow {
@@ -6704,39 +6741,69 @@ mod tests {
         let npc = s.judge(at.row, &[race], &ScriptCallFacts { self_id: 0x800a6, ..facts }, 0);
         assert_eq!((npc.code, npc.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
         let lists = [ScriptPropertyRow { form: 0x0d00_1000, members: vec![0x13746, 0x13745] }, ScriptPropertyRow { form: 0x0d00_1001, members: vec![0x88794, 0x88845] }];
-        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false };
+        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 0, count: 0.0, into_held_open: false };
         let mut overlays = new_player_overlays();
-        let v = overlays.player_own_judge(0xff00_0001, "SetRace", 0x88845, &lists, &khajiit);
+        let v = overlays.player_own_judge(0xff00_0001, "Actor", "SetRace", 0x88845, &lists, &khajiit);
         assert_eq!((v.code, v.name.as_str(), v.ended.open, v.overlay.open), (0, "", false, false));
-        let unnamed = overlays.player_own_judge(0xff00_0001, "AddSpell", 0x92c48, &lists, &khajiit);
+        let unnamed = overlays.player_own_judge(0xff00_0001, "Actor", "AddSpell", 0x92c48, &lists, &khajiit);
         assert_eq!((unnamed.code, unnamed.name.as_str()), (4, "E_SCRIPTCALL_UNNAMED"));
-        let restricted = overlays.player_own_judge(0xff00_0001, "SetRace", 0x88845, &lists, &PlayerOwnFacts { restricted: true, ..khajiit });
+        let restricted = overlays.player_own_judge(0xff00_0001, "Actor", "SetRace", 0x88845, &lists, &PlayerOwnFacts { restricted: true, ..khajiit });
         assert_eq!(restricted.name, "E_SCRIPTCALL_RACE");
-        assert_eq!(overlays.player_own_judge(0xff00_0001, "EquipSpell", 0x88845, &lists, &khajiit).name, "E_SCRIPTCALL_ROW");
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "EquipSpell", 0x88845, &lists, &khajiit).name, "E_SCRIPTCALL_ROW");
+        // Eli's D-R1 C: the inventory's two by their own class, with no
+        // bound (no property names the gold), the add whole, the removal at
+        // most what the record holds, the count's own bound, a leveled list
+        // refused by name, and an Actor spelling of the pair no row
+        let gold = PlayerOwnFacts { held_count: 40, count: 25.0, ..khajiit };
+        let add = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &gold);
+        assert_eq!((add.code, add.count, add.name.as_str()), (0, 25, ""));
+        let take = overlays.player_own_judge(0xff00_0001, "objectreference", "removeitem", 0xf, &[], &PlayerOwnFacts { count: 1000.0, ..gold });
+        assert_eq!((take.code, take.count), (0, 40));
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "ObjectReference", "RemoveItem", 0xf, &[], &PlayerOwnFacts { into_held_open: true, ..gold }).code, 3);
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &PlayerOwnFacts { count: 2.5, ..gold }).name, "E_SCRIPTCALL_ARGS");
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0x10_bf6a, &[], &PlayerOwnFacts { leveled: true, kind: false, ..gold }).name, "E_SCRIPTCALL_LEVELED");
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "AddItem", 0xf, &[], &gold).name, "E_SCRIPTCALL_ROW");
+        // the seven's verdicts carry no count
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "EquipItem", 0x88845, &lists, &PlayerOwnFacts { held: true, ..khajiit }).count, 0);
         // a form of another kind than the row's, named or not (the fresh
         // review's note 3), and an item outside an overlay that the record
         // lacks (note 4)
-        assert_eq!(overlays.player_own_judge(0xff00_0001, "SetRace", 0x88845, &lists, &PlayerOwnFacts { kind: false, ..khajiit }).name, "E_SCRIPTCALL_ARGS");
-        assert_eq!(overlays.player_own_judge(0xff00_0001, "EquipItem", 0x88845, &lists, &khajiit).name, "E_SCRIPTCALL_UNNAMED");
-        assert_eq!(overlays.player_own_judge(0xff00_0001, "EquipItem", 0x88845, &lists, &PlayerOwnFacts { held: true, ..khajiit }).code, 3);
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "SetRace", 0x88845, &lists, &PlayerOwnFacts { kind: false, ..khajiit }).name, "E_SCRIPTCALL_ARGS");
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "EquipItem", 0x88845, &lists, &khajiit).name, "E_SCRIPTCALL_UNNAMED");
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "EquipItem", 0x88845, &lists, &PlayerOwnFacts { held: true, ..khajiit }).code, 3);
         // the seventh row (Eli's D-E1 A): a head part the recorded race may
         // wear is recorded, one its list lacks refused
         let eyes = [ScriptPropertyRow { form: 0x24244, members: Vec::new() }];
-        assert_eq!(overlays.player_own_judge(0xff00_0001, "ChangeHeadPart", 0x24244, &eyes, &PlayerOwnFacts { race_valid: true, ..khajiit }).code, 0);
-        assert_eq!(overlays.player_own_judge(0xff00_0001, "ChangeHeadPart", 0x24244, &eyes, &khajiit).name, "E_SCRIPTCALL_UNNAMED");
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "ChangeHeadPart", 0x24244, &eyes, &PlayerOwnFacts { race_valid: true, ..khajiit }).code, 0);
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "Actor", "ChangeHeadPart", 0x24244, &eyes, &khajiit).name, "E_SCRIPTCALL_UNNAMED");
         // the beast form: an overlay, its howl held in it, its return ending it
         let werewolf = [ScriptPropertyRow { form: 0xcdd84, members: Vec::new() }, ScriptPropertyRow { form: 0x92c48, members: Vec::new() }];
         let nord = PlayerOwnFacts { recorded_race: 0x13746, ..khajiit };
-        let opened = overlays.player_own_judge(0xff00_0000, "SetRace", 0xcdd84, &werewolf, &nord);
+        let opened = overlays.player_own_judge(0xff00_0000, "Actor", "SetRace", 0xcdd84, &werewolf, &nord);
         assert_eq!((opened.code, opened.overlay.open, opened.overlay.race, opened.overlay.base), (1, true, 0xcdd84, 0x13746));
-        assert_eq!(overlays.player_own_judge(0xff00_0000, "AddShout", 0x92c48, &werewolf, &nord).overlay.shouts, vec![0x92c48]);
+        assert_eq!(overlays.player_own_judge(0xff00_0000, "Actor", "AddShout", 0x92c48, &werewolf, &nord).overlay.shouts, vec![0x92c48]);
         assert!(overlays.player_overlay(0xff00_0000).open && !overlays.player_overlay(0xff00_0001).open);
-        let back = overlays.player_own_judge(0xff00_0000, "SetRace", 0x13746, &werewolf, &nord);
+        let back = overlays.player_own_judge(0xff00_0000, "Actor", "SetRace", 0x13746, &werewolf, &nord);
         assert_eq!((back.code, back.ended.open, back.ended.shouts.clone(), back.overlay.open), (2, true, vec![0x92c48], false));
         // a disconnect mid-form ends it
-        assert_eq!(overlays.player_own_judge(0xff00_0000, "SetRace", 0xcdd84, &werewolf, &nord).code, 1);
+        assert_eq!(overlays.player_own_judge(0xff00_0000, "Actor", "SetRace", 0xcdd84, &werewolf, &nord).code, 1);
         assert_eq!(overlays.player_overlay_gone(0xff00_0000).race, 0xcdd84);
         assert!(!overlays.player_overlay_gone(0xff00_0000).open);
+    }
+
+    #[test]
+    fn a_stored_look_takes_a_swapped_head_part_of_its_type_within_the_wire_cap() {
+        // Eli's D-E1 A: rotfern's eyes, RotfernEyes 0x014C06 for
+        // RotfernEyesMora 0x023F0E (rotfern.esp's)
+        let look = r#"{"headParts": [{"formIdentifier": "rotfern.esp|02E117", "type": 0}, {"formIdentifier": "rotfern.esp|014C06", "type": 2}]}"#;
+        let out = racemenu_with_head_part(look, &[0, 1], "rotfern.esp", 0x023F0E);
+        let parts: Vec<(String, u32)> = racemenu_look_facts(&out).parts.into_iter().map(|p| (p.plugin, p.id)).collect();
+        assert_eq!(parts, vec![("rotfern.esp".to_owned(), 0x02E117), ("rotfern.esp".to_owned(), 0x023F0E)]);
+        // no part of the type, or a look past the preset cap once written: nothing
+        assert!(racemenu_with_head_part(look, &[0, 0], "rotfern.esp", 0x023F0E).is_empty());
+        let padding = "x".repeat(wire_schema::cap::RACEMENU_PRESET);
+        let big = format!(r#"{{"pad": "{padding}", "headParts": [{{"formIdentifier": "rotfern.esp|014C06", "type": 2}}]}}"#);
+        assert!(racemenu_with_head_part(&big, &[1], "rotfern.esp", 0x023F0E).is_empty());
     }
 
     #[test]

@@ -25,6 +25,7 @@
 #include "libespm/GLOB.h"
 #include "libespm/GMST.h"
 #include "libespm/HDPT.h"
+#include "libespm/LVLI.h"
 #include "libespm/ObjectBounds.h"
 #include "libespm/QUST.h"
 #include "libespm/RACE.h"
@@ -1230,19 +1231,7 @@ enum class LookVerdict
 // 0 for a plugin the server does not load
 uint32_t LookFormId(const PartOne& partOne, const skymp::rules::LookRef& ref)
 {
-  const std::string plugin(ref.plugin);
-  const auto& files = partOne.worldState.espmFiles;
-  for (size_t i = 0; i < files.size(); ++i) {
-    if (files[i].size() == plugin.size() &&
-        std::equal(files[i].begin(), files[i].end(), plugin.begin(),
-                   [](char a, char b) {
-                     return std::tolower(static_cast<unsigned char>(a)) ==
-                       std::tolower(static_cast<unsigned char>(b));
-                   })) {
-      return FormDesc(ref.id & 0x00ffffff, files[i]).ToFormId(files);
-    }
-  }
-  return 0;
+  return partOne.LookFormIdOf(std::string(ref.plugin), ref.id);
 }
 
 skymp::rules::LookPartFacts HeadPartFacts(PartOne& partOne, uint32_t formId,
@@ -1343,6 +1332,27 @@ void SendAppearanceToOthers(PartOne& partOne, MpActor& actor,
     }
     listener->SendToUser(out, true);
   }
+}
+
+// the player's stored RaceMenu look to everyone who sees it but the player,
+// whose own game wears it already (its race menu's close sent it, or its
+// script's own ChangeHeadPart ran there); how many games heard it
+size_t SendRaceMenuPresetToOthers(PartOne& partOne, MpActor& actor)
+{
+  RaceMenuPresetMessage out;
+  out.actor = actor.GetFormId();
+  out.preset = actor.GetRaceMenuPreset();
+  size_t sent = 0;
+  for (auto listener : actor.GetActorListeners()) {
+    if (listener == &actor ||
+        partOne.serverState.UserByActor(listener) ==
+          Networking::InvalidUserId) {
+      continue;
+    }
+    listener->SendToUser(out, true);
+    ++sent;
+  }
+  return sent;
 }
 
 bool SameAppearanceParts(const Appearance& a, const Appearance& b)
@@ -3031,19 +3041,7 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
     return spdlog::info("RaceMenu: user {} actor {:x} preset unchanged",
                         rawMsgData.userId, actor->GetFormId());
   }
-  RaceMenuPresetMessage out;
-  out.actor = actor->GetFormId();
-  out.preset = msg.preset;
-  size_t sent = 0;
-  for (auto listener : actor->GetActorListeners()) {
-    if (listener == actor ||
-        partOne.serverState.UserByActor(listener) ==
-          Networking::InvalidUserId) {
-      continue;
-    }
-    listener->SendToUser(out, true);
-    ++sent;
-  }
+  const size_t sent = SendRaceMenuPresetToOthers(partOne, *actor);
   spdlog::info("RaceMenu: user {} actor {:x} recorded a preset of {} bytes, "
                "sent to {} other players",
                rawMsgData.userId, actor->GetFormId(), msg.preset.size(), sent);
@@ -4536,18 +4534,68 @@ void RecordStanding(
                msg.caller, msg.handler, applier, verdict.seq, relayed);
 }
 
+// a call's argument `i` as an object's form id (0 for None, an argument that
+// is no object, or none at `i`)
+uint32_t ObjectArgAt(const ScriptCallMessage& msg, size_t i)
+{
+  if (i >= msg.args.size() || !msg.args[i]) {
+    return 0;
+  }
+  const auto* object = std::get_if<SpSnippetObjectArgument>(&*msg.args[i]);
+  return object && object->formId <= std::numeric_limits<uint32_t>::max()
+    ? static_cast<uint32_t>(object->formId)
+    : 0;
+}
+
 // the row's form, its first argument's object (0 for None or an argument
 // that is no object)
 uint32_t OwnRowForm(const ScriptCallMessage& msg)
 {
-  if (msg.args.empty() || !msg.args.front()) {
+  return ObjectArgAt(msg, 0);
+}
+
+// a call's argument `i` as a number (0 for none or another kind): AddItem's
+// and RemoveItem's aiCount, which wire-rules player_own::item_count judges
+// (wire-validate refuses a number that is not finite first)
+double NumberArgAt(const ScriptCallMessage& msg, size_t i)
+{
+  if (i >= msg.args.size() || !msg.args[i]) {
     return 0;
   }
-  const auto* object =
-    std::get_if<SpSnippetObjectArgument>(&*msg.args.front());
-  return object && object->formId <= std::numeric_limits<uint32_t>::max()
-    ? static_cast<uint32_t>(object->formId)
-    : 0;
+  const auto* number = std::get_if<double>(&*msg.args[i]);
+  return number ? *number : 0;
+}
+
+// thuum docs/DECISIONS.md D-R1 C: the stacks a removal of `count` of `form`
+// takes from `inventory`, its plain stack first (no extra data: the stack a
+// script's AddItem and a pickup join), then the form's other stacks in the
+// record's order, each as the record holds it with the count taken from it,
+// so Inventory::RemoveItems, which matches a stack by its extra data, finds
+// every one and never throws; never more than the record holds (wire-rules
+// player_own clamps the count first). Which stack the engine itself took is
+// its own, unread
+std::vector<Inventory::Entry> StacksToRemove(const Inventory& inventory,
+                                             uint32_t form, uint32_t count)
+{
+  std::vector<Inventory::Entry> stacks;
+  uint32_t left = count;
+  const Inventory::Entry plain(form, 0);
+  for (const bool plainPass : { true, false }) {
+    for (const auto& entry : inventory.entries) {
+      if (left == 0) {
+        return stacks;
+      }
+      if (entry.baseId != form || entry.count == 0 ||
+          entry.EqualExceptCount(plain) != plainPass) {
+        continue;
+      }
+      Inventory::Entry taken = entry;
+      taken.count = std::min(left, entry.count);
+      left -= taken.count;
+      stacks.push_back(taken);
+    }
+  }
+  return stacks;
 }
 
 bool NamesFunc(const std::string& fn, const char* name)
@@ -4583,6 +4631,17 @@ bool NamesFunc(const std::string& fn, const char* name)
 // journal records it running or staged (PartOne::QuestAttachmentLive), an
 // MGEF's while the player's record or overlay holds a SPEL that carries it;
 // the rest is R1 on the seat's word that its script ran (rule 5).
+// Eli's D-R1 C adds the player's inventory in the same shape: a script's
+// ObjectReference.AddItem or RemoveItem on its own player (a quest's
+// reward, A Lovely Letter's 25 gold) is recorded in the player's change form
+// as the seat reported it, R2 (rule 5's "record it as unvalidated"), with no
+// bound and so no attachment read; the facts are the form's record type (an
+// item, or a leveled list refused by name, E_SCRIPTCALL_LEVELED), the count
+// the record holds, the call's own count and, for a removal, whether its
+// other container is one the player holds open (that container's PutItem
+// moves the item, so the row folds). The record's change sends the player
+// its inventory (MpObjectReference::SendInventoryUpdate, deferred to the
+// tick), which its client's 5 s apply reads from then on.
 void RecordPlayerOwn(
   PartOne& partOne, MpActor& reporter, const ScriptCallMessage& msg,
   std::map<std::pair<uint32_t, std::string>,
@@ -4590,53 +4649,65 @@ void RecordPlayerOwn(
     refusals)
 {
   const uint32_t form = OwnRowForm(msg);
+  // Eli's D-R1 C: the inventory's two rows, which read no attachment
+  const bool addItem = NamesFunc(msg.fn, "AddItem");
+  const bool itemRow = addItem || NamesFunc(msg.fn, "RemoveItem");
   if (!partOne.HasEspm()) {
+    const char* const code =
+      itemRow ? "E_SCRIPTCALL_ARGS" : "E_SCRIPTCALL_UNNAMED";
     return RefuseStateRow(
-      refusals, reporter.GetFormId(), "E_SCRIPTCALL_UNNAMED",
-      fmt::format("[verb:quest-stage] E_SCRIPTCALL_UNNAMED: {:x}'s own {}.{} "
-                  "{:x} (from {}.{}): the server holds no game files to "
-                  "read the calling script's attachments from",
-                  reporter.GetFormId(), msg.cls, msg.fn, form, msg.caller,
-                  msg.handler));
+      refusals, reporter.GetFormId(), code,
+      fmt::format("[verb:quest-stage] {}: {:x}'s own {}.{} {:x} (from {}.{}): "
+                  "the server holds no game files to read {} from",
+                  code, reporter.GetFormId(), msg.cls, msg.fn, form,
+                  msg.caller, msg.handler,
+                  itemRow ? "the form's record type"
+                          : "the calling script's attachments"));
   }
 
-  // the attachments live for this player, and what they name, each once
-  const auto& attachments = partOne.ScriptAttachmentsOf(msg.caller);
-  const auto overlayNow = partOne.PlayerOverlayOf(reporter.GetFormId());
-  std::optional<std::vector<uint32_t>> held;
-  const auto holds = [&](uint32_t spell) {
-    if (!held) {
-      held = reporter.GetSpellList();
-      const auto base = reporter.KnownBaseSpells();
-      held->insert(held->end(), base.begin(), base.end());
-      if (overlayNow) {
-        held->insert(held->end(), overlayNow->spells.begin(),
-                     overlayNow->spells.end());
-      }
-    }
-    return std::find(held->begin(), held->end(), spell) != held->end();
-  };
-  std::vector<skymp::rules::ScriptPropertyRow> properties;
+  // the attachments live for this player, and what they name, each once;
+  // none for the inventory's rows, which have no bound (D-R1 C)
+  size_t attached = 0;
   size_t live = 0;
-  for (const auto& attachment : attachments) {
-    const bool counts = attachment.quest
-      ? partOne.QuestAttachmentLive(attachment.form)
-      : std::any_of(attachment.spells.begin(), attachment.spells.end(), holds);
-    if (!counts) {
-      continue;
-    }
-    ++live;
-    for (const auto& n : attachment.named) {
-      if (std::any_of(properties.begin(), properties.end(),
-                      [&](const auto& row) { return row.form == n.form; })) {
+  std::vector<skymp::rules::ScriptPropertyRow> properties;
+  if (!itemRow) {
+    const auto& attachments = partOne.ScriptAttachmentsOf(msg.caller);
+    attached = attachments.size();
+    const auto overlayNow = partOne.PlayerOverlayOf(reporter.GetFormId());
+    std::optional<std::vector<uint32_t>> held;
+    const auto holds = [&](uint32_t spell) {
+      if (!held) {
+        held = reporter.GetSpellList();
+        const auto base = reporter.KnownBaseSpells();
+        held->insert(held->end(), base.begin(), base.end());
+        if (overlayNow) {
+          held->insert(held->end(), overlayNow->spells.begin(),
+                       overlayNow->spells.end());
+        }
+      }
+      return std::find(held->begin(), held->end(), spell) != held->end();
+    };
+    for (const auto& attachment : attachments) {
+      const bool counts = attachment.quest
+        ? partOne.QuestAttachmentLive(attachment.form)
+        : std::any_of(attachment.spells.begin(), attachment.spells.end(),
+                      holds);
+      if (!counts) {
         continue;
       }
-      skymp::rules::ScriptPropertyRow row;
-      row.form = n.form;
-      for (uint32_t member : n.members) {
-        row.members.push_back(member);
+      ++live;
+      for (const auto& n : attachment.named) {
+        if (std::any_of(properties.begin(), properties.end(),
+                        [&](const auto& row) { return row.form == n.form; })) {
+          continue;
+        }
+        skymp::rules::ScriptPropertyRow row;
+        row.form = n.form;
+        for (uint32_t member : n.members) {
+          row.members.push_back(member);
+        }
+        properties.push_back(std::move(row));
       }
-      properties.push_back(std::move(row));
     }
   }
 
@@ -4660,8 +4731,25 @@ void RecordPlayerOwn(
     : (NamesFunc(msg.fn, "AddShout") || NamesFunc(msg.fn, "RemoveShout"))
     ? type == espm::SHOU::kType
     : headRow ? type == espm::HDPT::kType
-              : NamesFunc(msg.fn, "EquipItem") && !type.empty() &&
+              : (itemRow || NamesFunc(msg.fn, "EquipItem")) && !type.empty() &&
       espm::utils::IsItem(espm::Type(type.c_str()));
+  if (itemRow) {
+    // D-R1 C: a leveled list (its roll is the engine's), what the record
+    // holds over all the form's stacks, the call's own count (aiCount) and
+    // a removal's other container (akOtherContainer), held open by the
+    // player or not
+    facts.leveled = type == espm::LVLI::kType;
+    facts.held_count =
+      form != 0 ? reporter.GetInventory().GetItemCount(form) : 0;
+    facts.count = NumberArgAt(msg, 1);
+    if (const uint32_t other = addItem ? 0 : ObjectArgAt(msg, 3); other != 0) {
+      const auto& otherForm = partOne.worldState.LookupFormByIdNoLoad(other);
+      const MpObjectReference* container =
+        otherForm ? otherForm->AsObjectReference() : nullptr;
+      facts.into_held_open =
+        container && container->IsContainerOccupant(&reporter);
+    }
+  }
   if (headRow && form != 0) {
     facts.race_valid = partOne.HeadPartFitsRace(form, facts.recorded_race);
     facts.held = look &&
@@ -4698,7 +4786,7 @@ void RecordPlayerOwn(
   }
 
   const auto verdict = partOne.GetPlayerOverlays().player_own_judge(
-    reporter.GetFormId(), msg.fn, form,
+    reporter.GetFormId(), msg.cls, msg.fn, form,
     rust::Slice<const skymp::rules::ScriptPropertyRow>(properties.data(),
                                                        properties.size()),
     facts);
@@ -4707,6 +4795,37 @@ void RecordPlayerOwn(
                  reporter.GetFormId(), msg.cls, msg.fn, form, msg.caller,
                  msg.handler, what);
   };
+  if (itemRow && verdict.code == 0) {
+    // D-R1 C, R2: the seat's grant added whole, its removal at most what
+    // the record holds (the rule clamped it), the plain stack first. Either
+    // way the change form's inventory moves and the player's own game hears
+    // it (MpObjectReference::SendInventoryUpdate, deferred to the tick);
+    // nobody else hears a player's inventory
+    if (addItem) {
+      reporter.AddItem(form, verdict.count);
+    } else {
+      reporter.RemoveItems(
+        StacksToRemove(reporter.GetInventory(), form, verdict.count), nullptr);
+    }
+    return said(fmt::format("{} {} its inventory as its seat reported it "
+                            "(D-R1 C, R2), {} held now",
+                            verdict.count,
+                            addItem ? "added to" : "removed from",
+                            reporter.GetInventory().GetItemCount(form)));
+  }
+  if (itemRow && verdict.code == 1) {
+    // a removal of an item the open overlay holds (the beast form's skin,
+    // which its EquipItem put there): taken from the overlay, the record
+    // untouched, and every game that sees the player hears its look without
+    // it
+    if (look) {
+      SendAppearanceToOthers(partOne, reporter, *look);
+    }
+    return said(fmt::format("taken from its race overlay {:x} (D-T1 A), {} "
+                            "item(s) left in it, its record untouched",
+                            verdict.overlay.race,
+                            verdict.overlay.items.size()));
+  }
   switch (verdict.code) {
     case 0: {
       // the change form's, R1
@@ -4745,18 +4864,31 @@ void RecordPlayerOwn(
         return said("nothing written (EquipItem moves nothing into the "
                     "record)");
       } else if (headRow) {
-        // D-E1 A: the part of the same HDPT type swapped on the look, sent
-        // to every game that sees the player (its figure's head parts)
+        // D-E1 A: the part of the same HDPT type swapped on the look and on
+        // the stored RaceMenu look (PartOne::RecordHeadPart), the stored
+        // look sent first to every game that sees the player, then the
+        // look: the look's figure is built again at the appearance and
+        // takes the stored look its game holds then, whose head parts
+        // replace the base's by type (thuum docs/verbs/racemenu-sync.md)
         if (!look) {
           return said("no recorded look to wear the head part, nothing "
                       "written");
         }
-        Appearance appearance = *look;
-        if (!partOne.WearHeadPart(appearance, form)) {
-          return said("the look wears it already, nothing written");
+        const auto recorded = partOne.RecordHeadPart(reporter, form);
+        if (recorded.preset) {
+          what += fmt::format(", its RaceMenu look's part of that type "
+                              "rewritten and sent to {} game(s)",
+                              SendRaceMenuPresetToOthers(partOne, reporter));
         }
-        reporter.SetAppearance(&appearance);
-        SendAppearanceToOthers(partOne, reporter, appearance);
+        if (!recorded.look) {
+          return said(recorded.preset
+                        ? what
+                        : std::string("the look wears it already, nothing "
+                                      "written"));
+        }
+        if (const auto now = reporter.GetAppearance()) {
+          SendAppearanceToOthers(partOne, reporter, *now);
+        }
         what += fmt::format(", its look's head part {:x} sent to every game "
                             "that sees it",
                             form);
@@ -4782,18 +4914,35 @@ void RecordPlayerOwn(
         o.spells.size(), o.shouts.size(), o.items.size()));
     }
     case 3:
+      // a head part the look wears already: the stored RaceMenu look that
+      // still names another of its type is brought to it (ADR-026's one
+      // authority), and every game that sees the player hears it
+      if (headRow && partOne.RecordHeadPart(reporter, form).preset) {
+        return said(
+          fmt::format("folded on the look; its RaceMenu look's part "
+                      "of that type rewritten to it and sent to {} "
+                      "game(s)",
+                      SendRaceMenuPresetToOthers(partOne, reporter)));
+      }
       return spdlog::debug("[verb:quest-stage] {:x}'s own {}.{} {:x}: folded",
                            reporter.GetFormId(), msg.cls, msg.fn, form);
-    default:
-      RefuseStateRow(
-        refusals, reporter.GetFormId(), std::string(verdict.name),
-        fmt::format("[verb:quest-stage] {}: {:x}'s own {}.{} "
-                    "{:x} (from {}.{}): {}; the class has {} "
-                    "attachment(s), {} live for this player",
-                    std::string(verdict.name), reporter.GetFormId(), msg.cls,
-                    msg.fn, form, msg.caller, msg.handler,
-                    std::string(verdict.why), attachments.size(), live));
+    default: {
+      // the inventory's rows read no attachment (D-R1 C: no bound), so
+      // their line names none
+      const std::string reads = itemRow
+        ? std::string()
+        : fmt::format("; the class has {} attachment(s), {} live for this "
+                      "player",
+                      attached, live);
+      RefuseStateRow(refusals, reporter.GetFormId(), std::string(verdict.name),
+                     fmt::format("[verb:quest-stage] {}: {:x}'s own {}.{} "
+                                 "{:x} (from {}.{}): {}{}",
+                                 std::string(verdict.name),
+                                 reporter.GetFormId(), msg.cls, msg.fn, form,
+                                 msg.caller, msg.handler,
+                                 std::string(verdict.why), reads));
       return;
+    }
   }
 }
 

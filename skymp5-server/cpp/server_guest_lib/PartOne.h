@@ -350,7 +350,8 @@ public:
   // thuum ADR-068 rung 5 (the R1 bound of a player's own rows, wire-rules
   // player_own; the fresh review's note 3): one QUST or MGEF of the game
   // files that attaches a script class (its VMAD, libespm's
-  // RecordHeader::GetScriptData, the winning record of each form), with what
+  // RecordHeader::GetScriptData, the winning record of each form; a QUST's
+  // alias scripts too, each the quest's attachment), with what
   // its properties name: an Object property's form, each element of an
   // ObjectArray one's, and a FormList's entries in order beside it
   // (FLST::GetData); and for an MGEF the SPELs whose effects carry it
@@ -383,6 +384,28 @@ public:
   // false when it wears it already or `part` is no HDPT
   bool HeadPartFitsRace(uint32_t part, uint32_t race);
   bool WearHeadPart(Appearance& look, uint32_t part);
+  // a RaceMenu look's "<plugin>|<id>" as a form id in the server's load
+  // order, light plugins numbered as the engine numbers them (thuum
+  // docs/verbs/light-plugins.md); 0 for a plugin the server does not load
+  uint32_t LookFormIdOf(const std::string& plugin, uint32_t id) const;
+  // thuum ADR-026 (one authority over a face): the stored RaceMenu look
+  // `look` naming `part` in place of its head part of the same HDPT type
+  // (wire-rules racemenu::with_head_part, each listed part's type read from
+  // its record), false when it names `part` already, names no part of that
+  // type, is no look, or `part` is no HDPT
+  bool WearHeadPartInLook(std::string& look, uint32_t part);
+  // Eli's D-E1 A, a recorded ChangeHeadPart: `actor`'s look wears `part`
+  // (WearHeadPart) and its stored RaceMenu look follows (WearHeadPartInLook),
+  // since that look's load on a figure, or on the player after a login,
+  // replaces the base's head parts by type and would put the old part back
+  // (thuum docs/verbs/racemenu-sync.md); what each record took. The words to
+  // the other games are the caller's
+  struct HeadPartRecord
+  {
+    bool look = false;
+    bool preset = false;
+  };
+  HeadPartRecord RecordHeadPart(MpActor& actor, uint32_t part);
 
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
   // server places at an accepted cast of a listed spell,

@@ -242,7 +242,10 @@ pub enum RecordKind {
     /// rung5-quests-2026-11-09.md section 8(b)): Actor.SetRace, AddSpell,
     /// RemoveSpell, AddShout, RemoveShout and EquipItem on the reporter's own
     /// player alone, judged by wire-rules player_own (the bound, the twin
-    /// rule, the overlay) into its change form or its overlay. R1.
+    /// rule, the overlay) into its change form or its overlay. R1. Since
+    /// D-E1 A Actor.ChangeHeadPart, and since Eli's D-R1 C its inventory:
+    /// ObjectReference.AddItem and RemoveItem, recorded as the seat reports
+    /// them with no bound (R2, rule 5's "record it as unvalidated").
     PlayerOwn,
 }
 
@@ -706,8 +709,8 @@ pub enum Verdict {
     /// actions share (thuum ADR-068 rung 4). A player's own row
     /// ([`RecordKind::PlayerOwn`], rung 5) takes none: its subject, 0x14, is
     /// each reporter's own player, and its words ride the player's own
-    /// messages (its appearance, its learned set, its equipment), which no
-    /// receiver orders by an object's sequence.
+    /// messages (its appearance, its learned set, its equipment, its
+    /// inventory), which no receiver orders by an object's sequence.
     Record {
         /// The subject's form id (0x14 for a player's own row).
         subject: u32,
@@ -866,7 +869,7 @@ fn record_owner(subject: u32, kind: RecordKind, facts: &Facts) -> Result<(), Ref
         } else {
             Err(refusal(
                 Code::Row,
-                "a player's own row on another subject: its channel is the reporter's own player alone (an NPC's race, spells and equipment are its change form's)".to_owned(),
+                "a player's own row on another subject: its channel is the reporter's own player alone (an NPC's race, spells and equipment and a container's or an NPC's inventory are its change form's)".to_owned(),
             ))
         };
     }
@@ -1748,11 +1751,14 @@ mod tests {
         // three trap rows, rung 4's seven (the standing's six and
         // ReferenceAlias.Clear), D-W2's Sound.Play and CreateDetectionEvent
         // and rung 5's seven player's own rows (D-E1 A's ChangeHeadPart the
-        // seventh): "50 of 50 table rows bound"
+        // seventh): "50 of 50 table rows bound". D-R1 C keeps the flip's
+        // AddItem and RemoveItem as the player's own inventory in place, so
+        // nine rows are the player's own, in player_own's order
         assert_eq!(TABLE.len(), 50);
-        let own: Vec<&str> = TABLE.iter().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| r.func).collect();
-        assert_eq!(own, ["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem", "ChangeHeadPart"]);
-        assert_eq!(own.iter().map(|f| crate::player_own::Row::of("Actor", f).is_some()).filter(|b| *b).count(), crate::player_own::ROWS.len());
+        let own: Vec<(&str, &str)> = TABLE.iter().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func)).collect();
+        assert_eq!(own, crate::player_own::ROWS);
+        assert!(own.iter().all(|(c, f)| crate::player_own::Row::of(c, f).is_some()));
+        assert_eq!((row_index("ObjectReference", "AddItem"), row_index("ObjectReference", "RemoveItem")), (Some(6), Some(7)));
         assert_eq!(row_index("Actor", "SetRace"), Some(43));
         let actions: Vec<&str> = TABLE.iter().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
         assert_eq!(actions, ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat", "Play", "CreateDetectionEvent"]);
@@ -2055,6 +2061,20 @@ mod tests {
         assert_eq!(code(&s.judge(row("Actor", "AddSpell"), &[Arg::Object(0x92c48)], &own, 0)), Some(Code::Args));
         assert_eq!(code(&s.judge(set_race, &[Arg::Number], &own, 0)), Some(Code::Args));
         assert_eq!(RecordKind::PlayerOwn.code(), 4);
+        // Eli's D-R1 C: A Lovely Letter's Game.GetPlayer().AddItem(Gold, 25,
+        // False) (Gold 0xf) and a quest's RemoveItem on the player, its other
+        // container None, are the player's own; the same rows on an NPC or a
+        // world container have no channel, and the shape's kinds are
+        // FunctionsDump's (Form, Int, Bool and Form, Int, Bool, ObjectReference)
+        let add = row("ObjectReference", "AddItem");
+        let remove = row("ObjectReference", "RemoveItem");
+        assert_eq!(recorded(&s.judge(add, &[Arg::Object(0xf), Arg::Number, Arg::Bool], &own, 0)), (OWN_PLAYER, 0, RecordKind::PlayerOwn));
+        assert_eq!(recorded(&s.judge(remove, &[Arg::Object(0xf), Arg::Number, Arg::Bool, Arg::Absent], &own, 0)), (OWN_PLAYER, 0, RecordKind::PlayerOwn));
+        assert_eq!(s.seq_of(OWN_PLAYER), 0, "no sequence for the player's inventory either");
+        assert_eq!(code(&s.judge(add, &[Arg::Object(0xf), Arg::Number, Arg::Bool], &simulated(DRAUGR), 0)), Some(Code::Row));
+        assert_eq!(code(&s.judge(remove, &[Arg::Object(0xf), Arg::Number, Arg::Bool, Arg::Absent], &hosted(COBWEB), 0)), Some(Code::Row));
+        assert_eq!(code(&s.judge(add, &[Arg::Object(0xf), Arg::Bool], &own, 0)), Some(Code::Args));
+        assert_eq!(code(&s.judge(remove, &[Arg::Object(0xf), Arg::Number, Arg::Bool], &own, 0)), Some(Code::Args));
     }
 
     #[test]

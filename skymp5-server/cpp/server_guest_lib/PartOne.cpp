@@ -3856,11 +3856,14 @@ std::string LowerScriptClass(std::string name)
 }
 
 // thuum ADR-068 rung 5 (the fresh review's note 3): every QUST's and MGEF's
-// script attachments with what their properties name, and the SPELs that
-// carry each MGEF, read once per set of game files (QuestScopeFactsOf's
-// shape: built whole before it is kept, so a read that throws keeps
-// nothing). A script a record marks removed (status 3) and a property so
-// marked are skipped, as the core reads a VMAD elsewhere
+// script attachments with what their properties name, a QUST's alias
+// scripts among them (a review of the rotfern-eyes slot: an own row its
+// alias script called found no attachment, E_SCRIPTCALL_UNNAMED with "the
+// class has 0 attachment(s)"), and the SPELs that carry each MGEF, read once
+// per set of game files (QuestScopeFactsOf's shape: built whole before it is
+// kept, so a read that throws keeps nothing). A script a record marks
+// removed (status 3) and a property so marked are skipped, as the core
+// reads a VMAD elsewhere
 const std::unordered_map<std::string, std::vector<PartOne::ScriptAttachment>>&
 ScriptAttachmentIndexOf(WorldState& worldState)
 {
@@ -3898,7 +3901,23 @@ ScriptAttachmentIndexOf(WorldState& worldState)
       espm::ScriptData scriptData;
       lookup.rec->GetScriptData(&scriptData, cache);
       const uint32_t form = lookup.ToGlobalId(lookup.rec->GetId());
+      // a QUST's alias scripts beside its own (libespm's ScriptData::
+      // aliases, the VMAD's Alias Scripts Section): each an attachment of
+      // the quest, live as the quest is, its properties named as the
+      // quest's own scripts' are; RotfernEyes.esp carries its script on its
+      // player alias alone (thuum D-E1 A), as eight quests of Skyrim.esm,
+      // Dawnguard.esm and Dragonborn.esm do
+      std::vector<const espm::Script*> scripts;
       for (const auto& script : scriptData.scripts) {
+        scripts.push_back(&script);
+      }
+      for (const auto& alias : scriptData.aliases) {
+        for (const auto& script : alias.scripts) {
+          scripts.push_back(&script);
+        }
+      }
+      for (const espm::Script* each : scripts) {
+        const auto& script = *each;
         if (script.status == 3 || script.scriptName.empty()) {
           continue;
         }
@@ -4358,6 +4377,84 @@ bool PartOne::WearHeadPart(Appearance& look, uint32_t part)
     parts.end());
   parts.push_back(part);
   return true;
+}
+
+uint32_t PartOne::LookFormIdOf(const std::string& plugin, uint32_t id) const
+{
+  const auto& files = worldState.espmFiles;
+  for (const auto& file : files) {
+    if (file.size() == plugin.size() &&
+        std::equal(file.begin(), file.end(), plugin.begin(),
+                   [](char a, char b) {
+                     return std::tolower(static_cast<unsigned char>(a)) ==
+                       std::tolower(static_cast<unsigned char>(b));
+                   })) {
+      return FormDesc(id & 0x00ffffff, file).ToFormId(files);
+    }
+  }
+  return 0;
+}
+
+bool PartOne::WearHeadPartInLook(std::string& look, uint32_t part)
+{
+  if (!HasEspm() || look.empty()) {
+    return false;
+  }
+  auto& browser = GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto typeOf = [&](uint32_t id) -> std::optional<uint32_t> {
+    const auto* hdpt = espm::Convert<espm::HDPT>(browser.LookupById(id).rec);
+    return hdpt ? std::optional<uint32_t>(hdpt->GetData(cache).type)
+                : std::nullopt;
+  };
+  const auto type = typeOf(part);
+  if (!type) {
+    return false;
+  }
+  const auto facts = skymp::rules::racemenu_look_facts(rust::Str(look));
+  if (!facts.ok) {
+    return false;
+  }
+  // one byte a listed part, in the look's order: of `part`'s type or not
+  std::vector<uint8_t> sameType;
+  sameType.reserve(facts.parts.size());
+  for (const auto& ref : facts.parts) {
+    const uint32_t listed = LookFormIdOf(std::string(ref.plugin), ref.id);
+    sameType.push_back(listed != 0 && typeOf(listed) == type ? 1 : 0);
+  }
+  FormDesc desc;
+  try {
+    desc = FormDesc::FromFormId(part, worldState.espmFiles);
+  } catch (const std::exception&) {
+    return false; // a part in no loaded plugin
+  }
+  const auto rewritten = skymp::rules::racemenu_with_head_part(
+    rust::Str(look),
+    rust::Slice<const uint8_t>(sameType.data(), sameType.size()),
+    rust::Str(desc.file), desc.shortFormId);
+  if (rewritten.empty()) {
+    return false;
+  }
+  look = std::string(rewritten);
+  return true;
+}
+
+PartOne::HeadPartRecord PartOne::RecordHeadPart(MpActor& actor, uint32_t part)
+{
+  HeadPartRecord recorded;
+  if (const auto current = actor.GetAppearance()) {
+    Appearance look = *current;
+    if (WearHeadPart(look, part)) {
+      actor.SetAppearance(&look);
+      recorded.look = true;
+    }
+  }
+  std::string preset = actor.GetRaceMenuPreset();
+  if (WearHeadPartInLook(preset, part) &&
+      actor.SetRaceMenuPreset(std::move(preset))) {
+    recorded.preset = true;
+  }
+  return recorded;
 }
 
 void PartOne::SetRestrictedRacesSettings(

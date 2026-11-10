@@ -1637,3 +1637,97 @@ TEST_CASE("A recorded NPC with no fate level that wears an item adopts its "
   DoDisconnect(p, 0);
   p.DestroyActor(kPlayer);
 }
+
+// thuum playtest 50 (Embershard's undressed bandits; b6fec's roll: arrows
+// +19 and 3 pieces missing): a recorded bandit's re-roll adds in form id
+// order, and Inventory::AddItems returned at the first item that merged into
+// a stack the record held, so everything the roll laid after it was lost
+// while the worn set already named the roll's outfit, and the fate named only
+// the worn pieces the inventory held. The campfire bandit above, holding 10
+// gold (which its roll never yields) and one iron arrow (which it does, one
+// to twenty): the arrows 0x1397d merge, and the dagger 0x1397e, the bow and
+// any outfit piece above them still land, the fate naming all it wears.
+TEST_CASE("A bandit's re-roll onto a stack it holds lands whole and its fate "
+          "names everything it wears",
+          "[NpcFate][espm]")
+{
+  constexpr uint32_t kBandit = 0x39fe2;
+  constexpr uint32_t kBarrow = 0x371de;
+  constexpr uint32_t kPlayer = 0xff000d41;
+  constexpr uint32_t kGold = 0xf;
+  constexpr uint32_t kIronDagger = 0x1397e;
+  constexpr uint32_t kIronArrow = 0x1397d;
+  constexpr uint32_t kHuntingBow = 0x13985;
+  constexpr uint32_t kLongBow = 0x3b562;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& bandit = p.worldState.GetFormAt<MpActor>(kBandit);
+  REQUIRE(p.worldState.CellOf(bandit) == kBarrow);
+  bandit.AddItem(kGold, 10);
+  bandit.AddItem(kIronArrow, 1);
+  REQUIRE(bandit.CanRollFate());
+
+  DoConnect(p, 0);
+  p.CreateActor(kPlayer, { -3400.f, 700.f, 583.f }, 0, kBarrow);
+  p.SetUserActor(0, kPlayer);
+  auto& player = p.worldState.GetFormAt<MpActor>(kPlayer);
+  ActorValueRecord record;
+  record.level = 1;
+  player.SetActorValueRecord(record);
+  p.Messages().clear();
+  p.TickCellHosts(FateNowMs());
+
+  REQUIRE(bandit.GetFateLevel() == std::optional<uint16_t>{ 1 });
+  const Inventory inv = bandit.GetInventory();
+  INFO("gold " << inv.GetItemCount(kGold) << " dagger "
+               << inv.GetItemCount(kIronDagger) << " arrows "
+               << inv.GetItemCount(kIronArrow) << " hunting "
+               << inv.GetItemCount(kHuntingBow) << " long "
+               << inv.GetItemCount(kLongBow));
+  REQUIRE(inv.GetItemCount(kGold) == 10);
+  REQUIRE(inv.GetItemCount(kIronArrow) >= 2);
+  REQUIRE(inv.GetItemCount(kIronArrow) <= 21);
+  REQUIRE(inv.GetItemCount(kIronDagger) == 1);
+  REQUIRE(inv.GetItemCount(kHuntingBow) + inv.GetItemCount(kLongBow) == 1);
+  REQUIRE((Wearing(bandit, kHuntingBow) || Wearing(bandit, kLongBow)));
+
+  const auto fates = SentTo<ActorFateMessage>(p, 0);
+  const ActorFateMessage::Fate* sent = nullptr;
+  for (const auto& msg : fates) {
+    for (const auto& f : msg.fates) {
+      if (f.refrId == kBandit) {
+        sent = &f;
+      }
+    }
+  }
+  REQUIRE(sent != nullptr);
+  // every piece the record wears (the roll's outfit, the bow in hand) is in
+  // its inventory and named by the fate
+  size_t wornCount = 0;
+  for (const auto& entry : bandit.GetEquipment().inv.entries) {
+    if (entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    ++wornCount;
+    INFO("worn " << std::hex << entry.baseId);
+    REQUIRE(inv.GetItemCount(entry.baseId) >= 1);
+    REQUIRE(std::find(sent->worn.begin(), sent->worn.end(), entry.baseId) !=
+            sent->worn.end());
+  }
+  REQUIRE(sent->worn.size() == wornCount);
+  // and the rows carry the rest of the roll beside the put
+  auto rowOf = [&](uint32_t baseId) -> uint32_t {
+    for (const auto& r : sent->inv) {
+      if (r.baseId == baseId) {
+        return r.count;
+      }
+    }
+    return 0;
+  };
+  REQUIRE(rowOf(kGold) == 10);
+  REQUIRE(rowOf(kIronDagger) == 1);
+  REQUIRE(rowOf(kIronArrow) == inv.GetItemCount(kIronArrow));
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kPlayer);
+}

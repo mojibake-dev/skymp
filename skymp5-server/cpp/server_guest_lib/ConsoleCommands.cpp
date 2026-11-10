@@ -813,11 +813,18 @@ void ExecuteMpHost(PartOne& partOne, MpActor& caller)
 void ExecuteMpRacemenu(PartOne& partOne, MpActor& caller)
 {
   if (caller.IsRaceMenuOpen()) {
+    spdlog::info("ConsoleCommands: {:x} ran 'mp racemenu': its race menu is "
+                 "open already, no open sent",
+                 caller.GetFormId());
     return Reply(caller,
                  "the race menu is open already; close it to keep your look",
                  false);
   }
   partOne.SetRaceMenuOpen(caller.GetFormId(), true);
+  // the operators' line (playtest 50's `mp racemenu` left none on success)
+  spdlog::info("ConsoleCommands: {:x} ran 'mp racemenu': the race menu open "
+               "is sent to its game",
+               caller.GetFormId());
   Reply(caller,
         "the race menu opens; closing it records your look (a race change "
         "resets the face)",

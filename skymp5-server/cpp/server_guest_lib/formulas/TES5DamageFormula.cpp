@@ -8,6 +8,9 @@
 #include "wire_bridge_cxx/rules.h"
 #include <cmath>
 #include <limits>
+#include <set>
+#include <spdlog/spdlog.h>
+#include <string>
 
 namespace internal {
 
@@ -24,8 +27,6 @@ constexpr uint8_t kModArmorRating = 85;
 
 class TES5DamageFormulaImpl
 {
-  using Effects = std::vector<espm::Effects::Effect>;
-
 public:
   TES5DamageFormulaImpl(const MpActor& aggressor_, const MpActor& target_,
                         const HitData& hitData_);
@@ -46,7 +47,8 @@ private:
   [[nodiscard]] float CalcArmorRatingComponent(
     const Inventory::Entry& opponentEquipmentEntry) const;
   [[nodiscard]] float CalcOpponentArmorRating() const;
-  [[nodiscard]] float CalcMagicEffects(const Effects& effects) const;
+  [[nodiscard]] float CalcEnchantmentArmorRating(
+    uint32_t armorId, uint32_t rawEnchantmentId) const;
   [[nodiscard]] float DetermineDamageFromSource(uint32_t source) const;
   [[nodiscard]] float CalcUnarmedDamage() const;
   [[nodiscard]] float CalcArmorDamagePenalty() const;
@@ -144,13 +146,45 @@ float TES5DamageFormulaImpl::GetArrowDamage() const
   return 0.f;
 }
 
-float TES5DamageFormulaImpl::CalcMagicEffects(const Effects& effects) const
+// the armor rating a worn piece's enchantment adds, its effects on
+// DamageResist. The EITM is an id inside the armor's own file (libespm
+// ARMO::GetData keeps it raw), so it counts against that file's masters as
+// KeywordsOf's keywords do, and MpActor::EffectsOf numbers the enchantment's
+// MGEF ids the same way (thuum playtest 50: a Winter Is Coming cloak's EITM
+// 0x0200db5a, read as a load order id, named Dawnguard's REFR 0x0200db5a and
+// the throw dropped the whole hit). An enchantment that names no ENCH, or an
+// effect no MGEF, adds nothing and is logged once per armor; the hit stands
+float TES5DamageFormulaImpl::CalcEnchantmentArmorRating(
+  uint32_t armorId, uint32_t rawEnchantmentId) const
 {
+  static std::set<uint32_t> warned;
+  const auto& browser = espmProvider->GetEspm().GetBrowser();
+  const uint32_t enchantmentId =
+    browser.LookupById(armorId).ToGlobalId(rawEnchantmentId);
+  const auto unresolved = [&](const std::string& what) {
+    if (warned.insert(armorId).second) {
+      spdlog::warn("TES5DamageFormula - worn armor {:#x}: its enchantment "
+                   "{:#x} (EITM {:#x} in the armor's file) {} (logged once "
+                   "per armor)",
+                   armorId, enchantmentId, rawEnchantmentId, what);
+    }
+  };
+  if (!espm::Convert<espm::ENCH>(browser.LookupById(enchantmentId).rec)) {
+    unresolved("names no ENCH, so it adds no armor rating");
+    return 0.f;
+  }
   float armorRating = 0.f;
-  for (const auto& effect : effects) {
-    const auto actorValueType =
-      espm::GetData<espm::MGEF>(effect.effectId, espmProvider).data.primaryAV;
-    if (actorValueType == espm::ActorValue::DamageResist) {
+  for (const auto& effect : MpActor::EffectsOf(espmProvider, enchantmentId)) {
+    const auto mgef =
+      espm::Convert<espm::MGEF>(browser.LookupById(effect.effectId).rec);
+    if (!mgef) {
+      unresolved(
+        fmt::format("has an effect {:#x} that names no MGEF, which adds none",
+                    effect.effectId));
+      continue;
+    }
+    if (mgef->GetData(espmProvider->GetEspmCache()).data.primaryAV ==
+        espm::ActorValue::DamageResist) {
       armorRating += effect.magnitude;
     }
   }
@@ -174,9 +208,8 @@ float TES5DamageFormulaImpl::CalcArmorRatingComponent(
                              KeywordsOf(opponentEquipmentEntry.baseId));
     if (armorData.enchantmentFormId) {
       // TODO(#632) refactor this effect with actor effect system
-      const auto enchantmentData =
-        espm::GetData<espm::ENCH>(armorData.enchantmentFormId, espmProvider);
-      ac += CalcMagicEffects(enchantmentData.effects);
+      ac += CalcEnchantmentArmorRating(opponentEquipmentEntry.baseId,
+                                       armorData.enchantmentFormId);
     }
 
     return ac;

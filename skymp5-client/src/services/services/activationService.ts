@@ -29,6 +29,11 @@ const FIRED_MAX = 256;
 // UNMEASURED)
 const ENTRIES_MAX = 64;
 const ENTRIES_PER_S = 4;
+// D-W3 B: the platform's held entries are asked again this long after an
+// answer that still holds some (the platform's 60 s expiry and a second), so
+// the expired go with their lines and a pair whose owner came by no counted
+// flip is read once more
+const HELD_AGAIN_MS = 61_000;
 
 export class ActivationService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -37,6 +42,7 @@ export class ActivationService extends ClientListener {
         this.presserRule = this.startPresserRule();
         this.startTriggerLook(this.presserRule);
         if (this.presserRule) {
+            this.controller.on("update", () => this.replayHeldEntries());
             this.controller.on("update", () => this.sendEntries());
         }
     }
@@ -373,6 +379,78 @@ export class ActivationService extends ClientListener {
     }
   }
 
+  // thuum docs/DECISIONS.md ADR-068 D-W3 B (Eli 2026-11-10): an NPC standing
+  // inside a world trigger at this seat's own load enters it before the
+  // grant, its owner undecided here, so the platform's gate blanks the enter
+  // and holds it (FridaHooks.cpp, the held entries; x-trigger-preload v1 read
+  // no second enter after the grant). The platform replays a held enter once
+  // through SendTriggerEvent's body when its presser is this seat's by the
+  // gate's own owner test and its trigger stands in a cell this seat hosts;
+  // it is asked through TESModPlatform.ReplayHeldEntries at the update after
+  // the one that saw this seat's own hosting state change (HostService.
+  // ownerFlips: a cell's gate opened, an actor marked hosted or promoted),
+  // so never inside the change (the read's puppet flag cleared after
+  // setHosted, in the same pass), once an update at most while changes keep
+  // coming, and again HELD_AGAIN_MS after an answer that still holds some;
+  // not while nothing changed. A platform without the native says so once
+  // and is asked no more
+  private replayHeldEntries() {
+    if (this.replayHeldMissing) {
+      return;
+    }
+    this.heldUpdates += 1;
+    const flips = this.controller.lookupListener(HostService).ownerFlips();
+    if (flips !== this.ownerFlipsSeen) {
+      this.ownerFlipsSeen = flips;
+      if (this.heldAskAt === 0) {
+        this.heldAskAt = this.heldUpdates + 1;
+      }
+    }
+    const now = Date.now();
+    if (this.heldAgainAtMs !== 0 && now >= this.heldAgainAtMs) {
+      this.heldAgainAtMs = 0;
+      if (this.heldAskAt === 0) {
+        this.heldAskAt = this.heldUpdates;
+      }
+    }
+    if (this.heldAskAt === 0 || this.heldUpdates < this.heldAskAt) {
+      return;
+    }
+    this.heldAskAt = 0;
+    let raw: unknown;
+    try {
+      raw = this.sp.callNative("TESModPlatform", "ReplayHeldEntries", undefined);
+    } catch (e) {
+      const text = String(e);
+      if (text.indexOf("Native function not found") !== -1) {
+        this.replayHeldMissing = true;
+        logLab(TAG, `ReplayHeldEntries unavailable on this platform (${text}); an entry held at a load is not replayed`);
+        return;
+      }
+      logError(this, `ReplayHeldEntries threw (${text.slice(0, 64)})`);
+      return;
+    }
+    let answer: Record<string, unknown> = {};
+    try {
+      const parsed: unknown = typeof raw === "string" && raw !== "" ? JSON.parse(raw) : {};
+      if (parsed !== null && typeof parsed === "object") {
+        answer = parsed as Record<string, unknown>;
+      }
+    } catch (e) {
+      logError(this, `ReplayHeldEntries answered no JSON (${String(raw).slice(0, 64)})`);
+      return;
+    }
+    const count = (key: string): number => (typeof answer[key] === "number" ? (answer[key] as number) : 0);
+    const replayed = count("replayed");
+    const refused = count("refused");
+    const expired = count("expired");
+    const held = count("held");
+    if (replayed + refused + expired > 0) {
+      logLab(TAG, `held trigger entries: ${replayed} replayed, ${refused} refused, ${expired} expired, ${held} still held (D-W3 B)`);
+    }
+    this.heldAgainAtMs = held > 0 ? now + HELD_AGAIN_MS : 0;
+  }
+
   // the presser rule's A/B switch (.claude/rules/native.md): the client
   // setting triggerPresser, on unless false (ScriptStateService's read of
   // scriptRecord), told to the platform's gate through setTriggerPresserRule
@@ -494,6 +572,15 @@ export class ActivationService extends ClientListener {
   private readonly firedAt = new Map<number, number>();
   private entries: { refrId: number; presserId: number; enter: boolean }[] = [];
   private readonly entryBudget = new SecondWindow(ENTRIES_PER_S);
+  // D-W3 B: the owner flips seen (HostService.ownerFlips), this service's
+  // update count, the update at which the platform's held entries are asked
+  // (0 for none due), when they are asked again, and an older platform
+  // without the native
+  private ownerFlipsSeen = 0;
+  private heldUpdates = 0;
+  private heldAskAt = 0;
+  private heldAgainAtMs = 0;
+  private replayHeldMissing = false;
 
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace RE {
 class Actor;
@@ -49,6 +50,19 @@ void SetTriggerPresserRule(bool on);
 // the presser rule's switch as last set: ADR-068 D-W2 A's look acts only
 // with it on (ScriptNatives.cpp OnFamilyCall)
 bool TriggerPresserRuleOn();
+
+// thuum docs/DECISIONS.md ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's
+// held entries (an enter to a scripted world trigger it blanked while the
+// presser's owner was undecided here, an NPC standing inside at this seat's
+// load, kept per (trigger, presser) with a count and a 60 s expiry), each
+// replayed once through SendTriggerEvent's body when its presser is this
+// seat's now by the rule's own owner test and its trigger stands in a cell
+// this seat hosts; the expired ones dropped. TESModPlatform.ReplayHeldEntries'
+// body, on the update thread inside callNative (the platform's mark), which
+// skymp5-client calls at the update after the one that saw its own hosting
+// state change. A JSON string: replayed, refused, expired, held. No
+// exception leaves it. Turning the rule off clears the held entries
+std::string ReplayHeldEntries();
 
 // thuum docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch:
 // the animation hook's rule over a furniture's own graph event on or off

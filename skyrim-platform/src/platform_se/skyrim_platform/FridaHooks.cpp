@@ -44,10 +44,12 @@
 #include <fmt/format.h>
 #include <fstream>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 /**
  * The admitted scripts (thuum ADR-044, docs/verbs/papyrus-events.md)
@@ -441,7 +443,7 @@ RE::TESObjectREFR* ReadPresser(const void* args, PresserRead& how)
   return presser;
 }
 
-// whether this seat owns the presser (the plan's rule table, "A trigger
+// the presser's owner here (the plan's rule table, "A trigger
 // volume's entry"; the train's fresh review, note 2: the seam's owner,
 // ScriptNatives.cpp OwnedForRecord, so the gate and the seam name the same
 // one): its own player; a non-actor (a prop, a thrown item: D-W1 names
@@ -457,30 +459,49 @@ RE::TESObjectREFR* ReadPresser(const void* args, PresserRead& how)
 // word on, neither hosted nor a puppet (the ambush draugr 0x380ba, which no
 // seat simulates until its trigger enables it), its cell host's. Reads
 // alone: the form type byte (include/RE/T/TESForm.h:289), the life state
-// behind IsDead and the parent cell (TESObjectREFR.h:413)
-bool OwnsPresser(const RE::TESObjectREFR* presser)
+// behind IsDead and the parent cell (TESObjectREFR.h:413). Three answers:
+// this seat, another, and the last case's undecided one (a live game-file
+// actor neither hosted nor a puppet, in a cell this seat does not host: no
+// seat's word reached this seat yet), the one whose world trigger entries
+// D-W3 B holds (below); this seat owns the presser on kThisSeat alone
+enum class PresserOwner
+{
+  kThisSeat,
+  kOther,
+  kUndecided
+};
+
+PresserOwner OwnerOf(const RE::TESObjectREFR* presser)
 {
   const uint32_t id = presser->formID;
   if (id == 0x14) {
-    return true;
+    return PresserOwner::kThisSeat;
   }
   if (presser->GetFormType() != RE::FormType::ActorCharacter) {
-    return !TrapFamily::Followed::Is(id);
+    return TrapFamily::Followed::Is(id) ? PresserOwner::kOther
+                                        : PresserOwner::kThisSeat;
   }
   if (id >= 0xff000000) {
-    return Hosted::Is(id) && !Puppets::Is(id);
+    return Hosted::Is(id) && !Puppets::Is(id) ? PresserOwner::kThisSeat
+                                              : PresserOwner::kOther;
   }
   if (presser->IsDead()) {
     const RE::TESObjectCELL* cell = presser->GetParentCell();
-    return cell && Frida::IsCellHosted(cell->GetFormID());
+    return cell && Frida::IsCellHosted(cell->GetFormID())
+      ? PresserOwner::kThisSeat
+      : PresserOwner::kOther;
   }
   const bool hosted = Hosted::Is(id);
   const bool puppet = Puppets::Is(id);
   if (hosted || puppet) {
-    return hosted && !puppet;
+    return hosted && !puppet ? PresserOwner::kThisSeat : PresserOwner::kOther;
   }
   const RE::TESObjectCELL* cell = presser->GetParentCell();
-  return cell && Frida::IsCellHosted(cell->GetFormID());
+  if (!cell) {
+    return PresserOwner::kOther;
+  }
+  return Frida::IsCellHosted(cell->GetFormID()) ? PresserOwner::kThisSeat
+                                                : PresserOwner::kUndecided;
 }
 
 // whether the handle has an attached script (the VM's attachedScripts under
@@ -513,7 +534,15 @@ enum class TriggerLine : uint32_t
 {
   kExempted = 1,
   kIgnored = 2,
-  kTold = 3
+  kTold = 3,
+  // D-W3 B's (the held entries, below): a hold, a family trigger's enter
+  // not held, a held pair's presser leaving before its owner's grant, an
+  // owned presser's event settling a held pair, an expiry
+  kHeld = 4,
+  kHeldFamily = 5,
+  kHeldLeft = 6,
+  kHeldSettled = 7,
+  kHeldExpired = 8
 };
 
 std::mutex g_triggerLinesMutex;
@@ -530,6 +559,172 @@ bool TriggerLineDue(TriggerLine kind, uint32_t triggerId)
   const uint64_t n = ++g_triggerLines[key];
   return n <= 3 || n % 100 == 0;
 }
+
+/**
+ * The held entries (thuum docs/DECISIONS.md ADR-068 D-W3 B, Eli's rung 5
+ * stage-eve words, 2026-11-10; docs/research/rung5-quests-2026-11-09.md
+ * section 5, risk (c)'s fix sketch, rebuilt from x-trigger-preload v1's read
+ * of run 20261110-073038). An NPC standing inside a trigger when this seat's
+ * engine loads the cell enters it before this seat's grant, while its owner
+ * here is undecided (OwnerOf's kUndecided), so the rule blanks the enter
+ * (H-TP1), and the engine raises no second one while the NPC stays inside
+ * (H-TP2; both read on two builds). Blanked alone, a world trigger waiting
+ * on that NPC (MS13TriggerArvelRunSceneScript, for Arvel) never runs on any
+ * seat. So the rule keeps those enters per (trigger, presser), for a
+ * scripted world trigger alone: a trap family trigger (TrapFamily::IsFamily)
+ * with an NPC on it stays unfired until its next press, so no trap fires at
+ * a host's arrival (D-W3 B).
+ *
+ * The store counts: the engine raised one presser's enters in twos with no
+ * leave between (the prior read's oil pool 0x9b0de by the draugr 0x383f8),
+ * so an enter adds one, a leave takes one off and the last leave drops the
+ * pair; a pair expires kHeldEntryMs after its first enter. Enters reach the
+ * gate on several engine threads (four in the read), so the store has its
+ * own mutex, and it keeps taking holds after the grant (an NPC still
+ * undecided then). The demote at this seat's own load raises the puppet
+ * flag before its grant (Arvel's 97 ms before his setHosted in the read),
+ * so a puppet flag drops nothing: a held pair waits for its presser's owner,
+ * a leave or the expiry.
+ *
+ * Its owner is OwnerOf's kThisSeat, read again at skymp5-client's update
+ * after the one that saw the client's own hosting state change (a cell's
+ * gate opened, an actor marked hosted or promoted; the puppet flag clears in
+ * the reconcile pass that marks the actor hosted, after its setHosted, so
+ * never at that call), with the trigger in a cell this seat hosts:
+ * TESModPlatform.ReplayHeldEntries then replays its enter ONCE through
+ * SendTriggerEvent's body under the platform's mark (ReplayHeldEntriesImpl
+ * below). An owned presser's own event on a pair still held (its owner came
+ * between the hold and that update) settles it: an enter is the engine's
+ * delivery, so the held one goes; a leave is blanked, its enter never having
+ * reached the script. Only trigger events pay: one atomic read on a
+ * presser's event while nothing is held, the lock on a hold, on a held
+ * pair's event and in the replay (rule 9).
+ *
+ * HYPOTHESIS until x-trigger-preload v2 (every engine behaviour): the replay
+ * reaches the trigger's script as the engine's own enter would, its aliases
+ * relayed. Declared: a pair replayed at a count of 2 delivers one enter and
+ * its two leaves follow (the read's load raised one enter per pair); a
+ * puppet that never becomes this seat's never comes due (the host's ambush
+ * draugr in the read, npc-stream's question, not this store's); a pair held
+ * on a seat another seat out-raced to the grant waits while its presser is
+ * that seat's puppet and replays if this seat becomes its owner inside
+ * kHeldEntryMs, though the other seat's engine counted its own (bounded by
+ * the expiry and by rung 3's script record, which carries a stateful
+ * script's done state; UNMEASURED); an owned presser's held enter into a
+ * trigger in a cell another seat hosts waits until it expires (D-C2 relays
+ * live entries alone)
+ */
+constexpr uint64_t kHeldEntryMs = 60000;
+// the most pairs held (UNMEASURED: the read's Temple load held four)
+constexpr size_t kHeldPairsMax = 256;
+
+struct HeldEntry
+{
+  // the enters held, less the leaves since
+  uint32_t count = 0;
+  // the steady clock at the pair's first enter
+  uint64_t firstMs = 0;
+};
+
+std::mutex g_heldMutex;
+// (trigger << 32 | presser) to its held entry
+std::unordered_map<uint64_t, HeldEntry> g_held;
+// the pairs held, for the reads that take no lock
+std::atomic<size_t> g_heldPairs{ 0 };
+
+uint64_t HeldKey(uint32_t triggerId, uint32_t presserId)
+{
+  return (static_cast<uint64_t>(triggerId) << 32) | presserId;
+}
+
+// an undecided presser's enter to a scripted world trigger, held (the gate
+// blanks it as before): one more for the pair, whose clock starts at its
+// first enter (an expired pair starts over); false, nothing held, past
+// kHeldPairsMax pairs. count and pairs answer the pair's count and the pairs
+// held, for the line
+bool HoldEntry(uint32_t triggerId, uint32_t presserId, uint64_t nowMs,
+               uint32_t& count, size_t& pairs)
+{
+  std::lock_guard<std::mutex> lock(g_heldMutex);
+  const uint64_t key = HeldKey(triggerId, presserId);
+  auto it = g_held.find(key);
+  if (it != g_held.end() && nowMs >= it->second.firstMs + kHeldEntryMs) {
+    g_held.erase(it);
+    it = g_held.end();
+  }
+  bool held = true;
+  if (it == g_held.end()) {
+    if (g_held.size() >= kHeldPairsMax) {
+      held = false;
+    } else {
+      HeldEntry fresh;
+      fresh.firstMs = nowMs;
+      it = g_held.emplace(key, fresh).first;
+    }
+  }
+  if (held) {
+    count = ++it->second.count;
+  }
+  pairs = g_held.size();
+  g_heldPairs.store(pairs, std::memory_order_relaxed);
+  return held;
+}
+
+// a leave of a held pair: one off its count, the pair dropped with its last;
+// false when the pair is not held, dropped saying whether it went
+bool LeaveHeld(uint32_t triggerId, uint32_t presserId, bool& dropped)
+{
+  dropped = false;
+  if (g_heldPairs.load(std::memory_order_relaxed) == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_heldMutex);
+  const auto it = g_held.find(HeldKey(triggerId, presserId));
+  if (it == g_held.end()) {
+    return false;
+  }
+  if (it->second.count <= 1) {
+    g_held.erase(it);
+    dropped = true;
+  } else {
+    --it->second.count;
+  }
+  g_heldPairs.store(g_held.size(), std::memory_order_relaxed);
+  return true;
+}
+
+// an owned presser's enter on a held pair: the engine's own enter reaches
+// the script now, so the held pair goes; false when the pair is not held
+bool DropHeld(uint32_t triggerId, uint32_t presserId)
+{
+  if (g_heldPairs.load(std::memory_order_relaxed) == 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_heldMutex);
+  const auto it = g_held.find(HeldKey(triggerId, presserId));
+  if (it == g_held.end()) {
+    return false;
+  }
+  g_held.erase(it);
+  g_heldPairs.store(g_held.size(), std::memory_order_relaxed);
+  return true;
+}
+
+// the rule turned off: nothing is blanked from then on, so nothing waits
+void ClearHeld()
+{
+  std::lock_guard<std::mutex> lock(g_heldMutex);
+  g_held.clear();
+  g_heldPairs.store(0, std::memory_order_relaxed);
+}
+
+// a reference by form id (TESForm::LookupByID, CommonLibSSE-NG
+// include/RE/T/TESForm.h:210; AsReference, :270), or null
+RE::TESObjectREFR* ReferenceOf(uint32_t formId)
+{
+  RE::TESForm* form = RE::TESForm::LookupByID(formId);
+  return form ? form->AsReference() : nullptr;
+}
 }
 
 bool Frida::TriggerPresserRuleOn()
@@ -540,10 +735,157 @@ bool Frida::TriggerPresserRuleOn()
 void Frida::SetTriggerPresserRule(bool on)
 {
   g_triggerPresserRule.store(on, std::memory_order_relaxed);
+  if (!on) {
+    ClearHeld();
+  }
   logger::info("[verb:traps] setTriggerPresserRule({}): {}", on,
                on ? "a trigger entry counts on its presser's owner alone "
                     "(D-W1)"
                   : "every presser's entry counts on every seat (D-S3)");
+}
+
+namespace {
+// ADR-068 D-W3 B (the held entries, above): TESModPlatform.ReplayHeldEntries'
+// body, on the update thread inside callNative, whose Override is the
+// platform's mark the gate passes. The expired pairs go first, each with its
+// line. Then a pair is due when its presser is this seat's by the gate's own
+// rule (OwnerOf: the client's hosting state as the client told it, through
+// setHosted, setPuppet and SetCellHosted) and its trigger stands in a cell
+// this seat hosts (the trigger's script is the cell host's, ADR-062 decision
+// 1); the reads run outside the store's lock (OwnerOf takes the hosted, the
+// puppet and the cell sets' own). Each due pair is taken under the lock (a
+// leave that dropped it meanwhile wins) and its enter replayed once, outside
+// the lock, through SendTriggerEvent's body (ScriptState::SendTrigger:
+// SendEvent, then RelayEvent to the trigger's aliases, as the engine's own
+// trigger sinks do), whose send re-enters the gate. A JSON string:
+// replayed, refused, expired, held
+std::string ReplayHeldEntriesImpl()
+{
+  if (g_heldPairs.load(std::memory_order_relaxed) == 0) {
+    return "{\"replayed\":0,\"refused\":0,\"expired\":0,\"held\":0}";
+  }
+  struct Pair
+  {
+    uint32_t trigger = 0;
+    uint32_t presser = 0;
+    uint64_t firstMs = 0;
+  };
+  const uint64_t now = NowMs();
+  std::vector<Pair> live;
+  std::vector<Pair> expired;
+  {
+    std::lock_guard<std::mutex> lock(g_heldMutex);
+    for (auto it = g_held.begin(); it != g_held.end();) {
+      Pair pair;
+      pair.trigger = static_cast<uint32_t>(it->first >> 32);
+      pair.presser = static_cast<uint32_t>(it->first & 0xffffffffu);
+      pair.firstMs = it->second.firstMs;
+      if (now >= it->second.firstMs + kHeldEntryMs) {
+        expired.push_back(pair);
+        it = g_held.erase(it);
+      } else {
+        live.push_back(pair);
+        ++it;
+      }
+    }
+    g_heldPairs.store(g_held.size(), std::memory_order_relaxed);
+  }
+  for (const Pair& pair : expired) {
+    if (TriggerLineDue(TriggerLine::kHeldExpired, pair.trigger)) {
+      logger::info("[verb:traps] OnTriggerEnter to {:x} by {:x}: held at the "
+                   "load, dropped after {} s with no owner here (D-W3 B)",
+                   pair.trigger, pair.presser, (now - pair.firstMs) / 1000);
+    }
+  }
+  // a pair whose trigger or presser was disabled since, or whose presser
+  // died or unloaded since, is never due and expires (TESObjectREFR::
+  // IsDisabled, IsDead and Is3DLoaded, CommonLibSSE-NG
+  // include/RE/T/TESObjectREFR.h:442, :353, :435): the replay is a live
+  // NPC's standing inside, the engine's own entry
+  std::vector<Pair> due;
+  for (const Pair& pair : live) {
+    RE::TESObjectREFR* trigger = ReferenceOf(pair.trigger);
+    RE::TESObjectREFR* presser = ReferenceOf(pair.presser);
+    if (!trigger || !presser || trigger->IsDisabled() ||
+        presser->IsDisabled() || presser->IsDead() || !presser->Is3DLoaded()) {
+      continue;
+    }
+    const RE::TESObjectCELL* cell = trigger->GetParentCell();
+    if (!cell || !Frida::IsCellHosted(cell->GetFormID())) {
+      continue;
+    }
+    if (OwnerOf(presser) != PresserOwner::kThisSeat) {
+      continue;
+    }
+    due.push_back(pair);
+  }
+  std::vector<Pair> taken;
+  if (!due.empty()) {
+    std::lock_guard<std::mutex> lock(g_heldMutex);
+    for (const Pair& pair : due) {
+      const auto it = g_held.find(HeldKey(pair.trigger, pair.presser));
+      if (it == g_held.end()) {
+        continue;
+      }
+      taken.push_back(pair);
+      g_held.erase(it);
+    }
+    g_heldPairs.store(g_held.size(), std::memory_order_relaxed);
+  }
+  size_t replayed = 0;
+  size_t refused = 0;
+  for (const Pair& pair : taken) {
+    const std::string answer = ScriptState::SendTrigger(
+      ReferenceOf(pair.trigger), "OnTriggerEnter", ReferenceOf(pair.presser));
+    // the answer read as ScriptNatives.cpp reads its settings (find, then
+    // the kind), nothing thrown on a bad one
+    const auto parsed = nlohmann::json::parse(answer, nullptr, false);
+    bool sent = false;
+    std::string reason = "no answer";
+    if (parsed.is_object()) {
+      const auto sentIt = parsed.find("sent");
+      sent =
+        sentIt != parsed.end() && sentIt->is_boolean() && sentIt->get<bool>();
+      const auto reasonIt = parsed.find("reason");
+      if (reasonIt != parsed.end() && reasonIt->is_string()) {
+        reason = reasonIt->get<std::string>();
+      }
+    }
+    if (sent) {
+      ++replayed;
+      logger::info("[verb:traps] OnTriggerEnter to {:x} by {:x}: held at the "
+                   "load (no owner then), replayed at its owner's grant",
+                   pair.trigger, pair.presser);
+      continue;
+    }
+    ++refused;
+    logger::info("[verb:traps] OnTriggerEnter to {:x} by {:x}: held at the "
+                 "load (no owner then), not replayed at its owner's grant: {}",
+                 pair.trigger, pair.presser, reason);
+  }
+  return fmt::format(
+    "{{\"replayed\":{},\"refused\":{},\"expired\":{},\"held\":{}}}", replayed,
+    refused, expired.size(), g_heldPairs.load(std::memory_order_relaxed));
+}
+}
+
+std::string Frida::ReplayHeldEntries()
+{
+  try {
+    return ReplayHeldEntriesImpl();
+  } catch (const std::exception& e) {
+    try {
+      logger::error("[verb:traps] ReplayHeldEntries threw: {}", e.what());
+    } catch (...) {
+    }
+  } catch (...) {
+    try {
+      logger::error("[verb:traps] ReplayHeldEntries threw");
+    } catch (...) {
+    }
+  }
+  return "{\"replayed\":0,\"refused\":0,\"expired\":0,\"held\":0,"
+         "\"reason\":\"threw\"}";
 }
 
 /**
@@ -727,7 +1069,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A, the presser rule
   // (above; setTriggerPresserRule, off by default): an OnTriggerEnter or an
   // OnTriggerLeave to a world object, under the block, counts on its presser's
-  // owner alone. A presser this seat does not own (OwnsPresser: another seat's
+  // owner alone. A presser this seat does not own (OwnerOf: another seat's
   // figure, a puppet, a body or an actor no seat was given in a cell this seat
   // does not host, a trap body another seat streams) is blanked here, before
   // any rule below could pass it: its owner's engine counts that entry, and
@@ -741,8 +1083,10 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // then goes on through the gate as before, so a family trigger's runs here
   // and a guest's world script stays blanked; an owned entry on a hosted
   // cell's world trigger runs here and tells nobody. The family is asked in a
-  // hosted cell too, its verdict cached per class. Trigger events alone pay
-  // for this (rule 9)
+  // hosted cell too, its verdict cached per class. D-W3 B (the held entries,
+  // above) keeps an undecided presser's enter to a scripted world trigger for
+  // its owner's grant, and an owned presser's event on a pair still held
+  // settles it. Trigger events alone pay for this (rule 9)
   if (blockEvents && worldObject &&
       g_triggerPresserRule.load(std::memory_order_relaxed)) {
     const int entry = TriggerEntryOf(eventNameStr.c_str());
@@ -750,6 +1094,8 @@ void OnSendEventEnter(GumInvocationContext* ic)
       PresserRead how = PresserRead::kNoArgument;
       RE::TESObjectREFR* presser =
         ReadPresser(gum_invocation_context_get_nth_argument(ic, 3), how);
+      const PresserOwner owner =
+        presser ? OwnerOf(presser) : PresserOwner::kOther;
       if (!presser) {
         static std::atomic<uint64_t> s_presserUnread{ 0 };
         static std::atomic<uint64_t> s_presserUnreadLineMs{ 0 };
@@ -763,7 +1109,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
                        "minute)",
                        eventNameStr, selfId, PresserReadText(how), n);
         }
-      } else if (!OwnsPresser(presser)) {
+      } else if (owner != PresserOwner::kThisSeat) {
         // D-W2 A's fallback lever: a family reference of an exempt class
         // keeps D-S3, its non-owned press passed on to the gate's rules below
         // (every seat fires its own copy)
@@ -778,6 +1124,46 @@ void OnSendEventEnter(GumInvocationContext* ic)
                          eventNameStr, selfId, presser->formID, n);
           }
         } else {
+          // D-W3 B (the held entries, above): an undecided presser's enter
+          // to a scripted world trigger is kept for its owner's grant, a trap
+          // family trigger's is not (it waits for its next press); a leave of
+          // a held pair takes one off whatever its presser's owner, the last
+          // dropping the pair. Blanked below as before either way
+          if (entry == 1 && owner == PresserOwner::kUndecided) {
+            if (isFamily()) {
+              if (TriggerLineDue(TriggerLine::kHeldFamily, selfId)) {
+                logger::info("[verb:traps] {} to {:x} by {:x}: not held, a "
+                             "trap family trigger waits for its next press "
+                             "(D-W3 B)",
+                             eventNameStr, selfId, presser->formID);
+              }
+            } else if (HasAttachedScript(vm, handle)) {
+              uint32_t count = 0;
+              size_t pairs = 0;
+              if (HoldEntry(selfId, presser->formID, NowMs(), count, pairs)) {
+                if (TriggerLineDue(TriggerLine::kHeld, selfId)) {
+                  logger::info("[verb:traps] {} to {:x} by {:x}: held, the "
+                               "presser's owner undecided here (D-W3 B; {} "
+                               "for the pair, {} pair(s) held)",
+                               eventNameStr, selfId, presser->formID, count,
+                               pairs);
+                }
+              } else if (TriggerLineDue(TriggerLine::kHeld, selfId)) {
+                logger::info("[verb:traps] {} to {:x} by {:x}: not held, {} "
+                             "pairs held already (D-W3 B)",
+                             eventNameStr, selfId, presser->formID, pairs);
+              }
+            }
+          } else if (entry == 2) {
+            bool dropped = false;
+            if (LeaveHeld(selfId, presser->formID, dropped) && dropped &&
+                TriggerLineDue(TriggerLine::kHeldLeft, selfId)) {
+              logger::info("[verb:traps] {} to {:x} by {:x}: its held enter "
+                           "dropped, the presser left before its owner's "
+                           "grant (D-W3 B)",
+                           eventNameStr, selfId, presser->formID);
+            }
+          }
           static std::atomic<uint64_t> s_presserIgnored{ 0 };
           const auto n = ++s_presserIgnored;
           if (TriggerLineDue(TriggerLine::kIgnored, selfId)) {
@@ -790,6 +1176,35 @@ void OnSendEventEnter(GumInvocationContext* ic)
           return;
         }
       } else {
+        // D-W3 B (the held entries, above): an owned presser's event on a
+        // pair still held (its owner came between the hold and the replay's
+        // update) settles it. An enter is the engine's own delivery, so the
+        // held one goes and this one passes; a leave is blanked, its enter
+        // never having reached the script, and takes one off the count. One
+        // atomic read while nothing is held
+        if (entry == 1) {
+          if (DropHeld(selfId, presser->formID) &&
+              TriggerLineDue(TriggerLine::kHeldSettled, selfId)) {
+            logger::info("[verb:traps] {} to {:x} by {:x}: this seat's "
+                         "presser, its held enter dropped, the engine's own "
+                         "delivers it (D-W3 B)",
+                         eventNameStr, selfId, presser->formID);
+          }
+        } else {
+          bool dropped = false;
+          if (LeaveHeld(selfId, presser->formID, dropped)) {
+            if (TriggerLineDue(TriggerLine::kHeldSettled, selfId)) {
+              logger::info("[verb:traps] {} to {:x} by {:x}: this seat's "
+                           "presser, blanked, its enter held and never "
+                           "replayed (D-W3 B)",
+                           eventNameStr, selfId, presser->formID);
+            }
+            static const auto fsEmptyHeldLeave = new FixedString("");
+            gum_invocation_context_replace_nth_argument(ic, 2,
+                                                        fsEmptyHeldLeave);
+            return;
+          }
+        }
         const bool family = isFamily();
         // ADR-068 D-W2 A (section 7.2(a)): an owned entry to a family
         // trigger, an enter or a leave, opens its firing window, in which the

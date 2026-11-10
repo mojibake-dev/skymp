@@ -146,6 +146,14 @@ String Function SendScriptEvent(ObjectReference refr, String name, Bool unseenOn
 ; a None actionRef, an actor trigger and a reference with no attached script
 String Function SendTriggerEvent(ObjectReference trigger, String name, ObjectReference actionRef) global native
 
+; thuum ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's held entries (an
+; NPC's enter to a world trigger blanked at this seat's own load, its owner
+; undecided then) whose presser is this seat's now, with the trigger in a
+; cell this seat hosts, each replayed once through SendTriggerEvent's body
+; under the platform's mark; the expired ones dropped (a JSON string:
+; replayed, refused, expired, held)
+String Function ReplayHeldEntries() global native
+
 ; thuum ADR-068 rung 4 (the state rows, amendment B): the world globals this
 ; seat's engine changed since its last answer, for the world streamer's
 ; WorldGlobal 80 (a JSON string: [[formId, value], ...], at most 512

@@ -212,6 +212,10 @@ export class PuppetService extends ClientListener {
             ac.clearExpressionOverride();
             this.stopCloakLook(localId, ac);
             this.sp.setPuppet(localId, false);
+            // ADR-068 D-W3 B: an owner gained here (the flag is off from this
+            // call on, PuppetApi.cpp), so the platform's held trigger entries
+            // are asked at the next update (HostService.ownerFlips)
+            host.noteOwnerFlip();
             // the native promote lifts the block for a live actor and a dead
             // one alike (PuppetApi.cpp Promote; its dead branch leaves the AI
             // off, H-54e). A body promoted here comes back under the block on

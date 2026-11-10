@@ -1707,6 +1707,16 @@ RE::BSFixedString TESModPlatform::SendTriggerEvent(
   return RE::BSFixedString(ScriptState::SendTrigger(trigger, name, actionRef));
 }
 
+// thuum ADR-068 D-W3 B: the presser rule's held entries whose presser is this
+// seat's now, replayed once each through SendTriggerEvent's body under the
+// platform's mark, at skymp5-client's update after the one that saw its own
+// hosting state change (FridaHooks.cpp; no exception leaves it)
+RE::BSFixedString TESModPlatform::ReplayHeldEntries(IVM* vm, StackID stackId,
+                                                    RE::StaticFunctionTag*)
+{
+  return RE::BSFixedString(Frida::ReplayHeldEntries());
+}
+
 // thuum ADR-068 rung 5 (D-V1 B, D-T2 B): a quest's or a reference's script
 // variables read and written by name, under the VM's attachedScriptsLock on
 // this thread (ScriptState.cpp holds the reads, the writes and their
@@ -2140,6 +2150,12 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::TESObjectREFR*, std::string_view,
                                      RE::TESObjectREFR*>(
       "SendTriggerEvent", "TESModPlatform", SendTriggerEvent));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ReplayHeldEntries),
+                                     RE::BSFixedString,
+                                     RE::StaticFunctionTag*>(
+      "ReplayHeldEntries", "TESModPlatform", ReplayHeldEntries));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(ReadScriptVariables),

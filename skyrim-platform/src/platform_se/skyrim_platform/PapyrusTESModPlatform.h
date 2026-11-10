@@ -239,6 +239,14 @@ RE::BSFixedString SendTriggerEvent(IVM* vm, StackID stackId,
                                    RE::TESObjectREFR* trigger,
                                    std::string_view name,
                                    RE::TESObjectREFR* actionRef);
+// thuum docs/DECISIONS.md ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's
+// held entries (an NPC's enter to a world trigger blanked at this seat's own
+// load, its owner undecided then) whose presser is this seat's now, with the
+// trigger in a cell this seat hosts, each replayed once through
+// SendTriggerEvent's body under the platform's mark; the expired ones dropped
+// (a JSON string: replayed, refused, expired, held; FridaHooks.cpp)
+RE::BSFixedString ReplayHeldEntries(IVM* vm, StackID stackId,
+                                    RE::StaticFunctionTag*);
 // thuum docs/DECISIONS.md ADR-068 rung 5 (docs/research/
 // rung5-quests-2026-11-09.md 1(c) and 8(b); D-V1 B, D-T2 B): a quest's or a
 // reference's script variables read by name for ScriptVariables 81 (a JSON

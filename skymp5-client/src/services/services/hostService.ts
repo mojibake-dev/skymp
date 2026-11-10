@@ -161,11 +161,28 @@ export class HostService extends ClientListener {
         }
         if (!this.sp.setHosted(localId, hosted)) {
             logError(this, `setHosted(${localId.toString(16)}, ${hosted}) refused`);
+        } else if (hosted) {
+            this.noteOwnerFlip();
         }
     }
 
     isStreamEnabled(): boolean {
         return this.streamEnabled;
+    }
+
+    // thuum docs/DECISIONS.md ADR-068 D-W3 B (Eli 2026-11-10): a count of this
+    // seat's own hosting state gaining an owner here, as the platform was told
+    // it (a cell's gate opened, an actor marked hosted, PuppetService's
+    // promote, a reload's restore), read by ActivationService, which asks the
+    // platform to replay its held trigger entries at the first update after a
+    // change (the platform's gate held them while their presser's owner was
+    // undecided here); compared, never read as a total
+    ownerFlips(): number {
+        return this.ownerFlipCount;
+    }
+
+    noteOwnerFlip(): void {
+        this.ownerFlipCount += 1;
     }
 
     // thuum docs/DECISIONS.md ADR-059 decision 1: the platform's event block
@@ -253,6 +270,7 @@ export class HostService extends ClientListener {
         this.controller.lookupListener(RefStateService).applyAtGrant(cell);
         this.tellPlatform(cell, true, true);
         this.liftCellActivation(cell, true, true);
+        this.noteOwnerFlip();
     }
 
     // The cells this game hosts, with their epochs.
@@ -866,6 +884,7 @@ export class HostService extends ClientListener {
         for (const [cell, epoch] of pairs(stored.hosted)) {
             this.hosted.set(cell, epoch);
             this.tellPlatform(cell, true);
+            this.noteOwnerFlip();
         }
         for (const [cell, epoch] of pairs(stored.lastEpoch)) {
             this.lastEpoch.set(cell, epoch);
@@ -911,4 +930,6 @@ export class HostService extends ClientListener {
     private lastRefresh = 0;
     private lastSightings = 0;
     private readonly attached = new Map<number, true>();
+    // D-W3 B's count (ownerFlips)
+    private ownerFlipCount = 0;
 }

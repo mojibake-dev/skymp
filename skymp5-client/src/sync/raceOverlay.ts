@@ -1,5 +1,6 @@
 import { Actor, Game, Shout, Spell } from "skyrimPlatform";
 import { Appearance } from "./appearance";
+import { RaceOverlay } from "../services/messages/raceOverlay";
 
 // thuum docs/DECISIONS.md ADR-068 rung 5, D-T1 A (docs/research/
 // rung5-quests-2026-11-09.md 8(b)): a race's form overlay. While a player
@@ -11,17 +12,9 @@ import { Appearance } from "./appearance";
 // overlay that holds with its look (absent: none). It is never written to
 // the player's change form, and it ends at the race's return or at the
 // player's disconnect. The server's equipment gate counts it for the
-// player's own reports. JSON field names as wire-schema's CreateActor props
-// and UpdateAppearance read them (the server's row, wire-rules
-// player_own::Overlay: open, race, base, spells, shouts, items)
-export interface RaceOverlay {
-  open?: boolean;   // false: no overlay (the other fields empty)
-  race?: number;    // the race worn beyond the record, which the figure wears
-  base?: number;    // the recorded race it returns to (the server's)
-  spells: number[]; // the spells the race's scripts added (abilities)
-  shouts: number[]; // the shouts they added (the howls)
-  items: number[];  // the items they equipped (WolfSkinFXArmor)
-}
+// player's own reports. Its wire shape, RaceOverlay, is the messages'
+// (services/messages/raceOverlay.ts, RaceOverlay.h's pair); this module
+// parses and applies it
 
 // a bound on each list (rule 5: the server's word, still bounded here)
 const OVERLAY_MAX = 64;

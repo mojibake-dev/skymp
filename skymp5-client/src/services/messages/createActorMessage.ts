@@ -3,7 +3,7 @@ import { Equipment } from "../../sync/equipment";
 import { Inventory } from "../../sync/inventory";
 import { Transform } from "../../sync/movement";
 import { Animation } from "../../sync/animation";
-import { RaceOverlay } from "../../sync/raceOverlay";
+import { RaceOverlay } from "./raceOverlay";
 import { MsgType } from "src/messages";
 
 export interface SetNodeTextureSetEntry {

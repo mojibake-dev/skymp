@@ -1,6 +1,6 @@
 import { MsgType } from "../../messages";
 import { Appearance } from "../../sync/appearance";
-import { RaceOverlay } from "../../sync/raceOverlay";
+import { RaceOverlay } from "./raceOverlay";
 
 export interface UpdateAppearanceMessage {
     t: MsgType.UpdateAppearance;

@@ -260,6 +260,11 @@ declare module "skyrimPlatform" {
     function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number): boolean;
     function getActingPlayer(questId: number, stage: number): number;
     function setPlayerGlobals(globalFormIds: number[]): boolean;
+    // rung 5, the ownership rule for the per-player quests (the server's
+    // player-class quests, QuestStage 57's login `player`): this seat runs its
+    // own player's, so the platform's SendEvent gate lets their scripts'
+    // events through here; replaced whole at each call, [] clears it
+    function setPlayerQuests(questFormIds: number[]): boolean;
     // thuum ADR-068 D-S3 (traps follow the interaction): a reference's trap
     // role from the platform's own reads (null with no form or no script),
     // the trap bodies another seat streams, and the references whose server

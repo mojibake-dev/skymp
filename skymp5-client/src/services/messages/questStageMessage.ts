@@ -22,6 +22,7 @@ export interface QuestStageMessage {
     stage: number;
     shared?: number[];
     mode?: number;
+    player?: number[]; // on the login's message (quest 0) alone: the player-class quests, in `shared`'s entry shape; each seat runs its own player's (setPlayerQuests)
     word?: number;     // QUEST_START 1 or QUEST_STOP 2; absent for a stage
     acting?: number;   // the acting player's actor (a server id, 0xff000000 and up)
     served?: boolean;  // from the server alone: apply as a load, its fragment skipped

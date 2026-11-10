@@ -183,7 +183,14 @@ type QuestItem = {
 // served stage always carries the mark (the login's replay is a load, D-Q3
 // A); a live stage carries it while the setting questFragmentLive is false
 // (the default, the H-A1 fallback, until x-acting-player v1 is green), and
-// runs its fragment under the acting scope when it is true. The words and
+// runs its fragment under the acting scope when it is true. The login's
+// message also names the player-class quests (`player`, the list's entry
+// shape): each seat runs its own player's (the ownership rule; the vampire's
+// stage progresses only where its scripts' events pass the platform's
+// SendEvent gate), so the list goes to the platform's setPlayerQuests at
+// every login and reconnect ([] when the field is absent), again after a
+// game load and a plugin reload, "[verb:quest-stage] player quests: <n> told
+// to the platform at the login"; none of them is ever reported. The words and
 // stages apply in the server's order, one an update, and a quest's next one
 // waits for the engine's answer to its last (at a login: starts, stages,
 // stops). The setting questRuns false turns the words off both ways; a
@@ -214,9 +221,13 @@ export class QuestStageService extends ClientListener {
             // report in mode list, the quests never to report in mode all)
             const mode = m.mode === MODE_ALL ? MODE_ALL : MODE_LIST;
             const ids = (m.shared ?? []).filter((id) => Number.isInteger(id) && id > 0);
+            // rung 5: the player-class quests, resolved as the list's entries are
+            const player = (m.player ?? []).filter((id) => Number.isInteger(id) && id > 0);
             this.setShared(mode, ids);
-            this.sp.storage[SHARED_STORAGE_KEY] = { mode, ids };
+            this.playerQuests = player;
+            this.sp.storage[SHARED_STORAGE_KEY] = { mode, ids, player };
             logTrace(this, "the server shares quests in mode", QuestStageService.modeName(mode) + ":", ids.length, mode === MODE_ALL ? "quest(s) denied" : "quest(s) listed");
+            this.tellPlayerQuests("at the login", true);
             return;
         }
         if (m.word !== undefined && m.word !== WORD_START && m.word !== WORD_STOP) {
@@ -689,6 +700,10 @@ export class QuestStageService extends ClientListener {
     // seat's Story Manager heard its login's
     private onGameLoad() {
         this.arrivalGameLoaded = true;
+        // rung 5: the platform's list of this seat's own per-player quests,
+        // told again past the load (the platform clears its acting tables at a
+        // game load; whether this one too is its own, unread here)
+        this.tellPlayerQuests("after a game load", false);
     }
 
     // the server's CreateActor of this connection's own actor (isMe: a login,
@@ -819,10 +834,35 @@ export class QuestStageService extends ClientListener {
     }
 
     private reports(questId: number): boolean {
-        if (this.mode === undefined) {
-            return false;
+        if (this.mode === undefined || this.playerQuests.indexOf(questId) >= 0) {
+            return false; // nothing before the login's list; a player-class quest never
         }
         return this.mode === MODE_ALL ? !this.shared.has(questId) : this.shared.has(questId);
+    }
+
+    // rung 5: the player-class quests the login named, to the platform's
+    // setPlayerQuests (this seat runs its own player's); the lab's line at the
+    // login, a trace for a re-tell. An older platform without the export is
+    // said once
+    private tellPlayerQuests(when: string, lab: boolean) {
+        if (this.playerQuestsMissing) {
+            return;
+        }
+        try {
+            if (this.sp.setPlayerQuests([...this.playerQuests]) !== true) {
+                logError(this, "setPlayerQuests refused", this.playerQuests.length, "quest(s)", when);
+                return;
+            }
+        } catch (err) {
+            this.playerQuestsMissing = true;
+            logLab(TAG, `setPlayerQuests unavailable on this platform (${err}); this seat's own per-player quests stay behind the gate`);
+            return;
+        }
+        if (lab) {
+            logLab(TAG, `player quests: ${this.playerQuests.length} told to the platform ${when}`);
+        } else {
+            logTrace(this, "player quests:", this.playerQuests.length, "told to the platform", when);
+        }
     }
 
     private setShared(mode: number, ids: number[]) {
@@ -833,7 +873,7 @@ export class QuestStageService extends ClientListener {
     // After a plugin reload: the mode and the list the last login brought,
     // from storage
     private resume() {
-        const stored = this.sp.storage[SHARED_STORAGE_KEY] as { mode?: unknown; ids?: unknown } | undefined;
+        const stored = this.sp.storage[SHARED_STORAGE_KEY] as { mode?: unknown; ids?: unknown; player?: unknown } | undefined;
         if (!stored || typeof stored !== "object" || !Array.isArray(stored.ids)) {
             return;
         }
@@ -843,6 +883,9 @@ export class QuestStageService extends ClientListener {
         const ids = stored.ids.filter((id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0);
         this.setShared(stored.mode, ids);
         logTrace(this, "resumed after a reload in mode", QuestStageService.modeName(stored.mode) + ":", ids.length, stored.mode === MODE_ALL ? "quest(s) denied" : "quest(s) listed");
+        const player = Array.isArray(stored.player) ? stored.player : [];
+        this.playerQuests = player.filter((id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0);
+        this.tellPlayerQuests("after a reload", false);
     }
 
     private static modeName(mode: number): string {
@@ -929,6 +972,10 @@ export class QuestStageService extends ClientListener {
     private runsOffSaid = false;
     // an older platform without setActingPlayer and getActingPlayer
     private actingExportsMissing = false;
+    // the player-class quests the login named (each seat runs its own
+    // player's), and an older platform without setPlayerQuests
+    private playerQuests: number[] = [];
+    private playerQuestsMissing = false;
     // the last stage this game reported per quest: when its window began and
     // how many repeats of it were dropped since (REPORT_REPEAT_MS)
     private lastReports = new Map<number, { stage: number; since: number; dropped: number }>();

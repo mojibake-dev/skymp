@@ -210,19 +210,32 @@ export class SettingsService extends ClientListener {
     return [];
   };
 
-  // The game server's resources folder (skymp5-server ui.ts:102: game port
-  // 7777's is 3000, any other game port's is that port plus 1; ui.ts:88
-  // serves data/ there, where manifestGen writes manifest.json), on the host
-  // this client connects to: the resolved target peer, else the settings'
-  // server address (a seat that skips the server info connects to that)
-  private getOwnServerResourcesUrl(): string {
+  // The game server this client connects to: the resolved target peer, else
+  // the settings' server address (a seat that skips the server info connects
+  // to that); undefined when neither names one. QuestStageService matches the
+  // client-only plugins it keeps across a reconnect by it (thuum x-quest-runs
+  // 20261110-071422's read, fault 3)
+  public getServerAddress(): { host: string; port: number } | undefined {
     const peer = this.targetPeerCache;
     const host: unknown = peer ? peer.host : this.sp.settings['skymp5-client']['server-ip'];
     const port = Number(peer ? peer.port : this.sp.settings['skymp5-client']['server-port']);
     if (typeof host !== 'string' || host.length === 0 || !Number.isInteger(port) || port <= 0) {
-      throw new Error(`no server address (server-ip ${String(host)}, server-port ${String(port)})`);
+      return undefined;
     }
-    return `http://${host}:${port === 7777 ? 3000 : port + 1}`;
+    return { host, port };
+  }
+
+  // The game server's resources folder (skymp5-server ui.ts:102: game port
+  // 7777's is 3000, any other game port's is that port plus 1; ui.ts:88
+  // serves data/ there, where manifestGen writes manifest.json), on the host
+  // this client connects to (getServerAddress)
+  private getOwnServerResourcesUrl(): string {
+    const address = this.getServerAddress();
+    if (!address) {
+      const s = this.sp.settings['skymp5-client'];
+      throw new Error(`no server address (server-ip ${String(s['server-ip'])}, server-port ${String(s['server-port'])})`);
+    }
+    return `http://${address.host}:${address.port === 7777 ? 3000 : address.port + 1}`;
   }
 
   private normalizeUrl(url: string) {

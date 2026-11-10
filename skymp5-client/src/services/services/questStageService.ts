@@ -304,10 +304,21 @@ const START_UP_MEMORY_MAX = 2048;
 // server's resources port first, the master after), and a quest's plugin is
 // read by this game's own load order: a full plugin by the form id's top
 // byte, a light one at 0xFE by bits 12 to 23. The login never waits for the
-// list: until it comes every quest is reported as before, and a connection
-// whose list never comes stays so and says it once, "the server's plugin
-// list unavailable (<reason>): every quest reported as before (F3 off)".
-// With it: "the server serves <n> plugin(s): quests of <k> client-only
+// list: until the first one comes every quest is reported as before, and a
+// connection whose list never comes stays so and says it once, "the
+// server's plugin list unavailable (<reason>): every quest reported as
+// before (F3 off)". A reconnect to the same server (its host and port,
+// SettingsService.getServerAddress) keeps the last connection's list while
+// its own ask is in flight, said once, "the server's plugin list kept from
+// the last connection (<k> client-only plugin(s)) until the new answer".
+// Cleared at the reconnect, as d8182c19 had it, the list would let
+// RL_DetectionQuest's flips, about 2.6 a second, reach the server after a
+// restart until the answer came, each an E_QUEST_UNKNOWN line that
+// b-quest-stage-restart v2's refusal claims count (a fresh review of this
+// branch, 2026-11-10: a read of the code, not a run). The answer replaces
+// the kept list; a connection to another server, or an answer that says the
+// list is unavailable, drops it.
+// With a list: "the server serves <n> plugin(s): quests of <k> client-only
 // plugin(s) are this seat's own (<names>)", and the skipped reports are
 // counted, a line at most each SKIP_SAY_MS while the count moves and one at
 // the connection's end.
@@ -956,11 +967,12 @@ export class QuestStageService extends ClientListener {
             return;
         }
         let reason = "";
+        const server = this.serverKey();
         settings.getServerMods(true, (why) => {
             reason = why;
         }).then((mods) => {
             if (asked === this.pluginListAsked) {
-                this.takePluginList(mods, reason);
+                this.takePluginList(mods, reason, server);
             }
         }).catch((err) => {
             if (asked === this.pluginListAsked) {
@@ -975,7 +987,7 @@ export class QuestStageService extends ClientListener {
     // manifest names no plugin of its name, case aside. The promise's answer
     // comes in the update pass, where the Game calls run
     // (LoadOrderVerificationService reads the light list there too)
-    private takePluginList(mods: Mod[], reason: string) {
+    private takePluginList(mods: Mod[], reason: string, server: string) {
         const served = new Set<string>();
         for (const mod of Array.isArray(mods) ? mods : []) {
             const name = mod && typeof mod.filename === "string" ? mod.filename.toLowerCase() : "";
@@ -1013,17 +1025,50 @@ export class QuestStageService extends ClientListener {
             return;
         }
         this.clientOnly = { full, light };
+        this.clientOnlyServer = server;
         logLab(TAG, `the server serves ${served.size} plugin(s): quests of ${names.length} client-only plugin(s) are this seat's own (${names.length > 0 ? names.join(", ") : "none"})`);
     }
 
-    // no list this connection: every quest reported as before, said once
+    // no list this connection: every quest reported as before (a list kept
+    // from the last connection goes too), said once
     private pluginListMissing(reason: string) {
         this.clientOnly = undefined;
+        this.clientOnlyServer = "";
         if (this.pluginListMissSaid) {
             return;
         }
         this.pluginListMissSaid = true;
         logLab(TAG, `the server's plugin list unavailable (${reason}): every quest reported as before (F3 off)`);
+    }
+
+    // a new connection: the last client-only list stays while this
+    // connection's ask is in flight when the connection is with the server
+    // the list came from (the same host and port), said once a reconnect; a
+    // connection to another server, or one whose server is unknown, drops it
+    private keepOrDropPluginList() {
+        const list = this.clientOnly;
+        if (!list) {
+            return;
+        }
+        const server = this.serverKey();
+        if (server !== "" && server === this.clientOnlyServer) {
+            logLab(TAG, `the server's plugin list kept from the last connection (${list.full.size + list.light.size} client-only plugin(s)) until the new answer`);
+            return;
+        }
+        this.clientOnly = undefined;
+        this.clientOnlyServer = "";
+    }
+
+    // the game server this client connects to as "host:port"
+    // (SettingsService's target peer, else the settings' address), "" when
+    // none is named: the key a kept client-only list is matched by
+    private serverKey(): string {
+        try {
+            const address = this.controller.lookupListener(SettingsService).getServerAddress();
+            return address ? `${address.host}:${address.port}` : "";
+        } catch (err) {
+            return "";
+        }
     }
 
     // whether the quest is a client-only plugin's by this game's own load
@@ -1199,8 +1244,8 @@ export class QuestStageService extends ClientListener {
     // connection's full bucket, and the puppet rule's lines are said anew
     // (its marks stay: they are this engine's, not the connection's); the
     // last connection's skipped count is said whole, and the client-only
-    // plugins' list is asked anew, every quest reported as before until it
-    // comes
+    // plugins' list is asked anew, the last one kept meanwhile on a
+    // reconnect to the same server (keepOrDropPluginList)
     private onConnectionAccepted() {
         this.arrivalDone();
         this.applyingRuns.clear();
@@ -1212,7 +1257,7 @@ export class QuestStageService extends ClientListener {
         this.resetSends();
         this.puppetStopSaid.clear();
         this.endSkipped();
-        this.clientOnly = undefined;
+        this.keepOrDropPluginList();
         this.pluginListMissSaid = false;
         this.askPluginList();
     }
@@ -1519,12 +1564,15 @@ export class QuestStageService extends ClientListener {
     private puppetStopSaid = new Set<number>();
     // a client-only plugin's quest: the client-only plugins by this game's
     // own load order (a full plugin by its index, a light one by its index
-    // at 0xFE), once this connection's list came, and undefined until then
-    // and for a connection whose list never comes (every quest reported as
-    // before); the asks so far (an answer to an earlier one is dropped);
-    // whether this connection said its fallback line; the skipped reports
-    // and their line's state
+    // at 0xFE) from the last answer, kept across a reconnect to the same
+    // server until the new answer, and undefined before the first, after an
+    // answer that says the list is unavailable, and on another server's
+    // connection (every quest reported as before); the server the list came
+    // from, "host:port"; the asks so far (an answer to an earlier one is
+    // dropped); whether this connection said its fallback line; the skipped
+    // reports and their line's state
     private clientOnly: { full: Set<number>; light: Set<number> } | undefined;
+    private clientOnlyServer = "";
     private pluginListAsked = 0;
     private pluginListMissSaid = false;
     private skippedStages = 0;

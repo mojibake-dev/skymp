@@ -4,9 +4,11 @@ import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
 import { QuestStageMessage } from "../messages/questStageMessage";
+import { Mod } from "../messages_http/serverManifest";
 import { remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
+import { SettingsService } from "./settingsService";
 
 const TAG = "verb:quest-stage";
 
@@ -113,6 +115,11 @@ const QUEST_SEND_HELD_MAX = 1024;
 // How many quests the puppet rule's scene marks and their said lines keep;
 // the oldest makes room
 const PUPPET_SCENE_MEMORY_MAX = 256;
+
+// How often at most the count of reports skipped for client-only plugins'
+// quests is written while it moves, ms (in x-quest-runs' read
+// RL_DetectionQuest alone started or stopped about 2.6 times a second a seat)
+const SKIP_SAY_MS = 60000;
 
 // one of the server's quest words or stages waiting for the update pass
 type QuestItem = {
@@ -286,6 +293,24 @@ const START_UP_MEMORY_MAX = 2048;
 // puppetSceneStopped event), and the quest's stops here go unreported until
 // its next start here, said once a quest a connection: "quest <q>'s stop not
 // reported: its scene <s> was stopped here by the puppet rule".
+// A client-only plugin's quest: a quest of a plugin the server does not
+// serve is this seat's own, a stage and a run word alike. The server
+// refuses its report as E_QUEST_UNKNOWN before any judging (OnQuestStage's
+// FormDesc::FromFormId), and in that read RL_DetectionQuest 0x30002859 of
+// RLAiO.esp, a plugin the clients load and the server does not (its full
+// plugins end at rotfern.esp, 0x2f), started and stopped 1,514 times on c1
+// and 1,559 on c2. The server's plugin list is its own manifest.json, asked
+// once a connection through SettingsService.getServerMods (the game
+// server's resources port first, the master after), and a quest's plugin is
+// read by this game's own load order: a full plugin by the form id's top
+// byte, a light one at 0xFE by bits 12 to 23. The login never waits for the
+// list: until it comes every quest is reported as before, and a connection
+// whose list never comes stays so and says it once, "the server's plugin
+// list unavailable (<reason>): every quest reported as before (F3 off)".
+// With it: "the server serves <n> plugin(s): quests of <k> client-only
+// plugin(s) are this seat's own (<names>)", and the skipped reports are
+// counted, a line at most each SKIP_SAY_MS while the count moves and one at
+// the connection's end.
 export class QuestStageService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -378,6 +403,13 @@ export class QuestStageService extends ClientListener {
         this.flushRepeats(now);
         // the pacing: what the server's budget held, as the bucket refills
         this.drainSends(now);
+        // the client-only plugins' list: a reloaded plugin keeps its
+        // connection and hears no connectionAccepted, so its first update
+        // asks; and the skipped reports' line
+        if (this.pluginListAsked === 0) {
+            this.askPluginList();
+        }
+        this.saySkipped(now);
         // slice two's safety: a fragment mark whose stage event never came
         // within its window is taken back (callNative runs here, in the
         // update pass's VM context); the list is in order of expiry, and it
@@ -732,6 +764,9 @@ export class QuestStageService extends ClientListener {
         if (!this.runsEnabled() || !this.reports(questId)) {
             return;
         }
+        if (this.skipClientOnly(questId, true)) {
+            return;
+        }
         if (word === WORD_STOP && this.puppetScenes.has(questId)) {
             this.sayPuppetStop(questId);
             return;
@@ -907,6 +942,135 @@ export class QuestStageService extends ClientListener {
         logLab(TAG, line);
     }
 
+    // the client-only plugins' list for this connection, asked once (at the
+    // connection, or at the first update of a reloaded plugin): the server's
+    // own manifest first, then the master (SettingsService.getServerMods).
+    // Nothing waits for it; an answer to an earlier ask is dropped
+    private askPluginList() {
+        const asked = ++this.pluginListAsked;
+        let settings: SettingsService;
+        try {
+            settings = this.controller.lookupListener(SettingsService);
+        } catch (err) {
+            this.pluginListMissing(`no SettingsService here: ${err}`);
+            return;
+        }
+        let reason = "";
+        settings.getServerMods(true, (why) => {
+            reason = why;
+        }).then((mods) => {
+            if (asked === this.pluginListAsked) {
+                this.takePluginList(mods, reason);
+            }
+        }).catch((err) => {
+            if (asked === this.pluginListAsked) {
+                this.pluginListMissing(`${err}`);
+            }
+        });
+    }
+
+    // the server's plugins against this game's own load order (the read's
+    // mapping): a full plugin by its index, the form id's top byte, a light
+    // one by its index at 0xFE, bits 12 to 23; client-only when the server's
+    // manifest names no plugin of its name, case aside. The promise's answer
+    // comes in the update pass, where the Game calls run
+    // (LoadOrderVerificationService reads the light list there too)
+    private takePluginList(mods: Mod[], reason: string) {
+        const served = new Set<string>();
+        for (const mod of Array.isArray(mods) ? mods : []) {
+            const name = mod && typeof mod.filename === "string" ? mod.filename.toLowerCase() : "";
+            if (name.endsWith(".esm") || name.endsWith(".esp") || name.endsWith(".esl")) {
+                served.add(name);
+            }
+        }
+        if (served.size === 0) {
+            this.pluginListMissing(reason || "the manifest names no plugin");
+            return;
+        }
+        const full = new Set<number>();
+        const light = new Set<number>();
+        const names: string[] = [];
+        try {
+            const game = this.sp.Game;
+            const fullCount = game.getModCount();
+            for (let i = 0; i < fullCount; i++) {
+                const name = game.getModName(i);
+                if (typeof name === "string" && !served.has(name.toLowerCase())) {
+                    full.add(i);
+                    names.push(name);
+                }
+            }
+            const lightCount = game.getLightModCount();
+            for (let i = 0; i < lightCount; i++) {
+                const name = game.getLightModName(i);
+                if (typeof name === "string" && !served.has(name.toLowerCase())) {
+                    light.add(i);
+                    names.push(name);
+                }
+            }
+        } catch (err) {
+            this.pluginListMissing(`this game's load order unreadable: ${err}`);
+            return;
+        }
+        this.clientOnly = { full, light };
+        logLab(TAG, `the server serves ${served.size} plugin(s): quests of ${names.length} client-only plugin(s) are this seat's own (${names.length > 0 ? names.join(", ") : "none"})`);
+    }
+
+    // no list this connection: every quest reported as before, said once
+    private pluginListMissing(reason: string) {
+        this.clientOnly = undefined;
+        if (this.pluginListMissSaid) {
+            return;
+        }
+        this.pluginListMissSaid = true;
+        logLab(TAG, `the server's plugin list unavailable (${reason}): every quest reported as before (F3 off)`);
+    }
+
+    // whether the quest is a client-only plugin's by this game's own load
+    // order, a skipped report counted when it is; false while no list holds
+    private skipClientOnly(questId: number, word: boolean): boolean {
+        const list = this.clientOnly;
+        if (!list) {
+            return false;
+        }
+        const index = questId >>> 24;
+        const own = index === 0xfe ? list.light.has((questId >>> 12) & 0xfff) : index < 0xfe && list.full.has(index);
+        if (!own) {
+            return false;
+        }
+        if (word) {
+            this.skippedWords++;
+        } else {
+            this.skippedStages++;
+        }
+        return true;
+    }
+
+    // the skipped reports' line: at most once each SKIP_SAY_MS, and only when
+    // the count moved
+    private saySkipped(now: number) {
+        const total = this.skippedStages + this.skippedWords;
+        if (total === this.skippedSaid || now < this.skipSayAt) {
+            return;
+        }
+        this.skippedSaid = total;
+        this.skipSayAt = now + SKIP_SAY_MS;
+        logLab(TAG, `${total} report(s) of client-only plugins' quests skipped on this connection (${this.skippedStages} stage(s), ${this.skippedWords} run word(s)): this seat's own, never reported`);
+    }
+
+    // a connection's end: its last count said whole, then the counts start
+    // over for the next
+    private endSkipped() {
+        if (this.skippedStages + this.skippedWords > this.skippedSaid) {
+            this.skipSayAt = 0;
+            this.saySkipped(Date.now());
+        }
+        this.skippedStages = 0;
+        this.skippedWords = 0;
+        this.skippedSaid = 0;
+        this.skipSayAt = 0;
+    }
+
     // the acting scope for a live apply (the class comment): the server's
     // acting player for the pair, its figure here or 0; none for a served
     // apply, for a relay with no stamp, or for this seat's own actor
@@ -976,6 +1140,9 @@ export class QuestStageService extends ClientListener {
         if (!this.reports(questId)) {
             return;
         }
+        if (this.skipClientOnly(questId, false)) {
+            return;
+        }
         if (this.repeated(questId, e.stage)) {
             return; // the same stage again within its window: dropped and counted
         }
@@ -1030,7 +1197,10 @@ export class QuestStageService extends ClientListener {
     // the run state anew). The x-quest-runs rules: a login load's hold the
     // connection cut ends with its line, the pacing starts from the new
     // connection's full bucket, and the puppet rule's lines are said anew
-    // (its marks stay: they are this engine's, not the connection's)
+    // (its marks stay: they are this engine's, not the connection's); the
+    // last connection's skipped count is said whole, and the client-only
+    // plugins' list is asked anew, every quest reported as before until it
+    // comes
     private onConnectionAccepted() {
         this.arrivalDone();
         this.applyingRuns.clear();
@@ -1041,6 +1211,10 @@ export class QuestStageService extends ClientListener {
         this.endLoginLoad(" (a new connection came before the arrival)");
         this.resetSends();
         this.puppetStopSaid.clear();
+        this.endSkipped();
+        this.clientOnly = undefined;
+        this.pluginListMissSaid = false;
+        this.askPluginList();
     }
 
     // the login's arrival, from the update pass: once this connection's own
@@ -1102,11 +1276,6 @@ export class QuestStageService extends ClientListener {
         return !s || s["storyArrivalAtLogin"] !== false;
     }
 
-    // whether a stage this game set on the quest is the world's to report:
-    // nothing before the server's login message; in mode list the listed
-    // quests; in mode all every quest but the denied (memo D58 B), a
-    // start-game-enabled one included, which the server refuses unless it
-    // is allowed (memo D62; the class comment says why the filter is its)
     // the repeat window: true when this game reported the same stage of the
     // quest within REPORT_REPEAT_MS (the repeat is counted and dropped); a
     // new stage, or the same one past the window, starts a new window and
@@ -1152,6 +1321,14 @@ export class QuestStageService extends ClientListener {
         });
     }
 
+    // whether a stage or a run word this game raised on the quest is the
+    // world's to report: nothing before the server's login message, never a
+    // player-class quest (the login's `player`, D-Q1); in mode list the
+    // listed quests; in mode all every quest but the denied (memo D58 B),
+    // the start-game-enabled ones included since rung 5 retired memo D62's
+    // `allowed` list and the server's own-start refusal (W1 B). A quest of a
+    // plugin the server does not serve is skipped after this, once the
+    // connection's plugin list came (skipClientOnly)
     private reports(questId: number): boolean {
         if (this.mode === undefined || this.playerQuests.indexOf(questId) >= 0) {
             return false; // nothing before the login's list; a player-class quest never
@@ -1340,4 +1517,18 @@ export class QuestStageService extends ClientListener {
     // connection said
     private puppetScenes = new Map<number, number>();
     private puppetStopSaid = new Set<number>();
+    // a client-only plugin's quest: the client-only plugins by this game's
+    // own load order (a full plugin by its index, a light one by its index
+    // at 0xFE), once this connection's list came, and undefined until then
+    // and for a connection whose list never comes (every quest reported as
+    // before); the asks so far (an answer to an earlier one is dropped);
+    // whether this connection said its fallback line; the skipped reports
+    // and their line's state
+    private clientOnly: { full: Set<number>; light: Set<number> } | undefined;
+    private pluginListAsked = 0;
+    private pluginListMissSaid = false;
+    private skippedStages = 0;
+    private skippedWords = 0;
+    private skippedSaid = 0;
+    private skipSayAt = 0;
 }

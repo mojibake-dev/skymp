@@ -1428,7 +1428,27 @@ void PartOne::Init()
     if (serverState.UserByActor(&listener) == Networking::InvalidUserId) {
       return;
     }
-    EnsureFated(actor, listener);
+    // the roll's loader: the game hosting the actor's cell when one does
+    // (its engine runs the actor; the sighting's reporter), else the game
+    // it is served to, the first with a user in the subscribe loop's order
+    MpActor* host = worldState.HostOf(actor);
+    MpActor& loader =
+      host && serverState.UserByActor(host) != Networking::InvalidUserId
+      ? *host
+      : listener;
+    try {
+      EnsureFated(actor, loader);
+    } catch (const std::exception& e) {
+      // a roll that throws never unwinds the subscribe it runs in (a login's
+      // ForceSubscriptionsUpdate, SetUserActor's sends behind it): the actor
+      // is served as the roll left it, unrolled, one line per actor
+      static std::unordered_set<uint32_t> warned;
+      if (warned.insert(actor.GetFormId()).second) {
+        spdlog::error("PartOne - npc-fate: {:x}'s roll at its create word "
+                      "to {:x} threw, the actor served unrolled: {}",
+                      actor.GetFormId(), listener.GetFormId(), e.what());
+      }
+    }
   };
   worldState.onDeathState = [this](MpActor& actor, bool isDead) {
     OnDeathState(actor, isDead);
@@ -1615,12 +1635,16 @@ void PartOne::Init()
     message.transform.rot = { emitterRot.x, emitterRot.y, emitterRot.z };
     message.transform.worldOrCell = worldOrCell;
 
-    // thuum ADR-050 decision 3 (train 51): a server-made NPC's fate goes
-    // ahead of its create word to each subscriber (a game-file actor's rides
-    // the ring pass at the square change, SendFates), so the copy's engine
-    // rolls the server's roll inside its placement
-    if (emitterAsActor && emitter->GetFormId() >= 0xff000000 &&
-        !emitterAsActor->IsCreatedAsPlayer() &&
+    // thuum ADR-050 decision 3 (train 51) and docs/verbs/npc-fate.md
+    // (playtest 51): a fated NPC's fate goes ahead of each of its create
+    // words, a server-made copy's (its engine rolls the server's roll inside
+    // its placement) and a game-file actor's alike. The pass fates a square
+    // once per game, so an actor rolled at one game's pass and moved into a
+    // square another game had fated (a sighting, a MoveTo) reached that
+    // game with its create word alone, and its engine kept its own roll. A
+    // repeat costs the game nothing: its ActorFateService runs the late
+    // path only when the fate's base, worn list or rows changed
+    if (emitterAsActor && !emitterAsActor->IsCreatedAsPlayer() &&
         emitterAsActor->GetFateLevel().has_value()) {
       ActorFateMessage fateMessage;
       fateMessage.fates.push_back(FateOf(worldState, *emitterAsActor));
@@ -2288,10 +2312,11 @@ uint16_t PartOne::FateRollLevel(MpActor& loader, uint32_t cellOrWorld,
     1, static_cast<uint16_t>(sum / static_cast<uint32_t>(party.size())));
 }
 
-bool PartOne::EnsureFated(MpActor& actor, MpActor& loader)
+bool PartOne::EnsureFated(MpActor& actor, MpActor& loader,
+                          const MpActor* walker)
 {
   // a game-file actor alone, as the walk's: a server-made NPC rolls at its
-  // placement (PlaceAtMe) and its fate rides each create word (onSubscribe)
+  // placement (PlaceAtMe)
   if (actor.GetFormId() >= 0xff000000 || !actor.CanRollFate()) {
     return false;
   }
@@ -2304,20 +2329,25 @@ bool PartOne::EnsureFated(MpActor& actor, MpActor& loader)
     return false;
   }
   // the actor's square as the pass fates it (the grid's own, truncated
-  // toward zero): the games whose pass has fated it hear the fate now, the
-  // rest at their own pass
+  // toward zero). The games in its 3x3 get their create word now, the fate
+  // ahead of it (onSubscribe), and the walker gets it in its batch; every
+  // other game whose pass has fated the square, the ring beyond the 3x3,
+  // hears it here, as that pass will not come there again
   const uint32_t cellOrWorld =
     actor.GetCellOrWorld().ToFormId(worldState.espmFiles);
   const NiPoint3& pos = actor.GetPos();
-  const Impl::Square square{ cellOrWorld, static_cast<int16_t>(pos.x / 4096),
-                             static_cast<int16_t>(pos.y / 4096) };
+  const auto sx = static_cast<int16_t>(pos.x / 4096);
+  const auto sy = static_cast<int16_t>(pos.y / 4096);
+  const Impl::Square square{ cellOrWorld, sx, sy };
+  const auto& inReach =
+    worldState.GetGrids()[cellOrWorld].grid->GetNeighboursByPosition(sx, sy);
   ActorFateMessage msg;
   msg.fates.push_back(FateOf(worldState, actor));
   size_t told = 0;
   for (Networking::UserId userId = 0; userId <= serverState.maxConnectedId;
        ++userId) {
     MpActor* player = serverState.ActorByUser(userId);
-    if (!player) {
+    if (!player || player == walker || inReach.count(player)) {
       continue;
     }
     const auto fated = pImpl->fatedSquares.find(player->GetFormId());
@@ -2327,11 +2357,11 @@ bool PartOne::EnsureFated(MpActor& actor, MpActor& loader)
     GetSendTarget().Send(userId, msg, true);
     ++told;
   }
-  spdlog::info("PartOne - npc-fate: {:x} fated at level {} at its first "
-               "serve, to {:x}; its fate sent to {} game(s) whose pass fated "
-               "its square ({}, {}) in {:x}",
-               actor.GetFormId(), level, loader.GetFormId(), told,
-               std::get<1>(square), std::get<2>(square), cellOrWorld);
+  spdlog::info("PartOne - npc-fate: {:x} fated at level {} ({:x}'s) at its "
+               "first serve; its fate sent to {} game(s) beyond its 3x3 "
+               "whose pass fated its square ({}, {}) in {:x}",
+               actor.GetFormId(), level, loader.GetFormId(), told, sx, sy,
+               cellOrWorld);
   return true;
 }
 
@@ -2398,12 +2428,9 @@ void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
       }
       // an actor loaded where no game had it in reach (a lookup, another
       // actor's square change), so served to none, rolls here at this pass's
-      // level, its fate to every game whose pass has fated the square, this
-      // one's among them (EnsureFated); a rolled one's rides the batch
-      if (EnsureFated(*actor, player)) {
-        ++sent;
-        continue;
-      }
+      // level; its fate rides this batch, and EnsureFated tells the other
+      // games whose pass has fated the square
+      EnsureFated(*actor, player, &player);
       msg.fates.push_back(FateOf(worldState, *actor));
       if (msg.fates.size() >= kFatesPerMessage) {
         flush();

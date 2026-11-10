@@ -234,6 +234,42 @@ std::optional<size_t> FirstCreateAt(PartOne& p, Networking::UserId user,
   return std::nullopt;
 }
 
+// the words naming the actor of `idx` by its idx (an equipment word, a
+// property, a teleport) sent to `user` ahead of message `before`: what its
+// game would read about it ahead of its create word there
+size_t IdxWordsBefore(PartOne& p, Networking::UserId user, uint32_t idx,
+                      size_t before)
+{
+  size_t n = 0;
+  auto& messages = p.Messages();
+  for (size_t i = 0; i < before && i < messages.size(); ++i) {
+    const auto& m = messages[i];
+    if (m.userId == user && m.j.is_object() && m.j.contains("idx") &&
+        m.j["idx"] == idx) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+// the first fate naming `refrId` among the messages sent to `user`
+std::optional<ActorFateMessage::Fate> FirstFateOf(PartOne& p,
+                                                  Networking::UserId user,
+                                                  uint32_t refrId)
+{
+  const auto at = FirstFateAt(p, user, refrId);
+  if (!at) {
+    return std::nullopt;
+  }
+  auto fate = dynamic_cast<ActorFateMessage*>(p.Messages()[*at].message.get());
+  for (const auto& f : fate->fates) {
+    if (f.refrId == refrId) {
+      return f;
+    }
+  }
+  return std::nullopt;
+}
+
 // the server's log lines while it lives (StandingTest's idiom)
 struct LogCapture
 {
@@ -1808,6 +1844,16 @@ TEST_CASE("An indoor resident the host's sighting moves into a square its "
   REQUIRE(fateAt.has_value());
   REQUIRE(createAt.has_value());
   REQUIRE(*fateAt < *createAt);
+  // and nothing else of his reaches c1 ahead of that word: the roll's
+  // equipment word went to the listeners with a user he had (none), not
+  // through his own listening to his cell's host, c1 (the review of
+  // 062e9065, note 1)
+  REQUIRE(IdxWordsBefore(p, 0, faendal.GetIdx(), *createAt) == 0);
+  for (size_t i = 0; i < *createAt; ++i) {
+    auto word =
+      dynamic_cast<UpdateEquipmentMessage*>(p.Messages()[i].message.get());
+    REQUIRE_FALSE((word && word->idx == faendal.GetIdx()));
+  }
   {
     auto fate =
       dynamic_cast<ActorFateMessage*>(p.Messages()[*fateAt].message.get());
@@ -1854,12 +1900,15 @@ TEST_CASE("An indoor resident the host's sighting moves into a square its "
 // Teleport: the sighting's three sets behind a teleport word), and a
 // lookup's or an alias's load the same. Sigrid 0x13483, placed in Alvor's
 // house (CellHostTest's resident), is moved to c1's landing: she rolls once,
-// at her first create word, c1 hearing her fate once and ahead of it; her
-// next serve rolls nothing and sends no fate, and a second game landing
-// beside her hears her fate once, from its own pass.
+// at her first create word, c1 hearing her fate ahead of it, and c2, two
+// squares east (its pass fated her square, its 3x3 is short of her), hears
+// the same fate then with no create word (the review of 062e9065, note 8);
+// her next create word to c1 rolls nothing and carries the same fate again,
+// and c2 hears nothing more.
 TEST_CASE("A script's MoveTo of a resident nothing rolled into a square a "
-          "pass fated rolls her once at her create word; a later serve rolls "
-          "nothing, and each game hears her fate once",
+          "pass fated rolls her once at her create word, her fate ahead of "
+          "every create word and to a game beyond her 3x3 whose pass fated "
+          "the square",
           "[NpcFate][espm]")
 {
   enum : uint32_t
@@ -1878,6 +1927,12 @@ TEST_CASE("A script's MoveTo of a resident nothing rolled into a square a "
   record.level = 14;
   first.SetActorValueRecord(record);
   p.SetUserActor(0, kFirst);
+  // c2 has no record, so the roll's level is c1's alone (the party's mean)
+  DoConnect(p, 1);
+  p.CreateActor(kSecond, kLanding + NiPoint3{ 2 * 4096.f, 0.f, 0.f }, 0,
+                kTamriel);
+  auto& second = p.worldState.GetFormAt<MpActor>(kSecond);
+  p.SetUserActor(1, kSecond);
   p.TickCellHosts(FateNowMs());
 
   // loaded where the files place her, as a host's sighting loads her
@@ -1895,10 +1950,12 @@ TEST_CASE("A script's MoveTo of a resident nothing rolled into a square a "
       LocationalData{ pos, { 0.f, 0.f, 0.f }, FormDesc::Tamriel() });
   };
 
-  // the MoveTo: her first create word, to c1, carries her roll at c1's level
+  // the MoveTo: her first create word, to c1, carries her roll at c1's
+  // level with her fate ahead of it; c2 hears the fate alone
   p.Messages().clear();
   moveTo(kLanding + NiPoint3{ 150.f, 0.f, 0.f });
   REQUIRE(sigrid.GetListeners().count(&first) == 1);
+  REQUIRE(sigrid.GetListeners().count(&second) == 0);
   REQUIRE_FALSE(sigrid.CanRollFate());
   REQUIRE(sigrid.GetFateLevel() == std::optional<uint16_t>(14));
   REQUIRE(sigrid.GetChangeForm().baseContainerAdded);
@@ -1908,6 +1965,12 @@ TEST_CASE("A script's MoveTo of a resident nothing rolled into a square a "
   REQUIRE(fateAt.has_value());
   REQUIRE(createAt.has_value());
   REQUIRE(*fateAt < *createAt);
+  REQUIRE(IdxWordsBefore(p, 0, sigrid.GetIdx(), *createAt) == 0);
+  REQUIRE(FatesOf(p, 1, kSigrid) == 1);
+  REQUIRE_FALSE(FirstCreateAt(p, 1, kSigrid).has_value());
+  const auto fated = FirstFateOf(p, 0, kSigrid);
+  REQUIRE(fated.has_value());
+  REQUIRE(FirstFateOf(p, 1, kSigrid) == fated);
   {
     // the word carries the record's equipment, and what she wears she holds
     auto create =
@@ -1925,27 +1988,21 @@ TEST_CASE("A script's MoveTo of a resident nothing rolled into a square a "
   }
   const std::string rolled = sigrid.GetInventory().ToJson().dump();
 
-  // out of c1's reach and back: a second create word, no roll and no fate
-  moveTo(kLanding + NiPoint3{ 3 * 4096.f, 0.f, 0.f });
+  // out of both games' reach, west, and back to c1: a second create word,
+  // no roll, the same fate ahead of it; c2 hears nothing
+  moveTo(kLanding - NiPoint3{ 3 * 4096.f, 0.f, 0.f });
   REQUIRE(sigrid.GetListeners().count(&first) == 0);
   p.Messages().clear();
   moveTo(kLanding + NiPoint3{ 200.f, 0.f, 0.f });
   REQUIRE(sigrid.GetListeners().count(&first) == 1);
-  REQUIRE(FirstCreateAt(p, 0, kSigrid).has_value());
-  REQUIRE(FatesOf(p, 0, kSigrid) == 0);
-  REQUIRE(sigrid.GetFateLevel() == std::optional<uint16_t>(14));
-  REQUIRE(sigrid.GetInventory().ToJson().dump() == rolled);
-
-  // a second game lands beside her: its login's create word rolls nothing,
-  // its pass sends her fate once, and c1 hears none
-  DoConnect(p, 1);
-  p.CreateActor(kSecond, kLanding + NiPoint3{ 300.f, 0.f, 0.f }, 0, kTamriel);
-  p.Messages().clear();
-  p.SetUserActor(1, kSecond);
-  p.TickCellHosts(FateNowMs() + 1'000);
-  REQUIRE(FirstCreateAt(p, 1, kSigrid).has_value());
-  REQUIRE(FatesOf(p, 1, kSigrid) == 1);
-  REQUIRE(FatesOf(p, 0, kSigrid) == 0);
+  REQUIRE(FatesOf(p, 0, kSigrid) == 1);
+  const auto againAt = FirstFateAt(p, 0, kSigrid);
+  const auto recreatedAt = FirstCreateAt(p, 0, kSigrid);
+  REQUIRE(againAt.has_value());
+  REQUIRE(recreatedAt.has_value());
+  REQUIRE(*againAt < *recreatedAt);
+  REQUIRE(FirstFateOf(p, 0, kSigrid) == fated);
+  REQUIRE(FatesOf(p, 1, kSigrid) == 0);
   REQUIRE(sigrid.GetFateLevel() == std::optional<uint16_t>(14));
   REQUIRE(sigrid.GetInventory().ToJson().dump() == rolled);
 
@@ -1959,10 +2016,11 @@ TEST_CASE("A script's MoveTo of a resident nothing rolled into a square a "
 // actor the grid loaded where no game had it in reach (here a lookup's
 // load; another actor's square change loads a 3x3 the same) is served to
 // no game until a pass reaches its square: the walk rolls it there, at the
-// walker's level, and sends its fate once; the create word that follows
-// when the walker comes up rolls nothing more and sends no second fate.
+// walker's level, and its batch sends the fate once; the create word that
+// follows when the walker comes up rolls nothing more and carries the same
+// fate ahead of it.
 TEST_CASE("An actor the pass's walk rolled is not rolled again at its create "
-          "word, and its walker hears its fate once",
+          "word, which carries the walk's fate ahead of it",
           "[NpcFate][espm]")
 {
   constexpr uint32_t kWalker = 0xff000d53;
@@ -1991,17 +2049,80 @@ TEST_CASE("An actor the pass's walk rolled is not rolled again at its create "
   REQUIRE(predator.GetFateLevel() == std::optional<uint16_t>(17));
   REQUIRE(predator.GetListeners().count(&walker) == 0);
   REQUIRE(FatesOf(p, 0, kPredator) == 1);
+  const auto walked = FirstFateOf(p, 0, kPredator);
+  REQUIRE(walked.has_value());
   const std::string rolled = predator.GetInventory().ToJson().dump();
 
-  // the walker comes up: its create word rolls nothing, no fate follows
+  // the walker comes up: its create word rolls nothing and carries the
+  // walk's fate ahead of it
   p.Messages().clear();
   walker.SetPos(kForest);
   REQUIRE(predator.GetListeners().count(&walker) == 1);
-  REQUIRE(FirstCreateAt(p, 0, kPredator).has_value());
-  REQUIRE(FatesOf(p, 0, kPredator) == 0);
+  REQUIRE(FatesOf(p, 0, kPredator) == 1);
+  const auto fateAt = FirstFateAt(p, 0, kPredator);
+  const auto createAt = FirstCreateAt(p, 0, kPredator);
+  REQUIRE(fateAt.has_value());
+  REQUIRE(createAt.has_value());
+  REQUIRE(*fateAt < *createAt);
+  REQUIRE(FirstFateOf(p, 0, kPredator) == walked);
   REQUIRE(predator.GetFateLevel() == std::optional<uint16_t>(17));
   REQUIRE(predator.GetInventory().ToJson().dump() == rolled);
 
   DoDisconnect(p, 0);
   p.DestroyActor(kWalker);
+}
+
+// thuum playtest 51 (the review of 062e9065, notes 2 and 8): a login's
+// create words for the actors in its 3x3 are each its actor's first
+// serve, so each carries a roll made at the login's level, with the
+// actor's fate ahead of it, and nothing else about the actor (an equipment
+// word, a property) reaches the game ahead of that word. The login's first
+// pass then sends the fates again, which the game takes for free while
+// they are the same.
+TEST_CASE("A login's create words carry the rolls of the actors in its 3x3, "
+          "each behind its actor's fate and nothing else of it",
+          "[NpcFate][espm]")
+{
+  constexpr uint32_t kGuest = 0xff000d54;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kGuest, kForest, 0, kTamriel);
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuest);
+  ActorValueRecord record;
+  record.level = 21;
+  guest.SetActorValueRecord(record);
+  p.Messages().clear();
+  p.SetUserActor(0, kGuest);
+
+  size_t served = 0;
+  bool predatorServed = false;
+  auto& messages = p.Messages();
+  for (size_t i = 0; i < messages.size(); ++i) {
+    auto create = dynamic_cast<CreateActorMessage*>(messages[i].message.get());
+    if (messages[i].userId != 0 || !create || !create->refrId ||
+        *create->refrId >= 0xff000000) {
+      continue;
+    }
+    const auto refrId = static_cast<uint32_t>(*create->refrId);
+    const auto& form = p.worldState.LookupFormByIdNoLoad(refrId);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    // a reference that is no actor, or a body (it rolls at its first open)
+    if (!actor || actor->IsDead()) {
+      continue;
+    }
+    INFO("actor " << std::hex << refrId);
+    REQUIRE(actor->GetFateLevel() == std::optional<uint16_t>(21));
+    const auto fateAt = FirstFateAt(p, 0, refrId);
+    REQUIRE(fateAt.has_value());
+    REQUIRE(*fateAt < i);
+    REQUIRE(IdxWordsBefore(p, 0, actor->GetIdx(), i) == 0);
+    predatorServed = predatorServed || refrId == kPredator;
+    ++served;
+  }
+  REQUIRE(served > 0);
+  REQUIRE(predatorServed);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kGuest);
 }

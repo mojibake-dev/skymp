@@ -300,8 +300,17 @@ void MpActor::EquipBestWeapon()
   UpdateEquipmentMessage msg;
   msg.data = newEq;
   msg.idx = GetIdx();
+  // thuum docs/verbs/npc-fate.md (playtest 51): the word is a game's, so a
+  // listener with a user hears it, directly (UpdateHoster's rule).
+  // GetActorToSendTo handed an offline listener's copy, the actor's own
+  // among them (it listens to itself), to its cell's host, which at a roll
+  // ahead of a create word (PartOne::EnsureFated) had no copy of the actor
+  // yet: an UpdateEquipment for an idx its game did not know
   for (auto listener : GetActorListeners()) {
-    listener->GetActorToSendTo().SendToUser(msg, true);
+    if (listener->GetUserId() == Networking::InvalidUserId) {
+      continue;
+    }
+    listener->SendToUser(msg, true);
   }
 }
 
@@ -2365,6 +2374,15 @@ bool MpActor::RollFateIfUnrolled(uint16_t level)
     return false;
   }
   auto worldState = GetParent();
+  // the level is this roll's alone: a roll can run inside the fate pass's
+  // chunk load (a create word there, PartOne::EnsureFated), whose own level
+  // stands again after it, a throw's unwinding included
+  struct LoaderLevelRestore
+  {
+    std::optional<uint16_t>& slot;
+    const std::optional<uint16_t> outer;
+    ~LoaderLevelRestore() { slot = outer; }
+  } restore{ worldState->fateLoaderLevel, worldState->fateLoaderLevel };
   worldState->fateLoaderLevel = level;
   // the inventory stays: Init rolled nothing for this actor (CanRollFate
   // held there too), so what it holds was put, and the roll lands beside
@@ -2377,7 +2395,6 @@ bool MpActor::RollFateIfUnrolled(uint16_t level)
   EnsureTemplateChainEvaluated(worldState->GetEspm());
   EnsureBaseContainerAdded(worldState->GetEspm());
   EquipBestWeapon();
-  worldState->fateLoaderLevel.reset();
   return true;
 }
 

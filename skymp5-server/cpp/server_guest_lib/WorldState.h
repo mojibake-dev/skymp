@@ -390,7 +390,8 @@ public:
   // actor's coming subscription to an actor listener
   // (MpObjectReference::Subscribe, ahead of the listener's place in its sets
   // and of its create word); installed by PartOne, which rolls a game-file
-  // actor with no roll yet there at a player listener's level
+  // actor with no roll yet there, for a player listener, at the level of the
+  // game hosting the actor's cell, else of that listener
   // (PartOne::EnsureFated), so no create word carries an unrolled record
   std::function<void(MpActor& actor, MpActor& listener)> onActorSubscribe;
   // thuum ADR-068 rung 4 (amendment B, read 8): a game-file reference just

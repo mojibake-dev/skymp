@@ -48,6 +48,11 @@ Napi::Value SetActingPlayer(const Napi::CallbackInfo& info);
 // scope requested the pair here (relayed, or chained by a scoped stack), 0
 // for none; the C2S QuestStage's `acting`
 Napi::Value GetActingPlayer(const Napi::CallbackInfo& info);
+// setPlayerGlobals(globalFormIds): PQ-3's set, the globals each player keeps
+// (the PlayerGlobals watch list), replaced whole; a scoped stack's
+// GlobalVariable.SetValue on one is skipped. The JS thread alone, no game
+// call; true when stored
+Napi::Value SetPlayerGlobals(const Napi::CallbackInfo& info);
 // isPerformingAction(actorFormId): whether the engine's action entry is open
 // on the actor right now (Hosted::IsPerforming, the hook's mark); read
 // inside a sendAnimationEvent hook handler, where the game thread waits, it
@@ -218,6 +223,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "getActingPlayer",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetActingPlayer)));
+  exports.Set(
+    "setPlayerGlobals",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPlayerGlobals)));
   exports.Set("isPerformingAction",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(IsPerformingAction)));

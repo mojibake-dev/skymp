@@ -430,6 +430,30 @@ Napi::Value PuppetApi::GetActingPlayer(const Napi::CallbackInfo& info)
                            ActingScope::ServerIdOf(questId, stage));
 }
 
+// thuum ADR-068 rung 5, PQ-3 (docs/research/rung5-quests-2026-11-09.md
+// 8(a); ActingScope.h, PlayerGlobals): the globals each player keeps,
+// skymp5-client's PlayerGlobals watch list (the server's playerGlobals, the
+// marked quests' globals composed in), replaced whole at each call ([]
+// clears it); inside another player's acting scope the seam skips a
+// GlobalVariable.SetValue on one. setTriggerPresserExempt's shape: the JS
+// thread alone, no game call, logged for the lab
+Napi::Value PuppetApi::SetPlayerGlobals(const Napi::CallbackInfo& info)
+{
+  const auto globals = NapiHelper::ExtractArray(info[0], "globalFormIds");
+  std::vector<uint32_t> ids;
+  const uint32_t n = globals.Length();
+  ids.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "globalFormIds[" + std::to_string(i) + "]";
+    ids.push_back(NapiHelper::ExtractUInt32(globals.Get(i), name.c_str()));
+  }
+  ActingScope::PlayerGlobals::Set(ids);
+  logger::info("[verb:quests] setPlayerGlobals: {} global(s) a scoped stack "
+               "never writes here (PQ-3)",
+               ActingScope::PlayerGlobals::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 // isPerformingAction(actorFormId): the hook's mark, on from the action
 // entry's enter to its leave (FridaHooks.cpp OnPerformActionEnter)
 Napi::Value PuppetApi::IsPerformingAction(const Napi::CallbackInfo& info)

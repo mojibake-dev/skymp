@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 // thuum docs/DECISIONS.md ADR-068 rung 5 (D-F1 C: every seat's VM applies
 // every stage; D-Q3 A: the live relay runs the fragment, a replay skips it)
@@ -30,7 +31,9 @@
 // - joined stacks, a stack id to its scope, kept for the stack's life (at
 //   most kJoinedMs)
 // Cleared at a game load (PapyrusTESModPlatform.cpp's load sink): a stack id
-// names nothing in the new world.
+// names nothing in the new world. Beside them, PQ-3's set (the plan's
+// section 8(a)): the globals each player keeps, whose SetValue a scoped
+// stack never runs here (PlayerGlobals below).
 namespace ActingScope {
 
 // a request's stage beside a quest stage's 0 to 65535 (setActingPlayer's
@@ -153,4 +156,20 @@ struct Counts
 };
 // the tables' sizes, for the setter's line
 Counts Count();
+
+// PQ-3 (docs/research/rung5-quests-2026-11-09.md 8(a), read 18: world
+// scripts call into the per-player quests' scripts, VC01's and C03Rampage's
+// VampireCure among them): the globals each player keeps (PlayerGlobals
+// 45's watch list, with the marked quests' globals composed into it:
+// PlayerIsVampire, VampireFeedReady), replaced whole by setPlayerGlobals
+// (PuppetApi.cpp). Inside another player's acting scope the seam skips a
+// GlobalVariable.SetValue on one (ScriptNatives.cpp), so a relayed fragment
+// that reaches a per-player script never writes this seat's own player's
+// global. Mutex-guarded, the size kept for a read with no lock; empty by
+// default
+namespace PlayerGlobals {
+void Set(const std::vector<uint32_t>& globalFormIds);
+bool Is(uint32_t globalFormId);
+size_t Count();
+}
 }

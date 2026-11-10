@@ -148,12 +148,27 @@ constexpr std::size_t kRowCount = std::size(kRows);
 // OwnedHere's and no lever skips its body (rung 4's fresh review, note 1). The
 // player's own hits and standing cross too and the client drops them: a
 // handful an encounter, and the batch crosses once a frame whatever it holds.
-// Every other state row is counted and, since rung 3, touched (QueueTouch)
+// Every other state row is counted and, since rung 3, touched (QueueTouch).
+// Since rung 5 (thuum ADR-068 rung 5's full build, Eli's D-Q2 word, "yes
+// full transformation"; docs/research/rung5-quests-2026-11-09.md 8(b)) the
+// transformation's six, a per-player quest's change to its own player:
+// Actor.SetRace, AddSpell, RemoveSpell, AddShout, RemoveShout and EquipItem
+// (FunctionsDump.txt: `SetRace(Race akRace)`, `Bool AddSpell(SPELL akSpell,
+// Bool abVerbose)`, `Bool RemoveSpell(SPELL akSpell)`, `Bool AddShout(Shout
+// akShout)`, `Bool RemoveShout(Shout akShout)`, `EquipItem(Form akItem, Bool
+// abPreventRemoval, Bool abSilent)`, none latent), batched with their typed
+// arguments on the seat's own player alone (OwnedHere's 0x14), so the
+// server records them beside RefState and the standing (R1: the form
+// argument must be one the calling script's attachment names, H-VR1); on any
+// other actor this seat owns each is a plain state row, counted and touched,
+// and a non-owned one is judged by the lever as every state row is
+// (a figure's copy of a twin's race is the server's appearance word's)
 enum class RecordRow : std::uint8_t
 {
   None,
   RefState,
-  Standing
+  Standing,
+  PlayerOwn
 };
 
 struct BatchedRowName
@@ -177,7 +192,13 @@ constexpr BatchedRowName kBatchedStateRows[] = {
   { "Actor", "RemoveFromFaction", RecordRow::Standing },
   { "Actor", "RemoveFromAllFactions", RecordRow::Standing },
   { "Actor", "SetCrimeFaction", RecordRow::Standing },
-  { "Actor", "SetRelationshipRank", RecordRow::Standing }
+  { "Actor", "SetRelationshipRank", RecordRow::Standing },
+  { "Actor", "SetRace", RecordRow::PlayerOwn },
+  { "Actor", "AddSpell", RecordRow::PlayerOwn },
+  { "Actor", "RemoveSpell", RecordRow::PlayerOwn },
+  { "Actor", "AddShout", RecordRow::PlayerOwn },
+  { "Actor", "RemoveShout", RecordRow::PlayerOwn },
+  { "Actor", "EquipItem", RecordRow::PlayerOwn }
 };
 
 // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
@@ -270,6 +291,11 @@ constexpr QuestRowName kQuestRows[] = { { "Quest", "SetCurrentStageID",
                                         { "Quest", "Start", QuestRow::Start },
                                         { "Quest", "Stop", QuestRow::Stop } };
 
+// PQ-3 (the plan's section 8(a)): the everyone row a scoped stack never runs
+// on a player's own global (ActingScope::PlayerGlobals)
+constexpr std::pair<const char*, const char*> kGlobalSetRow{ "GlobalVariable",
+                                                             "SetValue" };
+
 // at most 11 arguments (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
 // "native supports max 11")
 constexpr std::uint32_t kMaxArgs = 11;
@@ -307,6 +333,8 @@ struct RowInfo
   // kQuestRows, None for every other row
   bool getPlayer = false;
   QuestRow quest = QuestRow::None;
+  // PQ-3: GlobalVariable.SetValue's row (kGlobalSetRow)
+  bool globalSet = false;
   // the declared return's kind (TypeInfo::GetUnmangledRawType)
   RE::BSScript::TypeInfo::RawType result =
     RE::BSScript::TypeInfo::RawType::kNone;
@@ -339,8 +367,9 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // its firing window, queued as kind "look" and run here (D-W2 A); " (acting)"
 // a call the acting scope changed (rung 5, ActingScope.h: a self or an
 // argument naming the player's own actor swapped for the acting player's
-// figure, beside the call's own kind, or Game.GetPlayer's result swapped in
-// place of its " (local)"); no suffix,
+// figure, beside the call's own kind, Game.GetPlayer's result swapped in
+// place of its " (local)", or a player's own global's SetValue skipped in
+// place of its self's count, PQ-3); no suffix,
 // an owned self's state row, run here and counted, and since rung 3 touched
 // (QueueTouch: the script record's trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
@@ -1542,6 +1571,23 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     if (scope && info.quest != QuestRow::None) {
       PropagateScope(row, info, stack, top, selfId, *scope);
     }
+    // PQ-3 (the plan's section 8(a)): inside another player's acting scope
+    // a player's own global (setPlayerGlobals) is never written here: the
+    // body is skipped, the row's empty result returned (SetValue's None),
+    // counted " (acting)"; the acting player's own seat runs the call
+    // natively and its PlayerGlobals report carries the value
+    if (scope && info.globalSet && ActingScope::PlayerGlobals::Is(selfId)) {
+      marks.skip = true;
+      marks.result = info.result;
+      Count(row, kCountActing);
+      if (ActingScope::LineDue(scope->seq, ActingScope::Line::kSkip)) {
+        logger::info("[verb:quests] GlobalVariable.SetValue on {:x}, a "
+                     "player's own global, skipped inside acting player "
+                     "{:x}'s scope, stack {} (PQ-3)",
+                     selfId, scope->player.serverId, stack->stackID);
+      }
+      return marks;
+    }
     CountSelf(row, selfId);
     return marks;
   }
@@ -1632,10 +1678,13 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // (e) owned. A state row is the record's (ADR-065: the change form carries
   // it), counted; a batched one (Kill and KillSilent, ProcessTrapHit, and
   // since rung 4 the record rows) crosses in the batch with its arguments
-  // instead. Since rung 3 (thuum ADR-068, the script record) every other
+  // instead, a transformation row (rung 5) on the seat's own player alone.
+  // Since rung 3 (thuum ADR-068, the script record) every other
   // state row's call also crosses as a touch (QueueTouch): the owner's mark
   // that the self's or the calling script's state may have changed
-  if (native.kind == NativeKind::State && !info.batchedState) {
+  const bool batched = info.batchedState &&
+    (info.record != RecordRow::PlayerOwn || ref->formID == 0x14);
+  if (native.kind == NativeKind::State && !batched) {
     Count(row, kCountOwned);
     QueueTouch(row, info, stack, top, ref, isActor);
     return marks;
@@ -1712,6 +1761,8 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
       info.quest = questRow.quest;
     }
   }
+  info.globalSet = _stricmp(kRows[row].cls, kGlobalSetRow.first) == 0 &&
+    _stricmp(kRows[row].fn, kGlobalSetRow.second) == 0;
   // D-W2 A's look rows (the plan's section 7.2(a)): the action rows, the two
   // motion rows among kTrapRows, and the look-only rows
   info.look = kRows[row].kind == NativeKind::Action ||
@@ -1751,6 +1802,9 @@ const char* CrossingNote(const RowInfo& info)
       return ", batched (a ref state record row)";
     case RecordRow::Standing:
       return ", batched (a standing record row)";
+    case RecordRow::PlayerOwn:
+      return ", batched on the seat's own player alone (a transformation "
+             "row)";
     case RecordRow::None:
       break;
   }
@@ -2186,6 +2240,7 @@ void ScriptNatives::InstallHooks()
   for (const auto& questRow : kQuestRows) {
     WarnUnbound("acting quest", questRow.cls, questRow.fn);
   }
+  WarnUnbound("player global", kGlobalSetRow.first, kGlobalSetRow.second);
   // thuum ADR-068 D-S3: the trap family the gate and this seam read, named
   // once per process beside the table it extends (TrapFamily.h)
   TrapFamily::LogReady();

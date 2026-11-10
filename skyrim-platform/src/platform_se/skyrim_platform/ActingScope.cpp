@@ -4,6 +4,7 @@
 #include <chrono>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
 struct RequestEntry
@@ -47,6 +48,14 @@ struct
   std::atomic<size_t> armed{ 0 };
   std::atomic<size_t> requested{ 0 };
 } g_scope;
+
+// PQ-3's set (ActingScope.h, PlayerGlobals), Hosted.h's idiom
+struct
+{
+  std::unordered_set<uint32_t> ids;
+  std::mutex m;
+  std::atomic<size_t> size{ 0 };
+} g_playerGlobals;
 
 // the pair's key: the subject's form id high, the stage (a word or an entry
 // below 0, as its 32 bits) low
@@ -294,4 +303,31 @@ ActingScope::Counts ActingScope::Count()
   counts.arms = g_scope.arms.size();
   counts.joined = g_scope.joined.size();
   return counts;
+}
+
+void ActingScope::PlayerGlobals::Set(
+  const std::vector<uint32_t>& globalFormIds)
+{
+  std::lock_guard l(g_playerGlobals.m);
+  g_playerGlobals.ids.clear();
+  for (const uint32_t id : globalFormIds) {
+    if (id != 0) {
+      g_playerGlobals.ids.insert(id);
+    }
+  }
+  g_playerGlobals.size.store(g_playerGlobals.ids.size());
+}
+
+bool ActingScope::PlayerGlobals::Is(uint32_t globalFormId)
+{
+  if (g_playerGlobals.size.load(std::memory_order_relaxed) == 0) {
+    return false;
+  }
+  std::lock_guard l(g_playerGlobals.m);
+  return g_playerGlobals.ids.count(globalFormId) != 0;
+}
+
+size_t ActingScope::PlayerGlobals::Count()
+{
+  return g_playerGlobals.size.load(std::memory_order_relaxed);
 }

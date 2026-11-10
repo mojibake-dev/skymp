@@ -121,6 +121,32 @@ std::string Send(RE::TESObjectREFR* refr, std::string_view name,
 std::string SendTrigger(RE::TESObjectREFR* refr, std::string_view name,
                         RE::TESObjectREFR* actionRef);
 
+// thuum ADR-068 rung 5, D-T2 B (docs/research/rung5-quests-2026-11-09.md
+// 8(b): a vampire's script state kept per player, its game-time
+// registration re-issued at login): the OnUpdateGameTime registration the VM
+// queued for a VM handle (a script's Form.RegisterForUpdateGameTime or
+// RegisterForSingleUpdateGameTime on a quest or a reference), read so a
+// relaunched seat can register it again. Read on the calling thread under
+// SkyrimVM's own locks, no VM call
+struct GameTimeRegistration
+{
+  // RegisterForUpdateGameTime's (true) or the single update's
+  bool repeat = false;
+  // the game hours until it fires, and a repeat's interval (0 for a single)
+  float hoursLeft = 0.f;
+  float intervalHours = 0.f;
+  // the fields as read (UpdateDataEvent's updateTime and timeToSendEvent,
+  // SkyrimVM's currentVMDaysPassed), for the lab's line
+  std::uint32_t updateTime = 0;
+  std::uint32_t timeToSendEvent = 0;
+  std::uint32_t daysPassed = 0;
+};
+// false, with the reason, when none is queued for the handle, or on a
+// runtime whose SkyrimVM layout past `impl` CommonLib's header does not give
+// (1.7.x, the fork's overlay patch 07); the soonest one when several are
+bool ReadGameTimeRegistration(RE::VMHandle handle, GameTimeRegistration& out,
+                              std::string& why);
+
 // the references whose served script record waits for its apply, by form id
 // (setScriptRecordPending: skymp5-client's ScriptStateService raises it for
 // a record that carries its view and lowers it when it gives the record up,

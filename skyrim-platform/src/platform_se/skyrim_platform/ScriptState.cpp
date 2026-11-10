@@ -210,6 +210,7 @@ std::atomic<std::uint64_t> g_retryLines{ 0 };
 std::atomic<std::uint64_t> g_sendLines{ 0 };
 std::atomic<std::uint64_t> g_triggerSendLines{ 0 };
 std::atomic<std::uint64_t> g_triggerArmLines{ 0 };
+std::atomic<std::uint64_t> g_registrationLines{ 0 };
 
 bool LogThis(std::atomic<std::uint64_t>& lines)
 {
@@ -1710,6 +1711,84 @@ std::string ScriptState::SendTrigger(RE::TESObjectREFR* refr,
   } catch (...) {
   }
   return ExceptionAnswer(formId, "sent", what.c_str());
+}
+
+// thuum ADR-068 rung 5, D-T2 B: a handle's queued OnUpdateGameTime
+// registration. SkyrimVM's queuedOnUpdateGameEvents (CommonLibSSE-NG
+// include/RE/S/SkyrimVM.h:249) holds one UpdateDataEvent per registration
+// (:143-158: updateType kRepeat for RegisterForUpdateGameTime, kNoRepeat for
+// the single; timeToSendEvent, by the header's comment "updateTime +
+// currentVMMenuMode/currentVMDaysPassed"; updateTime; handle), read under
+// queuedOnUpdateEventLock (:246, the lock the header sets before both update
+// queues), and currentVMDaysPassed (:237, "Calender.GetDaysPassed() * 1000")
+// is the VM's game clock, read under currentVMTimeLock (:233); the two locks
+// are taken one after the other, never together. HYPOTHESIS H-VS3's premise
+// (named here H-GT1): the members past `impl` sit at the header's offsets on
+// 1.6.1170, and both times count thousandths of a game day, so the hours
+// left are (timeToSendEvent - currentVMDaysPassed) * 24 / 1000 and a
+// repeat's interval updateTime * 24 / 1000; the line's raw fields read it
+// against the script's own call (the first three reads and every hundredth).
+// Nothing is read on a 1.7.x runtime, where `impl` moved to 0x210 behind two
+// new event sinks (the fork's overlay patch 07, GetImpl's own test)
+bool ScriptState::ReadGameTimeRegistration(RE::VMHandle handle,
+                                           GameTimeRegistration& out,
+                                           std::string& why)
+{
+  const auto version = REL::Module::get().version();
+  if (version[0] == 1 && version[1] >= 7) {
+    why = "a 1.7.x runtime, where SkyrimVM's members past impl are unread "
+          "(the overlay's patch 07)";
+    return false;
+  }
+  auto* skyrimVM = RE::SkyrimVM::GetSingleton();
+  if (!skyrimVM) {
+    why = "no SkyrimVM";
+    return false;
+  }
+  std::uint32_t daysPassed = 0;
+  {
+    RE::BSSpinLockGuard guard{ skyrimVM->currentVMTimeLock };
+    daysPassed = skyrimVM->currentVMDaysPassed;
+  }
+  GameTimeRegistration found;
+  bool any = false;
+  {
+    RE::BSSpinLockGuard guard{ skyrimVM->queuedOnUpdateEventLock };
+    for (const auto& event : skyrimVM->queuedOnUpdateGameEvents) {
+      if (!event || event->handle != handle ||
+          (any && event->timeToSendEvent >= found.timeToSendEvent)) {
+        continue;
+      }
+      any = true;
+      found.repeat = event->updateType ==
+        RE::SkyrimVM::UpdateDataEvent::UpdateType::kRepeat;
+      found.updateTime = event->updateTime;
+      found.timeToSendEvent = event->timeToSendEvent;
+    }
+  }
+  if (!any) {
+    why = "no OnUpdateGameTime registration queued for it";
+    return false;
+  }
+  found.daysPassed = daysPassed;
+  const double left = found.timeToSendEvent > daysPassed
+    ? static_cast<double>(found.timeToSendEvent - daysPassed)
+    : 0.0;
+  found.hoursLeft = static_cast<float>(left * 24.0 / 1000.0);
+  found.intervalHours = found.repeat
+    ? static_cast<float>(static_cast<double>(found.updateTime) * 24.0 / 1000.0)
+    : 0.f;
+  if (LogThis(g_registrationLines)) {
+    logger::info("[verb:quests] OnUpdateGameTime registration of handle "
+                 "{:x}: {}, {} game hour(s) left, every {} (updateTime {}, "
+                 "timeToSendEvent {}, currentVMDaysPassed {}; H-GT1 reads "
+                 "thousandths of a game day)",
+                 handle, found.repeat ? "repeating" : "single",
+                 found.hoursLeft, found.intervalHours, found.updateTime,
+                 found.timeToSendEvent, found.daysPassed);
+  }
+  out = found;
+  return true;
 }
 
 bool ScriptState::Pending::Is(std::uint32_t formId)

@@ -415,9 +415,13 @@ struct QuestLog
     spdlog::set_default_logger(logger);
   }
   ~QuestLog() { spdlog::set_default_logger(old); }
+  // a line's end is "\n" here whatever the platform's: spdlog ends a line
+  // with SPDLOG_EOL, "\r\n" on Windows (the mirror's Windows ctest read 0
+  // for a count that ends its line), so the carriage returns are dropped
   size_t Count(const std::string& line) const
   {
-    const std::string log = oss.str();
+    std::string log = oss.str();
+    log.erase(std::remove(log.begin(), log.end(), '\r'), log.end());
     size_t n = 0;
     for (size_t at = log.find(line); at != std::string::npos;
          at = log.find(line, at + line.size())) {

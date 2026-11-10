@@ -270,6 +270,9 @@ public:
   ShoutRecord GetShoutRecord() const;
   // Adds the form to the record's list; false when it was there already
   bool RecordShoutEntry(ShoutEntry kind, const FormDesc& form);
+  // thuum ADR-068 rung 5 (a player's own RemoveShout): takes the form off
+  // the record's list; false when it was not there
+  bool ForgetShoutEntry(ShoutEntry kind, const FormDesc& form);
   // Whether the record's list holds the form (a form id in the server's
   // load order)
   bool HasShoutEntry(ShoutEntry kind, uint32_t formId) const;

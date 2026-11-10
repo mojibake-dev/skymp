@@ -29,7 +29,15 @@
 //! served at login to that player alone, so PlayerVampireQuest's
 //! VampireStatus, LastFeedTime and FeedTimer survive a relaunch without
 //! reaching anyone else. A world key reported `own`, or a player's key
-//! reported as the world's, is `E_SCRIPTVAR_PLAYER`.
+//! reported as the world's, is `E_SCRIPTVAR_PLAYER`. D-T2 B's own keys go
+//! beyond the condition-read ones: the composition also names, per
+//! player-class quest, the scalar variables its scripts declare (the
+//! census's `playerQuestVariables`: PlayerVampireQuestScript's LastFeedTime
+//! and FeedTimer beside VampireStatus) and the two reserved names of its
+//! game-time registration ([`GAME_TIME_HOURS`], [`GAME_TIME_REPEAT`], the
+//! platform's ReadScriptVariables reads them from SkyrimVM's queue), each a
+//! listed own key, watched and recorded like the others, bounded apart by
+//! [`VARIABLE_RECORD_CAP`] (the player's own record's cap).
 //!
 //! Refusals, logged by name: `E_SCRIPTVAR_UNLISTED` (a key the setting does
 //! not list), `E_SCRIPTVAR_PLAYER` (the cut), `E_SCRIPTVAR_KIND` (a kind
@@ -50,6 +58,16 @@ pub const VARIABLE_RECORD_CAP: usize = 1024;
 /// The longest script or variable name a key carries: the wire's
 /// PAPYRUS_NAME (wire-schema cap), so every listed key fits the message.
 pub const NAME_MAX: usize = 128;
+
+/// The reserved name of a form's queued OnUpdateGameTime registration: the
+/// game hours until it fires (skyrim-platform ScriptState.cpp's
+/// kGameTimeHours), a float own key; -1 records a registration the script
+/// ended, so a login registers nothing. No Papyrus identifier holds a '<'.
+pub const GAME_TIME_HOURS: &str = "<OnUpdateGameTime>";
+
+/// The reserved name of that registration's repeat interval in game hours,
+/// 0 for a single update (kGameTimeRepeat), a float own key.
+pub const GAME_TIME_REPEAT: &str = "<OnUpdateGameTime:repeat>";
 
 /// One condition-read variable: its form, its script and its variable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,11 +186,12 @@ pub enum Verdict {
     Refuse(Code, String),
 }
 
-/// The listed keys and the player class composed in.
+/// The listed keys and the player class composed in, with its own keys.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ScriptVariables {
     keys: Vec<Key>,
     player: Vec<FormDesc>,
+    own: Vec<Key>,
 }
 
 /// A name a key may carry: not empty, no NUL (the receiver's BSFixedString
@@ -218,14 +237,29 @@ impl ScriptVariables {
             }
             keys.push(key);
         }
-        Ok(Self { keys, player: Vec::new() })
+        Ok(Self { keys, player: Vec::new(), own: Vec::new() })
     }
 
     /// Compose the player class in (wire-rules quest_scope, while the scope
     /// acts): a listed key whose form is one of `quests` is its player's
-    /// own. Replaces any composed before.
-    pub fn set_player(&mut self, quests: &[FormDesc]) {
+    /// own, and so is each of `own` (D-T2 B: the quests' scalar variables
+    /// and their registration's two names) whose form is one of `quests`,
+    /// whose names fit and which the setting does not list already, each
+    /// once, at most [`VARIABLE_RECORD_CAP`]. Replaces any composed before;
+    /// answers how many of `own` it kept.
+    pub fn set_player(&mut self, quests: &[FormDesc], own: &[Key]) -> usize {
         self.player = quests.to_vec();
+        self.own.clear();
+        for key in own {
+            if self.own.len() >= VARIABLE_RECORD_CAP {
+                break;
+            }
+            let fits = name_fits(&key.script) && name_fits(&key.var) && self.is_own(key);
+            if fits && !self.keys.iter().chain(self.own.iter()).any(|k| k.is(key)) {
+                self.own.push(key.clone());
+            }
+        }
+        self.own.len()
     }
 
     /// The listed keys, in the setting's order.
@@ -234,10 +268,17 @@ impl ScriptVariables {
         &self.keys
     }
 
-    /// Whether the setting lists `key`.
+    /// The watch a login names: the listed keys in the setting's order, then
+    /// the composed own keys in theirs.
+    #[must_use]
+    pub fn watch(&self) -> Vec<&Key> {
+        self.keys.iter().chain(self.own.iter()).collect()
+    }
+
+    /// Whether `key` is listed: by the setting, or composed as an own key.
     #[must_use]
     pub fn is_listed(&self, key: &Key) -> bool {
-        self.keys.iter().any(|k| k.is(key))
+        self.keys.iter().chain(self.own.iter()).any(|k| k.is(key))
     }
 
     /// Whether `key`'s form is of the composed player class: the key is its
@@ -400,7 +441,7 @@ mod tests {
         assert_eq!(list.judge(&[], &status(), Value::Int(2), false), Verdict::Recorded);
         assert!(matches!(list.judge(&[], &status(), Value::Int(2), true), Verdict::Refuse(Code::Player, _)));
         // derived: its player's own, recorded on its record, the world's refused
-        list.set_player(&[FormDesc { short_id: 0xeafd5, file: "Skyrim.esm".to_owned() }]);
+        list.set_player(&[FormDesc { short_id: 0xeafd5, file: "Skyrim.esm".to_owned() }], &[]);
         assert!(list.is_own(&status()) && !list.is_own(&escort()));
         assert_eq!(list.judge(&[], &status(), Value::Int(2), true), Verdict::Recorded);
         match list.judge(&[], &status(), Value::Int(2), false) {
@@ -416,6 +457,40 @@ mod tests {
         // an older record's unlisted key stays unsent
         let (stale, _) = merge(&world, &key(0x74a83, "S", "v"), Value::Int(1));
         assert_eq!(list.at_login(&stale, false).len(), 1);
+    }
+
+    #[test]
+    fn a_player_class_quests_scalar_variables_and_its_registration_are_own_keys_too() {
+        // D-T2 B: PlayerVampireQuestScript's LastFeedTime and FeedTimer
+        // (the census's playerQuestVariables) and the registration's two
+        // reserved names beside the condition-read VampireStatus
+        let mut list = listed();
+        let vampire = FormDesc { short_id: 0xeafd5, file: "Skyrim.esm".to_owned() };
+        let fed = key(0xeafd5, "PlayerVampireQuestScript", "::LastFeedTime_var");
+        let hours = key(0xeafd5, "PlayerVampireQuestScript", GAME_TIME_HOURS);
+        let repeat = key(0xeafd5, "PlayerVampireQuestScript", GAME_TIME_REPEAT);
+        // unlisted while nothing composes them
+        assert!(matches!(list.judge(&[], &hours, Value::Float(23.5), true), Verdict::Refuse(Code::Unlisted, _)));
+        // composed: each kept once, a listed key and another quest's key and
+        // a bad name never
+        let kept = list.set_player(
+            std::slice::from_ref(&vampire),
+            &[fed.clone(), hours.clone(), repeat.clone(), fed.clone(), status(), key(0x2ba16, "PlayerWerewolfChangeScript", "::Untimed_var"), key(0xeafd5, "S", "")],
+        );
+        assert_eq!(kept, 3);
+        assert_eq!(list.watch().iter().map(|k| k.var.as_str()).collect::<Vec<_>>(), ["::camillaescort_var", "::niryaskillvar_var", "::vampirestatus_var", "::LastFeedTime_var", GAME_TIME_HOURS, GAME_TIME_REPEAT]);
+        assert!(list.is_listed(&hours) && list.is_own(&hours));
+        // an ended registration's -1 is recorded on the player's own record
+        assert_eq!(list.judge(&[], &hours, Value::Float(-1.0), true), Verdict::Recorded);
+        assert_eq!(list.judge(&[], &repeat, Value::Float(0.0), true), Verdict::Recorded);
+        assert!(matches!(list.judge(&[], &fed, Value::Float(2.0), false), Verdict::Refuse(Code::Player, _)));
+        let (own, _) = merge(&[], &hours, Value::Float(-1.0));
+        let (own, _) = merge(&own, &fed, Value::Float(2.0));
+        assert_eq!(list.at_login(&own, true).len(), 2);
+        // the scope off again: none composed, the own keys unlisted once more
+        assert_eq!(list.set_player(&[], std::slice::from_ref(&hours)), 0);
+        assert!(!list.is_listed(&hours));
+        assert!(list.at_login(&own, true).is_empty());
     }
 
     #[test]

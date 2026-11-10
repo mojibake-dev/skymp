@@ -408,14 +408,23 @@ public:
   // the login itself, ahead of the other login sends.
   void SendPlayerGlobals(MpActor& actor);
   // thuum docs/verbs/quest-stage.md (ADR-056 decision 3): the shared quests'
-  // form ids for its client to report, then the world's recorded stages,
-  // ascending per quest, for its game to set after a login; PartOne::
-  // SetUserActor sends it right after the globals. In mode list, nothing
-  // when no quest is listed; in mode all (memo D58 B) the first message
-  // names the denied quests, none or not, so the seat learns the mode, and
-  // a recorded stage of a quest the game starts by itself stays unsent
-  // unless the quest is allowed (memo D62).
+  // form ids for its client to report, then the world's recorded runs and
+  // stages for its game to apply as a load after a login (thuum ADR-068 rung
+  // 5, D-Q3 A: every one served true): the quests recorded running (start
+  // words), the stages ascending per quest, the quests recorded stopped
+  // (stop words); PartOne::SetUserActor sends it right after the globals.
+  // In mode list, nothing when no quest is listed; in mode all (memo D58 B)
+  // the first message names the quests a seat never reports, the denied
+  // and the player class (none or not), so the seat learns the mode.
   void SendQuestStages(MpActor& actor);
+  // thuum ADR-068 rung 5 (ScriptVariables 81; D-V1 B, D-T2 B): the watch
+  // list (the listed keys, then the player class's own keys, each own set),
+  // then the world's record and the player's own record, served true, at
+  // most 256 keys or entries a message in order, a form's two game-time
+  // registration entries in one message; nothing when there is nothing to
+  // watch and nothing recorded. PartOne::SetUserActor sends it after the
+  // world globals.
+  void SendScriptVariables(MpActor& actor);
   // thuum ADR-068 rung 4: the world's alias fills (served true, a clear as
   // refr 0) after the quest stages, and its world globals (served true, at
   // the streamer's epoch, 512 to a message) after the player's own, both at
@@ -563,6 +572,13 @@ private:
   std::map<std::pair<uint32_t, std::string>,
            std::pair<std::chrono::steady_clock::time_point, uint32_t>>
     stateRowRefusals;
+  // thuum ADR-068 rung 5: when each reporter's quest and script variable
+  // line of each code was last said (one a minute per seat, the rest
+  // counted): E_QUEST_PLAYER, E_QUEST_ACTING, E_QUEST_CHURN, the player's own
+  // rows' refusals
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    questLines;
   // thuum D-C2: when each reporter's trigger entry refusal of each code was
   // last said (one a minute, the rest counted)
   std::map<std::pair<uint32_t, std::string>,

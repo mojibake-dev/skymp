@@ -2599,11 +2599,6 @@ mod ffi {
         /// E_QUEST_DENIED), 3 a player-class quest (E_QUEST_PLAYER, thuum
         /// ADR-068 rung 5), the mode's own refusal first.
         fn shared_quests_check(self: &SharedQuests, short_id: u32, file: &str) -> u8;
-        /// RETIRED by thuum ADR-068 rung 5 (read 4): `allowed` names nothing
-        /// now, so this answers false for every quest. Its one caller, the
-        /// core's IsSeatsOwnQuest, retires with the OWN_START block in the
-        /// rung's server half (A4); delete this then.
-        fn shared_quests_allowed(self: &SharedQuests, short_id: u32, file: &str) -> bool;
         /// thuum ADR-068 rung 5 (read 4): the line the core logs once at load
         /// when the block still carries the retired `allowed` key, empty
         /// when it does not.
@@ -3202,11 +3197,17 @@ mod ffi {
         /// names the bad entry.
         fn new_script_variables(settings_json: &str) -> Result<Box<ScriptVariables>>;
         /// Compose the player class in, while the scope acts: a listed key
-        /// whose form is one of `quests` (stage ignored) is its player's own.
-        fn script_variables_set_player(self: &mut ScriptVariables, quests: &[QuestStageEntry]);
-        /// The watch list a login names, in the setting's order, each key's
-        /// `own` set (the login sends it in ScriptVariables 81's `watch`,
-        /// at most 256 keys a message).
+        /// whose form is one of `quests` (stage ignored) is its player's own,
+        /// and so is each of `own` (D-T2 B: the quests' scalar variables and
+        /// their game-time registration's two reserved names, its `own`
+        /// unread) whose form is one of `quests` and which the setting does
+        /// not list already, each once, at most VARIABLE_RECORD_CAP; answers
+        /// how many of `own` it kept.
+        fn script_variables_set_player(self: &mut ScriptVariables, quests: &[QuestStageEntry], own: &[ScriptVarKeyRow]) -> usize;
+        /// The watch list a login names: the listed keys in the setting's
+        /// order, then the composed own keys, each key's `own` set (the login
+        /// sends it in ScriptVariables 81's `watch`, at most 256 keys a
+        /// message).
         fn script_variables_watch(self: &ScriptVariables) -> Vec<ScriptVarKeyRow>;
         /// One reported entry against `record` (the journal's for an entry
         /// not flagged own, the reporter's player's change form's for one
@@ -3864,10 +3865,6 @@ impl SharedQuests {
             Err(quest_stages::Refusal::Denied) => 2,
             Err(quest_stages::Refusal::Player) => 3,
         }
-    }
-
-    fn shared_quests_allowed(&self, _short_id: u32, _file: &str) -> bool {
-        false
     }
 
     fn shared_quests_retired(&self) -> String {
@@ -5702,14 +5699,18 @@ fn script_var_row(e: &script_variables::Entry, own: bool) -> ScriptVarRow {
 }
 
 impl ScriptVariables {
-    fn script_variables_set_player(&mut self, quests: &[QuestStageEntry]) {
-        self.0.set_player(&form_descs(quests));
+    fn script_variables_set_player(&mut self, quests: &[QuestStageEntry], own: &[ScriptVarKeyRow]) -> usize {
+        let keys: Vec<script_variables::Key> = own
+            .iter()
+            .map(|k| script_variables::Key { form: forms::FormDesc { short_id: k.short_id, file: k.file.clone() }, script: k.script.clone(), var: k.var.clone() })
+            .collect();
+        self.0.set_player(&form_descs(quests), &keys)
     }
 
     fn script_variables_watch(&self) -> Vec<ScriptVarKeyRow> {
         self.0
-            .keys()
-            .iter()
+            .watch()
+            .into_iter()
             .map(|k| ScriptVarKeyRow { short_id: k.form.short_id, file: k.form.file.clone(), script: k.script.clone(), var: k.var.clone(), own: self.0.is_own(k) })
             .collect()
     }
@@ -6028,10 +6029,10 @@ mod tests {
         assert!(all.as_ref().is_ok_and(|a| a.shared_quests_at_login(&[e(0x4e50d, 5), e(0x74a84, 20), e(0x74a83, 10)]) == vec![e(0x74a84, 20), e(0x74a83, 10)]));
         assert!(new_shared_quests(r#"{"mode": "list"}"#).is_err());
         // thuum ADR-068 rung 5 (read 4): memo D62's allowed list is a
-        // retired key, read, said once and ignored; the stub answers false
-        // until the core's IsSeatsOwnQuest retires with it
+        // retired key, read, said once and ignored (the core's
+        // IsSeatsOwnQuest retired with it, and the bridge's allowed stub)
         let allowed = new_shared_quests(r#"{"mode": "all", "denied": ["04e50d:Skyrim.esm"], "allowed": ["039645:Skyrim.esm"]}"#);
-        assert!(allowed.as_ref().is_ok_and(|a| !a.shared_quests_allowed(0x39645, "Skyrim.esm") && a.shared_quests_retired().starts_with("sharedQuests.allowed is retired")));
+        assert!(allowed.as_ref().is_ok_and(|a| a.shared_quests_check(0x39645, "Skyrim.esm") == 0 && a.shared_quests_retired().starts_with("sharedQuests.allowed is retired")));
         assert!(allowed.as_ref().is_ok_and(|a| a.shared_quests_listed() == vec![e(0x4e50d, 0)] && a.shared_quests_check(0x39645, "Skyrim.esm") == 0));
         assert!(new_shared_quests(r#"{"mode": "all", "denied": ["039645:Skyrim.esm"], "allowed": ["39645:Skyrim.esm"]}"#).is_ok_and(|a| a.shared_quests_check(0x39645, "Skyrim.esm") == 2));
         assert!(all.as_ref().is_ok_and(|a| a.shared_quests_retired().is_empty()));
@@ -6599,9 +6600,12 @@ mod tests {
         let settings = r#"[{"form": "039645:Skyrim.esm", "script": "MS13QuestScript", "var": "::camillaescort_var"},
             {"form": "0eafd5:Skyrim.esm", "script": "PlayerVampireQuestScript", "var": "::vampirestatus_var"}]"#;
         let mut vars = new_script_variables(settings).unwrap_or_else(|_| Box::new(ScriptVariables(script_variables::ScriptVariables::default())));
-        vars.script_variables_set_player(&[QuestStageEntry { short_id: 0xeafd5, file: "Skyrim.esm".to_owned(), stage: 0 }]);
+        let hours = ScriptVarKeyRow { short_id: 0xeafd5, file: "Skyrim.esm".to_owned(), script: "PlayerVampireQuestScript".to_owned(), var: "<OnUpdateGameTime>".to_owned(), own: true };
+        let kept = vars.script_variables_set_player(&[QuestStageEntry { short_id: 0xeafd5, file: "Skyrim.esm".to_owned(), stage: 0 }], std::slice::from_ref(&hours));
+        assert_eq!(kept, 1);
         let watch = vars.script_variables_watch();
-        assert_eq!(watch.iter().map(|k| (k.short_id, k.own)).collect::<Vec<_>>(), [(0x39645, false), (0xeafd5, true)]);
+        assert_eq!(watch.iter().map(|k| (k.short_id, k.own)).collect::<Vec<_>>(), [(0x39645, false), (0xeafd5, true), (0xeafd5, true)]);
+        assert_eq!(watch.last().map(|k| k.var.as_str()), Some("<OnUpdateGameTime>"));
         let entry = |short_id: u32, script: &str, var: &str, own: bool, k: u8, i: i32| ScriptVarRow { short_id, file: "Skyrim.esm".to_owned(), script: script.to_owned(), var: var.to_owned(), own, k, i, f: 0.0, b: false, seq: 0 };
         let escort = entry(0x39645, "MS13QuestScript", "::camillaescort_var", false, 3, 1);
         let v = vars.script_variable_judge(&[], &escort);

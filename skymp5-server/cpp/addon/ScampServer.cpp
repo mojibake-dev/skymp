@@ -473,6 +473,24 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
         : serverSettings.contains("sharedQuests")
         ? serverSettings.at("sharedQuests").dump()
         : std::string("[]"));
+    // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md
+    // section 8(a)): the quest scope, `questScope` ("off", the default,
+    // measures; "derived" acts) and `playerQuests` (the census's list half);
+    // the condition-read script variables, `conditionVariables` (D-V1 B);
+    // and the census's per-quest companions, `playerQuestGlobals`,
+    // `playerQuestVariables` and `playerQuestCallers`, the same way (an
+    // absent key reads none); the class is composed when the game files
+    // attach, below
+    const auto settingOr = [&](const char* key, const char* fallback) {
+      return serverSettings.contains(key) ? serverSettings.at(key).dump()
+                                          : std::string(fallback);
+    };
+    partOne->SetQuestScopeSettings(settingOr("questScope", "\"off\""),
+                                   settingOr("playerQuests", "[]"));
+    partOne->SetScriptVariablesSettings(settingOr("conditionVariables", "[]"));
+    partOne->SetPlayerQuestSettings(settingOr("playerQuestGlobals", "{}"),
+                                    settingOr("playerQuestVariables", "{}"),
+                                    settingOr("playerQuestCallers", "{}"));
     // the objects the server places at an accepted cast of a listed spell
     // (thuum docs/verbs/spell-placed-object.md, ADR-057):
     // `spellPlacedObjects`, the same way

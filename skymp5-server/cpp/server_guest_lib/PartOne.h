@@ -7,6 +7,7 @@
 #include "MpChangeForms.h"
 #include "NiPoint3.h"
 #include "PartOneListener.h"
+#include "RaceOverlay.h"
 #include "ServerState.h"
 #include "SpellCastData.h"
 #include "WorldState.h"
@@ -22,16 +23,19 @@
 #include <spdlog/logger.h>
 
 namespace skymp::rules {
-struct RestSettings;   // wire-bridge's (thuum ADR-020), opaque here
-struct Fights;         // wire-bridge's (thuum ADR-023), opaque here
-struct BondBreak;      // wire-bridge's (thuum shadowbond.md), opaque here
-struct CellHost;       // wire-bridge's (thuum cell-host.md), opaque here
-struct HostDecision;   // wire-bridge's (thuum cell-host.md), opaque here
-struct PlacementRow;   // wire-bridge's (thuum spell-placed-object.md), opaque
-                       // here
-struct ScriptCalls;    // wire-bridge's (thuum ADR-068), opaque here
-struct ScriptStates;   // wire-bridge's (thuum ADR-068 rung 3), opaque here
-struct TriggerEntries; // wire-bridge's (thuum ADR-068 D-C2), opaque here
+struct RestSettings;    // wire-bridge's (thuum ADR-020), opaque here
+struct Fights;          // wire-bridge's (thuum ADR-023), opaque here
+struct BondBreak;       // wire-bridge's (thuum shadowbond.md), opaque here
+struct CellHost;        // wire-bridge's (thuum cell-host.md), opaque here
+struct HostDecision;    // wire-bridge's (thuum cell-host.md), opaque here
+struct PlacementRow;    // wire-bridge's (thuum spell-placed-object.md), opaque
+                        // here
+struct ScriptCalls;     // wire-bridge's (thuum ADR-068), opaque here
+struct ScriptStates;    // wire-bridge's (thuum ADR-068 rung 3), opaque here
+struct TriggerEntries;  // wire-bridge's (thuum ADR-068 D-C2), opaque here
+struct QuestRuns;       // wire-bridge's (thuum ADR-068 rung 5), opaque here
+struct ScriptVariables; // wire-bridge's (thuum ADR-068 rung 5), opaque here
+struct PlayerOverlays;  // wire-bridge's (thuum ADR-068 rung 5), opaque here
 }
 
 using ProfileId = int32_t;
@@ -204,15 +208,15 @@ public:
   // stages are the world's, server-settings.json's `sharedQuests`: a JSON
   // list of FormDescs ("[]" for none) is mode list, the object {"mode":
   // "all", "denied": [FormDescs], "allowed": [FormDescs]} mode all; a bad
-  // entry or shape stops the server here, named. SharedQuestsMode: 0 list,
-  // 1 all, as the wire carries it. CheckSharedQuest: 0 the world's, else
-  // the rule's refusal (wire-rules quest_stages: 1 unlisted in mode list, 2
-  // denied in mode all). IsSharedQuestAllowed: mode all's `allowed` names
-  // the quest (memo D62: a quest the game starts by itself, QUST DNAM's
-  // Start Game Enabled, is each seat's own unless allowed; the flag is the
-  // record's and the caller reads it). Listed: what the login names as
-  // FormDescs, settings order (the list in mode list, the denied quests in
-  // mode all). AtLogin: the world's recorded stages of quests still the
+  // entry or shape stops the server here, named (thuum ADR-068 rung 5, read
+  // 4: `allowed` is a retired key, read, said once and ignored).
+  // SharedQuestsMode: 0 list, 1 all, as the wire carries it.
+  // CheckSharedQuest: 0 the world's, else the rule's refusal (wire-rules
+  // quest_stages: 1 unlisted in mode list, 2 denied in mode all, 3 a
+  // player-class quest while the quest scope acts). Listed: what the login
+  // names as FormDescs, settings order (the list in mode list less the
+  // player class; in mode all the denied quests, then the player class).
+  // AtLogin: the world's recorded stages of quests still the
   // world's, ascending per quest. DoneAlready: the world's record holds the
   // stage. Merge: the record with the stage added once, ascending within
   // its quest (unchanged when the record is full). RecordFull: the record
@@ -221,7 +225,6 @@ public:
   void SetSharedQuestsSettings(const std::string& sharedQuestsJson);
   uint8_t SharedQuestsMode() const;
   uint8_t CheckSharedQuest(const FormDesc& quest) const;
-  bool IsSharedQuestAllowed(const FormDesc& quest) const;
   std::vector<FormDesc> SharedQuestsListed() const;
   std::vector<QuestStageDone> SharedQuestsAtLogin();
   bool QuestStageDoneAlready(const QuestStageDone& done);
@@ -298,6 +301,50 @@ public:
   std::vector<MpChangeFormREFR::ScriptVariable> GetScriptVariables();
   bool SetScriptVariables(
     std::vector<MpChangeFormREFR::ScriptVariable> variables);
+
+  // thuum ADR-068 rung 5 (D-Q1's derivation whole; docs/research/
+  // rung5-quests-2026-11-09.md section 8(a)): the quest scope, from
+  // server-settings.json's `questScope` ("off", the default, measures;
+  // "derived" acts) and `playerQuests` (the census's list half), each as its
+  // value's JSON text; `conditionVariables`, the condition-read keys (D-V1
+  // B); and the census's per-quest companions as JSON maps keyed by the
+  // quest's "<hex id>:<plugin>": `playerQuestGlobals` (to the GLOBs its
+  // scripts write, composed into the player globals, so WorldGlobal refuses
+  // them), `playerQuestVariables` (to its scripts' scalar variables as
+  // "<script>::<var>", D-T2 B's own keys) and `playerQuestCallers` (to the
+  // stages whose fragment calls its scripts, PQ-3's: relayed served). A bad
+  // value stops the server here, named. With the game files every QUST is
+  // classed (wire-rules quest_scope over its aliases) and the measurement
+  // logged; while the scope acts the class is composed into the shared
+  // quests, the player globals and the script variables (each with the two
+  // names of the quest's game-time registration). Every setter recomposes,
+  // as AttachEspm does.
+  void SetQuestScopeSettings(const std::string& modeJson,
+                             const std::string& playerQuestsJson);
+  void SetScriptVariablesSettings(const std::string& conditionVariablesJson);
+  void SetPlayerQuestSettings(const std::string& globalsJson,
+                              const std::string& variablesJson,
+                              const std::string& callersJson);
+  // the quests the class marks the player's, measured in either mode; and
+  // the ones composed in (empty while the scope does not act)
+  const std::vector<FormDesc>& QuestScopeMarked() const;
+  const std::vector<FormDesc>& PlayerClassQuests() const;
+  // PQ-3: a stage of a world quest whose fragment calls a player-class
+  // quest's script is relayed served (applied as a load), so only its
+  // acting seat runs it; false while the scope does not act
+  bool IsServedStage(const FormDesc& quest, uint16_t stage) const;
+  // the rules' state (wire-rules quest_runs' churn counter and held quests,
+  // script_variables' keys, player_own's overlays), for the handlers
+  skymp::rules::QuestRuns& GetQuestRunRules();
+  skymp::rules::ScriptVariables& GetScriptVariableRules();
+  skymp::rules::PlayerOverlays& GetPlayerOverlays();
+  // the quests a login starts ahead of the stages and stops behind them, in
+  // the run record's order, each still the world's and not held
+  std::pair<std::vector<FormDesc>, std::vector<FormDesc>> QuestRunsAtLogin();
+  // D-T1 A: the race overlay `actorId` wears beyond its record, as its
+  // figure's CreateActor and UpdateAppearance carry it; none while it wears
+  // its record
+  std::optional<RaceOverlay> PlayerOverlayOf(uint32_t actorId) const;
 
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
   // server places at an accepted cast of a listed spell,
@@ -967,6 +1014,12 @@ private:
   void LoadWeatherPools();
   bool ApplySettingsWeatherPools();
   void LoadPerkTable();
+  // thuum ADR-068 rung 5: the quest scope's class over the game files, its
+  // measurement line, and while it acts its composition into the shared
+  // quests, the player globals and the script variables; the player globals
+  // alone (the setting's, with the class's while it acts)
+  void ComposeQuestScope();
+  void ComposePlayerGlobals();
   void TickWeather();
   void SendWeatherWord(Networking::UserId userId);
   // thuum docs/verbs/shadowbond.md (train-28): the proc's records on both

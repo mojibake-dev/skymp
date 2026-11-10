@@ -1651,6 +1651,24 @@ bool MpActor::RecordShoutEntry(ShoutEntry kind, const FormDesc& form)
   return true;
 }
 
+bool MpActor::ForgetShoutEntry(ShoutEntry kind, const FormDesc& form)
+{
+  const ShoutRecord current = GetShoutRecord();
+  const auto& list = ShoutListOf(current, kind);
+  if (std::find(list.begin(), list.end(), form) == list.end()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.shoutRecord) {
+      return;
+    }
+    auto& entries = ShoutListOf(*changeForm.shoutRecord, kind);
+    entries.erase(std::remove(entries.begin(), entries.end(), form),
+                  entries.end());
+  });
+  return true;
+}
+
 bool MpActor::HasShoutEntry(ShoutEntry kind, uint32_t formId) const
 {
   const auto& record = ChangeForm().shoutRecord;

@@ -1324,13 +1324,16 @@ LookVerdict AppearanceFromLook(PartOne& partOne, const Appearance& current,
 }
 
 // the player's derived appearance to everyone who sees it but the player,
-// whose own game already wears it
+// whose own game already wears it; with the race overlay it wears beyond its
+// record, if any (thuum ADR-068 rung 5, D-T1 A: the figure's look and its
+// overlay travel together, an UpdateAppearance without one ending it)
 void SendAppearanceToOthers(PartOne& partOne, MpActor& actor,
                             const Appearance& appearance)
 {
   UpdateAppearanceMessage out;
   out.idx = actor.GetIdx();
   out.data = appearance;
+  out.overlay = partOne.PlayerOverlayOf(actor.GetFormId());
   for (auto listener : actor.GetActorListeners()) {
     if (listener == &actor ||
         partOne.serverState.UserByActor(listener) ==
@@ -1382,6 +1385,12 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
       spdlog::info("RaceMenu: actor {:x} appearance follows its look "
                    "(ADR-026): {} head parts",
                    actor->GetFormId(), derived.headpartIds.size());
+    } else if (partOne.PlayerOverlayOf(actor->GetFormId())) {
+      // thuum ADR-068 rung 5 (D-T1 A): the seat's look relayed as is would
+      // drop the figure's overlay on every other screen; the server's word
+      // carries both
+      actor->SetAppearance(&msg.data.value());
+      SendAppearanceToOthers(partOne, *actor, msg.data.value());
     } else {
       actor->SetAppearance(&msg.data.value());
       SendToNeighbours(msg.idx, rawMsgData, true);
@@ -1724,6 +1733,23 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   std::array<uint32_t, static_cast<size_t>(SpellSlotId::kCount)>
     spellIdsToRemove = {};
 
+  // thuum ADR-068 rung 5 (D-T1 A): what a player's race overlay holds (the
+  // beast form's level abilities, its howl, WolfSkinFXArmor) counts here as
+  // its record's, though it never touches the change form; a hosted actor
+  // has none
+  const auto overlay = hosted ? std::optional<RaceOverlay>()
+                              : partOne.PlayerOverlayOf(actor->GetFormId());
+  const auto inOverlay = [&](const std::vector<uint32_t> RaceOverlay::* list,
+                             uint32_t formId) {
+    return overlay &&
+      std::find(((*overlay).*list).begin(), ((*overlay).*list).end(),
+                formId) != ((*overlay).*list).end();
+  };
+  const auto learned = [&](uint32_t spellId) {
+    return actor->IsSpellLearned(spellId) ||
+      inOverlay(&RaceOverlay::spells, spellId);
+  };
+
   // thuum docs/verbs/npc-stream.md (ADR-050, train 53): the known set is a
   // player's (the learned spells, the base's and its race's lists, the
   // template's where the chain is evaluated); a hosted actor's hands are its
@@ -1751,7 +1777,7 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     return true;
   };
 
-  if (leftSpell > 0 && !actor->IsSpellLearned(leftSpell) &&
+  if (leftSpell > 0 && !learned(leftSpell) &&
       !recordedUnknown("left", leftSpell, false)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
                  "equipment update: spell {:x} is not learned",
@@ -1761,7 +1787,7 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Left)] = leftSpell;
   }
 
-  if (rightSpell > 0 && !actor->IsSpellLearned(rightSpell) &&
+  if (rightSpell > 0 && !learned(rightSpell) &&
       !recordedUnknown("right", rightSpell, false)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
                  "equipment update: spell {:x} is not learned",
@@ -1777,8 +1803,9 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   const bool voiceIsShout = VoiceShout(data, partOne.worldState).has_value();
   if (voiceSpell > 0 &&
       !(voiceIsShout
-          ? actor->HasShoutEntry(MpActor::ShoutEntry::Shout, voiceSpell)
-          : actor->IsSpellLearned(voiceSpell)) &&
+          ? (actor->HasShoutEntry(MpActor::ShoutEntry::Shout, voiceSpell) ||
+             inOverlay(&RaceOverlay::shouts, voiceSpell))
+          : learned(voiceSpell)) &&
       !recordedUnknown("voice", voiceSpell, voiceIsShout)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
                  "equipment update: {} {:x} is not learned",
@@ -1788,7 +1815,7 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spellIdsToRemove[static_cast<size_t>(SpellSlotId::Voice)] = voiceSpell;
   }
 
-  if (instantSpell > 0 && !actor->IsSpellLearned(instantSpell) &&
+  if (instantSpell > 0 && !learned(instantSpell) &&
       !recordedUnknown("instant", instantSpell, false)) {
     spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
                  "equipment update: spell {:x} is not learned",
@@ -1842,7 +1869,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       // a hosted actor's report names what it wears; its engine's whole
       // inventory is npc-fate's record, not this message's
       if ((hosted && it->GetWorn() == Inventory::Worn::None) ||
-          inventory.HasItem(it->baseId)) {
+          inventory.HasItem(it->baseId) ||
+          inOverlay(&RaceOverlay::items, it->baseId)) {
         ++it;
         continue;
       }
@@ -3236,42 +3264,15 @@ void ActionListener::OnPlayerGlobals(const RawMessageData& rawMsgData,
 }
 
 namespace {
-// memo D62 (2026-10-29; apocrypha's census: 42 controller, MCM,
-// version-tracker and player-alias quests in the layer plus the alternate
-// start's eighteen, every one a quest the game starts by itself; 330 of
-// Skyrim.esm's 1811 carry the flag): in mode all a quest whose record is
-// Start Game Enabled (QUST DNAM, libespm QUST.h) is each seat's own unless
-// the setting's `allowed` names it. The flag is the record's, so it is read
-// here beside the rule (wire-rules quest_stages holds the lists) and not in
-// it. Mode list is untouched: its curated list names what crosses.
-// Memo D69 (2026-10-30; playtest 38's finding 76, the Aventus rumor DB01Misc,
-// start-game-enabled, whose stage 10 a dialogue sets): what is each seat's
-// own is the engine's OWN START of such a quest, stage 0 and the record's
-// start-up stages (QUST INDX flag, libespm QUST.h JournalIndex::StartUpStage),
-// which every seat's game sets by itself; a later stage of the same quest is
-// a world event like any other quest's and crosses (QuestStageIsEngineStart,
-// below, beside this flag test).
-bool IsSeatsOwnQuest(PartOne& partOne, const FormDesc& quest,
-                     const espm::RecordHeader* record)
-{
-  if (partOne.SharedQuestsMode() != 1 || partOne.IsSharedQuestAllowed(quest)) {
-    return false;
-  }
-  const auto qust = espm::Convert<espm::QUST>(record);
-  if (!qust) {
-    return false;
-  }
-  const auto data = qust->GetData(partOne.worldState.GetEspmCache());
-  return data.questData &&
-    (data.questData->mainFlags & espm::QUST::QuestData::StartGameEnabled);
-}
+// a monotonic clock in ms, defined with the lock rules below
+uint64_t MonotonicMs();
 
 // Rule 5 (the review of m3-pass-train-2, finding 2): the stage index is the
-// record's to check, as the start flag is. A quest's stages are its INDX
-// fields (libespm QUST.h QuestStage::JournalIndex, QUST.cpp GetQuestStages),
-// int16 in the record and u16 on the wire, compared at the wire's width. A
-// stage the quest does not define is refused (E_QUEST_STAGE) instead of
-// recorded for every seat's engine to park in its journal.
+// record's to check. A quest's stages are its INDX fields (libespm QUST.h
+// QuestStage::JournalIndex, QUST.cpp GetQuestStages), int16 in the record
+// and u16 on the wire, compared at the wire's width. A stage the quest does
+// not define is refused (E_QUEST_STAGE) instead of recorded for every seat's
+// engine to park in its journal.
 bool QuestHasStage(PartOne& partOne, const espm::RecordHeader* record,
                    uint16_t stage)
 {
@@ -3289,45 +3290,91 @@ bool QuestHasStage(PartOne& partOne, const espm::RecordHeader* record,
   return false;
 }
 
-// Memo D69: the stages a start-game-enabled quest reaches by the engine's
-// own start on every seat, stage 0 and the record's start-up stages (QUST
-// INDX, the StartUpStage flag; FreeformHeartwoodMill's 10 carries it),
-// which stay each seat's
-// own; every other stage of such a quest is the world's.
-bool QuestStageIsEngineStart(PartOne& partOne,
-                             const espm::RecordHeader* record, uint16_t stage)
+// thuum ADR-068 rung 5: whether a line of `name` is due for `reporter`, one a
+// minute per seat, the rest counted into it (RefuseStateRow's shape for a
+// line that is no refusal of a row)
+bool QuestLineDue(
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>& lines,
+  uint32_t reporter, const std::string& name, uint32_t& since)
 {
-  if (stage == 0) {
-    return true;
-  }
-  const auto qust = espm::Convert<espm::QUST>(record);
-  if (!qust) {
+  const auto now = std::chrono::steady_clock::now();
+  auto& [said, count] = lines[{ reporter, name }];
+  ++count;
+  if (said.time_since_epoch().count() != 0 &&
+      now - said < std::chrono::minutes(1)) {
     return false;
   }
-  for (const auto& questStage :
-       qust->GetQuestStages(partOne.worldState.GetEspmCache())) {
-    if (questStage.journalIndex &&
-        static_cast<uint16_t>(questStage.journalIndex->index) == stage) {
-      return (questStage.journalIndex->flags &
-              espm::QUST::QuestStage::JournalIndex::StartUpStage) != 0;
-    }
+  since = count;
+  said = now;
+  count = 0;
+  return true;
+}
+
+// the actor a report's `acting` names when it is a connected player's
+// (thuum ADR-068 rung 5, read 7: a scope's player), else none
+MpActor* ConnectedPlayer(PartOne& partOne, uint32_t actorId)
+{
+  if (actorId < 0xff000000) {
+    return nullptr;
   }
-  return false;
+  const auto& form = partOne.worldState.LookupFormByIdNoLoad(actorId);
+  MpActor* actor = form ? form->AsActor() : nullptr;
+  if (!actor ||
+      partOne.serverState.UserByActor(actor) == Networking::InvalidUserId) {
+    return nullptr;
+  }
+  return actor;
+}
+
+std::vector<skymp::rules::QuestRunRow> QuestRunRows(
+  const std::vector<MpChangeFormREFR::QuestRun>& runs)
+{
+  std::vector<skymp::rules::QuestRunRow> rows;
+  rows.reserve(runs.size());
+  for (const auto& run : runs) {
+    rows.push_back({ run.quest.shortFormId, rust::String(run.quest.file),
+                     run.running, run.seq });
+  }
+  return rows;
+}
+
+std::vector<MpChangeFormREFR::QuestRun> QuestRunsOf(
+  const rust::Vec<skymp::rules::QuestRunRow>& rows)
+{
+  std::vector<MpChangeFormREFR::QuestRun> runs;
+  runs.reserve(rows.size());
+  for (const auto& row : rows) {
+    runs.push_back(
+      { FormDesc(row.short_id, std::string(row.file)), row.running, row.seq });
+  }
+  return runs;
 }
 }
 
-// thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B): a player's game
-// reports a stage its engine set on a quest. The server checks the quest (a
-// QUST of the load order, the world's by the sharing mode: listed in mode
-// list, not denied in mode all and, in mode all, not a quest the game
-// starts by itself unless allowed, memo D62; R1), records the stage as the
-// world's (R0) and relays it to every other connected player; a stage the
-// world already has is a no-op, never an error. A client names no list, no
-// mode and no quest 0: those are the login replay's, server to client. The
-// stage must be one the quest's record defines (QUST INDX, E_QUEST_STAGE),
-// and the world's record is bounded (wire-rules quest_stages
-// QUEST_RECORD_CAP, E_QUEST_FULL): rule 12's explicit resource bound on a
-// client-fed table.
+// thuum docs/verbs/quest-stage.md (ADR-056; memo D58 B; thuum ADR-068 rung
+// 5, docs/research/rung5-quests-2026-11-09.md sections 1(b) and 8(a)): a
+// player's game reports what its engine did to a quest: set a stage, or
+// started or stopped it (`word` 1 or 2; a stage-0 report with no word is the
+// start word's, read 5). The server checks the quest (a QUST of the load
+// order, the world's by the sharing mode: listed in mode list, not denied in
+// mode all, and never a player-class quest while the quest scope acts,
+// E_QUEST_PLAYER; R1), stamps the acting player (the report's when it names
+// a connected player, the scope's player of read 7, else the reporter,
+// E_QUEST_ACTING once a minute per seat; the reported `acting` is R2) and
+// records it as the world's (R0): a stage the record has is a no-op, a word
+// equal to the quest's run is folded, a seat flipping one quest's run past
+// the churn bound is held out of the record (E_QUEST_CHURN, wire-rules
+// quest_runs), and each record is bounded (QUEST_RECORD_CAP, E_QUEST_FULL;
+// RUN_RECORD_CAP, E_QUEST_RUNS_FULL): rule 12's explicit resource bounds on
+// a client-fed table. What moved the record is relayed at once to every
+// other connected player with the acting player, its fragment run there
+// under that player's scope (D-Q3 A), a stage whose fragment calls a
+// player-class quest's script relayed served instead (PQ-3: applied as a
+// load, so only its acting seat runs it). A client names no list, no mode,
+// no quest 0 and no replay: those are the login's, server to client. The
+// memos D62 and D69 rules (a start-game-enabled quest's own start each
+// seat's) retired with the start word, which records that start once.
 void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                                   const QuestStageMessage& msg)
 {
@@ -3336,32 +3383,43 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     return spdlog::warn("OnQuestStage - no actor for user {}",
                         rawMsgData.userId);
   }
-  if (!msg.shared.empty() || msg.mode != 0 || msg.quest == 0) {
+  if (!msg.shared.empty() || msg.mode != 0 || msg.quest == 0 ||
+      msg.served.value_or(false)) {
     return spdlog::info("QuestStage: user {} actor {:x} report refused (a "
-                        "client names no shared list, no mode and no quest "
-                        "0)",
+                        "client names no shared list, no mode, no quest 0 "
+                        "and no replay)",
                         rawMsgData.userId, actor->GetFormId());
   }
   if (!partOne.HasEspm()) {
     return spdlog::warn("OnQuestStage - no master files");
   }
+  // 0 a stage, 1 a start, 2 a stop; 3 a word the wire refuses first
+  const uint8_t what =
+    skymp::rules::quest_report_word(msg.word.value_or(0), msg.stage);
+  if (what == 3) {
+    return spdlog::info("QuestStage: user {} actor {:x} report refused (word "
+                        "{} with stage {})",
+                        rawMsgData.userId, actor->GetFormId(),
+                        msg.word.value_or(0), msg.stage);
+  }
+  const char* const verb = what == 1 ? "start" : what == 2 ? "stop" : "stage";
   FormDesc quest;
   try {
     quest = FormDesc::FromFormId(msg.quest, partOne.worldState.espmFiles);
   } catch (const std::exception&) {
-    return spdlog::info("E_QUEST_UNKNOWN: user {} actor {:x} reported stage "
-                        "{} of {:x}, which is in no loaded plugin",
-                        rawMsgData.userId, actor->GetFormId(), msg.stage,
+    return spdlog::info("E_QUEST_UNKNOWN: user {} actor {:x} reported {} {} "
+                        "of {:x}, which is in no loaded plugin",
+                        rawMsgData.userId, actor->GetFormId(), verb, msg.stage,
                         msg.quest);
   }
   const auto lookup = partOne.GetEspm().GetBrowser().LookupById(msg.quest);
   if (!lookup.rec || lookup.rec->GetType() != "QUST") {
-    return spdlog::info("E_QUEST_UNKNOWN: user {} actor {:x} reported stage "
-                        "{} of {:x}, which is no quest",
-                        rawMsgData.userId, actor->GetFormId(), msg.stage,
+    return spdlog::info("E_QUEST_UNKNOWN: user {} actor {:x} reported {} {} "
+                        "of {:x}, which is no quest",
+                        rawMsgData.userId, actor->GetFormId(), verb, msg.stage,
                         msg.quest);
   }
-  if (!QuestHasStage(partOne, lookup.rec, msg.stage)) {
+  if (what == 0 && !QuestHasStage(partOne, lookup.rec, msg.stage)) {
     return spdlog::info("E_QUEST_STAGE: user {} actor {:x} reported stage {} "
                         "of {}, a stage the quest's record does not define "
                         "(QUST INDX)",
@@ -3369,47 +3427,136 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                         quest.ToString());
   }
   // the mode's own refusal first (the review of m3-pass-train-2, finding
-  // 5): a quest both denied and start-game-enabled logs E_QUEST_DENIED, the
-  // setting's word, not the record's flag
+  // 5), the setting's word, then the player class's
   if (const uint8_t refusal = partOne.CheckSharedQuest(quest)) {
     if (refusal == 2) {
-      return spdlog::info("E_QUEST_DENIED: user {} actor {:x} reported stage "
-                          "{} of {}, a quest the world denies (memo D58 B)",
-                          rawMsgData.userId, actor->GetFormId(), msg.stage,
-                          quest.ToString());
+      return spdlog::info("E_QUEST_DENIED: user {} actor {:x} reported {} {} "
+                          "of {}, a quest the world denies (memo D58 B)",
+                          rawMsgData.userId, actor->GetFormId(), verb,
+                          msg.stage, quest.ToString());
     }
-    return spdlog::info("E_QUEST_UNLISTED: user {} actor {:x} reported stage "
-                        "{} of {}, a quest the world does not share ({})",
-                        rawMsgData.userId, actor->GetFormId(), msg.stage,
+    if (refusal == 3) {
+      // every seat runs its own player's quest and reports it at the
+      // engine's rate until its client takes the login's list: one line a
+      // minute per seat, the rest counted
+      uint32_t since = 0;
+      if (QuestLineDue(questLines, actor->GetFormId(), "E_QUEST_PLAYER",
+                       since)) {
+        spdlog::info("E_QUEST_PLAYER: user {} actor {:x} reported {} {} of "
+                     "{}, a quest of the player class, each player's own "
+                     "(thuum ADR-068 rung 5); {} such report(s) since the "
+                     "last line",
+                     rawMsgData.userId, actor->GetFormId(), verb, msg.stage,
+                     quest.ToString(), since);
+      }
+      return;
+    }
+    return spdlog::info("E_QUEST_UNLISTED: user {} actor {:x} reported {} {} "
+                        "of {}, a quest the world does not share ({})",
+                        rawMsgData.userId, actor->GetFormId(), verb, msg.stage,
                         quest.ToString(), refusal);
   }
-  if (IsSeatsOwnQuest(partOne, quest, lookup.rec) &&
-      QuestStageIsEngineStart(partOne, lookup.rec, msg.stage)) {
-    // in mode all a seat reports every stage event of every quest it does
-    // not know to be denied (Skyrim Platform's Quest exposes no Start Game
-    // Enabled getter), so the 330 such quests of Skyrim.esm arrive here at
-    // the client's rate: one info line per seat per 10 s with the count held
-    // meanwhile (the OnActorSpeech shape; finding 5)
-    static std::unordered_map<
-      Networking::UserId,
-      std::pair<std::chrono::steady_clock::time_point, uint32_t>>
-      ownStart;
-    auto& [since, held] = ownStart[rawMsgData.userId];
-    ++held;
-    const auto now = std::chrono::steady_clock::now();
-    if (since == std::chrono::steady_clock::time_point() ||
-        now - since >= std::chrono::seconds(10)) {
-      spdlog::info("E_QUEST_OWN_START: user {} actor {:x} reported stage {} "
-                   "of {}: the engine's own start of a start-game-enabled "
-                   "quest is each seat's own (D62, D69); {} such report(s) "
-                   "since the last line",
-                   rawMsgData.userId, actor->GetFormId(), msg.stage,
-                   quest.ToString(), held);
-      since = now;
-      held = 0;
+
+  // the acting player: the report's when it names a connected player (a
+  // relayed fragment's chained set on this seat, read 7), else the reporter
+  uint32_t acting = actor->GetFormId();
+  if (msg.acting && *msg.acting != actor->GetFormId()) {
+    if (MpActor* scoped = ConnectedPlayer(partOne, *msg.acting)) {
+      acting = scoped->GetFormId();
+    } else {
+      uint32_t since = 0;
+      if (QuestLineDue(questLines, actor->GetFormId(), "E_QUEST_ACTING",
+                       since)) {
+        spdlog::info("E_QUEST_ACTING: user {} actor {:x} reported {} {} of "
+                     "{} acting for {:x}, no connected player's actor: "
+                     "stamped as the reporter; {} such report(s) since the "
+                     "last line",
+                     rawMsgData.userId, actor->GetFormId(), verb, msg.stage,
+                     quest.ToString(), *msg.acting, since);
+      }
     }
+  }
+
+  const auto relayToOthers = [&](const QuestStageMessage& relay) {
+    size_t relayed = 0;
+    for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
+      const auto userId = static_cast<Networking::UserId>(i);
+      if (userId == rawMsgData.userId ||
+          !partOne.serverState.ActorByUser(userId)) {
+        continue;
+      }
+      partOne.GetSendTarget().Send(userId, relay, true);
+      ++relayed;
+    }
+    return relayed;
+  };
+
+  if (what != 0) {
+    // a run word (wire-rules quest_runs): the churn, the fold, the cap
+    const auto rows = QuestRunRows(partOne.GetQuestRuns());
+    const rust::Slice<const skymp::rules::QuestRunRow> record(rows.data(),
+                                                              rows.size());
+    const auto verdict = partOne.GetQuestRunRules().quest_runs_judge(
+      record, quest.shortFormId, quest.file, what, actor->GetFormId(),
+      MonotonicMs());
+    if (verdict.code == 1) {
+      return spdlog::debug("QuestStage: user {} actor {:x} reported the {} "
+                           "of {}, already the world's",
+                           rawMsgData.userId, actor->GetFormId(), verb,
+                           quest.ToString());
+    }
+    if (verdict.code == 2) {
+      if (verdict.first) {
+        // held for the run: no replay starts or stops it
+        partOne.SetQuestRuns(QuestRunsOf(skymp::rules::quest_runs_without(
+          record, quest.shortFormId, quest.file)));
+      }
+      uint32_t since = 0;
+      const bool due =
+        QuestLineDue(questLines, actor->GetFormId(), "E_QUEST_CHURN", since);
+      if (verdict.first || due) {
+        spdlog::info(
+          "E_QUEST_CHURN: user {} actor {:x} reported the {} of "
+          "{}: {}; held out of the world's run record for the "
+          "server's run, nothing relayed",
+          rawMsgData.userId, actor->GetFormId(), verb, quest.ToString(),
+          verdict.first ? std::string("its run flipped past the churn bound "
+                                      "on this seat (wire-rules quest_runs, "
+                                      "UNMEASURED)")
+                        : fmt::format("a held quest ({} such report(s) since "
+                                      "the last line)",
+                                      since));
+      }
+      return;
+    }
+    if (verdict.code == 3) {
+      static std::chrono::steady_clock::time_point lastFull;
+      const auto now = std::chrono::steady_clock::now();
+      if (lastFull == std::chrono::steady_clock::time_point() ||
+          now - lastFull >= std::chrono::seconds(10)) {
+        spdlog::warn("{}: user {} actor {:x} reported the {} of {}: {}, "
+                     "refused (one line per 10 s)",
+                     std::string(verdict.name), rawMsgData.userId,
+                     actor->GetFormId(), verb, quest.ToString(),
+                     std::string(verdict.why));
+        lastFull = now;
+      }
+      return;
+    }
+    partOne.SetQuestRuns(QuestRunsOf(skymp::rules::quest_runs_merge(
+      record, quest.shortFormId, quest.file, what)));
+    QuestStageMessage relay;
+    relay.quest = msg.quest;
+    relay.stage = 0;
+    relay.word = what;
+    relay.acting = acting;
+    const size_t relayed = relayToOthers(relay);
+    spdlog::info("[verb:quest-stage] {:x} {} {}: recorded, relayed to {}",
+                 actor->GetFormId(), what == 1 ? "starts" : "stops",
+                 quest.ToString(), relayed);
     return;
   }
+
   const QuestStageDone done{ quest, msg.stage };
   if (partOne.QuestStageDoneAlready(done)) {
     return spdlog::debug("QuestStage: user {} actor {:x} reported stage {} "
@@ -3448,16 +3595,15 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
   QuestStageMessage relay;
   relay.quest = msg.quest;
   relay.stage = msg.stage;
-  size_t relayed = 0;
-  for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
-    const auto userId = static_cast<Networking::UserId>(i);
-    if (userId == rawMsgData.userId ||
-        !partOne.serverState.ActorByUser(userId)) {
-      continue;
-    }
-    partOne.GetSendTarget().Send(userId, relay, true);
-    ++relayed;
+  relay.acting = acting;
+  // PQ-3 (section 8(a), read 18): a stage whose fragment calls a
+  // player-class quest's script (VC01's cure, DLC1VQ03's progression) is
+  // applied as a load on the other seats, so it never turns or cures their
+  // own players; only its acting seat ran its fragment
+  if (partOne.IsServedStage(quest, msg.stage)) {
+    relay.served = true;
   }
+  const size_t relayed = relayToOthers(relay);
   spdlog::info("[verb:quest-stage] {:x} set {} stage {}: recorded, relayed "
                "to {}",
                actor->GetFormId(), quest.ToString(), msg.stage, relayed);
@@ -4285,6 +4431,262 @@ void RecordStanding(
                msg.caller, msg.handler, applier, verdict.seq, relayed);
 }
 
+// thuum ADR-068 rung 5 (the R1 bound of a player's own rows, wire-rules
+// player_own): the objects a script class's attachments name, read from the
+// game files' VMADs. A quest's or a magic effect's script reaches the seam
+// with no attachment form of its own (the platform's callerSelf is 0: a
+// quest script's self is the quest, an effect's the ActiveMagicEffect), so
+// the class's property values are gathered across every QUST and MGEF that
+// attaches it, as the core reads a VMAD elsewhere (libespm's
+// RecordHeader::GetScriptData, the winning record of each form): an Object
+// property's form (Property::Type::Object), each element of an ObjectArray
+// one's, and a FormList's entries in order (FLST::GetData) beside it. Read
+// once per set of game files, the class's name without case; a class no
+// QUST or MGEF attaches names nothing (E_SCRIPTCALL_UNNAMED, measured).
+struct NamedForm
+{
+  uint32_t form = 0;
+  std::vector<uint32_t> members;
+};
+
+const std::vector<NamedForm>& CallerProperties(WorldState& worldState,
+                                               const std::string& caller)
+{
+  static std::map<const espm::Loader*,
+                  std::unordered_map<std::string, std::vector<NamedForm>>>
+    g_index;
+  static const std::vector<NamedForm> kNone;
+  const auto lower = [](std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    return s;
+  };
+  auto found = g_index.find(&worldState.GetEspm());
+  if (found == g_index.end()) {
+    auto& index = g_index[&worldState.GetEspm()];
+    auto& browser = worldState.GetEspm().GetBrowser();
+    auto& cache = worldState.GetEspmCache();
+    const auto add = [&](std::vector<NamedForm>& into, uint32_t form) {
+      if (form == 0 ||
+          std::any_of(into.begin(), into.end(),
+                      [&](const NamedForm& n) { return n.form == form; })) {
+        return;
+      }
+      NamedForm named;
+      named.form = form;
+      const auto list = browser.LookupById(form);
+      if (const auto* flst = espm::Convert<espm::FLST>(list.rec)) {
+        for (uint32_t member : flst->GetData(cache).formIds) {
+          named.members.push_back(list.ToGlobalId(member));
+        }
+      }
+      into.push_back(std::move(named));
+    };
+    for (const char* type : { "QUST", "MGEF" }) {
+      for (const auto& lookup : browser.GetDistinctRecordsByType(type)) {
+        espm::ScriptData scriptData;
+        lookup.rec->GetScriptData(&scriptData, cache);
+        for (const auto& script : scriptData.scripts) {
+          if (script.status == 3 || script.scriptName.empty()) {
+            continue;
+          }
+          auto& into = index[lower(script.scriptName)];
+          for (const auto& property : script.properties) {
+            if (property.status == 3) {
+              continue;
+            }
+            if (property.type == espm::Property::Type::Object &&
+                property.value.formId) {
+              add(into, lookup.ToGlobalId(property.value.formId));
+            } else if (property.type == espm::Property::Type::ObjectArray) {
+              for (const auto& element : property.array) {
+                if (element.formId) {
+                  add(into, lookup.ToGlobalId(element.formId));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    found = g_index.find(&worldState.GetEspm());
+  }
+  const auto it = found->second.find(lower(caller));
+  return it == found->second.end() ? kNone : it->second;
+}
+
+// the row's form, its first argument's object (0 for None or an argument
+// that is no object)
+uint32_t OwnRowForm(const ScriptCallMessage& msg)
+{
+  if (msg.args.empty() || !msg.args.front()) {
+    return 0;
+  }
+  const auto* object =
+    std::get_if<SpSnippetObjectArgument>(&*msg.args.front());
+  return object && object->formId <= std::numeric_limits<uint32_t>::max()
+    ? static_cast<uint32_t>(object->formId)
+    : 0;
+}
+
+bool NamesFunc(const std::string& fn, const char* name)
+{
+  return fn.size() == std::strlen(name) &&
+    std::equal(fn.begin(), fn.end(), name, [](char a, char b) {
+           return std::tolower(static_cast<unsigned char>(a)) ==
+             std::tolower(static_cast<unsigned char>(b));
+         });
+}
+
+// thuum ADR-068 rung 5 (the two transformations, D-T1 A; docs/research/
+// rung5-quests-2026-11-09.md section 8(b)): a per-player quest's script
+// changed its own player through one of the six rows (Actor.SetRace,
+// AddSpell, RemoveSpell, AddShout, RemoveShout, EquipItem on 0x14, the
+// owner step's record 4). wire-rules player_own judges it over the facts
+// gathered here (the bound over the caller's VMAD properties, the twin rule
+// over its FormLists, the recorded race, the RACE's Playable flag, the
+// permit, what the record holds): recorded on the change form (R1) and the
+// look sent to every game that sees the player (the twin, the base after a
+// cure), held in the player's race overlay instead (never on the change
+// form; its figure's CreateActor and UpdateAppearance carry it, the
+// equipment gate counts it), the overlay ended at the race's return, folded,
+// or refused by name (E_SCRIPTCALL_UNNAMED, E_SCRIPTCALL_RACE), one line a
+// minute per seat and code.
+void RecordPlayerOwn(
+  PartOne& partOne, MpActor& reporter, const ScriptCallMessage& msg,
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>&
+    refusals)
+{
+  const uint32_t form = OwnRowForm(msg);
+  const auto& named = CallerProperties(partOne.worldState, msg.caller);
+  std::vector<skymp::rules::ScriptPropertyRow> properties;
+  properties.reserve(named.size());
+  for (const auto& n : named) {
+    skymp::rules::ScriptPropertyRow row;
+    row.form = n.form;
+    for (uint32_t member : n.members) {
+      row.members.push_back(member);
+    }
+    properties.push_back(std::move(row));
+  }
+
+  skymp::rules::PlayerOwnFacts facts{};
+  const auto look = reporter.GetAppearance();
+  facts.recorded_race = look ? look->raceId : 0;
+  const bool setRace = NamesFunc(msg.fn, "SetRace");
+  if (setRace && form != 0) {
+    const auto race = espm::Convert<espm::RACE>(
+      partOne.GetEspm().GetBrowser().LookupById(form).rec);
+    facts.playable = race &&
+      (race->GetData(partOne.worldState.GetEspmCache()).flags &
+       espm::RACE::kPlayable);
+    const auto restricted = partOne.worldState.RestrictedRaceIds();
+    facts.restricted = std::find(restricted.begin(), restricted.end(), form) !=
+      restricted.end();
+    const auto permitted =
+      partOne.worldState.PermittedRaceIds(reporter.GetProfileId());
+    facts.permitted =
+      std::find(permitted.begin(), permitted.end(), form) != permitted.end();
+  }
+  const bool spellRow =
+    NamesFunc(msg.fn, "AddSpell") || NamesFunc(msg.fn, "RemoveSpell");
+  const bool shoutRow =
+    NamesFunc(msg.fn, "AddShout") || NamesFunc(msg.fn, "RemoveShout");
+  const bool equipRow = NamesFunc(msg.fn, "EquipItem");
+  if (form != 0) {
+    if (spellRow) {
+      facts.held = reporter.IsSpellLearned(form);
+    } else if (shoutRow) {
+      facts.held = reporter.HasShoutEntry(MpActor::ShoutEntry::Shout, form);
+    } else if (equipRow) {
+      facts.held = reporter.GetInventory().HasItem(form);
+    }
+  }
+
+  const auto verdict = partOne.GetPlayerOverlays().player_own_judge(
+    reporter.GetFormId(), msg.fn, form,
+    rust::Slice<const skymp::rules::ScriptPropertyRow>(properties.data(),
+                                                       properties.size()),
+    facts);
+  const auto said = [&](const std::string& what) {
+    spdlog::info("[verb:quest-stage] {:x}'s own {}.{} {:x} (from {}.{}): {}",
+                 reporter.GetFormId(), msg.cls, msg.fn, form, msg.caller,
+                 msg.handler, what);
+  };
+  switch (verdict.code) {
+    case 0: {
+      // the change form's, R1
+      std::string what = "recorded on its change form";
+      if (setRace) {
+        if (!look) {
+          return said("no recorded look to wear the race, nothing written");
+        }
+        Appearance appearance = *look;
+        appearance.raceId = form;
+        reporter.SetAppearance(&appearance);
+        SendAppearanceToOthers(partOne, reporter, appearance);
+        what += fmt::format(", its look's race {:x} sent to every game that "
+                            "sees it",
+                            form);
+      } else if (NamesFunc(msg.fn, "AddSpell")) {
+        reporter.AddSpell(form);
+      } else if (NamesFunc(msg.fn, "RemoveSpell")) {
+        reporter.RemoveSpell(form);
+      } else if (shoutRow) {
+        FormDesc shout;
+        try {
+          shout = FormDesc::FromFormId(form, partOne.worldState.espmFiles);
+        } catch (const std::exception&) {
+          return said("a shout in no loaded plugin, nothing written");
+        }
+        if (NamesFunc(msg.fn, "AddShout")) {
+          reporter.RecordShoutEntry(MpActor::ShoutEntry::Shout, shout);
+        } else {
+          reporter.ForgetShoutEntry(MpActor::ShoutEntry::Shout, shout);
+        }
+      } else if (equipRow) {
+        // the item enters the player's inventory, as the engine's EquipItem
+        // adds an item the actor lacks (UNVERIFIED on a seat)
+        reporter.AddItem(form, 1);
+        what += ", the item added to its inventory";
+      }
+      if (verdict.ended.open) {
+        what += fmt::format("; its race overlay {:x} ended with it",
+                            verdict.ended.race);
+      }
+      return said(what);
+    }
+    case 1:
+    case 2: {
+      // the overlay's (D-T1 A): every game that sees the player hears its
+      // look with the overlay now held, or with none once it ended
+      if (look) {
+        SendAppearanceToOthers(partOne, reporter, *look);
+      }
+      const auto& o = verdict.code == 1 ? verdict.overlay : verdict.ended;
+      return said(fmt::format(
+        "{} race overlay {:x} over {:x} (D-T1 A): {} spell(s), {} shout(s), "
+        "{} item(s), never on its change form",
+        verdict.code == 1 ? "held in its" : "ended its", o.race, o.base,
+        o.spells.size(), o.shouts.size(), o.items.size()));
+    }
+    case 3:
+      return spdlog::debug("[verb:quest-stage] {:x}'s own {}.{} {:x}: folded",
+                           reporter.GetFormId(), msg.cls, msg.fn, form);
+    default:
+      RefuseStateRow(refusals, reporter.GetFormId(), std::string(verdict.name),
+                     fmt::format("[verb:quest-stage] {}: {:x}'s own {}.{} "
+                                 "{:x} (from {}.{}): {}",
+                                 std::string(verdict.name),
+                                 reporter.GetFormId(), msg.cls, msg.fn, form,
+                                 msg.caller, msg.handler,
+                                 std::string(verdict.why)));
+      return;
+  }
+}
+
 // the fifty fixes' D-C3 A (PENDING ELI): a SetAnimationVariable call's
 // variable kept on its subject; defined with the view's bound below
 void KeepScriptVariable(MpObjectReference& subject,
@@ -4568,6 +4970,11 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   if (verdict.record == 2) {
     return RecordStanding(partOne, *reporter, msg, verdict, subject,
                           stateRowRefusals);
+  }
+  // thuum ADR-068 rung 5: a player's own row, its subject the reporter's own
+  // player at any epoch (the owner step reads none), judged by player_own
+  if (verdict.record == 4) {
+    return RecordPlayerOwn(partOne, *reporter, msg, stateRowRefusals);
   }
   if (verdict.record == 3) {
     uint32_t worldOrCell = 0;
@@ -5674,6 +6081,23 @@ void ActionListener::OnAliasFill(const RawMessageData& rawMsgData,
   }
   const auto& files = partOne.worldState.espmFiles;
   const auto& browser = partOne.GetEspm().GetBrowser();
+  // thuum ADR-068 rung 5 (section 8(a)): a player-class quest's alias is its
+  // player's own (the werewolf's Alias_Player), never the world's: refused
+  // E_QUEST_PLAYER while the quest scope acts, nothing recorded or relayed
+  try {
+    if (partOne.CheckSharedQuest(FormDesc::FromFormId(msg.quest, files)) ==
+        3) {
+      RefuseStateRow(stateRowRefusals, reporter->GetFormId(), "E_QUEST_PLAYER",
+                     fmt::format("[verb:quest-stage] E_QUEST_PLAYER: {:x} "
+                                 "fills alias {:x}/{} with {:x}: a quest of "
+                                 "the player class, each player's own",
+                                 reporter->GetFormId(), msg.quest, msg.alias,
+                                 msg.refr));
+      return;
+    }
+  } catch (const std::exception&) {
+    // a quest in no loaded plugin: the rule's E_ALIASFILL_ refusal says so
+  }
   skymp::rules::AliasFillFacts facts{};
   const auto* qust =
     espm::Convert<espm::QUST>(browser.LookupById(msg.quest).rec);
@@ -5787,7 +6211,9 @@ void ActionListener::SendAliasFills(MpActor& actor)
   const auto& files = partOne.worldState.espmFiles;
   size_t sent = 0;
   for (const auto& fill : partOne.GetAliasFills()) {
-    if (!fill.refr) {
+    // thuum ADR-068 rung 5: an older record's fill of a player-class quest
+    // stays unsent, as its stages do
+    if (!fill.refr || partOne.CheckSharedQuest(fill.quest) == 3) {
       continue;
     }
     AliasFillMessage message;
@@ -5935,15 +6361,322 @@ void ActionListener::OnWorldGlobal(const RawMessageData& rawMsgData,
                relay.entries.size(), relayed, refusals);
 }
 
-// thuum ADR-068 rung 5: the wire's half only. The message is recognized and
-// validated in Rust before it gets here; until the rung's server half (A4)
-// writes this body, a report is dropped, said at debug
+namespace {
+// thuum ADR-068 rung 5: ScriptVariables 81's rows (wire-rules
+// script_variables through the bridge) and the change forms' records
+skymp::rules::ScriptVarRow ScriptVarRowOf(
+  const MpChangeFormREFR::ScriptVariable& v, bool own)
+{
+  skymp::rules::ScriptVarRow row{};
+  row.short_id = v.form.shortFormId;
+  row.file = rust::String(v.form.file);
+  row.script = rust::String(v.script);
+  row.var = rust::String(v.var);
+  row.own = own;
+  row.k = static_cast<uint8_t>(v.k);
+  row.i = v.i.value_or(0);
+  row.f = v.f.value_or(0.f);
+  row.b = v.b.value_or(false);
+  row.seq = v.seq;
+  return row;
+}
+
+std::vector<skymp::rules::ScriptVarRow> ScriptVarRows(
+  const std::vector<MpChangeFormREFR::ScriptVariable>& record, bool own)
+{
+  std::vector<skymp::rules::ScriptVarRow> rows;
+  rows.reserve(record.size());
+  for (const auto& v : record) {
+    rows.push_back(ScriptVarRowOf(v, own));
+  }
+  return rows;
+}
+
+std::vector<MpChangeFormREFR::ScriptVariable> ScriptVariablesOf(
+  const std::vector<skymp::rules::ScriptVarRow>& rows)
+{
+  std::vector<MpChangeFormREFR::ScriptVariable> record;
+  record.reserve(rows.size());
+  for (const auto& row : rows) {
+    MpChangeFormREFR::ScriptVariable v;
+    v.form = FormDesc(row.short_id, std::string(row.file));
+    v.script = std::string(row.script);
+    v.var = std::string(row.var);
+    v.k = row.k;
+    if (row.k == 3) {
+      v.i = row.i;
+    } else if (row.k == 4) {
+      v.f = row.f;
+    } else if (row.k == 5) {
+      v.b = row.b;
+    }
+    v.seq = row.seq;
+    record.push_back(std::move(v));
+  }
+  return record;
+}
+
+// a recorded row as the message's entry, its form in this load order
+ScriptVariablesMessage::Entry EntryOfRow(const skymp::rules::ScriptVarRow& row,
+                                         uint32_t formId)
+{
+  ScriptVariablesMessage::Entry e;
+  e.form = formId;
+  e.script = std::string(row.script);
+  e.var = std::string(row.var);
+  e.own = row.own;
+  e.k = row.k;
+  if (row.k == 3) {
+    e.i = row.i;
+  } else if (row.k == 4) {
+    e.f = row.f;
+  } else if (row.k == 5) {
+    e.b = row.b;
+  }
+  e.seq = row.seq;
+  return e;
+}
+
+// the wire's cap on one message's keys and its entries (wire-schema
+// cap::SCRIPT_VARIABLES)
+constexpr size_t kScriptVariablesPerMessage = 256;
+
+// D-T2 B's two reserved names of a form's game-time registration (the
+// platform's kGameTimeHours and kGameTimeRepeat), compared without case as
+// the platform compares them
+bool IsGameTimeName(const std::string& var)
+{
+  const auto same = [&](const char* name) {
+    const std::string n(name);
+    return var.size() == n.size() &&
+      std::equal(var.begin(), var.end(), n.begin(), [](char a, char b) {
+             return std::tolower(static_cast<unsigned char>(a)) ==
+               std::tolower(static_cast<unsigned char>(b));
+           });
+  };
+  return same("<OnUpdateGameTime>") || same("<OnUpdateGameTime:repeat>");
+}
+
+// the served entries in messages of at most kScriptVariablesPerMessage, in
+// order, a form's two registration entries side by side and never split
+// across two messages (the client reads them as one registration)
+std::vector<std::vector<ScriptVariablesMessage::Entry>> ServedChunks(
+  std::vector<ScriptVariablesMessage::Entry> entries)
+{
+  std::vector<ScriptVariablesMessage::Entry> ordered;
+  ordered.reserve(entries.size());
+  std::vector<bool> placed(entries.size(), false);
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (placed[i]) {
+      continue;
+    }
+    placed[i] = true;
+    ordered.push_back(entries[i]);
+    if (!IsGameTimeName(entries[i].var)) {
+      continue;
+    }
+    for (size_t j = i + 1; j < entries.size(); ++j) {
+      if (!placed[j] && entries[j].form == entries[i].form &&
+          IsGameTimeName(entries[j].var)) {
+        placed[j] = true;
+        ordered.push_back(entries[j]);
+        break;
+      }
+    }
+  }
+  std::vector<std::vector<ScriptVariablesMessage::Entry>> chunks;
+  for (size_t i = 0; i < ordered.size(); ++i) {
+    const bool pairStarts = IsGameTimeName(ordered[i].var) &&
+      i + 1 < ordered.size() && ordered[i + 1].form == ordered[i].form &&
+      IsGameTimeName(ordered[i + 1].var);
+    const size_t room = pairStarts ? 2 : 1;
+    if (chunks.empty() ||
+        chunks.back().size() + room > kScriptVariablesPerMessage) {
+      chunks.emplace_back();
+    }
+    chunks.back().push_back(ordered[i]);
+    if (pairStarts) {
+      chunks.back().push_back(ordered[++i]);
+    }
+  }
+  return chunks;
+}
+}
+
+// thuum ADR-068 rung 5 (ScriptVariables 81; D-V1 B and D-T2 B; docs/
+// research/rung5-quests-2026-11-09.md sections 1(b) and 8(b)): a seat's
+// report of the condition-read variables its game changed. Any seat may
+// report (a topic info's fragment runs on the talking seat alone): each
+// entry is judged by wire-rules script_variables against its record, the
+// journal's for a world key, the reporter's own player's change form for
+// one flagged own (the player cut: a player-class quest's key, its scalar
+// variables and its game-time registration). A world key's write is
+// recorded as the latest by the server's order with the key's next
+// sequence and relayed at once to every other seat (served false); an own
+// key's is recorded on the player's change form and relayed to nobody. An
+// equal value folds. R2: the reporting engine's value, recorded, never
+// judged. Refusals by name: E_SCRIPTVAR_UNLISTED, _PLAYER, _KIND, _FULL, one
+// line a minute per seat and code, every report's counts in its line.
 void ActionListener::OnScriptVariables(const RawMessageData& rawMsgData,
                                        const ScriptVariablesMessage& msg)
 {
-  spdlog::debug("ScriptVariables: user {} sent {} entr(ies); no handler "
-                "before rung 5's server half, dropped",
-                rawMsgData.userId, msg.entries.size());
+  MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!reporter) {
+    return;
+  }
+  if (!msg.watch.empty() || msg.served) {
+    return spdlog::info("ScriptVariables: user {} actor {:x} report refused "
+                        "(the watch and the served record are the server's)",
+                        rawMsgData.userId, reporter->GetFormId());
+  }
+  auto& rules = partOne.GetScriptVariableRules();
+  const auto& files = partOne.worldState.espmFiles;
+  auto world = ScriptVarRows(partOne.GetScriptVariables(), false);
+  auto own = ScriptVarRows(reporter->GetScriptVariables(), true);
+  ScriptVariablesMessage relay;
+  relay.served = false;
+  size_t ownRecorded = 0;
+  size_t folded = 0;
+  std::map<std::string, size_t> refused;
+  for (const auto& entry : msg.entries) {
+    skymp::rules::ScriptVarRow row{};
+    try {
+      const FormDesc form = FormDesc::FromFormId(entry.form, files);
+      row.short_id = form.shortFormId;
+      row.file = rust::String(form.file);
+    } catch (const std::exception&) {
+      ++refused["E_SCRIPTVAR_UNLISTED"]; // no plugin of this load order
+      continue;
+    }
+    row.script = rust::String(entry.script);
+    row.var = rust::String(entry.var);
+    row.own = entry.own;
+    row.k = static_cast<uint8_t>(entry.k);
+    row.i = entry.i.value_or(0);
+    row.f = entry.f.value_or(0.f);
+    row.b = entry.b.value_or(false);
+    row.seq = 0;
+    auto& record = entry.own ? own : world;
+    const rust::Slice<const skymp::rules::ScriptVarRow> recordSlice(
+      record.data(), record.size());
+    const auto verdict = rules.script_variable_judge(recordSlice, row);
+    if (verdict.code == 1) {
+      ++folded;
+      continue;
+    }
+    if (verdict.code != 0) {
+      const std::string name(verdict.name);
+      ++refused[name];
+      uint32_t since = 0;
+      if (QuestLineDue(questLines, reporter->GetFormId(), name, since)) {
+        spdlog::info("{}: {:x} reports script variable {:x} {}.{}: {}; "
+                     "refused, {} since the last line",
+                     name, reporter->GetFormId(), entry.form, entry.script,
+                     entry.var, std::string(verdict.why), since);
+      }
+      continue;
+    }
+    const auto merged = skymp::rules::script_variables_merge(recordSlice, row);
+    record.assign(merged.record.begin(), merged.record.end());
+    if (entry.own) {
+      ++ownRecorded;
+      continue;
+    }
+    auto out = entry;
+    out.seq = merged.seq;
+    relay.entries.push_back(std::move(out));
+  }
+  if (ownRecorded > 0) {
+    reporter->SetScriptVariables(ScriptVariablesOf(own));
+  }
+  size_t relayed = 0;
+  if (!relay.entries.empty()) {
+    partOne.SetScriptVariables(ScriptVariablesOf(world));
+    for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
+      const auto userId = static_cast<Networking::UserId>(i);
+      if (userId == rawMsgData.userId ||
+          !partOne.serverState.ActorByUser(userId)) {
+        continue;
+      }
+      partOne.GetSendTarget().Send(userId, relay, true);
+      ++relayed;
+    }
+  }
+  std::string refusals;
+  for (const auto& [name, count] : refused) {
+    refusals += fmt::format(", {} x{}", name, count);
+  }
+  spdlog::info("[verb:quest-stage] {:x} reports {} script variable(s): {} "
+               "recorded, {} of its own, {} folded, relayed to {} game(s){}",
+               reporter->GetFormId(), msg.entries.size(), relay.entries.size(),
+               ownRecorded, folded, relayed, refusals);
+}
+
+void ActionListener::SendScriptVariables(MpActor& actor)
+{
+  auto& rules = partOne.GetScriptVariableRules();
+  const auto& files = partOne.worldState.espmFiles;
+  std::vector<ScriptVariablesMessage::Key> watch;
+  size_t ownWatched = 0;
+  for (const auto& key : rules.script_variables_watch()) {
+    ScriptVariablesMessage::Key k;
+    try {
+      k.form = FormDesc(key.short_id, std::string(key.file)).ToFormId(files);
+    } catch (const std::exception&) {
+      continue; // a listed key whose plugin this load order lacks
+    }
+    k.script = std::string(key.script);
+    k.var = std::string(key.var);
+    k.own = key.own;
+    ownWatched += key.own ? 1 : 0;
+    watch.push_back(std::move(k));
+  }
+  const auto served = [&](const std::vector<skymp::rules::ScriptVarRow>& rows,
+                          bool own) {
+    std::vector<ScriptVariablesMessage::Entry> entries;
+    for (const auto& row : rules.script_variables_at_login(
+           rust::Slice<const skymp::rules::ScriptVarRow>(rows.data(),
+                                                         rows.size()),
+           own)) {
+      try {
+        entries.push_back(EntryOfRow(
+          row, FormDesc(row.short_id, std::string(row.file)).ToFormId(files)));
+      } catch (const std::exception&) {
+        // a recorded key whose plugin this load order lacks
+      }
+    }
+    return entries;
+  };
+  const auto world =
+    served(ScriptVarRows(partOne.GetScriptVariables(), false), false);
+  const auto own =
+    served(ScriptVarRows(actor.GetScriptVariables(), true), true);
+  if (watch.empty() && world.empty() && own.empty()) {
+    return;
+  }
+  size_t messages = 0;
+  for (size_t at = 0; at < watch.size(); at += kScriptVariablesPerMessage) {
+    ScriptVariablesMessage message;
+    message.served = true;
+    const size_t end = std::min(watch.size(), at + kScriptVariablesPerMessage);
+    message.watch.assign(watch.begin() + at, watch.begin() + end);
+    actor.SendToUser(message, true);
+    ++messages;
+  }
+  for (const auto* half : { &world, &own }) {
+    for (auto& chunk : ServedChunks(*half)) {
+      ScriptVariablesMessage message;
+      message.served = true;
+      message.entries = std::move(chunk);
+      actor.SendToUser(message, true);
+      ++messages;
+    }
+  }
+  spdlog::info("[verb:quest-stage] script variables served to {:x} after its "
+               "login: {} key(s) to watch ({} its own), {} world value(s), {} "
+               "of its own, in {} message(s)",
+               actor.GetFormId(), watch.size(), ownWatched, world.size(),
+               own.size(), messages);
 }
 
 void ActionListener::SendWorldGlobals(MpActor& actor)
@@ -6732,10 +7465,9 @@ void ActionListener::SendQuestStages(MpActor& actor)
 {
   // the login's first message names the sharing mode and its list (memo D58
   // B): in mode list the shared quests, and nothing at all when none is
-  // listed; in mode all the denied quests, sent even when none is, so the
-  // seat learns the mode (the allowed quests are not named: the wire's one
-  // list is the denied, and the allowed matter to the server alone, memo
-  // D62)
+  // listed; in mode all the quests a seat never reports, the denied and,
+  // while the quest scope acts, the player class (thuum ADR-068 rung 5), sent
+  // even when none is, so the seat learns the mode
   const uint8_t mode = partOne.SharedQuestsMode();
   const auto listed = partOne.SharedQuestsListed();
   if (mode == 0 && listed.empty()) {
@@ -6754,6 +7486,30 @@ void ActionListener::SendQuestStages(MpActor& actor)
     return;
   }
   actor.SendToUser(list, true);
+
+  // thuum ADR-068 rung 5 (D-Q3 A: the replay is a load, served true): the
+  // quests recorded running ahead of the stages, so a stage's quest runs
+  // when its stage applies, and those recorded stopped behind them; a quest
+  // the world no longer shares (denied, the player class, off a list) or a
+  // seat's churn stays unsent, as its stages do
+  const auto sendWord = [&](const FormDesc& quest, uint32_t word) {
+    QuestStageMessage message;
+    try {
+      message.quest = quest.ToFormId(partOne.worldState.espmFiles);
+    } catch (const std::exception&) {
+      return false; // a recorded quest whose plugin this load order lacks
+    }
+    message.stage = 0;
+    message.word = word;
+    message.served = true;
+    actor.SendToUser(message, true);
+    return true;
+  };
+  const auto [starts, stops] = partOne.QuestRunsAtLogin();
+  size_t running = 0;
+  for (const auto& quest : starts) {
+    running += sendWord(quest, 1) ? 1 : 0;
+  }
   size_t stages = 0;
   for (const auto& entry : partOne.SharedQuestsAtLogin()) {
     QuestStageMessage message;
@@ -6762,24 +7518,22 @@ void ActionListener::SendQuestStages(MpActor& actor)
     } catch (const std::exception&) {
       continue; // a recorded quest whose plugin this load order lacks
     }
-    if (mode == 1 && partOne.HasEspm()) {
-      const auto rec =
-        partOne.GetEspm().GetBrowser().LookupById(message.quest).rec;
-      if (IsSeatsOwnQuest(partOne, entry.quest, rec) &&
-          QuestStageIsEngineStart(partOne, rec, entry.stage)) {
-        // each seat's own (memos D62 and D69): a record made under another
-        // setting keeps the stage, unsent, as a denied quest's
-        continue;
-      }
-    }
     message.stage = entry.stage;
+    message.served = true;
     actor.SendToUser(message, true);
     ++stages;
+  }
+  size_t stopped = 0;
+  for (const auto& quest : stops) {
+    stopped += sendWord(quest, 2) ? 1 : 0;
   }
   spdlog::info("QuestStage: actor {:x} sent mode {} with {} {} quests, {} "
                "stages after a login",
                actor.GetFormId(), mode, list.shared.size(),
                mode == 0 ? "shared" : "denied", stages);
+  spdlog::info("QuestStage: actor {:x} sent {} running and {} stopped "
+               "quest(s) around the stages after a login",
+               actor.GetFormId(), running, stopped);
 }
 
 // thuum memo D56 A (Eli, 2026-10-28, "A for both"): the server cures the

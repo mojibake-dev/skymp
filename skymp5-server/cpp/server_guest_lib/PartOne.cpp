@@ -332,6 +332,36 @@ struct PartOne::Impl
   // `sharedQuests`
   rust::Box<skymp::rules::SharedQuests> sharedQuests =
     skymp::rules::new_shared_quests("[]");
+  // the retired `allowed` of the mode block (thuum ADR-068 rung 5, read 4),
+  // kept for the quest scope's measurement line alone
+  std::vector<FormDesc> retiredAllowed;
+
+  // thuum ADR-068 rung 5: the run record's churn counter and held quests
+  // (wire-rules quest_runs, runtime only), the quest scope's settings
+  // (questScope, playerQuests), the condition-read variables
+  // (conditionVariables) and every player's race overlay (player_own)
+  rust::Box<skymp::rules::QuestRuns> questRuns =
+    skymp::rules::new_quest_runs();
+  rust::Box<skymp::rules::QuestScope> questScope =
+    skymp::rules::new_quest_scope("\"off\"", "[]");
+  rust::Box<skymp::rules::ScriptVariables> scriptVariables =
+    skymp::rules::new_script_variables("[]");
+  rust::Box<skymp::rules::PlayerOverlays> playerOverlays =
+    skymp::rules::new_player_overlays();
+  // the playerGlobals setting as written, recomposed with the player class's
+  // globals (playerQuestGlobals) while the scope acts
+  std::string playerGlobalsJson = "[]";
+  // the census's per-quest companions, parsed (each key a quest)
+  std::vector<std::pair<FormDesc, std::vector<FormDesc>>> playerQuestGlobals;
+  std::vector<
+    std::pair<FormDesc, std::vector<std::pair<std::string, std::string>>>>
+    playerQuestVariables;
+  std::vector<std::pair<FormDesc, std::vector<uint16_t>>> playerQuestCallers;
+  // the class measured (either mode) and composed (acting only), and PQ-3's
+  // stages relayed served (acting only)
+  std::vector<FormDesc> questScopeMarked;
+  std::vector<FormDesc> playerClassQuests;
+  std::vector<std::pair<FormDesc, uint16_t>> servedStages;
 
   // the objects the server places at an accepted cast of a listed spell,
   // and every set standing (thuum docs/verbs/spell-placed-object.md,
@@ -640,6 +670,10 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     GetActionListener().SendAliasFills(actor);
     GetActionListener().SendWorldGlobals(actor);
 
+    // thuum ADR-068 rung 5 (D-V1 B, D-T2 B): the condition-read variables'
+    // watch and record after the world globals, the player's own with them
+    GetActionListener().SendScriptVariables(actor);
+
     // thuum memo D56 A: the listed cure spells leave the player's game at the
     // login and every minute after (the engine's own RemoveSpell)
     GetActionListener().SendCures(actor);
@@ -777,6 +811,9 @@ void PartOne::AttachEspm(espm::Loader* espm)
   LoadSkillTable();
   LoadWeatherPools();
   LoadPerkTable();
+  // thuum ADR-068 rung 5: the quest scope's class needs every QUST's
+  // aliases, read now that the game files are here (the settings came first)
+  ComposeQuestScope();
 }
 
 bool PartOne::FlushSaves(std::chrono::milliseconds budget)
@@ -984,6 +1021,22 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           this_->ForgetHeldSightings(actor->GetFormId());
           this_->pImpl->lastSquareByPlayer.erase(actor->GetFormId());
           this_->pImpl->fatedSquares.erase(actor->GetFormId());
+          // thuum ADR-068 rung 5: its quest words' churn counters go, and
+          // its race overlay ends with the connection (D-T1 A: a relaunch
+          // mid-form logs in as its own race)
+          this_->pImpl->questRuns->quest_runs_gone(actor->GetFormId());
+          const auto overlay =
+            this_->pImpl->playerOverlays->player_overlay_gone(
+              actor->GetFormId());
+          if (overlay.open) {
+            spdlog::info("[verb:quest-stage] {:x}'s race overlay {:x} ended "
+                         "at its disconnect: {} spell(s), {} shout(s), {} "
+                         "item(s) off its figure, its record's race {:x} "
+                         "stands (D-T1 A)",
+                         actor->GetFormId(), overlay.race,
+                         overlay.spells.size(), overlay.shouts.size(),
+                         overlay.items.size(), overlay.base);
+          }
         }
         this_->pImpl->staleUsers.erase(userId);
         this_->serverState.Disconnect(userId);
@@ -1594,6 +1647,12 @@ void PartOne::Init()
         placed != pImpl->placedCasterByForm.end()) {
       message.props.placedBy = placed->second;
       message.baseRecordType = emitter->GetBaseType();
+    }
+
+    // thuum ADR-068 rung 5 (D-T1 A): another player's figure wears that
+    // player's race overlay, which never touches its change form
+    if (hasUser && !isMe) {
+      message.props.overlay = PlayerOverlayOf(emitter->GetFormId());
     }
 
     message.idx = emitter->GetIdx();
@@ -3415,7 +3474,10 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
 void PartOne::SetPlayerGlobalsSettings(const std::string& playerGlobalsJson)
 {
   pImpl->playerGlobals = skymp::rules::new_player_globals(playerGlobalsJson);
+  pImpl->playerGlobalsJson = playerGlobalsJson;
   spdlog::info("PartOne::SetPlayerGlobalsSettings - {}", playerGlobalsJson);
+  // thuum ADR-068 rung 5: the player class's globals join the setting's
+  ComposePlayerGlobals();
 }
 
 namespace {
@@ -3501,6 +3563,491 @@ void PartOne::SetSharedQuestsSettings(const std::string& sharedQuestsJson)
 {
   pImpl->sharedQuests = skymp::rules::new_shared_quests(sharedQuestsJson);
   spdlog::info("PartOne::SetSharedQuestsSettings - {}", sharedQuestsJson);
+  // thuum ADR-068 rung 5 (read 4): the retired `allowed` is read and ignored,
+  // said once here; its quests stay known to the quest scope's measurement
+  // line alone (a mark on that list stops for Eli)
+  if (const std::string retired(pImpl->sharedQuests->shared_quests_retired());
+      !retired.empty()) {
+    spdlog::warn("[verb:quest-stage] {}", retired);
+  }
+  pImpl->retiredAllowed.clear();
+  const auto block = nlohmann::json::parse(sharedQuestsJson, nullptr, false);
+  if (block.is_object() && block.contains("allowed") &&
+      block["allowed"].is_array()) {
+    for (const auto& entry : block["allowed"]) {
+      if (entry.is_string()) {
+        pImpl->retiredAllowed.push_back(
+          FormDesc::FromString(entry.get<std::string>()));
+      }
+    }
+  }
+  ComposeQuestScope();
+}
+
+namespace {
+// thuum ADR-068 rung 5: a FormDesc as the settings spell it,
+// "<hex id>:<plugin>" (one to eight hex digits, a plugin named); throws
+// naming the setting and the entry (FormDesc::FromString checks nothing)
+FormDesc SettingFormDesc(const char* setting, const std::string& text)
+{
+  const auto colon = text.find(':');
+  const std::string id =
+    colon == std::string::npos ? std::string() : text.substr(0, colon);
+  const bool hex = !id.empty() && id.size() <= 8 &&
+    std::all_of(id.begin(), id.end(),
+                [](unsigned char c) { return std::isxdigit(c) != 0; });
+  if (!hex || colon + 1 >= text.size()) {
+    throw std::runtime_error(std::string(setting) + ": \"" + text +
+                             "\" is not \"<hex id>:<plugin>\"");
+  }
+  return FormDesc::FromString(text);
+}
+
+// the same form: the id, and the plugin compared without case, as the
+// engine compares plugin names (the census spells USSEP in lower case)
+bool SameForm(const FormDesc& a, const FormDesc& b)
+{
+  return a.shortFormId == b.shortFormId && a.file.size() == b.file.size() &&
+    std::equal(a.file.begin(), a.file.end(), b.file.begin(),
+               [](char x, char y) {
+                 return std::tolower(static_cast<unsigned char>(x)) ==
+                   std::tolower(static_cast<unsigned char>(y));
+               });
+}
+
+bool HoldsForm(const std::vector<FormDesc>& list, const FormDesc& form)
+{
+  return std::any_of(list.begin(), list.end(),
+                     [&](const FormDesc& f) { return SameForm(f, form); });
+}
+
+// one of the census's per-quest maps ({"<quest>": [values]}) as JSON text,
+// each value read by `read`; throws naming the setting and the entry
+template <class Value, class Read>
+std::vector<std::pair<FormDesc, std::vector<Value>>> PlayerQuestMap(
+  const char* setting, const std::string& text, Read read)
+{
+  const auto j = nlohmann::json::parse(text);
+  if (!j.is_object()) {
+    throw std::runtime_error(std::string(setting) +
+                             ": an object {\"<hex id>:<plugin>\": [...]} "
+                             "was expected");
+  }
+  std::vector<std::pair<FormDesc, std::vector<Value>>> out;
+  for (const auto& [key, values] : j.items()) {
+    if (!values.is_array()) {
+      throw std::runtime_error(std::string(setting) + ": \"" + key +
+                               "\" names no list");
+    }
+    std::vector<Value> parsed;
+    for (const auto& value : values) {
+      parsed.push_back(read(value));
+    }
+    out.emplace_back(SettingFormDesc(setting, key), std::move(parsed));
+  }
+  return out;
+}
+
+// the two reserved names of a form's queued OnUpdateGameTime registration
+// (skyrim-platform ScriptState.cpp's kGameTimeHours and kGameTimeRepeat,
+// read by ReadScriptVariables; wire-rules script_variables' GAME_TIME_HOURS
+// and GAME_TIME_REPEAT): D-T2 B's re-issue at a login
+constexpr const char* kGameTimeHours = "<OnUpdateGameTime>";
+constexpr const char* kGameTimeRepeat = "<OnUpdateGameTime:repeat>";
+
+// the wire's cap on a PlayerGlobals watch (wire-schema cap::PLAYER_GLOBALS)
+constexpr size_t kPlayerGlobalsMax = 256;
+
+// thuum ADR-068 rung 5 (D-Q1's alias half): one QUST's facts for its class,
+// read once per set of game files (the tests' many PartOnes share them, as
+// AliasCreationsOf's index): its aliases as libespm's QUST::GetQuestAliases
+// reads them, the forms in the load order (an external fill's alias read
+// one hop), and its first attached script, which names the key of its
+// game-time registration
+struct QuestScopeFacts
+{
+  FormDesc quest;
+  std::vector<skymp::rules::QuestScopeAliasRow> aliases;
+  std::string firstScript;
+};
+
+const std::vector<QuestScopeFacts>& QuestScopeFactsOf(WorldState& worldState)
+{
+  static std::map<const espm::Loader*, std::vector<QuestScopeFacts>> g_facts;
+  auto it = g_facts.find(&worldState.GetEspm());
+  if (it != g_facts.end()) {
+    return it->second;
+  }
+  auto& facts = g_facts[&worldState.GetEspm()];
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto global = [](const espm::LookupResult& at, uint32_t raw) {
+    return raw ? at.ToGlobalId(raw) : 0u;
+  };
+  for (const auto& lookup : browser.GetDistinctRecordsByType("QUST")) {
+    const auto* qust = espm::Convert<espm::QUST>(lookup.rec);
+    if (!qust) {
+      continue;
+    }
+    QuestScopeFacts quest;
+    try {
+      quest.quest = FormDesc::FromFormId(
+        lookup.ToGlobalId(lookup.rec->GetId()), worldState.espmFiles);
+    } catch (const std::exception&) {
+      continue;
+    }
+    for (const auto& alias : qust->GetQuestAliases(cache)) {
+      skymp::rules::QuestScopeAliasRow row{};
+      row.location = alias.locationAlias;
+      row.id = alias.locationAlias ? alias.locationID : alias.aliasID;
+      row.forced = global(lookup, alias.aliasForcedReference);
+      row.unique_actor = global(lookup, alias.aliasUniqueActor);
+      row.created = global(lookup, alias.aliasCreatedObject);
+      row.create_at = alias.createAt;
+      row.external = false;
+      if (!alias.locationAlias && alias.externalAliasReference) {
+        const auto other =
+          browser.LookupById(global(lookup, alias.externalAliasReference));
+        if (const auto* otherQust = espm::Convert<espm::QUST>(other.rec)) {
+          for (const auto& theirs : otherQust->GetQuestAliases(cache)) {
+            if (!theirs.locationAlias &&
+                theirs.aliasID == alias.externalAlias) {
+              row.external = true;
+              row.external_forced = global(other, theirs.aliasForcedReference);
+              row.external_unique_actor =
+                global(other, theirs.aliasUniqueActor);
+              break;
+            }
+          }
+        }
+      }
+      quest.aliases.push_back(row);
+    }
+    espm::ScriptData scriptData;
+    lookup.rec->GetScriptData(&scriptData, cache);
+    for (const auto& script : scriptData.scripts) {
+      if (script.status != 3 && !script.scriptName.empty()) {
+        quest.firstScript = script.scriptName;
+        break;
+      }
+    }
+    facts.push_back(std::move(quest));
+  }
+  return facts;
+}
+
+std::vector<skymp::rules::QuestStageEntry> QuestEntries(
+  const std::vector<FormDesc>& quests)
+{
+  std::vector<skymp::rules::QuestStageEntry> entries;
+  entries.reserve(quests.size());
+  for (const auto& q : quests) {
+    entries.push_back({ q.shortFormId, rust::String(q.file), 0 });
+  }
+  return entries;
+}
+}
+
+void PartOne::SetQuestScopeSettings(const std::string& modeJson,
+                                    const std::string& playerQuestsJson)
+{
+  pImpl->questScope =
+    skymp::rules::new_quest_scope(modeJson, playerQuestsJson);
+  spdlog::info("PartOne::SetQuestScopeSettings - questScope {}, playerQuests "
+               "{}",
+               modeJson, playerQuestsJson);
+  ComposeQuestScope();
+}
+
+void PartOne::SetScriptVariablesSettings(
+  const std::string& conditionVariablesJson)
+{
+  pImpl->scriptVariables =
+    skymp::rules::new_script_variables(conditionVariablesJson);
+  spdlog::info("PartOne::SetScriptVariablesSettings - {} key(s)",
+               pImpl->scriptVariables->script_variables_watch().size());
+  ComposeQuestScope();
+}
+
+void PartOne::SetPlayerQuestSettings(const std::string& globalsJson,
+                                     const std::string& variablesJson,
+                                     const std::string& callersJson)
+{
+  pImpl->playerQuestGlobals = PlayerQuestMap<FormDesc>(
+    "playerQuestGlobals", globalsJson, [](const nlohmann::json& v) {
+      if (!v.is_string()) {
+        throw std::runtime_error("playerQuestGlobals: " + v.dump() +
+                                 " is not \"<hex id>:<plugin>\"");
+      }
+      return SettingFormDesc("playerQuestGlobals", v.get<std::string>());
+    });
+  pImpl->playerQuestVariables =
+    PlayerQuestMap<std::pair<std::string, std::string>>(
+      "playerQuestVariables", variablesJson, [](const nlohmann::json& v) {
+        // "<script>::<var>", split at the first "::" (the census's
+        // ownVariables and the lab grammar's spelling: the variable of an
+        // auto property is "::<name>_var")
+        const std::string text = v.is_string() ? v.get<std::string>() : "";
+        const auto at = text.find("::");
+        if (at == std::string::npos || at == 0 || at + 2 >= text.size()) {
+          throw std::runtime_error("playerQuestVariables: " + v.dump() +
+                                   " is not \"<script>::<var>\"");
+        }
+        return std::make_pair(text.substr(0, at), text.substr(at + 2));
+      });
+  pImpl->playerQuestCallers = PlayerQuestMap<uint16_t>(
+    "playerQuestCallers", callersJson, [](const nlohmann::json& v) {
+      if (!v.is_number_unsigned() || v.get<uint64_t>() > 0xffff) {
+        throw std::runtime_error("playerQuestCallers: " + v.dump() +
+                                 " is no stage (0 to 65535)");
+      }
+      return static_cast<uint16_t>(v.get<uint64_t>());
+    });
+  spdlog::info("PartOne::SetPlayerQuestSettings - {} quest(s) with globals, "
+               "{} with variables, {} calling one",
+               pImpl->playerQuestGlobals.size(),
+               pImpl->playerQuestVariables.size(),
+               pImpl->playerQuestCallers.size());
+  ComposeQuestScope();
+}
+
+void PartOne::ComposeQuestScope()
+{
+  if (!HasEspm()) {
+    return; // AttachEspm composes once the game files are here
+  }
+  const auto& facts = QuestScopeFactsOf(worldState);
+  const bool acting = pImpl->questScope->quest_scope_acting();
+  std::vector<FormDesc> marked;
+  std::vector<const QuestScopeFacts*> markedFacts;
+  for (const auto& q : facts) {
+    const rust::Slice<const skymp::rules::QuestScopeAliasRow> aliases(
+      q.aliases.data(), q.aliases.size());
+    if (pImpl->questScope->quest_scope_class(q.quest.shortFormId, q.quest.file,
+                                             aliases) == 1) {
+      marked.push_back(q.quest);
+      markedFacts.push_back(&q);
+    }
+  }
+
+  // the measurement (D-Q1's "measured against today's lists"): the class and
+  // its overlap with the denied list and the retired allowed one, either
+  // mode, before anything is composed
+  size_t denied = 0;
+  size_t allowed = 0;
+  std::string ids;
+  for (const auto& q : marked) {
+    if (pImpl->sharedQuests->shared_quests_check(q.shortFormId, q.file) == 2) {
+      ++denied;
+    }
+    if (HoldsForm(pImpl->retiredAllowed, q)) {
+      ++allowed;
+    }
+    ids += (ids.empty() ? "" : ", ") + q.ToString();
+  }
+  spdlog::info("[verb:quest-stage] quest scope ({}): {} per player: {}; {} "
+               "denied, {} allowed",
+               acting ? "derived" : "off", marked.size(), ids, denied,
+               allowed);
+  pImpl->questScopeMarked = marked;
+
+  // the composition, while the scope acts ("off" leaves the settings as
+  // written)
+  pImpl->playerClassQuests = acting ? marked : std::vector<FormDesc>();
+  const auto entries = QuestEntries(pImpl->playerClassQuests);
+  const rust::Slice<const skymp::rules::QuestStageEntry> entrySlice(
+    entries.data(), entries.size());
+  pImpl->sharedQuests->shared_quests_set_player(entrySlice);
+
+  // D-T2 B's own keys: each composed quest's scalar variables (the census's
+  // playerQuestVariables) and its game-time registration's two names, keyed
+  // by the quest's first variable's script or, with none listed, its first
+  // attached one (the platform reads a registration by the form, whatever
+  // the script)
+  std::vector<skymp::rules::ScriptVarKeyRow> own;
+  if (acting) {
+    for (const QuestScopeFacts* q : markedFacts) {
+      std::string script;
+      for (const auto& [quest, variables] : pImpl->playerQuestVariables) {
+        if (!SameForm(quest, q->quest)) {
+          continue;
+        }
+        for (const auto& [scriptName, var] : variables) {
+          if (script.empty()) {
+            script = scriptName;
+          }
+          own.push_back({ q->quest.shortFormId, rust::String(q->quest.file),
+                          rust::String(scriptName), rust::String(var), true });
+        }
+      }
+      if (script.empty()) {
+        script = q->firstScript;
+      }
+      if (script.empty()) {
+        continue; // no script attached: nothing registers for game time
+      }
+      for (const char* name : { kGameTimeHours, kGameTimeRepeat }) {
+        own.push_back({ q->quest.shortFormId, rust::String(q->quest.file),
+                        rust::String(script), rust::String(name), true });
+      }
+    }
+  }
+  const size_t ownKept = pImpl->scriptVariables->script_variables_set_player(
+    entrySlice,
+    rust::Slice<const skymp::rules::ScriptVarKeyRow>(own.data(), own.size()));
+
+  // PQ-3's stages
+  pImpl->servedStages.clear();
+  if (acting) {
+    for (const auto& [quest, stages] : pImpl->playerQuestCallers) {
+      for (uint16_t stage : stages) {
+        pImpl->servedStages.emplace_back(quest, stage);
+      }
+    }
+  }
+
+  ComposePlayerGlobals();
+  if (acting) {
+    spdlog::info("[verb:quest-stage] quest scope composed: {} quest(s) per "
+                 "player, {} own key(s) of {} named, {} stage(s) relayed "
+                 "served (PQ-3)",
+                 pImpl->playerClassQuests.size(), ownKept, own.size(),
+                 pImpl->servedStages.size());
+  }
+}
+
+void PartOne::ComposePlayerGlobals()
+{
+  // the player class's globals (playerQuestGlobals) join the setting's, each
+  // once, so the player keeps them and WorldGlobal refuses them; nothing
+  // joins while the scope does not act
+  std::vector<std::string> added;
+  if (!pImpl->playerClassQuests.empty() &&
+      !pImpl->playerQuestGlobals.empty()) {
+    const auto listed =
+      nlohmann::json::parse(pImpl->playerGlobalsJson, nullptr, false);
+    std::vector<FormDesc> have;
+    if (listed.is_array()) {
+      for (const auto& e : listed) {
+        if (e.is_string()) {
+          have.push_back(FormDesc::FromString(e.get<std::string>()));
+        } else if (e.is_object() && e.contains("global") &&
+                   e["global"].is_string()) {
+          have.push_back(FormDesc::FromString(e["global"].get<std::string>()));
+        }
+      }
+    }
+    for (const auto& quest : pImpl->playerClassQuests) {
+      for (const auto& [owner, globals] : pImpl->playerQuestGlobals) {
+        if (!SameForm(owner, quest)) {
+          continue;
+        }
+        for (const auto& global : globals) {
+          if (!HoldsForm(have, global) && have.size() < kPlayerGlobalsMax) {
+            have.push_back(global);
+            added.push_back(global.ToString());
+          }
+        }
+      }
+    }
+  }
+  if (added.empty()) {
+    pImpl->playerGlobals =
+      skymp::rules::new_player_globals(pImpl->playerGlobalsJson);
+    return;
+  }
+  auto merged =
+    nlohmann::json::parse(pImpl->playerGlobalsJson, nullptr, false);
+  if (!merged.is_array()) {
+    merged = nlohmann::json::array();
+  }
+  for (const auto& global : added) {
+    merged.push_back(global);
+  }
+  try {
+    pImpl->playerGlobals = skymp::rules::new_player_globals(merged.dump());
+    spdlog::info("[verb:quest-stage] quest scope: {} global(s) of the player "
+                 "class kept per player (playerQuestGlobals)",
+                 added.size());
+  } catch (const std::exception& e) {
+    spdlog::error("[verb:quest-stage] quest scope: the player class's {} "
+                  "global(s) refused by playerGlobals ({}); the setting's "
+                  "list stands",
+                  added.size(), e.what());
+    pImpl->playerGlobals =
+      skymp::rules::new_player_globals(pImpl->playerGlobalsJson);
+  }
+}
+
+const std::vector<FormDesc>& PartOne::QuestScopeMarked() const
+{
+  return pImpl->questScopeMarked;
+}
+
+const std::vector<FormDesc>& PartOne::PlayerClassQuests() const
+{
+  return pImpl->playerClassQuests;
+}
+
+bool PartOne::IsServedStage(const FormDesc& quest, uint16_t stage) const
+{
+  return std::any_of(pImpl->servedStages.begin(), pImpl->servedStages.end(),
+                     [&](const auto& served) {
+                       return served.second == stage &&
+                         SameForm(served.first, quest);
+                     });
+}
+
+skymp::rules::QuestRuns& PartOne::GetQuestRunRules()
+{
+  return *pImpl->questRuns;
+}
+
+skymp::rules::ScriptVariables& PartOne::GetScriptVariableRules()
+{
+  return *pImpl->scriptVariables;
+}
+
+skymp::rules::PlayerOverlays& PartOne::GetPlayerOverlays()
+{
+  return *pImpl->playerOverlays;
+}
+
+std::pair<std::vector<FormDesc>, std::vector<FormDesc>>
+PartOne::QuestRunsAtLogin()
+{
+  std::vector<skymp::rules::QuestRunRow> record;
+  for (const auto& run : GetQuestRuns()) {
+    record.push_back({ run.quest.shortFormId, rust::String(run.quest.file),
+                       run.running, run.seq });
+  }
+  const auto login = pImpl->questRuns->quest_runs_at_login(
+    rust::Slice<const skymp::rules::QuestRunRow>(record.data(), record.size()),
+    *pImpl->sharedQuests);
+  std::pair<std::vector<FormDesc>, std::vector<FormDesc>> out;
+  for (const auto& e : login.starts) {
+    out.first.push_back(FormDesc(e.short_id, std::string(e.file)));
+  }
+  for (const auto& e : login.stops) {
+    out.second.push_back(FormDesc(e.short_id, std::string(e.file)));
+  }
+  return out;
+}
+
+std::optional<RaceOverlay> PartOne::PlayerOverlayOf(uint32_t actorId) const
+{
+  const auto row = pImpl->playerOverlays->player_overlay(actorId);
+  if (!row.open) {
+    return std::nullopt;
+  }
+  RaceOverlay overlay;
+  overlay.open = true;
+  overlay.race = row.race;
+  overlay.base = row.base;
+  overlay.spells.assign(row.spells.begin(), row.spells.end());
+  overlay.shouts.assign(row.shouts.begin(), row.shouts.end());
+  overlay.items.assign(row.items.begin(), row.items.end());
+  return overlay;
 }
 
 void PartOne::SetRestrictedRacesSettings(
@@ -3599,12 +4146,6 @@ uint8_t PartOne::CheckSharedQuest(const FormDesc& quest) const
 {
   return pImpl->sharedQuests->shared_quests_check(quest.shortFormId,
                                                   quest.file);
-}
-
-bool PartOne::IsSharedQuestAllowed(const FormDesc& quest) const
-{
-  return pImpl->sharedQuests->shared_quests_allowed(quest.shortFormId,
-                                                    quest.file);
 }
 
 std::vector<FormDesc> PartOne::SharedQuestsListed() const

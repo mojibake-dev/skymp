@@ -28,11 +28,14 @@
 #include "PercentagesBinding.h"
 #include "PosBinding.h"
 #include "ProfileIdBinding.h"
+#include "QuestRunsBinding.h"
+#include "QuestStagesBinding.h"
 #include "RefStateSeqBinding.h"
 #include "RespawnFatedBinding.h"
 #include "RespawnPercentagesBinding.h"
 #include "RunningEffectsBinding.h"
 #include "ScriptStateBinding.h"
+#include "ScriptVariablesBinding.h"
 #include "ShoutsBinding.h"
 #include "SpawnDelayBinding.h"
 #include "SpawnPointBinding.h"
@@ -91,6 +94,11 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   // and a reference's recorded ref state
   result["isDeleted"] = std::make_shared<IsDeletedBinding>();
   result["refStateSeq"] = std::make_shared<RefStateSeqBinding>();
+  // thuum ADR-068 rung 5: the journal's quest runs, quest stages and
+  // condition-read script variables
+  result["questRuns"] = std::make_shared<QuestRunsBinding>();
+  result["questStages"] = std::make_shared<QuestStagesBinding>();
+  result["scriptVariables"] = std::make_shared<ScriptVariablesBinding>();
   return result;
 }
 

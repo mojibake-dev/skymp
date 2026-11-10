@@ -6,7 +6,11 @@
 #include "libespm/QUST.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
+#include <fmt/format.h>
 #include <simdjson.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 #include <tuple>
 #include <vector>
 
@@ -332,87 +336,346 @@ TEST_CASE("In mode all a quest nobody declared is the world's: its stage is "
   Leave(p);
 }
 
-// memo D62 (2026-10-29): in mode all a quest the game starts by itself is
-// each seat's own unless allowed; memo D69 (2026-10-30, playtest 38's finding
-// 76): what is each seat's own is the engine's own start of such a quest,
-// stage 0 and the record's start-up stages, and its later stages are the
-// world's like any other quest's
-TEST_CASE("In mode all the engine's own start of a start-game-enabled quest "
-          "(stage 0, a start-up stage) is refused (E_QUEST_OWN_START) and "
-          "records nothing, while its later stages are recorded, relayed and "
-          "replayed like any other quest's; the login names the denied quests "
-          "alone",
+// thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md sections
+// 1(b) and 8(a)): a quest's run state is the world's too. A start or a stop
+// (QuestStage's `word` 1 or 2; a stage-0 report with no word is a start,
+// read 5) is recorded on the journal's questRuns, folded when it equals the
+// record and relayed with the acting player; memos D62 and D69 retired with
+// the start word, so a start-game-enabled quest's own start is recorded once
+// instead of refused (E_QUEST_OWN_START is gone) and its start-up stage is a
+// stage like any other.
+namespace {
+// the plan's x-quest-words quest, a script-started one (Skyrim.esm)
+constexpr uint32_t kLetterQuest = 0x10d3bb;
+
+// one QuestStage message as sent, rung 5's fields too: the quest, the
+// stage, the word (0 none), the acting player (0 none), served
+using Word = std::tuple<uint32_t, int, uint32_t, uint32_t, bool>;
+
+Word W(uint32_t quest, int stage, uint32_t word, uint32_t acting,
+       bool served = false)
+{
+  return Word{ quest, stage, word, acting, served };
+}
+
+std::vector<Word> WordsTo(PartOne& p, Networking::UserId user)
+{
+  std::vector<Word> sent;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::QuestStage) &&
+        m.j.value("quest", 0u) != 0) {
+      sent.emplace_back(m.j.value("quest", 0u), m.j.value("stage", -1),
+                        m.j.value("word", 0u), m.j.value("acting", 0u),
+                        m.j.value("served", false));
+    }
+  }
+  return sent;
+}
+
+void ReportWord(PartOne& p, Networking::UserId user, uint32_t quest,
+                uint32_t word, std::optional<uint32_t> acting = std::nullopt)
+{
+  nlohmann::json j{ { "t", static_cast<int>(MsgType::QuestStage) },
+                    { "quest", quest },
+                    { "stage", 0 },
+                    { "shared", nlohmann::json::array() },
+                    { "mode", 0 },
+                    { "word", word } };
+  if (acting) {
+    j["acting"] = *acting;
+  }
+  DoMessage(p, user, j);
+}
+
+void ReportActing(PartOne& p, Networking::UserId user, uint32_t quest,
+                  int stage, uint32_t acting)
+{
+  DoMessage(p, user,
+            nlohmann::json{ { "t", static_cast<int>(MsgType::QuestStage) },
+                            { "quest", quest },
+                            { "stage", stage },
+                            { "shared", nlohmann::json::array() },
+                            { "mode", 0 },
+                            { "acting", acting } });
+}
+
+// the default logger's lines at info and above while the guard lives
+// (ScriptCallTest's shape), restored at its end
+struct QuestLog
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  QuestLog()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger = std::make_shared<spdlog::logger>("quest-stage-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~QuestLog() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (size_t at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
+
+std::vector<MpChangeFormREFR::QuestRun> Runs(
+  std::initializer_list<std::tuple<const char*, bool, uint32_t>> rows)
+{
+  std::vector<MpChangeFormREFR::QuestRun> runs;
+  for (const auto& [quest, running, seq] : rows) {
+    runs.push_back({ FormDesc::FromString(quest), running, seq });
+  }
+  return runs;
+}
+}
+
+TEST_CASE("The retired allowed list is read and ignored: a quest it names is "
+          "the world's, one both denied and allowed denied",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  REQUIRE_NOTHROW(p.SetSharedQuestsSettings(kAllowedQuests));
+  REQUIRE(p.SharedQuestsMode() == 1);
+  REQUIRE(p.CheckSharedQuest(FormDesc::FromString("39645:Skyrim.esm")) == 0);
+  REQUIRE_NOTHROW(p.SetSharedQuestsSettings(
+    R"({"mode":"all","denied":["39645:Skyrim.esm"],"allowed":["39645:Skyrim.esm"]})"));
+  REQUIRE(p.CheckSharedQuest(FormDesc::FromString("39645:Skyrim.esm")) == 2);
+  p.SetSharedQuestsSettings("[]");
+}
+
+TEST_CASE("A start-game-enabled quest's stage 0 is the start word's: its run "
+          "is recorded once and relayed, no stage and no E_QUEST_ line; its "
+          "start-up stage is recorded like any other",
           "[QuestStage][espm]")
 {
   PartOne& p = GetPartOne();
   Enter(p, kDeniedQuests);
-
-  // FreeformHeartwoodMill is Start Game Enabled and its stage 10 carries the
-  // start-up flag: the engine's own start, refused, nothing recorded, nothing
-  // relayed
-  Report(p, 0, kHeartwoodMill, 10);
+  QuestLog log;
+  // FreeformHeartwoodMill is Start Game Enabled; its engine's own start
+  // reports stage 0 with no word
+  Report(p, 0, kHeartwoodMill, 0);
   REQUIRE(p.GetQuestStages().empty());
-  REQUIRE(SentTo(p, 1).empty());
-  REQUIRE(SentTo(p, 0).empty());
+  REQUIRE(p.GetQuestRuns() == Runs({ { "e3ea5:Skyrim.esm", true, 1 } }));
+  REQUIRE(WordsTo(p, 1) ==
+          std::vector<Word>{ W(kHeartwoodMill, 0, 1, kReporter) });
+  REQUIRE(WordsTo(p, 0).empty());
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd0 starts e3ea5:Skyrim.esm: "
+                    "recorded, relayed to 1") == 1);
+  REQUIRE(log.Count("E_QUEST_") == 0);
 
-  // its stage 20 is no start-up stage: a world event, recorded and relayed
-  // (D69; the Aventus rumor's shape)
-  Report(p, 0, kHeartwoodMill, 20);
+  // the other seat's engine starts it too: folded, nothing relayed
+  p.Messages().clear();
+  Report(p, 1, kHeartwoodMill, 0);
+  REQUIRE(p.GetQuestRuns() == Runs({ { "e3ea5:Skyrim.esm", true, 1 } }));
+  REQUIRE(WordsTo(p, 0).empty());
+  REQUIRE(WordsTo(p, 1).empty());
+
+  // its start-up stage 10: a stage like any other, recorded and relayed
+  Report(p, 0, kHeartwoodMill, 10);
   const FormDesc mill = FormDesc::FromString("e3ea5:Skyrim.esm");
-  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { mill, 20 } });
-  REQUIRE(SentTo(p, 1) == std::vector<Sent>{ Msg(kHeartwoodMill, 20) });
-  REQUIRE(SentTo(p, 0).empty());
+  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { mill, 10 } });
+  REQUIRE(WordsTo(p, 1) ==
+          std::vector<Word>{ W(kHeartwoodMill, 10, 0, kReporter) });
+  REQUIRE(log.Count("E_QUEST_") == 0);
+  Leave(p);
+}
 
-  // MS13 is Start Game Enabled too and its stage 10 is no start-up stage:
-  // the world's as well, allowed or not
+TEST_CASE("A start is recorded and relayed with the reporter acting, a "
+          "repeated start folds, a stop is relayed; a denied quest's word "
+          "is refused (E_QUEST_DENIED)",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kDeniedQuests);
+  QuestLog log;
+  ReportWord(p, 0, kLetterQuest, 1);
+  REQUIRE(p.GetQuestRuns() == Runs({ { "10d3bb:Skyrim.esm", true, 1 } }));
+  REQUIRE(WordsTo(p, 1) ==
+          std::vector<Word>{ W(kLetterQuest, 0, 1, kReporter) });
+  REQUIRE(WordsTo(p, 0).empty());
+
+  p.Messages().clear();
+  ReportWord(p, 0, kLetterQuest, 1);
+  ReportWord(p, 1, kLetterQuest, 1);
+  REQUIRE(p.GetQuestRuns() == Runs({ { "10d3bb:Skyrim.esm", true, 1 } }));
+  REQUIRE(WordsTo(p, 0).empty());
+  REQUIRE(WordsTo(p, 1).empty());
+
+  ReportWord(p, 1, kLetterQuest, 2);
+  REQUIRE(p.GetQuestRuns() == Runs({ { "10d3bb:Skyrim.esm", false, 2 } }));
+  REQUIRE(WordsTo(p, 0) ==
+          std::vector<Word>{ W(kLetterQuest, 0, 2, kWatcher) });
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd1 stops 10d3bb:Skyrim.esm: "
+                    "recorded, relayed to 1") == 1);
+
+  // MQ102 is denied: its start and its stage refused, nothing written
+  p.Messages().clear();
+  ReportWord(p, 0, kMq102, 1);
+  Report(p, 0, kMq102, 10);
+  REQUIRE(p.GetQuestRuns() == Runs({ { "10d3bb:Skyrim.esm", false, 2 } }));
+  REQUIRE(p.GetQuestStages().empty());
+  REQUIRE(WordsTo(p, 1).empty());
+  REQUIRE(log.Count("E_QUEST_DENIED") == 2);
+  Leave(p);
+}
+
+TEST_CASE("A report's acting player is relayed as reported when it names a "
+          "connected player, else stamped as the reporter (E_QUEST_ACTING)",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  QuestLog log;
+  // read 7: the watcher's seat applied the reporter's stage and its
+  // fragment's chained set ran under the reporter's scope
+  ReportActing(p, 1, kMs13, 20, kReporter);
+  REQUIRE(WordsTo(p, 0) == std::vector<Word>{ W(kMs13, 20, 0, kReporter) });
+  REQUIRE(log.Count("E_QUEST_ACTING") == 0);
+  // an actor no connected player holds
+  p.Messages().clear();
+  ReportActing(p, 1, kMs13, 10, 0xff000abc);
+  REQUIRE(WordsTo(p, 0) == std::vector<Word>{ W(kMs13, 10, 0, kWatcher) });
+  REQUIRE(log.Count("E_QUEST_ACTING") == 1);
+  Leave(p);
+}
+
+TEST_CASE("Under questScope derived a player-class quest's stage and word are "
+          "refused (E_QUEST_PLAYER), nothing recorded or relayed, and the "
+          "login names it; under off it is the world's; a stage PQ-3 names "
+          "is relayed served",
+          "[QuestStage][espm]")
+{
+  constexpr uint32_t kWerewolf = 0x2ba16; // PlayerWerewolfQuest, by ALUA 0x7
+  constexpr uint32_t kVampire = 0xeafd5;  // PlayerVampireQuest, by the list
+  constexpr uint32_t kVc01 = 0x5c625;     // VC01, whose fragment cures
+  {
+    PartOne& p = GetPartOne();
+    Enter(p, kDeniedQuests);
+    // off (the default): measured, not acting, so the vampire's cure stage
+    // is the world's like any other
+    REQUIRE(p.PlayerClassQuests().empty());
+    Report(p, 0, kVampire, 10);
+    REQUIRE(p.GetQuestStages().size() == 1);
+    REQUIRE(WordsTo(p, 1) ==
+            std::vector<Word>{ W(kVampire, 10, 0, kReporter) });
+    Leave(p);
+  }
+  PartOne& p = GetPartOne();
+  Enter(p, kDeniedQuests);
+  // VC01's first stage past 0, from its own record, as PQ-3's caller
+  const auto vc01 =
+    espm::Convert<espm::QUST>(p.GetEspm().GetBrowser().LookupById(kVc01).rec);
+  REQUIRE(vc01);
+  int cure = -1;
+  for (const auto& stage : vc01->GetQuestStages(p.worldState.GetEspmCache())) {
+    if (stage.journalIndex && stage.journalIndex->index > 0) {
+      cure = stage.journalIndex->index;
+      break;
+    }
+  }
+  REQUIRE(cure > 0);
+  p.SetPlayerQuestSettings(
+    "{}", "{}", fmt::format(R"({{"5c625:Skyrim.esm": [{}]}})", cure));
+  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])");
+  QuestLog log;
+  REQUIRE(p.CheckSharedQuest(FormDesc::FromString("2ba16:Skyrim.esm")) == 3);
+  REQUIRE(p.CheckSharedQuest(FormDesc::FromString("eafd5:Skyrim.esm")) == 3);
+  REQUIRE(p.CheckSharedQuest(FormDesc::FromString("4e50d:Skyrim.esm")) == 2);
+  Report(p, 0, kWerewolf, 0);
+  Report(p, 0, kVampire, 10);
+  ReportWord(p, 0, kVampire, 1);
+  REQUIRE(p.GetQuestStages().empty());
+  REQUIRE(p.GetQuestRuns().empty());
+  REQUIRE(WordsTo(p, 1).empty());
+  // one line a minute per seat, the rest counted
+  REQUIRE(log.Count("E_QUEST_PLAYER") == 1);
+
+  // PQ-3: VC01's cure stage is recorded and relayed served
+  Report(p, 0, kVc01, cure);
+  REQUIRE(WordsTo(p, 1) ==
+          std::vector<Word>{ W(kVc01, cure, 0, kReporter, true) });
+
+  // the login names the player class after the denied quest, never
+  // replaying its stages
+  p.Messages().clear();
+  p.SetUserActor(1, kWatcher);
+  const auto sent = SentTo(p, 1);
+  REQUIRE(!sent.empty());
+  const auto& shared = std::get<2>(sent.front());
+  const auto names = [&](uint32_t quest) {
+    return std::find(shared.begin(), shared.end(), quest) != shared.end();
+  };
+  REQUIRE(names(kMq102));
+  REQUIRE(names(kWerewolf));
+  REQUIRE(names(kVampire));
+  REQUIRE(!names(kVc01));
+  Leave(p);
+}
+
+TEST_CASE("A seat flipping one quest's run past the churn bound holds it out "
+          "of the record (E_QUEST_CHURN), its entry dropped and its later "
+          "words refused",
+          "[QuestStage][QuestRun][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kDeniedQuests);
+  QuestLog log;
+  // start, stop, start, ... one word a flip: six flips stay inside the
+  // bound, the seventh holds the quest
+  uint32_t word = 1;
+  for (int i = 0; i < 7; ++i) {
+    ReportWord(p, 0, kLetterQuest, word);
+    word = 3 - word;
+  }
+  REQUIRE(p.GetQuestRuns().size() == 1);
+  ReportWord(p, 0, kLetterQuest, word);
+  REQUIRE(p.GetQuestRuns().empty());
+  REQUIRE(log.Count("E_QUEST_CHURN") == 1);
+  p.Messages().clear();
+  ReportWord(p, 1, kLetterQuest, 1);
+  ReportWord(p, 0, kLetterQuest, 2);
+  REQUIRE(p.GetQuestRuns().empty());
+  REQUIRE(WordsTo(p, 0).empty());
+  REQUIRE(WordsTo(p, 1).empty());
+  // no login replays it
+  p.SetUserActor(1, kWatcher);
+  REQUIRE(WordsTo(p, 1).empty());
+  Leave(p);
+}
+
+TEST_CASE("The login sends the list, the running quests' starts, the stages "
+          "and the stopped quests' stops, all served; the old line byte for "
+          "byte, the runs line beside it",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kDeniedQuests);
+  ReportWord(p, 0, kLetterQuest, 1);
+  ReportWord(p, 0, kHeartwoodMill, 1);
+  ReportWord(p, 0, kHeartwoodMill, 2);
   Report(p, 0, kMs13, 10);
-  const FormDesc ms13 = FormDesc::FromString("39645:Skyrim.esm");
-  REQUIRE(p.GetQuestStages() ==
-          std::vector<QuestStageDone>{ { mill, 20 }, { ms13, 10 } });
-  REQUIRE(SentTo(p, 1) ==
-          std::vector<Sent>{ Msg(kHeartwoodMill, 20), Msg(kMs13, 10) });
-
-  // allowed: the same, a further stage
-  p.SetSharedQuestsSettings(kAllowedQuests);
-  Report(p, 0, kMs13, 20);
-  REQUIRE(
-    p.GetQuestStages() ==
-    std::vector<QuestStageDone>{ { mill, 20 }, { ms13, 10 }, { ms13, 20 } });
-  REQUIRE(SentTo(p, 1) ==
-          std::vector<Sent>{ Msg(kHeartwoodMill, 20), Msg(kMs13, 10),
-                             Msg(kMs13, 20) });
-  REQUIRE(SentTo(p, 0).empty());
-
-  // the login names the denied quest, never the allowed (the wire's one
-  // list), then replays the world's stages
+  QuestLog log;
   p.Messages().clear();
   p.SetUserActor(1, kWatcher);
-  REQUIRE(SentTo(p, 1) ==
-          std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMq102 }), 1),
-                             Msg(kHeartwoodMill, 20), Msg(kMs13, 10),
-                             Msg(kMs13, 20) });
-
-  // allowed no more: the stages stay the world's (no start-up stage among
-  // them) and the login still replays them
-  p.SetSharedQuestsSettings(kDeniedQuests);
-  p.Messages().clear();
-  p.SetUserActor(1, kWatcher);
-  REQUIRE(
-    p.GetQuestStages() ==
-    std::vector<QuestStageDone>{ { mill, 20 }, { ms13, 10 }, { ms13, 20 } });
-  REQUIRE(SentTo(p, 1) ==
-          std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMq102 }), 1),
-                             Msg(kHeartwoodMill, 20), Msg(kMs13, 10),
-                             Msg(kMs13, 20) });
-
-  // thuum ADR-068 rung 5 (read 4): allowed is a retired key, read and
-  // ignored, so a quest both denied and allowed is denied and the setting
-  // taken (the rung's server half replaces this case)
-  REQUIRE_NOTHROW(p.SetSharedQuestsSettings(
-    R"({"mode":"all","denied":["39645:Skyrim.esm"],"allowed":["39645:Skyrim.esm"]})"));
-  REQUIRE(p.SharedQuestsMode() == 1);
-  REQUIRE(p.CheckSharedQuest(FormDesc::FromString("39645:Skyrim.esm")) == 2);
-  // mode list is untouched: the first case above records MS13's stage there
+  REQUIRE(SentTo(p, 1).front() ==
+          Msg(0, 0, nlohmann::json::array({ kMq102 }), 1));
+  REQUIRE(WordsTo(p, 1) ==
+          std::vector<Word>{ W(kLetterQuest, 0, 1, 0, true),
+                             W(kMs13, 10, 0, 0, true),
+                             W(kHeartwoodMill, 0, 2, 0, true) });
+  REQUIRE(log.Count("QuestStage: actor ff000bd1 sent mode 1 with 1 denied "
+                    "quests, 1 stages after a login") == 1);
+  REQUIRE(log.Count("QuestStage: actor ff000bd1 sent 1 running and 1 stopped "
+                    "quest(s) around the stages after a login") == 1);
   Leave(p);
 }
 
@@ -427,6 +690,10 @@ TEST_CASE("The world's quest stages survive a restart through the journal's "
     { FormDesc::FromString("39645:Skyrim.esm"), 10 }
   };
   REQUIRE(running.GetQuestStages() == recorded);
+  // thuum ADR-068 rung 5 (rule 6): the quest's run rides the same record
+  ReportWord(running, 0, kMs13, 1);
+  const auto runs = Runs({ { "39645:Skyrim.esm", true, 1 } });
+  REQUIRE(running.GetQuestRuns() == runs);
 
   // the journal's record is a server-made reference's, at the fixed id, on
   // the XMarker base, so WorldState::LoadChangeForm recreates it from the
@@ -439,6 +706,7 @@ TEST_CASE("The world's quest stages survive a restart through the journal's "
   REQUIRE(saved.baseDesc == FormDesc::FromString("3b:Skyrim.esm"));
   REQUIRE(saved.worldOrCellDesc == FormDesc::Tamriel());
   REQUIRE(saved.questStages == recorded);
+  REQUIRE(saved.questRuns == runs);
   Leave(running);
 
   // The restarted server: a fresh world reading the saved record, as
@@ -446,6 +714,7 @@ TEST_CASE("The world's quest stages survive a restart through the journal's "
   PartOne& restarted = GetPartOne();
   restarted.worldState.LoadChangeForm(saved, restarted.CreateFormCallbacks());
   REQUIRE(restarted.GetQuestStages() == recorded);
+  REQUIRE(restarted.GetQuestRuns() == runs);
 
   restarted.SetSharedQuestsSettings(kSharedQuests);
   DoConnect(restarted, 0);
@@ -453,7 +722,10 @@ TEST_CASE("The world's quest stages survive a restart through the journal's "
   restarted.SetUserActor(0, kReporter);
   REQUIRE(SentTo(restarted, 0) ==
           std::vector<Sent>{ Msg(0, 0, nlohmann::json::array({ kMs13 })),
-                             Msg(kMs13, 10) });
+                             Msg(kMs13, 0), Msg(kMs13, 10) });
+  REQUIRE(
+    WordsTo(restarted, 0) ==
+    std::vector<Word>{ W(kMs13, 0, 1, 0, true), W(kMs13, 10, 0, 0, true) });
   restarted.SetSharedQuestsSettings("[]");
   restarted.DestroyActor(kReporter);
   DoDisconnect(restarted, 0);

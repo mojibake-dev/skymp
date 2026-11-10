@@ -1,0 +1,32 @@
+# difftest script-variables (thuum ADR-068 rung 5, ScriptVariables MsgType 81, wire id 89; D-V1 B and D-T2 B;
+# docs/research/rung5-quests-2026-11-09.md): every seat reports a listed condition-read variable its game changed, the
+# latest write winning per key with the server's sequence; a player-class quest's keys are its player's own. T2 copies
+# the deployed settings, which list no conditionVariables and no questScope while the rung's client half has not shipped,
+# so no login names a watch and no record exists (nothing is served: every other session's logins are unchanged), and
+# this session holds the edge's rules and the server's refusal of a key no setting lists; the record, the relay, the
+# player cut, the own keys and the login's serve are T0's (unit/ScriptVariablesTest.cpp). c1 and c2 are new characters
+# (profiles 9 and 10, see melee-reach). At 2 s c1 reports MS13 0x39645's ::camillaescort_var (the census's topic-info
+# write) at 1: no setting lists it, so the wire server refuses it by name (E_SCRIPTVAR_UNLISTED) and relays nothing. Five
+# reports are refused at the edge (E_VAL_RANGE): at 2.2 s a kind 2 (a string, which no condition compares), at 2.4 s one
+# key twice, at 2.6 s a seat naming a watch (the server's), at 2.8 s a served record (the server's), at 3 s an entry
+# carrying a sequence (the server's). The legacy server knows no MsgType 81 and drops all six. c2 steps at 4 s of its
+# own and so outlives c1, as in every session.
+id: script-variables
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 81, watch: [], entries: [{form: 0x39645, script: MS13QuestScript, var: "::camillaescort_var", own: false, k: 3, i: 1, seq: 0}], served: false}, reliable: true}
+  - {client: c1, at_ms: 2200, send: {t: 81, watch: [], entries: [{form: 0x39645, script: MS13QuestScript, var: "::camillaescort_var", own: false, k: 2, seq: 0}], served: false}, reliable: true}
+  - {client: c1, at_ms: 2400, send: {t: 81, watch: [], entries: [{form: 0x39645, script: MS13QuestScript, var: "::camillaescort_var", own: false, k: 3, i: 1, seq: 0}, {form: 0x39645, script: MS13QuestScript, var: "::CamillaEscort_var", own: false, k: 3, i: 2, seq: 0}], served: false}, reliable: true}
+  - {client: c1, at_ms: 2600, send: {t: 81, watch: [{form: 0x39645, script: MS13QuestScript, var: "::camillaescort_var", own: false}], entries: [], served: false}, reliable: true}
+  - {client: c1, at_ms: 2800, send: {t: 81, watch: [], entries: [{form: 0x39645, script: MS13QuestScript, var: "::camillaescort_var", own: false, k: 3, i: 1, seq: 1}], served: true}, reliable: true}
+  - {client: c1, at_ms: 3000, send: {t: 81, watch: [], entries: [{form: 0x39645, script: MS13QuestScript, var: "::camillaescort_var", own: false, k: 3, i: 1, seq: 4}], served: false}, reliable: true}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 4000, move: {dx: 60}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

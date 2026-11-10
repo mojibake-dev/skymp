@@ -1417,6 +1417,19 @@ void PartOne::Init()
     ServeReferenceRecords(*this, pImpl->sendTarget.get(), userId, primitive,
                           listener, "at its subscribe (a primitive)");
   };
+  // thuum docs/verbs/npc-fate.md (playtest 51, b-npc-stream-equipment): a
+  // game's first sight of a game-file actor nothing rolled yet rolls it, at
+  // that game's level, ahead of the create word: the npc-puppet sighting's
+  // move of an indoor record into a square the host's pass had fated
+  // (Faendal 0x1348c and nine more in 20261110-062127, served empty, every
+  // worn piece of the host's first report refused, E_EQUIP_REFUSED), a
+  // script's MoveTo, a lookup's load, a login's grid
+  worldState.onActorSubscribe = [this](MpActor& actor, MpActor& listener) {
+    if (serverState.UserByActor(&listener) == Networking::InvalidUserId) {
+      return;
+    }
+    EnsureFated(actor, listener);
+  };
   worldState.onDeathState = [this](MpActor& actor, bool isDead) {
     OnDeathState(actor, isDead);
   };
@@ -2275,6 +2288,53 @@ uint16_t PartOne::FateRollLevel(MpActor& loader, uint32_t cellOrWorld,
     1, static_cast<uint16_t>(sum / static_cast<uint32_t>(party.size())));
 }
 
+bool PartOne::EnsureFated(MpActor& actor, MpActor& loader)
+{
+  // a game-file actor alone, as the walk's: a server-made NPC rolls at its
+  // placement (PlaceAtMe) and its fate rides each create word (onSubscribe)
+  if (actor.GetFormId() >= 0xff000000 || !actor.CanRollFate()) {
+    return false;
+  }
+  const NiPoint3& loaderPos = loader.GetPos();
+  const uint16_t level = FateRollLevel(
+    loader, loader.GetCellOrWorld().ToFormId(worldState.espmFiles),
+    static_cast<int16_t>(loaderPos.x / 4096),
+    static_cast<int16_t>(loaderPos.y / 4096));
+  if (!actor.RollFateIfUnrolled(level)) {
+    return false;
+  }
+  // the actor's square as the pass fates it (the grid's own, truncated
+  // toward zero): the games whose pass has fated it hear the fate now, the
+  // rest at their own pass
+  const uint32_t cellOrWorld =
+    actor.GetCellOrWorld().ToFormId(worldState.espmFiles);
+  const NiPoint3& pos = actor.GetPos();
+  const Impl::Square square{ cellOrWorld, static_cast<int16_t>(pos.x / 4096),
+                             static_cast<int16_t>(pos.y / 4096) };
+  ActorFateMessage msg;
+  msg.fates.push_back(FateOf(worldState, actor));
+  size_t told = 0;
+  for (Networking::UserId userId = 0; userId <= serverState.maxConnectedId;
+       ++userId) {
+    MpActor* player = serverState.ActorByUser(userId);
+    if (!player) {
+      continue;
+    }
+    const auto fated = pImpl->fatedSquares.find(player->GetFormId());
+    if (fated == pImpl->fatedSquares.end() || !fated->second.count(square)) {
+      continue;
+    }
+    GetSendTarget().Send(userId, msg, true);
+    ++told;
+  }
+  spdlog::info("PartOne - npc-fate: {:x} fated at level {} at its first "
+               "serve, to {:x}; its fate sent to {} game(s) whose pass fated "
+               "its square ({}, {}) in {:x}",
+               actor.GetFormId(), level, loader.GetFormId(), told,
+               std::get<1>(square), std::get<2>(square), cellOrWorld);
+  return true;
+}
+
 void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
                         const NiPoint3& pos)
 {
@@ -2336,9 +2396,14 @@ void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
       if (!seen.insert(actor->GetFormId()).second) {
         continue;
       }
-      // an actor this process rolled before any pass reached it (the grid's
-      // 3x3 at a login, another square's ring) rolls at this level now
-      actor->RollFateIfUnrolled(level);
+      // an actor loaded where no game had it in reach (a lookup, another
+      // actor's square change), so served to none, rolls here at this pass's
+      // level, its fate to every game whose pass has fated the square, this
+      // one's among them (EnsureFated); a rolled one's rides the batch
+      if (EnsureFated(*actor, player)) {
+        ++sent;
+        continue;
+      }
       msg.fates.push_back(FateOf(worldState, *actor));
       if (msg.fates.size() >= kFatesPerMessage) {
         flush();

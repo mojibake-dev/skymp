@@ -842,6 +842,16 @@ public:
   // read.
   uint16_t FateRollLevel(MpActor& loader, uint32_t cellOrWorld, int16_t sx,
                          int16_t sy);
+  // thuum docs/verbs/npc-fate.md (playtest 51, b-npc-stream-equipment): the
+  // roll belongs to the actor, not to the grid square. A game-file actor
+  // with no roll yet (MpActor::CanRollFate) rolls at `loader`'s level
+  // (FateRollLevel at the loader's square, the pass's own) where its record
+  // first reaches a game: the pass's walk (SendFates) and its create word
+  // (WorldState::onActorSubscribe, ahead of the word). The fate goes to
+  // every game whose pass has fated the actor's square, as that pass will
+  // not come there again; the other games' passes carry it when they reach
+  // it, so no game hears one roll twice. True when the actor rolled here
+  bool EnsureFated(MpActor& actor, MpActor& loader);
   // Every cell the table knows, by cell id, for the lab's reading
   // (mp.get(0, "cellHosts")).
   struct CellHostEntry

@@ -386,6 +386,13 @@ public:
   // reference's records there as it serves them behind a create word
   std::function<void(MpObjectReference& primitive, MpActor& listener)>
     onPrimitiveSubscribe;
+  // thuum docs/verbs/npc-fate.md (playtest 51, b-npc-stream-equipment): an
+  // actor's coming subscription to an actor listener
+  // (MpObjectReference::Subscribe, ahead of the listener's place in its sets
+  // and of its create word); installed by PartOne, which rolls a game-file
+  // actor with no roll yet there at a player listener's level
+  // (PartOne::EnsureFated), so no create word carries an unrolled record
+  std::function<void(MpActor& actor, MpActor& listener)> onActorSubscribe;
   // thuum ADR-068 rung 4 (amendment B, read 8): a game-file reference just
   // attached (LoadForm, its saved record applied, before its first
   // subscription), installed by PartOne for the quest aliases' created items

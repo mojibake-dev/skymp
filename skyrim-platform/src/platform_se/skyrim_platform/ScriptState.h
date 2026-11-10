@@ -113,11 +113,11 @@ std::string Send(RE::TESObjectREFR* refr, std::string_view name,
 // the gate's presser rule reads any argument). A JSON object as a string:
 // { formId, event, sent, scripts (the attached scripts it was sent to),
 // reason }; refused for a name that is no trigger event, a None actionRef,
-// an actor trigger and a reference with no attached script. Since rung 5 a
-// figure presser (an actor at 0xff000000 and up) arms the trigger's acting
-// scope (ActingScope.h) before the send, its server id from the client's
-// entry request (setActingPlayer with stage -3), so the handler reads
-// Game.GetPlayer() as the figure.
+// an actor trigger and a reference with no attached script. Since rung 5,
+// when the client's entry request (setActingPlayer with stage -3) names this
+// presser as the acting player's figure, the trigger's acting scope
+// (ActingScope.h) is armed before the send, so the handler reads
+// Game.GetPlayer() as the figure; no other presser arms it.
 std::string SendTrigger(RE::TESObjectREFR* refr, std::string_view name,
                         RE::TESObjectREFR* actionRef);
 

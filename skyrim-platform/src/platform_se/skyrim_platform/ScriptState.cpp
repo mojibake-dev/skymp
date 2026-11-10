@@ -1582,7 +1582,10 @@ std::string SendTriggerImpl(RE::TESObjectREFR* refr, std::string_view name,
   // nothing (rung 5's fresh review, FIX FIRST 1)
   if (const auto taken = ActingScope::Take(formId, ActingScope::kEntry);
       taken && taken->player.figure == actionRefId) {
-    ActingScope::Arm(formId, taken->player, ActingScope::kArmMs);
+    // its joins capped at the trigger's own attached scripts, the handlers
+    // this send starts (rung 5's fresh review, note 9)
+    ActingScope::Arm(formId, taken->player, ActingScope::kArmMs,
+                     target.scripts);
     if (LogThis(g_triggerArmLines)) {
       logger::info("[verb:quests] SendTriggerEvent {} to {:x} by {:x}: the "
                    "presser's scope armed for {} ms (acting player {:x})",

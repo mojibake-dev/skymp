@@ -1293,7 +1293,10 @@ void PackFigure(RE::BSScript::Variable& v, RE::Actor* figure)
 // and its alias scripts carry the quest's id there (HYPOTHESIS H-AP1: a
 // relayed stage's fragment stack roots at the QF script's Fragment_N with
 // the quest's object as self, x-acting-frame v1; the alias half is H-AF3's
-// encoding), a trigger's script the trigger's; 0 for a root with no object
+// encoding), a trigger's script the trigger's; 0 for a root with no object,
+// or one whose handle is of a kind other than 0 (an inventory item's or an
+// active effect's, ScriptState.cpp's H-R6), which no arm's subject names
+// (rung 5's fresh review, note 9)
 constexpr std::uint32_t kMaxRootFrames = 1024;
 
 std::uint32_t RootSubjectOf(const RE::BSScript::Stack* stack)
@@ -1304,7 +1307,11 @@ std::uint32_t RootSubjectOf(const RE::BSScript::Stack* stack)
     frame = frame->previousFrame;
   }
   const RE::BSScript::Object* object = frame ? ObjectOf(frame->self) : nullptr;
-  return object ? FormIdOfHandle(object->GetHandle()) : 0;
+  if (!object) {
+    return 0;
+  }
+  const RE::VMHandle handle = object->GetHandle();
+  return (handle >> 48) == 0 ? FormIdOfHandle(handle) : 0;
 }
 
 // step (0)'s scope: the stack's own once it joined one (kept for its life,

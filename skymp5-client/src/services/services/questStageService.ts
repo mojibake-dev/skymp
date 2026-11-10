@@ -434,7 +434,9 @@ export class QuestStageService extends ClientListener {
         if (this.parked.size >= PARKED_MAX) {
             const oldest = this.parked.keys().next().value;
             if (oldest !== undefined) {
+                const gone = this.parked.get(oldest);
                 this.parked.delete(oldest);
+                logLab(TAG, `parked stages full at ${PARKED_MAX}: the world's stage ${gone ? gone.stage : "?"} of quest ${oldest.toString(16)} let go for quest ${item.quest.toString(16)}'s`);
             }
         }
         this.parked.set(item.quest, item);
@@ -451,6 +453,7 @@ export class QuestStageService extends ClientListener {
             const oldest = this.parkedStarts.values().next().value;
             if (oldest !== undefined) {
                 this.parkedStarts.delete(oldest);
+                logLab(TAG, `parked starts full at ${PARKED_MAX}: the world's start of quest ${oldest.toString(16)} let go for quest ${questId.toString(16)}'s`);
             }
         }
         this.parkedStarts.add(questId);

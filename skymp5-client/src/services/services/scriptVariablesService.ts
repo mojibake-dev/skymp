@@ -18,8 +18,15 @@ const REPORT_PER_S = 1;
 const SCRIPT_VARIABLES = 256;
 // the server's values written per update (the plan's (d))
 const APPLIES_PER_UPDATE = 32;
-// the server's record holds at most this many keys (VARIABLE_RECORD_CAP)
-const WATCH_MAX = 1024;
+// the server's record holds at most this many keys (wire-rules
+// script_variables VARIABLE_RECORD_CAP), and its login watch names the
+// listed keys (the setting's, at most one record's cap: the census's 798)
+// then the player's composed own keys (its quests' scalar variables and the
+// two reserved names, bounded apart by the same cap), own keys last; the
+// watch here holds both whole, and an own key is never dropped for a world
+// key (addWatch)
+const VARIABLE_RECORD_CAP = 1024;
+const WATCH_MAX = 2 * VARIABLE_RECORD_CAP;
 const SUMMARY_MS = 30_000;
 // load-order forms end where the server's copies begin (the validator
 // refuses a form of 0 or at 0xff000000 and up)
@@ -180,6 +187,7 @@ export class ScriptVariablesService extends ClientListener {
                 logTrace(this, `watching ${this.watch.size} script variable(s), ${added} new from the serve`);
             }
         }
+        this.sayCuts();
     }
 
     // a new connection (connectionAccepted, ahead of all its messages): the
@@ -502,7 +510,9 @@ export class ScriptVariablesService extends ClientListener {
     }
 
     // a key joins the watch, own or the world's (false when it is there
-    // already, an own flag then kept, or the watch is full)
+    // already, an own flag then kept, or the watch is full). Own keys are
+    // never dropped for world keys: a full watch lets its last world key go
+    // for an own one; every cut is counted for sayCuts
     private addWatch(key: ScriptVariableKey, own: boolean): boolean {
         const id = ScriptVariablesService.keyId(key);
         const had = this.watch.get(id);
@@ -513,12 +523,45 @@ export class ScriptVariablesService extends ClientListener {
             }
             return false;
         }
-        if (this.watch.size >= WATCH_MAX) {
-            this.refused++;
+        if (this.watch.size >= WATCH_MAX && !(own && this.letWorldKeyGo())) {
+            this.cutKeys++;
+            if (own) {
+                this.cutOwn++;
+            }
             return false;
         }
         this.watch.set(id, { form: key.form, script: key.script, var: key.var, own });
         return true;
+    }
+
+    // the last world key out of a full watch, for an own key; false when the
+    // watch holds own keys alone
+    private letWorldKeyGo(): boolean {
+        let lastWorld: string | undefined;
+        this.watch.forEach((k, id) => {
+            if (!k.own) {
+                lastWorld = id;
+            }
+        });
+        if (lastWorld === undefined) {
+            return false;
+        }
+        this.watch.delete(lastWorld);
+        this.last.delete(lastWorld);
+        this.chunks = undefined;
+        this.cutForOwn++;
+        return true;
+    }
+
+    // one line for a message (or a reload) whose keys a full watch cut
+    private sayCuts() {
+        if (this.cutKeys + this.cutForOwn === 0) {
+            return;
+        }
+        logLab(TAG, `the script variable watch is full at ${WATCH_MAX} keys: ${this.cutKeys} key(s) not watched (${this.cutOwn} of them own), ${this.cutForOwn} world key(s) let go for own keys`);
+        this.cutKeys = 0;
+        this.cutOwn = 0;
+        this.cutForOwn = 0;
     }
 
     // the server's sequence for a key (the record's, rising at each recorded
@@ -586,6 +629,7 @@ export class ScriptVariablesService extends ClientListener {
                 this.addWatch(key, key.own === true);
             }
         }
+        this.sayCuts();
         if (this.watch.size > 0) {
             logTrace(this, `resumed watching ${this.watch.size} script variable(s) after a reload; their baselines are taken anew`);
         }
@@ -743,4 +787,9 @@ export class ScriptVariablesService extends ClientListener {
     private refused = 0;
     private readRefused = 0;
     private badAnswers = 0;
+    // the watch's cuts since the last line: keys not watched (own among
+    // them), world keys let go for own keys
+    private cutKeys = 0;
+    private cutOwn = 0;
+    private cutForOwn = 0;
 }

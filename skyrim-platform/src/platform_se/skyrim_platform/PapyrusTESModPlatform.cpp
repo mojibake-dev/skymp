@@ -1,4 +1,5 @@
 #include "PapyrusTESModPlatform.h"
+#include "ActingScope.h"
 #include "CallNativeApi.h"
 #include "ChangeForm.h"
 #include "ConsoleApi.h"
@@ -129,6 +130,12 @@ private:
     // (TrapFamily.h, Firing); no exception leaves this sink
     try {
       TrapFamily::Firing::Clear();
+    } catch (...) {
+    }
+    // thuum ADR-068 rung 5: the acting scope's stack ids and requests name
+    // the old world's stacks and stages (ActingScope.h)
+    try {
+      ActingScope::Clear();
     } catch (...) {
     }
     return RE::BSEventNotifyControl::kContinue;
@@ -1700,6 +1707,24 @@ RE::BSFixedString TESModPlatform::SendTriggerEvent(
   return RE::BSFixedString(ScriptState::SendTrigger(trigger, name, actionRef));
 }
 
+// thuum ADR-068 rung 5 (D-V1 B, D-T2 B): a quest's or a reference's script
+// variables read and written by name, under the VM's attachedScriptsLock on
+// this thread (ScriptState.cpp holds the reads, the writes and their
+// refusals); inside TESModPlatform.Add's Call on the OnUpdate thread, no C++
+// exception leaving either
+RE::BSFixedString TESModPlatform::ReadScriptVariables(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, std::string_view keysJson)
+{
+  return RE::BSFixedString(ScriptState::ReadVariables(keysJson));
+}
+
+RE::BSFixedString TESModPlatform::WriteScriptVariables(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+  std::string_view entriesJson)
+{
+  return RE::BSFixedString(ScriptState::WriteVariables(entriesJson));
+}
+
 namespace {
 // thuum ADR-068 rung 4 (the state rows): DiffWorldGlobals' baseline, each
 // answered global's form id to its value at its last answer or the last
@@ -2115,6 +2140,18 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::TESObjectREFR*, std::string_view,
                                      RE::TESObjectREFR*>(
       "SendTriggerEvent", "TESModPlatform", SendTriggerEvent));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ReadScriptVariables),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     std::string_view>(
+      "ReadScriptVariables", "TESModPlatform", ReadScriptVariables));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(WriteScriptVariables),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     std::string_view>(
+      "WriteScriptVariables", "TESModPlatform", WriteScriptVariables));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(DiffWorldGlobals),

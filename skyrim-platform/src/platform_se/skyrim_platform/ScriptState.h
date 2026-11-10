@@ -113,9 +113,72 @@ std::string Send(RE::TESObjectREFR* refr, std::string_view name,
 // the gate's presser rule reads any argument). A JSON object as a string:
 // { formId, event, sent, scripts (the attached scripts it was sent to),
 // reason }; refused for a name that is no trigger event, a None actionRef,
-// an actor trigger and a reference with no attached script.
+// an actor trigger and a reference with no attached script. Since rung 5 a
+// figure presser (an actor at 0xff000000 and up) arms the trigger's acting
+// scope (ActingScope.h) before the send, its server id from the client's
+// entry request (setActingPlayer with stage -3), so the handler reads
+// Game.GetPlayer() as the figure.
 std::string SendTrigger(RE::TESObjectREFR* refr, std::string_view name,
                         RE::TESObjectREFR* actionRef);
+
+// thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 1(c) and
+// 8(b); D-V1 B: every seat reports a listed condition-read variable it
+// changes; D-T2 B: a marked quest's scalar variables kept per player as
+// ScriptVariables 81's own entries): script variables read and written by
+// name, under attachedScriptsLock (VirtualMachine.h:219).
+// ReadScriptVariables(keysJson): keysJson a JSON array of keys (an object
+// carrying a `keys` array read the same way), at most 256, each { form (a
+// QUST's or a reference's id, below 0xff000000), script (a class among the
+// form's attached scripts' chains: the object of exactly that class, else
+// one extending it), var (the variable as compiled: an auto property's
+// "::Name_var", a plain variable's name), own? }, names without case. The
+// answer, a JSON array in the keys' order: { form, script, var, k, i|f|b }
+// for a value read (k 3 int, 4 float, 5 bool, the wire's kinds; the
+// variable's declared kind and its value's), { form, script, var, reason }
+// for a refused key, each with the key's own echoed; "[]" for a call that
+// is no such array, the reason logged. The var names "<OnUpdateGameTime>"
+// and "<OnUpdateGameTime:repeat>" read the form's queued OnUpdateGameTime
+// registration (ReadGameTimeRegistration) as k 4: the game hours until it
+// fires, and a repeat's interval (0 for a single update).
+std::string ReadVariables(std::string_view keysJson);
+
+// WriteScriptVariables(entriesJson): entriesJson a JSON array of entries
+// (an object carrying an `entries` array read the same way), at most 256,
+// each a key with k (3, 4 or 5) and exactly its payload (i, f or b, as the
+// script record's values), written through Variable's setters (Variable.h:
+// 71-79) into the variable found as ReadScriptVariables finds it, refused
+// for a kind other than the variable's declared one and for the two
+// registration names (registered again through Form.RegisterForUpdateGameTime
+// or RegisterForSingleUpdateGameTime). The answer, a JSON array in the
+// entries' order: { form, script, var, written, reason? }; "[]" for a call
+// that is no such array, the reason logged.
+std::string WriteVariables(std::string_view entriesJson);
+
+// thuum ADR-068 rung 5, D-T2 B (docs/research/rung5-quests-2026-11-09.md
+// 8(b): a vampire's script state kept per player, its game-time
+// registration re-issued at login): the OnUpdateGameTime registration the VM
+// queued for a VM handle (a script's Form.RegisterForUpdateGameTime or
+// RegisterForSingleUpdateGameTime on a quest or a reference), read so a
+// relaunched seat can register it again. Read on the calling thread under
+// SkyrimVM's own locks, no VM call
+struct GameTimeRegistration
+{
+  // RegisterForUpdateGameTime's (true) or the single update's
+  bool repeat = false;
+  // the game hours until it fires, and a repeat's interval (0 for a single)
+  float hoursLeft = 0.f;
+  float intervalHours = 0.f;
+  // the fields as read (UpdateDataEvent's updateTime and timeToSendEvent,
+  // SkyrimVM's currentVMDaysPassed), for the lab's line
+  std::uint32_t updateTime = 0;
+  std::uint32_t timeToSendEvent = 0;
+  std::uint32_t daysPassed = 0;
+};
+// false, with the reason, when none is queued for the handle, or on a
+// runtime whose SkyrimVM layout past `impl` CommonLib's header does not give
+// (1.7.x, the fork's overlay patch 07); the soonest one when several are
+bool ReadGameTimeRegistration(RE::VMHandle handle, GameTimeRegistration& out,
+                              std::string& why);
 
 // the references whose served script record waits for its apply, by form id
 // (setScriptRecordPending: skymp5-client's ScriptStateService raises it for

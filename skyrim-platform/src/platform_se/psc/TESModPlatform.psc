@@ -153,3 +153,18 @@ String Function SendTriggerEvent(ObjectReference trigger, String name, ObjectRef
 ; comma-separated hex ids in exclude are never answered; with reset, every
 ; other global's value now becomes the baseline and the answer is "[]"
 String Function DiffWorldGlobals(Bool reset, String exclude) global native
+
+; thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 1(c) and
+; 8(b); D-V1 B, D-T2 B): a quest's or a reference's script variables read by
+; name for ScriptVariables 81 (a JSON string: an array, in the keys' order,
+; of { form, script, var, k, i|f|b } with k 3 int, 4 float, 5 bool, or of
+; { form, script, var, reason }; "[]" for keys that are no JSON array), and
+; written by name through Variable's setters, a kind other than the
+; variable's declared one refused (a JSON string: per entry { form, script,
+; var, written, reason }). A key is { form, script, var }, names without
+; case; var "<OnUpdateGameTime>" reads the form's queued game-time
+; registration's hours left and "<OnUpdateGameTime:repeat>" a repeat's
+; interval, never written. keysJson and entriesJson are JSON arrays, since
+; callNative takes no array
+String Function ReadScriptVariables(String keysJson) global native
+String Function WriteScriptVariables(String entriesJson) global native

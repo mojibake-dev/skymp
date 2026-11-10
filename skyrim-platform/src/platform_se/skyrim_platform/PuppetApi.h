@@ -36,6 +36,28 @@ Napi::Value GetHighProcessActors(const Napi::CallbackInfo& info);
 Napi::Value SetHosted(const Napi::CallbackInfo& info);
 // isHosted(actorFormId): whether the set holds the actor
 Napi::Value IsHosted(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 rung 5 (the acting scope, ActingScope.h):
+// setActingPlayer(questId, stage, figureLocalId, serverId, ttlMs), the acting
+// player of a relayed stage (0 to 65535), start (-1), stop (-2) or trigger
+// entry (-3, questId the trigger), written on the JS thread with no game
+// call before the client applies it; a start or a stop arms the quest's
+// scope at once. False for a quest 0, a stage outside -3 to 65535, a
+// serverId 0, the player's own id as the figure, a ttl outside 1 to 60000
+Napi::Value SetActingPlayer(const Napi::CallbackInfo& info);
+// getActingPlayer(questId, stage): the server id of the acting player whose
+// scope requested the pair here (relayed, or chained by a scoped stack), 0
+// for none; the C2S QuestStage's `acting`
+Napi::Value GetActingPlayer(const Napi::CallbackInfo& info);
+// setPlayerGlobals(globalFormIds): PQ-3's set, the globals each player keeps
+// (the PlayerGlobals watch list), replaced whole; a scoped stack's
+// GlobalVariable.SetValue on one is skipped. The JS thread alone, no game
+// call; true when stored
+Napi::Value SetPlayerGlobals(const Napi::CallbackInfo& info);
+// setPlayerQuests(questFormIds): the per-player quests (the server's derived
+// playerQuests), replaced whole; the Papyrus event gate passes an event to
+// such a quest's own scripts and its aliases' scripts on every seat, for its
+// own player. The JS thread alone, no game call; true when stored
+Napi::Value SetPlayerQuests(const Napi::CallbackInfo& info);
 // isPerformingAction(actorFormId): whether the engine's action entry is open
 // on the actor right now (Hosted::IsPerforming, the hook's mark); read
 // inside a sendAnimationEvent hook handler, where the game thread waits, it
@@ -200,6 +222,18 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "isHosted",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(IsHosted)));
+  exports.Set(
+    "setActingPlayer",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetActingPlayer)));
+  exports.Set(
+    "getActingPlayer",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetActingPlayer)));
+  exports.Set(
+    "setPlayerGlobals",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPlayerGlobals)));
+  exports.Set(
+    "setPlayerQuests",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPlayerQuests)));
   exports.Set("isPerformingAction",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(IsPerformingAction)));

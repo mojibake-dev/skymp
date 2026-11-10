@@ -29,7 +29,14 @@ class IFunction;
 // kDataLoaded from the VM's own bindings (Hooks.cpp BindNativeMethod's
 // record, by class and name), never from a pinned offset (rule 1). This
 // replaced the flip's 24 entry hooks (ADR-062 decision 2) and their per-call
-// "scriptNative" event.
+// "scriptNative" event. Since rung 5 (thuum docs/research/
+// rung5-quests-2026-11-09.md 1(c); ActingScope.h) the hook reads first, for
+// every native the game calls, whether its stack is scoped to another
+// player's relayed stage, start, stop or trigger entry (one relaxed load
+// while no scope exists): on a scoped stack the player's own actor in the
+// native's frame is that player's figure, Game.GetPlayer answers the figure,
+// and a stage, a start or a stop it sets carries the scope on, each swap
+// counted " (acting)".
 namespace ScriptNatives {
 // at kDataLoaded: the table's rows bound from the VM's bindings
 // (Hooks::GetBoundNatives) and the lever read, then the VM's one dispatch
@@ -37,7 +44,8 @@ namespace ScriptNatives {
 // its frame and the platform's latent calls are marked (PlatformCall.h)
 void InstallHooks();
 // every frame from the platform's OnUpdate: the census flushed on time (a
-// quiet seat emits its last window; the review's medium finding)
+// quiet seat emits its last window; the review's medium finding), and the
+// acting scope's expired entries dropped (rung 5)
 void Tick();
 // thuum docs/verbs/npc-fate.md (playtest 48): this frame's batch, when it
 // holds a call, raised on the update's task queue now, ahead of the task the

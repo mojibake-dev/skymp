@@ -26,10 +26,15 @@
 //! item of libespm's item types, else `E_SCRIPTCALL_ARGS`), and so does the
 //! count's own bound ([`item_count`]: a whole number from 1 to the Papyrus
 //! Int's largest). An add is recorded as reported, at most to the record's
-//! count bound; a removal takes at most what the record holds (never below
-//! zero), the overlay's own first (the werewolf's WolfSkinFXArmor, which its
-//! EquipItem put there, removed before the race's return), and folds into a
-//! container the player holds open, whose own move (PutItem) carries it. A
+//! count bound, and one that needs a new stack is refused once the record
+//! holds [`INVENTORY_STACKS`] (`E_SCRIPTCALL_FULL`, rule 12's bound on a
+//! client-fed record: the fresh review of the second head, its FIX FIRST 2,
+//! found a seat could mint a stack of any item at the native's rate with no
+//! limit on their number); a removal takes at most what the record holds
+//! (never below zero), the overlay's own first (the werewolf's
+//! WolfSkinFXArmor, which its EquipItem put there, removed before the race's
+//! return), and folds into a container the player holds open, whose own move
+//! (PutItem) carries it. A
 //! leveled list is refused by name (`E_SCRIPTCALL_LEVELED`): the engine's
 //! roll is what landed, and the report carries the list, not the roll (the
 //! named gap; the record never holds the list's form). Other seats run a
@@ -81,6 +86,13 @@
 //! form must be one the game files name for the calling script).
 
 use std::collections::BTreeMap;
+
+/// Stacks the player's record holds before an AddItem that needs a new one
+/// is refused (`E_SCRIPTCALL_FULL`; D-R1 C's resource bound, rule 12): the
+/// wire's stacks in one inventory, wire-schema `cap::INVENTORY` (wire-bridge's
+/// tests hold the two equal), so every SetInventory and CreateActor of the
+/// player still carries its whole inventory past the server's edge.
+pub const INVENTORY_STACKS: usize = 4096;
 
 /// The nine rows, by Papyrus class and name (natives_table.rs's order: the
 /// flip's AddItem and RemoveItem first, D-R1 C keeping them in place).
@@ -213,6 +225,13 @@ pub struct Facts {
     /// RemoveItem's akOtherContainer is a container the player holds open:
     /// that container's own move (PutItem) carries the removal.
     pub into_held_open: bool,
+    /// How many stacks (inventory entries) the player's record holds, for
+    /// AddItem's bound ([`INVENTORY_STACKS`]).
+    pub stacks: usize,
+    /// AddItem's form joins no stack the record holds (none of the form with
+    /// no extra data and unworn, the core's match for a plain add), so the
+    /// add appends a new one.
+    pub new_stack: bool,
 }
 
 /// An open overlay: the race the player wears beyond its record and what
@@ -246,6 +265,9 @@ pub enum Code {
     /// AddItem's form is a leveled list: what landed is the engine's roll,
     /// which the report does not carry (D-R1 C's named gap).
     Leveled,
+    /// AddItem's form needs a new stack and the player's record holds
+    /// [`INVENTORY_STACKS`] already (D-R1 C's resource bound).
+    Full,
 }
 
 impl Code {
@@ -257,6 +279,7 @@ impl Code {
             Code::Unnamed => "E_SCRIPTCALL_UNNAMED",
             Code::Race => "E_SCRIPTCALL_RACE",
             Code::Leveled => "E_SCRIPTCALL_LEVELED",
+            Code::Full => "E_SCRIPTCALL_FULL",
         }
     }
 }
@@ -389,11 +412,13 @@ impl PlayerOverlays {
     /// name (the engine's roll is what landed; the record never holds the
     /// list), any other form must be an item and the count a Papyrus Int
     /// above zero. An add is recorded whole, but never past the record's
-    /// count bound (u32, over all the form's stacks); a removal into a
-    /// container the player holds open folds (its PutItem moves the item,
-    /// both sides), one of an item the open overlay holds takes it from
-    /// there (the beast form's skin), and any other takes at most what the
-    /// record holds, a removal of what it lacks folding.
+    /// count bound (u32, over all the form's stacks), and one that needs a
+    /// new stack is refused once the record holds [`INVENTORY_STACKS`]
+    /// (`E_SCRIPTCALL_FULL`); a removal into a container the player holds
+    /// open folds (its PutItem moves the item, both sides), one of an item
+    /// the open overlay holds takes it from there (the beast form's skin),
+    /// and any other takes at most what the record holds, a removal of what
+    /// it lacks folding.
     fn items(&mut self, player: u32, row: Row, form: u32, facts: Facts) -> Verdict {
         if row == Row::AddItem && facts.leveled {
             return Verdict::Refuse(Code::Leveled, format!("{form:x} is a leveled list (LVLI): what landed is the engine's roll, which the report does not carry, so nothing is written (D-R1 C's named gap)"));
@@ -405,6 +430,9 @@ impl PlayerOverlays {
             return Verdict::Refuse(Code::Args, format!("the count of {form:x} is no whole number from 1 to {}, a Papyrus Int above zero: nothing lands", i32::MAX));
         };
         if row == Row::AddItem {
+            if facts.new_stack && facts.stacks >= INVENTORY_STACKS {
+                return Verdict::Refuse(Code::Full, format!("the player's record holds its cap of {INVENTORY_STACKS} stacks (the wire's in one inventory) and {form:x} would need a new one: nothing is written"));
+            }
             let room = u32::MAX.saturating_sub(facts.held_count);
             return match count.min(room) {
                 0 => Verdict::Fold,
@@ -505,6 +533,7 @@ mod tests {
         assert_eq!([Row::AddItem, Row::RemoveItem, Row::SetRace].map(Row::class), ["ObjectReference", "ObjectReference", "Actor"]);
         assert_eq!([Row::AddItem, Row::RemoveItem].map(Row::kind), ["item", "item"]);
         assert_eq!(Code::Leveled.name(), "E_SCRIPTCALL_LEVELED");
+        assert_eq!(Code::Full.name(), "E_SCRIPTCALL_FULL");
     }
 
     // Eli's D-R1 C, x-acting-frame 20261110-072506's fragment: A Lovely
@@ -554,6 +583,27 @@ mod tests {
         assert_eq!(o.judge(ARIADNE, Row::SetRace, BEAST, &werewolf_script(), nord), Verdict::Overlay);
         assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], gold(0, 25)), Verdict::Items(25));
         assert_eq!(o.overlay(ARIADNE).map(|v| v.items.len()), Some(0));
+    }
+
+    #[test]
+    fn an_add_that_needs_a_new_stack_is_refused_once_the_record_holds_the_wires_stacks() {
+        // the fresh review of the second head (FIX FIRST 2): a seat could
+        // mint a stack of any item at the native's rate; the record stops at
+        // the wire's stacks in one inventory
+        let mut o = PlayerOverlays::default();
+        let full = Facts { stacks: INVENTORY_STACKS, new_stack: true, ..gold(0, 25) };
+        match o.judge(ARIADNE, Row::AddItem, GOLD, &[], full) {
+            Verdict::Refuse(code, why) => assert_eq!((code, why.as_str()), (Code::Full, "the player's record holds its cap of 4096 stacks (the wire's in one inventory) and f would need a new one: nothing is written")),
+            other => panic!("not refused: {other:?}"),
+        }
+        // an add joining a stack the record holds lands at the cap, and a new
+        // stack one short of it
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], Facts { new_stack: false, ..full }), Verdict::Items(25));
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], Facts { stacks: INVENTORY_STACKS.saturating_sub(1), ..full }), Verdict::Items(25));
+        // the refusals ahead of it keep their names; a removal is never bounded by it
+        assert!(matches!(o.judge(ARIADNE, Row::AddItem, 0x10_bf6a, &[], Facts { leveled: true, kind: false, ..full }), Verdict::Refuse(Code::Leveled, _)));
+        assert!(matches!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], Facts { count: None, ..full }), Verdict::Refuse(Code::Args, _)));
+        assert_eq!(o.judge(ARIADNE, Row::RemoveItem, GOLD, &[], Facts { held_count: 25, ..full }), Verdict::Items(25));
     }
 
     #[test]

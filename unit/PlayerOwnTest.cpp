@@ -715,6 +715,74 @@ TEST_CASE("A removal into a container the player holds open is that "
   p.DestroyActor(kTurned);
 }
 
+// The fresh review of the second head (FIX FIRST 2): D-R1 C let a seat mint a
+// stack of any item at the native's rate with no limit on their number, and
+// the wire carries at most 4096 stacks in one inventory (wire-schema
+// cap::INVENTORY, wire-rules player_own::INVENTORY_STACKS), so an add that
+// needs a new stack is refused by name once the record holds that many. The
+// iron dagger 0x1397e is DropItemTest's, the lockpick 0xa LockTest's; each
+// record's type is read here first
+TEST_CASE("An own AddItem that needs a new stack is refused once the record "
+          "holds the wire's 4096 stacks (E_SCRIPTCALL_FULL); one that joins "
+          "a stack the record holds is still recorded, and a removal frees "
+          "a stack",
+          "[PlayerOwn][espm]")
+{
+  PartOne& p = GetPartOne();
+  constexpr uint32_t kIronDagger = 0x1397e;
+  constexpr uint32_t kLockpick = 0xa;
+  REQUIRE(RecordType(p, kIronDagger) == "WEAP");
+  REQUIRE(RecordType(p, kLockpick) == "MISC");
+  Enter(p);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  // the record at the cap: a plain stack of gold beside 4095 iron daggers,
+  // each tempered apart (a stack per health), so a plain dagger, which the
+  // record holds, needs a new stack as the lockpick it lacks does
+  Inventory full;
+  full.entries.push_back(Inventory::Entry(kGold, 10));
+  for (uint32_t i = 1; i < 4096; ++i) {
+    Inventory::ExtraData tempered;
+    tempered.health = 1.0f + static_cast<float>(i) / 4096.0f;
+    full.entries.push_back(Inventory::Entry(kIronDagger, 1, tempered));
+  }
+  REQUIRE(full.entries.size() == 4096);
+  turned.SetInventory(full);
+
+  OwnItem(p, 0, 0x14, "AddItem",
+          { FormArg(kIronDagger, "Form"), Arg(1.0), Arg(false) });
+  OwnItem(p, 0, 0x14, "AddItem",
+          { FormArg(kLockpick, "Form"), Arg(1.0), Arg(false) });
+  REQUIRE(turned.GetInventory() == full);
+  // one line a minute per seat and code, the second counted into the next
+  REQUIRE(log.Count("[verb:quest-stage] E_SCRIPTCALL_FULL: ff000c71's own "
+                    "ObjectReference.AddItem 1397e (from "
+                    "LovelyLetterFragments.Fragment_22): the player's record "
+                    "holds its cap of 4096 stacks (the wire's in one "
+                    "inventory) and 1397e would need a new one: nothing is "
+                    "written; refused, 1 since the last line") == 1);
+  REQUIRE(log.Count("E_SCRIPTCALL_FULL") == 1);
+
+  // the gold joins its plain stack: recorded at the cap, no stack added
+  OwnItem(p, 0, 0x14, "AddItem",
+          { FormArg(kGold, "Form"), Arg(25.0), Arg(false) });
+  REQUIRE(turned.GetInventory().entries.size() == 4096);
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == 35);
+  REQUIRE(log.Count("25 added to its inventory as its seat reported it") == 1);
+
+  // a removal takes a tempered dagger's whole stack, and the next new stack
+  // lands
+  OwnItem(p, 0, 0x14, "RemoveItem",
+          { FormArg(kIronDagger, "Form"), Arg(1.0), Arg(true), Arg() });
+  REQUIRE(turned.GetInventory().entries.size() == 4095);
+  OwnItem(p, 0, 0x14, "AddItem",
+          { FormArg(kLockpick, "Form"), Arg(1.0), Arg(false) });
+  REQUIRE(turned.GetInventory().entries.size() == 4096);
+  REQUIRE(turned.GetInventory().GetItemCount(kLockpick) == 1);
+  REQUIRE(log.Count("E_SCRIPTCALL_FULL") == 1);
+  Leave(p);
+}
+
 // A review of the rotfern-eyes slot, fix 1: the server indexes a QUST's alias
 // scripts as the quest's attachments (libespm ScriptData::aliases), so an own
 // row an alias script calls finds its bound, RotfernEyes.esp's (its script on

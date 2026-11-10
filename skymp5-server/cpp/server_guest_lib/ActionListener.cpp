@@ -3468,13 +3468,16 @@ std::vector<MpChangeFormREFR::QuestRun> QuestRunsOf(
 // seat's) retired with the start word, which records that start once.
 // D-Q4 C (SCHEMA_VERSION 43): a report names its cause and its stack's root
 // (R2, logged). A run word whose cause is the seat's own is refused
-// (E_QUEST_CAUSE: a seat whose rule held it never sends one), and a run word
-// of a quest a Story Manager quest node names while questStoryInstances is
-// "seat" (E_QUEST_INSTANCE, the node named), each one line a minute per seat
-// and quest; a stage report the record reads as a start (a start-up stage:
-// the seat cannot tell one, the record can) with the seat's own cause is not
-// recorded either, the designed path, one plain line a minute per seat; any
-// other stage crosses whatever its cause.
+// (E_QUEST_CAUSE: a seat whose rule held it never sends one), one line a
+// minute per seat and quest. Two designed paths are not recorded either, each
+// in a plain line with no E_QUEST_ code: a run word of a quest a Story Manager
+// quest node names while questStoryInstances is "seat", whatever its cause
+// (each seat's own instance: a world-caused completion's Stop comes here, as
+// A Lovely Letter's Fragment_22 does after a typed setstage), the node named,
+// one line a minute per seat and quest; and a stage report the record reads
+// as a start (a start-up stage: the seat cannot tell one, the record can)
+// with the seat's own cause, one line a minute per seat. Any other stage
+// crosses whatever its cause.
 void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                                   const QuestStageMessage& msg)
 {
@@ -3605,10 +3608,12 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
   // seat's word (R2), judged by wire-rules quest_runs and named in the lines
   const uint8_t cause =
     msg.cause && *msg.cause <= 2 ? static_cast<uint8_t>(*msg.cause) : 0;
-  const std::string causeText = cause == 0
+  const std::string causeWords = cause == 0
     ? std::string()
-    : fmt::format(" (cause {}, root {}, R2)", cause == 1 ? "world" : "seat",
+    : fmt::format("cause {}, root {}, R2", cause == 1 ? "world" : "seat",
                   msg.root && !msg.root->empty() ? *msg.root : "none");
+  const std::string causeText =
+    causeWords.empty() ? std::string() : " (" + causeWords + ")";
 
   if (what != 0) {
     // a run word (wire-rules quest_runs): its cause (D-Q4 C), a Story
@@ -3638,26 +3643,47 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
       }
       return;
     }
-    if (verdict.code == 4 || verdict.code == 5) {
+    if (verdict.code == 5) {
+      // D-Q4 C: a Story Manager instance's word or start under
+      // questStoryInstances "seat", whatever its cause (wire-rules
+      // quest_runs' Code::Instance): the designed path, since each seat's
+      // engine runs its own instance and its fragments' Start and Stop come
+      // here with a world cause (A Lovely Letter's Fragment_22 after a typed
+      // setstage), so no E_QUEST_ code (81527867's shape for a start-up
+      // stage). Nothing written, relayed or counted; one line a minute per
+      // seat and quest, the rest counted into it, every fact the refusal's
+      // line had
+      uint32_t since = 0;
+      if (QuestLineDue(questLines, actor->GetFormId(),
+                       "story instance " + quest.ToString(), since)) {
+        const std::string nodes = partOne.StoryNodesOf(quest);
+        spdlog::info("[verb:quest-stage] the {} of {} by {:x} kept to its "
+                     "seat: a Story Manager instance (questStoryInstances "
+                     "seat{}){}, its stages still crossing; user {}'s report "
+                     "not recorded, nothing relayed; {} such report(s) of "
+                     "the quest since the last line",
+                     verb, quest.ToString(), actor->GetFormId(),
+                     causeWords.empty() ? std::string() : "; " + causeWords,
+                     nodes.empty() ? std::string()
+                                   : fmt::format(", named by {}", nodes),
+                     rawMsgData.userId, since);
+      }
+      return;
+    }
+    if (verdict.code == 4) {
       // D-Q4 C: a run word with the seat's own cause (a seat whose rule held
-      // it never sends one), or a Story Manager instance's word or start
-      // under questStoryInstances "seat": nothing written, relayed or
-      // counted; one line a minute per seat and quest, the rest counted into
-      // it
+      // it never sends one): nothing written, relayed or counted; one line a
+      // minute per seat and quest, the rest counted into it
       const std::string name = std::string(verdict.name);
       uint32_t since = 0;
       if (QuestLineDue(questLines, actor->GetFormId(),
                        name + " " + quest.ToString(), since)) {
-        const std::string nodes =
-          verdict.code == 5 ? partOne.StoryNodesOf(quest) : std::string();
-        spdlog::info("{}: user {} actor {:x} reported the {} of {}{}{}: {}; "
+        spdlog::info("{}: user {} actor {:x} reported the {} of {}{}: {}; "
                      "not recorded, nothing relayed; {} such report(s) of "
                      "the quest since the last line",
                      name, rawMsgData.userId, actor->GetFormId(), verb,
-                     quest.ToString(), causeText,
-                     nodes.empty() ? std::string()
-                                   : fmt::format(", named by {}", nodes),
-                     std::string(verdict.why), since);
+                     quest.ToString(), causeText, std::string(verdict.why),
+                     since);
       }
       return;
     }
@@ -4703,11 +4729,14 @@ bool NamesFunc(const std::string& fn, const char* name)
 // as the seat reported it, R2 (rule 5's "record it as unvalidated"), with no
 // bound and so no attachment read; the facts are the form's record type (an
 // item, or a leveled list refused by name, E_SCRIPTCALL_LEVELED), the count
-// the record holds, the call's own count and, for a removal, whether its
-// other container is one the player holds open (that container's PutItem
-// moves the item, so the row folds). The record's change sends the player
-// its inventory (MpObjectReference::SendInventoryUpdate, deferred to the
-// tick), which its client's 5 s apply reads from then on.
+// the record holds, the call's own count, the stacks the record holds and
+// whether an add needs a new one (refused by name once the record holds the
+// wire's stacks in one inventory, E_SCRIPTCALL_FULL: the fresh review of the
+// second head, FIX FIRST 2) and, for a removal, whether its other container
+// is one the player holds open (that container's PutItem moves the item, so
+// the row folds). The record's change sends the player its inventory
+// (MpObjectReference::SendInventoryUpdate, deferred to the tick), which its
+// client's 5 s apply reads from then on.
 void RecordPlayerOwn(
   PartOne& partOne, MpActor& reporter, const ScriptCallMessage& msg,
   std::map<std::pair<uint32_t, std::string>,
@@ -4808,6 +4837,19 @@ void RecordPlayerOwn(
     facts.held_count =
       form != 0 ? reporter.GetInventory().GetItemCount(form) : 0;
     facts.count = NumberArgAt(msg, 1);
+    // the bound on the stacks an add mints (wire-rules
+    // player_own::INVENTORY_STACKS, the wire's stacks in one inventory): how
+    // many the record holds, and whether a plain add of the form joins none
+    // of them (Inventory::AddItems appends an item that matches no stack,
+    // its extra data and worn state compared)
+    const auto& inventory = reporter.GetInventory();
+    facts.stacks = inventory.entries.size();
+    const Inventory::Entry plain(form, 0);
+    facts.new_stack =
+      std::none_of(inventory.entries.begin(), inventory.entries.end(),
+                   [&](const Inventory::Entry& entry) {
+                     return entry.EqualExceptCount(plain);
+                   });
     if (const uint32_t other = addItem ? 0 : ObjectArgAt(msg, 3); other != 0) {
       const auto& otherForm = partOne.worldState.LookupFormByIdNoLoad(other);
       const MpObjectReference* container =

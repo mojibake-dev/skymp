@@ -131,6 +131,10 @@ struct MpActor::Impl
   // thuum docs/verbs/npc-fate.md (ADR-049): whether this actor came from a
   // saved change form (its roll kept) or was rolled by this process
   bool fromSave = false;
+  // thuum ADR-049 D-N1 A: whether a saved change form was applied over the
+  // game files' actor (WorldState's deferred load of a game-file actor's
+  // record: Init saw none, so fromSave stays false and the fate pass asks)
+  bool recordApplied = false;
   bool actorValuesLoginPending = false;
   using RestorationTimePoints =
     std::unordered_map<espm::ActorValue,
@@ -1166,6 +1170,9 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
   newChangeForm.isDisabled ? Disable() : Enable();
   SetCellOrWorldObsolete(newChangeForm.worldOrCellDesc);
   SetPos(newChangeForm.position);
+
+  // thuum ADR-049 D-N1 A: the record is the world's state from here on
+  pImpl->recordApplied = true;
 }
 
 uint32_t MpActor::NextSnippetIndex(
@@ -2383,6 +2390,33 @@ bool MpActor::RollFateIfUnrolled(uint16_t level)
     return false;
   }
   auto worldState = GetParent();
+  // thuum ADR-049 D-N1 A (Eli's "go for it", 15:3x PST 2026-11-09; playtest
+  // 50's naked bandits): a record that predates the fate (no fateLevel; 1,181
+  // in the canonical world, 330 with worn entries) and holds a worn item is
+  // the NPC's roll: its fateLevel is set at the first loader's level and
+  // nothing is rolled, so its recorded outfit stands (TES3MP's rule: the
+  // server holds the last recorded state). A worn piece counts while the
+  // inventory still holds it (FateOf's own rule). A record holding no worn
+  // item is rolled beside what it holds, below, as before
+  if (pImpl->recordApplied) {
+    const Inventory inventory = GetInventory();
+    size_t worn = 0;
+    for (const auto& entry : GetEquipment().inv.entries) {
+      if (entry.GetWorn() != Inventory::Worn::None && entry.baseId != 0 &&
+          inventory.HasItem(entry.baseId)) {
+        ++worn;
+      }
+    }
+    if (worn > 0) {
+      EditChangeForm(
+        [&](MpChangeForm& changeForm) { changeForm.fateLevel = level; });
+      spdlog::info("MpActor::RollFateIfUnrolled {:x} - npc-fate: its record "
+                   "holds {} worn item(s) and no fate level; adopted as its "
+                   "roll at level {}, nothing rolled (ADR-049 D-N1 A)",
+                   GetFormId(), worn, level);
+      return true;
+    }
+  }
   worldState->fateLoaderLevel = level;
   // the inventory stays: Init rolled nothing for this actor (CanRollFate
   // held there too), so what it holds was put, and the roll lands beside

@@ -1546,3 +1546,84 @@ TEST_CASE("The campfire bandit's own rows roll at its fate and a put made "
   DoDisconnect(p, 0);
   p.DestroyActor(kPlayer);
 }
+
+// thuum ADR-049 D-N1 A (Eli's "go for it", 2026-11-09; playtest 50's naked
+// bandits): a recorded NPC with no fate level that holds a worn item adopts
+// its record as its roll: its fateLevel is set at the first loader's level
+// and nothing is rolled, so its outfit stands; a recorded one holding no
+// worn item is rolled beside what it holds, as before. The two entrance
+// bandits of Bleak Falls Temple 0x371de (lab/esm.py on sky-srv, 2026-11-06;
+// the campfire case's), each given a record from before the fate: 0x39fe2
+// wearing an iron dagger 0x1397e, 0x39fe4 holding 10 gold and wearing
+// nothing
+TEST_CASE("A recorded NPC with no fate level that wears an item adopts its "
+          "record as its roll; one wearing nothing is rolled beside it",
+          "[NpcFate][espm]")
+{
+  constexpr uint32_t kWorn = 0x39fe2;
+  constexpr uint32_t kBare = 0x39fe4;
+  constexpr uint32_t kBarrow = 0x371de;
+  constexpr uint32_t kPlayer = 0xff000d51;
+  constexpr uint32_t kGold = 0xf;
+  constexpr uint32_t kIronDagger = 0x1397e;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& worn = p.worldState.GetFormAt<MpActor>(kWorn);
+  auto& bare = p.worldState.GetFormAt<MpActor>(kBare);
+  REQUIRE(worn.CanRollFate());
+  REQUIRE(bare.CanRollFate());
+
+  // the records, as a save from before ADR-049 holds them: no fateLevel
+  MpChangeForm wornRecord = worn.GetChangeForm();
+  wornRecord.inv = Inventory();
+  wornRecord.inv.AddItems({ Inventory::Entry(kIronDagger, 1) });
+  wornRecord.equipment = Equipment();
+  wornRecord.equipment.inv.entries.push_back(
+    Inventory::Entry(kIronDagger, 1, kWornRight));
+  wornRecord.fateLevel.reset();
+  worn.ApplyChangeForm(wornRecord);
+  MpChangeForm bareRecord = bare.GetChangeForm();
+  bareRecord.inv = Inventory();
+  bareRecord.inv.AddItems({ Inventory::Entry(kGold, 10) });
+  bareRecord.equipment = Equipment();
+  bareRecord.fateLevel.reset();
+  bare.ApplyChangeForm(bareRecord);
+  REQUIRE(worn.CanRollFate());
+  REQUIRE(bare.CanRollFate());
+
+  DoConnect(p, 0);
+  p.CreateActor(kPlayer, { -3400.f, 700.f, 583.f }, 0, kBarrow);
+  p.SetUserActor(0, kPlayer);
+  auto& player = p.worldState.GetFormAt<MpActor>(kPlayer);
+  ActorValueRecord level;
+  level.level = 1;
+  player.SetActorValueRecord(level);
+  p.Messages().clear();
+  p.TickCellHosts(FateNowMs());
+
+  // adopted: the level set, the record exactly as it was
+  REQUIRE(worn.GetFateLevel() == std::optional<uint16_t>{ 1 });
+  REQUIRE_FALSE(worn.CanRollFate());
+  REQUIRE(worn.GetInventory().GetItemCount(kIronDagger) == 1);
+  REQUIRE(worn.GetInventory().entries.size() == 1);
+  REQUIRE(Wearing(worn, kIronDagger));
+
+  // rolled beside: the gold kept, the roll added
+  REQUIRE(bare.GetFateLevel() == std::optional<uint16_t>{ 1 });
+  REQUIRE(bare.GetInventory().GetItemCount(kGold) == 10);
+  REQUIRE(bare.GetInventory().entries.size() > 1);
+
+  // the adopted outfit rides its fate
+  bool sentWorn = false;
+  for (const auto& msg : SentTo<ActorFateMessage>(p, 0)) {
+    for (const auto& f : msg.fates) {
+      if (f.refrId == kWorn) {
+        sentWorn =
+          std::find(f.worn.begin(), f.worn.end(), kIronDagger) != f.worn.end();
+      }
+    }
+  }
+  REQUIRE(sentWorn);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kPlayer);
+}

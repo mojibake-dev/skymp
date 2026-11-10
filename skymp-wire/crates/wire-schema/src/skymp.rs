@@ -1072,6 +1072,14 @@ wire_struct! {
         /// its own player: the platform admits their events past its gate.
         /// Absent when none is.
         pub player: Option<Vec<u32, { cap::SHARED_QUESTS }>>,
+        /// Since SCHEMA_VERSION 42 (thuum ADR-068 rung 5, D-Q3 A): on a run
+        /// word alone (server to client), the stages whose fragments the
+        /// engine runs with it, read from the quest's record: stage 0 and
+        /// its start-up stages for a start, its shut-down stages for a stop,
+        /// each once in the record's order. The receiver of a served word
+        /// suppresses their fragments, which its acting seat ran. Absent
+        /// when the record flags none.
+        pub word_stages: Option<Vec<u16, { cap::WORD_STAGES }>>,
     }
 }
 

@@ -122,7 +122,17 @@ use bounded::{String, Vec};
 /// server id), which the core takes only when it names a connected player;
 /// and QuestStage's optional `player` on the login's list (the player-class
 /// quests, whose scripts each seat runs for its own player).
-pub const SCHEMA_VERSION: u16 = 41;
+/// 42: rung 5's fresh review (thuum ADR-068 rung 5, m4-scripts-5-server;
+/// ADR-064 amendment A): QuestStage's optional `wordStages` on a start or a
+/// stop word, the stages whose fragments the engine runs with it (stage 0
+/// and the quest's start-up stages for a start, its shut-down stages for a
+/// stop; D-Q3 A, so a served word's receiver suppresses them), and
+/// QuestStage's byte cap at 4 KiB (the login's list with its `player`).
+/// The number moves for 41's server half too: CreateActorProps' and
+/// UpdateAppearance's `overlay`, ScriptCall's figure argument and
+/// QuestStage's `player` changed layouts inside 41 after pipeline 5676's
+/// image carried an earlier 41.
+pub const SCHEMA_VERSION: u16 = 42;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -220,6 +230,11 @@ pub mod cap {
     /// Quests whose stages are the world's (thuum docs/verbs/quest-stage.md:
     /// the server's `sharedQuests` list, Riverwood's first).
     pub const SHARED_QUESTS: usize = 256;
+    /// The stages one run word names whose fragments the engine runs with it
+    /// (thuum ADR-068 rung 5, D-Q3 A): stage 0 and the start-up stages, or
+    /// the shut-down stages; a quest flags one or two (Skyrim.esm,
+    /// lab/esm.py on sky-srv, 2026-11-10).
+    pub const WORD_STAGES: usize = 16;
     /// Actor values one actor's running buffs touch: two per effect at most
     /// (a dual value modifier's second).
     pub const EFFECT_MODIFIERS: usize = 2 * MAGIC_EFFECTS;
@@ -738,7 +753,7 @@ const TABLE: [Row; 90] = [
     row("ActorSpeech", 54, 32, Both),
     row("DamageCause", 55, 32, S2C),
     row("ActorClaim", 56, 16, C2S),
-    row("QuestStage", 57, 2 * KIB, Both),
+    row("QuestStage", 57, 4 * KIB, Both),
     row("PropTransform", 58, 64, Both),
     row("PropClaim", 59, 16, C2S),
     row("PropOwner", 60, 32, S2C),
@@ -1137,20 +1152,28 @@ mod tests {
         let bytes = postcard::to_allocvec(&m).unwrap_or_default();
         assert_eq!(bytes.len(), 141_062);
         assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
-        // a quest stage with its three rung 5 fields and the login's list
-        // full stays inside its 2 KiB
+        // a quest stage with every rung 5 field, the login's list and its
+        // player class full, stays inside its 4 KiB (2 KiB held the list
+        // alone; the class doubles it, thuum ADR-068 rung 5's fresh review)
+        let full = || (0..cap::SHARED_QUESTS).map(|_| u32::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default();
         let stage = Message::QuestStage(skymp::QuestStage {
             quest: u32::MAX,
             stage: u16::MAX,
-            shared: (0..cap::SHARED_QUESTS).map(|_| u32::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+            shared: full(),
             mode: u8::MAX,
             word: Some(u8::MAX),
             acting: Some(u32::MAX),
             served: Some(true),
+            player: Some(full()),
+            word_stages: Some((0..cap::WORD_STAGES).map(|_| u16::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default()),
             ..Default::default()
         });
+        if let Message::QuestStage(q) = &stage {
+            assert_eq!((q.shared.len(), q.player.as_ref().map(|p| p.len()), q.word_stages.as_ref().map(|w| w.len())), (cap::SHARED_QUESTS, Some(cap::SHARED_QUESTS), Some(cap::WORD_STAGES)));
+        }
         let bytes = postcard::to_allocvec(&stage).unwrap_or_default();
-        assert!(bytes.len() > 256 * 5 && bytes.len() <= 2 * KIB, "{}", bytes.len());
+        assert!(bytes.len() > 2 * KIB && bytes.len() <= 4 * KIB, "{}", bytes.len());
+        assert!(bytes.len() <= Message::max_len(stage.wire_id()).unwrap_or(0));
     }
 
     #[test]
@@ -1357,7 +1380,7 @@ mod tests {
             // the condition-read variables at their caps and a stage word at
             // its longest (thuum ADR-068 rung 5)
             Message::ScriptVariables(script_variables_at_their_caps()),
-            Message::QuestStage(skymp::QuestStage { quest: u32::MAX, stage: u16::MAX, word: Some(u8::MAX), acting: Some(u32::MAX), served: Some(true), ..Default::default() }),
+            Message::QuestStage(skymp::QuestStage { quest: u32::MAX, stage: u16::MAX, word: Some(u8::MAX), acting: Some(u32::MAX), served: Some(true), word_stages: Some(core::iter::repeat_n(u16::MAX, cap::WORD_STAGES).collect::<alloc::vec::Vec<u16>>().try_into().unwrap_or_default()), ..Default::default() }),
             // and its relay, the sequence carried (thuum ADR-068)
             Message::SpSnippet(skymp::SpSnippet {
                 class: "ObjectReference".try_into().unwrap_or_default(),

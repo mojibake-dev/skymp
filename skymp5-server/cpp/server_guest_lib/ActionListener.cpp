@@ -3290,6 +3290,61 @@ bool QuestHasStage(PartOne& partOne, const espm::RecordHeader* record,
   return false;
 }
 
+// the wire's cap on a run word's engine stages (wire-schema
+// cap::WORD_STAGES)
+constexpr size_t kWordStagesPerWord = 16;
+
+// thuum ADR-068 rung 5 (D-Q3 A, the fresh review's note 7): the stages whose
+// fragments the engine runs with a run word, read from the quest's record as
+// canon read them (QuestStageIsEngineStart, memo D69): for a start (word 1)
+// stage 0 and the record's start-up stages (QUST INDX,
+// JournalIndex::StartUpStage), for a stop (word 2) its shut-down stages
+// (ShutDownStage); each once in the record's order, int16 in the record and
+// u16 on the wire as QuestHasStage compares them, at most the wire's cap.
+// Every start and stop word the server sends carries them (`wordStages`), so
+// the receiver of a served word suppresses the fragments its acting seat ran
+std::vector<uint16_t> WordStages(PartOne& partOne,
+                                 const espm::RecordHeader* record,
+                                 uint32_t word)
+{
+  std::vector<uint16_t> stages;
+  const auto qust = espm::Convert<espm::QUST>(record);
+  if (!qust || (word != 1 && word != 2)) {
+    return stages;
+  }
+  using Flags = espm::QUST::QuestStage::JournalIndex;
+  for (const auto& questStage :
+       qust->GetQuestStages(partOne.worldState.GetEspmCache())) {
+    if (!questStage.journalIndex) {
+      continue;
+    }
+    const auto index = static_cast<uint16_t>(questStage.journalIndex->index);
+    const auto flags = questStage.journalIndex->flags;
+    const bool runs = word == 1
+      ? (index == 0 || (flags & Flags::StartUpStage) != 0)
+      : (flags & Flags::ShutDownStage) != 0;
+    if (runs && stages.size() < kWordStagesPerWord &&
+        std::find(stages.begin(), stages.end(), index) == stages.end()) {
+      stages.push_back(index);
+    }
+  }
+  return stages;
+}
+
+// a run word's `wordStages`, set only when the record flags any
+void StampWordStages(PartOne& partOne, QuestStageMessage& message)
+{
+  if (!message.word || !partOne.HasEspm()) {
+    return;
+  }
+  auto stages = WordStages(
+    partOne, partOne.GetEspm().GetBrowser().LookupById(message.quest).rec,
+    *message.word);
+  if (!stages.empty()) {
+    message.wordStages = std::move(stages);
+  }
+}
+
 // thuum ADR-068 rung 5: whether a line of `name` is due for `reporter`, one a
 // minute per seat, the rest counted into it (RefuseStateRow's shape for a
 // line that is no refusal of a row)
@@ -3550,10 +3605,15 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     relay.stage = 0;
     relay.word = what;
     relay.acting = acting;
+    StampWordStages(partOne, relay);
     const size_t relayed = relayToOthers(relay);
-    spdlog::info("[verb:quest-stage] {:x} {} {}: recorded, relayed to {}",
+    spdlog::info("[verb:quest-stage] {:x} {} {}: recorded, relayed to {}{}",
                  actor->GetFormId(), what == 1 ? "starts" : "stops",
-                 quest.ToString(), relayed);
+                 quest.ToString(), relayed,
+                 relay.wordStages
+                   ? fmt::format(" with its engine stages {}",
+                                 fmt::join(*relay.wordStages, ", "))
+                   : std::string());
     return;
   }
 
@@ -7527,6 +7587,7 @@ void ActionListener::SendQuestStages(MpActor& actor)
     message.stage = 0;
     message.word = word;
     message.served = true;
+    StampWordStages(partOne, message);
     actor.SendToUser(message, true);
     return true;
   };

@@ -737,8 +737,12 @@ fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
 /// player-class quests (`player`, thuum ADR-068 rung 5's ownership rule):
 /// on quest 0 alone, never empty when present, each a form of the load
 /// order (never 0 nor 0xff000000 and up) named once, at most the list's own
-/// cap. The mode's membership, the class and the records are the server's
-/// rules (wire-rules `quest_stages`, `quest_scope` and `quest_runs`).
+/// cap. Since SCHEMA_VERSION 42 (D-Q3 A): a run word may name the stages
+/// whose fragments the engine runs with it (`wordStages`), on a word alone,
+/// never empty when present, each stage once; a client names none
+/// ([`validate`]: the record's flags are the server's to read). The mode's
+/// membership, the class and the records are the server's rules
+/// (wire-rules `quest_stages`, `quest_scope` and `quest_runs`).
 fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
     if m.mode > 1 {
         return Err(Reject::Range);
@@ -765,6 +769,16 @@ fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
         }
         for (i, q) in player.iter().enumerate() {
             if *q == 0 || *q >= PLAYER_FORMS || player.iter().take(i).any(|p| p == q) {
+                return Err(Reject::Range);
+            }
+        }
+    }
+    if let Some(stages) = &m.word_stages {
+        if m.word.is_none() || stages.is_empty() {
+            return Err(Reject::Range);
+        }
+        for (i, s) in stages.iter().enumerate() {
+            if stages.iter().take(i).any(|p| p == s) {
                 return Err(Reject::Range);
             }
         }
@@ -1654,10 +1668,10 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         }
         Message::QuestStage(m) => {
             // a client reports one stage or run word of one quest; the
-            // sharing mode, its list and the login replay are the server's
-            // (docs/verbs/quest-stage.md; thuum ADR-068 rung 5); a word
-            // shares the stages' budget
-            if !m.shared.is_empty() || m.quest == 0 || m.mode != 0 || m.served == Some(true) {
+            // sharing mode, its list, the login replay and a word's stages
+            // are the server's (docs/verbs/quest-stage.md; thuum ADR-068
+            // rung 5); a word shares the stages' budget
+            if !m.shared.is_empty() || m.quest == 0 || m.mode != 0 || m.served == Some(true) || m.word_stages.is_some() {
                 return Err(Reject::Range);
             }
             take(&mut guard.quest_stage_budget, now_ms)
@@ -4857,6 +4871,26 @@ mod quest_word_and_script_variable_tests {
     }
 
     #[test]
+    fn a_run_word_names_its_engine_stages_once_each_and_only_a_word_does() {
+        // thuum ADR-068 rung 5 (D-Q3 A; Skyrim.esm, lab/esm.py on sky-srv,
+        // 2026-11-10): dunEldergleamT03 0x15cc2's start runs stage 0 and its
+        // start-up stage 10; ClearSkiesQuest 0x1e3b1's stop runs its
+        // shut-down stage 100
+        let word = |quest: u32, stage: u16, word: Option<u8>, stages: Option<Vec<u16>>| {
+            Message::QuestStage(wire_schema::skymp::QuestStage { quest, stage, word, served: Some(true), word_stages: stages.map(|s| s.try_into().unwrap_or_default()), ..Default::default() })
+        };
+        assert_eq!(validate_server(&word(0x15cc2, 0, Some(1), Some(vec![0, 10]))), Ok(()));
+        assert_eq!(validate_server(&word(0x1e3b1, 0, Some(2), Some(vec![100]))), Ok(()));
+        assert_eq!(validate_server(&word(0x1e3b1, 0, Some(2), None)), Ok(()));
+        // never empty, each stage once, never on a stage or the login's list
+        for bad in [vec![], vec![10, 10]] {
+            assert_eq!(validate_server(&word(0x15cc2, 0, Some(1), Some(bad.clone()))), Err(Reject::Range), "{bad:?}");
+        }
+        assert_eq!(validate_server(&word(0x15cc2, 10, None, Some(vec![10]))), Err(Reject::Range));
+        assert_eq!(validate_server(&word(0, 0, None, Some(vec![0]))), Err(Reject::Range));
+    }
+
+    #[test]
     fn quest_stages_carry_a_run_word_an_acting_player_and_the_replay_flag() {
         // a relayed start of 0x10d3bb with c1 0xff000000 acting, a stop, a
         // served stage of A Lovely Letter 0x74a83
@@ -4884,6 +4918,10 @@ mod quest_word_and_script_variable_tests {
         // a client never sends the replay, and is refused before its budget
         let mut g = ClientGuard::default();
         assert_eq!(validate(&quest_word(0x74a83, 10, None, None, Some(true)), &mut g, 0), Err(Reject::Range));
+        // nor a word's stages (thuum ADR-068 rung 5, D-Q3 A: the server reads
+        // them from the record)
+        let staged = |stages: &[u16]| Message::QuestStage(wire_schema::skymp::QuestStage { quest: 0x15cc2, word: Some(1), word_stages: Some(stages.to_vec().try_into().unwrap_or_default()), ..Default::default() });
+        assert_eq!(validate(&staged(&[0, 10]), &mut g, 0), Err(Reject::Range));
         for _ in 0..32 {
             assert_eq!(validate(&quest_word(0x10d3bb, 0, Some(1), None, None), &mut g, 0), Ok(()));
         }
@@ -4960,11 +4998,11 @@ mod quest_word_and_script_variable_tests {
         assert_eq!(validate(&script_vars(&[], &[escort], false), &mut g, 2_000), Ok(()));
     }
 
-    // thuum ADR-068 rung 5: a quest stage's word, acting and served as the
-    // generator drew them
+    // thuum ADR-068 rung 5: a quest stage's word, acting, served and the
+    // word's engine stages as the generator drew them
     proptest! {
-        // any word, stage, quest, acting player and replay flag: a verdict,
-        // never a panic, and the verdict the rules give both ways
+        // any word, stage, quest, acting player, replay flag and word stages:
+        // a verdict, never a panic, and the verdict the rules give both ways
         #[test]
         fn quest_words_never_panic_and_judge_their_shapes(
             quest in prop_oneof![Just(0u32), Just(0x10d3bbu32), any::<u32>()],
@@ -4972,17 +5010,22 @@ mod quest_word_and_script_variable_tests {
             word in proptest::option::of(prop_oneof![1u8..3, any::<u8>()]),
             acting in proptest::option::of(prop_oneof![Just(0xff00_0000u32), Just(0x14u32), any::<u32>()]),
             served in proptest::option::of(any::<bool>()),
+            stages in proptest::option::of(proptest::collection::vec(prop_oneof![Just(0u16), Just(10u16), any::<u16>()], 0..4)),
             now in any::<u64>(),
         ) {
-            let m = quest_word(quest, stage, word, acting, served);
+            let mut m = quest_word(quest, stage, word, acting, served);
+            if let Message::QuestStage(q) = &mut m {
+                q.word_stages = stages.clone().map(|s| s.try_into().unwrap_or_default());
+            }
             let word_ok = word.is_none_or(|w| (w == 1 || w == 2) && stage == 0 && quest != 0);
             let acting_ok = acting.is_none_or(|a| a >= 0xff00_0000 && quest != 0);
             // quest 0 in mode 0 without a list is the login's message shape alone
             let list_ok = quest != 0;
-            let shape = if word_ok && acting_ok && list_ok { Ok(()) } else { Err(Reject::Range) };
+            let stages_ok = stages.as_ref().is_none_or(|s| word.is_some() && !s.is_empty() && s.iter().enumerate().all(|(i, x)| !s.iter().take(i).any(|y| y == x)));
+            let shape = if word_ok && acting_ok && list_ok && stages_ok { Ok(()) } else { Err(Reject::Range) };
             prop_assert_eq!(validate_server(&m), shape);
             let mut g = ClientGuard::default();
-            let client = if shape.is_ok() && served != Some(true) { Ok(()) } else { Err(Reject::Range) };
+            let client = if shape.is_ok() && served != Some(true) && stages.is_none() { Ok(()) } else { Err(Reject::Range) };
             prop_assert_eq!(validate(&m, &mut g, now), client);
         }
     }

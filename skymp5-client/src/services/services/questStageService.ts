@@ -389,6 +389,11 @@ const START_UP_MEMORY_MAX = 2048;
 // stack that called Quest.Start, Quest.Stop or SetStage, carries its verdict
 // onto the stages and words the call sets, and names it on each event
 // (`cause` 'world' or 'seat', `root` "<Script>.<Function>"; QuestCause.h).
+// A quest command the player types (startquest, stopquest, setstage,
+// resetquest) runs no script, and is the player's own act:
+// ConsoleCommandsService marks it the world's before the engine runs it
+// (markQuestCause, root "console.<command>"), so its words and stages come
+// here with a world cause.
 // Every event says its cause in a trace, the login load's included: "quest
 // <q> <start|stop|stage s>: cause <world|seat> (root <Script.Function>)". A
 // run word goes only with a world cause, and so does a stage-0 report (the

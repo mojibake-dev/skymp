@@ -1,10 +1,21 @@
-import { logError, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { MsgType } from "../../messages";
 
 // TODO: refactor this out
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 import { ClientListener, Sp, CombinedController } from "./clientListener";
+
+// thuum ADR-068 rung 5, D-Q4 C: the quest commands' marks (setupQuestCommands)
+const QUEST_STAGE_TAG = "verb:quest-stage";
+// a run word's stage in the platform's QuestCause table: a start, a stop
+const QUEST_START = -1;
+const QUEST_STOP = -2;
+// a typed command's mark's life: the engine queues a typed start or stop to
+// the story teller's next pass, so the word's event comes after the handler
+// (a static read of the commands' handlers, HYPOTHESIS), and a console left
+// open may hold that pass back; a mark no event takes expires on its own
+const CONSOLE_MARK_MS = 30000;
 
 enum CmdArgument {
     ObjectReference,
@@ -28,6 +39,7 @@ export class ConsoleCommandsService extends ClientListener {
         this.setupMpCommand();
         this.setupVanilaCommands();
         this.setupServerOnlyCommands();
+        this.setupQuestCommands();
         this.controller.emitter.on("consoleOutputMessage", (e) => {
             this.sp.printConsole(e.message.text);
         });
@@ -136,6 +148,68 @@ export class ConsoleCommandsService extends ClientListener {
         });
     }
 
+    // thuum docs/DECISIONS.md ADR-068 rung 5, D-Q4 C: a quest command the
+    // player types is the player's own deliberate act, so the run word or
+    // stage-0 report it makes is the world's. It runs no script, so the
+    // platform's seam reads no root for it, and its words would be the
+    // seat's own (QuestStageService holds those). Skyrim Platform runs this
+    // execute before the engine's own handler, which runs only when execute
+    // answers true (ConsoleApi.cpp, ConsoleComand_Execute), so the mark comes
+    // first: markQuestCause puts the world's verdict, root
+    // "console.<command>", on each run word the command may make and on
+    // setstage's stage, in the platform's QuestCause table for 30 s; the
+    // word's next event takes it once, the stage's event reads it, and the
+    // fragment the stage runs carries it to what that sets. The engine's own
+    // starts (a load, Start Game Enabled, the Story Manager) mark nothing and
+    // stay the seat's own. Execute answers true whatever the mark did, so the
+    // engine runs the command as typed
+    private setupQuestCommands() {
+        ConsoleCommandsService.questCommands.forEach((words, commandName) => {
+            const command = this.sp.findConsoleCommand(commandName);
+            if (command === null) {
+                logError(this, `command`, commandName, `was null in setupQuestCommands`);
+                return;
+            }
+            command.execute = (...args: unknown[]) => {
+                try {
+                    this.markTypedQuest(commandName, words, args);
+                } catch (e) {
+                    logError(this, `marking`, commandName, e);
+                }
+                return true;
+            };
+        });
+    }
+
+    // args[0] the selected reference (0 for none); args[1] the quest as
+    // Skyrim Platform found it, its form id for an editor id or a hex id the
+    // game knows, else the typed text, which marks nothing (the engine finds
+    // no quest either); args[2] setstage's stage. One line a command
+    private markTypedQuest(commandName: string, words: number[], args: unknown[]) {
+        const questId = args[1];
+        if (typeof questId !== "number" || !Number.isInteger(questId) || questId <= 0) {
+            logTrace(this, `console`, commandName, `names no quest form here (${String(questId)}): nothing armed`);
+            return;
+        }
+        if (typeof this.sp.markQuestCause !== "function") {
+            if (!this.questMarkMissingSaid) {
+                this.questMarkMissingSaid = true;
+                logLab(QUEST_STAGE_TAG, `console quest commands arm nothing: this platform has no markQuestCause`);
+            }
+            return;
+        }
+        const stage = args[2];
+        const typedStage = commandName === "setstage" && typeof stage === "number" && Number.isInteger(stage) && stage >= 0 && stage <= 0xffff;
+        const marks = typedStage ? [stage, ...words] : words;
+        const root = `console.${commandName}`;
+        const refused = marks.filter((mark) => !this.sp.markQuestCause(questId, mark, "world", root, CONSOLE_MARK_MS));
+        if (refused.length > 0) {
+            logError(this, `console`, commandName, questId.toString(16), `: the platform refused its mark(s)`, refused.join(", "));
+            return;
+        }
+        logLab(QUEST_STAGE_TAG, `console ${commandName} ${questId.toString(16)}: armed world for its next event`);
+    }
+
     private getCommandExecutor(commandName: CmdName): (...args: unknown[]) => boolean {
         return (...args: unknown[]) => {
             // TODO: handle possible exceptions in this function
@@ -192,7 +266,25 @@ export class ConsoleCommandsService extends ClientListener {
         "save", "load", "savegame", "loadgame",
     ];
 
+    // thuum ADR-068 rung 5, D-Q4 C: the quest commands a player may type,
+    // each with the run words it may make here, as a static read of their
+    // handlers has them (HYPOTHESIS until a trace): StartQuest starts a quest
+    // with no story event; StopQuest stops it; SetStage starts a stopped one
+    // with no story event, then sets the typed stage, marked beside the
+    // start; ResetQuest resets the stages, then stops a running quest that
+    // is not Start Game Enabled or starts a stopped one that is, so both
+    // words are marked and the one it makes is taken. CompleteQuest is not
+    // here: it flags the quest completed and never starts or stops it, so it
+    // makes no run word or stage to mark
+    private static readonly questCommands = new Map<string, number[]>([
+        ["startquest", [QUEST_START]],
+        ["stopquest", [QUEST_STOP]],
+        ["setstage", [QUEST_START]],
+        ["resetquest", [QUEST_STOP, QUEST_START]],
+    ]);
+
     private readonly schemas: Map<CmdName, CmdArgument[]>;
     private readonly immuneSchema = ["mp", "kill", "resurrect", "moveto"];
     private readonly nonVanilaCommands = ["mp"];
+    private questMarkMissingSaid = false;
 }

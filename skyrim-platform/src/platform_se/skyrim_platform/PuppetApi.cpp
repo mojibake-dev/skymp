@@ -5,6 +5,7 @@
 #include "Hosted.h"
 #include "ItemMenuRefresh.h"
 #include "Puppets.h"
+#include "QuestCause.h"
 #include "ScriptNatives.h"
 #include "ScriptState.h"
 #include "TrapFamily.h"
@@ -428,6 +429,49 @@ Napi::Value PuppetApi::GetActingPlayer(const Napi::CallbackInfo& info)
   const auto stage = NapiHelper::ExtractInt32(info[1], "stage");
   return Napi::Number::New(info.Env(),
                            ActingScope::ServerIdOf(questId, stage));
+}
+
+// thuum docs/DECISIONS.md ADR-068 rung 5, D-Q4 C (QuestCause.h): a cause
+// this seat's own act names for a pair before the engine makes it. Its one
+// caller is skymp5-client's console service: Skyrim Platform runs a replaced
+// command's JS execute before the engine's own handler, which runs only when
+// execute answers true (ConsoleApi.cpp ConsoleComand_Execute), so a quest
+// command the player typed is marked the world's before the engine starts,
+// stops or stages the quest, and no script frame is on that path for the
+// seam to read (ScriptNatives.cpp MarkQuestCause reads Papyrus rows). The
+// word's event takes the mark once (EventHandler.cpp), the stage's event
+// reads it, and the quest stage sink arms the stage's fragment with it, so
+// what the fragment sets carries the world's cause too. ttlMs is the mark's
+// life (the engine queues a typed start or stop to the story teller's next
+// pass, so its event comes after the handler: a static read of the five
+// commands' handlers, HYPOTHESIS). setActingPlayer's shape: the JS thread
+// alone, no game call
+Napi::Value PuppetApi::MarkQuestCause(const Napi::CallbackInfo& info)
+{
+  const auto questId = NapiHelper::ExtractUInt32(info[0], "questId");
+  const auto stage = NapiHelper::ExtractInt32(info[1], "stage");
+  const auto cause = NapiHelper::ExtractString(info[2], "cause");
+  const auto root = NapiHelper::ExtractString(info[3], "root");
+  const auto ttlMs = NapiHelper::ExtractUInt32(info[4], "ttlMs");
+  bool shaped = root.size() <= QuestCause::kMaxRootBytes;
+  for (const char c : root) {
+    shaped = shaped &&
+      ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+       (c >= '0' && c <= '9') || c == '_' || c == '.');
+  }
+  if (questId == 0 || stage < QuestCause::kStop || stage > 0xFFFF ||
+      (cause != "world" && cause != "seat") || !shaped || ttlMs == 0 ||
+      ttlMs > QuestCause::kMaxMarkMs) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  QuestCause::Verdict verdict;
+  verdict.world = cause == "world";
+  verdict.root = root;
+  QuestCause::Mark(questId, stage, verdict, ttlMs);
+  logger::trace("[verb:quest-stage] markQuestCause({:x}, {}): cause {} (root "
+                "{}), marked for {} ms",
+                questId, stage, cause, root.empty() ? "none" : root, ttlMs);
+  return Napi::Boolean::New(info.Env(), true);
 }
 
 // thuum ADR-068 rung 5, PQ-3 (docs/research/rung5-quests-2026-11-09.md

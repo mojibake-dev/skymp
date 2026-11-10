@@ -21,8 +21,11 @@
 // questStop, questStage). ActingScope.h's idiom: mutex-guarded tables written
 // with no game call, the sizes kept for a read with no lock. Three tables:
 // - marks, (quest, stage or word) to a verdict for kMarkMs: written by the
-//   seam at a Quest row; read by the stage's event and the sink; taken once
-//   by the word's event (a later event of the word reads none)
+//   seam at a Quest row, and from JS by markQuestCause for its own life
+//   (PuppetApi.cpp: a quest command the player typed in the console, which
+//   runs no script, marked the world's before the engine runs it); read by
+//   the stage's event and the sink; taken once by the word's event (a later
+//   event of the word reads none)
 // - arms, a quest to its latest stage's verdict for kArmMs: written by the
 //   sink at every stage event, the engine's own (no mark) arming the seat's
 //   own; a stack whose root frame is a fragment of the quest joins it at its
@@ -62,6 +65,9 @@ constexpr int32_t kStop = -2;
 // a mark's life: the acting scope's chained 10 s, so a stage the VM queues on
 // an unstarted quest still finds it (UNMEASURED)
 constexpr uint64_t kMarkMs = 10000;
+// the longest life a JS mark may ask (markQuestCause; setActingPlayer's
+// bound)
+constexpr uint64_t kMaxMarkMs = 60000;
 // how long a taken start or stop still lends its verdict to the start-up or
 // shut-down stages the engine sets with it (their events may come after the
 // word's; UNMEASURED)
@@ -75,6 +81,9 @@ constexpr uint64_t kJoinedMs = 120000;
 constexpr size_t kMaxMarks = 1024;
 constexpr size_t kMaxArms = 256;
 constexpr size_t kMaxJoined = 512;
+// a root a JS mark may name (markQuestCause): wire-schema's cap::QUEST_ROOT,
+// two Papyrus names and the dot
+constexpr size_t kMaxRootBytes = 257;
 
 // a call's verdict: a world cause or the seat's own, and the root frame of
 // the stack that made it, "<Script>.<Function>" (empty for no script frame)
@@ -112,8 +121,10 @@ Root Classify(std::string_view script, std::string_view function, Self self);
 // the steady clock in milliseconds
 uint64_t NowMs();
 
-// a Quest row's verdict for the pair it sets, replacing an older mark
-void Mark(uint32_t quest, int32_t stage, const Verdict& verdict);
+// a Quest row's verdict for the pair it sets, replacing an older mark, for
+// ttlMs (the seam's kMarkMs, a JS mark's own)
+void Mark(uint32_t quest, int32_t stage, const Verdict& verdict,
+          uint64_t ttlMs = kMarkMs);
 // the word's event (kStart or kStop): the pair's mark, taken once; nothing for
 // none, a taken or an expired one
 std::optional<Verdict> TakeWord(uint32_t quest, int32_t word);

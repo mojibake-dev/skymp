@@ -226,7 +226,8 @@ QuestCause::Root QuestCause::Classify(std::string_view script,
   return Root::kUnknown;
 }
 
-void QuestCause::Mark(uint32_t quest, int32_t stage, const Verdict& verdict)
+void QuestCause::Mark(uint32_t quest, int32_t stage, const Verdict& verdict,
+                      uint64_t ttlMs)
 {
   const uint64_t now = NowMs();
   const uint64_t key = KeyOf(quest, stage);
@@ -239,7 +240,7 @@ void QuestCause::Mark(uint32_t quest, int32_t stage, const Verdict& verdict)
   MarkEntry& entry = g_cause.marks[key];
   entry.verdict = verdict;
   entry.createdMs = now;
-  entry.untilMs = now + kMarkMs;
+  entry.untilMs = now + ttlMs;
   entry.takenMs = 0;
   StoreSize();
 }

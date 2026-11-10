@@ -1111,13 +1111,16 @@ wire_struct! {
         /// [`QUEST_CAUSE_WORLD`] or [`QUEST_CAUSE_SEAT`], as the seat's
         /// platform read the root of the script stack that called
         /// Quest.Start, Quest.Stop or SetStage and carried its verdict onto
-        /// the stages and words the call set. Absent from an older client
+        /// the stages and words the call set; a quest command the player
+        /// typed in the console is [`QUEST_CAUSE_WORLD`] (the seat's client
+        /// marks it before the engine runs it). Absent from an older client
         /// and from the server. Unvalidated (R2).
         pub cause: Option<u8>,
         /// Since SCHEMA_VERSION 43: beside `cause`, that stack's root frame
         /// as "<Script>.<Function>" (its owningObjectType's name and its
-        /// owningFunction's), absent when no script call made the report.
-        /// Logged, never judged (R2).
+        /// owningFunction's), or "console.<command>" for a quest command the
+        /// player typed; absent when neither made the report. Logged, never
+        /// judged (R2).
         pub root: Option<String<{ cap::QUEST_ROOT }>>,
     }
 }

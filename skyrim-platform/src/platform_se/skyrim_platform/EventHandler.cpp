@@ -1264,7 +1264,8 @@ EventResult EventHandler::ProcessEvent(
   // taken once on the sender's thread as the event is sent (H-QC2: inside
   // the mark's window), else the seat's own with no root (a start or a stop
   // no script's call made: the template save's load, the Story Manager, the
-  // console, the platform's own apply)
+  // platform's own apply); a quest command the player typed in the console
+  // is marked the world's by skymp5-client first (markQuestCause)
   const auto verdict = QuestCause::TakeWord(
     formId, started ? QuestCause::kStart : QuestCause::kStop);
   const bool world = verdict && verdict->world;

@@ -1121,10 +1121,12 @@ export class RemoteServer extends ClientListener {
 
     // thuum ADR-068 rung 5, D-T1 A: the race overlay that holds with this
     // look, absent for none (FormView puts it on the figure, or takes it
-    // off), and the race it wears (withOverlayRace; the player's own apply
-    // below takes the look as sent)
-    form.overlay = msg.overlay;
-    form.appearance = withOverlayRace(msg.data || undefined, msg.overlay);
+    // off), and the race it wears (withOverlayRace), for another player's
+    // figure alone (the fresh review's note 8): this seat's own model keeps
+    // its look as sent, as its own apply below takes it
+    const isMe = i === this.getMyActorIndex();
+    form.overlay = isMe ? undefined : msg.overlay;
+    form.appearance = isMe ? msg.data || undefined : withOverlayRace(msg.data || undefined, msg.overlay);
     if (!form.numAppearanceChanges) {
       form.numAppearanceChanges = 0;
     }

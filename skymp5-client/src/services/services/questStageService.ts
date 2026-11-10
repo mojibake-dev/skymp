@@ -394,10 +394,10 @@ const START_UP_MEMORY_MAX = 2048;
 // run word goes only with a world cause, and so does a stage-0 report (the
 // server judges it a start, read 5); the login load's hold and the skips
 // stay ahead of the rule, the churn hold behind it. Every report names its
-// cause and root (QuestStage `cause` and `root`, R2), so the server refuses a
-// start-up stage's report with the seat's own cause (E_QUEST_CAUSE: this seat
-// cannot tell a start-up stage, the record can) and a Story Manager
-// instance's run word under questStoryInstances "seat" (E_QUEST_INSTANCE).
+// cause and root (QuestStage `cause` and `root`, R2), so the server records no
+// start-up stage's report with the seat's own cause (this seat cannot tell a
+// start-up stage, the record can) and refuses a Story Manager instance's run
+// word under questStoryInstances "seat" (E_QUEST_INSTANCE).
 // The reports the rule held are counted, one line a minute while the counts
 // move: "causes in 60 s: <w> world sent, <h> seat-own held (<a> word(s), <b>
 // stage-0; <r> script-rooted)". The client setting questRunCause "any" turns
@@ -1799,9 +1799,9 @@ export class QuestStageService extends ClientListener {
         return off;
     }
 
-    // a report's cause and root on the wire (the server's E_QUEST_CAUSE reads
-    // them), none while the rule is off or the platform names none; a root the
-    // wire would refuse is left off, the cause kept
+    // a report's cause and root on the wire (the server judges a start-up
+    // stage's report by them), none while the rule is off or the platform
+    // names none; a root the wire would refuse is left off, the cause kept
     private nameCause(message: QuestStageMessage, cause: Cause) {
         if (cause.world === undefined || this.causeRuleOff()) {
             return;

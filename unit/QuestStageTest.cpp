@@ -889,10 +889,16 @@ TEST_CASE("A run word or a start-up stage's report with the seat's own cause "
                     "of 10d3bb:Skyrim.esm (cause seat, root "
                     "USKP_VersionTrackingScript.OnInit, R2): the stop of "
                     "10d3bb:Skyrim.esm has the seat's own cause") == 1);
-  // the start-up stage is the start word's: one line a minute per seat and
-  // quest, its second report counted into the next
+  // the start-up stage's report is the start's, the seat's own: no E_QUEST_
+  // code (the designed path: the seat cannot tell a start-up stage), one
+  // plain line a minute per seat; the same start sent as a word is refused
+  // by its cause
+  REQUIRE(log.Count("QuestStage: user 0 actor ff000bd0 reported stage 10 of "
+                    "e3ea5:Skyrim.esm, which the record reads as its start "
+                    "(cause seat, root none, R2): the seat's own") == 1);
   REQUIRE(log.Count("E_QUEST_CAUSE: user 0 actor ff000bd0 reported the start "
                     "of e3ea5:Skyrim.esm (cause seat, root none, R2)") == 1);
+  REQUIRE(log.Count("E_QUEST_") == 2);
   REQUIRE(log.Count(": recorded, relayed") == 0);
 
   // HeartwoodMill's unflagged stage 20 with the seat's own cause and

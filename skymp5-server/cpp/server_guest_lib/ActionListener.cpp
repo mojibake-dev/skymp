@@ -3468,12 +3468,14 @@ std::vector<MpChangeFormREFR::QuestRun> QuestRunsOf(
 // memos D62 and D69 rules (a start-game-enabled quest's own start each
 // seat's) retired with the start word, which records that start once.
 // D-Q4 C (SCHEMA_VERSION 43): a report names its cause and its stack's root
-// (R2, logged); a run word, or a report judged a start, whose cause is the
-// seat's own is refused (E_QUEST_CAUSE: the seat cannot tell a start-up
-// stage, the record can), and a run word of a quest a Story Manager quest
-// node names while questStoryInstances is "seat" (E_QUEST_INSTANCE, the
-// node named), each one line a minute per seat and quest; a stage crosses
-// whatever its cause.
+// (R2, logged). A run word whose cause is the seat's own is refused
+// (E_QUEST_CAUSE: a seat whose rule held it never sends one), and a run word
+// of a quest a Story Manager quest node names while questStoryInstances is
+// "seat" (E_QUEST_INSTANCE, the node named), each one line a minute per seat
+// and quest; a stage report the record reads as a start (a start-up stage:
+// the seat cannot tell one, the record can) with the seat's own cause is not
+// recorded either, the designed path, one plain line a minute per seat; any
+// other stage crosses whatever its cause.
 void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                                   const QuestStageMessage& msg)
 {
@@ -3618,12 +3620,31 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     const auto verdict = partOne.GetQuestRunRules().quest_runs_judge(
       record, quest.shortFormId, quest.file, what, cause, actor->GetFormId(),
       MonotonicMs());
+    if (verdict.code == 4 && !msg.word) {
+      // D-Q4 C: a stage report the record judges a start (a start-up stage;
+      // the seat holds its stage-0 reports itself) with the seat's own cause,
+      // from the login's load or an engine start: the designed path, since
+      // the seat cannot tell a start-up stage and the record can, so no
+      // E_QUEST_ code. Nothing written or relayed; one line a minute per
+      // seat, the rest counted into it
+      uint32_t since = 0;
+      if (QuestLineDue(questLines, actor->GetFormId(), "seat-own start-up",
+                       since)) {
+        spdlog::info("QuestStage: user {} actor {:x} reported stage {} of "
+                     "{}, which the record reads as its start{}: the seat's "
+                     "own, not the world's (D-Q4 C), nothing recorded; {} "
+                     "such report(s) since the last line",
+                     rawMsgData.userId, actor->GetFormId(), msg.stage,
+                     quest.ToString(), causeText, since);
+      }
+      return;
+    }
     if (verdict.code == 4 || verdict.code == 5) {
-      // D-Q4 C: the seat's own cause (a start-up stage's report the record
-      // judges a start, from the login's load or an engine start), or a
-      // Story Manager instance under questStoryInstances "seat": nothing
-      // written, relayed or counted; one line a minute per seat and quest,
-      // the rest counted into it
+      // D-Q4 C: a run word with the seat's own cause (a seat whose rule held
+      // it never sends one), or a Story Manager instance's word or start
+      // under questStoryInstances "seat": nothing written, relayed or
+      // counted; one line a minute per seat and quest, the rest counted into
+      // it
       const std::string name = std::string(verdict.name);
       uint32_t since = 0;
       if (QuestLineDue(questLines, actor->GetFormId(),

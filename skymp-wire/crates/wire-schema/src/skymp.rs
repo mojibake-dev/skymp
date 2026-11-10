@@ -1054,11 +1054,13 @@ wire_struct! {
     /// [`QUEST_CAUSE_SEAT`] and `root`, the root frame of the script stack
     /// that called Quest.Start, Quest.Stop or SetStage (absent when no
     /// script call made it). Both the seat's own word (R2): the server
-    /// refuses a run word, or a report it judges a start, whose cause is the
-    /// seat's own (`E_QUEST_CAUSE`), and a run word of a quest a Story
-    /// Manager quest node names while `questStoryInstances` is "seat"
-    /// (`E_QUEST_INSTANCE`), logging both by name with the reported cause
-    /// and root. Reason codes besides: `E_VAL_RANGE` (a cause other than 1
+    /// refuses a run word whose cause is the seat's own (`E_QUEST_CAUSE`) and
+    /// a run word of a quest a Story Manager quest node names while
+    /// `questStoryInstances` is "seat" (`E_QUEST_INSTANCE`), logging both by
+    /// name with the reported cause and root, and records no stage report it
+    /// judges a start (a start-up stage, which only the record can tell)
+    /// whose cause is the seat's own, in one plain line a minute per seat.
+    /// Reason codes besides: `E_VAL_RANGE` (a cause other than 1
     /// or 2, a cause or a root with quest 0, a root without a cause, an
     /// empty root, a root outside `[A-Za-z0-9_.]`). A report received twice
     /// is judged twice and folds (the record's rule), so a resend is safe.

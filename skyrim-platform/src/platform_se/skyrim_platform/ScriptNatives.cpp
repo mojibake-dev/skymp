@@ -367,7 +367,8 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // its firing window, queued as kind "look" and run here (D-W2 A); " (acting)"
 // a call the acting scope changed (rung 5, ActingScope.h: a self or an
 // argument naming the player's own actor swapped for the acting player's
-// figure, beside the call's own kind, Game.GetPlayer's result swapped in
+// figure, beside the call's own kind; a call whose self names the player
+// skipped, the figure absent here, alone; Game.GetPlayer's result swapped in
 // place of its " (local)", or a player's own global's SetValue skipped in
 // place of its self's count, PQ-3); no suffix,
 // an owned self's state row, run here and counted, and since rung 3 touched
@@ -1356,13 +1357,19 @@ std::optional<ActingScope::Scope> ScopeOfCall(
 // include/RE/N/NativeFunction.h:81-92): its self (StackFrame.h:27) and each
 // argument, read through the engine's own accessor (Stack::
 // GetStackFrameVariable, Address Library 104484) with the frame's page, that
-// names the player's own actor is rewritten to the acting player's figure,
-// or to None when the figure is absent here (HYPOTHESIS H-AP6: the VM logs a
-// call on None, answers the empty result and the script goes on). The count
-// of values rewritten, its first lines per scope logged
+// names the player's own actor is rewritten to the acting player's figure;
+// with the figure absent here an argument becomes None (HYPOTHESIS H-AP6:
+// the native's body takes a None argument as a script's None), and a self
+// naming the player leaves the frame alone and asks for the call to be
+// skipped (`skip`; rung 5's fresh review, FIX FIRST 2): a None self written
+// here would reach the engine's own Call after the VM's None check ran, and
+// what Call does with it is unread, so OnCall takes the lever's skip path
+// instead (SetEmptyResult, the native's declared return's empty result,
+// kCompleted; a latent native's skip rests on H-F2, as the lever's does).
+// The count of values rewritten or skipped, its first lines per scope logged
 std::uint32_t SwapPlayer(const RE::BSScript::IFunction* fn,
                          RE::BSScript::Stack* stack,
-                         const ActingScope::Scope& scope)
+                         const ActingScope::Scope& scope, bool& skip)
 {
   RE::BSScript::StackFrame* top = stack->top;
   RE::Actor* figure = nullptr;
@@ -1376,7 +1383,19 @@ std::uint32_t SwapPlayer(const RE::BSScript::IFunction* fn,
   };
   std::uint32_t swapped = 0;
   if (IsPlayersOwn(top->self)) {
-    PackFigure(top->self, figureOnce());
+    if (!figureOnce()) {
+      skip = true;
+      if (ActingScope::LineDue(scope.seq, ActingScope::Line::kSwap)) {
+        logger::info("[verb:quests] {}.{}: its self names the player, acting "
+                     "player {:x}'s figure {:x} (absent here, skipped), "
+                     "stack {}",
+                     fn->GetObjectTypeName().c_str(), fn->GetName().c_str(),
+                     scope.player.serverId, scope.player.figure,
+                     stack->stackID);
+      }
+      return 1;
+    }
+    PackFigure(top->self, figure);
     ++swapped;
   }
   const std::uint32_t params = std::min(fn->GetParamCount(), kMaxArgs);
@@ -1476,7 +1495,16 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // player's own actor is the acting player's figure from here on, before
   // any judgment below reads the frame
   const std::optional<ActingScope::Scope> scope = ScopeOfCall(fn, stack);
-  const std::uint32_t swapped = scope ? SwapPlayer(fn, stack, *scope) : 0;
+  bool absentSelf = false;
+  const std::uint32_t swapped =
+    scope ? SwapPlayer(fn, stack, *scope, absentSelf) : 0;
+  // a self naming the player with the figure absent here: the frame left
+  // alone, the body skipped, the native's declared return's empty result
+  // left in its place (the lever's path, SetEmptyResult; FIX FIRST 2)
+  if (absentSelf) {
+    marks.skip = true;
+    marks.result = fn->GetReturnType().GetUnmangledRawType();
+  }
   // (a) not a tabled native: nothing more, the only cost of every other
   // native in the game (step (0)'s one relaxed load outside a scope, and one
   // hash lookup)
@@ -1492,6 +1520,9 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   const RowInfo& info = g_rows[row];
   if (swapped != 0) {
     Count(row, kCountActing);
+  }
+  if (marks.skip) {
+    return marks;
   }
   if (!stack) {
     Count(row, kCountUnresolved);

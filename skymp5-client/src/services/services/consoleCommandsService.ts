@@ -4,6 +4,7 @@ import { MsgType } from "../../messages";
 // TODO: refactor this out
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 
+import { QuestStartStopEvent } from "skyrimPlatform";
 import { ClientListener, Sp, CombinedController } from "./clientListener";
 
 // thuum ADR-068 rung 5, D-Q4 C: the quest commands' marks (setupQuestCommands)
@@ -16,6 +17,9 @@ const QUEST_STOP = -2;
 // (a static read of the commands' handlers, HYPOTHESIS), and a console left
 // open may hold that pass back; a mark no event takes expires on its own
 const CONSOLE_MARK_MS = 30000;
+// the quests whose run questRuns keeps (this game's own questStart and
+// questStop events since its last load), the oldest let go first
+const QUEST_RUNS_MAX = 4096;
 
 enum CmdArgument {
     ObjectReference,
@@ -40,6 +44,9 @@ export class ConsoleCommandsService extends ClientListener {
         this.setupVanilaCommands();
         this.setupServerOnlyCommands();
         this.setupQuestCommands();
+        this.controller.on("questStart", (e) => this.noteQuestRun(e, true));
+        this.controller.on("questStop", (e) => this.noteQuestRun(e, false));
+        this.controller.emitter.on("gameLoad", () => this.questRuns.clear());
         this.controller.emitter.on("consoleOutputMessage", (e) => {
             this.sp.printConsole(e.message.text);
         });
@@ -156,10 +163,24 @@ export class ConsoleCommandsService extends ClientListener {
     // execute before the engine's own handler, which runs only when execute
     // answers true (ConsoleApi.cpp, ConsoleComand_Execute), so the mark comes
     // first: markQuestCause puts the world's verdict, root
-    // "console.<command>", on each run word the command may make and on
+    // "console.<command>", on each run word the command will make and on
     // setstage's stage, in the platform's QuestCause table for 30 s; the
     // word's next event takes it once, the stage's event reads it, and the
-    // fragment the stage runs carries it to what that sets. The engine's own
+    // fragment the stage runs carries it to what that sets. A start is marked
+    // only for a quest not running here and a stop only for a running one,
+    // the seam's own rule (ScriptNatives.cpp MarkQuestCause: a Start of a
+    // running quest or a Stop of a stopped one changes nothing and raises no
+    // event), since an untaken mark lends the world's cause for its 30 s to
+    // the quest's next engine start or stop and to every stage the engine
+    // sets meanwhile (QuestCause::OfStage; the fresh review of rung 5's
+    // second head, note 5: setstage on a running quest marked a start that
+    // never came). The run is questRuns' (noteQuestRun): this execute runs
+    // outside the Papyrus VM's update, where no game function may be called
+    // (Skyrim Platform's docs/skyrim_platform/features.md:31; CallNativeApi.cpp
+    // refuses "can't be called in this context" while main.cpp's OnUpdate has
+    // not set its VM), so Quest.IsRunning cannot be asked here. A quest no
+    // event named since this game's load is unread, and its command marks
+    // every run word it may make, as before. The engine's own
     // starts (a load, Start Game Enabled, the Story Manager) mark nothing and
     // stay the seat's own. Execute answers true whatever the mark did, so the
     // engine runs the command as typed
@@ -184,7 +205,10 @@ export class ConsoleCommandsService extends ClientListener {
     // args[0] the selected reference (0 for none); args[1] the quest as
     // Skyrim Platform found it, its form id for an editor id or a hex id the
     // game knows, else the typed text, which marks nothing (the engine finds
-    // no quest either); args[2] setstage's stage. One line a command
+    // no quest either); args[2] setstage's stage. Of the run words the
+    // command may make, the ones its quest's run here says it will make
+    // (setupQuestCommands), so setstage on a running quest marks its stage
+    // alone. One line a command, naming what it marked and the run it read
     private markTypedQuest(commandName: string, words: number[], args: unknown[]) {
         const questId = args[1];
         if (typeof questId !== "number" || !Number.isInteger(questId) || questId <= 0) {
@@ -200,14 +224,51 @@ export class ConsoleCommandsService extends ClientListener {
         }
         const stage = args[2];
         const typedStage = commandName === "setstage" && typeof stage === "number" && Number.isInteger(stage) && stage >= 0 && stage <= 0xffff;
-        const marks = typedStage ? [stage, ...words] : words;
+        const running = this.questRuns.get(questId);
+        const made = words.filter((word) => (word === QUEST_START ? running !== true : running !== false));
+        const marks = typedStage ? [stage, ...made] : made;
+        const run = running === undefined ? "its run unread here" : running ? "running here" : "stopped here";
+        const id = questId.toString(16);
+        if (marks.length === 0) {
+            logLab(QUEST_STAGE_TAG, `console ${commandName} ${id}: nothing armed (${run}, so it makes no ${words.includes(QUEST_STOP) ? "stop" : "start"})`);
+            return;
+        }
         const root = `console.${commandName}`;
         const refused = marks.filter((mark) => !this.sp.markQuestCause(questId, mark, "world", root, CONSOLE_MARK_MS));
         if (refused.length > 0) {
-            logError(this, `console`, commandName, questId.toString(16), `: the platform refused its mark(s)`, refused.join(", "));
+            logError(this, `console`, commandName, id, `: the platform refused its mark(s)`, refused.join(", "));
             return;
         }
-        logLab(QUEST_STAGE_TAG, `console ${commandName} ${questId.toString(16)}: armed world for its next event`);
+        logLab(QUEST_STAGE_TAG, `console ${commandName} ${id}: armed world for its next event (${marks.map(ConsoleCommandsService.markName).join(", ")}; ${run})`);
+    }
+
+    // a mark as the arm's line names it
+    private static markName(mark: number): string {
+        return mark === QUEST_START ? "start" : mark === QUEST_STOP ? "stop" : `stage ${mark}`;
+    }
+
+    // questRuns: a quest's run as this game's own questStart and questStop
+    // events last said it (the platform raises them in an update, where
+    // Quest.getFormID may be called). HYPOTHESIS: their run is the flag the
+    // seam reads, TESQuest::IsEnabled (kEnabled, CommonLibSSE-NG
+    // src/RE/T/TESQuest.cpp:42-45, ScriptNatives.cpp:1617), every start or
+    // stop after a load raises one, and its event reaches this game's update
+    // before the next typed command; CommonLib's own TESQuest::IsRunning
+    // (:47-50) reads another expression, and Papyrus's Quest.IsRunning,
+    // which a console execute may not call, is unread against either
+    private noteQuestRun(e: QuestStartStopEvent, running: boolean) {
+        if (!e.quest) {
+            return;
+        }
+        const questId = e.quest.getFormID();
+        if (!this.questRuns.has(questId) && this.questRuns.size >= QUEST_RUNS_MAX) {
+            const oldest = this.questRuns.keys().next();
+            if (!oldest.done) {
+                this.questRuns.delete(oldest.value);
+            }
+        }
+        this.questRuns.delete(questId);
+        this.questRuns.set(questId, running);
     }
 
     private getCommandExecutor(commandName: CmdName): (...args: unknown[]) => boolean {
@@ -272,8 +333,13 @@ export class ConsoleCommandsService extends ClientListener {
     // with no story event; StopQuest stops it; SetStage starts a stopped one
     // with no story event, then sets the typed stage, marked beside the
     // start; ResetQuest resets the stages, then stops a running quest that
-    // is not Start Game Enabled or starts a stopped one that is, so both
-    // words are marked and the one it makes is taken. CompleteQuest is not
+    // is not Start Game Enabled or starts a stopped one that is. The flag has
+    // no read on this client (no Papyrus native or platform export names
+    // TESQuest's kStartsEnabled, CommonLibSSE-NG include/RE/T/TESQuest.h:30),
+    // so the run alone picks the reset's word, a running quest's stop or a
+    // stopped one's start (a running quest that is Start Game Enabled still
+    // marks a stop its reset does not make, a stopped one that is not a
+    // start), and an unread run marks both. CompleteQuest is not
     // here: it flags the quest completed and never starts or stops it, so it
     // makes no run word or stage to mark
     private static readonly questCommands = new Map<string, number[]>([
@@ -287,4 +353,5 @@ export class ConsoleCommandsService extends ClientListener {
     private readonly immuneSchema = ["mp", "kill", "resurrect", "moveto"];
     private readonly nonVanilaCommands = ["mp"];
     private questMarkMissingSaid = false;
+    private readonly questRuns = new Map<number, boolean>();
 }

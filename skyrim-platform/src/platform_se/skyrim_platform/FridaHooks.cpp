@@ -22,6 +22,9 @@
 #include <RE/A/Actor.h>
 #include <RE/A/ActorMagicCaster.h>
 #include <RE/A/ActorValues.h>
+#include <RE/B/BGSBaseAlias.h>
+#include <RE/B/BGSLocAlias.h>
+#include <RE/B/BGSRefAlias.h>
 #include <RE/B/BSTEvent.h>
 #include <RE/B/bhkCharProxyController.h>
 #include <RE/D/DialogueItem.h>
@@ -32,6 +35,7 @@
 #include <RE/H/hkpRootCdPoint.h>
 #include <RE/N/NiControllerSequence.h>
 #include <RE/T/TESHavokUtilities.h>
+#include <RE/T/TESQuest.h>
 #include <RE/T/TESQuestStageEvent.h>
 
 #include <atomic>
@@ -236,6 +240,61 @@ uint32_t SelfIdOfHandle(RE::VMHandle handle)
     return refr->GetFormID();
   }
   return 0;
+}
+
+// thuum ADR-068 rung 5's full build (docs/research/rung5-quests-2026-11-09.md
+// 8(a); ActingScope.h, PlayerQuests): the per-player quest an event's handle
+// belongs to, read through the VM's handle policy by CommonLib's own types,
+// as SelfIdOfHandle above reads an actor or a reference and the gate's
+// effect branch reads its effect: the quest itself (TESQuest::FORMTYPE,
+// CommonLibSSE-NG include/RE/T/TESQuest.h:195), else an alias's owning quest
+// (BGSBaseAlias::owningQuest, include/RE/B/BGSBaseAlias.h:76), the alias
+// asked by the three alias VM types (BGSRefAlias::VMTYPEID, BGSRefAlias.h:18;
+// BGSLocAlias::VMTYPEID, BGSLocAlias.h:13; BGSBaseAlias::VMTYPEID,
+// BGSBaseAlias.h:15) and resolved by the first that holds; 0 when the handle
+// names neither, or its quest is not in the set
+uint32_t PlayerQuestOfHandle(RE::BSScript::IObjectHandlePolicy* policy,
+                             RE::VMHandle handle)
+{
+  uint32_t questId = 0;
+  if (policy->HandleIsType(RE::TESQuest::FORMTYPE, handle)) {
+    if (RE::TESForm* quest =
+          policy->GetObjectForHandle(RE::TESQuest::FORMTYPE, handle)) {
+      questId = quest->GetFormID();
+    }
+  }
+  if (questId == 0) {
+    const RE::VMTypeID aliasTypes[] = { RE::BGSRefAlias::VMTYPEID,
+                                        RE::BGSLocAlias::VMTYPEID,
+                                        RE::BGSBaseAlias::VMTYPEID };
+    for (const RE::VMTypeID type : aliasTypes) {
+      if (!policy->HandleIsType(type, handle)) {
+        continue;
+      }
+      const auto* alias = static_cast<const RE::BGSBaseAlias*>(
+        policy->GetObjectForHandle(type, handle));
+      if (alias && alias->owningQuest) {
+        questId = alias->owningQuest->GetFormID();
+      }
+      break;
+    }
+  }
+  return questId != 0 && ActingScope::PlayerQuests::Is(questId) ? questId : 0;
+}
+
+// the gate's player-quest line, once per quest (a mutex set, cleared past
+// 1024 quests)
+std::mutex g_playerQuestLinesMutex;
+std::unordered_set<uint32_t> g_playerQuestLines;
+
+bool PlayerQuestLineDue(uint32_t questId)
+{
+  std::lock_guard<std::mutex> lock(g_playerQuestLinesMutex);
+  if (g_playerQuestLines.size() > 1024 &&
+      g_playerQuestLines.count(questId) == 0) {
+    g_playerQuestLines.clear();
+  }
+  return g_playerQuestLines.insert(questId).second;
 }
 }
 
@@ -869,6 +928,34 @@ void OnSendEventEnter(GumInvocationContext* ic)
         (effect->target == player->AsMagicTarget() ||
          effect->GetCasterActor().get() == player)) {
       blockEvents = false;
+    }
+  }
+
+  // thuum docs/DECISIONS.md ADR-068 rung 5's full build (Eli's D-Q2 word,
+  // "yes full transformation"; docs/research/rung5-quests-2026-11-09.md
+  // 8(a); ActingScope.h, PlayerQuests): the rule is ownership, each seat
+  // runs its own player's per-player quests, so an event to such a quest's
+  // own scripts, or to its aliases' scripts, passes whatever their class
+  // (PlayerVampireQuestScript's OnUpdateGameTime, PlayerWerewolfChangeScript's
+  // timers), before the class-chain test below would blank it; the server
+  // refuses such a quest's stages and words (E_QUEST_PLAYER, the plan's A4),
+  // so no seat applies another player's. Counted in the gate's tally as
+  // "(player quest)",
+  // the first admission per quest logged. One atomic read while the set is
+  // empty (rule 9). The effects of the disease on the player and of the
+  // power the player cast pass by the branch above, as before
+  if (blockEvents && policy && ActingScope::PlayerQuests::Any()) {
+    const uint32_t playerQuest = PlayerQuestOfHandle(policy, handle);
+    if (playerQuest != 0) {
+      blockEvents = false;
+      static std::atomic<uint64_t> s_playerQuestPassed{ 0 };
+      const auto n = ++s_playerQuestPassed;
+      if (PlayerQuestLineDue(playerQuest)) {
+        logger::info("[verb:quests] {} to handle {:x} passed (player quest): "
+                     "a script of {:x}, this seat's own player's quest ({} "
+                     "so far)",
+                     eventNameStr, handle, playerQuest, n);
+      }
     }
   }
 

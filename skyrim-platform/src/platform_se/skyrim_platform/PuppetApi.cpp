@@ -454,6 +454,31 @@ Napi::Value PuppetApi::SetPlayerGlobals(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+// thuum ADR-068 rung 5's full build (Eli's D-Q2 word, "yes full
+// transformation"; docs/research/rung5-quests-2026-11-09.md 8(a);
+// ActingScope.h, PlayerQuests): the per-player quests, the server's derived
+// playerQuests as skymp5-client receives them, replaced whole at each call
+// ([] clears it); the Papyrus event gate passes an event to such a quest's
+// own scripts and to its aliases' scripts on this seat, its own player's
+// (FridaHooks.cpp). setPlayerGlobals' shape: the JS thread alone, no game
+// call, logged for the lab
+Napi::Value PuppetApi::SetPlayerQuests(const Napi::CallbackInfo& info)
+{
+  const auto quests = NapiHelper::ExtractArray(info[0], "questFormIds");
+  std::vector<uint32_t> ids;
+  const uint32_t n = quests.Length();
+  ids.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "questFormIds[" + std::to_string(i) + "]";
+    ids.push_back(NapiHelper::ExtractUInt32(quests.Get(i), name.c_str()));
+  }
+  ActingScope::PlayerQuests::Set(ids);
+  logger::info("[verb:quests] setPlayerQuests: {} quest(s) whose own and "
+               "alias scripts' events run here, this seat's own player's",
+               ActingScope::PlayerQuests::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 // isPerformingAction(actorFormId): the hook's mark, on from the action
 // entry's enter to its leave (FridaHooks.cpp OnPerformActionEnter)
 Napi::Value PuppetApi::IsPerformingAction(const Napi::CallbackInfo& info)

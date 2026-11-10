@@ -53,6 +53,11 @@ Napi::Value GetActingPlayer(const Napi::CallbackInfo& info);
 // GlobalVariable.SetValue on one is skipped. The JS thread alone, no game
 // call; true when stored
 Napi::Value SetPlayerGlobals(const Napi::CallbackInfo& info);
+// setPlayerQuests(questFormIds): the per-player quests (the server's derived
+// playerQuests), replaced whole; the Papyrus event gate passes an event to
+// such a quest's own scripts and its aliases' scripts on every seat, for its
+// own player. The JS thread alone, no game call; true when stored
+Napi::Value SetPlayerQuests(const Napi::CallbackInfo& info);
 // isPerformingAction(actorFormId): whether the engine's action entry is open
 // on the actor right now (Hosted::IsPerforming, the hook's mark); read
 // inside a sendAnimationEvent hook handler, where the game thread waits, it
@@ -226,6 +231,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "setPlayerGlobals",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPlayerGlobals)));
+  exports.Set(
+    "setPlayerQuests",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPlayerQuests)));
   exports.Set("isPerformingAction",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(IsPerformingAction)));

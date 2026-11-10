@@ -31,9 +31,11 @@
 // - joined stacks, a stack id to its scope, kept for the stack's life (at
 //   most kJoinedMs)
 // Cleared at a game load (PapyrusTESModPlatform.cpp's load sink): a stack id
-// names nothing in the new world. Beside them, PQ-3's set (the plan's
-// section 8(a)): the globals each player keeps, whose SetValue a scoped
-// stack never runs here (PlayerGlobals below).
+// names nothing in the new world. Beside them, rung 5's two per-player sets
+// (the plan's section 8(a)): the globals each player keeps, whose SetValue a
+// scoped stack never runs here (PQ-3, PlayerGlobals below), and the quests
+// each player keeps, whose own scripts' events the Papyrus event gate passes
+// on every seat for its own player (PlayerQuests below).
 namespace ActingScope {
 
 // a request's stage beside a quest stage's 0 to 65535 (setActingPlayer's
@@ -170,6 +172,26 @@ Counts Count();
 namespace PlayerGlobals {
 void Set(const std::vector<uint32_t>& globalFormIds);
 bool Is(uint32_t globalFormId);
+size_t Count();
+}
+
+// rung 5's full build (Eli's D-Q2 word, "yes full transformation";
+// docs/research/rung5-quests-2026-11-09.md 8(a)): the per-player quests, the
+// server's derived playerQuests (PlayerVampireQuest, PlayerWerewolfQuest and
+// the census's others), replaced whole by setPlayerQuests (PuppetApi.cpp).
+// The rule is ownership: each seat runs its own player's per-player quests,
+// so the Papyrus event gate (FridaHooks.cpp OnSendEventEnter) passes an
+// event to such a quest's own scripts, or to its aliases' scripts, whatever
+// their class (PlayerVampireQuestScript's OnUpdateGameTime,
+// PlayerWerewolfChangeScript's timers), where the class-chain test would
+// blank it; the server never relays such a quest's stages (E_QUEST_PLAYER),
+// so no seat runs another player's copy. Mutex-guarded, the size kept for a
+// read with no lock; empty by default
+namespace PlayerQuests {
+void Set(const std::vector<uint32_t>& questFormIds);
+bool Is(uint32_t questFormId);
+// any quest in the set, one atomic read: the gate asks it first
+bool Any();
 size_t Count();
 }
 }

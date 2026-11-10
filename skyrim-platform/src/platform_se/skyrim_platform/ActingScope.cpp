@@ -49,13 +49,39 @@ struct
   std::atomic<size_t> requested{ 0 };
 } g_scope;
 
-// PQ-3's set (ActingScope.h, PlayerGlobals), Hosted.h's idiom
-struct
+// rung 5's two per-player sets (ActingScope.h, PlayerGlobals and
+// PlayerQuests), Hosted.h's idiom
+struct IdSet
 {
   std::unordered_set<uint32_t> ids;
   std::mutex m;
   std::atomic<size_t> size{ 0 };
-} g_playerGlobals;
+};
+
+IdSet g_playerGlobals;
+IdSet g_playerQuests;
+
+// a set replaced whole, 0 dropped
+void ReplaceIds(IdSet& set, const std::vector<uint32_t>& ids)
+{
+  std::lock_guard l(set.m);
+  set.ids.clear();
+  for (const uint32_t id : ids) {
+    if (id != 0) {
+      set.ids.insert(id);
+    }
+  }
+  set.size.store(set.ids.size());
+}
+
+bool HoldsId(IdSet& set, uint32_t id)
+{
+  if (set.size.load(std::memory_order_relaxed) == 0) {
+    return false;
+  }
+  std::lock_guard l(set.m);
+  return set.ids.count(id) != 0;
+}
 
 // the pair's key: the subject's form id high, the stage (a word or an entry
 // below 0, as its 32 bits) low
@@ -308,26 +334,35 @@ ActingScope::Counts ActingScope::Count()
 void ActingScope::PlayerGlobals::Set(
   const std::vector<uint32_t>& globalFormIds)
 {
-  std::lock_guard l(g_playerGlobals.m);
-  g_playerGlobals.ids.clear();
-  for (const uint32_t id : globalFormIds) {
-    if (id != 0) {
-      g_playerGlobals.ids.insert(id);
-    }
-  }
-  g_playerGlobals.size.store(g_playerGlobals.ids.size());
+  ReplaceIds(g_playerGlobals, globalFormIds);
 }
 
 bool ActingScope::PlayerGlobals::Is(uint32_t globalFormId)
 {
-  if (g_playerGlobals.size.load(std::memory_order_relaxed) == 0) {
-    return false;
-  }
-  std::lock_guard l(g_playerGlobals.m);
-  return g_playerGlobals.ids.count(globalFormId) != 0;
+  return HoldsId(g_playerGlobals, globalFormId);
 }
 
 size_t ActingScope::PlayerGlobals::Count()
 {
   return g_playerGlobals.size.load(std::memory_order_relaxed);
+}
+
+void ActingScope::PlayerQuests::Set(const std::vector<uint32_t>& questFormIds)
+{
+  ReplaceIds(g_playerQuests, questFormIds);
+}
+
+bool ActingScope::PlayerQuests::Is(uint32_t questFormId)
+{
+  return HoldsId(g_playerQuests, questFormId);
+}
+
+bool ActingScope::PlayerQuests::Any()
+{
+  return g_playerQuests.size.load(std::memory_order_relaxed) != 0;
+}
+
+size_t ActingScope::PlayerQuests::Count()
+{
+  return g_playerQuests.size.load(std::memory_order_relaxed);
 }

@@ -68,6 +68,16 @@ import { TrapResultService } from "./trapResultService";
 // batch's everyone rows ReferenceAlias.ForceRefTo and Clear are
 // AliasFillService's. PlaceAtMe and PlaceActorAtMe (Record(Placement)) are
 // never sent: W3, the script placement waits (the fake client alone, T2).
+// thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 8(b), Eli's
+// "yes full transformation"; m4-scripts-5-platform b3f93eb7): the
+// transformation's six (Actor.SetRace, AddSpell, RemoveSpell, AddShout,
+// RemoveShout and EquipItem), batched kind "state" on this seat's own player
+// alone (0x14), go the same way with selfId 0x14 (the wire's name for the
+// sender's own actor), each call in the engine's order, never folded (a
+// SetRace moved past the spells added after it would change which of them
+// the server's overlay holds); the server judges them by the calling
+// script's attachment and records them on the player's change form or in
+// its race overlay (wire-rules player_own, D-T1 A).
 // Every batched call keeps rung 3's read trigger (noteCall below).
 type Outgoing = {
     call: ScriptCall;
@@ -218,7 +228,14 @@ export class ScriptCallService extends ClientListener {
     // it, E_SCRIPTCALL_ROW), and its ref state is its seat's own (ADR-068
     // decision 6; a recorded disable of a player's actor would end its next
     // login, PartOne::SetUserActor)
-    private noteRecord(call: ScriptCall, family: "ref" | "standing") {
+    private noteRecord(call: ScriptCall, family: "ref" | "standing" | "own") {
+        if (family === "own") {
+            // rung 5's transformation rows: the player's own alone, unfolded
+            if (call.self === 0x14) {
+                this.queue({ call, record: true, key: undefined, dropped: false });
+            }
+            return;
+        }
         if (call.self === 0x14) {
             this.recordsOwn++;
             return;
@@ -306,20 +323,24 @@ export class ScriptCallService extends ClientListener {
     }
 
     // the record rows (docs/NATIVES.md's keep column, Record(RefState) and
-    // Record(Standing)), by the table's spelling
-    private static recordFamily(call: ScriptCall): "ref" | "standing" | undefined {
+    // Record(Standing), and rung 5's six of the player's own), by the table's
+    // spelling
+    private static recordFamily(call: ScriptCall): "ref" | "standing" | "own" | undefined {
         if (call.cls === "ObjectReference" && ScriptCallService.refStateRows.has(call.fn)) {
             return "ref";
         }
         if (call.cls === "Actor" && ScriptCallService.standingRows.has(call.fn)) {
             return "standing";
         }
+        if (call.cls === "Actor" && ScriptCallService.playerOwnRows.has(call.fn)) {
+            return "own";
+        }
         return undefined;
     }
 
     // the piece of state a record row's call sets (noteRecord's key with its
     // self); undefined for ModFactionRank, a step that is never folded
-    private static recordSlot(call: ScriptCall, family: "ref" | "standing"): string | undefined {
+    private static recordSlot(call: ScriptCall, family: "ref" | "standing" | "own"): string | undefined {
         if (family === "ref") {
             return "ref";
         }
@@ -598,4 +619,5 @@ export class ScriptCallService extends ClientListener {
     private static readonly outgoingMax = 4096;
     private static readonly refStateRows = new Set<string>(["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"]);
     private static readonly standingRows = new Set<string>(["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"]);
+    private static readonly playerOwnRows = new Set<string>(["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem"]);
 }

@@ -944,9 +944,9 @@ TEST_CASE("A run word or a start-up stage's report with the seat's own cause "
 }
 
 TEST_CASE("Under questStoryInstances seat a quest a Story Manager quest node "
-          "names keeps its runs per seat (E_QUEST_INSTANCE, the node named), "
-          "its stages cross and the login serves none of its runs; under "
-          "world it is judged by its cause",
+          "names keeps its runs per seat (the designed path: a plain line "
+          "naming the node, no E_QUEST_ code), its stages cross and the login "
+          "serves none of its runs; under world it is judged by its cause",
           "[QuestStage][espm]")
 {
   PartOne& p = GetPartOne();
@@ -973,17 +973,25 @@ TEST_CASE("Under questStoryInstances seat a quest a Story Manager quest node "
   REQUIRE(p.GetQuestRuns().empty());
   REQUIRE(WordsTo(p, 0).empty());
   REQUIRE(WordsTo(p, 1).empty());
-  REQUIRE(log.Count("E_QUEST_INSTANCE: user 0 actor ff000bd0 reported the "
-                    "start of 74a83:Skyrim.esm (cause world, root "
+  // the designed path (a world-caused completion's Stop comes here too):
+  // one plain line a minute per seat and quest with every fact the refusal
+  // had, and no E_QUEST_ code
+  REQUIRE(log.Count("[verb:quest-stage] the start of 74a83:Skyrim.esm by "
+                    "ff000bd0 kept to its seat: a Story Manager instance "
+                    "(questStoryInstances seat; cause world, root "
                     "QF_FreeformRiverwood01_00074A83.Fragment_22, R2), named "
-                    "by FreeformRiverwoodNode b555d: 74a83:Skyrim.esm is a "
-                    "quest a Story Manager quest node names") == 1);
-  REQUIRE(log.Count("E_QUEST_INSTANCE: user 0 actor ff000bd0 reported the "
-                    "stop of 74a83:Skyrim.esm") ==
-          0); // counted, its line due a minute on
-  REQUIRE(log.Count("E_QUEST_INSTANCE: user 1 actor ff000bd1 reported the "
-                    "start of 25185:Skyrim.esm, named by CompanionsAelaNode "
-                    "bfc77") == 1);
+                    "by FreeformRiverwoodNode b555d, its stages still "
+                    "crossing; user 0's report not recorded, nothing "
+                    "relayed; 1 such report(s) of the quest since the last "
+                    "line") == 1);
+  REQUIRE(log.Count("the stop of 74a83:Skyrim.esm by ff000bd0 kept to its "
+                    "seat") == 0); // counted, its line due a minute on
+  REQUIRE(log.Count("[verb:quest-stage] the start of 25185:Skyrim.esm by "
+                    "ff000bd1 kept to its seat: a Story Manager instance "
+                    "(questStoryInstances seat), named by CompanionsAelaNode "
+                    "bfc77, its stages still crossing; user 1's report not "
+                    "recorded") == 1);
+  REQUIRE(log.Count("E_QUEST_") == 0);
   // its stage crosses: A Lovely Letter's stage 10, recorded and relayed
   ReportCaused(p, 0, kLovelyLetter, 10, 0, 1,
                "QF_FreeformRiverwood01_00074A83.Fragment_3");
@@ -1024,6 +1032,8 @@ TEST_CASE("Under questStoryInstances seat a quest a Story Manager quest node "
   REQUIRE(p.GetQuestRuns() == Runs({ { "74a83:Skyrim.esm", true, 1 } }));
   REQUIRE(log.Count("E_QUEST_CAUSE: user 0 actor ff000bd0 reported the stop "
                     "of 74a83:Skyrim.esm") == 1);
+  // the run's one E_QUEST_ line is that genuine refusal
+  REQUIRE(log.Count("E_QUEST_") == 1);
   Leave(p);
 }
 

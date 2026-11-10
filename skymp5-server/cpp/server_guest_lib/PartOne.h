@@ -331,13 +331,13 @@ public:
   // ("seat", the default, or "world"); a bad value stops the server here,
   // named. With the game files every quest a Story Manager quest node names
   // (libespm SMQN, its NNAMs) goes to wire-rules quest_runs, whose judge
-  // keeps such a quest's runs per seat under "seat" (E_QUEST_INSTANCE) and
-  // whose login serves none of them; its stages still cross. One line names
-  // the nodes and quests read
+  // keeps such a quest's runs per seat under "seat" (its Code::Instance, a
+  // plain line in OnQuestStage) and whose login serves none of them; its
+  // stages still cross. One line names the nodes and quests read
   void SetQuestStoryInstancesSettings(const std::string& settingJson);
   // the Story Manager quest nodes naming the quest, "<editor id> <hex id>"
   // (the first, and how many more), empty for none or without the game
-  // files: the E_QUEST_INSTANCE line's cause
+  // files: the nodes the line keeping such a quest's run to its seat names
   std::string StoryNodesOf(const FormDesc& quest);
   // the quests the class marks the player's, measured in either mode; and
   // the ones composed in (empty while the scope does not act)

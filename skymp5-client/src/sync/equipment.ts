@@ -209,9 +209,11 @@ export const isFigureBase = (ac: Actor): boolean => {
 // (Stealth Detection Fixes' madDetectionCloak on every NPC; p-spell-bolt's
 // detection probes, 2026-10-23). The actor's added spells (Actor.getNthSpell
 // lists them, not the base's or the race's) are kept to the ones the server
-// equips; the rest are removed. Returns how many went.
-export const keepOnlyServerSpells = (ac: Actor, eq: Equipment): number => {
-  const keep = new Set<number>([eq.leftSpell ?? 0, eq.rightSpell ?? 0, eq.voiceSpell ?? 0, eq.instantSpell ?? 0]);
+// equips; the rest are removed. Returns how many went. keepAlso: the spells
+// the figure's race overlay adds (thuum ADR-068 rung 5, D-T1 A;
+// sync/raceOverlay.ts), the server's too.
+export const keepOnlyServerSpells = (ac: Actor, eq: Equipment, keepAlso: readonly number[] = []): number => {
+  const keep = new Set<number>([eq.leftSpell ?? 0, eq.rightSpell ?? 0, eq.voiceSpell ?? 0, eq.instantSpell ?? 0, ...keepAlso]);
   const foreign: Spell[] = [];
   const count = ac.getSpellCount();
   for (let i = 0; i < count; ++i) {
@@ -380,7 +382,7 @@ const equipPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe: boolean): vo
   }
 };
 
-export const applyEquipment = (ac: Actor, eq: Equipment): boolean => {
+export const applyEquipment = (ac: Actor, eq: Equipment, keepAlso: readonly number[] = []): boolean => {
   // a deleted reference (a copy the cleaner or a respawn let go) crashes
   // the engine in UnequipAll (c2's crash in x-handoff-door 20261024-001915:
   // EXCEPTION_ACCESS_VIOLATION on "test 1" flagged kDeleted); nothing to dress
@@ -414,9 +416,10 @@ export const applyEquipment = (ac: Actor, eq: Equipment): boolean => {
   syncSpellEquipment(ac, eq.voiceSpell, SpellType.Voice);
   syncSpellEquipment(ac, eq.instantSpell, SpellType.Instant);
 
-  // ADR-046: a figure's spells are the server's alone
+  // ADR-046: a figure's spells are the server's alone (its race overlay's
+  // among them)
   if (ac.getFormID() !== 0x14 && isFigureBase(ac)) {
-    keepOnlyServerSpells(ac, eq);
+    keepOnlyServerSpells(ac, eq, keepAlso);
   }
 
   return true;

@@ -413,8 +413,10 @@ export class PuppetService extends ClientListener {
     // own game's reports hold it, and its hold (the keep-offset on itself)
     // is an AI package, so a demote leaves it standing where it spawned
     // (a-racemenu 20261022-050437 on the gate: c2's figure of c1 absent
-    // where the server had c1, after c2 demoted it at its attach)
-    private isFigure(localId: number): boolean {
+    // where the server had c1, after c2 demoted it at its attach). Also
+    // RelayedActivationService's (rung 5: a relayed entry's presser is
+    // another player when it is a figure)
+    isFigure(localId: number): boolean {
         // the engine's own answer first: a figure is placed from the player
         // base 0x7 or from a runtime base the appearance made (0xff and
         // above); a server-made copy of a game-file NPC carries that NPC's

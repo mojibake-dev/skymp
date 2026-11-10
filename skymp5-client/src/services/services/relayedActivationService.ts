@@ -4,8 +4,19 @@ import { ConnectionMessage } from '../events/connectionMessage';
 import { RelayedActivationMessage } from '../messages/relayedActivationMessage';
 import { remoteIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
+import { PuppetService } from './puppetService';
 
 const TAG = 'verb:traps';
+
+// thuum docs/DECISIONS.md ADR-068 rung 5 (the acting scope; docs/research/
+// rung5-quests-2026-11-09.md 1(c), read 7): the stage the platform's
+// setActingPlayer names a relayed trigger entry by (its subject the
+// trigger's form id), and how long the request waits for SendTriggerEvent to
+// take it, ms (the send follows at once; the platform bounds a ttl at 60000)
+const ENTRY_SCOPE = -3;
+const ENTRY_ACTING_TTL_MS = 10000;
+// the players' actors (and the server's copies) are server ids from here up
+const FIRST_SERVER_ID = 0xff000000;
 
 // thuum docs/DECISIONS.md D-W1 A (ActivationService's root rule): a family
 // trigger pressed or fired on this seat is a firing's root for this long, and
@@ -60,7 +71,13 @@ const describeTriggerSend = (raw: unknown, event: string): string => {
 // root rule reads: a trigger a relay played is no root of its own. D-C2 A: a
 // relay with an entry is a guest's entry into a world trigger of a cell this
 // seat hosts, sent to the trigger's scripts with the presser as akActionRef
-// (playEntry) instead of activating.
+// (playEntry) instead of activating. Rung 5: when the presser is another
+// player's figure, the entry names that player as its acting player first
+// (setActingPlayer with stage -3: the trigger's form id, the figure's local
+// id, the player's server id), which SendTriggerEvent takes to arm the
+// trigger's scope, so the trigger's script reads Game.GetPlayer() as the
+// guest's figure (akActionRef == Game.GetPlayer() holds on the host) and a
+// stage it sets names the guest (HYPOTHESIS H-AP7).
 //
 // Lines for the lab: "relayed activation <target> by <caster>", and
 // "[verb:traps] relayed entry <target> by <caster>: <event> sent to <n>
@@ -136,6 +153,7 @@ export class RelayedActivationService extends ClientListener {
       return;
     }
     this.markRelayPlayed(target.getFormID());
+    this.nameEntryActing(target.getFormID(), caster.getFormID(), remoteCaster);
     let raw: unknown;
     try {
       raw = this.sp.callNative('TESModPlatform', 'SendTriggerEvent', undefined, target, event, caster);
@@ -150,6 +168,28 @@ export class RelayedActivationService extends ClientListener {
       return;
     }
     logLab(TAG, `${head}: ${describeTriggerSend(raw, event)}`);
+  }
+
+  // rung 5: a relayed entry's acting player, when its presser here is
+  // another player's figure (PuppetService.isFigure: a server copy of an
+  // NPC is no player, and the platform arms such a presser with no player);
+  // a table write, no game call. Said once on an older platform without the
+  // export
+  private nameEntryActing(triggerId: number, presserLocalId: number, presserServerId: number) {
+    if (this.actingMissing || presserLocalId < FIRST_SERVER_ID || presserServerId < FIRST_SERVER_ID) {
+      return;
+    }
+    if (!this.controller.lookupListener(PuppetService).isFigure(presserLocalId)) {
+      return;
+    }
+    try {
+      if (this.sp.setActingPlayer(triggerId, ENTRY_SCOPE, presserLocalId, presserServerId, ENTRY_ACTING_TTL_MS) !== true) {
+        logError(this, `setActingPlayer refused the relayed entry ${triggerId.toString(16)} by ${presserServerId.toString(16)}`);
+      }
+    } catch (e) {
+      this.actingMissing = true;
+      logLab(TAG, `setActingPlayer unavailable on this platform (${e}); a relayed entry's script reads this seat's own player`);
+    }
   }
 
   // Whether a relay played the reference here within FIRED_MS (local id, as
@@ -198,4 +238,6 @@ export class RelayedActivationService extends ClientListener {
   // the references a relay played here, until when (wasRelayPlayed)
   private readonly relayPlayed = new Map<number, number>();
   private sendTriggerMissing = false;
+  // an older platform without setActingPlayer (rung 5)
+  private actingMissing = false;
 }

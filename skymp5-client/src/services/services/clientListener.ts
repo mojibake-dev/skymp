@@ -240,6 +240,31 @@ declare module "skyrimPlatform" {
     function setHosted(actorFormId: number, hosted: boolean): boolean;
     function isHosted(actorFormId: number): boolean;
     function isPerformingAction(actorFormId: number): boolean;
+    // thuum docs/DECISIONS.md ADR-068 rung 5 (the acting scope;
+    // docs/research/rung5-quests-2026-11-09.md 1(c)): the player a relayed
+    // quest request runs for on this seat, a native table written with no game
+    // call (Hosted.h's idiom, safe from any context). setActingPlayer names it
+    // for ttlMs (1 to 60000): stage 0 to 65535 a quest's stage, -1 its start,
+    // -2 its stop, -3 a relayed trigger entry (questId then the trigger's form
+    // id, which SendTriggerEvent takes); figureLocalId the acting player's
+    // figure here, 0 when this seat holds none; serverId its server id; false,
+    // nothing stored, for a quest 0, a stage outside -3 to 65535, a serverId 0
+    // or 0x14 as the figure. Inside that scope Game.GetPlayer answers the
+    // figure. getActingPlayer answers the server id of the scope that
+    // requested the pair here, 0 for none. setPlayerGlobals (PQ-3) names the
+    // globals each player keeps (PlayerGlobalsService's watch), replaced whole
+    // ([] clears): inside another player's acting scope a script's
+    // GlobalVariable.SetValue on one is skipped here. The platform layer
+    // writes the bodies on its own branch; an older platform has none, and
+    // every use is guarded
+    function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number): boolean;
+    function getActingPlayer(questId: number, stage: number): number;
+    function setPlayerGlobals(globalFormIds: number[]): boolean;
+    // rung 5, the ownership rule for the per-player quests (the server's
+    // player-class quests, QuestStage 57's login `player`): this seat runs its
+    // own player's, so the platform's SendEvent gate lets their scripts'
+    // events through here; replaced whole at each call, [] clears it
+    function setPlayerQuests(questFormIds: number[]): boolean;
     // thuum ADR-068 D-S3 (traps follow the interaction): a reference's trap
     // role from the platform's own reads (null with no form or no script),
     // the trap bodies another seat streams, and the references whose server

@@ -23,6 +23,11 @@ const APPLY_ALL = -1;
 // load (0x801 in RaceMenu.esp)
 const PLAYER_HAIR_COLOR = 0x801;
 
+// RaceMenu's quest, whose scripts take its mod events, RSM_RequestTintSave
+// among them (0x800 in RaceMenu.esp; playtest 50's read); its runtime id
+// from the load order, as the hair color form's
+const RACEMENU_QUEST = 0x800;
+
 // The storage key of the state a plugin reload must not lose (sp.storage,
 // ADR-041's survivor, hostService's shape): the looks the server sent and
 // the player's own. A hot-reloaded client (lab client-hot, ADR-054) keeps its
@@ -63,11 +68,12 @@ export class RaceMenuService extends ClientListener {
 
     // RaceMenu puts its own saved copy of the player's hair color and tints
     // back on as its menu initializes (racemenu.psc OnMenuInitialized:
-    // LoadTints, LoadHair). That copy is taken when this service loads the
-    // player's look after a login (load: RSM_RequestTintSave), so it is the
-    // look the server holds. No copy is asked for here: the race menu has
-    // already reset the tints and hair color to the race's defaults when
-    // this event arrives, and a save then made RaceMenu put the defaults back
+    // LoadTints, LoadHair). That copy is taken after this service loads the
+    // player's look and after each own appearance apply (RSM_RequestTintSave,
+    // sendTintSaveIfDue), so it is the look the server holds. No copy is
+    // asked for here: the race menu has already reset the tints and hair
+    // color to the race's defaults when this event arrives, and a save then
+    // made RaceMenu put the defaults back
     // (x-racemenu-done-probe 20261008-224646: the skin tone at the race's
     // default with the menu open, Eli's playtest eleven: hair and skin
     // "back to the nord colors" after a Done with no change).
@@ -228,7 +234,8 @@ export class RaceMenuService extends ClientListener {
         const me = this.myId();
         let why = "RaceMenu is not here, the appearance alone is the record";
         if (this.available()) {
-            if (!this.resetPending && this.applied.has(me)) {
+            // the look on, and RaceMenu's copy of its tints taken (playtest 50)
+            if (!this.resetPending && this.applied.has(me) && !this.tintSavePending) {
                 why = "the recorded look is on the player";
             } else {
                 if (!this.sp.Game.getPlayer() || this.sp.Ui.isMenuOpen("Loading Menu")) {
@@ -240,7 +247,8 @@ export class RaceMenuService extends ClientListener {
                 if (Date.now() - due.since < RaceMenuService.sameLookWaitMs) {
                     return;
                 }
-                why = (this.wanted.has(me) ? "the server's look did not go on the player" : "no RaceMenu look came for the player")
+                why = (!this.resetPending && this.applied.has(me) ? "RaceMenu's quest took no copy of the tints"
+                    : this.wanted.has(me) ? "the server's look did not go on the player" : "no RaceMenu look came for the player")
                     + ` in ${RaceMenuService.sameLookWaitMs} ms`;
             }
         }
@@ -261,8 +269,12 @@ export class RaceMenuService extends ClientListener {
             this.alignRace();
         }
         // the race menu a login found open waits for the look the passes
-        // before this one put on (openRaceMenuAfterOwnLook)
+        // before this one put on (openRaceMenuAfterOwnLook), and for the
+        // tint copy a pass before this one asked for
         this.openRaceMenuIfLookOn();
+        if (this.available()) {
+            this.sendTintSaveIfDue();
+        }
         if (!this.available() || (this.wanted.size === 0 && !this.resetPending)) {
             return;
         }
@@ -373,7 +385,8 @@ export class RaceMenuService extends ClientListener {
         const hairColor = isPlayer ? this.sp.Game.getFormFromFile(PLAYER_HAIR_COLOR, "RaceMenu.esp") : null;
         const loaded = this.sp.callNative("CharGen", "LoadCharacterPresetEx", undefined, actor, name, hairColor, APPLY_ALL) === true;
         if (loaded && isPlayer) {
-            actor.sendModEvent("RSM_RequestTintSave", "", 0);
+            // RaceMenu's scripts take in what changed: sendTintSaveIfDue
+            this.markTintSaveDue("the player's look loaded");
             // RaceMenu's apply erases the actor's sculpt and slider entries
             // before it writes the look's (PresetInterface ApplyPresetData),
             // so what each apply carried is the record of what the next
@@ -441,6 +454,54 @@ export class RaceMenuService extends ClientListener {
         const want = base ? base.getRace() : null;
         const have = player.getRace();
         return !!want && !!have && have.getFormID() === want.getFormID();
+    }
+
+    // remoteServer's: the player's own appearance went on (a login's, a
+    // reconnect's, the server's UpdateAppearance), so RaceMenu's copy of the
+    // tints is due again
+    ownAppearanceApplied() {
+        this.markTintSaveDue("the player's appearance applied");
+    }
+
+    private markTintSaveDue(why: string) {
+        this.tintSavePending = true;
+        this.tintSaveWhy = why;
+        this.persist();
+    }
+
+    // thuum playtest 50 (2026-11-09; `mp racemenu` opened Ariadne's menu with
+    // her tints and warpaint reset): the RSM_RequestTintSave a login's look
+    // load sent went out before RaceMenu.esp's quest 0x800 had started, and
+    // SKSE drops a mod event no script is registered for yet (skse64 2.2.6
+    // PapyrusEvents.cpp:277-280), so RaceMenu's copy of the tints stayed empty
+    // and its menu put the race's defaults back as it opened. The request is
+    // due at each own look's load and own appearance apply, and goes from this
+    // pass once that quest has run for a whole pass (its scripts registered)
+    // and no menu is open (a copy taken inside one is the menu's own state)
+    private sendTintSaveIfDue() {
+        if (!this.tintSavePending) {
+            return;
+        }
+        const quest = this.sp.Quest.from(this.sp.Game.getFormFromFile(RACEMENU_QUEST, "RaceMenu.esp"));
+        if (!quest || !quest.isRunning()) {
+            this.tintQuestSeen = false;
+            return;
+        }
+        if (!this.tintQuestSeen) {
+            this.tintQuestSeen = true; // running at this pass: the next one sends
+            return;
+        }
+        if (this.sp.Utility.isInMenuMode() || this.sp.Ui.isMenuOpen("RaceSex Menu") || this.sp.Ui.isMenuOpen("Loading Menu")) {
+            return;
+        }
+        const player = this.sp.Game.getPlayer();
+        if (!player) {
+            return;
+        }
+        player.sendModEvent("RSM_RequestTintSave", "", 0);
+        this.tintSavePending = false;
+        this.persist();
+        logTrace(this, `RSM_RequestTintSave sent (${this.tintSaveWhy}): RaceMenu's quest runs, so its copy of the tints is the player's look`);
     }
 
     // RaceMenu's load erases an actor's sculpt, its own sliders, overrides
@@ -522,6 +583,7 @@ export class RaceMenuService extends ClientListener {
             lastSent: this.lastSent,
             ownLook: this.ownLook,
             appliedMe: me && mine !== undefined ? [me, mine] : null,
+            tintSaveDue: this.tintSavePending ? this.tintSaveWhy : null,
         };
     }
 
@@ -530,7 +592,7 @@ export class RaceMenuService extends ClientListener {
         if (!raw || typeof raw !== "object") {
             return;
         }
-        const stored = raw as Partial<Record<"wanted" | "lastSent" | "ownLook" | "appliedMe", unknown>>;
+        const stored = raw as Partial<Record<"wanted" | "lastSent" | "ownLook" | "appliedMe" | "tintSaveDue", unknown>>;
         const looks = Array.isArray(stored.wanted)
             ? stored.wanted.filter((x): x is [number, string] => Array.isArray(x) && x.length === 2 && typeof x[0] === "number" && typeof x[1] === "string")
             : [];
@@ -547,6 +609,10 @@ export class RaceMenuService extends ClientListener {
         const mine = stored.appliedMe;
         if (Array.isArray(mine) && mine.length === 2 && typeof mine[0] === "number" && typeof mine[1] === "string") {
             this.applied.set(mine[0], mine[1]);
+        }
+        if (typeof stored.tintSaveDue === "string") {
+            this.tintSavePending = true;
+            this.tintSaveWhy = stored.tintSaveDue;
         }
         if (this.wanted.size > 0) {
             logTrace(this, `resumed after a reload: ${this.wanted.size} look(s) kept, the figures' go on again at the next pass`);
@@ -602,4 +668,9 @@ export class RaceMenuService extends ClientListener {
     // wait saw the player's world up first
     private menuAfterLook: { open: () => void; since: number } | null = null;
     private raceMenu: boolean | undefined = undefined;
+    // playtest 50: RaceMenu's copy of the player's tints is due (why, for the
+    // trace), and RaceMenu's quest was running at the last pass that read it
+    private tintSavePending = false;
+    private tintSaveWhy = "";
+    private tintQuestSeen = false;
 }

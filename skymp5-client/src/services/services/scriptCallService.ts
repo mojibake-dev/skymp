@@ -68,6 +68,16 @@ import { TrapResultService } from "./trapResultService";
 // batch's everyone rows ReferenceAlias.ForceRefTo and Clear are
 // AliasFillService's. PlaceAtMe and PlaceActorAtMe (Record(Placement)) are
 // never sent: W3, the script placement waits (the fake client alone, T2).
+// thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 8(b), Eli's
+// "yes full transformation"; m4-scripts-5-platform b3f93eb7): the
+// transformation's six (Actor.SetRace, AddSpell, RemoveSpell, AddShout,
+// RemoveShout and EquipItem), batched kind "state" on this seat's own player
+// alone (0x14), go the same way with selfId 0x14 (the wire's name for the
+// sender's own actor), each call in the engine's order, never folded (a
+// SetRace moved past the spells added after it would change which of them
+// the server's overlay holds); the server judges them by the calling
+// script's attachment and records them on the player's change form or in
+// its race overlay (wire-rules player_own, D-T1 A).
 // Every batched call keeps rung 3's read trigger (noteCall below).
 type Outgoing = {
     call: ScriptCall;
@@ -218,7 +228,14 @@ export class ScriptCallService extends ClientListener {
     // it, E_SCRIPTCALL_ROW), and its ref state is its seat's own (ADR-068
     // decision 6; a recorded disable of a player's actor would end its next
     // login, PartOne::SetUserActor)
-    private noteRecord(call: ScriptCall, family: "ref" | "standing") {
+    private noteRecord(call: ScriptCall, family: "ref" | "standing" | "own") {
+        if (family === "own") {
+            // rung 5's transformation rows: the player's own alone, unfolded
+            if (call.self === 0x14) {
+                this.queue({ call, record: true, key: undefined, dropped: false });
+            }
+            return;
+        }
         if (call.self === 0x14) {
             this.recordsOwn++;
             return;
@@ -293,8 +310,9 @@ export class ScriptCallService extends ClientListener {
             }
             this.recordTokens -= 1;
             this.forget(entry);
-            this.send(entry.call, host);
-            this.recordsSent++;
+            if (this.send(entry.call, host)) {
+                this.recordsSent++;
+            }
         }
     }
 
@@ -305,20 +323,24 @@ export class ScriptCallService extends ClientListener {
     }
 
     // the record rows (docs/NATIVES.md's keep column, Record(RefState) and
-    // Record(Standing)), by the table's spelling
-    private static recordFamily(call: ScriptCall): "ref" | "standing" | undefined {
+    // Record(Standing), and rung 5's six of the player's own), by the table's
+    // spelling
+    private static recordFamily(call: ScriptCall): "ref" | "standing" | "own" | undefined {
         if (call.cls === "ObjectReference" && ScriptCallService.refStateRows.has(call.fn)) {
             return "ref";
         }
         if (call.cls === "Actor" && ScriptCallService.standingRows.has(call.fn)) {
             return "standing";
         }
+        if (call.cls === "Actor" && ScriptCallService.playerOwnRows.has(call.fn)) {
+            return "own";
+        }
         return undefined;
     }
 
     // the piece of state a record row's call sets (noteRecord's key with its
     // self); undefined for ModFactionRank, a step that is never folded
-    private static recordSlot(call: ScriptCall, family: "ref" | "standing"): string | undefined {
+    private static recordSlot(call: ScriptCall, family: "ref" | "standing" | "own"): string | undefined {
         if (family === "ref") {
             return "ref";
         }
@@ -381,8 +403,9 @@ export class ScriptCallService extends ClientListener {
                 this.hitsNotMine++;
                 continue;
             }
-            this.send(call, host);
-            this.hitsSent++;
+            if (this.send(call, host)) {
+                this.hitsSent++;
+            }
         }
     }
 
@@ -391,12 +414,27 @@ export class ScriptCallService extends ClientListener {
     // (the stamp ChangeForm carries; 0 when no hosted cell names it, which
     // the server refuses as E_SCRIPTCALL_OWNER), the arguments in SpSnippet's
     // shape. A subject with no server id (0, or a server copy the view does
-    // not map) is not sent and is counted for the summary
-    private send(call: ScriptCall, host: HostService) {
+    // not map) is not sent and is counted for the summary. Rung 5: inside an
+    // acting scope the platform names the acting player's figure by its local
+    // id where the script named the player (a relayed fragment's
+    // ForceRefTo, SetRelationshipRank), so every form argument travels by its
+    // server id (toSnippetArgument); a call with an argument the view cannot
+    // map (a figure or a server copy gone from it) is not sent, counted,
+    // rather than sent with None in its place. False when not sent
+    private send(call: ScriptCall, host: HostService): boolean {
         const selfId = call.self !== 0 ? localIdToRemoteId(call.self) : 0;
         if (selfId === 0) {
             this.unsent++;
-            return;
+            return false;
+        }
+        const args: SpSnippetArgument[] = [];
+        for (const arg of call.args) {
+            const packed = this.toSnippetArgument(arg, call.kind !== "look");
+            if (packed === undefined) {
+                this.argsUnmapped++;
+                return false;
+            }
+            args.push(packed);
         }
         // the subject's cell names the epoch: the self, or Sound.Play's source
         // (a look row whose self is the Sound, D-W2)
@@ -408,7 +446,7 @@ export class ScriptCallService extends ClientListener {
             selfId,
             cls: call.cls,
             fn: call.fn,
-            args: call.args.map((arg) => this.toSnippetArgument(arg, call.kind !== "look")),
+            args,
             caller: call.caller,
             handler: call.handler,
             latent: call.latent,
@@ -416,7 +454,7 @@ export class ScriptCallService extends ClientListener {
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
         if (call.kind === "look") {
             logLab("verb:traps", `trigger look ${(localIdToRemoteId(subject) || subject).toString(16)} ${call.cls}.${call.fn} reported (D-W2)`);
-            return;
+            return true;
         }
         // ObjectAnimationService's report line, byte for byte, for an
         // animation row on a world object (an actor's animation is the
@@ -425,6 +463,7 @@ export class ScriptCallService extends ClientListener {
         if (ScriptCallService.isAnimationRow(call) && typeof event === "string" && refr && !this.sp.Actor.from(refr)) {
             logTrace(this, `object animation ${call.self.toString(16)} ${event} reported`);
         }
+        return true;
     }
 
     // a form travels by its server id (the player's own actor as its figure's,
@@ -435,15 +474,22 @@ export class ScriptCallService extends ClientListener {
     // seat's own player as 0x14, which the server maps to the reporter's
     // actor: wire-validate refuses an object argument at 0xff000000 and up
     // (E_VAL_RANGE), so a look naming the player by its server id never
-    // reached the server's look rule
-    private toSnippetArgument(arg: ScriptCall["args"][number], newCast: boolean): SpSnippetArgument {
+    // reached the server's look rule. A form the view cannot map to a server
+    // id (a figure's or a server copy's local id, 0xff000000 and up, gone from
+    // the view; this seat's own player before its login) answers undefined,
+    // and the call is not sent
+    private toSnippetArgument(arg: ScriptCall["args"][number], newCast: boolean): SpSnippetArgument | undefined {
         if (arg === null || typeof arg !== "object") {
             return arg;
         }
         const form = this.sp.Game.getFormEx(arg.formId);
         const type = form && this.sp.Actor.from(form) ? "Actor" : form && this.sp.ObjectReference.from(form) ? "ObjectReference"
             : form && this.sp.Faction.from(form) ? "Faction" : "Form";
-        return { formId: localIdToRemoteId(arg.formId, newCast), type };
+        const formId = localIdToRemoteId(arg.formId, newCast);
+        if (formId === 0 && arg.formId !== 0) {
+            return undefined;
+        }
+        return { formId, type };
     }
 
     // a call's subject: its self, but Sound.Play's source in its first
@@ -490,6 +536,10 @@ export class ScriptCallService extends ClientListener {
         if (this.unsent > 0) {
             logTrace(this, `${this.unsent} action call(s) in ${ScriptCallService.summaryMs / 1000} s not sent: no server id for the subject`);
             this.unsent = 0;
+        }
+        if (this.argsUnmapped > 0) {
+            logTrace(this, `${this.argsUnmapped} call(s) in ${ScriptCallService.summaryMs / 1000} s not sent: a form argument with no server id (a figure or a server copy gone from the view)`);
+            this.argsUnmapped = 0;
         }
         // short of printConsole's 128-byte cut: throttled is within a second
         // of the actor's last report, not this seat's an actor it no longer
@@ -546,6 +596,8 @@ export class ScriptCallService extends ClientListener {
     private recordsOwn = 0;
     private outgoingDropped = 0;
     private unsent = 0;
+    // rung 5: calls not sent for a form argument with no server id
+    private argsUnmapped = 0;
     private hits: ScriptCall[] = [];
     private readonly lastHitAt = new Map<number, number>();
     private hitsSent = 0;
@@ -567,4 +619,5 @@ export class ScriptCallService extends ClientListener {
     private static readonly outgoingMax = 4096;
     private static readonly refStateRows = new Set<string>(["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"]);
     private static readonly standingRows = new Set<string>(["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"]);
+    private static readonly playerOwnRows = new Set<string>(["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem"]);
 }

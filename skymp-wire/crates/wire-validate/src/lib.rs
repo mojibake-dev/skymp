@@ -253,6 +253,11 @@ pub struct ClientGuard {
     /// trigger in a cell it does not host; 8 at once, 4 a second after
     /// (UNMEASURED). An Activate without `entry` takes none.
     pub entry_budget: TokenBucket,
+    /// Budget for a seat's condition-read variable reports (ScriptVariables,
+    /// thuum ADR-068 rung 5): one a second by design, its changed keys
+    /// batched; 4 at once, 1 a second after (WorldGlobal's shape,
+    /// UNMEASURED).
+    pub script_variables_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -302,6 +307,7 @@ impl Default for ClientGuard {
             alias_fill_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
             world_global_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             entry_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
+            script_variables_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
         }
     }
 }
@@ -682,9 +688,14 @@ fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
 /// (list) or 1 (all); a quest of 0 carries the login's list, which in mode
 /// 0 is never empty (in mode 1 it is the denied list, empty when nothing
 /// is denied), and the list names each quest once; from a client the list
-/// is empty, the mode 0 and the quest named ([`validate`]). The mode's
-/// membership and the record are the server's rule (wire-rules
-/// `quest_stages`).
+/// is empty, the mode 0 and the quest named ([`validate`]). Since
+/// SCHEMA_VERSION 41 (thuum ADR-068 rung 5): a word is a start or a stop
+/// ([`skymp::QUEST_START`], [`skymp::QUEST_STOP`]) with stage 0 on a named
+/// quest, never the login's list, and an acting player is a server id
+/// (0xff000000 and up: the server names players) on a named quest; from a
+/// client nothing is served ([`validate`]). The mode's membership, the
+/// class and the records are the server's rules (wire-rules
+/// `quest_stages`, `quest_scope` and `quest_runs`).
 fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
     if m.mode > 1 {
         return Err(Reject::Range);
@@ -696,6 +707,14 @@ fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
         if *q == 0 || m.shared.iter().take(i).any(|p| p == q) {
             return Err(Reject::Range);
         }
+    }
+    if let Some(word) = m.word {
+        if (word != skymp::QUEST_START && word != skymp::QUEST_STOP) || m.stage != 0 || m.quest == 0 {
+            return Err(Reject::Range);
+        }
+    }
+    if m.acting.is_some_and(|acting| acting < PLAYER_FORMS || m.quest == 0) {
+        return Err(Reject::Range);
     }
     Ok(())
 }
@@ -959,6 +978,58 @@ fn check_world_global(m: &skymp::WorldGlobal) -> Result<(), Reject> {
             return Err(Reject::Range);
         }
         if m.entries.iter().take(i).any(|e| e.global == entry.global) {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
+/// One condition-read variable's key (thuum ADR-068 rung 5, ScriptVariables):
+/// a form of the shared load order (never 0 nor 0xff000000 and up) and two
+/// names neither empty nor carrying a NUL ([`has_nul`]: the receiver's
+/// variable lookup takes a C string); each name's length holds at decode.
+fn script_var_key_fits(form: u32, script: &str, var: &str) -> bool {
+    form != 0 && form < PLAYER_FORMS && !script.is_empty() && !var.is_empty() && !has_nul(script) && !has_nul(var)
+}
+
+/// Whether two keys are one: the same form and the same names without case,
+/// as the VM finds a script and a variable by name.
+fn same_script_var_key(a: (u32, &str, &str), b: (u32, &str, &str)) -> bool {
+    a.0 == b.0 && a.1.eq_ignore_ascii_case(b.1) && a.2.eq_ignore_ascii_case(b.2)
+}
+
+/// The condition-read variables (thuum ADR-068 rung 5, ScriptVariables),
+/// either way: every float finite; every watched key and every entry's key
+/// [`script_var_key_fits`], each key once in its list (the watch's and the
+/// entries' apart; `own` no part of a key); each entry a kind of 3 (an
+/// int), 4 (a float) or 5 (a bool) carrying that kind's one field and no
+/// other, ScriptVar's folded kinds as GraphVar holds them; a served entry
+/// with its key's sequence (never 0). The counts (at most
+/// `cap::SCRIPT_VARIABLES` each) hold at decode. From a client no watch, no
+/// served record and no sequence ([`validate`]). Which keys are listed,
+/// whose they are and whether a write moves the record is the server's rule
+/// (wire-rules script_variables).
+fn check_script_variables(m: &skymp::ScriptVariables) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    for (n, k) in m.watch.iter().enumerate() {
+        let key = (k.form, k.script.as_str(), k.var.as_str());
+        if !script_var_key_fits(k.form, &k.script, &k.var) || m.watch.iter().take(n).any(|w| same_script_var_key((w.form, &w.script, &w.var), key)) {
+            return Err(Reject::Range);
+        }
+    }
+    for (n, e) in m.entries.iter().enumerate() {
+        let key = (e.form, e.script.as_str(), e.var.as_str());
+        let carried = [e.i.is_some(), e.f.is_some(), e.b.is_some()];
+        let fits = match e.k {
+            3 => carried == [true, false, false],
+            4 => carried == [false, true, false],
+            5 => carried == [false, false, true],
+            _ => false,
+        };
+        let twice = m.entries.iter().take(n).any(|w| same_script_var_key((w.form, &w.script, &w.var), key));
+        if !fits || twice || !script_var_key_fits(e.form, &e.script, &e.var) || (m.served && e.seq == 0) {
             return Err(Reject::Range);
         }
     }
@@ -1523,9 +1594,11 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             take(&mut guard.player_globals_budget, now_ms)
         }
         Message::QuestStage(m) => {
-            // a client reports one stage of one quest; the sharing mode and
-            // its list are the server's (docs/verbs/quest-stage.md)
-            if !m.shared.is_empty() || m.quest == 0 || m.mode != 0 {
+            // a client reports one stage or run word of one quest; the
+            // sharing mode, its list and the login replay are the server's
+            // (docs/verbs/quest-stage.md; thuum ADR-068 rung 5); a word
+            // shares the stages' budget
+            if !m.shared.is_empty() || m.quest == 0 || m.mode != 0 || m.served == Some(true) {
                 return Err(Reject::Range);
             }
             take(&mut guard.quest_stage_budget, now_ms)
@@ -1578,6 +1651,15 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
                 return Err(Reject::Range);
             }
             take(&mut guard.world_global_budget, now_ms)
+        }
+        Message::ScriptVariables(m) => {
+            // a seat reports what its game changed (thuum ADR-068 rung 5):
+            // the watch list, a served record and every key's sequence are
+            // the server's
+            if !m.watch.is_empty() || m.served || m.entries.iter().any(|e| e.seq != 0) {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.script_variables_budget, now_ms)
         }
         _ => Ok(()),
     }
@@ -1778,6 +1860,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::DestructionStage(m) => check_destruction_stage(m),
         Message::AliasFill(m) => check_alias_fill(m),
         Message::WorldGlobal(m) => check_world_global(m),
+        Message::ScriptVariables(m) => check_script_variables(m),
         Message::CreateActor(m) => check_create_actor(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
@@ -4662,6 +4745,210 @@ mod graph_var_tests {
             prop_assert_eq!(validate_server(&m), if ok { Ok(()) } else { Err(Reject::Range) });
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);
+        }
+    }
+}
+
+#[cfg(test)]
+mod quest_word_and_script_variable_tests {
+    // thuum ADR-068 rung 5 (SCHEMA_VERSION 41): QuestStage's word, acting
+    // and served, and ScriptVariables 81
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+
+    // thuum ADR-068 rung 5: a run word, an acting player, the login replay
+    fn quest_word(quest: u32, stage: u16, word: Option<u8>, acting: Option<u32>, served: Option<bool>) -> Message {
+        Message::QuestStage(wire_schema::skymp::QuestStage { quest, stage, word, acting, served, ..Default::default() })
+    }
+
+    #[test]
+    fn quest_stages_carry_a_run_word_an_acting_player_and_the_replay_flag() {
+        // a relayed start of 0x10d3bb with c1 0xff000000 acting, a stop, a
+        // served stage of A Lovely Letter 0x74a83
+        let mut g = ClientGuard::default();
+        assert_eq!(validate_server(&quest_word(0x10d3bb, 0, Some(1), Some(0xff00_0000), None)), Ok(()));
+        assert_eq!(validate_server(&quest_word(0x10d3bb, 0, Some(2), None, None)), Ok(()));
+        assert_eq!(validate_server(&quest_word(0x74a83, 10, None, None, Some(true))), Ok(()));
+        assert_eq!(validate_server(&quest_word(0x74a83, 10, None, Some(0xffff_ffff), Some(false))), Ok(()));
+        // a seat's own words and its scope's acting player cross
+        assert_eq!(validate(&quest_word(0x10d3bb, 0, Some(1), None, None), &mut g, 0), Ok(()));
+        assert_eq!(validate(&quest_word(0x74a83, 10, None, Some(0xff00_0001), None), &mut g, 0), Ok(()));
+        assert_eq!(validate(&quest_word(0x74a83, 10, None, None, Some(false)), &mut g, 0), Ok(()));
+        // a word other than a start or a stop, a word with a stage, a word or
+        // an acting player on the login's list, an acting player the server
+        // does not name
+        for bad in [0u8, 3, u8::MAX] {
+            assert_eq!(validate_server(&quest_word(0x10d3bb, 0, Some(bad), None, None)), Err(Reject::Range), "{bad}");
+        }
+        assert_eq!(validate_server(&quest_word(0x10d3bb, 10, Some(2), None, None)), Err(Reject::Range));
+        assert_eq!(validate_server(&quest_word(0, 0, Some(1), None, None)), Err(Reject::Range));
+        assert_eq!(validate_server(&quest_word(0, 0, None, Some(0xff00_0000), Some(true))), Err(Reject::Range));
+        for low in [0u32, 0x14, 0xfeff_ffff] {
+            assert_eq!(validate_server(&quest_word(0x74a83, 10, None, Some(low), None)), Err(Reject::Range), "{low:x}");
+        }
+        // a client never sends the replay, and is refused before its budget
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&quest_word(0x74a83, 10, None, None, Some(true)), &mut g, 0), Err(Reject::Range));
+        for _ in 0..32 {
+            assert_eq!(validate(&quest_word(0x10d3bb, 0, Some(1), None, None), &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&quest_word(0x10d3bb, 0, Some(2), None, None), &mut g, 0), Err(Reject::Rate), "words share the stages' budget");
+    }
+
+    // thuum ADR-068 rung 5 (D-V1 B): MS13 0x39645's ::camillaescort_var and
+    // PlayerVampireQuest 0xeafd5's ::vampirestatus_var, its player's own
+    fn script_var(form: u32, var: &str, own: bool, k: u8, carried: [bool; 3], seq: u32) -> wire_schema::skymp::ScriptVarEntry {
+        let [i, f, b] = carried;
+        wire_schema::skymp::ScriptVarEntry {
+            form,
+            script: "MS13QuestScript".try_into().unwrap_or_default(),
+            var: var.try_into().unwrap_or_default(),
+            own,
+            k,
+            i: i.then_some(1),
+            f: f.then_some(0.5),
+            b: b.then_some(true),
+            seq,
+        }
+    }
+
+    fn script_vars(watch: &[(u32, &str)], entries: &[wire_schema::skymp::ScriptVarEntry], served: bool) -> Message {
+        use wire_schema::skymp::{ScriptVarKey, ScriptVariables};
+        let keys: Vec<ScriptVarKey> = watch.iter().map(|&(form, var)| ScriptVarKey { form, script: "MS13QuestScript".try_into().unwrap_or_default(), var: var.try_into().unwrap_or_default(), own: false }).collect();
+        Message::ScriptVariables(ScriptVariables { watch: keys.try_into().unwrap_or_default(), entries: entries.to_vec().try_into().unwrap_or_default(), served, ..Default::default() })
+    }
+
+    #[test]
+    fn script_variables_name_keys_once_with_their_kinds_and_a_client_reports_alone() {
+        let int = [true, false, false];
+        let escort = script_var(0x39645, "::camillaescort_var", false, 3, int, 0);
+        let status = script_var(0xeafd5, "::vampirestatus_var", true, 3, int, 0);
+        // a seat's report, its own key beside a world key
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&script_vars(&[], &[escort.clone(), status.clone()], false), &mut g, 0), Ok(()));
+        // the login: the watch, the served values with their sequences
+        let served = [script_var(0x39645, "::camillaescort_var", false, 3, int, 2), script_var(0xeafd5, "::vampirestatus_var", true, 4, [false, true, false], 1)];
+        let login = script_vars(&[(0x39645, "::camillaescort_var"), (0xeafd5, "::vampirestatus_var")], &served, true);
+        assert_eq!(validate_server(&login), Ok(()));
+        // a client sends no watch, no served record and no sequence, refused
+        // before its budget
+        assert_eq!(validate(&login, &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&script_vars(&[(0x39645, "::camillaescort_var")], &[], false), &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&script_vars(&[], &[script_var(0x39645, "::camillaescort_var", false, 3, int, 1)], false), &mut g, 0), Err(Reject::Range));
+        // the shape both ways: a kind outside 3 to 5 or a payload not its
+        // kind's, a key twice (names without case), a form of 0 or the
+        // server's, an empty name or one with a NUL, a served seq of 0
+        let refused = [
+            script_var(0x39645, "::camillaescort_var", false, 2, int, 0),
+            script_var(0x39645, "::camillaescort_var", false, 3, [true, true, false], 0),
+            script_var(0x39645, "::camillaescort_var", false, 5, int, 0),
+            script_var(0, "::camillaescort_var", false, 3, int, 0),
+            script_var(0xff00_0000, "::camillaescort_var", false, 3, int, 0),
+            script_var(0x39645, "", false, 3, int, 0),
+            script_var(0x39645, "::camillaescort_var\0", false, 3, int, 0),
+        ];
+        for e in refused {
+            assert_eq!(validate_server(&script_vars(&[], std::slice::from_ref(&e), false)), Err(Reject::Range), "{e:?}");
+        }
+        assert_eq!(validate_server(&script_vars(&[], &[escort.clone(), script_var(0x39645, "::CamillaEscort_var", true, 3, int, 0)], false)), Err(Reject::Range));
+        assert_eq!(validate_server(&script_vars(&[(0x39645, "::camillaescort_var"), (0x39645, "::CAMILLAESCORT_VAR")], &[], true)), Err(Reject::Range));
+        assert_eq!(validate_server(&script_vars(&[(0, "::camillaescort_var")], &[], true)), Err(Reject::Range));
+        assert_eq!(validate_server(&script_vars(&[], &[script_var(0x39645, "::camillaescort_var", false, 3, int, 0)], true)), Err(Reject::Range));
+        let nan = wire_schema::skymp::ScriptVarEntry { k: 4, i: None, f: Some(f32::NAN), ..escort.clone() };
+        assert_eq!(validate_server(&script_vars(&[], &[nan], false)), Err(Reject::NonFinite));
+        // four at once, then one a second
+        let mut g = ClientGuard::default();
+        for _ in 0..4 {
+            assert_eq!(validate(&script_vars(&[], std::slice::from_ref(&escort), false), &mut g, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&script_vars(&[], std::slice::from_ref(&escort), false), &mut g, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&script_vars(&[], &[escort], false), &mut g, 2_000), Ok(()));
+    }
+
+    // thuum ADR-068 rung 5: a quest stage's word, acting and served as the
+    // generator drew them
+    proptest! {
+        // any word, stage, quest, acting player and replay flag: a verdict,
+        // never a panic, and the verdict the rules give both ways
+        #[test]
+        fn quest_words_never_panic_and_judge_their_shapes(
+            quest in prop_oneof![Just(0u32), Just(0x10d3bbu32), any::<u32>()],
+            stage in prop_oneof![Just(0u16), any::<u16>()],
+            word in proptest::option::of(prop_oneof![1u8..3, any::<u8>()]),
+            acting in proptest::option::of(prop_oneof![Just(0xff00_0000u32), Just(0x14u32), any::<u32>()]),
+            served in proptest::option::of(any::<bool>()),
+            now in any::<u64>(),
+        ) {
+            let m = quest_word(quest, stage, word, acting, served);
+            let word_ok = word.is_none_or(|w| (w == 1 || w == 2) && stage == 0 && quest != 0);
+            let acting_ok = acting.is_none_or(|a| a >= 0xff00_0000 && quest != 0);
+            // quest 0 in mode 0 without a list is the login's message shape alone
+            let list_ok = quest != 0;
+            let shape = if word_ok && acting_ok && list_ok { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate_server(&m), shape);
+            let mut g = ClientGuard::default();
+            let client = if shape.is_ok() && served != Some(true) { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate(&m, &mut g, now), client);
+        }
+    }
+
+    // a condition-read entry as the generator drew it: its form as a code (0
+    // a world key's, 1 0, 2 a server form), its name as a code (0 its own,
+    // 1 empty, 2 with a NUL, 3 the first entry's), its kind, which of the
+    // int, float and bool fields are present, and its sequence
+    type VarDraw = (u8, u8, u8, [bool; 3], u32);
+
+    fn var_draw() -> impl Strategy<Value = VarDraw> {
+        (
+            prop_oneof![4 => Just(0u8), 1 => Just(1u8), 1 => Just(2u8)],
+            prop_oneof![4 => Just(0u8), 1 => Just(1u8), 1 => Just(2u8), 1 => Just(3u8)],
+            prop_oneof![3u8..6, any::<u8>()],
+            any::<[bool; 3]>(),
+            prop_oneof![Just(0u32), any::<u32>()],
+        )
+    }
+
+    proptest! {
+        // any entries up to the cap, served or not: a verdict, never a
+        // panic, and the verdict the rules give both ways
+        #[test]
+        fn script_variables_never_panic_and_judge_their_shapes(draws in proptest::collection::vec(var_draw(), 0..=cap::SCRIPT_VARIABLES), served in any::<bool>(), now in any::<u64>()) {
+            let mut entries = Vec::new();
+            let mut names: Vec<String> = Vec::new();
+            let mut ok = true;
+            for (n, (form, name, k, [i, f, b], seq)) in draws.iter().copied().enumerate() {
+                let form = match form {
+                    0 => 0x39645,
+                    1 => 0,
+                    _ => 0xff00_0000,
+                };
+                let name = match name {
+                    0 => format!("::v{n}_var"),
+                    1 => String::new(),
+                    2 => format!("::v{n}\0"),
+                    _ => names.first().cloned().unwrap_or_else(|| format!("::v{n}_var")),
+                };
+                let fits = matches!((k, [i, f, b]), (3, [true, false, false]) | (4, [false, true, false]) | (5, [false, false, true]));
+                ok = ok && fits && form == 0x39645 && !name.is_empty() && !name.contains('\0') && !names.contains(&name) && !(served && seq == 0);
+                names.push(name.clone());
+                entries.push(wire_schema::skymp::ScriptVarEntry {
+                    form,
+                    script: "MS13QuestScript".try_into().unwrap_or_default(),
+                    var: name.as_str().try_into().unwrap_or_default(),
+                    own: n % 2 == 1,
+                    k,
+                    i: i.then_some(7),
+                    f: f.then_some(0.25),
+                    b: b.then_some(false),
+                    seq,
+                });
+            }
+            let m = script_vars(&[], &entries, served);
+            prop_assert_eq!(validate_server(&m), if ok { Ok(()) } else { Err(Reject::Range) });
+            let mut g = ClientGuard::default();
+            let client = if ok && !served && entries.iter().all(|e| e.seq == 0) { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate(&m, &mut g, now), client);
         }
     }
 }

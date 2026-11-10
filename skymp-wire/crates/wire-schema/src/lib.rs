@@ -108,7 +108,14 @@ use bounded::{String, Vec};
 /// next free MsgType stays 81. And ScriptStateApply's `graph_vars` (D-C3 A,
 /// PENDING Eli): a world object's behavior graph variables served beside
 /// the record's view, each with its own sequence.
-pub const SCHEMA_VERSION: u16 = 40;
+/// 41: rung 5's quests (thuum ADR-068 rung 5, docs/research/
+/// rung5-quests-2026-11-09.md sections 1(a) and 8, m4-scripts-5-wire):
+/// QuestStage's optional `word` (1 a start, 2 a stop), `acting` (the acting
+/// player's actor) and `served` (the login replay), and ScriptVariables
+/// (MsgType 81, wire id 89: the condition-read script variables any seat
+/// reports, the latest write recorded per key with the server's sequence,
+/// a player-class quest's keys its player's own).
+pub const SCHEMA_VERSION: u16 = 41;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -253,6 +260,12 @@ pub mod cap {
     /// GLOB records number in the hundreds and a second's diff moves a
     /// handful (UNMEASURED: x-world-globals-rate v1 reads the rate).
     pub const WORLD_GLOBALS: usize = 512;
+    /// Keys in one ScriptVariables's watch list, and entries in one (thuum
+    /// ADR-068 rung 5): the census lists 770 condition-read keys in the
+    /// five masters (docs/research/rung5-quests-2026-11-09.md section 7), so
+    /// a login sends the watch in several messages; a second's report moves
+    /// a handful. UNMEASURED past the census.
+    pub const SCRIPT_VARIABLES: usize = 256;
     /// Entries in one gamemode code list.
     pub const GAMEMODE_ENTRIES: usize = 256;
     /// One gamemode function's JavaScript source.
@@ -617,6 +630,8 @@ pub enum Message {
     AliasFill(skymp::AliasFill),
     /// 88, MsgType 80 (thuum ADR-068 rung 4). See [`skymp::WorldGlobal`].
     WorldGlobal(skymp::WorldGlobal),
+    /// 89, MsgType 81 (thuum ADR-068 rung 5). See [`skymp::ScriptVariables`].
+    ScriptVariables(skymp::ScriptVariables),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -645,7 +660,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 89] = [
+const TABLE: [Row; 90] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -752,14 +767,19 @@ const TABLE: [Row; 89] = [
     // 512 entries at nine bytes and the scalars (thuum ADR-068 rung 4;
     // 4,617 bytes at the longest)
     row("WorldGlobal", 80, 8 * KIB, Both),
+    // 256 watched keys and 256 entries, every name at PAPYRUS_NAME and
+    // every number at its widest varint (thuum ADR-068 rung 5; 141,062
+    // bytes at the longest, pinned by the size test), under the 256 KiB the
+    // transport takes from a client
+    row("ScriptVariables", 81, 144 * KIB, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 89;
-const _: () = assert!(TABLE.len() == 89, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 90;
+const _: () = assert!(TABLE.len() == 90, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -873,6 +893,7 @@ impl Message {
             Message::DestructionStage(_) => 86,
             Message::AliasFill(_) => 87,
             Message::WorldGlobal(_) => 88,
+            Message::ScriptVariables(_) => 89,
         }
     }
 
@@ -921,6 +942,7 @@ mod tests {
         assert_eq!(Message::DestructionStage(skymp::DestructionStage::default()).name(), "DestructionStage");
         assert_eq!(Message::AliasFill(skymp::AliasFill::default()).name(), "AliasFill");
         assert_eq!(Message::WorldGlobal(skymp::WorldGlobal::default()).name(), "WorldGlobal");
+        assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).name(), "ScriptVariables");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -991,7 +1013,12 @@ mod tests {
         // ADR-068 rung 4's two, after 78: wire ids 87 and 88
         assert_eq!(name_of_msg_type(79), Some("AliasFill"));
         assert_eq!(name_of_msg_type(80), Some("WorldGlobal"));
-        assert_eq!(name_of_msg_type(81), None);
+        // ADR-068 rung 5's one, after 80: wire id 89
+        assert_eq!(name_of_msg_type(81), Some("ScriptVariables"));
+        assert_eq!(name_of_msg_type(82), None);
+        assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).wire_id(), 89);
+        assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).msg_type(), Some(81));
+        assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).direction(), Direction::Both);
         assert_eq!(Message::AliasFill(skymp::AliasFill::default()).wire_id(), 87);
         assert_eq!(Message::WorldGlobal(skymp::WorldGlobal::default()).wire_id(), 88);
         assert_eq!(Message::AliasFill(skymp::AliasFill::default()).direction(), Direction::Both);
@@ -1072,6 +1099,46 @@ mod tests {
         });
         let served = postcard::to_allocvec(&apply).unwrap_or_default();
         assert!(served.len() > bytes.len() && served.len() <= 256 * KIB, "{}", served.len());
+    }
+
+    /// A ScriptVariables at its caps (thuum ADR-068 rung 5): 256 watched
+    /// keys and 256 entries, every name at PAPYRUS_NAME, every number a
+    /// varint at its widest and every payload field carried.
+    fn script_variables_at_their_caps() -> skymp::ScriptVariables {
+        let name = || -> String<{ cap::PAPYRUS_NAME }> { "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default() };
+        let key = || skymp::ScriptVarKey { form: u32::MAX, script: name(), var: name(), own: true };
+        let entry = || skymp::ScriptVarEntry { form: u32::MAX, script: name(), var: name(), own: true, k: u8::MAX, i: Some(i32::MIN), f: Some(f32::MAX), b: Some(true), seq: u32::MAX };
+        skymp::ScriptVariables {
+            watch: (0..cap::SCRIPT_VARIABLES).map(|_| key()).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+            entries: (0..cap::SCRIPT_VARIABLES).map(|_| entry()).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+            served: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_script_variables_message_at_its_caps_fits_its_byte_cap() {
+        let full = script_variables_at_their_caps();
+        // the sample is whole, not a default left by a refused conversion
+        assert_eq!((full.watch.len(), full.entries.len()), (cap::SCRIPT_VARIABLES, cap::SCRIPT_VARIABLES));
+        let m = Message::ScriptVariables(full);
+        let bytes = postcard::to_allocvec(&m).unwrap_or_default();
+        assert_eq!(bytes.len(), 141_062);
+        assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
+        // a quest stage with its three rung 5 fields and the login's list
+        // full stays inside its 2 KiB
+        let stage = Message::QuestStage(skymp::QuestStage {
+            quest: u32::MAX,
+            stage: u16::MAX,
+            shared: (0..cap::SHARED_QUESTS).map(|_| u32::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+            mode: u8::MAX,
+            word: Some(u8::MAX),
+            acting: Some(u32::MAX),
+            served: Some(true),
+            ..Default::default()
+        });
+        let bytes = postcard::to_allocvec(&stage).unwrap_or_default();
+        assert!(bytes.len() > 256 * 5 && bytes.len() <= 2 * KIB, "{}", bytes.len());
     }
 
     #[test]
@@ -1275,6 +1342,10 @@ mod tests {
                 served: true,
                 ..Default::default()
             }),
+            // the condition-read variables at their caps and a stage word at
+            // its longest (thuum ADR-068 rung 5)
+            Message::ScriptVariables(script_variables_at_their_caps()),
+            Message::QuestStage(skymp::QuestStage { quest: u32::MAX, stage: u16::MAX, word: Some(u8::MAX), acting: Some(u32::MAX), served: Some(true), ..Default::default() }),
             // and its relay, the sequence carried (thuum ADR-068)
             Message::SpSnippet(skymp::SpSnippet {
                 class: "ObjectReference".try_into().unwrap_or_default(),

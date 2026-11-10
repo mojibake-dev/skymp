@@ -1,0 +1,16 @@
+{
+  "entries": [
+    {
+      "form": 962517,
+      "i": 2,
+      "k": 3,
+      "own": true,
+      "script": "PlayerVampireQuestScript",
+      "seq": 0,
+      "var": "::vampirestatus_var"
+    }
+  ],
+  "served": false,
+  "t": 81,
+  "watch": []
+}

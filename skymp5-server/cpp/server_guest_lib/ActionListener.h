@@ -227,6 +227,17 @@ public:
   virtual void OnWorldGlobal(const RawMessageData& rawMsgData,
                              const WorldGlobalMessage& msg);
 
+  // thuum ADR-068 rung 5 (ScriptVariables 81; D-V1 B, D-T2 B): a seat's
+  // report of the listed condition-read variables its game changed. The
+  // wire's half (A3) declares it and drops the report; the rung's server
+  // half (A4) writes its body over the bridge's ScriptVariables
+  // (script_variable_judge, script_variables_merge): a world key's latest
+  // write recorded on the world's journal and relayed to every other seat
+  // with its sequence, an own key's on the reporter's player's change form,
+  // never relayed. R2, recorded as reported
+  virtual void OnScriptVariables(const RawMessageData& rawMsgData,
+                                 const ScriptVariablesMessage& msg);
+
   // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
   // reports (a reference that is no actor activating the reference whose
   // activation parents name it): recorded through Activate's own path, and

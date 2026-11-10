@@ -967,6 +967,12 @@ wire_struct! {
     }
 }
 
+/// A quest's run word (thuum ADR-068 rung 5, QuestStage's `word`): the quest
+/// started (Quest.Start, the engine's questStart event).
+pub const QUEST_START: u8 = 1;
+/// A quest's run word: the quest stopped (Quest.Stop, questStop).
+pub const QUEST_STOP: u8 = 2;
+
 wire_struct! {
     /// MsgType 57, thuum's (docs/verbs/quest-stage.md, ADR-056; memo D58 B):
     /// the world's quest stages. Both directions, reliable. Client to
@@ -983,6 +989,22 @@ wire_struct! {
     /// twice, a client naming a list, a mode or a quest of 0), `E_VAL_RATE`
     /// (client to server); the mode's and the record's refusals are the
     /// server's (wire-rules `quest_stages`).
+    ///
+    /// Since SCHEMA_VERSION 41 (thuum ADR-068 rung 5; docs/research/
+    /// rung5-quests-2026-11-09.md section 1(a)) the same message carries a
+    /// quest's run and its acting player, each field absent unless set, so
+    /// a stage alone renders as before: `word` [`QUEST_START`] or
+    /// [`QUEST_STOP`] with stage 0 (a start or a stop the seat's engine
+    /// made, recorded once, relayed and served around the stages; wire-rules
+    /// `quest_runs`), `acting` the acting player's actor (from the server,
+    /// its stamp; from a seat, the scope's player its stage was set under,
+    /// absent meaning the sender), and `served` true on the login replay
+    /// (the receiver applies it as a load, skipping fragments). Reason
+    /// codes besides: `E_VAL_RANGE` (a word other than 1 or 2, a word with a
+    /// stage other than 0 or with quest 0, an `acting` below 0xff000000 or
+    /// with quest 0; from a client, `served` true); the server logs
+    /// `E_QUEST_PLAYER` (a player-class quest), `E_QUEST_CHURN`,
+    /// `E_QUEST_RUNS_FULL` and `E_QUEST_ACTING` by name.
     pub struct QuestStage {
         /// `"t": 57`.
         #[serde(default)]
@@ -1000,6 +1022,15 @@ wire_struct! {
         /// all. A client sends 0.
         #[serde(default)]
         pub mode: u8,
+        /// Since SCHEMA_VERSION 41: the run word, [`QUEST_START`] or
+        /// [`QUEST_STOP`], with stage 0; absent on a stage.
+        pub word: Option<u8>,
+        /// Since SCHEMA_VERSION 41: the acting player's actor (a server id,
+        /// 0xff000000 and up); absent means the sender.
+        pub acting: Option<u32>,
+        /// Since SCHEMA_VERSION 41: true on the login replay (server to
+        /// client only), applied as a load.
+        pub served: Option<bool>,
     }
 }
 
@@ -2654,6 +2685,95 @@ wire_struct! {
         pub entries: Vec<WorldGlobalEntry, { cap::WORLD_GLOBALS }>,
         /// The record served at login rather than a relay; false on every
         /// report.
+        pub served: bool,
+    }
+}
+
+wire_struct! {
+    /// One condition-read variable's key (thuum ADR-068 rung 5,
+    /// ScriptVariables): a quest's variable (CTDA 629 GetVMQuestVariable) or a
+    /// reference's (630 GetVMScriptVariable), named by its form, the attached
+    /// script whose chain declares it and the variable's name as the
+    /// condition carries it (`::vampirestatus_var`).
+    pub struct ScriptVarKey {
+        /// The QUST or REFR, a form of the load order both ends share; never
+        /// 0 nor 0xff000000 and up.
+        pub form: u32,
+        /// The attached script; never empty, no NUL.
+        pub script: String<{ cap::PAPYRUS_NAME }>,
+        /// The variable; never empty, no NUL.
+        pub var: String<{ cap::PAPYRUS_NAME }>,
+        /// The key is its player's own (its form a player-class quest): the
+        /// seat reports it flagged own, and its value is that player's alone.
+        pub own: bool,
+    }
+}
+
+wire_struct! {
+    /// One condition-read variable's value (thuum ADR-068 rung 5,
+    /// ScriptVariables): its key's four fields, `k` rung 3's folded kinds a
+    /// condition compares (3 an int, 4 a float, 5 a bool) with the one field
+    /// that kind names, and the server's sequence for the key.
+    pub struct ScriptVarEntry {
+        /// The QUST or REFR; never 0 nor 0xff000000 and up.
+        pub form: u32,
+        /// The attached script; never empty, no NUL.
+        pub script: String<{ cap::PAPYRUS_NAME }>,
+        /// The variable; never empty, no NUL.
+        pub var: String<{ cap::PAPYRUS_NAME }>,
+        /// Its player's own key's value (a report's own, or a player's
+        /// record served to it alone).
+        pub own: bool,
+        /// The kind, 3 to 5.
+        pub k: u8,
+        /// An int's value (k 3).
+        pub i: Option<i32>,
+        /// A float's value (k 4); finite.
+        pub f: Option<f32>,
+        /// A bool's value (k 5).
+        pub b: Option<bool>,
+        /// The server's sequence for the key, rising at each recorded write;
+        /// 0 on a report, never 0 when served.
+        pub seq: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 81, thuum's (ADR-068 rung 5, ScriptVariables; D-V1 B and
+    /// D-T2 B; docs/research/rung5-quests-2026-11-09.md sections 1(a), 7 and
+    /// 8(b)): the script variables a dialogue's conditions read. A topic
+    /// info's fragment runs on the talking seat alone and writes many of them
+    /// (458 of the census's 770 keys), so every seat reports a listed key its
+    /// game changed and the server keeps the latest write per key. Client to
+    /// server, reliable, R2: the changed entries (`watch` empty, `served`
+    /// false, every `seq` 0), a player-class quest's keys flagged `own`
+    /// (wire-rules script_variables: the latest write wins per key in the
+    /// server's order, an equal one folded; an own key's on the reporter's
+    /// player's record). Server to client, reliable: a recorded world key's
+    /// relay to the other seats (`served` false), never an own key's; at
+    /// login the watch list (the keys to read, each `own` set, in messages of
+    /// at most 256) and the served values (`served` true: the world's record,
+    /// and the player's own record to that player alone), each with its
+    /// key's sequence, which a receiver keeps per key, applying a value
+    /// above the one it holds. Reason codes: `E_VAL_RANGE` (a form of 0 or
+    /// 0xff000000 and up, a script or a variable empty or carrying a NUL, a
+    /// key named twice in a list, a kind outside 3 to 5 or a payload not
+    /// exactly its kind's, a served entry's seq of 0; from a client a
+    /// `watch`, `served` true or a seq other than 0), `E_VAL_NONFINITE`,
+    /// `E_VAL_RATE`; the server logs `E_SCRIPTVAR_UNLISTED`,
+    /// `E_SCRIPTVAR_PLAYER`, `E_SCRIPTVAR_KIND` and `E_SCRIPTVAR_FULL` by
+    /// name.
+    pub struct ScriptVariables {
+        /// `"t": 81`.
+        #[serde(default)]
+        pub t: MsgT<81>,
+        /// The keys to read (server to client only, at a login), each once.
+        #[serde(default)]
+        pub watch: Vec<ScriptVarKey, { cap::SCRIPT_VARIABLES }>,
+        /// The values, each key once.
+        pub entries: Vec<ScriptVarEntry, { cap::SCRIPT_VARIABLES }>,
+        /// The record served at login rather than a report or a relay;
+        /// false on every report.
         pub served: bool,
     }
 }

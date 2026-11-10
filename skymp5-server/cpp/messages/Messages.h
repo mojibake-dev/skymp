@@ -59,6 +59,7 @@
 #include "ScriptCallMessage.h"
 #include "ScriptStateApplyMessage.h"
 #include "ScriptStateMessage.h"
+#include "ScriptVariablesMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetInventoryMessage.h"
 #include "SetRaceMenuOpenMessage.h"
@@ -160,4 +161,5 @@
   REGISTER_MESSAGE(ScriptStateMessage)                                        \
   REGISTER_MESSAGE(ScriptStateApplyMessage)                                   \
   REGISTER_MESSAGE(AliasFillMessage)                                          \
-  REGISTER_MESSAGE(WorldGlobalMessage)
+  REGISTER_MESSAGE(WorldGlobalMessage)                                        \
+  REGISTER_MESSAGE(ScriptVariablesMessage)

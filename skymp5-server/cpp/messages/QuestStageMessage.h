@@ -2,6 +2,7 @@
 #include "MessageBase.h"
 #include "MsgType.h"
 #include <cstdint>
+#include <optional>
 #include <type_traits>
 #include <vector>
 
@@ -16,8 +17,13 @@
 // (list), the quests the seat reports and, in mode 1 (all), the DENIED
 // quests it never reports (empty when none is); `shared` is empty and
 // `mode` 0 in every other message, and a client naming either is refused.
-// The contract is skymp-wire's (wire-schema skymp.rs, QuestStage, MsgType
-// 57).
+// Since SCHEMA_VERSION 41 (thuum ADR-068 rung 5): `word` 1 a start or 2 a
+// stop with stage 0 (a quest's run, wire-rules quest_runs; a stage-0 report
+// with no word is a start too), `acting` the acting player's actor (the
+// server's stamp; a seat's scope's player, absent meaning the sender) and
+// `served` true on the login replay (applied as a load), each absent unless
+// set, so a stage alone reads and writes as before. The contract is
+// skymp-wire's (wire-schema skymp.rs, QuestStage, MsgType 57).
 struct QuestStageMessage : public MessageBase<QuestStageMessage>
 {
   static constexpr auto kMsgType =
@@ -30,7 +36,10 @@ struct QuestStageMessage : public MessageBase<QuestStageMessage>
       .Serialize("quest", quest)
       .Serialize("stage", stage)
       .Serialize("shared", shared)
-      .Serialize("mode", mode);
+      .Serialize("mode", mode)
+      .Serialize("word", word)
+      .Serialize("acting", acting)
+      .Serialize("served", served);
   }
 
   uint32_t quest = 0; // the QUST's form id in the load order both ends share
@@ -39,4 +48,11 @@ struct QuestStageMessage : public MessageBase<QuestStageMessage>
   // denied quests in mode 1
   std::vector<uint32_t> shared;
   uint8_t mode = 0; // server to client only, at a login: 0 list, 1 all
+  // thuum ADR-068 rung 5: the run word, 1 a start or 2 a stop with stage 0
+  // (a u8 on the wire); absent on a stage
+  std::optional<uint32_t> word;
+  // the acting player's actor (0xff000000 and up); absent means the sender
+  std::optional<uint32_t> acting;
+  // server to client only: true on the login replay
+  std::optional<bool> served;
 };

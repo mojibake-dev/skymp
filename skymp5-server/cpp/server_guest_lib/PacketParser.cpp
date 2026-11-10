@@ -339,6 +339,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnWorldGlobal(rawMsgData, *message);
         return;
       }
+      case MsgType::ScriptVariables: {
+        auto message =
+          reinterpret_cast<ScriptVariablesMessage*>(result->message.get());
+        actionListener.OnScriptVariables(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

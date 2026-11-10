@@ -1,0 +1,29 @@
+{
+  "entries": [
+    {
+      "form": 235077,
+      "i": 1,
+      "k": 3,
+      "own": false,
+      "script": "MS13QuestScript",
+      "seq": 2,
+      "var": "::camillaescort_var"
+    }
+  ],
+  "served": true,
+  "t": 81,
+  "watch": [
+    {
+      "form": 235077,
+      "own": false,
+      "script": "MS13QuestScript",
+      "var": "::camillaescort_var"
+    },
+    {
+      "form": 127569,
+      "own": false,
+      "script": "MG01QuestScript",
+      "var": "::niryaskillvar_var"
+    }
+  ]
+}

@@ -136,5 +136,8 @@ enum class MsgType : uint8_t
                     // or cleared, every seat's report, the latest recorded
   WorldGlobal = 80, // the same rung: the GLOBs every seat's scripts write,
                     // streamed by one seat at an epoch
+  ScriptVariables = 81, // thuum ADR-068 rung 5: the condition-read script
+                        // variables any seat reports, the latest write
+                        // recorded per key, a player's own keys its own
   Max
 };

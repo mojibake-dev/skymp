@@ -77,7 +77,7 @@ macro_rules! skymp_family {
             58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
             72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall,
             76 ScriptState, 77 ScriptStateApply, 78 DestructionStage, 79 AliasFill,
-            80 WorldGlobal
+            80 WorldGlobal, 81 ScriptVariables
         }
     };
 }
@@ -357,7 +357,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 80, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 81, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with
@@ -535,6 +535,73 @@ mod tests {
         let m = recognize(&text).unwrap_or_else(|e| panic!("80-WorldGlobal-0.json: {e}"));
         let rendered: Value = serde_json::from_str(&render(&m).unwrap_or_default()).unwrap_or(Value::Null);
         assert_eq!(rendered.get("stream"), None);
+    }
+
+    /// thuum ADR-068 rung 5 (SCHEMA_VERSION 41): QuestStage's run word,
+    /// acting player and replay flag, and ScriptVariables 81, shapes and
+    /// refusals. 57-2 the relayed start of the plan's x-quest-words quest
+    /// 0x10d3bb with c1 0xff000000 acting; 57-3 a stop word with stage 10,
+    /// refused; 57-4 A Lovely Letter 0x74a83's stage 10 served at a login;
+    /// 57-5 a seat's start word claiming the replay, refused from a client.
+    /// 81-0 a seat's report of MS13 0x39645's ::camillaescort_var (the
+    /// census's topic-info and scene write, docs/research/
+    /// rung5-quests-2026-11-09.md section 7); 81-1 the login's watch (it and
+    /// MG01 0x1f251's ::niryaskillvar_var) and its served value at the key's
+    /// sequence 2; 81-2 a kind 2, refused; 81-3 a seat's own entry,
+    /// PlayerVampireQuest 0xeafd5's ::vampirestatus_var (the player cut, its
+    /// kind illustrative). 57-0 and 57-1 carry none of the new fields and
+    /// render none.
+    #[test]
+    fn quest_word_and_script_variable_fixtures_validate_as_named() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        type Verdict = (&'static str, Result<(), Reject>, Result<(), Reject>);
+        let verdicts: [Verdict; 8] = [
+            ("57-QuestStage-2.json", Ok(()), Ok(())),
+            ("57-QuestStage-3.json", Err(Reject::Range), Err(Reject::Range)),
+            ("57-QuestStage-4.json", Ok(()), Err(Reject::Range)),
+            ("57-QuestStage-5.json", Ok(()), Err(Reject::Range)),
+            ("81-ScriptVariables-0.json", Ok(()), Ok(())),
+            ("81-ScriptVariables-1.json", Ok(()), Err(Reject::Range)),
+            ("81-ScriptVariables-2.json", Err(Reject::Range), Err(Reject::Range)),
+            ("81-ScriptVariables-3.json", Ok(()), Ok(())),
+        ];
+        for (name, shape, from_client) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), shape, "{name}");
+            assert_eq!(validate(&m, &mut ClientGuard::default(), 0), from_client, "{name}");
+        }
+        match recognize(&read("57-QuestStage-2.json")) {
+            Ok(Message::QuestStage(q)) => assert_eq!((q.quest, q.stage, q.word, q.acting, q.served), (0x10d3bb, 0, Some(skymp::QUEST_START), Some(0xff00_0000), None)),
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("57-QuestStage-4.json")) {
+            Ok(Message::QuestStage(q)) => assert_eq!((q.quest, q.stage, q.word, q.acting, q.served), (0x74a83, 10, None, None, Some(true))),
+            other => panic!("{other:?}"),
+        }
+        for name in ["57-QuestStage-0.json", "57-QuestStage-1.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let rendered = render(&m).unwrap_or_default();
+            assert!(!rendered.is_empty() && ["\"word\"", "\"acting\"", "\"served\""].iter().all(|k| !rendered.contains(k)), "{name}: {rendered}");
+        }
+        match recognize(&read("81-ScriptVariables-1.json")) {
+            Ok(Message::ScriptVariables(v)) => {
+                assert_eq!(v.watch.iter().map(|k| (k.form, k.var.as_str(), k.own)).collect::<Vec<_>>(), vec![(0x39645, "::camillaescort_var", false), (0x1f251, "::niryaskillvar_var", false)]);
+                assert_eq!(v.entries.iter().map(|e| (e.form, e.k, e.i, e.seq)).collect::<Vec<_>>(), vec![(0x39645, 3, Some(1), 2)]);
+                assert!(v.served);
+            }
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("81-ScriptVariables-3.json")) {
+            Ok(Message::ScriptVariables(v)) => {
+                assert_eq!(v.entries.iter().map(|e| (e.form, e.script.as_str(), e.var.as_str(), e.own, e.seq)).collect::<Vec<_>>(), vec![(0xeafd5, "PlayerVampireQuestScript", "::vampirestatus_var", true, 0)]);
+                assert!(v.watch.is_empty() && !v.served);
+            }
+            other => panic!("{other:?}"),
+        }
+        // a report's watch may be absent (a client's spelling of none)
+        let bare = read("81-ScriptVariables-0.json").replacen("\"watch\": []", "\"absent\": 0", 1);
+        assert!(matches!(recognize(&bare), Ok(Message::ScriptVariables(v)) if v.watch.is_empty() && v.entries.len() == 1));
     }
 
     /// thuum ADR-068 rung 4: a script set's placement names its reporter on

@@ -5910,6 +5910,17 @@ void ActionListener::OnWorldGlobal(const RawMessageData& rawMsgData,
                relay.entries.size(), relayed, refusals);
 }
 
+// thuum ADR-068 rung 5: the wire's half only. The message is recognized and
+// validated in Rust before it gets here; until the rung's server half (A4)
+// writes this body, a report is dropped, said at debug
+void ActionListener::OnScriptVariables(const RawMessageData& rawMsgData,
+                                       const ScriptVariablesMessage& msg)
+{
+  spdlog::debug("ScriptVariables: user {} sent {} entr(ies); no handler "
+                "before rung 5's server half, dropped",
+                rawMsgData.userId, msg.entries.size());
+}
+
 void ActionListener::SendWorldGlobals(MpActor& actor)
 {
   if (!partOne.WorldGlobalsEnabled()) {

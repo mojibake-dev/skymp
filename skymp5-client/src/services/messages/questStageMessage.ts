@@ -15,7 +15,12 @@ import { MsgType } from "../../messages";
 // marks a stage or word to apply as a load (the login's replay; D-Q3 A),
 // never true from a client. An absent field is no key on the wire (the
 // validator: a word 1 or 2 with stage 0 and a quest, acting at 0xff000000
-// and up). JSON field names as wire-schema's QuestStage reads them
+// and up). JSON field names as wire-schema's QuestStage reads them.
+// D-Q4 C (SCHEMA_VERSION 43): a seat's report names what made it, `cause` 1
+// a world cause or 2 the seat's own, and `root`, the root frame of the script
+// stack that made it ("<Script>.<Function>", absent when no script call did);
+// both the seat's own word (R2), the server judging a report it reads as a
+// start by them
 export interface QuestStageMessage {
     t: MsgType.QuestStage;
     quest: number;
@@ -27,4 +32,6 @@ export interface QuestStageMessage {
     wordStages?: number[]; // on a word from the server: the quest's StartUpStage(s) for a start, its ShutDownStage(s) for a stop (u16s)
     acting?: number;   // the acting player's actor (a server id, 0xff000000 and up)
     served?: boolean;  // from the server alone: apply as a load, its fragment skipped
+    cause?: number;    // a seat's report alone: 1 a world cause, 2 the seat's own (D-Q4 C)
+    root?: string;     // beside `cause`: "<Script>.<Function>", at most 257 bytes of [A-Za-z0-9_.]
 }

@@ -321,6 +321,20 @@ declare module "skyrimPlatform" {
     function on(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle;
     function once(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle;
     function setFurnitureAnimation(enabled: boolean): boolean;
+    // thuum ADR-068 rung 5, D-Q4 C (the platform's QuestCause.h): a quest's
+    // start, stop or stage with its cause as the seam read it at the call that
+    // made it ('world' or 'seat') and the root frame of that call's stack
+    // ("<Script>.<Function>", empty when no script call made it). The published
+    // 2.8.0 types name the quest alone; an older platform raises neither
+    // field, and QuestStageService reports as before when they are absent
+    interface QuestStartStopEvent {
+        cause?: 'world' | 'seat';
+        root?: string;
+    }
+    interface QuestStageEvent {
+        cause?: 'world' | 'seat';
+        root?: string;
+    }
     // thuum ADR-068 amendment A (rung 3, the script record): a reference whose
     // served record carries a view, so the gate holds its OnLoad and OnCellLoad
     // (and notes which it held) until ApplyScriptState clears the mark; a plain

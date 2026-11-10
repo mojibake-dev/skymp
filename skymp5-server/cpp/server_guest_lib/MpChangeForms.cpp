@@ -654,6 +654,41 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     res["worldGlobals"] = { { "entries", std::move(entries) } };
   }
 
+  // thuum ADR-068 rung 5: the world's quest runs and the condition-read
+  // script variables (the journal's world keys, a player's own); absent in
+  // older records and where none was recorded, read as none
+  if (changeForm.questRuns.has_value() && !changeForm.questRuns->empty()) {
+    auto entries = nlohmann::json::array();
+    for (const auto& entry : *changeForm.questRuns) {
+      entries.push_back({ { "quest", entry.quest.ToString() },
+                          { "running", entry.running },
+                          { "seq", entry.seq } });
+    }
+    res["questRuns"] = { { "entries", std::move(entries) } };
+  }
+  if (changeForm.scriptVariables.has_value() &&
+      !changeForm.scriptVariables->empty()) {
+    auto entries = nlohmann::json::array();
+    for (const auto& entry : *changeForm.scriptVariables) {
+      nlohmann::json j = { { "form", entry.form.ToString() },
+                           { "script", entry.script },
+                           { "var", entry.var },
+                           { "k", entry.k },
+                           { "seq", entry.seq } };
+      if (entry.i) {
+        j["i"] = *entry.i;
+      }
+      if (entry.f) {
+        j["f"] = *entry.f;
+      }
+      if (entry.b) {
+        j["b"] = *entry.b;
+      }
+      entries.push_back(std::move(j));
+    }
+    res["scriptVariables"] = { { "entries", std::move(entries) } };
+  }
+
   // the fifty fixes' D-C3 A (PENDING ELI): the graph variables a script set,
   // each with its kind, its one value and its sequence; absent in older
   // records and where no script set one, read as none
@@ -840,6 +875,8 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer placedByScript("placedByScript");
   static const JsonPointer aliasFills("aliasFills");
   static const JsonPointer worldGlobals("worldGlobals");
+  static const JsonPointer questRuns("questRuns");
+  static const JsonPointer scriptVariables("scriptVariables");
   static const JsonPointer graphVariables("graphVariables");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
@@ -1424,6 +1461,73 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       ReadEx(parsedEntries[i], value, &globals[i].value);
     }
     res.worldGlobals = std::move(globals);
+  }
+
+  // thuum ADR-068 rung 5: the keys as ToJson writes them, read only where
+  // present (rule 6's migration: an older record reads as none and keeps its
+  // formVersion)
+  if (element.at_pointer(questRuns.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, questRuns, &jTmp);
+    static const JsonPointer entries("entries"), quest("quest"),
+      running("running"), seq("seq");
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+    std::vector<MpChangeFormREFR::QuestRun> parsed;
+    for (auto& entry : parsedEntries) {
+      MpChangeFormREFR::QuestRun run;
+      const char* questTmp = "";
+      ReadEx(entry, quest, &questTmp);
+      run.quest = FormDesc::FromString(questTmp);
+      ReadEx(entry, running, &run.running);
+      ReadEx(entry, seq, &run.seq);
+      parsed.push_back(std::move(run));
+    }
+    res.questRuns = std::move(parsed);
+  }
+
+  if (element.at_pointer(scriptVariables.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, scriptVariables, &jTmp);
+    static const JsonPointer entries("entries"), form("form"),
+      script("script"), var("var"), k("k"), i("i"), f("f"), b("b"), seq("seq");
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+    std::vector<MpChangeFormREFR::ScriptVariable> parsed;
+    for (auto& entry : parsedEntries) {
+      MpChangeFormREFR::ScriptVariable variable;
+      const char* formTmp = "";
+      ReadEx(entry, form, &formTmp);
+      variable.form = FormDesc::FromString(formTmp);
+      const char* scriptTmp = "";
+      ReadEx(entry, script, &scriptTmp);
+      variable.script = scriptTmp;
+      const char* varTmp = "";
+      ReadEx(entry, var, &varTmp);
+      variable.var = varTmp;
+      ReadEx(entry, k, &variable.k);
+      ReadEx(entry, seq, &variable.seq);
+      if (entry.at_pointer(i.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        int32_t iTmp = 0;
+        ReadEx(entry, i, &iTmp);
+        variable.i = iTmp;
+      }
+      if (entry.at_pointer(f.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        float fTmp = 0.f;
+        ReadEx(entry, f, &fTmp);
+        variable.f = fTmp;
+      }
+      if (entry.at_pointer(b.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        bool bTmp = false;
+        ReadEx(entry, b, &bTmp);
+        variable.b = bTmp;
+      }
+      parsed.push_back(std::move(variable));
+    }
+    res.scriptVariables = std::move(parsed);
   }
 
   // the fifty fixes' D-C3 A (PENDING ELI): the key as ToJson writes it, read

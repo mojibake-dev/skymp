@@ -3728,6 +3728,39 @@ bool PartOne::SetWorldGlobals(std::vector<PlayerGlobal> globals)
   return WorldJournal().SetWorldGlobals(std::move(globals));
 }
 
+std::vector<MpChangeFormREFR::QuestRun> PartOne::GetQuestRuns()
+{
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
+  return WorldJournal().GetQuestRuns();
+}
+
+bool PartOne::SetQuestRuns(std::vector<MpChangeFormREFR::QuestRun> runs)
+{
+  if (runs.empty() && !worldState.LookupFormById(kWorldJournalRefId)) {
+    return false; // nothing to write, and no journal made for it
+  }
+  return WorldJournal().SetQuestRuns(std::move(runs));
+}
+
+std::vector<MpChangeFormREFR::ScriptVariable> PartOne::GetScriptVariables()
+{
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
+  return WorldJournal().GetScriptVariables();
+}
+
+bool PartOne::SetScriptVariables(
+  std::vector<MpChangeFormREFR::ScriptVariable> variables)
+{
+  if (variables.empty() && !worldState.LookupFormById(kWorldJournalRefId)) {
+    return false; // nothing to write, and no journal made for it
+  }
+  return WorldJournal().SetScriptVariables(std::move(variables));
+}
+
 std::vector<MpChangeFormREFR::AliasFill> PartOne::GetAliasFills()
 {
   // a read makes no journal: the login's serve reads the fills on every

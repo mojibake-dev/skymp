@@ -430,6 +430,67 @@ public:
   // player; absent in older records, read as none
   std::optional<std::vector<PlayerGlobal>> worldGlobals;
 
+  // thuum ADR-068 rung 5 (QuestStage 57's word; docs/research/
+  // rung5-quests-2026-11-09.md section 1(b)): the world's quest runs, each
+  // quest recorded running or stopped by its last start or stop word, with
+  // the record's sequence for it (wire-rules quest_runs: an equal word
+  // folded, a seat's churn held out), served at a login around the stages.
+  // On the world's journal (PartOne::WorldJournal) beside questStages, never
+  // on a player; absent in older records, read as none (an optional key,
+  // formVersion kept)
+  struct QuestRun
+  {
+    FormDesc quest;
+    bool running = false;
+    uint32_t seq = 0;
+    auto ToTuple() const { return std::make_tuple(quest, running, seq); }
+    friend bool operator==(const QuestRun& lhs, const QuestRun& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const QuestRun& lhs, const QuestRun& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<std::vector<QuestRun>> questRuns;
+
+  // thuum ADR-068 rung 5 (ScriptVariables 81; D-V1 B and D-T2 B): the
+  // condition-read script variables as recorded, the latest write per key in
+  // the server's order with the record's sequence for the key (wire-rules
+  // script_variables). On the world's journal, the world's keys, served to
+  // every seat; on a player's actor, its own keys (a player-class quest's:
+  // the marked quests' scalar variables and the two names of its game-time
+  // registration), served to that player alone and relayed to nobody. `k` is
+  // the folded kind and the one value it carries: 3 `i`, 4 `f`, 5 `b`
+  // (GraphVariable's idiom). Absent in older records and on forms no seat
+  // reported, read as none (an optional key, formVersion kept)
+  struct ScriptVariable
+  {
+    FormDesc form;
+    std::string script;
+    std::string var;
+    uint32_t k = 0;
+    std::optional<int32_t> i;
+    std::optional<float> f;
+    std::optional<bool> b;
+    uint32_t seq = 0;
+    auto ToTuple() const
+    {
+      return std::make_tuple(form, script, var, k, i, f, b, seq);
+    }
+    friend bool operator==(const ScriptVariable& lhs,
+                           const ScriptVariable& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const ScriptVariable& lhs, const ScriptVariable& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<std::vector<ScriptVariable>> scriptVariables;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -461,7 +522,8 @@ public:
       raceMenuPreset, actorValueRecord, staffRank, runningEffects, shoutRecord,
       playerGlobals, questStages, placedBySpell, lock, destruction,
       changeFormRecord, scriptState, refStateSeq, crimeFaction, relationships,
-      placedByScript, aliasFills, worldGlobals, unresolved);
+      placedByScript, aliasFills, worldGlobals, questRuns, scriptVariables,
+      unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

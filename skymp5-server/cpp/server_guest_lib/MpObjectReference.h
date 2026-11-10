@@ -315,6 +315,15 @@ public:
   std::vector<PlayerGlobal> GetWorldGlobals() const;
   bool SetWorldGlobals(std::vector<PlayerGlobal> globals);
 
+  // thuum ADR-068 rung 5: the world's quest runs, on the same journal; and
+  // the condition-read script variables, the journal's the world's keys, a
+  // player's actor's its own; empty when none; false when unchanged
+  std::vector<MpChangeFormREFR::QuestRun> GetQuestRuns() const;
+  bool SetQuestRuns(std::vector<MpChangeFormREFR::QuestRun> runs);
+  std::vector<MpChangeFormREFR::ScriptVariable> GetScriptVariables() const;
+  bool SetScriptVariables(
+    std::vector<MpChangeFormREFR::ScriptVariable> variables);
+
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the spell whose
   // accepted cast made the server place this reference, none for every
   // other form; the record's mark for the sweep at load

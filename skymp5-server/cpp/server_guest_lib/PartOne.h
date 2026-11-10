@@ -288,6 +288,17 @@ public:
   std::vector<PlayerGlobal> GetWorldGlobals();
   bool SetWorldGlobals(std::vector<PlayerGlobal> globals);
 
+  // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md section
+  // 1(b), rule 6): the world's quest runs (QuestStage 57's words) and the
+  // world's condition-read script variables (ScriptVariables 81's world
+  // keys), on the journal beside its stages; a read makes no journal
+  // (GetAliasFills says why), the first write does
+  std::vector<MpChangeFormREFR::QuestRun> GetQuestRuns();
+  bool SetQuestRuns(std::vector<MpChangeFormREFR::QuestRun> runs);
+  std::vector<MpChangeFormREFR::ScriptVariable> GetScriptVariables();
+  bool SetScriptVariables(
+    std::vector<MpChangeFormREFR::ScriptVariable> variables);
+
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
   // server places at an accepted cast of a listed spell,
   // server-settings.json's `spellPlacedObjects` (a JSON list, "[]" for

@@ -918,6 +918,7 @@ export class RemoteServer extends ClientListener {
           // Note: appearance part was copy-pasted
           if (msg.appearance) {
             applyAppearanceToPlayer(msg.appearance);
+            this.controller.lookupListener(RaceMenuService).ownAppearanceApplied();
           }
         }
 
@@ -998,6 +999,7 @@ export class RemoteServer extends ClientListener {
               // Note: appearance part was copy-pasted
               if (msg.appearance) {
                 applyAppearanceToPlayer(msg.appearance);
+                this.controller.lookupListener(RaceMenuService).ownAppearanceApplied();
               }
             });
           }
@@ -1124,6 +1126,7 @@ export class RemoteServer extends ClientListener {
     if (i === this.getMyActorIndex() && newAppearance) {
       this.controller.once("update", () => {
         applyAppearanceToPlayer(newAppearance);
+        this.controller.lookupListener(RaceMenuService).ownAppearanceApplied();
         logTrace(this, "Applied appearance to the player");
       });
     }

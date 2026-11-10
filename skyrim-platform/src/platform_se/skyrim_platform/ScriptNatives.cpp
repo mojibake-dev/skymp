@@ -165,7 +165,21 @@ constexpr std::size_t kRowCount = std::size(kRows);
 // argument must be one the calling script's attachment names, H-VR1); on any
 // other actor this seat owns each is a plain state row, counted and touched,
 // and a non-owned one is judged by the lever as every state row is
-// (a figure's copy of a twin's race is the server's appearance word's)
+// (a figure's copy of a twin's race is the server's appearance word's).
+// Since Eli's D-R1 C (thuum docs/DECISIONS.md, rung 5's stage-eve words) the
+// player's inventory too: ObjectReference.AddItem and RemoveItem
+// (FunctionsDump.txt: `AddItem(Form akItemToAdd, Int aiCount, Bool
+// abSilent)` and `RemoveItem(Form akItemToRemove, Int aiCount, Bool
+// abSilent, ObjectReference akOtherContainer)`, both latent), batched with
+// their typed arguments on the seat's own player alone, which the server
+// records as reported (R2, no bound): a quest's reward, which the client's
+// inventory apply undid while nothing told the server of it (x-acting-frame
+// 20261110-072506). An owned call on any other reference stays the counted
+// and touched state row it was, and a non-owned one keeps the latent rule
+// under every lever (SkipsBody): only the player's own is recorded, so
+// nothing else carries a skipped body's item. Inside another player's acting
+// scope the self is that player's figure by now (step (0) of OnCall), never
+// 0x14, so the fragment's grant crosses once, from the acting seat
 enum class RecordRow : std::uint8_t
 {
   None,
@@ -202,7 +216,9 @@ constexpr BatchedRowName kBatchedStateRows[] = {
   { "Actor", "AddShout", RecordRow::PlayerOwn },
   { "Actor", "RemoveShout", RecordRow::PlayerOwn },
   { "Actor", "EquipItem", RecordRow::PlayerOwn },
-  { "Actor", "ChangeHeadPart", RecordRow::PlayerOwn }
+  { "Actor", "ChangeHeadPart", RecordRow::PlayerOwn },
+  { "ObjectReference", "AddItem", RecordRow::PlayerOwn },
+  { "ObjectReference", "RemoveItem", RecordRow::PlayerOwn }
 };
 
 // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
@@ -892,7 +908,11 @@ const char* LeverName(NonOwnerSkip skip)
 // W3 (rung 4's fresh review, note 1): a guest's dialogue or stage fragment on
 // an NPC another seat simulates runs on the guest alone (the relayed stage's
 // fragment is suppressed on the owner), so the guest's own copy is the only
-// one, and the owner's record overwrites it where one exists
+// one, and the owner's record overwrites it where one exists. A latent
+// player's own row (AddItem and RemoveItem, D-R1 C) is recorded on the
+// seat's own player alone, so recorded keeps the latent rule for it: no
+// record carries a container's or an NPC's item, or a figure's (the seven
+// non-latent own rows are skipped as before)
 bool SkipsBody(const RowInfo& info)
 {
   if (info.record == RecordRow::Standing) {
@@ -902,7 +922,9 @@ bool SkipsBody(const RowInfo& info)
     case NonOwnerSkip::NonLatent:
       return !info.latent;
     case NonOwnerSkip::Recorded:
-      return !info.latent || info.record != RecordRow::None;
+      return !info.latent ||
+        (info.record != RecordRow::None &&
+         info.record != RecordRow::PlayerOwn);
     case NonOwnerSkip::None:
       break;
   }
@@ -1720,7 +1742,8 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // (e) owned. A state row is the record's (ADR-065: the change form carries
   // it), counted; a batched one (Kill and KillSilent, ProcessTrapHit, and
   // since rung 4 the record rows) crosses in the batch with its arguments
-  // instead, a transformation row (rung 5) on the seat's own player alone.
+  // instead, a player's own row (rung 5's transformation, D-R1 C's
+  // inventory) on the seat's own player alone.
   // Since rung 3 (thuum ADR-068, the script record) every other
   // state row's call also crosses as a touch (QueueTouch): the owner's mark
   // that the self's or the calling script's state may have changed
@@ -1845,8 +1868,7 @@ const char* CrossingNote(const RowInfo& info)
     case RecordRow::Standing:
       return ", batched (a standing record row)";
     case RecordRow::PlayerOwn:
-      return ", batched on the seat's own player alone (a transformation "
-             "row)";
+      return ", batched on the seat's own player alone (a player's own row)";
     case RecordRow::None:
       break;
   }

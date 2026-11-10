@@ -23,8 +23,12 @@
 // two transformations; docs/research/rung5-quests-2026-11-09.md section
 // 8(b)) appends the player's own six, kept as its own record
 // (RecordKind::PlayerOwn, judged by wire-rules player_own); forty-nine rows,
-// their NativeRows.inc lines in the same commit. Included by natives.rs,
-// whose types it names.
+// their NativeRows.inc lines in the same commit. Eli's D-R1 C (thuum
+// docs/DECISIONS.md, rung 5's stage-eve words) gives the flip's AddItem and
+// RemoveItem the same keep on the player's own 0x14 (Owner::Player,
+// Keep::Record(RecordKind::PlayerOwn)), in place: NativeRows.inc has no
+// owner or keep column, so its lines stand. Included by natives.rs, whose
+// types it names.
 
 /// Every tabled native (thuum ADR-068 decision 3): rung 2's set, the six
 /// action rows, the flip's twenty-four state and everyone rows and
@@ -33,8 +37,10 @@
 /// evidence; then rung 4's seven, the standing's six kept as the NPC's record
 /// and ReferenceAlias.Clear beside ForceRefTo; then D-W2's Sound.Play and
 /// CreateDetectionEvent, a firing's looks alone; then rung 5's six, a
-/// player's own race, spells, shouts and equipment, kept as its own record.
-/// A native with no row has no channel. Forty-nine rows.
+/// player's own race, spells, shouts and equipment, kept as its own record,
+/// and D-E1 A's head part; the flip's AddItem and RemoveItem keep the
+/// player's own inventory on its own 0x14 since D-R1 C. A native with no row
+/// has no channel. Fifty rows.
 pub const TABLE: &[Row] = &[
     // the actions: relayed to the subject's listeners as the row's relay
     // native, the graph variables' kept on the subject as well
@@ -46,9 +52,15 @@ pub const TABLE: &[Row] = &[
     Row { cls: "ObjectReference", func: "SetAnimationVariableFloat", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Variable, look: Look::Also, params: &[Param::String, Param::Float] },
     // the flip's state rows: the object's record carries them (rung 4: the
     // ref state's five and the placements' two kept as their subject's
-    // record, the rest still carried by the change form or a typed verb)
-    Row { cls: "ObjectReference", func: "AddItem", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object, Param::Int, Param::Bool] },
-    Row { cls: "ObjectReference", func: "RemoveItem", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object, Param::Int, Param::Bool, Param::Object] },
+    // record, the rest still carried by the change form or a typed verb).
+    // Eli's D-R1 C: a script's AddItem and RemoveItem on the seat's own
+    // player (its subject 0x14) are that player's own inventory record, R2,
+    // judged by wire-rules player_own with no bound (a quest's reward fires
+    // every time, a leveled one or a count its script computes among them);
+    // on any other subject they are the counted state rows they were, with
+    // no channel (record_owner's E_SCRIPTCALL_ROW)
+    Row { cls: "ObjectReference", func: "AddItem", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object, Param::Int, Param::Bool] },
+    Row { cls: "ObjectReference", func: "RemoveItem", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object, Param::Int, Param::Bool, Param::Object] },
     Row { cls: "ObjectReference", func: "Enable", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), look: Look::Never, params: &[Param::Bool] },
     Row { cls: "ObjectReference", func: "EnableNoWait", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), look: Look::Never, params: &[Param::Bool] },
     Row { cls: "ObjectReference", func: "Disable", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::CellHost, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::RefState), look: Look::Never, params: &[Param::Bool] },

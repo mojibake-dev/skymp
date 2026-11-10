@@ -4,11 +4,13 @@ import { MsgType } from "../../messages";
 import { ScriptCallMessage } from "../messages/scriptCallMessage";
 import { SpSnippetArgument } from "../messages/spSnippetMessage";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
+import { keepDeficit, keepSurplus } from "../../sync/inventory";
 import { AliasFillService } from "./aliasFillService";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { ObjectAnimationService } from "./objectAnimationService";
 import { PropService } from "./propService";
+import { holdPcInventoryBase } from "./remoteServer";
 import { ScriptStateService } from "./scriptStateService";
 import { TrapResultService } from "./trapResultService";
 
@@ -81,6 +83,19 @@ import { TrapResultService } from "./trapResultService";
 // seventh the same way, Actor.ChangeHeadPart (m4-scripts-5-server a403ddd4,
 // m4-scripts-5-platform cbb59343): its part an HDPT the player's recorded
 // race may wear, which the server records on the player's look.
+// Eli's D-R1 C (thuum docs/DECISIONS.md, rung 5's stage-eve words): a
+// script's ObjectReference.AddItem and RemoveItem on this seat's own player
+// (0x14) are the player's own inventory, batched kind "state" with their
+// arguments (the item as { formId }, the count, the silent flag and a
+// removal's other container) and sent the same way, unfolded, which the
+// server records as reported (R2, no bound): a quest's reward, A Lovely
+// Letter's 25 gold among them. Each holds its base against remoteServer.ts's
+// 5 s inventory apply from the call's arrival here until ownItemHoldMs past
+// its send (holdOwnItem), so no apply undoes it before the server's
+// SetInventory carries it into pcInv. Inside another player's acting scope
+// the platform names that player's figure where the script named the
+// player, a self that is never 0x14 and never batched (not this seat's), so
+// a relayed fragment's grant is reported once, by the acting seat.
 // Every batched call keeps rung 3's read trigger (noteCall below).
 type Outgoing = {
     call: ScriptCall;
@@ -233,8 +248,10 @@ export class ScriptCallService extends ClientListener {
     // login, PartOne::SetUserActor)
     private noteRecord(call: ScriptCall, family: "ref" | "standing" | "own") {
         if (family === "own") {
-            // rung 5's transformation rows: the player's own alone, unfolded
+            // rung 5's transformation rows and D-R1 C's inventory rows: the
+            // player's own alone, unfolded
             if (call.self === 0x14) {
+                this.holdOwnItem(call, Date.now());
                 this.queue({ call, record: true, key: undefined, dropped: false });
             }
             return;
@@ -315,8 +332,28 @@ export class ScriptCallService extends ClientListener {
             this.forget(entry);
             if (this.send(entry.call, host)) {
                 this.recordsSent++;
+                // D-R1 C: the hold runs on from the send, which the record
+                // bucket may have held back
+                this.holdOwnItem(entry.call, now);
             }
         }
+    }
+
+    // thuum docs/DECISIONS.md D-R1 C: an own AddItem or RemoveItem holds its
+    // item's base against remoteServer.ts's inventory apply until
+    // ownItemHoldMs past `now`, an add's surplus (keepSurplus) or a
+    // removal's deficit (keepDeficit), so the apply never undoes the grant
+    // before the server's SetInventory carries it; a leveled list's id
+    // names no inventory entry and holds nothing. JS state alone
+    private holdOwnItem(call: ScriptCall, now: number) {
+        if (call.self !== 0x14 || call.cls !== "ObjectReference" || !ScriptCallService.playerItemRows.has(call.fn)) {
+            return;
+        }
+        const item = call.args[0];
+        if (item === null || typeof item !== "object" || item.formId === 0) {
+            return;
+        }
+        holdPcInventoryBase(item.formId, call.fn === "AddItem" ? keepSurplus : keepDeficit, now + ScriptCallService.ownItemHoldMs);
     }
 
     private forget(entry: Outgoing) {
@@ -326,11 +363,14 @@ export class ScriptCallService extends ClientListener {
     }
 
     // the record rows (docs/NATIVES.md's keep column, Record(RefState) and
-    // Record(Standing), and rung 5's seven of the player's own), by the
-    // table's spelling
+    // Record(Standing), and rung 5's seven of the player's own with D-R1 C's
+    // two of its inventory), by the table's spelling
     private static recordFamily(call: ScriptCall): "ref" | "standing" | "own" | undefined {
         if (call.cls === "ObjectReference" && ScriptCallService.refStateRows.has(call.fn)) {
             return "ref";
+        }
+        if (call.cls === "ObjectReference" && ScriptCallService.playerItemRows.has(call.fn)) {
+            return "own";
         }
         if (call.cls === "Actor" && ScriptCallService.standingRows.has(call.fn)) {
             return "standing";
@@ -623,4 +663,9 @@ export class ScriptCallService extends ClientListener {
     private static readonly refStateRows = new Set<string>(["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"]);
     private static readonly standingRows = new Set<string>(["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"]);
     private static readonly playerOwnRows = new Set<string>(["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem", "ChangeHeadPart"]);
+    // D-R1 C: the player's inventory, ObjectReference's two
+    private static readonly playerItemRows = new Set<string>(["AddItem", "RemoveItem"]);
+    // UNMEASURED: two of remoteServer.ts's 5 s apply periods, far past a
+    // report's round trip to the server's SetInventory
+    private static readonly ownItemHoldMs = 10_000;
 }

@@ -16,6 +16,26 @@
 //! `E_SCRIPTCALL_UNNAMED`; one the look wears already folds, any other is
 //! recorded on the look (the core swaps the part of the same HDPT type).
 //!
+//! Eli's D-R1 C (thuum docs/DECISIONS.md, rung 5's stage-eve words) adds the
+//! inventory's two in the same shape, ObjectReference.AddItem and RemoveItem
+//! on the seat's own player: a quest's reward is the seat's own record, R2
+//! (rule 5's "record it as unvalidated"), so neither row has the bound ("the
+//! most likely to fire every time": a bound would refuse a leveled reward or
+//! an item a script computes at run time), and they amend the fresh review's
+//! note 4 (no row minted an item) for these two alone. The kind holds (an
+//! item of libespm's item types, else `E_SCRIPTCALL_ARGS`), and so does the
+//! count's own bound ([`item_count`]: a whole number from 1 to the Papyrus
+//! Int's largest). An add is recorded as reported, at most to the record's
+//! count bound; a removal takes at most what the record holds (never below
+//! zero), the overlay's own first (the werewolf's WolfSkinFXArmor, which its
+//! EquipItem put there, removed before the race's return), and folds into a
+//! container the player holds open, whose own move (PutItem) carries it. A
+//! leveled list is refused by name (`E_SCRIPTCALL_LEVELED`): the engine's
+//! roll is what landed, and the report carries the list, not the roll (the
+//! named gap; the record never holds the list's form). Other seats run a
+//! relayed fragment on the acting player's figure (rung 5's acting scope),
+//! so the grant is reported once, by the acting seat, on its own 0x14.
+//!
 //! The kind first: the call's form (its first argument) must be a record of
 //! the row's type, a RACE for SetRace, a SPEL for AddSpell and RemoveSpell,
 //! a SHOU for AddShout and RemoveShout, an item (libespm's item types) for
@@ -62,12 +82,19 @@
 
 use std::collections::BTreeMap;
 
-/// The seven rows, by Papyrus class and name (natives_table.rs's order).
-pub const ROWS: [(&str, &str); 7] = [("Actor", "SetRace"), ("Actor", "AddSpell"), ("Actor", "RemoveSpell"), ("Actor", "AddShout"), ("Actor", "RemoveShout"), ("Actor", "EquipItem"), ("Actor", "ChangeHeadPart")];
+/// The nine rows, by Papyrus class and name (natives_table.rs's order: the
+/// flip's AddItem and RemoveItem first, D-R1 C keeping them in place).
+pub const ROWS: [(&str, &str); 9] = [("ObjectReference", "AddItem"), ("ObjectReference", "RemoveItem"), ("Actor", "SetRace"), ("Actor", "AddSpell"), ("Actor", "RemoveSpell"), ("Actor", "AddShout"), ("Actor", "RemoveShout"), ("Actor", "EquipItem"), ("Actor", "ChangeHeadPart")];
 
-/// One of the seven natives.
+/// One of the nine natives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
+    /// ObjectReference.AddItem(Form akItemToAdd, Int aiCount, Bool abSilent)
+    /// (D-R1 C).
+    AddItem,
+    /// ObjectReference.RemoveItem(Form akItemToRemove, Int aiCount, Bool
+    /// abSilent, ObjectReference akOtherContainer) (D-R1 C).
+    RemoveItem,
     /// Actor.SetRace(Race akRace).
     SetRace,
     /// Actor.AddSpell(SPELL akSpell, Bool abVerbose).
@@ -90,8 +117,32 @@ impl Row {
     #[must_use]
     pub fn of(cls: &str, func: &str) -> Option<Self> {
         let at = ROWS.iter().position(|(c, f)| c.eq_ignore_ascii_case(cls) && f.eq_ignore_ascii_case(func))?;
-        [Row::SetRace, Row::AddSpell, Row::RemoveSpell, Row::AddShout, Row::RemoveShout, Row::EquipItem, Row::ChangeHeadPart].get(at).copied()
+        [Row::AddItem, Row::RemoveItem, Row::SetRace, Row::AddSpell, Row::RemoveSpell, Row::AddShout, Row::RemoveShout, Row::EquipItem, Row::ChangeHeadPart].get(at).copied()
     }
+
+    /// The row's Papyrus class, as a refusal names its native.
+    #[must_use]
+    pub fn class(self) -> &'static str {
+        match self {
+            Row::AddItem | Row::RemoveItem => "ObjectReference",
+            Row::SetRace | Row::AddSpell | Row::RemoveSpell | Row::AddShout | Row::RemoveShout | Row::EquipItem | Row::ChangeHeadPart => "Actor",
+        }
+    }
+}
+
+/// The call's count (its second argument, aiCount, as the wire carried it)
+/// as a count of items for AddItem and RemoveItem (D-R1 C): a whole number
+/// from 1 to 2147483647, the Papyrus Int's largest (the platform reads the
+/// frame's Int as itself, ReadArg in skyrim-platform ScriptNatives.cpp); none
+/// for any other number, a count of none or below landing nothing and no
+/// seat's frame carrying a fraction or a number past an Int.
+#[must_use]
+pub fn item_count(count: f64) -> Option<u32> {
+    if !count.is_finite() || count.fract() != 0.0 || !(1.0..=f64::from(i32::MAX)).contains(&count) {
+        return None;
+    }
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // range checked above
+    Some(count as u32)
 }
 
 /// One object the calling script's attachment names (libespm VMAD): an
@@ -145,11 +196,23 @@ pub struct Facts {
     pub held: bool,
     /// The form's record is the row's kind: a RACE (SetRace), a SPEL
     /// (AddSpell, RemoveSpell), a SHOU (AddShout, RemoveShout), an item
-    /// (EquipItem), an HDPT (ChangeHeadPart).
+    /// (EquipItem, AddItem, RemoveItem), an HDPT (ChangeHeadPart).
     pub kind: bool,
     /// ChangeHeadPart's head part may be worn by the recorded race: its
     /// HDPT's valid-race FormList (RNAM) holds the race.
     pub race_valid: bool,
+    /// AddItem's form is a leveled item list (LVLI), whose roll is the
+    /// engine's (D-R1 C's named gap).
+    pub leveled: bool,
+    /// How many of the form the player's record holds over all its stacks
+    /// (AddItem's room below the count's bound, RemoveItem's clamp).
+    pub held_count: u32,
+    /// AddItem's and RemoveItem's count of items ([`item_count`] of the
+    /// call's aiCount), none when the number lands nothing.
+    pub count: Option<u32>,
+    /// RemoveItem's akOtherContainer is a container the player holds open:
+    /// that container's own move (PutItem) carries the removal.
+    pub into_held_open: bool,
 }
 
 /// An open overlay: the race the player wears beyond its record and what
@@ -164,20 +227,25 @@ pub struct Overlay {
     pub spells: Vec<u32>,
     /// Shouts added while open, in order.
     pub shouts: Vec<u32>,
-    /// Items equipped while open, in order.
+    /// Items equipped while open, in order (a RemoveItem of one takes it
+    /// from here first, D-R1 C).
     pub items: Vec<u32>,
 }
 
 /// Why a call is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Code {
-    /// The form is no record of the row's kind (natives' argument code).
+    /// The form is no record of the row's kind (natives' argument code), or
+    /// AddItem's or RemoveItem's count lands nothing.
     Args,
     /// The form is no value of the calling script's live attachments, or
     /// an item outside an overlay that the player's record does not hold.
     Unnamed,
     /// A race `restrictedRaces` keeps from the player's profile.
     Race,
+    /// AddItem's form is a leveled list: what landed is the engine's roll,
+    /// which the report does not carry (D-R1 C's named gap).
+    Leveled,
 }
 
 impl Code {
@@ -188,6 +256,7 @@ impl Code {
             Code::Args => "E_SCRIPTCALL_ARGS",
             Code::Unnamed => "E_SCRIPTCALL_UNNAMED",
             Code::Race => "E_SCRIPTCALL_RACE",
+            Code::Leveled => "E_SCRIPTCALL_LEVELED",
         }
     }
 }
@@ -200,7 +269,7 @@ impl Row {
             Row::SetRace => "RACE",
             Row::AddSpell | Row::RemoveSpell => "SPEL",
             Row::AddShout | Row::RemoveShout => "SHOU",
-            Row::EquipItem => "item",
+            Row::EquipItem | Row::AddItem | Row::RemoveItem => "item",
             Row::ChangeHeadPart => "HDPT",
         }
     }
@@ -210,13 +279,18 @@ impl Row {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// Written to the player's change form (the race, a learned spell or
-    /// shout added or removed; never an item, which no row mints). `ended`
-    /// an overlay this call closed (a twin or a Playable race taken while
-    /// one was open), whose adds the core strips.
+    /// shout added or removed, a head part on the look; never an item, which
+    /// only the two inventory rows write, [`Verdict::Items`]). `ended` an
+    /// overlay this call closed (a twin or a Playable race taken while one
+    /// was open), whose adds the core strips.
     Record {
         /// The overlay the call ended, if any.
         ended: Option<Overlay>,
     },
+    /// Written to the player's inventory on its change form (D-R1 C): this
+    /// many of the form added (AddItem, as reported, at most to the record's
+    /// count bound) or removed (RemoveItem, at most what the record holds).
+    Items(u32),
     /// Held in the player's overlay (opened, its race moved, a form added
     /// or removed), never written to the change form.
     Overlay,
@@ -250,13 +324,17 @@ impl PlayerOverlays {
     /// One call of `row` by `player`'s own scripts naming `form`: the kind
     /// first, then the bound over the calling script's live attachments'
     /// `properties` (a SetRace to the recorded race passes it: the race's
-    /// return).
+    /// return). AddItem and RemoveItem have no bound (D-R1 C, the inventory's
+    /// own judgment below).
     pub fn judge(&mut self, player: u32, row: Row, form: u32, properties: &[Named], facts: Facts) -> Verdict {
         if form == 0 {
             return Verdict::Refuse(Code::Unnamed, "the call names no form".to_owned());
         }
+        if matches!(row, Row::AddItem | Row::RemoveItem) {
+            return self.items(player, row, form, facts);
+        }
         if !facts.kind {
-            return Verdict::Refuse(Code::Args, format!("{form:x} is no {} record, the form Actor.{row:?} takes", row.kind()));
+            return Verdict::Refuse(Code::Args, format!("{form:x} is no {} record, the form {}.{row:?} takes", row.kind(), row.class()));
         }
         let returns = row == Row::SetRace && form == facts.recorded_race;
         if !returns && !named(form, properties) {
@@ -287,7 +365,7 @@ impl PlayerOverlays {
         let list = match row {
             Row::AddSpell | Row::RemoveSpell => &mut overlay.spells,
             Row::AddShout | Row::RemoveShout => &mut overlay.shouts,
-            Row::EquipItem | Row::SetRace | Row::ChangeHeadPart => &mut overlay.items,
+            Row::EquipItem | Row::SetRace | Row::ChangeHeadPart | Row::AddItem | Row::RemoveItem => &mut overlay.items,
         };
         let in_overlay = list.contains(&form);
         match row {
@@ -303,6 +381,48 @@ impl PlayerOverlays {
             }
             _ if facts.held => Verdict::Record { ended: None },
             _ => Verdict::Fold,
+        }
+    }
+
+    /// AddItem's and RemoveItem's judgment (D-R1 C, R2): the seat's report
+    /// recorded as it ran, with no bound. A leveled list's add is refused by
+    /// name (the engine's roll is what landed; the record never holds the
+    /// list), any other form must be an item and the count a Papyrus Int
+    /// above zero. An add is recorded whole, but never past the record's
+    /// count bound (u32, over all the form's stacks); a removal into a
+    /// container the player holds open folds (its PutItem moves the item,
+    /// both sides), one of an item the open overlay holds takes it from
+    /// there (the beast form's skin), and any other takes at most what the
+    /// record holds, a removal of what it lacks folding.
+    fn items(&mut self, player: u32, row: Row, form: u32, facts: Facts) -> Verdict {
+        if row == Row::AddItem && facts.leveled {
+            return Verdict::Refuse(Code::Leveled, format!("{form:x} is a leveled list (LVLI): what landed is the engine's roll, which the report does not carry, so nothing is written (D-R1 C's named gap)"));
+        }
+        if !facts.kind {
+            return Verdict::Refuse(Code::Args, format!("{form:x} is no {} record, the form {}.{row:?} takes", row.kind(), row.class()));
+        }
+        let Some(count) = facts.count else {
+            return Verdict::Refuse(Code::Args, format!("the count of {form:x} is no whole number from 1 to {}, a Papyrus Int above zero: nothing lands", i32::MAX));
+        };
+        if row == Row::AddItem {
+            let room = u32::MAX.saturating_sub(facts.held_count);
+            return match count.min(room) {
+                0 => Verdict::Fold,
+                add => Verdict::Items(add),
+            };
+        }
+        if facts.into_held_open {
+            return Verdict::Fold;
+        }
+        if let Some(overlay) = self.open.get_mut(&player) {
+            if overlay.items.contains(&form) {
+                overlay.items.retain(|&f| f != form);
+                return Verdict::Overlay;
+            }
+        }
+        match count.min(facts.held_count) {
+            0 => Verdict::Fold,
+            take => Verdict::Items(take),
         }
     }
 
@@ -370,14 +490,94 @@ mod tests {
     }
 
     #[test]
-    fn the_six_rows_read_by_name() {
+    fn the_nine_rows_read_by_name() {
         assert_eq!(Row::of("Actor", "SetRace"), Some(Row::SetRace));
         assert_eq!(Row::of("actor", "equipitem"), Some(Row::EquipItem));
         assert_eq!(Row::of("Actor", "EquipSpell"), None);
-        assert_eq!(Row::of("ObjectReference", "AddItem"), None);
         assert_eq!((Code::Args.name(), Code::Unnamed.name(), Code::Race.name()), ("E_SCRIPTCALL_ARGS", "E_SCRIPTCALL_UNNAMED", "E_SCRIPTCALL_RACE"));
         assert_eq!([Row::SetRace, Row::RemoveSpell, Row::AddShout, Row::EquipItem, Row::ChangeHeadPart].map(Row::kind), ["RACE", "SPEL", "SHOU", "item", "HDPT"]);
         assert_eq!(Row::of("actor", "changeheadpart"), Some(Row::ChangeHeadPart));
+        // D-R1 C: the inventory's two by their own class, which no Actor
+        // spelling reaches (the table holds them as ObjectReference's)
+        assert_eq!(Row::of("ObjectReference", "AddItem"), Some(Row::AddItem));
+        assert_eq!(Row::of("objectreference", "removeitem"), Some(Row::RemoveItem));
+        assert_eq!(Row::of("Actor", "AddItem"), None);
+        assert_eq!([Row::AddItem, Row::RemoveItem, Row::SetRace].map(Row::class), ["ObjectReference", "ObjectReference", "Actor"]);
+        assert_eq!([Row::AddItem, Row::RemoveItem].map(Row::kind), ["item", "item"]);
+        assert_eq!(Code::Leveled.name(), "E_SCRIPTCALL_LEVELED");
+    }
+
+    // Eli's D-R1 C, x-acting-frame 20261110-072506's fragment: A Lovely
+    // Letter's stage 310 or 320, `Game.GetPlayer().AddItem(Gold, 25, False)`
+    // (Gold a MiscObject property, 0xf; docs/research/
+    // rung5-quests-2026-11-09.md, its stage list)
+    const GOLD: u32 = 0xf;
+
+    fn gold(held_count: u32, count: u32) -> Facts {
+        Facts { kind: true, held_count, count: Some(count), ..Facts::default() }
+    }
+
+    #[test]
+    fn a_count_is_a_papyrus_int_above_zero() {
+        assert_eq!([25.0, 1.0, 2_147_483_647.0].map(item_count), [Some(25), Some(1), Some(2_147_483_647)]);
+        assert_eq!([0.0, -1.0, 2.5, 2_147_483_648.0, f64::NAN, f64::INFINITY].map(item_count), [None; 6]);
+    }
+
+    #[test]
+    fn a_grant_to_the_players_own_inventory_is_recorded_as_reported_with_no_bound() {
+        let mut o = PlayerOverlays::default();
+        // no property of any attachment names the gold, and none needs to
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], gold(0, 25)), Verdict::Items(25));
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], gold(40, 25)), Verdict::Items(25));
+        // the record's count bound: an add stops at u32's largest, and one
+        // with no room left folds
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], gold(u32::MAX - 10, 25)), Verdict::Items(10));
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], gold(u32::MAX, 25)), Verdict::Fold);
+        // a leveled list: refused by name, the record never holds the list
+        // (LItemFoodCabbage75 0x10bf6a, unit/LeveledListUtilsTest.cpp)
+        match o.judge(ARIADNE, Row::AddItem, 0x10_bf6a, &[], Facts { leveled: true, kind: false, ..gold(0, 1) }) {
+            Verdict::Refuse(code, why) => assert_eq!((code, why.as_str()), (Code::Leveled, "10bf6a is a leveled list (LVLI): what landed is the engine's roll, which the report does not carry, so nothing is written (D-R1 C's named gap)")),
+            other => panic!("not refused: {other:?}"),
+        }
+        // the kind, the count's bound, the form
+        match o.judge(ARIADNE, Row::AddItem, HOWL, &[], Facts { kind: false, ..gold(0, 1) }) {
+            Verdict::Refuse(code, why) => assert_eq!((code, why.as_str()), (Code::Args, "92c48 is no item record, the form ObjectReference.AddItem takes")),
+            other => panic!("not refused: {other:?}"),
+        }
+        match o.judge(ARIADNE, Row::AddItem, GOLD, &[], Facts { count: None, ..gold(0, 1) }) {
+            Verdict::Refuse(code, why) => assert_eq!((code, why.as_str()), (Code::Args, "the count of f is no whole number from 1 to 2147483647, a Papyrus Int above zero: nothing lands")),
+            other => panic!("not refused: {other:?}"),
+        }
+        assert!(matches!(o.judge(ARIADNE, Row::AddItem, 0, &[], gold(0, 25)), Verdict::Refuse(Code::Unnamed, _)));
+        // an open overlay leaves a grant the record's: a reward outlasts the form
+        let nord = Facts { recorded_race: NORD, kind: true, ..Facts::default() };
+        assert_eq!(o.judge(ARIADNE, Row::SetRace, BEAST, &werewolf_script(), nord), Verdict::Overlay);
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], gold(0, 25)), Verdict::Items(25));
+        assert_eq!(o.overlay(ARIADNE).map(|v| v.items.len()), Some(0));
+    }
+
+    #[test]
+    fn a_removal_is_never_below_zero_takes_the_overlays_own_first_and_folds_into_a_held_open_container() {
+        let mut o = PlayerOverlays::default();
+        assert_eq!(o.judge(ARIADNE, Row::RemoveItem, GOLD, &[], gold(25, 10)), Verdict::Items(10));
+        assert_eq!(o.judge(ARIADNE, Row::RemoveItem, GOLD, &[], gold(15, 1000)), Verdict::Items(15));
+        assert_eq!(o.judge(ARIADNE, Row::RemoveItem, GOLD, &[], gold(0, 1)), Verdict::Fold);
+        // into a container the player holds open: its PutItem moves it
+        assert_eq!(o.judge(ARIADNE, Row::RemoveItem, GOLD, &[], Facts { into_held_open: true, ..gold(25, 10) }), Verdict::Fold);
+        // a leveled list is no item to remove (the engine takes its members alone)
+        assert!(matches!(o.judge(ARIADNE, Row::RemoveItem, 0x10_bf6a, &[], Facts { leveled: true, kind: false, ..gold(0, 1) }), Verdict::Refuse(Code::Args, _)));
+        // the werewolf's shift back: RemoveItem(WolfSkinFXArmor, 1, True)
+        // ahead of the race's return takes the skin its EquipItem put in
+        // the overlay, never the record's count
+        let script = werewolf_script();
+        let nord = Facts { recorded_race: NORD, kind: true, ..Facts::default() };
+        assert_eq!(o.judge(ARIADNE, Row::SetRace, BEAST, &script, nord), Verdict::Overlay);
+        assert_eq!(o.judge(ARIADNE, Row::EquipItem, SKIN, &script, nord), Verdict::Overlay);
+        assert_eq!(o.judge(ARIADNE, Row::RemoveItem, SKIN, &[], gold(0, 1)), Verdict::Overlay);
+        assert_eq!(o.overlay(ARIADNE).map(|v| v.items.len()), Some(0));
+        assert_eq!(o.judge(ARIADNE, Row::RemoveItem, SKIN, &[], gold(0, 1)), Verdict::Fold);
+        let ended = Overlay { race: BEAST, base: NORD, ..Overlay::default() };
+        assert_eq!(o.judge(ARIADNE, Row::SetRace, NORD, &script, nord), Verdict::Ended(ended));
     }
 
     #[test]

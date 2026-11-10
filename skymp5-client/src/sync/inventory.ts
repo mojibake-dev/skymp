@@ -360,13 +360,27 @@ export interface ApplyInventoryReport {
   changed: Set<number>;
 }
 
+// thuum docs/DECISIONS.md D-R1 C: the bases an apply leaves as the engine
+// holds them (applyInventory's `keep`), each with the side it keeps, by
+// these bits: keepSurplus the engine's count above the target (a grant this
+// seat reported and the server has not yet echoed), keepDeficit its count
+// below it (a removal the same way). Every other base lands as before
+export const keepSurplus = 1;
+export const keepDeficit = 2;
+
+const keptBy = (e: Entry, keep: ReadonlyMap<number, number>): boolean => {
+  const sides = keep.get(e.baseId) ?? 0;
+  return (e.count < 0 && (sides & keepSurplus) !== 0) || (e.count > 0 && (sides & keepDeficit) !== 0);
+};
+
 export const applyInventory = (
   refr: ObjectReference,
   newInventory: Inventory,
   enableCrashProtection: boolean,
   ignoreWorn = false,
   resetBaseFirst = true,
-  report?: ApplyInventoryReport
+  report?: ApplyInventoryReport,
+  keep?: ReadonlyMap<number, number>
 ): boolean => {
   // thuum docs/verbs/npc-fate.md (playtest 34): a game-file body keeps the
   // engine's dressing, so its caller passes resetBaseFirst false and the
@@ -376,7 +390,8 @@ export const applyInventory = (
   if (resetBaseFirst) {
     resetBase(refr);
   }
-  const diff = getDiff(newInventory, getInventory(refr), ignoreWorn).entries;
+  const diff = getDiff(newInventory, getInventory(refr), ignoreWorn).entries
+    .filter((e) => keep === undefined || !keptBy(e, keep));
 
   let res = true;
 

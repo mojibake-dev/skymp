@@ -497,3 +497,220 @@ TEST_CASE("A head part is one the recorded race may wear by its HDPT's "
   REQUIRE(LooksTo(p, 1).empty());
   Leave(p);
 }
+
+// Eli's D-R1 C (thuum docs/DECISIONS.md, rung 5's stage-eve words): a
+// script's AddItem and RemoveItem on its own player are that player's own
+// inventory record, R2, with no bound (ScriptCall 75 on 0x14, the owner
+// step's record 4, ObjectReference's rows). x-acting-frame 20261110-072506's
+// fragment is A Lovely Letter's stage 310 or 320,
+// `Game.GetPlayer().AddItem(Gold, 25, False)` (Gold a MiscObject property,
+// 0xf; thuum docs/research/rung5-quests-2026-11-09.md), reported by the
+// acting seat alone: another seat runs it on the acting player's figure,
+// whose call is no own row. A fresh actor carries a kit of its own, so every
+// count below is the change a call made. LItemFoodCabbage75 0x10bf6a is
+// unit/LeveledListUtilsTest.cpp's leveled list, and the chest 0x20570 by
+// (21272, -7816, -3608) in 0x1a26f is PartOne_ActivateTest's; each record's
+// type is read from the game files here
+namespace {
+constexpr uint32_t kGold = 0xf;
+constexpr uint32_t kLeveledCabbage = 0x10bf6a;
+constexpr uint32_t kChest = 0x20570;
+constexpr uint32_t kArvelRef = 0x39655; // StandingTest's MS13ArvelREF, an ACHR
+
+void OwnItem(PartOne& p, Networking::UserId user, uint32_t selfId,
+             const char* fn, std::vector<Arg> args)
+{
+  ScriptCallMessage msg;
+  msg.epoch = 0;
+  msg.selfId = selfId;
+  msg.cls = "ObjectReference";
+  msg.fn = fn;
+  msg.args = std::move(args);
+  msg.caller = "LovelyLetterFragments"; // illustrative: no bound reads it
+  msg.handler = "Fragment_22";
+  RawMessageData raw;
+  raw.userId = user;
+  p.GetActionListener().OnScriptCall(raw, msg);
+}
+
+std::string RecordType(PartOne& p, uint32_t formId)
+{
+  const auto rec = p.GetEspm().GetBrowser().LookupById(formId).rec;
+  return rec ? rec->GetType().ToString() : std::string();
+}
+
+// the gold counts of the SetInventory messages `user` heard, in order
+std::vector<uint32_t> GoldSentTo(PartOne& p, Networking::UserId user)
+{
+  std::vector<uint32_t> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId != user || !m.j.is_object() ||
+        m.j.value("t", -1) != static_cast<int>(MsgType::SetInventory)) {
+      continue;
+    }
+    uint32_t gold = 0;
+    for (const auto& entry : m.j["inventory"]["entries"]) {
+      if (entry.value("baseId", 0u) == kGold) {
+        gold += entry.value("count", 0u);
+      }
+    }
+    out.push_back(gold);
+  }
+  return out;
+}
+}
+
+TEST_CASE("A script's AddItem of gold on the reporter's own player is "
+          "recorded once in its inventory as reported, with no bound, and "
+          "its game hears its inventory; a RemoveItem takes at most what the "
+          "record holds",
+          "[PlayerOwn][espm]")
+{
+  PartOne& p = GetPartOne();
+  REQUIRE(RecordType(p, kGold) == "MISC");
+  Enter(p);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  auto& watcher = p.worldState.GetFormAt<MpActor>(kWatcher);
+  const uint32_t kit = turned.GetInventory().GetItemCount(kGold);
+  const uint32_t watcherKit = watcher.GetInventory().GetItemCount(kGold);
+
+  // A Lovely Letter's 25 gold: no attachment of the caller names it, none
+  // needs to; recorded once, on the change form, and the player's own game
+  // hears its inventory with it (deferred to the tick), the other none
+  OwnItem(p, 0, 0x14, "AddItem",
+          { FormArg(kGold, "Form"), Arg(25.0), Arg(false) });
+  p.Tick();
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == kit + 25);
+  REQUIRE(turned.GetChangeForm().inv.GetItemCount(kGold) == kit + 25);
+  REQUIRE(log.Count("25 added to its inventory as its seat reported it "
+                    "(D-R1 C, R2)") == 1);
+  const auto heard = GoldSentTo(p, 0);
+  REQUIRE(!heard.empty());
+  REQUIRE(heard.back() == kit + 25);
+  REQUIRE(GoldSentTo(p, 1).empty());
+  REQUIRE(watcher.GetInventory().GetItemCount(kGold) == watcherKit);
+
+  // a quest taking 10 back, its other container None
+  p.Messages().clear();
+  OwnItem(p, 0, 0x14, "RemoveItem",
+          { FormArg(kGold, "Form"), Arg(10.0), Arg(true), Arg() });
+  p.Tick();
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == kit + 15);
+  REQUIRE(log.Count("10 removed from its inventory as its seat reported "
+                    "it (D-R1 C, R2)") == 1);
+  REQUIRE(!GoldSentTo(p, 0).empty());
+  REQUIRE(GoldSentTo(p, 0).back() == kit + 15);
+
+  // never below zero: a removal past the count takes what the record
+  // holds, and one of what it lacks folds, nothing thrown
+  REQUIRE_NOTHROW(
+    OwnItem(p, 0, 0x14, "RemoveItem",
+            { FormArg(kGold, "Form"), Arg(100000.0), Arg(true), Arg() }));
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == 0);
+  REQUIRE(log.Count("removed from its inventory as its seat reported it "
+                    "(D-R1 C, R2), 0 held now") == 1);
+  REQUIRE_NOTHROW(
+    OwnItem(p, 0, 0x14, "RemoveItem",
+            { FormArg(kGold, "Form"), Arg(5.0), Arg(true), Arg() }));
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == 0);
+  REQUIRE(watcher.GetInventory().GetItemCount(kGold) == watcherKit);
+  Leave(p);
+}
+
+TEST_CASE("Each seat's 0x14 is its own player: a call whose self is not the "
+          "reporter's own player is no own row and writes nothing",
+          "[PlayerOwn][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  auto& watcher = p.worldState.GetFormAt<MpActor>(kWatcher);
+  const uint32_t kit = turned.GetInventory().GetItemCount(kGold);
+  const uint32_t watcherKit = watcher.GetInventory().GetItemCount(kGold);
+
+  // the other seat's own call lands on its own player alone
+  OwnItem(p, 1, 0x14, "AddItem",
+          { FormArg(kGold, "Form"), Arg(5.0), Arg(false) });
+  REQUIRE(watcher.GetInventory().GetItemCount(kGold) == watcherKit + 5);
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == kit);
+
+  // the other player's actor named as the self: no subject the reporter
+  // may name (a server form), refused at the shape
+  OwnItem(p, 0, kWatcher, "AddItem",
+          { FormArg(kGold, "Form"), Arg(25.0), Arg(false) });
+  REQUIRE(log.Count("E_SCRIPTCALL_ARGS") == 1);
+  // an NPC as the self (a script's AddItem on Arvel): the player's own row
+  // has no channel on another subject
+  OwnItem(p, 0, kArvelRef, "AddItem",
+          { FormArg(kGold, "Form"), Arg(25.0), Arg(false) });
+  REQUIRE(log.Count("E_SCRIPTCALL_ROW") == 1);
+  REQUIRE(log.Count("a player's own row on another subject") == 1);
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == kit);
+  REQUIRE(watcher.GetInventory().GetItemCount(kGold) == watcherKit + 5);
+  Leave(p);
+}
+
+TEST_CASE("A leveled list's AddItem is refused by name and writes nothing: "
+          "what landed is the engine's roll, which the report does not carry",
+          "[PlayerOwn][espm]")
+{
+  PartOne& p = GetPartOne();
+  REQUIRE(RecordType(p, kLeveledCabbage) == "LVLI");
+  Enter(p);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  const Inventory before = turned.GetInventory();
+  OwnItem(p, 0, 0x14, "AddItem",
+          { FormArg(kLeveledCabbage, "Form"), Arg(1.0), Arg(false) });
+  REQUIRE(log.Count("E_SCRIPTCALL_LEVELED") == 1);
+  REQUIRE(log.Count("is a leveled list (LVLI)") == 1);
+  REQUIRE(turned.GetInventory() == before);
+  REQUIRE(!turned.GetInventory().HasItem(kLeveledCabbage));
+  // a count that lands nothing, and a form of no item's kind
+  OwnItem(p, 0, 0x14, "AddItem",
+          { FormArg(kGold, "Form"), Arg(0.0), Arg(false) });
+  REQUIRE(log.Count("E_SCRIPTCALL_ARGS") == 1);
+  REQUIRE(log.Count("is no whole number from 1 to 2147483647") == 1);
+  REQUIRE(turned.GetInventory() == before);
+  Leave(p);
+}
+
+TEST_CASE("A removal into a container the player holds open is that "
+          "container's own move (PutItem) and folds; once it is shut the "
+          "removal is the player's",
+          "[PlayerOwn][espm]")
+{
+  PartOne& p = GetPartOne();
+  REQUIRE(RecordType(p, kChest) == "REFR");
+  auto& chest = p.worldState.GetFormAt<MpObjectReference>(kChest);
+  DoConnect(p, 0);
+  p.CreateActor(kTurned, { 21272.0000, -7816.0000, -3608.0000 }, 0, 0x1a26f);
+  p.SetUserActor(0, kTurned);
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  OwnLog log;
+  const uint32_t kit = turned.GetInventory().GetItemCount(kGold);
+  OwnItem(p, 0, 0x14, "AddItem",
+          { FormArg(kGold, "Form"), Arg(25.0), Arg(false) });
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == kit + 25);
+
+  chest.Activate(turned);
+  REQUIRE(chest.IsContainerOccupant(&turned));
+  OwnItem(p, 0, 0x14, "RemoveItem",
+          { FormArg(kGold, "Form"), Arg(10.0), Arg(false),
+            FormArg(kChest, "ObjectReference") });
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == kit + 25);
+
+  // shut: the chest's PutItem would be refused, so the player's side is
+  // the record's (the chest's side is the named gap: nobody records it)
+  chest.Activate(turned, false, true);
+  REQUIRE(!chest.IsContainerOccupant(&turned));
+  OwnItem(p, 0, 0x14, "RemoveItem",
+          { FormArg(kGold, "Form"), Arg(10.0), Arg(false),
+            FormArg(kChest, "ObjectReference") });
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == kit + 15);
+  REQUIRE(log.Count("10 removed from its inventory") == 1);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kTurned);
+}

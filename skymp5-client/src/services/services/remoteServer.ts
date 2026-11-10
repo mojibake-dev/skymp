@@ -90,6 +90,50 @@ const setPcInventory = (inv: Inventory): void => {
   storage['pcInv'] = inv;
 };
 
+// thuum docs/DECISIONS.md D-R1 C (Eli, 2026-11-10): a script's AddItem or
+// RemoveItem on this seat's own player is the player's own record, which
+// ScriptCallService reports (ScriptCall 75) and the server records as
+// reported, its SetInventory then carrying it into pcInv. Until then the
+// apply below would undo it (x-acting-frame 20261110-072506: a fragment's 25
+// gold gone about 2.4 s after the grant, on the next apply). So the report
+// holds its base from the call's arrival in JS (the batch the dispatch
+// queued, ahead of the latent body that moves the item) until a while past
+// its send: the apply leaves the engine's surplus of a held add
+// (inventory.ts keepSurplus) and its deficit of a held removal
+// (keepDeficit), and once the hold lapses the record, the server's echo in
+// it by then, lands as before. A grant the server refused (a leveled list,
+// E_SCRIPTCALL_LEVELED) is the record's again at the lapse. JS state alone,
+// read by the update's apply
+const pcInvHolds = new Map<number, { sides: number; until: number }>();
+const pcInvHoldsMax = 256;
+
+export const holdPcInventoryBase = (baseId: number, sides: number, until: number): void => {
+  const held = pcInvHolds.get(baseId);
+  if (held === undefined && pcInvHolds.size >= pcInvHoldsMax) {
+    // bounded: the oldest hold goes first (the map keeps insertion order)
+    const oldest = pcInvHolds.keys().next();
+    if (!oldest.done) {
+      pcInvHolds.delete(oldest.value);
+    }
+  }
+  pcInvHolds.set(baseId, { sides: (held?.sides ?? 0) | sides, until: Math.max(held?.until ?? 0, until) });
+};
+
+// the holds still running at `now`, the lapsed ones dropped; undefined when
+// none runs
+const pcInvKept = (now: number): Map<number, number> | undefined => {
+  let kept: Map<number, number> | undefined;
+  pcInvHolds.forEach((held, baseId) => {
+    if (held.until <= now) {
+      pcInvHolds.delete(baseId);
+      return;
+    }
+    kept = kept ?? new Map<number, number>();
+    kept.set(baseId, held.sides);
+  });
+  return kept;
+};
+
 let pcInvLastApply = 0;
 // thuum playtest 48 ("Rotfern had to re-equip her bow again", as in playtest
 // 34 and 38's finding 68): the equipment a login's wipe dressed the player
@@ -110,7 +154,7 @@ on('update', () => {
     if (pcInv) {
       const player = Game.getPlayer()!;
       const report: ApplyInventoryReport = { changed: new Set<number>() };
-      applyInventory(player, pcInv, false, true, true, report);
+      applyInventory(player, pcInv, false, true, true, report, pcInvKept(Date.now()));
       // thuum playtest 38's finding 68 and playtest 48 (the first draw after
       // a relaunch's login nocked no arrow): a login wipes the player's
       // inventory and lays the equipment's worn rows (applyEquipment, twice:

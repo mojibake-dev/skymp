@@ -382,7 +382,7 @@ export class QuestStageService extends ClientListener {
         const running = quest.isRunning();
         const runKey = QuestStageService.runKey(questId, WORD_START);
         if (!running) {
-            this.applyingRuns.set(runKey, Date.now() + APPLY_ECHO_MS);
+            this.applyingRuns.set(runKey, Date.now() + BUSY_MAX_MS);
             this.nameActing(item, SCOPE_START);
             this.markWordStages(quest, questId, this.startUpStages.get(questId), item.served);
         }
@@ -403,6 +403,7 @@ export class QuestStageService extends ClientListener {
             return this.setStage(questId, stage, key, this.marksFragment(item.served));
         }).catch((err) => {
             this.applying.delete(key);
+            this.applyingRuns.delete(runKey);
             logError(this, "SetStage failed on quest", questId.toString(16), "stage", stage, err);
         }).then(() => {
             this.busy.delete(questId);
@@ -592,7 +593,7 @@ export class QuestStageService extends ClientListener {
                 return; // running here already
             }
             const runKey = QuestStageService.runKey(questId, WORD_START);
-            this.applyingRuns.set(runKey, Date.now() + APPLY_ECHO_MS);
+            this.applyingRuns.set(runKey, Date.now() + BUSY_MAX_MS);
             this.nameActing(item, SCOPE_START);
             this.markWordStages(quest, questId, item.wordStages, item.served);
             this.busy.set(questId, Date.now() + BUSY_MAX_MS);
@@ -618,12 +619,20 @@ export class QuestStageService extends ClientListener {
         if (!quest.isRunning() && !quest.isStarting()) {
             return; // stopped here already
         }
-        this.applyingRuns.set(QuestStageService.runKey(questId, WORD_STOP), Date.now() + APPLY_ECHO_MS);
+        const stopKey = QuestStageService.runKey(questId, WORD_STOP);
+        this.applyingRuns.set(stopKey, Date.now() + BUSY_MAX_MS);
         this.nameActing(item, SCOPE_STOP);
         this.markWordStages(quest, questId, item.wordStages, item.served);
         // the engine's stop event answers it (onQuestStop)
         this.busy.set(questId, Date.now() + BUSY_MAX_MS);
-        quest.stop();
+        try {
+            quest.stop();
+        } catch (err) {
+            this.applyingRuns.delete(stopKey);
+            this.busy.delete(questId);
+            logError(this, "Quest.Stop failed on quest", questId.toString(16), err);
+            return;
+        }
         logTrace(this, "the world's stop of quest", questId.toString(16), "(" + how + ") applied");
     }
 
@@ -685,14 +694,18 @@ export class QuestStageService extends ClientListener {
         if (item.served || acting === undefined || this.actingExportsMissing || this.isMe(acting)) {
             return;
         }
+        if (typeof this.sp.setActingPlayer !== "function") {
+            this.actingExportsMissing = true;
+            logLab(TAG, "setActingPlayer unavailable on this platform; a relayed request runs as this seat's own player");
+            return;
+        }
         const figure = remoteIdToLocalId(acting);
         try {
             if (this.sp.setActingPlayer(item.quest, scopeStage, figure, acting, ACTING_TTL_MS) !== true) {
                 logError(this, "setActingPlayer refused quest", item.quest.toString(16), "stage", scopeStage, "for", acting.toString(16));
             }
         } catch (err) {
-            this.actingExportsMissing = true;
-            logLab(TAG, `setActingPlayer unavailable on this platform (${err}); a relayed request runs as this seat's own player`);
+            logError(this, "setActingPlayer threw for quest", item.quest.toString(16), "stage", scopeStage, err);
         }
     }
 
@@ -702,12 +715,16 @@ export class QuestStageService extends ClientListener {
         if (this.actingExportsMissing) {
             return undefined;
         }
+        if (typeof this.sp.getActingPlayer !== "function") {
+            this.actingExportsMissing = true;
+            logLab(TAG, "getActingPlayer unavailable on this platform; reports name no acting player");
+            return undefined;
+        }
         let id: unknown;
         try {
             id = this.sp.getActingPlayer(questId, scopeStage);
         } catch (err) {
-            this.actingExportsMissing = true;
-            logLab(TAG, `getActingPlayer unavailable on this platform (${err}); reports name no acting player`);
+            logError(this, "getActingPlayer threw for quest", questId.toString(16), "stage", scopeStage, err);
             return undefined;
         }
         return typeof id === "number" && Number.isInteger(id) && id >= FIRST_SERVER_ID && id <= 0xffffffff ? id : undefined;
@@ -906,14 +923,18 @@ export class QuestStageService extends ClientListener {
         if (this.playerQuestsMissing) {
             return;
         }
+        if (typeof this.sp.setPlayerQuests !== "function") {
+            this.playerQuestsMissing = true;
+            logLab(TAG, "setPlayerQuests unavailable on this platform; this seat's own per-player quests stay behind the gate");
+            return;
+        }
         try {
             if (this.sp.setPlayerQuests([...this.playerQuests]) !== true) {
                 logError(this, "setPlayerQuests refused", this.playerQuests.length, "quest(s)", when);
                 return;
             }
         } catch (err) {
-            this.playerQuestsMissing = true;
-            logLab(TAG, `setPlayerQuests unavailable on this platform (${err}); this seat's own per-player quests stay behind the gate`);
+            logError(this, "setPlayerQuests threw", when, err);
             return;
         }
         if (lab) {

@@ -1407,14 +1407,19 @@ export class RemoteServer extends ClientListener {
     const msg = event.message;
 
     if (msg.open) {
-      // wait 0.3s cause we can see visual bugs when teleporting
-      // and showing this menu at the same time in onConnect
-      once('update', () =>
-        Utility.wait(0.3).then(() => {
-          unequipIronHelmet();
-          Game.showRaceMenu();
-        }),
-      );
+      // thuum playtest 50 (the fresh review's note 12): the open waits while
+      // RaceMenu's copy of the player's tints is due (RaceMenuService), so
+      // `mp racemenu` shows the player's own tints and warpaint
+      this.controller.lookupListener(RaceMenuService).openRaceMenuWhenTintsSaved(() => {
+        // wait 0.3s cause we can see visual bugs when teleporting
+        // and showing this menu at the same time in onConnect
+        once('update', () =>
+          Utility.wait(0.3).then(() => {
+            unequipIronHelmet();
+            Game.showRaceMenu();
+          }),
+        );
+      });
     } else {
       // TODO: Implement closeMenu in SkyrimPlatform
     }

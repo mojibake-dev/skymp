@@ -59,6 +59,9 @@ const COUNTDOWN_RISE_HOURS = 0.001;
 // a single update overdue at the read (0 hours left) is registered again at
 // this floor, so its interval stays positive (UNVERIFIED that 0 registers)
 const SINGLE_FLOOR_HOURS = 0.01;
+// callNative's throw for a native the platform does not have
+// (CallNative.cpp); no other throw marks a native missing
+const NATIVE_NOT_FOUND = "Native function not found";
 // The storage key of the watch (sp.storage survives a plugin reload, ADR-041's
 // survivor): the serve comes once, at the login, and a hot-reloaded client
 // keeps its connection and never logs in again
@@ -85,8 +88,9 @@ type Registration = { script: string; hours?: number; repeat?: number };
 // var), each own or the world's (the player cut, D-T2 B); a key the server
 // serves as this player's own is watched too. TESModPlatform.
 // ReadScriptVariables(keysJson of [{form, script, var, own}], at most 256 a
-// call, so the watch goes in chunks) reads them once a second, by name under
-// the platform's attachedScriptsLock, answering per key, in the keys' order,
+// call, so the watch goes in chunks, one an update, a pass starting once a
+// second) reads them by name under the platform's attachedScriptsLock,
+// answering per key, in the keys' order,
 // {form, script, var, k, i|f|b, own?} or {form, script, var, reason} ("[]"
 // for a bad call). A key's first read here is its
 // baseline, never a report, so the save's or the template's value is never
@@ -164,7 +168,13 @@ export class ScriptVariablesService extends ClientListener {
                 continue;
             }
             if (entry.own === true) {
-                // this player's own state, written first
+                // this player's own state, written first; served at a login
+                // alone (the server relays no own key: the fresh review's
+                // note 12)
+                if (m.served !== true) {
+                    this.refused++;
+                    continue;
+                }
                 this.toApply.delete(id);
                 this.toApplyOwn.delete(id);
                 this.toApplyOwn.set(id, entry);
@@ -181,7 +191,7 @@ export class ScriptVariablesService extends ClientListener {
             this.toApply.set(id, entry);
         }
         if (added > 0) {
-            this.chunks = undefined;
+            this.invalidateChunks();
             this.persist();
             if (m.served) {
                 logTrace(this, `watching ${this.watch.size} script variable(s), ${added} new from the serve`);
@@ -200,7 +210,7 @@ export class ScriptVariablesService extends ClientListener {
         this.toApplyOwn.clear();
         this.outgoing.clear();
         this.registrations.clear();
-        this.chunks = undefined;
+        this.invalidateChunks();
         this.persist();
     }
 
@@ -218,9 +228,8 @@ export class ScriptVariablesService extends ClientListener {
         }
         // the own state first (the gate): no read before it is written and
         // its registrations are registered again
-        if (this.watch.size > 0 && this.toApplyOwn.size === 0 && !this.readMissing && now - this.lastRead >= READ_MS) {
-            this.lastRead = now;
-            this.collect(this.readWatch());
+        if (this.watch.size > 0 && this.toApplyOwn.size === 0 && !this.readMissing) {
+            this.readStep(now);
         }
         if (this.outgoing.size > 0) {
             this.send(now);
@@ -291,11 +300,18 @@ export class ScriptVariablesService extends ClientListener {
         try {
             raw = this.sp.callNative("TESModPlatform", "WriteScriptVariables", undefined, JSON.stringify(batch.map(ScriptVariablesService.writeEntry)));
         } catch (e) {
-            this.writeMissing = true;
-            this.toApply.clear();
-            this.toApplyOwn.clear();
-            this.registrations.clear();
-            logLab(TAG, `WriteScriptVariables unavailable on this platform (${e}); no script variable is written here`);
+            // missing only when the platform has no such native (note 12);
+            // any other throw leaves this batch unwritten
+            if (String(e).indexOf(NATIVE_NOT_FOUND) !== -1) {
+                this.writeMissing = true;
+                this.toApply.clear();
+                this.toApplyOwn.clear();
+                this.registrations.clear();
+                logLab(TAG, `WriteScriptVariables unavailable on this platform (${e}); no script variable is written here`);
+            } else {
+                this.badAnswers++;
+                this.refused += batch.length;
+            }
             return;
         }
         const answers = ScriptVariablesService.answerList(raw, batch.length);
@@ -370,22 +386,54 @@ export class ScriptVariablesService extends ClientListener {
                 continue;
             }
             const repeat = typeof r.repeat === "number" && Number.isFinite(r.repeat) ? r.repeat : 0;
-            if (repeat > 0) {
-                form.registerForUpdateGameTime(repeat);
-                logTrace(this, `the game-time registration of ${formId.toString(16)} registered again: every ${repeat} game hour(s)`);
-            } else {
-                const hours = Math.max(r.hours as number, SINGLE_FLOOR_HOURS);
-                form.registerForSingleUpdateGameTime(hours);
-                logTrace(this, `the game-time registration of ${formId.toString(16)} registered again: once, in ${hours} game hour(s)`);
+            const hours = Math.max(r.hours as number, SINGLE_FLOOR_HOURS);
+            try {
+                if (repeat > 0) {
+                    form.registerForUpdateGameTime(repeat);
+                } else {
+                    form.registerForSingleUpdateGameTime(hours);
+                }
+            } catch (e) {
+                this.refused++;
+                logError(this, `the game-time registration of ${formId.toString(16)} not registered again (${e})`);
+                continue;
             }
+            logTrace(this, repeat > 0
+                ? `the game-time registration of ${formId.toString(16)} registered again: every ${repeat} game hour(s)`
+                : `the game-time registration of ${formId.toString(16)} registered again: once, in ${hours} game hour(s)`);
             this.ownRegistered++;
         }
     }
 
-    // the watch read whole, in chunks of SCRIPT_VARIABLES keys (the
-    // platform's bound on one call), their texts built once per watch;
-    // undefined when a chunk's call answered nothing usable
-    private readWatch(): ScriptVariableEntry[] | undefined {
+    // the watch's read, one chunk of SCRIPT_VARIABLES keys (the platform's
+    // bound on one call) an update (the fresh review's note 12), a pass over
+    // every chunk starting once READ_MS has gone since the last began; a
+    // chunk that answered nothing usable is skipped for this pass
+    private readStep(now: number) {
+        if (this.passAt === undefined) {
+            if (now - this.lastRead < READ_MS) {
+                return;
+            }
+            this.lastRead = now;
+            this.passAt = 0;
+        }
+        const chunks = this.watchChunks();
+        if (this.passAt < chunks.length) {
+            const chunk = chunks[this.passAt];
+            this.passAt++;
+            const values = this.read(chunk.keys, chunk.text, true);
+            if (values) {
+                this.collect(values);
+            }
+        }
+        if (this.passAt >= chunks.length) {
+            this.passAt = undefined;
+            this.reads++;
+        }
+    }
+
+    // the watch in chunks with their keys' texts, built once per watch
+    private watchChunks(): Array<{ keys: ScriptVariableKey[]; text: string }> {
         if (this.chunks === undefined) {
             const keys = Array.from(this.watch.values());
             this.chunks = [];
@@ -394,16 +442,14 @@ export class ScriptVariablesService extends ClientListener {
                 this.chunks.push({ keys: chunk, text: JSON.stringify(chunk.map(ScriptVariablesService.readKey)) });
             }
         }
-        const out: ScriptVariableEntry[] = [];
-        for (const chunk of this.chunks) {
-            const values = this.read(chunk.keys, chunk.text, true);
-            if (!values) {
-                return undefined;
-            }
-            out.push(...values);
-        }
-        this.reads++;
-        return out;
+        return this.chunks;
+    }
+
+    // the watch changed: its chunks are built anew and a pass in flight
+    // starts over at the next one
+    private invalidateChunks() {
+        this.chunks = undefined;
+        this.passAt = undefined;
     }
 
     // one ReadScriptVariables call over at most SCRIPT_VARIABLES keys (`text`
@@ -416,8 +462,14 @@ export class ScriptVariablesService extends ClientListener {
         try {
             raw = this.sp.callNative("TESModPlatform", "ReadScriptVariables", undefined, text);
         } catch (e) {
-            this.readMissing = true;
-            logLab(TAG, `ReadScriptVariables unavailable on this platform (${e}); this seat reports no script variable`);
+            // missing only when the platform has no such native (the fresh
+            // review's note 12); any other throw is this call's alone
+            if (String(e).indexOf(NATIVE_NOT_FOUND) !== -1) {
+                this.readMissing = true;
+                logLab(TAG, `ReadScriptVariables unavailable on this platform (${e}); this seat reports no script variable`);
+            } else {
+                this.badAnswers++;
+            }
             return undefined;
         }
         const answers = ScriptVariablesService.answerList(raw, keys.length);
@@ -519,7 +571,7 @@ export class ScriptVariablesService extends ClientListener {
         if (had) {
             if (own && !had.own) {
                 had.own = true;
-                this.chunks = undefined;
+                this.invalidateChunks();
             }
             return false;
         }
@@ -548,7 +600,7 @@ export class ScriptVariablesService extends ClientListener {
         }
         this.watch.delete(lastWorld);
         this.last.delete(lastWorld);
-        this.chunks = undefined;
+        this.invalidateChunks();
         this.cutForOwn++;
         return true;
     }
@@ -763,8 +815,10 @@ export class ScriptVariablesService extends ClientListener {
     // a read's changes waiting for the bucket, by key
     private readonly outgoing = new Map<string, ScriptVariableEntry>();
     // the watch's keys as ReadScriptVariables takes them, in chunks of
-    // SCRIPT_VARIABLES, rebuilt when the watch changes
+    // SCRIPT_VARIABLES, rebuilt when the watch changes; the read pass's next
+    // chunk, undefined between passes
     private chunks: Array<{ keys: ScriptVariableKey[]; text: string }> | undefined;
+    private passAt: number | undefined;
     private lastRead = 0;
     private readMissing = false;
     private writeMissing = false;

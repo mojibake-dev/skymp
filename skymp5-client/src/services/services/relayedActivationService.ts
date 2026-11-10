@@ -182,13 +182,17 @@ export class RelayedActivationService extends ClientListener {
     if (!this.controller.lookupListener(PuppetService).isFigure(presserLocalId)) {
       return;
     }
+    if (typeof this.sp.setActingPlayer !== 'function') {
+      this.actingMissing = true;
+      logLab(TAG, "setActingPlayer unavailable on this platform; a relayed entry's script reads this seat's own player");
+      return;
+    }
     try {
       if (this.sp.setActingPlayer(triggerId, ENTRY_SCOPE, presserLocalId, presserServerId, ENTRY_ACTING_TTL_MS) !== true) {
         logError(this, `setActingPlayer refused the relayed entry ${triggerId.toString(16)} by ${presserServerId.toString(16)}`);
       }
     } catch (e) {
-      this.actingMissing = true;
-      logLab(TAG, `setActingPlayer unavailable on this platform (${e}); a relayed entry's script reads this seat's own player`);
+      logError(this, `setActingPlayer threw for the relayed entry ${triggerId.toString(16)} by ${presserServerId.toString(16)}`, e);
     }
   }
 

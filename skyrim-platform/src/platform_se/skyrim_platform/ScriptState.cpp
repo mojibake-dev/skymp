@@ -16,6 +16,7 @@
 #include <RE/S/StackFrame.h>
 #include <RE/T/TESForm.h>
 #include <RE/T/TESObjectREFR.h>
+#include <RE/T/TESQuest.h>
 #include <RE/T/TypeInfo.h>
 #include <RE/V/Variable.h>
 #include <RE/V/VirtualMachine.h>
@@ -211,6 +212,8 @@ std::atomic<std::uint64_t> g_sendLines{ 0 };
 std::atomic<std::uint64_t> g_triggerSendLines{ 0 };
 std::atomic<std::uint64_t> g_triggerArmLines{ 0 };
 std::atomic<std::uint64_t> g_registrationLines{ 0 };
+std::atomic<std::uint64_t> g_varReadLines{ 0 };
+std::atomic<std::uint64_t> g_varWriteLines{ 0 };
 
 bool LogThis(std::atomic<std::uint64_t>& lines)
 {
@@ -1604,6 +1607,407 @@ std::string SendTriggerImpl(RE::TESObjectREFR* refr, std::string_view name,
   return DumpText(answer);
 }
 
+// thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 1(c) and
+// 8(b); D-V1 B: every seat reports a listed variable it changes, the latest
+// write winning; D-T2 B: a marked quest's scalar variables travel as
+// ScriptVariables 81's own entries): script variables read and written by
+// name. A key names a form (a QUST's or a reference's of the load order,
+// below 0xff000000), a class among its attached scripts' chains and a
+// variable as compiled (an auto property's "::Name_var", the CTDA's own
+// spelling, or a plain variable's name), each without case (Papyrus's rule).
+// The wire carries rung 3's folded kinds 3 (int), 4 (float) and 5 (bool)
+// alone: a CTDA compares a number. Two reserved names read the form's queued
+// OnUpdateGameTime registration (ScriptState::ReadGameTimeRegistration, D-T2
+// B's re-issue at login) as floats in game hours: kGameTimeHours the time
+// until it fires, kGameTimeRepeat a repeat's interval (0 for a single
+// update); no Papyrus identifier holds a '<', so neither names a variable,
+// and neither is ever written (the client registers again through
+// Form.RegisterForSingleUpdateGameTime or RegisterForUpdateGameTime)
+constexpr std::size_t kMaxVarKeys = 256; // cap::SCRIPT_VARIABLES, UNMEASURED
+constexpr const char* kGameTimeHours = "<OnUpdateGameTime>";
+constexpr const char* kGameTimeRepeat = "<OnUpdateGameTime:repeat>";
+
+struct VarKey
+{
+  std::uint32_t form = 0;
+  std::string script;
+  std::string var;
+  // the key's own `own` flag (D-T2 B's entries), echoed in its answer
+  bool hasOwn = false;
+  bool own = false;
+};
+
+bool IsGameTimeName(const std::string& var)
+{
+  return _stricmp(var.c_str(), kGameTimeHours) == 0 ||
+    _stricmp(var.c_str(), kGameTimeRepeat) == 0;
+}
+
+// a key's fields, false with `why` for one the wire's validator would refuse
+// (check_script_variables: a form 0 or at 0xff000000 and up, an empty name,
+// one past PAPYRUS_NAME, with a NUL or not in UTF-8); what was read is kept
+// for the refusal's echo
+bool ParseVarKey(const nlohmann::json& j, VarKey& key, std::string& why)
+{
+  if (!j.is_object()) {
+    why = "a key that is no JSON object";
+    return false;
+  }
+  std::int64_t form = 0;
+  const bool formOk = ReadInt(Member(j, "form"), 1, 0xFEFFFFFF, form);
+  key.form = formOk ? static_cast<std::uint32_t>(form) : 0;
+  const bool scriptOk = ReadString(Member(j, "script"), kMaxName, key.script);
+  const bool varOk = ReadString(Member(j, "var"), kMaxName, key.var);
+  if (const nlohmann::json* own = Member(j, "own"); own && own->is_boolean()) {
+    key.hasOwn = true;
+    key.own = own->get<bool>();
+  }
+  if (!formOk) {
+    why = "no form, or form 0 or a runtime form (0xff000000 and up)";
+    return false;
+  }
+  if (!scriptOk || !varOk || key.script.empty() || key.var.empty() ||
+      !IsUtf8(key.script) || !IsUtf8(key.var)) {
+    why = fmt::format("no script or var, or one empty, past {} bytes, with a "
+                      "NUL or not in UTF-8",
+                      kMaxName);
+    return false;
+  }
+  return true;
+}
+
+nlohmann::json KeyJson(const VarKey& key)
+{
+  nlohmann::json j = nlohmann::json::object();
+  j["form"] = key.form;
+  j["script"] = key.script;
+  j["var"] = key.var;
+  if (key.hasOwn) {
+    j["own"] = key.own;
+  }
+  return j;
+}
+
+// the VM handle of a key's form: a QUST's (TESQuest::FORMTYPE) or a
+// reference's, through the VM's handle policy (GetHandleForObject,
+// IObjectHandlePolicy.h:33), as Premises reads a reference's
+bool HandleOfForm(std::uint32_t formId, VM*& vm, RE::VMHandle& handle,
+                  std::string& why)
+{
+  RE::TESForm* form = RE::TESForm::LookupByID(formId);
+  if (!form) {
+    why = "no such form here";
+    return false;
+  }
+  vm = VM::GetSingleton();
+  auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+  if (!policy) {
+    why = "no VM or no handle policy";
+    return false;
+  }
+  if (form->GetFormType() == RE::TESQuest::FORMTYPE) {
+    handle = policy->GetHandleForObject(RE::TESQuest::FORMTYPE, form);
+    return true;
+  }
+  if (RE::TESObjectREFR* refr = form->AsReference()) {
+    handle = policy->GetHandleForObject(refr->GetFormType(), refr);
+    return true;
+  }
+  why = "neither a quest nor a reference";
+  return false;
+}
+
+// the attached object of the key's script, the caller holding
+// attachedScriptsLock: the object of exactly that class, or else the first
+// whose class chain reaches it (a class extending the script), without case;
+// null for none
+ScriptObject* ObjectOfClass(const std::vector<ScriptObject*>& objects,
+                            const std::string& script)
+{
+  ScriptObject* extending = nullptr;
+  for (ScriptObject* object : objects) {
+    if (!object) {
+      continue;
+    }
+    std::size_t depth = 0;
+    for (const ScriptType* cls = object->GetTypeInfo();
+         cls && depth < kMaxChain; cls = cls->GetParent(), ++depth) {
+      if (_stricmp(cls->GetName(), script.c_str()) == 0) {
+        if (depth == 0) {
+          return object;
+        }
+        if (!extending) {
+          extending = object;
+        }
+        break;
+      }
+    }
+  }
+  return extending;
+}
+
+// the variable's place in the object's variables (Object.h:49) by name,
+// without case, over its chain's declarations (DeclaredOf: parent first,
+// positional, H-R1), the most derived declaration first as
+// Object::GetVariable searches (src/RE/O/Object.cpp:84-112); false with
+// `why` for an unlinked chain or a name no class declares
+bool VarIndexOf(const ScriptObject* object, const std::string& var,
+                std::size_t& index, TypeInfo& declared, std::string& why)
+{
+  std::vector<Declared> vars;
+  if (!DeclaredOf(object->GetTypeInfo(), vars)) {
+    why = "its class chain is not linked or its variables do not add up to "
+          "GetTotalNumVariables";
+    return false;
+  }
+  for (std::size_t i = vars.size(); i-- > 0;) {
+    if (_stricmp(vars[i].name.c_str(), var.c_str()) == 0) {
+      index = i;
+      declared = vars[i].type;
+      return true;
+    }
+  }
+  why = "no class of its chain declares the variable";
+  return false;
+}
+
+// the key's attached object and variable found under attachedScriptsLock
+// (VirtualMachine.h:219; AttachedObjects), `use` run on the variable with its
+// declared type there and then, so nothing outlives the lock; false with
+// `why` when any step finds nothing
+template <class Use>
+bool WithVariable(VM* vm, RE::VMHandle handle, const VarKey& key,
+                  std::string& why, Use use)
+{
+  RE::BSSpinLockGuard guard{ vm->attachedScriptsLock };
+  std::vector<ScriptObject*> objects;
+  if (!AttachedObjects(vm, handle, objects)) {
+    why = "no attached script";
+    return false;
+  }
+  ScriptObject* object = ObjectOfClass(objects, key.script);
+  if (!object) {
+    why = "no attached script of that class";
+    return false;
+  }
+  std::size_t index = 0;
+  TypeInfo declared;
+  if (!VarIndexOf(object, key.var, index, declared, why)) {
+    return false;
+  }
+  return use(object->variables[index], declared, why);
+}
+
+// one key's answer: { form, script, var, k, i|f|b } for a value read, or
+// { form, script, var, reason } for a refused key, its own flag echoed
+nlohmann::json ReadOneVariable(const nlohmann::json& j, bool& read)
+{
+  VarKey key;
+  std::string why;
+  const bool parsed = ParseVarKey(j, key, why);
+  nlohmann::json entry = KeyJson(key);
+  VM* vm = nullptr;
+  RE::VMHandle handle = 0;
+  if (!parsed || !HandleOfForm(key.form, vm, handle, why)) {
+    entry["reason"] = why;
+    return entry;
+  }
+  if (IsGameTimeName(key.var)) {
+    ScriptState::GameTimeRegistration registration;
+    if (!ScriptState::ReadGameTimeRegistration(handle, registration, why)) {
+      entry["reason"] = why;
+      return entry;
+    }
+    entry["k"] = 4;
+    entry["f"] = _stricmp(key.var.c_str(), kGameTimeHours) == 0
+      ? registration.hoursLeft
+      : registration.intervalHours;
+    read = true;
+    return entry;
+  }
+  // the scalar copied under the lock, encoded after it
+  Variable value;
+  int kind = 0;
+  const bool found = WithVariable(
+    vm, handle, key, why,
+    [&](const Variable& v, const TypeInfo& declared, std::string& useWhy) {
+      kind = Fold(declared);
+      if (kind < 3 || kind > 5) {
+        useWhy = fmt::format("a variable of kind {} (the wire carries 3 int, "
+                             "4 float, 5 bool)",
+                             kind);
+        return false;
+      }
+      if (Fold(v.GetType()) != kind) {
+        useWhy = fmt::format("a variable declared of kind {} holding kind {}",
+                             kind, Fold(v.GetType()));
+        return false;
+      }
+      value = v;
+      return true;
+    });
+  std::uint32_t seatLocal = 0;
+  if (!found || !EncodeScalar(value, kind, entry, seatLocal, why)) {
+    entry["reason"] = why;
+    return entry;
+  }
+  entry["k"] = kind;
+  read = true;
+  return entry;
+}
+
+// one entry's answer: { form, script, var, written } with reason when
+// refused; the value is the entry's k (3, 4 or 5) and exactly its payload
+// (ParseValue, the validator's rule), written through Variable's setters
+// (WriteLiteral; Variable.h:71-79) only into a variable declared of that
+// kind, under attachedScriptsLock
+nlohmann::json WriteOneVariable(const nlohmann::json& j, bool& written)
+{
+  VarKey key;
+  std::string why;
+  const bool parsed = ParseVarKey(j, key, why);
+  nlohmann::json entry = KeyJson(key);
+  entry["written"] = false;
+  auto refuse = [&](const std::string& reason) {
+    entry["reason"] = reason;
+    return entry;
+  };
+  if (!parsed) {
+    return refuse(why);
+  }
+  RecValue value;
+  if (!ParseValue(j, value, why)) {
+    return refuse(why);
+  }
+  if (value.k < 3 || value.k > 5) {
+    return refuse(fmt::format("a value of kind {} (the wire carries 3 int, 4 "
+                              "float, 5 bool)",
+                              value.k));
+  }
+  if (IsGameTimeName(key.var)) {
+    return refuse("a game-time registration is registered again through "
+                  "Form.RegisterForSingleUpdateGameTime or "
+                  "RegisterForUpdateGameTime, never written");
+  }
+  VM* vm = nullptr;
+  RE::VMHandle handle = 0;
+  if (!HandleOfForm(key.form, vm, handle, why)) {
+    return refuse(why);
+  }
+  const bool done = WithVariable(
+    vm, handle, key, why,
+    [&](Variable& v, const TypeInfo& declared, std::string& useWhy) {
+      const int kd = Fold(declared);
+      if (kd != value.k) {
+        useWhy = fmt::format("a value of kind {} into a variable declared of "
+                             "kind {}",
+                             value.k, kd);
+        return false;
+      }
+      WriteLiteral(v, value, kd);
+      return true;
+    });
+  if (!done) {
+    return refuse(why);
+  }
+  entry["written"] = true;
+  written = true;
+  return entry;
+}
+
+// the keys or the entries of a call: a JSON array, or an object carrying
+// one under `member`, at most kMaxVarKeys; null with `why` otherwise
+const nlohmann::json* ListOf(const nlohmann::json& parsed, const char* member,
+                             std::string& why)
+{
+  if (parsed.is_discarded()) {
+    why = "no JSON";
+    return nullptr;
+  }
+  const nlohmann::json* list =
+    parsed.is_array() ? &parsed : Member(parsed, member);
+  if (!list || !list->is_array()) {
+    why = fmt::format("no JSON array (nor an object with {})", member);
+    return nullptr;
+  }
+  if (list->size() > kMaxVarKeys) {
+    why = fmt::format("{} items, past {}", list->size(), kMaxVarKeys);
+    return nullptr;
+  }
+  return list;
+}
+
+std::string ReadVariablesImpl(std::string_view keysJson)
+{
+  const nlohmann::json parsed = nlohmann::json::parse(
+    keysJson.data(), keysJson.data() + keysJson.size(), nullptr, false);
+  std::string why;
+  const nlohmann::json* keys = ListOf(parsed, "keys", why);
+  if (!keys) {
+    logger::info("[verb:quest-stage] ReadScriptVariables refused: {}", why);
+    return "[]";
+  }
+  nlohmann::json answer = nlohmann::json::array();
+  std::size_t read = 0;
+  std::string firstRefusal;
+  for (const nlohmann::json& j : *keys) {
+    bool one = false;
+    nlohmann::json entry = ReadOneVariable(j, one);
+    if (one) {
+      ++read;
+    } else if (firstRefusal.empty()) {
+      firstRefusal =
+        fmt::format("; first refused {:x} {}::{}: {}", entry.value("form", 0u),
+                    entry.value("script", std::string()),
+                    entry.value("var", std::string()),
+                    entry.value("reason", std::string()));
+    }
+    answer.push_back(std::move(entry));
+  }
+  if (LogThis(g_varReadLines)) {
+    logger::info("[verb:quest-stage] ReadScriptVariables: {} key(s), {} "
+                 "read, {} refused{}",
+                 keys->size(), read, keys->size() - read, firstRefusal);
+  }
+  return DumpText(answer);
+}
+
+std::string WriteVariablesImpl(std::string_view entriesJson)
+{
+  const nlohmann::json parsed = nlohmann::json::parse(
+    entriesJson.data(), entriesJson.data() + entriesJson.size(), nullptr,
+    false);
+  std::string why;
+  const nlohmann::json* entries = ListOf(parsed, "entries", why);
+  if (!entries) {
+    logger::info("[verb:quest-stage] WriteScriptVariables refused: {}", why);
+    return "[]";
+  }
+  nlohmann::json answer = nlohmann::json::array();
+  std::size_t written = 0;
+  std::string firstRefusal;
+  for (const nlohmann::json& j : *entries) {
+    bool one = false;
+    nlohmann::json entry = WriteOneVariable(j, one);
+    if (one) {
+      ++written;
+    } else if (firstRefusal.empty()) {
+      firstRefusal =
+        fmt::format("; first refused {:x} {}::{}: {}", entry.value("form", 0u),
+                    entry.value("script", std::string()),
+                    entry.value("var", std::string()),
+                    entry.value("reason", std::string()));
+    }
+    answer.push_back(std::move(entry));
+  }
+  if (LogThis(g_varWriteLines)) {
+    logger::info("[verb:quest-stage] WriteScriptVariables: {} of {} "
+                 "entr(ies) written{}",
+                 written, entries->size(), firstRefusal);
+  }
+  return DumpText(answer);
+}
+
 // an answer for a native whose body threw, in its own shape (an apply's with
 // the names blanked, read as a refusal reads them)
 std::string ExceptionAnswer(std::uint32_t formId, const char* field,
@@ -1711,6 +2115,35 @@ std::string ScriptState::SendTrigger(RE::TESObjectREFR* refr,
   } catch (...) {
   }
   return ExceptionAnswer(formId, "sent", what.c_str());
+}
+
+// rung 5's two natives (ReadScriptVariables, WriteScriptVariables): the
+// bodies above under a catch, as every public native here; a throw answers
+// "[]", the reason logged
+std::string ScriptState::ReadVariables(std::string_view keysJson)
+{
+  try {
+    return ReadVariablesImpl(keysJson);
+  } catch (const std::exception& e) {
+    logger::error("[verb:quest-stage] ReadScriptVariables threw: {}",
+                  e.what());
+  } catch (...) {
+    logger::error("[verb:quest-stage] ReadScriptVariables threw");
+  }
+  return "[]";
+}
+
+std::string ScriptState::WriteVariables(std::string_view entriesJson)
+{
+  try {
+    return WriteVariablesImpl(entriesJson);
+  } catch (const std::exception& e) {
+    logger::error("[verb:quest-stage] WriteScriptVariables threw: {}",
+                  e.what());
+  } catch (...) {
+    logger::error("[verb:quest-stage] WriteScriptVariables threw");
+  }
+  return "[]";
 }
 
 // thuum ADR-068 rung 5, D-T2 B: a handle's queued OnUpdateGameTime

@@ -239,6 +239,20 @@ RE::BSFixedString SendTriggerEvent(IVM* vm, StackID stackId,
                                    RE::TESObjectREFR* trigger,
                                    std::string_view name,
                                    RE::TESObjectREFR* actionRef);
+// thuum docs/DECISIONS.md ADR-068 rung 5 (docs/research/
+// rung5-quests-2026-11-09.md 1(c) and 8(b); D-V1 B, D-T2 B): a quest's or a
+// reference's script variables read by name for ScriptVariables 81 (a JSON
+// string: per key { form, script, var, k, i|f|b } or { form, script, var,
+// reason }) and written by name through Variable's setters (a JSON string:
+// per entry { form, script, var, written, reason? }); the shapes are
+// ScriptState.h's. keysJson and entriesJson are JSON arrays since callNative
+// takes no array
+RE::BSFixedString ReadScriptVariables(IVM* vm, StackID stackId,
+                                      RE::StaticFunctionTag*,
+                                      std::string_view keysJson);
+RE::BSFixedString WriteScriptVariables(IVM* vm, StackID stackId,
+                                       RE::StaticFunctionTag*,
+                                       std::string_view entriesJson);
 
 // thuum docs/DECISIONS.md ADR-068 rung 4 (the state rows, amendment B;
 // docs/research/rung4-state-rows-2026-11-07.md 1(a)): the world globals this

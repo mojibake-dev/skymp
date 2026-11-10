@@ -121,6 +121,39 @@ std::string Send(RE::TESObjectREFR* refr, std::string_view name,
 std::string SendTrigger(RE::TESObjectREFR* refr, std::string_view name,
                         RE::TESObjectREFR* actionRef);
 
+// thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 1(c) and
+// 8(b); D-V1 B: every seat reports a listed condition-read variable it
+// changes; D-T2 B: a marked quest's scalar variables kept per player as
+// ScriptVariables 81's own entries): script variables read and written by
+// name, under attachedScriptsLock (VirtualMachine.h:219).
+// ReadScriptVariables(keysJson): keysJson a JSON array of keys (an object
+// carrying a `keys` array read the same way), at most 256, each { form (a
+// QUST's or a reference's id, below 0xff000000), script (a class among the
+// form's attached scripts' chains: the object of exactly that class, else
+// one extending it), var (the variable as compiled: an auto property's
+// "::Name_var", a plain variable's name), own? }, names without case. The
+// answer, a JSON array in the keys' order: { form, script, var, k, i|f|b }
+// for a value read (k 3 int, 4 float, 5 bool, the wire's kinds; the
+// variable's declared kind and its value's), { form, script, var, reason }
+// for a refused key, each with the key's own echoed; "[]" for a call that
+// is no such array, the reason logged. The var names "<OnUpdateGameTime>"
+// and "<OnUpdateGameTime:repeat>" read the form's queued OnUpdateGameTime
+// registration (ReadGameTimeRegistration) as k 4: the game hours until it
+// fires, and a repeat's interval (0 for a single update).
+std::string ReadVariables(std::string_view keysJson);
+
+// WriteScriptVariables(entriesJson): entriesJson a JSON array of entries
+// (an object carrying an `entries` array read the same way), at most 256,
+// each a key with k (3, 4 or 5) and exactly its payload (i, f or b, as the
+// script record's values), written through Variable's setters (Variable.h:
+// 71-79) into the variable found as ReadScriptVariables finds it, refused
+// for a kind other than the variable's declared one and for the two
+// registration names (registered again through Form.RegisterForUpdateGameTime
+// or RegisterForSingleUpdateGameTime). The answer, a JSON array in the
+// entries' order: { form, script, var, written, reason? }; "[]" for a call
+// that is no such array, the reason logged.
+std::string WriteVariables(std::string_view entriesJson);
+
 // thuum ADR-068 rung 5, D-T2 B (docs/research/rung5-quests-2026-11-09.md
 // 8(b): a vampire's script state kept per player, its game-time
 // registration re-issued at login): the OnUpdateGameTime registration the VM

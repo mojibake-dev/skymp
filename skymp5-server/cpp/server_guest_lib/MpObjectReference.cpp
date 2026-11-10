@@ -1432,6 +1432,21 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
     return;
   }
 
+  // thuum docs/verbs/npc-fate.md (playtest 51, b-npc-stream-equipment): an
+  // actor's record reaches a game through this subscription, so a roll it
+  // has not had yet runs first (PartOne::EnsureFated): ahead of its scripts'
+  // OnLoad below and of the create word, which then carries it, the fate
+  // ahead of it. The roll's own equipment word (EquipBestWeapon) goes to
+  // the listeners with a user it already has, and this listener joins its
+  // sets only below, so nothing of the roll reaches a game ahead of its
+  // create word
+  if (actorEmitter && actorListener && actorEmitter != actorListener) {
+    if (auto* worldState = emitter->GetParent();
+        worldState && worldState->onActorSubscribe) {
+      worldState->onActorSubscribe(*actorEmitter, *actorListener);
+    }
+  }
+
   if (!emitter->pImpl->onInitEventSent &&
       listener->GetChangeForm().profileId != -1) {
     emitter->pImpl->onInitEventSent = true;

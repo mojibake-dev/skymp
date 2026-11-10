@@ -91,6 +91,29 @@ const RUN_MEMORY_MAX = 256;
 // anyway, logged
 const BUSY_MAX_MS = 15000;
 
+// x-quest-runs 20261110-071422's read, the login burst's safety net: the
+// server's QuestStage budget, mirrored. wire-validate's quest_stage_budget
+// (skymp-wire/crates/wire-validate/src/lib.rs:286, taken at :1677 for every
+// QuestStage a client sends, a stage and a run word alike) holds 32 at once
+// and refills 8 a second, one bucket a connection, and a report past it is
+// refused, counted and logged, and lost: nothing tells this seat. The pacing
+// spends the same bucket before each send and keeps QUEST_SEND_RESERVE
+// tokens back, since the server counts arrivals and a reliable packet resent
+// after a loss lands with the ones queued behind it, closing the gaps kept
+// here (UNMEASURED; four tokens are half a second of the refill)
+const QUEST_SEND_BURST = 32;
+const QUEST_SEND_PER_S = 8;
+const QUEST_SEND_RESERVE = 4;
+
+// How many reports the pacing holds at most; past it the oldest held run
+// word goes (the oldest stage only when no word is held), counted in the
+// episode's line
+const QUEST_SEND_HELD_MAX = 1024;
+
+// How many quests the puppet rule's scene marks and their said lines keep;
+// the oldest makes room
+const PUPPET_SCENE_MEMORY_MAX = 256;
+
 // one of the server's quest words or stages waiting for the update pass
 type QuestItem = {
     quest: number;
@@ -213,6 +236,56 @@ const START_UP_MEMORY_MAX = 2048;
 // stage's apply makes on a stopped quest uses the start-up stages the
 // quest's last start word named (a login's served starts name every recorded
 // running quest's). An absent field changes nothing.
+//
+// x-quest-runs 20261110-071422's read (a canon run read against rung 5's
+// code, 2026-11-10): three rules ahead of the run words. The login's load: a
+// seat's own game load raises some 400 questStart and questStop events in
+// its first 8 s (c1 405, c2 412 by the run's driver logs, held repeats
+// spread; about 280 in the first second): the template save's quests, the
+// start-game-enabled ones, and USSEP's retroactive-fix quests, which start at
+// the load and stop themselves 1.7 to 7 s later. Reported, they would overrun
+// the server's budget (below) and write the template save's state into the
+// world's record: a load-time start of a quest the record holds stopped
+// would be recorded and relayed, running it again on every other seat. So
+// from the login's CreateActor while no update has run in this game (the
+// main menu, where RemoteServer's spawn loads the save; a seat with the game
+// up moves its player and loads nothing) until the login's arrival resolves
+// (raised, given up after ARRIVAL_WINDOW_MS, or switched off), this game's
+// own run events are held and counted, one line at the arrival: "<n> run
+// event(s) of the login's load held: the template save's, not reported" (a
+// new connection before the arrival ends the hold with the same line). It
+// opens at the login, not at gameLoad, because the engine raises some of
+// them inside the save load, queued ahead of its load-game event: c1's first
+// 14 starts (07:14:57.672 to .674) reached this service before gameLoad
+// (LoginCellService's first line after gameLoad, at .993, follows them),
+// c2's none. In that read the hold takes 320 of c1's 405 and 376 of c2's 412,
+// both logins landing in no location, so each arrival came at the end of its
+// window. A login inside a location resolves its arrival at the first update
+// after gameLoad, ahead of the start-game-enabled quests' starts (c1 261 and
+// c2 276 in the 0.5 s after gameLoad), which then go as words: the bound is
+// the arrival's (the fix pass's choice, no new timer), and that case is
+// open. A run change after the arrival is a word like any other (W1 B
+// retired the start-game-enabled rule): there, 74 of c1's USSEP self-stops
+// and 23 of c2's. A stage event of the load is no run event and still goes
+// (b-quest-report-dedupe counts the login's stage 0 of 2002b6e).
+// The server's budget: every report this game sends passes a mirror of
+// wire-validate's quest_stage_budget (QUEST_SEND_BURST, QUEST_SEND_PER_S,
+// less QUEST_SEND_RESERVE): sent at once while a token is spare, else held,
+// a stage ahead of every run word, and sent from the update pass as the
+// bucket refills, so a burst is delayed here and never refused there; an
+// episode that held anything says so in one line once its last report goes.
+// The puppet rule's scene stop: PuppetService stops a scene the engine plays
+// here on a host's puppet (playtest 41's Sven scene), and the engine then
+// stops the scene's quest (c2 at 07:20:18: the start of 3a17c,
+// MS13BleakFallsBarrowCampfireScene, its scene 3a17d stopped on 39fe4 and
+// 39fe2, the quest's stop 0.32 s later at .522; c1 at 07:19:52 with 954da
+// of 954d9, the stop 3.1 s later). That stop is this seat's own, never a
+// word: reported, it would be recorded and relayed to the host, stopping
+// the scene the host's live actors play (ADR-063: a non-owner renders,
+// never simulates). PuppetService names the quest (its
+// puppetSceneStopped event), and the quest's stops here go unreported until
+// its next start here, said once a quest a connection: "quest <q>'s stop not
+// reported: its scene <s> was stopped here by the puppet rule".
 export class QuestStageService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -224,6 +297,7 @@ export class QuestStageService extends ClientListener {
         this.controller.emitter.on("gameLoad", () => this.onGameLoad());
         this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
         this.controller.emitter.on("connectionAccepted", () => this.onConnectionAccepted());
+        this.controller.emitter.on("puppetSceneStopped", (e) => this.onPuppetSceneStopped(e));
         this.resume();
         this.sayRetiredSetting();
     }
@@ -296,9 +370,14 @@ export class QuestStageService extends ClientListener {
     // its starts first and its stops last), a quest's next one after the
     // engine answered its last
     private onUpdate() {
+        // the login load's hold (x-quest-runs' read): the game is up here, as
+        // it never is at the main menu
+        this.updateSeen = true;
         this.arrival();
         const now = Date.now();
         this.flushRepeats(now);
+        // the pacing: what the server's budget held, as the bucket refills
+        this.drainSends(now);
         // slice two's safety: a fragment mark whose stage event never came
         // within its window is taken back (callNative runs here, in the
         // update pass's VM context); the list is in order of expiry, and it
@@ -524,6 +603,9 @@ export class QuestStageService extends ClientListener {
             return;
         }
         const questId = e.quest.getFormID();
+        // the puppet rule's scene stop (x-quest-runs' read): a start here ends
+        // the quest's mark, whoever's start it is
+        this.puppetScenes.delete(questId);
         const echo = this.applyingRuns.delete(QuestStageService.runKey(questId, WORD_START));
         const parkedStart = this.parkedStarts.delete(questId);
         const parkedStage = this.applyParked(e.quest, questId);
@@ -637,10 +719,24 @@ export class QuestStageService extends ClientListener {
     }
 
     // this game's own start or stop of a quest (no mark of the world's):
-    // reported as the world's unless the quest is listed, held for churn, or
-    // the words are off
+    // reported as the world's unless the login's load raised it (held and
+    // counted for the arrival's line), the words are off, the quest is
+    // listed, it is a stop after the puppet rule stopped the quest's scene
+    // here, or the quest is held for churn; sent through the server's budget
+    // (the class comment's x-quest-runs paragraph)
     private reportRun(questId: number, word: number) {
-        if (!this.runsEnabled() || !this.reports(questId) || this.churned(questId)) {
+        if (this.loginLoad) {
+            this.loginLoadHeld++;
+            return;
+        }
+        if (!this.runsEnabled() || !this.reports(questId)) {
+            return;
+        }
+        if (word === WORD_STOP && this.puppetScenes.has(questId)) {
+            this.sayPuppetStop(questId);
+            return;
+        }
+        if (this.churned(questId)) {
             return;
         }
         const message: QuestStageMessage = { t: MsgType.QuestStage, quest: questId, stage: 0, word };
@@ -648,7 +744,7 @@ export class QuestStageService extends ClientListener {
         if (acting !== undefined) {
             message.acting = acting;
         }
-        this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
+        this.send(message);
         logTrace(this, "this game", word === WORD_START ? "started" : "stopped", "shared quest", questId.toString(16) + "; reported" + QuestStageService.forActing(acting));
     }
 
@@ -684,6 +780,131 @@ export class QuestStageService extends ClientListener {
         this.heldRuns.add(questId);
         logLab(TAG, `quest ${questId.toString(16)}'s run flipped ${window.flips} times in ${Math.round((now - window.since) / 1000)} s here: held, not reported (churn)`);
         return true;
+    }
+
+    // the login load's hold is over (its arrival resolved, or a new
+    // connection came first): the one line of what it held
+    private endLoginLoad(why: string) {
+        if (!this.loginLoad) {
+            return;
+        }
+        this.loginLoad = false;
+        logLab(TAG, `${this.loginLoadHeld} run event(s) of the login's load held: the template save's, not reported${why}`);
+        this.loginLoadHeld = 0;
+    }
+
+    // the pacing: one of this game's reports to the server, into its lane (a
+    // stage's or a run word's), then as many sent as the bucket spares, every
+    // stage first; one still waiting is held, and the first held opens the
+    // episode
+    private send(message: QuestStageMessage) {
+        const lane = message.word === undefined ? this.heldStages : this.heldWords;
+        lane.push(message);
+        const now = Date.now();
+        this.drainSends(now);
+        if (lane.length === 0 || lane[lane.length - 1] !== message) {
+            return; // sent now
+        }
+        if (message.word === undefined) {
+            this.heldStageCount++;
+        } else {
+            this.heldWordCount++;
+        }
+        if (this.heldSince === 0) {
+            this.heldSince = now;
+            logTrace(this, "the server's QuestStage budget is spent here: reports held, sent at", QUEST_SEND_PER_S, "a second, stages first");
+        }
+        if (this.heldStages.length + this.heldWords.length > QUEST_SEND_HELD_MAX) {
+            (this.heldWords.length > 0 ? this.heldWords : this.heldStages).shift();
+            if (this.heldDropped++ === 0) {
+                logLab(TAG, `QuestStage pacing holds ${QUEST_SEND_HELD_MAX} report(s): the oldest held run word goes for each new one (the oldest stage when no word is held)`);
+            }
+        }
+    }
+
+    // the pacing's bucket credited for the time since its last credit (the
+    // fractions carry, as the server's do), then the held reports sent while
+    // a token is spare above the reserve, every stage before any run word; an
+    // episode that held anything ends once nothing is held, in one line
+    private drainSends(now: number) {
+        if (this.heldStages.length === 0 && this.heldWords.length === 0) {
+            return;
+        }
+        this.sendTokens = Math.min(QUEST_SEND_BURST, this.sendTokens + Math.max(0, now - this.sendCreditedAt) * QUEST_SEND_PER_S / 1000);
+        this.sendCreditedAt = now;
+        while (this.sendTokens >= QUEST_SEND_RESERVE + 1) {
+            const next = this.heldStages.length > 0 ? this.heldStages.shift() : this.heldWords.shift();
+            if (next === undefined) {
+                break;
+            }
+            this.sendTokens -= 1;
+            this.controller.emitter.emit("sendMessage", { message: next, reliability: "reliable" });
+        }
+        if (this.heldStages.length > 0 || this.heldWords.length > 0 || this.heldSince === 0) {
+            return;
+        }
+        const held = this.heldStageCount + this.heldWordCount;
+        const gone = this.heldDropped > 0 ? `${this.heldDropped} dropped past ${QUEST_SEND_HELD_MAX}, the rest sent` : "all sent";
+        logLab(TAG, `QuestStage pacing: ${held} report(s) held under the server's budget (${QUEST_SEND_BURST} at once, then ${QUEST_SEND_PER_S} a second) for ${((now - this.heldSince) / 1000).toFixed(1)} s, ${this.heldStageCount} stage(s) and ${this.heldWordCount} run word(s); ${gone}`);
+        this.heldSince = 0;
+        this.heldStageCount = 0;
+        this.heldWordCount = 0;
+        this.heldDropped = 0;
+    }
+
+    // a new connection's budget is the server's anew (a full bucket a
+    // connection), and the reports the old one held go with it, as a send
+    // on a dropped connection does (NetworkingService hands each send to the
+    // transport at once, with no queue of its own)
+    private resetSends() {
+        const left = this.heldStages.length + this.heldWords.length;
+        if (left > 0) {
+            logLab(TAG, `QuestStage pacing: ${left} held report(s) dropped at a new connection (${this.heldStages.length} stage(s), ${this.heldWords.length} run word(s)), lost with the old one`);
+        }
+        this.heldStages = [];
+        this.heldWords = [];
+        this.heldSince = 0;
+        this.heldStageCount = 0;
+        this.heldWordCount = 0;
+        this.heldDropped = 0;
+        this.sendTokens = QUEST_SEND_BURST;
+        this.sendCreditedAt = 0;
+    }
+
+    // PuppetService stopped a scene of the quest here on a host's puppet
+    // (its reconcile; JS state alone): the quest's stops here are this
+    // seat's own until the quest's next start here
+    private onPuppetSceneStopped(e: { quest: number; scene: number }) {
+        if (!Number.isInteger(e.quest) || e.quest <= 0) {
+            return;
+        }
+        if (!this.puppetScenes.has(e.quest) && this.puppetScenes.size >= PUPPET_SCENE_MEMORY_MAX) {
+            const oldest = this.puppetScenes.keys().next().value;
+            if (oldest !== undefined) {
+                this.puppetScenes.delete(oldest);
+            }
+        }
+        this.puppetScenes.set(e.quest, e.scene);
+    }
+
+    // the puppet rule's unreported stop, said once a quest a connection (a
+    // trace after)
+    private sayPuppetStop(questId: number) {
+        const scene = this.puppetScenes.get(questId);
+        const which = scene !== undefined && scene > 0 ? `its scene ${scene.toString(16)}` : "its scene";
+        const line = `quest ${questId.toString(16)}'s stop not reported: ${which} was stopped here by the puppet rule`;
+        if (this.puppetStopSaid.has(questId)) {
+            logTrace(this, line);
+            return;
+        }
+        if (this.puppetStopSaid.size >= PUPPET_SCENE_MEMORY_MAX) {
+            const oldest = this.puppetStopSaid.values().next().value;
+            if (oldest !== undefined) {
+                this.puppetStopSaid.delete(oldest);
+            }
+        }
+        this.puppetStopSaid.add(questId);
+        logLab(TAG, line);
     }
 
     // the acting scope for a live apply (the class comment): the server's
@@ -764,7 +985,7 @@ export class QuestStageService extends ClientListener {
         if (acting !== undefined) {
             message.acting = acting;
         }
-        this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
+        this.send(message);
         logTrace(this, "this game set stage", e.stage, "of shared quest", questId.toString(16) + "; reported" + QuestStageService.forActing(acting));
     }
 
@@ -784,19 +1005,32 @@ export class QuestStageService extends ClientListener {
     // the server's CreateActor of this connection's own actor (isMe: a login,
     // a reconnect, a restart, as HostService reads it): the login half of
     // the arrival's condition. The game's load follows it on a fresh launch
-    // (RemoteServer loads the save for the actor it was given)
+    // (RemoteServer loads the save for the actor it was given). While no
+    // update has run in this game yet it stands at the main menu, where
+    // RemoteServer's spawn loads the template save (with the game up it moves
+    // the player and loads nothing; LoadOrderVerificationService's first
+    // update printed after the load in x-quest-runs' read): the login load's
+    // hold opens, and every run event of this game until the arrival is that
+    // save's
     private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
         if (!e.message.isMe) {
             return;
         }
         this.arrivalLoginSeen = true;
+        if (!this.updateSeen && !this.loginLoad) {
+            this.loginLoad = true;
+            this.loginLoadHeld = 0;
+        }
     }
 
     // a new connection (NetworkingService's connectionAccepted, before the
     // server's CreateActor): the once-per-login flags start over, so each
     // login's arrival is its own and none is carried across a reconnect; so
     // do rung 5's run marks, parked starts and churn holds (the server serves
-    // the run state anew)
+    // the run state anew). The x-quest-runs rules: a login load's hold the
+    // connection cut ends with its line, the pacing starts from the new
+    // connection's full bucket, and the puppet rule's lines are said anew
+    // (its marks stay: they are this engine's, not the connection's)
     private onConnectionAccepted() {
         this.arrivalDone();
         this.applyingRuns.clear();
@@ -804,6 +1038,9 @@ export class QuestStageService extends ClientListener {
         this.busy.clear();
         this.runFlips.clear();
         this.heldRuns.clear();
+        this.endLoginLoad(" (a new connection came before the arrival)");
+        this.resetSends();
+        this.puppetStopSaid.clear();
     }
 
     // the login's arrival, from the update pass: once this connection's own
@@ -816,7 +1053,7 @@ export class QuestStageService extends ClientListener {
             return;
         }
         if (!this.arrivalEnabled()) {
-            this.arrivalDone();
+            this.arrived();
             return;
         }
         if (this.arrivalDeadline === 0) {
@@ -828,11 +1065,11 @@ export class QuestStageService extends ClientListener {
             if (Date.now() < this.arrivalDeadline) {
                 return; // read again next update, within the window
             }
-            this.arrivalDone();
+            this.arrived();
             logTrace(this, "no location at the login's cell; no arrival raised (the engine's own event comes at the first location entered)");
             return;
         }
-        this.arrivalDone();
+        this.arrived();
         const locationId = location.getFormID();
         try {
             const raised = this.sp.callNative("TESModPlatform", "SendStoryChangeLocation", undefined, player, null, location);
@@ -851,6 +1088,13 @@ export class QuestStageService extends ClientListener {
         this.arrivalLoginSeen = false;
         this.arrivalGameLoaded = false;
         this.arrivalDeadline = 0;
+    }
+
+    // the login's arrival resolved (raised, given up, or switched off): its
+    // flags go, and the login load's hold ends with its line
+    private arrived() {
+        this.arrivalDone();
+        this.endLoginLoad("");
     }
 
     private arrivalEnabled(): boolean {
@@ -1072,4 +1316,28 @@ export class QuestStageService extends ClientListener {
     private arrivalLoginSeen = false;
     private arrivalGameLoaded = false;
     private arrivalDeadline = 0;
+    // x-quest-runs 20261110-071422's read. The login load's hold: open from
+    // the login's CreateActor at the main menu to its arrival; the run events
+    // it held; whether an update has run in this game yet (none does at the
+    // main menu)
+    private loginLoad = false;
+    private loginLoadHeld = 0;
+    private updateSeen = false;
+    // the pacing: the mirrored bucket's tokens and the time they were last
+    // credited at; the reports waiting for a token, stages and run words
+    // apart, each in its order; the episode's start and its counts
+    private sendTokens = QUEST_SEND_BURST;
+    private sendCreditedAt = 0;
+    private heldStages: QuestStageMessage[] = [];
+    private heldWords: QuestStageMessage[] = [];
+    private heldSince = 0;
+    private heldStageCount = 0;
+    private heldWordCount = 0;
+    private heldDropped = 0;
+    // the puppet rule's scene stop: the quests whose scene PuppetService
+    // stopped here on a host's puppet (the scene by quest), each until the
+    // quest's next start here, and the quests whose unreported stop this
+    // connection said
+    private puppetScenes = new Map<number, number>();
+    private puppetStopSaid = new Set<number>();
 }

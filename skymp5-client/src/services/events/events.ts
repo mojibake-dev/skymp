@@ -134,6 +134,8 @@ type EventTypes = {
     'actorFateMessage': [ConnectionMessage<ActorFateMessage>],
     // thuum docs/verbs/npc-puppet.md: HostService's grant or release of a cell, for PuppetService
     'cellHostChanged': [{ cell: number; hosted: boolean }],
+    // x-quest-runs 20261110-071422's read: PuppetService's stop of a scene the engine played here on a host's puppet, for QuestStageService (the engine's stop of its quest that follows is this seat's own)
+    'puppetSceneStopped': [{ quest: number; scene: number }],
     'hostReleaseMessage': [ConnectionMessage<HostReleaseMessage>],
     // thuum docs/verbs/change-form.md (ADR-065): the server's ack of this seat's record, and a record served for a reference here
     'changeFormAckMessage': [ConnectionMessage<ChangeFormAckMessage>],

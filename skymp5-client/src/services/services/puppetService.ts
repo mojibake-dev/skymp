@@ -397,8 +397,16 @@ export class PuppetService extends ClientListener {
         }
         this.scenesStopped.set(localId, sceneId);
         const quest = scene.getOwningQuest();
+        const questId = quest ? quest.getFormID() : 0;
         scene.stop();
-        logTrace(this, `scene ${sceneId.toString(16)} of quest ${quest ? quest.getFormID().toString(16) : "none"} stopped on this seat: ${localId.toString(16)} is the host's puppet (playtest 41's Sven scene)`);
+        logTrace(this, `scene ${sceneId.toString(16)} of quest ${questId ? questId.toString(16) : "none"} stopped on this seat: ${localId.toString(16)} is the host's puppet (playtest 41's Sven scene)`);
+        // x-quest-runs 20261110-071422's read: the engine then stops the
+        // scene's quest here (c2's 3a17d of 3a17c stopped at 07:20:18.202, the
+        // quest's stop at .522), a stop that is this seat's own and never the
+        // world's, so QuestStageService is told the quest (JS state alone)
+        if (questId !== 0) {
+            this.controller.emitter.emit("puppetSceneStopped", { quest: questId, scene: sceneId });
+        }
     }
 
     // Whether this game switched the actor's AI off (by its local form id):

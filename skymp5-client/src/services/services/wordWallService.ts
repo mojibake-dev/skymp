@@ -21,6 +21,15 @@ import { logTrace } from '../../logging';
 // Papyrus block until the layer admits them by name (word-wall.md, the
 // chant's call).
 //
+// A guest's own walk in: the presser rule (D-C2 A, activationService.ts)
+// tells this game's own entry into a world trigger of a cell another game
+// hosts as the platform's triggerEntry, which this service takes too. OnTrigger
+// alone missed it: in b-word-wall 20261110-062732 the guest's engine sent its
+// trigger an enter and a leave 338 ms apart (the leave 12 ms after a
+// setPosition, the player inside the 2,065-unit sphere throughout) and no
+// OnTrigger. The host hears no triggerEntry for its own cell's trigger and a
+// game that logs in inside hears no entry; both keep OnTrigger.
+//
 // Lines for the lab: "word wall <id> entered", "word wall <id> reported".
 export class WordWallService extends ClientListener {
   constructor(
@@ -48,6 +57,18 @@ export class WordWallService extends ClientListener {
       WordWallService.lastGameFileId,
       'OnTrigger',
     );
+    // the presser rule's entry (a tick task, JS state alone here): this game's
+    // own player stepping into a world trigger; the base is checked on the
+    // update as for OnTrigger. A platform without the event keeps OnTrigger
+    try {
+      this.controller.on('triggerEntry', (e) => {
+        if (e.enter === true && e.presserId === 0x14 && typeof e.refrId === 'number') {
+          self.pending.add(e.refrId);
+        }
+      });
+    } catch (e) {
+      logTrace(this, `triggerEntry unavailable on this platform (${e}); OnTrigger alone`);
+    }
     this.controller.on('update', () => this.onUpdate());
   }
 

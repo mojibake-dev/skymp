@@ -10,7 +10,12 @@
 # declarations as missing: 20261110, a9491ba9). NordRace
 # is Playable; neither NordRaceVampire nor WerewolfBeastRace is. c1 and c2 are new characters (profiles 9 and 10, actors
 # 0xff000002 and 0xff000003, see melee-reach), so the server opens c1's race menu at its login (character-creation's
-# frame). At 3 s c1 answers with NordRace, which both stacks take and relay alike (to c2, and echoed to c1). Then c1's own
+# frame). At 3 s c1 answers with NordRace, which both stacks take and relay alike (to c2, and echoed to c1). The bound
+# reads a script's attachment only while it is live for the player (rung 5's fresh review, note 3), and T2's settings
+# carry no questScope (off: no quest is classed a player's), so c1 starts the two quests first: at 3.5 s
+# PlayerVampireQuest 0xeafd5 and at 3.7 s PlayerWerewolfQuest 0x2ba16, each recorded running in the world's journal and
+# relayed to c2 with c1 acting, PlayerWerewolfQuest's with its stage 0, its start-up stage, as the word's engine stage
+# (D-Q3 A, `wordStages`; PlayerVampireQuest flags none). Then c1's own
 # scripts: at 4 s VampireChange's SetRace to NordRaceVampire, its twin by the lists, which the wire server records on the
 # change form and sends c2 as c1's look (UpdateAppearance, raceId 0x88794, no overlay); at 4.5 s the beast form's SetRace
 # to WerewolfBeastRace, a race neither Playable nor a twin, which opens c1's race overlay (D-T1 A: the record keeps the
@@ -18,9 +23,11 @@
 # NordRaceVampire, which ends the overlay (c2 hears the look with none). Four calls send nothing, each said by its name in
 # the wire server's log: at 5.2 s an AddSpell of Flames 0x12fcd, which no attachment of PlayerWerewolfChangeScript names
 # (E_SCRIPTCALL_UNNAMED); at 5.4 s an EquipItem naming c2's actor 0xff000003 (a figure argument: the edge passes a
-# connected player's actor, the six rows' bound refuses it unnamed); at 5.6 s an EquipItem naming 0xff0000aa, no
+# connected player's actor, the six rows' kind check refuses it, an actor being no item: E_SCRIPTCALL_ARGS); at 5.6 s
+# an EquipItem naming 0xff0000aa, no
 # player's (E_SCRIPTCALL_ARGS, wire-rules natives::figures); at 5.8 s a SetRace on the spawn's ore vein 0x10e6c5
-# (script-call's subject, loaded with the spawn's chunk), no player's own row (E_SCRIPTCALL_ROW). The legacy server knows no MsgType 75 and drops all eight. c2 steps at 6 s of its own and so
+# (script-call's subject, loaded with the spawn's chunk), no player's own row (E_SCRIPTCALL_ROW). The legacy server knows
+# neither MsgType 57 nor 75 and drops the two words and all eight calls. c2 steps at 6 s of its own and so
 # outlives c1, as in every session.
 id: player-own
 clients:
@@ -28,6 +35,8 @@ clients:
   c2: {profile_id: 10}
 steps:
   - {client: c1, at_ms: 3000, send: {t: 4, idx: "{{idx}}", data: {isFemale: false, raceId: 0x13746, weight: 50, skinColor: 0, hairColor: 0, headpartIds: [], headTextureSetId: 0, options: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], presets: [0, 0, 0, 0], tints: [], name: difftest}}}
+  - {client: c1, at_ms: 3500, send: {t: 57, quest: 0xeafd5, stage: 0, word: 1}, reliable: true}
+  - {client: c1, at_ms: 3700, send: {t: 57, quest: 0x2ba16, stage: 0, word: 1}, reliable: true}
   - {client: c1, at_ms: 4000, send: {t: 75, epoch: 0, selfId: 0x14, cls: Actor, fn: SetRace, args: [{formId: 0x88794, type: Race}], caller: PlayerVampireQuestScript, handler: VampireChange, latent: false}, reliable: true}
   - {client: c1, at_ms: 4500, send: {t: 75, epoch: 0, selfId: 0x14, cls: Actor, fn: SetRace, args: [{formId: 0xcdd84, type: Race}], caller: PlayerWerewolfChangeScript, handler: InitialShift, latent: false}, reliable: true}
   - {client: c1, at_ms: 5000, send: {t: 75, epoch: 0, selfId: 0x14, cls: Actor, fn: SetRace, args: [{formId: 0x88794, type: Race}], caller: PlayerWerewolfChangeScript, handler: ShiftBack, latent: false}, reliable: true}
@@ -38,6 +47,16 @@ steps:
   - {client: c2, at_ms: 0, move: {dy: 30}}
   - {client: c2, at_ms: 6000, move: {dy: 60}}
 divergences:
+  - client: c2
+    msg: {t: 57, quest: 0xeafd5, stage: 0, word: 1, acting: 0xff000002}
+    legacy: 0
+    wire: 1
+    reason: c1's start of PlayerVampireQuest recorded running in the world's journal and relayed with its acting player, which makes PlayerVampireQuestScript's attachment live for the bound (rung 5's fresh review, note 3; questScope off in T2's settings); the legacy server knows no MsgType 57
+  - client: c2
+    msg: {t: 57, quest: 0x2ba16, stage: 0, word: 1, acting: 0xff000002, wordStages: [0]}
+    legacy: 0
+    wire: 1
+    reason: c1's start of PlayerWerewolfQuest recorded and relayed the same way, its stage 0 (QUST INDX, the start-up stage) named as the word's engine stage (D-Q3 A); the legacy server knows no MsgType 57
   - client: c2
     msg: {t: 4, overlay: {open: true, race: 0xcdd84, base: 0x88794}}
     legacy: 0

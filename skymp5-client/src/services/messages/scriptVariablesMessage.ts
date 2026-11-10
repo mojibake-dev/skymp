@@ -5,26 +5,29 @@ import { MsgType } from "../../messages";
 // (GetVMQuestVariable 629, GetVMScriptVariable 630), a quest's or a
 // reference's attached script variables, R2: the writing seat's engine
 // computes, the server records. Both directions, reliable. From the server:
-// the login's serve (served true) with the keys to watch and the record's
-// values, then each relay of another seat's write (served false), each entry
-// with the record's sequence for its key. The player cut (D-T2 B): a key of a
-// player-class quest is its player's own, flagged `own` on the watch and on
-// every entry; its value is recorded on the player's own change form, never
-// relayed, and served to that player alone (the marked quests' scalar
-// variables, and the game-time registration). To the server: the watched
-// keys whose values changed since the last read here, an own key's flagged
-// own (a player's key unflagged, or a world key flagged, is
-// E_SCRIPTVAR_PLAYER), never a watch, never served, never epoch 0, never a
-// sequence. The latest write wins per key in the server's order. The
+// at a login the watch list (each key's own set, in messages of at most 256)
+// and the served values (served true: the world's record, and this player's
+// own record to it alone), then each relay of another seat's write to a world
+// key (served false), every entry with the record's sequence for its key,
+// which a receiver keeps, applying a value above the one it holds. The player
+// cut (D-T2 B): a player-class quest's key is its player's own, `own` true on
+// the watch and on every entry; its value is recorded on the player's own
+// change form and never relayed (the marked quests' scalar variables, and
+// the game-time registration's two reserved names). To the server: the
+// watched keys whose values changed since the last read here, `watch` empty,
+// `served` false, every `seq` 0, an own key's entry own true (a player's key
+// reported as the world's, or a world key as own, is E_SCRIPTVAR_PLAYER).
+// `own` and `seq` render on every entry and `own` on every key. The
 // validator: at most 256 keys and 256 entries, a form not 0 and below
-// 0xff000000, names neither empty nor carrying a NUL, a key named once, a
-// kind 3 to 5 with its payload alone, a finite float. JSON field names as
-// wire-schema's ScriptVariables reads them
+// 0xff000000, names neither empty nor carrying a NUL, a key named once in a
+// list, a kind 3 to 5 with exactly its payload, a finite float, a served
+// entry's seq never 0. JSON field names as wire-schema's ScriptVariables
+// (ScriptVarKey, ScriptVarEntry) reads them
 export interface ScriptVariableKey {
     form: number;   // the QUST or REFR, a load-order form id
     script: string; // the attached script whose chain declares the variable
     var: string;    // the variable's name as the compiled script holds it ("::vampirestatus_var")
-    own?: boolean;  // the key is this player's own (absent: the world's)
+    own: boolean;   // the key is its player's own (a player-class quest's)
 }
 
 export interface ScriptVariableEntry extends ScriptVariableKey {
@@ -32,13 +35,12 @@ export interface ScriptVariableEntry extends ScriptVariableKey {
     i?: number;    // the value of a kind 3
     f?: number;    // of a kind 4
     b?: boolean;   // of a kind 5
-    seq?: number;  // from the server: the record's sequence for the key (a receiver keeps the newest); never on a report
+    seq: number;   // the server's sequence for the key, rising at each recorded write; 0 on a report
 }
 
 export interface ScriptVariablesMessage {
     t: MsgType.ScriptVariables;
-    epoch: number;                // the server's; a report echoes the last one this connection brought (never 0)
-    watch: ScriptVariableKey[];   // from the server's serve alone: the keys this seat reads once a second
+    watch: ScriptVariableKey[];   // from the server at a login alone: the keys this seat reads once a second
     entries: ScriptVariableEntry[];
     served: boolean;              // true for the record served at a login
 }

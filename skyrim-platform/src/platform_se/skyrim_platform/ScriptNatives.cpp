@@ -10,6 +10,7 @@
 #include "JsUtils.h"
 #include "PlatformCall.h"
 #include "Puppets.h"
+#include "QuestCause.h"
 #include "Settings.h"
 #include "SkyrimPlatform.h"
 #include "TrapFamily.h"
@@ -27,6 +28,7 @@
 #include <RE/T/TESForm.h>
 #include <RE/T/TESObjectCELL.h>
 #include <RE/T/TESObjectREFR.h>
+#include <RE/T/TESQuest.h>
 #include <RE/T/TypeInfo.h>
 #include <RE/V/Variable.h>
 #include <RE/V/VirtualMachine.h>
@@ -1303,19 +1305,32 @@ void PackFigure(RE::BSScript::Variable& v, RE::Actor* figure)
 // (rung 5's fresh review, note 9)
 constexpr std::uint32_t kMaxRootFrames = 1024;
 
-std::uint32_t RootSubjectOf(const RE::BSScript::Stack* stack)
+// the walk, one for both the join's key and D-Q4 C's root (MarkQuestCause):
+// the stack's first frame, null for a stack with none
+const RE::BSScript::StackFrame* RootFrameOf(const RE::BSScript::Stack* stack)
 {
   const RE::BSScript::StackFrame* frame = stack->top;
   const std::uint32_t frames = std::min(stack->frames, kMaxRootFrames);
   for (std::uint32_t i = 1; frame && frame->previousFrame && i < frames; ++i) {
     frame = frame->previousFrame;
   }
+  return frame;
+}
+
+// a frame's self's form id by its handle's low 32 bits, 0 as above
+std::uint32_t SubjectOfFrame(const RE::BSScript::StackFrame* frame)
+{
   const RE::BSScript::Object* object = frame ? ObjectOf(frame->self) : nullptr;
   if (!object) {
     return 0;
   }
   const RE::VMHandle handle = object->GetHandle();
   return (handle >> 48) == 0 ? FormIdOfHandle(handle) : 0;
+}
+
+std::uint32_t RootSubjectOf(const RE::BSScript::Stack* stack)
+{
+  return SubjectOfFrame(RootFrameOf(stack));
 }
 
 // step (0)'s scope: the stack's own once it joined one (kept for its life,
@@ -1496,6 +1511,132 @@ void PropagateScope(std::size_t row, const RowInfo& info,
   }
 }
 
+// D-Q4 C (QuestCause.h): a Fragment_ root's self by its form type, the
+// fragment script's attachment: a quest's own fragment, a topic info's, a
+// scene's, a package's, a perk's (CommonLibSSE-NG include/RE/F/FormTypes.h:
+// 216, 217, 219, 232 and 262); none for any other form or none
+QuestCause::Self SelfKindOf(std::uint32_t subject)
+{
+  const RE::TESForm* form =
+    subject != 0 ? RE::TESForm::LookupByID(subject) : nullptr;
+  if (!form) {
+    return QuestCause::Self::kNone;
+  }
+  switch (form->GetFormType()) {
+    case RE::FormType::Quest:
+      return QuestCause::Self::kQuest;
+    case RE::FormType::Info:
+      return QuestCause::Self::kInfo;
+    case RE::FormType::Scene:
+      return QuestCause::Self::kScene;
+    case RE::FormType::Package:
+      return QuestCause::Self::kPackage;
+    case RE::FormType::Perk:
+      return QuestCause::Self::kPerk;
+    default:
+      return QuestCause::Self::kNone;
+  }
+}
+
+// D-Q4 C (QuestCause.h; the run-cause read's rule): a Quest row's call (the
+// table's SetCurrentStageID, Start and Stop, kQuestRows) marked with its
+// verdict for the pair it sets. The verdict is the stack's own once it joined
+// a fragment's, else its root frame's class, read in one walk (RootFrameOf;
+// the frame's script and function as NameCaller reads a caller's, its self's
+// form type): a world root, a timer, the seat's own, or a quest's own
+// fragment, which joins the quest's arm (the verdict of whoever set its
+// stage, armed by FridaHooks.cpp's quest stage sink), so a seat-own chain
+// stays the seat's and a world one the world's. A start or a stop is marked
+// with the run word's verdict (a direct timer's the seat's own); a stage
+// with the verdict it carries to its fragment (a timer's stage is the
+// world's progress), and the quest's start beside it while the quest is not
+// running (TESQuest::IsEnabled, CommonLibSSE-NG src/RE/T/TESQuest.cpp:42-45),
+// since SetStage starts a stopped quest and the engine's start then rides the
+// stage. SetCurrentStageID's stage is its first argument, read as
+// PropagateScope reads it; one outside the engine's u16 marks nothing. Never
+// the platform's own call: OnCall's step (b) returns before
+void MarkQuestCause(std::size_t row, const RowInfo& info,
+                    const RE::BSScript::Stack* stack,
+                    const RE::BSScript::StackFrame* top, std::uint32_t quest)
+{
+  if (quest == 0) {
+    return;
+  }
+  std::int32_t stage = 0;
+  switch (info.quest) {
+    case QuestRow::Stage: {
+      const std::uint32_t page =
+        info.params > 0 ? top->GetPageForFrame() : kNoPage;
+      if (page == kNoPage) {
+        return;
+      }
+      const RE::BSScript::Variable& arg = top->GetStackFrameVariable(0, page);
+      if (!arg.IsInt() || arg.GetSInt() < 0 || arg.GetSInt() > 0xFFFF) {
+        return;
+      }
+      stage = arg.GetSInt();
+      break;
+    }
+    case QuestRow::Start:
+      stage = QuestCause::kStart;
+      break;
+    case QuestRow::Stop:
+      stage = QuestCause::kStop;
+      break;
+    case QuestRow::None:
+      return;
+  }
+  bool runWorld = false;
+  bool carriedWorld = false;
+  bool carried = false;
+  std::string root;
+  if (const auto joined = QuestCause::Of(stack->stackID)) {
+    runWorld = carriedWorld = joined->world;
+    carried = true;
+    root = joined->root;
+  } else {
+    const RE::BSScript::StackFrame* frame = RootFrameOf(stack);
+    std::string script;
+    std::string function;
+    NameCaller(frame, script, function);
+    if (!script.empty() || !function.empty()) {
+      root = script + "." + function;
+    }
+    const std::uint32_t subject = SubjectOfFrame(frame);
+    switch (QuestCause::Classify(script, function, SelfKindOf(subject))) {
+      case QuestCause::Root::kWorld:
+        runWorld = carriedWorld = true;
+        break;
+      case QuestCause::Root::kTimer:
+        carriedWorld = true;
+        break;
+      case QuestCause::Root::kStageFragment: {
+        const auto joinedNow = QuestCause::Join(stack->stackID, subject, root);
+        runWorld = carriedWorld = joinedNow && joinedNow->world;
+        carried = true;
+        break;
+      }
+      case QuestCause::Root::kSeat:
+      case QuestCause::Root::kUnknown:
+        break;
+    }
+  }
+  const bool world = stage < 0 ? runWorld : carriedWorld;
+  QuestCause::Mark(quest, stage, { world, root });
+  if (info.quest == QuestRow::Stage) {
+    const auto* questForm = RE::TESForm::LookupByID<RE::TESQuest>(quest);
+    if (questForm && !questForm->IsEnabled()) {
+      QuestCause::Mark(quest, QuestCause::kStart, { carriedWorld, root });
+    }
+  }
+  QuestCause::Count(world, carried);
+  logger::trace("[verb:quest-stage] {}.{} on {:x} ({}): cause {} (root {}), "
+                "stack {}",
+                kRows[row].cls, kRows[row].fn, quest, StageText(stage),
+                world ? "world" : "seat", root.empty() ? "none" : root,
+                stack->stackID);
+}
+
 // the seam's judgment of one dispatch, 6.2's order (rule 9: the cheapest
 // test first). The body runs unless the lever skips it (marks.skip)
 Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
@@ -1612,6 +1753,11 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     const std::uint32_t selfId = EveryoneSelfId(top->self);
     if (scope && info.quest != QuestRow::None) {
       PropagateScope(row, info, stack, top, selfId, *scope);
+    }
+    // D-Q4 C: every Quest row's call marked with its cause for the pair it
+    // sets (MarkQuestCause), inside an acting scope or not
+    if (info.quest != QuestRow::None) {
+      MarkQuestCause(row, info, stack, top, selfId);
     }
     // PQ-3 (the plan's section 8(a)): inside another player's acting scope
     // a player's own global (setPlayerGlobals) is never written here: the
@@ -1924,6 +2070,16 @@ void FlushCensus(uint64_t now)
     return;
   }
   g_lastFlushMs.store(now);
+  // D-Q4 C: the window's Quest row calls by the cause marked for them
+  // (MarkQuestCause), one line when any was
+  const auto causes = QuestCause::TakeCounts();
+  if (causes.world + causes.seat != 0) {
+    logger::info("[verb:quest-stage] {} quest call(s) in {} s marked by "
+                 "cause: {} world, {} the seat's own ({} by a fragment's "
+                 "carried verdict)",
+                 causes.world + causes.seat, kFlushMs / 1000, causes.world,
+                 causes.seat, causes.carried);
+  }
   std::vector<std::pair<std::string, uint32_t>> rows;
   uint64_t total = 0;
   for (size_t row = 0; row < kRowCount; ++row) {
@@ -2162,8 +2318,10 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
 void ScriptNatives::Tick()
 {
   FlushCensus(NowMs());
-  // rung 5: the acting scope's expired entries dropped once a frame
+  // rung 5: the acting scope's expired entries dropped once a frame, and
+  // D-Q4 C's marks, arms and joined stacks
   ActingScope::Sweep();
+  QuestCause::Sweep();
 }
 
 void ScriptNatives::FlushAheadOnUpdate()

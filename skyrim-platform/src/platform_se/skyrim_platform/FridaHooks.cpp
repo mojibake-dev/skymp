@@ -12,6 +12,7 @@
 #include "PapyrusTESModPlatform.h"
 #include "PlatformCall.h"
 #include "Puppets.h"
+#include "QuestCause.h"
 #include "ScriptNatives.h"
 #include "ScriptState.h"
 #include "SkyrimPlatform.h"
@@ -2622,6 +2623,15 @@ RE::BSEventNotifyControl QuestStageSinkReplacement(
                    taken->origin == ActingScope::Origin::kChained ? "chained"
                                                                   : "relayed");
     }
+    // thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): the stage's verdict (its
+    // setter's mark, the start or stop it rides, or none: a stage the engine
+    // set by itself, the seat's own) arms the quest before the original
+    // dispatches the fragment, so the fragment's stack carries the verdict
+    // of whoever set its stage (H-QC1). A suppressed pair runs no fragment
+    // and arms nothing (above)
+    QuestCause::Arm(event->formID,
+                    QuestCause::OfStage(event->formID, event->stage)
+                      .value_or(QuestCause::Verdict{}));
   }
   return g_questStageSinkOriginal(sink, event, source);
 }

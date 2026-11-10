@@ -1290,7 +1290,7 @@ export class FormView {
     this.overlayOn = wanted;
     this.overlayKey = key;
     printConsole(wanted
-      ? `figure ${refr.getFormID().toString(16)}: race overlay on, ${wanted.spells.length} spell(s), ${wanted.items.length} item(s) (D-T1 A)`
+      ? `figure ${refr.getFormID().toString(16)}: race overlay on${wanted.race ? " (race " + wanted.race.toString(16) + ")" : ""}, ${wanted.spells.length} spell(s), ${wanted.shouts.length} shout(s), ${wanted.items.length} item(s) (D-T1 A)`
       : `figure ${refr.getFormID().toString(16)}: race overlay off (D-T1 A)`);
   }
 

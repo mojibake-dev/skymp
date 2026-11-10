@@ -26,6 +26,7 @@ import { IdManager } from '../../lib/idManager';
 import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
+import { withOverlayRace } from '../../sync/raceOverlay';
 import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment, equippedAmmoAmong, handsTouchedBy } from '../../sync/equipment';
 import { Inventory, applyInventory, ApplyInventoryReport } from '../../sync/inventory';
 import { ContainerApplyQueue } from '../../view/containerApplyQueue';
@@ -745,6 +746,12 @@ export class RemoteServer extends ClientListener {
       (form as Record<string, unknown>)[element.propName] = parsed;
     });
 
+    // thuum ADR-068 rung 5, D-T1 A: a figure under a race overlay (its
+    // props' overlay) wears the overlay's race
+    if (!msg.isMe && form.overlay !== undefined) {
+      form.appearance = withOverlayRace(form.appearance, form.overlay);
+    }
+
     // thuum docs/verbs/npc-stream.md (playtest 35, Hilde's tanning missing
     // on a seat that joined two minutes after it began): a hosted NPC's last
     // action rides its CreateActor as the custom property "lastAction", and
@@ -1112,10 +1119,12 @@ export class RemoteServer extends ClientListener {
       return;
     }
 
-    form.appearance = msg.data || undefined;
     // thuum ADR-068 rung 5, D-T1 A: the race overlay that holds with this
-    // look, absent for none (FormView puts it on the figure, or takes it off)
+    // look, absent for none (FormView puts it on the figure, or takes it
+    // off), and the race it wears (withOverlayRace; the player's own apply
+    // below takes the look as sent)
     form.overlay = msg.overlay;
+    form.appearance = withOverlayRace(msg.data || undefined, msg.overlay);
     if (!form.numAppearanceChanges) {
       form.numAppearanceChanges = 0;
     }

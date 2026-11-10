@@ -1,4 +1,5 @@
 import { Actor, Game, Shout, Spell } from "skyrimPlatform";
+import { Appearance } from "./appearance";
 
 // thuum docs/DECISIONS.md ADR-068 rung 5, D-T1 A (docs/research/
 // rung5-quests-2026-11-09.md 8(b)): a race's form overlay. While a player
@@ -11,9 +12,14 @@ import { Actor, Game, Shout, Spell } from "skyrimPlatform";
 // the player's change form, and it ends at the race's return or at the
 // player's disconnect. The server's equipment gate counts it for the
 // player's own reports. JSON field names as wire-schema's CreateActor props
-// and UpdateAppearance read them
+// and UpdateAppearance read them (the server's row, wire-rules
+// player_own::Overlay: open, race, base, spells, shouts, items)
 export interface RaceOverlay {
-  spells: number[]; // the SPEL and SHOU forms the race's scripts added (abilities, howls)
+  open?: boolean;   // false: no overlay (the other fields empty)
+  race?: number;    // the race worn beyond the record, which the figure wears
+  base?: number;    // the recorded race it returns to (the server's)
+  spells: number[]; // the spells the race's scripts added (abilities)
+  shouts: number[]; // the shouts they added (the howls)
   items: number[];  // the items they equipped (WolfSkinFXArmor)
 }
 
@@ -26,32 +32,59 @@ const isFormIds = (x: unknown): x is number[] =>
   Array.isArray(x) && x.length <= OVERLAY_MAX &&
   x.every((id) => typeof id === "number" && Number.isInteger(id) && id > 0 && id <= LAST_GAME_FILE_ID);
 
-// the overlay a CreateActor or UpdateAppearance carried; undefined for none,
-// for empty lists and for a malformed one
+const isFormId = (x: unknown): x is number =>
+  typeof x === "number" && Number.isInteger(x) && x > 0 && x <= LAST_GAME_FILE_ID;
+
+// the overlay a CreateActor or UpdateAppearance carried; undefined for none
+// (absent, open false, nothing in it) and for a malformed one
 export const parseRaceOverlay = (x: unknown): RaceOverlay | undefined => {
   if (!x || typeof x !== "object") {
     return undefined;
   }
   const o = x as Record<string, unknown>;
-  const spells = o["spells"] === undefined ? [] : o["spells"];
-  const items = o["items"] === undefined ? [] : o["items"];
-  if (!isFormIds(spells) || !isFormIds(items) || spells.length + items.length === 0) {
+  if (o["open"] === false) {
     return undefined;
   }
-  return { spells: [...spells], items: [...items] };
+  const spells = o["spells"] === undefined ? [] : o["spells"];
+  const shouts = o["shouts"] === undefined ? [] : o["shouts"];
+  const items = o["items"] === undefined ? [] : o["items"];
+  const race = o["race"];
+  if (!isFormIds(spells) || !isFormIds(shouts) || !isFormIds(items) || (race !== undefined && race !== 0 && !isFormId(race))) {
+    return undefined;
+  }
+  const out: RaceOverlay = { spells: [...spells], shouts: [...shouts], items: [...items] };
+  if (isFormId(race)) {
+    out.race = race;
+  }
+  return out.race !== undefined || spells.length + shouts.length + items.length > 0 ? out : undefined;
+};
+
+// the look a figure wears under an overlay: its race the overlay's when the
+// overlay names one (the server may carry the worn race on the overlay
+// alone, the record's look keeping the recorded race); the look itself
+// otherwise. remoteServer keeps the result on the form's model, so the
+// figure is rebuilt on the race as on any appearance change
+export const withOverlayRace = (appearance: Appearance | undefined, overlay: unknown): Appearance | undefined => {
+  const o = parseRaceOverlay(overlay);
+  if (!appearance || !o || o.race === undefined || o.race === appearance.raceId) {
+    return appearance;
+  }
+  return { ...appearance, raceId: o.race };
 };
 
 // the overlay on a figure, through the engine's own Papyrus calls (from the
 // update): what the last overlay put on and the new one lacks comes off, the
 // new one's spells and shouts are added, its items added when the figure
-// holds none and equipped. A figure keeps only the spells the server gives
+// holds none and equipped (a shout listed with the spells is added as a
+// shout). A figure keeps only the spells the server gives
 // it (ADR-046 decision 2), so its sweep keeps these (keepOnlyServerSpells's
 // keepAlso); its equipment's apply takes every item off, so the overlay goes
 // on again after one (FormView)
 export const applyRaceOverlay = (ac: Actor, wanted: RaceOverlay | undefined, had: RaceOverlay | undefined): void => {
-  const want = wanted ?? { spells: [], items: [] };
+  const want = wanted ?? { spells: [], shouts: [], items: [] };
+  const wantMagic = [...want.spells, ...want.shouts];
   if (had) {
-    had.spells.filter((id) => want.spells.indexOf(id) < 0).forEach((id) => {
+    [...had.spells, ...had.shouts].filter((id) => wantMagic.indexOf(id) < 0).forEach((id) => {
       const form = Game.getFormEx(id);
       const shout = Shout.from(form);
       if (shout) {
@@ -71,7 +104,7 @@ export const applyRaceOverlay = (ac: Actor, wanted: RaceOverlay | undefined, had
       }
     });
   }
-  want.spells.forEach((id) => {
+  wantMagic.forEach((id) => {
     const form = Game.getFormEx(id);
     const shout = Shout.from(form);
     if (shout) {

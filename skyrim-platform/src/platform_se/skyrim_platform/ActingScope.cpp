@@ -22,6 +22,8 @@ struct ArmEntry
   uint64_t createdMs = 0;
   uint64_t untilMs = 0;
   uint32_t joins = 0;
+  // the stacks it may join, 0 for no cap (Arm's maxJoins)
+  uint32_t maxJoins = 0;
 };
 
 struct JoinedEntry
@@ -205,7 +207,7 @@ bool ActingScope::Requested()
 }
 
 ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
-                                    uint64_t ttlMs)
+                                    uint64_t ttlMs, uint32_t maxJoins)
 {
   const uint64_t now = NowMs();
   std::lock_guard l(g_scope.m);
@@ -220,6 +222,7 @@ ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
   entry.createdMs = now;
   entry.untilMs = now + ttlMs;
   entry.joins = 0;
+  entry.maxJoins = maxJoins;
   StoreSizes();
   return entry.scope;
 }
@@ -268,6 +271,9 @@ std::optional<ActingScope::Joined> ActingScope::Join(RE::VMStackID stackId,
   if (now >= arm->second.untilMs) {
     g_scope.arms.erase(arm);
     StoreSizes();
+    return std::nullopt;
+  }
+  if (arm->second.maxJoins != 0 && arm->second.joins >= arm->second.maxJoins) {
     return std::nullopt;
   }
   if (g_scope.joined.count(stackId) == 0 &&

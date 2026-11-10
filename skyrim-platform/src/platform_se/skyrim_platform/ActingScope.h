@@ -115,8 +115,12 @@ uint32_t ServerIdOf(uint32_t subject, int32_t stage);
 bool Requested();
 
 // the subject armed for its player for ttlMs, replacing an older arm of the
-// subject; the new scope answered for the caller's line
-Scope Arm(uint32_t subject, Player player, uint64_t ttlMs);
+// subject; the new scope answered for the caller's line. maxJoins caps the
+// stacks the arm joins (0 for no cap): a relayed trigger entry's arm joins
+// at most the trigger's own attached scripts' handlers (rung 5's fresh
+// review, note 9)
+Scope Arm(uint32_t subject, Player player, uint64_t ttlMs,
+          uint32_t maxJoins = 0);
 // any arm, one atomic read
 bool Armed();
 
@@ -126,7 +130,7 @@ bool Any();
 // a joined stack's scope, nothing for a stack never joined or expired
 std::optional<Scope> Of(RE::VMStackID stackId);
 // the stack joined to the scope armed for its root frame's subject, nothing
-// when no live arm names the subject
+// when no live arm names the subject or the arm has joined its cap
 std::optional<Joined> Join(RE::VMStackID stackId, uint32_t rootSubject);
 
 // the lines a scope makes, each kind throttled on its own, so a scope's

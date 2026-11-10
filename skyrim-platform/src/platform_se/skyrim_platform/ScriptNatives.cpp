@@ -151,12 +151,15 @@ constexpr std::size_t kRowCount = std::size(kRows);
 // Every other state row is counted and, since rung 3, touched (QueueTouch).
 // Since rung 5 (thuum ADR-068 rung 5's full build, Eli's D-Q2 word, "yes
 // full transformation"; docs/research/rung5-quests-2026-11-09.md 8(b)) the
-// transformation's six, a per-player quest's change to its own player:
+// transformation's seven, a per-player quest's change to its own player:
 // Actor.SetRace, AddSpell, RemoveSpell, AddShout, RemoveShout and EquipItem
 // (FunctionsDump.txt: `SetRace(Race akRace)`, `Bool AddSpell(SPELL akSpell,
 // Bool abVerbose)`, `Bool RemoveSpell(SPELL akSpell)`, `Bool AddShout(Shout
 // akShout)`, `Bool RemoveShout(Shout akShout)`, `EquipItem(Form akItem, Bool
-// abPreventRemoval, Bool abSilent)`, none latent), batched with their typed
+// abPreventRemoval, Bool abSilent)`), and since Eli's D-E1 A
+// Actor.ChangeHeadPart, SKSE's (FunctionsDump.txt: `ChangeHeadPart(HeadPart
+// hPart)`, its callback outside the game's module, so InstallHooks binds it
+// from the VM's other bindings), none latent, batched with their typed
 // arguments on the seat's own player alone (OwnedHere's 0x14), so the
 // server records them beside RefState and the standing (R1: the form
 // argument must be one the calling script's attachment names, H-VR1); on any
@@ -198,7 +201,8 @@ constexpr BatchedRowName kBatchedStateRows[] = {
   { "Actor", "RemoveSpell", RecordRow::PlayerOwn },
   { "Actor", "AddShout", RecordRow::PlayerOwn },
   { "Actor", "RemoveShout", RecordRow::PlayerOwn },
-  { "Actor", "EquipItem", RecordRow::PlayerOwn }
+  { "Actor", "EquipItem", RecordRow::PlayerOwn },
+  { "Actor", "ChangeHeadPart", RecordRow::PlayerOwn }
 };
 
 // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
@@ -367,7 +371,8 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // its firing window, queued as kind "look" and run here (D-W2 A); " (acting)"
 // a call the acting scope changed (rung 5, ActingScope.h: a self or an
 // argument naming the player's own actor swapped for the acting player's
-// figure, beside the call's own kind, Game.GetPlayer's result swapped in
+// figure, beside the call's own kind; a call whose self names the player
+// skipped, the figure absent here, alone; Game.GetPlayer's result swapped in
 // place of its " (local)", or a player's own global's SetValue skipped in
 // place of its self's count, PQ-3); no suffix,
 // an owned self's state row, run here and counted, and since rung 3 touched
@@ -1292,7 +1297,10 @@ void PackFigure(RE::BSScript::Variable& v, RE::Actor* figure)
 // and its alias scripts carry the quest's id there (HYPOTHESIS H-AP1: a
 // relayed stage's fragment stack roots at the QF script's Fragment_N with
 // the quest's object as self, x-acting-frame v1; the alias half is H-AF3's
-// encoding), a trigger's script the trigger's; 0 for a root with no object
+// encoding), a trigger's script the trigger's; 0 for a root with no object,
+// or one whose handle is of a kind other than 0 (an inventory item's or an
+// active effect's, ScriptState.cpp's H-R6), which no arm's subject names
+// (rung 5's fresh review, note 9)
 constexpr std::uint32_t kMaxRootFrames = 1024;
 
 std::uint32_t RootSubjectOf(const RE::BSScript::Stack* stack)
@@ -1303,7 +1311,11 @@ std::uint32_t RootSubjectOf(const RE::BSScript::Stack* stack)
     frame = frame->previousFrame;
   }
   const RE::BSScript::Object* object = frame ? ObjectOf(frame->self) : nullptr;
-  return object ? FormIdOfHandle(object->GetHandle()) : 0;
+  if (!object) {
+    return 0;
+  }
+  const RE::VMHandle handle = object->GetHandle();
+  return (handle >> 48) == 0 ? FormIdOfHandle(handle) : 0;
 }
 
 // step (0)'s scope: the stack's own once it joined one (kept for its life,
@@ -1356,13 +1368,19 @@ std::optional<ActingScope::Scope> ScopeOfCall(
 // include/RE/N/NativeFunction.h:81-92): its self (StackFrame.h:27) and each
 // argument, read through the engine's own accessor (Stack::
 // GetStackFrameVariable, Address Library 104484) with the frame's page, that
-// names the player's own actor is rewritten to the acting player's figure,
-// or to None when the figure is absent here (HYPOTHESIS H-AP6: the VM logs a
-// call on None, answers the empty result and the script goes on). The count
-// of values rewritten, its first lines per scope logged
+// names the player's own actor is rewritten to the acting player's figure;
+// with the figure absent here an argument becomes None (HYPOTHESIS H-AP6:
+// the native's body takes a None argument as a script's None), and a self
+// naming the player leaves the frame alone and asks for the call to be
+// skipped (`skip`; rung 5's fresh review, FIX FIRST 2): a None self written
+// here would reach the engine's own Call after the VM's None check ran, and
+// what Call does with it is unread, so OnCall takes the lever's skip path
+// instead (SetEmptyResult, the native's declared return's empty result,
+// kCompleted; a latent native's skip rests on H-F2, as the lever's does).
+// The count of values rewritten or skipped, its first lines per scope logged
 std::uint32_t SwapPlayer(const RE::BSScript::IFunction* fn,
                          RE::BSScript::Stack* stack,
-                         const ActingScope::Scope& scope)
+                         const ActingScope::Scope& scope, bool& skip)
 {
   RE::BSScript::StackFrame* top = stack->top;
   RE::Actor* figure = nullptr;
@@ -1376,7 +1394,19 @@ std::uint32_t SwapPlayer(const RE::BSScript::IFunction* fn,
   };
   std::uint32_t swapped = 0;
   if (IsPlayersOwn(top->self)) {
-    PackFigure(top->self, figureOnce());
+    if (!figureOnce()) {
+      skip = true;
+      if (ActingScope::LineDue(scope.seq, ActingScope::Line::kSwap)) {
+        logger::info("[verb:quests] {}.{}: its self names the player, acting "
+                     "player {:x}'s figure {:x} (absent here, skipped), "
+                     "stack {}",
+                     fn->GetObjectTypeName().c_str(), fn->GetName().c_str(),
+                     scope.player.serverId, scope.player.figure,
+                     stack->stackID);
+      }
+      return 1;
+    }
+    PackFigure(top->self, figure);
     ++swapped;
   }
   const std::uint32_t params = std::min(fn->GetParamCount(), kMaxArgs);
@@ -1476,7 +1506,16 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // player's own actor is the acting player's figure from here on, before
   // any judgment below reads the frame
   const std::optional<ActingScope::Scope> scope = ScopeOfCall(fn, stack);
-  const std::uint32_t swapped = scope ? SwapPlayer(fn, stack, *scope) : 0;
+  bool absentSelf = false;
+  const std::uint32_t swapped =
+    scope ? SwapPlayer(fn, stack, *scope, absentSelf) : 0;
+  // a self naming the player with the figure absent here: the frame left
+  // alone, the body skipped, the native's declared return's empty result
+  // left in its place (the lever's path, SetEmptyResult; FIX FIRST 2)
+  if (absentSelf) {
+    marks.skip = true;
+    marks.result = fn->GetReturnType().GetUnmangledRawType();
+  }
   // (a) not a tabled native: nothing more, the only cost of every other
   // native in the game (step (0)'s one relaxed load outside a scope, and one
   // hash lookup)
@@ -1492,6 +1531,9 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   const RowInfo& info = g_rows[row];
   if (swapped != 0) {
     Count(row, kCountActing);
+  }
+  if (marks.skip) {
+    return marks;
   }
   if (!stack) {
     Count(row, kCountUnresolved);
@@ -2179,8 +2221,18 @@ void ScriptNatives::CountPlatformCall(const RE::BSScript::IFunction* fn)
 void ScriptNatives::InstallHooks()
 {
   // the VM's bindings as Hooks.cpp recorded them (class, name, IFunction*,
-  // module base, the callback's offset, the long-signature mark); the game's
-  // own module alone (SKSE's natives are not scripts' consequences here)
+  // module base, the callback's offset, the long-signature mark); a row
+  // binds the game's own module's native (SKSE's natives are not scripts'
+  // consequences here), except a row the game's module binds nothing of its
+  // name for, which binds the VM's latest other binding of it: rung 5's
+  // Actor.ChangeHeadPart, SKSE's (Eli's D-E1 A), the one table row the game
+  // does not hold. HYPOTHESIS H-HP1: SKSE's native reaches this seam's hook,
+  // its IFunction::Call running the game's NativeFunctionBase::Call body
+  // (104651) as CommonLib's own does (src/RE/N/NativeFunctionBase.cpp:
+  // 106-112), its frame read as a game native's and its latency at
+  // NativeFunctionBase's _isLatent (include/RE/N/NativeFunctionBase.h:69);
+  // the census's Actor.ChangeHeadPart row counting a call reads it, and the
+  // latest binding being the one the VM dispatches is part of it
   const auto gameBase = REL::Module::get().base();
   const auto bound = Hooks::GetBoundNatives();
   // the table (NativeRows.inc): each row's IFunction, the `this` of its
@@ -2191,12 +2243,27 @@ void ScriptNatives::InstallHooks()
   for (size_t row = 0; row < kRowCount; ++row) {
     const NativeRow& native = kRows[row];
     const RE::BSScript::IFunction* function = nullptr;
+    const RE::BSScript::IFunction* other = nullptr;
+    std::uintptr_t otherBase = 0;
     for (const auto& [cls, name, func, moduleBase, offset, longSig] : bound) {
-      if (moduleBase == gameBase && _stricmp(cls.c_str(), native.cls) == 0 &&
-          _stricmp(name.c_str(), native.fn) == 0) {
+      if (_stricmp(cls.c_str(), native.cls) != 0 ||
+          _stricmp(name.c_str(), native.fn) != 0) {
+        continue;
+      }
+      if (moduleBase == gameBase) {
         function = func;
         break;
       }
+      other = func;
+      otherBase = moduleBase;
+    }
+    const bool fromOther = !function && other;
+    if (fromOther) {
+      function = other;
+      logger::info("[verb:scripts] table row {}.{}: no binding in the game's "
+                   "module; bound from its binding outside it (allocation "
+                   "base {:x}), the VM's latest of its name (H-HP1)",
+                   native.cls, native.fn, otherBase);
     }
     if (!function) {
       logger::warn("[verb:scripts] table row {}.{} is not among the VM's "

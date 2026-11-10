@@ -940,11 +940,13 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // timers), before the class-chain test below would blank it; the server
   // refuses such a quest's stages and words (E_QUEST_PLAYER, the plan's A4),
   // so no seat applies another player's. Counted in the gate's tally as
-  // "(player quest)",
-  // the first admission per quest logged. One atomic read while the set is
+  // "(player quest)", the first admission per quest logged. An actor's or a
+  // reference's event (selfId resolved above) never asks (rung 5's fresh
+  // review, note 10), and the rest pay one atomic read while the set is
   // empty (rule 9). The effects of the disease on the player and of the
   // power the player cast pass by the branch above, as before
-  if (blockEvents && policy && ActingScope::PlayerQuests::Any()) {
+  if (blockEvents && selfId == 0 && policy &&
+      ActingScope::PlayerQuests::Any()) {
     const uint32_t playerQuest = PlayerQuestOfHandle(policy, handle);
     if (playerQuest != 0) {
       blockEvents = false;

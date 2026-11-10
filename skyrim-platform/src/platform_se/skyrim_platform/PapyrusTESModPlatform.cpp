@@ -1,4 +1,5 @@
 #include "PapyrusTESModPlatform.h"
+#include "ActingScope.h"
 #include "CallNativeApi.h"
 #include "ChangeForm.h"
 #include "ConsoleApi.h"
@@ -129,6 +130,12 @@ private:
     // (TrapFamily.h, Firing); no exception leaves this sink
     try {
       TrapFamily::Firing::Clear();
+    } catch (...) {
+    }
+    // thuum ADR-068 rung 5: the acting scope's stack ids and requests name
+    // the old world's stacks and stages (ActingScope.h)
+    try {
+      ActingScope::Clear();
     } catch (...) {
     }
     return RE::BSEventNotifyControl::kContinue;

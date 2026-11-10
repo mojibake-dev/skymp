@@ -1,4 +1,5 @@
 #include "ScriptNatives.h"
+#include "ActingScope.h"
 #include "CallNativeApi.h"
 #include "EventsApi.h"
 #include "FileUtils.h"
@@ -20,6 +21,7 @@
 #include <RE/N/NativeFunctionBase.h>
 #include <RE/O/Object.h>
 #include <RE/O/ObjectTypeInfo.h>
+#include <RE/P/PackUnpack.h>
 #include <RE/S/Stack.h>
 #include <RE/S/StackFrame.h>
 #include <RE/T/TESForm.h>
@@ -28,6 +30,7 @@
 #include <RE/T/TypeInfo.h>
 #include <RE/V/Variable.h>
 #include <RE/V/VirtualMachine.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -238,6 +241,35 @@ constexpr std::pair<const char*, const char*> kLookOnlyRows[] = {
   { "ObjectReference", "CreateDetectionEvent" }
 };
 
+// thuum ADR-068 rung 5 (the acting scope, ActingScope.h; docs/research/
+// rung5-quests-2026-11-09.md 1(c)): the local row whose result a scoped
+// stack reads as the acting player's figure (Game.GetPlayer, the Local
+// branch's swapReturn), and the three everyone rows whose call inside a
+// scoped stack carries the scope to the stage or the word it sets (read 7's
+// propagation, PropagateScope)
+constexpr std::pair<const char*, const char*> kPlayerRow{ "Game",
+                                                          "GetPlayer" };
+
+enum class QuestRow : std::uint8_t
+{
+  None,
+  Stage,
+  Start,
+  Stop
+};
+
+struct QuestRowName
+{
+  const char* cls;
+  const char* fn;
+  QuestRow quest;
+};
+
+constexpr QuestRowName kQuestRows[] = { { "Quest", "SetCurrentStageID",
+                                          QuestRow::Stage },
+                                        { "Quest", "Start", QuestRow::Start },
+                                        { "Quest", "Stop", QuestRow::Stop } };
+
 // at most 11 arguments (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
 // "native supports max 11")
 constexpr std::uint32_t kMaxArgs = 11;
@@ -271,6 +303,10 @@ struct RowInfo
   // look-only row), and one of kLookOnlyRows
   bool look = false;
   bool lookOnly = false;
+  // rung 5: Game.GetPlayer's row (kPlayerRow), and the row's place among
+  // kQuestRows, None for every other row
+  bool getPlayer = false;
+  QuestRow quest = QuestRow::None;
   // the declared return's kind (TypeInfo::GetUnmangledRawType)
   RE::BSScript::TypeInfo::RawType result =
     RE::BSScript::TypeInfo::RawType::kNone;
@@ -300,7 +336,11 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // neither queued); " (followed)" a script's SetMotionType or
 // ApplyHavokImpulse on a trap body another seat streams, run neutralized
 // (D-S3 point 4); " (look)" a trap family trigger's own call on itself in
-// its firing window, queued as kind "look" and run here (D-W2 A); no suffix,
+// its firing window, queued as kind "look" and run here (D-W2 A); " (acting)"
+// a call the acting scope changed (rung 5, ActingScope.h: a self or an
+// argument naming the player's own actor swapped for the acting player's
+// figure, beside the call's own kind, or Game.GetPlayer's result swapped in
+// place of its " (local)"); no suffix,
 // an owned self's state row, run here and counted, and since rung 3 touched
 // (QueueTouch: the script record's trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
@@ -319,6 +359,7 @@ enum CountKind : std::size_t
   kCountTrap,
   kCountFollowed,
   kCountLook,
+  kCountActing,
   kCountKinds
 };
 
@@ -332,10 +373,16 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
                                                     " (skipped)",
                                                     " (trap)",
                                                     " (followed)",
-                                                    " (look)" };
+                                                    " (look)",
+                                                    " (acting)" };
 
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
+
+// rung 5: the acting scope's swaps in the frames of natives the table does
+// not hold (a PlayerRef property is a 0x14 self on any native: the plan's
+// finding 5), raised at the flush as one row, "untabled native (acting)"
+std::atomic<std::uint32_t> g_actingUntabled{ 0 };
 
 // an everyone row's selves in one window, the flip's bound (kSelvesPerRow)
 // on fixed slots: a slot's key is kSlotUsed | the self's form id, 0 while
@@ -870,6 +917,15 @@ struct Marks
   bool skip = false;
   RE::BSScript::TypeInfo::RawType result =
     RE::BSScript::TypeInfo::RawType::kNone;
+  // rung 5's acting scope (ActingScope.h): Game.GetPlayer's result written
+  // over with the scope's figure once the original answers kCompleted
+  // (SwapReturn), the scope beside it, and, when its line is due, the
+  // calling script's names read before the original
+  bool swapReturn = false;
+  ActingScope::Scope scope{};
+  bool line = false;
+  std::string caller;
+  std::string handler;
 };
 
 // one call queued from its frame into this frame's batch (the shared shape's
@@ -1151,20 +1207,263 @@ void OnAliasCall(std::size_t row, const RowInfo& info,
   QueueFromFrame(row, info, stack, top, kNoPage, quest, alias);
 }
 
+// thuum docs/DECISIONS.md ADR-068 rung 5 (D-F1 C, D-Q3 A) and
+// docs/research/rung5-quests-2026-11-09.md 1(c): the acting scope
+// (ActingScope.h). A stage, a start or a stop another player's seat set, or
+// a trigger entry another player's figure made, runs its scripts here for
+// that player: on a stack scoped to the acting player, step (0) of OnCall
+// below makes the player's own actor (0x14) in the native's frame that
+// player's figure, Game.GetPlayer answers the figure (the return swap), and
+// a stage, a start or a stop the stack sets carries the scope on (read 7's
+// propagation). A scoped call is then judged as any call on the figure: an
+// animation row on it local, a state row on it not hosted (a figure is never
+// in the hosted set), so a relayed fragment's player-targeted effects land
+// on the figure, cosmetic, or on None when it is absent here, never on this
+// seat's own player; the acting player's own seat runs that fragment
+// natively, and its own channels carry the effects (the plan's rule table)
+
+// the player's own actor in a value: a script object whose handle is the
+// plain form 0x14's (the encoding HYPOTHESIS above)
+bool IsPlayersOwn(const RE::BSScript::Variable& v)
+{
+  const RE::BSScript::Object* object = ObjectOf(v);
+  if (!object) {
+    return false;
+  }
+  const RE::VMHandle handle = object->GetHandle();
+  return IsPlainFormHandle(handle) && FormIdOfHandle(handle) == 0x14;
+}
+
+// the acting player's figure as this seat holds it, null when it is absent
+// here (its local id 0, or an id the form table names no actor for)
+RE::Actor* FigureOf(const ActingScope::Player& player)
+{
+  return player.figure != 0 ? RE::TESForm::LookupByID<RE::Actor>(player.figure)
+                            : nullptr;
+}
+
+// the figure packed over a value: CommonLibSSE-NG's PackHandle
+// (src/RE/P/PackUnpack.cpp:48-80) with ActorCharacter's VM type, the figure's
+// bound Actor object found, or created and bound, through the handle policy,
+// as a native's own object result is packed; None for a null figure
+// (PackHandle's SetNone, first). HYPOTHESIS H-AP4: a 0x14 self or argument
+// rewritten so dispatches on the figure (x-acting-player v1: the census's
+// " (acting)" row, and no "Cannot call ... on a None object" for a figure
+// that is present)
+void PackFigure(RE::BSScript::Variable& v, RE::Actor* figure)
+{
+  RE::BSScript::PackHandle(&v, figure,
+                           static_cast<RE::VMTypeID>(RE::Actor::FORMTYPE));
+}
+
+// the join's key: the stack's root frame, its first, read down
+// previousFrame (CommonLibSSE-NG include/RE/S/StackFrame.h:22) at most
+// Stack::frames times (Stack.h:74; cut at kMaxRootFrames), and its self's
+// form id by the handle's low 32 bits (FormIdOfHandle): a quest's fragment
+// and its alias scripts carry the quest's id there (HYPOTHESIS H-AP1: a
+// relayed stage's fragment stack roots at the QF script's Fragment_N with
+// the quest's object as self, x-acting-frame v1; the alias half is H-AF3's
+// encoding), a trigger's script the trigger's; 0 for a root with no object
+constexpr std::uint32_t kMaxRootFrames = 1024;
+
+std::uint32_t RootSubjectOf(const RE::BSScript::Stack* stack)
+{
+  const RE::BSScript::StackFrame* frame = stack->top;
+  const std::uint32_t frames = std::min(stack->frames, kMaxRootFrames);
+  for (std::uint32_t i = 1; frame && frame->previousFrame && i < frames; ++i) {
+    frame = frame->previousFrame;
+  }
+  const RE::BSScript::Object* object = frame ? ObjectOf(frame->self) : nullptr;
+  return object ? FormIdOfHandle(object->GetHandle()) : 0;
+}
+
+// step (0)'s scope: the stack's own once it joined one (kept for its life,
+// ActingScope::kJoinedMs), else, inside an armed window, the arm's for the
+// stack's root subject, joined at this call. Asked for every native the game
+// calls, not only tabled ones (a PlayerRef property is a 0x14 self on any
+// native: the plan's finding 5), one relaxed load while no scope exists
+// (H-AP5). The platform's own call is never scoped: step (b)'s direct test
+// first, its live test before a join (a latent call the platform dispatched
+// roots at the very quest the client applies); the frame must be the
+// native's own, step (c)'s test, before its frame is read
+std::optional<ActingScope::Scope> ScopeOfCall(
+  const RE::BSScript::IFunction* fn, const RE::BSScript::Stack* stack)
+{
+  if (!ActingScope::Any() || !stack) {
+    return std::nullopt;
+  }
+  if (PlatformCall::Active() ||
+      (g_nativeCallRequirements.stackId != 0 &&
+       stack->stackID == g_nativeCallRequirements.stackId)) {
+    return std::nullopt;
+  }
+  const RE::BSScript::StackFrame* top = stack->top;
+  if (!top || top->owningFunction.get() != fn) {
+    return std::nullopt;
+  }
+  if (auto scope = ActingScope::Of(stack->stackID)) {
+    return scope;
+  }
+  if (!ActingScope::Armed() ||
+      PlatformCall::IsLiveCallback(stack->callback.get())) {
+    return std::nullopt;
+  }
+  const std::uint32_t root = RootSubjectOf(stack);
+  const auto joined = ActingScope::Join(stack->stackID, root);
+  if (!joined) {
+    return std::nullopt;
+  }
+  if (ActingScope::LineDue(joined->scope.seq, ActingScope::Line::kJoin)) {
+    logger::info("[verb:quests] stack {} rooted at {:x} joined acting "
+                 "player {:x}'s scope ({} stack(s) joined by its arm)",
+                 stack->stackID, root, joined->scope.player.serverId,
+                 joined->joins);
+  }
+  return joined->scope;
+}
+
+// step (0)'s swaps, in the native's own frame, from which its body reads
+// its self and its arguments (MarshallAndDispatch, CommonLibSSE-NG
+// include/RE/N/NativeFunction.h:81-92): its self (StackFrame.h:27) and each
+// argument, read through the engine's own accessor (Stack::
+// GetStackFrameVariable, Address Library 104484) with the frame's page, that
+// names the player's own actor is rewritten to the acting player's figure,
+// or to None when the figure is absent here (HYPOTHESIS H-AP6: the VM logs a
+// call on None, answers the empty result and the script goes on). The count
+// of values rewritten, its first lines per scope logged
+std::uint32_t SwapPlayer(const RE::BSScript::IFunction* fn,
+                         RE::BSScript::Stack* stack,
+                         const ActingScope::Scope& scope)
+{
+  RE::BSScript::StackFrame* top = stack->top;
+  RE::Actor* figure = nullptr;
+  bool looked = false;
+  const auto figureOnce = [&]() {
+    if (!looked) {
+      looked = true;
+      figure = FigureOf(scope.player);
+    }
+    return figure;
+  };
+  std::uint32_t swapped = 0;
+  if (IsPlayersOwn(top->self)) {
+    PackFigure(top->self, figureOnce());
+    ++swapped;
+  }
+  const std::uint32_t params = std::min(fn->GetParamCount(), kMaxArgs);
+  const std::uint32_t page = params > 0 ? top->GetPageForFrame() : kNoPage;
+  for (std::uint32_t i = 0; page != kNoPage && i < params; ++i) {
+    RE::BSScript::Variable& arg = top->GetStackFrameVariable(i, page);
+    if (IsPlayersOwn(arg)) {
+      PackFigure(arg, figureOnce());
+      ++swapped;
+    }
+  }
+  if (swapped != 0 &&
+      ActingScope::LineDue(scope.seq, ActingScope::Line::kSwap)) {
+    logger::info("[verb:quests] {}.{}: {} value(s) naming the player swapped "
+                 "for acting player {:x}'s figure {:x}{}, stack {}",
+                 fn->GetObjectTypeName().c_str(), fn->GetName().c_str(),
+                 swapped, scope.player.serverId, scope.player.figure,
+                 figure ? "" : " (absent here, None)", stack->stackID);
+  }
+  return swapped;
+}
+
+// a request's stage or word as the lines name it
+std::string StageText(std::int32_t stage)
+{
+  if (stage == ActingScope::kStart) {
+    return "start";
+  }
+  if (stage == ActingScope::kStop) {
+    return "stop";
+  }
+  return fmt::format("stage {}", stage);
+}
+
+// read 7's propagation: a Quest row called inside a scoped stack (a relayed
+// fragment's chained SetStage, its Start or its Stop) requests the scope for
+// the stage or the word it sets (chained), so the quest stage sink scopes
+// that stage's fragment too and this seat's report of the stage names the
+// scope's player (getActingPlayer, the C2S QuestStage's `acting`); a start
+// or a stop arms the quest's scope at once, as setActingPlayer arms a
+// relayed word. SetCurrentStageID's stage is its first argument, read
+// through 104484 as the swaps read theirs; one outside the engine's u16
+// requests nothing
+void PropagateScope(std::size_t row, const RowInfo& info,
+                    const RE::BSScript::Stack* stack,
+                    const RE::BSScript::StackFrame* top, std::uint32_t quest,
+                    const ActingScope::Scope& scope)
+{
+  if (quest == 0) {
+    return;
+  }
+  std::int32_t stage = 0;
+  switch (info.quest) {
+    case QuestRow::Stage: {
+      const std::uint32_t page =
+        info.params > 0 ? top->GetPageForFrame() : kNoPage;
+      if (page == kNoPage) {
+        return;
+      }
+      const RE::BSScript::Variable& arg = top->GetStackFrameVariable(0, page);
+      if (!arg.IsInt() || arg.GetSInt() < 0 || arg.GetSInt() > 0xFFFF) {
+        return;
+      }
+      stage = arg.GetSInt();
+      break;
+    }
+    case QuestRow::Start:
+      stage = ActingScope::kStart;
+      break;
+    case QuestRow::Stop:
+      stage = ActingScope::kStop;
+      break;
+    case QuestRow::None:
+      return;
+  }
+  ActingScope::Request(quest, stage, scope.player, ActingScope::kChainedMs,
+                       ActingScope::Origin::kChained);
+  if (stage < 0) {
+    ActingScope::Arm(quest, scope.player, ActingScope::kArmMs);
+  }
+  if (ActingScope::LineDue(scope.seq, ActingScope::Line::kChain)) {
+    logger::info("[verb:quests] {}.{} on {:x} ({}) inside acting player "
+                 "{:x}'s scope, stack {}: the scope requested for it "
+                 "(chained)",
+                 kRows[row].cls, kRows[row].fn, quest, StageText(stage),
+                 scope.player.serverId, stack->stackID);
+  }
+}
+
 // the seam's judgment of one dispatch, 6.2's order (rule 9: the cheapest
 // test first). The body runs unless the lever skips it (marks.skip)
 Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
 {
   Marks marks;
+  // (0) rung 5's acting scope (ScopeOfCall, SwapPlayer): on a stack scoped
+  // to another player's request, every self or object argument naming the
+  // player's own actor is the acting player's figure from here on, before
+  // any judgment below reads the frame
+  const std::optional<ActingScope::Scope> scope = ScopeOfCall(fn, stack);
+  const std::uint32_t swapped = scope ? SwapPlayer(fn, stack, *scope) : 0;
   // (a) not a tabled native: nothing more, the only cost of every other
-  // native in the game (one hash lookup)
+  // native in the game (step (0)'s one relaxed load outside a scope, and one
+  // hash lookup)
   const auto it = g_rowOf.find(fn);
   if (it == g_rowOf.end()) {
+    if (swapped != 0) {
+      g_actingUntabled.fetch_add(1, std::memory_order_relaxed);
+    }
     return marks;
   }
   const std::size_t row = it->second;
   const NativeRow& native = kRows[row];
   const RowInfo& info = g_rows[row];
+  if (swapped != 0) {
+    Count(row, kCountActing);
+  }
   if (!stack) {
     Count(row, kCountUnresolved);
     return marks;
@@ -1211,19 +1510,39 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     Count(row, kCountFrameMismatch);
     return marks;
   }
-  // a local row never crosses (Game.GetPlayer: rung 5 adds its scope)
+  // a local row never crosses (Game.GetPlayer), except that inside an acting
+  // scope (rung 5) GetPlayer answers the acting player's figure: its result
+  // is written over once the original returns (marks.swapReturn,
+  // SwapReturn), counted " (acting)"
   if (native.kind == NativeKind::Local) {
+    if (scope && info.getPlayer) {
+      marks.swapReturn = true;
+      marks.scope = *scope;
+      marks.line =
+        ActingScope::LineDue(scope->seq, ActingScope::Line::kReturn);
+      if (marks.line) {
+        NameCaller(top->previousFrame, marks.caller, marks.handler);
+      }
+      Count(row, kCountActing);
+      return marks;
+    }
     Count(row, kCountLocal);
     return marks;
   }
   // an everyone row has no owner (D-F1 C): every seat runs it, its self
-  // counted; an alias row's call is batched instead (rung 4, OnAliasCall)
+  // counted; an alias row's call is batched instead (rung 4, OnAliasCall).
+  // Inside an acting scope a Quest row carries the scope on to the stage or
+  // the word it sets (rung 5, PropagateScope)
   if (native.kind == NativeKind::Everyone) {
     if (info.alias) {
       OnAliasCall(row, info, stack, top);
       return marks;
     }
-    CountSelf(row, EveryoneSelfId(top->self));
+    const std::uint32_t selfId = EveryoneSelfId(top->self);
+    if (scope && info.quest != QuestRow::None) {
+      PropagateScope(row, info, stack, top, selfId, *scope);
+    }
+    CountSelf(row, selfId);
     return marks;
   }
   // the subject: the frame's self for a method row, the first argument for
@@ -1384,6 +1703,15 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
       info.lookOnly = true;
     }
   }
+  // rung 5's acting scope: GetPlayer's row and the Quest rows, by name
+  info.getPlayer = _stricmp(kRows[row].cls, kPlayerRow.first) == 0 &&
+    _stricmp(kRows[row].fn, kPlayerRow.second) == 0;
+  for (const auto& questRow : kQuestRows) {
+    if (_stricmp(kRows[row].cls, questRow.cls) == 0 &&
+        _stricmp(kRows[row].fn, questRow.fn) == 0) {
+      info.quest = questRow.quest;
+    }
+  }
   // D-W2 A's look rows (the plan's section 7.2(a)): the action rows, the two
   // motion rows among kTrapRows, and the look-only rows
   info.look = kRows[row].kind == NativeKind::Action ||
@@ -1536,6 +1864,12 @@ void FlushCensus(uint64_t now)
       slot.store(0, std::memory_order_relaxed);
     }
   }
+  // rung 5: the acting scope's swaps on natives no row holds, one row
+  const uint32_t untabled = g_actingUntabled.exchange(0);
+  if (untabled != 0) {
+    rows.emplace_back("untabled native (acting)", untabled);
+    total += untabled;
+  }
   const uint32_t misses = g_handleMisses.exchange(0);
   if (misses != 0) {
     logger::warn("[verb:scripts] {} plain-form handle(s) in {} s disagreed "
@@ -1644,13 +1978,43 @@ void SetEmptyResult(RE::BSScript::Variable& result,
   }
 }
 
+// rung 5's return swap (NativeCallReplacement): Game.GetPlayer's result on a
+// scoped stack written over with the acting player's figure, or None when
+// it is absent here, once the original answered kCompleted; the VM takes a
+// native's result from the stack's returnValue (Stack.h:79), the contract
+// SetEmptyResult above relies on (HYPOTHESIS H-AP2, rung 5's H-A1: c2's
+// "acting player ff000000 returned yes" line, then the fragment's AddItem
+// counted " (acting)" on the figure and c2's own gold unchanged). The line,
+// the first three per scope and every hundredth, names the calling script
+// and its handler as OnCall read them
+void SwapReturn(RE::BSScript::Stack& stack, const Marks& marks)
+{
+  PackFigure(stack.returnValue, FigureOf(marks.scope.player));
+  if (!marks.line) {
+    return;
+  }
+  if (stack.returnValue.IsObject()) {
+    logger::info("[verb:quests] acting player {:x} returned yes: "
+                 "Game.GetPlayer in {}.{}, stack {}",
+                 marks.scope.player.serverId, marks.caller, marks.handler,
+                 stack.stackID);
+  } else {
+    logger::info("[verb:quests] acting player {:x} returned no (absent "
+                 "here, None): Game.GetPlayer in {}.{}, stack {}",
+                 marks.scope.player.serverId, marks.caller, marks.handler,
+                 stack.stackID);
+  }
+}
+
 // The replacement (the QuestStageSink 53987 shape, through
 // HookHandler::Replace): what the attach did at the call's entry, then the
 // body through Gum's trampoline in every case the judgment says run, the
 // level (and its marks) held for the call's extent. What each path returns:
-// the original's own CallResult whenever the body runs; kCompleted, with
-// the row's empty result in returnValue, when the lever skips it (a latent
-// record row's too under recorded, H-F2). A call of
+// the original's own CallResult whenever the body runs (Game.GetPlayer's
+// result in returnValue written over inside an acting scope, rung 5's
+// SwapReturn); kCompleted, with the row's empty result in returnValue, when
+// the lever skips it (a latent record row's too under recorded, H-F2). A
+// call of
 // this function nested in a replaced call's original on one thread never
 // reaches here: Gum runs it straight to the original (frida-gum
 // 698b356fef0e, frida 16.0.19's, gum/guminterceptor.c:1503-1513: the top
@@ -1688,13 +2052,22 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
   // through this frame; an unwind that skips it (SEH, longjmp) is the
   // stranded-level guard's
   const PlatformCall::CallLevel level(marks.platform, marks.action, sp);
-  return g_nativeCallOriginal(self, stack, logger, vm, arg4);
+  const RE::BSScript::IFunction::CallResult result =
+    g_nativeCallOriginal(self, stack, logger, vm, arg4);
+  // rung 5's return swap: GetPlayer's own result is in returnValue by now
+  if (marks.swapReturn &&
+      result == RE::BSScript::IFunction::CallResult::kCompleted && stack) {
+    SwapReturn(*stack.get(), marks);
+  }
+  return result;
 }
 }
 
 void ScriptNatives::Tick()
 {
   FlushCensus(NowMs());
+  // rung 5: the acting scope's expired entries dropped once a frame
+  ActingScope::Sweep();
 }
 
 void ScriptNatives::FlushAheadOnUpdate()
@@ -1808,6 +2181,10 @@ void ScriptNatives::InstallHooks()
   }
   for (const auto& [cls, name] : kLookOnlyRows) {
     WarnUnbound("look-only", cls, name);
+  }
+  WarnUnbound("acting player", kPlayerRow.first, kPlayerRow.second);
+  for (const auto& questRow : kQuestRows) {
+    WarnUnbound("acting quest", questRow.cls, questRow.fn);
   }
   // thuum ADR-068 D-S3: the trap family the gate and this seam read, named
   // once per process beside the table it extends (TrapFamily.h)

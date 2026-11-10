@@ -1,4 +1,5 @@
 #include "ScriptState.h"
+#include "ActingScope.h"
 #include "CallNativeApi.h"
 #include "PlatformCall.h"
 #include "TrapFamily.h"
@@ -208,6 +209,7 @@ std::atomic<std::uint64_t> g_refusedLines{ 0 };
 std::atomic<std::uint64_t> g_retryLines{ 0 };
 std::atomic<std::uint64_t> g_sendLines{ 0 };
 std::atomic<std::uint64_t> g_triggerSendLines{ 0 };
+std::atomic<std::uint64_t> g_triggerArmLines{ 0 };
 
 bool LogThis(std::atomic<std::uint64_t>& lines)
 {
@@ -1564,6 +1566,32 @@ std::string SendTriggerImpl(RE::TESObjectREFR* refr, std::string_view name,
   // rvalues, hence the copy moved in
   RE::TESObjectREFR* akActionRef = actionRef;
   RE::FunctionArguments<RE::TESObjectREFR*> args{ std::move(akActionRef) };
+  // thuum ADR-068 rung 5 (the acting scope, ActingScope.h; docs/research/
+  // rung5-quests-2026-11-09.md 1(c)): a figure presser, an actor at
+  // 0xff000000 and up (a player's figure as this seat holds it), arms the
+  // trigger's own scope before the send, so the handler's stack, rooted at
+  // the trigger's script, joins it and reads Game.GetPlayer() as that figure
+  // (akActionRef == Game.GetPlayer() holds on the host for the guest, D-C2's
+  // note; HYPOTHESIS H-AP7), and a stage it sets names the guest. The
+  // presser's server id is the client's entry request's (setActingPlayer
+  // with stage ActingScope::kEntry, naming this figure), 0 when none was made
+  if (actionRef->GetFormType() == RE::FormType::ActorCharacter &&
+      actionRefId >= 0xff000000) {
+    ActingScope::Player player;
+    player.figure = actionRefId;
+    if (const auto taken = ActingScope::Take(formId, ActingScope::kEntry)) {
+      if (taken->player.figure == actionRefId) {
+        player.serverId = taken->player.serverId;
+      }
+    }
+    ActingScope::Arm(formId, player, ActingScope::kArmMs);
+    if (LogThis(g_triggerArmLines)) {
+      logger::info("[verb:quests] SendTriggerEvent {} to {:x} by {:x}: the "
+                   "presser's scope armed for {} ms (acting player {:x})",
+                   event, formId, actionRefId, ActingScope::kArmMs,
+                   player.serverId);
+    }
+  }
   SendAndRelay(target, event, &args);
   answer["sent"] = true;
   answer["event"] = event;

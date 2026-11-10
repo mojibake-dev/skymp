@@ -1,4 +1,5 @@
 #include "PuppetApi.h"
+#include "ActingScope.h"
 #include "CallNativeApi.h"
 #include "FridaHooks.h"
 #include "Hosted.h"
@@ -364,6 +365,69 @@ Napi::Value PuppetApi::IsHosted(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
   return Napi::Boolean::New(info.Env(), Hosted::Is(actorFormId));
+}
+
+// thuum docs/DECISIONS.md ADR-068 rung 5 (the acting scope, ActingScope.h;
+// docs/research/rung5-quests-2026-11-09.md 1(c), read 12: an export, not a
+// TESModPlatform native, so the message handler can write it): the acting
+// player of a request the server relayed, written before skymp5-client
+// applies it; setHosted's shape, the JS thread alone, no game call. A stage
+// (0 to 65535) is a request the quest stage sink takes at the pair's event,
+// arming the quest's scope; a start (-1) or a stop (-2) is requested and
+// arms the quest's scope at once, for ActingScope::kArmMs; an entry (-3) is
+// a relayed trigger entry's, questId the trigger, taken by
+// TESModPlatform.SendTriggerEvent's arm for its server id. figureLocalId is
+// the figure this seat holds for the acting player, 0 when it is absent here
+// (Game.GetPlayer answers None in the scope then); serverId its actor id as
+// the server names it; ttlMs the request's life. False, nothing stored, for
+// a quest 0, a stage outside -3 to 65535, a serverId 0, the player's own id
+// as the figure, or a ttl outside 1 to ActingScope::kMaxRequestMs. Logged
+// for the lab
+Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
+{
+  const auto questId = NapiHelper::ExtractUInt32(info[0], "questId");
+  const auto stage = NapiHelper::ExtractInt32(info[1], "stage");
+  const auto figure = NapiHelper::ExtractUInt32(info[2], "figureLocalId");
+  const auto serverId = NapiHelper::ExtractUInt32(info[3], "serverId");
+  const auto ttlMs = NapiHelper::ExtractUInt32(info[4], "ttlMs");
+  if (questId == 0 || stage < ActingScope::kEntry || stage > 0xFFFF ||
+      serverId == 0 || figure == 0x14 || ttlMs == 0 ||
+      ttlMs > ActingScope::kMaxRequestMs) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  ActingScope::Player player;
+  player.figure = figure;
+  player.serverId = serverId;
+  ActingScope::Request(questId, stage, player, ttlMs,
+                       ActingScope::Origin::kRelayed);
+  const bool word =
+    stage == ActingScope::kStart || stage == ActingScope::kStop;
+  if (word) {
+    ActingScope::Arm(questId, player, ActingScope::kArmMs);
+  }
+  const ActingScope::Counts counts = ActingScope::Count();
+  logger::info(
+    "[verb:quests] setActingPlayer({:x}, {}, {:x}, {:x}, {}): {}; "
+    "{} request(s), {} arm(s), {} joined stack(s)",
+    questId, stage, figure, serverId, ttlMs,
+    word ? "requested and armed"
+         : (figure == 0 ? "requested, the figure absent here" : "requested"),
+    counts.requests, counts.arms, counts.joined);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// getActingPlayer(questId, stage): the server id of the acting player whose
+// scope requested the pair on this seat, a relayed request or a stage, a
+// start or a stop a scoped stack set (the seam's propagation), until the
+// request expires, whether its event took it or not; 0 for none. The C2S
+// QuestStage's `acting` for a stage this seat set inside a scope (read 7).
+// A table read on the JS thread, no game call
+Napi::Value PuppetApi::GetActingPlayer(const Napi::CallbackInfo& info)
+{
+  const auto questId = NapiHelper::ExtractUInt32(info[0], "questId");
+  const auto stage = NapiHelper::ExtractInt32(info[1], "stage");
+  return Napi::Number::New(info.Env(),
+                           ActingScope::ServerIdOf(questId, stage));
 }
 
 // isPerformingAction(actorFormId): the hook's mark, on from the action

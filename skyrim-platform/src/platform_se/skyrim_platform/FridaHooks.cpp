@@ -1,4 +1,5 @@
 #include "FridaHooks.h"
+#include "ActingScope.h"
 #include "ChangeForm.h"
 #include "EventsApi.h"
 #include "Fates.h"
@@ -2496,13 +2497,41 @@ RE::BSEventNotifyControl QuestStageSinkReplacement(
       }
     }
     if (suppressed) {
+      // thuum ADR-068 rung 5, D-Q3 A: a pair holding a suppress mark (the
+      // login replay's, a load) and an acting request too skips its
+      // fragment: suppress wins, and the request is taken here, so it arms
+      // nothing later
+      const bool dropped =
+        ActingScope::Take(event->formID, event->stage).has_value();
       logger::warn("[verb:quest-stage] fragment of {:x} stage {} entry {} "
                    "skipped: the stage is the world's, applied from the "
                    "relay; {} mark(s) left for the pair",
                    event->formID, event->stage,
                    static_cast<unsigned>(event->unk0E), left);
+      if (dropped) {
+        logger::info("[verb:quest-stage] acting request for {:x} stage {} "
+                     "dropped: its fragment is skipped (suppress wins, "
+                     "D-Q3 A)",
+                     event->formID, event->stage);
+      }
       FireStageItemFinished(event->finishedCallback);
       return RE::BSEventNotifyControl::kContinue;
+    }
+    // thuum ADR-068 rung 5 (the acting scope, ActingScope.h; docs/research/
+    // rung5-quests-2026-11-09.md 1(c)): the pair's acting request, a relayed
+    // stage the client applies for another player (setActingPlayer) or a
+    // stage a scoped stack set (the seam's propagation), is taken at its
+    // event and arms the quest's scope for ActingScope::kArmMs before the
+    // original dispatches the fragment, so the fragment's stack joins the
+    // scope at its first native call (H-AP1) and runs for the acting player.
+    // One atomic read for every other stage event
+    if (const auto taken = ActingScope::Take(event->formID, event->stage)) {
+      ActingScope::Arm(event->formID, taken->player, ActingScope::kArmMs);
+      logger::info("[verb:quest-stage] fragment of {:x} stage {} runs for "
+                   "acting player {:x} ({})",
+                   event->formID, event->stage, taken->player.serverId,
+                   taken->origin == ActingScope::Origin::kChained ? "chained"
+                                                                  : "relayed");
     }
   }
   return g_questStageSinkOriginal(sink, event, source);

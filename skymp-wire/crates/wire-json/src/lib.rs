@@ -566,6 +566,36 @@ mod tests {
         }
     }
 
+    /// thuum ADR-068 rung 5 (D-Q3 A, SCHEMA_VERSION 42): a run word's
+    /// engine stages. 57-QuestStage-7 is a relayed start of
+    /// dunEldergleamT03 0x15cc2 (stage 0 and its start-up stage 10), with
+    /// rotfern 0xff000000 acting; 57-QuestStage-8 a served stop of
+    /// ClearSkiesQuest 0x1e3b1 (its shut-down stage 100; Skyrim.esm,
+    /// lab/esm.py on sky-srv, 2026-11-10). The other QuestStage fixtures
+    /// carry none and render none.
+    #[test]
+    fn a_run_words_engine_stages_validate_and_render_only_when_present() {
+        use wire_validate::validate_server;
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        for (name, quest, word, stages) in [("57-QuestStage-7.json", 0x15cc2, 1, vec![0u16, 10]), ("57-QuestStage-8.json", 0x1e3b1, 2, vec![100])] {
+            match recognize(&read(name)) {
+                Ok(m @ Message::QuestStage(_)) => {
+                    assert_eq!(validate_server(&m), Ok(()), "{name}");
+                    assert!(render(&m).unwrap_or_default().contains("\"wordStages\""), "{name}");
+                    if let Message::QuestStage(q) = m {
+                        assert_eq!((q.quest, q.word, q.word_stages.map(|s| s.to_vec())), (quest, Some(word), Some(stages)), "{name}");
+                    }
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        for n in 0..=6 {
+            let name = format!("57-QuestStage-{n}.json");
+            let m = recognize(&read(&name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!render(&m).unwrap_or_default().contains("\"wordStages\""), "{name}: absent stages are no key");
+        }
+    }
+
     /// thuum ADR-068 rung 5 (D-T1 A): a player's race overlay on another
     /// player's figure. 33-CreateActor-4 is rotfern's figure (0xff000000)
     /// in Bleak Falls Barrow wearing WerewolfBeastRace 0xcdd84 over NordRace

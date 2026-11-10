@@ -1747,10 +1747,11 @@ mod tests {
         // the six action rows, the flip's twenty-four, Game.GetPlayer, D-S3's
         // three trap rows, rung 4's seven (the standing's six and
         // ReferenceAlias.Clear), D-W2's Sound.Play and CreateDetectionEvent
-        // and rung 5's six player's own rows: "49 of 49 table rows bound"
-        assert_eq!(TABLE.len(), 49);
+        // and rung 5's seven player's own rows (D-E1 A's ChangeHeadPart the
+        // seventh): "50 of 50 table rows bound"
+        assert_eq!(TABLE.len(), 50);
         let own: Vec<&str> = TABLE.iter().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| r.func).collect();
-        assert_eq!(own, ["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem"]);
+        assert_eq!(own, ["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem", "ChangeHeadPart"]);
         assert_eq!(own.iter().map(|f| crate::player_own::Row::of("Actor", f).is_some()).filter(|b| *b).count(), crate::player_own::ROWS.len());
         assert_eq!(row_index("Actor", "SetRace"), Some(43));
         let actions: Vec<&str> = TABLE.iter().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
@@ -1823,8 +1824,8 @@ mod tests {
         let everyone: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
         // the flip's nineteen state rows, D-S3's three, the standing's six and
-        // rung 5's six player's own
-        assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 34);
+        // rung 5's seven player's own
+        assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 35);
         assert_eq!(row("Game", "GetPlayer").map(|r| r.kind), Some(Kind::Local));
         // the three rows kept as their subject's variable (the fifty fixes'
         // D-C3 A)

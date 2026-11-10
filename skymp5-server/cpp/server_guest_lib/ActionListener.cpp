@@ -24,6 +24,7 @@
 #include "libespm/Convert.h"
 #include "libespm/GLOB.h"
 #include "libespm/GMST.h"
+#include "libespm/HDPT.h"
 #include "libespm/ObjectBounds.h"
 #include "libespm/QUST.h"
 #include "libespm/RACE.h"
@@ -1734,9 +1735,10 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spellIdsToRemove = {};
 
   // thuum ADR-068 rung 5 (D-T1 A): what a player's race overlay holds (the
-  // beast form's level abilities, its howl, WolfSkinFXArmor) counts here as
-  // its record's, though it never touches the change form; a hosted actor
-  // has none
+  // beast form's level abilities, its howl, WolfSkinFXArmor) passes the gate
+  // as its record's would, and is relayed as reported, but never reaches the
+  // change form (the fresh review's note 5: recorded below without it); a
+  // hosted actor has none
   const auto overlay = hosted ? std::optional<RaceOverlay>()
                               : partOne.PlayerOverlayOf(actor->GetFormId());
   const auto inOverlay = [&](const std::vector<uint32_t> RaceOverlay::* list,
@@ -2055,7 +2057,39 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
                    actorFormId, keptOutfit);
     }
   }
-  actor->SetEquipment(kept);
+  // D-T1 A (the fresh review's note 5): an entry that passed by the overlay
+  // alone is the figure's, relayed above as reported, and never the
+  // record's, which nothing would strip at the overlay's end
+  Equipment recorded = kept;
+  if (overlay) {
+    const auto overlaySpell = [&](std::optional<uint32_t>& slot) {
+      if (slot && !actor->IsSpellLearned(*slot) &&
+          inOverlay(&RaceOverlay::spells, *slot)) {
+        slot.reset();
+      }
+    };
+    overlaySpell(recorded.leftSpell);
+    overlaySpell(recorded.rightSpell);
+    overlaySpell(recorded.instantSpell);
+    if (recorded.voiceSpell && voiceIsShout) {
+      if (!actor->HasShoutEntry(MpActor::ShoutEntry::Shout,
+                                *recorded.voiceSpell) &&
+          inOverlay(&RaceOverlay::shouts, *recorded.voiceSpell)) {
+        recorded.voiceSpell.reset();
+      }
+    } else {
+      overlaySpell(recorded.voiceSpell);
+    }
+    auto& entries = recorded.inv.entries;
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                 [&](const Inventory::Entry& entry) {
+                                   return !inventory.HasItem(entry.baseId) &&
+                                     inOverlay(&RaceOverlay::items,
+                                               entry.baseId);
+                                 }),
+                  entries.end());
+  }
+  actor->SetEquipment(recorded);
   if (hosted) {
     uint32_t right = 0;
     uint32_t left = 0;
@@ -3290,6 +3324,61 @@ bool QuestHasStage(PartOne& partOne, const espm::RecordHeader* record,
   return false;
 }
 
+// the wire's cap on a run word's engine stages (wire-schema
+// cap::WORD_STAGES)
+constexpr size_t kWordStagesPerWord = 16;
+
+// thuum ADR-068 rung 5 (D-Q3 A, the fresh review's note 7): the stages whose
+// fragments the engine runs with a run word, read from the quest's record as
+// canon read them (QuestStageIsEngineStart, memo D69): for a start (word 1)
+// stage 0 and the record's start-up stages (QUST INDX,
+// JournalIndex::StartUpStage), for a stop (word 2) its shut-down stages
+// (ShutDownStage); each once in the record's order, int16 in the record and
+// u16 on the wire as QuestHasStage compares them, at most the wire's cap.
+// Every start and stop word the server sends carries them (`wordStages`), so
+// the receiver of a served word suppresses the fragments its acting seat ran
+std::vector<uint16_t> WordStages(PartOne& partOne,
+                                 const espm::RecordHeader* record,
+                                 uint32_t word)
+{
+  std::vector<uint16_t> stages;
+  const auto qust = espm::Convert<espm::QUST>(record);
+  if (!qust || (word != 1 && word != 2)) {
+    return stages;
+  }
+  using Flags = espm::QUST::QuestStage::JournalIndex;
+  for (const auto& questStage :
+       qust->GetQuestStages(partOne.worldState.GetEspmCache())) {
+    if (!questStage.journalIndex) {
+      continue;
+    }
+    const auto index = static_cast<uint16_t>(questStage.journalIndex->index);
+    const auto flags = questStage.journalIndex->flags;
+    const bool runs = word == 1
+      ? (index == 0 || (flags & Flags::StartUpStage) != 0)
+      : (flags & Flags::ShutDownStage) != 0;
+    if (runs && stages.size() < kWordStagesPerWord &&
+        std::find(stages.begin(), stages.end(), index) == stages.end()) {
+      stages.push_back(index);
+    }
+  }
+  return stages;
+}
+
+// a run word's `wordStages`, set only when the record flags any
+void StampWordStages(PartOne& partOne, QuestStageMessage& message)
+{
+  if (!message.word || !partOne.HasEspm()) {
+    return;
+  }
+  auto stages = WordStages(
+    partOne, partOne.GetEspm().GetBrowser().LookupById(message.quest).rec,
+    *message.word);
+  if (!stages.empty()) {
+    message.wordStages = std::move(stages);
+  }
+}
+
 // thuum ADR-068 rung 5: whether a line of `name` is due for `reporter`, one a
 // minute per seat, the rest counted into it (RefuseStateRow's shape for a
 // line that is no refusal of a row)
@@ -3550,10 +3639,15 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     relay.stage = 0;
     relay.word = what;
     relay.acting = acting;
+    StampWordStages(partOne, relay);
     const size_t relayed = relayToOthers(relay);
-    spdlog::info("[verb:quest-stage] {:x} {} {}: recorded, relayed to {}",
+    spdlog::info("[verb:quest-stage] {:x} {} {}: recorded, relayed to {}{}",
                  actor->GetFormId(), what == 1 ? "starts" : "stops",
-                 quest.ToString(), relayed);
+                 quest.ToString(), relayed,
+                 relay.wordStages
+                   ? fmt::format(" with its engine stages {}",
+                                 fmt::join(*relay.wordStages, ", "))
+                   : std::string());
     return;
   }
 
@@ -4431,92 +4525,6 @@ void RecordStanding(
                msg.caller, msg.handler, applier, verdict.seq, relayed);
 }
 
-// thuum ADR-068 rung 5 (the R1 bound of a player's own rows, wire-rules
-// player_own): the objects a script class's attachments name, read from the
-// game files' VMADs. A quest's or a magic effect's script reaches the seam
-// with no attachment form of its own (the platform's callerSelf is 0: a
-// quest script's self is the quest, an effect's the ActiveMagicEffect), so
-// the class's property values are gathered across every QUST and MGEF that
-// attaches it, as the core reads a VMAD elsewhere (libespm's
-// RecordHeader::GetScriptData, the winning record of each form): an Object
-// property's form (Property::Type::Object), each element of an ObjectArray
-// one's, and a FormList's entries in order (FLST::GetData) beside it. Read
-// once per set of game files, the class's name without case; a class no
-// QUST or MGEF attaches names nothing (E_SCRIPTCALL_UNNAMED, measured).
-struct NamedForm
-{
-  uint32_t form = 0;
-  std::vector<uint32_t> members;
-};
-
-const std::vector<NamedForm>& CallerProperties(WorldState& worldState,
-                                               const std::string& caller)
-{
-  static std::map<const espm::Loader*,
-                  std::unordered_map<std::string, std::vector<NamedForm>>>
-    g_index;
-  static const std::vector<NamedForm> kNone;
-  const auto lower = [](std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-      return static_cast<char>(std::tolower(c));
-    });
-    return s;
-  };
-  auto found = g_index.find(&worldState.GetEspm());
-  if (found == g_index.end()) {
-    // built whole before it is kept, so a read that throws keeps nothing
-    std::unordered_map<std::string, std::vector<NamedForm>> index;
-    auto& browser = worldState.GetEspm().GetBrowser();
-    auto& cache = worldState.GetEspmCache();
-    const auto add = [&](std::vector<NamedForm>& into, uint32_t form) {
-      if (form == 0 ||
-          std::any_of(into.begin(), into.end(),
-                      [&](const NamedForm& n) { return n.form == form; })) {
-        return;
-      }
-      NamedForm named;
-      named.form = form;
-      const auto list = browser.LookupById(form);
-      if (const auto* flst = espm::Convert<espm::FLST>(list.rec)) {
-        for (uint32_t member : flst->GetData(cache).formIds) {
-          named.members.push_back(list.ToGlobalId(member));
-        }
-      }
-      into.push_back(std::move(named));
-    };
-    for (const char* type : { "QUST", "MGEF" }) {
-      for (const auto& lookup : browser.GetDistinctRecordsByType(type)) {
-        espm::ScriptData scriptData;
-        lookup.rec->GetScriptData(&scriptData, cache);
-        for (const auto& script : scriptData.scripts) {
-          if (script.status == 3 || script.scriptName.empty()) {
-            continue;
-          }
-          auto& into = index[lower(script.scriptName)];
-          for (const auto& property : script.properties) {
-            if (property.status == 3) {
-              continue;
-            }
-            if (property.type == espm::Property::Type::Object &&
-                property.value.formId) {
-              add(into, lookup.ToGlobalId(property.value.formId));
-            } else if (property.type == espm::Property::Type::ObjectArray) {
-              for (const auto& element : property.array) {
-                if (element.formId) {
-                  add(into, lookup.ToGlobalId(element.formId));
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    found = g_index.emplace(&worldState.GetEspm(), std::move(index)).first;
-  }
-  const auto it = found->second.find(lower(caller));
-  return it == found->second.end() ? kNone : it->second;
-}
-
 // the row's form, its first argument's object (0 for None or an argument
 // that is no object)
 uint32_t OwnRowForm(const ScriptCallMessage& msg)
@@ -4542,18 +4550,28 @@ bool NamesFunc(const std::string& fn, const char* name)
 
 // thuum ADR-068 rung 5 (the two transformations, D-T1 A; docs/research/
 // rung5-quests-2026-11-09.md section 8(b)): a per-player quest's script
-// changed its own player through one of the six rows (Actor.SetRace,
-// AddSpell, RemoveSpell, AddShout, RemoveShout, EquipItem on 0x14, the
-// owner step's record 4). wire-rules player_own judges it over the facts
-// gathered here (the bound over the caller's VMAD properties, the twin rule
-// over its FormLists, the recorded race, the RACE's Playable flag, the
-// permit, what the record holds): recorded on the change form (R1) and the
-// look sent to every game that sees the player (the twin, the base after a
-// cure), held in the player's race overlay instead (never on the change
-// form; its figure's CreateActor and UpdateAppearance carry it, the
-// equipment gate counts it), the overlay ended at the race's return, folded,
-// or refused by name (E_SCRIPTCALL_UNNAMED, E_SCRIPTCALL_RACE), one line a
-// minute per seat and code.
+// changed its own player through one of the seven rows (Actor.SetRace,
+// AddSpell, RemoveSpell, AddShout, RemoveShout, EquipItem and, Eli's D-E1 A,
+// ChangeHeadPart, on 0x14, the owner step's record 4; the head part valid
+// for the recorded race by its HDPT's RNAM list, swapped on the look in
+// place of the part of its HDPT type). wire-rules player_own judges it over
+// the facts gathered here (the form's record type, the bound over the VMAD
+// properties of the caller's attachments live for this player, the twin
+// rule over their FormLists, the recorded race, the RACE's Playable flag,
+// the permit, what the record holds): recorded on the change form (R1) and
+// the look sent to every game that sees the player (the twin, the base
+// after a cure, the swapped head part), held in the player's race overlay
+// instead (never on the change form; its figure's CreateActor and
+// UpdateAppearance carry it, the equipment gate counts it), the overlay
+// ended at the race's return, folded, or refused by name
+// (E_SCRIPTCALL_ARGS, E_SCRIPTCALL_UNNAMED, E_SCRIPTCALL_RACE), one line a
+// minute per seat and code. The calling
+// class is the seat's own word (`caller`), so an attachment counts only
+// while it is live for the reporter (the fresh review's note 3): a QUST's
+// while the quest scope classes the quest the player's or the world's
+// journal records it running or staged (PartOne::QuestAttachmentLive), an
+// MGEF's while the player's record or overlay holds a SPEL that carries it;
+// the rest is R1 on the seat's word that its script ran (rule 5).
 void RecordPlayerOwn(
   PartOne& partOne, MpActor& reporter, const ScriptCallMessage& msg,
   std::map<std::pair<uint32_t, std::string>,
@@ -4561,22 +4579,84 @@ void RecordPlayerOwn(
     refusals)
 {
   const uint32_t form = OwnRowForm(msg);
-  const auto& named = CallerProperties(partOne.worldState, msg.caller);
-  std::vector<skymp::rules::ScriptPropertyRow> properties;
-  properties.reserve(named.size());
-  for (const auto& n : named) {
-    skymp::rules::ScriptPropertyRow row;
-    row.form = n.form;
-    for (uint32_t member : n.members) {
-      row.members.push_back(member);
+  if (!partOne.HasEspm()) {
+    return RefuseStateRow(
+      refusals, reporter.GetFormId(), "E_SCRIPTCALL_UNNAMED",
+      fmt::format("[verb:quest-stage] E_SCRIPTCALL_UNNAMED: {:x}'s own {}.{} "
+                  "{:x} (from {}.{}): the server holds no game files to "
+                  "read the calling script's attachments from",
+                  reporter.GetFormId(), msg.cls, msg.fn, form, msg.caller,
+                  msg.handler));
+  }
+
+  // the attachments live for this player, and what they name, each once
+  const auto& attachments = partOne.ScriptAttachmentsOf(msg.caller);
+  const auto overlayNow = partOne.PlayerOverlayOf(reporter.GetFormId());
+  std::optional<std::vector<uint32_t>> held;
+  const auto holds = [&](uint32_t spell) {
+    if (!held) {
+      held = reporter.GetSpellList();
+      const auto base = reporter.KnownBaseSpells();
+      held->insert(held->end(), base.begin(), base.end());
+      if (overlayNow) {
+        held->insert(held->end(), overlayNow->spells.begin(),
+                     overlayNow->spells.end());
+      }
     }
-    properties.push_back(std::move(row));
+    return std::find(held->begin(), held->end(), spell) != held->end();
+  };
+  std::vector<skymp::rules::ScriptPropertyRow> properties;
+  size_t live = 0;
+  for (const auto& attachment : attachments) {
+    const bool counts = attachment.quest
+      ? partOne.QuestAttachmentLive(attachment.form)
+      : std::any_of(attachment.spells.begin(), attachment.spells.end(), holds);
+    if (!counts) {
+      continue;
+    }
+    ++live;
+    for (const auto& n : attachment.named) {
+      if (std::any_of(properties.begin(), properties.end(),
+                      [&](const auto& row) { return row.form == n.form; })) {
+        continue;
+      }
+      skymp::rules::ScriptPropertyRow row;
+      row.form = n.form;
+      for (uint32_t member : n.members) {
+        row.members.push_back(member);
+      }
+      properties.push_back(std::move(row));
+    }
   }
 
   skymp::rules::PlayerOwnFacts facts{};
   const auto look = reporter.GetAppearance();
   facts.recorded_race = look ? look->raceId : 0;
   const bool setRace = NamesFunc(msg.fn, "SetRace");
+  // the form's record type, the row's own: a non-race written to the look
+  // drops the player's whole change form at the next start (WorldState
+  // skips a record whose appearance names no RACE)
+  const auto typeOf = [&]() -> std::string {
+    const auto rec = partOne.GetEspm().GetBrowser().LookupById(form).rec;
+    return rec ? rec->GetType().ToString() : std::string();
+  };
+  const std::string type = form != 0 ? typeOf() : std::string();
+  // Eli's D-E1 A: the seventh row, a head part swapped on the look
+  const bool headRow = NamesFunc(msg.fn, "ChangeHeadPart");
+  facts.kind = setRace ? type == espm::RACE::kType
+    : (NamesFunc(msg.fn, "AddSpell") || NamesFunc(msg.fn, "RemoveSpell"))
+    ? type == espm::SPEL::kType
+    : (NamesFunc(msg.fn, "AddShout") || NamesFunc(msg.fn, "RemoveShout"))
+    ? type == espm::SHOU::kType
+    : headRow ? type == espm::HDPT::kType
+              : NamesFunc(msg.fn, "EquipItem") && !type.empty() &&
+      espm::utils::IsItem(espm::Type(type.c_str()));
+  if (headRow && form != 0) {
+    facts.race_valid = partOne.HeadPartFitsRace(form, facts.recorded_race);
+    facts.held = look &&
+      std::find(look->headpartIds.begin(), look->headpartIds.end(), form) !=
+        look->headpartIds.end();
+  }
   if (setRace && form != 0) {
     const auto race = espm::Convert<espm::RACE>(
       partOne.GetEspm().GetBrowser().LookupById(form).rec);
@@ -4648,10 +4728,27 @@ void RecordPlayerOwn(
           reporter.ForgetShoutEntry(MpActor::ShoutEntry::Shout, shout);
         }
       } else if (equipRow) {
-        // the item enters the player's inventory, as the engine's EquipItem
-        // adds an item the actor lacks (UNVERIFIED on a seat)
-        reporter.AddItem(form, 1);
-        what += ", the item added to its inventory";
+        // no row mints an item (the fresh review's note 4): outside an
+        // overlay the rule folds an item the record holds and refuses one
+        // it lacks, so nothing reaches here to write
+        return said("nothing written (EquipItem moves nothing into the "
+                    "record)");
+      } else if (headRow) {
+        // D-E1 A: the part of the same HDPT type swapped on the look, sent
+        // to every game that sees the player (its figure's head parts)
+        if (!look) {
+          return said("no recorded look to wear the head part, nothing "
+                      "written");
+        }
+        Appearance appearance = *look;
+        if (!partOne.WearHeadPart(appearance, form)) {
+          return said("the look wears it already, nothing written");
+        }
+        reporter.SetAppearance(&appearance);
+        SendAppearanceToOthers(partOne, reporter, appearance);
+        what += fmt::format(", its look's head part {:x} sent to every game "
+                            "that sees it",
+                            form);
       }
       if (verdict.ended.open) {
         what += fmt::format("; its race overlay {:x} ended with it",
@@ -4677,13 +4774,14 @@ void RecordPlayerOwn(
       return spdlog::debug("[verb:quest-stage] {:x}'s own {}.{} {:x}: folded",
                            reporter.GetFormId(), msg.cls, msg.fn, form);
     default:
-      RefuseStateRow(refusals, reporter.GetFormId(), std::string(verdict.name),
-                     fmt::format("[verb:quest-stage] {}: {:x}'s own {}.{} "
-                                 "{:x} (from {}.{}): {}",
-                                 std::string(verdict.name),
-                                 reporter.GetFormId(), msg.cls, msg.fn, form,
-                                 msg.caller, msg.handler,
-                                 std::string(verdict.why)));
+      RefuseStateRow(
+        refusals, reporter.GetFormId(), std::string(verdict.name),
+        fmt::format("[verb:quest-stage] {}: {:x}'s own {}.{} "
+                    "{:x} (from {}.{}): {}; the class has {} "
+                    "attachment(s), {} live for this player",
+                    std::string(verdict.name), reporter.GetFormId(), msg.cls,
+                    msg.fn, form, msg.caller, msg.handler,
+                    std::string(verdict.why), attachments.size(), live));
       return;
   }
 }
@@ -6393,8 +6491,9 @@ std::vector<skymp::rules::ScriptVarRow> ScriptVarRows(
   return rows;
 }
 
+template <class Rows>
 std::vector<MpChangeFormREFR::ScriptVariable> ScriptVariablesOf(
-  const std::vector<skymp::rules::ScriptVarRow>& rows)
+  const Rows& rows)
 {
   std::vector<MpChangeFormREFR::ScriptVariable> record;
   record.reserve(rows.size());
@@ -6532,14 +6631,20 @@ void ActionListener::OnScriptVariables(const RawMessageData& rawMsgData,
   }
   auto& rules = partOne.GetScriptVariableRules();
   const auto& files = partOne.worldState.espmFiles;
-  auto world = ScriptVarRows(partOne.GetScriptVariables(), false);
-  auto own = ScriptVarRows(reporter->GetScriptVariables(), true);
   ScriptVariablesMessage relay;
   relay.served = false;
   size_t ownRecorded = 0;
   size_t folded = 0;
   std::map<std::string, size_t> refused;
-  for (const auto& entry : msg.entries) {
+  // the entries whose forms this load order names, judged whole in one
+  // bridge call (the fresh review's note 13), each against its record as
+  // the entries before it left it
+  std::vector<skymp::rules::ScriptVarRow> rows;
+  std::vector<size_t> rowEntry;
+  rows.reserve(msg.entries.size());
+  rowEntry.reserve(msg.entries.size());
+  for (size_t i = 0; i < msg.entries.size(); ++i) {
+    const auto& entry = msg.entries[i];
     skymp::rules::ScriptVarRow row{};
     try {
       const FormDesc form = FormDesc::FromFormId(entry.form, files);
@@ -6557,10 +6662,18 @@ void ActionListener::OnScriptVariables(const RawMessageData& rawMsgData,
     row.f = entry.f.value_or(0.f);
     row.b = entry.b.value_or(false);
     row.seq = 0;
-    auto& record = entry.own ? own : world;
-    const rust::Slice<const skymp::rules::ScriptVarRow> recordSlice(
-      record.data(), record.size());
-    const auto verdict = rules.script_variable_judge(recordSlice, row);
+    rows.push_back(std::move(row));
+    rowEntry.push_back(i);
+  }
+  const auto world = ScriptVarRows(partOne.GetScriptVariables(), false);
+  const auto own = ScriptVarRows(reporter->GetScriptVariables(), true);
+  const auto report = rules.script_variables_report(
+    rust::Slice<const skymp::rules::ScriptVarRow>(world.data(), world.size()),
+    rust::Slice<const skymp::rules::ScriptVarRow>(own.data(), own.size()),
+    rust::Slice<const skymp::rules::ScriptVarRow>(rows.data(), rows.size()));
+  for (size_t r = 0; r < rows.size() && r < report.verdicts.size(); ++r) {
+    const auto& verdict = report.verdicts[r];
+    const auto& entry = msg.entries[rowEntry[r]];
     if (verdict.code == 1) {
       ++folded;
       continue;
@@ -6577,22 +6690,20 @@ void ActionListener::OnScriptVariables(const RawMessageData& rawMsgData,
       }
       continue;
     }
-    const auto merged = skymp::rules::script_variables_merge(recordSlice, row);
-    record.assign(merged.record.begin(), merged.record.end());
     if (entry.own) {
       ++ownRecorded;
       continue;
     }
     auto out = entry;
-    out.seq = merged.seq;
+    out.seq = r < report.seqs.size() ? report.seqs[r] : 0;
     relay.entries.push_back(std::move(out));
   }
   if (ownRecorded > 0) {
-    reporter->SetScriptVariables(ScriptVariablesOf(own));
+    reporter->SetScriptVariables(ScriptVariablesOf(report.own));
   }
   size_t relayed = 0;
   if (!relay.entries.empty()) {
-    partOne.SetScriptVariables(ScriptVariablesOf(world));
+    partOne.SetScriptVariables(ScriptVariablesOf(report.world));
     for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
       const auto userId = static_cast<Networking::UserId>(i);
       if (userId == rawMsgData.userId ||
@@ -7527,6 +7638,7 @@ void ActionListener::SendQuestStages(MpActor& actor)
     message.stage = 0;
     message.word = word;
     message.served = true;
+    StampWordStages(partOne, message);
     actor.SendToUser(message, true);
     return true;
   };

@@ -766,11 +766,13 @@ TEST_CASE("A script call's figure argument is taken when it names a "
   const std::string refusal = "a server form that is no connected player's "
                               "actor";
   // the guest's actor, connected: past the figure check (the six own rows'
-  // rule judges the rest)
+  // rule judges the rest: an actor is no item, so their kind check refuses
+  // it, the fresh review's note 3)
   Call(p, 0, epoch, 0x14, "Actor", "EquipItem",
        { FormArg(kGuestActor, "Actor"), Arg(false), Arg(true) },
        "PlayerWerewolfChangeScript", "StartTracking");
   REQUIRE(log.Count(refusal) == 0);
+  REQUIRE(log.Count("is no item record") == 1);
   // a load-order form and None: no figure at all
   Call(p, 0, epoch, 0x14, "Actor", "EquipItem",
        { FormArg(0x12eb7, "Weapon"), Arg(false), Arg(true) },
@@ -780,7 +782,7 @@ TEST_CASE("A script call's figure argument is taken when it names a "
   Call(p, 0, epoch, 0x14, "Actor", "EquipItem",
        { FormArg(0xff000abc, "Actor"), Arg(false), Arg(true) },
        "PlayerWerewolfChangeScript", "StartTracking");
-  REQUIRE(log.Count("E_SCRIPTCALL_ARGS") == 1);
+  REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_ARGS") == 1);
   REQUIRE(log.Count(refusal) == 1);
   REQUIRE(SnippetsTo(p, 1).empty());
   REQUIRE(SnippetsTo(p, 0).empty());

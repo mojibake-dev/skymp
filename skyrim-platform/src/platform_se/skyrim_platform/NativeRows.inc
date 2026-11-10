@@ -13,7 +13,8 @@
 // the Sound; CreateDetectionEvent on the trigger itself), then rung 5's six,
 // a player's own race, spells, shouts and equipment, each a state row on the
 // seat's own player (docs/research/rung5-quests-2026-11-09.md section 8(b);
-// the batching on the seat's own player is the platform's 5b head, B5).
+// the batching on the seat's own player is the platform's 5b head, B5), and
+// Eli's D-E1 A seventh in their shape, ChangeHeadPart (rotfern's eyes).
 // kind: Action (the call itself is the message), State (the owner's record
 // carries it), Everyone (no owner, D-F1 C: every seat runs it), Local (never
 // crosses). subject: Self (the frame's self), Arg0 (a static native's first
@@ -69,3 +70,4 @@
 { "Actor", "AddShout", NativeKind::State, NativeSubject::Self, "none" },
 { "Actor", "RemoveShout", NativeKind::State, NativeSubject::Self, "none" },
 { "Actor", "EquipItem", NativeKind::State, NativeSubject::Self, "none" },
+{ "Actor", "ChangeHeadPart", NativeKind::State, NativeSubject::Self, "none" },

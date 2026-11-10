@@ -231,7 +231,7 @@ public:
   // report of the listed condition-read variables its game changed. The
   // wire's half (A3) declares it and drops the report; the rung's server
   // half (A4) writes its body over the bridge's ScriptVariables
-  // (script_variable_judge, script_variables_merge): a world key's latest
+  // (script_variables_report, one call a message): a world key's latest
   // write recorded on the world's journal and relayed to every other seat
   // with its sequence, an own key's on the reporter's player's change form,
   // never relayed. R2, recorded as reported

@@ -2215,20 +2215,30 @@ mod ffi {
         why: String,
     }
 
-    /// The record after a recorded entry and the key's new sequence.
+    /// One ScriptVariables 81 report judged whole (thuum ADR-068 rung 5,
+    /// the fresh review's note 13: one bridge call a message): a verdict
+    /// per entry, in order, and the two records after the report.
     #[derive(Debug, Clone, PartialEq)]
-    struct ScriptVarMerge {
-        /// The record after.
-        record: Vec<ScriptVarRow>,
-        /// The key's sequence now, which the relay carries; 0 when the
-        /// record was full and is unchanged.
-        seq: u32,
+    struct ScriptVarReport {
+        /// Per entry, in order: 0 recorded, 1 folded, 2 refused (with the
+        /// refusal's name and why).
+        verdicts: Vec<ScriptVarVerdict>,
+        /// Per entry: the key's sequence after a recorded entry, which the
+        /// relay of a world key's carries; 0 otherwise.
+        seqs: Vec<u32>,
+        /// The world's record after the report (the journal's).
+        world: Vec<ScriptVarRow>,
+        /// The reporter's player's own record after it (its change form's).
+        own: Vec<ScriptVarRow>,
     }
 
     /// One object the calling script's attachment names (thuum ADR-068 rung
-    /// 5, wire-rules player_own::Named): from libespm's VMAD for every
-    /// attachment of the ScriptCall's `caller` script, an object property's
-    /// value (Property::Type::Object 1) or each element of an object array
+    /// 5, wire-rules player_own::Named): from libespm's VMAD for each
+    /// attachment of the ScriptCall's `caller` script live for the reporter
+    /// (PartOne::ScriptAttachmentsOf, the fresh review's note 3: a QUST the
+    /// scope classes the player's or the journal records running or staged,
+    /// an MGEF a SPEL the player holds carries), an object property's value
+    /// (Property::Type::Object 1) or each element of an object array
     /// property's (ObjectArray 11), with a FormList's entries when the form
     /// is a FLST (FLST::GetData's formIds, in order).
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2256,6 +2266,14 @@ mod ffi {
         /// RemoveSpell), a learned shout (AddShout, RemoveShout), the item in
         /// its inventory (EquipItem).
         held: bool,
+        /// The form's record is the row's kind: a RACE (SetRace), a SPEL
+        /// (AddSpell, RemoveSpell), a SHOU (AddShout, RemoveShout), an item
+        /// of libespm's item types (EquipItem), an HDPT (ChangeHeadPart).
+        kind: bool,
+        /// ChangeHeadPart's head part may be worn by the player's recorded
+        /// race: its HDPT's valid-race FormList (RNAM) holds the race (Eli's
+        /// D-E1 A).
+        race_valid: bool,
     }
 
     /// A player's overlay (thuum ADR-068 D-T1 A, wire-rules
@@ -2284,13 +2302,14 @@ mod ffi {
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct PlayerOwnVerdict {
         /// 0 recorded on the change form (the race, a learned spell or shout
-        /// added or removed, the item into its inventory), 1 held in the
-        /// overlay (opened, its race moved, a form added or removed), 2 the
-        /// overlay ended at the race's return, 3 folded (nothing), 4 refused.
+        /// added or removed; never an item), 1 held in the overlay (opened,
+        /// its race moved, a form added or removed), 2 the overlay ended at
+        /// the race's return, 3 folded (nothing), 4 refused.
         code: u8,
-        /// The refusal's stable name (E_SCRIPTCALL_UNNAMED,
-        /// E_SCRIPTCALL_RACE, or E_SCRIPTCALL_ROW for a native that is none
-        /// of the six), empty otherwise.
+        /// The refusal's stable name (E_SCRIPTCALL_ARGS, a form of another
+        /// kind than the row's; E_SCRIPTCALL_UNNAMED; E_SCRIPTCALL_RACE; or
+        /// E_SCRIPTCALL_ROW for a native that is none of the seven), empty
+        /// otherwise.
         name: String,
         /// Why, for the log; empty otherwise.
         why: String,
@@ -3209,24 +3228,23 @@ mod ffi {
         /// sends it in ScriptVariables 81's `watch`, at most 256 keys a
         /// message).
         fn script_variables_watch(self: &ScriptVariables) -> Vec<ScriptVarKeyRow>;
-        /// One reported entry against `record` (the journal's for an entry
-        /// not flagged own, the reporter's player's change form's for one
-        /// flagged own): 0 recorded, 1 folded, 2 refused (E_SCRIPTVAR_
-        /// UNLISTED, a key the setting does not list; _PLAYER, an own key
-        /// reported as the world's or a world key as own; _KIND, a kind
-        /// other than the record's for the key, or none a condition
-        /// compares; _FULL, a new key past VARIABLE_RECORD_CAP). The
-        /// entry's `seq` is unread (a report's is 0).
-        fn script_variable_judge(self: &ScriptVariables, record: &[ScriptVarRow], entry: &ScriptVarRow) -> ScriptVarVerdict;
+        /// One report's entries, in order, each against the record it names
+        /// as the entries before it left it: `world` (the journal's) for an
+        /// entry not flagged own, `own` (the reporter's player's change
+        /// form's) for one flagged own. Each is 0 recorded (merged: its
+        /// value replaced and its sequence raised, or the key added last at
+        /// 1, the rows keeping their record's `own`), 1 folded, 2 refused
+        /// (E_SCRIPTVAR_UNLISTED, a key the setting does not list; _PLAYER,
+        /// an own key reported as the world's or a world key as own; _KIND,
+        /// a kind other than the record's for the key, or none a condition
+        /// compares; _FULL, a new key past VARIABLE_RECORD_CAP). An entry's
+        /// `seq` is unread (a report's is 0).
+        fn script_variables_report(self: &ScriptVariables, world: &[ScriptVarRow], own: &[ScriptVarRow], entries: &[ScriptVarRow]) -> ScriptVarReport;
         /// What the login serves of `record`, in its order: the entries
         /// still listed, the world's half (`own` false, the journal's
         /// record, to every seat) or a player's own (`own` true, its change
         /// form's record, to that player alone), each with its sequence.
         fn script_variables_at_login(self: &ScriptVariables, record: &[ScriptVarRow], own: bool) -> Vec<ScriptVarRow>;
-        /// The record after a recorded entry and the key's new sequence:
-        /// its value replaced and its sequence raised, or the key added
-        /// last at 1; the rows keep the entry's `own`.
-        fn script_variables_merge(record: &[ScriptVarRow], entry: &ScriptVarRow) -> ScriptVarMerge;
 
         /// thuum ADR-068 rung 5 (the two transformations, D-T1 A): every
         /// player's overlay, and the player's own rows' rule (wire-rules
@@ -3250,7 +3268,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarMerge, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -5715,30 +5733,43 @@ impl ScriptVariables {
             .collect()
     }
 
-    fn script_variable_judge(&self, record: &[ScriptVarRow], entry: &ScriptVarRow) -> ScriptVarVerdict {
+    fn script_variables_report(&self, world: &[ScriptVarRow], own: &[ScriptVarRow], entries: &[ScriptVarRow]) -> ScriptVarReport {
         let out = |code, name: &str, why: String| ScriptVarVerdict { code, name: name.to_owned(), why };
-        let Some(value) = script_variables::Value::of(entry.k, entry.i, entry.f, entry.b) else {
-            return out(2, script_variables::Code::Kind.name(), format!("kind {} is none a condition compares (3, 4 or 5)", entry.k));
-        };
-        match self.0.judge(&script_var_entries(record), &script_var_key(entry), value, entry.own) {
-            script_variables::Verdict::Recorded => out(0, "", String::new()),
-            script_variables::Verdict::Folded => out(1, "", String::new()),
-            script_variables::Verdict::Refuse(code, why) => out(2, code.name(), why),
+        let (mut w, mut o) = (script_var_entries(world), script_var_entries(own));
+        let mut verdicts = Vec::with_capacity(entries.len());
+        let mut seqs = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let Some(value) = script_variables::Value::of(entry.k, entry.i, entry.f, entry.b) else {
+                verdicts.push(out(2, script_variables::Code::Kind.name(), format!("kind {} is none a condition compares (3, 4 or 5)", entry.k)));
+                seqs.push(0);
+                continue;
+            };
+            let key = script_var_key(entry);
+            let record = if entry.own { &mut o } else { &mut w };
+            match self.0.judge(record, &key, value, entry.own) {
+                script_variables::Verdict::Recorded => {
+                    let (after, seq) = script_variables::merge(record, &key, value);
+                    *record = after;
+                    verdicts.push(out(0, "", String::new()));
+                    seqs.push(seq);
+                }
+                script_variables::Verdict::Folded => {
+                    verdicts.push(out(1, "", String::new()));
+                    seqs.push(0);
+                }
+                script_variables::Verdict::Refuse(code, why) => {
+                    verdicts.push(out(2, code.name(), why));
+                    seqs.push(0);
+                }
+            }
         }
+        ScriptVarReport { verdicts, seqs, world: w.iter().map(|e| script_var_row(e, false)).collect(), own: o.iter().map(|e| script_var_row(e, true)).collect() }
     }
 
     fn script_variables_at_login(&self, record: &[ScriptVarRow], own: bool) -> Vec<ScriptVarRow> {
         let entries = script_var_entries(record);
         self.0.at_login(&entries, own).into_iter().map(|e| script_var_row(e, own)).collect()
     }
-}
-
-fn script_variables_merge(record: &[ScriptVarRow], entry: &ScriptVarRow) -> ScriptVarMerge {
-    let Some(value) = script_variables::Value::of(entry.k, entry.i, entry.f, entry.b) else {
-        return ScriptVarMerge { record: record.to_vec(), seq: 0 };
-    };
-    let (after, seq) = script_variables::merge(&script_var_entries(record), &script_var_key(entry), value);
-    ScriptVarMerge { record: after.iter().map(|e| script_var_row(e, entry.own)).collect(), seq }
 }
 
 /// thuum ADR-068 rung 5: every player's overlay (wire-rules player_own).
@@ -5762,13 +5793,13 @@ impl PlayerOverlays {
             return PlayerOwnVerdict {
                 code: 4,
                 name: natives::Code::Row.name().to_owned(),
-                why: format!("Actor.{func} is none of a player's own six rows"),
+                why: format!("Actor.{func} is none of a player's own seven rows"),
                 ended: overlay_row(None),
                 overlay: overlay_row(self.0.overlay(player)),
             };
         };
         let named: Vec<player_own::Named> = properties.iter().map(|p| player_own::Named { form: p.form, members: p.members.clone() }).collect();
-        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held };
+        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind, race_valid: facts.race_valid };
         let (code, name, why, ended) = match self.0.judge(player, row, form, &named, f) {
             player_own::Verdict::Record { ended } => (0, "", String::new(), ended),
             player_own::Verdict::Overlay => (1, "", String::new(), None),
@@ -6608,26 +6639,42 @@ mod tests {
         assert_eq!(watch.last().map(|k| k.var.as_str()), Some("<OnUpdateGameTime>"));
         let entry = |short_id: u32, script: &str, var: &str, own: bool, k: u8, i: i32| ScriptVarRow { short_id, file: "Skyrim.esm".to_owned(), script: script.to_owned(), var: var.to_owned(), own, k, i, f: 0.0, b: false, seq: 0 };
         let escort = entry(0x39645, "MS13QuestScript", "::camillaescort_var", false, 3, 1);
-        let v = vars.script_variable_judge(&[], &escort);
-        assert_eq!((v.code, v.name.as_str()), (0, ""));
-        let merged = script_variables_merge(&[], &escort);
-        assert_eq!((merged.seq, merged.record.len(), merged.record.first().map(|r| (r.i, r.seq, r.own))), (1, 1, Some((1, 1, false))));
-        assert_eq!(vars.script_variable_judge(&merged.record, &escort).code, 1);
-        let again = script_variables_merge(&merged.record, &ScriptVarRow { i: 2, ..escort.clone() });
-        assert_eq!(again.seq, 2);
-        // the cut, both ways, and a kind no condition compares
+        // one call a message (the fresh review's note 13): the escort
+        // recorded, then its new value against the record the first entry
+        // left, the vampire's status its player's own
         let status = entry(0xeafd5, "PlayerVampireQuestScript", "::vampirestatus_var", true, 3, 2);
-        assert_eq!(vars.script_variable_judge(&[], &status).code, 0);
-        assert_eq!(vars.script_variable_judge(&[], &ScriptVarRow { own: false, ..status.clone() }).name, "E_SCRIPTVAR_PLAYER");
-        assert_eq!(vars.script_variable_judge(&[], &ScriptVarRow { own: true, ..escort.clone() }).name, "E_SCRIPTVAR_PLAYER");
-        assert_eq!(vars.script_variable_judge(&[], &ScriptVarRow { k: 2, ..escort.clone() }).name, "E_SCRIPTVAR_KIND");
-        assert_eq!(vars.script_variable_judge(&merged.record, &ScriptVarRow { k: 5, b: true, ..escort.clone() }).name, "E_SCRIPTVAR_KIND");
-        assert_eq!(vars.script_variable_judge(&[], &entry(0x74a83, "S", "v", false, 3, 1)).name, "E_SCRIPTVAR_UNLISTED");
+        let first = vars.script_variables_report(&[], &[], &[escort.clone(), ScriptVarRow { i: 2, ..escort.clone() }, status.clone()]);
+        assert_eq!(first.verdicts.iter().map(|v| (v.code, v.name.as_str())).collect::<Vec<_>>(), [(0, ""), (0, ""), (0, "")]);
+        assert_eq!(first.seqs, [1, 2, 1]);
+        assert_eq!(first.world.iter().map(|r| (r.short_id, r.i, r.seq, r.own)).collect::<Vec<_>>(), [(0x39645, 2, 2, false)]);
+        assert_eq!(first.own.iter().map(|r| (r.short_id, r.i, r.seq, r.own)).collect::<Vec<_>>(), [(0xeafd5, 2, 1, true)]);
+        // an equal value folds and leaves both records as they were
+        let again = vars.script_variables_report(&first.world, &first.own, &[ScriptVarRow { i: 2, ..escort.clone() }, status.clone()]);
+        assert_eq!((again.verdicts.iter().map(|v| v.code).collect::<Vec<_>>(), again.seqs.clone()), (vec![1, 1], vec![0, 0]));
+        assert_eq!((again.world.clone(), again.own.clone()), (first.world.clone(), first.own.clone()));
+        // the cut, both ways, a kind no condition compares and one the
+        // record does not hold for the key, an unlisted key: each refused
+        // by name, nothing written
+        let refused = vars.script_variables_report(
+            &first.world,
+            &[],
+            &[
+                ScriptVarRow { own: false, ..status.clone() },
+                ScriptVarRow { own: true, ..escort.clone() },
+                ScriptVarRow { k: 2, ..escort.clone() },
+                ScriptVarRow { k: 5, b: true, ..escort.clone() },
+                entry(0x74a83, "S", "v", false, 3, 1),
+            ],
+        );
+        assert_eq!(
+            refused.verdicts.iter().map(|v| (v.code, v.name.as_str())).collect::<Vec<_>>(),
+            [(2, "E_SCRIPTVAR_PLAYER"), (2, "E_SCRIPTVAR_PLAYER"), (2, "E_SCRIPTVAR_KIND"), (2, "E_SCRIPTVAR_KIND"), (2, "E_SCRIPTVAR_UNLISTED")]
+        );
+        assert_eq!((refused.world.clone(), refused.own.is_empty()), (first.world.clone(), true));
         // the login: the world's half to every seat, the player's own to it alone
-        let own = script_variables_merge(&[], &status).record;
-        assert_eq!(vars.script_variables_at_login(&again.record, false).iter().map(|r| (r.i, r.seq)).collect::<Vec<_>>(), [(2, 2)]);
-        assert_eq!(vars.script_variables_at_login(&own, true).iter().map(|r| (r.short_id, r.own, r.seq)).collect::<Vec<_>>(), [(0xeafd5, true, 1)]);
-        assert!(vars.script_variables_at_login(&own, false).is_empty());
+        assert_eq!(vars.script_variables_at_login(&first.world, false).iter().map(|r| (r.i, r.seq)).collect::<Vec<_>>(), [(2, 2)]);
+        assert_eq!(vars.script_variables_at_login(&first.own, true).iter().map(|r| (r.short_id, r.own, r.seq)).collect::<Vec<_>>(), [(0xeafd5, true, 1)]);
+        assert!(vars.script_variables_at_login(&first.own, false).is_empty());
         assert!(new_script_variables(r#"[{"form": "039645"}]"#).is_err());
     }
 
@@ -6650,7 +6697,7 @@ mod tests {
         let npc = s.judge(at.row, &[race], &ScriptCallFacts { self_id: 0x800a6, ..facts }, 0);
         assert_eq!((npc.code, npc.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
         let lists = [ScriptPropertyRow { form: 0x0d00_1000, members: vec![0x13746, 0x13745] }, ScriptPropertyRow { form: 0x0d00_1001, members: vec![0x88794, 0x88845] }];
-        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false };
+        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false };
         let mut overlays = new_player_overlays();
         let v = overlays.player_own_judge(0xff00_0001, "SetRace", 0x88845, &lists, &khajiit);
         assert_eq!((v.code, v.name.as_str(), v.ended.open, v.overlay.open), (0, "", false, false));
@@ -6659,6 +6706,17 @@ mod tests {
         let restricted = overlays.player_own_judge(0xff00_0001, "SetRace", 0x88845, &lists, &PlayerOwnFacts { restricted: true, ..khajiit });
         assert_eq!(restricted.name, "E_SCRIPTCALL_RACE");
         assert_eq!(overlays.player_own_judge(0xff00_0001, "EquipSpell", 0x88845, &lists, &khajiit).name, "E_SCRIPTCALL_ROW");
+        // a form of another kind than the row's, named or not (the fresh
+        // review's note 3), and an item outside an overlay that the record
+        // lacks (note 4)
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "SetRace", 0x88845, &lists, &PlayerOwnFacts { kind: false, ..khajiit }).name, "E_SCRIPTCALL_ARGS");
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "EquipItem", 0x88845, &lists, &khajiit).name, "E_SCRIPTCALL_UNNAMED");
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "EquipItem", 0x88845, &lists, &PlayerOwnFacts { held: true, ..khajiit }).code, 3);
+        // the seventh row (Eli's D-E1 A): a head part the recorded race may
+        // wear is recorded, one its list lacks refused
+        let eyes = [ScriptPropertyRow { form: 0x24244, members: Vec::new() }];
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "ChangeHeadPart", 0x24244, &eyes, &PlayerOwnFacts { race_valid: true, ..khajiit }).code, 0);
+        assert_eq!(overlays.player_own_judge(0xff00_0001, "ChangeHeadPart", 0x24244, &eyes, &khajiit).name, "E_SCRIPTCALL_UNNAMED");
         // the beast form: an overlay, its howl held in it, its return ending it
         let werewolf = [ScriptPropertyRow { form: 0xcdd84, members: Vec::new() }, ScriptPropertyRow { form: 0x92c48, members: Vec::new() }];
         let nord = PlayerOwnFacts { recorded_race: 0x13746, ..khajiit };

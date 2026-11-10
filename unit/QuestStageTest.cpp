@@ -704,6 +704,78 @@ TEST_CASE("The login sends the list, the running quests' starts, the stages "
   Leave(p);
 }
 
+// thuum ADR-068 rung 5 (D-Q3 A, the fresh review's note 7; Skyrim.esm,
+// lab/esm.py on sky-srv, 2026-11-10): every start and stop word carries the
+// stages whose fragments the engine runs with it, read from the quest's INDX
+// flags as canon's QuestStageIsEngineStart read them. dunEldergleamT03
+// defines stage 0 and flags 10 a start-up stage, no shut-down stage;
+// ClearSkiesQuest flags 10 a start-up stage and 100 a shut-down one, and
+// defines no stage 0; MS10MiscObjPointer flags neither and has no stage 0
+namespace {
+constexpr uint32_t kEldergleam = 0x15cc2;
+constexpr uint32_t kClearSkies = 0x1e3b1;
+
+// every run word `user` heard: its quest, its word and its `wordStages`
+// (null when absent), in order
+using Staged = std::tuple<uint32_t, uint32_t, nlohmann::json>;
+
+std::vector<Staged> WordStagesTo(PartOne& p, Networking::UserId user)
+{
+  std::vector<Staged> sent;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::QuestStage) &&
+        m.j.contains("word")) {
+      sent.emplace_back(m.j.value("quest", 0u), m.j.value("word", 0u),
+                        m.j.contains("wordStages") ? m.j["wordStages"]
+                                                   : nlohmann::json());
+    }
+  }
+  return sent;
+}
+}
+
+TEST_CASE("Every start and stop word carries its engine stages, relayed and "
+          "served: stage 0 and the start-up stages for a start, the "
+          "shut-down stages for a stop, none when the record flags none",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kDeniedQuests);
+  QuestLog log;
+  ReportWord(p, 0, kEldergleam, 1);
+  ReportWord(p, 0, kClearSkies, 1);
+  ReportWord(p, 0, kClearSkies, 2);
+  ReportWord(p, 0, kLetterQuest, 1);
+  using J = nlohmann::json;
+  REQUIRE(WordStagesTo(p, 1) ==
+          std::vector<Staged>{ { kEldergleam, 1, J::array({ 0, 10 }) },
+                               { kClearSkies, 1, J::array({ 10 }) },
+                               { kClearSkies, 2, J::array({ 100 }) },
+                               { kLetterQuest, 1, J() } });
+  REQUIRE(WordStagesTo(p, 0).empty());
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd0 starts 15cc2:Skyrim.esm: "
+                    "recorded, relayed to 1 with its engine stages 0, "
+                    "10") == 1);
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd0 starts 10d3bb:Skyrim.esm: "
+                    "recorded, relayed to 1\n") == 1);
+
+  // the login serves them the same way: the running quests' starts in the
+  // run record's order, then the stopped quest's stop
+  p.Messages().clear();
+  p.SetUserActor(1, kWatcher);
+  REQUIRE(WordStagesTo(p, 1) ==
+          std::vector<Staged>{ { kEldergleam, 1, J::array({ 0, 10 }) },
+                               { kLetterQuest, 1, J() },
+                               { kClearSkies, 2, J::array({ 100 }) } });
+  for (auto& m : p.Messages()) {
+    if (m.j.contains("wordStages")) {
+      REQUIRE(m.j.value("served", false));
+    }
+  }
+  Leave(p);
+}
+
 TEST_CASE("The world's quest stages survive a restart through the journal's "
           "record, and a login after it replays them",
           "[QuestStage][espm]")

@@ -19,6 +19,7 @@
 #include "libespm/RecordHeader.h"
 #include "libespm/RecordHeaderAccess.h"
 #include "libespm/RefrKey.h"
+#include "libespm/SPEL.h"
 #include "libespm/WRLD.h"
 #include <cstring>
 #include <optional>
@@ -59,6 +60,10 @@ struct Browser::Impl
   // thuum ADR-068 rung 5: the magic effects, whose VMADs name what an
   // effect script's player's own rows may add (the server's R1 bound)
   std::vector<const RecordHeader*> magicEffects;
+  // and the spells, whose effects name the MGEFs they carry: an effect
+  // script's attachment counts for a player who holds one (the fresh
+  // review's note 3)
+  std::vector<const RecordHeader*> spells;
   std::vector<const RecordHeader*> cells;
 
   GroupStack grStack;
@@ -169,9 +174,12 @@ const std::vector<const RecordHeader*>& Browser::GetRecordsByType(
   if (!std::strcmp(type, espm::MGEF::kType)) {
     return pImpl->magicEffects;
   }
+  if (!std::strcmp(type, espm::SPEL::kType)) {
+    return pImpl->spells;
+  }
   throw std::runtime_error("GetRecordsByType currently supports only REFR, "
                            "COBJ, KYWD, LCTN, FACT, QUST, WRLD, CELL, REGN, "
-                           "PERK and MGEF records");
+                           "PERK, MGEF and SPEL records");
 }
 
 const std::vector<const RecordHeader*>& Browser::GetRecordsAtPos(
@@ -304,6 +312,10 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
 
     if (utils::Is<espm::MGEF>(t)) {
       pImpl->magicEffects.push_back(recHeader);
+    }
+
+    if (utils::Is<espm::SPEL>(t)) {
+      pImpl->spells.push_back(recHeader);
     }
 
     if (utils::Is<espm::NAVM>(t)) {

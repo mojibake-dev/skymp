@@ -9,11 +9,29 @@
 //! RecordKind::PlayerOwn, its subject 0x14), carried by ScriptCall 75 after
 //! the row's shape and owner steps, and judged here before the core moves
 //! the player's record. R1, over facts the core gathers from the game files.
+//! Eli's D-E1 A adds a seventh in the six's shape, Actor.ChangeHeadPart, a
+//! script's swap of its own player's head part (rotfern's eyes): past the
+//! kind and the bound, the head part must be one the player's recorded race
+//! may wear (its HDPT's valid-race FormList, RNAM, holds the race), else
+//! `E_SCRIPTCALL_UNNAMED`; one the look wears already folds, any other is
+//! recorded on the look (the core swaps the part of the same HDPT type).
 //!
-//! The bound: the call's form (its first argument) must be one the calling
-//! script's attachment names, a property's value or a member of a FormList
-//! one (libespm's VMAD and FLST), else `E_SCRIPTCALL_UNNAMED`: a modified
-//! seat can teach its player nothing its scripts do not name. A property a
+//! The kind first: the call's form (its first argument) must be a record of
+//! the row's type, a RACE for SetRace, a SPEL for AddSpell and RemoveSpell,
+//! a SHOU for AddShout and RemoveShout, an item (libespm's item types) for
+//! EquipItem, else `E_SCRIPTCALL_ARGS` (a non-race written to the look would
+//! drop the player's whole change form at the next start: WorldState skips a
+//! record whose appearance names no RACE). The core reads the type.
+//!
+//! The bound: the form must be one the calling script's live attachments
+//! name, a property's value or a member of a FormList one (libespm's VMAD
+//! and FLST), else `E_SCRIPTCALL_UNNAMED`: a modified seat can teach its
+//! player nothing its scripts do not name. The calling class is the seat's
+//! own word (ScriptCall's `caller`), so the core passes the properties of
+//! the attachments live for this player alone (the fresh review's note 3):
+//! a QUST's while the quest scope classes the quest the player's or the
+//! world's journal records it running or staged, an MGEF's while the
+//! player's record or overlay holds a SPEL that carries it. A property a
 //! script assigns at run time is no VMAD value (Dawnguard's perks swap
 //! CurrentHowl) and is refused by the same name, so its count is measured.
 //! One form passes unnamed: a SetRace to the recorded race, the server's own
@@ -44,10 +62,10 @@
 
 use std::collections::BTreeMap;
 
-/// The six rows, by Papyrus class and name (natives_table.rs's order).
-pub const ROWS: [(&str, &str); 6] = [("Actor", "SetRace"), ("Actor", "AddSpell"), ("Actor", "RemoveSpell"), ("Actor", "AddShout"), ("Actor", "RemoveShout"), ("Actor", "EquipItem")];
+/// The seven rows, by Papyrus class and name (natives_table.rs's order).
+pub const ROWS: [(&str, &str); 7] = [("Actor", "SetRace"), ("Actor", "AddSpell"), ("Actor", "RemoveSpell"), ("Actor", "AddShout"), ("Actor", "RemoveShout"), ("Actor", "EquipItem"), ("Actor", "ChangeHeadPart")];
 
-/// One of the six natives.
+/// One of the seven natives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     /// Actor.SetRace(Race akRace).
@@ -62,6 +80,8 @@ pub enum Row {
     RemoveShout,
     /// Actor.EquipItem(Form akItem, Bool abPreventRemoval, Bool abSilent).
     EquipItem,
+    /// Actor.ChangeHeadPart(HeadPart hPart) (D-E1 A).
+    ChangeHeadPart,
 }
 
 impl Row {
@@ -70,7 +90,7 @@ impl Row {
     #[must_use]
     pub fn of(cls: &str, func: &str) -> Option<Self> {
         let at = ROWS.iter().position(|(c, f)| c.eq_ignore_ascii_case(cls) && f.eq_ignore_ascii_case(func))?;
-        [Row::SetRace, Row::AddSpell, Row::RemoveSpell, Row::AddShout, Row::RemoveShout, Row::EquipItem].get(at).copied()
+        [Row::SetRace, Row::AddSpell, Row::RemoveSpell, Row::AddShout, Row::RemoveShout, Row::EquipItem, Row::ChangeHeadPart].get(at).copied()
     }
 }
 
@@ -123,6 +143,13 @@ pub struct Facts {
     /// RemoveSpell), a learned shout (AddShout, RemoveShout), the item in
     /// its inventory (EquipItem).
     pub held: bool,
+    /// The form's record is the row's kind: a RACE (SetRace), a SPEL
+    /// (AddSpell, RemoveSpell), a SHOU (AddShout, RemoveShout), an item
+    /// (EquipItem), an HDPT (ChangeHeadPart).
+    pub kind: bool,
+    /// ChangeHeadPart's head part may be worn by the recorded race: its
+    /// HDPT's valid-race FormList (RNAM) holds the race.
+    pub race_valid: bool,
 }
 
 /// An open overlay: the race the player wears beyond its record and what
@@ -144,7 +171,10 @@ pub struct Overlay {
 /// Why a call is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Code {
-    /// The form is no value of the calling script's attachment.
+    /// The form is no record of the row's kind (natives' argument code).
+    Args,
+    /// The form is no value of the calling script's live attachments, or
+    /// an item outside an overlay that the player's record does not hold.
     Unnamed,
     /// A race `restrictedRaces` keeps from the player's profile.
     Race,
@@ -155,8 +185,23 @@ impl Code {
     #[must_use]
     pub fn name(self) -> &'static str {
         match self {
+            Code::Args => "E_SCRIPTCALL_ARGS",
             Code::Unnamed => "E_SCRIPTCALL_UNNAMED",
             Code::Race => "E_SCRIPTCALL_RACE",
+        }
+    }
+}
+
+impl Row {
+    /// The record type the row's form must be, as the refusal names it.
+    #[must_use]
+    pub fn kind(self) -> &'static str {
+        match self {
+            Row::SetRace => "RACE",
+            Row::AddSpell | Row::RemoveSpell => "SPEL",
+            Row::AddShout | Row::RemoveShout => "SHOU",
+            Row::EquipItem => "item",
+            Row::ChangeHeadPart => "HDPT",
         }
     }
 }
@@ -165,9 +210,9 @@ impl Code {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// Written to the player's change form (the race, a learned spell or
-    /// shout added or removed, an item into its inventory). `ended` an
-    /// overlay this call closed (a twin or a Playable race taken while one
-    /// was open), whose adds the core strips.
+    /// shout added or removed; never an item, which no row mints). `ended`
+    /// an overlay this call closed (a twin or a Playable race taken while
+    /// one was open), whose adds the core strips.
     Record {
         /// The overlay the call ended, if any.
         ended: Option<Overlay>,
@@ -202,28 +247,47 @@ impl PlayerOverlays {
         self.open.remove(&player)
     }
 
-    /// One call of `row` by `player`'s own scripts naming `form`, the bound
-    /// over the calling script's `properties` first (a SetRace to the
-    /// recorded race passes it: the race's return).
+    /// One call of `row` by `player`'s own scripts naming `form`: the kind
+    /// first, then the bound over the calling script's live attachments'
+    /// `properties` (a SetRace to the recorded race passes it: the race's
+    /// return).
     pub fn judge(&mut self, player: u32, row: Row, form: u32, properties: &[Named], facts: Facts) -> Verdict {
-        let returns = row == Row::SetRace && form != 0 && form == facts.recorded_race;
+        if form == 0 {
+            return Verdict::Refuse(Code::Unnamed, "the call names no form".to_owned());
+        }
+        if !facts.kind {
+            return Verdict::Refuse(Code::Args, format!("{form:x} is no {} record, the form Actor.{row:?} takes", row.kind()));
+        }
+        let returns = row == Row::SetRace && form == facts.recorded_race;
         if !returns && !named(form, properties) {
-            let why = if form == 0 { "the call names no form".to_owned() } else { format!("{form:x} is no value of the calling script's attachment, nor of a FormList one") };
-            return Verdict::Refuse(Code::Unnamed, why);
+            return Verdict::Refuse(Code::Unnamed, format!("{form:x} is no value of the calling script's live attachments, nor of a FormList one"));
         }
         if row == Row::SetRace {
             return self.set_race(player, form, properties, facts);
         }
+        if row == Row::ChangeHeadPart {
+            // D-E1 A: the look's, overlay or not (an overlay's race is worn
+            // over the look, whose head parts are the record's)
+            if !facts.race_valid {
+                return Verdict::Refuse(Code::Unnamed, format!("{form:x} is no head part the recorded race {:x} may wear (its HDPT's valid-race list, RNAM, lacks the race)", facts.recorded_race));
+            }
+            return if facts.held { Verdict::Fold } else { Verdict::Record { ended: None } };
+        }
         let Some(overlay) = self.open.get_mut(&player) else {
             // no overlay: the record's, an add of what it holds or a removal
-            // of what it lacks folding
-            let adds = matches!(row, Row::AddSpell | Row::AddShout | Row::EquipItem);
+            // of what it lacks folding; an item the record lacks is minted by
+            // no row (R0's inventory is never a client's word: the fresh
+            // review's note 4), so EquipItem folds or is refused
+            if row == Row::EquipItem {
+                return if facts.held { Verdict::Fold } else { Verdict::Refuse(Code::Unnamed, format!("{form:x} is no item the player's record holds, and outside an overlay EquipItem adds none")) };
+            }
+            let adds = matches!(row, Row::AddSpell | Row::AddShout);
             return if adds == facts.held { Verdict::Fold } else { Verdict::Record { ended: None } };
         };
         let list = match row {
             Row::AddSpell | Row::RemoveSpell => &mut overlay.spells,
             Row::AddShout | Row::RemoveShout => &mut overlay.shouts,
-            Row::EquipItem | Row::SetRace => &mut overlay.items,
+            Row::EquipItem | Row::SetRace | Row::ChangeHeadPart => &mut overlay.items,
         };
         let in_overlay = list.contains(&form);
         match row {
@@ -302,7 +366,7 @@ mod tests {
     }
 
     fn khajiit() -> Facts {
-        Facts { recorded_race: KHAJIIT, ..Facts::default() }
+        Facts { recorded_race: KHAJIIT, kind: true, ..Facts::default() }
     }
 
     #[test]
@@ -311,7 +375,9 @@ mod tests {
         assert_eq!(Row::of("actor", "equipitem"), Some(Row::EquipItem));
         assert_eq!(Row::of("Actor", "EquipSpell"), None);
         assert_eq!(Row::of("ObjectReference", "AddItem"), None);
-        assert_eq!((Code::Unnamed.name(), Code::Race.name()), ("E_SCRIPTCALL_UNNAMED", "E_SCRIPTCALL_RACE"));
+        assert_eq!((Code::Args.name(), Code::Unnamed.name(), Code::Race.name()), ("E_SCRIPTCALL_ARGS", "E_SCRIPTCALL_UNNAMED", "E_SCRIPTCALL_RACE"));
+        assert_eq!([Row::SetRace, Row::RemoveSpell, Row::AddShout, Row::EquipItem, Row::ChangeHeadPart].map(Row::kind), ["RACE", "SPEL", "SHOU", "item", "HDPT"]);
+        assert_eq!(Row::of("actor", "changeheadpart"), Some(Row::ChangeHeadPart));
     }
 
     #[test]
@@ -319,7 +385,7 @@ mod tests {
         let mut o = PlayerOverlays::default();
         assert!(named(KHAJIIT_VAMPIRE, &vampire_script()) && named(ABILITY, &vampire_script()));
         assert!(!named(0, &vampire_script()) && !named(HOWL, &vampire_script()));
-        for (form, why) in [(HOWL, "92c48 is no value of the calling script's attachment, nor of a FormList one"), (0, "the call names no form")] {
+        for (form, why) in [(HOWL, "92c48 is no value of the calling script's live attachments, nor of a FormList one"), (0, "the call names no form")] {
             match o.judge(ARIADNE, Row::AddSpell, form, &vampire_script(), khajiit()) {
                 Verdict::Refuse(code, w) => assert_eq!((code, w.as_str()), (Code::Unnamed, why)),
                 other => panic!("not refused: {other:?}"),
@@ -330,13 +396,72 @@ mod tests {
     }
 
     #[test]
+    fn a_form_of_another_kind_is_refused_before_the_bound() {
+        // the fresh review's note 3: a non-race written to the look drops the
+        // player's change form at the next start, so the record's type is
+        // judged first, named or not
+        let mut o = PlayerOverlays::default();
+        let wrong = Facts { kind: false, ..khajiit() };
+        for (row, form, why) in [
+            (Row::SetRace, ABILITY, "ed0a8 is no RACE record, the form Actor.SetRace takes"),
+            (Row::AddSpell, KHAJIIT_VAMPIRE, "88845 is no SPEL record, the form Actor.AddSpell takes"),
+            (Row::EquipItem, HOWL, "92c48 is no item record, the form Actor.EquipItem takes"),
+        ] {
+            assert_eq!(o.judge(ARIADNE, row, form, &vampire_script(), wrong), Verdict::Refuse(Code::Args, why.to_owned()));
+        }
+        assert!(o.overlay(ARIADNE).is_none());
+    }
+
+    #[test]
+    fn an_item_outside_an_overlay_folds_when_held_and_is_refused_when_not() {
+        // the fresh review's note 4: no row mints an item (R0's inventory)
+        let mut o = PlayerOverlays::default();
+        let script = werewolf_script();
+        let nord = Facts { recorded_race: NORD, kind: true, ..Facts::default() };
+        assert_eq!(o.judge(ARIADNE, Row::EquipItem, SKIN, &script, Facts { held: true, ..nord }), Verdict::Fold);
+        match o.judge(ARIADNE, Row::EquipItem, SKIN, &script, nord) {
+            Verdict::Refuse(Code::Unnamed, why) => assert_eq!(why, "10d4f9 is no item the player's record holds, and outside an overlay EquipItem adds none"),
+            other => panic!("not refused: {other:?}"),
+        }
+        // inside one the item is the overlay's, as before
+        assert_eq!(o.judge(ARIADNE, Row::SetRace, BEAST, &script, nord), Verdict::Overlay);
+        assert_eq!(o.judge(ARIADNE, Row::EquipItem, SKIN, &script, nord), Verdict::Overlay);
+    }
+
+    #[test]
+    fn a_head_part_the_recorded_race_may_wear_is_recorded_and_any_other_refused() {
+        // Eli's D-E1 A, rotfern's eyes: RotfernEyesMora for RotfernEyes, both
+        // HDPTs whose valid-race list holds race rotfern (rotfern.esp's ids
+        // illustrative here; lab/esm.py on sky-srv, 2026-11-10)
+        const ROTFERN: u32 = 0x0e00_aa00;
+        const EYES: u32 = 0x0e01_4c06;
+        const MORA: u32 = 0x0e02_3f0e;
+        let mut o = PlayerOverlays::default();
+        let script = [Named { form: MORA, members: Vec::new() }, Named { form: EYES, members: Vec::new() }];
+        let worn = Facts { recorded_race: ROTFERN, kind: true, race_valid: true, ..Facts::default() };
+        assert_eq!(o.judge(ARIADNE, Row::ChangeHeadPart, MORA, &script, worn), Verdict::Record { ended: None });
+        assert_eq!(o.judge(ARIADNE, Row::ChangeHeadPart, EYES, &script, Facts { held: true, ..worn }), Verdict::Fold);
+        // a race the part's list lacks, an unnamed part, another kind
+        match o.judge(ARIADNE, Row::ChangeHeadPart, MORA, &script, Facts { race_valid: false, ..worn }) {
+            Verdict::Refuse(Code::Unnamed, why) => assert_eq!(why, "e023f0e is no head part the recorded race e00aa00 may wear (its HDPT's valid-race list, RNAM, lacks the race)"),
+            other => panic!("not refused: {other:?}"),
+        }
+        assert!(matches!(o.judge(ARIADNE, Row::ChangeHeadPart, 0x0e01_0001, &script, worn), Verdict::Refuse(Code::Unnamed, _)));
+        assert!(matches!(o.judge(ARIADNE, Row::ChangeHeadPart, MORA, &script, Facts { kind: false, ..worn }), Verdict::Refuse(Code::Args, _)));
+        // an open overlay leaves it the look's
+        assert_eq!(o.judge(ARIADNE, Row::SetRace, BEAST, &[Named { form: BEAST, members: Vec::new() }], worn), Verdict::Overlay);
+        assert_eq!(o.judge(ARIADNE, Row::ChangeHeadPart, MORA, &script, worn), Verdict::Record { ended: None });
+        assert_eq!(o.overlay(ARIADNE).map(|v| v.items.len()), Some(0));
+    }
+
+    #[test]
     fn the_twin_is_recorded_and_the_cure_returns_it() {
         let mut o = PlayerOverlays::default();
         assert!(twins(KHAJIIT, KHAJIIT_VAMPIRE, &vampire_script()) && twins(KHAJIIT_VAMPIRE, KHAJIIT, &vampire_script()));
         assert!(!twins(KHAJIIT, NORD_VAMPIRE, &vampire_script()), "another index is no twin");
         assert!(!twins(KHAJIIT, KHAJIIT, &vampire_script()));
         assert_eq!(o.judge(ARIADNE, Row::SetRace, KHAJIIT_VAMPIRE, &vampire_script(), khajiit()), Verdict::Record { ended: None });
-        let turned = Facts { recorded_race: KHAJIIT_VAMPIRE, ..Facts::default() };
+        let turned = Facts { recorded_race: KHAJIIT_VAMPIRE, kind: true, ..Facts::default() };
         assert_eq!(o.judge(ARIADNE, Row::SetRace, KHAJIIT, &vampire_script(), turned), Verdict::Record { ended: None });
         // the recorded race folds; a stage's ability is the record's
         assert_eq!(o.judge(ARIADNE, Row::SetRace, KHAJIIT, &vampire_script(), khajiit()), Verdict::Fold);
@@ -352,7 +477,7 @@ mod tests {
         // rotfernRaceVampire 0x19d08: Playable, restricted to profile 1
         let mut o = PlayerOverlays::default();
         let script = [Named { form: 0x19d08, members: Vec::new() }];
-        let facts = Facts { recorded_race: 0x19d07, playable: true, restricted: true, ..Facts::default() };
+        let facts = Facts { recorded_race: 0x19d07, playable: true, restricted: true, kind: true, ..Facts::default() };
         assert!(matches!(o.judge(ARIADNE, Row::SetRace, 0x19d08, &script, facts), Verdict::Refuse(Code::Race, _)));
         assert_eq!(o.judge(ARIADNE, Row::SetRace, 0x19d08, &script, Facts { permitted: true, ..facts }), Verdict::Record { ended: None });
     }
@@ -362,7 +487,7 @@ mod tests {
         let mut o = PlayerOverlays::default();
         let rotfern = 0xff00_0000;
         let script = werewolf_script();
-        let nord = Facts { recorded_race: NORD, ..Facts::default() };
+        let nord = Facts { recorded_race: NORD, kind: true, ..Facts::default() };
         // the beast race: neither Playable nor a twin, an overlay
         assert_eq!(o.judge(rotfern, Row::SetRace, BEAST, &script, nord), Verdict::Overlay);
         assert_eq!(o.overlay(rotfern).map(|v| (v.race, v.base)), Some((BEAST, NORD)));
@@ -395,7 +520,7 @@ mod tests {
         let mut o = PlayerOverlays::default();
         let mut script = werewolf_script();
         script.extend(vampire_script());
-        let nord = Facts { recorded_race: NORD, ..Facts::default() };
+        let nord = Facts { recorded_race: NORD, kind: true, ..Facts::default() };
         assert_eq!(o.judge(ARIADNE, Row::SetRace, BEAST, &script, nord), Verdict::Overlay);
         assert_eq!(o.judge(ARIADNE, Row::AddSpell, ABILITY, &script, nord), Verdict::Overlay);
         // another race neither Playable nor a twin moves the overlay's race

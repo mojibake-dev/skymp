@@ -40,7 +40,8 @@ struct QuestStageMessage : public MessageBase<QuestStageMessage>
       .Serialize("word", word)
       .Serialize("acting", acting)
       .Serialize("served", served)
-      .Serialize("player", player);
+      .Serialize("player", player)
+      .Serialize("wordStages", wordStages);
   }
 
   uint32_t quest = 0; // the QUST's form id in the load order both ends share
@@ -60,4 +61,10 @@ struct QuestStageMessage : public MessageBase<QuestStageMessage>
   // login's list alone, the player-class quests while the quest scope acts,
   // whose scripts each seat runs for its own player; absent when none is
   std::optional<std::vector<uint32_t>> player;
+  // since SCHEMA_VERSION 42 (D-Q3 A): server to client, on a run word alone,
+  // the stages whose fragments the engine runs with it (stage 0 and the
+  // quest's start-up stages for a start, its shut-down stages for a stop),
+  // which a served word's receiver suppresses; absent when the record flags
+  // none
+  std::optional<std::vector<uint16_t>> wordStages;
 };

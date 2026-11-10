@@ -46,6 +46,7 @@
 #include <map>
 #include <optional>
 #include <random>
+#include <set>
 #include <spdlog/spdlog.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -7703,7 +7704,11 @@ void ActionListener::SendQuestStages(MpActor& actor)
   // quests recorded running ahead of the stages, so a stage's quest runs
   // when its stage applies, and those recorded stopped behind them; a quest
   // the world no longer shares (denied, the player class, off a list) or a
-  // seat's churn stays unsent, as its stages do
+  // seat's churn stays unsent, as its stages do. A quest recorded stopped
+  // whose stages the login replays is started ahead of them too (wire-rules
+  // quest_runs at_login): the seat would start it for its first stage
+  // anyway, and only a start word names the start-up stages whose fragments
+  // the seat must not run again, so each quest reads start, stages, stop
   const auto sendWord = [&](const FormDesc& quest, uint32_t word) {
     QuestStageMessage message;
     try {
@@ -7719,9 +7724,20 @@ void ActionListener::SendQuestStages(MpActor& actor)
     return true;
   };
   const auto [starts, stops] = partOne.QuestRunsAtLogin();
+  // a start of a quest the stops name too is a stopped quest's, for its
+  // stages
+  const std::set<FormDesc> stopping(stops.begin(), stops.end());
   size_t running = 0;
+  size_t staged = 0;
   for (const auto& quest : starts) {
-    running += sendWord(quest, 1) ? 1 : 0;
+    if (!sendWord(quest, 1)) {
+      continue;
+    }
+    if (stopping.count(quest) != 0) {
+      ++staged;
+    } else {
+      ++running;
+    }
   }
   size_t stages = 0;
   for (const auto& entry : partOne.SharedQuestsAtLogin()) {
@@ -7745,8 +7761,9 @@ void ActionListener::SendQuestStages(MpActor& actor)
                actor.GetFormId(), mode, list.shared.size(),
                mode == 0 ? "shared" : "denied", stages);
   spdlog::info("QuestStage: actor {:x} sent {} running and {} stopped "
-               "quest(s) around the stages after a login",
-               actor.GetFormId(), running, stopped);
+               "quest(s) around the stages after a login, {} of the stopped "
+               "started ahead of their stages (D-Q3 A)",
+               actor.GetFormId(), running, stopped, staged);
 }
 
 // thuum memo D56 A (Eli, 2026-10-28, "A for both"): the server cures the

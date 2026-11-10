@@ -1027,6 +1027,82 @@ TEST_CASE("Under questStoryInstances seat a quest a Story Manager quest node "
   Leave(p);
 }
 
+// thuum ADR-068 rung 5, D-Q3 A: a served replay's fragments are the world's
+// history and never run again on a seat. A stage served for a quest not
+// running on the seat makes the seat start the quest first, and that start
+// runs its start-up stages' fragments unless a start word named them, so the
+// login serves a quest recorded stopped whose stages it replays a start word
+// ahead of them, stamped as a running quest's is, and its stop behind them
+TEST_CASE("The login starts a quest recorded stopped ahead of the stages it "
+          "replays, served with its start-up stages, and stops it behind "
+          "them; a stopped quest with no stage and a Story Manager instance "
+          "get no start, and a running quest's replay is as before",
+          "[QuestStage][QuestRun][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kDeniedQuests);
+  // Embershard running with its stage 40; HeartwoodMill started, its plain
+  // stage 20 set, stopped; MS13 started, its stages 20 and 10 set, stopped;
+  // the letter quest started and stopped with no stage
+  ReportWord(p, 0, kEmbershard, 1);
+  Report(p, 0, kEmbershard, 40);
+  ReportWord(p, 0, kHeartwoodMill, 1);
+  Report(p, 0, kHeartwoodMill, 20);
+  ReportWord(p, 0, kHeartwoodMill, 2);
+  ReportWord(p, 0, kMs13, 1);
+  Report(p, 0, kMs13, 20);
+  Report(p, 0, kMs13, 10);
+  ReportWord(p, 0, kMs13, 2);
+  ReportWord(p, 0, kLetterQuest, 1);
+  ReportWord(p, 0, kLetterQuest, 2);
+  // A Lovely Letter, a Story Manager instance under "seat": its stage 10
+  // crosses, and a stopped run recorded before (an older build's) stays in
+  // the record, unsent
+  Report(p, 0, kLovelyLetter, 10);
+  auto runs = p.GetQuestRuns();
+  runs.push_back({ FormDesc::FromString("74a83:Skyrim.esm"), false, 2 });
+  REQUIRE(p.SetQuestRuns(runs));
+  // each word the login serves, as the watcher heard it relayed with its
+  // engine stages: the running quest's start, the two stopped quests' starts
+  // ahead of their stages, the three stops
+  const auto relayed = WordStagesTo(p, 1);
+  const std::vector<std::pair<uint32_t, uint32_t>> words{
+    { kEmbershard, 1 },    { kHeartwoodMill, 1 }, { kMs13, 1 },
+    { kHeartwoodMill, 2 }, { kMs13, 2 },          { kLetterQuest, 2 }
+  };
+  std::vector<Staged> served;
+  for (const auto& [quest, word] : words) {
+    const auto it =
+      std::find_if(relayed.begin(), relayed.end(), [&](const Staged& s) {
+        return std::get<0>(s) == quest && std::get<1>(s) == word;
+      });
+    REQUIRE(it != relayed.end());
+    served.push_back(*it);
+  }
+  // HeartwoodMill's start names its start-up stage 10
+  using J = nlohmann::json;
+  REQUIRE(std::get<2>(served[1]) == J::array({ 10 }));
+
+  QuestLog log;
+  p.Messages().clear();
+  p.SetUserActor(1, kWatcher);
+  REQUIRE(WordsTo(p, 1) ==
+          std::vector<Word>{
+            W(kEmbershard, 0, 1, 0, true), W(kHeartwoodMill, 0, 1, 0, true),
+            W(kMs13, 0, 1, 0, true), W(kEmbershard, 40, 0, 0, true),
+            W(kHeartwoodMill, 20, 0, 0, true), W(kMs13, 10, 0, 0, true),
+            W(kMs13, 20, 0, 0, true), W(kLovelyLetter, 10, 0, 0, true),
+            W(kHeartwoodMill, 0, 2, 0, true), W(kMs13, 0, 2, 0, true),
+            W(kLetterQuest, 0, 2, 0, true) });
+  REQUIRE(WordStagesTo(p, 1) == served);
+  REQUIRE(log.Count("QuestStage: actor ff000bd1 sent mode 1 with 1 denied "
+                    "quests, 5 stages after a login") == 1);
+  REQUIRE(log.Count("QuestStage: actor ff000bd1 sent 1 running and 3 stopped "
+                    "quest(s) around the stages after a login, 2 of the "
+                    "stopped started ahead of their stages (D-Q3 A)") == 1);
+  Leave(p);
+}
+
 TEST_CASE("The world's quest stages survive a restart through the journal's "
           "record, and a login after it replays them",
           "[QuestStage][espm]")

@@ -318,6 +318,17 @@ constexpr QuestRowName kQuestRows[] = { { "Quest", "SetCurrentStageID",
 constexpr std::pair<const char*, const char*> kGlobalSetRow{ "GlobalVariable",
                                                              "SetValue" };
 
+// thuum train 52, Fix 2 (the plan's section 2; ADR-068 decision 6, D-S2 B,
+// D-H1 B): the row whose call inside this seat's own player's effect may
+// place a local helper, PlaceAtMe (FunctionsDump.txt: `ObjectReference
+// PlaceAtMe(Form akFormToPlace, Int aiCount, Bool abForcePersist, Bool
+// abInitiallyDisabled)`, not latent), and the row whose call on a helper
+// lets it go, Delete
+constexpr std::pair<const char*, const char*> kPlaceAtMeRow{ "ObjectReference",
+                                                             "PlaceAtMe" };
+constexpr std::pair<const char*, const char*> kDeleteRow{ "ObjectReference",
+                                                          "Delete" };
+
 // at most 11 arguments (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
 // "native supports max 11")
 constexpr std::uint32_t kMaxArgs = 11;
@@ -357,6 +368,10 @@ struct RowInfo
   QuestRow quest = QuestRow::None;
   // PQ-3: GlobalVariable.SetValue's row (kGlobalSetRow)
   bool globalSet = false;
+  // train 52's Fix 2: PlaceAtMe's row (kPlaceAtMeRow) and Delete's
+  // (kDeleteRow)
+  bool placeAtMe = false;
+  bool deletes = false;
   // the declared return's kind (TypeInfo::GetUnmangledRawType)
   RE::BSScript::TypeInfo::RawType result =
     RE::BSScript::TypeInfo::RawType::kNone;
@@ -392,7 +407,10 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // figure, beside the call's own kind; a call whose self names the player
 // skipped, the figure absent here, alone; Game.GetPlayer's result swapped in
 // place of its " (local)", or a player's own global's SetValue skipped in
-// place of its self's count, PQ-3); no suffix,
+// place of its self's count, PQ-3); " (effect)" a PlaceAtMe on a self this
+// seat does not own, run inside this seat's own player's effect, its result
+// this seat's local helper (train 52's Fix 2, clause 1); " (helper)" a call
+// on such a helper, run here and crossing nowhere (clause 2); no suffix,
 // an owned self's state row, run here and counted, and since rung 3 touched
 // (QueueTouch: the script record's trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
@@ -412,6 +430,8 @@ enum CountKind : std::size_t
   kCountFollowed,
   kCountLook,
   kCountActing,
+  kCountEffect,
+  kCountHelper,
   kCountKinds
 };
 
@@ -426,7 +446,9 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
                                                     " (trap)",
                                                     " (followed)",
                                                     " (look)",
-                                                    " (acting)" };
+                                                    " (acting)",
+                                                    " (effect)",
+                                                    " (helper)" };
 
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
@@ -939,26 +961,162 @@ bool SkipsBody(const RowInfo& info)
 // slots as CountSelf keeps them: a slot's key is kSlotUsed | the self's form
 // id, 0 while free, every slot freed at the census's flush
 constexpr std::size_t kSkipLinesPerRow = 3;
-std::array<std::array<std::atomic<std::uint64_t>, kSkipLinesPerRow>, kRowCount>
-  g_skipLines{};
+using LineSlots = std::array<std::atomic<std::uint64_t>, kSkipLinesPerRow>;
+std::array<LineSlots, kRowCount> g_skipLines{};
+// train 52's Fix 2: the effect rule's lines, clause 1's placement and clause
+// 2's call on a helper, on the same slots and bound
+std::array<LineSlots, kRowCount> g_effectLines{};
+std::array<LineSlots, kRowCount> g_helperLines{};
 
-void LogSkipped(std::size_t row, std::uint32_t selfId)
+// true when the self takes a free slot of its row's window, its line due;
+// false for a self already logged this window or past the bound
+bool SelfLineDue(LineSlots& slots, std::uint32_t selfId)
 {
   const std::uint64_t key = kSlotUsed | selfId;
-  for (auto& slot : g_skipLines[row]) {
+  for (auto& slot : slots) {
     std::uint64_t seen = slot.load(std::memory_order_relaxed);
     if (seen == 0 &&
         slot.compare_exchange_strong(seen, key, std::memory_order_relaxed)) {
-      logger::info("[verb:scripts] {}.{} on {:x}: skipped, not hosted here "
-                   "({})",
-                   kRows[row].cls, kRows[row].fn, selfId,
-                   LeverName(g_nonOwnerSkip));
-      return;
+      return true;
     }
     if (seen == key) {
-      return;
+      return false;
     }
   }
+  return false;
+}
+
+// every slot freed at the census's flush
+void FreeLineSlots(LineSlots& slots)
+{
+  for (auto& slot : slots) {
+    slot.store(0, std::memory_order_relaxed);
+  }
+}
+
+void LogSkipped(std::size_t row, std::uint32_t selfId)
+{
+  if (SelfLineDue(g_skipLines[row], selfId)) {
+    logger::info("[verb:scripts] {}.{} on {:x}: skipped, not hosted here "
+                 "({})",
+                 kRows[row].cls, kRows[row].fn, selfId,
+                 LeverName(g_nonOwnerSkip));
+  }
+}
+
+// thuum train 52, Fix 2 (the plan's section 2.3; ADR-068 decision 6, "the
+// player's own (0x14, the player's effects, the player-alias quests) are the
+// player's seat's", and D-S2 B, one owner for consequences, cosmetic or
+// mechanism copies anywhere): the references a PlaceAtMe placed inside this
+// seat's own player's effect, each this seat's local helper. A helper is R3
+// (client-local, declared here): any tabled row on it runs here, counted
+// " (helper)", and crosses nowhere, and every seat that runs the effect
+// makes its own. A helper is only an activator, a static or a light (D-H1 B:
+// the census's helper kinds that simulate nothing, docs/private/
+// apocalypse-census-spells.tsv: ACTI 10, STAT 7, LIGH 2 of the 19 helper
+// spells; FURN and CONT out with every actor, item, explosion and hazard).
+// ActingScope.h's idiom: one mutex, the size in an atomic for the read with
+// no lock; game-free (the caller reads a reference's base), so a later
+// harness takes it whole. A helper holds while its reference's base is the
+// base recorded for it, so a recycled dynamic id never inherits it, and is
+// let go at a Delete row's call on it, kHelperMs after its placement, past
+// kMaxHelpers (the oldest first) and at a game load (ClearAtLoad)
+constexpr std::uint64_t kHelperMs = 600'000;
+constexpr std::size_t kMaxHelpers = 256;
+
+namespace Helpers {
+struct Entry
+{
+  std::uint32_t base = 0;
+  std::uint64_t createdMs = 0;
+};
+
+struct
+{
+  std::unordered_map<std::uint32_t, Entry> entries;
+  std::mutex m;
+  std::atomic<std::size_t> size{ 0 };
+} g_table;
+
+bool Any()
+{
+  return g_table.size.load(std::memory_order_relaxed) != 0;
+}
+
+void Add(std::uint32_t id, std::uint32_t base, std::uint64_t now)
+{
+  std::lock_guard<std::mutex> lock(g_table.m);
+  if (g_table.entries.count(id) == 0 &&
+      g_table.entries.size() >= kMaxHelpers) {
+    auto oldest = g_table.entries.begin();
+    for (auto it = g_table.entries.begin(); it != g_table.entries.end();
+         ++it) {
+      if (it->second.createdMs < oldest->second.createdMs) {
+        oldest = it;
+      }
+    }
+    g_table.entries.erase(oldest);
+  }
+  g_table.entries[id] = Entry{ base, now };
+  g_table.size.store(g_table.entries.size());
+}
+
+bool Is(std::uint32_t id, std::uint32_t base, std::uint64_t now)
+{
+  if (!Any()) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_table.m);
+  const auto it = g_table.entries.find(id);
+  return it != g_table.entries.end() && it->second.base == base &&
+    now < it->second.createdMs + kHelperMs;
+}
+
+void Drop(std::uint32_t id)
+{
+  std::lock_guard<std::mutex> lock(g_table.m);
+  g_table.entries.erase(id);
+  g_table.size.store(g_table.entries.size());
+}
+
+void Sweep(std::uint64_t now)
+{
+  if (!Any()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_table.m);
+  for (auto it = g_table.entries.begin(); it != g_table.entries.end();) {
+    if (now >= it->second.createdMs + kHelperMs) {
+      it = g_table.entries.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  g_table.size.store(g_table.entries.size());
+}
+
+void Clear()
+{
+  std::lock_guard<std::mutex> lock(g_table.m);
+  g_table.entries.clear();
+  g_table.size.store(0);
+}
+}
+
+// the effect rule's switch (scriptEffectHelpers, ClientSetting's; thuum
+// .claude/rules/native.md's kill switch), read once at kDataLoaded before
+// the replacement is installed and never written after; on unless false
+bool g_effectHelpers = true;
+
+// clause 2's test: a reference the table holds as a helper of its present
+// base; one atomic load while the table is empty (rule 9)
+bool IsHelper(const RE::TESObjectREFR& ref)
+{
+  if (!Helpers::Any()) {
+    return false;
+  }
+  const RE::TESBoundObject* base = ref.GetBaseObject();
+  return base && Helpers::Is(ref.formID, base->formID, NowMs());
 }
 
 // what the dispatch hook raises for one call's extent (PlatformCall.h's
@@ -984,6 +1142,9 @@ struct Marks
   bool line = false;
   std::string caller;
   std::string handler;
+  // train 52's Fix 2: a PlaceAtMe whose result is this seat's local helper,
+  // recorded once the original answers kCompleted (NoteHelper)
+  bool placeHelper = false;
 };
 
 // one call queued from its frame into this frame's batch (the shared shape's
@@ -1671,6 +1832,101 @@ void MarkQuestCause(std::size_t row, const RowInfo& info,
                 stack->stackID);
 }
 
+// train 52's Fix 2 (D-H1 B): a helper's base kind, an activator, a static or
+// a light (CommonLibSSE-NG include/RE/F/FormTypes.h:164, :174 and :171), as
+// the lines name it; null for every other form type
+const char* HelperKindOf(RE::FormType type)
+{
+  switch (type) {
+    case RE::FormType::Activator:
+      return "ACTI";
+    case RE::FormType::Static:
+      return "STAT";
+    case RE::FormType::Light:
+      return "LIGH";
+    default:
+      return nullptr;
+  }
+}
+
+// a PlaceAtMe's placed base, its first argument (akFormToPlace) read through
+// the engine's accessor with the frame's page (found here when the subject's
+// read did not need it), when it is a helper's kind; nothing for a None, a
+// form of any other kind, or a frame whose page cannot be found
+struct HelperBase
+{
+  std::uint32_t id = 0;
+  const char* kind = nullptr;
+};
+
+std::optional<HelperBase> HelperBaseOfArg0(const RowInfo& info,
+                                           const RE::BSScript::StackFrame* top,
+                                           std::uint32_t page)
+{
+  if (info.params == 0) {
+    return std::nullopt;
+  }
+  if (page == kNoPage) {
+    page = top->GetPageForFrame();
+  }
+  if (page == kNoPage) {
+    return std::nullopt;
+  }
+  const RE::BSScript::Object* object =
+    ObjectOf(top->GetStackFrameVariable(0, page));
+  if (!object) {
+    return std::nullopt;
+  }
+  const RE::VMHandle handle = object->GetHandle();
+  const std::uint32_t id = FormIdOfHandle(handle);
+  const RE::TESForm* form = IsPlainFormHandle(handle) && id != 0
+    ? RE::TESForm::LookupByID(id)
+    : nullptr;
+  const char* kind = form ? HelperKindOf(form->GetFormType()) : nullptr;
+  if (!kind) {
+    return std::nullopt;
+  }
+  return HelperBase{ id, kind };
+}
+
+// clause 1's test (the plan's section 2.3, creation inside the player's
+// effect), cheapest first: the placed base a helper's kind, then the stack's
+// root frame's self an active effect this seat runs for its own player, its
+// caster or its target (Frida::PlayersEffect, the Papyrus gate's own test,
+// FridaHooks.cpp OnSendEventEnter; RootFrameOf's walk). Asked only for a
+// PlaceAtMe the owner test refused (rule 9). HYPOTHESIS H-EF1: an effect
+// event's stack roots at the ActiveMagicEffect script's handler with the
+// effect's object as self, whose handle HandleIsType(142) answers true
+// (x-effect-helper v1's line for WB_CrackleNew_Script.OnEffectStart reads it)
+struct EffectPlacement
+{
+  HelperBase base;
+  Frida::PlayersEffectRole role = Frida::PlayersEffectRole::kNone;
+  const RE::BSScript::StackFrame* root = nullptr;
+};
+
+std::optional<EffectPlacement> EffectPlacementOf(
+  const RowInfo& info, const RE::BSScript::Stack* stack,
+  const RE::BSScript::StackFrame* top, std::uint32_t page,
+  RE::BSScript::IObjectHandlePolicy* policy)
+{
+  const std::optional<HelperBase> base = HelperBaseOfArg0(info, top, page);
+  if (!base || !policy) {
+    return std::nullopt;
+  }
+  const RE::BSScript::StackFrame* root = RootFrameOf(stack);
+  const RE::BSScript::Object* object = root ? ObjectOf(root->self) : nullptr;
+  if (!object) {
+    return std::nullopt;
+  }
+  const Frida::PlayersEffectRole role =
+    Frida::PlayersEffect(policy, object->GetHandle());
+  if (role == Frida::PlayersEffectRole::kNone) {
+    return std::nullopt;
+  }
+  return EffectPlacement{ *base, role, root };
+}
+
 // the seam's judgment of one dispatch, 6.2's order (rule 9: the cheapest
 // test first). The body runs unless the lever skips it (marks.skip)
 Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
@@ -1872,6 +2128,33 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     Count(row, kCountLocal);
     return marks;
   }
+  // train 52's Fix 2, clause 2 (the plan's section 2.3: a helper is its
+  // creator's): a non-actor at or above 0xff000000 that this seat's own
+  // player's effect placed (Helpers, above) is this seat's local helper, so
+  // any tabled row on it runs here, counted " (helper)", and crosses
+  // nowhere: never batched, never touched, never relayed. An action row on
+  // one runs under the script action's mark for its extent, as a trap family
+  // reference's does (OnFamilyCall), so the engine-level animation hooks
+  // leave it too and nothing reports it. A PlaceAtMe on a helper of a
+  // helper's base makes another helper (WB_CrackleNew_Script's TheShooter,
+  // placed at TheBox); a Delete on one lets it go. Asked only for a
+  // non-actor at or above 0xff000000 (where the players' figures and what
+  // they place begin), one atomic load while the table is empty (rule 9)
+  if (!isActor && ref->formID >= 0xff000000 && IsHelper(*ref)) {
+    Count(row, kCountHelper);
+    if (SelfLineDue(g_helperLines[row], ref->formID)) {
+      logger::info("[verb:scripts] {}.{} on {:x}: a helper this seat's own "
+                   "player's effect placed, run here and kept local (R3)",
+                   native.cls, native.fn, ref->formID);
+    }
+    if (info.deletes) {
+      Helpers::Drop(ref->formID);
+    } else if (info.placeAtMe && HelperBaseOfArg0(info, top, page)) {
+      marks.placeHelper = true;
+    }
+    marks.action = native.kind == NativeKind::Action;
+    return marks;
+  }
   // (d) the owner, a record row's by OwnedForRecord (rung 4). Not owned:
   // counted, and the body runs (an action row's jump, the pillar's
   // StartState0N from a guest's OnCellLoad, is wanted everywhere), unless
@@ -1887,6 +2170,41 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     ? OwnedForRecord(ref, isActor)
     : OwnedHere(ref, isActor);
   if (!owned) {
+    // train 52's Fix 2, clause 1 (the plan's section 2.3: creation inside
+    // the player's effect; the class b-second-hand reds on, second-hand.md:
+    // WB_CrackleNew_Script's OnEffectStart places TheBox at its target, c2's
+    // figure, which no seat hosts, so the lever skipped it and RemoteCast had
+    // no source): a PlaceAtMe of a helper's base on a stack whose root is an
+    // active effect this seat runs for its own player, its caster or its
+    // target, runs its body whatever its subject's owner, and the reference
+    // it returns is this seat's local helper (marks.placeHelper, NoteHelper),
+    // counted " (effect)". Nothing crosses (R3): a helper is never batched,
+    // and the consequence that matters, the proc's hit, has its own channel
+    // (the caster's OnHit, second-hand's claim). Everything else on another
+    // owner's object keeps the judgment below: a PlaceAtMe of an NPC, an
+    // item, a container, furniture, a door, an explosion or a hazard, and
+    // every other row
+    if (info.placeAtMe && g_effectHelpers) {
+      if (const auto placed =
+            EffectPlacementOf(info, stack, top, page, policy)) {
+        marks.placeHelper = true;
+        Count(row, kCountEffect);
+        if (SelfLineDue(g_effectLines[row], ref->formID)) {
+          std::string script;
+          std::string function;
+          NameCaller(placed->root, script, function);
+          logger::info(
+            "[verb:scripts] {}.{} on {:x}: run inside this seat's own "
+            "player's effect ({}.{}, the player its {}), its helper {:x} "
+            "({}) kept local here (ADR-068 decision 6, R3)",
+            native.cls, native.fn, ref->formID, script, function,
+            placed->role == Frida::PlayersEffectRole::kCaster ? "caster"
+                                                              : "target",
+            placed->base.id, placed->base.kind);
+        }
+        return marks;
+      }
+    }
     if (native.kind == NativeKind::State && SkipsBody(info)) {
       marks.skip = true;
       marks.result = info.result;
@@ -1986,6 +2304,11 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
   }
   info.globalSet = _stricmp(kRows[row].cls, kGlobalSetRow.first) == 0 &&
     _stricmp(kRows[row].fn, kGlobalSetRow.second) == 0;
+  // train 52's Fix 2: the effect rule's two rows, by name
+  info.placeAtMe = _stricmp(kRows[row].cls, kPlaceAtMeRow.first) == 0 &&
+    _stricmp(kRows[row].fn, kPlaceAtMeRow.second) == 0;
+  info.deletes = _stricmp(kRows[row].cls, kDeleteRow.first) == 0 &&
+    _stricmp(kRows[row].fn, kDeleteRow.second) == 0;
   // D-W2 A's look rows (the plan's section 7.2(a)): the action rows, the two
   // motion rows among kTrapRows, and the look-only rows
   info.look = kRows[row].kind == NativeKind::Action ||
@@ -2033,56 +2356,90 @@ const char* CrossingNote(const RowInfo& info)
   return info.batchedState ? ", batched" : "";
 }
 
-// the lever's value: "scriptNonOwnerSkip" in skymp5-client-settings.txt,
-// found in the platform's plugin folders (SkyrimPlatform.ini's
-// PluginFolders, Settings::GetPluginFolders: the folders SkyrimPlatform.cpp
-// loads every "-settings.txt" from, a later folder's file winning as it
-// does there) and read with the same reader (Viet::ReadFileIntoString), so
-// the lab sets it as it sets cellHost and npcPuppet (relaunch {files: [{json:
-// Data/Platform/Plugins/skymp5-client-settings.txt, key: scriptNonOwnerSkip,
-// value: nonLatent}]}). "nonLatent" skips a non-latent body, "recorded" a
-// latent record row's too (rung 4); "none", an absent key or file, an
-// unreadable file or any other value leaves the skip off
-NonOwnerSkip ReadNonOwnerSkip()
+// one key of skymp5-client-settings.txt, found in the platform's plugin
+// folders (SkyrimPlatform.ini's PluginFolders, Settings::GetPluginFolders:
+// the folders SkyrimPlatform.cpp loads every "-settings.txt" from, a later
+// folder's file winning as it does there) and read with the same reader
+// (Viet::ReadFileIntoString), so the lab sets each key as it sets cellHost
+// and npcPuppet (relaunch {files: [{json:
+// Data/Platform/Plugins/skymp5-client-settings.txt, key, value}]}): the
+// winning file's value, and nothing when that file lacks the key, is no JSON
+// object or cannot be read, or no file exists. One reader for the seam's
+// switches (train 52 factored it out of the lever's): scriptNonOwnerSkip,
+// scriptEffectHelpers and scriptLeveledLandings
+struct ClientSettingRead
 {
-  NonOwnerSkip skip = NonOwnerSkip::None;
+  std::optional<nlohmann::json> value;
+  // the winning file, empty when none exists
+  std::string path;
+};
+
+ClientSettingRead ClientSetting(const char* key)
+{
+  ClientSettingRead read;
   try {
+    const std::string name(key);
     const auto folders = Settings::GetPlatformSettings()->GetPluginFolders();
     for (const auto& folder : *folders) {
       const auto path = folder / "skymp5-client-settings.txt";
       if (!std::filesystem::exists(path)) {
         continue;
       }
-      skip = NonOwnerSkip::None;
+      read.value.reset();
+      read.path = path.string();
       const auto settings =
         nlohmann::json::parse(Viet::ReadFileIntoString(path), nullptr, false);
       if (!settings.is_object()) {
-        logger::warn("[verb:scripts] {} is no JSON object; "
-                     "scriptNonOwnerSkip read as none",
-                     path.string());
+        logger::warn("[verb:scripts] {} is no JSON object; {} read as unset",
+                     read.path, name);
         continue;
       }
-      const auto it = settings.find("scriptNonOwnerSkip");
-      if (it == settings.end()) {
-        continue;
-      }
-      const std::string value = it->is_string() ? it->get<std::string>() : "";
-      if (value == "nonLatent") {
-        skip = NonOwnerSkip::NonLatent;
-      } else if (value == "recorded") {
-        skip = NonOwnerSkip::Recorded;
-      } else if (value != "none") {
-        logger::warn("[verb:scripts] scriptNonOwnerSkip in {} is not none, "
-                     "nonLatent or recorded; read as none",
-                     path.string());
+      const auto it = settings.find(name);
+      if (it != settings.end()) {
+        read.value = *it;
       }
     }
   } catch (const std::exception& e) {
-    logger::warn("[verb:scripts] scriptNonOwnerSkip unread ({}); none",
+    logger::warn("[verb:scripts] {} unread ({}); read as unset", key,
                  e.what());
+    return ClientSettingRead{};
+  }
+  return read;
+}
+
+// a switch on unless the winning file sets it false, the client's own
+// settings' rule (`settings[key] !== false`)
+bool ClientSwitchOn(const char* key)
+{
+  const ClientSettingRead read = ClientSetting(key);
+  return !(read.value && read.value->is_boolean() && !read.value->get<bool>());
+}
+
+// the lever's value: "scriptNonOwnerSkip" (ClientSetting's; relaunch {files:
+// [{json: Data/Platform/Plugins/skymp5-client-settings.txt, key:
+// scriptNonOwnerSkip, value: nonLatent}]}). "nonLatent" skips a non-latent
+// body, "recorded" a latent record row's too (rung 4); "none", an absent key
+// or file, an unreadable file or any other value leaves the skip off
+NonOwnerSkip ReadNonOwnerSkip()
+{
+  const ClientSettingRead read = ClientSetting("scriptNonOwnerSkip");
+  if (!read.value) {
     return NonOwnerSkip::None;
   }
-  return skip;
+  const std::string value =
+    read.value->is_string() ? read.value->get<std::string>() : "";
+  if (value == "nonLatent") {
+    return NonOwnerSkip::NonLatent;
+  }
+  if (value == "recorded") {
+    return NonOwnerSkip::Recorded;
+  }
+  if (value != "none") {
+    logger::warn("[verb:scripts] scriptNonOwnerSkip in {} is not none, "
+                 "nonLatent or recorded; read as none",
+                 read.path);
+  }
+  return NonOwnerSkip::None;
 }
 
 // the census, every kFlushMs from the update's Tick: each row's counts read
@@ -2145,10 +2502,11 @@ void FlushCensus(uint64_t now)
       rows.emplace_back(name + " on others", others);
       total += others;
     }
-    // the next window logs its own first skipped selves (LogSkipped)
-    for (auto& slot : g_skipLines[row]) {
-      slot.store(0, std::memory_order_relaxed);
-    }
+    // the next window logs its own first skipped selves (LogSkipped), and
+    // the effect rule's first placements and helper calls (train 52's Fix 2)
+    FreeLineSlots(g_skipLines[row]);
+    FreeLineSlots(g_effectLines[row]);
+    FreeLineSlots(g_helperLines[row]);
   }
   // rung 5: the acting scope's swaps on natives no row holds, one row
   const uint32_t untabled = g_actingUntabled.exchange(0);
@@ -2292,6 +2650,30 @@ void SwapReturn(RE::BSScript::Stack& stack, const Marks& marks)
   }
 }
 
+// train 52's Fix 2: a placeHelper call's result, the reference the original
+// placed, read from the stack's returnValue once it answered kCompleted
+// (Stack.h:79, SwapReturn's contract above; HYPOTHESIS H-EF2, x-effect-
+// helper v1's census of the helper's own calls reads it) through the VM's
+// handle policy (RefOfObject), and recorded as this seat's local helper with
+// its base. A None result (the engine placed nothing), an actor, or an id
+// below 0xff000000 records nothing; of a PlaceAtMe with aiCount above 1 the
+// result, the last reference placed, alone
+void NoteHelper(const RE::BSScript::Stack& stack)
+{
+  auto* vm = VM::GetSingleton();
+  const RE::TESObjectREFR* ref = RefOfObject(
+    vm ? vm->GetObjectHandlePolicy() : nullptr, ObjectOf(stack.returnValue));
+  if (!ref || ref->formID < 0xff000000 ||
+      ref->GetFormType() == RE::FormType::ActorCharacter) {
+    return;
+  }
+  const RE::TESBoundObject* base = ref->GetBaseObject();
+  if (!base) {
+    return;
+  }
+  Helpers::Add(ref->formID, base->formID, NowMs());
+}
+
 // The replacement (the QuestStageSink 53987 shape, through
 // HookHandler::Replace): what the attach did at the call's entry, then the
 // body through Gum's trampoline in every case the judgment says run, the
@@ -2345,17 +2727,31 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
       result == RE::BSScript::IFunction::CallResult::kCompleted && stack) {
     SwapReturn(*stack.get(), marks);
   }
+  // train 52's Fix 2: a helper's PlaceAtMe placed its reference by now
+  if (marks.placeHelper &&
+      result == RE::BSScript::IFunction::CallResult::kCompleted && stack) {
+    NoteHelper(*stack.get());
+  }
   return result;
 }
 }
 
 void ScriptNatives::Tick()
 {
-  FlushCensus(NowMs());
+  const uint64_t now = NowMs();
+  FlushCensus(now);
   // rung 5: the acting scope's expired entries dropped once a frame, and
   // D-Q4 C's marks, arms and joined stacks
   ActingScope::Sweep();
   QuestCause::Sweep();
+  // train 52's Fix 2: the helpers past their life
+  Helpers::Sweep(now);
+}
+
+void ScriptNatives::ClearAtLoad()
+{
+  // train 52's Fix 2: a helper's id names the old world's reference
+  Helpers::Clear();
 }
 
 void ScriptNatives::FlushAheadOnUpdate()
@@ -2500,6 +2896,8 @@ void ScriptNatives::InstallHooks()
     WarnUnbound("acting quest", questRow.cls, questRow.fn);
   }
   WarnUnbound("player global", kGlobalSetRow.first, kGlobalSetRow.second);
+  WarnUnbound("effect helper", kPlaceAtMeRow.first, kPlaceAtMeRow.second);
+  WarnUnbound("helper delete", kDeleteRow.first, kDeleteRow.second);
   // thuum ADR-068 D-S3: the trap family the gate and this seam read, named
   // once per process beside the table it extends (TrapFamily.h)
   TrapFamily::LogReady();
@@ -2528,6 +2926,18 @@ void ScriptNatives::InstallHooks()
   }
   logger::info("[verb:scripts] scriptNonOwnerSkip {}: {}",
                LeverName(g_nonOwnerSkip), skipping);
+  // train 52's Fix 2: the effect rule's switch, read beside the lever
+  g_effectHelpers = ClientSwitchOn("scriptEffectHelpers");
+  if (g_effectHelpers) {
+    logger::info("[verb:scripts] scriptEffectHelpers on: a PlaceAtMe of an "
+                 "activator, a static or a light inside this seat's own "
+                 "player's effect runs whatever its subject's owner, and what "
+                 "it places is this seat's local helper");
+  } else {
+    logger::info("[verb:scripts] scriptEffectHelpers off: a PlaceAtMe inside "
+                 "this seat's own player's effect is judged by its subject's "
+                 "owner, as every call is");
+  }
   g_tableReady.store(true, std::memory_order_release);
   // the dispatch replaced, once the table's map and the lever are complete,
   // so it never reads either being written

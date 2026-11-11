@@ -206,6 +206,9 @@ declare module "skyrimPlatform" {
     // the seam's census every 30 s, one row per counted kind of call: "Class.Name
     // (platform)", " (not hosted)", " (local)", " (unrelayable)", " (unresolved)",
     // " (frame mismatch)", " (skipped)" (the scriptNonOwnerSkip lever, off by default),
+    // " (effect)" (train 52: a PlaceAtMe on a self this seat does not own, run inside
+    // this seat's own player's effect, its result a local helper) and " (helper)" (a
+    // call on such a helper, run here and crossing nowhere),
     // the bare "Class.Name" (an owned self's state row, run here) and "Class.Name on
     // <hex id>" or " on others" (an everyone row's selves); a call in scriptCalls is
     // never counted here. No game call in its handler.

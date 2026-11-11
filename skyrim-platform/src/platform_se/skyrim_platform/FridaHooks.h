@@ -1,10 +1,15 @@
 #pragma once
 
+#include <RE/B/BSCoreTypes.h>
 #include <cstdint>
 #include <string>
 
 namespace RE {
 class Actor;
+}
+
+namespace RE::BSScript {
+struct IObjectHandlePolicy;
 }
 
 namespace Frida {
@@ -50,6 +55,28 @@ void SetTriggerPresserRule(bool on);
 // the presser rule's switch as last set: ADR-068 D-W2 A's look acts only
 // with it on (ScriptNatives.cpp OnFamilyCall)
 bool TriggerPresserRuleOn();
+
+// thuum docs/DECISIONS.md ADR-068 decision 6 ("the player's own (0x14, the
+// player's effects, the player-alias quests) are the player's seat's"): this
+// seat's own player in the active effect a VM handle names, its target or
+// its caster (the gate's own order, the target first, so an effect the
+// player cast on itself answers kTarget), or neither, kNone also for a
+// handle that is no active effect's
+// (CommonLibSSE-NG include/RE/A/ActiveEffect.h:31, VMTYPEID 142;
+// IObjectHandlePolicy.h:20 and :27). One test, two callers: the Papyrus
+// event gate admits such an effect's events (OnSendEventEnter, ADR-031's
+// push), and the seam lets such an effect's script place its helpers
+// (ScriptNatives.cpp, thuum train 52's Fix 2), so an effect script places
+// wherever the gate lets it run. Two policy calls and a handle read; no lock
+// of this file's
+enum class PlayersEffectRole : std::uint8_t
+{
+  kNone,
+  kCaster,
+  kTarget
+};
+PlayersEffectRole PlayersEffect(RE::BSScript::IObjectHandlePolicy* policy,
+                                RE::VMHandle handle);
 
 // thuum docs/DECISIONS.md ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's
 // held entries (an enter to a scripted world trigger it blanked while the

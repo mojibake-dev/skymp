@@ -889,6 +889,36 @@ std::string Frida::ReplayHeldEntries()
          "\"reason\":\"threw\"}";
 }
 
+// the gate's own test of an effect event's handle (OnSendEventEnter below,
+// ADR-031's push), moved here so the seam asks it too (FridaHooks.h; thuum
+// train 52's Fix 2): ActiveEffect's VM type id, its caster and its target
+// (CommonLibSSE-NG include/RE/A/ActiveEffect.h:31, :100 and :104). The
+// target is the actor's MagicTarget base (+0xA0 on 1.6.1170, measured), so
+// it is compared with the player's AsMagicTarget (include/RE/A/Actor.h:720),
+// never through ActiveEffect::GetTargetActor, whose reinterpret_cast skips
+// that base; the caster is a handle (GetCasterActor,
+// src/RE/A/ActiveEffect.cpp:25-28). The target first, as the gate tested it
+Frida::PlayersEffectRole Frida::PlayersEffect(
+  RE::BSScript::IObjectHandlePolicy* policy, RE::VMHandle handle)
+{
+  if (!policy || !policy->HandleIsType(RE::ActiveEffect::VMTYPEID, handle)) {
+    return PlayersEffectRole::kNone;
+  }
+  auto effect = static_cast<RE::ActiveEffect*>(
+    policy->GetObjectForHandle(RE::ActiveEffect::VMTYPEID, handle));
+  auto player = RE::PlayerCharacter::GetSingleton();
+  if (!effect || !player) {
+    return PlayersEffectRole::kNone;
+  }
+  if (effect->target == player->AsMagicTarget()) {
+    return PlayersEffectRole::kTarget;
+  }
+  if (effect->GetCasterActor().get() == player) {
+    return PlayersEffectRole::kCaster;
+  }
+  return PlayersEffectRole::kNone;
+}
+
 /**
  * Send Event hook
  */
@@ -1327,24 +1357,15 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // player in the player's own game; cast, it throws the target's figure
   // in the shouter's game from the shouter's position, as the target's own
   // game throws it (the movement relay stands down while the figure is
-  // down). ActiveEffect's VM type id, its caster and its target:
-  // CommonLibSSE-NG include/RE/A/ActiveEffect.h:31, :100 and :104. The
-  // target is the actor's MagicTarget base (+0xA0 on 1.6.1170, measured),
-  // so it is compared with the player's AsMagicTarget
-  // (include/RE/A/Actor.h:720), never through ActiveEffect::GetTargetActor,
-  // whose reinterpret_cast skips that base; the caster is a handle
-  // (GetCasterActor, src/RE/A/ActiveEffect.cpp:25-28). An effect between two
-  // figures stays blanked (A1's bystanders, docs/apocalypse-options.md 6).
+  // down). The test is Frida::PlayersEffect's (above: the player the
+  // effect's target or its caster), which the seam asks too, so an effect's
+  // script places its helpers wherever this gate lets it run (thuum train
+  // 52's Fix 2). An effect between two figures stays blanked (A1's
+  // bystanders, docs/apocalypse-options.md 6).
   if (blockEvents && policy &&
-      policy->HandleIsType(RE::ActiveEffect::VMTYPEID, handle)) {
-    auto effect = static_cast<RE::ActiveEffect*>(
-      policy->GetObjectForHandle(RE::ActiveEffect::VMTYPEID, handle));
-    auto player = RE::PlayerCharacter::GetSingleton();
-    if (effect && player &&
-        (effect->target == player->AsMagicTarget() ||
-         effect->GetCasterActor().get() == player)) {
-      blockEvents = false;
-    }
+      Frida::PlayersEffect(policy, handle) !=
+        Frida::PlayersEffectRole::kNone) {
+    blockEvents = false;
   }
 
   // thuum docs/DECISIONS.md ADR-068 rung 5's full build (Eli's D-Q2 word,

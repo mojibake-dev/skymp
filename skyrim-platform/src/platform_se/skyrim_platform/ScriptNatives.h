@@ -45,8 +45,14 @@ namespace ScriptNatives {
 void InstallHooks();
 // every frame from the platform's OnUpdate: the census flushed on time (a
 // quiet seat emits its last window; the review's medium finding), and the
-// acting scope's expired entries dropped (rung 5)
+// acting scope's expired entries dropped (rung 5), and since train 52 the
+// effect rule's expired helpers
 void Tick();
+// at a game load (PapyrusTESModPlatform.cpp's TESLoadGameEvent sink, beside
+// the other tables that name the old world): the seam's own such tables
+// cleared, train 52's effect helpers (Fix 2: a helper's id names the old
+// world's reference). No game call; threadsafe
+void ClearAtLoad();
 // thuum docs/verbs/npc-fate.md (playtest 48): this frame's batch, when it
 // holds a call, raised on the update's task queue now, ahead of the task the
 // caller adds next: a death event's (EventHandler.cpp), so the script's call

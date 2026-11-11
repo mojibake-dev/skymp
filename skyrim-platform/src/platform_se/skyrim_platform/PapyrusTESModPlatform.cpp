@@ -8,6 +8,7 @@
 #include "ItemMenuRefresh.h"
 #include "NullPointerException.h"
 #include "QuestCause.h"
+#include "ScriptNatives.h"
 #include "ScriptState.h"
 #include "TrapFamily.h"
 
@@ -144,6 +145,12 @@ private:
     // keep the roots they marked whichever comes first
     try {
       QuestCause::ClearStacks();
+    } catch (...) {
+    }
+    // and the seam's own (ScriptNatives.h): train 52's effect helpers, whose
+    // ids name the old world's references
+    try {
+      ScriptNatives::ClearAtLoad();
     } catch (...) {
     }
     return RE::BSEventNotifyControl::kContinue;

@@ -7,7 +7,7 @@ import { ObjectAnimationService } from "./objectAnimationService";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 
 // TODO: refactor worldViewMisc into service
-import { remoteIdToLocalId } from '../../view/worldViewMisc';
+import { gameFileIdOfLongId, remoteIdToLocalId, snippetIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from "../../logging";
 import { WorldView } from "../../view/worldView";
 
@@ -43,6 +43,13 @@ const LOOK_ROWS = new Set<string>([
 // here is dropped; and the detection's sound level at most SoundTrap's (100)
 const LOOK_ONLY_FNS = new Set<string>(["setmotiontype", "applyhavokimpulse", "createdetectionevent"]);
 const DETECTION_LEVEL_MAX = 100;
+// thuum train 52, 4.2: the line of a long id run on (or passed as) its
+// game-file reference, the first three a minute for each long id, so a
+// login's serve of many actors' standings crowds out no one actor's relay;
+// the table starts over past its cap
+const GAME_FILE_LINES = 3;
+const GAME_FILE_LINE_WINDOW_MS = 60_000;
+const GAME_FILE_SAID_MAX = 256;
 
 export class SpSnippetService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
@@ -292,7 +299,8 @@ export class SpSnippetService extends ClientListener {
       if (functionLowerCase === "setdisplayname") {
         let newName = snippet.arguments[0];
         if (typeof newName === "string") {
-          const selfId = remoteIdToLocalId(snippet.selfId);
+          // the self runMethod runs on (its line is runMethod's)
+          const selfId = snippetIdToLocalId(snippet.selfId);
           const self = this.sp.ObjectReference.from(this.sp.Game.getFormEx(selfId));
 
           const replaceValue = self?.getBaseObject()?.getName();
@@ -326,7 +334,7 @@ export class SpSnippetService extends ClientListener {
 
     if (classLowerCase === "skymphacks") {
       if (functionLowerCase === "additem" || functionLowerCase === "removeitem") {
-        const form = this.sp.Form.from(this.deserializeArg(snippet.arguments[0]));
+        const form = this.sp.Form.from(this.deserializeArg(snippet.arguments[0], snippet));
         if (form === null) {
           logError(this, "Unable to find form with id " + snippet.arguments[0].formId.toString(16));
           return;
@@ -369,14 +377,14 @@ export class SpSnippetService extends ClientListener {
     return snippet.selfId ? this.runMethod(snippet) : this.runStatic(snippet);
   };
 
-  private deserializeArg(arg: any) {
+  private deserializeArg(arg: any, snippet: SpSnippetMessage) {
     // a None (null on the wire, SnippetArg's Option: a relayed script call's
     // None form) passes as null, never as a form to look up
     if (arg === null) {
       return null;
     }
     if (typeof arg === "object") {
-      const formId = remoteIdToLocalId(arg.formId);
+      const formId = this.localIdOf(snippet, arg.formId, true);
       const form = this.sp.Game.getFormEx(formId);
       let cl = this.spAny[arg.type];
       if (!cl) {
@@ -397,7 +405,7 @@ export class SpSnippetService extends ClientListener {
   };
 
   private async runMethod(snippet: SpSnippetMessage): Promise<unknown> {
-    const selfId = remoteIdToLocalId(snippet.selfId);
+    const selfId = this.localIdOf(snippet, snippet.selfId, false);
     const self = this.sp.Game.getFormEx(selfId);
     if (!self)
       throw new Error(
@@ -424,9 +432,42 @@ export class SpSnippetService extends ClientListener {
     const f = selfCasted[snippet.function];
     return await f.apply(
       selfCasted,
-      snippet.arguments.map((arg) => this.deserializeArg(arg)),
+      snippet.arguments.map((arg) => this.deserializeArg(arg, snippet)),
     );
   };
+
+  // thuum train 52, 4.2: a snippet's id as the local form id it runs on (its
+  // self) or passes (an object argument), snippetIdToLocalId's answer; a long
+  // id that no view holds runs on the game-file reference it names, and says
+  // so, the first three a minute for each long id
+  private localIdOf(snippet: SpSnippetMessage, remoteId: number, argument: boolean): number {
+    const localId = snippetIdToLocalId(remoteId);
+    if (localId !== 0 && localId === gameFileIdOfLongId(remoteId)) {
+      this.sayGameFileReference(snippet, remoteId, localId, argument);
+    }
+    return localId;
+  }
+
+  private sayGameFileReference(snippet: SpSnippetMessage, longId: number, localId: number, argument: boolean): void {
+    const now = Date.now();
+    const said = this.gameFileSaid.get(longId);
+    if (said !== undefined && now - said.since < GAME_FILE_LINE_WINDOW_MS) {
+      if (said.count >= GAME_FILE_LINES) {
+        return;
+      }
+      said.count++;
+    } else {
+      if (this.gameFileSaid.size >= GAME_FILE_SAID_MAX) {
+        this.gameFileSaid.clear();
+      }
+      this.gameFileSaid.set(longId, { since: now, count: 1 });
+    }
+    const head = `snippet ${snippet.class}.${snippet.function}`;
+    const view = `no view holds its long id ${longId.toString(16)}`;
+    logLab("verb:scripts", argument
+      ? `${head} with ${localId.toString(16)}: ${view}, passed the game-file reference`
+      : `${head} on ${localId.toString(16)}: ${view}, run on the game-file reference`);
+  }
 
   // A global Skyrim Platform does not bind (its own TESModPlatform natives are
   // not in the dump its bindings come from) is called by name through
@@ -435,7 +476,7 @@ export class SpSnippetService extends ClientListener {
   // b-stagger 20261011-084217 found the snippet failing without it)
   private async runStatic(snippet: SpSnippetMessage): Promise<unknown> {
     const papyrusClass = this.spAny[snippet.class];
-    const args = snippet.arguments.map((arg) => this.deserializeArg(arg));
+    const args = snippet.arguments.map((arg) => this.deserializeArg(arg, snippet));
     const f = papyrusClass ? papyrusClass[snippet.function] : undefined;
     if (typeof f === "function") {
       return await f.apply(papyrusClass, args);
@@ -446,4 +487,6 @@ export class SpSnippetService extends ClientListener {
   private spAny: Record<string, any>;
   // the last seq taken per subject (takeSeq), this connection's
   private readonly lastSeq = new Map<number, number>();
+  // 4.2's line per long id: its window's start and the lines said in it
+  private readonly gameFileSaid = new Map<number, { since: number; count: number }>();
 };

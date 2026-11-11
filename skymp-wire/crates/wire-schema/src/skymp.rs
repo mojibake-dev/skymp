@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bounded::{String, Vec};
 use crate::cap;
+use crate::ItemDelta;
 pub use crate::shape::{ConsoleArg, MsgT, SnippetArg, SnippetObject, SnippetValue};
 
 /// x, y, z in engine units, or Euler angles in degrees, as SkyMP sends them.
@@ -2399,9 +2400,15 @@ wire_struct! {
     /// value is never judged (ADR-062's amendment). Reason codes:
     /// `E_VAL_RANGE` (an empty class or function, a subject or an object
     /// argument the server names, 0xff000000 and up, or an object id past 32
-    /// bits), `E_VAL_NONFINITE`; the server's rule logs `E_SCRIPTCALL_ROW`,
-    /// `E_SCRIPTCALL_ARGS`, `E_SCRIPTCALL_OWNER` and `E_SCRIPTCALL_RATE` by
-    /// name.
+    /// bits; since SCHEMA_VERSION 44 `landed` on any call but an
+    /// ObjectReference.AddItem on 0x14, a landing's item 0 or 0xff000000 and
+    /// up, a negative count or a base twice), `E_VAL_ZERO_DELTA` (a landing's
+    /// count of 0), `E_VAL_NONFINITE`; the server's rule logs
+    /// `E_SCRIPTCALL_ROW`, `E_SCRIPTCALL_ARGS`, `E_SCRIPTCALL_OWNER` and
+    /// `E_SCRIPTCALL_RATE` by name, and on a player's own rows its
+    /// player_own codes (`E_SCRIPTCALL_LEVELED` for a leveled AddItem that
+    /// carries no `landed`, `E_SCRIPTCALL_ROLL` for a landing its list cannot
+    /// roll).
     pub struct ScriptCall {
         /// `"t": 75`.
         #[serde(default)]
@@ -2435,6 +2442,17 @@ wire_struct! {
         pub handler: String<{ cap::PAPYRUS_NAME }>,
         /// The native is latent: a receiver runs its row's non-latent twin.
         pub latent: bool,
+        /// Since SCHEMA_VERSION 44 (thuum D-R1 C's leveled gap, train 52): on
+        /// an AddItem whose form is a leveled list, on the sender's own
+        /// player (`self_id` 0x14) alone, what the engine's roll put in that
+        /// player's inventory, read from the container events inside the
+        /// call's AddItemFunctor: each base once, its count summed, in
+        /// landing order; empty when the roll landed nothing; absent on
+        /// every other call. R2, the seat's word: the server records each
+        /// landing as a plain grant after checking the base is one the list
+        /// can roll. Delivered once on the reliable channel; a duplicate
+        /// would grant twice, as a plain own AddItem's would.
+        pub landed: Option<Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>>,
     }
 }
 

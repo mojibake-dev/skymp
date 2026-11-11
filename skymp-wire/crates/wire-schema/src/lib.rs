@@ -138,7 +138,12 @@ use bounded::{String, Vec};
 /// <Function>") on a seat's report, so the server refuses a run word, or a
 /// report it judges a start, whose cause is the seat's own; R2, the seat's
 /// own word.
-pub const SCHEMA_VERSION: u16 = 43;
+/// 44: ScriptCall's optional `landed` (thuum D-R1 C's leveled gap,
+/// m4-train-52): on a leveled AddItem on the sender's own player, the bases
+/// and counts the engine's roll put in its inventory, read inside the call's
+/// AddItemFunctor, so the server records the roll where it refused the list
+/// by name (E_SCRIPTCALL_LEVELED).
+pub const SCHEMA_VERSION: u16 = 44;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -270,6 +275,12 @@ pub mod cap {
     /// native takes (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
     /// "native supports max 11").
     pub const SCRIPT_CALL_ARGS: usize = 11;
+    /// Landings one reported leveled AddItem carries (thuum D-R1 C's leveled
+    /// gap, train 52): a use-all list lands each of its entries, and a
+    /// leveled list's entry count is one byte (CommonLibSSE-NG
+    /// include/RE/T/TESLeveledList.h:72, `numEntries`, LLCT); the platform
+    /// folds the landings by base and never sends more.
+    pub const SCRIPT_CALL_LANDED: usize = 255;
     /// A Papyrus string argument or return value.
     pub const SNIPPET_STRING: usize = 16 * 1024;
     /// Scripts one script record carries (thuum ADR-068 rung 3): the scripts
@@ -785,8 +796,10 @@ const TABLE: [Row; 90] = [
     row("ChangeForm", 72, 136 * KIB, C2S),
     row("ChangeFormAck", 73, 16, S2C),
     row("ChangeFormApply", 74, 136 * KIB, S2C),
-    // eleven arguments at SNIPPET_STRING's 16 KiB each and the four names at
-    // PAPYRUS_NAME, with room (180,812 bytes at the fullest; thuum ADR-068)
+    // eleven arguments at SNIPPET_STRING's 16 KiB each, the four names at
+    // PAPYRUS_NAME and, since SCHEMA_VERSION 44, 255 landings at ten varint
+    // bytes each, with room (183,365 bytes at the fullest, pinned by the size
+    // test; thuum ADR-068, D-R1 C's leveled gap)
     row("ScriptCall", 75, 180 * KIB, C2S),
     // a reference's script record (thuum ADR-068 rung 3): under the 256 KiB
     // the transport takes from a client, with room over the 160 KiB answer
@@ -1191,6 +1204,50 @@ mod tests {
         assert!(bytes.len() <= Message::max_len(stage.wire_id()).unwrap_or(0));
     }
 
+    /// A reported native call at its caps (thuum ADR-068): eleven arguments,
+    /// each a string at SNIPPET_STRING, every name at PAPYRUS_NAME, every
+    /// number a five-byte varint, and since SCHEMA_VERSION 44 (D-R1 C's
+    /// leveled gap) 255 landings, each an item and a count at five varint
+    /// bytes apiece.
+    fn script_call_at_its_caps() -> skymp::ScriptCall {
+        let name = || -> String<{ cap::PAPYRUS_NAME }> { "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default() };
+        skymp::ScriptCall {
+            epoch: u32::MAX,
+            self_id: 0xfeff_ffff,
+            cls: name(),
+            func: name(),
+            args: (0..cap::SCRIPT_CALL_ARGS)
+                .map(|_| Some(skymp::SnippetArg::String("x".repeat(cap::SNIPPET_STRING).try_into().unwrap_or_default())))
+                .collect::<alloc::vec::Vec<_>>()
+                .try_into()
+                .unwrap_or_default(),
+            caller: name(),
+            handler: name(),
+            latent: true,
+            landed: (0..cap::SCRIPT_CALL_LANDED).map(|_| ItemDelta { item: FormId(u32::MAX), count: i32::MIN }).collect::<alloc::vec::Vec<_>>().try_into().ok(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_script_call_at_its_caps_fits_its_byte_cap() {
+        let full = script_call_at_its_caps();
+        // the sample is whole, not a default left by a refused conversion
+        assert_eq!((full.args.len(), full.landed.as_ref().map(|l| l.len())), (cap::SCRIPT_CALL_ARGS, Some(cap::SCRIPT_CALL_LANDED)));
+        let m = Message::ScriptCall(full);
+        let bytes = postcard::to_allocvec(&m).unwrap_or_default();
+        // 180,812 before SCHEMA_VERSION 44, then the landings' presence byte,
+        // their two-byte length and 255 of ten bytes (the table's comment)
+        assert_eq!(bytes.len(), 183_365);
+        assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
+        // an absent landing costs its presence byte alone
+        let plain = Message::ScriptCall(skymp::ScriptCall { landed: None, ..script_call_at_its_caps() });
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(180_813));
+        // a 256th landing fails at the bound, before any check
+        let over: Result<bounded::Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>, _> = (0..=cap::SCRIPT_CALL_LANDED).map(|_| ItemDelta { item: FormId(0xf), count: 1 }).collect::<alloc::vec::Vec<_>>().try_into();
+        assert!(over.is_err());
+    }
+
     #[test]
     fn wire_id_matches_postcard_variant_index() {
         let samples = vec![
@@ -1338,22 +1395,9 @@ mod tests {
             }),
             // a reported native call at its fullest: eleven arguments, each a
             // string at its cap, every name at its cap, every number a
-            // five-byte varint (thuum ADR-068)
-            Message::ScriptCall(skymp::ScriptCall {
-                epoch: u32::MAX,
-                self_id: 0xfeff_ffff,
-                cls: "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default(),
-                func: "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default(),
-                args: (0..cap::SCRIPT_CALL_ARGS)
-                    .map(|_| Some(skymp::SnippetArg::String("x".repeat(cap::SNIPPET_STRING).try_into().unwrap_or_default())))
-                    .collect::<alloc::vec::Vec<_>>()
-                    .try_into()
-                    .unwrap_or_default(),
-                caller: "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default(),
-                handler: "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default(),
-                latent: true,
-                ..Default::default()
-            }),
+            // five-byte varint (thuum ADR-068), and since SCHEMA_VERSION 44
+            // its landings at their cap
+            Message::ScriptCall(script_call_at_its_caps()),
             // a script record and its apply near the native's answer cap
             // (thuum ADR-068 rung 3), and a destruction report at its
             // longest: the reference a five-byte varint, the stage and both

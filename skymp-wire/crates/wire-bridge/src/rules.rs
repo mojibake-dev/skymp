@@ -3235,6 +3235,17 @@ mod ffi {
         /// passes `"seat"` for a key the file lacks), true for "world"; an
         /// error names what is wrong.
         fn quest_story_instances_world(settings_json: &str) -> Result<bool>;
+        /// thuum D-Q9 B (Eli 2026-11-11; train 52): the setting
+        /// `questPlayerAliasCause` from its JSON text ("seat", the default,
+        /// D-Q9 B, or "world", D-Q9 A; the core passes `"seat"` for a key the
+        /// file lacks), true for "world"; an error names what is wrong.
+        fn quest_player_alias_cause_world(settings_json: &str) -> Result<bool>;
+        /// D-Q9 B: whether a report's root is the seat's own: its `function`
+        /// (the root's part after its last dot) one of wire-rules
+        /// quest_runs::PLAYER_ALIAS_EVENTS, names without case, on a script
+        /// the game files attach to player aliases alone
+        /// (`script_on_player_aliases_only`, the core's index).
+        fn quest_root_is_seat_own(function: &str, script_on_player_aliases_only: bool) -> bool;
         /// The Story Manager's quests (every quest an SMQN node of the game
         /// files names, the core's read; stage 0 in each entry) and the
         /// setting (`world`, quest_story_instances_world's answer), both
@@ -3285,6 +3296,12 @@ mod ffi {
         /// it), 0 World (a world alias, whatever the list says, or none and
         /// unlisted).
         fn quest_scope_class(self: &QuestScope, short_id: u32, file: &str, aliases: &[QuestScopeAliasRow]) -> u8;
+        /// thuum D-Q9 B: the ids of the reference aliases among a quest's
+        /// `aliases` (every ALST and ALLS of its QUST record) that are the
+        /// player's (wire-rules quest_scope::is_players), in their order,
+        /// whatever the quest's class: the core's index of the scripts that
+        /// ride player aliases alone reads them per quest.
+        fn quest_scope_player_aliases(aliases: &[QuestScopeAliasRow]) -> Vec<u32>;
 
         /// thuum ADR-068 rung 5 (D-V1 B, D-T2 B): the condition-read
         /// variables server-settings.json's `conditionVariables` lists, and
@@ -5703,6 +5720,14 @@ fn quest_story_instances_world(settings_json: &str) -> Result<bool, clock::Setti
     quest_runs::StoryInstances::from_json(settings_json).map(|s| s == quest_runs::StoryInstances::World)
 }
 
+fn quest_player_alias_cause_world(settings_json: &str) -> Result<bool, clock::SettingsError> {
+    quest_runs::PlayerAliasCause::from_json(settings_json).map(|s| s == quest_runs::PlayerAliasCause::World)
+}
+
+fn quest_root_is_seat_own(function: &str, script_on_player_aliases_only: bool) -> bool {
+    quest_runs::root_is_seat_own(function, script_on_player_aliases_only)
+}
+
 impl QuestRuns {
     #[allow(clippy::too_many_arguments)]
     fn quest_runs_judge(&mut self, record: &[QuestRunRow], short_id: u32, file: &str, word: u8, cause: u8, seat: u32, now_ms: u64) -> QuestRunVerdict {
@@ -5782,20 +5807,28 @@ impl QuestScope {
     }
 
     fn quest_scope_class(&self, short_id: u32, file: &str, aliases: &[QuestScopeAliasRow]) -> u8 {
-        let parsed: Vec<quest_scope::Alias> = aliases
-            .iter()
-            .map(|a| quest_scope::Alias {
-                id: a.id,
-                location: a.location,
-                forced: a.forced,
-                unique_actor: a.unique_actor,
-                created: a.created,
-                create_at: a.create_at,
-                external: a.external.then_some(quest_scope::External { forced: a.external_forced, unique_actor: a.external_unique_actor }),
-            })
-            .collect();
-        self.0.class(&forms::FormDesc { short_id, file: file.to_owned() }, &parsed).code()
+        self.0.class(&forms::FormDesc { short_id, file: file.to_owned() }, &scope_aliases(aliases)).code()
     }
+}
+
+/// A quest's alias rows as wire-rules quest_scope reads them.
+fn scope_aliases(aliases: &[QuestScopeAliasRow]) -> Vec<quest_scope::Alias> {
+    aliases
+        .iter()
+        .map(|a| quest_scope::Alias {
+            id: a.id,
+            location: a.location,
+            forced: a.forced,
+            unique_actor: a.unique_actor,
+            created: a.created,
+            create_at: a.create_at,
+            external: a.external.then_some(quest_scope::External { forced: a.external_forced, unique_actor: a.external_unique_actor }),
+        })
+        .collect()
+}
+
+fn quest_scope_player_aliases(aliases: &[QuestScopeAliasRow]) -> Vec<u32> {
+    quest_scope::player_alias_ids(&scope_aliases(aliases))
 }
 
 /// thuum ADR-068 rung 5: the condition-read variables (wire-rules
@@ -6718,6 +6751,20 @@ mod tests {
         let full: Vec<QuestRunRow> = (1..=u32::try_from(quest_runs::RUN_RECORD_CAP).unwrap_or(0)).map(|q| row(q, true, 1)).collect();
         let v = runs.quest_runs_judge(&full, 0x0010_0000, "Skyrim.esm", 1, 0, 0xff00_0000, 0);
         assert_eq!((v.code, v.name.as_str()), (3, "E_QUEST_RUNS_FULL"));
+    }
+
+    #[test]
+    fn the_bridge_reads_a_player_aliass_location_change_as_the_seats_own() {
+        // thuum D-Q9 B (train 52): the setting, the event rule and the
+        // quest's player aliases the core's index reads (MQ101 0x3372b's
+        // player alias 119 beside an NPC one, the forms illustrative)
+        assert_eq!((quest_player_alias_cause_world(r#""seat""#).ok(), quest_player_alias_cause_world(r#""world""#).ok()), (Some(false), Some(true)));
+        assert!(quest_player_alias_cause_world(r#""off""#).is_err());
+        assert!(quest_root_is_seat_own("OnLocationChange", true) && quest_root_is_seat_own("ONLOCATIONCHANGE", true));
+        assert!(!quest_root_is_seat_own("OnLocationChange", false) && !quest_root_is_seat_own("OnActivate", true));
+        let alias = |id: u32, forced: u32, unique_actor: u32| QuestScopeAliasRow { id, location: false, forced, unique_actor, created: 0, create_at: 0, external: false, external_forced: 0, external_unique_actor: 0 };
+        assert_eq!(quest_scope_player_aliases(&[alias(119, 0x14, 0), alias(12, 0, 0x2bfb3), alias(7, 0, 7)]), vec![119, 7]);
+        assert!(quest_scope_player_aliases(&[QuestScopeAliasRow { location: true, ..alias(3, 0x14, 0) }]).is_empty());
     }
 
     #[test]

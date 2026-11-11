@@ -335,6 +335,20 @@ public:
   // plain line in OnQuestStage) and whose login serves none of them; its
   // stages still cross. One line names the nodes and quests read
   void SetQuestStoryInstancesSettings(const std::string& settingJson);
+  // thuum D-Q9 B (Eli 2026-11-11, docs/DECISIONS.md at main 7ced7f5a; train
+  // 52): server-settings.json's `questPlayerAliasCause`, its value's JSON
+  // text ("seat", the default, D-Q9 B, or "world", D-Q9 A); a bad value
+  // stops the server here, named. Under "seat" a report whose world cause a
+  // player alias's event roots (the root's function one of wire-rules
+  // quest_runs' PLAYER_ALIAS_EVENTS, its script one the index below marks)
+  // is judged with the seat's own cause (OnQuestStage)
+  void SetQuestPlayerAliasCauseSettings(const std::string& settingJson);
+  bool QuestPlayerAliasCauseSeat() const;
+  // D-Q9 B: whether the script class `script` (compared without case) rides
+  // at least one QUST alias of the game files and every alias it rides, over
+  // every quest, is the player's (wire-rules quest_scope::is_players over the
+  // quest's aliases); false without the game files. Indexed at AttachEspm
+  bool ScriptRidesPlayerAliasesOnly(const std::string& script) const;
   // the Story Manager quest nodes naming the quest, "<editor id> <hex id>"
   // (the first, and how many more), empty for none or without the game
   // files: the nodes the line keeping such a quest's run to its seat names

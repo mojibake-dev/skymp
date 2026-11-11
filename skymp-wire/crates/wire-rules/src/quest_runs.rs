@@ -48,6 +48,17 @@
 //! ELI'S WORD; [`Code::Instance`], `E_QUEST_INSTANCE`), since a relayed stop
 //! would cut another seat's own instance; its stages still cross. "world"
 //! judges such a quest by its cause like any other.
+//!
+//! D-Q9 B (Eli, 2026-11-11, thuum docs/DECISIONS.md at main 7ced7f5a; built
+//! in train 52 as the default of `questPlayerAliasCause`): a player alias's
+//! OnLocationChange is its seat's own cause, since the event is about that
+//! seat's player, so a quest that stops itself when its player changes
+//! location stops on that seat alone. The platform's class rule reads every
+//! `On*` event outside its seat lists as an interaction, a world cause; the
+//! core re-judges such a report under "seat" ([`root_is_seat_own`] over the
+//! report's root and the game files' alias scripts), only ever toward the
+//! seat's own, so a forged root gains a seat nothing it could not get by
+//! reporting the seat's cause itself.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
@@ -217,6 +228,62 @@ impl StoryInstances {
         match self {
             StoryInstances::Seat => "seat",
             StoryInstances::World => "world",
+        }
+    }
+}
+
+/// The Papyrus events a player alias's script receives about that alias's
+/// own player, which D-Q9 B reads as the seat's own cause (Eli's word names
+/// one; the list grows by name only on a census read).
+pub const PLAYER_ALIAS_EVENTS: &[&str] = &["OnLocationChange"];
+
+/// Whether a report's root is the seat's own by D-Q9 B: its function (the
+/// root's part after its last dot) is one of [`PLAYER_ALIAS_EVENTS`], names
+/// compared without case as Papyrus compares them, on a script the game
+/// files attach to player aliases alone (`script_on_player_aliases_only`,
+/// the core's index: every QUST alias the script rides is the player's by
+/// [`crate::quest_scope::is_players`]). A script that also rides another
+/// alias is no player's, whatever the event.
+#[must_use]
+pub fn root_is_seat_own(function: &str, script_on_player_aliases_only: bool) -> bool {
+    script_on_player_aliases_only && PLAYER_ALIAS_EVENTS.iter().any(|e| e.eq_ignore_ascii_case(function))
+}
+
+/// Whether a player alias's event roots its seat's own cause
+/// (`questPlayerAliasCause`, D-Q9; a quest setting's default, ADR-070's
+/// frame): a one-line flip of the server's settings either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PlayerAliasCause {
+    /// "seat", the default (Eli's D-Q9 B): a world-caused report whose root
+    /// is a player alias's event ([`root_is_seat_own`]) is judged with the
+    /// seat's own cause, so its run word is refused (`E_QUEST_CAUSE`) and a
+    /// report judged a start is not recorded; a plain stage crosses as
+    /// before.
+    #[default]
+    Seat,
+    /// "world" (D-Q9 A): such a report keeps the world cause its seat
+    /// reported.
+    World,
+}
+
+impl PlayerAliasCause {
+    /// The setting from its JSON text, the string "seat" or "world"; the
+    /// core passes `"seat"` for a key the file lacks. The error names what
+    /// is wrong.
+    pub fn from_json(text: &str) -> Result<Self, SettingsError> {
+        match serde_json::from_str::<serde_json::Value>(text).map_err(|e| SettingsError(format!("questPlayerAliasCause: {e}")))? {
+            serde_json::Value::String(m) if m == "seat" => Ok(PlayerAliasCause::Seat),
+            serde_json::Value::String(m) if m == "world" => Ok(PlayerAliasCause::World),
+            other => Err(SettingsError(format!("questPlayerAliasCause: {other} is neither \"seat\" nor \"world\""))),
+        }
+    }
+
+    /// The setting's word, as the server's settings spell it.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            PlayerAliasCause::Seat => "seat",
+            PlayerAliasCause::World => "world",
         }
     }
 }
@@ -756,6 +823,35 @@ mod tests {
         for bad in [r#""off""#, "1", "{}", r#"["seat"]"#, "seat"] {
             let why = StoryInstances::from_json(bad).err().map(|e| e.0);
             assert!(why.as_deref().is_some_and(|w| w.starts_with("questStoryInstances: ")), "{bad}: {why:?}");
+        }
+    }
+
+    #[test]
+    fn a_player_aliass_location_change_is_the_seats_own_and_nothing_else_is() {
+        // D-Q9 B (Eli, 2026-11-11): MQ101PlayerScript rides MQ101 0x3372b's
+        // player alias 119 alone, MQ101CartRiderScript that alias and NPC
+        // ones (the lab's cached masters, 2026-11-10); the core reads which,
+        // this rule reads the event
+        assert_eq!(PLAYER_ALIAS_EVENTS, ["OnLocationChange"]);
+        assert!(root_is_seat_own("OnLocationChange", true));
+        assert!(root_is_seat_own("onlocationchange", true), "Papyrus names compare without case");
+        // the same event on a script that also rides another alias, and any
+        // other event on a player alias's script, stay the world's
+        assert!(!root_is_seat_own("OnLocationChange", false));
+        assert!(!root_is_seat_own("OnItemAdded", true));
+        assert!(!root_is_seat_own("OnActivate", true));
+        assert!(!root_is_seat_own("", true));
+    }
+
+    #[test]
+    fn the_player_alias_setting_reads_seat_or_world_and_names_what_is_wrong() {
+        assert_eq!(PlayerAliasCause::from_json(r#""seat""#).ok(), Some(PlayerAliasCause::Seat));
+        assert_eq!(PlayerAliasCause::from_json(r#""world""#).ok(), Some(PlayerAliasCause::World));
+        assert_eq!(PlayerAliasCause::default(), PlayerAliasCause::Seat);
+        assert_eq!((PlayerAliasCause::Seat.name(), PlayerAliasCause::World.name()), ("seat", "world"));
+        for bad in [r#""off""#, r#""Seat""#, "1", "{}", r#"["seat"]"#, "seat"] {
+            let why = PlayerAliasCause::from_json(bad).err().map(|e| e.0);
+            assert!(why.as_deref().is_some_and(|w| w.starts_with("questPlayerAliasCause: ")), "{bad}: {why:?}");
         }
     }
 

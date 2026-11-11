@@ -1037,6 +1037,82 @@ TEST_CASE("Under questStoryInstances seat a quest a Story Manager quest node "
   Leave(p);
 }
 
+// thuum D-Q9 B (Eli 2026-11-11, docs/DECISIONS.md at main 7ced7f5a; train
+// 52): a player alias's OnLocationChange is its seat's own cause, the event
+// being about that seat's player. MQ101 0x3372b (no Story Manager quest node
+// names it; DNAM 0x0100, not Start Game Enabled) carries MQ101PlayerScript on
+// its player alias 119 alone and MQ101CartRiderScript on that alias and nine
+// NPC ones (lab/esm.py's walk of the lab's cached Skyrim.esm, Dawnguard.esm
+// and Dragonborn.esm, 2026-11-10: 729 alias script classes, 90 of them
+// riding player aliases alone, one riding a player alias and another). The
+// root is the seat's word (R2): the server reads only whether its script
+// rides player aliases alone and whether its function is such an event
+namespace {
+constexpr uint32_t kMq101 = 0x3372b;
+}
+
+TEST_CASE("Under questPlayerAliasCause seat a world-caused run word rooted at "
+          "a player alias's OnLocationChange is the seat's own "
+          "(E_QUEST_CAUSE, its line naming the re-judgment); another event, "
+          "or a script that also rides another alias, keeps the world's; "
+          "under world the location change is recorded",
+          "[QuestStage][espm]")
+{
+  PartOne& p = GetPartOne();
+  REQUIRE(p.ScriptRidesPlayerAliasesOnly("MQ101PlayerScript"));
+  REQUIRE(p.ScriptRidesPlayerAliasesOnly("mq101playerscript"));
+  REQUIRE(!p.ScriptRidesPlayerAliasesOnly("MQ101CartRiderScript"));
+  REQUIRE(!p.ScriptRidesPlayerAliasesOnly("QF_dunEmbershardQST_000B6FEF"));
+  REQUIRE(!p.ScriptRidesPlayerAliasesOnly(""));
+  REQUIRE(p.StoryNodesOf(FormDesc::FromString("3372b:Skyrim.esm")).empty());
+  // the default is Eli's B; a bad value stops the server, named, and
+  // changes nothing
+  REQUIRE(p.QuestPlayerAliasCauseSeat());
+  REQUIRE_THROWS(p.SetQuestPlayerAliasCauseSettings("\"off\""));
+  REQUIRE(p.QuestPlayerAliasCauseSeat());
+
+  Enter(p, kDeniedQuests);
+  QuestLog log;
+  // the player alias's location change stops the quest: the seat's own, so
+  // nothing written or relayed
+  ReportCaused(p, 0, kMq101, 0, 2, 1, "MQ101PlayerScript.OnLocationChange");
+  REQUIRE(p.GetQuestRuns().empty());
+  REQUIRE(WordsTo(p, 1).empty());
+  REQUIRE(log.Count("E_QUEST_CAUSE: user 0 actor ff000bd0 reported the stop "
+                    "of 3372b:Skyrim.esm (cause world re-judged the seat's "
+                    "own: MQ101PlayerScript.OnLocationChange is a player "
+                    "alias's OnLocationChange, D-Q9 B): the stop of "
+                    "3372b:Skyrim.esm has the seat's own cause") == 1);
+
+  // the same script's interaction, and the location change of a script that
+  // also rides NPC aliases: the world's, recorded and relayed
+  ReportCaused(p, 0, kMq101, 0, 1, 1, "MQ101PlayerScript.OnActivate");
+  REQUIRE(p.GetQuestRuns() == Runs({ { "3372b:Skyrim.esm", true, 1 } }));
+  ReportCaused(p, 1, kMq101, 0, 2, 1, "MQ101CartRiderScript.OnLocationChange");
+  REQUIRE(p.GetQuestRuns() == Runs({ { "3372b:Skyrim.esm", false, 2 } }));
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd0 starts 3372b:Skyrim.esm: "
+                    "recorded, relayed to 1") == 1);
+  REQUIRE(log.Count("(cause world, root MQ101PlayerScript.OnActivate, R2)") ==
+          1);
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd1 stops 3372b:Skyrim.esm: "
+                    "recorded, relayed to 1") == 1);
+  REQUIRE(log.Count("(cause world, root "
+                    "MQ101CartRiderScript.OnLocationChange, R2)") == 1);
+
+  // "world" (D-Q9 A): the location change keeps the world cause its seat
+  // reported
+  p.SetQuestPlayerAliasCauseSettings("\"world\"");
+  REQUIRE(!p.QuestPlayerAliasCauseSeat());
+  ReportCaused(p, 0, kMq101, 0, 1, 1, "MQ101PlayerScript.OnLocationChange");
+  REQUIRE(p.GetQuestRuns() == Runs({ { "3372b:Skyrim.esm", true, 3 } }));
+  REQUIRE(log.Count("(cause world, root MQ101PlayerScript.OnLocationChange, "
+                    "R2)") == 1);
+  REQUIRE(log.Count("re-judged") == 1);
+  REQUIRE(log.Count("E_QUEST_") == 1);
+  p.SetQuestPlayerAliasCauseSettings("\"seat\"");
+  Leave(p);
+}
+
 // thuum ADR-068 rung 5, D-Q3 A: a served replay's fragments are the world's
 // history and never run again on a seat. A stage served for a quest not
 // running on the seat makes the seat start the quest first, and that start

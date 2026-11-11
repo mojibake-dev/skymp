@@ -1118,7 +1118,11 @@ wire_struct! {
         /// the stages and words the call set; a quest command the player
         /// typed in the console is [`QUEST_CAUSE_WORLD`] (the seat's client
         /// marks it before the engine runs it). Absent from an older client
-        /// and from the server. Unvalidated (R2).
+        /// and from the server. Unvalidated (R2). The server may judge a
+        /// world cause the seat's own, never the other way: under
+        /// `questPlayerAliasCause` "seat" (thuum D-Q9 B, the default) one
+        /// whose `root` is a player alias's OnLocationChange (wire-rules
+        /// quest_runs::root_is_seat_own).
         pub cause: Option<u8>,
         /// Since SCHEMA_VERSION 43: beside `cause`, that stack's root frame
         /// as "<Script>.<Function>" (its owningObjectType's name and its

@@ -3477,7 +3477,10 @@ std::vector<MpChangeFormREFR::QuestRun> QuestRunsOf(
 // one line a minute per seat and quest; and a stage report the record reads
 // as a start (a start-up stage: the seat cannot tell one, the record can)
 // with the seat's own cause, one line a minute per seat. Any other stage
-// crosses whatever its cause.
+// crosses whatever its cause. D-Q9 B (Eli 2026-11-11; train 52): under
+// questPlayerAliasCause "seat", the default, a world cause rooted at a
+// player alias's OnLocationChange is judged the seat's own, its line naming
+// the re-judgment.
 void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                                   const QuestStageMessage& msg)
 {
@@ -3606,12 +3609,35 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
   // made the report, 1 a world cause, 2 its own, 0 none (an older client;
   // the wire refuses any other value first), and its stack's root; both the
   // seat's word (R2), judged by wire-rules quest_runs and named in the lines
-  const uint8_t cause =
+  uint8_t cause =
     msg.cause && *msg.cause <= 2 ? static_cast<uint8_t>(*msg.cause) : 0;
-  const std::string causeWords = cause == 0
+  std::string causeWords = cause == 0
     ? std::string()
     : fmt::format("cause {}, root {}, R2", cause == 1 ? "world" : "seat",
                   msg.root && !msg.root->empty() ? *msg.root : "none");
+  // D-Q9 B (Eli 2026-11-11; train 52): a player alias's OnLocationChange is
+  // its seat's own cause, the event being about that seat's player, so
+  // under questPlayerAliasCause "seat" (the default) a world-caused report
+  // whose root, split at its last dot, is such an event (wire-rules
+  // quest_runs::root_is_seat_own: the function one of PLAYER_ALIAS_EVENTS,
+  // the script one the game files attach to player aliases alone) is judged
+  // with the seat's own cause: a run word refused (E_QUEST_CAUSE), a report
+  // judged a start not recorded, a plain stage crossing as before. Only ever
+  // toward the seat's own, so a forged root gains nothing (R2)
+  if (cause == 1 && msg.root && partOne.QuestPlayerAliasCauseSeat()) {
+    const auto dot = msg.root->rfind('.');
+    if (dot != std::string::npos) {
+      const std::string script = msg.root->substr(0, dot);
+      const std::string function = msg.root->substr(dot + 1);
+      if (skymp::rules::quest_root_is_seat_own(
+            function, partOne.ScriptRidesPlayerAliasesOnly(script))) {
+        cause = 2;
+        causeWords = fmt::format("cause world re-judged the seat's own: {} is "
+                                 "a player alias's {}, D-Q9 B",
+                                 *msg.root, function);
+      }
+    }
+  }
   const std::string causeText =
     causeWords.empty() ? std::string() : " (" + causeWords + ")";
 

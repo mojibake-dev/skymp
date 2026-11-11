@@ -399,6 +399,12 @@ public:
   // false when it wears it already or `part` is no HDPT
   bool HeadPartFitsRace(uint32_t part, uint32_t race);
   bool WearHeadPart(Appearance& look, uint32_t part);
+  // thuum D-R1 C's leveled gap (train 52, D-R2 B): the bases the leveled
+  // list `list` can roll (LeveledListUtils::Reach over the game files: its
+  // entries, nested lists followed), read once per list and kept until the
+  // next AttachEspm; empty for a form that is no leveled list or without the
+  // game files. A landing of a seat's reported roll must be one of them
+  const std::vector<uint32_t>& LeveledReach(uint32_t list);
   // a RaceMenu look's "<plugin>|<id>" as a form id in the server's load
   // order, light plugins numbered as the engine numbers them (thuum
   // docs/verbs/light-plugins.md); 0 for a plugin the server does not load

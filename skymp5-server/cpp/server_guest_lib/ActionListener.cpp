@@ -4699,6 +4699,114 @@ bool NamesFunc(const std::string& fn, const char* name)
          });
 }
 
+// thuum D-R1 C's leveled gap (train 52, plan 1.5): a leveled AddItem on the
+// reporter's own player whose report carries its roll (ScriptCall's
+// `landed`, SCHEMA_VERSION 44: what the engine's roll put in the player's
+// inventory, read inside the call's AddItemFunctor on the seat). The call's
+// form must be a leveled item list (an LVLI), else its landings land on no
+// list (E_SCRIPTCALL_ARGS). Each landing is judged by wire-rules player_own
+// as a plain add of its base (its record type, the count the record holds,
+// the stacks and whether the base needs a new one, the u32 room), refused by
+// name first when the base is none the list can roll (D-R2 B,
+// E_SCRIPTCALL_ROLL: PartOne::LeveledReach, the list's entries with nested
+// lists followed), and an accepted one is written as a plain grant
+// (MpObjectReference::AddItem, whose inventory update the player's own game
+// alone hears at the tick). One line names the landings recorded, or that
+// the roll landed nothing; each refusal is RefuseStateRow's, one line a
+// minute per seat and code. R2: the seat's word that its engine's roll
+// landed these bases (rule 5), checked against the list's reach and never
+// rolled again here
+void RecordLandings(
+  PartOne& partOne, MpActor& reporter, const ScriptCallMessage& msg,
+  uint32_t list, const std::string& listType,
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>&
+    refusals)
+{
+  const auto& landed = *msg.landed;
+  const auto said = [&](const std::string& what) {
+    spdlog::info("[verb:quest-stage] {:x}'s own {}.{} {:x} (from {}.{}): {}",
+                 reporter.GetFormId(), msg.cls, msg.fn, list, msg.caller,
+                 msg.handler, what);
+  };
+  if (listType != espm::LVLI::kType) {
+    return RefuseStateRow(
+      refusals, reporter.GetFormId(), "E_SCRIPTCALL_ARGS",
+      fmt::format("[verb:quest-stage] E_SCRIPTCALL_ARGS: {:x}'s own {}.{} "
+                  "{:x} (from {}.{}): {:x} is no leveled list (LVLI), so its "
+                  "{} landing(s) land on no list: nothing is written",
+                  reporter.GetFormId(), msg.cls, msg.fn, list, msg.caller,
+                  msg.handler, list, landed.size()));
+  }
+  if (landed.empty()) {
+    return said("its roll landed nothing");
+  }
+  const auto& reach = partOne.LeveledReach(list);
+  const auto& browser = partOne.GetEspm().GetBrowser();
+  const std::vector<skymp::rules::ScriptPropertyRow> none;
+  std::vector<std::pair<uint32_t, uint32_t>> recorded;
+  for (const auto& landing : landed) {
+    const uint32_t base = landing.item;
+    const auto rec = browser.LookupById(base).rec;
+    const std::string type = rec ? rec->GetType().ToString() : std::string();
+    const auto& inventory = reporter.GetInventory();
+    const Inventory::Entry plain(base, 0);
+    skymp::rules::PlayerOwnFacts facts{};
+    facts.kind =
+      !type.empty() && espm::utils::IsItem(espm::Type(type.c_str()));
+    facts.leveled = type == espm::LVLI::kType;
+    facts.held_count = inventory.GetItemCount(base);
+    facts.count = static_cast<double>(landing.count);
+    facts.stacks = inventory.entries.size();
+    facts.new_stack =
+      std::none_of(inventory.entries.begin(), inventory.entries.end(),
+                   [&](const Inventory::Entry& entry) {
+                     return entry.EqualExceptCount(plain);
+                   });
+    facts.landing_of = list;
+    facts.in_reach =
+      std::find(reach.begin(), reach.end(), base) != reach.end();
+    const auto verdict = partOne.GetPlayerOverlays().player_own_judge(
+      reporter.GetFormId(), msg.cls, msg.fn, base,
+      rust::Slice<const skymp::rules::ScriptPropertyRow>(none.data(),
+                                                         none.size()),
+      facts);
+    if (verdict.code == 0) {
+      reporter.AddItem(base, verdict.count);
+      recorded.push_back({ base, verdict.count });
+      continue;
+    }
+    if (verdict.code == 3) {
+      // no room left below the record's count bound: nothing moves
+      spdlog::debug("[verb:quest-stage] {:x}'s own {}.{} {:x}: its landing "
+                    "{:x} folded",
+                    reporter.GetFormId(), msg.cls, msg.fn, list, base);
+      continue;
+    }
+    RefuseStateRow(refusals, reporter.GetFormId(), std::string(verdict.name),
+                   fmt::format("[verb:quest-stage] {}: {:x}'s own {}.{} {:x} "
+                               "(from {}.{}): {}",
+                               std::string(verdict.name), reporter.GetFormId(),
+                               msg.cls, msg.fn, list, msg.caller, msg.handler,
+                               std::string(verdict.why)));
+  }
+  if (recorded.empty()) {
+    return;
+  }
+  std::string landings;
+  std::string held;
+  for (const auto& [base, count] : recorded) {
+    landings +=
+      fmt::format("{}{:x} x{}", landings.empty() ? "" : ", ", base, count);
+    held += fmt::format("{}{} of {:x}", held.empty() ? "" : ", ",
+                        reporter.GetInventory().GetItemCount(base), base);
+  }
+  said(fmt::format("its roll landed {}, added to its inventory as its seat "
+                   "reported it (D-R1 C, R2; each a base the list can roll, "
+                   "D-R2 B), {} held now",
+                   landings, held));
+}
+
 // thuum ADR-068 rung 5 (the two transformations, D-T1 A; docs/research/
 // rung5-quests-2026-11-09.md section 8(b)): a per-player quest's script
 // changed its own player through one of the seven rows (Actor.SetRace,
@@ -4736,7 +4844,10 @@ bool NamesFunc(const std::string& fn, const char* name)
 // is one the player holds open (that container's PutItem moves the item, so
 // the row folds). The record's change sends the player its inventory
 // (MpObjectReference::SendInventoryUpdate, deferred to the tick), which its
-// client's 5 s apply reads from then on.
+// client's 5 s apply reads from then on. Since train 52 (D-R1 C's leveled
+// gap) a leveled AddItem whose report carries `landed` records its roll
+// (RecordLandings above); one that carries none is refused by name
+// (E_SCRIPTCALL_LEVELED, the seat's scriptLeveledLandings off).
 void RecordPlayerOwn(
   PartOne& partOne, MpActor& reporter, const ScriptCallMessage& msg,
   std::map<std::pair<uint32_t, std::string>,
@@ -4758,6 +4869,14 @@ void RecordPlayerOwn(
                   msg.caller, msg.handler,
                   itemRow ? "the form's record type"
                           : "the calling script's attachments"));
+  }
+  // D-R1 C's leveled gap (train 52): a leveled AddItem that carries its
+  // roll's landings records them, each a plain add of its base
+  if (addItem && msg.landed) {
+    const auto rec = partOne.GetEspm().GetBrowser().LookupById(form).rec;
+    return RecordLandings(partOne, reporter, msg, form,
+                          rec ? rec->GetType().ToString() : std::string(),
+                          refusals);
   }
 
   // the attachments live for this player, and what they name, each once;

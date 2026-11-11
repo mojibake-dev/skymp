@@ -35,11 +35,20 @@
 //! WolfSkinFXArmor, which its EquipItem put there, removed before the race's
 //! return), and folds into a container the player holds open, whose own move
 //! (PutItem) carries it. A
-//! leveled list is refused by name (`E_SCRIPTCALL_LEVELED`): the engine's
-//! roll is what landed, and the report carries the list, not the roll (the
-//! named gap; the record never holds the list's form). Other seats run a
-//! relayed fragment on the acting player's figure (rung 5's acting scope),
-//! so the grant is reported once, by the acting seat, on its own 0x14.
+//! leveled list's add records its roll (D-R1 C's leveled gap, closed in
+//! thuum train 52): since SCHEMA_VERSION 44 the seat reports what the
+//! engine's roll put in its player (ScriptCall's `landed`, read inside the
+//! call's AddItemFunctor), and the core judges each landing as a plain add
+//! of its base, refused by name when the base is none the list can roll
+//! (`E_SCRIPTCALL_ROLL`, [`Facts::landing_of`] and [`Facts::in_reach`]: the
+//! list's entries with nested lists followed, read from the game files;
+//! D-R2 B, a consistency check that never refuses a genuine roll while the
+//! load-order rule holds, not a bound). A leveled add that carries no
+//! landing (the seat's `scriptLeveledLandings` off) is refused by name
+//! (`E_SCRIPTCALL_LEVELED`): the record never holds the list's form. Other
+//! seats run a relayed fragment on the acting player's figure (rung 5's
+//! acting scope), so the grant is reported once, by the acting seat, on its
+//! own 0x14.
 //!
 //! The kind first: the call's form (its first argument) must be a record of
 //! the row's type, a RACE for SetRace, a SPEL for AddSpell and RemoveSpell,
@@ -214,7 +223,7 @@ pub struct Facts {
     /// HDPT's valid-race FormList (RNAM) holds the race.
     pub race_valid: bool,
     /// AddItem's form is a leveled item list (LVLI), whose roll is the
-    /// engine's (D-R1 C's named gap).
+    /// engine's: refused by name when the report carries no landing.
     pub leveled: bool,
     /// How many of the form the player's record holds over all its stacks
     /// (AddItem's room below the count's bound, RemoveItem's clamp).
@@ -232,6 +241,14 @@ pub struct Facts {
     /// no extra data and unworn, the core's match for a plain add), so the
     /// add appends a new one.
     pub new_stack: bool,
+    /// For one landing of a leveled AddItem's roll (ScriptCall's `landed`,
+    /// SCHEMA_VERSION 44; the judged form is the landing's base): the
+    /// leveled list the call named. 0 for every other call.
+    pub landing_of: u32,
+    /// The landing's base is one that list can roll: a non-list base among
+    /// its entries, nested lists followed (the core's LeveledListUtils::Reach
+    /// over the game files; D-R2 B). Read for a landing alone.
+    pub in_reach: bool,
 }
 
 /// An open overlay: the race the player wears beyond its record and what
@@ -262,12 +279,17 @@ pub enum Code {
     Unnamed,
     /// A race `restrictedRaces` keeps from the player's profile.
     Race,
-    /// AddItem's form is a leveled list: what landed is the engine's roll,
-    /// which the report does not carry (D-R1 C's named gap).
+    /// AddItem's form is a leveled list and the report carries no landing
+    /// (the seat's `scriptLeveledLandings` off): what landed is the
+    /// engine's roll, unreported.
     Leveled,
     /// AddItem's form needs a new stack and the player's record holds
     /// [`INVENTORY_STACKS`] already (D-R1 C's resource bound).
     Full,
+    /// A landing of a leveled AddItem names a base the list cannot roll (no
+    /// entry of it, nested lists followed, is that base; D-R2 B): that
+    /// landing is not recorded.
+    Roll,
 }
 
 impl Code {
@@ -280,6 +302,7 @@ impl Code {
             Code::Race => "E_SCRIPTCALL_RACE",
             Code::Leveled => "E_SCRIPTCALL_LEVELED",
             Code::Full => "E_SCRIPTCALL_FULL",
+            Code::Roll => "E_SCRIPTCALL_ROLL",
         }
     }
 }
@@ -408,20 +431,26 @@ impl PlayerOverlays {
     }
 
     /// AddItem's and RemoveItem's judgment (D-R1 C, R2): the seat's report
-    /// recorded as it ran, with no bound. A leveled list's add is refused by
-    /// name (the engine's roll is what landed; the record never holds the
-    /// list), any other form must be an item and the count a Papyrus Int
-    /// above zero. An add is recorded whole, but never past the record's
-    /// count bound (u32, over all the form's stacks), and one that needs a
-    /// new stack is refused once the record holds [`INVENTORY_STACKS`]
-    /// (`E_SCRIPTCALL_FULL`); a removal into a container the player holds
-    /// open folds (its PutItem moves the item, both sides), one of an item
-    /// the open overlay holds takes it from there (the beast form's skin),
-    /// and any other takes at most what the record holds, a removal of what
-    /// it lacks folding.
+    /// recorded as it ran, with no bound. A landing of a leveled add's roll
+    /// (the judged form its base, [`Facts::landing_of`] the list) is refused
+    /// first when the list cannot roll that base (`E_SCRIPTCALL_ROLL`, D-R2
+    /// B), and is otherwise judged as a plain add of its base. A leveled
+    /// list's add that carries no landing is refused by name (the record
+    /// never holds the list), any other form must be an item and the count
+    /// a Papyrus Int above zero. An add is recorded whole, but never past the
+    /// record's count bound (u32, over all the form's stacks), and one that
+    /// needs a new stack is refused once the record holds
+    /// [`INVENTORY_STACKS`] (`E_SCRIPTCALL_FULL`); a removal into a
+    /// container the player holds open folds (its PutItem moves the item,
+    /// both sides), one of an item the open overlay holds takes it from
+    /// there (the beast form's skin), and any other takes at most what the
+    /// record holds, a removal of what it lacks folding.
     fn items(&mut self, player: u32, row: Row, form: u32, facts: Facts) -> Verdict {
+        if row == Row::AddItem && facts.landing_of != 0 && !facts.in_reach {
+            return Verdict::Refuse(Code::Roll, format!("{form:x} is no base the leveled list {:x} can roll (its entries, nested lists followed): that landing is not recorded", facts.landing_of));
+        }
         if row == Row::AddItem && facts.leveled {
-            return Verdict::Refuse(Code::Leveled, format!("{form:x} is a leveled list (LVLI): what landed is the engine's roll, which the report does not carry, so nothing is written (D-R1 C's named gap)"));
+            return Verdict::Refuse(Code::Leveled, format!("{form:x} is a leveled list (LVLI) and the report carries no landing (scriptLeveledLandings off on the seat): nothing is written"));
         }
         if !facts.kind {
             return Verdict::Refuse(Code::Args, format!("{form:x} is no {} record, the form {}.{row:?} takes", row.kind(), row.class()));
@@ -534,6 +563,7 @@ mod tests {
         assert_eq!([Row::AddItem, Row::RemoveItem].map(Row::kind), ["item", "item"]);
         assert_eq!(Code::Leveled.name(), "E_SCRIPTCALL_LEVELED");
         assert_eq!(Code::Full.name(), "E_SCRIPTCALL_FULL");
+        assert_eq!(Code::Roll.name(), "E_SCRIPTCALL_ROLL");
     }
 
     // Eli's D-R1 C, x-acting-frame 20261110-072506's fragment: A Lovely
@@ -562,10 +592,11 @@ mod tests {
         // with no room left folds
         assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], gold(u32::MAX - 10, 25)), Verdict::Items(10));
         assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], gold(u32::MAX, 25)), Verdict::Fold);
-        // a leveled list: refused by name, the record never holds the list
-        // (LItemFoodCabbage75 0x10bf6a, unit/LeveledListUtilsTest.cpp)
+        // a leveled list whose report carries no landing: refused by name,
+        // the record never holds the list (LItemFoodCabbage75 0x10bf6a,
+        // unit/LeveledListUtilsTest.cpp)
         match o.judge(ARIADNE, Row::AddItem, 0x10_bf6a, &[], Facts { leveled: true, kind: false, ..gold(0, 1) }) {
-            Verdict::Refuse(code, why) => assert_eq!((code, why.as_str()), (Code::Leveled, "10bf6a is a leveled list (LVLI): what landed is the engine's roll, which the report does not carry, so nothing is written (D-R1 C's named gap)")),
+            Verdict::Refuse(code, why) => assert_eq!((code, why.as_str()), (Code::Leveled, "10bf6a is a leveled list (LVLI) and the report carries no landing (scriptLeveledLandings off on the seat): nothing is written")),
             other => panic!("not refused: {other:?}"),
         }
         // the kind, the count's bound, the form
@@ -604,6 +635,49 @@ mod tests {
         assert!(matches!(o.judge(ARIADNE, Row::AddItem, 0x10_bf6a, &[], Facts { leveled: true, kind: false, ..full }), Verdict::Refuse(Code::Leveled, _)));
         assert!(matches!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], Facts { count: None, ..full }), Verdict::Refuse(Code::Args, _)));
         assert_eq!(o.judge(ARIADNE, Row::RemoveItem, GOLD, &[], Facts { held_count: 25, ..full }), Verdict::Items(25));
+    }
+
+    // D-R1 C's leveled gap (thuum train 52): MS01's stage 39 reward,
+    // AddItem(LvlQuestReward02Medium 0xc0405, 1) on the seat's own player,
+    // whose roll landed Gold001 0xf x400 (x-additem-functor 20261110-151634;
+    // the list's five entries are all Gold001, Skyrim.esm read with
+    // lab/esm.py, 2026-11-10); IronSword 0x12eb7 is no base it can roll
+    const REWARD: u32 = 0xc_0405;
+    const IRON_SWORD: u32 = 0x1_2eb7;
+
+    fn landing(held_count: u32, count: u32, in_reach: bool) -> Facts {
+        Facts { landing_of: REWARD, in_reach, ..gold(held_count, count) }
+    }
+
+    #[test]
+    fn a_landing_the_list_can_roll_is_recorded_as_a_plain_add_and_any_other_is_refused_by_name() {
+        let mut o = PlayerOverlays::default();
+        // in reach: the base recorded whole, a plain add of it
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], landing(140, 400, true)), Verdict::Items(400));
+        // a base the list cannot roll: refused by name, ahead of every other
+        // judgment (a list named as a landing is no base either)
+        match o.judge(ARIADNE, Row::AddItem, IRON_SWORD, &[], landing(0, 1, false)) {
+            Verdict::Refuse(code, why) => assert_eq!((code, why.as_str()), (Code::Roll, "12eb7 is no base the leveled list c0405 can roll (its entries, nested lists followed): that landing is not recorded")),
+            other => panic!("not refused: {other:?}"),
+        }
+        assert!(matches!(o.judge(ARIADNE, Row::AddItem, 0x10_bf6a, &[], Facts { leveled: true, kind: false, ..landing(0, 1, false) }), Verdict::Refuse(Code::Roll, _)));
+        assert!(matches!(o.judge(ARIADNE, Row::AddItem, IRON_SWORD, &[], Facts { stacks: INVENTORY_STACKS, new_stack: true, ..landing(0, 1, false) }), Verdict::Refuse(Code::Roll, _)));
+        // the leveled call that carries no landing keeps its refusal
+        match o.judge(ARIADNE, Row::AddItem, REWARD, &[], Facts { leveled: true, kind: false, ..gold(0, 1) }) {
+            Verdict::Refuse(code, why) => assert_eq!((code, why.as_str()), (Code::Leveled, "c0405 is a leveled list (LVLI) and the report carries no landing (scriptLeveledLandings off on the seat): nothing is written")),
+            other => panic!("not refused: {other:?}"),
+        }
+        // the rest as for a plain add: the stacks' cap, the u32 room, the
+        // kind, the count
+        let full = Facts { stacks: INVENTORY_STACKS, new_stack: true, ..landing(0, 400, true) };
+        assert!(matches!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], full), Verdict::Refuse(Code::Full, _)));
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], Facts { new_stack: false, ..full }), Verdict::Items(400));
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], landing(u32::MAX - 10, 400, true)), Verdict::Items(10));
+        assert_eq!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], landing(u32::MAX, 400, true)), Verdict::Fold);
+        assert!(matches!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], Facts { kind: false, ..landing(0, 400, true) }), Verdict::Refuse(Code::Args, _)));
+        assert!(matches!(o.judge(ARIADNE, Row::AddItem, GOLD, &[], Facts { count: None, ..landing(0, 400, true) }), Verdict::Refuse(Code::Args, _)));
+        // a removal reads no landing (the edge refuses one on RemoveItem)
+        assert_eq!(o.judge(ARIADNE, Row::RemoveItem, GOLD, &[], Facts { landing_of: REWARD, ..gold(25, 10) }), Verdict::Items(10));
     }
 
     #[test]

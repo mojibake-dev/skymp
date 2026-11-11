@@ -2302,6 +2302,15 @@ mod ffi {
         /// form with no extra data, unworn: Inventory::AddItems' match for a
         /// plain add), so the add appends a new one.
         new_stack: bool,
+        /// For one landing of a leveled AddItem's roll (ScriptCall's
+        /// `landed`, SCHEMA_VERSION 44; thuum D-R1 C's leveled gap, train
+        /// 52), judged with the landing's base as the form: the leveled list
+        /// the call named. 0 for every other call.
+        landing_of: u32,
+        /// The landing's base is one that list can roll, a non-list base
+        /// among its entries with nested lists followed
+        /// (PartOne::LeveledReach over LeveledListUtils::Reach; D-R2 B).
+        in_reach: bool,
     }
 
     /// A player's overlay (thuum ADR-068 D-T1 A, wire-rules
@@ -2338,9 +2347,10 @@ mod ffi {
         /// The refusal's stable name (E_SCRIPTCALL_ARGS, a form of another
         /// kind than the row's or a count that lands nothing;
         /// E_SCRIPTCALL_UNNAMED; E_SCRIPTCALL_RACE; E_SCRIPTCALL_LEVELED, a
-        /// leveled list's add; E_SCRIPTCALL_FULL, an add needing a new stack
-        /// once the record holds the wire's stacks in one inventory; or
-        /// E_SCRIPTCALL_ROW for a native that is none
+        /// leveled list's add that carries no landing; E_SCRIPTCALL_FULL, an
+        /// add needing a new stack once the record holds the wire's stacks
+        /// in one inventory; E_SCRIPTCALL_ROLL, a landing whose base the
+        /// list cannot roll; or E_SCRIPTCALL_ROW for a native that is none
         /// of the nine), empty otherwise.
         name: String,
         /// Why, for the log; empty otherwise.
@@ -3326,9 +3336,11 @@ mod ffi {
         /// SetRace, AddSpell, RemoveSpell, AddShout, RemoveShout, EquipItem
         /// and ChangeHeadPart, ObjectReference's AddItem and RemoveItem,
         /// names without case) by `player`'s seat naming `form` (its first
-        /// argument's form id, 0 for None), over the `properties` of the
-        /// calling script's attachments (none for AddItem and RemoveItem,
-        /// which have no bound) and the record's `facts`.
+        /// argument's form id, 0 for None; for one landing of a leveled
+        /// AddItem's roll, the landing's base, `facts.landing_of` naming the
+        /// list), over the `properties` of the calling script's attachments
+        /// (none for AddItem and RemoveItem, which have no bound) and the
+        /// record's `facts`.
         fn player_own_judge(self: &mut PlayerOverlays, player: u32, cls: &str, func: &str, form: u32, properties: &[ScriptPropertyRow], facts: &PlayerOwnFacts) -> PlayerOwnVerdict;
         /// The overlay `player` wears now (`open` false for none), for its
         /// figure's CreateActor and UpdateAppearance and the equipment gate.
@@ -5898,7 +5910,7 @@ impl PlayerOverlays {
             };
         };
         let named: Vec<player_own::Named> = properties.iter().map(|p| player_own::Named { form: p.form, members: p.members.clone() }).collect();
-        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind, race_valid: facts.race_valid, leveled: facts.leveled, held_count: facts.held_count, count: player_own::item_count(facts.count), into_held_open: facts.into_held_open, stacks: facts.stacks, new_stack: facts.new_stack };
+        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind, race_valid: facts.race_valid, leveled: facts.leveled, held_count: facts.held_count, count: player_own::item_count(facts.count), into_held_open: facts.into_held_open, stacks: facts.stacks, new_stack: facts.new_stack, landing_of: facts.landing_of, in_reach: facts.in_reach };
         let (code, name, why, ended, count) = match self.0.judge(player, row, form, &named, f) {
             player_own::Verdict::Record { ended } => (0, "", String::new(), ended, 0),
             player_own::Verdict::Items(n) => (0, "", String::new(), None, n),
@@ -6847,7 +6859,7 @@ mod tests {
         let npc = s.judge(at.row, &[race], &ScriptCallFacts { self_id: 0x800a6, ..facts }, 0);
         assert_eq!((npc.code, npc.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
         let lists = [ScriptPropertyRow { form: 0x0d00_1000, members: vec![0x13746, 0x13745] }, ScriptPropertyRow { form: 0x0d00_1001, members: vec![0x88794, 0x88845] }];
-        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 0, count: 0.0, into_held_open: false, stacks: 0, new_stack: false };
+        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 0, count: 0.0, into_held_open: false, stacks: 0, new_stack: false, landing_of: 0, in_reach: false };
         let mut overlays = new_player_overlays();
         let v = overlays.player_own_judge(0xff00_0001, "Actor", "SetRace", 0x88845, &lists, &khajiit);
         assert_eq!((v.code, v.name.as_str(), v.ended.open, v.overlay.open), (0, "", false, false));
@@ -6918,13 +6930,32 @@ mod tests {
         // bound is the wire's, so every SetInventory and CreateActor of the
         // player still carries its whole inventory
         assert_eq!(player_own::INVENTORY_STACKS, wire_schema::cap::INVENTORY);
-        let gold = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 40, count: 25.0, into_held_open: false, stacks: wire_schema::cap::INVENTORY, new_stack: true };
+        let gold = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 40, count: 25.0, into_held_open: false, stacks: wire_schema::cap::INVENTORY, new_stack: true, landing_of: 0, in_reach: false };
         let mut overlays = new_player_overlays();
         let full = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &gold);
         assert_eq!((full.code, full.name.as_str(), full.count), (4, "E_SCRIPTCALL_FULL", 0));
         assert!(full.why.contains("4096 stacks"), "{}", full.why);
         let joins = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &PlayerOwnFacts { new_stack: false, ..gold });
         assert_eq!((joins.code, joins.count), (0, 25));
+    }
+
+    #[test]
+    fn a_leveled_rolls_landing_crosses_as_a_plain_add_of_its_base_and_one_its_list_cannot_roll_is_refused_by_name() {
+        // thuum D-R1 C's leveled gap (train 52): MS01's reward
+        // LvlQuestReward02Medium 0xc0405, whose roll landed Gold001 0xf x400,
+        // judged with the base as the form and the list beside it; IronSword
+        // 0x12eb7 is no base the list can roll (D-R2 B)
+        let landing = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 140, count: 400.0, into_held_open: false, stacks: 12, new_stack: false, landing_of: 0xc0405, in_reach: true };
+        let mut overlays = new_player_overlays();
+        let recorded = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &landing);
+        assert_eq!((recorded.code, recorded.name.as_str(), recorded.count), (0, "", 400));
+        let rolled = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0x12eb7, &[], &PlayerOwnFacts { in_reach: false, count: 1.0, ..landing });
+        assert_eq!((rolled.code, rolled.name.as_str(), rolled.count), (4, "E_SCRIPTCALL_ROLL", 0));
+        assert_eq!(rolled.why, "12eb7 is no base the leveled list c0405 can roll (its entries, nested lists followed): that landing is not recorded");
+        // the call itself with no landing keeps its refusal
+        let unreported = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xc0405, &[], &PlayerOwnFacts { landing_of: 0, in_reach: false, leveled: true, kind: false, count: 1.0, ..landing });
+        assert_eq!((unreported.code, unreported.name.as_str()), (4, "E_SCRIPTCALL_LEVELED"));
+        assert!(unreported.why.contains("the report carries no landing"), "{}", unreported.why);
     }
 
     #[test]

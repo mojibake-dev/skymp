@@ -41,6 +41,7 @@
 
 #include "ActionListener.h"
 #include "FormCallbacks.h"
+#include "LeveledListUtils.h"
 #include "MessageSerializerFactory.h"
 #include "OpenSSLSigner.h"
 #include "PacketParser.h"
@@ -375,6 +376,10 @@ struct PartOne::Impl
   const std::unordered_map<
     std::string, std::vector<PartOne::ScriptAttachment>>* scriptAttachments =
     nullptr;
+  // D-R1 C's leveled gap (train 52): each leveled list's reach as a landing
+  // first asked for it, by the list's form id (only lists of the game files:
+  // the caller checks the form is an LVLI first), cleared at AttachEspm
+  std::unordered_map<uint32_t, std::vector<uint32_t>> leveledReach;
 
   // the objects the server places at an accepted cast of a listed spell,
   // and every set standing (thuum docs/verbs/spell-placed-object.md,
@@ -837,6 +842,8 @@ void PartOne::AttachEspm(espm::Loader* espm)
   // and the R1 bound's script attachments, read here and not at a seat's
   // first call (the fresh review's note 3)
   pImpl->scriptAttachments = &ScriptAttachmentIndexOf(worldState);
+  // a leveled list's reach is read again from these game files
+  pImpl->leveledReach.clear();
 }
 
 bool PartOne::FlushSaves(std::chrono::milliseconds budget)
@@ -4457,6 +4464,23 @@ bool PartOne::QuestAttachmentLive(uint32_t questId)
   return std::any_of(stages.begin(), stages.end(), [&](const auto& stage) {
     return SameForm(stage.quest, quest);
   });
+}
+
+const std::vector<uint32_t>& PartOne::LeveledReach(uint32_t list)
+{
+  static const std::vector<uint32_t> kNone;
+  if (!HasEspm() || list == 0) {
+    return kNone;
+  }
+  auto it = pImpl->leveledReach.find(list);
+  if (it == pImpl->leveledReach.end()) {
+    auto& browser = GetEspm().GetBrowser();
+    it = pImpl->leveledReach
+           .emplace(list,
+                    LeveledListUtils::Reach(browser, browser.LookupById(list)))
+           .first;
+  }
+  return it->second;
 }
 
 bool PartOne::HeadPartFitsRace(uint32_t part, uint32_t race)

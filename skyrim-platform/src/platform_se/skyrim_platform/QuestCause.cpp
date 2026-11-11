@@ -181,6 +181,37 @@ uint64_t QuestCause::NowMs()
       .count());
 }
 
+std::optional<int32_t> QuestCause::WordMade(int32_t word, bool running,
+                                            bool startsEnabled)
+{
+  if (word >= 0 && word <= 0xFFFF) {
+    return word;
+  }
+  switch (word) {
+    case kStart:
+      if (!running) {
+        return kStart;
+      }
+      break;
+    case kStop:
+      if (running) {
+        return kStop;
+      }
+      break;
+    case kReset:
+      if (running && !startsEnabled) {
+        return kStop;
+      }
+      if (!running && startsEnabled) {
+        return kStart;
+      }
+      break;
+    default:
+      break;
+  }
+  return std::nullopt;
+}
+
 QuestCause::Root QuestCause::Classify(std::string_view script,
                                       std::string_view function, Self self)
 {

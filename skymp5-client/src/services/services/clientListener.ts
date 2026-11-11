@@ -263,11 +263,17 @@ declare module "skyrimPlatform" {
     // seat's own act names for the quest's next start (-1), stop (-2) or
     // stage before the engine makes it, for ttlMs, read as a script call's
     // mark is; ConsoleCommandsService marks a quest command the player
-    // typed. False, nothing stored, for a quest 0, a stage outside -2 to
-    // 65535, a cause other than 'world' or 'seat', a root past 257 bytes or
-    // outside [A-Za-z0-9_.], or a ttl outside 1 to 60000; an older platform
-    // has none, and its use is guarded
-    function markQuestCause(questId: number, stage: number, cause: 'world' | 'seat', root: string, ttlMs: number): boolean;
+    // typed. Since train 52 the platform stores the word the request makes
+    // by the quest's run and its Start Game Enabled flag, read there
+    // (QuestCause::WordMade: a stage itself, a start of a stopped quest, a
+    // stop of a running one, a typed reset's (-3) stop or start), and
+    // answers what it did: marked the word stored or null when the request
+    // makes none, beside the run and the flag it read. Null, nothing stored,
+    // for a quest 0, a stage outside -3 to 65535, a cause other than 'world'
+    // or 'seat', a root past 257 bytes or outside [A-Za-z0-9_.], a ttl
+    // outside 1 to 60000, or a quest id no quest has; an older platform has
+    // none, and its use is guarded
+    function markQuestCause(questId: number, stage: number, cause: 'world' | 'seat', root: string, ttlMs: number): { marked: number | null; running: boolean; startsEnabled: boolean } | null;
     function setPlayerGlobals(globalFormIds: number[]): boolean;
     // rung 5, the ownership rule for the per-player quests (the server's
     // player-class quests, QuestStage 57's login `player`): this seat runs its

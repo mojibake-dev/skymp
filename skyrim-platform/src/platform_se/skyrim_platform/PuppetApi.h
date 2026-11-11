@@ -54,10 +54,17 @@ Napi::Value GetActingPlayer(const Napi::CallbackInfo& info);
 // before the engine makes it, for ttlMs: skymp5-client's console service
 // marks a quest command the player typed. QuestCause::Mark's table, so the
 // word's event takes it once and the stage's event and the quest stage sink
-// read it, as they read a script call's mark. The JS thread alone, no game
-// call. False, nothing stored, for a quest 0, a stage outside -2 to 65535, a
-// cause other than "world" or "seat", a root past QuestCause::kMaxRootBytes
-// or outside [A-Za-z0-9_.], or a ttl outside 1 to QuestCause::kMaxMarkMs
+// read it, as they read a script call's mark. Since train 52 (Fix 3) the word
+// marked is QuestCause::WordMade's for the quest's run and Start Game
+// Enabled flag, read here (a form-table read and two flag reads on the JS
+// thread, no Papyrus call): a stage itself, a start only for a quest not
+// running, a stop only for a running one, and a typed reset (-3) the word it
+// makes. Answers { marked, running, startsEnabled }, marked the word stored
+// (a stage, -1 or -2) or null when the request makes none; null, nothing
+// stored, for a quest 0, a stage outside -3 to 65535, a cause other than
+// "world" or "seat", a root past QuestCause::kMaxRootBytes or outside
+// [A-Za-z0-9_.], a ttl outside 1 to QuestCause::kMaxMarkMs, or a quest id no
+// TESQuest has
 Napi::Value MarkQuestCause(const Napi::CallbackInfo& info);
 // setPlayerGlobals(globalFormIds): PQ-3's set, the globals each player keeps
 // (the PlayerGlobals watch list), replaced whole; a scoped stack's

@@ -1579,6 +1579,9 @@ QuestCause::Self SelfKindOf(std::uint32_t subject)
 // quest and a Stop on a stopped one change nothing and raise no event, so
 // they mark nothing: an untaken mark would lend its cause to the quest's
 // next engine start or stop and the stages riding it (the review's note 4).
+// Both tests are QuestCause::WordMade's, the one rule the console's typed
+// commands share (PuppetApi.cpp markQuestCause, train 52's Fix 3); a quest
+// the form table holds no TESQuest for marks its word as before.
 // SetCurrentStageID's stage is its first argument, read as PropagateScope
 // reads it; one outside the engine's u16 marks nothing. Never the platform's
 // own call: OnCall's step (b) returns before
@@ -1615,9 +1618,8 @@ void MarkQuestCause(std::size_t row, const RowInfo& info,
   }
   const auto* questForm = RE::TESForm::LookupByID<RE::TESQuest>(quest);
   const bool running = questForm && questForm->IsEnabled();
-  if (questForm &&
-      ((info.quest == QuestRow::Start && running) ||
-       (info.quest == QuestRow::Stop && !running))) {
+  const bool startsEnabled = questForm && questForm->StartsEnabled();
+  if (questForm && !QuestCause::WordMade(stage, running, startsEnabled)) {
     return;
   }
   bool runWorld = false;
@@ -1657,7 +1659,8 @@ void MarkQuestCause(std::size_t row, const RowInfo& info,
   }
   const bool world = stage < 0 ? runWorld : carriedWorld;
   QuestCause::Mark(quest, stage, { world, root });
-  if (info.quest == QuestRow::Stage && questForm && !running) {
+  if (info.quest == QuestRow::Stage && questForm &&
+      QuestCause::WordMade(QuestCause::kStart, running, startsEnabled)) {
     QuestCause::Mark(quest, QuestCause::kStart, { runWorld, root });
   }
   QuestCause::Count(world, carried);

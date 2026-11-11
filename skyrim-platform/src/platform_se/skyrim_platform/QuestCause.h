@@ -61,6 +61,32 @@ namespace QuestCause {
 // a pair's stage beside a quest stage's 0 to 65535 (ActingScope's spelling)
 constexpr int32_t kStart = -1;
 constexpr int32_t kStop = -2;
+// thuum train 52, Fix 3 (the console arm's home): a typed resetquest, an
+// input word alone (markQuestCause's, PuppetApi.cpp), never a table key: the
+// word it makes is a start or a stop (WordMade). ActingScope's kEntry -3 is
+// another table's
+constexpr int32_t kReset = -3;
+
+// the word a request makes on a quest whose run is `running`
+// (TESQuest::IsEnabled, kEnabled; CommonLibSSE-NG src/RE/T/TESQuest.cpp:42-45,
+// include/RE/T/TESQuest.h:26) and whose Start Game Enabled flag is
+// `startsEnabled` (TESQuest::StartsEnabled, kStartsEnabled; TESQuest.cpp:
+// 112-115, TESQuest.h:30): a start of a stopped quest, a stop of a running
+// one, a reset's stop of a running quest that is not Start Game Enabled or
+// its start of a stopped one that is, nothing otherwise; a stage (0 to
+// 65535) always itself; nothing for any other word. One rule for the seam's
+// Quest rows (ScriptNatives.cpp MarkQuestCause: a Start of a running quest
+// or a Stop of a stopped one changes nothing and raises no event) and the
+// console's typed commands (markQuestCause). Game-free: the caller reads the
+// two flags. HYPOTHESIS H-RQ1 (the reset's half): the console's ResetQuest
+// handler stops a running quest that is not Start Game Enabled and starts a
+// stopped one that is, and nothing else (the static read Fix C, fork
+// ab02d45c, cites); CommonLib's own TESQuest::ResetAndUpdate
+// (TESQuest.cpp:74-89: Reset, then a start-up or a shut-down when IsEnabled
+// differs from StartsEnabled) reads otherwise; x-console-arm v1's resetquest
+// of a running Start Game Enabled quest reads it
+std::optional<int32_t> WordMade(int32_t word, bool running,
+                                bool startsEnabled);
 
 // a mark's life: the acting scope's chained 10 s, so a stage the VM queues on
 // an unstarted quest still finds it (UNMEASURED)

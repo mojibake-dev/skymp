@@ -28,7 +28,10 @@
 #include <cfloat>
 #include <chrono>
 #include <cmath>
+#include <fmt/format.h>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -444,8 +447,23 @@ Napi::Value PuppetApi::GetActingPlayer(const Napi::CallbackInfo& info)
 // what the fragment sets carries the world's cause too. ttlMs is the mark's
 // life (the engine queues a typed start or stop to the story teller's next
 // pass, so its event comes after the handler: a static read of the five
-// commands' handlers, HYPOTHESIS). setActingPlayer's shape: the JS thread
-// alone, no game call
+// commands' handlers, HYPOTHESIS).
+// Since train 52 (Fix 3, the console arm's home) the rule of which word a
+// request makes is the seam's own, QuestCause::WordMade, read here against
+// the engine's flags: the quest looked up (TESForm::LookupByID<TESQuest>,
+// under the form table's own lock) and its run and Start Game Enabled flag
+// read (TESQuest::IsEnabled and StartsEnabled, CommonLibSSE-NG
+// src/RE/T/TESQuest.cpp:42-45 and :112-115), on the JS thread as
+// getTrapRole reads its reference (above), while the console's own thread
+// waits for this execute in PushAndWait (ConsoleApi.cpp
+// ConsoleComand_Execute), so the flags read are the ones the engine's
+// handler reads next (HYPOTHESIS H-QR1: a VM thread's own Quest.Start in
+// that window races, as the seam's own read races). No Papyrus call. A stage
+// marks itself; a start (-1), a stop (-2) or a typed reset (-3,
+// QuestCause::kReset) marks the word it makes, or nothing. The answer says
+// what it did: { marked, running, startsEnabled }, marked the word marked
+// (a stage, -1 or -2) or null when the request makes none; null, nothing
+// stored, for a refused shape or a quest id no TESQuest has
 Napi::Value PuppetApi::MarkQuestCause(const Napi::CallbackInfo& info)
 {
   const auto questId = NapiHelper::ExtractUInt32(info[0], "questId");
@@ -459,19 +477,38 @@ Napi::Value PuppetApi::MarkQuestCause(const Napi::CallbackInfo& info)
       ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
        (c >= '0' && c <= '9') || c == '_' || c == '.');
   }
-  if (questId == 0 || stage < QuestCause::kStop || stage > 0xFFFF ||
+  if (questId == 0 || stage < QuestCause::kReset || stage > 0xFFFF ||
       (cause != "world" && cause != "seat") || !shaped || ttlMs == 0 ||
       ttlMs > QuestCause::kMaxMarkMs) {
-    return Napi::Boolean::New(info.Env(), false);
+    return info.Env().Null();
   }
-  QuestCause::Verdict verdict;
-  verdict.world = cause == "world";
-  verdict.root = root;
-  QuestCause::Mark(questId, stage, verdict, ttlMs);
-  logger::trace("[verb:quest-stage] markQuestCause({:x}, {}): cause {} (root "
-                "{}), marked for {} ms",
-                questId, stage, cause, root.empty() ? "none" : root, ttlMs);
-  return Napi::Boolean::New(info.Env(), true);
+  const auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(questId);
+  if (!quest) {
+    return info.Env().Null();
+  }
+  const bool running = quest->IsEnabled();
+  const bool startsEnabled = quest->StartsEnabled();
+  const std::optional<int32_t> made =
+    QuestCause::WordMade(stage, running, startsEnabled);
+  Napi::Value marked = info.Env().Null();
+  if (made) {
+    QuestCause::Verdict verdict;
+    verdict.world = cause == "world";
+    verdict.root = root;
+    QuestCause::Mark(questId, *made, verdict, ttlMs);
+    marked = Napi::Number::New(info.Env(), *made);
+  }
+  logger::trace(
+    "[verb:quest-stage] markQuestCause({:x}, {}): {} (running {}, "
+    "Start Game Enabled {}; cause {}, root {}, for {} ms)",
+    questId, stage,
+    made ? fmt::format("marked {}", *made) : std::string("nothing marked"),
+    running, startsEnabled, cause, root.empty() ? "none" : root, ttlMs);
+  auto res = Napi::Object::New(info.Env());
+  res.Set("marked", marked);
+  res.Set("running", Napi::Boolean::New(info.Env(), running));
+  res.Set("startsEnabled", Napi::Boolean::New(info.Env(), startsEnabled));
+  return res;
 }
 
 // thuum ADR-068 rung 5, PQ-3 (docs/research/rung5-quests-2026-11-09.md

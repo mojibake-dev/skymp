@@ -808,10 +808,11 @@ TEST_CASE("A leveled AddItem on the reporter's own player records the roll "
 // landings in one edit (MpObjectReference::AddPlainItems) and raises one
 // OnItemAdded per landing. LItemSpecialLoot100 0x1031d0 reaches 3,632 bases
 // (ARMO, BOOK and WEAP; lab/esm.py's walk of the lab's cached Skyrim.esm,
-// Dawnguard.esm and Dragonborn.esm, 2026-11-11: 141 of their 3,075 LVLIs
-// reach 255 or more), so a seat can name 255 landings its list can roll; the
-// test takes them from the server's own reach. The tempered iron daggers
-// 0x1397e fill the record as Fix B's case does
+// Dawnguard.esm and Dragonborn.esm, 2026-11-11: 215 of the 3,812 LVLIs the
+// three carry reach 255 or more, 141 of the 3,075 numbered in Skyrim.esm), so
+// a seat can name 255 landings its list can roll; the test takes them from
+// the server's own reach. The tempered iron daggers 0x1397e fill the record
+// as Fix B's case does
 namespace {
 constexpr uint32_t kSpecialLoot = 0x1031d0;
 constexpr uint32_t kTemperedDagger = 0x1397e;
@@ -882,9 +883,9 @@ std::vector<size_t> InventoriesSentTo(PartOne& p, Networking::UserId user)
 }
 }
 
-TEST_CASE("A leveled roll's 255 landings are written in one edit of the "
-          "reporter's record, with one OnItemAdded per landing and one "
-          "inventory update, and a batch stops at the wire's 4096 stacks "
+TEST_CASE("A leveled roll's 255 landings are all in the reporter's record "
+          "before its first OnItemAdded, with one OnItemAdded per landing and "
+          "one inventory update, and a batch stops at the wire's 4096 stacks "
           "landing by landing as plain adds do",
           "[PlayerOwn][espm]")
 {
@@ -925,9 +926,9 @@ TEST_CASE("A leveled roll's 255 landings are written in one edit of the "
     REQUIRE(turned.GetInventory().GetItemCount(bases[i]) == i + 1);
   }
   // one OnItemAdded per landing, in the call's order, each naming its base
-  // and its count, and every one fired with the whole roll already in the
-  // record: the record took the call in one edit (the per-landing path's
-  // AddItem fired its first event with one landing in)
+  // and its count, and every landing in the record before the first
+  // OnItemAdded fired (the per-landing path's AddItem fired its first event
+  // with one landing in)
   REQUIRE(items->events.size() == 255);
   for (size_t i = 0; i < bases.size(); ++i) {
     REQUIRE(items->events[i].base == bases[i]);

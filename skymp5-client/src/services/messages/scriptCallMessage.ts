@@ -27,4 +27,13 @@ export interface ScriptCallMessage {
     caller: string;  // the calling script, the frame below the native's ("defaultPuzzlePillarScript")
     handler: string; // the calling function in it ("OnActivate")
     latent: boolean; // whether the native is latent (the server relays a latent row as its non-latent twin)
+    // since SCHEMA_VERSION 44 (thuum train 52, D-R1 C's leveled gap): on an
+    // AddItem of a leveled list on this seat's own player (selfId 0x14)
+    // alone, what the engine's roll put in that player's inventory (the
+    // platform's read of the call's AddItemFunctor), each base once by its
+    // id (a load-order form, the same on every seat and the server) with
+    // its count; empty when the roll landed nothing; absent on every other
+    // call. R2, the seat's word: the server records each landing as a plain
+    // grant of a base the list can roll (E_SCRIPTCALL_ROLL otherwise)
+    landed?: { item: number; count: number }[];
 }

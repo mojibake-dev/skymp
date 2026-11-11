@@ -199,6 +199,12 @@ declare module "skyrimPlatform" {
         handler: string;
         latent: boolean;
         stackId: number;
+        // train 52 (D-R1 C's leveled gap): on an AddItem of a leveled list on
+        // this seat's own player alone, what the engine's roll put in that
+        // player's inventory (the call's AddItemFunctor's container events),
+        // each base once, its count summed; empty when the roll landed
+        // nothing; absent from every other call and from an older platform
+        landed?: { formId: number; count: number }[];
     }
     interface ScriptCallsEvent {
         calls: ScriptCall[];

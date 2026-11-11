@@ -51,8 +51,43 @@ void Tick();
 // at a game load (PapyrusTESModPlatform.cpp's TESLoadGameEvent sink, beside
 // the other tables that name the old world): the seam's own such tables
 // cleared, train 52's effect helpers (Fix 2: a helper's id names the old
-// world's reference). No game call; threadsafe
+// world's reference) and its parked leveled AddItems (Fix 1: a stack id names
+// the old world's stack). No game call; threadsafe
 void ClearAtLoad();
+// thuum train 52, Fix 1 (D-R1 C's leveled gap; the plan's section 1.2: park,
+// note, close): a script's AddItem of a leveled list on the seat's own player
+// is parked at its call by its stack id (OnCall), and the window an
+// AddItemFunctor's operator() opens on its own thread for its stack
+// (Hooks.cpp's thunk; CommonLibSSE-NG include/RE/D/DelayFunctor.h:35, slot
+// 01, and :43, stackID) names the container events inside it as that
+// stack's roll (NoteContainerChange); its close queues the parked call into
+// the batch with the bases that landed (`landed`). The thread's previous
+// window comes back at the close, so a nested functor on one thread is safe.
+// Observe only: suppresses nothing. Cost: one thread_local write and read
+// per AddItemFunctor in the game, and a map lookup only while a call is
+// parked. HYPOTHESIS H-LR3: the functor's operator() and the events inside
+// it run on one OS thread with no fiber switch between them
+// (x-additem-functor 20261110-151634: its thread ids)
+struct FunctorWindow
+{
+  explicit FunctorWindow(std::uint32_t stackId);
+  ~FunctorWindow();
+  FunctorWindow(const FunctorWindow&) = delete;
+  FunctorWindow& operator=(const FunctorWindow&) = delete;
+
+private:
+  std::uint32_t stackId_ = 0;
+  std::uint32_t saved_ = 0;
+};
+// a container event's fields (EventHandler.cpp's TESContainerChangedEvent
+// sink, on the event's own thread; CommonLibSSE-NG
+// include/RE/T/TESContainerChangedEvent.h:11-14): noted onto the parked
+// call of the thread's open window when it is a new item (no old container)
+// in that call's self, a base, a positive count. One thread_local read on
+// every container event in the game outside a window (rule 9)
+void NoteContainerChange(std::uint32_t oldContainer,
+                         std::uint32_t newContainer, std::uint32_t base,
+                         std::int32_t count);
 // thuum docs/verbs/npc-fate.md (playtest 48): this frame's batch, when it
 // holds a call, raised on the update's task queue now, ahead of the task the
 // caller adds next: a death event's (EventHandler.cpp), so the script's call

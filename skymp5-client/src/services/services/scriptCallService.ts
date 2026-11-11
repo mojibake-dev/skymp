@@ -343,17 +343,27 @@ export class ScriptCallService extends ClientListener {
     // item's base against remoteServer.ts's inventory apply until
     // ownItemHoldMs past `now`, an add's surplus (keepSurplus) or a
     // removal's deficit (keepDeficit), so the apply never undoes the grant
-    // before the server's SetInventory carries it; a leveled list's id
-    // names no inventory entry and holds nothing. JS state alone
+    // before the server's SetInventory carries it. A leveled list's id names
+    // no inventory entry, so since train 52 an AddItem that carries `landed`
+    // (the platform's read of the roll) holds each landed base's surplus
+    // instead (HYPOTHESIS H-RW1: an apply in the tick before the hold is
+    // healed by the server's SetInventory echo). JS state alone
     private holdOwnItem(call: ScriptCall, now: number) {
         if (call.self !== 0x14 || call.cls !== "ObjectReference" || !ScriptCallService.playerItemRows.has(call.fn)) {
+            return;
+        }
+        const until = now + ScriptCallService.ownItemHoldMs;
+        if (call.fn === "AddItem" && call.landed !== undefined) {
+            for (const landing of call.landed) {
+                holdPcInventoryBase(landing.formId, keepSurplus, until);
+            }
             return;
         }
         const item = call.args[0];
         if (item === null || typeof item !== "object" || item.formId === 0) {
             return;
         }
-        holdPcInventoryBase(item.formId, call.fn === "AddItem" ? keepSurplus : keepDeficit, now + ScriptCallService.ownItemHoldMs);
+        holdPcInventoryBase(item.formId, call.fn === "AddItem" ? keepSurplus : keepDeficit, until);
     }
 
     private forget(entry: Outgoing) {
@@ -494,6 +504,12 @@ export class ScriptCallService extends ClientListener {
             handler: call.handler,
             latent: call.latent,
         };
+        // train 52 (D-R1 C's leveled gap): a leveled AddItem's roll as the
+        // platform read it landing on this seat's own player, each base by its
+        // id (a load-order form: the same on every seat and the server)
+        if (call.landed !== undefined) {
+            message.landed = call.landed.map((landing) => ({ item: landing.formId, count: landing.count }));
+        }
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
         if (call.kind === "look") {
             logLab("verb:traps", `trigger look ${(localIdToRemoteId(subject) || subject).toString(16)} ${call.cls}.${call.fn} reported (D-W2)`);

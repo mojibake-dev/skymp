@@ -40,6 +40,7 @@
 #include <fmt/format.h>
 #include <intrin.h>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -329,6 +330,13 @@ constexpr std::pair<const char*, const char*> kPlaceAtMeRow{ "ObjectReference",
 constexpr std::pair<const char*, const char*> kDeleteRow{ "ObjectReference",
                                                           "Delete" };
 
+// thuum train 52, Fix 1 (D-R1 C's leveled gap; the plan's section 1.3): the
+// row whose call of a leveled list on the seat's own player is parked until
+// its AddItemFunctor lands the roll, AddItem (FunctionsDump.txt: `AddItem(Form
+// akItemToAdd, Int aiCount, Bool abSilent)`, latent)
+constexpr std::pair<const char*, const char*> kAddItemRow{ "ObjectReference",
+                                                           "AddItem" };
+
 // at most 11 arguments (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
 // "native supports max 11")
 constexpr std::uint32_t kMaxArgs = 11;
@@ -372,6 +380,8 @@ struct RowInfo
   // (kDeleteRow)
   bool placeAtMe = false;
   bool deletes = false;
+  // train 52's Fix 1: AddItem's row (kAddItemRow)
+  bool addItem = false;
   // the declared return's kind (TypeInfo::GetUnmangledRawType)
   RE::BSScript::TypeInfo::RawType result =
     RE::BSScript::TypeInfo::RawType::kNone;
@@ -735,6 +745,15 @@ const RE::TESObjectREFR* CallerRefOf(const RE::BSScript::StackFrame* below)
                      ObjectOf(below->self));
 }
 
+// train 52's Fix 1: one base a leveled roll put in the seat's own player, and
+// how many (the wire's ItemDelta, positive here; wire-schema ScriptCall's
+// `landed`)
+struct Landing
+{
+  std::uint32_t formId = 0;
+  std::int32_t count = 0;
+};
+
 // one captured call of an owned self, the shared shape's Call; since rung 3
 // also the calling script's self and the touch mark, since rung 4 an alias
 // row's alias
@@ -758,6 +777,10 @@ struct QueuedCall
   std::optional<std::uint16_t> alias;
   // D-W2 A's look (OnFamilyCall), raised as kind "look"
   bool look = false;
+  // train 52's Fix 1: a parked leveled AddItem's roll as its AddItemFunctor
+  // landed it, each base once (empty when the roll landed nothing), raised
+  // as `landed`; none on every other call
+  std::optional<std::vector<Landing>> landed;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -820,7 +843,9 @@ Napi::Value ArgToJs(Napi::Env env, const CallArg& arg)
 // 3's touch (an owned state row's call, its args empty), "look" for D-W2's
 // look (a trap family trigger's own call on itself from its firing seat);
 // alias on rung 4's alias rows alone (ForceRefTo, Clear), absent from every
-// other call
+// other call; since train 52's Fix 1 landed, [{ formId, count }], on a parked
+// leveled AddItem on the seat's own player alone, absent from every other
+// call
 Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
 {
   const NativeRow& native = kRows[call.row];
@@ -843,6 +868,17 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   AddObjProperty(&obj, "stackId", call.stackId);
   if (call.alias) {
     AddObjProperty(&obj, "alias", *call.alias);
+  }
+  if (call.landed) {
+    auto landed = Napi::Array::New(env, call.landed->size());
+    for (uint32_t i = 0; i < static_cast<uint32_t>(call.landed->size()); ++i) {
+      auto landing = Napi::Object::New(env);
+      AddObjProperty(&landing, "formId", (*call.landed)[i].formId);
+      AddObjProperty(&landing, "count",
+                     static_cast<int>((*call.landed)[i].count));
+      landed.Set(i, landing);
+    }
+    obj.Set("landed", landed);
   }
   return obj;
 }
@@ -1145,19 +1181,20 @@ struct Marks
   // train 52's Fix 2: a PlaceAtMe whose result is this seat's local helper,
   // recorded once the original answers kCompleted (NoteHelper)
   bool placeHelper = false;
+  // train 52's Fix 1: a leveled AddItem parked by its stack id, let go when
+  // the original answers anything but kInProgress (no functor queued)
+  bool parked = false;
 };
 
-// one call queued from its frame into this frame's batch (the shared shape's
-// Call): its self (an alias row's quest, beside the alias's id), its
-// arguments read through the engine's accessor with the frame's page (found
-// here when the subject's read did not need it) and its caller; false,
-// counted " (frame mismatch)", when the arguments' page cannot be found
-bool QueueFromFrame(std::size_t row, const RowInfo& info,
-                    const RE::BSScript::Stack* stack,
-                    const RE::BSScript::StackFrame* top, std::uint32_t page,
-                    std::uint32_t self,
-                    std::optional<std::uint16_t> alias = std::nullopt,
-                    bool look = false)
+// one call built from its frame (the shared shape's Call): its self (an
+// alias row's quest, beside the alias's id), its arguments read through the
+// engine's accessor with the frame's page (found here when the subject's
+// read did not need it) and its caller; nothing, counted " (frame
+// mismatch)", when the arguments' page cannot be found
+std::optional<QueuedCall> CallFromFrame(
+  std::size_t row, const RowInfo& info, const RE::BSScript::Stack* stack,
+  const RE::BSScript::StackFrame* top, std::uint32_t page, std::uint32_t self,
+  std::optional<std::uint16_t> alias = std::nullopt, bool look = false)
 {
   QueuedCall call;
   call.row = row;
@@ -1173,7 +1210,7 @@ bool QueueFromFrame(std::size_t row, const RowInfo& info,
     }
     if (page == kNoPage) {
       Count(row, kCountFrameMismatch);
-      return false;
+      return std::nullopt;
     }
     for (std::uint32_t i = 0; i < info.params; ++i) {
       call.args[i] =
@@ -1183,8 +1220,313 @@ bool QueueFromFrame(std::size_t row, const RowInfo& info,
   NameCaller(top->previousFrame, call.caller, call.handler);
   const RE::TESObjectREFR* callerRef = CallerRefOf(top->previousFrame);
   call.callerSelf = callerRef ? callerRef->formID : 0;
-  QueueCall(std::move(call));
+  return call;
+}
+
+// one call queued from its frame into this frame's batch (CallFromFrame's);
+// false when it cannot be built
+bool QueueFromFrame(std::size_t row, const RowInfo& info,
+                    const RE::BSScript::Stack* stack,
+                    const RE::BSScript::StackFrame* top, std::uint32_t page,
+                    std::uint32_t self,
+                    std::optional<std::uint16_t> alias = std::nullopt,
+                    bool look = false)
+{
+  std::optional<QueuedCall> call =
+    CallFromFrame(row, info, stack, top, page, self, alias, look);
+  if (!call) {
+    return false;
+  }
+  QueueCall(std::move(*call));
   return true;
+}
+
+// thuum train 52, Fix 1 (D-R1 C's leveled gap; the plan's sections 1.2 and
+// 1.3: park, note, close). A script's AddItem of a leveled list on the
+// seat's own player (OnCall's step (e)) is parked here by its stack id
+// instead of queued: the native answers kInProgress with no container event,
+// and 3.0 to 3.4 ms later SkyrimScript::AddItemFunctor's operator() runs on a
+// worker thread with the call's stack id (DelayFunctor.h:43, stackID, equal
+// to the call's Stack::stackID six of six) and lands the roll inside it as
+// container events (the trace x-additem-functor 20261110-151634,
+// papyrus-events.md on r5b-docs :654-697). The functor's window
+// (ScriptNatives::FunctorWindow, Hooks.cpp's thunk) notes each add into the
+// call's self onto the parked call (NoteContainerChange), and its close
+// queues the call into the ordinary batch with what landed: each base once,
+// its count summed (saturating at the engine's int32), at most kMaxLanded
+// (the wire's cap::SCRIPT_CALL_LANDED); a base past it, or one the wire
+// cannot carry (at or above 0xff000000), is counted and never sent. A stack
+// waits on its latent call, so one stack id names one parked call. The
+// table: its own mutex, its size in an atomic for the lock-free empty test,
+// at most kMaxParked (the oldest let go with a line), each let go with a
+// line kParkMs after its park when no functor ran (a killed stack, a load
+// mid-wait), swept from Tick and cleared at a load (ClearAtLoad). The park
+// mutex is released before QueueCall takes the batch mutex, no engine
+// function is called under either, and the batch's flush is scheduled
+// through AddTickTask, whose queue takes its own lock
+// (viet/include/TaskQueue.h:18-22), so the functor's worker thread may queue.
+// HYPOTHESIS H-LR1: a list that rolls several entries (LVLF use all, or each
+// item in count) lands every one inside the functor (the trace read
+// one-entry rolls); H-LR4: the functor runs within kParkMs of its call while
+// a menu is open (60 s, not the trace's milliseconds, so a VM held back by a
+// menu does not expire a real reward; UNMEASURED)
+constexpr std::uint64_t kParkMs = 60'000;
+constexpr std::size_t kMaxParked = 64;
+constexpr std::size_t kMaxLanded = 255;
+
+struct Parked
+{
+  QueuedCall call;
+  std::vector<Landing> landed;
+  // bases past kMaxLanded, or at or above 0xff000000: noted, never sent
+  std::uint32_t overflow = 0;
+  std::uint64_t parkedMs = 0;
+};
+
+struct
+{
+  std::unordered_map<RE::VMStackID, Parked> calls;
+  std::mutex m;
+  std::atomic<std::size_t> size{ 0 };
+} g_park;
+
+// the window open on this thread: the stack of the AddItemFunctor whose
+// operator() runs here, 0 outside one (ScriptNatives::FunctorWindow)
+thread_local RE::VMStackID t_functorStack = 0;
+
+// the switch (scriptLeveledLandings, ClientSetting's; thuum
+// .claude/rules/native.md's kill switch), read once at kDataLoaded before
+// the replacement is installed and never written after; on unless false.
+// Off, nothing is parked: a leveled AddItem on the seat's own player crosses
+// at its call as before and the server refuses it E_SCRIPTCALL_LEVELED (the
+// lab's A/B), the functor's window opening and noting nothing
+bool g_leveledLandings = true;
+
+// the slot's read-back, once (ReadSlotOnce)
+std::atomic<bool> g_slotRead{ false };
+
+// the drop and expiry lines, one a minute, each with the count since the last
+constexpr std::uint64_t kDropLineMs = 60'000;
+std::atomic<std::uint64_t> g_dropLineMs{ 0 };
+std::atomic<std::uint32_t> g_dropsSince{ 0 };
+// the close lines: the first kCloseLines, then every hundredth
+constexpr std::uint64_t kCloseLines = 64;
+std::atomic<std::uint64_t> g_closes{ 0 };
+
+// a parked call as its lines name it: "<Class>.<Name> <list> on <self> (from
+// <caller>.<handler>), stack <id>"
+std::string ParkedName(const QueuedCall& call)
+{
+  const std::uint32_t list =
+    call.argCount > 0 && call.args[0].kind == CallArg::Kind::Form
+    ? call.args[0].formId
+    : 0;
+  return fmt::format("{}.{} {:x} on {:x} (from {}.{}), stack {}",
+                     kRows[call.row].cls, kRows[call.row].fn, list, call.self,
+                     call.caller, call.handler, call.stackId);
+}
+
+// a parked call let go with nothing reported, the line one a minute with the
+// count of such calls since the last line
+void DropLine(const QueuedCall& call, const char* why)
+{
+  g_dropsSince.fetch_add(1, std::memory_order_relaxed);
+  const std::uint64_t now = NowMs();
+  std::uint64_t last = g_dropLineMs.load(std::memory_order_relaxed);
+  if (last != 0 && now - last < kDropLineMs) {
+    return;
+  }
+  if (!g_dropLineMs.compare_exchange_strong(last, now)) {
+    return;
+  }
+  logger::info("[verb:scripts] own {}: {}, nothing reported ({} such since "
+               "the last line)",
+               ParkedName(call), why, g_dropsSince.exchange(0));
+}
+
+// H-LR2 (no plugin rewrites slot 01 after the thunk's write; SKSE took slot 1
+// of the cast handlers over the fork's own write, Hooks.cpp's note on
+// InstallCastAnswerSink): the slot read back once, at the first park, and a
+// warn line when it no longer holds the thunk, so a later write is never
+// silent; each parked call then expires with its line, and the server
+// refuses a leveled call that carries no landing as before
+void ReadSlotOnce()
+{
+  bool expected = false;
+  if (!g_slotRead.compare_exchange_strong(expected, true)) {
+    return;
+  }
+  if (!Hooks::AddItemFunctorSlotHolds()) {
+    logger::warn("[verb:scripts] AddItemFunctor's operator() slot 01 no "
+                 "longer holds the platform's thunk (a later write, H-LR2): a "
+                 "parked leveled AddItem expires unreported");
+  }
+}
+
+// a leveled AddItem parked by its stack id; a call already parked on the
+// stack, or the oldest past kMaxParked, let go with its line
+void Park(RE::VMStackID stackId, QueuedCall&& call)
+{
+  ReadSlotOnce();
+  std::optional<QueuedCall> displaced;
+  const char* why = "";
+  {
+    std::lock_guard<std::mutex> lock(g_park.m);
+    auto it = g_park.calls.find(stackId);
+    if (it != g_park.calls.end()) {
+      displaced = std::move(it->second.call);
+      why = "a later call on its stack parked over it";
+      g_park.calls.erase(it);
+    } else if (g_park.calls.size() >= kMaxParked) {
+      auto oldest = g_park.calls.begin();
+      for (auto jt = g_park.calls.begin(); jt != g_park.calls.end(); ++jt) {
+        if (jt->second.parkedMs < oldest->second.parkedMs) {
+          oldest = jt;
+        }
+      }
+      displaced = std::move(oldest->second.call);
+      why = "the park full, the oldest let go";
+      g_park.calls.erase(oldest);
+    }
+    Parked& parked = g_park.calls[stackId];
+    parked.call = std::move(call);
+    parked.parkedMs = NowMs();
+    g_park.size.store(g_park.calls.size());
+  }
+  if (displaced) {
+    DropLine(*displaced, why);
+  }
+}
+
+// the parked call of a stack taken out; nothing for a stack with none, one
+// atomic load while the park is empty
+std::optional<Parked> TakeParked(RE::VMStackID stackId)
+{
+  if (g_park.size.load(std::memory_order_relaxed) == 0) {
+    return std::nullopt;
+  }
+  std::lock_guard<std::mutex> lock(g_park.m);
+  const auto it = g_park.calls.find(stackId);
+  if (it == g_park.calls.end()) {
+    return std::nullopt;
+  }
+  std::optional<Parked> parked = std::move(it->second);
+  g_park.calls.erase(it);
+  g_park.size.store(g_park.calls.size());
+  return parked;
+}
+
+// a window's close (ScriptNatives::FunctorWindow): its stack's parked call
+// queued with its landing, the lock released first
+void CloseParked(RE::VMStackID stackId)
+{
+  std::optional<Parked> parked = TakeParked(stackId);
+  if (!parked) {
+    return;
+  }
+  const std::uint64_t n = g_closes.fetch_add(1) + 1;
+  if (n <= kCloseLines || n % 100 == 0) {
+    const std::string overflow = parked->overflow == 0
+      ? std::string()
+      : fmt::format(" ({} more not sent: past the wire's {} or no "
+                    "load-order form)",
+                    parked->overflow, kMaxLanded);
+    if (parked->landed.empty()) {
+      logger::info("[verb:scripts] own {}: its roll landed nothing in its "
+                   "AddItemFunctor, reported with an empty landing{}",
+                   ParkedName(parked->call), overflow);
+    } else {
+      std::string bases;
+      for (const Landing& landing : parked->landed) {
+        bases += fmt::format("{}{:x} x{}", bases.empty() ? "" : ", ",
+                             landing.formId, landing.count);
+      }
+      logger::info("[verb:scripts] own {}: its roll landed {} base(s) in its "
+                   "AddItemFunctor ({}), reported with the call{}",
+                   ParkedName(parked->call), parked->landed.size(), bases,
+                   overflow);
+    }
+  }
+  parked->call.landed = std::move(parked->landed);
+  QueueCall(std::move(parked->call));
+}
+
+// a parked call let go with its line (OnCall's native answered without
+// queueing its functor)
+void DropParked(RE::VMStackID stackId, const char* why)
+{
+  std::optional<Parked> parked = TakeParked(stackId);
+  if (parked) {
+    DropLine(parked->call, why);
+  }
+}
+
+// the parked calls past kParkMs let go with their lines, once a frame from
+// Tick; one atomic load while the park is empty
+void SweepParked(std::uint64_t now)
+{
+  if (g_park.size.load(std::memory_order_relaxed) == 0) {
+    return;
+  }
+  std::vector<QueuedCall> expired;
+  {
+    std::lock_guard<std::mutex> lock(g_park.m);
+    for (auto it = g_park.calls.begin(); it != g_park.calls.end();) {
+      if (now >= it->second.parkedMs + kParkMs) {
+        expired.push_back(std::move(it->second.call));
+        it = g_park.calls.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    g_park.size.store(g_park.calls.size());
+  }
+  for (const QueuedCall& call : expired) {
+    DropLine(call, "no AddItemFunctor ran within 60 s");
+  }
+}
+
+void ClearParked()
+{
+  std::lock_guard<std::mutex> lock(g_park.m);
+  g_park.calls.clear();
+  g_park.size.store(0);
+}
+
+// a window's note (ScriptNatives::NoteContainerChange) onto its stack's
+// parked call: a new item (no old container) in the call's self, a base and
+// a positive count, folded by base
+void NoteLanding(RE::VMStackID stackId, std::uint32_t oldContainer,
+                 std::uint32_t newContainer, std::uint32_t base,
+                 std::int32_t count)
+{
+  if (oldContainer != 0 || base == 0 || count <= 0 ||
+      g_park.size.load(std::memory_order_relaxed) == 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_park.m);
+  const auto it = g_park.calls.find(stackId);
+  if (it == g_park.calls.end() || newContainer != it->second.call.self) {
+    return;
+  }
+  Parked& parked = it->second;
+  if (base >= 0xff000000) {
+    ++parked.overflow;
+    return;
+  }
+  for (Landing& landing : parked.landed) {
+    if (landing.formId == base) {
+      landing.count = static_cast<std::int32_t>(
+        std::min<std::int64_t>(std::int64_t{ landing.count } + count,
+                               std::numeric_limits<std::int32_t>::max()));
+      return;
+    }
+  }
+  if (parked.landed.size() >= kMaxLanded) {
+    ++parked.overflow;
+    return;
+  }
+  parked.landed.push_back(Landing{ base, count });
 }
 
 // rung 3's touch (thuum ADR-068, the script record; OnCall's (e)): an owned
@@ -1849,10 +2191,38 @@ const char* HelperKindOf(RE::FormType type)
   }
 }
 
-// a PlaceAtMe's placed base, its first argument (akFormToPlace) read through
-// the engine's accessor with the frame's page (found here when the subject's
-// read did not need it), when it is a helper's kind; nothing for a None, a
-// form of any other kind, or a frame whose page cannot be found
+// a row's first argument's form (PlaceAtMe's akFormToPlace, AddItem's
+// akItemToAdd), read through the engine's accessor with the frame's page
+// (found here when the subject's read did not need it, and kept in `page`
+// for the caller's next read), the handle a plain form's (the encoding
+// HYPOTHESIS above); null for a None, an argument that is no plain form, or
+// a frame whose page cannot be found
+const RE::TESForm* Arg0Form(const RowInfo& info,
+                            const RE::BSScript::StackFrame* top,
+                            std::uint32_t& page)
+{
+  if (info.params == 0) {
+    return nullptr;
+  }
+  if (page == kNoPage) {
+    page = top->GetPageForFrame();
+  }
+  if (page == kNoPage) {
+    return nullptr;
+  }
+  const RE::BSScript::Object* object =
+    ObjectOf(top->GetStackFrameVariable(0, page));
+  if (!object) {
+    return nullptr;
+  }
+  const RE::VMHandle handle = object->GetHandle();
+  const std::uint32_t id = FormIdOfHandle(handle);
+  return IsPlainFormHandle(handle) && id != 0 ? RE::TESForm::LookupByID(id)
+                                              : nullptr;
+}
+
+// a PlaceAtMe's placed base (Arg0Form's) when it is a helper's kind; nothing
+// for a None, a form of any other kind, or a frame whose page cannot be found
 struct HelperBase
 {
   std::uint32_t id = 0;
@@ -1863,30 +2233,12 @@ std::optional<HelperBase> HelperBaseOfArg0(const RowInfo& info,
                                            const RE::BSScript::StackFrame* top,
                                            std::uint32_t page)
 {
-  if (info.params == 0) {
-    return std::nullopt;
-  }
-  if (page == kNoPage) {
-    page = top->GetPageForFrame();
-  }
-  if (page == kNoPage) {
-    return std::nullopt;
-  }
-  const RE::BSScript::Object* object =
-    ObjectOf(top->GetStackFrameVariable(0, page));
-  if (!object) {
-    return std::nullopt;
-  }
-  const RE::VMHandle handle = object->GetHandle();
-  const std::uint32_t id = FormIdOfHandle(handle);
-  const RE::TESForm* form = IsPlainFormHandle(handle) && id != 0
-    ? RE::TESForm::LookupByID(id)
-    : nullptr;
+  const RE::TESForm* form = Arg0Form(info, top, page);
   const char* kind = form ? HelperKindOf(form->GetFormType()) : nullptr;
   if (!kind) {
     return std::nullopt;
   }
-  return HelperBase{ id, kind };
+  return HelperBase{ form->formID, kind };
 }
 
 // clause 1's test (the plan's section 2.3, creation inside the player's
@@ -2238,6 +2590,24 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     Count(row, kCountUnrelayable);
     return marks;
   }
+  // train 52's Fix 1 (D-R1 C's leveled gap): an AddItem of a leveled list
+  // (CommonLibSSE-NG include/RE/F/FormTypes.h:193, LVLI) on the seat's own
+  // player is parked by its stack id until its AddItemFunctor lands the roll
+  // (the park table, above), the switch on; the batch carries it at the
+  // functor's close with `landed`, what the engine's roll put in the player
+  if (info.addItem && ref->formID == 0x14 && g_leveledLandings) {
+    const RE::TESForm* list = Arg0Form(info, top, page);
+    if (list && list->GetFormType() == RE::FormType::LeveledItem) {
+      std::optional<QueuedCall> call =
+        CallFromFrame(row, info, stack, top, page, ref->formID);
+      if (!call) {
+        return marks;
+      }
+      Park(stack->stackID, std::move(*call));
+      marks.parked = true;
+      return marks;
+    }
+  }
   if (!QueueFromFrame(row, info, stack, top, page, ref->formID)) {
     return marks;
   }
@@ -2309,6 +2679,9 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
     _stricmp(kRows[row].fn, kPlaceAtMeRow.second) == 0;
   info.deletes = _stricmp(kRows[row].cls, kDeleteRow.first) == 0 &&
     _stricmp(kRows[row].fn, kDeleteRow.second) == 0;
+  // train 52's Fix 1: the leveled landing's row, by name
+  info.addItem = _stricmp(kRows[row].cls, kAddItemRow.first) == 0 &&
+    _stricmp(kRows[row].fn, kAddItemRow.second) == 0;
   // D-W2 A's look rows (the plan's section 7.2(a)): the action rows, the two
   // motion rows among kTrapRows, and the look-only rows
   info.look = kRows[row].kind == NativeKind::Action ||
@@ -2732,6 +3105,14 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
       result == RE::BSScript::IFunction::CallResult::kCompleted && stack) {
     NoteHelper(*stack.get());
   }
+  // train 52's Fix 1: a parked call whose native answered anything but
+  // kInProgress (IFunction::CallResult, CommonLibSSE-NG
+  // include/RE/I/IFunction.h:34-41: kCompleted 0, kInProgress 2) queued no
+  // AddItemFunctor, so it is let go with its line
+  if (marks.parked &&
+      result != RE::BSScript::IFunction::CallResult::kInProgress && stack) {
+    DropParked(stack->stackID, "the native completed with no functor");
+  }
   return result;
 }
 }
@@ -2744,14 +3125,53 @@ void ScriptNatives::Tick()
   // D-Q4 C's marks, arms and joined stacks
   ActingScope::Sweep();
   QuestCause::Sweep();
-  // train 52's Fix 2: the helpers past their life
+  // train 52's Fix 2: the helpers past their life; Fix 1: the parked calls
+  // no functor closed in time
   Helpers::Sweep(now);
+  SweepParked(now);
 }
 
 void ScriptNatives::ClearAtLoad()
 {
-  // train 52's Fix 2: a helper's id names the old world's reference
+  // train 52's Fix 2: a helper's id names the old world's reference; Fix 1:
+  // a parked call's stack id the old world's stack
   Helpers::Clear();
+  ClearParked();
+}
+
+ScriptNatives::FunctorWindow::FunctorWindow(std::uint32_t stackId)
+  : stackId_(stackId)
+  , saved_(t_functorStack)
+{
+  t_functorStack = stackId;
+}
+
+ScriptNatives::FunctorWindow::~FunctorWindow()
+{
+  // the close inside the functor's own extent, on its own thread; nothing
+  // leaves a destructor that runs inside the engine's call
+  try {
+    if (stackId_ != 0) {
+      CloseParked(stackId_);
+    }
+  } catch (...) {
+  }
+  t_functorStack = saved_;
+}
+
+void ScriptNatives::NoteContainerChange(std::uint32_t oldContainer,
+                                        std::uint32_t newContainer,
+                                        std::uint32_t base, std::int32_t count)
+{
+  const RE::VMStackID stackId = t_functorStack;
+  if (stackId == 0) {
+    return;
+  }
+  // inside the engine's event dispatch: nothing leaves it
+  try {
+    NoteLanding(stackId, oldContainer, newContainer, base, count);
+  } catch (...) {
+  }
 }
 
 void ScriptNatives::FlushAheadOnUpdate()
@@ -2898,6 +3318,7 @@ void ScriptNatives::InstallHooks()
   WarnUnbound("player global", kGlobalSetRow.first, kGlobalSetRow.second);
   WarnUnbound("effect helper", kPlaceAtMeRow.first, kPlaceAtMeRow.second);
   WarnUnbound("helper delete", kDeleteRow.first, kDeleteRow.second);
+  WarnUnbound("leveled landing", kAddItemRow.first, kAddItemRow.second);
   // thuum ADR-068 D-S3: the trap family the gate and this seam read, named
   // once per process beside the table it extends (TrapFamily.h)
   TrapFamily::LogReady();
@@ -2937,6 +3358,30 @@ void ScriptNatives::InstallHooks()
     logger::info("[verb:scripts] scriptEffectHelpers off: a PlaceAtMe inside "
                  "this seat's own player's effect is judged by its subject's "
                  "owner, as every call is");
+  }
+  // train 52's Fix 1: the leveled landing's switch, read beside the lever,
+  // and the AddItemFunctor hook Hooks::Install wrote at the plugin's load,
+  // named in one line: the vtable CommonLibSSE-NG's
+  // include/RE/Offsets_VTABLE.h:4616 names (AE id 218372, `just addr
+  // 218372` on 1.6.1170), its slot 01 (include/RE/D/DelayFunctor.h:35), and
+  // what the slot held before the write (Hooks::AddItemFunctorSlotWas)
+  g_leveledLandings = ClientSwitchOn("scriptLeveledLandings");
+  if (g_leveledLandings) {
+    const auto [slotBase, slotOffset] = Hooks::AddItemFunctorSlotWas();
+    std::string held = "nothing: not hooked";
+    if (slotBase == gameBase) {
+      held = fmt::format("the game's module +{:x}", slotOffset);
+    } else if (slotBase != 0 || slotOffset != 0) {
+      held = fmt::format("allocation base {:x} +{:x}", slotBase, slotOffset);
+    }
+    logger::info("[verb:scripts] AddItemFunctor's operator() hooked "
+                 "(CommonLibSSE-NG VTABLE_SkyrimScript____AddItemFunctor slot "
+                 "01, AE id 218372; the slot held {}): a leveled AddItem on "
+                 "the seat's own player is reported with its roll",
+                 held);
+  } else {
+    logger::info("[verb:scripts] scriptLeveledLandings off: a leveled AddItem "
+                 "on the seat's own player crosses without its roll");
   }
   g_tableReady.store(true, std::memory_order_release);
   // the dispatch replaced, once the table's map and the lever are complete,

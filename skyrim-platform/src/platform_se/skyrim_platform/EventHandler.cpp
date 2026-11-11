@@ -390,6 +390,12 @@ EventResult EventHandler::ProcessEvent(
   auto itemCount = event->itemCount;
   auto uniqueID = event->uniqueID;
 
+  // thuum train 52, Fix 1 (ScriptNatives.h): an add inside an
+  // AddItemFunctor's window, on its thread, is that stack's leveled roll; one
+  // thread_local read outside a window (rule 9)
+  ScriptNatives::NoteContainerChange(oldContainerId, newContainerId, baseObjId,
+                                     itemCount);
+
   SkyrimPlatform::GetSingleton()->AddUpdateTask(
     [refrId, oldContainerId, newContainerId, baseObjId, itemCount,
      uniqueID](Napi::Env env) {

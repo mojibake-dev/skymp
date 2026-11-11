@@ -26,10 +26,13 @@ import { SpSnippetService } from "./spSnippetService";
 // state rows as kind "touch"); when a record read here names it through an
 // object variable of kind 0 as a non-actor in the same cell (one hop: a
 // pillar's myLinkedRef names the lever, whose numPillarsSolved the pillars set
-// with no native on the lever); when this seat's grant of its cell is released
-// (the cell's known references read once more under the released epoch, which
-// the server takes while the cell is unhosted); and every 30 s (the known set
-// swept: there is no digest cadence). A due reference is read on the update
+// with no native on the lever); when this seat reports a cell it hosts
+// unloaded (the grace read, D-S4 A: the cell's known references read at once
+// at this seat's own epoch, while the grant stands through the grace its
+// report starts); when this seat's grant of its cell is released (the cell's
+// known references read once more under the released epoch, which the server
+// takes while the cell is unhosted); and every 30 s (the known set swept:
+// there is no digest cadence). A due reference is read on the update
 // through TESModPlatform.SerializeScriptState at most once a second; a busy
 // object (a stack on it, its lock held, not initialized: H-R2) is asked again
 // every 250 ms for 10 s, then the last record stands; a read whose FNV-1a is
@@ -78,8 +81,12 @@ import { SpSnippetService } from "./spSnippetService";
 //
 // Known limits: a persistent exterior reference's parent cell is its
 // worldspace's persistent cell (hostService's isMine note), so a grant's pass
-// does not take its record (it is applied as a guest's) and the release read
-// does not find it; a gate that opens with a view unplayed (no 3D) hands the
+// does not take its record (it is applied as a guest's) and neither the grace
+// read nor the release read finds it; the grace read starts at an unload
+// report alone, so a grace the server's grid starts (a hosted exterior cell
+// left the grid while this engine still loads it) has none until that report,
+// and behind a successor its release read is refused (D-S4's grid case, B's
+// to cover); a gate that opens with a view unplayed (no 3D) hands the
 // pillar's graph to ObjectAnimationService, which puts it on the record's
 // side once its 3D comes (10 s at most) and feeds its script no turn (the
 // script is there already).
@@ -96,7 +103,8 @@ import { SpSnippetService } from "./spSnippetService";
 //
 // Lines for the lab (verb:scripts; the console tee cuts a line near 128
 // bytes, so what a probe reads comes first): "script state <id> sent: <n>
-// script(s), <v> variable(s), fnv <x>, epoch <e>[ (the release read)]",
+// script(s), <v> variable(s), fnv <x>, epoch <e>[ (the release read) | (the
+// grace read)]",
 // "script state <id>: the last record stands, busy for <ms> ms (<what>)",
 // "script state <id> applied at the grant of <cell>: stacks <n>, hold <us> us;
 // <n> resolved, <n> none, <n> seat-local" ("applied as a guest" for a guest's;
@@ -179,6 +187,7 @@ type Due = {
     notBefore: number;  // the read at the earliest (the 1 s rule, a busy retry's 250 ms)
     hop: boolean;       // named by another record's object handle: its own handles are not followed
     epoch: number;      // a release's epoch for the cell just released; 0 reads epochForActor at the read
+    grace: boolean;     // due at its hosted cell's unload report (D-S4 A, the grace read): its send line says so
     busySince: number;  // the first busy answer of this round, 0 for none
     busy: string;       // the last busy answer's text
 };
@@ -542,6 +551,38 @@ export class ScriptStateService extends ClientListener {
         }
     }
 
+    // HostService's, when this seat reports a cell it hosts unloaded (its
+    // poll, an update's context; JS state alone here): thuum D-S4 A (train
+    // 52), the grace read. The report starts the cell's grace on the server
+    // (wire-rules cells.rs GRACE_MS) and the grant stands through it, so the
+    // cell's known references are read now at this seat's own epoch
+    // (epochForActor at the read) and recorded as the owner's. Behind a
+    // successor the release read is refused (the grace's end sends the
+    // release and the successor's grant in one tick, and script_state.rs
+    // takes a release read only while nobody hosts the cell): stage 2's
+    // E_SCRIPTSTATE_EPOCH after each hand-off, a change only it carried lost
+    // to the record (nothing was lost there only because the successor's own
+    // records covered it). After this read the release read finds the bytes
+    // already sent and sends nothing, unless the grace changed them.
+    // HYPOTHESIS H-SS1: the cell's references stay readable after its detach
+    // for the grace's reads; one the engine freed is not read, and its record
+    // stays the last sent
+    onUnloaded(cell: number): void {
+        if (!this.enabled) {
+            return;
+        }
+        let due = 0;
+        this.known.forEach((knownCell, id) => {
+            if (knownCell === cell) {
+                this.noteDue(id, false, 0, true);
+                due++;
+            }
+        });
+        if (due > 0) {
+            logTrace(this, `cell ${cell.toString(16)} reported unloaded while hosted here: ${due} known reference(s) due for the grace read (D-S4 A)`);
+        }
+    }
+
     // HostService's, at a grant (a message handler): the cell's gate waits for
     // the pass on the next update (runPasses), which applies the cell's held
     // records and then calls `open`; with the switch off or ApplyScriptState
@@ -601,17 +642,19 @@ export class ScriptStateService extends ClientListener {
         return this.views.get(localId) ?? "none";
     }
 
-    private noteDue(localId: number, hop: boolean, epoch: number): void {
+    private noteDue(localId: number, hop: boolean, epoch: number, grace = false): void {
         if (this.serializeMissing || localId === 0 || localId === PLAYER_ID || localId > LAST_GAME_FILE_ID) {
             return;
         }
         const live = this.due.get(localId);
         if (live) {
-            // a direct reason outranks a hop, a release's epoch outranks none
+            // a direct reason outranks a hop, a release's epoch outranks none,
+            // and a grace read's mark stays
             live.hop = live.hop && hop;
             if (epoch !== 0) {
                 live.epoch = epoch;
             }
+            live.grace = live.grace || grace;
             return;
         }
         const now = Date.now();
@@ -628,6 +671,7 @@ export class ScriptStateService extends ClientListener {
             notBefore: lastRead === undefined ? now : Math.max(now, lastRead + READ_EVERY_MS),
             hop,
             epoch,
+            grace,
             busySince: 0,
             busy: "",
         });
@@ -1341,7 +1385,7 @@ export class ScriptStateService extends ClientListener {
         this.due.delete(id);
         this.rememberKnown(id, cell);
         if (!d.hop) {
-            this.followHops(id, answer.scripts, cell, d.epoch);
+            this.followHops(id, answer.scripts, cell, d.epoch, d.grace);
         }
         if (answer.fnv === this.lastSent.get(id)) {
             this.unchanged++;
@@ -1354,8 +1398,8 @@ export class ScriptStateService extends ClientListener {
         this.tokens -= 1;
         this.setLastSent(id, answer.fnv);
         this.sent++;
-        if (d.epoch !== 0 || this.say(id, "sent", now)) {
-            logLab(TAG, `script state ${hex} sent: ${answer.scripts.length} script(s), ${answer.vars} variable(s), fnv ${answer.fnv.toString(16)}, epoch ${epoch}${d.epoch !== 0 ? " (the release read)" : ""}${d.hop ? " (named by another record)" : ""}`);
+        if (d.epoch !== 0 || d.grace || this.say(id, "sent", now)) {
+            logLab(TAG, `script state ${hex} sent: ${answer.scripts.length} script(s), ${answer.vars} variable(s), fnv ${answer.fnv.toString(16)}, epoch ${epoch}${d.epoch !== 0 ? " (the release read)" : d.grace ? " (the grace read)" : ""}${d.hop ? " (named by another record)" : ""}`);
         }
         return true;
     }
@@ -1363,8 +1407,8 @@ export class ScriptStateService extends ClientListener {
     // the one hop: each object variable of kind 0 (a plain form's handle,
     // portable between seats) that names a non-actor reference in the read's
     // own cell is due too, its own handles not followed; a release read's
-    // hops carry its epoch
-    private followHops(self: number, scripts: ScriptObjectState[], cell: number, epoch: number): void {
+    // hops carry its epoch, a grace read's its mark
+    private followHops(self: number, scripts: ScriptObjectState[], cell: number, epoch: number, grace: boolean): void {
         if (cell === 0) {
             return;
         }
@@ -1385,7 +1429,7 @@ export class ScriptStateService extends ClientListener {
                 return true;
             }
             hops++;
-            this.noteDue(o.form, true, epoch);
+            this.noteDue(o.form, true, epoch, grace);
             return true;
         };
         for (const s of scripts) {

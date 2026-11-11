@@ -849,6 +849,13 @@ export class HostService extends ClientListener {
             message: { t: MsgType.CellLoaded, cell, loaded },
             reliability: "reliable",
         });
+        // thuum D-S4 A (train 52), the grace read: an unload report of a cell
+        // this seat hosts starts the cell's grace on the server, and the grant
+        // stands through it, so the cell's script records are read now at this
+        // seat's own epoch, ahead of the release (ScriptStateService.onUnloaded)
+        if (!loaded && this.hosted.has(cell)) {
+            this.controller.lookupListener(ScriptStateService).onUnloaded(cell);
+        }
     }
 
     private static readonly pollMs = 1000;

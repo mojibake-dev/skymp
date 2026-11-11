@@ -1054,10 +1054,13 @@ wire_struct! {
     /// [`QUEST_CAUSE_SEAT`] and `root`, the root frame of the script stack
     /// that called Quest.Start, Quest.Stop or SetStage (absent when no
     /// script call made it). Both the seat's own word (R2): the server
-    /// refuses a run word whose cause is the seat's own (`E_QUEST_CAUSE`) and
-    /// a run word of a quest a Story Manager quest node names while
-    /// `questStoryInstances` is "seat" (`E_QUEST_INSTANCE`), logging both by
-    /// name with the reported cause and root, and records no stage report it
+    /// refuses a run word whose cause is the seat's own (`E_QUEST_CAUSE`,
+    /// logged by name with the reported cause and root); keeps a run word of
+    /// a quest a Story Manager quest node names to its seat while
+    /// `questStoryInstances` is "seat" (D-Q5 A: neither recorded nor relayed,
+    /// its stages still crossing; wire-rules quest_runs' `Code::Instance`,
+    /// printed as one plain "kept to its seat" line a minute per seat and
+    /// quest, no E_ code since fork b23085da); and records no stage report it
     /// judges a start (a start-up stage, which only the record can tell)
     /// whose cause is the seat's own, in one plain line a minute per seat.
     /// Reason codes besides: `E_VAL_RANGE` (a cause other than 1

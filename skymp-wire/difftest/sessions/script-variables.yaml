@@ -1,16 +1,16 @@
 # difftest script-variables (thuum ADR-068 rung 5, ScriptVariables MsgType 81, wire id 89; D-V1 B and D-T2 B;
 # docs/research/rung5-quests-2026-11-09.md): every seat reports a listed condition-read variable its game changed, the
-# latest write winning per key with the server's sequence; a player-class quest's keys are its player's own. T2 copies
-# the deployed settings, which list no conditionVariables and no questScope while the rung's client half has not shipped,
-# so no login names a watch and no record exists (nothing is served: every other session's logins are unchanged), and
-# this session holds the edge's rules and the server's refusal of a key no setting lists; the record, the relay, the
-# player cut, the own keys and the login's serve are T0's (unit/ScriptVariablesTest.cpp). c1 and c2 are new characters
-# (profiles 9 and 10, see melee-reach). At 2 s c1 reports MS13 0x39645's ::camillaescort_var (the census's topic-info
-# write) at 1: no setting lists it, so the wire server refuses it by name (E_SCRIPTVAR_UNLISTED) and relays nothing. Five
-# reports are refused at the edge (E_VAL_RANGE): at 2.2 s a kind 2 (a string, which no condition compares), at 2.4 s one
-# key twice, at 2.6 s a seat naming a watch (the server's), at 2.8 s a served record (the server's), at 3 s an entry
-# carrying a sequence (the server's). The legacy server knows no MsgType 81 and drops all six. c2 steps at 4 s of its
-# own and so outlives c1, as in every session.
+# latest write winning per key with the server's sequence; a player-class quest's keys are its player's own. Since train
+# 52 T2 copies the deployed settings with rung 5's keys (the drain, fork 1bb3893b), so every login names the watch
+# (four served messages, divergences.yaml) and the deployed conditionVariables list MS13 0x39645's ::CamillaEscort_var;
+# a fresh T2 world records no value, so none is served. The record's other paths (the player cut, the own keys, the
+# login's serve of a value) are T0's (unit/ScriptVariablesTest.cpp). c1 and c2 are new characters (profiles 9 and 10,
+# see melee-reach). At 2 s c1 reports that key (the census's topic-info write; keys compare without case) at 1: listed,
+# MS13 the world's, so the wire server records it with the key's first sequence and relays it at once to c2 (served
+# false). Five reports are refused at the edge (E_VAL_RANGE): at 2.2 s a kind 2 (a string, which no condition compares),
+# at 2.4 s one key twice, at 2.6 s a seat naming a watch (the server's), at 2.8 s a served record (the server's), at 3 s
+# an entry carrying a sequence (the server's). The legacy server knows no MsgType 81 and drops all six. c2 steps at 4 s
+# of its own and so outlives c1, as in every session.
 id: script-variables
 clients:
   c1: {profile_id: 9}
@@ -25,6 +25,11 @@ steps:
   - {client: c2, at_ms: 0, move: {dx: 50}}
   - {client: c2, at_ms: 4000, move: {dx: 60}}
 divergences:
+  - client: c2
+    msg: {t: 81, served: false, entries: [{form: 0x39645, k: 3, i: 1}]}
+    legacy: 0
+    wire: 1
+    reason: c1's report of MS13's listed CamillaEscort_var recorded as the world's and relayed at once (ScriptVariables, thuum ADR-068 rung 5); the legacy server knows no MsgType 81
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0

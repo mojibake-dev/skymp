@@ -98,3 +98,18 @@ divergences:
     legacy: 1
     wire: 0
     reason: the player's own create word without the permit's lists, the legacy server's; the wire's was set aside by the declaration above
+
+  # thuum ADR-068 rung 5 (D-V1 B, D-T2 B; train 52): the condition-read
+  # script variables. With rung 5's keys in the deployed settings, which
+  # T2 copies since this entry and the drain (fork 1bb3893b), the wire
+  # server tells each player the keys it watches at the login itself
+  # (ScriptVariables, MsgType 81, served, the watch in chunks of 256,
+  # ActionListener.cpp's kScriptVariablesPerMessage: four for the 1,013 keys
+  # a T2 login served on 2026-11-10) and no value (a fresh T2 world records
+  # none). The legacy server has no such message. The count is
+  # ceil(keys / 256): a census that moves the key count past a multiple of
+  # 256 moves this number.
+  - msg: {t: 81, served: true}
+    legacy: 0
+    wire: 4
+    reason: the condition-read variables' watch at login (ScriptVariables, thuum ADR-068 rung 5, four chunks of 256 keys); the legacy server has none

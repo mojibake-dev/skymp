@@ -2595,10 +2595,12 @@ void InstallApplyMasksToRenderTargetsHook()
  * the figure's head from its own parts, as a seat whose player is no vampire
  * does; the player's own base and every other NPC get the engine's answer.
  * Filtered in native (rule 9): the form id compare comes first, so any other
- * NPC costs the detour's call and one compare beside the engine's own, and
- * nothing crosses into JS. Each base's first override prints one line, and the
- * count prints every ten seconds while it moves (thuum ADR-069's note: a fix
- * that skips work logs its count), so a run can count the overrides.
+ * NPC costs Gum's replace (its thread-local bookkeeping and a stack push,
+ * FridaHookHandler.cpp's gum_interceptor_replace) and one compare beside the
+ * engine's own; the call volume is unread. Nothing crosses into JS. Each
+ * base's first override prints one line, and the count prints every ten
+ * seconds while it moves (thuum ADR-069's note: a fix that skips work logs its
+ * count), so a run can count the overrides.
  */
 namespace {
 using HasOverlaysFn = bool (*)(RE::TESNPC* npc);
@@ -2648,9 +2650,14 @@ bool HasOverlaysReplacement(RE::TESNPC* npc)
   if (!playerBase || npc == playerBase) {
     return engine;
   }
-  g_hasOverlaysOverrides.fetch_add(1, std::memory_order_relaxed);
-  if (HasOverlaysFirstOverride(npc)) {
+  // the base first, then the override, so the reporter's read between the
+  // two never shows an override from a base it has not counted
+  const bool first = HasOverlaysFirstOverride(npc);
+  if (first) {
     g_hasOverlaysBases.fetch_add(1, std::memory_order_relaxed);
+  }
+  g_hasOverlaysOverrides.fetch_add(1, std::memory_order_relaxed);
+  if (first) {
     // the races the HYPOTHESIS names (the base's, the player's and its
     // chargen race, PlayerCharacter.h:823-831) and the thread, for the lab
     const RE::TESRace* race = npc->GetRace();
@@ -2694,6 +2701,9 @@ void StartHasOverlaysReporter()
 
 void InstallHasOverlaysHook()
 {
+  // an id the Address Library lacks stops the plugin at static
+  // initialization (the port's patch 05) before this runs, so this line
+  // catches a zero address alone
   const std::uintptr_t address = Offsets::Hooks::HasOverlays.address();
   if (!address) {
     logger::error("[verb:appearance] HasOverlays hook not installed: "

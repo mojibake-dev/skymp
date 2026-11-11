@@ -45,6 +45,14 @@ public:
 
   static uint64_t MakeLongFormId(WorldState* worldState, uint32_t formId);
 
+  // the id `listener`'s engine numbers the form `formId` by: its own player
+  // is always 0x14 on its client, while the server numbers a player's actor
+  // 0xff000000 and up; every other form keeps its id, and so does every form
+  // for no listener. The one rule SpSnippetFunctionGen::SerializeArguments
+  // maps a Papyrus argument by and MakeMessage the self and each object
+  // argument by
+  static uint32_t ClientFormId(uint32_t formId, const MpActor* listener);
+
 private:
   // the message to `actorExecutor`'s game, its self as that engine numbers it
   SpSnippetMessage MakeMessage(MpActor* actorExecutor,

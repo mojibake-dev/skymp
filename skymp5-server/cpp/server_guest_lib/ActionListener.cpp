@@ -4596,7 +4596,8 @@ void RecordStanding(
     std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
     args;
   // an object argument numbered as SerializeArguments numbers one (an actor
-  // the server holds by its long id, SpSnippet::MakeLongFormId)
+  // the server holds by its long id, SpSnippet::MakeLongFormId; a player's
+  // actor as 0x14 to that player's own game, SpSnippet::Relay's MakeMessage)
   const auto object_ = [&](const char* type) {
     if (rule.form == 0) {
       args.push_back(std::nullopt);

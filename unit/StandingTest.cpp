@@ -456,6 +456,74 @@ TEST_CASE("SetCrimeFaction records a crime faction and its removal, and "
   Leave(p);
 }
 
+// thuum train 52 (the client builder's read of fork m4-train-52-client
+// 24448f7b): a standing applier names a player's actor when a relayed
+// fragment ran under that player's acting scope on the NPC's simulator (A
+// Lovely Letter's Fragment_22, `SetRelationshipRank(Game.GetPlayer(), 2)` on
+// Faendal: the seat sends the acting player's figure by its actor id, rung
+// 5). That player's own game holds no view of its own actor, so the id
+// resolves to nothing there and the rank is never applied, after a relog
+// included; its engine numbers its player 0x14, as SerializeArguments and a
+// snippet's self already map it (SpSnippet::ClientFormId, now MakeMessage's
+// for every object argument). Here the host, Arvel's simulator, reports the
+// relationship toward the guest's actor
+TEST_CASE("A standing applier naming a player's actor reaches that player's "
+          "own game as 0x14 and every other game as the actor's id, "
+          "relayed and served behind the create word alike, after a relog "
+          "too",
+          "[Standing][espm]")
+{
+  auto& p = GetPartOne();
+  auto& arvel = Enter(p);
+  REQUIRE(SpSnippet::ClientFormId(
+            kGuestActor, &p.worldState.GetFormAt<MpActor>(kGuestActor)) ==
+          0x14);
+  REQUIRE(SpSnippet::ClientFormId(
+            kGuestActor, &p.worldState.GetFormAt<MpActor>(kHostActor)) ==
+          kGuestActor);
+  REQUIRE(SpSnippet::ClientFormId(kGuestActor, nullptr) == kGuestActor);
+  REQUIRE(SpSnippet::ClientFormId(
+            kArvel, &p.worldState.GetFormAt<MpActor>(kGuestActor)) == kArvel);
+
+  Call(p, 0, "SetRelationshipRank",
+       { ObjectArg(kGuestActor, "Actor"), Arg(2.0) });
+  const auto relationships = arvel.GetRelationships();
+  REQUIRE(relationships.size() == 1);
+  REQUIRE(relationships[0].other == Desc(p, kGuestActor));
+  REQUIRE(relationships[0].rank == 2);
+  // the relay: the guest's own game reads its player
+  const auto relayed = AppliersTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0].function == "SetRelationshipRank");
+  REQUIRE(ObjectOf(relayed[0], 0) == 0x14);
+  REQUIRE(NumberOf(relayed[0], 1) == 2.0);
+
+  // a late seat: served behind Arvel's create word, the guest's actor by
+  // its id
+  DoConnect(p, 2);
+  p.CreateActor(kLateActor, kByArvel, 0, kTemple);
+  p.SetUserActor(2, kLateActor);
+  const auto late = AppliersTo(p, 2);
+  REQUIRE(late.size() == 1);
+  REQUIRE(late[0].function == "SetRelationshipRank");
+  REQUIRE(ObjectOf(late[0], 0) == kGuestActor);
+  REQUIRE(NumberOf(late[0], 1) == 2.0);
+
+  // the guest logs in again (a second login of the same actor is what a
+  // reconnect does): its own game is served the record, its player as 0x14
+  p.Messages().clear();
+  p.SetUserActor(1, kGuestActor);
+  const auto own = AppliersTo(p, 1);
+  REQUIRE(own.size() == 1);
+  REQUIRE(own[0].function == "SetRelationshipRank");
+  REQUIRE(ObjectOf(own[0], 0) == 0x14);
+  REQUIRE(NumberOf(own[0], 1) == 2.0);
+  REQUIRE(!own[0].seq.has_value());
+  DoDisconnect(p, 2);
+  p.DestroyActor(kLateActor);
+  Leave(p);
+}
+
 TEST_CASE("RemoveFromAllFactions empties the standing and a second folds; a "
           "restart keeps the empty record, never the base's rows, and serves "
           "it",

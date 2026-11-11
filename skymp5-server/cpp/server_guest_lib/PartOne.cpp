@@ -1796,7 +1796,10 @@ void PartOne::Init()
     // thuum ADR-068 rung 4 (the standing, W3): an NPC's recorded standing
     // rides behind its create word as the appliers that bring a late
     // engine's copy to the record (the record's against its base's rows),
-    // at once and with no sequence: several serve one subject
+    // at once and with no sequence: several serve one subject. A
+    // relationship toward the listener's own player reaches its game as
+    // 0x14 (SpSnippet::Serve's MakeMessage, thuum train 52), after a relog
+    // too
     if (emitterAsActor && !isMe && !hasUser &&
         emitter->GetFormId() < 0xff000000) {
       size_t appliers = 0;

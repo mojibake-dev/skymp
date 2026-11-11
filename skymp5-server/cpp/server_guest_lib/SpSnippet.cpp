@@ -5,7 +5,9 @@
 #include "NetworkingInterface.h" // Format
 #include "SpSnippetMessage.h"
 #include <cmath>
+#include <limits>
 #include <spdlog/spdlog.h>
+#include <variant>
 
 SpSnippet::SpSnippet(
   const char* cl_, const char* func_,
@@ -71,18 +73,38 @@ SpSnippetMessage SpSnippet::MakeMessage(MpActor* actorExecutor,
                                         uint32_t snippetIdx) const
 {
   // Player character is always 0x14 on client, but 0xff000000+ in our server
-  // See also SpSnippetFunctionGen.cpp
-  const uint32_t targetSelfId =
-    (selfId < 0xff000000 || selfId != actorExecutor->GetFormId()) ? selfId
-                                                                  : 0x14;
-
+  // (ClientFormId; see also SpSnippetFunctionGen.cpp): the self, and since
+  // thuum train 52 every object argument too, so an applier relayed or
+  // served to the game of the player it names reaches that game as its own
+  // player (a standing's relationship toward a player, the SetRelationshipRank
+  // a relayed fragment made under that player's acting scope: its own seat
+  // holds no view of its own actor, so the server's id resolved to nothing
+  // there, after a relog included). An argument a SerializeArguments call
+  // mapped already reads 0x14, which keeps its id; a long id (a game-file
+  // actor's, MakeLongFormId) names no player
   SpSnippetMessage message;
   message.class_ = cl;
   message.function = func;
   message.arguments = args;
-  message.selfId = MakeLongFormId(actorExecutor->GetParent(), targetSelfId);
+  for (auto& argument : message.arguments) {
+    auto* object =
+      argument ? std::get_if<SpSnippetObjectArgument>(&*argument) : nullptr;
+    if (object && object->formId <= std::numeric_limits<uint32_t>::max()) {
+      object->formId =
+        ClientFormId(static_cast<uint32_t>(object->formId), actorExecutor);
+    }
+  }
+  message.selfId = MakeLongFormId(actorExecutor->GetParent(),
+                                  ClientFormId(selfId, actorExecutor));
   message.snippetIdx = static_cast<int64_t>(snippetIdx);
   return message;
+}
+
+uint32_t SpSnippet::ClientFormId(uint32_t formId, const MpActor* listener)
+{
+  return listener && formId >= 0xff000000 && formId == listener->GetFormId()
+    ? 0x14
+    : formId;
 }
 
 VarValue SpSnippet::VarValueFromSpSnippetReturnValue(

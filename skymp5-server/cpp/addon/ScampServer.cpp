@@ -496,6 +496,11 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     // default) or "world", a one-line flip of this file
     partOne->SetQuestStoryInstancesSettings(
       settingOr("questStoryInstances", "\"seat\""));
+    // thuum D-Q9 B (Eli 2026-11-11, train 52): whether a player alias's
+    // OnLocationChange roots its seat's own cause, `questPlayerAliasCause`
+    // "seat" (the default, Eli's B) or "world" (D-Q9 A), the same way
+    partOne->SetQuestPlayerAliasCauseSettings(
+      settingOr("questPlayerAliasCause", "\"seat\""));
     // the objects the server places at an accepted cast of a listed spell
     // (thuum docs/verbs/spell-placed-object.md, ADR-057):
     // `spellPlacedObjects`, the same way

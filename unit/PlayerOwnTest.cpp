@@ -5,6 +5,8 @@
 #include "libespm/ScriptData.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
+#include <fmt/format.h>
+#include <optional>
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
@@ -652,8 +654,9 @@ TEST_CASE("Each seat's 0x14 is its own player: a call whose self is not the "
   Leave(p);
 }
 
-TEST_CASE("A leveled list's AddItem is refused by name and writes nothing: "
-          "what landed is the engine's roll, which the report does not carry",
+TEST_CASE("A leveled list's AddItem whose report carries no landing is "
+          "refused by name and writes nothing: what landed is the engine's "
+          "roll, which that report does not carry",
           "[PlayerOwn][espm]")
 {
   PartOne& p = GetPartOne();
@@ -674,6 +677,117 @@ TEST_CASE("A leveled list's AddItem is refused by name and writes nothing: "
   REQUIRE(log.Count("E_SCRIPTCALL_ARGS") == 1);
   REQUIRE(log.Count("is no whole number from 1 to 2147483647") == 1);
   REQUIRE(turned.GetInventory() == before);
+  Leave(p);
+}
+
+// thuum D-R1 C's leveled gap (train 52, plan 1.8): a leveled AddItem on the
+// reporter's own player whose report carries its roll (ScriptCall's
+// `landed`, SCHEMA_VERSION 44) records each landing as a plain grant of its
+// base. MS01 0x18b4b's stage 39 fragment, `Game.GetPlayer().AddItem(
+// LvlQuestReward02Medium, 1, False)`: the list 0xc0405's five entries are all
+// Gold001 (Skyrim.esm, lab/esm.py on the lab's cached copy, 2026-11-10), and
+// its roll landed 0xf x400 on c1 (x-additem-functor 20261110-151634).
+// IronSword 0x12eb7, test-proto's smoke item, is no base it can roll (D-R2
+// B). Each record's type is read here first
+namespace {
+constexpr uint32_t kLvlQuestReward02Medium = 0xc0405;
+constexpr uint32_t kIronSword = 0x12eb7;
+
+ScriptCallMessage::Landing Landed(uint32_t item, int32_t count)
+{
+  ScriptCallMessage::Landing landing;
+  landing.item = item;
+  landing.count = count;
+  return landing;
+}
+
+// MS01's reward on the reporter's own player, with its roll's landings as
+// the seat read them (none: a report that carries no `landed`)
+void OwnReward(PartOne& p,
+               std::optional<std::vector<ScriptCallMessage::Landing>> landed)
+{
+  ScriptCallMessage msg;
+  msg.epoch = 0;
+  msg.selfId = 0x14;
+  msg.cls = "ObjectReference";
+  msg.fn = "AddItem";
+  msg.args = { FormArg(kLvlQuestReward02Medium, "Form"), Arg(1.0),
+               Arg(false) };
+  msg.caller = "QF_MS01_00018B4B";
+  msg.handler = "Fragment_56";
+  msg.latent = true;
+  msg.landed = std::move(landed);
+  RawMessageData raw;
+  raw.userId = 0;
+  p.GetActionListener().OnScriptCall(raw, msg);
+}
+}
+
+TEST_CASE("A leveled AddItem on the reporter's own player records the roll "
+          "its seat reported, each landing a base the list can roll; a "
+          "landing it cannot roll is refused by name, an empty roll writes "
+          "nothing, and a report with no landing keeps E_SCRIPTCALL_LEVELED",
+          "[PlayerOwn][espm]")
+{
+  PartOne& p = GetPartOne();
+  REQUIRE(RecordType(p, kLvlQuestReward02Medium) == "LVLI");
+  REQUIRE(RecordType(p, kIronSword) == "WEAP");
+  Enter(p);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  auto& watcher = p.worldState.GetFormAt<MpActor>(kWatcher);
+  const uint32_t kit = turned.GetInventory().GetItemCount(kGold);
+  const uint32_t swords = turned.GetInventory().GetItemCount(kIronSword);
+  const uint32_t watcherKit = watcher.GetInventory().GetItemCount(kGold);
+
+  // the roll's 400 gold: recorded once, on the change form, never the list,
+  // and the player's own game hears its inventory with it, the other none
+  OwnReward(p, std::vector<ScriptCallMessage::Landing>{ Landed(kGold, 400) });
+  p.Tick();
+  REQUIRE(turned.GetInventory().GetItemCount(kGold) == kit + 400);
+  REQUIRE(turned.GetChangeForm().inv.GetItemCount(kGold) == kit + 400);
+  REQUIRE(!turned.GetInventory().HasItem(kLvlQuestReward02Medium));
+  REQUIRE(log.Count(fmt::format(
+            "[verb:quest-stage] ff000c71's own ObjectReference.AddItem c0405 "
+            "(from QF_MS01_00018B4B.Fragment_56): its roll landed f x400, "
+            "added to its inventory as its seat reported it (D-R1 C, R2; "
+            "each a base the list can roll, D-R2 B), {} of f held now",
+            kit + 400)) == 1);
+  const auto heard = GoldSentTo(p, 0);
+  REQUIRE(!heard.empty());
+  REQUIRE(heard.back() == kit + 400);
+  REQUIRE(GoldSentTo(p, 1).empty());
+  REQUIRE(watcher.GetInventory().GetItemCount(kGold) == watcherKit);
+
+  // a base the list cannot roll: refused by name in one line, nothing
+  // written
+  const Inventory rolled = turned.GetInventory();
+  OwnReward(p,
+            std::vector<ScriptCallMessage::Landing>{ Landed(kIronSword, 1) });
+  REQUIRE(log.Count("[verb:quest-stage] E_SCRIPTCALL_ROLL: ff000c71's own "
+                    "ObjectReference.AddItem c0405 (from "
+                    "QF_MS01_00018B4B.Fragment_56): 12eb7 is no base the "
+                    "leveled list c0405 can roll (its entries, nested lists "
+                    "followed): that landing is not recorded; refused, 1 "
+                    "since the last line") == 1);
+  REQUIRE(turned.GetInventory() == rolled);
+  REQUIRE(turned.GetInventory().GetItemCount(kIronSword) == swords);
+
+  // the roll that landed nothing writes nothing and says so
+  OwnReward(p, std::vector<ScriptCallMessage::Landing>{});
+  REQUIRE(turned.GetInventory() == rolled);
+  REQUIRE(log.Count("(from QF_MS01_00018B4B.Fragment_56): its roll landed "
+                    "nothing") == 1);
+
+  // a report that carries no landing (the seat's scriptLeveledLandings off)
+  // keeps its refusal
+  OwnReward(p, std::nullopt);
+  REQUIRE(log.Count("E_SCRIPTCALL_LEVELED") == 1);
+  REQUIRE(log.Count("c0405 is a leveled list (LVLI) and the report carries "
+                    "no landing (scriptLeveledLandings off on the seat): "
+                    "nothing is written") == 1);
+  REQUIRE(turned.GetInventory() == rolled);
+  REQUIRE(log.Count("E_SCRIPTCALL_ROLL") == 1);
   Leave(p);
 }
 

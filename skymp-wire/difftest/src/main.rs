@@ -39,8 +39,10 @@
 //! different, 2 a driver failed.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{ChildStdout, Command, Stdio};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -306,6 +308,14 @@ fn script(s: &Session, client: &str) -> String {
 }
 
 /// Run every client of the session on one stack; event lines per client.
+/// A client prints its event lines from the thread that runs its script, and
+/// a write to a full pipe blocks (Linux's holds 65,536 bytes, pipe(7)), so
+/// each client's stdout is read on a thread of its own from its spawn on.
+/// Read one after the other, as they were before 2026-11-10, rung 5's logins
+/// of about 91 KB stalled c1 for the rest of the gap and c2 until c1 had
+/// exited, so c2 acted only after c1 had left (m4-scripts-5-second
+/// f6ca339d's T2). The clients' stderr goes to /dev/null: stdout is each
+/// one's only pipe.
 fn run_stack(stack: &Stack, s: &Session, tag: &str) -> Result<BTreeMap<String, (i32, Vec<Value>)>, DiffError> {
     let dir = std::env::temp_dir().join(format!("difftest-{}-{}-{tag}", std::process::id(), stack.name));
     std::fs::create_dir_all(&dir).map_err(|e| DiffError::Io(e.to_string()))?;
@@ -325,21 +335,39 @@ fn run_stack(stack: &Stack, s: &Session, tag: &str) -> Result<BTreeMap<String, (
         if let Some(p) = &stack.password {
             cmd.args(["--password", p]);
         }
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| DiffError::Driver(stack.name, format!("spawn {}: {e}", stack.fakeclient.display())))?;
-        children.push((name, child));
+        let stdout = drain(child.stdout.take()).map_err(|e| DiffError::Driver(stack.name, format!("{name}'s stdout reader: {e}")))?;
+        children.push((name, child, stdout));
     }
     let mut out = BTreeMap::new();
-    for (name, child) in children {
-        let output = child.wait_with_output().map_err(|e| DiffError::Driver(stack.name, e.to_string()))?;
-        let events = String::from_utf8_lossy(&output.stdout)
+    for (name, mut child, stdout) in children {
+        let stdout = stdout
+            .join()
+            .map_err(|_| DiffError::Driver(stack.name, format!("{name}'s stdout reader panicked")))?
+            .map_err(|e| DiffError::Driver(stack.name, e.to_string()))?;
+        let status = child.wait().map_err(|e| DiffError::Driver(stack.name, e.to_string()))?;
+        let events = String::from_utf8_lossy(&stdout)
             .lines()
             .filter_map(|l| serde_json::from_str(l).ok())
             .collect();
-        out.insert(name, (output.status.code().unwrap_or(-1), events));
+        out.insert(name, (status.code().unwrap_or(-1), events));
     }
     Ok(out)
+}
+
+/// Everything a client prints until its stdout closes, read on a thread of
+/// its own so the client never waits on a full pipe; a client without a
+/// stdout pipe reads as empty, as it did through `wait_with_output`.
+fn drain(stdout: Option<ChildStdout>) -> std::io::Result<JoinHandle<std::io::Result<Vec<u8>>>> {
+    std::thread::Builder::new().name("difftest-stdout".into()).spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = stdout {
+            pipe.read_to_end(&mut bytes)?;
+        }
+        Ok(bytes)
+    })
 }
 
 /// Floats compare at the precision the game keeps (f32); everything else
@@ -651,6 +679,10 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/fakeclient-stub.py")
     }
 
+    fn flood() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tools/fakeclient-flood.py")
+    }
+
     fn stub_available() -> bool {
         Command::new("python3").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
     }
@@ -716,6 +748,32 @@ mod tests {
         let lines = diff("a", &a, "c", &c, &[]).differences;
         assert!(!lines.is_empty());
         assert!(lines.iter().any(|l| l.contains("relays_seen")), "{lines:?}");
+    }
+
+    #[test]
+    fn every_client_is_read_while_the_others_run() {
+        // rung 5's login printed about 91 KB from the thread that runs the
+        // client's script, more than a pipe holds; the flood stub prints
+        // 292 KB, and its c1 cannot finish until c2 has printed all of its
+        // own. Read one after the other, c2 blocks on its full pipe and c1
+        // gives up after twenty seconds with rc 1.
+        if !stub_available() {
+            return;
+        }
+        let s: Session = serde_saphyr::from_str("id: drain\nclients:\n  c1: {profile_id: 1}\n  c2: {profile_id: 2}\nsteps: []\n").expect("session");
+        let run = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_nanos();
+        let out = run_stack(&stack(flood()), &s, &format!("drain{run}")).expect("run");
+        let login: Vec<i64> = (0..2048).collect();
+        for name in ["c1", "c2"] {
+            let (rc, events) = &out[name];
+            let errors: Vec<&Value> = events.iter().filter(|e| e["event"] == "error").collect();
+            assert_eq!((*rc, errors.len()), (0, 0), "{name}: {errors:?}");
+            // every line, in the client's own order: connected, actor, the login's 2,048, done
+            assert_eq!(events.len(), 2051, "{name}");
+            let seq: Vec<i64> = events.iter().filter_map(|e| e["msg"]["seq"].as_i64()).collect();
+            assert_eq!(seq, login, "{name}");
+            assert_eq!(events.last().and_then(|e| e["event"].as_str()), Some("done"), "{name}");
+        }
     }
 
     fn one_client(received: &[&str]) -> BTreeMap<String, Value> {

@@ -51,11 +51,9 @@ SpSnippetFunctionGen::SerializeArguments(
         auto formId = GetFormId(arg);
 
         // Player character is always 0x14 on client, but 0xff000000+ in our
-        // server
-        // See also SpSnippet.cpp
-        if (optionalActor && formId >= 0xff000000) {
-          formId = formId != optionalActor->GetFormId() ? formId : 0x14;
-        }
+        // server (SpSnippet::ClientFormId, the one rule; see also
+        // SpSnippet.cpp's MakeMessage)
+        formId = SpSnippet::ClientFormId(formId, optionalActor);
 
         auto obj = static_cast<IGameObject*>(arg);
         auto type = obj ? obj->GetParentNativeScript() : "";

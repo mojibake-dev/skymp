@@ -41,6 +41,7 @@
 
 #include "ActionListener.h"
 #include "FormCallbacks.h"
+#include "LeveledListUtils.h"
 #include "MessageSerializerFactory.h"
 #include "OpenSSLSigner.h"
 #include "PacketParser.h"
@@ -349,6 +350,11 @@ struct PartOne::Impl
   // D-Q4 C: `questStoryInstances` "world" (false: "seat", the default), the
   // Story Manager's quests composed into questRuns at AttachEspm
   bool questStoryWorld = false;
+  // D-Q9 B (train 52): `questPlayerAliasCause` "world" (false: "seat", the
+  // default, Eli's B), and the game files' alias scripts, indexed at
+  // AttachEspm: whether each rides player aliases alone
+  bool questPlayerAliasWorld = false;
+  const std::unordered_map<std::string, bool>* playerAliasScripts = nullptr;
   rust::Box<skymp::rules::QuestScope> questScope =
     skymp::rules::new_quest_scope("\"off\"", "[]");
   rust::Box<skymp::rules::ScriptVariables> scriptVariables =
@@ -375,6 +381,10 @@ struct PartOne::Impl
   const std::unordered_map<
     std::string, std::vector<PartOne::ScriptAttachment>>* scriptAttachments =
     nullptr;
+  // D-R1 C's leveled gap (train 52): each leveled list's reach as a landing
+  // first asked for it, by the list's form id (only lists of the game files:
+  // the caller checks the form is an LVLI first), cleared at AttachEspm
+  std::unordered_map<uint32_t, std::vector<uint32_t>> leveledReach;
 
   // the objects the server places at an accepted cast of a listed spell,
   // and every set standing (thuum docs/verbs/spell-placed-object.md,
@@ -820,6 +830,8 @@ void PartOne::SetOnActorStreamIn(OnActorStreamIn callback)
 namespace {
 const std::unordered_map<std::string, std::vector<PartOne::ScriptAttachment>>&
 ScriptAttachmentIndexOf(WorldState& worldState);
+const std::unordered_map<std::string, bool>& PlayerAliasScriptIndexOf(
+  WorldState& worldState);
 }
 
 void PartOne::AttachEspm(espm::Loader* espm)
@@ -837,6 +849,21 @@ void PartOne::AttachEspm(espm::Loader* espm)
   // and the R1 bound's script attachments, read here and not at a seat's
   // first call (the fresh review's note 3)
   pImpl->scriptAttachments = &ScriptAttachmentIndexOf(worldState);
+  // a leveled list's reach is read again from these game files
+  pImpl->leveledReach.clear();
+  // and D-Q9 B's alias scripts: which ride player aliases alone
+  pImpl->playerAliasScripts = &PlayerAliasScriptIndexOf(worldState);
+  size_t playerOnly = 0;
+  for (const auto& entry : *pImpl->playerAliasScripts) {
+    if (entry.second) {
+      ++playerOnly;
+    }
+  }
+  spdlog::info("[verb:quest-stage] the game files attach {} script class(es) "
+               "to quest aliases, {} of them to player aliases alone "
+               "(questPlayerAliasCause {}, D-Q9 B)",
+               pImpl->playerAliasScripts->size(), playerOnly,
+               pImpl->questPlayerAliasWorld ? "world" : "seat");
 }
 
 bool PartOne::FlushSaves(std::chrono::milliseconds budget)
@@ -1769,7 +1796,10 @@ void PartOne::Init()
     // thuum ADR-068 rung 4 (the standing, W3): an NPC's recorded standing
     // rides behind its create word as the appliers that bring a late
     // engine's copy to the record (the record's against its base's rows),
-    // at once and with no sequence: several serve one subject
+    // at once and with no sequence: several serve one subject. A
+    // relationship toward the listener's own player reaches its game as
+    // 0x14 (SpSnippet::Serve's MakeMessage, thuum train 52), after a relog
+    // too
     if (emitterAsActor && !isMe && !hasUser &&
         emitter->GetFormId() < 0xff000000) {
       size_t appliers = 0;
@@ -3784,6 +3814,9 @@ struct QuestScopeFacts
   FormDesc quest;
   std::vector<skymp::rules::QuestScopeAliasRow> aliases;
   std::string firstScript;
+  // thuum D-Q9 B (train 52): each script its VMAD attaches to one of its
+  // aliases (libespm ScriptData::aliases), with that alias's id
+  std::vector<std::pair<uint32_t, std::string>> aliasScripts;
 };
 
 const std::vector<QuestScopeFacts>& QuestScopeFactsOf(WorldState& worldState)
@@ -3847,6 +3880,17 @@ const std::vector<QuestScopeFacts>& QuestScopeFactsOf(WorldState& worldState)
         break;
       }
     }
+    for (const auto& alias : scriptData.aliases) {
+      if (alias.aliasId < 0) {
+        continue; // an alias object the section did not name
+      }
+      for (const auto& script : alias.scripts) {
+        if (script.status != 3 && !script.scriptName.empty()) {
+          quest.aliasScripts.emplace_back(static_cast<uint32_t>(alias.aliasId),
+                                          script.scriptName);
+        }
+      }
+    }
     facts.push_back(std::move(quest));
   }
   return g_facts.emplace(&worldState.GetEspm(), std::move(facts))
@@ -3859,6 +3903,44 @@ std::string LowerScriptClass(std::string name)
     return static_cast<char>(std::tolower(c));
   });
   return name;
+}
+
+// thuum D-Q9 B (Eli 2026-11-11; train 52): every script class a QUST's VMAD
+// attaches to an alias, by its name without case: true when every alias it
+// rides, over every quest, is the player's (wire-rules
+// quest_scope::is_players over that quest's aliases), false when one is not.
+// Read once per set of game files over the quest scope's facts
+// (QuestScopeFactsOf's shape: built whole before it is kept). A script also
+// attached to a placed reference is read by its aliases alone (the QUST VMADs
+// are what the index reads)
+const std::unordered_map<std::string, bool>& PlayerAliasScriptIndexOf(
+  WorldState& worldState)
+{
+  static std::map<const espm::Loader*, std::unordered_map<std::string, bool>>
+    g_index;
+  auto it = g_index.find(&worldState.GetEspm());
+  if (it != g_index.end()) {
+    return it->second;
+  }
+  std::unordered_map<std::string, bool> index;
+  for (const auto& q : QuestScopeFactsOf(worldState)) {
+    if (q.aliasScripts.empty()) {
+      continue;
+    }
+    const auto players = skymp::rules::quest_scope_player_aliases(
+      rust::Slice<const skymp::rules::QuestScopeAliasRow>(q.aliases.data(),
+                                                          q.aliases.size()));
+    for (const auto& [aliasId, script] : q.aliasScripts) {
+      const bool player =
+        std::find(players.begin(), players.end(), aliasId) != players.end();
+      auto [at, added] = index.emplace(LowerScriptClass(script), player);
+      if (!added) {
+        at->second = at->second && player;
+      }
+    }
+  }
+  return g_index.emplace(&worldState.GetEspm(), std::move(index))
+    .first->second;
 }
 
 // thuum ADR-068 rung 5 (the fresh review's note 3): every QUST's and MGEF's
@@ -4128,6 +4210,29 @@ void PartOne::SetQuestStoryInstancesSettings(const std::string& settingJson)
                "questStoryInstances {}",
                settingJson);
   ComposeStoryQuests();
+}
+
+void PartOne::SetQuestPlayerAliasCauseSettings(const std::string& settingJson)
+{
+  pImpl->questPlayerAliasWorld =
+    skymp::rules::quest_player_alias_cause_world(settingJson);
+  spdlog::info("PartOne::SetQuestPlayerAliasCauseSettings - "
+               "questPlayerAliasCause {}",
+               settingJson);
+}
+
+bool PartOne::QuestPlayerAliasCauseSeat() const
+{
+  return !pImpl->questPlayerAliasWorld;
+}
+
+bool PartOne::ScriptRidesPlayerAliasesOnly(const std::string& script) const
+{
+  if (!pImpl->playerAliasScripts || script.empty()) {
+    return false;
+  }
+  const auto it = pImpl->playerAliasScripts->find(LowerScriptClass(script));
+  return it != pImpl->playerAliasScripts->end() && it->second;
 }
 
 void PartOne::ComposeStoryQuests()
@@ -4457,6 +4562,23 @@ bool PartOne::QuestAttachmentLive(uint32_t questId)
   return std::any_of(stages.begin(), stages.end(), [&](const auto& stage) {
     return SameForm(stage.quest, quest);
   });
+}
+
+const std::vector<uint32_t>& PartOne::LeveledReach(uint32_t list)
+{
+  static const std::vector<uint32_t> kNone;
+  if (!HasEspm() || list == 0) {
+    return kNone;
+  }
+  auto it = pImpl->leveledReach.find(list);
+  if (it == pImpl->leveledReach.end()) {
+    auto& browser = GetEspm().GetBrowser();
+    it = pImpl->leveledReach
+           .emplace(list,
+                    LeveledListUtils::Reach(browser, browser.LookupById(list)))
+           .first;
+  }
+  return it->second;
 }
 
 bool PartOne::HeadPartFitsRace(uint32_t part, uint32_t race)

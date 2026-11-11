@@ -21,11 +21,37 @@
 // (ProcessTrapHit's, a trap's hit on an NPC the sender simulates: the NPC's
 // death evidence, thuum docs/verbs/npc-fate.md); a value is never judged.
 // Client to server, reliable. The contract is skymp-wire's (wire-schema
-// skymp.rs, ScriptCall, MsgType 75, wire id 83).
+// skymp.rs, ScriptCall, MsgType 75, wire id 83). Since SCHEMA_VERSION 44
+// (thuum D-R1 C's leveled gap, train 52) a leveled AddItem on the sender's
+// own player carries `landed`, what the engine's roll put in that player's
+// inventory (each base once, its count summed; empty when the roll landed
+// nothing), which the server records as plain grants of bases the list can
+// roll (ActionListener's RecordPlayerOwn, wire-rules player_own).
 struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
 {
   static constexpr auto kMsgType =
     std::integral_constant<char, static_cast<char>(MsgType::ScriptCall)>{};
+
+  // one landing of a leveled roll: a base the roll put in the sender's own
+  // player and how many (wire-schema ItemDelta; wire-validate holds the item
+  // a load-order form below 0xff000000, the count above zero and each base
+  // once)
+  struct Landing
+  {
+    template <class Archive>
+    void Serialize(Archive& archive)
+    {
+      archive.Serialize("item", item).Serialize("count", count);
+    }
+
+    friend bool operator==(const Landing& lhs, const Landing& rhs)
+    {
+      return lhs.item == rhs.item && lhs.count == rhs.count;
+    }
+
+    uint32_t item = 0;
+    int32_t count = 0;
+  };
 
   template <class Archive>
   void Serialize(Archive& archive)
@@ -38,7 +64,8 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
       .Serialize("args", args)
       .Serialize("caller", caller)
       .Serialize("handler", handler)
-      .Serialize("latent", latent);
+      .Serialize("latent", latent)
+      .Serialize("landed", landed);
   }
 
   // the subject's owner epoch the sender holds (the cell's host epoch;
@@ -56,4 +83,8 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
   std::string caller;  // the calling script's type, for the log
   std::string handler; // the calling function, for the log
   bool latent = false; // the native is latent: a receiver runs its twin
+  // since SCHEMA_VERSION 44: a leveled AddItem's roll as it landed on the
+  // sender's own player, at most 255 (TESLeveledList's one-byte entry
+  // count); absent on every other call
+  std::optional<std::vector<Landing>> landed;
 };

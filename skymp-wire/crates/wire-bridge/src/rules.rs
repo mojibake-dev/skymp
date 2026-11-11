@@ -2302,6 +2302,15 @@ mod ffi {
         /// form with no extra data, unworn: Inventory::AddItems' match for a
         /// plain add), so the add appends a new one.
         new_stack: bool,
+        /// For one landing of a leveled AddItem's roll (ScriptCall's
+        /// `landed`, SCHEMA_VERSION 44; thuum D-R1 C's leveled gap, train
+        /// 52), judged with the landing's base as the form: the leveled list
+        /// the call named. 0 for every other call.
+        landing_of: u32,
+        /// The landing's base is one that list can roll, a non-list base
+        /// among its entries with nested lists followed
+        /// (PartOne::LeveledReach over LeveledListUtils::Reach; D-R2 B).
+        in_reach: bool,
     }
 
     /// A player's overlay (thuum ADR-068 D-T1 A, wire-rules
@@ -2338,9 +2347,10 @@ mod ffi {
         /// The refusal's stable name (E_SCRIPTCALL_ARGS, a form of another
         /// kind than the row's or a count that lands nothing;
         /// E_SCRIPTCALL_UNNAMED; E_SCRIPTCALL_RACE; E_SCRIPTCALL_LEVELED, a
-        /// leveled list's add; E_SCRIPTCALL_FULL, an add needing a new stack
-        /// once the record holds the wire's stacks in one inventory; or
-        /// E_SCRIPTCALL_ROW for a native that is none
+        /// leveled list's add that carries no landing; E_SCRIPTCALL_FULL, an
+        /// add needing a new stack once the record holds the wire's stacks
+        /// in one inventory; E_SCRIPTCALL_ROLL, a landing whose base the
+        /// list cannot roll; or E_SCRIPTCALL_ROW for a native that is none
         /// of the nine), empty otherwise.
         name: String,
         /// Why, for the log; empty otherwise.
@@ -3225,6 +3235,17 @@ mod ffi {
         /// passes `"seat"` for a key the file lacks), true for "world"; an
         /// error names what is wrong.
         fn quest_story_instances_world(settings_json: &str) -> Result<bool>;
+        /// thuum D-Q9 B (Eli 2026-11-11; train 52): the setting
+        /// `questPlayerAliasCause` from its JSON text ("seat", the default,
+        /// D-Q9 B, or "world", D-Q9 A; the core passes `"seat"` for a key the
+        /// file lacks), true for "world"; an error names what is wrong.
+        fn quest_player_alias_cause_world(settings_json: &str) -> Result<bool>;
+        /// D-Q9 B: whether a report's root is the seat's own: its `function`
+        /// (the root's part after its last dot) one of wire-rules
+        /// quest_runs::PLAYER_ALIAS_EVENTS, names without case, on a script
+        /// the game files attach to player aliases alone
+        /// (`script_on_player_aliases_only`, the core's index).
+        fn quest_root_is_seat_own(function: &str, script_on_player_aliases_only: bool) -> bool;
         /// The Story Manager's quests (every quest an SMQN node of the game
         /// files names, the core's read; stage 0 in each entry) and the
         /// setting (`world`, quest_story_instances_world's answer), both
@@ -3275,6 +3296,12 @@ mod ffi {
         /// it), 0 World (a world alias, whatever the list says, or none and
         /// unlisted).
         fn quest_scope_class(self: &QuestScope, short_id: u32, file: &str, aliases: &[QuestScopeAliasRow]) -> u8;
+        /// thuum D-Q9 B: the ids of the reference aliases among a quest's
+        /// `aliases` (every ALST and ALLS of its QUST record) that are the
+        /// player's (wire-rules quest_scope::is_players), in their order,
+        /// whatever the quest's class: the core's index of the scripts that
+        /// ride player aliases alone reads them per quest.
+        fn quest_scope_player_aliases(aliases: &[QuestScopeAliasRow]) -> Vec<u32>;
 
         /// thuum ADR-068 rung 5 (D-V1 B, D-T2 B): the condition-read
         /// variables server-settings.json's `conditionVariables` lists, and
@@ -3326,9 +3353,11 @@ mod ffi {
         /// SetRace, AddSpell, RemoveSpell, AddShout, RemoveShout, EquipItem
         /// and ChangeHeadPart, ObjectReference's AddItem and RemoveItem,
         /// names without case) by `player`'s seat naming `form` (its first
-        /// argument's form id, 0 for None), over the `properties` of the
-        /// calling script's attachments (none for AddItem and RemoveItem,
-        /// which have no bound) and the record's `facts`.
+        /// argument's form id, 0 for None; for one landing of a leveled
+        /// AddItem's roll, the landing's base, `facts.landing_of` naming the
+        /// list), over the `properties` of the calling script's attachments
+        /// (none for AddItem and RemoveItem, which have no bound) and the
+        /// record's `facts`.
         fn player_own_judge(self: &mut PlayerOverlays, player: u32, cls: &str, func: &str, form: u32, properties: &[ScriptPropertyRow], facts: &PlayerOwnFacts) -> PlayerOwnVerdict;
         /// The overlay `player` wears now (`open` false for none), for its
         /// figure's CreateActor and UpdateAppearance and the equipment gate.
@@ -5691,6 +5720,14 @@ fn quest_story_instances_world(settings_json: &str) -> Result<bool, clock::Setti
     quest_runs::StoryInstances::from_json(settings_json).map(|s| s == quest_runs::StoryInstances::World)
 }
 
+fn quest_player_alias_cause_world(settings_json: &str) -> Result<bool, clock::SettingsError> {
+    quest_runs::PlayerAliasCause::from_json(settings_json).map(|s| s == quest_runs::PlayerAliasCause::World)
+}
+
+fn quest_root_is_seat_own(function: &str, script_on_player_aliases_only: bool) -> bool {
+    quest_runs::root_is_seat_own(function, script_on_player_aliases_only)
+}
+
 impl QuestRuns {
     #[allow(clippy::too_many_arguments)]
     fn quest_runs_judge(&mut self, record: &[QuestRunRow], short_id: u32, file: &str, word: u8, cause: u8, seat: u32, now_ms: u64) -> QuestRunVerdict {
@@ -5770,20 +5807,28 @@ impl QuestScope {
     }
 
     fn quest_scope_class(&self, short_id: u32, file: &str, aliases: &[QuestScopeAliasRow]) -> u8 {
-        let parsed: Vec<quest_scope::Alias> = aliases
-            .iter()
-            .map(|a| quest_scope::Alias {
-                id: a.id,
-                location: a.location,
-                forced: a.forced,
-                unique_actor: a.unique_actor,
-                created: a.created,
-                create_at: a.create_at,
-                external: a.external.then_some(quest_scope::External { forced: a.external_forced, unique_actor: a.external_unique_actor }),
-            })
-            .collect();
-        self.0.class(&forms::FormDesc { short_id, file: file.to_owned() }, &parsed).code()
+        self.0.class(&forms::FormDesc { short_id, file: file.to_owned() }, &scope_aliases(aliases)).code()
     }
+}
+
+/// A quest's alias rows as wire-rules quest_scope reads them.
+fn scope_aliases(aliases: &[QuestScopeAliasRow]) -> Vec<quest_scope::Alias> {
+    aliases
+        .iter()
+        .map(|a| quest_scope::Alias {
+            id: a.id,
+            location: a.location,
+            forced: a.forced,
+            unique_actor: a.unique_actor,
+            created: a.created,
+            create_at: a.create_at,
+            external: a.external.then_some(quest_scope::External { forced: a.external_forced, unique_actor: a.external_unique_actor }),
+        })
+        .collect()
+}
+
+fn quest_scope_player_aliases(aliases: &[QuestScopeAliasRow]) -> Vec<u32> {
+    quest_scope::player_alias_ids(&scope_aliases(aliases))
 }
 
 /// thuum ADR-068 rung 5: the condition-read variables (wire-rules
@@ -5898,7 +5943,7 @@ impl PlayerOverlays {
             };
         };
         let named: Vec<player_own::Named> = properties.iter().map(|p| player_own::Named { form: p.form, members: p.members.clone() }).collect();
-        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind, race_valid: facts.race_valid, leveled: facts.leveled, held_count: facts.held_count, count: player_own::item_count(facts.count), into_held_open: facts.into_held_open, stacks: facts.stacks, new_stack: facts.new_stack };
+        let f = player_own::Facts { recorded_race: facts.recorded_race, playable: facts.playable, restricted: facts.restricted, permitted: facts.permitted, held: facts.held, kind: facts.kind, race_valid: facts.race_valid, leveled: facts.leveled, held_count: facts.held_count, count: player_own::item_count(facts.count), into_held_open: facts.into_held_open, stacks: facts.stacks, new_stack: facts.new_stack, landing_of: facts.landing_of, in_reach: facts.in_reach };
         let (code, name, why, ended, count) = match self.0.judge(player, row, form, &named, f) {
             player_own::Verdict::Record { ended } => (0, "", String::new(), ended, 0),
             player_own::Verdict::Items(n) => (0, "", String::new(), None, n),
@@ -6709,6 +6754,20 @@ mod tests {
     }
 
     #[test]
+    fn the_bridge_reads_a_player_aliass_location_change_as_the_seats_own() {
+        // thuum D-Q9 B (train 52): the setting, the event rule and the
+        // quest's player aliases the core's index reads (MQ101 0x3372b's
+        // player alias 119 beside an NPC one, the forms illustrative)
+        assert_eq!((quest_player_alias_cause_world(r#""seat""#).ok(), quest_player_alias_cause_world(r#""world""#).ok()), (Some(false), Some(true)));
+        assert!(quest_player_alias_cause_world(r#""off""#).is_err());
+        assert!(quest_root_is_seat_own("OnLocationChange", true) && quest_root_is_seat_own("ONLOCATIONCHANGE", true));
+        assert!(!quest_root_is_seat_own("OnLocationChange", false) && !quest_root_is_seat_own("OnActivate", true));
+        let alias = |id: u32, forced: u32, unique_actor: u32| QuestScopeAliasRow { id, location: false, forced, unique_actor, created: 0, create_at: 0, external: false, external_forced: 0, external_unique_actor: 0 };
+        assert_eq!(quest_scope_player_aliases(&[alias(119, 0x14, 0), alias(12, 0, 0x2bfb3), alias(7, 0, 7)]), vec![119, 7]);
+        assert!(quest_scope_player_aliases(&[QuestScopeAliasRow { location: true, ..alias(3, 0x14, 0) }]).is_empty());
+    }
+
+    #[test]
     fn the_bridge_refuses_a_seat_caused_word_and_a_story_instances_run() {
         // thuum ADR-068 rung 5, D-Q4 C: dunEmbershardQST 0xb6fef, which no
         // Story Manager quest node names, and FreeformRiverwood01 0x74a83,
@@ -6847,7 +6906,7 @@ mod tests {
         let npc = s.judge(at.row, &[race], &ScriptCallFacts { self_id: 0x800a6, ..facts }, 0);
         assert_eq!((npc.code, npc.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
         let lists = [ScriptPropertyRow { form: 0x0d00_1000, members: vec![0x13746, 0x13745] }, ScriptPropertyRow { form: 0x0d00_1001, members: vec![0x88794, 0x88845] }];
-        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 0, count: 0.0, into_held_open: false, stacks: 0, new_stack: false };
+        let khajiit = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 0, count: 0.0, into_held_open: false, stacks: 0, new_stack: false, landing_of: 0, in_reach: false };
         let mut overlays = new_player_overlays();
         let v = overlays.player_own_judge(0xff00_0001, "Actor", "SetRace", 0x88845, &lists, &khajiit);
         assert_eq!((v.code, v.name.as_str(), v.ended.open, v.overlay.open), (0, "", false, false));
@@ -6918,13 +6977,32 @@ mod tests {
         // bound is the wire's, so every SetInventory and CreateActor of the
         // player still carries its whole inventory
         assert_eq!(player_own::INVENTORY_STACKS, wire_schema::cap::INVENTORY);
-        let gold = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 40, count: 25.0, into_held_open: false, stacks: wire_schema::cap::INVENTORY, new_stack: true };
+        let gold = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 40, count: 25.0, into_held_open: false, stacks: wire_schema::cap::INVENTORY, new_stack: true, landing_of: 0, in_reach: false };
         let mut overlays = new_player_overlays();
         let full = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &gold);
         assert_eq!((full.code, full.name.as_str(), full.count), (4, "E_SCRIPTCALL_FULL", 0));
         assert!(full.why.contains("4096 stacks"), "{}", full.why);
         let joins = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &PlayerOwnFacts { new_stack: false, ..gold });
         assert_eq!((joins.code, joins.count), (0, 25));
+    }
+
+    #[test]
+    fn a_leveled_rolls_landing_crosses_as_a_plain_add_of_its_base_and_one_its_list_cannot_roll_is_refused_by_name() {
+        // thuum D-R1 C's leveled gap (train 52): MS01's reward
+        // LvlQuestReward02Medium 0xc0405, whose roll landed Gold001 0xf x400,
+        // judged with the base as the form and the list beside it; IronSword
+        // 0x12eb7 is no base the list can roll (D-R2 B)
+        let landing = PlayerOwnFacts { recorded_race: 0x13745, playable: false, restricted: false, permitted: false, held: false, kind: true, race_valid: false, leveled: false, held_count: 140, count: 400.0, into_held_open: false, stacks: 12, new_stack: false, landing_of: 0xc0405, in_reach: true };
+        let mut overlays = new_player_overlays();
+        let recorded = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xf, &[], &landing);
+        assert_eq!((recorded.code, recorded.name.as_str(), recorded.count), (0, "", 400));
+        let rolled = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0x12eb7, &[], &PlayerOwnFacts { in_reach: false, count: 1.0, ..landing });
+        assert_eq!((rolled.code, rolled.name.as_str(), rolled.count), (4, "E_SCRIPTCALL_ROLL", 0));
+        assert_eq!(rolled.why, "12eb7 is no base the leveled list c0405 can roll (its entries, nested lists followed): that landing is not recorded");
+        // the call itself with no landing keeps its refusal
+        let unreported = overlays.player_own_judge(0xff00_0001, "ObjectReference", "AddItem", 0xc0405, &[], &PlayerOwnFacts { landing_of: 0, in_reach: false, leveled: true, kind: false, count: 1.0, ..landing });
+        assert_eq!((unreported.code, unreported.name.as_str()), (4, "E_SCRIPTCALL_LEVELED"));
+        assert!(unreported.why.contains("the report carries no landing"), "{}", unreported.why);
     }
 
     #[test]

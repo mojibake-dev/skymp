@@ -1,0 +1,24 @@
+{
+  "args": [
+    {
+      "formId": 787461,
+      "type": "Form"
+    },
+    1.0,
+    false
+  ],
+  "caller": "QF_MS01_00018B4B",
+  "cls": "ObjectReference",
+  "epoch": 0,
+  "fn": "AddItem",
+  "handler": "Fragment_56",
+  "landed": [
+    {
+      "count": 400,
+      "item": 15
+    }
+  ],
+  "latent": true,
+  "selfId": 20,
+  "t": 75
+}

@@ -296,3 +296,42 @@ TEST_CASE("Evaluate LItemBanditWeaponArrows at level 1: the nested count "
   REQUIRE(total > 2400);
   REQUIRE(total < 3600);
 }
+
+// thuum D-R1 C's leveled gap (train 52, D-R2 B): the bases a list can roll,
+// whatever the player's level, the chance of none or the flags, nested lists
+// followed, each once. Skyrim.esm read with lab/esm.py on the lab's cached
+// copy, 2026-11-10: LvlQuestReward02Medium 0xc0405 (MS01's reward, LVLF 0)
+// has five entries, all Gold001 0xf (x400 to x1200 by level);
+// FavorRewardGoldLarge 0x4a41b has one, LvlQuestReward03Large 0xc0406, whose
+// five are Gold001 too; LItemJewelryRing 0x8757e (LVLF 0x03) has 32 entries
+// of eight rings, every one an ARMO. Update.esm is no file of that cache, so
+// the ring case holds the eight Skyrim.esm names and not their total
+TEST_CASE("Reach of a leveled list: every base it can roll, each once, "
+          "nested lists followed",
+          "[espm]")
+{
+  constexpr uint32_t Gold001 = 0xf;
+  auto& br = GetEspmLoader().GetBrowser();
+  REQUIRE(LeveledListUtils::Reach(br, br.LookupById(0xc0405)) ==
+          std::vector<uint32_t>{ Gold001 });
+  REQUIRE(LeveledListUtils::Reach(br, br.LookupById(0x4a41b)) ==
+          std::vector<uint32_t>{ Gold001 });
+
+  const auto rings = LeveledListUtils::Reach(br, br.LookupById(0x8757e));
+  const std::vector<uint32_t> skyrimRings = { 0x3b97c, 0x877ab, 0x877a7,
+                                              0x1cf2b, 0x877b1, 0x877cb,
+                                              0x877ca, 0x877c9 };
+  for (uint32_t ring : skyrimRings) {
+    INFO("ring 0x" << std::hex << ring);
+    REQUIRE(std::count(rings.begin(), rings.end(), ring) == 1);
+  }
+  for (uint32_t base : rings) {
+    INFO("base 0x" << std::hex << base);
+    const auto rec = br.LookupById(base).rec;
+    REQUIRE(rec);
+    REQUIRE(rec->GetType() == espm::ARMO::kType);
+  }
+
+  // a form that is no leveled list reaches nothing
+  REQUIRE(LeveledListUtils::Reach(br, br.LookupById(Gold001)).empty());
+}

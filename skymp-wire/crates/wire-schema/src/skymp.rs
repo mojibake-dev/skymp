@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bounded::{String, Vec};
 use crate::cap;
+use crate::ItemDelta;
 pub use crate::shape::{ConsoleArg, MsgT, SnippetArg, SnippetObject, SnippetValue};
 
 /// x, y, z in engine units, or Euler angles in degrees, as SkyMP sends them.
@@ -1054,10 +1055,13 @@ wire_struct! {
     /// [`QUEST_CAUSE_SEAT`] and `root`, the root frame of the script stack
     /// that called Quest.Start, Quest.Stop or SetStage (absent when no
     /// script call made it). Both the seat's own word (R2): the server
-    /// refuses a run word whose cause is the seat's own (`E_QUEST_CAUSE`) and
-    /// a run word of a quest a Story Manager quest node names while
-    /// `questStoryInstances` is "seat" (`E_QUEST_INSTANCE`), logging both by
-    /// name with the reported cause and root, and records no stage report it
+    /// refuses a run word whose cause is the seat's own (`E_QUEST_CAUSE`,
+    /// logged by name with the reported cause and root); keeps a run word of
+    /// a quest a Story Manager quest node names to its seat while
+    /// `questStoryInstances` is "seat" (D-Q5 A: neither recorded nor relayed,
+    /// its stages still crossing; wire-rules quest_runs' `Code::Instance`,
+    /// printed as one plain "kept to its seat" line a minute per seat and
+    /// quest, no E_ code since fork b23085da); and records no stage report it
     /// judges a start (a start-up stage, which only the record can tell)
     /// whose cause is the seat's own, in one plain line a minute per seat.
     /// Reason codes besides: `E_VAL_RANGE` (a cause other than 1
@@ -1114,7 +1118,11 @@ wire_struct! {
         /// the stages and words the call set; a quest command the player
         /// typed in the console is [`QUEST_CAUSE_WORLD`] (the seat's client
         /// marks it before the engine runs it). Absent from an older client
-        /// and from the server. Unvalidated (R2).
+        /// and from the server. Unvalidated (R2). The server may judge a
+        /// world cause the seat's own, never the other way: under
+        /// `questPlayerAliasCause` "seat" (thuum D-Q9 B, the default) one
+        /// whose `root` is a player alias's OnLocationChange (wire-rules
+        /// quest_runs::root_is_seat_own).
         pub cause: Option<u8>,
         /// Since SCHEMA_VERSION 43: beside `cause`, that stack's root frame
         /// as "<Script>.<Function>" (its owningObjectType's name and its
@@ -2396,9 +2404,15 @@ wire_struct! {
     /// value is never judged (ADR-062's amendment). Reason codes:
     /// `E_VAL_RANGE` (an empty class or function, a subject or an object
     /// argument the server names, 0xff000000 and up, or an object id past 32
-    /// bits), `E_VAL_NONFINITE`; the server's rule logs `E_SCRIPTCALL_ROW`,
-    /// `E_SCRIPTCALL_ARGS`, `E_SCRIPTCALL_OWNER` and `E_SCRIPTCALL_RATE` by
-    /// name.
+    /// bits; since SCHEMA_VERSION 44 `landed` on any call but an
+    /// ObjectReference.AddItem on 0x14, a landing's item 0 or 0xff000000 and
+    /// up, a negative count or a base twice), `E_VAL_ZERO_DELTA` (a landing's
+    /// count of 0), `E_VAL_NONFINITE`; the server's rule logs
+    /// `E_SCRIPTCALL_ROW`, `E_SCRIPTCALL_ARGS`, `E_SCRIPTCALL_OWNER` and
+    /// `E_SCRIPTCALL_RATE` by name, and on a player's own rows its
+    /// player_own codes (`E_SCRIPTCALL_LEVELED` for a leveled AddItem that
+    /// carries no `landed`, `E_SCRIPTCALL_ROLL` for a landing its list cannot
+    /// roll).
     pub struct ScriptCall {
         /// `"t": 75`.
         #[serde(default)]
@@ -2432,6 +2446,17 @@ wire_struct! {
         pub handler: String<{ cap::PAPYRUS_NAME }>,
         /// The native is latent: a receiver runs its row's non-latent twin.
         pub latent: bool,
+        /// Since SCHEMA_VERSION 44 (thuum D-R1 C's leveled gap, train 52): on
+        /// an AddItem whose form is a leveled list, on the sender's own
+        /// player (`self_id` 0x14) alone, what the engine's roll put in that
+        /// player's inventory, read from the container events inside the
+        /// call's AddItemFunctor: each base once, its count summed, in
+        /// landing order; empty when the roll landed nothing; absent on
+        /// every other call. R2, the seat's word: the server records each
+        /// landing as a plain grant after checking the base is one the list
+        /// can roll. Delivered once on the reliable channel; a duplicate
+        /// would grant twice, as a plain own AddItem's would.
+        pub landed: Option<Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>>,
     }
 }
 

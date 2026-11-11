@@ -432,25 +432,43 @@ mod tests {
     /// rung 5 a scoped call's figure, which the edge passes and the server's
     /// rule takes for a connected player alone, wire-rules natives::figures);
     /// 3 names a subject at 0xff000000 and up and 4 an object argument past
-    /// 32 bits, both refused by the shape. The SpSnippet
+    /// 32 bits, both refused by the shape. 5 (SCHEMA_VERSION 44, thuum D-R1
+    /// C's leveled gap) is MS01's stage 39 reward on the seat's own player,
+    /// LvlQuestReward02Medium 0xc0405 x1, with the roll its AddItemFunctor
+    /// landed, Gold001 0xf x400 (x-additem-functor 20261110-151634); the
+    /// other five carry no `landed` and render none. The SpSnippet
     /// fixture 2 is the pillar's relay with the subject's sequence; 0 and 1,
     /// the snippets without one, render no `seq`.
     #[test]
     fn script_call_fixtures_validate_as_named() {
         use wire_validate::{validate_server, Reject};
-        let verdicts: [(&str, Result<(), Reject>); 5] = [
+        let verdicts: [(&str, Result<(), Reject>); 6] = [
             ("75-ScriptCall-0.json", Ok(())),
             ("75-ScriptCall-1.json", Ok(())),
             ("75-ScriptCall-2.json", Ok(())),
             ("75-ScriptCall-3.json", Err(Reject::Range)),
             ("75-ScriptCall-4.json", Err(Reject::Range)),
+            ("75-ScriptCall-5.json", Ok(())),
         ];
         for (name, want) in verdicts {
             let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
             let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(matches!(m, Message::ScriptCall(_)), "{name}");
             assert_eq!(validate_server(&m), want, "{name}");
+            let landed = name == "75-ScriptCall-5.json";
+            assert_eq!(render(&m).unwrap_or_default().contains("\"landed\""), landed, "{name}: `landed` renders only when carried");
         }
+        let text = std::fs::read_to_string(fixtures_dir().join("75-ScriptCall-5.json")).unwrap_or_default();
+        match recognize(&text) {
+            Ok(Message::ScriptCall(c)) => {
+                let landed: Vec<(u32, i32)> = c.landed.iter().flat_map(|l| l.iter()).map(|d| (d.item.0, d.count)).collect();
+                assert_eq!((c.self_id, landed), (0x14, vec![(0xf, 400)]));
+            }
+            other => panic!("{other:?}"),
+        }
+        // a 256th landing is no shape (the bound at decode)
+        let over = text.replacen("\"landed\": [", &format!("\"landed\": [{}", "{\"item\": 15, \"count\": 1}, ".repeat(255)), 1);
+        assert!(matches!(recognize(&over), Err(JsonError::Shape(_))), "256 landings");
         let text = std::fs::read_to_string(fixtures_dir().join("30-SpSnippet-2.json")).unwrap_or_default();
         match recognize(&text) {
             Ok(Message::SpSnippet(s)) => assert_eq!(s.seq, Some(1)),

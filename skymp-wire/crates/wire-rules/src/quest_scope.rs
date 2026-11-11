@@ -135,6 +135,15 @@ pub fn is_players(alias: &Alias, aliases: &[Alias]) -> bool {
     false
 }
 
+/// The ids of the reference aliases among `aliases` that are the player's
+/// ([`is_players`]), in their order: what the core's index of D-Q9 B's
+/// alias scripts reads per quest (a script rides player aliases alone when
+/// every alias it rides, over every quest, is among them).
+#[must_use]
+pub fn player_alias_ids(aliases: &[Alias]) -> Vec<u32> {
+    aliases.iter().filter(|a| !a.location && is_players(a, aliases)).map(|a| a.id).collect()
+}
+
 /// A quest's class from its `aliases` and whether `playerQuests` names it
 /// (`listed`): with aliases, Player when every one is the player's, World
 /// otherwise whatever the list says; with none, Player when listed.
@@ -260,6 +269,27 @@ mod tests {
         assert_eq!(classify(&[Alias { id: 0, created: 0x1000, create_at: CREATE_IN | 9, ..Alias::default() }], false), Class::World);
         let cycle = [Alias { id: 0, created: 0x1000, create_at: CREATE_IN | 1, ..Alias::default() }, Alias { id: 1, created: 0x1001, create_at: CREATE_IN, ..Alias::default() }];
         assert_eq!(classify(&cycle, false), Class::World);
+    }
+
+    #[test]
+    fn a_quests_player_aliases_are_named_by_id_whatever_its_class() {
+        // D-Q9 B's index reads them per quest: MQ101 0x3372b's player alias
+        // 119 beside its NPC aliases (the lab's cached masters, 2026-11-10;
+        // the forms illustrative), a quest of the world's class all the same
+        let mq101 = [forced(119, PLAYER_REF), Alias { id: 12, unique_actor: 0x2bfb3, ..Alias::default() }, forced(13, 0x6e4b8)];
+        assert_eq!(classify(&mq101, false), Class::World);
+        assert_eq!(player_alias_ids(&mq101), vec![119]);
+        // a unique actor, a creation in the player's inventory and an
+        // external fill are the player's; a location alias never is
+        let mixed = [
+            Alias { id: 0, unique_actor: PLAYER_BASE, ..Alias::default() },
+            Alias { id: 1, created: 0x39647, create_at: CREATE_IN, ..Alias::default() },
+            Alias { id: 2, external: Some(External { forced: PLAYER_REF, unique_actor: 0 }), ..Alias::default() },
+            Alias { id: 3, location: true, forced: PLAYER_REF, ..Alias::default() },
+            Alias { id: 4, ..Alias::default() },
+        ];
+        assert_eq!(player_alias_ids(&mixed), vec![0, 1, 2]);
+        assert!(player_alias_ids(&[]).is_empty());
     }
 
     #[test]

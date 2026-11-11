@@ -14,7 +14,7 @@
 //! come with the verbs.
 
 use wire_schema::finite::all_finite;
-use wire_schema::{skymp, Message, Transform};
+use wire_schema::{skymp, ItemDelta, Message, Transform};
 
 /// Rejection reasons. Stable names; append only.
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone, Copy)]
@@ -1449,7 +1449,8 @@ fn check_change_form_ack(m: &skymp::ChangeFormAck) -> Result<(), Reject> {
 /// every string's length hold at decode. Whether the pair is a tabled action
 /// row, the arguments its count and kinds, the subject the sender's at the
 /// epoch and the sender within its budget is the server's rule (wire-rules
-/// natives); a value is never judged.
+/// natives); a value is never judged. Since SCHEMA_VERSION 44 a call may
+/// carry `landed`, its leveled roll's landings ([`check_landed`]).
 fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
@@ -1462,6 +1463,39 @@ fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
     };
     if m.args.iter().any(past_a_form) {
         return Err(Reject::Range);
+    }
+    if let Some(landed) = &m.landed {
+        check_landed(m, landed.as_slice())?;
+    }
+    Ok(())
+}
+
+/// A reported call's landings (thuum D-R1 C's leveled gap, SCHEMA_VERSION
+/// 44), structural only: they ride an ObjectReference.AddItem (names without
+/// case, as the server's table reads them) on the sender's own player, 0x14,
+/// and no other call (`E_VAL_RANGE`); each names an item of the load order
+/// both ends share (not 0, below 0xff000000, the server's forms), a count
+/// above zero (0 is `E_VAL_ZERO_DELTA`, the ItemDelta rule; a negative one
+/// `E_VAL_RANGE`) and a base no earlier landing named (the platform folds by
+/// base). An empty list is the roll that landed nothing. The count, at most
+/// `cap::SCRIPT_CALL_LANDED`, holds at decode; whether each base is one the
+/// list can roll is the server's rule (wire-rules player_own,
+/// `E_SCRIPTCALL_ROLL`).
+fn check_landed(m: &skymp::ScriptCall, landed: &[ItemDelta]) -> Result<(), Reject> {
+    let add_item = m.cls.as_str().eq_ignore_ascii_case("ObjectReference") && m.func.as_str().eq_ignore_ascii_case("AddItem");
+    if !add_item || m.self_id != OWN_PLAYER {
+        return Err(Reject::Range);
+    }
+    for (i, landing) in landed.iter().enumerate() {
+        if landing.item.0 == 0 || landing.item.0 >= PLAYER_FORMS {
+            return Err(Reject::Range);
+        }
+        if landing.count == 0 {
+            return Err(Reject::ZeroDelta);
+        }
+        if landing.count < 0 || landed.iter().take(i).any(|earlier| earlier.item == landing.item) {
+            return Err(Reject::Range);
+        }
     }
     Ok(())
 }
@@ -4225,8 +4259,10 @@ mod change_form_tests {
 #[cfg(test)]
 mod script_call_tests {
     use super::*;
+    use proptest::prelude::*;
     use wire_schema::cap;
     use wire_schema::skymp::{ScriptCall, SnippetArg, SnippetObject};
+    use wire_schema::FormId;
 
     fn object(form_id: u64, kind: &str) -> Option<SnippetArg> {
         Some(SnippetArg::Object(SnippetObject { form_id, kind: kind.try_into().unwrap_or_default() }))
@@ -4301,6 +4337,78 @@ mod script_call_tests {
         let mut guard = ClientGuard::default();
         for _ in 0..100 {
             assert_eq!(validate(&call(0xaa8cb, "ObjectReference", "PlayAnimation", vec![text("Open")]), &mut guard, 0), Ok(()));
+        }
+    }
+
+    // thuum D-R1 C's leveled gap (SCHEMA_VERSION 44): MS01's stage 39,
+    // `Game.GetPlayer().AddItem(LvlQuestReward02Medium, 1, False)`, the list
+    // 0xc0405 whose roll landed Gold001 0xf x400 (x-additem-functor
+    // 20261110-151634)
+    const REWARD: u32 = 0xc0405;
+
+    fn reward(self_id: u32, cls: &str, func: &str, landed: &[(u32, i32)]) -> Message {
+        let Message::ScriptCall(c) = call(self_id, cls, func, vec![object(u64::from(REWARD), "LeveledItem"), Some(SnippetArg::Number(1.0)), Some(SnippetArg::Bool(false))]) else {
+            return Message::Refuse { reason: 0 };
+        };
+        let landed: Vec<ItemDelta> = landed.iter().map(|&(item, count)| ItemDelta { item: FormId(item), count }).collect();
+        Message::ScriptCall(ScriptCall { landed: landed.try_into().ok(), caller: "QF_MS01_00018B4B".try_into().unwrap_or_default(), handler: "Fragment_56".try_into().unwrap_or_default(), ..c })
+    }
+
+    #[test]
+    fn a_leveled_rolls_landings_ride_the_players_own_additem_alone() {
+        // the roll's one base, an empty roll, a call with no landings at all
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, 400)])), Ok(()));
+        assert_eq!(validate_server(&reward(0x14, "objectreference", "additem", &[(0xf, 400), (0x12eb7, 1)])), Ok(()), "names without case; the reach is the server's");
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[])), Ok(()));
+        assert_eq!(validate_server(&call(0x14, "ObjectReference", "AddItem", vec![object(u64::from(REWARD), "LeveledItem")])), Ok(()));
+        // on another native or another subject: E_VAL_RANGE
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "RemoveItem", &[(0xf, 400)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x14, "Actor", "SetRace", &[(0xf, 400)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x10e6c5, "ObjectReference", "AddItem", &[(0xf, 400)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x10e6c5, "ObjectReference", "AddItem", &[])), Err(Reject::Range), "an empty list is still a landing");
+        // each landing an item of the load order, a count above zero, a base once
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0, 400)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xff00_0001, 1)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xfeff_ffff, 1)])), Ok(()));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, 0)])), Err(Reject::ZeroDelta));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, -1)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, i32::MAX)])), Ok(()));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, 400), (0x12eb7, 1), (0xf, 25)])), Err(Reject::Range));
+        // the client's edge says the same
+        assert_eq!(validate(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, 0)]), &mut ClientGuard::default(), 0), Err(Reject::ZeroDelta));
+    }
+
+    #[test]
+    fn the_landings_stop_at_a_leveled_lists_255_entries() {
+        // TESLeveledList's entry count is one byte (CommonLibSSE-NG
+        // include/RE/T/TESLeveledList.h:72): 255 bases land at most, and a
+        // 256th fails at the bound (E_WIRE_CAPACITY), before any check
+        let bases: Vec<(u32, i32)> = (0x1000u32..).take(cap::SCRIPT_CALL_LANDED).map(|item| (item, 1)).collect();
+        let full = reward(0x14, "ObjectReference", "AddItem", &bases);
+        assert!(matches!(&full, Message::ScriptCall(c) if c.landed.as_ref().map(|l| l.len()) == Some(cap::SCRIPT_CALL_LANDED)));
+        assert_eq!(validate_server(&full), Ok(()));
+        let over: Vec<ItemDelta> = (0x1000u32..).take(cap::SCRIPT_CALL_LANDED.saturating_add(1)).map(|item| ItemDelta { item: FormId(item), count: 1 }).collect();
+        let held: Result<wire_schema::bounded::Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>, _> = over.try_into();
+        assert_eq!(held.map(|_| ()).map_err(|e| e.to_string()), Err("E_WIRE_CAPACITY: 256 > 255".to_owned()));
+    }
+
+    proptest! {
+        // any landings on any call: a verdict, never a panic; on the
+        // player's own AddItem a landing in range passes and one out of it
+        // is refused
+        #[test]
+        fn landings_never_panic(landed in proptest::collection::vec((any::<u32>(), any::<i32>()), 0..40), self_id in any::<u32>(), add in any::<bool>()) {
+            let func = if add { "AddItem" } else { "RemoveItem" };
+            let _ = validate_server(&reward(self_id, "ObjectReference", func, &landed));
+            let _ = validate(&reward(self_id, "ObjectReference", func, &landed), &mut ClientGuard::default(), 0);
+        }
+
+        #[test]
+        fn a_landing_in_range_passes_and_one_outside_is_refused(item in 1u32..0xff00_0000, count in 1i32.., bad_item in prop_oneof![Just(0u32), 0xff00_0000u32..], bad_count in i32::MIN..1) {
+            prop_assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(item, count)])), Ok(()));
+            prop_assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(bad_item, count)])), Err(Reject::Range));
+            let refused = validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(item, bad_count)]));
+            prop_assert_eq!(refused, Err(if bad_count == 0 { Reject::ZeroDelta } else { Reject::Range }));
         }
     }
 }

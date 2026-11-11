@@ -48,6 +48,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -2536,6 +2537,168 @@ void InstallApplyMasksToRenderTargetsHook()
 }
 
 /**
+ * HasOverlays on a figure's base (thuum docs/verbs/appearance.md; the fault
+ * x-vampire-stage recorded at run 20261111-035133: after c1's own player
+ * turned vampire, NordRace 0x13746 to NordRaceVampire 0x88794, c1 drew c2's
+ * figure with no head, a hollow helmet, while c2's view of c1 stayed right).
+ * The third hook here for a figure posing as the player, beside the two
+ * above. CONFIRMED-STATIC: a figure's base reads the player's form id 7 from
+ * before its first 3D load (SpawnProcess.enable calls applyTints before it
+ * enables the reference, skymp5-client src/view/spawnProcess.ts:21-32;
+ * applyTints gives the base the player's base id through SetFormIdUnsafe,
+ * src/sync/appearance.ts:126-129, which writes TESForm::formID alone,
+ * PapyrusTESModPlatform.cpp:530-537). CONFIRMED-STATIC (data): the vampire
+ * race carries the RACE flag kOverlayHeadPartList (CommonLibSSE-NG
+ * include/RE/T/TESRace.h:77; set in NordRaceVampire 0x88794's DATA flags by
+ * thuum lab/esm.py's race_flags over Skyrim.esm, clear in NordRace 0x13746
+ * and OrcRace 0x13747).
+ *
+ * HYPOTHESIS (decompiler reads only, rule 2: a review's read of 1.6.1170 and
+ * thuum ghidra/notes/playercharacter-tints-1-7-104.md on 1.7.104; the body
+ * was not reread for this hook): the engine's HasOverlays (game/Offsets.h)
+ * branches on form id 7 and there reads the local player's charGenRace and
+ * an overlay-map entry (the map GetBaseOverlays 24791 and GetNumBaseOverlays
+ * 24792 read), so the local player's turn flips the answer for every figure.
+ * Once it is true, a type's current head part comes from the overlay list
+ * alone (CommonLib's reading, src/RE/T/TESNPC.cpp:94-97); a figure's base
+ * has no overlay array (:111-123), so no Face part and no head; and the
+ * client rebuilds a figure's head each time it comes on screen
+ * (skymp5-client src/view/formView.ts:1052-1087), so the head built before
+ * the turn goes at the next rebuild. HYPOTHESIS too: the engine's head build
+ * asks this function rather than an inlined copy of its test. The lab read
+ * that settles both is x-vampire-figure-head (thuum lab/.cache/drafts/rung5).
+ *
+ * Replaced through Gum (the DamageActor shape): a base that reads form id 7
+ * and is not the player's own (the player character's base object, compared
+ * by pointer) gets false where the engine said true, so the engine builds
+ * the figure's head from its own parts, as a seat whose player is no vampire
+ * does; the player's own base and every other NPC get the engine's answer.
+ * Filtered in native (rule 9): the form id compare comes first, so any other
+ * NPC costs the detour's call and one compare beside the engine's own, and
+ * nothing crosses into JS. Each base's first override prints one line, and the
+ * count prints every ten seconds while it moves (thuum ADR-069's note: a fix
+ * that skips work logs its count), so a run can count the overrides.
+ */
+namespace {
+using HasOverlaysFn = bool (*)(RE::TESNPC* npc);
+HasOverlaysFn g_hasOverlaysOriginal = nullptr;
+
+// the player's base form id, the one applyTints gives a figure's base (run
+// 20261111-035133's figure-spells reads: base 7)
+constexpr uint32_t kPlayerBaseFormId = 0x7;
+
+// the overrides since launch, and the bases they came from: the replacement
+// counts, the reporter below reads
+std::atomic<uint64_t> g_hasOverlaysOverrides{ 0 };
+std::atomic<uint32_t> g_hasOverlaysBases{ 0 };
+
+// the bases given their first line, by pointer. HasOverlays' thread is
+// unread (a 3D load may run on a job thread), so a mutex, taken on the
+// override's branch alone (rule 9); the set is cleared past 1024 bases, as
+// TriggerLineDue's map
+std::mutex g_hasOverlaysSeenMutex;
+std::unordered_set<std::uintptr_t> g_hasOverlaysSeen;
+
+bool HasOverlaysFirstOverride(const RE::TESNPC* npc)
+{
+  const auto key = reinterpret_cast<std::uintptr_t>(npc);
+  std::lock_guard<std::mutex> lock(g_hasOverlaysSeenMutex);
+  if (g_hasOverlaysSeen.size() > 1024 && g_hasOverlaysSeen.count(key) == 0) {
+    g_hasOverlaysSeen.clear();
+  }
+  return g_hasOverlaysSeen.insert(key).second;
+}
+
+bool HasOverlaysReplacement(RE::TESNPC* npc)
+{
+  // the cheap test first (rule 9): any NPC but the player's base and the
+  // figures' bases reads another form id and keeps the engine's answer
+  if (!npc || npc->formID != kPlayerBaseFormId) {
+    return g_hasOverlaysOriginal(npc);
+  }
+  const bool engine = g_hasOverlaysOriginal(npc);
+  if (!engine) {
+    return engine;
+  }
+  // the player's own base keeps the engine's true (its own overlay parts);
+  // with no player or base to compare against, nothing is overridden
+  auto* player = RE::PlayerCharacter::GetSingleton();
+  const RE::TESNPC* playerBase = player ? player->GetActorBase() : nullptr;
+  if (!playerBase || npc == playerBase) {
+    return engine;
+  }
+  g_hasOverlaysOverrides.fetch_add(1, std::memory_order_relaxed);
+  if (HasOverlaysFirstOverride(npc)) {
+    g_hasOverlaysBases.fetch_add(1, std::memory_order_relaxed);
+    // the races the HYPOTHESIS names (the base's, the player's and its
+    // chargen race, PlayerCharacter.h:823-831) and the thread, for the lab
+    const RE::TESRace* race = npc->GetRace();
+    const RE::TESRace* playerRace = player->GetRace();
+    const RE::TESRace* chargenRace = player->GetRaceData().charGenRace;
+    logger::info("[verb:appearance] HasOverlays on a figure's base (form id "
+                 "7, not the player's): the engine's true returned false "
+                 "(base {:#x}, its race {:x}; the player's race {:x}, its "
+                 "chargen race {:x}; thread {})",
+                 reinterpret_cast<std::uintptr_t>(npc),
+                 race ? race->formID : 0u,
+                 playerRace ? playerRace->formID : 0u,
+                 chargenRace ? chargenRace->formID : 0u, GetCurrentThreadId());
+  }
+  return false;
+}
+
+// the count, every ten seconds while it moves (thuum ADR-069's note: a
+// fault's absence alone does not show that the fix fired); Rotfern's Fixes'
+// reporter shape (thuum lab/rotferns-fixes/src/main.cpp StartSkipReporter),
+// a detached thread as LoadGame.cpp's
+void StartHasOverlaysReporter()
+{
+  std::thread([] {
+    uint64_t reported = 0;
+    for (;;) {
+      std::this_thread::sleep_for(std::chrono::seconds(10));
+      const uint64_t now =
+        g_hasOverlaysOverrides.load(std::memory_order_relaxed);
+      if (now != reported) {
+        logger::info("[verb:appearance] HasOverlays on figures' bases: the "
+                     "engine's true returned false {} time(s) so far, on {} "
+                     "base(s)",
+                     now, g_hasOverlaysBases.load(std::memory_order_relaxed));
+        reported = now;
+      }
+    }
+  }).detach();
+}
+}
+
+void InstallHasOverlaysHook()
+{
+  const std::uintptr_t address = Offsets::Hooks::HasOverlays.address();
+  if (!address) {
+    logger::error("[verb:appearance] HasOverlays hook not installed: "
+                  "Offset::TESNPC::HasOverlays names no address on this "
+                  "runtime");
+    return;
+  }
+  if (!Frida::HookHandler::GetSingleton()->Replace(
+        address, reinterpret_cast<void*>(&HasOverlaysReplacement),
+        reinterpret_cast<void**>(&g_hasOverlaysOriginal))) {
+    logger::error("[verb:appearance] Gum refused the HasOverlays "
+                  "replacement: a figure's base keeps the engine's answer");
+    return;
+  }
+  StartHasOverlaysReporter();
+  // the lab tells a build with the hook by this line, and its address by
+  // `just addr` (1.6.1170: 24790 at +3c1b40)
+  logger::info("[verb:appearance] HasOverlays hook installed: "
+               "TESNPC::HasOverlays (CommonLibSSE-NG Offset::TESNPC::"
+               "HasOverlays, Address Library {} at +{:x}); a figure's base "
+               "gets false where the engine says true",
+               RE::Offset::TESNPC::HasOverlays.id(),
+               address - REL::Module::get().base());
+}
+
+/**
  * Render Cursor Menu hook
  */
 bool g_allowHideCursorMenu = true;
@@ -3381,6 +3544,9 @@ void Frida::InstallHooks()
 #ifdef ENABLE_SKYRIM_AE
   InstallApplyMasksToRenderTargetsHook();
 #endif
+  // thuum docs/verbs/appearance.md: a figure's base, posing as the player,
+  // takes no overlay head parts (the headless figure on a vampire's seat)
+  InstallHasOverlaysHook();
   InstallNativeFunctionCtorHook();
   // thuum docs/verbs/npc-puppet.md: the puppet shape's two detours
   Puppets::InstallHooks();

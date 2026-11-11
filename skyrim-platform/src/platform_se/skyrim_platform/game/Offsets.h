@@ -198,6 +198,17 @@ inline REL::Relocation<std::uintptr_t> CharProxyContactPointAdded{ REL::ID(
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
   RELOCATION_ID(26454, 27040)
 };
+// thuum docs/verbs/appearance.md (a figure with no head on a seat whose own
+// player turned vampire, x-vampire-stage run 20261111-035133):
+// TESNPC::HasOverlays, `bool (TESNPC* this)`, whether a head part type's
+// current part comes from the overlay list (CommonLibSSE-NG
+// src/RE/T/TESNPC.cpp:94-97; its call, :195-200). The ids are named, not
+// copied: CommonLibSSE-NG include/RE/Offsets.h:532, Offset::TESNPC::
+// HasOverlays (SE and AE, as SendEvent's);
+// addrlib: 24790 at 0x3c1b40 on 1.6.1170 (`just addr 24790`, 2026-11-11)
+inline REL::Relocation<std::uintptr_t> HasOverlays{
+  RE::Offset::TESNPC::HasOverlays
+};
 inline REL::Relocation<std::uintptr_t> RenderCursorMenu{ RELOCATION_ID(
   32867, 33632) };
 }

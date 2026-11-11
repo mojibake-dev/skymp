@@ -4573,10 +4573,11 @@ const std::vector<uint32_t>& PartOne::LeveledReach(uint32_t list)
   auto it = pImpl->leveledReach.find(list);
   if (it == pImpl->leveledReach.end()) {
     auto& browser = GetEspm().GetBrowser();
-    it = pImpl->leveledReach
-           .emplace(list,
-                    LeveledListUtils::Reach(browser, browser.LookupById(list)))
-           .first;
+    auto reach = LeveledListUtils::Reach(browser, browser.LookupById(list));
+    // sorted, so a landing's check is a binary search (a boss chest's list
+    // reaches thousands of bases)
+    std::sort(reach.begin(), reach.end());
+    it = pImpl->leveledReach.emplace(list, std::move(reach)).first;
   }
   return it->second;
 }

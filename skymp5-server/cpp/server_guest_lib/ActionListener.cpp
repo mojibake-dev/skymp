@@ -4736,9 +4736,14 @@ bool NamesFunc(const std::string& fn, const char* name)
 // the stacks and whether the base needs a new one, the u32 room), refused by
 // name first when the base is none the list can roll (D-R2 B,
 // E_SCRIPTCALL_ROLL: PartOne::LeveledReach, the list's entries with nested
-// lists followed), and an accepted one is written as a plain grant
-// (MpObjectReference::AddItem, whose inventory update the player's own game
-// alone hears at the tick). One line names the landings recorded, or that
+// lists followed), and the accepted ones are written together as plain
+// grants (MpObjectReference::AddPlainItems: one record edit, save request and
+// inventory update for the call, whose update the player's own game alone
+// hears at the tick, and one OnItemAdded per landing). The call's work is
+// one plain AddItem's plus a constant per landing, since the record budget
+// spends one token per call (wire-rules natives' BURST_RECORD, at most 255
+// landings each; the fresh review of the whole branch, SHOULD 1). One line
+// names the landings recorded (the first eight, the rest counted), or that
 // the roll landed nothing; each refusal is RefuseStateRow's, one line a
 // minute per seat and code. R2: the seat's word that its engine's roll
 // landed these bases (rule 5), checked against the list's reach and never
@@ -4768,39 +4773,67 @@ void RecordLandings(
   if (landed.empty()) {
     return said("its roll landed nothing");
   }
-  const auto& reach = partOne.LeveledReach(list);
+  const auto& reach = partOne.LeveledReach(list); // sorted
   const auto& browser = partOne.GetEspm().GetBrowser();
   const std::vector<skymp::rules::ScriptPropertyRow> none;
-  std::vector<std::pair<uint32_t, uint32_t>> recorded;
+  // the record's facts for each landed base, read in one pass over its
+  // stacks (the count it holds over them, and whether it has the plain stack
+  // a plain add joins), then carried forward as the call's accepted landings
+  // move them, so each landing is judged as a plain AddItem would be after
+  // the ones before it (Fix B's 4096 stacks counted landing by landing),
+  // while the stacks are read once for the call, not once per landing (the
+  // fresh review of the whole branch, SHOULD 1)
+  struct Held
+  {
+    uint32_t count = 0;
+    bool plain = false;
+  };
+  std::unordered_map<uint32_t, Held> held;
+  for (const auto& landing : landed) {
+    held.emplace(landing.item, Held());
+  }
+  const auto& before = reporter.GetInventory();
+  for (const auto& entry : before.entries) {
+    const auto at = held.find(entry.baseId);
+    if (at == held.end()) {
+      continue;
+    }
+    at->second.count += entry.count; // as Inventory::GetItemCount sums
+    if (!at->second.plain &&
+        entry.EqualExceptCount(Inventory::Entry(entry.baseId, 0))) {
+      at->second.plain = true;
+    }
+  }
+  size_t stacks = before.entries.size();
+  std::vector<Inventory::Entry> recorded;
   for (const auto& landing : landed) {
     const uint32_t base = landing.item;
     const auto rec = browser.LookupById(base).rec;
     const std::string type = rec ? rec->GetType().ToString() : std::string();
-    const auto& inventory = reporter.GetInventory();
-    const Inventory::Entry plain(base, 0);
+    auto& record = held[base];
     skymp::rules::PlayerOwnFacts facts{};
     facts.kind =
       !type.empty() && espm::utils::IsItem(espm::Type(type.c_str()));
     facts.leveled = type == espm::LVLI::kType;
-    facts.held_count = inventory.GetItemCount(base);
+    facts.held_count = record.count;
     facts.count = static_cast<double>(landing.count);
-    facts.stacks = inventory.entries.size();
-    facts.new_stack =
-      std::none_of(inventory.entries.begin(), inventory.entries.end(),
-                   [&](const Inventory::Entry& entry) {
-                     return entry.EqualExceptCount(plain);
-                   });
+    facts.stacks = stacks;
+    facts.new_stack = !record.plain;
     facts.landing_of = list;
-    facts.in_reach =
-      std::find(reach.begin(), reach.end(), base) != reach.end();
+    facts.in_reach = std::binary_search(reach.begin(), reach.end(), base);
     const auto verdict = partOne.GetPlayerOverlays().player_own_judge(
       reporter.GetFormId(), msg.cls, msg.fn, base,
       rust::Slice<const skymp::rules::ScriptPropertyRow>(none.data(),
                                                          none.size()),
       facts);
     if (verdict.code == 0) {
-      reporter.AddItem(base, verdict.count);
-      recorded.push_back({ base, verdict.count });
+      // written below with the call's other accepted landings
+      recorded.push_back(Inventory::Entry(base, verdict.count));
+      record.count += verdict.count;
+      if (!record.plain) {
+        record.plain = true; // the add appends the base's plain stack
+        ++stacks;
+      }
       continue;
     }
     if (verdict.code == 3) {
@@ -4820,18 +4853,38 @@ void RecordLandings(
   if (recorded.empty()) {
     return;
   }
+  // one record edit, one save request and one inventory update for the
+  // call, then OnItemAdded once per landing, as AddItem raises it
+  reporter.AddPlainItems(recorded);
+  // the line names the first kNamedLandings landings and counts the rest,
+  // each landed base's count read again in one pass after the call
+  constexpr size_t kNamedLandings = 8;
+  std::unordered_map<uint32_t, uint32_t> now;
+  for (size_t i = 0; i < recorded.size() && i < kNamedLandings; ++i) {
+    now.emplace(recorded[i].baseId, 0);
+  }
+  for (const auto& entry : reporter.GetInventory().entries) {
+    if (const auto at = now.find(entry.baseId); at != now.end()) {
+      at->second += entry.count;
+    }
+  }
   std::string landings;
-  std::string held;
-  for (const auto& [base, count] : recorded) {
+  std::string heldNow;
+  for (size_t i = 0; i < recorded.size() && i < kNamedLandings; ++i) {
+    const uint32_t base = recorded[i].baseId;
+    landings += fmt::format("{}{:x} x{}", landings.empty() ? "" : ", ", base,
+                            recorded[i].count);
+    heldNow += fmt::format("{}{} of {:x}", heldNow.empty() ? "" : ", ",
+                           now[base], base);
+  }
+  if (recorded.size() > kNamedLandings) {
     landings +=
-      fmt::format("{}{:x} x{}", landings.empty() ? "" : ", ", base, count);
-    held += fmt::format("{}{} of {:x}", held.empty() ? "" : ", ",
-                        reporter.GetInventory().GetItemCount(base), base);
+      fmt::format(" and {} more base(s)", recorded.size() - kNamedLandings);
   }
   said(fmt::format("its roll landed {}, added to its inventory as its seat "
                    "reported it (D-R1 C, R2; each a base the list can roll, "
                    "D-R2 B), {} held now",
-                   landings, held));
+                   landings, heldNow));
 }
 
 // thuum ADR-068 rung 5 (the two transformations, D-T1 A; docs/research/

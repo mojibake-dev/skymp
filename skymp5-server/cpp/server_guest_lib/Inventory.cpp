@@ -4,8 +4,10 @@
 #include "archives/SimdJsonInputArchive.h"
 #include <algorithm>
 #include <fmt/format.h>
+#include <limits>
 #include <spdlog/spdlog.h>
 #include <tuple>
+#include <unordered_map>
 
 Inventory::Entry::Entry()
 {
@@ -105,6 +107,43 @@ Inventory& Inventory::AddItems(const std::vector<Entry>& toAdd)
     if (stack != entries.end()) {
       stack->count += entryToAdd.count;
     } else {
+      entries.push_back(entryToAdd);
+    }
+  }
+  return *this;
+}
+
+// The first plain stack of each base the call adds is found in one pass over
+// the stacks; then each plain item joins its base's stack, or is appended and
+// becomes that stack, in the call's order: AddItems' result, since a plain
+// item matches exactly a plain stack of its base (EqualExceptCount ignores
+// the count) and a stack appended earlier in the call is the first such
+// stack for a later item of the same base
+Inventory& Inventory::AddPlainItems(const std::vector<Entry>& toAdd)
+{
+  constexpr size_t kNoStack = std::numeric_limits<size_t>::max();
+  std::unordered_map<uint32_t, size_t> firstPlain;
+  for (const auto& entryToAdd : toAdd) {
+    firstPlain.emplace(entryToAdd.baseId, kNoStack);
+  }
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const auto stack = firstPlain.find(entries[i].baseId);
+    if (stack != firstPlain.end() && stack->second == kNoStack &&
+        entries[i].EqualExceptCount(Entry(entries[i].baseId, 0))) {
+      stack->second = i;
+    }
+  }
+  for (const auto& entryToAdd : toAdd) {
+    if (!entryToAdd.EqualExceptCount(Entry(entryToAdd.baseId, 0))) {
+      // not plain: an append leaves every plain stack where it is
+      AddItems({ entryToAdd });
+      continue;
+    }
+    auto& stack = firstPlain[entryToAdd.baseId];
+    if (stack != kNoStack) {
+      entries[stack].count += entryToAdd.count;
+    } else {
+      stack = entries.size();
       entries.push_back(entryToAdd);
     }
   }

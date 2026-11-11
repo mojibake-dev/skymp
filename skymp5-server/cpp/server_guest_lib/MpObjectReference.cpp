@@ -1263,15 +1263,11 @@ void MpObjectReference::SetInventory(const Inventory& inv)
   SendInventoryUpdate();
 }
 
-void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
+namespace {
+// the OnItemAdded event AddItem raises for an item it added
+void SendItemAdded(MpObjectReference& ref, uint32_t baseId, uint32_t count)
 {
-  EditChangeForm([&](MpChangeFormREFR& changeForm) {
-    changeForm.baseContainerAdded = true;
-    changeForm.inv.AddItem(baseId, count);
-  });
-  SendInventoryUpdate();
-
-  if (auto worldState = GetParent(); worldState->HasEspm()) {
+  if (auto worldState = ref.GetParent(); worldState->HasEspm()) {
     espm::LookupResult lookupRes =
       worldState->GetEspm().GetBrowser().LookupById(baseId);
 
@@ -1284,11 +1280,38 @@ void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
         VarValue(static_cast<IGameObject*>(nullptr)); // TODO
       VarValue args[4] = { baseItem, itemCount, itemReference,
                            sourceContainer };
-      SendPapyrusEvent("OnItemAdded", args, 4);
+      ref.SendPapyrusEvent("OnItemAdded", args, 4);
     } else {
       spdlog::warn("MpObjectReference::AddItem - failed to lookup item {:x}",
                    baseId);
     }
+  }
+}
+}
+
+void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.baseContainerAdded = true;
+    changeForm.inv.AddItem(baseId, count);
+  });
+  SendInventoryUpdate();
+  SendItemAdded(*this, baseId, count);
+}
+
+void MpObjectReference::AddPlainItems(
+  const std::vector<Inventory::Entry>& entries)
+{
+  if (entries.empty()) {
+    return;
+  }
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.baseContainerAdded = true;
+    changeForm.inv.AddPlainItems(entries);
+  });
+  SendInventoryUpdate();
+  for (const auto& entry : entries) {
+    SendItemAdded(*this, entry.baseId, entry.count);
   }
 }
 

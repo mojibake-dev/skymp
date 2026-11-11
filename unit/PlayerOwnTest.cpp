@@ -1,11 +1,16 @@
 #include "ActionListener.h"
 #include "Messages.h"
+#include "PartOneListener.h"
 #include "TestUtils.hpp"
 #include "libespm/Loader.h"
 #include "libespm/ScriptData.h"
+#include "libespm/Utils.h"
+#include "script_objects/EspmGameObject.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <fmt/format.h>
+#include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
@@ -701,18 +706,19 @@ ScriptCallMessage::Landing Landed(uint32_t item, int32_t count)
   return landing;
 }
 
-// MS01's reward on the reporter's own player, with its roll's landings as
-// the seat read them (none: a report that carries no `landed`)
+// MS01's reward (or another leveled list's AddItem, `list`) on the
+// reporter's own player, with its roll's landings as the seat read them
+// (none: a report that carries no `landed`)
 void OwnReward(PartOne& p,
-               std::optional<std::vector<ScriptCallMessage::Landing>> landed)
+               std::optional<std::vector<ScriptCallMessage::Landing>> landed,
+               uint32_t list = kLvlQuestReward02Medium)
 {
   ScriptCallMessage msg;
   msg.epoch = 0;
   msg.selfId = 0x14;
   msg.cls = "ObjectReference";
   msg.fn = "AddItem";
-  msg.args = { FormArg(kLvlQuestReward02Medium, "Form"), Arg(1.0),
-               Arg(false) };
+  msg.args = { FormArg(list, "Form"), Arg(1.0), Arg(false) };
   msg.caller = "QF_MS01_00018B4B";
   msg.handler = "Fragment_56";
   msg.latent = true;
@@ -788,6 +794,188 @@ TEST_CASE("A leveled AddItem on the reporter's own player records the roll "
                     "nothing is written") == 1);
   REQUIRE(turned.GetInventory() == rolled);
   REQUIRE(log.Count("E_SCRIPTCALL_ROLL") == 1);
+  Leave(p);
+}
+
+// The fresh review of the whole train 52 branch (SHOULD 1, server work
+// amplification): one record token (wire-rules natives' BURST_RECORD) buys a
+// call of up to 255 landings, and each accepted landing was its own AddItem:
+// a record edit, a change-form copy for its save request, a serialization of
+// the whole inventory the deferred channel then overwrote, a scan of the
+// stacks for its facts, and an OnItemAdded; so a modified seat bought 255
+// plain AddItems' server work per token. The call now reads the record's
+// facts in one pass and carries them landing by landing, writes its accepted
+// landings in one edit (MpObjectReference::AddPlainItems) and raises one
+// OnItemAdded per landing. LItemSpecialLoot100 0x1031d0 reaches 3,632 bases
+// (ARMO, BOOK and WEAP; lab/esm.py's walk of the lab's cached Skyrim.esm,
+// Dawnguard.esm and Dragonborn.esm, 2026-11-11: 141 of their 3,075 LVLIs
+// reach 255 or more), so a seat can name 255 landings its list can roll; the
+// test takes them from the server's own reach. The tempered iron daggers
+// 0x1397e fill the record as Fix B's case does
+namespace {
+constexpr uint32_t kSpecialLoot = 0x1031d0;
+constexpr uint32_t kTemperedDagger = 0x1397e;
+
+// the OnItemAdded events `actor`'s record raised, each with its base, its
+// count and how many stacks the record held as it fired
+class ItemAddedLog : public PartOneListener
+{
+public:
+  ItemAddedLog(PartOne& p_, uint32_t actor_)
+    : p(p_)
+    , actor(actor_)
+  {
+  }
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (std::string(event.GetName()) != "onPapyrusEvent:OnItemAdded") {
+      return true;
+    }
+    const auto self = nlohmann::json::parse(event.GetArgumentsJsonArray());
+    if (!self.is_array() || self.empty() || self[0].get<uint32_t>() != actor) {
+      return true;
+    }
+    const auto [args, n] = event.GetAdditionalArguments();
+    Seen seen;
+    if (n >= 2) {
+      const auto& record = GetRecordPtr(args[0]);
+      seen.base = record.rec ? record.ToGlobalId(record.rec->GetId()) : 0;
+      seen.count = static_cast<int>(args[1]);
+    }
+    const auto& form = p.worldState.LookupFormByIdNoLoad(actor);
+    const MpActor* holder = form ? form->AsActor() : nullptr;
+    seen.stacks = holder ? holder->GetInventory().entries.size() : 0;
+    events.push_back(seen);
+    return true;
+  }
+
+  struct Seen
+  {
+    uint32_t base = 0;
+    int count = 0;
+    size_t stacks = 0;
+  };
+  std::vector<Seen> events;
+
+private:
+  PartOne& p;
+  const uint32_t actor;
+};
+
+// the stacks each SetInventory message `user` heard carried, in order
+std::vector<size_t> InventoriesSentTo(PartOne& p, Networking::UserId user)
+{
+  std::vector<size_t> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::SetInventory)) {
+      out.push_back(m.j["inventory"]["entries"].size());
+    }
+  }
+  return out;
+}
+}
+
+TEST_CASE("A leveled roll's 255 landings are written in one edit of the "
+          "reporter's record, with one OnItemAdded per landing and one "
+          "inventory update, and a batch stops at the wire's 4096 stacks "
+          "landing by landing as plain adds do",
+          "[PlayerOwn][espm]")
+{
+  PartOne& p = GetPartOne();
+  REQUIRE(RecordType(p, kSpecialLoot) == "LVLI");
+  REQUIRE(RecordType(p, kTemperedDagger) == "WEAP");
+  // 255 bases the list can roll, from the server's own reach, each an item
+  std::vector<uint32_t> bases;
+  for (uint32_t base : p.LeveledReach(kSpecialLoot)) {
+    const std::string type = RecordType(p, base);
+    if (base != kTemperedDagger && !type.empty() &&
+        espm::utils::IsItem(espm::Type(type.c_str()))) {
+      bases.push_back(base);
+    }
+    if (bases.size() == 255) {
+      break;
+    }
+  }
+  REQUIRE(bases.size() == 255);
+  std::vector<ScriptCallMessage::Landing> landed;
+  for (size_t i = 0; i < bases.size(); ++i) {
+    landed.push_back(Landed(bases[i], static_cast<int32_t>(i + 1)));
+  }
+
+  Enter(p);
+  OwnLog log;
+  auto items = std::make_shared<ItemAddedLog>(p, kTurned);
+  p.AddListener(items);
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  // an empty record, so each landing takes a stack of its own
+  turned.SetInventory(Inventory());
+  p.Tick();
+  p.Messages().clear();
+
+  OwnReward(p, landed, kSpecialLoot);
+  REQUIRE(turned.GetInventory().entries.size() == 255);
+  for (size_t i = 0; i < bases.size(); ++i) {
+    REQUIRE(turned.GetInventory().GetItemCount(bases[i]) == i + 1);
+  }
+  // one OnItemAdded per landing, in the call's order, each naming its base
+  // and its count, and every one fired with the whole roll already in the
+  // record: the record took the call in one edit (the per-landing path's
+  // AddItem fired its first event with one landing in)
+  REQUIRE(items->events.size() == 255);
+  for (size_t i = 0; i < bases.size(); ++i) {
+    REQUIRE(items->events[i].base == bases[i]);
+    REQUIRE(items->events[i].count == static_cast<int>(i + 1));
+    REQUIRE(items->events[i].stacks == 255);
+  }
+  // one line for the call, its first eight landings named, the rest counted
+  REQUIRE(log.Count("its roll landed ") == 1);
+  REQUIRE(log.Count(" and 247 more base(s), added to its inventory as its "
+                    "seat reported it") == 1);
+  // its own game hears its inventory once, the whole roll in it, and the
+  // other game none
+  p.Tick();
+  REQUIRE(InventoriesSentTo(p, 0) == std::vector<size_t>{ 255 });
+  REQUIRE(InventoriesSentTo(p, 1).empty());
+
+  // the record at 4096 - 100 stacks, none of them a base of the roll: the
+  // first 100 landings each take a new stack, then each later one is
+  // refused at the cap (E_SCRIPTCALL_FULL), as 255 plain adds would be: the
+  // stacks counted landing by landing, never once for the call
+  Inventory filled;
+  for (uint32_t i = 0; i < 3996; ++i) {
+    Inventory::ExtraData tempered;
+    tempered.health = 1.0f + static_cast<float>(i) / 4096.0f;
+    filled.entries.push_back(Inventory::Entry(kTemperedDagger, 1, tempered));
+  }
+  REQUIRE(filled.entries.size() == 3996);
+  turned.SetInventory(filled);
+  items->events.clear();
+  OwnReward(p, landed, kSpecialLoot);
+  REQUIRE(turned.GetInventory().entries.size() == 4096);
+  for (size_t i = 0; i < bases.size(); ++i) {
+    REQUIRE(turned.GetInventory().GetItemCount(bases[i]) ==
+            (i < 100 ? i + 1 : 0));
+  }
+  REQUIRE(items->events.size() == 100);
+  REQUIRE(items->events.front().stacks == 4096);
+  REQUIRE(items->events.back().base == bases[99]);
+  // the first refusal's line, the other 154 counted into the next
+  REQUIRE(log.Count(fmt::format(
+            "[verb:quest-stage] E_SCRIPTCALL_FULL: ff000c71's own "
+            "ObjectReference.AddItem 1031d0 (from "
+            "QF_MS01_00018B4B.Fragment_56): the player's record holds its cap "
+            "of 4096 stacks (the wire's in one inventory) and {:x} would need "
+            "a new one: nothing is written; refused, 1 since the last line",
+            bases[100])) == 1);
+  REQUIRE(log.Count("E_SCRIPTCALL_FULL") == 1);
+  REQUIRE(log.Count(" and 92 more base(s), added to its inventory") == 1);
   Leave(p);
 }
 

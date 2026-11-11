@@ -253,6 +253,15 @@ public:
   void SetInventory(const Inventory& inv);
   void AddItem(uint32_t baseId, uint32_t count);
   void AddItems(const std::vector<Inventory::Entry>& entries);
+  // thuum train 52 (D-R1 C's leveled gap; the fresh review of the whole
+  // branch, SHOULD 1): AddItem for several plain items at once, as a leveled
+  // roll lands them: one change-form edit (Inventory::AddPlainItems), so one
+  // save request and one inventory update to the owner's game, then
+  // OnItemAdded raised once per entry in their order, each as AddItem raises
+  // it; never a record edit, a change-form copy and an inventory
+  // serialization per item (the deferred channel keeps only the last of
+  // them)
+  void AddPlainItems(const std::vector<Inventory::Entry>& entries);
   void RemoveItem(uint32_t baseId, uint32_t count, MpObjectReference* target);
   void RemoveItems(const std::vector<Inventory::Entry>& entries,
                    MpObjectReference* target = nullptr);

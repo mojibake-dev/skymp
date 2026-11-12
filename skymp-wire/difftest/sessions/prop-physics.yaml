@@ -1,12 +1,18 @@
 # thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per physics prop. c1 and
-# c2 are new characters (profiles 9 and 10), so their actors are 0xff000002 and 0xff000003
-# (melee-reach's note: the clean world holds two characters, ids start at 0xff000000). The
+# c2 are new characters (profiles 9 and 10): c1's actor is 0xff000002 (melee-reach's note:
+# the clean world holds two characters, ids start at 0xff000000) and c2's the next id after
+# the two drops' (below). The
 # T2 spawn (startPoints: 133857, -61130, 14662 in Tamriel) has no item placement within
 # 2500 units (lab/esm.py near, 2026-10-29), so the props are drops: at 600 ms c1 gives itself
 # an iron dagger (0x1397e, 80254) through the console (AddItem, answered with a line as
 # smoke declares), at 1200 ms drops it (DropItem, both stacks place the reference at the
-# generator's next id and tell both clients CreateActor alike); at 1300 ms and 1400 ms the
+# generator's next id and tell both clients CreateActor alike); at 700 ms and 1000 ms the
 # same for an iron ingot (IngotIron, MISC 0x5ace4, 371940 by lab/esm.py, b-prop-push's).
+# Both drops come before c2's login (its client starts 1,500 ms after c1's, whose script
+# clock starts at its own login), so c2's actor takes the id after both drops' on both
+# stacks; an ingot dropped at 1400 ms raced c2's login by about 100 ms and lost on the wire
+# stack (cc5c44f3's T2: c2's figure ff000004 there, ff000005 on the legacy stack), where the
+# dagger's 1200 ms has always come first.
 # Fake clients run no physics, so the two drops at one drop point overlap harmlessly. At
 # 2000 ms c1 claims both drops in one claim (PropClaim v2's refrs, touch 2; physics rung 2,
 # ADR-071 decision 6): the wire stack judges each alone and grants each (c1 is a listener of
@@ -50,9 +56,9 @@ steps:
   - {client: c1, at_ms: 0, move: {dx: 10}}
   - {client: c1, at_ms: 500, send: {t: 47, cell: 48049, loaded: true}, reliable: true}
   - {client: c1, at_ms: 600, send: {t: 12, data: {commandName: AddItem, args: [20, 80254, 1]}}}
+  - {client: c1, at_ms: 700, send: {t: 12, data: {commandName: AddItem, args: [20, 371940, 1]}}}
+  - {client: c1, at_ms: 1000, send: {t: 19, baseId: 371940, count: 1}, reliable: true}
   - {client: c1, at_ms: 1200, send: {t: 19, baseId: 80254, count: 1}, reliable: true}
-  - {client: c1, at_ms: 1300, send: {t: 12, data: {commandName: AddItem, args: [20, 371940, 1]}}}
-  - {client: c1, at_ms: 1400, send: {t: 19, baseId: 371940, count: 1}, reliable: true}
   - {client: c1, at_ms: 2000, send: {t: 59, refrs: ["{{created:80254}}", "{{created:371940}}"], touch: 2}, reliable: true}
   - {client: c1, at_ms: 2500, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 1, tMs: 2500, pos: [133900.0, -61100.0, 14662.0], rot: [0.0, 0.0, 72.0], lin: [80.0, 20.0, 0.0], ang: [0.0, 0.0, 0.5], asleep: false, held: false, bones: []}, reliable: false}
   - {client: c1, at_ms: 2600, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 1, tMs: 2500, pos: [133900.0, -61100.0, 14662.0], rot: [0.0, 0.0, 72.0], lin: [80.0, 20.0, 0.0], ang: [0.0, 0.0, 0.5], asleep: false, held: false, bones: []}, reliable: false}

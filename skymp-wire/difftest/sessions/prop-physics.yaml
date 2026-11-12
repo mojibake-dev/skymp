@@ -10,12 +10,21 @@
 # drop, placed 64 units ahead in its grid square; the claimant's cell is no gate since
 # physics rung 1, A1 to A7 of ADR-071 decision 2) at epoch 1 and tells every listener of
 # the prop, c1 and c2 (PropOwner); the legacy stack knows no MsgType 59. At 2500 ms c1
-# sends an awake sample and at 3000 ms the sleep: the wire stack writes the record and
+# sends an awake sample and at 3500 ms the sleep: the wire stack writes the record and
 # relays each to c2 alone (the two PropTransform divergences), and the sleep returns the
 # prop to the cell's host by default (A4: every return is a word; nobody hosts the cell
 # here), so both clients hear a PropOwner with player 0 at epoch 2 (SCHEMA_VERSION 45);
-# the legacy stack knows no MsgType 58. c1's departure sends no word: its row returned at
-# rest. If the drop's id were assumed and wrong on
+# the legacy stack knows no MsgType 58. Between the two, at 1250 ms of its own (about
+# 2750 ms of c1's, 750 ms inside either end of c1's live row; the sleep stood at 3000 ms
+# before this row), c2 picks the dagger up (Activate, the activation a refused grab ends
+# in, thuum docs/engine/havok-props.md E16): the wire stack refuses it E_PROP_MOVING (a
+# pickup is a take, ADR-071 decision 2's table, and c1 streams the drop awake) and
+# answers c2 with the standing word, c1's at epoch 1, so c2 hears that word twice and
+# nothing of a pickup (no isHarvested, no inventory, no destroy), and the sleep's words
+# follow as before. The legacy stack's C++ fakeclient resolves no "{{created:80254}}"
+# (the placeholder is the Rust fakeclient's, 05184f99), so the Activate it sends carries
+# a string where its server reads a number, and nothing follows there. c1's departure
+# sends no word: its row returned at rest. If the drop's id were assumed and wrong on
 # a run (something else drew an id first: in a full T2 the sessions before this one allocate
 # forms on the same server, and P3's first T2 read exactly that, 2026-10-29), nothing here
 # assumes it: the sends and the declarations name the drop as "{{created:80254}}", which the
@@ -32,8 +41,9 @@ steps:
   - {client: c1, at_ms: 1200, send: {t: 19, baseId: 80254, count: 1}, reliable: true}
   - {client: c1, at_ms: 2000, send: {t: 59, refr: "{{created:80254}}", touch: 2}, reliable: true}
   - {client: c1, at_ms: 2500, send: {t: 58, refr: "{{created:80254}}", pos: [133900.0, -61100.0, 14662.0], rot: [0.0, 0.0, 72.0], asleep: false}, reliable: false}
-  - {client: c1, at_ms: 3000, send: {t: 58, refr: "{{created:80254}}", pos: [133910.0, -61090.0, 14650.0], rot: [0.0, 0.0, 80.0], asleep: true}, reliable: true}
+  - {client: c1, at_ms: 3500, send: {t: 58, refr: "{{created:80254}}", pos: [133910.0, -61090.0, 14650.0], rot: [0.0, 0.0, 80.0], asleep: true}, reliable: true}
   - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 1250, send: {t: 6, data: {caster: 20, target: "{{created:80254}}", isSecondActivation: false}}, reliable: true}
   - {client: c2, at_ms: 5000, move: {dx: 60}}
 divergences:
   # the drop's copy: the legacy server creates it at the dropper's own position and the branch at the
@@ -74,8 +84,8 @@ divergences:
   - client: c2
     msg: {t: 60, refr: "{{created:80254}}", player: 0xff000002, epoch: 1}
     legacy: 0
-    wire: 1
-    reason: the owner word to the prop's other listener (PropOwner, thuum docs/verbs/prop-physics.md); the legacy server knows no such message
+    wire: 2
+    reason: the owner word to the prop's other listener (PropOwner, thuum docs/verbs/prop-physics.md), at the grant and again as the answer to its pickup at 1250 ms of its own, refused E_PROP_MOVING (a pickup is a take, ADR-071 decision 2's table; AnswerPropWord repeats the standing word); the legacy server knows no such message, and its fakeclient's Activate names no number
   - client: c2
     msg: {t: 58, refr: "{{created:80254}}", asleep: false}
     legacy: 0

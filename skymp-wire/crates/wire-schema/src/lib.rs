@@ -153,7 +153,17 @@ use bounded::{String, Vec};
 /// it would drop each player-0 word and keep a stale owner with no sign,
 /// and the handshake's protocol id (`protocol_id`) is the one guard that
 /// fails loudly. Rung 2's sample and claim shapes take 46.
-pub const SCHEMA_VERSION: u16 = 45;
+/// 46: PropTransform v2 and PropClaim v2 (thuum ADR-071 decision 6, physics
+/// rung 2, m4-physics-2-sample): a sample carries the owner epoch its sender
+/// holds, a sequence within it, the owner's clock, both velocities, the
+/// engine's own grab and up to 64 body poses (empty until a world object's
+/// parts, rung 4, or a dead actor's bones, rung 5), and the server's record
+/// answer to a refused sample is the same message at sequence 0; a claim
+/// names one to sixteen references, each judged alone. The bump is Eli's
+/// D-PH1 A guard as at 45: the handshake's protocol id carries the number,
+/// where a refused server message would otherwise be dropped into a counter
+/// without a word.
+pub const SCHEMA_VERSION: u16 = 46;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -343,6 +353,16 @@ pub mod cap {
     /// Remap rows one record carries: the type-0 ids its body names
     /// (Sven's kDead record had 152 ids, 103 of them portable; D6's census).
     pub const CHANGE_FORM_REMAP: usize = 256;
+    /// Body poses one prop sample carries (thuum ADR-071 decision 6,
+    /// PropTransform v2): a humanoid's ragdoll has 19 bodies, 18 bones and
+    /// the weapon (x-body-impose 20261111-194559, fitsIn64 true); creatures
+    /// and multi-body world objects are unread, so 64 with room.
+    pub const PROP_BONES: usize = 64;
+    /// References one prop claim names (PropClaim v2): one for a touch, an
+    /// impact's bodies for rung 3; the Riverwood cart's blast moved at most
+    /// eight with every item Dynamic (thuum lab/.cache/drafts/physics/
+    /// read-x-prop-blast-223256.md section 3), so 16 with room.
+    pub const PROP_CLAIM_REFRS: usize = 16;
 }
 
 /// Newtype over an engine form id. Validated against the server's load order
@@ -785,8 +805,13 @@ const TABLE: [Row; 90] = [
     row("DamageCause", 55, 32, S2C),
     row("ActorClaim", 56, 16, C2S),
     row("QuestStage", 57, 4 * KIB, Both),
-    row("PropTransform", 58, 64, Both),
-    row("PropClaim", 59, 16, C2S),
+    // every id and the sequence at their widest varints, the four vectors,
+    // the two flags and 64 bones of 28 bytes (thuum ADR-071 decision 6,
+    // SCHEMA_VERSION 46; 1,862 bytes at the longest, pinned by
+    // a_prop_sample_and_claim_at_their_longest_fit_their_caps)
+    row("PropTransform", 58, 2 * KIB, Both),
+    // 16 references at five-byte varints and the touch (83 bytes)
+    row("PropClaim", 59, 96, C2S),
     row("PropOwner", 60, 32, S2C),
     row("PlacedRequest", 61, 64, S2C),
     row("PlacedReport", 62, 48, C2S),
@@ -1120,6 +1145,55 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// A prop's sample at its longest (thuum ADR-071 decision 6,
+    /// SCHEMA_VERSION 46): every id and the sequence at their widest
+    /// varints, every float carried, both flags and 64 bones.
+    fn prop_sample_at_its_longest() -> skymp::PropTransform {
+        let bone = skymp::PropBone { pos: [f32::MAX; 3], quat: [f32::MAX; 4] };
+        skymp::PropTransform {
+            refr: u32::MAX,
+            epoch: u32::MAX,
+            seq: u16::MAX,
+            t_ms: u32::MAX,
+            pos: [f32::MAX; 3],
+            rot: [f32::MAX; 3],
+            lin: [f32::MAX; 3],
+            ang: [f32::MAX; 3],
+            asleep: true,
+            held: true,
+            bones: (0..cap::PROP_BONES).map(|_| bone.clone()).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+            ..Default::default()
+        }
+    }
+
+    /// A prop claim at its longest: 16 references at five-byte varints.
+    fn prop_claim_at_its_longest() -> skymp::PropClaim {
+        skymp::PropClaim {
+            refrs: (0..cap::PROP_CLAIM_REFRS).map(|_| u32::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+            touch: u8::MAX,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_prop_sample_and_claim_at_their_longest_fit_their_caps() {
+        // thuum ADR-071 decision 6 (SCHEMA_VERSION 46): the tag, five-byte
+        // refr, epoch and t_ms, a three-byte seq, four Vec3s, two flags, the
+        // bones' length and 64 bones of 28 bytes; the claim's tag, its
+        // length, 16 five-byte references and the touch
+        let sample = Message::PropTransform(prop_sample_at_its_longest());
+        assert_eq!(postcard::to_allocvec(&sample).map(|b| b.len()), Ok(1_862));
+        assert_eq!(Message::max_len(sample.wire_id()), Some(2 * KIB));
+        let claim = Message::PropClaim(prop_claim_at_its_longest());
+        assert_eq!(postcard::to_allocvec(&claim).map(|b| b.len()), Ok(83));
+        assert_eq!(Message::max_len(claim.wire_id()), Some(96));
+        // a 65th bone and a 17th reference are no shape (the bounds at decode)
+        let bones = postcard::to_allocvec(&alloc::vec![skymp::PropBone::default(); cap::PROP_BONES + 1]).unwrap_or_default();
+        assert!(postcard::from_bytes::<bounded::Vec<skymp::PropBone, { cap::PROP_BONES }>>(&bones).is_err());
+        let refrs = postcard::to_allocvec(&alloc::vec![1_u32; cap::PROP_CLAIM_REFRS + 1]).unwrap_or_default();
+        assert!(postcard::from_bytes::<bounded::Vec<u32, { cap::PROP_CLAIM_REFRS }>>(&refrs).is_err());
+    }
+
     /// A serve's graph variables at their longest (thuum D-C3 A): sixteen,
     /// each name at its cap, every payload carried, every number a
     /// five-byte varint.
@@ -1326,8 +1400,8 @@ mod tests {
             // a prop's sample, claim and owner word at their longest: every id
             // a five-byte varint, every float carried (thuum docs/verbs/
             // prop-physics.md, ADR-058)
-            Message::PropTransform(skymp::PropTransform { refr: u32::MAX, pos: [f32::MAX; 3], rot: [f32::MAX; 3], asleep: true, ..Default::default() }),
-            Message::PropClaim(skymp::PropClaim { refr: u32::MAX, touch: u8::MAX, ..Default::default() }),
+            Message::PropTransform(prop_sample_at_its_longest()),
+            Message::PropClaim(prop_claim_at_its_longest()),
             Message::PropOwner(skymp::PropOwner { refr: u32::MAX, player: u32::MAX, epoch: u32::MAX, ..Default::default() }),
             // a placement request with every base slot full and a report
             // with every float carried (thuum docs/verbs/spell-placed-object.md,

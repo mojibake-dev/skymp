@@ -1973,21 +1973,46 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 58, thuum's (docs/verbs/prop-physics.md, ADR-058 decision 2):
-    /// where a physics prop (a kicked basket, a dropped sword) is, from the
-    /// one seat that simulates it. Client to server, unreliable, at most once
-    /// per prop per 100 ms while the body moves, at least every 500 ms while
-    /// it is awake or held (the heartbeat, thuum ADR-071's D-PH4 B) and once
-    /// more when it sleeps (`asleep` true; a held body never rests on the
-    /// wire), R2: the simulator's Havok computes, the server records the last
-    /// transform and the flag on the reference's record. Server to client,
-    /// the same bytes relayed to the cell's other listeners (unreliable while
-    /// awake, reliable at sleep), which impose it on a Keyframed body. Whose
-    /// transforms are taken is the server's rule (wire-rules `props`: the
-    /// prop's owner, the cell's host by default; every rest returns it to
-    /// the host with a word).
-    /// Reason codes: `E_VAL_RANGE` (a refr of 0), `E_VAL_NONFINITE`,
-    /// `E_VAL_OUT_OF_WORLD`, `E_VAL_RATE` (the budget, client to server).
+    /// One rigid body's pose in a prop's sample (thuum ADR-071 decision 6,
+    /// physics rung 2's PropTransform v2): a part of a body of several, a
+    /// world object's hinged part (rung 4, D-PH10) or a dead actor's bone
+    /// (rung 5), absolute in the world's frame.
+    pub struct PropBone {
+        /// Position, engine units.
+        pub pos: Vec3,
+        /// Orientation, a unit quaternion as Havok keeps one, [x, y, z, w]
+        /// (CommonLibSSE-NG H/hkQuaternion.h:10, one hkVector4, whose four
+        /// lanes run x, y, z, w, H/hkVector4.h:20).
+        pub quat: [f32; 4],
+    }
+}
+
+wire_struct! {
+    /// MsgType 58, thuum's (docs/verbs/prop-physics.md, ADR-058 decision 2;
+    /// ADR-071 decision 6, physics rung 2's v2): where a physics prop (a
+    /// kicked basket, a dropped sword) is and how it moves, from the one seat
+    /// that simulates it, under the owner epoch that seat holds and a
+    /// sequence within it. Client to server, unreliable, at most once per prop
+    /// per 100 ms while the body moves, at least every 500 ms while it is
+    /// awake or held (the heartbeat, thuum ADR-071's D-PH4 B) and once more
+    /// when its island deactivates (`asleep` true, reliable; a held body
+    /// never rests on the wire), R2: the simulator's Havok computes, the
+    /// server records the transform and the flag on the reference's record.
+    /// Server to client, the same bytes relayed to the prop's other listeners
+    /// (unreliable while awake, reliable at sleep), which follow it on a
+    /// Keyframed body; and the server's record answer, the same message at
+    /// `seq` 0, to a seat whose sample it refused (the record's transform at
+    /// the prop's epoch, `t_ms` 0, no velocity, `asleep` while no live row
+    /// moves the prop, `held` as the row's grab), which a client never sends.
+    /// Whose samples are taken is the server's rule (wire-rules `props`: by
+    /// the epoch first, then the prop's owner, the cell's host by default;
+    /// every rest returns it to the host with a word). Safe to receive twice:
+    /// a repeated sample is Late and dropped. Reason codes: `E_VAL_RANGE` (a
+    /// refr of 0, `seq` 0 from a client, an angle past a turn, a velocity
+    /// past its bound, `asleep` and `held` together, a bone more than 512
+    /// units from `pos` or a quaternion more than 1% off unit length),
+    /// `E_VAL_NONFINITE`, `E_VAL_OUT_OF_WORLD` (the position or a bone's),
+    /// `E_VAL_RATE` (the budget, client to server).
     pub struct PropTransform {
         /// `"t": 58`.
         #[serde(default)]
@@ -1995,25 +2020,50 @@ wire_struct! {
         /// The prop's reference form id (a game-file placement or a server-made
         /// drop above 0xff000000); never 0.
         pub refr: u32,
-        /// Position, engine units.
+        /// The owner epoch of the word the sender holds (ADR-066 decision 3):
+        /// 0 for the host's sample of a prop that never had a word.
+        pub epoch: u32,
+        /// The sender's sample number within (refr, epoch), from 1, wrapping
+        /// 65535 to 1; 0 is the server's record answer.
+        pub seq: u16,
+        /// The owner's own clock at the read, ms since its client started (a
+        /// session clock, so it never wraps inside 49 days); 0 in the record
+        /// answer.
+        pub t_ms: u32,
+        /// Position, engine units: where the body is drawn.
         pub pos: Vec3,
-        /// Rotation, Euler degrees as SkyMP sends them.
+        /// Rotation, Euler degrees, the reference's convention as the record
+        /// keeps it; each within one turn.
         pub rot: Vec3,
-        /// The body came to rest at this transform (the simulation island's
-        /// deactivation): the record's final sample, relayed reliable.
+        /// Linear velocity, engine units a second, in the world's frame.
+        pub lin: Vec3,
+        /// Angular velocity, radians a second, in the world's frame (Havok's
+        /// own, unscaled).
+        pub ang: Vec3,
+        /// The body came to rest at this transform (its island left Havok's
+        /// active list): the record's final sample, relayed reliable.
         pub asleep: bool,
+        /// The sender's engine holds the body (Game.getPlayerGrabbedRef names
+        /// it, Eli's D-PH3 A); never with `asleep`.
+        pub held: bool,
+        /// The poses of a body of several parts; empty for an item. Rung 2's
+        /// server takes a sample with none (a world object's parts are rung
+        /// 4's, a dead actor's bones rung 5's).
+        pub bones: Vec<PropBone, { cap::PROP_BONES }>,
     }
 }
 
 wire_struct! {
     /// MsgType 59, thuum's (docs/verbs/prop-physics.md, ADR-058 decision 1;
-    /// A2 and A3 of ADR-071 decision 2): a player's game touched a prop it
-    /// does not simulate, the engine that moved it claiming it (its capsule,
-    /// its hand, its drop, an impulse whose cause it owns; island contact
-    /// with a body it moved is a later rung's). Client to server, reliable,
-    /// R0: the server arbitrates. A prop at rest or stalled is the newest
-    /// toucher's (one epoch per prop) and every listener hears the word
-    /// (`PropOwner`); a prop another seat streams awake is refused to a
+    /// A2 and A3 of ADR-071 decision 2; physics rung 2's v2, ADR-071 decision
+    /// 6): a player's game touched props it does not simulate, the engine
+    /// that moved them claiming them (its capsule, its hand, its drop, an
+    /// impulse whose cause it owns; island contact with a body it moved is a
+    /// later rung's), one to sixteen in one message (an impact's bodies, rung
+    /// 3), each judged alone with an outcome of its own. Client to server,
+    /// reliable, R0: the server arbitrates. A prop at rest or stalled is the
+    /// newest toucher's (one epoch per prop) and every listener hears the
+    /// word (`PropOwner`); a prop another seat streams awake is refused to a
     /// contact, a drop or an impulse (E_PROP_MOVING), a grab takes it; a held
     /// prop refuses everything (E_PROP_HELD); a claimant the server never
     /// sent the prop, or told it is gone, is refused (E_PROP_UNSEEN), and so
@@ -2021,17 +2071,18 @@ wire_struct! {
     /// reached it since (E_PROP_AWAY); a refused claimant hears the current
     /// word. A grab ends the claimant's hold of any other prop (the engine
     /// holds one grabbed object per player). The claimant's cell and distance
-    /// are no gate. Reason codes:
-    /// `E_VAL_RANGE` (a refr of 0, a touch above 3), `E_VAL_RATE` (the
-    /// budget).
+    /// are no gate. Safe to receive twice: a repeated claim on a row it
+    /// granted is Same. Reason codes: `E_VAL_RANGE` (no reference, a refr of
+    /// 0, a reference named twice, a touch above 3), `E_VAL_RATE` (the
+    /// budget, one token a message).
     pub struct PropClaim {
         /// `"t": 59`.
         #[serde(default)]
         pub t: MsgT<59>,
-        /// The prop's reference form id; never 0.
-        pub refr: u32,
-        /// How it was touched: 0 a contact of the character controller, 1 a
-        /// grab (sent while the claimant's engine holds the body), 2 a drop
+        /// The props' reference form ids, one to sixteen, none 0, each once.
+        pub refrs: Vec<u32, { cap::PROP_CLAIM_REFRS }>,
+        /// How they were touched: 0 a contact of the character controller, 1
+        /// a grab (sent while the claimant's engine holds the body), 2 a drop
         /// (an item dropped, or a hold let go), 3 a shout's or spell's
         /// impulse, or a trap's world body its seat's own script set moving;
         /// at most 3.

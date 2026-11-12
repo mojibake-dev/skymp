@@ -69,6 +69,25 @@ pub enum Reject {
 /// value outside this is a bug or a lie either way.
 pub const WORLD_ABS_MAX: f32 = 1.0e6;
 
+/// The fastest a prop's body moves on the wire (PropTransform v2's `lin`,
+/// thuum ADR-071 decision 6), engine units a second: the server's speed cap,
+/// wire-rules props::PROP_MAX_SPEED_UNITS_PER_S, which wire-bridge's tests pin
+/// equal (this crate and wire-rules depend on neither). UNMEASURED.
+pub const PROP_MAX_LIN_UNITS_PER_S: f32 = 6_000.0;
+/// The fastest a prop's body spins on the wire (`ang`, Havok's own radians a
+/// second). UNMEASURED: x-prop-follow's tumbling leg reads the largest.
+pub const PROP_MAX_ANG_RAD_PER_S: f32 = 1_000.0;
+/// How far a body pose of a prop sample may stand from the sample's `pos`,
+/// engine units (thuum docs/research/physics-leg-2026-11-11.md, the model's
+/// bounds). UNMEASURED.
+pub const PROP_BONE_REACH_UNITS: f32 = 512.0;
+/// How far a body pose's quaternion may be off unit length: 1% (the same
+/// model's bounds).
+pub const PROP_QUAT_NORM_SLACK: f32 = 0.01;
+/// A prop sample's rotation bound: each Euler angle within one turn either
+/// way, degrees.
+pub const PROP_ROT_MAX_DEGREES: f32 = 360.0;
+
 /// Per-client state the validator needs: sequence tracking and token buckets.
 /// Owned by the transport layer, one per connection.
 #[derive(Debug, Clone)]
@@ -847,10 +866,22 @@ fn check_actor_death(m: &skymp::ActorDeath) -> Result<(), Reject> {
     Ok(())
 }
 
-/// A simulator's prop sample (docs/verbs/prop-physics.md, ADR-058): a
-/// reference (never 0), a finite position inside the world's bounds, a
-/// finite rotation. Whose sample is taken (the prop's owner, the cell's host
-/// by default) is the server's rule (wire-rules `props`).
+/// The length of a vector of floats (a velocity, a quaternion, a step);
+/// infinite past f32's range, never a panic.
+fn length(v: impl Iterator<Item = f32>) -> f32 {
+    v.map(|x| x * x).sum::<f32>().sqrt()
+}
+
+/// A simulator's prop sample (docs/verbs/prop-physics.md, ADR-058; v2, thuum
+/// ADR-071 decision 6: a Rust bound on every relayed float): a reference
+/// (never 0); every float finite; the position inside the world's bounds;
+/// each angle within a turn; the linear velocity within the server's speed
+/// cap and the angular within its bound; never asleep and held at once (A6:
+/// a held body never rests on the wire); each body pose inside the world,
+/// within reach of the position and its quaternion within 1% of unit
+/// length. Whose sample is taken (the epoch, the prop's owner, the order, the
+/// step budget) is the server's rule (wire-rules `props`); a sequence of 0
+/// is the server's record answer, refused from a client by [`validate`].
 fn check_prop_transform(m: &skymp::PropTransform) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
@@ -859,16 +890,37 @@ fn check_prop_transform(m: &skymp::PropTransform) -> Result<(), Reject> {
         return Err(Reject::Range);
     }
     check_pos(&m.pos)?;
+    if m.rot.iter().any(|a| a.abs() > PROP_ROT_MAX_DEGREES)
+        || length(m.lin.iter().copied()) > PROP_MAX_LIN_UNITS_PER_S
+        || length(m.ang.iter().copied()) > PROP_MAX_ANG_RAD_PER_S
+        || (m.asleep && m.held)
+    {
+        return Err(Reject::Range);
+    }
+    for bone in m.bones.iter() {
+        check_pos(&bone.pos)?;
+        let reach = length(bone.pos.iter().zip(m.pos.iter()).map(|(b, p)| b - p));
+        if reach > PROP_BONE_REACH_UNITS || (length(bone.quat.iter().copied()) - 1.0).abs() > PROP_QUAT_NORM_SLACK {
+            return Err(Reject::Range);
+        }
+    }
     Ok(())
 }
 
-/// A seat's prop claim (docs/verbs/prop-physics.md): a reference (never 0)
-/// and a touch the contract names (0 contact, 1 grab, 2 drop, 3 impulse).
-/// Whether the claimant was sent the prop and whether another seat holds or
-/// streams it is the server's rule (wire-rules props, A2 and A3).
+/// A seat's prop claim (docs/verbs/prop-physics.md; v2, thuum ADR-071
+/// decision 6): one to sixteen references (the cap at decode), none 0, each
+/// once, and a touch the contract names (0 contact, 1 grab, 2 drop, 3
+/// impulse). Whether the claimant was sent each prop and whether another
+/// seat holds or streams it is the server's rule (wire-rules props, A2 and
+/// A3), one reference at a time.
 fn check_prop_claim(m: &skymp::PropClaim) -> Result<(), Reject> {
-    if m.refr == 0 || m.touch > 3 {
+    if m.refrs.is_empty() || m.touch > 3 {
         return Err(Reject::Range);
+    }
+    for (n, refr) in m.refrs.iter().enumerate() {
+        if *refr == 0 || m.refrs.iter().take(n).any(|other| other == refr) {
+            return Err(Reject::Range);
+        }
     }
     Ok(())
 }
@@ -1736,7 +1788,15 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::HostedActorState(_) => take(&mut guard.hosted_state_budget, now_ms),
         Message::ActorSpeech(_) => take(&mut guard.speech_budget, now_ms),
         Message::ActorClaim(_) => take(&mut guard.claim_budget, now_ms),
-        Message::PropTransform(_) => take(&mut guard.prop_budget, now_ms),
+        Message::PropTransform(m) => {
+            // a seat streams its own samples from sequence 1; 0 is the
+            // server's record answer (thuum ADR-071 decision 6), so the mark
+            // cannot be forged
+            if m.seq == 0 {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.prop_budget, now_ms)
+        }
         Message::PropClaim(_) => take(&mut guard.prop_claim_budget, now_ms),
         Message::PlacedReport(_) => take(&mut guard.placed_report_budget, now_ms),
         Message::SkillUse(_) => take(&mut guard.skill_use_budget, now_ms),
@@ -3083,9 +3143,10 @@ mod tests {
     // thuum docs/verbs/prop-physics.md (ADR-058): a simulator's prop sample
     // names a reference, a finite point in the world and a finite rotation;
     // 128 at once, 96 a second after that (UNMEASURED; raised from 20 and 10
-    // for a trap's bodies, thuum D-S3 point 4)
+    // for a trap's bodies, thuum D-S3 point 4). A seat's first sample at its
+    // epoch, sequence 1 (v2, thuum ADR-071 decision 6)
     fn prop(refr: u32, pos: [f32; 3], rot: [f32; 3], asleep: bool) -> Message {
-        Message::PropTransform(wire_schema::skymp::PropTransform { refr, pos, rot, asleep, ..Default::default() })
+        Message::PropTransform(wire_schema::skymp::PropTransform { refr, epoch: 1, seq: 1, t_ms: 1_000, pos, rot, asleep, ..Default::default() })
     }
 
     #[test]
@@ -3130,7 +3191,7 @@ mod tests {
     #[test]
     fn prop_claims_name_a_reference_and_a_touch_and_are_rate_limited() {
         use wire_schema::skymp::PropClaim;
-        let claim = |refr, touch| Message::PropClaim(PropClaim { refr, touch, ..Default::default() });
+        let claim = |refr, touch| Message::PropClaim(PropClaim { refrs: vec![refr].try_into().unwrap_or_default(), touch, ..Default::default() });
         assert_eq!(validate_server(&claim(0x54a44, 0)), Ok(()));
         assert_eq!(validate_server(&claim(0xff00_0004, 3)), Ok(()));
         assert_eq!(validate_server(&claim(0, 0)), Err(Reject::Range));
@@ -3141,6 +3202,74 @@ mod tests {
         }
         assert_eq!(validate(&claim(0x54a44, 0), &mut guard, 1_000), Err(Reject::Rate));
         assert_eq!(validate(&claim(0x54a44, 2), &mut guard, 1_500), Ok(()));
+    }
+
+    #[test]
+    fn a_prop_claim_names_one_to_sixteen_references_once_each() {
+        // v2 (thuum ADR-071 decision 6): an impact's bodies in one claim, each
+        // judged alone by the server; the shape is one to sixteen references,
+        // none 0, none twice, and one budget token a message
+        use wire_schema::skymp::PropClaim;
+        let claim = |refrs: &[u32], touch| Message::PropClaim(PropClaim { refrs: refrs.to_vec().try_into().unwrap_or_default(), touch, ..Default::default() });
+        let cart = [0x1c0c6, 0x1c0c7, 0x1c0c8, 0x1c0c9, 0x1c0ca, 0x1c0cb];
+        assert_eq!(validate_server(&claim(&cart, 3)), Ok(()));
+        let sixteen: Vec<u32> = (1..=16).collect();
+        assert_eq!(validate_server(&claim(&sixteen, 3)), Ok(()));
+        assert_eq!(validate_server(&claim(&[], 3)), Err(Reject::Range));
+        assert_eq!(validate_server(&claim(&[0x1c0c6, 0], 3)), Err(Reject::Range));
+        assert_eq!(validate_server(&claim(&[0x1c0c6, 0x1c0c7, 0x1c0c6], 3)), Err(Reject::Range));
+        // the claim budget charges a message, whatever it names: eight of
+        // sixteen at once, then two a second
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&claim(&sixteen, 3), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&claim(&[0x1c0c6], 3), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&claim(&sixteen, 3), &mut guard, 1_500), Ok(()));
+    }
+
+    #[test]
+    fn a_v2_prop_sample_bounds_every_float() {
+        // thuum ADR-071 decision 6 (rules 5 and 12): a Rust bound on every
+        // relayed float, each with its code
+        use wire_schema::skymp::{PropBone, PropTransform};
+        let basket = [23877.5, -45485.25, 8.0];
+        let ok = PropTransform { refr: 0x54a44, epoch: 2, seq: 7, t_ms: 123_456, pos: basket, rot: [0.0, 0.0, 72.5], lin: [120.0, -35.5, 0.0], ang: [0.0, 0.0, 1.5], ..Default::default() };
+        let m = |p: &PropTransform| Message::PropTransform(p.clone());
+        assert_eq!(validate_server(&m(&ok)), Ok(()));
+        assert_eq!(validate(&m(&ok), &mut ClientGuard::default(), 0), Ok(()));
+        // seq 0 is the server's record answer: admitted from the server,
+        // refused from a client
+        let record = PropTransform { seq: 0, t_ms: 0, lin: [0.0; 3], ang: [0.0; 3], asleep: true, ..ok.clone() };
+        assert_eq!(validate_server(&m(&record)), Ok(()));
+        assert_eq!(validate(&m(&record), &mut ClientGuard::default(), 0), Err(Reject::Range));
+        // the rotation: each angle within one turn either way
+        assert_eq!(validate_server(&m(&PropTransform { rot: [0.0, -360.0, 360.0], ..ok.clone() })), Ok(()));
+        assert_eq!(validate_server(&m(&PropTransform { rot: [0.0, 0.0, 360.5], ..ok.clone() })), Err(Reject::Range));
+        // the velocities: the speed cap's length, and the spin's
+        assert_eq!(validate_server(&m(&PropTransform { lin: [4_800.0, 3_600.0, 0.0], ..ok.clone() })), Ok(()));
+        assert_eq!(validate_server(&m(&PropTransform { lin: [4_800.0, 3_600.0, 100.0], ..ok.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&m(&PropTransform { ang: [0.0, 600.0, 800.0], ..ok.clone() })), Ok(()));
+        assert_eq!(validate_server(&m(&PropTransform { ang: [0.0, 600.0, 801.0], ..ok.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&m(&PropTransform { lin: [f32::MAX, 0.0, 0.0], ..ok.clone() })), Err(Reject::Range));
+        // held, and asleep, but never both (A6)
+        assert_eq!(validate_server(&m(&PropTransform { held: true, ..ok.clone() })), Ok(()));
+        assert_eq!(validate_server(&m(&PropTransform { held: true, asleep: true, ..ok.clone() })), Err(Reject::Range));
+        // the bones: inside the world, within 512 units of the position, each
+        // quaternion within 1% of unit length
+        let bone = |pos: [f32; 3], quat: [f32; 4]| PropBone { pos, quat };
+        let with = |bones: Vec<PropBone>| PropTransform { bones: bones.try_into().unwrap_or_default(), ..ok.clone() };
+        let at = |dx: f32| [basket[0] + dx, basket[1], basket[2]];
+        assert_eq!(validate_server(&m(&with(vec![bone(at(511.0), [0.0, 0.0, 0.0, 1.0]), bone(at(-30.0), [0.5, -0.5, 0.5, 0.5])]))), Ok(()));
+        assert_eq!(validate_server(&m(&with(vec![bone(at(513.0), [0.0, 0.0, 0.0, 1.0])]))), Err(Reject::Range));
+        assert_eq!(validate_server(&m(&with(vec![bone(at(0.0), [0.0, 0.0, 0.0, 1.009])]))), Ok(()));
+        assert_eq!(validate_server(&m(&with(vec![bone(at(0.0), [0.0, 0.0, 0.0, 1.02])]))), Err(Reject::Range));
+        assert_eq!(validate_server(&m(&with(vec![bone(at(0.0), [0.0, 0.0, 0.0, 0.98])]))), Err(Reject::Range));
+        assert_eq!(validate_server(&m(&with(vec![bone([2.0e6, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])]))), Err(Reject::OutOfWorld));
+        assert_eq!(validate_server(&m(&with(vec![bone(at(0.0), [f32::NAN, 0.0, 0.0, 1.0])]))), Err(Reject::NonFinite));
+        // the floats rung 1 checked: finite, the position in the world
+        assert_eq!(validate_server(&m(&PropTransform { lin: [f32::INFINITY, 0.0, 0.0], ..ok.clone() })), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&m(&PropTransform { pos: [0.0, -1.5e6, 0.0], ..ok.clone() })), Err(Reject::OutOfWorld));
     }
 
     #[test]
@@ -3695,15 +3824,24 @@ mod tests {
         fn prop_messages_never_panic(
             refr in any::<u32>(), x in any::<f32>(), y in any::<f32>(), z in any::<f32>(),
             rx in any::<f32>(), touch in any::<u8>(), player in any::<u32>(), epoch in any::<u32>(),
-            asleep in any::<bool>(), now in any::<u64>(),
+            asleep in any::<bool>(), held in any::<bool>(), seq in any::<u16>(), t_ms in any::<u32>(), now in any::<u64>(),
+            bones in proptest::collection::vec((any::<[f32; 3]>(), any::<[f32; 4]>()), 0..=cap::PROP_BONES),
+            refrs in proptest::collection::vec(any::<u32>(), 0..=cap::PROP_CLAIM_REFRS),
         ) {
-            use wire_schema::skymp::{PropClaim, PropOwner, PropTransform};
+            // v2's shapes (thuum ADR-071 decision 6): every float any value,
+            // the bones and the references at any count the decode admits
+            use wire_schema::skymp::{PropBone, PropClaim, PropOwner, PropTransform};
             let mut g = ClientGuard::default();
-            let m = Message::PropTransform(PropTransform { refr, pos: [x, y, z], rot: [rx, y, x], asleep, ..Default::default() });
+            let bones = bones.into_iter().map(|(pos, quat)| PropBone { pos, quat }).collect::<Vec<_>>();
+            let m = Message::PropTransform(PropTransform {
+                refr, epoch, seq, t_ms, pos: [x, y, z], rot: [rx, y, x], lin: [z, rx, x], ang: [y, z, rx], asleep, held,
+                bones: bones.try_into().unwrap_or_default(),
+                ..Default::default()
+            });
             let _ = validate(&m, &mut g, now);
             let _ = validate(&m, &mut g, now);
             let _ = validate_server(&m);
-            let c = Message::PropClaim(PropClaim { refr, touch, ..Default::default() });
+            let c = Message::PropClaim(PropClaim { refrs: refrs.try_into().unwrap_or_default(), touch, ..Default::default() });
             let _ = validate(&c, &mut g, now);
             let _ = validate_server(&c);
             let _ = validate_server(&Message::PropOwner(PropOwner { refr, player, epoch, ..Default::default() }));

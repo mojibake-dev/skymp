@@ -6202,6 +6202,14 @@ mod tests {
     }
 
     #[test]
+    fn a_samples_velocity_bound_is_the_rules_speed_cap() {
+        // thuum ADR-071 decision 6: wire-validate bounds a sample's linear
+        // velocity by the server's speed cap, and the two crates depend on
+        // neither, so the bridge, which depends on both, pins them equal
+        assert_eq!(wire_validate::PROP_MAX_LIN_UNITS_PER_S.to_bits(), props::PROP_MAX_SPEED_UNITS_PER_S.to_bits());
+    }
+
+    #[test]
     fn a_trap_bodys_claim_crosses_as_codes() {
         // thuum D-S3 point 4 under A3 (ADR-071 decision 8): Embershard's rock
         // 0xb6d45 in the mine 0xb6be6, claimed by the impulse touch like any

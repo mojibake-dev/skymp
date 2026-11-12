@@ -1543,6 +1543,15 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(running[0].effect == kReanimateEffect);
     REQUIRE(running[0].secondsLeft ==
             Catch::Approx(static_cast<float>(recordMs) / 1000.f));
+    // the commander's engine is its timer (ADR-060 as amended): past the
+    // record's 60 s and past a day the state runs on and no word drops it,
+    // so no game dispels a living thrall
+    p.Messages().clear();
+    body.AdvanceEffects(61.f);
+    body.AdvanceEffects(86'400.f);
+    REQUIRE(body.GetRunningEffects().size() == 1);
+    REQUIRE(effectWordsTo(0).empty());
+    REQUIRE(effectWordsTo(1).empty());
     // its death: the effects tick that reads it ends the set and tells both
     // games, so each stops the shader at the death
     p.Messages().clear();

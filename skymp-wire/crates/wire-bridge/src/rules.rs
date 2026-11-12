@@ -793,8 +793,8 @@ mod ffi {
         /// Etherealize; thuum docs/verbs/self-cast.md).
         State,
         /// Archetype 22, reanimate: the thrall's state (thuum
-        /// docs/verbs/npc-fate.md); a full thrall's keeps its record's
-        /// duration (wire-rules magic::FULL_THRALL_MIN_S).
+        /// docs/verbs/npc-fate.md), which its actor's death alone ends
+        /// (wire-rules magic::EffectKind::Reanimate).
         Reanimate,
     }
 

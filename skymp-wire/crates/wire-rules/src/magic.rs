@@ -58,10 +58,13 @@ pub enum EffectKind {
     State,
     /// Archetype 22, reanimate: a state as State is, the thrall's from its
     /// stand-up, which every game shows (its look, thuum
-    /// docs/verbs/npc-fate.md, ADR-060). A timed thrall's is cut to the
-    /// bound as any effect's; a full thrall's (FULL_THRALL_MIN_S) keeps its
-    /// record's duration and ends with its death, which ends every running
-    /// effect.
+    /// docs/verbs/npc-fate.md, ADR-060). Its end is its actor's death, which
+    /// ends every running effect (the core's), timed or full: the
+    /// commander's engine is its timer (ADR-060 as amended: "summons and
+    /// resurrections should obey the timers the level of spell"), so its
+    /// record's duration is never cut nor run out here and counts only its
+    /// seconds left for the games. FULL_THRALL_MIN_S is the line its
+    /// commander's departure reads.
     Reanimate,
 }
 
@@ -198,12 +201,14 @@ pub fn apply(facts: EffectFacts, scale: f32, caster: u32, arrival: Arrival) -> A
     }
     let mut facts = facts;
     facts.magnitude = facts.magnitude.max(0.0) * scale;
-    // a full thrall's record keeps its number: its effect ends with its
-    // death, not its seconds; every other effect's is cut to the bound
-    let full_thrall = facts.kind == EffectKind::Reanimate && facts.duration_s >= FULL_THRALL_MIN_S;
-    if !full_thrall {
-        facts.duration_s = facts.duration_s.clamp(0.0, MAX_DURATION_S);
-    }
+    // a Reanimate state keeps its record's number, timed or full: its end is
+    // its actor's death, not its seconds; every other effect's is cut to the
+    // bound
+    facts.duration_s = if facts.kind == EffectKind::Reanimate {
+        facts.duration_s.max(0.0)
+    } else {
+        facts.duration_s.clamp(0.0, MAX_DURATION_S)
+    };
     let amount = facts.magnitude * sign(&facts);
     let instant = arrival == Arrival::Stream || facts.no_duration || facts.duration_s <= 0.0;
     if is_state(facts.kind) {
@@ -227,8 +232,9 @@ pub fn apply(facts: EffectFacts, scale: f32, caster: u32, arrival: Arrival) -> A
 
 /// Runs `entries` for `dt_s` seconds: each flowing effect's share of its
 /// magnitude for the time it ran within its duration, each buff's return
-/// when it ends; ended entries are removed. A `dt_s` that is not a finite
-/// positive number runs nothing.
+/// when it ends; ended entries are removed, but a Reanimate state, which
+/// ends with its actor's death alone. A `dt_s` that is not a finite positive
+/// number runs nothing.
 pub fn advance(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange> {
     let mut out = Vec::new();
     if !dt_s.is_finite() || dt_s <= 0.0 {
@@ -251,7 +257,7 @@ pub fn advance(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange> {
             out.extend(changes_of(&facts, amount * (after - before), false));
         }
     }
-    entries.retain(|e| e.elapsed_s < e.facts.duration_s);
+    entries.retain(|e| e.facts.kind == EffectKind::Reanimate || e.elapsed_s < e.facts.duration_s);
     out
 }
 
@@ -330,8 +336,8 @@ pub fn remove(entries: &mut Vec<EffectEntry>, effects: &[u32]) -> Vec<AvChange> 
 
 /// Adds `entry` to `entries`, keeping at most MAX_EFFECTS: past the bound the
 /// oldest entry of the same effect and source goes, or else the oldest of
-/// all. A buff that goes this way gives its modifier back: those changes are
-/// returned.
+/// all, a Reanimate state last (its actor's death ends it, `advance`). A buff
+/// that goes this way gives its modifier back: those changes are returned.
 pub fn admit(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvChange> {
     let mut out = Vec::new();
     if entries.len() >= MAX_EFFECTS {
@@ -341,10 +347,11 @@ pub fn admit(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvChange
             .filter(|(_, e)| e.facts.effect == entry.facts.effect && e.facts.source == entry.facts.source)
             .max_by(|(_, a), (_, b)| a.elapsed_s.total_cmp(&b.elapsed_s))
             .map(|(i, _)| i);
+        let timed = |e: &EffectEntry| e.facts.kind != EffectKind::Reanimate;
         let oldest = entries
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.elapsed_s.total_cmp(&b.elapsed_s))
+            .max_by(|(_, a), (_, b)| timed(a).cmp(&timed(b)).then(a.elapsed_s.total_cmp(&b.elapsed_s)))
             .map(|(i, _)| i);
         if let Some(i) = same.or(oldest) {
             if i < entries.len() {
@@ -574,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn a_timed_thralls_reanimate_is_a_state_that_runs_its_record() {
+    fn a_timed_thralls_reanimate_runs_past_its_record_and_a_day_until_its_death() {
         let applied = apply(reanimate(0x96d0b, 0x65bd7, 13.0, 60.0), 1.0, 0xff00_0003, Arrival::Once);
         assert!(applied.changes.is_empty());
         let mut entries: Vec<EffectEntry> = applied.entry.into_iter().collect();
@@ -582,34 +589,65 @@ mod tests {
         // Recover on a state buffs nothing
         assert_eq!(modifier(&entries, u32::MAX), 0.0);
         assert_eq!(constant_modifier(&[reanimate(0x96d0b, 0x65bd7, 13.0, 60.0)], u32::MAX), 0.0);
-        assert!(advance(&mut entries, 59.0).is_empty());
+        // the commander's engine is its timer: past the record's 60 s and
+        // past a day it runs on, its seconds left at 0, until its actor's
+        // death (the core's) ends it
+        assert!(advance(&mut entries, 61.0).is_empty());
+        assert_eq!(entries.first().map(EffectEntry::remaining_s), Some(0.0));
+        assert!(advance(&mut entries, MAX_DURATION_S).is_empty());
         assert_eq!(entries.len(), 1);
-        assert!(advance(&mut entries, 2.0).is_empty());
-        assert!(entries.is_empty());
     }
 
     #[test]
-    fn a_full_thralls_reanimate_keeps_its_records_duration_and_every_other_effect_is_cut() {
+    fn a_full_thralls_reanimate_keeps_its_records_duration_and_every_other_effect_its_cut_and_clock() {
         let applied = apply(reanimate(0x7e8e0, 0x7e8df, 40.0, 86_313_600.0), 1.0, 0xff00_0003, Arrival::Once);
         assert!(applied.changes.is_empty());
         let mut entries: Vec<EffectEntry> = applied.entry.into_iter().collect();
         assert_eq!(entries.first().map(|e| e.facts.duration_s), Some(86_313_600.0));
-        // ten days on it still runs: its end is its death, which ends every
-        // running effect (the core's)
         assert!(advance(&mut entries, 864_000.0).is_empty());
         assert_eq!(entries.len(), 1);
         assert!(entries.first().is_some_and(|e| e.remaining_s() > MAX_DURATION_S));
-        // the line is a Reanimate effect's alone: any other effect of that
-        // length is cut to a day, a state's, and Dead Thrall's own rider,
+        // a Reanimate state alone: any other effect of that length is cut to
+        // a day and ends there, a state's, and Dead Thrall's own rider,
         // crSummonThrallFortifyHealRate 0x8BB2A (peak value, Heal Rate 27, 1
         // for 86,313,600 s), whose 1 it then gives back
         let state = apply(EffectFacts { duration_s: 86_313_600.0, ..invisibility() }, 1.0, 0x14, Arrival::Once);
         assert_eq!(state.entry.map(|e| e.facts.duration_s), Some(MAX_DURATION_S));
+        let mut states: Vec<EffectEntry> = state.entry.into_iter().collect();
+        assert!(advance(&mut states, MAX_DURATION_S).is_empty());
+        assert!(states.is_empty());
         let rider = EffectFacts { effect: 0x8bb2a, source: 0x7e8df, av: 27, recover: true, ..facts(EffectKind::PeakValue, 1.0, 86_313_600.0) };
         let mut buffs: Vec<EffectEntry> = apply(rider, 1.0, 0xff00_0003, Arrival::Once).entry.into_iter().collect();
         assert_eq!(buffs.first().map(|e| e.facts.duration_s), Some(MAX_DURATION_S));
         assert_eq!(total(&advance(&mut buffs, MAX_DURATION_S), 27), (0.0, -1.0));
         assert!(buffs.is_empty());
+    }
+
+    #[test]
+    fn past_the_bound_a_reanimate_state_goes_last() {
+        let mut entries = Vec::new();
+        if let Some(e) = apply(reanimate(0x96d0b, 0x65bd7, 13.0, 60.0), 1.0, 0xff00_0003, Arrival::Once).entry {
+            admit(&mut entries, e);
+        }
+        // the thrall's state is the oldest of all when the bound is reached
+        advance(&mut entries, 120.0);
+        for i in 0..(MAX_EFFECTS - 1) {
+            let mut other = facts(EffectKind::Value, 1.0, 600.0);
+            other.effect = 0x1000 + u32::try_from(i).unwrap_or(0);
+            if let Some(e) = apply(other, 1.0, 0, Arrival::Once).entry {
+                admit(&mut entries, e);
+            }
+            advance(&mut entries, 1.0);
+        }
+        assert_eq!(entries.len(), MAX_EFFECTS);
+        let newest = EffectFacts { effect: 0x2000, ..facts(EffectKind::Value, 1.0, 600.0) };
+        if let Some(e) = apply(newest, 1.0, 0, Arrival::Once).entry {
+            admit(&mut entries, e);
+        }
+        assert_eq!(entries.len(), MAX_EFFECTS);
+        assert!(entries.iter().any(|e| e.facts.effect == 0x96d0b));
+        // the oldest of the rest went: the first of the 31
+        assert!(!entries.iter().any(|e| e.facts.effect == 0x1000));
     }
 
     #[test]

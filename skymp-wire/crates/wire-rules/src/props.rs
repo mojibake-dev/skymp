@@ -86,14 +86,16 @@ pub const PROP_STEP_ALLOWANCE_UNITS: f32 = PROP_MAX_SPEED_UNITS_PER_S / 10.0;
 /// samples 100 ms apart on the owner's clock reaching the server 5 ms apart)
 /// is taken whole where the server's clock alone refuses the second; and
 /// whatever the owner's clock claims, the budget's never runs past the
-/// server's by more than this, so over any stream the record travels no
-/// farther than the cap allows for the server's elapsed time and this slack,
-/// plus the one step. The clock is the prop's, as the allowance is: an epoch
-/// rise starts no fresh slack. The virtual scheduling of the generic cell
-/// rate algorithm, its tolerance this slack (accessible: "Generic cell rate
-/// algorithm", Wikipedia; foundational: ITU-T Recommendation I.371, "Traffic
-/// control and congestion control in B-ISDN"). UNMEASURED: x-prop-follow's
-/// loss leg reads the arrival jitter it must forgive.
+/// server's by more than this, so over any window of the server's time the
+/// record travels no farther than the cap allows for that window,
+/// PROP_CLOCK_LAG_MS and this slack, plus the one step (14,100 units in a
+/// second, 8,100 at one instant). The clock is the prop's, as the allowance
+/// is: an epoch rise starts no fresh slack. The virtual scheduling of the
+/// generic cell rate algorithm, its tolerance this slack (accessible:
+/// "Generic cell rate algorithm", Wikipedia; foundational: ITU-T
+/// Recommendation I.371, "Traffic control and congestion control in
+/// B-ISDN"). UNMEASURED: x-prop-follow's loss leg reads the arrival jitter it
+/// must forgive.
 pub const PROP_CLOCK_SLACK_MS: u64 = 250;
 /// How far behind the server's clock the step budget's own may fall
 /// (physics rung 2): samples delayed in flight (a stall, then a bunch) leave

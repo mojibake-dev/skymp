@@ -28,6 +28,7 @@
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <string>
+#include <variant>
 #include <vector>
 
 PartOne& GetPartOne();
@@ -1521,6 +1522,86 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(p.worldState.HostOf(body) == &host);
     REQUIRE(hosterWordsTo(0) >= 1);
     REQUIRE(hosterWordsTo(1) >= 1);
+  }
+
+  SECTION("by a player who is not the host: the thrall's ash after its death "
+          "is its reanimate's caster's for wire-rules natives' "
+          "ASH_WINDOW_MS, relayed to the host, and refused past it (the "
+          "reanimate-fx memo's D3 B)")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(body.ReanimateAcceptedCaster() == kCaster);
+    // the effect's end in the commander's engine: the command ends at the
+    // death, the cell's host simulates the body again
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+
+    // vanilla ReanimateAshPile's TurnToAsh on the commander's engine (MGEF
+    // 0xf52ab), as its seat reports it: AttachAshPile(None) on the body and
+    // ShockDisintegrate01FXS 0xd22fb's Stop on it
+    using Arg = std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
+    SpSnippetObjectArgument none;
+    none.formId = 0;
+    none.type = "Form";
+    SpSnippetObjectArgument victim;
+    victim.formId = kPredator;
+    victim.type = "Actor";
+    const auto ashCall = [&](uint32_t selfId, const char* cls, const char* fn,
+                             std::vector<Arg> args) {
+      ScriptCallMessage msg;
+      msg.selfId = selfId;
+      msg.cls = cls;
+      msg.fn = fn;
+      msg.args = std::move(args);
+      msg.caller = "ReanimateAshPile";
+      msg.handler = "TurnToAsh";
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnScriptCall(raw, msg);
+    };
+    // the relays of `fn` sent to `user` since the last clear
+    const auto relaysTo = [&](Networking::UserId user, const char* fn) {
+      size_t count = 0;
+      for (auto& m : p.Messages()) {
+        if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+            m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+            m.j.contains("function") && m.j["function"] == fn) {
+          ++count;
+        }
+      }
+      return count;
+    };
+
+    // inside the window: the caster's calls go to the body's other
+    // listener, the host, never back to the caster
+    p.Messages().clear();
+    ashCall(kPredator, "Actor", "AttachAshPile", { Arg(none) });
+    ashCall(0xd22fb, "EffectShader", "Stop", { Arg(victim) });
+    REQUIRE(relaysTo(0, "AttachAshPile") == 1);
+    REQUIRE(relaysTo(0, "Stop") == 1);
+    REQUIRE(relaysTo(1, "AttachAshPile") == 0);
+
+    // past it: the simulator's refusal, nothing relayed
+    body.RecordDeathAt(
+      std::chrono::steady_clock::now() -
+      std::chrono::milliseconds(
+        static_cast<int64_t>(skymp::rules::script_ash_window_ms()) + 1000));
+    p.Messages().clear();
+    {
+      LogCapture log;
+      ashCall(kPredator, "Actor", "AttachAshPile", { Arg(none) });
+      REQUIRE(log.Count("E_SCRIPTCALL_OWNER") == 1);
+      REQUIRE(log.Count("past the ash window") == 1);
+    }
+    REQUIRE(relaysTo(0, "AttachAshPile") == 0);
   }
 
   SECTION("by a player who is not the host: the stand-up's MagicEffects "

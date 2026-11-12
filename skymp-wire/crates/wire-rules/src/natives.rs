@@ -105,7 +105,11 @@
 //! rule): the subject an actor the server holds, simulated by the reporter
 //! now, the epoch unread; the reporter's own player, a world object, a door
 //! or a container is refused by the row (`E_SCRIPTCALL_ROW`), another seat's
-//! actor or one nobody simulates by its owner (`E_SCRIPTCALL_OWNER`). An
+//! actor or one nobody simulates by its owner (`E_SCRIPTCALL_OWNER`), except
+//! a dead thrall's look from the caster of the reanimate the server accepted
+//! on it, for [`ASH_WINDOW_MS`] after its death ([`actor_look_owner`]: the
+//! ash that vanilla's TurnToAsh makes on the caster's engine once ADR-060
+//! ended the command at the death). An
 //! accepted look goes to the actor's other listeners as the same native with
 //! the next sequence of its relay's self, the receiver's key: the actor's for
 //! a row on its self, the effect form's for a [`Subject::Arg0Method`] row
@@ -627,6 +631,18 @@ pub struct Facts {
     /// The subject's size: the farthest point of its bounds, times its
     /// scale (a look's facts).
     pub subject_size: f32,
+    /// The subject actor is dead on the record (an actor's facts, which an
+    /// actor's look row reads for [`ASH_WINDOW_MS`]; false for every other
+    /// kind).
+    pub dead: bool,
+    /// How long ago the subject actor last died on the server's clock, ms
+    /// (MpActor::DiedAgo, the death SendAndSetDeathState recorded); none for
+    /// no death this process recorded, or a subject that is no actor.
+    pub died_ago_ms: Option<u64>,
+    /// The caster of the reanimate the server last accepted on the subject
+    /// actor (MpActor::ReanimateAcceptedCaster, from the hit the server
+    /// numbered: a server fact, never the reporter's word), 0 for none.
+    pub reanimate_caster: u32,
 }
 
 /// Why a reported call is refused.
@@ -859,6 +875,30 @@ fn simulated_by_reporter(subject: u32, facts: &Facts, row_is: &str, own_player: 
     Ok(())
 }
 
+/// An actor's look row's owner step: [`simulated_by_reporter`]'s, and one
+/// more owner past it, the caster of the reanimate the server accepted on a
+/// dead thrall, for [`ASH_WINDOW_MS`] after the death it recorded (the
+/// reanimate-fx memo's D3 B: TurnToAsh on the caster's engine after ADR-060
+/// ended the command at the death). Both are server facts, the hit it
+/// numbered and the death it recorded, never the reporter's word (rule 5).
+/// The simulator's refusal stands otherwise, its words saying so when the
+/// reporter is that caster past the window.
+fn actor_look_owner(subject: u32, facts: &Facts) -> Result<(), Refusal> {
+    let refused = match simulated_by_reporter(subject, facts, "an actor's look, its simulator's", "a player's own looks stay on its seat") {
+        Ok(()) => return Ok(()),
+        Err(refused) => refused,
+    };
+    let caster = refused.code == Code::Owner && facts.kind == SubjectKind::Actor && facts.dead && facts.reanimate_caster != 0 && facts.reanimate_caster == facts.sender;
+    if !caster {
+        return Err(refused);
+    }
+    match facts.died_ago_ms {
+        Some(ms) if ms <= ASH_WINDOW_MS => Ok(()),
+        Some(ms) => Err(refusal(Code::Owner, format!("{} (its reanimate's caster, {ms} ms after its death, past the ash window's {ASH_WINDOW_MS})", refused.why))),
+        None => Err(refusal(Code::Owner, format!("{} (its reanimate's caster, no death of this process recorded)", refused.why))),
+    }
+}
+
 /// Whether the reporter hosts `cell` at the reported epoch: `host` the cell's
 /// host (0 while nobody hosts it) and `host_epoch` its standing epoch, the
 /// refusal's words ending in `placed` (what kind of subject the cell was
@@ -998,6 +1038,22 @@ pub const LOOK_BURST: u32 = 12;
 /// How many looks a second one subject takes after its burst. UNMEASURED,
 /// as [`LOOK_BURST`].
 pub const LOOK_PER_SECOND: u32 = 2;
+
+/// How long after a dead thrall's recorded death the caster of the reanimate
+/// the server accepted on it still owns the actor's looks on it, ms (the
+/// Undead FX build; the reanimate-fx memo's D3 B). ADR-060 ends the command
+/// at the death, and vanilla ReanimateAshPile's TurnToAsh, which the
+/// effect's OnDying runs on the caster's engine, makes the ash's calls after
+/// it: SetCriticalStage and the shader's Play at once, AttachAshPile after
+/// `Utility.Wait(fDelay)`, then Stop, SetAlpha and SetCriticalStage after
+/// `Utility.Wait(fDelayEnd)`. Skyrim.esm's MGEF 0xf52ab sets fDelay 1.25 s
+/// and ShaderDuration 4.0 s in its VMAD and leaves fDelayEnd at the script's
+/// own 1.65 s (scripts/reanimateashpile.pex, read 2026-11-12 with thuum
+/// lab/pex.py and lab/esm.py), so the last call comes 2.9 s after OnDying.
+/// This is that with room for the death report's and the calls' trips and a
+/// short menu (Utility.Wait pauses in one): a bound of the server's policy,
+/// MpActor::kReanimateWindowMs's size, not an engine number. UNMEASURED.
+pub const ASH_WINDOW_MS: u64 = 10_000;
 
 /// The words a refusal adds for a placement the server holds no reference
 /// for.
@@ -1206,9 +1262,10 @@ impl ScriptCalls {
                 };
             }
         };
-        // an actor's look row (the Undead FX build): its simulator's alone
+        // an actor's look row (the Undead FX build): its simulator's, or a
+        // dead thrall's reanimate caster's inside the ash window
         if row.owner == Owner::Simulator {
-            return match simulated_by_reporter(subject, facts, "an actor's look, its simulator's", "a player's own looks stay on its seat") {
+            return match actor_look_owner(subject, facts) {
                 Ok(()) => self.actor_look(row, subject, method_self, relay_cls, relay_fn),
                 Err(refused) => Verdict::Refuse(refused),
             };
@@ -1409,7 +1466,7 @@ mod tests {
     }
 
     fn hosted(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0 }
     }
 
     fn accepted(v: &Verdict) -> Accept {
@@ -1962,7 +2019,7 @@ mod tests {
     // the draugr in the temple, simulated by the host (its cell's), the
     // reporter
     fn simulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0 }
     }
 
     #[test]
@@ -2117,6 +2174,58 @@ mod tests {
         assert_eq!(code(&s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &simulated(DRAUGR), 0)), Some(Code::Row));
     }
 
+    #[test]
+    fn a_dead_thralls_ash_is_its_reanimate_casters_for_the_window() {
+        // TurnToAsh on the caster's engine once ADR-060 ended the command at
+        // the death: the cell's host (HOST) simulates the body again, and
+        // the reanimate's caster (GUEST) reports the ash's calls, each at its
+        // time after the death (the shader's Play at once, AttachAshPile
+        // after fDelay's 1.25 s, Stop after fDelayEnd's 1.65 s more)
+        let mut s = ScriptCalls::default();
+        let pile = row("Actor", "AttachAshPile");
+        let stop = row("EffectShader", "Stop");
+        let ash = |ago: u64| Facts { sender: GUEST, dead: true, died_ago_ms: Some(ago), reanimate_caster: GUEST, ..simulated(THRALL) };
+        let play = accepted(&s.judge(row("EffectShader", "Play"), &[Arg::Object(u64::from(THRALL)), Arg::Number], &Facts { self_id: DISINTEGRATE, ..ash(0) }, 0));
+        assert_eq!((play.subject, play.relay_self, play.seq), (THRALL, DISINTEGRATE, 1));
+        let a = accepted(&s.judge(pile, &[Arg::Absent], &ash(1_250), 0));
+        assert_eq!((a.subject, a.relay_self, a.seq, a.relay_fn, a.look), (THRALL, THRALL, 1, "AttachAshPile", false));
+        let off = accepted(&s.judge(stop, &[Arg::Object(u64::from(THRALL))], &Facts { self_id: DISINTEGRATE, ..ash(2_900) }, 0));
+        assert_eq!((off.relay_self, off.seq), (DISINTEGRATE, 2));
+        // the window's own edge is inside it
+        assert_eq!(accepted(&s.judge(row("Actor", "SetCriticalStage"), &[Arg::Number], &ash(ASH_WINDOW_MS), 0)).seq, 2);
+        let refused = |v: Verdict| match v {
+            Verdict::Refuse(r) => (r.code, r.why),
+            other => panic!("not refused: {other:?}"),
+        };
+        // past the window, or with no death this process recorded: the
+        // simulator's refusal, its words saying why
+        let past = ASH_WINDOW_MS + 1;
+        assert_eq!(
+            refused(s.judge(pile, &[Arg::Absent], &ash(past), 0)),
+            (Code::Owner, format!("ff000000 simulates 35534, not the reporter (its reanimate's caster, {past} ms after its death, past the ash window's {ASH_WINDOW_MS})"))
+        );
+        assert_eq!(
+            refused(s.judge(pile, &[Arg::Absent], &Facts { died_ago_ms: None, ..ash(0) }, 0)),
+            (Code::Owner, "ff000000 simulates 35534, not the reporter (its reanimate's caster, no death of this process recorded)".to_owned())
+        );
+        // another seat than the caster, a living thrall, no reanimate
+        // recorded: the simulator's words alone
+        let plain = (Code::Owner, "ff000000 simulates 35534, not the reporter".to_owned());
+        assert_eq!(refused(s.judge(pile, &[Arg::Absent], &Facts { reanimate_caster: 0xff00_0002, ..ash(0) }, 0)), plain.clone());
+        assert_eq!(refused(s.judge(pile, &[Arg::Absent], &Facts { dead: false, ..ash(0) }, 0)), plain.clone());
+        assert_eq!(refused(s.judge(pile, &[Arg::Absent], &Facts { reanimate_caster: 0, ..ash(0) }, 0)), plain);
+        // nobody simulating the body leaves the caster's window as it is
+        assert!(matches!(s.judge(pile, &[Arg::Absent], &Facts { owner: 0, ..ash(0) }, 0), Verdict::Accept(_)));
+        // the row's refusals stand: the reporter's own player, a world
+        // object, an animation row on the thrall
+        assert_eq!(code(&s.judge(pile, &[Arg::Absent], &Facts { self_id: 0x14, ..ash(0) }, 0)), Some(Code::Row));
+        assert_eq!(code(&s.judge(pile, &[Arg::Absent], &Facts { kind: SubjectKind::WorldObject, ..ash(0) }, 0)), Some(Code::Row));
+        assert_eq!(code(&s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &ash(0), 0)), Some(Code::Row));
+        // the simulator's own report needs no window
+        assert!(matches!(s.judge(pile, &[Arg::Absent], &Facts { sender: HOST, ..ash(past) }, 0), Verdict::Accept(_)));
+        assert_eq!(s.seq_of(THRALL), 4, "every refusal took no sequence");
+    }
+
     // thuum ADR-068 rung 4 (the state rows): Bleak Falls Temple's cobweb
     // 0x1fc43 a world object its host disables, the Temple's puzzle door
     // 0x371e9 a door, and the Temple's ambush draugr 0x380ba (an ACHR of the
@@ -2135,7 +2244,7 @@ mod tests {
 
     // an actor nobody simulates, its cell's host at epoch 3 the reporter
     fn unsimulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0 }
     }
 
     #[test]

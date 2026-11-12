@@ -5371,6 +5371,8 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   facts.sender = reporter->GetFormId();
   facts.self_id = msg.selfId;
   facts.epoch = msg.epoch;
+  // no death recorded unless an actor's below
+  facts.died_ago_ms = std::numeric_limits<uint64_t>::max();
   MpObjectReference* subject = nullptr;
   // a world object's world or cell and position, the reference's or its
   // record's
@@ -5414,10 +5416,24 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     } else if (MpActor* actor = subject->AsActor()) {
       // an actor's owner is its simulator (ADR-063 decision 1; the death
       // report's own E_DEATH_NOT_HOST rule), which a row kept as evidence
-      // reads (wire-rules natives Keep::Evidence: ProcessTrapHit's); an
-      // action row on an actor is the streams' and refused by its kind
+      // reads (wire-rules natives Keep::Evidence: ProcessTrapHit's) and an
+      // actor's look row; an animation row on an actor is the streams' and
+      // refused by its kind
       facts.subject_kind = 3;
       facts.owner = partOne.SimulatorOf(*actor);
+      // the Undead FX build (the reanimate-fx memo's D3 B): a dead thrall's
+      // looks are its reanimate's caster's for wire-rules natives'
+      // ASH_WINDOW_MS after its death, once ADR-060 ended the command there;
+      // the server's own facts, the reanimate hit it accepted (OnHit's
+      // NoteReanimateAccepted) and the death it recorded
+      // (SendAndSetDeathState), never the reporter's word
+      facts.dead = actor->IsDead();
+      facts.reanimate_caster = actor->ReanimateAcceptedCaster();
+      if (const auto diedAgo =
+            actor->DiedAgo(std::chrono::steady_clock::now())) {
+        facts.died_ago_ms =
+          static_cast<uint64_t>(std::max<int64_t>(0, diedAgo->count()));
+      }
       if (const auto cell = partOne.worldState.CellOf(*actor)) {
         facts.cell = *cell;
         if (recordRow) {

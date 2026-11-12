@@ -1903,6 +1903,115 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     p.SetUserActor(1, kCaster);
   }
 
+  SECTION("by a player who is not the host: a full thrall that stayed at its "
+          "commander's disconnect is its caster's again when the caster's "
+          "next game reports the thrall's cell loaded, the record its "
+          "dormant row and the host keeping the cell (C4; Eli, 2026-11-12: "
+          "\"thrall returns to caster obvs\")")
+  {
+    Equipment eq;
+    eq.rightSpell = kDeadThrall;
+    caster.SetEquipment(eq);
+    casts(1, kDeadThrall);
+    hits(1, kDeadThrall);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    // the record names its caster: the dormant row
+    REQUIRE(body.GetReanimateCaster().caster == kCaster);
+    REQUIRE(body.GetReanimateCaster().recordSeconds >=
+            skymp::rules::full_thrall_min_s());
+    DoDisconnect(p, 1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(body.GetReanimateCaster().caster == kCaster);
+
+    // the caster's next login: the body's set names it (MagicEffects'
+    // caster), and nothing returns before its game reports the cell loaded
+    LogCapture log;
+    p.Messages().clear();
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(hostedFalseTo(1) == 0);
+    bool named = false;
+    for (auto& word : effectWordsTo(1)) {
+      for (auto& effect : word["effects"]) {
+        if (effect["effect"] == kDeadThrallEffect) {
+          REQUIRE(effect["caster"] == kCaster);
+          REQUIRE(effect["remaining"].get<float>() == -1.f);
+          named = true;
+        }
+      }
+    }
+    REQUIRE(named);
+
+    // its game reports the thrall's cell loaded, the host still hosting it:
+    // the caster commands the thrall again, both games hear the word, and
+    // the host keeps its cell
+    const auto loadsTheCell = [&] {
+      RawMessageData raw;
+      raw.userId = 1;
+      CellLoadedMessage loaded;
+      loaded.cell = kForestCell;
+      loaded.loaded = true;
+      p.GetActionListener().OnCellLoaded(raw, loaded);
+    };
+    p.Messages().clear();
+    loadsTheCell();
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.worldState.HostOf(body) == &caster);
+    REQUIRE(p.GetCellHost(kForestCell).player == kHost);
+    REQUIRE(hostedFalseTo(1) >= 1);
+    REQUIRE(hosterWordsTo(0) >= 1);
+    REQUIRE(log.Count("85547 returns to its caster ff000d36 in cell 9810: a "
+                      "full thrall its record names") == 1);
+    // a later load claims nothing again: its own command stands
+    loadsTheCell();
+    REQUIRE(log.Count("returns to its caster ff000d36") == 1);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    // the returned command is the cast's own: the thrall's death ends it
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+  }
+
+  SECTION("by a player who is not the host: a full thrall killed while its "
+          "caster was away is no thrall at the caster's return (C4)")
+  {
+    Equipment eq;
+    eq.rightSpell = kDeadThrall;
+    caster.SetEquipment(eq);
+    casts(1, kDeadThrall);
+    hits(1, kDeadThrall);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    DoDisconnect(p, 1);
+    REQUIRE_FALSE(body.IsDead());
+    // the host's engine kills it while its caster is away
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    LogCapture log;
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
+    {
+      RawMessageData raw;
+      raw.userId = 1;
+      CellLoadedMessage loaded;
+      loaded.cell = kForestCell;
+      loaded.loaded = true;
+      p.GetActionListener().OnCellLoaded(raw, loaded);
+    }
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(log.Count("returns to its caster") == 0);
+  }
+
   SECTION("by a player who is not the host: a command its engine never stood "
           "ends at any other respawn, and the old commander's report of the "
           "living actor is a stranger's (E_DEATH_NOT_HOST)")
@@ -2554,6 +2663,108 @@ TEST_CASE("At a restart a timed thrall's record dies by the server's word "
   auto& thrall = p.worldState.GetFormAt<MpActor>(kThrall);
   thrall.Respawn(false);
   p.worldState.fateRespawnDue.erase(kThrall);
+  p.DestroyActor(kThrall);
+}
+
+// thuum docs/verbs/npc-fate.md C4 (ADR-060's return; rule 6's option A,
+// 2026-11-12): the dormant row is the record, so a restart keeps it. A full
+// thrall's saved record that names its caster, written to the change form's
+// JSON and read back into a fresh world (the database's round trip, a
+// restart), stays alive with its look at the load and is its caster's again
+// once the caster's game reports the thrall's cell loaded, whoever hosts
+// the cell; another player's load claims nothing
+TEST_CASE("After a restart a full thrall's record still names its caster, "
+          "and the caster's return commands it again (C4)",
+          "[NpcFate][Reanimate][espm]")
+{
+  constexpr uint32_t kThrall = 0xff000d3e;
+  constexpr uint32_t kCaster = 0xff000d3f;
+  constexpr uint32_t kOther = 0xff000d40;
+  constexpr uint32_t kBanditBase = 0x3de6f;
+  constexpr uint32_t kDeadThrall = 0x7e8df;
+  constexpr uint32_t kDeadThrallEffect = 0x7e8e0;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  const auto wallNowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+
+  // the saved record: alive at the forest, Dead Thrall's state 5 s in as of
+  // now, kept as a state with its key and its caster
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kThrall, p.worldState.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  saved.position = kForest;
+  saved.angle = { 0.f, 0.f, 0.f };
+  RunningEffect state;
+  state.effect =
+    FormDesc::FromFormId(kDeadThrallEffect, p.worldState.espmFiles);
+  state.source = FormDesc::FromFormId(kDeadThrall, p.worldState.espmFiles);
+  state.caster = FormDesc::FromFormId(kCaster, p.worldState.espmFiles);
+  state.kind = 3;
+  state.reanimate = true;
+  state.magnitude = 40.f;
+  state.durationS = 86'313'600.f;
+  state.elapsedS = 5.f;
+  state.asOfMs = wallNowMs;
+  state.recover = true;
+  saved.runningEffects = std::vector<RunningEffect>{ state };
+
+  // the database's round trip: the change form's JSON and back
+  simdjson::dom::parser parser;
+  const std::string dump = MpChangeForm::ToJson(saved).dump();
+  auto element = parser.parse(dump).value();
+  const MpChangeForm reread = MpChangeForm::JsonToChangeForm(element);
+  REQUIRE(reread.runningEffects == saved.runningEffects);
+
+  LogCapture log;
+  p.worldState.LoadChangeForm(reread, p.CreateFormCallbacks());
+  p.worldState.LoadDeferredActors();
+  p.worldState.fateRespawnDue.erase(kThrall);
+  auto& thrall = p.worldState.GetFormAt<MpActor>(kThrall);
+  p.Tick();
+  REQUIRE_FALSE(thrall.IsDead());
+  REQUIRE(thrall.GetReanimateCaster().caster == kCaster);
+  REQUIRE(log.Count("is a full thrall's (the record's 86313600 s): it stays, "
+                    "its look kept, until its caster ff000d3f returns") == 1);
+
+  // another player takes the forest's cell first: its load claims nothing
+  DoConnect(p, 0);
+  p.CreateActor(kOther, kForest, 0, kTamriel);
+  p.SetUserActor(0, kOther);
+  HostGrants(p, 0, kForestCell);
+  REQUIRE(p.CommanderOf(thrall) == 0);
+  REQUIRE(p.GetCellHost(kForestCell).player == kOther);
+
+  // the caster returns: commanded once its game reports the cell loaded
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, kForest + NiPoint3{ 50.f, 0.f, 0.f }, 0, kTamriel);
+  p.SetUserActor(1, kCaster);
+  REQUIRE(p.CommanderOf(thrall) == 0);
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kForestCell;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  REQUIRE(p.CommanderOf(thrall) == kCaster);
+  REQUIRE(p.SimulatorOf(thrall) == kCaster);
+  REQUIRE(p.GetCellHost(kForestCell).player == kOther);
+  REQUIRE(log.Count("returns to its caster ff000d3f in cell 9810") == 1);
+
+  // the shared world
+  p.ReleaseAnyClaim(thrall);
+  thrall.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kThrall);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kOther);
+  p.DestroyActor(kCaster);
   p.DestroyActor(kThrall);
 }
 

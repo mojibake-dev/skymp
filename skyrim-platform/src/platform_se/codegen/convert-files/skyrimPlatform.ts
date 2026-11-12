@@ -352,6 +352,18 @@ export interface PropContactEvent {
   layer: number;
   motionType: number;
 }
+// thuum docs/DECISIONS.md ADR-071 rung 3: a reference with a Havok body, as propImpulse and readBodies' island name one: refrId its form id on this seat, formType its base's form type in FormType's numbers (an item's are FormTypeEx.isItem's; 34 Static, 36 MovableStatic, 62 an actor, a ragdoll), so the client tells its rows with no game call
+export interface BodyRef {
+  refrId: number;
+  formType: number;
+}
+// thuum docs/DECISIONS.md ADR-071 decision 4 (rung 3, "caster only"; docs/verbs/prop-physics.md): the bodies an impulse this seat's own cause gave pushed inside one engine frame, raised on the next tick at the frame's leave while setImpulseCauseRule(true) holds (the fork's replacements of TESHavokUtilities::ScaleGameplayImpulseForce and AddExplosionImpulse, Address Library 26004 and 26005, each judged by the innermost frame open on its thread: Explosion::Update, Projectile::ProcessImpacts or ConeProjectile::HandleHits). impact: this seat's impact number, from 1, the native line's "impact <n>". kind: the frame, 'explosion' an explosion's update (every body it pushes, one event), 'impacts' a projectile's impacts (an arrow, a bolt, a missile, a beam, a flame), 'cone' a shout's cone meeting one collidable (one event per collidable it pushes, so a shout raises several, across ticks). cause: the cause's form id on this seat (0x14 its own player, an actor it simulates; 0 for an explosion or projectile no actor owns, in a cell this seat hosts). refrs: each reference the cause pushed, once, in the order pushed, at most 16 (PropClaim v2's limit; a larger set comes as several events with one impact); every physics body (D-PH5): items, statics and ragdolls alike, never the player's own. A frame with no reference pushed raises nothing; so does an impulse another seat's cause gave (zeroed in native code) or one whose cause no seat's word names here (applied, unclaimed). A frame that pushes on every engine frame (a stream on a pile, unread) raises one each frame. No game call in its handler
+export interface PropImpulseEvent {
+  impact: number;
+  kind: 'explosion' | 'impacts' | 'cone';
+  cause: number;
+  refrs: BodyRef[];
+}
 
 // thuum docs/verbs/leveling.md (M5): the player's UseSkill (the fork's hook on PlayerCharacter's vtable slot 0xF7, Address Library 40488), raised on the next tick once per landed hit, cast or craft: the skill as its actor value (CommonLibSSE-NG include/RE/A/ActorValues.h, 6 One-handed to 23 Enchanting), the action's base amount (the weapon's base damage for a melee hit) and the source form's id (0 for none). No game call in its handler
 export interface SkillUseEvent {
@@ -803,6 +815,8 @@ export declare function once(eventName: 'runeDecal', callback: (event: RuneDecal
 
 export declare function on(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
 export declare function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
+export declare function on(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle
+export declare function once(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle
 export declare function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 export declare function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 export declare function on(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle
@@ -1864,6 +1878,11 @@ export interface BodyRead { formId: number; awake: boolean; motion: number; pos:
 export declare function readBodies(formIds: number[], all: boolean): BodyRead[];
 // thuum ADR-071 rung 2 (the take-over's hand-off): the linear velocity (game units a second) and angular velocity (radians a second) of the body readBodies reads, set on the main thread through SKSE's UI task queue, never waited for; true when queued, false for 0, the player's own id or a non-finite component; the task logs "[verb:prop-physics] velocity set on <id>" or "velocity not set on <id>" with the reason (no reference with 3D, no rigid body on its 3D root or the root's children, a motion type that is not dynamic)
 export declare function setBodyVelocity(formId: number, lin: number[], ang: number[]): boolean;
+// thuum docs/DECISIONS.md ADR-071 rung 3 (the island's claim): readBodies with a third argument, islands: true adds to each body of a dynamic motion type that is awake its island, the island's other members of a dynamic type, each reference once with its base's form type (BodyRef), at most 16 in the island's own order, never the player's own or the body's own reference, none for the world's fixed island; read on the JS thread with no engine lock, island absent when that read faulted (a member changed under it, said in the platform's log) and on every other body; false reads as the two-argument call
+export interface BodyIslandRead extends BodyRead { island?: BodyRef[] }
+export declare function readBodies(formIds: number[], all: boolean, islands: boolean): BodyIslandRead[];
+// thuum docs/DECISIONS.md ADR-071 decision 4 (rung 3, "caster only"): the impulse rule on or off at the replaced ScaleGameplayImpulseForce and AddExplosionImpulse, off by default (every impulse applies as the engine's own, nothing counted); on, an impulse whose cause another seat owns (a figure, a puppet: the innermost Explosion::Update, Projectile::ProcessImpacts or ConeProjectile::HandleHits on its thread names it) is zeroed on every physics body, one this seat's cause gave applies and raises propImpulse, and one outside every such frame applies; the client setting propImpulseCause's mirror; stored with no game call; true when ScaleGameplayImpulseForce's replacement went in at install, false when it did not (no prop's push can then be zeroed)
+export declare function setImpulseCauseRule(on: boolean): boolean;
 // thuum ADR-068 rung 3 (the script record, amendment A): a reference whose served script record waits for its apply, so this seat's OnLoad and OnCellLoad to it are blanked (their names kept for ApplyScriptState's answer, blanked) until TESModPlatform.ApplyScriptState applies the record or this is called with false; set it only for a record that carries its view; stored on the JS thread, no game call; false for 0 and for the player's own id
 export declare function setScriptRecordPending(formId: number, pending: boolean): boolean;
 // thuum ADR-068 rung 3 (the script record): a reference's pending mark lowered, answering the JSON array of the event names the gate blanked while it was up ("[]" for none, for 0 and for the player's own id), so a client that gives a record up can still send them through TESModPlatform.SendScriptEvent (setScriptRecordPending with false drops them); a table operation on the JS thread, no game call

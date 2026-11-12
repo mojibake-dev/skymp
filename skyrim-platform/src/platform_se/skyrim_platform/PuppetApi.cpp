@@ -25,6 +25,7 @@
 #include <RE/U/UI.h>
 #include <RE/U/UIMessage.h>
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
@@ -807,6 +808,16 @@ RE::NiPoint3 Vec3(const RE::hkVector4& v, float scale)
   return { f[0] * scale, f[1] * scale, f[2] * scale };
 }
 
+// a reference with a Havok body, as readBodies' island and the propImpulse
+// event name one (FridaHooks.cpp's BodyRef): its form id and its base's form
+// type (RE::FormType, F/FormTypes.h:138, whose numbers Skyrim Platform's
+// FormType keeps), so the client tells its rows with no game call
+struct BodyRef
+{
+  uint32_t refrId = 0;
+  uint32_t formType = 0;
+};
+
 struct BodyRead
 {
   uint32_t formId = 0;
@@ -816,6 +827,10 @@ struct BodyRead
   RE::NiPoint3 rot;
   RE::NiPoint3 lin;
   RE::NiPoint3 ang;
+  // with islands: whether the body carries its island (a dynamic type,
+  // awake), and the island's other members (ReadIslandOf, below)
+  bool hasIsland = false;
+  std::vector<BodyRef> island;
 };
 
 // one reference's body, false when the reference, its 3D
@@ -868,6 +883,136 @@ bool ReadBody(uint32_t formId, float toGameUnits, BodyRead& out)
   return true;
 }
 
+// thuum ADR-071 rung 3 (the island's claim; lab/.cache/drafts/physics/
+// rung3-plan.md B4, on H4's facts, CONFIRMED by 20261111-223256 on c1: a
+// resting pile is one sleeping island, a knocked neighbour joins it on the
+// first moving frame, islands split in 2 to 9 frames and merge again on
+// contact in flight, a Keyframed body a member that never moves): at most
+// this many of an awake body's island's other members, by reference
+constexpr size_t kIslandRefsMax = 16;
+// at most this many of the island's entities looked at, so a size read
+// mid-change still bounds the walk (UNMEASURED: 223256's pile held six
+// cabbages)
+constexpr int32_t kIslandEntitiesRead = 256;
+// the walk's answer when a read faulted
+constexpr size_t kIslandFault = static_cast<size_t>(-1);
+
+// the walk itself, plain data alone so the frame below may guard it (MSVC
+// C2712): the body's island (H/hkpEntity.h:92) unless it is its world's
+// fixed island (hkpSimulationIsland::world, H/hkpSimulationIsland.h:31;
+// hkpWorld::fixedIsland, H/hkpWorld.h:97; the cart's 1,710 statics in
+// 223256), then its entities (hkpSimulationIsland.h:53, an hkInplaceArray,
+// H/hkArray.h:196, its size and data read once) in the island's own order,
+// each of a dynamic motion type (IsDynamicMotion: a Keyframed member is
+// another seat's stream or an animated actor, a Fixed one the world) whose
+// collidable names a reference (hkpWorldObject::GetUserData,
+// H/hkpWorldObject.h:62, which is TESHavokUtilities::FindCollidableRef,
+// src/RE/H/hkpWorldObject.cpp:23-27), each reference once with its base's
+// form type; the player's own, the body's own (a reference of several
+// bodies, the Riverwood Trader sign's seven) and a body with no reference
+// left out. Fills out[0, max) and answers the count
+size_t WalkIsland(const RE::hkpEntity& body, uint32_t self, BodyRef* out,
+                  size_t max)
+{
+  const RE::hkpSimulationIsland* island = body.simulationIsland;
+  if (!island) {
+    return 0;
+  }
+  const RE::hkpWorld* world = island->world;
+  if (world && world->fixedIsland == island) {
+    return 0;
+  }
+  const RE::hkpEntity* const* entities = island->entities.data();
+  const int32_t count =
+    std::min<int32_t>(island->entities.size(), kIslandEntitiesRead);
+  size_t n = 0;
+  for (int32_t i = 0; entities && i < count && n < max; ++i) {
+    const RE::hkpEntity* member = entities[i];
+    if (!member || member == &body ||
+        !IsDynamicMotion(member->motion.type.get())) {
+      continue;
+    }
+    const RE::TESObjectREFR* refr = member->GetUserData();
+    const uint32_t refrId = refr ? refr->formID : 0;
+    if (refrId == 0 || refrId == 0x14 || refrId == self) {
+      continue;
+    }
+    bool seen = false;
+    for (size_t k = 0; k < n && !seen; ++k) {
+      seen = out[k].refrId == refrId;
+    }
+    if (seen) {
+      continue;
+    }
+    const RE::TESBoundObject* base = refr->GetBaseObject();
+    out[n].refrId = refrId;
+    out[n].formType = base ? static_cast<uint32_t>(base->GetFormType()) : 0u;
+    ++n;
+  }
+  return n;
+}
+
+// the walk in a structured exception frame, the fork's GetNthVtableElement
+// shape (PapyrusTESModPlatform.cpp:253-258). The walk runs on the JS thread
+// with no lock (rung 2's fresh review, finding 1: Hook.cpp:86's PushAndWait
+// lets an engine thread wait on the JS thread while it holds a world lock as
+// a writer, so a lock taken here can hang the game; never one), so it reads
+// the island while Havok's step may merge or split it: HYPOTHESIS that such a
+// read is torn at worst. A member freed mid-read faults here instead of
+// taking the game down, and answers kIslandFault
+size_t GuardedWalkIsland(const RE::hkpEntity& body, uint32_t self,
+                         BodyRef* out, size_t max)
+{
+  __try {
+    return WalkIsland(body, self, out, max);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return kIslandFault;
+  }
+}
+
+std::atomic<uint64_t> g_islandFaults{ 0 };
+
+// one reference's island (readBodies with islands, for a body its read found
+// awake and of a dynamic type): the body found again as ReadBody finds it
+// (BodyOf), then the guarded walk, the island itself read inside it; on the
+// JS thread, never inside the step from the impulse replacement (R2-4's
+// threading HYPOTHESIS), taking no engine lock. The other calls are a
+// form-table read and field reads (TESForm::LookupByID,
+// include/RE/T/TESForm.h:209-218, takes no lock at this pin) and
+// FindCollidableRef in the walk: HYPOTHESIS that it takes none either (E26
+// read it safe inside Havok's own callbacks). False with no island read: no
+// body, a type that is not dynamic, or a faulted read (said at its first and
+// every hundredth: a torn read here moves the read to the game thread's
+// queue in this file's poll shape, PollHostedGaze, never to a lock)
+bool ReadIslandOf(uint32_t formId, std::vector<BodyRef>& out)
+{
+  auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
+  auto* root = refr ? refr->Get3D() : nullptr;
+  if (!root) {
+    return false;
+  }
+  const PropBody body = BodyOf(*root);
+  if (!body.havok || !IsDynamicMotion(body.havok->motion.type.get())) {
+    return false;
+  }
+  BodyRef found[kIslandRefsMax];
+  const size_t n =
+    GuardedWalkIsland(*body.havok, formId, found, kIslandRefsMax);
+  if (n == kIslandFault) {
+    const uint64_t faults =
+      g_islandFaults.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (faults == 1 || faults % 100 == 0) {
+      logger::warn("[verb:prop-physics] island read of {:x} faulted: a "
+                   "member changed under the lock-free read, no island this "
+                   "read ({} so far)",
+                   formId, faults);
+    }
+    return false;
+  }
+  out.assign(found, found + n);
+  return true;
+}
+
 // readBodies' filter (rule 9): the ids its last read without all found
 // awake, so a body is answered while awake and once more at the read where
 // its awake bit fell, and a resting one never; an id left out (no body) is
@@ -890,6 +1035,11 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
 {
   const auto ids = NapiHelper::ExtractArray(info[0], "formIds");
   const bool all = NapiHelper::ExtractBoolean(info[1], "all");
+  // thuum ADR-071 rung 3 (the island's claim, rung3-plan.md B4): the third
+  // argument, false when absent (rung 2's call), adds each awake dynamic
+  // body's island (ReadIslandOf, lock-free on this thread)
+  const bool islands = info.Length() >= 3 && !info[2].IsUndefined() &&
+    !info[2].IsNull() && NapiHelper::ExtractBoolean(info[2], "islands");
   std::vector<uint32_t> formIds;
   const uint32_t n = ids.Length();
   formIds.reserve(n);
@@ -904,9 +1054,13 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
     BodyRead read;
     const bool found =
       formId != 0 && formId != 0x14 && ReadBody(formId, toGameUnits, read);
+    if (found && islands && read.awake &&
+        IsDynamicMotion(static_cast<RE::hkpMotion::MotionType>(read.motion))) {
+      read.hasIsland = ReadIslandOf(formId, read.island);
+    }
     if (all) {
       if (found) {
-        answered.push_back(read);
+        answered.push_back(std::move(read));
       }
       continue;
     }
@@ -916,12 +1070,12 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
         g_bodyAwake.clear();
       }
       g_bodyAwake.insert(formId);
-      answered.push_back(read);
+      answered.push_back(std::move(read));
       continue;
     }
     const bool fell = g_bodyAwake.erase(formId) != 0;
     if (fell && found) {
-      answered.push_back(read);
+      answered.push_back(std::move(read));
     }
   }
   const auto toArray = [&](const RE::NiPoint3& v) {
@@ -942,6 +1096,18 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
     row.Set("rot", toArray(read.rot));
     row.Set("lin", toArray(read.lin));
     row.Set("ang", toArray(read.ang));
+    if (read.hasIsland) {
+      auto island = Napi::Array::New(info.Env(), read.island.size());
+      for (uint32_t k = 0; k < read.island.size(); ++k) {
+        auto ref = Napi::Object::New(info.Env());
+        ref.Set("refrId",
+                Napi::Number::New(info.Env(), read.island[k].refrId));
+        ref.Set("formType",
+                Napi::Number::New(info.Env(), read.island[k].formType));
+        island.Set(k, ref);
+      }
+      row.Set("island", island);
+    }
     res.Set(i, row);
   }
   return res;
@@ -1011,6 +1177,20 @@ Napi::Value PuppetApi::SetBodyVelocity(const Napi::CallbackInfo& info)
                  formId, lin.x, lin.y, lin.z, ang.x, ang.y, ang.z, motion);
   });
   return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum docs/DECISIONS.md ADR-071 decision 4 (rung 3, an impulse's cause;
+// thuum .claude/rules/native.md's kill switch): the impulse rule at the
+// replaced ScaleGameplayImpulseForce and AddExplosionImpulse on or off
+// (FridaHooks.cpp), one atomic flag, off by default so a client that never
+// sets it keeps every engine's own push; skymp5-client's setting
+// propImpulseCause (default true) turns it on. No game call; the setter logs
+// the switch for the lab and answers whether ScaleGameplayImpulseForce's
+// replacement went in at install
+Napi::Value PuppetApi::SetImpulseCauseRule(const Napi::CallbackInfo& info)
+{
+  const auto on = NapiHelper::ExtractBoolean(info[0], "on");
+  return Napi::Boolean::New(info.Env(), Frida::SetImpulseCauseRule(on));
 }
 
 // thuum ADR-068 rung 3 (the script record, amendment A): the pending set the

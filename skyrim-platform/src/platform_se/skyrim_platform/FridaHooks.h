@@ -56,6 +56,19 @@ void SetTriggerPresserRule(bool on);
 // with it on (ScriptNatives.cpp OnFamilyCall)
 bool TriggerPresserRuleOn();
 
+// thuum docs/DECISIONS.md ADR-071 decision 4 (rung 3, an impulse's cause;
+// docs/verbs/prop-physics.md): the impulse rule on or off at the replaced
+// ScaleGameplayImpulseForce and AddExplosionImpulse (FridaHooks.cpp). On, an
+// impulse whose cause another seat owns is zeroed (every physics body, Eli's
+// D-PH5 "Every physics body"), and one whose cause this seat owns applies and
+// raises propImpulse with the references it pushed; off, the default, every
+// impulse applies as the engine's own and nothing is counted, so a client
+// that never sets it changes nothing. skymp5-client's setting
+// propImpulseCause turns it on through setImpulseCauseRule (PuppetApi.cpp).
+// Stored either way; true when ScaleGameplayImpulseForce's replacement went
+// in at install (the props' push can be zeroed). Threadsafe
+bool SetImpulseCauseRule(bool on);
+
 // thuum docs/DECISIONS.md ADR-068 decision 6 ("the player's own (0x14, the
 // player's effects, the player-alias quests) are the player's seat's"): this
 // seat's own player in the active effect a VM handle names, its target or

@@ -2012,6 +2012,67 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(log.Count("returns to its caster") == 0);
   }
 
+  SECTION("by a player who is not the host: a full thrall served to its "
+          "caster's next game after that game reported the thrall's cell "
+          "loaded is claimed at the subscribe, once, its create word naming "
+          "the caster its simulator (C4: the engine's 5x5 runs ahead of the "
+          "server's 3x3)")
+  {
+    Equipment eq;
+    eq.rightSpell = kDeadThrall;
+    caster.SetEquipment(eq);
+    casts(1, kDeadThrall);
+    hits(1, kDeadThrall);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    DoDisconnect(p, 1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(body.GetReanimateCaster().caster == kCaster);
+    // the caster's next game starts three grid squares east: the body is no
+    // emitter of its, so its load of the body's cell meets no thrall
+    caster.SetPos(kForest + NiPoint3{ 3 * 4096.f, 0.f, 0.f });
+    LogCapture log;
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
+    REQUIRE(caster.GetEmitters().count(&body) == 0);
+    const auto loadsTheCell = [&] {
+      RawMessageData raw;
+      raw.userId = 1;
+      CellLoadedMessage loaded;
+      loaded.cell = kForestCell;
+      loaded.loaded = true;
+      p.GetActionListener().OnCellLoaded(raw, loaded);
+    };
+    loadsTheCell();
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(log.Count("returns to its caster ff000d36") == 0);
+    // it comes back beside the body: the grid serves the body to its game,
+    // and the subscribe claims it ahead of the create word
+    p.Messages().clear();
+    caster.SetPos(kForest + NiPoint3{ 50.f, 0.f, 0.f });
+    REQUIRE(caster.GetEmitters().count(&body) == 1);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(log.Count("85547 returns to its caster ff000d36 in cell 9810") ==
+            1);
+    bool created = false;
+    for (auto& m : p.Messages()) {
+      if (m.userId == 1 && m.j.is_object() &&
+          m.j.value("t", -1) == static_cast<int>(MsgType::CreateActor) &&
+          m.j.contains("refrId") && m.j["refrId"] == kPredator) {
+        REQUIRE(m.j["props"]["isHostedByOther"] == false);
+        created = true;
+      }
+    }
+    REQUIRE(created);
+    // a later load claims nothing again: its own command stands
+    loadsTheCell();
+    REQUIRE(log.Count("returns to its caster ff000d36") == 1);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+  }
+
   SECTION("by a player who is not the host: a command its engine never stood "
           "ends at any other respawn, and the old commander's report of the "
           "living actor is a stranger's (E_DEATH_NOT_HOST)")

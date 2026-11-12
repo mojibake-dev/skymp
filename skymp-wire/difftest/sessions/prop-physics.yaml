@@ -30,11 +30,14 @@
 # 05184f99), so the Activate it sends carries a string where its server reads a number, and
 # nothing follows there. Then two refused samples of the dagger, each answered to its sender
 # alone with the current word and then the record (PropTransform at seq 0, the rested
-# record's position): c1's at 4000 ms under epoch 1, a sample of the tenure its rest ended,
-# and c2's at its own 4000 ms under epoch 2 from a seat that owns nothing. Nobody hosts the
-# cell in this session (no client reports a load, physics rung 1's header), so the rule
-# refuses both as a resting prop in an unhosted cell (Frozen, judged before the epoch); had
-# c1 hosted it they would read Stale and NotOwner, and the answers are the same either way.
+# record's position): c1's at 4000 ms under epoch 1, a sample of the tenure its rest ended
+# (Stale), and c2's at its own 4000 ms under epoch 2 from a seat that owns nothing
+# (NotOwner). They reach the epoch checks because c1 hosts the cell: at 500 ms c1 reports
+# the spawn's cell loaded (CellLoaded 47, cell-host's load report; 48049 is 0xbbb1,
+# Tamriel's (32, -15)), the first loader in reach, so the fixed server grants it the cell
+# (HostGrant {cell 0xbbb1, epoch 1}) and a resting prop there is c1's by default; an
+# unhosted cell would refuse both as Frozen before any epoch (the review of 3892415e,
+# finding 3). The legacy stack knows no MsgType 47 and grants nothing.
 # c1's departure sends no word: both rows returned at rest. If a drop's id were assumed
 # and wrong on a run (something else drew an id first: in a full T2 the sessions before
 # this one allocate forms on the same server, and P3's first T2 read exactly that,
@@ -49,6 +52,7 @@ clients:
   c2: {profile_id: 10}
 steps:
   - {client: c1, at_ms: 0, move: {dx: 10}}
+  - {client: c1, at_ms: 500, send: {t: 47, cell: 48049, loaded: true}, reliable: true}
   - {client: c1, at_ms: 600, send: {t: 12, data: {commandName: AddItem, args: [20, 80254, 1]}}}
   - {client: c1, at_ms: 1200, send: {t: 19, baseId: 80254, count: 1}, reliable: true}
   - {client: c1, at_ms: 1300, send: {t: 12, data: {commandName: AddItem, args: [20, 371940, 1]}}}
@@ -64,6 +68,12 @@ steps:
   - {client: c2, at_ms: 4000, send: {t: 58, refr: "{{created:80254}}", epoch: 2, seq: 1, tMs: 4000, pos: [133915.0, -61085.0, 14650.0], rot: [0.0, 0.0, 80.0], lin: [20.0, 20.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: false, held: false, bones: []}, reliable: true}
   - {client: c2, at_ms: 5000, move: {dx: 60}}
 divergences:
+  # c1's load report makes it the cell's host (cell-host's first grant)
+  - client: c1
+    msg: {t: 48, cell: 48049, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md), so a resting prop there is c1's by default and the refused samples below meet the epoch checks; the legacy server has no cell hosts
   # the drops' copies: the legacy server creates each at the dropper's own position and the branch at
   # the drop point, 64 units ahead along the dropper's heading (72 degrees: +60.868, +19.777) and 48 up
   # (MpActor::DropItem through PapyrusObjectReference::PlaceAt, m3-prop-physics 967ba8c8; thuum
@@ -157,12 +167,12 @@ divergences:
     msg: {t: 60, refr: "{{created:80254}}", player: 0, epoch: 2}
     legacy: 0
     wire: 2
-    reason: the dagger's owner word at its rest (nobody hosts the cell in this session, so the asleep sample returns the prop to the host by default, player 0, at epoch 2; A4 of ADR-071 decision 2, physics rung 1), and the same word again answering c1's refused sample at 4000 ms (physics rung 2); the legacy server knows no such message
+    reason: the dagger's owner word at its rest (the asleep sample returns the prop to the cell's host by default, c1 since its load report, the word naming nobody, player 0, at epoch 2; A4 of ADR-071 decision 2, physics rung 1), and the same word again answering c1's refused sample at 4000 ms, Stale (physics rung 2); the legacy server knows no such message
   - client: c2
     msg: {t: 60, refr: "{{created:80254}}", player: 0, epoch: 2}
     legacy: 0
     wire: 2
-    reason: the same return word to the prop's other listener, and again answering c2's refused sample at its 4000 ms (physics rung 2); the legacy server knows no such message
+    reason: the same return word to the prop's other listener, and again answering c2's refused sample at its 4000 ms, NotOwner (physics rung 2); the legacy server knows no such message
   - client: c1
     msg: {t: 60, refr: "{{created:371940}}", player: 0, epoch: 2}
     legacy: 0

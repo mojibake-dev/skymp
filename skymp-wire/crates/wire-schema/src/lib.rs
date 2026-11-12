@@ -143,7 +143,13 @@ use bounded::{String, Vec};
 /// and counts the engine's roll put in its inventory, read inside the call's
 /// AddItemFunctor, so the server records the roll where it refused the list
 /// by name (E_SCRIPTCALL_LEVELED).
-pub const SCHEMA_VERSION: u16 = 44;
+/// 45: MagicEffects' per-effect `caster` (thuum docs/verbs/npc-fate.md C4,
+/// ADR-060's return, m4-reanimate-return): the server's form id of who
+/// applied each effect, 0 for none, so a fresh game that simulates a full
+/// thrall knows whether its own player is the thrall's caster and commands
+/// it. Taken as the next number after this branch's base (44); numidium
+/// settles it at the merge, where physics rungs 1 and 2 carry their own.
+pub const SCHEMA_VERSION: u16 = 45;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

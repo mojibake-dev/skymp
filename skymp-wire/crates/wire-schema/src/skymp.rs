@@ -931,6 +931,14 @@ wire_struct! {
         /// alone (the client reads a negative as no end). Any finite value
         /// validates.
         pub remaining: f32,
+        /// Who applied it, 0 for none: the server's form id of the caster its
+        /// record keeps (a player's actor from 0xff000000 up, a game-file
+        /// NPC's own id). A thrall's reanimate names its caster here, the
+        /// one game whose engine commands the thrall when that game also
+        /// simulates it (thuum docs/verbs/npc-fate.md C4, ADR-060's return).
+        /// Any value validates.
+        #[serde(default)]
+        pub caster: u32,
     }
 }
 

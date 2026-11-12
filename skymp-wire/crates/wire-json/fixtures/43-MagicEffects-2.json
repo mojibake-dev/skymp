@@ -1,0 +1,14 @@
+{
+  "effects": [
+    {
+      "caster": 4278190080,
+      "effect": 518368,
+      "magnitude": 999.0,
+      "remaining": -1.0,
+      "source": 518367
+    }
+  ],
+  "idx": 64,
+  "modifiers": [],
+  "t": 43
+}

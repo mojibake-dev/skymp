@@ -17,6 +17,10 @@ export interface MagicEffectsMessage {
         // seconds left; 0 for an effect without duration, a negative (the
         // server's -1) for a state with no clock, a thrall's reanimate: no end
         remaining: number;
+        // who applied it, the server's form id, 0 for none (thuum
+        // docs/verbs/npc-fate.md C4: a thrall's reanimate names its caster,
+        // whose game commands the thrall when it simulates it)
+        caster?: number;
     }>;
     modifiers?: Array<{
         av: number;

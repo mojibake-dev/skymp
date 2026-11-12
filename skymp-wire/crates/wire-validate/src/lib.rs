@@ -1936,7 +1936,8 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         // most MAGIC_EFFECTS entries and EFFECT_MODIFIERS sums (bounded at
         // decode); the transport refuses it from a client by direction, its
         // numbers are finite and each sum names an actor value the engine
-        // has
+        // has; an effect's caster is any form id, 0 for none (thuum
+        // docs/verbs/npc-fate.md C4: a reanimate's caster, the server's own)
         Message::MagicEffects(m) => {
             if !all_finite(m) {
                 Err(Reject::NonFinite)
@@ -2796,7 +2797,7 @@ mod tests {
         // DB03Poison's effect, 3.5 s into its 10 (thuum docs/verbs/magic-effects.md)
         let set = |remaining: f32| {
             let mut m = MagicEffects { idx: 64, ..MagicEffects::default() };
-            let entry = MagicEffect { effect: 0x10aa4a, source: 0x58cfb, magnitude: 6.0, remaining };
+            let entry = MagicEffect { effect: 0x10aa4a, source: 0x58cfb, magnitude: 6.0, remaining, caster: 0 };
             if m.effects.push(entry).is_err() {
                 return Message::MagicEffects(MagicEffects::default());
             }
@@ -2804,6 +2805,25 @@ mod tests {
         };
         assert_eq!(validate_server(&set(6.5)), Ok(()));
         assert_eq!(validate_server(&set(f32::NAN)), Err(Reject::NonFinite));
+    }
+
+    // thuum docs/verbs/npc-fate.md C4 (ADR-060's return): an effect names
+    // its caster, any form id or none; Dead Thrall's state on Sven, no clock
+    // (-1), cast by a player's actor, and a potion's with no caster
+    #[test]
+    fn a_magic_effects_caster_is_any_form_id_or_none() {
+        use wire_schema::skymp::{MagicEffect, MagicEffects};
+        let set = |caster: u32| {
+            let mut m = MagicEffects { idx: 64, ..MagicEffects::default() };
+            let entry = MagicEffect { effect: 0x7e8e0, source: 0x7e8df, magnitude: 999.0, remaining: -1.0, caster };
+            if m.effects.push(entry).is_err() {
+                return Message::MagicEffects(MagicEffects::default());
+            }
+            Message::MagicEffects(m)
+        };
+        for caster in [0, 0x13491, 0xff00_0000, u32::MAX] {
+            assert_eq!(validate_server(&set(caster)), Ok(()), "{caster:x}");
+        }
     }
 
     #[test]

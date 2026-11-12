@@ -24,13 +24,15 @@ struct MagicEffectsMessage : public MessageBase<MagicEffectsMessage>
       archive.Serialize("effect", effect)
         .Serialize("source", source)
         .Serialize("magnitude", magnitude)
-        .Serialize("remaining", remaining);
+        .Serialize("remaining", remaining)
+        .Serialize("caster", caster);
     }
 
     friend bool operator==(const Effect& lhs, const Effect& rhs)
     {
       return lhs.effect == rhs.effect && lhs.source == rhs.source &&
-        lhs.magnitude == rhs.magnitude && lhs.remaining == rhs.remaining;
+        lhs.magnitude == rhs.magnitude && lhs.remaining == rhs.remaining &&
+        lhs.caster == rhs.caster;
     }
 
     uint32_t effect = 0; // the MGEF
@@ -39,6 +41,10 @@ struct MagicEffectsMessage : public MessageBase<MagicEffectsMessage>
     // seconds; 0 for an effect without duration, -1 for a state with no
     // clock (a thrall's reanimate, which ends with its actor's death)
     float remaining = 0.f;
+    // who applied it, 0 for none: the caster the record keeps (thuum
+    // docs/verbs/npc-fate.md C4: a thrall's reanimate names the one game
+    // whose engine commands the thrall when that game simulates it)
+    uint32_t caster = 0;
   };
 
   // What the actor's running buffs add to one actor value: the sum the

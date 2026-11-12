@@ -4222,6 +4222,9 @@ MagicEffectsMessage MagicEffectsOf(
     effect.remaining = e.facts.kind == skymp::rules::EffectKind::Reanimate
       ? -1.f
       : std::max(e.facts.duration_s - e.elapsed_s, 0.f);
+    // who applied it (thuum docs/verbs/npc-fate.md C4): a thrall's caster
+    // tells the game that simulates it whether its engine commands it
+    effect.caster = e.caster;
     msg.effects.push_back(effect);
   }
   for (const auto& effect : shownOnce) {
@@ -4753,6 +4756,7 @@ void MpActor::ApplyEffects(uint32_t source,
       once.effect = facts->effect;
       once.source = source;
       once.magnitude = facts->magnitude * resisted;
+      once.caster = caster;
       shownOnce.push_back(once);
     }
   }

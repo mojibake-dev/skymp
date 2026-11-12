@@ -8,7 +8,7 @@ import { PropTransformMessage } from "../messages/propTransformMessage";
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { NiPoint3 } from "../../sync/movement";
-import { FollowSample, FollowStep, PropFollow } from "../../sync/propFollow";
+import { FOLLOW_SAMPLES_MAX, FollowSample, FollowStep, PropFollow } from "../../sync/propFollow";
 import { FormModel } from "../../view/model";
 import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -91,9 +91,12 @@ const ANG_MAX_RAD_PER_S = 1000;
 // stream this far behind the owner's own clock, never ahead of it: the client
 // setting propFollowDelayMs (so the lab sizes it by the relaunch files lever
 // without a build; 0 to FOLLOW_DELAY_MAX_MS), three samples at the owner's
-// SEND_MIN_MS by default, ADR-071 decision 3's "about 300 ms" (UNMEASURED)
+// SEND_MIN_MS by default, ADR-071 decision 3's "about 300 ms" (UNMEASURED).
+// The most the buffer's FOLLOW_SAMPLES_MAX samples carry at the owner's
+// cadence, less the pair the render clock is in: a longer delay would drop
+// samples the render clock has not reached (the review of 3892415e)
 const FOLLOW_DELAY_MS = 300;
-const FOLLOW_DELAY_MAX_MS = 2000;
+const FOLLOW_DELAY_MAX_MS = (FOLLOW_SAMPLES_MAX - 2) * SEND_MIN_MS;
 // The stream went quiet when the render clock runs two heartbeats past its
 // newest awake sample (one lost beat is no quiet: the next comes a heartbeat
 // later and the delay covers its flight), and a word naming another seat
@@ -199,6 +202,7 @@ type Prop = {
     awakeAt: number;               // the engine last read the body awake (or the stream opened, or a hand let go)
     streaming: boolean;            // awake samples went out since the last rest
     announce: boolean;             // a granted word named this seat: its first read goes out at once (see stream)
+    restAgain: boolean;            // a word naming this seat overtook its rest: sent again if the body still rests (onOwner)
     handOff: HandOff | undefined;  // a take-over's velocities, handed once its placement landed
     // the hand: this seat's engine holds the body (Game.getPlayerGrabbedRef named it at the update's read, readHolds)
     held: boolean;
@@ -248,6 +252,8 @@ const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 3
 const perf = (globalThis as unknown as { performance?: { now?: () => number } }).performance;
 const clockMs = (): number => (perf !== undefined && typeof perf.now === "function" ? perf.now() : Date.now());
 const CLOCK_START_MS = perf !== undefined && typeof perf.now === "function" ? 0 : Date.now();
+// the clock's name for the service's startup line (its HYPOTHESIS read)
+const CLOCK_NAME = perf !== undefined && typeof perf.now === "function" ? "performance.now()" : "Date.now() from this module's load";
 const tMsOf = (now: number): number => Math.max(0, Math.floor(now - CLOCK_START_MS)) % 4294967296;
 
 // a vector's length, and the vector within max of it (its direction kept,
@@ -361,6 +367,7 @@ export class PropService extends ClientListener {
         this.controller.on("propContact", (e) => this.onPropContact(e));
         this.controller.on("containerChanged", (e) => this.onContainerChanged(e));
         this.controller.on("update", () => this.onUpdate());
+        logLab(TAG, `samples timed by ${CLOCK_NAME}`);
     }
 
     // Whether this service places the engine reference: the view skips the
@@ -494,6 +501,19 @@ export class PropService extends ClientListener {
             this.sent.delete(m.refr);
         }
         const mine = m.player !== 0 && m.player === this.myId();
+        // the review of 3892415e (the server half's finding 1): a rest of
+        // this seat's that the word overtook (a woken host's body rested
+        // before its wake's word came back, so its one asleep sample named the
+        // epoch before and the server dropped it Stale, unanswered as the live
+        // owner's own) goes again under this word at the next update, if the
+        // body still reads asleep (stream); else the row stays live naming
+        // this seat with no stream until a claim, a departure or an unload
+        if (mine && sent !== undefined && sent.asleep && sent.epoch + 1 === m.epoch) {
+            const prop = this.props.get(m.refr);
+            if (prop) {
+                prop.restAgain = true;
+            }
+        }
         logLab(TAG, `prop ${m.refr.toString(16)} owner ${m.player.toString(16)} epoch ${m.epoch} (${m.player === 0 ? "the host" : mine ? "mine" : "theirs"})`);
         // ADR-068 D-S3: a word on a trap body is read on the update (its family
         // test is a game read, and a message handler may make none)
@@ -927,6 +947,7 @@ export class PropService extends ClientListener {
         }
         prop.handOff = undefined;
         prop.restAt = 0;
+        prop.restAgain = false;
         if (simulate) {
             // a trap body this seat now simulates is its own again before its
             // Dynamic set (D-S3: a followed body's motion calls run neutralized)
@@ -1019,6 +1040,8 @@ export class PropService extends ClientListener {
         }
         prop.handOff = undefined;
         prop.motionAsked = MotionType.Dynamic;
+        // the take-over's translate starts a frame late, so it may still run
+        refr.stopTranslation();
         refr.setMotionType(MotionType.Dynamic, true)
             .then(() => {
                 let how: string;
@@ -1090,6 +1113,17 @@ export class PropService extends ClientListener {
                 this.handOver(prop, refr);
             }
             return;
+        }
+        if (prop.restAgain) {
+            // a rest the word overtook (onOwner): sent again under the word's
+            // epoch while the body still rests and no hand holds it; a body
+            // that woke streams on as ever
+            prop.restAgain = false;
+            const again = read !== undefined ? read : this.readBody(prop);
+            if (again !== undefined && !again.awake && !prop.held) {
+                this.due.push({ prop, body: again, asleep: true, line: "re-sent under the new epoch" });
+                return;
+            }
         }
         // the update's read named the body not awake: the read its island fell
         const fell = read !== undefined && !read.awake;
@@ -1221,7 +1255,7 @@ export class PropService extends ClientListener {
         const epoch = word ? word.epoch : 0;
         const last = this.sent.get(prop.refr);
         const seq = last !== undefined && last.epoch === epoch ? (last.seq >= SEQ_MAX ? 1 : last.seq + 1) : 1;
-        this.sent.set(prop.refr, { epoch, seq });
+        this.sent.set(prop.refr, { epoch, seq, asleep });
         // A6: never held and asleep together (the validator refuses the pair)
         const held = prop.held && !asleep;
         const message: PropTransformMessage = {
@@ -1652,6 +1686,7 @@ export class PropService extends ClientListener {
                     prop.loaded3D = false;
                     prop.lastSent = undefined;
                     prop.handOff = undefined;
+                    prop.restAgain = false;
                     prop.lastTouchRead = undefined;
                     prop.bodyTracked = false;
                     prop.badBodySaid = false;
@@ -1959,6 +1994,7 @@ export class PropService extends ClientListener {
             awakeAt: 0,
             streaming: false,
             announce: false,
+            restAgain: false,
             handOff: undefined,
             held: false,
             heldAt: 0,
@@ -2264,9 +2300,10 @@ export class PropService extends ClientListener {
     private readonly byLocal = new Map<number, number>();
     // the server's words, by prop, tracked or not
     private readonly owners = new Map<number, Owner>();
-    // this seat's last sample by prop: the epoch it carried and its sequence
-    // there (send), dropped once a word raises the epoch past it (onOwner)
-    private readonly sent = new Map<number, { epoch: number; seq: number }>();
+    // this seat's last sample by prop: the epoch it carried, its sequence
+    // there and whether it was the rest (send), dropped once a word raises the
+    // epoch past it (onOwner)
+    private readonly sent = new Map<number, { epoch: number; seq: number; asleep: boolean }>();
     // the update's due samples (stream), and the send budget's tokens and
     // their last refill (sendDue)
     private due: Due[] = [];

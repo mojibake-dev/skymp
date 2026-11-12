@@ -9,7 +9,8 @@
 //! each a fakeclient script line: `move` (an UpdateMovement at the spawn
 //! plus an offset) or `send` (SkyMP JSON as the client's networking service
 //! would send it). Each stack runs one fakeclient process per client, in
-//! declared order, a fixed gap apart, and the clients' event lines are
+//! declared order, a fixed gap apart (or at a client's own `start_ms` after
+//! the first client's start), and the clients' event lines are
 //! normalized and diffed: whether each logged in and where it spawned, its
 //! exit code, what it sent, and the multiset of messages it received, with
 //! every form index renamed to the id of the form it names (the client's
@@ -43,7 +44,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdout, Command, Stdio};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -198,7 +199,20 @@ fn default_volatile() -> Vec<u8> {
 #[derive(Debug, Clone, Deserialize)]
 struct ClientOpts {
     profile_id: i64,
+    /// When the client starts, ms after the session's first client started
+    /// (thuum docs/verbs/npc-fate.md C4: a character's return after its own
+    /// departure is its profile again in a later client, once the first has
+    /// left); absent, the stack's gap after the client before it. Clients
+    /// still start in declared order, so at load a start before an earlier
+    /// client's own, a first client's other than 0 and one past
+    /// `MAX_START_MS` are refused.
+    #[serde(default)]
+    start_ms: Option<u64>,
 }
+
+/// The latest a client may start, ms after the first: a session runs in
+/// minutes, not hours.
+const MAX_START_MS: u64 = 600_000;
 
 /// One script line for one client.
 #[derive(Debug, Deserialize)]
@@ -269,6 +283,20 @@ fn load_session(path: &Path) -> Result<Session, DiffError> {
             return Err(DiffError::Session(format!("a step for {} needs exactly one of move, send", st.client)));
         }
     }
+    let mut latest: u64 = 0;
+    for (i, (name, opts)) in s.clients.iter().enumerate() {
+        let Some(at) = opts.start_ms else { continue };
+        if i == 0 && at != 0 {
+            return Err(DiffError::Session(format!("{name}'s start_ms {at}: the first client starts at 0")));
+        }
+        if at > MAX_START_MS {
+            return Err(DiffError::Session(format!("{name}'s start_ms {at} is past ten minutes ({MAX_START_MS})")));
+        }
+        if at < latest {
+            return Err(DiffError::Session(format!("{name}'s start_ms {at} is before an earlier client's {latest}: clients start in declared order")));
+        }
+        latest = at;
+    }
     for d in &s.divergences {
         if !s.clients.contains_key(d.client.as_str()) {
             return Err(DiffError::Session(format!("divergence for unknown client {}", d.client)));
@@ -320,8 +348,14 @@ fn run_stack(stack: &Stack, s: &Session, tag: &str) -> Result<BTreeMap<String, (
     let dir = std::env::temp_dir().join(format!("difftest-{}-{}-{tag}", std::process::id(), stack.name));
     std::fs::create_dir_all(&dir).map_err(|e| DiffError::Io(e.to_string()))?;
     let mut children = Vec::new();
+    let first = Instant::now();
     for (i, (name, opts)) in clients(s)?.into_iter().enumerate() {
-        if i > 0 {
+        if let Some(at) = opts.start_ms {
+            // its own start after the first client's (thuum docs/verbs/npc-fate.md C4)
+            if let Some(due) = first.checked_add(Duration::from_millis(at)) {
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            }
+        } else if i > 0 {
             std::thread::sleep(stack.gap);
         }
         let path = dir.join(format!("{name}.jsonl"));
@@ -865,6 +899,33 @@ mod tests {
         ] {
             let path = dir.join("s.yaml");
             std::fs::write(&path, format!("{base}{bad}")).expect("write");
+            let err = load_session(&path).expect_err(why).to_string();
+            assert!(err.contains(why), "{err}");
+        }
+    }
+
+    // thuum docs/verbs/npc-fate.md C4: a client may start at a time of its
+    // own after the first client did, so a character's return is the same
+    // profile again once its first client has left; a start before an
+    // earlier client's, a first client's other than 0 and one past ten
+    // minutes are refused at load
+    #[test]
+    fn a_clients_own_start_is_read_and_checked_at_load() {
+        let dir = std::env::temp_dir().join(format!("difftest-start-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("s.yaml");
+        let session = |clients: &str| format!("id: t\nclients:\n{clients}steps:\n  - {{client: c1, move: {{dx: 1}}}}\n");
+        std::fs::write(&path, session("  c1: {profile_id: 9}\n  c2: {profile_id: 10}\n  c3: {profile_id: 9, start_ms: 12000}\n")).expect("write");
+        let s = load_session(&path).expect("parse");
+        let starts: Vec<Option<u64>> = s.clients.values().map(|o| o.start_ms).collect();
+        assert_eq!(starts, vec![None, None, Some(12_000)]);
+        assert_eq!(s.clients.get("c3").map(|o| o.profile_id), Some(9));
+        for (clients, why) in [
+            ("  c1: {profile_id: 1, start_ms: 5}\n", "the first client starts at 0"),
+            ("  c1: {profile_id: 1}\n  c2: {profile_id: 2, start_ms: 9000}\n  c3: {profile_id: 1, start_ms: 4000}\n", "clients start in declared order"),
+            ("  c1: {profile_id: 1}\n  c2: {profile_id: 2, start_ms: 600001}\n", "past ten minutes"),
+        ] {
+            std::fs::write(&path, session(clients)).expect("write");
             let err = load_session(&path).expect_err(why).to_string();
             assert!(err.contains(why), "{err}");
         }

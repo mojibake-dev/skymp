@@ -486,8 +486,8 @@ PresserOwner OwnerOf(const RE::TESObjectREFR* presser)
                                         : PresserOwner::kThisSeat;
   }
   if (id >= 0xff000000) {
-    return Hosted::Is(id) && !Puppets::Is(id) ? PresserOwner::kThisSeat
-                                              : PresserOwner::kOther;
+    return Hosted::SimulatedHere(id) ? PresserOwner::kThisSeat
+                                     : PresserOwner::kOther;
   }
   if (presser->IsDead()) {
     const RE::TESObjectCELL* cell = presser->GetParentCell();
@@ -983,7 +983,7 @@ bool OwnedReference(const RE::TESObjectREFR* ref)
     return false;
   }
   if (ref->GetFormType() == RE::FormType::ActorCharacter) {
-    return Hosted::Is(id) && !Puppets::Is(id);
+    return Hosted::SimulatedHere(id);
   }
   const RE::TESObjectCELL* cell = ref->GetParentCell();
   return cell && Frida::IsCellHosted(cell->GetFormID());
@@ -1339,8 +1339,8 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // (a follow's actor outside the hosted cell included); a puppet's never.
   const bool ownedByAPlayer = selfId == 0x14 || selfId >= 0xff000000;
   const bool worldObject = !selfIsActor && selfCell != 0 && !ownedByAPlayer;
-  const bool simulatedActor = selfIsActor && !ownedByAPlayer &&
-    Hosted::Is(selfId) && !Puppets::Is(selfId);
+  const bool simulatedActor =
+    selfIsActor && !ownedByAPlayer && Hosted::SimulatedHere(selfId);
 
   auto blockEvents = TESModPlatform::GetPapyrusEventsBlocked();
   // the trap family's verdict, asked at most once for this event: the
@@ -3643,7 +3643,7 @@ void OnReanimateEnter(GumInvocationContext* ic)
     return;
   }
   const uint32_t formId = actor->formID;
-  if (!Hosted::Is(formId) || Puppets::Is(formId) || actor->IsAIEnabled()) {
+  if (!Hosted::SimulatedHere(formId) || actor->IsAIEnabled()) {
     return;
   }
   auto& seen = g_reanimations.back();

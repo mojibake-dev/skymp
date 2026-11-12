@@ -656,7 +656,7 @@ bool OwnedHere(const RE::TESObjectREFR* ref, bool isActor)
     return true;
   }
   if (isActor) {
-    return Hosted::Is(id) && !Puppets::Is(id);
+    return Hosted::SimulatedHere(id);
   }
   const RE::TESObjectCELL* cell = ref->GetParentCell();
   return cell && Frida::IsCellHosted(cell->formID);

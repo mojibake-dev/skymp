@@ -21,10 +21,11 @@ size_t Count();
 // whether this game's engine simulates the actor: the server's word per
 // actor says this game (Is) and it is no puppet here (Puppets.h). The one
 // definition of the test: Hooks.cpp's CharacterAddTarget and HostedResurrect
-// read it, and the Papyrus gate's simulatedActor (FridaHooks.cpp
-// OnSendEventEnter) and the seam's owner of an actor's scripts
-// (ScriptNatives.cpp OwnedHere) spell it inline until they take it. A
-// player's figure is never in the hosted set
+// read it, and so do the Papyrus gate's simulatedActor (FridaHooks.cpp
+// OnSendEventEnter), its owner rule (OwnedReference), a created presser's
+// owner (OwnerOf), the reanimate hook (OnReanimateEnter) and the seam's
+// owner of an actor's scripts (ScriptNatives.cpp OwnedHere). A player's
+// figure is never in the hosted set
 inline bool SimulatedHere(uint32_t formId)
 {
   return Is(formId) && !Puppets::Is(formId);

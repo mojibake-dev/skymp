@@ -1,4 +1,4 @@
-import { Actor, EffectShader, Game, MagicEffect, ObjectReference, Spell } from "skyrimPlatform";
+import { Actor, Art, EffectShader, Game, MagicEffect, ObjectReference, Spell } from "skyrimPlatform";
 import { logError, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { MagicEffectsMessage } from "../messages/magicEffectsMessage";
@@ -11,7 +11,9 @@ import { RemoteServer } from "./remoteServer";
 // server sends an actor's running effects (MagicEffects) whenever the set
 // changes and when this game first sees the actor; this game plays each
 // effect's hit shader (its MGEF's, MagicEffect.GetHitShader) on that actor
-// for the seconds left, and stops a shader whose effect left the set. No
+// for the seconds left, and stops a shader whose effect left the set; its
+// hit effect art plays beside it the same way (showArts), unless an engine
+// effect of the same record runs on the actor here and draws its own. No
 // ActiveEffect is made here, so nothing changes a value but the server: its
 // ChangeValues for the percentages, and for the player the sums its running
 // buffs put on its actor values (modifiers), held here through
@@ -23,6 +25,10 @@ import { RemoteServer } from "./remoteServer";
 // for an update of its own, in the order the messages came: the server
 // sends a change's MagicEffects before its ChangeValues, which waits the
 // same way (remoteServer.ts), so the maximum moves before the percentage.
+
+// a hit effect art to show on an actor, and the seconds it shows
+type ArtShown = { art: Art; seconds: number };
+
 export class MagicEffectsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -78,14 +84,30 @@ export class MagicEffectsService extends ClientListener {
         const key = refr.getFormID();
         const before = this.shown.get(key) ?? new Set<number>();
         const now = new Set<number>();
+        const actor = Actor.from(refr);
+        const arts = new Map<number, ArtShown>();
         for (const effect of msg.effects) {
             const mgef = MagicEffect.from(Game.getFormEx(effect.effect));
-            const shader = mgef ? mgef.getHitShader() : null;
-            if (!shader) {
+            if (!mgef) {
                 continue;
             }
-            now.add(shader.getFormID());
-            shader.play(refr, effect.remaining > 0 ? effect.remaining : MagicEffectsService.shownOnceSeconds);
+            const seconds = effect.remaining > 0 ? effect.remaining : MagicEffectsService.shownOnceSeconds;
+            const shader = mgef.getHitShader();
+            if (shader) {
+                now.add(shader.getFormID());
+                shader.play(refr, seconds);
+            }
+            // the art beside it, unless the engine runs an effect of this
+            // record on the actor here and draws the art itself: a second art
+            // is a second model (a reanimated body's raise is its commander's
+            // engine's alone, Hooks.cpp CharacterAddTarget, so a watcher draws
+            // the record's)
+            const art = mgef.getHitEffectArt();
+            if (art && !(actor && actor.hasMagicEffect(mgef))) {
+                const artId = art.getFormID();
+                const shownFor = arts.get(artId);
+                arts.set(artId, { art, seconds: shownFor ? Math.max(shownFor.seconds, seconds) : seconds });
+            }
         }
         before.forEach((shaderId) => {
             if (!now.has(shaderId)) {
@@ -93,7 +115,47 @@ export class MagicEffectsService extends ClientListener {
             }
         });
         this.shown.set(key, now);
+        this.showArts(refr, arts);
         this.dispelEnded(own, refr, msg);
+    }
+
+    // thuum docs/verbs/magic-effects.md, the hit art (the reanimation look's
+    // D2 B): each art played on the actor for the seconds left through
+    // TESModPlatform.ApplyArtObject, the engine's own
+    // TESObjectREFR::ApplyArtObject, as the shader plays above (a second play
+    // of an art replaces this game's first, so a message's replay keeps one
+    // copy), and an art no longer shown stopped through StopArtObject, which
+    // stops this game's own alone, never an engine effect's
+    private showArts(refr: ObjectReference, arts: Map<number, ArtShown>) {
+        const key = refr.getFormID();
+        const before = this.shownArts.get(key) ?? new Set<number>();
+        const now = new Set<number>();
+        arts.forEach((shown, artId) => {
+            try {
+                if (this.sp.callNative("TESModPlatform", "ApplyArtObject", undefined, refr, shown.art, shown.seconds) === true) {
+                    now.add(artId);
+                } else {
+                    logTrace(this, "no art", artId.toString(16), "played on", key.toString(16));
+                }
+            } catch (err) {
+                logError(this, "TESModPlatform.ApplyArtObject failed", err);
+            }
+        });
+        before.forEach((artId) => {
+            if (now.has(artId)) {
+                return;
+            }
+            const art = Art.from(Game.getFormEx(artId));
+            if (!art) {
+                return;
+            }
+            try {
+                this.sp.callNative("TESModPlatform", "StopArtObject", undefined, refr, art);
+            } catch (err) {
+                logError(this, "TESModPlatform.StopArtObject failed", err);
+            }
+        });
+        this.shownArts.set(key, now);
     }
 
     // thuum docs/verbs/self-cast.md: a figure's Self spell runs in this game
@@ -173,6 +235,8 @@ export class MagicEffectsService extends ClientListener {
     private static readonly epsilon = 1e-4;
 
     private shown = new Map<number, Set<number>>();
+    // the hit arts this game plays on each actor, by art (showArts)
+    private shownArts = new Map<number, Set<number>>();
     // the sources (spells, potions) of each actor's running effects, as the
     // server last sent them
     private sources = new Map<number, Set<number>>();

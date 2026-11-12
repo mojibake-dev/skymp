@@ -162,6 +162,13 @@ pub enum ClaimVerdict {
     /// (`unloaded`, `loaded`, `reached`; ADR-071's D-PH2 A): its 3D of the
     /// prop is gone, so a claim from it there is a late one; nothing changes.
     Away,
+    /// A grab from a claimant that holds another prop already (a live
+    /// grabbed row of its own): the engine holds one grabbed object per
+    /// player (its grabbedObject, CommonLibSSE-NG P/PlayerCharacter.h:697), so
+    /// a second hold is none its engine has, and a modified seat cannot hold
+    /// every prop near it (a consistency bound, ADR-063 decision 4); nothing
+    /// changes.
+    HeldTwo,
 }
 
 /// The answer to a simulator's transform (ADR-058 decision 2; A4, A7).
@@ -277,6 +284,12 @@ impl Props {
         }
     }
 
+    /// Whether `player` holds a prop other than `refr`: a live row of its
+    /// own, grabbed (one hand per player, `ClaimVerdict::HeldTwo`).
+    fn holds_another(&self, player: u32, refr: u32) -> bool {
+        self.rows.iter().any(|(&other, row)| other != refr && row.owner == player && row.grabbed && row.live())
+    }
+
     /// `player` touched `refr`, which stands in `cell`, by `touch` at
     /// `now_ms` (A2, A3): the claimant that simulates it already keeps it
     /// (Same, the grab mark from the touch); another player's grab holds it
@@ -287,10 +300,15 @@ impl Props {
     /// race at rest); a prop at rest, stalled or unclaimed is the newest
     /// touch's (Granted, the epoch up, the word to every listener). The
     /// claimant's cell and distance are no gate (ADR-063 decision 4); a claim
-    /// from a game that unloaded the cell is late (Away).
+    /// from a game that unloaded the cell is late (Away), and a grab from a
+    /// player that holds another prop already is no hold its engine has
+    /// (HeldTwo).
     pub fn claim(&mut self, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> ClaimVerdict {
         if self.away.contains(&(player, cell)) {
             return ClaimVerdict::Away;
+        }
+        if touch == touch::GRAB && self.holds_another(player, refr) {
+            return ClaimVerdict::HeldTwo;
         }
         if let Some(row) = self.rows.get_mut(&refr) {
             if row.live() {
@@ -620,6 +638,34 @@ mod tests {
         assert_eq!(r.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
         assert_eq!(r.claim(BASKET, C2, CELL, touch::GRAB, 1_100), ClaimVerdict::Same);
         assert_eq!(r.claim(BASKET, C1, CELL, touch::CONTACT, 5_000), ClaimVerdict::Held);
+    }
+
+    #[test]
+    fn a_player_holds_one_prop_at_a_time() {
+        // the engine holds one grabbed object per player (CommonLibSSE-NG P/PlayerCharacter.h:697): a grab from a
+        // player that holds another prop is refused, so no seat holds every prop near it (the review of b7151a42)
+        let mut p = Props::default();
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::GRAB, 1_000), ClaimVerdict::Granted(1));
+        // the second grab: refused, nothing changes
+        assert_eq!(p.claim(0x54a44, C2, CELL, touch::GRAB, 1_100), ClaimVerdict::HeldTwo);
+        assert_eq!(p.epoch_of(0x54a44), 0);
+        assert_eq!(p.live_owner(0x54a44), 0);
+        // the first still held: another seat's touch on it is Held, and the holder's grab of it again is Same
+        assert_eq!(p.claim(BASKET, C1, CELL, touch::CONTACT, 1_200), ClaimVerdict::Held);
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::GRAB, 1_250), ClaimVerdict::Same);
+        assert_eq!(p.live_owner(BASKET), C2);
+        // a contact is no grab (the holder's capsule takes a prop at rest), but a grab of that row is a second hold
+        assert_eq!(p.claim(0x1234, C2, CELL, touch::CONTACT, 1_300), ClaimVerdict::Granted(1));
+        assert_eq!(p.claim(0x1234, C2, CELL, touch::GRAB, 1_350), ClaimVerdict::HeldTwo);
+        // another player's grab is its own hand's
+        assert_eq!(p.claim(0x54a44, C1, CELL, touch::GRAB, 1_400), ClaimVerdict::Granted(1));
+        // the first's release frees the hand: the next grab is taken
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::DROP, 1_500), ClaimVerdict::Same);
+        assert_eq!(p.claim(0x1234, C2, CELL, touch::GRAB, 1_600), ClaimVerdict::Same);
+        // and the holder's rest, a hold already ended, frees it too
+        assert_eq!(p.transform(&facts(0x1234, C2, CELL, C1, true, 10.0, 1_700)), TransformVerdict::Returned(2));
+        assert_eq!(p.claim(0x5678, C2, CELL, touch::GRAB, 1_800), ClaimVerdict::Granted(1));
+        assert_eq!(p.claim(BASKET, C2, CELL, touch::GRAB, 1_900), ClaimVerdict::HeldTwo);
     }
 
     #[test]
@@ -1036,6 +1082,8 @@ mod tests {
                             prop_assert!(matches!(stream, Some((s, last, false)) if s != player && now < last.saturating_add(PROP_MOVING_MS)));
                         }
                         ClaimVerdict::Away => prop_assert_eq!(p.epoch_of(BASKET), epoch),
+                        // one prop here, so no hand ever holds another
+                        ClaimVerdict::HeldTwo => return Err(TestCaseError::fail("a second hold of the one prop")),
                     },
                     2 | 3 => match p.transform(&facts(BASKET, player, CELL, C1, asleep, moved, now)) {
                         TransformVerdict::Accepted => {
@@ -1098,6 +1146,33 @@ mod tests {
                 prop_assert_eq!(live, stream.map_or(0, |s| s.0));
                 for host in [0, C1, C2, C3] {
                     prop_assert_eq!(p.owner_of(BASKET, host), if live == 0 { host } else { live });
+                }
+            }
+        }
+
+        #[test]
+        fn a_player_never_holds_two_props(
+            // (which prop, which seat, a touch 0 to 3 or 4 for a sample, the gap before it)
+            ops in prop::collection::vec((0_usize..3, 0_usize..3, 0_u8..5, 0_u64..400), 1..200),
+        ) {
+            // one hand per player (CommonLibSSE-NG P/PlayerCharacter.h:697): whatever three seats claim and stream
+            // over three props, no seat's rows ever hold two at once
+            let seats = [C1, C2, C3];
+            let refrs = [BASKET, 0x54a44, 0x1234];
+            let mut p = Props::default();
+            let mut now = 1_000_u64;
+            for (which, seat, what, gap) in ops {
+                now = now.saturating_add(gap);
+                let refr = refrs.get(which).copied().unwrap_or(BASKET);
+                let player = seats.get(seat).copied().unwrap_or(C1);
+                if what < 4 {
+                    let _ = p.claim(refr, player, CELL, what, now);
+                } else {
+                    let _ = p.transform(&facts(refr, player, CELL, C1, gap % 2 == 0, 10.0, now));
+                }
+                for s in seats {
+                    let held = p.rows().iter().filter(|(_, row)| row.owner == s && row.grabbed).count();
+                    prop_assert!(held <= 1, "{:x} holds {} props", s, held);
                 }
             }
         }

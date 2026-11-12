@@ -985,31 +985,42 @@ export class PropService extends ClientListener {
     // release claim (touch 2) when this seat simulates the prop, and the sleep
     // clock starts again from it, so the fall gets SLEEP_AFTER_MS to show. A
     // grab's claim goes even for a prop this seat simulates: the server marks
-    // it held against the other seats' claims. A trap body moves by a firing
-    // alone
+    // it held against the other seats' claims. The server takes one hold per
+    // player (E_PROP_HELD_TWO: the engine holds one grabbed object), so the
+    // releases go before the grab when the hand moved from one prop to
+    // another between two reads. A trap body moves by a firing alone
     private readHolds(now: number) {
         const grabbed = this.sp.Game.getPlayerGrabbedRef();
         const heldLocal = grabbed ? grabbed.getFormID() : 0;
-        for (const prop of Array.from(this.props.values())) {
-            const held = heldLocal !== 0 && prop.localId === heldLocal && !prop.trap;
-            if (held === prop.held) {
-                continue;
+        const props = Array.from(this.props.values());
+        const holds = (prop: Prop) => heldLocal !== 0 && prop.localId === heldLocal && !prop.trap;
+        for (const prop of props) {
+            if (prop.held && !holds(prop)) {
+                this.letGo(prop, now, "the engine's grab ended");
             }
-            prop.held = held;
-            if (held) {
+        }
+        for (const prop of props) {
+            if (!prop.held && holds(prop)) {
+                prop.held = true;
                 prop.heldAt = now;
                 prop.holdLost = false;
                 logLab(TAG, `prop ${prop.refr.toString(16)} held: the engine's grab names it`);
                 this.claim(prop, TOUCH_GRAB, now);
-                continue;
             }
-            logLab(TAG, `prop ${prop.refr.toString(16)} let go: the engine's grab ended${prop.holdLost ? " (another seat's word had ended this hand's hold)" : ""}`);
-            prop.stirredAt = now;
-            if (prop.simulating && !prop.holdLost) {
-                this.claim(prop, TOUCH_DROP, now);
-            }
-            prop.holdLost = false;
         }
+    }
+
+    // a hold that ended (the engine's grab, or the prop leaving the tracked
+    // set): the release claim when this seat simulates the prop and no other
+    // seat's word ended the hold first, and the sleep clock from here
+    private letGo(prop: Prop, now: number, why: string) {
+        prop.held = false;
+        logLab(TAG, `prop ${prop.refr.toString(16)} let go: ${why}${prop.holdLost ? " (another seat's word had ended this hand's hold)" : ""}`);
+        prop.stirredAt = now;
+        if (prop.simulating && !prop.holdLost) {
+            this.claim(prop, TOUCH_DROP, now);
+        }
+        prop.holdLost = false;
     }
 
     // The contacts since the last update, by local id: a tracked prop this
@@ -1256,6 +1267,12 @@ export class PropService extends ClientListener {
         this.props.delete(prop.refr);
         if (this.byLocal.get(prop.localId) === prop.refr) {
             this.byLocal.delete(prop.localId);
+        }
+        if (prop.held) {
+            // a held prop leaving the tracked set (a teleport, a door) lets go
+            // first: the server keeps one hold per player, and a hold it never
+            // heard end would refuse this seat's next grab (E_PROP_HELD_TWO)
+            this.letGo(prop, Date.now(), `untracked (${why})`);
         }
         if (prop.simulating) {
             // a body this seat leaves Dynamic would move here unstreamed: its

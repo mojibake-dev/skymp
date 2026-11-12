@@ -3895,7 +3895,9 @@ constexpr float kWorldBodyTether = 2048.f;
 // refuses everything (E_PROP_HELD); a prop another seat streams awake
 // refuses a contact, a drop or an impulse (E_PROP_MOVING; a grab takes it),
 // a trap body's second firing among them; a claim from a game that unloaded
-// the prop's cell waits for its load report (E_PROP_AWAY). Granted, the word
+// the prop's cell waits for its load report (E_PROP_AWAY); a grab from a
+// claimant that holds another prop is refused (E_PROP_HELD_TWO: one grabbed
+// object per player). Granted, the word
 // (PropOwner) goes reliable to every listener of the prop with a user, the
 // claimant among them (it learns its epoch); a refused claimant hears the
 // current word, once per prop per second, and every refusal counts in the
@@ -3997,6 +3999,16 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
       refuse("E_PROP_AWAY",
              "its game unloaded the prop's cell and has not loaded or "
              "reached it since");
+      partOne.AnswerPropWord(rawMsgData.userId, *prop);
+      break;
+    case PartOne::PropClaimVerdict::HeldTwo:
+      // one hand per player: the engine holds one grabbed object at a time
+      // (the player's grabbedObject, CommonLibSSE-NG P/PlayerCharacter.h:697),
+      // so a grab while the claimant's row holds another prop is no hold its
+      // engine has; a consistency bound (ADR-063 decision 4) that keeps a
+      // modified seat from holding every prop near it with no cap
+      refuse("E_PROP_HELD_TWO",
+             "it holds another prop already: one grabbed object per player");
       partOne.AnswerPropWord(rawMsgData.userId, *prop);
       break;
   }

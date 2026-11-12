@@ -2018,8 +2018,10 @@ wire_struct! {
     /// prop refuses everything (E_PROP_HELD); a claimant the server never
     /// sent the prop, or told it is gone, is refused (E_PROP_UNSEEN), and so
     /// is one whose game unloaded the prop's cell and has not loaded or
-    /// reached it since (E_PROP_AWAY); a refused claimant hears the current
-    /// word. The claimant's cell and distance are no gate. Reason codes:
+    /// reached it since (E_PROP_AWAY), and a grab from a claimant that holds
+    /// another prop already (E_PROP_HELD_TWO: the engine holds one grabbed
+    /// object per player); a refused claimant hears the current word. The
+    /// claimant's cell and distance are no gate. Reason codes:
     /// `E_VAL_RANGE` (a refr of 0, a touch above 3), `E_VAL_RATE` (the
     /// budget).
     pub struct PropClaim {

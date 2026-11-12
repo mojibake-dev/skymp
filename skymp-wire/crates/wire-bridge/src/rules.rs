@@ -3022,7 +3022,8 @@ mod ffi {
         /// seat streams it awake and the touch is no grab (a trap body's
         /// second firing among them: the first firing wins), 4 the
         /// claimant's game reported the prop's cell unloaded and has not
-        /// loaded or reached it since (Away).
+        /// loaded or reached it since (Away), 5 a grab from a claimant that
+        /// holds another prop already (HeldTwo: one hand per player).
         fn claim_prop(self: &mut Props, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8;
         /// The prop's owner epoch, up at every word (a grant, a return, the
         /// host's wake); 0 before any.
@@ -4564,7 +4565,8 @@ const fn host_grace_ms() -> u64 {
 
 /// A claim's verdict as the core's code: 0 granted, 1 held, 2 the same
 /// simulator, 3 moving (another seat streams it awake, a trap body's first
-/// firing among them, thuum D-S3), 4 away (the claimant unloaded the cell).
+/// firing among them, thuum D-S3), 4 away (the claimant unloaded the cell), 5
+/// a second hold (the claimant holds another prop).
 fn claim_code(verdict: props::ClaimVerdict) -> u8 {
     match verdict {
         props::ClaimVerdict::Granted(_) => 0,
@@ -4572,6 +4574,7 @@ fn claim_code(verdict: props::ClaimVerdict) -> u8 {
         props::ClaimVerdict::Same => 2,
         props::ClaimVerdict::Moving => 3,
         props::ClaimVerdict::Away => 4,
+        props::ClaimVerdict::HeldTwo => 5,
     }
 }
 
@@ -6078,7 +6081,8 @@ mod tests {
     #[test]
     fn the_prop_table_crosses_as_codes() {
         // thuum docs/verbs/prop-physics.md (A1 to A7, ADR-071 decision 2):
-        // the claim's codes (0 granted, 1 held, 2 same, 3 moving, 4 away),
+        // the claim's codes (0 granted, 1 held, 2 same, 3 moving, 4 away, 5
+        // a second hold),
         // the transform's (0 accepted, 1 not owner, 2 outside, 3 too fast, 4
         // returned, 5 rest refused, 6 woken, 7 away, 8 frozen), the epoch and
         // the returns of an unload and a departure as the core reads them
@@ -6087,6 +6091,7 @@ mod tests {
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
         assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 1, 1_100), 2);
+        assert_eq!(p.claim_prop(0x54a44, 0xff00_0003, 0x9732, 1, 1_150), 5);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 0, 1_200), 1);
         assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 0x9732, 0xff00_0002, false, 10.0, 1_300)), 1);
         assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, false, 10.0, 1_300)), 0);

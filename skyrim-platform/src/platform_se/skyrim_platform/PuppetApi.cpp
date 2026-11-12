@@ -35,6 +35,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <xmmintrin.h>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -684,6 +685,295 @@ Napi::Value PuppetApi::SetRecordApplying(const Napi::CallbackInfo& info)
   TrapFamily::RecordApplying::Set(formId, applying);
   logger::info("[verb:traps] setRecordApplying({:x}, {}): applying set {}",
                formId, applying, TrapFamily::RecordApplying::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+namespace {
+// thuum ADR-071 rung 2 (the sample v2): a loaded reference's Havok body, by
+// the walk CommonLib's own GetCollisionLayer makes (CommonLibSSE-NG
+// src/RE/N/NiAVObject.cpp:61-75): the 3D root's collision object
+// (include/RE/N/NiAVObject.h:156) as a bhkNiCollisionObject (NiObject.h:61),
+// its body (bhkNiCollisionObject.h:56) as a bhkRigidBody (NiObject.h:64), and
+// the hkpRigidBody it refers to (bhkRefObject.h:26; hkpRigidBody.h:7, an
+// hkpEntity). Both null for a model whose root carries no rigid body
+// (HYPOTHESIS: the lab's props, an IronIngot, a Basket01 and a FoodCabbage,
+// carry theirs on the root; x-body-read's "body" lines read it)
+struct PropBody
+{
+  RE::bhkRigidBody* rigid = nullptr;
+  RE::hkpRigidBody* havok = nullptr;
+};
+
+PropBody BodyOf(RE::NiAVObject& root)
+{
+  PropBody res;
+  auto* collision = root.collisionObject
+    ? root.collisionObject->AsBhkNiCollisionObject()
+    : nullptr;
+  auto* rigid =
+    collision && collision->body ? collision->body->AsBhkRigidBody() : nullptr;
+  if (rigid && rigid->referencedObject) {
+    res.rigid = rigid;
+    res.havok = static_cast<RE::hkpRigidBody*>(rigid->referencedObject.get());
+  }
+  return res;
+}
+
+// hkpMotion::MotionType's dynamic values (CommonLibSSE-NG
+// include/RE/H/hkpMotion.h:26-38): the lab's resting Dynamic props read 2, a
+// basket, and 3, an ingot (docs/engine/havok-props.md E1, E13), never 1
+bool IsDynamicMotion(RE::hkpMotion::MotionType type)
+{
+  using Type = RE::hkpMotion::MotionType;
+  return type == Type::kDynamic || type == Type::kSphereInertia ||
+    type == Type::kBoxInertia || type == Type::kThinBoxInertia;
+}
+
+// a world rotation as Euler XYZ in degrees, the inverse of CommonLib's
+// NiMatrix3::SetEulerAnglesXYZ (src/RE/N/NiMatrix3.cpp:90-109): its
+// ToEulerAnglesXYZ formula (:36-56) with the standard arctangent, and the
+// pitch of 90 degrees solved from SetEulerAnglesXYZ itself. The pin's
+// NiFastATan2 (src/RE/N/NiMath.cpp:23-71) answers -atan(y / x) wherever |x|
+// is at least |y| (:61 takes the series from an offset of 0), so through
+// ToEulerAnglesXYZ a yaw of 30 degrees reads -30 and one of 60 reads 60, and
+// three random rotations in four fail to rebuild their matrix (the pin's own
+// bodies compiled and run on their own, 2026-11-12; this one rebuilds all
+// 100000). CommonLib is never modified here, so the caller carries the fix,
+// as with BSTSmallSharedArray::empty. x and z in -180 to 180, y in -90 to 90
+RE::NiPoint3 EulerDegreesXYZ(const RE::NiMatrix3& m)
+{
+  // SetEulerAnglesXYZ's entry[0][2] is -sin(y)
+  const float s = m.entry[0][2];
+  float x = 0.f;
+  float y = 0.f;
+  float z = 0.f;
+  if (s > -1.f && s < 1.f) {
+    y = -std::asin(s);
+    x = std::atan2(m.entry[1][2], m.entry[2][2]);
+    z = std::atan2(m.entry[0][1], m.entry[0][0]);
+  } else if (s <= -1.f) {
+    // a pitch of +90 degrees: the matrix holds x - z alone, z taken as 0
+    y = RE::NI_HALF_PI;
+    x = std::atan2(m.entry[1][0], m.entry[1][1]);
+  } else {
+    // a pitch of -90 degrees: the matrix holds x + z alone
+    y = -RE::NI_HALF_PI;
+    x = std::atan2(-m.entry[1][0], m.entry[1][1]);
+  }
+  return { RE::rad_to_deg(x), RE::rad_to_deg(y), RE::rad_to_deg(z) };
+}
+
+// an hkVector4's three components (hkVector4.h:53, an __m128) times a scale
+RE::NiPoint3 Vec3(const RE::hkVector4& v, float scale)
+{
+  float f[4];
+  _mm_storeu_ps(f, v.quad);
+  return { f[0] * scale, f[1] * scale, f[2] * scale };
+}
+
+struct BodyRead
+{
+  uint32_t formId = 0;
+  bool awake = false;
+  uint32_t motion = 0;
+  RE::NiPoint3 pos;
+  RE::NiPoint3 rot;
+  RE::NiPoint3 lin;
+  RE::NiPoint3 ang;
+};
+
+// one reference's body, false when the reference, its 3D
+// (TESObjectREFR::Get3D, T/TESObjectREFR.h:375), its cell's bhkWorld
+// (TESObjectCELL::GetbhkWorld, T/TESObjectCELL.h:197) or the rigid body is
+// missing. Read on the JS thread under the world's lock taken as a reader
+// (bhkWorld::worldLock, B/bhkWorld.h:71; BSReadLockGuard,
+// B/BSAtomic.h:110-117). HYPOTHESIS: Havok's step and the node's update from
+// the body write under that lock as writers, so a read is never mixed across
+// two steps and the island it reads is never one the step frees; nothing in
+// CommonLib takes the lock (bhkWorld.h:71 is its one mention), so who holds it
+// is the exe's to show. HYPOTHESIS too: no writer of it waits for the JS tick
+// while it holds it, setPuppet's deadlock shape (above); x-body-read and
+// x-prop-follow read both as no hang and no step spike across reads every
+// update. The fields: pos the root's world translate in game units and rot
+// its world rotation (N/NiAVObject.h:158; N/NiTransform.h:25-26), the body's
+// drawn place, CommonLib's own node-to-reference pair (MoveToNode,
+// src/RE/T/TESObjectREFR.cpp:780-789; HYPOTHESIS that the engine's reference
+// angle keeps the same convention, x-body-read's premise P0); lin and ang the
+// entity's motion (H/hkpEntity.h:99; H/hkpMotion.h:84-85), lin times the
+// world scale's inverse (B/bhkWorld.h:48-52) into game units a second, ang
+// unscaled; motion its type (hkpMotion.h:77); awake the entity's island
+// (hkpEntity.h:92) set and in the world's active list
+// (H/hkpSimulationIsland.h:41, the bit lab/frida/prop-sleep.js reads;
+// HYPOTHESIS until E10 reads under the 60 fps cap: in the active list means
+// awake)
+bool ReadBody(uint32_t formId, float toGameUnits, BodyRead& out)
+{
+  auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
+  auto* root = refr ? refr->Get3D() : nullptr;
+  auto* cell = refr ? refr->GetParentCell() : nullptr;
+  auto* world = cell ? cell->GetbhkWorld() : nullptr;
+  if (!root || !world) {
+    return false;
+  }
+  RE::BSReadLockGuard reading{ world->worldLock };
+  const PropBody body = BodyOf(*root);
+  if (!body.havok) {
+    return false;
+  }
+  const auto& motion = body.havok->motion;
+  const auto* island = body.havok->simulationIsland;
+  out.formId = formId;
+  out.awake = island && island->isInActiveIslandsArray;
+  out.motion = motion.type.underlying();
+  out.pos = root->world.translate;
+  out.rot = EulerDegreesXYZ(root->world.rotate);
+  out.lin = Vec3(motion.linearVelocity, toGameUnits);
+  out.ang = Vec3(motion.angularVelocity, 1.f);
+  return true;
+}
+
+// readBodies' filter (rule 9): the ids its last read without all found
+// awake, so a body is answered while awake and once more at the read where
+// its awake bit fell, and a resting one never; an id left out (no body) is
+// dropped from it. Bounded and cleared by size as the contact hook's map is
+// (FridaHooks.cpp OnPropContactEnter)
+constexpr size_t kBodyAwakeMax = 1024;
+std::mutex g_bodyAwakeMutex;
+std::unordered_set<uint32_t> g_bodyAwake;
+} // namespace
+
+// thuum docs/DECISIONS.md ADR-071 rung 2 (the sample v2): the owner's stream
+// reads its simulated bodies every update with all false; a placement's test
+// and the lab's "body" line read one id with all true, which leaves the
+// filter alone so they never take the stream's fall. On the JS thread as
+// getTrapRole reads the engine (above), since the engine's own reads are
+// synchronous while its writes are latent (Skyrim Platform's typing: getMass
+// a number, applyHavokImpulse and setMotionType promises); no task, no
+// Papyrus call
+Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
+{
+  const auto ids = NapiHelper::ExtractArray(info[0], "formIds");
+  const bool all = NapiHelper::ExtractBoolean(info[1], "all");
+  std::vector<uint32_t> formIds;
+  const uint32_t n = ids.Length();
+  formIds.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "formIds[" + std::to_string(i) + "]";
+    formIds.push_back(NapiHelper::ExtractUInt32(ids.Get(i), name.c_str()));
+  }
+  const float toGameUnits = RE::bhkWorld::GetWorldScaleInverse();
+  std::vector<BodyRead> answered;
+  answered.reserve(formIds.size());
+  for (const auto formId : formIds) {
+    BodyRead read;
+    const bool found =
+      formId != 0 && formId != 0x14 && ReadBody(formId, toGameUnits, read);
+    if (all) {
+      if (found) {
+        answered.push_back(read);
+      }
+      continue;
+    }
+    std::lock_guard<std::mutex> lock(g_bodyAwakeMutex);
+    if (found && read.awake) {
+      if (g_bodyAwake.size() > kBodyAwakeMax) {
+        g_bodyAwake.clear();
+      }
+      g_bodyAwake.insert(formId);
+      answered.push_back(read);
+      continue;
+    }
+    const bool fell = g_bodyAwake.erase(formId) != 0;
+    if (fell && found) {
+      answered.push_back(read);
+    }
+  }
+  const auto toArray = [&](const RE::NiPoint3& v) {
+    auto arr = Napi::Array::New(info.Env(), 3);
+    arr.Set(uint32_t(0), Napi::Number::New(info.Env(), v.x));
+    arr.Set(uint32_t(1), Napi::Number::New(info.Env(), v.y));
+    arr.Set(uint32_t(2), Napi::Number::New(info.Env(), v.z));
+    return arr;
+  };
+  auto res = Napi::Array::New(info.Env(), answered.size());
+  for (uint32_t i = 0; i < answered.size(); ++i) {
+    const auto& read = answered[i];
+    auto row = Napi::Object::New(info.Env());
+    row.Set("formId", Napi::Number::New(info.Env(), read.formId));
+    row.Set("awake", Napi::Boolean::New(info.Env(), read.awake));
+    row.Set("motion", Napi::Number::New(info.Env(), read.motion));
+    row.Set("pos", toArray(read.pos));
+    row.Set("rot", toArray(read.rot));
+    row.Set("lin", toArray(read.lin));
+    row.Set("ang", toArray(read.ang));
+    res.Set(i, row);
+  }
+  return res;
+}
+
+// thuum docs/DECISIONS.md ADR-071 rung 2 (the take-over: a Keyframed copy set
+// Dynamic starts at rest, HYPOTHESIS, prop-physics.md:41-42): a write, so
+// latent as the engine's own are, and on the main thread: SKSE's UI task
+// queue (AddUITask, CommonLibSSE-NG include/SKSE/Interfaces.h:198), drained
+// by skse64's hook in UI::ProcessMessages, which Main::Update calls every
+// frame; never AddTask, whose tasks run on pool threads during play (run
+// 20261104-043219; ChangeForm.cpp's apply, whose route this is). The native
+// never waits for its task. The task looks the reference up again, walks to
+// its rigid body (BodyOf), refuses a motion type that is not dynamic and
+// calls CommonLib's bhkRigidBody::SetLinearVelocity (B/bhkRigidBody.h:55;
+// src/RE/B/bhkRigidBody.cpp:26-31, Address Library 78089) with lin times the
+// world scale (bhkWorld::GetWorldScale, B/bhkWorld.h:42-46) and
+// SetAngularVelocity (bhkRigidBody.h:53; .cpp:12-17, 78090) with ang
+// unscaled, each as an hkVector4 (H/hkVector4.h:19-21). The engine's setters
+// take whatever lock they need themselves (HYPOTHESIS), so the task takes
+// none; HYPOTHESIS too that they wake a deactivated body, x-prop-follow's
+// leg D reads the motion they carry
+Napi::Value PuppetApi::SetBodyVelocity(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto lin = NapiHelper::ExtractNiPoint3(info[1], "lin");
+  const auto ang = NapiHelper::ExtractNiPoint3(info[2], "ang");
+  bool finite = true;
+  for (size_t i = 0; i < 3; ++i) {
+    finite = finite && std::isfinite(lin[i]) && std::isfinite(ang[i]);
+  }
+  const auto* tasks = SKSE::GetTaskInterface();
+  if (formId == 0 || formId == 0x14 || !finite || !tasks) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  tasks->AddUITask([formId, lin, ang]() {
+    auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
+    auto* root = refr ? refr->Get3D() : nullptr;
+    if (!root) {
+      logger::warn("[verb:prop-physics] velocity not set on {:x}: no "
+                   "reference with 3D",
+                   formId);
+      return;
+    }
+    const PropBody body = BodyOf(*root);
+    if (!body.havok) {
+      logger::warn("[verb:prop-physics] velocity not set on {:x}: no rigid "
+                   "body on its 3D root",
+                   formId);
+      return;
+    }
+    const auto type = body.havok->motion.type;
+    const uint32_t motion = type.underlying();
+    if (!IsDynamicMotion(type.get())) {
+      logger::warn("[verb:prop-physics] velocity not set on {:x}: motion {} "
+                   "is not dynamic",
+                   formId, motion);
+      return;
+    }
+    const float toHavok = RE::bhkWorld::GetWorldScale();
+    body.rigid->SetLinearVelocity(
+      RE::hkVector4(lin.x * toHavok, lin.y * toHavok, lin.z * toHavok, 0.f));
+    body.rigid->SetAngularVelocity(RE::hkVector4(ang.x, ang.y, ang.z, 0.f));
+    logger::info("[verb:prop-physics] velocity set on {:x}: ({:.1f}, {:.1f}, "
+                 "{:.1f}) units a second, spin ({:.2f}, {:.2f}, {:.2f}) "
+                 "radians a second, motion {}",
+                 formId, lin.x, lin.y, lin.z, ang.x, ang.y, ang.z, motion);
+  });
   return Napi::Boolean::New(info.Env(), true);
 }
 

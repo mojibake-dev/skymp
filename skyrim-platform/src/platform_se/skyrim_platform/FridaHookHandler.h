@@ -52,7 +52,17 @@ enum HookID
   // NativeFunctionBase::Call (Address Library 104651), until rung 2's last
   // commit replaced the function through HookHandler::Replace, which takes
   // no id (ScriptNatives.cpp); the value is never reused
-  HOOK_NATIVE_CALL
+  HOOK_NATIVE_CALL,
+  // thuum docs/verbs/prop-physics.md, beside HOOK_PROP_CONTACT (the ids
+  // after the reserved two, so every id above keeps its value): ADR-071
+  // rung 3's three brackets, the frames on an impulse's own thread that name
+  // its cause at the replaced ScaleGameplayImpulseForce and
+  // AddExplosionImpulse (FridaHooks.cpp): Explosion::Update, every distinct
+  // Projectile::ProcessImpacts (one id, attached at each address), and
+  // ConeProjectile::HandleHits
+  HOOK_IMPULSE_EXPLOSION,
+  HOOK_IMPULSE_IMPACTS,
+  HOOK_IMPULSE_CONE
 };
 
 struct Hook

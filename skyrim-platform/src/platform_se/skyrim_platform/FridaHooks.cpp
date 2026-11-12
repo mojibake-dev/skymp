@@ -28,17 +28,23 @@
 #include <RE/B/BGSRefAlias.h>
 #include <RE/B/BSTEvent.h>
 #include <RE/B/bhkCharProxyController.h>
+#include <RE/B/bhkRigidBody.h>
 #include <RE/D/DialogueItem.h>
 #include <RE/E/Effect.h>
 #include <RE/E/EffectSetting.h>
+#include <RE/E/Explosion.h>
 #include <RE/H/HighProcessData.h>
 #include <RE/H/hkpEntity.h>
+#include <RE/H/hkpRigidBody.h>
 #include <RE/H/hkpRootCdPoint.h>
+#include <RE/N/NiAVObject.h>
 #include <RE/N/NiControllerSequence.h>
+#include <RE/P/Projectile.h>
 #include <RE/T/TESHavokUtilities.h>
 #include <RE/T/TESQuest.h>
 #include <RE/T/TESQuestStageEvent.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -49,6 +55,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -465,45 +472,56 @@ RE::TESObjectREFR* ReadPresser(const void* args, PresserRead& how)
 // this seat, another, and the last case's undecided one (a live game-file
 // actor neither hosted nor a puppet, in a cell this seat does not host: no
 // seat's word reached this seat yet), the one whose world trigger entries
-// D-W3 B holds (below); this seat owns the presser on kThisSeat alone
-enum class PresserOwner
+// D-W3 B holds (below); this seat owns the presser on kThisSeat alone.
+//
+// One taxonomy, two callers (ADR-071 rung 3, lab/.cache/drafts/physics/
+// rung3-plan.md B3 point 4): the presser rule's, and an impulse's cause at
+// the replaced ScaleGameplayImpulseForce and AddExplosionImpulse (the
+// impulse rule, below), whose cause is the explosion's owner or the
+// projectile's shooter. Its actor branches are the projectile launch hook's
+// split of shooters (OnProjectileLaunchEnter: the player, a hosted actor, a
+// puppet, a figure), so a cause this seat's engine simulates is this seat's
+// and another seat's figure or puppet is another's. Every read is a
+// mutex-guarded set or a field of the cause, so any engine thread may ask
+// (the impulse's run on Havok's workers, the read's 080520 rows)
+enum class CauseOwner
 {
   kThisSeat,
   kOther,
   kUndecided
 };
 
-PresserOwner OwnerOf(const RE::TESObjectREFR* presser)
+CauseOwner OwnerOf(const RE::TESObjectREFR* cause)
 {
-  const uint32_t id = presser->formID;
+  const uint32_t id = cause->formID;
   if (id == 0x14) {
-    return PresserOwner::kThisSeat;
+    return CauseOwner::kThisSeat;
   }
-  if (presser->GetFormType() != RE::FormType::ActorCharacter) {
-    return TrapFamily::Followed::Is(id) ? PresserOwner::kOther
-                                        : PresserOwner::kThisSeat;
+  if (cause->GetFormType() != RE::FormType::ActorCharacter) {
+    return TrapFamily::Followed::Is(id) ? CauseOwner::kOther
+                                        : CauseOwner::kThisSeat;
   }
   if (id >= 0xff000000) {
-    return Hosted::Is(id) && !Puppets::Is(id) ? PresserOwner::kThisSeat
-                                              : PresserOwner::kOther;
+    return Hosted::Is(id) && !Puppets::Is(id) ? CauseOwner::kThisSeat
+                                              : CauseOwner::kOther;
   }
-  if (presser->IsDead()) {
-    const RE::TESObjectCELL* cell = presser->GetParentCell();
+  if (cause->IsDead()) {
+    const RE::TESObjectCELL* cell = cause->GetParentCell();
     return cell && Frida::IsCellHosted(cell->GetFormID())
-      ? PresserOwner::kThisSeat
-      : PresserOwner::kOther;
+      ? CauseOwner::kThisSeat
+      : CauseOwner::kOther;
   }
   const bool hosted = Hosted::Is(id);
   const bool puppet = Puppets::Is(id);
   if (hosted || puppet) {
-    return hosted && !puppet ? PresserOwner::kThisSeat : PresserOwner::kOther;
+    return hosted && !puppet ? CauseOwner::kThisSeat : CauseOwner::kOther;
   }
-  const RE::TESObjectCELL* cell = presser->GetParentCell();
+  const RE::TESObjectCELL* cell = cause->GetParentCell();
   if (!cell) {
-    return PresserOwner::kOther;
+    return CauseOwner::kOther;
   }
-  return Frida::IsCellHosted(cell->GetFormID()) ? PresserOwner::kThisSeat
-                                                : PresserOwner::kUndecided;
+  return Frida::IsCellHosted(cell->GetFormID()) ? CauseOwner::kThisSeat
+                                                : CauseOwner::kUndecided;
 }
 
 // whether the handle has an attached script (the VM's attachedScripts under
@@ -816,7 +834,7 @@ std::string ReplayHeldEntriesImpl()
     if (!cell || !Frida::IsCellHosted(cell->GetFormID())) {
       continue;
     }
-    if (OwnerOf(presser) != PresserOwner::kThisSeat) {
+    if (OwnerOf(presser) != CauseOwner::kThisSeat) {
       continue;
     }
     due.push_back(pair);
@@ -1126,8 +1144,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
       PresserRead how = PresserRead::kNoArgument;
       RE::TESObjectREFR* presser =
         ReadPresser(gum_invocation_context_get_nth_argument(ic, 3), how);
-      const PresserOwner owner =
-        presser ? OwnerOf(presser) : PresserOwner::kOther;
+      const CauseOwner owner = presser ? OwnerOf(presser) : CauseOwner::kOther;
       if (!presser) {
         static std::atomic<uint64_t> s_presserUnread{ 0 };
         static std::atomic<uint64_t> s_presserUnreadLineMs{ 0 };
@@ -1141,7 +1158,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
                        "minute)",
                        eventNameStr, selfId, PresserReadText(how), n);
         }
-      } else if (owner != PresserOwner::kThisSeat) {
+      } else if (owner != CauseOwner::kThisSeat) {
         // D-W2 A's fallback lever: a family reference of an exempt class
         // keeps D-S3, its non-owned press passed on to the gate's rules below
         // (every seat fires its own copy)
@@ -1161,7 +1178,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
           // family trigger's is not (it waits for its next press); a leave of
           // a held pair takes one off whatever its presser's owner, the last
           // dropping the pair. Blanked below as before either way
-          if (entry == 1 && owner == PresserOwner::kUndecided) {
+          if (entry == 1 && owner == CauseOwner::kUndecided) {
             if (isFamily()) {
               if (TriggerLineDue(TriggerLine::kHeldFamily, selfId)) {
                 logger::info("[verb:traps] {} to {:x} by {:x}: not held, a "
@@ -3547,6 +3564,756 @@ void InstallPropContactHook()
                kPropContactEveryMs);
 }
 
+/**
+ * An impulse's cause (thuum docs/DECISIONS.md ADR-071 decision 4, "caster
+ * only"; lab/.cache/drafts/physics/rung3-plan.md B3 and its 2026-11-12
+ * addendum, from the reads in read-rung3-premises-080520-080858.md; the
+ * trace lab/frida/prop-impulse.js v1.2 on thuum main is the map of the sites
+ * and brackets rebuilt here). Every seat's engine runs every cast and shout
+ * it sees, its own and its copies of another seat's, so the watcher's copy of
+ * a remote cast pushes the watcher's own bodies with the caster's numbers
+ * (H3: CONFIRMED by 20261111-223256, and by 20261112-080520 on c2, the
+ * Riverwood Trader sign's board and a static's two bodies under the figure's
+ * cones, a dead chicken's ragdoll through 26005). The engine that owns a body
+ * simulates it and the others render it (ADR-063; Fiedler, "Networked Physics
+ * in Virtual Reality", GDC 2018; Delaney, Ward and McLoone, Presence 15(2) and
+ * 15(4), 2006): an impulse whose cause another seat owns is zeroed here, and
+ * one whose cause this seat owns applies and names the references it pushed,
+ * for the client's claim.
+ *
+ * The two sites, replaced through Gum (the DamageActor shape), each with
+ * CommonLib's own signature (the decltype of its declaration, checked by a
+ * static_assert at its replacement):
+ * - ScaleGameplayImpulseForce (Address Library 26004,
+ *   T/TESHavokUtilities.h:18), the force a gameplay impulse gives one body.
+ *   Every prop push on both seats went through it (223256's H2). The
+ *   explosions' and the cone's bhkRigidBody::SetLinearImpulse (78091,
+ *   B/bhkRigidBody.h:54) applied its result over the world scale (223256's 58
+ *   pairs, 080520's 14), and the arrow's hkpSphereMotion::ApplyPointImpulse
+ *   (slot 0x14, H/hkpMotion.h:60) took it whole, its length the result to four
+ *   places (x-prop-arrow 20261112-080858, c1:L22-L23). Zeroed: 0.0f, the
+ *   original not called (HYPOTHESIS: it computes and writes nothing).
+ * - AddExplosionImpulse (26005, TESHavokUtilities.h:14), an explosion's push
+ *   of a node tree and a ragdoll's one push (080520: no 26004 inside any 26005
+ *   on either seat). It recurses through the tree, and a replacement sees its
+ *   outermost call alone (223256's replace saw 3 outer calls where 080520's
+ *   attach saw 110; HYPOTHESIS, Gum routing a call from inside the original to
+ *   the original). Zeroed: returned without calling the original, which skips
+ *   the whole tree (HYPOTHESIS until a zero reads, and that its caller needs
+ *   nothing else done inside it).
+ *
+ * The cause is never an argument (HitData's aggressor never appeared,
+ * 223256): it is the innermost bracket open on the impulse's own thread, a
+ * frame three engine functions push at their enter and pop at their leave
+ * (HookHandler's attach, a HookID each), on a thread_local stack (the idiom
+ * of g_relayedArrowDepth, above):
+ * - Explosion::Update, slot 0xA3 (E/Explosion.h:53) of VTABLE_Explosion[0]
+ *   (include/RE/Offsets_VTABLE.h:2779, Address Library 209940): its cause the
+ *   explosion's actorOwner (Explosion.h:72, through GetExplosionRuntimeData's
+ *   1.6.629 shift, :89-97), the caster on its own seat and the caster's figure
+ *   on the watcher's (223256);
+ * - Projectile::ProcessImpacts, slot 0xAC (P/Projectile.h:208) of each
+ *   projectile class's vtable (Offsets_VTABLE.h:2771-2788: Arrow 209891,
+ *   Barrier 209901, Beam 209914, Cone 209925, Flame 209953, Grenade 209962,
+ *   Missile 209980 and Projectile itself 210006), one attach per distinct
+ *   address (five in 1.6.1170's exe, lab/.cache/game/exe-1.6.1170 read
+ *   2026-11-12: a class that does not override shares its parent's): its
+ *   cause the projectile's shooter (Projectile.h:254, through
+ *   GetProjectileRuntimeData's shift, :291-299). The arrow's 26004 ran at
+ *   depth 3, inside the Arrow, Missile and Projectile chain on one object
+ *   (080858);
+ * - ConeProjectile::HandleHits, slot 0xBE (P/Projectile.h:226,
+ *   C/ConeProjectile.h:43) of VTABLE_ConeProjectile[0] (Offsets_VTABLE.h:2777,
+ *   209925): all 14 cone pushes of 080520 (8 on c1, 6 on c2) ran inside it
+ *   under UpdateImpl, and its shooter named the cause, 0x14 on c1 and c1's
+ *   figure on c2 (CONFIRMED by 20261112-080520 on both seats). UpdateImpl
+ *   encloses it alone and the cone's own ProcessImpacts pushed nothing, so the
+ *   cone has no other bracket of its own.
+ * Each slot is read from its vtable at install, through CommonLib's
+ * Relocation as write_vfunc reads the one it replaces (REL/Relocation.h:
+ * 392-399), and its install line says whether it lies in SkyrimSE.exe's code
+ * (Core Impact Framework hooks slot 0xBE of ArrowProjectile and
+ * MissileProjectile, never ConeProjectile's: c1-CoreImpactFramework.log:22-23
+ * in both reads).
+ *
+ * The rule (ADR-071 W5), in order, all reads and no engine write of its own:
+ * 1. The switch off (the default): the original, nothing counted.
+ * 2. No bracket open on this thread: the original, counted as outside any
+ *    bracket (no 26004 ran unbracketed in either read; the caster's own 26005
+ *    calls on its NPC copies ran outside every bracket, 080520's 110 on c1,
+ * and pass, as caster only wants).
+ * 3. The cause, read once a frame at its first impulse (the handle resolved by
+ *    BSPointerHandle::get, B/BSPointerHandle.h:155, on the impulse's worker
+ *    thread, as prop-impulse.js resolved it with no fault, and released at
+ *    once), judged by OwnerOf (above). An explosion no actor owns (a trap's,
+ *    the world's) or a projectile with no shooter is the world's, its cell
+ *    host's: this seat's when this seat hosts the bracket object's cell, else
+ *    undecided.
+ * 4. Another seat's: zeroed, counted. This seat's: the original, the body's
+ *    reference joining the frame's impact set (26004's by its rigid body's
+ *    collidable, hkpWorldObject::GetUserData, H/hkpWorldObject.h:62, which is
+ *    TESHavokUtilities::FindCollidableRef, E26's read safe inside Havok's
+ *    callbacks; 26005's by its node's owner, NiAVObject::GetUserData,
+ *    N/NiAVObject.h:125, src/RE/N/NiAVObject.cpp:102-114). Undecided (a live
+ *    NPC no seat's word reached this seat for, in a cell this seat does not
+ *    host; the world's in such a cell): the original, counted, no claim.
+ * Every physics body takes the rule (Eli's D-PH5, "Every physics body",
+ * 2026-11-12): items, statics and ragdolls alike, so a remote cast moves the
+ * watcher's sign and ragdolls no more until rungs 4 and 5 stream them. The
+ * player's own reference and a body with no reference join no impact set.
+ *
+ * At a frame's leave (rule 9: counted and said in native code; nothing
+ * crosses for a zero): one line under the verb's tag, "impulse zeroed: N
+ * bodies, cause C (kind S), another seat's", "impulse applied: N bodies,
+ * cause C (kind S), this seat's: claim raised" (or "no reference to claim")
+ * or "impulse undecided: ...", each (outcome, bracket object)'s first 16 and
+ * every hundredth after; and for this seat's cause with a reference pushed,
+ * propImpulse on the next tick (the propContact idiom): { impact, kind,
+ * cause, refrs }, refrs at most kImpulseRefsPerEvent, a larger set as several
+ * events with one impact number. Calls outside every bracket print once a
+ * second while they come, and every count by kind and outcome every ten
+ * seconds while one moves.
+ *
+ * Cost (rule 9; the plan's R7, read against an untraced run): 26004 and 26005
+ * run at impacts alone (no call in the minutes between 223256's legs), Gum's
+ * replace adding its thread-local bookkeeping and a stack push to each call;
+ * the brackets run at every live projectile's ProcessImpacts and every
+ * explosion's Update, a thread_local push and pop each, no lock and no lookup.
+ *
+ * HYPOTHESIS until the rung 3 build's reads (x-prop-impact v1; the reads'
+ * section 7): that a zero at 26004 zeroes the push (the cone's 78091 vectors;
+ * the arrow's ApplyPointImpulse, or the helper's early return on a zero
+ * result, unread: the reads' section 3); that HandleHits' angular impulse
+ * (78092, its call inside HandleHits never attached in 080520: section 7
+ * item 2) leaves no spin; that an explosion a projectile's impact spawns
+ * updates in its own frame, never nested inside the projectile's (the plan's
+ * R4); how a zeroed 26005 looks on a live NPC the watcher hosts (item 4)
+ */
+namespace {
+// the two sites as CommonLib declares them (TESHavokUtilities.h:14, :18)
+using ScaleImpulseFn =
+  decltype(&RE::TESHavokUtilities::ScaleGameplayImpulseForce);
+using ExplosionImpulseFn =
+  decltype(&RE::TESHavokUtilities::AddExplosionImpulse);
+ScaleImpulseFn g_scaleImpulseOriginal = nullptr;
+ExplosionImpulseFn g_explosionImpulseOriginal = nullptr;
+// whether each replacement went in at install
+std::atomic<bool> g_scaleImpulseReplaced{ false };
+std::atomic<bool> g_explosionImpulseReplaced{ false };
+
+// the rule's switch (Frida::SetImpulseCauseRule), off by default
+std::atomic<bool> g_impulseCauseRule{ false };
+
+// a bracket's kind, kNone the calls outside every bracket
+enum class ImpulseBracket : uint32_t
+{
+  kNone = 0,
+  kExplosion = 1,
+  kImpacts = 2,
+  kCone = 3
+};
+constexpr uint32_t kImpulseBracketKinds = 4;
+
+// the kind's name in propImpulse and the lines (prop-impulse.js's names)
+const char* ImpulseBracketText(ImpulseBracket kind)
+{
+  switch (kind) {
+    case ImpulseBracket::kExplosion:
+      return "explosion";
+    case ImpulseBracket::kImpacts:
+      return "impacts";
+    case ImpulseBracket::kCone:
+      return "cone";
+    default:
+      return "none";
+  }
+}
+
+// an impulse call's outcome, by its cause's owner
+enum class ImpulseOutcome : uint32_t
+{
+  kApplied = 0,
+  kZeroed = 1,
+  kUndecided = 2
+};
+constexpr uint32_t kImpulseOutcomes = 3;
+
+ImpulseOutcome OutcomeOf(CauseOwner owner)
+{
+  switch (owner) {
+    case CauseOwner::kOther:
+      return ImpulseOutcome::kZeroed;
+    case CauseOwner::kUndecided:
+      return ImpulseOutcome::kUndecided;
+    default:
+      return ImpulseOutcome::kApplied;
+  }
+}
+
+// the counted impulse calls since launch, by bracket kind and outcome (rule
+// 9: counted in native code; the reporter below says them)
+std::atomic<uint64_t> g_impulseCalls[kImpulseBracketKinds][kImpulseOutcomes];
+// the impacts raised since launch, each propImpulse's number
+std::atomic<uint32_t> g_impulseImpacts{ 0 };
+
+void CountImpulseCall(ImpulseBracket kind, ImpulseOutcome outcome)
+{
+  g_impulseCalls[static_cast<uint32_t>(kind)][static_cast<uint32_t>(outcome)]
+    .fetch_add(1, std::memory_order_relaxed);
+}
+
+// one bracket open on a thread; trivially constructible, so the
+// thread_local array below needs no dynamic initialization, and every field
+// is set at the enter
+struct ImpulseFrame
+{
+  ImpulseBracket kind;
+  // the hooked function's this: an Explosion for kExplosion, a Projectile for
+  // the other two (each a TESObjectREFR at offset 0, the primary vtable's)
+  void* site;
+  // the cause, read and judged at the frame's first counted impulse, with
+  // the site's form id read then (inside the site's own call)
+  bool judged;
+  CauseOwner owner;
+  uint32_t causeId;
+  uint32_t siteId;
+  // the counted calls inside the frame, 26004's and 26005's
+  uint32_t sized;
+  uint32_t trees;
+  // the frame's references in g_impulseRefs, from refStart, once it has one
+  bool hasRefs;
+  size_t refStart;
+};
+
+// at most this many brackets nest on a thread (the arrow's chain is three,
+// 080858); a deeper enter is counted so the pops stay paired, and an impulse
+// past it goes to the deepest frame kept
+constexpr uint32_t kImpulseDepth = 8;
+thread_local ImpulseFrame g_impulseFrames[kImpulseDepth];
+thread_local uint32_t g_impulseDepth = 0;
+
+// a reference with a Havok body, as propImpulse and readBodies' island name
+// one: its form id and its base's form type (RE::FormType, F/FormTypes.h:138,
+// whose numbers Skyrim Platform's FormType keeps)
+struct BodyRef
+{
+  uint32_t refrId;
+  uint32_t formType;
+};
+// this thread's impact sets, each open frame's from its refStart in the
+// frames' order, cut back at each frame's leave (its capacity alone outlives
+// an impact)
+thread_local std::vector<BodyRef> g_impulseRefs;
+
+// at most this many references a propImpulse (PropClaim v2's, the rung 2
+// plan's R2-2)
+constexpr size_t kImpulseRefsPerEvent = 16;
+
+void ImpulseBracketEnter(ImpulseBracket kind, GumInvocationContext* ic)
+{
+  const uint32_t depth = g_impulseDepth++;
+  if (depth >= kImpulseDepth) {
+    return;
+  }
+  ImpulseFrame& frame = g_impulseFrames[depth];
+  frame.kind = kind;
+  frame.site = gum_invocation_context_get_nth_argument(ic, 0);
+  frame.judged = false;
+  frame.owner = CauseOwner::kUndecided;
+  frame.causeId = 0;
+  frame.siteId = 0;
+  frame.sized = 0;
+  frame.trees = 0;
+  frame.hasRefs = false;
+  frame.refStart = 0;
+}
+
+void OnImpulseExplosionEnter(GumInvocationContext* ic)
+{
+  ImpulseBracketEnter(ImpulseBracket::kExplosion, ic);
+}
+
+void OnImpulseImpactsEnter(GumInvocationContext* ic)
+{
+  ImpulseBracketEnter(ImpulseBracket::kImpacts, ic);
+}
+
+void OnImpulseConeEnter(GumInvocationContext* ic)
+{
+  ImpulseBracketEnter(ImpulseBracket::kCone, ic);
+}
+
+// the innermost frame open on this thread, or null for none
+ImpulseFrame* InnermostImpulseFrame()
+{
+  const uint32_t depth = g_impulseDepth;
+  if (depth == 0) {
+    return nullptr;
+  }
+  return &g_impulseFrames[std::min(depth, kImpulseDepth) - 1];
+}
+
+// the world's cause (no actor named): the bracket object's cell's host
+CauseOwner WorldCauseOwner(const RE::TESObjectREFR* site)
+{
+  const RE::TESObjectCELL* cell = site ? site->GetParentCell() : nullptr;
+  return cell && Frida::IsCellHosted(cell->GetFormID())
+    ? CauseOwner::kThisSeat
+    : CauseOwner::kUndecided;
+}
+
+// the frame's cause, once: the explosion's owner or the projectile's
+// shooter, each resolved and released here, judged by OwnerOf
+void JudgeImpulseCause(ImpulseFrame& frame)
+{
+  if (frame.judged) {
+    return;
+  }
+  frame.judged = true;
+  frame.causeId = 0;
+  if (!frame.site) {
+    frame.owner = CauseOwner::kUndecided;
+    return;
+  }
+  if (frame.kind == ImpulseBracket::kExplosion) {
+    auto* explosion = static_cast<RE::Explosion*>(frame.site);
+    frame.siteId = explosion->formID;
+    const RE::NiPointer<RE::Actor> owner =
+      explosion->GetExplosionRuntimeData().actorOwner.get();
+    if (owner) {
+      frame.causeId = owner->formID;
+      frame.owner = OwnerOf(owner.get());
+    } else {
+      frame.owner = WorldCauseOwner(explosion);
+    }
+    return;
+  }
+  auto* projectile = static_cast<RE::Projectile*>(frame.site);
+  frame.siteId = projectile->formID;
+  const RE::NiPointer<RE::TESObjectREFR> shooter =
+    projectile->GetProjectileRuntimeData().shooter.get();
+  if (shooter) {
+    frame.causeId = shooter->formID;
+    frame.owner = OwnerOf(shooter.get());
+  } else {
+    frame.owner = WorldCauseOwner(projectile);
+  }
+}
+
+// a counted call inside the frame: the cause judged first, then the call
+// counted by the frame's kind and its outcome
+void CountFrameImpulse(ImpulseFrame& frame, bool tree)
+{
+  JudgeImpulseCause(frame);
+  if (tree) {
+    ++frame.trees;
+  } else {
+    ++frame.sized;
+  }
+  CountImpulseCall(frame.kind, OutcomeOf(frame.owner));
+}
+
+// a body this seat's cause pushed: its reference joins the frame's impact
+// set once, with its base's form type; the player's own and none skipped
+void NoteImpulseRef(ImpulseFrame& frame, const RE::TESObjectREFR* refr)
+{
+  if (!refr) {
+    return;
+  }
+  const uint32_t refrId = refr->formID;
+  if (refrId == 0 || refrId == 0x14) {
+    return;
+  }
+  if (!frame.hasRefs) {
+    frame.hasRefs = true;
+    frame.refStart = g_impulseRefs.size();
+  }
+  const auto from =
+    g_impulseRefs.begin() + static_cast<std::ptrdiff_t>(frame.refStart);
+  if (std::any_of(from, g_impulseRefs.end(), [refrId](const BodyRef& ref) {
+        return ref.refrId == refrId;
+      })) {
+    return;
+  }
+  const RE::TESBoundObject* base = refr->GetBaseObject();
+  g_impulseRefs.push_back(
+    { refrId, base ? static_cast<uint32_t>(base->GetFormType()) : 0u });
+}
+
+float ScaleImpulseReplacement(float a_inputForce, RE::bhkRigidBody* a_body,
+                              bool a_factorMass)
+{
+  if (!g_impulseCauseRule.load(std::memory_order_relaxed)) {
+    return g_scaleImpulseOriginal(a_inputForce, a_body, a_factorMass);
+  }
+  ImpulseFrame* frame = InnermostImpulseFrame();
+  if (!frame) {
+    CountImpulseCall(ImpulseBracket::kNone, ImpulseOutcome::kApplied);
+    return g_scaleImpulseOriginal(a_inputForce, a_body, a_factorMass);
+  }
+  CountFrameImpulse(*frame, false);
+  if (frame->owner == CauseOwner::kOther) {
+    return 0.f;
+  }
+  const float force =
+    g_scaleImpulseOriginal(a_inputForce, a_body, a_factorMass);
+  if (frame->owner == CauseOwner::kThisSeat && a_body) {
+    // the rigid body bhkRefObject refers to (B/bhkRefObject.h:26), an
+    // hkpEntity whose collidable names its reference
+    const auto* havok =
+      static_cast<const RE::hkpRigidBody*>(a_body->referencedObject.get());
+    NoteImpulseRef(*frame, havok ? havok->GetUserData() : nullptr);
+  }
+  return force;
+}
+static_assert(
+  std::is_same_v<decltype(&ScaleImpulseReplacement), ScaleImpulseFn>,
+  "26004's replacement keeps CommonLib's signature");
+
+void ExplosionImpulseReplacement(RE::NiAVObject* a_obj3D, RE::hkVector4& a_pos,
+                                 float a_force, const RE::HitData* a_hitData)
+{
+  if (!g_impulseCauseRule.load(std::memory_order_relaxed)) {
+    g_explosionImpulseOriginal(a_obj3D, a_pos, a_force, a_hitData);
+    return;
+  }
+  ImpulseFrame* frame = InnermostImpulseFrame();
+  if (!frame) {
+    CountImpulseCall(ImpulseBracket::kNone, ImpulseOutcome::kApplied);
+    g_explosionImpulseOriginal(a_obj3D, a_pos, a_force, a_hitData);
+    return;
+  }
+  CountFrameImpulse(*frame, true);
+  if (frame->owner == CauseOwner::kOther) {
+    return;
+  }
+  g_explosionImpulseOriginal(a_obj3D, a_pos, a_force, a_hitData);
+  if (frame->owner == CauseOwner::kThisSeat && a_obj3D) {
+    NoteImpulseRef(*frame, a_obj3D->GetUserData());
+  }
+}
+static_assert(
+  std::is_same_v<decltype(&ExplosionImpulseReplacement), ExplosionImpulseFn>,
+  "26005's replacement keeps CommonLib's signature");
+
+// the frame's lines are due per (outcome, bracket object): each one's first
+// 16 and every hundredth after (a flame's or a beam's stream on a pile would
+// raise one a frame, unread), TriggerLineDue's shape; the lock is taken at a
+// leave that counted an impulse alone
+std::mutex g_impulseLinesMutex;
+std::unordered_map<uint64_t, uint64_t> g_impulseLines;
+
+bool ImpulseLineDue(ImpulseOutcome outcome, uint32_t siteId)
+{
+  const uint64_t key =
+    (static_cast<uint64_t>(static_cast<uint32_t>(outcome)) << 32) | siteId;
+  std::lock_guard<std::mutex> lock(g_impulseLinesMutex);
+  if (g_impulseLines.size() > 1024 && g_impulseLines.count(key) == 0) {
+    g_impulseLines.clear();
+  }
+  const uint64_t n = ++g_impulseLines[key];
+  return n <= 16 || n % 100 == 0;
+}
+
+// propImpulse on the next tick, kImpulseRefsPerEvent references an event,
+// one impact number for every part
+void RaiseImpulseEvents(uint32_t impact, const char* kind, uint32_t causeId,
+                        const std::vector<BodyRef>& refs)
+{
+  for (size_t at = 0; at < refs.size(); at += kImpulseRefsPerEvent) {
+    const size_t end = std::min(refs.size(), at + kImpulseRefsPerEvent);
+    std::vector<BodyRef> part(refs.begin() + static_cast<std::ptrdiff_t>(at),
+                              refs.begin() + static_cast<std::ptrdiff_t>(end));
+    SkyrimPlatform::GetSingleton()->AddTickTask(
+      [impact, kind, causeId, part](Napi::Env env) {
+        auto obj = Napi::Object::New(env);
+        AddObjProperty(&obj, "impact", impact);
+        AddObjProperty(&obj, "kind", kind);
+        AddObjProperty(&obj, "cause", causeId);
+        auto refrs = Napi::Array::New(env, part.size());
+        for (uint32_t i = 0; i < part.size(); ++i) {
+          auto ref = Napi::Object::New(env);
+          AddObjProperty(&ref, "refrId", part[i].refrId);
+          AddObjProperty(&ref, "formType", part[i].formType);
+          refrs.Set(i, ref);
+        }
+        obj.Set("refrs", refrs);
+        EventsApi::SendEvent("propImpulse", { obj });
+      });
+  }
+}
+
+// a frame's leave with a counted impulse: its impact set taken off the
+// thread's, the event raised for this seat's cause, and its line
+void FinishImpulseFrame(const ImpulseFrame& frame)
+{
+  std::vector<BodyRef> refs;
+  if (frame.hasRefs && frame.refStart <= g_impulseRefs.size()) {
+    const auto from =
+      g_impulseRefs.begin() + static_cast<std::ptrdiff_t>(frame.refStart);
+    refs.assign(from, g_impulseRefs.end());
+    g_impulseRefs.erase(from, g_impulseRefs.end());
+  }
+  const ImpulseOutcome outcome = OutcomeOf(frame.owner);
+  const char* kind = ImpulseBracketText(frame.kind);
+  uint32_t impact = 0;
+  if (outcome == ImpulseOutcome::kApplied && !refs.empty()) {
+    impact = g_impulseImpacts.fetch_add(1, std::memory_order_relaxed) + 1;
+    RaiseImpulseEvents(impact, kind, frame.causeId, refs);
+  }
+  if (!ImpulseLineDue(outcome, frame.siteId)) {
+    return;
+  }
+  const uint32_t bodies = frame.sized + frame.trees;
+  const auto thread = GetCurrentThreadId();
+  if (outcome == ImpulseOutcome::kZeroed) {
+    logger::info("[verb:prop-physics] impulse zeroed: {} bodies, cause {:x} "
+                 "({} {:x}), another seat's (26004 {}, 26005 {}; thread {})",
+                 bodies, frame.causeId, kind, frame.siteId, frame.sized,
+                 frame.trees, thread);
+    return;
+  }
+  if (outcome == ImpulseOutcome::kUndecided) {
+    logger::info("[verb:prop-physics] impulse undecided: {} bodies, cause "
+                 "{:x} ({} {:x}), no seat's word on it here: applied, no "
+                 "claim (26004 {}, 26005 {}; thread {})",
+                 bodies, frame.causeId, kind, frame.siteId, frame.sized,
+                 frame.trees, thread);
+    return;
+  }
+  if (refs.empty()) {
+    logger::info("[verb:prop-physics] impulse applied: {} bodies, cause {:x} "
+                 "({} {:x}), this seat's: no reference to claim (26004 {}, "
+                 "26005 {}; thread {})",
+                 bodies, frame.causeId, kind, frame.siteId, frame.sized,
+                 frame.trees, thread);
+    return;
+  }
+  std::string list;
+  for (const auto& ref : refs) {
+    list += fmt::format("{}{:x}", list.empty() ? "" : " ", ref.refrId);
+  }
+  logger::info("[verb:prop-physics] impulse applied: {} bodies, cause {:x} "
+               "({} {:x}), this seat's: claim raised, impact {}, {} "
+               "references {} (26004 {}, 26005 {}; thread {})",
+               bodies, frame.causeId, kind, frame.siteId, impact, refs.size(),
+               list, frame.sized, frame.trees, thread);
+}
+
+void OnImpulseBracketLeave(GumInvocationContext* ic)
+{
+  if (g_impulseDepth == 0) {
+    return;
+  }
+  const uint32_t depth = --g_impulseDepth;
+  if (depth >= kImpulseDepth) {
+    return;
+  }
+  const ImpulseFrame& frame = g_impulseFrames[depth];
+  if (frame.sized == 0 && frame.trees == 0) {
+    return;
+  }
+  FinishImpulseFrame(frame);
+}
+
+// the calls outside every bracket once a second while they come, and every
+// count by kind and outcome every ten seconds while one moves (thuum
+// ADR-069's note: a count shows that the rule fired); HasOverlays' reporter
+// shape, a detached thread
+void StartImpulseReporter()
+{
+  std::thread([] {
+    uint64_t outsideSaid = 0;
+    uint64_t totalSaid = 0;
+    for (uint64_t second = 1;; ++second) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+      const uint64_t outside =
+        g_impulseCalls[0][0].load(std::memory_order_relaxed);
+      if (outside != outsideSaid) {
+        logger::info("[verb:prop-physics] impulse outside any bracket: {} "
+                     "calls, applied ({} so far)",
+                     outside - outsideSaid, outside);
+        outsideSaid = outside;
+      }
+      if (second % 10 != 0) {
+        continue;
+      }
+      uint64_t n[kImpulseBracketKinds][kImpulseOutcomes];
+      uint64_t total = 0;
+      for (uint32_t k = 0; k < kImpulseBracketKinds; ++k) {
+        for (uint32_t o = 0; o < kImpulseOutcomes; ++o) {
+          n[k][o] = g_impulseCalls[k][o].load(std::memory_order_relaxed);
+          total += n[k][o];
+        }
+      }
+      if (total == totalSaid) {
+        continue;
+      }
+      totalSaid = total;
+      logger::info(
+        "[verb:prop-physics] impulse calls so far (applied, zeroed, "
+        "undecided): explosion {}, {}, {}; impacts {}, {}, {}; cone {}, {}, "
+        "{}; outside any bracket {} applied; {} impacts raised",
+        n[1][0], n[1][1], n[1][2], n[2][0], n[2][1], n[2][2], n[3][0], n[3][1],
+        n[3][2], n[0][0], g_impulseImpacts.load(std::memory_order_relaxed));
+    }
+  }).detach();
+}
+
+// a vtable's slot, read as REL::Relocation::write_vfunc reads the one it
+// replaces (REL/Relocation.h:392-399), the vtable through Relocation's
+// VariantID constructor (:258-260); 0 for a vtable at 0
+std::uintptr_t VtableSlot(const REL::VariantID& vtable, std::size_t slot)
+{
+  const REL::Relocation<std::uintptr_t> table{ vtable };
+  if (table.address() == 0) {
+    return 0;
+  }
+  return *reinterpret_cast<const std::uintptr_t*>(table.address() +
+                                                  sizeof(void*) * slot);
+}
+
+// where a bracket's slot points, for its install line: in SkyrimSE.exe's
+// code (REL::Module's textx segment, REL/Module.h:209) or outside it, where
+// another plugin's thunk would sit
+std::string SlotPlace(std::uintptr_t address)
+{
+  const auto& exe = REL::Module::get();
+  const auto text = exe.segment(REL::Segment::textx);
+  if (address >= text.address() && address < text.address() + text.size()) {
+    return fmt::format("+{:x}, in SkyrimSE.exe's code", address - exe.base());
+  }
+  return fmt::format("{:x}, outside SkyrimSE.exe's code (another plugin's "
+                     "thunk)",
+                     address);
+}
+}
+
+bool Frida::SetImpulseCauseRule(bool on)
+{
+  g_impulseCauseRule.store(on, std::memory_order_relaxed);
+  const bool sized = g_scaleImpulseReplaced.load(std::memory_order_relaxed);
+  const bool trees =
+    g_explosionImpulseReplaced.load(std::memory_order_relaxed);
+  logger::info("[verb:prop-physics] setImpulseCauseRule({}): {} "
+               "(ScaleGameplayImpulseForce {}, AddExplosionImpulse {})",
+               on,
+               on ? "another seat's cause is zeroed on every physics body, "
+                    "this seat's raises propImpulse"
+                  : "every impulse applies as the engine's own, nothing "
+                    "counted",
+               sized ? "replaced" : "not replaced",
+               trees ? "replaced" : "not replaced");
+  return sized;
+}
+
+void InstallImpulseHooks()
+{
+  // AE only: the reads that place every site and bracket are 1.6.1170's
+  // (game/Offsets.h)
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  auto* handler = Frida::HookHandler::GetSingleton();
+  const std::uintptr_t base = REL::Module::get().base();
+  const std::uintptr_t sizedAt =
+    Offsets::Hooks::ScaleGameplayImpulseForce.address();
+  const std::uintptr_t treesAt = Offsets::Hooks::AddExplosionImpulse.address();
+  const bool sized = sizedAt &&
+    handler->Replace(sizedAt,
+                     reinterpret_cast<void*>(&ScaleImpulseReplacement),
+                     reinterpret_cast<void**>(&g_scaleImpulseOriginal));
+  const bool trees = treesAt &&
+    handler->Replace(treesAt,
+                     reinterpret_cast<void*>(&ExplosionImpulseReplacement),
+                     reinterpret_cast<void**>(&g_explosionImpulseOriginal));
+  g_scaleImpulseReplaced.store(sized, std::memory_order_relaxed);
+  g_explosionImpulseReplaced.store(trees, std::memory_order_relaxed);
+  if (!sized && !trees) {
+    logger::error("[verb:prop-physics] impulse hooks not installed: Gum "
+                  "refused ScaleGameplayImpulseForce (26004) and "
+                  "AddExplosionImpulse (26005), so every impulse stays the "
+                  "engine's own on every seat");
+    return;
+  }
+
+  // the brackets, a HookID each (FridaHookHandler.h), one shape for the
+  // three: the hook registered at plugin load, before any hook reads the map
+  // (HookHandler::Register's note), then attached at each slot read now, so
+  // every attach answers (Install's does not) and ProcessImpacts' one id
+  // takes every distinct address
+  handler->Register(Frida::HookID::HOOK_IMPULSE_EXPLOSION,
+                    std::make_shared<Frida::Hook>(OnImpulseExplosionEnter,
+                                                  OnImpulseBracketLeave));
+  handler->Register(
+    Frida::HookID::HOOK_IMPULSE_CONE,
+    std::make_shared<Frida::Hook>(OnImpulseConeEnter, OnImpulseBracketLeave));
+  handler->Register(Frida::HookID::HOOK_IMPULSE_IMPACTS,
+                    std::make_shared<Frida::Hook>(OnImpulseImpactsEnter,
+                                                  OnImpulseBracketLeave));
+  const std::uintptr_t updateAt = VtableSlot(RE::VTABLE_Explosion[0], 0xA3);
+  const bool update = updateAt &&
+    handler->Attach(Frida::HookID::HOOK_IMPULSE_EXPLOSION, updateAt);
+  if (updateAt) {
+    logger::info("[verb:prop-physics] impulse bracket Explosion::Update "
+                 "(VTABLE_Explosion[0] slot 0xa3): {}, {}",
+                 SlotPlace(updateAt), update ? "attached" : "NOT attached");
+  }
+  const std::uintptr_t hitsAt = VtableSlot(RE::VTABLE_ConeProjectile[0], 0xBE);
+  const bool hits =
+    hitsAt && handler->Attach(Frida::HookID::HOOK_IMPULSE_CONE, hitsAt);
+  if (hitsAt) {
+    logger::info("[verb:prop-physics] impulse bracket "
+                 "ConeProjectile::HandleHits (VTABLE_ConeProjectile[0] slot "
+                 "0xbe): {}, {}",
+                 SlotPlace(hitsAt), hits ? "attached" : "NOT attached");
+  }
+  const std::pair<const char*, REL::VariantID> projectiles[] = {
+    { "Projectile", RE::VTABLE_Projectile[0] },
+    { "ArrowProjectile", RE::VTABLE_ArrowProjectile[0] },
+    { "BarrierProjectile", RE::VTABLE_BarrierProjectile[0] },
+    { "BeamProjectile", RE::VTABLE_BeamProjectile[0] },
+    { "ConeProjectile", RE::VTABLE_ConeProjectile[0] },
+    { "FlameProjectile", RE::VTABLE_FlameProjectile[0] },
+    { "GrenadeProjectile", RE::VTABLE_GrenadeProjectile[0] },
+    { "MissileProjectile", RE::VTABLE_MissileProjectile[0] }
+  };
+  std::vector<std::uintptr_t> impactsAt;
+  for (const auto& [name, vtable] : projectiles) {
+    const std::uintptr_t at = VtableSlot(vtable, 0xAC);
+    if (!at) {
+      continue;
+    }
+    if (std::find(impactsAt.begin(), impactsAt.end(), at) != impactsAt.end()) {
+      logger::info("[verb:prop-physics] impulse bracket {}::ProcessImpacts "
+                   "(slot 0xac): {}, attached already",
+                   name, SlotPlace(at));
+      continue;
+    }
+    const bool attached =
+      handler->Attach(Frida::HookID::HOOK_IMPULSE_IMPACTS, at);
+    if (attached) {
+      impactsAt.push_back(at);
+    }
+    logger::info("[verb:prop-physics] impulse bracket {}::ProcessImpacts "
+                 "(slot 0xac): {}, {}",
+                 name, SlotPlace(at), attached ? "attached" : "NOT attached");
+  }
+  StartImpulseReporter();
+  // the lab tells a build with the rule by this line (prop-impulse.js v1.2
+  // runs ATTACH_ONLY beside it: one replacement a function a process)
+  logger::info("[verb:prop-physics] impulse hooks installed: "
+               "ScaleGameplayImpulseForce (Address Library 26004 at +{:x}) "
+               "{}, AddExplosionImpulse (26005 at +{:x}) {}; brackets "
+               "Explosion::Update {}, ConeProjectile::HandleHits {}, "
+               "ProcessImpacts at {} addresses; inert until "
+               "setImpulseCauseRule(true)",
+               sizedAt - base, sized ? "replaced" : "NOT replaced",
+               treesAt - base, trees ? "replaced" : "NOT replaced",
+               update ? "attached" : "NOT attached",
+               hits ? "attached" : "NOT attached", impactsAt.size());
+}
+
 void Frida::InstallHooks()
 {
   LoadAdmittedScripts();
@@ -3570,6 +4337,9 @@ void Frida::InstallHooks()
   InstallReanimateHook();
   // thuum docs/verbs/prop-physics.md: the player's touch of a prop's body
   InstallPropContactHook();
+  // and an impulse's cause (ADR-071 rung 3), inert until
+  // setImpulseCauseRule(true)
+  InstallImpulseHooks();
   InstallQueueNinodeUpdateHook();
   InstallRenderCursorMenuHook();
 #ifdef ENABLE_SKYRIM_AE

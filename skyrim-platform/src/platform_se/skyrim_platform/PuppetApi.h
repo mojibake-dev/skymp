@@ -150,6 +150,21 @@ Napi::Value ReadBodies(const Napi::CallbackInfo& info);
 // task logs the set, or why not (no 3D, no rigid body, a motion type that is
 // not dynamic)
 Napi::Value SetBodyVelocity(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-071 decision 4 (rung 3, FridaHooks.h):
+// setImpulseCauseRule(on), the impulse rule at the replaced
+// ScaleGameplayImpulseForce and AddExplosionImpulse on or off, off by default
+// (every impulse the engine's own): on, an impulse whose cause another seat
+// owns is zeroed on every physics body, and one this seat's cause gave
+// raises propImpulse on the next tick. Stored with no game call; true when
+// ScaleGameplayImpulseForce's replacement went in at install. And rung 3's
+// third argument to readBodies, islands (the island's claim): with islands
+// true a body of a dynamic motion type that is awake carries island, its
+// island's other members of a dynamic type as { refrId, formType }, each
+// reference once with its base's form type, at most 16, never the player's
+// own or the body's own reference, none for the world's fixed island, read
+// on the JS thread with no engine lock (absent when the read faulted);
+// islands absent or false reads none, rung 2's call
+Napi::Value SetImpulseCauseRule(const Napi::CallbackInfo& info);
 // thuum docs/DECISIONS.md ADR-068 rung 3 (the script record, amendment A;
 // ScriptState.h): setScriptRecordPending(formId, pending), a reference whose
 // served script record waits for its apply (true) or no longer (false), kept
@@ -308,6 +323,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "setBodyVelocity",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetBodyVelocity)));
+  exports.Set("setImpulseCauseRule",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetImpulseCauseRule)));
   exports.Set("setScriptRecordPending",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetScriptRecordPending)));

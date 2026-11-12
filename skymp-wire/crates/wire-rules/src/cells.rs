@@ -265,6 +265,26 @@ pub enum ClaimVerdict {
     Reclaimed,
 }
 
+/// A thrall's record as the core reads it for `Cells::returning` (ADR-060's
+/// return, thuum docs/verbs/npc-fate.md C4; Eli, 2026-11-12: "thrall returns
+/// to caster obvs"). The record is the dormant row: its Reanimate state's
+/// caster is the server's own, stamped at the accepted hit and kept through
+/// the commander's departure and a restart, and a death empties it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThrallRecord {
+    /// The thrall.
+    pub actor: u32,
+    /// The cell its record stands in.
+    pub cell: u32,
+    /// The caster its Reanimate state names, 0 for none.
+    pub caster: u32,
+    /// That state's record duration, seconds (a full thrall's at least
+    /// `FULL_THRALL_MIN_S`).
+    pub record_s: u32,
+    /// Whether the record is alive.
+    pub alive: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 struct PlayerState {
     /// The cells the game reports loaded, each with the time it first did.
@@ -690,6 +710,30 @@ impl Cells {
         let full = f64::from(effect_s) >= f64::from(FULL_THRALL_MIN_S);
         self.follows.insert(actor, Follow { player, cell, since_ms: now_ms, kind: FollowKind::Commanded, lease_until_ms: None, full });
         verdict
+    }
+
+    /// `player`'s game reports a cell loaded and the core read the records of
+    /// the thralls standing there (ADR-060's return, thuum
+    /// docs/verbs/npc-fate.md C4; Eli, 2026-11-12: "thrall returns to caster
+    /// obvs"): each one alive, a full thrall's (its record's duration at least
+    /// `FULL_THRALL_MIN_S`), naming `player` its caster, in a cell the
+    /// player's game has loaded and under no live command is commanded by
+    /// `player` again (`claim_commanded`), whoever hosts its cell. Nothing is
+    /// kept here between calls: the record is the dormant row, so a thrall
+    /// that died meanwhile or that another raised names nobody, or another.
+    /// The actors claimed, in the records' order.
+    pub fn returning(&mut self, player: u32, thralls: &[ThrallRecord], now_ms: u64) -> Vec<u32> {
+        let mut claimed = Vec::new();
+        for t in thralls {
+            let full = f64::from(t.record_s) >= f64::from(FULL_THRALL_MIN_S);
+            if player == 0 || t.caster != player || !t.alive || !full || self.commander_of(t.actor) != 0 {
+                continue;
+            }
+            if self.claim_commanded(t.actor, player, t.cell, t.record_s, now_ms) == ClaimVerdict::Granted {
+                claimed.push(t.actor);
+            }
+        }
+        claimed
     }
 
     /// `player` releases its dialogue claim on `actor`; false when it holds
@@ -1719,5 +1763,99 @@ mod tests {
                 Decision::ClaimGone { actor: HILDE, cell: RIVERWOOD, player: C2 },
             ]
         );
+    }
+
+    // ADR-060's return (thuum docs/verbs/npc-fate.md C4; Eli, 2026-11-12:
+    // "thrall returns to caster obvs"): a full thrall that stayed when its
+    // caster left is its caster's again once the caster's game loads the
+    // thrall's cell, read from its record, whoever hosts the cell; not
+    // before the load (the caster logged in elsewhere), and a second
+    // departure is the word again
+    #[test]
+    fn a_full_thrall_returns_to_its_caster_at_its_cells_load_whoever_hosts_it() {
+        const SVEN: u32 = 0x13491;
+        const WEST: u32 = 0x9731;
+        let sven = ThrallRecord { actor: SVEN, cell: RIVERWOOD, caster: C2, record_s: DEAD_THRALL_S, alive: true };
+        let mut c = Cells::default();
+        c.reach(C1, &[RIVERWOOD], 1_000);
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.reach(C2, &[RIVERWOOD], 1_100);
+        c.loaded(C2, RIVERWOOD, 1_100);
+        c.tick(1_200);
+        assert_eq!(c.host_of(RIVERWOOD).map(|(p, _)| p), Some(C1));
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, DEAD_THRALL_S, 2_000), ClaimVerdict::Granted);
+        // the caster leaves: the word alone, the cell's host simulates the full thrall
+        assert_eq!(c.gone(C2, 3_000), vec![Decision::ClaimGone { actor: SVEN, cell: RIVERWOOD, player: C2 }]);
+        assert_eq!(c.commander_of(SVEN), 0);
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
+        // it logs in elsewhere: its game has not loaded the thrall's cell, so nothing returns
+        c.reach(C2, &[WEST], 10_000);
+        c.loaded(C2, WEST, 10_000);
+        assert!(c.returning(C2, &[sven], 10_000).is_empty());
+        assert_eq!(c.commander_of(SVEN), 0);
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
+        // its game loads the thrall's cell, which C1 still hosts: commanded again, and C1 keeps the cell
+        c.reach(C2, &[WEST, RIVERWOOD], 20_000);
+        c.loaded(C2, RIVERWOOD, 20_000);
+        assert_eq!(c.returning(C2, &[sven], 20_000), vec![SVEN]);
+        assert_eq!(c.commander_of(SVEN), C2);
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
+        assert_eq!(c.host_of(RIVERWOOD).map(|(p, _)| p), Some(C1));
+        assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
+        // a later load claims nothing again: its own command stands as it is
+        assert!(c.returning(C2, &[sven], 21_000).is_empty());
+        assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
+        // the command is the cast's own shape: it follows the thrall, and its commander's next departure is the word again
+        assert_eq!(
+            c.may_move(&CellMove { sender: C2, actor: SVEN, origin: RIVERWOOD, dest: WEST, adjacent: true, door: false, edge_units: 0 }, 22_000),
+            MoveVerdict::Accept
+        );
+        assert_eq!(c.simulator_of(SVEN, WEST), C2);
+        assert_eq!(c.gone(C2, 30_000), vec![Decision::ClaimGone { actor: SVEN, cell: WEST, player: C2 }]);
+        assert_eq!(c.commander_of(SVEN), 0);
+    }
+
+    // the return's edges (C4): a thrall that died while its caster was away
+    // (the tick before its set empties), another caster's record, a timed
+    // thrall's, a live command (another's or its own) and nobody return
+    // nothing; the line is the record's duration, a day; another player's
+    // dialogue with the thrall gives way, as at a cast
+    #[test]
+    fn a_return_skips_a_dead_thrall_another_casters_a_timed_one_and_a_live_command() {
+        const SVEN: u32 = 0x13491;
+        const HILDE: u32 = 0x35534;
+        const HOD: u32 = 0x1348a;
+        const C3: u32 = 0xff00_0007;
+        let rec = |actor: u32, caster: u32, record_s: u32, alive: bool| ThrallRecord { actor, cell: RIVERWOOD, caster, record_s, alive };
+        let mut c = Cells::default();
+        c.reach(C1, &[RIVERWOOD], 1_000);
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.reach(C2, &[RIVERWOOD], 1_100);
+        c.loaded(C2, RIVERWOOD, 1_100);
+        c.reach(C3, &[RIVERWOOD], 1_200);
+        c.loaded(C3, RIVERWOOD, 1_200);
+        // died while its caster was away
+        assert!(c.returning(C2, &[rec(SVEN, C2, DEAD_THRALL_S, false)], 2_000).is_empty());
+        // another caster raised it after that death: the record names C3
+        assert!(c.returning(C2, &[rec(SVEN, C3, DEAD_THRALL_S, true)], 2_000).is_empty());
+        // a timed thrall's record (its commander's departure kills it, and a restart's next tick)
+        assert!(c.returning(C2, &[rec(SVEN, C2, REANIMATE_CORPSE_S, true)], 2_000).is_empty());
+        // nobody is no caster
+        assert!(c.returning(0, &[rec(SVEN, 0, DEAD_THRALL_S, true)], 2_000).is_empty());
+        assert_eq!(c.claims(), vec![]);
+        // the line: 86,399 s is a timed thrall's, 86,400 a full one's
+        assert_eq!(c.returning(C2, &[rec(SVEN, C2, 86_399, true), rec(HILDE, C2, 86_400, true)], 2_000), vec![HILDE]);
+        // a live command by another stands: C3 commands Sven, and C2's record of him claims nothing
+        assert_eq!(c.claim_commanded(SVEN, C3, RIVERWOOD, DEAD_THRALL_S, 3_000), ClaimVerdict::Granted);
+        assert!(c.returning(C2, &[rec(SVEN, C2, DEAD_THRALL_S, true)], 3_000).is_empty());
+        assert_eq!(c.commander_of(SVEN), C3);
+        // and its own: Hilde is C2's already
+        assert!(c.returning(C2, &[rec(HILDE, C2, DEAD_THRALL_S, true)], 3_000).is_empty());
+        // another player's dialogue with the thrall gives way, as at a cast
+        assert_eq!(c.claim(HOD, C1, RIVERWOOD, 4_000), ClaimVerdict::Granted);
+        assert_eq!(c.returning(C2, &[rec(HOD, C2, DEAD_THRALL_S, true)], 4_000), vec![HOD]);
+        assert_eq!(c.commander_of(HOD), C2);
+        assert_eq!(c.simulator_of(HOD, RIVERWOOD), C2);
+        assert_eq!(c.claims(), vec![(HOD, C2, RIVERWOOD), (SVEN, C3, RIVERWOOD), (HILDE, C2, RIVERWOOD)]);
     }
 }

@@ -1388,6 +1388,25 @@ mod ffi {
         edge_units: u32,
     }
 
+    /// A thrall's record as the core reads it for `returning` (ADR-060's
+    /// return, thuum docs/verbs/npc-fate.md C4): the thrall, the cell its
+    /// record stands in, the caster its Reanimate state names (0 for none),
+    /// that state's record duration in seconds, and whether the record is
+    /// alive.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ThrallRecord {
+        /// The thrall.
+        actor: u32,
+        /// The cell its record stands in.
+        cell: u32,
+        /// The caster its Reanimate state names, 0 for none.
+        caster: u32,
+        /// That state's record duration, seconds.
+        record_s: u32,
+        /// Whether the record is alive.
+        alive: bool,
+    }
+
     /// A follow (ADR-047 D6, thuum docs/verbs/npc-handoff.md): `player`
     /// simulates `actor` in `cell`, a cell nobody hosts, for the lab's reading.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3027,6 +3046,11 @@ mod ffi {
         /// line at its commander's departure (a full thrall's, a day and
         /// more, stays; a timed one dies): the same codes as claim_actor.
         fn claim_commanded(self: &mut Cells, actor: u32, player: u32, cell: u32, effect_s: u32, now_ms: u64) -> u8;
+        /// ADR-060's return (thuum docs/verbs/npc-fate.md C4): `player`'s
+        /// game has a cell loaded; each thrall record there that is alive, a
+        /// full thrall's and names `player` its caster, under no live
+        /// command, is commanded by `player` again. The actors claimed.
+        fn returning(self: &mut Cells, player: u32, thralls: &[ThrallRecord], now_ms: u64) -> Vec<u32>;
         /// `player` releases its dialogue claim on `actor`; false when it
         /// holds none (a commanded row ends by its death or its
         /// commander's departure, never a dialogue's release; ADR-060).
@@ -3418,7 +3442,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ThrallRecord, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4567,6 +4591,14 @@ impl Cells {
             cells::ClaimVerdict::Unloaded => 2,
             cells::ClaimVerdict::Reclaimed => 3,
         }
+    }
+
+    fn returning(&mut self, player: u32, thralls: &[ThrallRecord], now_ms: u64) -> Vec<u32> {
+        let records: Vec<cells::ThrallRecord> = thralls
+            .iter()
+            .map(|t| cells::ThrallRecord { actor: t.actor, cell: t.cell, caster: t.caster, record_s: t.record_s, alive: t.alive })
+            .collect();
+        self.0.returning(player, &records, now_ms)
     }
 
     fn release_claim(&mut self, actor: u32, player: u32) -> bool {
@@ -6133,6 +6165,34 @@ mod tests {
         assert_eq!(k.commander_of(0x35534), 0);
         assert_eq!(k.commander_of(0x13491), 0);
         assert!(k.tick(1_500 + 60_000).is_empty());
+    }
+
+    // ADR-060's return (thuum docs/verbs/npc-fate.md C4): the core's records
+    // of a loaded cell cross as slices; the full thrall naming its returning
+    // caster is claimed for it, the timed one is not, and the word is the
+    // core's to send (UpdateHoster, as ClaimCommanded's)
+    #[test]
+    fn a_full_thralls_record_returns_it_to_its_caster_across_the_bridge() {
+        let mut k = new_cells();
+        assert!(k.reach(0xff00_0002, &[0x9731], 0).is_empty());
+        assert!(k.reach(0xff00_0003, &[0x9731], 0).is_empty());
+        assert_eq!(k.loaded(0xff00_0002, 0x9731, 1_000).len(), 1);
+        assert!(k.loaded(0xff00_0003, 0x9731, 1_100).is_empty());
+        assert_eq!(k.claim_commanded(0x13491, 0xff00_0003, 0x9731, 86_313_600, 1_500), 0);
+        assert_eq!(k.gone(0xff00_0003, 2_000).len(), 1);
+        assert_eq!(k.commander_of(0x13491), 0);
+        assert_eq!(k.simulator_of(0x13491, 0x9731), 0xff00_0002);
+        assert!(k.reach(0xff00_0003, &[0x9731], 3_000).is_empty());
+        assert!(k.loaded(0xff00_0003, 0x9731, 3_000).is_empty());
+        let records = [
+            ThrallRecord { actor: 0x13491, cell: 0x9731, caster: 0xff00_0003, record_s: 86_313_600, alive: true },
+            ThrallRecord { actor: 0x35534, cell: 0x9731, caster: 0xff00_0003, record_s: 60, alive: true },
+        ];
+        assert_eq!(k.returning(0xff00_0003, &records, 3_000), vec![0x13491]);
+        assert_eq!(k.commander_of(0x13491), 0xff00_0003);
+        assert_eq!(k.simulator_of(0x13491, 0x9731), 0xff00_0003);
+        assert_eq!(k.commander_of(0x35534), 0);
+        assert!(k.returning(0xff00_0003, &records, 3_100).is_empty());
     }
 
     fn sample(refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, moved: f32, now_ms: u64) -> PropSampleFacts {

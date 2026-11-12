@@ -135,8 +135,10 @@ Napi::Value SetRecordApplying(const Napi::CallbackInfo& info);
 // translate in game units, rot its world rotation as Euler XYZ degrees, lin
 // in game units a second, ang in radians a second (Havok's own), motion
 // hkpMotion::MotionType's value, awake the body's island in the world's
-// active list. An id with no reference, 3D, cell world or rigid body on the
-// root is left out. With all false a body is answered while awake and once
+// active list. The body is the 3D root's own, else the first one on the
+// root's children (a trap rock's); an id with no reference, 3D, cell world or
+// rigid body on the root or a child of it is left out. pos and rot stay the
+// root's either way. With all false a body is answered while awake and once
 // more at the read where it fell asleep (rule 9: a resting body costs JS
 // nothing); with all true every body found, that filter left as it was
 Napi::Value ReadBodies(const Napi::CallbackInfo& info);

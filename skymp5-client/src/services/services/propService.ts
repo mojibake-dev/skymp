@@ -1806,13 +1806,13 @@ export class PropService extends ClientListener {
     // placement's test, the follower's segment, the grant's first sample, a
     // hand on a resting body, an open stream's end, the take-over's jump and
     // the "body" lines. A loaded 3D the platform reads no body for (none on its
-    // root, or no cell world) is said once: its stream cannot run (a body of
-    // several parts is rung 4's walk)
+    // root or the root's children, or no cell world) is said once: its stream
+    // cannot run (a body of several parts is rung 4's walk)
     private readBody(prop: Prop): Body | undefined {
         const body = this.readBodies([prop.localId], true)[0];
         if (body === undefined && prop.loaded3D && !prop.badBodySaid) {
             prop.badBodySaid = true;
-            logLab(TAG, `prop ${prop.refr.toString(16)}: no Havok body read (none on its 3D root, or no cell world)`);
+            logLab(TAG, `prop ${prop.refr.toString(16)}: no Havok body read (none on its 3D root or its children, or no cell world)`);
         }
         return body;
     }

@@ -689,26 +689,24 @@ Napi::Value PuppetApi::SetRecordApplying(const Napi::CallbackInfo& info)
 }
 
 namespace {
-// thuum ADR-071 rung 2 (the sample v2): a loaded reference's Havok body, by
-// the walk CommonLib's own GetCollisionLayer makes (CommonLibSSE-NG
-// src/RE/N/NiAVObject.cpp:61-75): the 3D root's collision object
+// thuum ADR-071 rung 2 (the sample v2): a node's own Havok body, by the walk
+// CommonLib's own GetCollisionLayer makes (CommonLibSSE-NG
+// src/RE/N/NiAVObject.cpp:61-75): the node's collision object
 // (include/RE/N/NiAVObject.h:156) as a bhkNiCollisionObject (NiObject.h:61),
 // its body (bhkNiCollisionObject.h:56) as a bhkRigidBody (NiObject.h:64), and
 // the hkpRigidBody it refers to (bhkRefObject.h:26; hkpRigidBody.h:7, an
-// hkpEntity). Both null for a model whose root carries no rigid body
-// (HYPOTHESIS: the lab's props, an IronIngot, a Basket01 and a FoodCabbage,
-// carry theirs on the root; x-body-read's "body" lines read it)
+// hkpEntity). Both null for a node that carries no rigid body
 struct PropBody
 {
   RE::bhkRigidBody* rigid = nullptr;
   RE::hkpRigidBody* havok = nullptr;
 };
 
-PropBody BodyOf(RE::NiAVObject& root)
+PropBody OwnBodyOf(RE::NiAVObject& node)
 {
   PropBody res;
-  auto* collision = root.collisionObject
-    ? root.collisionObject->AsBhkNiCollisionObject()
+  auto* collision = node.collisionObject
+    ? node.collisionObject->AsBhkNiCollisionObject()
     : nullptr;
   auto* rigid =
     collision && collision->body ? collision->body->AsBhkRigidBody() : nullptr;
@@ -717,6 +715,44 @@ PropBody BodyOf(RE::NiAVObject& root)
     res.havok = static_cast<RE::hkpRigidBody*>(rigid->referencedObject.get());
   }
   return res;
+}
+
+// a loaded reference's Havok body, found as lab/frida/rock-motion-trace.js
+// finds it (thuum main, bodyOfNode at :177-205; the rung 3 read
+// prop-impulse.js walks the same): the 3D root's own body, else the first of
+// the root's children that carries one, one level down, since a trap rock's
+// body hangs on a child of its root (the plan's R9). The children are read as
+// CommonLib's own scene graph walk reads them
+// (BSVisit::TraverseScenegraphCollision, src/RE/B/BSVisit.cpp:26-34, which
+// goes deeper than this one level): NiAVObject::AsNode (N/NiObject.h:46), then
+// NiNode::GetChildren (N/NiNode.h:57-65), every slot from begin to end
+// (N/NiTArray.h:69-97, the array's capacity, where the trace stops at its
+// first 16 under _size; an empty slot skipped). readBodies and
+// setBodyVelocity both find their body here, so a write lands on the body
+// read. Both null for a model with no rigid body on its root or a child of
+// it. HYPOTHESIS: the lab's items carry theirs on the root (x-body-read's
+// "body" lines read it), and a rock whose body hangs on a child moves its
+// root with it, since pos and rot stay the root's (the trace's rows read the
+// root's translate too, rock-motion-trace.js:246); the trap scenarios read it
+PropBody BodyOf(RE::NiAVObject& root)
+{
+  const PropBody own = OwnBodyOf(root);
+  if (own.havok) {
+    return own;
+  }
+  if (auto* node = root.AsNode()) {
+    for (auto& child : node->GetChildren()) {
+      auto* object = child.get();
+      if (!object) {
+        continue;
+      }
+      const PropBody body = OwnBodyOf(*object);
+      if (body.havok) {
+        return body;
+      }
+    }
+  }
+  return {};
 }
 
 // hkpMotion::MotionType's dynamic values (CommonLibSSE-NG
@@ -953,7 +989,7 @@ Napi::Value PuppetApi::SetBodyVelocity(const Napi::CallbackInfo& info)
     const PropBody body = BodyOf(*root);
     if (!body.havok) {
       logger::warn("[verb:prop-physics] velocity not set on {:x}: no rigid "
-                   "body on its 3D root",
+                   "body on its 3D root or the root's children",
                    formId);
       return;
     }

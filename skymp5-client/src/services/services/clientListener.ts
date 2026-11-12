@@ -307,13 +307,15 @@ declare module "skyrimPlatform" {
     // rot that rotation as Euler XYZ degrees (x and z in -180 to 180, y in -90
     // to 90), lin game units a second, ang radians a second, motion Havok's
     // type (1, 2, 3 and 6 dynamic, 4 Keyframed, 5 Fixed), awake its island in
-    // the world's active list; an id with no reference, 3D, cell world or
-    // rigid body on its root is left out. With all false a body is answered
-    // while awake and once more at the read its awake bit fell (rule 9), with
-    // all true every body found. setBodyVelocity queues the take-over's
-    // velocities to the main thread (true when queued) and its task logs
-    // "[verb:prop-physics] velocity set on <id>" or "velocity not set on <id>"
-    // with why. Definitions.txt carries the same
+    // the world's active list; the body the root's own, else the first one on
+    // the root's children (a trap rock's); an id with no reference, 3D, cell
+    // world or rigid body on its root or a child of it is left out. With all
+    // false a body is answered while awake and once more at the read its awake
+    // bit fell (rule 9), with all true every body found. setBodyVelocity
+    // queues the take-over's velocities to the same body on the main thread
+    // (true when queued) and its task logs "[verb:prop-physics] velocity set
+    // on <id>" or "velocity not set on <id>" with why. Definitions.txt
+    // carries the same
     interface BodyRead { formId: number; awake: boolean; motion: number; pos: number[]; rot: number[]; lin: number[]; ang: number[] }
     function readBodies(formIds: number[], all: boolean): BodyRead[];
     function setBodyVelocity(formId: number, lin: number[], ang: number[]): boolean;

@@ -1748,7 +1748,9 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   {
     // Reanimate Corpse's record: a timed thrall's, under a day
     REQUIRE(recordSecondsOf(kReanimateCorpse, kReanimateEffect) > 0);
-    REQUIRE(recordSecondsOf(kReanimateCorpse, kReanimateEffect) < 86'400);
+    REQUIRE(
+      static_cast<float>(recordSecondsOf(kReanimateCorpse, kReanimateEffect)) <
+      skymp::rules::full_thrall_min_s());
     Equipment eq;
     eq.rightSpell = kReanimateCorpse;
     caster.SetEquipment(eq);
@@ -1803,7 +1805,7 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
           "just stay\")")
   {
     const uint32_t seconds = recordSecondsOf(kDeadThrall, kDeadThrallEffect);
-    REQUIRE(seconds >= 86'400);
+    REQUIRE(static_cast<float>(seconds) >= skymp::rules::full_thrall_min_s());
     Equipment eq;
     eq.rightSpell = kDeadThrall;
     caster.SetEquipment(eq);

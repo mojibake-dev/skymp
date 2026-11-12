@@ -2017,6 +2017,78 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(p.SimulatorOf(body) == kHost);
   }
 
+  // thuum lab/.cache/drafts/reanimate/read-stage-125536.md 4.2
+  // (x-reanimate-claim 20261112-125536's terminate): a commander that hosts
+  // its thrall's cell is that cell's rule's answer through its own grace
+  // (cells.rs gone()), so the departure's ClaimGone named the leaver and
+  // sent it a keyframe its freed user could not take, in a ScopedTask's
+  // destructor. The test's send target records what the live one throws on
+  SECTION("by the host itself: its departure while it commands a timed "
+          "thrall sends its own user nothing, the thrall dies by the "
+          "server's word first, and the cell's next host takes the body")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    host.SetEquipment(eq);
+    casts(0, kReanimateCorpse);
+    hits(0, kReanimateCorpse);
+    REQUIRE(p.CommanderOf(body) == kHost);
+    standsOn(0);
+    REQUIRE_FALSE(body.IsDead());
+    p.Messages().clear();
+    {
+      LogCapture log;
+      REQUIRE_NOTHROW(DoDisconnect(p, 0));
+      // the claim's end names nobody (PartOne.cpp's ClaimGone guard), and
+      // every decision of the departure completed
+      REQUIRE(log.Count("the claimant hosting the cell: the word waits for "
+                        "its next host") == 1);
+      REQUIRE(log.Count("a host decision threw") == 0);
+    }
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    // nothing to the leaver's user: no keyframe and no hoster word
+    const auto toLeaver =
+      std::count_if(p.Messages().begin(), p.Messages().end(),
+                    [](const PartOne::Message& m) { return m.userId == 0; });
+    REQUIRE(toLeaver == 0);
+    // the other game hears the death, the server's word (ThrallExpired),
+    // ahead of the word that nobody simulates the body yet
+    size_t deadAt = p.Messages().size();
+    size_t hostedAt = p.Messages().size();
+    for (size_t i = 0; i < p.Messages().size(); ++i) {
+      const auto& m = p.Messages()[i];
+      if (m.userId != 1 || !m.j.is_object() ||
+          m.j.value("t", -1) != static_cast<int>(MsgType::UpdateProperty) ||
+          m.j.value("refrId", 0u) != kPredator) {
+        continue;
+      }
+      const auto prop = m.j.value("propName", std::string());
+      const auto dump = m.j.value("dataDump", std::string());
+      if (prop == "isDead" && dump == "true") {
+        deadAt = std::min(deadAt, i);
+      }
+      if (prop == "isHostedByOther" && dump == "true") {
+        hostedAt = std::min(hostedAt, i);
+      }
+    }
+    REQUIRE(deadAt < p.Messages().size());
+    REQUIRE(hostedAt < p.Messages().size());
+    REQUIRE(deadAt < hostedAt);
+    // the grace passes: the caster's game, which has the cell loaded, hosts
+    // it next and is named the body's simulator; the record stays dead
+    p.Messages().clear();
+    p.TickCellHosts(FateNowMs() + skymp::rules::host_grace_ms() + 2'000);
+    REQUIRE(SentOfType(p, 1, MsgType::HostGrant) >= 1);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.worldState.HostOf(body) == &caster);
+    REQUIRE(hostedFalseTo(1) >= 1);
+    REQUIRE(body.IsDead());
+    // the shared cleanup below disconnects the host again
+    DoConnect(p, 0);
+    p.SetUserActor(0, kHost);
+  }
+
   // the shared world: no claim on the body, the body stood up again with no
   // deadline, the fight a hit may have begun forgotten, the players gone
   p.ReleaseAnyClaim(body);

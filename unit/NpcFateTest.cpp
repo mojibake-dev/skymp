@@ -1338,6 +1338,18 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   p.worldState.fateRespawnDue.erase(kPredator);
   body.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
   HostGrants(p, 0, kForestCell);
+  // the caster's game has the cell loaded too, as its client reports it: a
+  // command needs its commander to have the body's cell loaded (cells.rs
+  // claim_commanded answers Unloaded otherwise, E_COMMAND_UNLOADED); the
+  // host holds the cell, so the load grants nothing
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kForestCell;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
   auto& host = p.worldState.GetFormAt<MpActor>(kHost);
   auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
   REQUIRE(p.worldState.HostOf(body) == &host);

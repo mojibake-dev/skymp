@@ -407,6 +407,11 @@ declare module "skyrimPlatform" {
     // record-worn armor that it holds unworn, equipped again after an apply
     function dressBody(refrId: number, worn: number[]): boolean;
     function actorFateCount(): number;
+    // thuum docs/verbs/npc-fate.md C4 (ADR-060's return): the command of a
+    // living thrall this game's player cast and simulates though its engine
+    // holds no effect on it, one main-thread task that starts, refreshes or
+    // ends it by the engine's state (FateApi.cpp CommandActor)
+    function commandActor(refrId: number, on: boolean): boolean;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

@@ -4,7 +4,12 @@
 #include "ItemMenuRefresh.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
+#include <RE/A/AIProcess.h>
+#include <RE/A/Actor.h>
+#include <RE/A/ActorState.h>
 #include <RE/M/Main.h>
+#include <RE/M/MiddleHighProcessData.h>
+#include <RE/P/PlayerCharacter.h>
 #include <algorithm>
 #include <functional>
 #include <set>
@@ -805,4 +810,157 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
 Napi::Value FateApi::ActorFateCount(const Napi::CallbackInfo& info)
 {
   return Napi::Number::New(info.Env(), static_cast<double>(Fates::Count()));
+}
+
+namespace {
+// thuum docs/verbs/npc-fate.md C4: the engine's command routines, by the
+// static read's signatures (game/Offsets.h's Fate block cites each)
+using CommandLifeStateFn = void (*)(RE::Actor* actor, std::uint8_t reanimate);
+using CommandLinkFn = void (*)(RE::Actor* commanded, RE::Actor* commander,
+                               RE::ActiveEffect* effect);
+using CommandUnlinkFn = void (*)(RE::Actor* commanded,
+                                 RE::ActiveEffect* effect);
+// 38799 has the link's shape (Offsets.h)
+using CommandRefreshFn = CommandLinkFn;
+
+// The player's commandedActors entry for `thrall`
+// (MiddleHighProcessData.h:147, CommandedActorData at :52-60): none, one
+// holding no effect (this export's link), or one holding the engine's own
+// command effect (the original cast's CommandEffect)
+enum class CommandEntry
+{
+  kNone,
+  kOurs,
+  kEngine
+};
+
+CommandEntry CommandEntryOf(RE::Actor* player, RE::Actor* thrall)
+{
+  auto* process = player->GetActorRuntimeData().currentProcess;
+  if (!process || !process->middleHigh) {
+    return CommandEntry::kNone;
+  }
+  for (const auto& entry : process->middleHigh->commandedActors) {
+    if (entry.commandedActor.get().get() == thrall) {
+      return entry.activeEffect ? CommandEntry::kEngine : CommandEntry::kOurs;
+    }
+  }
+  return CommandEntry::kNone;
+}
+
+// What this export did to each thrall, read and written on the main thread
+// alone (every use below runs inside a QueueFateTask): linked, or evicted by
+// the engine after the link (never linked again); once-lines said
+enum class CommandMark
+{
+  kLinked,
+  kEvicted
+};
+std::unordered_map<uint32_t, CommandMark> g_commandMarks;
+std::unordered_map<uint32_t, bool> g_commandSaidEngine;
+std::unordered_map<uint32_t, bool> g_commandSaidWait;
+
+void CommandOnGameThread(uint32_t refrId, bool on)
+{
+  auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
+  auto* player = RE::PlayerCharacter::GetSingleton();
+  if (!actor || !player) {
+    logger::warn("[verb:npc-fate] commandActor({:x}): no such actor", refrId);
+    return;
+  }
+  const CommandEntry entry = CommandEntryOf(player, actor);
+  const auto mark = g_commandMarks.find(refrId);
+  const bool dead = actor->IsDead();
+  if (!on || dead) {
+    if (mark == g_commandMarks.end()) {
+      return;
+    }
+    const bool linked = mark->second == CommandMark::kLinked;
+    g_commandMarks.erase(mark);
+    g_commandSaidWait.erase(refrId);
+    if (linked && entry == CommandEntry::kOurs) {
+      REL::Relocation<CommandUnlinkFn> unlink{ Offsets::Fate::CommandUnlink };
+      unlink(actor, nullptr);
+      logger::info("[verb:npc-fate] commandActor({:x}): unlinked (38800; "
+                   "{}), the player's entry {} after it, on {}",
+                   refrId, dead ? "the thrall dead" : "no longer commanded",
+                   CommandEntryOf(player, actor) == CommandEntry::kNone
+                     ? "gone"
+                     : "still there",
+                   FateThreadNote());
+    }
+    return;
+  }
+  if (entry == CommandEntry::kEngine) {
+    if (g_commandSaidEngine.emplace(refrId, true).second) {
+      logger::info("[verb:npc-fate] commandActor({:x}): the engine's own "
+                   "command, left alone",
+                   refrId);
+    }
+    return;
+  }
+  if (mark != g_commandMarks.end() && mark->second == CommandMark::kEvicted) {
+    return;
+  }
+  if (mark != g_commandMarks.end()) {
+    if (entry == CommandEntry::kNone) {
+      // 40056's eviction (the static read's G2): the entry went without
+      // this export's 38800, so the engine dropped it for another; never
+      // linked again here (H-C4-4)
+      mark->second = CommandMark::kEvicted;
+      logger::info("[verb:npc-fate] commandActor({:x}): the engine removed "
+                   "it from the player's commanded actors; not linked again",
+                   refrId);
+      return;
+    }
+    REL::Relocation<CommandRefreshFn> refresh{ Offsets::Fate::CommandRefresh };
+    refresh(actor, player, nullptr);
+    return;
+  }
+  // the promotion first: a puppet (AI off, Puppets.h) is the record's copy
+  // until the server's word turns it into this game's actor; asked again at
+  // the client's next call (H-C4-5)
+  const bool puppet = Puppets::Is(refrId);
+  const bool aiOn = actor->IsAIEnabled();
+  if (puppet || !aiOn) {
+    if (g_commandSaidWait.emplace(refrId, true).second) {
+      logger::info("[verb:npc-fate] commandActor({:x}): waits for its "
+                   "promotion (puppet {}, AI on {})",
+                   refrId, puppet, aiOn);
+    }
+    return;
+  }
+  const auto* state = actor->AsActorState();
+  const bool reanimated =
+    state && state->GetLifeState() == RE::ACTOR_LIFE_STATE::kReanimate;
+  if (!reanimated) {
+    REL::Relocation<CommandLifeStateFn> lifeState{
+      Offsets::Fate::CommandLifeState
+    };
+    lifeState(actor, 1);
+  }
+  REL::Relocation<CommandLinkFn> link{ Offsets::Fate::CommandLink };
+  link(actor, player, nullptr);
+  const CommandEntry after = CommandEntryOf(player, actor);
+  g_commandMarks[refrId] = CommandMark::kLinked;
+  g_commandSaidWait.erase(refrId);
+  logger::info("[verb:npc-fate] commandActor({:x}): linked to the player "
+               "({}38798; the player's entry {}, commanded {}) on {}",
+               refrId, reanimated ? "" : "37490, ",
+               after == CommandEntry::kOurs ? "with no effect" : "missing",
+               actor->IsCommandedActor(), FateThreadNote());
+}
+}
+
+Napi::Value FateApi::CommandActor(const Napi::CallbackInfo& info)
+{
+  const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  const auto on = NapiHelper::ExtractBoolean(info[1], "on");
+  if (refrId == 0 || refrId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  const bool queued = QueueFateTask("commandActor", refrId, [refrId, on]() {
+    CommandOnGameThread(refrId, on);
+  });
+  return Napi::Boolean::New(info.Env(), queued);
 }

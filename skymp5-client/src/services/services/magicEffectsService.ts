@@ -1,9 +1,10 @@
 import { Actor, Art, EffectShader, Game, MagicEffect, ObjectReference, Spell } from "skyrimPlatform";
-import { logError, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { MagicEffectsMessage } from "../messages/magicEffectsMessage";
-import { getObjectReference } from "../../view/worldViewMisc";
+import { getObjectReference, localIdToRemoteId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
 
 // thuum docs/verbs/magic-effects.md: the effects the server runs on an actor
@@ -35,6 +36,7 @@ export class MagicEffectsService extends ClientListener {
         this.controller.emitter.on("magicEffectsMessage", (e) => this.onMagicEffects(e));
         this.controller.emitter.on("connectionAccepted", () => this.onConnectionAccepted());
         this.controller.once("update", () => this.blockEngineDrinks());
+        this.controller.on("update", () => this.commandUpkeep());
     }
 
     // A login, a reconnect's included, sets the player's base values from
@@ -82,6 +84,7 @@ export class MagicEffectsService extends ClientListener {
             return;
         }
         const key = refr.getFormID();
+        this.noteThrall(own, key, msg);
         const before = this.shown.get(key) ?? new Set<number>();
         const now = new Set<number>();
         for (const effect of msg.effects) {
@@ -269,6 +272,78 @@ export class MagicEffectsService extends ClientListener {
         });
     }
 
+    // thuum docs/verbs/npc-fate.md C4 (ADR-060's return; Eli, 2026-11-12:
+    // "thrall returns to caster obvs"): the caster each actor's Reanimate
+    // state names, by local form id, from its MagicEffects (the state with
+    // no clock, remaining negative, and its caster). A thrall stays its
+    // caster's through the caster's departure, and the server hands it back
+    // at the caster's return (UpdateHoster); this fresh game's engine holds
+    // no effect on it, so the upkeep below commands it
+    private noteThrall(own: boolean, key: number, msg: MagicEffectsMessage) {
+        if (own) {
+            return;
+        }
+        const state = msg.effects.find((e) => e.remaining < 0 && (e.caster ?? 0) !== 0);
+        if (state && state.caster !== undefined) {
+            this.thralls.set(key, state.caster);
+        } else {
+            this.thralls.delete(key);
+        }
+    }
+
+    // Every commandEveryUpdates updates, for each thrall: while its record
+    // names this game's player its caster, this game simulates it
+    // (HostService, the server's word) and it lives, Skyrim Platform's
+    // commandActor(refrId, true) starts the engine's command or refreshes it
+    // (38799, the static read's per-update refresh at the read's 30 frames,
+    // H-C4-2); once any of the three stops, commandActor(refrId, false) once
+    // ends it. The export queues its work on the main thread and leaves the
+    // engine's own command (the original cast's) alone, so a thrall this
+    // game raised itself costs one task per period and nothing else
+    private commandUpkeep() {
+        this.commandTick += 1;
+        if (this.commandTick < MagicEffectsService.commandEveryUpdates) {
+            return;
+        }
+        this.commandTick = 0;
+        if (!this.enabled() || (this.thralls.size === 0 && this.commanded.size === 0)) {
+            return;
+        }
+        const me = localIdToRemoteId(0x14);
+        const hostService = this.controller.lookupListener(HostService);
+        const ids = new Set<number>();
+        this.thralls.forEach((_caster, id) => ids.add(id));
+        this.commanded.forEach((id) => ids.add(id));
+        ids.forEach((id) => {
+            const caster = this.thralls.get(id);
+            const commanded = this.commanded.has(id);
+            if (caster !== me && !commanded) {
+                return;
+            }
+            const actor = Actor.from(Game.getFormEx(id));
+            const wish = caster === me && !!actor && !actor.isDead() && hostService.isMineLocal(id);
+            if (!wish && !commanded) {
+                return;
+            }
+            try {
+                const queued = this.sp.commandActor(id, wish);
+                if (wish && !commanded) {
+                    this.commanded.add(id);
+                    logLab("verb:npc-fate", `commandActor ${id.toString(16)}: asked, its record's caster ${me.toString(16)} is this game's player and this game simulates it (queued ${queued})`);
+                } else if (!wish) {
+                    this.commanded.delete(id);
+                    logLab("verb:npc-fate", `commandActor ${id.toString(16)}: ended (${!actor ? "no reference here" : actor.isDead() ? "dead" : caster !== me ? "its record names no caster of this game" : "simulated by another game"}; queued ${queued})`);
+                }
+            } catch (err) {
+                logError(this, "commandActor failed", err);
+            }
+        });
+    }
+
+    // the upkeep's period, in updates (the read's 38799 every 30 frames,
+    // lab/.cache/drafts/reanimate/read-return-152001.md section 3)
+    private static readonly commandEveryUpdates = 30;
+
     // how long an effect without duration (a heal at once) shows: a
     // presentation choice, about the engine's own flash
     private static readonly shownOnceSeconds = 1.5;
@@ -283,4 +358,9 @@ export class MagicEffectsService extends ClientListener {
     private sources = new Map<number, Set<number>>();
     // what this game holds of the server's buff sums, by actor value
     private held = new Map<number, number>();
+    // the caster each actor's Reanimate state names, by local form id
+    // (noteThrall), and the thralls the upkeep asked to command
+    private thralls = new Map<number, number>();
+    private commanded = new Set<number>();
+    private commandTick = 0;
 }

@@ -292,6 +292,36 @@ inline REL::ID AddWornOutfit(19692);
 // slot, which Hooks.cpp HostedResurrect holds; PlayerCharacter's override
 // (40491) calls it for the player alone, never a hosted body.
 inline REL::ID ActorResurrect(37321);
+// thuum docs/verbs/npc-fate.md C4 (ADR-060's return): the engine's command
+// of a living thrall by a player whose game holds no effect on it
+// (FateApi.cpp commandActor), the recipe read in lab run 20261112-152001
+// (x-reanimate-return v1.5, GREEN; lab/.cache/drafts/reanimate/
+// read-return-152001.md section 3) through lab/frida/thrall-link.js v1.3,
+// whose header (thrall-link.js:69-77) names each source. None is in
+// CommonLibSSE-NG at b93280e8; its one neighbour is 37612,
+// Actor::SetLifeState (src/RE/A/Actor.cpp:1031-1036). 1.6.1170's ids by
+// `just addr` on 2026-11-12, AE only, the SE ids unread. The signatures are
+// the static read's (lab/.cache/drafts/reanimate/return-to-caster-read.md,
+// REA's Ghidra pseudocode of the 1.6.1170 exe), HYPOTHESIS by rule 2 beyond
+// what 152001's rows showed.
+// 37490, offset 0x675130: `void (Actor*, uint8)`, the life state to
+// kReanimate (4) through 37612 for 1, the write the engine's own
+// reanimation (38820) makes
+inline REL::ID CommandLifeState(37490);
+// 38798, offset 0x6c5cb0: `void (Actor* commanded, Actor* commander,
+// ActiveEffect* effect)`, the command link: AIProcess::SetCommandingActor
+// (39950: the commanded's commandingActor and kIsCommandedActor), the
+// commander's commandedActors entry {commanded, effect} (40056), default
+// object 25's ability (38716) and the follow package (37404)
+inline REL::ID CommandLink(38798);
+// 38799, offset 0x6c5da0: `void (Actor*, Actor*, ActiveEffect*)`, the
+// refresh CommandEffect::Update makes every update: a re-link when the
+// commanding actor differs, the follow package rebuilt out of combat
+inline REL::ID CommandRefresh(38799);
+// 38800, offset 0x6c5fd0: `void (Actor* commanded, ActiveEffect* effect)`,
+// the unlink: 39950 with no handle, the entry removed (40057), 38717, a
+// package re-read
+inline REL::ID CommandUnlink(38800);
 }
 
 // thuum docs/verbs/change-form.md (ADR-065, system 1): the engine's own

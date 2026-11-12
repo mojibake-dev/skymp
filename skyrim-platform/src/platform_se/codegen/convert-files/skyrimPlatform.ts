@@ -1907,6 +1907,8 @@ export declare function redressActor(refrId: number): boolean;
 // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): after the client laid the record's list into a dead body, the armor of worn (the record's equipment) that the body holds but does not wear is equipped again, the fate reconcile's own dress, queued behind the tick's addItemEx tasks and run on the main thread; false for an invalid id
 export declare function dressBody(refrId: number, worn: number[]): boolean;
 export declare function actorFateCount(): number;
+// thuum docs/verbs/npc-fate.md C4 (ADR-060's return): the command of a living thrall this game's player cast and simulates though its engine holds no effect on it, in one main-thread task that starts (37490, 38798), refreshes (38799) or ends it (38800) by the engine's state; the engine's own command is left alone; false for an invalid id
+export declare function commandActor(refrId: number, on: boolean): boolean;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 

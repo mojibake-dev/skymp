@@ -3341,20 +3341,25 @@ bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
 }
 
 PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,
-                                              MpActor& actor, uint64_t leaseMs)
+                                              MpActor& actor)
 {
   const auto cell = worldState.CellOf(actor);
   if (!cell) {
     return ClaimVerdict::Unloaded;
   }
   const auto code = pImpl->cells->claim_commanded(
-    actor.GetFormId(), commander.GetFormId(), *cell, leaseMs, SteadyNowMs());
+    actor.GetFormId(), commander.GetFormId(), *cell, SteadyNowMs());
   const auto verdict = static_cast<ClaimVerdict>(code);
   if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
     // the word to every listening game: the commander simulates it now
     actor.UpdateHoster(commander.GetFormId());
   }
   return verdict;
+}
+
+uint32_t PartOne::CommanderOf(const MpActor& actor) const
+{
+  return pImpl->cells->commander_of(actor.GetFormId());
 }
 
 uint32_t PartOne::ReleaseAnyClaim(MpActor& actor)

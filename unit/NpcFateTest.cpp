@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "ActorDeathMessage.h"
 #include "ActorFateMessage.h"
 #include "ActorValueRecord.h"
 #include "CellLoadedMessage.h"
@@ -1446,6 +1447,52 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(p.worldState.HostOf(body) == &host);
     REQUIRE(hosterWordsTo(0) >= 1);
     REQUIRE(hosterWordsTo(1) >= 1);
+  }
+
+  SECTION("by a player who is not the host: no lease ends the command at "
+          "the record's duration, and its commander's report of the thrall's "
+          "death ends it at any time, past the reanimation's 90 s window")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1);
+    hits(1);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    // Reanimate Corpse's record says 60 s (the old lease, 70 s with its
+    // margin): the clock past it ends nothing (Eli, 2026-11-12: "summons
+    // and resurrections should obey the timers the level of spell")
+    p.TickCellHosts(FateNowMs() + 71'000);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    // the commander's engine stood the thrall long ago (a dual cast's or a
+    // perk's longer effect) and now ends it: the hit and the stand-up older
+    // than every other evidence's window, the record alive
+    body.Respawn(false);
+    REQUIRE_FALSE(body.IsDead());
+    const auto now = std::chrono::steady_clock::now();
+    body.NoteHitBy(kCaster, now - std::chrono::seconds(130));
+    body.NoteHostStoodUp(now -
+                         std::chrono::milliseconds(MpActor::kReanimatedEndMs) -
+                         std::chrono::seconds(30));
+    const bool reportsBefore = p.worldState.npcDeathReports;
+    p.worldState.npcDeathReports = true;
+    {
+      ActorDeathMessage report;
+      report.refrId = kPredator;
+      report.cause = 0;
+      report.killer = 0;
+      const auto& at = body.GetPos();
+      report.pos = { at.x, at.y, at.z };
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnActorDeath(raw, report);
+    }
+    p.worldState.npcDeathReports = reportsBefore;
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
   }
 
   SECTION("by the host itself: no snippet, the body stays the host's, the "

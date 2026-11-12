@@ -501,9 +501,9 @@ private:
   void PlayStagger(MpActor& aggressor, MpActor& target, float magnitude,
                    const std::string& what);
   // thuum docs/verbs/npc-fate.md (ADR-060): an accepted reanimate hands the
-  // body to the caster's seat for the effect's life (the cells rule's
-  // commanded claim); the caster's own engine ran the spell and runs the
-  // effect, the get-up, the shader and the commanded packages
+  // body to the caster's seat until its engine ends the effect (the cells
+  // rule's commanded claim, no lease); the caster's own engine ran the spell
+  // and runs the effect, the get-up, the shader and the commanded packages
   void ClaimReanimated(MpActor& caster, MpActor& body, uint32_t spell,
                        const std::vector<espm::Effects::Effect>& effects);
 

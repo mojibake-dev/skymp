@@ -184,12 +184,16 @@ pub enum FollowKind {
     /// A player's claim for a dialogue (ADR-052).
     Claim,
     /// A commanded actor's commander (ADR-060): the player whose spell
-    /// reanimated it simulates it for the effect's life.
+    /// reanimated it simulates it until its engine ends the effect, the
+    /// thrall's death on that engine's own timer (Eli, 2026-11-12: "summons
+    /// and resurrections should obey the timers the level of spell"); no
+    /// lease.
     Commanded,
 }
 
 /// A claim in either shape: a dialogue's (ADR-052) or a commander's
-/// (ADR-060). Both travel with the actor, both end by their lease.
+/// (ADR-060). Both travel with the actor; a dialogue's ends by its lease, a
+/// command by its thrall's death.
 const fn is_claim(kind: FollowKind) -> bool {
     matches!(kind, FollowKind::Claim | FollowKind::Commanded)
 }
@@ -204,20 +208,23 @@ struct Follow {
     cell: u32,
     since_ms: u64,
     kind: FollowKind,
-    /// A claim's lease; none for the other kinds.
+    /// A dialogue claim's lease; none for the other kinds, a command's
+    /// included (ADR-060).
     lease_until_ms: Option<u64>,
 }
 
 /// The answer to a claim (ADR-052).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimVerdict {
-    /// The claimant simulates the actor from now, for the lease.
+    /// The claimant simulates the actor from now: a dialogue's for its
+    /// lease, a command until its thrall's death.
     Granted,
     /// Another player holds a claim on the actor.
     Held,
     /// The claimant has not loaded the actor's cell.
     Unloaded,
-    /// The claimant held it already; the lease is renewed.
+    /// The claimant held it already: a dialogue's lease is renewed, a
+    /// command stands as it was.
     Reclaimed,
 }
 
@@ -589,14 +596,15 @@ impl Cells {
     }
 
     /// `player`'s spell commands `actor`, which stands in `cell` (ADR-060, a
-    /// reanimation the server accepted): the player simulates the actor for
-    /// `lease_ms` (0: for good, until the actor's death, the player's
-    /// departure or a grant that outranks nothing: a commanded row ends by
-    /// `release_any_claim` or `gone` alone). The newest commander wins; a
-    /// dialogue's claim gives way. Unloaded when the player has not loaded
-    /// the cell; Reclaimed when it commanded the actor already (the lease
-    /// starts over).
-    pub fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, lease_ms: u64, now_ms: u64) -> ClaimVerdict {
+    /// reanimation the server accepted): the player simulates the actor
+    /// until its engine ends the effect. No lease: the effect's timer is the
+    /// engine's own, which dual casting, perks and the spell's level set and
+    /// the record's duration does not measure, and its end is the thrall's
+    /// death, which the commander's game reports (`release_any_claim`); the
+    /// commander's departure ends it too (`gone`). The newest commander wins;
+    /// a dialogue's claim gives way. Unloaded when the player has not loaded
+    /// the cell; Reclaimed when it commanded the actor already.
+    pub fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, now_ms: u64) -> ClaimVerdict {
         if !self.players.get(&player).is_some_and(|p| p.loaded.contains_key(&cell)) {
             return ClaimVerdict::Unloaded;
         }
@@ -604,16 +612,15 @@ impl Cells {
             Some(f) if f.kind == FollowKind::Commanded && f.player == player => ClaimVerdict::Reclaimed,
             _ => ClaimVerdict::Granted,
         };
-        let lease_until_ms = (lease_ms > 0).then(|| now_ms.saturating_add(lease_ms));
-        self.follows.insert(actor, Follow { player, cell, since_ms: now_ms, kind: FollowKind::Commanded, lease_until_ms });
+        self.follows.insert(actor, Follow { player, cell, since_ms: now_ms, kind: FollowKind::Commanded, lease_until_ms: None });
         verdict
     }
 
     /// `player` releases its dialogue claim on `actor`; false when it holds
     /// none. A commanded row is no dialogue's: the commander's own E on its
     /// thrall claims and releases (the client's host-own dialogue, ADR-052)
-    /// and the command stands; it ends by its death, its lease, its
-    /// commander's departure or unload alone (ADR-060).
+    /// and the command stands; it ends by its thrall's death or its
+    /// commander's departure or unload (ADR-060).
     pub fn release_claim(&mut self, actor: u32, player: u32) -> bool {
         match self.follows.get(&actor) {
             Some(f) if f.kind == FollowKind::Claim && f.player == player => {
@@ -635,6 +642,14 @@ impl Cells {
             }
             _ => 0,
         }
+    }
+
+    /// The player commanding `actor` (ADR-060), 0 when no command names one:
+    /// the death report's evidence that a thrall's end is its commander's
+    /// engine's.
+    #[must_use]
+    pub fn commander_of(&self, actor: u32) -> u32 {
+        self.follows.get(&actor).filter(|f| f.kind == FollowKind::Commanded).map_or(0, |f| f.player)
     }
 
     /// Every claim, by actor id: the actor, its claimant and the cell (a
@@ -693,11 +708,12 @@ impl Cells {
     /// to the visitor with the cell loaded and in reach whose round trip is
     /// lowest (earliest loaded on a tie), or to nobody.
     pub fn tick(&mut self, now_ms: u64) -> Vec<Decision> {
-        // a claim past its lease ends (ADR-052)
+        // a dialogue's claim past its lease ends (ADR-052); a command has
+        // none (ADR-060)
         let mut ended: Vec<(u32, u32)> = self
             .follows
             .iter()
-            .filter(|(_, f)| is_claim(f.kind) && f.lease_until_ms.is_some_and(|t| now_ms >= t))
+            .filter(|(_, f)| f.kind == FollowKind::Claim && f.lease_until_ms.is_some_and(|t| now_ms >= t))
             .map(|(&a, f)| (a, f.cell))
             .collect();
         ended.sort_unstable();
@@ -1446,9 +1462,12 @@ mod tests {
         assert_eq!(c.claims(), vec![]);
     }
 
-    // ADR-060: a reanimated actor is its commander's for the effect's life
+    // ADR-060: a reanimated actor is its commander's until its engine ends
+    // the effect (Eli, 2026-11-12: "summons and resurrections should obey
+    // the timers the level of spell"): no lease; the thrall's death or the
+    // commander's departure ends it
     #[test]
-    fn a_commanded_claim_names_the_commander_until_its_lease_the_death_or_the_departure() {
+    fn a_commanded_claim_names_the_commander_until_the_thralls_death_or_the_departure_with_no_lease() {
         const SVEN: u32 = 0x13491;
         const WEST: u32 = 0x9731;
         let mut c = Cells::default();
@@ -1459,8 +1478,9 @@ mod tests {
         c.tick(1_200);
         assert_eq!(c.host_of(RIVERWOOD).map(|(p, _)| p), Some(C1));
         // c2's reanimate: c2 simulates Sven, the host stands aside
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 70_000, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 2_000), ClaimVerdict::Granted);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
+        assert_eq!(c.commander_of(SVEN), C2);
         assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
         // a dialogue claim by the host gives way to the command; the
         // commander's own dialogue renews nothing
@@ -1480,24 +1500,34 @@ mod tests {
             MoveVerdict::Accept
         );
         assert_eq!(c.simulator_of(SVEN, WEST), C2);
-        // the lease ends it: ClaimEnded, the cell's rule names the host again
-        assert_eq!(c.tick(2_000 + 70_000 - 1), vec![]);
-        assert_eq!(c.tick(2_000 + 70_000), vec![Decision::ClaimEnded { actor: SVEN, cell: WEST }]);
-        assert_eq!(c.claims(), vec![]);
-        // a second command is a new row; the thrall's death ends it at once
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 70_000, 80_000), ClaimVerdict::Granted);
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 70_000, 80_500), ClaimVerdict::Reclaimed);
+        // no lease: the record's duration (Reanimate Corpse's 60 s, the old
+        // lease's 70 with its margin) passes and so does any spell's; the
+        // command stands until the engine ends the effect
+        assert_eq!(c.tick(2_000 + 70_000), vec![]);
+        assert_eq!(c.tick(2_000 + CLAIM_LEASE_MS * 100), vec![]);
+        assert_eq!(c.simulator_of(SVEN, WEST), C2);
+        assert_eq!(c.claims(), vec![(SVEN, C2, WEST)]);
+        // the thrall's death ends it at once (OnDeathState's release)
         assert_eq!(c.release_any_claim(SVEN), C2);
         assert_eq!(c.release_any_claim(SVEN), 0);
+        assert_eq!(c.commander_of(SVEN), 0);
+        assert_eq!(c.claims(), vec![]);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
-        // a permanent command (Dead Thrall, duration 0) outlives any tick
-        // and ends with its commander's departure
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 0, 90_000), ClaimVerdict::Granted);
-        assert_eq!(c.tick(90_000 + CLAIM_LEASE_MS * 10), vec![]);
-        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
+        // a second command is a new row; a second hit before the stand-up
+        // changes nothing
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 80_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 80_500), ClaimVerdict::Reclaimed);
+        assert_eq!(c.release_any_claim(SVEN), C2);
+        // a dialogue's claim is no command
+        assert_eq!(c.claim(SVEN, C1, RIVERWOOD, 85_000), ClaimVerdict::Granted);
+        assert_eq!(c.commander_of(SVEN), 0);
+        assert!(c.release_claim(SVEN, C1));
+        // the commander's departure ends a command
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 90_000), ClaimVerdict::Granted);
         c.gone(C2, 2_000_000);
         assert_eq!(c.claims(), vec![]);
+        assert_eq!(c.commander_of(SVEN), 0);
         // a commander who has not loaded the cell commands nothing
-        assert_eq!(c.claim_commanded(SVEN, 0xff000009, RIVERWOOD, 70_000, 2_000_100), ClaimVerdict::Unloaded);
+        assert_eq!(c.claim_commanded(SVEN, 0xff000009, RIVERWOOD, 2_000_100), ClaimVerdict::Unloaded);
     }
 }

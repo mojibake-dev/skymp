@@ -7932,6 +7932,16 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
           fmt::format("a drop of {:.0f} units in the host's samples", *drop);
       } else if (hazardSeen) {
         evidence = hazardEvidence();
+      } else if (partOne.CommanderOf(*actor) == reporter->GetFormId()) {
+        // thuum docs/verbs/npc-fate.md (ADR-060; Eli, 2026-11-12: "summons
+        // and resurrections should obey the timers the level of spell"): a
+        // commanded thrall dies when its commander's engine ends the effect,
+        // on that engine's own timer (dual casting, perks, the spell's
+        // level), which no window of the server's bounds; its commander's
+        // report of the death is the effect's end, at any time (R2,
+        // recorded: the thrall is the commander's, ADR-063)
+        evidence = "the command's end: its commander's engine ended the "
+                   "effect (ADR-060)";
       } else if (const auto stoodUp = actor->HostStoodUpAgo(now); stoodUp &&
                  actor->ReanimateAcceptedAgo(now) &&
                  stoodUp->count() <=
@@ -10447,11 +10457,12 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
 // Eli, playtest 37: "anyone should be able to reanimate any corpse, that's
 // Just Gameplay"; ADR-060, playtest 41): the engine's Reanimate effect runs
 // in the caster's own game, the one that knows what the commander wants, so
-// the accepted hit makes that game the body's simulator for the effect's
-// life (the cells rule's commanded claim, UpdateHoster to every listening
-// game): its engine stands the body and runs the get-up and the commanded
-// packages, and its samples stand the record (OnHostedActorState: inside
-// MpActor::kReanimateWindowMs of the hit, or after its own dead sample). The
+// the accepted hit makes that game the body's simulator until its engine
+// ends the effect (the cells rule's commanded claim, no lease; UpdateHoster
+// to every listening game): its engine stands the body and runs the get-up
+// and the commanded packages, and its samples stand the record
+// (OnHostedActorState: inside MpActor::kReanimateWindowMs of the hit, or
+// after its own dead sample). The
 // caster's game is its user's for a player and its host's for a hosted
 // caster (a necromancer's cast at a body in another game's cell). The claim
 // is R0, the thrall's behaviour R2 (ADR-060's H1 to H3 open until
@@ -10472,26 +10483,32 @@ void ActionListener::ClaimReanimated(
                  spell, caster.GetFormId(), body.GetFormId());
     return;
   }
-  // the lease is the effect's duration (the record's EFIT, seconds) plus a
-  // margin; 0 (Dead Thrall) is for good, until the thrall's death or the
-  // commander's departure
-  constexpr uint64_t kLeaseMarginMs = 10'000;
-  uint64_t leaseMs = 0;
+  // no lease (Eli, 2026-11-12: "summons and resurrections should obey the
+  // timers the level of spell"): the command lasts until the commander's
+  // engine ends the effect, the thrall's death, which its seat reports
+  // (OnActorDeath's command's end, OnDeathState's release). The record's
+  // duration (its EFIT, seconds; 0 for Dead Thrall's permanent effect) is
+  // named for the lab alone: dual casting, perks and the spell's level set
+  // the engine's own
+  uint32_t recordSeconds = 0;
   const auto effectId = ReanimateEffectOf(&partOne.worldState, effects);
   for (const auto& effect : effects) {
-    if (effectId && effect.effectId == *effectId && effect.duration > 0) {
-      leaseMs = static_cast<uint64_t>(effect.duration) * 1000 + kLeaseMarginMs;
+    if (effectId && effect.effectId == *effectId) {
+      recordSeconds = effect.duration;
     }
   }
-  const auto verdict = partOne.ClaimCommanded(*commander, body, leaseMs);
+  const auto verdict = partOne.ClaimCommanded(*commander, body);
   switch (verdict) {
     case PartOne::ClaimVerdict::Granted:
     case PartOne::ClaimVerdict::Reclaimed:
       spdlog::info(
         "[verb:npc-fate] reanimate {:x} by {:x} on {:x}: {:x} "
-        "commands it for {} (ADR-060){}",
+        "commands it until {} (ADR-060){}",
         spell, caster.GetFormId(), body.GetFormId(), commander->GetFormId(),
-        leaseMs ? fmt::format("{} s", leaseMs / 1000) : std::string("good"),
+        recordSeconds ? fmt::format("its engine ends the effect (the "
+                                    "record's {} s)",
+                                    recordSeconds)
+                      : std::string("its death (a permanent effect)"),
         verdict == PartOne::ClaimVerdict::Reclaimed ? ", renewed" : "");
       break;
     case PartOne::ClaimVerdict::Unloaded:

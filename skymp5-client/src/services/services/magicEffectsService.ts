@@ -2,7 +2,7 @@ import { Actor, Art, EffectShader, Game, MagicEffect, ObjectReference, Spell } f
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { MagicEffectsMessage } from "../messages/magicEffectsMessage";
-import { getObjectReference, localIdToRemoteId } from "../../view/worldViewMisc";
+import { getObjectReference, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
@@ -78,13 +78,16 @@ export class MagicEffectsService extends ClientListener {
         if (own) {
             this.holdModifiers(msg);
         }
+        // noted by the server's id before the reference is looked for, so a
+        // server-made thrall whose view is still spawning is noted too
+        // (thuum docs/verbs/npc-fate.md C4)
+        this.noteThrall(own, remoteServer.getWorldModel().forms[id]?.refrId, msg);
         const refr: ObjectReference | null = own ? Game.getPlayer() : getObjectReference(id);
         if (!refr) {
             logTrace(this, "no reference here for the effects of", msg.idx);
             return;
         }
         const key = refr.getFormID();
-        this.noteThrall(own, key, msg);
         const before = this.shown.get(key) ?? new Set<number>();
         const now = new Set<number>();
         for (const effect of msg.effects) {
@@ -274,13 +277,14 @@ export class MagicEffectsService extends ClientListener {
 
     // thuum docs/verbs/npc-fate.md C4 (ADR-060's return; Eli, 2026-11-12:
     // "thrall returns to caster obvs"): the caster each actor's Reanimate
-    // state names, by local form id, from its MagicEffects (the state with
-    // no clock, remaining negative, and its caster). A thrall stays its
-    // caster's through the caster's departure, and the server hands it back
-    // at the caster's return (UpdateHoster); this fresh game's engine holds
-    // no effect on it, so the upkeep below commands it
-    private noteThrall(own: boolean, key: number, msg: MagicEffectsMessage) {
-        if (own) {
+    // state names, by the actor's server id (its model's refrId), from its
+    // MagicEffects (the state with no clock, remaining negative, and its
+    // caster). A thrall stays its caster's through the caster's departure,
+    // and the server hands it back at the caster's return (UpdateHoster);
+    // this fresh game's engine holds no effect on it, so the upkeep below
+    // commands it
+    private noteThrall(own: boolean, key: number | undefined, msg: MagicEffectsMessage) {
+        if (own || key === undefined || key === 0) {
             return;
         }
         const state = msg.effects.find((e) => e.remaining < 0 && (e.caster ?? 0) !== 0);
@@ -309,30 +313,37 @@ export class MagicEffectsService extends ClientListener {
         if (!this.enabled() || (this.thralls.size === 0 && this.commanded.size === 0)) {
             return;
         }
-        const me = localIdToRemoteId(0x14);
+        // the player's server id (formView.ts's placedBy test): without the
+        // second argument localIdToRemoteId answers 0x14 itself
+        const me = localIdToRemoteId(0x14, true);
         const hostService = this.controller.lookupListener(HostService);
         const ids = new Set<number>();
-        this.thralls.forEach((_caster, id) => ids.add(id));
-        this.commanded.forEach((id) => ids.add(id));
-        ids.forEach((id) => {
-            const caster = this.thralls.get(id);
-            const commanded = this.commanded.has(id);
-            if (caster !== me && !commanded) {
+        this.thralls.forEach((_caster, remote) => ids.add(remote));
+        this.commanded.forEach((_local, remote) => ids.add(remote));
+        ids.forEach((remote) => {
+            const caster = this.thralls.get(remote);
+            const askedAt = this.commanded.get(remote);
+            if (caster !== me && askedAt === undefined) {
                 return;
             }
-            const actor = Actor.from(Game.getFormEx(id));
-            const wish = caster === me && !!actor && !actor.isDead() && hostService.isMineLocal(id);
-            if (!wish && !commanded) {
+            // a game-file actor's local id is its own; a server-made one's
+            // its view's, 0 while none holds it
+            const local = remoteIdToLocalId(remote);
+            const actor = local ? Actor.from(Game.getFormEx(local)) : null;
+            const wish = caster === me && !!actor && !actor.isDead() && hostService.isMineLocal(local);
+            if (!wish && askedAt === undefined) {
                 return;
             }
+            // an end goes to the reference the command was asked of
+            const target = wish ? local : (askedAt as number);
             try {
-                const queued = this.sp.commandActor(id, wish);
-                if (wish && !commanded) {
-                    this.commanded.add(id);
-                    logLab("verb:npc-fate", `commandActor ${id.toString(16)}: asked, its record's caster ${me.toString(16)} is this game's player and this game simulates it (queued ${queued})`);
+                const queued = this.sp.commandActor(target, wish);
+                if (wish && askedAt !== local) {
+                    this.commanded.set(remote, local);
+                    logLab("verb:npc-fate", `commandActor ${remote.toString(16)}: asked, its record's caster ${me.toString(16)} is this game's player and this game simulates it (queued ${queued})`);
                 } else if (!wish) {
-                    this.commanded.delete(id);
-                    logLab("verb:npc-fate", `commandActor ${id.toString(16)}: ended (${!actor ? "no reference here" : actor.isDead() ? "dead" : caster !== me ? "its record names no caster of this game" : "simulated by another game"}; queued ${queued})`);
+                    this.commanded.delete(remote);
+                    logLab("verb:npc-fate", `commandActor ${remote.toString(16)}: ended (${!actor ? "no reference here" : actor.isDead() ? "dead" : caster !== me ? "its record names no caster of this game" : "simulated by another game"}; queued ${queued})`);
                 }
             } catch (err) {
                 logError(this, "commandActor failed", err);
@@ -358,9 +369,10 @@ export class MagicEffectsService extends ClientListener {
     private sources = new Map<number, Set<number>>();
     // what this game holds of the server's buff sums, by actor value
     private held = new Map<number, number>();
-    // the caster each actor's Reanimate state names, by local form id
-    // (noteThrall), and the thralls the upkeep asked to command
+    // the caster each actor's Reanimate state names, by the actor's server
+    // id (noteThrall), and the thralls the upkeep asked to command, by
+    // server id, each with the local id it was asked of
     private thralls = new Map<number, number>();
-    private commanded = new Set<number>();
+    private commanded = new Map<number, number>();
     private commandTick = 0;
 }

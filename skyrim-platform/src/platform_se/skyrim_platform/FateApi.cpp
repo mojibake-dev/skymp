@@ -859,6 +859,7 @@ enum class CommandMark
 std::unordered_map<uint32_t, CommandMark> g_commandMarks;
 std::unordered_map<uint32_t, bool> g_commandSaidEngine;
 std::unordered_map<uint32_t, bool> g_commandSaidWait;
+std::unordered_map<uint32_t, bool> g_commandSaidNoEntry;
 
 void CommandOnGameThread(uint32_t refrId, bool on)
 {
@@ -942,13 +943,27 @@ void CommandOnGameThread(uint32_t refrId, bool on)
   REL::Relocation<CommandLinkFn> link{ Offsets::Fate::CommandLink };
   link(actor, player, nullptr);
   const CommandEntry after = CommandEntryOf(player, actor);
+  if (after != CommandEntry::kOurs) {
+    // 38798 refused (its own tests: the commanded's process, a commander,
+    // 37965; the static read's section 9) or the engine's entry is there:
+    // no mark, so the next call is no eviction and asks again
+    if (g_commandSaidNoEntry.emplace(refrId, true).second) {
+      logger::info("[verb:npc-fate] commandActor({:x}): 38798 left no entry; "
+                   "asked again (the player's entry {}) on {}",
+                   refrId,
+                   after == CommandEntry::kEngine ? "the engine's" : "missing",
+                   FateThreadNote());
+    }
+    return;
+  }
   g_commandMarks[refrId] = CommandMark::kLinked;
   g_commandSaidWait.erase(refrId);
+  g_commandSaidNoEntry.erase(refrId);
   logger::info("[verb:npc-fate] commandActor({:x}): linked to the player "
-               "({}38798; the player's entry {}, commanded {}) on {}",
-               refrId, reanimated ? "" : "37490, ",
-               after == CommandEntry::kOurs ? "with no effect" : "missing",
-               actor->IsCommandedActor(), FateThreadNote());
+               "({}38798; the player's entry with no effect, commanded {}) "
+               "on {}",
+               refrId, reanimated ? "" : "37490, ", actor->IsCommandedActor(),
+               FateThreadNote());
 }
 }
 

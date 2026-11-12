@@ -2563,6 +2563,26 @@ void MpActor::EnsureTemplateChainEvaluated(espm::Loader& loader,
     mode);
 }
 
+namespace {
+// thuum docs/verbs/npc-fate.md (ADR-060; Eli's standing rule, "whatever
+// happens in single player"): whether a body stands by a reanimation, a
+// thrall's reanimate state on its record (RunningEffect's `reanimate` key,
+// the server's own fact). Its death rolls no death item, as the engine's:
+// Actor::KillImpl (Address Library 37896) reads the life state before it
+// marks the actor dying and skips the death item's add (37198) when that
+// state was kReanimate (4); a Resurrect (37321) or a respawn stands the
+// actor alive with no such state, so its next death rolls again. HYPOTHESIS
+// (a static read: lab/.cache/drafts/reanimate/death-item-second-death.md,
+// sha1 5c4c03e2, its Frida trace unrun)
+bool StandsByReanimation(const MpChangeForm& changeForm)
+{
+  const auto& running = changeForm.runningEffects;
+  return running &&
+    std::any_of(running->begin(), running->end(),
+                [](const RunningEffect& r) { return r.reanimate; });
+}
+}
+
 void MpActor::AddDeathItem()
 {
   auto map = EvaluateDeathItem();
@@ -2796,6 +2816,9 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
     spdlog::trace("MpActor::Kill {:x} - already dead, nothing", GetFormId());
     return;
   }
+  // read before the death changes anything, as the engine's KillImpl reads
+  // the life state before it marks the actor dying (StandsByReanimation)
+  const bool reanimated = StandsByReanimation(ChangeForm());
   if (pImpl->pendingDeath) {
     pImpl->pendingDeath = false;
     if (auto worldState = GetParent()) {
@@ -2820,7 +2843,15 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
                         staminaPercentageBeforeDeath);
   deathEvent.Fire(GetParent());
 
-  AddDeathItem();
+  // a thrall's death rolls no death item: its body keeps what it carried
+  if (reanimated) {
+    spdlog::info("[verb:npc-fate] {:x} dies from its reanimation: no death "
+                 "item rolled, as the engine's kill from kReanimate (ADR-060, "
+                 "HYPOTHESIS)",
+                 GetFormId());
+  } else {
+    AddDeathItem();
+  }
 }
 
 void MpActor::RespawnWithDelay(bool shouldTeleport)
@@ -3610,6 +3641,8 @@ void MpActor::SetIsDead(bool isDead)
 
   if (isDead) {
     if (IsDead() == false) {
+      // as Kill reads it, before the death changes anything
+      const bool reanimated = StandsByReanimation(ChangeForm());
       auto& changeForm = ChangeForm();
       const float healthPercentageBeforeDeath =
         changeForm.actorValues.healthPercentage;
@@ -3626,7 +3659,9 @@ void MpActor::SetIsDead(bool isDead)
                             staminaPercentageBeforeDeath);
       deathEvent.Fire(GetParent());
 
-      AddDeathItem();
+      if (!reanimated) {
+        AddDeathItem();
+      }
 
       spdlog::trace("MpActor::SetIsDead {:x} - actor is now dead",
                     GetFormId());

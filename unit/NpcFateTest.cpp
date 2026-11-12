@@ -1484,6 +1484,19 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     State(p, user, kPredator, 1.f);
   };
 
+  // the items the body carries, every entry's count: a death item's roll
+  // adds one at least, whatever species the predator rolled (each of
+  // LCharAnimalForestPredator 0x42297's has a death item of chance none 0
+  // and Use All holding a base item: a tail, a pelt, venom or fat;
+  // Skyrim.esm)
+  const auto items = [&] {
+    uint32_t n = 0;
+    for (const auto& entry : body.GetInventory().entries) {
+      n += entry.count;
+    }
+    return n;
+  };
+
   SECTION("by a player who is not the host: the body is the caster's seat's "
           "from the hit, both games hear the word, no snippet, the relay "
           "reaches the host as any cast's; the body's death ends the claim")
@@ -1716,6 +1729,60 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(p.SimulatorOf(body) == kHost);
   }
 
+  SECTION("by a player who is not the host: the thrall's death at its "
+          "commander's report rolls no death item, its body keeping what it "
+          "carried; respawned, the NPC's next death rolls it (single "
+          "player's rule, MpActor's StandsByReanimation)")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    // the stand-up's reanimate state on the record, the server's own fact
+    const auto running = body.GetChangeForm().runningEffects;
+    REQUIRE(running.has_value());
+    REQUIRE(std::any_of(running->begin(), running->end(),
+                        [](const RunningEffect& r) { return r.reanimate; }));
+    const uint32_t carried = items();
+    const auto now = std::chrono::steady_clock::now();
+    body.NoteHitBy(kCaster, now - std::chrono::seconds(130));
+    body.NoteHostStoodUp(now -
+                         std::chrono::milliseconds(MpActor::kReanimatedEndMs) -
+                         std::chrono::seconds(30));
+    const bool reportsBefore = p.worldState.npcDeathReports;
+    p.worldState.npcDeathReports = true;
+    {
+      LogCapture log;
+      ActorDeathMessage report;
+      report.refrId = kPredator;
+      report.cause = 0;
+      report.killer = 0;
+      const auto& at = body.GetPos();
+      report.pos = { at.x, at.y, at.z };
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnActorDeath(raw, report);
+      REQUIRE(log.Count("dies from its reanimation: no death item rolled") ==
+              1);
+    }
+    p.worldState.npcDeathReports = reportsBefore;
+    REQUIRE(body.IsDead());
+    REQUIRE(items() == carried);
+    // the death's effects tick ends the state; a respawn stands the NPC
+    // alive with none, and its next death rolls the death item
+    body.AdvanceEffects(0.25f);
+    REQUIRE_FALSE(body.HasRunningEffects());
+    body.Respawn(false);
+    REQUIRE_FALSE(body.IsDead());
+    const uint32_t standing = items();
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    REQUIRE(items() > standing);
+  }
+
   SECTION("by a player who is not the host: the command outlives its "
           "commander's unload of the thrall's cell, with no word (Eli, "
           "2026-11-12: \"leaving a cell should not kill the thrall\")")
@@ -1761,9 +1828,12 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     standsOn(1);
     REQUIRE_FALSE(body.IsDead());
     REQUIRE(p.CommanderOf(body) == kCaster);
+    const uint32_t carried = items();
     p.Messages().clear();
     DoDisconnect(p, 1);
     REQUIRE(body.IsDead());
+    // the departure's kill rolls no death item (single player's rule)
+    REQUIRE(items() == carried);
     REQUIRE(p.CommanderOf(body) == 0);
     REQUIRE(p.SimulatorOf(body) == kHost);
     REQUIRE(p.worldState.HostOf(body) == &host);
@@ -2372,8 +2442,21 @@ TEST_CASE("At a restart a timed thrall's record dies by the server's word "
     LogCapture log;
     auto& thrall = load(0x96d0b, 0x65bd7, 13.f, 60.f);
     REQUIRE_FALSE(thrall.IsDead());
+    // the items it carries, every entry's count
+    const auto items = [&] {
+      uint32_t n = 0;
+      for (const auto& entry : thrall.GetInventory().entries) {
+        n += entry.count;
+      }
+      return n;
+    };
+    const uint32_t carried = items();
     p.Tick();
     REQUIRE(thrall.IsDead());
+    // the restart's kill of a standing thrall rolls no death item (single
+    // player's rule)
+    REQUIRE(items() == carried);
+    REQUIRE(log.Count("dies from its reanimation: no death item rolled") == 1);
     REQUIRE(log.Count("commander left at the server's restart and its effect "
                       "is a timed thrall's (the record's 60 s): the server's "
                       "word ends it") == 1);

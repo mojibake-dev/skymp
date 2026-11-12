@@ -506,6 +506,11 @@ struct PartOne::Impl
 };
 
 namespace {
+// the cell host table's decisions, applied (defined below, beside
+// FlipHostedFlags); a disconnect's claims need them first (ADR-060)
+void ApplyHostDecisions(
+  PartOne& partOne, const rust::Vec<skymp::rules::HostDecision>& decisions);
+
 // thuum ADR-068 rung 4: the stream words of one election, at once, never
 // the deferred queue: false to the seat whose stream ends, true to the new
 // streamer, each naming the election's epoch
@@ -1056,8 +1061,13 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
             container->RemoveContainerOccupant(*actor);
           }
           // every cell it hosts starts its grace (thuum
-          // docs/verbs/cell-host.md); the clock passes them on
-          this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
+          // docs/verbs/cell-host.md); the clock passes them on. And its
+          // claims end with a word each, a thrall's command's and a
+          // dialogue's (ADR-060): the cell's simulator takes each actor
+          // back, never left a puppet nobody simulates
+          ApplyHostDecisions(
+            *this_,
+            this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs()));
           // and the world streamer hands its stream on (thuum ADR-068 rung
           // 4)
           SendStreamWords(
@@ -2312,20 +2322,49 @@ void ApplyHostDecisions(PartOne& partOne,
                      d.cell, d.epoch);
         partOne.NoteCellHostDecision(PartOne::CellHostNote::Unhosted, d.cell);
         break;
-      case skymp::rules::HostKind::ClaimEnded: {
-        // thuum docs/verbs/npc-talk.md (ADR-052): a claim's lease ran out;
-        // the cell's rule names the simulator again and the word follows
+      case skymp::rules::HostKind::ClaimEnded:
+      case skymp::rules::HostKind::ClaimGone: {
+        // thuum docs/verbs/npc-talk.md (ADR-052): a claim's lease ran out,
+        // or (ADR-060) its claimant left the server, a thrall's commander or
+        // a dialogue's claimant; the cell's rule names the simulator again
+        // and the word follows, so no actor stays a puppet nobody simulates
         auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
         MpActor* actor = form ? form->AsActor() : nullptr;
-        spdlog::info("[verb:npc-talk] the claim on {:x} in cell {:x} ended "
-                     "with its lease; the cell's rule stands",
-                     d.actor, d.cell);
+        const uint32_t simulator = actor ? partOne.SimulatorOf(*actor) : 0u;
+        if (d.kind == skymp::rules::HostKind::ClaimEnded) {
+          spdlog::info("[verb:npc-talk] the claim on {:x} in cell {:x} ended "
+                       "with its lease; the cell's rule stands",
+                       d.actor, d.cell);
+        } else {
+          spdlog::info("[verb:npc-talk] the claim on {:x} in cell {:x} ended "
+                       "with its claimant {:x}'s departure; {:x} simulates "
+                       "it (ADR-052, ADR-060)",
+                       d.actor, d.cell, d.player, simulator);
+        }
         if (actor) {
-          const uint32_t simulator = partOne.SimulatorOf(*actor);
           if (MpActor* sim = PlayerActor(partOne, simulator)) {
             partOne.SendActorKeyframe(*actor, *sim);
           }
           actor->UpdateHoster(simulator);
+        }
+        break;
+      }
+      case skymp::rules::HostKind::ThrallExpired: {
+        // thuum docs/verbs/npc-fate.md (ADR-060; Eli's default of
+        // 2026-11-12, HYPOTHESIS): a thrall whose commander left lived on
+        // its cell's simulator until its effect's estimate, the record's
+        // duration from its raise; no engine runs its effect any more, so
+        // the server's word ends it (an engine's longer effect, a dual
+        // cast's or a perk's, would have lasted longer)
+        auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
+        MpActor* actor = form ? form->AsActor() : nullptr;
+        if (actor && !actor->IsDead()) {
+          spdlog::info("[verb:npc-fate] {:x}'s commander left and its "
+                       "effect's estimate (the record's duration from its "
+                       "raise) has passed: the server's word ends it "
+                       "(ADR-060, HYPOTHESIS)",
+                       d.actor);
+          actor->Kill(nullptr);
         }
         break;
       }
@@ -3341,14 +3380,15 @@ bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
 }
 
 PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,
-                                              MpActor& actor)
+                                              MpActor& actor,
+                                              uint64_t effectMs)
 {
   const auto cell = worldState.CellOf(actor);
   if (!cell) {
     return ClaimVerdict::Unloaded;
   }
   const auto code = pImpl->cells->claim_commanded(
-    actor.GetFormId(), commander.GetFormId(), *cell, SteadyNowMs());
+    actor.GetFormId(), commander.GetFormId(), *cell, effectMs, SteadyNowMs());
   const auto verdict = static_cast<ClaimVerdict>(code);
   if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
     // the word to every listening game: the commander simulates it now

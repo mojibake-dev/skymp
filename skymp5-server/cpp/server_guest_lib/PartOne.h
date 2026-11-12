@@ -851,7 +851,12 @@ public:
   // (the reanimate's hit), which a promote never places (a body is never
   // moved, D78 C; the client's dead hold), so the keyframe would place
   // nothing
-  ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor);
+  // `effectMs` is the record's duration (0 for a permanent effect), kept as
+  // the thrall's estimate for its commander's departure alone (cells.rs's
+  // orphan, HYPOTHESIS: the engine's own duration may be longer), never a
+  // lease while the commander stays
+  ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor,
+                              uint64_t effectMs);
   // the player commanding `actor` (ADR-060), 0 when none: whose report of
   // the thrall's death is its effect's end
   uint32_t CommanderOf(const MpActor& actor) const;

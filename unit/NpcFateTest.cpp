@@ -1425,6 +1425,34 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     return count;
   };
 
+  // the same word saying this game simulates it (isHostedByOther false)
+  const auto hostedFalseTo = [&](Networking::UserId user) {
+    size_t count = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.contains("propName") && m.j["propName"] == "isHostedByOther" &&
+          m.j.contains("idx") && m.j["idx"] == body.GetIdx() &&
+          m.j.value("dataDump", std::string()) == "false") {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  // the record's own duration of the spell's Reanimate effect, ms (the
+  // thrall's estimate once its commander leaves; no lease)
+  const uint64_t recordMs = [&] {
+    uint64_t ms = 0;
+    for (const auto& effect :
+         MpActor::EffectsOf(&p.worldState, kReanimateCorpse)) {
+      if (effect.effectId == kReanimateEffect) {
+        ms = static_cast<uint64_t>(effect.duration) * 1000;
+      }
+    }
+    return ms;
+  }();
+
   SECTION("by a player who is not the host: the body is the caster's seat's "
           "from the hit, both games hear the word, no snippet, the relay "
           "reaches the host as any cast's; the body's death ends the claim")
@@ -1505,6 +1533,63 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(body.IsDead());
     REQUIRE(p.CommanderOf(body) == 0);
     REQUIRE(p.SimulatorOf(body) == kHost);
+  }
+
+  SECTION("by a player who is not the host: the command outlives its "
+          "commander's unload of the thrall's cell, with no word (Eli, "
+          "2026-11-12: \"leaving a cell should not kill the thrall\")")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1);
+    hits(1);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    p.Messages().clear();
+    {
+      RawMessageData raw;
+      raw.userId = 1;
+      CellLoadedMessage unloaded;
+      unloaded.cell = kForestCell;
+      unloaded.loaded = false;
+      p.GetActionListener().OnCellLoaded(raw, unloaded);
+    }
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.worldState.HostOf(body) == &caster);
+    REQUIRE(hosterWordsTo(0) == 0);
+    REQUIRE(hosterWordsTo(1) == 0);
+  }
+
+  SECTION("by a player who is not the host: the commander's disconnect hands "
+          "the standing thrall to the cell's host with the word, and the "
+          "server ends it at its effect's estimate, the record's duration "
+          "from the raise (Eli's default, HYPOTHESIS)")
+  {
+    REQUIRE(recordMs > 2'000);
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1);
+    hits(1);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    body.Respawn(false);
+    REQUIRE_FALSE(body.IsDead());
+    p.Messages().clear();
+    DoDisconnect(p, 1);
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(p.worldState.HostOf(body) == &host);
+    REQUIRE(hostedFalseTo(0) >= 1);
+    REQUIRE_FALSE(body.IsDead());
+    // alive on the host until the estimate, then the server's word
+    p.TickCellHosts(FateNowMs() + recordMs - 2'000);
+    REQUIRE_FALSE(body.IsDead());
+    p.TickCellHosts(FateNowMs() + recordMs + 1'000);
+    REQUIRE(body.IsDead());
+    // the shared cleanup below disconnects the caster again
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
   }
 
   SECTION("by the host itself: no snippet, the body stays the host's, the "

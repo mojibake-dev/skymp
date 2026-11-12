@@ -77,7 +77,8 @@ export class DropItemService extends ClientListener {
                         ref.disable(false).then(() => {
                             const again = this.sp.ObjectReference.from(this.sp.Game.getFormEx(refrId));
                             if (again && !again.isDeleted()) {
-                                again.delete();
+                                // returned, so a refused delete reaches the catch below
+                                return again.delete();
                             }
                         }).catch((err) => logError(this, `deleting the engine's dropped reference ${refrId.toString(16)} after its disable failed`, err));
                         ++numFound;

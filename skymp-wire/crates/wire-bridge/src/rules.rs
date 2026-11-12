@@ -51,6 +51,17 @@ mod ffi {
         target_scale: f32,
     }
 
+    /// A prop returned to its cell's host by a departure or an unload
+    /// (props_gone, props_unloaded): the reference and the new epoch the
+    /// word (PropOwner, player 0) carries.
+    #[derive(Debug)]
+    struct PropReturn {
+        /// The prop's reference id.
+        refr: u32,
+        /// The epoch the word carries.
+        epoch: u32,
+    }
+
     /// What the core knows about a simulator's sample of a physics prop
     /// (wire-rules props, thuum docs/verbs/prop-physics.md).
     #[derive(Debug)]
@@ -2996,47 +3007,69 @@ mod ffi {
         /// (wire-rules cells::GRACE_MS), for the core's timer.
         fn host_grace_ms() -> u64;
 
-        /// thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
-        /// physics prop, the cell's host by default, the last toucher while
-        /// its lease holds; the owner table's "prop" rows.
+        /// thuum docs/verbs/prop-physics.md (ADR-058; A1 to A7 of ADR-063's
+        /// props note, ADR-071 decision 2): one simulating seat per physics
+        /// prop, the cell's host by default, the toucher while it moves, a
+        /// grabber while its engine holds it; ownership changes by the word
+        /// alone and no clock lapses a row; the owner table's "prop" rows.
         type Props;
         /// No prop claimed.
         fn new_props() -> Box<Props>;
         /// `player` touched `refr` in `cell` by `touch` (0 contact, 1 grab, 2
-        /// drop, 3 impulse) at `now_ms`: 0 granted (the epoch is
-        /// `prop_epoch_of`), 1 held by another's grab, 2 the claimant
-        /// simulates it already.
+        /// drop, 3 impulse; a trap's world body by 3 alone, the core's gate)
+        /// at `now_ms`: 0 granted (the epoch is `prop_epoch_of`), 1 held by
+        /// another's grab, 2 the claimant simulates it already, 3 another
+        /// seat streams it awake and the touch is no grab (a trap body's
+        /// second firing among them: the first firing wins), 4 the
+        /// claimant's game reported the prop's cell unloaded and has not
+        /// loaded or reached it since (Away).
         fn claim_prop(self: &mut Props, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8;
-        /// thuum D-S3 point 4: `player`'s seat claims `refr`, a trap's world
-        /// body in `cell` (a world object its own script set moving; the core
-        /// admits it by the impulse touch alone), at `now_ms`: the codes of
-        /// `claim_prop`, and 3 Moving, another seat's firing set the body
-        /// moving and it is awake under that seat's live row (the first firing
-        /// wins).
-        fn claim_prop_world_body(self: &mut Props, refr: u32, player: u32, cell: u32, now_ms: u64) -> u8;
-        /// The prop's owner epoch, up at every grant; 0 before any.
+        /// The prop's owner epoch, up at every word (a grant, a return, the
+        /// host's wake); 0 before any.
         fn prop_epoch_of(self: &Props, refr: u32) -> u32;
         /// `player`'s transform of `refr`, landing in `cell` (0 for none)
         /// whose host is `cell_host` (0 while nobody), the body asleep or
         /// not, `moved` units from the record: 0 accepted (the record takes
-        /// it), 1 not the owner's, 2 no cell or an unhosted cell nobody holds
-        /// (the prop freezes), 3 farther than the step budget allows (the
-        /// record stands); `cell_host` hosts the cell the RECORD stands in.
+        /// it), 1 not the owner's, 2 no cell at the sample's point (the
+        /// record stands, whoever sent it), 3 farther than the step budget
+        /// allows (the record stands), 4 accepted and the rest returned the
+        /// prop to the host (the word with player 0 at `prop_epoch_of`), 5 an
+        /// asleep sample over the budget (the rest taken and returned, the
+        /// position not, the word), 6 woken by the host's own sample of a
+        /// prop that was not its live row (the row the host's at a new
+        /// epoch, the word NAMING THE HOST by id), 7 a wake by a sender whose
+        /// game reported the sample's cell unloaded and not loaded or reached
+        /// since (Away; a live owner's own stream passes), 8 a resting prop
+        /// in a cell nobody hosts (it freezes at the record); `cell_host`
+        /// hosts the cell the RECORD stands in.
         fn prop_transform(self: &mut Props, facts: &PropSampleFacts) -> u8;
-        /// The row's owner while the row is live, else 0: the word a late
-        /// listener gets at its subscription.
-        fn prop_live_owner(self: &Props, refr: u32, now_ms: u64) -> u32;
-        /// Who simulates `refr` now, given its cell's host (0 while nobody):
-        /// the toucher while awake or inside its lease, else the host.
-        fn prop_owner_of(self: &Props, refr: u32, cell_host: u32, now_ms: u64) -> u32;
-        /// `host` now hosts `cell`: the rows nobody holds live name it, their
-        /// epochs kept.
-        fn props_host_changed(self: &mut Props, cell: u32, host: u32, now_ms: u64);
-        /// `player` left: its rows fall back to their cells' hosts.
-        fn props_gone(self: &mut Props, player: u32);
-        /// The lease a toucher keeps a sleeping prop for, ms (wire-rules
-        /// props::PROP_LEASE_MS), for the core's log.
-        fn prop_lease_ms() -> u64;
+        /// The row's owner while the row is live (awake or held), else 0: the
+        /// word a late listener gets at its subscription (with the epoch, 0
+        /// names the host by default).
+        fn prop_live_owner(self: &Props, refr: u32) -> u32;
+        /// Who simulates `refr` now, given its record's cell's host (0 while
+        /// nobody): the toucher while awake or held, else the host; no clock.
+        fn prop_owner_of(self: &Props, refr: u32, cell_host: u32) -> u32;
+        /// `player`'s game unloaded `cell`: every live row of its there (a
+        /// held one included) returns to the host by default at a new epoch;
+        /// the core sends `PropOwner` with player 0 for every (refr, epoch).
+        /// Its grants and wakes there are refused (Away) until its load
+        /// report or the cell's return to its reach.
+        fn props_unloaded(self: &mut Props, player: u32, cell: u32) -> Vec<PropReturn>;
+        /// `player`'s game reported `cell` loaded: the end of the unload's
+        /// state, its claims and samples there judged again.
+        fn props_loaded(self: &mut Props, player: u32, cell: u32);
+        /// `cells` are in `player`'s reach now (RefreshReach): the unload's
+        /// state ends for each, as a follow vouches by loaded or reach.
+        fn props_reached(self: &mut Props, player: u32, cells: &[u32]);
+        /// `player` left: its live rows (awake or held) return to their
+        /// cells' hosts at a new epoch each; the core sends `PropOwner` with
+        /// player 0 for every (refr, epoch) returned.
+        fn props_gone(self: &mut Props, player: u32) -> Vec<PropReturn>;
+        /// How recent the owner's last sample must be for a prop to count as
+        /// moving, ms (wire-rules props::PROP_MOVING_MS): a contact, a drop or
+        /// an impulse from another seat is refused on it (claim code 3).
+        fn prop_moving_ms() -> u64;
 
         /// thuum ADR-068 (the one seam): the row of a reported script call
         /// and its subject, the row for the core's shape step.
@@ -3368,7 +3401,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4530,13 +4563,15 @@ const fn host_grace_ms() -> u64 {
 }
 
 /// A claim's verdict as the core's code: 0 granted, 1 held, 2 the same
-/// simulator, 3 a world body another seat's firing moves (thuum D-S3).
+/// simulator, 3 moving (another seat streams it awake, a trap body's first
+/// firing among them, thuum D-S3), 4 away (the claimant unloaded the cell).
 fn claim_code(verdict: props::ClaimVerdict) -> u8 {
     match verdict {
         props::ClaimVerdict::Granted(_) => 0,
         props::ClaimVerdict::Held => 1,
         props::ClaimVerdict::Same => 2,
         props::ClaimVerdict::Moving => 3,
+        props::ClaimVerdict::Away => 4,
     }
 }
 
@@ -4548,13 +4583,14 @@ fn new_props() -> Box<Props> {
     Box::default()
 }
 
+/// The props a departure or an unload returned, as the core's rows.
+fn prop_returns(returned: Vec<(u32, u32)>) -> Vec<PropReturn> {
+    returned.into_iter().map(|(refr, epoch)| PropReturn { refr, epoch }).collect()
+}
+
 impl Props {
     fn claim_prop(&mut self, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8 {
         claim_code(self.0.claim(refr, player, cell, touch, now_ms))
-    }
-
-    fn claim_prop_world_body(&mut self, refr: u32, player: u32, cell: u32, now_ms: u64) -> u8 {
-        claim_code(self.0.claim_world_body(refr, player, cell, now_ms))
     }
 
     fn prop_epoch_of(&self, refr: u32) -> u32 {
@@ -4574,30 +4610,43 @@ impl Props {
         match self.0.transform(&facts) {
             props::TransformVerdict::Accepted => 0,
             props::TransformVerdict::NotOwner => 1,
-            props::TransformVerdict::WrongCell => 2,
+            props::TransformVerdict::Outside => 2,
             props::TransformVerdict::TooFast => 3,
+            props::TransformVerdict::Returned(_) => 4,
+            props::TransformVerdict::RestRefused(_) => 5,
+            props::TransformVerdict::Woken(_) => 6,
+            props::TransformVerdict::Away => 7,
+            props::TransformVerdict::Frozen => 8,
         }
     }
 
-    fn prop_live_owner(&self, refr: u32, now_ms: u64) -> u32 {
-        self.0.live_owner(refr, now_ms)
+    fn prop_live_owner(&self, refr: u32) -> u32 {
+        self.0.live_owner(refr)
     }
 
-    fn prop_owner_of(&self, refr: u32, cell_host: u32, now_ms: u64) -> u32 {
-        self.0.owner_of(refr, cell_host, now_ms)
+    fn prop_owner_of(&self, refr: u32, cell_host: u32) -> u32 {
+        self.0.owner_of(refr, cell_host)
     }
 
-    fn props_host_changed(&mut self, cell: u32, host: u32, now_ms: u64) {
-        self.0.host_changed(cell, host, now_ms);
+    fn props_unloaded(&mut self, player: u32, cell: u32) -> Vec<PropReturn> {
+        prop_returns(self.0.unloaded(player, cell))
     }
 
-    fn props_gone(&mut self, player: u32) {
-        self.0.gone(player);
+    fn props_loaded(&mut self, player: u32, cell: u32) {
+        self.0.loaded(player, cell);
+    }
+
+    fn props_reached(&mut self, player: u32, cells: &[u32]) {
+        self.0.reached(player, cells);
+    }
+
+    fn props_gone(&mut self, player: u32) -> Vec<PropReturn> {
+        prop_returns(self.0.gone(player))
     }
 }
 
-const fn prop_lease_ms() -> u64 {
-    props::PROP_LEASE_MS
+const fn prop_moving_ms() -> u64 {
+    props::PROP_MOVING_MS
 }
 
 /// The spells the server names as teleports (wire-rules teleports).
@@ -6028,46 +6077,74 @@ mod tests {
 
     #[test]
     fn the_prop_table_crosses_as_codes() {
-        // thuum docs/verbs/prop-physics.md (ADR-058): the claim's and the
-        // transform's codes, the epoch and the lease's end as the core reads them
+        // thuum docs/verbs/prop-physics.md (A1 to A7, ADR-071 decision 2):
+        // the claim's codes (0 granted, 1 held, 2 same, 3 moving, 4 away),
+        // the transform's (0 accepted, 1 not owner, 2 outside, 3 too fast, 4
+        // returned, 5 rest refused, 6 woken, 7 away, 8 frozen), the epoch and
+        // the returns of an unload and a departure as the core reads them
         let mut p = new_props();
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 0), 0xff00_0002);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002), 0xff00_0002);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
         assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 1, 1_100), 2);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 0, 1_200), 1);
         assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 0x9732, 0xff00_0002, false, 10.0, 1_300)), 1);
-        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 10.0, 1_300)), 0);
-        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0, 0xff00_0002, true, 10.0, 1_300)), 2);
-        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 5_000.0, 1_300)), 3);
-        assert_eq!(p.prop_live_owner(0x2ad9c, 1_300), 0xff00_0003);
-        // the grab holds through the sleep; the holder's drop and its rest start the lease
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms()), 0xff00_0003);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, false, 10.0, 1_300)), 0);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0, 0xff00_0002, false, 10.0, 1_300)), 2);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, false, 5_000.0, 1_300)), 3);
+        assert_eq!(p.prop_live_owner(0x2ad9c), 0xff00_0003);
+        // the holder's release clears the grab; a contact on the falling prop is moving (3); its rest returns it (4)
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 2, 1_300), 2);
-        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 10.0, 1_300)), 0);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms() - 1), 0xff00_0003);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms()), 0xff00_0002);
-        p.props_host_changed(0x9732, 0xff00_0004, 9_000);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0004, 9_000), 0xff00_0004);
-        p.props_gone(0xff00_0004);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 9_100), 0xff00_0002);
-        assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, false, 10.0, 1_400)), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 0, 1_500), 3);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 10.0, 1_600)), 4);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 2);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002), 0xff00_0002);
+        assert_eq!(p.prop_live_owner(0x2ad9c), 0);
+        // the host's wake by id (6), its asleep sample over the budget (5), a resting prop nobody hosts (8)
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 0x9732, 0xff00_0002, false, 10.0, 1_700)), 6);
+        assert_eq!(p.prop_live_owner(0x2ad9c), 0xff00_0002);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 0x9732, 0xff00_0002, true, 5_000.0, 1_800)), 5);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 4);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 0x9732, 0, false, 10.0, 1_900)), 8);
+        // an unload returns the live rows there with their new epochs, and refuses the claim (4) and the wake (7)
+        // there until the load report or the reach
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 1, 9_100), 0);
+        let unloaded = p.props_unloaded(0xff00_0003, 0x9732);
+        assert_eq!(unloaded.iter().map(|r| (r.refr, r.epoch)).collect::<Vec<_>>(), vec![(0x2ad9c, 6)]);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 9_150), 4);
+        assert!(p.props_unloaded(0xff00_0002, 0x9732).is_empty());
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 0x9732, 0xff00_0002, false, 10.0, 9_200)), 7);
+        p.props_loaded(0xff00_0003, 0x9732);
+        p.props_reached(0xff00_0002, &[0x9732]);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 0x9732, 0xff00_0002, false, 10.0, 9_300)), 6);
+        // a departure returns the live rows with their new epochs
+        let returned = p.props_gone(0xff00_0002);
+        assert_eq!(returned.iter().map(|r| (r.refr, r.epoch)).collect::<Vec<_>>(), vec![(0x2ad9c, 8)]);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0004), 0xff00_0004);
+        assert!(prop_moving_ms() >= 100);
     }
 
     #[test]
     fn a_trap_bodys_claim_crosses_as_codes() {
-        // thuum D-S3 point 4: Embershard's rock 0xb6d45 in the mine 0xb6be6;
-        // the firing seat's grant, the second firing's Moving (3), the
-        // firing seat's own Same (2); an item's impulse keeps its grant
+        // thuum D-S3 point 4 under A3 (ADR-071 decision 8): Embershard's rock
+        // 0xb6d45 in the mine 0xb6be6, claimed by the impulse touch like any
+        // prop: the firing seat's grant, the second firing's Moving (3), the
+        // firing seat's own Same (2), the rest's return (4), then a new
+        // firing's grant; an item's impulse on a prop another seat streams is
+        // moving too
         let mut p = new_props();
-        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0003, 0xb6be6, 1_000), 0);
+        assert_eq!(p.claim_prop(0xb6d45, 0xff00_0003, 0xb6be6, 3, 1_000), 0);
         assert_eq!(p.prop_epoch_of(0xb6d45), 1);
-        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0002, 0xb6be6, 1_050), 3);
-        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0003, 0xb6be6, 1_100), 2);
+        assert_eq!(p.claim_prop(0xb6d45, 0xff00_0002, 0xb6be6, 3, 1_050), 3);
+        assert_eq!(p.claim_prop(0xb6d45, 0xff00_0003, 0xb6be6, 3, 1_100), 2);
         assert_eq!(p.prop_epoch_of(0xb6d45), 1);
-        assert_eq!(p.prop_live_owner(0xb6d45, 1_100), 0xff00_0003);
+        assert_eq!(p.prop_live_owner(0xb6d45), 0xff00_0003);
+        assert_eq!(p.prop_transform(&sample(0xb6d45, 0xff00_0003, 0xb6be6, 0xff00_0002, true, 40.0, 1_200)), 4);
+        assert_eq!(p.claim_prop(0xb6d45, 0xff00_0002, 0xb6be6, 3, 1_300), 0);
+        assert_eq!(p.prop_epoch_of(0xb6d45), 3);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
-        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 3, 1_050), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 3, 1_050), 3);
     }
 
     #[test]

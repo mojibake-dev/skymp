@@ -3413,6 +3413,14 @@ PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,
   return static_cast<PropClaimVerdict>(code);
 }
 
+PartOne::PropPickupVerdict PartOne::PropPickup(
+  const MpActor& picker, const MpObjectReference& prop) const
+{
+  const auto code = pImpl->props->pickup_prop(
+    prop.GetFormId(), picker.GetFormId(), SteadyNowMs());
+  return static_cast<PropPickupVerdict>(code);
+}
+
 PartOne::PropTransformVerdict PartOne::PropTransform(
   const MpActor& sender, const MpObjectReference& prop, uint32_t cell,
   uint32_t recordCell, bool asleep, float moved)

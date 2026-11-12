@@ -2447,6 +2447,14 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
     }
   }
 
+  // thuum docs/verbs/prop-physics.md (ADR-071 decision 2's table): a pickup
+  // is a take, refused on a prop another seat holds or streams awake, the
+  // reference standing for every seat (RefusePropPickup)
+  if (!msg.data.isSecondActivation &&
+      RefusePropPickup(rawMsgData, *ac, *targetPtr)) {
+    return;
+  }
+
   // thuum docs/verbs/npc-fate.md (ADR-048's B): where things were set off
   // lately, a hazard death's evidence
   if (!msg.data.isSecondActivation) {
@@ -4002,6 +4010,46 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
       partOne.AnswerPropWord(rawMsgData.userId, *prop);
       break;
   }
+}
+
+// thuum docs/verbs/prop-physics.md (A2 and A3 of ADR-071 decision 2, physics
+// rung 1): a pickup is a take. An item reference's activation gives the item
+// and deletes a server-made reference for every seat (ProcessActivateNormal's
+// pickable branch), and a grab the engine refuses in its own frame ends in
+// such a pickup at the key's release (havok-props.md E16 and E28): in
+// x-moving-press 20261112-082448 c1's key-up deleted the ingot c2 was
+// moving. The rule (wire-rules props) reads the claim's rows for a touch that
+// is no grab: a prop another player holds is taken by nothing (E_PROP_HELD),
+// one another seat streams awake by a grab alone (E_PROP_MOVING); the
+// picker's own row and a prop at rest, stalled or unclaimed are taken as
+// before. A refused pickup does nothing else: the reference stands for every
+// seat, nothing reaches the picker's inventory, and its game hears the
+// current word, once per prop per second (A5). The picker is the reporting
+// game's player, the id the rows name, a hosted caster's pickup its host's.
+bool ActionListener::RefusePropPickup(const RawMessageData& rawMsgData,
+                                      const MpActor& picker,
+                                      MpObjectReference& target)
+{
+  if (!IsPropKind(target)) {
+    return false;
+  }
+  const auto refuse = [&](const char* code, const char* why) {
+    spdlog::warn("[verb:prop-physics] {}: {:x} picks up prop {:x}; {}", code,
+                 picker.GetFormId(), target.GetFormId(), why);
+    partOne.AnswerPropWord(rawMsgData.userId, target);
+    return true;
+  };
+  switch (partOne.PropPickup(picker, target)) {
+    case PartOne::PropPickupVerdict::Taken:
+      return false;
+    case PartOne::PropPickupVerdict::Held:
+      return refuse("E_PROP_HELD", "another player holds it grabbed");
+    case PartOne::PropPickupVerdict::Moving:
+      return refuse("E_PROP_MOVING",
+                    "another seat streams it awake: a pickup takes a prop at "
+                    "rest, a grab takes it at once");
+  }
+  return false;
 }
 
 // thuum docs/verbs/spell-placed-object.md (ADR-057 shape A, D70): the

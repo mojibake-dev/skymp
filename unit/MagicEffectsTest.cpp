@@ -312,3 +312,66 @@ TEST_CASE("The change form keeps an actor's running effects, and older "
   auto olderElement = parser.parse(olderDump).value();
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).runningEffects);
 }
+
+// thuum docs/verbs/npc-fate.md (ADR-060; rule 6): a thrall's reanimate state
+// is kept as a state, kind 3, with the optional key "reanimate". A server
+// that predates the key reads a plain state, which it shows and ends by its
+// clock; a kind of its own would read there as a value modifier on no actor
+// value, whose sum (actor value 4294967295) the wire refuses in every set of
+// the actor (wire-validate, an actor value past the engine's). A record
+// without the key reads as a plain state.
+TEST_CASE("A thrall's reanimate state is kept as a state with its key, and "
+          "a state without the key reads as a plain one",
+          "[MagicEffects]")
+{
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::ACHR;
+
+  // DeadThrall's ReanimateThrallFFAimed, 40 for 86,313,600 s, 5 s in, from
+  // its commander; InvisibillityFFSelf, 30 s, a plain state (Skyrim.esm,
+  // thuum lab/esm.py)
+  RunningEffect thrall;
+  thrall.effect = FormDesc::FromString("7e8e0:Skyrim.esm");
+  thrall.source = FormDesc::FromString("7e8df:Skyrim.esm");
+  thrall.caster = FormDesc::FromString("3");
+  thrall.kind = 3;
+  thrall.reanimate = true;
+  thrall.magnitude = 40.f;
+  thrall.durationS = 86313600.f;
+  thrall.elapsedS = 5.f;
+  thrall.asOfMs = 1762934400123;
+  thrall.recover = true;
+
+  RunningEffect invisible;
+  invisible.effect = FormDesc::FromString("1ea6a:Skyrim.esm");
+  invisible.source = FormDesc::FromString("27eb6:Skyrim.esm");
+  invisible.kind = 3;
+  invisible.av = 54;
+  invisible.durationS = 30.f;
+  invisible.recover = true;
+
+  changeForm.runningEffects = std::vector<RunningEffect>{ thrall, invisible };
+
+  simdjson::dom::parser parser;
+  const nlohmann::json json = MpChangeForm::ToJson(changeForm);
+  const auto& entries = json["runningEffects"]["entries"];
+  REQUIRE(entries[0]["kind"] == 3);
+  REQUIRE(entries[0]["reanimate"] == true);
+  REQUIRE(!entries[1].contains("reanimate"));
+  const std::string dump = json.dump();
+  auto element = parser.parse(dump).value();
+  REQUIRE(MpChangeForm::JsonToChangeForm(element).runningEffects ==
+          changeForm.runningEffects);
+
+  // without the key the thrall's entry reads as a plain state
+  nlohmann::json without = json;
+  without["runningEffects"]["entries"][0].erase("reanimate");
+  const std::string withoutDump = without.dump();
+  auto withoutElement = parser.parse(withoutDump).value();
+  const auto read =
+    MpChangeForm::JsonToChangeForm(withoutElement).runningEffects;
+  REQUIRE(read);
+  REQUIRE(read->size() == 2);
+  REQUIRE((*read)[0].kind == 3);
+  REQUIRE_FALSE((*read)[0].reanimate);
+}

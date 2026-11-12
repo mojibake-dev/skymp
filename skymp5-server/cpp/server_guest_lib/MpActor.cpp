@@ -4042,11 +4042,12 @@ rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
       skymp::rules::EffectEntry e{};
       e.facts.effect = r.effect.ToFormId(files);
       e.facts.source = r.source.ToFormId(files);
+      // a thrall's reanimate is kept as a state with its key (rule 6)
       e.facts.kind = r.kind == 1 ? skymp::rules::EffectKind::PeakValue
         : r.kind == 2            ? skymp::rules::EffectKind::DualValue
-        : r.kind == 3            ? skymp::rules::EffectKind::State
-        : r.kind == 4            ? skymp::rules::EffectKind::Reanimate
-                                 : skymp::rules::EffectKind::Value;
+        : r.kind == 3 ? (r.reanimate ? skymp::rules::EffectKind::Reanimate
+                                     : skymp::rules::EffectKind::State)
+                      : skymp::rules::EffectKind::Value;
       e.facts.av = static_cast<uint32_t>(r.av);
       e.facts.second_av =
         r.secondAv < 0 ? kNoSecond : static_cast<uint32_t>(r.secondAv);
@@ -4094,11 +4095,13 @@ std::optional<std::vector<RunningEffect>> RunningEffectsOf(
     r.effect = FormDesc::FromFormId(e.facts.effect, files);
     r.source = FormDesc::FromFormId(e.facts.source, files);
     r.caster = e.caster ? FormDesc::FromFormId(e.caster, files) : FormDesc();
-    r.kind = e.facts.kind == skymp::rules::EffectKind::PeakValue ? 1
-      : e.facts.kind == skymp::rules::EffectKind::DualValue      ? 2
-      : e.facts.kind == skymp::rules::EffectKind::State          ? 3
-      : e.facts.kind == skymp::rules::EffectKind::Reanimate      ? 4
-                                                                 : 0;
+    // a thrall's reanimate is kept as a state with its key (rule 6: a
+    // server that predates the key reads a plain state)
+    r.reanimate = e.facts.kind == skymp::rules::EffectKind::Reanimate;
+    r.kind = e.facts.kind == skymp::rules::EffectKind::PeakValue       ? 1
+      : e.facts.kind == skymp::rules::EffectKind::DualValue            ? 2
+      : e.facts.kind == skymp::rules::EffectKind::State || r.reanimate ? 3
+                                                                       : 0;
     r.av = static_cast<int32_t>(e.facts.av);
     r.secondAv = e.facts.second_av == kNoSecond
       ? -1

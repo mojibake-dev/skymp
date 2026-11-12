@@ -78,6 +78,18 @@ enum class PlayersEffectRole : std::uint8_t
 PlayersEffectRole PlayersEffect(RE::BSScript::IObjectHandlePolicy* policy,
                                 RE::VMHandle handle);
 
+// the Undead FX build (thuum ADR-068 decision 6 applied to an actor's aliases
+// and effects; the reanimate-fx memo's D5 B): the Papyrus event gate's owner
+// rule on or off (OnSendEventEnter). On, the default, an event to a World
+// quest's reference alias passes on the seat that owns the alias's
+// reference, and one to an active effect on an actor that is not the player
+// on the seat that simulates the effect's target, each tallied; off, the
+// rule asks nothing and the gate is the block's as before.
+// ScriptNatives::InstallHooks sets it once at kDataLoaded from the client
+// setting scriptOwnerEvents. Threadsafe
+void SetScriptOwnerEvents(bool on);
+bool ScriptOwnerEventsOn();
+
 // thuum docs/DECISIONS.md ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's
 // held entries (an enter to a scripted world trigger it blanked while the
 // presser's owner was undecided here, an NPC standing inside at this seat's

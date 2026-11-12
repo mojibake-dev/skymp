@@ -14,7 +14,12 @@
 // a player's own race, spells, shouts and equipment, each a state row on the
 // seat's own player (docs/research/rung5-quests-2026-11-09.md section 8(b);
 // the batching on the seat's own player is the platform's 5b head, B5), and
-// Eli's D-E1 A seventh in their shape, ChangeHeadPart (rotfern's eyes).
+// Eli's D-E1 A seventh in their shape, ChangeHeadPart (rotfern's eyes), then
+// the Undead FX build's eight, an actor's own looks (the reanimate-fx memo's
+// D6 B and D3 B: the decay's and the eyes' shader, visual effect and eye
+// texture, TurnToAsh's alpha, critical stage and ash pile), action rows its
+// simulator's script makes, an effect form's subject its first argument
+// (Arg0Method, Sound.Play's shape), each relayed as itself.
 // kind: Action (the call itself is the message), State (the owner's record
 // carries it), Everyone (no owner, D-F1 C: every seat runs it), Local (never
 // crosses). subject: Self (the frame's self), Arg0 (a static native's first
@@ -71,3 +76,11 @@
 { "Actor", "RemoveShout", NativeKind::State, NativeSubject::Self, "none" },
 { "Actor", "EquipItem", NativeKind::State, NativeSubject::Self, "none" },
 { "Actor", "ChangeHeadPart", NativeKind::State, NativeSubject::Self, "none" },
+{ "EffectShader", "Play", NativeKind::Action, NativeSubject::Arg0Method, "same" },
+{ "EffectShader", "Stop", NativeKind::Action, NativeSubject::Arg0Method, "same" },
+{ "VisualEffect", "Play", NativeKind::Action, NativeSubject::Arg0Method, "same" },
+{ "VisualEffect", "Stop", NativeKind::Action, NativeSubject::Arg0Method, "same" },
+{ "Actor", "SetEyeTexture", NativeKind::Action, NativeSubject::Self, "same" },
+{ "Actor", "SetAlpha", NativeKind::Action, NativeSubject::Self, "same" },
+{ "Actor", "SetCriticalStage", NativeKind::Action, NativeSubject::Self, "same" },
+{ "Actor", "AttachAshPile", NativeKind::Action, NativeSubject::Self, "same" },

@@ -1586,6 +1586,22 @@ void PartOne::Init()
                       actor.GetFormId(), listener.GetFormId(), e.what());
       }
     }
+    // thuum docs/verbs/npc-fate.md C4 (ADR-060's return): a full thrall
+    // served to its caster's game after that game reported the thrall's
+    // cell loaded (the engine's 5x5 runs ahead of the server's 3x3, so the
+    // load met no emitter) is commanded by it again here, ahead of the
+    // create word, which then names the caster the simulator; the word
+    // reaches the games already listening. Under the same rule as the roll:
+    // a throw never unwinds the subscribe
+    if (actor.HasRunningEffects()) {
+      try {
+        ReturnThralls(listener, { &actor });
+      } catch (const std::exception& e) {
+        spdlog::error("[verb:npc-fate] {:x}'s return to {:x} at its create "
+                      "word threw: {}",
+                      actor.GetFormId(), listener.GetFormId(), e.what());
+      }
+    }
   };
   worldState.onDeathState = [this](MpActor& actor, bool isDead) {
     OnDeathState(actor, isDead);
@@ -2646,6 +2662,7 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
   // there (the create word's copy may predate the record, or the engine's
   // 5x5 may run ahead of the server's 3x3); the receiver's hash compare
   // makes a repeat free
+  std::vector<MpActor*> inCell;
   if (loaded) {
     size_t served = 0;
     for (MpObjectReference* emitter : player.GetEmitters()) {
@@ -2655,6 +2672,7 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
           worldState.CellOf(*actor) != cell) {
         continue;
       }
+      inCell.push_back(actor);
       ChangeFormApplyMessage apply;
       if (actor->BuildChangeFormApply(apply)) {
         player.SendToUser(apply, true);
@@ -2672,6 +2690,14 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
     *this,
     loaded ? pImpl->cells->loaded(player.GetFormId(), cell, nowMs)
            : pImpl->cells->unloaded(player.GetFormId(), cell, nowMs));
+  // thuum docs/verbs/npc-fate.md C4 (ADR-060's return): a full thrall its
+  // record names this player the caster of is commanded by it again once
+  // its game has the thrall's cell loaded (the cells table knows the load
+  // only from here on); a thrall the grid serves it later is the
+  // subscribe's (onActorSubscribe)
+  if (loaded && !inCell.empty()) {
+    ReturnThralls(player, inCell);
+  }
 }
 
 void PartOne::OnDeathState(MpActor& actor, bool isDead)
@@ -3435,6 +3461,66 @@ bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
     actor.UpdateHoster(simulator);
   }
   return released;
+}
+
+std::vector<uint32_t> PartOne::ReturnThralls(
+  MpActor& player, const std::vector<MpActor*>& actors)
+{
+  std::vector<skymp::rules::ThrallRecord> records;
+  std::unordered_map<uint32_t, MpActor*> byId;
+  for (MpActor* actor : actors) {
+    if (!actor || actor == &player || !actor->HasRunningEffects() ||
+        serverState.UserByActor(actor) != Networking::InvalidUserId) {
+      continue;
+    }
+    const auto reanimate = actor->GetReanimateCaster();
+    if (reanimate.caster == 0 || reanimate.caster != player.GetFormId() ||
+        !std::isfinite(reanimate.recordSeconds)) {
+      continue;
+    }
+    const auto cell = worldState.CellOf(*actor);
+    if (!cell) {
+      continue;
+    }
+    skymp::rules::ThrallRecord record;
+    record.actor = actor->GetFormId();
+    record.cell = *cell;
+    record.caster = reanimate.caster;
+    record.record_s =
+      static_cast<uint32_t>(std::clamp(reanimate.recordSeconds, 0.f, 4.0e9f));
+    record.alive = !actor->IsDead() && !actor->IsRespawning();
+    records.push_back(record);
+    byId[record.actor] = actor;
+  }
+  if (records.empty()) {
+    return {};
+  }
+  const auto claimed =
+    pImpl->cells->returning(player.GetFormId(),
+                            rust::Slice<const skymp::rules::ThrallRecord>(
+                              records.data(), records.size()),
+                            SteadyNowMs());
+  std::vector<uint32_t> returned;
+  for (const uint32_t id : claimed) {
+    const auto it = byId.find(id);
+    if (it == byId.end()) {
+      continue;
+    }
+    MpActor& actor = *it->second;
+    const auto cell = worldState.CellOf(actor);
+    spdlog::info("[verb:npc-fate] {:x} returns to its caster {:x} in cell "
+                 "{:x}: a full thrall its record names (the record's {:.0f} "
+                 "s), commanded again (ADR-060)",
+                 id, player.GetFormId(), cell.value_or(0u),
+                 actor.GetReanimateCaster().recordSeconds);
+    // ClaimGone's shape for a living actor: the record is the truth for
+    // this one moment, so the new simulator's copy is placed at it first
+    // (SendActorKeyframe sends only to a game that sees the actor)
+    SendActorKeyframe(actor, player);
+    actor.UpdateHoster(player.GetFormId());
+    returned.push_back(id);
+  }
+  return returned;
 }
 
 PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,

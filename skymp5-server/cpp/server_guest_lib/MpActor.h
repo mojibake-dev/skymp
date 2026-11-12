@@ -600,6 +600,17 @@ public:
     float secondsLeft = 0.f;
   };
   std::vector<RunningEffectView> GetRunningEffects() const;
+  // thuum docs/verbs/npc-fate.md C4 (ADR-060's return): the caster the
+  // record's Reanimate state names, 0 for none (no such state, or one with
+  // no caster), and that state's record duration, seconds, as the effect
+  // rule keeps them. The thrall's record is the dormant row its caster's
+  // return reads (wire-rules cells.rs returning)
+  struct ReanimateCasterView
+  {
+    uint32_t caster = 0;
+    float recordSeconds = 0.f;
+  };
+  ReanimateCasterView GetReanimateCaster() const;
   // The running buffs' sum on `av`: the temporary modifier the maximum and
   // the regeneration rates count
   float GetEffectModifier(espm::ActorValue av) const;

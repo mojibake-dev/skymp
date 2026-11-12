@@ -858,6 +858,16 @@ public:
   // departure, a timed one dies by the server's word; never a lease
   ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor,
                               uint32_t recordSeconds);
+  // thuum docs/verbs/npc-fate.md C4 (ADR-060's return; Eli, 2026-11-12:
+  // "thrall returns to caster obvs"): of `actors`, every one whose record's
+  // Reanimate state names `player` its caster, alive, a full thrall's, in a
+  // cell `player`'s game has loaded and under no live command, is commanded
+  // by `player` again (wire-rules cells.rs returning, the record the dormant
+  // row), whoever hosts its cell; each claim's word follows, a keyframe to
+  // the caster's game when it sees the thrall already and UpdateHoster to
+  // every listening game. The actors claimed
+  std::vector<uint32_t> ReturnThralls(MpActor& player,
+                                      const std::vector<MpActor*>& actors);
   // the player commanding `actor` (ADR-060), 0 when none: whose report of
   // the thrall's death is its effect's end
   uint32_t CommanderOf(const MpActor& actor) const;

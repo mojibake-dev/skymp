@@ -4488,10 +4488,14 @@ void MpActor::ReapplyMagicEffects()
       const uint32_t formId = GetFormId();
       const float recordSeconds = e.facts.duration_s;
       if (recordSeconds >= skymp::rules::full_thrall_min_s()) {
+        // C4 (thuum docs/verbs/npc-fate.md, rule 6's option A): the record
+        // keeps its caster, so the caster's return commands it again
+        // (PartOne::ReturnThralls) after a restart as without one
         spdlog::info("[verb:npc-fate] {:x}'s commander left at the server's "
                      "restart and its effect is a full thrall's (the "
-                     "record's {:.0f} s): it stays, its look kept (ADR-060)",
-                     formId, recordSeconds);
+                     "record's {:.0f} s): it stays, its look kept, until its "
+                     "caster {:x} returns (ADR-060)",
+                     formId, recordSeconds, e.caster);
       } else {
         worldState->SetTimer(std::chrono::milliseconds(0))
           .Then([worldState, formId, recordSeconds](Viet::Void) {
@@ -4531,6 +4535,23 @@ std::vector<MpActor::RunningEffectView> MpActor::GetRunningEffects() const
     res.push_back(view);
   }
   return res;
+}
+
+MpActor::ReanimateCasterView MpActor::GetReanimateCaster() const
+{
+  ReanimateCasterView view;
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return view;
+  }
+  for (const auto& e : EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
+    if (e.facts.kind == skymp::rules::EffectKind::Reanimate && e.caster != 0) {
+      view.caster = e.caster;
+      view.recordSeconds = e.facts.duration_s;
+      break;
+    }
+  }
+  return view;
 }
 
 std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,

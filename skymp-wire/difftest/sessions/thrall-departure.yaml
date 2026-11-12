@@ -1,0 +1,160 @@
+# difftest thrall-departure (thuum docs/verbs/npc-fate.md, ADR-060; the stage read
+# lab/.cache/drafts/reanimate/read-stage-125536.md 4.2): a thrall's commander that hosts the
+# thrall's cell leaves, and the server stays up. x-reanimate-claim 20261112-125536 ended its
+# server at such a departure: the departure's ClaimGone named the leaver as the thrall's
+# simulator (wire-rules cells.rs: gone() drops the leaver's command and only starts its grace as
+# the cell's host, so simulator_of falls to host_of) and sent it a keyframe its freed user could
+# not take ("User with id 2 doesn't exist", thrown in a ScopedTask's destructor). c1 and c2 are
+# new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003, see melee-reach), at the
+# spawn in Tamriel's exterior cell (32, -15), form 0xbbb1 (cell-host's read); c2 starts 1.5 s
+# after c1, and each client's times below are its own. At 1 s c1 reports the cell loaded and is
+# granted it (HostGrant epoch 1, as in actor-look). At 1.5 s it places a copy of Hilde's base
+# (Skyrim.esm NPC_ 0x35533, 217395, the probes' Hilde; PlaceAtMe, an owner's console command),
+# at 2.5 s kills the copy (Kill on "{{created:217395}}"), at 3 s learns Reanimate Corpse (SPEL
+# 0x65bd7, 416727; AddSpell, ghostwalk's shape), at 3.5 s wears it in its right hand, at 4 s
+# casts it at the body (SpellCast) and at 4.2 s reports its hit (OnHit). The wire server takes
+# the hit on a dead body as a reanimate (ActionListener OnSpellHit, ClaimReanimated) and names c1
+# its commander for the record's 60 s, a timed thrall (cells.rs claim_commanded, full false), its
+# word to both games (UpdateHoster: false to c1, true to c2). T2 reaches no stand-up (a
+# HostedActorState names its actor by idx, which the fake client cannot name for a created
+# actor, and T2's settings leave npcEnabled off), so the record holds the body dead by the
+# console's Kill (isDead true to both games, the death's container to the cell's host). c1's
+# script then ends and c1 leaves after the fake client's settle while it hosts the cell: the
+# departure's ThrallExpired finds the body dead and does nothing, and its ClaimGone, whose cell
+# rule answers the leaver, names nobody (PartOne.cpp's ClaimGone guard): no keyframe goes to the
+# leaver, and the word reaches c2 alone (isHostedByOther true, c2's second), with c1's departure
+# notice. Under the old code the server ends at that departure, before c2's last step. c2 never
+# reports the cell loaded, so after the grace the cell is unhosted with nothing to c2; c2 steps
+# aside at 9 s of its own, so it outlives c1, as in every session. The legacy stack: of these
+# commands its console knows PlaceAtMe alone (upstream's four), so it places the copy (a create
+# word without the hosted flag: its hosters name nobody) and prints nothing back; its fake client
+# cannot resolve "{{created:...}}" and sends the strings, so its kill, cast and hit name no form;
+# and it refuses the unlearned spell in c1's hand as ghostwalk reads (RemoveSpell, the inventory
+# again). The declarations are read from the code (2026-11-12) and not yet run: the first T2 run
+# draws them (ONLY=thrall-departure SESSIONS=tree), the fate words and the death's container the
+# least sure.
+id: thrall-departure
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 1500, send: {t: 12, data: {commandName: PlaceAtMe, args: [20, 217395]}}}
+  - {client: c1, at_ms: 2500, send: {t: 12, data: {commandName: kill, args: ["{{created:217395}}"]}}}
+  - {client: c1, at_ms: 3000, send: {t: 12, data: {commandName: addspell, args: [20, 416727]}}}
+  - {client: c1, at_ms: 3500, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: []}, rightSpell: 416727, numChanges: 1}}}
+  - {client: c1, at_ms: 4000, send: {t: 23, data: {caster: 20, target: "{{created:217395}}", spell: 416727, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
+  - {client: c1, at_ms: 4200, send: {t: 17, data: {aggressor: 20, target: "{{created:217395}}", source: 416727, isBashAttack: false, isHitBlocked: false, isPowerAttack: false, isSneakAttack: false, projectile: 0}}}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 9000, move: {dx: 60}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md); the legacy server has no cell hosts
+  - client: c1
+    msg: {t: 51}
+    legacy: 0
+    wire: 1
+    reason: the placed copy's fate ahead of its create word (ActorFate, PartOne's onSubscribe; thuum ADR-050 decision 3); the legacy server has no fates
+  - client: c2
+    msg: {t: 51}
+    legacy: 0
+    wire: 1
+    reason: the same fate to the copy's other listener
+  - client: c1
+    msg: {t: 33, baseId: 217395, props: {isHostedByOther: false}}
+    legacy: 0
+    wire: 1
+    reason: the copy's create word to its cell's host, which simulates it (props.isHostedByOther false, thuum docs/verbs/cell-host.md); the legacy server sets the flag for a hosted-by-other actor alone, and its hosters name nobody
+  - client: c1
+    msg: {t: 33, baseId: 217395}
+    legacy: 1
+    wire: 0
+    reason: the same create word without the flag, the legacy server's; the wire's was set aside by the declaration above
+  - client: c2
+    msg: {t: 33, baseId: 217395, props: {isHostedByOther: true}}
+    legacy: 0
+    wire: 1
+    reason: the copy's create word to a game that does not host its cell (props.isHostedByOther true); the legacy server's hosters name nobody
+  - client: c2
+    msg: {t: 33, baseId: 217395}
+    legacy: 1
+    wire: 0
+    reason: the same create word without the flag, the legacy server's; the wire's was set aside by the declaration above
+  - client: c1
+    msg: {t: 41, text: "PlaceAtMe done", refused: false}
+    legacy: 0
+    wire: 1
+    reason: the server answers every console command with a line (ConsoleOutput); the legacy server prints nothing back
+  - client: c1
+    msg: {t: 41, text: "kill done", refused: false}
+    legacy: 0
+    wire: 1
+    reason: the console's Kill of the created copy (thuum docs/verbs/console-commands.md); the legacy console knows no Kill, and its fake client sends the created id's placeholder as a string
+  - client: c1
+    msg: {t: 18}
+    legacy: 0
+    wire: 1
+    reason: the death's container to the copy's cell's host (MpActor::SendAndSetDeathState through GetActorToSendTo, the host for an actor no user plays)
+  - client: c1
+    msg: {t: 7, propName: isDead, dataDump: "true"}
+    legacy: 0
+    wire: 1
+    reason: the copy's death word to every listening game (thuum docs/verbs/npc-fate.md, ADR-048's seam); the legacy server never killed it
+  - client: c2
+    msg: {t: 7, propName: isDead, dataDump: "true"}
+    legacy: 0
+    wire: 1
+    reason: the same death word to the copy's other listener; the record stays dead to the end (T2 reaches no stand-up)
+  - client: c1
+    msg: {t: 41, text: "addspell done: 65bd7 recorded", refused: false}
+    legacy: 0
+    wire: 1
+    reason: an owner's AddSpell writes the server's record of learned spells and answers with a line (thuum docs/verbs/cast-teleport.md); the legacy server does not know the command
+  - client: c1
+    msg: {t: 30, class: Actor, function: AddSpell, arguments: [{formId: 416727, type: Spell}, false]}
+    legacy: 0
+    wire: 1
+    reason: the recorded spell is told to c1's own game
+  - client: c1
+    msg: {t: 5, data: {rightSpell: 416727}}
+    legacy: 0
+    wire: 1
+    reason: the wire stack takes the learned spell in the right hand and relays it, c1's own game included; the legacy stack refuses it
+  - client: c2
+    msg: {t: 5, data: {rightSpell: 416727}}
+    legacy: 0
+    wire: 1
+    reason: the same relay reaches c2
+  - client: c1
+    msg: {t: 30, class: Actor, function: RemoveSpell, arguments: [{formId: 416727, type: Spell}]}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack refuses a spell c1 never learned and takes it from c1's game (upstream #2665)
+  - client: c1
+    msg: {t: 28, inventory: {entries: [{baseId: 10, count: 10}, {baseId: 15, count: 140}, {baseId: 77382, count: 1}, {baseId: 77385, count: 1}, {baseId: 77387, count: 1}, {baseId: 77389, count: 1}, {baseId: 77494, count: 1}, {baseId: 77495, count: 1}, {baseId: 79760, count: 1}, {baseId: 80253, count: 23}, {baseId: 80254, count: 1}, {baseId: 120044, count: 2}, {baseId: 236362, count: 2}, {baseId: 243042, count: 1}, {baseId: 256733, count: 5}, {baseId: 256736, count: 5}, {baseId: 256741, count: 5}, {baseId: 256810, count: 1}, {baseId: 256819, count: 1}, {baseId: 1017598, count: 1}]}}
+    legacy: 1
+    wire: 0
+    reason: the legacy stack's refusal of the spell sends c1 its inventory again (upstream #2665)
+  - client: c2
+    msg: {t: 23, data: {caster: 4278190082, spell: 416727, castingSource: 1}}
+    legacy: 0
+    wire: 1
+    reason: the wire stack relays the reanimate's cast to the other game that sees c1 (RelayCast); the legacy stack refuses the unlearned spell and relays nothing
+  - client: c1
+    msg: {t: 7, propName: isHostedByOther, dataDump: "false"}
+    legacy: 0
+    wire: 1
+    reason: the accepted reanimate hit names c1 the thrall's commander, a timed thrall for the record's 60 s (ADR-060; ClaimCommanded's UpdateHoster); the legacy server has no claims
+  - client: c2
+    msg: {t: 7, propName: isHostedByOther, dataDump: "true"}
+    legacy: 0
+    wire: 2
+    reason: the command's word to the other game (ClaimCommanded's UpdateHoster), then the departure's (ClaimGone, its cell rule answering the leaver, names nobody, thuum docs/verbs/npc-fate.md); under the old code the server ended at the departure's keyframe to the leaver, before the second
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout; the server is up after the commander's departure

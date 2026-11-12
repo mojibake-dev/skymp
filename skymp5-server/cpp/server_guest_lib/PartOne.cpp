@@ -1070,10 +1070,28 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // dialogue's (ADR-060): the cell's simulator takes each actor
           // back, never left a puppet nobody simulates; a timed thrall dies
           // by the server's word first, a full one stays alive there (ADR-060
-          // as amended 2026-11-12)
-          ApplyHostDecisions(
-            *this_,
-            this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs()));
+          // as amended 2026-11-12). The decisions are applied under a try
+          // that logs (thuum lab/.cache/drafts/reanimate/
+          // read-stage-125536.md 4.2): this task runs in a ScopedTask's
+          // destructor, where an exception ends the process, and the
+          // transport has freed the leaver's user before it runs, so a
+          // direct send to the leaver threw "User with id 2 doesn't exist"
+          // and terminated the server (x-reanimate-claim 20261112-125536);
+          // a throw now skips the decisions after it, logged, and the rest
+          // of the departure below still runs
+          try {
+            ApplyHostDecisions(
+              *this_,
+              this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs()));
+          } catch (std::exception& e) {
+            spdlog::error("[verb:cell-host] {:x}'s departure: a host "
+                          "decision threw, the ones after it skipped: {}",
+                          actor->GetFormId(), e.what());
+          } catch (...) {
+            spdlog::error("[verb:cell-host] {:x}'s departure: a host "
+                          "decision threw, the ones after it skipped",
+                          actor->GetFormId());
+          }
           // and the world streamer hands its stream on (thuum ADR-068 rung
           // 4)
           SendStreamWords(
@@ -2336,7 +2354,20 @@ void ApplyHostDecisions(PartOne& partOne,
         // and the word follows, so no actor stays a puppet nobody simulates
         auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
         MpActor* actor = form ? form->AsActor() : nullptr;
-        const uint32_t simulator = actor ? partOne.SimulatorOf(*actor) : 0u;
+        uint32_t simulator = actor ? partOne.SimulatorOf(*actor) : 0u;
+        // thuum lab/.cache/drafts/reanimate/read-stage-125536.md 4.2: a
+        // departing claimant that hosts the actor's cell, or was just
+        // granted it, is the cell's rule's answer through its grace
+        // (wire-rules cells.rs: gone() drops its follows and only starts its
+        // grace as host, so simulator_of falls to host_of), and the leaver
+        // gets no word: its user is gone from the transport, and the
+        // keyframe below went to it and threw. The actor waits for its
+        // cell's next host; UpdateHoster's word skips the departing user
+        const bool leaverSimulates =
+          d.kind == skymp::rules::HostKind::ClaimGone && simulator == d.player;
+        if (leaverSimulates) {
+          simulator = 0;
+        }
         if (d.kind == skymp::rules::HostKind::ClaimEnded) {
           spdlog::info("[verb:npc-talk] the claim on {:x} in cell {:x} ended "
                        "with its lease; the cell's rule stands",
@@ -2344,8 +2375,11 @@ void ApplyHostDecisions(PartOne& partOne,
         } else {
           spdlog::info("[verb:npc-talk] the claim on {:x} in cell {:x} ended "
                        "with its claimant {:x}'s departure; {:x} simulates "
-                       "it (ADR-052, ADR-060)",
-                       d.actor, d.cell, d.player, simulator);
+                       "it (ADR-052, ADR-060){}",
+                       d.actor, d.cell, d.player, simulator,
+                       leaverSimulates ? ", the claimant hosting the cell: "
+                                         "the word waits for its next host"
+                                       : "");
         }
         if (actor) {
           if (MpActor* sim = PlayerActor(partOne, simulator)) {

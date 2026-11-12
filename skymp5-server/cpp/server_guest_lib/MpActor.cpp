@@ -3975,11 +3975,18 @@ std::optional<skymp::rules::EffectFacts> EffectFactsOf(
     case espm::MGEF::EffectType::Etherealize:
       facts.kind = skymp::rules::EffectKind::State;
       break;
+    // thuum docs/verbs/npc-fate.md (ADR-060, the reanimate's look): the
+    // thrall's state from its stand-up, which every game shows (its hit
+    // shader for the seconds left) until its death
+    case espm::MGEF::EffectType::Reanimate:
+      facts.kind = skymp::rules::EffectKind::Reanimate;
+      break;
     default:
       return std::nullopt;
   }
   if (mgef.primaryAV == espm::ActorValue::None &&
-      facts.kind != skymp::rules::EffectKind::State) {
+      facts.kind != skymp::rules::EffectKind::State &&
+      facts.kind != skymp::rules::EffectKind::Reanimate) {
     return std::nullopt;
   }
   constexpr uint32_t kNoSecond = std::numeric_limits<uint32_t>::max();
@@ -4022,6 +4029,7 @@ rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
       e.facts.kind = r.kind == 1 ? skymp::rules::EffectKind::PeakValue
         : r.kind == 2            ? skymp::rules::EffectKind::DualValue
         : r.kind == 3            ? skymp::rules::EffectKind::State
+        : r.kind == 4            ? skymp::rules::EffectKind::Reanimate
                                  : skymp::rules::EffectKind::Value;
       e.facts.av = static_cast<uint32_t>(r.av);
       e.facts.second_av =
@@ -4073,6 +4081,7 @@ std::optional<std::vector<RunningEffect>> RunningEffectsOf(
     r.kind = e.facts.kind == skymp::rules::EffectKind::PeakValue ? 1
       : e.facts.kind == skymp::rules::EffectKind::DualValue      ? 2
       : e.facts.kind == skymp::rules::EffectKind::State          ? 3
+      : e.facts.kind == skymp::rules::EffectKind::Reanimate      ? 4
                                                                  : 0;
     r.av = static_cast<int32_t>(e.facts.av);
     r.secondAv = e.facts.second_av == kNoSecond

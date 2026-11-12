@@ -792,6 +792,10 @@ mod ffi {
         /// A state that changes no value (Invisibility, Light,
         /// Etherealize; thuum docs/verbs/self-cast.md).
         State,
+        /// Archetype 22, reanimate: the thrall's state (thuum
+        /// docs/verbs/npc-fate.md); a full thrall's keeps its record's
+        /// duration (wire-rules magic::FULL_THRALL_MIN_S).
+        Reanimate,
     }
 
     /// How an effect arrives.
@@ -4860,6 +4864,7 @@ fn to_magic_facts(f: EffectFacts) -> magic::EffectFacts {
         EffectKind::PeakValue => magic::EffectKind::PeakValue,
         EffectKind::DualValue => magic::EffectKind::DualValue,
         EffectKind::State => magic::EffectKind::State,
+        EffectKind::Reanimate => magic::EffectKind::Reanimate,
         _ => magic::EffectKind::Value,
     };
     let second_av = if second_av == u32::MAX { None } else { Some(second_av) };
@@ -4873,6 +4878,7 @@ fn from_magic_facts(f: magic::EffectFacts) -> EffectFacts {
         magic::EffectKind::PeakValue => EffectKind::PeakValue,
         magic::EffectKind::DualValue => EffectKind::DualValue,
         magic::EffectKind::State => EffectKind::State,
+        magic::EffectKind::Reanimate => EffectKind::Reanimate,
     };
     EffectFacts { effect, source, kind, av, second_av: second_av.unwrap_or(u32::MAX), second_weight, magnitude, duration_s, recover, detrimental, no_duration }
 }
@@ -6529,6 +6535,12 @@ mod tests {
         assert!(!hit.has_entry);
         let magicka: f32 = hit.changes.iter().filter(|c| c.av == 25).map(|c| c.current).sum();
         assert!((magicka + 1.0).abs() < 1e-3);
+        // Dead Thrall's reanimate: a state, its record's 86,313,600 s kept
+        let thrall = EffectFacts { effect: 0x7e8e0, source: 0x7e8df, kind: EffectKind::Reanimate, av: u32::MAX, magnitude: 40.0, duration_s: 86_313_600.0, recover: true, detrimental: false, ..poison };
+        let raised = apply_effect(thrall, 1.0, 7, EffectArrival::Once);
+        assert!(raised.changes.is_empty() && raised.has_entry);
+        assert!(matches!(raised.entry.facts.kind, EffectKind::Reanimate));
+        assert!((raised.entry.facts.duration_s - 86_313_600.0).abs() < 1.0);
     }
 
     #[test]

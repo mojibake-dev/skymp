@@ -25,6 +25,13 @@ pub const MAX_EFFECTS: usize = 32;
 /// number is cut to it, so a running effect always ends.
 pub const MAX_DURATION_S: f32 = 86_400.0;
 
+/// A Reanimate effect at least this long is a full thrall's (ADR-060 as
+/// amended 2026-11-12): in the masters every Reanimate effect lasts 60 to
+/// 200 s but Dead Thrall's, 86,313,600 s, and their effects' flags are
+/// equal, so the record's duration is the one line. A full thrall stays at
+/// its commander's departure and keeps its look; a timed one dies.
+pub const FULL_THRALL_MIN_S: f32 = MAX_DURATION_S;
+
 /// How long a Self concentration cast's effects run on the server without
 /// the cast's end message (thuum docs/verbs/self-cast.md, train-31): the
 /// stream starts at the cast and ends at its end message; a lost end leaves
@@ -49,6 +56,13 @@ pub enum EffectKind {
     /// as the actor's running state, which its rules read and every game
     /// shows (thuum docs/verbs/self-cast.md).
     State,
+    /// Archetype 22, reanimate: a state as State is, the thrall's from its
+    /// stand-up, which every game shows (its look, thuum
+    /// docs/verbs/npc-fate.md, ADR-060). A timed thrall's is cut to the
+    /// bound as any effect's; a full thrall's (FULL_THRALL_MIN_S) keeps its
+    /// record's duration and ends with its death, which ends every running
+    /// effect.
+    Reanimate,
 }
 
 /// How the effect arrives: a concentration spell's hits each bring the
@@ -159,11 +173,17 @@ fn changes_of(facts: &EffectFacts, amount: f32, as_modifier: bool) -> Vec<AvChan
     out
 }
 
+/// Whether the kind is a state, which changes no actor value: State's
+/// archetypes and Reanimate.
+const fn is_state(kind: EffectKind) -> bool {
+    matches!(kind, EffectKind::State | EffectKind::Reanimate)
+}
+
 /// Whether the effect buffs (moves the temporary modifier for its duration
 /// and gives it back) rather than heals or wounds: Recover on a value or
 /// peak value modifier, and a peak value modifier always moves the maximum.
 fn buffs(facts: &EffectFacts) -> bool {
-    facts.kind != EffectKind::State && (facts.recover || facts.kind == EffectKind::PeakValue)
+    !is_state(facts.kind) && (facts.recover || facts.kind == EffectKind::PeakValue)
 }
 
 /// Applies one effect at `scale` times its magnitude, cast by `caster`: a
@@ -178,10 +198,15 @@ pub fn apply(facts: EffectFacts, scale: f32, caster: u32, arrival: Arrival) -> A
     }
     let mut facts = facts;
     facts.magnitude = facts.magnitude.max(0.0) * scale;
-    facts.duration_s = facts.duration_s.clamp(0.0, MAX_DURATION_S);
+    // a full thrall's record keeps its number: its effect ends with its
+    // death, not its seconds; every other effect's is cut to the bound
+    let full_thrall = facts.kind == EffectKind::Reanimate && facts.duration_s >= FULL_THRALL_MIN_S;
+    if !full_thrall {
+        facts.duration_s = facts.duration_s.clamp(0.0, MAX_DURATION_S);
+    }
     let amount = facts.magnitude * sign(&facts);
     let instant = arrival == Arrival::Stream || facts.no_duration || facts.duration_s <= 0.0;
-    if facts.kind == EffectKind::State {
+    if is_state(facts.kind) {
         // a state changes nothing; it runs for its duration, or not at all
         let entry = (!instant).then_some(EffectEntry { facts, caster, elapsed_s: 0.0 });
         return Applied { changes: Vec::new(), entry };
@@ -215,7 +240,7 @@ pub fn advance(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange> {
         entry.elapsed_s = before + dt_s;
         let facts = entry.facts;
         let amount = facts.magnitude * sign(&facts);
-        if facts.kind == EffectKind::State {
+        if is_state(facts.kind) {
             continue;
         }
         if buffs(&facts) {
@@ -258,7 +283,7 @@ pub fn modifier(entries: &[EffectEntry], av: u32) -> f32 {
 pub fn constant_modifier(facts: &[EffectFacts], av: u32) -> f32 {
     facts
         .iter()
-        .filter(|f| f.kind != EffectKind::State)
+        .filter(|f| !is_state(f.kind))
         .map(|f| {
             let amount = f.magnitude * sign(f);
             let primary = if f.av == av { amount } else { 0.0 };
@@ -525,6 +550,66 @@ mod tests {
         // without a duration it never runs
         let none = apply(EffectFacts { duration_s: 0.0, ..invisibility() }, 1.0, 0x14, Arrival::Once);
         assert!(none.changes.is_empty() && none.entry.is_none());
+    }
+
+    // Skyrim.esm 1.6.1170 (a scratch reader over thuum lab/esm.py on sky-srv,
+    // 2026-11-12): ReanimateCorpse 0x65BD7's ReanimateFFAimed25 0x96D0B, 13
+    // for 60 s, and DeadThrall 0x7E8DF's ReanimateThrallFFAimed 0x7E8E0, 40
+    // for 86,313,600 s; both archetype 22, flags 0x00401002 (Recover, FX
+    // Persist, Power Affects Duration), no actor value (libespm's None, -1)
+    fn reanimate(effect: u32, source: u32, magnitude: f32, duration_s: f32) -> EffectFacts {
+        EffectFacts {
+            effect,
+            source,
+            kind: EffectKind::Reanimate,
+            av: u32::MAX,
+            second_av: None,
+            second_weight: 0.0,
+            magnitude,
+            duration_s,
+            recover: true,
+            detrimental: false,
+            no_duration: false,
+        }
+    }
+
+    #[test]
+    fn a_timed_thralls_reanimate_is_a_state_that_runs_its_record() {
+        let applied = apply(reanimate(0x96d0b, 0x65bd7, 13.0, 60.0), 1.0, 0xff00_0003, Arrival::Once);
+        assert!(applied.changes.is_empty());
+        let mut entries: Vec<EffectEntry> = applied.entry.into_iter().collect();
+        assert_eq!(entries.first().map(EffectEntry::remaining_s), Some(60.0));
+        // Recover on a state buffs nothing
+        assert_eq!(modifier(&entries, u32::MAX), 0.0);
+        assert_eq!(constant_modifier(&[reanimate(0x96d0b, 0x65bd7, 13.0, 60.0)], u32::MAX), 0.0);
+        assert!(advance(&mut entries, 59.0).is_empty());
+        assert_eq!(entries.len(), 1);
+        assert!(advance(&mut entries, 2.0).is_empty());
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn a_full_thralls_reanimate_keeps_its_records_duration_and_every_other_effect_is_cut() {
+        let applied = apply(reanimate(0x7e8e0, 0x7e8df, 40.0, 86_313_600.0), 1.0, 0xff00_0003, Arrival::Once);
+        assert!(applied.changes.is_empty());
+        let mut entries: Vec<EffectEntry> = applied.entry.into_iter().collect();
+        assert_eq!(entries.first().map(|e| e.facts.duration_s), Some(86_313_600.0));
+        // ten days on it still runs: its end is its death, which ends every
+        // running effect (the core's)
+        assert!(advance(&mut entries, 864_000.0).is_empty());
+        assert_eq!(entries.len(), 1);
+        assert!(entries.first().is_some_and(|e| e.remaining_s() > MAX_DURATION_S));
+        // the line is a Reanimate effect's alone: any other effect of that
+        // length is cut to a day, a state's, and Dead Thrall's own rider,
+        // crSummonThrallFortifyHealRate 0x8BB2A (peak value, Heal Rate 27, 1
+        // for 86,313,600 s), whose 1 it then gives back
+        let state = apply(EffectFacts { duration_s: 86_313_600.0, ..invisibility() }, 1.0, 0x14, Arrival::Once);
+        assert_eq!(state.entry.map(|e| e.facts.duration_s), Some(MAX_DURATION_S));
+        let rider = EffectFacts { effect: 0x8bb2a, source: 0x7e8df, av: 27, recover: true, ..facts(EffectKind::PeakValue, 1.0, 86_313_600.0) };
+        let mut buffs: Vec<EffectEntry> = apply(rider, 1.0, 0xff00_0003, Arrival::Once).entry.into_iter().collect();
+        assert_eq!(buffs.first().map(|e| e.facts.duration_s), Some(MAX_DURATION_S));
+        assert_eq!(total(&advance(&mut buffs, MAX_DURATION_S), 27), (0.0, -1.0));
+        assert!(buffs.is_empty());
     }
 
     #[test]

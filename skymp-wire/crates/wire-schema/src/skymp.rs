@@ -925,7 +925,10 @@ wire_struct! {
         pub source: u32,
         /// Its magnitude, scaled as the server applied it.
         pub magnitude: f32,
-        /// Seconds left; 0 for an effect without duration, shown once.
+        /// Seconds left; 0 for an effect without duration, shown once. At
+        /// most a day (wire-rules magic::MAX_DURATION_S) but a full thrall's
+        /// reanimate, which keeps its record's (Dead Thrall's 86,313,600 s,
+        /// magic::FULL_THRALL_MIN_S).
         pub remaining: f32,
     }
 }

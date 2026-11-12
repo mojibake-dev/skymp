@@ -127,6 +127,27 @@ Napi::Value SetTriggerPresserExempt(const Napi::CallbackInfo& info);
 // call: true when stored, false for 0 and for the player's own id
 Napi::Value SetPropFollowed(const Napi::CallbackInfo& info);
 Napi::Value SetRecordApplying(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-071 rung 2 (the sample v2; a prop's place is
+// its body's, never its reference's: docs/engine/havok-props.md E21):
+// readBodies(formIds, all) reads each loaded reference's Havok body on the JS
+// thread, under its cell's bhkWorld::worldLock taken as a reader, as
+// { formId, awake, motion, pos, rot, lin, ang }: pos the 3D root's world
+// translate in game units, rot its world rotation as Euler XYZ degrees, lin
+// in game units a second, ang in radians a second (Havok's own), motion
+// hkpMotion::MotionType's value, awake the body's island in the world's
+// active list. An id with no reference, 3D, cell world or rigid body on the
+// root is left out. With all false a body is answered while awake and once
+// more at the read where it fell asleep (rule 9: a resting body costs JS
+// nothing); with all true every body found, that filter left as it was
+Napi::Value ReadBodies(const Napi::CallbackInfo& info);
+// setBodyVelocity(formId, lin, ang): the take-over's hand-off, the body's
+// linear (game units a second) and angular (radians a second) velocity set
+// through CommonLib's bhkRigidBody setters on the main thread, queued on
+// SKSE's UI task queue and never waited for. True when queued; false for 0,
+// the player's own id, a non-finite component or no SKSE task interface. The
+// task logs the set, or why not (no 3D, no rigid body, a motion type that is
+// not dynamic)
+Napi::Value SetBodyVelocity(const Napi::CallbackInfo& info);
 // thuum docs/DECISIONS.md ADR-068 rung 3 (the script record, amendment A;
 // ScriptState.h): setScriptRecordPending(formId, pending), a reference whose
 // served script record waits for its apply (true) or no longer (false), kept
@@ -279,6 +300,12 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("setRecordApplying",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetRecordApplying)));
+  exports.Set(
+    "readBodies",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(ReadBodies)));
+  exports.Set(
+    "setBodyVelocity",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetBodyVelocity)));
   exports.Set("setScriptRecordPending",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetScriptRecordPending)));

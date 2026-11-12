@@ -3508,11 +3508,9 @@ void ScriptNatives::InstallHooks()
   const bool ownerEvents = ClientSwitchOn("scriptOwnerEvents");
   Frida::SetScriptOwnerEvents(ownerEvents);
   if (ownerEvents) {
-    logger::info("[verb:papyrus-events] scriptOwnerEvents on: an event to a "
-                 "world quest's reference alias passes on the seat that owns "
-                 "the alias's reference, and one to an effect on an actor "
-                 "that is not the player on the seat that simulates it, each "
-                 "tallied as \"owner rule tally\" (D5 B)");
+    logger::info("[verb:papyrus-events] scriptOwnerEvents on: one to an "
+                 "effect on an actor that is not the player on the seat that "
+                 "simulates it, each tallied as \"owner rule tally\" (D5 B)");
   } else {
     logger::info("[verb:papyrus-events] scriptOwnerEvents off: the owner "
                  "rule asks nothing, and an alias's or an actor's effect's "

@@ -80,11 +80,10 @@ PlayersEffectRole PlayersEffect(RE::BSScript::IObjectHandlePolicy* policy,
 
 // the Undead FX build (thuum ADR-068 decision 6 applied to an actor's aliases
 // and effects; the reanimate-fx memo's D5 B): the Papyrus event gate's owner
-// rule on or off (OnSendEventEnter). On, the default, an event to a World
-// quest's reference alias passes on the seat that owns the alias's
-// reference, and one to an active effect on an actor that is not the player
-// on the seat that simulates the effect's target, each tallied; off, the
-// rule asks nothing and the gate is the block's as before.
+// rule on or off (OnSendEventEnter). On, the default, one to an active
+// effect on an actor that is not the player on the seat that simulates the
+// effect's target, each tallied; off, the rule asks nothing and the gate is
+// the block's as before.
 // ScriptNatives::InstallHooks sets it once at kDataLoaded from the client
 // setting scriptOwnerEvents. Threadsafe
 void SetScriptOwnerEvents(bool on);

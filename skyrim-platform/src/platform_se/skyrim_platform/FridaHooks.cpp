@@ -990,14 +990,6 @@ bool OwnedReference(const RE::TESObjectREFR* ref)
 }
 
 // the event the rule names, if any, for a handle that names no reference:
-// - a reference alias (BGSRefAlias::VMTYPEID, CommonLibSSE-NG
-//   include/RE/B/BGSRefAlias.h:18) of a quest that is no per-player quest
-//   here (BGSBaseAlias::owningQuest, BGSBaseAlias.h:76; ActingScope's
-//   PlayerQuests), whose reference (BGSRefAlias::GetReference,
-//   BGSRefAlias.h:149, src/RE/B/BGSRefAlias.cpp:8-20: the engine's own
-//   TESQuest::CreateRefHandleByAliasID, RELOCATION_ID(24537, 25066),
-//   src/RE/T/TESQuest.cpp:13-18; `just addr 25066` 0x3d14d0 on 1.6.1170)
-//   this seat owns;
 // - an active effect (ActiveEffect::VMTYPEID, ActiveEffect.h:31) whose
 //   target (ActiveEffect.h:104, read as a reference through its
 //   MagicTarget's own GetTargetStatsObject, MagicTarget.h:79, which an
@@ -1005,36 +997,14 @@ bool OwnedReference(const RE::TESObjectREFR* ref)
 //   EventHandler.cpp's spell cast) is an actor this seat simulates, and
 //   whose caster (GetCasterActor, ActiveEffect.h:93) is none, a game-file
 //   actor, or one at or above 0xff000000 this seat simulates.
-// Two policy calls per branch first, so every other handle pays two type
-// tests (rule 9). The effect branch reads what PlayersEffect already reads
-// at every blocked event (the caster's handle); the alias branch's read is
-// new to this hook. HYPOTHESIS H-OR1 (static, unread: Ghidra was down): the
-// engine's CreateRefHandleByAliasID takes the quest's alias lock
-// (TESQuest::aliasAccessLock, TESQuest.h:262), and no engine path raises an
-// alias's event while it holds that lock or a lock the reading thread then
-// needs, so the read cannot hang the event's thread; a seat that hangs while
-// Undead FX's applicators toggle (every 0.5 s, each start an alias OnInit)
-// reads it first, scriptOwnerEvents false the lever
+// An alias's OnInit never passes SendEvent (the VM dispatches it at the
+// object's birth, 104875; docs/research/adr065-papyrus-state-2026-11-03.md
+// Q4), so the applicators run on every seat and the seam keeps their
+// AddSpell on the owner (x-reanimate-look-u0 20261112-085636); the rule asks
+// effects alone.
 std::optional<OwnedEvent> OwnedEventOf(
   RE::BSScript::IObjectHandlePolicy* policy, RE::VMHandle handle)
 {
-  if (policy->HandleIsType(RE::BGSRefAlias::VMTYPEID, handle)) {
-    const auto* alias = static_cast<const RE::BGSRefAlias*>(
-      policy->GetObjectForHandle(RE::BGSRefAlias::VMTYPEID, handle));
-    if (!alias || !alias->owningQuest) {
-      return std::nullopt;
-    }
-    const uint32_t quest = alias->owningQuest->GetFormID();
-    if (ActingScope::PlayerQuests::Any() &&
-        ActingScope::PlayerQuests::Is(quest)) {
-      return std::nullopt;
-    }
-    const RE::TESObjectREFR* ref = alias->GetReference();
-    if (!ref || !OwnedReference(ref)) {
-      return std::nullopt;
-    }
-    return OwnedEvent{ OwnerBranch::kAlias, ref->formID, quest };
-  }
   if (policy->HandleIsType(RE::ActiveEffect::VMTYPEID, handle)) {
     auto* effect = static_cast<RE::ActiveEffect*>(
       policy->GetObjectForHandle(RE::ActiveEffect::VMTYPEID, handle));
@@ -1047,7 +1017,7 @@ std::optional<OwnedEvent> OwnedEventOf(
     }
     const RE::NiPointer<RE::Actor> caster = effect->GetCasterActor();
     if (caster && caster->formID >= 0xff000000 &&
-        !Hosted::Is(caster->formID)) {
+        !Hosted::SimulatedHere(caster->formID)) {
       return std::nullopt;
     }
     return OwnedEvent{ OwnerBranch::kEffect, ref->formID, 0 };

@@ -266,7 +266,7 @@ void InstallPlayerAddTargetHook()
  * puppet then), and the watcher still hosts its copy when the relayed
  * missile lands, the caster's report of its hit waiting two updates
  * (hitService.ts) before the grant's UpdateHoster can leave the server
- * (HYPOTHESIS, the order x-reanimate-claim v2's U4 reads).
+ * (HYPOTHESIS, the order x-reanimate-look's U4 reads).
  *
  * Every effect of such an item is refused, one AddTarget per effect
  * (MagicTarget.h:58-60) as PlayerAddTarget refuses a potion's: the item is

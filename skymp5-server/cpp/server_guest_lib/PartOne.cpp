@@ -1477,6 +1477,12 @@ void PartOne::Init()
   worldState.simulatorOf = [this](uint32_t actor, uint32_t cell) {
     return pImpl->cells->simulator_of(actor, cell);
   };
+  // thuum docs/verbs/prop-physics.md (physics rung 3): and who streams a
+  // prop's live row, so a body flown past its owner's grid squares keeps the
+  // owner's subscription, and the owner's walk keeps the body's
+  worldState.propLiveOwnerOf = [this](uint32_t refr) {
+    return pImpl->props->prop_live_owner(refr);
+  };
   // thuum docs/verbs/leveling.md: the skill table's cost of a level, for a
   // server set of a skill (MpActor::SetActorValueBaseByServer moves the
   // progress entry with the base; x-lockpick v4's read, 2026-10-31)

@@ -1112,6 +1112,33 @@ void MpObjectReference::ForceSubscriptionsUpdate()
       now.insert(simulator);
     }
   }
+  // thuum docs/verbs/prop-physics.md (physics rung 3, D6's keep for a prop):
+  // a live prop row's owner and the prop stay a pair where the grid would
+  // part them, on both sides, since one subscription is both edges: the
+  // prop's pass keeps its owner (a body the third word throws past the 3x3
+  // squares around its caster) and the owner's pass keeps every live prop
+  // of its it still listens to (a caster that crosses a square while its
+  // body flies), else the owner's game would get a DestroyActor for the body
+  // its engine flies and no word on it after. It lasts while the row is live
+  // (awake or held): at its rest the next grid pass, either side's, parts
+  // the pair as the grid would
+  if (worldState->propLiveOwnerOf) {
+    if (AsActor()) {
+      for (MpObjectReference* listener : was) {
+        if (!listener->AsActor() && emitters->count(listener) != 0 &&
+            worldState->propLiveOwnerOf(listener->GetFormId()) ==
+              GetFormId()) {
+          now.insert(listener);
+        }
+      }
+    } else if (const uint32_t owner =
+                 worldState->propLiveOwnerOf(GetFormId())) {
+      const auto& form = worldState->LookupFormByIdNoLoad(owner);
+      if (MpActor* actor = form ? form->AsActor() : nullptr) {
+        now.insert(actor);
+      }
+    }
+  }
 
   std::vector<MpObjectReference*> toRemove;
   std::set_difference(was.begin(), was.end(), now.begin(), now.end(),

@@ -327,6 +327,12 @@ public:
   // actor's follower (npc-handoff D6), else 0; installed by PartOne; HostOf
   // reads this when installed and cellHostOf otherwise
   std::function<uint32_t(uint32_t actor, uint32_t cell)> simulatorOf;
+  // thuum docs/verbs/prop-physics.md (physics rung 3): the player actor whose
+  // game streams a prop's live row (awake or held), else 0, from the prop
+  // table (wire-rules props); installed by PartOne. ForceSubscriptionsUpdate
+  // keeps that owner and the prop a pair where the grid would part them, as
+  // it keeps an actor's simulator (D6); none installed, the grid alone
+  std::function<uint32_t(uint32_t refr)> propLiveOwnerOf;
   // thuum docs/verbs/npc-handoff.md D6, the door: whether a hosted NPC may
   // cross a teleport door into `destWorldOrCell` at `destPos` (PartOne's
   // follow verdict for its simulator), installed by PartOne; none installed,

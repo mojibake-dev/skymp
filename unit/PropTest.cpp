@@ -1,5 +1,6 @@
 #include "ActionListener.h"
 #include "ActivateMessage.h"
+#include "DestroyActorMessage.h"
 #include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
 #include "PropTransformMessage.h"
@@ -225,6 +226,21 @@ int FirstTo(PartOne& p, Networking::UserId user)
     ++at;
   }
   return -1;
+}
+
+// how many DestroyActors for `refr` went to `user`: its game told the
+// reference is gone (an unsubscription; SpellPlacedTest's DestroyedTo shape,
+// by the reference's idx)
+size_t DestroysTo(PartOne& p, Networking::UserId user, MpObjectReference& refr)
+{
+  size_t n = 0;
+  for (auto& m : p.Messages()) {
+    auto destroy = dynamic_cast<DestroyActorMessage*>(m.message.get());
+    if (m.userId == user && destroy && destroy->idx == refr.GetIdx()) {
+      ++n;
+    }
+  }
+  return n;
 }
 
 // the relays of a sample sent to `user`: the raw bytes the sender's game
@@ -1593,4 +1609,135 @@ TEST_CASE("Bones on an item are refused: the sample moves nothing, wakes "
   DoDisconnect(p, 10);
   p.DestroyActor(kC11);
   p.DestroyActor(kC10);
+}
+
+TEST_CASE("One impact's claim names what it moved: the resting props are the "
+          "caster's at the next epoch each, one another seat streams awake "
+          "is refused E_PROP_MOVING and answered with its word, and the "
+          "island's next claim takes a resting neighbour the same way and "
+          "is the caster's own for what it holds",
+          "[Prop][espm]")
+{
+  // physics rung 3 (thuum lab/.cache/drafts/physics/rung3-plan.md B4; ADR-071
+  // decision 4: the caster claims what its impact moved in one PropClaim per
+  // impact, and the neighbours that join its island in claims of their own):
+  // c1 hosts the cell and its own engine kicked the jug, which it streams
+  // awake when c2's blast lands on the basket and the jug
+  auto& p = GetPartOne();
+  auto w = Enter(p);
+  auto& jug = Prop(p, kJug, kHere + NiPoint3{ 20.f, 0.f, 0.f });
+  auto& crate = Prop(p, kCrate, kHere + NiPoint3{ -20.f, 0.f, 0.f });
+  Sample(p, 0, kJug, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false);
+  REQUIRE(p.PropLiveOwner(jug) == kC1);
+  REQUIRE(p.PropEpochOf(jug) == 1);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    ClaimAll(p, 1, { kBasket, kJug }, 3);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d02 claims prop ff000d03 by "
+                      "touch 3: granted, epoch 1; 2 listener(s) told") == 1);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_MOVING: ff000d02 claims "
+                      "prop ff000d0e by touch 3; another seat streams it "
+                      "awake: a contact, a drop or an impulse takes a prop at "
+                      "rest, a grab takes it at once") == 1);
+  }
+  REQUIRE(p.PropLiveOwner(w.prop) == kC2);
+  REQUIRE(p.PropLiveOwner(jug) == kC1);
+  REQUIRE(p.PropEpochOf(jug) == 1);
+  // c2 heard the basket's grant and the jug's standing word (c1's at 1); c1
+  // the grant alone
+  const auto toC2 = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(toC2.size() == 2);
+  for (const auto& word : toC2) {
+    REQUIRE(word.player == (word.refr == kJug ? kC1 : kC2));
+    REQUIRE(word.epoch == 1);
+  }
+  const auto toC1 = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(toC1.size() == 1);
+  REQUIRE(toC1[0].refr == kBasket);
+  REQUIRE(toC1[0].player == kC2);
+
+  // the basket in flight knocked the resting crate into its island: c2's
+  // next claim names the crate and the basket again, the crate granted with
+  // its word to both seats, the basket c2's own already (no word, no line)
+  p.Messages().clear();
+  {
+    LogCapture log;
+    ClaimAll(p, 1, { kCrate, kBasket }, 3);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d02 claims prop ff000d0f by "
+                      "touch 3: granted, epoch 1; 2 listener(s) told") == 1);
+    REQUIRE(log.Count("prop ff000d03") == 0);
+  }
+  REQUIRE(p.PropLiveOwner(crate) == kC2);
+  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  for (const Networking::UserId user :
+       std::vector<Networking::UserId>{ 0, 1 }) {
+    const auto words = SentTo<PropOwnerMessage>(p, user);
+    REQUIRE(words.size() == 1);
+    REQUIRE(words[0].refr == kCrate);
+    REQUIRE(words[0].player == kC2);
+  }
+  Leave(p);
+}
+
+TEST_CASE("A live prop's owner stays its listener where the grid would drop "
+          "it: a body two squares from its owner keeps the owner subscribed "
+          "and its samples taken, the owner's own walk across a square keeps "
+          "it too, and the next grid pass after the body's rest drops it",
+          "[Prop][espm]")
+{
+  // physics rung 3 (thuum lab/.cache/drafts/physics/rung3-plan.md B5): a body
+  // the third word throws can land more than a square from its caster,
+  // outside the 3x3 squares around it that decide its listeners, and the grid
+  // would then unsubscribe its owner (a DestroyActor to the game whose engine
+  // flies it, and no word on it after); the keep is npc-handoff D6's for an
+  // actor's simulator (MpObjectReference's ForceSubscriptionsUpdate), on both
+  // sides of the pair. c1 hosts the cell, c2 casts
+  auto& p = GetPartOne();
+  auto w = Enter(p);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  auto& c2 = p.worldState.GetFormAt<MpActor>(kC2);
+  Claim(p, 1, kBasket, 3);
+  REQUIRE(p.PropLiveOwner(w.prop) == kC2);
+  p.Messages().clear();
+
+  // the flight's samples carried the record two squares east, 8,200 units
+  // from c2 (x 17200, grid square 4 against c2's 2, Tamriel's cell (4, 0)):
+  // the record stands where they left it, as the tether case stands its
+  // rock, since no clock runs here. That write's grid pass drops the host's
+  // game and keeps the owner's
+  const NiPoint3 far = kHere + NiPoint3{ 8200.f, 0.f, 0.f };
+  w.prop.SetPos(far);
+  REQUIRE(Listens(w.prop, c2));
+  REQUIRE(DestroysTo(p, 1, w.prop) == 0);
+  REQUIRE_FALSE(Listens(w.prop, c1));
+  REQUIRE(DestroysTo(p, 0, w.prop) == 1);
+  // c2's sample there is taken (a live owner's stream passes the listener
+  // check wherever it lands; the keep is what keeps its game told)
+  const NiPoint3 flying = far + NiPoint3{ 50.f, 0.f, 0.f };
+  Sample(p, 1, kBasket, flying, false);
+  REQUIRE(w.prop.GetPos() == flying);
+
+  // c2's own walk across a square while the body flies: its grid pass keeps
+  // the pair too, where it drops a resting prop two squares away (the claim
+  // case above, c2 at kTwoEast)
+  c2.SetPos(kHere + NiPoint3{ -4000.f, 0.f, 0.f });
+  REQUIRE(Listens(w.prop, c2));
+  REQUIRE(DestroysTo(p, 1, w.prop) == 0);
+
+  // the rest: the host's again at epoch 2, and c2, a listener still, hears
+  // its own rest's word; the next grid pass, the body's own, parts the pair
+  p.Messages().clear();
+  Sample(p, 1, kBasket, flying + NiPoint3{ 10.f, 0.f, 0.f }, true);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  REQUIRE(Listens(w.prop, c2));
+  const auto rested = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(rested.size() == 1);
+  REQUIRE(rested[0].player == 0);
+  REQUIRE(rested[0].epoch == 2);
+  w.prop.ForceSubscriptionsUpdate();
+  REQUIRE_FALSE(Listens(w.prop, c2));
+  REQUIRE(DestroysTo(p, 1, w.prop) == 1);
+  Leave(p);
 }

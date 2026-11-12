@@ -1471,8 +1471,8 @@ mod ffi {
         cell: u32,
         /// The host of that cell, 0 while nobody hosts it, for a world
         /// object, held or placed by its record; an actor's simulator for an
-        /// actor (0 for none), which a row kept as evidence reads; 0 for
-        /// every other kind.
+        /// actor (0 for none), which a row kept as evidence and an actor's
+        /// look row read; 0 for every other kind.
         owner: u32,
         /// That host's standing epoch (unread for an actor).
         owner_epoch: u32,
@@ -1535,7 +1535,9 @@ mod ffi {
         /// The subject's form id (accepted).
         subject: u32,
         /// The subject's sequence after this call, 1 for its first
-        /// (accepted).
+        /// (accepted); an actor's look row on an effect form (EffectShader,
+        /// VisualEffect) takes its relay's self's, the form's, the key a
+        /// receiver orders a relay by.
         seq: u32,
         /// The relay native's class (accepted).
         relay_cls: String,
@@ -1543,8 +1545,9 @@ mod ffi {
         relay_fn: String,
         /// The call's arguments the relay carries, by index, in order.
         relay_args: Vec<u8>,
-        /// The relay's self: the subject for a method native, 0 for a static
-        /// one.
+        /// The relay's self: the subject for a method native, the method's
+        /// own for one whose subject is its first argument (the effect
+        /// form, the Sound), 0 for a static one.
         relay_self: u32,
         /// Who hears it: 0 the subject's listeners, 1 every seat, 2 none, 3
         /// the subject's cell's host alone (a look's CreateDetectionEvent,
@@ -6767,6 +6770,37 @@ mod tests {
         let pillar = ScriptCallFacts { self_id: 0xaa8cb, subject_kind: 1, owner_epoch: 3, ..facts };
         let relayed = s.judge(play.row, &[text], &pillar, 0);
         assert_eq!((relayed.code, relayed.keep_evidence, relayed.seq), (ScriptCallCode::Accepted, false, 1));
+    }
+
+    #[test]
+    fn the_bridge_relays_an_actors_look_on_its_selfs_sequence() {
+        // the Undead FX build (the reanimate-fx memo, D6 B and D3 B):
+        // TurnToAsh's ShockDisintegrate01FXS 0xd22fb played on the draugr
+        // 0x800a6 by its simulator 0xff000000, kind 3, the facts' owner; the
+        // relay is the shader's, on the shader's sequence, no firing's look,
+        // nothing kept, so the core relays it with its seq to the actor's
+        // listeners and logs its "relayed to" line
+        let number = ScriptArg { kind: 2, form_id: 0 };
+        let draugr = ScriptArg { kind: 4, form_id: 0x800a6 };
+        let at = script_call_subject("EffectShader", "Play", 0xd22fb, &[draugr, number]);
+        assert!(at.row >= 0);
+        assert_eq!((at.subject, at.record, at.look), (0x800a6, 0, 0));
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xd22fb, epoch: 0, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING };
+        let mut s = new_script_calls();
+        let v = s.judge(at.row, &[draugr, number], &facts, 0);
+        assert_eq!((v.code, v.subject, v.seq, v.relay_self, v.audience), (ScriptCallCode::Accepted, 0x800a6, 1, 0xd22fb, 0));
+        assert_eq!((v.relay_cls.as_str(), v.relay_fn.as_str(), v.relay_args.as_slice()), ("EffectShader", "Play", &[0u8, 1][..]));
+        assert_eq!((v.look, v.keep_last, v.keep_evidence, v.record, v.event_arg, v.keep_var, v.figure_args), (false, false, false, 0, -1, 0, false));
+        // a row on the actor's self: its own sequence, the actor its self
+        let flag = ScriptArg { kind: 1, form_id: 0 };
+        let alpha = script_call_subject("Actor", "SetAlpha", 0x800a6, &[number, flag]);
+        let on_self = s.judge(alpha.row, &[number, flag], &ScriptCallFacts { self_id: 0x800a6, ..facts }, 0);
+        assert_eq!((on_self.code, on_self.seq, on_self.relay_self), (ScriptCallCode::Accepted, 1, 0x800a6));
+        // another seat's report and a world object cross with their names
+        let guest = s.judge(at.row, &[draugr, number], &ScriptCallFacts { sender: 0xff00_0001, ..facts }, 0);
+        assert_eq!((guest.code, guest.name.as_str()), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER"));
+        let object = s.judge(at.row, &[draugr, number], &ScriptCallFacts { subject_kind: 1, ..facts }, 0);
+        assert_eq!((object.code, object.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
     }
 
     #[test]

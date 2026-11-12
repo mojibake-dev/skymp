@@ -26,9 +26,10 @@
 //! ([`SubjectKind::Record`]: the loader attaches no moving static, so Bleak
 //! Falls Sanctum's door FX is no reference of the server's). A door's or a
 //! container's call is dropped quietly (its open is Activate's isOpen, as
-//! ObjectAnimation's handler drops it) and an actor's is refused as the
-//! streams' (`E_SCRIPTCALL_ROW`: the row is local for an actor). A value is
-//! never judged (ADR-062's amendment). An accepted call takes its subject's
+//! ObjectAnimation's handler drops it) and an actor's animation is refused as
+//! the streams' (`E_SCRIPTCALL_ROW`: the row is local for an actor; an
+//! actor's look row is its simulator's, below). A value is never judged
+//! (ADR-062's amendment). An accepted call takes its subject's
 //! next sequence (6.11 item 1: one per object, owned by the server, so a
 //! receiver applies one object's relays in order and drops a stale one) and
 //! goes to the row's audience but the reporter as the row's relay native.
@@ -92,6 +93,25 @@
 //! actor, a door or a container, the reporter's own player among them). R2:
 //! that the reporter's press fired the trigger is its word, as D-W1's firing
 //! is.
+//!
+//! An actor's look rows (thuum ADR-060's amendment of 2026-11-12, the Undead
+//! FX build; the reanimate-fx memo's D6 B and D3 B): an action row the table
+//! gives the actor's simulator ([`Owner::Simulator`]: EffectShader.Play and
+//! Stop, VisualEffect.Play and Stop, Actor.SetEyeTexture, SetAlpha,
+//! SetCriticalStage and AttachAshPile) is a look a script on an actor makes,
+//! which the engine running that script plays and every other seat plays as
+//! the call (ADR-068 decision 6: an actor's scripts are its simulator's). Its
+//! owner step is an actor's ([`simulated_by_reporter`], the evidence row's
+//! rule): the subject an actor the server holds, simulated by the reporter
+//! now, the epoch unread; the reporter's own player, a world object, a door
+//! or a container is refused by the row (`E_SCRIPTCALL_ROW`), another seat's
+//! actor or one nobody simulates by its owner (`E_SCRIPTCALL_OWNER`). An
+//! accepted look goes to the actor's other listeners as the same native with
+//! the next sequence of its relay's self, the receiver's key: the actor's for
+//! a row on its self, the effect form's for a [`Subject::Arg0Method`] row
+//! (one shader played on many actors keeps the server's order on every
+//! receiver, and none is dropped as stale), and is kept nowhere. R2: the look
+//! is the simulator's engine's word, its arguments never judged.
 
 use std::collections::HashMap;
 
@@ -101,8 +121,8 @@ use crate::trigger_entry;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// A consequence the engine never saves (an animation event, a graph
-    /// variable): the call itself is the message, relayed to run on every
-    /// other seat.
+    /// variable, an actor's shader): the call itself is the message, relayed
+    /// to run on every other seat.
     Action,
     /// A consequence the engine saves for the object, carried by its change
     /// form or its typed verb (rungs 4 and 5), never relayed as an action.
@@ -580,9 +600,9 @@ pub struct Facts {
     pub cell: u32,
     /// The subject's owner by its kind: the host of its cell for a world
     /// object, held or placed by its record, 0 while nobody hosts it; an
-    /// actor's simulator for an actor (0 for none), which only a row kept as
-    /// evidence reads (no action row is an actor's, the streams carry those);
-    /// 0 for every other kind.
+    /// actor's simulator for an actor (0 for none), which a row kept as
+    /// evidence and an actor's look row read (an animation row on an actor
+    /// is the streams'); 0 for every other kind.
     pub owner: u32,
     /// That owner's standing epoch (a world object's host's; unread for an
     /// actor).
@@ -657,7 +677,9 @@ pub struct Refusal {
 pub struct Accept {
     /// The subject's form id.
     pub subject: u32,
-    /// The subject's sequence after this call, 1 for its first.
+    /// The subject's sequence after this call, 1 for its first; for an
+    /// actor's look row on an effect form ([`Subject::Arg0Method`]) its
+    /// relay's self's, the form's, the key a receiver orders the relay by.
     pub seq: u32,
     /// The relay native's class.
     pub relay_cls: &'static str,
@@ -665,8 +687,10 @@ pub struct Accept {
     pub relay_fn: &'static str,
     /// The call's arguments the relay carries, by index, in order.
     pub relay_args: &'static [u8],
-    /// The relay's self: the subject for a method native's row, 0 for a
-    /// static one's (the target travels among the arguments).
+    /// The relay's self: the subject for a method native's row, the
+    /// method's own for a [`Subject::Arg0Method`] row (the effect form, the
+    /// Sound), 0 for a static one's (the target travels among the
+    /// arguments).
     pub relay_self: u32,
     /// Who hears it.
     pub audience: Audience,
@@ -760,7 +784,8 @@ enum Channel {
 }
 
 /// The channel a call of `row` leaves by: an action row the table relays to
-/// the subject's listeners, a state row it keeps as evidence or as its
+/// the subject's listeners (a world object's, its cell host's, or an actor's
+/// look, its simulator's), a state row it keeps as evidence or as its
 /// subject's record; any other row is refused by its row
 /// (`E_SCRIPTCALL_ROW`).
 fn channel_of(row: &Row) -> Result<Channel, Refusal> {
@@ -787,7 +812,7 @@ fn channel_of(row: &Row) -> Result<Channel, Refusal> {
     let Some((cls, func)) = row.relay_target() else {
         return Err(refusal(Code::Row, "an action row the table never relays".to_owned()));
     };
-    if row.owner != Owner::CellHost || row.audience != Audience::Listeners {
+    if !matches!(row.owner, Owner::CellHost | Owner::Simulator) || row.audience != Audience::Listeners {
         return Err(refusal(Code::Row, format!("an action row owned by the {:?} for the {:?}: no relay before its rung", row.owner, row.audience)));
     }
     Ok(Channel::Relay { cls, func })
@@ -801,23 +826,37 @@ fn channel_of(row: &Row) -> Result<Channel, Refusal> {
 /// health is its own report). An actor's owner is its simulator, so the epoch
 /// is not read; nothing is relayed, so no sequence is taken.
 fn keep_evidence(subject: u32, facts: &Facts) -> Verdict {
+    match simulated_by_reporter(subject, facts, "an actor's death evidence", "a player's trap hit is its own seat's") {
+        Ok(()) => Verdict::Kept { subject },
+        Err(refused) => Verdict::Refuse(refused),
+    }
+}
+
+/// An actor's owner step, the evidence row's and an actor's look row's
+/// (ADR-063 decision 1; the death report's own E_DEATH_NOT_HOST rule): the
+/// subject an actor the server holds, simulated by the reporter now
+/// (`facts.owner`, the core's simulator of the actor), never the reporter's
+/// own player; an actor's owner is its simulator, so the epoch is not read.
+/// The words name what the row is (`row_is`) for a subject that is no actor,
+/// and why the reporter's own player is no subject of it (`own_player`).
+fn simulated_by_reporter(subject: u32, facts: &Facts, row_is: &str, own_player: &str) -> Result<(), Refusal> {
     match facts.kind {
         SubjectKind::Actor => {}
-        SubjectKind::Unknown => return refuse(Code::Owner, "the server holds no such reference".to_owned()),
+        SubjectKind::Unknown => return Err(refusal(Code::Owner, "the server holds no such reference".to_owned())),
         SubjectKind::WorldObject | SubjectKind::Record | SubjectKind::DoorOrContainer => {
-            return refuse(Code::Row, "the subject is no actor: the row is an actor's death evidence".to_owned());
+            return Err(refusal(Code::Row, format!("the subject is no actor: the row is {row_is}")));
         }
     }
     if subject == OWN_PLAYER {
-        return refuse(Code::Row, "the reporter's own player: a player's trap hit is its own seat's (the row is local for a player)".to_owned());
+        return Err(refusal(Code::Row, format!("the reporter's own player: {own_player} (the row is local for a player)")));
     }
     if facts.owner == 0 {
-        return refuse(Code::Owner, format!("nobody simulates {subject:x}"));
+        return Err(refusal(Code::Owner, format!("nobody simulates {subject:x}")));
     }
     if facts.owner != facts.sender {
-        return refuse(Code::Owner, format!("{:x} simulates {subject:x}, not the reporter", facts.owner));
+        return Err(refusal(Code::Owner, format!("{:x} simulates {subject:x}, not the reporter", facts.owner)));
     }
-    Verdict::Kept { subject }
+    Ok(())
 }
 
 /// Whether the reporter hosts `cell` at the reported epoch: `host` the cell's
@@ -1167,6 +1206,13 @@ impl ScriptCalls {
                 };
             }
         };
+        // an actor's look row (the Undead FX build): its simulator's alone
+        if row.owner == Owner::Simulator {
+            return match simulated_by_reporter(subject, facts, "an actor's look, its simulator's", "a player's own looks stay on its seat") {
+                Ok(()) => self.actor_look(row, subject, method_self, relay_cls, relay_fn),
+                Err(refused) => Verdict::Refuse(refused),
+            };
+        }
         match facts.kind {
             SubjectKind::WorldObject | SubjectKind::Record => {}
             SubjectKind::DoorOrContainer => return Verdict::Skip,
@@ -1240,6 +1286,33 @@ impl ScriptCalls {
             variable_kind: None,
             look: true,
             figure_args: true,
+        })
+    }
+
+    /// An actor's look its simulator reported (the Undead FX build), after
+    /// its owner step: relayed to the actor's listeners as the row's relay
+    /// native with the next sequence of the relay's self, the key a receiver
+    /// orders a relay by (skymp5-client spSnippetService's takeSeq): the
+    /// actor's for a row on its self, the effect form's for a
+    /// [`Subject::Arg0Method`] row, a form one script plays on many actors,
+    /// so its relays keep the server's order on every receiver and none is
+    /// dropped as stale; kept nowhere (the row's keep, Keep::Nothing).
+    fn actor_look(&mut self, row: Row, subject: u32, method_self: u32, cls: &'static str, func: &'static str) -> Verdict {
+        let relay_self = if row.subject == Subject::Arg0Method { method_self } else { subject };
+        let seq = self.next_seq(relay_self);
+        Verdict::Accept(Accept {
+            subject,
+            seq,
+            relay_cls: cls,
+            relay_fn: func,
+            relay_args: row.relay_args(),
+            relay_self,
+            audience: row.audience,
+            keep: row.keep,
+            graph_event_arg: row.graph_event_arg(),
+            variable_kind: row.variable_kind(),
+            look: false,
+            figure_args: false,
         })
     }
 
@@ -1751,17 +1824,29 @@ mod tests {
         // three trap rows, rung 4's seven (the standing's six and
         // ReferenceAlias.Clear), D-W2's Sound.Play and CreateDetectionEvent
         // and rung 5's seven player's own rows (D-E1 A's ChangeHeadPart the
-        // seventh): "50 of 50 table rows bound". D-R1 C keeps the flip's
-        // AddItem and RemoveItem as the player's own inventory in place, so
-        // nine rows are the player's own, in player_own's order
-        assert_eq!(TABLE.len(), 50);
+        // seventh), then the Undead FX build's eight look rows of an actor:
+        // "58 of 58 table rows bound". D-R1 C keeps the flip's AddItem and
+        // RemoveItem as the player's own inventory in place, so nine rows
+        // are the player's own, in player_own's order
+        assert_eq!(TABLE.len(), 58);
         let own: Vec<(&str, &str)> = TABLE.iter().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func)).collect();
         assert_eq!(own, crate::player_own::ROWS);
         assert!(own.iter().all(|(c, f)| crate::player_own::Row::of(c, f).is_some()));
         assert_eq!((row_index("ObjectReference", "AddItem"), row_index("ObjectReference", "RemoveItem")), (Some(6), Some(7)));
         assert_eq!(row_index("Actor", "SetRace"), Some(43));
         let actions: Vec<&str> = TABLE.iter().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
-        assert_eq!(actions, ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat", "Play", "CreateDetectionEvent"]);
+        assert_eq!(
+            actions,
+            ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat", "Play", "CreateDetectionEvent", "Play", "Stop", "Play", "Stop", "SetEyeTexture", "SetAlpha", "SetCriticalStage", "AttachAshPile"]
+        );
+        // the Undead FX build's eight, an actor's looks, its simulator's:
+        // appended, so every earlier row keeps its place
+        let actor_looks: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Action && r.owner == Owner::Simulator).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        assert_eq!(
+            actor_looks,
+            ["EffectShader.Play", "EffectShader.Stop", "VisualEffect.Play", "VisualEffect.Stop", "Actor.SetEyeTexture", "Actor.SetAlpha", "Actor.SetCriticalStage", "Actor.AttachAshPile"]
+        );
+        assert_eq!((row_index("Actor", "ChangeHeadPart"), row_index("EffectShader", "Play"), row_index("Actor", "AttachAshPile")), (Some(49), Some(50), Some(57)));
         // D-W2 A's look column: the six action rows also, the two motion rows
         // and the sound alone, every other row never
         let looks = |look: Look| -> Vec<String> { TABLE.iter().filter(|r| r.look == look).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
@@ -1778,11 +1863,18 @@ mod tests {
             assert_eq!(row_index(r.cls, r.func), Some(i), "{name}");
             assert!(r.params.len() <= EVERY_ARG.len(), "{name}");
             // an action row relays to the subject's listeners, its twin's
-            // arguments among the call's; every other row is never relayed
+            // arguments among the call's; every other row is never relayed.
+            // A world object's is its cell host's; an actor's look is its
+            // simulator's, on its self or an effect form's first argument,
+            // relayed as itself, kept nowhere and never a firing's look
             if r.kind == Kind::Action {
                 let audience = r.audience == Audience::Listeners || (r.look == Look::Only && r.audience == Audience::Host);
-                assert!(r.relay_target().is_some() && audience && r.owner == Owner::CellHost, "{name}");
+                assert!(r.relay_target().is_some() && audience && matches!(r.owner, Owner::CellHost | Owner::Simulator), "{name}");
                 assert!(r.relay_args().iter().all(|&a| usize::from(a) < r.params.len()), "{name}");
+                if r.owner == Owner::Simulator {
+                    assert!(matches!(r.subject, Subject::SelfRef | Subject::Arg0Method), "{name}");
+                    assert_eq!((r.audience, r.relay, r.keep, r.look), (Audience::Listeners, Relay::Same, Keep::Nothing, Look::Never), "{name}");
+                }
             } else if r.keep == Keep::Evidence {
                 // a row kept as evidence is an actor's state row, its
                 // simulator's, heard by nobody, its subject its self and its
@@ -1929,6 +2021,100 @@ mod tests {
         assert_eq!(code(&s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &hosted(PILLAR), 1_000)), Some(Code::Rate));
         // a token every 125 ms
         assert_eq!(s.judge(hit, &blade, &simulated(DRAUGR), 1_125), Verdict::Kept { subject: DRAUGR });
+    }
+
+    // the Undead FX build (the reanimate-fx memo, sections 1 and 6.2):
+    // vanilla's ShockDisintegrate01FXS 0xd22fb, TurnToAsh's shader, and
+    // Undead FX's US_Disintegrate_full_flat 0x50cba at UndeadFX.esp's
+    // runtime index 0x2b; RFCT 0x107d9b DA10ReanimateTargetFX; Riverwood's
+    // Hilde 0x35534, the memo's thrall, beside the temple's draugr
+    const DISINTEGRATE: u32 = 0xd22fb;
+    const DECAY_FULL: u32 = 0x2b05_0cba;
+    const REANIMATE_FX: u32 = 0x10_7d9b;
+    const THRALL: u32 = 0x35534;
+
+    // an effect form's call on an actor: the form the message's self
+    fn played_on(form: u32, actor: u32) -> Facts {
+        Facts { self_id: form, ..simulated(actor) }
+    }
+
+    #[test]
+    fn an_actors_look_is_its_simulators_relayed_on_its_selfs_sequence() {
+        let mut s = ScriptCalls::default();
+        let play = row("EffectShader", "Play");
+        let on = |actor: u32| [Arg::Object(u64::from(actor)), Arg::Number];
+        // TurnToAsh's ShockDisintegrate01FXS.Play(Victim, 4.0) from the
+        // simulator: relayed on the shader to the actor's listeners, every
+        // argument, the shader's sequence, kept nowhere, no firing's look
+        let a = accepted(&s.judge(play, &on(DRAUGR), &played_on(DISINTEGRATE, DRAUGR), 0));
+        assert_eq!((a.subject, a.relay_self, a.seq), (DRAUGR, DISINTEGRATE, 1));
+        assert_eq!((a.relay_cls, a.relay_fn, a.relay_args), ("EffectShader", "Play", &[0u8, 1][..]));
+        assert_eq!((a.audience, a.keep, a.graph_event_arg, a.variable_kind, a.look, a.figure_args), (Audience::Listeners, Keep::Nothing, None, None, false, false));
+        // the same shader on another actor runs on the shader's sequence, so
+        // a receiver keyed by the relay's self drops neither as stale
+        assert_eq!(accepted(&s.judge(play, &on(THRALL), &played_on(DISINTEGRATE, THRALL), 0)).seq, 2);
+        assert_eq!((s.seq_of(DISINTEGRATE), s.seq_of(DRAUGR), s.seq_of(THRALL)), (2, 0, 0));
+        // another form starts its own
+        let decay = accepted(&s.judge(play, &on(THRALL), &played_on(DECAY_FULL, THRALL), 0));
+        assert_eq!((decay.relay_self, decay.seq), (DECAY_FULL, 1));
+        let stop = accepted(&s.judge(row("EffectShader", "Stop"), &[Arg::Object(u64::from(THRALL))], &played_on(DECAY_FULL, THRALL), 0));
+        assert_eq!((stop.relay_fn, stop.relay_self, stop.seq, stop.relay_args), ("Stop", DECAY_FULL, 2, &[0u8][..]));
+        // a visual effect's three arguments, its facing object None
+        let fx = accepted(&s.judge(row("VisualEffect", "Play"), &[Arg::Object(u64::from(THRALL)), Arg::Number, Arg::Absent], &played_on(REANIMATE_FX, THRALL), 0));
+        assert_eq!((fx.relay_cls, fx.relay_self, fx.seq, fx.relay_args), ("VisualEffect", REANIMATE_FX, 1, &[0u8, 1, 2][..]));
+        // a row on the actor's self takes the actor's own sequence: the
+        // rest of TurnToAsh, the ash pile its engine's default (None)
+        let stage = accepted(&s.judge(row("Actor", "SetCriticalStage"), &[Arg::Number], &simulated(DRAUGR), 0));
+        assert_eq!((stage.subject, stage.relay_self, stage.seq, stage.relay_fn), (DRAUGR, DRAUGR, 1, "SetCriticalStage"));
+        let pile = accepted(&s.judge(row("Actor", "AttachAshPile"), &[Arg::Absent], &simulated(DRAUGR), 0));
+        assert_eq!((pile.relay_self, pile.seq, pile.keep), (DRAUGR, 2, Keep::Nothing));
+        let alpha = accepted(&s.judge(row("Actor", "SetAlpha"), &[Arg::Number, Arg::Bool], &simulated(DRAUGR), 0));
+        assert_eq!((alpha.relay_self, alpha.seq, alpha.relay_args), (DRAUGR, 3, &[0u8, 1][..]));
+        let eyes = accepted(&s.judge(row("Actor", "SetEyeTexture"), &[Arg::Object(0x2b01_264b)], &simulated(THRALL), 0));
+        assert_eq!((eyes.relay_self, eyes.seq), (THRALL, 1));
+        // an actor's owner is its simulator: the epoch is not read
+        assert!(matches!(s.judge(play, &on(DRAUGR), &Facts { epoch: 0, ..played_on(DISINTEGRATE, DRAUGR) }, 0), Verdict::Accept(_)));
+    }
+
+    #[test]
+    fn an_actors_look_from_any_other_seat_or_on_anything_else_is_refused() {
+        let mut s = ScriptCalls::default();
+        let play = row("EffectShader", "Play");
+        let alpha = row("Actor", "SetAlpha");
+        let on = |actor: u32| [Arg::Object(u64::from(actor)), Arg::Number];
+        let refused = |v: Verdict| match v {
+            Verdict::Refuse(r) => (r.code, r.why),
+            other => panic!("not refused: {other:?}"),
+        };
+        // another seat simulates the actor, or nobody does: its owner's
+        // refusal, the words the evidence row's
+        assert_eq!(refused(s.judge(play, &on(DRAUGR), &Facts { sender: GUEST, ..played_on(DISINTEGRATE, DRAUGR) }, 0)), (Code::Owner, "ff000000 simulates 800a6, not the reporter".to_owned()));
+        assert_eq!(refused(s.judge(alpha, &[Arg::Number, Arg::Bool], &Facts { owner: 0, ..simulated(DRAUGR) }, 0)), (Code::Owner, "nobody simulates 800a6".to_owned()));
+        assert_eq!(refused(s.judge(alpha, &[Arg::Number, Arg::Bool], &Facts { kind: SubjectKind::Unknown, ..simulated(DRAUGR) }, 0)), (Code::Owner, "the server holds no such reference".to_owned()));
+        // the reporter's own player, by its self or as the effect's subject
+        let own = (Code::Row, "the reporter's own player: a player's own looks stay on its seat (the row is local for a player)".to_owned());
+        assert_eq!(refused(s.judge(alpha, &[Arg::Number, Arg::Bool], &simulated(0x14), 0)), own.clone());
+        assert_eq!(refused(s.judge(play, &on(0x14), &played_on(DISINTEGRATE, 0x14), 0)), own);
+        // no actor: a world object, a placement by its record, a door or a
+        // container, refused by the row and never dropped as a door's open is
+        for kind in [SubjectKind::WorldObject, SubjectKind::Record, SubjectKind::DoorOrContainer] {
+            assert_eq!(refused(s.judge(play, &on(PILLAR), &Facts { kind, ..played_on(DISINTEGRATE, PILLAR) }, 0)), (Code::Row, "the subject is no actor: the row is an actor's look, its simulator's".to_owned()), "{kind:?}");
+        }
+        // the shape: the method's self is a form the reporter may name and
+        // never its own player; a row on the actor's self names its subject
+        // by that self, whose facts the core then gathers
+        assert_eq!(code(&s.judge(play, &on(DRAUGR), &played_on(0x14, DRAUGR), 0)), Some(Code::Args));
+        assert_eq!(code(&s.judge(play, &on(DRAUGR), &played_on(0, DRAUGR), 0)), Some(Code::Args));
+        assert_eq!(s.shape(alpha, &[Arg::Number, Arg::Bool], HOST, DRAUGR, 0).map(|shaped| shaped.subject()), Ok(DRAUGR));
+        // the rows' count and kinds, and a subject the server names
+        assert_eq!(code(&s.judge(play, &[Arg::Object(u64::from(DRAUGR))], &played_on(DISINTEGRATE, DRAUGR), 0)), Some(Code::Args));
+        assert_eq!(code(&s.judge(play, &[Arg::Number, Arg::Number], &played_on(DISINTEGRATE, DRAUGR), 0)), Some(Code::Args));
+        assert_eq!(code(&s.judge(alpha, &[Arg::Bool, Arg::Number], &simulated(DRAUGR), 0)), Some(Code::Args));
+        assert_eq!(code(&s.judge(row("VisualEffect", "Play"), &[Arg::Object(u64::from(DRAUGR)), Arg::Number], &played_on(REANIMATE_FX, DRAUGR), 0)), Some(Code::Args));
+        assert_eq!(code(&s.judge(play, &on(0xff00_0002), &played_on(DISINTEGRATE, 0xff00_0002), 0)), Some(Code::Args));
+        assert_eq!((s.seq_of(DISINTEGRATE), s.seq_of(DRAUGR), s.seq_of(0x14)), (0, 0, 0), "no refusal took a sequence");
+        // an animation row on an actor is still the streams'
+        assert_eq!(code(&s.judge(row("ObjectReference", "PlayAnimation"), &[Arg::String], &simulated(DRAUGR), 0)), Some(Code::Row));
     }
 
     // thuum ADR-068 rung 4 (the state rows): Bleak Falls Temple's cobweb

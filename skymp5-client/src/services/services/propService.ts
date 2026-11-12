@@ -537,7 +537,15 @@ export class PropService extends ClientListener {
             }
             prop.effective = owner;
         }
-        const simulate = myId !== 0 && owner === myId;
+        // A4's rest reaches a follower as two messages, the owner's asleep
+        // sample (relayed) and the word (player 0, or this seat's own grant),
+        // often in one update; flip clears a pending sample and stops a glide,
+        // so a seat the word makes the simulator follows on until
+        // REST_DYNAMIC_MS after the rest it heard, and its copy takes the rest
+        // pose before it goes Dynamic (the review of b7151a42: the host's copy
+        // went Dynamic at the last awake pose, the rest never applied)
+        const simulate = myId !== 0 && owner === myId
+            && (prop.simulating || prop.restAt === 0 || now - prop.restAt >= REST_DYNAMIC_MS);
         // A6: a hand whose grab another seat's later word overrides (a double
         // grab lost, the server's Held answer naming the holder) lets go, so
         // no two hands move one prop (ADR-063 decision 3)

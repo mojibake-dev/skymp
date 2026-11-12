@@ -21432,6 +21432,37 @@
                             }
                         },
                         {
+                            "name": "art",
+                            "type": {
+                                "objectTypeName": "Art",
+                                "rawType": "Object"
+                            }
+                        },
+                        {
+                            "name": "duration",
+                            "type": {
+                                "rawType": "Float"
+                            }
+                        }
+                    ],
+                    "isLatent": false,
+                    "name": "ApplyArtObject",
+                    "offset": "0",
+                    "returnType": {
+                        "rawType": "Bool"
+                    },
+                    "useLongSignature": false
+                },
+                {
+                    "arguments": [
+                        {
+                            "name": "refr",
+                            "type": {
+                                "objectTypeName": "ObjectReference",
+                                "rawType": "Object"
+                            }
+                        },
+                        {
                             "name": "bodyHex",
                             "type": {
                                 "rawType": "String"
@@ -21937,6 +21968,31 @@
                         "rawType": "None"
                     },
                     "useLongSignature": true
+                },
+                {
+                    "arguments": [
+                        {
+                            "name": "refr",
+                            "type": {
+                                "objectTypeName": "ObjectReference",
+                                "rawType": "Object"
+                            }
+                        },
+                        {
+                            "name": "art",
+                            "type": {
+                                "objectTypeName": "Art",
+                                "rawType": "Object"
+                            }
+                        }
+                    ],
+                    "isLatent": false,
+                    "name": "StopArtObject",
+                    "offset": "0",
+                    "returnType": {
+                        "rawType": "Bool"
+                    },
+                    "useLongSignature": false
                 },
                 {
                     "arguments": [

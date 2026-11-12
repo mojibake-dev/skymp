@@ -828,6 +828,15 @@ void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
   }
   if (!msg.claim) {
     if (!partOne.ReleaseClaim(*myActor, *actor)) {
+      // ADR-060: the commander's own dialogue with its thrall claimed
+      // nothing (its command names it already), so its close releases
+      // nothing and the command stands
+      if (partOne.CommanderOf(*actor) == myActor->GetFormId()) {
+        spdlog::info("[verb:npc-talk] {:x} closes its dialogue with its "
+                     "thrall {:x}; the command stands (ADR-060)",
+                     myActor->GetFormId(), actor->GetFormId());
+        return;
+      }
       refuse("E_CLAIM_NONE", "it holds no claim on it");
       return;
     }
@@ -867,6 +876,16 @@ void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
   switch (verdict) {
     case PartOne::ClaimVerdict::Granted:
     case PartOne::ClaimVerdict::Reclaimed:
+      // ADR-060: the commander's own dialogue with its thrall renews
+      // nothing; its command names it, with no lease
+      if (verdict == PartOne::ClaimVerdict::Reclaimed &&
+          partOne.CommanderOf(*actor) == myActor->GetFormId()) {
+        spdlog::info("[verb:npc-talk] {:x} talks to its thrall {:x} in cell "
+                     "{:x}; the command stands, no lease (ADR-060)",
+                     myActor->GetFormId(), actor->GetFormId(),
+                     partOne.worldState.CellOf(*actor).value_or(0));
+        break;
+      }
       spdlog::info("[verb:npc-talk] {:x} claims {:x} in cell {:x} for a "
                    "dialogue{}; it simulates the actor for the lease",
                    myActor->GetFormId(), actor->GetFormId(),
@@ -1052,7 +1071,10 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
             : std::string("its death before this process"));
         actor->ClearHostSampledDead();
         actor->NoteHostStoodUp(now);
-        actor->Respawn(false);
+        // through PartOne: a claim on the body stands through its
+        // simulator's own stand-up (a reanimation's command) and ends at
+        // any other respawn (ADR-060)
+        partOne.ResurrectByHost(*actor);
       }
     }
   } else if (actor->IsFateRespawned() && msg.health <= onePoint) {
@@ -7797,10 +7819,24 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
                              std::chrono::steady_clock::now());
   if (actor->IsDead()) {
     // the server's own kill reached the host first, or a second report:
-    // nothing to do and no warning, the race is the expected one
+    // nothing to do and no warning, the race is the expected one. A command
+    // on the body ends with its commander's report all the same (ADR-060;
+    // the fresh review of f89115af, C2): a raise its engine never stood
+    // would leave the command on the corpse, and on the actor its respawn
+    // stands
+    const bool commandEnds =
+      partOne.CommanderOf(*actor) == reporter->GetFormId();
+    if (commandEnds) {
+      partOne.ReleaseAnyClaim(*actor);
+    }
     spdlog::info("[verb:npc-fate] death report: {:x} says {:x} died of {}; "
-                 "already dead here, nothing to do",
-                 reporter->GetFormId(), msg.refrId, DeathCauseName(msg.cause));
+                 "already dead here, {}",
+                 reporter->GetFormId(), msg.refrId, DeathCauseName(msg.cause),
+                 commandEnds
+                   ? fmt::format("its command ends, {:x} simulates it "
+                                 "(ADR-060)",
+                                 partOne.SimulatorOf(*actor))
+                   : std::string("nothing to do"));
     return;
   }
   MpActor* killer = nullptr;
@@ -7815,7 +7851,14 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
   // host itself streams are checks on the owner, not on consistency, so
   // they do not apply to it (npc-fate.md's Authority row)
   const bool scripted = msg.cause == 3;
-  if (!scripted && !actor->MayDie(killer)) {
+  // ADR-060: a thrall's end its commander reports (cause 0) is the
+  // command's end, the commander's word (R2); the essential and protected
+  // rules are a check on the owner there too, so they never refuse it (a
+  // protected base's thrall had no other end once its lease was gone); the
+  // body's place is still checked (the fresh review of f89115af, C3)
+  const bool commandEnd =
+    msg.cause == 0 && partOne.CommanderOf(*actor) == reporter->GetFormId();
+  if (!scripted && !commandEnd && !actor->MayDie(killer)) {
     refuse("E_DEATH_IMMORTAL",
            "an essential or protected base (the engine's rule, "
            "MpActor::MayDie)");

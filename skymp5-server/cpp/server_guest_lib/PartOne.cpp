@@ -445,6 +445,10 @@ struct PartOne::Impl
     const char* kind = "none";
   };
   std::unordered_map<uint32_t, CellGrantNote> cellGrantNotes;
+  // thuum docs/verbs/npc-fate.md (ADR-060): the actor standing again by its
+  // simulator's engine for the length of ResurrectByHost's call, 0 for none:
+  // the death state's listener keeps its claims through that stand-up alone
+  uint32_t standingUpByHost = 0;
   // the prop owner table (thuum docs/verbs/prop-physics.md, ADR-058): which
   // seat simulates each physics prop, the cell's host by default
   rust::Box<skymp::rules::Props> props = skymp::rules::new_props();
@@ -2640,12 +2644,27 @@ void PartOne::OnDeathState(MpActor& actor, bool isDead)
 {
   // thuum docs/verbs/npc-fate.md (ADR-060): a commanded actor's death ends
   // its commander's claim (the effect's end kills the thrall in the
-  // commander's engine, vanilla's ash pile); the cell's rule simulates it
+  // commander's engine, vanilla's ash pile), a dialogue's claim with it; the
+  // cell's rule simulates it
   if (isDead) {
-    if (const uint32_t commander = ReleaseAnyClaim(actor); commander != 0) {
+    const uint32_t commander = CommanderOf(actor);
+    if (ReleaseAnyClaim(actor) != 0 && commander != 0) {
       spdlog::info("[verb:npc-fate] {:x} died under {:x}'s command: the "
                    "claim ends, {:x} simulates it (ADR-060)",
                    actor.GetFormId(), commander, SimulatorOf(actor));
+    }
+  } else if (pImpl->standingUpByHost != actor.GetFormId()) {
+    // and a respawn its simulator's engine did not stand (the fate's sweep,
+    // the console's Resurrect, the lab's respawn-ref) ends any claim on it:
+    // a command whose engine never stood the body would name its commander
+    // on the living actor in any cell, and that commander's cause-0 report
+    // would kill it (the fresh review of f89115af, C2); the commander's own
+    // stand-up (ResurrectByHost) keeps it
+    if (const uint32_t former = ReleaseAnyClaim(actor); former != 0) {
+      spdlog::info("[verb:npc-fate] {:x} stands again by a respawn its "
+                   "simulator's engine did not make: {:x}'s claim ends, {:x} "
+                   "simulates it (ADR-060)",
+                   actor.GetFormId(), former, SimulatorOf(actor));
     }
   }
   // a player's actor alone: an NPC's death is npc-fate's and hosts nothing
@@ -3412,6 +3431,15 @@ uint32_t PartOne::ReleaseAnyClaim(MpActor& actor)
     actor.UpdateHoster(SimulatorOf(actor));
   }
   return former;
+}
+
+void PartOne::ResurrectByHost(MpActor& actor)
+{
+  // the mark lives for the call alone: a gamemode listener may block the
+  // respawn (GameModeEvent::Fire), and then no death state reads it
+  pImpl->standingUpByHost = actor.GetFormId();
+  ScopedTask clear([this] { pImpl->standingUpByHost = 0; });
+  actor.Respawn(false);
 }
 
 void PartOne::SendActorKeyframe(MpActor& actor, MpActor& to)

@@ -3008,7 +3008,8 @@ mod ffi {
         /// holds none (a commanded row ends by its death or its
         /// commander's departure, never a dialogue's release; ADR-060).
         fn release_claim(self: &mut Cells, actor: u32, player: u32) -> bool;
-        /// Any claim on `actor` ends (its death): the claimant it had, 0 when none.
+        /// Any claim on `actor` ends (its death, or a respawn its simulator's
+        /// engine did not stand): the claimant it had, 0 when none.
         fn release_any_claim(self: &mut Cells, actor: u32) -> u32;
         /// ADR-060: the player commanding `actor`, 0 when none.
         fn commander_of(self: &Cells, actor: u32) -> u32;

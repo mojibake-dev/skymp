@@ -1459,7 +1459,8 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
 
   // the commander's engine stands the thrall: its live sample of the body,
   // the death past the grace and the reanimate's hit inside its window
-  // (OnHostedActorState's resurrection branch)
+  // (OnHostedActorState's resurrection branch, PartOne::ResurrectByHost),
+  // the one respawn a command survives
   const auto standsOn = [&](Networking::UserId user) {
     body.RecordDeathAt(
       std::chrono::steady_clock::now() -
@@ -1669,6 +1670,73 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     p.SetUserActor(1, kCaster);
   }
 
+  SECTION("by a player who is not the host: a command its engine never stood "
+          "ends at any other respawn, and the old commander's report of the "
+          "living actor is a stranger's (E_DEATH_NOT_HOST)")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(body.IsDead());
+    // the fate's own stand-up (the sweep's RespawnFated; the console's
+    // Resurrect and the lab's respawn-ref take the same path): no engine of
+    // the commander's stood it, so the command ends
+    body.RespawnFated();
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    // the old commander's cause-0 report of it: refused, not the simulator
+    const bool reportsBefore = p.worldState.npcDeathReports;
+    p.worldState.npcDeathReports = true;
+    {
+      ActorDeathMessage report;
+      report.refrId = kPredator;
+      report.cause = 0;
+      report.killer = 0;
+      const auto& at = body.GetPos();
+      report.pos = { at.x, at.y, at.z };
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnActorDeath(raw, report);
+    }
+    p.worldState.npcDeathReports = reportsBefore;
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+  }
+
+  SECTION("by a player who is not the host: the commander's report of a body "
+          "its engine never stood ends the command, the body dead here "
+          "already")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(body.IsDead());
+    const bool reportsBefore = p.worldState.npcDeathReports;
+    p.worldState.npcDeathReports = true;
+    {
+      ActorDeathMessage report;
+      report.refrId = kPredator;
+      report.cause = 0;
+      report.killer = 0;
+      const auto& at = body.GetPos();
+      report.pos = { at.x, at.y, at.z };
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnActorDeath(raw, report);
+    }
+    p.worldState.npcDeathReports = reportsBefore;
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+  }
+
   SECTION("by the host itself: no snippet, the body stays the host's, the "
           "relay reaches the other game as any cast's")
   {
@@ -1692,6 +1760,148 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   p.ReleaseAnyClaim(body);
   body.Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);
+  p.GetFights().forget(kCaster);
+  p.GetFights().forget(kHost);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kHost);
+  p.DestroyActor(kCaster);
+}
+
+// thuum docs/verbs/npc-fate.md (ADR-060; the fresh review of f89115af, C3):
+// a thrall's end its commander reports is the commander's word (R2), and
+// the engine's essential and protected rules (MpActor::MayDie) are a check
+// on the owner there, as on a host-run script's kill (ADR-063 decision 4);
+// before, a protected base's thrall had that report refused
+// E_DEATH_IMMORTAL and, with no lease, no end at all. Jenassa 0xe1ba9 (base
+// HirelingJenassa 0xb9982, protected and not essential in Skyrim.esm, read
+// here from the record) in WhiterunDrunkenHuntsman 0x165b7, hosted by user
+// 0 and raised by user 1
+TEST_CASE("A protected base's thrall ends at its commander's report of the "
+          "effect's end",
+          "[NpcFate][Reanimate][espm]")
+{
+  constexpr uint32_t kJenassa = 0xe1ba9;
+  constexpr uint32_t kInn = 0x165b7;
+  constexpr uint32_t kHost = 0xff000d38;
+  constexpr uint32_t kCaster = 0xff000d39;
+  constexpr uint32_t kReanimateCorpse = 0x65bd7;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kInn));
+  auto& body = p.worldState.GetFormAt<MpActor>(kJenassa);
+  const auto npc = espm::GetData<espm::NPC_>(body.GetBaseId(), &p.worldState);
+  REQUIRE(npc.isProtected);
+  REQUIRE_FALSE(npc.isEssential);
+  REQUIRE(body.IsFateRespawned());
+  REQUIRE(p.worldState.CellOf(body) == kInn);
+  if (body.IsDead()) {
+    body.Respawn(false);
+  }
+
+  // the host stands in the inn and takes it; the caster beside her has the
+  // inn loaded too, as its client reports it
+  DoConnect(p, 0);
+  p.CreateActor(kHost, body.GetPos() + NiPoint3{ 100.f, 0.f, 0.f }, 0, kInn);
+  p.SetUserActor(0, kHost);
+  HostGrants(p, 0, kInn);
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, body.GetPos() + NiPoint3{ -100.f, 0.f, 0.f }, 0,
+                kInn);
+  p.SetUserActor(1, kCaster);
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kInn;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
+  REQUIRE(p.worldState.HostOf(body) == &host);
+  body.Kill(nullptr);
+  REQUIRE(body.IsDead());
+
+  // the caster's Reanimate Corpse at her body, as its client's messages
+  // arrive: the cast, then its hit
+  Equipment eq;
+  eq.rightSpell = kReanimateCorpse;
+  caster.SetEquipment(eq);
+  DoMessage(
+    p, 1,
+    nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
+                    { "data",
+                      { { "caster", 0x14 },
+                        { "target", kJenassa },
+                        { "spell", kReanimateCorpse },
+                        { "isDualCasting", false },
+                        { "interruptCast", false },
+                        { "castingSource", 1 },
+                        { "aimAngle", 0.f },
+                        { "aimHeading", 0.f },
+                        { "hasLaunch", false },
+                        { "originX", 0.f },
+                        { "originY", 0.f },
+                        { "originZ", 0.f },
+                        { "launchAngleX", 0.f },
+                        { "launchAngleZ", 0.f },
+                        { "actorAnimationVariables",
+                          { { "booleans", nlohmann::json::array() },
+                            { "floats", nlohmann::json::array() },
+                            { "integers", nlohmann::json::array() } } } } } });
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    HitMessage hit;
+    hit.data.aggressor = 0x14;
+    hit.data.target = kJenassa;
+    hit.data.source = kReanimateCorpse;
+    p.GetActionListener().OnHit(raw, hit);
+  }
+  REQUIRE(p.CommanderOf(body) == kCaster);
+
+  // the commander's engine stands her (its live sample, the death past the
+  // grace): alive and still commanded, a death the engine's rule refuses to
+  // any hand but a player's
+  body.RecordDeathAt(
+    std::chrono::steady_clock::now() -
+    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+  State(p, 1, kJenassa, 1.f);
+  REQUIRE_FALSE(body.IsDead());
+  REQUIRE(p.CommanderOf(body) == kCaster);
+  REQUIRE_FALSE(body.MayDie(nullptr));
+
+  // its engine ends the effect: the commander's cause-0 report, the hit and
+  // the stand-up older than every other evidence's window
+  const auto now = std::chrono::steady_clock::now();
+  body.NoteHitBy(kCaster, now - std::chrono::seconds(130));
+  body.NoteHostStoodUp(now -
+                       std::chrono::milliseconds(MpActor::kReanimatedEndMs) -
+                       std::chrono::seconds(30));
+  const bool reportsBefore = p.worldState.npcDeathReports;
+  p.worldState.npcDeathReports = true;
+  {
+    ActorDeathMessage report;
+    report.refrId = kJenassa;
+    report.cause = 0;
+    report.killer = 0;
+    const auto& at = body.GetPos();
+    report.pos = { at.x, at.y, at.z };
+    RawMessageData raw;
+    raw.userId = 1;
+    p.GetActionListener().OnActorDeath(raw, report);
+  }
+  p.worldState.npcDeathReports = reportsBefore;
+  REQUIRE(body.IsDead());
+  REQUIRE(p.CommanderOf(body) == 0);
+  REQUIRE(p.SimulatorOf(body) == kHost);
+
+  // the shared world: no claim on her, standing again with no deadline, the
+  // fight a hit may have begun forgotten, the players gone
+  p.ReleaseAnyClaim(body);
+  body.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kJenassa);
   p.GetFights().forget(kCaster);
   p.GetFights().forget(kHost);
   DoDisconnect(p, 0);

@@ -707,8 +707,8 @@ impl Cells {
         }
     }
 
-    /// Any claim on `actor` ends (its death, ADR-060): the claimant it had,
-    /// 0 when none.
+    /// Any claim on `actor` ends (its death, or a respawn its simulator's
+    /// engine did not stand, ADR-060): the claimant it had, 0 when none.
     pub fn release_any_claim(&mut self, actor: u32) -> u32 {
         match self.follows.get(&actor) {
             Some(f) if is_claim(f.kind) => {

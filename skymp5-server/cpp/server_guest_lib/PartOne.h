@@ -861,10 +861,18 @@ public:
   // the player commanding `actor` (ADR-060), 0 when none: whose report of
   // the thrall's death is its effect's end
   uint32_t CommanderOf(const MpActor& actor) const;
-  // any claim on `actor` ends (its death): the claimant it had, 0 for none;
-  // the cell's rule names the simulator again and the word follows, again
-  // on a dead record and so with no keyframe
+  // any claim on `actor` ends (its death, or a respawn its simulator's
+  // engine did not stand): the claimant it had, 0 for none; the cell's rule
+  // names the simulator again and the word follows, with no keyframe
   uint32_t ReleaseAnyClaim(MpActor& actor);
+  // thuum docs/verbs/npc-fate.md (ADR-060): `actor` stands again by its
+  // simulator's engine (ActionListener::OnHostedActorState's resurrection
+  // branch, a reanimation's own get-up): the death cleared without a
+  // teleport, any claim on it kept. Every other respawn (the fate's sweep,
+  // the console's Resurrect, the lab's respawn-ref) ends any claim on the
+  // actor in OnDeathState, so a command its engine never stood names no
+  // commander on the living actor
+  void ResurrectByHost(MpActor& actor);
   // thuum docs/engine/non-owning-seat.md section 3: the actor's record (its
   // transform and flags, as a movement message) to the game about to
   // simulate it, reliable and ahead of the hoster word on the same channel,

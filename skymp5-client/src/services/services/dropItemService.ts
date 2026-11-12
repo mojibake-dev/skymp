@@ -4,7 +4,7 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { SweetTaffySweetCantDropService } from "./sweetTaffySweetCantDropService";
 import { WorldCleanerService } from "./worldCleanerService";
-import { logTrace } from "../../logging";
+import { logError, logTrace } from "../../logging";
 
 export class DropItemService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -62,7 +62,24 @@ export class DropItemService extends ClientListener {
                     const refrId = ref.getFormID();
 
                     if (worldCleanerService.getWcProtection(refrId) === 0) {
-                        ref.delete();
+                        // thuum ADR-071 W3 (Eli, "Fix the drop", 2026-11-11): the
+                        // engine's own dropped copy is disabled, then deleted once
+                        // the disable has run on a wrapper taken again (the
+                        // Creation Kit's order for a delete, formView.ts's and the
+                        // world cleaner's idiom). A delete alone left it listed in
+                        // the dropper's cell under Skyrim Souls RE's running
+                        // InventoryMenu, deleted, not disabled and never freed
+                        // until its player left the cell (thuum
+                        // docs/engine/havok-props.md E39, x-drop-leftover v1.1
+                        // 20261111-220150), where a pausing menu freed it at once
+                        // (E38). HYPOTHESIS until a read shows the reference gone
+                        // at once under the running menu
+                        ref.disable(false).then(() => {
+                            const again = this.sp.ObjectReference.from(this.sp.Game.getFormEx(refrId));
+                            if (again && !again.isDeleted()) {
+                                again.delete();
+                            }
+                        }).catch((err) => logError(this, `deleting the engine's dropped reference ${refrId.toString(16)} after its disable failed`, err));
                         ++numFound;
                         logTrace(this, "Found and deleted reference " + refrId.toString(16));
                     } else {

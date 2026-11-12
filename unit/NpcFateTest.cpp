@@ -1440,6 +1440,21 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     return count;
   };
 
+  // the MagicEffects words for the body sent to `user` since the last clear
+  // (MagicEffectsTest's idiom); a listener NPC the host hosts doubles the
+  // host's, so a test reads every word, not their count
+  const auto effectWordsTo = [&](Networking::UserId user) {
+    std::vector<nlohmann::json> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::MagicEffects) &&
+          m.j.contains("idx") && m.j["idx"] == body.GetIdx()) {
+        out.push_back(m.j);
+      }
+    }
+    return out;
+  };
+
   // the record's own duration of the spell's Reanimate effect, ms (the
   // thrall's estimate once its commander leaves; no lease)
   const uint64_t recordMs = [&] {
@@ -1487,6 +1502,61 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(p.worldState.HostOf(body) == &host);
     REQUIRE(hosterWordsTo(0) >= 1);
     REQUIRE(hosterWordsTo(1) >= 1);
+  }
+
+  SECTION("by a player who is not the host: the stand-up's MagicEffects "
+          "names the Reanimate effect with about 60 s to both games, and the "
+          "thrall's death sends both the emptied set (its look, ADR-060)")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1);
+    hits(1);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    // a dead target takes nothing at the hit
+    REQUIRE_FALSE(body.HasRunningEffects());
+    // the commander's engine stands it: its live sample past the death's
+    // grace (ActorDeathTest's BackdatePastGrace), inside the hit's window
+    body.RecordDeathAt(
+      std::chrono::steady_clock::now() -
+      std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+    p.Messages().clear();
+    State(p, 1, kPredator, 1.f);
+    REQUIRE_FALSE(body.IsDead());
+    // the record's 60 s (Skyrim.esm's EFIT); the Dark Souls rider fails its
+    // HasPerk on the caster (EffectConditionsTest) and the ash's script
+    // effect is no state of the server's, so the set is the one effect
+    for (const Networking::UserId user : { 0, 1 }) {
+      auto words = effectWordsTo(user);
+      REQUIRE_FALSE(words.empty());
+      for (auto& word : words) {
+        REQUIRE(word["effects"].size() == 1);
+        REQUIRE(word["effects"][0]["effect"] == kReanimateEffect);
+        REQUIRE(word["effects"][0]["source"] == kReanimateCorpse);
+        REQUIRE(word["effects"][0]["remaining"].get<float>() ==
+                Catch::Approx(60.f).margin(0.5f));
+      }
+    }
+    const auto running = body.GetRunningEffects();
+    REQUIRE(running.size() == 1);
+    REQUIRE(running[0].effect == kReanimateEffect);
+    REQUIRE(running[0].secondsLeft ==
+            Catch::Approx(static_cast<float>(recordMs) / 1000.f));
+    // its death: the effects tick that reads it ends the set and tells both
+    // games, so each stops the shader at the death
+    p.Messages().clear();
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    body.AdvanceEffects(0.25f);
+    REQUIRE_FALSE(body.HasRunningEffects());
+    for (const Networking::UserId user : { 0, 1 }) {
+      auto words = effectWordsTo(user);
+      REQUIRE_FALSE(words.empty());
+      for (auto& word : words) {
+        REQUIRE(word["effects"].empty());
+      }
+    }
   }
 
   SECTION("by a player who is not the host: no lease ends the command at "
@@ -1621,6 +1691,218 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   DoDisconnect(p, 1);
   p.DestroyActor(kHost);
   p.DestroyActor(kCaster);
+}
+
+// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12, Eli: "if
+// it's a full thrall at 999 days, should just stay. i want it to keep it's
+// undead look though"): Dead Thrall 0x7E8DF's ReanimateThrallFFAimed
+// 0x7E8E0 lasts 86,313,600 s in Skyrim.esm (a scratch reader over thuum
+// lab/esm.py, 2026-11-12), a full thrall's by wire-rules
+// magic::FULL_THRALL_MIN_S: the record keeps that duration whole, every game
+// hears the look from the stand-up, and the commander's departure ends
+// neither the thrall nor its look on the host's game or a later arrival's;
+// its death's emptied set ends it. The effect's own conditions want
+// ActorTypeNPC, so the body is a server-made Nord bandit (base
+// EncBandit01Melee2HBerserkNordM 0x3DE6F, NordRace), the dead server-made
+// NPC case's.
+TEST_CASE("A full thrall's look is the record's for the record's whole "
+          "duration and outlasts its commander's departure; its death ends "
+          "it",
+          "[NpcFate][Reanimate][espm]")
+{
+  constexpr uint32_t kHost = 0xff000d38;
+  constexpr uint32_t kCaster = 0xff000d39;
+  constexpr uint32_t kThrall = 0xff000d3a;
+  constexpr uint32_t kLater = 0xff000d3b;
+  constexpr uint32_t kBanditBase = 0x3de6f;
+  constexpr uint32_t kDeadThrall = 0x7e8df;
+  constexpr uint32_t kThrallEffect = 0x7e8e0;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+
+  // the record itself: Dead Thrall's Reanimate effect and its duration
+  float recordSeconds = 0.f;
+  for (const auto& effect : MpActor::EffectsOf(&p.worldState, kDeadThrall)) {
+    if (espm::GetData<espm::MGEF>(effect.effectId, &p.worldState)
+          .data.effectType == espm::MGEF::EffectType::Reanimate) {
+      REQUIRE(effect.effectId == kThrallEffect);
+      recordSeconds = static_cast<float>(effect.duration);
+    }
+  }
+  REQUIRE(recordSeconds == 86'313'600.f);
+
+  // the host takes the forest's cell, the caster has it loaded too; the
+  // bandit lies dead beside them, hosted by user 0
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kForest, 0, kTamriel);
+  p.SetUserActor(0, kHost);
+  HostGrants(p, 0, kForestCell);
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, kForest, 0, kTamriel);
+  p.SetUserActor(1, kCaster);
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kForestCell;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kThrall, p.worldState.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  saved.position = kForest + NiPoint3{ 100.f, 0.f, 0.f };
+  saved.angle = { 0.f, 0.f, 0.f };
+  p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+  p.worldState.LoadDeferredActors();
+  auto& form = p.worldState.LookupFormByIdNoLoad(kThrall);
+  REQUIRE(form);
+  MpActor* thrallPtr = form->AsActor();
+  REQUIRE(thrallPtr);
+  MpActor& thrall = *thrallPtr;
+  p.worldState.fateRespawnDue.erase(kThrall);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
+  REQUIRE(p.worldState.HostOf(thrall) == &host);
+  thrall.Kill(nullptr);
+  REQUIRE(thrall.IsDead());
+
+  // the MagicEffects words for the thrall sent to `user` since the last
+  // clear, every one read (the reanimate case's idiom)
+  const auto effectWordsTo = [&](Networking::UserId user) {
+    std::vector<nlohmann::json> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::MagicEffects) &&
+          m.j.contains("idx") && m.j["idx"] == thrall.GetIdx()) {
+        out.push_back(m.j);
+      }
+    }
+    return out;
+  };
+  // the thrall's Reanimate effect's seconds left in a word, -1 for none
+  const auto lookIn = [&](nlohmann::json& word) {
+    for (auto& effect : word["effects"]) {
+      if (effect["effect"] == kThrallEffect) {
+        return effect["remaining"].get<float>();
+      }
+    }
+    return -1.f;
+  };
+
+  // the caster's cast and hit through the packet path, then its engine's
+  // stand-up: its live sample past the death's grace, inside the window
+  Equipment eq;
+  eq.rightSpell = kDeadThrall;
+  caster.SetEquipment(eq);
+  DoMessage(
+    p, 1,
+    nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
+                    { "data",
+                      { { "caster", 0x14 },
+                        { "target", kThrall },
+                        { "spell", kDeadThrall },
+                        { "isDualCasting", false },
+                        { "interruptCast", false },
+                        { "castingSource", 1 },
+                        { "aimAngle", 0.f },
+                        { "aimHeading", 0.f },
+                        { "hasLaunch", false },
+                        { "originX", 0.f },
+                        { "originY", 0.f },
+                        { "originZ", 0.f },
+                        { "launchAngleX", 0.f },
+                        { "launchAngleZ", 0.f },
+                        { "actorAnimationVariables",
+                          { { "booleans", nlohmann::json::array() },
+                            { "floats", nlohmann::json::array() },
+                            { "integers", nlohmann::json::array() } } } } } });
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    HitMessage hit;
+    hit.data.aggressor = 0x14;
+    hit.data.target = kThrall;
+    hit.data.source = kDeadThrall;
+    p.GetActionListener().OnHit(raw, hit);
+  }
+  REQUIRE(p.CommanderOf(thrall) == kCaster);
+  thrall.RecordDeathAt(
+    std::chrono::steady_clock::now() -
+    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+  p.Messages().clear();
+  State(p, 1, kThrall, 1.f);
+  REQUIRE_FALSE(thrall.IsDead());
+
+  // both games hear the look for the record's 86,313,600 s, not a day's
+  for (const Networking::UserId user : { 0, 1 }) {
+    auto words = effectWordsTo(user);
+    REQUIRE_FALSE(words.empty());
+    for (auto& word : words) {
+      REQUIRE(lookIn(word) == Catch::Approx(recordSeconds));
+    }
+  }
+  const auto lookOnRecord = [&] {
+    for (const auto& e : thrall.GetRunningEffects()) {
+      if (e.effect == kThrallEffect) {
+        return e.secondsLeft;
+      }
+    }
+    return -1.f;
+  };
+  REQUIRE(lookOnRecord() == Catch::Approx(recordSeconds));
+
+  // its commander leaves: the thrall stays on the cell's host, alive, its
+  // look kept whole on the record; no word ends it on the host's game
+  p.Messages().clear();
+  DoDisconnect(p, 1);
+  REQUIRE(p.CommanderOf(thrall) == 0);
+  REQUIRE(p.SimulatorOf(thrall) == kHost);
+  REQUIRE_FALSE(thrall.IsDead());
+  REQUIRE(effectWordsTo(0).empty());
+  REQUIRE(lookOnRecord() == Catch::Approx(recordSeconds));
+
+  // a later arrival's game first sees the thrall and hears the look whole
+  // (the subscription's SendMagicEffectsTo)
+  DoConnect(p, 2);
+  p.CreateActor(kLater, kForest, 0, kTamriel);
+  p.SetUserActor(2, kLater);
+  {
+    auto words = effectWordsTo(2);
+    REQUIRE_FALSE(words.empty());
+    for (auto& word : words) {
+      REQUIRE(lookIn(word) == Catch::Approx(recordSeconds));
+    }
+  }
+
+  // its death: the emptied set to every game that sees it
+  p.Messages().clear();
+  thrall.Kill(nullptr);
+  REQUIRE(thrall.IsDead());
+  thrall.AdvanceEffects(0.25f);
+  REQUIRE_FALSE(thrall.HasRunningEffects());
+  for (const Networking::UserId user : { 0, 2 }) {
+    auto words = effectWordsTo(user);
+    REQUIRE_FALSE(words.empty());
+    for (auto& word : words) {
+      REQUIRE(word["effects"].empty());
+    }
+  }
+
+  // the shared world
+  p.ReleaseAnyClaim(thrall);
+  thrall.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kThrall);
+  p.GetFights().forget(kCaster);
+  p.GetFights().forget(kHost);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 2);
+  p.DestroyActor(kThrall);
+  p.DestroyActor(kHost);
+  p.DestroyActor(kCaster);
+  p.DestroyActor(kLater);
 }
 
 // thuum docs/verbs/npc-fate.md (playtest 38's finding 65; the train's

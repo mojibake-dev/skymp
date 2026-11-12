@@ -1053,6 +1053,31 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
         actor->ClearHostSampledDead();
         actor->NoteHostStoodUp(now);
         actor->Respawn(false);
+        // thuum docs/verbs/npc-fate.md (ADR-060, the reanimate's look): the
+        // accepted reanimate's effects land now, on the living record at the
+        // record's magnitudes and under their conditions (ADR-039), since a
+        // dead target takes none at the hit. Its Reanimate effect is the
+        // thrall's state, which every game that sees the body shows
+        // (MagicEffects: the hit shader for the seconds left), a later load
+        // included, until the death's emptied set
+        const uint32_t spell = actor->ReanimateAcceptedSpell();
+        if (reanimated && spell != 0) {
+          const uint32_t caster = actor->ReanimateAcceptedCaster();
+          actor->ApplyEffects(spell,
+                              MpActor::EffectsOf(&partOne.worldState, spell),
+                              1.f, caster, false);
+          std::string running;
+          for (const auto& e : actor->GetRunningEffects()) {
+            running +=
+              fmt::format("{}{:x} for {:.0f} s", running.empty() ? "" : ", ",
+                          e.effect, e.secondsLeft);
+          }
+          spdlog::info("[verb:npc-fate] {:x} stands by reanimate {:x} of "
+                       "{:x}: its effects on the record ({}), every game "
+                       "told (MagicEffects, ADR-060)",
+                       actor->GetFormId(), spell, caster,
+                       running.empty() ? std::string("none") : running);
+        }
       }
     }
   } else if (actor->IsFateRespawned() && msg.health <= onePoint) {
@@ -10054,8 +10079,11 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   if (targetActorPtr->IsDead() &&
       ReanimateEffectOf(&partOne.worldState, effects).has_value()) {
     // the stamp a placed corpse's stand-up is read against
-    // (OnHostedActorState, finding 65)
-    targetActorPtr->NoteReanimateAccepted(std::chrono::steady_clock::now());
+    // (OnHostedActorState, finding 65), with the spell and its caster,
+    // whose effects the stand-up applies
+    targetActorPtr->NoteReanimateAccepted(std::chrono::steady_clock::now(),
+                                          hitData.source,
+                                          aggressor->GetFormId());
     ClaimReanimated(*aggressor, *targetActorPtr, hitData.source, effects);
   }
 

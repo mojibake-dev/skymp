@@ -76,8 +76,11 @@ struct MpActor::Impl
   // npc-fate.md finding 48: the last death's time on the server's clock
   std::chrono::steady_clock::time_point diedAt{};
   // npc-fate.md finding 65: the last reanimate hit the server accepted on
-  // this body, the window a placed corpse's stand-up is read within
+  // this body, the window a placed corpse's stand-up is read within; its
+  // spell and caster, whose effects the stand-up applies (the look, ADR-060)
   std::chrono::steady_clock::time_point reanimateAcceptedAt{};
+  uint32_t reanimateSpell = 0;
+  uint32_t reanimateCaster = 0;
   bool deadStamped = false;
   uint32_t deadStampHost = 0;
   uint32_t deadStampLogin = 0;
@@ -3104,9 +3107,22 @@ std::optional<std::chrono::milliseconds> MpActor::DiedAgo(
                                                                pImpl->diedAt);
 }
 
-void MpActor::NoteReanimateAccepted(std::chrono::steady_clock::time_point at)
+void MpActor::NoteReanimateAccepted(std::chrono::steady_clock::time_point at,
+                                    uint32_t spell, uint32_t caster)
 {
   pImpl->reanimateAcceptedAt = at;
+  pImpl->reanimateSpell = spell;
+  pImpl->reanimateCaster = caster;
+}
+
+uint32_t MpActor::ReanimateAcceptedSpell() const
+{
+  return pImpl->reanimateSpell;
+}
+
+uint32_t MpActor::ReanimateAcceptedCaster() const
+{
+  return pImpl->reanimateCaster;
 }
 
 std::optional<std::chrono::milliseconds> MpActor::ReanimateAcceptedAgo(
@@ -4681,9 +4697,14 @@ void MpActor::AdvanceEffects(float dtSeconds)
     return;
   }
   if (IsDead()) {
-    // a death ends the effects; the respawn restores the attributes
+    // a death ends the effects; the respawn restores the attributes. Every
+    // game drops them with the emptied set, so a shader played for seconds
+    // left stops at the death (thuum docs/verbs/npc-fate.md, the
+    // reanimate's look: a full thrall's runs for its record's 999 days)
     EditChangeForm(
       [&](MpChangeForm& changeForm) { changeForm.runningEffects.reset(); });
+    const rust::Vec<skymp::rules::EffectEntry> none;
+    SendMessageToActorListeners(MagicEffectsOf(GetIdx(), none, {}), true);
     return;
   }
   const auto& files = worldState->espmFiles;

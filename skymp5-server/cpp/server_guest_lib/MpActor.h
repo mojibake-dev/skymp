@@ -417,10 +417,16 @@ public:
   // grace and no engine stand-up of its own to record, so its host's live
   // sample stands it on the record only within kReanimateWindowMs of an
   // accepted reanimate: the cast's rule, not the sample's
-  // (ActionListener::OnHostedActorState)
-  void NoteReanimateAccepted(std::chrono::steady_clock::time_point at);
+  // (ActionListener::OnHostedActorState). The spell and its caster are kept
+  // beside the time (0 for none): the stand-up applies the spell's effects,
+  // which the hit could not (a dead target takes none), so the thrall's
+  // state is the record's and every game shows it (the look, ADR-060)
+  void NoteReanimateAccepted(std::chrono::steady_clock::time_point at,
+                             uint32_t spell = 0, uint32_t caster = 0);
   std::optional<std::chrono::milliseconds> ReanimateAcceptedAgo(
     std::chrono::steady_clock::time_point now) const;
+  uint32_t ReanimateAcceptedSpell() const;
+  uint32_t ReanimateAcceptedCaster() const;
   // the host's round trip, the cast's flight on its engine and the sampler's
   // cadence, with room; a bound of the server's policy, not an engine number
   static constexpr uint64_t kReanimateWindowMs = 10'000;
@@ -569,16 +575,18 @@ public:
   // effects (its record's list) apply at `scale` times their magnitudes,
   // by `caster` (0 for none); `stream` for a concentration spell's hit,
   // which counts at once. Archetypes other than value, peak value and dual
-  // value modifiers are left alone. `streamSeconds` above 0 runs every
-  // effect for that many seconds at its magnitude a second, the record's
-  // own duration set aside: a Self concentration cast's stream (thuum
-  // docs/verbs/self-cast.md, train-31)
+  // value modifiers and the states (self-cast's, a thrall's reanimate) are
+  // left alone. `streamSeconds` above 0 runs every effect for that many
+  // seconds at its magnitude a second, the record's own duration set aside:
+  // a Self concentration cast's stream (thuum docs/verbs/self-cast.md,
+  // train-31)
   void ApplyEffects(uint32_t source,
                     const std::vector<espm::Effects::Effect>& effects,
                     float scale, uint32_t caster, bool stream,
                     bool dualCast = false, float streamSeconds = 0.f);
   // Runs the actor's effects for `dtSeconds` of the server's wall clock
-  // (WorldState's effects tick; at a load, the time since the record's)
+  // (WorldState's effects tick; at a load, the time since the record's); a
+  // death ends them all, every game told with the emptied set
   void AdvanceEffects(float dtSeconds);
   bool HasRunningEffects() const;
   // One running effect as a gamemode reads it (mp.get(actor,

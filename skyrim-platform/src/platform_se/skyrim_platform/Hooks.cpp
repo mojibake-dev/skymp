@@ -241,6 +241,100 @@ void InstallPlayerAddTargetHook()
   PlayerAddTarget::func = vtbl.write_vfunc(0x1, PlayerAddTarget::thunk);
 }
 
+namespace {
+// whether this game's engine simulates the actor: the server's word per
+// actor says this game (Hosted.h) and it is no puppet here (Puppets.h), the
+// Papyrus gate's simulatedActor test (FridaHooks.cpp OnSendEventEnter) and
+// the seam's owner of an actor's scripts (ScriptNatives.cpp OwnedHere); a
+// player's figure is never in the hosted set
+bool SimulatedHere(std::uint32_t a_formId)
+{
+  return Hosted::Is(a_formId) && !Puppets::Is(a_formId);
+}
+}
+
+/**
+ * thuum docs/verbs/npc-fate.md (ADR-060: a thrall is its commander's game's
+ * for the effect's life; ADR-063: one engine owns each piece of the world,
+ * and a non-owner renders and never simulates), the reanimation look's D4 B
+ * (thuum lab/.cache/drafts/reanimate-fx.md 4 and 6.4): an effect of
+ * archetype kReanimate (CommonLibSSE-NG include/RE/E/EffectArchetypes.h:32)
+ * lands on a Character here only when this game runs the raise. A cast
+ * relayed from another seat is a real cast from its caster's figure
+ * (MagicApi.cpp castSpellImmediate), so a watcher's engine would raise its
+ * own copy of the body beside the commander's, a second simulator of one body
+ * (the look's read, HYPOTHESIS: the live word's Resurrect(true, true),
+ * FateApi.cpp, resets the copy's inventory, a relayed underskin with it,
+ * and the copy's own effect kills it a second time at its end).
+ *
+ * The raise is the caster's game's, as the server names the commander
+ * (ActionListener::ClaimReanimated: the caster's user for a player, else the
+ * caster's host): this game's own player, or an actor this game simulates
+ * (SimulatedHere above); a raise with no actor behind it, the body's
+ * simulator's. The caster is read and not the body: the commander's engine
+ * raises its copy at its own hit, before the server's grant makes the body
+ * this game's (ADR-060's H2: a body this game neither hosts nor holds as a
+ * puppet then), and the watcher still hosts its copy when the relayed
+ * missile lands, the caster's report of its hit waiting two updates
+ * (hitService.ts) before the grant's UpdateHoster can leave the server
+ * (HYPOTHESIS, the order x-reanimate-claim v2's U4 reads).
+ *
+ * The refused effect alone is dropped, as PlayerAddTarget drops its own
+ * (one call per effect, MagicTarget.h:58-60): the spell's other effects take
+ * as the engine plays them, Reanimate Corpse's ash carrier 0xf52ab
+ * (ReanimateAshPile) among them, its script blanked on a seat whose player
+ * neither cast nor bears it (the gate's effect rule, Frida::PlayersEffect).
+ * Filtered in native, nothing crosses into JS: one archetype compare per
+ * AddTarget on a Character, the two sets read for a reanimate alone.
+ *
+ * The slot is AddTarget, vfunc 01 (include/RE/M/MagicTarget.h:78), of
+ * Character's MagicTarget vtable, RE::VTABLE_Character[4]
+ * (include/RE/Offsets_VTABLE.h:2215, AE id 207894; `just addr 207894`
+ * resolves it on 1.6.1170): TESObjectREFR's four vtables
+ * (include/RE/T/TESObjectREFR.h:108-112), then Actor's MagicTarget base
+ * (include/RE/A/Actor.h:126), the player's [4] above counted the same way.
+ * The table's complete object locator on the 1.6.1170 image (read
+ * statically) names Character with the MagicTarget base at offset 0xA0, and
+ * its slot 01 holds the function the player's and Actor's tables hold
+ * (Address Library 38786), so this write leaves PlayerAddTarget's table
+ * alone. The body is GetTargetStatsObject, vfunc 02 (MagicTarget.h:79),
+ * Actor's override answering the actor (include/RE/A/Actor.h:354; the
+ * slot's body on the image is `lea rax, [rcx-0A0h]; ret`).
+ */
+struct CharacterAddTarget
+{
+  static bool thunk(RE::MagicTarget* a_this,
+                    RE::MagicTarget::AddTargetData& a_data)
+  {
+    // include/RE/E/Effect.h:39, include/RE/E/EffectSetting.h:141
+    const auto mgef = a_data.effect ? a_data.effect->baseEffect : nullptr;
+    if (!mgef ||
+        !mgef->HasArchetype(RE::EffectSetting::Archetype::kReanimate)) {
+      return func(a_this, a_data);
+    }
+    const auto caster =
+      a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
+    const auto body = a_this ? a_this->GetTargetStatsObject() : nullptr;
+    const RE::TESObjectREFR* raiser = caster ? caster : body;
+    if (!raiser || raiser->IsPlayerRef() || SimulatedHere(raiser->formID)) {
+      return func(a_this, a_data);
+    }
+    logger::info("[verb:npc-fate] reanimate {:x} (effect {:x}) on {:x} "
+                 "refused here: the raise is {:x}'s game's, its commander's "
+                 "engine raises the body (ADR-060, D4 B)",
+                 a_data.magicItem ? a_data.magicItem->formID : 0, mgef->formID,
+                 body ? body->formID : 0, raiser->formID);
+    return false;
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void InstallCharacterAddTargetHook()
+{
+  REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_Character[4] };
+  CharacterAddTarget::func = vtbl.write_vfunc(0x1, CharacterAddTarget::thunk);
+}
+
 /**
  * thuum train 52, Fix 1 (D-R1 C's leveled gap; the plan's section 1.3):
  * SkyrimScript::AddItemFunctor's operator(), the latent AddItem's body that
@@ -394,8 +488,8 @@ struct HostedResurrect
   {
     // Actor::IsAIEnabled (Actor.h:579), TESForm::formID (include/RE/T/
     // TESForm.h:354); a hosted actor with its AI on has nothing to enable
-    const bool taken = a_this && !a_this->IsAIEnabled() &&
-      Hosted::Is(a_this->formID) && !Puppets::Is(a_this->formID);
+    const bool taken =
+      a_this && !a_this->IsAIEnabled() && SimulatedHere(a_this->formID);
     if (!taken) {
       func(a_this, a_resetInventory, a_attach3D);
       return;
@@ -609,6 +703,7 @@ void Hooks::Install()
   InstallQuitDisconnectHook();
   HookVirtualMachineBind();
   InstallPlayerAddTargetHook();
+  InstallCharacterAddTargetHook();
   InstallPlayerHealthDamageHook();
   InstallHostedResurrectHook();
   InstallAddItemFunctorHook();

@@ -101,17 +101,21 @@ public:
   virtual void OnQuestStage(const RawMessageData& rawMsgData,
                             const QuestStageMessage& msg);
 
-  // thuum docs/verbs/prop-physics.md (ADR-058): a player's game touched a
-  // physics prop another seat simulates; the newest touch wins (R0, one
-  // epoch per prop, wire-rules props) and the word (PropOwner) goes to every
-  // listener of the prop; refused outside the prop's cell or while another
-  // player holds it grabbed
+  // thuum docs/verbs/prop-physics.md (ADR-058; A1 to A7 of ADR-071 decision
+  // 2): a player's game touched a physics prop another seat simulates; the
+  // server arbitrates (R0, one epoch per prop, wire-rules props): a prop at
+  // rest or stalled is the newest toucher's and the word (PropOwner) goes to
+  // every listener of the prop; refused while another player holds it
+  // grabbed, while another seat streams it awake (a grab excepted), from a
+  // claimant that is no listener of the prop or that unloaded its cell; a
+  // refused claimant hears the current word
   virtual void OnPropClaim(const RawMessageData& rawMsgData,
                            const PropClaimMessage& msg);
   // the same verb: the simulator's sample of a prop, taken from its owner
-  // alone (the toucher while awake or inside its lease, else the cell's
-  // host) into the reference's record (R2) and relayed to the prop's other
-  // listeners, unreliable while awake and reliable at sleep
+  // alone (the toucher while awake or held, else the cell's host) into the
+  // reference's record (R2) and relayed to the prop's other listeners,
+  // unreliable while awake and reliable at sleep; every rest returns the
+  // prop to the host with a word, and the host's own wake is a word naming it
   virtual void OnPropTransform(const RawMessageData& rawMsgData,
                                const PropTransformMessage& msg);
 

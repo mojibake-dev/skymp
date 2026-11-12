@@ -3858,13 +3858,20 @@ bool IsWorldBodyKind(MpObjectReference& refr)
     baseType != "NPC_";
 }
 
-// how far a touch reaches, in units from the claimant's record to the prop's:
-// the controller's contact and the grab at arm's length, a drop at the
-// player's feet with the client's drop match slack, an impulse (a shout, a
-// spell) across a room. UNMEASURED budgets (the stage sizes them).
-constexpr float kPropTouchReach = 256.f;
-constexpr float kPropDropReach = 512.f;
-constexpr float kPropImpulseReach = 2048.f;
+// thuum docs/verbs/prop-physics.md (A1 to A7 of ADR-071 decision 2): whether
+// `actor` is a listener of `refr`: the server sent its game the reference's
+// create word and has not told it the reference is gone (the subscription
+// the 3x3 grid squares around each keep, MpObjectReference's
+// ForceSubscriptionsUpdate). A consistency fact of the server's own state,
+// never a judgment of where the claimant stands (ADR-063 decision 4); it
+// replaces the claimant-in-cell gate and the reach gate (E_PROP_CELL,
+// E_PROP_REACH), which retire with A1 to A7
+bool IsPropListener(const MpObjectReference& refr, const MpActor& actor)
+{
+  const auto& listeners = refr.GetActorListeners();
+  return std::find(listeners.begin(), listeners.end(), &actor) !=
+    listeners.end();
+}
 
 // thuum D-S3 point 4 (the review of 9ff1895e, finding 2): how far a world
 // body's sample may stand from the body's game-file position. "A trap's
@@ -3876,15 +3883,27 @@ constexpr float kPropImpulseReach = 2048.f;
 constexpr float kWorldBodyTether = 2048.f;
 }
 
-// thuum docs/verbs/prop-physics.md (ADR-058 decision 1): a player's game
-// touched a physics prop it does not simulate. The gates: the reference a
-// prop the server holds (not an actor), the claimant standing in its cell
-// (the cell the record's position names, WorldState::CellOf); then the rule
-// (wire-rules props): the newest touch wins, one epoch per prop, unless the
-// claimant simulates it already or another player holds it grabbed. Granted,
-// the word (PropOwner) goes reliable to every listener of the prop with a
-// user, the claimant among them (it learns its epoch); the old simulator's
-// seat goes Keyframed on it, the claimant's Dynamic.
+// thuum docs/verbs/prop-physics.md (ADR-058 decision 1; A2, A3 and A5 of
+// ADR-071 decision 2): a player's game touched a physics prop it does not
+// simulate. The gates: the reference a prop the server holds (an item, or
+// under an impulse a trap's world body; never an actor), a touch the
+// contract names, the claimant a listener of the prop (E_PROP_UNSEEN: the
+// server's own record of which games it sent the prop), and the prop's
+// record in a cell (E_PROP_OUTSIDE: the cell is the rule's row key, never a
+// gate on the claimant). Then the rule (wire-rules props): a prop at rest or
+// stalled is the newest toucher's, one epoch per prop; a grabbed prop
+// refuses everything (E_PROP_HELD); a prop another seat streams awake
+// refuses a contact, a drop or an impulse (E_PROP_MOVING; a grab takes it),
+// a trap body's second firing among them; a claim from a game that unloaded
+// the prop's cell waits for its load report (E_PROP_AWAY). Granted, the word
+// (PropOwner) goes reliable to every listener of the prop with a user, the
+// claimant among them (it learns its epoch); a refused claimant hears the
+// current word, once per prop per second, and every refusal counts in the
+// stream counters. The two gates that stood here, the claimant in the
+// prop's cell (E_PROP_CELL) and within 256, 512 or 2048 units of the record
+// (E_PROP_REACH), retire with A1 to A7 (ADR-071 decision 2): they refused
+// playtest 41's carried bucket and playtest 44's kettle at the mill's cell
+// edge against records the carrier had already moved.
 void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
                                  const PropClaimMessage& msg)
 {
@@ -3896,12 +3915,13 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   // claim never loads the id a seat chose, the review of 9ff1895e's finding
   // 4): an item, or under an impulse (thuum D-S3 point 4) a trap's world
   // body, which stands loaded with the chunks the claimant's own grid pass
-  // loads around it (GetNeighborsByPosition, the 3x3 squares of 4096 units,
-  // so every body within kPropImpulseReach of the claimant)
+  // loads around it (GetNeighborsByPosition, the 3x3 squares of 4096 units)
   const bool impulse = msg.touch == 3;
   const auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.refr);
   MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
   const auto refuse = [&](const char* code, const char* why) {
+    partOne.serverState.CountStream(
+      rawMsgData.userId, static_cast<uint8_t>(MsgType::PropClaim), false);
     spdlog::warn(
       "[verb:prop-physics] {}: {:x} claims prop {:x} by touch {}; {}", code,
       myActor->GetFormId(), msg.refr, msg.touch, why);
@@ -3919,40 +3939,37 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   if (msg.touch > 3) {
     return refuse("E_PROP_RANGE", "a touch the contract does not name");
   }
+  // a game the server never sent the prop, or told it is gone, has no copy
+  // to heal, so no word answers it (a claim racing an unsubscription reads
+  // here too)
+  if (!IsPropListener(*prop, *myActor)) {
+    return refuse("E_PROP_UNSEEN",
+                  "the claimant is no listener of the prop (its game was "
+                  "never sent it, or was told it is gone)");
+  }
+  // the prop's own cell is the rule's row key, not a gate on the claimant
   const auto cell = partOne.worldState.CellOf(*prop);
-  if (!cell || partOne.worldState.CellOf(*myActor) != cell) {
-    return refuse("E_PROP_CELL", "the claimant is not in the prop's cell");
+  if (!cell) {
+    return refuse("E_PROP_OUTSIDE", "the prop's record stands in no cell");
   }
-  const float reach = msg.touch == 3 ? kPropImpulseReach
-    : msg.touch == 2                 ? kPropDropReach
-                                     : kPropTouchReach;
-  if ((myActor->GetPos() - prop->GetPos()).Length() > reach) {
-    return refuse("E_PROP_REACH", "the claimant is too far from the prop");
-  }
-  const auto verdict = partOne.ClaimProp(
-    *myActor, *prop, *cell, static_cast<uint8_t>(msg.touch), worldBody);
+  const auto verdict =
+    partOne.ClaimProp(*myActor, *prop, *cell, static_cast<uint8_t>(msg.touch));
   switch (verdict) {
     case PartOne::PropClaimVerdict::Granted: {
-      PropOwnerMessage word;
-      word.refr = prop->GetFormId();
-      word.player = myActor->GetFormId();
-      word.epoch = partOne.PropEpochOf(*prop);
-      size_t told = 0;
-      for (auto listener : prop->GetActorListeners()) {
-        const auto targetUserId = partOne.serverState.UserByActor(listener);
-        if (targetUserId != Networking::InvalidUserId) {
-          partOne.GetSendTarget().Send(targetUserId, word, true);
-          ++told;
-        }
-      }
+      const auto epoch = partOne.PropEpochOf(*prop);
+      const size_t told = partOne.SendPropOwnerWord(
+        prop->GetFormId(), myActor->GetFormId(), epoch);
       spdlog::info("[verb:prop-physics] {:x} claims prop {:x} by touch {}: "
                    "granted, epoch {}; {} listener(s) told",
-                   myActor->GetFormId(), prop->GetFormId(), msg.touch,
-                   word.epoch, told);
+                   myActor->GetFormId(), prop->GetFormId(), msg.touch, epoch,
+                   told);
       break;
     }
     case PartOne::PropClaimVerdict::Held:
       refuse("E_PROP_HELD", "another player holds it grabbed");
+      // the claimant hears who (A5: a refused claim is an owner conflict,
+      // answered; the loser of a double grab lets go)
+      partOne.AnswerPropWord(rawMsgData.userId, *prop);
       break;
     case PartOne::PropClaimVerdict::Same:
       spdlog::debug("[verb:prop-physics] {:x} claims prop {:x} by touch {}: "
@@ -3960,11 +3977,27 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
                     myActor->GetFormId(), prop->GetFormId(), msg.touch);
       break;
     case PartOne::PropClaimVerdict::Moving:
-      // thuum D-S3 point 4: the claimant heard the first firing's owner word
-      // at its grant, so its seat follows the body until the owner's rest
+      // A3, a consistency refusal between two owners, not a check on the
+      // claimant (playtest 41: the newest touch from any copy took a prop
+      // the other seat was moving); a trap body's second firing reads here
+      // too, the first firing winning, and its seat follows the body by the
+      // word it heard at the grant until the owner's rest
       refuse("E_PROP_MOVING",
-             "another seat's firing set the body moving, the first firing "
-             "wins");
+             "another seat streams it awake: a contact, a drop or an impulse "
+             "takes a prop at rest, a grab takes it at once");
+      partOne.AnswerPropWord(rawMsgData.userId, *prop);
+      break;
+    case PartOne::PropClaimVerdict::Away:
+      // the unload is a state (D-PH2 A, the review of 2026-11-03): the
+      // claimant's game reported the prop's cell unloaded and has not
+      // reported it loaded since, nor had the cell back in its reach, so
+      // this claim is a late one (a grab release after a door, a report that
+      // raced the unload); the row returned to the host at the unload and
+      // stays there
+      refuse("E_PROP_AWAY",
+             "its game unloaded the prop's cell and has not loaded or "
+             "reached it since");
+      partOne.AnswerPropWord(rawMsgData.userId, *prop);
       break;
   }
 }
@@ -7289,22 +7322,31 @@ void ActionListener::SendWorldGlobals(MpActor& actor)
                entries.size(), actor.GetFormId(), epoch);
 }
 
-// thuum docs/verbs/prop-physics.md (ADR-058 decision 2): a simulator's
-// sample of a prop. The record takes it from the prop's owner alone (the
-// toucher while awake or inside its lease, else the host of the cell the
-// RECORD stands in; wire-rules props), within the rule's step budget against
-// the record (a seat cannot carry a prop across the world in one message),
-// a trap's world body within kWorldBodyTether of its game-file position (nor
-// carry one off over many: E_PROP_FAR, thuum D-S3 point 4's review),
-// landing in the cell the sample's position names in the prop's own world or
-// cell (HYPOTHESIS: a prop never changes world or interior by physics, so
-// the record's worldOrCell stands; a kick through a load door is a later
-// read); then the same bytes go to the prop's other listeners, unreliable
-// while awake and reliable at sleep (the record's final sample). The write
-// is the movement path's (OnUpdateMovement's SetPos and SetAngle): saved
-// from time to time while the body moves, at once when it rests. A refusal
-// is logged once per 10 s per seat: a seat that lost the lease keeps
-// streaming until its own timer ends.
+// thuum docs/verbs/prop-physics.md (ADR-058 decision 2; A4, A5 and A7 of
+// ADR-071 decision 2): a simulator's sample of a prop. The record takes it
+// from the prop's owner alone (the toucher while awake or held, else the
+// host of the cell the RECORD stands in; wire-rules props), wherever a live
+// owner's sample lands (a moving body's owner never depends on its cell) but
+// never at a point in no cell (E_PROP_OUTSIDE) nor for a resting prop in a
+// cell nobody hosts (E_PROP_FROZEN), within the rule's step budget against
+// the record (a seat cannot carry a prop across the world in one message), a
+// trap's world body within kWorldBodyTether of its game-file position (nor
+// carry one off over many: E_PROP_FAR, thuum D-S3 point 4's review), landing
+// in the cell the sample's position names in the prop's own world or cell
+// (HYPOTHESIS: a prop never changes world or interior by physics, so the
+// record's worldOrCell stands; a kick through a load door is a later read);
+// then the same bytes go to the prop's other listeners, unreliable while
+// awake and reliable at sleep (the record's final sample). The write is the
+// movement path's (OnUpdateMovement's SetPos and SetAngle): saved from time
+// to time while the body moves, at once when it rests. Every asleep sample
+// returns the prop to the cell's host at once with the word (player 0) to
+// every listener (A4), the host's own and a holder's included; so does a
+// refused final sample (the rest taken, the position not); the host's own
+// wake of a resting prop is a word naming it by id (A7), and a wake from a
+// game that is no listener of the prop is refused (E_PROP_UNSEEN); a
+// NotOwner refusal is answered with the current word, once per prop per
+// second per seat, so a divergent word heals (A5). Refusals are logged once
+// per 10 s per seat.
 void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                                      const PropTransformMessage& msg)
 {
@@ -7370,6 +7412,15 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                     "allows");
     }
   }
+  // a sender with no live row of its own (a host's wake, a non-owner) is a
+  // listener of the prop or has no copy to stream; a live owner's own stream
+  // passes wherever its samples land (the record follows them)
+  if (partOne.PropLiveOwner(*prop) != myActor->GetFormId() &&
+      !IsPropListener(*prop, *myActor)) {
+    return refuse("E_PROP_UNSEEN",
+                  "the sender is no listener of the prop and streams no live "
+                  "row of its own");
+  }
   const uint32_t worldOrCell =
     prop->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles);
   const auto cell = partOne.worldState.CellOf(worldOrCell, pos);
@@ -7378,26 +7429,31 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   const auto verdict =
     partOne.PropTransform(*myActor, *prop, cell.value_or(0),
                           recordCell.value_or(0), msg.asleep, moved);
+  // the record takes the sample and the bytes go to the other listeners
+  const auto applyAndRelay = [&]() -> size_t {
+    const auto mode =
+      msg.asleep ? SetPosMode::Other : SetPosMode::CalledByUpdateMovement;
+    prop->SetPos(pos, mode);
+    prop->SetAngle(rot, mode);
+    size_t sent = 0;
+    for (auto listener : prop->GetActorListeners()) {
+      if (listener == myActor) {
+        continue;
+      }
+      const auto targetUserId = partOne.serverState.UserByActor(listener);
+      if (targetUserId != Networking::InvalidUserId) {
+        partOne.GetSendTarget().Send(targetUserId, rawMsgData.unparsed,
+                                     rawMsgData.unparsedLength, msg.asleep);
+        ++sent;
+      }
+    }
+    partOne.serverState.CountStream(
+      rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), true);
+    return sent;
+  };
   switch (verdict) {
     case PartOne::PropTransformVerdict::Accepted: {
-      const auto mode =
-        msg.asleep ? SetPosMode::Other : SetPosMode::CalledByUpdateMovement;
-      prop->SetPos(pos, mode);
-      prop->SetAngle(rot, mode);
-      size_t sent = 0;
-      for (auto listener : prop->GetActorListeners()) {
-        if (listener == myActor) {
-          continue;
-        }
-        const auto targetUserId = partOne.serverState.UserByActor(listener);
-        if (targetUserId != Networking::InvalidUserId) {
-          partOne.GetSendTarget().Send(targetUserId, rawMsgData.unparsed,
-                                       rawMsgData.unparsedLength, msg.asleep);
-          ++sent;
-        }
-      }
-      partOne.serverState.CountStream(
-        rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), true);
+      const auto sent = applyAndRelay();
       spdlog::trace(
         "[verb:prop-physics] prop {:x} by {:x} at ({:.0f}, {:.0f}, "
         "{:.0f}){} in cell {:x}; relayed to {} listener(s)",
@@ -7405,16 +7461,85 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
         msg.asleep ? ", asleep" : "", cell.value_or(0), sent);
       break;
     }
+    case PartOne::PropTransformVerdict::Returned: {
+      // A4: ownership returns to the host only at rest on the owner's
+      // screen, by the owner's own final sample, and the return is a word
+      // (player 0, the host by default), never a timer's silent lapse
+      // (playtest 41: a blasted prop's owner refused while it still flew);
+      // a holder's rest ends its hold here too (D-PH3 A: a held body never
+      // rests on the wire)
+      const auto sent = applyAndRelay();
+      const auto epoch = partOne.PropEpochOf(*prop);
+      const auto told = partOne.SendPropOwnerWord(prop->GetFormId(), 0, epoch);
+      spdlog::info("[verb:prop-physics] prop {:x} rests on {:x}'s screen at "
+                   "({:.0f}, {:.0f}, {:.0f}): the host's again at epoch {}; "
+                   "the sample relayed to {} listener(s), the word to {}",
+                   prop->GetFormId(), myActor->GetFormId(), pos.x, pos.y,
+                   pos.z, epoch, sent, told);
+      break;
+    }
     case PartOne::PropTransformVerdict::NotOwner:
       refuse("E_PROP_NOT_OWNER", "another seat simulates it");
+      // the answer: the current word to the sender, once per prop per second
+      // (A5: a seat whose word diverged hears who owns the prop instead of
+      // streaming into refusals)
+      partOne.AnswerPropWord(rawMsgData.userId, *prop);
       break;
-    case PartOne::PropTransformVerdict::WrongCell:
-      refuse("E_PROP_CELL",
-             "no cell at the point, or a cell nobody hosts and nobody holds");
+    case PartOne::PropTransformVerdict::RestRefused: {
+      // an asleep sample over the step budget: the position is refused (the
+      // record stands), the rest is taken (the prop the host's again, the
+      // word), so a refused final sample never leaves a live row nobody can
+      // move
+      refuse("E_PROP_STEP",
+             "farther from the record than the step budget allows; the rest "
+             "taken, the record standing");
+      const auto epoch = partOne.PropEpochOf(*prop);
+      const auto told = partOne.SendPropOwnerWord(prop->GetFormId(), 0, epoch);
+      spdlog::info("[verb:prop-physics] prop {:x}: {:x}'s refused final "
+                   "sample rests it where the record stands; the host's "
+                   "again at epoch {}; the word to {} listener(s)",
+                   prop->GetFormId(), myActor->GetFormId(), epoch, told);
+      break;
+    }
+    case PartOne::PropTransformVerdict::Woken: {
+      // A7: the host's own engine moved a prop that was not its live row (a
+      // resting prop kicked): the row is the host's at a new epoch and every
+      // listener hears the word NAMING THE HOST, so the seat that streams is
+      // the seat every word names and a host change leaves it streaming
+      // until its rest (the review of 2026-11-03: a word of player 0 over a
+      // row naming the host left a prop nobody simulated after a host change)
+      const auto sent = applyAndRelay();
+      const auto epoch = partOne.PropEpochOf(*prop);
+      const auto told = partOne.SendPropOwnerWord(prop->GetFormId(),
+                                                  myActor->GetFormId(), epoch);
+      spdlog::info("[verb:prop-physics] prop {:x} woken by its host {:x} at "
+                   "({:.0f}, {:.0f}, {:.0f}): the host's by name at epoch {}; "
+                   "the sample relayed to {} listener(s), the word to {}",
+                   prop->GetFormId(), myActor->GetFormId(), pos.x, pos.y,
+                   pos.z, epoch, sent, told);
+      break;
+    }
+    case PartOne::PropTransformVerdict::Outside:
+      // ADR-071 decision 6's conservation: no record outside a cell, whoever
+      // streams it
+      refuse("E_PROP_OUTSIDE", "no cell at the sample's point");
+      break;
+    case PartOne::PropTransformVerdict::Frozen:
+      // the design law's freeze: an unhosted cell's resting prop stands at
+      // its record until a host or a toucher takes it
+      refuse("E_PROP_FROZEN", "a resting prop in a cell nobody hosts");
       break;
     case PartOne::PropTransformVerdict::TooFast:
       refuse("E_PROP_STEP",
              "farther from the record than the step budget allows");
+      break;
+    case PartOne::PropTransformVerdict::Away:
+      // a wake by an unloading host still in its grace (D-PH2 A, the review
+      // of 2026-11-03): refused until its load report or the cell's return
+      // to its reach, the record standing; a live owner's own stream passes
+      refuse("E_PROP_AWAY",
+             "its game unloaded the cell and has not loaded or reached it "
+             "since");
       break;
   }
 }

@@ -500,11 +500,6 @@ private:
   // (thuum docs/verbs/stagger.md); `what` names the hit for the log
   void PlayStagger(MpActor& aggressor, MpActor& target, float magnitude,
                    const std::string& what);
-  // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any
-  // body"): a reanimate's accepted hit on a dead body another game hosts,
-  // cast again by the server's word on that host's engine, from the
-  // caster's figure at the body (Spell.Cast by SpSnippet); nothing when the
-  // body's host is the caster's own game
   // thuum docs/verbs/npc-fate.md (ADR-060): an accepted reanimate hands the
   // body to the caster's seat for the effect's life (the cells rule's
   // commanded claim); the caster's own engine ran the spell and runs the

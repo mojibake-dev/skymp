@@ -89,15 +89,6 @@ std::optional<uint32_t> ReanimateEffectOf(
   }
   return std::nullopt;
 }
-
-// whether `spell` carries a Reanimate effect at all; a relay knows the
-// cast's spell alone
-bool CarriesReanimate(WorldState* worldState, uint32_t spell)
-{
-  return spell != 0 &&
-    ReanimateEffectOf(worldState, MpActor::EffectsOf(worldState, spell))
-      .has_value();
-}
 }
 
 MpActor* ActionListener::ActorUpdatableBy(uint32_t idx,
@@ -10454,19 +10445,17 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
 
 // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any body";
 // Eli, playtest 37: "anyone should be able to reanimate any corpse, that's
-// Just Gameplay"): the engine's Reanimate effect runs in the caster's own
-// game, where a body in a cell another game hosts is a puppet with its AI
-// off, which the platform leaves alone by design; the one engine that can
-// stand the body is its host's. So the accepted hit tells the host's game to
-// cast the spell itself, from the caster's figure at the body (Spell.Cast
-// with the two as its source and target, on the host's engine), the level
-// cap and the thrall's duration the engine's there, the reanimation hook
-// (fork 4ec01060) keeping the hosted body's AI and the host's sampler
-// reporting it alive. A body hosted by the caster's own game needs nothing:
-// that engine ran the effect itself. The caster's game is its user's for a
-// player and its host's for a hosted caster (a necromancer's cast at a body
-// in another game's cell). The record's life stays R0, the thrall's
-// behaviour R2.
+// Just Gameplay"; ADR-060, playtest 41): the engine's Reanimate effect runs
+// in the caster's own game, the one that knows what the commander wants, so
+// the accepted hit makes that game the body's simulator for the effect's
+// life (the cells rule's commanded claim, UpdateHoster to every listening
+// game): its engine stands the body and runs the get-up and the commanded
+// packages, and its samples stand the record (OnHostedActorState: inside
+// MpActor::kReanimateWindowMs of the hit, or after its own dead sample). The
+// caster's game is its user's for a player and its host's for a hosted
+// caster (a necromancer's cast at a body in another game's cell). The claim
+// is R0, the thrall's behaviour R2 (ADR-060's H1 to H3 open until
+// x-reanimate-claim reads them).
 void ActionListener::ClaimReanimated(
   MpActor& caster, MpActor& body, uint32_t spell,
   const std::vector<espm::Effects::Effect>& effects)

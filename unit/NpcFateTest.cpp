@@ -1542,9 +1542,9 @@ TEST_CASE("A placed-dead body ignores its host's live sample until the "
   REQUIRE(liveWords() == 0);
 
   // a reanimate the server accepted on it (the host's own cast, then its
-  // hit: OnHit's stamp ahead of CastReanimateOnHost, which sends nothing to
-  // the caster's own seat): the next live sample is the engine's stand-up,
-  // recorded with the live word
+  // hit: OnHit's stamp ahead of ClaimReanimated, whose commanded claim names
+  // the host's own seat, the simulator already): the next live sample is the
+  // engine's stand-up, recorded with the live word
   Equipment eq;
   eq.rightSpell = kReanimateCorpse;
   host.SetEquipment(eq);

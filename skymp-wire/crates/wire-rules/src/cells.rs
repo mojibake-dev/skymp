@@ -609,10 +609,14 @@ impl Cells {
         verdict
     }
 
-    /// `player` releases its claim on `actor`; false when it holds none.
+    /// `player` releases its dialogue claim on `actor`; false when it holds
+    /// none. A commanded row is no dialogue's: the commander's own E on its
+    /// thrall claims and releases (the client's host-own dialogue, ADR-052)
+    /// and the command stands; it ends by its death, its lease, its
+    /// commander's departure or unload alone (ADR-060).
     pub fn release_claim(&mut self, actor: u32, player: u32) -> bool {
         match self.follows.get(&actor) {
-            Some(f) if is_claim(f.kind) && f.player == player => {
+            Some(f) if f.kind == FollowKind::Claim && f.player == player => {
                 self.follows.remove(&actor);
                 true
             }
@@ -1463,6 +1467,12 @@ mod tests {
         assert_eq!(c.claim(SVEN, C1, RIVERWOOD, 2_500), ClaimVerdict::Held);
         assert_eq!(c.claim(SVEN, C2, RIVERWOOD, 2_500), ClaimVerdict::Reclaimed);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
+        // and the dialogue's release after it ends no command: neither the
+        // commander's nor another's
+        assert!(!c.release_claim(SVEN, C2));
+        assert!(!c.release_claim(SVEN, C1));
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
+        assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
         // the thrall walks with its commander into another cell: accepted,
         // the row follows
         assert_eq!(

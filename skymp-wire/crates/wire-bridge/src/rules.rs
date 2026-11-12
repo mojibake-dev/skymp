@@ -2991,7 +2991,9 @@ mod ffi {
         /// ADR-060: `player`'s spell commands `actor` in `cell` for
         /// `lease_ms` (0 for good): the same codes as claim_actor.
         fn claim_commanded(self: &mut Cells, actor: u32, player: u32, cell: u32, lease_ms: u64, now_ms: u64) -> u8;
-        /// `player` releases its claim on `actor`; false when it holds none.
+        /// `player` releases its dialogue claim on `actor`; false when it
+        /// holds none (a commanded row ends by its death, lease or
+        /// commander's departure, never a dialogue's release; ADR-060).
         fn release_claim(self: &mut Cells, actor: u32, player: u32) -> bool;
         /// Any claim on `actor` ends (its death): the claimant it had, 0 when none.
         fn release_any_claim(self: &mut Cells, actor: u32) -> u32;

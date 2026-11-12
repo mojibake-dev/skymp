@@ -844,11 +844,16 @@ public:
   // its commander's game for the effect's life. `commander` is the seat
   // whose engine ran the spell (the caster when a user plays it, else the
   // caster's host); `leaseMs` the effect's duration plus a margin, 0 for
-  // good (Dead Thrall). The word is UpdateHoster to every listening game.
+  // good (Dead Thrall). The word is UpdateHoster to every listening game,
+  // with no SendActorKeyframe ahead of it: the grant runs on a dead record
+  // (the reanimate's hit), which a promote never places (a body is never
+  // moved, D78 C; the client's dead hold), so the keyframe would place
+  // nothing
   ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor,
                               uint64_t leaseMs);
   // any claim on `actor` ends (its death): the claimant it had, 0 for none;
-  // the cell's rule names the simulator again and the word follows
+  // the cell's rule names the simulator again and the word follows, again
+  // on a dead record and so with no keyframe
   uint32_t ReleaseAnyClaim(MpActor& actor);
   // thuum docs/engine/non-owning-seat.md section 3: the actor's record (its
   // transform and flags, as a movement message) to the game about to

@@ -241,18 +241,6 @@ void InstallPlayerAddTargetHook()
   PlayerAddTarget::func = vtbl.write_vfunc(0x1, PlayerAddTarget::thunk);
 }
 
-namespace {
-// whether this game's engine simulates the actor: the server's word per
-// actor says this game (Hosted.h) and it is no puppet here (Puppets.h), the
-// Papyrus gate's simulatedActor test (FridaHooks.cpp OnSendEventEnter) and
-// the seam's owner of an actor's scripts (ScriptNatives.cpp OwnedHere); a
-// player's figure is never in the hosted set
-bool SimulatedHere(std::uint32_t a_formId)
-{
-  return Hosted::Is(a_formId) && !Puppets::Is(a_formId);
-}
-}
-
 /**
  * thuum docs/verbs/npc-fate.md (ADR-060: a thrall is its commander's game's
  * for the effect's life; ADR-063: one engine owns each piece of the world,
@@ -271,7 +259,7 @@ bool SimulatedHere(std::uint32_t a_formId)
  * The raise is the caster's game's, as the server names the commander
  * (ActionListener::ClaimReanimated: the caster's user for a player, else the
  * caster's host): this game's own player, or an actor this game simulates
- * (SimulatedHere above); a raise with no actor behind it, the body's
+ * (Hosted::SimulatedHere); a raise with no actor behind it, the body's
  * simulator's. The caster is read and not the body: the commander's engine
  * raises its copy at its own hit, before the server's grant makes the body
  * this game's (ADR-060's H2: a body this game neither hosts nor holds as a
@@ -339,7 +327,8 @@ struct CharacterAddTarget
       a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
     const auto body = a_this ? a_this->GetTargetStatsObject() : nullptr;
     const RE::TESObjectREFR* raiser = caster ? caster : body;
-    if (!raiser || raiser->IsPlayerRef() || SimulatedHere(raiser->formID)) {
+    if (!raiser || raiser->IsPlayerRef() ||
+        Hosted::SimulatedHere(raiser->formID)) {
       return func(a_this, a_data);
     }
     const auto mgef = a_data.effect ? a_data.effect->baseEffect : nullptr;
@@ -513,8 +502,8 @@ struct HostedResurrect
   {
     // Actor::IsAIEnabled (Actor.h:579), TESForm::formID (include/RE/T/
     // TESForm.h:354); a hosted actor with its AI on has nothing to enable
-    const bool taken =
-      a_this && !a_this->IsAIEnabled() && SimulatedHere(a_this->formID);
+    const bool taken = a_this && !a_this->IsAIEnabled() &&
+      Hosted::SimulatedHere(a_this->formID);
     if (!taken) {
       func(a_this, a_resetInventory, a_attach3D);
       return;

@@ -4425,6 +4425,46 @@ void MpActor::ReapplyMagicEffects()
   if (asOfMs != 0 && nowMs > asOfMs) {
     AdvanceEffects(static_cast<float>(nowMs - asOfMs) / 1000.f);
   }
+  // thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12): a restart
+  // is every commander's departure, since the cells rule's commands live in
+  // memory alone, and a saved record is applied here once a process, at its
+  // load (WorldState::AddForm at the boot, a game-file form's first attach).
+  // A thrall its record brings back alive is judged as a departure judges
+  // one, by its Reanimate state's record duration: a full thrall's
+  // (FULL_THRALL_MIN_S or longer) stays with its look; a timed one dies by
+  // the server's word, as ThrallExpired's does, at the world's next tick,
+  // once the load is done
+  if (!IsDead()) {
+    for (const auto& e :
+         EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
+      if (e.facts.kind != skymp::rules::EffectKind::Reanimate) {
+        continue;
+      }
+      const uint32_t formId = GetFormId();
+      const float recordSeconds = e.facts.duration_s;
+      if (recordSeconds >= skymp::rules::full_thrall_min_s()) {
+        spdlog::info("[verb:npc-fate] {:x}'s commander left at the server's "
+                     "restart and its effect is a full thrall's (the "
+                     "record's {:.0f} s): it stays, its look kept (ADR-060)",
+                     formId, recordSeconds);
+      } else {
+        worldState->SetTimer(std::chrono::milliseconds(0))
+          .Then([worldState, formId, recordSeconds](Viet::Void) {
+            auto& form = worldState->LookupFormByIdNoLoad(formId);
+            MpActor* actor = form ? form->AsActor() : nullptr;
+            if (actor && !actor->IsDead()) {
+              spdlog::info("[verb:npc-fate] {:x}'s commander left at the "
+                           "server's restart and its effect is a timed "
+                           "thrall's (the record's {:.0f} s): the server's "
+                           "word ends it (ADR-060)",
+                           formId, recordSeconds);
+              actor->Kill(nullptr);
+            }
+          });
+      }
+      break;
+    }
+  }
   if (HasRunningEffects()) {
     worldState->TrackEffects(GetFormId());
   }

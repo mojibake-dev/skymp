@@ -2814,6 +2814,11 @@ mod ffi {
         /// The share of a hostile effect's magnitude a target takes, by its
         /// element and magic resistances under `cap`.
         fn resistance_factor(resist: f32, magic_resist: f32, cap: f32) -> f32;
+        /// A Reanimate effect at least this long is a full thrall's, seconds
+        /// (wire-rules magic::FULL_THRALL_MIN_S), for the core's restart:
+        /// every commander's departure, at which a full thrall stays and a
+        /// timed one dies.
+        fn full_thrall_min_s() -> f32;
 
         /// Every player actor's recent spell casts and open streams.
         type SpellCasts;
@@ -4946,6 +4951,10 @@ fn ability_modifier(facts: &Vec<EffectFacts>, av: u32) -> f32 {
 
 fn resistance_factor(resist: f32, magic_resist: f32, cap: f32) -> f32 {
     magic::resistance_factor(resist, magic_resist, cap)
+}
+
+const fn full_thrall_min_s() -> f32 {
+    magic::FULL_THRALL_MIN_S
 }
 
 /// Every player actor's recent spell casts and open streams (wire-rules

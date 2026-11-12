@@ -1914,6 +1914,91 @@ TEST_CASE("A full thrall's look is the record's for the record's whole "
   p.DestroyActor(kLater);
 }
 
+// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12): a restart is
+// every commander's departure, the cells rule's commands living in memory
+// alone, so a thrall its saved record brings back alive with its Reanimate
+// state (MpActor::ApplyChangeForm's ReapplyMagicEffects, at the load) is
+// judged by the state's record duration: a timed thrall dies by the server's
+// word at the world's next tick, a full thrall stays with its look. The
+// record is a server-made Nord bandit's (base 0x3DE6F), loaded through
+// WorldState::LoadChangeForm as the boot loads a saved one
+TEST_CASE("At a restart a timed thrall's record dies by the server's word "
+          "and a full thrall's stays with its look",
+          "[NpcFate][Reanimate][espm]")
+{
+  constexpr uint32_t kThrall = 0xff000d3c;
+  constexpr uint32_t kBanditBase = 0x3de6f;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  const auto wallNowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+
+  // the saved record: alive at the forest, its reanimate state 5 s in as of
+  // now, kept as a state with its key
+  const auto load = [&](uint32_t effect, uint32_t spell, float magnitude,
+                        float recordSeconds) -> MpActor& {
+    MpChangeForm saved;
+    saved.recType = MpChangeForm::ACHR;
+    saved.formDesc = FormDesc::FromFormId(kThrall, p.worldState.espmFiles);
+    saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+    saved.worldOrCellDesc = FormDesc::Tamriel();
+    saved.position = kForest;
+    saved.angle = { 0.f, 0.f, 0.f };
+    RunningEffect state;
+    state.effect = FormDesc::FromFormId(effect, p.worldState.espmFiles);
+    state.source = FormDesc::FromFormId(spell, p.worldState.espmFiles);
+    state.kind = 3;
+    state.reanimate = true;
+    state.magnitude = magnitude;
+    state.durationS = recordSeconds;
+    state.elapsedS = 5.f;
+    state.asOfMs = wallNowMs;
+    state.recover = true;
+    saved.runningEffects = std::vector<RunningEffect>{ state };
+    p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+    p.worldState.LoadDeferredActors();
+    p.worldState.fateRespawnDue.erase(kThrall);
+    return p.worldState.GetFormAt<MpActor>(kThrall);
+  };
+
+  SECTION("Reanimate Corpse's 0x96D0B, the record's 60 s: a timed thrall, "
+          "the server's word ends it once the load is done")
+  {
+    LogCapture log;
+    auto& thrall = load(0x96d0b, 0x65bd7, 13.f, 60.f);
+    REQUIRE_FALSE(thrall.IsDead());
+    p.Tick();
+    REQUIRE(thrall.IsDead());
+    REQUIRE(log.Count("commander left at the server's restart and its effect "
+                      "is a timed thrall's (the record's 60 s): the server's "
+                      "word ends it") == 1);
+  }
+
+  SECTION("Dead Thrall's 0x7E8E0, the record's 86,313,600 s: a full thrall "
+          "stays, its look kept")
+  {
+    LogCapture log;
+    auto& thrall = load(0x7e8e0, 0x7e8df, 40.f, 86'313'600.f);
+    p.Tick();
+    REQUIRE_FALSE(thrall.IsDead());
+    REQUIRE(log.Count("commander left at the server's restart and its effect "
+                      "is a full thrall's (the record's 86313600 s): it "
+                      "stays, its look kept") == 1);
+    const auto running = thrall.GetRunningEffects();
+    REQUIRE(running.size() == 1);
+    REQUIRE(running[0].effect == 0x7e8e0);
+    REQUIRE(running[0].secondsLeft == Catch::Approx(86'313'595.f));
+  }
+
+  // the shared world
+  auto& thrall = p.worldState.GetFormAt<MpActor>(kThrall);
+  thrall.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kThrall);
+  p.DestroyActor(kThrall);
+}
+
 // thuum docs/verbs/npc-fate.md (playtest 38's finding 65; the train's
 // review, 2026-10-29): a placement that starts dead is the server's corpse
 // with no death this process stamped, so the resurrection rule's no-stamp

@@ -257,15 +257,16 @@ bool SimulatedHere(std::uint32_t a_formId)
  * thuum docs/verbs/npc-fate.md (ADR-060: a thrall is its commander's game's
  * for the effect's life; ADR-063: one engine owns each piece of the world,
  * and a non-owner renders and never simulates), the reanimation look's D4 B
- * (thuum lab/.cache/drafts/reanimate-fx.md 4 and 6.4): an effect of
- * archetype kReanimate (CommonLibSSE-NG include/RE/E/EffectArchetypes.h:32)
- * lands on a Character here only when this game runs the raise. A cast
- * relayed from another seat is a real cast from its caster's figure
- * (MagicApi.cpp castSpellImmediate), so a watcher's engine would raise its
- * own copy of the body beside the commander's, a second simulator of one body
- * (the look's read, HYPOTHESIS: the live word's Resurrect(true, true),
- * FateApi.cpp, resets the copy's inventory, a relayed underskin with it,
- * and the copy's own effect kills it a second time at its end).
+ * (thuum lab/.cache/drafts/reanimate-fx.md 4 and 6.4): a magic item that
+ * carries an effect of archetype kReanimate (CommonLibSSE-NG
+ * include/RE/E/EffectArchetypes.h:32) lands on a Character here only when
+ * this game runs the raise. A cast relayed from another seat is a real cast
+ * from its caster's figure (MagicApi.cpp castSpellImmediate), so a watcher's
+ * engine would raise its own copy of the body beside the commander's, a
+ * second simulator of one body (the look's read, HYPOTHESIS: the live word's
+ * Resurrect(true, true), FateApi.cpp, resets the copy's inventory, a relayed
+ * underskin with it, and the copy's own effect kills it a second time at its
+ * end).
  *
  * The raise is the caster's game's, as the server names the commander
  * (ActionListener::ClaimReanimated: the caster's user for a player, else the
@@ -279,13 +280,18 @@ bool SimulatedHere(std::uint32_t a_formId)
  * (hitService.ts) before the grant's UpdateHoster can leave the server
  * (HYPOTHESIS, the order x-reanimate-claim v2's U4 reads).
  *
- * The refused effect alone is dropped, as PlayerAddTarget drops its own
- * (one call per effect, MagicTarget.h:58-60): the spell's other effects take
- * as the engine plays them, Reanimate Corpse's ash carrier 0xf52ab
- * (ReanimateAshPile) among them, its script blanked on a seat whose player
- * neither cast nor bears it (the gate's effect rule, Frida::PlayersEffect).
- * Filtered in native, nothing crosses into JS: one archetype compare per
- * AddTarget on a Character, the two sets read for a reanimate alone.
+ * Every effect of such an item is refused, one AddTarget per effect
+ * (MagicTarget.h:58-60) as PlayerAddTarget refuses a potion's: the item is
+ * its commander's whole, so the relayed cast lands nothing on the watcher's
+ * copy, Reanimate Corpse's ash carrier 0xf52ab (ReanimateAshPile) and Dark
+ * Souls rider 0xcab63, Dead Thrall's 0x8bb2a and a mod's added effects
+ * alike. An item raises when its effect list (include/RE/M/MagicItem.h:127)
+ * holds an effect whose base (include/RE/E/Effect.h:39) has the archetype
+ * (include/RE/E/EffectSetting.h:141); with no item, the effect in hand
+ * alone. Filtered in native, nothing crosses into JS: the item's few
+ * effects compared per AddTarget on a Character, no engine call, and the
+ * two sets read for a raising item alone. Each refused effect logs one line
+ * under its own effect id.
  *
  * The slot is AddTarget, vfunc 01 (include/RE/M/MagicTarget.h:78), of
  * Character's MagicTarget vtable, RE::VTABLE_Character[4]
@@ -303,13 +309,30 @@ bool SimulatedHere(std::uint32_t a_formId)
  */
 struct CharacterAddTarget
 {
+  static bool IsRaise(const RE::Effect* a_effect)
+  {
+    return a_effect && a_effect->baseEffect &&
+      a_effect->baseEffect->HasArchetype(
+        RE::EffectSetting::Archetype::kReanimate);
+  }
+
+  static bool Raises(RE::MagicItem* a_item, const RE::Effect* a_effect)
+  {
+    if (!a_item) {
+      return IsRaise(a_effect);
+    }
+    for (auto* effect : a_item->effects) {
+      if (IsRaise(effect)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   static bool thunk(RE::MagicTarget* a_this,
                     RE::MagicTarget::AddTargetData& a_data)
   {
-    // include/RE/E/Effect.h:39, include/RE/E/EffectSetting.h:141
-    const auto mgef = a_data.effect ? a_data.effect->baseEffect : nullptr;
-    if (!mgef ||
-        !mgef->HasArchetype(RE::EffectSetting::Archetype::kReanimate)) {
+    if (!Raises(a_data.magicItem, a_data.effect)) {
       return func(a_this, a_data);
     }
     const auto caster =
@@ -319,11 +342,13 @@ struct CharacterAddTarget
     if (!raiser || raiser->IsPlayerRef() || SimulatedHere(raiser->formID)) {
       return func(a_this, a_data);
     }
+    const auto mgef = a_data.effect ? a_data.effect->baseEffect : nullptr;
     logger::info("[verb:npc-fate] reanimate {:x} (effect {:x}) on {:x} "
                  "refused here: the raise is {:x}'s game's, its commander's "
                  "engine raises the body (ADR-060, D4 B)",
-                 a_data.magicItem ? a_data.magicItem->formID : 0, mgef->formID,
-                 body ? body->formID : 0, raiser->formID);
+                 a_data.magicItem ? a_data.magicItem->formID : 0,
+                 mgef ? mgef->formID : 0, body ? body->formID : 0,
+                 raiser->formID);
     return false;
   }
   static inline REL::Relocation<decltype(thunk)> func;

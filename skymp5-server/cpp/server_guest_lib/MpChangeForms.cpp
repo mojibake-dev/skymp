@@ -745,6 +745,11 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
       if (e.caster.shortFormId != 0 || !e.caster.file.empty()) {
         j["caster"] = e.caster.ToString();
       }
+      // a thrall's reanimate state, written only when it is one (rule 6:
+      // a server that predates the key reads kind 3, a plain state)
+      if (e.reanimate) {
+        j["reanimate"] = true;
+      }
       entries.push_back(j);
     }
     res["runningEffects"] = { { "entries", entries } };
@@ -1597,7 +1602,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       secondAv("secondAv"), secondWeight("secondWeight"),
       magnitude("magnitude"), durationS("durationS"), elapsedS("elapsedS"),
       asOf("asOf"), recover("recover"), detrimental("detrimental"),
-      noDuration("noDuration");
+      noDuration("noDuration"), reanimate("reanimate");
 
     std::vector<simdjson::dom::element> parsedEntries;
     ReadVector(jTmp, entries, &parsedEntries);
@@ -1630,6 +1635,12 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       ReadEx(parsedEntries[i], recover, &e.recover);
       ReadEx(parsedEntries[i], detrimental, &e.detrimental);
       ReadEx(parsedEntries[i], noDuration, &e.noDuration);
+      // absent in records written before it was kept, and in every effect
+      // but a thrall's reanimate
+      if (parsedEntries[i].at_pointer(reanimate.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        ReadEx(parsedEntries[i], reanimate, &e.reanimate);
+      }
     }
     res.runningEffects = running;
   }

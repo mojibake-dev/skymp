@@ -41,12 +41,12 @@ divergences:
     wire: 1
     reason: departure detection, graceful close on the wire against RakNet's timeout
   - client: c1
-    msg: {t: 43, idx: "refr:ff000002", effects: [{effect: 256755, source: 256754, magnitude: 20, remaining: 60}]}
+    msg: {t: 43, idx: "refr:ff000002", effects: [{effect: 256755, source: 256754, magnitude: 20, remaining: 60, caster: 0}]}
     legacy: 0
     wire: 1
-    reason: the fixed server tells every game that sees c1 its running effects (MagicEffects, thuum docs/verbs/magic-effects.md), its own included; the legacy server has no such message
+    reason: the fixed server tells every game that sees c1 its running effects (MagicEffects, thuum docs/verbs/magic-effects.md), its own included; a drink names no caster (0 since SCHEMA_VERSION 45, EatItemEvent's ApplyEffects passing none, thuum docs/verbs/npc-fate.md C4); the legacy server has no such message
   - client: c2
-    msg: {t: 43, idx: "refr:ff000002", effects: [{effect: 256755, source: 256754, magnitude: 20, remaining: 60}]}
+    msg: {t: 43, idx: "refr:ff000002", effects: [{effect: 256755, source: 256754, magnitude: 20, remaining: 60, caster: 0}]}
     legacy: 0
     wire: 1
     reason: c2's game hears c1's fortify the same way, to show its shader on c1's figure

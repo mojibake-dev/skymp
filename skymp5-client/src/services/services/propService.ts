@@ -516,7 +516,10 @@ export class PropService extends ClientListener {
         }
         const owner = this.ownerOf(prop, myId);
         const word = this.owners.get(prop.refr);
-        const named = word !== undefined && word.player === owner;
+        // a word naming nobody names no simulator: a seat that does not host
+        // reads owner 0 then, which is no match for player 0 (the review of
+        // b7151a42: 0 === 0 hid the fallback line below on every such seat)
+        const named = word !== undefined && word.player !== 0 && word.player === owner;
         if (owner !== prop.effective) {
             if (!named && prop.effective !== undefined) {
                 // the cell's host by default: no word yet, or the word named

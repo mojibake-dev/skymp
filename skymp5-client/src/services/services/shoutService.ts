@@ -249,17 +249,25 @@ export class ShoutService extends ClientListener {
         // Unrelenting Force reported at its release reached a far target
         // 1.57 s later, past the 1200 ms this allowed before, and went out
         // again (E_SHOUT_UNREPORTED, c1-console.log:5851); the server took
-        // both and the other seat drew two cones. Counted on the wall clock,
-        // which no menu pauses, the recovery ends here no later than in the
-        // game, so no later release falls inside it. God mode lets a shout
-        // go under a running recovery and sets it again (x-tgm-breath4
-        // 20261016-010539: 22.75 s left 7.25 s after a breath shouted 23.6 s
-        // into the first's 30 s); such a release reports from its launch
-        // (x-tgm-breath5 20261016-162436, five of five), not from here. A
-        // release that sets no recovery (ShoutRecoveryMult 0) keeps one
-        // breath's hits span, hitWindowMs
+        // both and the other seat drew two cones. Counted from the report on
+        // the wall clock, as the server counts its own recovery from the
+        // report's arrival (PartOne::Shout, ActionListener.cpp:9870-9886), so
+        // outside god mode a report kept back here is one the server would
+        // refuse; a report that lags its release ends this window that much
+        // after the game's. God mode lets a shout go under a running recovery
+        // and sets it again (x-tgm-breath4 20261016-010539: 22.75 s left
+        // 7.25 s after a breath shouted 23.6 s into the first's 30 s); such a
+        // release reports from its launch (x-tgm-breath5 20261016-162436,
+        // five of five), not from here. A release that sets no recovery
+        // (ShoutRecoveryMult 0) keeps one breath's hits span, hitWindowMs
         const ownMs = Math.max(shoutGate.reportedRecovery * 1000, ShoutService.hitWindowMs);
-        if (spell === shoutGate.reportedSpell && Date.now() - shoutGate.reportedAt <= ownMs) {
+        const sinceReport = Date.now() - shoutGate.reportedAt;
+        if (spell === shoutGate.reportedSpell && sinceReport <= ownMs) {
+            // one the old window would have reported again, traced so a run
+            // counts it (x-shout-once), short of the console tee's 128 bytes
+            if (sinceReport > ShoutService.hitWindowMs) {
+                logTrace(this, "late hit of", spell.toString(16), sinceReport, "ms after its report: its release's, recovery", shoutGate.reportedRecovery.toFixed(1), "s");
+            }
             return false;
         }
         // a stream's hits come ten a second: the equipped shout's spells are
@@ -303,7 +311,11 @@ export class ShoutService extends ClientListener {
             if (!player || !shout || n === null) {
                 return 0;
             }
-            return this.recoverySetBy(shout, n, player.getActorValue("ShoutRecoveryMult"));
+            // a read that is no finite number (callNative's undefined, a NaN
+            // mult) would make the window NaN, holding no hit, or Infinity,
+            // holding every one: such a read keeps hitWindowMs
+            const set = this.recoverySetBy(shout, n, player.getActorValue("ShoutRecoveryMult"));
+            return Number.isFinite(set) ? set : 0;
         } catch (err) {
             logError(this, "E_SHOUT_REPORT: the recovery of", spell.toString(16), "unread:", err);
             return 0;

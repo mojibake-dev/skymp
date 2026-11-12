@@ -3502,6 +3502,22 @@ void ScriptNatives::InstallHooks()
                  "actor's look inside this seat's own player's effect is "
                  "judged by its subject's owner, as every call is");
   }
+  // the Undead FX build: the Papyrus event gate's owner rule (FridaHooks.cpp
+  // OnSendEventEnter, the reanimate-fx memo's D5 B), its switch read here
+  // with the seam's by the one reader, before the game's scripts run
+  const bool ownerEvents = ClientSwitchOn("scriptOwnerEvents");
+  Frida::SetScriptOwnerEvents(ownerEvents);
+  if (ownerEvents) {
+    logger::info("[verb:papyrus-events] scriptOwnerEvents on: an event to a "
+                 "world quest's reference alias passes on the seat that owns "
+                 "the alias's reference, and one to an effect on an actor "
+                 "that is not the player on the seat that simulates it, each "
+                 "tallied as \"owner rule tally\" (D5 B)");
+  } else {
+    logger::info("[verb:papyrus-events] scriptOwnerEvents off: the owner "
+                 "rule asks nothing, and an alias's or an actor's effect's "
+                 "events keep the block's rules (D5 B)");
+  }
   // train 52's Fix 1: the leveled landing's switch, read beside the lever,
   // and the AddItemFunctor hook Hooks::Install wrote at the plugin's load,
   // named in one line: the vtable CommonLibSSE-NG's

@@ -20,6 +20,7 @@
 #include "TrapFamily.h"
 
 #include <RE/A/AIProcess.h>
+#include <RE/A/ActiveEffect.h>
 #include <RE/A/Actor.h>
 #include <RE/A/ActorMagicCaster.h>
 #include <RE/A/ActorValues.h>
@@ -34,6 +35,7 @@
 #include <RE/H/HighProcessData.h>
 #include <RE/H/hkpEntity.h>
 #include <RE/H/hkpRootCdPoint.h>
+#include <RE/M/MagicTarget.h>
 #include <RE/N/NiControllerSequence.h>
 #include <RE/T/TESHavokUtilities.h>
 #include <RE/T/TESQuest.h>
@@ -921,6 +923,261 @@ Frida::PlayersEffectRole Frida::PlayersEffect(
 }
 
 /**
+ * The owner rule (the Undead FX build; thuum ADR-068 decision 6 applied to an
+ * actor's aliases and effects, the reanimate-fx memo's D5 B)
+ */
+
+// Under the block an alias's and an effect's scripts ran only for the
+// player's own (the player quests, ADR-031's effects) or an admitted class,
+// so Undead FX's applicators (their aliases' OnInit adds the decay's
+// ability) and the decay's own effect script ran on no seat (the memo's
+// 6.3). The rule is ownership, no name list (ADR-063, ADR-068): an event to a
+// World quest's reference alias passes on the seat that owns the alias's
+// reference, an actor's simulator or a world object's cell host; an event to
+// an active effect on an actor that is not the player passes on the seat that
+// simulates the effect's target. A per-player quest's alias keeps rung 5's
+// branch; the player's own actor and everything at or above 0xff000000 (a
+// figure, what a seat places) keep ADR-044's rules, as the gate's own
+// simulatedActor test does; an effect another seat's player cast (a caster at
+// or above 0xff000000 this seat does not simulate) stays its caster's seat's,
+// decision 6's "the player's effects are the player's seat's", so one engine
+// runs it. Every event the rule passes is tallied by its branch and its
+// script's class (the first stage measures the breadth before the build
+// ships)
+namespace {
+// the rule's switch (Frida::SetScriptOwnerEvents), on until the client's
+// settings turn it off; off, the rule asks nothing, no engine call among it,
+// and the gate is the block's as before (the lab's A/B and its lever)
+std::atomic<bool> g_scriptOwnerEvents{ true };
+
+// which branch of the rule names an event: an alias's or an effect's
+enum class OwnerBranch : uint8_t
+{
+  kAlias,
+  kEffect
+};
+
+const char* OwnerBranchName(OwnerBranch branch)
+{
+  return branch == OwnerBranch::kAlias ? "alias" : "effect";
+}
+
+// an event the rule names: its branch, the alias's reference or the effect's
+// target, and for an alias its quest
+struct OwnedEvent
+{
+  OwnerBranch branch = OwnerBranch::kAlias;
+  uint32_t ref = 0;
+  uint32_t quest = 0;
+};
+
+// the rule's owner of a reference here, the gate's own tests: a live or dead
+// actor simulated here (Hosted.h, no puppet, Puppets.h: simulatedActor's), a
+// world object in a cell this seat hosts (Frida::IsCellHosted: inHostedCell's
+// set); never this seat's own player or a reference at or above 0xff000000
+// (ownedByAPlayer's ids)
+bool OwnedReference(const RE::TESObjectREFR* ref)
+{
+  const uint32_t id = ref->formID;
+  if (id == 0x14 || id >= 0xff000000) {
+    return false;
+  }
+  if (ref->GetFormType() == RE::FormType::ActorCharacter) {
+    return Hosted::Is(id) && !Puppets::Is(id);
+  }
+  const RE::TESObjectCELL* cell = ref->GetParentCell();
+  return cell && Frida::IsCellHosted(cell->GetFormID());
+}
+
+// the event the rule names, if any, for a handle that names no reference:
+// - a reference alias (BGSRefAlias::VMTYPEID, CommonLibSSE-NG
+//   include/RE/B/BGSRefAlias.h:18) of a quest that is no per-player quest
+//   here (BGSBaseAlias::owningQuest, BGSBaseAlias.h:76; ActingScope's
+//   PlayerQuests), whose reference (BGSRefAlias::GetReference,
+//   BGSRefAlias.h:149, src/RE/B/BGSRefAlias.cpp:8-20: the engine's own
+//   TESQuest::CreateRefHandleByAliasID, RELOCATION_ID(24537, 25066),
+//   src/RE/T/TESQuest.cpp:13-18; `just addr 25066` 0x3d14d0 on 1.6.1170)
+//   this seat owns;
+// - an active effect (ActiveEffect::VMTYPEID, ActiveEffect.h:31) whose
+//   target (ActiveEffect.h:104, read as a reference through its
+//   MagicTarget's own GetTargetStatsObject, MagicTarget.h:79, which an
+//   actor answers with itself, Actor.h:354; the platform's idiom,
+//   EventHandler.cpp's spell cast) is an actor this seat simulates, and
+//   whose caster (GetCasterActor, ActiveEffect.h:93) is none, a game-file
+//   actor, or one at or above 0xff000000 this seat simulates.
+// Two policy calls per branch first, so every other handle pays two type
+// tests (rule 9). The effect branch reads what PlayersEffect already reads
+// at every blocked event (the caster's handle); the alias branch's read is
+// new to this hook. HYPOTHESIS H-OR1 (static, unread: Ghidra was down): the
+// engine's CreateRefHandleByAliasID takes the quest's alias lock
+// (TESQuest::aliasAccessLock, TESQuest.h:262), and no engine path raises an
+// alias's event while it holds that lock or a lock the reading thread then
+// needs, so the read cannot hang the event's thread; a seat that hangs while
+// Undead FX's applicators toggle (every 0.5 s, each start an alias OnInit)
+// reads it first, scriptOwnerEvents false the lever
+std::optional<OwnedEvent> OwnedEventOf(
+  RE::BSScript::IObjectHandlePolicy* policy, RE::VMHandle handle)
+{
+  if (policy->HandleIsType(RE::BGSRefAlias::VMTYPEID, handle)) {
+    const auto* alias = static_cast<const RE::BGSRefAlias*>(
+      policy->GetObjectForHandle(RE::BGSRefAlias::VMTYPEID, handle));
+    if (!alias || !alias->owningQuest) {
+      return std::nullopt;
+    }
+    const uint32_t quest = alias->owningQuest->GetFormID();
+    if (ActingScope::PlayerQuests::Any() &&
+        ActingScope::PlayerQuests::Is(quest)) {
+      return std::nullopt;
+    }
+    const RE::TESObjectREFR* ref = alias->GetReference();
+    if (!ref || !OwnedReference(ref)) {
+      return std::nullopt;
+    }
+    return OwnedEvent{ OwnerBranch::kAlias, ref->formID, quest };
+  }
+  if (policy->HandleIsType(RE::ActiveEffect::VMTYPEID, handle)) {
+    auto* effect = static_cast<RE::ActiveEffect*>(
+      policy->GetObjectForHandle(RE::ActiveEffect::VMTYPEID, handle));
+    RE::MagicTarget* target = effect ? effect->target : nullptr;
+    const RE::TESObjectREFR* ref =
+      target ? target->GetTargetStatsObject() : nullptr;
+    if (!ref || ref->GetFormType() != RE::FormType::ActorCharacter ||
+        !OwnedReference(ref)) {
+      return std::nullopt;
+    }
+    const RE::NiPointer<RE::Actor> caster = effect->GetCasterActor();
+    if (caster && caster->formID >= 0xff000000 &&
+        !Hosted::Is(caster->formID)) {
+      return std::nullopt;
+    }
+    return OwnedEvent{ OwnerBranch::kEffect, ref->formID, 0 };
+  }
+  return std::nullopt;
+}
+
+// the class of the handle's first attached script (the VM's attachedScripts
+// under its own lock, HasAttachedScript's read), empty for none
+std::string FirstScriptClass(VM* vm, RE::VMHandle handle)
+{
+  if (!vm) {
+    return {};
+  }
+  RE::BSSpinLockGuard guard{ vm->attachedScriptsLock };
+  const auto it = vm->attachedScripts.find(handle);
+  if (it == vm->attachedScripts.end() || it->second.size() == 0) {
+    return {};
+  }
+  const auto* script = it->second[0].get();
+  const auto* info = script ? script->GetTypeInfo() : nullptr;
+  return info ? std::string(info->GetName()) : std::string();
+}
+
+// the rule's tally: each event the rule passes counted by its key, "<branch>
+// <class>", in windows of kOwnerTallyMs, at most kOwnerTallyClasses keys a
+// window and the rest as "others"; a window's lines are logged when the
+// first event after it ends is tallied (a quiet seat's last window waits for
+// its next one); and each key's first event is logged once, the keys said
+// kept to kOwnerTallySaid
+constexpr uint64_t kOwnerTallyMs = 30'000;
+constexpr size_t kOwnerTallyClasses = 64;
+constexpr size_t kOwnerTallySaid = 1024;
+
+struct
+{
+  std::mutex m;
+  uint64_t windowMs = 0;
+  std::unordered_map<std::string, uint32_t> counts;
+  uint32_t others = 0;
+  uint32_t aliases = 0;
+  uint32_t effects = 0;
+  std::unordered_set<std::string> said;
+} g_ownerTally;
+
+void TallyOwnedEvent(const OwnedEvent& owned, const std::string& cls,
+                     const std::string& eventName, RE::VMHandle handle)
+{
+  const uint64_t now = NowMs();
+  const std::string key =
+    fmt::format("{} {}", OwnerBranchName(owned.branch), cls);
+  std::vector<std::string> window;
+  bool first = false;
+  {
+    std::lock_guard<std::mutex> lock(g_ownerTally.m);
+    if (g_ownerTally.windowMs == 0) {
+      g_ownerTally.windowMs = now;
+    }
+    if (now - g_ownerTally.windowMs >= kOwnerTallyMs) {
+      const uint64_t seconds = (now - g_ownerTally.windowMs) / 1000;
+      window.push_back(fmt::format(
+        "[verb:papyrus-events] the owner rule passed {} event(s) in {} s: {} "
+        "to world quests' aliases, {} to actors' effects, {} key(s) (D5 B)",
+        g_ownerTally.aliases + g_ownerTally.effects, seconds,
+        g_ownerTally.aliases, g_ownerTally.effects,
+        g_ownerTally.counts.size()));
+      for (const auto& [name, count] : g_ownerTally.counts) {
+        window.push_back(
+          fmt::format("[verb:papyrus-events] owner rule tally: {} {} in {} s",
+                      name, count, seconds));
+      }
+      if (g_ownerTally.others != 0) {
+        window.push_back(
+          fmt::format("[verb:papyrus-events] owner rule tally: others {} in "
+                      "{} s",
+                      g_ownerTally.others, seconds));
+      }
+      g_ownerTally.counts.clear();
+      g_ownerTally.others = 0;
+      g_ownerTally.aliases = 0;
+      g_ownerTally.effects = 0;
+      g_ownerTally.windowMs = now;
+    }
+    if (const auto it = g_ownerTally.counts.find(key);
+        it != g_ownerTally.counts.end()) {
+      ++it->second;
+    } else if (g_ownerTally.counts.size() < kOwnerTallyClasses) {
+      g_ownerTally.counts.emplace(key, 1);
+    } else {
+      ++g_ownerTally.others;
+    }
+    ++(owned.branch == OwnerBranch::kAlias ? g_ownerTally.aliases
+                                           : g_ownerTally.effects);
+    if (g_ownerTally.said.size() >= kOwnerTallySaid &&
+        g_ownerTally.said.count(key) == 0) {
+      g_ownerTally.said.clear();
+    }
+    first = g_ownerTally.said.insert(key).second;
+  }
+  for (const auto& line : window) {
+    logger::info("{}", line);
+  }
+  if (!first) {
+    return;
+  }
+  if (owned.branch == OwnerBranch::kAlias) {
+    logger::info("[verb:papyrus-events] {} to handle {:x} passed (owned "
+                 "alias): {}, an alias of world quest {:x} filled with {:x}, "
+                 "its owner here (D5 B; the key's first event)",
+                 eventName, handle, cls, owned.quest, owned.ref);
+  } else {
+    logger::info("[verb:papyrus-events] {} to handle {:x} passed (simulated "
+                 "effect): {}, an effect on {:x}, which this seat simulates "
+                 "(D5 B; the key's first event)",
+                 eventName, handle, cls, owned.ref);
+  }
+}
+}
+
+bool Frida::ScriptOwnerEventsOn()
+{
+  return g_scriptOwnerEvents.load(std::memory_order_relaxed);
+}
+
+void Frida::SetScriptOwnerEvents(bool on)
+{
+  g_scriptOwnerEvents.store(on, std::memory_order_relaxed);
+}
+
+/**
  * Send Event hook
  */
 
@@ -1395,6 +1652,26 @@ void OnSendEventEnter(GumInvocationContext* ic)
                      "a script of {:x}, this seat's own player's quest ({} "
                      "so far)",
                      eventNameStr, handle, playerQuest, n);
+      }
+    }
+  }
+
+  // the owner rule (above, the Undead FX build: ADR-068 decision 6 applied
+  // to an actor's aliases and effects): an event to a World quest's
+  // reference alias passes on the seat that owns the alias's reference, and
+  // one to an active effect on an actor that is not the player on the seat
+  // that simulates the effect's target, whatever the script's class, each
+  // tallied by branch and class. With the rule's switch off nothing here is
+  // asked. An actor's or a reference's event (selfId resolved above) never
+  // asks, and a handle with no attached script runs nothing to pass. The
+  // never admitted list and the spent trap returned above, so they stay
+  // blanked
+  if (blockEvents && selfId == 0 && policy && Frida::ScriptOwnerEventsOn()) {
+    if (const auto owned = OwnedEventOf(policy, handle)) {
+      const std::string cls = FirstScriptClass(vm, handle);
+      if (!cls.empty()) {
+        TallyOwnedEvent(*owned, cls, eventNameStr, handle);
+        blockEvents = false;
       }
     }
   }

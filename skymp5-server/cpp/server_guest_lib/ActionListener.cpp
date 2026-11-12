@@ -7370,8 +7370,9 @@ void ActionListener::SendWorldGlobals(MpActor& actor)
 // the prop is refused (E_PROP_UNSEEN). A refused sample (stale, future, not
 // the owner's, past the step budget, outside, frozen) is answered with the
 // current word and the record, once per prop per second per seat, so a
-// divergent word and copy heal (A5; ADR-071 decision 6). Refusals are logged
-// once per 10 s per seat.
+// divergent word and copy heal (A5; ADR-071 decision 6), but for the live
+// owner's own stale sample, whose word is on its way and whose body is ahead
+// of the record. Refusals are logged once per 10 s per seat.
 void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                                      const PropTransformMessage& msg)
 {
@@ -7611,11 +7612,17 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
     case PartOne::PropTransformVerdict::Stale:
       // ADR-066 decision 4: a sample of an earlier tenure (an old owner's in
       // flight, a woken host's sent before its wake's word reached it) is
-      // never read as a pass or a move; its sender hears the word and the
-      // record
+      // never read as a pass or a move. Its sender hears the word and the
+      // record, unless it is the prop's live owner itself (a woken host, a
+      // grabber whose grant is on its way): its newer word is already on the
+      // reliable channel and the record lags the body it simulates, which
+      // the answer would only rewind, so a record answer is always a place
+      // its receiver puts its copy
       refuse("E_PROP_STALE",
              "an epoch below the prop's: a sample of an earlier tenure");
-      partOne.AnswerPropRecord(rawMsgData.userId, *prop);
+      if (partOne.PropLiveOwner(*prop) != myActor->GetFormId()) {
+        partOne.AnswerPropRecord(rawMsgData.userId, *prop);
+      }
       break;
     case PartOne::PropTransformVerdict::Future:
       refuse("E_PROP_FUTURE",

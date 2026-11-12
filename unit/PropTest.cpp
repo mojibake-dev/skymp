@@ -51,6 +51,8 @@ constexpr uint32_t kCrate = 0xff000d0f;
 constexpr uint32_t kC9 = 0xff000d10;
 constexpr uint32_t kC10 = 0xff000d11;
 constexpr uint32_t kC11 = 0xff000d12;
+constexpr uint32_t kC12 = 0xff000d13;
+constexpr uint32_t kC13 = 0xff000d14;
 // BarrelFood01_NoRespawn, a CONT of Skyrim.esm (esm.py): no prop
 constexpr uint32_t kBarrelFood01NoRespawn = 0x10e882;
 // Bucket01, a MISC of Skyrim.esm (the one Riverwood's 0x2ad9c is placed from)
@@ -1141,16 +1143,18 @@ TEST_CASE("A sample names its epoch: a stale one and a future one are "
   REQUIRE(cell.has_value());
   CellLoaded(p, 7, *cell);
   REQUIRE(p.GetCellHost(*cell).player == kC7);
+  // c7's contact at 1, c8's grab of the moving prop at 2
   Claim(p, 7, kBasket, 0);
-  REQUIRE(p.PropEpochOf(prop) == 1);
+  Claim(p, 8, kBasket, 1);
+  REQUIRE(p.PropLiveOwner(prop) == kC8);
+  REQUIRE(p.PropEpochOf(prop) == 2);
   p.Messages().clear();
   {
     LogCapture log;
-    // c7's sample under epoch 0, sent before its grant's word reached it:
-    // stale; c8's under epoch 2, a word the server never said: future, the
-    // epoch judged before the owner
-    SampleAt(p, 7, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false, 0, 1);
-    SampleAt(p, 8, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false, 2, 1);
+    // c7's sample under epoch 1, sent before the grab's word reached it:
+    // stale; c8's under epoch 3, a word the server never said: future
+    SampleAt(p, 7, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false, 1, 1);
+    SampleAt(p, 8, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false, 3, 1);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_STALE: ff000d0c moves prop "
                       "ff000d03; an epoch below the prop's: a sample of an "
                       "earlier tenure") == 1);
@@ -1162,38 +1166,94 @@ TEST_CASE("A sample names its epoch: a stale one and a future one are "
   REQUIRE(prop.GetPos() == kHere);
   REQUIRE(RelaysTo(p, 7).empty());
   REQUIRE(RelaysTo(p, 8).empty());
-  // each sender heard the word (c7's, at 1), then the record at seq 0
+  // each sender heard the word (c8's, at 2), then the record at seq 0: the
+  // prop held, so awake
   const Networking::UserId senders[] = { 7, 8 };
   for (const auto user : senders) {
     const auto words = SentTo<PropOwnerMessage>(p, user);
     REQUIRE(words.size() == 1);
-    REQUIRE(words[0].player == kC7);
-    REQUIRE(words[0].epoch == 1);
+    REQUIRE(words[0].player == kC8);
+    REQUIRE(words[0].epoch == 2);
     const auto records = SentTo<PropTransformMessage>(p, user);
     REQUIRE(records.size() == 1);
     REQUIRE(records[0].refr == kBasket);
     REQUIRE(records[0].seq == 0);
     REQUIRE(records[0].tMs == 0);
-    REQUIRE(records[0].epoch == 1);
+    REQUIRE(records[0].epoch == 2);
     REQUIRE(records[0].pos ==
             std::array<float, 3>{ kHere.x, kHere.y, kHere.z });
     REQUIRE_FALSE(records[0].asleep);
-    REQUIRE_FALSE(records[0].held);
+    REQUIRE(records[0].held);
     REQUIRE(FirstTo<PropOwnerMessage>(p, user) <
             FirstTo<PropTransformMessage>(p, user));
   }
   // a second refusal inside the second is not answered again
-  SampleAt(p, 7, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false, 0, 2);
+  SampleAt(p, 7, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false, 1, 2);
   REQUIRE(SentTo<PropOwnerMessage>(p, 7).size() == 1);
   REQUIRE(SentTo<PropTransformMessage>(p, 7).size() == 1);
-  // c7's sample under its grant's epoch is taken and relayed
-  Sample(p, 7, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false);
+  // c8's sample under its grab's epoch is taken and relayed
+  Sample(p, 8, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false);
   REQUIRE(std::abs(prop.GetPos().x - (kHere.x + 30.f)) < 1.f);
-  REQUIRE(RelaysTo(p, 8) == std::vector<int>{ 0 });
+  REQUIRE(RelaysTo(p, 7) == std::vector<int>{ 0 });
   DoDisconnect(p, 7);
   DoDisconnect(p, 8);
   p.DestroyActor(kC7);
   p.DestroyActor(kC8);
+}
+
+TEST_CASE("A woken host's own sample of the tenure its wake ended is dropped "
+          "and not answered (its word is on its way and its body ahead of "
+          "the record); another seat's of that tenure is answered",
+          "[Prop][espm]")
+{
+  // the plan's R5 (no grace, ADR-066 decision 5 not built): the host's wake
+  // raises the epoch, and the samples it sent before the wake's word reached
+  // it are stale; a record answer would rewind the body it simulates
+  auto& p = GetPartOne();
+  Player(p, 12, kC12, kHere + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 13, kC13, kHere + NiPoint3{ 60.f, 0.f, 0.f });
+  auto& prop = Prop(p, kBasket, kHere);
+  const auto cell = p.worldState.CellOf(prop);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 12, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC12);
+  // the host's kick of the untouched prop wakes it at 1, by name
+  SampleAt(p, 12, kBasket, kHere + NiPoint3{ 10.f, 0.f, 0.f }, false, 0, 1);
+  REQUIRE(p.PropLiveOwner(prop) == kC12);
+  REQUIRE(p.PropEpochOf(prop) == 1);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    // its next sample, sent under epoch 0 before the word came back: stale,
+    // counted and said, not answered, the record standing
+    SampleAt(p, 12, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false, 0, 2);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_STALE: ff000d13 moves prop "
+                      "ff000d03; an epoch below the prop's: a sample of an "
+                      "earlier tenure") == 1);
+  }
+  REQUIRE(std::abs(prop.GetPos().x - (kHere.x + 10.f)) < 1.f);
+  REQUIRE(RelaysTo(p, 13).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 12).empty());
+  REQUIRE(SentTo<PropTransformMessage>(p, 12).empty());
+  // the other seat's sample of that tenure is answered: the host's word at
+  // 1, then the record
+  SampleAt(p, 13, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false, 0, 1);
+  const auto words = SentTo<PropOwnerMessage>(p, 13);
+  REQUIRE(words.size() == 1);
+  REQUIRE(words[0].player == kC12);
+  REQUIRE(words[0].epoch == 1);
+  const auto records = SentTo<PropTransformMessage>(p, 13);
+  REQUIRE(records.size() == 1);
+  REQUIRE(records[0].seq == 0);
+  REQUIRE(std::abs(records[0].pos[0] - (kHere.x + 10.f)) < 1.f);
+  // and the host's samples under its wake's epoch go on
+  Sample(p, 12, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false);
+  REQUIRE(std::abs(prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
+  REQUIRE(RelaysTo(p, 13) == std::vector<int>{ 0 });
+  DoDisconnect(p, 12);
+  DoDisconnect(p, 13);
+  p.DestroyActor(kC12);
+  p.DestroyActor(kC13);
 }
 
 TEST_CASE("A repeated or overtaken sequence is dropped quietly: no relay, no "

@@ -143,7 +143,17 @@ use bounded::{String, Vec};
 /// and counts the engine's roll put in its inventory, read inside the call's
 /// AddItemFunctor, so the server records the roll where it refused the list
 /// by name (E_SCRIPTCALL_LEVELED).
-pub const SCHEMA_VERSION: u16 = 44;
+/// 45: PropOwner's player 0 (thuum ADR-071's physics rung 1, the props rule
+/// A1 to A7, m4-physics-1-arbitration): the host of the cell the prop's
+/// record stands in, the word of every return at rest, departure and unload.
+/// No shape moved; the number moves by Eli's D-PH1 A (ADR-071's amendment of
+/// 2026-11-11, a bump at each rung that changes what an older peer accepts):
+/// a client built before it validates every server message and counts a
+/// refusal without a word (wire-transport's receive, `validate_server`), so
+/// it would drop each player-0 word and keep a stale owner with no sign,
+/// and the handshake's protocol id (`protocol_id`) is the one guard that
+/// fails loudly. Rung 2's sample and claim shapes take 46.
+pub const SCHEMA_VERSION: u16 = 45;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

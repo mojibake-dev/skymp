@@ -1083,7 +1083,9 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
         // (MagicEffects: the hit shader for the seconds left), a later load
         // included, until the death's emptied set
         const uint32_t spell = actor->ReanimateAcceptedSpell();
-        if (reanimated && spell != 0) {
+        const bool commanded =
+          partOne.CommanderOf(*actor) == myActor->GetFormId();
+        if ((reanimated || commanded) && spell != 0 && !actor->IsDead()) {
           const uint32_t caster = actor->ReanimateAcceptedCaster();
           actor->ApplyEffects(spell,
                               MpActor::EffectsOf(&partOne.worldState, spell),
@@ -10558,6 +10560,15 @@ void ActionListener::ClaimReanimated(
   MpActor& caster, MpActor& body, uint32_t spell,
   const std::vector<espm::Effects::Effect>& effects)
 {
+  // ADR-060 commands an NPC: a player's body is its own seat's (ADR-063;
+  // OnActorClaim's E_CLAIM_NPC), so it takes no command and no hoster word
+  if (body.IsCreatedAsPlayer() ||
+      partOne.serverState.UserByActor(&body) != Networking::InvalidUserId) {
+    spdlog::info("[verb:npc-fate] reanimate {:x} by {:x} on {:x}: a player's "
+                 "body is nobody's to command (ADR-063)",
+                 spell, caster.GetFormId(), body.GetFormId());
+    return;
+  }
   // the seat whose engine ran the spell: the caster when a user plays it,
   // else the caster's host (a hosted necromancer's thrall is its host's)
   MpActor* commander =

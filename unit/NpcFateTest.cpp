@@ -1898,6 +1898,35 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(p.SimulatorOf(body) == kHost);
   }
 
+  SECTION("by a player at another player's body: no command, no word")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    host.Kill(nullptr);
+    casts(1, kReanimateCorpse);
+    p.Messages().clear();
+    {
+      LogCapture log;
+      RawMessageData raw;
+      raw.userId = 1;
+      HitMessage hit;
+      hit.data.aggressor = 0x14;
+      hit.data.target = kHost;
+      hit.data.source = kReanimateCorpse;
+      p.GetActionListener().OnHit(raw, hit);
+      REQUIRE(log.Count("a player's body is nobody's to command") == 1);
+    }
+    REQUIRE(p.CommanderOf(host) == 0);
+    for (auto& m : p.Messages()) {
+      REQUIRE_FALSE(m.j.is_object() &&
+                    m.j.value("propName", std::string()) ==
+                      "isHostedByOther" &&
+                    m.j.value("refrId", 0u) == kHost);
+    }
+    host.Respawn(false);
+  }
+
   SECTION("by the host itself: no snippet, the body stays the host's, the "
           "relay reaches the other game as any cast's")
   {

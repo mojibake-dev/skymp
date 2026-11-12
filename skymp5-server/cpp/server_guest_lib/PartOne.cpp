@@ -2654,6 +2654,9 @@ void PartOne::OnDeathState(MpActor& actor, bool isDead)
                    actor.GetFormId(), commander, SimulatorOf(actor));
     }
   } else if (pImpl->standingUpByHost != actor.GetFormId()) {
+    // a respawn the engine did not make starts a new life: its accepted
+    // reanimate, spell and caster end (the server review of 3a31c05a, N2)
+    actor.NoteReanimateAccepted({});
     // and a respawn its simulator's engine did not stand (the fate's sweep,
     // the console's Resurrect, the lab's respawn-ref) ends any claim on it:
     // a command whose engine never stood the body would name its commander

@@ -10487,10 +10487,11 @@ void ActionListener::ClaimReanimated(
   // timers the level of spell"): the command lasts until the commander's
   // engine ends the effect, the thrall's death, which its seat reports
   // (OnActorDeath's command's end, OnDeathState's release). The record's
-  // duration (its EFIT, seconds; 0 for Dead Thrall's permanent effect) is
-  // named for the lab and kept as the thrall's estimate for its commander's
-  // departure alone (an orphan's end, HYPOTHESIS): dual casting, perks and
-  // the spell's level set the engine's own
+  // duration (its EFIT, seconds) is named for the lab and read for one line
+  // alone, the commander's departure (wire-rules cells.rs gone, ADR-060 as
+  // amended 2026-11-12): a full thrall's, a day and more (Dead Thrall's
+  // 86,313,600 s), stays alive, a timed one dies; dual casting, perks and
+  // the spell's level set the engine's own timer
   uint32_t recordSeconds = 0;
   const auto effectId = ReanimateEffectOf(&partOne.worldState, effects);
   for (const auto& effect : effects) {
@@ -10498,19 +10499,16 @@ void ActionListener::ClaimReanimated(
       recordSeconds = effect.duration;
     }
   }
-  const auto verdict = partOne.ClaimCommanded(
-    *commander, body, static_cast<uint64_t>(recordSeconds) * 1000);
+  const auto verdict = partOne.ClaimCommanded(*commander, body, recordSeconds);
   switch (verdict) {
     case PartOne::ClaimVerdict::Granted:
     case PartOne::ClaimVerdict::Reclaimed:
       spdlog::info(
         "[verb:npc-fate] reanimate {:x} by {:x} on {:x}: {:x} "
-        "commands it until {} (ADR-060){}",
+        "commands it until its engine ends the effect (the record's {} s) "
+        "(ADR-060){}",
         spell, caster.GetFormId(), body.GetFormId(), commander->GetFormId(),
-        recordSeconds ? fmt::format("its engine ends the effect (the "
-                                    "record's {} s)",
-                                    recordSeconds)
-                      : std::string("its death (a permanent effect)"),
+        recordSeconds,
         verdict == PartOne::ClaimVerdict::Reclaimed ? ", renewed" : "");
       break;
     case PartOne::ClaimVerdict::Unloaded:

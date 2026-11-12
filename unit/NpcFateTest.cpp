@@ -1287,7 +1287,8 @@ TEST_CASE("A hosted game-file actor's swing lands with the weapon its "
 // normal path") is gone. Skyrim.esm: Reanimate Corpse 0x65bd7, its effect
 // ReanimateFFAimed25 0x96d0b of the Reanimate archetype (libespm
 // MGEF::EffectType::Reanimate, 22, as CommonLibSSE-NG's EffectArchetypes.h
-// kReanimate), read here from the record itself.
+// kReanimate), and Dead Thrall 0x7e8df, its effect ReanimateThrallFFAimed
+// 0x7e8e0, read here from the records themselves.
 TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
           "for the effect's life; its death ends the claim; the host's own "
           "cast keeps the body its own",
@@ -1297,26 +1298,28 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   constexpr uint32_t kCaster = 0xff000d36;
   constexpr uint32_t kReanimateCorpse = 0x65bd7;
   constexpr uint32_t kReanimateEffect = 0x96d0b;
+  constexpr uint32_t kDeadThrall = 0x7e8df;
+  constexpr uint32_t kDeadThrallEffect = 0x7e8e0;
   auto& p = GetPartOne();
   p.worldState.npcEnabled = true;
 
-  // the record itself: the spell's Reanimate effect is 0x96d0b
-  {
-    const auto spell =
-      espm::GetData<espm::SPEL>(kReanimateCorpse, &p.worldState);
+  // the record itself: `spell`'s Reanimate effect is `effectId`
+  const auto reanimatesBy = [&](uint32_t spellId, uint32_t effectId) {
+    const auto spell = espm::GetData<espm::SPEL>(spellId, &p.worldState);
     REQUIRE(spell.spellItem != nullptr);
     bool reanimates = false;
-    for (const auto& effect :
-         MpActor::EffectsOf(&p.worldState, kReanimateCorpse)) {
+    for (const auto& effect : MpActor::EffectsOf(&p.worldState, spellId)) {
       const auto mgef =
         espm::GetData<espm::MGEF>(effect.effectId, &p.worldState);
       if (mgef.data.effectType == espm::MGEF::EffectType::Reanimate) {
-        REQUIRE(effect.effectId == kReanimateEffect);
+        REQUIRE(effect.effectId == effectId);
         reanimates = true;
       }
     }
     REQUIRE(reanimates);
-  }
+  };
+  reanimatesBy(kReanimateCorpse, kReanimateEffect);
+  reanimatesBy(kDeadThrall, kDeadThrallEffect);
 
   // the host takes the forest's cell; the caster arrives beside the body,
   // which lies dead, hosted by user 0
@@ -1356,19 +1359,19 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   body.Kill(nullptr);
   REQUIRE(body.IsDead());
 
-  // `user`'s cast of Reanimate Corpse through the packet path, as its
-  // client's message arrives: the caster 0x14, the target the body (a
-  // client naming the crosshair's actor; the engine's own word for an aimed
-  // cast names the caster, and then the relay stands and the look doubles
-  // on the host once, RelayCast)
-  const auto casts = [&](Networking::UserId user) {
+  // `user`'s cast of `spell` (Reanimate Corpse or Dead Thrall) through the
+  // packet path, as its client's message arrives: the caster 0x14, the
+  // target the body (a client naming the crosshair's actor; the engine's own
+  // word for an aimed cast names the caster, and then the relay stands and
+  // the look doubles on the host once, RelayCast)
+  const auto casts = [&](Networking::UserId user, uint32_t spell) {
     DoMessage(p, user,
               nlohmann::json{
                 { "t", static_cast<int>(MsgType::SpellCast) },
                 { "data",
                   { { "caster", 0x14 },
                     { "target", kPredator },
-                    { "spell", kReanimateCorpse },
+                    { "spell", spell },
                     { "isDualCasting", false },
                     { "interruptCast", false },
                     { "castingSource", 1 },
@@ -1385,14 +1388,14 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
                         { "floats", nlohmann::json::array() },
                         { "integers", nlohmann::json::array() } } } } } });
   };
-  // `user`'s report of its own hit on the body with the spell
-  const auto hits = [&](Networking::UserId user) {
+  // `user`'s report of its own hit on the body with `spell`
+  const auto hits = [&](Networking::UserId user, uint32_t spell) {
     RawMessageData raw;
     raw.userId = user;
     HitMessage hit;
     hit.data.aggressor = 0x14;
     hit.data.target = kPredator;
-    hit.data.source = kReanimateCorpse;
+    hit.data.source = spell;
     p.GetActionListener().OnHit(raw, hit);
   };
   // the Spell.Cast snippets sent to `user` since the last clear, known by
@@ -1440,18 +1443,29 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     return count;
   };
 
-  // the record's own duration of the spell's Reanimate effect, ms (the
-  // thrall's estimate once its commander leaves; no lease)
-  const uint64_t recordMs = [&] {
-    uint64_t ms = 0;
-    for (const auto& effect :
-         MpActor::EffectsOf(&p.worldState, kReanimateCorpse)) {
-      if (effect.effectId == kReanimateEffect) {
-        ms = static_cast<uint64_t>(effect.duration) * 1000;
+  // the record's own duration of `spell`'s Reanimate effect, seconds: the
+  // command's side at its commander's departure, a day and more a full
+  // thrall's (wire-rules magic::FULL_THRALL_MIN_S, 86,400 s), less a timed
+  // one's; never a lease or a clock
+  const auto recordSecondsOf = [&](uint32_t spell, uint32_t effectId) {
+    uint32_t seconds = 0;
+    for (const auto& effect : MpActor::EffectsOf(&p.worldState, spell)) {
+      if (effect.effectId == effectId) {
+        seconds = effect.duration;
       }
     }
-    return ms;
-  }();
+    return seconds;
+  };
+
+  // the commander's engine stands the thrall: its live sample of the body,
+  // the death past the grace and the reanimate's hit inside its window
+  // (OnHostedActorState's resurrection branch)
+  const auto standsOn = [&](Networking::UserId user) {
+    body.RecordDeathAt(
+      std::chrono::steady_clock::now() -
+      std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+    State(p, user, kPredator, 1.f);
+  };
 
   SECTION("by a player who is not the host: the body is the caster's seat's "
           "from the hit, both games hear the word, no snippet, the relay "
@@ -1461,10 +1475,10 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     eq.rightSpell = kReanimateCorpse;
     caster.SetEquipment(eq);
     p.Messages().clear();
-    casts(1);
+    casts(1, kReanimateCorpse);
     // the relay reaches the host as any cast's look (the skip is gone)
     REQUIRE(SentOfType(p, 0, MsgType::SpellCast) == 1);
-    hits(1);
+    hits(1, kReanimateCorpse);
     p.Tick(); // snippets would be deferred (SpSnippet.cpp): none come
     REQUIRE(castSnippetsTo(0).empty());
     REQUIRE(castSnippetsTo(1).empty());
@@ -1474,12 +1488,16 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(hosterWordsTo(0) >= 1);
     REQUIRE(hosterWordsTo(1) >= 1);
     // a second hit renews the command, nothing else
-    hits(1);
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    // the commander's engine stands the thrall: the command stands through
+    // it
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == kCaster);
     REQUIRE(p.SimulatorOf(body) == kCaster);
     // the thrall's death (the effect's end in the commander's engine, its
     // report) ends the claim: the cell's host simulates the body again
-    body.Respawn(false);
-    REQUIRE(p.SimulatorOf(body) == kCaster);
     p.Messages().clear();
     body.Kill(nullptr);
     REQUIRE(body.IsDead());
@@ -1496,8 +1514,8 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     Equipment eq;
     eq.rightSpell = kReanimateCorpse;
     caster.SetEquipment(eq);
-    casts(1);
-    hits(1);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
     REQUIRE(p.SimulatorOf(body) == kCaster);
     REQUIRE(p.CommanderOf(body) == kCaster);
     // Reanimate Corpse's record says 60 s (the old lease, 70 s with its
@@ -1509,8 +1527,9 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     // the commander's engine stood the thrall long ago (a dual cast's or a
     // perk's longer effect) and now ends it: the hit and the stand-up older
     // than every other evidence's window, the record alive
-    body.Respawn(false);
+    standsOn(1);
     REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == kCaster);
     const auto now = std::chrono::steady_clock::now();
     body.NoteHitBy(kCaster, now - std::chrono::seconds(130));
     body.NoteHostStoodUp(now -
@@ -1542,8 +1561,8 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     Equipment eq;
     eq.rightSpell = kReanimateCorpse;
     caster.SetEquipment(eq);
-    casts(1);
-    hits(1);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
     REQUIRE(p.CommanderOf(body) == kCaster);
     p.Messages().clear();
     {
@@ -1561,32 +1580,90 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(hosterWordsTo(1) == 0);
   }
 
-  SECTION("by a player who is not the host: the commander's disconnect hands "
-          "the standing thrall to the cell's host with the word, and the "
-          "server ends it at its effect's estimate, the record's duration "
-          "from the raise (Eli's default, HYPOTHESIS)")
+  SECTION("by a player who is not the host: the commander's disconnect kills "
+          "a timed thrall at once by the server's word, then hands the body "
+          "to the cell's host with the word, no clock kept (Eli, "
+          "2026-11-12: \"'but as a plain resident with no undead look' "
+          "should simply die\")")
   {
-    REQUIRE(recordMs > 2'000);
+    // Reanimate Corpse's record: a timed thrall's, under a day
+    REQUIRE(recordSecondsOf(kReanimateCorpse, kReanimateEffect) > 0);
+    REQUIRE(recordSecondsOf(kReanimateCorpse, kReanimateEffect) < 86'400);
     Equipment eq;
     eq.rightSpell = kReanimateCorpse;
     caster.SetEquipment(eq);
-    casts(1);
-    hits(1);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
     REQUIRE(p.CommanderOf(body) == kCaster);
-    body.Respawn(false);
+    p.Messages().clear();
+    DoDisconnect(p, 1);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(p.worldState.HostOf(body) == &host);
+    // the kill's word reaches the host ahead of the hoster word, so the
+    // host's engine promotes a body, never a living copy no effect holds
+    size_t deadAt = p.Messages().size();
+    size_t hostedAt = p.Messages().size();
+    for (size_t i = 0; i < p.Messages().size(); ++i) {
+      const auto& m = p.Messages()[i];
+      if (m.userId != 0 || !m.j.is_object() ||
+          m.j.value("t", -1) != static_cast<int>(MsgType::UpdateProperty) ||
+          m.j.value("refrId", 0u) != kPredator) {
+        continue;
+      }
+      const auto prop = m.j.value("propName", std::string());
+      const auto dump = m.j.value("dataDump", std::string());
+      if (prop == "isDead" && dump == "true") {
+        deadAt = std::min(deadAt, i);
+      }
+      if (prop == "isHostedByOther" && dump == "false") {
+        hostedAt = std::min(hostedAt, i);
+      }
+    }
+    REQUIRE(deadAt < p.Messages().size());
+    REQUIRE(hostedAt < p.Messages().size());
+    REQUIRE(deadAt < hostedAt);
+    // no estimate is kept: the clock past the record's duration changes
+    // nothing
+    p.TickCellHosts(FateNowMs() + 200'000);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    // the shared cleanup below disconnects the caster again
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
+  }
+
+  SECTION("by a player who is not the host: a full thrall (Dead Thrall, a "
+          "day and more on the record) stays alive at its commander's "
+          "disconnect, the cell's host simulating it, and no clock ends it "
+          "(Eli, 2026-11-12: \"if it's a full thrall at 999 days, should "
+          "just stay\")")
+  {
+    const uint32_t seconds = recordSecondsOf(kDeadThrall, kDeadThrallEffect);
+    REQUIRE(seconds >= 86'400);
+    Equipment eq;
+    eq.rightSpell = kDeadThrall;
+    caster.SetEquipment(eq);
+    casts(1, kDeadThrall);
+    hits(1, kDeadThrall);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    standsOn(1);
     REQUIRE_FALSE(body.IsDead());
     p.Messages().clear();
     DoDisconnect(p, 1);
+    REQUIRE_FALSE(body.IsDead());
     REQUIRE(p.CommanderOf(body) == 0);
     REQUIRE(p.SimulatorOf(body) == kHost);
     REQUIRE(p.worldState.HostOf(body) == &host);
     REQUIRE(hostedFalseTo(0) >= 1);
+    // past the record's own duration, 999 days: still alive
+    p.TickCellHosts(FateNowMs() + static_cast<uint64_t>(seconds) * 1000 +
+                    1'000);
     REQUIRE_FALSE(body.IsDead());
-    // alive on the host until the estimate, then the server's word
-    p.TickCellHosts(FateNowMs() + recordMs - 2'000);
-    REQUIRE_FALSE(body.IsDead());
-    p.TickCellHosts(FateNowMs() + recordMs + 1'000);
-    REQUIRE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kHost);
     // the shared cleanup below disconnects the caster again
     DoConnect(p, 1);
     p.SetUserActor(1, kCaster);
@@ -1599,9 +1676,9 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     eq.rightSpell = kReanimateCorpse;
     host.SetEquipment(eq);
     p.Messages().clear();
-    casts(0);
+    casts(0, kReanimateCorpse);
     REQUIRE(SentOfType(p, 1, MsgType::SpellCast) == 1);
-    hits(0);
+    hits(0, kReanimateCorpse);
     p.Tick();
     REQUIRE(castSnippetsTo(0).empty());
     REQUIRE(castSnippetsTo(1).empty());

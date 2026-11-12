@@ -25,6 +25,13 @@ pub const MAX_EFFECTS: usize = 32;
 /// number is cut to it, so a running effect always ends.
 pub const MAX_DURATION_S: f32 = 86_400.0;
 
+/// A Reanimate effect at least this long is a full thrall's (ADR-060 as
+/// amended 2026-11-12): in the masters every Reanimate effect lasts 60 to
+/// 200 s but Dead Thrall's, 86,313,600 s, and their effects' flags are
+/// equal, so the record's duration is the one line. A full thrall stays at
+/// its commander's departure and keeps its look; a timed one dies.
+pub const FULL_THRALL_MIN_S: f32 = MAX_DURATION_S;
+
 /// How long a Self concentration cast's effects run on the server without
 /// the cast's end message (thuum docs/verbs/self-cast.md, train-31): the
 /// stream starts at the cast and ends at its end message; a lost end leaves

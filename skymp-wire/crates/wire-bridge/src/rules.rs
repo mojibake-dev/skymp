@@ -1334,8 +1334,9 @@ mod ffi {
         /// departure (ADR-060; a dialogue's alike): the cell's rule names
         /// the simulator again, the word follows.
         ClaimGone,
-        /// A thrall whose commander left has reached its effect's estimate
-        /// (ADR-060, HYPOTHESIS): the server's word ends it.
+        /// A timed thrall's commander `player` left (ADR-060 as amended
+        /// 2026-11-12): the server's word ends it at once, ahead of the
+        /// departure's ClaimGone for the same actor.
         ThrallExpired,
     }
 
@@ -1345,8 +1346,8 @@ mod ffi {
     struct HostDecision {
         /// Which decision.
         kind: HostKind,
-        /// The player it concerns (0 for Unhosted, ClaimEnded and
-        /// ThrallExpired; the claimant that left for ClaimGone).
+        /// The player it concerns (0 for Unhosted and ClaimEnded; the
+        /// claimant that left for ClaimGone and ThrallExpired).
         player: u32,
         /// The cell.
         cell: u32,
@@ -2998,12 +2999,13 @@ mod ffi {
         /// cell, 3 renewed.
         fn claim_actor(self: &mut Cells, actor: u32, player: u32, cell: u32, now_ms: u64) -> u8;
         /// ADR-060: `player`'s spell commands `actor` in `cell` until its
-        /// engine ends the effect (the thrall's death; no lease); `effect_ms`
-        /// the record's duration (0 permanent), the thrall's estimate once
-        /// its commander leaves: the same codes as claim_actor.
-        fn claim_commanded(self: &mut Cells, actor: u32, player: u32, cell: u32, effect_ms: u64, now_ms: u64) -> u8;
+        /// engine ends the effect (the thrall's death; no lease); `effect_s`
+        /// the record's duration of the Reanimate effect, seconds, the one
+        /// line at its commander's departure (a full thrall's, a day and
+        /// more, stays; a timed one dies): the same codes as claim_actor.
+        fn claim_commanded(self: &mut Cells, actor: u32, player: u32, cell: u32, effect_s: u32, now_ms: u64) -> u8;
         /// `player` releases its dialogue claim on `actor`; false when it
-        /// holds none (a commanded row ends by its death, lease or
+        /// holds none (a commanded row ends by its death or its
         /// commander's departure, never a dialogue's release; ADR-060).
         fn release_claim(self: &mut Cells, actor: u32, player: u32) -> bool;
         /// Any claim on `actor` ends (its death): the claimant it had, 0 when none.
@@ -4404,8 +4406,8 @@ fn host_decisions(table: &cells::Cells, decisions: Vec<cells::Decision>) -> Vec<
             cells::Decision::ClaimGone { actor, cell, player } => {
                 HostDecision { actor, kind: HostKind::ClaimGone, player, cell, epoch: table.epoch_of(cell) }
             }
-            cells::Decision::ThrallExpired { actor, cell } => {
-                HostDecision { actor, kind: HostKind::ThrallExpired, player: 0, cell, epoch: table.epoch_of(cell) }
+            cells::Decision::ThrallExpired { actor, cell, player } => {
+                HostDecision { actor, kind: HostKind::ThrallExpired, player, cell, epoch: table.epoch_of(cell) }
             }
         })
         .collect()
@@ -4530,8 +4532,8 @@ impl Cells {
         }
     }
 
-    fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, effect_ms: u64, now_ms: u64) -> u8 {
-        match self.0.claim_commanded(actor, player, cell, effect_ms, now_ms) {
+    fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, effect_s: u32, now_ms: u64) -> u8 {
+        match self.0.claim_commanded(actor, player, cell, effect_s, now_ms) {
             cells::ClaimVerdict::Granted => 0,
             cells::ClaimVerdict::Held => 1,
             cells::ClaimVerdict::Unloaded => 2,
@@ -6065,27 +6067,31 @@ mod tests {
         assert_eq!(c.hosts(), vec![CellHostRow { cell: 0x9732, hosted: false, player: 0, epoch: 1 }]);
     }
 
-    // ADR-060: a commander's departure crosses as a word naming its
-    // claimant, and its thrall's estimate as the server's end of it
+    // ADR-060 as amended (Eli, 2026-11-12): a commander's departure crosses
+    // as a word naming its claimant, a timed thrall's end ahead of its word,
+    // a full thrall's word alone, and no clock after it
     #[test]
-    fn a_commanders_departure_crosses_as_a_word_and_its_thralls_end() {
+    fn a_commanders_departure_crosses_as_a_timed_thralls_end_and_a_word() {
         let mut k = new_cells();
         assert!(k.reach(0xff00_0002, &[0x9731], 0).is_empty());
         assert!(k.reach(0xff00_0003, &[0x9731], 0).is_empty());
         assert_eq!(k.loaded(0xff00_0002, 0x9731, 1_000).len(), 1);
         assert!(k.loaded(0xff00_0003, 0x9731, 1_100).is_empty());
-        assert_eq!(k.claim_commanded(0x35534, 0xff00_0003, 0x9731, 60_000, 1_500), 0);
+        // Reanimate Corpse's 60 s on Hilde, Dead Thrall's 86,313,600 s on Sven
+        assert_eq!(k.claim_commanded(0x35534, 0xff00_0003, 0x9731, 60, 1_500), 0);
+        assert_eq!(k.claim_commanded(0x13491, 0xff00_0003, 0x9731, 86_313_600, 1_500), 0);
         assert_eq!(k.commander_of(0x35534), 0xff00_0003);
         assert_eq!(
             k.gone(0xff00_0003, 2_000),
-            vec![HostDecision { actor: 0x35534, kind: HostKind::ClaimGone, player: 0xff00_0003, cell: 0x9731, epoch: 1 }]
+            vec![
+                HostDecision { actor: 0x13491, kind: HostKind::ClaimGone, player: 0xff00_0003, cell: 0x9731, epoch: 1 },
+                HostDecision { actor: 0x35534, kind: HostKind::ThrallExpired, player: 0xff00_0003, cell: 0x9731, epoch: 1 },
+                HostDecision { actor: 0x35534, kind: HostKind::ClaimGone, player: 0xff00_0003, cell: 0x9731, epoch: 1 },
+            ]
         );
         assert_eq!(k.commander_of(0x35534), 0);
-        assert!(k.tick(1_500 + 60_000 - 1).is_empty());
-        assert_eq!(
-            k.tick(1_500 + 60_000),
-            vec![HostDecision { actor: 0x35534, kind: HostKind::ThrallExpired, player: 0, cell: 0x9731, epoch: 1 }]
-        );
+        assert_eq!(k.commander_of(0x13491), 0);
+        assert!(k.tick(1_500 + 60_000).is_empty());
     }
 
     fn sample(refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, moved: f32, now_ms: u64) -> PropSampleFacts {

@@ -1064,7 +1064,9 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // docs/verbs/cell-host.md); the clock passes them on. And its
           // claims end with a word each, a thrall's command's and a
           // dialogue's (ADR-060): the cell's simulator takes each actor
-          // back, never left a puppet nobody simulates
+          // back, never left a puppet nobody simulates; a timed thrall dies
+          // by the server's word first, a full one stays alive there (ADR-060
+          // as amended 2026-11-12)
           ApplyHostDecisions(
             *this_,
             this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs()));
@@ -2350,20 +2352,20 @@ void ApplyHostDecisions(PartOne& partOne,
         break;
       }
       case skymp::rules::HostKind::ThrallExpired: {
-        // thuum docs/verbs/npc-fate.md (ADR-060; Eli's default of
-        // 2026-11-12, HYPOTHESIS): a thrall whose commander left lived on
-        // its cell's simulator until its effect's estimate, the record's
-        // duration from its raise; no engine runs its effect any more, so
-        // the server's word ends it (an engine's longer effect, a dual
-        // cast's or a perk's, would have lasted longer)
+        // thuum docs/verbs/npc-fate.md (ADR-060 as amended; Eli,
+        // 2026-11-12: "'but as a plain resident with no undead look' should
+        // simply die"): a timed thrall's commander left and no engine runs
+        // its effect now, so the server's word ends it at once. It comes
+        // ahead of the departure's ClaimGone for the same actor, so the
+        // cell's simulator is handed a body and never promotes a living copy
+        // no effect holds
         auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
         MpActor* actor = form ? form->AsActor() : nullptr;
         if (actor && !actor->IsDead()) {
-          spdlog::info("[verb:npc-fate] {:x}'s commander left and its "
-                       "effect's estimate (the record's duration from its "
-                       "raise) has passed: the server's word ends it "
-                       "(ADR-060, HYPOTHESIS)",
-                       d.actor);
+          spdlog::info("[verb:npc-fate] {:x} dies at its commander {:x}'s "
+                       "departure: a timed thrall, its effect no engine's "
+                       "now, ends by the server's word (ADR-060)",
+                       d.actor, d.player);
           actor->Kill(nullptr);
         }
         break;
@@ -3381,14 +3383,15 @@ bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
 
 PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,
                                               MpActor& actor,
-                                              uint64_t effectMs)
+                                              uint32_t recordSeconds)
 {
   const auto cell = worldState.CellOf(actor);
   if (!cell) {
     return ClaimVerdict::Unloaded;
   }
-  const auto code = pImpl->cells->claim_commanded(
-    actor.GetFormId(), commander.GetFormId(), *cell, effectMs, SteadyNowMs());
+  const auto code =
+    pImpl->cells->claim_commanded(actor.GetFormId(), commander.GetFormId(),
+                                  *cell, recordSeconds, SteadyNowMs());
   const auto verdict = static_cast<ClaimVerdict>(code);
   if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
     // the word to every listening game: the commander simulates it now

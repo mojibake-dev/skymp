@@ -18,6 +18,8 @@
 
 use std::collections::HashMap;
 
+use crate::magic::FULL_THRALL_MIN_S;
+
 /// How long a host keeps its cell after unloading it or leaving, before the
 /// cell passes on (ADR-035, Eli 2026-10-18: "a grace window of about 5 s").
 pub const GRACE_MS: u64 = 5_000;
@@ -140,16 +142,20 @@ pub enum Decision {
         /// The claimant that left.
         player: u32,
     },
-    /// A thrall whose commander left (`ClaimGone`) has lived on its cell's
-    /// simulator until its effect's estimate, the record's duration from its
-    /// raise (ADR-060; Eli's default of 2026-11-12, HYPOTHESIS: an engine's
-    /// longer effect, a dual cast's or a perk's, would have lasted longer):
-    /// no engine runs the effect now, so the server's word ends it.
+    /// A timed thrall's commander left the server (ADR-060 as amended; Eli,
+    /// 2026-11-12: "'but as a plain resident with no undead look' should
+    /// simply die"): no engine runs its effect now, so the server's word
+    /// ends it at once. It comes ahead of the departure's `ClaimGone` for
+    /// the same actor, so the cell's simulator is handed a body and never
+    /// promotes a living copy no effect holds; a full thrall's command ends
+    /// with `ClaimGone` alone (`FULL_THRALL_MIN_S`).
     ThrallExpired {
         /// The actor.
         actor: u32,
         /// The cell its command named when its commander left.
         cell: u32,
+        /// The commander that left.
+        player: u32,
     },
 }
 
@@ -237,21 +243,11 @@ struct Follow {
     /// A dialogue claim's lease; none for the other kinds, a command's
     /// included (ADR-060).
     lease_until_ms: Option<u64>,
-    /// A command's estimate of its effect's end, the record's duration from
-    /// the raise (ADR-060): never a lease while its commander stays (the
-    /// engine's own timer ends a command); its thrall's end once the
-    /// commander has left (`gone`, an orphan). None for the other kinds and
-    /// for a permanent effect.
-    effect_until_ms: Option<u64>,
-}
-
-/// A thrall whose commander left the server (ADR-060): back on its cell's
-/// simulator, alive, until its effect's estimate (HYPOTHESIS, Eli's open
-/// point of 2026-11-12).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Orphan {
-    cell: u32,
-    until_ms: u64,
+    /// A command's side at its commander's departure (ADR-060 as amended
+    /// 2026-11-12): a full thrall's (the record's duration at least
+    /// `FULL_THRALL_MIN_S`) stays alive on its cell's simulator, a timed
+    /// one dies (`gone`). Never a clock. False for the other kinds.
+    full: bool,
 }
 
 /// The answer to a claim (ADR-052).
@@ -298,9 +294,6 @@ pub struct Cells {
     cells: HashMap<u32, CellState>,
     players: HashMap<u32, PlayerState>,
     follows: HashMap<u32, Follow>,
-    /// The thralls whose commanders left, by actor id, until their effects'
-    /// estimates (ADR-060).
-    orphans: HashMap<u32, Orphan>,
     /// The first grant's time, the cold start's window opening; None until it.
     first_grant_ms: Option<u64>,
 }
@@ -368,19 +361,18 @@ impl Cells {
     /// `player` left the server at `now_ms`: every cell it hosts starts its
     /// grace, and it is no candidate anywhere. Its claims end with a word
     /// each (`ClaimGone`), a command's and a dialogue's alike, so no actor
-    /// stays a puppet nobody simulates (ADR-060); a command's thrall lives on
-    /// its cell's simulator until its effect's estimate (an orphan, `tick`).
+    /// stays a puppet nobody simulates (ADR-060). A timed thrall dies at once
+    /// by the server's word (`ThrallExpired`, ahead of its `ClaimGone`); a
+    /// full thrall stays alive on its cell's simulator (Eli, 2026-11-12: "if
+    /// it's a full thrall at 999 days, should just stay"). Nothing is kept.
     pub fn gone(&mut self, player: u32, now_ms: u64) -> Vec<Decision> {
         self.players.remove(&player);
-        let mut ended: Vec<(u32, u32)> = Vec::new();
-        for (&actor, f) in &self.follows {
-            if is_claim(f.kind) && f.player == player {
-                ended.push((actor, f.cell));
-                if let (FollowKind::Commanded, Some(until_ms)) = (f.kind, f.effect_until_ms) {
-                    self.orphans.insert(actor, Orphan { cell: f.cell, until_ms });
-                }
-            }
-        }
+        let mut ended: Vec<(u32, u32, bool)> = self
+            .follows
+            .iter()
+            .filter(|(_, f)| is_claim(f.kind) && f.player == player)
+            .map(|(&actor, f)| (actor, f.cell, f.kind == FollowKind::Commanded && !f.full))
+            .collect();
         ended.sort_unstable();
         self.follows.retain(|_, f| f.player != player);
         for state in self.cells.values_mut() {
@@ -390,7 +382,14 @@ impl Cells {
                 }
             }
         }
-        ended.into_iter().map(|(actor, cell)| Decision::ClaimGone { actor, cell, player }).collect()
+        let mut out = Vec::new();
+        for (actor, cell, timed) in ended {
+            if timed {
+                out.push(Decision::ThrallExpired { actor, cell, player });
+            }
+            out.push(Decision::ClaimGone { actor, cell, player });
+        }
+        out
     }
 
     /// `player`'s connection went silent at `now_ms` (the game killed,
@@ -614,7 +613,7 @@ impl Cells {
             MoveVerdict::Follow => {
                 // into a cell nobody hosts (D6), or another host's within the margin (D22)
                 let kind = if self.host_of(m.dest).is_some() { FollowKind::Margin } else { FollowKind::Follow };
-                self.follows.insert(m.actor, Follow { player: m.sender, cell: m.dest, since_ms: now_ms, kind, lease_until_ms: None, effect_until_ms: None });
+                self.follows.insert(m.actor, Follow { player: m.sender, cell: m.dest, since_ms: now_ms, kind, lease_until_ms: None, full: false });
             }
             MoveVerdict::Accept if m.dest != m.origin => {
                 // a claim follows its actor into the new cell (ADR-052)
@@ -661,7 +660,7 @@ impl Cells {
                 since_ms: now_ms,
                 kind: FollowKind::Claim,
                 lease_until_ms: Some(now_ms.saturating_add(CLAIM_LEASE_MS)),
-                effect_until_ms: None,
+                full: false,
             },
         );
         verdict
@@ -673,13 +672,14 @@ impl Cells {
     /// engine's own, which dual casting, perks and the spell's level set and
     /// the record's duration does not measure, and its end is the thrall's
     /// death, which the commander's game reports (`release_any_claim`); the
-    /// commander's departure ends it too (`gone`). `effect_ms` is the record's
-    /// duration (0 for a permanent effect), kept as the thrall's estimate for
-    /// its commander's departure alone (an orphan's end), never a lease. The
-    /// newest commander wins; a dialogue's claim gives way; an orphan's clock
-    /// ends. Unloaded when the player has not loaded the cell; Reclaimed when
-    /// it commanded the actor already.
-    pub fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, effect_ms: u64, now_ms: u64) -> ClaimVerdict {
+    /// commander's departure ends it too (`gone`). `effect_s` is the record's
+    /// duration of the Reanimate effect, seconds, read for one line alone:
+    /// a full thrall's (at least `FULL_THRALL_MIN_S`) stays at its
+    /// commander's departure, a timed one dies; never a lease or a clock.
+    /// The newest commander wins; a dialogue's claim gives way. Unloaded
+    /// when the player has not loaded the cell; Reclaimed when it commanded
+    /// the actor already.
+    pub fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, effect_s: u32, now_ms: u64) -> ClaimVerdict {
         if !self.players.get(&player).is_some_and(|p| p.loaded.contains_key(&cell)) {
             return ClaimVerdict::Unloaded;
         }
@@ -687,9 +687,8 @@ impl Cells {
             Some(f) if f.kind == FollowKind::Commanded && f.player == player => ClaimVerdict::Reclaimed,
             _ => ClaimVerdict::Granted,
         };
-        self.orphans.remove(&actor);
-        let effect_until_ms = (effect_ms > 0).then(|| now_ms.saturating_add(effect_ms));
-        self.follows.insert(actor, Follow { player, cell, since_ms: now_ms, kind: FollowKind::Commanded, lease_until_ms: None, effect_until_ms });
+        let full = f64::from(effect_s) >= f64::from(FULL_THRALL_MIN_S);
+        self.follows.insert(actor, Follow { player, cell, since_ms: now_ms, kind: FollowKind::Commanded, lease_until_ms: None, full });
         verdict
     }
 
@@ -709,9 +708,8 @@ impl Cells {
     }
 
     /// Any claim on `actor` ends (its death, ADR-060): the claimant it had,
-    /// 0 when none. An orphan's clock ends with it.
+    /// 0 when none.
     pub fn release_any_claim(&mut self, actor: u32) -> u32 {
-        self.orphans.remove(&actor);
         match self.follows.get(&actor) {
             Some(f) if is_claim(f.kind) => {
                 let player = f.player;
@@ -798,14 +796,6 @@ impl Cells {
         for (actor, _) in &ended {
             self.follows.remove(actor);
         }
-        // a thrall whose commander left ends at its effect's estimate
-        // (ADR-060, HYPOTHESIS)
-        let mut expired: Vec<(u32, u32)> =
-            self.orphans.iter().filter(|(_, o)| now_ms >= o.until_ms).map(|(&a, o)| (a, o.cell)).collect();
-        expired.sort_unstable();
-        for (actor, _) in &expired {
-            self.orphans.remove(actor);
-        }
         let mut due: Vec<(u32, Host)> = Vec::new();
         for (&cell, state) in &self.cells {
             if let Some(host) = state.host {
@@ -818,7 +808,6 @@ impl Cells {
         }
         due.sort_by_key(|&(cell, _)| cell);
         let mut out: Vec<Decision> = ended.into_iter().map(|(actor, cell)| Decision::ClaimEnded { actor, cell }).collect();
-        out.extend(expired.into_iter().map(|(actor, cell)| Decision::ThrallExpired { actor, cell }));
         for (cell, old) in due {
             out.push(Decision::Release { player: old.player, cell, epoch: old.epoch });
             let next = self.candidate(cell, old.player);
@@ -1549,6 +1538,12 @@ mod tests {
         assert_eq!(c.claims(), vec![]);
     }
 
+    // the Reanimate effects' durations in Skyrim.esm, seconds (the probe's
+    // esm.py reads, 2026-11-12): Reanimate Corpse's 0x96d0b, a timed
+    // thrall's, and Dead Thrall's 0x7e8e0, a full thrall's
+    const REANIMATE_CORPSE_S: u32 = 60;
+    const DEAD_THRALL_S: u32 = 86_313_600;
+
     // ADR-060: a reanimated actor is its commander's until its engine ends
     // the effect (Eli, 2026-11-12: "summons and resurrections should obey
     // the timers the level of spell"): no lease; the thrall's death or the
@@ -1565,7 +1560,7 @@ mod tests {
         c.tick(1_200);
         assert_eq!(c.host_of(RIVERWOOD).map(|(p, _)| p), Some(C1));
         // c2's reanimate: c2 simulates Sven, the host stands aside
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 60_000, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, REANIMATE_CORPSE_S, 2_000), ClaimVerdict::Granted);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
         assert_eq!(c.commander_of(SVEN), C2);
         assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
@@ -1602,20 +1597,21 @@ mod tests {
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
         // a second command is a new row; a second hit before the stand-up
         // changes nothing
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 60_000, 80_000), ClaimVerdict::Granted);
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 60_000, 80_500), ClaimVerdict::Reclaimed);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, REANIMATE_CORPSE_S, 80_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, REANIMATE_CORPSE_S, 80_500), ClaimVerdict::Reclaimed);
         assert_eq!(c.release_any_claim(SVEN), C2);
         // a dialogue's claim is no command
         assert_eq!(c.claim(SVEN, C1, RIVERWOOD, 85_000), ClaimVerdict::Granted);
         assert_eq!(c.commander_of(SVEN), 0);
         assert!(c.release_claim(SVEN, C1));
-        // the commander's departure ends a command, with the word
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 0, 90_000), ClaimVerdict::Granted);
+        // the commander's departure ends a full thrall's command with the
+        // word alone (a timed one's below)
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, DEAD_THRALL_S, 90_000), ClaimVerdict::Granted);
         assert_eq!(c.gone(C2, 2_000_000), vec![Decision::ClaimGone { actor: SVEN, cell: RIVERWOOD, player: C2 }]);
         assert_eq!(c.claims(), vec![]);
         assert_eq!(c.commander_of(SVEN), 0);
         // a commander who has not loaded the cell commands nothing
-        assert_eq!(c.claim_commanded(SVEN, 0xff000009, RIVERWOOD, 60_000, 2_000_100), ClaimVerdict::Unloaded);
+        assert_eq!(c.claim_commanded(SVEN, 0xff000009, RIVERWOOD, REANIMATE_CORPSE_S, 2_000_100), ClaimVerdict::Unloaded);
     }
 
     // ADR-060, Eli 2026-11-12: "leaving a cell should not kill the thrall":
@@ -1631,7 +1627,7 @@ mod tests {
         c.reach(C2, &[RIVERWOOD], 1_100);
         c.loaded(C2, RIVERWOOD, 1_100);
         c.tick(1_200);
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 60_000, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, REANIMATE_CORPSE_S, 2_000), ClaimVerdict::Granted);
         // the commander's game unloads the thrall's cell (its walk away, a
         // load door's far side) before the thrall's own report: the command
         // stands, with no word
@@ -1666,13 +1662,14 @@ mod tests {
         assert_eq!(c.simulator_of(SVEN, INN), C2);
     }
 
-    // ADR-060: a commander's departure ends its commands with a word each
-    // (no puppet left that nobody simulates); the thrall lives on its cell's
-    // simulator until its effect's estimate, the record's duration from its
-    // raise, then the server ends it (Eli's default, HYPOTHESIS); a
-    // permanent one lives until its death
+    // ADR-060 as amended (Eli, 2026-11-12: "'but as a plain resident with no
+    // undead look' should simply die, but if it's a full thrall at 999 days,
+    // should just stay"): a commander's departure ends its commands with a
+    // word each (no puppet left that nobody simulates); a timed thrall dies
+    // at once, the server's word ahead of its word, and a full one stays on
+    // its cell's simulator; no clock is left behind for either
     #[test]
-    fn a_commanders_departure_ends_its_commands_with_a_word_and_its_thrall_at_the_estimate() {
+    fn a_commanders_departure_kills_a_timed_thrall_at_once_and_leaves_a_full_one() {
         const SVEN: u32 = 0x13491;
         const HILDE: u32 = 0x35534;
         const HOD: u32 = 0x1348a;
@@ -1682,15 +1679,16 @@ mod tests {
         c.reach(C2, &[RIVERWOOD], 1_100);
         c.loaded(C2, RIVERWOOD, 1_100);
         c.tick(1_200);
-        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, 60_000, 2_000), ClaimVerdict::Granted);
-        assert_eq!(c.claim_commanded(HILDE, C2, RIVERWOOD, 0, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(SVEN, C2, RIVERWOOD, REANIMATE_CORPSE_S, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim_commanded(HILDE, C2, RIVERWOOD, DEAD_THRALL_S, 2_000), ClaimVerdict::Granted);
         assert_eq!(c.claim(HOD, C2, RIVERWOOD, 2_000), ClaimVerdict::Granted);
-        // the departure: one word per claim, a dialogue's included; the
-        // host simulates all three again
+        // the departure: one word per claim, a dialogue's included, and the
+        // timed thrall's end ahead of its word; the host simulates all three
         assert_eq!(
             c.gone(C2, 30_000),
             vec![
                 Decision::ClaimGone { actor: HOD, cell: RIVERWOOD, player: C2 },
+                Decision::ThrallExpired { actor: SVEN, cell: RIVERWOOD, player: C2 },
                 Decision::ClaimGone { actor: SVEN, cell: RIVERWOOD, player: C2 },
                 Decision::ClaimGone { actor: HILDE, cell: RIVERWOOD, player: C2 },
             ]
@@ -1699,24 +1697,27 @@ mod tests {
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
         assert_eq!(c.simulator_of(HILDE, RIVERWOOD), C1);
         assert_eq!(c.simulator_of(HOD, RIVERWOOD), C1);
-        // the timed thrall ends at its estimate, 60 s from its raise; the
-        // permanent one never does
-        assert_eq!(c.tick(2_000 + 60_000 - 1), vec![]);
-        assert_eq!(c.tick(2_000 + 60_000), vec![Decision::ThrallExpired { actor: SVEN, cell: RIVERWOOD }]);
-        assert_eq!(c.tick(2_000 + CLAIM_LEASE_MS * 100), vec![]);
-        // an orphan that dies first, or is raised again, has no end to come
+        // no estimate is kept: past Reanimate Corpse's 60 s and past Dead
+        // Thrall's own 86,313,600 s the clock ends nothing
+        assert_eq!(c.tick(2_000 + 60_000), vec![]);
+        assert_eq!(c.tick(2_000 + 86_313_600 * 1_000 + 1), vec![]);
+        // the line is the record's duration, FULL_THRALL_MIN_S: a day is a
+        // full thrall's, a second less a timed one's
         let mut d = Cells::default();
         d.reach(C1, &[RIVERWOOD], 1_000);
         d.loaded(C1, RIVERWOOD, 1_000);
         d.reach(C2, &[RIVERWOOD], 1_100);
         d.loaded(C2, RIVERWOOD, 1_100);
         d.tick(1_200);
-        assert_eq!(d.claim_commanded(SVEN, C2, RIVERWOOD, 60_000, 2_000), ClaimVerdict::Granted);
-        assert_eq!(d.claim_commanded(HILDE, C2, RIVERWOOD, 60_000, 2_000), ClaimVerdict::Granted);
-        assert_eq!(d.gone(C2, 3_000).len(), 2);
-        assert_eq!(d.release_any_claim(SVEN), 0);
-        assert_eq!(d.claim_commanded(HILDE, C1, RIVERWOOD, 60_000, 4_000), ClaimVerdict::Granted);
-        assert_eq!(d.tick(2_000 + 60_000), vec![]);
-        assert_eq!(d.commander_of(HILDE), C1);
+        assert_eq!(d.claim_commanded(SVEN, C2, RIVERWOOD, 86_399, 2_000), ClaimVerdict::Granted);
+        assert_eq!(d.claim_commanded(HILDE, C2, RIVERWOOD, 86_400, 2_000), ClaimVerdict::Granted);
+        assert_eq!(
+            d.gone(C2, 3_000),
+            vec![
+                Decision::ThrallExpired { actor: SVEN, cell: RIVERWOOD, player: C2 },
+                Decision::ClaimGone { actor: SVEN, cell: RIVERWOOD, player: C2 },
+                Decision::ClaimGone { actor: HILDE, cell: RIVERWOOD, player: C2 },
+            ]
+        );
     }
 }

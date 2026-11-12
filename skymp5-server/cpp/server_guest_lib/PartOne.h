@@ -851,12 +851,13 @@ public:
   // (the reanimate's hit), which a promote never places (a body is never
   // moved, D78 C; the client's dead hold), so the keyframe would place
   // nothing
-  // `effectMs` is the record's duration (0 for a permanent effect), kept as
-  // the thrall's estimate for its commander's departure alone (cells.rs's
-  // orphan, HYPOTHESIS: the engine's own duration may be longer), never a
-  // lease while the commander stays
+  // `recordSeconds` is the record's duration of the spell's Reanimate
+  // effect, read for one line alone (wire-rules cells.rs and
+  // magic::FULL_THRALL_MIN_S; ADR-060 as amended 2026-11-12): a full
+  // thrall's (a day and more, Dead Thrall's) stays alive at its commander's
+  // departure, a timed one dies by the server's word; never a lease
   ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor,
-                              uint64_t effectMs);
+                              uint32_t recordSeconds);
   // the player commanding `actor` (ADR-060), 0 when none: whose report of
   // the thrall's death is its effect's end
   uint32_t CommanderOf(const MpActor& actor) const;

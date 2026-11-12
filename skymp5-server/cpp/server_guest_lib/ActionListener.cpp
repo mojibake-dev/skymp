@@ -3889,6 +3889,27 @@ bool IsPropListener(const MpObjectReference& refr, const MpActor& actor)
 // the game files place it. UNMEASURED: a fall's extent (x-trap-boulders
 // reads Embershard's rocks)
 constexpr float kWorldBodyTether = 2048.f;
+
+// thuum docs/verbs/prop-physics.md: whether a prop refusal's line is due for
+// its sender, one line per 10 s per seat, a refused sample's and a refused
+// claim's alike, the first at once (the review of 3892415e, finding 4: a
+// claim's references were each said, up to 32 warn lines a second per seat);
+// every refusal is counted all the same (CountStream). The last line's time
+// is the connection's (UserInfo), so a seat's reconnect starts afresh and the
+// table is never larger than the connections
+bool PropRefusalLineDue(ServerState& serverState, Networking::UserId user,
+                        std::chrono::steady_clock::time_point now)
+{
+  if (!serverState.IsConnected(user)) {
+    return true;
+  }
+  auto& last = serverState.userInfo[user]->lastPropRefusalLine;
+  if (last && now - *last < std::chrono::seconds(10)) {
+    return false;
+  }
+  last = now;
+  return true;
+}
 }
 
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 1; A2, A3 and A5 of
@@ -3924,10 +3945,12 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     return;
   }
   const bool impulse = msg.touch == 3;
+  const auto now = std::chrono::steady_clock::now();
   // physics rung 2 (ADR-071 decision 6): one to sixteen references, each
   // judged alone through the gates below, with its own verdict, its own word
   // or answer and its own line, the line a lone reference's (the probes
-  // count it by its text)
+  // count it by its text); a refusal's line is said once per 10 s per seat,
+  // with the seat's refused samples (PropRefusalLineDue)
   const auto claimOne = [&](uint32_t refr) {
     // every touch names a reference the server holds already (NoLoad: a
     // claim never loads the id a seat chose, the review of 9ff1895e's
@@ -3940,9 +3963,11 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     const auto refuse = [&](const char* code, const char* why) {
       partOne.serverState.CountStream(
         rawMsgData.userId, static_cast<uint8_t>(MsgType::PropClaim), false);
-      spdlog::warn(
-        "[verb:prop-physics] {}: {:x} claims prop {:x} by touch {}; {}", code,
-        myActor->GetFormId(), refr, msg.touch, why);
+      if (PropRefusalLineDue(partOne.serverState, rawMsgData.userId, now)) {
+        spdlog::warn(
+          "[verb:prop-physics] {}: {:x} claims prop {:x} by touch {}; {}",
+          code, myActor->GetFormId(), refr, msg.touch, why);
+      }
     };
     if (!prop || prop->AsActor()) {
       return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
@@ -7420,7 +7445,8 @@ void ActionListener::SendWorldGlobals(MpActor& actor)
 // current word and the record, once per prop per second per seat, so a
 // divergent word and copy heal (A5; ADR-071 decision 6), but for the live
 // owner's own stale sample, whose word is on its way and whose body is ahead
-// of the record. Refusals are logged once per 10 s per seat.
+// of the record. Refusals are logged once per 10 s per seat, with the seat's
+// refused claims (PropRefusalLineDue).
 void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                                      const PropTransformMessage& msg)
 {
@@ -7429,18 +7455,12 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
     return;
   }
   const auto now = std::chrono::steady_clock::now();
-  static std::unordered_map<Networking::UserId,
-                            std::chrono::steady_clock::time_point>
-    lastRefusal;
   const auto refuse = [&](const char* code, const char* why) {
     partOne.serverState.CountStream(
       rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), false);
-    auto& last = lastRefusal[rawMsgData.userId];
-    if (last == std::chrono::steady_clock::time_point() ||
-        now - last >= std::chrono::seconds(10)) {
+    if (PropRefusalLineDue(partOne.serverState, rawMsgData.userId, now)) {
       spdlog::warn("[verb:prop-physics] {}: {:x} moves prop {:x}; {}", code,
                    myActor->GetFormId(), msg.refr, why);
-      last = now;
     }
   };
   const auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.refr);

@@ -159,9 +159,13 @@ export class PropFollow {
     }
 
     // The render clock at nowMs (this seat's clock, the arrivals' own) and the
-    // update's step on it; the samples behind the pair it is in are dropped
+    // update's step on it; the samples behind the pair it is in are dropped.
+    // The clock never steps back: when the least offset leaves the window
+    // (FOLLOW_OFFSET_SAMPLES) the next least is larger, and the copy holds
+    // where it stands until the clock passes it again
     step(nowMs: number, delayMs: number): FollowStep {
-        const render = nowMs - this.offsetMs - delayMs;
+        const render = Math.max(this.lastRender, nowMs - this.offsetMs - delayMs);
+        this.lastRender = render;
         const buf = this.buffer;
         const newest = buf[buf.length - 1];
         let i = 0;
@@ -260,6 +264,8 @@ export class PropFollow {
     private readonly firstEpoch: number;
     private readonly offsets: number[] = [];
     private offsetMs = 0;
+    // the render clock at the last step, which it never falls below
+    private lastRender = -Infinity;
     // the sample the copy was last sent toward
     private target: FollowSample | undefined;
     private restApplied = false;

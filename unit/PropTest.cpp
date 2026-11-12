@@ -44,8 +44,9 @@ constexpr uint32_t kChest = 0xff000d05;
 constexpr uint32_t kC4 = 0xff000d08;
 constexpr uint32_t kC5 = 0xff000d09;
 constexpr uint32_t kC6 = 0xff000d0a;
-// physics rung 2's seats of their own (OnPropTransform says a refusal once
-// per 10 s per seat, across the binary's cases) and two more props
+// physics rung 2's seats of their own (a refusal is said once per 10 s per
+// seat, a sample's and a claim's alike; the time is the connection's, so a
+// case's own connects start it afresh) and two more props
 constexpr uint32_t kC7 = 0xff000d0c;
 constexpr uint32_t kC8 = 0xff000d0d;
 constexpr uint32_t kJug = 0xff000d0e;
@@ -898,9 +899,7 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   auto& c2 = p.worldState.GetFormAt<MpActor>(kC2);
   // c2 kicks the basket and streams it awake, then its game unloads the
   // cell (a door): the row returns to the host at a new epoch, both seats
-  // told with player 0; c2's late sample is refused Away and not answered
-  // (physics rung 2 judges the unload's state before the owner: its game's
-  // copy went with the cell)
+  // told with player 0
   Claim(p, 1, kBasket, 0);
   Sample(p, 1, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false);
   REQUIRE(p.PropLiveOwner(w.prop) == kC2);
@@ -915,11 +914,6 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   REQUIRE(toC1[0].player == 0);
   REQUIRE(toC1[0].epoch == 2);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
-  p.Messages().clear();
-  Sample(p, 1, kBasket, kHere + NiPoint3{ 40.f, 0.f, 0.f }, false);
-  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
-  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
-  REQUIRE(SentTo<PropTransformMessage>(p, 1).empty());
 
   // the unload is a state: c2's claim there is refused until its game
   // reports the cell loaded again or has the cell back in its reach
@@ -932,6 +926,20 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   }
   REQUIRE(p.PropLiveOwner(w.prop) == 0);
   REQUIRE(p.PropEpochOf(w.prop) == 2);
+  // c2's late sample is refused Away too and not answered (physics rung 2
+  // judges the unload's state before the owner: its game's copy went with
+  // the cell); its line is not said, the seat's second refusal inside 10 s
+  // (a seat's refused samples and claims share one line a 10 s, the review
+  // of 3892415e, finding 4)
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Sample(p, 1, kBasket, kHere + NiPoint3{ 40.f, 0.f, 0.f }, false);
+    REQUIRE(log.Count("E_PROP_AWAY") == 0);
+  }
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  REQUIRE(SentTo<PropTransformMessage>(p, 1).empty());
   // c2 stands in the next square (the server's own placement, as a teleport
   // is) and its game reports THAT cell loaded, never the old one: the load
   // report refreshes its reach, the old cell is in it, the state ends and
@@ -1009,21 +1017,20 @@ TEST_CASE("A trap's world body joins the stream by the impulse touch alone: "
   REQUIRE(toC1[0].epoch == 1);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
 
-  // c1's own copy of the same firing claims it too: the first firing wins
-  // by A3's moving row, and c1 hears the current word; a contact never
-  // claims a world body
+  // a contact never claims a world body; c1's own copy of the same firing
+  // claims it too, and the first firing wins by A3's moving row: c1 hears
+  // the current word (below), the refusal's line not said, the seat's second
+  // inside 10 s (a seat's refused samples and claims share one line a 10 s,
+  // the review of 3892415e, finding 4)
   p.Messages().clear();
   {
     LogCapture log;
-    Claim(p, 0, kRock, 3);
     Claim(p, 0, kRock, 0);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_MOVING: ff000d01 claims "
-                      "prop b6d45 by touch 3; another seat streams it awake: "
-                      "a contact, a drop or an impulse takes a prop at rest, "
-                      "a grab takes it at once") == 1);
+    Claim(p, 0, kRock, 3);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
                       "prop b6d45 by touch 0; a world body, which only an "
                       "impulse claims") == 1);
+    REQUIRE(log.Count("E_PROP_MOVING") == 0);
   }
   REQUIRE(p.PropOwnerOf(rock) == kC2);
   REQUIRE(p.PropEpochOf(rock) == 1);
@@ -1174,8 +1181,8 @@ TEST_CASE("A sample at a point in no cell is refused E_PROP_OUTSIDE whoever "
           "[Prop][espm]")
 {
   auto& p = GetPartOne();
-  // seats of their own: OnPropTransform says a refusal once per 10 s per
-  // seat, so these lines are read from seats no other case refused
+  // seats of their own: a refusal is said once per 10 s per seat, so each
+  // line is read from a seat no step of this case refused before
   auto& c5 = Player(p, 5, kC5, kHere + NiPoint3{ 40.f, 0.f, 0.f });
   auto& c6 = Player(p, 6, kC6, kHere + NiPoint3{ 60.f, 0.f, 0.f });
   auto& prop = Prop(p, kBasket, kHere);

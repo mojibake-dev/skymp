@@ -99,8 +99,9 @@ pub const PROP_STEP_ALLOWANCE_UNITS: f32 = PROP_MAX_SPEED_UNITS_PER_S / 10.0;
 /// replaces it, and nothing is banked: a crafted seat that raises the epoch
 /// as fast as it can is held to the bound of one that never does. The record's
 /// travel from a grant on a new row is at most the cap's pace for the
-/// server's elapsed time and `PROP_CLOCK_SLACK_MS`, plus this once (plus
-/// `PROP_CLOCK_LAG_MS` of the cap for a window that opens mid-stream): a
+/// server's elapsed time and `PROP_CLOCK_SLACK_MS`, plus this once, and over
+/// any window rung 2's bound stands (`PROP_CLOCK_SLACK_MS`'s: a first sample
+/// takes this at most of the time the clock has run, its lag included): a
 /// lie is a hop of 3,000 units, never a teleport (ADR-063's H1 accepts the
 /// lie class on a friends' server). UNMEASURED: x-prop-impact v1 reads each
 /// caster's impact-to-first-sample time against half a second at the cap.
@@ -113,15 +114,21 @@ pub const PROP_FIRST_SAMPLE_UNITS: f32 = PROP_MAX_SPEED_UNITS_PER_S / 2.0;
 /// samples 100 ms apart on the owner's clock reaching the server 5 ms apart)
 /// is taken whole where the server's clock alone refuses the second; and
 /// whatever the owner's clock claims, the budget's never runs past the
-/// server's by more than this, so over any stream the record travels no
-/// farther than the cap allows for the server's elapsed time and this slack,
-/// plus one first sample's allowance (`PROP_FIRST_SAMPLE_UNITS`, one step
-/// before physics rung 3a). The clock is the prop's, as the allowance is: an
-/// epoch rise starts no fresh slack. The virtual scheduling of the generic cell
-/// rate algorithm, its tolerance this slack (accessible: "Generic cell rate
-/// algorithm", Wikipedia; foundational: ITU-T Recommendation I.371, "Traffic
-/// control and congestion control in B-ISDN"). UNMEASURED: x-prop-follow's
-/// loss leg reads the arrival jitter it must forgive.
+/// server's by more than this, so over any window of the server's time the
+/// record travels no farther than the cap allows for that window,
+/// PROP_CLOCK_LAG_MS and this slack, plus the one step (14,100 units in a
+/// second, 8,100 at one instant). Physics rung 3a leaves those as they are:
+/// an epoch's first sample takes at most `PROP_FIRST_SAMPLE_UNITS` of the
+/// time the clock has run, its lag included, and brings a lagging clock to
+/// the server's, so from a grant on a new row (no lag yet) the bound is the
+/// cap for the elapsed time and this slack plus `PROP_FIRST_SAMPLE_UNITS`
+/// (10,500 units in a second). The clock is the prop's, as the allowance
+/// is: an epoch rise starts no fresh slack. The virtual scheduling of the
+/// generic cell rate algorithm, its tolerance this slack (accessible:
+/// "Generic cell rate algorithm", Wikipedia; foundational: ITU-T
+/// Recommendation I.371, "Traffic control and congestion control in
+/// B-ISDN"). UNMEASURED: x-prop-follow's loss leg reads the arrival jitter it
+/// must forgive.
 pub const PROP_CLOCK_SLACK_MS: u64 = 250;
 /// How far behind the server's clock the step budget's own may fall
 /// (physics rung 2): samples delayed in flight (a stall, then a bunch) leave

@@ -836,16 +836,23 @@ struct BodyRead
 // one reference's body, false when the reference, its 3D
 // (TESObjectREFR::Get3D, T/TESObjectREFR.h:375), its cell's bhkWorld
 // (TESObjectCELL::GetbhkWorld, T/TESObjectCELL.h:197) or the rigid body is
-// missing. Read on the JS thread under the world's lock taken as a reader
-// (bhkWorld::worldLock, B/bhkWorld.h:71; BSReadLockGuard,
-// B/BSAtomic.h:110-117). HYPOTHESIS: Havok's step and the node's update from
-// the body write under that lock as writers, so a read is never mixed across
-// two steps and the island it reads is never one the step frees; nothing in
-// CommonLib takes the lock (bhkWorld.h:71 is its one mention), so who holds it
-// is the exe's to show. HYPOTHESIS too: no writer of it waits for the JS tick
-// while it holds it, setPuppet's deadlock shape (above); x-body-read and
-// x-prop-follow read both as no hang and no step spike across reads every
-// update. The fields: pos the root's world translate in game units and rot
+// missing. Read on the JS thread and under no lock, the rung 2 plan's
+// section 4 order: HYPOTHESIS that the JS tick never overlaps Havok's step on
+// its worker threads (docs/engine/havok-props.md E2), so the reads are whole;
+// the fields are aligned floats, one pointer and a byte, so a read racing the
+// step would mix at most one step's motion, never a value that is not a
+// number, and the island pointer is the one dereference that could meet a
+// freed island (HYPOTHESIS: Havok frees a merged island inside its own step).
+// No lock is taken on the JS thread: Hook.cpp:86 sends every animation event
+// to the one JS thread through PushAndWait (FridaHooks.cpp:1744), from
+// whatever thread sent it, before any filter, so a JS thread waiting on
+// bhkWorld::worldLock (B/bhkWorld.h:71) while that thread, or one it waits
+// for, holds it as a writer would hang the game (the review of 3892415e,
+// finding 1). x-body-read and x-prop-follow read for a torn read across reads
+// every update (a crash, a step spike in the follower's largest step); if one
+// shows, the read moves to the game thread in this file's poll shape
+// (gameThrQ, as PollHostedGaze reads), never a lock on the JS thread. The
+// fields: pos the root's world translate in game units and rot
 // its world rotation (N/NiAVObject.h:158; N/NiTransform.h:25-26), the body's
 // drawn place, CommonLib's own node-to-reference pair (MoveToNode,
 // src/RE/T/TESObjectREFR.cpp:780-789; HYPOTHESIS that the engine's reference
@@ -866,7 +873,6 @@ bool ReadBody(uint32_t formId, float toGameUnits, BodyRead& out)
   if (!root || !world) {
     return false;
   }
-  RE::BSReadLockGuard reading{ world->worldLock };
   const PropBody body = BodyOf(*root);
   if (!body.havok) {
     return false;

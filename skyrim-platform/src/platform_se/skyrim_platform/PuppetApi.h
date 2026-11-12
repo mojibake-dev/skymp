@@ -130,7 +130,7 @@ Napi::Value SetRecordApplying(const Napi::CallbackInfo& info);
 // thuum docs/DECISIONS.md ADR-071 rung 2 (the sample v2; a prop's place is
 // its body's, never its reference's: docs/engine/havok-props.md E21):
 // readBodies(formIds, all) reads each loaded reference's Havok body on the JS
-// thread, under its cell's bhkWorld::worldLock taken as a reader, as
+// thread under no lock (PuppetApi.cpp's ReadBody says why), as
 // { formId, awake, motion, pos, rot, lin, ang }: pos the 3D root's world
 // translate in game units, rot its world rotation as Euler XYZ degrees, lin
 // in game units a second, ang in radians a second (Havok's own), motion

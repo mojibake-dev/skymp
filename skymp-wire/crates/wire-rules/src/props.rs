@@ -1596,6 +1596,50 @@ mod tests {
 
     #[test]
     #[allow(clippy::arithmetic_side_effects)] // a test's clocks, never a packet's path
+    fn a_first_sample_spends_no_more_of_a_lagging_clock_than_its_allowance() {
+        // rung 2's bound over any window (PROP_CLOCK_SLACK_MS: the cap for the window, the lag and the slack, plus the one
+        // step; 8,100 units at one instant) stands under physics rung 3a: an epoch's first sample takes at most
+        // PROP_FIRST_SAMPLE_UNITS of the time the clock has run, its lag included, and brings the clock to the server's,
+        // so a grant inside a lagging window adds nothing. A minute at 10 Hz with c2's clock still leaves the budget's
+        // clock PROP_CLOCK_LAG_MS behind the server's
+        let still = |p: &mut Props| {
+            assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
+            for i in 1..=600_u16 {
+                assert_eq!(p.transform(&facts(BASKET, C2, 1, i, 0, CELL, C1, false, false, 0.0, 1_000 + u64::from(i) * 100)), TransformVerdict::Accepted);
+            }
+        };
+        let lag_s = f32::from(u16::try_from(PROP_CLOCK_LAG_MS).unwrap_or(0)) / 1_000.0;
+        let slack_s = f32::from(u16::try_from(PROP_CLOCK_SLACK_MS).unwrap_or(0)) / 1_000.0;
+        // at one instant, 61,000, c3's grab takes the prop: its first sample's ask of the whole lag is held to the first
+        // allowance, and its crafted clock's whole steps after it spend the slack alone
+        let mut p = Props::default();
+        still(&mut p);
+        assert_eq!(p.claim(BASKET, C3, CELL, touch::GRAB, 61_000), ClaimVerdict::Granted(2));
+        assert_eq!(p.transform(&facts(BASKET, C3, 2, 1, 0, CELL, C1, false, true, PROP_FIRST_SAMPLE_UNITS + 1.0, 61_000)), TransformVerdict::TooFast);
+        assert_eq!(p.transform(&facts(BASKET, C3, 2, 1, 0, CELL, C1, false, true, PROP_FIRST_SAMPLE_UNITS, 61_000)), TransformVerdict::Accepted);
+        let mut granted = PROP_FIRST_SAMPLE_UNITS;
+        for i in 2..=40_u16 {
+            if p.transform(&facts(BASKET, C3, 2, i, u32::from(i) * 100, CELL, C1, false, true, PROP_STEP_ALLOWANCE_UNITS, 61_000)) == TransformVerdict::Accepted {
+                granted += PROP_STEP_ALLOWANCE_UNITS;
+            }
+        }
+        assert!(granted <= PROP_FIRST_SAMPLE_UNITS + PROP_MAX_SPEED_UNITS_PER_S * slack_s, "granted {granted}");
+        // the witness, the same instant with no grant: c2's own crafted whole steps spend the lag, the slack and the step,
+        // more than the grant's seat could, and within rung 2's 8,100
+        let mut q = Props::default();
+        still(&mut q);
+        let mut kept = 0.0_f32;
+        for i in 601..=640_u16 {
+            if q.transform(&facts(BASKET, C2, 1, i, u32::from(i - 600) * 100, CELL, C1, false, false, PROP_STEP_ALLOWANCE_UNITS, 61_000)) == TransformVerdict::Accepted {
+                kept += PROP_STEP_ALLOWANCE_UNITS;
+            }
+        }
+        assert!(kept > granted, "kept {kept}, granted {granted}");
+        assert!(kept <= PROP_STEP_ALLOWANCE_UNITS + PROP_MAX_SPEED_UNITS_PER_S * (lag_s + slack_s), "kept {kept}");
+    }
+
+    #[test]
+    #[allow(clippy::arithmetic_side_effects)] // a test's clocks, never a packet's path
     fn a_wake_and_rest_cycle_buys_no_first_allowance_the_clock_has_not_run() {
         // physics rung 3a on rung 2's one clock: an epoch's first sample may spend up to half a second of the prop's
         // clock, never a fresh half second of its own. A refill at every epoch rise (the build plan's form) hands a

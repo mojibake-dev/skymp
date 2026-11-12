@@ -3646,9 +3646,9 @@ void InstallPropContactHook()
  *    BSPointerHandle::get, B/BSPointerHandle.h:155, on the impulse's worker
  *    thread, as prop-impulse.js resolved it with no fault, and released at
  *    once), judged by OwnerOf (above). An explosion no actor owns (a trap's,
- *    the world's) or a projectile with no shooter is the world's, its cell
- *    host's: this seat's when this seat hosts the bracket object's cell, else
- *    undecided.
+ *    the world's) or a projectile whose shooter is no actor (none, a trap's
+ *    dart, a caster activator) is the world's, its cell host's: this seat's
+ *    when this seat hosts the bracket object's cell, else undecided.
  * 4. Another seat's: zeroed, counted. This seat's: the original, the body's
  *    reference joining the frame's impact set (26004's by its rigid body's
  *    collidable, hkpWorldObject::GetUserData, H/hkpWorldObject.h:62, which is
@@ -3687,7 +3687,12 @@ void InstallPropContactHook()
  * (78092, its call inside HandleHits never attached in 080520: section 7
  * item 2) leaves no spin; that an explosion a projectile's impact spawns
  * updates in its own frame, never nested inside the projectile's (the plan's
- * R4); how a zeroed 26005 looks on a live NPC the watcher hosts (item 4)
+ * R4); how a zeroed 26005 looks on a live NPC the watcher hosts (item 4);
+ * that the zero vector a zeroed 26004 still hands 78091 activates no sleeping
+ * island (unread: a far host's client would track and read such bodies awake,
+ * propService.ts wakeFar); and that the skipped 26005 original writes nothing
+ * through a_pos (its hkVector4&, non-const, TESHavokUtilities.h:14) that its
+ * caller reads
  */
 namespace {
 // the two sites as CommonLib declares them (TESHavokUtilities.h:14, :18)
@@ -3892,10 +3897,12 @@ void JudgeImpulseCause(ImpulseFrame& frame)
   frame.siteId = projectile->formID;
   const RE::NiPointer<RE::TESObjectREFR> shooter =
     projectile->GetProjectileRuntimeData().shooter.get();
-  if (shooter) {
+  if (shooter && shooter->GetFormType() == RE::FormType::ActorCharacter) {
     frame.causeId = shooter->formID;
     frame.owner = OwnerOf(shooter.get());
   } else {
+    // no actor named (none, a trap's dart, a caster activator): the world's,
+    // its cell host's, as an explosion no actor owns
     frame.owner = WorldCauseOwner(projectile);
   }
 }

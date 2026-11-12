@@ -117,9 +117,9 @@ const JUMP_UNITS = 256;
 // the word that answers it (physics rung 3, B5)
 const CLAIM_EVERY_MS = 2000;
 // Physics rung 3 (ADR-071 decision 4: the caster claims what its impact moved
-// in one PropClaim per impact): a shout's cone raises one propImpulse per
-// collidable it pushes, across ticks, under one impact number, so a cone's
-// impact is claimed this long after its first event, in one claim (16
+// in one PropClaim per impact): a cone raises a new impact number at each
+// HandleHits frame that pushed, so its events fold by cause for
+// CONE_BATCH_MS, claimed this long after the first of them in one claim (16
 // references at most, PropClaim v2's); an explosion's and a projectile's
 // impact is claimed on the update its event comes (one event per frame). The
 // cone crosses the Riverwood Trader's cart in about 70 ms (1,536 units a
@@ -1606,9 +1606,9 @@ export class PropService extends ClientListener {
 
     // Physics rung 3 (ADR-071 decision 4; the rung 3 plan's B4): the impacts
     // this seat's own cause gave since the last update, folded by impact
-    // number, a cone's held CONE_BATCH_MS from its first event (its events
-    // come one per collidable across ticks) and every other kind's claimed at
-    // once. Each impact's rows (items and trap bodies; a static and a ragdoll
+    // number and a cone's by its cause (a cone raises a new impact number at
+    // each HandleHits frame that pushed, so its events fold by cause for
+    // CONE_BATCH_MS), every other kind's claimed at once. Each impact's rows (items and trap bodies; a static and a ragdoll
     // are no row before rungs 4 and 5) are tracked in place at any distance
     // (B5), and the ones this seat does not own go in one claim by touch 3; a
     // row another seat streams awake stays home (A3: the server refuses it
@@ -1617,10 +1617,11 @@ export class PropService extends ClientListener {
     // the push itself (the host's wake, A7)
     private claimImpulses(now: number) {
         for (const e of this.impulses) {
-            let batch = this.impactBatches.get(e.impact);
+            const key = e.kind === "cone" ? `cone ${e.cause}` : `${e.impact}`;
+            let batch = this.impactBatches.get(key);
             if (!batch) {
-                batch = { kind: e.kind, cause: e.cause, firstAt: now, refs: [] };
-                this.impactBatches.set(e.impact, batch);
+                batch = { impact: e.impact, kind: e.kind, cause: e.cause, firstAt: now, refs: [] };
+                this.impactBatches.set(key, batch);
             }
             for (const r of e.refrs) {
                 if (!batch.refs.some((x) => x.localId === r.localId)) {
@@ -1630,11 +1631,11 @@ export class PropService extends ClientListener {
         }
         this.impulses = [];
         const myId = this.myId();
-        this.impactBatches.forEach((batch, impact) => {
+        this.impactBatches.forEach((batch, key) => {
             if (batch.kind === "cone" && now - batch.firstAt < CONE_BATCH_MS && batch.refs.length < 16) {
                 return;
             }
-            this.impactBatches.delete(impact);
+            this.impactBatches.delete(key);
             const claims: Prop[] = [];
             let rows = 0;
             for (const r of batch.refs) {
@@ -1647,14 +1648,14 @@ export class PropService extends ClientListener {
                     continue;
                 }
                 if (this.followLive(prop, now)) {
-                    logLab(TAG, `impact ${impact}: prop ${prop.refr.toString(16)} another seat streams awake, no claim`);
+                    logLab(TAG, `impact ${batch.impact}: prop ${prop.refr.toString(16)} another seat streams awake, no claim`);
                     continue;
                 }
                 claims.push(prop);
             }
-            logTrace(this, `impact ${impact} (${batch.kind}, cause ${batch.cause.toString(16)}): ${batch.refs.length} references pushed, ${rows} rows, ${claims.length} to claim`);
+            logTrace(this, `impact ${batch.impact} (${batch.kind}, cause ${batch.cause.toString(16)}): ${batch.refs.length} references pushed, ${rows} rows, ${claims.length} to claim`);
             if (claims.length > 0) {
-                this.claimMany(claims, TOUCH_IMPULSE, now, `impact ${impact}: ${batch.kind}, cause ${batch.cause.toString(16)}`);
+                this.claimMany(claims, TOUCH_IMPULSE, now, `impact ${batch.impact}: ${batch.kind}, cause ${batch.cause.toString(16)}`);
             }
         });
     }
@@ -1703,7 +1704,12 @@ export class PropService extends ClientListener {
             let prop = this.props.get(w.message.refr);
             if (!prop) {
                 const localId = remoteIdToLocalId(w.message.refr);
-                prop = localId ? this.trackInPlace(w.message.refr, localId, undefined, "its stream arrived") : undefined;
+                const body = this.trapBodies.get(w.message.refr);
+                // an item's stream; a trap body is D-S3's, an unknown one taken at its word
+                prop = !localId ? undefined
+                    : body ? this.trackTrapBody(w.message.refr, body, w.at, false)
+                    : this.isItem(localId, w.message.refr) ? this.trackInPlace(w.message.refr, localId, undefined, "its stream arrived")
+                    : undefined;
             }
             if (prop) {
                 this.feed(prop, w.message, w.at, false);
@@ -1983,7 +1989,10 @@ export class PropService extends ClientListener {
     // in place, so it streams as the host's wake (A7). Another seat's far
     // woken copy is not its to stream (the declared limit R6 of the plan: a
     // puppet's walk into a far item moves it with no claim). HYPOTHESIS: rare;
-    // the count line reads it
+    // the count line reads it. HYPOTHESIS too: that the zero vector a zeroed
+    // 26004 still hands 78091 (another seat's cause, FridaHooks.cpp) wakes no
+    // sleeping island, else the bodies a remote blast touched here read awake
+    // and are tracked by this read, unmoved
     private wakeFar(far: number[], keep: Set<number>) {
         const ids = far.filter((localId) => !this.byLocal.has(localId)).slice(0, ENGINE_REFS_MAX);
         if (ids.length === 0) {
@@ -2654,7 +2663,7 @@ export class PropService extends ClientListener {
     // awake samples of untracked props awaiting their tracking (trackStreams),
     // and the impulse rule as last told to the platform (applyImpulseRule)
     private impulses: Array<{ impact: number; kind: PropImpulseEvent["kind"]; cause: number; refrs: Member[] }> = [];
-    private readonly impactBatches = new Map<number, { kind: PropImpulseEvent["kind"]; cause: number; firstAt: number; refs: Member[] }>();
+    private readonly impactBatches = new Map<string, { impact: number; kind: PropImpulseEvent["kind"]; cause: number; firstAt: number; refs: Member[] }>();
     private streamsUntracked: Array<{ message: PropTransformMessage; at: number }> = [];
     private impulseRuleSent: boolean | undefined = undefined;
     // the player's drops awaiting the server's reference

@@ -157,9 +157,10 @@ declare module "skyrimPlatform" {
     // Address Library 26004 and 26005, judged by the innermost Explosion::Update,
     // Projectile::ProcessImpacts or ConeProjectile::HandleHits on the thread),
     // raised on the next tick while setImpulseCauseRule(true) holds: impact this
-    // seat's impact number from 1 (a shout's cone raises one event per
-    // collidable, across ticks, under one number; a set past 16 references
-    // splits under one number too), kind the frame, cause the cause's form id
+    // seat's impact number from 1 (a cone raises a new impact number at each
+    // HandleHits frame that pushed, so its events fold by cause for
+    // CONE_BATCH_MS, propService.ts; a set past 16 references splits under one
+    // number), kind the frame, cause the cause's form id
     // here (0x14, an actor this seat simulates; 0 for none, in a cell this
     // seat hosts), refrs each reference pushed once in push order, every
     // physics body (D-PH5): refrId this seat's form id, formType its base's

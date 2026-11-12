@@ -2,26 +2,38 @@
 # c2 are new characters (profiles 9 and 10), so their actors are 0xff000002 and 0xff000003
 # (melee-reach's note: the clean world holds two characters, ids start at 0xff000000). The
 # T2 spawn (startPoints: 133857, -61130, 14662 in Tamriel) has no item placement within
-# 2500 units (lab/esm.py near, 2026-10-29), so the prop is a drop: at 600 ms c1 gives itself
+# 2500 units (lab/esm.py near, 2026-10-29), so the props are drops: at 600 ms c1 gives itself
 # an iron dagger (0x1397e, 80254) through the console (AddItem, answered with a line as
 # smoke declares), at 1200 ms drops it (DropItem, both stacks place the reference at the
-# generator's next id and tell both clients CreateActor alike). At 2000 ms c1
-# claims the drop (PropClaim touch 2): the wire stack grants it (c1 is a listener of its
-# drop, placed 64 units ahead in its grid square; the claimant's cell is no gate since
-# physics rung 1, A1 to A7 of ADR-071 decision 2) at epoch 1 and tells every listener of
-# the prop, c1 and c2 (PropOwner); the legacy stack knows no MsgType 59. At 2500 ms c1
-# sends an awake sample and at 3000 ms the sleep: the wire stack writes the record and
-# relays each to c2 alone (the two PropTransform divergences), and the sleep returns the
-# prop to the cell's host by default (A4: every return is a word; nobody hosts the cell
-# here), so both clients hear a PropOwner with player 0 at epoch 2 (SCHEMA_VERSION 45);
-# the legacy stack knows no MsgType 58. c1's departure sends no word: its row returned at
-# rest. If the drop's id were assumed and wrong on
-# a run (something else drew an id first: in a full T2 the sessions before this one allocate
-# forms on the same server, and P3's first T2 read exactly that, 2026-10-29), nothing here
-# assumes it: the sends and the declarations name the drop as "{{created:80254}}", which the
-# fakeclient resolves to the id the CreateActor it received for that base carried, and the
-# harness resolves the same way per stack before matching. c2 steps again
-# at 5 s of its own, so it outlives c1, as in every session.
+# generator's next id and tell both clients CreateActor alike); at 1300 ms and 1400 ms the
+# same for an iron ingot (IngotIron, MISC 0x5ace4, 371940 by lab/esm.py, b-prop-push's).
+# Fake clients run no physics, so the two drops at one drop point overlap harmlessly. At
+# 2000 ms c1 claims both drops in one claim (PropClaim v2's refrs, touch 2; physics rung 2,
+# ADR-071 decision 6): the wire stack judges each alone and grants each (c1 is a listener of
+# its drops; the claimant's cell is no gate since physics rung 1) at epoch 1, telling every
+# listener of each prop, c1 and c2 (PropOwner); the legacy stack knows no MsgType 59. The
+# samples are v2's (an epoch, a sequence, the owner's clock, both velocities, the hold and
+# no bones; SCHEMA_VERSION 46). At 2500 ms c1 sends the dagger awake and at 2600 ms the same
+# sample again, which is Late (a sequence not newer than the last at its epoch) and dropped
+# with no relay and no answer; at 3000 ms the dagger's sleep and at 3200 ms the ingot's:
+# the wire stack writes each record and relays each sample to c2 alone, and each sleep
+# returns its prop to the cell's host by default (A4: every return is a word), so both
+# clients hear a PropOwner with player 0 at epoch 2 for each; the legacy stack knows no
+# MsgType 58. Then two refused samples of the dagger, each answered to its sender alone
+# with the current word and then the record (PropTransform at seq 0, the rested record's
+# position): c1's at 3500 ms under epoch 1, a sample of the tenure its rest ended, and c2's
+# at its own 4000 ms under epoch 2 from a seat that owns nothing. Nobody hosts the cell in
+# this session (no client reports a load, physics rung 1's header), so the rule refuses
+# both as a resting prop in an unhosted cell (Frozen, judged before the epoch); had c1
+# hosted it they would read Stale and NotOwner, and the answers are the same either way.
+# c1's departure sends no word: both rows returned at rest. If a drop's id were assumed
+# and wrong on a run (something else drew an id first: in a full T2 the sessions before
+# this one allocate forms on the same server, and P3's first T2 read exactly that,
+# 2026-10-29), nothing here assumes it: the sends and the declarations name the drops as
+# "{{created:80254}}" and "{{created:371940}}", which the fakeclient resolves to the id the
+# CreateActor it received for that base carried, and the harness resolves the same way per
+# stack before matching. c2 steps again at 5 s of its own, so it outlives c1, as in every
+# session.
 id: prop-physics
 clients:
   c1: {profile_id: 9}
@@ -30,17 +42,24 @@ steps:
   - {client: c1, at_ms: 0, move: {dx: 10}}
   - {client: c1, at_ms: 600, send: {t: 12, data: {commandName: AddItem, args: [20, 80254, 1]}}}
   - {client: c1, at_ms: 1200, send: {t: 19, baseId: 80254, count: 1}, reliable: true}
-  - {client: c1, at_ms: 2000, send: {t: 59, refr: "{{created:80254}}", touch: 2}, reliable: true}
-  - {client: c1, at_ms: 2500, send: {t: 58, refr: "{{created:80254}}", pos: [133900.0, -61100.0, 14662.0], rot: [0.0, 0.0, 72.0], asleep: false}, reliable: false}
-  - {client: c1, at_ms: 3000, send: {t: 58, refr: "{{created:80254}}", pos: [133910.0, -61090.0, 14650.0], rot: [0.0, 0.0, 80.0], asleep: true}, reliable: true}
+  - {client: c1, at_ms: 1300, send: {t: 12, data: {commandName: AddItem, args: [20, 371940, 1]}}}
+  - {client: c1, at_ms: 1400, send: {t: 19, baseId: 371940, count: 1}, reliable: true}
+  - {client: c1, at_ms: 2000, send: {t: 59, refrs: ["{{created:80254}}", "{{created:371940}}"], touch: 2}, reliable: true}
+  - {client: c1, at_ms: 2500, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 1, tMs: 2500, pos: [133900.0, -61100.0, 14662.0], rot: [0.0, 0.0, 72.0], lin: [80.0, 20.0, 0.0], ang: [0.0, 0.0, 0.5], asleep: false, held: false, bones: []}, reliable: false}
+  - {client: c1, at_ms: 2600, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 1, tMs: 2500, pos: [133900.0, -61100.0, 14662.0], rot: [0.0, 0.0, 72.0], lin: [80.0, 20.0, 0.0], ang: [0.0, 0.0, 0.5], asleep: false, held: false, bones: []}, reliable: false}
+  - {client: c1, at_ms: 3000, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 2, tMs: 3000, pos: [133910.0, -61090.0, 14650.0], rot: [0.0, 0.0, 80.0], lin: [0.0, 0.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: true, held: false, bones: []}, reliable: true}
+  - {client: c1, at_ms: 3200, send: {t: 58, refr: "{{created:371940}}", epoch: 1, seq: 1, tMs: 3200, pos: [133930.0, -61110.0, 14662.0], rot: [0.0, 0.0, 0.0], lin: [0.0, 0.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: true, held: false, bones: []}, reliable: true}
+  - {client: c1, at_ms: 3500, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 3, tMs: 3500, pos: [133912.0, -61088.0, 14650.0], rot: [0.0, 0.0, 80.0], lin: [20.0, 20.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: false, held: false, bones: []}, reliable: true}
   - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 4000, send: {t: 58, refr: "{{created:80254}}", epoch: 2, seq: 1, tMs: 4000, pos: [133915.0, -61085.0, 14650.0], rot: [0.0, 0.0, 80.0], lin: [20.0, 20.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: false, held: false, bones: []}, reliable: true}
   - {client: c2, at_ms: 5000, move: {dx: 60}}
 divergences:
-  # the drop's copy: the legacy server creates it at the dropper's own position and the branch at the
-  # drop point, 64 units ahead along the dropper's heading (72 degrees: +60.868, +19.777) and 48 up
+  # the drops' copies: the legacy server creates each at the dropper's own position and the branch at
+  # the drop point, 64 units ahead along the dropper's heading (72 degrees: +60.868, +19.777) and 48 up
   # (MpActor::DropItem through PapyrusObjectReference::PlaceAt, m3-prop-physics 967ba8c8; thuum
   # docs/verbs/prop-physics.md, D75: the create word carries the position the clients spawn at, so the
-  # copy never spawns inside the dropper's capsule). The numbers are the harness's printed f32 values.
+  # copy never spawns inside the dropper's capsule). The numbers are the harness's printed f32 values;
+  # c1 stands still between the two drops, so the ingot's are the dagger's.
   - client: c1
     msg: {t: 33, baseId: 80254, transform: {pos: [133867, -61130, 14662]}}
     legacy: 1
@@ -62,40 +81,99 @@ divergences:
     wire: 1
     reason: the same create word to the drop's other listener, at the drop point on the branch (967ba8c8, D75)
   - client: c1
-    msg: {t: 41, text: "AddItem done", refused: false}
+    msg: {t: 33, baseId: 371940, transform: {pos: [133867, -61130, 14662]}}
+    legacy: 1
+    wire: 0
+    reason: the ingot's create word at the dropper's position on the legacy server, as the dagger's
+  - client: c1
+    msg: {t: 33, baseId: 371940, transform: {pos: [133927.875, -61110.22265625, 14710]}}
     legacy: 0
     wire: 1
-    reason: the server answers every console command with a line (ConsoleOutput); the legacy server prints nothing back
+    reason: the ingot's create word at the drop point on the branch, as the dagger's (967ba8c8, D75)
+  - client: c2
+    msg: {t: 33, baseId: 371940, transform: {pos: [133867, -61130, 14662]}}
+    legacy: 1
+    wire: 0
+    reason: the ingot's create word to its other listener, at the dropper's position on the legacy server
+  - client: c2
+    msg: {t: 33, baseId: 371940, transform: {pos: [133927.875, -61110.22265625, 14710]}}
+    legacy: 0
+    wire: 1
+    reason: the ingot's create word to its other listener, at the drop point on the branch (967ba8c8, D75)
+  - client: c1
+    msg: {t: 41, text: "AddItem done", refused: false}
+    legacy: 0
+    wire: 2
+    reason: the server answers every console command with a line (ConsoleOutput), the dagger's AddItem and the ingot's; the legacy server prints nothing back
+  # the claim of both drops (PropClaim v2, each reference judged alone): a grant word each, to both listeners
   - client: c1
     msg: {t: 60, refr: "{{created:80254}}", player: 0xff000002, epoch: 1}
     legacy: 0
     wire: 1
-    reason: the owner word to the claimant, a listener of its own drop (PropOwner, thuum docs/verbs/prop-physics.md); the legacy server knows no such message
+    reason: the dagger's owner word to the claimant, a listener of its own drop (PropOwner, thuum docs/verbs/prop-physics.md); the legacy server knows no such message
   - client: c2
     msg: {t: 60, refr: "{{created:80254}}", player: 0xff000002, epoch: 1}
     legacy: 0
     wire: 1
-    reason: the owner word to the prop's other listener (PropOwner, thuum docs/verbs/prop-physics.md); the legacy server knows no such message
-  - client: c2
-    msg: {t: 58, refr: "{{created:80254}}", asleep: false}
+    reason: the dagger's owner word to the prop's other listener (PropOwner, thuum docs/verbs/prop-physics.md); the legacy server knows no such message
+  - client: c1
+    msg: {t: 60, refr: "{{created:371940}}", player: 0xff000002, epoch: 1}
     legacy: 0
     wire: 1
-    reason: the simulator's awake sample relayed to the cell's other listener (PropTransform, thuum docs/verbs/prop-physics.md); the legacy server drops the type
+    reason: the ingot's owner word to the claimant, granted in the same claim as the dagger, judged alone (PropClaim v2, physics rung 2); the legacy server knows no such message
   - client: c2
-    msg: {t: 58, refr: "{{created:80254}}", asleep: true}
+    msg: {t: 60, refr: "{{created:371940}}", player: 0xff000002, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the ingot's owner word to its other listener (PropClaim v2, physics rung 2); the legacy server knows no such message
+  # the samples relayed: the dagger's awake one once (its repeat at 2600 ms is Late), its sleep, the ingot's sleep
+  - client: c2
+    msg: {t: 58, refr: "{{created:80254}}", seq: 1, asleep: false}
+    legacy: 0
+    wire: 1
+    reason: the simulator's awake sample relayed to the cell's other listener once, its repeat dropped as Late (PropTransform v2's sequence, physics rung 2); the legacy server drops the type
+  - client: c2
+    msg: {t: 58, refr: "{{created:80254}}", seq: 2, asleep: true}
     legacy: 0
     wire: 1
     reason: the simulator's sleep sample relayed reliable to the cell's other listener (PropTransform); the legacy server drops the type
+  - client: c2
+    msg: {t: 58, refr: "{{created:371940}}", seq: 1, asleep: true}
+    legacy: 0
+    wire: 1
+    reason: the ingot's sleep sample relayed reliable to its other listener (PropTransform); the legacy server drops the type
+  # the rests' returns, and the same word again as each refused sample's answer to its sender
   - client: c1
     msg: {t: 60, refr: "{{created:80254}}", player: 0, epoch: 2}
     legacy: 0
-    wire: 1
-    reason: the owner word at the body's rest (nobody hosts the cell in this session, so the asleep sample returns the prop to the host by default, player 0, at epoch 2; A4 of ADR-071 decision 2, physics rung 1); the legacy server knows no such message
+    wire: 2
+    reason: the dagger's owner word at its rest (nobody hosts the cell in this session, so the asleep sample returns the prop to the host by default, player 0, at epoch 2; A4 of ADR-071 decision 2, physics rung 1), and the same word again answering c1's refused sample at 3500 ms (physics rung 2); the legacy server knows no such message
   - client: c2
     msg: {t: 60, refr: "{{created:80254}}", player: 0, epoch: 2}
     legacy: 0
+    wire: 2
+    reason: the same return word to the prop's other listener, and again answering c2's refused sample at its 4000 ms (physics rung 2); the legacy server knows no such message
+  - client: c1
+    msg: {t: 60, refr: "{{created:371940}}", player: 0, epoch: 2}
+    legacy: 0
     wire: 1
-    reason: the same return word to the prop's other listener; the legacy server knows no such message
+    reason: the ingot's return word at its rest, player 0 at epoch 2 (A4); the legacy server knows no such message
+  - client: c2
+    msg: {t: 60, refr: "{{created:371940}}", player: 0, epoch: 2}
+    legacy: 0
+    wire: 1
+    reason: the ingot's return word to its other listener; the legacy server knows no such message
+  # the record answers (PropTransform at seq 0, the record's own transform at the prop's epoch)
+  - client: c1
+    msg: {t: 58, refr: "{{created:80254}}", epoch: 2, seq: 0, tMs: 0, asleep: true, held: false, pos: [133910.0, -61090.0, 14650.0]}
+    legacy: 0
+    wire: 1
+    reason: the record answering c1's refused sample, after the word (ADR-071 decision 6, every refusal answered with the record; physics rung 2); the legacy server knows no MsgType 58
+  - client: c2
+    msg: {t: 58, refr: "{{created:80254}}", epoch: 2, seq: 0, tMs: 0, asleep: true, held: false, pos: [133910.0, -61090.0, 14650.0]}
+    legacy: 0
+    wire: 1
+    reason: the record answering c2's refused sample, after the word (physics rung 2); the legacy server knows no MsgType 58
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0

@@ -301,6 +301,22 @@ declare module "skyrimPlatform" {
     function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean; trigger?: boolean; exempt?: boolean } | null;
     function setPropFollowed(formId: number, followed: boolean): boolean;
     function setRecordApplying(formId: number, applying: boolean): boolean;
+    // thuum ADR-071 rung 2 (the sample v2; a prop's place is its body's, never
+    // its reference's: havok-props.md E21): each loaded reference's Havok body
+    // read on the JS thread, pos its 3D root's world translate in game units,
+    // rot that rotation as Euler XYZ degrees (x and z in -180 to 180, y in -90
+    // to 90), lin game units a second, ang radians a second, motion Havok's
+    // type (1, 2, 3 and 6 dynamic, 4 Keyframed, 5 Fixed), awake its island in
+    // the world's active list; an id with no reference, 3D, cell world or
+    // rigid body on its root is left out. With all false a body is answered
+    // while awake and once more at the read its awake bit fell (rule 9), with
+    // all true every body found. setBodyVelocity queues the take-over's
+    // velocities to the main thread (true when queued) and its task logs
+    // "[verb:prop-physics] velocity set on <id>" or "velocity not set on <id>"
+    // with why. Definitions.txt carries the same
+    interface BodyRead { formId: number; awake: boolean; motion: number; pos: number[]; rot: number[]; lin: number[]; ang: number[] }
+    function readBodies(formIds: number[], all: boolean): BodyRead[];
+    function setBodyVelocity(formId: number, lin: number[], ang: number[]): boolean;
     // thuum docs/DECISIONS.md D-W1 A and D-C2 A (a trigger volume's entry is
     // its presser's owner's; docs/research/fifty-fixes-2026-11-07.md 1(b)):
     // the gate's presser rule, off by default in the platform so an older

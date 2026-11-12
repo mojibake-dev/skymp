@@ -162,13 +162,6 @@ pub enum ClaimVerdict {
     /// (`unloaded`, `loaded`, `reached`; ADR-071's D-PH2 A): its 3D of the
     /// prop is gone, so a claim from it there is a late one; nothing changes.
     Away,
-    /// A grab from a claimant that holds another prop already (a live
-    /// grabbed row of its own): the engine holds one grabbed object per
-    /// player (its grabbedObject, CommonLibSSE-NG P/PlayerCharacter.h:697), so
-    /// a second hold is none its engine has, and a modified seat cannot hold
-    /// every prop near it (a consistency bound, ADR-063 decision 4); nothing
-    /// changes.
-    HeldTwo,
 }
 
 /// The answer to a simulator's transform (ADR-058 decision 2; A4, A7).
@@ -284,12 +277,6 @@ impl Props {
         }
     }
 
-    /// Whether `player` holds a prop other than `refr`: a live row of its
-    /// own, grabbed (one hand per player, `ClaimVerdict::HeldTwo`).
-    fn holds_another(&self, player: u32, refr: u32) -> bool {
-        self.rows.iter().any(|(&other, row)| other != refr && row.owner == player && row.grabbed && row.live())
-    }
-
     /// `player` touched `refr`, which stands in `cell`, by `touch` at
     /// `now_ms` (A2, A3): the claimant that simulates it already keeps it
     /// (Same, the grab mark from the touch); another player's grab holds it
@@ -300,15 +287,26 @@ impl Props {
     /// race at rest); a prop at rest, stalled or unclaimed is the newest
     /// touch's (Granted, the epoch up, the word to every listener). The
     /// claimant's cell and distance are no gate (ADR-063 decision 4); a claim
-    /// from a game that unloaded the cell is late (Away), and a grab from a
-    /// player that holds another prop already is no hold its engine has
-    /// (HeldTwo).
+    /// from a game that unloaded the cell is late (Away). A grab ends the
+    /// claimant's hold of any other prop first, whatever its own verdict: the
+    /// engine holds one grabbed object per player (its grabbedObject,
+    /// CommonLibSSE-NG P/PlayerCharacter.h:697), so a new grab means the old
+    /// hold is over, whether or not the server heard it end (a release inside
+    /// the grab claim's round trip, the engine's own drop, havok-props.md
+    /// E41), and no seat holds two props at once.
     pub fn claim(&mut self, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> ClaimVerdict {
+        if touch == touch::GRAB {
+            // the grab mark alone goes: the old row stays the player's awake
+            // row, streamed or, past PROP_MOVING_MS from its last sample (not
+            // refreshed here), stalled and anyone's to claim
+            for (other, row) in &mut self.rows {
+                if *other != refr && row.owner == player && row.grabbed {
+                    row.grabbed = false;
+                }
+            }
+        }
         if self.away.contains(&(player, cell)) {
             return ClaimVerdict::Away;
-        }
-        if touch == touch::GRAB && self.holds_another(player, refr) {
-            return ClaimVerdict::HeldTwo;
         }
         if let Some(row) = self.rows.get_mut(&refr) {
             if row.live() {
@@ -641,31 +639,34 @@ mod tests {
     }
 
     #[test]
-    fn a_player_holds_one_prop_at_a_time() {
-        // the engine holds one grabbed object per player (CommonLibSSE-NG P/PlayerCharacter.h:697): a grab from a
-        // player that holds another prop is refused, so no seat holds every prop near it (the review of b7151a42)
+    fn a_players_new_grab_ends_its_hold_of_another_prop() {
+        // the engine holds one grabbed object per player (CommonLibSSE-NG P/PlayerCharacter.h:697): a new grab means the
+        // old hold is over, whether or not its release reached the server (the re-check of 46a7bfa4: refusing the new
+        // grab contradicted the engine), so the grab is judged as any grab and the old row loses its grab mark alone
         let mut p = Props::default();
         assert_eq!(p.claim(BASKET, C2, CELL, touch::GRAB, 1_000), ClaimVerdict::Granted(1));
-        // the second grab: refused, nothing changes
-        assert_eq!(p.claim(0x54a44, C2, CELL, touch::GRAB, 1_100), ClaimVerdict::HeldTwo);
-        assert_eq!(p.epoch_of(0x54a44), 0);
-        assert_eq!(p.live_owner(0x54a44), 0);
-        // the first still held: another seat's touch on it is Held, and the holder's grab of it again is Same
-        assert_eq!(p.claim(BASKET, C1, CELL, touch::CONTACT, 1_200), ClaimVerdict::Held);
-        assert_eq!(p.claim(BASKET, C2, CELL, touch::GRAB, 1_250), ClaimVerdict::Same);
+        // the second grab: granted, the first hold ended
+        assert_eq!(p.claim(0x54a44, C2, CELL, touch::GRAB, 1_100), ClaimVerdict::Granted(1));
+        assert_eq!(p.live_owner(0x54a44), C2);
+        // the first stays c2's awake row, held no more: another seat's contact on it is Moving inside the window, from
+        // its grant at 1_000 (the new grab refreshes no sample), not Held; past the window the stalled row is the next
+        // touch's
+        assert_eq!(p.claim(BASKET, C1, CELL, touch::CONTACT, 1_200), ClaimVerdict::Moving);
         assert_eq!(p.live_owner(BASKET), C2);
-        // a contact is no grab (the holder's capsule takes a prop at rest), but a grab of that row is a second hold
-        assert_eq!(p.claim(0x1234, C2, CELL, touch::CONTACT, 1_300), ClaimVerdict::Granted(1));
-        assert_eq!(p.claim(0x1234, C2, CELL, touch::GRAB, 1_350), ClaimVerdict::HeldTwo);
-        // another player's grab is its own hand's
-        assert_eq!(p.claim(0x54a44, C1, CELL, touch::GRAB, 1_400), ClaimVerdict::Granted(1));
-        // the first's release frees the hand: the next grab is taken
-        assert_eq!(p.claim(BASKET, C2, CELL, touch::DROP, 1_500), ClaimVerdict::Same);
-        assert_eq!(p.claim(0x1234, C2, CELL, touch::GRAB, 1_600), ClaimVerdict::Same);
-        // and the holder's rest, a hold already ended, frees it too
-        assert_eq!(p.transform(&facts(0x1234, C2, CELL, C1, true, 10.0, 1_700)), TransformVerdict::Returned(2));
-        assert_eq!(p.claim(0x5678, C2, CELL, touch::GRAB, 1_800), ClaimVerdict::Granted(1));
-        assert_eq!(p.claim(BASKET, C2, CELL, touch::GRAB, 1_900), ClaimVerdict::HeldTwo);
+        assert_eq!(p.claim(BASKET, C1, CELL, touch::CONTACT, 1_000 + PROP_MOVING_MS - 1), ClaimVerdict::Moving);
+        assert_eq!(p.claim(BASKET, C1, CELL, touch::CONTACT, 1_000 + PROP_MOVING_MS), ClaimVerdict::Granted(2));
+        // the new hold stands: another seat's touch is Held, the holder's grab of it again is Same
+        assert_eq!(p.claim(0x54a44, C3, CELL, touch::CONTACT, 2_700), ClaimVerdict::Held);
+        assert_eq!(p.claim(0x54a44, C2, CELL, touch::GRAB, 2_750), ClaimVerdict::Same);
+        assert_eq!(p.claim(0x54a44, C3, CELL, touch::CONTACT, 2_800), ClaimVerdict::Held);
+        // a contact is no grab and ends nothing, and another player's grab is its own hand's
+        assert_eq!(p.claim(0x1234, C2, CELL, touch::CONTACT, 2_900), ClaimVerdict::Granted(1));
+        assert_eq!(p.claim(0x5678, C1, CELL, touch::GRAB, 3_000), ClaimVerdict::Granted(1));
+        assert_eq!(p.claim(0x54a44, C3, CELL, touch::CONTACT, 3_050), ClaimVerdict::Held);
+        // the holder's grab of a row it streams moves the hand there: that row is held, the last one takes a grab
+        assert_eq!(p.claim(0x1234, C2, CELL, touch::GRAB, 3_100), ClaimVerdict::Same);
+        assert_eq!(p.claim(0x1234, C3, CELL, touch::CONTACT, 3_150), ClaimVerdict::Held);
+        assert_eq!(p.claim(0x54a44, C3, CELL, touch::GRAB, 3_200), ClaimVerdict::Granted(2));
     }
 
     #[test]
@@ -1082,8 +1083,6 @@ mod tests {
                             prop_assert!(matches!(stream, Some((s, last, false)) if s != player && now < last.saturating_add(PROP_MOVING_MS)));
                         }
                         ClaimVerdict::Away => prop_assert_eq!(p.epoch_of(BASKET), epoch),
-                        // one prop here, so no hand ever holds another
-                        ClaimVerdict::HeldTwo => return Err(TestCaseError::fail("a second hold of the one prop")),
                     },
                     2 | 3 => match p.transform(&facts(BASKET, player, CELL, C1, asleep, moved, now)) {
                         TransformVerdict::Accepted => {
@@ -1156,7 +1155,7 @@ mod tests {
             ops in prop::collection::vec((0_usize..3, 0_usize..3, 0_u8..5, 0_u64..400), 1..200),
         ) {
             // one hand per player (CommonLibSSE-NG P/PlayerCharacter.h:697): whatever three seats claim and stream
-            // over three props, no seat's rows ever hold two at once
+            // over three props, no seat's rows ever hold two at once (a new grab ends the old hold)
             let seats = [C1, C2, C3];
             let refrs = [BASKET, 0x54a44, 0x1234];
             let mut p = Props::default();

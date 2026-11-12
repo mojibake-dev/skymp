@@ -379,12 +379,14 @@ TEST_CASE("A claim from the next square is granted and one from two squares "
 }
 
 TEST_CASE("A player holds one prop at a time: its grab of a second prop is "
-          "refused E_PROP_HELD_TWO and answered with that prop's word, the "
-          "first stays held, and a grab after the first's release is granted",
+          "granted and ends its hold of the first, which stays its awake "
+          "row, so the host's contact on it is refused E_PROP_MOVING and "
+          "answered",
           "[Prop][espm]")
 {
   // the engine holds one grabbed object per player (CommonLibSSE-NG
-  // P/PlayerCharacter.h:697), so a second hold is none its engine has
+  // P/PlayerCharacter.h:697): a new grab means the old hold is over, whether
+  // or not its release reached the server
   constexpr uint32_t kTub = 0xff000d0b;
   auto& p = GetPartOne();
   auto w = Enter(p);
@@ -394,39 +396,40 @@ TEST_CASE("A player holds one prop at a time: its grab of a second prop is "
   REQUIRE(p.PropLiveOwner(w.prop) == kC2);
   p.Messages().clear();
 
-  // the second grab: refused with the exact line, nothing changes, and the
-  // claimant hears the tub's word (the host's by default, no epoch yet)
-  {
-    LogCapture log;
-    Claim(p, 1, kTub, 1);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_HELD_TWO: ff000d02 claims "
-                      "prop ff000d0b by touch 1; it holds another prop "
-                      "already: one grabbed object per player") == 1);
-  }
-  REQUIRE(p.PropLiveOwner(tub) == 0);
-  REQUIRE(p.PropEpochOf(tub) == 0);
-  const auto answered = SentTo<PropOwnerMessage>(p, 1);
-  REQUIRE(answered.size() == 1);
-  REQUIRE(answered[0].refr == kTub);
-  REQUIRE(answered[0].player == 0);
-  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
-
-  // the first stays held: the host's contact on it is refused Held
-  Claim(p, 0, kBasket, 0);
-  REQUIRE(p.PropLiveOwner(w.prop) == kC2);
-  REQUIRE(p.PropEpochOf(w.prop) == 1);
-
-  // c2's release of the basket frees its hand: its grab of the tub is
-  // granted, both seats told
-  Claim(p, 1, kBasket, 2);
-  p.Messages().clear();
+  // the second grab: granted, both seats told
   Claim(p, 1, kTub, 1);
   REQUIRE(p.PropLiveOwner(tub) == kC2);
   REQUIRE(p.PropEpochOf(tub) == 1);
   const auto toC1 = SentTo<PropOwnerMessage>(p, 0);
+  const auto toC2 = SentTo<PropOwnerMessage>(p, 1);
   REQUIRE(toC1.size() == 1);
+  REQUIRE(toC2.size() == 1);
   REQUIRE(toC1[0].refr == kTub);
   REQUIRE(toC1[0].player == kC2);
+  REQUIRE(toC2[0].player == kC2);
+  REQUIRE(toC2[0].epoch == 1);
+
+  // the basket stays c2's awake row, held no more: the host's contact on it
+  // is refused as moving (inside the window from c2's grant), not as held,
+  // and the host hears c2's word
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Claim(p, 0, kBasket, 0);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_MOVING: ff000d01 claims "
+                      "prop ff000d03 by touch 0; another seat streams it "
+                      "awake: a contact, a drop or an impulse takes a prop at "
+                      "rest, a grab takes it at once") == 1);
+    REQUIRE(log.Count("E_PROP_HELD") == 0);
+  }
+  REQUIRE(p.PropLiveOwner(w.prop) == kC2);
+  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  const auto answered = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(answered.size() == 1);
+  REQUIRE(answered[0].refr == kBasket);
+  REQUIRE(answered[0].player == kC2);
+  REQUIRE(answered[0].epoch == 1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
   Leave(p);
 }
 

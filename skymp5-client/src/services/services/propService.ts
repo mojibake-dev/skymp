@@ -985,10 +985,11 @@ export class PropService extends ClientListener {
     // release claim (touch 2) when this seat simulates the prop, and the sleep
     // clock starts again from it, so the fall gets SLEEP_AFTER_MS to show. A
     // grab's claim goes even for a prop this seat simulates: the server marks
-    // it held against the other seats' claims. The server takes one hold per
-    // player (E_PROP_HELD_TWO: the engine holds one grabbed object), so the
-    // releases go before the grab when the hand moved from one prop to
-    // another between two reads. A trap body moves by a firing alone
+    // it held against the other seats' claims. The releases go before the
+    // grab when the hand moved from one prop to another between two reads, so
+    // the server hears the holds in the engine's order (one grabbed object
+    // per player; a grab ends the claimant's other hold there too). A trap
+    // body moves by a firing alone
     private readHolds(now: number) {
         const grabbed = this.sp.Game.getPlayerGrabbedRef();
         const heldLocal = grabbed ? grabbed.getFormID() : 0;
@@ -1270,8 +1271,9 @@ export class PropService extends ClientListener {
         }
         if (prop.held) {
             // a held prop leaving the tracked set (a teleport, a door) lets go
-            // first: the server keeps one hold per player, and a hold it never
-            // heard end would refuse this seat's next grab (E_PROP_HELD_TWO)
+            // first: a hold the server never heard end holds the prop against
+            // every other seat until this seat's next grab, unload or
+            // departure
             this.letGo(prop, Date.now(), `untracked (${why})`);
         }
         if (prop.simulating) {

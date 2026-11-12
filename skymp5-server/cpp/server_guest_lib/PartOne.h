@@ -868,11 +868,7 @@ public:
     // the claimant's game reported the prop's cell unloaded and not loaded
     // since, nor had it back in its reach: a late claim, refused until then
     // (the unload is a state, not a moment)
-    Away,
-    // a grab from a claimant that holds another prop already: the engine
-    // holds one grabbed object per player, so a second hold is none its
-    // engine has (a consistency bound: no seat holds every prop near it)
-    HeldTwo
+    Away
   };
   // A trap's world body (thuum D-S3 point 4) is claimed here like any prop,
   // the handler admitting it by the impulse touch alone

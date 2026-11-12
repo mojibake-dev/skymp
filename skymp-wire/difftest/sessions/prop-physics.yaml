@@ -15,17 +15,26 @@
 # samples are v2's (an epoch, a sequence, the owner's clock, both velocities, the hold and
 # no bones; SCHEMA_VERSION 46). At 2500 ms c1 sends the dagger awake and at 2600 ms the same
 # sample again, which is Late (a sequence not newer than the last at its epoch) and dropped
-# with no relay and no answer; at 3000 ms the dagger's sleep and at 3200 ms the ingot's:
-# the wire stack writes each record and relays each sample to c2 alone, and each sleep
-# returns its prop to the cell's host by default (A4: every return is a word), so both
-# clients hear a PropOwner with player 0 at epoch 2 for each; the legacy stack knows no
-# MsgType 58. Then two refused samples of the dagger, each answered to its sender alone
-# with the current word and then the record (PropTransform at seq 0, the rested record's
-# position): c1's at 3500 ms under epoch 1, a sample of the tenure its rest ended, and c2's
-# at its own 4000 ms under epoch 2 from a seat that owns nothing. Nobody hosts the cell in
-# this session (no client reports a load, physics rung 1's header), so the rule refuses
-# both as a resting prop in an unhosted cell (Frozen, judged before the epoch); had c1
-# hosted it they would read Stale and NotOwner, and the answers are the same either way.
+# with no relay and no answer; at 3200 ms the ingot's sleep and at 3500 ms the dagger's: the
+# wire stack writes each record and relays each sample to c2 alone, and each sleep returns
+# its prop to the cell's host by default (A4: every return is a word), so both clients hear
+# a PropOwner with player 0 at epoch 2 for each; the legacy stack knows no MsgType 58.
+# Between the dagger's awake sample and its sleep, at 1250 ms of its own (about 2750 ms of
+# c1's, 750 ms inside either end of c1's live row; the dagger's sleep stood at 3000 ms before
+# physics rung 1's pickup row), c2 picks the dagger up (Activate, the activation a refused
+# grab ends in, thuum docs/engine/havok-props.md E16): the wire stack refuses it
+# E_PROP_MOVING (a pickup is a take, ADR-071 decision 2's table, and c1 streams the drop
+# awake) and answers c2 with the standing word, c1's at epoch 1, so c2 hears that word twice
+# and nothing of a pickup (no isHarvested, no inventory, no destroy). The legacy stack's C++
+# fakeclient resolves no "{{created:80254}}" (the placeholder is the Rust fakeclient's,
+# 05184f99), so the Activate it sends carries a string where its server reads a number, and
+# nothing follows there. Then two refused samples of the dagger, each answered to its sender
+# alone with the current word and then the record (PropTransform at seq 0, the rested
+# record's position): c1's at 4000 ms under epoch 1, a sample of the tenure its rest ended,
+# and c2's at its own 4000 ms under epoch 2 from a seat that owns nothing. Nobody hosts the
+# cell in this session (no client reports a load, physics rung 1's header), so the rule
+# refuses both as a resting prop in an unhosted cell (Frozen, judged before the epoch); had
+# c1 hosted it they would read Stale and NotOwner, and the answers are the same either way.
 # c1's departure sends no word: both rows returned at rest. If a drop's id were assumed
 # and wrong on a run (something else drew an id first: in a full T2 the sessions before
 # this one allocate forms on the same server, and P3's first T2 read exactly that,
@@ -47,10 +56,11 @@ steps:
   - {client: c1, at_ms: 2000, send: {t: 59, refrs: ["{{created:80254}}", "{{created:371940}}"], touch: 2}, reliable: true}
   - {client: c1, at_ms: 2500, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 1, tMs: 2500, pos: [133900.0, -61100.0, 14662.0], rot: [0.0, 0.0, 72.0], lin: [80.0, 20.0, 0.0], ang: [0.0, 0.0, 0.5], asleep: false, held: false, bones: []}, reliable: false}
   - {client: c1, at_ms: 2600, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 1, tMs: 2500, pos: [133900.0, -61100.0, 14662.0], rot: [0.0, 0.0, 72.0], lin: [80.0, 20.0, 0.0], ang: [0.0, 0.0, 0.5], asleep: false, held: false, bones: []}, reliable: false}
-  - {client: c1, at_ms: 3000, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 2, tMs: 3000, pos: [133910.0, -61090.0, 14650.0], rot: [0.0, 0.0, 80.0], lin: [0.0, 0.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: true, held: false, bones: []}, reliable: true}
   - {client: c1, at_ms: 3200, send: {t: 58, refr: "{{created:371940}}", epoch: 1, seq: 1, tMs: 3200, pos: [133930.0, -61110.0, 14662.0], rot: [0.0, 0.0, 0.0], lin: [0.0, 0.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: true, held: false, bones: []}, reliable: true}
-  - {client: c1, at_ms: 3500, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 3, tMs: 3500, pos: [133912.0, -61088.0, 14650.0], rot: [0.0, 0.0, 80.0], lin: [20.0, 20.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: false, held: false, bones: []}, reliable: true}
+  - {client: c1, at_ms: 3500, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 2, tMs: 3500, pos: [133910.0, -61090.0, 14650.0], rot: [0.0, 0.0, 80.0], lin: [0.0, 0.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: true, held: false, bones: []}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 58, refr: "{{created:80254}}", epoch: 1, seq: 3, tMs: 4000, pos: [133912.0, -61088.0, 14650.0], rot: [0.0, 0.0, 80.0], lin: [20.0, 20.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: false, held: false, bones: []}, reliable: true}
   - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 1250, send: {t: 6, data: {caster: 20, target: "{{created:80254}}", isSecondActivation: false}}, reliable: true}
   - {client: c2, at_ms: 4000, send: {t: 58, refr: "{{created:80254}}", epoch: 2, seq: 1, tMs: 4000, pos: [133915.0, -61085.0, 14650.0], rot: [0.0, 0.0, 80.0], lin: [20.0, 20.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: false, held: false, bones: []}, reliable: true}
   - {client: c2, at_ms: 5000, move: {dx: 60}}
 divergences:
@@ -114,8 +124,8 @@ divergences:
   - client: c2
     msg: {t: 60, refr: "{{created:80254}}", player: 0xff000002, epoch: 1}
     legacy: 0
-    wire: 1
-    reason: the dagger's owner word to the prop's other listener (PropOwner, thuum docs/verbs/prop-physics.md); the legacy server knows no such message
+    wire: 2
+    reason: the dagger's owner word to the prop's other listener (PropOwner, thuum docs/verbs/prop-physics.md), at the grant and again as the answer to its pickup at 1250 ms of its own, refused E_PROP_MOVING (a pickup is a take, ADR-071 decision 2's table; AnswerPropWord repeats the standing word); the legacy server knows no such message, and its fakeclient's Activate names no number
   - client: c1
     msg: {t: 60, refr: "{{created:371940}}", player: 0xff000002, epoch: 1}
     legacy: 0
@@ -147,7 +157,7 @@ divergences:
     msg: {t: 60, refr: "{{created:80254}}", player: 0, epoch: 2}
     legacy: 0
     wire: 2
-    reason: the dagger's owner word at its rest (nobody hosts the cell in this session, so the asleep sample returns the prop to the host by default, player 0, at epoch 2; A4 of ADR-071 decision 2, physics rung 1), and the same word again answering c1's refused sample at 3500 ms (physics rung 2); the legacy server knows no such message
+    reason: the dagger's owner word at its rest (nobody hosts the cell in this session, so the asleep sample returns the prop to the host by default, player 0, at epoch 2; A4 of ADR-071 decision 2, physics rung 1), and the same word again answering c1's refused sample at 4000 ms (physics rung 2); the legacy server knows no such message
   - client: c2
     msg: {t: 60, refr: "{{created:80254}}", player: 0, epoch: 2}
     legacy: 0

@@ -264,6 +264,14 @@ public:
   // admits the scripts everywhere
   void RelayActivationToHost(MpActor& player, MpObjectReference& target);
   bool IsScriptedWorldObject(const MpObjectReference& target);
+  // thuum docs/verbs/prop-physics.md (ADR-071 decision 2's table): a pickup
+  // is a take. True when `picker`'s activation of the item `target` is
+  // refused, another player holding the prop grabbed (E_PROP_HELD) or
+  // another seat streaming it awake (E_PROP_MOVING): logged and answered
+  // with the current word, nothing else done. False for any other target
+  // and for every pickup the rule takes
+  bool RefusePropPickup(const RawMessageData& rawMsgData,
+                        const MpActor& picker, MpObjectReference& target);
   // thuum D-W1 and D-C2 (playtest 50): an Activate carrying `entry`, a
   // seat's report of its own presser's entry into a trigger whose world
   // script runs on the cell's host. The facts are gathered here and judged

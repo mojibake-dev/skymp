@@ -3048,6 +3048,13 @@ mod ffi {
         /// loaded or reached it since (Away); a grab ends the claimant's hold
         /// of any other prop first (one hand per player).
         fn claim_prop(self: &mut Props, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8;
+        /// `player` picks `refr` up at `now_ms` (its activation of the item
+        /// reference, which gives the item and deletes a server-made one for
+        /// every seat), a take read off the claim's rows for a touch that is
+        /// no grab: 0 taken (the picker's own row, or one at rest, stalled or
+        /// unclaimed), 1 held by another's grab, 2 another seat streams it
+        /// awake; it changes no row.
+        fn pickup_prop(self: &Props, refr: u32, player: u32, now_ms: u64) -> u8;
         /// The prop's owner epoch, up at every word (a grant, a return, the
         /// host's wake); 0 before any.
         fn prop_epoch_of(self: &Props, refr: u32) -> u32;
@@ -4624,6 +4631,14 @@ fn prop_returns(returned: Vec<(u32, u32)>) -> Vec<PropReturn> {
 impl Props {
     fn claim_prop(&mut self, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8 {
         claim_code(self.0.claim(refr, player, cell, touch, now_ms))
+    }
+
+    fn pickup_prop(&self, refr: u32, player: u32, now_ms: u64) -> u8 {
+        match self.0.pickup(refr, player, now_ms) {
+            props::PickupVerdict::Taken => 0,
+            props::PickupVerdict::Held => 1,
+            props::PickupVerdict::Moving => 2,
+        }
     }
 
     fn prop_epoch_of(&self, refr: u32) -> u32 {
@@ -6229,6 +6244,25 @@ mod tests {
         assert_eq!(p.prop_epoch_of(0xb6d45), 3);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 3, 1_050), 3);
+    }
+
+    #[test]
+    fn a_pickup_crosses_as_codes() {
+        // a pickup is a take (ADR-071 decision 2's table): 0 taken (an
+        // unclaimed prop, the holder's own, a resting one), 1 another's hold,
+        // 2 another seat's awake stream (the holder's release, then its fall);
+        // no code moves the epoch
+        let mut p = new_props();
+        assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0002, 1_000), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 1, 1_000), 0);
+        assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0002, 1_100), 1);
+        assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0003, 1_100), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 2, 1_200), 2);
+        assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0002, 1_300), 2);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 1, 0x9732, 0xff00_0002, true, 10.0, 1_400)).code, 4);
+        assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0002, 1_500), 0);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 2);
     }
 
     #[test]

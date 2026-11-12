@@ -875,6 +875,21 @@ public:
   PropClaimVerdict ClaimProp(const MpActor& claimant,
                              const MpObjectReference& prop, uint32_t cell,
                              uint8_t touch);
+  // A pickup is a take (ADR-071 decision 2's table): `picker`'s activation
+  // of the item `prop`, which gives the item and deletes a server-made
+  // reference for every seat, judged by the claim's rows for a touch that is
+  // no grab; it changes no row (wire-rules props' pickup)
+  enum class PropPickupVerdict
+  {
+    Taken,
+    // another player holds the prop grabbed
+    Held,
+    // another seat streams the prop awake, and a grab alone takes a moving
+    // prop
+    Moving
+  };
+  PropPickupVerdict PropPickup(const MpActor& picker,
+                               const MpObjectReference& prop) const;
   enum class PropTransformVerdict
   {
     Accepted,

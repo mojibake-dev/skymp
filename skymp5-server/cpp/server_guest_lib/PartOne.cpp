@@ -29,6 +29,7 @@
 #include "PerkStateMessage.h"
 #include "PlacedRequestMessage.h"
 #include "PropOwnerMessage.h"
+#include "PropTransformMessage.h"
 #include "RaceMenuPresetMessage.h"
 #include "ScriptStateApplyMessage.h"
 #include "SetGameTimeMessage.h"
@@ -3413,9 +3414,10 @@ PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,
   return static_cast<PropClaimVerdict>(code);
 }
 
-PartOne::PropTransformVerdict PartOne::PropTransform(
+PartOne::PropTransformOutcome PartOne::PropTransform(
   const MpActor& sender, const MpObjectReference& prop, uint32_t cell,
-  uint32_t recordCell, bool asleep, float moved)
+  uint32_t recordCell, uint32_t epoch, uint16_t seq, uint32_t tMs, bool asleep,
+  bool held, float moved)
 {
   uint32_t cellHost = 0;
   if (recordCell != 0) {
@@ -3425,13 +3427,21 @@ PartOne::PropTransformVerdict PartOne::PropTransform(
   skymp::rules::PropSampleFacts facts{};
   facts.refr = prop.GetFormId();
   facts.player = sender.GetFormId();
+  facts.epoch = epoch;
+  facts.seq = seq;
+  facts.t_ms = tMs;
   facts.cell = cell;
   facts.cell_host = cellHost;
   facts.asleep = asleep;
+  facts.held = held;
   facts.moved = moved;
   facts.now_ms = SteadyNowMs();
-  const auto code = pImpl->props->prop_transform(facts);
-  return static_cast<PropTransformVerdict>(code);
+  const auto verdict = pImpl->props->prop_transform(facts);
+  PropTransformOutcome outcome;
+  outcome.verdict = static_cast<PropTransformVerdict>(verdict.code);
+  outcome.epoch = verdict.epoch;
+  outcome.allowed = verdict.allowed;
+  return outcome;
 }
 
 uint32_t PartOne::PropLiveOwner(const MpObjectReference& prop) const
@@ -3459,12 +3469,16 @@ uint32_t PartOne::PropEpochOf(const MpObjectReference& prop) const
   return pImpl->props->prop_epoch_of(prop.GetFormId());
 }
 
-void PartOne::AnswerPropWord(Networking::UserId user,
-                             const MpObjectReference& prop)
+namespace {
+// whether an answer to `user` about the prop `refr` is due: at most one a
+// second per (user, prop), a refused claim's word and a refused sample's word
+// and record alike. Keyed by user and prop; pruned when it grows, so the map
+// stays the size of the recent refusals
+bool PropAnswerDue(
+  std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>&
+    answered,
+  Networking::UserId user, uint32_t refr)
 {
-  // keyed by user and prop; pruned when it grows, so the map stays the size
-  // of the recent refusals
-  auto& answered = pImpl->propWordsAnswered;
   const auto now = std::chrono::steady_clock::now();
   if (answered.size() > 1024) {
     for (auto it = answered.begin(); it != answered.end();) {
@@ -3472,19 +3486,68 @@ void PartOne::AnswerPropWord(Networking::UserId user,
                                                        : std::next(it);
     }
   }
-  const uint64_t key = (static_cast<uint64_t>(user) << 32) |
-    static_cast<uint64_t>(prop.GetFormId());
+  const uint64_t key =
+    (static_cast<uint64_t>(user) << 32) | static_cast<uint64_t>(refr);
   auto& at = answered[key];
   if (at != std::chrono::steady_clock::time_point() &&
       now - at < std::chrono::seconds(1)) {
-    return;
+    return false;
   }
   at = now;
+  return true;
+}
+
+// the current word (the live owner or 0, the epoch) to one user, reliable
+void SendCurrentPropWord(PartOne& partOne, Networking::UserId user,
+                         const MpObjectReference& prop)
+{
   PropOwnerMessage word;
   word.refr = prop.GetFormId();
-  word.player = PropLiveOwner(prop);
-  word.epoch = PropEpochOf(prop);
-  GetSendTarget().Send(user, word, true);
+  word.player = partOne.PropLiveOwner(prop);
+  word.epoch = partOne.PropEpochOf(prop);
+  partOne.GetSendTarget().Send(user, word, true);
+}
+}
+
+void PartOne::AnswerPropWord(Networking::UserId user,
+                             const MpObjectReference& prop)
+{
+  if (PropAnswerDue(pImpl->propWordsAnswered, user, prop.GetFormId())) {
+    SendCurrentPropWord(*this, user, prop);
+  }
+}
+
+void PartOne::AnswerPropRecord(Networking::UserId user,
+                               const MpObjectReference& prop)
+{
+  // the word first, then the record, on the one reliable ordered channel: a
+  // seat applies the record under the word it heard just before it
+  if (PropAnswerDue(pImpl->propWordsAnswered, user, prop.GetFormId())) {
+    SendCurrentPropWord(*this, user, prop);
+    SendPropRecord(user, prop);
+  }
+}
+
+void PartOne::SendPropRecord(Networking::UserId user,
+                             const MpObjectReference& prop)
+{
+  PropTransformMessage record;
+  record.refr = prop.GetFormId();
+  record.epoch = PropEpochOf(prop);
+  // the record, not a stream: the mark wire-validate refuses from a client
+  record.seq = 0;
+  record.tMs = 0;
+  const auto& pos = prop.GetPos();
+  const auto& rot = prop.GetAngle();
+  record.pos = { pos.x, pos.y, pos.z };
+  // the contract's bound, each angle within one turn: an angle the record
+  // took past one (a script's SetAngle) is the same angle, where the edge's
+  // encoder (validate_server) would refuse the answer and count it
+  record.rot = { std::fmod(rot.x, 360.f), std::fmod(rot.y, 360.f),
+                 std::fmod(rot.z, 360.f) };
+  record.asleep = PropLiveOwner(prop) == 0;
+  record.held = pImpl->props->prop_held(prop.GetFormId());
+  GetSendTarget().Send(user, record, true);
 }
 
 size_t PartOne::SendPropOwnerWord(uint32_t refr, uint32_t player,

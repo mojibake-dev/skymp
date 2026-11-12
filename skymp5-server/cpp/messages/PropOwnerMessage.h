@@ -7,15 +7,17 @@
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 1; A1 to A7 of ADR-071
 // decision 2): who simulates a prop from now, to every listener of the prop
 // at each owner change: a grant, the return to the cell's host at any
-// owner's own asleep sample (the host's and a holder's included), a refused
-// final sample, the host's own wake of a resting prop (the word names the
-// host by id), a departure, the simulator's unload of the prop's cell; to
-// one seat alone as the answer to its refused claim or sample, and to a late
-// listener after the prop's create word. Server to client, reliable, R0
-// output: the named player's seat simulates (its body Dynamic), every other
-// seat's follows the stream; player 0 names the host of the cell the prop's
-// record stands in; a word with an epoch below one already applied is
-// dropped and an equal one replaces (a fencing token, one counter per prop).
+// owner's own asleep sample (the host's and a holder's included), a rest
+// past the step budget, clamped (physics rung 2), the host's own wake of a
+// resting prop (the word names the host by id), a departure, the simulator's
+// unload of the prop's cell; to one seat alone as the answer to its refused
+// claim or sample (a sample's answer then the record, PropTransform at seq
+// 0), and to a late listener after the prop's create word. Server to client,
+// reliable, R0 output: the named player's seat simulates (its body Dynamic),
+// every other seat's follows the stream; player 0 names the host of the cell
+// the prop's record stands in; a word with an epoch below one already applied
+// is dropped and an equal one replaces (a fencing token, one counter per
+// prop).
 // The contract is skymp-wire's (wire-schema skymp.rs, PropOwner, MsgType 60,
 // wire id 68).
 struct PropOwnerMessage : public MessageBase<PropOwnerMessage>

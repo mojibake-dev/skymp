@@ -25,6 +25,12 @@ PartOne& GetPartOne();
 // and a refused claim or sample is answered with the current word. No clock
 // changes an owner; the moving window that judges a claim is the Rust rule's
 // test (wire-rules props.rs): the clock cannot be advanced from here.
+// Physics rung 2 (ADR-071 decision 6): a sample names the epoch its sender
+// holds, a sequence within it and its owner's clock, and is judged by the
+// epoch first; a refused sample is answered with the word and the record
+// (PropTransform at seq 0); a rest past the step budget is clamped; a claim
+// names one to sixteen props, each judged alone. The owner's-clock cases of
+// the step budget are the Rust rule's too.
 
 namespace {
 constexpr uint32_t kTamriel = 0x3c;
@@ -36,6 +42,15 @@ constexpr uint32_t kChest = 0xff000d05;
 constexpr uint32_t kC4 = 0xff000d08;
 constexpr uint32_t kC5 = 0xff000d09;
 constexpr uint32_t kC6 = 0xff000d0a;
+// physics rung 2's seats of their own (OnPropTransform says a refusal once
+// per 10 s per seat, across the binary's cases) and two more props
+constexpr uint32_t kC7 = 0xff000d0c;
+constexpr uint32_t kC8 = 0xff000d0d;
+constexpr uint32_t kJug = 0xff000d0e;
+constexpr uint32_t kCrate = 0xff000d0f;
+constexpr uint32_t kC9 = 0xff000d10;
+constexpr uint32_t kC10 = 0xff000d11;
+constexpr uint32_t kC11 = 0xff000d12;
 // BarrelFood01_NoRespawn, a CONT of Skyrim.esm (esm.py): no prop
 constexpr uint32_t kBarrelFood01NoRespawn = 0x10e882;
 // Bucket01, a MISC of Skyrim.esm (the one Riverwood's 0x2ad9c is placed from)
@@ -99,24 +114,69 @@ RawMessageData Raw(Networking::UserId user)
   return raw;
 }
 
+// `user`'s touch of the props `refrs` in one claim (physics rung 2: one to
+// sixteen, each judged alone)
+void ClaimAll(PartOne& p, Networking::UserId user,
+              const std::vector<uint32_t>& refrs, uint32_t touch)
+{
+  PropClaimMessage msg;
+  msg.refrs = refrs;
+  msg.touch = touch;
+  p.GetActionListener().OnPropClaim(Raw(user), msg);
+}
+
 // `user`'s touch of the prop `refr`
 void Claim(PartOne& p, Networking::UserId user, uint32_t refr, uint32_t touch)
 {
-  PropClaimMessage msg;
+  ClaimAll(p, user, { refr }, touch);
+}
+
+// the next sample number of this file's senders: one counter for every
+// sample, so each is newer than the last at its epoch (the rule's order),
+// wrapping 65535 to 1 as a client does
+uint16_t NextSeq()
+{
+  static uint16_t seq = 0;
+  seq = seq == 65535 ? 1 : static_cast<uint16_t>(seq + 1);
+  return seq;
+}
+
+// a sample of the prop `refr` as an honest seat sends it (physics rung 2):
+// under the epoch the prop stands at (the seat heard every word), the next
+// number, the owner's clock 100 ms on a number (the client's cadence), no
+// velocity, no hold and no bones
+PropTransformMessage SampleOf(PartOne& p, uint32_t refr, const NiPoint3& pos,
+                              bool asleep)
+{
+  PropTransformMessage msg;
   msg.refr = refr;
-  msg.touch = touch;
-  p.GetActionListener().OnPropClaim(Raw(user), msg);
+  const auto& form = p.worldState.LookupFormByIdNoLoad(refr);
+  const MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
+  msg.epoch = prop ? p.PropEpochOf(*prop) : 0;
+  msg.seq = NextSeq();
+  msg.tMs = static_cast<uint32_t>(msg.seq) * 100;
+  msg.pos = { pos.x, pos.y, pos.z };
+  msg.rot = { 0.f, 0.f, 72.f };
+  msg.asleep = asleep;
+  return msg;
 }
 
 // `user`'s sample of the prop `refr`
 void Sample(PartOne& p, Networking::UserId user, uint32_t refr,
             const NiPoint3& pos, bool asleep)
 {
-  PropTransformMessage msg;
-  msg.refr = refr;
-  msg.pos = { pos.x, pos.y, pos.z };
-  msg.rot = { 0.f, 0.f, 72.f };
-  msg.asleep = asleep;
+  p.GetActionListener().OnPropTransform(Raw(user),
+                                        SampleOf(p, refr, pos, asleep));
+}
+
+// `user`'s sample under an epoch and a number of its own: a stale or a
+// future one, a repeat
+void SampleAt(PartOne& p, Networking::UserId user, uint32_t refr,
+              const NiPoint3& pos, bool asleep, uint32_t epoch, uint16_t seq)
+{
+  auto msg = SampleOf(p, refr, pos, asleep);
+  msg.epoch = epoch;
+  msg.seq = seq;
   p.GetActionListener().OnPropTransform(Raw(user), msg);
 }
 
@@ -133,6 +193,21 @@ std::vector<Message> SentTo(PartOne& p, Networking::UserId user)
     }
   }
   return out;
+}
+
+// where in the sent messages the first of type Message to `user` stands,
+// -1 for none: the order of a word and a record on the one channel
+template <class Message>
+int FirstTo(PartOne& p, Networking::UserId user)
+{
+  int at = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && dynamic_cast<Message*>(m.message.get())) {
+      return at;
+    }
+    ++at;
+  }
+  return -1;
 }
 
 // the relays of a sample sent to `user`: the raw bytes the sender's game
@@ -458,6 +533,16 @@ TEST_CASE("Only the owner's transform moves the record and reaches the other "
   REQUIRE(answer.size() == 1);
   REQUIRE(answer[0].player == kC2);
   REQUIRE(answer[0].epoch == 1);
+  // and the record after the word (physics rung 2: every refusal answered
+  // with the record), at seq 0, where the record stands
+  const auto record = SentTo<PropTransformMessage>(p, 0);
+  REQUIRE(record.size() == 1);
+  REQUIRE(record[0].seq == 0);
+  REQUIRE(record[0].epoch == 1);
+  REQUIRE(record[0].pos == std::array<float, 3>{ kHere.x, kHere.y, kHere.z });
+  REQUIRE_FALSE(record[0].asleep);
+  REQUIRE(FirstTo<PropOwnerMessage>(p, 0) <
+          FirstTo<PropTransformMessage>(p, 0));
 
   // the owner's sample: the record moves, c1 alone hears it, unreliable
   Sample(p, 1, kBasket, kicked, false);
@@ -512,9 +597,9 @@ TEST_CASE("Only the owner's transform moves the record and reaches the other "
 
 TEST_CASE("A claim on a container is refused and one beyond the old reach "
           "inside the square is granted; a sample farther than the step "
-          "budget is refused, the record standing, and an asleep one rests "
-          "the prop where the record stands with the word; a late listener "
-          "hears the current word, player 0 for a resting prop",
+          "budget is refused, the record standing, and an asleep one is "
+          "clamped to the budget with the word; a late listener hears the "
+          "current word, player 0 for a resting prop",
           "[Prop][espm]")
 {
   auto& p = GetPartOne();
@@ -569,14 +654,25 @@ TEST_CASE("A claim on a container is refused and one beyond the old reach "
   REQUIRE(toC3[0].player == kC2);
   REQUIRE(toC3[0].epoch == p.PropEpochOf(w.prop));
 
-  // an asleep sample over the budget: the position is refused (the record
-  // stands, nothing relayed), the rest is taken: the host's again at the
-  // next epoch, every listener told with player 0 (RestRefused)
+  // an asleep sample over the budget is clamped (physics rung 2, in rung
+  // 1's RestRefused's place): the record moves the budget's 600 units toward
+  // it (100 ms on the owner's clock refilled the 550 the near sample left),
+  // the other listeners hear that rest re-encoded, not the sender's bytes,
+  // and the rest is taken: the host's again at the next epoch, every
+  // listener told with player 0, the sender the record
   const auto epochAtFlight = p.PropEpochOf(w.prop);
   p.Messages().clear();
   Sample(p, 1, kBasket, kHere + NiPoint3{ 5000.f, 0.f, 0.f }, true);
-  REQUIRE(w.prop.GetPos() == near);
+  REQUIRE(std::abs(w.prop.GetPos().x - (near.x + 600.f)) < 1.f);
   REQUIRE(RelaysTo(p, 0).empty());
+  const auto clamped = SentTo<PropTransformMessage>(p, 0);
+  REQUIRE(clamped.size() == 1);
+  REQUIRE(clamped[0].asleep);
+  REQUIRE(std::abs(clamped[0].pos[0] - (near.x + 600.f)) < 1.f);
+  const auto record = SentTo<PropTransformMessage>(p, 1);
+  REQUIRE(record.size() == 1);
+  REQUIRE(record[0].seq == 0);
+  REQUIRE(record[0].epoch == epochAtFlight + 1);
   REQUIRE(p.PropOwnerOf(w.prop) == kC1);
   REQUIRE(p.PropLiveOwner(w.prop) == 0);
   REQUIRE(p.PropEpochOf(w.prop) == epochAtFlight + 1);
@@ -689,8 +785,9 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   auto& c2 = p.worldState.GetFormAt<MpActor>(kC2);
   // c2 kicks the basket and streams it awake, then its game unloads the
   // cell (a door): the row returns to the host at a new epoch, both seats
-  // told with player 0; c2's late sample is refused NotOwner (a guest's;
-  // Away is a host's wake or a claim)
+  // told with player 0; c2's late sample is refused Away and not answered
+  // (physics rung 2 judges the unload's state before the owner: its game's
+  // copy went with the cell)
   Claim(p, 1, kBasket, 0);
   Sample(p, 1, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false);
   REQUIRE(p.PropLiveOwner(w.prop) == kC2);
@@ -708,6 +805,8 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   p.Messages().clear();
   Sample(p, 1, kBasket, kHere + NiPoint3{ 40.f, 0.f, 0.f }, false);
   REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  REQUIRE(SentTo<PropTransformMessage>(p, 1).empty());
 
   // the unload is a state: c2's claim there is refused until its game
   // reports the cell loaded again or has the cell back in its reach
@@ -993,8 +1092,20 @@ TEST_CASE("A sample at a point in no cell is refused E_PROP_OUTSIDE whoever "
   REQUIRE(prop.GetPos() == kHere);
   REQUIRE(RelaysTo(p, 5).empty());
   REQUIRE(RelaysTo(p, 6).empty());
-  REQUIRE(SentTo<PropOwnerMessage>(p, 5).empty());
-  REQUIRE(SentTo<PropOwnerMessage>(p, 6).empty());
+  // each sender heard the word (nobody's: player 0) and the record where it
+  // stands (physics rung 2: every refusal answered with the record)
+  const Networking::UserId senders[] = { 5, 6 };
+  for (const auto user : senders) {
+    const auto words = SentTo<PropOwnerMessage>(p, user);
+    REQUIRE(words.size() == 1);
+    REQUIRE(words[0].player == 0);
+    const auto records = SentTo<PropTransformMessage>(p, user);
+    REQUIRE(records.size() == 1);
+    REQUIRE(records[0].seq == 0);
+    REQUIRE(records[0].pos ==
+            std::array<float, 3>{ kHere.x, kHere.y, kHere.z });
+    REQUIRE(records[0].asleep);
+  }
 
   // a toucher's live row streams in the unhosted cell (a moving body's
   // owner never depends on its cell), but never past the world's cells
@@ -1013,4 +1124,247 @@ TEST_CASE("A sample at a point in no cell is refused E_PROP_OUTSIDE whoever "
   DoDisconnect(p, 6);
   p.DestroyActor(kC5);
   p.DestroyActor(kC6);
+}
+
+TEST_CASE("A sample names its epoch: a stale one and a future one are "
+          "dropped, never relayed, and answered with the word and then the "
+          "record, once a second",
+          "[Prop][espm]")
+{
+  // physics rung 2 (ADR-066 decision 4): by the epoch first, then the owner;
+  // seats of their own, for the refusal lines
+  auto& p = GetPartOne();
+  Player(p, 7, kC7, kHere + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 8, kC8, kHere + NiPoint3{ 60.f, 0.f, 0.f });
+  auto& prop = Prop(p, kBasket, kHere);
+  const auto cell = p.worldState.CellOf(prop);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 7, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC7);
+  Claim(p, 7, kBasket, 0);
+  REQUIRE(p.PropEpochOf(prop) == 1);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    // c7's sample under epoch 0, sent before its grant's word reached it:
+    // stale; c8's under epoch 2, a word the server never said: future, the
+    // epoch judged before the owner
+    SampleAt(p, 7, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false, 0, 1);
+    SampleAt(p, 8, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false, 2, 1);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_STALE: ff000d0c moves prop "
+                      "ff000d03; an epoch below the prop's: a sample of an "
+                      "earlier tenure") == 1);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_FUTURE: ff000d0d moves "
+                      "prop ff000d03; an epoch above the prop's, a word the "
+                      "server never said") == 1);
+  }
+  // nothing moved and nothing was relayed
+  REQUIRE(prop.GetPos() == kHere);
+  REQUIRE(RelaysTo(p, 7).empty());
+  REQUIRE(RelaysTo(p, 8).empty());
+  // each sender heard the word (c7's, at 1), then the record at seq 0
+  const Networking::UserId senders[] = { 7, 8 };
+  for (const auto user : senders) {
+    const auto words = SentTo<PropOwnerMessage>(p, user);
+    REQUIRE(words.size() == 1);
+    REQUIRE(words[0].player == kC7);
+    REQUIRE(words[0].epoch == 1);
+    const auto records = SentTo<PropTransformMessage>(p, user);
+    REQUIRE(records.size() == 1);
+    REQUIRE(records[0].refr == kBasket);
+    REQUIRE(records[0].seq == 0);
+    REQUIRE(records[0].tMs == 0);
+    REQUIRE(records[0].epoch == 1);
+    REQUIRE(records[0].pos ==
+            std::array<float, 3>{ kHere.x, kHere.y, kHere.z });
+    REQUIRE_FALSE(records[0].asleep);
+    REQUIRE_FALSE(records[0].held);
+    REQUIRE(FirstTo<PropOwnerMessage>(p, user) <
+            FirstTo<PropTransformMessage>(p, user));
+  }
+  // a second refusal inside the second is not answered again
+  SampleAt(p, 7, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false, 0, 2);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 7).size() == 1);
+  REQUIRE(SentTo<PropTransformMessage>(p, 7).size() == 1);
+  // c7's sample under its grant's epoch is taken and relayed
+  Sample(p, 7, kBasket, kHere + NiPoint3{ 30.f, 0.f, 0.f }, false);
+  REQUIRE(std::abs(prop.GetPos().x - (kHere.x + 30.f)) < 1.f);
+  REQUIRE(RelaysTo(p, 8) == std::vector<int>{ 0 });
+  DoDisconnect(p, 7);
+  DoDisconnect(p, 8);
+  p.DestroyActor(kC7);
+  p.DestroyActor(kC8);
+}
+
+TEST_CASE("A repeated or overtaken sequence is dropped quietly: no relay, no "
+          "line and no answer",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  Player(p, 9, kC9, kHere + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 10, kC10, kHere + NiPoint3{ 60.f, 0.f, 0.f });
+  auto& prop = Prop(p, kBasket, kHere);
+  Claim(p, 9, kBasket, 0);
+  REQUIRE(p.PropLiveOwner(prop) == kC9);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    // seq 2 twice, then 1: the first taken and relayed, the others Late
+    SampleAt(p, 9, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false, 1, 2);
+    SampleAt(p, 9, kBasket, kHere + NiPoint3{ 25.f, 0.f, 0.f }, false, 1, 2);
+    SampleAt(p, 9, kBasket, kHere + NiPoint3{ 25.f, 0.f, 0.f }, false, 1, 1);
+    REQUIRE(log.Count("E_PROP_") == 0);
+  }
+  REQUIRE(std::abs(prop.GetPos().x - (kHere.x + 20.f)) < 1.f);
+  REQUIRE(RelaysTo(p, 10) == std::vector<int>{ 0 });
+  REQUIRE(SentTo<PropOwnerMessage>(p, 9).empty());
+  REQUIRE(SentTo<PropTransformMessage>(p, 9).empty());
+  DoDisconnect(p, 9);
+  DoDisconnect(p, 10);
+  p.DestroyActor(kC9);
+  p.DestroyActor(kC10);
+}
+
+TEST_CASE("One claim of three props judges each: two granted with their "
+          "words, the third held by another seat and answered, a line each",
+          "[Prop][espm]")
+{
+  // physics rung 2 (ADR-071 decision 6): an impact's bodies in one claim,
+  // each judged alone (here an impulse's, touch 3, on three items)
+  auto& p = GetPartOne();
+  auto w = Enter(p);
+  auto& jug = Prop(p, kJug, kHere + NiPoint3{ 20.f, 0.f, 0.f });
+  auto& crate = Prop(p, kCrate, kHere + NiPoint3{ -20.f, 0.f, 0.f });
+  // c2 holds the jug
+  Claim(p, 1, kJug, 1);
+  REQUIRE(p.PropLiveOwner(jug) == kC2);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    ClaimAll(p, 0, { kBasket, kJug, kCrate }, 3);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d01 claims prop ff000d03 by "
+                      "touch 3: granted, epoch 1; 2 listener(s) told") == 1);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_HELD: ff000d01 claims prop "
+                      "ff000d0e by touch 3; another player holds it "
+                      "grabbed") == 1);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d01 claims prop ff000d0f by "
+                      "touch 3: granted, epoch 1; 2 listener(s) told") == 1);
+  }
+  REQUIRE(p.PropLiveOwner(w.prop) == kC1);
+  REQUIRE(p.PropLiveOwner(crate) == kC1);
+  REQUIRE(p.PropLiveOwner(jug) == kC2);
+  REQUIRE(p.PropEpochOf(jug) == 1);
+  // c1 heard the two grants and the jug's answer (c2's word); c2 the two
+  // grants alone
+  const auto toC1 = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(toC1.size() == 3);
+  const auto toC2 = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(toC2.size() == 2);
+  for (const auto& word : toC1) {
+    REQUIRE(word.player == (word.refr == kJug ? kC2 : kC1));
+  }
+  for (const auto& word : toC2) {
+    REQUIRE(word.refr != kJug);
+    REQUIRE(word.player == kC1);
+  }
+  Leave(p);
+}
+
+TEST_CASE("A rest past the step budget is clamped: the record moves the "
+          "budget's distance toward it, the other seat hears that rest "
+          "re-encoded, both hear the host's word and the sender the record",
+          "[Prop][espm]")
+{
+  // ADR-071 decision 6: a live owner's rest past the bucket is clamped and
+  // accepted. Right after c1's grant its prop holds one full step, 600 units
+  auto& p = GetPartOne();
+  auto w = Enter(p);
+  Claim(p, 0, kBasket, 0);
+  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Sample(p, 0, kBasket, kHere + NiPoint3{ 1000.f, 0.f, 0.f }, true);
+    REQUIRE(log.Count("[verb:prop-physics] prop ff000d03 rests on "
+                      "ff000d01's screen at (9600, 500, 0): the host's again "
+                      "at epoch 2; the sample relayed to 1 listener(s), the "
+                      "word to 2, clamped from (10000, 500, 0)") == 1);
+  }
+  REQUIRE(std::abs(w.prop.GetPos().x - (kHere.x + 600.f)) < 1.f);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  // c2 hears the rest at the clamped point, typed (never the sender's raw
+  // bytes, which name the far point), then the word
+  REQUIRE(RelaysTo(p, 1).empty());
+  const auto relay = SentTo<PropTransformMessage>(p, 1);
+  REQUIRE(relay.size() == 1);
+  REQUIRE(relay[0].asleep);
+  REQUIRE(relay[0].epoch == 1);
+  REQUIRE(relay[0].seq != 0);
+  REQUIRE(std::abs(relay[0].pos[0] - (kHere.x + 600.f)) < 1.f);
+  REQUIRE(FirstTo<PropTransformMessage>(p, 1) <
+          FirstTo<PropOwnerMessage>(p, 1));
+  // both seats hear the host's word at 2
+  for (const Networking::UserId user :
+       std::vector<Networking::UserId>{ 0, 1 }) {
+    const auto words = SentTo<PropOwnerMessage>(p, user);
+    REQUIRE(words.size() == 1);
+    REQUIRE(words[0].player == 0);
+    REQUIRE(words[0].epoch == 2);
+  }
+  // and c1 the record, after the word
+  const auto record = SentTo<PropTransformMessage>(p, 0);
+  REQUIRE(record.size() == 1);
+  REQUIRE(record[0].seq == 0);
+  REQUIRE(record[0].epoch == 2);
+  REQUIRE(record[0].asleep);
+  REQUIRE(std::abs(record[0].pos[0] - (kHere.x + 600.f)) < 1.f);
+  REQUIRE(FirstTo<PropOwnerMessage>(p, 0) <
+          FirstTo<PropTransformMessage>(p, 0));
+  Leave(p);
+}
+
+TEST_CASE("Bones on an item are refused: the sample moves nothing, wakes "
+          "nothing and reaches nobody",
+          "[Prop][espm]")
+{
+  // physics rung 2: the bones field is on the wire, and no prop row takes
+  // one until a world object's parts (rung 4) or a dead actor's bones (rung
+  // 5); a seat of its own, for the refusal line
+  auto& p = GetPartOne();
+  Player(p, 11, kC11, kHere + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 10, kC10, kHere + NiPoint3{ 60.f, 0.f, 0.f });
+  auto& prop = Prop(p, kBasket, kHere);
+  const auto cell = p.worldState.CellOf(prop);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 11, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC11);
+  p.Messages().clear();
+  auto msg = SampleOf(p, kBasket, kHere + NiPoint3{ 20.f, 0.f, 0.f }, false);
+  PropTransformMessage::Bone bone;
+  bone.pos = { kHere.x + 20.f, kHere.y, kHere.z + 30.f };
+  msg.bones.push_back(bone);
+  {
+    LogCapture log;
+    p.GetActionListener().OnPropTransform(Raw(11), msg);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d12 moves prop "
+                      "ff000d03; a sample with bones, which no prop row "
+                      "takes yet (a world object's parts are rung 4's, a "
+                      "dead actor's bones rung 5's)") == 1);
+  }
+  REQUIRE(prop.GetPos() == kHere);
+  REQUIRE(p.PropEpochOf(prop) == 0);
+  REQUIRE(RelaysTo(p, 10).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 11).empty());
+  REQUIRE(SentTo<PropTransformMessage>(p, 11).empty());
+  // the same sample without its bone is the host's wake
+  msg.bones.clear();
+  p.GetActionListener().OnPropTransform(Raw(11), msg);
+  REQUIRE(p.PropLiveOwner(prop) == kC11);
+  REQUIRE(p.PropEpochOf(prop) == 1);
+  REQUIRE(RelaysTo(p, 10) == std::vector<int>{ 0 });
+  DoDisconnect(p, 11);
+  DoDisconnect(p, 10);
+  p.DestroyActor(kC11);
+  p.DestroyActor(kC10);
 }

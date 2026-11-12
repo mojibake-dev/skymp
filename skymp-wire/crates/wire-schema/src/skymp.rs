@@ -2095,11 +2095,12 @@ wire_struct! {
     /// A1 to A7 of ADR-071 decision 2): who simulates a prop from now, to
     /// every listener of the prop at each owner change: a grant; the return
     /// to the cell's host at any owner's own asleep sample, the host's and a
-    /// holder's included; a refused final sample (the rest taken, the
-    /// position not); the host's own wake of a resting prop, the word naming
-    /// the host by id; a departure; its simulator's unload of the prop's
-    /// cell. To one seat alone as the answer to its refused claim or sample
-    /// (the current owner and epoch), and to a late listener after the
+    /// holder's included; a rest past the step budget, clamped (physics
+    /// rung 2); the host's own wake of a resting prop, the word naming the
+    /// host by id; a departure; its simulator's unload of the prop's cell.
+    /// To one seat alone as the answer to its refused claim or sample (the
+    /// current owner and epoch; a sample's answer then the record, a
+    /// `PropTransform` at seq 0), and to a late listener after the
     /// prop's create word. Ownership changes by this word alone: no seat
     /// infers it from a timer, and the server runs none. Server to client,
     /// reliable, R0 output: the named seat simulates (its body Dynamic, the

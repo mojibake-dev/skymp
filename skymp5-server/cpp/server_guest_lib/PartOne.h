@@ -886,9 +886,11 @@ public:
     // taken, and the owner's rest returned the prop to the cell's host at a
     // new epoch: the word with player 0 goes out (A4)
     Returned,
-    // refused as over the step budget, but asleep: the rest is taken (the
-    // host's again, the word), the position is not (the record stands)
-    RestRefused,
+    // an asleep sample past the step budget, clamped and taken (ADR-071
+    // decision 6, physics rung 2, in rung 1's RestRefused's place): the
+    // record moves the outcome's `allowed` units toward the sample and the
+    // prop is the host's again at the outcome's epoch, the word with player 0
+    Clamped,
     // woken: the host's own awake sample of a prop that was not its live
     // row (a resting prop its engine moved); the row is the host's at a new
     // epoch and the word names the host BY ID, so a host change leaves the
@@ -899,16 +901,36 @@ public:
     // prop it just left; refused (a live owner's own stream passes)
     Away,
     // a resting prop in a cell nobody hosts: it freezes at the record
-    Frozen
+    Frozen,
+    // the sample names an epoch below the prop's (a sample of an earlier
+    // tenure) or above it (a word the server never said): dropped whoever
+    // sent it (ADR-066 decision 4: by the epoch first)
+    Stale,
+    Future,
+    // the owner's sample at the prop's epoch whose sequence is not newer than
+    // its last accepted one there (a repeat, or an unreliable sample
+    // overtaken in flight): dropped, no fault
+    Late
+  };
+  // The rule's answer to a sample: the verdict, the prop's owner epoch after
+  // it (the word's at a return, a clamp or a wake) and a clamp's distance.
+  struct PropTransformOutcome
+  {
+    PropTransformVerdict verdict = PropTransformVerdict::Accepted;
+    uint32_t epoch = 0;
+    float allowed = 0.f;
   };
   // `sender`'s sample of `prop` landing in `cell` (0 for none), judged by
   // the host of `recordCell` (the cell the record stands in, read from the
-  // host table), the body asleep or not, `moved` units from the record (the
-  // rule's step budget)
-  PropTransformVerdict PropTransform(const MpActor& sender,
+  // host table), under the word's `epoch`, numbered `seq`, read at `tMs` on
+  // the owner's clock, the body asleep or not and held or not, `moved` units
+  // from the record (the rule's step budget)
+  PropTransformOutcome PropTransform(const MpActor& sender,
                                      const MpObjectReference& prop,
                                      uint32_t cell, uint32_t recordCell,
-                                     bool asleep, float moved);
+                                     uint32_t epoch, uint16_t seq,
+                                     uint32_t tMs, bool asleep, bool held,
+                                     float moved);
   // The prop's live row's owner (awake or held), else 0: who the word a
   // listener arriving at the prop gets names (onSubscribe), the host's own
   // live row by its id like any other's.
@@ -928,9 +950,22 @@ public:
   size_t SendPropOwnerWord(uint32_t refr, uint32_t player, uint32_t epoch,
                            uint32_t exceptActor = 0);
   // The current word (the live owner or 0, the epoch) to one user, at most
-  // once per prop per second: the answer to a refused sample or claim, so a
-  // seat whose word diverged hears who owns the prop (A5).
+  // once per prop per second: the answer to a refused claim, so a seat whose
+  // word diverged hears who owns the prop (A5).
   void AnswerPropWord(Networking::UserId user, const MpObjectReference& prop);
+  // The current word and then the record (SendPropRecord) to one user, on
+  // the one reliable ordered channel, under AnswerPropWord's limit of one a
+  // second per prop: the answer to a refused sample (ADR-071 decision 6:
+  // every refusal answered with the record), so the sender's word and copy
+  // heal to the prop's owner and the record.
+  void AnswerPropRecord(Networking::UserId user,
+                        const MpObjectReference& prop);
+  // The record as a sample, reliable, to one user: PropTransform at seq 0
+  // (the mark no client may send), tMs 0, no velocity and no bones, at the
+  // record's position and angle under the prop's epoch, asleep while no live
+  // row moves the prop, held as the row's grab. A clamp's sender gets it
+  // unlimited, as the clamp's outcome; AnswerPropRecord sends it limited.
+  void SendPropRecord(Networking::UserId user, const MpObjectReference& prop);
   // thuum docs/verbs/npc-fate.md (the deaths): the bodies whose deadline
   // (fateDiedAt plus WorldState::FateRespawnHours()) the installed game
   // clock has passed stand again; once a second from Tick, directly from a

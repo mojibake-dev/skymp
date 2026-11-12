@@ -1690,7 +1690,8 @@ TEST_CASE("One impact's claim names what it moved: the resting props are the "
 TEST_CASE("A live prop's owner stays its listener where the grid would drop "
           "it: a body two squares from its owner keeps the owner subscribed "
           "and its samples taken, the owner's own walk across a square keeps "
-          "it too, and the next grid pass after the body's rest drops it",
+          "it too, and the next grid pass after the body's rest, or after "
+          "the owner's unload of the prop's cell, drops it",
           "[Prop][espm]")
 {
   // physics rung 3 (thuum lab/.cache/drafts/physics/rung3-plan.md B5): a body
@@ -1746,5 +1747,22 @@ TEST_CASE("A live prop's owner stays its listener where the grid would drop "
   w.prop.ForceSubscriptionsUpdate();
   REQUIRE_FALSE(Listens(w.prop, c2));
   REQUIRE(DestroysTo(p, 1, w.prop) == 1);
+
+  // the keep ends at an unload's return as at the rest (D-PH2 A): the record
+  // back beside the players (the server's own placement, which subscribes
+  // c2 again), c2's fresh grant at epoch 3, the body two squares off again,
+  // kept; c2's game reports the prop's cell unloaded, which returns its live
+  // row there to the host, and the body's next grid pass parts the pair
+  w.prop.SetPos(kHere);
+  REQUIRE(Listens(w.prop, c2));
+  Claim(p, 1, kBasket, 3);
+  REQUIRE(p.PropLiveOwner(w.prop) == kC2);
+  REQUIRE(p.PropEpochOf(w.prop) == 3);
+  w.prop.SetPos(far);
+  REQUIRE(Listens(w.prop, c2));
+  CellLoaded(p, 1, w.cell, false);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  w.prop.ForceSubscriptionsUpdate();
+  REQUIRE_FALSE(Listens(w.prop, c2));
   Leave(p);
 }

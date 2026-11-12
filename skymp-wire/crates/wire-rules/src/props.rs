@@ -102,8 +102,9 @@ pub const PROP_STEP_ALLOWANCE_UNITS: f32 = PROP_MAX_SPEED_UNITS_PER_S / 10.0;
 /// server's elapsed time and `PROP_CLOCK_SLACK_MS`, plus this once, and over
 /// any window rung 2's bound stands (`PROP_CLOCK_SLACK_MS`'s: a first sample
 /// takes this at most of the time the clock has run, its lag included): a
-/// lie is a hop of 3,000 units, never a teleport (ADR-063's H1 accepts the
-/// lie class on a friends' server). UNMEASURED: x-prop-impact v1 reads each
+/// first sample's lie is a hop of 3,000 units at most, an instant's stays
+/// rung 2's 8,100, never a teleport (ADR-063's H1 accepts the lie class on a
+/// friends' server). UNMEASURED: x-prop-impact v1 reads each
 /// caster's impact-to-first-sample time against half a second at the cap.
 pub const PROP_FIRST_SAMPLE_UNITS: f32 = PROP_MAX_SPEED_UNITS_PER_S / 2.0;
 

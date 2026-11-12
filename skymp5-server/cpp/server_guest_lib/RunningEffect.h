@@ -1,6 +1,7 @@
 #pragma once
 #include "FormDesc.h"
 #include <cstdint>
+#include <optional>
 #include <tuple>
 
 // An effect running on an actor (thuum docs/verbs/magic-effects.md), as the
@@ -12,9 +13,14 @@
 // FormDesc, so a change of load order keeps them.
 struct RunningEffect
 {
-  FormDesc effect;   // the MGEF
-  FormDesc source;   // the potion, poison, spell or enchantment
-  FormDesc caster;   // who applied it; empty for none
+  FormDesc effect; // the MGEF
+  FormDesc source; // the potion, poison, spell or enchantment
+  // who applied it, none for none. An optional (thuum docs/verbs/npc-fate.md
+  // C4): a server's first player, 0xff000000, is FormDesc {0, ""}, the same
+  // value an empty FormDesc has, so an empty desc read as "none" lost that
+  // caster at every rewrite of the record and its thrall never knew its
+  // caster
+  std::optional<FormDesc> caster;
   uint32_t kind = 0; // 0 value, 1 peak value, 2 dual value modifier, 3 a
                      // state (wire-rules magic::EffectKind)
   int32_t av = -1;

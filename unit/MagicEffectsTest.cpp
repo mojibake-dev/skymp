@@ -320,6 +320,45 @@ TEST_CASE("The change form keeps an actor's running effects, and older "
 // value, whose sum (actor value 4294967295) the wire refuses in every set of
 // the actor (wire-validate, an actor value past the engine's). A record
 // without the key reads as a plain state.
+// thuum docs/verbs/npc-fate.md C4: a server's first player, 0xff000000,
+// has the FormDesc an empty one has ("0"), so the record keeps whether there
+// is a caster beside the desc: that caster is written and read back as one,
+// and an effect with none writes no caster
+TEST_CASE("A running effect's caster 0xff000000 is kept as a caster, not as "
+          "none",
+          "[MagicEffects]")
+{
+  const std::vector<std::string> noFiles;
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::ACHR;
+  RunningEffect thrall;
+  thrall.effect = FormDesc::FromString("7e8e0:Skyrim.esm");
+  thrall.source = FormDesc::FromString("7e8df:Skyrim.esm");
+  thrall.caster = FormDesc::FromFormId(0xff000000, noFiles);
+  thrall.kind = 3;
+  thrall.reanimate = true;
+  thrall.magnitude = 40.f;
+  thrall.durationS = 86313600.f;
+  RunningEffect potion;
+  potion.effect = FormDesc::FromString("3eaf3:Skyrim.esm");
+  potion.source = FormDesc::FromString("3eaf2:Skyrim.esm");
+  potion.durationS = 60.f;
+  changeForm.runningEffects = std::vector<RunningEffect>{ thrall, potion };
+
+  const nlohmann::json json = MpChangeForm::ToJson(changeForm);
+  REQUIRE(json["runningEffects"]["entries"][0]["caster"] == "0");
+  REQUIRE(!json["runningEffects"]["entries"][1].contains("caster"));
+  simdjson::dom::parser parser;
+  const std::string dump = json.dump();
+  auto element = parser.parse(dump).value();
+  const auto reread = MpChangeForm::JsonToChangeForm(element).runningEffects;
+  REQUIRE(reread == changeForm.runningEffects);
+  REQUIRE(reread.has_value());
+  REQUIRE((*reread)[0].caster.has_value());
+  REQUIRE((*reread)[0].caster->ToFormId(noFiles) == 0xff000000);
+  REQUIRE_FALSE((*reread)[1].caster.has_value());
+}
+
 TEST_CASE("A thrall's reanimate state is kept as a state with its key, and "
           "a state without the key reads as a plain one",
           "[MagicEffects]")

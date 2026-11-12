@@ -4057,11 +4057,6 @@ std::optional<skymp::rules::EffectFacts> EffectFactsOf(
   return facts;
 }
 
-bool IsNoForm(const FormDesc& desc)
-{
-  return desc.shortFormId == 0 && desc.file.empty();
-}
-
 // The change form's running effects as the rule's entries; one whose
 // plugin is no longer loaded is dropped
 rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
@@ -4092,7 +4087,9 @@ rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
       e.facts.recover = r.recover;
       e.facts.detrimental = r.detrimental;
       e.facts.no_duration = r.noDuration;
-      e.caster = IsNoForm(r.caster) ? 0 : r.caster.ToFormId(files);
+      // a caster kept is a form, 0xff000000's FormDesc {0, ""} too (thuum
+      // docs/verbs/npc-fate.md C4); none is the optional's own
+      e.caster = r.caster.has_value() ? r.caster->ToFormId(files) : 0;
       e.elapsed_s = r.elapsedS;
       entries.push_back(e);
     } catch (std::exception& ex) {
@@ -4129,7 +4126,9 @@ std::optional<std::vector<RunningEffect>> RunningEffectsOf(
     RunningEffect r;
     r.effect = FormDesc::FromFormId(e.facts.effect, files);
     r.source = FormDesc::FromFormId(e.facts.source, files);
-    r.caster = e.caster ? FormDesc::FromFormId(e.caster, files) : FormDesc();
+    r.caster = e.caster
+      ? std::optional<FormDesc>(FormDesc::FromFormId(e.caster, files))
+      : std::nullopt;
     // a thrall's reanimate is kept as a state with its key (rule 6: a
     // server that predates the key reads a plain state)
     r.reanimate = e.facts.kind == skymp::rules::EffectKind::Reanimate;
@@ -4491,11 +4490,14 @@ void MpActor::ReapplyMagicEffects()
         // C4 (thuum docs/verbs/npc-fate.md, rule 6's option A): the record
         // keeps its caster, so the caster's return commands it again
         // (PartOne::ReturnThralls) after a restart as without one
-        spdlog::info("[verb:npc-fate] {:x}'s commander left at the server's "
-                     "restart and its effect is a full thrall's (the "
-                     "record's {:.0f} s): it stays, its look kept, until its "
-                     "caster {:x} returns (ADR-060)",
-                     formId, recordSeconds, e.caster);
+        spdlog::info(
+          "[verb:npc-fate] {:x}'s commander left at the server's "
+          "restart and its effect is a full thrall's (the "
+          "record's {:.0f} s): it stays, its look kept{} (ADR-060)",
+          formId, recordSeconds,
+          e.caster != 0
+            ? fmt::format(", until its caster {:x} returns", e.caster)
+            : std::string());
       } else {
         worldState->SetTimer(std::chrono::milliseconds(0))
           .Then([worldState, formId, recordSeconds](Viet::Void) {

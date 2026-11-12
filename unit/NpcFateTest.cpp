@@ -1991,10 +1991,10 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     }
     REQUIRE(p.CommanderOf(host) == 0);
     for (auto& m : p.Messages()) {
-      REQUIRE_FALSE(m.j.is_object() &&
-                    m.j.value("propName", std::string()) ==
-                      "isHostedByOther" &&
-                    m.j.value("refrId", 0u) == kHost);
+      REQUIRE_FALSE(
+        (m.j.is_object() &&
+         m.j.value("propName", std::string()) == "isHostedByOther" &&
+         m.j.value("refrId", 0u) == kHost));
     }
     host.Respawn(false);
   }

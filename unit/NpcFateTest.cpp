@@ -1605,7 +1605,7 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   }
 
   SECTION("by a player who is not the host: the stand-up's MagicEffects "
-          "names the Reanimate effect with about 60 s to both games, and the "
+          "names the Reanimate effect with no end (-1) to both games, and the "
           "thrall's death sends both the emptied set (its look, ADR-060)")
   {
     Equipment eq;
@@ -1622,9 +1622,12 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     p.Messages().clear();
     standsOn(1);
     REQUIRE_FALSE(body.IsDead());
-    // the record's 60 s (Skyrim.esm's EFIT); the Dark Souls rider fails its
-    // HasPerk on the caster (EffectConditionsTest) and the ash's script
-    // effect is no state of the server's, so the set is the one effect
+    // a state with no clock, sent as -1, no end (thuum docs/WIRE.md,
+    // MagicEffects' remaining; the platform review of 3a31c05a, F5), while
+    // the record keeps its 60 s (Skyrim.esm's EFIT) below; the Dark Souls
+    // rider fails its HasPerk on the caster (EffectConditionsTest) and the
+    // ash's script effect is no state of the server's, so the set is the one
+    // effect
     for (const Networking::UserId user : { 0, 1 }) {
       auto words = effectWordsTo(user);
       REQUIRE_FALSE(words.empty());
@@ -1632,8 +1635,7 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
         REQUIRE(word["effects"].size() == 1);
         REQUIRE(word["effects"][0]["effect"] == kReanimateEffect);
         REQUIRE(word["effects"][0]["source"] == kReanimateCorpse);
-        REQUIRE(word["effects"][0]["remaining"].get<float>() ==
-                Catch::Approx(60.f).margin(0.5f));
+        REQUIRE(word["effects"][0]["remaining"].get<float>() == -1.f);
       }
     }
     const auto running = body.GetRunningEffects();
@@ -2189,14 +2191,15 @@ TEST_CASE("A full thrall's look is the record's for the record's whole "
     }
     return out;
   };
-  // the thrall's Reanimate effect's seconds left in a word, -1 for none
-  const auto lookIn = [&](nlohmann::json& word) {
+  // the thrall's Reanimate effect's seconds left in a word, nothing when the
+  // word names none
+  const auto lookIn = [&](nlohmann::json& word) -> std::optional<float> {
     for (auto& effect : word["effects"]) {
       if (effect["effect"] == kThrallEffect) {
         return effect["remaining"].get<float>();
       }
     }
-    return -1.f;
+    return std::nullopt;
   };
 
   // the caster's cast and hit through the packet path, then its engine's
@@ -2243,12 +2246,14 @@ TEST_CASE("A full thrall's look is the record's for the record's whole "
   State(p, 1, kThrall, 1.f);
   REQUIRE_FALSE(thrall.IsDead());
 
-  // both games hear the look for the record's 86,313,600 s, not a day's
+  // both games hear the look with no end (-1, a state with no clock: thuum
+  // docs/WIRE.md, MagicEffects' remaining; the platform review of 3a31c05a,
+  // F5); the record keeps its 86,313,600 s, not a day's
   for (const Networking::UserId user : { 0, 1 }) {
     auto words = effectWordsTo(user);
     REQUIRE_FALSE(words.empty());
     for (auto& word : words) {
-      REQUIRE(lookIn(word) == Catch::Approx(recordSeconds));
+      REQUIRE(lookIn(word) == -1.f);
     }
   }
   const auto lookOnRecord = [&] {
@@ -2280,7 +2285,7 @@ TEST_CASE("A full thrall's look is the record's for the record's whole "
     auto words = effectWordsTo(2);
     REQUIRE_FALSE(words.empty());
     for (auto& word : words) {
-      REQUIRE(lookIn(word) == Catch::Approx(recordSeconds));
+      REQUIRE(lookIn(word) == -1.f);
     }
   }
 

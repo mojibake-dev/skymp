@@ -14,6 +14,8 @@ export interface MagicEffectsMessage {
         effect: number;
         source: number;
         magnitude: number;
+        // seconds left; 0 for an effect without duration, a negative (the
+        // server's -1) for a state with no clock, a thrall's reanimate: no end
         remaining: number;
     }>;
     modifiers?: Array<{

@@ -925,9 +925,11 @@ wire_struct! {
         pub source: u32,
         /// Its magnitude, scaled as the server applied it.
         pub magnitude: f32,
-        /// Seconds left; 0 for an effect without duration, shown once. At
-        /// most a day (wire-rules magic::MAX_DURATION_S) but a thrall's
-        /// reanimate, which keeps its record's (Dead Thrall's 86,313,600 s).
+        /// Seconds left, at most a day (wire-rules magic::MAX_DURATION_S); 0
+        /// for an effect without duration, shown once; -1 for a state with
+        /// no clock, a thrall's reanimate, which ends with its actor's death
+        /// alone (the client reads a negative as no end). Any finite value
+        /// validates.
         pub remaining: f32,
     }
 }

@@ -36,7 +36,9 @@ struct MagicEffectsMessage : public MessageBase<MagicEffectsMessage>
     uint32_t effect = 0; // the MGEF
     uint32_t source = 0; // the potion, poison, spell or enchantment
     float magnitude = 0.f;
-    float remaining = 0.f; // seconds; 0 for an effect without duration
+    // seconds; 0 for an effect without duration, -1 for a state with no
+    // clock (a thrall's reanimate, which ends with its actor's death)
+    float remaining = 0.f;
   };
 
   // What the actor's running buffs add to one actor value: the sum the

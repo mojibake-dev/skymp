@@ -4179,7 +4179,14 @@ MagicEffectsMessage MagicEffectsOf(
     effect.effect = e.facts.effect;
     effect.source = e.facts.source;
     effect.magnitude = e.facts.magnitude;
-    effect.remaining = std::max(e.facts.duration_s - e.elapsed_s, 0.f);
+    // a state with no clock, a thrall's reanimate, which ends with its
+    // actor's death alone, is sent as -1, no end: its record's seconds left
+    // would read 0 past them, which a game shows for a moment (thuum
+    // docs/WIRE.md, MagicEffects' remaining; the platform review of
+    // 3a31c05a, F5)
+    effect.remaining = e.facts.kind == skymp::rules::EffectKind::Reanimate
+      ? -1.f
+      : std::max(e.facts.duration_s - e.elapsed_s, 0.f);
     msg.effects.push_back(effect);
   }
   for (const auto& effect : shownOnce) {

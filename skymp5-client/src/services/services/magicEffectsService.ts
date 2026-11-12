@@ -84,29 +84,15 @@ export class MagicEffectsService extends ClientListener {
         const key = refr.getFormID();
         const before = this.shown.get(key) ?? new Set<number>();
         const now = new Set<number>();
-        const actor = Actor.from(refr);
-        const arts = new Map<number, ArtShown>();
         for (const effect of msg.effects) {
             const mgef = MagicEffect.from(Game.getFormEx(effect.effect));
             if (!mgef) {
                 continue;
             }
-            const seconds = effect.remaining > 0 ? effect.remaining : MagicEffectsService.shownOnceSeconds;
             const shader = mgef.getHitShader();
             if (shader) {
                 now.add(shader.getFormID());
-                shader.play(refr, seconds);
-            }
-            // the art beside it, unless the engine runs an effect of this
-            // record on the actor here and draws the art itself: a second art
-            // is a second model (a reanimated body's raise is its commander's
-            // engine's alone, Hooks.cpp CharacterAddTarget, so a watcher draws
-            // the record's)
-            const art = mgef.getHitEffectArt();
-            if (art && !(actor && actor.hasMagicEffect(mgef))) {
-                const artId = art.getFormID();
-                const shownFor = arts.get(artId);
-                arts.set(artId, { art, seconds: shownFor ? Math.max(shownFor.seconds, seconds) : seconds });
+                shader.play(refr, MagicEffectsService.secondsOf(effect.remaining));
             }
         }
         before.forEach((shaderId) => {
@@ -115,8 +101,61 @@ export class MagicEffectsService extends ClientListener {
             }
         });
         this.shown.set(key, now);
-        this.showArts(refr, arts);
+        // the art pass, for another's actor a second update later: the server
+        // sends a self spell's MagicEffects before it relays the cast
+        // (ActionListener's OnSpellCast), and each message waits its own
+        // update, so the engine's own effect of the record, which draws its
+        // own art, may land on a player's figure only after this one (the
+        // platform review of 3a31c05a, F3)
+        if (own) {
+            this.artPass(refr, msg);
+        } else {
+            this.controller.once("update", () => {
+                const later = ObjectReference.from(Game.getFormEx(key));
+                if (later) {
+                    this.artPass(later, msg);
+                }
+            });
+        }
         this.dispelEnded(own, refr, msg);
+    }
+
+    // the seconds an effect shows: the server's seconds left; an effect
+    // without duration (0) for the flash; a state with no clock (a negative,
+    // the server's -1: a thrall's reanimate, which ends with its actor's
+    // death) for -1, no end, until the server's set drops it (thuum
+    // docs/WIRE.md, MagicEffects' remaining; the platform review of 3a31c05a,
+    // F5)
+    private static secondsOf(remaining: number): number {
+        if (remaining < 0) {
+            return -1;
+        }
+        return remaining > 0 ? remaining : MagicEffectsService.shownOnceSeconds;
+    }
+
+    // each effect's hit art, unless the engine runs an effect of its record
+    // on the actor here and draws the art itself: a second art is a second
+    // model (a reanimated body's raise is its commander's engine's alone,
+    // Hooks.cpp CharacterAddTarget, so a watcher draws the record's); an art
+    // two effects share shows for the longer, no end the longest
+    private artPass(refr: ObjectReference, msg: MagicEffectsMessage) {
+        const actor = Actor.from(refr);
+        const arts = new Map<number, ArtShown>();
+        for (const effect of msg.effects) {
+            const mgef = MagicEffect.from(Game.getFormEx(effect.effect));
+            if (!mgef) {
+                continue;
+            }
+            const art = mgef.getHitEffectArt();
+            if (art && !(actor && actor.hasMagicEffect(mgef))) {
+                const seconds = MagicEffectsService.secondsOf(effect.remaining);
+                const artId = art.getFormID();
+                const shownFor = arts.get(artId);
+                const longer = !shownFor ? seconds : shownFor.seconds < 0 || seconds < 0 ? -1 : Math.max(shownFor.seconds, seconds);
+                arts.set(artId, { art, seconds: longer });
+            }
+        }
+        this.showArts(refr, arts);
     }
 
     // thuum docs/verbs/magic-effects.md, the hit art (the reanimation look's

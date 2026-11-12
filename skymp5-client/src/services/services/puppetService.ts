@@ -40,9 +40,8 @@ import { RemoteServer } from "./remoteServer";
 // the JavaScript tick (skyrim-platform main.cpp OnUpdate: JsTick, then
 // gameThrQ->Update) and would undo a block issued in the lift's own tick.
 
-// one look played on a puppet: an effect shader, or the VisualEffect that
-// wraps an effect's hit effect art (artId 0 for a shader)
-type CloakLook = { kind: "shader" | "visual"; formId: number; artId: number; abilityId: number };
+// one look played on a puppet: an effect's hit shader, or its hit effect art
+type CloakLook = { kind: "shader" | "art"; formId: number; abilityId: number };
 
 export class PuppetService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -572,11 +571,12 @@ export class PuppetService extends ClientListener {
     // applies no ability on an AI-off actor). The look alone is restored, R3:
     // among the abilities the puppet's race and base list, each constant
     // effect on self is played on the puppet for the puppet period by its
-    // hit shader (EffectShader.play) and by the VisualEffect wrapping its
-    // hit effect art (VisualEffect.play), -1 being Papyrus's until stopped;
-    // stopped at the promote; read once per 3D. No spell is added to the
-    // puppet: the ability on this engine would burn this game's own player,
-    // and the cloak's damage is the server's (PartOne::AbilityReaching).
+    // hit shader (EffectShader.play) and its hit effect art
+    // (TESModPlatform.ApplyArtObject, the engine's own ApplyArtObject), -1
+    // being Papyrus's until stopped; stopped at the promote; read once per
+    // 3D. No spell is added to the puppet: the ability on this engine would
+    // burn this game's own player, and the cloak's damage is the server's
+    // (PartOne::AbilityReaching).
     // Read from Skyrim.esm (lab/esm.py, 2026-10-28): AbFlameAtronach 0x2f3b5
     // sits on AtronachFlameRace 0x131f5; none of its five effects has a hit
     // shader, and its cloak effect AbAtronachCloakFire 0x64459 has no look at
@@ -601,13 +601,21 @@ export class PuppetService extends ClientListener {
                 shader.play(ac, -1);
                 logTrace(this, `cloak look: ${id} plays shader ${look.formId.toString(16)} of ability ${look.abilityId.toString(16)}`);
             } else {
-                const visual = this.sp.VisualEffect.from(form);
-                if (!visual) {
+                const art = this.sp.Art.from(form);
+                if (!art) {
                     continue;
                 }
-                visual.stop(ac);
-                visual.play(ac, -1, null);
-                logTrace(this, `cloak look: ${id} plays visual effect ${look.formId.toString(16)} of art ${look.artId.toString(16)} of ability ${look.abilityId.toString(16)}`);
+                // a second play of the art replaces this game's first (the
+                // native's), so the art needs no stop first
+                try {
+                    if (this.sp.callNative("TESModPlatform", "ApplyArtObject", undefined, ac, art, -1) !== true) {
+                        continue;
+                    }
+                } catch (err) {
+                    logError(this, "TESModPlatform.ApplyArtObject failed", err);
+                    continue;
+                }
+                logTrace(this, `cloak look: ${id} plays art ${look.formId.toString(16)} of ability ${look.abilityId.toString(16)}`);
             }
             playing.push(look);
         }
@@ -626,8 +634,17 @@ export class PuppetService extends ClientListener {
             const form = this.sp.Game.getFormEx(look.formId);
             if (look.kind === "shader") {
                 this.sp.EffectShader.from(form)?.stop(ac);
-            } else {
-                this.sp.VisualEffect.from(form)?.stop(ac);
+                continue;
+            }
+            const art = this.sp.Art.from(form);
+            if (!art) {
+                continue;
+            }
+            // this game's own play alone, never an art the engine draws
+            try {
+                this.sp.callNative("TESModPlatform", "StopArtObject", undefined, ac, art);
+            } catch (err) {
+                logError(this, "TESModPlatform.StopArtObject failed", err);
             }
         }
     }
@@ -638,8 +655,8 @@ export class PuppetService extends ClientListener {
     // effects that is a constant effect delivered to self (an ability's
     // shape, never a listed combat spell's: MagicSystem::CastingType
     // kConstantEffect 0 and Delivery kSelf 0, CommonLibSSE-NG
-    // include/RE/M/MagicSystem.h), by its hit shader and by the VisualEffect
-    // wrapping its hit effect art, once per form.
+    // include/RE/M/MagicSystem.h), by its hit shader and its hit effect art,
+    // once per form.
     private abilityLooks(ac: Actor): CloakLook[] {
         const out: CloakLook[] = [];
         const seenForms = new Set<number>();
@@ -674,13 +691,12 @@ export class PuppetService extends ClientListener {
                     const shader = effect.getHitShader();
                     if (shader && !seenForms.has(shader.getFormID())) {
                         seenForms.add(shader.getFormID());
-                        out.push({ kind: "shader", formId: shader.getFormID(), artId: 0, abilityId });
+                        out.push({ kind: "shader", formId: shader.getFormID(), abilityId });
                     }
                     const art = effect.getHitEffectArt();
-                    const visual = art ? PuppetService.artVisualEffects.get(art.getFormID()) : undefined;
-                    if (art && visual !== undefined && !seenForms.has(visual)) {
-                        seenForms.add(visual);
-                        out.push({ kind: "visual", formId: visual, artId: art.getFormID(), abilityId });
+                    if (art && !seenForms.has(art.getFormID())) {
+                        seenForms.add(art.getFormID());
+                        out.push({ kind: "art", formId: art.getFormID(), abilityId });
                     }
                 }
             }
@@ -755,19 +771,6 @@ export class PuppetService extends ClientListener {
     // the looks playing on each puppet, by local id (an empty list once the
     // lists were read for the current 3D)
     private readonly cloakLooks = new Map<number, CloakLook[]>();
-    // The Skyrim Platform API reads an effect's hit effect art
-    // (MagicEffect.getHitEffectArt) but plays only a VisualEffect (an RFCT
-    // wrapping an art, a shader or both), and nothing maps an art to one; the
-    // general path is one native, TESObjectREFR::ApplyArtObject
-    // (CommonLibSSE-NG include/RE/T/TESObjectREFR.h:368). Until the platform
-    // has it, this table is the map: the vanilla RFCT wrapping each art a
-    // creature's ability shows, read from Skyrim.esm with lab/esm.py (every
-    // RFCT's DATA scanned, 2026-10-28). Skyrim.esm is always load index 00.
-    private static readonly artVisualEffects = new Map<number, number>([
-        // FXAtronachFireTrailObject (AbFXAtronachFlame 0x60da1 of
-        // AbFlameAtronach 0x2f3b5): FXAtronachFireTrailEffect
-        [0x60d9c, 0x60d9d],
-    ]);
     private readonly attached = new Set<number>();
     private readonly deferredArmed = new Set<number>();
     // the moment a dead puppet was first seen dead here (the flag's settle)

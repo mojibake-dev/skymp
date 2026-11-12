@@ -3547,6 +3547,7 @@ export declare class SoundDescriptor extends Form {
 export declare class TESModPlatform extends PapyrusObject {
   static from(papyrusObject: PapyrusObject | null): TESModPlatform | null
   static addItemEx(containerRefr: ObjectReference | null, item: Form | null, countDelta: number, health: number, enchantment: Enchantment | null, maxCharge: number, removeEnchantmentOnUnequip: boolean, chargePercent: number, textDisplayData: string, soul: number, poison: Potion | null, poisonCount: number): void
+  static applyArtObject(refr: ObjectReference | null, art: Art | null, duration: number): boolean
   static applyChangeForm(refr: ObjectReference | null, bodyHex: string, flags: number, version: number, remapRows: string): string
   static clearTintMasks(targetActor: Actor | null): void
   static createNpc(): ActorBase | null
@@ -3568,6 +3569,7 @@ export declare class TESModPlatform extends PapyrusObject {
   static setNpcSex(npc: ActorBase | null, sex: number): void
   static setNpcSkinColor(npc: ActorBase | null, skinColor: number): void
   static setWeaponDrawnMode(actor: Actor | null, mode: number): void
+  static stopArtObject(refr: ObjectReference | null, art: Art | null): boolean
   static updateEquipment(actor: Actor | null, item: Form | null, leftHand: boolean): void
 }
 

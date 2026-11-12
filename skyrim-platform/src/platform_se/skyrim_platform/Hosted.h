@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Puppets.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -16,6 +17,18 @@ namespace Hosted {
 bool Is(uint32_t formId);
 void Set(uint32_t formId, bool hosted);
 size_t Count();
+
+// whether this game's engine simulates the actor: the server's word per
+// actor says this game (Is) and it is no puppet here (Puppets.h). The one
+// definition of the test: Hooks.cpp's CharacterAddTarget and HostedResurrect
+// read it, and the Papyrus gate's simulatedActor (FridaHooks.cpp
+// OnSendEventEnter) and the seam's owner of an actor's scripts
+// (ScriptNatives.cpp OwnedHere) spell it inline until they take it. A
+// player's figure is never in the hosted set
+inline bool SimulatedHere(uint32_t formId)
+{
+  return Is(formId) && !Puppets::Is(formId);
+}
 
 // The actors inside the engine's action entry right now, a depth per form
 // id (the mediator re-enters itself for a paired action's target), marked by

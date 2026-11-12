@@ -311,6 +311,21 @@ export interface ProjectileLaunchedEvent {
   angleZ: number;
   power: number;
   useOrigin: boolean;
+  // thuum docs/verbs/spell-cast.md: LaunchData's contactNormal (the pick's normal a target-location launch carries; (0, 0, 1) for a launch with no pick)
+  contactNormalX: number;
+  contactNormalY: number;
+  contactNormalZ: number;
+}
+// thuum docs/verbs/spell-cast.md (the rune's glyph on the observer): the engine's decal placement for the player's own target-location launch (the fork's hook on Address Library 44186): the projectile's base form, the pick's position, its unit normal and the surface's material id. No game call in its handler
+export interface RuneDecalEvent {
+  projectile: number;
+  originX: number;
+  originY: number;
+  originZ: number;
+  normalX: number;
+  normalY: number;
+  normalZ: number;
+  materialId: number;
 }
 // thuum docs/verbs/marksman.md: an arrow's flight as it starts (its first update's angles, after the player's auto-aim), for the player's and the figures' arrows, raised on the next tick. No game call in its handler
 export interface ProjectileFlightEvent {
@@ -339,6 +354,42 @@ export interface SkillUseEvent {
   points: number;
   source: number;
 }
+// thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): the calls this seat's scripts made in one frame on what this seat owns, raised at most once a frame (the platform's hook on NativeFunctionBase::Call judges every row of its table, NativeRows.inc, from the call's typed frame; ScriptNatives.cpp): an action row on a world object in a cell this game hosts (kind "action"); Actor.Kill and KillSilent, and ObjectReference.ProcessTrapHit (a trap's hit, its self the hit actor, thuum docs/verbs/npc-fate.md), on an actor it simulates or the player's own, and a trap family reference's SetDestroyed, SetMotionType and ApplyHavokImpulse (kind "state"); since rung 4 (the state rows, ADR-068 amendment B) the record rows on what this seat owns, with their args (kind "state"): ObjectReference.Enable, EnableNoWait, Disable, DisableNoWait and Delete, and Actor.SetFactionRank, ModFactionRank, RemoveFromFaction, RemoveFromAllFactions, SetCrimeFaction and SetRelationshipRank, on a world object in a cell this game hosts, an actor it simulates or the player's own (a game-file actor the server gave this seat no word on, neither hosted nor a puppet, by its cell's host), and on every seat ReferenceAlias.ForceRefTo and Clear (kind "everyone", self the alias's quest, with alias; a self whose handle names no alias of a quest never appears); and since rung 3 (the script record) any other owned state row's call as kind "touch", its args empty, once a frame per self and caller's self, only when one of the two is a world object (no actor, below 0xff000000) and never while setScriptRecordTouches(false) holds: the owner's mark that their scripts' state may have changed (the census counts the same call, so a touch is no count). cls and fn are the table's spelling; self the subject's form id (a static row's first argument: Debug.SendAnimationEvent's reference); args the call's arguments in order, each a boolean, a number, a string, { formId } (0 for None) or null (unread); caller and handler the calling script's type and function, "" when the native began its stack; callerSelf the calling script's reference's form id (the frame below the native's, its self), 0 for none; latent whether the native is latent; stackId the Papyrus stack. Since ADR-068 D-W2 A (the trigger's own calls from its firing seat; docs/research/fifty-fixes-2026-11-07.md section 7.2(a)) kind "look": while setTriggerLook(true) and setTriggerPresserRule(true) hold, a trap family trigger's own call on itself (callerSelf the trigger) within 10 s of an entry this seat's presser made (the presser rule's), on the action rows, ObjectReference.SetMotionType and ApplyHavokImpulse, and the look-only rows Sound.Play (self the Sound, the trigger its first argument, the source) and ObjectReference.CreateDetectionEvent (self the trigger, its first argument akOwner, the actor whose noise it is, as this seat names it: 0x14 for its own player; then aiSoundLevel), each still run on this seat; a look-only row never appears as any other kind. The platform's own calls (callNative, SpSnippets) never appear. No game call in its handler
+export interface ScriptCallsEvent {
+  calls: {
+    cls: string;
+    fn: string;
+    kind: 'action' | 'state' | 'everyone' | 'touch' | 'look';
+    self: number;
+    args: (boolean | number | string | { formId: number } | null)[];
+    caller: string;
+    handler: string;
+    callerSelf: number;
+    latent: boolean;
+    stackId: number;
+    // thuum ADR-068 rung 4 (AliasFill's reference half): on ReferenceAlias.ForceRefTo and Clear alone, the alias's id within the quest self names (the middle word of the alias's VM handle, HYPOTHESIS H-AF3); absent from every other call
+    alias?: number;
+    // thuum train 52 (D-R1 C's leveled gap): on an ObjectReference.AddItem of a leveled list on this seat's own player (self 0x14) alone, while the platform's scriptLeveledLandings holds (on unless false), what the engine's roll put in that player's inventory, read from the container events inside the call's AddItemFunctor: each base once (formId, a load-order form), its count summed, in landing order, at most 255; empty when the roll landed nothing. Such a call crosses at its functor's close, a few milliseconds after the call, not in the call's frame; absent from every other call
+    landed?: { formId: number; count: number }[];
+  }[];
+}
+// thuum docs/DECISIONS.md ADR-068 (rung 2): the seam's census every 30 s, one row per counted kind of call: "Class.Name (platform)" (the platform's own call), "Class.Name (not hosted)" (a self this seat does not own), "Class.Name (local)" (a row that never crosses, an animation row on an actor), "Class.Name (unrelayable)", "Class.Name (unresolved)" (a subject that names no reference, or an alias row's self that names no alias of a quest), "Class.Name (frame mismatch)", "Class.Name (skipped)" (a non-owned state row's body skipped by the platform's scriptNonOwnerSkip lever, off by default: nonLatent skips a non-latent body, recorded a latent record row's too), "Class.Name (look)" (a trap family trigger's own call on itself queued as kind "look" in scriptCalls and run here, ADR-068 D-W2 A), "Class.Name (effect)" (a PlaceAtMe of an activator, a static or a light on a self this seat does not own, run inside this seat's own player's effect, its result this seat's local helper; train 52, scriptEffectHelpers on unless false) and "Class.Name (helper)" (a call on such a helper, run here and crossing nowhere), the bare "Class.Name" (an owned self's state row, run here) and "Class.Name on <hex id>" or "Class.Name on others" for an everyone row's selves (a quest, a global; an alias row's calls cross in scriptCalls instead). A call in scriptCalls is never counted here. No game call in its handler
+export interface ScriptCensusEvent {
+  rows: { row: string; count: number }[];
+}
+// thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A (the presser rule; docs/research/fifty-fixes-2026-11-07.md 1(b)): an OnTriggerEnter (enter true) or OnTriggerLeave (enter false) the engine raised to a world object's trigger with a presser this seat owns (its own player, 0x14; a live NPC it simulates that is no puppet; a body in a cell it hosts; a non-actor that is no trap body another seat streams), on a trap family trigger (family true) or on a scripted trigger in a cell this seat does not host, read by the Papyrus event gate from the engine's own argument while setTriggerPresserRule(true) holds, raised on the next tick: refrId the trigger's form id, presserId the presser's. The event itself goes on through the gate (a family trigger's runs here, a guest's world script stays blanked); an entry by a presser this seat does not own is blanked at the gate and raises nothing. No game call in its handler
+export interface TriggerEntryEvent {
+  refrId: number;
+  presserId: number;
+  enter: boolean;
+  family: boolean;
+}
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(b) (the furniture branch): an event the engine sent to a furniture's own graph (a plain reference whose base is a FURN; the platform's hook on NotifyAnimationGraph), noted in native while setFurnitureAnimation(true) holds, under the platform's own call or not (Bleak Falls Temple's puzzle lever's 'Lever_PlayerPush' comes from TESFurniture::Activate's NoPlayer branch inside the client's own activate), and raised on the next tick, never through the sendAnimationEvent handlers: refrId the furniture's form id, event the graph event's name as the engine sent it, took the graph's answer. No game call in its handler
+export interface FurnitureAnimationEvent {
+  refrId: number;
+  event: string;
+  took: boolean;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -349,13 +400,18 @@ export interface QuestInitEvent {
   quest: Quest
 }
 
+// thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): a quest's start, stop or stage with its cause as the seam read it at the call that made it: cause 'world' when a script's call with a world cause made it (a dialogue, scene, package or perk fragment, an interaction event, or a stage fragment whose stage a world cause or a timer set), 'seat' for the seat's own (lifecycle, cell load, the Story Manager, a direct timer, a magic effect, the UI, an engine start's start-up fragment, a stage set inside such a chain, or no script call at all); root the root frame of the stack that made the call, "<Script>.<Function>", empty for none; both absent from an older platform
 export interface QuestStartStopEvent {
   quest: Quest
+  cause?: 'world' | 'seat'
+  root?: string
 }
 
 export interface QuestStageEvent {
   quest: Quest
   stage: number
+  cause?: 'world' | 'seat'
+  root?: string
 }
 
 export interface TriggerEvent {
@@ -737,11 +793,21 @@ export declare function once(eventName: 'areaEffectPlaced', callback: (event: Ar
 
 export declare function on(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
 export declare function once(eventName: 'projectileFlight', callback: (event: ProjectileFlightEvent) => void): EventHandle
+export declare function on(eventName: 'runeDecal', callback: (event: RuneDecalEvent) => void): EventHandle
+export declare function once(eventName: 'runeDecal', callback: (event: RuneDecalEvent) => void): EventHandle
 
 export declare function on(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
 export declare function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
 export declare function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 export declare function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
+export declare function on(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle
+export declare function once(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle
+export declare function on(eventName: 'scriptCensus', callback: (event: ScriptCensusEvent) => void): EventHandle
+export declare function once(eventName: 'scriptCensus', callback: (event: ScriptCensusEvent) => void): EventHandle
+export declare function on(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle
+export declare function once(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle
+export declare function on(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle
+export declare function once(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
@@ -1738,7 +1804,7 @@ export interface ActorAnimationVariables {
 export declare function setInventory(formId: number, inventory: Inventory): void;
 
 // thuum docs/verbs/spell-cast.md: with hasLaunch, a target-location spell is launched at the caster's own launch (the point its game picked, engine units) with its angles (radians), not from the figure
-export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables, hasLaunch?: boolean, originX?: number, originY?: number, originZ?: number, launchAngleX?: number, launchAngleZ?: number): void;
+export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables, hasLaunch?: boolean, originX?: number, originY?: number, originZ?: number, launchAngleX?: number, launchAngleZ?: number, hasDecal?: boolean, decalNormalX?: number, decalNormalY?: number, decalNormalZ?: number, decalMaterialId?: number): void;
 export declare function interruptCast(actorCasterFormId: number, castingSource: SpellType, animationVariables: ActorAnimationVariables): void;
 // thuum docs/verbs/cast-action.md: performs a BGSAction on an actor through the engine's action entry, with the event and idle the caster's engine chose (an actionPerformed event's fields), the caster's variables applied first by applyAnimationVariablesToActor; the figure's cast animation. Queued to the game thread, which performs it right after this update; returns true when queued
 export declare function performAction(actorFormId: number, actionFormId: number, idleFormId: number, eventName: string, type: number): boolean;
@@ -1764,6 +1830,36 @@ export declare function getHighProcessActors(): number[];
 // thuum docs/verbs/npc-stream.md (ADR-050): the server's word that this game simulates the actor, kept in the hosted set the hook on the engine's action entry reads: a hosted actor's actions are reported (actionPerformed, actorId) and travel as UpdateAction under its own id; false for 0 and for the player's own id. Stored on the JS thread, no game call
 export declare function setHosted(actorFormId: number, hosted: boolean): boolean;
 export declare function isHosted(actorFormId: number): boolean;
+// thuum ADR-068 rung 5 (the acting scope; docs/research/rung5-quests-2026-11-09.md 1(c)): the acting player of a request the server relayed, written before the client applies it: stage 0 to 65535 a stage (the quest stage sink takes it at the pair's event and arms the quest's scope, so the stage's fragment runs for that player: Game.GetPlayer answers figureLocalId's figure, and the player's own actor in a native's frame is that figure), -1 a start and -2 a stop (the quest's scope armed at once), -3 a relayed trigger entry (questId the trigger; TESModPlatform.SendTriggerEvent takes its serverId); figureLocalId 0 when the acting player's figure is absent here (Game.GetPlayer answers None in the scope); ttlMs the request's life, 1 to 60000; false, nothing stored, for a quest 0, a stage outside -3 to 65535, a serverId 0 or the player's own id as the figure; stored with no game call
+export declare function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number): boolean;
+// thuum ADR-068 rung 5: the server id of the acting player whose scope requested (questId, stage) on this seat (stage -1 a start, -2 a stop), a relayed request or a stage, start or stop a scoped stack set, until the request expires; 0 for none; the C2S QuestStage's acting for a stage this seat set inside a scope; a table read, no game call
+export declare function getActingPlayer(questId: number, stage: number): number;
+// thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): a cause this seat's own act names for the quest's next start (stage -1), stop (-2) or stage (0 to 65535) before the engine makes it, for ttlMs (1 to 60000): the word's event takes it once, the stage's event and the quest stage sink read it (the fragment the stage runs carries it), as they read a script call's; skymp5-client's console service marks a quest command the player typed with cause 'world' and root "console.<command>" (a replaced command's execute runs before the engine's handler). Since train 52 the word stored is the seam's own rule (QuestCause::WordMade) over the engine's flags, read here (TESQuest's IsEnabled and StartsEnabled: a form-table read, no Papyrus call): a stage itself, a start only for a quest not running, a stop only for a running one, a typed reset (-3) the word its handler makes (a running quest's stop unless it is Start Game Enabled, a stopped one's start if it is); the answer says what it did, marked the word stored (a stage, -1 or -2) or null when the request makes none, with the run and the flag it read; null, nothing stored, for a quest 0, a stage outside -3 to 65535, a cause other than 'world' or 'seat', a root past 257 bytes or outside [A-Za-z0-9_.], a ttl outside 1 to 60000, or a quest id no TESQuest has
+export declare function markQuestCause(questId: number, stage: number, cause: 'world' | 'seat', root: string, ttlMs: number): { marked: number | null; running: boolean; startsEnabled: boolean } | null;
+// thuum ADR-068 rung 5, PQ-3 (docs/research/rung5-quests-2026-11-09.md 8(a)): the globals each player keeps (the PlayerGlobals watch list, the marked quests' globals composed in), replaced whole at each call, [] clears it, empty by default; inside another player's acting scope a script's GlobalVariable.SetValue on one is skipped on this seat; stored with no game call; true when stored
+export declare function setPlayerGlobals(globalFormIds: number[]): boolean;
+// thuum ADR-068 rung 5's full build (docs/research/rung5-quests-2026-11-09.md 8(a)): the per-player quests (the server's derived playerQuests), replaced whole at each call, [] clears it, empty by default; the Papyrus event gate passes an event to such a quest's own scripts and to its aliases' scripts on this seat, its own player's, whatever their class; stored with no game call; true when stored
+export declare function setPlayerQuests(questFormIds: number[]): boolean;
+// thuum ADR-068 D-S3 (traps follow the interaction; docs/research/trap-slice-d-s3-2026-11-05.md): a reference's trap role from the platform's own reads: family (every script attached to it is in the trap family's class chain), playerOnly (its trigger's playerOnlyTrigger property), destroyed (its destroyed flag), trigger (a script attached to it reaches TrapTriggerBase in its parent chain: a trap's trigger, never a trap body, so each seat's own copy moves its own; playtest 48), exempt (ADR-068 D-W2 A: a script attached to it is of a class setTriggerPresserExempt names, matched through its parent chain without case, so the client skips its root report for a trigger every seat fires itself); null when the reference has no form or no attached script
+export declare function getTrapRole(formId: number): { family: boolean; playerOnly: boolean; destroyed: boolean; trigger: boolean; exempt: boolean } | null;
+// thuum ADR-068 D-W1 A and D-C2 A (the presser rule): the Papyrus event gate's rule over a world object's OnTriggerEnter and OnTriggerLeave on or off, off by default (D-S3: every seat's engine counts every presser); on, an entry whose presser this seat does not own is blanked, and an owned one on a trap family trigger, or on a scripted trigger in a cell this seat does not host, raises triggerEntry; the client setting triggerPresser's mirror; stored with no game call; true when stored
+export declare function setTriggerPresserRule(on: boolean): boolean;
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(b) (the furniture branch): the animation hook's rule over a furniture's own graph event on or off, off by default (every graph event goes to the sendAnimationEvent handlers); on, an event the engine sends to a plain reference whose base is a FURN never reaches the handlers and raises furnitureAnimation; the client setting furnitureAnimation's mirror; stored with no game call; true when stored
+export declare function setFurnitureAnimation(on: boolean): boolean;
+// thuum ADR-068 D-W2 A (the trigger's own calls from its firing seat; docs/research/fifty-fixes-2026-11-07.md section 7.2(a)): the look's switch, off by default, acting only with setTriggerPresserRule(true): on, a trap family trigger's own call on itself within 10 s of an entry this seat's presser made is batched in scriptCalls as kind "look" and still runs here; the client setting triggerLook's mirror; stored with no game call; true when stored
+export declare function setTriggerLook(on: boolean): boolean;
+// thuum ADR-068 D-W2 A's fallback lever: the script classes (names, without case, matched through each attached script's parent chain) whose trap family references keep D-S3's per-seat firing under the presser rule: a non-owned press to such a reference passes, an owned one batches no look, and getTrapRole answers exempt for it; replaced whole at each call, [] clears it, empty by default; the client setting triggerPresserExempt's mirror; stored with no game call; true when stored
+export declare function setTriggerPresserExempt(classes: string[]): boolean;
+// thuum ADR-068 D-S3 point 4: a trap body another seat streams, so this seat's motion calls on it run neutralized (Keyframed, no impulse); stored on the JS thread, no game call
+export declare function setPropFollowed(formId: number, followed: boolean): boolean;
+// thuum ADR-068 D-S3 point 3: a reference whose server record is being applied, its Papyrus events blanked while the apply runs; stored on the JS thread, no game call
+export declare function setRecordApplying(formId: number, applying: boolean): boolean;
+// thuum ADR-068 rung 3 (the script record, amendment A): a reference whose served script record waits for its apply, so this seat's OnLoad and OnCellLoad to it are blanked (their names kept for ApplyScriptState's answer, blanked) until TESModPlatform.ApplyScriptState applies the record or this is called with false; set it only for a record that carries its view; stored on the JS thread, no game call; false for 0 and for the player's own id
+export declare function setScriptRecordPending(formId: number, pending: boolean): boolean;
+// thuum ADR-068 rung 3 (the script record): a reference's pending mark lowered, answering the JSON array of the event names the gate blanked while it was up ("[]" for none, for 0 and for the player's own id), so a client that gives a record up can still send them through TESModPlatform.SendScriptEvent (setScriptRecordPending with false drops them); a table operation on the JS thread, no game call
+export declare function releaseScriptRecordPending(formId: number): string;
+// thuum ADR-068 rung 3 (the script record): the seam's switch on its touch (an owned state row's call batched in scriptCalls as kind "touch"), on by default; with false no such call is read for its caller or queued; stored on the JS thread, no game call; true when stored
+export declare function setScriptRecordTouches(enabled: boolean): boolean;
 // thuum docs/verbs/npc-stream.md: whether the engine's action entry is open on the actor right now (the hook's mark from its entry to its leave); read inside a sendAnimationEvent hook handler, where the game thread waits, it says the event being sent is the action's own
 export declare function isPerformingAction(actorFormId: number): boolean;
 // thuum docs/verbs/npc-stream.md (the voice slice): a puppet says the host's line through the engine's own say with the topic info given (the engine's pick skipped); queued to the game thread; sayTopicInfoResult answers -1 while it waits, 0 for no actor, info or process, 1 when the line started, 2 when the engine refused it, 3 when a line plays without the state byte (a live sound handle or a running timer), 4 when the engine deferred it for an AI replay a puppet never runs Voice v4 adds 5: the engine judged the line inaudible on this seat (no 3D, or the speaker outside the dialogue output model's range of the listener) before the lip load; the item is cleared and nothing plays
@@ -1772,6 +1868,8 @@ export declare function sayTopicInfoResult(actorFormId: number): number;
 // thuum docs/verbs/npc-stream.md (slice 5, the gaze and the face): the actors' highest set head-track slot and their emotion read on the game thread into a table (one task per poll; rule 9), then answered per actor as [targetFormId, slot, emotionType, emotionValue, exprOverride (0 or 1), exprIndex, exprValue] from the last poll, or null before one; the last three are the face as FaceGen animates it (the strongest expression keyframe's index and value, and whether an override holds it: Actor::GetFaceGenAnimationData, BSFaceGenAnimationData's expressionKeyFrame and exprOverride), a puppet's and a host's alike for the lab's comparison
 export declare function pollHostedGaze(actorFormIds: number[]): void;
 export declare function hostedGaze(actorFormId: number): number[] | null;
+export declare function pollNodeRotation(refrId: number, nodeNames: string[]): void;
+export declare function nodeRotation(refrId: number): Array<{ node: string; has: boolean; world: number[]; local: number[] }> | null;
 // thuum playtest 37 (the probe before any head build): the actor's FaceGen keyframes copied on the game thread (BSFaceGenAnimationData's expression, modifier and phoneme keyframes and its override flag); faceKeyframes answers the last read as [expression[], modifier[], phoneme[], override, sets[][]], or null; sets are every keyframe set of BSFaceGenAnimationData, 0x20 to 0x180 in header order (the lip sync's set is among the unnamed ones, 2026-10-28)
 export declare function pollFaceKeyframes(actorFormId: number): void;
 export declare function faceKeyframes(actorFormId: number): [number[], number[], number[], boolean, number[][]] | null;
@@ -1783,12 +1881,14 @@ export declare function consumeActivatePress(): boolean;
 export declare function damageActor(actorFormId: number, health: number, attackerFormId: number, killMove: boolean): boolean;
 // the replacement's cut of this game's own engine damage to a puppet and, from a player's or a figure's hand, to an NPC this game simulates (the server's number is the one number); the client setting npcEngineDamage's mirror, default on
 export declare function setEngineDamageCut(on: boolean): void;
+// thuum D-T4 (ADR-028): whether DamageActor's replacement went in at install, the player's cut of another actor's damage with it; the client keeps its world multiplier at 0 without it
+export declare function isDamageActorReplaced(): boolean;
 // thuum docs/verbs/npc-talk.md (ADR-052): the player's own activation of its crosshair pick (PlayerCharacter::ActivatePickRef) on the game thread, the E a claim's word made meaningful; true when queued
 export declare function activatePickRef(): boolean;
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the server's one roll for a leveled placement, held by this game ahead of the engine's own roll: baseId is the NPC_ the server named (0: no actor there, the engine deletes the placement), worn the items it rolled, each added as an inventory entry tagged for the actor's default outfit by the outfit detour (an empty list dresses nothing). Stored on the JS thread, no game call; false for an invalid reference id
-export declare function setActorFate(refrId: number, baseId: number, worn: number[]): boolean;
+export declare function setActorFate(refrId: number, baseId: number, worn: number[], inv: number[]): boolean;
 // thuum ADR-050 decision 3 (train 51): a server-made NPC's fate armed by its base before the copy's placeAtMe; the first detour that meets a new 0xff reference of that base binds it to the copy's own id, so the copy's engine rolls the server's roll inside its placement (one copy per call, in spawn order). Stored on the JS thread, no game call; false for a base id of 0
-export declare function armActorFate(baseId: number, fateBaseId: number, worn: number[]): boolean;
+export declare function armActorFate(baseId: number, fateBaseId: number, worn: number[], inv: number[]): boolean;
 // the reference rolls as the engine's own again; false when it held no fate
 export declare function clearActorFate(refrId: number): boolean;
 // the runtime switch over both detours (the leveled roll wrapper and the outfit-array resolver, docs/research/m3/re-npc-roll.md section 8.4), default off: nothing is imposed until it is on; the leveled detour's observations held three times in the lab, the outfit chain is HYPOTHESIS until its trace
@@ -1799,6 +1899,8 @@ export declare function rerollActor(refrId: number): boolean;
 export declare function resurrectActor(refrId: number): boolean;
 // for a fate that arrives after an unleveled actor was dressed (re-npc-roll.md section 8.4's late path): on the game thread, the engine's RemoveOutfitItems with the base's default outfit, the server's worn list added tagged exactly as the outfit detour adds it, then AddWornOutfit: one pop; false when the id is invalid, the reference holds no fate or the switch is off (a reference the game cannot find, or a base with no default outfit, is a warn on the game thread)
 export declare function redressActor(refrId: number): boolean;
+// thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): after the client laid the record's list into a dead body, the armor of worn (the record's equipment) that the body holds but does not wear is equipped again, the fate reconcile's own dress, queued behind the tick's addItemEx tasks and run on the main thread; false for an invalid id
+export declare function dressBody(refrId: number, worn: number[]): boolean;
 export declare function actorFateCount(): number;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;

@@ -14,7 +14,7 @@
 //! come with the verbs.
 
 use wire_schema::finite::all_finite;
-use wire_schema::{skymp, Message, Transform};
+use wire_schema::{skymp, ItemDelta, Message, Transform};
 
 /// Rejection reasons. Stable names; append only.
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone, Copy)]
@@ -40,6 +40,29 @@ pub enum Reject {
     /// A field outside its legal range (a calendar field, a negative rate).
     #[error("E_VAL_RANGE")]
     Range,
+    /// A change form names a form id of 0 or a player's (0xff000000 and up),
+    /// or a save-type index past the header byte's six bits (thuum
+    /// docs/verbs/change-form.md).
+    #[error("E_CHANGEFORM_RANGE")]
+    ChangeFormRange,
+    /// A change form's header disagrees with its body: a character that is
+    /// not lowercase hex, a size code the pack never writes, the type byte
+    /// against `formType`, a version other than 0x4E, the lengths against the
+    /// body's size.
+    #[error("E_CHANGEFORM_HEADER")]
+    ChangeFormHeader,
+    /// A change form's FNV-1a 32 over the body differs from `fnv1a`.
+    #[error("E_CHANGEFORM_HASH")]
+    ChangeFormHash,
+    /// A change form's remap row lies outside the body's data, does not
+    /// decode to kind 0 with its own index, names a form no row may remap
+    /// (0, a load-index-00 form, a created one), or repeats an offset.
+    #[error("E_CHANGEFORM_REMAP")]
+    ChangeFormRemap,
+    /// A change form's body is too short for any header, or a collection
+    /// stands past its cap.
+    #[error("E_CHANGEFORM_SIZE")]
+    ChangeFormSize,
 }
 
 /// World bounds in engine units. Tamriel's worldspace fits comfortably; a
@@ -162,9 +185,13 @@ pub struct ClientGuard {
     pub cell_loaded_budget: TokenBucket,
     /// Budget for a simulator's prop samples (PropTransform, thuum docs/verbs/
     /// prop-physics.md, ADR-058): one per awake prop per 100 ms and one at
-    /// its sleep, a kicked shelf's worth of bodies at once. UNMEASURED: 20 at
-    /// once and 10 a second after that, bodies and props on one budget, until
-    /// x-prop-push reads a seat's rate.
+    /// its sleep, a kicked shelf's worth of bodies at once, and since D-S3
+    /// (traps follow the interaction, point 4) a trap's bodies on the same
+    /// stream: one firing streams eight (Embershard's tripwire 0xb6d3f, which
+    /// its own script sets Dynamic, and its seven falling rocks), eighty
+    /// samples a second for the length of the fall. UNMEASURED: 128 at once
+    /// and 96 a second after that (20 and 10 before the trap bodies), bodies
+    /// and props on one budget, until x-trap-boulders reads a seat's rate.
     pub prop_budget: TokenBucket,
     /// Budget for a seat's prop claims (PropClaim, the same verb): a touch, a
     /// grab, a drop or an impulse each a claim; the claim idiom's 8 at once,
@@ -194,6 +221,43 @@ pub struct ClientGuard {
     /// events, a plate's press a wall's swing and reset; a burst of 32 then 8
     /// a second (UNMEASURED).
     pub object_animation_budget: TokenBucket,
+    /// Budget for a host's change-form reports (ChangeForm, thuum
+    /// docs/verbs/change-form.md, ADR-065): one per changed actor at the
+    /// frame's end, only when the body's hash moved; a grant into a village
+    /// marks its residents at once. UNMEASURED: 32 at once, 8 a second,
+    /// until a lab run reads a host's rate; the transport's byte budget
+    /// bounds the bytes.
+    pub change_form_budget: TokenBucket,
+    /// Budget for a seat's destruction reports (DestructionStage, thuum
+    /// D-S3): one per stage rise or destruction its engine caused or saw
+    /// first, a trap's result once; 8 at once, 2 a second after (UNMEASURED).
+    pub destruction_budget: TokenBucket,
+    /// Budget for an owner's script records (ScriptState, thuum ADR-068 rung
+    /// 3): one per reference whose record's hash moved, at the end of a
+    /// stack that touched it or at the 30 s sweep, and the cell's known
+    /// references at once at a release; 64 at once, 8 a second after
+    /// (UNMEASURED). The transport's byte budget bounds the bytes.
+    pub script_state_budget: TokenBucket,
+    /// Budget for a seat's alias fills (AliasFill, thuum ADR-068 rung 4):
+    /// every seat runs a quest's scripts, so each reports its ForceRefTo and
+    /// Clear; 16 at once, 4 a second after (UNMEASURED: 57 ForceRefTo were
+    /// counted at one guest's arrival, thuum docs/DECISIONS.md ADR-068's
+    /// measurements).
+    pub alias_fill_budget: TokenBucket,
+    /// Budget for the world streamer's reports (WorldGlobal, thuum ADR-068
+    /// rung 4): one a second by design, its entries batched; 4 at once, 1 a
+    /// second after (UNMEASURED).
+    pub world_global_budget: TokenBucket,
+    /// Budget for a seat's trigger entries (an Activate with `entry`, thuum
+    /// D-C2): one per entry and leave of its own presser into a world
+    /// trigger in a cell it does not host; 8 at once, 4 a second after
+    /// (UNMEASURED). An Activate without `entry` takes none.
+    pub entry_budget: TokenBucket,
+    /// Budget for a seat's condition-read variable reports (ScriptVariables,
+    /// thuum ADR-068 rung 5): one a second by design, its changed keys
+    /// batched; 4 at once, 1 a second after (WorldGlobal's shape,
+    /// UNMEASURED).
+    pub script_variables_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -229,7 +293,7 @@ impl Default for ClientGuard {
             // burst on top; P3 replaces it
             action_budget: TokenBucket { tokens: 48, capacity: 48, refill_per_s: 16, last_refill_ms: 0 },
             cell_loaded_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 32, last_refill_ms: 0 },
-            prop_budget: TokenBucket { tokens: 20, capacity: 20, refill_per_s: 10, last_refill_ms: 0 },
+            prop_budget: TokenBucket { tokens: 128, capacity: 128, refill_per_s: 96, last_refill_ms: 0 },
             prop_claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             placed_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             skill_use_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
@@ -237,6 +301,13 @@ impl Default for ClientGuard {
             perk_pick_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             word_wall_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             object_animation_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
+            change_form_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
+            destruction_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            script_state_budget: TokenBucket { tokens: 64, capacity: 64, refill_per_s: 8, last_refill_ms: 0 },
+            alias_fill_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
+            world_global_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
+            entry_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
+            script_variables_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
         }
     }
 }
@@ -432,7 +503,31 @@ fn check_spell_cast(m: &skymp::SpellCast) -> Result<(), Reject> {
     {
         return Err(Reject::Range);
     }
-    check_launch(d.has_launch, &[d.origin_x, d.origin_y, d.origin_z], d.launch_angle_x, d.launch_angle_z)
+    check_launch(d.has_launch, &[d.origin_x, d.origin_y, d.origin_z], d.launch_angle_x, d.launch_angle_z)?;
+    check_decal(d.has_launch, d.decal.as_ref())
+}
+
+/// A cast's decal (docs/verbs/spell-cast.md, the rune's glyph): only with
+/// the launch it belongs to, its normal finite and of unit length within
+/// [`DECAL_NORMAL_TOLERANCE`]; the material id is any number (0 for none).
+pub const DECAL_NORMAL_TOLERANCE: f32 = 0.05;
+
+fn check_decal(has_launch: bool, decal: Option<&skymp::SpellDecal>) -> Result<(), Reject> {
+    let Some(d) = decal else {
+        return Ok(());
+    };
+    if !has_launch {
+        return Err(Reject::Range);
+    }
+    let parts = [d.normal_x, d.normal_y, d.normal_z];
+    if parts.iter().any(|v| !v.is_finite()) {
+        return Err(Reject::NonFinite);
+    }
+    let length = parts.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if (length - 1.0).abs() > DECAL_NORMAL_TOLERANCE {
+        return Err(Reject::Range);
+    }
+    Ok(())
 }
 
 /// A rest's hours: the Sleep/Wait menu's range, one hour to a day
@@ -526,20 +621,65 @@ fn check_host(cell: u32, epoch: u32) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A player's race overlay (thuum ADR-068 rung 5, D-T1 A; wire-rules
+/// player_own::Overlay): an open one wears a race of the load order (never 0
+/// nor a server form) over a recorded race of the same kind, its lists name
+/// load-order forms each once; a closed one names nothing (`open` false with
+/// every field empty: the receiver reads it as none). Anything else is out
+/// of range.
+fn check_race_overlay(o: &skymp::RaceOverlay) -> Result<(), Reject> {
+    let form = |id: u32| id != 0 && id < PLAYER_FORMS;
+    let distinct = |ids: &[u32]| ids.iter().enumerate().all(|(i, id)| form(*id) && !ids.iter().take(i).any(|p| p == id));
+    if !o.open {
+        let empty = o.race == 0 && o.base == 0 && o.spells.is_empty() && o.shouts.is_empty() && o.items.is_empty();
+        return if empty { Ok(()) } else { Err(Reject::Range) };
+    }
+    if !form(o.race) || !form(o.base) || o.race == o.base || !distinct(&o.spells) || !distinct(&o.shouts) || !distinct(&o.items) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// UpdateAppearance (MsgType 4): its optional overlay is the server's word
+/// on another player's figure ([`check_race_overlay`]); a client's own look
+/// carries none ([`validate`]).
+fn check_update_appearance(m: &skymp::UpdateAppearance) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    match &m.overlay {
+        Some(overlay) => check_race_overlay(overlay),
+        None => Ok(()),
+    }
+}
+
+/// The record types a placed form may be (`placed_by`'s pairing): Raise
+/// Wall's MSTT and ACTI (ADR-057), and since thuum ADR-068 rung 4 a script
+/// set's placement, a STAT, an NPC_ or an item (libespm's utils::IsItem
+/// types; wire-rules placements' script set places nothing else).
+const PLACED_KINDS: [&str; 15] = ["MSTT", "ACTI", "STAT", "NPC_", "AMMO", "ARMO", "BOOK", "INGR", "ALCH", "SCRL", "SLGM", "WEAP", "MISC", "KEYM", "LIGH"];
+
 /// A form the server introduces (thuum docs/verbs/spell-placed-object.md,
 /// ADR-057): one its table placed at a caster's accepted cast names the
 /// caster in `placed_by`, a server id above 0, and is an MSTT or an ACTI,
-/// which its `base_record_type` says; any other `placed_by` is out of
-/// range. The transport refuses the message from a client by direction.
+/// which its `base_record_type` says; since rung 4 a script set's
+/// placement names its reporter the same way and is any of
+/// [`PLACED_KINDS`]; any other `placed_by` is out of range. The transport
+/// refuses the message from a client by direction.
 fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
     }
+    // thuum ADR-068 rung 5 (D-T1 A): another player's figure wears its
+    // overlay; a player's own CreateActor never carries one
+    if let Some(overlay) = &m.props.overlay {
+        if m.is_me {
+            return Err(Reject::Range);
+        }
+        check_race_overlay(overlay)?;
+    }
     if let Some(caster) = m.props.placed_by {
-        let placed_kind = m
-            .base_record_type
-            .as_ref()
-            .is_some_and(|t| t.as_str() == "MSTT" || t.as_str() == "ACTI");
+        let placed_kind = m.base_record_type.as_ref().is_some_and(|t| PLACED_KINDS.contains(&t.as_str()));
         if caster == 0 || !placed_kind {
             return Err(Reject::Range);
         }
@@ -588,9 +728,21 @@ fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
 /// (list) or 1 (all); a quest of 0 carries the login's list, which in mode
 /// 0 is never empty (in mode 1 it is the denied list, empty when nothing
 /// is denied), and the list names each quest once; from a client the list
-/// is empty, the mode 0 and the quest named ([`validate`]). The mode's
-/// membership and the record are the server's rule (wire-rules
-/// `quest_stages`).
+/// is empty, the mode 0 and the quest named ([`validate`]). Since
+/// SCHEMA_VERSION 41 (thuum ADR-068 rung 5): a word is a start or a stop
+/// ([`skymp::QUEST_START`], [`skymp::QUEST_STOP`]) with stage 0 on a named
+/// quest, never the login's list, and an acting player is a server id
+/// (0xff000000 and up: the server names players) on a named quest; from a
+/// client nothing is served ([`validate`]). The login's list may name the
+/// player-class quests (`player`, thuum ADR-068 rung 5's ownership rule):
+/// on quest 0 alone, never empty when present, each a form of the load
+/// order (never 0 nor 0xff000000 and up) named once, at most the list's own
+/// cap. Since SCHEMA_VERSION 42 (D-Q3 A): a run word may name the stages
+/// whose fragments the engine runs with it (`wordStages`), on a word alone,
+/// never empty when present, each stage once; a client names none
+/// ([`validate`]: the record's flags are the server's to read). The mode's
+/// membership, the class and the records are the server's rules
+/// (wire-rules `quest_stages`, `quest_scope` and `quest_runs`).
 fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
     if m.mode > 1 {
         return Err(Reject::Range);
@@ -600,6 +752,47 @@ fn check_quest_stage(m: &skymp::QuestStage) -> Result<(), Reject> {
     }
     for (i, q) in m.shared.iter().enumerate() {
         if *q == 0 || m.shared.iter().take(i).any(|p| p == q) {
+            return Err(Reject::Range);
+        }
+    }
+    if let Some(word) = m.word {
+        if (word != skymp::QUEST_START && word != skymp::QUEST_STOP) || m.stage != 0 || m.quest == 0 {
+            return Err(Reject::Range);
+        }
+    }
+    if m.acting.is_some_and(|acting| acting < PLAYER_FORMS || m.quest == 0) {
+        return Err(Reject::Range);
+    }
+    if let Some(player) = &m.player {
+        if m.quest != 0 || player.is_empty() {
+            return Err(Reject::Range);
+        }
+        for (i, q) in player.iter().enumerate() {
+            if *q == 0 || *q >= PLAYER_FORMS || player.iter().take(i).any(|p| p == q) {
+                return Err(Reject::Range);
+            }
+        }
+    }
+    if let Some(stages) = &m.word_stages {
+        if m.word.is_none() || stages.is_empty() {
+            return Err(Reject::Range);
+        }
+        for (i, s) in stages.iter().enumerate() {
+            if stages.iter().take(i).any(|p| p == s) {
+                return Err(Reject::Range);
+            }
+        }
+    }
+    // SCHEMA_VERSION 43 (thuum ADR-068 rung 5, D-Q4 C): a report's cause is a
+    // world cause or the seat's own, on a report of a quest; its root a
+    // script's "<Script>.<Function>" in the characters Papyrus names take,
+    // and only beside a cause. Whether the cause holds is the server's rule
+    // (wire-rules quest_runs), and it is the seat's word either way (R2)
+    if m.cause.is_some_and(|c| (c != skymp::QUEST_CAUSE_WORLD && c != skymp::QUEST_CAUSE_SEAT) || m.quest == 0) {
+        return Err(Reject::Range);
+    }
+    if let Some(root) = &m.root {
+        if m.cause.is_none() || root.is_empty() || !root.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.') {
             return Err(Reject::Range);
         }
     }
@@ -764,10 +957,40 @@ fn check_word_wall(m: &skymp::WordWall) -> Result<(), Reject> {
     Ok(())
 }
 
+/// Whether a trigger entry's event is one the schema names (thuum D-C2):
+/// [`skymp::ENTRY_ENTER`] or [`skymp::ENTRY_LEAVE`].
+fn is_entry_event(entry: u8) -> bool {
+    entry == skymp::ENTRY_ENTER || entry == skymp::ENTRY_LEAVE
+}
+
+/// A seat's activation report (SkyMP's MsgType 6) and, since SCHEMA_VERSION
+/// 40, its trigger entry (thuum D-W1 and D-C2): an Activate with `entry`
+/// names OnTriggerEnter (1) or OnTriggerLeave (2), is no second activation,
+/// names a presser (`caster`, never 0 nor past 32 bits, a form id's width:
+/// the sender's own player 0x14 or an actor its game simulates) and a
+/// trigger of the shared load order
+/// (`target`, never 0 nor 0xff000000 and up). An Activate without `entry`
+/// keeps the checks every message shares (it carries no float). Whether the
+/// trigger is a world object the server holds, the presser the sender's,
+/// the sender a loader of the cell that does not host it, a host there and
+/// the presser within reach is the server's rule (wire-rules
+/// trigger_entry); the budget is [`ClientGuard::entry_budget`].
+fn check_activate(m: &skymp::Activate) -> Result<(), Reject> {
+    let Some(entry) = m.data.entry else {
+        return Ok(());
+    };
+    if !is_entry_event(entry) || m.data.is_second_activation || m.data.caster == 0 || m.data.target == 0 || m.data.target >= u64::from(PLAYER_FORMS) || m.data.caster > u64::from(u32::MAX) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// The server's relayed activation (docs/verbs/traps.md): a target and a
-/// caster, neither 0; the transport refuses it from a client by direction.
+/// caster, neither 0, and since SCHEMA_VERSION 40 (thuum D-C2) a trigger
+/// entry's event, absent or 1 or 2; the transport refuses it from a client
+/// by direction.
 fn check_relayed_activation(m: &skymp::RelayedActivation) -> Result<(), Reject> {
-    if m.target == 0 || m.caster == 0 {
+    if m.target == 0 || m.caster == 0 || m.entry.is_some_and(|e| !is_entry_event(e)) {
         return Err(Reject::Range);
     }
     Ok(())
@@ -779,6 +1002,116 @@ fn check_relayed_activation(m: &skymp::RelayedActivation) -> Result<(), Reject> 
 fn check_object_animation(m: &skymp::ObjectAnimation) -> Result<(), Reject> {
     if m.refr == 0 || m.event.as_str().is_empty() {
         return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// The highest destruction stage a report or a record may name (thuum
+/// D-S3): wire-rules destruction's MAX_STAGE, the same number (wire-bridge's
+/// test pins the two together).
+pub const DESTRUCTION_MAX_STAGE: u8 = 127;
+
+/// A reference's destruction stage (thuum D-S3, ADR-068's DestructionStage
+/// row): a game-file reference, never 0 nor one the server names
+/// (0xff000000 and up), and a stage of at most [`DESTRUCTION_MAX_STAGE`]; the
+/// same shape both ways (a seat's report, the server's relay and its served
+/// record). Whether the reference is one the server holds, no actor, in a
+/// cell the reporter's game has loaded, and whether the report moves the
+/// record is the server's rule (wire-rules destruction).
+fn check_destruction_stage(m: &skymp::DestructionStage) -> Result<(), Reject> {
+    if m.refr == 0 || m.refr >= PLAYER_FORMS || m.stage > DESTRUCTION_MAX_STAGE {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// A quest alias's fill (thuum ADR-068 rung 4, AliasFill): a quest of the
+/// shared load order (never 0 nor one the server names, 0xff000000 and up),
+/// an alias id of at most 0xFFFF (ALST's ids are an alias count's; the
+/// handle's middle word, the platform's read, is 16 bits), a reference of
+/// the load order or 0 for a clear; the same shape both ways (a seat's
+/// report, the server's relay and its served record). Whether the quest has
+/// that reference alias, and whether the fill moves the record, is the
+/// server's rule (wire-rules alias_fills).
+fn check_alias_fill(m: &skymp::AliasFill) -> Result<(), Reject> {
+    if m.quest == 0 || m.quest >= PLAYER_FORMS || m.alias > 0xFFFF || m.refr >= PLAYER_FORMS {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// World globals (thuum ADR-068 rung 4, WorldGlobal): every value finite, at
+/// most [`cap::WORLD_GLOBALS`](wire_schema::cap::WORLD_GLOBALS) entries, each
+/// a GLOB of the shared load order (never 0 nor 0xff000000 and up) named
+/// once, and a stream word naming its epoch (never 0); the same shape both
+/// ways. Which globals the world keeps, and whose report counts, is the
+/// server's rule (wire-rules world_globals and world_streamer).
+fn check_world_global(m: &skymp::WorldGlobal) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.entries.len() > wire_schema::cap::WORLD_GLOBALS || (m.stream.is_some() && m.epoch == 0) {
+        return Err(Reject::Range);
+    }
+    for (i, entry) in m.entries.iter().enumerate() {
+        if entry.global == 0 || entry.global >= PLAYER_FORMS {
+            return Err(Reject::Range);
+        }
+        if m.entries.iter().take(i).any(|e| e.global == entry.global) {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
+/// One condition-read variable's key (thuum ADR-068 rung 5, ScriptVariables):
+/// a form of the shared load order (never 0 nor 0xff000000 and up) and two
+/// names neither empty nor carrying a NUL ([`has_nul`]: the receiver's
+/// variable lookup takes a C string); each name's length holds at decode.
+fn script_var_key_fits(form: u32, script: &str, var: &str) -> bool {
+    form != 0 && form < PLAYER_FORMS && !script.is_empty() && !var.is_empty() && !has_nul(script) && !has_nul(var)
+}
+
+/// Whether two keys are one: the same form and the same names without case,
+/// as the VM finds a script and a variable by name.
+fn same_script_var_key(a: (u32, &str, &str), b: (u32, &str, &str)) -> bool {
+    a.0 == b.0 && a.1.eq_ignore_ascii_case(b.1) && a.2.eq_ignore_ascii_case(b.2)
+}
+
+/// The condition-read variables (thuum ADR-068 rung 5, ScriptVariables),
+/// either way: every float finite; every watched key and every entry's key
+/// [`script_var_key_fits`], each key once in its list (the watch's and the
+/// entries' apart; `own` no part of a key); each entry a kind of 3 (an
+/// int), 4 (a float) or 5 (a bool) carrying that kind's one field and no
+/// other, ScriptVar's folded kinds as GraphVar holds them; a served entry
+/// with its key's sequence (never 0). The counts (at most
+/// `cap::SCRIPT_VARIABLES` each) hold at decode. From a client no watch, no
+/// served record and no sequence ([`validate`]). Which keys are listed,
+/// whose they are and whether a write moves the record is the server's rule
+/// (wire-rules script_variables).
+fn check_script_variables(m: &skymp::ScriptVariables) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    for (n, k) in m.watch.iter().enumerate() {
+        let key = (k.form, k.script.as_str(), k.var.as_str());
+        if !script_var_key_fits(k.form, &k.script, &k.var) || m.watch.iter().take(n).any(|w| same_script_var_key((w.form, &w.script, &w.var), key)) {
+            return Err(Reject::Range);
+        }
+    }
+    for (n, e) in m.entries.iter().enumerate() {
+        let key = (e.form, e.script.as_str(), e.var.as_str());
+        let carried = [e.i.is_some(), e.f.is_some(), e.b.is_some()];
+        let fits = match e.k {
+            3 => carried == [true, false, false],
+            4 => carried == [false, true, false],
+            5 => carried == [false, false, true],
+            _ => false,
+        };
+        let twice = m.entries.iter().take(n).any(|w| same_script_var_key((w.form, &w.script, &w.var), key));
+        if !fits || twice || !script_var_key_fits(e.form, &e.script, &e.var) || (m.served && e.seq == 0) {
+            return Err(Reject::Range);
+        }
     }
     Ok(())
 }
@@ -890,6 +1223,450 @@ fn check_favorites(m: &skymp::Favorites) -> Result<(), Reject> {
     Ok(())
 }
 
+/// The form version byte every record on 1.6.1170 carries (the constant
+/// 35740 writes; docs/research/adr065-serialize-on-demand-2026-11-03.md).
+pub const CHANGE_FORM_VERSION: u8 = 0x4e;
+
+/// Where the players' and the server-made forms begin: a change form names
+/// a game-file actor alone (thuum docs/verbs/change-form.md).
+const PLAYER_FORMS: u32 = 0xff00_0000;
+
+/// The shortest packed record: a one-byte size code's header with no data.
+const RECORD_MIN_LEN: usize = 4;
+
+/// FNV-1a 32 over `bytes` (offset basis 0x811c9dc5, prime 0x01000193): the
+/// variant the lab's Frida scripts (serialize-on-demand.js, apply-on-demand.js)
+/// and skymp5-client compute over a packed record. The multiplication wraps
+/// by the hash's definition, the one place a wrap is the meaning.
+pub fn fnv1a_32(bytes: &[u8]) -> u32 {
+    bytes
+        .iter()
+        .fold(0x811c_9dc5_u32, |h, b| (h ^ u32::from(*b)).wrapping_mul(0x0100_0193))
+}
+
+/// A packed change-form record's header as the engine's pack (Address
+/// Library 36081) writes it: byte 0 the save-type index in its low six bits
+/// and the size code in its top two, byte 1 the form version, then length1
+/// (the data's size) and length2 (the inflated size when deflated, 0 when
+/// raw), each of the code's width (0 one byte, 1 two, 2 four; the pack never
+/// writes 3). docs/research/adr065-serialize-on-demand-2026-11-03.md Q3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordHeader {
+    /// The save-type index (0 REFR, 1 ACHR).
+    pub form_type: u8,
+    /// The lengths' width code.
+    pub size_code: u8,
+    /// The form version byte.
+    pub version: u8,
+    /// The data's size in bytes.
+    pub length1: u32,
+    /// The inflated size when deflated, 0 for a raw record.
+    pub length2: u32,
+    /// Where the data starts: 2 plus twice the lengths' width.
+    pub header_len: usize,
+}
+
+/// The header at the start of `body`, or `None` for a body too short for
+/// its own header or a size code the pack never writes.
+pub fn read_record_header(body: &[u8]) -> Option<RecordHeader> {
+    let b0 = *body.first()?;
+    let version = *body.get(1)?;
+    let size_code = b0.checked_shr(6).unwrap_or(0);
+    let width: usize = match size_code {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        _ => return None,
+    };
+    let read_len = |at: usize| -> Option<u32> {
+        let bytes = body.get(at..at.checked_add(width)?)?;
+        let mut value: u32 = 0;
+        for (i, b) in bytes.iter().enumerate() {
+            let shift = u32::try_from(i.checked_mul(8)?).ok()?;
+            value |= u32::from(*b).checked_shl(shift)?;
+        }
+        Some(value)
+    };
+    let length1 = read_len(2)?;
+    let length2 = read_len(2usize.checked_add(width)?)?;
+    let header_len = 2usize.checked_add(width.checked_mul(2)?)?;
+    Some(RecordHeader {
+        form_type: b0 & 0x3f,
+        size_code,
+        version,
+        length1,
+        length2,
+        header_len,
+    })
+}
+
+/// The shape a change-form record and its remap rows must have, shared by
+/// the host's report and the server's apply (thuum docs/verbs/change-form.md),
+/// over the DECODED record bytes ([`decode_record_hex`] runs first):
+/// a game-file actor's id and a six-bit type (`E_CHANGEFORM_RANGE`); a body
+/// long enough for a header and no collection past its cap
+/// (`E_CHANGEFORM_SIZE`); a header whose type byte is `form_type`, whose
+/// version and the message's are 0x4E, whose length1 is the data's size and
+/// whose length2 stays within the body cap (`E_CHANGEFORM_HEADER`); every
+/// remap row inside the data, its three bytes kind 0 (top two bits clear)
+/// decoding to the row's index, its form one a row may remap (never 0,
+/// never load index 00, never a created form) and no offset twice
+/// (`E_CHANGEFORM_REMAP`). Whose record it is and at which epoch is the
+/// server's handler's rule.
+fn check_change_form_shape(
+    form_id: u32,
+    form_type: u8,
+    version: u8,
+    body: &[u8],
+    remap: &[skymp::ChangeFormRemap],
+) -> Result<RecordHeader, Reject> {
+    if form_id == 0 || form_id >= PLAYER_FORMS || form_type > 0x3f {
+        return Err(Reject::ChangeFormRange);
+    }
+    if body.len() < RECORD_MIN_LEN
+        || body.len() > wire_schema::cap::CHANGE_FORM_BODY
+        || remap.len() > wire_schema::cap::CHANGE_FORM_REMAP
+    {
+        return Err(Reject::ChangeFormSize);
+    }
+    let header = read_record_header(body).ok_or(Reject::ChangeFormHeader)?;
+    if header.form_type != form_type
+        || header.version != CHANGE_FORM_VERSION
+        || version != CHANGE_FORM_VERSION
+    {
+        return Err(Reject::ChangeFormHeader);
+    }
+    let data_len = body.len().checked_sub(header.header_len).ok_or(Reject::ChangeFormHeader)?;
+    if usize::try_from(header.length1).ok() != Some(data_len) {
+        return Err(Reject::ChangeFormHeader);
+    }
+    if usize::try_from(header.length2).map_or(true, |n| n > wire_schema::cap::CHANGE_FORM_BODY) {
+        return Err(Reject::ChangeFormHeader);
+    }
+    for (i, row) in remap.iter().enumerate() {
+        let at = usize::try_from(row.offset).map_err(|_| Reject::ChangeFormRemap)?;
+        if at < header.header_len {
+            return Err(Reject::ChangeFormRemap);
+        }
+        let end = at.checked_add(3).ok_or(Reject::ChangeFormRemap)?;
+        let bytes = body.get(at..end).ok_or(Reject::ChangeFormRemap)?;
+        let (d1, d2, d3) = match (bytes.first(), bytes.get(1), bytes.get(2)) {
+            (Some(a), Some(b), Some(c)) => (*a, *b, *c),
+            _ => return Err(Reject::ChangeFormRemap),
+        };
+        if d1 & 0xc0 != 0 {
+            return Err(Reject::ChangeFormRemap);
+        }
+        let high = u32::from(d1 & 0x3f).checked_shl(16).ok_or(Reject::ChangeFormRemap)?;
+        let mid = u32::from(d2).checked_shl(8).ok_or(Reject::ChangeFormRemap)?;
+        if high | mid | u32::from(d3) != row.index {
+            return Err(Reject::ChangeFormRemap);
+        }
+        // the engine encodes a load-index-00 form as kind 1 and a created one
+        // as kind 2 on every seat: no row remaps either (apply-on-demand.js
+        // v2.3's rule)
+        if row.form_id < 0x0100_0000 || row.form_id >= PLAYER_FORMS {
+            return Err(Reject::ChangeFormRemap);
+        }
+        if remap.iter().take(i).any(|earlier| earlier.offset == row.offset) {
+            return Err(Reject::ChangeFormRemap);
+        }
+    }
+    Ok(header)
+}
+
+/// The record bytes behind a message's hex body (docs/verbs/change-form.md):
+/// two lowercase hex characters a byte, the spelling the native's serializer
+/// hands the client. An odd length or a string past the cap is
+/// `E_CHANGEFORM_SIZE`; a character that is not lowercase hex is
+/// `E_CHANGEFORM_HEADER` (such a body holds no record at all).
+pub fn decode_record_hex(hex: &str) -> Result<Vec<u8>, Reject> {
+    if !hex.len().is_multiple_of(2) || hex.len() > wire_schema::cap::CHANGE_FORM_BODY_HEX {
+        return Err(Reject::ChangeFormSize);
+    }
+    let nibble = |c: u8| -> Result<u8, Reject> {
+        match c {
+            b'0'..=b'9' => Ok(c.wrapping_sub(b'0')),
+            b'a'..=b'f' => Ok(c.wrapping_sub(b'a').saturating_add(10)),
+            _ => Err(Reject::ChangeFormHeader),
+        }
+    };
+    // as_chunks (stable since 1.88): the CI's clippy (1.99) refuses
+    // chunks_exact with a constant size; the remainder is empty after the
+    // even-length check above, refused as SIZE if it ever were not
+    let (pairs, rest) = hex.as_bytes().as_chunks::<2>();
+    if !rest.is_empty() {
+        return Err(Reject::ChangeFormSize);
+    }
+    let mut out = Vec::with_capacity(pairs.len());
+    for &[high, low] in pairs {
+        out.push(nibble(high)?.checked_shl(4).unwrap_or(0) | nibble(low)?);
+    }
+    Ok(out)
+}
+
+/// A host's change-form report (docs/verbs/change-form.md): the hex decoded,
+/// the shared shape, then the hash over the record bytes
+/// (`E_CHANGEFORM_HASH`).
+fn check_change_form(m: &skymp::ChangeForm) -> Result<(), Reject> {
+    let body = decode_record_hex(m.body.as_str())?;
+    check_change_form_shape(m.form_id, m.form_type, m.version, &body, &m.remap)?;
+    if fnv1a_32(&body) != m.fnv1a {
+        return Err(Reject::ChangeFormHash);
+    }
+    Ok(())
+}
+
+/// The server's apply (docs/verbs/change-form.md): the hex decoded and the
+/// shared shape; no hash travels. The transport refuses it from a client by
+/// direction.
+fn check_change_form_apply(m: &skymp::ChangeFormApply) -> Result<(), Reject> {
+    let body = decode_record_hex(m.body.as_str())?;
+    check_change_form_shape(m.form_id, m.form_type, m.version, &body, &m.remap).map(|_| ())
+}
+
+/// The server's receipt (docs/verbs/change-form.md): a form, never 0.
+fn check_change_form_ack(m: &skymp::ChangeFormAck) -> Result<(), Reject> {
+    if m.form_id == 0 {
+        return Err(Reject::ChangeFormRange);
+    }
+    Ok(())
+}
+
+/// A tabled native an owner's engine ran (thuum ADR-068, the one seam;
+/// docs/research/scripts-one-system-2026-11-05.md 6.11 item 13, "the shape
+/// is the gate"): a class and a function, neither empty; a subject the
+/// client may name (a load-order form or its own 0x14; the server names
+/// 0xff000000 and up, its own forms and the players' figures), and every
+/// object argument's id a form's 32 bits; every number finite. Since thuum
+/// ADR-068 rung 5 an object argument may name a server id (0xff000000 to
+/// 0xffffffff): inside an acting scope the platform puts the acting player's
+/// figure where the script named the player (a relayed fragment's
+/// ForceRefTo, an owned NPC's SetRelationshipRank), and the seat sends it by
+/// the player's actor id; the server takes it only when it names a connected
+/// player's actor (wire-rules natives::figures, E_SCRIPTCALL_ARGS), never
+/// any other server form. The count (at most `cap::SCRIPT_CALL_ARGS`) and
+/// every string's length hold at decode. Whether the pair is a tabled action
+/// row, the arguments its count and kinds, the subject the sender's at the
+/// epoch and the sender within its budget is the server's rule (wire-rules
+/// natives); a value is never judged. Since SCHEMA_VERSION 44 a call may
+/// carry `landed`, its leveled roll's landings ([`check_landed`]).
+fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.cls.as_str().is_empty() || m.func.as_str().is_empty() || m.self_id >= PLAYER_FORMS {
+        return Err(Reject::Range);
+    }
+    let past_a_form = |a: &Option<skymp::SnippetArg>| {
+        matches!(a, Some(skymp::SnippetArg::Object(o)) if o.form_id > u64::from(u32::MAX))
+    };
+    if m.args.iter().any(past_a_form) {
+        return Err(Reject::Range);
+    }
+    if let Some(landed) = &m.landed {
+        check_landed(m, landed.as_slice())?;
+    }
+    Ok(())
+}
+
+/// A reported call's landings (thuum D-R1 C's leveled gap, SCHEMA_VERSION
+/// 44), structural only: they ride an ObjectReference.AddItem (names without
+/// case, as the server's table reads them) on the sender's own player, 0x14,
+/// and no other call (`E_VAL_RANGE`); each names an item of the load order
+/// both ends share (not 0, below 0xff000000, the server's forms), a count
+/// above zero (0 is `E_VAL_ZERO_DELTA`, the ItemDelta rule; a negative one
+/// `E_VAL_RANGE`) and a base no earlier landing named (the platform folds by
+/// base). An empty list is the roll that landed nothing. The count, at most
+/// `cap::SCRIPT_CALL_LANDED`, holds at decode; whether each base is one the
+/// list can roll is the server's rule (wire-rules player_own,
+/// `E_SCRIPTCALL_ROLL`).
+fn check_landed(m: &skymp::ScriptCall, landed: &[ItemDelta]) -> Result<(), Reject> {
+    let add_item = m.cls.as_str().eq_ignore_ascii_case("ObjectReference") && m.func.as_str().eq_ignore_ascii_case("AddItem");
+    if !add_item || m.self_id != OWN_PLAYER {
+        return Err(Reject::Range);
+    }
+    for (i, landing) in landed.iter().enumerate() {
+        if landing.item.0 == 0 || landing.item.0 >= PLAYER_FORMS {
+            return Err(Reject::Range);
+        }
+        if landing.count == 0 {
+            return Err(Reject::ZeroDelta);
+        }
+        if landing.count < 0 || landed.iter().take(i).any(|earlier| earlier.item == landing.item) {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
+/// Object::Save's flags byte in a script record (thuum ADR-068 rung 3):
+/// constructed, which a read requires.
+const SCRIPT_CONSTRUCTED: u8 = 0x01;
+/// The lock held: a read taken while a stack held the object, never a
+/// quiescent one.
+const SCRIPT_LOCKED: u8 = 0x04;
+/// Initialized, which a read requires (an apply waits for it on the
+/// receiver).
+const SCRIPT_INITIALIZED: u8 = 0x08;
+/// The kinds a script record's handle may name: 0 a form's, 1 and 2 the
+/// others the save read met (thuum docs/research/
+/// adr065-papyrus-state-2026-11-03.md Q1).
+const SCRIPT_HANDLE_KINDS: u8 = 2;
+/// A seat's own player, which a record never names (the owner encodes it as
+/// None).
+const OWN_PLAYER: u32 = 0x14;
+
+/// Whether a script record's string or name holds a NUL. The receiver's
+/// BSFixedString reads a C string, so a NUL would cut a type, a state, an
+/// element type or a value short, and the platform's apply refuses the whole
+/// record for one (its ReadString, skyrim-platform ScriptState.cpp): a
+/// record every receiver refuses is refused here first.
+fn has_nul(s: &str) -> bool {
+    s.contains('\0')
+}
+
+/// A script value's payload against its kind (thuum ADR-068 rung 3): `k` 0
+/// (None) carries nothing, 1 (an object) at most its handle (none is a typed
+/// None), 2 its string, 3 its int, 4 its float, 5 its bool, and no other
+/// field; `numbers` is which of the int, float and bool fields are present
+/// and `s` the string. A string holds no NUL. A handle names a kind of 0 to
+/// 2, the script type bound at it (never empty, no NUL: the receiver's
+/// FindBoundObject takes it, and the platform's apply refuses an empty one)
+/// and a form every seat shares: never a seat's own player (0x14) nor a form
+/// the server names (0xff000000 and up), which the owner encodes as None.
+fn check_script_payload(k: u8, numbers: [bool; 3], s: Option<&str>, o: Option<&skymp::ScriptHandle>) -> Result<(), Reject> {
+    let [i, f, b] = numbers;
+    let carried = [i, f, b, s.is_some()];
+    let fits = match k {
+        0 => carried == [false, false, false, false] && o.is_none(),
+        1 => carried == [false, false, false, false],
+        2 => carried == [false, false, false, true] && o.is_none(),
+        3 => carried == [true, false, false, false] && o.is_none(),
+        4 => carried == [false, true, false, false] && o.is_none(),
+        5 => carried == [false, false, true, false] && o.is_none(),
+        _ => false,
+    };
+    if !fits || s.is_some_and(has_nul) {
+        return Err(Reject::Range);
+    }
+    match o {
+        Some(h) if h.kind > SCRIPT_HANDLE_KINDS || h.form == OWN_PLAYER || h.form >= PLAYER_FORMS || h.cls.is_empty() || has_nul(&h.cls) => Err(Reject::Range),
+        _ => Ok(()),
+    }
+}
+
+/// The None array's kind (CommonLibSSE-NG include/RE/T/TypeInfo.h,
+/// kNoneArray): a None array value, which carries no elements (the
+/// platform's apply refuses any, its ParseVar); 11 to 15 are the typed
+/// arrays.
+const SCRIPT_NONE_ARRAY: u8 = 10;
+
+/// One variable of a script record (thuum ADR-068 rung 3): a value of kind 0
+/// to 5 ([`check_script_payload`]) with no array fields; an array of kind 11
+/// to 15 with no value fields, its elements (none for a None array) each a
+/// value of kind `k - 10`, and `elem` on an object array (11) alone, with no
+/// NUL; or kind 10, the None array, with no field at all.
+fn check_script_var(v: &skymp::ScriptVar) -> Result<(), Reject> {
+    let numbers = [v.i.is_some(), v.f.is_some(), v.b.is_some()];
+    match v.k {
+        0..=5 => {
+            if v.elem.is_some() || v.a.is_some() {
+                return Err(Reject::Range);
+            }
+            check_script_payload(v.k, numbers, v.s.as_deref(), v.o.as_ref())
+        }
+        10..=15 => {
+            let elem_fits = v.elem.as_deref().is_none_or(|elem| v.k == 11 && !has_nul(elem));
+            if numbers.contains(&true) || v.s.is_some() || v.o.is_some() || !elem_fits || (v.k == SCRIPT_NONE_ARRAY && v.a.is_some()) {
+                return Err(Reject::Range);
+            }
+            let element = v.k.checked_sub(SCRIPT_NONE_ARRAY).ok_or(Reject::Range)?;
+            for e in v.a.iter().flat_map(|a| a.iter()) {
+                if e.k != element {
+                    return Err(Reject::Range);
+                }
+                check_script_payload(e.k, [e.i.is_some(), e.f.is_some(), e.b.is_some()], e.s.as_deref(), e.o.as_ref())?;
+            }
+            Ok(())
+        }
+        _ => Err(Reject::Range),
+    }
+}
+
+/// A script record's reference and scripts (thuum ADR-068 rung 3, the shape
+/// ScriptState and ScriptStateApply share): a game-file reference, never 0
+/// nor one the server names (0xff000000 and up); 1 to 16 scripts (the
+/// count's cap holds at decode), each with a type, its type and its state
+/// holding no NUL ([`has_nul`]), its flags read at a quiescent point
+/// (constructed and initialized, the lock not held) and every variable of a
+/// kind the VM has with its payload. So whatever passes here the platform's apply parses
+/// (ScriptState.cpp's ParseRecord): a record it would refuse whole is never
+/// stored to be served. Whether the sender owns the reference at the epoch
+/// is the server's rule (wire-rules script_state); no value is judged.
+fn check_script_objects(form_id: u32, scripts: &[skymp::ScriptObjectState]) -> Result<(), Reject> {
+    if form_id == 0 || form_id >= PLAYER_FORMS || scripts.is_empty() {
+        return Err(Reject::Range);
+    }
+    for script in scripts {
+        let quiescent = script.flags & SCRIPT_CONSTRUCTED != 0 && script.flags & SCRIPT_INITIALIZED != 0 && script.flags & SCRIPT_LOCKED == 0;
+        if script.cls.is_empty() || has_nul(&script.cls) || has_nul(&script.state) || !quiescent {
+            return Err(Reject::Range);
+        }
+        for v in script.vars.iter() {
+            check_script_var(v)?;
+        }
+    }
+    Ok(())
+}
+
+/// An owner's script record (thuum ADR-068 rung 3): every float finite, then
+/// the shape [`check_script_objects`] holds.
+fn check_script_state(m: &skymp::ScriptState) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    check_script_objects(m.form_id, m.scripts.as_slice())
+}
+
+/// The server's serve of a script record (thuum ADR-068 rung 3): the
+/// record's shape, and since SCHEMA_VERSION 40 its graph variables'
+/// ([`check_graph_vars`]); the transport refuses it from a client by
+/// direction.
+fn check_script_state_apply(m: &skymp::ScriptStateApply) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    check_script_objects(m.form_id, m.scripts.as_slice())?;
+    check_graph_vars(m.graph_vars.as_deref().unwrap_or_default())
+}
+
+/// A serve's graph variables (thuum D-C3 A, PENDING Eli): each with a name
+/// neither empty nor holding a NUL ([`has_nul`]: the receiver's
+/// SetAnimationVariable takes a C string), named once, a kind of 3 (an
+/// int), 4 (a float) or 5 (a bool) carrying that kind's one field and no
+/// other (ScriptVar's folded kinds), and a sequence above 0, the object's
+/// at the call that set it. The count (at most `cap::GRAPH_VARS`) and each
+/// name's length hold at decode, and every float's finiteness is the
+/// apply's own first check ([`check_script_state_apply`]). Which variables
+/// the server keeps is its rule (wire-rules natives, Keep::Variable).
+fn check_graph_vars(vars: &[skymp::GraphVar]) -> Result<(), Reject> {
+    for (n, v) in vars.iter().enumerate() {
+        let carried = [v.i.is_some(), v.f.is_some(), v.b.is_some()];
+        let fits = match v.k {
+            3 => carried == [true, false, false],
+            4 => carried == [false, true, false],
+            5 => carried == [false, false, true],
+            _ => false,
+        };
+        let twice = vars.iter().take(n).any(|w| w.name.as_str() == v.name.as_str());
+        if !fits || v.seq == 0 || v.name.is_empty() || has_nul(&v.name) || twice {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
 /// Validate one inbound message from a client against its guard state: the
 /// message's shape ([`validate_server`]'s rules) and then what only a
 /// server's view of a client adds, replay order and rate budgets.
@@ -937,9 +1714,11 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             take(&mut guard.player_globals_budget, now_ms)
         }
         Message::QuestStage(m) => {
-            // a client reports one stage of one quest; the sharing mode and
-            // its list are the server's (docs/verbs/quest-stage.md)
-            if !m.shared.is_empty() || m.quest == 0 || m.mode != 0 {
+            // a client reports one stage or run word of one quest; the
+            // sharing mode, its list, the login replay and a word's stages
+            // are the server's (docs/verbs/quest-stage.md; thuum ADR-068
+            // rung 5); a word shares the stages' budget
+            if !m.shared.is_empty() || m.quest == 0 || m.mode != 0 || m.served == Some(true) || m.word_stages.is_some() {
                 return Err(Reject::Range);
             }
             take(&mut guard.quest_stage_budget, now_ms)
@@ -962,7 +1741,49 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::LockReport(_) => take(&mut guard.lock_report_budget, now_ms),
         Message::PerkPick(_) => take(&mut guard.perk_pick_budget, now_ms),
         Message::WordWall(_) => take(&mut guard.word_wall_budget, now_ms),
+        // thuum D-C2: a trigger entry spends the entry budget; any other
+        // activation spends none, as before
+        Message::Activate(m) if m.data.entry.is_some() => take(&mut guard.entry_budget, now_ms),
         Message::ObjectAnimation(_) => take(&mut guard.object_animation_budget, now_ms),
+        Message::ChangeForm(_) => take(&mut guard.change_form_budget, now_ms),
+        Message::DestructionStage(m) => {
+            // a seat reports a destruction step alone: the ref state's words
+            // and the object's sequence are the server's (thuum ADR-068 rung
+            // 4; its report is ScriptCall 75)
+            if m.disabled.is_some() || m.deleted.is_some() || m.seq != 0 {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.destruction_budget, now_ms)
+        }
+        Message::ScriptState(_) => take(&mut guard.script_state_budget, now_ms),
+        Message::AliasFill(m) => {
+            // a seat reports its own fill; a served record is the server's
+            if m.served {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.alias_fill_budget, now_ms)
+        }
+        Message::WorldGlobal(m) => {
+            // the streamer reports under the epoch its word named (ADR-066's
+            // epoch-0 rule); the stream word and a served record are the
+            // server's
+            if m.stream.is_some() || m.served || m.epoch == 0 {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.world_global_budget, now_ms)
+        }
+        Message::ScriptVariables(m) => {
+            // a seat reports what its game changed (thuum ADR-068 rung 5):
+            // the watch list, a served record and every key's sequence are
+            // the server's
+            if !m.watch.is_empty() || m.served || m.entries.iter().any(|e| e.seq != 0) {
+                return Err(Reject::Range);
+            }
+            take(&mut guard.script_variables_budget, now_ms)
+        }
+        // thuum ADR-068 rung 5 (D-T1 A): a seat sends its own look; a
+        // figure's overlay is the server's word
+        Message::UpdateAppearance(m) if m.overlay.is_some() => Err(Reject::Range),
         _ => Ok(()),
     }
 }
@@ -986,6 +1807,10 @@ fn check_fates(m: &skymp::ActorFate) -> Result<(), Reject> {
             return Err(Reject::Range);
         }
         if f.worn.contains(&0) {
+            return Err(Reject::Range);
+        }
+        // the record's inventory rows (playtest 44's 1c): a real item, a count
+        if f.inv.iter().any(|row| row.base_id == 0 || row.count == 0) {
             return Err(Reject::Range);
         }
     }
@@ -1146,9 +1971,21 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::PerkPick(m) => check_perk_pick(m),
         Message::PerkState(m) => check_perk_state(m),
         Message::WordWall(m) => check_word_wall(m),
+        Message::Activate(m) => check_activate(m),
         Message::RelayedActivation(m) => check_relayed_activation(m),
         Message::ObjectAnimation(m) => check_object_animation(m),
+        Message::ChangeForm(m) => check_change_form(m),
+        Message::ChangeFormAck(m) => check_change_form_ack(m),
+        Message::ChangeFormApply(m) => check_change_form_apply(m),
+        Message::ScriptCall(m) => check_script_call(m),
+        Message::ScriptState(m) => check_script_state(m),
+        Message::ScriptStateApply(m) => check_script_state_apply(m),
+        Message::DestructionStage(m) => check_destruction_stage(m),
+        Message::AliasFill(m) => check_alias_fill(m),
+        Message::WorldGlobal(m) => check_world_global(m),
+        Message::ScriptVariables(m) => check_script_variables(m),
         Message::CreateActor(m) => check_create_actor(m),
+        Message::UpdateAppearance(m) => check_update_appearance(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -1686,6 +2523,38 @@ mod tests {
         })
     }
 
+    // the cast's decal (docs/verbs/spell-cast.md, the rune's glyph): with its launch, a unit normal
+    fn cast_with_decal(has_launch: bool, nx: f32, ny: f32, nz: f32) -> Message {
+        Message::SpellCast(skymp::SpellCast {
+            data: skymp::SpellCastData {
+                spell: 0x6796f,
+                casting_source: 1,
+                aim_angle: 0.1,
+                has_launch,
+                origin_x: if has_launch { 1234.5 } else { 0.0 },
+                origin_y: if has_launch { -300.25 } else { 0.0 },
+                origin_z: if has_launch { 96.0 } else { 0.0 },
+                launch_angle_x: 0.0,
+                launch_angle_z: if has_launch { 1.57 } else { 0.0 },
+                decal: Some(skymp::SpellDecal { normal_x: nx, normal_y: ny, normal_z: nz, material_id: 0xe4d39ca3 }),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_cast_s_decal_rides_its_launch_with_a_unit_normal() {
+        assert_eq!(validate(&cast_with_decal(true, 0.0, 0.0, 1.0), &mut ClientGuard::default(), 0), Ok(()));
+        assert_eq!(validate(&cast_with_decal(true, 0.083, -0.996, 0.0), &mut ClientGuard::default(), 0), Ok(()));
+        // the normal the caster's engine hands the placement is scaled to 69.99: the client unitizes it, the wire refuses it raw
+        assert_eq!(validate(&cast_with_decal(true, 5.83, -69.75, 0.0), &mut ClientGuard::default(), 0), Err(Reject::Range));
+        assert_eq!(validate(&cast_with_decal(true, 0.0, 0.0, 0.0), &mut ClientGuard::default(), 0), Err(Reject::Range));
+        assert_eq!(validate(&cast_with_decal(true, f32::NAN, 0.0, 1.0), &mut ClientGuard::default(), 0), Err(Reject::NonFinite));
+        // a decal without the launch it belongs to
+        assert_eq!(validate(&cast_with_decal(false, 0.0, 0.0, 1.0), &mut ClientGuard::default(), 0), Err(Reject::Range));
+    }
+
     #[test]
     fn a_cast_carries_its_launch_from_inside_the_world_at_a_pitch_within_bounds() {
         assert_eq!(validate(&cast_launched(1234.5, -300.25, 96.0, 0.1), &mut ClientGuard::default(), 0), Ok(()));
@@ -2185,6 +3054,7 @@ mod tests {
                     base_id,
                     level,
                     worn: worn.to_vec().try_into().unwrap_or_default(),
+                    ..Default::default()
                 })
                 .collect::<Vec<_>>()
                 .try_into()
@@ -2210,7 +3080,8 @@ mod tests {
 
     // thuum docs/verbs/prop-physics.md (ADR-058): a simulator's prop sample
     // names a reference, a finite point in the world and a finite rotation;
-    // 20 at once, 10 a second after that (UNMEASURED)
+    // 128 at once, 96 a second after that (UNMEASURED; raised from 20 and 10
+    // for a trap's bodies, thuum D-S3 point 4)
     fn prop(refr: u32, pos: [f32; 3], rot: [f32; 3], asleep: bool) -> Message {
         Message::PropTransform(wire_schema::skymp::PropTransform { refr, pos, rot, asleep, ..Default::default() })
     }
@@ -2225,11 +3096,33 @@ mod tests {
         assert_eq!(validate_server(&prop(0x54a44, basket, [0.0, f32::INFINITY, 0.0], false)), Err(Reject::NonFinite));
         assert_eq!(validate_server(&prop(0x54a44, [2.0e6, 0.0, 0.0], [0.0, 0.0, 0.0], false)), Err(Reject::OutOfWorld));
         let mut guard = ClientGuard::default();
-        for _ in 0..20 {
+        for _ in 0..128 {
             assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], false), &mut guard, 1_000), Ok(()));
         }
         assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], false), &mut guard, 1_000), Err(Reject::Rate));
-        assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], true), &mut guard, 1_100), Ok(()));
+        // 100 ms buys nine samples at 96 a second (9.6, the fraction carried
+        // to the next refill), and no tenth
+        for _ in 0..9 {
+            assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], true), &mut guard, 1_100), Ok(()));
+        }
+        assert_eq!(validate(&prop(0x54a44, basket, [0.0, 0.0, 0.0], true), &mut guard, 1_100), Err(Reject::Rate));
+        // one firing's eight bodies (Embershard's tripwire 0xb6d3f and its
+        // seven falling rocks, thuum docs/research/trap-census-2026-11-05.md
+        // rows 18 and the tripwire's) at 10 Hz for three seconds of fall, 240
+        // samples at 80 a second, all pass (the old 20 and 10 refuse them
+        // from the third tick)
+        let bodies = [0xb6d3f, 0xb6d45, 0xb6d48, 0xb6d49, 0xb6d4a, 0xb6d4b, 0xb6d4c, 0xb6d4d];
+        let mut seat = ClientGuard::default();
+        let mut refused = 0u32;
+        for tick in 0..30u64 {
+            let now = 10_000u64.saturating_add(tick.saturating_mul(100));
+            for body in bodies {
+                if validate(&prop(body, basket, [0.0, 0.0, 0.0], false), &mut seat, now) != Ok(()) {
+                    refused = refused.saturating_add(1);
+                }
+            }
+        }
+        assert_eq!(refused, 0);
     }
 
     #[test]
@@ -2384,12 +3277,169 @@ mod tests {
     }
 
     #[test]
+    fn destruction_stages_name_a_game_file_reference_and_a_bounded_stage_and_are_rate_limited() {
+        // thuum D-S3: Bleak Falls Temple's oil lamp 0x9b0fb at its first
+        // stage, Embershard's spent tripwire 0xb6d3f served after a create
+        // word, the bound's edges
+        use wire_schema::skymp::DestructionStage;
+        let stage = |refr, stage, destroyed, served| Message::DestructionStage(DestructionStage { refr, stage, destroyed, served, ..Default::default() });
+        assert_eq!(validate_server(&stage(0x9b0fb, 1, false, false)), Ok(()));
+        assert_eq!(validate_server(&stage(0xb6d3f, 0, true, true)), Ok(()));
+        assert_eq!(validate_server(&stage(0xfeff_ffff, DESTRUCTION_MAX_STAGE, true, false)), Ok(()));
+        assert_eq!(validate_server(&stage(0, 1, false, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(0xff00_0000, 1, false, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(u32::MAX, 0, true, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(0x9b0fb, DESTRUCTION_MAX_STAGE.saturating_add(1), false, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&stage(0x9b0fb, u8::MAX, false, false)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&stage(0x9b0fb, 1, false, false), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&stage(0x9b0fb, 1, false, false), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&stage(0x9b0fb, 2, false, false), &mut guard, 1_500), Ok(()));
+        // a refused shape spends no token: the shape is judged first
+        let mut fresh = ClientGuard::default();
+        for _ in 0..20 {
+            assert_eq!(validate(&stage(0, 1, false, false), &mut fresh, 1_000), Err(Reject::Range));
+        }
+        assert_eq!(validate(&stage(0x9b0fb, 1, false, false), &mut fresh, 1_000), Ok(()));
+    }
+
+    #[test]
+    fn a_ref_state_word_is_the_servers_alone() {
+        // thuum ADR-068 rung 4: the widened DestructionStage, the cobweb
+        // 0x1fc43 disabled at the object's sequence 3 and served; a seat's
+        // report carries no ref state word and a sequence of 0
+        use wire_schema::skymp::DestructionStage;
+        let word = |disabled: Option<bool>, deleted: Option<bool>, seq: u32| Message::DestructionStage(DestructionStage { refr: 0x1fc43, disabled, deleted, seq, served: true, ..Default::default() });
+        assert_eq!(validate_server(&word(Some(true), None, 3)), Ok(()));
+        assert_eq!(validate_server(&word(Some(true), Some(true), u32::MAX)), Ok(()));
+        let mut guard = ClientGuard::default();
+        assert_eq!(validate(&word(Some(true), None, 3), &mut guard, 0), Err(Reject::Range));
+        assert_eq!(validate(&word(None, Some(false), 0), &mut guard, 0), Err(Reject::Range));
+        let report = |seq: u32| Message::DestructionStage(DestructionStage { refr: 0x9b0fb, stage: 1, seq, ..Default::default() });
+        assert_eq!(validate(&report(1), &mut guard, 0), Err(Reject::Range));
+        assert_eq!(validate(&report(0), &mut guard, 0), Ok(()));
+        // the refusals spent no token: eight in all
+        for _ in 1..8 {
+            assert_eq!(validate(&report(0), &mut guard, 0), Ok(()));
+        }
+        assert_eq!(validate(&report(0), &mut guard, 0), Err(Reject::Rate));
+    }
+
+    #[test]
+    fn alias_fills_name_a_quest_an_alias_and_a_reference() {
+        // thuum ADR-068 rung 4: MS13 0x39645's ArvelWeb alias 10 forced to
+        // the web 0x1fc43, a clear, the edges
+        use wire_schema::skymp::AliasFill;
+        let fill = |quest, alias, refr, served| Message::AliasFill(AliasFill { quest, alias, refr, served, ..Default::default() });
+        assert_eq!(validate_server(&fill(0x39645, 10, 0x1fc43, false)), Ok(()));
+        assert_eq!(validate_server(&fill(0x39645, 10, 0, true)), Ok(()));
+        assert_eq!(validate_server(&fill(0x39645, 0xFFFF, 0xfeff_ffff, false)), Ok(()));
+        assert_eq!(validate_server(&fill(0, 10, 0x1fc43, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&fill(0xff00_0000, 10, 0x1fc43, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&fill(0x39645, 0x1_0000, 0x1fc43, false)), Err(Reject::Range));
+        assert_eq!(validate_server(&fill(0x39645, 10, 0xff00_0002, false)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        // a seat never sends a served record
+        assert_eq!(validate(&fill(0x39645, 10, 0, true), &mut guard, 0), Err(Reject::Range));
+        for _ in 0..16 {
+            assert_eq!(validate(&fill(0x39645, 10, 0x1fc43, false), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&fill(0x39645, 10, 0x1fc43, false), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&fill(0x39645, 10, 0x1fc43, false), &mut guard, 1_250), Ok(()));
+    }
+
+    #[test]
+    fn world_globals_name_glob_forms_once_and_finite() {
+        // thuum ADR-068 rung 4: a streamer's report at epoch 2, the stream
+        // word, a served record (illustrative GLOB ids)
+        use wire_schema::skymp::{WorldGlobal, WorldGlobalEntry};
+        let entry = |global, value| WorldGlobalEntry { global, value };
+        let globals = |epoch, stream, entries: &[WorldGlobalEntry], served| {
+            Message::WorldGlobal(WorldGlobal { epoch, stream, entries: entries.to_vec().try_into().unwrap_or_default(), served, ..Default::default() })
+        };
+        assert_eq!(validate_server(&globals(2, None, &[entry(0x5e3bd, 7.0), entry(0x1000, -1.5)], false)), Ok(()));
+        assert_eq!(validate_server(&globals(3, Some(true), &[], false)), Ok(()));
+        assert_eq!(validate_server(&globals(0, None, &[entry(0x5e3bd, 7.0)], true)), Ok(()), "a record served before any election");
+        assert_eq!(validate_server(&globals(0, Some(true), &[], false)), Err(Reject::Range), "a stream word names its epoch");
+        assert_eq!(validate_server(&globals(2, None, &[entry(0, 1.0)], false)), Err(Reject::Range));
+        assert_eq!(validate_server(&globals(2, None, &[entry(0xff00_0001, 1.0)], false)), Err(Reject::Range));
+        assert_eq!(validate_server(&globals(2, None, &[entry(0x5e3bd, 1.0), entry(0x5e3bd, 2.0)], false)), Err(Reject::Range));
+        assert_eq!(validate_server(&globals(2, None, &[entry(0x5e3bd, f32::NAN)], false)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&globals(2, None, &[entry(0x5e3bd, f32::INFINITY)], false)), Err(Reject::NonFinite));
+        let mut guard = ClientGuard::default();
+        // a report never carries the word, a served flag or epoch 0
+        assert_eq!(validate(&globals(2, Some(true), &[], false), &mut guard, 0), Err(Reject::Range));
+        assert_eq!(validate(&globals(2, None, &[entry(0x5e3bd, 1.0)], true), &mut guard, 0), Err(Reject::Range));
+        assert_eq!(validate(&globals(0, None, &[entry(0x5e3bd, 1.0)], false), &mut guard, 0), Err(Reject::Range));
+        for _ in 0..4 {
+            assert_eq!(validate(&globals(2, None, &[entry(0x5e3bd, 1.0)], false), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&globals(2, None, &[entry(0x5e3bd, 1.0)], false), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&globals(2, None, &[entry(0x5e3bd, 1.0)], false), &mut guard, 2_000), Ok(()));
+    }
+
+    #[test]
     fn relayed_activations_name_both_references() {
         use wire_schema::skymp::RelayedActivation;
         let relay = |target, caster| Message::RelayedActivation(RelayedActivation { target, caster, ..Default::default() });
         assert_eq!(validate_server(&relay(0x54b15, 0x567f2)), Ok(()));
         assert_eq!(validate_server(&relay(0, 0x567f2)), Err(Reject::Range));
         assert_eq!(validate_server(&relay(0x54b15, 0)), Err(Reject::Range));
+        // thuum D-C2 (SCHEMA_VERSION 40): a guest's entry into the web
+        // 0x37281 relayed to the host with its figure 0xff000001, enter or
+        // leave; any other event byte is no event
+        let entry = |entry| Message::RelayedActivation(RelayedActivation { target: 0x37281, caster: 0xff00_0001, entry, ..Default::default() });
+        assert_eq!(validate_server(&entry(Some(1))), Ok(()));
+        assert_eq!(validate_server(&entry(Some(2))), Ok(()));
+        assert_eq!(validate_server(&entry(None)), Ok(()));
+        for bad in [0u8, 3, u8::MAX] {
+            assert_eq!(validate_server(&entry(Some(bad))), Err(Reject::Range), "{bad}");
+        }
+    }
+
+    #[test]
+    fn trigger_entries_name_an_event_a_presser_and_a_trigger_and_are_rate_limited() {
+        // thuum D-W1 and D-C2 (SCHEMA_VERSION 40): c2's own player entering
+        // and leaving Bleak Falls Temple's web 0x37281, an NPC it simulates
+        // (illustrative 0x380b3, a draugr of the Temple), the edges
+        use wire_schema::skymp::{Activate, ActivateData};
+        let activate = |caster: u64, target: u64, is_second_activation: bool, entry: Option<u8>| {
+            Message::Activate(Activate { data: ActivateData { caster, target, is_second_activation, entry, ..Default::default() }, ..Default::default() })
+        };
+        assert_eq!(validate_server(&activate(0x14, 0x37281, false, Some(1))), Ok(()));
+        assert_eq!(validate_server(&activate(0x14, 0x37281, false, Some(2))), Ok(()));
+        assert_eq!(validate_server(&activate(0x380b3, 0x37281, false, Some(1))), Ok(()));
+        assert_eq!(validate_server(&activate(0xff00_0005, 0xfeff_ffff, false, Some(1))), Ok(()), "a server-made NPC presses a trigger at the load order's top");
+        for bad in [0u8, 3, u8::MAX] {
+            assert_eq!(validate_server(&activate(0x14, 0x37281, false, Some(bad))), Err(Reject::Range), "{bad}");
+        }
+        assert_eq!(validate_server(&activate(0x14, 0x37281, true, Some(1))), Err(Reject::Range), "an entry is no second activation");
+        assert_eq!(validate_server(&activate(0, 0x37281, false, Some(1))), Err(Reject::Range));
+        assert_eq!(validate_server(&activate(0x14, 0, false, Some(1))), Err(Reject::Range));
+        assert_eq!(validate_server(&activate(0x14, 0xff00_0000, false, Some(1))), Err(Reject::Range));
+        assert_eq!(validate_server(&activate(0x14, u64::MAX, false, Some(2))), Err(Reject::Range));
+        // an activation without an entry keeps the shared checks alone: the
+        // legacy shapes, a second activation and a server form's target too
+        assert_eq!(validate_server(&activate(0x14, 0x37281, true, None)), Ok(()));
+        assert_eq!(validate_server(&activate(0, 0, false, None)), Ok(()));
+        assert_eq!(validate_server(&activate(0x14, 0xff00_0001, false, None)), Ok(()));
+        // eight entries at once, then four a second; a refused shape spends
+        // no token, and an activation without an entry spends none
+        let mut guard = ClientGuard::default();
+        for _ in 0..100 {
+            assert_eq!(validate(&activate(0x14, 0x37281, false, None), &mut guard, 1_000), Ok(()));
+            assert_eq!(validate(&activate(0x14, 0x37281, true, Some(1)), &mut guard, 1_000), Err(Reject::Range));
+        }
+        for _ in 0..8 {
+            assert_eq!(validate(&activate(0x14, 0x37281, false, Some(1)), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&activate(0x14, 0x37281, false, Some(2)), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&activate(0x14, 0x37281, false, None), &mut guard, 1_000), Ok(()), "the entry budget is the entries' alone");
+        // one token every 250 ms
+        assert_eq!(validate(&activate(0x14, 0x37281, false, Some(2)), &mut guard, 1_249), Err(Reject::Rate));
+        assert_eq!(validate(&activate(0x14, 0x37281, false, Some(2)), &mut guard, 1_250), Ok(()));
     }
 
     #[test]
@@ -2424,6 +3474,35 @@ mod tests {
         assert_eq!(validate_server(&fates(&[(0xff00_0c03, 0x1bcd8, 25, &[0x1397f])])), Ok(()));
         assert_eq!(validate_server(&fates(&[(0, 0x7, 1, &[])])), Err(Reject::Range));
         assert_eq!(validate_server(&fates(&[(0x85547, 0x7, 1, &[0])])), Err(Reject::Range));
+    }
+
+    #[test]
+    fn actor_fates_carry_the_records_inventory_rows_with_ids_and_counts() {
+        use wire_schema::skymp::{ActorFate, ActorFateEntry, FateInvRow};
+        let with_inv = |rows: &[(u32, u32)]| {
+            Message::ActorFate(ActorFate {
+                fates: vec![ActorFateEntry {
+                    refr_id: 0x39fe2,
+                    base_id: 0x1bcd8,
+                    level: 7,
+                    worn: vec![0x13982].try_into().unwrap_or_default(),
+                    inv: rows
+                        .iter()
+                        .map(|&(base_id, count)| FateInvRow { base_id, count })
+                        .collect::<Vec<_>>()
+                        .try_into()
+                        .unwrap_or_default(),
+                }]
+                .try_into()
+                .unwrap_or_default(),
+                ..Default::default()
+            })
+        };
+        // the longbow and twenty arrows the host's engine used to roll alone
+        assert_eq!(validate_server(&with_inv(&[(0x3b562, 1), (0x1397d, 20), (0xf, 43)])), Ok(()));
+        assert_eq!(validate_server(&with_inv(&[])), Ok(()));
+        assert_eq!(validate_server(&with_inv(&[(0, 1)])), Err(Reject::Range));
+        assert_eq!(validate_server(&with_inv(&[(0x3b562, 0)])), Err(Reject::Range));
     }
 
     #[test]
@@ -2533,10 +3612,41 @@ mod tests {
         }
 
         #[test]
-        fn relayed_activations_never_panic(target in any::<u32>(), caster in any::<u32>()) {
+        fn destruction_stages_never_panic(refr in any::<u32>(), stage in any::<u8>(), destroyed in any::<bool>(), served in any::<bool>(), now in any::<u64>()) {
+            use wire_schema::skymp::DestructionStage;
+            let mut g = ClientGuard::default();
+            let m = Message::DestructionStage(DestructionStage { refr, stage, destroyed, served, ..Default::default() });
+            let _ = validate(&m, &mut g, now);
+            let want = if refr == 0 || refr >= 0xff00_0000 || stage > DESTRUCTION_MAX_STAGE { Err(Reject::Range) } else { Ok(()) };
+            prop_assert_eq!(validate_server(&m), want);
+        }
+
+        #[test]
+        fn relayed_activations_never_panic(target in any::<u32>(), caster in any::<u32>(), entry in proptest::option::of(prop_oneof![0u8..4, any::<u8>()])) {
             use wire_schema::skymp::RelayedActivation;
-            let m = Message::RelayedActivation(RelayedActivation { target, caster, ..Default::default() });
-            prop_assert_eq!(validate_server(&m), if target == 0 || caster == 0 { Err(Reject::Range) } else { Ok(()) });
+            let m = Message::RelayedActivation(RelayedActivation { target, caster, entry, ..Default::default() });
+            let entry_ok = entry.is_none_or(|e| e == 1 || e == 2);
+            prop_assert_eq!(validate_server(&m), if target == 0 || caster == 0 || !entry_ok { Err(Reject::Range) } else { Ok(()) });
+        }
+
+        // thuum D-C2: any presser, trigger, flag and event byte, any clock:
+        // a verdict, never a panic, and the shape's verdict the rule gives
+        #[test]
+        fn trigger_entries_never_panic(
+            caster in prop_oneof![Just(0u64), Just(0x14u64), any::<u64>()],
+            target in prop_oneof![Just(0u64), Just(0x37281u64), Just(0xff00_0000u64), any::<u64>()],
+            second in any::<bool>(), entry in proptest::option::of(prop_oneof![0u8..4, any::<u8>()]), now in any::<u64>(),
+        ) {
+            use wire_schema::skymp::{Activate, ActivateData};
+            let m = Message::Activate(Activate { data: ActivateData { caster, target, is_second_activation: second, entry, ..Default::default() }, ..Default::default() });
+            let want = match entry {
+                None => Ok(()),
+                Some(e) if (e == 1 || e == 2) && !second && caster != 0 && target != 0 && target < 0xff00_0000 && caster <= u64::from(u32::MAX) => Ok(()),
+                Some(_) => Err(Reject::Range),
+            };
+            prop_assert_eq!(validate_server(&m), want);
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
         }
 
         #[test]
@@ -2804,7 +3914,15 @@ mod spell_placed_tests {
         assert_eq!(validate_server(&placed(Some(0), Some("MSTT"))), Err(Reject::Range));
         assert_eq!(validate_server(&placed(Some(0xff00_0000), None)), Err(Reject::Range));
         assert_eq!(validate_server(&placed(Some(0xff00_0000), Some("DOOR"))), Err(Reject::Range));
-        assert_eq!(validate_server(&placed(Some(0xff00_0000), Some("NPC_"))), Err(Reject::Range));
+        // thuum ADR-068 rung 4: a script set's placement, a static, an NPC
+        // or an item, names its reporter too; an explosion never travels
+        // placed
+        for kind in ["STAT", "NPC_", "MISC", "WEAP", "LIGH"] {
+            assert_eq!(validate_server(&placed(Some(0xff00_0000), Some(kind))), Ok(()), "{kind}");
+        }
+        for kind in ["EXPL", "HAZD", "PROJ", "CONT", "FURN"] {
+            assert_eq!(validate_server(&placed(Some(0xff00_0000), Some(kind))), Err(Reject::Range), "{kind}");
+        }
         // every other CreateActor is as it was: no placer, any base type
         assert_eq!(validate_server(&placed(None, None)), Ok(()));
         assert_eq!(validate_server(&placed(None, Some("DOOR"))), Ok(()));
@@ -2851,5 +3969,1378 @@ mod race_permit_tests {
         assert_eq!(validate_server(&permit(true, Some(&[A, A]), Some(&[]))), Err(Reject::Range));
         assert_eq!(validate_server(&permit(true, Some(&[A]), Some(&[B]))), Err(Reject::Range));
         assert_eq!(validate_server(&permit(true, Some(&[A, B]), Some(&[A, A]))), Err(Reject::Range));
+    }
+}
+
+// thuum docs/verbs/change-form.md (ADR-065 system 1): the host's change form
+#[cfg(test)]
+mod change_form_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::{skymp, Message};
+
+    // thuum docs/verbs/change-form.md (ADR-065 system 1): a host's change
+    // form is a packed record whose header must agree with its body, whose
+    // hash must be the body's, and whose remap rows must decode to what
+    // they claim; whose record it is and at which epoch is the server's
+
+    /// A packed record of `form_type` around `data`: the pack's one-byte
+    /// lengths under 0x100, two-byte ones under 0x10000 (35522's rule).
+    fn record(form_type: u8, data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        if data.len() < 0x100 {
+            out.push(form_type);
+            out.push(CHANGE_FORM_VERSION);
+            out.push(u8::try_from(data.len()).unwrap_or(0));
+            out.push(0);
+        } else {
+            out.push(form_type | 0x40);
+            out.push(CHANGE_FORM_VERSION);
+            let len = u16::try_from(data.len()).unwrap_or(0).to_le_bytes();
+            out.extend_from_slice(&len);
+            out.extend_from_slice(&[0, 0]);
+        }
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// The record's hex as the native spells it: two lowercase digits a byte.
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn change_form(form_id: u32, form_type: u8, body: Vec<u8>, remap: &[(u32, u32, u32)]) -> Message {
+        let fnv1a = fnv1a_32(&body);
+        change_form_hex(form_id, form_type, hex(&body), fnv1a, remap)
+    }
+
+    fn change_form_hex(form_id: u32, form_type: u8, body: String, fnv1a: u32, remap: &[(u32, u32, u32)]) -> Message {
+        Message::ChangeForm(skymp::ChangeForm {
+            epoch: 1,
+            form_id,
+            form_type,
+            flags: 0x0400_0427,
+            version: CHANGE_FORM_VERSION,
+            body: body.try_into().unwrap_or_default(),
+            fnv1a,
+            remap: remap
+                .iter()
+                .map(|(offset, form_id, index)| skymp::ChangeFormRemap { offset: *offset, form_id: *form_id, index: *index })
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap_or_default(),
+            ..Default::default()
+        })
+    }
+
+    fn with_fnv(m: Message, fnv1a: u32) -> Message {
+        match m {
+            Message::ChangeForm(mut c) => {
+                c.fnv1a = fnv1a;
+                Message::ChangeForm(c)
+            }
+            other => other,
+        }
+    }
+
+    fn with_version(m: Message, version: u8) -> Message {
+        match m {
+            Message::ChangeForm(mut c) => {
+                c.version = version;
+                Message::ChangeForm(c)
+            }
+            other => other,
+        }
+    }
+
+    // the lab's own REFR record (run 20261103-131511: the Sleeping Giant's
+    // door 0xe3a7a at `lock 50`), 40 bytes, FNV-1a 0x4ebbb261 as the Frida
+    // script read it
+    const LAB_REFR_RECORD: [u8; 40] = [
+        0x00, 0x4e, 0x24, 0x00, 0x08, 0x32, 0x4e, 0x3a, 0x7a, 0x00, 0x2a, 0x32, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x05, 0x00, 0x43, 0x6c, 0x6f, 0x73,
+        0x65, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn the_labs_own_record_reads_and_hashes_as_the_frida_script_read_it() {
+        let header = read_record_header(&LAB_REFR_RECORD);
+        assert_eq!(
+            header,
+            Some(RecordHeader { form_type: 0, size_code: 0, version: 0x4e, length1: 36, length2: 0, header_len: 4 })
+        );
+        assert_eq!(fnv1a_32(&LAB_REFR_RECORD), 0x4ebb_b261);
+        assert_eq!(validate_server(&change_form(0xe3a7a, 0, LAB_REFR_RECORD.to_vec(), &[])), Ok(()));
+        assert_eq!(validate_server(&change_form(0xe3a7a, 1, LAB_REFR_RECORD.to_vec(), &[])), Err(Reject::ChangeFormHeader));
+    }
+
+    #[test]
+    fn a_change_form_names_a_game_file_actor_and_a_six_bit_type() {
+        let body = record(1, &[0x00, 0x00, 0x05, 0x7f]);
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[])), Ok(()));
+        assert_eq!(validate_server(&change_form(0, 1, body.clone(), &[])), Err(Reject::ChangeFormRange));
+        assert_eq!(validate_server(&change_form(0xff00_0000, 1, body.clone(), &[])), Err(Reject::ChangeFormRange));
+        assert_eq!(validate_server(&change_form(0x13480, 0x40, body, &[])), Err(Reject::ChangeFormRange));
+    }
+
+    #[test]
+    fn a_change_forms_body_holds_at_least_a_header() {
+        assert_eq!(validate_server(&change_form(0x13480, 1, Vec::new(), &[])), Err(Reject::ChangeFormSize));
+        assert_eq!(validate_server(&change_form(0x13480, 1, vec![0x01, 0x4e, 0x00], &[])), Err(Reject::ChangeFormSize));
+        // the shortest record: a header and no data
+        assert_eq!(validate_server(&change_form(0x13480, 1, record(1, &[]), &[])), Ok(()));
+    }
+
+    #[test]
+    fn a_change_forms_body_is_lowercase_hex_of_even_length() {
+        let body = record(1, &[0x00, 0x00, 0x05, 0x7f]);
+        let fnv1a = fnv1a_32(&body);
+        let good = hex(&body);
+        assert_eq!(validate_server(&change_form_hex(0x13480, 1, good.clone(), fnv1a, &[])), Ok(()));
+        // the native's hex is lowercase; the record decodes to the same bytes
+        // either way, but one spelling is the contract
+        assert_eq!(validate_server(&change_form_hex(0x13480, 1, good.to_uppercase(), fnv1a, &[])), Err(Reject::ChangeFormHeader));
+        // a character that is not hex at all, a sign from_str_radix would take
+        let mut bad = good.clone();
+        bad.replace_range(4..5, "g");
+        assert_eq!(validate_server(&change_form_hex(0x13480, 1, bad, fnv1a, &[])), Err(Reject::ChangeFormHeader));
+        let mut signed = good.clone();
+        signed.replace_range(4..5, "+");
+        assert_eq!(validate_server(&change_form_hex(0x13480, 1, signed, fnv1a, &[])), Err(Reject::ChangeFormHeader));
+        // an odd length holds no whole byte
+        let mut odd = good.clone();
+        odd.pop();
+        assert_eq!(validate_server(&change_form_hex(0x13480, 1, odd, fnv1a, &[])), Err(Reject::ChangeFormSize));
+        // the decoded bytes are what the header, the hash and the rows see
+        assert_eq!(decode_record_hex(&good), Ok(body));
+        assert_eq!(decode_record_hex(""), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn a_change_forms_header_agrees_with_its_body() {
+        let data = [0x00, 0x00, 0x05, 0x7f];
+        // the type byte against formType
+        assert_eq!(validate_server(&change_form(0x13480, 1, record(0, &data), &[])), Err(Reject::ChangeFormHeader));
+        // the version byte, and the message's version
+        let mut old = record(1, &data);
+        if let Some(v) = old.get_mut(1) {
+            *v = 0x4d;
+        }
+        assert_eq!(validate_server(&change_form(0x13480, 1, old, &[])), Err(Reject::ChangeFormHeader));
+        assert_eq!(
+            validate_server(&with_version(change_form(0x13480, 1, record(1, &data), &[]), 0x4d)),
+            Err(Reject::ChangeFormHeader)
+        );
+        // length1 off the body by one, either way
+        let mut long = record(1, &data);
+        if let Some(l) = long.get_mut(2) {
+            *l = 5;
+        }
+        assert_eq!(validate_server(&change_form(0x13480, 1, long, &[])), Err(Reject::ChangeFormHeader));
+        let mut short = record(1, &data);
+        if let Some(l) = short.get_mut(2) {
+            *l = 3;
+        }
+        assert_eq!(validate_server(&change_form(0x13480, 1, short, &[])), Err(Reject::ChangeFormHeader));
+        // a size code the pack never writes
+        let mut three = record(1, &data);
+        if let Some(b) = three.get_mut(0) {
+            *b |= 0xc0;
+        }
+        assert_eq!(validate_server(&change_form(0x13480, 1, three, &[])), Err(Reject::ChangeFormHeader));
+        // a header whose lengths run past the body
+        assert_eq!(validate_server(&change_form(0x13480, 1, vec![0x41, 0x4e, 0x10, 0x00], &[])), Err(Reject::ChangeFormHeader));
+        // a two-byte-length record (an actor at kDying is 4,789 bytes)
+        let big = vec![0x7a; 4789];
+        assert_eq!(validate_server(&change_form(0x13480, 1, record(1, &big), &[])), Ok(()));
+        // a deflated record's inflated size is bounded like the body
+        let mut inflated = record(1, &big);
+        if let Some(l) = inflated.get_mut(4..6) {
+            l.copy_from_slice(&[0xff, 0xff]);
+        }
+        assert_eq!(validate_server(&change_form(0x13480, 1, inflated, &[])), Ok(()));
+        let mut bomb = record(1, &big);
+        if let Some(b) = bomb.get_mut(0) {
+            *b = 0x81;
+        }
+        bomb.splice(2..6, [0xb5, 0x12, 0x00, 0x00, 0xff, 0xff, 0xff, 0x7f]);
+        assert_eq!(validate_server(&change_form(0x13480, 1, bomb, &[])), Err(Reject::ChangeFormHeader));
+    }
+
+    #[test]
+    fn a_change_forms_hash_is_the_bodys() {
+        let body = record(1, &[0x00, 0x00, 0x05, 0x7f]);
+        let good = change_form(0x13480, 1, body, &[]);
+        assert_eq!(validate_server(&good), Ok(()));
+        assert_eq!(validate_server(&with_fnv(good, 0xdead_beef)), Err(Reject::ChangeFormHash));
+    }
+
+    #[test]
+    fn a_change_forms_remap_rows_decode_to_what_they_claim() {
+        // the data: a kind-0 id (index 5) at offset 4, a kind-1 id at 7, pad
+        let data = [0x00, 0x00, 0x05, 0x4e, 0x3a, 0x7a, 0x00, 0x00];
+        let body = record(1, &data);
+        const FORM: u32 = 0x0200_abcd;
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(4, FORM, 5)])), Ok(()));
+        // the index against the bytes
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(4, FORM, 6)])), Err(Reject::ChangeFormRemap));
+        // kind 1 bytes (a portable id needs no row)
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(7, FORM, 0x0e3a7a)])), Err(Reject::ChangeFormRemap));
+        // outside the data: in the header, past the end, at the very end
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(1, FORM, 0x4e0000)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(12, FORM, 0)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(10, FORM, 0)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(u32::MAX, FORM, 0)])), Err(Reject::ChangeFormRemap));
+        // forms no row may remap: 0, a load-index-00 form, a created one
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(4, 0, 5)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(4, 0x0001_2345, 5)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&change_form(0x13480, 1, body.clone(), &[(4, 0xff00_0001, 5)])), Err(Reject::ChangeFormRemap));
+        // an offset twice
+        assert_eq!(
+            validate_server(&change_form(0x13480, 1, body, &[(4, FORM, 5), (4, 0x0200_abce, 5)])),
+            Err(Reject::ChangeFormRemap)
+        );
+    }
+
+    #[test]
+    fn change_forms_are_rate_limited_per_host() {
+        let body = record(1, &[0x00, 0x00, 0x05, 0x7f]);
+        let report = change_form(0x13480, 1, body, &[]);
+        let mut guard = ClientGuard::default();
+        for _ in 0..32 {
+            assert_eq!(validate(&report, &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&report, &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&report, &mut guard, 2_000), Ok(()));
+    }
+
+    #[test]
+    fn the_servers_ack_and_apply_keep_the_records_shape() {
+        use wire_schema::skymp::{ChangeFormAck, ChangeFormApply, ChangeFormRemap};
+        assert_eq!(validate_server(&Message::ChangeFormAck(ChangeFormAck { form_id: 0x13480, fnv1a: 1, ..Default::default() })), Ok(()));
+        assert_eq!(validate_server(&Message::ChangeFormAck(ChangeFormAck { form_id: 0, fnv1a: 1, ..Default::default() })), Err(Reject::ChangeFormRange));
+        let data = [0x00, 0x00, 0x05, 0x7f];
+        let apply = |form_type: u8, body: Vec<u8>, remap: &[(u32, u32, u32)]| {
+            Message::ChangeFormApply(ChangeFormApply {
+                form_id: 0x13480,
+                form_type,
+                flags: 0x0400_0427,
+                version: CHANGE_FORM_VERSION,
+                body: hex(&body).try_into().unwrap_or_default(),
+                remap: remap
+                    .iter()
+                    .map(|(offset, form_id, index)| ChangeFormRemap { offset: *offset, form_id: *form_id, index: *index })
+                    .collect::<Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&apply(1, record(1, &data), &[(4, 0x0200_abcd, 5)])), Ok(()));
+        assert_eq!(validate_server(&apply(0, record(1, &data), &[])), Err(Reject::ChangeFormHeader));
+        assert_eq!(validate_server(&apply(1, record(1, &data), &[(4, 0x0200_abcd, 6)])), Err(Reject::ChangeFormRemap));
+        assert_eq!(validate_server(&apply(1, Vec::new(), &[])), Err(Reject::ChangeFormSize));
+    }
+
+    proptest! {
+        // any bytes and rows: a verdict, never a panic (the fuzz target's
+        // property in miniature)
+        #[test]
+        fn change_form_checks_never_panic(body in proptest::collection::vec(any::<u8>(), 0..300),
+                                          text in "[0-9a-fA-Fxyz+ ]{0,80}",
+                                          rows in proptest::collection::vec((any::<u32>(), any::<u32>(), any::<u32>()), 0..8),
+                                          form_id in any::<u32>(), form_type in any::<u8>(), fnv1a in any::<u32>()) {
+            let _ = validate_server(&change_form(form_id, form_type, body, &rows));
+            let _ = validate_server(&change_form_hex(form_id, form_type, text, fnv1a, &rows));
+        }
+    }
+}
+
+#[cfg(test)]
+mod script_call_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+    use wire_schema::skymp::{ScriptCall, SnippetArg, SnippetObject};
+    use wire_schema::FormId;
+
+    fn object(form_id: u64, kind: &str) -> Option<SnippetArg> {
+        Some(SnippetArg::Object(SnippetObject { form_id, kind: kind.try_into().unwrap_or_default() }))
+    }
+
+    fn text(s: &str) -> Option<SnippetArg> {
+        Some(SnippetArg::String(s.try_into().unwrap_or_default()))
+    }
+
+    fn call(self_id: u32, cls: &str, func: &str, args: Vec<Option<SnippetArg>>) -> Message {
+        Message::ScriptCall(ScriptCall {
+            epoch: 3,
+            self_id,
+            cls: cls.try_into().unwrap_or_default(),
+            func: func.try_into().unwrap_or_default(),
+            args: args.try_into().unwrap_or_default(),
+            caller: "defaultPuzzlePillarScript".try_into().unwrap_or_default(),
+            handler: "onActivate".try_into().unwrap_or_default(),
+            latent: true,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_reported_call_names_a_class_a_function_and_a_subject_the_client_may_name() {
+        // thuum ADR-068: the pillar's turn (Bleak Falls Temple's 0xaa8cb), a
+        // static call on a world object, the player's own 0x14, an absent
+        // argument; the row, the kinds and the owner are the server's rule
+        assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "PlayAnimationAndWait", vec![text("Trigger02"), text("Turned02")])), Ok(()));
+        assert_eq!(validate_server(&call(0x10e6c5, "Debug", "SendAnimationEvent", vec![object(0x10e6c5, "ObjectReference"), text("Open")])), Ok(()));
+        assert_eq!(validate_server(&call(0x14, "ObjectReference", "PlayAnimation", vec![text("Open")])), Ok(()));
+        assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "PlayAnimation", vec![None])), Ok(()));
+        assert_eq!(validate_server(&call(0xaa8cb, "Debug", "Notification", vec![])), Ok(()), "an untabled pair is the rule's to refuse");
+        // the names, never empty
+        assert_eq!(validate_server(&call(0xaa8cb, "", "PlayAnimation", vec![text("Open")])), Err(Reject::Range));
+        assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "", vec![text("Open")])), Err(Reject::Range));
+        // what the server names: its own forms and the players' figures, as
+        // the subject, and no form past 32 bits
+        assert_eq!(validate_server(&call(0xff00_0002, "ObjectReference", "PlayAnimation", vec![text("Open")])), Err(Reject::Range));
+        assert_eq!(validate_server(&call(0xfeff_ffff, "ObjectReference", "PlayAnimation", vec![text("Open")])), Ok(()));
+        assert_eq!(validate_server(&call(0x10e6c5, "Debug", "SendAnimationEvent", vec![object(0x1_0010_e6c5, "ObjectReference"), text("Open")])), Err(Reject::Range));
+        // thuum ADR-068 rung 5: a scoped call's figure, an object argument
+        // naming a player's actor by its server id, passes the edge to the
+        // server's rule (wire-rules natives::figures takes a connected
+        // player's alone); the top of the 32 bits too, nothing past them
+        assert_eq!(validate_server(&call(0x10e6c5, "Debug", "SendAnimationEvent", vec![object(0xff00_0002, "Actor"), text("Open")])), Ok(()));
+        assert_eq!(validate_server(&call(0x39655, "Actor", "SetRelationshipRank", vec![object(0xffff_ffff, "Actor"), Some(SnippetArg::Number(1.0))])), Ok(()));
+        assert_eq!(validate_server(&call(0x39655, "Actor", "SetRelationshipRank", vec![object(0x1_0000_0000, "Actor"), Some(SnippetArg::Number(1.0))])), Err(Reject::Range));
+        // every number a number
+        assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "SetAnimationVariableFloat", vec![text("fSpeed"), Some(SnippetArg::Number(f64::NAN))])), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "SetAnimationVariableFloat", vec![text("fSpeed"), Some(SnippetArg::Number(1.5))])), Ok(()));
+    }
+
+    #[test]
+    fn the_arguments_stop_at_the_engines_eleven() {
+        // CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15: a native takes
+        // at most eleven; a twelfth fails at decode, before any check
+        let eleven: Vec<Option<SnippetArg>> = (0..cap::SCRIPT_CALL_ARGS).map(|_| Some(SnippetArg::Bool(true))).collect();
+        let held: Result<wire_schema::bounded::Vec<Option<SnippetArg>, { cap::SCRIPT_CALL_ARGS }>, _> = eleven.clone().try_into();
+        assert!(held.is_ok());
+        let mut twelve = eleven;
+        twelve.push(Some(SnippetArg::Bool(true)));
+        let over: Result<wire_schema::bounded::Vec<Option<SnippetArg>, { cap::SCRIPT_CALL_ARGS }>, _> = twelve.try_into();
+        assert!(over.is_err());
+    }
+
+    #[test]
+    fn the_rate_is_the_rules_not_the_edges() {
+        // thuum ADR-068: the sender's budget (32 then 8 a second) is the
+        // server's rule's, E_SCRIPTCALL_RATE by name (wire-rules natives);
+        // the edge takes every well-formed call
+        let mut guard = ClientGuard::default();
+        for _ in 0..100 {
+            assert_eq!(validate(&call(0xaa8cb, "ObjectReference", "PlayAnimation", vec![text("Open")]), &mut guard, 0), Ok(()));
+        }
+    }
+
+    // thuum D-R1 C's leveled gap (SCHEMA_VERSION 44): MS01's stage 39,
+    // `Game.GetPlayer().AddItem(LvlQuestReward02Medium, 1, False)`, the list
+    // 0xc0405 whose roll landed Gold001 0xf x400 (x-additem-functor
+    // 20261110-151634)
+    const REWARD: u32 = 0xc0405;
+
+    fn reward(self_id: u32, cls: &str, func: &str, landed: &[(u32, i32)]) -> Message {
+        let Message::ScriptCall(c) = call(self_id, cls, func, vec![object(u64::from(REWARD), "LeveledItem"), Some(SnippetArg::Number(1.0)), Some(SnippetArg::Bool(false))]) else {
+            return Message::Refuse { reason: 0 };
+        };
+        let landed: Vec<ItemDelta> = landed.iter().map(|&(item, count)| ItemDelta { item: FormId(item), count }).collect();
+        Message::ScriptCall(ScriptCall { landed: landed.try_into().ok(), caller: "QF_MS01_00018B4B".try_into().unwrap_or_default(), handler: "Fragment_56".try_into().unwrap_or_default(), ..c })
+    }
+
+    #[test]
+    fn a_leveled_rolls_landings_ride_the_players_own_additem_alone() {
+        // the roll's one base, an empty roll, a call with no landings at all
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, 400)])), Ok(()));
+        assert_eq!(validate_server(&reward(0x14, "objectreference", "additem", &[(0xf, 400), (0x12eb7, 1)])), Ok(()), "names without case; the reach is the server's");
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[])), Ok(()));
+        assert_eq!(validate_server(&call(0x14, "ObjectReference", "AddItem", vec![object(u64::from(REWARD), "LeveledItem")])), Ok(()));
+        // on another native or another subject: E_VAL_RANGE
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "RemoveItem", &[(0xf, 400)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x14, "Actor", "SetRace", &[(0xf, 400)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x10e6c5, "ObjectReference", "AddItem", &[(0xf, 400)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x10e6c5, "ObjectReference", "AddItem", &[])), Err(Reject::Range), "an empty list is still a landing");
+        // each landing an item of the load order, a count above zero, a base once
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0, 400)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xff00_0001, 1)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xfeff_ffff, 1)])), Ok(()));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, 0)])), Err(Reject::ZeroDelta));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, -1)])), Err(Reject::Range));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, i32::MAX)])), Ok(()));
+        assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, 400), (0x12eb7, 1), (0xf, 25)])), Err(Reject::Range));
+        // the client's edge says the same
+        assert_eq!(validate(&reward(0x14, "ObjectReference", "AddItem", &[(0xf, 0)]), &mut ClientGuard::default(), 0), Err(Reject::ZeroDelta));
+    }
+
+    #[test]
+    fn the_landings_stop_at_a_leveled_lists_255_entries() {
+        // TESLeveledList's entry count is one byte (CommonLibSSE-NG
+        // include/RE/T/TESLeveledList.h:72): 255 bases land at most, and a
+        // 256th fails at the bound (E_WIRE_CAPACITY), before any check
+        let bases: Vec<(u32, i32)> = (0x1000u32..).take(cap::SCRIPT_CALL_LANDED).map(|item| (item, 1)).collect();
+        let full = reward(0x14, "ObjectReference", "AddItem", &bases);
+        assert!(matches!(&full, Message::ScriptCall(c) if c.landed.as_ref().map(|l| l.len()) == Some(cap::SCRIPT_CALL_LANDED)));
+        assert_eq!(validate_server(&full), Ok(()));
+        let over: Vec<ItemDelta> = (0x1000u32..).take(cap::SCRIPT_CALL_LANDED.saturating_add(1)).map(|item| ItemDelta { item: FormId(item), count: 1 }).collect();
+        let held: Result<wire_schema::bounded::Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>, _> = over.try_into();
+        assert_eq!(held.map(|_| ()).map_err(|e| e.to_string()), Err("E_WIRE_CAPACITY: 256 > 255".to_owned()));
+    }
+
+    proptest! {
+        // any landings on any call: a verdict, never a panic; on the
+        // player's own AddItem a landing in range passes and one out of it
+        // is refused
+        #[test]
+        fn landings_never_panic(landed in proptest::collection::vec((any::<u32>(), any::<i32>()), 0..40), self_id in any::<u32>(), add in any::<bool>()) {
+            let func = if add { "AddItem" } else { "RemoveItem" };
+            let _ = validate_server(&reward(self_id, "ObjectReference", func, &landed));
+            let _ = validate(&reward(self_id, "ObjectReference", func, &landed), &mut ClientGuard::default(), 0);
+        }
+
+        #[test]
+        fn a_landing_in_range_passes_and_one_outside_is_refused(item in 1u32..0xff00_0000, count in 1i32.., bad_item in prop_oneof![Just(0u32), 0xff00_0000u32..], bad_count in i32::MIN..1) {
+            prop_assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(item, count)])), Ok(()));
+            prop_assert_eq!(validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(bad_item, count)])), Err(Reject::Range));
+            let refused = validate_server(&reward(0x14, "ObjectReference", "AddItem", &[(item, bad_count)]));
+            prop_assert_eq!(refused, Err(if bad_count == 0 { Reject::ZeroDelta } else { Reject::Range }));
+        }
+    }
+}
+
+#[cfg(test)]
+mod script_state_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+    use wire_schema::skymp::{ScriptHandle, ScriptObjectState, ScriptState, ScriptStateApply, ScriptValue, ScriptVar};
+
+    // thuum ADR-068 rung 3: Bleak Falls Temple's pillar 0xaa8cb, its
+    // defaultPuzzlePillarScript in its turned state (the census's five
+    // variables: raw types 3, 3, 5, a class, 5), the class one the puzzle
+    // lever 0xaa8c3's plain form handle (kind 0, mid 0xFFFF)
+    const PILLAR: u32 = 0xaa8cb;
+
+    fn lever() -> ScriptHandle {
+        ScriptHandle { kind: 0, mid: 0xffff, form: 0xaa8c3, cls: "defaultPillarPuzzleLever".try_into().unwrap_or_default() }
+    }
+
+    fn var(k: u8) -> ScriptVar {
+        ScriptVar { k, ..Default::default() }
+    }
+
+    fn pillar_vars() -> Vec<ScriptVar> {
+        vec![
+            ScriptVar { i: Some(1), ..var(3) },
+            ScriptVar { i: Some(3), ..var(3) },
+            ScriptVar { b: Some(true), ..var(5) },
+            ScriptVar { o: Some(lever()), ..var(1) },
+            ScriptVar { b: Some(false), ..var(5) },
+        ]
+    }
+
+    fn script(vars: Vec<ScriptVar>) -> ScriptObjectState {
+        ScriptObjectState {
+            cls: "defaultPuzzlePillarScript".try_into().unwrap_or_default(),
+            state: "position02".try_into().unwrap_or_default(),
+            flags: 0x0b,
+            vars: vars.try_into().unwrap_or_default(),
+        }
+    }
+
+    fn record(form_id: u32, scripts: Vec<ScriptObjectState>) -> Message {
+        Message::ScriptState(ScriptState { epoch: 1, form_id, fnv1a: 0x5c1a_7e01, scripts: scripts.try_into().unwrap_or_default(), ..Default::default() })
+    }
+
+    fn with_var(v: ScriptVar) -> Message {
+        let mut vars = pillar_vars();
+        vars.push(v);
+        record(PILLAR, vec![script(vars)])
+    }
+
+    #[test]
+    fn the_pillars_record_is_a_record() {
+        assert_eq!(validate_server(&record(PILLAR, vec![script(pillar_vars())])), Ok(()));
+        // the empty state, a script with no variables, every kind of value
+        let empty = ScriptObjectState { state: "".try_into().unwrap_or_default(), ..script(vec![]) };
+        assert_eq!(validate_server(&record(PILLAR, vec![empty])), Ok(()));
+        let every = vec![
+            var(0),
+            var(1),
+            ScriptVar { s: Some("Turned02".try_into().unwrap_or_default()), ..var(2) },
+            ScriptVar { f: Some(1.5), ..var(4) },
+        ];
+        assert_eq!(validate_server(&record(PILLAR, vec![script(every)])), Ok(()));
+    }
+
+    #[test]
+    fn a_record_names_a_game_file_reference_and_one_to_sixteen_scripts() {
+        let one = || vec![script(pillar_vars())];
+        assert_eq!(validate_server(&record(0, one())), Err(Reject::Range));
+        assert_eq!(validate_server(&record(0xff00_0000, one())), Err(Reject::Range));
+        assert_eq!(validate_server(&record(u32::MAX, one())), Err(Reject::Range));
+        assert_eq!(validate_server(&record(0xfeff_ffff, one())), Ok(()));
+        assert_eq!(validate_server(&record(PILLAR, vec![])), Err(Reject::Range));
+        let sixteen: Vec<ScriptObjectState> = (0..cap::SCRIPT_OBJECTS).map(|_| script(pillar_vars())).collect();
+        assert_eq!(validate_server(&record(PILLAR, sixteen.clone())), Ok(()));
+        // a seventeenth fails at decode, before any check
+        let mut seventeen = sixteen;
+        seventeen.push(script(pillar_vars()));
+        let over: Result<wire_schema::bounded::Vec<ScriptObjectState, { cap::SCRIPT_OBJECTS }>, _> = seventeen.try_into();
+        assert!(over.is_err());
+        // a script with no type
+        let untyped = ScriptObjectState { cls: "".try_into().unwrap_or_default(), ..script(pillar_vars()) };
+        assert_eq!(validate_server(&record(PILLAR, vec![untyped])), Err(Reject::Range));
+    }
+
+    #[test]
+    fn a_record_is_read_at_a_quiescent_point() {
+        // Object::Save's byte: 0x01 constructed, 0x02 valid, 0x04 lock held,
+        // 0x08 initialized
+        let flagged = |flags| record(PILLAR, vec![ScriptObjectState { flags, ..script(pillar_vars()) }]);
+        assert_eq!(validate_server(&flagged(0x09)), Ok(()));
+        assert_eq!(validate_server(&flagged(0x0b)), Ok(()));
+        assert_eq!(validate_server(&flagged(0x08)), Err(Reject::Range), "not constructed");
+        assert_eq!(validate_server(&flagged(0x03)), Err(Reject::Range), "not initialized");
+        assert_eq!(validate_server(&flagged(0x0f)), Err(Reject::Range), "the lock held");
+    }
+
+    #[test]
+    fn a_value_carries_the_one_field_its_kind_names() {
+        let text = || Some("x".try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(var(0))), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { i: Some(1), ..var(0) })), Err(Reject::Range), "a None carries nothing");
+        assert_eq!(validate_server(&with_var(ScriptVar { o: Some(lever()), ..var(0) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { i: Some(1), ..var(1) })), Err(Reject::Range), "an object carries its handle alone");
+        assert_eq!(validate_server(&with_var(var(2))), Err(Reject::Range), "a string carries its string");
+        assert_eq!(validate_server(&with_var(ScriptVar { s: text(), ..var(2) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { s: text(), i: Some(1), ..var(2) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(var(3))), Err(Reject::Range), "an int carries its int");
+        assert_eq!(validate_server(&with_var(ScriptVar { f: Some(1.0), ..var(3) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { f: Some(-0.5), ..var(4) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { b: Some(true), ..var(4) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { b: Some(false), o: Some(lever()), ..var(5) })), Err(Reject::Range));
+        // the kinds the VM has: 0 to 5 and the arrays 10 to 15
+        for k in [6, 7, 8, 9, 16, 255] {
+            assert_eq!(validate_server(&with_var(var(k))), Err(Reject::Range), "kind {k}");
+        }
+    }
+
+    #[test]
+    fn an_array_holds_values_of_its_element_kind() {
+        let ints = |values: &[i32]| Some(values.iter().map(|i| ScriptValue { k: 3, i: Some(*i), ..Default::default() }).collect::<Vec<_>>().try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: ints(&[1, 3]), ..var(13) })), Ok(()));
+        // a None array, and an empty one
+        assert_eq!(validate_server(&with_var(var(12))), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { a: ints(&[]), ..var(13) })), Ok(()));
+        // an element of another kind
+        assert_eq!(validate_server(&with_var(ScriptVar { a: ints(&[1]), ..var(14) })), Err(Reject::Range));
+        // an object array names its element type, and only an object array
+        let objects = Some(vec![ScriptValue { k: 1, o: Some(lever()), ..Default::default() }, ScriptValue { k: 1, ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { elem: Some("ObjectReference".try_into().unwrap_or_default()), a: objects.clone(), ..var(11) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { a: objects, ..var(11) })), Ok(()), "its element type may be the declared one's");
+        assert_eq!(validate_server(&with_var(ScriptVar { elem: Some("Int".try_into().unwrap_or_default()), a: ints(&[1]), ..var(13) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { elem: Some("Int".try_into().unwrap_or_default()), i: Some(1), ..var(3) })), Err(Reject::Range));
+        // an array carries no value of its own, a value no array
+        assert_eq!(validate_server(&with_var(ScriptVar { i: Some(1), a: ints(&[1]), ..var(13) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { i: Some(1), a: ints(&[1]), ..var(3) })), Err(Reject::Range));
+        // the None array (kind 10) is a value with no elements: no `a` at all,
+        // not even an empty one, and no element type (the platform's apply
+        // refuses any, ScriptState.cpp's ParseVar)
+        assert_eq!(validate_server(&with_var(var(10))), Ok(()));
+        let nones = Some(vec![ScriptValue::default()].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: nones, ..var(10) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { a: Some(Default::default()), ..var(10) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { elem: Some("ObjectReference".try_into().unwrap_or_default()), ..var(10) })), Err(Reject::Range));
+        // the VM's 128 elements hold at decode (CommonLibSSE-NG
+        // include/RE/A/Array.h:69)
+        let full: Vec<ScriptValue> = (0..cap::SCRIPT_ARRAY).map(|_| ScriptValue { k: 5, b: Some(true), ..Default::default() }).collect();
+        let held: Result<wire_schema::bounded::Vec<ScriptValue, { cap::SCRIPT_ARRAY }>, _> = full.clone().try_into();
+        assert!(held.is_ok());
+        let mut over = full;
+        over.push(ScriptValue { k: 5, b: Some(true), ..Default::default() });
+        let refused: Result<wire_schema::bounded::Vec<ScriptValue, { cap::SCRIPT_ARRAY }>, _> = over.try_into();
+        assert!(refused.is_err());
+    }
+
+    #[test]
+    fn a_handle_names_a_form_every_seat_shares() {
+        let handle = |kind, form| with_var(ScriptVar { o: Some(ScriptHandle { kind, form, ..lever() }), ..var(1) });
+        assert_eq!(validate_server(&handle(1, 0xaa8c3)), Ok(()), "a kind a receiver reads as None");
+        assert_eq!(validate_server(&handle(2, 0xaa8c3)), Ok(()));
+        assert_eq!(validate_server(&handle(3, 0xaa8c3)), Err(Reject::Range));
+        assert_eq!(validate_server(&handle(0, 0x14)), Err(Reject::Range), "a seat's own player");
+        assert_eq!(validate_server(&handle(0, 0xff00_0002)), Err(Reject::Range), "a form the server names");
+        // inside an object array too
+        let element = |form| Some(vec![ScriptValue { k: 1, o: Some(ScriptHandle { form, ..lever() }), ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: element(0xaa8c3), ..var(11) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { a: element(0xff00_0002), ..var(11) })), Err(Reject::Range));
+        // and the script type bound at it, which the receiver's
+        // FindBoundObject takes: never empty (the platform's apply refuses
+        // an object with no class, ScriptState.cpp's ParseValue)
+        let typed = |cls: &str| ScriptHandle { cls: cls.try_into().unwrap_or_default(), ..lever() };
+        assert_eq!(validate_server(&with_var(ScriptVar { o: Some(typed("defaultPillarPuzzleLever")), ..var(1) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { o: Some(typed("")), ..var(1) })), Err(Reject::Range));
+        let untyped = Some(vec![ScriptValue { k: 1, o: Some(typed("")), ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: untyped, ..var(11) })), Err(Reject::Range));
+    }
+
+    #[test]
+    fn no_string_or_name_holds_a_nul() {
+        // the receiver's BSFixedString reads a C string, and the platform's
+        // apply refuses the whole record for a NUL anywhere it reads one
+        // (ScriptState.cpp's ReadString): a string value, alone or in an
+        // array, a script's type and state, an object array's element type,
+        // a handle's type
+        let text = |s: &str| -> Option<wire_schema::bounded::String<{ cap::SCRIPT_STRING }>> { Some(s.try_into().unwrap_or_default()) };
+        assert_eq!(validate_server(&with_var(ScriptVar { s: text("Turned02"), ..var(2) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { s: text("Turned02\0"), ..var(2) })), Err(Reject::Range));
+        assert_eq!(validate_server(&with_var(ScriptVar { s: text("\0"), ..var(2) })), Err(Reject::Range));
+        let strings = |s: &str| Some(vec![ScriptValue { k: 2, s: text(s), ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: strings("Turned02"), ..var(12) })), Ok(()));
+        assert_eq!(validate_server(&with_var(ScriptVar { a: strings("Turned\0Two"), ..var(12) })), Err(Reject::Range));
+        let named = |cls: &str, state: &str| {
+            record(PILLAR, vec![ScriptObjectState { cls: cls.try_into().unwrap_or_default(), state: state.try_into().unwrap_or_default(), ..script(pillar_vars()) }])
+        };
+        assert_eq!(validate_server(&named("defaultPuzzlePillarScript", "position02")), Ok(()));
+        assert_eq!(validate_server(&named("defaultPuzzle\0PillarScript", "position02")), Err(Reject::Range));
+        assert_eq!(validate_server(&named("defaultPuzzlePillarScript", "position02\0")), Err(Reject::Range));
+        // an empty state is the empty state, not a cut one
+        assert_eq!(validate_server(&named("defaultPuzzlePillarScript", "")), Ok(()));
+        let elem = |e: &str| with_var(ScriptVar { elem: Some(e.try_into().unwrap_or_default()), ..var(11) });
+        assert_eq!(validate_server(&elem("ObjectReference")), Ok(()));
+        assert_eq!(validate_server(&elem("Object\0Reference")), Err(Reject::Range));
+        // an empty element type cuts nothing: the declared one's stands
+        assert_eq!(validate_server(&elem("")), Ok(()));
+        let handle = |cls: &str| ScriptHandle { cls: cls.try_into().unwrap_or_default(), ..lever() };
+        assert_eq!(validate_server(&with_var(ScriptVar { o: Some(handle("defaultPillar\0PuzzleLever")), ..var(1) })), Err(Reject::Range));
+        let element = Some(vec![ScriptValue { k: 1, o: Some(handle("\0")), ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: element, ..var(11) })), Err(Reject::Range));
+    }
+
+    #[test]
+    fn a_float_is_finite() {
+        assert_eq!(validate_server(&with_var(ScriptVar { f: Some(f32::NAN), ..var(4) })), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&with_var(ScriptVar { f: Some(f32::INFINITY), ..var(4) })), Err(Reject::NonFinite));
+        let array = Some(vec![ScriptValue { k: 4, f: Some(f32::NEG_INFINITY), ..Default::default() }].try_into().unwrap_or_default());
+        assert_eq!(validate_server(&with_var(ScriptVar { a: array, ..var(14) })), Err(Reject::NonFinite));
+    }
+
+    #[test]
+    fn the_apply_obeys_the_records_shape() {
+        let apply = |form_id, event: Option<&str>, scripts: Vec<ScriptObjectState>| {
+            Message::ScriptStateApply(ScriptStateApply {
+                form_id,
+                fnv1a: 0x5c1a_7e01,
+                seq: 2,
+                event: event.map(|e| e.try_into().unwrap_or_default()),
+                scripts: scripts.try_into().unwrap_or_default(),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&apply(PILLAR, Some("Trigger01"), vec![script(pillar_vars())])), Ok(()));
+        assert_eq!(validate_server(&apply(PILLAR, None, vec![script(pillar_vars())])), Ok(()), "a record with no view");
+        assert_eq!(validate_server(&apply(0, None, vec![script(pillar_vars())])), Err(Reject::Range));
+        assert_eq!(validate_server(&apply(PILLAR, None, vec![])), Err(Reject::Range));
+        let mut bad = pillar_vars();
+        bad.push(var(6));
+        assert_eq!(validate_server(&apply(PILLAR, None, vec![script(bad)])), Err(Reject::Range));
+        // a NUL in a served name, as in a reported one
+        let cut = ScriptObjectState { state: "position\0One".try_into().unwrap_or_default(), ..script(pillar_vars()) };
+        assert_eq!(validate_server(&apply(PILLAR, Some("Trigger01"), vec![cut])), Err(Reject::Range));
+    }
+
+    #[test]
+    fn an_owners_records_are_rate_limited() {
+        let mut guard = ClientGuard::default();
+        let ok = record(PILLAR, vec![script(pillar_vars())]);
+        for _ in 0..64 {
+            assert_eq!(validate(&ok, &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&ok, &mut guard, 1_000), Err(Reject::Rate));
+        // one token every 125 ms
+        assert_eq!(validate(&ok, &mut guard, 1_124), Err(Reject::Rate));
+        assert_eq!(validate(&ok, &mut guard, 1_125), Ok(()));
+        // a refused shape spends no token: the shape is judged first
+        let mut fresh = ClientGuard::default();
+        for _ in 0..100 {
+            assert_eq!(validate(&record(0, vec![script(pillar_vars())]), &mut fresh, 1_000), Err(Reject::Range));
+        }
+        assert_eq!(validate(&ok, &mut fresh, 1_000), Ok(()));
+        // the server's apply takes no client budget
+        let served = Message::ScriptStateApply(ScriptStateApply { form_id: PILLAR, scripts: vec![script(pillar_vars())].try_into().unwrap_or_default(), ..Default::default() });
+        let mut other = ClientGuard::default();
+        for _ in 0..100 {
+            assert_eq!(validate(&served, &mut other, 1_000), Ok(()));
+        }
+    }
+
+    // a value as the generator drew it: its kind; which of the int, float,
+    // bool and string fields are present; whether its string holds a NUL;
+    // and its handle when there is one (its kind, its form, and its type as a
+    // name code)
+    type Draw = (u8, [bool; 4], bool, Option<(u8, u32, u8)>);
+
+    // a name as a code: mostly the stage's own (0), else empty (1) or the
+    // stage's own with a NUL (2)
+    fn name_strategy() -> impl Strategy<Value = u8> {
+        prop_oneof![4 => Just(0u8), 1 => Just(1u8), 1 => Just(2u8)]
+    }
+
+    fn name_of<const N: usize>(code: u8, own: &str) -> wire_schema::bounded::String<N> {
+        let text = match code {
+            0 => own.to_owned(),
+            1 => String::new(),
+            _ => format!("{own}\0"),
+        };
+        text.as_str().try_into().unwrap_or_default()
+    }
+
+    fn value_strategy() -> impl Strategy<Value = Draw> {
+        (
+            0u8..17,
+            any::<[bool; 4]>(),
+            proptest::bool::weighted(0.25),
+            proptest::option::of((0u8..4, prop_oneof![Just(0x14u32), Just(0xaa8c3u32), Just(0xff00_0002u32), any::<u32>()], name_strategy())),
+        )
+    }
+
+    // a value's payload as the rules judge it: the one field its kind names, a
+    // string with no NUL, a handle on an object alone with a kind of 0 to 2, a
+    // form every seat shares and a type neither empty nor cut by a NUL
+    fn payload_ok((k, carried, s_nul, handle): Draw) -> bool {
+        let expected = match k {
+            0 | 1 => [false; 4],
+            2 => [false, false, false, true],
+            3 => [true, false, false, false],
+            4 => [false, true, false, false],
+            5 => [false, false, true, false],
+            _ => return false,
+        };
+        let [_, _, _, s] = carried;
+        carried == expected
+            && !(s && s_nul)
+            && (k == 1 || handle.is_none())
+            && handle.is_none_or(|(kind, form, name)| kind <= 2 && form != 0x14 && form < 0xff00_0000 && name == 0)
+    }
+
+    fn value_of((k, carried, s_nul, handle): Draw) -> ScriptValue {
+        let [i, f, b, s] = carried;
+        ScriptValue {
+            k,
+            i: i.then_some(7),
+            f: f.then_some(0.25),
+            b: b.then_some(true),
+            s: s.then(|| (if s_nul { "x\0" } else { "x" }).try_into().unwrap_or_default()),
+            o: handle.map(|(kind, form, name)| ScriptHandle { kind, form, cls: name_of(name, "defaultPillarPuzzleLever"), ..lever() }),
+        }
+    }
+
+    proptest! {
+        // any kinds, payloads, handles, names, flags and forms: a verdict,
+        // never a panic, and the verdict the record's rules give
+        #[test]
+        fn script_records_never_panic_and_judge_their_shapes(
+            form_id in prop_oneof![Just(0u32), Just(PILLAR), Just(0xff00_0000u32), any::<u32>()],
+            flags in any::<u8>(), names in (name_strategy(), name_strategy()), scalar in value_strategy(),
+            array in proptest::option::of((10u8..17, proptest::option::of(proptest::collection::vec(value_strategy(), 0..4)), proptest::option::of(name_strategy()))),
+            now in any::<u64>(),
+        ) {
+            let (k, carried, _, handle) = scalar;
+            let v = value_of(scalar);
+            // a scalar draw of an array kind with no payload is a None array, the
+            // same variable as the array branch's draw with no elements, so it is
+            // valid too (4f525bad's oracle fix on the integrated rung)
+            let mut var_ok = payload_ok(scalar) || ((10..=15).contains(&k) && carried == [false; 4] && handle.is_none());
+            let mut as_var = ScriptVar { k: v.k, i: v.i, f: v.f, b: v.b, s: v.s, o: v.o, ..Default::default() };
+            if let Some((ak, elements, elem)) = array {
+                // an array instead: no value fields; `elem` (a name code) on an
+                // object array alone and with no NUL; no elements at all on the
+                // None array (kind 10); a typed one's elements each of kind ak - 10
+                as_var = ScriptVar { k: ak, ..Default::default() };
+                as_var.elem = elem.map(|code| name_of(code, "ObjectReference"));
+                var_ok = (10..=15).contains(&ak) && elem.is_none_or(|code| ak == 11 && code != 2) && (ak != 10 || elements.is_none());
+                if let Some(elements) = elements {
+                    for e in &elements {
+                        var_ok = var_ok && ak.checked_sub(10) == Some(e.0) && payload_ok(*e);
+                    }
+                    as_var.a = Some(elements.into_iter().map(value_of).collect::<Vec<_>>().try_into().unwrap_or_default());
+                }
+            }
+            // the script's type (never empty) and its state (empty is the empty
+            // state) as name codes, neither with a NUL
+            let (type_code, state_code) = names;
+            let named = ScriptObjectState {
+                cls: name_of(type_code, "defaultPuzzlePillarScript"),
+                state: name_of(state_code, "position02"),
+                flags,
+                ..script(vec![as_var])
+            };
+            let m = record(form_id, vec![named]);
+            let names_ok = type_code == 0 && state_code != 2;
+            let shape_ok = form_id != 0 && form_id < 0xff00_0000 && flags & 0x01 != 0 && flags & 0x08 != 0 && flags & 0x04 == 0 && names_ok;
+            let want = if shape_ok && var_ok { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate_server(&m), want);
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
+        }
+    }
+}
+
+// thuum D-C3 A (PENDING Eli; docs/research/fifty-fixes-2026-11-07.md 1(a)):
+// a serve's graph variables
+#[cfg(test)]
+mod graph_var_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+    use wire_schema::skymp::{GraphVar, ScriptObjectState, ScriptStateApply, ScriptVar};
+
+    // Bleak Falls Temple's web 0x3758c after its tear: its FXtriggerAmbFX
+    // with the two variables the pex declares (broken, here 2, spent; myFX,
+    // the placed explosion a seat's engine made, encoded None), its
+    // properties' backing variables left out (the record's values are the
+    // owner's and never judged), and the variable its OnTriggerEnter set
+    // through SetAnimationVariableFloat("fToggleBlend", 1.0) at the web's
+    // first sequence (lab/.cache/drafts/fifty/trigger-entry-static.md
+    // section 6)
+    const WEB: u32 = 0x3758c;
+
+    fn web_script() -> ScriptObjectState {
+        ScriptObjectState {
+            cls: "FXtriggerAmbFX".try_into().unwrap_or_default(),
+            state: "".try_into().unwrap_or_default(),
+            flags: 0x0b,
+            vars: vec![ScriptVar { k: 3, i: Some(2), ..Default::default() }, ScriptVar { k: 1, ..Default::default() }].try_into().unwrap_or_default(),
+        }
+    }
+
+    fn var(name: &str, k: u8, seq: u32) -> GraphVar {
+        GraphVar { name: name.try_into().unwrap_or_default(), k, seq, ..Default::default() }
+    }
+
+    fn torn() -> GraphVar {
+        GraphVar { f: Some(1.0), ..var("fToggleBlend", 4, 1) }
+    }
+
+    fn serve(graph_vars: Option<Vec<GraphVar>>) -> Message {
+        Message::ScriptStateApply(ScriptStateApply {
+            form_id: WEB,
+            fnv1a: 0x1f2e_3d4c,
+            seq: 1,
+            scripts: vec![web_script()].try_into().unwrap_or_default(),
+            graph_vars: graph_vars.map(|v| v.try_into().unwrap_or_default()),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn the_torn_webs_variable_is_served() {
+        assert_eq!(validate_server(&serve(Some(vec![torn()]))), Ok(()));
+        // no variable kept: absent, or (a shape nobody sends) present and empty
+        assert_eq!(validate_server(&serve(None)), Ok(()));
+        assert_eq!(validate_server(&serve(Some(vec![]))), Ok(()));
+        // each kind with its own field
+        let int = GraphVar { i: Some(-3), ..var("iState", 3, 2) };
+        let flag = GraphVar { b: Some(true), ..var("bOpen", 5, 3) };
+        assert_eq!(validate_server(&serve(Some(vec![torn(), int, flag]))), Ok(()));
+        // sixteen names at once, each at its cap's length
+        let full: Vec<GraphVar> = (0..cap::GRAPH_VARS)
+            .map(|n| GraphVar { f: Some(0.5), ..var(&format!("{n:x}{}", "x".repeat(cap::ANIM_EVENT.saturating_sub(1))), 4, 7) })
+            .collect();
+        assert_eq!(full.first().map(|v| v.name.len()), Some(cap::ANIM_EVENT));
+        assert_eq!(validate_server(&serve(Some(full))), Ok(()));
+    }
+
+    #[test]
+    fn a_variable_carries_its_kinds_one_field_a_name_once_and_a_sequence() {
+        let refused = |v: GraphVar| validate_server(&serve(Some(vec![v])));
+        // a kind outside 3 to 5, whatever it carries
+        for k in [0u8, 1, 2, 6, 10, u8::MAX] {
+            assert_eq!(refused(GraphVar { f: Some(1.0), ..var("fToggleBlend", k, 1) }), Err(Reject::Range), "{k}");
+        }
+        // a payload that is not exactly its kind's
+        assert_eq!(refused(var("fToggleBlend", 4, 1)), Err(Reject::Range), "a float with no value");
+        assert_eq!(refused(GraphVar { i: Some(1), ..var("fToggleBlend", 4, 1) }), Err(Reject::Range), "a float carrying an int");
+        assert_eq!(refused(GraphVar { b: Some(true), ..torn() }), Err(Reject::Range), "a float carrying a bool too");
+        assert_eq!(refused(GraphVar { f: Some(1.0), ..var("iState", 3, 1) }), Err(Reject::Range), "an int carrying a float");
+        assert_eq!(refused(GraphVar { i: Some(1), b: Some(false), ..var("bOpen", 5, 1) }), Err(Reject::Range), "a bool carrying an int too");
+        // a sequence of 0
+        assert_eq!(refused(GraphVar { seq: 0, ..torn() }), Err(Reject::Range));
+        // a name empty or cut by a NUL
+        assert_eq!(refused(GraphVar { name: "".try_into().unwrap_or_default(), ..torn() }), Err(Reject::Range));
+        assert_eq!(refused(GraphVar { name: "fToggle\0Blend".try_into().unwrap_or_default(), ..torn() }), Err(Reject::Range));
+        // a name twice, whatever the values and sequences
+        let again = GraphVar { f: Some(0.0), seq: 2, ..torn() };
+        assert_eq!(validate_server(&serve(Some(vec![torn(), again]))), Err(Reject::Range));
+        let int = GraphVar { i: Some(1), ..var("fToggleBlend", 3, 3) };
+        assert_eq!(validate_server(&serve(Some(vec![int, torn()]))), Err(Reject::Range));
+        // names compare exactly: another case is another name
+        let other = GraphVar { f: Some(0.0), seq: 2, ..var("ftoggleblend", 4, 2) };
+        assert_eq!(validate_server(&serve(Some(vec![torn(), other]))), Ok(()));
+    }
+
+    #[test]
+    fn a_variables_float_is_finite() {
+        for f in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(validate_server(&serve(Some(vec![GraphVar { f: Some(f), ..torn() }]))), Err(Reject::NonFinite));
+        }
+        // the record's own rules come first: a bad record is refused with
+        // whatever variables ride beside it
+        let mut bad = serve(Some(vec![torn()]));
+        if let Message::ScriptStateApply(a) = &mut bad {
+            a.form_id = 0;
+        }
+        assert_eq!(validate_server(&bad), Err(Reject::Range));
+        // the serve takes no client budget, as before
+        let mut g = ClientGuard::default();
+        for _ in 0..100 {
+            assert_eq!(validate(&serve(Some(vec![torn()])), &mut g, 1_000), Ok(()));
+        }
+    }
+
+    // a variable as the generator drew it: its kind, which of the int,
+    // float and bool fields are present, its name as a code (0 its own, 1
+    // empty, 2 with a NUL, 3 the first variable's) and its sequence
+    type Draw = (u8, [bool; 3], u8, u32);
+
+    fn draw() -> impl Strategy<Value = Draw> {
+        (
+            prop_oneof![3u8..6, any::<u8>()],
+            any::<[bool; 3]>(),
+            prop_oneof![4 => Just(0u8), 1 => Just(1u8), 1 => Just(2u8), 1 => Just(3u8)],
+            prop_oneof![Just(0u32), 1u32..8, any::<u32>()],
+        )
+    }
+
+    proptest! {
+        // any kinds, payloads, names and sequences, up to the cap: a
+        // verdict, never a panic, and the verdict the rules give
+        #[test]
+        fn graph_vars_never_panic_and_judge_their_shapes(draws in proptest::collection::vec(draw(), 0..=cap::GRAPH_VARS), now in any::<u64>()) {
+            let mut vars = Vec::new();
+            let mut names: Vec<String> = Vec::new();
+            let mut ok = true;
+            for (n, (k, [i, f, b], code, seq)) in draws.iter().copied().enumerate() {
+                let name = match code {
+                    0 => format!("v{n}"),
+                    1 => String::new(),
+                    2 => format!("v{n}\0"),
+                    _ => names.first().cloned().unwrap_or_else(|| format!("v{n}")),
+                };
+                let fits = matches!((k, [i, f, b]), (3, [true, false, false]) | (4, [false, true, false]) | (5, [false, false, true]));
+                ok = ok && fits && seq != 0 && !name.is_empty() && !name.contains('\0') && !names.contains(&name);
+                names.push(name.clone());
+                vars.push(GraphVar {
+                    name: name.as_str().try_into().unwrap_or_default(),
+                    k,
+                    i: i.then_some(7),
+                    f: f.then_some(0.25),
+                    b: b.then_some(false),
+                    seq,
+                });
+            }
+            let m = serve(Some(vars));
+            prop_assert_eq!(validate_server(&m), if ok { Ok(()) } else { Err(Reject::Range) });
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
+        }
+    }
+}
+
+#[cfg(test)]
+mod quest_word_and_script_variable_tests {
+    // thuum ADR-068 rung 5 (SCHEMA_VERSION 41): QuestStage's word, acting
+    // and served, and ScriptVariables 81
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+
+    // thuum ADR-068 rung 5: a run word, an acting player, the login replay
+    fn quest_word(quest: u32, stage: u16, word: Option<u8>, acting: Option<u32>, served: Option<bool>) -> Message {
+        Message::QuestStage(wire_schema::skymp::QuestStage { quest, stage, word, acting, served, ..Default::default() })
+    }
+
+    #[test]
+    fn the_logins_list_names_the_player_class_once_each_and_nowhere_else() {
+        // thuum ADR-068 rung 5 (the ownership rule): PlayerWerewolfQuest
+        // 0x2ba16 and PlayerVampireQuest 0xeafd5 beside mode all's denied
+        // MQ102 0x4e50d
+        let list = |quest: u32, player: Option<Vec<u32>>| {
+            Message::QuestStage(wire_schema::skymp::QuestStage {
+                quest,
+                mode: 1,
+                shared: vec![0x4e50d, 0x2ba16, 0xeafd5].try_into().unwrap_or_default(),
+                player: player.map(|p| p.try_into().unwrap_or_default()),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&list(0, Some(vec![0x2ba16, 0xeafd5]))), Ok(()));
+        assert_eq!(validate_server(&list(0, None)), Ok(()));
+        for bad in [vec![], vec![0x2ba16, 0x2ba16], vec![0], vec![0xff00_0000]] {
+            assert_eq!(validate_server(&list(0, Some(bad.clone()))), Err(Reject::Range), "{bad:?}");
+        }
+        // on the login's list alone, never a stage or a word, never a client's
+        assert_eq!(validate_server(&list(0x74a83, Some(vec![0x2ba16]))), Err(Reject::Range));
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&list(0, Some(vec![0x2ba16])), &mut g, 0), Err(Reject::Range));
+    }
+
+    #[test]
+    fn a_run_word_names_its_engine_stages_once_each_and_only_a_word_does() {
+        // thuum ADR-068 rung 5 (D-Q3 A; Skyrim.esm, lab/esm.py on sky-srv,
+        // 2026-11-10): dunEldergleamT03 0x15cc2's start runs stage 0 and its
+        // start-up stage 10; ClearSkiesQuest 0x1e3b1's stop runs its
+        // shut-down stage 100
+        let word = |quest: u32, stage: u16, word: Option<u8>, stages: Option<Vec<u16>>| {
+            Message::QuestStage(wire_schema::skymp::QuestStage { quest, stage, word, served: Some(true), word_stages: stages.map(|s| s.try_into().unwrap_or_default()), ..Default::default() })
+        };
+        assert_eq!(validate_server(&word(0x15cc2, 0, Some(1), Some(vec![0, 10]))), Ok(()));
+        assert_eq!(validate_server(&word(0x1e3b1, 0, Some(2), Some(vec![100]))), Ok(()));
+        assert_eq!(validate_server(&word(0x1e3b1, 0, Some(2), None)), Ok(()));
+        // never empty, each stage once, never on a stage or the login's list
+        for bad in [vec![], vec![10, 10]] {
+            assert_eq!(validate_server(&word(0x15cc2, 0, Some(1), Some(bad.clone()))), Err(Reject::Range), "{bad:?}");
+        }
+        assert_eq!(validate_server(&word(0x15cc2, 10, None, Some(vec![10]))), Err(Reject::Range));
+        assert_eq!(validate_server(&word(0, 0, None, Some(vec![0]))), Err(Reject::Range));
+    }
+
+    #[test]
+    fn a_seats_report_names_its_cause_and_root_in_their_shapes() {
+        // thuum ADR-068 rung 5, D-Q4 C (SCHEMA_VERSION 43): c1's stop of
+        // dunEmbershardQST 0xb6fef from its stage 40 fragment (a world cause,
+        // the probe's world pair), USSEP's housekeeping stop of
+        // USKPDrownedSorrowsFix (the seat's own, rooted at OnInit), and an
+        // engine start's stage 0 (the seat's own, no script call: no root)
+        let report = |quest: u32, stage: u16, word: Option<u8>, cause: Option<u8>, root: Option<&str>| {
+            Message::QuestStage(wire_schema::skymp::QuestStage { quest, stage, word, cause, root: root.map(|r| r.try_into().unwrap_or_default()), ..Default::default() })
+        };
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&report(0xb6fef, 0, Some(2), Some(1), Some("QF_dunEmbershardQST_000B6FEF.Fragment_16")), &mut g, 0), Ok(()));
+        assert_eq!(validate(&report(0x701e8bd, 0, Some(2), Some(2), Some("USKP_VersionTrackingScript.OnInit")), &mut g, 0), Ok(()));
+        assert_eq!(validate(&report(0x74a83, 0, None, Some(2), None), &mut g, 0), Ok(()));
+        // a stage with its cause, and an older client's report with none
+        assert_eq!(validate(&report(0xb6fef, 40, None, Some(1), Some("defaultSetStageTrigScript.OnTriggerEnter")), &mut g, 0), Ok(()));
+        assert_eq!(validate(&report(0xb6fef, 40, None, None, None), &mut g, 0), Ok(()));
+        // a cause other than 1 or 2, a cause or a root on the login's list, a
+        // root without a cause, an empty root, a root with a character no
+        // Papyrus name takes
+        for bad in [0u8, 3, u8::MAX] {
+            assert_eq!(validate(&report(0xb6fef, 0, Some(1), Some(bad), None), &mut g, 0), Err(Reject::Range), "{bad}");
+        }
+        assert_eq!(validate_server(&report(0, 0, None, Some(1), None)), Err(Reject::Range));
+        for root in ["QF_dunEmbershardQST_000B6FEF.Fragment_16", "", "Script.On Init", "Script.OnInit;", "Skrípt.OnInit"] {
+            assert_eq!(validate(&report(0xb6fef, 0, Some(1), None, Some(root)), &mut g, 0), Err(Reject::Range), "{root:?} without a cause");
+        }
+        for root in ["", "Script.On Init", "Script.OnInit;", "Skrípt.OnInit"] {
+            assert_eq!(validate(&report(0xb6fef, 0, Some(1), Some(1), Some(root)), &mut g, 0), Err(Reject::Range), "{root:?}");
+        }
+    }
+
+    #[test]
+    fn quest_stages_carry_a_run_word_an_acting_player_and_the_replay_flag() {
+        // a relayed start of 0x10d3bb with c1 0xff000000 acting, a stop, a
+        // served stage of A Lovely Letter 0x74a83
+        let mut g = ClientGuard::default();
+        assert_eq!(validate_server(&quest_word(0x10d3bb, 0, Some(1), Some(0xff00_0000), None)), Ok(()));
+        assert_eq!(validate_server(&quest_word(0x10d3bb, 0, Some(2), None, None)), Ok(()));
+        assert_eq!(validate_server(&quest_word(0x74a83, 10, None, None, Some(true))), Ok(()));
+        assert_eq!(validate_server(&quest_word(0x74a83, 10, None, Some(0xffff_ffff), Some(false))), Ok(()));
+        // a seat's own words and its scope's acting player cross
+        assert_eq!(validate(&quest_word(0x10d3bb, 0, Some(1), None, None), &mut g, 0), Ok(()));
+        assert_eq!(validate(&quest_word(0x74a83, 10, None, Some(0xff00_0001), None), &mut g, 0), Ok(()));
+        assert_eq!(validate(&quest_word(0x74a83, 10, None, None, Some(false)), &mut g, 0), Ok(()));
+        // a word other than a start or a stop, a word with a stage, a word or
+        // an acting player on the login's list, an acting player the server
+        // does not name
+        for bad in [0u8, 3, u8::MAX] {
+            assert_eq!(validate_server(&quest_word(0x10d3bb, 0, Some(bad), None, None)), Err(Reject::Range), "{bad}");
+        }
+        assert_eq!(validate_server(&quest_word(0x10d3bb, 10, Some(2), None, None)), Err(Reject::Range));
+        assert_eq!(validate_server(&quest_word(0, 0, Some(1), None, None)), Err(Reject::Range));
+        assert_eq!(validate_server(&quest_word(0, 0, None, Some(0xff00_0000), Some(true))), Err(Reject::Range));
+        for low in [0u32, 0x14, 0xfeff_ffff] {
+            assert_eq!(validate_server(&quest_word(0x74a83, 10, None, Some(low), None)), Err(Reject::Range), "{low:x}");
+        }
+        // a client never sends the replay, and is refused before its budget
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&quest_word(0x74a83, 10, None, None, Some(true)), &mut g, 0), Err(Reject::Range));
+        // nor a word's stages (thuum ADR-068 rung 5, D-Q3 A: the server reads
+        // them from the record)
+        let staged = |stages: &[u16]| Message::QuestStage(wire_schema::skymp::QuestStage { quest: 0x15cc2, word: Some(1), word_stages: Some(stages.to_vec().try_into().unwrap_or_default()), ..Default::default() });
+        assert_eq!(validate(&staged(&[0, 10]), &mut g, 0), Err(Reject::Range));
+        for _ in 0..32 {
+            assert_eq!(validate(&quest_word(0x10d3bb, 0, Some(1), None, None), &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&quest_word(0x10d3bb, 0, Some(2), None, None), &mut g, 0), Err(Reject::Rate), "words share the stages' budget");
+    }
+
+    // thuum ADR-068 rung 5 (D-V1 B): MS13 0x39645's ::camillaescort_var and
+    // PlayerVampireQuest 0xeafd5's ::vampirestatus_var, its player's own
+    fn script_var(form: u32, var: &str, own: bool, k: u8, carried: [bool; 3], seq: u32) -> wire_schema::skymp::ScriptVarEntry {
+        let [i, f, b] = carried;
+        wire_schema::skymp::ScriptVarEntry {
+            form,
+            script: "MS13QuestScript".try_into().unwrap_or_default(),
+            var: var.try_into().unwrap_or_default(),
+            own,
+            k,
+            i: i.then_some(1),
+            f: f.then_some(0.5),
+            b: b.then_some(true),
+            seq,
+        }
+    }
+
+    fn script_vars(watch: &[(u32, &str)], entries: &[wire_schema::skymp::ScriptVarEntry], served: bool) -> Message {
+        use wire_schema::skymp::{ScriptVarKey, ScriptVariables};
+        let keys: Vec<ScriptVarKey> = watch.iter().map(|&(form, var)| ScriptVarKey { form, script: "MS13QuestScript".try_into().unwrap_or_default(), var: var.try_into().unwrap_or_default(), own: false }).collect();
+        Message::ScriptVariables(ScriptVariables { watch: keys.try_into().unwrap_or_default(), entries: entries.to_vec().try_into().unwrap_or_default(), served, ..Default::default() })
+    }
+
+    #[test]
+    fn script_variables_name_keys_once_with_their_kinds_and_a_client_reports_alone() {
+        let int = [true, false, false];
+        let escort = script_var(0x39645, "::camillaescort_var", false, 3, int, 0);
+        let status = script_var(0xeafd5, "::vampirestatus_var", true, 3, int, 0);
+        // a seat's report, its own key beside a world key
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&script_vars(&[], &[escort.clone(), status.clone()], false), &mut g, 0), Ok(()));
+        // the login: the watch, the served values with their sequences
+        let served = [script_var(0x39645, "::camillaescort_var", false, 3, int, 2), script_var(0xeafd5, "::vampirestatus_var", true, 4, [false, true, false], 1)];
+        let login = script_vars(&[(0x39645, "::camillaescort_var"), (0xeafd5, "::vampirestatus_var")], &served, true);
+        assert_eq!(validate_server(&login), Ok(()));
+        // a client sends no watch, no served record and no sequence, refused
+        // before its budget
+        assert_eq!(validate(&login, &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&script_vars(&[(0x39645, "::camillaescort_var")], &[], false), &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&script_vars(&[], &[script_var(0x39645, "::camillaescort_var", false, 3, int, 1)], false), &mut g, 0), Err(Reject::Range));
+        // the shape both ways: a kind outside 3 to 5 or a payload not its
+        // kind's, a key twice (names without case), a form of 0 or the
+        // server's, an empty name or one with a NUL, a served seq of 0
+        let refused = [
+            script_var(0x39645, "::camillaescort_var", false, 2, int, 0),
+            script_var(0x39645, "::camillaescort_var", false, 3, [true, true, false], 0),
+            script_var(0x39645, "::camillaescort_var", false, 5, int, 0),
+            script_var(0, "::camillaescort_var", false, 3, int, 0),
+            script_var(0xff00_0000, "::camillaescort_var", false, 3, int, 0),
+            script_var(0x39645, "", false, 3, int, 0),
+            script_var(0x39645, "::camillaescort_var\0", false, 3, int, 0),
+        ];
+        for e in refused {
+            assert_eq!(validate_server(&script_vars(&[], std::slice::from_ref(&e), false)), Err(Reject::Range), "{e:?}");
+        }
+        assert_eq!(validate_server(&script_vars(&[], &[escort.clone(), script_var(0x39645, "::CamillaEscort_var", true, 3, int, 0)], false)), Err(Reject::Range));
+        assert_eq!(validate_server(&script_vars(&[(0x39645, "::camillaescort_var"), (0x39645, "::CAMILLAESCORT_VAR")], &[], true)), Err(Reject::Range));
+        assert_eq!(validate_server(&script_vars(&[(0, "::camillaescort_var")], &[], true)), Err(Reject::Range));
+        assert_eq!(validate_server(&script_vars(&[], &[script_var(0x39645, "::camillaescort_var", false, 3, int, 0)], true)), Err(Reject::Range));
+        let nan = wire_schema::skymp::ScriptVarEntry { k: 4, i: None, f: Some(f32::NAN), ..escort.clone() };
+        assert_eq!(validate_server(&script_vars(&[], &[nan], false)), Err(Reject::NonFinite));
+        // four at once, then one a second
+        let mut g = ClientGuard::default();
+        for _ in 0..4 {
+            assert_eq!(validate(&script_vars(&[], std::slice::from_ref(&escort), false), &mut g, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&script_vars(&[], std::slice::from_ref(&escort), false), &mut g, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&script_vars(&[], &[escort], false), &mut g, 2_000), Ok(()));
+    }
+
+    // thuum ADR-068 rung 5: a quest stage's word, acting, served and the
+    // word's engine stages as the generator drew them
+    proptest! {
+        // any word, stage, quest, acting player, replay flag and word stages:
+        // a verdict, never a panic, and the verdict the rules give both ways
+        #[test]
+        fn quest_words_never_panic_and_judge_their_shapes(
+            quest in prop_oneof![Just(0u32), Just(0x10d3bbu32), any::<u32>()],
+            stage in prop_oneof![Just(0u16), any::<u16>()],
+            word in proptest::option::of(prop_oneof![1u8..3, any::<u8>()]),
+            acting in proptest::option::of(prop_oneof![Just(0xff00_0000u32), Just(0x14u32), any::<u32>()]),
+            served in proptest::option::of(any::<bool>()),
+            stages in proptest::option::of(proptest::collection::vec(prop_oneof![Just(0u16), Just(10u16), any::<u16>()], 0..4)),
+            // SCHEMA_VERSION 43 (D-Q4 C): a cause in range or not, and a root
+            // a script's name, empty, or with a character no name takes
+            cause in proptest::option::of(prop_oneof![1u8..3, any::<u8>()]),
+            root in proptest::option::of(prop_oneof![Just("QF_dunEmbershardQST_000B6FEF.Fragment_16".to_owned()), Just(String::new()), "[A-Za-z0-9_. :-]{1,24}"]),
+            now in any::<u64>(),
+        ) {
+            let mut m = quest_word(quest, stage, word, acting, served);
+            if let Message::QuestStage(q) = &mut m {
+                q.word_stages = stages.clone().map(|s| s.try_into().unwrap_or_default());
+                q.cause = cause;
+                q.root = root.as_deref().map(|r| r.try_into().unwrap_or_default());
+            }
+            let word_ok = word.is_none_or(|w| (w == 1 || w == 2) && stage == 0 && quest != 0);
+            let acting_ok = acting.is_none_or(|a| a >= 0xff00_0000 && quest != 0);
+            // quest 0 in mode 0 without a list is the login's message shape alone
+            let list_ok = quest != 0;
+            let stages_ok = stages.as_ref().is_none_or(|s| word.is_some() && !s.is_empty() && s.iter().enumerate().all(|(i, x)| !s.iter().take(i).any(|y| y == x)));
+            let cause_ok = cause.is_none_or(|c| (c == 1 || c == 2) && quest != 0);
+            let root_ok = root.as_ref().is_none_or(|r| cause.is_some() && !r.is_empty() && r.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.'));
+            let shape = if word_ok && acting_ok && list_ok && stages_ok && cause_ok && root_ok { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate_server(&m), shape);
+            let mut g = ClientGuard::default();
+            let client = if shape.is_ok() && served != Some(true) && stages.is_none() { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate(&m, &mut g, now), client);
+        }
+    }
+
+    // a condition-read entry as the generator drew it: its form as a code (0
+    // a world key's, 1 0, 2 a server form), its name as a code (0 its own,
+    // 1 empty, 2 with a NUL, 3 the first entry's), its kind, which of the
+    // int, float and bool fields are present, and its sequence
+    type VarDraw = (u8, u8, u8, [bool; 3], u32);
+
+    fn var_draw() -> impl Strategy<Value = VarDraw> {
+        (
+            prop_oneof![4 => Just(0u8), 1 => Just(1u8), 1 => Just(2u8)],
+            prop_oneof![4 => Just(0u8), 1 => Just(1u8), 1 => Just(2u8), 1 => Just(3u8)],
+            prop_oneof![3u8..6, any::<u8>()],
+            any::<[bool; 3]>(),
+            prop_oneof![Just(0u32), any::<u32>()],
+        )
+    }
+
+    proptest! {
+        // any entries up to the cap, served or not: a verdict, never a
+        // panic, and the verdict the rules give both ways
+        #[test]
+        fn script_variables_never_panic_and_judge_their_shapes(draws in proptest::collection::vec(var_draw(), 0..=cap::SCRIPT_VARIABLES), served in any::<bool>(), now in any::<u64>()) {
+            let mut entries = Vec::new();
+            let mut names: Vec<String> = Vec::new();
+            let mut ok = true;
+            for (n, (form, name, k, [i, f, b], seq)) in draws.iter().copied().enumerate() {
+                let form = match form {
+                    0 => 0x39645,
+                    1 => 0,
+                    _ => 0xff00_0000,
+                };
+                let name = match name {
+                    0 => format!("::v{n}_var"),
+                    1 => String::new(),
+                    2 => format!("::v{n}\0"),
+                    _ => names.first().cloned().unwrap_or_else(|| format!("::v{n}_var")),
+                };
+                let fits = matches!((k, [i, f, b]), (3, [true, false, false]) | (4, [false, true, false]) | (5, [false, false, true]));
+                ok = ok && fits && form == 0x39645 && !name.is_empty() && !name.contains('\0') && !names.contains(&name) && !(served && seq == 0);
+                names.push(name.clone());
+                entries.push(wire_schema::skymp::ScriptVarEntry {
+                    form,
+                    script: "MS13QuestScript".try_into().unwrap_or_default(),
+                    var: name.as_str().try_into().unwrap_or_default(),
+                    own: n % 2 == 1,
+                    k,
+                    i: i.then_some(7),
+                    f: f.then_some(0.25),
+                    b: b.then_some(false),
+                    seq,
+                });
+            }
+            let m = script_vars(&[], &entries, served);
+            prop_assert_eq!(validate_server(&m), if ok { Ok(()) } else { Err(Reject::Range) });
+            let mut g = ClientGuard::default();
+            let client = if ok && !served && entries.iter().all(|e| e.seq == 0) { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate(&m, &mut g, now), client);
+        }
+    }
+}
+
+#[cfg(test)]
+mod race_overlay_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+    use wire_schema::skymp::{CreateActor, CreateActorProps, RaceOverlay, UpdateAppearance};
+
+    // thuum ADR-068 rung 5 (D-T1 A): rotfern's beast form, WerewolfBeastRace
+    // 0xcdd84 over its recorded race (NordRace 0x13746), the howl 0x92c48
+    // and WolfSkinFXArmor's id illustrative
+    fn beast() -> RaceOverlay {
+        RaceOverlay {
+            open: true,
+            race: 0xcdd84,
+            base: 0x13746,
+            spells: vec![0x92c48].try_into().unwrap_or_default(),
+            shouts: vec![0x6f6da].try_into().unwrap_or_default(),
+            items: vec![0x10d4f9].try_into().unwrap_or_default(),
+        }
+    }
+
+    fn appearance(overlay: Option<RaceOverlay>) -> Message {
+        Message::UpdateAppearance(UpdateAppearance { idx: 7, overlay, ..Default::default() })
+    }
+
+    fn figure(overlay: Option<RaceOverlay>, is_me: bool) -> Message {
+        Message::CreateActor(CreateActor { idx: 7, is_me, props: CreateActorProps { overlay, ..Default::default() }, ..Default::default() })
+    }
+
+    #[test]
+    fn a_figures_overlay_wears_a_race_of_the_load_order_and_a_seat_sends_none() {
+        assert_eq!(validate_server(&appearance(Some(beast()))), Ok(()));
+        assert_eq!(validate_server(&appearance(None)), Ok(()));
+        assert_eq!(validate_server(&figure(Some(beast()), false)), Ok(()));
+        // a player's own CreateActor never carries one
+        assert_eq!(validate_server(&figure(Some(beast()), true)), Err(Reject::Range));
+        // a closed overlay names nothing
+        assert_eq!(validate_server(&appearance(Some(RaceOverlay::default()))), Ok(()));
+        assert_eq!(validate_server(&appearance(Some(RaceOverlay { open: false, ..beast() }))), Err(Reject::Range));
+        // an open one wears a load-order race over another, each form once
+        let refused = [
+            RaceOverlay { race: 0, ..beast() },
+            RaceOverlay { race: 0xff00_0001, ..beast() },
+            RaceOverlay { base: 0, ..beast() },
+            RaceOverlay { base: 0xcdd84, ..beast() },
+            RaceOverlay { spells: vec![0x92c48, 0x92c48].try_into().unwrap_or_default(), ..beast() },
+            RaceOverlay { shouts: vec![0].try_into().unwrap_or_default(), ..beast() },
+            RaceOverlay { items: vec![0xff00_0002].try_into().unwrap_or_default(), ..beast() },
+        ];
+        for o in refused {
+            assert_eq!(validate_server(&appearance(Some(o.clone()))), Err(Reject::Range), "{o:?}");
+        }
+        // a seat's own look carries no overlay
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&appearance(None), &mut g, 0), Ok(()));
+        assert_eq!(validate(&appearance(Some(beast())), &mut g, 0), Err(Reject::Range));
+        assert_eq!(validate(&appearance(Some(RaceOverlay::default())), &mut g, 0), Err(Reject::Range));
+    }
+
+    proptest! {
+        // any overlay up to the caps, on either carrier: a verdict, never a
+        // panic, and the verdict the rule gives
+        #[test]
+        fn overlays_never_panic_and_judge_their_shapes(
+            open in any::<bool>(),
+            race in prop_oneof![Just(0u32), Just(0xcdd84u32), Just(0xff00_0000u32), any::<u32>()],
+            base in prop_oneof![Just(0u32), Just(0x13746u32), any::<u32>()],
+            spells in proptest::collection::vec(prop_oneof![Just(0u32), 1u32..0x200, any::<u32>()], 0..=cap::OVERLAY_FORMS),
+            shouts in proptest::collection::vec(1u32..0x200, 0..=4),
+            items in proptest::collection::vec(any::<u32>(), 0..=4),
+            is_me in any::<bool>(),
+        ) {
+            let o = RaceOverlay {
+                open,
+                race,
+                base,
+                spells: spells.clone().try_into().unwrap_or_default(),
+                shouts: shouts.clone().try_into().unwrap_or_default(),
+                items: items.clone().try_into().unwrap_or_default(),
+            };
+            let form = |id: u32| id != 0 && id < 0xff00_0000;
+            let distinct = |ids: &[u32]| ids.iter().enumerate().all(|(i, id)| form(*id) && !ids.iter().take(i).any(|p| p == id));
+            let shape_ok = if open {
+                form(race) && form(base) && race != base && distinct(&spells) && distinct(&shouts) && distinct(&items)
+            } else {
+                race == 0 && base == 0 && spells.is_empty() && shouts.is_empty() && items.is_empty()
+            };
+            let want = if shape_ok { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate_server(&appearance(Some(o.clone()))), want);
+            prop_assert_eq!(validate_server(&figure(Some(o), is_me)), if is_me { Err(Reject::Range) } else { want });
+        }
     }
 }

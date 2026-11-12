@@ -78,8 +78,26 @@ struct MpActor::Impl
   // npc-fate.md finding 65: the last reanimate hit the server accepted on
   // this body, the window a placed corpse's stand-up is read within
   std::chrono::steady_clock::time_point reanimateAcceptedAt{};
-  bool hostSampledDead = false;
+  bool deadStamped = false;
+  uint32_t deadStampHost = 0;
+  uint32_t deadStampLogin = 0;
+  std::chrono::steady_clock::time_point deadStampAt{};
+  uint32_t loginGeneration = 0;
   std::chrono::steady_clock::time_point hostStoodUpAt{};
+  // npc-fate.md "The body's rest" (ADR-067): the corpse as a physics object.
+  // The simulator at the death owns the ragdoll (0 none); the window runs
+  // from the recorded death on the TickDeaths clock; the owner's accepted
+  // samples are counted and the dwell's anchor kept (the last sample past
+  // the rest bounds, and when it came), so a dwell held long enough is the
+  // rest; restAtMs is 0 until then
+  uint32_t bodyOwner = 0;
+  uint64_t bodyDiedAtMs = 0;
+  bool bodyAtRest = false;
+  uint64_t bodyRestAtMs = 0;
+  uint32_t bodySamples = 0;
+  NiPoint3 bodyDwellPos;
+  NiPoint3 bodyDwellRot;
+  uint64_t bodyDwellSinceMs = 0;
   // npc-fate.md H-52b: the killer credited at the last Kill (the read)
   std::optional<uint32_t> lastKillerId;
   std::optional<UpdateActionMessage> lastAction;
@@ -113,6 +131,10 @@ struct MpActor::Impl
   // thuum docs/verbs/npc-fate.md (ADR-049): whether this actor came from a
   // saved change form (its roll kept) or was rolled by this process
   bool fromSave = false;
+  // thuum ADR-049 D-N1 A: whether a saved change form was applied over the
+  // game files' actor (WorldState's deferred load of a game-file actor's
+  // record: Init saw none, so fromSave stays false and the fate pass asks)
+  bool recordApplied = false;
   bool actorValuesLoginPending = false;
   using RestorationTimePoints =
     std::unordered_map<espm::ActorValue,
@@ -282,8 +304,17 @@ void MpActor::EquipBestWeapon()
   UpdateEquipmentMessage msg;
   msg.data = newEq;
   msg.idx = GetIdx();
+  // thuum docs/verbs/npc-fate.md (playtest 51): the word is a game's, so a
+  // listener with a user hears it, directly (UpdateHoster's rule).
+  // GetActorToSendTo handed an offline listener's copy, the actor's own
+  // among them (it listens to itself), to its cell's host, which at a roll
+  // ahead of a create word (PartOne::EnsureFated) had no copy of the actor
+  // yet: an UpdateEquipment for an idx its game did not know
   for (auto listener : GetActorListeners()) {
-    listener->GetActorToSendTo().SendToUser(msg, true);
+    if (listener->GetUserId() == Networking::InvalidUserId) {
+      continue;
+    }
+    listener->SendToUser(msg, true);
   }
 }
 
@@ -342,6 +373,41 @@ void MpActor::SetJudgedPercentages(std::optional<float> health,
     }
   });
   SetLastAttributesPercentagesUpdate(std::chrono::steady_clock::now());
+}
+
+void MpActor::SetChangeFormRecord(std::optional<ChangeFormRecord> record)
+{
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.changeFormRecord = std::move(record);
+  });
+}
+
+std::optional<ChangeFormRecord> MpActor::GetChangeFormRecord() const
+{
+  return ChangeForm().changeFormRecord;
+}
+
+bool MpActor::BuildChangeFormApply(ChangeFormApplyMessage& out) const
+{
+  const auto& record = ChangeForm().changeFormRecord;
+  if (!record) {
+    return false;
+  }
+  out.formId = GetFormId();
+  out.formType = record->formType;
+  out.flags = record->flags;
+  out.version = record->version;
+  out.body = record->bodyHex;
+  out.remap = record->remap;
+  return true;
+}
+
+void MpActor::SendChangeFormRecordTo(MpActor& listener)
+{
+  ChangeFormApplyMessage apply;
+  if (BuildChangeFormApply(apply)) {
+    listener.SendToUser(apply, true);
+  }
 }
 
 void MpActor::SetHostedState(uint32_t combatTarget, uint32_t package)
@@ -412,6 +478,38 @@ void MpActor::SetEquipment(const Equipment& newEquipment)
 {
   EditChangeForm(
     [&](MpChangeForm& changeForm) { changeForm.equipment = newEquipment; });
+}
+
+void MpActor::DropWornBeyondInventory(uint32_t baseId)
+{
+  const uint32_t held = GetInventory().GetItemCount(baseId);
+  Equipment kept = GetEquipment();
+  uint32_t left = held;
+  uint32_t dropped = 0;
+  for (auto& entry : kept.inv.entries) {
+    if (entry.baseId != baseId || entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    const uint32_t keep = std::min(entry.count, left);
+    dropped += entry.count - keep;
+    entry.count = keep;
+    left -= keep;
+  }
+  if (dropped == 0) {
+    return;
+  }
+  auto& entries = kept.inv.entries;
+  entries.erase(std::remove_if(entries.begin(), entries.end(),
+                               [&](const Inventory::Entry& entry) {
+                                 return entry.baseId == baseId &&
+                                   entry.GetWorn() != Inventory::Worn::None &&
+                                   entry.count == 0;
+                               }),
+                entries.end());
+  SetEquipment(kept);
+  spdlog::info("[verb:npc-fate] {:x}'s worn {:x} off its record's equipment: "
+               "{} worn beyond the {} its inventory holds",
+               GetFormId(), baseId, dropped, held);
 }
 
 void MpActor::SetHealthRespawnPercentage(float percentage)
@@ -520,6 +618,81 @@ void MpActor::RemoveFromFaction(FormDesc factionForm, bool lazyLoad)
                                     return faction.formDesc == factionForm;
                                   }),
                    factions.end());
+  });
+}
+
+std::vector<Faction> MpActor::GetFactionRanks()
+{
+  if (!factionsLoaded) {
+    LoadFactions();
+  }
+  const auto& factions = ChangeForm().factions;
+  return factions ? *factions : std::vector<Faction>();
+}
+
+void MpActor::SetFactionRank(const FormDesc& factionForm, int8_t rank)
+{
+  if (!factionsLoaded) {
+    LoadFactions();
+  }
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    if (!changeForm.factions.has_value()) {
+      changeForm.factions = std::vector<Faction>();
+    }
+    for (auto& faction : *changeForm.factions) {
+      if (faction.formDesc == factionForm) {
+        faction.rank = rank;
+        return;
+      }
+    }
+    Faction added;
+    added.formDesc = factionForm;
+    added.rank = rank;
+    changeForm.factions->push_back(added);
+  });
+}
+
+void MpActor::RemoveFromAllFactions()
+{
+  if (!factionsLoaded) {
+    LoadFactions();
+  }
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.factions = std::vector<Faction>();
+  });
+}
+
+std::optional<FormDesc> MpActor::GetCrimeFactionRecord() const
+{
+  return ChangeForm().crimeFaction;
+}
+
+void MpActor::SetCrimeFactionRecord(const FormDesc& faction)
+{
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.crimeFaction = faction; });
+}
+
+std::vector<MpChangeFormREFR::Relationship> MpActor::GetRelationships() const
+{
+  const auto& relationships = ChangeForm().relationships;
+  return relationships ? *relationships
+                       : std::vector<MpChangeFormREFR::Relationship>();
+}
+
+void MpActor::SetRelationshipRank(const FormDesc& other, int8_t rank)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    if (!changeForm.relationships.has_value()) {
+      changeForm.relationships = std::vector<MpChangeFormREFR::Relationship>();
+    }
+    for (auto& relationship : *changeForm.relationships) {
+      if (relationship.other == other) {
+        relationship.rank = rank;
+        return;
+      }
+    }
+    changeForm.relationships->push_back({ other, rank });
   });
 }
 
@@ -1006,6 +1179,9 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
   newChangeForm.isDisabled ? Disable() : Enable();
   SetCellOrWorldObsolete(newChangeForm.worldOrCellDesc);
   SetPos(newChangeForm.position);
+
+  // thuum ADR-049 D-N1 A: the record is the world's state from here on
+  pImpl->recordApplied = true;
 }
 
 uint32_t MpActor::NextSnippetIndex(
@@ -1306,6 +1482,11 @@ uint64_t MpActor::PendingDeathSinceMs() const
   return pImpl->pendingDeathSinceMs;
 }
 
+void MpActor::RecordPendingDeathAt(uint64_t sinceMs)
+{
+  pImpl->pendingDeathSinceMs = sinceMs;
+}
+
 uint32_t MpActor::PendingDeathAggressor() const
 {
   return pImpl->pendingDeathAggressor;
@@ -1482,6 +1663,24 @@ bool MpActor::RecordShoutEntry(ShoutEntry kind, const FormDesc& form)
       changeForm.shoutRecord.emplace();
     }
     ShoutListOf(*changeForm.shoutRecord, kind).push_back(form);
+  });
+  return true;
+}
+
+bool MpActor::ForgetShoutEntry(ShoutEntry kind, const FormDesc& form)
+{
+  const ShoutRecord current = GetShoutRecord();
+  const auto& list = ShoutListOf(current, kind);
+  if (std::find(list.begin(), list.end(), form) == list.end()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.shoutRecord) {
+      return;
+    }
+    auto& entries = ShoutListOf(*changeForm.shoutRecord, kind);
+    entries.erase(std::remove(entries.begin(), entries.end(), form),
+                  entries.end());
   });
   return true;
 }
@@ -1687,7 +1886,7 @@ bool MpActor::HasPerk(uint32_t perk) const
     std::binary_search(record->perks.begin(), record->perks.end(), perk);
 }
 
-bool MpActor::AddPerkByServer(uint32_t perk)
+bool MpActor::AddPerkByServer(uint32_t perk, bool asPick)
 {
   if (perk == 0 || HasPerk(perk)) {
     return false;
@@ -1701,6 +1900,9 @@ bool MpActor::AddPerkByServer(uint32_t perk)
   }
   record.perks.insert(
     std::upper_bound(record.perks.begin(), record.perks.end(), perk), perk);
+  if (asPick && record.perkPicks < std::numeric_limits<uint16_t>::max()) {
+    ++record.perkPicks;
+  }
   SetActorValueRecord(record);
   return true;
 }
@@ -1727,7 +1929,7 @@ uint16_t MpActor::PerkPoints() const
   if (!record) {
     return 0;
   }
-  return skymp::rules::perk_points(record->level, record->perks.size());
+  return skymp::rules::perk_points(record->level, record->perkPicks);
 }
 
 void MpActor::SendPerkState()
@@ -2049,6 +2251,14 @@ void MpActor::SendAndSetDeathState(bool isDead, bool shouldTeleport)
 
   if (isDead) {
     RecordDeathAt(std::chrono::steady_clock::now());
+    // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): an NPC's
+    // corpse settles under its simulator from here, for the window
+    if (IsFateRespawned()) {
+      BeginBodySettle(static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count()));
+    }
   }
 
   auto position = GetSpawnPoint();
@@ -2169,7 +2379,7 @@ uint32_t MpActor::GetFateBaseId() const
   return pick ? pick : GetBaseId();
 }
 
-bool MpActor::RollFateIfUnrolled(uint16_t level)
+bool MpActor::CanRollFate() const
 {
   auto worldState = GetParent();
   if (!worldState || !worldState->HasEspm() || pImpl->fromSave || IsDead() ||
@@ -2180,20 +2390,63 @@ bool MpActor::RollFateIfUnrolled(uint16_t level)
   // under a 0xff id, is fated through the same roll as a game-file actor
   // (PapyrusObjectReference::PlaceAtMe rolls it before its create word);
   // only a player's actor (the player base) and a baseless one are refused
-  const auto baseId = GetBaseId();
-  if (baseId <= 0x7) {
+  return GetBaseId() > 0x7;
+}
+
+bool MpActor::RollFateIfUnrolled(uint16_t level)
+{
+  if (!CanRollFate()) {
     return false;
   }
+  auto worldState = GetParent();
+  // thuum ADR-049 D-N1 A (Eli's "go for it", 15:3x PST 2026-11-09; playtest
+  // 50's naked bandits): a record that predates the fate (no fateLevel; 1,181
+  // in the canonical world, 330 with worn entries) and holds a worn item is
+  // the NPC's roll: its fateLevel is set at the first loader's level and
+  // nothing is rolled, so its recorded outfit stands (TES3MP's rule: the
+  // server holds the last recorded state). A worn piece counts while the
+  // inventory still holds it (FateOf's own rule). A record holding no worn
+  // item is rolled beside what it holds, below, as before
+  if (pImpl->recordApplied) {
+    const Inventory inventory = GetInventory();
+    size_t worn = 0;
+    for (const auto& entry : GetEquipment().inv.entries) {
+      if (entry.GetWorn() != Inventory::Worn::None && entry.baseId != 0 &&
+          inventory.HasItem(entry.baseId)) {
+        ++worn;
+      }
+    }
+    if (worn > 0) {
+      EditChangeForm(
+        [&](MpChangeForm& changeForm) { changeForm.fateLevel = level; });
+      spdlog::info("MpActor::RollFateIfUnrolled {:x} - npc-fate: its record "
+                   "holds {} worn item(s) and no fate level; adopted as its "
+                   "roll at level {}, nothing rolled (ADR-049 D-N1 A)",
+                   GetFormId(), worn, level);
+      return true;
+    }
+  }
+  // the level is this roll's alone: a roll can run inside the fate pass's
+  // chunk load (a create word there, PartOne::EnsureFated), whose own level
+  // stands again after it, a throw's unwinding included
+  struct LoaderLevelRestore
+  {
+    std::optional<uint16_t>& slot;
+    const std::optional<uint16_t> outer;
+    ~LoaderLevelRestore() { slot = outer; }
+  } restore{ worldState->fateLoaderLevel, worldState->fateLoaderLevel };
   worldState->fateLoaderLevel = level;
+  // the inventory stays: Init rolled nothing for this actor (CanRollFate
+  // held there too), so what it holds was put, and the roll lands beside
+  // it (finding 1 of x-fate-inventory v1b: the reset here took a put with
+  // the level-0 roll it replaced)
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.templateChain.clear();
-    changeForm.inv = Inventory();
     changeForm.baseContainerAdded = false;
   });
   EnsureTemplateChainEvaluated(worldState->GetEspm());
   EnsureBaseContainerAdded(worldState->GetEspm());
   EquipBestWeapon();
-  worldState->fateLoaderLevel.reset();
   return true;
 }
 
@@ -2315,8 +2568,73 @@ void MpActor::AddDeathItem()
   }
 }
 
+std::vector<MpActor::StandingApplier> MpActor::StandingAppliers()
+{
+  std::vector<StandingApplier> out;
+  const auto& record = ChangeForm();
+  if (record.factions.has_value() && GetParent() && GetParent()->HasEspm()) {
+    const auto recorded = *record.factions;
+    const auto base = BaseFactions();
+    for (const auto& faction : recorded) {
+      const bool asBase =
+        std::any_of(base.begin(), base.end(), [&](const Faction& b) {
+          return b.formDesc == faction.formDesc && b.rank == faction.rank;
+        });
+      if (!asBase) {
+        out.push_back({ "SetFactionRank", faction.formDesc,
+                        static_cast<int32_t>(faction.rank) });
+      }
+    }
+    for (const auto& faction : base) {
+      const bool kept =
+        std::any_of(recorded.begin(), recorded.end(), [&](const Faction& r) {
+          return r.formDesc == faction.formDesc;
+        });
+      if (!kept) {
+        out.push_back({ "RemoveFromFaction", faction.formDesc, std::nullopt });
+      }
+    }
+  }
+  if (record.crimeFaction.has_value()) {
+    out.push_back({ "SetCrimeFaction", *record.crimeFaction, std::nullopt });
+  }
+  if (record.relationships.has_value()) {
+    for (const auto& relationship : *record.relationships) {
+      out.push_back({ "SetRelationshipRank", relationship.other,
+                      static_cast<int32_t>(relationship.rank) });
+    }
+  }
+  return out;
+}
+
+std::vector<Faction> MpActor::BaseFactions()
+{
+  return EvaluateTemplate<espm::NPC_::UseFactions>(
+    GetParent(), GetBaseId(), GetTemplateChain(),
+    [&](const auto& npcLookupResult, const auto& npcData) {
+      std::vector<Faction> factions = std::vector<Faction>();
+      for (auto npcFaction : npcData.factions) {
+        Faction faction = Faction();
+        faction.formDesc =
+          FormDesc::FromFormId(npcLookupResult.ToGlobalId(npcFaction.formId),
+                               GetParent()->espmFiles);
+        faction.rank = npcFaction.rank;
+        factions.push_back(faction);
+      }
+      return factions;
+    });
+}
+
 void MpActor::LoadFactions()
 {
+  // thuum ADR-068 rung 4 (the standing): a record that holds a list was
+  // loaded from the base before and edited since (every edit loads first),
+  // so the base's SNAM rows are read into a record that holds none; read
+  // again, they would bring back every faction a script removed
+  if (ChangeForm().factions.has_value()) {
+    factionsLoaded = true;
+    return;
+  }
   std::vector<Faction> factions = EvaluateTemplate<espm::NPC_::UseFactions>(
     GetParent(), GetBaseId(), GetTemplateChain(),
     [&](const auto& npcLookupResult, const auto& npcData) {
@@ -2446,10 +2764,22 @@ void MpActor::Init(WorldState* worldState, uint32_t formId, bool hasChangeForm)
   if (worldState->HasEspm()) {
     auto& espm = worldState->GetEspm();
     EnsureTemplateChainEvaluated(espm);
-    EnsureBaseContainerAdded(espm); // template chain needed here
+    // thuum docs/verbs/npc-fate.md (playtest 44's 1c; x-fate-inventory v1b
+    // 20261104-062409, finding 1): an actor the fate pass will roll keeps
+    // no roll of its own until then. Init's roll ran at level 0 and the
+    // fate's re-roll reset the inventory to replace it, taking every item
+    // put before the first loader arrived with it (the probe's 10 gold; a
+    // script's gift). The engine's own shape: the base's rows resolve once,
+    // at the first load, at the loader's level. So a fate-able actor waits
+    // for RollFateIfUnrolled, which adds the roll beside what the inventory
+    // holds; an actor from a save, a dead one or a player's keeps the old
+    // rule here (a body's first open rolls it, EnsureBaseContainerAdded)
+    if (!CanRollFate()) {
+      EnsureBaseContainerAdded(espm); // template chain needed here
 
-    // TODO: implement "gearedUpWeapons" flag
-    EquipBestWeapon();
+      // TODO: implement "gearedUpWeapons" flag
+      EquipBestWeapon();
+    }
   }
 }
 
@@ -2571,6 +2901,24 @@ void MpActor::Respawn(bool shouldTeleport)
   // the sweep's, the console's Resurrect, the lab's respawn-ref; the body's
   // stamp and its place in the due set end with it, so the next death
   // counts from its own day
+  // every stand-up ends the death the host's dead-sample stamp belonged to
+  // (numidium's review of round seven, item 3), and the pending start that
+  // anchored its window: a stale start from this life would anchor the next
+  // death's window far too early and admit the stamps it means to refuse
+  pImpl->deadStamped = false;
+  pImpl->pendingDeathSinceMs = 0;
+  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): a body that
+  // stands again is no body; its rest ends with the death
+  ClearBodyRest();
+  // a death that bypassed Kill (SetIsDead during a pending death) left the
+  // pending phase armed, and BeginPendingDeath would refuse the next one for
+  // good (numidium's review of round ten, item 1)
+  if (pImpl->pendingDeath) {
+    pImpl->pendingDeath = false;
+    if (auto worldState = GetParent()) {
+      worldState->pendingDeaths.erase(GetFormId());
+    }
+  }
   if (ChangeForm().fateDiedAt.has_value()) {
     EditChangeForm(
       [&](MpChangeForm& changeForm) { changeForm.fateDiedAt.reset(); },
@@ -2667,7 +3015,14 @@ void MpActor::ScheduleFateRespawn()
     return;
   }
   pImpl->isRespawning = true;
-  if (!ChangeForm().fateDiedAt.has_value()) {
+  // the death stamps the day once; a dead body loaded from the record (a
+  // restart, MpActor::ApplyChangeForm's "respawning dead actor") passes here
+  // again with the day already held, and says so: x-corpse-record v5
+  // (20261104-072601) counted "died at day" twice across a restart for one
+  // death, the clock unchanged. The load's line is its own, the death's
+  // line counts deaths alone
+  const bool loaded = ChangeForm().fateDiedAt.has_value();
+  if (!loaded) {
     const float day =
       worldState->gameTime ? worldState->gameTime().daysPassed : 0.f;
     EditChangeForm(
@@ -2679,16 +3034,29 @@ void MpActor::ScheduleFateRespawn()
     unique = espm::GetData<espm::NPC_>(GetBaseId(), worldState).isUnique;
   }
   if (unique) {
-    spdlog::info("[verb:npc-fate] {:x} died at day {:.4f}: a unique base, "
-                 "the body stays (the engine's rule)",
-                 GetFormId(), diedAt);
+    if (loaded) {
+      spdlog::info("[verb:npc-fate] {:x} lies dead since day {:.4f} (loaded "
+                   "from the record): a unique base, the body stays (the "
+                   "engine's rule)",
+                   GetFormId(), diedAt);
+    } else {
+      spdlog::info("[verb:npc-fate] {:x} died at day {:.4f}: a unique base, "
+                   "the body stays (the engine's rule)",
+                   GetFormId(), diedAt);
+    }
     return;
   }
   const float hours = worldState->FateRespawnHours();
   worldState->fateRespawnDue.insert(GetFormId());
-  spdlog::info("[verb:npc-fate] {:x} died at day {:.4f}; the body lies until "
-               "day {:.4f} ({} h)",
-               GetFormId(), diedAt, diedAt + hours / 24.f, hours);
+  if (loaded) {
+    spdlog::info("[verb:npc-fate] {:x} lies dead since day {:.4f} (loaded "
+                 "from the record); the body lies until day {:.4f} ({} h)",
+                 GetFormId(), diedAt, diedAt + hours / 24.f, hours);
+  } else {
+    spdlog::info("[verb:npc-fate] {:x} died at day {:.4f}; the body lies "
+                 "until day {:.4f} ({} h)",
+                 GetFormId(), diedAt, diedAt + hours / 24.f, hours);
+  }
 }
 
 void MpActor::RespawnFated()
@@ -2696,9 +3064,28 @@ void MpActor::RespawnFated()
   if (!IsDead()) {
     return;
   }
+  // the server's own stand-up ends the death; the host's dead-sample stamp
+  // belongs to that death, not the next one (numidium's review of round
+  // six, item 8); the pending start that anchored the window ends with it
+  pImpl->deadStamped = false;
+  pImpl->pendingDeathSinceMs = 0;
+  if (pImpl->pendingDeath) {
+    pImpl->pendingDeath = false;
+    if (auto worldState = GetParent()) {
+      worldState->pendingDeaths.erase(GetFormId());
+    }
+  }
+  // thuum docs/verbs/npc-fate.md ("canon-4's merge review", finding 2): the
+  // held change-form record describes the body this stand-up ends; served
+  // to a later arrival it would lay a corpse over the living copy (the
+  // apply's dead premise refuses it, but the record is stale either way)
+  const bool hadRecord = ChangeForm().changeFormRecord.has_value();
+  if (hadRecord) {
+    SetChangeFormRecord(std::nullopt);
+  }
   spdlog::info("[verb:npc-fate] {:x} stands again at its placement, rolled "
-               "anew",
-               GetFormId());
+               "anew{}",
+               GetFormId(), hadRecord ? "; the body's record dropped" : "");
   RebuildAndRespawn(true, true);
 }
 
@@ -2732,19 +3119,75 @@ std::optional<std::chrono::milliseconds> MpActor::ReanimateAcceptedAgo(
     now - pImpl->reanimateAcceptedAt);
 }
 
-void MpActor::NoteHostSampledDead()
+void MpActor::NoteHostSampledDead(uint32_t hostId, uint32_t hostLogin,
+                                  std::chrono::steady_clock::time_point at)
 {
-  pImpl->hostSampledDead = true;
+  pImpl->deadStamped = true;
+  pImpl->deadStampHost = hostId;
+  pImpl->deadStampLogin = hostLogin;
+  pImpl->deadStampAt = at;
 }
 
-bool MpActor::HostSampledDead() const
+std::optional<std::string> MpActor::DeadStampGap(
+  uint32_t hostId, uint32_t hostLogin,
+  std::chrono::steady_clock::time_point now) const
 {
-  return pImpl->hostSampledDead;
+  if (!pImpl->deadStamped) {
+    return std::string("no dead sample from any host yet");
+  }
+  if (pImpl->deadStampHost != hostId) {
+    return fmt::format("the dead sample is another host's ({:x})",
+                       pImpl->deadStampHost);
+  }
+  if (pImpl->deadStampLogin != hostLogin) {
+    return std::string("the dead sample is this host's earlier login");
+  }
+  // a stamp counts only as the DEATH's: taken no more than kPendingDeathMs
+  // before the recorded death (a bleedout's zero long before a later death
+  // is not that death's witness); a body dead since before this process has
+  // no recorded death, and any stamp of the witness counts
+  const auto diedAgo = DiedAgo(now);
+  if (!diedAgo) {
+    return std::nullopt;
+  }
+  // the window's anchor is the earlier of the recorded death and the pending
+  // death's start: the host's engine dies at the DamageCause sent beside
+  // BeginPendingDeath and its flip lands within half a second of it, while
+  // TickDeaths records the death 3 to 4 s later (numidium's review of round
+  // nine, item 2)
+  auto anchor = now - *diedAgo;
+  if (pImpl->pendingDeathSinceMs != 0) {
+    const auto pendingAt = std::chrono::steady_clock::time_point(
+      std::chrono::milliseconds(pImpl->pendingDeathSinceMs));
+    if (pendingAt < anchor) {
+      anchor = pendingAt;
+    }
+  }
+  if (pImpl->deadStampAt + std::chrono::milliseconds(kPendingDeathMs) <
+      anchor) {
+    const auto early = std::chrono::duration_cast<std::chrono::milliseconds>(
+      anchor - pImpl->deadStampAt);
+    return fmt::format("the dead sample is {} ms before the death (its "
+                       "pending start where there was one), past its {} ms "
+                       "window",
+                       early.count(), kPendingDeathMs);
+  }
+  return std::nullopt;
 }
 
 void MpActor::ClearHostSampledDead()
 {
-  pImpl->hostSampledDead = false;
+  pImpl->deadStamped = false;
+}
+
+void MpActor::SetLoginGeneration(uint32_t serial)
+{
+  pImpl->loginGeneration = serial;
+}
+
+uint32_t MpActor::LoginGeneration() const
+{
+  return pImpl->loginGeneration;
 }
 
 void MpActor::NoteHostStoodUp(std::chrono::steady_clock::time_point at)
@@ -2760,6 +3203,179 @@ std::optional<std::chrono::milliseconds> MpActor::HostStoodUpAgo(
   }
   return std::chrono::duration_cast<std::chrono::milliseconds>(
     now - pImpl->hostStoodUpAt);
+}
+
+// thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4)
+
+void MpActor::BeginBodySettle(uint64_t nowMs)
+{
+  MpActor* host = HostedBy();
+  pImpl->bodyOwner = host ? host->GetFormId() : 0u;
+  pImpl->bodyDiedAtMs = nowMs;
+  pImpl->bodyAtRest = false;
+  pImpl->bodyRestAtMs = 0;
+  pImpl->bodySamples = 0;
+  pImpl->bodyDwellSinceMs = 0;
+  if (auto worldState = GetParent()) {
+    worldState->settlingBodies.insert(GetFormId());
+  }
+}
+
+bool MpActor::HasBodySettle() const
+{
+  return pImpl->bodyDiedAtMs != 0;
+}
+
+bool MpActor::IsBodySettling() const
+{
+  return IsDead() && pImpl->bodyDiedAtMs != 0 && !pImpl->bodyAtRest;
+}
+
+bool MpActor::IsBodyAtRest() const
+{
+  return pImpl->bodyAtRest;
+}
+
+uint64_t MpActor::BodyRestAtMs() const
+{
+  return pImpl->bodyRestAtMs;
+}
+
+uint64_t MpActor::BodyDiedAtMs() const
+{
+  return pImpl->bodyDiedAtMs;
+}
+
+uint32_t MpActor::BodyOwnerId() const
+{
+  return pImpl->bodyOwner;
+}
+
+void MpActor::ClaimBodyOwner(uint32_t ownerId)
+{
+  spdlog::info("[verb:npc-fate] body {:x} had no simulator at its death; "
+               "{:x} simulates it now and owns its ragdoll",
+               GetFormId(), ownerId);
+  pImpl->bodyOwner = ownerId;
+}
+
+uint32_t MpActor::BodySampleCount() const
+{
+  return pImpl->bodySamples;
+}
+
+namespace {
+// the wire's angles are degrees (the client's getAngleX/Y/Z); a turn's
+// wrap counts as no turn
+bool BodyAnglesAgree(const NiPoint3& a, const NiPoint3& b, float degrees)
+{
+  const float d[3] = { a.x - b.x, a.y - b.y, a.z - b.z };
+  for (const float delta : d) {
+    if (std::fabs(std::remainder(delta, 360.f)) > degrees) {
+      return false;
+    }
+  }
+  return true;
+}
+}
+
+namespace {
+// within the rest bounds of the dwell's anchor
+bool BodyWithinDwell(const NiPoint3& pos, const NiPoint3& rot,
+                     const NiPoint3& anchorPos, const NiPoint3& anchorRot)
+{
+  return (pos - anchorPos).Length() <= MpActor::kBodyRestUnits &&
+    BodyAnglesAgree(rot, anchorRot, MpActor::kBodyRestDegrees);
+}
+}
+
+bool MpActor::BodySampleRests(const NiPoint3& pos, const NiPoint3& rot,
+                              uint64_t nowMs) const
+{
+  if (!IsBodySettling() || pImpl->bodySamples == 0) {
+    return false;
+  }
+  return BodyWithinDwell(pos, rot, pImpl->bodyDwellPos, pImpl->bodyDwellRot) &&
+    nowMs >= pImpl->bodyDwellSinceMs + kBodyRestDwellMs &&
+    nowMs >= pImpl->bodyDiedAtMs + kBodyRestMinMs;
+}
+
+bool MpActor::NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
+                             uint64_t nowMs)
+{
+  if (!IsBodySettling()) {
+    return false;
+  }
+  const bool rests = BodySampleRests(pos, rot, nowMs);
+  const bool first = pImpl->bodySamples == 0;
+  ++pImpl->bodySamples;
+  // the dwell starts again at a sample past its anchor's bounds (the first
+  // sample is the first anchor)
+  if (first ||
+      !BodyWithinDwell(pos, rot, pImpl->bodyDwellPos, pImpl->bodyDwellRot)) {
+    pImpl->bodyDwellPos = pos;
+    pImpl->bodyDwellRot = rot;
+    pImpl->bodyDwellSinceMs = nowMs;
+  }
+  if (first) {
+    spdlog::info("[verb:npc-fate] body {:x} settling under {:x}: ({:.0f}, "
+                 "{:.0f}, {:.0f})",
+                 GetFormId(), pImpl->bodyOwner, pos.x, pos.y, pos.z);
+    return false;
+  }
+  if (!rests) {
+    return false;
+  }
+  SettleBody(nowMs, "still for the dwell");
+  return true;
+}
+
+bool MpActor::SettleBodyIfDue(uint64_t nowMs)
+{
+  if (!IsBodySettling()) {
+    return false;
+  }
+  auto worldState = GetParent();
+  const uint64_t settleMs = worldState ? worldState->bodySettleMs : 15000u;
+  if (nowMs < pImpl->bodyDiedAtMs + settleMs) {
+    return false;
+  }
+  SettleBody(nowMs, "the settle window ended");
+  return true;
+}
+
+void MpActor::SettleBody(uint64_t nowMs, const char* why)
+{
+  pImpl->bodyAtRest = true;
+  pImpl->bodyRestAtMs = nowMs;
+  if (auto worldState = GetParent()) {
+    worldState->settlingBodies.erase(GetFormId());
+  }
+  // the rest pose is the record's final sample: saved at once, as a prop's
+  // is at sleep (ADR-058), not at the movement path's 30 s
+  FlushUnsavedEdit();
+  const auto& at = GetPos();
+  spdlog::info("[verb:npc-fate] body {:x} at rest at ({:.0f}, {:.0f}, {:.0f}) "
+               "after {} ms, {} samples; {} (owner {:x})",
+               GetFormId(), at.x, at.y, at.z,
+               nowMs >= pImpl->bodyDiedAtMs ? nowMs - pImpl->bodyDiedAtMs : 0u,
+               pImpl->bodySamples, why, pImpl->bodyOwner);
+}
+
+void MpActor::ClearBodyRest()
+{
+  if (pImpl->bodyDiedAtMs == 0 && !pImpl->bodyAtRest) {
+    return;
+  }
+  pImpl->bodyOwner = 0;
+  pImpl->bodyDiedAtMs = 0;
+  pImpl->bodyAtRest = false;
+  pImpl->bodyRestAtMs = 0;
+  pImpl->bodySamples = 0;
+  pImpl->bodyDwellSinceMs = 0;
+  if (auto worldState = GetParent()) {
+    worldState->settlingBodies.erase(GetFormId());
+  }
 }
 
 void MpActor::NoteHitBy(uint32_t aggressorId,
@@ -3113,6 +3729,18 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   }
 
   const int count = entry.count;
+
+  // thuum docs/verbs/npc-fate.md (1c; the review of 7c3c9f79, finding 8): a
+  // drop of what the record does not hold is refused by name, no throw, the
+  // dropper resynced, as a take or a put is
+  if (GetInventory().GetItemCount(baseId) < static_cast<uint32_t>(count)) {
+    spdlog::warn("[verb:containers] E_DROP_NOT_HELD: {:x} drops {} of {:x} "
+                 "but its record holds {}; refused, the dropper resynced",
+                 GetFormId(), count, baseId,
+                 GetInventory().GetItemCount(baseId));
+    ResyncAfterRefusedMove(*this);
+    return;
+  }
 
   DropItemEvent dropEvent(GetFormId(), baseId, count);
   bool success = dropEvent.Fire(GetParent());

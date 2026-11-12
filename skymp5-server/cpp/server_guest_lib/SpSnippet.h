@@ -27,12 +27,37 @@ public:
   // actorExecutor will be used to detect userId to execute SpSnippet on
   Viet::Promise<VarValue> Execute(MpActor* actorExecutor, SpSnippetMode mode);
 
+  // thuum ADR-068 (the one seam): a script call the subject's owner reported,
+  // relayed to one listener's game: no return value, the subject's sequence
+  // `seq` on the message, sent at once (MpActor::SendToUser, reliable),
+  // never through the deferred queue Execute's snippets take (6.11 item 1: a
+  // relay must not land behind the object's later record or relay)
+  void Relay(MpActor* listener, uint32_t seq);
+
+  // thuum ADR-068 rung 4 (the standing's serve): a recorded state's applier
+  // to one listener's game behind a create word, at once, no answer and no
+  // sequence (several appliers serve one subject, and a receiver drops a
+  // seq at or below the last it took)
+  void Serve(MpActor* listener);
+
   static VarValue VarValueFromSpSnippetReturnValue(
     const std::optional<std::variant<bool, double, std::string>>& returnValue);
 
   static uint64_t MakeLongFormId(WorldState* worldState, uint32_t formId);
 
+  // the id `listener`'s engine numbers the form `formId` by: its own player
+  // is always 0x14 on its client, while the server numbers a player's actor
+  // 0xff000000 and up; every other form keeps its id, and so does every form
+  // for no listener. The one rule SpSnippetFunctionGen::SerializeArguments
+  // maps a Papyrus argument by and MakeMessage the self and each object
+  // argument by
+  static uint32_t ClientFormId(uint32_t formId, const MpActor* listener);
+
 private:
+  // the message to `actorExecutor`'s game, its self as that engine numbers it
+  SpSnippetMessage MakeMessage(MpActor* actorExecutor,
+                               uint32_t snippetIdx) const;
+
   const char* const cl;
   const char* const func;
   const std::vector<std::optional<

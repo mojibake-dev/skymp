@@ -19,6 +19,7 @@ std::vector<QUST::Alias> QUST::GetQuestAliases(
       } else if (!std::memcmp(type, "ALLS", 4)) {
         result.push_back(Alias());
         result.back().locationID = *reinterpret_cast<const uint32_t*>(data);
+        result.back().locationAlias = true;
       } else if (!std::memcmp(type, "ALID", 4)) {
         result.back().aliasName = data;
       } else if (!std::memcmp(type, "FNAM", 4) && result.size() != 0) {

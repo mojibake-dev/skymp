@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bounded::{String, Vec};
 use crate::cap;
+use crate::ItemDelta;
 pub use crate::shape::{ConsoleArg, MsgT, SnippetArg, SnippetObject, SnippetValue};
 
 /// x, y, z in engine units, or Euler angles in degrees, as SkyMP sends them.
@@ -286,6 +287,34 @@ wire_struct! {
         pub restricted_races: Option<Vec<u32, { cap::RACES }>>,
         /// Of `restricted_races`, the ones this player's profile may wear.
         pub permitted_races: Option<Vec<u32, { cap::RACES }>>,
+        /// thuum ADR-068 rung 5 (D-T1 A): the race overlay another player's
+        /// figure wears beyond its record (WerewolfBeastRace and what its
+        /// scripts added), on that figure's CreateActor alone, never on a
+        /// player's own; absent while it wears its record.
+        pub overlay: Option<RaceOverlay>,
+    }
+}
+
+wire_struct! {
+    /// A player's race overlay (thuum ADR-068 rung 5, D-T1 A; wire-rules
+    /// player_own::Overlay, wire-bridge PlayerOverlayRow): a race neither
+    /// Playable nor a twin of its recorded one, worn while its scripts run,
+    /// and the spells, shouts and items they added meanwhile, none of it on
+    /// the player's change form. It ends at the race's return or at the
+    /// player's disconnect. The server's word, R1 by player_own's bound.
+    pub struct RaceOverlay {
+        /// An overlay is open; false names none (every list empty).
+        pub open: bool,
+        /// The race worn, a RACE of the load order.
+        pub race: u32,
+        /// The recorded race the overlay's end returns to.
+        pub base: u32,
+        /// Spells added while open, in order.
+        pub spells: Vec<u32, { cap::OVERLAY_FORMS }>,
+        /// Shouts added while open, in order.
+        pub shouts: Vec<u32, { cap::OVERLAY_FORMS }>,
+        /// Items equipped while open, in order.
+        pub items: Vec<u32, { cap::OVERLAY_FORMS }>,
     }
 }
 
@@ -391,6 +420,11 @@ wire_struct! {
         pub idx: u32,
         /// The look; absent clears it.
         pub data: Option<Appearance>,
+        /// thuum ADR-068 rung 5 (D-T1 A): the race overlay the figure wears
+        /// with this look (server to client, another player's figure
+        /// alone); absent while it wears its record, so the overlay's end is
+        /// an UpdateAppearance without it.
+        pub overlay: Option<RaceOverlay>,
     }
 }
 
@@ -409,24 +443,56 @@ wire_struct! {
     }
 }
 
+/// A trigger entry's event (thuum D-W1 and D-C2, SCHEMA_VERSION 40): the
+/// presser entered the trigger, its scripts hear OnTriggerEnter.
+pub const ENTRY_ENTER: u8 = 1;
+/// A trigger entry's event: the presser left the trigger, its scripts hear
+/// OnTriggerLeave.
+pub const ENTRY_LEAVE: u8 = 2;
+
 wire_struct! {
     /// ActivateMessage's `data`, which repeats `"t"`.
     pub struct ActivateData {
         /// `"t": 6` again.
         #[serde(default)]
         pub t: MsgT<6>,
-        /// Who activates.
+        /// Who activates; for an entry, the presser: 0x14 for the sender's
+        /// own player, or an actor its game simulates.
         pub caster: u64,
-        /// What is activated.
+        /// What is activated; for an entry, the trigger, a reference of the
+        /// shared load order.
         pub target: u64,
-        /// The engine's second activation of the same reference.
+        /// The engine's second activation of the same reference; false on
+        /// an entry.
         pub is_second_activation: bool,
+        /// Since SCHEMA_VERSION 40 (thuum D-C2): the presser's owner's
+        /// report of an entry into a trigger whose world script runs on the
+        /// cell's host, [`ENTRY_ENTER`] or [`ENTRY_LEAVE`]; absent on every
+        /// activation.
+        pub entry: Option<u8>,
     }
 }
 
 wire_struct! {
     /// MsgType 6. Client to server, reliable: activate a reference (R1
     /// intent, the server decides). Not idempotent.
+    ///
+    /// Since SCHEMA_VERSION 40 (thuum D-W1 and D-C2; docs/research/
+    /// fifty-fixes-2026-11-07.md 1(a)) the same message carries a trigger
+    /// entry: a trigger volume's entry counts once, on its presser's owner,
+    /// and a world trigger's script runs on the cell's host, so a seat that
+    /// does not host the cell reports its own presser's entry (`entry` set,
+    /// `caster` the presser, `target` the trigger) and the server relays it
+    /// to the host alone as [`RelayedActivation`] with the same `entry`. R2:
+    /// the presser's owner's engine saw the entry; the server checks the
+    /// shape it can (the trigger, the presser, the cell, the reach) and
+    /// records nothing. Not idempotent: each report is one event on the
+    /// host. Reason codes for an entry: `E_VAL_RANGE` (an entry other than 1
+    /// or 2, a second activation, a caster of 0, a target of 0 or
+    /// 0xff000000 and up), `E_VAL_RATE` (the sender's entry budget); the
+    /// server logs `E_ENTRY_NO_REF`, `E_ENTRY_ACTOR`, `E_ENTRY_PRESSER`,
+    /// `E_ENTRY_NOT_LOADER`, `E_ENTRY_HOST`, `E_ENTRY_NO_HOST` and
+    /// `E_ENTRY_REACH` by name (wire-rules trigger_entry).
     pub struct Activate {
         /// `"t": 6`.
         #[serde(default)]
@@ -935,6 +1001,22 @@ wire_struct! {
     }
 }
 
+/// A quest's run word (thuum ADR-068 rung 5, QuestStage's `word`): the quest
+/// started (Quest.Start, the engine's questStart event).
+pub const QUEST_START: u8 = 1;
+/// A quest's run word: the quest stopped (Quest.Stop, questStop).
+pub const QUEST_STOP: u8 = 2;
+/// A report's cause (thuum ADR-068 rung 5, D-Q4 C, QuestStage's `cause`): a
+/// world cause made it (a script's call from a dialogue, scene, package or
+/// perk fragment, an interaction event, or a stage fragment whose stage a
+/// world cause or a timer set).
+pub const QUEST_CAUSE_WORLD: u8 = 1;
+/// A report's cause: the seat's own (lifecycle, cell load, the Story
+/// Manager's events, a direct timer, a magic effect, the UI, an engine
+/// start's start-up fragment, a stage set inside such a chain, or no script
+/// call at all).
+pub const QUEST_CAUSE_SEAT: u8 = 2;
+
 wire_struct! {
     /// MsgType 57, thuum's (docs/verbs/quest-stage.md, ADR-056; memo D58 B):
     /// the world's quest stages. Both directions, reliable. Client to
@@ -951,6 +1033,41 @@ wire_struct! {
     /// twice, a client naming a list, a mode or a quest of 0), `E_VAL_RATE`
     /// (client to server); the mode's and the record's refusals are the
     /// server's (wire-rules `quest_stages`).
+    ///
+    /// Since SCHEMA_VERSION 41 (thuum ADR-068 rung 5; docs/research/
+    /// rung5-quests-2026-11-09.md section 1(a)) the same message carries a
+    /// quest's run and its acting player, each field absent unless set, so
+    /// a stage alone renders as before: `word` [`QUEST_START`] or
+    /// [`QUEST_STOP`] with stage 0 (a start or a stop the seat's engine
+    /// made, recorded once, relayed and served around the stages; wire-rules
+    /// `quest_runs`), `acting` the acting player's actor (from the server,
+    /// its stamp; from a seat, the scope's player its stage was set under,
+    /// absent meaning the sender), and `served` true on the login replay
+    /// (the receiver applies it as a load, skipping fragments). Reason
+    /// codes besides: `E_VAL_RANGE` (a word other than 1 or 2, a word with a
+    /// stage other than 0 or with quest 0, an `acting` below 0xff000000 or
+    /// with quest 0; from a client, `served` true); the server logs
+    /// `E_QUEST_PLAYER` (a player-class quest), `E_QUEST_CHURN`,
+    /// `E_QUEST_RUNS_FULL` and `E_QUEST_ACTING` by name.
+    ///
+    /// Since SCHEMA_VERSION 43 (thuum ADR-068 rung 5, D-Q4 C) a seat's
+    /// report names what made it: `cause` [`QUEST_CAUSE_WORLD`] or
+    /// [`QUEST_CAUSE_SEAT`] and `root`, the root frame of the script stack
+    /// that called Quest.Start, Quest.Stop or SetStage (absent when no
+    /// script call made it). Both the seat's own word (R2): the server
+    /// refuses a run word whose cause is the seat's own (`E_QUEST_CAUSE`,
+    /// logged by name with the reported cause and root); keeps a run word of
+    /// a quest a Story Manager quest node names to its seat while
+    /// `questStoryInstances` is "seat" (D-Q5 A: neither recorded nor relayed,
+    /// its stages still crossing; wire-rules quest_runs' `Code::Instance`,
+    /// printed as one plain "kept to its seat" line a minute per seat and
+    /// quest, no E_ code since fork b23085da); and records no stage report it
+    /// judges a start (a start-up stage, which only the record can tell)
+    /// whose cause is the seat's own, in one plain line a minute per seat.
+    /// Reason codes besides: `E_VAL_RANGE` (a cause other than 1
+    /// or 2, a cause or a root with quest 0, a root without a cause, an
+    /// empty root, a root outside `[A-Za-z0-9_.]`). A report received twice
+    /// is judged twice and folds (the record's rule), so a resend is safe.
     pub struct QuestStage {
         /// `"t": 57`.
         #[serde(default)]
@@ -968,6 +1085,51 @@ wire_struct! {
         /// all. A client sends 0.
         #[serde(default)]
         pub mode: u8,
+        /// Since SCHEMA_VERSION 41: the run word, [`QUEST_START`] or
+        /// [`QUEST_STOP`], with stage 0; absent on a stage.
+        pub word: Option<u8>,
+        /// Since SCHEMA_VERSION 41: the acting player's actor (a server id,
+        /// 0xff000000 and up); absent means the sender.
+        pub acting: Option<u32>,
+        /// Since SCHEMA_VERSION 41: true on the login replay (server to
+        /// client only), applied as a load.
+        pub served: Option<bool>,
+        /// Since SCHEMA_VERSION 41 (thuum ADR-068 rung 5, the ownership
+        /// rule): on the login's list alone (quest 0, server to client), the
+        /// player-class quests while the server's quest scope acts (the
+        /// `playerQuests` list and the alias-derived class, the whole set
+        /// it judges each player's own), whose scripts each seat runs for
+        /// its own player: the platform admits their events past its gate.
+        /// Absent when none is.
+        pub player: Option<Vec<u32, { cap::SHARED_QUESTS }>>,
+        /// Since SCHEMA_VERSION 42 (thuum ADR-068 rung 5, D-Q3 A): on a run
+        /// word alone (server to client), the stages whose fragments the
+        /// engine runs with it, read from the quest's record: stage 0 and
+        /// its start-up stages for a start, its shut-down stages for a stop,
+        /// each once in the record's order. The receiver of a served word
+        /// suppresses their fragments, which its acting seat ran. Absent
+        /// when the record flags none.
+        pub word_stages: Option<Vec<u16, { cap::WORD_STAGES }>>,
+        /// Since SCHEMA_VERSION 43 (thuum ADR-068 rung 5, D-Q4 C): on a
+        /// seat's report alone (client to server), what made it,
+        /// [`QUEST_CAUSE_WORLD`] or [`QUEST_CAUSE_SEAT`], as the seat's
+        /// platform read the root of the script stack that called
+        /// Quest.Start, Quest.Stop or SetStage and carried its verdict onto
+        /// the stages and words the call set; a quest command the player
+        /// typed in the console is [`QUEST_CAUSE_WORLD`] (the seat's client
+        /// marks it before the engine runs it). Absent from an older client
+        /// and from the server. Unvalidated (R2). The server may judge a
+        /// world cause the seat's own, never the other way: under
+        /// `questPlayerAliasCause` "seat" (thuum D-Q9 B, the default) one
+        /// whose `root` is a player alias's OnLocationChange (wire-rules
+        /// quest_runs::root_is_seat_own).
+        pub cause: Option<u8>,
+        /// Since SCHEMA_VERSION 43: beside `cause`, that stack's root frame
+        /// as "<Script>.<Function>" (its owningObjectType's name and its
+        /// owningFunction's), or "console.<command>" for a quest command the
+        /// player typed; absent when neither made the report. Logged, never
+        /// judged (R2).
+        pub root: Option<String<{ cap::QUEST_ROOT }>>,
     }
 }
 
@@ -1017,6 +1179,30 @@ wire_struct! {
         pub launch_angle_z: f32,
         /// The caster's behavior graph variables.
         pub actor_animation_variables: ActorAnimationVariables,
+        /// thuum docs/verbs/spell-cast.md (the rune's glyph on the observer,
+        /// queued by Eli 2026-11-02): the surface the caster's own
+        /// target-location launch picked, read in its game from the engine's
+        /// decal placement (Skyrim Platform's runeDecal), so each observer's
+        /// game places the same glyph after its relayed launch. Only with
+        /// `has_launch` (`E_VAL_RANGE` otherwise); absent for every other
+        /// cast and for a sender that saw no decal.
+        pub decal: Option<SpellDecal>,
+    }
+}
+
+wire_struct! {
+    /// A target-location launch's surface (docs/verbs/spell-cast.md): the
+    /// pick's unit normal and the surface's material.
+    pub struct SpellDecal {
+        /// The pick's normal, x (unit length within 0.05, `E_VAL_RANGE`).
+        pub normal_x: f32,
+        /// The pick's normal, y.
+        pub normal_y: f32,
+        /// The pick's normal, z.
+        pub normal_z: f32,
+        /// The surface's MATERIAL_ID (CommonLibSSE-NG MaterialIDs.h, a
+        /// uint32 hash of the material's name), 0 for none known.
+        pub material_id: u32,
     }
 }
 
@@ -1168,6 +1354,13 @@ wire_struct! {
         pub self_id: u64,
         /// The call's number, echoed by FinishSpSnippet.
         pub snippet_idx: i64,
+        /// thuum ADR-068 (the one seam): the server's sequence for the
+        /// subject of a relayed script call (ScriptCall, MsgType 75), up by
+        /// one at every accepted call on that object; absent for every
+        /// other snippet, the server VM's own among them. A receiver applies
+        /// the relayed calls for one subject in this order and drops one at
+        /// or below the last it applied.
+        pub seq: Option<u32>,
     }
 }
 
@@ -1570,6 +1763,19 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// One inventory row of a fate (docs/verbs/npc-fate.md, playtest 44's
+    /// 1c): an item the server's container roll put in the actor's record
+    /// (worn items travel in `worn`), so every engine's copy carries the
+    /// record's loot and not its own roll.
+    pub struct FateInvRow {
+        /// The item's form id, never 0.
+        pub base_id: u32,
+        /// How many, never 0.
+        pub count: u32,
+    }
+}
+
+wire_struct! {
     /// One placement's fate (docs/verbs/npc-fate.md, ADR-046 decision 1,
     /// ADR-049): the server's roll for a game-file actor, for every engine to
     /// take instead of its own.
@@ -1586,6 +1792,10 @@ wire_struct! {
         pub level: u16,
         /// The worn items the server's outfit roll chose, by form id.
         pub worn: Vec<u32, { cap::FATE_WORN }>,
+        /// The record's inventory rows apart from the worn items (the
+        /// server's own container roll, playtest 44's 1c), at most
+        /// [`cap::FATE_INV`].
+        pub inv: Vec<FateInvRow, { cap::FATE_INV }>,
     }
 }
 
@@ -1597,7 +1807,8 @@ wire_struct! {
     /// own roll at the reference's load, and again at a respawn. The client
     /// pins the engine's roll from it; a fate arriving after the engine rolled
     /// goes through the engine's own re-roll. Reason codes: `E_VAL_RANGE` (a
-    /// placement id of 0 or at or above 0xff000000, a worn id of 0).
+    /// placement id of 0 or at or above 0xff000000, a worn id of 0, an
+    /// inventory row with a base id or count of 0).
     pub struct ActorFate {
         /// `"t": 51`.
         #[serde(default)]
@@ -1609,15 +1820,18 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 52, thuum's (docs/verbs/npc-fate.md, ADR-048's B): client to
-    /// server, reliable, once per death, R1. The host of a game-file actor,
-    /// or of a server-made one (0xff000000 up; playtest 37's finding 47),
+    /// server, reliable, once per death. The host of a game-file actor, or
+    /// of a server-made one (0xff000000 up; playtest 37's finding 47),
     /// reports a death its engine played that the server has no number for:
-    /// the actor, the host's reading of the cause, the killer when an actor,
-    /// the point. The server accepts it only when it can check the cause by
-    /// its own evidence (a fall by the record's height history, a hazard by
-    /// an activation it saw near the point, an NPC's hit by a recent hit it
-    /// numbered), refuses and logs the rest, and caps a host's reports. Reason
-    /// codes: `E_VAL_RANGE` (an actor id of 0, a cause above 4),
+    /// the actor, the host's reading of the cause, the killer when an actor
+    /// (cause 4, or the one a script named for cause 3), the point. Causes
+    /// 0, 1, 2 and 4 are R1: the server accepts them only when it can check
+    /// the cause by its own evidence (a fall by the record's height history,
+    /// a hazard by an activation it saw near the point, an NPC's hit by a
+    /// recent hit it numbered) and refuses and logs the rest; cause 3, a
+    /// host-run script's kill, is R2 since ADR-062 decision 2: the host's
+    /// word, recorded. A host's reports are capped. Reason codes:
+    /// `E_VAL_RANGE` (an actor id of 0, a cause above 4),
     /// `E_VAL_OUT_OF_WORLD`, `E_VAL_NONFINITE`, `E_VAL_RATE`.
     pub struct ActorDeath {
         /// `"t": 52`.
@@ -1626,9 +1840,11 @@ wire_struct! {
         /// The dead actor's own form id, under 0xff000000.
         pub refr_id: u32,
         /// The host's reading of the cause: 0 unknown, 1 fall, 2 hazard,
-        /// 3 script, 4 an actor's hit (the killer named).
+        /// 3 a script's kill (R2, the host's word), 4 an actor's hit (the
+        /// killer named).
         pub cause: u8,
-        /// The killer's form id when the cause is an actor's hit, else 0.
+        /// The killer's form id when the cause is an actor's hit, or the
+        /// one a script's Kill named, else 0.
         pub killer: u32,
         /// Where the body fell.
         pub pos: Vec3,
@@ -1637,8 +1853,10 @@ wire_struct! {
 
 wire_struct! {
     /// MsgType 53, thuum's (docs/verbs/npc-stream.md, ADR-050 decision 1):
-    /// client to server, unreliable (the first for an actor after a grant
-    /// marked reliable, the keyframe), at most once per 500 ms per hosted
+    /// client to server, unreliable except three samples sent reliable (the
+    /// first for an actor after a grant, the keyframe; a stand-up, finding
+    /// 54; the alive-to-dead flip, the host's dead-sample stamp on the
+    /// server), at most once per 500 ms per hosted
     /// actor and only on a change, R2 bounded by the server's numbers. The
     /// state of an actor the sender's game simulates (cell-host's host of the
     /// actor's cell) as its engine has it: the three percentages, its combat
@@ -2010,15 +2228,24 @@ wire_struct! {
     /// opening its portcullis: the target's activation parents name the
     /// caster in the game files), told to the cell's other games so each
     /// engine plays it with the caster the host's did. Server to client,
-    /// reliable. Reason codes: `E_VAL_RANGE` (a target or caster of 0).
+    /// reliable. Reason codes: `E_VAL_RANGE` (a target or caster of 0, an
+    /// entry other than 1 or 2).
+    ///
+    /// Since SCHEMA_VERSION 40 (thuum D-C2): with `entry` it is a guest's
+    /// trigger entry ([`Activate`]'s), sent to the cell's host alone, whose
+    /// engine sends that event (OnTriggerEnter for [`ENTRY_ENTER`],
+    /// OnTriggerLeave for [`ENTRY_LEAVE`]) to the target's scripts with the
+    /// caster, the presser, as akActionRef, instead of activating.
     pub struct RelayedActivation {
         /// `"t": 70`.
         #[serde(default)]
         pub t: MsgT<70>,
-        /// The activated reference; never 0.
+        /// The activated reference, or the entered trigger; never 0.
         pub target: u32,
-        /// The reference that activated it; never 0.
+        /// The reference that activated it, or the presser; never 0.
         pub caster: u32,
+        /// The trigger entry's event, 1 or 2; absent on an activation.
+        pub entry: Option<u8>,
     }
 }
 
@@ -2039,6 +2266,631 @@ wire_struct! {
         pub refr: u32,
         /// The behavior graph event name; never empty.
         pub event: String<{ cap::ANIM_EVENT }>,
+    }
+}
+
+wire_struct! {
+    /// One remap row of a change-form record (thuum docs/verbs/change-form.md,
+    /// D6): the record's body names a form by a three-byte id of kind 0, an
+    /// index into the SENDER's form-id map (a seat-and-session number), so
+    /// the row carries where that id sits in the body, the form's full id in
+    /// the load order both ends share, and the index the bytes decode to. The
+    /// receiver re-encodes the form through its own engine's SetNumericID
+    /// (35928) at that offset; the server stores the rows untranslated.
+    pub struct ChangeFormRemap {
+        /// The byte offset of the three-byte id inside `body`; the three
+        /// bytes fit inside it.
+        pub offset: u32,
+        /// The form the id stands for, as the shared load order numbers it;
+        /// never 0, never a load-index-00 or a created (0xff) form, which the
+        /// engine encodes as kinds 1 and 2 on every seat and no row remaps.
+        pub form_id: u32,
+        /// The 22-bit index the three bytes decode to on the sender.
+        pub index: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 72, thuum's (docs/verbs/change-form.md, ADR-065 system 1): an
+    /// actor's change form as the owner's engine serialized it at the frame's
+    /// end (the pack 36081's record: a header byte of type index and size
+    /// code, the version 0x4E, two lengths of the code's width, the data).
+    /// Client to server, reliable, R2: the cell's host reports the actors it
+    /// simulates, the server validates the shape against the decoded body
+    /// and records it; ownership and the epoch are the server's handler's
+    /// (ActionListener::OnChangeForm, the cells table). Reason codes:
+    /// `E_CHANGEFORM_RANGE` (a form id of 0 or a player's, 0xff000000 and
+    /// up, or a type past the header's six bits), `E_CHANGEFORM_SIZE` (a hex
+    /// body of odd length, past its cap or too short for any header),
+    /// `E_CHANGEFORM_HEADER` (a character that is not lowercase hex, the type
+    /// byte, the version or the lengths against the decoded body),
+    /// `E_CHANGEFORM_HASH` (the FNV-1a 32 of the decoded body against
+    /// `fnv1a`), `E_CHANGEFORM_REMAP` (a row outside the decoded body's data,
+    /// not decoding to kind 0 and its index, a form no row may remap, an
+    /// offset twice), `E_VAL_RATE` (the budget).
+    pub struct ChangeForm {
+        /// `"t": 72`.
+        #[serde(default)]
+        pub t: MsgT<72>,
+        /// The cell's host epoch the owner holds (HostGrant's); a stale one is
+        /// refused by the server (E_CHANGEFORM_EPOCH).
+        pub epoch: u32,
+        /// The actor's form id in the load order both ends share; never 0,
+        /// never a player's.
+        pub form_id: u32,
+        /// The record's save-type index (0 REFR, 1 ACHR), equal to the header
+        /// byte's low six bits.
+        pub form_type: u8,
+        /// The change flags the owner's engine marked (the header's
+        /// changeFlags).
+        pub flags: u32,
+        /// The form version byte, 0x4E on 1.6.1170.
+        pub version: u8,
+        /// The whole packed record, header and data, as two lowercase hex
+        /// characters a byte (the native's bodyHex, forwarded as is); even
+        /// length, at most cap::CHANGE_FORM_BODY_HEX characters; its header's
+        /// lengths match its decoded size.
+        pub body: String<{ cap::CHANGE_FORM_BODY_HEX }>,
+        /// FNV-1a 32 over the decoded record bytes (offset 0x811c9dc5, prime
+        /// 0x01000193), the owner's compare baseline once acked.
+        pub fnv1a: u32,
+        /// The census of kind-0 ids the body names (D6).
+        pub remap: Vec<ChangeFormRemap, { cap::CHANGE_FORM_REMAP }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 73, thuum's (docs/verbs/change-form.md): the server's receipt
+    /// of a recorded change form, the hash the owner compares its next
+    /// serialization against (equal bytes send nothing, amendment A). Server
+    /// to client, reliable, R0. Reason codes: `E_CHANGEFORM_RANGE` (a form
+    /// id of 0).
+    pub struct ChangeFormAck {
+        /// `"t": 73`.
+        #[serde(default)]
+        pub t: MsgT<73>,
+        /// The actor's form id; never 0.
+        pub form_id: u32,
+        /// The recorded body's FNV-1a 32.
+        pub fnv1a: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 74, thuum's (docs/verbs/change-form.md): a recorded change
+    /// form served to a seat that sees the actor, before the actor's first
+    /// frame there: with the CreateActor word, at a cell's load for the
+    /// cell's actors with a record, and at once to a seat already listening
+    /// when the record arrives. The remap rows are the sender's,
+    /// untranslated: the receiver re-encodes them through its own engine.
+    /// Server to client, reliable, R0 output. Reason codes: the shape rules
+    /// ChangeForm's body and rows obey (`E_CHANGEFORM_RANGE`,
+    /// `E_CHANGEFORM_SIZE`, `E_CHANGEFORM_HEADER`, `E_CHANGEFORM_REMAP`); no
+    /// hash travels.
+    pub struct ChangeFormApply {
+        /// `"t": 74`.
+        #[serde(default)]
+        pub t: MsgT<74>,
+        /// The actor's form id; never 0.
+        pub form_id: u32,
+        /// The record's save-type index.
+        pub form_type: u8,
+        /// The change flags the record was marked with.
+        pub flags: u32,
+        /// The form version byte.
+        pub version: u8,
+        /// The whole packed record as the sender's hex, unchanged; the
+        /// receiver computes its hash.
+        pub body: String<{ cap::CHANGE_FORM_BODY_HEX }>,
+        /// The sender's census rows.
+        pub remap: Vec<ChangeFormRemap, { cap::CHANGE_FORM_REMAP }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 75, thuum's (ADR-068, the one seam; docs/research/
+    /// scripts-one-system-2026-11-05.md 6.4): a tabled native a script ran
+    /// on the engine that owns the call's subject, read at the native
+    /// boundary (NativeFunctionBase::Call) from the call's typed frame and
+    /// reported as it ran. Client to server, reliable, R2: the server judges
+    /// the shape alone (wire-rules natives: the pair an action row of the
+    /// table or a state row it keeps as evidence, the arguments the row's
+    /// count and kinds, the sender within its budget and the subject's owner
+    /// at the epoch) and relays an accepted action to the subject's other
+    /// listeners as SpSnippet 30 with the subject's sequence (`seq`), or
+    /// keeps an evidence row's call for its subject and relays it to no seat
+    /// (ProcessTrapHit's: a trap's hit on an actor the sender simulates, that
+    /// actor's death evidence; thuum docs/verbs/npc-fate.md, playtest 48); a
+    /// value is never judged (ADR-062's amendment). Reason codes:
+    /// `E_VAL_RANGE` (an empty class or function, a subject or an object
+    /// argument the server names, 0xff000000 and up, or an object id past 32
+    /// bits; since SCHEMA_VERSION 44 `landed` on any call but an
+    /// ObjectReference.AddItem on 0x14, a landing's item 0 or 0xff000000 and
+    /// up, a negative count or a base twice), `E_VAL_ZERO_DELTA` (a landing's
+    /// count of 0), `E_VAL_NONFINITE`; the server's rule logs
+    /// `E_SCRIPTCALL_ROW`, `E_SCRIPTCALL_ARGS`, `E_SCRIPTCALL_OWNER` and
+    /// `E_SCRIPTCALL_RATE` by name, and on a player's own rows its
+    /// player_own codes (`E_SCRIPTCALL_LEVELED` for a leveled AddItem that
+    /// carries no `landed`, `E_SCRIPTCALL_ROLL` for a landing its list cannot
+    /// roll).
+    pub struct ScriptCall {
+        /// `"t": 75`.
+        #[serde(default)]
+        pub t: MsgT<75>,
+        /// The subject's owner epoch the sender holds: the cell's host epoch
+        /// of HostGrant for a world object (ADR-066 decision 3); for an
+        /// actor its cell's, unread (an actor's owner is its simulator).
+        pub epoch: u32,
+        /// The call's subject as the sender's engine numbers it: the self of
+        /// a method native, the target argument (the first) of a static one;
+        /// a form of the load order both ends share, or 0x14 for the
+        /// sender's own player; never 0xff000000 and up, which the server
+        /// names.
+        pub self_id: u32,
+        /// The native's Papyrus class, `ObjectReference`.
+        pub cls: String<{ cap::PAPYRUS_NAME }>,
+        /// The native's name, `PlayAnimation`.
+        #[serde(rename = "fn")]
+        pub func: String<{ cap::PAPYRUS_NAME }>,
+        /// The call's arguments in the native's order, read by their
+        /// declared types (an object as its form id and type name); JSON
+        /// null for one the boundary could not read. At most eleven, the
+        /// engine's limit for a native (CommonLibSSE-NG
+        /// src/RE/N/NativeFunctionBase.cpp:15).
+        pub args: Vec<Option<SnippetArg>, { cap::SCRIPT_CALL_ARGS }>,
+        /// The calling script's type (the caller frame's owningObjectType),
+        /// for the server's log.
+        pub caller: String<{ cap::PAPYRUS_NAME }>,
+        /// The calling function (the caller frame's owningFunction), for the
+        /// server's log.
+        pub handler: String<{ cap::PAPYRUS_NAME }>,
+        /// The native is latent: a receiver runs its row's non-latent twin.
+        pub latent: bool,
+        /// Since SCHEMA_VERSION 44 (thuum D-R1 C's leveled gap, train 52): on
+        /// an AddItem whose form is a leveled list, on the sender's own
+        /// player (`self_id` 0x14) alone, what the engine's roll put in that
+        /// player's inventory, read from the container events inside the
+        /// call's AddItemFunctor: each base once, its count summed, in
+        /// landing order; empty when the roll landed nothing; absent on
+        /// every other call. R2, the seat's word: the server records each
+        /// landing as a plain grant after checking the base is one the list
+        /// can roll. Delivered once on the reliable channel; a duplicate
+        /// would grant twice, as a plain own AddItem's would.
+        pub landed: Option<Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>>,
+    }
+}
+
+wire_struct! {
+    /// An object value's handle in a script record (thuum ADR-068 rung 3):
+    /// the VM's 64-bit handle as the owner's read splits it (thuum
+    /// docs/research/adr065-papyrus-state-2026-11-03.md Q1, a (kind, mid,
+    /// form id) triple; a plain form's is kind 0, mid 0xFFFF), and the script
+    /// type bound at it, which the receiver's FindBoundObject takes.
+    pub struct ScriptHandle {
+        /// The handle's kind: 0 a form's; 1 and 2 the others the save read
+        /// met, which a receiver reads as None (H-R6).
+        pub kind: u8,
+        /// The handle's mid.
+        pub mid: u16,
+        /// The form id: never 0x14 (a seat's own player) nor 0xff000000 and
+        /// up (the server's forms), which the owner encodes as None.
+        pub form: u32,
+        /// The script type bound at the handle; never empty, no NUL (the
+        /// receiver's FindBoundObject takes it as a C string).
+        #[serde(rename = "type")]
+        pub cls: String<{ cap::PAPYRUS_NAME }>,
+    }
+}
+
+wire_struct! {
+    /// One value in a script record (thuum ADR-068 rung 3), an array
+    /// variable's element: `k`, the Variable's folded raw type
+    /// (CommonLibSSE-NG include/RE/T/TypeInfo.h: 0 None, 1 object, 2 string,
+    /// 3 int, 4 float, 5 bool), and the one field that kind carries; an
+    /// object with no handle is a typed None.
+    pub struct ScriptValue {
+        /// The raw type, 0 to 5.
+        pub k: u8,
+        /// An int's value (k 3).
+        pub i: Option<i32>,
+        /// A float's value (k 4).
+        pub f: Option<f32>,
+        /// A bool's value (k 5).
+        pub b: Option<bool>,
+        /// A string's value (k 2); no NUL (the receiver's BSFixedString reads
+        /// a C string).
+        pub s: Option<String<{ cap::SCRIPT_STRING }>>,
+        /// An object's handle (k 1); none for a typed None.
+        pub o: Option<ScriptHandle>,
+    }
+}
+
+wire_struct! {
+    /// One variable of a script in a script record (thuum ADR-068 rung 3),
+    /// positional and parent-first (the chain's GetTotalNumVariables, H-R1):
+    /// a value as [`ScriptValue`] carries one, or for `k` 11 to 15 (the typed
+    /// array raw types) an array in `a` whose elements are of kind `k - 10`,
+    /// `elem` naming an object array's element type (k 11 alone); no `a` is
+    /// a None array, and `k` 10, the None array's own kind, carries no `a`
+    /// at all. Not recursive: an array holds values, never arrays.
+    pub struct ScriptVar {
+        /// The raw type, 0 to 5, or 10 to 15 for an array.
+        pub k: u8,
+        /// An int's value (k 3).
+        pub i: Option<i32>,
+        /// A float's value (k 4).
+        pub f: Option<f32>,
+        /// A bool's value (k 5).
+        pub b: Option<bool>,
+        /// A string's value (k 2); no NUL.
+        pub s: Option<String<{ cap::SCRIPT_STRING }>>,
+        /// An object's handle (k 1); none for a typed None.
+        pub o: Option<ScriptHandle>,
+        /// An object array's element type (k 11 alone); no NUL.
+        pub elem: Option<String<{ cap::PAPYRUS_NAME }>>,
+        /// An array's elements (k 11 to 15), each of kind `k - 10`; none for
+        /// a None array, and never on k 10.
+        pub a: Option<Vec<ScriptValue, { cap::SCRIPT_ARRAY }>>,
+    }
+}
+
+wire_struct! {
+    /// One script attached to the reference of a script record (thuum
+    /// ADR-068 rung 3): its type (the receiver's exact match), its current
+    /// state, Object::Save's flags byte (0x01 constructed, 0x02 valid, 0x04
+    /// lock held, 0x08 initialized) and every variable its chain declares,
+    /// in order.
+    pub struct ScriptObjectState {
+        /// The script type; never empty, no NUL.
+        #[serde(rename = "type")]
+        pub cls: String<{ cap::PAPYRUS_NAME }>,
+        /// The current state; "" for the empty state; no NUL.
+        pub state: String<{ cap::PAPYRUS_NAME }>,
+        /// Object::Save's flags byte: constructed and initialized, the lock
+        /// not held (a quiescent read).
+        pub flags: u8,
+        /// The variables, positional and parent-first.
+        pub vars: Vec<ScriptVar, { cap::SCRIPT_VARS }>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 76, thuum's (ADR-068 rung 3, the script record, decision 5
+    /// and its amendment A; docs/research/rung3-script-record-2026-11-06.md
+    /// section 1(b)): the scripts attached to one reference as its owner's
+    /// engine holds them, read at a quiescent point of the object (no running
+    /// or waiting stack whose self is it; the platform's
+    /// SerializeScriptState). Client to server, reliable, R2: the reference's
+    /// owner, the host of its cell, reports a record when its hash moved (at
+    /// the end of a stack that touched the object, at its sweep, and at its
+    /// release of the cell, at the epoch it released); the server judges the
+    /// epoch and the owner (wire-rules script_state) and keeps the last
+    /// record beside the reference's change form, stamping the object's
+    /// sequence and the reference's last animation event, and never relays it
+    /// live: it serves it as [`ScriptStateApply`]. Safe to receive twice: a
+    /// record replaces the last. Reason codes: `E_VAL_RANGE` (a form id of 0
+    /// or 0xff000000 and up; not 1 to 16 scripts; an empty type; flags
+    /// without constructed 0x01 or initialized 0x08, or with the lock 0x04; a
+    /// kind outside 0 to 5 and 10 to 15; a payload that does not match its
+    /// kind, an element of another kind than its array's `k - 10`, an `elem`
+    /// off an object array, elements on the None array, k 10; a handle's kind
+    /// past 2, its form 0x14 or 0xff000000 and up, its type empty; a NUL in
+    /// any string or name, which the receiver's apply would refuse the whole
+    /// record for), `E_VAL_NONFINITE`, `E_VAL_RATE` (the sender's budget);
+    /// the server logs `E_SCRIPTSTATE_NO_REF`, `E_SCRIPTSTATE_KIND`,
+    /// `E_SCRIPTSTATE_OWNER` and `E_SCRIPTSTATE_EPOCH` by name.
+    pub struct ScriptState {
+        /// `"t": 76`.
+        #[serde(default)]
+        pub t: MsgT<76>,
+        /// The cell's host epoch the owner holds (HostGrant's; at its release
+        /// read, the epoch it released).
+        pub epoch: u32,
+        /// The reference, a game-file placement; never 0, never 0xff000000
+        /// and up.
+        pub form_id: u32,
+        /// The owner's FNV-1a 32 over the record's dump, its compare
+        /// baseline; the server keeps it and never recomputes it.
+        pub fnv1a: u32,
+        /// The scripts attached to the reference, 1 to 16.
+        pub scripts: Vec<ScriptObjectState, { cap::SCRIPT_OBJECTS }>,
+    }
+}
+
+wire_struct! {
+    /// One behavior graph variable of a world object (thuum D-C3 A, PENDING
+    /// Eli; docs/research/fifty-fixes-2026-11-07.md 1(a)): the last value
+    /// its owner's script set through ObjectReference.SetAnimationVariableInt,
+    /// Float or Bool, which the server keeps on the reference with the call's
+    /// sequence. `k` takes [`ScriptVar`]'s folded kinds, 3 an int, 4 a float,
+    /// 5 a bool, so a typed value has one encoding in the schema, and the one
+    /// field that kind names carries the value.
+    pub struct GraphVar {
+        /// The graph variable's name; never empty, no NUL (the receiver's
+        /// BSFixedString reads a C string), each name once per serve.
+        pub name: String<{ cap::ANIM_EVENT }>,
+        /// The raw type, 3 to 5.
+        pub k: u8,
+        /// An int's value (k 3).
+        pub i: Option<i32>,
+        /// A float's value (k 4); finite.
+        pub f: Option<f32>,
+        /// A bool's value (k 5).
+        pub b: Option<bool>,
+        /// The object's sequence at the call that set it; never 0.
+        pub seq: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 77, thuum's (ADR-068 rung 3): a reference's script record
+    /// served to a seat, to the seat about to host the reference's cell
+    /// right ahead of its HostGrant, and to a seat that does not host the
+    /// cell right behind the reference's create word (a late joiner, a
+    /// restart). Server to client, reliable, R0 output; never relayed live.
+    /// `seq` is the object's sequence when the record was taken and `event`
+    /// the reference's last animation event then, its view (amendment A),
+    /// absent when none had reached it: the receiver applies the scripts and
+    /// replays the view where its own sequence for the object differs. Safe
+    /// to receive twice. Reason codes: the shape rules ScriptState's scripts
+    /// obey (`E_VAL_RANGE`, `E_VAL_NONFINITE`).
+    ///
+    /// Since SCHEMA_VERSION 40 (thuum D-C3 A, PENDING Eli): `graph_vars`, the
+    /// reference's behavior graph variables as the server keeps them at the
+    /// serve, not stamped at the record's take (a stack whose only act sets
+    /// a variable takes no new record), each with its own sequence: the
+    /// receiver sets each one whose sequence is above the one it holds for
+    /// that name, and again at each 3D load (a variable lives on the 3D's
+    /// graph). Absent when none is kept. Reason codes beside the record's:
+    /// `E_VAL_RANGE` (a name empty, with a NUL or named twice; a kind
+    /// outside 3 to 5 or a payload not its kind's; a seq of 0),
+    /// `E_VAL_NONFINITE` (a float that is not finite).
+    pub struct ScriptStateApply {
+        /// `"t": 77`.
+        #[serde(default)]
+        pub t: MsgT<77>,
+        /// The reference; never 0, never 0xff000000 and up.
+        pub form_id: u32,
+        /// The record's FNV-1a 32, the owner's.
+        pub fnv1a: u32,
+        /// The object's sequence when the record was taken.
+        pub seq: u32,
+        /// The reference's last animation event when the record was taken.
+        pub event: Option<String<{ cap::ANIM_EVENT }>>,
+        /// The scripts, 1 to 16, as the owner read them.
+        pub scripts: Vec<ScriptObjectState, { cap::SCRIPT_OBJECTS }>,
+        /// The reference's graph variables at the serve, at most 16 (thuum
+        /// D-C3 A, PENDING Eli); absent when none is kept.
+        pub graph_vars: Option<Vec<GraphVar, { cap::GRAPH_VARS }>>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 78, thuum's (D-S3, traps follow the interaction; ADR-068's
+    /// DestructionStage row; docs/research/trap-slice-d-s3-2026-11-05.md
+    /// point 3): a single-use result recorded once. Every seat runs the trap
+    /// family itself, so one oil lamp's fall or one tripwire's snap happens
+    /// on several engines; the world keeps one result. Client to server,
+    /// reliable, R2: a seat reports a reference's destruction stage rise, or
+    /// its destruction (SetDestroyed), that its engine caused or saw first
+    /// (`served` false); the server records the first report of each step
+    /// (wire-rules destruction: the stage only rises, destroyed only goes
+    /// true) for a reference it holds or loads, no actor, in a cell the
+    /// reporter's game has loaded. Server to client, reliable: a newly
+    /// recorded step relayed to the reference's other listeners (`served`
+    /// false), and the record served to a seat right after the reference's
+    /// create word, a late joiner's or after a restart (`served` true), which
+    /// the receiver applies without replaying the firing. Reason codes:
+    /// `E_VAL_RANGE` (a refr of 0 or 0xff000000 and up, a stage past 127),
+    /// `E_VAL_RATE` (the sender's budget); the server logs
+    /// `E_DESTRUCTION_NO_REF`, `E_DESTRUCTION_ACTOR` and
+    /// `E_DESTRUCTION_CELL` by name.
+    ///
+    /// Since SCHEMA_VERSION 39 (thuum ADR-068 rung 4 and its amendment B,
+    /// read 7) the same word is a reference's engine state from the server:
+    /// `disabled` and `deleted`, the record a host's scripted Enable,
+    /// Disable or Delete moved (its report is ScriptCall 75, never this
+    /// message), with the object's sequence `seq`; relayed to the
+    /// reference's other listeners at once and served behind its create word
+    /// (`served` true). A word carrying neither is a destruction word alone.
+    /// A seat's report carries neither and a `seq` of 0 (`E_VAL_RANGE`
+    /// otherwise).
+    pub struct DestructionStage {
+        /// `"t": 78`.
+        #[serde(default)]
+        pub t: MsgT<78>,
+        /// The reference, a game-file placement (below 0xff000000); never 0.
+        pub refr: u32,
+        /// The destruction stage the engine reached, 0 for none; at most 127.
+        pub stage: u8,
+        /// The reference is destroyed (a spent trap).
+        pub destroyed: bool,
+        /// The server's record served behind the reference's create word
+        /// (a late joiner, a restart) rather than a step just recorded; false
+        /// on every report.
+        pub served: bool,
+        /// The server's word that the reference is disabled (true) or
+        /// enabled (false), the ref state's record (thuum ADR-068 rung 4);
+        /// absent on a destruction word and on every report.
+        pub disabled: Option<bool>,
+        /// The server's word that the reference is deleted (a deleted
+        /// game-file reference stays disabled on every seat); absent on a
+        /// destruction word and on every report.
+        pub deleted: Option<bool>,
+        /// The object's sequence at the ref state's record (one per object,
+        /// owned by the server, shared with its relayed script calls); 0 on
+        /// a destruction word and on every report.
+        pub seq: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 79, thuum's (ADR-068 rung 4, AliasFill; amendment B, read 8):
+    /// a quest's reference alias filled or cleared. A quest is nobody's (D-F1
+    /// C): every seat runs its scripts, so each seat reports its own
+    /// ReferenceAlias.ForceRefTo or Clear (`served` false). Client to server,
+    /// reliable, R2: the server records one fill per (quest, alias), the
+    /// latest report winning and an equal one folded (wire-rules
+    /// alias_fills), for a QUST with a reference alias of that id. Server to
+    /// client, reliable: a fill that moved the record relayed to every other
+    /// seat (`served` false), and the record served at login (`served`
+    /// true). The items an alias creates are the server's own from the game
+    /// files and never travel here. Reason codes: `E_VAL_RANGE` (a quest of
+    /// 0 or 0xff000000 and up, an alias past 0xFFFF, a refr 0xff000000 and
+    /// up; a report served), `E_VAL_RATE`; the server logs
+    /// `E_ALIASFILL_NO_QUEST`, `E_ALIASFILL_NO_ALIAS` and `E_ALIASFILL_REF`
+    /// by name.
+    pub struct AliasFill {
+        /// `"t": 79`.
+        #[serde(default)]
+        pub t: MsgT<79>,
+        /// The QUST, a form of the load order both ends share; never 0.
+        pub quest: u32,
+        /// The alias's id in its quest (ALST), at most 0xFFFF.
+        pub alias: u32,
+        /// The reference filling it, a game-file form; 0 when cleared.
+        pub refr: u32,
+        /// The record served at login rather than a fill just recorded;
+        /// false on every report.
+        pub served: bool,
+    }
+}
+
+wire_struct! {
+    /// One world global's value (thuum ADR-068 rung 4, WorldGlobal).
+    pub struct WorldGlobalEntry {
+        /// The GLOB, a form of the load order both ends share; never 0.
+        pub global: u32,
+        /// Its value (a TESGlobal holds a float whatever its type,
+        /// CommonLibSSE-NG include/RE/T/TESGlobal.h:45); finite.
+        pub value: f32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 80, thuum's (ADR-068 rung 4, WorldGlobal; amendment B): the
+    /// GLOBs every seat's scripts write, streamed by one seat. Client to
+    /// server, reliable, R2: the world streamer's game reports the values
+    /// its once-a-second diff of the GLOB array found moved, under the
+    /// streamer's epoch (no `stream`, `served` false); the server judges the
+    /// epoch first (wire-rules world_streamer, ADR-066 decision 4) and each
+    /// entry (wire-rules world_globals: not the clock's, not a per-player
+    /// global, a non-constant GLOB), keeps the latest value per global on the
+    /// world's journal and relays what moved to every other seat. Server to
+    /// client, reliable: the relay (`served` false), the record at login
+    /// (`served` true), and the stream word at each election (`stream` true
+    /// to the new streamer, false to the old one; `entries` empty). Reason
+    /// codes: `E_VAL_RANGE` (more than 512 entries, a global of 0 or
+    /// 0xff000000 and up, one twice; a stream word at epoch 0; a report with
+    /// `stream`, `served`, or epoch 0), `E_VAL_NONFINITE`, `E_VAL_RATE`; the
+    /// server logs `E_WORLDGLOBAL_EPOCH`, `E_WORLDGLOBAL_OWNER` and the
+    /// entries' `E_WORLDGLOBAL_CLOCK`, `E_WORLDGLOBAL_PLAYER`,
+    /// `E_WORLDGLOBAL_CONSTANT` and `E_WORLDGLOBAL_NO_GLOB` by name.
+    pub struct WorldGlobal {
+        /// `"t": 80`.
+        #[serde(default)]
+        pub t: MsgT<80>,
+        /// The streamer's epoch: a report's the one its stream word named,
+        /// never 0; the server's the election's at the word, the current one
+        /// otherwise.
+        pub epoch: u32,
+        /// The stream word: true, this seat streams from `epoch`; false, its
+        /// stream ends. Absent on every report, relay and serve.
+        pub stream: Option<bool>,
+        /// The values, each global once; at most 512.
+        pub entries: Vec<WorldGlobalEntry, { cap::WORLD_GLOBALS }>,
+        /// The record served at login rather than a relay; false on every
+        /// report.
+        pub served: bool,
+    }
+}
+
+wire_struct! {
+    /// One condition-read variable's key (thuum ADR-068 rung 5,
+    /// ScriptVariables): a quest's variable (CTDA 629 GetVMQuestVariable) or a
+    /// reference's (630 GetVMScriptVariable), named by its form, the attached
+    /// script whose chain declares it and the variable's name as the
+    /// condition carries it (`::vampirestatus_var`).
+    pub struct ScriptVarKey {
+        /// The QUST or REFR, a form of the load order both ends share; never
+        /// 0 nor 0xff000000 and up.
+        pub form: u32,
+        /// The attached script; never empty, no NUL.
+        pub script: String<{ cap::PAPYRUS_NAME }>,
+        /// The variable; never empty, no NUL.
+        pub var: String<{ cap::PAPYRUS_NAME }>,
+        /// The key is its player's own (its form a player-class quest): the
+        /// seat reports it flagged own, and its value is that player's alone.
+        pub own: bool,
+    }
+}
+
+wire_struct! {
+    /// One condition-read variable's value (thuum ADR-068 rung 5,
+    /// ScriptVariables): its key's four fields, `k` rung 3's folded kinds a
+    /// condition compares (3 an int, 4 a float, 5 a bool) with the one field
+    /// that kind names, and the server's sequence for the key.
+    pub struct ScriptVarEntry {
+        /// The QUST or REFR; never 0 nor 0xff000000 and up.
+        pub form: u32,
+        /// The attached script; never empty, no NUL.
+        pub script: String<{ cap::PAPYRUS_NAME }>,
+        /// The variable; never empty, no NUL.
+        pub var: String<{ cap::PAPYRUS_NAME }>,
+        /// Its player's own key's value (a report's own, or a player's
+        /// record served to it alone).
+        pub own: bool,
+        /// The kind, 3 to 5.
+        pub k: u8,
+        /// An int's value (k 3).
+        pub i: Option<i32>,
+        /// A float's value (k 4); finite.
+        pub f: Option<f32>,
+        /// A bool's value (k 5).
+        pub b: Option<bool>,
+        /// The server's sequence for the key, rising at each recorded write;
+        /// 0 on a report, never 0 when served.
+        pub seq: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 81, thuum's (ADR-068 rung 5, ScriptVariables; D-V1 B and
+    /// D-T2 B; docs/research/rung5-quests-2026-11-09.md sections 1(a), 7 and
+    /// 8(b)): the script variables a dialogue's conditions read. A topic
+    /// info's fragment runs on the talking seat alone and writes many of them
+    /// (458 of the census's 770 keys), so every seat reports a listed key its
+    /// game changed and the server keeps the latest write per key. Client to
+    /// server, reliable, R2: the changed entries (`watch` empty, `served`
+    /// false, every `seq` 0), a player-class quest's keys flagged `own`
+    /// (wire-rules script_variables: the latest write wins per key in the
+    /// server's order, an equal one folded; an own key's on the reporter's
+    /// player's record). Server to client, reliable: a recorded world key's
+    /// relay to the other seats (`served` false), never an own key's; at
+    /// login the watch list (the keys to read, each `own` set, in messages of
+    /// at most 256) and the served values (`served` true: the world's record,
+    /// and the player's own record to that player alone), each with its
+    /// key's sequence, which a receiver keeps per key, applying a value
+    /// above the one it holds. Reason codes: `E_VAL_RANGE` (a form of 0 or
+    /// 0xff000000 and up, a script or a variable empty or carrying a NUL, a
+    /// key named twice in a list, a kind outside 3 to 5 or a payload not
+    /// exactly its kind's, a served entry's seq of 0; from a client a
+    /// `watch`, `served` true or a seq other than 0), `E_VAL_NONFINITE`,
+    /// `E_VAL_RATE`; the server logs `E_SCRIPTVAR_UNLISTED`,
+    /// `E_SCRIPTVAR_PLAYER`, `E_SCRIPTVAR_KIND` and `E_SCRIPTVAR_FULL` by
+    /// name.
+    pub struct ScriptVariables {
+        /// `"t": 81`.
+        #[serde(default)]
+        pub t: MsgT<81>,
+        /// The keys to read (server to client only, at a login), each once.
+        #[serde(default)]
+        pub watch: Vec<ScriptVarKey, { cap::SCRIPT_VARIABLES }>,
+        /// The values, each key once.
+        pub entries: Vec<ScriptVarEntry, { cap::SCRIPT_VARIABLES }>,
+        /// The record served at login rather than a report or a relay;
+        /// false on every report.
+        pub served: bool,
     }
 }
 

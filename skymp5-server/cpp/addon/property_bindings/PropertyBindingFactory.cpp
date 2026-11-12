@@ -2,11 +2,14 @@
 
 #include "ActorFateBinding.h"
 #include "ActorNeighborsBinding.h"
+#include "AliasFillsBinding.h"
 #include "AngleBinding.h"
 #include "AppearanceBinding.h"
 #include "BaseDescBinding.h"
+#include "BodyRestBinding.h"
 #include "CellFollowsBinding.h"
 #include "CellHostsBinding.h"
+#include "ChangeFormRecordBinding.h"
 #include "ConsoleCommandsAllowedBinding.h"
 #include "CustomPropertyBinding.h"
 #include "EquipmentBinding.h"
@@ -14,6 +17,7 @@
 #include "IdxBinding.h"
 #include "InventoryBinding.h"
 #include "IsDeadBinding.h"
+#include "IsDeletedBinding.h"
 #include "IsDisabledBinding.h"
 #include "IsOnlineBinding.h"
 #include "IsOpenBinding.h"
@@ -24,8 +28,14 @@
 #include "PercentagesBinding.h"
 #include "PosBinding.h"
 #include "ProfileIdBinding.h"
+#include "QuestRunsBinding.h"
+#include "QuestStagesBinding.h"
+#include "RefStateSeqBinding.h"
+#include "RespawnFatedBinding.h"
 #include "RespawnPercentagesBinding.h"
 #include "RunningEffectsBinding.h"
+#include "ScriptStateBinding.h"
+#include "ScriptVariablesBinding.h"
 #include "ShoutsBinding.h"
 #include "SpawnDelayBinding.h"
 #include "SpawnPointBinding.h"
@@ -33,6 +43,7 @@
 #include "StreamCountersBinding.h"
 #include "TemplateChainBinding.h"
 #include "TypeBinding.h"
+#include "WorldGlobalsBinding.h"
 #include "WorldOrCellDescBinding.h"
 
 std::map<std::string, std::shared_ptr<PropertyBinding>>
@@ -48,9 +59,13 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["cellFollows"] = std::make_shared<CellFollowsBinding>();
   result["streamCounters"] = std::make_shared<StreamCountersBinding>();
   result["actorFate"] = std::make_shared<ActorFateBinding>();
+  result["bodyRest"] = std::make_shared<BodyRestBinding>();
+  result["changeFormRecord"] = std::make_shared<ChangeFormRecordBinding>();
+  result["scriptState"] = std::make_shared<ScriptStateBinding>();
   result["gameTime"] = std::make_shared<GameTimeBinding>();
   result["inventory"] = std::make_shared<InventoryBinding>();
   result["isDead"] = std::make_shared<IsDeadBinding>();
+  result["respawnFated"] = std::make_shared<RespawnFatedBinding>();
   result["isDisabled"] = std::make_shared<IsDisabledBinding>();
   result["isOnline"] = std::make_shared<IsOnlineBinding>();
   result["isOpen"] = std::make_shared<IsOpenBinding>();
@@ -73,6 +88,17 @@ PropertyBindingFactory::CreateStandardPropertyBindings()
   result["respawnPercentages"] = std::make_shared<RespawnPercentagesBinding>();
   result["runningEffects"] = std::make_shared<RunningEffectsBinding>();
   result["shouts"] = std::make_shared<ShoutsBinding>();
+  // thuum ADR-068 rung 4: the journal's world globals and alias fills
+  result["worldGlobals"] = std::make_shared<WorldGlobalsBinding>();
+  result["aliasFills"] = std::make_shared<AliasFillsBinding>();
+  // and a reference's recorded ref state
+  result["isDeleted"] = std::make_shared<IsDeletedBinding>();
+  result["refStateSeq"] = std::make_shared<RefStateSeqBinding>();
+  // thuum ADR-068 rung 5: the journal's quest runs, quest stages and
+  // condition-read script variables
+  result["questRuns"] = std::make_shared<QuestRunsBinding>();
+  result["questStages"] = std::make_shared<QuestStagesBinding>();
+  result["scriptVariables"] = std::make_shared<ScriptVariablesBinding>();
   return result;
 }
 

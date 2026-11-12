@@ -1,7 +1,7 @@
-import { Actor } from "skyrimPlatform";
+import { Actor, isDamageActorReplaced } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { TimersService } from "./timersService";
-import { logLab } from "../../logging";
+import { logError, logLab } from "../../logging";
 
 export class RagdollService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -34,7 +34,14 @@ export class RagdollService extends ClientListener {
             return;
         }
         this.pending.set(id, [afterRemoveCallback]);
-        this.setLocalDamageMult(0);
+        // the player's own multipliers, so the player's own removal alone
+        // zeroes them for its window: every teleport of an NPC runs this too
+        // (remoteServer's Teleport), and must not cut the player's world
+        // damage meanwhile (D-T4's review, gap 2)
+        const isPlayer = id === 0x14;
+        if (isPlayer) {
+            this.setLocalDamageMults(0);
+        }
         let done = false;
         const finish = (how: string) => {
             if (done) {
@@ -42,7 +49,9 @@ export class RagdollService extends ClientListener {
             }
             done = true;
             this.controller.once("update", () => {
-                this.setLocalDamageMult(this.defaultLocalDamageMult);
+                if (isPlayer) {
+                    this.restoreLocalDamageMults();
+                }
                 const callbacks = this.pending.get(id) ?? [];
                 this.pending.delete(id);
                 if (how !== "answered") {
@@ -67,25 +76,144 @@ export class RagdollService extends ClientListener {
     private static readonly deadlineMs = 1000;
 
     private onceUpdate() {
-        this.setLocalDamageMult(this.defaultLocalDamageMult);
+        this.captureEngineDamageMults();
+        const override = this.localDamageMultOverride();
+        if (override === null) {
+            logLab("verb:traps", `world damage multipliers: the engine's own for the difficulty in force (D-T4 B): ${this.describeEngineDamageMults()}`);
+            // a reload inside the player's own removal window left 0 written:
+            // the engine's own go back unless this instance opened a window
+            if (!this.pending.has(0x14)) {
+                this.restoreLocalDamageMults();
+            }
+            return;
+        }
+        logLab("verb:traps", `world damage multipliers: ${override} on all six, the engine's own being ${this.describeEngineDamageMults()} (D-T4 B)`);
+        this.setLocalDamageMults(override);
     }
 
-    private setLocalDamageMult(damageMult: number) {
-        this.sp.Game.setGameSettingFloat("fDiffMultHPToPCE", damageMult);
-        this.sp.Game.setGameSettingFloat("fDiffMultHPToPCH", damageMult);
-        this.sp.Game.setGameSettingFloat("fDiffMultHPToPCL", damageMult);
-        this.sp.Game.setGameSettingFloat("fDiffMultHPToPCN", damageMult);
-        this.sp.Game.setGameSettingFloat("fDiffMultHPToPCVE", damageMult);
-        this.sp.Game.setGameSettingFloat("fDiffMultHPToPCVH", damageMult);
+    // the six damage-taken multipliers, one per difficulty, listed Novice
+    // (VE) to Legendary (L); DamageActor takes the one of the player's
+    // difficulty (thuum docs/research/re-37335-and-rune-landing.md, item 3)
+    private static readonly damageMultSettings: ReadonlyArray<string> = [
+        "fDiffMultHPToPCVE", "fDiffMultHPToPCE", "fDiffMultHPToPCN",
+        "fDiffMultHPToPCH", "fDiffMultHPToPCVH", "fDiffMultHPToPCL",
+    ];
+
+    // D-T4 B: the engine's own six, read once, before this client's first
+    // write of them (skymp5-client writes them at its first update and in the
+    // player's own removal window alone; the platform never does), whichever
+    // comes first. The first capture is kept in the platform's storage, which
+    // survives a plugin reload (client-hot, or any write under Plugins), so a
+    // reloaded instance takes it back instead of reading what the instance
+    // before it left (0 inside a removal window)
+    private captureEngineDamageMults() {
+        if (this.engineDamageMults !== null) {
+            return;
+        }
+        const kept = this.sp.storage[RagdollService.engineDamageMultsKey];
+        if (Array.isArray(kept) && kept.length === RagdollService.damageMultSettings.length
+            && kept.every((v) => typeof v === "number")) {
+            this.engineDamageMults = kept as number[];
+            return;
+        }
+        this.engineDamageMults = RagdollService.damageMultSettings.map(
+            (name) => this.sp.Game.getGameSettingFloat(name));
+        this.sp.storage[RagdollService.engineDamageMultsKey] = this.engineDamageMults;
     }
 
-    // thuum ADR-028: the server computes all damage one actor deals another,
-    // so a hit from any actor counts nothing to the player here; the
-    // server's ChangeValues carry it. At 1, a figure's spell that landed in
-    // this game hurt the player locally on top of the server's count: a
-    // relayed Fire Breath took test 2's own game to 0.34 while the server
-    // counted half (x-shout-relay 20261013-082608; docs/verbs/shouts.md).
-    // The world's damage (a fall) goes through no actor's multiplier and
-    // stays the game's own
-    private readonly defaultLocalDamageMult = 0;
+    private static readonly engineDamageMultsKey = "ragdollService.engineDamageMults";
+
+    private setLocalDamageMults(damageMult: number) {
+        this.captureEngineDamageMults();
+        for (const name of RagdollService.damageMultSettings) {
+            this.sp.Game.setGameSettingFloat(name, damageMult);
+        }
+    }
+
+    // after the player's own removal window: the override, 0 without the
+    // cut, or the engine's own six as captured
+    private restoreLocalDamageMults() {
+        const override = this.localDamageMultOverride();
+        if (override !== null) {
+            this.setLocalDamageMults(override);
+            return;
+        }
+        const engine = this.engineDamageMults;
+        if (engine === null) {
+            return;
+        }
+        RagdollService.damageMultSettings.forEach((name, i) => {
+            this.sp.Game.setGameSettingFloat(name, engine[i]);
+        });
+    }
+
+    private describeEngineDamageMults(): string {
+        const engine = this.engineDamageMults ?? [];
+        return RagdollService.damageMultSettings
+            .map((name, i) => `${name} ${engine[i]}`)
+            .join(", ");
+    }
+
+    // thuum ADR-028 and D-T4 (docs/research/trap-slice-d-s3-2026-11-05.md):
+    // the server computes all damage one actor deals another, and the
+    // platform's DamageActor replacement cuts it on this engine whoever the
+    // attacker (FridaHooks.cpp), so these six multipliers scale the WORLD's
+    // damage to the player alone: a hit with no attacker (a trap's) or the
+    // player's own. They were 0, the old way of keeping an
+    // actor's hit off the player's own engine (a relayed Fire Breath took
+    // test 2's own game to 0.34 while the server counted half, x-shout-relay
+    // 20261013-082608; docs/verbs/shouts.md), which zeroed the world's damage
+    // too: a spike wall's hit cost the player nothing (x-trap-hit-premise
+    // 20261105-154820; 60 at 1.0). D-T4 B (Eli, 2026-11-05: "traps should be
+    // scaled to difficulty"): the six keep the engine's own values, the
+    // game's table for the difficulty in force (Update.esm's
+    // fDiffMultHPToPCL 3.0 for Legendary; the difficulty in force is the
+    // player's own field, which the INI pin never reaches, x-trap-hit-difficulty
+    // 20261105-205713, DisableDifficultySelectionService), so this returns no number and
+    // nothing is written. A fall read unzeroed under the old 0 (b-push), so
+    // whether a fall passes through these at all is HYPOTHESIS, and the
+    // static read of DamageActor (re-37335 (a)) skips them for a fall at 1.0
+    // or more: a multiplier above 1 scales a trap's hit and not a fall's.
+    // The client setting worldDamageMult, a number of 0 or more, writes that
+    // one value to all six instead: a per-seat lever for the lab (R3, as
+    // every client setting is; traps.md); the player's own ragdoll removal
+    // writes 0 for its window and the same choice after it. Without the
+    // platform's DamageActor replacement (an older platform, or a replace
+    // that failed) nothing cuts another actor's damage to the player, so they
+    // stay 0 then. A plugin reloaded in a running game (client-hot) takes the
+    // first instance's capture back from the platform's storage
+    private localDamageMultOverride(): number | null {
+        if (!RagdollService.cutInstalled()) {
+            if (!this.cutMissingSaid) {
+                this.cutMissingSaid = true;
+                logError(this, "DamageActor's replacement is not in: the world multiplier stays 0 (D-T4)");
+            }
+            return 0;
+        }
+        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+        const v = s ? s["worldDamageMult"] : undefined;
+        if (v === undefined) {
+            return null;
+        }
+        if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+            return v;
+        }
+        if (!this.multRefusedSaid) {
+            this.multRefusedSaid = true;
+            logError(this, `worldDamageMult ${JSON.stringify(v)} refused (a number of 0 or more); the engine's own instead`);
+        }
+        return null;
+    }
+
+    private static cutInstalled(): boolean {
+        try {
+            return isDamageActorReplaced() === true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    private engineDamageMults: number[] | null = null;
+    private cutMissingSaid = false;
+    private multRefusedSaid = false;
 }

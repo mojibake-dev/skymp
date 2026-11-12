@@ -36,6 +36,16 @@ public:
   static uint32_t FirstLeveledPick(const espm::CombineBrowser& br,
                                    const std::vector<uint32_t>& chain);
 
+  // thuum D-R1 C's leveled gap (train 52, D-R2 B): every base the leveled
+  // list can roll, whatever the player's level, the chance of none or the
+  // list's flags: each entry's form made global as EvaluateList makes it, a
+  // nested leveled list followed (to kReachDepth levels below the list, each
+  // list once, so a cycle ends), an entry no record answers skipped; each
+  // base once, never a list. Empty for a form that is no leveled list.
+  static constexpr size_t kReachDepth = 16;
+  static std::vector<uint32_t> Reach(const espm::CombineBrowser& br,
+                                     const espm::LookupResult& lookupRes);
+
 private:
   static const espm::NPC_* ConvertToNpc(
     const espm::LookupResult& lookupResult);

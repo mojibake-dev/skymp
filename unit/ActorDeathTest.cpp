@@ -8,6 +8,7 @@
 #include "HostedActorStateMessage.h"
 #include "MsgType.h"
 #include "TestUtils.hpp"
+#include "UpdateMovementMessage.h"
 #include "libespm/Loader.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
@@ -169,6 +170,13 @@ TEST_CASE("A hosted NPC the record holds dead whose host samples it alive "
   State(p, 1, kPredator, 1.f);
   REQUIRE(actor.IsDead());
 
+  // the host samples the body dead first: its stamp (round six, run
+  // 20261103-100946: a host whose game never sampled the body dead stands
+  // nothing with a live sample, whatever the death's own stamp; the
+  // necromancer's host had the skeever dead on its engine before the spell)
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+
   // from the host: the death cleared, the body's day and its due ended, the
   // live word to the other game
   p.Messages().clear();
@@ -191,6 +199,347 @@ TEST_CASE("A hosted NPC the record holds dead whose host samples it alive "
   StandUp(p, actor);
   Leave(p, 1, kOther);
   Leave(p, 0, kHost);
+}
+
+// numidium's reviews of rounds six and seven (2026-11-03): the host's
+// dead-sample stamp names its WITNESS (the host's id and login generation)
+// and its time. The cases below: the cast's rule survives it; a NEW host's
+// first live sample stands nothing until it has sampled the body dead; a
+// RELAUNCHED host (a clean quit, the Release gone while it was away, the
+// same id back) must sample the body dead again; a host that WALKED OFF
+// before its quit (the cell unhosted, no Release flip reaching the body) the
+// same; the engine's death first (the host's zero on a still-alive record)
+// is that death's stamp; a bleedout's zero long before a later death is not;
+// the host's reliable death report is a stamp too
+
+static void BackdatePastGrace(MpActor& actor)
+{
+  actor.RecordDeathAt(
+    std::chrono::steady_clock::now() -
+    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+}
+
+static MpActor& HostedPredator(PartOne& p, MpActor*& hostOut, bool withOther)
+{
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  if (withOther) {
+    Arrive(p, 1, kOther);
+  }
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  hostOut = &host;
+  return actor;
+}
+
+TEST_CASE("An accepted reanimate stands a dead NPC at its host's live sample "
+          "without a dead sample first; a live sample with neither stands "
+          "nothing",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  actor.NoteReanimateAccepted(std::chrono::steady_clock::now());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A new host's first live sample of a dead NPC stands nothing until "
+          "that host has sampled the body dead",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  {
+    RawMessageData raw;
+    raw.userId = 0;
+    CellLoadedMessage unloaded;
+    unloaded.cell = kForestCell;
+    unloaded.loaded = false;
+    p.GetActionListener().OnCellLoaded(raw, unloaded);
+  }
+  host->SetPos(kForest + NiPoint3{ 60000.f, 60000.f, 0.f });
+  Host(p, 1, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &other);
+  State(p, 1, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  State(p, 1, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 1, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("The host's zero sample on a still-alive record is its dead-sample "
+          "stamp, so a later stand-up with no claimed hit stands the body",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  State(p, 0, kPredator, 0.f);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A host that quit cleanly and hosts again under the same id must "
+          "sample the body dead again before a live sample stands it",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, false);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  // the clean quit; the grace passes while the player is away (the Release
+  // reaches no game of its); the same id back, a new login generation
+  Leave(p, 0, kHost);
+  p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + 2'000);
+  auto& again = Arrive(p, 0, kHost);
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &again);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A host that walked off, quit and came back first must sample the "
+          "body dead again (its stamp named the old login)",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, false);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  // the host walks off: the cell unhosted after the grace, no Release flip
+  // reaching the body; then the quit, the grace again, the same id back
+  host->SetPos(kForest + NiPoint3{ 60000.f, 60000.f, 0.f });
+  p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + 2'000);
+  Leave(p, 0, kHost);
+  p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + 2'000);
+  auto& again = Arrive(p, 0, kHost);
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &again);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A bleedout's zero long before a later death is not that death's "
+          "stamp; the host must sample the body dead again",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const auto now = std::chrono::steady_clock::now();
+  // the host's zero on the living actor twenty seconds ago (a test-only
+  // backdate of the stamp, as RecordDeathAt is of the death)
+  actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
+                            now - std::chrono::seconds(20));
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A dead-sample stamp counts within kPendingDeathMs before the "
+          "recorded death and not beyond it",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const auto now = std::chrono::steady_clock::now();
+  // the death four seconds ago; a stamp two seconds before it, inside the
+  // window: the live sample stands the body
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
+                            now - std::chrono::seconds(6));
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+  // the same body dead again; a stamp four seconds before the death, past
+  // the window: the live sample stands nothing until a fresh dead sample
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
+                            now - std::chrono::seconds(8));
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A live sample inside kPendingDeathMs of the death is a sample in "
+          "flight, not a resurrection, with the host's stamp or without it",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  // the death now, the host's dead sample now, a live sample at once: the
+  // grace refuses it although the stamp is the witness's
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 0.f);
+  REQUIRE(actor.IsDead());
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+  // past the grace (the stamp taken after the death counts): the body stands
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A dead-sample stamp inside the window of the PENDING death's "
+          "start counts although TickDeaths recorded the death seconds later",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const auto now = std::chrono::steady_clock::now();
+  // the pending death began 8 s ago (the server's number reached zero), the
+  // host's engine died at the DamageCause and its flip landed 0.4 s later,
+  // and TickDeaths recorded the death 4 s after the start (4 s ago now,
+  // past the grace)
+  actor.BeginPendingDeath(nullptr);
+  actor.RecordPendingDeathAt(NowMs() - 8000);
+  actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
+                            now - std::chrono::milliseconds(7600));
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  // the stamp is 3.6 s before the recorded death (refused by 600 ms under a
+  // window anchored there) but 0.4 s after the pending start, so it counts
+  // by 3.4 s: the body stands at the host's live sample
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
+}
+
+TEST_CASE("A stale pending start from an earlier life never anchors the next "
+          "death's window: the stand-up clears it",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const auto now = std::chrono::steady_clock::now();
+  // life one: a pending death that began 60 s ago, the kill, the stand-up
+  actor.BeginPendingDeath(nullptr);
+  actor.RecordPendingDeathAt(NowMs() - 60000);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  actor.Respawn(false);
+  REQUIRE_FALSE(actor.IsDead());
+  // life two: the host's zero sample 20 s ago, then a death with no pending
+  // phase (OnActorDeath's kill, a script's, the console's) recorded 4 s ago:
+  // the stamp is 16 s before the death, past its window, although it follows
+  // life one's pending start; the live sample stands nothing
+  actor.NoteHostSampledDead(kHost, host->LoginGeneration(),
+                            now - std::chrono::seconds(20));
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE(actor.IsDead());
+}
+
+TEST_CASE("A death through SetIsDead during a pending death leaves the "
+          "pending phase armed until the stand-up clears it, so the next "
+          "pending death arms",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.BeginPendingDeath(nullptr);
+  REQUIRE(actor.HasPendingDeath());
+  // the death lands by the property, not by Kill (the lab's isDead write)
+  actor.SetIsDead(true);
+  REQUIRE(actor.IsDead());
+  actor.Respawn(false);
+  REQUIRE_FALSE(actor.IsDead());
+  REQUIRE_FALSE(actor.HasPendingDeath());
+  REQUIRE(p.worldState.pendingDeaths.count(kPredator) == 0);
+  actor.BeginPendingDeath(nullptr);
+  REQUIRE(actor.HasPendingDeath());
+}
+
+TEST_CASE("The host's reliable death report is its dead-sample stamp",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  // the host reports the death (a fall, with the height samples the fall
+  // rule checks): the record dies and the report is the stamp; no
+  // hosted-state zero follows
+  const NiPoint3 body = actor.GetPos();
+  const auto fell = std::chrono::steady_clock::now();
+  actor.RecordHeight(body.z + 500.f, fell - std::chrono::seconds(2));
+  actor.RecordHeight(body.z, fell);
+  Report(p, 0, kPredator, 1, 0, body);
+  REQUIRE(actor.IsDead());
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 1.f);
+  REQUIRE_FALSE(actor.IsDead());
 }
 
 // thuum docs/verbs/npc-fate.md (playtest 37's finding 54): a body dead since
@@ -411,9 +760,11 @@ TEST_CASE("A hazard report is checked against an activation beside the body",
   Leave(p, 0, kHost);
 }
 
-TEST_CASE("A script's kill, an unnamed cause and a body far from the record "
-          "are refused, a dead actor's report is nothing, and the setting "
-          "off refuses everything",
+// (a script's kill, cause 3, was refused here until ADR-062 decision 2 made
+// it the host's word; its case is the last in this file)
+TEST_CASE("An unnamed cause and a body far from the record are refused, a "
+          "dead actor's report is nothing, and the setting off refuses "
+          "everything",
           "[ActorDeath][espm]")
 {
   auto& p = GetPartOne();
@@ -430,8 +781,6 @@ TEST_CASE("A script's kill, an unnamed cause and a body far from the record "
   actor.RecordHeight(body.z + 500.f, now - std::chrono::seconds(2));
   actor.RecordHeight(body.z, now);
 
-  Report(p, 0, kPredator, 3, 0, body);
-  REQUIRE_FALSE(actor.IsDead());
   Report(p, 0, kPredator, 7, 0, body);
   REQUIRE_FALSE(actor.IsDead());
   // the drop would pass, but the body lies 3000 units away
@@ -717,5 +1066,511 @@ TEST_CASE("A hosted NPC at zero with no report dies by the server's word "
 
   StandUp(p, predator);
   Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+// thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4): a
+// corpse is a physics object under the prop rule. The engine that simulated
+// the NPC at its death owns its ragdoll: for WorldState::bodySettleMs its
+// movement reports for the dead actor move the record and reach the other
+// games (R2, recorded not judged); any other seat's are refused
+// (E_BODY_NOT_OWNER). Accepted samples held within MpActor::kBodyRestUnits
+// and kBodyRestDegrees of the dwell's anchor for kBodyRestDwellMs, no sooner
+// than kBodyRestMinMs after the death, or the window's end
+// (PartOne::TickBodies), put the body at rest, and every later report is
+// refused (E_BODY_AT_REST) until a resurrection clears it. A dead actor's
+// movement report is a body sample and never a stand-up: the stand-up reads
+// the health the host samples (OnHostedActorState), not the body's place.
+
+namespace {
+// `user`'s movement report for `actorId` at `pos` and `rot` (CellHostTest's
+// Move idiom). Its health and isDead are a live actor's on purpose: the body
+// path reads neither
+void MoveBody(PartOne& p, Networking::UserId user, uint32_t actorId,
+              const NiPoint3& pos, const NiPoint3& rot = { 0.f, 0.f, 0.f })
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateMovementMessage msg;
+  msg.idx = p.worldState.GetFormAt<MpActor>(actorId).GetIdx();
+  msg.data.worldOrCell = kTamriel;
+  msg.data.pos = { pos.x, pos.y, pos.z };
+  msg.data.rot = { rot.x, rot.y, rot.z };
+  msg.data.runMode = "Standing";
+  msg.data.healthPercentage = 1.f;
+  msg.data.isDead = false;
+  p.GetActionListener().OnUpdateMovement(raw, msg);
+}
+
+// the movement relays `user` received since the last clear: the raw `{}`
+// bytes the fixture parses to an empty object; `reliable` counts those sent
+// reliably alone
+size_t RelaysTo(PartOne& p, Networking::UserId user, bool reliable = false)
+{
+  size_t n = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() && m.j.empty() &&
+        (!reliable || m.reliable)) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+// the isDead "false" words `user` heard for `refrId` (a stand-up's)
+size_t LiveWordsTo(PartOne& p, Networking::UserId user, uint32_t refrId)
+{
+  size_t n = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == user && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::UpdateProperty) &&
+        m.j.value("propName", std::string()) == "isDead" &&
+        m.j.value("refrId", 0u) == refrId &&
+        m.j.value("dataDump", std::string()) == "false") {
+      ++n;
+    }
+  }
+  return n;
+}
+}
+
+TEST_CASE("The body's rest: its owner's movement report for a dead NPC inside "
+          "the settle window moves the record and reaches the other game",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  const NiPoint3 deathPoint = actor.GetPos();
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  REQUIRE(actor.HasBodySettle());
+  REQUIRE(actor.IsBodySettling());
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE(actor.BodyRestAtMs() == 0);
+  REQUIRE(actor.BodyOwnerId() == kHost);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 1);
+
+  // the ragdoll slid down the slope (playtest 42's F4): the record follows
+  const NiPoint3 slid = deathPoint + NiPoint3{ 700.f, 0.f, -300.f };
+  const NiPoint3 lying{ 90.f, 0.f, 45.f };
+  p.Messages().clear();
+  MoveBody(p, 0, kPredator, slid, lying);
+  REQUIRE(actor.GetPos() == slid);
+  REQUIRE(actor.GetAngle() == lying);
+  REQUIRE(actor.IsDead());
+  REQUIRE(actor.IsBodySettling());
+  REQUIRE(actor.BodySampleCount() == 1);
+  // relayed to the other game as a live hosted actor's step, unreliable
+  REQUIRE(RelaysTo(p, 1) == 1);
+  REQUIRE(RelaysTo(p, 1, true) == 0);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: a report from a game that does not own the body "
+          "is refused (E_BODY_NOT_OWNER) and moves nothing",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  REQUIRE(actor.BodyOwnerId() == kHost);
+  const NiPoint3 deathPoint = actor.GetPos();
+
+  p.Messages().clear();
+  MoveBody(p, 1, kPredator, deathPoint + NiPoint3{ 300.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint);
+  REQUIRE(actor.BodySampleCount() == 0);
+  REQUIRE(actor.IsBodySettling());
+  REQUIRE(RelaysTo(p, 0) == 0);
+  REQUIRE(RelaysTo(p, 1) == 0);
+
+  // the owner's report right after is taken: the refusal held nothing back
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.BodySampleCount() == 1);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: samples held within 2 units and 2 degrees of the "
+          "dwell's anchor for the dwell, no sooner than its floor after the "
+          "death, put the body at rest; two agreeing samples at the death "
+          "point, a creep and a turn do not",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  const NiPoint3 deathPoint = actor.GetPos();
+  // the samples against the record's own death stamp: no wall-clock slack
+  const uint64_t d = actor.BodyDiedAtMs();
+  REQUIRE(d != 0);
+  REQUIRE(MpActor::kBodyRestDwellMs == 750);
+  REQUIRE(MpActor::kBodyRestMinMs == 2'500);
+  const NiPoint3 lying{ 0.f, 0.f, 10.f };
+
+  // b-npc-death's red (rung 3's gate 20261107-005511): the engine's reference
+  // holds the death point while the ragdoll starts, so its first samples
+  // agree 133 ms apart; however long they agree, no rest before the floor
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 50));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 183));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 1'500));
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE(actor.BodySampleCount() == 3);
+
+  // then the ragdoll slides: a sample past the anchor's bounds starts the
+  // dwell again there
+  const NiPoint3 slid = deathPoint + NiPoint3{ 400.f, 0.f, -150.f };
+  REQUIRE_FALSE(actor.NoteBodySample(slid, lying, d + 2'730));
+  // a creep: each step 1.5 units from the last, which two agreeing samples
+  // called a rest before; the second is 3 units from the anchor, so the
+  // dwell starts again at it
+  const NiPoint3 crept = slid + NiPoint3{ 3.f, 0.f, 0.f };
+  REQUIRE_FALSE(
+    actor.NoteBodySample(slid + NiPoint3{ 1.5f, 0.f, 0.f }, lying, d + 3'000));
+  REQUIRE_FALSE(actor.NoteBodySample(crept, lying, d + 3'130));
+  // a turn of 3 degrees in place: the angle starts it again
+  REQUIRE_FALSE(
+    actor.NoteBodySample(crept, NiPoint3{ 0.f, 0.f, 13.f }, d + 3'260));
+  // 359 is 14 degrees from 13 through the heading's wrap: again
+  REQUIRE_FALSE(
+    actor.NoteBodySample(crept, NiPoint3{ 0.f, 0.f, 359.f }, d + 3'390));
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  // 1 unit off the anchor and 1.5 degrees through the wrap (359 to 0.5):
+  // 510 ms into the dwell is short of it, 750 ms ends it
+  REQUIRE_FALSE(actor.NoteBodySample(crept + NiPoint3{ 1.f, 0.f, 0.f },
+                                     NiPoint3{ 0.f, 0.f, 0.5f }, d + 3'900));
+  REQUIRE(actor.NoteBodySample(crept + NiPoint3{ 1.f, 0.f, 0.f },
+                               NiPoint3{ 0.f, 0.f, 0.5f }, d + 4'140));
+  REQUIRE(actor.IsBodyAtRest());
+  REQUIRE_FALSE(actor.IsBodySettling());
+  REQUIRE(actor.BodyRestAtMs() == d + 4'140);
+  REQUIRE(actor.BodySampleCount() == 10);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 0);
+
+  // a body still from its first sample rests at the floor, not before
+  StandUp(p, actor);
+  actor.Kill(nullptr);
+  const uint64_t d2 = actor.BodyDiedAtMs();
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d2 + 100));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d2 + 2'400));
+  REQUIRE(actor.NoteBodySample(deathPoint, lying, d2 + 2'530));
+  REQUIRE(actor.BodyRestAtMs() == d2 + 2'530);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: the owner's sample that ends the dwell puts the "
+          "body at rest through its report, goes reliably, and the next "
+          "report is refused (E_BODY_AT_REST)",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  const NiPoint3 deathPoint = actor.GetPos();
+
+  // the death and the dwell's anchor behind the report's own clock (the
+  // movement path reads steady_clock, as NowMs does): the death 5 s ago, the
+  // body still at `rest` since 1 s ago
+  const uint64_t now = NowMs();
+  actor.BeginBodySettle(now - 5'000);
+  const NiPoint3 rest = deathPoint + NiPoint3{ 211.f, 0.f, -50.f };
+  REQUIRE_FALSE(
+    actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 359.f }, now - 1'000));
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  // the owner's next report, 1 unit off and 1.5 degrees through the wrap:
+  // the dwell is over, the body at rest at this sample
+  p.Messages().clear();
+  const NiPoint3 last = rest + NiPoint3{ 1.f, 0.f, 0.f };
+  MoveBody(p, 0, kPredator, last, NiPoint3{ 0.f, 0.f, 0.5f });
+  REQUIRE(actor.IsBodyAtRest());
+  REQUIRE_FALSE(actor.IsBodySettling());
+  REQUIRE(actor.BodyRestAtMs() != 0);
+  REQUIRE(actor.BodySampleCount() == 2);
+  REQUIRE(actor.GetPos() == last);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 0);
+  REQUIRE(RelaysTo(p, 1, true) == 1);
+
+  // from then every report for the body is refused, the owner's included
+  const auto restAt = actor.BodyRestAtMs();
+  p.Messages().clear();
+  MoveBody(p, 0, kPredator, last + NiPoint3{ 500.f, 0.f, 0.f });
+  MoveBody(p, 1, kPredator, last + NiPoint3{ 500.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == last);
+  REQUIRE(actor.BodySampleCount() == 2);
+  REQUIRE(actor.BodyRestAtMs() == restAt);
+  REQUIRE(RelaysTo(p, 1) == 0);
+  REQUIRE(RelaysTo(p, 0) == 0);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: the settle window's end (bodySettleMs) puts the "
+          "body at rest where the record has it, by the sweep or by the "
+          "next report",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.bodySettleMs = 5'000;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  const NiPoint3 deathPoint = actor.GetPos();
+  // the ticks against the record's own death stamp: no wall-clock slack
+  const uint64_t d = actor.BodyDiedAtMs();
+  REQUIRE(d != 0);
+
+  // the sweep inside the window: nothing; past it: at rest at the record
+  p.TickBodies(d + 2'500);
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE(actor.IsBodySettling());
+  p.TickBodies(d + 7'000);
+  REQUIRE(actor.IsBodyAtRest());
+  REQUIRE(actor.BodyRestAtMs() == d + 7'000);
+  REQUIRE(actor.GetPos() == deathPoint);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 0);
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 300.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint);
+
+  // the same end read by the movement path when no sweep ran since: a
+  // report after the window is refused, the body at rest
+  StandUp(p, actor);
+  p.worldState.bodySettleMs = 0;
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsBodySettling());
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 300.f, 0.f, 0.f });
+  REQUIRE(actor.IsBodyAtRest());
+  REQUIRE(actor.GetPos() == deathPoint);
+  REQUIRE(actor.BodySampleCount() == 0);
+  p.worldState.bodySettleMs = 15'000;
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: a respawn clears the rest, and the next death "
+          "settles anew under its simulator",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  const NiPoint3 deathPoint = actor.GetPos();
+  const NiPoint3 rest = deathPoint + NiPoint3{ 150.f, 0.f, 0.f };
+  // at rest by the dwell, against the record's own death stamp
+  const uint64_t d = actor.BodyDiedAtMs();
+  actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 0.f }, d + 2'000);
+  actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 0.f }, d + 3'000);
+  REQUIRE(actor.IsBodyAtRest());
+
+  actor.Respawn(false);
+  REQUIRE_FALSE(actor.IsDead());
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE_FALSE(actor.IsBodySettling());
+  REQUIRE_FALSE(actor.HasBodySettle());
+  REQUIRE(actor.BodyRestAtMs() == 0);
+  REQUIRE(actor.BodyOwnerId() == 0);
+  REQUIRE(actor.BodySampleCount() == 0);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 0);
+
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsBodySettling());
+  REQUIRE_FALSE(actor.IsBodyAtRest());
+  REQUIRE(actor.BodyOwnerId() == kHost);
+  REQUIRE(actor.BodySampleCount() == 0);
+  REQUIRE(p.worldState.settlingBodies.count(kPredator) == 1);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: a dead actor's movement report is a body sample "
+          "and never a stand-up, whatever health the message carries",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  // the fate's day and its due as the kill left them (scheduled by the
+  // respawn path when it ran): the body sample must change neither
+  const bool dayStamped = actor.GetChangeForm().fateDiedAt.has_value();
+  const size_t due = p.worldState.fateRespawnDue.count(kPredator);
+  // past the grace and with the host's dead stamp: the state a live HOSTED
+  // STATE sample would stand the body from (the first case of this file)
+  BackdatePastGrace(actor);
+  State(p, 0, kPredator, 0.f);
+  const NiPoint3 deathPoint = actor.GetPos();
+
+  p.Messages().clear();
+  // MoveBody's message says health 1.0 and isDead false: not read
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 120.f, 0.f, -40.f });
+  REQUIRE(actor.IsDead());
+  REQUIRE(actor.GetChangeForm().fateDiedAt.has_value() == dayStamped);
+  REQUIRE(p.worldState.fateRespawnDue.count(kPredator) == due);
+  REQUIRE(LiveWordsTo(p, 1, kPredator) == 0);
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 120.f, 0.f, -40.f });
+  REQUIRE(actor.IsBodySettling());
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("The body's rest: a host change mid-ragdoll leaves the body with "
+          "its mover: the old host's in-cell samples are taken past the "
+          "cell-host rule, the new host's are refused, and a roll into the "
+          "next cell keeps the cell-change rule",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  actor.Kill(nullptr);
+  REQUIRE(actor.BodyOwnerId() == kHost);
+  const NiPoint3 deathPoint = actor.GetPos();
+
+  // the mover's game unloads the cell and walks away; the other game hosts
+  {
+    RawMessageData raw;
+    raw.userId = 0;
+    CellLoadedMessage unloaded;
+    unloaded.cell = kForestCell;
+    unloaded.loaded = false;
+    p.GetActionListener().OnCellLoaded(raw, unloaded);
+  }
+  host->SetPos(kForest + NiPoint3{ 60000.f, 60000.f, 0.f });
+  Host(p, 1, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &other);
+  REQUIRE(actor.BodyOwnerId() == kHost);
+
+  // the mover's in-cell sample: the cell-host rule stands aside for the
+  // body's owner within the window
+  p.Messages().clear();
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.BodySampleCount() == 1);
+  REQUIRE(RelaysTo(p, 1) == 1);
+
+  // the new host's sample: not the owner
+  MoveBody(p, 1, kPredator, deathPoint + NiPoint3{ 200.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.BodySampleCount() == 1);
+
+  // the mover's roll into the next cell: the cell-change rule, which the
+  // owner no longer satisfies, refuses it
+  MoveBody(p, 0, kPredator, deathPoint + NiPoint3{ 4000.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.BodySampleCount() == 1);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+// thuum docs/DECISIONS.md ADR-062 decision 2 (Eli, playtest 41: "trust
+// should LARGELY be the default"): a host-run script's kill, reported by the
+// host whose engine ran it, is the host's word (R2, declared unvalidated);
+// before ADR-062 cause 3 was refused as the server's to run
+TEST_CASE("A host's report of a script's kill (cause 3) is taken as the "
+          "host's word; another game's is not the host's to make",
+          "[ActorDeath][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  auto& host = Arrive(p, 0, kHost);
+  Arrive(p, 1, kOther);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+
+  // the other game does not simulate the actor: its report is nobody's
+  Report(p, 1, kPredator, 3, 0, actor.GetPos());
+  REQUIRE_FALSE(actor.IsDead());
+
+  // the host's: taken, the killer the script named credited; the body's
+  // distance to the record is no gate for a script's kill (ADR-063 decision
+  // 4: the host streams the record itself; KillEssential's flag the same)
+  Report(p, 0, kPredator, 3, kHost,
+         actor.GetPos() + NiPoint3{ 3000.f, 0.f, 0.f });
+  REQUIRE(actor.IsDead());
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+// thuum docs/DECISIONS.md ADR-062 decision 2 and ADR-063 decision 4 (slice
+// 1b's review, finding 7): the engine's essential rule is a check on the
+// owner's engine, not on consistency (KillEssential clears the flag and
+// kills; the server's base still reads essential), so a host-run script's
+// kill (cause 3) passes MayDie where an actor's hit (cause 4) is refused
+TEST_CASE("A host's report of a script's kill on an essential base is taken "
+          "where an actor's hit on it is refused as immortal",
+          "[ActorDeath][espm]")
+{
+  // Delphine 0x13485 in the Sleeping Giant 0x133c6 (lab/esm.py refs-of
+  // 0x13478: her base's ACBS flags carry Essential); the host stands inside
+  // the inn so its loaded report is granted the interior
+  constexpr uint32_t kInn = 0x133c6;
+  constexpr uint32_t kDelphine = 0x13485;
+  const NiPoint3 kInside{ -250.f, -360.f, 0.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  p.worldState.npcDeathReports = true;
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kInside, 0, kInn);
+  p.SetUserActor(0, kHost);
+  p.TickCellHosts(NowMs());
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& actor = Standing(p, kDelphine);
+  Host(p, 0, kInn);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  REQUIRE_FALSE(actor.MayDie(nullptr));
+
+  // an actor's hit on her, the hit the server numbered a moment before so
+  // that only the essential rule can refuse it: refused
+  actor.NoteHitBy(kHost, std::chrono::steady_clock::now());
+  Report(p, 0, kDelphine, 4, kHost, actor.GetPos());
+  REQUIRE_FALSE(actor.IsDead());
+
+  // a script's kill on her: the host's word, taken
+  Report(p, 0, kDelphine, 3, 0, actor.GetPos());
+  REQUIRE(actor.IsDead());
+
+  StandUp(p, actor);
   Leave(p, 0, kHost);
 }

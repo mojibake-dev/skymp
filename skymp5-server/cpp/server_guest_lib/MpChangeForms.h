@@ -3,6 +3,7 @@
 #include "ActorValueRecord.h"
 #include "ActorValues.h"
 #include "Appearance.h"
+#include "ChangeFormRecord.h"
 #include "DynamicFields.h"
 #include "Equipment.h"
 #include "Faction.h"
@@ -17,6 +18,7 @@
 #include "Quest.h"
 #include "QuestStageDone.h"
 #include "RunningEffect.h"
+#include "ScriptStateRecord.h"
 #include "ShoutRecord.h"
 #include "UnresolvedForm.h"
 #include <cstdint>
@@ -171,6 +173,38 @@ public:
   // Used for PlayAnimation (object reference)
   std::optional<std::string> lastAnimation;
 
+  // the fifty fixes' D-C3 A (PENDING ELI; thuum docs/research/
+  // fifty-fixes-2026-11-07.md section 1(c), the record): the behavior graph
+  // variables a world object's owner's script set through the seam
+  // (SetAnimationVariableBool, Int and Float, wire-rules natives
+  // Keep::Variable), each with the call's sequence and placed by the
+  // record's slot rule (natives::variable_slot: at most sixteen, a new name
+  // past them in the oldest's place), served beside the view in the script
+  // record's apply, since a stack whose only act is a variable takes no new
+  // record. `k` is ScriptVar's folded kind and the one value it carries: 3
+  // `i`, 4 `f`, 5 `b` (ScriptStateTypes.h's ScriptStateValue idiom). Saved
+  // under "graphVariables"; absent in older records and on references no
+  // script set one, read as none (an optional key, formVersion kept)
+  struct GraphVariable
+  {
+    std::string name;
+    uint32_t k = 0;
+    std::optional<int32_t> i;
+    std::optional<float> f;
+    std::optional<bool> b;
+    uint32_t seq = 0;
+    auto ToTuple() const { return std::make_tuple(name, k, i, f, b, seq); }
+    friend bool operator==(const GraphVariable& lhs, const GraphVariable& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const GraphVariable& lhs, const GraphVariable& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<std::vector<GraphVariable>> graphVariables;
+
   // Used for SetNodeTextureSet (node, texture set desc)
   std::optional<std::map<std::string, std::string>> setNodeTextureSet;
 
@@ -261,6 +295,202 @@ public:
   };
   std::optional<Lock> lock;
 
+  // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
+  // row): the reference's destruction as the server recorded it from the
+  // first seat to report each step (wire-rules destruction: the stage only
+  // rises, destroyed only goes true); absent in older records and on
+  // references nobody reported, read as the game files' state (stage 0, not
+  // destroyed)
+  struct Destruction
+  {
+    uint8_t stage = 0;
+    bool destroyed = false;
+    auto ToTuple() const { return std::make_tuple(stage, destroyed); }
+    friend bool operator==(const Destruction& lhs, const Destruction& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const Destruction& lhs, const Destruction& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<Destruction> destruction;
+
+  // thuum docs/verbs/change-form.md (ADR-065 system 1): the latest change
+  // form the actor's owner reported, as the engine packed it, with its hash,
+  // the sender's remap rows, the epoch, the sender and the time
+  // (ChangeFormRecord.h); absent in older records and on actors nobody
+  // reported, read as none
+  std::optional<ChangeFormRecord> changeFormRecord;
+
+  // thuum ADR-068 rung 3 (the script record): the last record the
+  // reference's owner reported of the scripts attached to it, with the
+  // object's sequence and the reference's view the server stamped then
+  // (ScriptStateRecord.h); absent in older records and on references nobody
+  // reported, read as none
+  std::optional<ScriptStateRecord> scriptState;
+
+  // thuum ADR-068 rung 4 (the state rows; docs/research/
+  // rung4-state-rows-2026-11-07.md section 1(c)): the object's sequence at
+  // the ref state's last record (an Enable, a Disable or a Delete its owner's
+  // script reported through the seam, or one of the server's own), which
+  // marks isDisabled and isDeleted as recorded: a reference whose record
+  // carries it is attached by its record (WorldState::LoadForm lets the
+  // loader's type and disabled filters yield), served behind its create word
+  // as DestructionStage's disabled and deleted words, and seeds the object's
+  // sequence after a restart; absent in older records and on references no
+  // script moved, read as none
+  std::optional<uint32_t> refStateSeq;
+
+  // thuum ADR-068 rung 4 (the standing, W3): the crime faction the NPC's
+  // simulator's script set (SetCrimeFaction), the empty FormDesc for its
+  // removal (SetCrimeFaction(None); an empty desc names no plugin's form, so
+  // it marks the removal and nothing else); absent while the base's (CRIF)
+  // stands, and in older records
+  std::optional<FormDesc> crimeFaction;
+
+  // thuum ADR-068 rung 4 (the standing, W3): the relationship ranks the NPC's
+  // simulator's scripts set toward other actors (SetRelationshipRank, the
+  // engine's int8); absent in older records and on NPCs no script moved,
+  // read as none
+  struct Relationship
+  {
+    FormDesc other;
+    int8_t rank = 0;
+    auto ToTuple() const { return std::make_tuple(other, rank); }
+    friend bool operator==(const Relationship& lhs, const Relationship& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const Relationship& lhs, const Relationship& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<std::vector<Relationship>> relationships;
+
+  // thuum ADR-068 rung 4 (the script set, W3): the script's self and the base
+  // whose PlaceAtMe or PlaceActorAtMe made the server place this reference
+  // (wire-rules placements' SelfRef anchor), its pose the reporter's; absent
+  // on every other form and in older records, read as none
+  struct PlacedByScript
+  {
+    FormDesc self;
+    FormDesc base;
+    auto ToTuple() const { return std::make_tuple(self, base); }
+    friend bool operator==(const PlacedByScript& lhs,
+                           const PlacedByScript& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const PlacedByScript& lhs, const PlacedByScript& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<PlacedByScript> placedByScript;
+
+  // thuum ADR-068 rung 4 (amendment B, read 8): the world's quest alias fills
+  // and the created items' marks, per (quest, alias), on the world's journal
+  // (PartOne::WorldJournal) beside questStages, never on a player. The ref
+  // half (AliasFill 79): `refr` the reference a seat's ForceRefTo named, the
+  // empty FormDesc for a Clear (an empty desc names no plugin's form, and a
+  // fill never names a server form: wire-validate refuses one). The created
+  // half (the server's, R0 from the game files): `created` the alias's ALCO
+  // base, `container` the reference it went into, `added` once it did, so a
+  // take, a second load or a restart never adds it again. Absent in older
+  // records, read as none
+  struct AliasFill
+  {
+    FormDesc quest;
+    uint32_t alias = 0;
+    std::optional<FormDesc> refr;
+    std::optional<FormDesc> created;
+    std::optional<FormDesc> container;
+    bool added = false;
+    auto ToTuple() const
+    {
+      return std::make_tuple(quest, alias, refr, created, container, added);
+    }
+    friend bool operator==(const AliasFill& lhs, const AliasFill& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const AliasFill& lhs, const AliasFill& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<std::vector<AliasFill>> aliasFills;
+
+  // thuum ADR-068 rung 4 (WorldGlobal 80): the world's globals the world
+  // streamer's game reported (wire-rules world_globals, the latest value
+  // winning), on the world's journal (PartOne::WorldJournal), never on a
+  // player; absent in older records, read as none
+  std::optional<std::vector<PlayerGlobal>> worldGlobals;
+
+  // thuum ADR-068 rung 5 (QuestStage 57's word; docs/research/
+  // rung5-quests-2026-11-09.md section 1(b)): the world's quest runs, each
+  // quest recorded running or stopped by its last start or stop word, with
+  // the record's sequence for it (wire-rules quest_runs: an equal word
+  // folded, a seat's churn held out), served at a login around the stages.
+  // On the world's journal (PartOne::WorldJournal) beside questStages, never
+  // on a player; absent in older records, read as none (an optional key,
+  // formVersion kept)
+  struct QuestRun
+  {
+    FormDesc quest;
+    bool running = false;
+    uint32_t seq = 0;
+    auto ToTuple() const { return std::make_tuple(quest, running, seq); }
+    friend bool operator==(const QuestRun& lhs, const QuestRun& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const QuestRun& lhs, const QuestRun& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<std::vector<QuestRun>> questRuns;
+
+  // thuum ADR-068 rung 5 (ScriptVariables 81; D-V1 B and D-T2 B): the
+  // condition-read script variables as recorded, the latest write per key in
+  // the server's order with the record's sequence for the key (wire-rules
+  // script_variables). On the world's journal, the world's keys, served to
+  // every seat; on a player's actor, its own keys (a player-class quest's:
+  // the marked quests' scalar variables and the two names of its game-time
+  // registration), served to that player alone and relayed to nobody. `k` is
+  // the folded kind and the one value it carries: 3 `i`, 4 `f`, 5 `b`
+  // (GraphVariable's idiom). Absent in older records and on forms no seat
+  // reported, read as none (an optional key, formVersion kept)
+  struct ScriptVariable
+  {
+    FormDesc form;
+    std::string script;
+    std::string var;
+    uint32_t k = 0;
+    std::optional<int32_t> i;
+    std::optional<float> f;
+    std::optional<bool> b;
+    uint32_t seq = 0;
+    auto ToTuple() const
+    {
+      return std::make_tuple(form, script, var, k, i, f, b, seq);
+    }
+    friend bool operator==(const ScriptVariable& lhs,
+                           const ScriptVariable& rhs)
+    {
+      return lhs.ToTuple() == rhs.ToTuple();
+    }
+    friend bool operator<(const ScriptVariable& lhs, const ScriptVariable& rhs)
+    {
+      return lhs.ToTuple() < rhs.ToTuple();
+    }
+  };
+  std::optional<std::vector<ScriptVariable>> scriptVariables;
+
   // Please update 'ActorTest.cpp' when adding new Actor-related rows
 
   DynamicFields dynamicFields;
@@ -287,10 +517,13 @@ public:
       equipment.ToJson(), actorValues.ToTuple(), healthRespawnPercentage,
       magickaRespawnPercentage, staminaRespawnPercentage, spawnPoint,
       dynamicFields, spawnDelay, learnedSpells, readBooks, templateChain,
-      fateLevel, fateDiedAt, lastAnimation, setNodeTextureSet, setNodeScale,
-      displayName, mapMarkers, ingredientEffects, favorites, raceMenuPreset,
-      actorValueRecord, staffRank, runningEffects, shoutRecord, playerGlobals,
-      questStages, placedBySpell, lock, unresolved);
+      fateLevel, fateDiedAt, lastAnimation, graphVariables, setNodeTextureSet,
+      setNodeScale, displayName, mapMarkers, ingredientEffects, favorites,
+      raceMenuPreset, actorValueRecord, staffRank, runningEffects, shoutRecord,
+      playerGlobals, questStages, placedBySpell, lock, destruction,
+      changeFormRecord, scriptState, refStateSeq, crimeFaction, relationships,
+      placedByScript, aliasFills, worldGlobals, questRuns, scriptVariables,
+      unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

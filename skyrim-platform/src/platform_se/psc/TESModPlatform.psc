@@ -107,3 +107,72 @@ Bool Function LaunchArrowAt(Actor shooter, Weapon weapon, Ammo ammo, Float power
 ; false for no quest or a stage outside 0 to 65535
 Bool Function SuppressQuestStageFragment(Quest quest, Int stage) global native
 Bool Function ReleaseQuestStageFragment(Quest quest, Int stage) global native
+
+; thuum docs/verbs/change-form.md (ADR-065, system 1): the reference's change
+; form serialized on demand by the engine's own SaveGame (a JSON string:
+; formType, flags, version, bodyHex, fnv1a, remap rows; "" when a premise
+; refused, the reason in skyrim-platform.log), and a served record applied to
+; this seat's loaded copy through the engine's own LoadGame and finish pass (a
+; JSON string: applied, reason, fnvPatched). remapRows is
+; "offset:formId:index,..." since callNative takes no array; flags is the
+; sender's u32 as an Int
+String Function SerializeChangeForm(ObjectReference refr) global native
+String Function ApplyChangeForm(ObjectReference refr, String bodyHex, Int flags, Int version, String remapRows) global native
+; the queued apply's answer (the apply runs as an SKSE task on the main thread
+; since playtest 44): the JSON object above once, "" while the task has not run
+String Function ApplyChangeFormResult(ObjectReference refr) global native
+
+; thuum ADR-068 rung 3 (the script record, amendment A;
+; docs/research/rung3-script-record-2026-11-06.md 1(a)): the reference's
+; attached scripts read as the record carries them (a JSON string: formId,
+; quiescent, fnv1a, seatLocal, scripts; or quiescent false and busy; "" when
+; refused, the reason in skyrim-platform.log); a served record's scripts
+; written over this seat's copies (a JSON string: applied, retry, reason,
+; scripts, resolved, none, unresolved, seatLocal, stacksOnObject, holdUs,
+; blanked, fnvAfter); and OnCellAttach, OnLoad or OnCellLoad sent to the
+; reference's scripts and relayed as the engine's sinks raise it, with
+; unseenOnly not when the engine served it since the last load (a JSON
+; string: sent, seen, scripts, reason). scriptsJson is the record's scripts
+; as a JSON array, since callNative takes no array
+String Function SerializeScriptState(ObjectReference refr) global native
+String Function ApplyScriptState(ObjectReference refr, String scriptsJson) global native
+String Function SendScriptEvent(ObjectReference refr, String name, Bool unseenOnly) global native
+
+; thuum ADR-068 D-C2 A (docs/research/fifty-fixes-2026-11-07.md 1(b)): a
+; relayed trigger entry, OnTriggerEnter or OnTriggerLeave sent to the
+; trigger's scripts and relayed to its aliases as the engine's trigger sinks
+; raise it, with actionRef as the event's akActionRef (a JSON string: formId,
+; event, sent, scripts, reason); refused for a name that is no trigger event,
+; a None actionRef, an actor trigger and a reference with no attached script
+String Function SendTriggerEvent(ObjectReference trigger, String name, ObjectReference actionRef) global native
+
+; thuum ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's held entries (an
+; NPC's enter to a world trigger blanked at this seat's own load, its owner
+; undecided then) whose presser is this seat's now, with the trigger in a
+; cell this seat hosts, each replayed once through SendTriggerEvent's body
+; under the platform's mark; the expired ones dropped (a JSON string:
+; replayed, refused, expired, held)
+String Function ReplayHeldEntries() global native
+
+; thuum ADR-068 rung 4 (the state rows, amendment B): the world globals this
+; seat's engine changed since its last answer, for the world streamer's
+; WorldGlobal 80 (a JSON string: [[formId, value], ...], at most 512
+; entries, "[]" for none); constants, non-finite values and the
+; comma-separated hex ids in exclude are never answered; with reset, every
+; other global's value now becomes the baseline and the answer is "[]"
+String Function DiffWorldGlobals(Bool reset, String exclude) global native
+
+; thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 1(c) and
+; 8(b); D-V1 B, D-T2 B): a quest's or a reference's script variables read by
+; name for ScriptVariables 81 (a JSON string: an array, in the keys' order,
+; of { form, script, var, k, i|f|b } with k 3 int, 4 float, 5 bool, or of
+; { form, script, var, reason }; "[]" for keys that are no JSON array), and
+; written by name through Variable's setters, a kind other than the
+; variable's declared one refused (a JSON string: per entry { form, script,
+; var, written, reason }). A key is { form, script, var }, names without
+; case; var "<OnUpdateGameTime>" reads the form's queued game-time
+; registration's hours left and "<OnUpdateGameTime:repeat>" a repeat's
+; interval, never written. keysJson and entriesJson are JSON arrays, since
+; callNative takes no array
+String Function ReadScriptVariables(String keysJson) global native
+String Function WriteScriptVariables(String entriesJson) global native

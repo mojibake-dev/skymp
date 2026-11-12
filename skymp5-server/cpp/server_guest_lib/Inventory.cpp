@@ -2,9 +2,12 @@
 #include "archives/JsonInputArchive.h"
 #include "archives/JsonOutputArchive.h"
 #include "archives/SimdJsonInputArchive.h"
+#include <algorithm>
 #include <fmt/format.h>
+#include <limits>
 #include <spdlog/spdlog.h>
 #include <tuple>
+#include <unordered_map>
 
 Inventory::Entry::Entry()
 {
@@ -89,16 +92,60 @@ Inventory& Inventory::AddItem(uint32_t baseId, uint32_t count)
   return AddItems({ { baseId, count } });
 }
 
+// Each item joins the first stack it matches (its extra data included), and
+// only an item that matches none is appended, in the call's order. Upstream
+// returned at the first merge and dropped every later item of the call (thuum
+// playtest 50: a fate re-roll adds in form id order, so a bandit's held gold
+// or arrows merged first and the armor after them never reached the record)
 Inventory& Inventory::AddItems(const std::vector<Entry>& toAdd)
 {
   for (auto& entryToAdd : toAdd) {
-    for (auto& entry : entries) {
-      if (entry.EqualExceptCount(entryToAdd)) {
-        entry.count += entryToAdd.count;
-        return *this; // TODO: It seems there is a bug
-      }
+    auto stack =
+      std::find_if(entries.begin(), entries.end(), [&](const Entry& entry) {
+        return entry.EqualExceptCount(entryToAdd);
+      });
+    if (stack != entries.end()) {
+      stack->count += entryToAdd.count;
+    } else {
+      entries.push_back(entryToAdd);
     }
-    entries.push_back(entryToAdd);
+  }
+  return *this;
+}
+
+// The first plain stack of each base the call adds is found in one pass over
+// the stacks; then each plain item joins its base's stack, or is appended and
+// becomes that stack, in the call's order: AddItems' result, since a plain
+// item matches exactly a plain stack of its base (EqualExceptCount ignores
+// the count) and a stack appended earlier in the call is the first such
+// stack for a later item of the same base
+Inventory& Inventory::AddPlainItems(const std::vector<Entry>& toAdd)
+{
+  constexpr size_t kNoStack = std::numeric_limits<size_t>::max();
+  std::unordered_map<uint32_t, size_t> firstPlain;
+  for (const auto& entryToAdd : toAdd) {
+    firstPlain.emplace(entryToAdd.baseId, kNoStack);
+  }
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const auto stack = firstPlain.find(entries[i].baseId);
+    if (stack != firstPlain.end() && stack->second == kNoStack &&
+        entries[i].EqualExceptCount(Entry(entries[i].baseId, 0))) {
+      stack->second = i;
+    }
+  }
+  for (const auto& entryToAdd : toAdd) {
+    if (!entryToAdd.EqualExceptCount(Entry(entryToAdd.baseId, 0))) {
+      // not plain: an append leaves every plain stack where it is
+      AddItems({ entryToAdd });
+      continue;
+    }
+    auto& stack = firstPlain[entryToAdd.baseId];
+    if (stack != kNoStack) {
+      entries[stack].count += entryToAdd.count;
+    } else {
+      stack = entries.size();
+      entries.push_back(entryToAdd);
+    }
   }
   return *this;
 }

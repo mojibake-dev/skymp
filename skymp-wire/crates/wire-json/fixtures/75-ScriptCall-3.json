@@ -1,0 +1,13 @@
+{
+  "args": [
+    "Open"
+  ],
+  "caller": "",
+  "cls": "ObjectReference",
+  "epoch": 1,
+  "fn": "PlayAnimation",
+  "handler": "",
+  "latent": false,
+  "selfId": 4278190082,
+  "t": 75
+}

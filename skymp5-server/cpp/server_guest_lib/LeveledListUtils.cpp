@@ -1,7 +1,9 @@
 #include "LeveledListUtils.h"
 #include "EvaluateTemplate.h"
+#include <algorithm>
 #include <optional>
 #include <random>
+#include <set>
 #include <spdlog/spdlog.h>
 #include <stdexcept>
 
@@ -103,7 +105,13 @@ std::map<uint32_t, uint32_t> LeveledListUtils::EvaluateListRecurse(
       continue;
     }
     if (IsLeveledType(eLookupRes)) {
-      auto childRes = EvaluateListRecurse(br, eLookupRes, 1, pcLevel);
+      // the entry's count is the nested list's multiplier (UESP, LVLO:
+      // count; a child with "calculate for each item in count" rolls once
+      // per count, else once times the count): LItemBanditWeaponArrows
+      // names BaseArrowIron75 x20, which gave one arrow at most while the
+      // count was dropped here (x-fate-inventory v1b, 2026-11-04)
+      auto childRes = EvaluateListRecurse(
+        br, eLookupRes, std::max<uint32_t>(1, e.count), pcLevel);
       for (auto& p : childRes) {
         res[p.first] += p.second;
       }
@@ -181,6 +189,51 @@ uint32_t LeveledListUtils::FirstLeveledPick(const espm::CombineBrowser& br,
     }
   }
   return 0;
+}
+
+namespace {
+// Reach's walk over one list: its entries' bases appended once each, a
+// nested list followed while it lies within the depth and was not walked
+// before. Each list reads its record through a cache of its own, so a
+// nested read never moves the entries the outer loop still holds.
+void ReachInto(const espm::CombineBrowser& br, const espm::LookupResult& list,
+               size_t depth, std::set<uint32_t>& lists,
+               std::vector<uint32_t>& bases)
+{
+  espm::CompressedFieldsCache cache;
+  const auto* leveled =
+    reinterpret_cast<const espm::LeveledListBase*>(list.rec);
+  const auto data = leveled->GetData(cache);
+  for (size_t i = 0; i < data.numEntries; ++i) {
+    const uint32_t formId = list.ToGlobalId(data.entries[i].formId);
+    const auto entry = br.LookupById(formId);
+    if (!entry.rec) {
+      continue;
+    }
+    if (IsLeveledType(entry)) {
+      if (depth < LeveledListUtils::kReachDepth &&
+          lists.insert(formId).second) {
+        ReachInto(br, entry, depth + 1, lists, bases);
+      }
+      continue;
+    }
+    if (std::find(bases.begin(), bases.end(), formId) == bases.end()) {
+      bases.push_back(formId);
+    }
+  }
+}
+}
+
+std::vector<uint32_t> LeveledListUtils::Reach(
+  const espm::CombineBrowser& br, const espm::LookupResult& lookupRes)
+{
+  std::vector<uint32_t> bases;
+  if (!lookupRes.rec || !IsLeveledType(lookupRes)) {
+    return bases;
+  }
+  std::set<uint32_t> lists = { lookupRes.ToGlobalId(lookupRes.rec->GetId()) };
+  ReachInto(br, lookupRes, 0, lists, bases);
+  return bases;
 }
 
 uint32_t LeveledListUtils::GetBaseTemplateId(

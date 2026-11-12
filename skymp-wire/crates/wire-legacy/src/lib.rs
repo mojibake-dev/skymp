@@ -116,6 +116,18 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     ("CreateActorProps", "lock"),
     ("CreateActorProps", "restrictedRaces"),
     ("CreateActorProps", "permittedRaces"),
+    ("SpellCastData", "decal"),
+    // thuum ADR-068: a relayed script call's sequence (2026-11-05)
+    ("SpSnippet", "seq"),
+    // thuum D-C2: an activation's trigger entry (SCHEMA_VERSION 40,
+    // 2026-11-07); RelayedActivation's entry and ScriptStateApply's
+    // graphVars sit on thuum's own MsgTypes 70 and 77, which the legacy
+    // format never carried (decode_packet reads SkyMP's 33 alone)
+    ("ActivateData", "entry"),
+    // thuum ADR-068 rung 5 (D-T1 A): a player figure's race overlay
+    // (SCHEMA_VERSION 41, 2026-11-09)
+    ("CreateActorProps", "overlay"),
+    ("UpdateAppearance", "overlay"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,
@@ -408,6 +420,49 @@ mod tests {
                 // (2026-11-01)
                 assert_eq!(m.props.restricted_races, None);
                 assert_eq!(m.props.permitted_races, None);
+                // thuum ADR-068 rung 5: the race overlay (2026-11-09)
+                assert_eq!(m.props.overlay, None);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_snippet_from_the_legacy_format_reads_without_a_sequence() {
+        // thuum ADR-068: SpSnippet's seq came after the format froze. The old
+        // C++ wrote class, function, the arguments' count, selfId and
+        // snippetIdx (here "A", "B", none, 0x14, 7, every field whole bytes)
+        // and nothing more, so the reader spends no bit on the sequence
+        let mut p = vec![0x86u8, 0x1e];
+        p.extend([0, 0, 0, 1, b'A', 0, 0, 0, 1, b'B', 0, 0, 0, 0]);
+        p.extend(0x14u64.to_be_bytes());
+        p.extend(7i64.to_be_bytes());
+        match decode_packet(&p) {
+            Ok(Message::SpSnippet(s)) => {
+                assert_eq!((s.class.as_str(), s.function.as_str(), s.self_id, s.snippet_idx), ("A", "B", 0x14, 7));
+                assert!(s.arguments.is_empty());
+                assert_eq!(s.seq, None);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_activation_from_the_legacy_format_reads_without_an_entry() {
+        // thuum D-C2: ActivateData's entry came after the format froze. The
+        // old C++ wrote the two type bytes, the caster and the target as
+        // eight big-endian bytes each and the second activation's bit (here
+        // set), and nothing more; the last byte's seven padding bits are set
+        // too, so a reader that spent a presence bit on the entry would read
+        // one and run out of bits for its value
+        let mut p = vec![0x86u8, 0x06, 0x06];
+        p.extend(0x14u64.to_be_bytes());
+        p.extend(0x37281u64.to_be_bytes());
+        p.push(0xff);
+        match decode_packet(&p) {
+            Ok(Message::Activate(a)) => {
+                assert_eq!((a.data.caster, a.data.target, a.data.is_second_activation), (0x14, 0x37281, true));
+                assert_eq!(a.data.entry, None);
             }
             other => panic!("{other:?}"),
         }

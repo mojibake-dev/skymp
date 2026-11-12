@@ -66,7 +66,10 @@ struct WorldState::Impl
   std::vector<std::unique_ptr<IPapyrusClassBase>> classes;
   std::array<std::shared_ptr<std::vector<uint32_t>>, 0x100>
     allFormsByModIndexCache;
-  std::vector<uint32_t> attachEspmRecordFailures;
+  // the records LoadForm could not attach, each id once: a lookup of one the
+  // loader never attaches repeats (a moving static a script call names, the
+  // hall door's FX review, finding 1); GetAllForms drops each from its list
+  std::set<uint32_t> attachEspmRecordFailures;
   // thuum docs/verbs/magic-effects.md: actors with running effects and when
   // they were last advanced
   std::set<uint32_t> actorsWithEffects;
@@ -432,7 +435,7 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
                                   const espm::RecordHeader* record,
                                   const espm::IdMapping& mapping,
                                   std::stringstream* optionalOutTrace,
-                                  bool sighted)
+                                  bool sighted, bool recorded)
 {
   auto& cache = GetEspmCache();
   // this place is a hotpath.
@@ -463,8 +466,15 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
   bool isTree = t == "TREE" &&
     reinterpret_cast<const espm::TREE*>(base.rec)->GetData(cache).resultItem;
 
-  if (!isNpc && !isFurniture && !isActivator && !espm::utils::IsItem(t) &&
-      !isDoor && !isContainer && !isFlor && !isTree) {
+  // thuum ADR-068 rung 4 (amendment B, read 2): a REFR whose ref state is
+  // recorded attaches whatever its base (an XMarker, a collision marker, a
+  // talking activator a script enables), so the server holds what it
+  // records; an ACHR keeps its rule, an actor's base or nothing (a leveled
+  // actor's placement never attaches as an object)
+  const bool recordedRefr = recorded && record->GetType() == "REFR";
+  if (!recordedRefr && !isNpc && !isFurniture && !isActivator &&
+      !espm::utils::IsItem(t) && !isDoor && !isContainer && !isFlor &&
+      !isTree) {
     if (optionalOutTrace) {
       *optionalOutTrace << fmt::format(
         "AttachEspmRecord - the server skips base type {} \n", t.ToString());
@@ -498,8 +508,11 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
 
   // a sighting (thuum docs/verbs/npc-puppet.md, the roster) says the host's
   // engine has the actor attached and enabled, which a quest may have done
-  // to a placement the files disable: the two disabled filters yield to it
-  if (!sighted && (refr->GetFlags() & InitiallyDisabled)) {
+  // to a placement the files disable: the two disabled filters yield to it;
+  // so does a recorded ref state (thuum ADR-068 rung 4), whose record says
+  // whether it stands enabled
+  const bool initiallyDisabled = (refr->GetFlags() & InitiallyDisabled) != 0;
+  if (!sighted && !recorded && initiallyDisabled) {
     if (optionalOutTrace) {
       *optionalOutTrace << fmt::format(
         "AttachEspmRecord - the server skips initially disabled references\n");
@@ -524,6 +537,9 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
   // of parents, read at load. HYPOTHESIS for the flag's semantics beyond the
   // Creation Kit's description (UESP, REFR XESP); the lab's e93d2 is the
   // measured case.
+  // a recorded reference attaches whatever its parent says, and starts
+  // disabled as the files start it (below)
+  bool disabledByParent = false;
   if (!sighted && data.enableParentId != 0) {
     const uint32_t parentId =
       espm::utils::GetMappedId(data.enableParentId, mapping);
@@ -532,7 +548,8 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
       const bool parentDisabled =
         (parent.rec->GetFlags() & InitiallyDisabled) != 0;
       const bool opposite = (data.enableParentFlags & 1) != 0;
-      if (parentDisabled != opposite) {
+      disabledByParent = parentDisabled != opposite;
+      if (disabledByParent && !recorded) {
         if (optionalOutTrace) {
           *optionalOutTrace << fmt::format(
             "AttachEspmRecord - the server skips a reference its enable "
@@ -699,6 +716,20 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
     }
   }
 
+  // thuum ADR-068 rung 4 (amendment B, read 2): a reference attached by its
+  // record starts as the game files start it, disabled when they place it
+  // initially disabled or under a parent that disables it, so its first
+  // recorded call (a host's Enable of an ambush marker) moves the record
+  // from the engine's own start, never a fold against an enabled read; a
+  // saved record (LoadForm's deferred apply) then replaces the start
+  if (recorded && !sighted && (initiallyDisabled || disabledByParent)) {
+    auto it = forms.find(formId);
+    if (MpObjectReference* attached =
+          it != forms.end() ? it->second->AsObjectReference() : nullptr) {
+      attached->MarkDisabledByFiles();
+    }
+  }
+
   // Do not TriggerFormInitEvent here, doing it later after changeForm apply
 
   if (optionalOutTrace) {
@@ -709,7 +740,7 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
 }
 
 bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace,
-                          bool sighted)
+                          bool sighted, bool recorded)
 {
   ANTIGO_CONTEXT_INIT(ctx);
   ctx.AddUnsigned(formId);
@@ -736,15 +767,27 @@ bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace,
 
   auto mapping = br.GetCombMapping(lookupRes.fileIdx);
 
-  bool attached =
-    AttachEspmRecord(br, lookupRes.rec, *mapping, optionalOutTrace, sighted);
+  // thuum ADR-068 rung 4 (amendment B, read 2): a saved record that carries
+  // a recorded ref state attaches its reference by its record, the held and
+  // the unheld subject of a script's Enable or Disable sharing one path
+  if (!recorded) {
+    auto deferred = pImpl->changeFormsForDeferredLoad.find(formId);
+    recorded = deferred != pImpl->changeFormsForDeferredLoad.end() &&
+      deferred->second.refStateSeq.has_value();
+  }
+
+  bool attached = AttachEspmRecord(br, lookupRes.rec, *mapping,
+                                   optionalOutTrace, sighted, recorded);
   if (optionalOutTrace) {
     *optionalOutTrace << "AttachEspmRecord " << (attached ? "true" : "false")
                       << std::endl;
   }
 
   if (!attached) {
-    pImpl->attachEspmRecordFailures.push_back(formId);
+    pImpl->attachEspmRecordFailures.insert(formId);
+  } else {
+    // a record a later attach by record took is no failure (GetAllForms)
+    pImpl->attachEspmRecordFailures.erase(formId);
   }
 
   if (attached) {
@@ -753,6 +796,12 @@ bool WorldState::LoadForm(uint32_t formId, std::stringstream* optionalOutTrace,
     if (it != pImpl->changeFormsForDeferredLoad.end()) {
       auto copy = it->second; // crashes without copying
       refr.ApplyChangeForm(copy);
+    }
+
+    // thuum ADR-068 rung 4: the created items it holds go in before its
+    // first create word (PartOne::AddCreatedItems)
+    if (onAttach) {
+      onAttach(refr);
     }
 
     refr.ForceSubscriptionsUpdate();
@@ -931,6 +980,17 @@ void WorldState::SendPapyrusEvent(MpForm* form, const char* eventName,
   };
   auto& vm = GetPapyrusVm();
   return vm.SendEvent(form->ToGameObject(), eventName, args, onEnter);
+}
+
+bool WorldState::AttachForRecord(uint32_t formId)
+{
+  if (forms.find(formId) != forms.end()) {
+    return true;
+  }
+  if (!espm || formId >= 0xff000000) {
+    return false;
+  }
+  return LoadForm(formId, nullptr, false, true);
 }
 
 // thuum docs/verbs/npc-puppet.md (playtest 33, 2026-10-23): a game-file

@@ -7,8 +7,12 @@
 #include "ActorSightingsMessage.h"
 #include "ActorSpeechMessage.h"
 #include "ActorValuesMessage.h"
+#include "AliasFillMessage.h"
 #include "ArrowShotMessage.h"
 #include "CellLoadedMessage.h"
+#include "ChangeFormAckMessage.h"
+#include "ChangeFormApplyMessage.h"
+#include "ChangeFormMessage.h"
 #include "ChangeValuesMessage.h"
 #include "ConsoleCommandMessage.h"
 #include "ConsoleOutputMessage.h"
@@ -19,6 +23,7 @@
 #include "DamageCauseMessage.h"
 #include "DeathStateContainerMessage.h"
 #include "DestroyActorMessage.h"
+#include "DestructionStageMessage.h"
 #include "DropItemMessage.h"
 #include "FavoritesMessage.h"
 #include "FinishSpSnippetMessage.h"
@@ -51,6 +56,10 @@
 #include "RaceMenuPresetMessage.h"
 #include "RelayedActivationMessage.h"
 #include "RestIntentMessage.h"
+#include "ScriptCallMessage.h"
+#include "ScriptStateApplyMessage.h"
+#include "ScriptStateMessage.h"
+#include "ScriptVariablesMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetInventoryMessage.h"
 #include "SetRaceMenuOpenMessage.h"
@@ -70,6 +79,7 @@
 #include "UpdateMovementMessage.h"
 #include "UpdatePropertyMessage.h"
 #include "WordWallMessage.h"
+#include "WorldGlobalMessage.h"
 
 #define REGISTER_MESSAGES                                                     \
   REGISTER_MESSAGE(ActivateMessage)                                           \
@@ -142,4 +152,14 @@
   REGISTER_MESSAGE(PerkStateMessage)                                          \
   REGISTER_MESSAGE(WordWallMessage)                                           \
   REGISTER_MESSAGE(RelayedActivationMessage)                                  \
-  REGISTER_MESSAGE(ObjectAnimationMessage)
+  REGISTER_MESSAGE(ObjectAnimationMessage)                                    \
+  REGISTER_MESSAGE(ChangeFormMessage)                                         \
+  REGISTER_MESSAGE(ChangeFormAckMessage)                                      \
+  REGISTER_MESSAGE(ChangeFormApplyMessage)                                    \
+  REGISTER_MESSAGE(ScriptCallMessage)                                         \
+  REGISTER_MESSAGE(DestructionStageMessage)                                   \
+  REGISTER_MESSAGE(ScriptStateMessage)                                        \
+  REGISTER_MESSAGE(ScriptStateApplyMessage)                                   \
+  REGISTER_MESSAGE(AliasFillMessage)                                          \
+  REGISTER_MESSAGE(WorldGlobalMessage)                                        \
+  REGISTER_MESSAGE(ScriptVariablesMessage)

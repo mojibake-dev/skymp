@@ -1,5 +1,5 @@
 import { MsgType } from "../../messages";
-import { logTrace } from "../../logging";
+import { logError, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { PlayerGlobalsMessage } from "../messages/playerGlobalsMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -28,12 +28,29 @@ const WATCH_STORAGE_KEY = "playerGlobalsWatch";
 // push, until its relaunch at 17:45Z. A fresh service with a stored list
 // resumes the watch and reports every watched value once, so the record
 // catches up with whatever moved during the reload.
+//
+// thuum docs/DECISIONS.md ADR-068 rung 5, PQ-3 (docs/research/
+// rung5-quests-2026-11-09.md 8(a)): the watch is the platform's too. The
+// list (the server's playerGlobals, the marked quests' globals composed in:
+// PlayerIsVampire, VampireFeedReady) goes to setPlayerGlobals whenever it is
+// set, at the login and after a reload, so inside another player's acting
+// scope (a relayed fragment that reaches a per-player script) a
+// GlobalVariable.SetValue on one is skipped here and this seat's own player's
+// global keeps its value. A table write, no game call; the set lives in the
+// platform past a game load. An older platform without the export is said
+// once.
 export class PlayerGlobalsService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         this.controller.emitter.on("playerGlobalsMessage", (e) => this.onPlayerGlobalsMessage(e));
         this.controller.on("update", () => this.onUpdate());
         this.resume();
+    }
+
+    // WorldGlobalService's: the globals watched here are each player's own
+    // (ADR-029's A2), so the world's stream leaves them out. JS state alone
+    watched(): readonly number[] {
+        return this.watch;
     }
 
     private onPlayerGlobalsMessage(e: ConnectionMessage<PlayerGlobalsMessage>) {
@@ -78,6 +95,7 @@ export class PlayerGlobalsService extends ClientListener {
         }
         this.watch = m.watch;
         this.sp.storage[WATCH_STORAGE_KEY] = [...m.watch];
+        this.tellPlatform();
         this.last = new Map();
         for (const id of this.watch) {
             const value = this.read(id);
@@ -102,6 +120,26 @@ export class PlayerGlobalsService extends ClientListener {
         this.watch = list;
         this.last = new Map();
         logTrace(this, "resumed watching", this.watch.length, "globals after a reload; a full report follows");
+        this.tellPlatform();
+    }
+
+    // PQ-3: the watch as the platform's set of the globals each player keeps
+    private tellPlatform() {
+        if (this.exportMissing) {
+            return;
+        }
+        if (typeof this.sp.setPlayerGlobals !== "function") {
+            this.exportMissing = true;
+            logTrace(this, "setPlayerGlobals unavailable on this platform; a relayed fragment may write this player's own globals here");
+            return;
+        }
+        try {
+            if (this.sp.setPlayerGlobals([...this.watch]) !== true) {
+                logError(this, "setPlayerGlobals refused the list of", this.watch.length, "globals");
+            }
+        } catch (e) {
+            logError(this, "setPlayerGlobals threw for the list of", this.watch.length, "globals", e);
+        }
     }
 
     private global(id: number) {
@@ -115,6 +153,8 @@ export class PlayerGlobalsService extends ClientListener {
 
     private pending?: PlayerGlobalsMessage;
     private watch: number[] = [];
+    // an older platform without setPlayerGlobals (rung 5, PQ-3)
+    private exportMissing = false;
     private last = new Map<number, number>();
     private lastRead = 0;
 }

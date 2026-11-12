@@ -755,19 +755,103 @@ LocationalData WhereIs(const MpActor& actor)
                          actor.GetCellOrWorld() };
 }
 
+// The cell's form id as the console names it, with its editor id when the
+// cell has one (exterior squares mostly have none)
+std::string CellNamedForConsole(WorldState& worldState, uint32_t cell)
+{
+  const auto found = worldState.GetEspm().GetBrowser().LookupById(cell);
+  const char* editorId =
+    found.rec ? found.rec->GetEditorId(worldState.GetEspmCache()) : nullptr;
+  return editorId && *editorId ? fmt::format("{:x} ({})", cell, editorId)
+                               : fmt::format("{:x}", cell);
+}
+
+// `mp host` (Eli in playtest 48, 2026-11-06: "who's hosting? (you should
+// make a console command i can ask that with instead of you)"): the host of
+// the cell the caller stands in, as the server's host table has it (thuum
+// docs/verbs/cell-host.md): the host by name and number, the grant's epoch,
+// how the grant came (fresh, with nobody hosting before it, or inherited from
+// a host that stopped: PartOne::GetCellGrantKind, the lab's last_grant rule)
+// and the caller's own part, in the words of the lab's playtest-roles line
+void ExecuteMpHost(PartOne& partOne, MpActor& caller)
+{
+  WorldState& worldState = partOne.worldState;
+  const auto cell = worldState.CellOf(caller);
+  if (!cell) {
+    throw std::runtime_error("no cell at your position");
+  }
+  const std::string where = CellNamedForConsole(worldState, *cell);
+  const auto host = partOne.GetCellHost(*cell);
+  if (!host.hosted) {
+    return Reply(caller,
+                 fmt::format("cell {}: nobody hosts it (frozen at its "
+                             "record, epoch {} kept)",
+                             where, host.epoch),
+                 false);
+  }
+  const auto& hostForm = worldState.LookupFormById(host.player);
+  const MpActor* hostActor = hostForm ? hostForm->AsActor() : nullptr;
+  const std::string who = hostActor
+    ? fmt::format("{} ({})", NameOf(*hostActor), hostActor->GetProfileId())
+    : fmt::format("{:x}", host.player);
+  Reply(caller,
+        fmt::format("cell {}: host {}, epoch {}, its grant {}; {}", where, who,
+                    host.epoch, partOne.GetCellGrantKind(*cell),
+                    host.player == caller.GetFormId() ? "you host it"
+                                                      : "you are its guest"),
+        false);
+}
+
+// `mp racemenu` (Eli in playtest 49, 2026-11-06: "at next playtest make sure
+// the command is implemented so i can"): the caller's own race menu, opened
+// by the server's word as the lab's open-race-menu opens it
+// (PartOne::SetRaceMenuOpen: the record's isRaceMenuOpen, then
+// SetRaceMenuOpen 29 to the caller's game). The menu's close records the look
+// as any race menu's close does (thuum docs/verbs/racemenu-sync.md); a race
+// change resets the face, and a race the permit does not give the caller's
+// profile is refused at the close (thuum docs/verbs/character-creation.md)
+void ExecuteMpRacemenu(PartOne& partOne, MpActor& caller)
+{
+  if (caller.IsRaceMenuOpen()) {
+    spdlog::info("ConsoleCommands: {:x} ran 'mp racemenu': its race menu is "
+                 "open already, no open sent",
+                 caller.GetFormId());
+    return Reply(caller,
+                 "the race menu is open already; close it to keep your look",
+                 false);
+  }
+  partOne.SetRaceMenuOpen(caller.GetFormId(), true);
+  // the operators' line (playtest 50's `mp racemenu` left none on success)
+  spdlog::info("ConsoleCommands: {:x} ran 'mp racemenu': the race menu open "
+               "is sent to its game",
+               caller.GetFormId());
+  Reply(caller,
+        "the race menu opens; closing it records your look (a race change "
+        "resets the face)",
+        false);
+}
+
 // SkyMP's own `mp`, with TES3MP's player commands (thuum
 // docs/verbs/console-commands.md; TES3MP CoreScripts commandHandler.lua
 // /teleport and /teleportto, logicHandler.lua TeleportToPlayer): `mp list`
 // names every player online by its number, `mp tp <n>` brings that player
 // to the caller and `mp tpto <n>` takes the caller to it. The server makes
 // each teleport, wherever the two are: no figure in the caller's game is
-// needed, as the console's own MoveTo needs one.
+// needed, as the console's own MoveTo needs one. `mp host` says who hosts the
+// caller's cell (ExecuteMpHost); `mp racemenu` opens the caller's own race
+// menu (ExecuteMpRacemenu).
 void ExecuteMp(PartOne& partOne, MpActor& caller,
                const std::vector<ConsoleCommands::Argument>& args)
 {
   const std::string& sub = args.at(1).GetString();
   if (!Utils::stricmp(sub.data(), "disable")) {
     return ExecuteDisable(caller, args);
+  }
+  if (!Utils::stricmp(sub.data(), "host")) {
+    return ExecuteMpHost(partOne, caller);
+  }
+  if (!Utils::stricmp(sub.data(), "racemenu")) {
+    return ExecuteMpRacemenu(partOne, caller);
   }
   if (!Utils::stricmp(sub.data(), "list")) {
     for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
@@ -801,7 +885,8 @@ void ExecuteMp(PartOne& partOne, MpActor& caller,
     }
     return;
   }
-  throw std::runtime_error("mp knows list, tp <n>, tpto <n> and disable");
+  throw std::runtime_error(
+    "mp knows list, host, tp <n>, tpto <n> and disable");
 }
 }
 

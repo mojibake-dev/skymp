@@ -302,9 +302,37 @@ export class NetworkingService extends ClientListener {
             const event = { message: msgAny };
             this.controller.emitter.emit("hostReleaseMessage", event);
             this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.ChangeFormAck) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("changeFormAckMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.ChangeFormApply) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("changeFormApplyMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
           } else if (msgAny.t === MsgType.ActorFate) {
             const event = { message: msgAny };
             this.controller.emitter.emit("actorFateMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.DestructionStage) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("destructionStageMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.ScriptStateApply) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("scriptStateApplyMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.AliasFill) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("aliasFillMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.WorldGlobal) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("worldGlobalMessage", event);
+            this.controller.emitter.emit("anyMessage", event);
+          } else if (msgAny.t === MsgType.ScriptVariables) {
+            const event = { message: msgAny };
+            this.controller.emitter.emit("scriptVariablesMessage", event);
             this.controller.emitter.emit("anyMessage", event);
           } else {
             // throw new NeverError(msgAny);

@@ -5,6 +5,9 @@
 #include "TestUtils.hpp"
 #include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 
 PartOne& GetPartOne();
 
@@ -35,10 +38,10 @@ const NiPoint3 kHere{ 9000.f, 500.f, 0.f };
 const NiPoint3 kEast{ 13500.f, 500.f, 0.f };
 
 MpActor& Player(PartOne& p, Networking::UserId user, uint32_t id,
-                const NiPoint3& pos)
+                const NiPoint3& pos, uint32_t worldOrCell = kTamriel)
 {
   DoConnect(p, user);
-  p.CreateActor(id, pos, 0, kTamriel);
+  p.CreateActor(id, pos, 0, worldOrCell);
   p.SetUserActor(user, id);
   return p.worldState.GetFormAt<MpActor>(id);
 }
@@ -153,6 +156,44 @@ void Leave(PartOne& p)
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
 }
+
+// thuum D-S3 (traps follow the interaction, point 4): Embershard Mine
+// 0xb6be6's falling rock 0xb6d45 (TrapFallingRockSm01 0x79922, an ACTI) at
+// (2915.7, 3613.4, 8840.6) and its sibling 0xb6d48 at (2805.9, 3627.0,
+// 8840.6), enabled records whose XAPR names the linker 0xb6d3e (lab/esm.py
+// ref on Skyrim.esm, 2026-11-05); the players stand about 100 units from
+// both
+constexpr uint32_t kEmbershard = 0xb6be6;
+constexpr uint32_t kRock = 0xb6d45;
+constexpr uint32_t kSiblingRock = 0xb6d48;
+const NiPoint3 kByTheRocks{ 2860.f, 3520.f, 8840.f };
+
+// the default logger's lines at info and above while the guard lives
+// (TrapRelayTest's shape), restored at its end
+struct LogCapture
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  LogCapture()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger = std::make_shared<spdlog::logger>("prop-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~LogCapture() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (size_t at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
 }
 
 TEST_CASE("A claim by a player in the prop's cell is granted and the owner "
@@ -345,5 +386,171 @@ TEST_CASE("A claim on a container, a claim from beyond reach and a sample "
 
   DoDisconnect(p, 2);
   p.DestroyActor(kC3);
+  Leave(p);
+}
+
+TEST_CASE("A trap's world body joins the stream by the impulse touch alone: "
+          "the firing seat's claim is granted, a second firing's is refused "
+          "E_PROP_MOVING and a contact E_PROP_KIND, and the owner's samples "
+          "move the record, its rest saved at once",
+          "[Prop][Traps][espm]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kByTheRocks, kEmbershard);
+  Player(p, 1, kC2, kByTheRocks + NiPoint3{ 20.f, 0.f, 0.f }, kEmbershard);
+  CellLoaded(p, 0, kEmbershard);
+  REQUIRE(p.GetCellHost(kEmbershard).player == kC1);
+  // the rock stands loaded with the chunks around the players (an impulse's
+  // own lookup loads nothing, the next case's)
+  auto& rock = p.worldState.GetFormAt<MpObjectReference>(kRock);
+  REQUIRE(rock.GetBaseType() == "ACTI");
+  REQUIRE(p.worldState.CellOf(rock) == std::optional<uint32_t>(kEmbershard));
+  REQUIRE(rock.GetActorListeners().size() >= 2);
+  const NiPoint3 hung = rock.GetPos();
+  p.Messages().clear();
+
+  // c2's firing set the rock moving: its impulse claim is granted, and both
+  // seats hear the owner word
+  Claim(p, 1, kRock, 3);
+  REQUIRE(p.PropOwnerOf(rock) == kC2);
+  REQUIRE(p.PropEpochOf(rock) == 1);
+  const auto toC1 = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(toC1.size() == 1);
+  REQUIRE(toC1[0].refr == kRock);
+  REQUIRE(toC1[0].player == kC2);
+  REQUIRE(toC1[0].epoch == 1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
+
+  // c1's own copy of the same firing claims it too: the first firing wins;
+  // and a contact never claims a world body
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Claim(p, 0, kRock, 3);
+    Claim(p, 0, kRock, 0);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_MOVING: ff000d01 claims "
+                      "prop b6d45 by touch 3; another seat's firing set the "
+                      "body moving, the first firing wins") == 1);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
+                      "prop b6d45 by touch 0; a world body, which only an "
+                      "impulse claims") == 1);
+  }
+  REQUIRE(p.PropOwnerOf(rock) == kC2);
+  REQUIRE(p.PropEpochOf(rock) == 1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+
+  // the fall: the host's sample is refused (not the owner), the owner's
+  // moves the record and reaches c1 alone, unreliable while awake
+  const NiPoint3 falling = hung + NiPoint3{ 0.f, 0.f, -100.f };
+  Sample(p, 0, kRock, falling, false);
+  REQUIRE(rock.GetPos() == hung);
+  Sample(p, 1, kRock, falling, false);
+  REQUIRE(rock.GetPos() == falling);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 0 });
+  REQUIRE(RelaysTo(p, 1).empty());
+  REQUIRE(rock.HasUnsavedEdit());
+
+  // the rest: relayed reliable, and the record saved at once
+  p.Messages().clear();
+  const NiPoint3 rested = falling + NiPoint3{ 10.f, 0.f, -100.f };
+  Sample(p, 1, kRock, rested, true);
+  REQUIRE(rock.GetPos() == rested);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 1 });
+  REQUIRE(!rock.HasUnsavedEdit());
+
+  // a world body no impulse claimed takes no sample, the host's neither (the
+  // refusal's line is once per 10 s per seat, so its effect is read here)
+  auto& sibling = p.worldState.GetFormAt<MpObjectReference>(kSiblingRock);
+  const NiPoint3 siblingAt = sibling.GetPos();
+  REQUIRE(p.PropEpochOf(sibling) == 0);
+  p.Messages().clear();
+  Sample(p, 0, kSiblingRock, siblingAt + NiPoint3{ 0.f, 0.f, -50.f }, false);
+  REQUIRE(sibling.GetPos() == siblingAt);
+  REQUIRE(RelaysTo(p, 1).empty());
+  Leave(p);
+}
+
+// the review of 9ff1895e (finding 4): an impulse's claim looked its reference
+// up with a load, so the id a seat chose was loaded for a claim the server
+// then refused. Bleak Falls Temple 0x371de's oil lamp 0x9b0fb (an ACTI,
+// unit/DestructionStageTest's) stands in another cell than the mine
+TEST_CASE("An impulse's claim loads nothing: a world body the chunks around "
+          "the claimant have not loaded is refused E_PROP_UNKNOWN and stays "
+          "unloaded, and one they have is granted",
+          "[Prop][Traps][espm]")
+{
+  constexpr uint32_t kTempleLamp = 0x9b0fb;
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kByTheRocks, kEmbershard);
+  Player(p, 1, kC2, kByTheRocks + NiPoint3{ 20.f, 0.f, 0.f }, kEmbershard);
+  CellLoaded(p, 0, kEmbershard);
+  REQUIRE(p.GetCellHost(kEmbershard).player == kC1);
+  p.Messages().clear();
+
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kTempleLamp) == nullptr);
+  {
+    LogCapture log;
+    Claim(p, 1, kTempleLamp, 3);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_UNKNOWN: ff000d02 claims "
+                      "prop 9b0fb by touch 3; no such reference, or an "
+                      "actor") == 1);
+  }
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kTempleLamp) == nullptr);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+
+  // the mine's rock stands within the impulse's reach of the claimant, so
+  // the claimant's own grid pass (the 3x3 squares around it) loaded it: the
+  // impulse finds it without a load and is granted
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kRock) != nullptr);
+  Claim(p, 1, kRock, 3);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1)[0].refr == kRock);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1)[0].player == kC2);
+  Leave(p);
+}
+
+// the review of 9ff1895e (finding 2): "a trap's world body" admits almost
+// every world object, so a crafted seat could claim one by the impulse and
+// carry it off for good, a step budget at a time; a world body's sample now
+// lands within the tether (2048 units, UNMEASURED: a fall's extent) of its
+// game-file position or is refused E_PROP_FAR
+TEST_CASE("A trap's world body takes no sample farther than the tether from "
+          "its game-file position, the record standing; a sample within it "
+          "is taken",
+          "[Prop][Traps][espm]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kByTheRocks, kEmbershard);
+  Player(p, 1, kC2, kByTheRocks + NiPoint3{ 20.f, 0.f, 0.f }, kEmbershard);
+  CellLoaded(p, 0, kEmbershard);
+  REQUIRE(p.GetCellHost(kEmbershard).player == kC1);
+  // the rock loads where its record places it: its game-file position
+  auto& rock = p.worldState.GetFormAt<MpObjectReference>(kRock);
+  const NiPoint3 placed = rock.GetPos();
+  Claim(p, 1, kRock, 3);
+  REQUIRE(p.PropOwnerOf(rock) == kC2);
+  // the record stands 2000 units below the place already (an earlier fall's
+  // samples), so each sample here is a short step inside the step budget
+  // and the tether alone judges it
+  const NiPoint3 low = placed + NiPoint3{ 0.f, 0.f, -2000.f };
+  rock.SetPos(low);
+  p.Messages().clear();
+
+  // 2100 below the place, 100 from the record: past the tether, refused, the
+  // record standing and nothing relayed (the refusal's line is once per 10 s
+  // per seat, so its effect is read here)
+  Sample(p, 1, kRock, placed + NiPoint3{ 0.f, 0.f, -2100.f }, false);
+  REQUIRE(rock.GetPos() == low);
+  REQUIRE(RelaysTo(p, 0).empty());
+  REQUIRE(RelaysTo(p, 1).empty());
+
+  // 2040 below the place, 40 from the record: inside the tether, taken and
+  // relayed to the host's game
+  const NiPoint3 inside = placed + NiPoint3{ 0.f, 0.f, -2040.f };
+  Sample(p, 1, kRock, inside, false);
+  REQUIRE(rock.GetPos() == inside);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 0 });
   Leave(p);
 }

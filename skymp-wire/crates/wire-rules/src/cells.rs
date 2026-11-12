@@ -761,6 +761,18 @@ impl Cells {
         self.cells.get(&cell).map_or(0, |s| s.epoch)
     }
 
+    /// Every player whose game reports `cell` loaded, lowest id first,
+    /// whether or not the grid gives it the cell (a silent or a dead
+    /// player's game keeps it loaded): the games that show what stands in
+    /// it. thuum ADR-068: the listeners of a script call's subject the
+    /// server holds no reference for, placed by its record.
+    #[must_use]
+    pub fn loaders_of(&self, cell: u32) -> Vec<u32> {
+        let mut players: Vec<u32> = self.players.iter().filter(|(_, p)| p.loaded.contains_key(&cell)).map(|(&id, _)| id).collect();
+        players.sort_unstable();
+        players
+    }
+
     /// Every cell the table knows, by cell id: its host (`None` while
     /// unhosted) and its epoch, for the lab's reading of the server.
     #[must_use]
@@ -801,6 +813,28 @@ mod tests {
         d.reach(C1, &[0x1234], 0);
         assert_eq!(d.loaded(C1, RIVERWOOD, 1_000), vec![]);
         assert_eq!(d.host_of(RIVERWOOD), None);
+    }
+
+    #[test]
+    fn a_cells_loaders_are_the_games_that_report_it_loaded() {
+        // thuum ADR-068: who a script call on a placement the server holds
+        // no reference for is mirrored to
+        let mut c = Cells::default();
+        assert!(c.loaders_of(RIVERWOOD).is_empty());
+        // a load the grid does not give counts: the game shows the cell
+        c.loaded(C2, RIVERWOOD, 1_000);
+        c.reach(C1, &[RIVERWOOD], 1_000);
+        c.loaded(C1, RIVERWOOD, 1_100);
+        assert_eq!(c.loaders_of(RIVERWOOD), vec![C1, C2]);
+        assert!(c.loaders_of(0x1234).is_empty());
+        // a dead player's game keeps the cell loaded; an unload and a
+        // departure end it
+        c.died(C2, 2_000);
+        assert_eq!(c.loaders_of(RIVERWOOD), vec![C1, C2]);
+        c.unloaded(C2, RIVERWOOD, 3_000);
+        assert_eq!(c.loaders_of(RIVERWOOD), vec![C1]);
+        c.gone(C1, 4_000);
+        assert!(c.loaders_of(RIVERWOOD).is_empty());
     }
 
     #[test]

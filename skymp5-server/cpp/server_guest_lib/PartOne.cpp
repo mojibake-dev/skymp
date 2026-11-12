@@ -10,7 +10,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
+#include <map>
 #include <set>
 #include <string>
 #include <tuple>
@@ -21,20 +23,25 @@
 #include "CreateActorMessage.h"
 #include "CustomPacketMessage.h"
 #include "DestroyActorMessage.h"
+#include "DestructionStageMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
 #include "PerkStateMessage.h"
 #include "PlacedRequestMessage.h"
 #include "PropOwnerMessage.h"
 #include "RaceMenuPresetMessage.h"
+#include "ScriptStateApplyMessage.h"
 #include "SetGameTimeMessage.h"
 #include "SetRaceMenuOpenMessage.h"
 #include "SetWeatherMessage.h"
 #include "SpellCastMessage.h"
 #include "UpdateGameModeDataMessage.h"
+#include "UpdateMovementMessage.h"
+#include "WorldGlobalMessage.h"
 
 #include "ActionListener.h"
 #include "FormCallbacks.h"
+#include "LeveledListUtils.h"
 #include "MessageSerializerFactory.h"
 #include "OpenSSLSigner.h"
 #include "PacketParser.h"
@@ -42,11 +49,16 @@
 #include "libespm/ARMO.h"
 #include "libespm/AVIF.h"
 #include "libespm/CELL.h"
+#include "libespm/FLST.h"
+#include "libespm/HDPT.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
+#include "libespm/QUST.h"
+#include "libespm/SMQN.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
 #include "papyrus-vm/Utils.h"
+#include "script_classes/PapyrusObjectReference.h"
 #include <spdlog/fmt/fmt.h>
 #include <spdlog/spdlog.h>
 
@@ -79,6 +91,7 @@ constexpr std::chrono::milliseconds kPlacementsTick{ 50 };
 // the old rule's) and the worn list, at most the wire's 32 entries
 constexpr size_t kFatesPerMessage = 64;
 constexpr size_t kFateWornMax = 32;
+constexpr size_t kFateInvMax = 32; // wire-schema cap::FATE_INV
 
 ActorFateMessage::Fate FateOf(const WorldState& worldState,
                               const MpActor& actor)
@@ -87,11 +100,66 @@ ActorFateMessage::Fate FateOf(const WorldState& worldState,
   fate.refrId = actor.GetFormId();
   fate.baseId = actor.GetFateBaseId();
   fate.level = actor.GetFateLevel().value_or(0);
+  // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): a worn piece
+  // is named only while the inventory still holds it. Since playtest 48 a
+  // take drops the worn entry it empties (MpActor::DropWornBeyondInventory);
+  // a record saved before keeps one (Embershard's bandit b6fdb in 48's world:
+  // the shield 12eb6 worn in its record by the host's report accepted at
+  // 20:23:28Z, gone from its inventory after its opens at 20:27Z, the next
+  // host's report of it refused at 20:40:43Z as "inventory does not
+  // contain"), and a seat's reconcile would add it back and dress it
+  std::map<uint32_t, uint32_t> unnamed;
+  for (const auto& entry : actor.GetInventory().entries) {
+    if (entry.baseId != 0) {
+      unnamed[entry.baseId] += entry.count;
+    }
+  }
   for (const auto& entry : actor.GetEquipment().inv.entries) {
     if (entry.GetWorn() != Inventory::Worn::None &&
         fate.worn.size() < kFateWornMax) {
+      auto& left = unnamed[entry.baseId];
+      if (left == 0) {
+        spdlog::debug("PartOne - npc-fate: {:x}'s worn {:x} left out of its "
+                      "fate, its inventory holds none",
+                      actor.GetFormId(), entry.baseId);
+        continue;
+      }
+      --left;
       fate.worn.push_back(entry.baseId);
     }
+  }
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c): the record's other rows,
+  // the server's own container roll (EnsureBaseContainerAdded), so every
+  // seat's copy carries them instead of its engine's roll. The worn set lives
+  // in the Equipment record alone (the inventory's entries carry no worn flag
+  // of their own: the review of 7c3c9f79, finding 1), so a base's row is its
+  // inventory count less its worn count, and a base whose whole count is
+  // worn makes no row (the validator refuses a count of 0)
+  std::map<uint32_t, int64_t> rows;
+  for (const auto& entry : actor.GetInventory().entries) {
+    if (entry.baseId != 0) {
+      rows[entry.baseId] += entry.count;
+    }
+  }
+  for (const auto& entry : actor.GetEquipment().inv.entries) {
+    if (entry.GetWorn() != Inventory::Worn::None && entry.baseId != 0) {
+      rows[entry.baseId] -= entry.count;
+    }
+  }
+  for (const auto& [baseId, net] : rows) {
+    if (net <= 0) {
+      continue;
+    }
+    if (fate.inv.size() >= kFateInvMax) {
+      spdlog::debug("PartOne - npc-fate: {:x}'s fate carries {} of its {} "
+                    "inventory rows (the wire's cap)",
+                    actor.GetFormId(), kFateInvMax, rows.size());
+      break;
+    }
+    ActorFateMessage::InvRow row;
+    row.baseId = baseId;
+    row.count = static_cast<uint32_t>(net);
+    fate.inv.push_back(row);
   }
   return fate;
 }
@@ -269,6 +337,54 @@ struct PartOne::Impl
   // `sharedQuests`
   rust::Box<skymp::rules::SharedQuests> sharedQuests =
     skymp::rules::new_shared_quests("[]");
+  // the retired `allowed` of the mode block (thuum ADR-068 rung 5, read 4),
+  // kept for the quest scope's measurement line alone
+  std::vector<FormDesc> retiredAllowed;
+
+  // thuum ADR-068 rung 5: the run record's churn counter and held quests
+  // (wire-rules quest_runs, runtime only), the quest scope's settings
+  // (questScope, playerQuests), the condition-read variables
+  // (conditionVariables) and every player's race overlay (player_own)
+  rust::Box<skymp::rules::QuestRuns> questRuns =
+    skymp::rules::new_quest_runs();
+  // D-Q4 C: `questStoryInstances` "world" (false: "seat", the default), the
+  // Story Manager's quests composed into questRuns at AttachEspm
+  bool questStoryWorld = false;
+  // D-Q9 B (train 52): `questPlayerAliasCause` "world" (false: "seat", the
+  // default, Eli's B), and the game files' alias scripts, indexed at
+  // AttachEspm: whether each rides player aliases alone
+  bool questPlayerAliasWorld = false;
+  const std::unordered_map<std::string, bool>* playerAliasScripts = nullptr;
+  rust::Box<skymp::rules::QuestScope> questScope =
+    skymp::rules::new_quest_scope("\"off\"", "[]");
+  rust::Box<skymp::rules::ScriptVariables> scriptVariables =
+    skymp::rules::new_script_variables("[]");
+  rust::Box<skymp::rules::PlayerOverlays> playerOverlays =
+    skymp::rules::new_player_overlays();
+  // the playerGlobals setting as written, recomposed with the player class's
+  // globals (playerQuestGlobals) while the scope acts
+  std::string playerGlobalsJson = "[]";
+  // the census's per-quest companions, parsed (each key a quest)
+  std::vector<std::pair<FormDesc, std::vector<FormDesc>>> playerQuestGlobals;
+  std::vector<
+    std::pair<FormDesc, std::vector<std::pair<std::string, std::string>>>>
+    playerQuestVariables;
+  // (playerQuestCallers is keyed by the world quest whose stages it names)
+  std::vector<std::pair<FormDesc, std::vector<uint16_t>>> playerQuestCallers;
+  // the class measured (either mode) and composed (acting only), and PQ-3's
+  // stages relayed served (acting only)
+  std::vector<FormDesc> questScopeMarked;
+  std::vector<FormDesc> playerClassQuests;
+  std::vector<std::pair<FormDesc, uint16_t>> servedStages;
+  // the R1 bound's script attachments, indexed at AttachEspm (the fresh
+  // review's note 3), by the class's name without case
+  const std::unordered_map<
+    std::string, std::vector<PartOne::ScriptAttachment>>* scriptAttachments =
+    nullptr;
+  // D-R1 C's leveled gap (train 52): each leveled list's reach as a landing
+  // first asked for it, by the list's form id (only lists of the game files:
+  // the caller checks the form is an LVLI first), cleared at AttachEspm
+  std::unordered_map<uint32_t, std::vector<uint32_t>> leveledReach;
 
   // the objects the server places at an accepted cast of a listed spell,
   // and every set standing (thuum docs/verbs/spell-placed-object.md,
@@ -279,6 +395,24 @@ struct PartOne::Impl
     skymp::rules::new_placements("[]");
   std::unordered_map<uint64_t, std::vector<uint32_t>> placedSets;
   std::unordered_map<uint32_t, uint32_t> placedCasterByForm;
+
+  // thuum ADR-068 rung 4 (the created half): a unique actor's attached
+  // reference by its base (an ALUA container, noted at its attach), and the
+  // created aliases whose unresolved container this world logged, once each
+  std::unordered_map<uint32_t, uint32_t> uniqueActorRefs;
+  std::set<std::pair<uint32_t, uint32_t>> unresolvedCreationsLogged;
+
+  // thuum ADR-068 rung 4 (WorldGlobal 80): the world streamer, and the users
+  // it marked stale for their silence (apart from the cell hosts' marks,
+  // which only a host takes)
+  rust::Box<skymp::rules::WorldStreamer> worldStreamer =
+    skymp::rules::new_world_streamer();
+  std::unordered_set<Networking::UserId> streamerStaleUsers;
+  bool worldGlobalsEnabled = false;
+
+  // thuum ADR-068 rung 4 (the script set): each open set's world or cell,
+  // where its object is placed at its report
+  std::unordered_map<uint64_t, uint32_t> scriptSetWorldOrCell;
   // thuum docs/verbs/leveling.md
   rust::Box<skymp::rules::LevelingTable> leveling =
     skymp::rules::new_leveling_table();
@@ -302,11 +436,37 @@ struct PartOne::Impl
   // player's last grid square (worldOrCell, floor x, floor y), so its reach
   // is recomputed only when the square moves
   rust::Box<skymp::rules::Cells> cells = skymp::rules::new_cells();
+  // `mp host`'s note of how each cell's grant came (GetCellGrantKind): held
+  // from a grant or a stop until the cell goes unhosted, so a grant while it
+  // is held is a hand-off
+  struct CellGrantNote
+  {
+    bool held = false;
+    const char* kind = "none";
+  };
+  std::unordered_map<uint32_t, CellGrantNote> cellGrantNotes;
   // the prop owner table (thuum docs/verbs/prop-physics.md, ADR-058): which
   // seat simulates each physics prop, the cell's host by default
   rust::Box<skymp::rules::Props> props = skymp::rules::new_props();
+  // the script calls' budgets and sequences (thuum ADR-068, wire-rules
+  // natives): runtime only, every budget full and every sequence 0 at a start
+  rust::Box<skymp::rules::ScriptCalls> scriptCalls =
+    skymp::rules::new_script_calls();
+  // the script records' release reads (thuum ADR-068 rung 3, wire-rules
+  // script_state): runtime only, no release open at a start
+  rust::Box<skymp::rules::ScriptStates> scriptStates =
+    skymp::rules::new_script_states();
+  // each presser's accepted trigger enters it has not left (thuum ADR-068
+  // D-C2, wire-rules trigger_entry::Entries): runtime only, none open at a
+  // start
+  rust::Box<skymp::rules::TriggerEntries> triggerEntries =
+    skymp::rules::new_trigger_entries();
   std::chrono::steady_clock::time_point lastCellsTick;
   using Square = std::tuple<uint32_t, int32_t, int32_t>;
+  // one serial per login across the process: a dead-sample stamp's witness
+  // names it, and a destroyed-and-recreated actor must never bring an old
+  // witness back
+  uint32_t loginSerial = 0;
   std::unordered_map<uint32_t, Square> lastSquareByPlayer;
   std::function<int64_t(Networking::UserId)> roundTripSource;
   // the quitting host (docs/verbs/cell-host.md): each connection's silence
@@ -344,6 +504,39 @@ struct PartOne::Impl
 
   PartOne::OnActorStreamIn onActorStreamIn;
 };
+
+namespace {
+// thuum ADR-068 rung 4: the stream words of one election, at once, never
+// the deferred queue: false to the seat whose stream ends, true to the new
+// streamer, each naming the election's epoch
+void SendStreamWords(PartOne& partOne,
+                     const skymp::rules::StreamerElection& election)
+{
+  if (!election.changed) {
+    return;
+  }
+  const auto tell = [&](uint32_t actorId, bool streams) {
+    if (actorId == 0) {
+      return;
+    }
+    const auto& form = partOne.worldState.LookupFormByIdNoLoad(actorId);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    if (!actor ||
+        partOne.serverState.UserByActor(actor) == Networking::InvalidUserId) {
+      return;
+    }
+    WorldGlobalMessage word;
+    word.epoch = election.epoch;
+    word.stream = streams;
+    actor->SendToUser(word, true);
+  };
+  tell(election.previous, false);
+  tell(election.streamer, true);
+  spdlog::info("[verb:world-globals] the world streamer is {:x} from epoch "
+               "{} ({:x} before)",
+               election.streamer, election.epoch, election.previous);
+}
+}
 
 PartOne::PartOne(Networking::ISendTarget* sendTarget)
 {
@@ -453,6 +646,9 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     actor.RemoveFromGridAndUnsubscribeAll();
 
     serverState.actorsMap.Set(userId, &actor);
+    // the login generation: a dead-sample stamp's witness names it, so a
+    // relaunch or a reconnect is a new witness (MpActor::DeadStampGap)
+    actor.SetLoginGeneration(++pImpl->loginSerial);
 
     // The clock first, so the client knows the time before its own
     // CreateActor loads the save (thuum docs/verbs/time.md)
@@ -490,6 +686,16 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // quest stages follow the globals, the shared list first, then every
     // recorded stage ascending per quest
     GetActionListener().SendQuestStages(actor);
+
+    // thuum ADR-068 rung 4: the world's alias fills after its quest stages,
+    // and its world globals after the player's own (the streamer applies
+    // the serve before it re-baselines its diff)
+    GetActionListener().SendAliasFills(actor);
+    GetActionListener().SendWorldGlobals(actor);
+
+    // thuum ADR-068 rung 5 (D-V1 B, D-T2 B): the condition-read variables'
+    // watch and record after the world globals, the player's own with them
+    GetActionListener().SendScriptVariables(actor);
 
     // thuum memo D56 A: the listed cure spells leave the player's game at the
     // login and every minute after (the engine's own RemoveSpell)
@@ -621,6 +827,13 @@ void PartOne::SetOnActorStreamIn(OnActorStreamIn callback)
   pImpl->onActorStreamIn = callback;
 }
 
+namespace {
+const std::unordered_map<std::string, std::vector<PartOne::ScriptAttachment>>&
+ScriptAttachmentIndexOf(WorldState& worldState);
+const std::unordered_map<std::string, bool>& PlayerAliasScriptIndexOf(
+  WorldState& worldState);
+}
+
 void PartOne::AttachEspm(espm::Loader* espm)
 {
   pImpl->espm = espm;
@@ -628,6 +841,29 @@ void PartOne::AttachEspm(espm::Loader* espm)
   LoadSkillTable();
   LoadWeatherPools();
   LoadPerkTable();
+  // thuum ADR-068 rung 5: the quest scope's class needs every QUST's
+  // aliases, read now that the game files are here (the settings came first)
+  ComposeQuestScope();
+  // and D-Q4 C's Story Manager quests, every SMQN node's NNAMs
+  ComposeStoryQuests();
+  // and the R1 bound's script attachments, read here and not at a seat's
+  // first call (the fresh review's note 3)
+  pImpl->scriptAttachments = &ScriptAttachmentIndexOf(worldState);
+  // a leveled list's reach is read again from these game files
+  pImpl->leveledReach.clear();
+  // and D-Q9 B's alias scripts: which ride player aliases alone
+  pImpl->playerAliasScripts = &PlayerAliasScriptIndexOf(worldState);
+  size_t playerOnly = 0;
+  for (const auto& entry : *pImpl->playerAliasScripts) {
+    if (entry.second) {
+      ++playerOnly;
+    }
+  }
+  spdlog::info("[verb:quest-stage] the game files attach {} script class(es) "
+               "to quest aliases, {} of them to player aliases alone "
+               "(questPlayerAliasCause {}, D-Q9 B)",
+               pImpl->playerAliasScripts->size(), playerOnly,
+               pImpl->questPlayerAliasWorld ? "world" : "seat");
 }
 
 bool PartOne::FlushSaves(std::chrono::milliseconds budget)
@@ -661,14 +897,20 @@ void PartOne::AttachSaveStorage(
       changeForm.isDisabled = true;
     }
 
-    if (changeForm.isDeleted) {
+    bool isFF = changeForm.formDesc.file.empty();
+
+    // thuum ADR-068 rung 4 (amendment B, read 7): a game-file reference a
+    // script deleted keeps its record, deleted and disabled at its ref
+    // state's sequence, so the loader attaches it by that record and every
+    // seat that loads its cell is served the deletion (skipped here, the
+    // files' standing copy came back after every restart); a server form's
+    // deleted record is still dropped (upstream's skip: its id is reused)
+    if (changeForm.isDeleted && isFF) {
       pImpl->logger->info(
         "Skipping deleted form {}, will likely overwrite at some point",
         changeForm.formDesc.ToString());
       return;
     }
-
-    bool isFF = changeForm.formDesc.file.empty();
 
     // thuum docs/verbs/prop-physics.md (ADR-058): a dropped item's copy is a
     // prop the record keeps across a restart, so the skip below (upstream's,
@@ -794,6 +1036,10 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // and a teleport's look waiting for its landing
           // (docs/verbs/cast-teleport.md)
           this_->pImpl->teleportLooks.erase(actor->GetFormId());
+          // and the trigger enters it has not left (thuum ADR-068 D-C2: a
+          // leave pairs with its enter; its presence on the host's copy
+          // goes with the figure)
+          this_->pImpl->triggerEntries->forget(actor->GetFormId());
           // TGM and TIM are the session's (thuum docs/verbs/god-mode.md)
           actor->SetGodMode(false);
           actor->SetImmortal(false);
@@ -812,6 +1058,11 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // every cell it hosts starts its grace (thuum
           // docs/verbs/cell-host.md); the clock passes them on
           this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
+          // and the world streamer hands its stream on (thuum ADR-068 rung
+          // 4)
+          SendStreamWords(
+            *this_, this_->pImpl->worldStreamer->gone(actor->GetFormId()));
+          this_->pImpl->streamerStaleUsers.erase(userId);
           // and its props fall back to their cells' hosts (thuum
           // docs/verbs/prop-physics.md)
           this_->pImpl->props->props_gone(actor->GetFormId());
@@ -820,6 +1071,22 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           this_->ForgetHeldSightings(actor->GetFormId());
           this_->pImpl->lastSquareByPlayer.erase(actor->GetFormId());
           this_->pImpl->fatedSquares.erase(actor->GetFormId());
+          // thuum ADR-068 rung 5: its quest words' churn counters go, and
+          // its race overlay ends with the connection (D-T1 A: a relaunch
+          // mid-form logs in as its own race)
+          this_->pImpl->questRuns->quest_runs_gone(actor->GetFormId());
+          const auto overlay =
+            this_->pImpl->playerOverlays->player_overlay_gone(
+              actor->GetFormId());
+          if (overlay.open) {
+            spdlog::info("[verb:quest-stage] {:x}'s race overlay {:x} ended "
+                         "at its disconnect: {} spell(s), {} shout(s), {} "
+                         "item(s) off its figure, its record's race {:x} "
+                         "stands (D-T1 A)",
+                         actor->GetFormId(), overlay.race,
+                         overlay.spells.size(), overlay.shouts.size(),
+                         overlay.items.size(), overlay.base);
+          }
         }
         this_->pImpl->staleUsers.erase(userId);
         this_->serverState.Disconnect(userId);
@@ -1104,6 +1371,83 @@ std::vector<PartOne::Message>& PartOne::Messages()
   return pImpl->fakeSendTarget.messages;
 }
 
+namespace {
+// thuum D-S3 and ADR-068 rungs 3 and 4: a reference's records served to one
+// listener's game on the ordered channel, at once, behind the reference's
+// create word and, for a primitive (a trigger the loader keeps as one, which
+// gets no create word), at its new subscription (b-ref-state-restart
+// 20261107-211516, step 53: the Temple's setStage trigger 0x3ac73, disabled
+// with refStateSeq 1, reached no late joiner); `when` ends each line.
+// - Its recorded destruction (a spent tripwire, an oil lamp's fallen stage)
+//   and its recorded ref state (its owner's Enable, Disable or Delete, or the
+//   server's own: disabled and deleted with the object's sequence, an
+//   actor's too), served, in one word, so the late seat applies the record
+//   without replaying the firing; the word goes before ScriptStateApply,
+//   whose sequence can be older (the receiver's served word raises nothing).
+// - Its scripts' record, with the sequence and the view they were taken at,
+//   to a game that does not host its cell (the host's engine runs the
+//   scripts; a new host hears the record ahead of its grant instead,
+//   ApplyHostDecisions), its sequence seeding the object's first
+//   (ScriptCalls::seed, a max). After a restart each record is the saved one
+void ServeReferenceRecords(PartOne& partOne,
+                           PartOneSendTargetWrapper* sendTarget,
+                           Networking::UserId listenerUserId,
+                           MpObjectReference& emitter, MpActor& listener,
+                           const char* when)
+{
+  MpActor* emitterAsActor = emitter.AsActor();
+  const auto destruction = emitterAsActor
+    ? std::optional<MpChangeFormREFR::Destruction>()
+    : emitter.GetDestruction();
+  const auto refStateSeq = emitter.GetRefStateSeq();
+  if (destruction || refStateSeq) {
+    DestructionStageMessage served;
+    served.refr = emitter.GetFormId();
+    if (destruction) {
+      served.stage = destruction->stage;
+      served.destroyed = destruction->destroyed;
+    }
+    if (refStateSeq) {
+      served.disabled = emitter.IsDisabled();
+      served.deleted = emitter.IsDeleted();
+      served.seq = *refStateSeq;
+    }
+    served.served = true;
+    sendTarget->Send(listenerUserId, served, true);
+    if (destruction) {
+      spdlog::info("[verb:traps] {:x}'s record (stage {}, destroyed {}) "
+                   "served to {:x} {}",
+                   emitter.GetFormId(), static_cast<int>(destruction->stage),
+                   destruction->destroyed, listener.GetFormId(), when);
+    }
+    if (refStateSeq) {
+      spdlog::info("[verb:scripts] ref state {:x} (disabled {}, deleted {}, "
+                   "seq {}) served to {:x} {}",
+                   emitter.GetFormId(), emitter.IsDisabled(),
+                   emitter.IsDeleted(), *refStateSeq, listener.GetFormId(),
+                   when);
+    }
+  }
+  if (!emitterAsActor && emitter.GetScriptState()) {
+    const auto cell = partOne.worldState.CellOf(emitter);
+    const auto host =
+      cell ? partOne.GetCellHost(*cell) : skymp::rules::CellHost{};
+    ScriptStateApplyMessage apply;
+    if ((!host.hosted || host.player != listener.GetFormId()) &&
+        emitter.BuildScriptStateApply(apply)) {
+      partOne.GetScriptCalls().seed(apply.formId, apply.seq);
+      sendTarget->Send(listenerUserId, apply, true);
+      // thuum D-C3 A: the graph variables served with it
+      spdlog::info("[verb:scripts] script state {:x} served to {:x} {}: {} "
+                   "script(s), seq {}, view '{}', {} graph variable(s)",
+                   apply.formId, listener.GetFormId(), when,
+                   apply.scripts.size(), apply.seq, apply.event.value_or(""),
+                   apply.graphVars ? apply.graphVars->size() : 0);
+    }
+  }
+}
+}
+
 void PartOne::Init()
 {
   pImpl.reset(new Impl);
@@ -1143,6 +1487,16 @@ void PartOne::Init()
       WouldMoveActor(*host, actor, destWorldOrCell, destPos) !=
       MoveVerdict::Refuse;
   };
+  // thuum ADR-068 rung 4 (amendment B, read 8): the quest aliases' created
+  // items a reference holds, put in at its attach, before its create word
+  worldState.onAttach = [this](MpObjectReference& refr) {
+    AddCreatedItems(refr);
+  };
+  // thuum ADR-068 rung 4: the object's sequence now, which a game-file world
+  // object's Enable or Disable stamps as its recorded ref state
+  worldState.objectSeqOf = [this](uint32_t refrId) {
+    return GetScriptCalls().seq_of(refrId);
+  };
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 2): a fate rolled anew
   // at a respawn goes to every user and the fate pass at a player's square
   // change, ahead of the grid's own loader (decision 3's "ahead of the
@@ -1153,6 +1507,51 @@ void PartOne::Init()
     }
     SendFates(actor, actor.GetCellOrWorld().ToFormId(worldState.espmFiles),
               actor.GetPos());
+  };
+  // thuum ADR-068 rung 4 (b-ref-state-restart 20261107-211516, step 53): a
+  // primitive's new subscription, which sends no create word, serves the
+  // reference's records as a create word carries them
+  worldState.onPrimitiveSubscribe = [this](MpObjectReference& primitive,
+                                           MpActor& listener) {
+    const auto userId = serverState.UserByActor(&listener);
+    if (userId == Networking::InvalidUserId) {
+      return;
+    }
+    ServeReferenceRecords(*this, pImpl->sendTarget.get(), userId, primitive,
+                          listener, "at its subscribe (a primitive)");
+  };
+  // thuum docs/verbs/npc-fate.md (playtest 51, b-npc-stream-equipment): a
+  // game's first sight of a game-file actor nothing rolled yet rolls it, at
+  // that game's level, ahead of the create word: the npc-puppet sighting's
+  // move of an indoor record into a square the host's pass had fated
+  // (Faendal 0x1348c and nine more in 20261110-062127, served empty, every
+  // worn piece of the host's first report refused, E_EQUIP_REFUSED), a
+  // script's MoveTo, a lookup's load, a login's grid
+  worldState.onActorSubscribe = [this](MpActor& actor, MpActor& listener) {
+    if (serverState.UserByActor(&listener) == Networking::InvalidUserId) {
+      return;
+    }
+    // the roll's loader: the game hosting the actor's cell when one does
+    // (its engine runs the actor; the sighting's reporter), else the game
+    // it is served to, the first with a user in the subscribe loop's order
+    MpActor* host = worldState.HostOf(actor);
+    MpActor& loader =
+      host && serverState.UserByActor(host) != Networking::InvalidUserId
+      ? *host
+      : listener;
+    try {
+      EnsureFated(actor, loader);
+    } catch (const std::exception& e) {
+      // a roll that throws never unwinds the subscribe it runs in (a login's
+      // ForceSubscriptionsUpdate, SetUserActor's sends behind it): the actor
+      // is served as the roll left it, unrolled, one line per actor
+      static std::unordered_set<uint32_t> warned;
+      if (warned.insert(actor.GetFormId()).second) {
+        spdlog::error("PartOne - npc-fate: {:x}'s roll at its create word "
+                      "to {:x} threw, the actor served unrolled: {}",
+                      actor.GetFormId(), listener.GetFormId(), e.what());
+      }
+    }
   };
   worldState.onDeathState = [this](MpActor& actor, bool isDead) {
     OnDeathState(actor, isDead);
@@ -1333,18 +1732,28 @@ void PartOne::Init()
       message.baseRecordType = emitter->GetBaseType();
     }
 
+    // thuum ADR-068 rung 5 (D-T1 A): another player's figure wears that
+    // player's race overlay, which never touches its change form
+    if (hasUser && !isMe) {
+      message.props.overlay = PlayerOverlayOf(emitter->GetFormId());
+    }
+
     message.idx = emitter->GetIdx();
     message.isMe = isMe;
     message.transform.pos = { emitterPos.x, emitterPos.y, emitterPos.z };
     message.transform.rot = { emitterRot.x, emitterRot.y, emitterRot.z };
     message.transform.worldOrCell = worldOrCell;
 
-    // thuum ADR-050 decision 3 (train 51): a server-made NPC's fate goes
-    // ahead of its create word to each subscriber (a game-file actor's rides
-    // the ring pass at the square change, SendFates), so the copy's engine
-    // rolls the server's roll inside its placement
-    if (emitterAsActor && emitter->GetFormId() >= 0xff000000 &&
-        !emitterAsActor->IsCreatedAsPlayer() &&
+    // thuum ADR-050 decision 3 (train 51) and docs/verbs/npc-fate.md
+    // (playtest 51): a fated NPC's fate goes ahead of each of its create
+    // words, a server-made copy's (its engine rolls the server's roll inside
+    // its placement) and a game-file actor's alike. The pass fates a square
+    // once per game, so an actor rolled at one game's pass and moved into a
+    // square another game had fated (a sighting, a MoveTo) reached that
+    // game with its create word alone, and its engine kept its own roll. A
+    // repeat costs the game nothing: its ActorFateService runs the late
+    // path only when the fate's base, worn list or rows changed
+    if (emitterAsActor && !emitterAsActor->IsCreatedAsPlayer() &&
         emitterAsActor->GetFateLevel().has_value()) {
       ActorFateMessage fateMessage;
       fateMessage.fates.push_back(FateOf(worldState, *emitterAsActor));
@@ -1352,6 +1761,16 @@ void PartOne::Init()
     }
 
     sendTarget->Send(listenerUserId, message, true);
+
+    // thuum docs/verbs/change-form.md (ADR-065 system 1): the actor's
+    // recorded change form rides behind its create word on the same ordered
+    // channel, so the seat applies it before the actor's first frame there
+    if (emitterAsActor && !isMe) {
+      ChangeFormApplyMessage apply;
+      if (emitterAsActor->BuildChangeFormApply(apply)) {
+        sendTarget->Send(listenerUserId, apply, true);
+      }
+    }
 
     // thuum docs/verbs/prop-physics.md (ADR-058): a listener arriving while
     // a seat simulates this prop hears who, after the create word, so it
@@ -1365,6 +1784,58 @@ void PartOne::Init()
         word.player = liveOwner;
         word.epoch = PropEpochOf(*emitter);
         sendTarget->Send(listenerUserId, word, true);
+      }
+    }
+
+    // the reference's records ride behind its create word on the same
+    // ordered channel (ServeReferenceRecords: its destruction and ref state,
+    // then its scripts' record for a game that does not host its cell)
+    ServeReferenceRecords(*this, sendTarget, listenerUserId, *emitter,
+                          *listenerAsActor, "after its create word");
+
+    // thuum ADR-068 rung 4 (the standing, W3): an NPC's recorded standing
+    // rides behind its create word as the appliers that bring a late
+    // engine's copy to the record (the record's against its base's rows),
+    // at once and with no sequence: several serve one subject. A
+    // relationship toward the listener's own player reaches its game as
+    // 0x14 (SpSnippet::Serve's MakeMessage, thuum train 52), after a relog
+    // too
+    if (emitterAsActor && !isMe && !hasUser &&
+        emitter->GetFormId() < 0xff000000) {
+      size_t appliers = 0;
+      for (const auto& applier : emitterAsActor->StandingAppliers()) {
+        uint32_t formId = 0;
+        if (applier.form.shortFormId != 0 || !applier.form.file.empty()) {
+          try {
+            formId = applier.form.ToFormId(worldState.espmFiles);
+          } catch (const std::exception&) {
+            continue;
+          }
+        }
+        std::vector<std::optional<
+          std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+          args;
+        const bool other =
+          std::string(applier.function) == "SetRelationshipRank";
+        if (formId != 0) {
+          args.push_back(SpSnippetObjectArgument{
+            SpSnippet::MakeLongFormId(&worldState, formId),
+            other ? std::string("Actor") : std::string("Faction") });
+        } else {
+          args.push_back(std::nullopt);
+        }
+        if (applier.rank) {
+          args.push_back(static_cast<double>(*applier.rank));
+        }
+        SpSnippet("Actor", applier.function, args, emitter->GetFormId())
+          .Serve(listenerAsActor);
+        ++appliers;
+      }
+      if (appliers > 0) {
+        spdlog::info("[verb:scripts] standing of {:x} served to {:x} after "
+                     "its create word: {} applier(s)",
+                     emitter->GetFormId(), listenerAsActor->GetFormId(),
+                     appliers);
       }
     }
 
@@ -1592,6 +2063,21 @@ skymp::rules::Fights& PartOne::GetFights()
   return *pImpl->fights;
 }
 
+skymp::rules::ScriptCalls& PartOne::GetScriptCalls()
+{
+  return *pImpl->scriptCalls;
+}
+
+skymp::rules::ScriptStates& PartOne::GetScriptStates()
+{
+  return *pImpl->scriptStates;
+}
+
+skymp::rules::TriggerEntries& PartOne::GetTriggerEntries()
+{
+  return *pImpl->triggerEntries;
+}
+
 void PartOne::TickFightsEverySecond()
 {
   const auto now = std::chrono::steady_clock::now();
@@ -1729,8 +2215,15 @@ void FlipHostedFlags(PartOne& partOne, MpActor& viewer, uint32_t cell,
     // (ADR-047's follows, D22's margin hold, ADR-052's claims): the word
     // names the simulator the table answers, which is the host for an actor
     // with no row (a grant into the cell ends the rows into it)
-    (void)host;
-    actor->UpdateHoster(partOne.SimulatorOf(*actor));
+    const uint32_t simulator = partOne.SimulatorOf(*actor);
+    // the record ahead of EVERY word to the game the word names, the host's
+    // or another's (non-owning-seat.md section 3; the grant bounce of 055217
+    // and 060106; a host swap's Release runs after the grant has named the
+    // new host, so its flip names the new host too and carries the keyframe)
+    if (MpActor* sim = PlayerActor(partOne, simulator)) {
+      partOne.SendActorKeyframe(*actor, *sim);
+    }
+    actor->UpdateHoster(simulator);
   }
 }
 
@@ -1742,12 +2235,46 @@ void ApplyHostDecisions(PartOne& partOne,
       case skymp::rules::HostKind::Grant: {
         spdlog::info("PartOne - cell-host: {:x} hosts cell {:x} at epoch {}",
                      d.player, d.cell, d.epoch);
+        partOne.NoteCellHostDecision(PartOne::CellHostNote::Grant, d.cell);
         // the cell's props nobody holds live are the new host's (thuum
         // docs/verbs/prop-physics.md, ADR-058 decision 1)
         partOne.PropsHostChanged(d.cell, d.player);
+        // thuum ADR-068 rung 3: the grant ends the release read the cell's
+        // last release left open; from here the old host's epoch stands
+        // behind the cell's (wire-rules script_state)
+        partOne.GetScriptStates().granted(d.cell);
         MpActor* host = PlayerActor(partOne, d.player);
         if (!host) {
           break;
+        }
+        // thuum ADR-068 rung 3 (the script record): the cell's recorded
+        // references the new host's game sees (FlipHostedFlags' walk of its
+        // emitters; an actor's scripts are its simulator's, a later rung's)
+        // go to it right ahead of the grant on the same ordered channel, at
+        // once, so its engine applies each record before its gate opens for
+        // the cell; each record's sequence seeds the object's first
+        // (ScriptCalls::seed, a max), so after a restart the next relay
+        // takes a number above the one the record is stamped with
+        for (MpObjectReference* emitter : host->GetEmitters()) {
+          if (!emitter || emitter->AsActor() || !emitter->GetScriptState() ||
+              partOne.worldState.CellOf(*emitter) != d.cell) {
+            continue;
+          }
+          ScriptStateApplyMessage apply;
+          if (!emitter->BuildScriptStateApply(apply)) {
+            continue;
+          }
+          partOne.GetScriptCalls().seed(apply.formId, apply.seq);
+          partOne.GetSendTarget().Send(partOne.serverState.UserByActor(host),
+                                       apply, true);
+          // thuum D-C3 A (PENDING Eli): the graph variables served with it
+          spdlog::info("[verb:scripts] script state {:x} served to {:x} "
+                       "ahead of its grant of cell {:x}: {} script(s), seq "
+                       "{}, view '{}', {} graph variable(s)",
+                       apply.formId, host->GetFormId(), d.cell,
+                       apply.scripts.size(), apply.seq,
+                       apply.event.value_or(""),
+                       apply.graphVars ? apply.graphVars->size() : 0);
         }
         HostGrantMessage grant;
         grant.cell = d.cell;
@@ -1762,6 +2289,11 @@ void ApplyHostDecisions(PartOne& partOne,
         spdlog::info(
           "PartOne - cell-host: {:x} stops hosting cell {:x} (epoch {})",
           d.player, d.cell, d.epoch);
+        partOne.NoteCellHostDecision(PartOne::CellHostNote::Release, d.cell);
+        // thuum ADR-068 rung 3: the old host's release read of the cell's
+        // references, at the epoch it released, is taken while nobody hosts
+        // the cell (wire-rules script_state; the next grant ends it)
+        partOne.GetScriptStates().released(d.cell, d.player, d.epoch);
         MpActor* old = PlayerActor(partOne, d.player);
         if (!old) {
           break;
@@ -1778,6 +2310,7 @@ void ApplyHostDecisions(PartOne& partOne,
         spdlog::info("PartOne - cell-host: cell {:x} is unhosted, frozen at "
                      "its record (epoch {} kept)",
                      d.cell, d.epoch);
+        partOne.NoteCellHostDecision(PartOne::CellHostNote::Unhosted, d.cell);
         break;
       case skymp::rules::HostKind::ClaimEnded: {
         // thuum docs/verbs/npc-talk.md (ADR-052): a claim's lease ran out;
@@ -1788,7 +2321,11 @@ void ApplyHostDecisions(PartOne& partOne,
                      "with its lease; the cell's rule stands",
                      d.actor, d.cell);
         if (actor) {
-          actor->UpdateHoster(partOne.SimulatorOf(*actor));
+          const uint32_t simulator = partOne.SimulatorOf(*actor);
+          if (MpActor* sim = PlayerActor(partOne, simulator)) {
+            partOne.SendActorKeyframe(*actor, *sim);
+          }
+          actor->UpdateHoster(simulator);
         }
         break;
       }
@@ -1887,6 +2424,59 @@ uint16_t PartOne::FateRollLevel(MpActor& loader, uint32_t cellOrWorld,
     1, static_cast<uint16_t>(sum / static_cast<uint32_t>(party.size())));
 }
 
+bool PartOne::EnsureFated(MpActor& actor, MpActor& loader,
+                          const MpActor* walker)
+{
+  // a game-file actor alone, as the walk's: a server-made NPC rolls at its
+  // placement (PlaceAtMe)
+  if (actor.GetFormId() >= 0xff000000 || !actor.CanRollFate()) {
+    return false;
+  }
+  const NiPoint3& loaderPos = loader.GetPos();
+  const uint16_t level = FateRollLevel(
+    loader, loader.GetCellOrWorld().ToFormId(worldState.espmFiles),
+    static_cast<int16_t>(loaderPos.x / 4096),
+    static_cast<int16_t>(loaderPos.y / 4096));
+  if (!actor.RollFateIfUnrolled(level)) {
+    return false;
+  }
+  // the actor's square as the pass fates it (the grid's own, truncated
+  // toward zero). The games in its 3x3 get their create word now, the fate
+  // ahead of it (onSubscribe), and the walker gets it in its batch; every
+  // other game whose pass has fated the square, the ring beyond the 3x3,
+  // hears it here, as that pass will not come there again
+  const uint32_t cellOrWorld =
+    actor.GetCellOrWorld().ToFormId(worldState.espmFiles);
+  const NiPoint3& pos = actor.GetPos();
+  const auto sx = static_cast<int16_t>(pos.x / 4096);
+  const auto sy = static_cast<int16_t>(pos.y / 4096);
+  const Impl::Square square{ cellOrWorld, sx, sy };
+  const auto& inReach =
+    worldState.GetGrids()[cellOrWorld].grid->GetNeighboursByPosition(sx, sy);
+  ActorFateMessage msg;
+  msg.fates.push_back(FateOf(worldState, actor));
+  size_t told = 0;
+  for (Networking::UserId userId = 0; userId <= serverState.maxConnectedId;
+       ++userId) {
+    MpActor* player = serverState.ActorByUser(userId);
+    if (!player || player == walker || inReach.count(player)) {
+      continue;
+    }
+    const auto fated = pImpl->fatedSquares.find(player->GetFormId());
+    if (fated == pImpl->fatedSquares.end() || !fated->second.count(square)) {
+      continue;
+    }
+    GetSendTarget().Send(userId, msg, true);
+    ++told;
+  }
+  spdlog::info("PartOne - npc-fate: {:x} fated at level {} ({:x}'s) at its "
+               "first serve; its fate sent to {} game(s) beyond its 3x3 "
+               "whose pass fated its square ({}, {}) in {:x}",
+               actor.GetFormId(), level, loader.GetFormId(), told, sx, sy,
+               cellOrWorld);
+  return true;
+}
+
 void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
                         const NiPoint3& pos)
 {
@@ -1948,9 +2538,11 @@ void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
       if (!seen.insert(actor->GetFormId()).second) {
         continue;
       }
-      // an actor this process rolled before any pass reached it (the grid's
-      // 3x3 at a login, another square's ring) rolls at this level now
-      actor->RollFateIfUnrolled(level);
+      // an actor loaded where no game had it in reach (a lookup, another
+      // actor's square change), so served to none, rolls here at this pass's
+      // level; its fate rides this batch, and EnsureFated tells the other
+      // games whose pass has fated the square
+      EnsureFated(*actor, player, &player);
       msg.fates.push_back(FateOf(worldState, *actor));
       if (msg.fates.size() >= kFatesPerMessage) {
         flush();
@@ -1969,6 +2561,33 @@ void PartOne::SendFates(MpActor& player, uint32_t cellOrWorld,
 void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
 {
   RefreshReach(player);
+  // thuum docs/verbs/change-form.md (ADR-065 system 1): the cell's actors
+  // with a record are served again at the load, so a seat whose engine
+  // attached the cell applies each record before the actor's first frame
+  // there (the create word's copy may predate the record, or the engine's
+  // 5x5 may run ahead of the server's 3x3); the receiver's hash compare
+  // makes a repeat free
+  if (loaded) {
+    size_t served = 0;
+    for (MpObjectReference* emitter : player.GetEmitters()) {
+      MpActor* actor = emitter ? emitter->AsActor() : nullptr;
+      if (!actor || actor == &player ||
+          serverState.UserByActor(actor) != Networking::InvalidUserId ||
+          worldState.CellOf(*actor) != cell) {
+        continue;
+      }
+      ChangeFormApplyMessage apply;
+      if (actor->BuildChangeFormApply(apply)) {
+        player.SendToUser(apply, true);
+        ++served;
+      }
+    }
+    if (served > 0) {
+      spdlog::info("[verb:change-form] cell {:x} loaded by {:x}: {} record(s) "
+                   "served",
+                   cell, player.GetFormId(), served);
+    }
+  }
   const auto nowMs = SteadyNowMs();
   ApplyHostDecisions(
     *this,
@@ -1998,14 +2617,22 @@ void PartOne::OnDeathState(MpActor& actor, bool isDead)
                  "grace, no candidate until it stands (D18)",
                  actor.GetFormId());
     ApplyHostDecisions(*this, pImpl->cells->died(actor.GetFormId(), nowMs));
+    SendStreamWords(*this,
+                    pImpl->worldStreamer->dead(actor.GetFormId(), true));
   } else {
     spdlog::info("PartOne - cell-host: {:x} stands again: a candidate again "
                  "(D18)",
                  actor.GetFormId());
     ApplyHostDecisions(*this,
                        pImpl->cells->respawned(actor.GetFormId(), nowMs));
+    SendStreamWords(*this,
+                    pImpl->worldStreamer->dead(actor.GetFormId(), false));
   }
 }
+
+// degrees to radians for the snippet's rotation arguments (the client's
+// moveRefrToPosition takes radians, as remoteServer's teleport converts)
+static constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
 
 void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
                               uint32_t worldOrCell, const NiPoint3& pos,
@@ -2026,6 +2653,87 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
                  reporter.GetFormId(), refrId, pos.x, pos.y, pos.z,
                  worldOrCell, why);
   };
+  // playtest 42's F1 and F2 (2026-11-03): a sighter's own copy of an actor
+  // standing where the record does not (the record in a cell another game
+  // hosts, or the copy in another game's cell while the record stands
+  // elsewhere) is told to MOVE to the record, cell and position, through the
+  // native the client uses for a player's own cross-cell move
+  // (TESModPlatform's moveRefrToPosition, the call formView's gate makes when
+  // a view exists). Playtest 37's finding 38 ("we have 2 embrys") first met
+  // this orphan and sent ObjectReference.Disable; playtest 42's F1 (c2's
+  // Embry solid at the inn's porch while the record sat inside under c1, Hod
+  // walking into it) showed the Disable never REACHED the copy: its selfId
+  // went through MakeLongFormId's actor branch and the client resolves a
+  // long id through a view this game no longer had (runMethod threw "Unable
+  // to find form with id 0"), so the roster kept sighting the porch copy
+  // every 10 s after each hide. Playtest 40's F2 (Hilde's ghost) is the
+  // other shape: D11's release after a move indoors walking a copy back out.
+  // The copy now travels as an ARGUMENT with its raw id and selfId 0 (a
+  // static call), which the client maps to itself. A copy moved into an
+  // interior this game has not loaded loses its 3D and its collision here and
+  // stands at the record when that game walks in. The record's cell-or-world
+  // form goes typed as both the Cell and the WorldSpace argument: the
+  // client's deserializer casts and yields null for the one that does not
+  // fit, so no null travels (a null argument would fault its deserializer).
+  // Once a minute per sighter and actor. The move itself is npc-handoff's H5
+  // (CONFIRMED at T3 for an engine reference moved into an unloaded interior
+  // through this native). HYPOTHESIS until the lab: a copy with no view and
+  // the puppet flag lands the same; and, after D11's release 4 s later, the
+  // copy's own schedule may walk it off the record (Hod's porch record while
+  // nobody hosts the street), the minute's cadence then showing as a pop.
+  static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
+    moved;
+  const auto tellToMoveToRecord = [&](MpActor& actor, uint32_t recordCell,
+                                      const char* hostedBy) {
+    // a body is never moved (D78 C): a dead record's copy is npc-fate's,
+    // killed where it stands when its view arrives
+    if (actor.IsDead()) {
+      return;
+    }
+    const uint64_t key =
+      (static_cast<uint64_t>(reporter.GetFormId()) << 32) | refrId;
+    const auto now = std::chrono::steady_clock::now();
+    auto& last = moved[key];
+    if (last != std::chrono::steady_clock::time_point{} &&
+        now - last < std::chrono::minutes(1)) {
+      return;
+    }
+    last = now;
+    const uint32_t recordCellOrWorld =
+      actor.GetCellOrWorld().ToFormId(worldState.espmFiles);
+    const NiPoint3 recordPos = actor.GetPos();
+    const NiPoint3 recordRot = actor.GetAngle();
+    SpSnippetObjectArgument copy;
+    copy.formId = refrId;
+    copy.type = "ObjectReference";
+    SpSnippetObjectArgument asCell;
+    asCell.formId = recordCellOrWorld;
+    asCell.type = "Cell";
+    SpSnippetObjectArgument asWorld;
+    asWorld.formId = recordCellOrWorld;
+    asWorld.type = "WorldSpace";
+    const std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+      toRecord{ copy,
+                asCell,
+                asWorld,
+                static_cast<double>(recordPos.x),
+                static_cast<double>(recordPos.y),
+                static_cast<double>(recordPos.z),
+                static_cast<double>(recordRot.x * kDegToRad),
+                static_cast<double>(recordRot.y * kDegToRad),
+                static_cast<double>(recordRot.z * kDegToRad) };
+    SpSnippet("TESModPlatform", "moveRefrToPosition", toRecord, 0)
+      .Execute(&reporter, SpSnippetMode::kNoReturnResult);
+    spdlog::info(
+      "PartOne - npc-puppet: {:x}'s own copy of {:x} told to move "
+      "to the record at ({:.0f}, {:.0f}, {:.0f}) in {:x} (the "
+      "record's cell {:x} is {}; the copy stood at ({:.0f}, {:.0f}, "
+      "{:.0f}) in {:x} here)",
+      reporter.GetFormId(), refrId, recordPos.x, recordPos.y, recordPos.z,
+      recordCellOrWorld, recordCell, hostedBy, pos.x, pos.y, pos.z,
+      worldOrCell);
+  };
   // a game-file actor alone (the validator's bound too); a player's actor
   // never
   if (refrId >= 0xff000000) {
@@ -2041,6 +2749,30 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
     // grant comes first and replays what it held (finding 66)
     if (!host.hosted) {
       HoldSighting(reporter.GetFormId(), *cell, refrId, worldOrCell, pos, rot);
+    } else {
+      // playtest 42's F2: c2's engine walked Hod through the inn's door after
+      // c2's demote and sighted him inside c1's inn while the record stayed
+      // at the porch outside; the copy follows the record, never the record
+      // the copy
+      // a record the server holds already; an actor with no record is its
+      // host's roster's to create (the loader's disabled filters yield to the
+      // host's engine alone, rule 5)
+      const auto& sightedForm = worldState.LookupFormByIdNoLoad(refrId);
+      MpActor* sighted = sightedForm ? sightedForm->AsActor() : nullptr;
+      if (sighted &&
+          serverState.UserByActor(sighted) == Networking::InvalidUserId) {
+        const auto recordCell = worldState.CellOf(*sighted);
+        if (recordCell && *recordCell != *cell) {
+          const MpActor* recordHost = worldState.HostOf(*sighted);
+          // never the record's own host: its engine is the truth (branch (a)'s
+          // rule and the view's gate's, formView)
+          if (recordHost != &reporter) {
+            tellToMoveToRecord(*sighted, *recordCell,
+                               recordHost ? "another game's"
+                                          : "nobody's, frozen at the record");
+          }
+        }
+      }
     }
     return drop(host.hosted ? "the cell is another game's"
                             : "the cell is nobody's yet");
@@ -2064,34 +2796,9 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
   if (MpActor* other = worldState.HostOf(*actor);
       other && other != &reporter) {
     // hosted by another game where the record stands: its word, not this
-    // one's; the records meet at a handoff (npc-handoff). Playtest 37
-    // (2026-10-28, finding 38, "we have 2 embrys"): after two fresh
-    // launches the engines disagreed about where a resident stood, the
-    // first sighting placed the record in the inn its sighter hosts, and the
-    // other game's own reference outside stayed an orphan no record drives
-    // (no promote, no demote, no move; frozen on its screen). The sighter's
-    // engine is told to hide its copy (ObjectReference.Disable, no fade),
-    // once a minute per sighter and actor; formView re-enables a disabled
-    // reference when the record comes back into that game's grid
-    static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
-      hidden;
-    const uint64_t key =
-      (static_cast<uint64_t>(reporter.GetFormId()) << 32) | refrId;
-    const auto now = std::chrono::steady_clock::now();
-    auto& last = hidden[key];
-    if (last == std::chrono::steady_clock::time_point{} ||
-        now - last >= std::chrono::minutes(1)) {
-      last = now;
-      const std::vector<std::optional<
-        std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-        noFade{ false };
-      SpSnippet("ObjectReference", "Disable", noFade, refrId)
-        .Execute(&reporter, SpSnippetMode::kNoReturnResult);
-      spdlog::info("PartOne - npc-puppet: {:x}'s own copy of {:x} hidden (its "
-                   "record stands in {:x}, which {:x} hosts)",
-                   reporter.GetFormId(), refrId, standing.value_or(0),
-                   other->GetFormId());
-    }
+    // one's; the records meet at a handoff (npc-handoff); the sighter's copy
+    // goes to the record (tellToMoveToRecord above)
+    tellToMoveToRecord(*actor, standing.value_or(0), "another game's");
     return drop("its record stands in a cell another game hosts");
   }
   spdlog::info("PartOne - npc-puppet: {:x} sights {:x} at ({:.0f}, {:.0f}, "
@@ -2257,7 +2964,26 @@ void PartOne::TickCellHostsEverySecond()
   pImpl->lastCellsTick = now;
   TickCellHosts(SteadyNowMs());
   TickDeaths(SteadyNowMs());
+  TickBodies(SteadyNowMs());
   SweepHeldSightings(SteadyNowMs());
+}
+
+void PartOne::TickBodies(uint64_t nowMs)
+{
+  if (worldState.settlingBodies.empty()) {
+    return;
+  }
+  const std::vector<uint32_t> ids(worldState.settlingBodies.begin(),
+                                  worldState.settlingBodies.end());
+  for (const auto id : ids) {
+    auto& form = worldState.LookupFormByIdNoLoad(id);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    if (!actor || !actor->IsBodySettling()) {
+      worldState.settlingBodies.erase(id);
+      continue;
+    }
+    actor->SettleBodyIfDue(nowMs);
+  }
 }
 
 void PartOne::TickDeaths(uint64_t nowMs)
@@ -2390,6 +3116,19 @@ void PartOne::TickCellHosts(uint64_t nowMs)
         }
         return false;
       }();
+      // thuum ADR-068 rung 4: the world streamer reads the same silence for
+      // every seat (its own eligibility wants a movement report first, so a
+      // login's load block is no election)
+      const bool streamerStale = pImpl->streamerStaleUsers.count(userId) > 0;
+      if (silenceMs >= kStaleHostMs && !streamerStale) {
+        pImpl->streamerStaleUsers.insert(userId);
+        SendStreamWords(*this,
+                        pImpl->worldStreamer->stale(actor->GetFormId(), true));
+      } else if (silenceMs >= 0 && silenceMs < kStaleHostMs && streamerStale) {
+        pImpl->streamerStaleUsers.erase(userId);
+        SendStreamWords(
+          *this, pImpl->worldStreamer->stale(actor->GetFormId(), false));
+      }
       if (silenceMs >= kStaleHostMs && !wasStale && hostsSomething) {
         pImpl->staleUsers.insert(userId);
         spdlog::info("PartOne - cell-host: {:x} (user {}) silent {} ms, "
@@ -2413,6 +3152,39 @@ void PartOne::TickCellHosts(uint64_t nowMs)
 skymp::rules::CellHost PartOne::GetCellHost(uint32_t cell) const
 {
   return pImpl->cells->host_of(cell);
+}
+
+const char* PartOne::GetCellGrantKind(uint32_t cell) const
+{
+  const auto it = pImpl->cellGrantNotes.find(cell);
+  return it == pImpl->cellGrantNotes.end() ? "none" : it->second.kind;
+}
+
+void PartOne::NoteCellHostDecision(CellHostNote note, uint32_t cell)
+{
+  auto& kept = pImpl->cellGrantNotes[cell];
+  switch (note) {
+    case CellHostNote::Grant:
+      kept.kind = kept.held ? "inherited" : "fresh";
+      kept.held = true;
+      break;
+    case CellHostNote::Release:
+      // until the cell goes unhosted, the next grant is a hand-off
+      kept.held = true;
+      break;
+    case CellHostNote::Unhosted:
+      kept.held = false;
+      break;
+  }
+}
+
+std::vector<uint32_t> PartOne::GetCellLoaders(uint32_t cell) const
+{
+  std::vector<uint32_t> out;
+  for (const uint32_t player : pImpl->cells->loaders_of(cell)) {
+    out.push_back(player);
+  }
+  return out;
 }
 
 std::vector<PartOne::CellHostEntry> PartOne::GetCellHosts() const
@@ -2545,7 +3317,9 @@ PartOne::ClaimVerdict PartOne::ClaimActor(MpActor& claimant, MpActor& actor)
     actor.GetFormId(), claimant.GetFormId(), *cell, SteadyNowMs());
   const auto verdict = static_cast<ClaimVerdict>(code);
   if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
-    // the word to every listening game: the claimant simulates it now
+    // the record ahead of the word, then the word to every listening game:
+    // the claimant simulates it now
+    SendActorKeyframe(actor, claimant);
     actor.UpdateHoster(claimant.GetFormId());
   }
   return verdict;
@@ -2556,7 +3330,12 @@ bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
   const bool released =
     pImpl->cells->release_claim(actor.GetFormId(), claimant.GetFormId());
   if (released) {
-    actor.UpdateHoster(SimulatorOf(actor));
+    const uint32_t simulator = SimulatorOf(actor);
+    auto& form = worldState.LookupFormByIdNoLoad(simulator);
+    if (MpActor* sim = form ? form->AsActor() : nullptr) {
+      SendActorKeyframe(actor, *sim);
+    }
+    actor.UpdateHoster(simulator);
   }
   return released;
 }
@@ -2587,12 +3366,46 @@ uint32_t PartOne::ReleaseAnyClaim(MpActor& actor)
   return former;
 }
 
+void PartOne::SendActorKeyframe(MpActor& actor, MpActor& to)
+{
+  const auto userId = serverState.UserByActor(&to);
+  if (userId == Networking::InvalidUserId) {
+    return;
+  }
+  // only to a game that sees the actor: a Release's flip walks the old
+  // host's emitters, and a keyframe for a form the new host lacks is "Form
+  // with idx N not found" there (numidium's review of 0b61fc80, item 7)
+  if (to.GetEmitters().count(&actor) == 0) {
+    return;
+  }
+  UpdateMovementMessage msg;
+  msg.idx = actor.GetIdx();
+  msg.data.worldOrCell = actor.GetCellOrWorld().ToFormId(worldState.espmFiles);
+  const auto& pos = actor.GetPos();
+  const auto& rot = actor.GetAngle();
+  msg.data.pos = { pos.x, pos.y, pos.z };
+  msg.data.rot = { rot.x, rot.y, rot.z };
+  msg.data.runMode = "Standing";
+  msg.data.isWeapDrawn = actor.IsWeaponDrawn();
+  msg.data.isDead = actor.IsDead();
+  // the edge validates the keyframe like any movement (wire-validate's
+  // bounds), so a record's health is clamped to its range rather than
+  // refused silently while the word still goes
+  msg.data.healthPercentage =
+    std::clamp(actor.GetChangeForm().actorValues.healthPercentage, 0.f, 1.f);
+  GetSendTarget().Send(userId, msg, true);
+}
+
 PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,
                                              const MpObjectReference& prop,
-                                             uint32_t cell, uint8_t touch)
+                                             uint32_t cell, uint8_t touch,
+                                             bool worldBody)
 {
-  const auto code = pImpl->props->claim_prop(
-    prop.GetFormId(), claimant.GetFormId(), cell, touch, SteadyNowMs());
+  const auto code = worldBody
+    ? pImpl->props->claim_prop_world_body(
+        prop.GetFormId(), claimant.GetFormId(), cell, SteadyNowMs())
+    : pImpl->props->claim_prop(prop.GetFormId(), claimant.GetFormId(), cell,
+                               touch, SteadyNowMs());
   return static_cast<PropClaimVerdict>(code);
 }
 
@@ -2842,7 +3655,10 @@ bool PartOne::BreakBondsOf(uint32_t actorFormId)
 void PartOne::SetPlayerGlobalsSettings(const std::string& playerGlobalsJson)
 {
   pImpl->playerGlobals = skymp::rules::new_player_globals(playerGlobalsJson);
+  pImpl->playerGlobalsJson = playerGlobalsJson;
   spdlog::info("PartOne::SetPlayerGlobalsSettings - {}", playerGlobalsJson);
+  // thuum ADR-068 rung 5: the player class's globals join the setting's
+  ComposePlayerGlobals();
 }
 
 namespace {
@@ -2928,6 +3744,1012 @@ void PartOne::SetSharedQuestsSettings(const std::string& sharedQuestsJson)
 {
   pImpl->sharedQuests = skymp::rules::new_shared_quests(sharedQuestsJson);
   spdlog::info("PartOne::SetSharedQuestsSettings - {}", sharedQuestsJson);
+  // thuum ADR-068 rung 5 (read 4): the retired `allowed` is read and ignored,
+  // said once here; its quests stay known to the quest scope's measurement
+  // line alone (a mark on that list stops for Eli)
+  if (const std::string retired(pImpl->sharedQuests->shared_quests_retired());
+      !retired.empty()) {
+    spdlog::warn("[verb:quest-stage] {}", retired);
+  }
+  pImpl->retiredAllowed.clear();
+  const auto block = nlohmann::json::parse(sharedQuestsJson, nullptr, false);
+  if (block.is_object() && block.contains("allowed") &&
+      block["allowed"].is_array()) {
+    for (const auto& entry : block["allowed"]) {
+      if (entry.is_string()) {
+        pImpl->retiredAllowed.push_back(
+          FormDesc::FromString(entry.get<std::string>()));
+      }
+    }
+  }
+  ComposeQuestScope();
+}
+
+namespace {
+// thuum ADR-068 rung 5: a FormDesc as the settings spell it,
+// "<hex id>:<plugin>" (one to eight hex digits, a plugin named); throws
+// naming the setting and the entry (FormDesc::FromString checks nothing)
+FormDesc SettingFormDesc(const char* setting, const std::string& text)
+{
+  const auto colon = text.find(':');
+  const std::string id =
+    colon == std::string::npos ? std::string() : text.substr(0, colon);
+  const bool hex = !id.empty() && id.size() <= 8 &&
+    std::all_of(id.begin(), id.end(),
+                [](unsigned char c) { return std::isxdigit(c) != 0; });
+  if (!hex || colon + 1 >= text.size()) {
+    throw std::runtime_error(std::string(setting) + ": \"" + text +
+                             "\" is not \"<hex id>:<plugin>\"");
+  }
+  return FormDesc::FromString(text);
+}
+
+// the same form: the id, and the plugin compared without case, as the
+// engine compares plugin names (the census spells USSEP in lower case)
+bool SameForm(const FormDesc& a, const FormDesc& b)
+{
+  return a.shortFormId == b.shortFormId && a.file.size() == b.file.size() &&
+    std::equal(a.file.begin(), a.file.end(), b.file.begin(),
+               [](char x, char y) {
+                 return std::tolower(static_cast<unsigned char>(x)) ==
+                   std::tolower(static_cast<unsigned char>(y));
+               });
+}
+
+bool HoldsForm(const std::vector<FormDesc>& list, const FormDesc& form)
+{
+  return std::any_of(list.begin(), list.end(),
+                     [&](const FormDesc& f) { return SameForm(f, form); });
+}
+
+// one of the census's per-quest maps ({"<quest>": [values]}) as JSON text,
+// each value read by `read`; throws naming the setting and the entry
+template <class Value, class Read>
+std::vector<std::pair<FormDesc, std::vector<Value>>> PlayerQuestMap(
+  const char* setting, const std::string& text, Read read)
+{
+  const auto j = nlohmann::json::parse(text);
+  if (!j.is_object()) {
+    throw std::runtime_error(std::string(setting) +
+                             ": an object {\"<hex id>:<plugin>\": [...]} "
+                             "was expected");
+  }
+  std::vector<std::pair<FormDesc, std::vector<Value>>> out;
+  for (const auto& [key, values] : j.items()) {
+    if (!values.is_array()) {
+      throw std::runtime_error(std::string(setting) + ": \"" + key +
+                               "\" names no list");
+    }
+    std::vector<Value> parsed;
+    for (const auto& value : values) {
+      parsed.push_back(read(value));
+    }
+    out.emplace_back(SettingFormDesc(setting, key), std::move(parsed));
+  }
+  return out;
+}
+
+// the two reserved names of a form's queued OnUpdateGameTime registration
+// (skyrim-platform ScriptState.cpp's kGameTimeHours and kGameTimeRepeat,
+// read by ReadScriptVariables; wire-rules script_variables' GAME_TIME_HOURS
+// and GAME_TIME_REPEAT): D-T2 B's re-issue at a login
+constexpr const char* kGameTimeHours = "<OnUpdateGameTime>";
+constexpr const char* kGameTimeRepeat = "<OnUpdateGameTime:repeat>";
+
+// the wire's cap on a PlayerGlobals watch (wire-schema cap::PLAYER_GLOBALS)
+constexpr size_t kPlayerGlobalsMax = 256;
+
+// thuum ADR-068 rung 5 (D-Q1's alias half): one QUST's facts for its class,
+// read once per set of game files (the tests' many PartOnes share them, as
+// AliasCreationsOf's index): its aliases as libespm's QUST::GetQuestAliases
+// reads them, the forms in the load order (an external fill's alias read
+// one hop), and its first attached script, which names the key of its
+// game-time registration
+struct QuestScopeFacts
+{
+  FormDesc quest;
+  std::vector<skymp::rules::QuestScopeAliasRow> aliases;
+  std::string firstScript;
+  // thuum D-Q9 B (train 52): each script its VMAD attaches to one of its
+  // aliases (libespm ScriptData::aliases), with that alias's id
+  std::vector<std::pair<uint32_t, std::string>> aliasScripts;
+};
+
+const std::vector<QuestScopeFacts>& QuestScopeFactsOf(WorldState& worldState)
+{
+  static std::map<const espm::Loader*, std::vector<QuestScopeFacts>> g_facts;
+  auto it = g_facts.find(&worldState.GetEspm());
+  if (it != g_facts.end()) {
+    return it->second;
+  }
+  // built whole before it is kept, so a read that throws keeps nothing
+  std::vector<QuestScopeFacts> facts;
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto global = [](const espm::LookupResult& at, uint32_t raw) {
+    return raw ? at.ToGlobalId(raw) : 0u;
+  };
+  for (const auto& lookup : browser.GetDistinctRecordsByType("QUST")) {
+    const auto* qust = espm::Convert<espm::QUST>(lookup.rec);
+    if (!qust) {
+      continue;
+    }
+    QuestScopeFacts quest;
+    try {
+      quest.quest = FormDesc::FromFormId(
+        lookup.ToGlobalId(lookup.rec->GetId()), worldState.espmFiles);
+    } catch (const std::exception&) {
+      continue;
+    }
+    for (const auto& alias : qust->GetQuestAliases(cache)) {
+      skymp::rules::QuestScopeAliasRow row{};
+      row.location = alias.locationAlias;
+      row.id = alias.locationAlias ? alias.locationID : alias.aliasID;
+      row.forced = global(lookup, alias.aliasForcedReference);
+      row.unique_actor = global(lookup, alias.aliasUniqueActor);
+      row.created = global(lookup, alias.aliasCreatedObject);
+      row.create_at = alias.createAt;
+      row.external = false;
+      if (!alias.locationAlias && alias.externalAliasReference) {
+        const auto other =
+          browser.LookupById(global(lookup, alias.externalAliasReference));
+        if (const auto* otherQust = espm::Convert<espm::QUST>(other.rec)) {
+          for (const auto& theirs : otherQust->GetQuestAliases(cache)) {
+            if (!theirs.locationAlias &&
+                theirs.aliasID == alias.externalAlias) {
+              row.external = true;
+              row.external_forced = global(other, theirs.aliasForcedReference);
+              row.external_unique_actor =
+                global(other, theirs.aliasUniqueActor);
+              break;
+            }
+          }
+        }
+      }
+      quest.aliases.push_back(row);
+    }
+    espm::ScriptData scriptData;
+    lookup.rec->GetScriptData(&scriptData, cache);
+    for (const auto& script : scriptData.scripts) {
+      if (script.status != 3 && !script.scriptName.empty()) {
+        quest.firstScript = script.scriptName;
+        break;
+      }
+    }
+    for (const auto& alias : scriptData.aliases) {
+      if (alias.aliasId < 0) {
+        continue; // an alias object the section did not name
+      }
+      for (const auto& script : alias.scripts) {
+        if (script.status != 3 && !script.scriptName.empty()) {
+          quest.aliasScripts.emplace_back(static_cast<uint32_t>(alias.aliasId),
+                                          script.scriptName);
+        }
+      }
+    }
+    facts.push_back(std::move(quest));
+  }
+  return g_facts.emplace(&worldState.GetEspm(), std::move(facts))
+    .first->second;
+}
+
+std::string LowerScriptClass(std::string name)
+{
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return name;
+}
+
+// thuum D-Q9 B (Eli 2026-11-11; train 52): every script class a QUST's VMAD
+// attaches to an alias, by its name without case: true when every alias it
+// rides, over every quest, is the player's (wire-rules
+// quest_scope::is_players over that quest's aliases), false when one is not.
+// Read once per set of game files over the quest scope's facts
+// (QuestScopeFactsOf's shape: built whole before it is kept). A script also
+// attached to a placed reference is read by its aliases alone (the QUST VMADs
+// are what the index reads)
+const std::unordered_map<std::string, bool>& PlayerAliasScriptIndexOf(
+  WorldState& worldState)
+{
+  static std::map<const espm::Loader*, std::unordered_map<std::string, bool>>
+    g_index;
+  auto it = g_index.find(&worldState.GetEspm());
+  if (it != g_index.end()) {
+    return it->second;
+  }
+  std::unordered_map<std::string, bool> index;
+  for (const auto& q : QuestScopeFactsOf(worldState)) {
+    if (q.aliasScripts.empty()) {
+      continue;
+    }
+    const auto players = skymp::rules::quest_scope_player_aliases(
+      rust::Slice<const skymp::rules::QuestScopeAliasRow>(q.aliases.data(),
+                                                          q.aliases.size()));
+    for (const auto& [aliasId, script] : q.aliasScripts) {
+      const bool player =
+        std::find(players.begin(), players.end(), aliasId) != players.end();
+      auto [at, added] = index.emplace(LowerScriptClass(script), player);
+      if (!added) {
+        at->second = at->second && player;
+      }
+    }
+  }
+  return g_index.emplace(&worldState.GetEspm(), std::move(index))
+    .first->second;
+}
+
+// thuum ADR-068 rung 5 (the fresh review's note 3): every QUST's and MGEF's
+// script attachments with what their properties name, a QUST's alias
+// scripts among them (a review of the rotfern-eyes slot: an own row its
+// alias script called found no attachment, E_SCRIPTCALL_UNNAMED with "the
+// class has 0 attachment(s)"), and the SPELs that carry each MGEF, read once
+// per set of game files (QuestScopeFactsOf's shape: built whole before it is
+// kept, so a read that throws keeps nothing). A script a record marks
+// removed (status 3) and a property so marked are skipped, as the core
+// reads a VMAD elsewhere
+const std::unordered_map<std::string, std::vector<PartOne::ScriptAttachment>>&
+ScriptAttachmentIndexOf(WorldState& worldState)
+{
+  using Index =
+    std::unordered_map<std::string, std::vector<PartOne::ScriptAttachment>>;
+  static std::map<const espm::Loader*, Index> g_index;
+  auto it = g_index.find(&worldState.GetEspm());
+  if (it != g_index.end()) {
+    return it->second;
+  }
+  Index index;
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  std::unordered_map<uint32_t, std::vector<uint32_t>> carriers;
+  for (const auto& lookup :
+       browser.GetDistinctRecordsByType(espm::SPEL::kType)) {
+    const auto* spel = espm::Convert<espm::SPEL>(lookup.rec);
+    if (!spel) {
+      continue;
+    }
+    const uint32_t spell = lookup.ToGlobalId(lookup.rec->GetId());
+    for (const auto& effect : spel->GetData(cache).effects) {
+      if (!effect.effectFormId) {
+        continue;
+      }
+      auto& spells = carriers[lookup.ToGlobalId(effect.effectFormId)];
+      if (std::find(spells.begin(), spells.end(), spell) == spells.end()) {
+        spells.push_back(spell);
+      }
+    }
+  }
+  for (const char* type : { espm::QUST::kType, espm::MGEF::kType }) {
+    const bool quest = !std::strcmp(type, espm::QUST::kType);
+    for (const auto& lookup : browser.GetDistinctRecordsByType(type)) {
+      espm::ScriptData scriptData;
+      lookup.rec->GetScriptData(&scriptData, cache);
+      const uint32_t form = lookup.ToGlobalId(lookup.rec->GetId());
+      // a QUST's alias scripts beside its own (libespm's ScriptData::
+      // aliases, the VMAD's Alias Scripts Section): each an attachment of
+      // the quest, live as the quest is, its properties named as the
+      // quest's own scripts' are; RotfernEyes.esp carries its script on its
+      // player alias alone (thuum D-E1 A), as eight quests of Skyrim.esm,
+      // Dawnguard.esm and Dragonborn.esm do
+      std::vector<const espm::Script*> scripts;
+      for (const auto& script : scriptData.scripts) {
+        scripts.push_back(&script);
+      }
+      for (const auto& alias : scriptData.aliases) {
+        for (const auto& script : alias.scripts) {
+          scripts.push_back(&script);
+        }
+      }
+      for (const espm::Script* each : scripts) {
+        const auto& script = *each;
+        if (script.status == 3 || script.scriptName.empty()) {
+          continue;
+        }
+        PartOne::ScriptAttachment attachment;
+        attachment.form = form;
+        attachment.quest = quest;
+        if (!quest) {
+          if (const auto c = carriers.find(form); c != carriers.end()) {
+            attachment.spells = c->second;
+          }
+        }
+        const auto add = [&](uint32_t named) {
+          if (named == 0 ||
+              std::any_of(attachment.named.begin(), attachment.named.end(),
+                          [&](const auto& n) { return n.form == named; })) {
+            return;
+          }
+          PartOne::ScriptAttachment::Named n;
+          n.form = named;
+          const auto list = browser.LookupById(named);
+          if (const auto* flst = espm::Convert<espm::FLST>(list.rec)) {
+            for (uint32_t member : flst->GetData(cache).formIds) {
+              n.members.push_back(list.ToGlobalId(member));
+            }
+          }
+          attachment.named.push_back(std::move(n));
+        };
+        for (const auto& property : script.properties) {
+          if (property.status == 3) {
+            continue;
+          }
+          if (property.type == espm::Property::Type::Object &&
+              property.value.formId) {
+            add(lookup.ToGlobalId(property.value.formId));
+          } else if (property.type == espm::Property::Type::ObjectArray) {
+            for (const auto& element : property.array) {
+              if (element.formId) {
+                add(lookup.ToGlobalId(element.formId));
+              }
+            }
+          }
+        }
+        index[LowerScriptClass(script.scriptName)].push_back(
+          std::move(attachment));
+      }
+    }
+  }
+  return g_index.emplace(&worldState.GetEspm(), std::move(index))
+    .first->second;
+}
+
+std::vector<skymp::rules::QuestStageEntry> QuestEntries(
+  const std::vector<FormDesc>& quests)
+{
+  std::vector<skymp::rules::QuestStageEntry> entries;
+  entries.reserve(quests.size());
+  for (const auto& q : quests) {
+    entries.push_back({ q.shortFormId, rust::String(q.file), 0 });
+  }
+  return entries;
+}
+
+// thuum ADR-068 rung 5 (D-Q4 C): every quest a Story Manager quest node of
+// the game files names (libespm SMQN.h, its NNAMs: CommonLibSSE-NG
+// include/RE/B/BGSStoryManagerQuestNode.h:48), each with the first node that
+// names it ("<editor id> <hex id>") and how many do, and the nodes read,
+// once per set of game files (QuestScopeFactsOf's shape: built whole before
+// it is kept). A node is read in the last file's version
+// (GetDistinctRecordsByType), and one that file deletes or marks ignored
+// names nothing (the node's RecordFlags, kDeleted 1 << 5 and kIgnored
+// 1 << 12, BGSStoryManagerQuestNode.h:29-30)
+struct StoryQuest
+{
+  FormDesc quest;
+  std::string firstNode;
+  size_t nodes = 0;
+};
+
+struct StoryIndex
+{
+  std::vector<StoryQuest> quests;
+  size_t nodes = 0;
+};
+
+constexpr uint32_t kStoryNodeSkipped = (1u << 5) | (1u << 12);
+
+const StoryIndex& StoryIndexOf(WorldState& worldState)
+{
+  static std::map<const espm::Loader*, StoryIndex> g_story;
+  auto it = g_story.find(&worldState.GetEspm());
+  if (it != g_story.end()) {
+    return it->second;
+  }
+  StoryIndex index;
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  for (const auto& lookup :
+       browser.GetDistinctRecordsByType(espm::SMQN::kType)) {
+    const auto* node = espm::Convert<espm::SMQN>(lookup.rec);
+    if (!node || (lookup.rec->GetFlags() & kStoryNodeSkipped) != 0) {
+      continue;
+    }
+    ++index.nodes;
+    const char* editorId = lookup.rec->GetEditorId(cache);
+    const std::string name =
+      fmt::format("{} {:x}", editorId ? editorId : "",
+                  lookup.ToGlobalId(lookup.rec->GetId()));
+    for (const uint32_t raw : node->GetData(cache).quests) {
+      if (raw == 0) {
+        continue;
+      }
+      FormDesc quest;
+      try {
+        quest =
+          FormDesc::FromFormId(lookup.ToGlobalId(raw), worldState.espmFiles);
+      } catch (const std::exception&) {
+        continue;
+      }
+      const auto at = std::find_if(
+        index.quests.begin(), index.quests.end(),
+        [&](const StoryQuest& q) { return SameForm(q.quest, quest); });
+      if (at == index.quests.end()) {
+        index.quests.push_back({ quest, name, 1 });
+      } else {
+        ++at->nodes;
+      }
+    }
+  }
+  return g_story.emplace(&worldState.GetEspm(), std::move(index))
+    .first->second;
+}
+}
+
+void PartOne::SetQuestScopeSettings(const std::string& modeJson,
+                                    const std::string& playerQuestsJson)
+{
+  pImpl->questScope =
+    skymp::rules::new_quest_scope(modeJson, playerQuestsJson);
+  spdlog::info("PartOne::SetQuestScopeSettings - questScope {}, playerQuests "
+               "{}",
+               modeJson, playerQuestsJson);
+  ComposeQuestScope();
+}
+
+void PartOne::SetScriptVariablesSettings(
+  const std::string& conditionVariablesJson)
+{
+  pImpl->scriptVariables =
+    skymp::rules::new_script_variables(conditionVariablesJson);
+  spdlog::info("PartOne::SetScriptVariablesSettings - {} key(s)",
+               pImpl->scriptVariables->script_variables_watch().size());
+  ComposeQuestScope();
+}
+
+void PartOne::SetPlayerQuestSettings(const std::string& globalsJson,
+                                     const std::string& variablesJson,
+                                     const std::string& callersJson)
+{
+  pImpl->playerQuestGlobals = PlayerQuestMap<FormDesc>(
+    "playerQuestGlobals", globalsJson, [](const nlohmann::json& v) {
+      if (!v.is_string()) {
+        throw std::runtime_error("playerQuestGlobals: " + v.dump() +
+                                 " is not \"<hex id>:<plugin>\"");
+      }
+      return SettingFormDesc("playerQuestGlobals", v.get<std::string>());
+    });
+  pImpl->playerQuestVariables =
+    PlayerQuestMap<std::pair<std::string, std::string>>(
+      "playerQuestVariables", variablesJson, [](const nlohmann::json& v) {
+        // "<script>::<var>", split at the first "::" (the census's
+        // ownVariables and the lab grammar's spelling: the variable of an
+        // auto property is "::<name>_var")
+        const std::string text = v.is_string() ? v.get<std::string>() : "";
+        const auto at = text.find("::");
+        if (at == std::string::npos || at == 0 || at + 2 >= text.size()) {
+          throw std::runtime_error("playerQuestVariables: " + v.dump() +
+                                   " is not \"<script>::<var>\"");
+        }
+        return std::make_pair(text.substr(0, at), text.substr(at + 2));
+      });
+  pImpl->playerQuestCallers = PlayerQuestMap<uint16_t>(
+    "playerQuestCallers", callersJson, [](const nlohmann::json& v) {
+      if (!v.is_number_unsigned() || v.get<uint64_t>() > 0xffff) {
+        throw std::runtime_error("playerQuestCallers: " + v.dump() +
+                                 " is no stage (0 to 65535)");
+      }
+      return static_cast<uint16_t>(v.get<uint64_t>());
+    });
+  spdlog::info("PartOne::SetPlayerQuestSettings - {} quest(s) with globals, "
+               "{} with variables, {} calling one",
+               pImpl->playerQuestGlobals.size(),
+               pImpl->playerQuestVariables.size(),
+               pImpl->playerQuestCallers.size());
+  ComposeQuestScope();
+}
+
+void PartOne::SetQuestStoryInstancesSettings(const std::string& settingJson)
+{
+  pImpl->questStoryWorld =
+    skymp::rules::quest_story_instances_world(settingJson);
+  spdlog::info("PartOne::SetQuestStoryInstancesSettings - "
+               "questStoryInstances {}",
+               settingJson);
+  ComposeStoryQuests();
+}
+
+void PartOne::SetQuestPlayerAliasCauseSettings(const std::string& settingJson)
+{
+  pImpl->questPlayerAliasWorld =
+    skymp::rules::quest_player_alias_cause_world(settingJson);
+  spdlog::info("PartOne::SetQuestPlayerAliasCauseSettings - "
+               "questPlayerAliasCause {}",
+               settingJson);
+}
+
+bool PartOne::QuestPlayerAliasCauseSeat() const
+{
+  return !pImpl->questPlayerAliasWorld;
+}
+
+bool PartOne::ScriptRidesPlayerAliasesOnly(const std::string& script) const
+{
+  if (!pImpl->playerAliasScripts || script.empty()) {
+    return false;
+  }
+  const auto it = pImpl->playerAliasScripts->find(LowerScriptClass(script));
+  return it != pImpl->playerAliasScripts->end() && it->second;
+}
+
+void PartOne::ComposeStoryQuests()
+{
+  if (!HasEspm()) {
+    return; // AttachEspm composes once the game files are here
+  }
+  const auto& index = StoryIndexOf(worldState);
+  std::vector<FormDesc> quests;
+  quests.reserve(index.quests.size());
+  for (const auto& q : index.quests) {
+    quests.push_back(q.quest);
+  }
+  const auto entries = QuestEntries(quests);
+  pImpl->questRuns->quest_runs_set_story(
+    rust::Slice<const skymp::rules::QuestStageEntry>(entries.data(),
+                                                     entries.size()),
+    pImpl->questStoryWorld);
+  spdlog::info("[verb:quest-stage] the Story Manager's {} quest node(s) "
+               "name {} quest(s) (SMQN NNAM): {} (questStoryInstances {}, "
+               "D-Q4 C)",
+               index.nodes, quests.size(),
+               pImpl->questStoryWorld
+                 ? "judged by their cause like any other quest"
+                 : "their runs are each seat's own, their stages cross",
+               pImpl->questStoryWorld ? "world" : "seat");
+}
+
+std::string PartOne::StoryNodesOf(const FormDesc& quest)
+{
+  if (!HasEspm()) {
+    return std::string();
+  }
+  for (const auto& q : StoryIndexOf(worldState).quests) {
+    if (SameForm(q.quest, quest)) {
+      return q.nodes > 1
+        ? fmt::format("{} and {} more", q.firstNode, q.nodes - 1)
+        : q.firstNode;
+    }
+  }
+  return std::string();
+}
+
+void PartOne::ComposeQuestScope()
+{
+  if (!HasEspm()) {
+    return; // AttachEspm composes once the game files are here
+  }
+  const auto& facts = QuestScopeFactsOf(worldState);
+  const bool acting = pImpl->questScope->quest_scope_acting();
+  std::vector<FormDesc> marked;
+  std::vector<const QuestScopeFacts*> markedFacts;
+  for (const auto& q : facts) {
+    const rust::Slice<const skymp::rules::QuestScopeAliasRow> aliases(
+      q.aliases.data(), q.aliases.size());
+    if (pImpl->questScope->quest_scope_class(q.quest.shortFormId, q.quest.file,
+                                             aliases) == 1) {
+      marked.push_back(q.quest);
+      markedFacts.push_back(&q);
+    }
+  }
+
+  // the measurement (D-Q1's "measured against today's lists"): the class and
+  // its overlap with the denied list and the retired allowed one, either
+  // mode, before anything is composed
+  size_t denied = 0;
+  size_t allowed = 0;
+  std::string ids;
+  for (const auto& q : marked) {
+    if (pImpl->sharedQuests->shared_quests_check(q.shortFormId, q.file) == 2) {
+      ++denied;
+    }
+    if (HoldsForm(pImpl->retiredAllowed, q)) {
+      ++allowed;
+    }
+    ids += (ids.empty() ? "" : ", ") + q.ToString();
+  }
+  spdlog::info("[verb:quest-stage] quest scope ({}): {} per player: {}; {} "
+               "denied, {} allowed",
+               acting ? "derived" : "off", marked.size(), ids, denied,
+               allowed);
+  pImpl->questScopeMarked = marked;
+
+  // the composition, while the scope acts ("off" leaves the settings as
+  // written)
+  pImpl->playerClassQuests = acting ? marked : std::vector<FormDesc>();
+  const auto entries = QuestEntries(pImpl->playerClassQuests);
+  const rust::Slice<const skymp::rules::QuestStageEntry> entrySlice(
+    entries.data(), entries.size());
+  pImpl->sharedQuests->shared_quests_set_player(entrySlice);
+
+  // D-T2 B's own keys: each composed quest's scalar variables (the census's
+  // playerQuestVariables) and its game-time registration's two names, keyed
+  // by the quest's first variable's script or, with none listed, its first
+  // attached one (the platform reads a registration by the form, whatever
+  // the script)
+  std::vector<skymp::rules::ScriptVarKeyRow> own;
+  if (acting) {
+    for (const QuestScopeFacts* q : markedFacts) {
+      std::string script;
+      for (const auto& [quest, variables] : pImpl->playerQuestVariables) {
+        if (!SameForm(quest, q->quest)) {
+          continue;
+        }
+        for (const auto& [scriptName, var] : variables) {
+          if (script.empty()) {
+            script = scriptName;
+          }
+          own.push_back({ q->quest.shortFormId, rust::String(q->quest.file),
+                          rust::String(scriptName), rust::String(var), true });
+        }
+      }
+      if (script.empty()) {
+        script = q->firstScript;
+      }
+      if (script.empty()) {
+        continue; // no script attached: nothing registers for game time
+      }
+      for (const char* name : { kGameTimeHours, kGameTimeRepeat }) {
+        own.push_back({ q->quest.shortFormId, rust::String(q->quest.file),
+                        rust::String(script), rust::String(name), true });
+      }
+    }
+  }
+  const size_t ownKept = pImpl->scriptVariables->script_variables_set_player(
+    entrySlice,
+    rust::Slice<const skymp::rules::ScriptVarKeyRow>(own.data(), own.size()));
+
+  // PQ-3's stages
+  pImpl->servedStages.clear();
+  if (acting) {
+    for (const auto& [quest, stages] : pImpl->playerQuestCallers) {
+      for (uint16_t stage : stages) {
+        pImpl->servedStages.emplace_back(quest, stage);
+      }
+    }
+  }
+
+  ComposePlayerGlobals();
+  if (acting) {
+    spdlog::info("[verb:quest-stage] quest scope composed: {} quest(s) per "
+                 "player, {} own key(s) of {} named, {} stage(s) relayed "
+                 "served (PQ-3)",
+                 pImpl->playerClassQuests.size(), ownKept, own.size(),
+                 pImpl->servedStages.size());
+  }
+}
+
+void PartOne::ComposePlayerGlobals()
+{
+  // the player class's globals (playerQuestGlobals) join the setting's, each
+  // once, so the player keeps them and WorldGlobal refuses them; nothing
+  // joins while the scope does not act
+  std::vector<std::string> added;
+  if (!pImpl->playerClassQuests.empty() &&
+      !pImpl->playerQuestGlobals.empty()) {
+    const auto listed =
+      nlohmann::json::parse(pImpl->playerGlobalsJson, nullptr, false);
+    std::vector<FormDesc> have;
+    if (listed.is_array()) {
+      for (const auto& e : listed) {
+        if (e.is_string()) {
+          have.push_back(FormDesc::FromString(e.get<std::string>()));
+        } else if (e.is_object() && e.contains("global") &&
+                   e["global"].is_string()) {
+          have.push_back(FormDesc::FromString(e["global"].get<std::string>()));
+        }
+      }
+    }
+    for (const auto& quest : pImpl->playerClassQuests) {
+      for (const auto& [owner, globals] : pImpl->playerQuestGlobals) {
+        if (!SameForm(owner, quest)) {
+          continue;
+        }
+        for (const auto& global : globals) {
+          if (!HoldsForm(have, global) && have.size() < kPlayerGlobalsMax) {
+            have.push_back(global);
+            added.push_back(global.ToString());
+          }
+        }
+      }
+    }
+  }
+  if (added.empty()) {
+    pImpl->playerGlobals =
+      skymp::rules::new_player_globals(pImpl->playerGlobalsJson);
+    return;
+  }
+  auto merged =
+    nlohmann::json::parse(pImpl->playerGlobalsJson, nullptr, false);
+  if (!merged.is_array()) {
+    merged = nlohmann::json::array();
+  }
+  for (const auto& global : added) {
+    merged.push_back(global);
+  }
+  try {
+    pImpl->playerGlobals = skymp::rules::new_player_globals(merged.dump());
+    spdlog::info("[verb:quest-stage] quest scope: {} global(s) of the player "
+                 "class kept per player (playerQuestGlobals)",
+                 added.size());
+  } catch (const std::exception& e) {
+    spdlog::error("[verb:quest-stage] quest scope: the player class's {} "
+                  "global(s) refused by playerGlobals ({}); the setting's "
+                  "list stands",
+                  added.size(), e.what());
+    pImpl->playerGlobals =
+      skymp::rules::new_player_globals(pImpl->playerGlobalsJson);
+  }
+}
+
+const std::vector<FormDesc>& PartOne::QuestScopeMarked() const
+{
+  return pImpl->questScopeMarked;
+}
+
+const std::vector<FormDesc>& PartOne::PlayerClassQuests() const
+{
+  return pImpl->playerClassQuests;
+}
+
+bool PartOne::IsServedStage(const FormDesc& quest, uint16_t stage) const
+{
+  return std::any_of(pImpl->servedStages.begin(), pImpl->servedStages.end(),
+                     [&](const auto& served) {
+                       return served.second == stage &&
+                         SameForm(served.first, quest);
+                     });
+}
+
+skymp::rules::QuestRuns& PartOne::GetQuestRunRules()
+{
+  return *pImpl->questRuns;
+}
+
+skymp::rules::ScriptVariables& PartOne::GetScriptVariableRules()
+{
+  return *pImpl->scriptVariables;
+}
+
+skymp::rules::PlayerOverlays& PartOne::GetPlayerOverlays()
+{
+  return *pImpl->playerOverlays;
+}
+
+std::pair<std::vector<FormDesc>, std::vector<FormDesc>>
+PartOne::QuestRunsAtLogin()
+{
+  std::vector<skymp::rules::QuestRunRow> record;
+  for (const auto& run : GetQuestRuns()) {
+    record.push_back({ run.quest.shortFormId, rust::String(run.quest.file),
+                       run.running, run.seq });
+  }
+  // the journal's stages: a quest recorded stopped whose stages the login
+  // replays is started ahead of them too (D-Q3 A)
+  std::vector<skymp::rules::QuestStageEntry> stages;
+  for (const auto& done : GetQuestStages()) {
+    stages.push_back(
+      { done.quest.shortFormId, rust::String(done.quest.file), done.stage });
+  }
+  const auto login = pImpl->questRuns->quest_runs_at_login(
+    rust::Slice<const skymp::rules::QuestRunRow>(record.data(), record.size()),
+    *pImpl->sharedQuests,
+    rust::Slice<const skymp::rules::QuestStageEntry>(stages.data(),
+                                                     stages.size()));
+  std::pair<std::vector<FormDesc>, std::vector<FormDesc>> out;
+  for (const auto& e : login.starts) {
+    out.first.push_back(FormDesc(e.short_id, std::string(e.file)));
+  }
+  for (const auto& e : login.stops) {
+    out.second.push_back(FormDesc(e.short_id, std::string(e.file)));
+  }
+  return out;
+}
+
+std::optional<RaceOverlay> PartOne::PlayerOverlayOf(uint32_t actorId) const
+{
+  const auto row = pImpl->playerOverlays->player_overlay(actorId);
+  // an overlay over no recorded race (a player with no look) is never sent:
+  // the wire's overlay names both races (wire-validate check_race_overlay)
+  if (!row.open || row.race == 0 || row.base == 0) {
+    return std::nullopt;
+  }
+  RaceOverlay overlay;
+  overlay.open = true;
+  overlay.race = row.race;
+  overlay.base = row.base;
+  overlay.spells.assign(row.spells.begin(), row.spells.end());
+  overlay.shouts.assign(row.shouts.begin(), row.shouts.end());
+  overlay.items.assign(row.items.begin(), row.items.end());
+  return overlay;
+}
+
+const std::vector<PartOne::ScriptAttachment>& PartOne::ScriptAttachmentsOf(
+  const std::string& scriptClass) const
+{
+  static const std::vector<ScriptAttachment> kNone;
+  if (!pImpl->scriptAttachments) {
+    return kNone;
+  }
+  const auto it =
+    pImpl->scriptAttachments->find(LowerScriptClass(scriptClass));
+  return it == pImpl->scriptAttachments->end() ? kNone : it->second;
+}
+
+bool PartOne::QuestAttachmentLive(uint32_t questId)
+{
+  if (!HasEspm()) {
+    return false;
+  }
+  FormDesc quest;
+  try {
+    quest = FormDesc::FromFormId(questId, worldState.espmFiles);
+  } catch (const std::exception&) {
+    return false;
+  }
+  if (HoldsForm(pImpl->playerClassQuests, quest)) {
+    return true;
+  }
+  const auto runs = GetQuestRuns();
+  if (std::any_of(runs.begin(), runs.end(), [&](const auto& run) {
+        return run.running && SameForm(run.quest, quest);
+      })) {
+    return true;
+  }
+  const auto stages = GetQuestStages();
+  return std::any_of(stages.begin(), stages.end(), [&](const auto& stage) {
+    return SameForm(stage.quest, quest);
+  });
+}
+
+const std::vector<uint32_t>& PartOne::LeveledReach(uint32_t list)
+{
+  static const std::vector<uint32_t> kNone;
+  if (!HasEspm() || list == 0) {
+    return kNone;
+  }
+  auto it = pImpl->leveledReach.find(list);
+  if (it == pImpl->leveledReach.end()) {
+    auto& browser = GetEspm().GetBrowser();
+    auto reach = LeveledListUtils::Reach(browser, browser.LookupById(list));
+    // sorted, so a landing's check is a binary search (a boss chest's list
+    // reaches thousands of bases)
+    std::sort(reach.begin(), reach.end());
+    it = pImpl->leveledReach.emplace(list, std::move(reach)).first;
+  }
+  return it->second;
+}
+
+bool PartOne::HeadPartFitsRace(uint32_t part, uint32_t race)
+{
+  if (!HasEspm() || race == 0) {
+    return false;
+  }
+  auto& browser = GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto lookup = browser.LookupById(part);
+  const auto* hdpt = espm::Convert<espm::HDPT>(lookup.rec);
+  if (!hdpt) {
+    return false;
+  }
+  const uint32_t validRaces = hdpt->GetData(cache).validRaces;
+  if (validRaces == 0) {
+    return false; // a part that lists no race is no race's
+  }
+  const auto list = browser.LookupById(lookup.ToGlobalId(validRaces));
+  const auto* flst = espm::Convert<espm::FLST>(list.rec);
+  if (!flst) {
+    return false;
+  }
+  for (uint32_t member : flst->GetData(cache).formIds) {
+    if (list.ToGlobalId(member) == race) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool PartOne::WearHeadPart(Appearance& look, uint32_t part)
+{
+  if (!HasEspm()) {
+    return false;
+  }
+  auto& browser = GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto typeOf = [&](uint32_t id) -> std::optional<uint32_t> {
+    const auto* hdpt = espm::Convert<espm::HDPT>(browser.LookupById(id).rec);
+    return hdpt ? std::optional<uint32_t>(hdpt->GetData(cache).type)
+                : std::nullopt;
+  };
+  const auto type = typeOf(part);
+  if (!type ||
+      std::find(look.headpartIds.begin(), look.headpartIds.end(), part) !=
+        look.headpartIds.end()) {
+    return false;
+  }
+  auto& parts = look.headpartIds;
+  parts.erase(
+    std::remove_if(parts.begin(), parts.end(),
+                   [&](uint32_t worn) { return typeOf(worn) == type; }),
+    parts.end());
+  parts.push_back(part);
+  return true;
+}
+
+uint32_t PartOne::LookFormIdOf(const std::string& plugin, uint32_t id) const
+{
+  const auto& files = worldState.espmFiles;
+  for (const auto& file : files) {
+    if (file.size() == plugin.size() &&
+        std::equal(file.begin(), file.end(), plugin.begin(),
+                   [](char a, char b) {
+                     return std::tolower(static_cast<unsigned char>(a)) ==
+                       std::tolower(static_cast<unsigned char>(b));
+                   })) {
+      return FormDesc(id & 0x00ffffff, file).ToFormId(files);
+    }
+  }
+  return 0;
+}
+
+bool PartOne::WearHeadPartInLook(std::string& look, uint32_t part)
+{
+  if (!HasEspm() || look.empty()) {
+    return false;
+  }
+  auto& browser = GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto typeOf = [&](uint32_t id) -> std::optional<uint32_t> {
+    const auto* hdpt = espm::Convert<espm::HDPT>(browser.LookupById(id).rec);
+    return hdpt ? std::optional<uint32_t>(hdpt->GetData(cache).type)
+                : std::nullopt;
+  };
+  const auto type = typeOf(part);
+  if (!type) {
+    return false;
+  }
+  const auto facts = skymp::rules::racemenu_look_facts(rust::Str(look));
+  if (!facts.ok) {
+    return false;
+  }
+  // one byte a listed part, in the look's order: of `part`'s type or not
+  std::vector<uint8_t> sameType;
+  sameType.reserve(facts.parts.size());
+  for (const auto& ref : facts.parts) {
+    const uint32_t listed = LookFormIdOf(std::string(ref.plugin), ref.id);
+    sameType.push_back(listed != 0 && typeOf(listed) == type ? 1 : 0);
+  }
+  FormDesc desc;
+  try {
+    desc = FormDesc::FromFormId(part, worldState.espmFiles);
+  } catch (const std::exception&) {
+    return false; // a part in no loaded plugin
+  }
+  const auto rewritten = skymp::rules::racemenu_with_head_part(
+    rust::Str(look),
+    rust::Slice<const uint8_t>(sameType.data(), sameType.size()),
+    rust::Str(desc.file), desc.shortFormId);
+  if (rewritten.empty()) {
+    return false;
+  }
+  look = std::string(rewritten);
+  return true;
+}
+
+PartOne::HeadPartRecord PartOne::RecordHeadPart(MpActor& actor, uint32_t part)
+{
+  HeadPartRecord recorded;
+  if (const auto current = actor.GetAppearance()) {
+    Appearance look = *current;
+    if (WearHeadPart(look, part)) {
+      actor.SetAppearance(&look);
+      recorded.look = true;
+    }
+  }
+  std::string preset = actor.GetRaceMenuPreset();
+  if (WearHeadPartInLook(preset, part) &&
+      actor.SetRaceMenuPreset(std::move(preset))) {
+    recorded.preset = true;
+  }
+  return recorded;
 }
 
 void PartOne::SetRestrictedRacesSettings(
@@ -3028,12 +4850,6 @@ uint8_t PartOne::CheckSharedQuest(const FormDesc& quest) const
                                                   quest.file);
 }
 
-bool PartOne::IsSharedQuestAllowed(const FormDesc& quest) const
-{
-  return pImpl->sharedQuests->shared_quests_allowed(quest.shortFormId,
-                                                    quest.file);
-}
-
 std::vector<FormDesc> PartOne::SharedQuestsListed() const
 {
   std::vector<FormDesc> listed;
@@ -3108,6 +4924,373 @@ std::vector<QuestStageDone> PartOne::GetQuestStages()
 bool PartOne::SetQuestStages(std::vector<QuestStageDone> stages)
 {
   return WorldJournal().SetQuestStages(std::move(stages));
+}
+
+void PartOne::SetWorldGlobalsEnabled(bool on)
+{
+  pImpl->worldGlobalsEnabled = on;
+  spdlog::info("[verb:world-globals] world globals {}", on ? "on" : "off");
+}
+
+bool PartOne::WorldGlobalsEnabled() const
+{
+  return pImpl->worldGlobalsEnabled;
+}
+
+void PartOne::WorldStreamerMoved(MpActor& actor)
+{
+  // off, nobody is ever eligible, so the seats' later events elect nobody
+  if (!pImpl->worldGlobalsEnabled) {
+    return;
+  }
+  SendStreamWords(*this, pImpl->worldStreamer->moved(actor.GetFormId()));
+}
+
+uint8_t PartOne::JudgeWorldGlobalReport(uint32_t sender, uint32_t epoch) const
+{
+  return pImpl->worldStreamer->judge(sender, epoch);
+}
+
+std::pair<uint32_t, uint32_t> PartOne::WorldStreamer() const
+{
+  const auto now = pImpl->worldStreamer->streamer_now();
+  return { now.streamer, now.epoch };
+}
+
+std::vector<PlayerGlobal> PartOne::GetWorldGlobals()
+{
+  // a read makes no journal (GetAliasFills says why)
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
+  return WorldJournal().GetWorldGlobals();
+}
+
+bool PartOne::SetWorldGlobals(std::vector<PlayerGlobal> globals)
+{
+  return WorldJournal().SetWorldGlobals(std::move(globals));
+}
+
+std::vector<MpChangeFormREFR::QuestRun> PartOne::GetQuestRuns()
+{
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
+  return WorldJournal().GetQuestRuns();
+}
+
+bool PartOne::SetQuestRuns(std::vector<MpChangeFormREFR::QuestRun> runs)
+{
+  if (runs.empty() && !worldState.LookupFormById(kWorldJournalRefId)) {
+    return false; // nothing to write, and no journal made for it
+  }
+  return WorldJournal().SetQuestRuns(std::move(runs));
+}
+
+std::vector<MpChangeFormREFR::ScriptVariable> PartOne::GetScriptVariables()
+{
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
+  return WorldJournal().GetScriptVariables();
+}
+
+bool PartOne::SetScriptVariables(
+  std::vector<MpChangeFormREFR::ScriptVariable> variables)
+{
+  if (variables.empty() && !worldState.LookupFormById(kWorldJournalRefId)) {
+    return false; // nothing to write, and no journal made for it
+  }
+  return WorldJournal().SetScriptVariables(std::move(variables));
+}
+
+std::vector<MpChangeFormREFR::AliasFill> PartOne::GetAliasFills()
+{
+  // a read makes no journal: the login's serve reads the fills on every
+  // server, and a journal made there would take the idx of the actor the
+  // next login creates (PartOne_MovementTest's idx 1, pipeline 5600); the
+  // first write makes it
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
+  return WorldJournal().GetAliasFills();
+}
+
+bool PartOne::SetAliasFills(std::vector<MpChangeFormREFR::AliasFill> fills)
+{
+  return WorldJournal().SetAliasFills(std::move(fills));
+}
+
+namespace {
+// thuum ADR-068 rung 4 (amendment B, read 8): one created alias's item as
+// the game files give it, the forms in the load order; containerKind is the
+// rules' (0 unresolved, 1 a forced reference, 2 a unique actor's base)
+struct AliasCreation
+{
+  uint32_t quest = 0;
+  uint32_t alias = 0;
+  uint32_t base = 0;
+  uint32_t target = 0;
+  uint8_t containerKind = 0;
+  uint32_t container = 0;
+  bool startGameEnabled = false;
+  std::string why;
+};
+
+// every quest's created aliases, read once per set of game files: a scan of
+// the QUST records (their aliases, libespm QUST::GetQuestAliases; a quest's
+// DNAM read only where an alias creates), the creation and its container
+// the rule's (wire-rules alias_fills::creations). The index is the files',
+// so the process keeps one per loader, which the tests' many PartOnes share
+struct AliasCreationIndex
+{
+  std::unordered_multimap<uint32_t, AliasCreation> byForcedRef;
+  std::unordered_multimap<uint32_t, AliasCreation> byUniqueActor;
+  std::unordered_map<uint32_t, std::vector<AliasCreation>> byQuest;
+};
+
+const AliasCreationIndex& AliasCreationsOf(WorldState& worldState)
+{
+  static std::map<const espm::Loader*, std::unique_ptr<AliasCreationIndex>>
+    g_indices;
+  auto& slot = g_indices[&worldState.GetEspm()];
+  if (slot) {
+    return *slot;
+  }
+  slot = std::make_unique<AliasCreationIndex>();
+  auto& index = *slot;
+  auto& cache = worldState.GetEspmCache();
+  size_t resolved = 0;
+  size_t unresolved = 0;
+  for (const auto& lookup :
+       worldState.GetEspm().GetBrowser().GetDistinctRecordsByType("QUST")) {
+    const auto* qust = espm::Convert<espm::QUST>(lookup.rec);
+    if (!qust) {
+      continue;
+    }
+    std::vector<skymp::rules::QuestAliasRow> rows;
+    bool creates = false;
+    for (const auto& alias : qust->GetQuestAliases(cache)) {
+      if (alias.locationAlias) {
+        continue;
+      }
+      skymp::rules::QuestAliasRow row{};
+      row.id = alias.aliasID;
+      row.created = alias.aliasCreatedObject
+        ? lookup.ToGlobalId(alias.aliasCreatedObject)
+        : 0;
+      row.create_at = alias.createAt;
+      row.forced = alias.aliasForcedReference
+        ? lookup.ToGlobalId(alias.aliasForcedReference)
+        : 0;
+      row.unique_actor =
+        alias.aliasUniqueActor ? lookup.ToGlobalId(alias.aliasUniqueActor) : 0;
+      creates = creates || row.created != 0;
+      rows.push_back(row);
+    }
+    if (!creates) {
+      continue;
+    }
+    const auto made = skymp::rules::alias_creations(
+      rust::Slice<const skymp::rules::QuestAliasRow>(rows.data(),
+                                                     rows.size()));
+    const uint32_t questId = lookup.ToGlobalId(lookup.rec->GetId());
+    const auto data = qust->GetData(cache);
+    const bool startGameEnabled = data.questData &&
+      (data.questData->mainFlags & espm::QUST::QuestData::StartGameEnabled);
+    for (const auto& row : made) {
+      AliasCreation creation;
+      creation.quest = questId;
+      creation.alias = row.alias;
+      creation.base = row.base;
+      creation.target = row.target;
+      creation.containerKind = row.container_kind;
+      creation.container = row.container;
+      creation.startGameEnabled = startGameEnabled;
+      creation.why = std::string(row.why);
+      if (creation.containerKind == 1) {
+        index.byForcedRef.emplace(creation.container, creation);
+        ++resolved;
+      } else if (creation.containerKind == 2) {
+        index.byUniqueActor.emplace(creation.container, creation);
+        ++resolved;
+      } else {
+        ++unresolved;
+      }
+      index.byQuest[questId].push_back(std::move(creation));
+    }
+  }
+  spdlog::info("[verb:quest-stage] the quests' created aliases: {} resolved "
+               "to a container, {} unresolved (E_ALIASFILL_UNRESOLVED, each "
+               "logged once when its quest fills)",
+               resolved, unresolved);
+  return index;
+}
+
+// the journal's marks as the rule reads them: an entry whose created item
+// names a quest the running order resolves
+std::vector<skymp::rules::AliasMarkRow> CreatedMarks(
+  const std::vector<MpChangeFormREFR::AliasFill>& fills,
+  const EspmFileList& files)
+{
+  std::vector<skymp::rules::AliasMarkRow> marks;
+  for (const auto& fill : fills) {
+    if (!fill.created) {
+      continue;
+    }
+    try {
+      marks.push_back({ fill.quest.ToFormId(files), fill.alias, fill.added });
+    } catch (const std::exception&) {
+      // a plugin the order lacks: its mark names no quest of this world
+    }
+  }
+  return marks;
+}
+}
+
+namespace {
+bool AddCreatedItem(PartOne& partOne, MpObjectReference& container,
+                    const AliasCreation& creation)
+{
+  auto fills = partOne.GetAliasFills();
+  const auto marks = CreatedMarks(fills, partOne.worldState.espmFiles);
+  if (!skymp::rules::alias_created_due(
+        rust::Slice<const skymp::rules::AliasMarkRow>(marks.data(),
+                                                      marks.size()),
+        creation.quest, creation.alias)) {
+    return false;
+  }
+  const auto& files = partOne.worldState.espmFiles;
+  FormDesc quest;
+  FormDesc created;
+  FormDesc where;
+  try {
+    quest = FormDesc::FromFormId(creation.quest, files);
+    created = FormDesc::FromFormId(creation.base, files);
+    where = FormDesc::FromFormId(container.GetFormId(), files);
+  } catch (const std::exception& e) {
+    spdlog::warn("[verb:quest-stage] alias {:x}/{} creates {:x} in {:x}: {}; "
+                 "not added",
+                 creation.quest, creation.alias, creation.base,
+                 container.GetFormId(), e.what());
+    return false;
+  }
+  container.AddItem(creation.base, 1);
+  auto entry = std::find_if(fills.begin(), fills.end(), [&](const auto& fill) {
+    return fill.quest == quest && fill.alias == creation.alias;
+  });
+  if (entry == fills.end()) {
+    MpChangeFormREFR::AliasFill mark;
+    mark.quest = quest;
+    mark.alias = creation.alias;
+    fills.push_back(std::move(mark));
+    entry = std::prev(fills.end());
+  }
+  entry->created = created;
+  entry->container = where;
+  entry->added = true;
+  partOne.SetAliasFills(std::move(fills));
+  spdlog::info("[verb:quest-stage] alias {:x}/{} creates {:x} in {:x}: "
+               "added once",
+               creation.quest, creation.alias, creation.base,
+               container.GetFormId());
+  return true;
+}
+}
+
+size_t PartOne::AddCreatedItems(MpObjectReference& container)
+{
+  if (!HasEspm() || container.GetFormId() >= 0xff000000) {
+    return 0;
+  }
+  const auto& index = AliasCreationsOf(worldState);
+  std::vector<const AliasCreation*> found;
+  const auto collect =
+    [&](const std::unordered_multimap<uint32_t, AliasCreation>& map,
+        uint32_t key) {
+      const auto [begin, end] = map.equal_range(key);
+      for (auto it = begin; it != end; ++it) {
+        found.push_back(&it->second);
+      }
+    };
+  collect(index.byForcedRef, container.GetFormId());
+  if (container.AsActor()) {
+    const size_t before = found.size();
+    collect(index.byUniqueActor, container.GetBaseId());
+    if (found.size() != before) {
+      pImpl->uniqueActorRefs[container.GetBaseId()] = container.GetFormId();
+    }
+  }
+  if (found.empty()) {
+    return 0;
+  }
+  // a start-game-enabled quest fills from the game's start; any other once
+  // the world records a stage of it (its start, as near as the record knows)
+  const auto stages = GetQuestStages();
+  size_t added = 0;
+  for (const AliasCreation* creation : found) {
+    if (!creation->startGameEnabled) {
+      const bool started =
+        std::any_of(stages.begin(), stages.end(), [&](const auto& stage) {
+          try {
+            return stage.quest.ToFormId(worldState.espmFiles) ==
+              creation->quest;
+          } catch (const std::exception&) {
+            return false;
+          }
+        });
+      if (!started) {
+        continue;
+      }
+    }
+    if (AddCreatedItem(*this, container, *creation)) {
+      ++added;
+    }
+  }
+  return added;
+}
+
+size_t PartOne::AddCreatedItemsOfQuest(uint32_t questId)
+{
+  if (!HasEspm()) {
+    return 0;
+  }
+  const auto& index = AliasCreationsOf(worldState);
+  const auto it = index.byQuest.find(questId);
+  if (it == index.byQuest.end()) {
+    return 0;
+  }
+  size_t added = 0;
+  for (const auto& creation : it->second) {
+    if (creation.containerKind == 0) {
+      if (pImpl->unresolvedCreationsLogged
+            .insert({ creation.quest, creation.alias })
+            .second) {
+        spdlog::info("[verb:quest-stage] E_ALIASFILL_UNRESOLVED: alias "
+                     "{:x}/{} creates {:x} in alias {}: {}; the item stays "
+                     "each seat's own",
+                     creation.quest, creation.alias, creation.base,
+                     creation.target, creation.why);
+      }
+      continue;
+    }
+    // the container already attached; one attached later takes its item at
+    // its own attach (AddCreatedItems), the quest now recorded
+    uint32_t containerId = creation.container;
+    if (creation.containerKind == 2) {
+      const auto ref = pImpl->uniqueActorRefs.find(creation.container);
+      if (ref == pImpl->uniqueActorRefs.end()) {
+        continue;
+      }
+      containerId = ref->second;
+    }
+    const auto& form = worldState.LookupFormByIdNoLoad(containerId);
+    MpObjectReference* container = form ? form->AsObjectReference() : nullptr;
+    if (container && AddCreatedItem(*this, *container, creation)) {
+      ++added;
+    }
+  }
+  return added;
 }
 
 namespace {
@@ -3465,6 +5648,105 @@ void PartOne::RemoveSpellPlacedSet(uint64_t set, const char* why)
   pImpl->placedSets.erase(it);
 }
 
+bool PartOne::OpenScriptSet(MpActor& reporter, uint32_t selfId,
+                            uint32_t worldOrCell, const NiPoint3& anchor,
+                            uint32_t baseId)
+{
+  FormDesc baseDesc;
+  try {
+    baseDesc = FormDesc::FromFormId(baseId, worldState.espmFiles);
+  } catch (const std::exception& e) {
+    spdlog::info("[verb:spell-placed] E_PLACED_BASE: {:x}'s script placed "
+                 "{:x} at {:x}: {}; nothing placed",
+                 reporter.GetFormId(), baseId, selfId, e.what());
+    return false;
+  }
+  std::string baseType;
+  if (HasEspm()) {
+    if (const auto* rec = GetEspm().GetBrowser().LookupById(baseId).rec) {
+      baseType = rec->GetType().ToString();
+    }
+  }
+  const auto opened = pImpl->placements->open_script_set(
+    reporter.GetFormId(), selfId, anchor.x, anchor.y, anchor.z,
+    baseDesc.shortFormId, baseDesc.file, baseType, SteadyNowMs());
+  if (opened.refusal != 0) {
+    const char* code = opened.refusal == 1 ? "E_PLACED_KIND"
+      : opened.refusal == 2                ? "E_PLACED_FULL"
+                                           : "E_PLACED_NAN";
+    spdlog::info("[verb:spell-placed] {}: {:x}'s script placed {} ({}) at "
+                 "{:x}; nothing placed",
+                 code, reporter.GetFormId(), baseDesc.ToString(), baseType,
+                 selfId);
+    return false;
+  }
+  pImpl->scriptSetWorldOrCell[opened.set] = worldOrCell;
+  for (const auto& row : pImpl->placements->take_script_requests()) {
+    PlacedRequestMessage ask;
+    ask.set = row.set;
+    ask.windowMs =
+      static_cast<uint32_t>(std::min<uint64_t>(row.window_ms, 10'000));
+    const FormDesc base(row.short_id, std::string(row.file));
+    try {
+      ask.bases.push_back(base.ToFormId(worldState.espmFiles));
+    } catch (const std::exception&) {
+      continue;
+    }
+    const auto userId = serverState.UserByActor(&reporter);
+    if (userId == Networking::InvalidUserId) {
+      continue;
+    }
+    GetSendTarget().Send(userId, ask, true);
+    spdlog::info("[verb:spell-placed] {:x}'s script placed {} ({}) at {:x}: "
+                 "set {} requested within {} ms",
+                 row.caster, base.ToString(), std::string(row.record_type),
+                 row.self_id, row.set, ask.windowMs);
+  }
+  return true;
+}
+
+namespace {
+// thuum ADR-068 rung 4 (the script set): the server's copy of a script's
+// placement at its reporter's pose, through PlaceAt (an NPC fated before its
+// create word), marked with its placer and its record before its first
+// subscription so its create word names the reporter
+uint32_t PlaceScriptObject(PartOne& partOne,
+                           const skymp::rules::ScriptPlacementRow& row,
+                           uint32_t worldOrCell,
+                           std::unordered_map<uint32_t, uint32_t>& placers)
+{
+  auto& worldState = partOne.worldState;
+  const auto& reporterForm = worldState.LookupFormByIdNoLoad(row.caster);
+  MpActor* reporter = reporterForm ? reporterForm->AsActor() : nullptr;
+  if (!reporter || !partOne.HasEspm() || worldOrCell == 0) {
+    return 0;
+  }
+  const FormDesc baseDesc(row.short_id, std::string(row.file));
+  uint32_t baseId = 0;
+  FormDesc where;
+  FormDesc self;
+  try {
+    baseId = baseDesc.ToFormId(worldState.espmFiles);
+    where = FormDesc::FromFormId(worldOrCell, worldState.espmFiles);
+    self = FormDesc::FromFormId(row.self_id, worldState.espmFiles);
+  } catch (const std::exception&) {
+    return 0;
+  }
+  const auto lookup = partOne.GetEspm().GetBrowser().LookupById(baseId);
+  if (!lookup.rec) {
+    return 0;
+  }
+  auto& refr = PapyrusObjectReference::PlaceAt(
+    *reporter, lookup,
+    LocationalData{ { row.x, row.y, row.z }, { 0.f, 0.f, row.yaw }, where },
+    false);
+  placers[refr.GetFormId()] = row.caster;
+  refr.SetPlacedByScript(self, baseDesc);
+  refr.ForceSubscriptionsUpdate();
+  return refr.GetFormId();
+}
+}
+
 void PartOne::SendPlacementRequests()
 {
   const auto rows = pImpl->placements->take_requests();
@@ -3574,6 +5856,28 @@ void PartOne::TickPlacements(uint64_t nowMs)
   }
   for (const auto& removal : pImpl->placements->due_removals(nowMs)) {
     RemoveSpellPlacedSet(removal.set, PlacementRemovalWhy(removal.why));
+  }
+  // thuum ADR-068 rung 4 (the script set): a report placed, or a window
+  // closed with none
+  for (const auto& row : pImpl->placements->due_script_placements(nowMs)) {
+    const auto where = pImpl->scriptSetWorldOrCell.find(row.set);
+    const uint32_t worldOrCell =
+      where != pImpl->scriptSetWorldOrCell.end() ? where->second : 0;
+    pImpl->scriptSetWorldOrCell.erase(row.set);
+    const FormDesc base(row.short_id, std::string(row.file));
+    if (!row.placed) {
+      spdlog::info("[verb:spell-placed] {:x}'s script placed {} at {:x}: "
+                   "nothing placed, its game reported no base within the "
+                   "window",
+                   row.caster, base.ToString(), row.self_id);
+      continue;
+    }
+    const uint32_t formId =
+      PlaceScriptObject(*this, row, worldOrCell, pImpl->placedCasterByForm);
+    spdlog::info("[verb:spell-placed] {:x}'s script placed {} ({}) at {:x}: "
+                 "{:x} at ({:.0f}, {:.0f}, {:.0f}) yaw {:.0f}, as reported",
+                 row.caster, base.ToString(), std::string(row.record_type),
+                 row.self_id, formId, row.x, row.y, row.z, row.yaw);
   }
 }
 
@@ -4051,6 +6355,12 @@ void PartOne::ConcealBond(const skymp::rules::BondBreak& bond)
     });
 }
 
+// thuum D-T4 (ADR-028; the review of fork e4c78077, its finding 2d): the proc
+// relayed below as a seat's own self-cast passes both the client's refusal of
+// an actor caster's Health, Magicka and Stamina effects (the caster is the
+// seat's own player) and the platform's cut of another actor's damage (the
+// attacker is the victim itself), so it must never carry a Health, Magicka or
+// Stamina damage effect: concealment alone, today
 void PartOne::CastBondProc(const skymp::rules::BondBreak& bond,
                            uint32_t procId)
 {
@@ -5109,18 +7419,18 @@ bool PartOne::PickPerk(MpActor& actor, uint32_t perk)
   const auto verdict = pImpl->perkTable->pick(
     record->level,
     rust::Slice<const uint32_t>(record->perks.data(), record->perks.size()),
-    rust::Slice<const uint8_t>(avs.data(), avs.size()),
+    record->perkPicks, rust::Slice<const uint8_t>(avs.data(), avs.size()),
     rust::Slice<const float>(values.data(), values.size()), perk);
   if (!verdict.accepted) {
     spdlog::info(
-      "[verb:perks] {}: {:x} picks {:x} at level {} with {} perk(s) "
-      "(detail {:x}); refused, its state resent",
+      "[verb:perks] {}: {:x} picks {:x} at level {} with {} perk(s) and {} "
+      "pick(s) spent (detail {:x}); refused, its state resent",
       std::string(verdict.code), actor.GetFormId(), perk, record->level,
-      record->perks.size(), verdict.detail);
+      record->perks.size(), record->perkPicks, verdict.detail);
     actor.SendPerkState();
     return false;
   }
-  actor.AddPerkByServer(perk);
+  actor.AddPerkByServer(perk, true); // the pick spends a point
   spdlog::info("[verb:perks] {:x} takes perk {:x} at level {}: {} perk(s) "
                "held, {} point(s) left",
                actor.GetFormId(), perk, record->level,

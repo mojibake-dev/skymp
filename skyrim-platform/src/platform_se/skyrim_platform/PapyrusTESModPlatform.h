@@ -92,10 +92,11 @@ void ResetContainer(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 void CloseMenu(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                std::string_view name);
 
-// thuum docs/DECISIONS.md ADR-059 decision 1: a cell this game hosts (or no
-// longer hosts), for the Papyrus event block's host-scoped admitted scripts
-// (Frida::SetCellHosted); skymp5-client's hostService calls it at every
-// grant and release
+// thuum docs/DECISIONS.md ADR-059 decision 1 and ADR-062 decision 1: a cell
+// this game hosts (or no longer hosts), where every world script's events
+// pass the Papyrus event block and the script hooks count a call as the
+// host's (Frida::SetCellHosted); skymp5-client's hostService calls it at
+// every grant and release
 void SetCellHosted(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                    int32_t cellFormId, bool hosted);
 
@@ -183,6 +184,98 @@ bool SuppressQuestStageFragment(IVM* vm, StackID stackId,
 bool ReleaseQuestStageFragment(IVM* vm, StackID stackId,
                                RE::StaticFunctionTag*, RE::TESQuest* quest,
                                int32_t stage);
+
+// thuum docs/verbs/change-form.md (ADR-065, system 1): the reference's change
+// form, serialized on demand by the engine's own SaveGame on the owner's seat
+// (a JSON string: formType, flags, version, bodyHex, fnv1a, the remap rows;
+// "" for null, the reason in skyrim-platform.log), and a served record
+// applied to this seat's loaded copy through the engine's own LoadGame and
+// finish pass (a JSON string: applied, reason, fnvPatched). The JSON shapes
+// and the premises are ChangeForm.h's. remapRows is "offset:formId:index,..."
+// since callNative takes no array; flags is the sender's u32 as a Papyrus
+// Int (`flags | 0` in JS)
+RE::BSFixedString ApplyChangeFormResult(IVM* vm, StackID stackId,
+                                        RE::StaticFunctionTag*,
+                                        RE::TESObjectREFR* refr);
+RE::BSFixedString SerializeChangeForm(IVM* vm, StackID stackId,
+                                      RE::StaticFunctionTag*,
+                                      RE::TESObjectREFR* refr);
+RE::BSFixedString ApplyChangeForm(IVM* vm, StackID stackId,
+                                  RE::StaticFunctionTag*,
+                                  RE::TESObjectREFR* refr,
+                                  std::string_view bodyHex, int32_t flags,
+                                  int32_t version, std::string_view remapRows);
+
+// thuum docs/DECISIONS.md ADR-068 rung 3 (the script record, amendment A;
+// docs/research/rung3-script-record-2026-11-06.md 1(a)): the reference's
+// attached scripts read as the record carries them (a JSON string: formId,
+// quiescent, fnv1a, seatLocal, scripts; or quiescent false and busy; "" when
+// refused, the reason in skyrim-platform.log), a served record's scripts
+// written over this seat's copies (a JSON string: applied, retry, reason,
+// scripts, resolved, none, unresolved, seatLocal, stacksOnObject, holdUs,
+// blanked, fnvAfter), and a lifecycle event (OnCellAttach, OnLoad,
+// OnCellLoad) sent to its scripts and relayed as the engine's sinks raise it
+// (a JSON string: sent, seen, scripts, reason). The shapes and the premises
+// are ScriptState.h's. scriptsJson is the record's scripts as a JSON array
+// since callNative takes no array
+RE::BSFixedString SerializeScriptState(IVM* vm, StackID stackId,
+                                       RE::StaticFunctionTag*,
+                                       RE::TESObjectREFR* refr);
+RE::BSFixedString ApplyScriptState(IVM* vm, StackID stackId,
+                                   RE::StaticFunctionTag*,
+                                   RE::TESObjectREFR* refr,
+                                   std::string_view scriptsJson);
+RE::BSFixedString SendScriptEvent(IVM* vm, StackID stackId,
+                                  RE::StaticFunctionTag*,
+                                  RE::TESObjectREFR* refr,
+                                  std::string_view name, bool unseenOnly);
+// thuum docs/DECISIONS.md ADR-068 D-C2 A (docs/research/
+// fifty-fixes-2026-11-07.md 1(b)): a relayed trigger entry, OnTriggerEnter
+// or OnTriggerLeave sent to the trigger's scripts and relayed to its aliases
+// with actionRef as akActionRef, SendScriptEvent's mechanism (a JSON string:
+// formId, event, sent, scripts, reason; ScriptState.h)
+RE::BSFixedString SendTriggerEvent(IVM* vm, StackID stackId,
+                                   RE::StaticFunctionTag*,
+                                   RE::TESObjectREFR* trigger,
+                                   std::string_view name,
+                                   RE::TESObjectREFR* actionRef);
+// thuum docs/DECISIONS.md ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's
+// held entries (an NPC's enter to a world trigger blanked at this seat's own
+// load, its owner undecided then) whose presser is this seat's now, with the
+// trigger in a cell this seat hosts, each replayed once through
+// SendTriggerEvent's body under the platform's mark; the expired ones dropped
+// (a JSON string: replayed, refused, expired, held; FridaHooks.cpp)
+RE::BSFixedString ReplayHeldEntries(IVM* vm, StackID stackId,
+                                    RE::StaticFunctionTag*);
+// thuum docs/DECISIONS.md ADR-068 rung 5 (docs/research/
+// rung5-quests-2026-11-09.md 1(c) and 8(b); D-V1 B, D-T2 B): a quest's or a
+// reference's script variables read by name for ScriptVariables 81 (a JSON
+// string: per key { form, script, var, k, i|f|b } or { form, script, var,
+// reason }) and written by name through Variable's setters (a JSON string:
+// per entry { form, script, var, written, reason? }); the shapes are
+// ScriptState.h's. keysJson and entriesJson are JSON arrays since callNative
+// takes no array
+RE::BSFixedString ReadScriptVariables(IVM* vm, StackID stackId,
+                                      RE::StaticFunctionTag*,
+                                      std::string_view keysJson);
+RE::BSFixedString WriteScriptVariables(IVM* vm, StackID stackId,
+                                       RE::StaticFunctionTag*,
+                                       std::string_view entriesJson);
+
+// thuum docs/DECISIONS.md ADR-068 rung 4 (the state rows, amendment B;
+// docs/research/rung4-state-rows-2026-11-07.md 1(a)): the world globals this
+// seat's engine changed since its last answer, the world streamer's
+// WorldGlobal 80. A JSON array as a string, [[formId, value], ...] (the
+// form id a number, the value the global's float), "[]" for none: at most
+// 512 entries (skymp-wire's WORLD_GLOBALS), any past them answered by a
+// later call, each answered value the baseline from then on; a constant, a
+// non-finite value and the comma-separated hex ids in `exclude` ("0x"
+// optional) never answered. With `reset`, the baseline is every other
+// global's value now and the answer "[]"; a call before any reset diffs
+// against an empty baseline, so it answers every such global
+RE::BSFixedString DiffWorldGlobals(IVM* vm, StackID stackId,
+                                   RE::StaticFunctionTag*, bool reset,
+                                   std::string_view exclude);
 
 void BlockPapyrusEvents(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                         bool blocked);

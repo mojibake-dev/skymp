@@ -415,12 +415,19 @@ TEST_CASE("An activation from beyond reach harvests nothing",
   partOne.DestroyActor(0xff000000);
 }
 
-// thuum memo D52 (playtest 37, Eli: "i WOULD like two people to be able to
-// be in one container at once"): a container holds every player who opens
-// it; a take by one reaches the other's menu as the inventory property; the
-// chest shuts with the last player's closing activation.
-TEST_CASE("Two players in one container: both open it, a take reaches the "
-          "other's menu, the chest shuts with the last to leave",
+// thuum docs/verbs/containers.md (ADR-067 decisions 1 and 6, Eli after
+// playtest 43: "wrap the exclusive container hold"): a container holds the
+// one player who opened it. A second player's activation is refused while
+// it does: E_CONTAINER_BUSY, no OpenContainer and no inventory to the
+// refused seat, a notification naming the holder (its appearance's name);
+// the holder hears nothing of it and its moves stay its own, with no live
+// redraw to anyone. A move by the refused player moves nothing and raises
+// no exception; the mover hears both inventories again. The holder's close
+// shuts the chest and frees it for the second.
+TEST_CASE("One player holds a container: a second's activation is refused "
+          "with the holder named, the holder's view and moves untouched, "
+          "the refused player's move resynced, and the second admitted once "
+          "the holder leaves",
           "[PartOne][espm]")
 {
   auto& partOne = GetPartOne();
@@ -441,66 +448,92 @@ TEST_CASE("Two players in one container: both open it, a take reaches the "
   auto& second = partOne.worldState.GetFormAt<MpActor>(0xff000001);
   first.RemoveAllItems();
   second.RemoveAllItems();
+  // the holder has a name (its appearance's): the refused player hears it
+  Appearance named;
+  named.name = "Rotfern";
+  first.SetAppearance(&named);
+
+  auto& messages = partOne.Messages();
+  const auto sentTo = [&](Networking::UserId user, MsgType t) {
+    return std::any_of(
+      messages.begin(), messages.end(), [&](PartOne::Message& m) {
+        return m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(t);
+      });
+  };
+  const auto chestInventoryTo = [&](Networking::UserId user) {
+    return std::any_of(
+      messages.begin(), messages.end(), [&](PartOne::Message& m) {
+        return m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.contains("propName") && m.j["propName"] == "inventory" &&
+          m.j["idx"] == ref.GetIdx();
+      });
+  };
+  const auto notifiedOf = [&](Networking::UserId user, const char* text) {
+    return std::any_of(
+      messages.begin(), messages.end(), [&](PartOne::Message& m) {
+        return m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+          m.j["class"] == "Debug" && m.j["function"] == "Notification" &&
+          m.j["arguments"][0].get<std::string>() == text;
+      });
+  };
 
   ref.Activate(first);
   REQUIRE(ref.IsOpen());
+  REQUIRE(ref.IsContainerOccupant(&first));
+  REQUIRE(ref.GetInventory().GetTotalItemCount() > 0);
+
+  // the second is refused: no OpenContainer and no inventory to it, the
+  // notification with the holder's name, no occupancy; the holder hears
+  // nothing of it
   partOne.Messages().clear();
-  // the second player joins while the first is in it
+  ref.Activate(second);
+  partOne.Tick(); // snippets are deferred (SpSnippet.cpp)
+  REQUIRE(ref.IsOpen());
+  REQUIRE_FALSE(sentTo(1, MsgType::OpenContainer));
+  REQUIRE_FALSE(chestInventoryTo(1));
+  REQUIRE(notifiedOf(1, "Rotfern is searching this"));
+  REQUIRE_FALSE(ref.IsContainerOccupant(&second));
+  REQUIRE(ref.IsContainerOccupant(&first));
+  REQUIRE_FALSE(sentTo(0, MsgType::OpenContainer));
+  REQUIRE_FALSE(chestInventoryTo(0));
+  REQUIRE_FALSE(notifiedOf(0, "Rotfern is searching this"));
+
+  // the refused player's take: refused with no exception, nothing moves, it
+  // hears its own inventory and the chest's at once
+  const auto count = ref.GetInventory().GetTotalItemCount();
+  const auto wanted = ref.GetInventory().entries.at(0).baseId;
+  partOne.Messages().clear();
+  REQUIRE_NOTHROW(ref.TakeItem(second, { wanted, 1 }));
+  REQUIRE(ref.GetInventory().GetTotalItemCount() == count);
+  REQUIRE(second.GetInventory().GetTotalItemCount() == 0);
+  REQUIRE(sentTo(1, MsgType::SetInventory));
+  REQUIRE(chestInventoryTo(1));
+
+  // the holder's take: the item moves, no live redraw goes anywhere
+  // (decision 1: the contents sync at the open and at the close alone)
+  partOne.Messages().clear();
+  REQUIRE_NOTHROW(ref.TakeItem(first, { wanted, 1 }));
+  partOne.Tick(); // the holder's own SetInventory is deferred
+  REQUIRE(first.GetInventory().GetItemCount(wanted) == 1);
+  REQUIRE(ref.GetInventory().GetTotalItemCount() == count - 1);
+  REQUIRE_FALSE(chestInventoryTo(0));
+  REQUIRE_FALSE(chestInventoryTo(1));
+  REQUIRE_FALSE(sentTo(1, MsgType::SetInventory));
+
+  // the holder leaves: shut, the hold released; the second's activation now
+  // opens it
+  ref.Activate(first, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+  REQUIRE_FALSE(ref.IsContainerOccupant(&first));
+  partOne.Messages().clear();
   ref.Activate(second);
   REQUIRE(ref.IsOpen());
-  auto& messages = partOne.Messages();
-  const bool secondOpened =
-    std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
-      return m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
-        m.j["t"] == static_cast<int>(MsgType::OpenContainer);
-    });
-  REQUIRE(secondOpened);
-
-  // a take by the first: the second's menu gets the inventory anew
-  REQUIRE(ref.GetInventory().GetTotalItemCount() > 0);
-  const auto taken = ref.GetInventory().entries.at(0).baseId;
-  partOne.Messages().clear();
-  ref.TakeItem(first, { taken, 1 });
-  const bool refreshed =
-    std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
-      return m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
-        m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
-        m.j.contains("propName") && m.j["propName"] == "inventory" &&
-        m.j["idx"] == ref.GetIdx();
-    });
-  REQUIRE(refreshed);
-  // and the second may take as well
-  if (ref.GetInventory().GetTotalItemCount() > 0) {
-    const auto other = ref.GetInventory().entries.at(0).baseId;
-    REQUIRE_NOTHROW(ref.TakeItem(second, { other, 1 }));
-  }
-
-  // a take the server refuses (the row gone, playtest 37's phantom bow):
-  // the taker hears its own inventory and the container's at once
-  partOne.Messages().clear();
-  REQUIRE_THROWS_WITH(ref.TakeItem(first, { 0x12eb7, 1 }),
-                      ContainsSubstring("doesn't have enough"));
-  const bool ownResent =
-    std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
-      return m.userId == 0 && m.j.is_object() && m.j.contains("t") &&
-        m.j["t"] == static_cast<int>(MsgType::SetInventory);
-    });
-  const bool chestResent =
-    std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
-      return m.userId == 0 && m.j.is_object() && m.j.contains("t") &&
-        m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
-        m.j.contains("propName") && m.j["propName"] == "inventory" &&
-        m.j["idx"] == ref.GetIdx();
-    });
-  REQUIRE(ownResent);
-  REQUIRE(chestResent);
-
-  // the first leaves: still open for the second; the second leaves: shut
-  ref.Activate(first, false, true);
-  REQUIRE(ref.IsOpen());
-  REQUIRE_THROWS_WITH(
-    ref.TakeItem(first, { taken, 1 }),
-    ContainsSubstring("Actor 0xff000000 doesn't occupy ref 0x20570"));
+  REQUIRE(ref.IsContainerOccupant(&second));
+  REQUIRE(sentTo(1, MsgType::OpenContainer));
+  REQUIRE(chestInventoryTo(1));
   ref.Activate(second, false, true);
   REQUIRE_FALSE(ref.IsOpen());
 
@@ -508,6 +541,145 @@ TEST_CASE("Two players in one container: both open it, a take reaches the "
   DoDisconnect(partOne, 1);
   partOne.DestroyActor(0xff000000);
   partOne.DestroyActor(0xff000001);
+}
+
+// thuum docs/verbs/containers.md (ADR-067 decision 1, Eli after playtest 42:
+// "fuck live updates of containers"): a container's contents sync at its
+// open (the record to the opener) and at its close (the record to every
+// listener of the reference: a watcher's engine copy and crosshair, the next
+// opener's included), never while it is open
+TEST_CASE("A container's record reaches every listener at the close and no "
+          "one while it is open",
+          "[PartOne][espm]")
+{
+  auto& partOne = GetPartOne();
+  auto refrId = 0x20570;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  ref.SetRelootTime(kRelootWindow);
+  ref.SetChanceNoneOverride(0);
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(0, 0xff000000);
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xff000001, { 21300.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(1, 0xff000001);
+  auto& first = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  first.RemoveAllItems();
+
+  auto& messages = partOne.Messages();
+  const auto chestInventoryTo = [&](Networking::UserId user) {
+    return std::find_if(
+      messages.begin(), messages.end(), [&](PartOne::Message& m) {
+        return m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.contains("propName") && m.j["propName"] == "inventory" &&
+          m.j["idx"] == ref.GetIdx();
+      });
+  };
+
+  // the open: the record to the opener alone
+  partOne.Messages().clear();
+  ref.Activate(first);
+  REQUIRE(ref.IsOpen());
+  REQUIRE(ref.GetInventory().GetTotalItemCount() > 0);
+  REQUIRE(chestInventoryTo(0) != messages.end());
+  REQUIRE(chestInventoryTo(1) == messages.end());
+
+  // the holder's take: the record changes, no listener hears of it yet
+  const auto taken = ref.GetInventory().entries.at(0).baseId;
+  partOne.Messages().clear();
+  ref.TakeItem(first, { taken, 1 });
+  partOne.Tick();
+  REQUIRE(chestInventoryTo(0) == messages.end());
+  REQUIRE(chestInventoryTo(1) == messages.end());
+
+  // the close: the record as it stands to both players, the watcher included
+  partOne.Messages().clear();
+  ref.Activate(first, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+  const auto toWatcher = chestInventoryTo(1);
+  REQUIRE(toWatcher != messages.end());
+  REQUIRE(toWatcher->j["dataDump"].get<std::string>() ==
+          ref.GetInventory().ToJson().dump());
+  REQUIRE(chestInventoryTo(0) != messages.end());
+
+  DoDisconnect(partOne, 0);
+  DoDisconnect(partOne, 1);
+  partOne.DestroyActor(0xff000000);
+  partOne.DestroyActor(0xff000001);
+}
+
+// thuum docs/verbs/containers.md (ADR-067 decision 6): a put or a take by a
+// player not in the container (its hold released, a corpse's loot menu its
+// engine opened on its own, a forged message) moves nothing and raises no
+// exception: E_CONTAINER_OCCUPANT is logged and the mover hears its own
+// inventory and the container's at once, as every refused move does
+TEST_CASE("A move by a player not in the container is refused without an "
+          "exception, moves nothing, and resyncs the mover",
+          "[PartOne][espm]")
+{
+  auto& partOne = GetPartOne();
+  auto refrId = 0x20570;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  ref.SetRelootTime(kRelootWindow);
+  ref.SetChanceNoneOverride(0);
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(0, 0xff000000);
+  auto& actor = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  actor.RemoveAllItems();
+
+  // the record exists: opened and closed once, the hold released
+  ref.Activate(actor);
+  ref.Activate(actor, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+  REQUIRE_FALSE(ref.IsContainerOccupant(&actor));
+  const auto before = ref.GetInventory().GetTotalItemCount();
+  REQUIRE(before > 0);
+  const auto wanted = ref.GetInventory().entries.at(0).baseId;
+
+  auto& messages = partOne.Messages();
+  const auto resynced = [&]() {
+    const bool own =
+      std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
+        return m.userId == 0 && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::SetInventory);
+      });
+    const bool chest =
+      std::any_of(messages.begin(), messages.end(), [&](PartOne::Message& m) {
+        return m.userId == 0 && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.contains("propName") && m.j["propName"] == "inventory" &&
+          m.j["idx"] == ref.GetIdx();
+      });
+    return own && chest;
+  };
+
+  // a take
+  partOne.Tick(); // the open's and close's deferred messages flushed
+  partOne.Messages().clear();
+  REQUIRE_NOTHROW(ref.TakeItem(actor, { wanted, 1 }));
+  REQUIRE(ref.GetInventory().GetTotalItemCount() == before);
+  REQUIRE(actor.GetInventory().GetTotalItemCount() == 0);
+  REQUIRE(resynced());
+
+  // a put
+  actor.AddItem(0x12eb7, 1);
+  const auto chestHad = ref.GetInventory().GetItemCount(0x12eb7);
+  partOne.Tick(); // the AddItem's own deferred SetInventory flushed
+  partOne.Messages().clear();
+  REQUIRE_NOTHROW(ref.PutItem(actor, { 0x12eb7, 1 }));
+  REQUIRE(ref.GetInventory().GetItemCount(0x12eb7) == chestHad);
+  REQUIRE(actor.GetInventory().GetItemCount(0x12eb7) == 1);
+  REQUIRE(resynced());
+
+  DoDisconnect(partOne, 0);
+  partOne.DestroyActor(0xff000000);
 }
 
 // thuum (playtest 37, 2026-10-28, Eli: "shouldn't be that hard to change that
@@ -591,9 +763,10 @@ TEST_CASE("BarrelFood01 PutItem/TakeItem", "[PartOne][espm]")
   auto& actor = partOne.worldState.GetFormAt<MpActor>(0xff000000);
   actor.RemoveAllItems();
 
-  REQUIRE_THROWS_WITH(
-    ref.PutItem(actor, { 0x12eb7, 2 }),
-    ContainsSubstring("Actor 0xff000000 doesn't occupy ref 0x20570"));
+  // not in it: the put is refused (E_CONTAINER_OCCUPANT, ADR-067 decision
+  // 6) with no exception and nothing moves
+  REQUIRE_NOTHROW(ref.PutItem(actor, { 0x12eb7, 2 }));
+  REQUIRE(ref.GetInventory().IsEmpty());
 
   // Activation forces base container to be added
   partOne.Messages().clear();
@@ -615,16 +788,34 @@ TEST_CASE("BarrelFood01 PutItem/TakeItem", "[PartOne][espm]")
   REQUIRE(partOne.Messages()[2].j["t"] == MsgType::OpenContainer);
   REQUIRE(partOne.Messages()[2].j["target"] == ref.GetFormId());
 
-  REQUIRE_THROWS_WITH(
-    ref.PutItem(actor, { 0x12eb7, 2 }),
-    ContainsSubstring("Source inventory doesn't have enough 0x12eb7 "
-                      "(2 is required while 0 present)"));
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c): a put of what the
+  // mover's record does not hold is refused by name (E_PUT_NOT_HELD), no
+  // throw, the mover resynced; nothing moves
+  // ... and the mover hears both inventories again (its own SetInventory
+  // and the chest's "inventory" property: a CONT)
+  partOne.Messages().clear();
+  REQUIRE_NOTHROW(ref.PutItem(actor, { 0x12eb7, 2 }));
+  REQUIRE(ref.GetInventory().GetItemCount(0x12eb7) == 0);
+  {
+    bool ownSent = false;
+    bool chestSent = false;
+    for (const auto& m : partOne.Messages()) {
+      if (m.j["t"] == MsgType::SetInventory) {
+        ownSent = true;
+      }
+      if (m.j["t"] == MsgType::UpdateProperty &&
+          m.j["propName"] == "inventory" && m.j["idx"] == ref.GetIdx()) {
+        chestSent = true;
+      }
+    }
+    REQUIRE(ownSent);
+    REQUIRE(chestSent);
+  }
 
   actor.AddItem(0x12eb7, 1);
-  REQUIRE_THROWS_WITH(
-    ref.PutItem(actor, { 0x12eb7, 2 }),
-    ContainsSubstring("Source inventory doesn't have enough 0x12eb7 "
-                      "(2 is required while 1 present)"));
+  REQUIRE_NOTHROW(ref.PutItem(actor, { 0x12eb7, 2 }));
+  REQUIRE(ref.GetInventory().GetItemCount(0x12eb7) == 0);
+  REQUIRE(actor.GetInventory().GetItemCount(0x12eb7) == 1);
 
   actor.AddItem(0x12eb7, 1);
 
@@ -1015,6 +1206,90 @@ TEST_CASE("A disconnect releases the player's container: the chest shuts "
   }
   REQUIRE(told);
 
+  DoDisconnect(partOne, 1);
+  partOne.DestroyActor(0xff000000);
+  partOne.DestroyActor(0xff000001);
+}
+
+// thuum docs/verbs/containers.md (ADR-067 decision 6, superseding ADR-061
+// decision 3's switch): the hold is the one model and no setting; a second
+// player's activation of a held container is refused with a notification on
+// its seat ("Someone is using this" when the holder has no name); the
+// holder's close frees the container, and the holder's own re-activation
+// keeps its hold
+TEST_CASE("The container hold is the one model: a second player is refused "
+          "while the first is in it, told someone is using it when the "
+          "holder has no name, and admitted once the first leaves",
+          "[PartOne][espm]")
+{
+  auto& partOne = GetPartOne();
+  auto refrId = 0x20570;
+  auto& ref = partOne.worldState.GetFormAt<MpObjectReference>(refrId);
+  ref.SetRelootTime(kRelootWindow);
+  ref.SetChanceNoneOverride(0);
+
+  DoConnect(partOne, 0);
+  partOne.CreateActor(0xff000000, { 21272.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(0, 0xff000000);
+  DoConnect(partOne, 1);
+  partOne.CreateActor(0xff000001, { 21300.0000, -7816.0000, -3608.0000 }, 0,
+                      0x1a26f);
+  partOne.SetUserActor(1, 0xff000001);
+  auto& first = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  auto& second = partOne.worldState.GetFormAt<MpActor>(0xff000001);
+  REQUIRE_FALSE(static_cast<bool>(first.GetAppearance())); // no name
+
+  ref.Activate(first);
+  REQUIRE(ref.IsOpen());
+  REQUIRE(ref.IsContainerOccupant(&first));
+
+  // the second is refused: no OpenContainer, the notification, no occupancy
+  partOne.Messages().clear();
+  ref.Activate(second);
+  partOne.Tick(); // snippets are deferred (SpSnippet.cpp)
+  auto& messages = partOne.Messages();
+  const auto openedFor = [&](Networking::UserId user) {
+    return std::any_of(
+      messages.begin(), messages.end(), [&](PartOne::Message& m) {
+        return m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::OpenContainer);
+      });
+  };
+  const auto notified =
+    std::find_if(messages.begin(), messages.end(), [&](PartOne::Message& m) {
+      return m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+        m.j["class"] == "Debug" && m.j["function"] == "Notification";
+    });
+  REQUIRE_FALSE(openedFor(1));
+  REQUIRE(notified != messages.end());
+  REQUIRE(notified->j["arguments"][0].get<std::string>() ==
+          "Someone is using this");
+  REQUIRE_FALSE(ref.IsContainerOccupant(&second));
+  REQUIRE(ref.IsContainerOccupant(&first));
+
+  // the first leaves: shut; the second's activation now opens it
+  ref.Activate(first, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+  partOne.Messages().clear();
+  ref.Activate(second);
+  REQUIRE(ref.IsOpen());
+  REQUIRE(openedFor(1));
+  REQUIRE(ref.IsContainerOccupant(&second));
+  ref.Activate(second, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+
+  // the holder's own re-activation keeps its hold, one occupant still
+  ref.Activate(first);
+  ref.Activate(first);
+  REQUIRE(ref.IsOpen());
+  REQUIRE(ref.IsContainerOccupant(&first));
+  REQUIRE_FALSE(ref.IsContainerOccupant(&second));
+  ref.Activate(first, false, true);
+  REQUIRE_FALSE(ref.IsOpen());
+
+  DoDisconnect(partOne, 0);
   DoDisconnect(partOne, 1);
   partOne.DestroyActor(0xff000000);
   partOne.DestroyActor(0xff000001);

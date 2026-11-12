@@ -62,6 +62,13 @@ import { CustomPacketMessage } from "../messages/customPacketMessage";
 import { HostGrantMessage } from "../messages/hostGrantMessage";
 import { ActorFateMessage } from "../messages/actorFateMessage";
 import { HostReleaseMessage } from "../messages/hostReleaseMessage";
+import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
+import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
+import { DestructionStageMessage } from "../messages/destructionStageMessage";
+import { ScriptStateApplyMessage } from "../messages/scriptStateApplyMessage";
+import { AliasFillMessage } from "../messages/aliasFillMessage";
+import { WorldGlobalMessage } from "../messages/worldGlobalMessage";
+import { ScriptVariablesMessage } from "../messages/scriptVariablesMessage";
 
 import { AnyRawMessageEvent } from "./anyRawMessageEvent";
 import { NicknameCreateEvent } from "./nicknameCreateEvent";
@@ -127,7 +134,22 @@ type EventTypes = {
     'actorFateMessage': [ConnectionMessage<ActorFateMessage>],
     // thuum docs/verbs/npc-puppet.md: HostService's grant or release of a cell, for PuppetService
     'cellHostChanged': [{ cell: number; hosted: boolean }],
+    // x-quest-runs 20261110-071422's read: PuppetService's stop of a scene the engine played here on a host's puppet, for QuestStageService (the engine's stop of its quest that follows is this seat's own)
+    'puppetSceneStopped': [{ quest: number; scene: number }],
     'hostReleaseMessage': [ConnectionMessage<HostReleaseMessage>],
+    // thuum docs/verbs/change-form.md (ADR-065): the server's ack of this seat's record, and a record served for a reference here
+    'changeFormAckMessage': [ConnectionMessage<ChangeFormAckMessage>],
+    'changeFormApplyMessage': [ConnectionMessage<ChangeFormApplyMessage>],
+    // thuum docs/DECISIONS.md ADR-068 D-S3 point 3: a trap result's record, relayed or served (TrapResultService)
+    'destructionStageMessage': [ConnectionMessage<DestructionStageMessage>],
+    // thuum docs/DECISIONS.md ADR-068 amendment A (rung 3): a script record served ahead of a grant or behind a create word (ScriptStateService)
+    'scriptStateApplyMessage': [ConnectionMessage<ScriptStateApplyMessage>],
+    // thuum docs/DECISIONS.md ADR-068 rung 4 (the state rows): an alias's fill relayed or served (AliasFillService)
+    'aliasFillMessage': [ConnectionMessage<AliasFillMessage>],
+    // the same rung: the world's globals, a stream word, a relay or a login's serve (WorldGlobalService)
+    'worldGlobalMessage': [ConnectionMessage<WorldGlobalMessage>],
+    // rung 5: the condition-read script variables, a relay or a login's serve (ScriptVariablesService)
+    'scriptVariablesMessage': [ConnectionMessage<ScriptVariablesMessage>],
     'customPacketMessage': [ConnectionMessage<CustomPacketMessage>]
 
     'browserWindowLoaded': [BrowserWindowLoadedEvent],

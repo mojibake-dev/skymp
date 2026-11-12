@@ -98,6 +98,14 @@ public:
 
   Inventory& AddItem(uint32_t baseId, uint32_t count);
   Inventory& AddItems(const std::vector<Entry>& entries);
+  // thuum train 52 (D-R1 C's leveled gap; the fresh review of the whole
+  // branch, SHOULD 1): AddItems for plain items (no extra data, unworn, as a
+  // script's AddItem or a leveled roll's landing adds them), each joining
+  // the first plain stack of its base or appended, in the call's order, the
+  // stacks read once for the call rather than once per item (a roll's 255
+  // landings into a record of 4096 stacks); an item that is not plain takes
+  // AddItems' own rule
+  Inventory& AddPlainItems(const std::vector<Entry>& entries);
   Inventory& RemoveItems(const std::vector<Entry>& entries);
   bool HasItem(uint32_t baseId) const;
   uint32_t GetItemCount(uint32_t baseId) const;

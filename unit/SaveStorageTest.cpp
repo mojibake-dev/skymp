@@ -296,3 +296,22 @@ TEST_CASE("FlushSaveStorage writes the position the movement policy left "
   REQUIRE(saved() == std::optional<float>(200.f));
   REQUIRE(ac.HasUnsavedEdit() == false);
 }
+
+// thuum docs/verbs/cell-host.md (playtest 49, 2026-11-06): a plain restart
+// grew the world from 1,542 records to 15,393, nearly all of them flora the
+// players' grids had loaded, unharvested and default. Every NoRequestSave edit
+// was marked unsaved, an attach's Init included, and the stop's flush wrote
+// them; only a deferred movement sample (Mode::Deferred) marks the record now
+TEST_CASE("A game-file reference the session only loads carries no unsaved "
+          "edit, so a stop's flush writes no record for it",
+          "[save][espm]")
+{
+  PartOne& p = GetPartOne();
+  // the PurpleMountainFlower in Whiterun PartOne_ActivateTest harvests, a
+  // flora reference the loader attaches (for Tamriel's 0x1066c3, a sample
+  // from playtest 49's world, LookupFormById answered none here: pipeline
+  // 5610)
+  constexpr uint32_t kFlower = 0x0100122a;
+  auto& flower = p.worldState.GetFormAt<MpObjectReference>(kFlower);
+  REQUIRE_FALSE(flower.HasUnsavedEdit());
+}

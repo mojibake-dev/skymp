@@ -5,6 +5,7 @@
 #include "../server_guest_lib/Inventory.h"
 #include "MessageBase.h"
 #include "MsgType.h"
+#include "RaceOverlay.h"
 #include <map>
 #include <type_traits>
 
@@ -116,7 +117,8 @@ struct CreateActorMessageAdditionalProps
       .Serialize("placedBy", placedBy)
       .Serialize("lock", lock)
       .Serialize("restrictedRaces", restrictedRaces)
-      .Serialize("permittedRaces", permittedRaces);
+      .Serialize("permittedRaces", permittedRaces)
+      .Serialize("overlay", overlay);
   }
 
   std::optional<bool> isOpen;
@@ -163,6 +165,10 @@ struct CreateActorMessageAdditionalProps
   // race
   std::optional<std::vector<uint32_t>> restrictedRaces;
   std::optional<std::vector<uint32_t>> permittedRaces;
+
+  // thuum ADR-068 rung 5 (D-T1 A): the race overlay another player's figure
+  // wears beyond its record; never on a player's own CreateActor
+  std::optional<RaceOverlay> overlay;
 };
 
 struct CreateActorMessageMainProps

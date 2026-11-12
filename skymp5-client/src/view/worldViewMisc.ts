@@ -48,6 +48,30 @@ export const remoteIdToLocalId = (remoteFormId: number): number => {
   return remoteFormId;
 };
 
+// MakeLongFormId's inverse (skymp5-server SpSnippet.cpp): the game-file form
+// id a long id carries, the server's id for an actor from the game files it
+// holds (the form id plus 0x100000000); 0 for any other id
+export const gameFileIdOfLongId = (remoteFormId: number): number => {
+  const formId = remoteFormId - 0x100000000;
+  return formId > 0 && formId < 0xff000000 ? formId : 0;
+};
+
+// thuum train 52, 4.2 (x-acting-player 20261111-034406: c1's relayed
+// SetRelationshipRank on Faendal failed, "Unable to find form with id 0"):
+// the local form id of a server snippet's self or object argument, for
+// SpSnippetService alone. The server writes a game-file actor it holds by its
+// long id (SpSnippet::MakeLongFormId), while this client binds such an actor
+// as itself under its short id (a FormView keeps the CreateActor's refrId,
+// the actor's own form id since npc-puppet, PartOne.cpp), so no view answers
+// a long id, on a puppet's seat or a host's alike. The view's answer first,
+// as remoteIdToLocalId's, then the reference the long id names, the game
+// file's own, which every seat's engine has from the same files whether or
+// not a view stands for it. remoteIdToLocalId stays as it is: its other
+// callers read 0 as "not in my view"
+export const snippetIdToLocalId = (remoteFormId: number): number => {
+  return remoteIdToLocalId(remoteFormId) || gameFileIdOfLongId(remoteFormId);
+};
+
 // The local form id a form view holds for model index `i`, pure JavaScript
 // (no native call): what a network message handler may read, since Skyrim
 // Platform refuses natives in that context (thuum docs/verbs/npc-handoff.md

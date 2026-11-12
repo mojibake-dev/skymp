@@ -7,7 +7,9 @@
 #include "MpClientPluginApi.h"
 #include "PapyrusTESModPlatform.h"
 #include "Puppets.h"
+#include "ScriptNatives.h"
 #include "SkyrimPlatform.h"
+#include <RE/D/DelayFunctor.h>
 #include <mutex>
 
 namespace hook::internal {
@@ -237,6 +239,68 @@ void InstallPlayerAddTargetHook()
 {
   REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[4] };
   PlayerAddTarget::func = vtbl.write_vfunc(0x1, PlayerAddTarget::thunk);
+}
+
+/**
+ * thuum train 52, Fix 1 (D-R1 C's leveled gap; the plan's section 1.3):
+ * SkyrimScript::AddItemFunctor's operator(), the latent AddItem's body that
+ * lands a leveled list's roll in the container (the trace x-additem-functor
+ * 20261110-151634: on a worker thread, 3.0 to 3.4 ms after the native's
+ * kInProgress, its stackID the call's six of six, one container event per
+ * landing inside it). Its vtable is CommonLibSSE-NG's
+ * include/RE/Offsets_VTABLE.h:4616, VTABLE_SkyrimScript____AddItemFunctor
+ * (AE id 218372; `just addr 218372` resolves it on 1.6.1170), its slot 01
+ * the header's own (include/RE/D/DelayFunctor.h:35, operator(), `// 01`),
+ * written with REL::Relocation::write_vfunc (include/REL/Relocation.h:
+ * 392-399: the slot's old value returned, the new one written through
+ * safe_write), the fork's idiom above. The thunk opens ScriptNatives'
+ * FunctorWindow for the functor's stack (DelayFunctor.h:43, stackID) around
+ * the original, so the container events the roll raises inside it name that
+ * stack's parked call (ScriptNatives.h). operator() returns
+ * BSScript::Variable by value: a member function returning a class by value
+ * takes `this` in RCX and the caller's return buffer in RDX and returns the
+ * buffer in RAX (the Microsoft x64 convention's return values; Raymond Chen,
+ * The Old New Thing 2013-02-20: "The this pointer goes ahead of the output
+ * structure pointer"; LLVM review D3618), as the trace measured on this
+ * build (rax equal to rdx at entry, six of six), so the thunk names both,
+ * `this` first: a static thunk declared to return Variable by value would
+ * take its hidden pointer first and be wrong. Observe only: the original
+ * runs whole, nothing is suppressed. The switch is the seam's
+ * (scriptLeveledLandings, ScriptNatives.cpp): off, nothing is parked and the
+ * window notes nothing. Ghidra cross-check of slot 01's target: UNVERIFIED
+ * (Ghidra); the trace's live read of the slot at load, agreeing with the
+ * type's RTTI, stands in for it
+ */
+constexpr std::size_t kAddItemFunctorCallSlot = 0x1;
+
+struct AddItemFunctorCall
+{
+  static RE::BSScript::Variable* thunk(RE::SkyrimScript::DelayFunctor* a_this,
+                                       RE::BSScript::Variable* a_result)
+  {
+    const ScriptNatives::FunctorWindow window(a_this ? a_this->stackID : 0);
+    return func(a_this, a_result);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+// the slot's address and what it held before the write (Hooks.h: the seam's
+// install line and its read-back), 0 before the install
+namespace {
+std::uintptr_t g_addItemFunctorSlot = 0;
+std::uintptr_t g_addItemFunctorSlotWas = 0;
+}
+
+void InstallAddItemFunctorHook()
+{
+  REL::Relocation<std::uintptr_t> vtbl{
+    RE::VTABLE_SkyrimScript____AddItemFunctor[0]
+  };
+  g_addItemFunctorSlot =
+    vtbl.address() + sizeof(void*) * kAddItemFunctorCallSlot;
+  AddItemFunctorCall::func =
+    vtbl.write_vfunc(kAddItemFunctorCallSlot, AddItemFunctorCall::thunk);
+  g_addItemFunctorSlotWas = AddItemFunctorCall::func.address();
 }
 
 /**
@@ -513,6 +577,23 @@ void BindNativeMethod(RE::BSScript::Internal::VirtualMachine* thisArg,
   _BindNativeMethod(thisArg, func);
 }
 
+std::pair<std::uintptr_t, std::uintptr_t> Hooks::AddItemFunctorSlotWas()
+{
+  if (g_addItemFunctorSlotWas == 0) {
+    return { 0, 0 };
+  }
+  const std::uintptr_t base = hook::internal::GetAllocationBase(
+    reinterpret_cast<void*>(g_addItemFunctorSlotWas));
+  return { base, g_addItemFunctorSlotWas - base };
+}
+
+bool Hooks::AddItemFunctorSlotHolds()
+{
+  return g_addItemFunctorSlot != 0 &&
+    *reinterpret_cast<const std::uintptr_t*>(g_addItemFunctorSlot) ==
+    stl::unrestricted_cast<std::uintptr_t>(AddItemFunctorCall::thunk);
+}
+
 std::vector<std::tuple<std::string, std::string, RE::BSScript::IFunction*,
                        uintptr_t, uintptr_t, uintptr_t>>
 Hooks::GetBoundNatives()
@@ -530,6 +611,7 @@ void Hooks::Install()
   InstallPlayerAddTargetHook();
   InstallPlayerHealthDamageHook();
   InstallHostedResurrectHook();
+  InstallAddItemFunctorHook();
 
   logger::info("CommonLib hooks installed.");
 }

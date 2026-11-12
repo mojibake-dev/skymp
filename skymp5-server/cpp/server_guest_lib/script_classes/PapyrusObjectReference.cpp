@@ -428,7 +428,7 @@ VarValue PapyrusObjectReference::PlaceAtMe(
 
 MpObjectReference& PapyrusObjectReference::PlaceAt(
   MpObjectReference& anchor, const espm::LookupResult& form,
-  const LocationalData& where)
+  const LocationalData& where, bool subscribe)
 {
   auto baseId = form.ToGlobalId(form.rec->GetId());
   FormCallbacks callbacks = anchor.GetCallbacks();
@@ -466,7 +466,9 @@ MpObjectReference& PapyrusObjectReference::PlaceAt(
     }
   }
 
-  refr.ForceSubscriptionsUpdate();
+  if (subscribe) {
+    refr.ForceSubscriptionsUpdate();
+  }
   return refr;
 }
 

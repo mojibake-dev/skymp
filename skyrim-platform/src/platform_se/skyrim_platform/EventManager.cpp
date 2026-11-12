@@ -19,6 +19,9 @@ void EventManager::InitCustom()
   manager->EmplaceEvent("actionPerformed");
   manager->EmplaceEvent("skseAction");
   manager->EmplaceEvent("projectileLaunched");
+  // thuum docs/verbs/spell-cast.md: the engine's decal placement for the
+  // player's own target-location launch (FridaHooks' runeDecal)
+  manager->EmplaceEvent("runeDecal");
   manager->EmplaceEvent("projectileFlight");
   // thuum docs/research/apocalypse/target-location.md: a target-location
   // explosion placed at the caster's point (FridaHooks' areaEffectPlaced);
@@ -30,6 +33,20 @@ void EventManager::InitCustom()
   manager->EmplaceEvent("propContact");
   // thuum docs/verbs/leveling.md: the player's UseSkill (FridaHooks' skillUse)
   manager->EmplaceEvent("skillUse");
+  // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): the calls this
+  // seat's scripts made in a frame on what it owns, once a frame, and the
+  // seam's 30 s census (ScriptNatives.cpp)
+  manager->EmplaceEvent("scriptCalls");
+  manager->EmplaceEvent("scriptCensus");
+  // thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A (the presser rule): an
+  // entry this seat's presser made into a trap family trigger or into a
+  // scripted trigger in a cell this seat does not host (FridaHooks'
+  // triggerEntry, the Papyrus event gate's)
+  manager->EmplaceEvent("triggerEntry");
+  // thuum docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch:
+  // an engine event to a furniture's own graph (FridaHooks'
+  // furnitureAnimation, the animation hook's)
+  manager->EmplaceEvent("furnitureAnimation");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

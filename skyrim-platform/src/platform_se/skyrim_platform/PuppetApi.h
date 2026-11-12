@@ -36,11 +36,117 @@ Napi::Value GetHighProcessActors(const Napi::CallbackInfo& info);
 Napi::Value SetHosted(const Napi::CallbackInfo& info);
 // isHosted(actorFormId): whether the set holds the actor
 Napi::Value IsHosted(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 rung 5 (the acting scope, ActingScope.h):
+// setActingPlayer(questId, stage, figureLocalId, serverId, ttlMs), the acting
+// player of a relayed stage (0 to 65535), start (-1), stop (-2) or trigger
+// entry (-3, questId the trigger), written on the JS thread with no game
+// call before the client applies it; a start or a stop arms the quest's
+// scope at once. False for a quest 0, a stage outside -3 to 65535, a
+// serverId 0, the player's own id as the figure, a ttl outside 1 to 60000
+Napi::Value SetActingPlayer(const Napi::CallbackInfo& info);
+// getActingPlayer(questId, stage): the server id of the acting player whose
+// scope requested the pair here (relayed, or chained by a scoped stack), 0
+// for none; the C2S QuestStage's `acting`
+Napi::Value GetActingPlayer(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 rung 5, D-Q4 C (QuestCause.h):
+// markQuestCause(questId, stage, cause, root, ttlMs), a cause this seat's own
+// act names for the quest's next start (-1), stop (-2) or stage (0 to 65535)
+// before the engine makes it, for ttlMs: skymp5-client's console service
+// marks a quest command the player typed. QuestCause::Mark's table, so the
+// word's event takes it once and the stage's event and the quest stage sink
+// read it, as they read a script call's mark. Since train 52 (Fix 3) the word
+// marked is QuestCause::WordMade's for the quest's run and Start Game
+// Enabled flag, read here (a form-table read and two flag reads on the JS
+// thread, no Papyrus call): a stage itself, a start only for a quest not
+// running, a stop only for a running one, and a typed reset (-3) the word it
+// makes. Answers { marked, running, startsEnabled }, marked the word stored
+// (a stage, -1 or -2) or null when the request makes none; null, nothing
+// stored, for a quest 0, a stage outside -3 to 65535, a cause other than
+// "world" or "seat", a root past QuestCause::kMaxRootBytes or outside
+// [A-Za-z0-9_.], a ttl outside 1 to QuestCause::kMaxMarkMs, or a quest id no
+// TESQuest has
+Napi::Value MarkQuestCause(const Napi::CallbackInfo& info);
+// setPlayerGlobals(globalFormIds): PQ-3's set, the globals each player keeps
+// (the PlayerGlobals watch list), replaced whole; a scoped stack's
+// GlobalVariable.SetValue on one is skipped. The JS thread alone, no game
+// call; true when stored
+Napi::Value SetPlayerGlobals(const Napi::CallbackInfo& info);
+// setPlayerQuests(questFormIds): the per-player quests (the server's derived
+// playerQuests), replaced whole; the Papyrus event gate passes an event to
+// such a quest's own scripts and its aliases' scripts on every seat, for its
+// own player. The JS thread alone, no game call; true when stored
+Napi::Value SetPlayerQuests(const Napi::CallbackInfo& info);
 // isPerformingAction(actorFormId): whether the engine's action entry is open
 // on the actor right now (Hosted::IsPerforming, the hook's mark); read
 // inside a sendAnimationEvent hook handler, where the game thread waits, it
 // says the event being sent is the action's own
 Napi::Value IsPerformingAction(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
+// TrapFamily.h): getTrapRole(formId) answers { family, playerOnly, destroyed,
+// trigger, exempt } for a reference with an attached script, from the gate's
+// own reads on the JS thread (the VM's attached scripts under its lock, the
+// reference's destroyed flag, its trigger's playerOnlyTrigger property,
+// whether a script on it reaches TrapTriggerBase: a trap's trigger, never a
+// trap body, playtest 48; and since ADR-068 D-W2 A whether a script on it is
+// of a class setTriggerPresserExempt names, TrapFamily::Exempt, so the
+// client skips its root report for a trigger every seat fires itself), and
+// null for an id that names no reference or one with no attached script
+Napi::Value GetTrapRole(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A (the presser rule,
+// FridaHooks.h): setTriggerPresserRule(on), the Papyrus event gate's rule over
+// a world object's OnTriggerEnter and OnTriggerLeave on or off, off by
+// default (D-S3's every-seat firing): on, an entry whose presser this seat
+// does not own is blanked, and an owned one on a trap family trigger, or on
+// a scripted trigger in a cell this seat does not host, raises triggerEntry
+// on the next tick. Stored with no game call; true when stored
+Napi::Value SetTriggerPresserRule(const Napi::CallbackInfo& info);
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(b) (the furniture branch,
+// FridaHooks.h): setFurnitureAnimation(on), the animation hook's rule over a
+// furniture's own graph event on or off, off by default: on, an event the
+// engine sends to a plain reference whose base is a FURN never reaches the
+// sendAnimationEvent handlers and raises furnitureAnimation on the next tick.
+// Stored with no game call; true when stored
+Napi::Value SetFurnitureAnimation(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 D-W2 A (ScriptNatives.h, TrapFamily.h):
+// setTriggerLook(on), the look's switch, off by default, acting only with the
+// presser rule on: on, a trap family trigger's own call on itself in its
+// firing window is queued in scriptCalls as kind "look" and still runs here;
+// setTriggerPresserExempt(classes), the fallback lever, the script classes
+// whose family references keep D-S3 under the presser rule (a non-owned
+// press passes, an owned one opens no look), replaced whole, empty by
+// default. Both stored with no game call; true when stored
+Napi::Value SetTriggerLook(const Napi::CallbackInfo& info);
+Napi::Value SetTriggerPresserExempt(const Napi::CallbackInfo& info);
+// setPropFollowed(formId, followed): a trap body another seat streams (true)
+// or no longer (false), kept in the set the native seam reads, where this
+// seat's script SetMotionType and ApplyHavokImpulse on the body run
+// neutralized; setRecordApplying(formId, applying): a reference whose server
+// record skymp5-client is applying, every Papyrus event to it blanked
+// meanwhile (the gate's blank precedes the sendPapyrusEvent hook, so JS
+// hears none of them either). Both store on the JS thread alone, no game
+// call: true when stored, false for 0 and for the player's own id
+Napi::Value SetPropFollowed(const Napi::CallbackInfo& info);
+Napi::Value SetRecordApplying(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-068 rung 3 (the script record, amendment A;
+// ScriptState.h): setScriptRecordPending(formId, pending), a reference whose
+// served script record waits for its apply (true) or no longer (false), kept
+// in the set the Papyrus event gate reads, where its OnLoad and OnCellLoad
+// are blanked meanwhile and their names kept for ApplyScriptState's answer;
+// TESModPlatform.ApplyScriptState lowers it when it applies the record.
+// Stored on the JS thread alone, no game call: true when stored, false for 0
+// and for the player's own id
+Napi::Value SetScriptRecordPending(const Napi::CallbackInfo& info);
+// releaseScriptRecordPending(formId): the mark lowered, answering the JSON
+// array of the event names the gate blanked while it was up ("[]" for none,
+// for 0 and for the player's own id), so a client that gives a record up can
+// still send them through SendScriptEvent (setScriptRecordPending(id, false)
+// drops them); a table operation on the JS thread alone, no game call
+Napi::Value ReleaseScriptRecordPending(const Napi::CallbackInfo& info);
+// setScriptRecordTouches(enabled): the seam's switch on its touch (an owned
+// state row's call batched as kind "touch", ScriptNatives.h), one atomic
+// flag, on by default; with false no such call is read for its caller or
+// queued. No game call: true when stored
+Napi::Value SetScriptRecordTouches(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-stream.md (the voice slice): sayTopicInfo(actorFormId,
 // topicInfoFormId) makes a puppet say the host's line through the engine's
 // own say (Offsets::Voice::SayTopic with the info given, so the engine's
@@ -67,6 +173,14 @@ Napi::Value PollHostedGaze(const Napi::CallbackInfo& info);
 // the E the claim's word made meaningful; true when queued
 Napi::Value ActivatePickRef(const Napi::CallbackInfo& info);
 Napi::Value HostedGaze(const Napi::CallbackInfo& info);
+// pollNodeRotation(refrId, nodeNames) reads, on the game thread, the world
+// and local rotation (Euler XYZ, radians) of each named node of a loaded
+// reference's 3D ("" for the root); nodeRotation(refrId) answers the last
+// poll as [{node, has, world: [x, y, z], local: [x, y, z]}], null before one
+// (docs/verbs/traps.md "The pillar's side": the lab's view read of a turned
+// puzzle pillar, which no Papyrus native can give without an out-array)
+Napi::Value PollNodeRotation(const Napi::CallbackInfo& info);
+Napi::Value NodeRotation(const Napi::CallbackInfo& info);
 // thuum playtest 37 (the probe before any head build): pollFaceKeyframes
 // (actorFormId) copies, on the game thread, the actor's FaceGen keyframes
 // (BSFaceGenAnimationData's expression, modifier and phoneme keyframes,
@@ -98,6 +212,10 @@ Napi::Value DamageActor(const Napi::CallbackInfo& info);
 // setEngineDamageCut(on): the replacement's cut (FridaHooks.cpp), the client
 // setting npcEngineDamage's mirror
 Napi::Value SetEngineDamageCut(const Napi::CallbackInfo& info);
+// isDamageActorReplaced(): whether DamageActor's replacement went in, the
+// player's cut of another actor's damage with it (thuum D-T4); the client
+// keeps its world multiplier at 0 without it
+Napi::Value IsDamageActorReplaced(const Napi::CallbackInfo& info);
 
 inline void Register(Napi::Env env, Napi::Object& exports)
 {
@@ -122,9 +240,55 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "isHosted",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(IsHosted)));
+  exports.Set(
+    "setActingPlayer",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetActingPlayer)));
+  exports.Set(
+    "getActingPlayer",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetActingPlayer)));
+  exports.Set(
+    "markQuestCause",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(MarkQuestCause)));
+  exports.Set(
+    "setPlayerGlobals",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPlayerGlobals)));
+  exports.Set(
+    "setPlayerQuests",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPlayerQuests)));
   exports.Set("isPerformingAction",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(IsPerformingAction)));
+  exports.Set(
+    "getTrapRole",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetTrapRole)));
+  exports.Set("setTriggerPresserRule",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetTriggerPresserRule)));
+  exports.Set("setFurnitureAnimation",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetFurnitureAnimation)));
+  exports.Set(
+    "setTriggerLook",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetTriggerLook)));
+  exports.Set("setTriggerPresserExempt",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetTriggerPresserExempt)));
+  exports.Set(
+    "setPropFollowed",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPropFollowed)));
+  exports.Set("setRecordApplying",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetRecordApplying)));
+  exports.Set("setScriptRecordPending",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetScriptRecordPending)));
+  exports.Set(
+    "releaseScriptRecordPending",
+    Napi::Function::New(
+      env, NapiHelper::WrapCppExceptions(ReleaseScriptRecordPending)));
+  exports.Set("setScriptRecordTouches",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetScriptRecordTouches)));
   exports.Set(
     "sayTopicInfo",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SayTopicInfo)));
@@ -140,6 +304,12 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "hostedGaze",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(HostedGaze)));
+  exports.Set(
+    "pollNodeRotation",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollNodeRotation)));
+  exports.Set(
+    "nodeRotation",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(NodeRotation)));
   exports.Set("pollFaceKeyframes",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(PollFaceKeyframes)));
@@ -158,5 +328,8 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("setEngineDamageCut",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetEngineDamageCut)));
+  exports.Set("isDamageActorReplaced",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(IsDamageActorReplaced)));
 }
 }

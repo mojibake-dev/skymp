@@ -7,6 +7,7 @@
 #include "MpChangeForms.h"
 #include "NiPoint3.h"
 #include "PartOneListener.h"
+#include "RaceOverlay.h"
 #include "ServerState.h"
 #include "SpellCastData.h"
 #include "WorldState.h"
@@ -22,13 +23,19 @@
 #include <spdlog/logger.h>
 
 namespace skymp::rules {
-struct RestSettings; // wire-bridge's (thuum ADR-020), opaque here
-struct Fights;       // wire-bridge's (thuum ADR-023), opaque here
-struct BondBreak;    // wire-bridge's (thuum shadowbond.md), opaque here
-struct CellHost;     // wire-bridge's (thuum cell-host.md), opaque here
-struct HostDecision; // wire-bridge's (thuum cell-host.md), opaque here
-struct PlacementRow; // wire-bridge's (thuum spell-placed-object.md), opaque
-                     // here
+struct RestSettings;    // wire-bridge's (thuum ADR-020), opaque here
+struct Fights;          // wire-bridge's (thuum ADR-023), opaque here
+struct BondBreak;       // wire-bridge's (thuum shadowbond.md), opaque here
+struct CellHost;        // wire-bridge's (thuum cell-host.md), opaque here
+struct HostDecision;    // wire-bridge's (thuum cell-host.md), opaque here
+struct PlacementRow;    // wire-bridge's (thuum spell-placed-object.md), opaque
+                        // here
+struct ScriptCalls;     // wire-bridge's (thuum ADR-068), opaque here
+struct ScriptStates;    // wire-bridge's (thuum ADR-068 rung 3), opaque here
+struct TriggerEntries;  // wire-bridge's (thuum ADR-068 D-C2), opaque here
+struct QuestRuns;       // wire-bridge's (thuum ADR-068 rung 5), opaque here
+struct ScriptVariables; // wire-bridge's (thuum ADR-068 rung 5), opaque here
+struct PlayerOverlays;  // wire-bridge's (thuum ADR-068 rung 5), opaque here
 }
 
 using ProfileId = int32_t;
@@ -201,15 +208,15 @@ public:
   // stages are the world's, server-settings.json's `sharedQuests`: a JSON
   // list of FormDescs ("[]" for none) is mode list, the object {"mode":
   // "all", "denied": [FormDescs], "allowed": [FormDescs]} mode all; a bad
-  // entry or shape stops the server here, named. SharedQuestsMode: 0 list,
-  // 1 all, as the wire carries it. CheckSharedQuest: 0 the world's, else
-  // the rule's refusal (wire-rules quest_stages: 1 unlisted in mode list, 2
-  // denied in mode all). IsSharedQuestAllowed: mode all's `allowed` names
-  // the quest (memo D62: a quest the game starts by itself, QUST DNAM's
-  // Start Game Enabled, is each seat's own unless allowed; the flag is the
-  // record's and the caller reads it). Listed: what the login names as
-  // FormDescs, settings order (the list in mode list, the denied quests in
-  // mode all). AtLogin: the world's recorded stages of quests still the
+  // entry or shape stops the server here, named (thuum ADR-068 rung 5, read
+  // 4: `allowed` is a retired key, read, said once and ignored).
+  // SharedQuestsMode: 0 list, 1 all, as the wire carries it.
+  // CheckSharedQuest: 0 the world's, else the rule's refusal (wire-rules
+  // quest_stages: 1 unlisted in mode list, 2 denied in mode all, 3 a
+  // player-class quest while the quest scope acts). Listed: what the login
+  // names as FormDescs, settings order (the list in mode list less the
+  // player class; in mode all the denied quests, then the player class).
+  // AtLogin: the world's recorded stages of quests still the
   // world's, ascending per quest. DoneAlready: the world's record holds the
   // stage. Merge: the record with the stage added once, ascending within
   // its quest (unchanged when the record is full). RecordFull: the record
@@ -218,7 +225,6 @@ public:
   void SetSharedQuestsSettings(const std::string& sharedQuestsJson);
   uint8_t SharedQuestsMode() const;
   uint8_t CheckSharedQuest(const FormDesc& quest) const;
-  bool IsSharedQuestAllowed(const FormDesc& quest) const;
   std::vector<FormDesc> SharedQuestsListed() const;
   std::vector<QuestStageDone> SharedQuestsAtLogin();
   bool QuestStageDoneAlready(const QuestStageDone& done);
@@ -244,6 +250,198 @@ public:
   MpObjectReference& WorldJournal();
   std::vector<QuestStageDone> GetQuestStages();
   bool SetQuestStages(std::vector<QuestStageDone> stages);
+
+  // thuum ADR-068 rung 4 (amendment B, read 8; docs/research/
+  // rung4-state-rows-2026-11-07.md section 1(c), the created half): an alias
+  // that creates its reference in another alias's inventory (QUST ALCO, ALCA
+  // "in") puts one item in that container when its quest fills, which no
+  // seat reports, so the server adds it, R0 from the game files: the
+  // container resolved by the target alias's forced reference (ALFR) or
+  // unique actor (ALUA), each item added once (the journal's aliasFills
+  // marks), so a take, a second load or a restart never adds it again
+  // (MS13's GoldenClaw 0x39647 and ArvelsJournal 0x39654 in Arvel 0x39655).
+  // AddCreatedItems: a game-file reference just attached (WorldState's
+  // onAttach), for a start-game-enabled quest's creation, or one whose quest
+  // has a recorded stage. AddCreatedItemsOfQuest: a quest's first recorded
+  // stage, for its creations' containers already attached. Each returns the
+  // items added.
+  size_t AddCreatedItems(MpObjectReference& container);
+  size_t AddCreatedItemsOfQuest(uint32_t questId);
+  std::vector<MpChangeFormREFR::AliasFill> GetAliasFills();
+  bool SetAliasFills(std::vector<MpChangeFormREFR::AliasFill> fills);
+
+  // thuum ADR-068 rung 4 (WorldGlobal 80; amendment B): the world's globals
+  // the world streamer's game reports, on the journal; the streamer elected
+  // from what ADR-066 decision 6 has built (wire-rules world_streamer: past
+  // a player's first movement report, not stale, not dead, the lowest id at
+  // each election) and told by its stream word (WorldGlobal with `stream`
+  // true; false to the seat whose stream ends), every send at once.
+  // WorldStreamerMoved: a player's movement report (its first makes it
+  // eligible). JudgeWorldGlobalReport: the streamer's epoch first, 0
+  // Current, 1 StaleEpoch, 2 FutureEpoch, 3 NotOwner. WorldStreamer: the
+  // streamer now and the epoch.
+  // The switch is server-settings.json's `worldGlobals` (false, the
+  // default: nobody is elected, no stream word goes out and no record is
+  // served, the games' globals stay each seat's own as before).
+  void SetWorldGlobalsEnabled(bool on);
+  bool WorldGlobalsEnabled() const;
+  void WorldStreamerMoved(MpActor& actor);
+  uint8_t JudgeWorldGlobalReport(uint32_t sender, uint32_t epoch) const;
+  std::pair<uint32_t, uint32_t> WorldStreamer() const;
+  std::vector<PlayerGlobal> GetWorldGlobals();
+  bool SetWorldGlobals(std::vector<PlayerGlobal> globals);
+
+  // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md section
+  // 1(b), rule 6): the world's quest runs (QuestStage 57's words) and the
+  // world's condition-read script variables (ScriptVariables 81's world
+  // keys), on the journal beside its stages; a read makes no journal
+  // (GetAliasFills says why), the first write does
+  std::vector<MpChangeFormREFR::QuestRun> GetQuestRuns();
+  bool SetQuestRuns(std::vector<MpChangeFormREFR::QuestRun> runs);
+  std::vector<MpChangeFormREFR::ScriptVariable> GetScriptVariables();
+  bool SetScriptVariables(
+    std::vector<MpChangeFormREFR::ScriptVariable> variables);
+
+  // thuum ADR-068 rung 5 (D-Q1's derivation whole; docs/research/
+  // rung5-quests-2026-11-09.md section 8(a)): the quest scope, from
+  // server-settings.json's `questScope` ("off", the default, measures;
+  // "derived" acts) and `playerQuests` (the census's list half), each as its
+  // value's JSON text; `conditionVariables`, the condition-read keys (D-V1
+  // B); and the census's per-quest companions as JSON maps keyed by the
+  // quest's "<hex id>:<plugin>": `playerQuestGlobals` (to the GLOBs its
+  // scripts write, composed into the player globals, so WorldGlobal refuses
+  // them), `playerQuestVariables` (to its scripts' scalar variables as
+  // "<script>::<var>", D-T2 B's own keys) and `playerQuestCallers` (keyed by
+  // a world quest instead: to its stages whose fragment calls a player-class
+  // quest's script, PQ-3's, relayed served). A bad
+  // value stops the server here, named. With the game files every QUST is
+  // classed (wire-rules quest_scope over its aliases) and the measurement
+  // logged; while the scope acts the class is composed into the shared
+  // quests, the player globals and the script variables (each with the two
+  // names of the quest's game-time registration). Every setter recomposes,
+  // as AttachEspm does.
+  void SetQuestScopeSettings(const std::string& modeJson,
+                             const std::string& playerQuestsJson);
+  void SetScriptVariablesSettings(const std::string& conditionVariablesJson);
+  void SetPlayerQuestSettings(const std::string& globalsJson,
+                              const std::string& variablesJson,
+                              const std::string& callersJson);
+  // thuum ADR-068 rung 5 (D-Q4 C, PENDING ELI'S WORD on the setting):
+  // server-settings.json's `questStoryInstances`, its value's JSON text
+  // ("seat", the default, or "world"); a bad value stops the server here,
+  // named. With the game files every quest a Story Manager quest node names
+  // (libespm SMQN, its NNAMs) goes to wire-rules quest_runs, whose judge
+  // keeps such a quest's runs per seat under "seat" (its Code::Instance, a
+  // plain line in OnQuestStage) and whose login serves none of them; its
+  // stages still cross. One line names the nodes and quests read
+  void SetQuestStoryInstancesSettings(const std::string& settingJson);
+  // thuum D-Q9 B (Eli 2026-11-11, docs/DECISIONS.md at main 7ced7f5a; train
+  // 52): server-settings.json's `questPlayerAliasCause`, its value's JSON
+  // text ("seat", the default, D-Q9 B, or "world", D-Q9 A); a bad value
+  // stops the server here, named. Under "seat" a report whose world cause a
+  // player alias's event roots (the root's function one of wire-rules
+  // quest_runs' PLAYER_ALIAS_EVENTS, its script one the index below marks)
+  // is judged with the seat's own cause (OnQuestStage)
+  void SetQuestPlayerAliasCauseSettings(const std::string& settingJson);
+  bool QuestPlayerAliasCauseSeat() const;
+  // D-Q9 B: whether the script class `script` (compared without case) rides
+  // at least one QUST alias of the game files and every alias it rides, over
+  // every quest, is the player's (wire-rules quest_scope::is_players over the
+  // quest's aliases); false without the game files. Indexed at AttachEspm
+  bool ScriptRidesPlayerAliasesOnly(const std::string& script) const;
+  // the Story Manager quest nodes naming the quest, "<editor id> <hex id>"
+  // (the first, and how many more), empty for none or without the game
+  // files: the nodes the line keeping such a quest's run to its seat names
+  std::string StoryNodesOf(const FormDesc& quest);
+  // the quests the class marks the player's, measured in either mode; and
+  // the ones composed in (empty while the scope does not act)
+  const std::vector<FormDesc>& QuestScopeMarked() const;
+  const std::vector<FormDesc>& PlayerClassQuests() const;
+  // PQ-3: a stage of a world quest whose fragment calls a player-class
+  // quest's script is relayed served (applied as a load), so only its
+  // acting seat runs it; false while the scope does not act
+  bool IsServedStage(const FormDesc& quest, uint16_t stage) const;
+  // the rules' state (wire-rules quest_runs' churn counter and held quests,
+  // script_variables' keys, player_own's overlays), for the handlers
+  skymp::rules::QuestRuns& GetQuestRunRules();
+  skymp::rules::ScriptVariables& GetScriptVariableRules();
+  skymp::rules::PlayerOverlays& GetPlayerOverlays();
+  // the quests a login starts ahead of the stages and stops behind them, in
+  // the run record's order, each still the world's and not held; a quest
+  // recorded stopped whose stages the login replays is among the starts too
+  // (D-Q3 A: its served start names its start-up stages)
+  std::pair<std::vector<FormDesc>, std::vector<FormDesc>> QuestRunsAtLogin();
+  // D-T1 A: the race overlay `actorId` wears beyond its record, as its
+  // figure's CreateActor and UpdateAppearance carry it; none while it wears
+  // its record
+  std::optional<RaceOverlay> PlayerOverlayOf(uint32_t actorId) const;
+
+  // thuum ADR-068 rung 5 (the R1 bound of a player's own rows, wire-rules
+  // player_own; the fresh review's note 3): one QUST or MGEF of the game
+  // files that attaches a script class (its VMAD, libespm's
+  // RecordHeader::GetScriptData, the winning record of each form; a QUST's
+  // alias scripts too, each the quest's attachment), with what
+  // its properties name: an Object property's form, each element of an
+  // ObjectArray one's, and a FormList's entries in order beside it
+  // (FLST::GetData); and for an MGEF the SPELs whose effects carry it
+  // (SPEL::GetData). Indexed once per set of game files at AttachEspm, by
+  // the class's name without case
+  struct ScriptAttachment
+  {
+    struct Named
+    {
+      uint32_t form = 0;
+      std::vector<uint32_t> members;
+    };
+    uint32_t form = 0;            // the QUST's or MGEF's id in the load order
+    bool quest = false;           // a QUST's attachment, else an MGEF's
+    std::vector<uint32_t> spells; // an MGEF's: the SPELs carrying it
+    std::vector<Named> named;     // each form once, in the VMAD's order
+  };
+  // the attachments of `scriptClass`, none for a class no QUST or MGEF
+  // attaches or without the game files
+  const std::vector<ScriptAttachment>& ScriptAttachmentsOf(
+    const std::string& scriptClass) const;
+  // whether a QUST attachment counts for the bound: the quest scope classes
+  // the quest a player's (PlayerClassQuests, while the scope acts) or the
+  // world's journal records it running (questRuns) or staged (questStages)
+  bool QuestAttachmentLive(uint32_t questId);
+  // Eli's D-E1 A (ChangeHeadPart, the seventh own row): whether `race` may
+  // wear head part `part`, its HDPT's valid-race FormList (RNAM, libespm
+  // HDPT::Data::validRaces) holding the race; and the look wearing `part` in
+  // place of every part of the same HDPT type (PNAM: eyes replace eyes),
+  // false when it wears it already or `part` is no HDPT
+  bool HeadPartFitsRace(uint32_t part, uint32_t race);
+  bool WearHeadPart(Appearance& look, uint32_t part);
+  // thuum D-R1 C's leveled gap (train 52, D-R2 B): the bases the leveled
+  // list `list` can roll (LeveledListUtils::Reach over the game files: its
+  // entries, nested lists followed), read once per list and kept until the
+  // next AttachEspm, sorted ascending; empty for a form that is no leveled
+  // list or without the game files. A landing of a seat's reported roll must
+  // be one of them
+  const std::vector<uint32_t>& LeveledReach(uint32_t list);
+  // a RaceMenu look's "<plugin>|<id>" as a form id in the server's load
+  // order, light plugins numbered as the engine numbers them (thuum
+  // docs/verbs/light-plugins.md); 0 for a plugin the server does not load
+  uint32_t LookFormIdOf(const std::string& plugin, uint32_t id) const;
+  // thuum ADR-026 (one authority over a face): the stored RaceMenu look
+  // `look` naming `part` in place of its head part of the same HDPT type
+  // (wire-rules racemenu::with_head_part, each listed part's type read from
+  // its record), false when it names `part` already, names no part of that
+  // type, is no look, or `part` is no HDPT
+  bool WearHeadPartInLook(std::string& look, uint32_t part);
+  // Eli's D-E1 A, a recorded ChangeHeadPart: `actor`'s look wears `part`
+  // (WearHeadPart) and its stored RaceMenu look follows (WearHeadPartInLook),
+  // since that look's load on a figure, or on the player after a login,
+  // replaces the base's head parts by type and would put the old part back
+  // (thuum docs/verbs/racemenu-sync.md); what each record took. The words to
+  // the other games are the caller's
+  struct HeadPartRecord
+  {
+    bool look = false;
+    bool preset = false;
+  };
+  HeadPartRecord RecordHeadPart(MpActor& actor, uint32_t part);
 
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
   // server places at an accepted cast of a listed spell,
@@ -328,6 +526,16 @@ public:
                           const NiPoint3& pos, float yaw);
   bool SweepSpellPlacedAtLoad(const MpChangeForm& record);
   size_t SpellPlacedSets() const;
+  // thuum ADR-068 rung 4 (the script set, W3; wire-rules placements): a
+  // script's PlaceAtMe or PlaceActorAtMe on `selfId`, which stands at
+  // `anchor` in `worldOrCell`, of `baseId`, its owner `reporter`: a set
+  // opened for the one base (a placeable kind, else E_PLACED_KIND) and the
+  // PlacedRequest sent to the reporter at once; its report (OnPlacedReport,
+  // judged through the set) places the server's copy at the reported pose,
+  // naming the reporter (placedBy) and recording placedByScript. False when
+  // the set was refused.
+  bool OpenScriptSet(MpActor& reporter, uint32_t selfId, uint32_t worldOrCell,
+                     const NiPoint3& anchor, uint32_t baseId);
   // thuum docs/verbs/player-globals.md, the needs (playtest 37, 2026-10-28,
   // Eli: "food doesnt replenish hunger"): server-settings.json's
   // `survivalFood`, as data: the effects a food record carries whose
@@ -581,6 +789,23 @@ public:
   skymp::rules::Fights& GetFights();
   void TickFights(uint64_t nowMs);
 
+  // thuum ADR-068 (the one seam): every reporter's script-call budget and
+  // every subject's sequence (the rule and its state are Rust's, wire-rules
+  // natives); ActionListener::OnScriptCall asks it for each reported call
+  skymp::rules::ScriptCalls& GetScriptCalls();
+
+  // thuum ADR-068 rung 3 (the script record): the release each cell last saw
+  // until its next grant (wire-rules script_state; ApplyHostDecisions notes
+  // the release and the grant); ActionListener::OnScriptState asks it for
+  // each reported record
+  skymp::rules::ScriptStates& GetScriptStates();
+
+  // thuum ADR-068 D-C2 (the trigger entry channel): each presser's accepted
+  // enters it has not left, by trigger (wire-rules trigger_entry::Entries;
+  // the disconnect forgets a player's); ActionListener::OnTriggerEntry asks
+  // it for each reported entry, so a leave pairs with its enter
+  skymp::rules::TriggerEntries& GetTriggerEntries();
+
   // thuum docs/verbs/cell-host.md (ADR-035): the cell host table (wire-rules
   // cells, through the bridge). The facts: a game's CellLoaded report
   // (OnCellLoaded), the server's grid for the player (RefreshReach: its 3x3
@@ -600,6 +825,10 @@ public:
   // server number reached zero dies by the server's word when its host
   // reported nothing within MpActor::kPendingDeathMs
   void TickDeaths(uint64_t nowMs);
+  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): a corpse
+  // whose settle window passed with no two agreeing samples from its owner
+  // is at rest where the record has it (MpActor::SettleBodyIfDue)
+  void TickBodies(uint64_t nowMs);
   // thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC for a
   // dialogue, the per-actor row beside the cell's host; the word follows
   enum class ClaimVerdict
@@ -621,6 +850,14 @@ public:
   // any claim on `actor` ends (its death): the claimant it had, 0 for none;
   // the cell's rule names the simulator again and the word follows
   uint32_t ReleaseAnyClaim(MpActor& actor);
+  // thuum docs/engine/non-owning-seat.md section 3: the actor's record (its
+  // transform and flags, as a movement message) to the game about to
+  // simulate it, reliable and ahead of the hoster word on the same channel,
+  // so its promote places the copy at the record and its first report comes
+  // from there (the pass sends the passing report itself; a grant, a claim,
+  // a release and a lease end send this). Nothing is sent to a game with no
+  // user.
+  void SendActorKeyframe(MpActor& actor, MpActor& to);
   // thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
   // physics prop, the cell's host by default, the last toucher while its
   // lease holds; the owner table's "prop" rows (wire-rules props). The
@@ -630,11 +867,17 @@ public:
   {
     Granted,
     Held,
-    Same
+    Same,
+    Moving
   };
+  // `worldBody`: the prop is a trap's world body (thuum D-S3 point 4: a
+  // world object a seat's own script set moving, claimed by the impulse
+  // alone), whose first firing wins: Moving while another seat's firing has
+  // it awake (wire-rules props' claim_world_body); an item's claim keeps
+  // ADR-058's newest touch wins
   PropClaimVerdict ClaimProp(const MpActor& claimant,
                              const MpObjectReference& prop, uint32_t cell,
-                             uint8_t touch);
+                             uint8_t touch, bool worldBody);
   enum class PropTransformVerdict
   {
     Accepted,
@@ -723,6 +966,26 @@ public:
   static constexpr int64_t kStaleHostMs = 4'000;
   // Who hosts `cell` (hosted false while nobody; the epoch kept).
   skymp::rules::CellHost GetCellHost(uint32_t cell) const;
+  // thuum docs/verbs/console-commands.md, `mp host`: how `cell`'s current
+  // grant came, by the rule the lab reads the cell-host lines with
+  // (lab/tools/playtest_setup.py last_grant): "fresh" when it came with
+  // nobody hosting (the first since the server started, or after the cell
+  // went unhosted), "inherited" when another host's stop came before it
+  // (that seat loaded the cell as a guest first), "none" before any grant.
+  // ApplyHostDecisions notes each grant, stop and unhosting of a cell here.
+  enum class CellHostNote
+  {
+    Grant,
+    Release,
+    Unhosted
+  };
+  const char* GetCellGrantKind(uint32_t cell) const;
+  void NoteCellHostDecision(CellHostNote note, uint32_t cell);
+  // Every player actor whose game reports `cell` loaded (its CellLoaded
+  // reports, OnCellLoaded), lowest id first: the games that show what
+  // stands in it, the listeners of a script call's subject the server holds
+  // no reference for (thuum ADR-068, ActionListener::OnScriptCall)
+  std::vector<uint32_t> GetCellLoaders(uint32_t cell) const;
   // thuum docs/verbs/npc-fate.md (ADR-049 decision 3): the fates of the
   // game-file actors in the grid squares around `player`'s own, kFateRing
   // out (the engine attaches a 5x5 of cells; the grid's squares truncate
@@ -744,6 +1007,21 @@ public:
   // read.
   uint16_t FateRollLevel(MpActor& loader, uint32_t cellOrWorld, int16_t sx,
                          int16_t sy);
+  // thuum docs/verbs/npc-fate.md (playtest 51, b-npc-stream-equipment): the
+  // roll belongs to the actor, not to the grid square. A game-file actor
+  // with no roll yet (MpActor::CanRollFate) rolls at `loader`'s level
+  // (FateRollLevel at the loader's square, the pass's own) where its record
+  // first reaches a game: the pass's walk (SendFates, `walker` the game its
+  // batch carries the fate to) and its create word (WorldState::
+  // onActorSubscribe, ahead of the word). The fate rides ahead of each of
+  // the actor's create words (onSubscribe), so this sends it to the games
+  // whose pass has fated the actor's square and that get no create word now
+  // (the ring beyond its 3x3), as that pass will not come there again; the
+  // rest hear it at their own pass. A game can hear one roll again (a create
+  // word, then its pass), which it takes for free while the fate is the
+  // same. True when the actor rolled here
+  bool EnsureFated(MpActor& actor, MpActor& loader,
+                   const MpActor* walker = nullptr);
   // Every cell the table knows, by cell id, for the lab's reading
   // (mp.get(0, "cellHosts")).
   struct CellHostEntry
@@ -858,6 +1136,14 @@ private:
   void LoadWeatherPools();
   bool ApplySettingsWeatherPools();
   void LoadPerkTable();
+  // thuum ADR-068 rung 5: the quest scope's class over the game files, its
+  // measurement line, and while it acts its composition into the shared
+  // quests, the player globals and the script variables; the player globals
+  // alone (the setting's, with the class's while it acts)
+  void ComposeQuestScope();
+  // D-Q4 C: the Story Manager's quests and the setting into quest_runs
+  void ComposeStoryQuests();
+  void ComposePlayerGlobals();
   void TickWeather();
   void SendWeatherWord(Networking::UserId userId);
   // thuum docs/verbs/shadowbond.md (train-28): the proc's records on both

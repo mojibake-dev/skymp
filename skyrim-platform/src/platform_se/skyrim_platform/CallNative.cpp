@@ -8,6 +8,12 @@
 #include "StringHolder.h"
 #include "VmCall.h"
 #include "VmCallback.h"
+#include <RE/A/ActiveEffect.h>
+#include <RE/B/BGSBaseAlias.h>
+#include <RE/B/BGSLocAlias.h>
+#include <RE/B/BGSRefAlias.h>
+#include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <unordered_map>
 
@@ -112,6 +118,72 @@ Variable CallNative::AnySafeToVariable(const CallNative::AnySafe& v,
 
 namespace {
 
+// thuum docs/research/rung5-quests-2026-11-09.md 1(c), fix (a), and its read
+// 11 (thuum memory skyrim-platform-alias-returns-null): the form loop below
+// asks only the form types under FormType::Max (0x8A, CommonLibSSE-NG
+// include/RE/F/FormTypes.h:279), so every alias a native returned reached JS
+// as null (Quest.GetAlias, the lab's alias step, rung 4's AliasFill
+// receiver), and an active effect too. The line, once per concrete class (a
+// bit per VM type id), names what the fix hands over
+void LogNonFormReturn(std::optional<const char*> className,
+                      RE::VMTypeID concrete, const char* concreteName)
+{
+  static std::atomic<std::uint64_t> s_logged{ 0 };
+  const std::uint64_t bit = std::uint64_t{ 1 } << (concrete % 64);
+  if ((s_logged.fetch_or(bit) & bit) != 0) {
+    return;
+  }
+  logger::info("[verb:scripts] a native returned a {} (VM type {}): handed "
+               "to JS as {}",
+               className.has_value() && *className ? *className : "?",
+               concrete, concreteName);
+}
+
+// a handle no form type names, asked by CommonLib's own non-form VM types,
+// never a literal: BGSRefAlias::VMTYPEID (include/RE/B/BGSRefAlias.h:18),
+// BGSLocAlias::VMTYPEID (BGSLocAlias.h:13), BGSBaseAlias::VMTYPEID
+// (BGSBaseAlias.h:15) and ActiveEffect::VMTYPEID (include/RE/A/
+// ActiveEffect.h:31). The pooled Object carries the concrete class, since
+// from() casts through DynamicCast's exact compare and the JS stamp is the
+// native's declared return (Sp3Api.cpp's _sp3ObjectType: Quest.GetAlias
+// declares Alias): an alias's class is BGSBaseAlias::GetVMTypeID's (its QType
+// virtual, "Ref" or "Loc", src/RE/B/BGSBaseAlias.cpp:13-23), an effect's its
+// own type's, each named by the VM's type table, so
+// ReferenceAlias.from(quest.getAlias(n)) answers the alias. Null for a handle
+// none of them names, or one the table names no class for. HYPOTHESIS H-AR1
+// (the plan's section 2): HandleIsType holds for an alias's handle under 140
+// or 141, Resolve gives the alias, GetVMTypeID names its concrete class
+// (x-alias-return v1: c2.alias(0x39645, 1).refr == 0x39655)
+CallNative::ObjectPtr NonFormObjectPtr(
+  VM* vm, RE::BSScript::IObjectHandlePolicy* policy,
+  const RE::BSScript::Object* object, std::optional<const char*> className)
+{
+  const RE::VMTypeID nonFormTypes[] = { RE::BGSRefAlias::VMTYPEID,
+                                        RE::BGSLocAlias::VMTYPEID,
+                                        RE::BGSBaseAlias::VMTYPEID,
+                                        RE::ActiveEffect::VMTYPEID };
+  const RE::VMHandle handle = object->handle;
+  for (const RE::VMTypeID type : nonFormTypes) {
+    if (!policy->HandleIsType(type, handle)) {
+      continue;
+    }
+    void* ptr = object->Resolve(type);
+    if (!ptr) {
+      return CallNative::ObjectPtr();
+    }
+    const RE::VMTypeID concrete = type == RE::ActiveEffect::VMTYPEID
+      ? type
+      : static_cast<const RE::BGSBaseAlias*>(ptr)->GetVMTypeID();
+    RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> classPtr;
+    if (!vm->GetScriptObjectType(concrete, classPtr) || !classPtr) {
+      return CallNative::ObjectPtr();
+    }
+    LogNonFormReturn(className, concrete, classPtr->GetName());
+    return std::make_shared<CallNative::Object>(classPtr->GetName(), ptr);
+  }
+  return CallNative::ObjectPtr();
+}
+
 CallNative::ObjectPtr GetSingleObjectPtr(
   const Variable& r, std::optional<const char*> className = std::nullopt)
 {
@@ -129,10 +201,12 @@ CallNative::ObjectPtr GetSingleObjectPtr(
   auto policy = vmImpl->GetObjectHandlePolicy();
 
   void* objPtr = nullptr;
+  int resolvedType = -1;
 
   for (int i = 0; i < static_cast<int>(RE::FormType::Max); ++i) {
     if (policy->HandleIsType(i, object->handle)) {
       objPtr = object->Resolve(i);
+      resolvedType = i;
       break;
     }
   }
@@ -140,12 +214,25 @@ CallNative::ObjectPtr GetSingleObjectPtr(
   if (objPtr) {
     auto objectTypeInfo = r.varType.GetTypeInfo();
     if (!objectTypeInfo) {
-      throw NullPointerException("objectTypeInfo");
+      // thuum playtest 45 (2026-11-04): this threw every frame on the host's
+      // hosted-actor loop ("on('update'): Expected 'objectTypeInfo' to not to
+      // be nullptr", tens a second) and named nothing, so the native stayed
+      // unknown; the message now carries the declared class of the native's
+      // return and the handle's resolved form type (RE::FormType's number)
+      const std::string what =
+        std::string("objectTypeInfo (a native returned a live object of "
+                    "class ") +
+        (className.has_value() && *className ? *className : "?") +
+        " resolved as form type " + std::to_string(resolvedType) +
+        " with no script type loaded for it)";
+      throw NullPointerException(what.c_str());
     }
     return std::make_shared<Object>(
       className.has_value() ? *className : objectTypeInfo->GetName(), objPtr);
   } else {
-    return ObjectPtr();
+    // fix (a): no form type names the handle; a form's path above is
+    // unchanged, this branch runs only when the loop finds nothing
+    return NonFormObjectPtr(vmImpl, policy, object.get(), className);
   }
 }
 
@@ -616,6 +703,22 @@ CallNative::AnySafe CallNative::DynamicCast(const std::string& outputTypeName,
 
       return std::shared_ptr<Object>(
         new Object(outTypeInfoPtr->GetName(), form));
+    }
+  }
+
+  // thuum docs/research/rung5-quests-2026-11-09.md 1(c), fix (a): an alias,
+  // pooled as its concrete class (GetSingleObjectPtr's non-form branch), is
+  // cast up (ReferenceAlias to Alias) or down by that concrete class, read
+  // through BGSBaseAlias::GetVMTypeID as the return path reads it, the way
+  // the Form branch above casts a form by its form type
+  if (IsInstanceOf(fromTypeInfoPtr, "Alias")) {
+    const RE::VMTypeID concreteId =
+      static_cast<const RE::BGSBaseAlias*>(rawPtr)->GetVMTypeID();
+    RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> concreteInfo;
+    if (vm->GetScriptObjectType(concreteId, concreteInfo) && concreteInfo &&
+        IsInstanceOf(concreteInfo, outputTypeName.data())) {
+      return std::shared_ptr<Object>(
+        new Object(outTypeInfoPtr->GetName(), rawPtr));
     }
   }
 

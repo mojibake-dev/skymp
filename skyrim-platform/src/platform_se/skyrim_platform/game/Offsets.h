@@ -25,6 +25,17 @@ inline REL::Relocation<std::uintptr_t> QuitShutdownCall{ REL::ID(36544),
                                                          0x1ae };
 inline REL::Relocation<std::uintptr_t> SendEvent{ RELOCATION_ID(98077,
                                                                 104800) };
+// thuum docs/DECISIONS.md ADR-062 decision 2 (docs/verbs/papyrus-events.md,
+// the latent path): BSScript::NF_util::NativeFunctionBase::Call, the one
+// dispatch every Papyrus native runs through (CommonLibSSE-NG
+// include/RE/N/NativeFunctionBase.h:47, IFunction's slot 0x0F; the id is
+// include/RE/Offsets.h:130, Offset::BSScript::NF_util::NativeFunctionBase::
+// Call), `CallResult (NativeFunctionBase* this, const BSTSmartPointer<Stack>&
+// stack, ErrorLogger*, Internal::VirtualMachine*, bool)`; 1.6.1170's
+// address 0x143dc00 by `just addr 104651` (2026-11-03). Both runtimes' ids
+// are CommonLib's, as SendEvent's.
+inline REL::Relocation<std::uintptr_t> NativeFunctionCall{ RELOCATION_ID(
+  97923, 104651) };
 inline REL::Relocation<std::uintptr_t> DrawSheatheWeaponPC{ RELOCATION_ID(
   40232, 41235) };
 inline REL::Relocation<std::uintptr_t> DrawSheatheWeaponActor{ RELOCATION_ID(
@@ -96,6 +107,15 @@ inline REL::Relocation<std::uintptr_t> QuestStageSink{ REL::ID(53987) };
 // 44108); include/RE/P/Projectile.h:78-107 the LaunchData). AE id; thuum
 // docs/verbs/marksman.md, the arrow's path identical on both screens.
 inline REL::Relocation<std::uintptr_t> ProjectileLaunch{ REL::ID(44108) };
+// thuum docs/verbs/spell-cast.md (the rune's glyph on the observer): the
+// engine's decal placement, called by the magic caster's target-location
+// launch (34452) right after Projectile::Launch for a grenade projectile
+// with the pick's position and normal and the surface's material id; its
+// callers are 34452 and the impact-effects pass 44213 (the re-analyst's REA
+// read of 2026-10-20, docs/research/re-37335-and-rune-landing.md, CONFIRMED
+// on the caster by lab/frida/rune-decal-trace.js, x-rune-decal-frida
+// 20261020-102818). AE only (1.6.1170)
+inline REL::Relocation<std::uintptr_t> RuneDecal{ REL::ID(44186) };
 // A missile's velocity set on its first update, Projectile vfunc called as
 // (Projectile*): the angles here are its final ones, the player's arrow's
 // after the engine's auto-aim rewrote them (41248), which Launch's entry does
@@ -177,6 +197,17 @@ inline REL::Relocation<std::uintptr_t> CharProxyContactPointAdded{ REL::ID(
   79131) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
   RELOCATION_ID(26454, 27040)
+};
+// thuum docs/verbs/appearance.md (a figure with no head on a seat whose own
+// player turned vampire, x-vampire-stage run 20261111-035133):
+// TESNPC::HasOverlays, `bool (TESNPC* this)`, whether a head part type's
+// current part comes from the overlay list (CommonLibSSE-NG
+// src/RE/T/TESNPC.cpp:94-97; its call, :195-200). The ids are named, not
+// copied: CommonLibSSE-NG include/RE/Offsets.h:532, Offset::TESNPC::
+// HasOverlays (SE and AE, as SendEvent's);
+// addrlib: 24790 at 0x3c1b40 on 1.6.1170 (`just addr 24790`, 2026-11-11)
+inline REL::Relocation<std::uintptr_t> HasOverlays{
+  RE::Offset::TESNPC::HasOverlays
 };
 inline REL::Relocation<std::uintptr_t> RenderCursorMenu{ RELOCATION_ID(
   32867, 33632) };
@@ -261,6 +292,59 @@ inline REL::ID AddWornOutfit(19692);
 // slot, which Hooks.cpp HostedResurrect holds; PlayerCharacter's override
 // (40491) calls it for the player alone, never a hosted body.
 inline REL::ID ActorResurrect(37321);
+}
+
+// thuum docs/verbs/change-form.md (ADR-065, system 1): the engine's own
+// change-form serializer and apply, called on demand by TESModPlatform's
+// SerializeChangeForm and ApplyChangeForm (ChangeForm.cpp). AE only,
+// 1.6.1170's ids by `just addr` on 2026-11-03, the bodies the re-analyst's
+// pyghidra read (docs/research/adr065-serialize-on-demand-2026-11-03.md, the
+// id tables; HYPOTHESIS by rule 2) and the Frida scripts' GREEN runs
+// (lab/frida/serialize-on-demand-actor.js 153929 and 192013,
+// lab/frida/apply-on-demand.js 193005 and 210713; docs/engine/change-forms.md
+// C4 to C6). None has a CommonLibSSE-NG binding except SetNumericID
+// (BGSNumericIDIndex.h:28, RELOCATION_ID(35027, 35928)), listed for the
+// census hook's address.
+namespace ChangeForm {
+// BGSSaveFormBuffer's ctor `(BGSSaveFormBuffer*) -> BGSSaveFormBuffer*`
+// (found by the xrefs of VTABLE_BGSSaveFormBuffer 206723)
+inline REL::ID BufferCtor(36035);
+// the nine-byte header `(buf, FormID id, uint32 flags, uint32 formType,
+// uint8 version)`: SetNumericID at +0x18, the flags at +0x1b, SetFormType at
+// +0x1f, the version at +0x20
+inline REL::ID BufferInit(36037);
+// frees the buffer's data at +0x08 `(buf)`
+inline REL::ID BufferDestroy(36044);
+// the initial data and the Havok block `(buf, TESForm*, uint32 flags) ->
+// uint32 kind` (kind 4 moved, 5 created, 6 cell-changed or promoted)
+inline REL::ID InitialData(35715);
+// the pack, buffer to record on the engine heap `(void** out, buf)`
+inline REL::ID Pack(36081);
+// the change form version byte `() -> uint8` (0x4E today)
+inline REL::ID SaveVersion(35740);
+// the changes map's read `(BGSSaveLoadChangesMap*, FormID, Value*) -> bool`
+// and write `(map, FormID, const Value*)`, Value {flags, u32, record}
+inline REL::ID ChangesRead(35503);
+inline REL::ID ChangesWrite(35509);
+// the apply's stack-buffer wrapper `(BGSSaveLoadGame*, TESForm*) -> uint8`:
+// the decode, the initial data, LoadGame, the pending array
+inline REL::ID ApplyLoaded(35568);
+// the finish pass `(BGSSaveLoadGame*, uint8 fromFullLoad)`: InitLoadGame, the
+// flush of the queued sub-buffers, FinishLoadGame
+inline REL::ID FinishPass(35567);
+// BGSNumericIDIndex::SetNumericID `(BGSNumericIDIndex*, FormID)`: the id
+// census's replacement site (CommonLibSSE-NG's own id)
+inline REL::ID SetNumericID(35928);
+// the vtable premises, compared by address: TESObjectREFR::CheckSaveGame
+// (slot 0x0D of every actor, TESForm.h:136), Actor::SaveGame and
+// Character::SaveGame (slot 0x0E, :137; VTABLE_Actor 207511 and
+// VTABLE_Character 207886), Actor::LoadGame and Character::LoadGame (slot
+// 0x0F, :138)
+inline REL::ID RefrCheckSaveGame(19527);
+inline REL::ID ActorSaveGame(37649);
+inline REL::ID CharacterSaveGame(40266);
+inline REL::ID ActorLoadGame(37650);
+inline REL::ID CharacterLoadGame(40267);
 }
 
 namespace EventSource {

@@ -19,7 +19,9 @@
 #include "MagicApi.h"
 #include "MpClientPluginApi.h"
 #include "ObjectReferenceApi.h"
+#include "PlatformCall.h"
 #include "PuppetApi.h"
+#include "ScriptNatives.h"
 #include "Sp3Api.h"
 #include "TextApi.h"
 #include "ThreadPoolWrapper.h"
@@ -385,7 +387,15 @@ struct SkyrimPlatform::Impl
                       RE::BSScript::Internal::VirtualMachine* vm,
                       RE::BSScript::IFunction::CallResult* ret)
   {
-    *ret = fPtr->Call(stack, logger, vm, false);
+    {
+      // the platform's own call, marked for the seam (ScriptNatives.cpp;
+      // thuum ADR-062 decision 2, ADR-068) and counted in its census here:
+      // made inside the OnUpdate native's own Call, it never reaches the
+      // seam's replacement (Gum runs a nested call straight to the original)
+      ScriptNatives::CountPlatformCall(fPtr.get());
+      PlatformCall::Scope platformCall;
+      *ret = fPtr->Call(stack, logger, vm, false);
+    }
     std::lock_guard<std::mutex> lock(syncLock);
     complete = true;
     conditionalVariable.notify_all();

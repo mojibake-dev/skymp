@@ -2,6 +2,8 @@
 #include "ActorValueRecord.h"
 #include "AnimationData.h"
 #include "Appearance.h"
+#include "ChangeFormApplyMessage.h"
+#include "ChangeFormRecord.h"
 #include "Equipment.h"
 #include "Favorite.h"
 #include "GetBaseActorValues.h"
@@ -81,6 +83,10 @@ public:
   // decision 1: a record rolled before the rule keeps it), as does a dead
   // one and one already fated. Returns whether it rolled.
   bool RollFateIfUnrolled(uint16_t level);
+  // the roll's preconditions (npc-fate.md, playtest 44's 1c): a living
+  // game-file or placed actor this process has not fated and did not load from
+  // a save; Init leaves such an actor's base unrolled for the fate pass
+  bool CanRollFate() const;
   bool IsCreatedAsPlayer() const;
   const ActorValues& GetActorValues() const;
   const ActiveMagicEffectsMap& GetActiveMagicEffects() const;
@@ -99,6 +105,17 @@ public:
   void SetRaceMenuOpen(bool isOpen);
   void SetAppearance(const Appearance* newAppearance);
   void SetEquipment(const Equipment& newEquipment);
+  // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): the record's
+  // worn set never names more of an item than its inventory holds. A take
+  // from a body (TakeItemEvent) removed the inventory's row and left the
+  // equipment's worn entry, so the fate's worn list (PartOne's FateOf) kept
+  // naming the taken item and every seat's reconcile added it back. Called
+  // after `baseId` left this actor's inventory: its worn entries shrink to
+  // what the inventory still holds, an unworn copy leaving first. The
+  // equipment's numChanges stays: a copy's view re-applies a changed one whole
+  // (sync/equipment.ts applyEquipment: removeAllItems, then the worn alone),
+  // which on a body would empty its loot
+  void DropWornBeyondInventory(uint32_t baseId);
 
   void SetHealthRespawnPercentage(float percentage);
   void SetMagickaRespawnPercentage(float percentage);
@@ -109,6 +126,34 @@ public:
   std::vector<Faction> GetFactions(int minFactionID, int maxFactionID,
                                    bool lazyLoad = true);
   void RemoveFromFaction(FormDesc factionForm, bool lazyLoad = true);
+  // thuum ADR-068 rung 4 (the standing, W3): the NPC's factions and ranks
+  // (the base's SNAM rows loaded at the first read), a faction's rank set
+  // (added when the record lacks it), every faction dropped, the crime
+  // faction the record keeps (none: the base's; the empty desc: removed),
+  // the relationship ranks toward other actors; and the base's own rows, for
+  // the serve's difference
+  std::vector<Faction> GetFactionRanks();
+  void SetFactionRank(const FormDesc& factionForm, int8_t rank);
+  void RemoveFromAllFactions();
+  std::optional<FormDesc> GetCrimeFactionRecord() const;
+  void SetCrimeFactionRecord(const FormDesc& faction);
+  std::vector<MpChangeFormREFR::Relationship> GetRelationships() const;
+  void SetRelationshipRank(const FormDesc& other, int8_t rank);
+  std::vector<Faction> BaseFactions();
+  // the standing's appliers a late seat runs to stand where the record does
+  // (the serve behind the create word): SetFactionRank for each recorded
+  // rank the base's rows lack, RemoveFromFaction for each base faction the
+  // record dropped, SetCrimeFaction for a recorded crime faction (form 0 for
+  // its removal), SetRelationshipRank for each recorded relationship; none
+  // for an NPC whose factions the server never loaded and whose standing no
+  // script moved
+  struct StandingApplier
+  {
+    const char* function = "";
+    FormDesc form;
+    std::optional<int32_t> rank;
+  };
+  std::vector<StandingApplier> StandingAppliers();
 
   void VisitProperties(CreateActorMessage& message,
                        VisitPropertiesMode mode) override;
@@ -225,6 +270,9 @@ public:
   ShoutRecord GetShoutRecord() const;
   // Adds the form to the record's list; false when it was there already
   bool RecordShoutEntry(ShoutEntry kind, const FormDesc& form);
+  // thuum ADR-068 rung 5 (a player's own RemoveShout): takes the form off
+  // the record's list; false when it was not there
+  bool ForgetShoutEntry(ShoutEntry kind, const FormDesc& form);
   // Whether the record's list holds the form (a form id in the server's
   // load order)
   bool HasShoutEntry(ShoutEntry kind, uint32_t formId) const;
@@ -270,7 +318,10 @@ public:
   // server's writes to it (the console's and the natives', R0, no rule) and
   // the whole set with the points left to the player (PerkState)
   bool HasPerk(uint32_t perk) const;
-  bool AddPerkByServer(uint32_t perk);
+  // asPick: the perk is a player's pick the rule accepted, so it spends a
+  // point (the picks counter); the console's, a quest's or a gamemode's add
+  // spends nothing
+  bool AddPerkByServer(uint32_t perk, bool asPick = false);
   bool RemovePerkByServer(uint32_t perk);
   uint16_t PerkPoints() const;
   void SendPerkState();
@@ -310,6 +361,9 @@ public:
                                   const std::vector<espm::ActorValue>& touched,
                                   MpActor* host);
   uint64_t PendingDeathSinceMs() const;
+  // tests backdate the pending start, as they backdate the death with
+  // RecordDeathAt
+  void RecordPendingDeathAt(uint64_t sinceMs);
   uint32_t PendingDeathAggressor() const;
   static constexpr uint64_t kPendingDeathMs = 3000;
   void Respawn(bool shouldTeleport = true);
@@ -377,9 +431,26 @@ public:
   // first live sample is a race, not a resurrection; a live sample stands
   // such a body only after a dead one from its host (the engine's own
   // respawn or reanimation) or within a reanimate's window
-  void NoteHostSampledDead();
-  bool HostSampledDead() const;
+  // the host's dead-sample stamp names its WITNESS (the host's form id and
+  // its login generation) and its time: a live sample stands a dead body only
+  // when the same game, in the same login, sampled the body dead no more than
+  // kPendingDeathMs before the recorded death (or at any time for a body dead
+  // since before this process), or an accepted reanimate is in its window
+  // (numidium's reviews of rounds six and seven; x-npc-death-reentry v4's
+  // run 20261103-100946: a fresh process's first sample stood Hilde up)
+  void NoteHostSampledDead(uint32_t hostId, uint32_t hostLogin,
+                           std::chrono::steady_clock::time_point at);
+  // nothing when the stamp counts for this witness now; else why not (the
+  // lab reads the reason in the guard's line)
+  std::optional<std::string> DeadStampGap(
+    uint32_t hostId, uint32_t hostLogin,
+    std::chrono::steady_clock::time_point now) const;
   void ClearHostSampledDead();
+  // a player's login generation, a process-wide serial set at every
+  // SetUserActor: the witness's second half (a relaunch, a reconnect or a
+  // recreated actor is a new generation)
+  void SetLoginGeneration(uint32_t serial);
+  uint32_t LoginGeneration() const;
   // thuum docs/verbs/npc-fate.md (playtest 40's F5, 2026-11-02): when this
   // body last stood again by its host's engine on the server's word
   // (ActionListener::OnHostedActorState's resurrection branch). A reanimated
@@ -392,6 +463,63 @@ public:
   std::optional<std::chrono::milliseconds> HostStoodUpAgo(
     std::chrono::steady_clock::time_point now) const;
   static constexpr uint64_t kReanimatedEndMs = 90'000;
+  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4): a
+  // corpse is a physics object under the prop rule. One mover simulates the
+  // ragdoll, the engine that owned the actor at its death (the simulator,
+  // PartOne::SimulatorOf; 0 when none, and the first simulator to report
+  // inside the window claims it); for WorldState::bodySettleMs from the
+  // recorded death its movement samples move the record (R2: recorded, not
+  // judged, inside the movement bounds), and every other seat's are refused
+  // (E_BODY_NOT_OWNER). The body is AT REST when its accepted samples have
+  // stayed within kBodyRestUnits and kBodyRestDegrees of one sample (the
+  // dwell's anchor, the last one past those bounds) for kBodyRestDwellMs, no
+  // sooner than kBodyRestMinMs after the recorded death, or when the window
+  // ends (PartOne::TickBodies); from then every sample is refused
+  // (E_BODY_AT_REST) until a later claim (a drag or a push: the prop claim,
+  // not this slice). A resurrection (Respawn, every stand-up's path) clears
+  // it. Begun by SendAndSetDeathState for a game-file or server-made NPC;
+  // a body dead since before this process or placed dead has no window and
+  // keeps the host's samples as before (TODO: its rest at load, with the
+  // prop claim). Times are the TickDeaths clock (monotonic ms)
+  void BeginBodySettle(uint64_t nowMs);
+  // a death of this process recorded for this body (settling or at rest)
+  bool HasBodySettle() const;
+  // dead, a death of this process recorded and not at rest yet
+  bool IsBodySettling() const;
+  bool IsBodyAtRest() const;
+  // when the rest was set; 0 while not at rest
+  uint64_t BodyRestAtMs() const;
+  uint64_t BodyDiedAtMs() const;
+  uint32_t BodyOwnerId() const;
+  void ClaimBodyOwner(uint32_t ownerId);
+  uint32_t BodySampleCount() const;
+  // whether `pos` and `rot` at `nowMs` end the dwell: within the rest bounds
+  // of its anchor, the anchor kBodyRestDwellMs old and the death
+  // kBodyRestMinMs (the rest's test, read before the relay so the resting
+  // sample goes reliably)
+  bool BodySampleRests(const NiPoint3& pos, const NiPoint3& rot,
+                       uint64_t nowMs) const;
+  // the owner's accepted sample, after the record took it: counted, the
+  // dwell's anchor moved to it when it left the anchor's bounds; true when
+  // it put the body at rest
+  bool NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
+                      uint64_t nowMs);
+  // the window's end: true when the body came to rest now
+  bool SettleBodyIfDue(uint64_t nowMs);
+  void ClearBodyRest();
+  static constexpr float kBodyRestUnits = 2.f;
+  static constexpr float kBodyRestDegrees = 2.f;
+  // the dwell and its floor (thuum docs/verbs/npc-fate.md, "The body's rest
+  // as a dwell"): the engine's reference holds the death point a moment
+  // before the ragdoll carries it, so two samples in a row agreed there and
+  // the record kept a place the body had slid 430 to 710 units from
+  // (b-npc-death, rung 3's gate 20261107-005511). The owner's rule
+  // (skymp5-client changeFormService.ts CORPSE_REST_DWELL_MS 1000 and
+  // CORPSE_REST_MIN_MS 3000) is the same with a margin above these, so the
+  // server rests at or before the owner's final sample, which the owner
+  // sends reliably and then sends no more
+  static constexpr uint64_t kBodyRestDwellMs = 750;
+  static constexpr uint64_t kBodyRestMinMs = 2500;
   void Teleport(const LocationalData& position);
   void SetSpawnPoint(const LocationalData& position);
   LocationalData GetSpawnPoint() const;
@@ -591,6 +719,19 @@ public:
   uint32_t GetHostedEmotionType() const;
   uint32_t GetHostedEmotionValue() const;
 
+  // thuum docs/verbs/change-form.md (ADR-065 system 1): the latest change
+  // form the actor's owner reported, kept on its change form (persisted,
+  // rule 6; none until a report); the apply built from it (false without a
+  // record), and its trip to one listening game as ChangeFormApply, the
+  // sender's hex and rows untranslated (the receiver re-encodes). Served
+  // after the create word (PartOne's onSubscribe), at a cell's load
+  // (PartOne::OnCellLoaded) and at once to a listener present when the
+  // record arrives (ActionListener::OnChangeForm)
+  void SetChangeFormRecord(std::optional<ChangeFormRecord> record);
+  std::optional<ChangeFormRecord> GetChangeFormRecord() const;
+  bool BuildChangeFormApply(ChangeFormApplyMessage& out) const;
+  void SendChangeFormRecordTo(MpActor& listener);
+
 private:
   std::set<MpObjectReference*> occupiedContainers;
   // the two EndRunningEffects above: removes the MGEFs named, gives a buff's
@@ -607,6 +748,9 @@ private:
   void ApplyAttributeDeltas(const std::array<float, 3>& deltas,
                             const std::array<bool, 3>& touched,
                             const BaseActorValues& maxBefore, uint32_t caster);
+  // thuum docs/verbs/npc-fate.md ("The body's rest"): the body at rest now,
+  // by `why`: the state, the record's save at once, the one log line
+  void SettleBody(uint64_t nowMs, const char* why);
 
   struct Impl;
   std::shared_ptr<Impl> pImpl;

@@ -6,6 +6,7 @@ import { RespawnNeededError } from "../../lib/errors";
 import { AnimationEventName, takeRelayedStagger } from "../../sync/animation";
 import { RagdollService } from "./ragdollService";
 import { PuppetService } from "./puppetService";
+import { ChangeFormService } from "./changeFormService";
 import { RemoteServer } from "./remoteServer";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 
@@ -44,6 +45,41 @@ export class DeathService extends ClientListener {
       0xffffffff,
       "KillMove*"
     );
+    // thuum docs/verbs/npc-fate.md (the guest's half-up body, 2026-11-03): a
+    // puppet's death is the server's word (ADR-050 decision 2), so a kill
+    // move's victim half never reaches a puppet's graph, whichever mouth it
+    // comes by (the action replay, dropped in formView.replayActions, or the
+    // event relay, which a creature's events and a humanoid event outside the
+    // PerformAction entry ride): the figures' blank widened to the game-file
+    // range with the puppet read inside the hook, the animation.ts idiom; the
+    // id range and the patterns filter in native (rule 9), the puppet read
+    // costs one native per matching event. The names are the idles' ENAMs
+    // less "pa_" (lab/esm.py on Skyrim.esm and Update.esm, numidium's read):
+    // KillMove1HMStabUpFace and KillMoveD seen in the lab; KillingBlow (three
+    // bleed-out idles), 2HWKillMoveA and KillWerewolfPaired* in the tree,
+    // HYPOTHESIS beyond the two seen
+    // the whole id range: a server-made NPC's copy (0xff000000 and up) is a
+    // puppet on the seats that do not host it and takes the replay and the
+    // event relay like any NPC model; the puppet read keeps figures out (a
+    // figure is never flagged), and a KillMove* the figures' handler already
+    // blanked reaches these as "" and matches nothing (the fresh review of
+    // 7d0d4d7e, note 1)
+    const sp = this.sp;
+    for (const pattern of ["KillMove*", "KillingBlow*", "2HWKillMove*", "KillWerewolf*"]) {
+      this.sp.hooks.sendAnimationEvent.add(
+        {
+          enter(ctx) {
+            if (sp.isPuppet(ctx.selfId)) {
+              ctx.animEventName = "";
+            }
+          },
+          leave() { },
+        },
+        0,
+        0xffffffff,
+        pattern
+      );
+    }
   }
 
   // A figure staggers only by its own player's relayed stagger, which the
@@ -91,6 +127,8 @@ export class DeathService extends ClientListener {
       this.predicted.delete(actor.getFormID());
     }
     if (actor.isDead() === isDead && this.isPlayer(actor) === false) {
+      // the word and the engine agree: a queued stand-up has landed
+      this.resurrectQueuedAt.delete(actor.getFormID());
       return;
     }
     if (isDead === true) {
@@ -235,26 +273,58 @@ export class DeathService extends ClientListener {
           if (!again || !again.isDead()) {
             return;
           }
+          // thuum ADR-067 by ADR-065's path (ChangeFormService): a body with
+          // a change-form record held for this kill or laid on it is not
+          // pushed; the push's ragdoll would undo the record's pose and start
+          // playtest 42's F4 slide again (the kill above is deferred and the
+          // apply lands with it, a frame or two in, so the record is still
+          // "held" at this wait's end: docs/research/adr062/
+          // papyrus-native-entries.md:73)
+          if (this.controller.lookupListener(ChangeFormService).hasRecord(localIdToRemoteId(id) || id)) {
+            logLab("verb:npc-fate", `body ${id.toString(16)}: no push, the change-form record laid it`);
+            return;
+          }
           again.pushActorAway(again, 0);
         });
       } else {
         actor.kill(killer);
       }
-      // thuum docs/verbs/npc-fate.md (the deaths, revised by playtest 37's
-      // findings 58 and 62): the body is NOT activation-blocked, on any seat.
-      // The block stood here (a CONT's shape, dealWithRef) on the design
-      // note's assumption that the server's OpenContainer activation with
-      // default processing opens a blocked body ahead of the engine's own
-      // menu: it never did. Every corpse that opened in the logs was the
-      // engine's own activation of an unblocked body (finding 58: c2's one
-      // good open came while a brief host grant had lifted the block; after
-      // the host flipped back the body was demoted and four E presses opened
-      // nothing). The loot is the server's container either way: E is the
-      // engine's own activation, the activate hook reports it, the server
-      // answers the record's inventory and OpenContainer, and formView lays
-      // the server's list under the open menu (memo D52 B). puppetService
-      // keeps a dead body out of the puppet state, so no native block comes
-      // back on it.
+      // thuum ADR-067 by ADR-065's path (ChangeFormService, docs/verbs/
+      // change-form.md): a change-form record of the body the server served
+      // (the owner's own save of its corpse) and held for this kill is
+      // applied as the kill lands (the kill above is deferred: Kill and
+      // KillSilent queue a type-10 task and the actor is alive at the
+      // native's return, docs/research/adr062/papyrus-native-entries.md:73;
+      // the service tries every update until the copy reads dead), the
+      // engine's own load laying the body in the owner's pose at the owner's
+      // place; a record that comes later is applied at its arrival, the body
+      // dead already. The bind (silent) applies on any seat; a kill by the
+      // word never takes a held record over this seat's own engine's death
+      // of an actor it simulates
+      this.controller.lookupListener(ChangeFormService).onKilledHere(actor.getFormID(), silent);
+      // thuum ADR-067 decision 6 (the exclusive container hold;
+      // docs/private/container-hold-scope.md D-C2 A): the body is the
+      // server's container, its activation blocked as a CONT's is
+      // (dealWithRef's shape), so the engine's own loot menu never opens
+      // ahead of the server's word: E sends Activate, the server admits one
+      // looter and answers OpenContainer, remoteServer's handler opens the
+      // ContainerMenu, and a refused looter sees the notification and no
+      // menu. The block is PuppetService's (blockDeadBody: once per body, a
+      // figure never, re-asserted a tick or two after each native lift);
+      // laid here at the server's word and at the bind's silent kill, at the
+      // death's start for this seat's own engine deaths, and from the
+      // reconciler's passes. The block that stood here until c1de7167 was
+      // taken out on
+      // playtest 37's findings 58 and 62 ("the server's activation never
+      // opened a blocked body"); D71 then read the refusal as the released
+      // body's AI off (engine model E25), which openBodyOnTimers switches on
+      // for the open, and the promote's re-block went out in the promote's
+      // own tick, which its task would have undone (a source reading, no
+      // trace). That the engine's activate(player, true) opens the loot menu
+      // on a blocked dead actor as it opens a blocked CONT is the HYPOTHESIS
+      // x-container-hold's corpse leg reads.
+      // formView lays the server's list under the menu as before (memo D52 B).
+      this.controller.lookupListener(PuppetService).blockDeadBody(actor.getFormID(), actor, silent ? "the bind's silent kill" : "the server's word");
     }
   };
 
@@ -273,7 +343,8 @@ export class DeathService extends ClientListener {
       // roll follows through ActorFate's late path and its placement through
       // the death container's teleport; never the copy's delete. A puppet
       // keeps its block; the host's own actor gets its engine behavior back
-      // one game-thread task (FateApi.cpp resurrectActor): AI on for the
+      // one main-thread task (FateApi.cpp resurrectActor, SKSE's UI task
+      // queue since fork cc5c82b6): AI on for the
       // call, a puppet demoted again after it, a live actor unblocked;
       // Papyrus's Resurrect on a just-demoted corpse did not stand it up
       // (x-npc-respawn 070508). A server-made NPC's copy (playtest 37's
@@ -282,6 +353,22 @@ export class DeathService extends ClientListener {
       // game-file actor's, never the delete and re-placement a player's
       // figure takes (the throw below)
       const id = actor.getFormID();
+      // thuum docs/verbs/npc-fate.md 1e (x-fate-dress-bleak v5 20261104-070209:
+      // "resurrect 39fe4 (puppet false) queued" 33 times a respawn): the live
+      // word is applied by every view update, movement and property message
+      // while the engine still reads the copy dead, and the native's task
+      // lands a frame or more later, so each tick queued another stand-up.
+      // One in flight per actor: a second ask within RESURRECT_INFLIGHT_MS
+      // is dropped, the mark cleared when the word and the engine agree
+      const now = Date.now();
+      const queuedAt = this.resurrectQueuedAt.get(id);
+      if (queuedAt !== undefined && now - queuedAt < DeathService.RESURRECT_INFLIGHT_MS) {
+        return;
+      }
+      this.resurrectQueuedAt.set(id, now);
+      // thuum ADR-065's path (ChangeFormService): a dead record held for this
+      // body is stale once the live word stands it up
+      this.controller.lookupListener(ChangeFormService).onStoodUp(id);
       const queued = this.sp.resurrectActor(id);
       // the reconciler arms the deferred kill again on its next pass
       // (ADR-050 decision 3: the stood-up actor holds at zero for the
@@ -336,6 +423,9 @@ export class DeathService extends ClientListener {
   private readonly playerActorId = 0x14;
 
   private playerDead = false;
+  // the stand-ups queued to the game thread and not yet seen landed, by actor
+  private resurrectQueuedAt = new Map<number, number>();
+  private static readonly RESURRECT_INFLIGHT_MS = 2000;
 
   private busyForOtherReasonsCounter = 0;
 }

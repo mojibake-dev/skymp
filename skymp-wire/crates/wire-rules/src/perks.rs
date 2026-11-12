@@ -5,7 +5,7 @@
 //! GetBaseActorValue for the skill's level; UESP "Skyrim Mod:Mod File
 //! Format/PERK", read in Skyrim.esm 2026-10-31: Armsman20 0x79343 wants
 //! GetBaseActorValue(OneHanded) >= 20 and HasPerk(Armsman00) == 1) and by
-//! the points left, one a level over the perks held. The record is the
+//! the points left, one a level over the picks the server granted. The record is the
 //! server's (R0); the pick is the player's report (R1). A condition the
 //! server cannot judge refuses the pick (rule 5), named by its function id.
 //! Function ids are CommonLibSSE-NG's FUNCTION_DATA::FunctionID
@@ -313,6 +313,11 @@ pub struct Record<'a> {
     pub level: u16,
     /// The perks held.
     pub perks: &'a [u32],
+    /// The picks the server granted through this rule (playtest 41's item 6,
+    /// 2026-11-02: a perk from the console, a quest or a mod spends no
+    /// point, so the points are a counter of levels earned and picks spent,
+    /// not the perks held).
+    pub picks: u16,
     /// Actor values the conditions may read: (index, the value a condition
     /// compares: a skill's level for 6 to 23, the base otherwise).
     pub values: &'a [(u8, f32)],
@@ -375,10 +380,11 @@ impl Refusal {
     }
 }
 
-/// The perk points left: one a level past the first, less the perks held.
-pub fn points(level: u16, held: usize) -> u16 {
-    let earned = usize::from(level).saturating_sub(1);
-    u16::try_from(earned.saturating_sub(held)).unwrap_or(u16::MAX)
+/// The perk points left: one a level past the first, less the picks the
+/// server granted (not the perks held: a perk from the console, a quest or a
+/// mod spends nothing, playtest 41's item 6).
+pub fn points(level: u16, picks: u16) -> u16 {
+    level.saturating_sub(1).saturating_sub(picks)
 }
 
 /// The judgement of `perk` picked by the player whose record this is.
@@ -393,7 +399,7 @@ pub fn pick(table: &Table, record: &Record<'_>, perk: u32) -> Result<(), Refusal
     if record.perks.len() >= MAX_PERKS {
         return Err(Refusal::Full);
     }
-    if points(record.level, record.perks.len()) == 0 {
+    if points(record.level, record.picks) == 0 {
         return Err(Refusal::NoPoints);
     }
     groups_hold(&entry.conditions, |condition| judge(record, condition))
@@ -545,8 +551,11 @@ mod tests {
         t
     }
 
+    // the picks as the perks held: the old reading, which every case below
+    // assumed; a record whose perks came from elsewhere is the case after
+    // points_are_one_a_level_over_the_picks
     fn record<'a>(level: u16, perks: &'a [u32], values: &'a [(u8, f32)]) -> Record<'a> {
-        Record { level, perks, values }
+        Record { level, perks, picks: u16::try_from(perks.len()).unwrap_or(u16::MAX), values }
     }
 
     #[test]
@@ -572,12 +581,25 @@ mod tests {
     }
 
     #[test]
-    fn points_are_one_a_level_over_the_perks_held() {
+    fn points_are_one_a_level_over_the_picks() {
         assert_eq!(points(1, 0), 0);
         assert_eq!(points(2, 0), 1);
         assert_eq!(points(5, 2), 2);
         assert_eq!(points(5, 9), 0);
         assert_eq!(points(0, 0), 0);
+    }
+
+    #[test]
+    fn a_perk_granted_outside_a_pick_spends_no_point() {
+        let t = skyrim();
+        // level 2 holding Armsman from the console: one point still, and the
+        // pick of the perk that wants Armsman takes
+        let granted = Record { level: 2, perks: &[ARMSMAN], picks: 0, values: &[(ONE_HANDED, 20.0)] };
+        assert_eq!(points(granted.level, granted.picks), 1);
+        assert_eq!(pick(&t, &granted, FIGHTING_STANCE), Ok(()));
+        // the same perks held through a pick: the point is spent
+        let picked = Record { level: 2, perks: &[ARMSMAN], picks: 1, values: &[(ONE_HANDED, 20.0)] };
+        assert_eq!(pick(&t, &picked, FIGHTING_STANCE), Err(Refusal::NoPoints));
     }
 
     #[test]
@@ -661,15 +683,15 @@ mod tests {
         let t = two_parents();
         let thirty = [(ONE_HANDED, 30.0)];
         let ten = [(ONE_HANDED, 10.0)];
-        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_A], values: &thirty }, TWO_PARENTS), Ok(()));
-        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_B], values: &thirty }, TWO_PARENTS), Ok(()));
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_A], picks: 1, values: &thirty }, TWO_PARENTS), Ok(()));
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_B], picks: 1, values: &thirty }, TWO_PARENTS), Ok(()));
         assert_eq!(
-            pick(&t, &Record { level: 10, perks: &[], values: &thirty }, TWO_PARENTS),
+            pick(&t, &Record { level: 10, perks: &[], picks: 0, values: &thirty }, TWO_PARENTS),
             Err(Refusal::Prerequisite(PARENT_A)),
             "neither parent: the group's first refusal"
         );
         assert_eq!(
-            pick(&t, &Record { level: 10, perks: &[PARENT_A], values: &ten }, TWO_PARENTS),
+            pick(&t, &Record { level: 10, perks: &[PARENT_A], picks: 1, values: &ten }, TWO_PARENTS),
             Err(Refusal::Value(ONE_HANDED)),
             "the parent group holds, the skill group does not"
         );
@@ -682,8 +704,8 @@ mod tests {
         t.add_perk(TWO_PARENTS, true, false);
         t.add_clause(TWO_PARENTS, Condition::from_ctda(FN_HAS_PERK, EQ | FLAG_OR, 1.0, PARENT_A, 0), true);
         t.add_clause(TWO_PARENTS, Condition::from_ctda(999, EQ, 1.0, 0, 0), false);
-        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_A], values: &[] }, TWO_PARENTS), Ok(()));
-        assert_eq!(pick(&t, &Record { level: 10, perks: &[], values: &[] }, TWO_PARENTS), Err(Refusal::Prerequisite(PARENT_A)));
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_A], picks: 1, values: &[] }, TWO_PARENTS), Ok(()));
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[], picks: 0, values: &[] }, TWO_PARENTS), Err(Refusal::Prerequisite(PARENT_A)));
     }
 
     #[test]
@@ -692,8 +714,8 @@ mod tests {
         t.add_perk(PARENT_A, true, false);
         t.add_perk(TWO_PARENTS, true, false);
         t.add_clause(TWO_PARENTS, Condition::from_ctda(FN_HAS_PERK, EQ | FLAG_OR, 1.0, PARENT_A, 0), true);
-        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_A], values: &[] }, TWO_PARENTS), Ok(()));
-        assert_eq!(pick(&t, &Record { level: 10, perks: &[], values: &[] }, TWO_PARENTS), Err(Refusal::Prerequisite(PARENT_A)));
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[PARENT_A], picks: 1, values: &[] }, TWO_PARENTS), Ok(()));
+        assert_eq!(pick(&t, &Record { level: 10, perks: &[], picks: 0, values: &[] }, TWO_PARENTS), Err(Refusal::Prerequisite(PARENT_A)));
     }
 
     // the weapon school's effects as Skyrim.esm reads them (lab/esm.py,
@@ -721,20 +743,20 @@ mod tests {
     #[test]
     fn a_weapon_perk_multiplies_a_hit_with_its_school_keyword() {
         let t = weapon_school();
-        let held = Record { level: 5, perks: &[ARMSMAN], values: &[] };
+        let held = Record { level: 5, perks: &[ARMSMAN], picks: 1, values: &[] };
         assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &held, &[SWORD, 0x1234]), 12.0);
         assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &held, &[DAGGER]), 12.0);
         assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &held, &[BOW]), 10.0, "not the school's weapon");
         assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &held, &[]), 10.0, "unarmed carries no keyword");
         assert_eq!(apply_entry_point(&t, ENTRY_MOD_ARMOR_RATING, 10.0, &held, &[SWORD]), 10.0, "another entry point");
-        let none = Record { level: 5, perks: &[], values: &[] };
+        let none = Record { level: 5, perks: &[], picks: 0, values: &[] };
         assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &none, &[SWORD]), 10.0);
     }
 
     #[test]
     fn the_rank_held_above_excludes_the_rank_below() {
         let t = weapon_school();
-        let both = Record { level: 5, perks: &[ARMSMAN20, ARMSMAN], values: &[] };
+        let both = Record { level: 5, perks: &[ARMSMAN20, ARMSMAN], picks: 2, values: &[] };
         assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &both, &[SWORD]), 14.0);
     }
 
@@ -751,7 +773,7 @@ mod tests {
         let _spell = t.add_effect(ARMSMAN, ENTRY_MOD_ATTACK_DAMAGE, 10, 0.0, 0, 0).unwrap();
         assert_ne!(m, a);
         assert_eq!((t.judged_effects(), t.unjudged_effects()), (2, 2));
-        let held = Record { level: 5, perks: &[ARMSMAN], values: &[] };
+        let held = Record { level: 5, perks: &[ARMSMAN], picks: 1, values: &[] };
         assert_eq!(apply_entry_point(&t, ENTRY_MOD_ATTACK_DAMAGE, 10.0, &held, &[]), 24.0);
         assert!(t.add_effect(0x9999, ENTRY_MOD_ATTACK_DAMAGE, EFFECT_ADD_VALUE, 1.0, 0, 0).is_none(), "a perk not added");
     }
@@ -761,6 +783,6 @@ mod tests {
         let mut t = Table::default();
         t.add_perk(ARMSMAN, true, false);
         t.add_condition(ARMSMAN, Condition::from_ctda(FN_HAS_KEYWORD, EQ, 1.0, SWORD, 0));
-        assert_eq!(pick(&t, &Record { level: 5, perks: &[], values: &[] }, ARMSMAN), Err(Refusal::Condition(FN_HAS_KEYWORD)));
+        assert_eq!(pick(&t, &Record { level: 5, perks: &[], picks: 0, values: &[] }, ARMSMAN), Err(Refusal::Condition(FN_HAS_KEYWORD)));
     }
 }

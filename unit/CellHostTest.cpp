@@ -2,6 +2,7 @@
 #include "ActorClaimMessage.h"
 #include "ActorSpeechMessage.h"
 #include "ChangeValuesMessage.h"
+#include "ConsoleCommandMessage.h"
 #include "CreateActorMessage.h"
 #include "HitMessage.h"
 #include "HostGrantMessage.h"
@@ -829,6 +830,34 @@ TEST_CASE("A hosted actor's door into a cell another live host holds passes "
   }
   REQUIRE(newHostLive);
   REQUIRE(oldHostDemoted);
+  // the passing report reached the new host's game reliably, ahead of the
+  // word (the settle's half (a), 019921fb, on m3-system1 without the
+  // window: its promote places the copy at the door's far side, not where
+  // the copy stood); the test's raw report is the empty object the harness
+  // parses it to
+  {
+    const auto& sent = p.Messages();
+    size_t reportAt = sent.size();
+    size_t wordAt = sent.size();
+    for (size_t i = 0; i < sent.size(); ++i) {
+      const auto& m = sent[i];
+      if (m.userId != 1 || !m.j.is_object()) {
+        continue;
+      }
+      if (reportAt == sent.size() && m.reliable && m.j.empty()) {
+        reportAt = i;
+      }
+      if (wordAt == sent.size() &&
+          m.j.value("propName", std::string()) == "isHostedByOther" &&
+          m.j.value("dataDump", std::string()) == "false" &&
+          m.j.value("refrId", 0u) == kHod) {
+        wordAt = i;
+      }
+    }
+    REQUIRE(reportAt < sent.size());
+    REQUIRE(wordAt < sent.size());
+    REQUIRE(reportAt < wordAt);
+  }
 
   // the old host's next report from indoors is a stranger's, the inn
   // host's passes
@@ -1127,7 +1156,12 @@ TEST_CASE("A host's sighting places an interior-placed resident where its "
 
   // playtest 37 (finding 38, "we have 2 embrys"): a game whose engine has
   // the resident in a cell it hosts, while her record stands in another
-  // game's cell, is told to hide its copy and the record stays
+  // game's cell, is told to MOVE its copy to the record and the record
+  // stays (ADR-067 decision 5, playtest 42's F1: the Disable snippet this
+  // block once sent never reached the copy, its long selfId needing a view
+  // the sighter no longer had; the move travels as a static call with the
+  // copy as an argument, the record's cell-or-world typed as both the Cell
+  // and the WorldSpace argument)
   const NiPoint3 far = landing + NiPoint3{ 0.f, -40000.f, 0.f };
   const auto farCell = p.worldState.CellOf(kTamriel, far);
   REQUIRE(farCell.has_value());
@@ -1137,19 +1171,35 @@ TEST_CASE("A host's sighting places an interior-placed resident where its "
   sighting(1, kSigrid, far);
   REQUIRE(p.worldState.CellOf(sigrid) == cell);
   p.Tick(); // snippets are deferred (SpSnippet.cpp; pipeline 3613's red)
-  // the snippet's selfId is the long form id (SpSnippet::Execute's
-  // MakeLongFormId; pipeline 3619's red compared the short one), so the
-  // snippet is known by its class and function to this user alone
-  bool hidden = false;
+  bool moved = false;
+  bool disabled = false;
   for (auto& m : p.Messages()) {
-    if (m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
-        m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
-        m.j.contains("class") && m.j["class"] == "ObjectReference" &&
-        m.j.contains("function") && m.j["function"] == "Disable") {
-      hidden = true;
+    if (!(m.userId == 1 && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+          m.j.contains("class") && m.j.contains("function"))) {
+      continue;
+    }
+    if (m.j["class"] == "ObjectReference" && m.j["function"] == "Disable") {
+      disabled = true;
+    }
+    if (m.j["class"] == "TESModPlatform" &&
+        m.j["function"] == "moveRefrToPosition") {
+      moved = true;
+      const auto& args = m.j["arguments"];
+      REQUIRE(args.is_array());
+      REQUIRE(args.size() == 9);
+      REQUIRE(args[0]["formId"] == kSigrid);
+      REQUIRE(args[0]["type"] == "ObjectReference");
+      REQUIRE(args[1]["type"] == "Cell");
+      REQUIRE(args[2]["type"] == "WorldSpace");
+      REQUIRE(args[1]["formId"] == args[2]["formId"]);
+      REQUIRE(std::abs(args[3].get<double>() - sigridPos.x) < 1.0);
+      REQUIRE(std::abs(args[4].get<double>() - sigridPos.y) < 1.0);
+      REQUIRE(std::abs(args[5].get<double>() - sigridPos.z) < 1.0);
     }
   }
-  REQUIRE(hidden);
+  REQUIRE(moved);
+  REQUIRE_FALSE(disabled);
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
@@ -1730,6 +1780,8 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   // its own (3b's first T0, "outfit kept ... 4 worn item(s)", right 12e4d)
   constexpr uint32_t kElsewhere = 0x13989;
   constexpr uint32_t kSteelHelmet = 0x13954;
+  // Skyrim.esm's Torch01, a LIGH record the record lacks
+  constexpr uint32_t kTorch = 0x1d4ec;
   const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
   Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
   Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
@@ -1769,14 +1821,15 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   // the record's worn outfit before the report: what no report may shrink
   // (fate-dress, playtest 37's finding 46: the fate's worn list is the
   // outfit every seat dresses the copy from, so a hosted report keeps the
-  // record's worn non-weapon entries it lacks)
-  const auto isWeapon = [&](uint32_t baseId) {
+  // record's worn ARMOR entries it lacks; the hands, a weapon or a light,
+  // are the host's and follow the report, Eli's word of 2026-11-04)
+  const auto isArmor = [&](uint32_t baseId) {
     const auto rec = p.GetEspm().GetBrowser().LookupById(baseId).rec;
-    return rec && rec->GetType() == "WEAP";
+    return rec && rec->GetType() == "ARMO";
   };
   std::vector<uint32_t> outfitBefore;
   for (const auto& entry : actor.GetEquipment().inv.entries) {
-    if (entry.GetWorn() != Inventory::Worn::None && !isWeapon(entry.baseId)) {
+    if (entry.GetWorn() != Inventory::Worn::None && isArmor(entry.baseId)) {
       outfitBefore.push_back(entry.baseId);
     }
   }
@@ -1824,6 +1877,35 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   REQUIRE(relays(1) == 0);
   REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
   REQUIRE(sentOfType(0, MsgType::SpSnippet) == 0);
+
+  // a LIGHT the record lacks, lit by the host's AI (Skyrim.esm Torch01
+  // 0x1d4ec; thuum docs/verbs/npc-fate.md, Eli's word of 2026-11-04 after
+  // oracle v4 190713: the AI's torch is an equip every seat shows, the hands
+  // are the host's): recorded R2 like the engine's own weapon, relayed once
+  p.Messages().clear();
+  Wear(p, 0, kActor, kTorch, 5);
+  p.Tick();
+  REQUIRE(actor.GetEquipment().inv.HasItem(kTorch));
+  REQUIRE(actor.GetInventory().HasItem(kTorch));
+  REQUIRE(actor.GetEquipment().numChanges == 5);
+  REQUIRE(relays(1) == 1);
+  REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
+
+  // the host's next report without it (the AI put the torch away): the
+  // torch leaves the record's hands and stays in its inventory, while the
+  // roll's armor the report lacks is kept as before (the dress is the
+  // server's, the hands the host's)
+  p.Messages().clear();
+  Wear(p, 0, kActor, kIronSword, 6);
+  p.Tick();
+  REQUIRE(!actor.GetEquipment().inv.HasItem(kTorch));
+  REQUIRE(actor.GetInventory().HasItem(kTorch));
+  REQUIRE(actor.GetEquipment().inv.HasItem(kIronSword));
+  for (const auto baseId : outfitBefore) {
+    REQUIRE(actor.GetEquipment().inv.HasItem(baseId));
+  }
+  REQUIRE(actor.GetEquipment().numChanges == 6);
+  REQUIRE(relays(1) == 1);
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
@@ -2168,4 +2250,197 @@ TEST_CASE("A hosted resident's melee hit its host reports is gated by reach",
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
   p.DestroyActor(kSigrid);
+}
+
+TEST_CASE("A grant sends the cell's actors' records to the new host ahead of "
+          "its hoster words (docs/engine/non-owning-seat.md section 3: the "
+          "promote places the copy at the record, not where the engine had "
+          "it; the grant bounce of 20261103-055217 and 060106)",
+          "[CellHost]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(here.has_value());
+  // the wolf stands in a cell nobody hosts yet, frozen at its record
+  p.CreateActor(kWolf, kHere + NiPoint3{ 300.f, 0.f, 0.f }, 0, kTamriel);
+  auto& wolf = p.worldState.GetFormAt<MpActor>(kWolf);
+  wolf.SetPos(kHere + NiPoint3{ 300.f, 0.f, 0.f });
+  REQUIRE(p.SimulatorOf(wolf) == 0);
+  p.Messages().clear();
+
+  // c1's load grants it the cell: for the wolf, its record as a movement
+  // message to c1 first, reliable, then the word
+  CellLoaded(p, 0, *here);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+  const auto& sent = p.Messages();
+  size_t keyframeAt = sent.size();
+  size_t wordAt = sent.size();
+  for (size_t i = 0; i < sent.size(); ++i) {
+    const auto& m = sent[i];
+    if (m.userId != 0 || !m.j.is_object()) {
+      continue;
+    }
+    if (keyframeAt == sent.size() && m.reliable &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::UpdateMovement) &&
+        m.j.value("idx", 0u) == wolf.GetIdx()) {
+      keyframeAt = i;
+      REQUIRE(std::abs(m.j["data"]["pos"][0].get<float>() -
+                       (kHere.x + 300.f)) < 1.f);
+      REQUIRE(m.j["data"]["worldOrCell"].get<uint32_t>() == kTamriel);
+    }
+    if (wordAt == sent.size() &&
+        m.j.value("propName", std::string()) == "isHostedByOther" &&
+        m.j.value("dataDump", std::string()) == "false" &&
+        m.j.value("refrId", 0u) == kWolf) {
+      wordAt = i;
+    }
+  }
+  REQUIRE(keyframeAt < sent.size());
+  REQUIRE(wordAt < sent.size());
+  REQUIRE(keyframeAt < wordAt);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kWolf);
+  p.DestroyActor(kC1);
+}
+
+TEST_CASE("A host swap (a nearer seat takes the cell) sends the new host each "
+          "actor's record ahead of the Release's flip, which already names it "
+          "(docs/engine/non-owning-seat.md section 3: the keyframe goes to "
+          "whichever game the word names)",
+          "[CellHost]")
+{
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  const auto east = p.worldState.CellOf(kTamriel, kEast);
+  REQUIRE(east.has_value());
+  // c1 hosts the east square from a ring away (its load report), with the
+  // wolf in it
+  CellLoaded(p, 0, *east);
+  REQUIRE(p.GetCellHost(*east).player == kC1);
+  p.CreateActor(kWolf, kEast, 0, kTamriel);
+  auto& wolf = p.worldState.GetFormAt<MpActor>(kWolf);
+  wolf.SetPos(kEast);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+  p.Messages().clear();
+
+  // c2 stands in the square itself: the strictly nearer ring takes it, as
+  // [Release(c1), Grant(c2)]; for the wolf the Release's flip names c2
+  // already, so c2 hears the record before that word
+  Player(p, 1, kC2, kEast);
+  CellLoaded(p, 1, *east);
+  REQUIRE(p.GetCellHost(*east).player == kC2);
+  REQUIRE(p.SimulatorOf(wolf) == kC2);
+  const auto& sent = p.Messages();
+  size_t keyframeAt = sent.size();
+  size_t wordAt = sent.size();
+  for (size_t i = 0; i < sent.size(); ++i) {
+    const auto& m = sent[i];
+    if (m.userId != 1 || !m.j.is_object()) {
+      continue;
+    }
+    if (keyframeAt == sent.size() && m.reliable &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::UpdateMovement) &&
+        m.j.value("idx", 0u) == wolf.GetIdx()) {
+      keyframeAt = i;
+    }
+    if (wordAt == sent.size() &&
+        m.j.value("propName", std::string()) == "isHostedByOther" &&
+        m.j.value("dataDump", std::string()) == "false" &&
+        m.j.value("refrId", 0u) == kWolf) {
+      wordAt = i;
+    }
+  }
+  REQUIRE(keyframeAt < sent.size());
+  REQUIRE(wordAt < sent.size());
+  REQUIRE(keyframeAt < wordAt);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kWolf);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
+// thuum docs/verbs/console-commands.md, `mp host` (Eli in playtest 48,
+// 2026-11-06: "who's hosting? (you should make a console command i can ask
+// that with instead of you)"): any player asks who hosts the cell it stands
+// in, the grant's epoch and how the grant came, fresh with nobody hosting
+// before it or inherited from a host that stopped (the lab's last_grant
+// rule), and its own part
+TEST_CASE("mp host names the host of the caller's cell, its epoch and how "
+          "its grant came",
+          "[CellHost][ConsoleCommand]")
+{
+  auto& p = GetPartOne();
+  auto& c1 = Player(p, 0, kC1, kHere);
+  auto& c2 = Player(p, 1, kC2, kHere + NiPoint3{ 100.f, 0.f, 0.f });
+  const auto cell = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(cell.has_value());
+  REQUIRE(p.worldState.CellOf(c2) == cell);
+  // the console lines `user` gets for its `mp host`
+  const auto ask = [&](Networking::UserId user) {
+    p.Messages().clear();
+    RawMessageData raw;
+    raw.userId = user;
+    ConsoleCommandMessage msg;
+    msg.data.commandName = "mp";
+    msg.data.args = { int64_t(0), std::string("host") };
+    p.GetActionListener().OnConsoleCommand(raw, msg);
+    std::vector<std::string> lines;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j["t"] == MsgType::ConsoleOutput) {
+        lines.push_back(m.j["text"].get<std::string>());
+      }
+    }
+    return lines;
+  };
+  using Catch::Matchers::ContainsSubstring;
+  const std::string c1Name =
+    "(no name) (" + std::to_string(c1.GetProfileId()) + ")";
+  const std::string c2Name =
+    "(no name) (" + std::to_string(c2.GetProfileId()) + ")";
+
+  // nobody loads it yet: nobody hosts it
+  auto lines = ask(0);
+  REQUIRE(lines.size() == 2);
+  REQUIRE_THAT(lines[0],
+               ContainsSubstring(
+                 ": nobody hosts it (frozen at its record, epoch 0 kept)"));
+  REQUIRE(lines[1] == "mp host done");
+
+  // c1 loads it first: a fresh grant at epoch 1, c1 its host, c2 its guest
+  CellLoaded(p, 0, *cell);
+  CellLoaded(p, 1, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  lines = ask(0);
+  REQUIRE(lines.size() == 2);
+  REQUIRE_THAT(lines[0],
+               ContainsSubstring(": host " + c1Name +
+                                 ", epoch 1, its grant fresh; you host it"));
+  lines = ask(1);
+  REQUIRE(lines.size() == 2);
+  REQUIRE_THAT(
+    lines[0],
+    ContainsSubstring(": host " + c1Name +
+                      ", epoch 1, its grant fresh; you are its guest"));
+
+  // c1 leaves: at the grace's end c2 takes the cell, an inherited grant
+  const auto now = NowMs();
+  DoDisconnect(p, 0);
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);
+  REQUIRE(p.GetCellHost(*cell).player == kC2);
+  REQUIRE(p.GetCellHost(*cell).epoch == 2);
+  lines = ask(1);
+  REQUIRE(lines.size() == 2);
+  REQUIRE_THAT(
+    lines[0],
+    ContainsSubstring(": host " + c2Name +
+                      ", epoch 2, its grant inherited; you host it"));
+  REQUIRE(lines[1] == "mp host done");
+
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
 }

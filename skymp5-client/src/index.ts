@@ -23,6 +23,8 @@ import { ActorValuesService } from "./services/services/actorValuesService";
 import { PlayerGlobalsService } from "./services/services/playerGlobalsService";
 import { QuestStageService } from "./services/services/questStageService";
 import { PropService } from "./services/services/propService";
+import { ScriptCallService } from "./services/services/scriptCallService";
+import { ScriptStateService } from "./services/services/scriptStateService";
 import { SpellPlacedService } from "./services/services/spellPlacedService";
 import { LockService } from "./services/services/lockService";
 import { WeatherService } from "./services/services/weatherService";
@@ -30,6 +32,11 @@ import { PerkService } from "./services/services/perkService";
 import { WordWallService } from "./services/services/wordWallService";
 import { RelayedActivationService } from "./services/services/relayedActivationService";
 import { ObjectAnimationService } from "./services/services/objectAnimationService";
+import { TrapResultService } from "./services/services/trapResultService";
+import { RefStateService } from "./services/services/refStateService";
+import { AliasFillService } from "./services/services/aliasFillService";
+import { WorldGlobalService } from "./services/services/worldGlobalService";
+import { ScriptVariablesService } from "./services/services/scriptVariablesService";
 import { SkillUseService } from "./services/services/skillUseService";
 import { ArrowSyncService } from "./services/services/arrowSyncService";
 import { SpVersionCheckService } from "./services/services/spVersionCheckService";
@@ -41,11 +48,13 @@ import { DropItemService } from "./services/services/dropItemService";
 import { HitService } from "./services/services/hitService";
 import { RagdollService } from "./services/services/ragdollService";
 import { DeathService } from "./services/services/deathService";
+import { ChangeFormService } from "./services/services/changeFormService";
 import { HeadshotPredictionService } from "./services/services/headshotPredictionService";
 import { ContainersService } from "./services/services/containersService";
 import { NetworkingService } from "./services/services/networkingService";
 import { RemoteServer } from "./services/services/remoteServer";
 import { HostService } from "./services/services/hostService";
+import { LoginCellService } from "./services/services/loginCellService";
 import { PuppetService } from "./services/services/puppetService";
 import { ActorFateService } from "./services/services/actorFateService";
 import { DeathReportService } from "./services/services/deathReportService";
@@ -116,6 +125,8 @@ const main = () => {
       new PlayerGlobalsService(sp, controller),
       new QuestStageService(sp, controller),
       new PropService(sp, controller),
+      new ScriptCallService(sp, controller),
+      new ScriptStateService(sp, controller),
       new SpellPlacedService(sp, controller),
       new LockService(sp, controller),
       new WeatherService(sp, controller),
@@ -123,6 +134,11 @@ const main = () => {
       new WordWallService(sp, controller),
       new RelayedActivationService(sp, controller),
       new ObjectAnimationService(sp, controller),
+      new TrapResultService(sp, controller),
+      new RefStateService(sp, controller),
+      new AliasFillService(sp, controller),
+      new WorldGlobalService(sp, controller),
+      new ScriptVariablesService(sp, controller),
       new SkillUseService(sp, controller),
       new ArrowSyncService(sp, controller),
       new SpVersionCheckService(sp, controller),
@@ -134,11 +150,13 @@ const main = () => {
       new HitService(sp, controller),
       new RagdollService(sp, controller),
       new DeathService(sp, controller),
+      new ChangeFormService(sp, controller),
       new HeadshotPredictionService(sp, controller),
       new ContainersService(sp, controller),
       new NetworkingService(sp, controller),
       new RemoteServer(sp, controller),
       new HostService(sp, controller),
+      new LoginCellService(sp, controller),
       new PuppetService(sp, controller),
       new ActorFateService(sp, controller),
       new DeathReportService(sp, controller),

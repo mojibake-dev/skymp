@@ -21,7 +21,16 @@ public:
   enum class Mode
   {
     RequestSave,
-    NoRequestSave
+    NoRequestSave,
+    // thuum docs/verbs/cell-host.md: an edit the saving policy deferred (a
+    // movement sample inside IsLocationSavingNeeded's 30 s, MakeMode): no
+    // save request now, the record marked unsaved so a stop flushes it.
+    // NoRequestSave alone (a load's apply, an attach's Init, a respawn's
+    // bookkeeping) neither requests a save nor marks the record, so a stop
+    // writes no record for a reference the session only loaded (playtest
+    // 49: a restart wrote 13,851 flora records, every NoRequestSave edit
+    // having been marked since 6f39d9a7)
+    Deferred
   };
 
   void EditChangeForm(std::function<void(MpChangeForm&)> f,
@@ -32,7 +41,7 @@ public:
       lastSaveRequest = std::chrono::system_clock::now();
       unsavedEdit = false;
       ChangeFormGuard_::RequestSave(self);
-    } else if (!blockSaving) {
+    } else if (!blockSaving && mode == Mode::Deferred) {
       // thuum docs/verbs/cell-host.md: an edit the saving policy skipped (a
       // movement sample inside IsLocationSavingNeeded's 30 s) stays in the
       // record alone until the next requested save; a stop flushes it

@@ -156,6 +156,17 @@ public:
   // No loading version of LookupFormById
   const std::shared_ptr<MpForm>& LookupFormByIdNoLoad(uint32_t formId);
 
+  // thuum ADR-068 rung 4 (the state rows, amendment B read 2): attaches a
+  // game-file reference for its first recorded ref state, the loader's type
+  // and disabled filters yielding as for a reference whose saved record
+  // carries refStateSeq (LoadForm), so a marker, a collision box or an
+  // initially disabled activator a host's script enables or disables is the
+  // server's to record and serve; true when the reference stands attached
+  // (already, or now). An ACHR's actor attaches as an actor; a deleted
+  // record, a leveled actor's placement and an NPC under npcEnabled false
+  // stay skipped
+  bool AttachForRecord(uint32_t formId);
+
   void SendPapyrusEvent(MpForm* form, const char* eventName,
                         const VarValue* arguments, size_t argumentsCount);
 
@@ -368,6 +379,31 @@ public:
   // runs here for a player, so the ring is rolled at that player's level
   // before any of it is loaded or subscribed
   std::function<void(MpActor&)> onSquareChange;
+  // thuum ADR-068 rung 4 (b-ref-state-restart 20261107-211516, step 53): a
+  // player's actor's new subscription to a reference the loader keeps as a
+  // primitive (a trigger with an XPRM box, MpObjectReference::Subscribe),
+  // which gets no create word; installed by PartOne, which serves the
+  // reference's records there as it serves them behind a create word
+  std::function<void(MpObjectReference& primitive, MpActor& listener)>
+    onPrimitiveSubscribe;
+  // thuum docs/verbs/npc-fate.md (playtest 51, b-npc-stream-equipment): an
+  // actor's coming subscription to an actor listener
+  // (MpObjectReference::Subscribe, ahead of the listener's place in its sets
+  // and of its create word); installed by PartOne, which rolls a game-file
+  // actor with no roll yet there, for a player listener, at the level of the
+  // game hosting the actor's cell, else of that listener
+  // (PartOne::EnsureFated), so no create word carries an unrolled record
+  std::function<void(MpActor& actor, MpActor& listener)> onActorSubscribe;
+  // thuum ADR-068 rung 4 (amendment B, read 8): a game-file reference just
+  // attached (LoadForm, its saved record applied, before its first
+  // subscription), installed by PartOne for the quest aliases' created items
+  // the reference holds (PartOne::AddCreatedItems)
+  std::function<void(MpObjectReference&)> onAttach;
+  // thuum ADR-068 rung 4: the object's sequence now (the script calls' one
+  // sequence per object, PartOne's ScriptCalls), installed by PartOne, which
+  // a game-file world object's Enable or Disable stamps as its recorded ref
+  // state whatever the cause (MpObjectReference)
+  std::function<uint32_t(uint32_t refrId)> objectSeqOf;
   // thuum ADR-050 decision 3 (train 51): the roll's level for a server-made
   // NPC placed at a reference (PlaceAtMe), by the same rule as the ring's
   // (PartOne::FateRollLevel with the placer as the loader)
@@ -412,6 +448,17 @@ public:
   // to kPendingDeathMs; false restores the absolute values and the kill at
   // once (a bisect switch, server setting npcEngineDeaths)
   bool npcEngineDeaths = true;
+  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4): a
+  // corpse is a physics object under the prop rule. After a death this
+  // process records, the body's owner (the simulator at the death) moves the
+  // record with its ragdoll's samples for bodySettleMs (server setting), or
+  // until they hold still for the dwell (MpActor::kBodyRestUnits,
+  // kBodyRestDegrees, kBodyRestDwellMs, no sooner than kBodyRestMinMs);
+  // the body is then at rest and every later sample is refused until a
+  // later claim. The ids whose window runs; PartOne::TickBodies ends the
+  // ones past it
+  uint32_t bodySettleMs = 15000;
+  std::unordered_set<uint32_t> settlingBodies;
   // the sneak attack multiplier for bows, staffs and crossbows, which the
   // game names no setting for: measured against the engine (x-npc-sneak-shot)
   // and set here (server setting sneakRangedMult); 0 keeps SkyMP's 1.3
@@ -456,14 +503,17 @@ public:
   std::vector<GameModeEvent*> currentGameModeEventsStack;
 
 private:
+  // `recorded` (thuum ADR-068 rung 4): the reference has a recorded ref
+  // state, so the type filter (a REFR of a base the server does not load)
+  // and the two disabled filters yield to it
   bool AttachEspmRecord(const espm::CombineBrowser& br,
                         const espm::RecordHeader* record,
                         const espm::IdMapping& mapping,
                         std::stringstream* optionalOutTrace = nullptr,
-                        bool sighted = false);
+                        bool sighted = false, bool recorded = false);
 
   bool LoadForm(uint32_t formId, std::stringstream* optionalOutTrace = nullptr,
-                bool sighted = false);
+                bool sighted = false, bool recorded = false);
   void TickSaveStorage(const std::chrono::system_clock::time_point& now);
   void TickTimers(const std::chrono::system_clock::time_point& now);
   void TickEffects(const std::chrono::system_clock::time_point& now);

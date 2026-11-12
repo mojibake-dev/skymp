@@ -1,9 +1,15 @@
 #pragma once
 
+#include <RE/B/BSCoreTypes.h>
 #include <cstdint>
+#include <string>
 
 namespace RE {
 class Actor;
+}
+
+namespace RE::BSScript {
+struct IObjectHandlePolicy;
 }
 
 namespace Frida {
@@ -21,14 +27,79 @@ bool DamageActorOriginal(RE::Actor* victim, float damage, RE::Actor* attacker,
 // server's number is the one number); default on, skymp5-client's
 // npcEngineDamage switches it
 void SetEngineDamageCut(bool on);
+// whether DamageActor's replacement went in at install: the player's cut of
+// another actor's damage rests on it (thuum D-T4)
+bool IsDamageActorReplaced();
 
-// thuum docs/DECISIONS.md ADR-059 decision 1: the cells this game hosts, so a
-// Papyrus event to a reference standing in one of them passes the event block
-// when its script is on a host-scoped row of the admitted list ("<plugin>
-// host: <class> ..." in Data/Platform/papyrus-scripts.txt). skymp5-client's
-// hostService tells it at every grant and release (TESModPlatform's
-// SetCellHosted). Threadsafe.
+// thuum docs/DECISIONS.md ADR-059 decision 1 and ADR-062 decision 1: the
+// cells this game hosts, so a Papyrus event to a world object standing in one
+// of them passes the event block whatever its script's name (OnSendEventEnter)
+// and a hooked native's call on such an object counts as the host's
+// (ScriptNatives.cpp). skymp5-client's hostService tells it at every grant
+// and release (TESModPlatform's SetCellHosted). Threadsafe.
 void SetCellHosted(uint32_t cellFormId, bool hosted);
+// whether this game hosts the cell (ADR-059 decision 1's set), for the hooks
+// outside this file (ScriptNatives.cpp)
+bool IsCellHosted(uint32_t cellFormId);
+
+// thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A (the presser rule;
+// docs/research/fifty-fixes-2026-11-07.md 1(b)): the Papyrus event gate's
+// rule over a world object's OnTriggerEnter and OnTriggerLeave on or off
+// (OnSendEventEnter). On, an entry whose presser this seat does not own is
+// blanked, and one it owns on a trap family trigger, or on a scripted
+// trigger in a cell it does not host, raises triggerEntry; off, the default,
+// keeps D-S3 (every seat's engine counts every presser), so a client that
+// never sets it changes nothing. skymp5-client's setting triggerPresser
+// turns it on through setTriggerPresserRule (PuppetApi.cpp). Threadsafe
+void SetTriggerPresserRule(bool on);
+// the presser rule's switch as last set: ADR-068 D-W2 A's look acts only
+// with it on (ScriptNatives.cpp OnFamilyCall)
+bool TriggerPresserRuleOn();
+
+// thuum docs/DECISIONS.md ADR-068 decision 6 ("the player's own (0x14, the
+// player's effects, the player-alias quests) are the player's seat's"): this
+// seat's own player in the active effect a VM handle names, its target or
+// its caster (the gate's own order, the target first, so an effect the
+// player cast on itself answers kTarget), or neither, kNone also for a
+// handle that is no active effect's
+// (CommonLibSSE-NG include/RE/A/ActiveEffect.h:31, VMTYPEID 142;
+// IObjectHandlePolicy.h:20 and :27). One test, two callers: the Papyrus
+// event gate admits such an effect's events (OnSendEventEnter, ADR-031's
+// push), and the seam lets such an effect's script place its helpers
+// (ScriptNatives.cpp, thuum train 52's Fix 2), so an effect script places
+// wherever the gate lets it run. Two policy calls and a handle read; no lock
+// of this file's
+enum class PlayersEffectRole : std::uint8_t
+{
+  kNone,
+  kCaster,
+  kTarget
+};
+PlayersEffectRole PlayersEffect(RE::BSScript::IObjectHandlePolicy* policy,
+                                RE::VMHandle handle);
+
+// thuum docs/DECISIONS.md ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's
+// held entries (an enter to a scripted world trigger it blanked while the
+// presser's owner was undecided here, an NPC standing inside at this seat's
+// load, kept per (trigger, presser) with a count and a 60 s expiry), each
+// replayed once through SendTriggerEvent's body when its presser is this
+// seat's now by the rule's own owner test and its trigger stands in a cell
+// this seat hosts; the expired ones dropped. TESModPlatform.ReplayHeldEntries'
+// body, on the update thread inside callNative (the platform's mark), which
+// skymp5-client calls at the update after the one that saw its own hosting
+// state change. A JSON string: replayed, refused, expired, held. No
+// exception leaves it. Turning the rule off clears the held entries
+std::string ReplayHeldEntries();
+
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch:
+// the animation hook's rule over a furniture's own graph event on or off
+// (OnSendAnimationEventEnter). On, an event the engine sends to a plain
+// reference whose base is a FURN never reaches the sendAnimationEvent
+// handlers and crosses after the call as furnitureAnimation; off, the
+// default, keeps every graph event on the handlers as before.
+// skymp5-client's setting furnitureAnimation turns it on through
+// setFurnitureAnimation (PuppetApi.cpp). Threadsafe
+void SetFurnitureAnimation(bool on);
 
 // thuum docs/verbs/quest-stage.md, slice two: a (quest, stage) pair
 // skymp5-client's questStageService is applying from the server's relay,

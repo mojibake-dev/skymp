@@ -70,6 +70,16 @@ import { WordWallMessage } from "./wordWallMessage";
 import { RelayedActivationMessage } from "./relayedActivationMessage";
 import { ObjectAnimationMessage } from "./objectAnimationMessage";
 import { SkillUseMessage } from "./skillUseMessage";
+import { ChangeFormMessage } from "./changeFormMessage";
+import { ChangeFormAckMessage } from "./changeFormAckMessage";
+import { ChangeFormApplyMessage } from "./changeFormApplyMessage";
+import { ScriptCallMessage } from "./scriptCallMessage";
+import { ScriptStateMessage } from "./scriptStateMessage";
+import { ScriptStateApplyMessage } from "./scriptStateApplyMessage";
+import { DestructionStageMessage } from "./destructionStageMessage";
+import { AliasFillMessage } from "./aliasFillMessage";
+import { WorldGlobalMessage } from "./worldGlobalMessage";
+import { ScriptVariablesMessage } from "./scriptVariablesMessage";
 
 export type AnyMessage = ActivateMessage
     | ConsoleCommandMessage
@@ -136,6 +146,16 @@ export type AnyMessage = ActivateMessage
     | RelayedActivationMessage
     | ObjectAnimationMessage
     | SkillUseMessage
+    | ChangeFormMessage
+    | ChangeFormAckMessage
+    | ChangeFormApplyMessage
+    | ScriptCallMessage
+    | ScriptStateMessage
+    | ScriptStateApplyMessage
+    | DestructionStageMessage
+    | AliasFillMessage
+    | WorldGlobalMessage
+    | ScriptVariablesMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

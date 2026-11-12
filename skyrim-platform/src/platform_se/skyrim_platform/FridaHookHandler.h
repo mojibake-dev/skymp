@@ -40,7 +40,19 @@ enum HookID
   // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
   // NiControllerManager sequence as the engine plays it
   // (TESObjectREFR::PlayAnimation_Impl, CommonLibSSE-NG Offsets.h:546)
-  HOOK_PLAY_ANIMATION
+  HOOK_PLAY_ANIMATION,
+  // thuum docs/verbs/spell-cast.md (the rune's glyph): the engine's decal
+  // placement after a target-location launch (Address Library 44186)
+  HOOK_RUNE_DECAL,
+  // reserved: the flip's 24 Papyrus native entry hooks (thuum ADR-062
+  // decision 2), retired by ADR-068's one seam (rung 2) on the dispatch
+  // below; the value is never reused and the ids after it keep theirs
+  HOOK_SCRIPT_NATIVE,
+  // reserved: the attach on the VM's one native dispatch,
+  // NativeFunctionBase::Call (Address Library 104651), until rung 2's last
+  // commit replaced the function through HookHandler::Replace, which takes
+  // no id (ScriptNatives.cpp); the value is never reused
+  HOOK_NATIVE_CALL
 };
 
 struct Hook
@@ -66,6 +78,11 @@ public:
 
   bool Attach(HookID id, uintptr_t address);
   void Install(HookID id, uintptr_t address, std::shared_ptr<Hook> hook);
+  // Register the hook's callbacks without an address, at plugin load, so a
+  // later Attach (kDataLoaded, when the entries are known) never inserts
+  // into the map the live hooks read (thuum ADR-062 slice 1b's review: the
+  // map is unguarded and a Robin Hood insert moves entries)
+  void Register(HookID id, std::shared_ptr<Hook> hook);
   // Replace the function at address with replacement (Gum's
   // gum_interceptor_replace, frida-gum 16.0.19 gum/guminterceptor.h:49-51),
   // the original left callable through *original; false when Gum refused

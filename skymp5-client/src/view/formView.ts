@@ -5,8 +5,11 @@ import { isHandCastEvent } from "../services/services/actionSyncService";
 import { applyAnimationVariablesToActor, armActorFate, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimHeading, setActorAimPitch } from "skyrimPlatform";
 import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
+import { applyRaceOverlay, parseRaceOverlay } from "../sync/raceOverlay";
+import { RaceOverlay } from "../services/messages/raceOverlay";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
+import { applyBodyInventory } from "../sync/inventory";
 import * as sp from "skyrimPlatform";
 import { logLab, logTrace } from "../logging";
 import { FormModel } from "./model";
@@ -122,6 +125,33 @@ export class FormView {
         // per record cell, never destroyed; the npcHandoff switch leaves it
         // standing where the engine put it
         this.lastWorldOrCell = model.movement.worldOrCell;
+        // docs/engine/non-owning-seat.md R1: the view's gate at the word's flip,
+        // logged whatever it decides (the instrumented run on the parent):
+        // the engine's cell and position against the record's, and why the
+        // move below runs or not (the same cell; moved into this record cell
+        // once already; moved now)
+        if (FormView.npcHandoffEnabled()) {
+          const refr0 = ObjectReference.from(Game.getFormEx(this.refrId));
+          const mine0 = !!refr0 && SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr0);
+          const promoted0 = mine0 && model.isHostedByOther === false && this.hostedBefore !== false;
+          const demoted0 = !mine0 && model.isHostedByOther === true && this.hostedBefore === false;
+          if (refr0 && (promoted0 || demoted0)) {
+            const e = ObjectReferenceEx.getWorldOrCell(refr0);
+            const r = model.movement.worldOrCell;
+            const p = model.movement.pos;
+            const engineAt = `(${refr0.getPositionX().toFixed(0)}, ${refr0.getPositionY().toFixed(0)}, ${refr0.getPositionZ().toFixed(0)}) in ${e.toString(16)}`;
+            const recordAt = `(${p[0].toFixed(0)}, ${p[1].toFixed(0)}, ${p[2].toFixed(0)}) in ${r.toString(16)}`;
+            // a promotion resets the one-shot: the gate's move may run at
+            // every promotion (non-owning-seat.md P2b); HostService's hold
+            // keeps the actor's reports until the engine's copy stands at the
+            // record, by this move or its own
+            if (promoted0) {
+              this.movedInto = 0;
+            }
+            const why = !promoted0 ? "demoted" : e === r ? "not moved here (the same cell)" : "moved to the record below";
+            logLab("verb:npc-handoff", `${promoted0 ? "promote" : "demote"} gate ${this.refrId.toString(16)}: the engine at ${engineAt}, the record at ${recordAt}; ${why}`);
+          }
+        }
         if (FormView.npcHandoffEnabled() && this.movedInto !== model.movement.worldOrCell) {
           const refr = ObjectReference.from(Game.getFormEx(this.refrId));
           const engineCell = refr ? ObjectReferenceEx.getWorldOrCell(refr) : 0;
@@ -137,7 +167,13 @@ export class FormView {
           // moment, so the new host moves its own reference to it when the
           // engine has it in another cell; after that the host's engine leads
           const promotedNow = mine && model.isHostedByOther === false && this.hostedBefore !== false;
-          if (refr && target && (!mine || promotedNow) && engineCell !== 0 && engineCell !== model.movement.worldOrCell) {
+          // one mover: while HostService holds this actor for its placement
+          // the hold asks the move, not the gate (review item 4); and a body
+          // is never moved (D78 C, review item 2)
+          const held = !!refr && SpApiInteractor.getControllerInstance().lookupListener(HostService).isHeld(this.refrId);
+          // the dead read (a native) only when every cheaper condition holds
+          if (refr && target && (!mine || promotedNow) && !held && engineCell !== 0 && engineCell !== model.movement.worldOrCell &&
+              model.isDead !== true && !(Actor.from(refr)?.isDead() ?? false)) {
             const pos = model.movement.pos;
             const rot = model.movement.rot;
             TESModPlatform.moveRefrToPosition(
@@ -349,8 +385,8 @@ export class FormView {
         if (typeof model.refrId === "number" && model.refrId >= 0xff000000 && FormView.isNpcModel(model) && base.getType() === FormType.NPC) {
           const fate = SpApiInteractor.getControllerInstance().lookupListener(ActorFateService).fateForCopy(model.refrId);
           if (fate) {
-            const armed = armActorFate(base.getFormID(), fate.baseId, fate.worn);
-            logLab("verb:npc-fate", `copy ${model.refrId.toString(16)} of ${base.getFormID().toString(16)}: fate armed ${armed} (${fate.worn.length} worn)`);
+            const armed = armActorFate(base.getFormID(), fate.baseId, fate.worn, fate.inv);
+            logLab("verb:npc-fate", `copy ${model.refrId.toString(16)} of ${base.getFormID().toString(16)}: fate armed ${armed} (${fate.worn.length} worn, ${fate.inv.length / 2} inventory row(s))`);
           } else {
             logLab("verb:npc-fate", `copy ${model.refrId.toString(16)} of ${base.getFormID().toString(16)}: no fate held, the engine's own roll`);
           }
@@ -413,6 +449,9 @@ export class FormView {
         // TODO: reset all states?
         this.eqState = this.getDefaultEquipState();
         this.animState = this.getDefaultAnimState();
+        // a new reference wears no overlay yet (rung 5, D-T1 A)
+        this.overlayOn = undefined;
+        this.overlayKey = "";
 
         this.ready = false;
 
@@ -748,6 +787,11 @@ export class FormView {
           // native clears is unread); that the silent kill still drops the
           // body as a ragdoll at the record's spot; that the record's pos is
           // the body's rest and not an earlier sample of the standing actor
+          // thuum ADR-067 by ADR-065's path (ChangeFormService): a served
+          // change-form record lays the body as this kill lands, and moves
+          // it anyway (read 1: 1,150 units in one call), so the move by
+          // coordinates stays regardless, harmless, and the owner's early
+          // dead samples then come from the record's spot
           const placed = this.placeAtDeadRecord(body, model);
           logLab("verb:npc-fate", `dead record ${this.refrId.toString(16)} loaded alive on ${simulatedHere ? "this host's" : "a watcher's"} seat: ${placed}, killed silently at the bind`);
           SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true, silent: true });
@@ -788,10 +832,12 @@ export class FormView {
       // However, actually, actors do not have inventory in their models
       // Except your clone. A dead NPC, an engine reference or a server-made
       // copy, is the server's container (npc-fate.md): its inventory is the
-      // record's, laid under the engine's own ContainerMenu (the live chest
-      // above; a body is never activation-blocked since playtest 37's
-      // findings 58 and 62, so the engine's menu opens on E and the list
-      // lands under it). The copy's branch is finding 62's: the dead
+      // record's, laid under the ContainerMenu the server's OpenContainer
+      // opens (remoteServer's handler; the body is activation-blocked like a
+      // CONT since ADR-067 decision 6, PuppetService.blockDeadBody, so E
+      // sends Activate and the record's list, sent ahead of the
+      // OpenContainer, lands before the menu). The copy's branch is finding
+      // 62's: the dead
       // necromancer ff00000a's menu got no list laid under it; the shape is
       // remoteServer.ts's npcCopy (an NPC base, never the players' 0x7, not
       // this player's own clone)
@@ -802,8 +848,18 @@ export class FormView {
         // thuum docs/verbs/npc-fate.md (playtest 34, section 5): a body keeps
         // the engine's dressing (the pin made the worn sets equal); the
         // server's list is the loot rows, laid in as a diff alone, never
-        // through resetBase's removeAllItems and resetContainer
-        ModelApplyUtils.applyModelInventory(refr, model.inventory, !deadBody);
+        // through resetBase's removeAllItems and resetContainer. Playtest 48
+        // (the loot strip): and the record's worn armor it then holds unworn
+        // is dressed again (applyBodyInventory), from the record's equipment
+        // this view holds
+        if (deadBody) {
+          const worn = (model.equipment?.inv.entries || [])
+            .filter((e) => e.worn || e.wornLeft)
+            .map((e) => e.baseId);
+          applyBodyInventory(refr, model.inventory, worn);
+        } else {
+          ModelApplyUtils.applyModelInventory(refr, model.inventory, true);
+        }
         model.inventory = undefined;
         if (liveChest) {
           const api = sp as unknown as Record<string, unknown>;
@@ -1064,7 +1120,7 @@ export class FormView {
         this.spellSweepAt = Date.now();
         const figure = Actor.from(refr);
         if (figure && isFigureBase(figure)) {
-          const removed = keepOnlyServerSpells(figure, model.equipment);
+          const removed = keepOnlyServerSpells(figure, model.equipment, FormView.overlaySpells(model));
           if (removed > 0) {
             printConsole(`figure ${refr.getFormID().toString(16)}: ${removed} spell(s) a distributor added removed (ADR-046)`);
           }
@@ -1082,7 +1138,7 @@ export class FormView {
           this.spawnMoment > 0
         ) {
           //if (this.spawnMoment > 0 && Date.now() - this.spawnMoment > 5000) {
-          if (applyEquipment(ac, model.equipment)) {
+          if (applyEquipment(ac, model.equipment, FormView.overlaySpells(model))) {
             this.eqState.lastNumChanges = model.equipment.numChanges;
           }
           this.eqState.lastEqMoment = Date.now();
@@ -1091,6 +1147,12 @@ export class FormView {
           //if (res) this.eqState.lastNumChanges = model.equipment.numChanges;
         }
       }
+    }
+
+    // thuum docs/DECISIONS.md ADR-068 rung 5, D-T1 A: a player's figure wears
+    // its race overlay (sync/raceOverlay.ts)
+    if (!alreadyHosted && !FormView.isNpcModel(model) && this.spawnMoment > 0) {
+      this.applyOverlay(refr, model);
     }
 
     // thuum docs/verbs/self-cast.md (playtest twenty: "yes hide it"): an
@@ -1205,6 +1267,48 @@ export class FormView {
     return this.leveledBaseId;
   }
 
+  // thuum docs/DECISIONS.md ADR-068 rung 5, D-T1 A (sync/raceOverlay.ts):
+  // the overlay the model carries (its CreateActor's props, then each
+  // UpdateAppearance's) goes on the figure whenever the figure, the overlay
+  // or the equipment's apply changed, since that apply takes every item off
+  // (its spells it keeps: overlaySpells), and only once the apply's adds
+  // have had overlayAfterEquipMs to land (setInventory queues them past the
+  // tick, sync/equipment.ts). An overlay gone comes off the figure
+  private applyOverlay(refr: ObjectReference, model: FormModel) {
+    const wanted = parseRaceOverlay(model.overlay);
+    if (!wanted && !this.overlayOn) {
+      return;
+    }
+    const key = wanted ? `${JSON.stringify(wanted)} on ${refr.getFormID()} at ${this.eqState.lastNumChanges}` : "";
+    if (key === this.overlayKey || Date.now() - this.eqState.lastEqMoment < FormView.overlayAfterEquipMs) {
+      return;
+    }
+    const ac = Actor.from(refr);
+    if (!ac || ac.isDeleted() || !isFigureBase(ac)) {
+      return;
+    }
+    // the key first (the fresh review's note 8): a throw below is tried
+    // again at the next change, never every frame
+    const had = this.overlayOn;
+    this.overlayOn = wanted;
+    this.overlayKey = key;
+    try {
+      applyRaceOverlay(ac, wanted, had);
+    } catch (e) {
+      printConsole(`figure ${refr.getFormID().toString(16)}: race overlay not applied (${e}) (D-T1 A)`);
+      return;
+    }
+    printConsole(wanted
+      ? `figure ${refr.getFormID().toString(16)}: race overlay on${wanted.race ? " (race " + wanted.race.toString(16) + ")" : ""}, ${wanted.spells.length} spell(s), ${wanted.shouts.length} shout(s), ${wanted.items.length} item(s) (D-T1 A)`
+      : `figure ${refr.getFormID().toString(16)}: race overlay off (D-T1 A)`);
+  }
+
+  // the spells a figure's race overlay adds, which its spell strip keeps
+  private static overlaySpells(model: FormModel): number[] {
+    const overlay = parseRaceOverlay(model.overlay);
+    return overlay ? overlay.spells : [];
+  }
+
   private getDefaultEquipState() {
     return { lastNumChanges: 0, lastEqMoment: 0 };
   };
@@ -1253,6 +1357,17 @@ export class FormView {
   // P4: the puppet's graph (AI off, the detours feeding it) takes an attack
   // through the entry
   private replayActions(refr: ObjectReference, model: FormModel): void {
+    // a dead record's carried action (the create word's lastAction, train
+    // 56's late-join replay) is never played: the body is bound dead instead
+    // (x-npc-death-reentry v4's run 20261103-100946 on the watcher: the carried
+    // death Ragdoll played as an event beside the bind's own, two replays at
+    // one re-entry)
+    if (model.isDead === true && model.actionQueue && model.actionQueue.length > 0) {
+      const dropped = model.actionQueue.length;
+      model.actionQueue.splice(0, dropped);
+      logLab("verb:npc-fate", `${dropped} carried action(s) of the dead record ${this.refrId.toString(16)} dropped, not replayed (the record is dead)`);
+      return;
+    }
     if (FormView.isNpcModel(model) && !FormView.streamSwitch("npcStreamActions")) {
       // the bisect switch: an NPC puppet's queue is dropped unplayed
       if (model.actionQueue && model.actionQueue.length > 0) {
@@ -1407,6 +1522,22 @@ export class FormView {
       // action's event, as the relay sent it; no variables, no retries. The
       // first such event per puppet is said once (the lab's read of the
       // path: x-npc-stream-p4's claim since v2)
+      if (next.eventName && next.eventName.startsWith("KillMove")) {
+        // a puppet's death is the server's word (ADR-050 decision 2): the
+        // host's kill move, replayed as its event, ran the victim animation
+        // whose KillActor tag killed the copy at its own time (2.7 s after
+        // the event on c2 in x-npc-death-freeze 140538 and 152912), 3 s ahead
+        // of the record; the dead check stood it up, the word killed it again
+        // and the second ragdoll froze half-up (HYPOTHESIS on the tag, the
+        // timing is the runs'). The figures' kill moves are blanked at the
+        // hook (deathService.hookDisableKillMoves); a puppet's are dropped
+        // here, once said per puppet
+        if (!FormView.killMoveSaid.has(this.refrId)) {
+          FormView.killMoveSaid.add(this.refrId);
+          logLab("verb:npc-fate", `${this.refrId.toString(16)}: the host's ${next.eventName} not replayed on the puppet, a puppet's death is the server's word`);
+        }
+        return;
+      }
       if (next.eventName) {
         Debug.sendAnimationEvent(refr, next.eventName);
         if (!FormView.eventPathSaid.has(this.refrId)) {
@@ -1462,6 +1593,8 @@ export class FormView {
   }
 
   private static readonly eventPathSaid = new Set<number>();
+  // the puppets whose kill-move replay was dropped and said once
+  private static readonly killMoveSaid = new Set<number>();
   private static readonly castRetryLimit = 15;
   // updates to wait for the queue's answer before counting it refused
   private static readonly answerWaitLimit = 6;
@@ -1492,6 +1625,11 @@ export class FormView {
   private state = {};
   private localImmortal = false;
   private spellSweepAt = 0;
+  // rung 5, D-T1 A: the race overlay on the figure now and the key it went
+  // on under (the overlay, the reference, the equipment's apply)
+  private overlayOn: RaceOverlay | undefined = undefined;
+  private overlayKey = "";
+  private static readonly overlayAfterEquipMs = 500;
   // thuum docs/verbs/spell-placed-object.md: for a server form this game's
   // own cast placed, undefined until decided, true while this game's own
   // copy stands at the pose (the server's never placed), false once the

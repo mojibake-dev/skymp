@@ -109,5 +109,35 @@ enum class MsgType : uint8_t
   ObjectAnimation =
     71, // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
         // animation event the cell's host reported, recorded and relayed
+  ChangeForm = 72,    // thuum docs/verbs/change-form.md (ADR-065 system 1): an
+                      // actor's change form as its owner's engine serialized
+                      // it, recorded by the server
+  ChangeFormAck = 73, // the same verb: the server's receipt, the body's
+                      // hash the owner compares against
+  ChangeFormApply = 74, // the same verb: a recorded change form served to a
+                        // seat before the actor's first frame there
+  ScriptCall = 75,  // thuum ADR-068 (the one seam): a tabled native a script
+                    // ran on the engine that owns its subject, reported at the
+                    // native boundary and relayed as SpSnippet with the
+                    // subject's sequence
+  ScriptState = 76, // thuum ADR-068 rung 3 (the script record): the
+                    // scripts attached to a reference as its owner's
+                    // engine read them, recorded with the object's
+                    // sequence and its view, never relayed live
+  ScriptStateApply = 77, // the same rung: a reference's record served ahead
+                         // of a grant to the cell's new host and behind the
+                         // create word to every other seat
+  DestructionStage = 78, // thuum D-S3 (traps follow the interaction): a
+                         // reference's destruction stage or destroyed flag,
+                         // reported by the seat that reached it first,
+                         // recorded once and served behind a create word;
+                         // since rung 4 also its ref state, the server's
+  AliasFill = 79,   // thuum ADR-068 rung 4: a quest's reference alias filled
+                    // or cleared, every seat's report, the latest recorded
+  WorldGlobal = 80, // the same rung: the GLOBs every seat's scripts write,
+                    // streamed by one seat at an epoch
+  ScriptVariables = 81, // thuum ADR-068 rung 5: the condition-read script
+                        // variables any seat reports, the latest write
+                        // recorded per key, a player's own keys its own
   Max
 };

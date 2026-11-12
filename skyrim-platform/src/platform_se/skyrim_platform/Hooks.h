@@ -20,4 +20,12 @@ std::vector<std::tuple<std::string, std::string, RE::BSScript::IFunction*,
                        uintptr_t, uintptr_t, uintptr_t>>
 GetBoundNatives();
 
+// thuum train 52, Fix 1: SkyrimScript::AddItemFunctor's operator() slot,
+// written at Install (Hooks.cpp): what the slot held before the write, as its
+// allocation base and the offset from it ({0, 0} before Install), for the
+// seam's install line; and whether the slot holds the platform's thunk now,
+// the seam's read-back at its first parked call (H-LR2)
+std::pair<std::uintptr_t, std::uintptr_t> AddItemFunctorSlotWas();
+bool AddItemFunctorSlotHolds();
+
 }

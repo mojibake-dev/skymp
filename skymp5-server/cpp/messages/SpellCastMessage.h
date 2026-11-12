@@ -1,6 +1,7 @@
 #pragma once
 #include "MessageBase.h"
 #include "MsgType.h"
+#include <optional>
 #include <type_traits>
 
 struct ActorAnimationVariables
@@ -16,6 +17,32 @@ struct ActorAnimationVariables
       .Serialize("floats", floats)
       .Serialize("integers", integers);
   }
+};
+
+// thuum docs/verbs/spell-cast.md (the rune's glyph on the observer): the
+// surface the caster's own target-location launch picked, read in its game
+// from the engine's decal placement; the pick's unit normal and the surface's
+// material id, which each observer's game hands to the placement after its
+// relayed launch. Only with hasLaunch (the validator's rule)
+struct SpellCastDecal
+{
+  template <class Archive>
+  void Serialize(Archive& archive)
+  {
+    archive.Serialize("normalX", normalX)
+      .Serialize("normalY", normalY)
+      .Serialize("normalZ", normalZ)
+      .Serialize("materialId", materialId);
+  }
+  friend bool operator==(const SpellCastDecal& lhs, const SpellCastDecal& rhs)
+  {
+    return lhs.normalX == rhs.normalX && lhs.normalY == rhs.normalY &&
+      lhs.normalZ == rhs.normalZ && lhs.materialId == rhs.materialId;
+  }
+  float normalX = 0.f;
+  float normalY = 0.f;
+  float normalZ = 0.f;
+  uint32_t materialId = 0;
 };
 
 struct SpellCastMsgData
@@ -37,7 +64,8 @@ struct SpellCastMsgData
       .Serialize("originZ", originZ)
       .Serialize("launchAngleX", launchAngleX)
       .Serialize("launchAngleZ", launchAngleZ)
-      .Serialize("actorAnimationVariables", actorAnimationVariables);
+      .Serialize("actorAnimationVariables", actorAnimationVariables)
+      .Serialize("decal", decal);
   }
 
   uint32_t caster = 0;
@@ -61,6 +89,8 @@ struct SpellCastMsgData
   float launchAngleZ = 0.f;
 
   ActorAnimationVariables actorAnimationVariables;
+  // the launch's surface (above); absent for every cast without one
+  std::optional<SpellCastDecal> decal;
 };
 
 struct SpellCastMessage : public MessageBase<SpellCastMessage>

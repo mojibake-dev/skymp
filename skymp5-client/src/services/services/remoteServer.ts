@@ -26,7 +26,8 @@ import { IdManager } from '../../lib/idManager';
 import { nameof } from '../../lib/nameof';
 import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
-import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment } from '../../sync/equipment';
+import { withOverlayRace } from '../../sync/raceOverlay';
+import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment, equippedAmmoAmong, handsTouchedBy } from '../../sync/equipment';
 import { Inventory, applyInventory, ApplyInventoryReport } from '../../sync/inventory';
 import { ContainerApplyQueue } from '../../view/containerApplyQueue';
 import { Movement } from '../../sync/movement';
@@ -65,7 +66,11 @@ import {
 } from '../../view/worldViewMisc';
 import { TimeService } from './timeService';
 import { HostService } from './hostService';
-import { logTrace, logError } from '../../logging';
+import { ObjectAnimationService } from './objectAnimationService';
+import { ScriptStateService } from './scriptStateService';
+import { PuppetService } from "./puppetService";
+import { RaceMenuService } from "./raceMenuService";
+import { logTrace, logError, logLab } from '../../logging';
 
 import { SpellCastMessage } from '../messages/spellCastMessage';
 import { ActorJumpMessage } from '../messages/actorJumpMessage';
@@ -85,33 +90,99 @@ const setPcInventory = (inv: Inventory): void => {
   storage['pcInv'] = inv;
 };
 
+// thuum docs/DECISIONS.md D-R1 C (Eli, 2026-11-10): a script's AddItem or
+// RemoveItem on this seat's own player is the player's own record, which
+// ScriptCallService reports (ScriptCall 75) and the server records as
+// reported, its SetInventory then carrying it into pcInv. Until then the
+// apply below would undo it (x-acting-frame 20261110-072506: a fragment's 25
+// gold gone about 2.4 s after the grant, on the next apply). So the report
+// holds its base from the call's arrival in JS (the batch the dispatch
+// queued, ahead of the latent body that moves the item) until a while past
+// its send: the apply leaves the engine's surplus of a held add
+// (inventory.ts keepSurplus) and its deficit of a held removal
+// (keepDeficit), and once the hold lapses the record, the server's echo in
+// it by then, lands as before. A grant the server refused (a leveled list,
+// E_SCRIPTCALL_LEVELED) is the record's again at the lapse. JS state alone,
+// read by the update's apply
+const pcInvHolds = new Map<number, { sides: number; until: number }>();
+const pcInvHoldsMax = 256;
+
+export const holdPcInventoryBase = (baseId: number, sides: number, until: number): void => {
+  const held = pcInvHolds.get(baseId);
+  if (held === undefined && pcInvHolds.size >= pcInvHoldsMax) {
+    // bounded: the oldest hold goes first (the map keeps insertion order)
+    const oldest = pcInvHolds.keys().next();
+    if (!oldest.done) {
+      pcInvHolds.delete(oldest.value);
+    }
+  }
+  pcInvHolds.set(baseId, { sides: (held?.sides ?? 0) | sides, until: Math.max(held?.until ?? 0, until) });
+};
+
+// the holds still running at `now`, the lapsed ones dropped; undefined when
+// none runs
+const pcInvKept = (now: number): Map<number, number> | undefined => {
+  let kept: Map<number, number> | undefined;
+  pcInvHolds.forEach((held, baseId) => {
+    if (held.until <= now) {
+      pcInvHolds.delete(baseId);
+      return;
+    }
+    kept = kept ?? new Map<number, number>();
+    kept.set(baseId, held.sides);
+  });
+  return kept;
+};
+
 let pcInvLastApply = 0;
+// thuum playtest 48 ("Rotfern had to re-equip her bow again", as in playtest
+// 34 and 38's finding 68): the equipment a login's wipe dressed the player
+// from (applyPcInv below), left for the hands pass after this loop's next
+// apply, the one that lands the record's plain rows after that wipe. Kept
+// until `until`, the loop's period twice past the wipe: a menu held open
+// longer at the login holds the apply back (isBadMenuShown), and a weapon
+// the player swapped in it then stays the player's
+let loginHands: { eq: Equipment; until: number } | undefined;
+const loginHandsMs = 10000;
 on('update', () => {
   if (isBadMenuShown()) {
     return;
   }
   if (Date.now() - pcInvLastApply > 5000) {
-    const firstApplyAfterSet = pcInvLastApply === 0;
     pcInvLastApply = Date.now();
     const pcInv = getPcInventory();
     if (pcInv) {
-      const report: ApplyInventoryReport = { wornAdded: false };
-      applyInventory(Game.getPlayer()!, pcInv, false, true, true, report);
-      // thuum playtest 38's finding 68 ("after rotfern came back her bow
-      // wouldn't draw arrows"; c1's console: the login's hands pass equipped
-      // the ammo at +0.1 s, and this loop's first apply re-added the whole
-      // inventory at +5 s with nothing equipping after it): the first apply
-      // after a setInventory resets the base and lands every entry anew, and
-      // any later apply that re-adds a worn entry (an arrow count drift from
-      // shooting re-adds the ammo and un-equips it, the finding's read)
-      // leaves the hands the same way, so the hands pass runs once more when
-      // such adds have landed. The apply's own report is the one check this
-      // loop pays per five seconds
-      if (firstApplyAfterSet || report.wornAdded) {
+      const player = Game.getPlayer()!;
+      const report: ApplyInventoryReport = { changed: new Set<number>() };
+      applyInventory(player, pcInv, false, true, true, report, pcInvKept(Date.now()));
+      // thuum playtest 38's finding 68 and playtest 48 (the first draw after
+      // a relaunch's login nocked no arrow): a login wipes the player's
+      // inventory and lays the equipment's worn rows (applyEquipment, twice:
+      // applyPcInv below), and this loop's next apply lands the record's
+      // plain rows after each wipe (the 40 arrows of a quiver the record
+      // splits into one worn arrow and the rest, 38's console; the bow
+      // itself, x-hands-relaunch v1's), the last word on the hands. The pass
+      // after it read the worn flags of the server's rows, which a player's
+      // rows never carry (inventory.ts ApplyInventoryReport), so it equipped
+      // nothing. Now the apply's report names every base id it added or
+      // removed, and the hands pass runs when one of them is a hand's item:
+      // after the first apply that follows a login's wipe, with that login's
+      // equipment (consumed here) and the fresh equip a wipe needs
+      // (sync/equipment.ts applyPlayerHands); after any other apply, with
+      // the ammo this engine had equipped among the changed ids (an arrow
+      // count drift from shooting re-adds the ammo, finding 68's read), read
+      // in this tick before the apply's adds land, its isEquipped check
+      // kept. Never with the login's equipment in play: the player may have
+      // put that bow away since. The apply's own report is the one check
+      // this loop pays per five seconds
+      const login = loginHands !== undefined && Date.now() <= loginHands.until ? loginHands.eq : undefined;
+      loginHands = undefined;
+      const hands = login ?? equippedAmmoAmong(player, report.changed);
+      if (hands && handsTouchedBy(hands, report.changed)) {
         Utility.wait(0.1).then(() => {
-          const player = Game.getPlayer();
-          if (player) {
-            applyPlayerHands(player, { inv: pcInv } as Equipment);
+          const again = Game.getPlayer();
+          if (again) {
+            applyPlayerHands(again, hands, login !== undefined);
           }
         });
       }
@@ -245,11 +316,28 @@ export class RemoteServer extends ClientListener {
       // it awaited, while the plugin ran on. The timers' callbacks run inside
       // the game's update (TimersService processes them on 'update' when the
       // player exists), so the natives are legal there.
+      // thuum ADR-067 decision 6 (the exclusive container hold;
+      // docs/private/container-hold-scope.md D-C2 A): a dead body is
+      // activation-blocked like a CONT on every seat (PuppetService.
+      // blockDeadBody), so this handler is the one way its loot menu opens,
+      // for the one looter the server admitted. The activate(player, true)
+      // below and openBodyOnTimers' run with default processing only
+      // (TESObjectREFR::ActivateRef's a_defaultProcessingOnly, CommonLibSSE-NG
+      // include/RE/T/TESObjectREFR.h:367; the block is ExtraFlags
+      // kBlockActivate, src/RE/T/TESObjectREFR.cpp:843), the call that opens
+      // a blocked chest in every container scenario. That it opens the loot
+      // ContainerMenu on a blocked dead actor too (the NPC base's Activate
+      // and OpenContainer(kLoot), engine model E25) is a HYPOTHESIS until
+      // x-container-hold's corpse leg reads it; the block's state is logged
+      // at each open for that read.
       if (baseType === FormType.NPC) {
         const ac = Actor.from(refr);
-        if (ac && ac.isDead() && !ac.isAIEnabled()) {
-          this.openBodyOnTimers(localId, event.message.target, ac);
-          return;
+        if (ac && ac.isDead()) {
+          if (!ac.isAIEnabled()) {
+            this.openBodyOnTimers(localId, event.message.target, ac);
+            return;
+          }
+          logLab("verb:containers", `body ${localId.toString(16)}: the server's open on ${refr.isActivationBlocked() ? "a blocked" : "an unblocked"} body with its AI on (D-C2 A)`);
         }
       }
 
@@ -444,7 +532,7 @@ export class RemoteServer extends ClientListener {
       attempts += 1;
       const ok = again.activate(Game.getPlayer(), true);
       const opened = ok || Ui.isMenuOpen("ContainerMenu");
-      logTrace(this, `${tag}: activate returned ${ok} at +${elapsed} ms (attempt ${attempts}; AI ${ac.isAIEnabled()}, dead ${ac.isDead()}, 3D ${ac.is3DLoaded()}, health ${ac.getActorValue("Health").toFixed(0)}${opened && !ok ? ", the menu open regardless" : ""})`);
+      logTrace(this, `${tag}: activate returned ${ok} at +${elapsed} ms (attempt ${attempts}; AI ${ac.isAIEnabled()}, dead ${ac.isDead()}, 3D ${ac.is3DLoaded()}, blocked ${again.isActivationBlocked()}, health ${ac.getActorValue("Health").toFixed(0)}${opened && !ok ? ", the menu open regardless" : ""})`);
       if (opened) {
         timers.setTimeout(() => pollOpen(Date.now() + kOpenDeadlineMs), kPollMs);
         return;
@@ -526,13 +614,19 @@ export class RemoteServer extends ClientListener {
             ModelApplyUtils.applyModelIsHarvested(
               refr,
               !!msg.props['isHarvested'],
+              !!msg.props.isDisabled,
             );
 
             ModelApplyUtils.applyModelNodeScale(refr, msg.props.setNodeScale);
 
             ModelApplyUtils.applyModelNodeTextureSet(refr, msg.props.setNodeTextureSet);
 
-            ModelApplyUtils.applyModelIsDisabled(refr, !!msg.props['disabled']);
+            // thuum docs/DECISIONS.md ADR-068 amendment B (rung 4): no
+            // disabled apply here. This one read `disabled` where the server
+            // sends isDisabled, so it enabled every game-file reference the
+            // engine held disabled at each create word, a host's scripted
+            // Disable undone on every seat; the reference's engine state is
+            // the server's DestructionStage word, applied by RefStateService
 
             // TODO: move to a separate module
             const animation = msg.props.lastAnimation;
@@ -540,13 +634,59 @@ export class RemoteServer extends ClientListener {
               const refrid = refr.getFormID();
 
               (async () => {
+                // the record's replay is a guest's view of a scripted object; a seat
+                // that hosts the cell never replays it, since its script owns the
+                // graph and a replayed event moves the graph off the script's state
+                // (playtest 46's dead pillars; objectAnimationService.playRelayed).
+                // The first attempt waits one interval: the host grant follows this
+                // seat's CellLoaded report by one round trip, and the engine's graph
+                // is rarely there at onceLoad anyway ("pillars in bleakfalls are not
+                // reliable" was a trigger refused by a graph not yet loaded, or on
+                // another side). A grant slower than the interval still lets a host
+                // replay once: the limit until the server sends the record to
+                // non-host loaders alone (the review of 843fed95, F1).
+                // thuum docs/DECISIONS.md ADR-068 D-S3 point 1: a trap family
+                // reference (a plate, a swinging wall, a blade) is never
+                // replayed: every seat fires the family itself, so its record's
+                // last event is no state to catch up on (a record kept from
+                // before D-S3; the seam records none of its calls now), and a
+                // replay would swing the wall at a late joiner for nothing.
+                // Read after the wait, on the form taken again, when its
+                // scripts are bound
+                const host = this.controller.lookupListener(HostService);
                 for (let i = 0; i < 5; i++) {
-                  // retry. pillars in bleakfalls are not reliable for some reason
-                  let res2 = ObjectReference.from(Game.getFormEx(refrid))?.playAnimation(animation);
-                  if (res2) {
+                  await Utility.wait(2);
+                  const again = ObjectReference.from(Game.getFormEx(refrid));
+                  if (!again) {
+                    continue;
+                  }
+                  if (ObjectReferenceEx.isTrapFamily(refrid)) {
+                    logTrace(this, `object animation ${refrid.toString(16)} ${animation} not replayed: a trap reference, every seat fires the trap family itself (D-S3)`);
                     break;
                   }
-                  await Utility.wait(2);
+                  const cell = again.getParentCell();
+                  if (cell && host.hostsCell(cell.getFormID())) {
+                    logTrace(this, `object animation ${refrid.toString(16)} ${animation} not replayed: hosted here`);
+                    break;
+                  }
+                  // thuum docs/DECISIONS.md ADR-068 amendment A (rung 3): a reference
+                  // whose script record carries a view takes that view
+                  // (ScriptStateService) and not this replay; a record still being
+                  // applied is waited for, one with no view or given up leaves the
+                  // replay as it was
+                  const view = this.controller.lookupListener(ScriptStateService).viewOf(refrid);
+                  if (view === "applied") {
+                    logTrace(this, `object animation ${refrid.toString(16)} ${animation} not replayed: its script record carries the view`);
+                    break;
+                  }
+                  if (view === "pending") {
+                    continue;
+                  }
+                  // a guest's replay carries the jump to the trigger's side (the record's
+                  // side is then this seat's); the host never gets here
+                  if (this.controller.lookupListener(ObjectAnimationService).playRelayed(again, animation, "the record")) {
+                    break;
+                  }
                 }
               })();
             }
@@ -650,6 +790,12 @@ export class RemoteServer extends ClientListener {
       (form as Record<string, unknown>)[element.propName] = parsed;
     });
 
+    // thuum ADR-068 rung 5, D-T1 A: a figure under a race overlay (its
+    // props' overlay) wears the overlay's race
+    if (!msg.isMe && form.overlay !== undefined) {
+      form.appearance = withOverlayRace(form.appearance, form.overlay);
+    }
+
     // thuum docs/verbs/npc-stream.md (playtest 35, Hilde's tanning missing
     // on a seat that joined two minutes after it began): a hosted NPC's last
     // action rides its CreateActor as the custom property "lastAction", and
@@ -681,11 +827,31 @@ export class RemoteServer extends ClientListener {
 
     // TODO: move to a separate module
 
-    if (msg.props && !msg.props.isHostedByOther) {
+    // a promotion inside the create word (this seat simulates the actor from
+    // its first sight of it: a late joiner hosting, a grant at a login): the
+    // same hold as a flip's, until the engine's copy stands at the record
+    // isHostedByOther === false: the server sets the field for actors alone,
+    // so an absent field (a prop, a door) is no promotion (review item 5)
+    if (msg.props && msg.props.isHostedByOther === false && !msg.isMe && movement !== undefined && msg.refrId !== undefined &&
+        (msg.baseRecordType === 'NPC_' || (msg.refrId >= 0xff000000 && msg.baseId !== undefined && msg.baseId !== 0x7))) {
+      this.controller.lookupListener(HostService).holdUntilPlaced(msg.refrId, movement, msg.isDead === true);
     }
 
-    if (msg.props && msg.props.isRaceMenuOpen && msg.isMe) {
-      this.onSetRaceMenuOpenMessage({ message: { t: MsgType.SetRaceMenuOpen, open: true } });
+    // thuum playtest 48 (2026-11-06): the race menu the record keeps open
+    // opens on the recorded look for a recorded character (a CreateActor
+    // with an appearance): RaceMenuService opens it once its passes have put
+    // the server's look on the player (openRaceMenuAfterOwnLook); opened
+    // here at once, before them, it showed the race's defaults, and its
+    // close would have recorded them over the record. A new character's (no
+    // appearance) opens here at once, on the race's defaults, as before.
+    // Every own CreateActor sets or drops the wait
+    if (msg.isMe) {
+      const menuOpen = !!(msg.props && msg.props.isRaceMenuOpen);
+      const open = () => this.onSetRaceMenuOpenMessage({ message: { t: MsgType.SetRaceMenuOpen, open: true } });
+      this.controller.lookupListener(RaceMenuService).openRaceMenuAfterOwnLook(menuOpen && msg.appearance ? open : null);
+      if (menuOpen && !msg.appearance) {
+        open();
+      }
     }
 
     const numSetInventory = this.numSetInventory;
@@ -693,6 +859,9 @@ export class RemoteServer extends ClientListener {
     const applyPcInv = () => {
       if (msg.equipment) {
         applyEquipment(Game.getPlayer()!, msg.equipment)
+        // playtest 48: the loop's next apply lands the plain rows this wipe
+        // removed, and its hands pass takes this equipment (loginHands)
+        loginHands = { eq: msg.equipment, until: Date.now() + loginHandsMs };
       }
 
       if (numSetInventory !== this.numSetInventory) {
@@ -800,6 +969,7 @@ export class RemoteServer extends ClientListener {
           // Note: appearance part was copy-pasted
           if (msg.appearance) {
             applyAppearanceToPlayer(msg.appearance);
+            this.controller.lookupListener(RaceMenuService).ownAppearanceApplied();
           }
         }
 
@@ -880,6 +1050,7 @@ export class RemoteServer extends ClientListener {
               // Note: appearance part was copy-pasted
               if (msg.appearance) {
                 applyAppearanceToPlayer(msg.appearance);
+                this.controller.lookupListener(RaceMenuService).ownAppearanceApplied();
               }
             });
           }
@@ -992,7 +1163,14 @@ export class RemoteServer extends ClientListener {
       return;
     }
 
-    form.appearance = msg.data || undefined;
+    // thuum ADR-068 rung 5, D-T1 A: the race overlay that holds with this
+    // look, absent for none (FormView puts it on the figure, or takes it
+    // off), and the race it wears (withOverlayRace), for another player's
+    // figure alone (the fresh review's note 8): this seat's own model keeps
+    // its look as sent, as its own apply below takes it
+    const isMe = i === this.getMyActorIndex();
+    form.overlay = isMe ? undefined : msg.overlay;
+    form.appearance = isMe ? msg.data || undefined : withOverlayRace(msg.data || undefined, msg.overlay);
     if (!form.numAppearanceChanges) {
       form.numAppearanceChanges = 0;
     }
@@ -1003,6 +1181,7 @@ export class RemoteServer extends ClientListener {
     if (i === this.getMyActorIndex() && newAppearance) {
       this.controller.once("update", () => {
         applyAppearanceToPlayer(newAppearance);
+        this.controller.lookupListener(RaceMenuService).ownAppearanceApplied();
         logTrace(this, "Applied appearance to the player");
       });
     }
@@ -1024,6 +1203,8 @@ export class RemoteServer extends ClientListener {
   }
 
   private onUpdatePropertyMessage(event: ConnectionMessage<UpdatePropertyMessage>): void {
+    // a server-made NPC's copy: a base that is not a player's, not this seat's own clone
+    const npcCopyOf = (f: FormModel) => !!f.baseId && f.baseId !== 0x7 && f.isMyClone !== true;
     const msg = event.message;
     const msgData = this.extractUpdatePropertyMessageData(msg);
 
@@ -1084,8 +1265,6 @@ export class RemoteServer extends ClientListener {
           ModelApplyUtils.applyModelLock(refr, msgData as { level: number; key: number; locked: boolean } | undefined);
         } else if (msg.propName === 'isHarvested') {
           ModelApplyUtils.applyModelIsHarvested(refr, !!msgData);
-        } else if (msg.propName === 'disabled') {
-          ModelApplyUtils.applyModelIsDisabled(refr, !!msgData);
         }
       });
       return;
@@ -1099,7 +1278,42 @@ export class RemoteServer extends ClientListener {
       logTrace(this, `UpdateProperty ${msg.propName} for idx ${msg.idx} (refr ${msg.refrId.toString(16)}): no form held, skipped`);
       return;
     }
+    const hostedBefore = form.isHostedByOther;
     (form as Record<string, unknown>)[msg.propName] = msgData;
+
+    // docs/engine/non-owning-seat.md section 3 and P8 (the instrumented runs
+    // 065955 and 070357 on the parent): the word's flip to "mine" is a
+    // promotion, and the copy must STAND at the record BEFORE this seat's
+    // first report goes out, or the engine's own position (the day copy at
+    // the mill) becomes the record and the other side's copy passes the actor
+    // back. So the flip holds the actor's stream (HostService) until its
+    // check reads the engine's copy at the record (the server's keyframe sent
+    // ahead of the word, or the last sample held), asking the move itself if
+    // nothing else has; only a FLIP holds and places (a re-sent word for an
+    // actor this seat already runs would yank its live copy to a stale
+    // model). The reconcile runs on the next update for either flip.
+    const npcForm = !!form && typeof form.refrId === 'number' && form.isMyClone !== true && (form.refrId < 0xff000000 || npcCopyOf(form));
+    if (npcForm && msg.propName === 'isHostedByOther') {
+      const remoteId = form.refrId as number;
+      const host = this.controller.lookupListener(HostService);
+      const puppets = this.controller.lookupListener(PuppetService);
+      if (msgData === false && hostedBefore !== false) {
+        // the hold ends when the copy stands at the record (HostService's
+        // check each update asks the move and reads the engine), never here
+        host.holdUntilPlaced(remoteId, form.movement, form.isDead === true);
+      }
+      if (msgData === true && hostedBefore === false) {
+        // a demote ends any hold: the word names another game now
+        host.releaseHold(remoteId, "demoted by the word");
+      }
+      if ((msgData === false && hostedBefore !== false) || (msgData === true && hostedBefore === false)) {
+        // the reconcile reads the word as it stands when it runs (a flip and
+        // a flip back inside one frame toggle nothing twice)
+        once('update', () => {
+          puppets.reconcile(remoteIdToLocalId(remoteId));
+        });
+      }
+    }
 
     // thuum docs/verbs/npc-fate.md, ADR-048's seam: a game-file actor's death
     // is the server's word on every seat (the server broadcasts isDead to the
@@ -1113,6 +1327,11 @@ export class RemoteServer extends ClientListener {
     if (form && msg.propName === 'isDead' && typeof form.refrId === 'number' && (form.refrId < 0xff000000 || npcCopy)) {
       const engineRefrId = form.refrId;
       const isDead = !!msgData;
+      if (!isDead) {
+        // the live word (the RespawnEvent): a dead hold turns back into a
+        // placing hold (numidium's reviews of rounds seven and eight)
+        this.controller.lookupListener(HostService).reviveHold(engineRefrId, form.movement);
+      }
       once('update', () => {
         const actor = Actor.from(Game.getFormEx(remoteIdToLocalId(engineRefrId)));
         if (actor) {
@@ -1152,6 +1371,15 @@ export class RemoteServer extends ClientListener {
     once('update', () => this.onUpdatePropertyMessage({ message: msg.tIsDead }));
 
     if (msg.tTeleport) {
+      // a respawn that teleports: a dead hold on this actor turns back into a
+      // placing hold with the TELEPORT's place as its record, ahead of the
+      // standalone live word, so the hold never asks the corpse's place over
+      // the spawn point (numidium's review of round nine, item 1)
+      if (msgData === false && typeof form.refrId === 'number' && form.movement) {
+        const t = msg.tTeleport;
+        const record = { ...form.movement, pos: [t.pos[0], t.pos[1], t.pos[2]] as [number, number, number], rot: [t.rot[0], t.rot[1], t.rot[2]] as [number, number, number], worldOrCell: t.worldOrCell, isDead: false };
+        this.controller.lookupListener(HostService).reviveHold(form.refrId, record);
+      }
       this.onTeleportMessage({ message: msg.tTeleport });
     }
 
@@ -1223,14 +1451,19 @@ export class RemoteServer extends ClientListener {
     const msg = event.message;
 
     if (msg.open) {
-      // wait 0.3s cause we can see visual bugs when teleporting
-      // and showing this menu at the same time in onConnect
-      once('update', () =>
-        Utility.wait(0.3).then(() => {
-          unequipIronHelmet();
-          Game.showRaceMenu();
-        }),
-      );
+      // thuum playtest 50 (the fresh review's note 12): the open waits while
+      // RaceMenu's copy of the player's tints is due (RaceMenuService), so
+      // `mp racemenu` shows the player's own tints and warpaint
+      this.controller.lookupListener(RaceMenuService).openRaceMenuWhenTintsSaved(() => {
+        // wait 0.3s cause we can see visual bugs when teleporting
+        // and showing this menu at the same time in onConnect
+        once('update', () =>
+          Utility.wait(0.3).then(() => {
+            unequipIronHelmet();
+            Game.showRaceMenu();
+          }),
+        );
+      });
     } else {
       // TODO: Implement closeMenu in SkyrimPlatform
     }
@@ -1480,9 +1713,13 @@ export class RemoteServer extends ClientListener {
         const target = atPlayer && landsOnItsTarget(spell)
           ? 0x14
           : remoteIdToLocalId(msg.data.target);
+        // the launch's surface, when the cast carries one (the rune's glyph:
+        // the observer's game places the caster's decal after its launch)
+        const decal = msg.data.hasLaunch ? msg.data.decal : undefined;
         castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), target,
           msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables,
-          msg.data.hasLaunch, msg.data.originX, msg.data.originY, msg.data.originZ, msg.data.launchAngleX, msg.data.launchAngleZ);
+          msg.data.hasLaunch, msg.data.originX, msg.data.originY, msg.data.originZ, msg.data.launchAngleX, msg.data.launchAngleZ,
+          !!decal, decal ? decal.normalX : 0, decal ? decal.normalY : 0, decal ? decal.normalZ : 0, decal ? decal.materialId : 0);
         if (onPuppet) {
           logTrace(this, `cast ${spell.getFormID().toString(16)} on puppet ${ac.getFormID().toString(16)} hand ${msg.data.castingSource} at ${msg.data.target.toString(16)}`);
         }

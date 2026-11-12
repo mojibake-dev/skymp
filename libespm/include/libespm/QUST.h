@@ -183,6 +183,10 @@ public:
     std::vector<uint32_t> aliasPackageData;
     uint32_t voiceType;
     // ALED (EOF Marker) - empty - Marks the end of any given alias entry.
+    // thuum ADR-068 rung 4: a location alias (ALLS, its id in locationID),
+    // apart from a reference alias (ALST, its id in aliasID), whose id 0
+    // would otherwise read the same as an ALLS entry's empty aliasID
+    bool locationAlias = false;
   };
 
   struct Data

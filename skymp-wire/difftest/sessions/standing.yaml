@@ -1,0 +1,50 @@
+# difftest standing (thuum ADR-068 rung 4, the state rows, W3; docs/research/
+# rung4-state-rows-2026-11-07.md section 1(c), Standing): an NPC's standing
+# rows are its simulator's alone, and T2's settings (the deployed stage's,
+# lab/tools/test-proto.sh) carry no npcEnabled, so neither stack holds a
+# game-file NPC and none is simulated: this session proves the refusals send
+# nothing (the recorded and relayed path is T0's, unit/StandingTest.cpp, on
+# Arvel 0x39655, and T3's x-standing). c1 and c2 are new characters
+# (profiles 9 and 10, actors 0xff000002 and 0xff000003, see melee-reach),
+# both at the spawn in Tamriel's exterior cell (32, -15), form 0xbbb1
+# (cell-host's read); c2 starts 1.5 s after c1, and each client's times below
+# are its own. At 1 s c1 reports the cell loaded and is granted it, HostGrant
+# {cell 0xbbb1, epoch 1}, as in cell-host. Its game then reports five
+# standing rows (ScriptCall 75, kept as the NPC's record, wire-rules natives
+# Keep::Record) and each is refused by its name in the wire server's log,
+# nothing sent: at 3 s Actor.SetFactionRank(CrimeFactionImperial 0x28848, 2)
+# on 0x86111 (an ACHR of LvlAnimalHillsPredator 0xdc5a3 at (136248, -63212,
+# 13483), 3170 units from the spawn; Skyrim.esm by lab/esm.py `near`,
+# 2026-11-06), which nobody simulates (E_SCRIPTCALL_OWNER); at 3.2 s
+# SetFactionRank on the ore vein 0x10e6c5, script-call's subject, a world
+# object (E_SCRIPTCALL_ROW: a standing row is an NPC's); at 3.4 s
+# RemoveFromAllFactions on its own player 0x14 (E_SCRIPTCALL_ROW: the seat's
+# own until rung 5); at 3.6 s SetFactionRank on 0x86111 with its faction
+# alone (E_SCRIPTCALL_ARGS); and at 2.4 s of its own script c2 reports
+# SetCrimeFaction(None) on 0x86111 (E_SCRIPTCALL_OWNER). The legacy server
+# knows no MsgType 75 and drops all five. c2 never reports the cell loaded,
+# so c1's departure leaves it unhosted after the grace with nothing to c2;
+# c2 steps aside at 6 s so it outlives c1, as in every session.
+id: standing
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 3000, send: {t: 75, epoch: 1, selfId: 0x86111, cls: Actor, fn: SetFactionRank, args: [{formId: 0x28848, type: Faction}, 2], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c1, at_ms: 3200, send: {t: 75, epoch: 1, selfId: 0x10e6c5, cls: Actor, fn: SetFactionRank, args: [{formId: 0x28848, type: Faction}, 2], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c1, at_ms: 3400, send: {t: 75, epoch: 1, selfId: 0x14, cls: Actor, fn: RemoveFromAllFactions, args: [], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c1, at_ms: 3600, send: {t: 75, epoch: 1, selfId: 0x86111, cls: Actor, fn: SetFactionRank, args: [{formId: 0x28848, type: Faction}], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c2, at_ms: 2400, send: {t: 75, epoch: 1, selfId: 0x86111, cls: Actor, fn: SetCrimeFaction, args: [{formId: 0, type: Faction}], caller: "", handler: "", latent: false}, reliable: true}
+  - {client: c2, at_ms: 6000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md); the legacy server has no cell hosts
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

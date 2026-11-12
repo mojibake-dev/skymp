@@ -1,0 +1,65 @@
+# difftest player-own (thuum ADR-068 rung 5, the two transformations; D-T1 A; docs/research/rung5-quests-2026-11-09.md
+# section 8(b)): a per-player quest's script changes its own player through six rows (Actor.SetRace, AddSpell,
+# RemoveSpell, AddShout, RemoveShout, EquipItem), each a ScriptCall (MsgType 75) on selfId 0x14 at any epoch (a guest
+# seat's 0), judged by wire-rules player_own over the calling script's VMAD properties across the forms that attach it.
+# The game files (lab/esm.py on sky-srv, 2026-11-09): T2's pinned load order holds RaceCompatibility.esm, whose override
+# of PlayerVampireQuest 0xeafd5 gives PlayerVampireQuestScript the vanilla race properties and its two FormLists,
+# PlayableRaceList and PlayableVampireList, pairing NordRace 0x13746 with NordRaceVampire 0x88794 at index 6;
+# PlayerWerewolfQuest 0x2ba16's PlayerWerewolfChangeScript names WerewolfBeastRace 0xcdd84. Every id below is a hex
+# literal (the first cut declared 0x88794 as 559060, a hand conversion that is 0x887d4, and T2 read the two
+# declarations as missing: 20261110, a9491ba9). NordRace
+# is Playable; neither NordRaceVampire nor WerewolfBeastRace is. c1 and c2 are new characters (profiles 9 and 10, actors
+# 0xff000002 and 0xff000003, see melee-reach), so the server opens c1's race menu at its login (character-creation's
+# frame). At 3 s c1 answers with NordRace, which both stacks take and relay alike (to c2, and echoed to c1). The bound
+# reads a script's attachment only while it is live for the player (rung 5's fresh review, note 3). Since train 52 T2's
+# settings carry rung 5's keys (the drain, fork 1bb3893b, and divergences.yaml's t:81 watch), questScope "derived"
+# among them, which classes both quests the player's (PlayerVampireQuest 0xeafd5 by the playerQuests list,
+# PlayerWerewolfQuest 0x2ba16 by its alias 0, ALUA 0x7), so their attachments are live by class
+# (PartOne::QuestAttachmentLive) and c1's two starts, at 3.5 s and 3.7 s, are refused (E_QUEST_PLAYER, each player's
+# own: nothing recorded or relayed). Then c1's own
+# scripts: at 4 s VampireChange's SetRace to NordRaceVampire, its twin by the lists, which the wire server records on the
+# change form and sends c2 as c1's look (UpdateAppearance, raceId 0x88794, no overlay); at 4.5 s the beast form's SetRace
+# to WerewolfBeastRace, a race neither Playable nor a twin, which opens c1's race overlay (D-T1 A: the record keeps the
+# vampire race, c2 hears the look with the overlay {open, race 0xcdd84, base 0x88794}); at 5 s the race's return to
+# NordRaceVampire, which ends the overlay (c2 hears the look with none). Four calls send nothing, each said by its name in
+# the wire server's log: at 5.2 s an AddSpell of Flames 0x12fcd, which no attachment of PlayerWerewolfChangeScript names
+# (E_SCRIPTCALL_UNNAMED); at 5.4 s an EquipItem naming c2's actor 0xff000003 (a figure argument: the edge passes a
+# connected player's actor, the six rows' kind check refuses it, an actor being no item: E_SCRIPTCALL_ARGS); at 5.6 s
+# an EquipItem naming 0xff0000aa, no
+# player's (E_SCRIPTCALL_ARGS, wire-rules natives::figures); at 5.8 s a SetRace on the spawn's ore vein 0x10e6c5
+# (script-call's subject, loaded with the spawn's chunk), no player's own row (E_SCRIPTCALL_ROW). The legacy server knows
+# neither MsgType 57 nor 75 and drops the two words and all eight calls. c2 steps at 6 s of its own and so
+# outlives c1, as in every session.
+id: player-own
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 3000, send: {t: 4, idx: "{{idx}}", data: {isFemale: false, raceId: 0x13746, weight: 50, skinColor: 0, hairColor: 0, headpartIds: [], headTextureSetId: 0, options: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], presets: [0, 0, 0, 0], tints: [], name: difftest}}}
+  - {client: c1, at_ms: 3500, send: {t: 57, quest: 0xeafd5, stage: 0, word: 1}, reliable: true}
+  - {client: c1, at_ms: 3700, send: {t: 57, quest: 0x2ba16, stage: 0, word: 1}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 75, epoch: 0, selfId: 0x14, cls: Actor, fn: SetRace, args: [{formId: 0x88794, type: Race}], caller: PlayerVampireQuestScript, handler: VampireChange, latent: false}, reliable: true}
+  - {client: c1, at_ms: 4500, send: {t: 75, epoch: 0, selfId: 0x14, cls: Actor, fn: SetRace, args: [{formId: 0xcdd84, type: Race}], caller: PlayerWerewolfChangeScript, handler: InitialShift, latent: false}, reliable: true}
+  - {client: c1, at_ms: 5000, send: {t: 75, epoch: 0, selfId: 0x14, cls: Actor, fn: SetRace, args: [{formId: 0x88794, type: Race}], caller: PlayerWerewolfChangeScript, handler: ShiftBack, latent: false}, reliable: true}
+  - {client: c1, at_ms: 5200, send: {t: 75, epoch: 0, selfId: 0x14, cls: Actor, fn: AddSpell, args: [{formId: 0x12fcd, type: Spell}, false], caller: PlayerWerewolfChangeScript, handler: InitialShift, latent: false}, reliable: true}
+  - {client: c1, at_ms: 5400, send: {t: 75, epoch: 0, selfId: 0x14, cls: Actor, fn: EquipItem, args: [{formId: 0xff000003, type: Actor}, false, true], caller: PlayerWerewolfChangeScript, handler: StartTracking, latent: false}, reliable: true}
+  - {client: c1, at_ms: 5600, send: {t: 75, epoch: 0, selfId: 0x14, cls: Actor, fn: EquipItem, args: [{formId: 0xff0000aa, type: Actor}, false, true], caller: PlayerWerewolfChangeScript, handler: StartTracking, latent: false}, reliable: true}
+  - {client: c1, at_ms: 5800, send: {t: 75, epoch: 0, selfId: 0x10e6c5, cls: Actor, fn: SetRace, args: [{formId: 0x88794, type: Race}], caller: PlayerVampireQuestScript, handler: VampireChange, latent: false}, reliable: true}
+  - {client: c2, at_ms: 0, move: {dy: 30}}
+  - {client: c2, at_ms: 6000, move: {dy: 60}}
+divergences:
+  - client: c2
+    msg: {t: 4, overlay: {open: true, race: 0xcdd84, base: 0x88794}}
+    legacy: 0
+    wire: 1
+    reason: the beast form's race overlay opened on c1's figure (D-T1 A, wire-rules player_own), the record keeping the vampire race; the legacy server knows no MsgType 75
+  - client: c2
+    msg: {t: 4, data: {raceId: 0x88794}}
+    legacy: 0
+    wire: 2
+    reason: c1's own twin race recorded and sent as its look (the RaceList and VampireList pairing), then the same look with no overlay at the beast form's end; the legacy server knows no MsgType 75
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

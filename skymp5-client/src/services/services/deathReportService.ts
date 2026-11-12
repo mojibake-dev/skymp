@@ -5,6 +5,7 @@ import { MsgType } from "../../messages";
 import { ActorDeathMessage } from "../messages/actorDeathMessage";
 import { HostService } from "./hostService";
 import { DeathService } from "./deathService";
+import { ScriptCallService } from "./scriptCallService";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 // thuum docs/verbs/npc-fate.md (ADR-048's B): this game's report of a death
@@ -53,19 +54,54 @@ export class DeathReportService extends ClientListener {
         if (this.controller.lookupListener(DeathService).takeServerKill(localId)) {
             return;
         }
-        if (!this.controller.lookupListener(HostService).isMineLocal(localId)) {
+        const host = this.controller.lookupListener(HostService);
+        if (!host.isMineLocal(localId)) {
+            return;
+        }
+        // thuum docs/DECISIONS.md ADR-062 decision 2 (slice 1b): a script this
+        // seat ran called Kill on the actor within the window (ScriptCallService's
+        // mark from the platform's boundary on Actor.Kill, ADR-068's one seam): the
+        // death is the script's, cause 3, with the killer the script named, and the
+        // server takes it as the host's word (R2)
+        const scripted = this.controller.lookupListener(ScriptCallService).scriptKill(localId);
+        if (scripted) {
+            const named = scripted.killer !== 0 ? localIdToRemoteId(scripted.killer, true) : 0;
+            this.send(dying, localIdToRemoteId(localId), 3, named, "deathStart after a script's Kill");
             return;
         }
         const killer = e.actorKiller ? this.sp.Actor.from(e.actorKiller) : null;
         const killerLocal = killer ? killer.getFormID() : 0;
-        this.send(dying, localIdToRemoteId(localId), killerLocal !== 0 ? 4 : 0,
-            killerLocal !== 0 ? localIdToRemoteId(killerLocal, true) : 0, "deathStart");
+        const cause = killerLocal !== 0 ? 4 : 0;
+        const killerRemote = killerLocal !== 0 ? localIdToRemoteId(killerLocal, true) : 0;
+        // a death during a promotion's hold waits for the hold's end (the
+        // engine's kill stands here; the report carries the body's place,
+        // which the hold is settling), never dropped (review item 4)
+        if (host.deferPastHold(localId, "the death report", () => {
+            // the word may have changed while the report waited (a demote in
+            // the release's frame): the server would refuse it, E_DEATH_NOT_HOST
+            if (!host.isMineLocal(localId)) {
+                logLab("verb:npc-handoff", `hold ${localIdToRemoteId(localId).toString(16)}: the deferred death report dropped, not this seat's any more`);
+                return;
+            }
+            const again = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
+            if (again) {
+                this.send(again, localIdToRemoteId(localId), cause, killerRemote, "deathStart, deferred past the hold");
+            }
+        })) {
+            return;
+        }
+        this.send(dying, localIdToRemoteId(localId), cause, killerRemote, "deathStart");
     }
 
     private send(actor: Actor, refrId: number, cause: number, killer: number, how: string) {
         if (refrId === 0) {
             return;
         }
+        // thuum docs/verbs/npc-fate.md (playtest 48): the trap hits this
+        // game's engine dealt go first, so the server reads the hit that
+        // killed the actor before the report it explains (both reliable, in
+        // order); the platform raised the batch ahead of the death's event
+        this.controller.lookupListener(ScriptCallService).sendTrapHits();
         const message: ActorDeathMessage = {
             t: MsgType.ActorDeath,
             refrId,

@@ -74,7 +74,10 @@ macro_rules! skymp_family {
             43 MagicEffects, 44 UpdateAction, 45 PlayerGlobals, 46 ActorJump,
             47 CellLoaded, 48 HostGrant, 49 HostRelease, 50 ActorSightings,
             51 ActorFate, 52 ActorDeath, 53 HostedActorState, 54 ActorSpeech, 55 DamageCause, 56 ActorClaim, 57 QuestStage,
-            58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation
+            58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
+            72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall,
+            76 ScriptState, 77 ScriptStateApply, 78 DestructionStage, 79 AliasFill,
+            80 WorldGlobal, 81 ScriptVariables
         }
     };
 }
@@ -223,11 +226,14 @@ mod tests {
                 caster: 0x14,
                 target: 0xff00_0001,
                 is_second_activation: false,
+                entry: None,
             },
         });
         let v = render_value(&m).unwrap_or(Value::Null);
         assert_eq!(v["t"], 6);
         assert_eq!(v["data"]["t"], 6);
+        // an absent entry is no key (thuum D-C2)
+        assert!(v["data"].get("entry").is_none());
         let d = Message::DeathStateContainer(skymp::DeathStateContainer {
             t: skymp::MsgT,
             t_teleport: Some(skymp::Teleport::default()),
@@ -351,7 +357,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 71, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 81, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with
@@ -384,6 +390,514 @@ mod tests {
             };
         }
         skymp_family!(each);
+    }
+
+    /// thuum docs/verbs/change-form.md (ADR-065): the ChangeForm fixtures
+    /// are the contract's refusals as well as its shapes. 0 and 1 are
+    /// records the validator takes (an ACHR with one remap row, the lab's
+    /// own REFR record); 2 to 6 each break one rule and name its code, so
+    /// the C++ contract test reads the refused shapes too and the client's
+    /// agent can replay them against its own encoder.
+    #[test]
+    fn change_form_fixtures_validate_as_named() {
+        use wire_validate::{validate_server, Reject};
+        let verdicts: [(&str, Result<(), Reject>); 7] = [
+            ("72-ChangeForm-0.json", Ok(())),
+            ("72-ChangeForm-1.json", Ok(())),
+            ("72-ChangeForm-2.json", Err(Reject::ChangeFormRange)),
+            ("72-ChangeForm-3.json", Err(Reject::ChangeFormHeader)),
+            ("72-ChangeForm-4.json", Err(Reject::ChangeFormHash)),
+            ("72-ChangeForm-5.json", Err(Reject::ChangeFormRemap)),
+            ("72-ChangeForm-6.json", Err(Reject::ChangeFormSize)),
+        ];
+        for (name, want) in verdicts {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), want, "{name}");
+        }
+        for name in ["73-ChangeFormAck-0.json", "73-ChangeFormAck-1.json", "74-ChangeFormApply-0.json", "74-ChangeFormApply-1.json"] {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), Ok(()), "{name}");
+        }
+    }
+
+    /// thuum ADR-068 (the one seam): the ScriptCall fixtures are the
+    /// contract's shapes and its refusals, as the ChangeForm ones are. 0 is
+    /// the puzzle pillar's turn on Bleak Falls Temple's 0xaa8cb (a method
+    /// native, latent, two strings; docs/verbs/traps.md's census of
+    /// defaultPuzzlePillarScript), 1 a static native on a world object (the
+    /// subject first among the arguments and named again as `selfId`); 2
+    /// names a player's actor as an object argument (since thuum ADR-068
+    /// rung 5 a scoped call's figure, which the edge passes and the server's
+    /// rule takes for a connected player alone, wire-rules natives::figures);
+    /// 3 names a subject at 0xff000000 and up and 4 an object argument past
+    /// 32 bits, both refused by the shape. 5 (SCHEMA_VERSION 44, thuum D-R1
+    /// C's leveled gap) is MS01's stage 39 reward on the seat's own player,
+    /// LvlQuestReward02Medium 0xc0405 x1, with the roll its AddItemFunctor
+    /// landed, Gold001 0xf x400 (x-additem-functor 20261110-151634); the
+    /// other five carry no `landed` and render none. The SpSnippet
+    /// fixture 2 is the pillar's relay with the subject's sequence; 0 and 1,
+    /// the snippets without one, render no `seq`.
+    #[test]
+    fn script_call_fixtures_validate_as_named() {
+        use wire_validate::{validate_server, Reject};
+        let verdicts: [(&str, Result<(), Reject>); 6] = [
+            ("75-ScriptCall-0.json", Ok(())),
+            ("75-ScriptCall-1.json", Ok(())),
+            ("75-ScriptCall-2.json", Ok(())),
+            ("75-ScriptCall-3.json", Err(Reject::Range)),
+            ("75-ScriptCall-4.json", Err(Reject::Range)),
+            ("75-ScriptCall-5.json", Ok(())),
+        ];
+        for (name, want) in verdicts {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(m, Message::ScriptCall(_)), "{name}");
+            assert_eq!(validate_server(&m), want, "{name}");
+            let landed = name == "75-ScriptCall-5.json";
+            assert_eq!(render(&m).unwrap_or_default().contains("\"landed\""), landed, "{name}: `landed` renders only when carried");
+        }
+        let text = std::fs::read_to_string(fixtures_dir().join("75-ScriptCall-5.json")).unwrap_or_default();
+        match recognize(&text) {
+            Ok(Message::ScriptCall(c)) => {
+                let landed: Vec<(u32, i32)> = c.landed.iter().flat_map(|l| l.iter()).map(|d| (d.item.0, d.count)).collect();
+                assert_eq!((c.self_id, landed), (0x14, vec![(0xf, 400)]));
+            }
+            other => panic!("{other:?}"),
+        }
+        // a 256th landing is no shape (the bound at decode)
+        let over = text.replacen("\"landed\": [", &format!("\"landed\": [{}", "{\"item\": 15, \"count\": 1}, ".repeat(255)), 1);
+        assert!(matches!(recognize(&over), Err(JsonError::Shape(_))), "256 landings");
+        let text = std::fs::read_to_string(fixtures_dir().join("30-SpSnippet-2.json")).unwrap_or_default();
+        match recognize(&text) {
+            Ok(Message::SpSnippet(s)) => assert_eq!(s.seq, Some(1)),
+            other => panic!("{other:?}"),
+        }
+        for name in ["30-SpSnippet-0.json", "30-SpSnippet-1.json"] {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(&m, Message::SpSnippet(s) if s.seq.is_none()), "{name}");
+            assert!(!render(&m).unwrap_or_default().contains("\"seq\""), "{name}: an absent sequence is no key");
+        }
+    }
+
+    /// thuum D-S3 (ADR-068's DestructionStage row): one fixture each way.
+    /// 0 is a seat's report, Bleak Falls Temple's oil lamp 0x9b0fb at its
+    /// first stage (the census's TrapFallingOilLampColLayer, its first shot's
+    /// DamageObject); 1 the server's record served behind a create word,
+    /// Embershard Mine's tripwire 0xb6d3f spent (SetDestroyed true after its
+    /// firing, docs/research/trap-census-2026-11-05.md). Named by MsgType,
+    /// 78, as every fixture is.
+    #[test]
+    fn destruction_stage_fixtures_validate_as_named() {
+        // thuum D-S3's two (a seat's report, a served destruction) with
+        // rung 4's sequence of 0, then the ref state's: 78-2 the server's
+        // served word for Bleak Falls Temple's cobweb 0x1fc43, disabled at
+        // the object's sequence 3, and 78-3 a seat's report carrying the
+        // server's words: shapes either side may hold, the ref state's words
+        // refused from a client at the edge
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        type Want = (&'static str, u32, u8, bool, bool, Option<bool>, Option<bool>, u32, Result<(), Reject>);
+        let wants: [Want; 4] = [
+            ("78-DestructionStage-0.json", 0x9b0fb, 1, false, false, None, None, 0, Ok(())),
+            ("78-DestructionStage-1.json", 0xb6d3f, 0, true, true, None, None, 0, Ok(())),
+            ("78-DestructionStage-2.json", 0x1fc43, 0, false, true, Some(true), None, 3, Err(Reject::Range)),
+            ("78-DestructionStage-3.json", 0x1fc43, 0, false, false, Some(true), Some(false), 1, Err(Reject::Range)),
+        ];
+        for (name, refr, stage, destroyed, served, disabled, deleted, seq, from_client) in wants {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            match recognize(&text) {
+                Ok(m @ Message::DestructionStage(_)) => {
+                    assert_eq!(validate_server(&m), Ok(()), "{name}");
+                    assert_eq!(validate(&m, &mut ClientGuard::default(), 0), from_client, "{name}");
+                    if let Message::DestructionStage(d) = m {
+                        assert_eq!((d.refr, d.stage, d.destroyed, d.served, d.disabled, d.deleted, d.seq), (refr, stage, destroyed, served, disabled, deleted, seq), "{name}");
+                    }
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+    }
+
+    /// thuum ADR-068 rung 4: the AliasFill and WorldGlobal fixtures, shapes
+    /// and refusals. 79-0 a relay of MS13 0x39645's ArvelWeb alias 10, forced
+    /// to the web 0x1fc43 (Skyrim.esm, lab/esm.py 2026-11-06); 79-1 its alias
+    /// 3 served cleared; 79-2 a fill naming a server form, refused. 80-0 the
+    /// streamer's report at epoch 2 of DA04MinLevel 0xe316c (a Skyrim.esm
+    /// GLOB, lab/esm.py), 80-1 the stream word at epoch 3 with its empty
+    /// entries, 80-2 a global named twice, refused (JSON cannot spell the
+    /// NaN the plan named; the unit tests carry it).
+    #[test]
+    fn alias_fill_and_world_global_fixtures_validate_as_named() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        type Verdict = (&'static str, Result<(), Reject>, Result<(), Reject>);
+        let verdicts: [Verdict; 6] = [
+            ("79-AliasFill-0.json", Ok(()), Ok(())),
+            ("79-AliasFill-1.json", Ok(()), Err(Reject::Range)),
+            ("79-AliasFill-2.json", Err(Reject::Range), Err(Reject::Range)),
+            ("80-WorldGlobal-0.json", Ok(()), Ok(())),
+            ("80-WorldGlobal-1.json", Ok(()), Err(Reject::Range)),
+            ("80-WorldGlobal-2.json", Err(Reject::Range), Err(Reject::Range)),
+        ];
+        for (name, shape, from_client) in verdicts {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), shape, "{name}");
+            assert_eq!(validate(&m, &mut ClientGuard::default(), 0), from_client, "{name}");
+        }
+        // the stream word's entries are present though empty
+        let text = std::fs::read_to_string(fixtures_dir().join("80-WorldGlobal-1.json")).unwrap_or_default();
+        let m = recognize(&text).unwrap_or_else(|e| panic!("80-WorldGlobal-1.json: {e}"));
+        let rendered: Value = serde_json::from_str(&render(&m).unwrap_or_default()).unwrap_or(Value::Null);
+        assert_eq!(rendered.get("entries"), Some(&Value::Array(Vec::new())));
+        assert_eq!(rendered.get("stream"), Some(&Value::Bool(true)));
+        // a report carries no stream key
+        let text = std::fs::read_to_string(fixtures_dir().join("80-WorldGlobal-0.json")).unwrap_or_default();
+        let m = recognize(&text).unwrap_or_else(|e| panic!("80-WorldGlobal-0.json: {e}"));
+        let rendered: Value = serde_json::from_str(&render(&m).unwrap_or_default()).unwrap_or(Value::Null);
+        assert_eq!(rendered.get("stream"), None);
+    }
+
+    /// thuum ADR-068 rung 5 (the ownership rule): 57-QuestStage-6 is mode
+    /// all's login list naming MQ102 0x4e50d denied and the player class,
+    /// PlayerWerewolfQuest 0x2ba16 and PlayerVampireQuest 0xeafd5, in
+    /// `player` too; the other QuestStage fixtures carry none and render
+    /// none.
+    #[test]
+    fn the_logins_player_class_validates_and_renders_only_when_present() {
+        use wire_validate::validate_server;
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        match recognize(&read("57-QuestStage-6.json")) {
+            Ok(m @ Message::QuestStage(_)) => {
+                assert_eq!(validate_server(&m), Ok(()));
+                if let Message::QuestStage(q) = m {
+                    assert_eq!(q.player.map(|p| p.to_vec()), Some(vec![0x2ba16, 0xeafd5]));
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+        for n in 0..=5 {
+            let name = format!("57-QuestStage-{n}.json");
+            let m = recognize(&read(&name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!render(&m).unwrap_or_default().contains("\"player\""), "{name}: an absent class is no key");
+        }
+    }
+
+    /// thuum ADR-068 rung 5 (D-Q3 A, SCHEMA_VERSION 42): a run word's
+    /// engine stages. 57-QuestStage-7 is a relayed start of
+    /// dunEldergleamT03 0x15cc2 (stage 0 and its start-up stage 10), with
+    /// rotfern 0xff000000 acting; 57-QuestStage-8 a served stop of
+    /// ClearSkiesQuest 0x1e3b1 (its shut-down stage 100; Skyrim.esm,
+    /// lab/esm.py on sky-srv, 2026-11-10). The other QuestStage fixtures
+    /// carry none and render none.
+    #[test]
+    fn a_run_words_engine_stages_validate_and_render_only_when_present() {
+        use wire_validate::validate_server;
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        for (name, quest, word, stages) in [("57-QuestStage-7.json", 0x15cc2, 1, vec![0u16, 10]), ("57-QuestStage-8.json", 0x1e3b1, 2, vec![100])] {
+            match recognize(&read(name)) {
+                Ok(m @ Message::QuestStage(_)) => {
+                    assert_eq!(validate_server(&m), Ok(()), "{name}");
+                    assert!(render(&m).unwrap_or_default().contains("\"wordStages\""), "{name}");
+                    if let Message::QuestStage(q) = m {
+                        assert_eq!((q.quest, q.word, q.word_stages.map(|s| s.to_vec())), (quest, Some(word), Some(stages)), "{name}");
+                    }
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        for n in 0..=6 {
+            let name = format!("57-QuestStage-{n}.json");
+            let m = recognize(&read(&name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!render(&m).unwrap_or_default().contains("\"wordStages\""), "{name}: absent stages are no key");
+        }
+    }
+
+    /// thuum ADR-068 rung 5 (D-Q4 C, SCHEMA_VERSION 43): a seat's report
+    /// names its cause and its stack's root. 57-QuestStage-9 is c1's stop of
+    /// dunEmbershardQST 0xb6fef from its stage 40 fragment, a world cause
+    /// (x-quest-cause's world pair; the run-cause read of 2026-11-10, its
+    /// census of Skyrim.esm). The other QuestStage fixtures carry neither
+    /// and render neither.
+    #[test]
+    fn a_reports_cause_and_root_validate_and_render_only_when_present() {
+        use wire_validate::{validate, ClientGuard};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        match recognize(&read("57-QuestStage-9.json")) {
+            Ok(m @ Message::QuestStage(_)) => {
+                assert_eq!(validate(&m, &mut ClientGuard::default(), 0), Ok(()));
+                let text = render(&m).unwrap_or_default();
+                assert!(text.contains("\"cause\"") && text.contains("\"root\""), "{text}");
+                if let Message::QuestStage(q) = m {
+                    assert_eq!((q.quest, q.word, q.cause, q.root.as_deref()), (0xb6fef, Some(2), Some(1), Some("QF_dunEmbershardQST_000B6FEF.Fragment_16")));
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+        for n in 0..=8 {
+            let name = format!("57-QuestStage-{n}.json");
+            let text = render(&recognize(&read(&name)).unwrap_or_else(|e| panic!("{name}: {e}"))).unwrap_or_default();
+            assert!(!text.contains("\"cause\"") && !text.contains("\"root\""), "{name}: an absent cause and root are no keys");
+        }
+    }
+
+    /// thuum ADR-068 rung 5 (D-T1 A): a player's race overlay on another
+    /// player's figure. 33-CreateActor-4 is rotfern's figure (0xff000000)
+    /// in Bleak Falls Barrow wearing WerewolfBeastRace 0xcdd84 over NordRace
+    /// 0x13746, 04-UpdateAppearance-2 its look with the same overlay (the
+    /// spell, shout and item ids illustrative); the other CreateActor and
+    /// UpdateAppearance fixtures carry none and render none.
+    #[test]
+    fn overlay_fixtures_validate_and_render_only_when_present() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        for name in ["33-CreateActor-4.json", "04-UpdateAppearance-2.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), Ok(()), "{name}");
+        }
+        match recognize(&read("33-CreateActor-4.json")) {
+            Ok(Message::CreateActor(c)) => {
+                let o = c.props.overlay.unwrap_or_default();
+                assert_eq!((o.open, o.race, o.base, o.spells.len(), o.shouts.len(), o.items.len()), (true, 0xcdd84, 0x13746, 1, 1, 1));
+            }
+            other => panic!("{other:?}"),
+        }
+        // a seat's own look never carries one
+        let own = recognize(&read("04-UpdateAppearance-2.json")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(validate(&own, &mut ClientGuard::default(), 0), Err(Reject::Range));
+        for name in ["33-CreateActor-0.json", "33-CreateActor-1.json", "33-CreateActor-2.json", "33-CreateActor-3.json", "04-UpdateAppearance-0.json", "04-UpdateAppearance-1.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!render(&m).unwrap_or_default().contains("\"overlay\""), "{name}: an absent overlay is no key");
+        }
+    }
+
+    /// thuum ADR-068 rung 5 (SCHEMA_VERSION 41): QuestStage's run word,
+    /// acting player and replay flag, and ScriptVariables 81, shapes and
+    /// refusals. 57-2 the relayed start of the plan's x-quest-words quest
+    /// 0x10d3bb with c1 0xff000000 acting; 57-3 a stop word with stage 10,
+    /// refused; 57-4 A Lovely Letter 0x74a83's stage 10 served at a login;
+    /// 57-5 a seat's start word claiming the replay, refused from a client.
+    /// 81-0 a seat's report of MS13 0x39645's ::camillaescort_var (the
+    /// census's topic-info and scene write, docs/research/
+    /// rung5-quests-2026-11-09.md section 7); 81-1 the login's watch (it and
+    /// MG01 0x1f251's ::niryaskillvar_var) and its served value at the key's
+    /// sequence 2; 81-2 a kind 2, refused; 81-3 a seat's own entry,
+    /// PlayerVampireQuest 0xeafd5's ::vampirestatus_var (the player cut, its
+    /// kind illustrative). 57-0 and 57-1 carry none of the new fields and
+    /// render none.
+    #[test]
+    fn quest_word_and_script_variable_fixtures_validate_as_named() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        type Verdict = (&'static str, Result<(), Reject>, Result<(), Reject>);
+        let verdicts: [Verdict; 8] = [
+            ("57-QuestStage-2.json", Ok(()), Ok(())),
+            ("57-QuestStage-3.json", Err(Reject::Range), Err(Reject::Range)),
+            ("57-QuestStage-4.json", Ok(()), Err(Reject::Range)),
+            ("57-QuestStage-5.json", Ok(()), Err(Reject::Range)),
+            ("81-ScriptVariables-0.json", Ok(()), Ok(())),
+            ("81-ScriptVariables-1.json", Ok(()), Err(Reject::Range)),
+            ("81-ScriptVariables-2.json", Err(Reject::Range), Err(Reject::Range)),
+            ("81-ScriptVariables-3.json", Ok(()), Ok(())),
+        ];
+        for (name, shape, from_client) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), shape, "{name}");
+            assert_eq!(validate(&m, &mut ClientGuard::default(), 0), from_client, "{name}");
+        }
+        match recognize(&read("57-QuestStage-2.json")) {
+            Ok(Message::QuestStage(q)) => assert_eq!((q.quest, q.stage, q.word, q.acting, q.served), (0x10d3bb, 0, Some(skymp::QUEST_START), Some(0xff00_0000), None)),
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("57-QuestStage-4.json")) {
+            Ok(Message::QuestStage(q)) => assert_eq!((q.quest, q.stage, q.word, q.acting, q.served), (0x74a83, 10, None, None, Some(true))),
+            other => panic!("{other:?}"),
+        }
+        for name in ["57-QuestStage-0.json", "57-QuestStage-1.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let rendered = render(&m).unwrap_or_default();
+            assert!(!rendered.is_empty() && ["\"word\"", "\"acting\"", "\"served\""].iter().all(|k| !rendered.contains(k)), "{name}: {rendered}");
+        }
+        match recognize(&read("81-ScriptVariables-1.json")) {
+            Ok(Message::ScriptVariables(v)) => {
+                assert_eq!(v.watch.iter().map(|k| (k.form, k.var.as_str(), k.own)).collect::<Vec<_>>(), vec![(0x39645, "::camillaescort_var", false), (0x1f251, "::niryaskillvar_var", false)]);
+                assert_eq!(v.entries.iter().map(|e| (e.form, e.k, e.i, e.seq)).collect::<Vec<_>>(), vec![(0x39645, 3, Some(1), 2)]);
+                assert!(v.served);
+            }
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("81-ScriptVariables-3.json")) {
+            Ok(Message::ScriptVariables(v)) => {
+                assert_eq!(v.entries.iter().map(|e| (e.form, e.script.as_str(), e.var.as_str(), e.own, e.seq)).collect::<Vec<_>>(), vec![(0xeafd5, "PlayerVampireQuestScript", "::vampirestatus_var", true, 0)]);
+                assert!(v.watch.is_empty() && !v.served);
+            }
+            other => panic!("{other:?}"),
+        }
+        // a report's watch may be absent (a client's spelling of none)
+        let bare = read("81-ScriptVariables-0.json").replacen("\"watch\": []", "\"absent\": 0", 1);
+        assert!(matches!(recognize(&bare), Ok(Message::ScriptVariables(v)) if v.watch.is_empty() && v.entries.len() == 1));
+    }
+
+    /// thuum ADR-068 rung 4: a script set's placement names its reporter on
+    /// a STAT (33-CreateActor-3: an XMarker 0x3b placed at Bleak Falls
+    /// Temple's cobweb, the reporter 0xff000000), a pairing the server sends
+    #[test]
+    fn a_script_placements_create_word_validates() {
+        use wire_validate::validate_server;
+        let text = std::fs::read_to_string(fixtures_dir().join("33-CreateActor-3.json")).unwrap_or_default();
+        let m = recognize(&text).unwrap_or_else(|e| panic!("33-CreateActor-3.json: {e}"));
+        assert_eq!(validate_server(&m), Ok(()));
+        match m {
+            Message::CreateActor(c) => {
+                assert_eq!((c.props.placed_by, c.base_record_type.as_ref().map(|t| t.as_str())), (Some(0xff00_0000), Some("STAT")));
+            }
+            other => panic!("not a CreateActor: {other:?}"),
+        }
+    }
+
+    /// thuum ADR-068 rung 3 (the script record): the ScriptState and
+    /// ScriptStateApply fixtures are the contract's shapes and one refusal,
+    /// as the ChangeForm ones are. 76-0 is the Temple pillar 0xaa8cb's
+    /// record as its host reads it after a turn to position02, its
+    /// defaultPuzzlePillarScript with the census's five variables (raw
+    /// types 3, 3, 5, a class, 5; docs/verbs/papyrus-events.md), the class
+    /// one the puzzle lever 0xaa8c3's plain form handle (kind 0, mid
+    /// 0xFFFF); 76-1 the same record with the handle's kind 3, which no
+    /// handle has (E_VAL_RANGE); 77-0 the pillar's record served with its
+    /// view, Trigger01, at the object's sequence 2, in position01; 77-1 the
+    /// lever's own defaultPillarPuzzleLever (state Waiting) served with no
+    /// view and sequence 0, since no animation native runs on the lever
+    /// (docs/research/trap-census-2026-11-05.md), its handles the puzzle
+    /// door's marker 0x3e728, the portcullis 0x3b9f1 and a failure dart
+    /// 0x3720f (docs/verbs/traps.md's read of its properties).
+    #[test]
+    fn script_state_fixtures_validate_as_named() {
+        use wire_validate::{validate_server, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        let verdicts: [(&str, Result<(), Reject>); 4] = [
+            ("76-ScriptState-0.json", Ok(())),
+            ("76-ScriptState-1.json", Err(Reject::Range)),
+            ("77-ScriptStateApply-0.json", Ok(())),
+            ("77-ScriptStateApply-1.json", Ok(())),
+        ];
+        for (name, want) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(m, Message::ScriptState(_) | Message::ScriptStateApply(_)), "{name}");
+            assert_eq!(validate_server(&m), want, "{name}");
+        }
+        // the record's names as the wire spells them: formId, type, k, o
+        match recognize(&read("76-ScriptState-0.json")) {
+            Ok(Message::ScriptState(r)) => {
+                assert_eq!((r.epoch, r.form_id, r.scripts.len()), (1, 0xaa8cb, 1));
+                let pillar = r.scripts.first();
+                assert_eq!(pillar.map(|p| (p.cls.as_str(), p.state.as_str(), p.flags, p.vars.len())), Some(("defaultPuzzlePillarScript", "position02", 11, 5)));
+                let handle = pillar.and_then(|p| p.vars.get(3)).and_then(|v| v.o.as_ref());
+                assert_eq!(handle.map(|h| (h.kind, h.mid, h.form, h.cls.as_str())), Some((0, 0xffff, 0xaa8c3, "defaultPillarPuzzleLever")));
+            }
+            other => panic!("{other:?}"),
+        }
+        // the served pillar's sequence and view; the lever's no view, which
+        // renders no key
+        match recognize(&read("77-ScriptStateApply-0.json")) {
+            Ok(Message::ScriptStateApply(a)) => {
+                assert_eq!((a.form_id, a.seq, a.event.as_ref().map(|e| e.as_str())), (0xaa8cb, 2, Some("Trigger01")));
+            }
+            other => panic!("{other:?}"),
+        }
+        let lever = recognize(&read("77-ScriptStateApply-1.json"));
+        match &lever {
+            Ok(Message::ScriptStateApply(a)) => {
+                assert_eq!((a.form_id, a.seq, a.event.is_none(), a.scripts.first().map(|s| s.vars.len())), (0xaa8c3, 0, true, Some(6)));
+            }
+            other => panic!("{other:?}"),
+        }
+        let rendered = lever.as_ref().map(render).ok().and_then(Result::ok).unwrap_or_default();
+        assert!(!rendered.is_empty() && !rendered.contains("\"event\""), "{rendered}");
+        // a null view reads as none, the client's spelling of no view
+        let null = read("77-ScriptStateApply-1.json").replacen("\"fnv1a\"", "\"event\": null, \"fnv1a\"", 1);
+        assert!(matches!(recognize(&null), Ok(Message::ScriptStateApply(a)) if a.event.is_none()));
+    }
+
+    /// thuum D-W1 and D-C2 (SCHEMA_VERSION 40): the trigger entry's
+    /// fixtures, shapes and refusals. 06-2 is c2's own player (0x14)
+    /// entering Bleak Falls Temple's web 0x37281 (FXtriggerAmbFX on
+    /// FXcobwebRoundWall01ACT, lab/.cache/drafts/fifty/
+    /// trigger-entry-static.md section 6), its report to the server; 06-3
+    /// the same entry flagged a second activation, refused; 70-2 that entry
+    /// relayed to the cell's host with the guest's figure 0xff000001 as the
+    /// presser; 70-3 a relay naming event 3, which is none, refused. The
+    /// activation fixtures 06-0, 06-1, 70-0 and 70-1 carry no entry and
+    /// render none.
+    #[test]
+    fn trigger_entry_fixtures_validate_as_named() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        // the shape's verdict, and a client's (the relay is the server's,
+        // which the transport refuses from a client by direction)
+        type Verdict = (&'static str, Result<(), Reject>, Option<Result<(), Reject>>);
+        let verdicts: [Verdict; 4] = [
+            ("06-Activate-2.json", Ok(()), Some(Ok(()))),
+            ("06-Activate-3.json", Err(Reject::Range), Some(Err(Reject::Range))),
+            ("70-RelayedActivation-2.json", Ok(()), None),
+            ("70-RelayedActivation-3.json", Err(Reject::Range), None),
+        ];
+        for (name, shape, from_client) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), shape, "{name}");
+            if let Some(want) = from_client {
+                assert_eq!(validate(&m, &mut ClientGuard::default(), 0), want, "{name}");
+            }
+        }
+        match recognize(&read("06-Activate-2.json")) {
+            Ok(Message::Activate(a)) => {
+                assert_eq!((a.data.caster, a.data.target, a.data.is_second_activation, a.data.entry), (0x14, 0x37281, false, Some(skymp::ENTRY_ENTER)));
+            }
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("70-RelayedActivation-2.json")) {
+            Ok(Message::RelayedActivation(r)) => assert_eq!((r.target, r.caster, r.entry), (0x37281, 0xff00_0001, Some(skymp::ENTRY_ENTER))),
+            other => panic!("{other:?}"),
+        }
+        for name in ["06-Activate-0.json", "06-Activate-1.json", "70-RelayedActivation-0.json", "70-RelayedActivation-1.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(&m, Message::Activate(a) if a.data.entry.is_none()) || matches!(&m, Message::RelayedActivation(r) if r.entry.is_none()), "{name}");
+            assert!(!render(&m).unwrap_or_default().contains("\"entry\""), "{name}: an absent entry is no key");
+        }
+    }
+
+    /// thuum D-C3 A (PENDING Eli; SCHEMA_VERSION 40): the serve's graph
+    /// variables. 77-2 is Bleak Falls Temple's web 0x3758c served after its
+    /// tear (its record at the web's first sequence, no view: the tear sets
+    /// a variable and plays no event), its FXtriggerAmbFX with the two
+    /// variables the pex declares (broken 2, myFX None; the properties'
+    /// backing variables left out and the hash illustrative, since the
+    /// server stores a record's values unread) and fToggleBlend 1.0 at
+    /// sequence 1, the call's (49's server.log read, trigger-entry-static.md
+    /// section 6); 77-3 the same serve naming fToggleBlend twice, refused.
+    /// The record fixtures 77-0 and 77-1 carry no variables and render none.
+    #[test]
+    fn graph_var_fixtures_validate_as_named() {
+        use wire_validate::{validate_server, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        let verdicts: [(&str, Result<(), Reject>); 2] = [("77-ScriptStateApply-2.json", Ok(())), ("77-ScriptStateApply-3.json", Err(Reject::Range))];
+        for (name, want) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), want, "{name}");
+        }
+        match recognize(&read("77-ScriptStateApply-2.json")) {
+            Ok(Message::ScriptStateApply(a)) => {
+                assert_eq!((a.form_id, a.seq, a.event.is_none(), a.scripts.len()), (0x3758c, 1, true, 1));
+                let vars = a.graph_vars.as_deref().unwrap_or_default();
+                assert_eq!(vars.iter().map(|v| (v.name.as_str(), v.k, v.i, v.f, v.b, v.seq)).collect::<Vec<_>>(), vec![("fToggleBlend", 4, None, Some(1.0), None, 1)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        for name in ["77-ScriptStateApply-0.json", "77-ScriptStateApply-1.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(&m, Message::ScriptStateApply(a) if a.graph_vars.is_none()), "{name}");
+            assert!(!render(&m).unwrap_or_default().contains("\"graphVars\""), "{name}: no variables, no key");
+        }
     }
 
     #[test]

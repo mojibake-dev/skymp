@@ -1,10 +1,16 @@
 #include "PapyrusTESModPlatform.h"
+#include "ActingScope.h"
 #include "CallNativeApi.h"
+#include "ChangeForm.h"
 #include "ConsoleApi.h"
 #include "ExceptionPrinter.h"
 #include "FridaHooks.h"
 #include "ItemMenuRefresh.h"
 #include "NullPointerException.h"
+#include "QuestCause.h"
+#include "ScriptNatives.h"
+#include "ScriptState.h"
+#include "TrapFamily.h"
 
 #include <RE/B/BGSLocation.h>
 #include <RE/B/BGSStoryEventManager.h>
@@ -16,10 +22,18 @@
 #include <RE/M/MagicFavorites.h>
 #include <RE/N/NiPoint3.h>
 #include <RE/P/Projectile.h>
+#include <RE/T/TESDataHandler.h>
 #include <RE/T/TESGlobal.h>
 #include <REL/Relocation.h>
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <fmt/format.h>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -111,6 +125,34 @@ private:
     RE::BSTEventSource<RE::TESLoadGameEvent>* eventSource) override
   {
     vmCallAllowed = true;
+    // thuum ADR-068 rung 3: the lifecycle events served before a load name
+    // the old world's references (ScriptState.h's seen set; H-R12)
+    ScriptState::Seen::Clear();
+    // D-W2 A: a firing window names the old world's triggers too
+    // (TrapFamily.h, Firing); no exception leaves this sink
+    try {
+      TrapFamily::Firing::Clear();
+    } catch (...) {
+    }
+    // thuum ADR-068 rung 5: the acting scope's stack ids and requests name
+    // the old world's stacks and stages (ActingScope.h)
+    try {
+      ActingScope::Clear();
+    } catch (...) {
+    }
+    // and D-Q4 C's joined stacks (QuestCause.h); its marks and arms, keyed
+    // by form ids, expire on their own, so a load's own lifecycle calls
+    // keep the roots they marked whichever comes first
+    try {
+      QuestCause::ClearStacks();
+    } catch (...) {
+    }
+    // and the seam's own (ScriptNatives.h): train 52's effect helpers, whose
+    // ids name the old world's references
+    try {
+      ScriptNatives::ClearAtLoad();
+    } catch (...) {
+    }
     return RE::BSEventNotifyControl::kContinue;
   }
 };
@@ -1606,6 +1648,241 @@ bool TESModPlatform::SetPlayerExperience(IVM* vm, StackID stackId,
   return true;
 }
 
+// thuum docs/verbs/change-form.md (ADR-065): the engine's own change form of
+// a loaded actor, on demand (ChangeForm.cpp holds the recipe, the premises
+// and the HYPOTHESIS list). A String return since callNative returns no
+// object: "" is the null the contract names, the reason logged
+RE::BSFixedString TESModPlatform::SerializeChangeForm(IVM* vm, StackID stackId,
+                                                      RE::StaticFunctionTag*,
+                                                      RE::TESObjectREFR* refr)
+{
+  return RE::BSFixedString(ChangeForm::Serialize(refr));
+}
+
+// the served record applied to this seat's loaded copy through the engine's
+// own LoadGame and finish pass, the REMAP step first (ChangeForm.cpp)
+RE::BSFixedString TESModPlatform::ApplyChangeForm(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, RE::TESObjectREFR* refr,
+  std::string_view bodyHex, int32_t flags, int32_t version,
+  std::string_view remapRows)
+{
+  return RE::BSFixedString(
+    ChangeForm::Apply(refr, bodyHex, static_cast<uint32_t>(flags),
+                      static_cast<uint32_t>(version), remapRows));
+}
+
+// the queued apply's answer, "" while the main thread's task has not run
+// (ChangeForm.cpp; playtest 44's H1)
+RE::BSFixedString TESModPlatform::ApplyChangeFormResult(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, RE::TESObjectREFR* refr)
+{
+  return RE::BSFixedString(ChangeForm::ApplyResult(refr));
+}
+
+// thuum ADR-068 rung 3 (the script record): the reference's script state on
+// demand, under the VM's own locks on this thread (ScriptState.cpp holds the
+// read, the write, the premises and the HYPOTHESIS list). String returns,
+// since callNative returns no object: "" is the refused read's null, the
+// reason logged
+RE::BSFixedString TESModPlatform::SerializeScriptState(IVM* vm,
+                                                       StackID stackId,
+                                                       RE::StaticFunctionTag*,
+                                                       RE::TESObjectREFR* refr)
+{
+  return RE::BSFixedString(ScriptState::Serialize(refr));
+}
+
+// a served record's scripts written over this seat's copies, its pending
+// mark lifted when the record applies (ScriptState.cpp)
+RE::BSFixedString TESModPlatform::ApplyScriptState(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, RE::TESObjectREFR* refr,
+  std::string_view scriptsJson)
+{
+  return RE::BSFixedString(ScriptState::Apply(refr, scriptsJson));
+}
+
+// a lifecycle event sent to the reference's scripts and relayed to its
+// aliases, under the platform's mark (ScriptState.cpp)
+RE::BSFixedString TESModPlatform::SendScriptEvent(IVM* vm, StackID stackId,
+                                                  RE::StaticFunctionTag*,
+                                                  RE::TESObjectREFR* refr,
+                                                  std::string_view name,
+                                                  bool unseenOnly)
+{
+  return RE::BSFixedString(ScriptState::Send(refr, name, unseenOnly));
+}
+
+// thuum ADR-068 D-C2 A: a guest's trigger entry the server relayed to this
+// seat, the cell's host, played on the trigger's scripts with the guest's
+// figure as akActionRef, under the platform's mark (ScriptState.cpp)
+RE::BSFixedString TESModPlatform::SendTriggerEvent(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, RE::TESObjectREFR* trigger,
+  std::string_view name, RE::TESObjectREFR* actionRef)
+{
+  return RE::BSFixedString(ScriptState::SendTrigger(trigger, name, actionRef));
+}
+
+// thuum ADR-068 D-W3 B: the presser rule's held entries whose presser is this
+// seat's now, replayed once each through SendTriggerEvent's body under the
+// platform's mark, at skymp5-client's update after the one that saw its own
+// hosting state change (FridaHooks.cpp; no exception leaves it)
+RE::BSFixedString TESModPlatform::ReplayHeldEntries(IVM* vm, StackID stackId,
+                                                    RE::StaticFunctionTag*)
+{
+  return RE::BSFixedString(Frida::ReplayHeldEntries());
+}
+
+// thuum ADR-068 rung 5 (D-V1 B, D-T2 B): a quest's or a reference's script
+// variables read and written by name, under the VM's attachedScriptsLock on
+// this thread (ScriptState.cpp holds the reads, the writes and their
+// refusals); inside TESModPlatform.Add's Call on the OnUpdate thread, no C++
+// exception leaving either
+RE::BSFixedString TESModPlatform::ReadScriptVariables(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*, std::string_view keysJson)
+{
+  return RE::BSFixedString(ScriptState::ReadVariables(keysJson));
+}
+
+RE::BSFixedString TESModPlatform::WriteScriptVariables(
+  IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+  std::string_view entriesJson)
+{
+  return RE::BSFixedString(ScriptState::WriteVariables(entriesJson));
+}
+
+namespace {
+// thuum ADR-068 rung 4 (the state rows): DiffWorldGlobals' baseline, each
+// answered global's form id to its value at its last answer or the last
+// reset, and one answer's bound, skymp-wire's WORLD_GLOBALS (the
+// WorldGlobal message's entries, the rung 4 plan's 1(b)). The native runs on
+// the OnUpdate thread alone; the lock is for any other caller
+constexpr size_t kWorldGlobalsPerAnswer = 512;
+std::mutex g_worldGlobalsMutex;
+std::unordered_map<uint32_t, float> g_worldGlobalsBaseline;
+
+// `exclude` read as comma-separated hex form ids, "0x" optional and spaces
+// allowed around each; a token that is no hex id is skipped
+std::unordered_set<uint32_t> ParseHexIds(std::string_view text)
+{
+  std::unordered_set<uint32_t> ids;
+  size_t start = 0;
+  while (start <= text.size()) {
+    size_t end = text.find(',', start);
+    if (end == std::string_view::npos) {
+      end = text.size();
+    }
+    std::string_view token = text.substr(start, end - start);
+    while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) {
+      token.remove_prefix(1);
+    }
+    while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) {
+      token.remove_suffix(1);
+    }
+    if (token.size() > 2 && token[0] == '0' &&
+        (token[1] == 'x' || token[1] == 'X')) {
+      token.remove_prefix(2);
+    }
+    if (!token.empty()) {
+      uint32_t id = 0;
+      const char* last = token.data() + token.size();
+      const auto [ptr, ec] = std::from_chars(token.data(), last, id, 16);
+      if (ec == std::errc() && ptr == last) {
+        ids.insert(id);
+      }
+    }
+    start = end + 1;
+  }
+  return ids;
+}
+
+// the walk itself, under the baseline's lock: every GLOB the data handler
+// holds, the skipped ones counted for the reset's line
+std::string DiffWorldGlobalsImpl(bool reset, std::string_view exclude)
+{
+  auto handler = RE::TESDataHandler::GetSingleton();
+  if (!handler) {
+    return "[]";
+  }
+  const std::unordered_set<uint32_t> excluded = ParseHexIds(exclude);
+  std::lock_guard<std::mutex> lock(g_worldGlobalsMutex);
+  if (reset) {
+    g_worldGlobalsBaseline.clear();
+  }
+  std::string answer = "[";
+  size_t entries = 0;
+  size_t constants = 0;
+  size_t skipped = 0;
+  for (RE::TESGlobal* global : handler->GetFormArray<RE::TESGlobal>()) {
+    if (!global) {
+      continue;
+    }
+    if ((global->GetFormFlags() & RE::TESGlobal::RecordFlags::kConstant) !=
+        0) {
+      ++constants;
+      continue;
+    }
+    const uint32_t id = global->GetFormID();
+    const float value = global->value;
+    if (excluded.count(id) != 0 || !std::isfinite(value)) {
+      ++skipped;
+      continue;
+    }
+    if (reset) {
+      g_worldGlobalsBaseline[id] = value;
+      continue;
+    }
+    const auto it = g_worldGlobalsBaseline.find(id);
+    if (it != g_worldGlobalsBaseline.end() && it->second == value) {
+      continue;
+    }
+    if (entries == kWorldGlobalsPerAnswer) {
+      // the rest keep their baseline, so a later call answers them
+      break;
+    }
+    answer += fmt::format("{}[{},{}]", entries == 0 ? "" : ",", id, value);
+    g_worldGlobalsBaseline[id] = value;
+    ++entries;
+  }
+  answer += "]";
+  if (reset) {
+    logger::info("[verb:world-globals] DiffWorldGlobals reset: {} global(s) "
+                 "baselined; {} constant(s), {} excluded or non-finite "
+                 "skipped",
+                 g_worldGlobalsBaseline.size(), constants, skipped);
+  }
+  return answer;
+}
+}
+
+// thuum ADR-068 rung 4 (the state rows, amendment B; docs/research/
+// rung4-state-rows-2026-11-07.md 1(a)): the world globals this seat's engine
+// changed since its last answer, for the world streamer's WorldGlobal 80
+// (skymp5-client's WorldGlobalService calls it with reset at the stream
+// word, then once a second without, on the seat the server elected). The
+// engine's GLOB array walked whole (TESDataHandler::GetFormArray,
+// CommonLibSSE-NG include/RE/T/TESDataHandler.h:68-70 and :222-224, over the
+// handler's formArrays, :170): a constant (TESGlobal::RecordFlags::kConstant,
+// TESGlobal.h:28, read on TESForm::GetFormFlags, TESForm.h:287), an id in
+// `exclude` and a non-finite value skipped, every other value
+// (TESGlobal::value, TESGlobal.h:45) held to the baseline. Runs inside
+// TESModPlatform.Add's Call on the OnUpdate thread (callNative's direct
+// path, ScriptState.h's note), and no C++ exception leaves it: a throw
+// answers "[]", the reason logged
+RE::BSFixedString TESModPlatform::DiffWorldGlobals(IVM* vm, StackID stackId,
+                                                   RE::StaticFunctionTag*,
+                                                   bool reset,
+                                                   std::string_view exclude)
+{
+  try {
+    return RE::BSFixedString(DiffWorldGlobalsImpl(reset, exclude));
+  } catch (const std::exception& e) {
+    logger::error("[verb:world-globals] DiffWorldGlobals threw: {}", e.what());
+  } catch (...) {
+    logger::error("[verb:world-globals] DiffWorldGlobals threw");
+  }
+  return RE::BSFixedString("[]");
+}
+
 bool TESModPlatform::Register(IVM* vm)
 {
   TESModPlatform::onPapyrusUpdate = onPapyrusUpdate;
@@ -1844,6 +2121,74 @@ bool TESModPlatform::Register(IVM* vm)
                        true, decltype(ReleaseQuestStageFragment), bool,
                        RE::StaticFunctionTag*, RE::TESQuest*, int32_t>(
     "ReleaseQuestStageFragment", "TESModPlatform", ReleaseQuestStageFragment));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SerializeChangeForm),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*>(
+      "SerializeChangeForm", "TESModPlatform", SerializeChangeForm));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ApplyChangeForm),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*, std::string_view,
+                                     int32_t, int32_t, std::string_view>(
+      "ApplyChangeForm", "TESModPlatform", ApplyChangeForm));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ApplyChangeFormResult),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*>(
+      "ApplyChangeFormResult", "TESModPlatform", ApplyChangeFormResult));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SerializeScriptState),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*>(
+      "SerializeScriptState", "TESModPlatform", SerializeScriptState));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ApplyScriptState),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*, std::string_view>(
+      "ApplyScriptState", "TESModPlatform", ApplyScriptState));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(SendScriptEvent), RE::BSFixedString,
+      RE::StaticFunctionTag*, RE::TESObjectREFR*, std::string_view, bool>(
+      "SendScriptEvent", "TESModPlatform", SendScriptEvent));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SendTriggerEvent),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*, std::string_view,
+                                     RE::TESObjectREFR*>(
+      "SendTriggerEvent", "TESModPlatform", SendTriggerEvent));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ReplayHeldEntries),
+                                     RE::BSFixedString,
+                                     RE::StaticFunctionTag*>(
+      "ReplayHeldEntries", "TESModPlatform", ReplayHeldEntries));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ReadScriptVariables),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     std::string_view>(
+      "ReadScriptVariables", "TESModPlatform", ReadScriptVariables));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(WriteScriptVariables),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     std::string_view>(
+      "WriteScriptVariables", "TESModPlatform", WriteScriptVariables));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(DiffWorldGlobals),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     bool, std::string_view>(
+      "DiffWorldGlobals", "TESModPlatform", DiffWorldGlobals));
 
   static LoadGameEvent loadGameEvent;
 

@@ -58,7 +58,92 @@ use bounded::{String, Vec};
 /// 30: ObjectAnimation (thuum docs/verbs/traps.md, ADR-059 decision 3,
 /// m4-object-animation): a world object's animation event the cell's host
 /// reported, recorded as its lastAnimation and told to the cell's other games.
-pub const SCHEMA_VERSION: u16 = 30;
+/// 31: TrapHit (m4-trap-hit, thuum docs/WIRE.md). 32: m2-rune-glyph.
+/// 33: ChangeForm, ChangeFormAck and ChangeFormApply (thuum
+/// docs/verbs/change-form.md, ADR-065 system 1, adr065-sys1-wire): an
+/// actor's change form as the owner's engine serialized it, recorded by the
+/// server, acked by its hash and served to every seat that sees the actor.
+/// Their `t` numbers 72 to 74 and wire ids 80 to 82 are positional (the wire
+/// id is `t` plus 8, the variant index; the tests below pin both) and collide
+/// with TrapHit's 72 in the doc of record (thuum docs/WIRE.md, m4-trap-hit):
+/// the branch that lands on parity second renumbers, the ids shifting with
+/// the variant order either way. 33 so that no two builds at 31 disagree on
+/// what a 72 means.
+/// 34: 33's three messages with 32's `decal` on SpellCast (the rune's glyph
+/// on the observer, m2-rune-glyph) merged on m3-canon-1, Eli's baseline of
+/// everything known to work; a 33 image without the field is on the lab, so
+/// the union is a new number.
+/// 35: ActorFateEntry.inv (thuum docs/verbs/npc-fate.md, playtest 44's 1c):
+/// the record's inventory rows on the fate.
+/// 36: ScriptCall and SpSnippet's `seq` (thuum ADR-068, the one seam,
+/// m4-scripts-2): a tabled native the subject's owner ran, reported at the
+/// native boundary, and its relay with the subject's sequence.
+/// 37: DestructionStage (thuum D-S3, traps follow the interaction; ADR-068's
+/// DestructionStage 78, pulled ahead of rung 4, m4-scripts-2b-traps): a
+/// reference's destruction stage and destroyed flag, reported by the seat
+/// whose engine reached the step first, recorded once and served to a late
+/// seat; and the two reserved rows at ids 84 and 85 (ADR-068's ScriptState
+/// 76 and ScriptStateApply 77, rung 3's, numbered ahead of their shapes), so
+/// MsgType 78 keeps `wire id = MsgType + 8` (ADR-019 decision 1).
+/// 38: ScriptState and ScriptStateApply (thuum ADR-068 rung 3, the script
+/// record, m4-scripts-3-record) in place of the two reserved rows, at the
+/// same ids 84 and 85: the scripts attached to a reference as its owner's
+/// engine read them at a quiescent point, recorded by the server with the
+/// object's sequence and its view, and served ahead of a grant and behind a
+/// create word.
+/// 39: the state rows (thuum ADR-068 rung 4 and its amendment B,
+/// m4-scripts-4-rows): DestructionStage widened to a reference's engine
+/// state (`disabled`, `deleted` and the object's `seq` beside the stage and
+/// destroyed, the server's word alone), AliasFill (MsgType 79, wire id 87: a
+/// quest's reference alias filled or cleared, nobody's, the latest report
+/// recorded and relayed) and WorldGlobal (MsgType 80, wire id 88: the GLOBs
+/// every seat's scripts write, streamed by one seat at an epoch), and
+/// CreateActor's `placedBy` on a script's placement (STAT, NPC_ and items
+/// beside MSTT and ACTI).
+/// 40: the trigger entry channel (thuum D-W1 and D-C2, playtest 50,
+/// docs/research/fifty-fixes-2026-11-07.md 1(a), m4-fifty-wire): Activate's
+/// and RelayedActivation's optional `entry` (1 OnTriggerEnter, 2
+/// OnTriggerLeave), a guest's entry into a trigger whose world script runs
+/// on the cell's host, relayed to the host alone; no new message, so the
+/// next free MsgType stays 81. And ScriptStateApply's `graph_vars` (D-C3 A,
+/// PENDING Eli): a world object's behavior graph variables served beside
+/// the record's view, each with its own sequence.
+/// 41: rung 5's quests (thuum ADR-068 rung 5, docs/research/
+/// rung5-quests-2026-11-09.md sections 1(a) and 8, m4-scripts-5-wire):
+/// QuestStage's optional `word` (1 a start, 2 a stop), `acting` (the acting
+/// player's actor) and `served` (the login replay), and ScriptVariables
+/// (MsgType 81, wire id 89: the condition-read script variables any seat
+/// reports, the latest write recorded per key with the server's sequence,
+/// a player-class quest's keys its player's own). The rung's server half
+/// (m4-scripts-5-server) adds, inside 41 before any build of it shipped:
+/// CreateActorProps' and UpdateAppearance's optional `overlay` (D-T1 A, a
+/// player's race overlay on its figure), and a ScriptCall object argument at
+/// 0xff000000 and up (a scoped call's figure, its player's actor by its
+/// server id), which the core takes only when it names a connected player;
+/// and QuestStage's optional `player` on the login's list (the player-class
+/// quests, whose scripts each seat runs for its own player).
+/// 42: rung 5's fresh review (thuum ADR-068 rung 5, m4-scripts-5-server;
+/// ADR-064 amendment A): QuestStage's optional `wordStages` on a start or a
+/// stop word, the stages whose fragments the engine runs with it (stage 0
+/// and the quest's start-up stages for a start, its shut-down stages for a
+/// stop; D-Q3 A, so a served word's receiver suppresses them), and
+/// QuestStage's byte cap at 4 KiB (the login's list with its `player`).
+/// The number moves for 41's server half too: CreateActorProps' and
+/// UpdateAppearance's `overlay`, ScriptCall's figure argument and
+/// QuestStage's `player` changed layouts inside 41 after pipeline 5676's
+/// image carried an earlier 41.
+/// 43: D-Q4 C (thuum ADR-068 rung 5, m4-scripts-5-cause): QuestStage's
+/// optional `cause` (1 a world cause, 2 the seat's own) and `root` (the
+/// root frame of the script stack that made the report, "<Script>.
+/// <Function>") on a seat's report, so the server refuses a run word, or a
+/// report it judges a start, whose cause is the seat's own; R2, the seat's
+/// own word.
+/// 44: ScriptCall's optional `landed` (thuum D-R1 C's leveled gap,
+/// m4-train-52): on a leveled AddItem on the sender's own player, the bases
+/// and counts the engine's roll put in its inventory, read inside the call's
+/// AddItemFunctor, so the server records the roll where it refused the list
+/// by name (E_SCRIPTCALL_LEVELED).
+pub const SCHEMA_VERSION: u16 = 44;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -96,11 +181,21 @@ pub mod cap {
     pub const ACTOR_FATES: usize = 64;
     /// Worn items the server's outfit roll put on one actor.
     pub const FATE_WORN: usize = 32;
+    /// Inventory rows the server's container roll put in one actor's record
+    /// apart from the worn items (playtest 44's 1c): a bandit's loot is a
+    /// handful; a vendor's wares sit in its chest, not on it. Sixty-four
+    /// fates of thirty-two rows keep ActorFate's bound at 32 KiB.
+    pub const FATE_INV: usize = 32;
     /// Leveled templates one NPC resolves through.
     pub const TEMPLATE_CHAIN: usize = 64;
     /// Races a server restricts to listed profiles (Skyrim.esm has 99 RACE
     /// records, ten of them playable; a mod list's custom races are a few).
     pub const RACES: usize = 128;
+    /// Forms in one list of a player's race overlay (thuum ADR-068 D-T1 A:
+    /// the spells, shouts or items a worn race's scripts added; the
+    /// werewolf's level abilities, its howl and WolfSkinFXArmor are a few),
+    /// the client's own bound (sync/raceOverlay.ts).
+    pub const OVERLAY_FORMS: usize = 64;
     /// Node overrides on one reference.
     pub const NODES: usize = 256;
     /// A node name in a model.
@@ -146,6 +241,15 @@ pub mod cap {
     /// Quests whose stages are the world's (thuum docs/verbs/quest-stage.md:
     /// the server's `sharedQuests` list, Riverwood's first).
     pub const SHARED_QUESTS: usize = 256;
+    /// The stages one run word names whose fragments the engine runs with it
+    /// (thuum ADR-068 rung 5, D-Q3 A): stage 0 and the start-up stages, or
+    /// the shut-down stages; a quest flags one or two (Skyrim.esm,
+    /// lab/esm.py on sky-srv, 2026-11-10).
+    pub const WORD_STAGES: usize = 16;
+    /// A report's root frame (thuum ADR-068 rung 5, D-Q4 C), a script and
+    /// one of its functions, "<Script>.<Function>": two [`PAPYRUS_NAME`]s
+    /// and the dot between them.
+    pub const QUEST_ROOT: usize = 2 * PAPYRUS_NAME + 1;
     /// Actor values one actor's running buffs touch: two per effect at most
     /// (a dual value modifier's second).
     pub const EFFECT_MODIFIERS: usize = 2 * MAGIC_EFFECTS;
@@ -167,14 +271,68 @@ pub mod cap {
     pub const PAPYRUS_NAME: usize = 128;
     /// Arguments of one delegated Papyrus call.
     pub const SNIPPET_ARGS: usize = 64;
+    /// Arguments of one reported native call (thuum ADR-068): the most a
+    /// native takes (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
+    /// "native supports max 11").
+    pub const SCRIPT_CALL_ARGS: usize = 11;
+    /// Landings one reported leveled AddItem carries (thuum D-R1 C's leveled
+    /// gap, train 52): a use-all list lands each of its entries, and a
+    /// leveled list's entry count is one byte (CommonLibSSE-NG
+    /// include/RE/T/TESLeveledList.h:72, `numEntries`, LLCT); the platform
+    /// folds the landings by base and never sends more.
+    pub const SCRIPT_CALL_LANDED: usize = 255;
     /// A Papyrus string argument or return value.
     pub const SNIPPET_STRING: usize = 16 * 1024;
+    /// Scripts one script record carries (thuum ADR-068 rung 3): the scripts
+    /// attached to one reference (the Temple's puzzle lever 0xaa8c3 carries
+    /// two, docs/research/trap-census-2026-11-05.md). UNMEASURED beyond the
+    /// census.
+    pub const SCRIPT_OBJECTS: usize = 16;
+    /// Variables of one attached script, its chain's total
+    /// (GetTotalNumVariables, H-R1): the largest the save read met,
+    /// TrapSwingingWall over MovingTrap over TrapBase, has 52 (thuum
+    /// docs/research/adr065-papyrus-state-2026-11-03.md Q1).
+    pub const SCRIPT_VARS: usize = 512;
+    /// A string variable's value in a script record. UNMEASURED: a save
+    /// read's string histogram (rung 3's script-save-trace.js v2.1) sets it.
+    pub const SCRIPT_STRING: usize = 1024;
+    /// Elements of one array variable: the VM's own bound (CommonLibSSE-NG
+    /// include/RE/A/Array.h:69, MAX_SIZE 128).
+    pub const SCRIPT_ARRAY: usize = 128;
+    /// Behavior graph variables one ScriptStateApply serves for its
+    /// reference (thuum D-C3 A, PENDING Eli): the server keeps at most this
+    /// many per reference, a new name past them replacing the oldest; the
+    /// cobweb's script sets one (fToggleBlend). UNMEASURED.
+    pub const GRAPH_VARS: usize = 16;
+    /// World globals in one WorldGlobal (thuum ADR-068 rung 4): Skyrim.esm's
+    /// GLOB records number in the hundreds and a second's diff moves a
+    /// handful (UNMEASURED: x-world-globals-rate v1 reads the rate).
+    pub const WORLD_GLOBALS: usize = 512;
+    /// Keys in one ScriptVariables's watch list, and entries in one (thuum
+    /// ADR-068 rung 5): the census lists 770 condition-read keys in the
+    /// five masters (docs/research/rung5-quests-2026-11-09.md section 7), so
+    /// a login sends the watch in several messages; a second's report moves
+    /// a handful. UNMEASURED past the census.
+    pub const SCRIPT_VARIABLES: usize = 256;
     /// Entries in one gamemode code list.
     pub const GAMEMODE_ENTRIES: usize = 256;
     /// One gamemode function's JavaScript source.
     pub const GAMEMODE_SOURCE: usize = 256 * 1024;
     /// Gamemode properties on one form.
     pub const CUSTOM_PROPS: usize = 256;
+    /// A change-form record's body as the engine packs it (thuum
+    /// docs/verbs/change-form.md, ADR-065): the research note's largest
+    /// actor record is 4,795 bytes (an ACHR at kDying with its process
+    /// block), so 64 KiB holds a record with its inventory many times over
+    /// and still stops a flood at the shape.
+    pub const CHANGE_FORM_BODY: usize = 65536;
+    /// The same body as it travels: two lowercase hex characters a byte, the
+    /// spelling the native's serializer hands the client and the client
+    /// forwards as is (the JSON form and the wire's are one string).
+    pub const CHANGE_FORM_BODY_HEX: usize = 2 * CHANGE_FORM_BODY;
+    /// Remap rows one record carries: the type-0 ids its body names
+    /// (Sven's kDead record had 152 ids, 103 of them portable; D6's census).
+    pub const CHANGE_FORM_REMAP: usize = 256;
 }
 
 /// Newtype over an engine form id. Validated against the server's load order
@@ -500,6 +658,28 @@ pub enum Message {
     RelayedActivation(skymp::RelayedActivation),
     /// 79, MsgType 71 (thuum). See [`skymp::ObjectAnimation`].
     ObjectAnimation(skymp::ObjectAnimation),
+    /// 80, MsgType 72 (thuum). See [`skymp::ChangeForm`].
+    ChangeForm(skymp::ChangeForm),
+    /// 81, MsgType 73 (thuum). See [`skymp::ChangeFormAck`].
+    ChangeFormAck(skymp::ChangeFormAck),
+    /// 82, MsgType 74 (thuum). See [`skymp::ChangeFormApply`].
+    ChangeFormApply(skymp::ChangeFormApply),
+    /// 83, MsgType 75 (thuum). See [`skymp::ScriptCall`].
+    ScriptCall(skymp::ScriptCall),
+    /// 84, MsgType 76 (thuum ADR-068 rung 3; the id D-S3 held for it while
+    /// DestructionStage, 78, was built first). See [`skymp::ScriptState`].
+    ScriptState(skymp::ScriptState),
+    /// 85, MsgType 77 (thuum ADR-068 rung 3, held the same way). See
+    /// [`skymp::ScriptStateApply`].
+    ScriptStateApply(skymp::ScriptStateApply),
+    /// 86, MsgType 78 (thuum). See [`skymp::DestructionStage`].
+    DestructionStage(skymp::DestructionStage),
+    /// 87, MsgType 79 (thuum ADR-068 rung 4). See [`skymp::AliasFill`].
+    AliasFill(skymp::AliasFill),
+    /// 88, MsgType 80 (thuum ADR-068 rung 4). See [`skymp::WorldGlobal`].
+    WorldGlobal(skymp::WorldGlobal),
+    /// 89, MsgType 81 (thuum ADR-068 rung 5). See [`skymp::ScriptVariables`].
+    ScriptVariables(skymp::ScriptVariables),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -528,7 +708,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 80] = [
+const TABLE: [Row; 90] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -588,13 +768,13 @@ const TABLE: [Row; 80] = [
     row("HostGrant", 48, 32, S2C),
     row("HostRelease", 49, 32, S2C),
     row("ActorSightings", 50, 4 * KIB, C2S),
-    row("ActorFate", 51, 16 * KIB, S2C),
+    row("ActorFate", 51, 32 * KIB, S2C),
     row("ActorDeath", 52, KIB, C2S),
     row("HostedActorState", 53, 64, Both),
     row("ActorSpeech", 54, 32, Both),
     row("DamageCause", 55, 32, S2C),
     row("ActorClaim", 56, 16, C2S),
-    row("QuestStage", 57, 2 * KIB, Both),
+    row("QuestStage", 57, 4 * KIB, Both),
     row("PropTransform", 58, 64, Both),
     row("PropClaim", 59, 16, C2S),
     row("PropOwner", 60, 32, S2C),
@@ -607,16 +787,49 @@ const TABLE: [Row; 80] = [
     row("PerkPick", 67, 8, C2S),
     row("PerkState", 68, 4 * KIB, S2C),
     row("WordWall", 69, 8, C2S),
-    row("RelayedActivation", 70, 16, S2C),
+    // a target, a caster and the entry byte (thuum D-C2, SCHEMA_VERSION 40;
+    // 13 bytes at the longest, pinned by wire_id_matches_postcard_variant_index)
+    row("RelayedActivation", 70, 24, S2C),
     row("ObjectAnimation", 71, 160, Both),
+    // a record's hex body at its cap (128 KiB) plus every remap row at
+    // five-byte varints and the scalars, with room (docs/verbs/change-form.md)
+    row("ChangeForm", 72, 136 * KIB, C2S),
+    row("ChangeFormAck", 73, 16, S2C),
+    row("ChangeFormApply", 74, 136 * KIB, S2C),
+    // eleven arguments at SNIPPET_STRING's 16 KiB each, the four names at
+    // PAPYRUS_NAME and, since SCHEMA_VERSION 44, 255 landings at ten varint
+    // bytes each, with room (183,365 bytes at the fullest, pinned by the size
+    // test; thuum ADR-068, D-R1 C's leveled gap)
+    row("ScriptCall", 75, 180 * KIB, C2S),
+    // a reference's script record (thuum ADR-068 rung 3): under the 256 KiB
+    // the transport takes from a client, with room over the 160 KiB answer
+    // the owner's native refuses past (its JSON, which postcard spells
+    // shorter); the apply adds the sequence and the view
+    row("ScriptState", 76, 192 * KIB, C2S),
+    row("ScriptStateApply", 77, 256 * KIB, S2C),
+    // a reference, a stage byte, two flags, the ref state's two words and
+    // the object's sequence (thuum D-S3, ADR-068 rung 4; 16 bytes at the
+    // longest, pinned by wire_id_matches_postcard_variant_index)
+    row("DestructionStage", 78, 32, Both),
+    // a quest, an alias, a reference and a flag (thuum ADR-068 rung 4; 17
+    // bytes at the longest)
+    row("AliasFill", 79, 32, Both),
+    // 512 entries at nine bytes and the scalars (thuum ADR-068 rung 4;
+    // 4,617 bytes at the longest)
+    row("WorldGlobal", 80, 8 * KIB, Both),
+    // 256 watched keys and 256 entries, every name at PAPYRUS_NAME and
+    // every number at its widest varint (thuum ADR-068 rung 5; 141,062
+    // bytes at the longest, pinned by the size test), under the 256 KiB the
+    // transport takes from a client
+    row("ScriptVariables", 81, 144 * KIB, Both),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 80;
-const _: () = assert!(TABLE.len() == 80, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 90;
+const _: () = assert!(TABLE.len() == 90, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -721,6 +934,16 @@ impl Message {
             Message::WordWall(_) => 77,
             Message::RelayedActivation(_) => 78,
             Message::ObjectAnimation(_) => 79,
+            Message::ChangeForm(_) => 80,
+            Message::ChangeFormAck(_) => 81,
+            Message::ChangeFormApply(_) => 82,
+            Message::ScriptCall(_) => 83,
+            Message::ScriptState(_) => 84,
+            Message::ScriptStateApply(_) => 85,
+            Message::DestructionStage(_) => 86,
+            Message::AliasFill(_) => 87,
+            Message::WorldGlobal(_) => 88,
+            Message::ScriptVariables(_) => 89,
         }
     }
 
@@ -764,6 +987,12 @@ mod tests {
         assert_eq!(Message::Refuse { reason: 0 }.name(), "Refuse");
         assert_eq!(Message::HostGrant(skymp::HostGrant::default()).name(), "HostGrant");
         assert_eq!(Message::ReservedHostGrant { cell: FormId(1) }.name(), "ReservedHostGrant");
+        assert_eq!(Message::ScriptState(skymp::ScriptState::default()).name(), "ScriptState");
+        assert_eq!(Message::ScriptStateApply(skymp::ScriptStateApply::default()).name(), "ScriptStateApply");
+        assert_eq!(Message::DestructionStage(skymp::DestructionStage::default()).name(), "DestructionStage");
+        assert_eq!(Message::AliasFill(skymp::AliasFill::default()).name(), "AliasFill");
+        assert_eq!(Message::WorldGlobal(skymp::WorldGlobal::default()).name(), "WorldGlobal");
+        assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).name(), "ScriptVariables");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -823,7 +1052,200 @@ mod tests {
         assert_eq!(name_of_msg_type(69), Some("WordWall"));
         assert_eq!(name_of_msg_type(70), Some("RelayedActivation"));
         assert_eq!(name_of_msg_type(71), Some("ObjectAnimation"));
-        assert_eq!(name_of_msg_type(72), None);
+        assert_eq!(name_of_msg_type(72), Some("ChangeForm"));
+        assert_eq!(name_of_msg_type(73), Some("ChangeFormAck"));
+        assert_eq!(name_of_msg_type(74), Some("ChangeFormApply"));
+        assert_eq!(name_of_msg_type(75), Some("ScriptCall"));
+        // ADR-068's 76 and 77 at the ids D-S3 held for them (thuum rung 3)
+        assert_eq!(name_of_msg_type(76), Some("ScriptState"));
+        assert_eq!(name_of_msg_type(77), Some("ScriptStateApply"));
+        assert_eq!(name_of_msg_type(78), Some("DestructionStage"));
+        // ADR-068 rung 4's two, after 78: wire ids 87 and 88
+        assert_eq!(name_of_msg_type(79), Some("AliasFill"));
+        assert_eq!(name_of_msg_type(80), Some("WorldGlobal"));
+        // ADR-068 rung 5's one, after 80: wire id 89
+        assert_eq!(name_of_msg_type(81), Some("ScriptVariables"));
+        assert_eq!(name_of_msg_type(82), None);
+        assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).wire_id(), 89);
+        assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).msg_type(), Some(81));
+        assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).direction(), Direction::Both);
+        assert_eq!(Message::AliasFill(skymp::AliasFill::default()).wire_id(), 87);
+        assert_eq!(Message::WorldGlobal(skymp::WorldGlobal::default()).wire_id(), 88);
+        assert_eq!(Message::AliasFill(skymp::AliasFill::default()).direction(), Direction::Both);
+        assert_eq!(Message::WorldGlobal(skymp::WorldGlobal::default()).direction(), Direction::Both);
+        assert_eq!(Message::ScriptState(skymp::ScriptState::default()).msg_type(), Some(76));
+        assert_eq!(Message::ScriptStateApply(skymp::ScriptStateApply::default()).msg_type(), Some(77));
+        assert_eq!(Message::ScriptState(skymp::ScriptState::default()).wire_id(), 84);
+        assert_eq!(Message::ScriptStateApply(skymp::ScriptStateApply::default()).wire_id(), 85);
+        assert_eq!(Message::ScriptState(skymp::ScriptState::default()).direction(), Direction::ClientToServer);
+        assert_eq!(Message::ScriptStateApply(skymp::ScriptStateApply::default()).direction(), Direction::ServerToClient);
+        assert_eq!(Message::DestructionStage(skymp::DestructionStage::default()).direction(), Direction::Both);
+    }
+
+    /// A script record near the owner's native's answer cap (thuum ADR-068
+    /// rung 3: the native refuses an answer past 160 KiB of JSON): sixteen
+    /// scripts with their names at the cap, each with twenty-four strings of
+    /// 384 bytes, the first one also with an object array of 128 handles at
+    /// their caps.
+    fn script_record_at_its_answer_cap() -> bounded::Vec<skymp::ScriptObjectState, { cap::SCRIPT_OBJECTS }> {
+        let name = || -> String<{ cap::PAPYRUS_NAME }> { "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default() };
+        let handle = skymp::ScriptHandle { kind: 2, mid: u16::MAX, form: 0xfeff_ffff, cls: name() };
+        let strings: alloc::vec::Vec<skymp::ScriptVar> = (0..24).map(|_| skymp::ScriptVar { k: 2, s: Some("x".repeat(384).try_into().unwrap_or_default()), ..Default::default() }).collect();
+        let handles = skymp::ScriptVar {
+            k: 11,
+            elem: Some(name()),
+            a: Some((0..cap::SCRIPT_ARRAY).map(|_| skymp::ScriptValue { k: 1, o: Some(handle.clone()), ..Default::default() }).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default()),
+            ..Default::default()
+        };
+        (0..cap::SCRIPT_OBJECTS)
+            .map(|n| {
+                let mut vars = strings.clone();
+                if n == 0 {
+                    vars.push(handles.clone());
+                }
+                skymp::ScriptObjectState { cls: name(), state: name(), flags: u8::MAX, vars: vars.try_into().unwrap_or_default() }
+            })
+            .collect::<alloc::vec::Vec<_>>()
+            .try_into()
+            .unwrap_or_default()
+    }
+
+    /// A serve's graph variables at their longest (thuum D-C3 A): sixteen,
+    /// each name at its cap, every payload carried, every number a
+    /// five-byte varint.
+    fn graph_vars_at_their_cap() -> Option<bounded::Vec<skymp::GraphVar, { cap::GRAPH_VARS }>> {
+        let var = || skymp::GraphVar {
+            name: "x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default(),
+            k: u8::MAX,
+            i: Some(i32::MIN),
+            f: Some(f32::MAX),
+            b: Some(true),
+            seq: u32::MAX,
+        };
+        (0..cap::GRAPH_VARS).map(|_| var()).collect::<alloc::vec::Vec<_>>().try_into().ok()
+    }
+
+    #[test]
+    fn a_script_record_at_the_natives_answer_cap_fits_its_byte_cap() {
+        let scripts = script_record_at_its_answer_cap();
+        // the sample is whole, not a default left by a refused conversion
+        assert_eq!(scripts.len(), cap::SCRIPT_OBJECTS);
+        assert!(scripts.iter().all(|s| s.vars.len() >= 24));
+        assert_eq!(scripts.first().and_then(|s| s.vars.last()).and_then(|v| v.a.as_ref()).map(|a| a.len()), Some(cap::SCRIPT_ARRAY));
+        let state = Message::ScriptState(skymp::ScriptState { epoch: u32::MAX, form_id: 0xfeff_ffff, fnv1a: u32::MAX, scripts: scripts.clone(), ..Default::default() });
+        let bytes = postcard::to_allocvec(&state).unwrap_or_default();
+        assert!(bytes.len() > 150 * KIB && bytes.len() <= 192 * KIB, "{}", bytes.len());
+        // the serve with its graph variables at their cap too (thuum D-C3 A)
+        let graph_vars = graph_vars_at_their_cap();
+        assert_eq!(graph_vars.as_ref().map(|v| v.len()), Some(cap::GRAPH_VARS));
+        let apply = Message::ScriptStateApply(skymp::ScriptStateApply {
+            form_id: 0xfeff_ffff,
+            fnv1a: u32::MAX,
+            seq: u32::MAX,
+            event: Some("x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default()),
+            scripts,
+            graph_vars,
+            ..Default::default()
+        });
+        let served = postcard::to_allocvec(&apply).unwrap_or_default();
+        assert!(served.len() > bytes.len() && served.len() <= 256 * KIB, "{}", served.len());
+    }
+
+    /// A ScriptVariables at its caps (thuum ADR-068 rung 5): 256 watched
+    /// keys and 256 entries, every name at PAPYRUS_NAME, every number a
+    /// varint at its widest and every payload field carried.
+    fn script_variables_at_their_caps() -> skymp::ScriptVariables {
+        let name = || -> String<{ cap::PAPYRUS_NAME }> { "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default() };
+        let key = || skymp::ScriptVarKey { form: u32::MAX, script: name(), var: name(), own: true };
+        let entry = || skymp::ScriptVarEntry { form: u32::MAX, script: name(), var: name(), own: true, k: u8::MAX, i: Some(i32::MIN), f: Some(f32::MAX), b: Some(true), seq: u32::MAX };
+        skymp::ScriptVariables {
+            watch: (0..cap::SCRIPT_VARIABLES).map(|_| key()).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+            entries: (0..cap::SCRIPT_VARIABLES).map(|_| entry()).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+            served: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_script_variables_message_at_its_caps_fits_its_byte_cap() {
+        let full = script_variables_at_their_caps();
+        // the sample is whole, not a default left by a refused conversion
+        assert_eq!((full.watch.len(), full.entries.len()), (cap::SCRIPT_VARIABLES, cap::SCRIPT_VARIABLES));
+        let m = Message::ScriptVariables(full);
+        let bytes = postcard::to_allocvec(&m).unwrap_or_default();
+        assert_eq!(bytes.len(), 141_062);
+        assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
+        // a quest stage with every rung 5 field, the login's list and its
+        // player class full, stays inside its 4 KiB (2 KiB held the list
+        // alone; the class doubles it, thuum ADR-068 rung 5's fresh review)
+        let full = || (0..cap::SHARED_QUESTS).map(|_| u32::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default();
+        let stage = Message::QuestStage(skymp::QuestStage {
+            quest: u32::MAX,
+            stage: u16::MAX,
+            shared: full(),
+            mode: u8::MAX,
+            word: Some(u8::MAX),
+            acting: Some(u32::MAX),
+            served: Some(true),
+            player: Some(full()),
+            word_stages: Some((0..cap::WORD_STAGES).map(|_| u16::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default()),
+            // SCHEMA_VERSION 43 (D-Q4 C): a report's cause and its root at
+            // the cap
+            cause: Some(u8::MAX),
+            root: Some(core::iter::repeat_n('_', cap::QUEST_ROOT).collect::<alloc::string::String>().as_str().try_into().unwrap_or_default()),
+            ..Default::default()
+        });
+        if let Message::QuestStage(q) = &stage {
+            assert_eq!((q.shared.len(), q.player.as_ref().map(|p| p.len()), q.word_stages.as_ref().map(|w| w.len())), (cap::SHARED_QUESTS, Some(cap::SHARED_QUESTS), Some(cap::WORD_STAGES)));
+            assert_eq!(q.root.as_ref().map(|r| r.len()), Some(cap::QUEST_ROOT));
+        }
+        let bytes = postcard::to_allocvec(&stage).unwrap_or_default();
+        assert!(bytes.len() > 2 * KIB && bytes.len() <= 4 * KIB, "{}", bytes.len());
+        assert!(bytes.len() <= Message::max_len(stage.wire_id()).unwrap_or(0));
+    }
+
+    /// A reported native call at its caps (thuum ADR-068): eleven arguments,
+    /// each a string at SNIPPET_STRING, every name at PAPYRUS_NAME, every
+    /// number a five-byte varint, and since SCHEMA_VERSION 44 (D-R1 C's
+    /// leveled gap) 255 landings, each an item and a count at five varint
+    /// bytes apiece.
+    fn script_call_at_its_caps() -> skymp::ScriptCall {
+        let name = || -> String<{ cap::PAPYRUS_NAME }> { "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default() };
+        skymp::ScriptCall {
+            epoch: u32::MAX,
+            self_id: 0xfeff_ffff,
+            cls: name(),
+            func: name(),
+            args: (0..cap::SCRIPT_CALL_ARGS)
+                .map(|_| Some(skymp::SnippetArg::String("x".repeat(cap::SNIPPET_STRING).try_into().unwrap_or_default())))
+                .collect::<alloc::vec::Vec<_>>()
+                .try_into()
+                .unwrap_or_default(),
+            caller: name(),
+            handler: name(),
+            latent: true,
+            landed: (0..cap::SCRIPT_CALL_LANDED).map(|_| ItemDelta { item: FormId(u32::MAX), count: i32::MIN }).collect::<alloc::vec::Vec<_>>().try_into().ok(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_script_call_at_its_caps_fits_its_byte_cap() {
+        let full = script_call_at_its_caps();
+        // the sample is whole, not a default left by a refused conversion
+        assert_eq!((full.args.len(), full.landed.as_ref().map(|l| l.len())), (cap::SCRIPT_CALL_ARGS, Some(cap::SCRIPT_CALL_LANDED)));
+        let m = Message::ScriptCall(full);
+        let bytes = postcard::to_allocvec(&m).unwrap_or_default();
+        // 180,812 before SCHEMA_VERSION 44, then the landings' presence byte,
+        // their two-byte length and 255 of ten bytes (the table's comment)
+        assert_eq!(bytes.len(), 183_365);
+        assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
+        // an absent landing costs its presence byte alone
+        let plain = Message::ScriptCall(skymp::ScriptCall { landed: None, ..script_call_at_its_caps() });
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(180_813));
+        // a 256th landing fails at the bound, before any check
+        let over: Result<bounded::Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>, _> = (0..=cap::SCRIPT_CALL_LANDED).map(|_| ItemDelta { item: FormId(0xf), count: 1 }).collect::<alloc::vec::Vec<_>>().try_into();
+        assert!(over.is_err());
     }
 
     #[test]
@@ -873,6 +1295,7 @@ mod tests {
                         base_id: u32::MAX,
                         level: u16::MAX,
                         worn: (0..cap::FATE_WORN).map(|_| u32::MAX).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
+                        inv: (0..cap::FATE_INV).map(|_| skymp::FateInvRow { base_id: u32::MAX, count: u32::MAX }).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
                     })
                     .collect::<alloc::vec::Vec<_>>()
                     .try_into()
@@ -924,11 +1347,106 @@ mod tests {
             Message::PerkPick(skymp::PerkPick { perk: u32::MAX, ..Default::default() }),
             // a word wall report (thuum docs/verbs/word-wall.md)
             Message::WordWall(skymp::WordWall { wall: u32::MAX, ..Default::default() }),
-            // a linked activation relayed (thuum docs/verbs/traps.md)
+            // a linked activation relayed (thuum docs/verbs/traps.md), and
+            // since SCHEMA_VERSION 40 an activation and its relay with the
+            // entry byte at their longest (thuum D-C2: 24 and 13 bytes)
             Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, ..Default::default() }),
+            Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, entry: Some(u8::MAX), ..Default::default() }),
+            Message::Activate(skymp::Activate {
+                data: skymp::ActivateData { caster: u64::MAX, target: u64::MAX, is_second_activation: true, entry: Some(u8::MAX), ..Default::default() },
+                ..Default::default()
+            }),
             Message::ObjectAnimation(skymp::ObjectAnimation {
                 refr: u32::MAX,
                 event: "x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default(),
+                ..Default::default()
+            }),
+            // a change-form record at its fullest: the body at its cap,
+            // every remap row carried at five-byte varints, every scalar at
+            // its widest (thuum docs/verbs/change-form.md, ADR-065)
+            Message::ChangeForm(skymp::ChangeForm {
+                epoch: u32::MAX,
+                form_id: 0xfeff_ffff,
+                form_type: u8::MAX,
+                flags: u32::MAX,
+                version: u8::MAX,
+                body: "f".repeat(cap::CHANGE_FORM_BODY_HEX).try_into().unwrap_or_default(),
+                fnv1a: u32::MAX,
+                remap: (0..cap::CHANGE_FORM_REMAP)
+                    .map(|_| skymp::ChangeFormRemap { offset: u32::MAX, form_id: u32::MAX, index: u32::MAX })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                ..Default::default()
+            }),
+            Message::ChangeFormAck(skymp::ChangeFormAck { form_id: u32::MAX, fnv1a: u32::MAX, ..Default::default() }),
+            Message::ChangeFormApply(skymp::ChangeFormApply {
+                form_id: 0xfeff_ffff,
+                form_type: u8::MAX,
+                flags: u32::MAX,
+                version: u8::MAX,
+                body: "f".repeat(cap::CHANGE_FORM_BODY_HEX).try_into().unwrap_or_default(),
+                remap: (0..cap::CHANGE_FORM_REMAP)
+                    .map(|_| skymp::ChangeFormRemap { offset: u32::MAX, form_id: u32::MAX, index: u32::MAX })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                ..Default::default()
+            }),
+            // a reported native call at its fullest: eleven arguments, each a
+            // string at its cap, every name at its cap, every number a
+            // five-byte varint (thuum ADR-068), and since SCHEMA_VERSION 44
+            // its landings at their cap
+            Message::ScriptCall(script_call_at_its_caps()),
+            // a script record and its apply near the native's answer cap
+            // (thuum ADR-068 rung 3), and a destruction report at its
+            // longest: the reference a five-byte varint, the stage and both
+            // flags (thuum D-S3)
+            Message::ScriptState(skymp::ScriptState { epoch: u32::MAX, form_id: 0xfeff_ffff, fnv1a: u32::MAX, scripts: script_record_at_its_answer_cap(), ..Default::default() }),
+            Message::ScriptStateApply(skymp::ScriptStateApply {
+                form_id: 0xfeff_ffff,
+                fnv1a: u32::MAX,
+                seq: u32::MAX,
+                event: Some("x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default()),
+                scripts: script_record_at_its_answer_cap(),
+                graph_vars: graph_vars_at_their_cap(),
+                ..Default::default()
+            }),
+            Message::DestructionStage(skymp::DestructionStage {
+                refr: u32::MAX,
+                stage: u8::MAX,
+                destroyed: true,
+                served: true,
+                disabled: Some(true),
+                deleted: Some(true),
+                seq: u32::MAX,
+                ..Default::default()
+            }),
+            // an alias fill and a world global report at their longest
+            // (thuum ADR-068 rung 4)
+            Message::AliasFill(skymp::AliasFill { quest: u32::MAX, alias: u32::MAX, refr: u32::MAX, served: true, ..Default::default() }),
+            Message::WorldGlobal(skymp::WorldGlobal {
+                epoch: u32::MAX,
+                stream: Some(true),
+                entries: (0..cap::WORLD_GLOBALS)
+                    .map(|_| skymp::WorldGlobalEntry { global: u32::MAX, value: f32::MAX })
+                    .collect::<alloc::vec::Vec<_>>()
+                    .try_into()
+                    .unwrap_or_default(),
+                served: true,
+                ..Default::default()
+            }),
+            // the condition-read variables at their caps and a stage word at
+            // its longest (thuum ADR-068 rung 5)
+            Message::ScriptVariables(script_variables_at_their_caps()),
+            Message::QuestStage(skymp::QuestStage { quest: u32::MAX, stage: u16::MAX, word: Some(u8::MAX), acting: Some(u32::MAX), served: Some(true), word_stages: Some(core::iter::repeat_n(u16::MAX, cap::WORD_STAGES).collect::<alloc::vec::Vec<u16>>().try_into().unwrap_or_default()), cause: Some(u8::MAX), root: Some("QF_dunEmbershardQST_000B6FEF.Fragment_16".try_into().unwrap_or_default()), ..Default::default() }),
+            // and its relay, the sequence carried (thuum ADR-068)
+            Message::SpSnippet(skymp::SpSnippet {
+                class: "ObjectReference".try_into().unwrap_or_default(),
+                function: "PlayAnimation".try_into().unwrap_or_default(),
+                self_id: 0xfeff_ffff,
+                snippet_idx: i64::from(u32::MAX),
+                seq: Some(u32::MAX),
                 ..Default::default()
             }),
             Message::PerkState(skymp::PerkState {
@@ -1023,6 +1541,7 @@ mod tests {
                         floats: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
                         integers: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
                     },
+                    decal: Some(skymp::SpellDecal { normal_x: f32::MAX, normal_y: f32::MAX, normal_z: f32::MAX, material_id: u32::MAX }),
                 },
                 ..Default::default()
             }),
@@ -1033,6 +1552,25 @@ mod tests {
             assert_eq!(bytes.first().copied().map(u32::from), Some(m.wire_id()), "{}", m.name());
             assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0), "{}", m.name());
         }
+    }
+
+    #[test]
+    fn an_entry_rides_inside_its_messages_byte_caps() {
+        // thuum D-C2 (SCHEMA_VERSION 40): the relay's longest is its wire
+        // id, two five-byte varints and the entry's presence and byte; the
+        // report's two ten-byte varints, the flag and the same two
+        let relay = Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, entry: Some(skymp::ENTRY_LEAVE), ..Default::default() });
+        assert_eq!(postcard::to_allocvec(&relay).map(|b| b.len()), Ok(13));
+        assert_eq!(Message::max_len(relay.wire_id()), Some(24));
+        let report = Message::Activate(skymp::Activate {
+            data: skymp::ActivateData { caster: u64::MAX, target: u64::MAX, entry: Some(skymp::ENTRY_ENTER), ..Default::default() },
+            ..Default::default()
+        });
+        assert_eq!(postcard::to_allocvec(&report).map(|b| b.len()), Ok(24));
+        assert_eq!(Message::max_len(report.wire_id()), Some(64));
+        // an absent entry costs its presence byte alone
+        let plain = Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, ..Default::default() });
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(12));
     }
 
     #[test]

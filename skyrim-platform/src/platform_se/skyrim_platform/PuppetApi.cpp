@@ -1,9 +1,14 @@
 #include "PuppetApi.h"
+#include "ActingScope.h"
 #include "CallNativeApi.h"
 #include "FridaHooks.h"
 #include "Hosted.h"
 #include "ItemMenuRefresh.h"
 #include "Puppets.h"
+#include "QuestCause.h"
+#include "ScriptNatives.h"
+#include "ScriptState.h"
+#include "TrapFamily.h"
 #include "game/Offsets.h"
 #include <RE/A/ActivateHandler.h>
 #include <RE/C/Calendar.h>
@@ -23,7 +28,10 @@
 #include <cfloat>
 #include <chrono>
 #include <cmath>
+#include <fmt/format.h>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -158,6 +166,11 @@ void Promote(RE::Actor& actor)
           Offsets::Voice::ClearGreetTopic
         };
         clearGreet(process);
+        // and the done bits the cleared line's END would have restored, so
+        // the live actor's own first say passes the busy test (37266)
+        actor.GetActorRuntimeData().boolBits.set(
+          RE::Actor::BOOL_BITS::kSoundFileDone,
+          RE::Actor::BOOL_BITS::kVoiceFileDone);
         logger::info("[verb:npc-puppet] promote {:x}: a puppet line's item "
                      "cleared before the AI (in flight {}, handle {})",
                      actor.formID, high->greetingPlayer,
@@ -358,12 +371,371 @@ Napi::Value PuppetApi::IsHosted(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), Hosted::Is(actorFormId));
 }
 
+// thuum docs/DECISIONS.md ADR-068 rung 5 (the acting scope, ActingScope.h;
+// docs/research/rung5-quests-2026-11-09.md 1(c), read 12: an export, not a
+// TESModPlatform native, so the message handler can write it): the acting
+// player of a request the server relayed, written before skymp5-client
+// applies it; setHosted's shape, the JS thread alone, no game call. A stage
+// (0 to 65535) is a request the quest stage sink takes at the pair's event,
+// arming the quest's scope; a start (-1) or a stop (-2) is requested and
+// arms the quest's scope at once, for ActingScope::kArmMs; an entry (-3) is
+// a relayed trigger entry's, questId the trigger, taken by
+// TESModPlatform.SendTriggerEvent's arm for its server id. figureLocalId is
+// the figure this seat holds for the acting player, 0 when it is absent here
+// (Game.GetPlayer answers None in the scope then); serverId its actor id as
+// the server names it; ttlMs the request's life. False, nothing stored, for
+// a quest 0, a stage outside -3 to 65535, a serverId 0, the player's own id
+// as the figure, or a ttl outside 1 to ActingScope::kMaxRequestMs. Logged
+// for the lab
+Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
+{
+  const auto questId = NapiHelper::ExtractUInt32(info[0], "questId");
+  const auto stage = NapiHelper::ExtractInt32(info[1], "stage");
+  const auto figure = NapiHelper::ExtractUInt32(info[2], "figureLocalId");
+  const auto serverId = NapiHelper::ExtractUInt32(info[3], "serverId");
+  const auto ttlMs = NapiHelper::ExtractUInt32(info[4], "ttlMs");
+  if (questId == 0 || stage < ActingScope::kEntry || stage > 0xFFFF ||
+      serverId == 0 || figure == 0x14 || ttlMs == 0 ||
+      ttlMs > ActingScope::kMaxRequestMs) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  ActingScope::Player player;
+  player.figure = figure;
+  player.serverId = serverId;
+  ActingScope::Request(questId, stage, player, ttlMs,
+                       ActingScope::Origin::kRelayed);
+  const bool word =
+    stage == ActingScope::kStart || stage == ActingScope::kStop;
+  if (word) {
+    ActingScope::Arm(questId, player, ActingScope::kArmMs);
+  }
+  const ActingScope::Counts counts = ActingScope::Count();
+  logger::info(
+    "[verb:quests] setActingPlayer({:x}, {}, {:x}, {:x}, {}): {}; "
+    "{} request(s), {} arm(s), {} joined stack(s)",
+    questId, stage, figure, serverId, ttlMs,
+    word ? "requested and armed"
+         : (figure == 0 ? "requested, the figure absent here" : "requested"),
+    counts.requests, counts.arms, counts.joined);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// getActingPlayer(questId, stage): the server id of the acting player whose
+// scope requested the pair on this seat, a relayed request or a stage, a
+// start or a stop a scoped stack set (the seam's propagation), until the
+// request expires, whether its event took it or not; 0 for none. The C2S
+// QuestStage's `acting` for a stage this seat set inside a scope (read 7).
+// A table read on the JS thread, no game call
+Napi::Value PuppetApi::GetActingPlayer(const Napi::CallbackInfo& info)
+{
+  const auto questId = NapiHelper::ExtractUInt32(info[0], "questId");
+  const auto stage = NapiHelper::ExtractInt32(info[1], "stage");
+  return Napi::Number::New(info.Env(),
+                           ActingScope::ServerIdOf(questId, stage));
+}
+
+// thuum docs/DECISIONS.md ADR-068 rung 5, D-Q4 C (QuestCause.h): a cause
+// this seat's own act names for a pair before the engine makes it. Its one
+// caller is skymp5-client's console service: Skyrim Platform runs a replaced
+// command's JS execute before the engine's own handler, which runs only when
+// execute answers true (ConsoleApi.cpp ConsoleComand_Execute), so a quest
+// command the player typed is marked the world's before the engine starts,
+// stops or stages the quest, and no script frame is on that path for the
+// seam to read (ScriptNatives.cpp MarkQuestCause reads Papyrus rows). The
+// word's event takes the mark once (EventHandler.cpp), the stage's event
+// reads it, and the quest stage sink arms the stage's fragment with it, so
+// what the fragment sets carries the world's cause too. ttlMs is the mark's
+// life (the engine queues a typed start or stop to the story teller's next
+// pass, so its event comes after the handler: a static read of the five
+// commands' handlers, HYPOTHESIS).
+// Since train 52 (Fix 3, the console arm's home) the rule of which word a
+// request makes is the seam's own, QuestCause::WordMade, read here against
+// the engine's flags: the quest looked up (TESForm::LookupByID<TESQuest>,
+// under the form table's own lock) and its run and Start Game Enabled flag
+// read (TESQuest::IsEnabled and StartsEnabled, CommonLibSSE-NG
+// src/RE/T/TESQuest.cpp:42-45 and :112-115), on the JS thread as
+// getTrapRole reads its reference (above), while the console's own thread
+// waits for this execute in PushAndWait (ConsoleApi.cpp
+// ConsoleComand_Execute), so the flags read are the ones the engine's
+// handler reads next (HYPOTHESIS H-QR1: a VM thread's own Quest.Start in
+// that window races, as the seam's own read races). No Papyrus call. A stage
+// marks itself; a start (-1), a stop (-2) or a typed reset (-3,
+// QuestCause::kReset) marks the word it makes, or nothing. The answer says
+// what it did: { marked, running, startsEnabled }, marked the word marked
+// (a stage, -1 or -2) or null when the request makes none; null, nothing
+// stored, for a refused shape or a quest id no TESQuest has
+Napi::Value PuppetApi::MarkQuestCause(const Napi::CallbackInfo& info)
+{
+  const auto questId = NapiHelper::ExtractUInt32(info[0], "questId");
+  const auto stage = NapiHelper::ExtractInt32(info[1], "stage");
+  const auto cause = NapiHelper::ExtractString(info[2], "cause");
+  const auto root = NapiHelper::ExtractString(info[3], "root");
+  const auto ttlMs = NapiHelper::ExtractUInt32(info[4], "ttlMs");
+  bool shaped = root.size() <= QuestCause::kMaxRootBytes;
+  for (const char c : root) {
+    shaped = shaped &&
+      ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+       (c >= '0' && c <= '9') || c == '_' || c == '.');
+  }
+  if (questId == 0 || stage < QuestCause::kReset || stage > 0xFFFF ||
+      (cause != "world" && cause != "seat") || !shaped || ttlMs == 0 ||
+      ttlMs > QuestCause::kMaxMarkMs) {
+    return info.Env().Null();
+  }
+  const auto* quest = RE::TESForm::LookupByID<RE::TESQuest>(questId);
+  if (!quest) {
+    return info.Env().Null();
+  }
+  const bool running = quest->IsEnabled();
+  const bool startsEnabled = quest->StartsEnabled();
+  const std::optional<int32_t> made =
+    QuestCause::WordMade(stage, running, startsEnabled);
+  Napi::Value marked = info.Env().Null();
+  if (made) {
+    QuestCause::Verdict verdict;
+    verdict.world = cause == "world";
+    verdict.root = root;
+    QuestCause::Mark(questId, *made, verdict, ttlMs);
+    marked = Napi::Number::New(info.Env(), *made);
+  }
+  logger::trace(
+    "[verb:quest-stage] markQuestCause({:x}, {}): {} (running {}, "
+    "Start Game Enabled {}; cause {}, root {}, for {} ms)",
+    questId, stage,
+    made ? fmt::format("marked {}", *made) : std::string("nothing marked"),
+    running, startsEnabled, cause, root.empty() ? "none" : root, ttlMs);
+  auto res = Napi::Object::New(info.Env());
+  res.Set("marked", marked);
+  res.Set("running", Napi::Boolean::New(info.Env(), running));
+  res.Set("startsEnabled", Napi::Boolean::New(info.Env(), startsEnabled));
+  return res;
+}
+
+// thuum ADR-068 rung 5, PQ-3 (docs/research/rung5-quests-2026-11-09.md
+// 8(a); ActingScope.h, PlayerGlobals): the globals each player keeps,
+// skymp5-client's PlayerGlobals watch list (the server's playerGlobals, the
+// marked quests' globals composed in), replaced whole at each call ([]
+// clears it); inside another player's acting scope the seam skips a
+// GlobalVariable.SetValue on one. setTriggerPresserExempt's shape: the JS
+// thread alone, no game call, logged for the lab
+Napi::Value PuppetApi::SetPlayerGlobals(const Napi::CallbackInfo& info)
+{
+  const auto globals = NapiHelper::ExtractArray(info[0], "globalFormIds");
+  std::vector<uint32_t> ids;
+  const uint32_t n = globals.Length();
+  ids.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "globalFormIds[" + std::to_string(i) + "]";
+    ids.push_back(NapiHelper::ExtractUInt32(globals.Get(i), name.c_str()));
+  }
+  ActingScope::PlayerGlobals::Set(ids);
+  logger::info("[verb:quests] setPlayerGlobals: {} global(s) a scoped stack "
+               "never writes here (PQ-3)",
+               ActingScope::PlayerGlobals::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum ADR-068 rung 5's full build (Eli's D-Q2 word, "yes full
+// transformation"; docs/research/rung5-quests-2026-11-09.md 8(a);
+// ActingScope.h, PlayerQuests): the per-player quests, the server's derived
+// playerQuests as skymp5-client receives them, replaced whole at each call
+// ([] clears it); the Papyrus event gate passes an event to such a quest's
+// own scripts and to its aliases' scripts on this seat, its own player's
+// (FridaHooks.cpp). setPlayerGlobals' shape: the JS thread alone, no game
+// call, logged for the lab
+Napi::Value PuppetApi::SetPlayerQuests(const Napi::CallbackInfo& info)
+{
+  const auto quests = NapiHelper::ExtractArray(info[0], "questFormIds");
+  std::vector<uint32_t> ids;
+  const uint32_t n = quests.Length();
+  ids.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "questFormIds[" + std::to_string(i) + "]";
+    ids.push_back(NapiHelper::ExtractUInt32(quests.Get(i), name.c_str()));
+  }
+  ActingScope::PlayerQuests::Set(ids);
+  logger::info("[verb:quests] setPlayerQuests: {} quest(s) whose own and "
+               "alias scripts' events run here, this seat's own player's",
+               ActingScope::PlayerQuests::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 // isPerformingAction(actorFormId): the hook's mark, on from the action
 // entry's enter to its leave (FridaHooks.cpp OnPerformActionEnter)
 Napi::Value PuppetApi::IsPerformingAction(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
   return Napi::Boolean::New(info.Env(), Hosted::IsPerforming(actorFormId));
+}
+
+// thuum docs/DECISIONS.md ADR-068 D-S3 (TrapFamily.h): the role from the
+// reads the gate and the seam make, here on the JS thread, as MagicApi's
+// setActorAimPitch reads its actor (TESForm::LookupByID under the form
+// table's own lock), with the attached scripts read under the VM's lock; no
+// task queued, no Papyrus native called
+Napi::Value PuppetApi::GetTrapRole(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto role = TrapFamily::RoleOf(formId);
+  if (!role) {
+    return info.Env().Null();
+  }
+  auto res = Napi::Object::New(info.Env());
+  res.Set("family", Napi::Boolean::New(info.Env(), role->family));
+  res.Set("playerOnly", Napi::Boolean::New(info.Env(), role->playerOnly));
+  res.Set("destroyed", Napi::Boolean::New(info.Env(), role->destroyed));
+  res.Set("trigger", Napi::Boolean::New(info.Env(), role->trigger));
+  res.Set("exempt", Napi::Boolean::New(info.Env(), role->exempt));
+  return res;
+}
+
+// thuum docs/DECISIONS.md ADR-068 D-W1 A and D-C2 A (the presser rule; thuum
+// .claude/rules/native.md's kill switch): the Papyrus event gate's rule over
+// a world object's OnTriggerEnter and OnTriggerLeave on or off
+// (FridaHooks.cpp OnSendEventEnter), one atomic flag, off by default so a
+// client that never sets it keeps D-S3; skymp5-client's setting
+// triggerPresser (default true) turns it on. No game call; the setter logs
+// the switch for the lab
+Napi::Value PuppetApi::SetTriggerPresserRule(const Napi::CallbackInfo& info)
+{
+  const auto on = NapiHelper::ExtractBoolean(info[0], "on");
+  Frida::SetTriggerPresserRule(on);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch
+// (thuum .claude/rules/native.md's kill switch): the animation hook's rule
+// over a furniture's own graph event on or off (FridaHooks.cpp
+// OnSendAnimationEventEnter), one atomic flag, off by default so a client
+// that never sets it keeps every graph event on the sendAnimationEvent
+// handlers; skymp5-client's setting furnitureAnimation (default true) turns
+// it on. No game call; the setter logs the switch for the lab
+Napi::Value PuppetApi::SetFurnitureAnimation(const Napi::CallbackInfo& info)
+{
+  const auto on = NapiHelper::ExtractBoolean(info[0], "on");
+  Frida::SetFurnitureAnimation(on);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum docs/DECISIONS.md ADR-068 D-W2 A (docs/research/
+// fifty-fixes-2026-11-07.md section 7.2(a); thuum .claude/rules/native.md's
+// kill switch): the look's switch (ScriptNatives.h), one atomic flag, off by
+// default, acting only with the presser rule on; skymp5-client's setting
+// triggerLook (default true) turns it on. No game call; logged for the lab
+Napi::Value PuppetApi::SetTriggerLook(const Napi::CallbackInfo& info)
+{
+  const auto on = NapiHelper::ExtractBoolean(info[0], "on");
+  ScriptNatives::SetTriggerLook(on);
+  logger::info("[verb:traps] setTriggerLook({}): {}", on,
+               on ? "a family trigger's own calls on itself in its firing "
+                    "window cross as its firing seat's look (D-W2), with "
+                    "the presser rule on"
+                  : "a family trigger's own calls stay on each seat");
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// D-W2 A's fallback lever (TrapFamily.h, Exempt): the class names, replacing
+// the list whole ([] clears it); no game call; logged for the lab
+Napi::Value PuppetApi::SetTriggerPresserExempt(const Napi::CallbackInfo& info)
+{
+  const auto classes = NapiHelper::ExtractArray(info[0], "classes");
+  std::vector<std::string> names;
+  const uint32_t n = classes.Length();
+  names.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "classes[" + std::to_string(i) + "]";
+    names.push_back(NapiHelper::ExtractString(classes.Get(i), name.c_str()));
+  }
+  TrapFamily::Exempt::Set(names);
+  const std::string stored = TrapFamily::Exempt::Names();
+  logger::info("[verb:traps] setTriggerPresserExempt: {}",
+               stored.empty()
+                 ? std::string("no class exempt, the presser rule whole")
+                 : "these keep D-S3's per-seat firing: " + stored);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum ADR-068 D-S3 point 4: the followed set the seam reads (TrapFamily.h),
+// fed by skymp5-client's prop stream at a trap body's owner word and at the
+// owner's at-rest sample; setHosted's shape. The count is logged for the lab
+Napi::Value PuppetApi::SetPropFollowed(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto followed = NapiHelper::ExtractBoolean(info[1], "followed");
+  if (formId == 0 || formId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  TrapFamily::Followed::Set(formId, followed);
+  logger::info("[verb:traps] setPropFollowed({:x}, {}): followed set {}",
+               formId, followed, TrapFamily::Followed::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum ADR-068 D-S3 point 3: the applying set the gate reads (TrapFamily.h),
+// raised by skymp5-client's trap results around a served record's apply and
+// lowered after it; setHosted's shape. The count is logged for the lab
+Napi::Value PuppetApi::SetRecordApplying(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto applying = NapiHelper::ExtractBoolean(info[1], "applying");
+  if (formId == 0 || formId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  TrapFamily::RecordApplying::Set(formId, applying);
+  logger::info("[verb:traps] setRecordApplying({:x}, {}): applying set {}",
+               formId, applying, TrapFamily::RecordApplying::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum ADR-068 rung 3 (the script record, amendment A): the pending set the
+// gate reads (ScriptState.h), raised by skymp5-client's ScriptStateService
+// for a served record that carries its view and lowered when it gives the
+// record up (an applied record lowers it in the native); setHosted's shape.
+// The count is logged for the lab
+Napi::Value PuppetApi::SetScriptRecordPending(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto pending = NapiHelper::ExtractBoolean(info[1], "pending");
+  if (formId == 0 || formId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  ScriptState::Pending::Set(formId, pending);
+  logger::info("[verb:scripts] setScriptRecordPending({:x}, {}): pending set "
+               "{}",
+               formId, pending, ScriptState::Pending::Count());
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum ADR-068 rung 3 (the review's FIX FIRST 2): the mark lowered with the
+// names the gate blanked while it was up handed back (ScriptState.h's
+// Pending::Release, under the set's own lock), where setScriptRecordPending's
+// lowering drops them; the JS thread alone, no game call. The answer is
+// logged for the lab
+Napi::Value PuppetApi::ReleaseScriptRecordPending(
+  const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  if (formId == 0 || formId == 0x14) {
+    return Napi::String::New(info.Env(), "[]");
+  }
+  const std::string blanked = ScriptState::Pending::Release(formId);
+  logger::info("[verb:scripts] releaseScriptRecordPending({:x}): blanked {}, "
+               "pending set {}",
+               formId, blanked, ScriptState::Pending::Count());
+  return Napi::String::New(info.Env(), blanked);
+}
+
+// thuum ADR-068 rung 3 (the review's NOTE 10, thuum .claude/rules/native.md's
+// kill switch): the seam's touch on or off (ScriptNatives.h), one atomic
+// flag the seam reads first; logged for the lab
+Napi::Value PuppetApi::SetScriptRecordTouches(const Napi::CallbackInfo& info)
+{
+  const auto enabled = NapiHelper::ExtractBoolean(info[0], "enabled");
+  ScriptNatives::SetTouchesEnabled(enabled);
+  logger::info("[verb:scripts] setScriptRecordTouches({}): {}", enabled,
+               enabled ? "an owned state row's call crosses as a touch"
+                       : "no touch is read or queued");
+  return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
@@ -461,6 +833,11 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
             Offsets::Voice::ClearGreetTopic
           };
           clearGreetBefore(runtime.currentProcess);
+          // the stopped line's END never runs either: its done bits restored
+          // so this say passes the busy test (the same reason as the
+          // inaudible branch below)
+          runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
+                               RE::Actor::BOOL_BITS::kVoiceFileDone);
           precleared = true;
         }
         const bool returned = repeat
@@ -502,6 +879,21 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
             clearGreet(runtime.currentProcess);
             cleared = true;
           }
+          // The engine's END restores the done bits; an inaudible start never
+          // reaches it: the voice-file start (39772) clears kVoiceFileDone
+          // after SpeakSoundFunction returned at its audibility gate with the
+          // timer at -1, and the item above is cleared by the engine's own
+          // ClearGreetTopic, which leaves the bits alone. So the next say on
+          // this puppet failed the busy test (37266: both done bits set and
+          // the timer at or below 0) and every later line answered "refused":
+          // one line heard, the rest never (playtests 43 and 44's F9; Eli,
+          // 2026-11-03: voice lines after the first one worked historically
+          // for everything but scripted scenes, and a scene's first line is
+          // the one most often inaudible, the guest far). Restored here as END
+          // would (Actor.h:166-167). HYPOTHESIS until say-verdict.js reads a
+          // started or played say after an inaudible one on the same puppet.
+          runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
+                               RE::Actor::BOOL_BITS::kVoiceFileDone);
         } else {
           result = 2;
         }
@@ -555,6 +947,25 @@ struct HostedGazeRead
 };
 std::mutex g_gazeMutex;
 std::unordered_map<uint32_t, HostedGazeRead> g_gaze;
+
+// thuum docs/verbs/traps.md "The pillar's side" (x-puzzle-guest-view v1
+// 20261104-220217): a named node's rotation on any loaded reference, read on
+// the game thread as the gaze is (NetImmerse's Euler natives take out-arrays
+// the platform cannot pass, and a BSTriShape on its node's origin moves no
+// position when the node turns). pollNodeRotation(refrId, nodeNames) queues
+// the read of the reference's 3D (TESObjectREFR::Get3D, NiAVObject::
+// GetObjectByName, NiAVObject.h:106; the world and local transforms at :157
+// and :158; NiMatrix3::ToEulerAnglesXYZ, NiMatrix3.h:28, radians);
+// nodeRotation(refrId) answers the last poll, one row per name
+struct NodeRotationRead
+{
+  std::string node;
+  bool has = false;
+  float world[3] = { 0.f, 0.f, 0.f };
+  float local[3] = { 0.f, 0.f, 0.f };
+};
+std::mutex g_nodeRotationMutex;
+std::unordered_map<uint32_t, std::vector<NodeRotationRead>> g_nodeRotation;
 
 // thuum playtest 37 (Eli: "do the probe first before any more head builds"):
 // the face as FaceGen animates it, every keyframe value, for the lab's read
@@ -800,6 +1211,75 @@ Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
   return info.Env().Undefined();
 }
 
+Napi::Value PuppetApi::PollNodeRotation(const Napi::CallbackInfo& info)
+{
+  const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  const auto names = NapiHelper::ExtractArray(info[1], "nodeNames");
+  std::vector<std::string> nodeNames;
+  const uint32_t n = names.Length();
+  nodeNames.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "nodeNames[" + std::to_string(i) + "]";
+    nodeNames.push_back(NapiHelper::ExtractString(names.Get(i), name.c_str()));
+  }
+  g_nativeCallRequirements.gameThrQ->AddTask([refrId, nodeNames](Viet::Void) {
+    std::vector<NodeRotationRead> reads;
+    reads.reserve(nodeNames.size());
+    auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(refrId);
+    RE::NiAVObject* root = refr ? refr->Get3D() : nullptr;
+    for (const auto& name : nodeNames) {
+      NodeRotationRead read;
+      read.node = name;
+      RE::NiAVObject* node = nullptr;
+      if (root) {
+        node = name.empty() ? root : root->GetObjectByName(name.c_str());
+      }
+      if (node) {
+        read.has = true;
+        node->world.rotate.ToEulerAnglesXYZ(read.world[0], read.world[1],
+                                            read.world[2]);
+        node->local.rotate.ToEulerAnglesXYZ(read.local[0], read.local[1],
+                                            read.local[2]);
+      }
+      reads.push_back(std::move(read));
+    }
+    std::lock_guard<std::mutex> lock(g_nodeRotationMutex);
+    g_nodeRotation[refrId] = std::move(reads);
+  });
+  return info.Env().Undefined();
+}
+
+Napi::Value PuppetApi::NodeRotation(const Napi::CallbackInfo& info)
+{
+  const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
+  std::vector<NodeRotationRead> reads;
+  {
+    std::lock_guard<std::mutex> lock(g_nodeRotationMutex);
+    const auto it = g_nodeRotation.find(refrId);
+    if (it == g_nodeRotation.end()) {
+      return info.Env().Null();
+    }
+    reads = it->second;
+  }
+  auto res = Napi::Array::New(info.Env(), reads.size());
+  for (uint32_t i = 0; i < reads.size(); ++i) {
+    const auto& read = reads[i];
+    auto row = Napi::Object::New(info.Env());
+    row.Set("node", Napi::String::New(info.Env(), read.node));
+    row.Set("has", Napi::Boolean::New(info.Env(), read.has));
+    auto world = Napi::Array::New(info.Env(), 3);
+    auto local = Napi::Array::New(info.Env(), 3);
+    for (uint32_t k = 0; k < 3; ++k) {
+      world.Set(k, Napi::Number::New(info.Env(), read.world[k]));
+      local.Set(k, Napi::Number::New(info.Env(), read.local[k]));
+    }
+    row.Set("world", world);
+    row.Set("local", local);
+    res.Set(i, row);
+  }
+  return res;
+}
+
 Napi::Value PuppetApi::HostedGaze(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
@@ -1032,6 +1512,11 @@ Napi::Value PuppetApi::SetEngineDamageCut(const Napi::CallbackInfo& info)
   logger::info("[verb:npc-fate] the engine damage cut is {}",
                on ? "on" : "off");
   return info.Env().Undefined();
+}
+
+Napi::Value PuppetApi::IsDamageActorReplaced(const Napi::CallbackInfo& info)
+{
+  return Napi::Boolean::New(info.Env(), Frida::IsDamageActorReplaced());
 }
 
 Napi::Value PuppetApi::SayTopicInfoResult(const Napi::CallbackInfo& info)

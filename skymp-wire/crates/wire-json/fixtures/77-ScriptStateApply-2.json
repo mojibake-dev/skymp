@@ -1,0 +1,30 @@
+{
+  "fnv1a": 1349735513,
+  "formId": 226700,
+  "graphVars": [
+    {
+      "f": 1.0,
+      "k": 4,
+      "name": "fToggleBlend",
+      "seq": 1
+    }
+  ],
+  "scripts": [
+    {
+      "flags": 11,
+      "state": "",
+      "type": "FXtriggerAmbFX",
+      "vars": [
+        {
+          "i": 2,
+          "k": 3
+        },
+        {
+          "k": 1
+        }
+      ]
+    }
+  ],
+  "seq": 1,
+  "t": 77
+}

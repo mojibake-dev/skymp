@@ -21,7 +21,9 @@ import {
   ActorBase,
   FormType,
   Form,
+  dressBody,
 } from "skyrimPlatform";
+import { logLab } from "../logging";
 
 export interface Extra {
   health?: number;
@@ -343,16 +345,33 @@ const resetBase = (refr: ObjectReference): void => {
   }
 };
 
-// thuum playtest 38's finding 68: what an apply did to the hands. `wornAdded`
-// is set when the diff added (or re-added) an entry the server's inventory
-// holds worn or wornLeft, so the engine's equip state for it is suspect (an
-// arrow count drift from shooting re-adds the ammo and un-equips it) and a
-// hands pass is due (sync/equipment.ts applyPlayerHands). A second signal
-// beside the boolean applyInventory returns, which is crash protection's
-// "every entry landed in one apply", not "something changed"
+// thuum playtest 38's finding 68 and playtest 48 ("Rotfern had to re-equip
+// her bow again"): what an apply did, for the hands pass that may follow it
+// (sync/equipment.ts applyPlayerHands). `changed` gathers the base id of
+// every entry the apply added or removed, and the caller compares it with
+// the items the hands hold, by id: a player's rows carry no worn flag (the
+// server strips it at every put and take, ActionListener.cpp OnPutItem and
+// OnTakeItem; the worn list is the equipment's, not the inventory's), so
+// the worn-row test this report made before never rose and its hands pass
+// never ran. A second signal beside the boolean applyInventory returns,
+// which is crash protection's "every entry landed in one apply", not
+// "something changed"
 export interface ApplyInventoryReport {
-  wornAdded: boolean;
+  changed: Set<number>;
 }
+
+// thuum docs/DECISIONS.md D-R1 C: the bases an apply leaves as the engine
+// holds them (applyInventory's `keep`), each with the side it keeps, by
+// these bits: keepSurplus the engine's count above the target (a grant this
+// seat reported and the server has not yet echoed), keepDeficit its count
+// below it (a removal the same way). Every other base lands as before
+export const keepSurplus = 1;
+export const keepDeficit = 2;
+
+const keptBy = (e: Entry, keep: ReadonlyMap<number, number>): boolean => {
+  const sides = keep.get(e.baseId) ?? 0;
+  return (e.count < 0 && (sides & keepSurplus) !== 0) || (e.count > 0 && (sides & keepDeficit) !== 0);
+};
 
 export const applyInventory = (
   refr: ObjectReference,
@@ -360,7 +379,8 @@ export const applyInventory = (
   enableCrashProtection: boolean,
   ignoreWorn = false,
   resetBaseFirst = true,
-  report?: ApplyInventoryReport
+  report?: ApplyInventoryReport,
+  keep?: ReadonlyMap<number, number>
 ): boolean => {
   // thuum docs/verbs/npc-fate.md (playtest 34): a game-file body keeps the
   // engine's dressing, so its caller passes resetBaseFirst false and the
@@ -370,7 +390,8 @@ export const applyInventory = (
   if (resetBaseFirst) {
     resetBase(refr);
   }
-  const diff = getDiff(newInventory, getInventory(refr), ignoreWorn).entries;
+  const diff = getDiff(newInventory, getInventory(refr), ignoreWorn).entries
+    .filter((e) => keep === undefined || !keptBy(e, keep));
 
   let res = true;
 
@@ -386,9 +407,6 @@ export const applyInventory = (
 
     const worn = !!e.worn;
     const wornLeft = !!e.wornLeft;
-    if (report && e.count > 0 && (worn || wornLeft)) {
-      report.wornAdded = true;
-    }
 
     let oneStepCount = e.count / absCount;
 
@@ -425,6 +443,12 @@ export const applyInventory = (
           e.count = 1;
         }
       }
+    }
+
+    // an entry this apply lands (not one crash protection held back above,
+    // nor the strange-count arrows it skips)
+    if (report && absCount > 0) {
+      report.changed.add(e.baseId);
     }
 
     for (let i = 0; i < absCount; ++i) {
@@ -496,4 +520,67 @@ export const applyInventory = (
   });
 
   return res;
+};
+
+// thuum docs/verbs/npc-fate.md (playtest 48, the loot strip; Eli: "when i
+// activate the person their armor is unequipped in their inventory stripping
+// them naked"): a dead body's inventory is the record's, laid in as a diff
+// alone (no base reset: resetBaseFirst false) with the worn flag left out of
+// the match, so a worn stack counts toward its item's row and only the
+// surplus over the record moves. A removal still goes by count alone
+// (addItemEx with no extra list, TESModPlatform's RemoveItem with none), and
+// which stack the engine takes is its own (HYPOTHESIS, H1 of the read: the
+// worn one beside a loose copy), so after the diff the record's worn armor
+// that the body holds but does not wear is equipped again by the platform
+// (dressBody, FateApi.cpp: the one dress the fate's reconcile runs after a
+// change-form lay too), never left loose. `worn` is the record's equipment
+// as this seat holds it (the view's model); a piece the inventory no longer
+// covers dresses nothing. Each removal of an item this body wears here is
+// said, the lab's read of the rule (x-body-open-worn)
+let bodyDressMissingSaid = false;
+export const applyBodyInventory = (
+  refr: ObjectReference,
+  newInventory: Inventory,
+  worn: number[]
+): boolean => {
+  const refrId = refr.getFormID();
+  const hex = refrId.toString(16);
+  const record = new Map<number, number>();
+  newInventory.entries.forEach((e) => {
+    record.set(e.baseId, (record.get(e.baseId) || 0) + e.count);
+  });
+  const here = new Map<number, { worn: number; loose: number }>();
+  getInventory(refr).entries.forEach((e) => {
+    const row = here.get(e.baseId) || { worn: 0, loose: 0 };
+    if (e.worn || e.wornLeft) {
+      row.worn += e.count;
+    } else {
+      row.loose += e.count;
+    }
+    here.set(e.baseId, row);
+  });
+  here.forEach((row, baseId) => {
+    const holds = record.get(baseId) || 0;
+    const leaving = row.worn + row.loose - holds;
+    if (row.worn > 0 && leaving > 0) {
+      logLab("verb:npc-fate", `body ${hex}: ${leaving} of ${baseId.toString(16)} leave, worn here ${row.worn}; the record holds ${holds}${holds < row.worn ? ", fewer than this body wears" : ""}`);
+    }
+  });
+
+  const landed = applyInventory(refr, newInventory, false, true, false);
+
+  // the platform's export, absent on an older dist
+  if (typeof dressBody !== "function") {
+    if (!bodyDressMissingSaid) {
+      bodyDressMissingSaid = true;
+      logLab("verb:npc-fate", `body ${hex}: this platform has no dressBody (an older dist); the record's worn armor is not dressed again after an apply`);
+    }
+    return landed;
+  }
+  try {
+    dressBody(refrId, worn);
+  } catch (e) {
+    logLab("verb:npc-fate", `body ${hex}: dressBody threw: ${e}`);
+  }
+  return landed;
 };

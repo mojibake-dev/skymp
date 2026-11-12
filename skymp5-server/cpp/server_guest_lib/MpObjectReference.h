@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "CreateActorMessage.h"
+#include "ScriptStateApplyMessage.h"
 #include "UpdatePropertyMessage.h"
 
 struct GridPosInfo
@@ -166,15 +167,62 @@ public:
   std::optional<MpChangeFormREFR::Lock> GetLock() const;
   void SetLock(const MpChangeFormREFR::Lock& lock);
   void SendLockPrompt(MpActor& to);
+  // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
+  // row): the reference's destruction as the server recorded it (the stage
+  // the engine reached, the destroyed flag), none while nobody reported one
+  // (the game files' state); the write is the record's alone (saved), the
+  // relay and the late subscriber's serve are ActionListener's and
+  // PartOne's
+  std::optional<MpChangeFormREFR::Destruction> GetDestruction() const;
+  void SetDestruction(const MpChangeFormREFR::Destruction& destruction);
+  // thuum ADR-068 rung 3 (the script record): the last record the
+  // reference's owner reported of the scripts attached to it, with the
+  // sequence and the view the server stamped (ScriptStateRecord.h), none
+  // while nobody reported one; the write is the record's alone (saved). The
+  // read is the record in place, valid until the reference's next edit
+  const std::optional<ScriptStateRecord>& GetScriptState() const;
+  void SetScriptState(std::optional<ScriptStateRecord> record);
+  // thuum ADR-068 rung 4 (the state rows): the object's sequence at the ref
+  // state's last record (MpChangeFormREFR::refStateSeq), none while no
+  // script moved its enabled or deleted state
+  std::optional<uint32_t> GetRefStateSeq() const;
+  // the ref state's record as its owner's call moved it (ActionListener's
+  // record branch; wire-rules ref_state): the deleted flag and the object's
+  // sequence written, then Enable or Disable as the record now says (an
+  // actor's grid changes are MpActor's), and a world object put on the grid
+  // (an attach by record, a re-enable), where a recorded one stays while
+  // disabled so every seat that loads its cell is served its state
+  void SetRefState(bool disabled, bool deleted, uint32_t seq);
+  // a game-file world object whose ref state is recorded keeps its place on
+  // the grid while disabled (ForceSubscriptionsUpdate): its create word and
+  // its served state reach every seat that loads its cell
+  bool KeepsGridWhileDisabled() const;
+  // the reference starts disabled as the game files place it (initially
+  // disabled, or under an enable parent that disables it), written when the
+  // loader attaches it by its record (WorldState::AttachEspmRecord's
+  // `recorded`), so its first recorded call applies to the engine's own
+  // start; no save request, no grid change, no sequence
+  void MarkDisabledByFiles();
+  // the apply built from the record, stamped with the sequence and the view
+  // the record was taken at (false without a record); served ahead of a
+  // grant (ApplyHostDecisions) and behind the create word (onSubscribe)
+  bool BuildScriptStateApply(ScriptStateApplyMessage& out) const;
   void PutItem(MpActor& actor, const Inventory::Entry& entry);
   void TakeItem(MpActor& actor, const Inventory::Entry& entry);
   // thuum docs/verbs/containers.md: a mover whose put or take the server
-  // refused (a reach, a missing item) hears both inventories again
+  // refused (a reach, a missing item, no hold on the container) hears both
+  // inventories again
   void ResyncAfterRefusedMove(MpActor& ac);
-  // memo D52's occupant set, read by the tests and released by a player's
-  // disconnect (PartOne; docs/verbs/containers.md)
+  // the container's holder (ADR-067 decision 6: one at a time; memo D52's
+  // set kept), read by the tests and released by a player's disconnect
+  // (PartOne; docs/verbs/containers.md)
   bool IsContainerOccupant(const MpActor* actor) const;
   void RemoveContainerOccupant(MpActor& actor);
+  // a furniture's recorded user, or nullptr: set at a use's activation
+  // (ProcessActivateNormal's FURN branch), cleared by its closing
+  // activation and by the occupant's destroy or disable; read by the owner
+  // of the furniture's graph events (wire-rules object_animation)
+  MpActor* GetOccupant() const noexcept { return occupant; }
   void SetRelootTime(std::chrono::system_clock::duration newRelootTime);
   void SetChanceNoneOverride(uint8_t chanceNone);
   void SetCellOrWorld(const FormDesc& worldOrCell);
@@ -205,6 +253,15 @@ public:
   void SetInventory(const Inventory& inv);
   void AddItem(uint32_t baseId, uint32_t count);
   void AddItems(const std::vector<Inventory::Entry>& entries);
+  // thuum train 52 (D-R1 C's leveled gap; the fresh review of the whole
+  // branch, SHOULD 1): AddItem for several plain items at once, as a leveled
+  // roll lands them: one change-form edit (Inventory::AddPlainItems), so one
+  // save request and one inventory update to the owner's game, then
+  // OnItemAdded raised once per entry in their order, each as AddItem raises
+  // it; never a record edit, a change-form copy and an inventory
+  // serialization per item (the deferred channel keeps only the last of
+  // them)
+  void AddPlainItems(const std::vector<Inventory::Entry>& entries);
   void RemoveItem(uint32_t baseId, uint32_t count, MpObjectReference* target);
   void RemoveItems(const std::vector<Inventory::Entry>& entries,
                    MpObjectReference* target = nullptr);
@@ -221,6 +278,18 @@ public:
                           MpObjectReference* listener);
 
   void SetLastAnimation(const std::string& lastAnimation);
+  // the reference's last behavior graph event as the record holds it (an
+  // accepted script call's or ObjectAnimation's), none before any: the view
+  // a script record is stamped with (thuum ADR-068 rung 3, amendment A)
+  std::optional<std::string> GetLastAnimation() const;
+  // the fifty fixes' D-C3 A (PENDING ELI): the graph variables a script set
+  // on this world object as the record keeps them (MpChangeForm's
+  // graphVariables), empty when none; and one more kept where the record's
+  // slot rule puts it (wire-rules natives::variable_slot, the names
+  // compared without case), false when nothing changed (a call older than
+  // the one kept)
+  std::vector<MpChangeFormREFR::GraphVariable> GetGraphVariables() const;
+  bool KeepGraphVariable(MpChangeFormREFR::GraphVariable variable);
   void SetNodeTextureSet(const std::string& node,
                          const espm::LookupResult& textureSet,
                          bool firstPerson);
@@ -247,11 +316,33 @@ public:
   std::vector<QuestStageDone> GetQuestStages() const;
   bool SetQuestStages(std::vector<QuestStageDone> stages);
 
+  // thuum ADR-068 rung 4: the world's alias fills and created items' marks
+  // and its world globals, on the same journal; empty when none; false when
+  // unchanged
+  std::vector<MpChangeFormREFR::AliasFill> GetAliasFills() const;
+  bool SetAliasFills(std::vector<MpChangeFormREFR::AliasFill> fills);
+  std::vector<PlayerGlobal> GetWorldGlobals() const;
+  bool SetWorldGlobals(std::vector<PlayerGlobal> globals);
+
+  // thuum ADR-068 rung 5: the world's quest runs, on the same journal; and
+  // the condition-read script variables, the journal's the world's keys, a
+  // player's actor's its own; empty when none; false when unchanged
+  std::vector<MpChangeFormREFR::QuestRun> GetQuestRuns() const;
+  bool SetQuestRuns(std::vector<MpChangeFormREFR::QuestRun> runs);
+  std::vector<MpChangeFormREFR::ScriptVariable> GetScriptVariables() const;
+  bool SetScriptVariables(
+    std::vector<MpChangeFormREFR::ScriptVariable> variables);
+
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the spell whose
   // accepted cast made the server place this reference, none for every
   // other form; the record's mark for the sweep at load
   std::optional<FormDesc> GetPlacedBySpell() const;
   void SetPlacedBySpell(const FormDesc& spell);
+  // thuum ADR-068 rung 4 (the script set, W3): the script's self and the base
+  // whose placement made the server place this reference, none for every
+  // other form
+  std::optional<MpChangeFormREFR::PlacedByScript> GetPlacedByScript() const;
+  void SetPlacedByScript(const FormDesc& self, const FormDesc& base);
 
   // This method removes ObjectReference from a current grid and doesn't attach
   // to another grid
@@ -300,12 +391,12 @@ private:
   void GivePickupItemsToActivationSource(MpObjectReference& activationSource,
                                          const espm::LookupResult& base);
   void ActivateChilds();
-  // thuum memo D52 (playtest 37, Eli: "i WOULD like two people to be able to
-  // be in one container at once"): a container's or a corpse's occupants, as
-  // many as open it; furniture keeps the one occupant below
+  // thuum docs/verbs/containers.md (ADR-067 decision 6): a container's or a
+  // corpse's holder, one at a time (memo D52's shared set of playtest 37,
+  // kept as the set it was and holding one); furniture keeps the one
+  // occupant below
   void AddContainerOccupant(MpActor& actor);
   void PruneContainerOccupants(float reach);
-  void SendInventoryToContainerOccupants(const MpActor* except);
   bool CheckIfObjectCanStartOccupyThis(MpObjectReference& activationSource,
                                        float occupationReach);
 
@@ -329,9 +420,10 @@ private:
   MpActor* occupant = nullptr;
   std::shared_ptr<OccupantDestroyEventSink> occupantDestroySink;
   std::shared_ptr<OccupantDisableEventSink> occupantDisableSink;
-  // the container's occupants (memo D52) and each one's sinks; the sinks
-  // leave with the actor on its normal way out (the closing activation, the
-  // pruning), never from inside their own callback
+  // the container's holder (one at most, ADR-067 decision 6; memo D52's set
+  // kept) and its sinks; the sinks leave with the actor on its normal way
+  // out (the closing activation, the pruning), never from inside their own
+  // callback
   std::set<MpActor*> containerOccupants;
   std::map<MpActor*,
            std::pair<std::shared_ptr<OccupantDestroyEventSink>,

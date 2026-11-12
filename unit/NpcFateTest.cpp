@@ -17,10 +17,15 @@
 #include "libespm/NPC_.h"
 #include "libespm/SPEL.h"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 #include <cmath>
+#include <optional>
 #include <simdjson.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -182,6 +187,114 @@ void State(PartOne& p, Networking::UserId user, uint32_t actorId, float health)
   msg.stamina = 1.f;
   p.GetActionListener().OnHostedActorState(raw, msg);
 }
+
+// the fates naming `refrId` sent to `user` since the last clear
+size_t FatesOf(PartOne& p, Networking::UserId user, uint32_t refrId)
+{
+  size_t n = 0;
+  for (const auto& msg : SentTo<ActorFateMessage>(p, user)) {
+    n += static_cast<size_t>(std::count_if(
+      msg.fates.begin(), msg.fates.end(),
+      [&](const ActorFateMessage::Fate& f) { return f.refrId == refrId; }));
+  }
+  return n;
+}
+
+// where the first fate naming `refrId`, and the first create word for it,
+// stand among the messages sent to `user`: the order its game reads them in
+std::optional<size_t> FirstFateAt(PartOne& p, Networking::UserId user,
+                                  uint32_t refrId)
+{
+  auto& messages = p.Messages();
+  for (size_t i = 0; i < messages.size(); ++i) {
+    auto fate = dynamic_cast<ActorFateMessage*>(messages[i].message.get());
+    if (messages[i].userId != user || !fate) {
+      continue;
+    }
+    for (const auto& f : fate->fates) {
+      if (f.refrId == refrId) {
+        return i;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<size_t> FirstCreateAt(PartOne& p, Networking::UserId user,
+                                    uint32_t refrId)
+{
+  auto& messages = p.Messages();
+  for (size_t i = 0; i < messages.size(); ++i) {
+    auto create = dynamic_cast<CreateActorMessage*>(messages[i].message.get());
+    if (messages[i].userId == user && create &&
+        create->refrId == std::optional<uint64_t>(refrId)) {
+      return i;
+    }
+  }
+  return std::nullopt;
+}
+
+// the words naming the actor of `idx` by its idx (an equipment word, a
+// property, a teleport) sent to `user` ahead of message `before`: what its
+// game would read about it ahead of its create word there
+size_t IdxWordsBefore(PartOne& p, Networking::UserId user, uint32_t idx,
+                      size_t before)
+{
+  size_t n = 0;
+  auto& messages = p.Messages();
+  for (size_t i = 0; i < before && i < messages.size(); ++i) {
+    const auto& m = messages[i];
+    if (m.userId == user && m.j.is_object() && m.j.contains("idx") &&
+        m.j["idx"] == idx) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+// the first fate naming `refrId` among the messages sent to `user`
+std::optional<ActorFateMessage::Fate> FirstFateOf(PartOne& p,
+                                                  Networking::UserId user,
+                                                  uint32_t refrId)
+{
+  const auto at = FirstFateAt(p, user, refrId);
+  if (!at) {
+    return std::nullopt;
+  }
+  auto fate = dynamic_cast<ActorFateMessage*>(p.Messages()[*at].message.get());
+  for (const auto& f : fate->fates) {
+    if (f.refrId == refrId) {
+      return f;
+    }
+  }
+  return std::nullopt;
+}
+
+// the server's log lines while it lives (StandingTest's idiom)
+struct LogCapture
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  LogCapture()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger = std::make_shared<spdlog::logger>("npc-fate-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~LogCapture() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (size_t at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
 }
 
 TEST_CASE("A player's arrival rolls the ring's leveled actors at its level "
@@ -194,11 +307,13 @@ TEST_CASE("A player's arrival rolls the ring's leveled actors at its level "
   p.worldState.npcEnabled = true;
   DoConnect(p, 0);
   p.CreateActor(kC1, kForest, 0, kTamriel);
-  p.SetUserActor(0, kC1);
+  // the level the player logs in with (a save's record): the login's create
+  // words already carry the rolls of the actors in its 3x3 (EnsureFated)
   auto& player = p.worldState.GetFormAt<MpActor>(kC1);
   ActorValueRecord record;
   record.level = 25;
   player.SetActorValueRecord(record);
+  p.SetUserActor(0, kC1);
   p.Messages().clear();
 
   // the first square change (the tick's reach refresh) runs the fate pass
@@ -217,8 +332,9 @@ TEST_CASE("A player's arrival rolls the ring's leveled actors at its level "
   REQUIRE(predator->level == 25);
   REQUIRE(predator->baseId != 0);
 
-  // the record: loaded by the pass, rolled at the player's level, the chain
-  // through the LVLN, the pin the chain's first leveled pick
+  // the record: rolled at the player's level (at the login's create word,
+  // the predator in the player's own square), the chain through the LVLN,
+  // the pin the chain's first leveled pick
   auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
   REQUIRE(form);
   MpActor* actor = form->AsActor();
@@ -228,6 +344,32 @@ TEST_CASE("A player's arrival rolls the ring's leveled actors at its level "
   REQUIRE(actor->GetTemplateChain().size() >= 2);
   REQUIRE(actor->GetFateBaseId() == predator->baseId);
   REQUIRE(actor->GetFateBaseId() != actor->GetBaseId());
+
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c): the fate carries the
+  // record's inventory rows apart from the worn items: no row names a worn
+  // base, and the rows' counts sum to the inventory less the worn (the
+  // review of 7c3c9f79, finding 1: the inventory's entries carry no worn
+  // flag of their own, the Equipment record does)
+  {
+    int64_t total = 0;
+    for (const auto& e : actor->GetInventory().entries) {
+      total += e.count;
+    }
+    int64_t worn = 0;
+    for (const auto& e : actor->GetEquipment().inv.entries) {
+      if (e.GetWorn() != Inventory::Worn::None) {
+        worn += e.count;
+      }
+    }
+    int64_t rows = 0;
+    for (const auto& row : predator->inv) {
+      REQUIRE(row.count > 0);
+      REQUIRE(std::find(predator->worn.begin(), predator->worn.end(),
+                        row.baseId) == predator->worn.end());
+      rows += row.count;
+    }
+    REQUIRE(rows == total - worn);
+  }
 
   // the same squares again: nothing new
   p.Messages().clear();
@@ -436,10 +578,157 @@ TEST_CASE("A dead game-file actor is a container to the player beside it",
   REQUIRE(looter.GetInventory().GetItemCount(kGold) == looterGold + 3);
   REQUIRE(actor->GetInventory().GetItemCount(kGold) == corpseGold - 3);
 
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c, the longbow): a take of
+  // what the body's record never held is refused by name
+  // (E_TAKE_NOT_IN_RECORD), no throw, the looter's engine resynced (its
+  // own inventory and the body's), nothing moves
+  constexpr uint32_t kLongBow = 0x3b562; // Skyrim.esm LongBow
+  const auto corpseBows = actor->GetInventory().GetItemCount(kLongBow);
+  const auto looterBows = looter.GetInventory().GetItemCount(kLongBow);
+  Inventory::Entry bow;
+  bow.baseId = kLongBow;
+  bow.count = corpseBows + 1;
+  p.Messages().clear();
+  REQUIRE_NOTHROW(actor->TakeItem(looter, bow));
+  REQUIRE(looter.GetInventory().GetItemCount(kLongBow) == looterBows);
+  REQUIRE(actor->GetInventory().GetItemCount(kLongBow) == corpseBows);
+  REQUIRE(SentOfType(p, 0, MsgType::SetInventory) >= 1);
+  {
+    // the body's record too (a corpse is a container to its looter)
+    bool bodySent = false;
+    for (const auto& msg : SentTo<UpdatePropertyMessage>(p, 0)) {
+      if (msg.idx == actor->GetIdx() && msg.propName == "inventory") {
+        bodySent = true;
+      }
+    }
+    REQUIRE(bodySent);
+  }
+
   actor->Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);
   DoDisconnect(p, 0);
   p.DestroyActor(kLooter);
+}
+
+// thuum docs/verbs/npc-fate.md (playtest 48, the loot strip; H2 of its
+// read): a take from a body removed the record's row and left the worn entry,
+// so the body's fate kept naming the taken piece and a seat's reconcile added
+// it back. The take now drops the worn entry it empties, an unworn copy
+// leaving first, and the fate names a worn piece only while the inventory
+// holds it (a record saved before the drop keeps such an entry). The predator
+// stands for a looted bandit with a roll of its own: the hide boots worn, two
+// hide helmets with one worn (Skyrim.esm ArmorHideBoots and ArmorHideHelmet,
+// the hosted swing case's ids)
+TEST_CASE("A take from a body drops the record's worn entry it empties, an "
+          "unworn copy leaving first, and the body's fate names no worn piece "
+          "its inventory lacks",
+          "[NpcFate][espm]")
+{
+  enum : uint32_t
+  {
+    kLooter = 0xff000d42,
+    kLater = 0xff000d43,
+    kHideBoots = 0x13910,
+    kHideHelmet = 0x13913
+  };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kLooter, kForest, 0, kTamriel);
+  p.SetUserActor(0, kLooter);
+  p.TickCellHosts(FateNowMs());
+  auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form);
+  MpActor* actor = form->AsActor();
+  REQUIRE(actor);
+  if (actor->IsDead()) {
+    actor->Respawn(false);
+  }
+  p.worldState.fateRespawnDue.erase(kPredator);
+  auto& looter = p.worldState.GetFormAt<MpActor>(kLooter);
+  looter.SetPos(actor->GetPos());
+
+  // the body opens to the looter, its occupant, so the takes are the
+  // looter's (ContainerMoveByOccupant)
+  actor->Kill(nullptr);
+  REQUIRE(actor->IsDead());
+  actor->Activate(looter);
+  REQUIRE(actor->IsContainerOccupant(&looter));
+
+  // the roll, laid after the open's own (EnsureBaseContainerAdded); a fresh
+  // actor is never assumed empty, so the counts are read back
+  actor->AddItem(kHideBoots, 1);
+  actor->AddItem(kHideHelmet, 2);
+  Equipment rolled;
+  rolled.numChanges = 7;
+  rolled.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  rolled.inv.entries.push_back(Inventory::Entry(kHideHelmet, 1, kWornRight));
+  actor->SetEquipment(rolled);
+  const auto boots = actor->GetInventory().GetItemCount(kHideBoots);
+  const auto helmets = actor->GetInventory().GetItemCount(kHideHelmet);
+  REQUIRE(boots >= 1);
+  REQUIRE(helmets >= 2);
+  const auto take = [&](uint32_t baseId, uint32_t count) {
+    Inventory::Entry entry;
+    entry.baseId = baseId;
+    entry.count = count;
+    actor->TakeItem(looter, entry);
+  };
+
+  // a helmet of the two: the record still holds one, the worn one stays
+  take(kHideHelmet, 1);
+  REQUIRE(actor->GetInventory().GetItemCount(kHideHelmet) == helmets - 1);
+  REQUIRE(Wearing(*actor, kHideHelmet));
+  REQUIRE(Wearing(*actor, kHideBoots));
+
+  // the worn boots: their worn entry leaves with them
+  take(kHideBoots, boots);
+  REQUIRE(actor->GetInventory().GetItemCount(kHideBoots) == 0);
+  REQUIRE_FALSE(Wearing(*actor, kHideBoots));
+  REQUIRE(Wearing(*actor, kHideHelmet));
+
+  // the helmets left: the worn one goes too
+  take(kHideHelmet, helmets - 1);
+  REQUIRE(actor->GetInventory().GetItemCount(kHideHelmet) == 0);
+  REQUIRE_FALSE(Wearing(*actor, kHideHelmet));
+  REQUIRE(looter.GetInventory().GetItemCount(kHideHelmet) >= helmets);
+  // the counter stays: a copy's view re-applies a changed one whole
+  REQUIRE(actor->GetEquipment().numChanges == 7);
+
+  // a record saved before the take's drop: the boots worn, none held. A
+  // later player's arrival hears the body's fate, which names no boots
+  Equipment stale = actor->GetEquipment();
+  stale.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  actor->SetEquipment(stale);
+  REQUIRE(Wearing(*actor, kHideBoots));
+  DoConnect(p, 1);
+  p.CreateActor(kLater, kForest, 0, kTamriel);
+  p.SetUserActor(1, kLater);
+  p.Messages().clear();
+  p.TickCellHosts(FateNowMs());
+  const auto fates = SentTo<ActorFateMessage>(p, 1);
+  const ActorFateMessage::Fate* sent = nullptr;
+  for (const auto& msg : fates) {
+    for (const auto& f : msg.fates) {
+      if (f.refrId == kPredator) {
+        sent = &f;
+      }
+    }
+  }
+  REQUIRE(sent != nullptr);
+  REQUIRE(std::find(sent->worn.begin(), sent->worn.end(), kHideBoots) ==
+          sent->worn.end());
+  REQUIRE(std::find(sent->worn.begin(), sent->worn.end(), kHideHelmet) ==
+          sent->worn.end());
+
+  // the shared world: the body's equipment as found, the predator standing
+  actor->SetEquipment(Equipment{});
+  actor->Respawn(false);
+  p.worldState.fateRespawnDue.erase(kPredator);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kLooter);
+  p.DestroyActor(kLater);
 }
 
 // thuum docs/verbs/npc-fate.md (playtest 37, findings 58 and 62): a
@@ -1308,4 +1597,656 @@ TEST_CASE("A placed-dead body ignores its host's live sample until the "
   DoDisconnect(p, 0);
   p.DestroyActor(kHost);
   p.DestroyActor(kFloorBody);
+}
+
+// thuum docs/verbs/npc-fate.md (playtest 44's 1c; x-fate-inventory v1b
+// 20261104-062409): MS13BanditCampfire02's placement 0x39fe2 in Bleak Falls
+// Temple keeps its own rows (base 0x39fe5, UseInventory unset: an IronDagger,
+// LItemBanditWeaponArrows x1 and LItemBanditWeaponBow x1, both lists at
+// chanceNone 0 and all levels), yet the probe's record held the dagger alone
+// after the fate and lost the 10 gold put before it (finding 1: the roll's
+// reset replaced Init's level-0 roll and the put with it). Here Init rolls
+// nothing for an actor the fate pass will roll, the put stays, and the roll
+// lands beside it at the loader's level: one bow in hand (the best weapon),
+// the arrows by the nested count (BaseArrowIron75 x20 at 75 percent each),
+// the dagger kept; the fate's rows name everything but the worn bow.
+TEST_CASE("The campfire bandit's own rows roll at its fate and a put made "
+          "before the roll stays in the record",
+          "[NpcFate][espm]")
+{
+  constexpr uint32_t kBandit = 0x39fe2;
+  constexpr uint32_t kBarrow = 0x371de;
+  constexpr uint32_t kPlayer = 0xff000d41;
+  constexpr uint32_t kGold = 0xf;
+  constexpr uint32_t kIronDagger = 0x1397e;
+  constexpr uint32_t kIronArrow = 0x1397d;
+  constexpr uint32_t kHuntingBow = 0x13985;
+  constexpr uint32_t kLongBow = 0x3b562;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kBarrow));
+  auto& bandit = p.worldState.GetFormAt<MpActor>(kBandit);
+  REQUIRE(p.worldState.CellOf(bandit) == kBarrow);
+  REQUIRE_FALSE(bandit.GetFateLevel().has_value());
+  REQUIRE(bandit.CanRollFate());
+  // Init rolled nothing for an actor the fate pass will roll
+  REQUIRE_FALSE(bandit.GetChangeForm().baseContainerAdded);
+  REQUIRE(bandit.GetInventory().GetItemCount(kIronDagger) == 0);
+
+  // the put before the first loader (lab-api's server-console AddItem)
+  bandit.AddItem(kGold, 10);
+  REQUIRE(bandit.GetInventory().GetItemCount(kGold) == 10);
+  REQUIRE(bandit.CanRollFate());
+
+  DoConnect(p, 0);
+  p.CreateActor(kPlayer, { -3400.f, 700.f, 583.f }, 0, kBarrow);
+  p.SetUserActor(0, kPlayer);
+  auto& player = p.worldState.GetFormAt<MpActor>(kPlayer);
+  ActorValueRecord record;
+  record.level = 1;
+  player.SetActorValueRecord(record);
+  p.Messages().clear();
+  p.TickCellHosts(FateNowMs());
+
+  REQUIRE(bandit.GetFateLevel() == std::optional<uint16_t>{ 1 });
+  REQUIRE_FALSE(bandit.CanRollFate());
+  const Inventory inv = bandit.GetInventory();
+  INFO("gold " << inv.GetItemCount(kGold) << " dagger "
+               << inv.GetItemCount(kIronDagger) << " arrows "
+               << inv.GetItemCount(kIronArrow) << " hunting "
+               << inv.GetItemCount(kHuntingBow) << " long "
+               << inv.GetItemCount(kLongBow));
+  REQUIRE(inv.GetItemCount(kGold) == 10);
+  REQUIRE(inv.GetItemCount(kIronDagger) == 1);
+  REQUIRE(inv.GetItemCount(kHuntingBow) + inv.GetItemCount(kLongBow) == 1);
+  REQUIRE(inv.GetItemCount(kIronArrow) >= 1);
+  REQUIRE(inv.GetItemCount(kIronArrow) <= 20);
+  // the best weapon in hand: a bow over the dagger
+  REQUIRE((Wearing(bandit, kHuntingBow) || Wearing(bandit, kLongBow)));
+  REQUIRE_FALSE(Wearing(bandit, kIronDagger));
+
+  // the fate's rows: the record apart from the worn (the gold, the arrows,
+  // the dagger; no bow, it is in hand)
+  const auto fates = SentTo<ActorFateMessage>(p, 0);
+  const ActorFateMessage::Fate* sent = nullptr;
+  for (const auto& msg : fates) {
+    for (const auto& f : msg.fates) {
+      if (f.refrId == kBandit) {
+        sent = &f;
+      }
+    }
+  }
+  REQUIRE(sent != nullptr);
+  REQUIRE(sent->level == 1);
+  auto rowOf = [&](uint32_t baseId) -> uint32_t {
+    for (const auto& r : sent->inv) {
+      if (r.baseId == baseId) {
+        return r.count;
+      }
+    }
+    return 0;
+  };
+  REQUIRE(rowOf(kGold) == 10);
+  REQUIRE(rowOf(kIronDagger) == 1);
+  REQUIRE(rowOf(kIronArrow) == inv.GetItemCount(kIronArrow));
+  REQUIRE(rowOf(kHuntingBow) + rowOf(kLongBow) == 0);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kPlayer);
+}
+
+// thuum ADR-049 D-N1 A (Eli's "go for it", 2026-11-09; playtest 50's naked
+// bandits): a recorded NPC with no fate level that holds a worn item adopts
+// its record as its roll: its fateLevel is set at the first loader's level
+// and nothing is rolled, so its outfit stands; a recorded one holding no
+// worn item is rolled beside what it holds, as before. The two entrance
+// bandits of Bleak Falls Temple 0x371de (lab/esm.py on sky-srv, 2026-11-06;
+// the campfire case's), each given a record from before the fate: 0x39fe2
+// wearing an iron dagger 0x1397e and holding 10 gold, 0x39fe4 holding 10
+// gold and wearing nothing. A roll draws from a generator std::random_device
+// seeds at every list it rolls (LeveledListUtils.cpp:43-44), so an exact
+// count is asserted only where nothing is rolled: the adopted record,
+// exactly as it was, which canon's re-roll beside it breaks (new outfit
+// entries)
+TEST_CASE("A recorded NPC with no fate level that wears an item adopts its "
+          "record as its roll; one wearing nothing is rolled beside it",
+          "[NpcFate][espm]")
+{
+  constexpr uint32_t kWorn = 0x39fe2;
+  constexpr uint32_t kBare = 0x39fe4;
+  constexpr uint32_t kBarrow = 0x371de;
+  constexpr uint32_t kPlayer = 0xff000d51;
+  constexpr uint32_t kGold = 0xf;
+  constexpr uint32_t kIronDagger = 0x1397e;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& worn = p.worldState.GetFormAt<MpActor>(kWorn);
+  auto& bare = p.worldState.GetFormAt<MpActor>(kBare);
+  REQUIRE(worn.CanRollFate());
+  REQUIRE(bare.CanRollFate());
+
+  // the records, as a save from before ADR-049 holds them: no fateLevel
+  MpChangeForm wornRecord = worn.GetChangeForm();
+  wornRecord.inv = Inventory();
+  wornRecord.inv.AddItems(
+    { Inventory::Entry(kIronDagger, 1), Inventory::Entry(kGold, 10) });
+  wornRecord.equipment = Equipment();
+  wornRecord.equipment.inv.entries.push_back(
+    Inventory::Entry(kIronDagger, 1, kWornRight));
+  wornRecord.fateLevel.reset();
+  worn.ApplyChangeForm(wornRecord);
+  MpChangeForm bareRecord = bare.GetChangeForm();
+  bareRecord.inv = Inventory();
+  bareRecord.inv.AddItems({ Inventory::Entry(kGold, 10) });
+  bareRecord.equipment = Equipment();
+  bareRecord.fateLevel.reset();
+  bare.ApplyChangeForm(bareRecord);
+  REQUIRE(worn.CanRollFate());
+  REQUIRE(bare.CanRollFate());
+
+  DoConnect(p, 0);
+  p.CreateActor(kPlayer, { -3400.f, 700.f, 583.f }, 0, kBarrow);
+  p.SetUserActor(0, kPlayer);
+  auto& player = p.worldState.GetFormAt<MpActor>(kPlayer);
+  ActorValueRecord level;
+  level.level = 1;
+  player.SetActorValueRecord(level);
+  p.Messages().clear();
+  p.TickCellHosts(FateNowMs());
+
+  // adopted: the level set and nothing rolled, the record exactly as it was:
+  // its two rows, the gold it held unchanged, the dagger its one worn entry
+  REQUIRE(worn.GetFateLevel() == std::optional<uint16_t>{ 1 });
+  REQUIRE_FALSE(worn.CanRollFate());
+  REQUIRE(worn.GetInventory().GetItemCount(kIronDagger) == 1);
+  REQUIRE(worn.GetInventory().GetItemCount(kGold) == 10);
+  REQUIRE(worn.GetInventory().entries.size() == 2);
+  REQUIRE(worn.GetEquipment().inv.entries.size() == 1);
+  REQUIRE(Wearing(worn, kIronDagger));
+
+  // rolled beside, as before D-N1 A: the level set, the record's rows kept
+  // and the roll's added (its own gold may join the record's: pipeline 5691
+  // read 17 and the mirror's Windows run 18, so the record's 10 is a floor)
+  REQUIRE(bare.GetFateLevel() == std::optional<uint16_t>{ 1 });
+  REQUIRE(bare.GetInventory().GetItemCount(kGold) >= 10);
+  REQUIRE(bare.GetInventory().entries.size() > 1);
+
+  // the adopted outfit rides its fate
+  bool sentWorn = false;
+  for (const auto& msg : SentTo<ActorFateMessage>(p, 0)) {
+    for (const auto& f : msg.fates) {
+      if (f.refrId == kWorn) {
+        sentWorn =
+          std::find(f.worn.begin(), f.worn.end(), kIronDagger) != f.worn.end();
+      }
+    }
+  }
+  REQUIRE(sentWorn);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kPlayer);
+}
+
+// thuum playtest 50 (Embershard's undressed bandits; b6fec's roll: arrows
+// +19 and 3 pieces missing): a recorded bandit's re-roll adds in form id
+// order, and Inventory::AddItems returned at the first item that merged into
+// a stack the record held, so everything the roll laid after it was lost
+// while the worn set already named the roll's outfit, and the fate named only
+// the worn pieces the inventory held. The campfire bandit above, holding 10
+// gold (which its roll never yields) and one iron arrow (which it does, one
+// to twenty): the arrows 0x1397d merge, and the dagger 0x1397e, the bow and
+// any outfit piece above them still land, the fate naming all it wears.
+TEST_CASE("A bandit's re-roll onto a stack it holds lands whole and its fate "
+          "names everything it wears",
+          "[NpcFate][espm]")
+{
+  constexpr uint32_t kBandit = 0x39fe2;
+  constexpr uint32_t kBarrow = 0x371de;
+  constexpr uint32_t kPlayer = 0xff000d41;
+  constexpr uint32_t kGold = 0xf;
+  constexpr uint32_t kIronDagger = 0x1397e;
+  constexpr uint32_t kIronArrow = 0x1397d;
+  constexpr uint32_t kHuntingBow = 0x13985;
+  constexpr uint32_t kLongBow = 0x3b562;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& bandit = p.worldState.GetFormAt<MpActor>(kBandit);
+  REQUIRE(p.worldState.CellOf(bandit) == kBarrow);
+  bandit.AddItem(kGold, 10);
+  bandit.AddItem(kIronArrow, 1);
+  REQUIRE(bandit.CanRollFate());
+
+  DoConnect(p, 0);
+  p.CreateActor(kPlayer, { -3400.f, 700.f, 583.f }, 0, kBarrow);
+  p.SetUserActor(0, kPlayer);
+  auto& player = p.worldState.GetFormAt<MpActor>(kPlayer);
+  ActorValueRecord record;
+  record.level = 1;
+  player.SetActorValueRecord(record);
+  p.Messages().clear();
+  p.TickCellHosts(FateNowMs());
+
+  REQUIRE(bandit.GetFateLevel() == std::optional<uint16_t>{ 1 });
+  const Inventory inv = bandit.GetInventory();
+  INFO("gold " << inv.GetItemCount(kGold) << " dagger "
+               << inv.GetItemCount(kIronDagger) << " arrows "
+               << inv.GetItemCount(kIronArrow) << " hunting "
+               << inv.GetItemCount(kHuntingBow) << " long "
+               << inv.GetItemCount(kLongBow));
+  REQUIRE(inv.GetItemCount(kGold) == 10);
+  REQUIRE(inv.GetItemCount(kIronArrow) >= 2);
+  REQUIRE(inv.GetItemCount(kIronArrow) <= 21);
+  REQUIRE(inv.GetItemCount(kIronDagger) == 1);
+  REQUIRE(inv.GetItemCount(kHuntingBow) + inv.GetItemCount(kLongBow) == 1);
+  REQUIRE((Wearing(bandit, kHuntingBow) || Wearing(bandit, kLongBow)));
+
+  const auto fates = SentTo<ActorFateMessage>(p, 0);
+  const ActorFateMessage::Fate* sent = nullptr;
+  for (const auto& msg : fates) {
+    for (const auto& f : msg.fates) {
+      if (f.refrId == kBandit) {
+        sent = &f;
+      }
+    }
+  }
+  REQUIRE(sent != nullptr);
+  // every piece the record wears (the roll's outfit, the bow in hand) is in
+  // its inventory and named by the fate
+  size_t wornCount = 0;
+  for (const auto& entry : bandit.GetEquipment().inv.entries) {
+    if (entry.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    ++wornCount;
+    INFO("worn " << std::hex << entry.baseId);
+    REQUIRE(inv.GetItemCount(entry.baseId) >= 1);
+    REQUIRE(std::find(sent->worn.begin(), sent->worn.end(), entry.baseId) !=
+            sent->worn.end());
+  }
+  REQUIRE(sent->worn.size() == wornCount);
+  // and the rows carry the rest of the roll beside the put
+  auto rowOf = [&](uint32_t baseId) -> uint32_t {
+    for (const auto& r : sent->inv) {
+      if (r.baseId == baseId) {
+        return r.count;
+      }
+    }
+    return 0;
+  };
+  REQUIRE(rowOf(kGold) == 10);
+  REQUIRE(rowOf(kIronDagger) == 1);
+  REQUIRE(rowOf(kIronArrow) == inv.GetItemCount(kIronArrow));
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kPlayer);
+}
+
+// thuum playtest 51 (b-npc-stream-equipment, run 20261110-062127): ten
+// Riverwood residents the game files place indoors reached their host with
+// no roll. Since fork c312fd39 (2026-11-03) Init leaves a fate-able actor's
+// roll to its fate, and only the pass's walk and PlaceAtMe rolled: c1's pass
+// at (4,-11) fated 32 actors and none of the ten (their records stood in
+// their houses), then c1's npc-puppet sighting moved each outdoors into a
+// square that pass had fated, so no pass came back for it, and c1's first
+// equipment report met an empty record: every worn piece failed the
+// inventory check and the hosted refusal dropped the report whole
+// (E_EQUIP_REFUSED). Faendal 0x1348c (base 0x13480, its outfit 0xdab76 of
+// 0x209a5 and 0x6c1d9) stands for the ten, his record in
+// RiverwoodFaendalsHouse 0x133ca; the 11-02 build, which rolled at Init,
+// took the same report ("3 worn, right 209a5 left 13985"). The roll now
+// runs at his first create word (EnsureFated), at c1's level.
+TEST_CASE("An indoor resident the host's sighting moves into a square its "
+          "pass fated rolls at its create word, its fate ahead of the word, "
+          "and the host's first equipment report is taken",
+          "[NpcFate][HostedEquipment][espm]")
+{
+  enum : uint32_t
+  {
+    kHost = 0xff000d50,
+    kFaendal = 0x1348c,
+    kFaendalsHouse = 0x133ca,
+    // Skyrim.esm: the outfit's two pieces, and the HuntingBow his host's
+    // engine had in hand
+    kOutfitA = 0x6c1d9,
+    kOutfitB = 0x209a5,
+    kHuntingBow = 0x13985
+  };
+  const NiPoint3 kLanding{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+
+  // c1 lands at Riverwood with its level, its pass fates the ring around
+  // (4,-11) and it hosts the landing's cell
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kLanding, 0, kTamriel);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  ActorValueRecord record;
+  record.level = 9;
+  host.SetActorValueRecord(record);
+  p.SetUserActor(0, kHost);
+  const auto cell = p.worldState.CellOf(kTamriel, kLanding);
+  REQUIRE(cell.has_value());
+  HostGrants(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kHost);
+
+  // the record the pass never reached: indoors, loaded as the sighting
+  // loads it (here ahead of the sighting), served to no game, no roll yet
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kFaendal) == nullptr);
+  const auto& form = p.worldState.LookupFormById(kFaendal, nullptr, true);
+  REQUIRE(form);
+  REQUIRE(form->AsActor());
+  MpActor& faendal = *form->AsActor();
+  REQUIRE(p.worldState.IsInteriorCell(kFaendalsHouse));
+  REQUIRE(p.worldState.CellOf(faendal) ==
+          std::optional<uint32_t>(kFaendalsHouse));
+  REQUIRE(faendal.CanRollFate());
+  REQUIRE(faendal.GetInventory().GetItemCount(kOutfitA) == 0);
+  REQUIRE(faendal.GetInventory().GetItemCount(kOutfitB) == 0);
+
+  // c1's roster sights him outdoors at the landing, in the cell c1 hosts
+  // and the square its pass fated: the record moves there and reaches c1
+  p.Messages().clear();
+  p.OnActorSighting(host, kFaendal, kTamriel,
+                    kLanding + NiPoint3{ 150.f, 0.f, 0.f },
+                    NiPoint3{ 0.f, 0.f, 90.f });
+  REQUIRE(p.worldState.CellOf(faendal) == cell);
+  REQUIRE(p.worldState.HostOf(faendal) == &host);
+
+  // rolled once, at c1's level (its pass's own); the outfit held and worn
+  REQUIRE_FALSE(faendal.CanRollFate());
+  REQUIRE(faendal.GetFateLevel() == std::optional<uint16_t>(9));
+  REQUIRE(faendal.GetInventory().GetItemCount(kOutfitA) >= 1);
+  REQUIRE(faendal.GetInventory().GetItemCount(kOutfitB) >= 1);
+  REQUIRE(Wearing(faendal, kOutfitA));
+  REQUIRE(Wearing(faendal, kOutfitB));
+
+  // c1 hears his fate once, ahead of his create word (its pass fated the
+  // square before he came, and comes back for nothing), and both carry the
+  // outfit
+  REQUIRE(FatesOf(p, 0, kFaendal) == 1);
+  const auto fateAt = FirstFateAt(p, 0, kFaendal);
+  const auto createAt = FirstCreateAt(p, 0, kFaendal);
+  REQUIRE(fateAt.has_value());
+  REQUIRE(createAt.has_value());
+  REQUIRE(*fateAt < *createAt);
+  // and nothing else of his reaches c1 ahead of that word: the roll's
+  // equipment word went to the listeners with a user he had (none), not
+  // through his own listening to his cell's host, c1 (the review of
+  // 062e9065, note 1)
+  REQUIRE(IdxWordsBefore(p, 0, faendal.GetIdx(), *createAt) == 0);
+  for (size_t i = 0; i < *createAt; ++i) {
+    auto word =
+      dynamic_cast<UpdateEquipmentMessage*>(p.Messages()[i].message.get());
+    REQUIRE_FALSE((word && word->idx == faendal.GetIdx()));
+  }
+  {
+    auto fate =
+      dynamic_cast<ActorFateMessage*>(p.Messages()[*fateAt].message.get());
+    REQUIRE(fate);
+    const auto sent = std::find_if(
+      fate->fates.begin(), fate->fates.end(),
+      [](const ActorFateMessage::Fate& f) { return f.refrId == kFaendal; });
+    REQUIRE(sent != fate->fates.end());
+    REQUIRE(sent->level == 9);
+    const auto names = [&](uint32_t baseId) {
+      return std::find(sent->worn.begin(), sent->worn.end(), baseId) !=
+        sent->worn.end();
+    };
+    REQUIRE(names(kOutfitA));
+    REQUIRE(names(kOutfitB));
+    auto create =
+      dynamic_cast<CreateActorMessage*>(p.Messages()[*createAt].message.get());
+    REQUIRE(create);
+    REQUIRE(create->equipment.has_value());
+    REQUIRE(create->equipment->inv.HasItem(kOutfitA));
+    REQUIRE(create->equipment->inv.HasItem(kOutfitB));
+  }
+
+  // c1's first equipment report as 062127 logged it: taken whole
+  {
+    LogCapture log;
+    Wears(p, faendal, { kOutfitA, kOutfitB, kHuntingBow }, 7);
+    REQUIRE(log.Count("E_EQUIP_REFUSED") == 0);
+    REQUIRE(log.Count("inventory does not contain item") == 0);
+  }
+  REQUIRE(faendal.GetEquipment().numChanges == 7);
+  REQUIRE(Wearing(faendal, kOutfitA));
+  REQUIRE(Wearing(faendal, kOutfitB));
+  REQUIRE(Wearing(faendal, kHuntingBow));
+  REQUIRE(faendal.GetInventory().HasItem(kHuntingBow));
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kHost);
+}
+
+// thuum playtest 51 (b-npc-stream-equipment): the sighting is one late path
+// that moves a record no game was served into a square a pass has fated; a
+// script's MoveTo is another (PapyrusObjectReference::MoveTo, an actor's
+// Teleport: the sighting's three sets behind a teleport word), and a
+// lookup's or an alias's load the same. Sigrid 0x13483, placed in Alvor's
+// house (CellHostTest's resident), is moved to c1's landing: she rolls once,
+// at her first create word, c1 hearing her fate ahead of it, and c2, two
+// squares east (its pass fated her square, its 3x3 is short of her), hears
+// the same fate then with no create word (the review of 062e9065, note 8);
+// her next create word to c1 rolls nothing and carries the same fate again,
+// and c2 hears nothing more.
+TEST_CASE("A script's MoveTo of a resident nothing rolled into a square a "
+          "pass fated rolls her once at her create word, her fate ahead of "
+          "every create word and to a game beyond her 3x3 whose pass fated "
+          "the square",
+          "[NpcFate][espm]")
+{
+  enum : uint32_t
+  {
+    kFirst = 0xff000d51,
+    kSecond = 0xff000d52,
+    kSigrid = 0x13483
+  };
+  const NiPoint3 kLanding{ 17225.f, -47204.f, -128.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kFirst, kLanding, 0, kTamriel);
+  auto& first = p.worldState.GetFormAt<MpActor>(kFirst);
+  ActorValueRecord record;
+  record.level = 14;
+  first.SetActorValueRecord(record);
+  p.SetUserActor(0, kFirst);
+  // c2 has no record, so the roll's level is c1's alone (the party's mean)
+  DoConnect(p, 1);
+  p.CreateActor(kSecond, kLanding + NiPoint3{ 2 * 4096.f, 0.f, 0.f }, 0,
+                kTamriel);
+  auto& second = p.worldState.GetFormAt<MpActor>(kSecond);
+  p.SetUserActor(1, kSecond);
+  p.TickCellHosts(FateNowMs());
+
+  // loaded where the files place her, as a host's sighting loads her
+  // (CellHostTest's), served to no game
+  const auto& form = p.worldState.LookupFormById(kSigrid, nullptr, true);
+  REQUIRE(form);
+  REQUIRE(form->AsActor());
+  MpActor& sigrid = *form->AsActor();
+  const auto home = p.worldState.CellOf(sigrid);
+  REQUIRE(home.has_value());
+  REQUIRE(p.worldState.IsInteriorCell(*home));
+  REQUIRE(sigrid.CanRollFate());
+  const auto moveTo = [&](const NiPoint3& pos) {
+    sigrid.Teleport(
+      LocationalData{ pos, { 0.f, 0.f, 0.f }, FormDesc::Tamriel() });
+  };
+
+  // the MoveTo: her first create word, to c1, carries her roll at c1's
+  // level with her fate ahead of it; c2 hears the fate alone
+  p.Messages().clear();
+  moveTo(kLanding + NiPoint3{ 150.f, 0.f, 0.f });
+  REQUIRE(sigrid.GetListeners().count(&first) == 1);
+  REQUIRE(sigrid.GetListeners().count(&second) == 0);
+  REQUIRE_FALSE(sigrid.CanRollFate());
+  REQUIRE(sigrid.GetFateLevel() == std::optional<uint16_t>(14));
+  REQUIRE(sigrid.GetChangeForm().baseContainerAdded);
+  REQUIRE(FatesOf(p, 0, kSigrid) == 1);
+  const auto fateAt = FirstFateAt(p, 0, kSigrid);
+  const auto createAt = FirstCreateAt(p, 0, kSigrid);
+  REQUIRE(fateAt.has_value());
+  REQUIRE(createAt.has_value());
+  REQUIRE(*fateAt < *createAt);
+  REQUIRE(IdxWordsBefore(p, 0, sigrid.GetIdx(), *createAt) == 0);
+  REQUIRE(FatesOf(p, 1, kSigrid) == 1);
+  REQUIRE_FALSE(FirstCreateAt(p, 1, kSigrid).has_value());
+  const auto fated = FirstFateOf(p, 0, kSigrid);
+  REQUIRE(fated.has_value());
+  REQUIRE(FirstFateOf(p, 1, kSigrid) == fated);
+  {
+    // the word carries the record's equipment, and what she wears she holds
+    auto create =
+      dynamic_cast<CreateActorMessage*>(p.Messages()[*createAt].message.get());
+    REQUIRE(create);
+    REQUIRE(create->equipment.has_value());
+    REQUIRE(create->equipment->inv.entries.size() ==
+            sigrid.GetEquipment().inv.entries.size());
+    for (const auto& entry : sigrid.GetEquipment().inv.entries) {
+      if (entry.GetWorn() != Inventory::Worn::None) {
+        INFO("worn " << std::hex << entry.baseId);
+        REQUIRE(sigrid.GetInventory().GetItemCount(entry.baseId) >= 1);
+      }
+    }
+  }
+  const std::string rolled = sigrid.GetInventory().ToJson().dump();
+
+  // out of both games' reach, west, and back to c1: a second create word,
+  // no roll, the same fate ahead of it; c2 hears nothing
+  moveTo(kLanding - NiPoint3{ 3 * 4096.f, 0.f, 0.f });
+  REQUIRE(sigrid.GetListeners().count(&first) == 0);
+  p.Messages().clear();
+  moveTo(kLanding + NiPoint3{ 200.f, 0.f, 0.f });
+  REQUIRE(sigrid.GetListeners().count(&first) == 1);
+  REQUIRE(FatesOf(p, 0, kSigrid) == 1);
+  const auto againAt = FirstFateAt(p, 0, kSigrid);
+  const auto recreatedAt = FirstCreateAt(p, 0, kSigrid);
+  REQUIRE(againAt.has_value());
+  REQUIRE(recreatedAt.has_value());
+  REQUIRE(*againAt < *recreatedAt);
+  REQUIRE(FirstFateOf(p, 0, kSigrid) == fated);
+  REQUIRE(FatesOf(p, 1, kSigrid) == 0);
+  REQUIRE(sigrid.GetFateLevel() == std::optional<uint16_t>(14));
+  REQUIRE(sigrid.GetInventory().ToJson().dump() == rolled);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kFirst);
+  p.DestroyActor(kSecond);
+}
+
+// thuum playtest 51: the pass's walk is the roll's other first reach. An
+// actor the grid loaded where no game had it in reach (here a lookup's
+// load; another actor's square change loads a 3x3 the same) is served to
+// no game until a pass reaches its square: the walk rolls it there, at the
+// walker's level, and its batch sends the fate once; the create word that
+// follows when the walker comes up rolls nothing more and carries the same
+// fate ahead of it.
+TEST_CASE("An actor the pass's walk rolled is not rolled again at its create "
+          "word, which carries the walk's fate ahead of it",
+          "[NpcFate][espm]")
+{
+  constexpr uint32_t kWalker = 0xff000d53;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& predator = p.worldState.GetFormAt<MpActor>(kPredator);
+  REQUIRE(predator.CanRollFate());
+
+  // the walker lands two squares east: inside its pass's ring, outside the
+  // grid's 3x3, so its login serves the predator nothing
+  DoConnect(p, 0);
+  p.CreateActor(kWalker, kForest + NiPoint3{ 2 * 4096.f, 0.f, 0.f }, 0,
+                kTamriel);
+  auto& walker = p.worldState.GetFormAt<MpActor>(kWalker);
+  ActorValueRecord record;
+  record.level = 17;
+  walker.SetActorValueRecord(record);
+  p.SetUserActor(0, kWalker);
+  REQUIRE(predator.GetListeners().count(&walker) == 0);
+  REQUIRE(predator.CanRollFate());
+
+  // the pass: the walk rolls it at the walker's level and sends its fate
+  p.Messages().clear();
+  p.TickCellHosts(FateNowMs());
+  REQUIRE_FALSE(predator.CanRollFate());
+  REQUIRE(predator.GetFateLevel() == std::optional<uint16_t>(17));
+  REQUIRE(predator.GetListeners().count(&walker) == 0);
+  REQUIRE(FatesOf(p, 0, kPredator) == 1);
+  const auto walked = FirstFateOf(p, 0, kPredator);
+  REQUIRE(walked.has_value());
+  const std::string rolled = predator.GetInventory().ToJson().dump();
+
+  // the walker comes up: its create word rolls nothing and carries the
+  // walk's fate ahead of it
+  p.Messages().clear();
+  walker.SetPos(kForest);
+  REQUIRE(predator.GetListeners().count(&walker) == 1);
+  REQUIRE(FatesOf(p, 0, kPredator) == 1);
+  const auto fateAt = FirstFateAt(p, 0, kPredator);
+  const auto createAt = FirstCreateAt(p, 0, kPredator);
+  REQUIRE(fateAt.has_value());
+  REQUIRE(createAt.has_value());
+  REQUIRE(*fateAt < *createAt);
+  REQUIRE(FirstFateOf(p, 0, kPredator) == walked);
+  REQUIRE(predator.GetFateLevel() == std::optional<uint16_t>(17));
+  REQUIRE(predator.GetInventory().ToJson().dump() == rolled);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kWalker);
+}
+
+// thuum playtest 51 (the review of 062e9065, notes 2 and 8): a login's
+// create words for the actors in its 3x3 are each its actor's first
+// serve, so each carries a roll made at the login's level, with the
+// actor's fate ahead of it, and nothing else about the actor (an equipment
+// word, a property) reaches the game ahead of that word. The login's first
+// pass then sends the fates again, which the game takes for free while
+// they are the same.
+TEST_CASE("A login's create words carry the rolls of the actors in its 3x3, "
+          "each behind its actor's fate and nothing else of it",
+          "[NpcFate][espm]")
+{
+  constexpr uint32_t kGuest = 0xff000d54;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kGuest, kForest, 0, kTamriel);
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuest);
+  ActorValueRecord record;
+  record.level = 21;
+  guest.SetActorValueRecord(record);
+  p.Messages().clear();
+  p.SetUserActor(0, kGuest);
+
+  size_t served = 0;
+  bool predatorServed = false;
+  auto& messages = p.Messages();
+  for (size_t i = 0; i < messages.size(); ++i) {
+    auto create = dynamic_cast<CreateActorMessage*>(messages[i].message.get());
+    if (messages[i].userId != 0 || !create || !create->refrId ||
+        *create->refrId >= 0xff000000) {
+      continue;
+    }
+    const auto refrId = static_cast<uint32_t>(*create->refrId);
+    const auto& form = p.worldState.LookupFormByIdNoLoad(refrId);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    // a reference that is no actor, or a body (it rolls at its first open)
+    if (!actor || actor->IsDead()) {
+      continue;
+    }
+    INFO("actor " << std::hex << refrId);
+    REQUIRE(actor->GetFateLevel() == std::optional<uint16_t>(21));
+    const auto fateAt = FirstFateAt(p, 0, refrId);
+    REQUIRE(fateAt.has_value());
+    REQUIRE(*fateAt < i);
+    REQUIRE(IdxWordsBefore(p, 0, actor->GetIdx(), i) == 0);
+    predatorServed = predatorServed || refrId == kPredator;
+    ++served;
+  }
+  REQUIRE(served > 0);
+  REQUIRE(predatorServed);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kGuest);
 }

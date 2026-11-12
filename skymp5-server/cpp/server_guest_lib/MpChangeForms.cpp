@@ -1,5 +1,9 @@
 #include "MpChangeForms.h"
 #include "JsonUtils.h"
+#include "archives/JsonOutputArchive.h"
+#include "archives/SimdJsonInputArchive.h"
+#include <algorithm>
+#include <limits>
 #include <spdlog/spdlog.h>
 
 namespace {
@@ -476,8 +480,11 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     res["displayName"] = *changeForm.displayName;
   }
 
-  if (changeForm.factions.has_value() &&
-      !changeForm.factions.value().empty()) {
+  // thuum ADR-068 rung 4 (the standing): written once loaded, an emptied
+  // list included (RemoveFromAllFactions, the last RemoveFromFaction), so a
+  // removal survives a restart; MpActor::LoadFactions reads the base's SNAM
+  // rows only into a record that holds no list
+  if (changeForm.factions.has_value()) {
     auto factionsJson = nlohmann::json::array();
     for (int i = 0; i < static_cast<int>(changeForm.factions.value().size());
          ++i) {
@@ -549,6 +556,161 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
                                   { "key", changeForm.lock->key },
                                   { "locked", changeForm.lock->locked },
                                   { "broken", changeForm.lock->broken } };
+  }
+
+  // thuum D-S3 (ADR-068's DestructionStage row); absent in older records and
+  // on references nobody reported, read as the game files' state
+  if (changeForm.destruction.has_value()) {
+    res["destruction"] =
+      nlohmann::json{ { "stage", changeForm.destruction->stage },
+                      { "destroyed", changeForm.destruction->destroyed } };
+  }
+
+  // thuum docs/verbs/change-form.md (ADR-065): the owner's latest change
+  // form, its body the sender's hex as received, its rows raw
+  // (ChangeFormRecord.h says why); absent in older records and on actors
+  // nobody reported, read as none
+  if (changeForm.changeFormRecord.has_value()) {
+    const auto& record = *changeForm.changeFormRecord;
+    auto rows = nlohmann::json::array();
+    for (const auto& row : record.remap) {
+      rows.push_back({ { "offset", row.offset },
+                       { "formId", row.formId },
+                       { "index", row.index } });
+    }
+    res["changeFormRecord"] =
+      nlohmann::json{ { "epoch", record.epoch },
+                      { "flags", record.flags },
+                      { "version", static_cast<uint32_t>(record.version) },
+                      { "formType", static_cast<uint32_t>(record.formType) },
+                      { "body", record.bodyHex },
+                      { "fnv1a", record.fnv1a },
+                      { "remap", std::move(rows) },
+                      { "sender", record.sender },
+                      { "at", record.atMs } };
+  }
+
+  // thuum ADR-068 rung 3 (the script record): the owner's last record of the
+  // reference's scripts, with the sequence and the view the server stamped,
+  // by the record's own field list (ScriptStateRecord.h says why its forms
+  // stay raw); absent in older records and on references nobody reported,
+  // read as none
+  if (changeForm.scriptState.has_value()) {
+    JsonOutputArchive archive;
+    archive.Serialize("scriptState", *changeForm.scriptState);
+    res["scriptState"] = std::move(archive.j["scriptState"]);
+  }
+
+  // thuum ADR-068 rung 4 (the state rows): the ref state's recorded mark,
+  // the standing's crime faction and relationships, a script set's placement
+  // and the journal's alias fills and world globals; each absent in older
+  // records and where nothing moved it, read as none. Their forms are
+  // FormDescs already, written as "<hex>:<plugin>" whatever `files` says
+  if (changeForm.refStateSeq.has_value()) {
+    res["refStateSeq"] = *changeForm.refStateSeq;
+  }
+  if (changeForm.crimeFaction.has_value()) {
+    res["crimeFaction"] = changeForm.crimeFaction->ToString();
+  }
+  if (changeForm.relationships.has_value()) {
+    auto entries = nlohmann::json::array();
+    for (const auto& entry : *changeForm.relationships) {
+      entries.push_back({ { "other", entry.other.ToString() },
+                          { "rank", static_cast<int32_t>(entry.rank) } });
+    }
+    res["relationships"] = { { "entries", std::move(entries) } };
+  }
+  if (changeForm.placedByScript.has_value()) {
+    res["placedByScript"] =
+      nlohmann::json{ { "self", changeForm.placedByScript->self.ToString() },
+                      { "base", changeForm.placedByScript->base.ToString() } };
+  }
+  if (changeForm.aliasFills.has_value() && !changeForm.aliasFills->empty()) {
+    auto entries = nlohmann::json::array();
+    for (const auto& entry : *changeForm.aliasFills) {
+      nlohmann::json j = { { "quest", entry.quest.ToString() },
+                           { "alias", entry.alias },
+                           { "added", entry.added } };
+      if (entry.refr) {
+        j["refr"] = entry.refr->ToString();
+      }
+      if (entry.created) {
+        j["created"] = entry.created->ToString();
+      }
+      if (entry.container) {
+        j["container"] = entry.container->ToString();
+      }
+      entries.push_back(std::move(j));
+    }
+    res["aliasFills"] = { { "entries", std::move(entries) } };
+  }
+  if (changeForm.worldGlobals.has_value() &&
+      !changeForm.worldGlobals->empty()) {
+    auto entries = nlohmann::json::array();
+    for (const auto& entry : *changeForm.worldGlobals) {
+      entries.push_back(
+        { { "formDesc", entry.global.ToString() }, { "value", entry.value } });
+    }
+    res["worldGlobals"] = { { "entries", std::move(entries) } };
+  }
+
+  // thuum ADR-068 rung 5: the world's quest runs and the condition-read
+  // script variables (the journal's world keys, a player's own); absent in
+  // older records and where none was recorded, read as none
+  if (changeForm.questRuns.has_value() && !changeForm.questRuns->empty()) {
+    auto entries = nlohmann::json::array();
+    for (const auto& entry : *changeForm.questRuns) {
+      entries.push_back({ { "quest", entry.quest.ToString() },
+                          { "running", entry.running },
+                          { "seq", entry.seq } });
+    }
+    res["questRuns"] = { { "entries", std::move(entries) } };
+  }
+  if (changeForm.scriptVariables.has_value() &&
+      !changeForm.scriptVariables->empty()) {
+    auto entries = nlohmann::json::array();
+    for (const auto& entry : *changeForm.scriptVariables) {
+      nlohmann::json j = { { "form", entry.form.ToString() },
+                           { "script", entry.script },
+                           { "var", entry.var },
+                           { "k", entry.k },
+                           { "seq", entry.seq } };
+      if (entry.i) {
+        j["i"] = *entry.i;
+      }
+      if (entry.f) {
+        j["f"] = *entry.f;
+      }
+      if (entry.b) {
+        j["b"] = *entry.b;
+      }
+      entries.push_back(std::move(j));
+    }
+    res["scriptVariables"] = { { "entries", std::move(entries) } };
+  }
+
+  // the fifty fixes' D-C3 A (PENDING ELI): the graph variables a script set,
+  // each with its kind, its one value and its sequence; absent in older
+  // records and where no script set one, read as none
+  if (changeForm.graphVariables.has_value() &&
+      !changeForm.graphVariables->empty()) {
+    auto entries = nlohmann::json::array();
+    for (const auto& entry : *changeForm.graphVariables) {
+      nlohmann::json j = { { "name", entry.name },
+                           { "k", entry.k },
+                           { "seq", entry.seq } };
+      if (entry.i) {
+        j["i"] = *entry.i;
+      }
+      if (entry.f) {
+        j["f"] = *entry.f;
+      }
+      if (entry.b) {
+        j["b"] = *entry.b;
+      }
+      entries.push_back(std::move(j));
+    }
+    res["graphVariables"] = { { "entries", std::move(entries) } };
   }
 
   // thuum docs/verbs/shouts.md; absent in older records, read as none
@@ -628,12 +790,15 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     for (const auto& [skill, count] : record.legendary) {
       legendary.push_back({ { "skill", skill }, { "count", count } });
     }
-    res["actorValueRecord"] = {
-      { "bases", bases },        { "skills", skills },
-      { "xp", record.xp },       { "threshold", record.threshold },
-      { "level", record.level }, { "legendary", legendary },
-      { "perks", record.perks } // thuum docs/verbs/perks.md
-    };
+    res["actorValueRecord"] = { { "bases", bases },
+                                { "skills", skills },
+                                { "xp", record.xp },
+                                { "threshold", record.threshold },
+                                { "level", record.level },
+                                { "legendary", legendary },
+                                { "perks",
+                                  record.perks }, // thuum docs/verbs/perks.md
+                                { "perkPicks", record.perkPicks } };
   }
 
   // ADR-043: with the running order every stored form goes plugin-relative
@@ -700,6 +865,19 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer lockKey("lock/key");
   static const JsonPointer lockLocked("lock/locked");
   static const JsonPointer lockBroken("lock/broken");
+  static const JsonPointer destructionStage("destruction/stage");
+  static const JsonPointer destructionDestroyed("destruction/destroyed");
+  static const JsonPointer changeFormRecord("changeFormRecord");
+  static const JsonPointer scriptState("scriptState");
+  static const JsonPointer refStateSeq("refStateSeq");
+  static const JsonPointer crimeFaction("crimeFaction");
+  static const JsonPointer relationships("relationships");
+  static const JsonPointer placedByScript("placedByScript");
+  static const JsonPointer aliasFills("aliasFills");
+  static const JsonPointer worldGlobals("worldGlobals");
+  static const JsonPointer questRuns("questRuns");
+  static const JsonPointer scriptVariables("scriptVariables");
+  static const JsonPointer graphVariables("graphVariables");
   static const JsonPointer favorites("favorites");
   static const JsonPointer raceMenuPreset("raceMenuPreset");
   static const JsonPointer staffRank("staffRank");
@@ -1121,6 +1299,278 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     res.lock = lockTmp;
   }
 
+  if (element.at_pointer(destructionStage.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    MpChangeFormREFR::Destruction destructionTmp;
+    int64_t stage = 0;
+    ReadEx(element, destructionStage, &stage);
+    ReadEx(element, destructionDestroyed, &destructionTmp.destroyed);
+    destructionTmp.stage = static_cast<uint8_t>(stage);
+    res.destruction = destructionTmp;
+  }
+
+  // thuum docs/verbs/change-form.md (ADR-065): the record as ToJson writes
+  // it, the body's hex kept as the string it is (the wire validated it once;
+  // the server never decodes it)
+  if (element.at_pointer(changeFormRecord.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, changeFormRecord, &jTmp);
+    static const JsonPointer recordEpoch("epoch"), recordFlags("flags"),
+      recordVersion("version"), recordFormType("formType"), recordBody("body"),
+      recordFnv("fnv1a"), recordRemap("remap"), recordSender("sender"),
+      recordAt("at"), rowOffset("offset"), rowFormId("formId"),
+      rowIndex("index");
+    ChangeFormRecord record;
+    ReadEx(jTmp, recordEpoch, &record.epoch);
+    ReadEx(jTmp, recordFlags, &record.flags);
+    uint32_t versionTmp = 0;
+    uint32_t formTypeTmp = 0;
+    ReadEx(jTmp, recordVersion, &versionTmp);
+    ReadEx(jTmp, recordFormType, &formTypeTmp);
+    record.version = static_cast<uint8_t>(versionTmp);
+    record.formType = static_cast<uint8_t>(formTypeTmp);
+    ReadEx(jTmp, recordFnv, &record.fnv1a);
+    ReadEx(jTmp, recordSender, &record.sender);
+    int64_t atTmp = 0;
+    ReadEx(jTmp, recordAt, &atTmp);
+    record.atMs = static_cast<uint64_t>(atTmp);
+    const char* bodyTmp = "";
+    ReadEx(jTmp, recordBody, &bodyTmp);
+    std::vector<simdjson::dom::element> rows;
+    ReadVector(jTmp, recordRemap, &rows);
+    for (auto& row : rows) {
+      ChangeFormRemapRow parsed;
+      ReadEx(row, rowOffset, &parsed.offset);
+      ReadEx(row, rowFormId, &parsed.formId);
+      ReadEx(row, rowIndex, &parsed.index);
+      record.remap.push_back(parsed);
+    }
+    record.bodyHex = bodyTmp;
+    res.changeFormRecord = std::move(record);
+  }
+
+  // thuum ADR-068 rung 3 (the script record): the record as ToJson writes
+  // it, read by the same field list (ScriptStateRecord::Serialize)
+  if (element.at_pointer(scriptState.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, scriptState, &jTmp);
+    SimdJsonInputArchive archive(jTmp);
+    ScriptStateRecord record;
+    record.Serialize(archive);
+    res.scriptState = std::move(record);
+  }
+
+  // thuum ADR-068 rung 4 (the state rows): the keys as ToJson writes them,
+  // each read only where present (rule 6's migration: an older record reads
+  // as none and keeps its formVersion)
+  if (element.at_pointer(refStateSeq.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    int64_t seqTmp = 0;
+    ReadEx(element, refStateSeq, &seqTmp);
+    res.refStateSeq = static_cast<uint32_t>(seqTmp);
+  }
+
+  if (element.at_pointer(crimeFaction.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    const char* crimeTmp = "";
+    ReadEx(element, crimeFaction, &crimeTmp);
+    res.crimeFaction = FormDesc::FromString(crimeTmp);
+  }
+
+  if (element.at_pointer(relationships.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, relationships, &jTmp);
+    static const JsonPointer entries("entries"), other("other"), rank("rank");
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+    std::vector<MpChangeFormREFR::Relationship> parsed;
+    for (auto& entry : parsedEntries) {
+      MpChangeFormREFR::Relationship relationship;
+      const char* otherTmp = "";
+      ReadEx(entry, other, &otherTmp);
+      relationship.other = FormDesc::FromString(otherTmp);
+      int64_t rankTmp = 0;
+      ReadEx(entry, rank, &rankTmp);
+      relationship.rank = static_cast<int8_t>(rankTmp);
+      parsed.push_back(std::move(relationship));
+    }
+    res.relationships = std::move(parsed);
+  }
+
+  if (element.at_pointer(placedByScript.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, placedByScript, &jTmp);
+    static const JsonPointer self("self"), base("base");
+    MpChangeFormREFR::PlacedByScript placed;
+    const char* selfTmp = "";
+    const char* baseTmp = "";
+    ReadEx(jTmp, self, &selfTmp);
+    ReadEx(jTmp, base, &baseTmp);
+    placed.self = FormDesc::FromString(selfTmp);
+    placed.base = FormDesc::FromString(baseTmp);
+    res.placedByScript = std::move(placed);
+  }
+
+  if (element.at_pointer(aliasFills.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, aliasFills, &jTmp);
+    static const JsonPointer entries("entries"), quest("quest"),
+      alias("alias"), refr("refr"), created("created"), container("container"),
+      added("added");
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+    std::vector<MpChangeFormREFR::AliasFill> parsed;
+    for (auto& entry : parsedEntries) {
+      MpChangeFormREFR::AliasFill fill;
+      const char* questTmp = "";
+      ReadEx(entry, quest, &questTmp);
+      fill.quest = FormDesc::FromString(questTmp);
+      int64_t aliasTmp = 0;
+      ReadEx(entry, alias, &aliasTmp);
+      fill.alias = static_cast<uint32_t>(aliasTmp);
+      ReadEx(entry, added, &fill.added);
+      const auto optionalDesc = [&](const JsonPointer& key) {
+        std::optional<FormDesc> out;
+        if (entry.at_pointer(key.GetData()).error() ==
+            simdjson::error_code::SUCCESS) {
+          const char* descTmp = "";
+          ReadEx(entry, key, &descTmp);
+          out = FormDesc::FromString(descTmp);
+        }
+        return out;
+      };
+      fill.refr = optionalDesc(refr);
+      fill.created = optionalDesc(created);
+      fill.container = optionalDesc(container);
+      parsed.push_back(std::move(fill));
+    }
+    res.aliasFills = std::move(parsed);
+  }
+
+  if (element.at_pointer(worldGlobals.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, worldGlobals, &jTmp);
+    static const JsonPointer entries("entries"), value("value");
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+    std::vector<PlayerGlobal> globals(parsedEntries.size());
+    for (size_t i = 0; i != parsedEntries.size(); ++i) {
+      const char* globalTmp = "";
+      ReadEx(parsedEntries[i], formDesc, &globalTmp);
+      globals[i].global = FormDesc::FromString(globalTmp);
+      ReadEx(parsedEntries[i], value, &globals[i].value);
+    }
+    res.worldGlobals = std::move(globals);
+  }
+
+  // thuum ADR-068 rung 5: the keys as ToJson writes them, read only where
+  // present (rule 6's migration: an older record reads as none and keeps its
+  // formVersion)
+  if (element.at_pointer(questRuns.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, questRuns, &jTmp);
+    static const JsonPointer entries("entries"), quest("quest"),
+      running("running"), seq("seq");
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+    std::vector<MpChangeFormREFR::QuestRun> parsed;
+    for (auto& entry : parsedEntries) {
+      MpChangeFormREFR::QuestRun run;
+      const char* questTmp = "";
+      ReadEx(entry, quest, &questTmp);
+      run.quest = FormDesc::FromString(questTmp);
+      ReadEx(entry, running, &run.running);
+      ReadEx(entry, seq, &run.seq);
+      parsed.push_back(std::move(run));
+    }
+    res.questRuns = std::move(parsed);
+  }
+
+  if (element.at_pointer(scriptVariables.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, scriptVariables, &jTmp);
+    static const JsonPointer entries("entries"), form("form"),
+      script("script"), var("var"), k("k"), i("i"), f("f"), b("b"), seq("seq");
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+    std::vector<MpChangeFormREFR::ScriptVariable> parsed;
+    for (auto& entry : parsedEntries) {
+      MpChangeFormREFR::ScriptVariable variable;
+      const char* formTmp = "";
+      ReadEx(entry, form, &formTmp);
+      variable.form = FormDesc::FromString(formTmp);
+      const char* scriptTmp = "";
+      ReadEx(entry, script, &scriptTmp);
+      variable.script = scriptTmp;
+      const char* varTmp = "";
+      ReadEx(entry, var, &varTmp);
+      variable.var = varTmp;
+      ReadEx(entry, k, &variable.k);
+      ReadEx(entry, seq, &variable.seq);
+      if (entry.at_pointer(i.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        int32_t iTmp = 0;
+        ReadEx(entry, i, &iTmp);
+        variable.i = iTmp;
+      }
+      if (entry.at_pointer(f.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        float fTmp = 0.f;
+        ReadEx(entry, f, &fTmp);
+        variable.f = fTmp;
+      }
+      if (entry.at_pointer(b.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        bool bTmp = false;
+        ReadEx(entry, b, &bTmp);
+        variable.b = bTmp;
+      }
+      parsed.push_back(std::move(variable));
+    }
+    res.scriptVariables = std::move(parsed);
+  }
+
+  // the fifty fixes' D-C3 A (PENDING ELI): the key as ToJson writes it, read
+  // only where present (rule 6's migration: an older record reads as none
+  // and keeps its formVersion)
+  if (element.at_pointer(graphVariables.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, graphVariables, &jTmp);
+    static const JsonPointer entries("entries"), name("name"), k("k"), i("i"),
+      f("f"), b("b"), seq("seq");
+    std::vector<simdjson::dom::element> parsedEntries;
+    ReadVector(jTmp, entries, &parsedEntries);
+    std::vector<MpChangeFormREFR::GraphVariable> parsed;
+    for (auto& entry : parsedEntries) {
+      MpChangeFormREFR::GraphVariable variable;
+      const char* nameTmp = "";
+      ReadEx(entry, name, &nameTmp);
+      variable.name = nameTmp;
+      ReadEx(entry, k, &variable.k);
+      ReadEx(entry, seq, &variable.seq);
+      if (entry.at_pointer(i.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        int32_t iTmp = 0;
+        ReadEx(entry, i, &iTmp);
+        variable.i = iTmp;
+      }
+      if (entry.at_pointer(f.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        float fTmp = 0.f;
+        ReadEx(entry, f, &fTmp);
+        variable.f = fTmp;
+      }
+      if (entry.at_pointer(b.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        bool bTmp = false;
+        ReadEx(entry, b, &bTmp);
+        variable.b = bTmp;
+      }
+      parsed.push_back(std::move(variable));
+    }
+    res.graphVariables = std::move(parsed);
+  }
+
   if (element.at_pointer(shoutRecord.GetData()).error() ==
       simdjson::error_code::SUCCESS) {
     ReadEx(element, shoutRecord, &jTmp);
@@ -1226,7 +1676,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     static const JsonPointer bases("bases"), skills("skills"),
       legendary("legendary"), av("av"), base("base"), skill("skill"),
       level("level"), xp("xp"), threshold("threshold"), count("count"),
-      perks("perks");
+      perks("perks"), perkPicks("perkPicks");
     ActorValueRecord record;
 
     std::vector<simdjson::dom::element> parsed;
@@ -1279,6 +1729,21 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     record.xp = static_cast<float>(xpTmp);
     record.threshold = static_cast<float>(thresholdTmp);
     record.level = static_cast<uint16_t>(levelTmp);
+    // the picks the server granted (thuum docs/verbs/perks.md): absent in a
+    // record from before the counter, which counted every perk held against
+    // the points; read as the perks held capped at the points the level
+    // earned, so such a record keeps the points it showed
+    if (jTmp.at_pointer(perkPicks.GetData()).error() ==
+        simdjson::error_code::SUCCESS) {
+      uint32_t picksTmp = 0;
+      ReadEx(jTmp, perkPicks, &picksTmp);
+      record.perkPicks = static_cast<uint16_t>(
+        std::min<uint32_t>(picksTmp, std::numeric_limits<uint16_t>::max()));
+    } else {
+      const size_t earned = record.level > 0 ? record.level - 1 : 0;
+      record.perkPicks =
+        static_cast<uint16_t>(std::min(earned, record.perks.size()));
+    }
     res.actorValueRecord = record;
   }
 

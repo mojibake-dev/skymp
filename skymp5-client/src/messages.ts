@@ -73,5 +73,15 @@ export enum MsgType {
   PerkState = 68, // the same verb: the server's whole perk set and the points left for this player
   WordWall = 69, // thuum docs/verbs/word-wall.md (M4): the word wall trigger this game fired, its word the server's
   RelayedActivation = 70, // thuum docs/verbs/traps.md (M4): a linked activation the cell's host reported, for this game's engine to play
-  ObjectAnimation = 71 // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's animation event the cell's host reported, recorded and relayed
+  ObjectAnimation = 71, // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's animation event the cell's host reported, recorded and relayed
+  ChangeForm = 72, // thuum docs/verbs/change-form.md (ADR-065): an owner's engine's own change form of a reference, serialized at the corpse's rest (ADR-067); the server validates, records, acks
+  ChangeFormAck = 73, // the same verb: the server's hash of the record it holds, the owner's compare baseline
+  ChangeFormApply = 74, // the same verb: a recorded change form served to a seat with the reference, applied through its engine's own load
+  ScriptCall = 75, // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): a script's call of a tabled action native on a subject this game owns, as the platform's boundary read it; the server checks its shape and mirrors it to the subject's other listeners as SpSnippet 30 with the object's seq
+  ScriptState = 76, // thuum docs/DECISIONS.md ADR-068 decision 5 and amendment A (rung 3, the script record): a world object's Papyrus state as its owner's engine holds it (each attached script's type, state, flags and positional variables), read by the platform's SerializeScriptState; the server records it and never relays it live
+  ScriptStateApply = 77, // the same rung: a recorded script state served to a new host ahead of its HostGrant and to a late subscriber behind the reference's create word, with the record's view (the last animation event and the object's seq at the read)
+  DestructionStage = 78, // thuum docs/DECISIONS.md ADR-068 D-S3 point 3 (traps follow the interaction): a world object's single-use result, its destruction stage's rise or its destruction, reported by the seat that caused or saw it first and recorded once by the server; relayed to the reference's other listeners and served to a late subscriber after its create word and after a restart. Since rung 4 (amendment B) also the reference's engine state from the server, disabled and deleted with the object's seq (RefStateService)
+  AliasFill = 79, // thuum docs/DECISIONS.md ADR-068 rung 4 and amendment B (the state rows): a quest alias's reference as a seat's engine filled or cleared it (ForceRefTo, Clear; everyone rows under D-F1 C), recorded per quest and alias, relayed, and served after a login's quest stages
+  WorldGlobal = 80, // the same rung: the world's global variables, the once-a-second diff of the GLOB array from the one seat the server's stream word names, relayed to every other seat and served after a login
+  ScriptVariables = 81 // thuum docs/DECISIONS.md ADR-068 rung 5 (D-V1 B, D-T2 B): the condition-read script variables, every seat's once-a-second read of the watched keys reporting what changed, relayed to every other seat and served after a login with the player's own quests' state
 }

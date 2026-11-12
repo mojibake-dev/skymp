@@ -30,6 +30,7 @@
 #include "wire_bridge_cxx/rules.h"
 #include <ScopedTask.h>
 #include <TimeUtils.h>
+#include <algorithm>
 #include <antigo/Context.h>
 #include <antigo/ResolvedContext.h>
 #include <cctype>
@@ -224,7 +225,7 @@ ChangeFormGuard::Mode MakeMode(bool isLocationSaveNeeded,
 
   switch (setPosMode) {
     case SetPosMode::CalledByUpdateMovement:
-      return ChangeFormGuard::Mode::NoRequestSave;
+      return ChangeFormGuard::Mode::Deferred;
     case SetPosMode::Other:
       return ChangeFormGuard::Mode::RequestSave;
     default:
@@ -568,6 +569,26 @@ void MpObjectReference::Activate(MpObjectReference& activationSource,
   }
 }
 
+namespace {
+// thuum ADR-068 rung 4: a game-file world object's Enable or Disable stamps
+// its ref state recorded, whatever the cause (the server's own VM, the
+// console, labState), at the object's sequence now (WorldState's
+// objectSeqOf, the script calls' one sequence), so the state is attached,
+// saved and served like a script's; an actor's grid is its own
+void StampRefState(MpObjectReference& refr, ChangeFormGuard& guard)
+{
+  auto* worldState = refr.GetParent();
+  if (!refr.IsEspmForm() || refr.AsActor() || !worldState) {
+    return;
+  }
+  const uint32_t seq =
+    worldState->objectSeqOf ? worldState->objectSeqOf(refr.GetFormId()) : 0;
+  guard.EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.refStateSeq = std::max(changeForm.refStateSeq.value_or(0), seq);
+  });
+}
+}
+
 void MpObjectReference::Disable()
 {
   if (ChangeForm().isDisabled) {
@@ -576,6 +597,7 @@ void MpObjectReference::Disable()
 
   EditChangeForm(
     [&](MpChangeFormREFR& changeForm) { changeForm.isDisabled = true; });
+  StampRefState(*this, *this);
 
   if (!IsEspmForm() || AsActor()) {
     RemoveFromGridAndUnsubscribeAll();
@@ -590,6 +612,7 @@ void MpObjectReference::Enable()
 
   EditChangeForm(
     [&](MpChangeFormREFR& changeForm) { changeForm.isDisabled = false; });
+  StampRefState(*this, *this);
 
   if (!IsEspmForm() || AsActor()) {
     ForceSubscriptionsUpdate();
@@ -699,11 +722,40 @@ void MpObjectReference::SetOpen(bool open)
       [&](MpChangeFormREFR& changeForm) { changeForm.isOpen = open; });
     SendMessageToActorListeners(
       CreatePropertyMessage_(this, "isOpen", open ? "true" : "false"), true);
-    // thuum docs/verbs/containers.md: the lab reads a container's state here
-    if (baseType == "CONT") {
-      spdlog::info("[verb:containers] {:x} {} with {} occupant(s)",
-                   GetFormId(), open ? "open" : "shut",
-                   containerOccupants.size());
+    const bool container = baseType == "CONT" || IsCorpse();
+    // thuum docs/verbs/containers.md (ADR-067 decision 1, Eli after playtest
+    // 42: "fuck live updates of containers"): a container's contents sync at
+    // its open (the record to the opener, ProcessActivateNormal) and at its
+    // close: the record to every listener of the reference, the same
+    // property the open sends, so a watcher's engine copy and the next
+    // opener's crosshair hold the record without a reload. The shut is here
+    // and not in RemoveContainerOccupant since a holder's destroy or
+    // disable (the sinks above), a reloot and a script shut it here too.
+    // Never while open: no two seats see one container's contents change
+    // under them (decision 6 holds the menu to one seat). An untouched
+    // container (no record, baseContainerAdded unset: every engine holds
+    // the base's own roll) sends none, as the subscribe-time send does
+    // (HasRecordedInventory), else a script's shut would blank the copies.
+    const bool synced = container && !open && ChangeForm().baseContainerAdded;
+    if (synced) {
+      SendMessageToActorListeners(
+        CreatePropertyMessage_(this, "inventory",
+                               GetInventory().ToJson().dump()),
+        true);
+    }
+    // thuum docs/verbs/containers.md: the lab reads a container's state here,
+    // a chest's and a corpse's alike (x-container-hold v2 002233: the body's
+    // open never printed, the claim could not hold)
+    if (container) {
+      if (open) {
+        spdlog::info("[verb:containers] {:x} open with {} occupant(s)",
+                     GetFormId(), containerOccupants.size());
+      } else {
+        spdlog::info("[verb:containers] {:x} shut with {} occupant(s); "
+                     "inventory sent to {} listener(s)",
+                     GetFormId(), containerOccupants.size(),
+                     synced ? GetActorListeners().size() : 0);
+      }
     }
   }
 }
@@ -761,14 +813,128 @@ void MpObjectReference::SendLockPrompt(MpActor& to)
   to.SendToUser(prompt, true);
 }
 
+std::optional<MpChangeFormREFR::Destruction>
+MpObjectReference::GetDestruction() const
+{
+  return ChangeForm().destruction;
+}
+
+void MpObjectReference::SetDestruction(
+  const MpChangeFormREFR::Destruction& destruction)
+{
+  if (ChangeForm().destruction == destruction) {
+    return;
+  }
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.destruction = destruction;
+  });
+}
+
+const std::optional<ScriptStateRecord>& MpObjectReference::GetScriptState()
+  const
+{
+  return ChangeForm().scriptState;
+}
+
+void MpObjectReference::SetScriptState(std::optional<ScriptStateRecord> record)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.scriptState = std::move(record);
+  });
+}
+
+namespace {
+// thuum D-C3 A (PENDING Eli): the wire's bounds on a serve's graph variables
+// (wire-schema cap::GRAPH_VARS and a name's cap::ANIM_EVENT bytes)
+constexpr size_t kGraphVarsServed = 16;
+constexpr size_t kGraphVarNameBytes = 128;
+}
+
+bool MpObjectReference::BuildScriptStateApply(
+  ScriptStateApplyMessage& out) const
+{
+  const auto& record = ChangeForm().scriptState;
+  if (!record) {
+    return false;
+  }
+  out.formId = GetFormId();
+  out.fnv1a = record->fnv1a;
+  out.seq = record->seq;
+  out.event = record->event;
+  out.scripts = record->scripts;
+  // thuum D-C3 A (PENDING Eli; docs/research/fifty-fixes-2026-11-07.md read
+  // 7): the reference's graph variables as kept now, at the serve, each with
+  // its own sequence, never stamped at the record's take (a stack whose only
+  // act sets a variable takes no new record). A name comes from a script
+  // call's string argument, which the wire lets run to 16 KiB where a graph
+  // variable's stops at 128 bytes, so a variable the serve could not carry
+  // (a name empty, past 128 bytes or cut by a NUL; past the sixteenth) is
+  // left out rather than make the whole apply unservable (OnScriptState's
+  // guard on the view)
+  out.graphVars.reset();
+  if (const auto& kept = ChangeForm().graphVariables) {
+    for (const auto& v : *kept) {
+      if (out.graphVars && out.graphVars->size() >= kGraphVarsServed) {
+        break;
+      }
+      if (v.name.empty() || v.name.size() > kGraphVarNameBytes ||
+          v.name.find('\0') != std::string::npos) {
+        continue;
+      }
+      ScriptStateGraphVar served;
+      served.name = v.name;
+      served.k = v.k;
+      served.i = v.i;
+      served.f = v.f;
+      served.b = v.b;
+      served.seq = v.seq;
+      if (!out.graphVars) {
+        out.graphVars.emplace();
+      }
+      out.graphVars->push_back(std::move(served));
+    }
+  }
+  return true;
+}
+
+namespace {
+// thuum docs/verbs/containers.md (ADR-067 decision 6): a move in or out of a
+// container is its holder's alone. A mover not in it (its hold released by
+// its close or the prune, a corpse's loot menu its engine opened before the
+// server's word, a forged message) is refused, and as every refused move
+// (memo D52) it hears both inventories again, since its engine moved the
+// item already. A refusal and not a throw: the throw reached the tick's
+// catch (ScampServer::Tick) as an error line and left the mover's engine
+// holding the phantom.
+bool ContainerMoveByOccupant(MpActor& actor, MpObjectReference& container)
+{
+  if (container.IsContainerOccupant(&actor)) {
+    return true;
+  }
+  spdlog::warn("[verb:containers] E_CONTAINER_OCCUPANT: {:x} doesn't occupy "
+               "{:x}; the move refused, the mover resynced",
+               actor.GetFormId(), container.GetFormId());
+  container.ResyncAfterRefusedMove(actor);
+  return false;
+}
+}
+
 void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 {
   CheckInteractionAbility(ac);
-  if (!IsContainerOccupant(&ac)) {
-    std::stringstream err;
-    err << std::hex << "Actor 0x" << ac.GetFormId() << " doesn't occupy ref 0x"
-        << GetFormId();
-    throw std::runtime_error(err.str());
+  if (!ContainerMoveByOccupant(ac, *this)) {
+    return;
+  }
+  // the take's twin (npc-fate.md 1c): a put of what the mover's record does
+  // not hold is refused by name, no throw, the mover resynced
+  const auto held = ac.GetInventory().GetItemCount(e.baseId);
+  if (held < e.count) {
+    spdlog::warn("[verb:containers] E_PUT_NOT_HELD: {:x} puts {} of {:x} "
+                 "into {:x} but its record holds {}; refused, the mover "
+                 "resynced",
+                 ac.GetFormId(), e.count, e.baseId, GetFormId(), held);
+    ResyncAfterRefusedMove(ac);
+    return;
   }
 
   PutItemEvent putItemEvent(&ac, this, e);
@@ -778,18 +944,28 @@ void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
     ResyncAfterRefusedMove(ac);
     throw;
   }
-  // memo D52: the other players in this container see the move
-  SendInventoryToContainerOccupants(&ac);
 }
 
 void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 {
   CheckInteractionAbility(ac);
-  if (!IsContainerOccupant(&ac)) {
-    std::stringstream err;
-    err << std::hex << "Actor 0x" << ac.GetFormId() << " doesn't occupy ref 0x"
-        << GetFormId();
-    throw std::runtime_error(err.str());
+  if (!ContainerMoveByOccupant(ac, *this)) {
+    return;
+  }
+  // thuum docs/verbs/npc-fate.md (playtest 44's 1c, the longbow): the
+  // mover's engine moved an item the server's record never had (a
+  // late-fated actor's own container roll in its loot window), RemoveItems
+  // threw into the tick's catch with no code and the engine kept the
+  // phantom. The record is the truth: a take the record cannot cover is
+  // refused by name and the mover hears both inventories again (rule 5)
+  const auto held = GetInventory().GetItemCount(e.baseId);
+  if (held < e.count) {
+    spdlog::warn("[verb:containers] E_TAKE_NOT_IN_RECORD: {:x} takes {} of "
+                 "{:x} from {:x}, whose record holds {}; refused, the mover "
+                 "resynced",
+                 ac.GetFormId(), e.count, e.baseId, GetFormId(), held);
+    ResyncAfterRefusedMove(ac);
+    return;
   }
 
   TakeItemEvent takeItemEvent(&ac, this, e);
@@ -799,7 +975,6 @@ void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
     ResyncAfterRefusedMove(ac);
     throw;
   }
-  SendInventoryToContainerOccupants(&ac);
 }
 
 // thuum memo D52 (playtest 37, 23:32Z): two players on one stack, the loser's
@@ -817,18 +992,25 @@ void MpObjectReference::ResyncAfterRefusedMove(MpActor& ac)
   SetInventoryMessage own;
   own.inventory = ac.GetInventory();
   ac.SendToUser(own, true);
+  // a living actor's inventory is its owner's alone (VisitProperties sends
+  // it in mode All only); only a container's or a corpse's record is the
+  // mover's to hear, else a forged move naming another player within reach
+  // would read that player's inventory (rule 5; the hold's fresh review)
+  if (baseType != "CONT" && !IsCorpse()) {
+    return;
+  }
   ac.GetActorToSendTo().SendToUser(
     CreatePropertyMessage_(this, "inventory", GetInventory().ToJson().dump()),
     true);
 }
 
-// thuum memo D52 (playtest 37, Eli: "i WOULD like two people to be able to be
-// in one container at once"): a container or a corpse holds every player who
-// opens it. The inventory is the server's already (every take and put a
-// validated transfer), so two menus are two views of one record; on a change
-// the record goes to every other player in it. HYPOTHESIS until the probe:
-// the engine's ContainerMenu redraws when the reference's inventory changes
-// under it (skymp5-client applies the property through ModelApplyUtils).
+// thuum docs/verbs/containers.md (ADR-067 decision 6, Eli after playtest 43:
+// "wrap the exclusive container hold"): a container or a corpse holds the one
+// player who opened it, and every other player's activation is refused
+// while it does (ProcessActivateNormal). The set is memo D52's (playtest 37's
+// shared view, every opener in it, the record redrawn under the others'
+// menus), kept as the set it was and holding one; its sinks and the prune
+// are the hold's releases beside the holder's own close.
 bool MpObjectReference::IsContainerOccupant(const MpActor* actor) const
 {
   return actor && containerOccupants.count(const_cast<MpActor*>(actor)) > 0;
@@ -880,22 +1062,6 @@ void MpObjectReference::PruneContainerOccupants(float reach)
   }
 }
 
-void MpObjectReference::SendInventoryToContainerOccupants(
-  const MpActor* except)
-{
-  if (containerOccupants.size() < 2) {
-    return;
-  }
-  const auto msg =
-    CreatePropertyMessage_(this, "inventory", GetInventory().ToJson().dump());
-  for (auto* a : containerOccupants) {
-    if (a == except) {
-      continue;
-    }
-    a->GetActorToSendTo().SendToUser(msg, true);
-  }
-}
-
 void MpObjectReference::SetRelootTime(
   std::chrono::system_clock::duration newRelootTime)
 {
@@ -922,7 +1088,7 @@ void MpObjectReference::SetActivationBlocked(bool blocked)
 void MpObjectReference::ForceSubscriptionsUpdate()
 {
   auto worldState = GetParent();
-  if (!worldState || IsDisabled()) {
+  if (!worldState || (IsDisabled() && !KeepsGridWhileDisabled())) {
     return;
   }
   InitListenersAndEmitters();
@@ -1097,15 +1263,11 @@ void MpObjectReference::SetInventory(const Inventory& inv)
   SendInventoryUpdate();
 }
 
-void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
+namespace {
+// the OnItemAdded event AddItem raises for an item it added
+void SendItemAdded(MpObjectReference& ref, uint32_t baseId, uint32_t count)
 {
-  EditChangeForm([&](MpChangeFormREFR& changeForm) {
-    changeForm.baseContainerAdded = true;
-    changeForm.inv.AddItem(baseId, count);
-  });
-  SendInventoryUpdate();
-
-  if (auto worldState = GetParent(); worldState->HasEspm()) {
+  if (auto worldState = ref.GetParent(); worldState->HasEspm()) {
     espm::LookupResult lookupRes =
       worldState->GetEspm().GetBrowser().LookupById(baseId);
 
@@ -1118,11 +1280,38 @@ void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
         VarValue(static_cast<IGameObject*>(nullptr)); // TODO
       VarValue args[4] = { baseItem, itemCount, itemReference,
                            sourceContainer };
-      SendPapyrusEvent("OnItemAdded", args, 4);
+      ref.SendPapyrusEvent("OnItemAdded", args, 4);
     } else {
       spdlog::warn("MpObjectReference::AddItem - failed to lookup item {:x}",
                    baseId);
     }
+  }
+}
+}
+
+void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.baseContainerAdded = true;
+    changeForm.inv.AddItem(baseId, count);
+  });
+  SendInventoryUpdate();
+  SendItemAdded(*this, baseId, count);
+}
+
+void MpObjectReference::AddPlainItems(
+  const std::vector<Inventory::Entry>& entries)
+{
+  if (entries.empty()) {
+    return;
+  }
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.baseContainerAdded = true;
+    changeForm.inv.AddPlainItems(entries);
+  });
+  SendInventoryUpdate();
+  for (const auto& entry : entries) {
+    SendItemAdded(*this, entry.baseId, entry.count);
   }
 }
 
@@ -1266,6 +1455,21 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
     return;
   }
 
+  // thuum docs/verbs/npc-fate.md (playtest 51, b-npc-stream-equipment): an
+  // actor's record reaches a game through this subscription, so a roll it
+  // has not had yet runs first (PartOne::EnsureFated): ahead of its scripts'
+  // OnLoad below and of the create word, which then carries it, the fate
+  // ahead of it. The roll's own equipment word (EquipBestWeapon) goes to
+  // the listeners with a user it already has, and this listener joins its
+  // sets only below, so nothing of the roll reaches a game ahead of its
+  // create word
+  if (actorEmitter && actorListener && actorEmitter != actorListener) {
+    if (auto* worldState = emitter->GetParent();
+        worldState && worldState->onActorSubscribe) {
+      worldState->onActorSubscribe(*actorEmitter, *actorListener);
+    }
+  }
+
   if (!emitter->pImpl->onInitEventSent &&
       listener->GetChangeForm().profileId != -1) {
     emitter->pImpl->onInitEventSent = true;
@@ -1302,6 +1506,17 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
         new std::map<MpObjectReference*, bool>);
     }
     listener->emittersWithPrimitives->insert({ emitter, false });
+    // thuum ADR-068 rung 4 (b-ref-state-restart 20261107-211516, step 53): a
+    // primitive gets no create word, so the records a create word carries
+    // (its ref state, its destruction, its scripts' record) are served at
+    // its new subscription instead (PartOne, WorldState's
+    // onPrimitiveSubscribe): the Temple's setStage trigger 0x3ac73, disabled
+    // with refStateSeq 1, reached no late joiner
+    if (auto* worldState = emitter->GetParent(); worldState &&
+        worldState->onPrimitiveSubscribe && inserted && actorListener &&
+        !actorEmitter) {
+      worldState->onPrimitiveSubscribe(*emitter, *actorListener);
+    }
   }
 }
 
@@ -1342,6 +1557,61 @@ void MpObjectReference::SetLastAnimation(const std::string& lastAnimation)
   EditChangeForm([&](MpChangeForm& changeForm) {
     changeForm.lastAnimation = lastAnimation;
   });
+}
+
+std::optional<std::string> MpObjectReference::GetLastAnimation() const
+{
+  return ChangeForm().lastAnimation;
+}
+
+std::vector<MpChangeFormREFR::GraphVariable>
+MpObjectReference::GetGraphVariables() const
+{
+  const auto& variables = ChangeForm().graphVariables;
+  return variables ? *variables
+                   : std::vector<MpChangeFormREFR::GraphVariable>();
+}
+
+namespace {
+// one graph variable's name against another's without case, as the engine's
+// BSFixedString compares a string (CommonLibSSE-NG
+// include/RE/B/BSFixedString.h: its strncmp over _strnicmp), so the engine's
+// one variable is kept once whatever case each call spelled it in
+bool SameVariableName(const std::string& lhs, const std::string& rhs)
+{
+  return lhs.size() == rhs.size() &&
+    std::equal(lhs.begin(), lhs.end(), rhs.begin(), [](char a, char b) {
+           return std::tolower(static_cast<unsigned char>(a)) ==
+             std::tolower(static_cast<unsigned char>(b));
+         });
+}
+}
+
+bool MpObjectReference::KeepGraphVariable(
+  MpChangeFormREFR::GraphVariable variable)
+{
+  auto kept = GetGraphVariables();
+  std::vector<skymp::rules::GraphVariableKept> slots;
+  slots.reserve(kept.size());
+  for (const auto& entry : kept) {
+    slots.push_back(
+      { SameVariableName(entry.name, variable.name), entry.seq });
+  }
+  const auto slot = skymp::rules::graph_variable_slot(
+    rust::Slice<const skymp::rules::GraphVariableKept>(slots.data(),
+                                                       slots.size()),
+    variable.seq);
+  if (slot.code == 0 && slot.index < kept.size()) {
+    kept[slot.index] = std::move(variable);
+  } else if (slot.code == 1) {
+    kept.push_back(std::move(variable));
+  } else {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.graphVariables = std::move(kept);
+  });
+  return true;
 }
 
 void MpObjectReference::SetNodeTextureSet(const std::string& node,
@@ -1575,9 +1845,132 @@ bool MpObjectReference::SetQuestStages(std::vector<QuestStageDone> stages)
   return true;
 }
 
+std::vector<MpChangeFormREFR::AliasFill> MpObjectReference::GetAliasFills()
+  const
+{
+  const auto& fills = ChangeForm().aliasFills;
+  return fills ? *fills : std::vector<MpChangeFormREFR::AliasFill>();
+}
+
+bool MpObjectReference::SetAliasFills(
+  std::vector<MpChangeFormREFR::AliasFill> fills)
+{
+  if (fills == GetAliasFills()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.aliasFills = std::move(fills);
+  });
+  return true;
+}
+
+std::vector<PlayerGlobal> MpObjectReference::GetWorldGlobals() const
+{
+  const auto& globals = ChangeForm().worldGlobals;
+  return globals ? *globals : std::vector<PlayerGlobal>();
+}
+
+bool MpObjectReference::SetWorldGlobals(std::vector<PlayerGlobal> globals)
+{
+  if (globals == GetWorldGlobals()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.worldGlobals = std::move(globals);
+  });
+  return true;
+}
+
+std::vector<MpChangeFormREFR::QuestRun> MpObjectReference::GetQuestRuns() const
+{
+  const auto& runs = ChangeForm().questRuns;
+  return runs ? *runs : std::vector<MpChangeFormREFR::QuestRun>();
+}
+
+bool MpObjectReference::SetQuestRuns(
+  std::vector<MpChangeFormREFR::QuestRun> runs)
+{
+  if (runs == GetQuestRuns()) {
+    return false;
+  }
+  EditChangeForm(
+    [&](MpChangeForm& changeForm) { changeForm.questRuns = std::move(runs); });
+  return true;
+}
+
+std::vector<MpChangeFormREFR::ScriptVariable>
+MpObjectReference::GetScriptVariables() const
+{
+  const auto& variables = ChangeForm().scriptVariables;
+  return variables ? *variables
+                   : std::vector<MpChangeFormREFR::ScriptVariable>();
+}
+
+bool MpObjectReference::SetScriptVariables(
+  std::vector<MpChangeFormREFR::ScriptVariable> variables)
+{
+  if (variables == GetScriptVariables()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.scriptVariables = std::move(variables);
+  });
+  return true;
+}
+
 std::optional<FormDesc> MpObjectReference::GetPlacedBySpell() const
 {
   return ChangeForm().placedBySpell;
+}
+
+std::optional<uint32_t> MpObjectReference::GetRefStateSeq() const
+{
+  return ChangeForm().refStateSeq;
+}
+
+void MpObjectReference::SetRefState(bool disabled, bool deleted, uint32_t seq)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.isDeleted = deleted;
+    changeForm.refStateSeq = seq;
+  });
+  if (disabled) {
+    Disable();
+  } else {
+    Enable();
+  }
+  // the stamp above may name the sequence now; the record's is the call's
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.refStateSeq = seq; });
+  if (!AsActor()) {
+    ForceSubscriptionsUpdate();
+  }
+}
+
+bool MpObjectReference::KeepsGridWhileDisabled() const
+{
+  return IsEspmForm() && !AsActor() && ChangeForm().refStateSeq.has_value();
+}
+
+std::optional<MpChangeFormREFR::PlacedByScript>
+MpObjectReference::GetPlacedByScript() const
+{
+  return ChangeForm().placedByScript;
+}
+
+void MpObjectReference::SetPlacedByScript(const FormDesc& self,
+                                          const FormDesc& base)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.placedByScript = MpChangeFormREFR::PlacedByScript{ self, base };
+  });
+}
+
+void MpObjectReference::MarkDisabledByFiles()
+{
+  EditChangeForm(
+    [&](MpChangeFormREFR& changeForm) { changeForm.isDisabled = true; },
+    Mode::NoRequestSave);
 }
 
 void MpObjectReference::SetPlacedBySpell(const FormDesc& spell)
@@ -2005,19 +2398,37 @@ void MpObjectReference::ProcessActivateNormal(
 
     constexpr float kOccupationReach = 512.f;
 
-    // memo D52: every player who opens it is in it (the one-occupant rule
-    // was the engine's own for furniture, carried over); the ones gone out
-    // of reach, disabled or to another cell leave first
+    // a holder gone out of reach, disabled or to another cell has no menu
+    // open here any more and leaves first, so a stale hold never outlives
+    // its seat's distance
     PruneContainerOccupants(kOccupationReach);
-    if (!IsContainerOccupant(actorActivator)) {
-      AddContainerOccupant(*actorActivator);
-      if (containerOccupants.size() > 1) {
-        spdlog::info("MpObjectReference::ProcessActivate {:x} - {} players in "
-                     "the container now (activationSource = {:x})",
-                     GetFormId(), containerOccupants.size(),
-                     activationSource.GetFormId());
-      }
+    // thuum docs/verbs/containers.md (ADR-067 decision 6, Eli after playtest
+    // 43: "wrap the exclusive container hold"): one seat holds a container,
+    // a chest's or a corpse's, at a time; another seat's activation is
+    // refused while it is held, and the holder's close or its leaving reach
+    // (the prune above) frees it. With decision 1 (the contents sync at the
+    // open and at the close, SetOpen) no two seats see one container's
+    // contents change under them. The refused seat hears who holds it: the
+    // holder's name as PartOne::GetActorName reads it (the appearance's),
+    // "Someone" when it has none.
+    if (!containerOccupants.empty() && !IsContainerOccupant(actorActivator)) {
+      const MpActor* holder = *containerOccupants.begin();
+      spdlog::info("[verb:containers] E_CONTAINER_BUSY: {:x} activates {:x} "
+                   "held by {:x}; refused",
+                   actorActivator->GetFormId(), GetFormId(),
+                   holder->GetFormId());
+      const auto appearance = holder->GetAppearance();
+      const std::string text = appearance && !appearance->name.empty()
+        ? appearance->name + " is searching this"
+        : std::string("Someone is using this");
+      const std::vector<std::optional<
+        std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+        args{ text };
+      SpSnippet("Debug", "Notification", args, 0)
+        .Execute(actorActivator, SpSnippetMode::kNoReturnResult);
+      return;
     }
+    AddContainerOccupant(*actorActivator);
     SetOpen(true);
     actorActivator->GetActorToSendTo().SendToUser(
       CreatePropertyMessage_(this, "inventory",
@@ -2105,6 +2516,26 @@ bool MpObjectReference::ProcessActivateSecond(
   return false;
 }
 
+namespace {
+// a game-file reference whose base is a STAT (a marker): nothing for the
+// server to activate
+bool IsStaticMarker(WorldState& worldState, uint32_t refrId)
+{
+  if (!worldState.HasEspm()) {
+    return false;
+  }
+  const auto& browser = worldState.GetEspm().GetBrowser();
+  const auto lookup = browser.LookupById(refrId);
+  const auto* refr = espm::Convert<espm::REFR>(lookup.rec);
+  if (!refr) {
+    return false;
+  }
+  const auto data = refr->GetData(worldState.GetEspmCache());
+  const auto base = browser.LookupById(lookup.ToGlobalId(data.baseId));
+  return base.rec && base.rec->GetType() == "STAT";
+}
+}
+
 void MpObjectReference::ActivateChilds()
 {
   auto worldState = GetParent();
@@ -2125,6 +2556,16 @@ void MpObjectReference::ActivateChilds()
       MpObjectReference* childRefr =
         childForm ? childForm->AsObjectReference() : nullptr;
       if (!childRefr) {
+        // thuum playtest 47: a static marker child (an XMarker, a scene's
+        // spot) is no object the server models and has nothing to activate,
+        // so its absence is told at info; any other missing child stays a
+        // warning (the puzzle lever 0xaa8c3's 0x3e728 logged one per pull)
+        if (IsStaticMarker(*worldState, childRefrId)) {
+          spdlog::info("MpObjectReference::ActivateChilds {:x} - activation "
+                       "child {:x} is a static marker, nothing to activate",
+                       myFormId, childRefrId);
+          return;
+        }
         spdlog::warn("MpObjectReference::ActivateChilds {:x} - Bad/missing "
                      "activation child {:x}",
                      myFormId, childRefrId);
@@ -2151,6 +2592,20 @@ bool MpObjectReference::CheckIfObjectCanStartOccupyThis(
   if (this->occupant->IsDisabled()) {
     spdlog::info("MpObjectReference::ProcessActivate {:x} - occupant is "
                  "disabled (activationSource = {:x})",
+                 GetFormId(), activationSource.GetFormId());
+    return true;
+  }
+
+  // thuum playtest 47 (2026-11-06): a dead or deleted occupant uses nothing.
+  // A host's NPC takes a furniture by its reported activation, and nothing
+  // reports its leaving (an NPC's furniture exit is no activation), so Bleak
+  // Falls Temple's puzzle lever 0xaa8c3 stayed its scene's bandit 0x39fe1's
+  // after the darts killed him beside it: every player's pull was refused
+  // here ("occupant is another object and is nearby"), the OpenContainer
+  // reply never came, and the lever never animated though its script ran
+  if (this->occupant->IsDead() || this->occupant->IsDeleted()) {
+    spdlog::info("MpObjectReference::ProcessActivate {:x} - occupant is "
+                 "dead or deleted (activationSource = {:x})",
                  GetFormId(), activationSource.GetFormId());
     return true;
   }

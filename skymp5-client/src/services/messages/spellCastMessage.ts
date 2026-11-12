@@ -25,6 +25,21 @@ export interface SpellCastMsgData {
         floats: number[]
         integers: number[]
     }
+    // thuum docs/verbs/spell-cast.md (the rune's glyph on the observer): the
+    // surface the caster's own target-location launch picked, read in its
+    // game from the engine's decal placement (the fork's runeDecal event):
+    // the pick's unit normal and the surface's material id, which each
+    // observer's game hands to the placement after its relayed launch
+    // (castSpellImmediate's last five arguments). Only with hasLaunch;
+    // absent for every other cast
+    decal?: SpellCastDecal
+}
+
+export interface SpellCastDecal {
+    normalX: number
+    normalY: number
+    normalZ: number
+    materialId: number
 }
 
 // a cast without its launch: the wire requires the fields (a missing key is

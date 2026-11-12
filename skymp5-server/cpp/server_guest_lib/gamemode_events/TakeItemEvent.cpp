@@ -34,4 +34,10 @@ std::string TakeItemEvent::GetArgumentsJsonArray() const
 void TakeItemEvent::OnFireSuccess(WorldState*)
 {
   sourceRefr->RemoveItems({ entry }, actor);
+  // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): a take from a
+  // body leaves no worn entry its inventory no longer covers, so the body's
+  // fate never names the taken piece (H2: the reconcile adding it back)
+  if (auto body = sourceRefr->AsActor()) {
+    body->DropWornBeyondInventory(entry.baseId);
+  }
 }

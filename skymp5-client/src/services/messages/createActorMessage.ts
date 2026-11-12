@@ -3,6 +3,7 @@ import { Equipment } from "../../sync/equipment";
 import { Inventory } from "../../sync/inventory";
 import { Transform } from "../../sync/movement";
 import { Animation } from "../../sync/animation";
+import { RaceOverlay } from "./raceOverlay";
 import { MsgType } from "src/messages";
 
 export interface SetNodeTextureSetEntry {
@@ -45,7 +46,13 @@ export interface CreateActorMessageAdditionalProps {
     isHarvested?: boolean;
     setNodeTextureSet?: SetNodeTextureSetEntry[];
     setNodeScale?: SetNodeScaleEntry[];
-    disabled?: boolean;
+    // the server's name for the reference's disabled flag (CreateActorMessage.h,
+    // wire-schema's CreateActor); the client read `disabled`, an upstream slip
+    // since 63ca3d82, and applied it over the engine's own state. Nothing
+    // applies it now: a reference's engine state is the server's
+    // DestructionStage word (thuum docs/DECISIONS.md ADR-068 amendment B,
+    // RefStateService)
+    isDisabled?: boolean;
     lastAnimation?: string;
     displayName?: string;
     isHostedByOther?: boolean;
@@ -80,4 +87,9 @@ export interface CreateActorMessageAdditionalProps {
     // thuum docs/verbs/locks.md: the reference's lock as the server holds it;
     // applied to this game's reference instead of the old strip
     lock?: { level: number; key: number; locked: boolean };
+    // thuum ADR-068 rung 5, D-T1 A (sync/raceOverlay.ts): on another player's
+    // figure, what its non-Playable, non-twin race's scripts added; absent
+    // for none. Never on the player's own CreateActor (a relaunch mid-form
+    // logs in as the player's own race)
+    overlay?: RaceOverlay;
 }

@@ -230,6 +230,37 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn a_reported_rolls_landings_stop_at_255_at_decode() -> Result<(), WireError> {
+        // thuum D-R1 C's leveled gap (SCHEMA_VERSION 44): ScriptCall's
+        // `landed` is its last field, so a call with an empty list ends in
+        // the list's presence byte and its zero length; the same call with
+        // 255 landings of Gold001 x1 (each the varint 0x0f, then 1 zigzagged
+        // to 0x02) decodes, and with 256 it is malformed at the bound
+        let empty = Message::ScriptCall(skymp::ScriptCall {
+            self_id: 0x14,
+            cls: "ObjectReference".try_into().unwrap_or_default(),
+            func: "AddItem".try_into().unwrap_or_default(),
+            latent: true,
+            landed: Some(Default::default()),
+            ..Default::default()
+        });
+        let mut prefix = encode(&empty)?;
+        assert_eq!(prefix.pop(), Some(0x00), "the empty list's length");
+        let body = |length: [u8; 2], n: usize| {
+            let mut bytes = prefix.clone();
+            bytes.extend(length);
+            for _ in 0..n {
+                bytes.extend([0x0f, 0x02]);
+            }
+            bytes
+        };
+        let full = decode(&body([0xff, 0x01], wire_schema::cap::SCRIPT_CALL_LANDED))?;
+        assert!(matches!(&full, Message::ScriptCall(c) if c.landed.as_ref().map(|l| l.len()) == Some(255)));
+        assert_eq!(decode(&body([0x80, 0x02], 256)), Err(WireError::Malformed));
+        Ok(())
+    }
+
     fn fail(e: WireError) -> TestCaseError {
         TestCaseError::fail(e.to_string())
     }

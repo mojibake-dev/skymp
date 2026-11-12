@@ -9,6 +9,7 @@
 #include "libespm/GroupUtils.h"
 #include "libespm/KYWD.h"
 #include "libespm/LCTN.h"
+#include "libespm/MGEF.h"
 #include "libespm/NAVM.h"
 #include "libespm/NavMeshKey.h"
 #include "libespm/PERK.h"
@@ -18,6 +19,8 @@
 #include "libespm/RecordHeader.h"
 #include "libespm/RecordHeaderAccess.h"
 #include "libespm/RefrKey.h"
+#include "libespm/SMQN.h"
+#include "libespm/SPEL.h"
 #include "libespm/WRLD.h"
 #include <cstring>
 #include <optional>
@@ -55,6 +58,16 @@ struct Browser::Impl
   std::vector<const RecordHeader*> worlds;
   std::vector<const RecordHeader*> regions;
   std::vector<const RecordHeader*> perks;
+  // thuum ADR-068 rung 5: the magic effects, whose VMADs name what an
+  // effect script's player's own rows may add (the server's R1 bound)
+  std::vector<const RecordHeader*> magicEffects;
+  // and the spells, whose effects name the MGEFs they carry: an effect
+  // script's attachment counts for a player who holds one (the fresh
+  // review's note 3)
+  std::vector<const RecordHeader*> spells;
+  // thuum ADR-068 rung 5 (D-Q4 C): the Story Manager's quest nodes, whose
+  // NNAMs name the quests the Story Manager starts per seat
+  std::vector<const RecordHeader*> storyQuestNodes;
   std::vector<const RecordHeader*> cells;
 
   GroupStack grStack;
@@ -162,9 +175,18 @@ const std::vector<const RecordHeader*>& Browser::GetRecordsByType(
   if (!std::strcmp(type, espm::PERK::kType)) {
     return pImpl->perks;
   }
+  if (!std::strcmp(type, espm::MGEF::kType)) {
+    return pImpl->magicEffects;
+  }
+  if (!std::strcmp(type, espm::SPEL::kType)) {
+    return pImpl->spells;
+  }
+  if (!std::strcmp(type, espm::SMQN::kType)) {
+    return pImpl->storyQuestNodes;
+  }
   throw std::runtime_error("GetRecordsByType currently supports only REFR, "
-                           "COBJ, KYWD, LCTN, FACT, QUST, WRLD, CELL, REGN "
-                           "and PERK records");
+                           "COBJ, KYWD, LCTN, FACT, QUST, WRLD, CELL, REGN, "
+                           "PERK, MGEF, SPEL and SMQN records");
 }
 
 const std::vector<const RecordHeader*>& Browser::GetRecordsAtPos(
@@ -293,6 +315,18 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
 
     if (utils::Is<espm::PERK>(t)) {
       pImpl->perks.push_back(recHeader);
+    }
+
+    if (utils::Is<espm::MGEF>(t)) {
+      pImpl->magicEffects.push_back(recHeader);
+    }
+
+    if (utils::Is<espm::SPEL>(t)) {
+      pImpl->spells.push_back(recHeader);
+    }
+
+    if (utils::Is<espm::SMQN>(t)) {
+      pImpl->storyQuestNodes.push_back(recHeader);
     }
 
     if (utils::Is<espm::NAVM>(t)) {

@@ -5,7 +5,9 @@
 #include "NetworkingInterface.h" // Format
 #include "SpSnippetMessage.h"
 #include <cmath>
+#include <limits>
 #include <spdlog/spdlog.h>
+#include <variant>
 
 SpSnippet::SpSnippet(
   const char* cl_, const char* func_,
@@ -23,7 +25,6 @@ SpSnippet::SpSnippet(
 Viet::Promise<VarValue> SpSnippet::Execute(MpActor* actorExecutor,
                                            SpSnippetMode mode)
 {
-  auto worldState = actorExecutor->GetParent();
   if (!actorExecutor->IsCreatedAsPlayer()) {
     // Return promise that never resolves in this case
     // TODO: somehow detect user instead as this breaks potential feature of
@@ -37,20 +38,7 @@ Viet::Promise<VarValue> SpSnippet::Execute(MpActor* actorExecutor,
     ? actorExecutor->NextSnippetIndex(promise)
     : std::numeric_limits<uint32_t>::max();
 
-  // Player character is always 0x14 on client, but 0xff000000+ in our server
-  // See also SpSnippetFunctionGen.cpp
-  const uint32_t targetSelfId =
-    (selfId < 0xff000000 || selfId != actorExecutor->GetFormId()) ? selfId
-                                                                  : 0x14;
-
-  const uint64_t targetSelfIdLong = MakeLongFormId(worldState, targetSelfId);
-
-  SpSnippetMessage message;
-  message.class_ = cl;
-  message.function = func;
-  message.arguments = args;
-  message.selfId = targetSelfIdLong;
-  message.snippetIdx = static_cast<int64_t>(snippetIdx);
+  SpSnippetMessage message = MakeMessage(actorExecutor, snippetIdx);
 
   // TODO: change to SendToUser, probably was deferred only for ability to send
   // text packets
@@ -58,6 +46,65 @@ Viet::Promise<VarValue> SpSnippet::Execute(MpActor* actorExecutor,
   actorExecutor->SendToUserDeferred(message, true, kChannelSpSnippet, false);
 
   return promise;
+}
+
+void SpSnippet::Relay(MpActor* listener, uint32_t seq)
+{
+  if (!listener->IsCreatedAsPlayer()) {
+    return;
+  }
+  SpSnippetMessage message =
+    MakeMessage(listener, std::numeric_limits<uint32_t>::max());
+  message.seq = seq;
+  listener->SendToUser(message, true);
+}
+
+void SpSnippet::Serve(MpActor* listener)
+{
+  if (!listener->IsCreatedAsPlayer()) {
+    return;
+  }
+  SpSnippetMessage message =
+    MakeMessage(listener, std::numeric_limits<uint32_t>::max());
+  listener->SendToUser(message, true);
+}
+
+SpSnippetMessage SpSnippet::MakeMessage(MpActor* actorExecutor,
+                                        uint32_t snippetIdx) const
+{
+  // Player character is always 0x14 on client, but 0xff000000+ in our server
+  // (ClientFormId; see also SpSnippetFunctionGen.cpp): the self, and since
+  // thuum train 52 every object argument too, so an applier relayed or
+  // served to the game of the player it names reaches that game as its own
+  // player (a standing's relationship toward a player, the SetRelationshipRank
+  // a relayed fragment made under that player's acting scope: its own seat
+  // holds no view of its own actor, so the server's id resolved to nothing
+  // there, after a relog included). An argument a SerializeArguments call
+  // mapped already reads 0x14, which keeps its id; a long id (a game-file
+  // actor's, MakeLongFormId) names no player
+  SpSnippetMessage message;
+  message.class_ = cl;
+  message.function = func;
+  message.arguments = args;
+  for (auto& argument : message.arguments) {
+    auto* object =
+      argument ? std::get_if<SpSnippetObjectArgument>(&*argument) : nullptr;
+    if (object && object->formId <= std::numeric_limits<uint32_t>::max()) {
+      object->formId =
+        ClientFormId(static_cast<uint32_t>(object->formId), actorExecutor);
+    }
+  }
+  message.selfId = MakeLongFormId(actorExecutor->GetParent(),
+                                  ClientFormId(selfId, actorExecutor));
+  message.snippetIdx = static_cast<int64_t>(snippetIdx);
+  return message;
+}
+
+uint32_t SpSnippet::ClientFormId(uint32_t formId, const MpActor* listener)
+{
+  return listener && formId >= 0xff000000 && formId == listener->GetFormId()
+    ? 0x14
+    : formId;
 }
 
 VarValue SpSnippet::VarValueFromSpSnippetReturnValue(

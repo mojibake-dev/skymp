@@ -1,0 +1,25 @@
+{
+  "baseId": 59,
+  "baseRecordType": "STAT",
+  "customPropsJsonDumps": [],
+  "idx": 512,
+  "isMe": false,
+  "props": {
+    "placedBy": 4278190080
+  },
+  "refrId": 4278190339,
+  "t": 33,
+  "transform": {
+    "pos": [
+      3918.5,
+      -3314.0,
+      -1779.25
+    ],
+    "rot": [
+      0.0,
+      0.0,
+      90.0
+    ],
+    "worldOrCell": 225758
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "baseId": 7,
+  "baseRecordType": "NPC_",
+  "customPropsJsonDumps": [],
+  "idx": 513,
+  "isMe": false,
+  "props": {
+    "overlay": {
+      "base": 79686,
+      "items": [
+        1103097
+      ],
+      "open": true,
+      "race": 843140,
+      "shouts": [
+        456410
+      ],
+      "spells": [
+        601160
+      ]
+    }
+  },
+  "refrId": 4278190080,
+  "t": 33,
+  "transform": {
+    "pos": [
+      3918.5,
+      -3314.0,
+      -1779.25
+    ],
+    "rot": [
+      0.0,
+      0.0,
+      90.0
+    ],
+    "worldOrCell": 225758
+  }
+}

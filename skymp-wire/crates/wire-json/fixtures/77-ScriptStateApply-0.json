@@ -1,0 +1,41 @@
+{
+  "event": "Trigger01",
+  "fnv1a": 729683222,
+  "formId": 698571,
+  "scripts": [
+    {
+      "flags": 11,
+      "state": "position01",
+      "type": "defaultPuzzlePillarScript",
+      "vars": [
+        {
+          "i": 1,
+          "k": 3
+        },
+        {
+          "i": 3,
+          "k": 3
+        },
+        {
+          "b": true,
+          "k": 5
+        },
+        {
+          "k": 1,
+          "o": {
+            "form": 698563,
+            "kind": 0,
+            "mid": 65535,
+            "type": "defaultPillarPuzzleLever"
+          }
+        },
+        {
+          "b": false,
+          "k": 5
+        }
+      ]
+    }
+  ],
+  "seq": 2,
+  "t": 77
+}

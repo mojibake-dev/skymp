@@ -295,6 +295,13 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     if (serverSettings.find("perks") != serverSettings.end()) {
       partOne->SetPerksEnabled(serverSettings.at("perks").get<bool>());
     }
+    // thuum ADR-068 rung 4 (WorldGlobal 80): one seat streams the globals
+    // every seat's scripts write; `worldGlobals` false (the default) elects
+    // nobody and leaves every game's globals its own
+    if (serverSettings.find("worldGlobals") != serverSettings.end()) {
+      partOne->SetWorldGlobalsEnabled(
+        serverSettings.at("worldGlobals").get<bool>());
+    }
     // thuum docs/verbs/prop-physics.md (ADR-058): dropped items persist as
     // props (the default); false restores upstream's load skip and the
     // drop's timed deletion
@@ -307,6 +314,13 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
     if (serverSettings.find("npcEngineDeaths") != serverSettings.end()) {
       partOne->worldState.npcEngineDeaths =
         serverSettings.at("npcEngineDeaths").get<bool>();
+    }
+    // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): how long
+    // after an NPC's death its owner's ragdoll samples move the record
+    // before the body is at rest where it lies; default 15000
+    if (serverSettings.find("bodySettleMs") != serverSettings.end()) {
+      partOne->worldState.bodySettleMs =
+        serverSettings.at("bodySettleMs").get<uint32_t>();
     }
     // the ranged sneak attack multiplier the engine uses, measured by the lab
     // (x-npc-sneak-shot); absent or 0, SkyMP's 1.3 stands
@@ -459,6 +473,34 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
         : serverSettings.contains("sharedQuests")
         ? serverSettings.at("sharedQuests").dump()
         : std::string("[]"));
+    // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md
+    // section 8(a)): the quest scope, `questScope` ("off", the default,
+    // measures; "derived" acts) and `playerQuests` (the census's list half);
+    // the condition-read script variables, `conditionVariables` (D-V1 B);
+    // and the census's per-quest companions, `playerQuestGlobals`,
+    // `playerQuestVariables` and `playerQuestCallers`, the same way (an
+    // absent key reads none); the class is composed when the game files
+    // attach, below
+    const auto settingOr = [&](const char* key, const char* fallback) {
+      return serverSettings.contains(key) ? serverSettings.at(key).dump()
+                                          : std::string(fallback);
+    };
+    partOne->SetQuestScopeSettings(settingOr("questScope", "\"off\""),
+                                   settingOr("playerQuests", "[]"));
+    partOne->SetScriptVariablesSettings(settingOr("conditionVariables", "[]"));
+    partOne->SetPlayerQuestSettings(settingOr("playerQuestGlobals", "{}"),
+                                    settingOr("playerQuestVariables", "{}"),
+                                    settingOr("playerQuestCallers", "{}"));
+    // D-Q4 C (PENDING ELI'S WORD): whether a quest a Story Manager quest
+    // node names keeps its runs per seat, `questStoryInstances` "seat" (the
+    // default) or "world", a one-line flip of this file
+    partOne->SetQuestStoryInstancesSettings(
+      settingOr("questStoryInstances", "\"seat\""));
+    // thuum D-Q9 B (Eli 2026-11-11, train 52): whether a player alias's
+    // OnLocationChange roots its seat's own cause, `questPlayerAliasCause`
+    // "seat" (the default, Eli's B) or "world" (D-Q9 A), the same way
+    partOne->SetQuestPlayerAliasCauseSettings(
+      settingOr("questPlayerAliasCause", "\"seat\""));
     // the objects the server places at an accepted cast of a listed spell
     // (thuum docs/verbs/spell-placed-object.md, ADR-057):
     // `spellPlacedObjects`, the same way

@@ -7,11 +7,15 @@
 
 #include "Magic/AnimationGraphMasterBehaviourDescriptor.h"
 
+#include <RE/B/BGSDecalGroup.h>
+#include <RE/B/BGSImpactData.h>
+#include <RE/B/BGSProjectile.h>
 #include <RE/B/BSTArray.h>
 #include <RE/E/Effect.h>
 #include <RE/E/EffectSetting.h>
 #include <RE/F/FixedStrings.h>
 #include <RE/M/MagicItemDataCollector.h>
+#include <RE/M/MaterialIDs.h>
 #include <RE/T/TES.h>
 #include <RE/T/TESObjectCELL.h>
 #include <mutex>
@@ -60,10 +64,20 @@ GetAnimationVariablesFromJSArg(const Napi::Object& argObj)
 // thuum docs/verbs/spell-cast.md: a relayed cast's launch, where the
 // caster's engine launched the spell and with which angles (pitch x and
 // heading z, radians)
+// thuum docs/verbs/spell-cast.md (the rune's glyph on the observer): the
+// launch's surface as the caster's engine placed its decal (the pick's unit
+// normal and the surface's material id), carried with the cast
+struct RelayedDecal
+{
+  RE::NiPoint3 normal;
+  uint32_t materialId = 0;
+};
+
 struct RelayedLaunch
 {
   RE::NiPoint3 origin;
   RE::Projectile::ProjectileRot angles;
+  std::optional<RelayedDecal> decal;
 };
 
 // The launch a relayed cast carries, as the caster's engine made it
@@ -92,7 +106,121 @@ std::optional<RelayedLaunch> GetLaunchFromJSArgs(
       !std::isfinite(launch.angles.z)) {
     return std::nullopt;
   }
-  return launch;
+  RelayedLaunch withDecal = launch;
+  // the launch's surface, five more arguments (hasDecal, the normal, the
+  // material id), when the caller passes them and hasDecal is true
+  if (info.Length() >= first + 11 &&
+      NapiHelper::ExtractBoolean(info[first + 6], "hasDecal")) {
+    RelayedDecal decal;
+    decal.normal =
+      RE::NiPoint3{ NapiHelper::ExtractFloat(info[first + 7], "decalNormalX"),
+                    NapiHelper::ExtractFloat(info[first + 8], "decalNormalY"),
+                    NapiHelper::ExtractFloat(info[first + 9],
+                                             "decalNormalZ") };
+    decal.materialId =
+      NapiHelper::ExtractUInt32(info[first + 10], "decalMaterialId");
+    const float length = decal.normal.Length();
+    if (std::isfinite(length) && length > 0.f) {
+      decal.normal /= length;
+      withDecal.decal = decal;
+    }
+  }
+  return withDecal;
+}
+
+// thuum docs/verbs/spell-cast.md (the rune's glyph on the observer): the
+// engine's decal placement as the re-analyst read it (pyghidra, 2026-11-02;
+// HYPOTHESIS until x-rune-glyph): `void (Projectile* proj, const NiPoint3*
+// position, const NiPoint3* direction, MATERIAL_ID material, uint8_t flagB5,
+// BGSImpactData* impact, BGSDecalGroup* group, uint8_t force)`, void (both
+// callers discard RAX); the direction is renormalized inside; impact may be
+// null (the body takes the projectile's own impact data set); the group is
+// the grenade's own (TESObjectREFR.h:359, slot 0x9F; the grenade's
+// constructor allocates it); force 1 passes the 800-unit fDecalLOD0 cull
+// (the observer's player may stand far from the figure's rune). The magic
+// caster's target-location launch 34452 calls it with (proj, &origin,
+// &normal * 69.99, the material from 44190, 1, nullptr, GetDecalGroup(), 1)
+// right after Projectile::Launch; lab/frida/rune-decal-trace.js confirmed
+// the call and its first four arguments on the caster (x-rune-decal-frida
+// 20261020-102818).
+using PlaceDecalFn = void (*)(RE::Projectile* projectile,
+                              const RE::NiPoint3* position,
+                              const RE::NiPoint3* direction,
+                              RE::MATERIAL_ID material, uint8_t flagB5,
+                              RE::BGSImpactData* impact,
+                              RE::BGSDecalGroup* group, uint8_t force);
+
+// whether a projectile is a mine (the engine's slot 0xAE as read: the base's
+// kExplosionAltTrigger flag with an explosion proximity; BGSProjectile.h:21,
+// :52): a rune
+bool IsMine(RE::Projectile& projectile)
+{
+  auto* base = projectile.GetProjectileBase();
+  if (!base) {
+    return false;
+  }
+  return base->data.flags.any(
+           RE::BGSProjectileData::BGSProjectileFlags::kExplosionAltTrigger) &&
+    base->data.explosionProximity > 0.f;
+}
+
+// the armed rune each figure holds here. The engine caps the player's own at
+// iMaxPlayerRunes (Skyrim.esm's GMST 0x60290 is 1, plus kModMaxPlaceableMines
+// perks; its registration 43934 admits the player's runes alone and 40674
+// ends the oldest), and a relayed rune passes no registration, so a figure's
+// new rune ends its earlier one here, the engine's number without the
+// figure's perks (a known limit)
+std::unordered_map<uint32_t, RE::ProjectileHandle> g_figureRunes;
+
+void CapFigureRunes(const RE::ProjectileHandle& handle, uint32_t shooterId)
+{
+  auto projectile = handle.get();
+  if (!projectile || !IsMine(*projectile)) {
+    return;
+  }
+  if (auto it = g_figureRunes.find(shooterId); it != g_figureRunes.end()) {
+    if (auto older = it->second.get();
+        older && older.get() != projectile.get() && !older->IsDeleted()) {
+      // HYPOTHESIS: a disabled, deleted rune reference leaves the world as
+      // the engine's own 44110 ends the player's oldest
+      older->Disable();
+      older->SetDelete(true);
+      logger::info("[verb:spell-cast] rune cap: ended the figure {:x}'s "
+                   "earlier rune {:x} (one armed rune, iMaxPlayerRunes)",
+                   shooterId, older->formID);
+    }
+  }
+  g_figureRunes[shooterId] = handle;
+}
+
+void PlaceRelayedDecal(const RE::ProjectileHandle& handle, uint32_t shooterId,
+                       const RE::NiPoint3& origin, const RelayedDecal& decal)
+{
+  auto projectile = handle.get();
+  if (!projectile || !projectile->IsGrenadeProjectile()) {
+    return;
+  }
+  auto material = static_cast<RE::MATERIAL_ID>(decal.materialId);
+  if (decal.materialId == 0) {
+    // the caster's game knew no material: the landscape's under the point,
+    // as 44190 answers for the ground layer (TES.h:73)
+    if (auto* tes = RE::TES::GetSingleton()) {
+      material = tes->GetLandMaterialType(origin);
+    }
+  }
+  if (static_cast<uint32_t>(material) == 0) {
+    logger::info("[verb:spell-cast] no decal for the figure {:x}'s rune "
+                 "{:x}: no material relayed and none under the point",
+                 shooterId, projectile->formID);
+    return;
+  }
+  REL::Relocation<PlaceDecalFn> place{ Offsets::Hooks::RuneDecal.address() };
+  place(projectile.get(), &origin, &decal.normal, material, 1, nullptr,
+        projectile->GetDecalGroup(), 1);
+  logger::info("[verb:spell-cast] placed the caster's decal for the figure "
+               "{:x}'s rune {:x}: material {:x} at ({:.0f}, {:.0f}, {:.0f})",
+               shooterId, projectile->formID, static_cast<uint32_t>(material),
+               origin.x, origin.y, origin.z);
 }
 
 // thuum docs/verbs/cast-action.md: a BGSAction performed on an actor with
@@ -351,9 +479,20 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
 
       launchData.castingSource = castingSource;
       launchData.desiredTarget = magicTarget;
-      launchData.contactNormal = RE::NiPoint3{ 0.f, 0.f, 1.0f };
+      launchData.contactNormal = launch && launch->decal
+        ? launch->decal->normal
+        : RE::NiPoint3{ 0.f, 0.f, 1.0f };
 
       RE::Projectile::Launch(&pProjectile, launchData);
+
+      // thuum docs/verbs/spell-cast.md (the rune's glyph): a figure's rune
+      // ends its earlier one, and the caster's surface, when the cast
+      // carried it, draws the glyph the bare Launch never requests
+      skymp::magic::details::CapFigureRunes(pProjectile, actorFormId);
+      if (launch && launch->decal) {
+        skymp::magic::details::PlaceRelayedDecal(pProjectile, actorFormId,
+                                                 origin, *launch->decal);
+      }
     });
 
   return info.Env().Undefined();

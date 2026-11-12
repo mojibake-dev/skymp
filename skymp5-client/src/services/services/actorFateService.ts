@@ -1,5 +1,5 @@
 import { logLab, logTrace } from "../../logging";
-import { ActorFateMessage } from "../messages/actorFateMessage";
+import { ActorFateMessage, flatInvRows } from "../messages/actorFateMessage";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
@@ -25,6 +25,10 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 export class ActorFateService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
+        // the late fate's wait for a load (playtest 41's crash): the attach of
+        // the reference's cell and a slow poll
+        this.controller.on("cellAttach", (e) => this.onCellAttach(e));
+        this.controller.on("update", () => this.onUpdate());
         const setting = this.sp.settings["skymp5-client"]["npcFate"];
         this.enabled = setting !== false;
         this.sp.setActorFateEnabled(this.enabled);
@@ -48,11 +52,12 @@ export class ActorFateService extends ClientListener {
                 // where the detours bind it to the copy's own id. No native
                 // table entry under the remote id and no late path: the copy
                 // is this game's to place
-                this.copyFates.set(fate.refrId, { baseId: fate.baseId, worn: fate.worn.slice() });
+                this.copyFates.set(fate.refrId, { baseId: fate.baseId, worn: fate.worn.slice(), inv: flatInvRows(fate.inv) });
                 continue;
             }
-            this.sp.setActorFate(fate.refrId, fate.baseId, fate.worn);
-            const key = `${fate.baseId}:${fate.worn.join(",")}`;
+            const inv = flatInvRows(fate.inv);
+            this.sp.setActorFate(fate.refrId, fate.baseId, fate.worn, inv);
+            const key = `${fate.baseId}:${fate.worn.join(",")}:${inv.join(",")}`;
             const before = this.applied.get(fate.refrId);
             this.applied.set(fate.refrId, key);
             if (this.enabled && before !== key) {
@@ -68,34 +73,103 @@ export class ActorFateService extends ClientListener {
         // 2026-10-23); the two exports queue their own game-thread tasks
         this.controller.once("update", () => {
             for (const refrId of late) {
-                // the engine has the reference already (the save around the
-                // player at a login, a cell attached ahead of the fate, a
-                // respawn's new roll): its own re-roll goes through the detour
-                const refr = this.sp.Game.getFormEx(refrId);
-                const actor = refr ? this.sp.Actor.from(refr) : null;
-                if (!actor) {
-                    continue;
-                }
-                // the export decides on the game thread by the engine's own
-                // mark (ExtraLeveledCreature): a clone is re-rolled through
-                // the detours, a plain base is redressed. The Papyrus
-                // getBaseObject read before answered a clone's placed base,
-                // so no re-roll ever ran (b-npc-respawn 120743)
-                const queued = this.sp.rerollActor(refrId);
-                logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: engine re-roll or redress ${queued ? "queued" : "refused"}`);
+                this.lateFate(refrId);
             }
         });
     }
 
+    // thuum playtest 41 (2026-11-03 01:51:00Z): c1 crashed in the redress of
+    // Sven right after the host set emptied, EXCEPTION_ACCESS_VIOLATION at
+    // SkyrimSE.exe+070DB20 on a null read, the platform's last lines two
+    // redresses "3D loaded false" and "rerollActor(13491): not a leveled
+    // clone, redress instead". HYPOTHESIS: the redress's AddWornOutfit on an
+    // actor with no 3D reads the model it has not got. So the late fate
+    // runs on a LOADED actor alone: an unloaded one waits in `pending` and
+    // is dressed at its load (the cellAttach of its reference, and a poll
+    // every PENDING_POLL_MS for a load no attach names), rule 3's shape (a
+    // reloading engine renders at load). A reference the engine no longer
+    // has is forgotten.
+    private lateFate(refrId: number) {
+        // the engine has the reference already (the save around the player
+        // at a login, a cell attached ahead of the fate, a respawn's new
+        // roll): its own re-roll goes through the detour
+        const refr = this.sp.Game.getFormEx(refrId);
+        const actor = refr ? this.sp.Actor.from(refr) : null;
+        if (!actor) {
+            // thuum docs/verbs/npc-fate.md 1c (x-fate-inventory v1b 20261104-062409: the
+            // early path's copy held two HuntingBows no detoured call passed): a fate
+            // for a reference the engine does not hold yet (an interior's actors
+            // before the cell attaches) waits in `pending` for its load like a late
+            // one, so every loaded copy passes rerollActor once (the record's dress
+            // and inventory, idempotent over the detours' own work); one path for
+            // early and late. Forgotten after PENDING_MAX_MS, as before
+            if (!this.pending.has(refrId)) {
+                this.pending.set(refrId, Date.now());
+                logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: not in the engine yet, the redress waits for its load`);
+            }
+            return;
+        }
+        if (!actor.is3DLoaded()) {
+            if (!this.pending.has(refrId)) {
+                this.pending.set(refrId, Date.now());
+                logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: its 3D is not loaded, the redress waits for the load`);
+            }
+            return;
+        }
+        this.pending.delete(refrId);
+        // the export decides on the main thread by the engine's own mark
+        // (ExtraLeveledCreature): a clone is re-rolled through the detours, a
+        // plain base is redressed. The Papyrus getBaseObject read before
+        // answered a clone's placed base, so no re-roll ever ran
+        // (b-npc-respawn 120743)
+        const queued = this.sp.rerollActor(refrId);
+        logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: engine re-roll or redress ${queued ? "queued" : "refused"}`);
+    }
+
+    private onCellAttach(e: { refr?: { getFormID(): number } | null }) {
+        if (!e.refr) {
+            return;
+        }
+        const id = e.refr.getFormID();
+        if (this.pending.has(id)) {
+            this.lateFate(id);
+        }
+    }
+
+    private onUpdate() {
+        if (this.pending.size === 0) {
+            return;
+        }
+        const now = Date.now();
+        if (now - this.lastPendingPoll < ActorFateService.PENDING_POLL_MS) {
+            return;
+        }
+        this.lastPendingPoll = now;
+        for (const [refrId, since] of Array.from(this.pending.entries())) {
+            if (now - since > ActorFateService.PENDING_MAX_MS) {
+                this.pending.delete(refrId);
+                logTrace(this, `late fate for ${refrId.toString(16)}: no load within ${ActorFateService.PENDING_MAX_MS / 1000} s, forgotten (the next fate asks again)`);
+                continue;
+            }
+            this.lateFate(refrId);
+        }
+    }
+
+    // the fates waiting for their actor's 3D, with the time they began to wait
+    private readonly pending = new Map<number, number>();
+    private lastPendingPoll = 0;
+    private static readonly PENDING_POLL_MS = 1000;
+    private static readonly PENDING_MAX_MS = 120_000;
+
     // The server's fate for a server-made NPC by its remote id (ADR-050
     // decision 3), read by the view at the copy's spawn.
-    fateForCopy(remoteId: number): { baseId: number; worn: number[] } | undefined {
+    fateForCopy(remoteId: number): { baseId: number; worn: number[]; inv: number[] } | undefined {
         return this.copyFates.get(remoteId);
     }
 
     // the last fate applied per reference (base and worn), so a repeated fate
     // for the same roll re-rolls nothing
     private applied = new Map<number, string>();
-    private copyFates = new Map<number, { baseId: number; worn: number[] }>();
+    private copyFates = new Map<number, { baseId: number; worn: number[]; inv: number[] }>();
     private enabled: boolean;
 }

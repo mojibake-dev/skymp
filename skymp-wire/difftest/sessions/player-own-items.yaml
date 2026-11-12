@@ -1,0 +1,44 @@
+# difftest player-own-items (thuum D-R1 C and its leveled gap, train 52; docs/verbs/papyrus-events.md): a script's
+# ObjectReference.AddItem or RemoveItem on its own player is that player's own inventory record, R2 (ScriptCall, MsgType
+# 75, on selfId 0x14 at any epoch, a guest seat's 0; wire-rules player_own), and since SCHEMA_VERSION 44 a leveled
+# list's AddItem carries `landed`, what the engine's roll put in the player (read inside the call's AddItemFunctor),
+# each landing recorded as a plain grant of a base the list can roll (D-R2 B). c1 and c2 are new characters (profiles 9
+# and 10, actors 0xff000002 and 0xff000003, see melee-reach); c1 starts with 140 Gold001 (0xf, ghostwalk's inventory).
+# At 3 s c1 reports FreeformStonehillsA 0x64958's stage 20 fragment, AddItem(Gold001, 25, False) (x-additem-functor
+# 20261110-151634's control): the wire server adds the 25 to c1's record and sends c1 its inventory (SetInventory,
+# MsgType 28) with 165 gold, D-R1 C's plain path in a session for the first time. At 3.5 s c1 reports MS01 0x18b4b's
+# stage 39 fragment, AddItem(LvlQuestReward02Medium 0xc0405, 1, False) with `landed` Gold001 x400 (the trace's roll):
+# the list's five entries are all Gold001 (Skyrim.esm), so the landing is recorded and c1 hears 565 gold. Three reports
+# send nothing, each said by its name in the wire server's log: at 4 s the same call with no `landed`
+# (E_SCRIPTCALL_LEVELED, a seat whose scriptLeveledLandings is off); at 4.5 s with `landed` IronSword 0x12eb7 x1, no
+# base the list can roll (E_SCRIPTCALL_ROLL); at 5 s a RemoveItem carrying `landed`, refused at the edge (E_VAL_RANGE).
+# The legacy server knows no MsgType 75 and drops all five. c2 hears nothing of c1's inventory (a player's inventory
+# goes to its own game alone), and steps at 6 s of its own, so it outlives c1, as in every session.
+id: player-own-items
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 3000, send: {t: 75, epoch: 0, selfId: 0x14, cls: ObjectReference, fn: AddItem, args: [{formId: 0xf, type: Form}, 25, false], caller: QF_FreeformStonehillsA_00064958, handler: Fragment_2, latent: true}, reliable: true}
+  - {client: c1, at_ms: 3500, send: {t: 75, epoch: 0, selfId: 0x14, cls: ObjectReference, fn: AddItem, args: [{formId: 0xc0405, type: Form}, 1, false], caller: QF_MS01_00018B4B, handler: Fragment_56, latent: true, landed: [{item: 0xf, count: 400}]}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 75, epoch: 0, selfId: 0x14, cls: ObjectReference, fn: AddItem, args: [{formId: 0xc0405, type: Form}, 1, false], caller: QF_MS01_00018B4B, handler: Fragment_62, latent: true}, reliable: true}
+  - {client: c1, at_ms: 4500, send: {t: 75, epoch: 0, selfId: 0x14, cls: ObjectReference, fn: AddItem, args: [{formId: 0xc0405, type: Form}, 1, false], caller: QF_MS01_00018B4B, handler: Fragment_62, latent: true, landed: [{item: 0x12eb7, count: 1}]}, reliable: true}
+  - {client: c1, at_ms: 5000, send: {t: 75, epoch: 0, selfId: 0x14, cls: ObjectReference, fn: RemoveItem, args: [{formId: 0xf, type: Form}, 1, true, null], caller: QF_MS01_00018B4B, handler: Fragment_62, latent: true, landed: [{item: 0xf, count: 1}]}, reliable: true}
+  - {client: c2, at_ms: 0, move: {dy: 30}}
+  - {client: c2, at_ms: 6000, move: {dy: 60}}
+divergences:
+  - client: c1
+    msg: {t: 28, inventory: {entries: [{baseId: 0xf, count: 165}]}}
+    legacy: 0
+    wire: 1
+    reason: c1's own AddItem of 25 gold recorded in its inventory as its seat reported it and sent to its own game (D-R1 C, R2); the legacy server knows no MsgType 75
+  - client: c1
+    msg: {t: 28, inventory: {entries: [{baseId: 0xf, count: 565}]}}
+    legacy: 0
+    wire: 1
+    reason: the leveled reward's landing, Gold001 x400 from LvlQuestReward02Medium, recorded the same way, a base the list can roll (D-R2 B); the legacy server knows no MsgType 75
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

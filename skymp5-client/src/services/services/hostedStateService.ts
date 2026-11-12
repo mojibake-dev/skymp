@@ -97,10 +97,16 @@ export class HostedStateService extends ClientListener {
             }
             const dead = actor.isDead();
             const stoodUp = this.dead.get(localId) === true && !dead;
+            // the alive-to-dead flip goes reliable too: it is the host's
+            // dead-sample stamp on the server for a death by the server's word
+            // (TickDeaths, the console's kill), which no report carries; one
+            // lost packet must not refuse a later script's Resurrect (round
+            // nine; finding 54's shape for the stand-up)
+            const fellDead = this.dead.get(localId) === false && dead;
             this.dead.set(localId, dead);
             const sample = this.read(actor, localId);
             const last = this.lastSent.get(localId);
-            if (last && !stoodUp && HostedStateService.same(last, sample)) {
+            if (last && !stoodUp && !fellDead && HostedStateService.same(last, sample)) {
                 continue;
             }
             const message: MessageWithRefrId<HostedActorStateMessage> = {
@@ -118,9 +124,12 @@ export class HostedStateService extends ClientListener {
             };
             this.controller.emitter.emit("sendMessageWithRefrId", {
                 message,
-                reliability: last && !stoodUp ? "unreliable" : "reliable",
+                reliability: last && !stoodUp && !fellDead ? "unreliable" : "reliable",
             });
             this.lastSent.set(localId, sample);
+            if (fellDead) {
+                logLab("verb:npc-fate", `${remoteId.toString(16)} fell dead on this engine: health ${sample.health.toFixed(3)}, the sample sent reliable (the host's dead-sample stamp)`);
+            }
             if (stoodUp) {
                 logLab("verb:npc-fate", `${remoteId.toString(16)} stood up on this engine: health ${sample.health.toFixed(3)}, the sample sent reliable for the server's record`);
             }

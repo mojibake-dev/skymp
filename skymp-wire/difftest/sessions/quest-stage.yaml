@@ -1,14 +1,24 @@
-# thuum docs/verbs/quest-stage.md (ADR-056, memo D55 B): the world's quest stages. c1 and
-# c2 are new characters (profiles 9 and 10, see melee-reach). The lab server's settings
-# share Riverwood's quests (sharedQuests: A Lovely Letter FreeformRiverwood01 0x74a83 and
-# The Golden Claw's three, read from Skyrim.esm), so each login makes the wire stack send
-# the client the shared list (QuestStage with quest 0, declared in divergences.yaml for
-# every client of every session); the legacy stack knows no MsgType 57. At 2 s c1 reports
-# stage 10 of FreeformRiverwood01 (0x74a83, 477827; the first cut wrote 478851, a hand-converted decimal that is 0x74e83, no quest the world shares, so the relay never came and T2 read the declared divergence as missing): the wire stack records it for the world and
-# relays it to c2 (the one divergence below); the legacy drops the type. At 2.5 s c1
-# reports the same stage again: a no-op, nothing relayed. At 3 s c1 reports stage 10 of
-# MQ102 (0x4e50d, 320781), which is not shared: refused on the wire (E_QUEST_UNLISTED),
-# logged only. c2 steps again at 5 s of its own, so it outlives c1, as in every session.
+# thuum docs/verbs/quest-stage.md (ADR-056, memo D55 B; v2, thuum ADR-068 rung 5): the world's quest stages and runs. c1
+# and c2 are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003, see melee-reach). T2 copies the
+# deployed settings, sharing mode all with MQ102 (0x4e50d) among the denied and, since train 52, rung 5's questScope
+# "derived" (no quest here is a player's: each has a world alias or none the list names), so each login makes the wire
+# stack send the client the denied list (QuestStage with quest 0, declared in divergences.yaml for every client of every
+# session); the legacy stack knows no MsgType 57. At 2 s c1 reports stage 10 of
+# FreeformRiverwood01 (0x74a83, 477827; the first cut wrote 478851, a hand-converted decimal that is 0x74e83, no quest the
+# world shares, so the relay never came and T2 read the declared divergence as missing): the wire stack records it for the
+# world and relays it to c2, since rung 5 with c1 as the acting player (`acting` 0xff000002, the reporter's own actor:
+# the report names none). At 2.5 s c1 reports the same stage again: a no-op, nothing relayed. At 3 s c1 reports stage 10
+# of MQ102, which is denied: refused on the wire (E_QUEST_DENIED), logged only. Rung 5's run words: at 3.5 s c1 starts
+# MS10MiscObjPointer (0x10d3bb, a script-started quest: QUST, DNAM main flags 0x00, lab/esm.py on sky-srv 2026-11-09),
+# recorded running and relayed to c2 as word 1 with c1 acting; at 3.7 s the same start again folds, nothing relayed; at
+# 3.9 s its stop is relayed as word 2; at 4.1 s MQ102's start is refused (E_QUEST_DENIED); at 4.3 s a word 3 and at 4.5 s
+# a seat's claim of the login replay (served true) are refused at the edge (E_VAL_RANGE). D-Q9 B (Eli 2026-11-11; train
+# 52): at 4.7 s c1 reports the stop of FreeformRiften04 (0x53308) with a world cause rooted at
+# FFR04PlayerScript.OnLocationChange, a script the game files attach to the quest's player alias 1 alone (its alias 0
+# is the world's, so the quest is; no Story Manager node names it; lab/esm.py's walk of the lab's cached masters,
+# 2026-11-10). Under questPlayerAliasCause "seat" (the default; T2's settings name none) the wire stack judges it the
+# seat's own and refuses it (E_QUEST_CAUSE), so nothing is recorded or relayed; read as the world's it would be recorded
+# and relayed to c2, an undeclared divergence. c2 steps again at 5 s of its own, so it outlives c1, as in every session.
 id: quest-stage
 clients:
   c1: {profile_id: 9}
@@ -18,14 +28,31 @@ steps:
   - {client: c1, at_ms: 2000, send: {t: 57, quest: 0x74a83, stage: 10}, reliable: true}
   - {client: c1, at_ms: 2500, send: {t: 57, quest: 0x74a83, stage: 10}, reliable: true}
   - {client: c1, at_ms: 3000, send: {t: 57, quest: 0x4e50d, stage: 10}, reliable: true}
+  - {client: c1, at_ms: 3500, send: {t: 57, quest: 0x10d3bb, stage: 0, word: 1}, reliable: true}
+  - {client: c1, at_ms: 3700, send: {t: 57, quest: 0x10d3bb, stage: 0, word: 1}, reliable: true}
+  - {client: c1, at_ms: 3900, send: {t: 57, quest: 0x10d3bb, stage: 0, word: 2}, reliable: true}
+  - {client: c1, at_ms: 4100, send: {t: 57, quest: 0x4e50d, stage: 0, word: 1}, reliable: true}
+  - {client: c1, at_ms: 4300, send: {t: 57, quest: 0x10d3bb, stage: 0, word: 3}, reliable: true}
+  - {client: c1, at_ms: 4500, send: {t: 57, quest: 0x10d3bb, stage: 0, word: 1, served: true}, reliable: true}
+  - {client: c1, at_ms: 4700, send: {t: 57, quest: 0x53308, stage: 0, word: 2, cause: 1, root: FFR04PlayerScript.OnLocationChange}, reliable: true}
   - {client: c2, at_ms: 0, move: {dx: 50}}
   - {client: c2, at_ms: 5000, move: {dx: 60}}
 divergences:
   - client: c2
-    msg: {t: 57, quest: 0x74a83, stage: 10}
+    msg: {t: 57, quest: 0x74a83, stage: 10, acting: 0xff000002}
     legacy: 0
     wire: 1
-    reason: the world's stage relayed to the other seat (QuestStage, thuum docs/verbs/quest-stage.md); the legacy server knows no such message
+    reason: the world's stage relayed to the other seat with its acting player (QuestStage, thuum docs/verbs/quest-stage.md; ADR-068 rung 5); the legacy server knows no such message
+  - client: c2
+    msg: {t: 57, quest: 0x10d3bb, stage: 0, word: 1, acting: 0xff000002}
+    legacy: 0
+    wire: 1
+    reason: the world's run, a start, recorded and relayed once with its acting player, the repeated start folded (thuum ADR-068 rung 5, wire-rules quest_runs); the legacy server knows no such message
+  - client: c2
+    msg: {t: 57, quest: 0x10d3bb, stage: 0, word: 2, acting: 0xff000002}
+    legacy: 0
+    wire: 1
+    reason: the world's run, the stop, relayed with its acting player (thuum ADR-068 rung 5); the legacy server knows no such message
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0

@@ -9,9 +9,13 @@
 #include "SpellCastData.h"
 #include "SweetHidePlayerNamesService.h"
 #include "libespm/Loader.h"
+#include <chrono>
 #include <deque>
 #include <map>
 #include <memory>
+#include <optional>
+#include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -146,12 +150,93 @@ public:
                           const WordWallMessage& msg);
 
   // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
-  // animation event the cell's host reports (a game-file reference that is
-  // no actor and no door, in a cell the reporter hosts): recorded as the
-  // reference's lastAnimation and relayed to the cell's other games as the
-  // same message, at most 8 a second per reference (UNMEASURED)
+  // animation event its owner reports (a game-file reference that is no
+  // actor, no door and no container): a furniture's recorded occupant's
+  // owner while it is used, else the cell's host (wire-rules
+  // object_animation, the fifty fixes' furniture rule); recorded as the
+  // reference's lastAnimation, a furniture's never, and relayed to the
+  // cell's other games as the same message, at most 8 a second per
+  // reference (UNMEASURED)
   virtual void OnObjectAnimation(const RawMessageData& rawMsgData,
                                  const ObjectAnimationMessage& msg);
+
+  // thuum ADR-068 (the one seam): a tabled native a script ran on the engine
+  // that owns its subject. The rule (wire-rules natives, PartOne::
+  // GetScriptCalls) judges the reporter's budget, the row and the arguments
+  // before anything of the subject is read (its shape step, a token spent by
+  // every call, so a refused one costs no lookup), then the subject's owner
+  // at the epoch over the facts gathered here (its owner step); an
+  // accepted action takes the subject's next sequence and is relayed at
+  // once to the subject's other listeners as SpSnippet with it (for a
+  // game-file placement the server holds no reference for, judged by its
+  // record's cell, the other games that report that cell loaded); a door's
+  // or a container's is dropped quietly, each refusal logged once a minute
+  // per reporter and code
+  virtual void OnScriptCall(const RawMessageData& rawMsgData,
+                            const ScriptCallMessage& msg);
+
+  // thuum ADR-068 rung 3 (the script record): a reference's owner reports
+  // the scripts attached to it as its engine read them at a quiescent point.
+  // The wire validated the shape; here the reference (a game-file one the
+  // server holds or loads, no actor: an actor's record is refused by its
+  // type before any load) and its cell's host and standing epoch are
+  // gathered, and the rule (wire-rules script_state, PartOne::
+  // GetScriptStates) judges them, the epoch first, then the owner, and while
+  // nobody hosts the cell the release read of the host that released it. An
+  // accepted record is kept on the reference (saved), stamped with the
+  // object's sequence and its view (the reference's lastAnimation now), and
+  // never relayed live: PartOne serves it ahead of a grant and behind a
+  // create word. Each refusal is logged once a minute per sender, form and
+  // code (E_SCRIPTSTATE_NO_REF, _KIND, _OWNER, _EPOCH)
+  virtual void OnScriptState(const RawMessageData& rawMsgData,
+                             const ScriptStateMessage& msg);
+
+  // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
+  // row): a seat's report of a reference's destruction stage rise or its
+  // destruction, which its engine caused or saw first. The reference is one
+  // the server holds or loads, no actor, in a cell the reporter's game has
+  // loaded (PartOne::GetCellLoaders); the rule (wire-rules destruction: the
+  // stage only rises, destroyed only goes true) records the first report of
+  // each step on the reference's record and the step goes at once to the
+  // reference's other listeners (served false); an equal or a lower report
+  // changes nothing. A late subscriber hears the record behind the
+  // reference's create word (PartOne's onSubscribe, served true)
+  virtual void OnDestructionStage(const RawMessageData& rawMsgData,
+                                  const DestructionStageMessage& msg);
+
+  // thuum ADR-068 rung 4 (AliasFill 79; amendment B, read 8): a seat's own
+  // ReferenceAlias.ForceRefTo or Clear. A quest is nobody's (D-F1 C), so
+  // every seat reports its own; the rule (wire-rules alias_fills) takes a
+  // QUST with a reference alias of that id and a reference (or a clear),
+  // records the latest fill per (quest, alias) on the world's journal, folds
+  // an equal one, and the fill goes at once to every other seat (served
+  // false). R2, recorded as reported. Each refusal is logged once a minute
+  // per reporter and code (E_ALIASFILL_NO_QUEST, _NO_ALIAS, _REF)
+  virtual void OnAliasFill(const RawMessageData& rawMsgData,
+                           const AliasFillMessage& msg);
+
+  // thuum ADR-068 rung 4 (WorldGlobal 80; amendment B): the world
+  // streamer's report of the GLOBs its diff found moved. Judged whole by the
+  // streamer's epoch first (PartOne::JudgeWorldGlobalReport, ADR-066
+  // decision 4: E_WORLDGLOBAL_EPOCH, E_WORLDGLOBAL_OWNER, once a minute per
+  // reporter and code), then each entry (wire-rules world_globals: the
+  // clock's six, a playerGlobals entry, a constant or a form that is no GLOB
+  // refused alone), the latest value per global kept on the world's journal
+  // and what moved relayed at once to every other seat (served false). R2:
+  // the streamer's engine computed the values, recorded as reported
+  virtual void OnWorldGlobal(const RawMessageData& rawMsgData,
+                             const WorldGlobalMessage& msg);
+
+  // thuum ADR-068 rung 5 (ScriptVariables 81; D-V1 B, D-T2 B): a seat's
+  // report of the listed condition-read variables its game changed. The
+  // wire's half (A3) declares it and drops the report; the rung's server
+  // half (A4) writes its body over the bridge's ScriptVariables
+  // (script_variables_report, one call a message): a world key's latest
+  // write recorded on the world's journal and relayed to every other seat
+  // with its sequence, an own key's on the reporter's player's change form,
+  // never relayed. R2, recorded as reported
+  virtual void OnScriptVariables(const RawMessageData& rawMsgData,
+                                 const ScriptVariablesMessage& msg);
 
   // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
   // reports (a reference that is no actor activating the reference whose
@@ -171,6 +256,28 @@ public:
   // admits the scripts everywhere
   void RelayActivationToHost(MpActor& player, MpObjectReference& target);
   bool IsScriptedWorldObject(const MpObjectReference& target);
+  // thuum D-W1 and D-C2 (playtest 50): an Activate carrying `entry`, a
+  // seat's report of its own presser's entry into a trigger whose world
+  // script runs on the cell's host. The facts are gathered here and judged
+  // by wire-rules trigger_entry (the bridge's trigger_entry); an
+  // accepted entry goes to the host's game alone as RelayedActivation with
+  // the presser as the caster and the same entry, and nothing is recorded
+  // (R2); every refusal is logged by name, once a minute per reporter and
+  // code. The edge spends the sender's entry budget (wire-validate
+  // ClientGuard::entry_budget), so no window is kept here
+  void OnTriggerEntry(MpActor& reporter, const ActivateMessage& msg);
+
+  // thuum docs/verbs/change-form.md (ADR-065 system 1): an actor's change
+  // form as the owner's engine serialized it. The wire validated the shape
+  // (the header against the body, the hash, the remap rows); here the owner
+  // and the epoch are judged against the cells table (the sender hosts the
+  // actor's cell at the report's epoch), the record is kept on the actor
+  // (persisted), its hash acked to the sender (ChangeFormAck) and the record
+  // served at once to every other game listening to the actor
+  // (ChangeFormApply); every refusal logged once a minute per sender and
+  // form by its code (E_CHANGEFORM_RANGE, _SIZE, _OWNER, _EPOCH)
+  virtual void OnChangeForm(const RawMessageData& rawMsgData,
+                            const ChangeFormMessage& msg);
 
   // thuum docs/verbs/cell-host.md: a game's cell loaded or left its loaded
   // set; the server's election follows (wire-rules cells)
@@ -212,12 +319,50 @@ public:
                              const ActorSpeechMessage& msg);
 
   // the activations the server accepted lately, by place: a hazard death's
-  // evidence (ADR-048's B; that a trap's trigger reaches the server as an
-  // activation is a HYPOTHESIS until the lab's trap run)
+  // evidence (ADR-048's B). A trap's evidence (`trap`: a trigger's own
+  // firing, its activation children, a host's linked report, a destruction
+  // record) is kept for kDeathTrapWindow, since a swinging blade or a
+  // burning pool stays deadly after its report; a player's activation for
+  // kDeathHazardWindow. The newest note beside `pos` in `where`'s cell, or
+  // nothing: a copy, since a later pop_front would leave a pointer into the
+  // deque dangling
+  struct RecentActivation
+  {
+    std::chrono::steady_clock::time_point at;
+    FormDesc cellOrWorld;
+    NiPoint3 pos;
+    uint32_t refId = 0;
+    bool trap = false;
+  };
   void NoteActivation(const MpObjectReference& target,
+                      std::chrono::steady_clock::time_point now,
+                      bool trap = false);
+  void NoteTrapFiring(const MpObjectReference& trigger,
                       std::chrono::steady_clock::time_point now);
-  bool ActivationSeenNear(const MpObjectReference& where, const NiPoint3& pos,
-                          std::chrono::steady_clock::time_point now) const;
+  std::optional<RecentActivation> ActivationSeenNear(
+    const MpObjectReference& where, const NiPoint3& pos,
+    std::chrono::steady_clock::time_point now) const;
+
+  // thuum docs/verbs/npc-fate.md (playtest 48): a trap's hit on an actor,
+  // its simulator's word through the seam (ProcessTrapHit's row, which
+  // wire-rules natives keeps as evidence: OnScriptCall), noted beside the
+  // trap notes above and kept as long, kDeathTrapWindow. It names the actor
+  // it hit, not a place: a death of that actor within the window is taken on
+  // it whenever its trap was set off (Bleak Falls Temple's blades swing on
+  // long after their trigger's notes lapse; 48 refused 800a6 so, 106 s
+  // after the box 0x86018 fired). The newest hit on `actor` within the
+  // window, or nothing: a copy, as ActivationSeenNear's
+  struct RecentTrapHit
+  {
+    std::chrono::steady_clock::time_point at;
+    uint32_t actorId = 0;
+    // the trap the hit names (ProcessTrapHit's akTrap), 0 for None
+    uint32_t trapId = 0;
+  };
+  void NoteTrapHit(const MpActor& actor, uint32_t trapId,
+                   std::chrono::steady_clock::time_point now);
+  std::optional<RecentTrapHit> TrapHitOn(
+    const MpActor& actor, std::chrono::steady_clock::time_point now) const;
 
   virtual void OnFinishSpSnippet(const RawMessageData& rawMsgData,
                                  const FinishSpSnippetMessage& msg);
@@ -263,14 +408,30 @@ public:
   // the login itself, ahead of the other login sends.
   void SendPlayerGlobals(MpActor& actor);
   // thuum docs/verbs/quest-stage.md (ADR-056 decision 3): the shared quests'
-  // form ids for its client to report, then the world's recorded stages,
-  // ascending per quest, for its game to set after a login; PartOne::
-  // SetUserActor sends it right after the globals. In mode list, nothing
-  // when no quest is listed; in mode all (memo D58 B) the first message
-  // names the denied quests, none or not, so the seat learns the mode, and
-  // a recorded stage of a quest the game starts by itself stays unsent
-  // unless the quest is allowed (memo D62).
+  // form ids for its client to report, then the world's recorded runs and
+  // stages for its game to apply as a load after a login (thuum ADR-068 rung
+  // 5, D-Q3 A: every one served true): the quests recorded running (start
+  // words), the stages ascending per quest, the quests recorded stopped
+  // (stop words); PartOne::SetUserActor sends it right after the globals.
+  // In mode list, nothing when no quest is listed; in mode all (memo D58 B)
+  // the first message names the quests a seat never reports, the denied
+  // and the player class (none or not), so the seat learns the mode.
   void SendQuestStages(MpActor& actor);
+  // thuum ADR-068 rung 5 (ScriptVariables 81; D-V1 B, D-T2 B): the watch
+  // list (the listed keys, then the player class's own keys, each own set),
+  // then the world's record and the player's own record, served true, at
+  // most 256 keys or entries a message in order, a form's two game-time
+  // registration entries in one message; nothing when there is nothing to
+  // watch and nothing recorded. PartOne::SetUserActor sends it after the
+  // world globals.
+  void SendScriptVariables(MpActor& actor);
+  // thuum ADR-068 rung 4: the world's alias fills (served true, a clear as
+  // refr 0) after the quest stages, and its world globals (served true, at
+  // the streamer's epoch, 512 to a message) after the player's own, both at
+  // the login; nothing when the record holds none, and no globals while
+  // `worldGlobals` is off
+  void SendAliasFills(MpActor& actor);
+  void SendWorldGlobals(MpActor& actor);
   // thuum memo D56 A: the listed cure spells (PartOne::CureSpells) removed
   // from the player's game at its login and every minute after, by the
   // engine's own RemoveSpell; the minute chain stops when the actor has no
@@ -362,13 +523,8 @@ private:
   MpActor* ActorUpdatableBy(uint32_t idx, Networking::UserId userId,
                             MsgType msgType = MsgType::Invalid);
 
-  struct RecentActivation
-  {
-    std::chrono::steady_clock::time_point at;
-    FormDesc cellOrWorld;
-    NiPoint3 pos;
-  };
   std::deque<RecentActivation> recentActivations;
+  std::deque<RecentTrapHit> recentTrapHits;
 
   // The message, as received, to every user listening to the actor. A
   // hosted actor's report is not echoed to the game that sent it (thuum
@@ -410,6 +566,37 @@ private:
   // thuum docs/verbs/traps.md (ADR-059 decision 3): one reference's reported
   // animation events, at most 8 in any second (UNMEASURED)
   std::unordered_map<uint32_t, LinkedActivationWindow> objectAnimationWindows;
+  // thuum ADR-068: when each reporter's refusal of each code was last said
+  // (one line a minute, the rest counted), by reporter actor and code
+  std::map<std::pair<uint32_t, uint8_t>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    scriptCallRefusals;
+  // thuum ADR-068 rung 4: when each alias fill's and world global report's
+  // refusal line was last said, by reporter actor and code (one a minute,
+  // the rest counted)
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    stateRowRefusals;
+  // thuum ADR-068 rung 5: when each reporter's quest and script variable
+  // line of each code was last said (one a minute per seat, the rest
+  // counted): E_QUEST_PLAYER, E_QUEST_ACTING, E_QUEST_CHURN, the player's own
+  // rows' refusals
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    questLines;
+  // thuum D-C2: when each reporter's trigger entry refusal of each code was
+  // last said (one a minute, the rest counted)
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    triggerEntryRefusals;
+  // thuum ADR-068 rung 3: when each form's record line was last said (one a
+  // minute, the rest at debug), and each refusal's, by sender, form and code
+  // (one a minute, the rest counted)
+  std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
+    scriptStateLines;
+  std::map<std::tuple<uint32_t, uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    scriptStateRefusals;
   // base form id to whether its record carries a script (the VMAD read once)
   std::unordered_map<uint32_t, bool> scriptedBases;
   // thuum docs/verbs/spell-cast.md (train-27): a cast delivered to its

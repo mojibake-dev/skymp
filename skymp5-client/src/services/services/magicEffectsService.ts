@@ -164,7 +164,9 @@ export class MagicEffectsService extends ClientListener {
     // TESObjectREFR::ApplyArtObject, as the shader plays above (a second play
     // of an art replaces this game's first, so a message's replay keeps one
     // copy), and an art no longer shown stopped through StopArtObject, which
-    // stops this game's own alone, never an engine effect's
+    // finishes every live copy of an art this game played on the actor, an
+    // engine-drawn copy there with them (narrow: the pass plays no art where
+    // the engine runs the effect)
     private showArts(refr: ObjectReference, arts: Map<number, ArtShown>) {
         const key = refr.getFormID();
         const before = this.shownArts.get(key) ?? new Set<number>();

@@ -640,7 +640,8 @@ export class PuppetService extends ClientListener {
             if (!art) {
                 continue;
             }
-            // this game's own play alone, never an art the engine draws
+            // every live copy of the art this game played on the puppet,
+            // where the engine applies no ability (the slice's HYPOTHESIS above)
             try {
                 this.sp.callNative("TESModPlatform", "StopArtObject", undefined, ac, art);
             } catch (err) {

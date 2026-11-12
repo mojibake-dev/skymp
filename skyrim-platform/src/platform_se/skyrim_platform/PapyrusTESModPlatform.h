@@ -158,10 +158,11 @@ bool ModPlayerActorValue(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 // The hit art beside the hit shader (thuum docs/verbs/magic-effects.md; the
 // reanimation look's D2 B, thuum lab/.cache/drafts/reanimate-fx.md 4): an
 // effect's hit effect art played on refr as the engine plays one
-// (TESObjectREFR::ApplyArtObject), for duration seconds, -1 until stopped, a
-// second play of the art on refr replacing this native's first; and the arts
-// this native played on refr stopped, never one an engine effect plays
-// there. False when nothing was played, or nothing stopped
+// (TESObjectREFR::ApplyArtObject, its answer never read), for duration
+// seconds, -1 until stopped, a second play of the art on refr replacing this
+// native's first, false when refr has no 3D; and an art this native played on
+// refr stopped, every live copy of it on refr with it, an engine-drawn one
+// included, false when nothing was stopped
 bool ApplyArtObject(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                     RE::TESObjectREFR* refr, RE::BGSArtObject* art,
                     float duration);

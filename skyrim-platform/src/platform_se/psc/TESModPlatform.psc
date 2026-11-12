@@ -87,9 +87,9 @@ Bool Function ModPlayerActorValue(Int av, Float delta) global native
 ; thuum docs/verbs/magic-effects.md, the hit art: an effect's hit effect art
 ; played on refr as the engine plays one (TESObjectREFR::ApplyArtObject), for
 ; duration seconds, -1 until stopped, a second play of the art on refr
-; replacing this native's first; and the arts this native played on refr
-; stopped, never one an engine effect plays there; false when nothing was
-; played, or nothing stopped
+; replacing this native's first, false when refr has no 3D; and an art this
+; native played on refr stopped, every live copy of it on refr with it, an
+; engine-drawn one included, false when nothing was stopped
 Bool Function ApplyArtObject(ObjectReference refr, Art art, Float duration) global native
 Bool Function StopArtObject(ObjectReference refr, Art art) global native
 

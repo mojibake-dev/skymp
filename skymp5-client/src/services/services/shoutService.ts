@@ -26,21 +26,24 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 // one ordered channel, so a hit sent after the report reaches the server
 // after it. HitService asks the gate before it sends.
 //
-// When the recovery names no variation (god mode sets none: TGM's "no shout
-// cooldown"; or the read came late), the shout's own hit does: its spell is
-// one of the equipped shout's three, and the report goes out with it before
-// the hit. A hit of a shout's spell with no report in the last chargeMs
-// (the release unseen) reports it the same way. Playtest fifteen: no shout
-// of test 1's reached the server for a quarter hour, its Unrelenting Force
-// hits refused for want of a cast (thuum docs/verbs/shouts.md)
+// When the recovery names no variation (a god-mode shout under a running
+// recovery, whose read finds the last one's, x-tgm-breath4 20261016-010539;
+// or the read came late), the shout's own hit does: its spell is one of the
+// equipped shout's three, and the report goes out with it before the hit. A
+// hit of a shout's spell once the recovery its last report's release set
+// has run out (the release unseen) reports it the same way. Playtest
+// fifteen: no shout of test 1's reached the server for a quarter hour, its
+// Unrelenting Force hits refused for want of a cast (thuum
+// docs/verbs/shouts.md)
 type HeldHit = { spell: number; send: () => void };
 export const shoutGate = {
     pending: false,
     held: [] as Array<HeldHit>,
-    // the last report: its spell and when, so a shout's own hits after it
-    // report nothing more
+    // the last report: its spell, when, and the recovery its release set
+    // (seconds), so a shout's own hits after it report nothing more
     reportedSpell: 0,
     reportedAt: 0,
+    reportedRecovery: 0,
     // set by ShoutService: reports the equipped shout's cast from a hit's
     // spell when it is one of the shout's variations; true when it did
     reportFromHit: (_spell: number, _why: string): boolean => false,
@@ -203,6 +206,7 @@ export class ShoutService extends ClientListener {
     private report(spell: number) {
         shoutGate.reportedSpell = spell;
         shoutGate.reportedAt = Date.now();
+        shoutGate.reportedRecovery = this.recoveryOf(spell);
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.SpellCast, data: this.castOf(spell) },
             reliability: "reliable",
@@ -235,13 +239,27 @@ export class ShoutService extends ClientListener {
     }
 
     // HitService's check for a hit sent with no report pending: a hit of the
-    // equipped shout's spell with no report of it within chargeMs means the
-    // release went unseen, and the report goes out first
+    // equipped shout's spell with no report of it whose recovery still runs
+    // means the release went unseen, and the report goes out first
     private reportFromHit(spell: number, why: string): boolean {
-        // one breath's hits span about a second (r-shout-firebreath-a: the
-        // cone's hits 220 ms after the exhale); a hit of the same spell past
-        // that is another shout's, the release unseen
-        if (spell === shoutGate.reportedSpell && Date.now() - shoutGate.reportedAt <= ShoutService.hitWindowMs) {
+        // one report per release, the release named by the recovery it set:
+        // the game lets no shout go while the recovery runs, so a hit of the
+        // reported spell before it has run out is that release's, however
+        // far its cone flew. x-prop-blast v3 (20261111-223256): a god-mode
+        // Unrelenting Force reported at its release reached a far target
+        // 1.57 s later, past the 1200 ms this allowed before, and went out
+        // again (E_SHOUT_UNREPORTED, c1-console.log:5851); the server took
+        // both and the other seat drew two cones. Counted on the wall clock,
+        // which no menu pauses, the recovery ends here no later than in the
+        // game, so no later release falls inside it. God mode lets a shout
+        // go under a running recovery and sets it again (x-tgm-breath4
+        // 20261016-010539: 22.75 s left 7.25 s after a breath shouted 23.6 s
+        // into the first's 30 s); such a release reports from its launch
+        // (x-tgm-breath5 20261016-162436, five of five), not from here. A
+        // release that sets no recovery (ShoutRecoveryMult 0) keeps one
+        // breath's hits span, hitWindowMs
+        const ownMs = Math.max(shoutGate.reportedRecovery * 1000, ShoutService.hitWindowMs);
+        if (spell === shoutGate.reportedSpell && Date.now() - shoutGate.reportedAt <= ownMs) {
             return false;
         }
         // a stream's hits come ten a second: the equipped shout's spells are
@@ -267,6 +285,31 @@ export class ShoutService extends ClientListener {
         return true;
     }
 
+    // The recovery a release of variation n sets, in seconds: its recovery
+    // time times ShoutRecoveryMult (x-shout-probe3 20261011-221358)
+    private recoverySetBy(shout: Shout, n: number, mult: number): number {
+        return (this.sp.callNative("Shout", "GetNthRecoveryTime", shout, n) as number) * mult;
+    }
+
+    // The recovery set by the release a report names: that of the equipped
+    // shout's variation the spell is, 0 when it is none of them. It runs on
+    // the report's path, a hit's included, so a throw here costs nothing
+    // but the recovery: the report keeps hitWindowMs
+    private recoveryOf(spell: number): number {
+        try {
+            const player = Game.getPlayer();
+            const shout = player ? player.getEquippedShout() : null;
+            const n = shout ? this.variationSpellOf(shout, spell) : null;
+            if (!player || !shout || n === null) {
+                return 0;
+            }
+            return this.recoverySetBy(shout, n, player.getActorValue("ShoutRecoveryMult"));
+        } catch (err) {
+            logError(this, "E_SHOUT_REPORT: the recovery of", spell.toString(16), "unread:", err);
+            return 0;
+        }
+    }
+
     // The variation whose recovery the game set: the one whose recovery
     // times ShoutRecoveryMult is at or just above what is left of it (it
     // counts down from the release), or null
@@ -275,7 +318,7 @@ export class ShoutService extends ClientListener {
         let best: number | null = null;
         let bestSet = Infinity;
         for (let n = 0; n < 3; ++n) {
-            const set = (this.sp.callNative("Shout", "GetNthRecoveryTime", shout, n) as number) * mult;
+            const set = this.recoverySetBy(shout, n, mult);
             const counted = set - recovery;
             if (counted >= -ShoutService.slackS && counted <= ShoutService.countedS && set < bestSet) {
                 best = n;
@@ -341,7 +384,10 @@ export class ShoutService extends ClientListener {
     private static readonly kVoiceSource = 2;
     // a release reported from the recovery read within this is the same shout
     private static readonly fireReportWindowMs = 500;
-    // how long one shout's own hits may follow its report
+    // how long one shout's own hits may follow its report at the least, the
+    // whole of it when its release sets no recovery (one breath's hits span
+    // about a second, r-shout-firebreath-a: the cone's hits 220 ms after the
+    // exhale)
     private static readonly hitWindowMs = 1200;
     // how long the recovery may take to show after the release
     private static readonly readMs = 1500;

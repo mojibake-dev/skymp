@@ -151,6 +151,33 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle;
     function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle;
+    // thuum ADR-071 decision 4 (physics rung 3, "caster only"): the bodies an
+    // impulse this seat's own cause gave pushed inside one engine frame (the
+    // fork's replacements of ScaleGameplayImpulseForce and AddExplosionImpulse,
+    // Address Library 26004 and 26005, judged by the innermost Explosion::Update,
+    // Projectile::ProcessImpacts or ConeProjectile::HandleHits on the thread),
+    // raised on the next tick while setImpulseCauseRule(true) holds: impact this
+    // seat's impact number from 1 (a shout's cone raises one event per
+    // collidable, across ticks, under one number; a set past 16 references
+    // splits under one number too), kind the frame, cause the cause's form id
+    // here (0x14, an actor this seat simulates; 0 for none, in a cell this
+    // seat hosts), refrs each reference pushed once in push order, every
+    // physics body (D-PH5): refrId this seat's form id, formType its base's
+    // FormType number, so the client picks its rows. An impulse another seat
+    // caused is zeroed in native code and raises nothing. No game call in its
+    // handler. Definitions.txt carries the same
+    interface BodyRef {
+        refrId: number;
+        formType: number;
+    }
+    interface PropImpulseEvent {
+        impact: number;
+        kind: 'explosion' | 'impacts' | 'cone';
+        cause: number;
+        refrs: BodyRef[];
+    }
+    function on(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle;
+    function once(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle;
 
     // thuum docs/verbs/leveling.md (M5): the player's UseSkill (the fork's hook on
     // PlayerCharacter's vtable slot 0xF7, Address Library 40488), raised on the next
@@ -319,6 +346,17 @@ declare module "skyrimPlatform" {
     interface BodyRead { formId: number; awake: boolean; motion: number; pos: number[]; rot: number[]; lin: number[]; ang: number[] }
     function readBodies(formIds: number[], all: boolean): BodyRead[];
     function setBodyVelocity(formId: number, lin: number[], ang: number[]): boolean;
+    // physics rung 3 (the island's claim): with islands true an awake body of
+    // a dynamic type also carries its island, the island's other dynamic
+    // members (each reference once, at most 16, never the player's own or the
+    // body's own, none for the world's fixed island), read on the JS thread
+    // with no engine lock; absent when that read faulted and on every other
+    // body. setImpulseCauseRule is the impulse rule's switch (off by default
+    // in the platform; the client setting propImpulseCause's mirror), true
+    // when ScaleGameplayImpulseForce's replacement went in at install
+    interface BodyIslandRead extends BodyRead { island?: BodyRef[] }
+    function readBodies(formIds: number[], all: boolean, islands: boolean): BodyIslandRead[];
+    function setImpulseCauseRule(on: boolean): boolean;
     // thuum docs/DECISIONS.md D-W1 A and D-C2 A (a trigger volume's entry is
     // its presser's owner's; docs/research/fifty-fixes-2026-11-07.md 1(b)):
     // the gate's presser rule, off by default in the platform so an older

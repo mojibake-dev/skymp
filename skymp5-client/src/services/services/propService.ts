@@ -1,4 +1,4 @@
-import { ContainerChangedEvent, MotionType, ObjectReference, PropContactEvent, ScriptCall } from "skyrimPlatform";
+import { ContainerChangedEvent, FormType, MotionType, ObjectReference, PropContactEvent, PropImpulseEvent, ScriptCall } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
@@ -31,7 +31,10 @@ const TOUCH_IMPULSE = 3;
 // How often the tracked set is rebuilt from the view's references, ms
 const RESCAN_MS = 500;
 // A prop is tracked within this many units of the player, the nearest
-// TRACK_MAX of them
+// TRACK_MAX of them (the contact-ready set), and at any distance while its 3D
+// is loaded in the player's world or cell when this seat owns it, follows its
+// stream, claimed it moments ago or its own engine woke it here (physics rung
+// 3, B5: the rescan's keeps)
 const TRACK_RADIUS = 1024;
 const TRACK_MAX = 64;
 // game-file item references the server subscribed this seat to, remembered from their CreateActor (see engineRefs)
@@ -106,17 +109,22 @@ const FOLLOW_QUIET_MS = 2 * STREAM_HEARTBEAT_MS;
 const SEGMENT_MIN_MS = 50;
 const GLIDE_MIN_SPEED = 8;
 const JUMP_UNITS = 256;
-// The proximity touch, the Havok contact's stand-in before the contact event
-// (ADR-058's consequences), behind the sub-setting propContactFallback
-// (default off): a prop this seat does not simulate that moved by itself (no
-// translate of the stream's landing within TOUCH_QUIET_MS, no placement of
-// ours) while the player stood within TOUCH_RADIUS; read every TOUCH_READ_MS.
-// A contact's claim, the event's or the stand-in's, goes at most once per
-// CLAIM_EVERY_MS per prop
-const TOUCH_RADIUS = 128;
-const TOUCH_QUIET_MS = 300;
-const TOUCH_READ_MS = 100;
+// A contact's claim and an island member's go at most once per CLAIM_EVERY_MS
+// per prop, and a prop claimed is kept tracked that long, wherever it is, for
+// the word that answers it (physics rung 3, B5)
 const CLAIM_EVERY_MS = 2000;
+// Physics rung 3 (ADR-071 decision 4: the caster claims what its impact moved
+// in one PropClaim per impact): a shout's cone raises one propImpulse per
+// collidable it pushes, across ticks, under one impact number, so a cone's
+// impact is claimed this long after its first event, in one claim (16
+// references at most, PropClaim v2's); an explosion's and a projectile's
+// impact is claimed on the update its event comes (one event per frame). The
+// cone crosses the Riverwood Trader's cart in about 70 ms (1,536 units a
+// second, x-shout-once's read, over its cabbages' 100 units). UNMEASURED:
+// x-prop-impact's leg I2 reads the claim per cone. The events held between
+// two updates are bounded
+const CONE_BATCH_MS = 100;
+const IMPULSES_MAX = 64;
 // A drop's claim: the server's reference for an item this player dropped is
 // matched by its base within this window and this distance of the player
 const DROP_MATCH_MS = 3000;
@@ -157,8 +165,11 @@ type Pose = { pos: NiPoint3; rot: NiPoint3 };
 // engine's form id: pos and rot its 3D root's world transform (the drawn
 // place, never the reference's: havok-props.md E21), lin game units a second,
 // ang radians a second, motion Havok's type (1, 2, 3 and 6 dynamic, 4
-// Keyframed, 5 Fixed), awake its island in the world's active list
-type Body = Pose & { formId: number; lin: NiPoint3; ang: NiPoint3; motion: number; awake: boolean };
+// Keyframed, 5 Fixed), awake its island in the world's active list; island,
+// when the read asked for it (physics rung 3), the island's other dynamic
+// members by this engine's id and their bases' FormType numbers
+type Member = { localId: number; formType: number };
+type Body = Pose & { formId: number; lin: NiPoint3; ang: NiPoint3; motion: number; awake: boolean; island?: Member[] };
 
 // a take-over waiting for its placement to land (takeOver): the newest
 // sample's velocities to hand, its sequence, how far the copy jumped ahead
@@ -177,7 +188,7 @@ type Prop = {
     formIdx: number;     // its index in the world model, checked at each use
     cell: number;        // the engine's parent cell at the last rescan (the host rule's cell)
     distance: number;    // to the player at the last rescan
-    trackedAt: number;
+    trackedAt: number;   // 0 for a reference tracked in place (trackInPlace): no copy is being spawned, so no grace
     // the record's transform imposed once, before anything else (the login's
     // place, which the view's own apply may or may not have reached yet), and
     // again at a record answer
@@ -207,10 +218,7 @@ type Prop = {
     // the follower's side
     follow: PropFollow | undefined; // the stream this seat follows (sync/propFollow.ts), until its end
     keyframeDue: boolean;          // a word named another seat: the copy goes Keyframed before any of its samples
-    movedUntil: number;            // the follower's last translate lands by then (the proximity read's quiet)
     lastAppliedLog: number;
-    lastTouchRead: Pose | undefined;
-    lastTouchReadAt: number;
     lastClaimAt: number;
     restAt: number;                // the render clock applied the stream's asleep sample then, for the Dynamic set after it (0 none)
     // the "body" lines (propBodyReadLog): their next read (0 none), and whether the first track's is asked
@@ -275,10 +283,11 @@ const triple = (v: NiPoint3): string => `${v[0].toFixed(1)}, ${v[1].toFixed(1)},
 // its Havok body's place, velocities and hand, under the owner epoch of the
 // word this seat holds and its own clock, at 100 ms while it moves and once
 // more when the engine deactivates it (R2: this seat's Havok computes, the
-// server records); every other seat's body stays Keyframed, as the view
-// forces every item on arrival (objectReferenceEx.ts dealWithRef,
-// spawnProcess.ts), and takes the stream FOLLOW_DELAY_MS behind the owner's
-// clock (sync/propFollow.ts), so it neither falls nor fights the stream, and
+// server records); every other seat's copy rests Dynamic as the game files
+// make it (D73; physics rung 3 retired the Keyframing on arrival, since
+// another seat's cause is zeroed at the impulse site) and goes Keyframed while
+// another seat streams it, taking the stream FOLLOW_DELAY_MS behind the
+// owner's clock (sync/propFollow.ts), so it neither falls nor fights it, and
 // a seat a word makes the simulator mid-flight takes the body over with the
 // stream's last velocities. Who simulates is the server's word alone
 // (PropOwner, R0; A1 to A7 of ADR-071 decision 2, physics rung 1): the player
@@ -293,15 +302,20 @@ const triple = (v: NiPoint3): string => `${v[0].toFixed(1)}, ${v[1].toFixed(1)},
 // another seat streams the body awake (A3); the engine's grab, read from the
 // engine once per update (Game.getPlayerGrabbedRef, ADR-071's D-PH3 A), its
 // claim sent while the engine names the body and its end the first sample
-// that says held false; a drop; the proximity stand-in below stays behind
-// propContactFallback. An awake body streams at least every
-// STREAM_HEARTBEAT_MS and a held one never rests on the wire; the server's
-// record answer (seq 0) to a refused sample places the copy at the record.
-// The engine is read through readBodies (rule 9: one call an update, a
-// resting body answered only at its fall), never the reference. Slice one:
-// items only (FormTypeEx.isItem's types), within TRACK_RADIUS of the player,
-// the nearest TRACK_MAX. Everything the engine is asked happens on the update
-// (a message handler queues; Skyrim Platform refuses natives in its context).
+// that says held false; a drop; and (physics rung 3, ADR-071 decision 4) an
+// impulse this seat's own cause gave, the platform's propImpulse, claimed in
+// one PropClaim per impact by touch 3, and the resting bodies a moving body
+// of this seat's knocks into its island, by the same touch. An awake body
+// streams at least every STREAM_HEARTBEAT_MS and a held one never rests on
+// the wire; the server's record answer (seq 0) to a refused sample places the
+// copy at the record. The engine is read through readBodies (rule 9: one call
+// an update, a resting body answered only at its fall), never the reference.
+// Items (FormTypeEx.isItem's types) and trap bodies are the rows: a static and
+// a ragdoll are rungs 4 and 5's, pushed meanwhile by their own engine's cause
+// alone (D-PH5). The tracked set is the nearest TRACK_MAX within TRACK_RADIUS
+// of the player and the rescan's keeps at any distance (TRACK_RADIUS's note).
+// Everything the engine is asked happens on the update (a message handler
+// queues; Skyrim Platform refuses natives in its context).
 //
 // HYPOTHESIS, until x-prop-push and x-prop-pass: that setMotionType flips a
 // clutter body between Keyframed and Dynamic cleanly both ways (Dynamic
@@ -310,9 +324,12 @@ const triple = (v: NiPoint3): string => `${v[0].toFixed(1)}, ${v[1].toFixed(1)},
 // Keyframed body the player walks into (the re-analyst's static read, thuum
 // docs/research/m3/re-havok-contact.md; lab/frida/prop-contact.js is its
 // trace), so a non-host's walk into a basket claims it; the grab and the
-// drop are the slice's sure touches, and the proximity stand-in
-// (propContactFallback) fires only where a body this seat does not simulate
-// moves locally, which a Keyframed body never does. HYPOTHESIS (physics rung
+// drop are the slice's sure touches. HYPOTHESIS (physics rung 3, the rung 3
+// plan's B10 rows): that propImpulse names every body this seat's own cause
+// pushed and no other seat's (x-prop-impact v1's leg I1); that a cone's events
+// of one impact fall inside CONE_BATCH_MS; that a member of a moving body's
+// island read awake is a body this seat's engine knocked (H4's facts, the
+// claim rule x-prop-impact's leg I2 reads). HYPOTHESIS (physics rung
 // 1): that Game.getPlayerGrabbedRef names the body for exactly as long as the
 // engine's grab holds it, from StartGrabObject to DestroyMouseSprings (the
 // player's grabbedObject, CommonLibSSE-NG P/PlayerCharacter.h:558 and :697;
@@ -359,6 +376,7 @@ export class PropService extends ClientListener {
         this.controller.emitter.on("propOwnerMessage", (e) => this.onOwner(e));
         this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
         this.controller.on("propContact", (e) => this.onPropContact(e));
+        this.controller.on("propImpulse", (e) => this.onPropImpulse(e));
         this.controller.on("containerChanged", (e) => this.onContainerChanged(e));
         this.controller.on("update", () => this.onUpdate());
     }
@@ -394,7 +412,11 @@ export class PropService extends ClientListener {
     // stream this seat follows at its arrival, which feeds that stream's clock
     // alone (sync/propFollow.ts); one below the epoch this seat holds is a late
     // packet of an earlier tenure (the reliable word overtook the unreliable
-    // sample; the server relays current samples alone) and is dropped
+    // sample; the server relays current samples alone) and is dropped. An
+    // awake relayed sample of a prop this seat does not track waits for the
+    // update, which tracks the prop if its reference is loaded here and feeds
+    // it then (physics rung 3, B5: a watcher past TRACK_RADIUS follows the
+    // caster's stream; trackStreams)
     private onTransform(e: ConnectionMessage<PropTransformMessage>) {
         const m = e.message;
         const now = clockMs();
@@ -410,8 +432,21 @@ export class PropService extends ClientListener {
         }
         const prop = this.props.get(m.refr);
         if (!prop) {
+            if (!record && !m.asleep) {
+                this.streamsUntracked.push({ message: m, at: now });
+                if (this.streamsUntracked.length > IMPULSES_MAX) {
+                    this.streamsUntracked.shift();
+                }
+            }
             return;
         }
+        this.feed(prop, m, now, record);
+    }
+
+    // A sample of a tracked prop, at its arrival `now` (onTransform's, or the
+    // update's for a sample that waited for its prop's tracking): the record
+    // answer, or the stream this seat follows
+    private feed(prop: Prop, m: PropTransformMessage, now: number, record: boolean) {
         if (record) {
             // ADR-071 decision 6: the record answer, after the word on the one
             // reliable channel (PartOne::AnswerPropRecord), is a place this
@@ -583,6 +618,21 @@ export class PropService extends ClientListener {
         }
     }
 
+    // Physics rung 3 (ADR-071 decision 4, "caster only"): an impulse this
+    // seat's own cause gave pushed bodies (the platform's propImpulse, raised
+    // at the impulse frame's leave; another seat's cause is zeroed there and
+    // raises nothing). Ids alone here (the event's context allows no game
+    // call); the impact's claim goes from the update (claimImpulses)
+    private onPropImpulse(e: PropImpulseEvent) {
+        if (!this.enabled()) {
+            return;
+        }
+        this.impulses.push({ impact: e.impact, kind: e.kind, cause: e.cause, refrs: e.refrs.map((r) => ({ localId: r.refrId, formType: r.formType })) });
+        if (this.impulses.length > IMPULSES_MAX) {
+            this.impulses.shift();
+        }
+    }
+
     // An item left the player's inventory for the world (oldContainer the
     // player, no new container, a reference made): the engine's own dropped
     // reference is deleted by DropItemService and the server's reference for
@@ -626,6 +676,7 @@ export class PropService extends ClientListener {
     }
 
     private onUpdate() {
+        this.applyImpulseRule();
         if (!this.enabled()) {
             if (this.props.size > 0) {
                 this.untrackAll();
@@ -633,6 +684,9 @@ export class PropService extends ClientListener {
             this.trapMotions = [];
             this.trapWords = [];
             this.trapRests = [];
+            this.impulses = [];
+            this.impactBatches.clear();
+            this.streamsUntracked = [];
             return;
         }
         const now = clockMs();
@@ -644,6 +698,16 @@ export class PropService extends ClientListener {
         }
         if (this.trapWords.length > 0) {
             this.followTrapWords(now);
+        }
+        // physics rung 3: the impacts this seat's own cause gave, claimed and
+        // tracked in place, and the streams of untracked props this seat's
+        // reference stands loaded for, tracked and fed, before the rescan
+        // keeps them
+        if (this.impulses.length > 0 || this.impactBatches.size > 0) {
+            this.claimImpulses(now);
+        }
+        if (this.streamsUntracked.length > 0) {
+            this.trackStreams();
         }
         if (now - this.lastRescan >= RESCAN_MS) {
             this.lastRescan = now;
@@ -657,12 +721,12 @@ export class PropService extends ClientListener {
         }
         const player = this.props.size > 0 ? this.sp.Game.getPlayer() : null;
         if (player) {
-            const playerPos = ObjectReferenceEx.getPos(player);
             const myId = this.myId();
-            const fallback = this.contactFallback();
             const bodies = this.readSimulated();
+            // the islands this seat's moving bodies are in, read with them
+            this.claimIslands(bodies, now, myId);
             for (const prop of Array.from(this.props.values())) {
-                this.tick(prop, now, myId, playerPos, fallback, bodies);
+                this.tick(prop, now, myId, bodies);
             }
             // the samples the ticks made due, within the budget
             this.sendDue(now);
@@ -676,9 +740,8 @@ export class PropService extends ClientListener {
     // One prop, one update: the simulator computed from the owner table, the
     // body's motion type set to match (once, and again when its 3D reloads),
     // then the stream out (from the update's read of the simulated bodies,
-    // `bodies`) or the stream's render and, under the fallback, the proximity
-    // read
-    private tick(prop: Prop, now: number, myId: number, playerPos: NiPoint3, fallback: boolean, bodies: Map<number, Body>) {
+    // `bodies`) or the stream's render
+    private tick(prop: Prop, now: number, myId: number, bodies: Map<number, Body>) {
         // a trap body is a game-file reference in place, no copy being
         // spawned, and a firing's first second is its fall: no grace
         if (!prop.trap && now - prop.trackedAt < TRACK_GRACE_MS) {
@@ -724,16 +787,14 @@ export class PropService extends ClientListener {
         // no two hands move one prop (ADR-063 decision 3)
         const lostHold = prop.held && !prop.holdLost && word !== undefined && word.at > prop.heldAt
             && word.player !== 0 && word.player !== myId;
-        const near = prop.distance <= TOUCH_RADIUS + 512;
-        const touchReadDue = fallback && !prop.trap && !simulate && near && now - prop.lastTouchReadAt >= TOUCH_READ_MS;
         // D73's rest: a follower's Keyframed body goes Dynamic REST_DYNAMIC_MS after
         // the render clock applied the asleep sample, or once the stream went
         // quiet, so a kick or a grab acts on it at once; the check below needs
         // the reference, so the tick must reach it (x-prop-grab v8 202618: with
-        // no pending sample and the touch fallback off the tick returned here
-        // every time, no seat ever logged "at rest: Dynamic", and c2's E on the
-        // still-Keyframed basket picked it up instead of grabbing it); a
-        // stream followed is rendered every update until its end
+        // no pending sample the tick returned here every time, no seat ever
+        // logged "at rest: Dynamic", and c2's E on the still-Keyframed basket
+        // picked it up instead of grabbing it); a stream followed is rendered
+        // every update until its end
         // (a followed trap body is held Keyframed until its owner's at-rest
         // sample, not let go when the stream goes quiet: D-S3)
         const restDue = !simulate && prop.placed && prop.landsAt === 0 && prop.motionAsked === MotionType.Keyframed
@@ -744,7 +805,7 @@ export class PropService extends ClientListener {
         const landed = prop.landsAt !== 0 && now - prop.landsAt >= REST_DYNAMIC_MS;
         const bodyLogDue = prop.bodyLogDue !== 0 && now >= prop.bodyLogDue;
         const wantsRef = simulate || !prop.placed || prop.simulating !== simulate || prop.motionAsked === undefined
-            || prop.follow !== undefined || prop.keyframeDue || touchReadDue || restDue || lostHold || landed || bodyLogDue;
+            || prop.follow !== undefined || prop.keyframeDue || restDue || lostHold || landed || bodyLogDue;
         if (!wantsRef) {
             return;
         }
@@ -800,7 +861,7 @@ export class PropService extends ClientListener {
         if (prop.simulating) {
             this.stream(prop, refr, now, bodies.get(prop.localId));
         } else {
-            this.follow(prop, refr, now, playerPos, touchReadDue);
+            this.follow(prop, refr, now);
         }
     }
 
@@ -959,7 +1020,6 @@ export class PropService extends ClientListener {
         prop.sentHeld = false;
         prop.streaming = false;
         prop.awakeAt = now;
-        prop.lastTouchRead = undefined;
         // a granted touch (wake): the first sample goes out at once, so the
         // server's row and the other seats start from the owner's baseline
         // (the moving window and the step budget run from it; no silence
@@ -1052,7 +1112,8 @@ export class PropService extends ClientListener {
     // The update's one read of the bodies this seat simulates (readBodies
     // with all false), by this engine's id: a body while the engine has it
     // awake, and once more at the read its island deactivated, so a resting
-    // prop costs nothing here (rule 9: filtered in native)
+    // prop costs nothing here (rule 9: filtered in native); an awake body's
+    // island with it (physics rung 3, claimIslands)
     private readSimulated(): Map<number, Body> {
         const ids: number[] = [];
         this.props.forEach((prop) => {
@@ -1062,7 +1123,7 @@ export class PropService extends ClientListener {
         });
         const bodies = new Map<number, Body>();
         if (ids.length > 0) {
-            for (const body of this.readBodies(ids, false)) {
+            for (const body of this.readBodies(ids, false, true)) {
                 bodies.set(body.formId, body);
             }
         }
@@ -1252,9 +1313,8 @@ export class PropService extends ClientListener {
     }
 
     // The follower: the stream followed rendered on its clock (one translate a
-    // segment, the rest applied when the render clock reaches it), its end,
-    // and else the proximity read (the contact's stand-in, propContactFallback)
-    private follow(prop: Prop, refr: ObjectReference, now: number, playerPos: NiPoint3, touchReadDue: boolean) {
+    // segment, the rest applied when the render clock reaches it) and its end
+    private follow(prop: Prop, refr: ObjectReference, now: number) {
         const f = prop.follow;
         if (f !== undefined) {
             const awake = !f.newest().asleep;
@@ -1298,30 +1358,6 @@ export class PropService extends ClientListener {
                 this.bodyLogAt(prop, now + REST_DYNAMIC_MS);
             }
         }
-        if (!touchReadDue) {
-            return;
-        }
-        prop.lastTouchReadAt = now;
-        const read = PropService.read(refr);
-        const prev = prop.lastTouchRead;
-        prop.lastTouchRead = read;
-        if (!prev) {
-            return;
-        }
-        if (ObjectReferenceEx.getDistance(read.pos, prev.pos) <= SAMPLE_UNITS) {
-            return;
-        }
-        // moved by itself: not by the stream's translate, not by our placement
-        if (now < prop.movedUntil + TOUCH_QUIET_MS || now - prop.placedAt < TOUCH_QUIET_MS + JUMP_MS) {
-            return;
-        }
-        if (ObjectReferenceEx.getDistance(playerPos, read.pos) > TOUCH_RADIUS) {
-            return;
-        }
-        if (now - prop.lastClaimAt < CLAIM_EVERY_MS) {
-            return;
-        }
-        this.claim(prop, TOUCH_CONTACT, now);
     }
 
     // A segment of the stream on the Keyframed copy, once each, as the render
@@ -1366,11 +1402,7 @@ export class PropService extends ClientListener {
             }
             refr.translateTo(x, y, z, ax, ay, az, Math.max(GLIDE_MIN_SPEED, distance / (windowMs / 1000)), 0);
             f.noteStep(distance, jumped);
-            prop.movedUntil = now + windowMs;
         }
-        // the stream moved it: the touch read starts over after the segment
-        prop.lastTouchRead = undefined;
-        prop.lastTouchReadAt = now;
         if (now - prop.lastAppliedLog >= APPLIED_LOG_MS) {
             prop.lastAppliedLog = now;
             logLab(TAG, `applied ${prop.refr.toString(16)} from the stream`);
@@ -1509,8 +1541,8 @@ export class PropService extends ClientListener {
         }
     }
 
-    // one prop's claim, PropClaim v2's list of one (rung 3 claims an impact's
-    // bodies in one)
+    // one prop's claim, PropClaim v2's list of one (an impact's bodies and an
+    // island's go in one, claimMany)
     private claim(prop: Prop, touch: number, now: number) {
         prop.lastClaimAt = now;
         this.controller.emitter.emit("sendMessage", {
@@ -1520,10 +1552,207 @@ export class PropService extends ClientListener {
         logLab(TAG, `claim ${prop.refr.toString(16)} touch ${touch}`);
     }
 
+    // several props in one claim (PropClaim v2: 16 references at most, each
+    // judged alone on the server, its own word or answer), a larger set in
+    // several; `why` rides the line, "claim <ids> touch 3 (impact 2: cone,
+    // cause 14)" or "(island of <id>)", one line a message
+    private claimMany(props: Prop[], touch: number, now: number, why: string) {
+        for (let i = 0; i < props.length; i += 16) {
+            const batch = props.slice(i, i + 16);
+            for (const prop of batch) {
+                prop.lastClaimAt = now;
+            }
+            this.controller.emitter.emit("sendMessage", {
+                message: { t: MsgType.PropClaim, refrs: batch.map((p) => p.refr), touch },
+                reliability: "reliable",
+            });
+            logLab(TAG, `claim ${batch.map((p) => p.refr.toString(16)).join(",")} touch ${touch} (${why})`);
+        }
+    }
+
+    // Physics rung 3 (ADR-071 decision 4; the rung 3 plan's B4): the impacts
+    // this seat's own cause gave since the last update, folded by impact
+    // number, a cone's held CONE_BATCH_MS from its first event (its events
+    // come one per collidable across ticks) and every other kind's claimed at
+    // once. Each impact's rows (items and trap bodies; a static and a ragdoll
+    // are no row before rungs 4 and 5) are tracked in place at any distance
+    // (B5), and the ones this seat does not own go in one claim by touch 3; a
+    // row another seat streams awake stays home (A3: the server refuses it
+    // E_PROP_MOVING, and its Keyframed copy here took no push, E27). A row this
+    // seat owns (the cell's host's resting clutter, its own live row) streams
+    // the push itself (the host's wake, A7)
+    private claimImpulses(now: number) {
+        for (const e of this.impulses) {
+            let batch = this.impactBatches.get(e.impact);
+            if (!batch) {
+                batch = { kind: e.kind, cause: e.cause, firstAt: now, refs: [] };
+                this.impactBatches.set(e.impact, batch);
+            }
+            for (const r of e.refrs) {
+                if (!batch.refs.some((x) => x.localId === r.localId)) {
+                    batch.refs.push(r);
+                }
+            }
+        }
+        this.impulses = [];
+        const myId = this.myId();
+        this.impactBatches.forEach((batch, impact) => {
+            if (batch.kind === "cone" && now - batch.firstAt < CONE_BATCH_MS && batch.refs.length < 16) {
+                return;
+            }
+            this.impactBatches.delete(impact);
+            const claims: Prop[] = [];
+            let rows = 0;
+            for (const r of batch.refs) {
+                const prop = this.rowInPlace(r, now, "pushed by this seat's impulse");
+                if (!prop) {
+                    continue;
+                }
+                rows += 1;
+                if (this.ownedHere(prop, myId)) {
+                    continue;
+                }
+                if (this.followLive(prop, now)) {
+                    logLab(TAG, `impact ${impact}: prop ${prop.refr.toString(16)} another seat streams awake, no claim`);
+                    continue;
+                }
+                claims.push(prop);
+            }
+            logTrace(this, `impact ${impact} (${batch.kind}, cause ${batch.cause.toString(16)}): ${batch.refs.length} references pushed, ${rows} rows, ${claims.length} to claim`);
+            if (claims.length > 0) {
+                this.claimMany(claims, TOUCH_IMPULSE, now, `impact ${impact}: ${batch.kind}, cause ${batch.cause.toString(16)}`);
+            }
+        });
+    }
+
+    // Physics rung 3 (the rung 3 plan's B4, the island; H4: a resting pile is
+    // one sleeping island, a neighbour joins the moving body's island on the
+    // first moving frame, and islands split and merge on contact in flight):
+    // the update's read of the bodies this seat simulates carries each awake
+    // one's island, its other dynamic members; each member that is a row is
+    // tracked in place, and the ones this seat does not own and has not
+    // claimed in the last CLAIM_EVERY_MS go in one claim by touch 3 per
+    // island, "(island of <id>)". Read on the JS thread with the stream's own
+    // read, never inside the step. A member another seat streams awake is
+    // Keyframed here and in no island (a moving island with two owners is a
+    // declared limit: each engine meets the other's copy Keyframed)
+    private claimIslands(bodies: Map<number, Body>, now: number, myId: number) {
+        bodies.forEach((body) => {
+            const island = body.island;
+            const of = this.byLocal.get(body.formId);
+            if (island === undefined || island.length === 0 || of === undefined) {
+                return;
+            }
+            const claims: Prop[] = [];
+            for (const member of island) {
+                const prop = this.rowInPlace(member, now, `knocked into ${of.toString(16)}'s island`);
+                if (!prop || this.ownedHere(prop, myId) || now - prop.lastClaimAt < CLAIM_EVERY_MS || this.followLive(prop, now)) {
+                    continue;
+                }
+                claims.push(prop);
+            }
+            if (claims.length > 0) {
+                this.claimMany(claims, TOUCH_IMPULSE, now, `island of ${of.toString(16)}`);
+            }
+        });
+    }
+
+    // Physics rung 3 (B5): the awake samples of props this seat did not
+    // track, kept by onTransform since the last update: a prop whose reference
+    // stands loaded in the player's world or cell is tracked in place (a
+    // watcher past TRACK_RADIUS follows the caster's stream) and fed its
+    // samples at their arrival times
+    private trackStreams() {
+        const waiting = this.streamsUntracked;
+        this.streamsUntracked = [];
+        for (const w of waiting) {
+            let prop = this.props.get(w.message.refr);
+            if (!prop) {
+                const localId = remoteIdToLocalId(w.message.refr);
+                prop = localId ? this.trackInPlace(w.message.refr, localId, undefined, "its stream arrived") : undefined;
+            }
+            if (prop) {
+                this.feed(prop, w.message, w.at, false);
+            }
+        }
+    }
+
+    // A body an engine read named (an impact's, an island member's), by this
+    // engine's id and its base's FormType number, as a tracked row: an item,
+    // or a trap body this seat knows (the server's world-body row, touch 3
+    // alone), tracked in place; undefined for a static, a ragdoll, an
+    // unloaded reference or one the server has no id for here
+    private rowInPlace(r: Member, now: number, why: string): Prop | undefined {
+        const refr = localIdToRemoteId(r.localId);
+        if (!refr) {
+            return undefined;
+        }
+        if (!FormTypeEx.isItem(r.formType as FormType) && !this.trapBodies.has(refr)) {
+            return undefined;
+        }
+        const known = this.props.get(refr);
+        if (known) {
+            // the engine's body moved by this seat's cause is the truth from
+            // here: a prop the rescan tracked moments ago (its grace running,
+            // its record placement not yet made) is in place, never put back
+            known.trackedAt = 0;
+            if (!known.placed && !known.placing) {
+                known.placed = true;
+                known.placedAt = now;
+            }
+            return known;
+        }
+        const body = this.trapBodies.get(refr);
+        if (body) {
+            return this.trackTrapBody(refr, body, now, false);
+        }
+        // a pushed or knocked body is Dynamic (a Keyframed one takes no push,
+        // havok-props.md E27; an island's members are its dynamic ones)
+        return this.trackInPlace(refr, r.localId, MotionType.Dynamic, why);
+    }
+
+    // A prop tracked where its engine has it (physics rung 3, B5): the
+    // reference loaded in the player's world or cell, placed already (an
+    // engine's own body in flight is never put back at the record; the record
+    // follows its stream), no grace (no copy is being spawned), `motion` the
+    // body's as read (undefined: the tick sets it, D73). Undefined when the
+    // reference is not loaded here
+    private trackInPlace(refr: number, localId: number, motion: MotionType | undefined, why: string): Prop | undefined {
+        const ref = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
+        const player = this.sp.Game.getPlayer();
+        if (!ref || !player || !ref.is3DLoaded()) {
+            return undefined;
+        }
+        const worldOrCell = ObjectReferenceEx.getWorldOrCell(player);
+        if (worldOrCell !== 0 && ObjectReferenceEx.getWorldOrCell(ref) !== worldOrCell) {
+            return undefined;
+        }
+        const now = clockMs();
+        const distance = ObjectReferenceEx.getDistance(ObjectReferenceEx.getPos(player), ObjectReferenceEx.getPos(ref));
+        const cell = ref.getParentCell();
+        const prop = PropService.newProp(refr, localId, -1, cell ? cell.getFormID() : 0, distance, 0);
+        prop.placed = true;
+        prop.placedAt = now;
+        prop.loaded3D = true;
+        prop.motionAsked = motion;
+        this.props.set(refr, prop);
+        this.byLocal.set(localId, refr);
+        logTrace(this, `prop ${refr.toString(16)} tracked in place, ${Math.round(distance)} units off: ${why}`);
+        return prop;
+    }
+
+    // whether this seat owns the prop as it reads the table: it simulates it,
+    // or the word names it, or the cell's host by default is this seat
+    private ownedHere(prop: Prop, myId: number): boolean {
+        return prop.simulating || (myId !== 0 && this.ownerOf(prop, myId) === myId);
+    }
+
     // The tracked set, from the view's references: every bound view whose
     // record is no actor's and whose base is an item (read once per binding),
     // in the player's world or cell, within TRACK_RADIUS; the nearest
-    // TRACK_MAX are tracked, the rest let go
+    // TRACK_MAX are tracked, with the trap bodies and (physics rung 3, B5) the
+    // props kept at any distance (keptAnywhere) and the far items this seat's
+    // own engine woke in a cell it hosts (wakeFar); the rest let go
     private rescan(now: number) {
         const view = getViewFromStorage();
         const player = this.sp.Game.getPlayer();
@@ -1538,6 +1767,8 @@ export class PropService extends ClientListener {
         const n = views.getFormViewsArrayLength();
         type Found = { refr: number; localId: number; formIdx: number; distance: number; cell: number; baseId: number };
         const found: Found[] = [];
+        // the items past TRACK_RADIUS, by this engine's id, for wakeFar
+        const far: number[] = [];
         for (let i = 0; i < n; ++i) {
             if (i === world.playerCharacterFormIdx) {
                 continue;
@@ -1571,6 +1802,7 @@ export class PropService extends ClientListener {
             }
             const distance = ObjectReferenceEx.getDistance(playerPos, ObjectReferenceEx.getPos(refr));
             if (distance > TRACK_RADIUS) {
+                far.push(localId);
                 continue;
             }
             const cell = refr.getParentCell();
@@ -1597,6 +1829,7 @@ export class PropService extends ClientListener {
             }
             const distance = ObjectReferenceEx.getDistance(playerPos, ObjectReferenceEx.getPos(refr));
             if (distance > TRACK_RADIUS) {
+                far.push(refrId);
                 return;
             }
             const cell = refr.getParentCell();
@@ -1604,6 +1837,9 @@ export class PropService extends ClientListener {
         });
         found.sort((a, b) => a.distance - b.distance);
         const chosen = found.slice(0, TRACK_MAX);
+        for (const c of found.slice(TRACK_MAX)) {
+            far.push(c.localId);
+        }
         // ADR-068 D-S3 point 4: the trap bodies, past the item cap and at any
         // distance in the player's world or cell (a follower far from the
         // firing still holds the stream's rocks)
@@ -1652,7 +1888,6 @@ export class PropService extends ClientListener {
                     prop.loaded3D = false;
                     prop.lastSent = undefined;
                     prop.handOff = undefined;
-                    prop.lastTouchRead = undefined;
                     prop.bodyTracked = false;
                     prop.badBodySaid = false;
                     prop.trackedAt = now;
@@ -1665,12 +1900,81 @@ export class PropService extends ClientListener {
                 }
             }
         }
+        // physics rung 3 (B5): kept wherever it is, while its 3D is loaded in
+        // the player's world or cell
+        const myId = this.myId();
+        this.props.forEach((prop) => {
+            if (!keep.has(prop.refr) && this.keptAnywhere(prop, myId, now) && this.loadedHere(prop, playerWorldOrCell)) {
+                keep.add(prop.refr);
+            }
+        });
+        this.wakeFar(far, keep);
         for (const prop of Array.from(this.props.values())) {
             if (!keep.has(prop.refr)) {
                 this.untrack(prop, "out of reach");
             }
         }
         this.drops = this.drops.filter((d) => now - d.at <= DROP_MATCH_MS);
+    }
+
+    // Physics rung 3 (the rung 3 plan's B5): a prop kept at any distance:
+    // one this seat owns by a live word naming it, or streams or holds; one
+    // whose stream this seat follows (followLive: an awake sample on the
+    // render clock within the quiet window, or a word naming another seat
+    // whose first sample is on its way); one this seat claimed moments ago
+    // (an impact, an island, a contact), awaiting the word; a trap body is the
+    // trap bodies' loop's
+    private keptAnywhere(prop: Prop, myId: number, now: number): boolean {
+        const word = this.owners.get(prop.refr);
+        if (myId !== 0 && word !== undefined && word.player === myId) {
+            return true;
+        }
+        return prop.streaming || prop.held || this.followLive(prop, now) || (prop.lastClaimAt !== 0 && now - prop.lastClaimAt < CLAIM_EVERY_MS);
+    }
+
+    // whether the prop's reference stands with its 3D loaded in the player's
+    // world or cell (the engine has its body to simulate or to show)
+    private loadedHere(prop: Prop, playerWorldOrCell: number): boolean {
+        const ref = this.refOf(prop);
+        return ref !== null && ref.is3DLoaded()
+            && (playerWorldOrCell === 0 || ObjectReferenceEx.getWorldOrCell(ref) === playerWorldOrCell);
+    }
+
+    // Physics rung 3 (B5): the far items this seat's own engine woke (an NPC
+    // knocking clutter far from the player), read once a rescan by one
+    // readBodies with all false over the untracked items past TRACK_RADIUS
+    // (filtered in native, rule 9: answered while awake), at most
+    // ENGINE_REFS_MAX ids; an awake one in a cell this seat hosts is tracked
+    // in place, so it streams as the host's wake (A7). Another seat's far
+    // woken copy is not its to stream (the declared limit R6 of the plan: a
+    // puppet's walk into a far item moves it with no claim). HYPOTHESIS: rare;
+    // the count line reads it
+    private wakeFar(far: number[], keep: Set<number>) {
+        const ids = far.filter((localId) => !this.byLocal.has(localId)).slice(0, ENGINE_REFS_MAX);
+        if (ids.length === 0) {
+            return;
+        }
+        const hosts = this.controller.lookupListener(HostService);
+        let woken = 0;
+        for (const body of this.readBodies(ids, false)) {
+            if (!body.awake || !PropService.isDynamic(body.motion)) {
+                continue;
+            }
+            const refr = localIdToRemoteId(body.formId);
+            const ref = refr ? this.sp.ObjectReference.from(this.sp.Game.getFormEx(body.formId)) : null;
+            const cell = ref ? ref.getParentCell() : null;
+            if (!refr || !cell || !hosts.hostsCell(cell.getFormID())) {
+                continue;
+            }
+            const prop = this.trackInPlace(refr, body.formId, body.motion as MotionType, "its engine woke it here, past TRACK_RADIUS");
+            if (prop) {
+                keep.add(refr);
+                woken += 1;
+            }
+        }
+        if (woken > 0) {
+            logLab(TAG, `rescan: ${woken} far item(s) this seat's engine woke in a cell it hosts, tracked`);
+        }
     }
 
     // A prop just tracked that is the server's reference for an item this
@@ -1725,21 +2029,26 @@ export class PropService extends ClientListener {
         }
         this.endFollow(prop);
         prop.handOff = undefined;
-        if (prop.simulating) {
-            // a body this seat leaves Dynamic would move here unstreamed: its
-            // body's place goes out once more as the final sample (the server
-            // returns the prop to the host on it, the record rests there, the
-            // other seats follow), then the body is parked
-            const refr = this.refOf(prop);
-            if (refr && refr.is3DLoaded()) {
-                const body = prop.streaming ? this.readBody(prop) : undefined;
-                if (body !== undefined) {
-                    this.send(prop, body, true, now);
-                }
-                prop.streaming = false;
-                refr.setMotionType(MotionType.Keyframed, false).catch((err) =>
-                    logError(this, `setMotionType(Keyframed) on untracked prop ${prop.refr.toString(16)} failed`, err));
+        const refr = this.refOf(prop);
+        if (prop.simulating && refr && refr.is3DLoaded()) {
+            // an open stream's body place goes out once more as the final
+            // sample (the server returns the prop to the host on it, the record
+            // rests there, the other seats follow)
+            const body = prop.streaming ? this.readBody(prop) : undefined;
+            if (body !== undefined) {
+                this.send(prop, body, true, now);
             }
+            prop.streaming = false;
+        }
+        // physics rung 3 (B6): the body rests Dynamic as the game files make
+        // it, wherever this service leaves it, so its own engine's next cause
+        // moves it here (a far wake, an impact: tracked again) and another
+        // seat's cause is zeroed at the impulse site; the Keyframed park, and
+        // a copy left Keyframed past TRACK_RADIUS, were the remote blast's
+        // shield (havok-props.md E34). A followed trap body is its follow's
+        if (refr && refr.is3DLoaded() && prop.motionAsked === MotionType.Keyframed && !this.followedTrap(prop)) {
+            refr.setMotionType(MotionType.Dynamic, false).catch((err) =>
+                logError(this, `setMotionType(Dynamic) on untracked prop ${prop.refr.toString(16)} failed`, err));
         }
         logTrace(this, `prop ${prop.refr.toString(16)} untracked: ${why}`);
     }
@@ -1780,11 +2089,14 @@ export class PropService extends ClientListener {
 
     // The platform's body reads (readBodies, PuppetApi.cpp; the client's
     // typing in clientListener.ts), as the wire's triples. On the JS thread,
-    // as the engine's own reads are, so any update context reads them; a
-    // platform without the export (an older dist) reads no body, said once
-    private readBodies(localIds: number[], all: boolean): Body[] {
+    // as the engine's own reads are, so any update context reads them, and
+    // with no engine lock there (rung 2's fresh review, finding 1: an engine
+    // thread can wait on this one while it holds a world lock); with islands,
+    // an awake dynamic body's island too (physics rung 3). A platform without
+    // the export (an older dist) reads no body, said once
+    private readBodies(localIds: number[], all: boolean, islands = false): Body[] {
         try {
-            return this.sp.readBodies(localIds, all).map((b) => ({
+            return this.sp.readBodies(localIds, all, islands).map((b) => ({
                 formId: b.formId,
                 awake: b.awake,
                 motion: b.motion,
@@ -1792,6 +2104,7 @@ export class PropService extends ClientListener {
                 rot: [b.rot[0], b.rot[1], b.rot[2]],
                 lin: [b.lin[0], b.lin[1], b.lin[2]],
                 ang: [b.ang[0], b.ang[1], b.ang[2]],
+                island: b.island !== undefined ? b.island.map((r) => ({ localId: r.refrId, formType: r.formType })) : undefined,
             }));
         } catch (e) {
             if (!this.readBodiesSaid) {
@@ -1886,11 +2199,34 @@ export class PropService extends ClientListener {
         return !s || s["propPhysics"] !== false;
     }
 
-    // the proximity stand-in for the contact, off by default now that the
-    // contact event exists; on for a seat whose hook never fires
-    private contactFallback(): boolean {
+    // Physics rung 3 (ADR-071 decision 4, "caster only"): the platform's
+    // impulse rule, on while propPhysics is and the client setting
+    // propImpulseCause is not false, told when it changes (at the first
+    // update, and at a settings change). On, another seat's cause is zeroed at
+    // the impulse site on every physics body (D-PH5) and this seat's own
+    // raises propImpulse; off, every engine pushes by its own numbers (the
+    // lab's A/B, .claude/rules/native.md's kill switch). The platform answers
+    // whether its ScaleGameplayImpulseForce replacement went in; an older one
+    // has no rule, said once
+    private applyImpulseRule() {
         const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
-        return s !== undefined && s["propContactFallback"] === true;
+        const want = this.enabled() && (s === undefined || s["propImpulseCause"] !== false);
+        if (want === this.impulseRuleSent) {
+            return;
+        }
+        this.impulseRuleSent = want;
+        try {
+            const replaced = this.sp.setImpulseCauseRule(want);
+            if (!want) {
+                logLab(TAG, "impulse rule off: every engine pushes by its own numbers");
+            } else if (replaced) {
+                logLab(TAG, "impulse rule on: another seat's cause is zeroed here, this seat's claims what it moved");
+            } else {
+                logLab(TAG, "impulse rule on, but the platform's impulse replacement did not go in: no push is zeroed here");
+            }
+        } catch (e) {
+            logError(this, `setImpulseCauseRule unavailable on this platform: ${e}`);
+        }
     }
 
     // the follower's delay behind the owner's clock: the client setting
@@ -1965,10 +2301,7 @@ export class PropService extends ClientListener {
             holdLost: false,
             follow: undefined,
             keyframeDue: false,
-            movedUntil: 0,
             lastAppliedLog: 0,
-            lastTouchRead: undefined,
-            lastTouchReadAt: 0,
             lastClaimAt: 0,
             restAt: 0,
             bodyLogDue: 0,
@@ -2279,6 +2612,14 @@ export class PropService extends ClientListener {
     private readonly echoSaid = new Set<number>();
     // the controller's contacts since the last update, by local id
     private contacts: Array<{ localId: number; layer: number; motionType: number }> = [];
+    // physics rung 3: the impulse events since the last update, the impacts
+    // awaiting their claim by impact number (a cone's for CONE_BATCH_MS), the
+    // awake samples of untracked props awaiting their tracking (trackStreams),
+    // and the impulse rule as last told to the platform (applyImpulseRule)
+    private impulses: Array<{ impact: number; kind: PropImpulseEvent["kind"]; cause: number; refrs: Member[] }> = [];
+    private readonly impactBatches = new Map<number, { kind: PropImpulseEvent["kind"]; cause: number; firstAt: number; refs: Member[] }>();
+    private streamsUntracked: Array<{ message: PropTransformMessage; at: number }> = [];
+    private impulseRuleSent: boolean | undefined = undefined;
     // the player's drops awaiting the server's reference
     private drops: Array<{ baseId: number; at: number }> = [];
     private lastRescan = 0;

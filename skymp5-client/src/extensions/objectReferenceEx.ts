@@ -157,9 +157,12 @@ export class ObjectReferenceEx {
       self.lock(false, false);
     }
 
-    if (isItem) {
-      self.setMotionType(MotionType.Keyframed, false);
-    }
+    // thuum ADR-071 rung 3 (lab/.cache/drafts/physics/rung3-plan.md B6): an
+    // item rests Dynamic as the game files make it (D73 for every item, not
+    // only a tracked one). Its Keyframing on arrival was the remote blast's
+    // shield (thuum docs/engine/havok-props.md E34: a watcher's cabbages beyond
+    // TRACK_RADIUS were spared only by it); another seat's cause is zeroed at
+    // the impulse site instead (the platform's setImpulseCauseRule, D-PH5)
 
     // https://github.com/skyrim-multiplayer/issue-tracker/issues/36
     if (t === FormType.Flora && Flora.from(base)?.getIngredient()) {

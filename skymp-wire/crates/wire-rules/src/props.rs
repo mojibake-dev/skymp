@@ -35,13 +35,20 @@ use std::collections::{HashMap, HashSet};
 /// seat cannot take (A3: a non-owner's contact never takes a moving prop). An
 /// owner streams at most every 100 ms while the body moves, at least every
 /// 500 ms while it is awake or held (the client's heartbeat, ADR-071's D-PH4
-/// B) and one asleep sample at rest, so a row this quiet is stalled (a stream
-/// that died without its asleep sample) or its samples are not getting
-/// through; either is the next touch's. A judgment of a claim, never a
-/// return: no clock changes a row's owner. The same length as the client's
-/// STREAM_LIVE_MS. UNMEASURED (thuum docs/engine/havok-props.md E10 sizes
-/// it).
-pub const PROP_MOVING_MS: u64 = 1_000;
+/// B, sent at the first frame past 500 ms) and one asleep sample at rest. The
+/// window is about three heartbeat intervals and a frame, so two lost
+/// unreliable beats in a row still read as moving (one lost beat alone left a
+/// gap of 1,000 to 1,066 ms, past a 1,000 ms window: the review of
+/// b7151a42), the way a failure detector sets its timeout at several
+/// heartbeat intervals (accessible: Joshi, "HeartBeat", Patterns of
+/// Distributed Systems; foundational: Ongaro and Ousterhout, "In Search of an
+/// Understandable Consensus Algorithm", USENIX ATC 2014, section 5.6). A row
+/// quieter than this is stalled (a stream that died without its asleep
+/// sample) or its samples are not getting through; either is the next
+/// touch's. A judgment of a claim, never a return: no clock changes a row's
+/// owner. The same length as the client's STREAM_LIVE_MS. UNMEASURED (thuum
+/// docs/engine/havok-props.md E10 sizes it).
+pub const PROP_MOVING_MS: u64 = 1_600;
 
 /// The step budget's pace: the rate a row's distance allowance refills at
 /// (`PropRow::allowance`, a token bucket on distance). A sample farther from

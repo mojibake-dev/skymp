@@ -53,9 +53,10 @@ const SLEEP_AFTER_MS = 500;
 // The heartbeat (ADR-071's D-PH4 B, decision 6's 500 ms on v1 samples): an
 // awake body this seat streams sends a sample at least this often, moved or
 // not, and a held one never sends the asleep sample (A6), so the server never
-// reads a live stream stalled (its PROP_MOVING_MS, 1000) and no follower rests
-// its copy mid-stream (STREAM_LIVE_MS); a creeping body under SAMPLE_UNITS
-// and a still hand both stay on the wire
+// reads a live stream stalled (its PROP_MOVING_MS, 1600: about three of these
+// and a frame, so two lost beats in a row are no stall) and no follower rests
+// its copy mid-stream (STREAM_LIVE_MS, the same); a creeping body under
+// SAMPLE_UNITS and a still hand both stay on the wire
 const STREAM_HEARTBEAT_MS = 500;
 // a resting body this seat simulates is read for a stir ten times a second,
 // not every frame (sixty-four host-default props at rest cost nine natives
@@ -87,8 +88,13 @@ const APPLIED_LOG_MS = 10_000;
 // D73 (docs/DECISIONS.md, ADR-058 decision 3 refined): a follower's body is
 // Keyframed only while another seat streams it awake, this long after the
 // last awake sample; then, and REST_DYNAMIC_MS after an asleep sample's
-// apply, it is Dynamic and may wake, so a kick or a grab acts on it at once
-const STREAM_LIVE_MS = 1000;
+// apply, it is Dynamic and may wake, so a kick or a grab acts on it at once.
+// The server's PROP_MOVING_MS, the same length: about three heartbeat
+// intervals (STREAM_HEARTBEAT_MS) and a frame, so two lost beats in a row
+// still read live (accessible: Joshi, "HeartBeat", Patterns of Distributed
+// Systems; foundational: Ongaro and Ousterhout, Raft, USENIX ATC 2014,
+// section 5.6). UNMEASURED
+const STREAM_LIVE_MS = 1600;
 const REST_DYNAMIC_MS = 300;
 // a jump's translate lands within this (the translate's speed is the distance over it), ms
 const JUMP_MS = 100;

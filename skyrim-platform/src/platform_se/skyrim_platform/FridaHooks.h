@@ -69,6 +69,18 @@ bool TriggerPresserRuleOn();
 // in at install (the props' push can be zeroed). Threadsafe
 bool SetImpulseCauseRule(bool on);
 
+// thuum docs/DECISIONS.md ADR-071 rung 4 (D-PH9 A, a world body admitted by
+// any touch; thuum .claude/rules/native.md's kill switch): the contact hook's
+// world-body switch (OnPropContactEnter, FridaHooks.cpp). On, the player's
+// contact with a body of a dynamic motion type reaches propContact on any
+// collision layer (a world body's part on its own layer, kClutterLarge 29, a
+// corpse's kDeadBip 32), beside rung 3's clutter and props layers at any
+// motion; off, the default, keeps rung 3's filter, so a client that never
+// sets it changes nothing. skymp5-client's setting propWorldBodies turns it on
+// through setWorldBodyContacts (PuppetApi.cpp). Logs "[verb:prop-physics]
+// world-body contacts on" or "off". Threadsafe
+void SetWorldBodyContacts(bool on);
+
 // thuum docs/DECISIONS.md ADR-068 decision 6 ("the player's own (0x14, the
 // player's effects, the player-alias quests) are the player's seat's"): this
 // seat's own player in the active effect a VM handle names, its target or

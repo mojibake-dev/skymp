@@ -135,11 +135,17 @@ Napi::Value SetRecordApplying(const Napi::CallbackInfo& info);
 // translate in game units, rot its world rotation as Euler XYZ degrees, lin
 // in game units a second, ang in radians a second (Havok's own), motion
 // hkpMotion::MotionType's value, awake the body's island in the world's
-// active list. The body is the 3D root's own, else the first one on the
-// root's children (a trap rock's); an id with no reference, 3D, cell world or
-// rigid body on the root or a child of it is left out. pos and rot stay the
-// root's either way. With all false a body is answered while awake and once
-// more at the read where it fell asleep (rule 9: a resting body costs JS
+// active list. Since rung 4 the bodies are PropBodies' walk of the whole 3D
+// (PropBodies.h): a whole reference (one body, not Fixed) answers its one
+// body, found at any depth, and one with no part its first body (an
+// all-Fixed static, motion 5); a reference with a part (a body that is not
+// Invalid, Fixed or Character) answers awake when any part is, motion, lin
+// and ang the fastest part's, and bones, every part's pose in walk order as
+// { pos: [x, y, z] in game units, quat: [x, y, z, w] }, none when the walk
+// was cut short; an id with no reference, 3D, cell world or rigid body is
+// left out, as is one whose walk faulted (said in the log). pos and rot stay
+// the root's either way. With all false a body is answered while awake and
+// once more at the read where it fell asleep (rule 9: a resting body costs JS
 // nothing); with all true every body found, that filter left as it was
 Napi::Value ReadBodies(const Napi::CallbackInfo& info);
 // setBodyVelocity(formId, lin, ang): the take-over's hand-off, the body's
@@ -147,8 +153,9 @@ Napi::Value ReadBodies(const Napi::CallbackInfo& info);
 // through CommonLib's bhkRigidBody setters on the main thread, queued on
 // SKSE's UI task queue and never waited for. True when queued; false for 0,
 // the player's own id, a non-finite component or no SKSE task interface. The
-// task logs the set, or why not (no 3D, no rigid body, a motion type that is
-// not dynamic)
+// task logs the set, or why not (no 3D, no rigid body, since rung 4 a
+// reference of several bodies, which imposeBodies drives, a motion type that
+// is not dynamic)
 Napi::Value SetBodyVelocity(const Napi::CallbackInfo& info);
 // thuum docs/DECISIONS.md ADR-071 decision 4 (rung 3, FridaHooks.h):
 // setImpulseCauseRule(on), the impulse rule at the replaced
@@ -165,6 +172,32 @@ Napi::Value SetBodyVelocity(const Napi::CallbackInfo& info);
 // on the JS thread with no engine lock (absent when the read faulted);
 // islands absent or false reads none, rung 2's call
 Napi::Value SetImpulseCauseRule(const Napi::CallbackInfo& info);
+// thuum docs/DECISIONS.md ADR-071 rung 4 (statics and a body's parts; D-PH9
+// A, D-PH10 A, the route K3 under D-PH26 A): getBodyClass(formId), the class
+// each seat reads from its loaded 3D, { bsx, dynamic, bodies, fixed, parts:
+// [{ node, motion }], cut }: bsx the 3D root's BSX flags (0 with no block),
+// dynamic their kDynamic bit, then PropBodies' walk (bodies every rigid body,
+// fixed the Fixed ones, parts each part's node name, "" for none, and motion
+// type in walk order, cut a walk past 64 parts, 512 nodes or 32 levels); null
+// with no reference, no 3D or a faulted walk. On the JS thread, no task, no
+// log. imposeBodies(formId, bones, rest), the follower's newest poses for the
+// reference's parts in walk order ({ pos in game units, quat [x, y, z, w] }),
+// stored on the JS thread and laid on the parts by one drain on the main
+// thread: rest, or a part more than 64 units off, places every part
+// outright (a rest then drops the form), else every part is driven by
+// velocity toward its pose over its world's step; true when stored, false for
+// 0, the player's own id, no pose or more than 64, a value not a number, a
+// quaternion off unit length by more than 0.01, no SKSE task interface or a
+// full table. releaseBodies(formId), the form's stored poses dropped (a
+// take-over, a quiet stream, a follow's end), true when poses were held.
+// setWorldBodyContacts(on), the contact hook's world-body switch, off by
+// default (rung 3's filter, layers 4 and 10 alone): on, a body of a dynamic
+// motion type on any layer reaches propContact too; stored with no game
+// call, true
+Napi::Value GetBodyClass(const Napi::CallbackInfo& info);
+Napi::Value ImposeBodies(const Napi::CallbackInfo& info);
+Napi::Value ReleaseBodies(const Napi::CallbackInfo& info);
+Napi::Value SetWorldBodyContacts(const Napi::CallbackInfo& info);
 // thuum docs/DECISIONS.md ADR-068 rung 3 (the script record, amendment A;
 // ScriptState.h): setScriptRecordPending(formId, pending), a reference whose
 // served script record waits for its apply (true) or no longer (false), kept
@@ -326,6 +359,18 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("setImpulseCauseRule",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetImpulseCauseRule)));
+  exports.Set(
+    "getBodyClass",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetBodyClass)));
+  exports.Set(
+    "imposeBodies",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(ImposeBodies)));
+  exports.Set(
+    "releaseBodies",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(ReleaseBodies)));
+  exports.Set("setWorldBodyContacts",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(SetWorldBodyContacts)));
   exports.Set("setScriptRecordPending",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetScriptRecordPending)));

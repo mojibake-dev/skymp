@@ -11,6 +11,7 @@
 #include "Override.h"
 #include "PapyrusTESModPlatform.h"
 #include "PlatformCall.h"
+#include "PropBodies.h"
 #include "Puppets.h"
 #include "QuestCause.h"
 #include "ScriptNatives.h"
@@ -3446,21 +3447,30 @@ void InstallReanimateHook()
  *
  * On entry: this (rcx) is the listener subobject, the proxy controller's
  * first base at +0 (bhkCharProxyController.h:12); the point (r8) is a
- * reference. Filtered here (rule 9) to the other collidable's layer in
- * {kClutter 4, kProps 10} (hkpRootCdPoint.h:16 rootCollidableB;
- * hkpCollidable.h:52-55 GetCollisionLayer, collisionFilterInfo & 0x7F;
- * include/RE/C/CollisionLayers.h) and to the player's own controller: the
- * listener's enclosing proxy controller, upcast to its bhkCharacterController
- * base (bhkCharProxyController.h:13; the casts apply the header's layout),
- * against Actor::GetCharController (Actor.h:531; src/RE/A/Actor.cpp:324-328
- * walks currentProcess->middleHigh->charController). The body is the
- * collidable's owner when its broadphase type is an entity
- * (hkpTypedBroadPhaseHandle.h:15; hkpWorldObject.h:39-47 kEntity;
- * hkpCollidable.h:57-66 GetOwner by ownerOffset), its motion type at
+ * reference. Filtered here (rule 9), in this order since thuum ADR-071 rung
+ * 4 (D-PH9 A; the build spec's C3). The body first: the other collidable
+ * (hkpRootCdPoint.h:16 rootCollidableB) and its owner when its broadphase
+ * type is an entity (hkpTypedBroadPhaseHandle.h:15; hkpWorldObject.h:39-47
+ * kEntity; hkpCollidable.h:57-66 GetOwner by ownerOffset), its motion type at
  * hkpEntity.h:99 motion, hkpMotion.h:77 type (hkpMotion.h:26-38: 1 Dynamic,
- * 4 Keyframed, 5 Fixed); the reference by
- * TESHavokUtilities::FindCollidableRef (TESHavokUtilities.h:15, bound by
- * CommonLib at Offsets.h:524, Address Library 26003, just addr 2026-10-29).
+ * 4 Keyframed, 5 Fixed). Then the layer and the motion: a layer in
+ * {kClutter 4, kProps 10} (hkpCollidable.h:52-55 GetCollisionLayer,
+ * collisionFilterInfo & 0x7F; include/RE/C/CollisionLayers.h:11, :17) at
+ * any motion, which keeps E27's Keyframed follower copy (rung 3's filter),
+ * or, while the world-body switch is on (Frida::SetWorldBodyContacts, off by
+ * default), a dynamic motion type on any layer (PropBodies::IsDynamicMotion:
+ * a world body's part on its own layer, kClutterLarge 29 at :36, a corpse's
+ * kDeadBip 32 at :39), so the ground, the walls and every Keyframed body
+ * outside those two layers stop here, before any JS. Then the player's own
+ * controller: the listener's enclosing proxy controller, upcast to its
+ * bhkCharacterController base (bhkCharProxyController.h:13; the casts apply
+ * the header's layout), against Actor::GetCharController (Actor.h:531;
+ * src/RE/A/Actor.cpp:324-328 walks currentProcess->middleHigh->
+ * charController). Then the reference by TESHavokUtilities::FindCollidableRef
+ * (TESHavokUtilities.h:15, bound by CommonLib at Offsets.h:524, Address
+ * Library 26003, just addr 2026-10-29), never the player's own (0x14). The
+ * client's kind of the reference is the one filter past these
+ * (skymp5-client propService.ts).
  * One event per reference per 250 ms (a manifold point is added each time
  * the player's capsule meets the body anew, several a second while leaning
  * on it), kept in a map under a mutex because the callback's thread is
@@ -3473,6 +3483,8 @@ void InstallReanimateHook()
  */
 namespace {
 constexpr uint64_t kPropContactEveryMs = 250;
+// the world-body switch (Frida::SetWorldBodyContacts), off by default
+std::atomic<bool> g_worldBodyContacts{ false };
 std::mutex g_propContactMutex;
 // reference form id -> NowMs() of the last event sent for it
 std::unordered_map<uint32_t, uint64_t> g_propContactLastMs;
@@ -3490,9 +3502,24 @@ void OnPropContactEnter(GumInvocationContext* ic)
   if (!collidable) {
     return;
   }
-  // the layer first: the ground and the walls are most of the points
+  // the body, an entity's
+  if (collidable->broadPhaseHandle.type !=
+      static_cast<std::int8_t>(RE::hkpWorldObject::BroadPhaseType::kEntity)) {
+    return;
+  }
+  auto* body = collidable->GetOwner<RE::hkpEntity>();
+  if (!body) {
+    return;
+  }
+  // the layer and the motion: the ground and the walls (Fixed) are most of
+  // the points, and a Keyframed body passes on the two prop layers alone
+  const auto type = body->motion.type.get();
   const auto layer = collidable->GetCollisionLayer();
-  if (layer != RE::COL_LAYER::kClutter && layer != RE::COL_LAYER::kProps) {
+  const bool propLayer =
+    layer == RE::COL_LAYER::kClutter || layer == RE::COL_LAYER::kProps;
+  if (!propLayer &&
+      !(g_worldBodyContacts.load(std::memory_order_relaxed) &&
+        PropBodies::IsDynamicMotion(type))) {
     return;
   }
   // the player's controller alone
@@ -3506,20 +3533,15 @@ void OnPropContactEnter(GumInvocationContext* ic)
       playerController) {
     return;
   }
-  if (collidable->broadPhaseHandle.type !=
-      static_cast<std::int8_t>(RE::hkpWorldObject::BroadPhaseType::kEntity)) {
-    return;
-  }
-  auto* body = collidable->GetOwner<RE::hkpEntity>();
-  if (!body) {
-    return;
-  }
   const uint32_t motionType = body->motion.type.underlying();
   auto* refr = RE::TESHavokUtilities::FindCollidableRef(*collidable);
   if (!refr) {
     return;
   }
   const uint32_t refrId = refr->formID;
+  if (refrId == 0x14) {
+    return;
+  }
   const uint64_t now = NowMs();
   {
     std::lock_guard<std::mutex> lock(g_propContactMutex);
@@ -3562,6 +3584,13 @@ void InstallPropContactHook()
                "controller's ContactPointAddedCallback (Address Library "
                "79131), one propContact per reference per {} ms",
                kPropContactEveryMs);
+}
+
+void Frida::SetWorldBodyContacts(bool on)
+{
+  g_worldBodyContacts.store(on, std::memory_order_relaxed);
+  logger::info("[verb:prop-physics] world-body contacts {}",
+               on ? "on" : "off");
 }
 
 /**

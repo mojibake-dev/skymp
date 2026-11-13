@@ -4,6 +4,7 @@
 #include "FridaHooks.h"
 #include "Hosted.h"
 #include "ItemMenuRefresh.h"
+#include "PropBodies.h"
 #include "Puppets.h"
 #include "QuestCause.h"
 #include "ScriptNatives.h"
@@ -11,11 +12,13 @@
 #include "TrapFamily.h"
 #include "game/Offsets.h"
 #include <RE/A/ActivateHandler.h>
+#include <RE/B/BSXFlags.h>
 #include <RE/C/Calendar.h>
 #include <RE/C/ContainerMenu.h>
 #include <RE/C/CrosshairPickData.h>
 #include <RE/D/DialogueMenu.h>
 #include <RE/I/InterfaceStrings.h>
+#include <RE/M/Main.h>
 #include <RE/M/MenuTopicManager.h>
 #include <RE/P/PlayerControls.h>
 #include <RE/T/TESFaction.h>
@@ -690,81 +693,16 @@ Napi::Value PuppetApi::SetRecordApplying(const Napi::CallbackInfo& info)
 }
 
 namespace {
-// thuum ADR-071 rung 2 (the sample v2): a node's own Havok body, by the walk
-// CommonLib's own GetCollisionLayer makes (CommonLibSSE-NG
-// src/RE/N/NiAVObject.cpp:61-75): the node's collision object
-// (include/RE/N/NiAVObject.h:156) as a bhkNiCollisionObject (NiObject.h:61),
-// its body (bhkNiCollisionObject.h:56) as a bhkRigidBody (NiObject.h:64), and
-// the hkpRigidBody it refers to (bhkRefObject.h:26; hkpRigidBody.h:7, an
-// hkpEntity). Both null for a node that carries no rigid body
-struct PropBody
-{
-  RE::bhkRigidBody* rigid = nullptr;
-  RE::hkpRigidBody* havok = nullptr;
-};
-
-PropBody OwnBodyOf(RE::NiAVObject& node)
-{
-  PropBody res;
-  auto* collision = node.collisionObject
-    ? node.collisionObject->AsBhkNiCollisionObject()
-    : nullptr;
-  auto* rigid =
-    collision && collision->body ? collision->body->AsBhkRigidBody() : nullptr;
-  if (rigid && rigid->referencedObject) {
-    res.rigid = rigid;
-    res.havok = static_cast<RE::hkpRigidBody*>(rigid->referencedObject.get());
-  }
-  return res;
-}
-
-// a loaded reference's Havok body, found as lab/frida/rock-motion-trace.js
-// finds it (thuum main, bodyOfNode at :177-205; the rung 3 read
-// prop-impulse.js walks the same): the 3D root's own body, else the first of
-// the root's children that carries one, one level down, since a trap rock's
-// body hangs on a child of its root (the plan's R9). The children are read as
-// CommonLib's own scene graph walk reads them
-// (BSVisit::TraverseScenegraphCollision, src/RE/B/BSVisit.cpp:26-34, which
-// goes deeper than this one level): NiAVObject::AsNode (N/NiObject.h:46), then
-// NiNode::GetChildren (N/NiNode.h:57-65), every slot from begin to end
-// (N/NiTArray.h:69-97, the array's capacity, where the trace stops at its
-// first 16 under _size; an empty slot skipped). readBodies and
-// setBodyVelocity both find their body here, so a write lands on the body
-// read. Both null for a model with no rigid body on its root or a child of
-// it. HYPOTHESIS: the lab's items carry theirs on the root (x-body-read's
-// "body" lines read it), and a rock whose body hangs on a child moves its
-// root with it, since pos and rot stay the root's (the trace's rows read the
-// root's translate too, rock-motion-trace.js:246); the trap scenarios read it
-PropBody BodyOf(RE::NiAVObject& root)
-{
-  const PropBody own = OwnBodyOf(root);
-  if (own.havok) {
-    return own;
-  }
-  if (auto* node = root.AsNode()) {
-    for (auto& child : node->GetChildren()) {
-      auto* object = child.get();
-      if (!object) {
-        continue;
-      }
-      const PropBody body = OwnBodyOf(*object);
-      if (body.havok) {
-        return body;
-      }
-    }
-  }
-  return {};
-}
-
-// hkpMotion::MotionType's dynamic values (CommonLibSSE-NG
-// include/RE/H/hkpMotion.h:26-38): the lab's resting Dynamic props read 2, a
-// basket, and 3, an ingot (docs/engine/havok-props.md E1, E13), never 1
-bool IsDynamicMotion(RE::hkpMotion::MotionType type)
-{
-  using Type = RE::hkpMotion::MotionType;
-  return type == Type::kDynamic || type == Type::kSphereInertia ||
-    type == Type::kBoxInertia || type == Type::kThinBoxInertia;
-}
+// thuum ADR-071 rung 4 (statics and a body's parts; the build spec's C3): a
+// reference's bodies are found by PropBodies' one walk (PropBodies.h), which
+// replaced rung 2's BodyOf (the 3D root's own body, else the first on the
+// root's children, one level down) with CommonLib's whole scene-graph order
+// (BSVisit::TraverseScenegraphCollision, src/RE/B/BSVisit.cpp:11-37). Where
+// BodyOf found a body and the reference has no other, the walk's one body is
+// the same one, so an item's and a trap rock's row is rung 3's; a body deeper
+// than one level is found too. readBodies, its island, setBodyVelocity,
+// getBodyClass and imposeBodies all read the same walk, so a write lands on
+// the parts a read named
 
 // a world rotation as Euler XYZ in degrees, the inverse of CommonLib's
 // NiMatrix3::SetEulerAnglesXYZ (src/RE/N/NiMatrix3.cpp:90-109): its
@@ -831,6 +769,12 @@ struct BodyRead
   // awake), and the island's other members (ReadIslandOf, below)
   bool hasIsland = false;
   std::vector<BodyRef> island;
+  // thuum ADR-071 rung 4 (D-PH10 A): a reference that is not whole and has a
+  // part carries every part's pose in walk order, pos in game units and quat
+  // as Havok keeps it (ReadBody); none for a whole reference, one with no
+  // part, or a walk cut short
+  bool hasBones = false;
+  std::vector<PropBodies::Pose> bones;
 };
 
 // one reference's body, false when the reference, its 3D
@@ -863,7 +807,23 @@ struct BodyRead
 // (hkpEntity.h:92) set and in the world's active list
 // (H/hkpSimulationIsland.h:41, the bit lab/frida/prop-sleep.js reads;
 // HYPOTHESIS until E10 reads under the 60 fps cap: in the active list means
-// awake)
+// awake).
+// Since thuum ADR-071 rung 4 (D-PH10 A; the build spec's C3) the bodies are
+// PropBodies' walk (ReadWalk, its fault said as line N4 and no row this
+// time), and the row is read three ways. A whole reference (one body, not
+// Fixed: an item, a trap rock) answers rung 3's row from its one body, now
+// also from a body deeper than one level; one with no part (an all-Fixed
+// static) answers its first body's row, motion 5, as BodyOf did. Otherwise,
+// with a part (the Riverwood Trader sign's boards on their Fixed anchor):
+// awake when any part's island is set and in the active list; motion, lin
+// and ang the fastest part's (the largest linear speed), so the client's
+// send priority needs no math of its own; and bones, every part's pose in
+// walk order (PropBodies::PoseOf, pos times the world scale's inverse into
+// game units, quat as read), none when the walk was cut. pos and rot stay the
+// 3D root's either way (the sign's anchor; HYPOTHESIS for a whole body that
+// hangs below its root that the root moves with it, rung 2's R9: the trap
+// scenarios read it). The parts' fields are read after the guarded walk,
+// under no lock, as the velocities always were
 bool ReadBody(uint32_t formId, float toGameUnits, BodyRead& out)
 {
   auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
@@ -873,19 +833,52 @@ bool ReadBody(uint32_t formId, float toGameUnits, BodyRead& out)
   if (!root || !world) {
     return false;
   }
-  const PropBody body = BodyOf(*root);
-  if (!body.havok) {
+  PropBodies::Walk walk;
+  if (!PropBodies::ReadWalk(*root, formId, walk) || walk.bodies == 0) {
     return false;
   }
-  const auto& motion = body.havok->motion;
-  const auto* island = body.havok->simulationIsland;
   out.formId = formId;
-  out.awake = island && island->isInActiveIslandsArray;
-  out.motion = motion.type.underlying();
   out.pos = root->world.translate;
   out.rot = EulerDegreesXYZ(root->world.rotate);
-  out.lin = Vec3(motion.linearVelocity, toGameUnits);
-  out.ang = Vec3(motion.angularVelocity, 1.f);
+  if (PropBodies::IsWhole(walk) || walk.nParts == 0) {
+    const auto& motion = walk.first.havok->motion;
+    const auto* island = walk.first.havok->simulationIsland;
+    out.awake = island && island->isInActiveIslandsArray;
+    out.motion = motion.type.underlying();
+    out.lin = Vec3(motion.linearVelocity, toGameUnits);
+    out.ang = Vec3(motion.angularVelocity, 1.f);
+    return true;
+  }
+  const RE::hkpRigidBody* fastest = walk.parts[0].havok;
+  float fastestSq = -1.f;
+  bool awake = false;
+  for (uint32_t i = 0; i < walk.nParts; ++i) {
+    const RE::hkpRigidBody* havok = walk.parts[i].havok;
+    const auto* island = havok->simulationIsland;
+    awake = awake || (island && island->isInActiveIslandsArray);
+    const RE::NiPoint3 v = Vec3(havok->motion.linearVelocity, 1.f);
+    const float sq = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (sq > fastestSq) {
+      fastestSq = sq;
+      fastest = havok;
+    }
+  }
+  out.awake = awake;
+  out.motion = fastest->motion.type.underlying();
+  out.lin = Vec3(fastest->motion.linearVelocity, toGameUnits);
+  out.ang = Vec3(fastest->motion.angularVelocity, 1.f);
+  if (walk.cut) {
+    return true;
+  }
+  out.hasBones = true;
+  out.bones.reserve(walk.nParts);
+  for (uint32_t i = 0; i < walk.nParts; ++i) {
+    PropBodies::Pose pose = PropBodies::PoseOf(*walk.parts[i].havok);
+    for (float& f : pose.pos) {
+      f *= toGameUnits;
+    }
+    out.bones.push_back(pose);
+  }
   return true;
 }
 
@@ -935,7 +928,7 @@ size_t WalkIsland(const RE::hkpEntity& body, uint32_t self, BodyRef* out,
   for (int32_t i = 0; entities && i < count && n < max; ++i) {
     const RE::hkpEntity* member = entities[i];
     if (!member || member == &body ||
-        !IsDynamicMotion(member->motion.type.get())) {
+        !PropBodies::IsDynamicMotion(member->motion.type.get())) {
       continue;
     }
     const RE::TESObjectREFR* refr = member->GetUserData();
@@ -978,18 +971,43 @@ size_t GuardedWalkIsland(const RE::hkpEntity& body, uint32_t self,
 
 std::atomic<uint64_t> g_islandFaults{ 0 };
 
+// the body whose island readBodies names (thuum ADR-071 rung 4): a whole
+// reference's one body when its type is dynamic, rung 3's body; otherwise the
+// first part in walk order of a dynamic type whose island is set and in the
+// active list (H/hkpEntity.h:92; H/hkpSimulationIsland.h:41). Null for none
+const RE::hkpRigidBody* IslandBodyOf(const PropBodies::Walk& walk)
+{
+  if (PropBodies::IsWhole(walk)) {
+    const RE::hkpRigidBody* havok = walk.first.havok;
+    return havok && PropBodies::IsDynamicMotion(havok->motion.type.get())
+      ? havok
+      : nullptr;
+  }
+  for (uint32_t i = 0; i < walk.nParts; ++i) {
+    const RE::hkpRigidBody* havok = walk.parts[i].havok;
+    const auto* island = havok->simulationIsland;
+    if (PropBodies::IsDynamicMotion(havok->motion.type.get()) && island &&
+        island->isInActiveIslandsArray) {
+      return havok;
+    }
+  }
+  return nullptr;
+}
+
 // one reference's island (readBodies with islands, for a body its read found
-// awake and of a dynamic type): the body found again as ReadBody finds it
-// (BodyOf), then the guarded walk, the island itself read inside it; on the
+// awake and of a dynamic type): the bodies walked again as ReadBody walks
+// them (PropBodies::ReadWalk) and the island's body taken (IslandBodyOf),
+// then the guarded walk, the island itself read inside it; on the
 // JS thread, never inside the step from the impulse replacement (R2-4's
 // threading HYPOTHESIS), taking no engine lock. The other calls are a
 // form-table read and field reads (TESForm::LookupByID,
 // include/RE/T/TESForm.h:209-218, takes no lock at this pin) and
 // FindCollidableRef in the walk: HYPOTHESIS that it takes none either (E26
 // read it safe inside Havok's own callbacks). False with no island read: no
-// body, a type that is not dynamic, or a faulted read (said at its first and
-// every hundredth: a torn read here moves the read to the game thread's
-// queue in this file's poll shape, PollHostedGaze, never to a lock)
+// body, no island body (IslandBodyOf), a faulted body walk (said as N4) or a
+// faulted island read (said at its first and every hundredth: a torn read
+// here moves the read to the game thread's queue in this file's poll shape,
+// PollHostedGaze, never to a lock)
 bool ReadIslandOf(uint32_t formId, std::vector<BodyRef>& out)
 {
   auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
@@ -997,13 +1015,16 @@ bool ReadIslandOf(uint32_t formId, std::vector<BodyRef>& out)
   if (!root) {
     return false;
   }
-  const PropBody body = BodyOf(*root);
-  if (!body.havok || !IsDynamicMotion(body.havok->motion.type.get())) {
+  PropBodies::Walk walk;
+  if (!PropBodies::ReadWalk(*root, formId, walk)) {
+    return false;
+  }
+  const RE::hkpRigidBody* body = IslandBodyOf(walk);
+  if (!body) {
     return false;
   }
   BodyRef found[kIslandRefsMax];
-  const size_t n =
-    GuardedWalkIsland(*body.havok, formId, found, kIslandRefsMax);
+  const size_t n = GuardedWalkIsland(*body, formId, found, kIslandRefsMax);
   if (n == kIslandFault) {
     const uint64_t faults =
       g_islandFaults.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -1061,7 +1082,8 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
     const bool found =
       formId != 0 && formId != 0x14 && ReadBody(formId, toGameUnits, read);
     if (found && islands && read.awake &&
-        IsDynamicMotion(static_cast<RE::hkpMotion::MotionType>(read.motion))) {
+        PropBodies::IsDynamicMotion(
+          static_cast<RE::hkpMotion::MotionType>(read.motion))) {
       read.hasIsland = ReadIslandOf(formId, read.island);
     }
     if (all) {
@@ -1114,6 +1136,27 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
       }
       row.Set("island", island);
     }
+    // thuum ADR-071 rung 4: a body of several parts' poses, { pos: [x, y, z]
+    // in game units, quat: [x, y, z, w] } a part, in walk order
+    if (read.hasBones) {
+      auto bones = Napi::Array::New(info.Env(), read.bones.size());
+      for (uint32_t k = 0; k < read.bones.size(); ++k) {
+        const auto& pose = read.bones[k];
+        auto pos = Napi::Array::New(info.Env(), 3);
+        for (uint32_t c = 0; c < 3; ++c) {
+          pos.Set(c, Napi::Number::New(info.Env(), pose.pos[c]));
+        }
+        auto quat = Napi::Array::New(info.Env(), 4);
+        for (uint32_t c = 0; c < 4; ++c) {
+          quat.Set(c, Napi::Number::New(info.Env(), pose.quat[c]));
+        }
+        auto bone = Napi::Object::New(info.Env());
+        bone.Set("pos", pos);
+        bone.Set("quat", quat);
+        bones.Set(k, bone);
+      }
+      row.Set("bones", bones);
+    }
     res.Set(i, row);
   }
   return res;
@@ -1126,9 +1169,13 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
 // by skse64's hook in UI::ProcessMessages, which Main::Update calls every
 // frame; never AddTask, whose tasks run on pool threads during play (run
 // 20261104-043219; ChangeForm.cpp's apply, whose route this is). The native
-// never waits for its task. The task looks the reference up again, walks to
-// its rigid body (BodyOf), refuses a motion type that is not dynamic and
-// calls CommonLib's bhkRigidBody::SetLinearVelocity (B/bhkRigidBody.h:55;
+// never waits for its task. The task looks the reference up again, walks its
+// bodies (PropBodies::ReadWalk, rung 4: a faulted walk said as N4 and nothing
+// set), refuses a reference of several bodies ("a body of several parts
+// (imposeBodies drives it)", the build spec's line N5: a velocity names one
+// body, and a sign's parts are each the follower's drive's), refuses a motion
+// type that is not dynamic and calls CommonLib's
+// bhkRigidBody::SetLinearVelocity (B/bhkRigidBody.h:55;
 // src/RE/B/bhkRigidBody.cpp:26-31, Address Library 78089) with lin times the
 // world scale (bhkWorld::GetWorldScale, B/bhkWorld.h:42-46) and
 // SetAngularVelocity (bhkRigidBody.h:53; .cpp:12-17, 78090) with ang
@@ -1158,16 +1205,26 @@ Napi::Value PuppetApi::SetBodyVelocity(const Napi::CallbackInfo& info)
                    formId);
       return;
     }
-    const PropBody body = BodyOf(*root);
-    if (!body.havok) {
+    PropBodies::Walk walk;
+    if (!PropBodies::ReadWalk(*root, formId, walk)) {
+      return;
+    }
+    if (walk.bodies == 0) {
       logger::warn("[verb:prop-physics] velocity not set on {:x}: no rigid "
-                   "body on its 3D root or the root's children",
+                   "body in its 3D",
                    formId);
       return;
     }
+    if (walk.bodies > 1) {
+      logger::warn("[verb:prop-physics] velocity not set on {:x}: a body of "
+                   "several parts (imposeBodies drives it)",
+                   formId);
+      return;
+    }
+    const PropBodies::Body& body = walk.first;
     const auto type = body.havok->motion.type;
     const uint32_t motion = type.underlying();
-    if (!IsDynamicMotion(type.get())) {
+    if (!PropBodies::IsDynamicMotion(type.get())) {
       logger::warn("[verb:prop-physics] velocity not set on {:x}: motion {} "
                    "is not dynamic",
                    formId, motion);
@@ -1197,6 +1254,408 @@ Napi::Value PuppetApi::SetImpulseCauseRule(const Napi::CallbackInfo& info)
 {
   const auto on = NapiHelper::ExtractBoolean(info[0], "on");
   return Napi::Boolean::New(info.Env(), Frida::SetImpulseCauseRule(on));
+}
+
+// thuum docs/DECISIONS.md ADR-071 rung 4, D-PH9 A (each seat reads the class
+// from its loaded 3D: the root's BSX kDynamic, through one export, cached per
+// binding by the client): the reference's 3D root's BSX block, by the key
+// built per call as CommonLib's own HasAnimation builds it
+// (src/RE/N/NiAVObject.cpp:121-125; NiObjectNET::GetExtraData,
+// N/NiObjectNET.h:40-41; no function-local static, whose destructor would
+// release the engine's string at the DLL's unload, HYPOTHESIS), its flags
+// (BSXFlags::GetFlags, B/BSXFlags.h:43) and kDynamic (B/BSXFlags.h:22), then
+// PropBodies' walk. On the JS thread, as readBodies reads (a form-table read,
+// TESForm::LookupByID, T/TESForm.h:210-227, under no lock at this pin;
+// TESObjectREFR::Get3D, T/TESObjectREFR.h:375; field reads), no task, no
+// Papyrus call, no log of its own (the client's class line carries it).
+// HYPOTHESIS that the engine's string cache takes the per-call key off the
+// main thread as it does from the engine's own threads
+Napi::Value PuppetApi::GetBodyClass(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  auto* refr =
+    formId != 0 ? RE::TESForm::LookupByID<RE::TESObjectREFR>(formId) : nullptr;
+  auto* root = refr ? refr->Get3D() : nullptr;
+  if (!root) {
+    return info.Env().Null();
+  }
+  const auto* bsx = root->GetExtraData<RE::BSXFlags>("BSX");
+  const uint32_t flags = bsx ? static_cast<uint32_t>(bsx->GetFlags()) : 0u;
+  const bool dynamic =
+    (flags & static_cast<uint32_t>(RE::BSXFlags::Flag::kDynamic)) != 0;
+  PropBodies::Walk walk;
+  if (!PropBodies::ReadWalk(*root, formId, walk)) {
+    return info.Env().Null();
+  }
+  auto parts = Napi::Array::New(info.Env(), walk.nParts);
+  for (uint32_t i = 0; i < walk.nParts; ++i) {
+    const auto& part = walk.parts[i];
+    auto row = Napi::Object::New(info.Env());
+    // the part's node by its name (NiObjectNET::name, N/NiObjectNET.h:53),
+    // "" for a node with none (BSFixedString::c_str answers "" for no
+    // string, B/BSFixedString.h:116-123)
+    row.Set(
+      "node",
+      Napi::String::New(info.Env(), part.node ? part.node->name.c_str() : ""));
+    row.Set(
+      "motion",
+      Napi::Number::New(info.Env(), part.havok->motion.type.underlying()));
+    parts.Set(i, row);
+  }
+  auto res = Napi::Object::New(info.Env());
+  res.Set("bsx", Napi::Number::New(info.Env(), flags));
+  res.Set("dynamic", Napi::Boolean::New(info.Env(), dynamic));
+  res.Set("bodies", Napi::Number::New(info.Env(), walk.bodies));
+  res.Set("fixed", Napi::Number::New(info.Env(), walk.fixed));
+  res.Set("parts", parts);
+  res.Set("cut", Napi::Boolean::New(info.Env(), walk.cut));
+  return res;
+}
+
+namespace {
+// thuum docs/DECISIONS.md ADR-071 rung 4, the follower's impose (D-PH10 A; the
+// route K3 under D-PH26 A; the build spec's C3 and section C): imposeBodies
+// keeps the newest poses per form and one drain on the main thread applies
+// them. At most this many forms held at once (UNMEASURED: one sign today, a
+// field of corpses at rung 5; ChangeForm.cpp:1490-1492's per-form table
+// shape)
+constexpr size_t kImposeRefsMax = 64;
+// a part farther than this from its target is placed outright, not driven
+// (UNMEASURED, twice E24's 32: thuum docs/engine/havok-props.md)
+constexpr float kBodySnapUnits = 64.f;
+// the drive's step, the part's world's own clamped to these (the spec's
+// F9: HYPOTHESIS until B5's read, 1/60 under decision 7's cap)
+constexpr float kImposeDtMin = 1.f / 240.f;
+constexpr float kImposeDtMax = 1.f / 30.f;
+// a pose's quaternion off unit length by at most this, wire-validate's
+// PROP_QUAT_NORM_SLACK (skymp-wire crates/wire-validate/src/lib.rs:86)
+constexpr float kImposeQuatSlack = 0.01f;
+// the snap line at most once a second per form
+constexpr uint64_t kImposeSnapSayEveryMs = 1000;
+// the drain's said-once sets, cleared past this size
+constexpr size_t kImposeSaidMax = 1024;
+
+// one form's newest poses, game units and unit quaternions, a part each in
+// the follower's walk order; rest the stream's rest, placed outright and then
+// dropped; seq the store's number, so the drain drops only what it applied
+struct ImposeEntry
+{
+  std::vector<PropBodies::Pose> poses;
+  bool rest = false;
+  uint64_t seq = 0;
+};
+
+// written on the JS thread (imposeBodies, releaseBodies) and read by the
+// drain on the main thread, under the one mutex, never held across an engine
+// call
+std::mutex g_imposeMutex;
+std::unordered_map<uint32_t, ImposeEntry> g_impose;
+uint64_t g_imposeSeq = 0;
+// a drain queued and not yet begun; cleared at the drain's start, so a store
+// during a drain queues the next one, and at most one waits in the queue
+std::atomic<bool> g_imposeDrainQueued{ false };
+// stores refused for a full table
+std::atomic<uint64_t> g_imposeFull{ 0 };
+
+// the drain's own memory, read and written on the main thread alone
+bool g_imposeDrainSaid = false;
+std::unordered_set<uint32_t> g_imposeNo3DSaid;
+std::unordered_set<uint64_t> g_imposeSkipSaid;
+std::unordered_map<uint32_t, uint64_t> g_imposeSnapSaidMs;
+
+// a JS array of exactly n numbers into out; a value of another shape throws
+// as NapiHelper's extractors throw (ExtractNiPoint3's shape)
+void ExtractLanes(const Napi::Value& v, const std::string& argName, float* out,
+                  uint32_t n)
+{
+  const auto arr = NapiHelper::ExtractArray(v, argName.c_str());
+  if (arr.Length() != n) {
+    throw std::runtime_error("Expected '" + argName +
+                             "' to be array with length " + std::to_string(n));
+  }
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = argName + "[" + std::to_string(i) + "]";
+    out[i] = NapiHelper::ExtractFloat(arr.Get(i), name.c_str());
+  }
+}
+
+// the part's drive step: its world's (hkpWorldObject::world,
+// H/hkpWorldObject.h:65) dynamicsStepInfo.stepInfo.deltaTime
+// (H/hkpWorld.h:193, H/hkStepInfo.h:12) clamped, or 0 (no write) with no
+// world or a step that is not a positive number
+float ImposeStepOf(const RE::hkpRigidBody& body)
+{
+  const RE::hkpWorld* world = body.world;
+  if (!world) {
+    return 0.f;
+  }
+  const float raw = world->dynamicsStepInfo.stepInfo.deltaTime;
+  if (!std::isfinite(raw) || !(raw > 0.f)) {
+    return 0.f;
+  }
+  return std::clamp(raw, kImposeDtMin, kImposeDtMax);
+}
+
+// one form's poses applied on the main thread; true when the form leaves the
+// table (no reference with 3D, or its rest placed)
+bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
+               float toGameUnits)
+{
+  auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
+  auto* root = refr ? refr->Get3D() : nullptr;
+  if (!root) {
+    if (g_imposeNo3DSaid.size() > kImposeSaidMax) {
+      g_imposeNo3DSaid.clear();
+    }
+    if (g_imposeNo3DSaid.insert(formId).second) {
+      logger::info("[verb:prop-physics] impose {:x}: no reference with 3D, "
+                   "dropped",
+                   formId);
+    }
+    return true;
+  }
+  PropBodies::Walk walk;
+  if (!PropBodies::ReadWalk(*root, formId, walk)) {
+    return false;
+  }
+  const auto n = static_cast<uint32_t>(entry.poses.size());
+  if (walk.cut || n != walk.nParts) {
+    // a pose for each part, in each seat's walk order, or none (E55; the
+    // spec's F2): the counts both at most 64, so one key a (form, n, m)
+    const uint64_t key = (static_cast<uint64_t>(formId) << 16) |
+      (static_cast<uint64_t>(n & 0xff) << 8) | (walk.nParts & 0xff);
+    if (g_imposeSkipSaid.size() > kImposeSaidMax) {
+      g_imposeSkipSaid.clear();
+    }
+    if (g_imposeSkipSaid.insert(key).second) {
+      logger::info("[verb:prop-physics] impose {:x} skipped: {} poses against "
+                   "{} parts here{}",
+                   formId, n, walk.nParts, walk.cut ? ", its walk cut" : "");
+    }
+    return false;
+  }
+  PropBodies::Pose targets[PropBodies::kPartsMax];
+  float farthest = 0.f;
+  uint32_t farthestPart = 0;
+  for (uint32_t i = 0; i < n; ++i) {
+    targets[i] = entry.poses[i];
+    for (float& f : targets[i].pos) {
+      f *= toHavok;
+    }
+    const PropBodies::Pose now = PropBodies::PoseOf(*walk.parts[i].havok);
+    float sq = 0.f;
+    for (size_t c = 0; c < 3; ++c) {
+      const float d = now.pos[c] - targets[i].pos[c];
+      sq += d * d;
+    }
+    const float off = std::sqrt(sq) * toGameUnits;
+    if (off > farthest) {
+      farthest = off;
+      farthestPart = i;
+    }
+  }
+  const bool snap = farthest > kBodySnapUnits;
+  if (entry.rest || snap) {
+    for (uint32_t i = 0; i < n; ++i) {
+      PropBodies::PlaceBody(walk.parts[i], targets[i]);
+    }
+    if (snap) {
+      const uint64_t nowMs = Puppets::NowMs();
+      if (g_imposeSnapSaidMs.size() > kImposeSaidMax) {
+        g_imposeSnapSaidMs.clear();
+      }
+      auto it = g_imposeSnapSaidMs.find(formId);
+      if (it == g_imposeSnapSaidMs.end() ||
+          nowMs - it->second >= kImposeSnapSayEveryMs) {
+        g_imposeSnapSaidMs[formId] = nowMs;
+        logger::info("[verb:prop-physics] impose {:x} placed: part {} {:.1f} "
+                     "units off",
+                     formId, farthestPart, farthest);
+      }
+    }
+    return entry.rest;
+  }
+  for (uint32_t i = 0; i < n; ++i) {
+    const PropBodies::Body& part = walk.parts[i];
+    PropBodies::DriveBody(part, targets[i], ImposeStepOf(*part.havok));
+  }
+  return false;
+}
+
+// the drain, on the main thread (SKSE's UI task queue, below): every form's
+// newest poses taken one at a time under the table's mutex and applied with
+// it released, so releaseBodies between two forms is honoured; a form whose
+// entry changed while it was applied keeps the newer entry. No
+// bhkWorld::worldLock (B/bhkWorld.h:71): HYPOTHESIS (rule 2, the static read
+// on sky-re the build spec's F7 records, of 78089 and 78090, which just addr
+// placed on 2026-11-13, addrlib: 0xe931e0 and 0xe932b0 on 1.6.1170) that
+// they take the body's world lock for write and activate its island, so a
+// sleeping copy wakes with no other call and a driven part stays awake while
+// it is driven, and that SetPosition and SetRotation (slots 0x35 and 0x36)
+// lock as they need
+void DrainImpose()
+{
+  g_imposeDrainQueued.store(false);
+  if (!g_imposeDrainSaid) {
+    g_imposeDrainSaid = true;
+    // the spec's F8: Main's (M/Main.h:87 threadID) until this line reads
+    // equal ids, HYPOTHESIS
+    const auto* main = RE::Main::GetSingleton();
+    logger::info("[verb:prop-physics] impose drain on thread {}, Main's {}",
+                 static_cast<uint32_t>(::GetCurrentThreadId()),
+                 main ? main->threadID : 0u);
+  }
+  std::vector<uint32_t> ids;
+  {
+    std::lock_guard<std::mutex> lock(g_imposeMutex);
+    ids.reserve(g_impose.size());
+    for (const auto& held : g_impose) {
+      ids.push_back(held.first);
+    }
+  }
+  const float toHavok = RE::bhkWorld::GetWorldScale();
+  const float toGameUnits = RE::bhkWorld::GetWorldScaleInverse();
+  for (const uint32_t formId : ids) {
+    ImposeEntry entry;
+    {
+      std::lock_guard<std::mutex> lock(g_imposeMutex);
+      const auto it = g_impose.find(formId);
+      if (it == g_impose.end()) {
+        continue;
+      }
+      entry = it->second;
+    }
+    if (!ImposeOne(formId, entry, toHavok, toGameUnits)) {
+      continue;
+    }
+    std::lock_guard<std::mutex> lock(g_imposeMutex);
+    const auto it = g_impose.find(formId);
+    if (it != g_impose.end() && it->second.seq == entry.seq) {
+      g_impose.erase(it);
+    }
+  }
+}
+} // namespace
+
+// thuum docs/DECISIONS.md ADR-071 rung 4 (D-PH10 A, the stream and impose of
+// a body's parts; the route K3 under D-PH26 A): the follower's newest poses
+// for a reference's parts, validated and stored on the JS thread, applied on
+// the main thread by one drain queued on SKSE's UI task queue (AddUITask,
+// include/SKSE/Interfaces.h:198), never AddTask (ChangeForm.cpp:1477-1489,
+// run 20261104-043219), at most one drain waiting, and never waited for. The
+// drain looks each form up again, walks it (PropBodies::ReadWalk) and lays
+// pose i on part i: with rest set, or a part more than 64 units from its
+// target, every part placed (PropBodies::PlaceBody; the snap said at most
+// once a second a form, line N6, and a rest dropping the form); otherwise
+// every part driven (PropBodies::DriveBody) over its world's step. A form
+// with no 3D is dropped (N3, once a form); a pose count that is not the
+// walk's part count is skipped (N2, once a (form, count, parts)). Refused,
+// false and nothing stored: 0, the player's own id, no pose, more than 64, a
+// value that is not a number, a quaternion off unit length by more than 0.01
+// (wire-validate's PROP_QUAT_NORM_SLACK), no SKSE task interface, or a full
+// table (64 forms, said at the first and every hundredth). A pose of another
+// shape throws, as the platform's extractors throw
+Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  const auto bones = NapiHelper::ExtractArray(info[1], "bones");
+  const bool rest = NapiHelper::ExtractBoolean(info[2], "rest");
+  const uint32_t n = bones.Length();
+  const auto* tasks = SKSE::GetTaskInterface();
+  if (formId == 0 || formId == 0x14 || n == 0 || n > PropBodies::kPartsMax ||
+      !tasks) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  std::vector<PropBodies::Pose> poses;
+  poses.reserve(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = "bones[" + std::to_string(i) + "]";
+    auto bone = NapiHelper::ExtractObject(bones.Get(i), name.c_str());
+    PropBodies::Pose pose;
+    ExtractLanes(bone.Get("pos"), name + ".pos", pose.pos, 3);
+    ExtractLanes(bone.Get("quat"), name + ".quat", pose.quat, 4);
+    bool finite = true;
+    for (float f : pose.pos) {
+      finite = finite && std::isfinite(f);
+    }
+    float sq = 0.f;
+    for (float f : pose.quat) {
+      finite = finite && std::isfinite(f);
+      sq += f * f;
+    }
+    const float len = std::sqrt(sq);
+    if (!finite || !(std::abs(len - 1.f) <= kImposeQuatSlack)) {
+      return Napi::Boolean::New(info.Env(), false);
+    }
+    for (float& f : pose.quat) {
+      f /= len;
+    }
+    poses.push_back(pose);
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_imposeMutex);
+    if (g_impose.count(formId) == 0 && g_impose.size() >= kImposeRefsMax) {
+      const uint64_t full =
+        g_imposeFull.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (full == 1 || full % 100 == 0) {
+        logger::warn("[verb:prop-physics] impose {:x} refused: {} forms "
+                     "already held ({} so far)",
+                     formId, kImposeRefsMax, full);
+      }
+      return Napi::Boolean::New(info.Env(), false);
+    }
+    auto& entry = g_impose[formId];
+    entry.poses = std::move(poses);
+    entry.rest = rest;
+    entry.seq = ++g_imposeSeq;
+  }
+  if (!g_imposeDrainQueued.exchange(true)) {
+    tasks->AddUITask([]() {
+      try {
+        DrainImpose();
+      } catch (const std::exception& e) {
+        logger::error("[verb:prop-physics] impose drain threw on the main "
+                      "thread: {}",
+                      e.what());
+      }
+    });
+  }
+  return Napi::Boolean::New(info.Env(), true);
+}
+
+// thuum docs/DECISIONS.md ADR-071 rung 4: the form's stored poses dropped,
+// so the drain lays nothing more on it (a take-over, a quiet stream, a
+// follow's end). Under K3 nothing else: the parts were never set another
+// motion type. A later K4 or K1 (the build spec's section C) restores each
+// part's captured type here. True when poses were held; false for 0, the
+// player's own id or none held. A table operation on the JS thread, no game
+// call
+Napi::Value PuppetApi::ReleaseBodies(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  if (formId == 0 || formId == 0x14) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  bool held = false;
+  {
+    std::lock_guard<std::mutex> lock(g_imposeMutex);
+    held = g_impose.erase(formId) != 0;
+  }
+  return Napi::Boolean::New(info.Env(), held);
+}
+
+// thuum docs/DECISIONS.md ADR-071 rung 4, D-PH9 A (thuum
+// .claude/rules/native.md's kill switch): the contact hook's world-body
+// switch (FridaHooks.cpp OnPropContactEnter), one atomic flag, off by default
+// so a client that never sets it keeps rung 3's filter; skymp5-client's
+// setting propWorldBodies turns it on. No game call; Frida's setter logs the
+// switch for the lab ("[verb:prop-physics] world-body contacts on|off", the
+// spec's line N7); true
+Napi::Value PuppetApi::SetWorldBodyContacts(const Napi::CallbackInfo& info)
+{
+  const auto on = NapiHelper::ExtractBoolean(info[0], "on");
+  Frida::SetWorldBodyContacts(on);
+  return Napi::Boolean::New(info.Env(), true);
 }
 
 // thuum ADR-068 rung 3 (the script record, amendment A): the pending set the

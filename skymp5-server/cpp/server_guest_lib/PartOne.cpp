@@ -6735,11 +6735,17 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
 }
 }
 
-bool PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
-                        const NiPoint3& from, bool dual)
+PartOne::CastStart PartOne::StartCast(uint32_t actorFormId, uint32_t spell,
+                                      uint8_t hand, const NiPoint3& from,
+                                      bool dual)
 {
   const auto facts = CastFactsFor(worldState, spell, hand, from, dual);
   const uint64_t nowMs = SteadyNowMs();
+  // the open stream reported again keeps its count and is no new cast: no
+  // placement, no relay, no start (wire-rules casts::Casts::continues)
+  if (pImpl->spellCasts->continues(actorFormId, facts, nowMs)) {
+    return CastStart::Continued;
+  }
   // thuum docs/verbs/spell-placed-object.md (ADR-057): a listed spell's
   // cast waits for its placement from where the caster stands and faces
   // (the recorded angle's Z, the yaw the script read)
@@ -6765,7 +6771,9 @@ bool PartOne::StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
                                     cast, nowMs);
     SendPlacementRequests();
   }
-  return pImpl->spellCasts->start(actorFormId, facts, nowMs);
+  return pImpl->spellCasts->start(actorFormId, facts, nowMs)
+    ? CastStart::RelayAtFirstHit
+    : CastStart::RelayNow;
 }
 
 void PartOne::EndCast(uint32_t actorFormId, uint8_t hand)

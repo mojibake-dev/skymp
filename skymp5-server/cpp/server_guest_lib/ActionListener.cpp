@@ -9924,9 +9924,20 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
   // actor) is drawn there only once its first hit names the target (thuum
   // docs/verbs/spell-cast.md, playtest twenty-three: the caster's guess at
   // the target was 0 at every Shadowbond and Azure Reconstruction cast)
-  const bool relayAtFirstHit =
+  const auto started =
     partOne.StartCast(caster->GetFormId(), spellCastData.spell, hand,
                       caster->GetPos(), spellCastData.isDualCasting);
+  if (started == PartOne::CastStart::Continued) {
+    // the stream already open in this hand, reported again (playtest 51: a
+    // hosted vampire's drain about every 0.17 s): it keeps its count, and
+    // nothing is relayed, run or raised again (wire-rules
+    // casts::Casts::continues)
+    spdlog::debug("ActionListener::OnSpellCast - {:x} cast {:x} in hand {}: "
+                  "its open stream, reported again; continued",
+                  caster->GetFormId(), spellCastData.spell, hand);
+    return;
+  }
+  const bool relayAtFirstHit = started == PartOne::CastStart::RelayAtFirstHit;
   EndConcealment(partOne, *caster, spellCastData.spell);
   RunSelfSpell(partOne.worldState, *caster, spellCastData.spell);
 

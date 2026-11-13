@@ -213,6 +213,9 @@ struct Open {
     /// docs/verbs/spell-cast.md, b-duel's Flames leg: the engine's last hit
     /// report follows the hand's equipped event by up to a cadence).
     ending: bool,
+    /// When the caster's game last reported this stream's cast (its start,
+    /// or a later report it continued: [`Casts::continues`]).
+    last_report_ms: u64,
 }
 
 /// A cast whose records reach other spells, kept for its linger.
@@ -292,7 +295,7 @@ impl Casts {
             }
             CastKind::Concentration => {
                 if let Some(slot) = casts.open.get_mut(hand) {
-                    *slot = Some(Open { facts, last_counted_ms: now_ms, relay_pending: facts.lands_on_target, counted: false, ending: false });
+                    *slot = Some(Open { facts, last_counted_ms: now_ms, relay_pending: facts.lands_on_target, counted: false, ending: false, last_report_ms: now_ms });
                 }
             }
         }
@@ -307,6 +310,36 @@ impl Casts {
             casts.lingering.push_back(Lingering { facts, at_ms: now_ms, claims: [(0, 0); MAX_REACHED_TARGETS] });
         }
         facts.lands_on_target
+    }
+
+    /// Whether `actor`'s concentration cast reported at `now_ms` is the
+    /// stream already open in its hand, reported again: the same spell, not
+    /// ending, its last report or counted hit within `HOLE_MS`. If so the
+    /// stream keeps its count and its pending relay, takes the report's
+    /// position and reach, and true is returned: the caller relays nothing
+    /// and starts nothing (thuum docs/verbs/spell-cast.md, playtest 51: a
+    /// hosted vampire's drain was reported about every 0.17 s, and each
+    /// report reopened the stream, so its hits counted 0.001 s and 0.08 to
+    /// 0.15 s in turn, about half the seconds it held; the module's contract
+    /// is the time the stream held its target, not how often its caster's
+    /// game reports it). Anything else returns false and changes nothing:
+    /// the caller starts the cast as before. A new stream always follows an
+    /// end, and a report more than `HOLE_MS` after the stream's last news is
+    /// a new stream too, so a later cast never merges into a stale one.
+    pub fn continues(&mut self, actor: u32, facts: CastFacts, now_ms: u64) -> bool {
+        if facts.kind != CastKind::Concentration || !finite(&facts) {
+            return false;
+        }
+        let Some(open) = self.per_actor.get_mut(&actor).and_then(|c| c.open.get_mut(usize::from(facts.hand))).and_then(Option::as_mut) else {
+            return false;
+        };
+        let last_news = open.last_counted_ms.max(open.last_report_ms);
+        if open.facts.spell != facts.spell || open.ending || now_ms.saturating_sub(last_news) > HOLE_MS {
+            return false;
+        }
+        open.facts = CastFacts { lands_on_target: open.facts.lands_on_target, ..facts };
+        open.last_report_ms = now_ms;
+        true
     }
 
     /// `actor`'s stream in `hand` ended (its stop, or the server's own end of
@@ -868,5 +901,61 @@ mod tests {
         // the newest target's rate is kept
         let newest = 2 + kept + 2;
         assert_eq!(c.claim_reached(1, hit(CLOAK_PROC, newest, 300.0, 0.0, 0.0), [0.0; 3], 1_100), CastCheck::Throttled);
+    }
+
+    // playtest 51: a stream re-reported without an end keeps counting its
+    // held time; a report after an end, a hole or of another spell does not
+    #[test]
+    fn a_re_reported_stream_counts_the_time_it_held_not_its_reports() {
+        let mut c = Casts::default();
+        let flames = cast(FLAMES, 1, CastKind::Concentration, false);
+        c.start(1, flames, 0);
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 200), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
+        // the caster's game reports the same cast 100 ms later: the stream goes on
+        assert!(c.continues(1, CastFacts { x: 10.0, ..flames }, 300));
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 400), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
+        // reopened instead (the old behaviour), the same hit would count 0.1
+        let mut old = Casts::default();
+        old.start(1, flames, 0);
+        old.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 200);
+        old.start(1, flames, 300);
+        assert_eq!(old.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 400), CastCheck::Claimed { scale: 0.1, relay: false, dual: false });
+    }
+
+    #[test]
+    fn a_report_after_a_hole_an_end_or_of_another_spell_is_a_new_stream() {
+        let flames = cast(FLAMES, 1, CastKind::Concentration, false);
+        // past HOLE_MS of the stream's last news
+        let mut c = Casts::default();
+        c.start(1, flames, 0);
+        assert!(!c.continues(1, flames, HOLE_MS + 1));
+        // after its end
+        let mut c = Casts::default();
+        c.start(1, flames, 0);
+        c.end(1, 1);
+        assert!(!c.continues(1, flames, 100));
+        // another spell, another hand, a fire-and-forget cast, no stream at all
+        let mut c = Casts::default();
+        c.start(1, flames, 0);
+        assert!(!c.continues(1, cast(BOLT, 1, CastKind::Concentration, false), 100));
+        assert!(!c.continues(1, cast(FLAMES, 0, CastKind::Concentration, false), 100));
+        assert!(!c.continues(1, cast(FLAMES, 1, CastKind::FireAndForget, false), 100));
+        assert!(!c.continues(2, flames, 100));
+        // a report's news keeps the stream: reports alone, each within the hole, without a hit
+        let mut c = Casts::default();
+        c.start(1, flames, 0);
+        assert!(c.continues(1, flames, 900));
+        assert!(c.continues(1, flames, 1_800));
+    }
+
+    #[test]
+    fn a_landing_streams_re_report_never_relays_it_again() {
+        let mut c = Casts::default();
+        let beam = landing(FLAMES, CastKind::Concentration);
+        assert!(c.start(1, beam, 0));
+        assert!(c.continues(1, beam, 100));
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 200), CastCheck::Claimed { scale: 0.2, relay: true, dual: false });
+        assert!(c.continues(1, beam, 300));
+        assert_eq!(c.claim(1, hit(FLAMES, 2, 100.0, 0.0, 0.0), 400), CastCheck::Claimed { scale: 0.2, relay: false, dual: false });
     }
 }

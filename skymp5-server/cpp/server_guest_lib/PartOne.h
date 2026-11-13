@@ -703,11 +703,21 @@ public:
   // fire-and-forget cast waits for its hit, a concentration one opens in
   // that hand (wire-rules casts); its kind, area and reach come from the
   // records
-  // true: the cast's relay waits for its first hit (every effect delivered
-  // to its target; wire-rules casts::CastFacts::lands_on_target)
-  // `dual`: the caster's game reported a dual cast (EffectWasDualCast 724)
-  bool StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
-                 const NiPoint3& from, bool dual = false);
+  // `dual`: the caster's game reported a dual cast (EffectWasDualCast 724).
+  // How the report was taken: its relay goes now, or waits for its first
+  // hit (every effect delivered to its target; wire-rules
+  // casts::CastFacts::lands_on_target), or it is the concentration stream
+  // already open in that hand reported again (wire-rules
+  // casts::Casts::continues; playtest 51's drain), which keeps its count
+  // and relays and starts nothing
+  enum class CastStart
+  {
+    RelayNow,
+    RelayAtFirstHit,
+    Continued
+  };
+  CastStart StartCast(uint32_t actorFormId, uint32_t spell, uint8_t hand,
+                      const NiPoint3& from, bool dual = false);
   // the stream in `hand` ended
   void EndCast(uint32_t actorFormId, uint8_t hand);
   enum class CastCheck

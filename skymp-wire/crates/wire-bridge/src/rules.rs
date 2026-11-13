@@ -2815,6 +2815,10 @@ mod ffi {
         /// `actor` began a cast at `now_ms` (a monotonic clock). True: the
         /// cast's relay waits for its first hit (`CastFacts::lands_on_target`).
         fn start(self: &mut SpellCasts, actor: u32, facts: CastFacts, now_ms: u64) -> bool;
+        /// Whether `actor`'s concentration cast reported now is its open
+        /// stream reported again (wire-rules casts::Casts::continues): the
+        /// stream keeps its count, and the caller relays and starts nothing.
+        fn continues(self: &mut SpellCasts, actor: u32, facts: CastFacts, now_ms: u64) -> bool;
         /// `actor`'s stream in `hand` ended.
         fn end(self: &mut SpellCasts, actor: u32, hand: u8);
         /// Whether `actor` holds a stream open in `hand`.
@@ -4936,6 +4940,15 @@ impl SpellCasts {
             _ => casts::CastKind::FireAndForget,
         };
         self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual }, now_ms)
+    }
+
+    fn continues(&mut self, actor: u32, facts: CastFacts, now_ms: u64) -> bool {
+        let CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual } = facts;
+        let kind = match kind {
+            CastKind::Concentration => casts::CastKind::Concentration,
+            _ => casts::CastKind::FireAndForget,
+        };
+        self.0.continues(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual }, now_ms)
     }
 
     fn end(&mut self, actor: u32, hand: u8) {

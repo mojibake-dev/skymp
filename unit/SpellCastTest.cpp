@@ -378,3 +378,28 @@ TEST_CASE("A plugin spell reaches by its own effect's projectile",
   Cast(p, kMiraakStorm, true);
   Leave(p);
 }
+
+// playtest 51's drain: a hosted caster's game reported its open stream again
+// about every 0.17 s, and each report reopened it; the stream reported
+// again is the same cast (wire-rules casts::Casts::continues), and after its
+// end a report is a new one. Flames 0x12FCD (Skyrim.esm), an aimed
+// concentration spell, relays at once
+TEST_CASE("A concentration stream reported again is its open stream, not a "
+          "new cast",
+          "[SpellCast][espm]")
+{
+  PartOne& p = GetPartOne();
+  constexpr uint32_t kCaster = 0xff000a51;
+  REQUIRE(p.StartCast(kCaster, 0x12FCD, 1, { 0, 0, 0 }) ==
+          PartOne::CastStart::RelayNow);
+  REQUIRE(p.StartCast(kCaster, 0x12FCD, 1, { 10, 0, 0 }) ==
+          PartOne::CastStart::Continued);
+  // another hand is its own stream
+  REQUIRE(p.StartCast(kCaster, 0x12FCD, 0, { 0, 0, 0 }) ==
+          PartOne::CastStart::RelayNow);
+  p.EndCast(kCaster, 1);
+  p.EndCast(kCaster, 0);
+  REQUIRE(p.StartCast(kCaster, 0x12FCD, 1, { 0, 0, 0 }) ==
+          PartOne::CastStart::RelayNow);
+  p.EndCast(kCaster, 1);
+}

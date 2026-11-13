@@ -10588,7 +10588,8 @@ void ActionListener::ClaimReanimated(
   // simulator alone (ActorUpdatableBy), which a refusal leaves where it was.
   // HYPOTHESIS: the engine also refuses a Reanimate effect whose conditions
   // fail on its target (Dead Thrall at an animal under the masters' record
-  // stands nothing), unread on the lab
+  // stands nothing; UESP's Skyrim:Dead_Thrall says "Only works on
+  // people"), unread on the lab
   const auto effectId = ReanimateEffectOf(&partOne.worldState, effects);
   for (const auto& effect : effects) {
     if (!effectId || effect.effectId != *effectId) {

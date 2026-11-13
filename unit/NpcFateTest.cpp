@@ -1361,6 +1361,16 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   auto& host = p.worldState.GetFormAt<MpActor>(kHost);
   auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
   REQUIRE(p.worldState.HostOf(body) == &host);
+  // the claim's gate (ADR-039, ClaimReanimated): Reanimate Corpse's
+  // 0x96d0b holds on the predator for this caster, the premise of every
+  // section that has it command the body
+  for (const auto& effect :
+       MpActor::EffectsOf(&p.worldState, kReanimateCorpse)) {
+    if (effect.effectId == kReanimateEffect) {
+      REQUIRE(MpActor::EffectConditionsHold(&p.worldState, effect,
+                                            kReanimateCorpse, body, caster));
+    }
+  }
   body.Kill(nullptr);
   REQUIRE(body.IsDead());
 

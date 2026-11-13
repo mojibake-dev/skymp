@@ -1,0 +1,98 @@
+# thuum docs/verbs/prop-physics.md, physics rung 4 (ADR-071; Eli's D-PH9 A and D-PH10 A; the
+# rung 4 spec's section A C2, on the server of m4-physics-4-statics 49081646): a world body on
+# the wire, and the one test that reads a relayed sample's bones on the wire (T0's PropTest
+# relays the bytes its Raw() hands the listener, '{}', unit/PropTest.cpp:123-132). c1 and c2
+# are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003, see melee-reach), at
+# the spawn (startPoints: 133857, -61130, 14662 in Tamriel), the server's grid square (32,
+# -14): a position over 4096, truncated toward zero, as libespm's chunk index
+# (Browser.cpp:288-289) and the listeners' grid count squares. The subject is the ore vein
+# 0x10e6cb (ACTI MineOreMoonstone03_LFallForestRocks, base 0x10db20, at (133493.1, -61558.7,
+# 14494.8), rotation (-12.1, 28.3, 347) degrees, scale 1; lab/esm.py ref on sky-srv, 2026-11-13
+# UTC, and no override of it in T2's 17 plugins): the server's square (32, -15), 562 units from
+# the spawn, so both games are sent its create word at login on both stacks and are its
+# listeners, in the engine's exterior cell 0xbbd2, Tamriel's (32, -16) (CellOf floors), which
+# nobody hosts here. An activator is a world body by its kind (PropKindOf: a game-file
+# reference that is no item, actor, door, container, furniture or static), and since rung 4 a
+# world body is claimed by any touch, as an item is (D-PH9 A; before it, the core refused every
+# touch on one but an impulse, D-S3 point 4). At 2.5 s c1 claims the vein by contact (PropClaim
+# v2, touch 0): granted at epoch 1, the word (PropOwner) to both listeners, the claimant among
+# them. At 3 s c1 sends it awake with two bones (PropTransform v2, epoch 1, seq 1), its parts'
+# poses in its seat's walk order, each within the 512 units of the sample's position
+# wire-validate allows (PROP_BONE_REACH_UNITS, lib.rs:83), its quaternion of unit length
+# (PROP_QUAT_NORM_SLACK, lib.rs:86): the record takes the position and rotation alone (DEF-4c:
+# bones are relayed, never recorded) and the same bytes go to c2, bones and all, unreliable
+# while awake. At 2 s of its own (about 3.5 s of c1's: c2's client starts 1,500 ms after c1's,
+# and each script clock starts at its own login) c2's contact finds the vein streamed awake by
+# c1, inside PROP_MOVING_MS (1,600 ms, wire-rules props.rs:84) of c1's last sample: refused
+# E_PROP_MOVING (A3) and answered with the current word, which is the grant's word again. The
+# window opens at the grant (2.5 s of c1's) and closes at 4.6 s, about a second either side of
+# c2's contact. At 5 s c1 sends its rest (seq 2, asleep, its parts' resting poses): relayed
+# reliable to c2, and the vein is the host's again at epoch 2 (A4), the word naming nobody
+# (player 0) to both. Every position stands a few units from the record: inside the step
+# budget, the tether (kWorldBodyTether, 2048) and the vein's square, so no subscription moves.
+# Every float is an integer, so a declaration matches the f32 the harness compares to the digit
+# (canonical). The legacy stack knows no MsgType 58, 59 or 60, so each message below is
+# declared wire 1 (the repeated word 2), legacy 0. The harness matches a pattern's array
+# element by element anywhere in the received array, so a bone's declaration proves its numbers
+# arrived, not their lane order; the two bones' numbers differ, so each matches on its own.
+# H-S5 (the spec's E0): since rung 4 the server holds every movable static, and none stands in
+# the 3x3 squares around the spawn's, by a read of every Tamriel placement on sky-srv with
+# lab/esm.py's reader, each base resolved across the plugins (2026-11-13 UTC), over T2's pinned
+# load order (lab/deploy/sky-srv/server-settings-t2-load-order.json, 17 plugins) and over the
+# lab's deployed 91: the nearest are two FXPineDroppings (0x106b36, 0x106b35) in square (32,
+# -16), two south of the spawn's, which no session's moves bring into a player's 3x3, and the
+# 7x7 the login's fate pass loads (kFateRing, PartOne.h:1097) holds 24, attached with no
+# listener in reach, so no session's diff gains a create word. c1's departure sends no word:
+# the row returned at rest. c2 steps again at 5 s of its own, so it outlives c1, as in every
+# session.
+id: prop-world-body
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 0, move: {dx: 10}}
+  - {client: c1, at_ms: 2500, send: {t: 59, refrs: [0x10e6cb], touch: 0}, reliable: true}
+  - {client: c1, at_ms: 3000, send: {t: 58, refr: 0x10e6cb, epoch: 1, seq: 1, tMs: 3000, pos: [133500.0, -61570.0, 14500.0], rot: [-12.0, 28.0, 347.0], lin: [20.0, -30.0, 0.0], ang: [1.0, 0.0, 0.0], asleep: false, held: false, bones: [{pos: [133510.0, -61566.0, 14520.0], quat: [0.0, 0.0, 0.0, 1.0]}, {pos: [133488.0, -61578.0, 14480.0], quat: [0.0, -1.0, 0.0, 0.0]}]}, reliable: false}
+  - {client: c1, at_ms: 5000, send: {t: 58, refr: 0x10e6cb, epoch: 1, seq: 2, tMs: 5000, pos: [133504.0, -61574.0, 14496.0], rot: [-12.0, 28.0, 347.0], lin: [0.0, 0.0, 0.0], ang: [0.0, 0.0, 0.0], asleep: true, held: false, bones: [{pos: [133514.0, -61570.0, 14516.0], quat: [0.0, 0.0, 0.0, 1.0]}, {pos: [133492.0, -61582.0, 14476.0], quat: [0.0, -1.0, 0.0, 0.0]}]}, reliable: true}
+  - {client: c2, at_ms: 0, move: {dx: 50}}
+  - {client: c2, at_ms: 2000, send: {t: 59, refrs: [0x10e6cb], touch: 0}, reliable: true}
+  - {client: c2, at_ms: 5000, move: {dx: 60}}
+divergences:
+  # the contact's grant (a world body by any touch since rung 4, D-PH9 A): the word to both listeners
+  - client: c1
+    msg: {t: 60, refr: 0x10e6cb, player: 0xff000002, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the vein's owner word to the claimant, a world body granted by contact as an item is since physics rung 4 (PropOwner, thuum docs/verbs/prop-physics.md, D-PH9 A); the legacy server knows no such message
+  - client: c2
+    msg: {t: 60, refr: 0x10e6cb, player: 0xff000002, epoch: 1}
+    legacy: 0
+    wire: 2
+    reason: the same word to the vein's other listener, and the same word again answering c2's contact, refused E_PROP_MOVING while c1 streams the vein awake (A3, physics rung 4); the legacy server knows no such message
+  # the samples relayed with their bones: the awake one unreliable, the rest reliable
+  - client: c2
+    msg: {t: 58, refr: 0x10e6cb, epoch: 1, seq: 1, asleep: false, pos: [133500.0, -61570.0, 14500.0], bones: [{pos: [133510.0, -61566.0, 14520.0], quat: [0.0, 0.0, 0.0, 1.0]}, {pos: [133488.0, -61578.0, 14480.0], quat: [0.0, -1.0, 0.0, 0.0]}]}
+    legacy: 0
+    wire: 1
+    reason: the simulator's awake sample of a world body relayed to its other listener with its two parts as bones, which the server relays and never records (PropTransform v2, physics rung 4, D-PH10 A and DEF-4c); the legacy server drops the type
+  - client: c2
+    msg: {t: 58, refr: 0x10e6cb, epoch: 1, seq: 2, asleep: true, pos: [133504.0, -61574.0, 14496.0], bones: [{pos: [133514.0, -61570.0, 14516.0], quat: [0.0, 0.0, 0.0, 1.0]}, {pos: [133492.0, -61582.0, 14476.0], quat: [0.0, -1.0, 0.0, 0.0]}]}
+    legacy: 0
+    wire: 1
+    reason: the simulator's rest of a world body relayed reliable to its other listener with its parts' resting poses (PropTransform v2, physics rung 4); the legacy server drops the type
+  # the rest's return (A4: the host's again by default, the word naming nobody)
+  - client: c1
+    msg: {t: 60, refr: 0x10e6cb, player: 0, epoch: 2}
+    legacy: 0
+    wire: 1
+    reason: the vein's owner word at its rest, player 0 at epoch 2 (A4 of ADR-071 decision 2); the legacy server knows no such message
+  - client: c2
+    msg: {t: 60, refr: 0x10e6cb, player: 0, epoch: 2}
+    legacy: 0
+    wire: 1
+    reason: the same return word to the vein's other listener; the legacy server knows no such message
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

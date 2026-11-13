@@ -2217,3 +2217,72 @@ TEST_CASE("A login's create words carry the rolls of the actors in its 3x3, "
   DoDisconnect(p, 0);
   p.DestroyActor(kGuest);
 }
+
+// ADR-063 (playtest 51's break, Gorm's letter: the dialogue's script moved
+// the letter out of Gorm in its talk-lease holder's game, the server
+// refused the move with E_CONTAINER_OCCUPANT, and a relaunch lost the
+// letter): a living NPC's own inventory moves by the game that simulates it,
+// and by nobody else's; a player's inventory is never its cell host's
+TEST_CASE("A living NPC's own items move by the game that simulates it, by "
+          "nobody else's",
+          "[NpcFate][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kHost = 0xff000d61;
+  constexpr uint32_t kOther = 0xff000d62;
+  constexpr uint32_t kGold = 0xf;
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kForest, 0, kTamriel);
+  p.SetUserActor(0, kHost);
+  DoConnect(p, 1);
+  p.CreateActor(kOther, kForest, 0, kTamriel);
+  p.SetUserActor(1, kOther);
+  auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form);
+  MpActor* npcPtr = form->AsActor();
+  REQUIRE(npcPtr);
+  MpActor& npc = *npcPtr;
+  if (npc.IsDead()) {
+    npc.Respawn(false);
+  }
+  p.worldState.fateRespawnDue.erase(kPredator);
+  npc.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  HostGrants(p, 0, kForestCell);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  REQUIRE(p.worldState.HostOf(npc) == &host);
+  REQUIRE_FALSE(npc.IsDead());
+  host.SetPos(npc.GetPos());
+  other.SetPos(npc.GetPos());
+  npc.AddItem(kGold, 2);
+  other.AddItem(kGold, 1);
+  Inventory::Entry one;
+  one.baseId = kGold;
+  one.count = 1;
+
+  // the simulating game's script gives one away: taken
+  auto npcGold = npc.GetInventory().GetItemCount(kGold);
+  auto hostGold = host.GetInventory().GetItemCount(kGold);
+  npc.TakeItem(host, one);
+  REQUIRE(host.GetInventory().GetItemCount(kGold) == hostGold + 1);
+  REQUIRE(npc.GetInventory().GetItemCount(kGold) == npcGold - 1);
+
+  // another game moves nothing of an actor it does not simulate
+  npcGold = npc.GetInventory().GetItemCount(kGold);
+  const auto otherGold = other.GetInventory().GetItemCount(kGold);
+  npc.TakeItem(other, one);
+  REQUIRE(other.GetInventory().GetItemCount(kGold) == otherGold);
+  REQUIRE(npc.GetInventory().GetItemCount(kGold) == npcGold);
+
+  // a player's inventory is its own game's, never its cell host's
+  hostGold = host.GetInventory().GetItemCount(kGold);
+  other.TakeItem(host, one);
+  REQUIRE(host.GetInventory().GetItemCount(kGold) == hostGold);
+  REQUIRE(other.GetInventory().GetItemCount(kGold) == otherGold);
+
+  p.DestroyActor(kOther);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kHost);
+  DoDisconnect(p, 0);
+}

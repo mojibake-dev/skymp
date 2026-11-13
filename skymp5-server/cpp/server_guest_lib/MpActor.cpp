@@ -3314,7 +3314,7 @@ bool MpActor::BodySampleRests(const NiPoint3& pos, const NiPoint3& rot,
 }
 
 bool MpActor::NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
-                             uint64_t nowMs)
+                             uint64_t nowMs, uint32_t sender)
 {
   if (!IsBodySettling()) {
     return false;
@@ -3331,11 +3331,11 @@ bool MpActor::NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
     pImpl->bodyDwellSinceMs = nowMs;
   }
   if (first) {
-    // the live row's owner, or 0: nobody's row, the cell's host's samples
+    // the sample's sender, the body's owner by construction (the live
+    // row's, else the cell's host's), never a bare 0 for a host-owned body
     spdlog::info("[verb:npc-fate] body {:x} settling under {:x}: ({:.0f}, "
                  "{:.0f}, {:.0f})",
-                 GetFormId(), BodyLiveOwner(GetParent(), GetFormId()), pos.x,
-                 pos.y, pos.z);
+                 GetFormId(), sender, pos.x, pos.y, pos.z);
     return false;
   }
   if (!rests) {

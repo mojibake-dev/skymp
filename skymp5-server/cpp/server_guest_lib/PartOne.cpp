@@ -3502,6 +3502,14 @@ uint32_t PartOne::PropEpochOf(const MpObjectReference& prop) const
 uint32_t PartOne::BodyDied(const MpActor& body, uint32_t simulator,
                            uint64_t nowMs)
 {
+  // a simulator no user plays names nobody: a departed host still hosts
+  // its cells through its grace (wire-rules cells gone), its actor still in
+  // the world, and its departure's props_gone has run, so a row naming it
+  // would stand live with no game to stream it and no departure to return
+  // it; owner_of answers the cell's host instead (the review of 71b30412)
+  if (simulator != 0 && !PlayerActor(*this, simulator)) {
+    simulator = 0;
+  }
   // the row's cell is the death's: the movement path never moves it (rung
   // 5's stream does), so an unload of the cell the body died in returns it
   const auto cell = worldState.CellOf(body);

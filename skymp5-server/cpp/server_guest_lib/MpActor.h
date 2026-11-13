@@ -468,8 +468,9 @@ public:
   // row of the prop table (wire-rules props) from its death to its stand-up,
   // told through WorldState::bodyWord. The death writes the row: the
   // simulator's at the death (HostedBy(): the cell's host, a follow's player
-  // or a dialogue's claimant), or nobody's when none simulates it or its
-  // game has the cell unloaded, so the cell's host's by default. For
+  // or a dialogue's claimant), or nobody's when none simulates it, no user
+  // plays it (a departed host in its grace) or its game has the cell
+  // unloaded, so the cell's host's by default. For
   // WorldState::bodySettleMs from the recorded death the row's owner
   // (PartOne::PropOwnerOf) moves the record with its ragdoll's samples (R2:
   // recorded, not judged, inside the movement bounds), and every other
@@ -480,7 +481,7 @@ public:
   // the last one past those bounds) for kBodyRestDwellMs, no sooner than
   // kBodyRestMinMs after the recorded death, which also returns the row to
   // the host at a new epoch; or when the window ends (PartOne::TickBodies),
-  // which ends the settle and never the row (no clock moves a row). From
+  // which ends the settle and never the row (no clock returns a row). From
   // then every sample is refused (E_BODY_AT_REST) until a later claim (a
   // drag or a push: rung 5). A resurrection (Respawn, every stand-up's path)
   // clears it and ends the row. Begun by SendAndSetDeathState for a
@@ -506,11 +507,13 @@ public:
                        uint64_t nowMs) const;
   // the owner's accepted sample, after the record took it: counted, the
   // dwell's anchor moved to it when it left the anchor's bounds; true when
-  // it put the body at rest (and returned its row to the host)
-  bool NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
-                      uint64_t nowMs);
+  // it put the body at rest (and returned its row to the host). `sender`
+  // is the sample's sender, by construction the body's owner (the movement
+  // path's PartOne::PropOwnerOf gate), which the settling line names
+  bool NoteBodySample(const NiPoint3& pos, const NiPoint3& rot, uint64_t nowMs,
+                      uint32_t sender);
   // the window's end: true when the body came to rest now; its row stays
-  // as it stood (a clock moves no row)
+  // as it stood (a clock returns no row)
   bool SettleBodyIfDue(uint64_t nowMs);
   // the stand-up: the settle cleared and the body's row ended
   void ClearBodyRest();

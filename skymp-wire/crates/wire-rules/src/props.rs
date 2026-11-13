@@ -6,17 +6,19 @@
 //! seat whose engine set it moving while it moves, a grabber while its
 //! engine holds it. The server decides who simulates (the claim, R0) and
 //! records the simulator's transforms (R2: only the owner's are taken).
-//! Ownership changes by the server's word alone (`PropOwner`): a grant, the
-//! return to the host at the owner's own asleep sample (player 0, the host
-//! by default), the host's own wake of a resting prop (by id), a departure,
-//! an unload. No timer hands a prop back (playtest 41, Eli: "item physics
+//! A prop's ownership changes by the server's word alone (`PropOwner`): a
+//! grant, the return to the host at the owner's own asleep sample (player
+//! 0, the host by default), the host's own wake of a resting prop (by id),
+//! a departure, an unload; a body's (below) also by the core's own calls
+//! at its death, its rest and its end, each raising the epoch with no word
+//! in 5a. No timer hands a prop back (playtest 41, Eli: "item physics
 //! sync is more broken than it was when we STARTED testing": the 3 s lease
 //! and the 3 s silence returned props the owner still streamed, and no seat
 //! heard it), and the grab's cap is not built either (Eli's D-PH3 A,
 //! 2026-11-11, ADR-071's amendment: a hold ends by the holder's release, its
 //! rest or its departure), so who owns a prop is a function of the words
-//! alone and takes no clock; the moving window judges a claim and the step
-//! allowance a sample, and neither ever returns a row. The claim's rows: a
+//! alone and no clock returns a row; the moving window judges a claim and
+//! the step allowance a sample, and neither returns one. The claim's rows: a
 //! grab beats a touch and nothing beats a grab (Held); a contact, a drop or
 //! an impulse never takes a prop another seat streams awake (Moving), a
 //! trap's world body included (thuum D-S3's first firing wins by the same
@@ -508,7 +510,9 @@ impl Props {
         }
     }
 
-    /// The prop's owner epoch: the last word's, 0 before any.
+    /// The prop's owner epoch: the last word's or, for a body, that of its
+    /// last death, rest or end where later (each raises it with no word in
+    /// 5a); 0 before any.
     #[must_use]
     pub fn epoch_of(&self, refr: u32) -> u32 {
         self.epochs.get(&refr).copied().unwrap_or(0)
@@ -830,9 +834,13 @@ impl Props {
     /// samples, physics rung 5a): a judgment made outside the row, where a
     /// prop's rest is its owner's own asleep sample. A live row (awake or
     /// held) returns to the cell's host by default, asleep and not held, at
-    /// a new epoch, returned, for the core's word (player 0), as a
-    /// departure's return would. A row at rest or naming nobody, and no row,
-    /// change nothing: 0, no word (every word's epoch is 1 or more).
+    /// a new epoch, returned, as a departure's return would but with no
+    /// word: in 5a no word goes out at the death or the rest (only a
+    /// departure or an unload words a live dead row), and rung 5's R5-1
+    /// words both (the bodies synthesis: its words at the death and a dead
+    /// row's asleep sample, the rest's word its R5-3 session reads). A row
+    /// at rest or naming nobody, and no row, change nothing: 0 (every
+    /// raised epoch is 1 or more).
     /// Kind-blind: any row's, though the core asks it for a body's alone,
     /// and never by a clock.
     pub fn rested(&mut self, refr: u32) -> u32 {

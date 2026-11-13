@@ -339,7 +339,7 @@ public:
   // Died at a death this process records (`simulator` the engine that
   // simulated the actor then, HostedBy(), 0 for none; `nowMs` the settle's
   // clock): the row the simulator's at a new epoch. Rested at the dwell's
-  // rest alone, never at the settle window's end (no clock moves a row): a
+  // rest alone, never at the settle window's end (no clock returns a row): a
   // live row the host's again at a new epoch. Ended at the stand-up
   // (ClearBodyRest): the row gone, the epoch up. Returns the epoch after the
   // word, 0 when nothing changed; installed by PartOne (BodyDied, BodyRested,

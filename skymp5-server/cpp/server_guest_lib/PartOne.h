@@ -828,7 +828,7 @@ public:
   // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): a corpse
   // whose settle window passed with no two agreeing samples from its owner
   // is at rest where the record has it (MpActor::SettleBodyIfDue); its row
-  // stays as it stood (physics rung 5a: no clock moves a row)
+  // stays as it stood (physics rung 5a: no clock returns a row)
   void TickBodies(uint64_t nowMs);
   // thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC for a
   // dialogue, the per-actor row beside the cell's host; the word follows
@@ -958,7 +958,8 @@ public:
   // held, else its cell's host, else 0.
   uint32_t PropOwnerOf(const MpObjectReference& prop) const;
   // The prop's owner epoch, up at every word (a grant, a return, the host's
-  // wake, a departure, an unload); 0 before any.
+  // wake, a departure, an unload) and at a body's death, rest and end (with
+  // no word in 5a); 0 before any.
   uint32_t PropEpochOf(const MpObjectReference& prop) const;
   // thuum docs/verbs/npc-fate.md ("The body's rest"; physics rung 5a,
   // ADR-071 decision 5: a dead actor's row is owned by the death's
@@ -968,8 +969,9 @@ public:
   // the row with its word as any prop's. The death (MpActor's settle, R0,
   // the server's own fact, no claim): the row `simulator`'s (the engine that
   // simulated the actor then, 0 for none) in the cell the body died in, awake
-  // at a new epoch, or nobody's (its cell's host by default) for 0 or for a
-  // simulator whose game has that cell unloaded. No word goes out at the
+  // at a new epoch, or nobody's (its cell's host by default) for 0, for a
+  // simulator no user plays (a departed host in its grace) or for one whose
+  // game has that cell unloaded. No word goes out at the
   // death: the seats learn a body's owner from the cells rule's, as before
   // (rung 5 words it). Returns the epoch.
   uint32_t BodyDied(const MpActor& body, uint32_t simulator, uint64_t nowMs);

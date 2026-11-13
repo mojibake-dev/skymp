@@ -282,8 +282,10 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
   bool hostedCellChange = false;
   bool passed = false;
   // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): the report is
-  // a dead NPC's, from the body's owner, inside its settle window
+  // a dead NPC's, from the body's owner, inside its settle window; and that
+  // owner, the sender (the settling line names it)
   bool bodySample = false;
+  uint32_t bodySender = 0;
   const uint64_t nowMs = static_cast<uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch())
@@ -403,6 +405,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
           return;
         }
         bodySample = true;
+        bodySender = owner;
       }
       auto verdict =
         partOne.MayMoveActor(*myActor, *moved, msg.data.worldOrCell, destPos);
@@ -686,7 +689,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // samples held still for the dwell, saves the record at once and ends
     // the window
     if (bodySample) {
-      actor->NoteBodySample(reportedPos, reportedRot, nowMs);
+      actor->NoteBodySample(reportedPos, reportedRot, nowMs, bodySender);
     }
     actor->SetAnimationVariableBool(
       AnimationVariableBool::kVariable_bInJumpState, msg.data.isInJumpState);

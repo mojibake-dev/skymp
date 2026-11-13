@@ -1257,36 +1257,37 @@ TEST_CASE("The body's rest: samples held within 2 units and 2 degrees of the "
   // b-npc-death's red (rung 3's gate 20261107-005511): the engine's reference
   // holds the death point while the ragdoll starts, so its first samples
   // agree 133 ms apart; however long they agree, no rest before the floor
-  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 50));
-  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 183));
-  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 1'500));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 50, kHost));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 183, kHost));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d + 1'500, kHost));
   REQUIRE_FALSE(actor.IsBodyAtRest());
   REQUIRE(actor.BodySampleCount() == 3);
 
   // then the ragdoll slides: a sample past the anchor's bounds starts the
   // dwell again there
   const NiPoint3 slid = deathPoint + NiPoint3{ 400.f, 0.f, -150.f };
-  REQUIRE_FALSE(actor.NoteBodySample(slid, lying, d + 2'730));
+  REQUIRE_FALSE(actor.NoteBodySample(slid, lying, d + 2'730, kHost));
   // a creep: each step 1.5 units from the last, which two agreeing samples
   // called a rest before; the second is 3 units from the anchor, so the
   // dwell starts again at it
   const NiPoint3 crept = slid + NiPoint3{ 3.f, 0.f, 0.f };
-  REQUIRE_FALSE(
-    actor.NoteBodySample(slid + NiPoint3{ 1.5f, 0.f, 0.f }, lying, d + 3'000));
-  REQUIRE_FALSE(actor.NoteBodySample(crept, lying, d + 3'130));
+  REQUIRE_FALSE(actor.NoteBodySample(slid + NiPoint3{ 1.5f, 0.f, 0.f }, lying,
+                                     d + 3'000, kHost));
+  REQUIRE_FALSE(actor.NoteBodySample(crept, lying, d + 3'130, kHost));
   // a turn of 3 degrees in place: the angle starts it again
   REQUIRE_FALSE(
-    actor.NoteBodySample(crept, NiPoint3{ 0.f, 0.f, 13.f }, d + 3'260));
+    actor.NoteBodySample(crept, NiPoint3{ 0.f, 0.f, 13.f }, d + 3'260, kHost));
   // 359 is 14 degrees from 13 through the heading's wrap: again
-  REQUIRE_FALSE(
-    actor.NoteBodySample(crept, NiPoint3{ 0.f, 0.f, 359.f }, d + 3'390));
+  REQUIRE_FALSE(actor.NoteBodySample(crept, NiPoint3{ 0.f, 0.f, 359.f },
+                                     d + 3'390, kHost));
   REQUIRE_FALSE(actor.IsBodyAtRest());
   // 1 unit off the anchor and 1.5 degrees through the wrap (359 to 0.5):
   // 510 ms into the dwell is short of it, 750 ms ends it
   REQUIRE_FALSE(actor.NoteBodySample(crept + NiPoint3{ 1.f, 0.f, 0.f },
-                                     NiPoint3{ 0.f, 0.f, 0.5f }, d + 3'900));
+                                     NiPoint3{ 0.f, 0.f, 0.5f }, d + 3'900,
+                                     kHost));
   REQUIRE(actor.NoteBodySample(crept + NiPoint3{ 1.f, 0.f, 0.f },
-                               NiPoint3{ 0.f, 0.f, 0.5f }, d + 4'140));
+                               NiPoint3{ 0.f, 0.f, 0.5f }, d + 4'140, kHost));
   REQUIRE(actor.IsBodyAtRest());
   REQUIRE_FALSE(actor.IsBodySettling());
   REQUIRE(actor.BodyRestAtMs() == d + 4'140);
@@ -1297,9 +1298,9 @@ TEST_CASE("The body's rest: samples held within 2 units and 2 degrees of the "
   StandUp(p, actor);
   actor.Kill(nullptr);
   const uint64_t d2 = actor.BodyDiedAtMs();
-  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d2 + 100));
-  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d2 + 2'400));
-  REQUIRE(actor.NoteBodySample(deathPoint, lying, d2 + 2'530));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d2 + 100, kHost));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, lying, d2 + 2'400, kHost));
+  REQUIRE(actor.NoteBodySample(deathPoint, lying, d2 + 2'530, kHost));
   REQUIRE(actor.BodyRestAtMs() == d2 + 2'530);
 
   StandUp(p, actor);
@@ -1325,8 +1326,8 @@ TEST_CASE("The body's rest: the owner's sample that ends the dwell puts the "
   const uint64_t now = NowMs();
   actor.BeginBodySettle(now - 5'000);
   const NiPoint3 rest = deathPoint + NiPoint3{ 211.f, 0.f, -50.f };
-  REQUIRE_FALSE(
-    actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 359.f }, now - 1'000));
+  REQUIRE_FALSE(actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 359.f },
+                                     now - 1'000, kHost));
   REQUIRE_FALSE(actor.IsBodyAtRest());
   // the owner's next report, 1 unit off and 1.5 degrees through the wrap:
   // the dwell is over, the body at rest at this sample
@@ -1416,8 +1417,8 @@ TEST_CASE("The body's rest: a respawn clears the rest, and the next death "
   const NiPoint3 rest = deathPoint + NiPoint3{ 150.f, 0.f, 0.f };
   // at rest by the dwell, against the record's own death stamp
   const uint64_t d = actor.BodyDiedAtMs();
-  actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 0.f }, d + 2'000);
-  actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 0.f }, d + 3'000);
+  actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 0.f }, d + 2'000, kHost);
+  actor.NoteBodySample(rest, NiPoint3{ 0.f, 0.f, 0.f }, d + 3'000, kHost);
   REQUIRE(actor.IsBodyAtRest());
 
   actor.Respawn(false);
@@ -1672,6 +1673,79 @@ TEST_CASE("The body's row: the simulator leaving mid-settle returns the row "
   Leave(p, 1, kOther);
 }
 
+TEST_CASE("The body's row: a death inside a departed host's grace names "
+          "nobody (the leaver still hosts the cell, but no user plays it), "
+          "so the next host's samples move the record",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  const uint32_t before = p.PropEpochOf(actor);
+
+  // the host's game quits, its actor left in the world (production
+  // disables it at the disconnect): through its grace the cells rule still
+  // names it the cell's host, and its departure's return has run already
+  DoDisconnect(p, 0);
+  REQUIRE(p.serverState.UserByActor(host) == Networking::InvalidUserId);
+  REQUIRE(p.worldState.HostOf(actor) == host);
+
+  // a death inside the grace: the row names nobody, the cell's host by
+  // default, never the leaver, whose departure's return has run already
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsBodySettling());
+  REQUIRE(p.PropLiveOwner(actor) == 0);
+  REQUIRE(p.PropEpochOf(actor) == before + 1);
+  const NiPoint3 deathPoint = actor.GetPos();
+
+  // past the grace the other game hosts, and its samples move the record
+  Host(p, 1, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &other);
+  REQUIRE(p.PropOwnerOf(actor) == kOther);
+  MoveBody(p, 1, kPredator, deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == deathPoint + NiPoint3{ 100.f, 0.f, 0.f });
+  REQUIRE(actor.BodySampleCount() == 1);
+
+  // the shared world: the leaver's actor goes too, past its grace, so the
+  // next case's arrival creates it afresh
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
+  p.DestroyActor(kHost);
+}
+
+TEST_CASE("The body's row: a death after the simulator's game unloaded the "
+          "cell names nobody (its 3D of the body went with the cell), the "
+          "cell's host's by default",
+          "[ActorDeath][BodyRest][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  constexpr uint32_t kForestCell = 0x9810;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, false);
+  const uint32_t before = p.PropEpochOf(actor);
+
+  // the host's game unloads the cell: it still hosts through its grace, so
+  // the cells rule names it the actor's simulator at the death
+  CellReport(p, 0, kForestCell, false);
+  REQUIRE(p.worldState.HostOf(actor) == host);
+  REQUIRE(p.SimulatorOf(actor) == kHost);
+
+  // the death: the row names nobody (wire-rules props died's unload guard,
+  // D-PH2 A), where naming the unloaded seat would strand a live row
+  // nobody streams until its departure
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsBodySettling());
+  REQUIRE(p.PropLiveOwner(actor) == 0);
+  REQUIRE(p.PropEpochOf(actor) == before + 1);
+
+  StandUp(p, actor);
+  Leave(p, 0, kHost);
+}
+
 TEST_CASE("The body's row: the dwell's rest returns it to the host at a new "
           "epoch; the settle window's end leaves it as it stood",
           "[ActorDeath][BodyRest][espm]")
@@ -1688,10 +1762,10 @@ TEST_CASE("The body's row: the dwell's rest returns it to the host at a new "
   // still for the dwell, against the record's own death stamp: the core's
   // rest is the body's asleep sample
   const uint64_t d = actor.BodyDiedAtMs();
-  REQUIRE_FALSE(
-    actor.NoteBodySample(deathPoint, NiPoint3{ 0.f, 0.f, 0.f }, d + 2'000));
-  REQUIRE(
-    actor.NoteBodySample(deathPoint, NiPoint3{ 0.f, 0.f, 0.f }, d + 3'000));
+  REQUIRE_FALSE(actor.NoteBodySample(deathPoint, NiPoint3{ 0.f, 0.f, 0.f },
+                                     d + 2'000, kHost));
+  REQUIRE(actor.NoteBodySample(deathPoint, NiPoint3{ 0.f, 0.f, 0.f },
+                               d + 3'000, kHost));
   REQUIRE(actor.IsBodyAtRest());
   REQUIRE(p.PropLiveOwner(actor) == 0);
   REQUIRE(p.PropEpochOf(actor) == died + 1);

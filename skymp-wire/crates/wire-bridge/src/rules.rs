@@ -3117,9 +3117,11 @@ mod ffi {
         fn prop_died(self: &mut Props, refr: u32, simulator: u32, cell: u32, now_ms: u64) -> u32;
         /// The core judged `refr`'s body at rest (its dwell, never a
         /// clock): a live row (awake or held) returns to the host by
-        /// default, asleep, at a new epoch, returned, the core's word
-        /// (`PropOwner` with player 0) at it; 0 when no live row stood (one
-        /// at rest, one naming nobody, none), and nothing changes.
+        /// default, asleep, at a new epoch, returned, with no word (in 5a
+        /// none goes out at the death or the rest, only a departure or an
+        /// unload words a live dead row; rung 5's R5-1 words the death and
+        /// the rest); 0 when no live row stood (one at rest, one naming
+        /// nobody, none), and nothing changes.
         fn prop_rested(self: &mut Props, refr: u32) -> u32;
         /// `refr`'s body ended (its actor stood again): the row goes and the
         /// epoch rises, returned (epochs outlive rows, so a later death

@@ -442,8 +442,9 @@ const triple = (v: NiPoint3): string => `${v[0].toFixed(1)}, ${v[1].toFixed(1)},
 // sample's bones (bonesOf), and its follower's parts stay live Havok bodies
 // the platform drives toward the stream every update (route K3: imposeBodies,
 // imposeParts), placed outright at the stream's rest, with no reference-wide
-// motion set ever (setMotion's guard: TESObjectREFR::SetMotionType recurses
-// from the root and would free the Fixed anchor, risk H-T1). A watcher's own
+// motion set ever (setMotion's guard: TESObjectREFR::SetMotionType passes
+// a_arg2 true to the root's, which, HYPOTHESIS, recurses and would free the
+// Fixed anchor, risk H-T1). A watcher's own
 // capsule or local cause nudges such a copy for a frame and the drive pulls
 // it back, and a watcher can grab it mid-swing: D-PH26 A's declared limits.
 // The class is each seat's own word, unvalidated (R2, rule 5); the server
@@ -457,8 +458,20 @@ const triple = (v: NiPoint3): string => `${v[0].toFixed(1)}, ${v[1].toFixed(1)},
 // nothing, L6's skipped count); that K3 holds each part within 32 units of
 // the owner's pose (F3); that a sign's parts lie within 512 of its root
 // (F12; L3 counts the others); that the trap-family verdict is read after the
-// scripts bind (F14); that a trap rock is whole (F18); and that engineRefs'
-// 1024 holds Riverwood with every MSTT (F20; L10 counts the evictions).
+// scripts bind (F14); that a trap rock is whole (F18); that engineRefs'
+// 1024 holds Riverwood with every MSTT (F20; L10 counts the evictions); that
+// a body of parts' parts all deactivate, on its owner (the stream's rest)
+// and after a follower's rest placement (F4: a never-sleeping sign
+// heartbeats for good), and that the host's lazy baseline after the rest
+// streams no wake while they settle (H-C3); that the player's contact
+// reaches a world body's part on its own layer by its dynamic motion (F5)
+// and that a part's collidable names its reference in a contact and an
+// impact (F13: claimContacts, claimImpulses); that no scripted activator
+// with a dynamic model outside a trap family is a part its own script moves,
+// a puzzle's (H-C1; L1's verdicts by base type count them); and that a
+// dynamic root's lone body is of a dynamic motion type (a lone Keyframed one
+// is taken whole, and each seat that tracks it sets it Dynamic at rest by
+// the items' route, restMotion, D73; L1 prints its motion).
 export class PropService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -1257,11 +1270,15 @@ export class PropService extends ClientListener {
     // keeps a resting cell's clutter silent. Keyframed as dealWithRef sets it.
     // HYPOTHESIS until v10: a body denied activation is inert to the controller.
     // Physics rung 4 (route K3, D-PH26 A): a body of several parts never takes
-    // a reference-wide motion set, here or anywhere: TESObjectREFR::
-    // SetMotionType recurses from the 3D root with a_arg2 true (CommonLibSSE-NG
-    // src/RE/T/TESObjectREFR.cpp:879-890) and would reach the Fixed anchor
-    // (risk H-T1); its parts stay Dynamic, driven while another seat streams
-    // them, so the motion asked reads Dynamic
+    // a reference-wide motion set, here or anywhere: CommonLib's own
+    // TESObjectREFR::SetMotionType calls the 3D root's NiAVObject::
+    // SetMotionType with a_arg2 true (CommonLibSSE-NG
+    // src/RE/T/TESObjectREFR.cpp:879-890; a_arg2 is unnamed at
+    // include/RE/N/NiAVObject.h:133), which, HYPOTHESIS, recurses, and the
+    // Papyrus native this client calls is taken to do the same, which would
+    // reach the Fixed anchor (HYPOTHESIS, risk H-T1); its parts stay Dynamic,
+    // driven while another seat streams them, so the motion asked reads
+    // Dynamic
     private setMotion(prop: Prop, refr: ObjectReference, type: MotionType, wake: boolean) {
         if (prop.parts > 0) {
             prop.motionAsked = MotionType.Dynamic;
@@ -1460,8 +1477,8 @@ export class PropService extends ClientListener {
     // carry (a place or turn that is not a number, a place outside the world,
     // parts bonesOf refuses), which goes nowhere and is said. A rest whose
     // parts made the prop no row still goes, its pose alone, so the server
-    // returns the row (a world body takes a sample with no bones); so does
-    // the untrack's final sample after it
+    // returns the row (a world body takes a sample with no bones); so do a
+    // rest with a part that is no pose and the untrack's final sample
     private send(prop: Prop, body: Body, asleep: boolean, now: number): number {
         const pos = body.pos;
         const rot: NiPoint3 = [body.rot[0] % 360, body.rot[1] % 360, body.rot[2] % 360];
@@ -1477,7 +1494,7 @@ export class PropService extends ClientListener {
         let bones: PropBone[] = [];
         if (prop.parts > 0 && prop.dropRow === undefined) {
             const read = this.bonesOf(prop, body);
-            if (read === undefined && (prop.dropRow === undefined || !asleep)) {
+            if (read === undefined && !asleep) {
                 return 0;
             }
             bones = read !== undefined ? read : [];
@@ -1878,7 +1895,11 @@ export class PropService extends ClientListener {
     // expected body is the follower's, Keyframed (motion 4), or (physics rung
     // 4) a world body's part, whose layer passes the platform's filter by its
     // dynamic motion while setWorldBodyContacts holds (a follower's parts
-    // stay Dynamic under the drive, K3)
+    // stay Dynamic under the drive, K3; HYPOTHESIS F5 and F13: that the
+    // contact fires for the part and its collidable names its reference).
+    // With the switch on, an item's dynamic body on a layer other than
+    // kClutter and kProps reaches here too and is claimed by contact, which
+    // rung 3 never did (FridaHooks.cpp's contact hook)
     private claimContacts(now: number) {
         const contacts = this.contacts;
         this.contacts = [];
@@ -1957,7 +1978,10 @@ export class PropService extends ClientListener {
     // ragdoll is no row before rung 5) are tracked in place at any distance
     // (B5), and the ones this seat does not own go in one claim by touch 3; a
     // row another seat streams awake stays home (A3: the server refuses it
-    // E_PROP_MOVING, and its Keyframed copy here took no push, E27). A row this
+    // E_PROP_MOVING, and its Keyframed copy here took no push, E27; a body of
+    // parts' copy stays Dynamic under the drive, K3, so this seat's push
+    // nudges it for a frame and the drive pulls it back, D-PH26 A's declared
+    // limit, H-P6). A row this
     // seat owns (the cell's host's resting clutter, its own live row) streams
     // the push itself (the host's wake, A7)
     private claimImpulses(now: number) {
@@ -2015,7 +2039,10 @@ export class PropService extends ClientListener {
     // island, "(island of <id>)". Read on the JS thread with the stream's own
     // read, never inside the step. A member another seat streams awake is
     // Keyframed here and in no island (a moving island with two owners is a
-    // declared limit: each engine meets the other's copy Keyframed)
+    // declared limit: each engine meets the other's copy Keyframed), except a
+    // body of parts (physics rung 4, K3, D-PH26 A): its parts stay Dynamic
+    // under the drive and may join this seat's islands, and followLive keeps
+    // its claim home (A3)
     private claimIslands(bodies: Map<number, Body>, now: number, myId: number) {
         bodies.forEach((body) => {
             const island = body.island;
@@ -2282,7 +2309,7 @@ export class PropService extends ClientListener {
                     // respawned copy): the body is a new one, placed and set
                     // anew, its class its own (the old one's drive let go
                     // under the old id first)
-                    this.releaseImpose(prop);
+                    this.endFollow(prop);
                     this.byLocal.delete(prop.localId);
                     prop.localId = c.localId;
                     prop.world = c.world;
@@ -2301,7 +2328,6 @@ export class PropService extends ClientListener {
                     prop.bodyTracked = false;
                     prop.badBodySaid = false;
                     prop.trackedAt = now;
-                    this.endFollow(prop);
                 }
                 prop.formIdx = c.formIdx;
                 prop.distance = c.distance;
@@ -2432,9 +2458,9 @@ export class PropService extends ClientListener {
     //     dynamic (the root's BSX kDynamic), no moving part or a walk past 64
     //     parts is "none"; one body and none Fixed is a whole world body (the
     //     items' route, parts 0); otherwise a world body of its parts' count.
-    //     Said once per binding: "body class <refr> <base>: BSX 0x<hex>,
-    //     dynamic yes|no, <b> bodies, <f> fixed, walk <node>:<motion>, ...:
-    //     <verdict>".
+    //     Said once per binding in two lines: "body class <refr> <base>:
+    //     <verdict>; BSX 0x<hex>, dynamic yes|no, <b> bodies, <f> fixed" and
+    //     "body class <refr> walk: <node>:<motion>, ...".
     // The two client settings apply after the cache (withSettings), so a
     // relaunch-files change takes effect live. The server's PropKindOf
     // (ActionListener.cpp) is the wider side: the class is this seat's own
@@ -2473,8 +2499,11 @@ export class PropService extends ClientListener {
             return "none";
         }
         if (ObjectReferenceEx.isTrapFamily(localId)) {
+            if (!ref.is3DLoaded()) {
+                return "trap"; // judged again with its 3D, so its class line is said
+            }
             this.cacheKind(localId, refr, { item: false, family: true, world: null });
-            if (this.worldBodies() && ref.is3DLoaded()) {
+            if (this.worldBodies()) {
                 const trapClass = this.bodyClass(localId);
                 if (trapClass !== null) {
                     this.sayClass(refr, ref, trapClass, "no row: a trap's");
@@ -2594,7 +2623,11 @@ export class PropService extends ClientListener {
         const base = ref.getBaseObject();
         const baseId = base ? base.getFormID() : 0;
         const walk = c.parts.length > 0 ? c.parts.map((p) => `${p.node !== "" ? p.node : "(no name)"}:${p.motion}`).join(", ") : "none";
-        logLab(TAG, `body class ${refr.toString(16)} ${baseId.toString(16)}: BSX 0x${c.bsx.toString(16)}, dynamic ${c.dynamic ? "yes" : "no"}, ${c.bodies} bodies, ${c.fixed} fixed, walk ${walk}: ${verdict}`);
+        // two lines, the verdict first: one line with the walk passes the
+        // console's 128-byte cut (InGameConsolePrinter.cpp:26-29), the only
+        // copy the lab collects (logLab), for a body of more than two parts
+        logLab(TAG, `body class ${refr.toString(16)} ${baseId.toString(16)}: ${verdict}; BSX 0x${c.bsx.toString(16)}, dynamic ${c.dynamic ? "yes" : "no"}, ${c.bodies} bodies, ${c.fixed} fixed`);
+        logLab(TAG, `body class ${refr.toString(16)} walk: ${walk}`);
     }
 
     private untrack(prop: Prop, why: string) {
@@ -2907,8 +2940,8 @@ export class PropService extends ClientListener {
         if (!Array.isArray(bones)) {
             return [];
         }
-        const shaped = bones.every((b) => b !== null && typeof b === "object" && Array.isArray(b.pos) && b.pos.length === 3
-            && Array.isArray(b.quat) && b.quat.length === 4);
+        const lanes = (v: unknown, n: number): boolean => Array.isArray(v) && v.length === n && v.every((x) => typeof x === "number");
+        const shaped = bones.every((b) => b !== null && typeof b === "object" && lanes(b.pos, 3) && lanes(b.quat, 4));
         if (!shaped) {
             return [];
         }

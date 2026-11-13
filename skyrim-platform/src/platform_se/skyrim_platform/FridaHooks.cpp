@@ -3460,8 +3460,18 @@ void InstallReanimateHook()
  * or, while the world-body switch is on (Frida::SetWorldBodyContacts, off by
  * default), a dynamic motion type on any layer (PropBodies::IsDynamicMotion:
  * a world body's part on its own layer, kClutterLarge 29 at :36, a corpse's
- * kDeadBip 32 at :39), so the ground, the walls and every Keyframed body
- * outside those two layers stop here, before any JS. Then the player's own
+ * kDeadBip 32 at :39; HYPOTHESIS that the proxy's callback fires for them,
+ * the spec's F5, E58), so the ground, the walls and every Keyframed body
+ * outside those two layers stop here, before any JS. HYPOTHESIS (the build
+ * spec's F5, F13 and F19): that a world body's part reaches this callback by
+ * its dynamic motion on its own layer, that FindCollidableRef names the
+ * part's reference, and that a living biped's bodies read Keyframed, so they
+ * stop here too. With the switch on, an item's body on a layer other than
+ * those two passes as well wherever this seat's copy reads a dynamic type (a
+ * non-owner's resting copy reads 2 or 3, thuum docs/engine/havok-props.md
+ * E26), and propService.ts claimContacts claims it by touch 0, which rung 3
+ * never did: a weapon's, if its body lies on kWeapon 5 (:12; unread, thuum
+ * docs/verbs/prop-physics.md's drop reads owed). Then the player's own
  * controller: the listener's enclosing proxy controller, upcast to its
  * bhkCharacterController base (bhkCharProxyController.h:13; the casts apply
  * the header's layout), against Actor::GetCharController (Actor.h:531;

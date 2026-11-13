@@ -12,8 +12,9 @@
 // loaded 3D, found by one walk that every reader and writer shares, so the
 // owner's read (readBodies' bones), the class each seat reads
 // (getBodyClass), the follower's impose (imposeBodies) and the contact hook
-// all name the same parts in the same order. A part is a rigid body whose
-// motion type is not Invalid, Fixed or Character (CommonLibSSE-NG
+// all name the same parts in the same order (on two seats, HYPOTHESIS: the
+// spec's F2, E55; a count mismatch imposes nothing). A part is a rigid body
+// whose motion type is not Invalid, Fixed or Character (CommonLibSSE-NG
 // include/RE/H/hkpMotion.h:26-38): the Riverwood Trader sign's boards on its
 // Fixed anchor, a dead actor's bones at rung 5. Plain data and engine field
 // reads alone, except DriveBody and PlaceBody, which write through
@@ -105,7 +106,9 @@ bool ReadWalk(RE::NiAVObject& root, uint32_t formId, Walk& out);
 
 // a whole reference: one body, not Fixed (the items, a trap rock, a lone
 // wheel), whose row is rung 3's; an anchor with any moving part is not whole
-// (DEF-4d refined), and sends every part
+// (DEF-4d refined), and sends every part. HYPOTHESIS (the build spec's F22,
+// beside F18's trap rock): every item is whole; no read has counted an
+// item's bodies, and the client's kindOf answers "item" before any class read
 inline bool IsWhole(const Walk& walk)
 {
   return walk.bodies == 1 && walk.fixed == 0;

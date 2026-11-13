@@ -812,9 +812,14 @@ struct BodyRead
 // PropBodies' walk (ReadWalk, its fault said as line N4 and no row this
 // time), and the row is read three ways. A whole reference (one body, not
 // Fixed: an item, a trap rock) answers rung 3's row from its one body, now
-// also from a body deeper than one level; one with no part (an all-Fixed
-// static) answers its first body's row, motion 5, as BodyOf did. Otherwise,
-// with a part (the Riverwood Trader sign's boards on their Fixed anchor):
+// also from a body deeper than one level (HYPOTHESIS, the build spec's F22
+// beside F18's trap rock: every item is whole; the client routes an item by
+// its form type before any class read, propService.ts kindOf, so an item of
+// several bodies would answer its fastest part's motion and velocities, its
+// bones dropped by its client, and have its take-over velocity refused as
+// N5); one with no part (an all-Fixed static) answers its first body's row,
+// motion 5, as BodyOf did. Otherwise, with a part (the Riverwood Trader
+// sign's boards on their Fixed anchor):
 // awake when any part's island is set and in the active list; motion, lin
 // and ang the fastest part's (the largest linear speed), so the client's
 // send priority needs no math of its own; and bones, every part's pose in
@@ -1173,8 +1178,10 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
 // bodies (PropBodies::ReadWalk, rung 4: a faulted walk said as N4 and nothing
 // set), refuses a reference of several bodies ("a body of several parts
 // (imposeBodies drives it)", the build spec's line N5: a velocity names one
-// body, and a sign's parts are each the follower's drive's), refuses a motion
-// type that is not dynamic and calls CommonLib's
+// body, and a sign's parts are each the follower's drive's; HYPOTHESIS F22
+// that no item has several: the client hands an item's take-over velocity
+// here and never imposes one, so N5 naming an item refutes it), refuses a
+// motion type that is not dynamic and calls CommonLib's
 // bhkRigidBody::SetLinearVelocity (B/bhkRigidBody.h:55;
 // src/RE/B/bhkRigidBody.cpp:26-31, Address Library 78089) with lin times the
 // world scale (bhkWorld::GetWorldScale, B/bhkWorld.h:42-46) and
@@ -1334,6 +1341,11 @@ constexpr float kImposeQuatSlack = 0.01f;
 constexpr uint64_t kImposeSnapSayEveryMs = 1000;
 // the drain's said-once sets, cleared past this size
 constexpr size_t kImposeSaidMax = 1024;
+// an entry no store has refreshed for this long is dropped unapplied by the
+// next drain (UNMEASURED: the follower stores every update, and a rest is
+// laid by the drain its own store queues), so a rest the drain could not lay
+// or a reloaded script's last poses never land on a later drain
+constexpr uint64_t kImposeStaleMs = 1000;
 
 // one form's newest poses, game units and unit quaternions, a part each in
 // the follower's walk order; rest the stream's rest, placed outright and then
@@ -1343,6 +1355,8 @@ struct ImposeEntry
   std::vector<PropBodies::Pose> poses;
   bool rest = false;
   uint64_t seq = 0;
+  // Puppets::NowMs() at the store (kImposeStaleMs)
+  uint64_t storedMs = 0;
 };
 
 // written on the JS thread (imposeBodies, releaseBodies) and read by the
@@ -1397,7 +1411,9 @@ float ImposeStepOf(const RE::hkpRigidBody& body)
 }
 
 // one form's poses applied on the main thread; true when the form leaves the
-// table (no reference with 3D, or its rest placed)
+// table (no reference with 3D, its rest placed, or a rest it cannot place: a
+// faulted or cut walk, another part count; the parts then rest as their own
+// engine has them, DEF-4c), so the client's last store never lingers
 bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
                float toGameUnits)
 {
@@ -1416,7 +1432,7 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
   }
   PropBodies::Walk walk;
   if (!PropBodies::ReadWalk(*root, formId, walk)) {
-    return false;
+    return entry.rest;
   }
   const auto n = static_cast<uint32_t>(entry.poses.size());
   if (walk.cut || n != walk.nParts) {
@@ -1432,7 +1448,7 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
                    "{} parts here{}",
                    formId, n, walk.nParts, walk.cut ? ", its walk cut" : "");
     }
-    return false;
+    return entry.rest;
   }
   PropBodies::Pose targets[PropBodies::kPartsMax];
   float farthest = 0.f;
@@ -1525,7 +1541,8 @@ void DrainImpose()
       }
       entry = it->second;
     }
-    if (!ImposeOne(formId, entry, toHavok, toGameUnits)) {
+    const bool stale = Puppets::NowMs() - entry.storedMs > kImposeStaleMs;
+    if (!stale && !ImposeOne(formId, entry, toHavok, toGameUnits)) {
       continue;
     }
     std::lock_guard<std::mutex> lock(g_imposeMutex);
@@ -1608,6 +1625,7 @@ Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
     entry.poses = std::move(poses);
     entry.rest = rest;
     entry.seq = ++g_imposeSeq;
+    entry.storedMs = Puppets::NowMs();
   }
   if (!g_imposeDrainQueued.exchange(true)) {
     tasks->AddUITask([]() {

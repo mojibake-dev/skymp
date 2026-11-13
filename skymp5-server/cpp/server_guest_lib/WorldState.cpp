@@ -67,9 +67,9 @@ struct WorldState::Impl
   std::array<std::shared_ptr<std::vector<uint32_t>>, 0x100>
     allFormsByModIndexCache;
   // the records LoadForm could not attach, each id once: a lookup of one the
-  // loader never attaches repeats (a STAT a script call names, as the hall
-  // door's FX was until physics rung 4: its review's finding 1); GetAllForms
-  // drops each from its list
+  // loader never attaches repeats (a STAT a script call names; the hall
+  // door's FX review, finding 1, whose MSTT the loader holds since physics
+  // rung 4); GetAllForms drops each from its list
   std::set<uint32_t> attachEspmRecordFailures;
   // thuum docs/verbs/magic-effects.md: actors with running effects and when
   // they were last advanced

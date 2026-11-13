@@ -3878,7 +3878,8 @@ namespace {
 // position to be tethered to; WorldState.cpp's split of the ids at
 // 0xff000000), nor is a static (DEF-4f: D-PH9 A gives a STAT with a dynamic
 // model no row). An actor answers None: a dead actor's row is rung 5's
-// (Body; MpActor::IsDead), and every caller refuses an actor before it asks.
+// (Body; MpActor::IsDead), and the prop and destruction handlers refuse an
+// actor before they ask (RefusePropPickup asks for an item alone).
 // A world body is also the one kind whose destruction a seat's report
 // records (OnDestructionStage, E_DESTRUCTION_KIND; D-S3 point 3)
 enum class PropKind
@@ -4216,12 +4217,14 @@ skymp::rules::ScriptArg ScriptArgOf(
 // an actor's, the streams'), whether its base is a door or a container, the
 // world or cell its group names (the load order's id) and its position; none
 // for another record, for no record, or for one with no base or no place.
-// Its placements are a STAT or another base the loader never attaches (a
-// room marker, an XMarker a script names); since physics rung 4 (D-PH9 A)
-// the loader holds every movable static (MSTT), so Bleak Falls Sanctum
-// 0x371dd's door FX 0x5256c, which HallofStoriesKeyholeScript.openDoor
-// plays FXDoorOpen on, is a held reference (lab/esm.py, 2026-11-05: base
-// 0x52172 RuinsPuzzleDoorFX, at (128, -320, -256)).
+// The script seam's placements are a STAT or another base the loader never
+// attaches (a room marker, an XMarker a script names), and the prop tether
+// (OnPropTransform) reads a held world body's own record here; since physics
+// rung 4 (D-PH9 A) the loader holds every movable static (MSTT), so Bleak
+// Falls Sanctum 0x371dd's door FX 0x5256c, which
+// HallofStoriesKeyholeScript.openDoor plays FXDoorOpen on, is a held
+// reference (lab/esm.py, 2026-11-05: base 0x52172 RuinsPuzzleDoorFX, at
+// (128, -320, -256)).
 // `actors` (thuum ADR-068 rung 4, a record row's subject): an ACHR is
 // placed too, by its record's cell, so an actor the loader never held (an
 // initially disabled ambush draugr, Bleak Falls Temple 0x371de's 0x380ba,
@@ -6681,7 +6684,7 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
 // before the lookup could load it), a world body (PropKindOf: the lamp and
 // the tripwire are ACTIs; a door, a container, furniture or an item is no
 // trap's result, whatever a seat reports, the review of 9ff1895e's finding
-// 1, and since physics rung 4 neither is a static the server attached by its
+// 1, and since physics rung 4 nor is a static the server attached by its
 // record, DEF-4f), and the reference's cell loaded in the reporter's game
 // (PartOne::GetCellLoaders): the seat whose engine reached the step reports
 // it, the cell's host or a guest alike (R2: the engine computed it, the

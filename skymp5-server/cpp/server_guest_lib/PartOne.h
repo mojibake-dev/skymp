@@ -871,8 +871,8 @@ public:
     // (the unload is a state, not a moment)
     Away
   };
-  // A trap's world body (thuum D-S3 point 4) is claimed here like any prop,
-  // the handler admitting it by the impulse touch alone
+  // A world body (thuum D-S3 point 4; since physics rung 4, Eli's D-PH9 A,
+  // by any touch, ActionListener's PropKindOf) is claimed here like any prop
   PropClaimVerdict ClaimProp(const MpActor& claimant,
                              const MpObjectReference& prop, uint32_t cell,
                              uint8_t touch);

@@ -479,9 +479,11 @@ TEST_CASE("The server VM's own snippet carries no sequence and waits for "
 // attached with the Sanctum's chunk by the players' own grid pass, and its
 // calls are a held world object's: relayed to its listeners (the grid's,
 // never the cell's load reports) and, for the PlayAnimation pair, kept as
-// its lastAnimation (wire-rules natives Keep::Last), which a late joiner
-// replays. Until rung 4 the FX was judged by its record (the room marker's
-// case below), and a game that unloaded the cell heard it no more
+// its lastAnimation (wire-rules natives Keep::Last), which the server serves
+// a late joiner (that its game replays it once is HYPOTHESIS, the spec's F17,
+// until the stage's late join at the Sanctum door). Until rung 4 the FX was
+// judged by its record (the room marker's case below), and a game that
+// unloaded the cell heard it no more
 TEST_CASE("The host's script call on the hall door's FX, a movable static the "
           "server holds, is relayed at once to its listeners and kept as its "
           "last animation; a game that unloads the cell hears it while it "
@@ -887,7 +889,8 @@ TEST_CASE("The host's script call on an exterior movable static the server "
   p.Messages().clear();
   {
     LogCapture log;
-    play(1);
+    Call(p, 1, epoch, kForestMotes, "ObjectReference", "PlayAnimation",
+         { Text("PlayAnim02") });
     REQUIRE(log.Count("[verb:traps] ff000fe4 reports "
                       "ObjectReference.PlayAnimation on b15e6 in cell " +
                       cellHex + " (epoch " + std::to_string(epoch) +
@@ -900,6 +903,7 @@ TEST_CASE("The host's script call on an exterior movable static the server "
   relayed = SnippetsTo(p, 0);
   REQUIRE(relayed.size() == 1);
   REQUIRE(relayed[0]["seq"] == 2);
+  REQUIRE(relayed[0]["arguments"] == nlohmann::json::array({ "PlayAnim02" }));
   REQUIRE(SnippetsTo(p, 1).empty());
   REQUIRE(LastAnimation(p, kForestMotes) ==
           std::optional<std::string>("PlayAnim01"));

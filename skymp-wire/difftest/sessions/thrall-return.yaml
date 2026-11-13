@@ -2,8 +2,9 @@
 # a full thrall's commander leaves and the same character logs in again; what T2 can reach of the return. c1 and c2 are new
 # characters (profiles 9 and 10), at the spawn in Tamriel's exterior cell (32, -15), form 0xbbb1 (cell-host's read); c1 is
 # actor 0xff000002 (see melee-reach); c3 is profile 9 again, c1's character, started at 14 s of c1's clock (difftest's
-# start_ms, after c1 has left; HYPOTHESIS: the T2 gamemode gives a profile its character again at its next login, as the lab's
-# relaunch does). Each client's times below are its own. c1's steps are thrall-departure's with Dead Thrall (SPEL 0x7e8df,
+# start_ms, after c1 has left; the server's Spawn system gives a profile its character again at its next login,
+# skymp5-server/ts/systems/spawn.ts:20-24, as the lab's relaunch does, and the first T2 drew it). Each client's times below
+# are its own. c1's steps are thrall-departure's with Dead Thrall (SPEL 0x7e8df,
 # its MGEF 0x7e8e0's record 86,313,600 s, a full thrall's; lab/esm.py) for Reanimate Corpse: at 0.4 s c1 reports the cell
 # loaded and is granted it (HostGrant epoch 1), at 0.7 s it places a copy of Hilde's base (NPC_ 0x35533) before c2 logs in,
 # so the copy is 0xff000003 on both stacks and c2's figure 0xff000004, at 2.5 s kills it ("{{created:218419}}", a console
@@ -21,7 +22,8 @@
 # round trip among them) and T3's (x-reanimate-return v2). c2 steps aside at 20 s of its own, so it outlives c1 and c3. The
 # legacy stack: as thrall-departure's (its console knows PlaceAtMe alone; its fake client sends the kill's placeholder as a
 # string; it refuses the unlearned spell, so its cast relays nothing and its hit counts nothing); it knows no CellLoaded,
-# HostGrant or fate. The declarations were read from the code (2026-11-12). The first T2 (numidium, 2026-11-13, server
+# HostGrant or fate. The declarations were read from the code (2026-11-12). The first T2 (numidium, 2026-11-13 08:06Z to
+# 08:08:29Z, server
 # m4-reanimate-return-7eaffba3, ONLY=thrall-return) held all of them but two and drew seven differences, each declared
 # now with its route read at 7eaffba3 (the line numbers below are its): c1 hears the copy's death word twice, as
 # thrall-departure's c1 does; and c1's character 0xff000002 leaves c2's view at each departure and at c3's login, where
@@ -158,7 +160,7 @@ divergences:
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 1
     wire: 3
-    reason: c1's character leaves c2's view three times on the wire, at c1's departure (a graceful close; the Spawn system's disconnect disables the leaver's actor, skymp5-server/ts/systems/spawn.ts:56-60, Disable's RemoveFromGridAndUnsubscribeAll, MpObjectReference.cpp:592-605, and onUnsubscribe sends DestroyActor to every listener with a user but the leaver, PartOne.cpp:1905-1920), at c3's login (Spawn enables the actor and then sets c3's user, spawn.ts:23-24, and SetUserActor unsubscribes it from all before it subscribes it again, PartOne.cpp:654-669) and at c3's departure, as at c1's; on the legacy stack once, at c3's login (the same pair, fork 737ee085^, the last RakNet tree, PartOne.cpp:201-206), since its C++ fake client exits without closing (docs/WIRE.md's harness note) and its RakNet timeout of 60 s (737ee085^ Networking.cpp:139, :163) outlasts c2, so neither departure reaches it; the server is up after the commander's departure
+    reason: c1's character leaves c2's view three times on the wire, at c1's departure (a graceful close; the Spawn system's disconnect disables the leaver's actor, skymp5-server/ts/systems/spawn.ts:56-60, Disable's RemoveFromGridAndUnsubscribeAll, MpObjectReference.cpp:592-605, and onUnsubscribe sends DestroyActor to every listener with a user but the leaver, PartOne.cpp:1905-1920), at c3's login (Spawn enables the actor and then sets c3's user, spawn.ts:23-24, and SetUserActor unsubscribes it from all before it subscribes it again, PartOne.cpp:654-669) and at c3's departure, as at c1's; on the legacy stack once, at c3's login (the same pair, fork 737ee085^, the last RakNet tree, PartOne.cpp:201-206), since its C++ fake client exits without closing (thuum docs/WIRE.md:644-648) and its RakNet timeout of 60 s (737ee085^ Networking.cpp:139, :163) outlasts c2, so neither departure reaches it; the server is up after the commander's departure
   - client: c2
     msg: {t: 33, idx: "refr:ff000002", props: {isHostedByOther: false}}
     legacy: 0

@@ -282,8 +282,10 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
   bool hostedCellChange = false;
   bool passed = false;
   // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): the report is
-  // a dead NPC's, from the body's owner, inside its settle window
+  // a dead NPC's, from the body's owner, inside its settle window; and that
+  // owner, the sender (the settling line names it)
   bool bodySample = false;
+  uint32_t bodySender = 0;
   const uint64_t nowMs = static_cast<uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch())
@@ -312,21 +314,34 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // 4): a dead NPC's movement report is a BODY sample, never a
       // stand-up: the message's healthPercentage and isDead are not read
       // on this path, and a stand-up is OnHostedActorState's alone, from
-      // the health the host samples. The corpse is a physics object under
-      // the prop rule: its owner, the engine that simulated the actor at
-      // its death, moves the record with its ragdoll for the settle window
-      // (WorldState::bodySettleMs) and the record keeps the pose the
-      // ragdoll rests at (its samples still for the dwell), so a watcher
-      // places its corpse there and the loot reach measures from it
+      // the health the host samples. The corpse is a physics object, a row
+      // of the prop table (physics rung 5a, ADR-071 decision 5: a dead
+      // actor's row is owned by the death's simulator): its owner
+      // (PartOne::PropOwnerOf: the engine that simulated the actor at its
+      // death while its row is live, else the host of the cell the record
+      // stands in, one owner table for props and bodies) moves the record
+      // with its ragdoll for the settle window (WorldState::bodySettleMs)
+      // and the record keeps the pose the ragdoll rests at (its samples
+      // still for the dwell, which returns the row to the host), so a
+      // watcher places its corpse there and the loot reach measures from it
       // (playtest 42's F4 and F6: a watcher's body 1,700 units down Bleak
       // Falls' slope while the record kept the death point). Every other
-      // seat's report is refused, and once at rest so is the owner's, until
-      // a later claim (a drag or a push: the prop claim, not this slice).
-      // R2 (rule 5): the owner's ragdoll is recorded, not judged, inside
-      // the movement bounds below. Each refusal is said once a minute per
-      // sender and body, the rest counted. A body dead since before this
-      // process or placed dead has no window here and keeps the host's
-      // samples as before (TODO: its rest at load, with the prop claim)
+      // seat's report is refused (E_PROP_NOT_OWNER), and once at rest so is
+      // the owner's (E_BODY_AT_REST), until a later claim (a drag or a
+      // push: rung 5). Declared narrowings: a body nobody simulated at its
+      // death is its cell's host's alone (a follower or a claimant after
+      // it is refused, where the first simulator to report claimed it
+      // before); the owner's departure or unload of the death's cell
+      // returns the row to the host with its word mid-settle (D-PH2 A), so
+      // the new host's samples move the record from then; and the row keeps
+      // the death's cell, which this path never moves (rung 5's stream
+      // does). R2 (rule 5): the owner's ragdoll is recorded, not judged,
+      // inside the movement bounds below. Each refusal is said once a
+      // minute per sender and body, the rest counted, its line "moves body"
+      // (apart from the prop stream's "moves prop"). A body dead since
+      // before this process or placed dead has no window and no row here
+      // and keeps the host's samples as before (TODO: its rest at load,
+      // with the prop claim)
       if (moved->IsDead() && moved->IsFateRespawned() &&
           moved->HasBodySettle()) {
         const auto refuseBody = [&](const char* code, const std::string& why) {
@@ -371,21 +386,26 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                           : 0u));
           return;
         }
-        if (moved->BodyOwnerId() == 0 &&
-            partOne.SimulatorOf(*moved) == myActor->GetFormId()) {
-          moved->ClaimBodyOwner(myActor->GetFormId());
-        }
-        if (moved->BodyOwnerId() != myActor->GetFormId()) {
-          refuseBody("E_BODY_NOT_OWNER",
-                     moved->BodyOwnerId()
-                       ? fmt::format("{:x} owns the body (the engine that "
-                                     "simulated it at its death)",
-                                     moved->BodyOwnerId())
-                       : std::string("nobody simulated it at its death and "
-                                     "the sender does not simulate it now"));
+        // the one owner table's answer: the live row's owner, else the
+        // host of the record's cell
+        const uint32_t owner = partOne.PropOwnerOf(*moved);
+        if (owner != myActor->GetFormId()) {
+          refuseBody(
+            "E_PROP_NOT_OWNER",
+            owner == 0
+              ? std::string("nobody simulates it (no live row, and nobody "
+                            "hosts the cell its record stands in)")
+              : partOne.PropLiveOwner(*moved) == owner
+              ? fmt::format("{:x} simulates it (its row's, the engine that "
+                            "simulated it at its death)",
+                            owner)
+              : fmt::format("{:x} simulates it (the host of the cell its "
+                            "record stands in, its row nobody's)",
+                            owner));
           return;
         }
         bodySample = true;
+        bodySender = owner;
       }
       auto verdict =
         partOne.MayMoveActor(*myActor, *moved, msg.data.worldOrCell, destPos);
@@ -395,8 +415,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         // the body's owner inside the record's cell: the cell-host rule
         // stands aside for the ragdoll's owner within the window (ADR-063,
         // ownership, not permission; a host change mid-ragdoll leaves the
-        // body with its mover); a roll across a cell border keeps the
-        // cell-change rule
+        // body with its mover while its game keeps the cell loaded, its
+        // unload or departure returning the row); a roll across a cell
+        // border keeps the cell-change rule
         verdict = PartOne::MoveVerdict::Accept;
       }
       if (verdict == PartOne::MoveVerdict::Refuse) {
@@ -668,7 +689,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // samples held still for the dwell, saves the record at once and ends
     // the window
     if (bodySample) {
-      actor->NoteBodySample(reportedPos, reportedRot, nowMs);
+      actor->NoteBodySample(reportedPos, reportedRot, nowMs, bodySender);
     }
     actor->SetAnimationVariableBool(
       AnimationVariableBool::kVariable_bInJumpState, msg.data.isInJumpState);

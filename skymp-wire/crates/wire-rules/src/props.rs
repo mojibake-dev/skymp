@@ -202,8 +202,9 @@ pub mod touch {
     /// frame; a grabbed prop let go).
     pub const DROP: u8 = 2;
     /// A shout's or spell's impulse, and a trap's world body its seat's own
-    /// script set moving (thuum D-S3 point 4; the core admits no other touch
-    /// on a world body).
+    /// script set moving (thuum D-S3 point 4). Since physics rung 4 (thuum
+    /// ADR-071, Eli's D-PH9 A) the core admits every touch on a world body,
+    /// as on an item, so this is no longer a world body's only touch.
     pub const IMPULSE: u8 = 3;
 }
 

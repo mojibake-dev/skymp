@@ -1,14 +1,19 @@
 #include "ActionListener.h"
 #include "ActivateMessage.h"
 #include "DestroyActorMessage.h"
+#include "DestructionStageMessage.h"
 #include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
 #include "PropTransformMessage.h"
 #include "TestUtils.hpp"
+#include "libespm/Loader.h"
+#include "libespm/REFR.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
+#include <chrono>
 #include <cmath>
+#include <limits>
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
@@ -32,7 +37,11 @@ PartOne& GetPartOne();
 // epoch first; a refused sample is answered with the word and the record
 // (PropTransform at seq 0); a rest past the step budget is clamped; a claim
 // names one to sixteen props, each judged alone. The owner's-clock cases of
-// the step budget are the Rust rule's too.
+// the step budget are the Rust rule's too. Physics rung 4 (Eli's D-PH9 A and
+// D-PH10 A): the server holds every movable static, a world body is claimed
+// by any touch and woken by its host as an item is, and its sample carries
+// its parts as bones, relayed and never recorded; the body's class is each
+// seat's, so no case here reads one.
 
 namespace {
 constexpr uint32_t kTamriel = 0x3c;
@@ -324,6 +333,79 @@ struct LogCapture
     return n;
   }
 };
+
+// physics rung 4 (thuum ADR-071; Eli's D-PH9 A and D-PH10 A): the Riverwood
+// Trader's sign 0x5161a, a REFR of the movable static (MSTT)
+// SignRiverwoodRiverwoodTrader01 0x38229 in Tamriel 0x3c at (21739.4,
+// -45609.9, 127.5), record flags 0 and no enable parent (lab/esm.py ref on
+// Skyrim.esm, 2026-11-13; no override in Update.esm or the three DLCs):
+// seven bodies on a Fixed anchor in the game, one reference to the server,
+// whose positions here are read from its record and its form, never typed
+constexpr uint32_t kSign = 0x5161a;
+constexpr uint32_t kSignBase = 0x38229;
+
+// where the game files place `refr` (its REFR record's DATA), read before
+// anything loads it: the players stand by a reference the server holds only
+// once their own grid pass loads its chunk
+NiPoint3 PlacedAt(PartOne& p, uint32_t refr)
+{
+  const auto data = espm::GetData<espm::REFR>(refr, &p.worldState);
+  REQUIRE(data.loc);
+  return { data.loc->pos[0], data.loc->pos[1], data.loc->pos[2] };
+}
+
+// two players beside the sign, c1 hosting its cell (Enter's shape); the sign
+// is the chunk's, loaded by the players' grid pass, never by its id
+World EnterBySign(PartOne& p)
+{
+  const NiPoint3 placed = PlacedAt(p, kSign);
+  Player(p, 0, kC1, placed + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 1, kC2, placed + NiPoint3{ 60.f, 0.f, 0.f });
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSign) != nullptr);
+  auto& sign = p.worldState.GetFormAt<MpObjectReference>(kSign);
+  const auto cell = p.worldState.CellOf(sign);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  REQUIRE(sign.GetActorListeners().size() >= 2);
+  p.Messages().clear();
+  return World{ p, sign, *cell };
+}
+
+// `n` part poses about `pos`, as a seat's walk lists a body's parts: each
+// within 512 units of the sample's position (wire-validate's reach, the
+// edge's; the legacy path here has none), its quaternion unit length
+std::vector<PropTransformMessage::Bone> BonesAbout(const NiPoint3& pos,
+                                                   size_t n)
+{
+  std::vector<PropTransformMessage::Bone> bones(n);
+  for (size_t i = 0; i < n; ++i) {
+    bones[i].pos = { pos.x + 10.f * static_cast<float>(i % 16),
+                     pos.y + 5.f * static_cast<float>(i / 16), pos.z - 40.f };
+    // an eighth of a turn about z: (0, 0, sin 22.5 deg, cos 22.5 deg)
+    bones[i].quat = { 0.f, 0.f, 0.38268343f, 0.92387953f };
+  }
+  return bones;
+}
+
+// `user`'s sample of `refr` carrying `n` bones about `pos` (SampleOf's
+// honest seat otherwise)
+PropTransformMessage SampleWithBones(PartOne& p, uint32_t refr,
+                                     const NiPoint3& pos, bool asleep,
+                                     size_t n)
+{
+  auto msg = SampleOf(p, refr, pos, asleep);
+  msg.bones = BonesAbout(pos, n);
+  return msg;
+}
+
+uint64_t NowMs()
+{
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+}
 }
 
 TEST_CASE("A contact at rest is granted and the owner word reaches every "
@@ -984,11 +1066,11 @@ TEST_CASE("A player's unload of a cell returns its live props there to the "
   Leave(p);
 }
 
-TEST_CASE("A trap's world body joins the stream by the impulse touch alone: "
-          "the firing seat's claim is granted, a second firing's is refused "
-          "E_PROP_MOVING and answered and a contact E_PROP_KIND, the owner's "
-          "samples move the record, and its rest, saved at once, returns the "
-          "body to the host with the word",
+TEST_CASE("A trap body's first firing still wins: the firing seat's claim is "
+          "granted, a second firing's and a contact's are refused "
+          "E_PROP_MOVING and answered, the owner's samples move the record, "
+          "and its rest, saved at once, returns the body to the host with "
+          "the word",
           "[Prop][Traps][espm]")
 {
   auto& p = GetPartOne();
@@ -1017,9 +1099,11 @@ TEST_CASE("A trap's world body joins the stream by the impulse touch alone: "
   REQUIRE(toC1[0].epoch == 1);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
 
-  // a contact never claims a world body; c1's own copy of the same firing
-  // claims it too, and the first firing wins by A3's moving row: c1 hears
-  // the current word (below), the refusal's line not said, the seat's second
+  // since physics rung 4 a contact claims a world body as it claims an item
+  // (Eli's D-PH9 A; it was E_PROP_KIND), so c1's walk into the falling rock
+  // is A3's moving row like c1's own copy of the same firing: the first
+  // firing wins, c1 hears the current word once (below, once per prop per
+  // second), and the impulse's refusal line is not said, the seat's second
   // inside 10 s (a seat's refused samples and claims share one line a 10 s,
   // the review of 3892415e, finding 4)
   p.Messages().clear();
@@ -1027,10 +1111,12 @@ TEST_CASE("A trap's world body joins the stream by the impulse touch alone: "
     LogCapture log;
     Claim(p, 0, kRock, 0);
     Claim(p, 0, kRock, 3);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
-                      "prop b6d45 by touch 0; a world body, which only an "
-                      "impulse claims") == 1);
-    REQUIRE(log.Count("E_PROP_MOVING") == 0);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_MOVING: ff000d01 claims "
+                      "prop b6d45 by touch 0; another seat streams it awake: "
+                      "a contact, a drop or an impulse takes a prop at rest, "
+                      "a grab takes it at once") == 1);
+    REQUIRE(log.Count("E_PROP_MOVING") == 1);
+    REQUIRE(log.Count("E_PROP_KIND") == 0);
   }
   REQUIRE(p.PropOwnerOf(rock) == kC2);
   REQUIRE(p.PropEpochOf(rock) == 1);
@@ -1077,16 +1163,56 @@ TEST_CASE("A trap's world body joins the stream by the impulse touch alone: "
   REQUIRE(p.PropOwnerOf(rock) == kC1);
   REQUIRE(p.PropEpochOf(rock) == 3);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
+  Leave(p);
+}
 
-  // a world body no impulse claimed takes no sample, the host's neither (the
-  // refusal's line is once per 10 s per seat, so its effect is read here)
+// physics rung 4 (DEF-4a): the epoch-0 refusal of D-S3 point 4 ("a world
+// body no impulse claimed") retires, so the host's own engine moving a
+// resting world body is A7's wake, as an item's is ("The host's own sample
+// of a resting prop wakes it"); this case takes the trap case's old last
+// step, where the same sample was refused
+TEST_CASE("The host's own sample of a resting world body wakes it: the row "
+          "the host's at epoch 1, the sample relayed, and the word names the "
+          "host by id (A7)",
+          "[Prop][Traps][espm]")
+{
+  auto& p = GetPartOne();
+  auto& c1 = Player(p, 0, kC1, kByTheRocks, kEmbershard);
+  Player(p, 1, kC2, kByTheRocks + NiPoint3{ 20.f, 0.f, 0.f }, kEmbershard);
+  CellLoaded(p, 0, kEmbershard);
+  REQUIRE(p.GetCellHost(kEmbershard).player == kC1);
+  // the sibling rock stands loaded with the chunks around the players, at
+  // rest and untouched, the host's by default
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSiblingRock) != nullptr);
   auto& sibling = p.worldState.GetFormAt<MpObjectReference>(kSiblingRock);
+  REQUIRE(sibling.GetBaseType() == "ACTI");
+  REQUIRE(Listens(sibling, c1));
   const NiPoint3 siblingAt = sibling.GetPos();
   REQUIRE(p.PropEpochOf(sibling) == 0);
+  REQUIRE(p.PropLiveOwner(sibling) == 0);
   p.Messages().clear();
-  Sample(p, 0, kSiblingRock, siblingAt + NiPoint3{ 0.f, 0.f, -50.f }, false);
-  REQUIRE(sibling.GetPos() == siblingAt);
-  REQUIRE(RelaysTo(p, 1).empty());
+
+  const NiPoint3 kicked = siblingAt + NiPoint3{ 0.f, 0.f, -50.f };
+  {
+    LogCapture log;
+    Sample(p, 0, kSiblingRock, kicked, false);
+    REQUIRE(log.Count("[verb:prop-physics] prop b6d48 woken by its host "
+                      "ff000d01 at (") == 1);
+    REQUIRE(log.Count("E_PROP_") == 0);
+  }
+  REQUIRE(sibling.GetPos() == kicked);
+  REQUIRE(p.PropOwnerOf(sibling) == kC1);
+  REQUIRE(p.PropLiveOwner(sibling) == kC1);
+  REQUIRE(p.PropEpochOf(sibling) == 1);
+  REQUIRE(RelaysTo(p, 1) == std::vector<int>{ 0 });
+  for (const Networking::UserId user :
+       std::vector<Networking::UserId>{ 0, 1 }) {
+    const auto words = SentTo<PropOwnerMessage>(p, user);
+    REQUIRE(words.size() == 1);
+    REQUIRE(words[0].refr == kSiblingRock);
+    REQUIRE(words[0].player == kC1);
+    REQUIRE(words[0].epoch == 1);
+  }
   Leave(p);
 }
 
@@ -1577,9 +1703,10 @@ TEST_CASE("Bones on an item are refused: the sample moves nothing, wakes "
           "nothing and reaches nobody",
           "[Prop][espm]")
 {
-  // physics rung 2: the bones field is on the wire, and no prop row takes
-  // one until a world object's parts (rung 4) or a dead actor's bones (rung
-  // 5); a seat of its own, for the refusal line
+  // physics rung 2: the bones field is on the wire; since physics rung 4 a
+  // world body's row takes them (its parts, D-PH10 A) and an item's never
+  // does, its body being one part (a dead actor's bones are rung 5's); a
+  // seat of its own, for the refusal line
   auto& p = GetPartOne();
   Player(p, 11, kC11, kHere + NiPoint3{ 40.f, 0.f, 0.f });
   Player(p, 10, kC10, kHere + NiPoint3{ 60.f, 0.f, 0.f });
@@ -1597,9 +1724,8 @@ TEST_CASE("Bones on an item are refused: the sample moves nothing, wakes "
     LogCapture log;
     p.GetActionListener().OnPropTransform(Raw(11), msg);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d12 moves prop "
-                      "ff000d03; a sample with bones, which no prop row "
-                      "takes yet (a world object's parts are rung 4's, a "
-                      "dead actor's bones rung 5's)") == 1);
+                      "ff000d03; a sample with bones on an item, whose body "
+                      "is one part") == 1);
   }
   REQUIRE(prop.GetPos() == kHere);
   REQUIRE(p.PropEpochOf(prop) == 0);
@@ -1764,5 +1890,407 @@ TEST_CASE("A live prop's owner stays its listener where the grid would drop "
   REQUIRE(p.PropLiveOwner(w.prop) == 0);
   w.prop.ForceSubscriptionsUpdate();
   REQUIRE_FALSE(Listens(w.prop, c2));
+  Leave(p);
+}
+
+// physics rung 4 (thuum ADR-071; Eli's D-PH9 A, 2026-11-12): the loader
+// attaches every movable static, whatever its class, which is each seat's
+// read of the loaded 3D; the server holds the reference like any world
+// object of its chunk
+TEST_CASE("The server holds a movable static after its chunk loads, at its "
+          "record's position",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  const NiPoint3 placed = PlacedAt(p, kSign);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kSign) == nullptr);
+  Player(p, 0, kC1, placed + NiPoint3{ 40.f, 0.f, 0.f });
+  const auto& form = p.worldState.LookupFormByIdNoLoad(kSign);
+  REQUIRE(form != nullptr);
+  MpObjectReference* sign = form->AsObjectReference();
+  REQUIRE(sign != nullptr);
+  REQUIRE(sign->AsActor() == nullptr);
+  REQUIRE(sign->GetBaseType() == "MSTT");
+  REQUIRE(sign->GetBaseId() == kSignBase);
+  REQUIRE(sign->GetPos() == placed);
+  REQUIRE(Listens(*sign, p.worldState.GetFormAt<MpActor>(kC1)));
+  DoDisconnect(p, 0);
+  p.DestroyActor(kC1);
+}
+
+// physics rung 4 (D-PH9 A: the server admits a world body by any touch, as
+// an item; the impulse-only gate of D-S3 point 4 retires, and a contact or
+// a grab on a world body was E_PROP_KIND before)
+TEST_CASE("A world body is claimed by a contact like an item, the word to "
+          "both seats, and a resting trap rock by a grab",
+          "[Prop][Traps][espm]")
+{
+  {
+    auto& p = GetPartOne();
+    auto w = EnterBySign(p);
+    REQUIRE(p.PropOwnerOf(w.prop) == kC1);
+    REQUIRE(p.PropEpochOf(w.prop) == 0);
+    {
+      LogCapture log;
+      Claim(p, 1, kSign, 0);
+      REQUIRE(log.Count("[verb:prop-physics] ff000d02 claims prop 5161a by "
+                        "touch 0: granted, epoch 1; 2 listener(s) told") == 1);
+      REQUIRE(log.Count("E_PROP_") == 0);
+    }
+    REQUIRE(p.PropOwnerOf(w.prop) == kC2);
+    REQUIRE(p.PropLiveOwner(w.prop) == kC2);
+    REQUIRE(p.PropEpochOf(w.prop) == 1);
+    for (const Networking::UserId user :
+         std::vector<Networking::UserId>{ 0, 1 }) {
+      const auto words = SentTo<PropOwnerMessage>(p, user);
+      REQUIRE(words.size() == 1);
+      REQUIRE(words[0].refr == kSign);
+      REQUIRE(words[0].player == kC2);
+      REQUIRE(words[0].epoch == 1);
+    }
+    Leave(p);
+  }
+  {
+    auto& p = GetPartOne();
+    Player(p, 0, kC1, kByTheRocks, kEmbershard);
+    Player(p, 1, kC2, kByTheRocks + NiPoint3{ 20.f, 0.f, 0.f }, kEmbershard);
+    CellLoaded(p, 0, kEmbershard);
+    REQUIRE(p.GetCellHost(kEmbershard).player == kC1);
+    auto& rock = p.worldState.GetFormAt<MpObjectReference>(kRock);
+    REQUIRE(rock.GetBaseType() == "ACTI");
+    REQUIRE(p.PropEpochOf(rock) == 0);
+    p.Messages().clear();
+    Claim(p, 1, kRock, 1);
+    REQUIRE(p.PropOwnerOf(rock) == kC2);
+    REQUIRE(p.PropLiveOwner(rock) == kC2);
+    REQUIRE(p.PropEpochOf(rock) == 1);
+    REQUIRE(SentTo<PropOwnerMessage>(p, 0).size() == 1);
+    REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
+    REQUIRE(SentTo<PropOwnerMessage>(p, 1)[0].player == kC2);
+    Leave(p);
+  }
+}
+
+// physics rung 4 (D-PH10 A; DEF-4c): a world body's sample carries the poses
+// of its parts as bones, which the server relays with the sample's own
+// bytes and never records: the record takes the sample's pos and rot, the
+// root's (the sign's anchor), and its answer to a refused sample carries
+// none. The relay's bones on the wire are T2's to read (difftest's
+// prop-world-body session): the legacy path here relays the raw bytes
+TEST_CASE("A world body's sample carries its parts: taken and relayed with "
+          "its bones, the record keeping pos and rot alone, and its rest "
+          "returning the row with player 0",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  auto w = EnterBySign(p);
+  const NiPoint3 placed = w.prop.GetPos();
+  Claim(p, 1, kSign, 0);
+  REQUIRE(p.PropLiveOwner(w.prop) == kC2);
+  p.Messages().clear();
+
+  // c2's awake sample with the sign's seven parts: taken, relayed to c1
+  // unreliable while awake
+  const NiPoint3 swung = placed + NiPoint3{ 0.f, 0.f, -2.f };
+  {
+    LogCapture log;
+    p.GetActionListener().OnPropTransform(
+      Raw(1), SampleWithBones(p, kSign, swung, false, 7));
+    REQUIRE(log.Count("E_PROP_") == 0);
+  }
+  REQUIRE(w.prop.GetPos() == swung);
+  REQUIRE(w.prop.GetAngle() == NiPoint3{ 0.f, 0.f, 72.f });
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 0 });
+  REQUIRE(RelaysTo(p, 1).empty());
+
+  // the record holds no bones: c1's sample (not the owner's) is answered
+  // with the word and the record, which is the sample's pos with none
+  p.Messages().clear();
+  Sample(p, 0, kSign, placed + NiPoint3{ 0.f, 0.f, -9.f }, false);
+  REQUIRE(w.prop.GetPos() == swung);
+  const auto record = SentTo<PropTransformMessage>(p, 0);
+  REQUIRE(record.size() == 1);
+  REQUIRE(record[0].seq == 0);
+  REQUIRE(record[0].pos == std::array<float, 3>{ swung.x, swung.y, swung.z });
+  REQUIRE(record[0].bones.empty());
+  REQUIRE(RelaysTo(p, 1).empty());
+
+  // c2's asleep sample with its parts: relayed reliable, and the row is the
+  // host's again at epoch 2, both seats told with player 0 (A4)
+  p.Messages().clear();
+  const NiPoint3 rested = placed + NiPoint3{ 0.f, 0.f, -1.f };
+  p.GetActionListener().OnPropTransform(
+    Raw(1), SampleWithBones(p, kSign, rested, true, 7));
+  REQUIRE(w.prop.GetPos() == rested);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 1 });
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  REQUIRE(p.PropOwnerOf(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  for (const Networking::UserId user :
+       std::vector<Networking::UserId>{ 0, 1 }) {
+    const auto words = SentTo<PropOwnerMessage>(p, user);
+    REQUIRE(words.size() == 1);
+    REQUIRE(words[0].player == 0);
+    REQUIRE(words[0].epoch == 2);
+  }
+  Leave(p);
+}
+
+// physics rung 4 (DEF-4h): the Rust edge refuses a non-finite bone and more
+// bones than cap::PROP_BONES at decode; the legacy path's JSON (1e999 reads
+// as infinity) is held to both in the core, before any arithmetic on them
+TEST_CASE("A bone that is not a number, or more than 64 bones, is refused "
+          "E_PROP_RANGE: the record unmoved, nothing relayed, nobody told; "
+          "64 bones are taken",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  auto w = EnterBySign(p);
+  const NiPoint3 placed = w.prop.GetPos();
+  const NiPoint3 kicked = placed + NiPoint3{ 0.f, 0.f, -3.f };
+  {
+    LogCapture log;
+    // c2: 65 bones, each finite and within the reach
+    p.GetActionListener().OnPropTransform(
+      Raw(1), SampleWithBones(p, kSign, kicked, false, 65));
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_RANGE: ff000d02 moves "
+                      "prop 5161a; more bones than the wire carries") == 1);
+    // c1: seven bones, the third's position infinite (the line), then a
+    // quaternion lane not a number (the seat's second refusal: no line)
+    auto infinite = SampleWithBones(p, kSign, kicked, false, 7);
+    infinite.bones[2].pos[0] = std::numeric_limits<float>::infinity();
+    p.GetActionListener().OnPropTransform(Raw(0), infinite);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_RANGE: ff000d01 moves "
+                      "prop 5161a; a transform that is not a number") == 1);
+    auto nan = SampleWithBones(p, kSign, kicked, false, 7);
+    nan.bones[6].quat[1] = std::numeric_limits<float>::quiet_NaN();
+    p.GetActionListener().OnPropTransform(Raw(0), nan);
+    REQUIRE(log.Count("E_PROP_RANGE") == 2);
+    REQUIRE(log.Count("woken by its host") == 0);
+  }
+  REQUIRE(w.prop.GetPos() == placed);
+  REQUIRE(p.PropEpochOf(w.prop) == 0);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  REQUIRE(RelaysTo(p, 0).empty());
+  REQUIRE(RelaysTo(p, 1).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  REQUIRE(SentTo<PropTransformMessage>(p, 0).empty());
+  REQUIRE(SentTo<PropTransformMessage>(p, 1).empty());
+
+  // the cap itself is taken: the host's sample with 64 finite bones wakes
+  // the resting sign by id (A7)
+  p.GetActionListener().OnPropTransform(
+    Raw(0), SampleWithBones(p, kSign, kicked, false, 64));
+  REQUIRE(w.prop.GetPos() == kicked);
+  REQUIRE(p.PropLiveOwner(w.prop) == kC1);
+  REQUIRE(p.PropEpochOf(w.prop) == 1);
+  REQUIRE(RelaysTo(p, 1) == std::vector<int>{ 0 });
+  Leave(p);
+}
+
+// physics rung 4 (DEF-4g; risk H-S6): a clamped rest is re-encoded for the
+// other listeners at the record's new point, and a world body's parts move
+// with it as one rigid shift, so each bone stands where it stood from the
+// root and the outbound validator's 512 (wire-validate validate_server)
+// holds; the step budget is the container case's: the epoch's first sample
+// leaves one step, 600 units, and the tether (2048 from the record's file
+// position) admits the far rest
+TEST_CASE("A clamped rest of a world body moves its bones with the record: "
+          "the relay's position at the rest and each bone shifted by the "
+          "same delta",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  auto w = EnterBySign(p);
+  const NiPoint3 placed = w.prop.GetPos();
+  Claim(p, 1, kSign, 0);
+  REQUIRE(p.PropLiveOwner(w.prop) == kC2);
+  const NiPoint3 near = placed + NiPoint3{ 50.f, 0.f, 0.f };
+  Sample(p, 1, kSign, near, false);
+  REQUIRE(w.prop.GetPos() == near);
+  p.Messages().clear();
+
+  // the rest 1,500 units past the record and 1,550 from the file position
+  const NiPoint3 far = placed + NiPoint3{ 1550.f, 0.f, 0.f };
+  const auto sent = SampleWithBones(p, kSign, far, true, 7);
+  p.GetActionListener().OnPropTransform(Raw(1), sent);
+  const NiPoint3 rest = near + NiPoint3{ 600.f, 0.f, 0.f };
+  REQUIRE(std::abs(w.prop.GetPos().x - rest.x) < 1.f);
+  REQUIRE(p.PropLiveOwner(w.prop) == 0);
+  REQUIRE(p.PropEpochOf(w.prop) == 2);
+  // c1 hears the rest re-encoded, never the sender's bytes
+  REQUIRE(RelaysTo(p, 0).empty());
+  const auto relay = SentTo<PropTransformMessage>(p, 0);
+  REQUIRE(relay.size() == 1);
+  REQUIRE(relay[0].asleep);
+  REQUIRE(std::abs(relay[0].pos[0] - rest.x) < 1.f);
+  REQUIRE(std::abs(relay[0].pos[1] - rest.y) < 1.f);
+  REQUIRE(std::abs(relay[0].pos[2] - rest.z) < 1.f);
+  REQUIRE(relay[0].bones.size() == sent.bones.size());
+  const NiPoint3 shift{ relay[0].pos[0] - far.x, relay[0].pos[1] - far.y,
+                        relay[0].pos[2] - far.z };
+  REQUIRE(std::abs(shift.x - (rest.x - far.x)) < 1.f);
+  for (size_t i = 0; i < sent.bones.size(); ++i) {
+    for (size_t k = 0; k < 3; ++k) {
+      REQUIRE(std::abs(relay[0].bones[i].pos[k] -
+                       (sent.bones[i].pos[k] + shift[k])) < 0.01f);
+    }
+    REQUIRE(relay[0].bones[i].quat == sent.bones[i].quat);
+    const NiPoint3 bone{ relay[0].bones[i].pos[0], relay[0].bones[i].pos[1],
+                         relay[0].bones[i].pos[2] };
+    REQUIRE((bone - rest).Length() < 512.f);
+  }
+  // and the sender the record, whose answer carries no bones
+  const auto record = SentTo<PropTransformMessage>(p, 1);
+  REQUIRE(record.size() == 1);
+  REQUIRE(record[0].seq == 0);
+  REQUIRE(record[0].bones.empty());
+  Leave(p);
+}
+
+// physics rung 4 (DEF-4e): a world body is a game-file reference, held to its
+// file position by the tether; a server-made one (a spell's placed wall,
+// SpellPlacedTest's MSTT base) has none and is no prop at all, by any touch
+TEST_CASE("A server-made world object is no prop: a contact and an impulse "
+          "on a server-made movable static are refused E_PROP_KIND with no "
+          "word, and its sample moves nothing",
+          "[Prop][espm]")
+{
+  // Skyrim.esm's MSTT BFXSmashedBarrelWithOil (SpellPlacedTest.cpp:31-33),
+  // its type read from the record here
+  constexpr uint32_t kSmashedBarrel = 0x000eee0d;
+  constexpr uint32_t kPlacedWall = 0xff000d17;
+  auto& p = GetPartOne();
+  const auto base = p.GetEspm().GetBrowser().LookupById(kSmashedBarrel);
+  REQUIRE(base.rec);
+  REQUIRE(base.rec->GetType() == "MSTT");
+  Enter(p);
+  const NiPoint3 wallAt = kHere + NiPoint3{ 30.f, 0.f, 0.f };
+  {
+    auto wall = std::make_unique<MpObjectReference>(
+      LocationalData{ wallAt, { 0.f, 0.f, 0.f }, FormDesc::Tamriel() },
+      p.CreateFormCallbacks(), kSmashedBarrel, "MSTT");
+    p.worldState.AddForm(std::move(wall), kPlacedWall);
+  }
+  auto& wall = p.worldState.GetFormAt<MpObjectReference>(kPlacedWall);
+  wall.ForceSubscriptionsUpdate();
+  REQUIRE(Listens(wall, p.worldState.GetFormAt<MpActor>(kC1)));
+  REQUIRE(Listens(wall, p.worldState.GetFormAt<MpActor>(kC2)));
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Claim(p, 0, kPlacedWall, 0);
+    Claim(p, 1, kPlacedWall, 3);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
+                      "prop ff000d17 by touch 0; neither an item nor a world "
+                      "body") == 1);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 claims "
+                      "prop ff000d17 by touch 3; neither an item nor a world "
+                      "body") == 1);
+  }
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  REQUIRE(p.PropEpochOf(wall) == 0);
+  // the host's sample of it: refused by its kind too (the seat's second
+  // refusal inside 10 s, so its effect is read)
+  Sample(p, 0, kPlacedWall, wallAt + NiPoint3{ 0.f, 0.f, -20.f }, false);
+  REQUIRE(wall.GetPos() == wallAt);
+  REQUIRE(RelaysTo(p, 1).empty());
+  REQUIRE(p.PropEpochOf(wall) == 0);
+  REQUIRE(p.PropLiveOwner(wall) == 0);
+  Leave(p);
+}
+
+// physics rung 4 (DEF-4f: D-PH9 A gives a STAT with a dynamic model no row):
+// a STAT the server holds is one it attached by its record (thuum ADR-068
+// rung 4's AttachForRecord, AttachByRecordTest's Bleak Falls Temple XMarker
+// 0x108a5c, a REFR of the STAT 0x3b at (-598, -4954, -3312)); it is no world
+// body for a claim, a sample or a destruction report
+TEST_CASE("A STAT attached by its record is no world body: a claim and a "
+          "sample are refused E_PROP_KIND and a destruction report "
+          "E_DESTRUCTION_KIND",
+          "[Prop][Traps][espm]")
+{
+  constexpr uint32_t kTemple = 0x371de;
+  constexpr uint32_t kMarker = 0x108a5c;
+  auto& p = GetPartOne();
+  REQUIRE(p.worldState.AttachForRecord(kMarker));
+  auto& marker = p.worldState.GetFormAt<MpObjectReference>(kMarker);
+  REQUIRE(marker.GetBaseType() == "STAT");
+  const NiPoint3 markerAt = marker.GetPos();
+  Player(p, 0, kC1, markerAt + NiPoint3{ 40.f, 0.f, 0.f }, kTemple);
+  Player(p, 1, kC2, markerAt + NiPoint3{ 60.f, 0.f, 0.f }, kTemple);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Claim(p, 0, kMarker, 0);
+    Sample(p, 1, kMarker, markerAt + NiPoint3{ 0.f, 0.f, -20.f }, false);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
+                      "prop 108a5c by touch 0; neither an item nor a world "
+                      "body") == 1);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 moves prop "
+                      "108a5c; neither an item nor a world body") == 1);
+    DestructionStageMessage report;
+    report.refr = kMarker;
+    report.stage = 1;
+    report.destroyed = false;
+    report.served = false;
+    p.GetActionListener().OnDestructionStage(Raw(0), report);
+    REQUIRE(log.Count("[verb:traps] E_DESTRUCTION_KIND: ff000d01 reports "
+                      "108a5c at stage 1, destroyed false: not a trap or "
+                      "destructible world body") == 1);
+  }
+  REQUIRE(marker.GetPos() == markerAt);
+  REQUIRE(p.PropEpochOf(marker) == 0);
+  REQUIRE(!marker.GetDestruction().has_value());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  Leave(p);
+}
+
+// physics rung 4 leaves an actor off the stream, a dead one included: its
+// body's row is 5a's, told by the movement path (ActorDeathTest's body
+// cases), and rung 5 gives the prop stream a Body kind, which changes this
+// text. ActorDeathTest's fixture: the forest's leveled predator 0x85547
+// (NpcFateTest's ids), loaded by the arrival's fate pass
+TEST_CASE("A dead actor stays off the stream until rung 5: a claim and a "
+          "sample naming it are refused E_PROP_UNKNOWN",
+          "[Prop][espm]")
+{
+  constexpr uint32_t kPredator = 0x85547;
+  const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Player(p, 0, kC1, kForest);
+  Player(p, 1, kC2, kForest + NiPoint3{ 20.f, 0.f, 0.f });
+  p.TickCellHosts(NowMs());
+  const auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form != nullptr);
+  MpActor* body = form->AsActor();
+  REQUIRE(body != nullptr);
+  if (body->IsDead()) {
+    body->Respawn(false);
+  }
+  body->Kill(nullptr);
+  REQUIRE(body->IsDead());
+  const NiPoint3 diedAt = body->GetPos();
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Claim(p, 0, kPredator, 0);
+    Sample(p, 1, kPredator, diedAt + NiPoint3{ 30.f, 0.f, 0.f }, false);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_UNKNOWN: ff000d01 claims "
+                      "prop 85547 by touch 0; no such reference, or an "
+                      "actor") == 1);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_UNKNOWN: ff000d02 moves "
+                      "prop 85547; no such reference, or an actor") == 1);
+  }
+  REQUIRE(body->GetPos() == diedAt);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  REQUIRE(RelaysTo(p, 0).empty());
+  body->Respawn(false);
+  p.worldState.fateRespawnDue.erase(kPredator);
   Leave(p);
 }

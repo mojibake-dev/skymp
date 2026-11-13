@@ -216,8 +216,9 @@ pub struct ClientGuard {
     /// by an explosion, 6 by Unrelenting Force's cone and 1 by an arrow; with
     /// every item Dynamic the cart's ceiling is its six cabbages and two
     /// statics, 8, and the six cabbages streamed at the owner's 10 Hz with
-    /// their heartbeats are 60 samples a second (the statics are no rows
-    /// until physics rung 4), inside this budget. Two blasts at once, or a
+    /// their heartbeats are 60 samples a second (the statics are rows since
+    /// physics rung 4, D-PH9 A, which adds the two movable statics' samples:
+    /// UNMEASURED), inside this budget. Two blasts at once, or a
     /// blast beside a trap firing, pass the client's priority accumulator,
     /// which rations its sends at 80 a second under this budget (physics rung
     /// 2), so the edge refuses none; physics rung 3 keeps the numbers.

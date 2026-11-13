@@ -3860,31 +3860,51 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
 }
 
 namespace {
-// thuum docs/verbs/prop-physics.md (ADR-058, slice one): a prop is an item
-// reference (libespm's item types, the client's FormTypeEx.isItem set), from
-// the game files or server-made (a drop); a door, a container, an activator
-// or an actor is no prop, whatever a seat claims or streams
-bool IsPropKind(MpObjectReference& refr)
+// thuum docs/verbs/prop-physics.md (ADR-058, slice one; physics rung 4,
+// ADR-071 and Eli's D-PH9 A): what a reference is to the prop stream, read
+// from the server's own record alone, never a record lookup and never the
+// body's class. An item (libespm's item types, the client's
+// FormTypeEx.isItem set, a key and a light among them: libespm
+// src/Utils.cpp:41-49), from the game files or server-made (a drop), is a
+// prop whose body is one part. A world body is any other game-file reference
+// that is no actor, door, container, furniture or static: a trap's rock or
+// tripwire (thuum D-S3 point 4; thuum docs/research/trap-census-2026-11-05.md
+// row 18), a hinged sign, a cart's wheel. The server holds every movable
+// static (WorldState's loader) and no class: whether a world body moves at
+// all is each seat's read of its loaded 3D (the root's BSX kDynamic), its
+// unvalidated word (R2), bounded here by the kind, the listener check
+// (E_PROP_UNSEEN), the step budget and the tether (kWorldBodyTether). A
+// server-made reference is no world body (DEF-4e: it has no game-file
+// position to be tethered to; WorldState.cpp's split of the ids at
+// 0xff000000), nor is a static (DEF-4f: D-PH9 A gives a STAT with a dynamic
+// model no row). An actor answers None: a dead actor's row is rung 5's
+// (Body; MpActor::IsDead), and every caller refuses an actor before it asks.
+// A world body is also the one kind whose destruction a seat's report
+// records (OnDestructionStage, E_DESTRUCTION_KIND; D-S3 point 3)
+enum class PropKind
 {
-  return !refr.AsActor() &&
-    espm::utils::IsItem(espm::Type(refr.GetBaseType().c_str()));
-}
+  None,
+  Item,
+  WorldBody
+};
 
-// thuum D-S3 (traps follow the interaction, point 4): a trap's world body,
-// a world object a seat's own script sets moving (Embershard's falling
-// rocks and its tripwire, ACTIs: thuum docs/research/trap-census-2026-11-05.md
-// rows 18 and the tripwire's), joins the prop stream by the impulse touch
-// alone; an actor, a door, a container or furniture never does, and an item
-// is a prop by IsPropKind. Point 3: a world body is also the one kind whose
-// destruction a seat's report records (OnDestructionStage, E_DESTRUCTION_KIND)
-bool IsWorldBodyKind(MpObjectReference& refr)
+PropKind PropKindOf(MpObjectReference& refr)
 {
-  if (refr.AsActor() || IsPropKind(refr)) {
-    return false;
+  if (refr.AsActor()) {
+    return PropKind::None;
   }
   const auto& baseType = refr.GetBaseType();
-  return baseType != "DOOR" && baseType != "CONT" && baseType != "FURN" &&
-    baseType != "NPC_";
+  if (espm::utils::IsItem(espm::Type(baseType.c_str()))) {
+    return PropKind::Item;
+  }
+  if (!refr.IsEspmForm()) {
+    return PropKind::None;
+  }
+  if (baseType == "DOOR" || baseType == "CONT" || baseType == "FURN" ||
+      baseType == "NPC_" || baseType == "STAT") {
+    return PropKind::None;
+  }
+  return PropKind::WorldBody;
 }
 
 // thuum docs/verbs/prop-physics.md (A1 to A7 of ADR-071 decision 2): whether
@@ -3903,13 +3923,18 @@ bool IsPropListener(const MpObjectReference& refr, const MpActor& actor)
 }
 
 // thuum D-S3 point 4 (the review of 9ff1895e, finding 2): how far a world
-// body's sample may stand from the body's game-file position. "A trap's
-// world body" admits almost every world object (IsWorldBodyKind), and a
-// crafted seat could claim one by the impulse and carry it off for good at
-// the step budget's pace; the tether keeps every one within a fall of where
-// the game files place it. UNMEASURED: a fall's extent (x-trap-boulders
-// reads Embershard's rocks)
+// body's sample may stand from the body's game-file position. A world body
+// is almost every world object (PropKindOf), and since physics rung 4 any
+// touch claims one (D-PH9 A), so a crafted seat could carry one off for good
+// at the step budget's pace; the tether keeps every one within a fall of
+// where the game files place it. UNMEASURED: a fall's extent (x-trap-boulders
+// reads Embershard's rocks; DEF-4b keeps 2048 for rung 4)
 constexpr float kWorldBodyTether = 2048.f;
+
+// physics rung 4 (DEF-4h): the most bones a sample may carry, the wire's own
+// cap (skymp-wire wire-schema lib.rs:360, cap::PROP_BONES); the Rust edge
+// refuses more at decode, and the legacy path's JSON is held to it here
+constexpr size_t kPropBonesMax = 64;
 
 // thuum docs/verbs/prop-physics.md: whether a prop refusal's line is due for
 // its sender, one line per 10 s per seat, a refused sample's and a refused
@@ -3938,26 +3963,27 @@ bool PropRefusalLineDue(ServerState& serverState, Networking::UserId user,
 // simulate; since physics rung 2 (ADR-071 decision 6) one claim names one to
 // sixteen props, each judged alone, its own verdict, word and line. The
 // gates, per reference: the reference a prop the server holds (an item, or
-// under an impulse a trap's world body; never an actor), a touch the
-// contract names, the claimant a listener of the prop (E_PROP_UNSEEN: the
-// server's own record of which games it sent the prop), and the prop's
+// since physics rung 4 a world body by any touch, D-PH9 A's admission: the
+// server holds no class, PropKindOf; never an actor; E_PROP_KIND), a touch
+// the contract names, the claimant a listener of the prop (E_PROP_UNSEEN:
+// the server's own record of which games it sent the prop), and the prop's
 // record in a cell (E_PROP_OUTSIDE: the cell is the rule's row key, never a
-// gate on the claimant). Then the rule (wire-rules props): a prop at rest or
-// stalled is the newest toucher's, one epoch per prop; a grabbed prop
-// refuses everything (E_PROP_HELD); a prop another seat streams awake
-// refuses a contact, a drop or an impulse (E_PROP_MOVING; a grab takes it),
-// a trap body's second firing among them; a claim from a game that unloaded
-// the prop's cell waits for its load report (E_PROP_AWAY); a grab ends the
-// claimant's hold of any other prop (one grabbed object per player). Granted,
-// the word
-// (PropOwner) goes reliable to every listener of the prop with a user, the
-// claimant among them (it learns its epoch); a refused claimant hears the
-// current word, once per prop per second, and every refusal counts in the
-// stream counters. The two gates that stood here, the claimant in the
-// prop's cell (E_PROP_CELL) and within 256, 512 or 2048 units of the record
-// (E_PROP_REACH), retire with A1 to A7 (ADR-071 decision 2): they refused
-// playtest 41's carried bucket and playtest 44's kettle at the mill's cell
-// edge against records the carrier had already moved.
+// gate on the claimant). Then the rule (wire-rules props), a world body's as
+// an item's: a prop at rest or stalled is the newest toucher's, one epoch
+// per prop; a grabbed prop refuses everything (E_PROP_HELD); a prop another
+// seat streams awake refuses a contact, a drop or an impulse (E_PROP_MOVING,
+// A3; a grab takes it, A2), a trap body's second firing among them; a claim
+// from a game that unloaded the prop's cell waits for its load report
+// (E_PROP_AWAY); a grab ends the claimant's hold of any other prop (one
+// grabbed object per player). Granted, the word (PropOwner) goes reliable to
+// every listener of the prop with a user, the claimant among them (it
+// learns its epoch); a refused claimant hears the current word, once per
+// prop per second, and every refusal counts in the stream counters. The two
+// gates that stood here, the claimant in the prop's cell (E_PROP_CELL) and
+// within 256, 512 or 2048 units of the record (E_PROP_REACH), retire with
+// A1 to A7 (ADR-071 decision 2): they refused playtest 41's carried bucket
+// and playtest 44's kettle at the mill's cell edge against records the
+// carrier had already moved.
 void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
                                  const PropClaimMessage& msg)
 {
@@ -3965,7 +3991,6 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   if (!myActor) {
     return;
   }
-  const bool impulse = msg.touch == 3;
   const auto now = std::chrono::steady_clock::now();
   // physics rung 2 (ADR-071 decision 6): one to sixteen references, each
   // judged alone through the gates below, with its own verdict, its own word
@@ -3975,10 +4000,10 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   const auto claimOne = [&](uint32_t refr) {
     // every touch names a reference the server holds already (NoLoad: a
     // claim never loads the id a seat chose, the review of 9ff1895e's
-    // finding 4): an item, or under an impulse (thuum D-S3 point 4) a trap's
-    // world body, which stands loaded with the chunks the claimant's own grid
-    // pass loads around it (GetNeighborsByPosition, the 3x3 squares of 4096
-    // units)
+    // finding 4): an item, or a world body (thuum D-S3 point 4; any touch
+    // since physics rung 4), which stands loaded with the chunks the
+    // claimant's own grid pass loads around it (GetNeighborsByPosition, the
+    // 3x3 squares of 4096 units)
     const auto& form = partOne.worldState.LookupFormByIdNoLoad(refr);
     MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
     const auto refuse = [&](const char* code, const char* why) {
@@ -3993,13 +4018,11 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     if (!prop || prop->AsActor()) {
       return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
     }
-    const bool worldBody = IsWorldBodyKind(*prop);
-    if (!IsPropKind(*prop) && !worldBody) {
-      return refuse("E_PROP_KIND", "not an item reference");
-    }
-    if (worldBody && !impulse) {
-      return refuse("E_PROP_KIND",
-                    "a world body, which only an impulse claims");
+    // physics rung 4 (D-PH9 A): a world body by any touch, as an item; the
+    // impulse-only gate of D-S3 point 4 retires with it
+    const PropKind kind = PropKindOf(*prop);
+    if (kind == PropKind::None) {
+      return refuse("E_PROP_KIND", "neither an item nor a world body");
     }
     if (msg.touch > 3) {
       return refuse("E_PROP_RANGE", "a touch the contract does not name");
@@ -4090,7 +4113,7 @@ bool ActionListener::RefusePropPickup(const RawMessageData& rawMsgData,
                                       const MpActor& picker,
                                       MpObjectReference& target)
 {
-  if (!IsPropKind(target)) {
+  if (PropKindOf(target) != PropKind::Item) {
     return false;
   }
   const auto refuse = [&](const char* code, const char* why) {
@@ -4193,10 +4216,12 @@ skymp::rules::ScriptArg ScriptArgOf(
 // an actor's, the streams'), whether its base is a door or a container, the
 // world or cell its group names (the load order's id) and its position; none
 // for another record, for no record, or for one with no base or no place.
-// The loader attaches no moving static (MSTT), so Bleak Falls Sanctum
+// Its placements are a STAT or another base the loader never attaches (a
+// room marker, an XMarker a script names); since physics rung 4 (D-PH9 A)
+// the loader holds every movable static (MSTT), so Bleak Falls Sanctum
 // 0x371dd's door FX 0x5256c, which HallofStoriesKeyholeScript.openDoor
-// plays FXDoorOpen on, is no reference of the server's (lab/esm.py,
-// 2026-11-05: base 0x52172 RuinsPuzzleDoorFX, at (128, -320, -256)).
+// plays FXDoorOpen on, is a held reference (lab/esm.py, 2026-11-05: base
+// 0x52172 RuinsPuzzleDoorFX, at (128, -320, -256)).
 // `actors` (thuum ADR-068 rung 4, a record row's subject): an ACHR is
 // placed too, by its record's cell, so an actor the loader never held (an
 // initially disabled ambush draugr, Bleak Falls Temple 0x371de's 0x380ba,
@@ -5403,10 +5428,11 @@ void KeepScriptVariable(MpObjectReference& subject,
                         uint32_t seq);
 }
 
-// A game-file placement the loader never attaches (a moving static: the hall
-// door's FX, rung 2's merged-head review) is judged by its record instead:
-// its record's cell, its listeners the games that report that cell loaded,
-// and nothing kept, since no reference of the server's carries it.
+// A game-file placement the loader never attaches (a STAT or another base
+// the loader skips; since physics rung 4 the hall door's FX of rung 2's
+// merged-head review is a held reference, D-PH9 A) is judged by its record
+// instead: its record's cell, its listeners the games that report that cell
+// loaded, and nothing kept, since no reference of the server's carries it.
 // An accepted action goes at once (SpSnippet::Relay, never the deferred queue)
 // to the subject's listeners but the reporter as the row's relay native
 // (PlayAnimationAndWait as PlayAnimation), with the subject's sequence; the
@@ -5727,8 +5753,9 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     }
   }
   // a placement by its record keeps nothing: no reference of the server's
-  // carries a lastAnimation to a late joiner (the hall door's FX is a
-  // one-shot; the door it dresses, 0x4e2b8, is an ACTI the server holds)
+  // carries a lastAnimation to a late joiner (a STAT or another base the
+  // loader skips); since physics rung 4 the hall door's FX is a held
+  // reference (D-PH9 A), which keeps its event as any world object does
   if (subject && verdict.keep_last && !event.empty()) {
     subject->SetLastAnimation(event);
   }
@@ -6651,10 +6678,11 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
 // game-file reference the server holds or loads (LookupFormById: a trap's
 // lamp may stand outside the chunks loaded around the players), no actor
 // (an actor's death is the NPC fate's; an ACHR is refused by its record
-// before the lookup could load it), a world body (IsWorldBodyKind: the
-// lamp and the tripwire are ACTIs; a door, a container, furniture or an item
-// is no trap's result, whatever a seat reports, the review of 9ff1895e's
-// finding 1), and the reference's cell loaded in the reporter's game
+// before the lookup could load it), a world body (PropKindOf: the lamp and
+// the tripwire are ACTIs; a door, a container, furniture or an item is no
+// trap's result, whatever a seat reports, the review of 9ff1895e's finding
+// 1, and since physics rung 4 neither is a static the server attached by its
+// record, DEF-4f), and the reference's cell loaded in the reporter's game
 // (PartOne::GetCellLoaders): the seat whose engine reached the step reports
 // it, the cell's host or a guest alike (R2: the engine computed it, the
 // server records it, nothing of it validated beyond these checks). A
@@ -6700,7 +6728,7 @@ void ActionListener::OnDestructionStage(const RawMessageData& rawMsgData,
     return refuse("E_DESTRUCTION_ACTOR",
                   "an actor, whose death is the NPC fate's");
   }
-  if (!IsWorldBodyKind(*refrPtr)) {
+  if (PropKindOf(*refrPtr) != PropKind::WorldBody) {
     return refuse("E_DESTRUCTION_KIND",
                   "not a trap or destructible world body");
   }
@@ -7433,9 +7461,19 @@ void ActionListener::SendWorldGlobals(MpActor& actor)
 }
 
 // thuum docs/verbs/prop-physics.md (ADR-058 decision 2; A4, A5 and A7 of
-// ADR-071 decision 2; physics rung 2's v2, ADR-071 decision 6): a
-// simulator's sample of a prop. A sample with bones (the parts of a body of
-// several) is refused before anything (E_PROP_KIND): no row takes one yet.
+// ADR-071 decision 2; physics rung 2's v2, ADR-071 decision 6; physics rung
+// 4, D-PH9 A and D-PH10 A): a simulator's sample of a prop, an item or a
+// world body (PropKindOf; E_PROP_KIND for neither). Since rung 4 a world
+// body's sample may carry bones, the poses of its parts in its seat's walk
+// order, and an item's may not (E_PROP_KIND: its body is one part); more
+// bones than the wire's cap (kPropBonesMax) or a value that is not a number,
+// the sample's or a bone's, is refused (E_PROP_RANGE) before any arithmetic
+// on it. The bones are relayed and never recorded or budgeted (DEF-4c):
+// the record keeps the sample's pos and rot, the root's (a hinged sign's
+// anchor), and the rule judges those alone. A world body joins the stream
+// by any touch or by its host's own wake (DEF-4a: the epoch-0 refusal of
+// D-S3 point 4 retires, so a resting one the host's engine moved is A7's
+// Woken, as an item is).
 // The record takes a sample by the rule (wire-rules props): never at a point
 // in no cell (E_PROP_OUTSIDE) nor for a resting prop in a cell nobody hosts
 // (E_PROP_FROZEN) nor a wake from a game that unloaded the cell
@@ -7445,7 +7483,7 @@ void ActionListener::SendWorldGlobals(MpActor& actor)
 // cell the RECORD stands in; E_PROP_NOT_OWNER), then in order (a sequence not
 // newer than the last at the epoch is Late: dropped and counted, with no line
 // and no answer), then within the step budget, refilled by the owner's clock
-// bounded by the server's (E_PROP_STEP for an awake sample past it), a trap's
+// bounded by the server's (E_PROP_STEP for an awake sample past it), a
 // world body within kWorldBodyTether of its game-file position (E_PROP_FAR,
 // thuum D-S3 point 4's review), landing in the cell the sample's position
 // names in the prop's own world or cell (HYPOTHESIS: a prop never changes
@@ -7458,12 +7496,13 @@ void ActionListener::SendWorldGlobals(MpActor& actor)
 // prop to the cell's host at once with the word (player 0) to every listener
 // (A4), the host's own and a holder's included; one past the step budget is
 // clamped (the record moves the budget's distance toward it, every other
-// listener hears that rest re-encoded, and the sender hears the record), so
-// every seat ends at one record; the host's own wake of a resting prop is a
-// word naming it by id (A7), and a wake from a game that is no listener of
-// the prop is refused (E_PROP_UNSEEN). A refused sample (stale, future, not
-// the owner's, past the step budget, outside, frozen) is answered with the
-// current word and the record, once per prop per second per seat, so a
+// listener hears that rest re-encoded, its bones moved rigidly with it,
+// DEF-4g, and the sender hears the record), so every seat ends at one
+// record; the host's own wake of a resting prop is a word naming it by id
+// (A7), and a wake from a game that is no listener of the prop is refused
+// (E_PROP_UNSEEN). A refused sample (stale, future, not the owner's, past the
+// step budget, outside, frozen) is answered with the current word and the
+// record, once per prop per second per seat, so a
 // divergent word and copy heal (A5; ADR-071 decision 6), but for the live
 // owner's own stale sample, whose word is on its way and whose body is ahead
 // of the record. Refusals are logged once per 10 s per seat, with the seat's
@@ -7489,31 +7528,41 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   if (!prop || prop->AsActor()) {
     return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
   }
-  const bool worldBody = IsWorldBodyKind(*prop);
-  if (!IsPropKind(*prop) && !worldBody) {
-    return refuse("E_PROP_KIND", "not an item reference");
+  // physics rung 4 (D-PH9 A): a world body's samples are judged as an
+  // item's from its first, its host's own wake included (DEF-4a)
+  const PropKind kind = PropKindOf(*prop);
+  if (kind == PropKind::None) {
+    return refuse("E_PROP_KIND", "neither an item nor a world body");
   }
-  // thuum D-S3 point 4: a trap's world body is on the stream once an impulse
-  // claimed it (its epoch above 0: OnPropClaim admits no other touch on it,
-  // and found it loaded), its samples then judged as an item's
-  if (worldBody && partOne.PropEpochOf(*prop) == 0) {
-    return refuse("E_PROP_KIND", "a world body no impulse claimed");
+  // physics rung 2's bones: the parts of a body of several, a world body's
+  // since rung 4 (D-PH10 A) and a dead actor's at rung 5; an item's body is
+  // one part, so its sample with bones moves nothing and reaches nobody
+  if (!msg.bones.empty() && kind == PropKind::Item) {
+    return refuse("E_PROP_KIND",
+                  "a sample with bones on an item, whose body is one part");
   }
-  // physics rung 2: bones are the parts of a body of several, a world
-  // object's (rung 4) or a dead actor's (rung 5); no row takes them yet, so
-  // the sample moves nothing and reaches nobody
-  if (!msg.bones.empty()) {
-    return refuse(
-      "E_PROP_KIND",
-      "a sample with bones, which no prop row takes yet (a world "
-      "object's parts are rung 4's, a dead actor's bones rung 5's)");
+  // DEF-4h: the Rust edge caps the bones at decode (wire-schema
+  // cap::PROP_BONES); the legacy path's JSON is held to the same cap here
+  if (msg.bones.size() > kPropBonesMax) {
+    return refuse("E_PROP_RANGE", "more bones than the wire carries");
   }
   // the Rust edge refuses a non-finite transform (wire-validate); the legacy
   // path parses JSON, where 1e999 reads as infinity, so the check stands
-  // here too before any arithmetic on it or any message built from it
+  // here too before any arithmetic on it or any message built from it, each
+  // bone's pose among it (DEF-4h)
   for (int i = 0; i < 3; ++i) {
     if (!std::isfinite(msg.pos[i]) || !std::isfinite(msg.rot[i]) ||
         !std::isfinite(msg.lin[i]) || !std::isfinite(msg.ang[i])) {
+      return refuse("E_PROP_RANGE", "a transform that is not a number");
+    }
+  }
+  for (const auto& bone : msg.bones) {
+    const bool finite =
+      std::all_of(bone.pos.begin(), bone.pos.end(),
+                  [](float v) { return std::isfinite(v); }) &&
+      std::all_of(bone.quat.begin(), bone.quat.end(),
+                  [](float v) { return std::isfinite(v); });
+    if (!finite) {
       return refuse("E_PROP_RANGE", "a transform that is not a number");
     }
   }
@@ -7523,9 +7572,9 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   // sample lands within kWorldBodyTether of the body's game-file position
   // (its REFR record's, PlacementOfRecord), whoever owns it, before the rule
   // judges or spends anything; one with no game-file placement (no REFR
-  // record of the load order: a server-made reference) has nothing to be
-  // held to and takes no sample
-  if (worldBody) {
+  // record of the load order) has nothing to be held to and takes no sample
+  // (a server-made reference is no world body at all, DEF-4e)
+  if (kind == PropKind::WorldBody) {
     const auto placement =
       PlacementOfRecord(partOne.worldState, prop->GetFormId());
     if (!placement) {
@@ -7632,6 +7681,16 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
       prop->SetAngle(rot, SetPosMode::Other);
       PropTransformMessage relay = msg;
       relay.pos = { rest.x, rest.y, rest.z };
+      // physics rung 4 (DEF-4g): a world body's parts move rigidly with the
+      // record, each bone shifted by the clamp's own delta, so every bone
+      // stays where it stood from the root (within the edge's 512, which the
+      // outbound validator holds, wire-validate lib.rs:83 and validate_server;
+      // HYPOTHESIS for how often a clamped rest would otherwise miss it)
+      const NiPoint3 shift = rest - pos;
+      for (auto& bone : relay.bones) {
+        bone.pos = { bone.pos[0] + shift.x, bone.pos[1] + shift.y,
+                     bone.pos[2] + shift.z };
+      }
       size_t sent = 0;
       for (auto listener : prop->GetActorListeners()) {
         if (listener == myActor ||

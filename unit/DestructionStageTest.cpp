@@ -360,8 +360,9 @@ TEST_CASE("A destruction report on no reference, on an actor or from a game "
 
 // the review of 9ff1895e (finding 1): before the kind check any reference
 // that was no actor could be recorded destroyed, a container's or a door's
-// as well as a trap's; IsWorldBodyKind refuses a door, a container,
-// furniture and an item alike, and the temple's chest stands for them
+// as well as a trap's; the kind (PropKindOf's world body) refuses a door, a
+// container, furniture and an item alike, and the temple's chest stands for
+// them
 TEST_CASE("A destruction report on a container, which is no world body, is "
           "refused and records nothing: a trap's result is a world body's",
           "[Traps][espm]")

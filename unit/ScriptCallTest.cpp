@@ -1,8 +1,11 @@
 #include "ActionListener.h"
 #include "Messages.h"
 #include "TestUtils.hpp"
+#include "libespm/Convert.h"
+#include "libespm/REFR.h"
 #include "script_classes/PapyrusObjectReference.h"
 #include "wire_bridge_cxx/rules.h"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
 #include <fmt/format.h>
@@ -22,15 +25,22 @@ PartOne& GetPartOne();
 // both players beside it; and LockTest's bandit chest 0x371e9 (a CONT,
 // TreasBanditChest) at (-3420, 732, 575) in the same temple. The hall door's
 // FX (rung 2's merged-head review): Bleak Falls Sanctum 0x371dd's door FX
-// 0x5256c, a REFR of RuinsPuzzleDoorFX 0x52172 (an MSTT, which the loader
-// never attaches) at (128, -320, -256), which HallofStoriesKeyholeScript's
-// openDoor plays FXDoorOpen on (lab/esm.py, 2026-11-05; no override in
-// Update.esm or the three DLCs); the temple's draugr 0x380b4, an ACHR the
-// fresh world never loads (npcEnabled false; TrapRelayTest's). An exterior
-// placement (the hall door's FX review, finding 4): the forest motes 0xb15e6
-// by Riverwood, a REFR of FXMotesForest01 0xb15e4 (an MSTT) at (17697.3,
-// -46985.8, -100.1) in Tamriel 0x3c (lab/esm.py, 2026-11-05; no override in
-// Update.esm or the three DLCs), in the cell of the grid square there.
+// 0x5256c, a REFR of RuinsPuzzleDoorFX 0x52172 (an MSTT) at (128, -320,
+// -256), which HallofStoriesKeyholeScript's openDoor plays FXDoorOpen on
+// (lab/esm.py, 2026-11-05; no override in Update.esm or the three DLCs); the
+// temple's draugr 0x380b4, an ACHR the fresh world never loads (npcEnabled
+// false; TrapRelayTest's). An exterior one (the hall door's FX review,
+// finding 4): the forest motes 0xb15e6 by Riverwood, a REFR of
+// FXMotesForest01 0xb15e4 (an MSTT) at (17697.3, -46985.8, -100.1) in
+// Tamriel 0x3c (lab/esm.py, 2026-11-05; no override in Update.esm or the
+// three DLCs), in the cell of the grid square there. Since physics rung 4
+// (thuum ADR-071, Eli's D-PH9 A) the loader holds every movable static, so
+// both are held references; the placements by their record are two STATs
+// the loader never attaches (lab/esm.py ref, 2026-11-13; no override in
+// Update.esm or the three DLCs): the Sanctum's room marker 0x23358 (STAT
+// RoomMarker 0x1f) at (5152, -736, -512), and the rock 0x94b15 (STAT RockS03
+// 0x1b0a9) at (17553.3, -46793.6, -181.3) in Tamriel, 240 units from the
+// motes, in the same grid square.
 namespace {
 using Arg = std::optional<
   std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
@@ -51,6 +61,10 @@ constexpr uint32_t kTamriel = 0x3c;
 constexpr uint32_t kForestMotes = 0xb15e6;
 // the motes' DATA position rounded, in the record's grid square (4, -12)
 const NiPoint3 kAtTheMotes{ 17697.f, -46986.f, -100.f };
+constexpr uint32_t kRoomMarker = 0x23358;
+constexpr uint32_t kRockByTheMotes = 0x94b15;
+// the rock's DATA position rounded, in the same grid square
+const NiPoint3 kAtTheRock{ 17553.f, -46794.f, -181.f };
 
 uint64_t NowMs()
 {
@@ -226,12 +240,39 @@ std::optional<std::string> LastAnimation(PartOne& p, uint32_t refr)
 }
 
 // HallofStoriesKeyholeScript.openDoor's first native: PlayAnimation of
-// FXDoorOpen on the door FX (or on `selfId`), reported by `user` at `epoch`
+// FXDoorOpen on the door FX (or on `selfId`: the server never reads which
+// script made a call, nor its event), reported by `user` at `epoch`
 void OpenDoorFx(PartOne& p, Networking::UserId user, uint32_t epoch,
                 uint32_t selfId = kDoorFx)
 {
   Call(p, user, epoch, selfId, "ObjectReference", "PlayAnimation",
        { Text("FXDoorOpen") }, "HallofStoriesKeyholeScript", "openDoor");
+}
+
+// the type of the base a game-file placement names, read from its record as
+// the handler's PlacementOfRecord reads it: a by-record case's premise
+std::string BaseTypeOfRecord(PartOne& p, uint32_t refr)
+{
+  const auto& browser = p.GetEspm().GetBrowser();
+  const auto record = browser.LookupById(refr);
+  const auto* placement = espm::Convert<espm::REFR>(record.rec);
+  REQUIRE(placement);
+  const auto data = placement->GetData(p.worldState.GetEspmCache());
+  const auto base = browser.LookupById(record.ToGlobalId(data.baseId));
+  REQUIRE(base.rec);
+  return base.rec->GetType().ToString();
+}
+
+// whether the actor `actorId` listens to the held reference `refr`: the
+// grid squares around its player keep it subscribed, whatever its game
+// reports of the cell
+bool Listens(PartOne& p, uint32_t refr, uint32_t actorId)
+{
+  const auto& listeners =
+    p.worldState.GetFormAt<MpObjectReference>(refr).GetActorListeners();
+  const MpActor* actor = &p.worldState.GetFormAt<MpActor>(actorId);
+  return std::find(listeners.begin(), listeners.end(), actor) !=
+    listeners.end();
 }
 }
 
@@ -433,13 +474,29 @@ TEST_CASE("The server VM's own snippet carries no sequence and waits for "
   Leave(p);
 }
 
-TEST_CASE("The host's script call on a placement the server never loads is "
-          "judged by its record and mirrored to the other games with its "
-          "cell loaded",
+// physics rung 4 (thuum ADR-071, Eli's D-PH9 A): the loader holds every
+// movable static, so the hall door's FX is a reference of the server's,
+// attached with the Sanctum's chunk by the players' own grid pass, and its
+// calls are a held world object's: relayed to its listeners (the grid's,
+// never the cell's load reports) and, for the PlayAnimation pair, kept as
+// its lastAnimation (wire-rules natives Keep::Last), which a late joiner
+// replays. Until rung 4 the FX was judged by its record (the room marker's
+// case below), and a game that unloaded the cell heard it no more
+TEST_CASE("The host's script call on the hall door's FX, a movable static the "
+          "server holds, is relayed at once to its listeners and kept as its "
+          "last animation; a game that unloads the cell hears it while it "
+          "listens",
           "[ScriptCall][espm]")
 {
   PartOne& p = GetPartOne();
   const uint32_t epoch = EnterSanctum(p);
+  // the premise: held before any call looked it up
+  const auto& form = p.worldState.LookupFormByIdNoLoad(kDoorFx);
+  REQUIRE(form);
+  REQUIRE(form->AsObjectReference());
+  REQUIRE(form->AsObjectReference()->GetBaseType() == "MSTT");
+  REQUIRE(form->AsObjectReference()->GetBaseId() == kDoorFxBase);
+  REQUIRE(Listens(p, kDoorFx, kGuestActor));
   // the lines the held path writes, byte for byte (x-bleak-scripts' and
   // x-puzzle-whale's patterns, b-puzzle-relay's animates line)
   const std::string animates = "[verb:traps] 5256c animates 5256c "
@@ -459,8 +516,6 @@ TEST_CASE("The host's script call on a placement the server never loads is "
                       "ObjectReference.PlayAnimation") == 1);
     REQUIRE(log.Count("E_SCRIPTCALL_") == 0);
   }
-  // judged by its record: the server made no reference of it
-  REQUIRE(p.worldState.LookupFormByIdNoLoad(kDoorFx) == nullptr);
   auto relayed = SnippetsTo(p, 1);
   REQUIRE(relayed.size() == 1);
   REQUIRE(relayed[0]["class"] == "ObjectReference");
@@ -471,10 +526,122 @@ TEST_CASE("The host's script call on a placement the server never loads is "
   REQUIRE(relayed[0]["seq"] == 1);
   // never back to the reporter
   REQUIRE(SnippetsTo(p, 0).empty());
+  // kept on the reference, as the portcullis keeps its event
+  REQUIRE(LastAnimation(p, kDoorFx) ==
+          std::optional<std::string>("FXDoorOpen"));
 
   // the next call on the object takes its next sequence
   p.Messages().clear();
   OpenDoorFx(p, 0, epoch);
+  relayed = SnippetsTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["seq"] == 2);
+
+  // a game that unloads the cell is still the reference's listener, so it
+  // hears the object still (the relay goes to the listeners, not the loaders)
+  Loaded(p, 1, kSanctum, false);
+  REQUIRE(p.GetCellLoaders(kSanctum) == std::vector<uint32_t>(1, kHostActor));
+  REQUIRE(Listens(p, kDoorFx, kGuestActor));
+  p.Messages().clear();
+  {
+    LogCapture log;
+    OpenDoorFx(p, 0, epoch);
+    REQUIRE(log.Count(animates + "1 game(s)") == 1);
+    REQUIRE(log.Count(reports +
+                      "3, relayed to 1 game(s) as "
+                      "ObjectReference.PlayAnimation") == 1);
+  }
+  REQUIRE(SnippetsTo(p, 0).empty());
+  relayed = SnippetsTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["seq"] == 3);
+  Leave(p);
+}
+
+// physics rung 4: a held reference's look (thuum ADR-068 D-W2 A) is judged
+// by reach from the reference, where a placement by its record measures none
+// and takes only its host's word (the room marker's case below): the guest
+// beside the FX, with the Sanctum loaded, is a firing's look
+TEST_CASE("A guest's script call on the hall door's FX from beside it is its "
+          "look, judged by reach from the held reference: relayed to the "
+          "host's game with the FX's sequence and kept nowhere",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  const uint32_t epoch = EnterSanctum(p);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kDoorFx));
+  {
+    LogCapture log;
+    OpenDoorFx(p, 1, epoch);
+    REQUIRE(log.Count("[verb:traps] ff000fe4 reports "
+                      "ObjectReference.PlayAnimation on 5256c in cell 371dd "
+                      "(epoch " +
+                      std::to_string(epoch) +
+                      ", from HallofStoriesKeyholeScript.openDoor): its "
+                      "firing seat's look, seq 1, relayed to 1 game(s) as "
+                      "ObjectReference.PlayAnimation, kept nowhere (D-W2)") ==
+            1);
+    REQUIRE(log.Count("E_SCRIPTCALL_") == 0);
+    REQUIRE(log.Count(" animates ") == 0);
+  }
+  const auto relayed = SnippetsTo(p, 0);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["function"] == "PlayAnimation");
+  REQUIRE(relayed[0]["selfId"] == kDoorFx);
+  REQUIRE(relayed[0]["arguments"] == nlohmann::json::array({ "FXDoorOpen" }));
+  REQUIRE(relayed[0]["seq"] == 1);
+  REQUIRE(SnippetsTo(p, 1).empty());
+  // kept nowhere: a late joiner never replays a firing's look
+  REQUIRE(!LastAnimation(p, kDoorFx).has_value());
+  Leave(p);
+}
+
+// a placement the loader never attaches (since physics rung 4 a STAT or
+// another base it skips; the Sanctum's room marker stands for any): judged by
+// its record's cell, mirrored to the games that report that cell loaded, and
+// kept nowhere, since no reference of the server's carries it
+TEST_CASE("The host's script call on a placement the server never loads is "
+          "judged by its record and mirrored to the other games with its "
+          "cell loaded",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
+  const uint32_t epoch = EnterSanctum(p);
+  REQUIRE(BaseTypeOfRecord(p, kRoomMarker) == "STAT");
+  // the lines the by-record path writes, byte for byte
+  const std::string animates = "[verb:traps] 23358 animates 23358 "
+                               "'FXDoorOpen' in cell 371dd (its host "
+                               "ff000fe3 reports): recorded, relayed to ";
+  const std::string reports = "[verb:scripts] ff000fe3 reports "
+                              "ObjectReference.PlayAnimation on 23358 in "
+                              "cell 371dd (epoch " +
+    std::to_string(epoch) +
+    ", from HallofStoriesKeyholeScript.openDoor): seq ";
+  {
+    LogCapture log;
+    OpenDoorFx(p, 0, epoch, kRoomMarker);
+    REQUIRE(log.Count(animates + "1 game(s)") == 1);
+    REQUIRE(log.Count(reports +
+                      "1, relayed to 1 game(s) as "
+                      "ObjectReference.PlayAnimation") == 1);
+    REQUIRE(log.Count("E_SCRIPTCALL_") == 0);
+  }
+  // judged by its record: the server made no reference of it
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kRoomMarker) == nullptr);
+  auto relayed = SnippetsTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["class"] == "ObjectReference");
+  REQUIRE(relayed[0]["function"] == "PlayAnimation");
+  REQUIRE(relayed[0]["selfId"] == kRoomMarker);
+  REQUIRE(relayed[0]["arguments"] == nlohmann::json::array({ "FXDoorOpen" }));
+  REQUIRE(relayed[0]["snippetIdx"] == std::numeric_limits<uint32_t>::max());
+  REQUIRE(relayed[0]["seq"] == 1);
+  // never back to the reporter
+  REQUIRE(SnippetsTo(p, 0).empty());
+
+  // the next call on the object takes its next sequence
+  p.Messages().clear();
+  OpenDoorFx(p, 0, epoch, kRoomMarker);
   relayed = SnippetsTo(p, 1);
   REQUIRE(relayed.size() == 1);
   REQUIRE(relayed[0]["seq"] == 2);
@@ -485,7 +652,7 @@ TEST_CASE("The host's script call on a placement the server never loads is "
   p.Messages().clear();
   {
     LogCapture log;
-    OpenDoorFx(p, 0, epoch);
+    OpenDoorFx(p, 0, epoch, kRoomMarker);
     REQUIRE(log.Count(animates + "0 game(s)") == 1);
     REQUIRE(log.Count(reports +
                       "3, relayed to 0 game(s) as "
@@ -502,6 +669,7 @@ TEST_CASE("A script call on a placement by its record from a game that does "
 {
   PartOne& p = GetPartOne();
   const uint32_t epoch = EnterSanctum(p);
+  REQUIRE(BaseTypeOfRecord(p, kRoomMarker) == "STAT");
   const std::string byRecord = " (a reference the server does not load, "
                                "placed by its game-file record)";
   {
@@ -510,12 +678,12 @@ TEST_CASE("A script call on a placement by its record from a game that does "
     // it, and a firing's look (thuum ADR-068 D-W2 A) measures no reach from
     // a placement the server holds no reference for: only its host's word
     // is taken
-    OpenDoorFx(p, 1, epoch);
+    OpenDoorFx(p, 1, epoch, kRoomMarker);
     // E_SCRIPTCALL_OWNER: the host's report names an epoch the cell is not
     // at
-    OpenDoorFx(p, 0, epoch + 1);
+    OpenDoorFx(p, 0, epoch + 1, kRoomMarker);
     REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_FAR: ff000fe4 reports "
-                      "ObjectReference.PlayAnimation on 5256c (epoch " +
+                      "ObjectReference.PlayAnimation on 23358 (epoch " +
                       std::to_string(epoch) +
                       ", from HallofStoriesKeyholeScript.openDoor): a game "
                       "with cell 371dd loaded, and no reference of the "
@@ -523,7 +691,7 @@ TEST_CASE("A script call on a placement by its record from a game that does "
                       "host's word is taken" +
                       byRecord + "; refused, 1 since the last line") == 1);
     REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_OWNER: ff000fe3 reports "
-                      "ObjectReference.PlayAnimation on 5256c (epoch " +
+                      "ObjectReference.PlayAnimation on 23358 (epoch " +
                       std::to_string(epoch + 1) +
                       ", from HallofStoriesKeyholeScript.openDoor): cell "
                       "371dd stands at epoch " +
@@ -536,7 +704,7 @@ TEST_CASE("A script call on a placement by its record from a game that does "
   REQUIRE(SnippetsTo(p, 1).empty());
 
   // and no refusal took a sequence: the host's own call is the first
-  OpenDoorFx(p, 0, epoch);
+  OpenDoorFx(p, 0, epoch, kRoomMarker);
   const auto relayed = SnippetsTo(p, 1);
   REQUIRE(relayed.size() == 1);
   REQUIRE(relayed[0]["seq"] == 1);
@@ -578,6 +746,10 @@ TEST_CASE("A script call on an actor's placement or on a record that is no "
   Leave(p);
 }
 
+// an exterior placement the loader never attaches (the hall door's FX
+// review, finding 4; since physics rung 4 the motes are held, so the rock
+// beside them, a STAT, stands for every such placement): its record's cell is
+// its world's grid square's at its DATA position
 TEST_CASE("The host's script call on an exterior placement the server never "
           "loads is judged by its record's grid square and mirrored to a "
           "game with that cell loaded; a guest's is refused",
@@ -586,13 +758,102 @@ TEST_CASE("The host's script call on an exterior placement the server never "
   PartOne& p = GetPartOne();
   // the cell the handler places the record in (its world and its DATA
   // position, WorldState::CellOf), read the same way here, never a literal
+  const auto cell = p.worldState.CellOf(kTamriel, kAtTheRock);
+  REQUIRE(cell.has_value());
+  REQUIRE(*cell != 0);
+  REQUIRE(*cell != kTamriel);
+  const uint32_t epoch = EnterLoaded(p, kTamriel, kAtTheRock, *cell);
+  REQUIRE(BaseTypeOfRecord(p, kRockByTheMotes) == "STAT");
+  const std::string cellHex = fmt::format("{:x}", *cell);
+  // the event is a value the server never judges (ADR-062's amendment)
+  const auto play = [&](Networking::UserId user) {
+    Call(p, user, epoch, kRockByTheMotes, "ObjectReference", "PlayAnimation",
+         { Text("PlayAnim01") });
+  };
+  {
+    LogCapture log;
+    play(0);
+    REQUIRE(log.Count("[verb:traps] 94b15 animates 94b15 'PlayAnim01' in "
+                      "cell " +
+                      cellHex +
+                      " (its host ff000fe3 reports): recorded, relayed to 1 "
+                      "game(s)") == 1);
+    REQUIRE(log.Count("[verb:scripts] ff000fe3 reports "
+                      "ObjectReference.PlayAnimation on 94b15 in cell " +
+                      cellHex + " (epoch " + std::to_string(epoch) +
+                      ", from default2StateActivator.onActivate): seq 1, "
+                      "relayed to 1 game(s) as "
+                      "ObjectReference.PlayAnimation") == 1);
+    REQUIRE(log.Count("E_SCRIPTCALL_") == 0);
+  }
+  // judged by its record: the server made no reference of it
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kRockByTheMotes) == nullptr);
+  auto relayed = SnippetsTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["class"] == "ObjectReference");
+  REQUIRE(relayed[0]["function"] == "PlayAnimation");
+  REQUIRE(relayed[0]["selfId"] == kRockByTheMotes);
+  REQUIRE(relayed[0]["arguments"] == nlohmann::json::array({ "PlayAnim01" }));
+  REQUIRE(relayed[0]["seq"] == 1);
+  // never back to the reporter
+  REQUIRE(SnippetsTo(p, 0).empty());
+
+  // E_SCRIPTCALL_FAR: the guest has the cell loaded but does not host it,
+  // and a firing's look (thuum ADR-068 D-W2 A) measures no reach from a
+  // placement the server holds no reference for
+  p.Messages().clear();
+  {
+    LogCapture log;
+    play(1);
+    REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_FAR: ff000fe4 reports "
+                      "ObjectReference.PlayAnimation on 94b15 (epoch " +
+                      std::to_string(epoch) +
+                      ", from default2StateActivator.onActivate): a game "
+                      "with cell " +
+                      cellHex +
+                      " loaded, and no reference of the server's to measure "
+                      "its reach from, so only the host's word is taken (a "
+                      "reference the server does not load, placed by its "
+                      "game-file record); refused, 1 since the last line") ==
+            1);
+    REQUIRE(log.Count(" animates ") == 0);
+  }
+  REQUIRE(SnippetsTo(p, 0).empty());
+  REQUIRE(SnippetsTo(p, 1).empty());
+
+  // and the refusal took no sequence: the host's next call is the second
+  play(0);
+  relayed = SnippetsTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["seq"] == 2);
+  Leave(p);
+}
+
+// physics rung 4 (Eli's D-PH9 A): the forest motes are held, attached with
+// their grid square's chunk: the host's call is relayed to their listeners
+// and kept, and the guest beside them is a firing's look by reach from the
+// reference (thuum ADR-068 D-W2 A), where by their record it was
+// E_SCRIPTCALL_FAR (the rock's case above)
+TEST_CASE("The host's script call on an exterior movable static the server "
+          "holds is relayed to its listeners and kept; a guest's beside it "
+          "is its look, which takes the next sequence and is kept nowhere",
+          "[ScriptCall][espm]")
+{
+  PartOne& p = GetPartOne();
   const auto cell = p.worldState.CellOf(kTamriel, kAtTheMotes);
   REQUIRE(cell.has_value());
   REQUIRE(*cell != 0);
   REQUIRE(*cell != kTamriel);
   const uint32_t epoch = EnterLoaded(p, kTamriel, kAtTheMotes, *cell);
   const std::string cellHex = fmt::format("{:x}", *cell);
-  // the event is a value the server never judges (ADR-062's amendment)
+  // the premise: held before any call looked it up, in the grid square's
+  // cell the players' games report loaded
+  const auto& form = p.worldState.LookupFormByIdNoLoad(kForestMotes);
+  REQUIRE(form);
+  REQUIRE(form->AsObjectReference());
+  REQUIRE(form->AsObjectReference()->GetBaseType() == "MSTT");
+  REQUIRE(p.worldState.CellOf(*form->AsObjectReference()) == cell);
+  REQUIRE(Listens(p, kForestMotes, kGuestActor));
   const auto play = [&](Networking::UserId user) {
     Call(p, user, epoch, kForestMotes, "ObjectReference", "PlayAnimation",
          { Text("PlayAnim01") });
@@ -613,46 +874,42 @@ TEST_CASE("The host's script call on an exterior placement the server never "
                       "ObjectReference.PlayAnimation") == 1);
     REQUIRE(log.Count("E_SCRIPTCALL_") == 0);
   }
-  // judged by its record: the server made no reference of it
-  REQUIRE(p.worldState.LookupFormByIdNoLoad(kForestMotes) == nullptr);
   auto relayed = SnippetsTo(p, 1);
   REQUIRE(relayed.size() == 1);
-  REQUIRE(relayed[0]["class"] == "ObjectReference");
-  REQUIRE(relayed[0]["function"] == "PlayAnimation");
   REQUIRE(relayed[0]["selfId"] == kForestMotes);
   REQUIRE(relayed[0]["arguments"] == nlohmann::json::array({ "PlayAnim01" }));
   REQUIRE(relayed[0]["seq"] == 1);
-  // never back to the reporter
   REQUIRE(SnippetsTo(p, 0).empty());
+  REQUIRE(LastAnimation(p, kForestMotes) ==
+          std::optional<std::string>("PlayAnim01"));
 
-  // E_SCRIPTCALL_FAR: the guest has the cell loaded but does not host it,
-  // and a firing's look (thuum ADR-068 D-W2 A) measures no reach from a
-  // placement the server holds no reference for
+  // the guest beside the motes: its look, relayed to the host's game
   p.Messages().clear();
   {
     LogCapture log;
     play(1);
-    REQUIRE(log.Count("[verb:scripts] E_SCRIPTCALL_FAR: ff000fe4 reports "
-                      "ObjectReference.PlayAnimation on b15e6 (epoch " +
-                      std::to_string(epoch) +
-                      ", from default2StateActivator.onActivate): a game "
-                      "with cell " +
-                      cellHex +
-                      " loaded, and no reference of the server's to measure "
-                      "its reach from, so only the host's word is taken (a "
-                      "reference the server does not load, placed by its "
-                      "game-file record); refused, 1 since the last line") ==
+    REQUIRE(log.Count("[verb:traps] ff000fe4 reports "
+                      "ObjectReference.PlayAnimation on b15e6 in cell " +
+                      cellHex + " (epoch " + std::to_string(epoch) +
+                      ", from default2StateActivator.onActivate): its "
+                      "firing seat's look, seq 2, relayed to 1 game(s) as "
+                      "ObjectReference.PlayAnimation, kept nowhere (D-W2)") ==
             1);
-    REQUIRE(log.Count(" animates ") == 0);
+    REQUIRE(log.Count("E_SCRIPTCALL_") == 0);
   }
-  REQUIRE(SnippetsTo(p, 0).empty());
+  relayed = SnippetsTo(p, 0);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0]["seq"] == 2);
   REQUIRE(SnippetsTo(p, 1).empty());
+  REQUIRE(LastAnimation(p, kForestMotes) ==
+          std::optional<std::string>("PlayAnim01"));
 
-  // and the refusal took no sequence: the host's next call is the second
+  // the host's next call takes the next sequence
+  p.Messages().clear();
   play(0);
   relayed = SnippetsTo(p, 1);
   REQUIRE(relayed.size() == 1);
-  REQUIRE(relayed[0]["seq"] == 2);
+  REQUIRE(relayed[0]["seq"] == 3);
   Leave(p);
 }
 

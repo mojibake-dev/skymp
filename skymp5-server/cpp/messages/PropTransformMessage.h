@@ -28,8 +28,10 @@ struct PropTransformMessage : public MessageBase<PropTransformMessage>
     std::integral_constant<char, static_cast<char>(MsgType::PropTransform)>{};
 
   // one rigid body's pose of a body of several (wire-schema PropBone): a
-  // world object's parts (rung 4) or a dead actor's bones (rung 5); rung 2's
-  // server takes a sample with none (wire-validate holds each inside the
+  // world body's parts in its seat's walk order (physics rung 4, D-PH10 A)
+  // or a dead actor's bones (rung 5); an item's sample carries none
+  // (E_PROP_KIND), and the server relays bones and never records them
+  // (ActionListener::OnPropTransform; wire-validate holds each inside the
   // world, within 512 units of pos, its quaternion within 1% of unit length)
   struct Bone
   {

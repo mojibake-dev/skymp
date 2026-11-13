@@ -2046,9 +2046,10 @@ wire_struct! {
         /// The sender's engine holds the body (Game.getPlayerGrabbedRef names
         /// it, Eli's D-PH3 A); never with `asleep`.
         pub held: bool,
-        /// The poses of a body of several parts; empty for an item. Rung 2's
-        /// server takes a sample with none (a world object's parts are rung
-        /// 4's, a dead actor's bones rung 5's).
+        /// The poses of a body of several parts; empty for an item, whose
+        /// row takes none (E_PROP_KIND). A world body's parts in its seat's
+        /// walk order since physics rung 4 (D-PH10 A), relayed and never
+        /// recorded; a dead actor's bones at rung 5.
         pub bones: Vec<PropBone, { cap::PROP_BONES }>,
     }
 }

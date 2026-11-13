@@ -21,8 +21,14 @@
 # round trip among them) and T3's (x-reanimate-return v2). c2 steps aside at 20 s of its own, so it outlives c1 and c3. The
 # legacy stack: as thrall-departure's (its console knows PlaceAtMe alone; its fake client sends the kill's placeholder as a
 # string; it refuses the unlearned spell, so its cast relays nothing and its hit counts nothing); it knows no CellLoaded,
-# HostGrant or fate. The declarations are read from the code (2026-11-12), not yet run: its first T2 run draws them
-# (ONLY=thrall-return SESSIONS=tree), c3's words and the grant's flip the least sure.
+# HostGrant or fate. The declarations were read from the code (2026-11-12). The first T2 (numidium, 2026-11-13, server
+# m4-reanimate-return-7eaffba3, ONLY=thrall-return) held all of them but two and drew seven differences, each declared
+# now with its route read at 7eaffba3 (the line numbers below are its): c1 hears the copy's death word twice, as
+# thrall-departure's c1 does; and c1's character 0xff000002 leaves c2's view at each departure and at c3's login, where
+# the Spawn system enables its actor and then SetUserActor unsubscribes and subscribes it again. So the wire stack sends
+# c2 three DestroyActors of it and three create words (the first look at c2's login; at c3's login one before c3's user
+# is bound and one after), where the legacy stack, whose C++ fake client never closes and whose RakNet timeout of 60 s
+# outlasts the session, sends one DestroyActor and two create words, both with the first look.
 id: thrall-return
 clients:
   c1: {profile_id: 9}
@@ -96,8 +102,8 @@ divergences:
   - client: c1
     msg: {t: 7, propName: isDead, dataDump: "true"}
     legacy: 0
-    wire: 1
-    reason: the copy's death word to every listening game (thuum docs/verbs/npc-fate.md, ADR-048's seam); the legacy server never killed it
+    wire: 2
+    reason: the copy's death word to every listening game (thuum docs/verbs/npc-fate.md, ADR-048's seam; a server-made NPC's since canon's 634c2874, ADR-050 decision 3, MpActor.cpp:2279-2285), twice to its cell's host, as in thrall-departure; the copy is its own actor listener (its placement's ForceSubscriptionsUpdate, PapyrusObjectReference.cpp:470, reads the neighbours of the square MoveOnGrid put it on, itself among them, and its loop's Subscribe(this, listener) subscribes it to itself, MpObjectReference.cpp:1099-1136), and SendMessageToActorListeners (MpObjectReference.cpp:3019-3025) hands each listener's word to GetActorToSendTo (MpActor.cpp:872-889), which for the copy, a listener with no user, is its cell's host, c1, beside c1's own actor; the legacy server never killed it
   - client: c2
     msg: {t: 7, propName: isDead, dataDump: "true"}
     legacy: 0
@@ -150,9 +156,24 @@ divergences:
     reason: the command's word to the other game (ClaimCommanded's UpdateHoster), then the departure's (ClaimGone alone for a full thrall, no ThrallExpired; its cell rule answering the leaver names nobody, thuum docs/verbs/npc-fate.md)
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 1
+    wire: 3
+    reason: c1's character leaves c2's view three times on the wire, at c1's departure (a graceful close; the Spawn system's disconnect disables the leaver's actor, skymp5-server/ts/systems/spawn.ts:56-60, Disable's RemoveFromGridAndUnsubscribeAll, MpObjectReference.cpp:592-605, and onUnsubscribe sends DestroyActor to every listener with a user but the leaver, PartOne.cpp:1905-1920), at c3's login (Spawn enables the actor and then sets c3's user, spawn.ts:23-24, and SetUserActor unsubscribes it from all before it subscribes it again, PartOne.cpp:654-669) and at c3's departure, as at c1's; on the legacy stack once, at c3's login (the same pair, fork 737ee085^, the last RakNet tree, PartOne.cpp:201-206), since its C++ fake client exits without closing (docs/WIRE.md's harness note) and its RakNet timeout of 60 s (737ee085^ Networking.cpp:139, :163) outlasts c2, so neither departure reaches it; the server is up after the commander's departure
+  - client: c2
+    msg: {t: 33, idx: "refr:ff000002", props: {isHostedByOther: false}}
     legacy: 0
-    wire: 2
-    reason: departure detection, graceful close on the wire against RakNet's timeout, at c1's departure and again at c3's (the same character); the server is up after the commander's departure
+    wire: 1
+    reason: c1's character created again to c2 at c3's login by the Spawn system's enable (spawn.ts:23; Enable's ForceSubscriptionsUpdate, MpObjectReference.cpp:607-620) ahead of its setUserActor (spawn.ts:24), with no user bound yet and HostOf naming c2, the cell's host since the grant (cells.rs simulator_of falls to host_of, :514-529), so the flag is false (PartOne.cpp:1740-1759); the record carries c1's learned spell in the right hand; the legacy stack sends none, since c1's user, connected until RakNet's timeout, keeps the actor enabled and Enable returns at once (737ee085^ MpObjectReference.cpp:521-525)
+  - client: c2
+    msg: {t: 33, idx: "refr:ff000002", props: {isHostedByOther: true, learnedSpells: [0x7e8df]}}
+    legacy: 0
+    wire: 1
+    reason: the same character's create word once SetUserActor has bound c3's user to it, after its DestroyActor (PartOne.cpp:654-669), a user's figure and so hosted by other (PartOne.cpp:1758-1759), with the learned spell; the legacy stack's word at the same SetUserActor carries its record's first look (the declaration below)
+  - client: c2
+    msg: {t: 33, idx: "refr:ff000002"}
+    legacy: 2
+    wire: 1
+    reason: c1's character's create word with its first look (the starting kit worn, no spell), a user's figure and so hosted by other on both stacks (PartOne.cpp:1758-1759; 737ee085^ PartOne.cpp:855-859), at c2's login on both stacks and on the legacy stack again at c3's SetUserActor (737ee085^ PartOne.cpp:201-206), whose record kept the first look since that stack refused the spell (RemoveSpell and the inventory again, above); the wire's two later words carry the spell and were set aside by the two declarations above
   - client: c2
     msg: {t: 48, cell: 0xbbb1, epoch: 2}
     legacy: 0

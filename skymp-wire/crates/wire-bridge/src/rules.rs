@@ -3106,6 +3106,26 @@ mod ffi {
         /// cells' hosts at a new epoch each; the core sends `PropOwner` with
         /// player 0 for every (refr, epoch) returned.
         fn props_gone(self: &mut Props, player: u32) -> Vec<PropReturn>;
+        /// Physics rung 5a (thuum ADR-071 decision 5: a dead actor's row is
+        /// owned by the death's simulator): `refr`, an actor, died in `cell`
+        /// at `now_ms` with `simulator` simulating it (0 for none). The row
+        /// is written afresh at a new epoch, returned, whatever stood (no
+        /// row refuses the server's fact): `simulator`'s, awake and not
+        /// held, or nobody's (the cell's host by default) for 0 or for a
+        /// simulator whose game reported the cell unloaded and has not
+        /// loaded or reached it since.
+        fn prop_died(self: &mut Props, refr: u32, simulator: u32, cell: u32, now_ms: u64) -> u32;
+        /// The core judged `refr`'s body at rest (its dwell, never a
+        /// clock): a live row (awake or held) returns to the host by
+        /// default, asleep, at a new epoch, returned, the core's word
+        /// (`PropOwner` with player 0) at it; 0 when no live row stood (one
+        /// at rest, one naming nobody, none), and nothing changes.
+        fn prop_rested(self: &mut Props, refr: u32) -> u32;
+        /// `refr`'s body ended (its actor stood again): the row goes and the
+        /// epoch rises, returned (epochs outlive rows, so a later death
+        /// starts above every word before it); 0 when no row stood, and
+        /// nothing changes.
+        fn prop_ended(self: &mut Props, refr: u32) -> u32;
         /// How recent the owner's last sample must be for a prop to count as
         /// moving, ms (wire-rules props::PROP_MOVING_MS): a contact, a drop or
         /// an impulse from another seat is refused on it (claim code 3).
@@ -4703,6 +4723,18 @@ impl Props {
     fn props_gone(&mut self, player: u32) -> Vec<PropReturn> {
         prop_returns(self.0.gone(player))
     }
+
+    fn prop_died(&mut self, refr: u32, simulator: u32, cell: u32, now_ms: u64) -> u32 {
+        self.0.died(refr, simulator, cell, now_ms)
+    }
+
+    fn prop_rested(&mut self, refr: u32) -> u32 {
+        self.0.rested(refr)
+    }
+
+    fn prop_ended(&mut self, refr: u32) -> u32 {
+        self.0.ended(refr)
+    }
 }
 
 const fn prop_moving_ms() -> u64 {
@@ -6263,6 +6295,36 @@ mod tests {
         assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 1, 0x9732, 0xff00_0002, true, 10.0, 1_400)).code, 4);
         assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0002, 1_500), 0);
         assert_eq!(p.prop_epoch_of(0x2ad9c), 2);
+    }
+
+    #[test]
+    fn a_dead_actors_row_crosses_as_epochs() {
+        // physics rung 5a (ADR-071 decision 5): the death's, the rest's and the end's epochs as the core reads them, 0
+        // where nothing changed; the forest's predators 0x85547 and 0x85549 in Tamriel's cell 0x9810 (ActorDeathTest's),
+        // c1 0xff00_0002 hosting
+        let mut p = new_props();
+        assert_eq!(p.prop_died(0x85547, 0xff00_0003, 0x9810, 1_000), 1);
+        assert_eq!(p.prop_owner_of(0x85547, 0xff00_0002), 0xff00_0003);
+        assert_eq!(p.prop_live_owner(0x85547), 0xff00_0003);
+        assert!(!p.prop_held(0x85547));
+        assert_eq!(p.prop_rested(0x85547), 2);
+        assert_eq!(p.prop_rested(0x85547), 0);
+        assert_eq!(p.prop_owner_of(0x85547, 0xff00_0002), 0xff00_0002);
+        assert_eq!(p.prop_ended(0x85547), 3);
+        assert_eq!(p.prop_ended(0x85547), 0);
+        assert_eq!(p.prop_epoch_of(0x85547), 3);
+        // no simulator: the host's by default, nothing for the rest to return
+        assert_eq!(p.prop_died(0x85547, 0, 0x9810, 2_000), 4);
+        assert_eq!(p.prop_live_owner(0x85547), 0);
+        assert_eq!(p.prop_rested(0x85547), 0);
+        // a departure returns a live dead row with its word's epoch, as any prop's
+        assert_eq!(p.prop_died(0x85547, 0xff00_0003, 0x9810, 3_000), 5);
+        let returned = p.props_gone(0xff00_0003);
+        assert_eq!(returned.iter().map(|r| (r.refr, r.epoch)).collect::<Vec<_>>(), vec![(0x85547, 6)]);
+        // a simulator whose game unloaded the cell holds no row
+        assert!(p.props_unloaded(0xff00_0004, 0x9810).is_empty());
+        assert_eq!(p.prop_died(0x85549, 0xff00_0004, 0x9810, 4_000), 1);
+        assert_eq!(p.prop_live_owner(0x85549), 0);
     }
 
     #[test]

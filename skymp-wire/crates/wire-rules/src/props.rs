@@ -30,6 +30,23 @@
 //! deletes a server-made reference for every seat) is a take, read off the
 //! claim's rows for a touch that is no grab, and changes no row (`pickup`).
 //!
+//! A dead actor is a row too (ADR-071 decision 5, physics rung 5a: a dead
+//! actor's row is owned by the death's simulator). The death is the
+//! server's own fact (R0), never a seat's touch, so it is no claim: it
+//! always raises the epoch and writes the row afresh, naming the seat the
+//! cells rule names the actor's simulator at the death (the cell's host, a
+//! follow's player, a dialogue's claimant), awake and not held, or nobody
+//! (the host by default) when no seat simulates it or that seat's game has
+//! the cell unloaded (`died`). The body's rest is the core's judgment of its
+//! simulator's samples (the dwell), not an asleep sample, so the core
+//! returns a live row to the host at a new epoch by its own call
+//! (`rested`); the core's settle window ends the body's settle and never
+//! the row, so no clock returns a body either. A body that stands again
+//! (a respawn, a resurrection) is no body: its row goes and the epoch
+//! rises, since epochs outlive rows (`ended`). Everything else is any
+//! prop's: a departure or an unload returns a live dead row with its word,
+//! and only its owner's samples move the record.
+//!
 //! A sample is judged by its epoch first and then by the owner table, never
 //! by its position (ADR-066 decision 4; ADR-071 decision 6, physics rung 2):
 //! one below the prop's epoch is a sample of an earlier tenure (Stale), one
@@ -192,11 +209,13 @@ pub mod touch {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PropRow {
     /// The simulating player's actor form id; 0 once the prop went back to
-    /// the host (at rest, or the owner left or unloaded the prop's cell):
-    /// the cell's host simulates, `owner_of`.
+    /// the host (at rest, or the owner left or unloaded the prop's cell) or
+    /// for a body no seat simulated at its death: the cell's host
+    /// simulates, `owner_of`.
     pub owner: u32,
     /// The prop's owner epoch: up at every word (a grant, a return to the
-    /// host, the host's wake), the wire's `PropOwner.epoch`.
+    /// host, the host's wake; a death, a body's rest and its end), the
+    /// wire's `PropOwner.epoch`.
     pub epoch: u32,
     /// The cell the prop's record stands in, by the last claim or accepted
     /// transform.
@@ -392,11 +411,11 @@ impl PropRow {
     }
 
     /// The row at a new epoch (every word: a grant, a return, a wake, a
-    /// clamp, an unload, a departure): no sample yet at it, so the next one's
-    /// sequence and clock are measured from nothing, and its allowance may
-    /// hold up to `PROP_FIRST_SAMPLE_UNITS` of the prop's clock (physics rung
-    /// 3a); the allowance and its clock stand (they are the prop's), so the
-    /// rise itself buys no time.
+    /// clamp, an unload, a departure, a body's rest): no sample yet at it,
+    /// so the next one's sequence and clock are measured from nothing, and
+    /// its allowance may hold up to `PROP_FIRST_SAMPLE_UNITS` of the prop's
+    /// clock (physics rung 3a); the allowance and its clock stand (they are
+    /// the prop's), so the rise itself buys no time.
     fn begin(&mut self, epoch: u32) {
         self.epoch = epoch;
         self.last_seq = 0;
@@ -776,6 +795,73 @@ impl Props {
         }
         returned.sort_unstable();
         returned
+    }
+
+    /// `refr`, an actor, died in `cell` at `now_ms`, its body simulated by
+    /// `simulator` (the seat the cells rule names the actor's simulator at
+    /// the death, 0 for none; ADR-071 decision 5, physics rung 5a: a dead
+    /// actor's row is owned by the death's simulator). The death is the
+    /// server's own fact (R0), never a seat's touch, so it is no claim: no
+    /// row refuses it (another seat's hold, a stream, a live row of the same
+    /// seat, where a claim's Same would keep the epoch) and it always raises
+    /// the epoch, returned, so every word before it is of an earlier tenure.
+    /// The row is written afresh: the simulator's, awake, not held, no sample
+    /// yet at the epoch. A simulator of 0 leaves the row naming nobody, so
+    /// `owner_of` answers the cell's host; so does a simulator whose game
+    /// reported the cell unloaded and has not loaded or reached it since
+    /// (ADR-071's D-PH2 A: its 3D of the body is gone, and its unload would
+    /// have returned the row). The allowance and its clock are the prop's,
+    /// as at a grant: a row that stands keeps them, so the rise buys no
+    /// time, and a new row starts full (the record's last write was the
+    /// movement path's, no row's).
+    pub fn died(&mut self, refr: u32, simulator: u32, cell: u32, now_ms: u64) -> u32 {
+        let epoch = self.epoch_of(refr).saturating_add(1);
+        self.epochs.insert(refr, epoch);
+        let owner = if self.away.contains(&(simulator, cell)) { 0 } else { simulator };
+        let (allowance, allowance_ms) = self
+            .rows
+            .get(&refr)
+            .map_or((PROP_FIRST_SAMPLE_UNITS, now_ms), |row| (row.allowance, row.allowance_ms));
+        self.rows.insert(refr, PropRow { allowance, allowance_ms, ..PropRow::new(owner, epoch, cell, now_ms) });
+        epoch
+    }
+
+    /// The core judged `refr`'s body at rest (its dwell on the simulator's
+    /// samples, physics rung 5a): a judgment made outside the row, where a
+    /// prop's rest is its owner's own asleep sample. A live row (awake or
+    /// held) returns to the cell's host by default, asleep and not held, at
+    /// a new epoch, returned, for the core's word (player 0), as a
+    /// departure's return would. A row at rest or naming nobody, and no row,
+    /// change nothing: 0, no word (every word's epoch is 1 or more).
+    /// Kind-blind: any row's, though the core asks it for a body's alone,
+    /// and never by a clock.
+    pub fn rested(&mut self, refr: u32) -> u32 {
+        let Some(row) = self.rows.get_mut(&refr).filter(|r| r.live()) else {
+            return 0;
+        };
+        row.owner = 0;
+        row.grabbed = false;
+        row.asleep = true;
+        let next = row.epoch.saturating_add(1);
+        row.begin(next);
+        self.epochs.insert(refr, next);
+        next
+    }
+
+    /// `refr`'s body ended (its actor stood again: a respawn, a
+    /// resurrection; physics rung 5a): the row goes, whatever it named, and
+    /// the epoch rises, returned, since epochs outlive rows: a word any seat
+    /// still holds, and a sample under it, is of an ended tenure (Stale),
+    /// and the next death starts above it. Its next row starts afresh, its
+    /// allowance full (the record's writes between are the movement path's,
+    /// no row's). No row: nothing changes, 0.
+    pub fn ended(&mut self, refr: u32) -> u32 {
+        if self.rows.remove(&refr).is_none() {
+            return 0;
+        }
+        let next = self.epoch_of(refr).saturating_add(1);
+        self.epochs.insert(refr, next);
+        next
     }
 
     /// `player`'s game reported `cell` loaded: its claims and samples there
@@ -1710,25 +1796,168 @@ mod tests {
         assert!(p.held(0x54a44));
     }
 
+    // physics rung 5a (ADR-071 decision 5: a dead actor's row is owned by the
+    // death's simulator): the forest's leveled predator in Tamriel's cell
+    // 0x9810 (the C++ ActorDeathTest's kPredator and kPredator2)
+    const PREDATOR: u32 = 0x85547;
+    const PREDATOR2: u32 = 0x85549;
+    const FOREST: u32 = 0x9810;
+
+    #[test]
+    fn a_death_writes_its_simulators_row_at_a_new_epoch() {
+        // c2 simulates the predator at its death (a claimant, while c1 hosts the cell): the row is c2's at epoch 1,
+        // awake and not held, streamed from the death as any prop's (another seat's touch is Moving), and only c2's
+        // samples move the record
+        let mut p = Props::default();
+        assert_eq!(p.died(PREDATOR, C2, FOREST, 1_000), 1);
+        assert_eq!(p.epoch_of(PREDATOR), 1);
+        assert_eq!(p.owner_of(PREDATOR, C1), C2);
+        assert_eq!(p.live_owner(PREDATOR), C2);
+        assert!(!p.held(PREDATOR));
+        assert_eq!(p.claim(PREDATOR, C3, FOREST, touch::CONTACT, 1_100), ClaimVerdict::Moving);
+        assert_eq!(p.sample(PREDATOR, C1, FOREST, C1, false, 10.0, 1_200), TransformVerdict::NotOwner);
+        assert_eq!(p.sample(PREDATOR, C2, FOREST, C1, false, 10.0, 1_200), TransformVerdict::Accepted);
+        // no simulator at the death: the row names nobody, so whoever hosts the cell simulates it, and there is
+        // nothing for the core's rest to return; the host's own sample is a wake by id, as a resting prop's is
+        let mut q = Props::default();
+        assert_eq!(q.died(PREDATOR, 0, FOREST, 1_000), 1);
+        assert_eq!(q.owner_of(PREDATOR, C1), C1);
+        assert_eq!(q.owner_of(PREDATOR, C3), C3);
+        assert_eq!(q.live_owner(PREDATOR), 0);
+        assert_eq!(q.rested(PREDATOR), 0);
+        assert_eq!(q.epoch_of(PREDATOR), 1);
+        assert_eq!(q.sample(PREDATOR, C1, FOREST, C1, false, 10.0, 1_100), TransformVerdict::Woken(2));
+        // a simulator whose game reported the cell unloaded (ADR-071's D-PH2 A) holds no 3D of the body: the row
+        // names nobody; its load report ends that, and after the body stands again a new death names it
+        let mut u = Props::default();
+        assert!(u.unloaded(C2, FOREST).is_empty());
+        assert_eq!(u.died(PREDATOR, C2, FOREST, 1_000), 1);
+        assert_eq!(u.live_owner(PREDATOR), 0);
+        assert_eq!(u.owner_of(PREDATOR, C1), C1);
+        u.loaded(C2, FOREST);
+        assert_eq!(u.ended(PREDATOR), 2);
+        assert_eq!(u.died(PREDATOR, C2, FOREST, 2_000), 3);
+        assert_eq!(u.live_owner(PREDATOR), C2);
+        // another cell's unload state is not this one's
+        assert!(u.unloaded(C3, 0x9811).is_empty());
+        assert_eq!(u.died(PREDATOR2, C3, FOREST, 2_100), 1);
+        assert_eq!(u.live_owner(PREDATOR2), C3);
+    }
+
+    #[test]
+    fn a_death_over_a_live_row_of_the_same_seat_still_raises_the_epoch() {
+        // a claim of the claimant's own live row is Same, the epoch kept (claim's first branch); the death is the
+        // server's fact and a new tenure, so it rises even there, and a sample under the earlier word is Stale
+        let mut p = Props::default();
+        assert_eq!(p.died(PREDATOR, C2, FOREST, 1_000), 1);
+        assert_eq!(p.claim(PREDATOR, C2, FOREST, touch::IMPULSE, 1_100), ClaimVerdict::Same);
+        assert_eq!(p.epoch_of(PREDATOR), 1);
+        assert_eq!(p.died(PREDATOR, C2, FOREST, 1_200), 2);
+        assert_eq!(p.live_owner(PREDATOR), C2);
+        assert_eq!(p.transform(&facts(PREDATOR, C2, 1, 1, 1_300, FOREST, C1, false, false, 10.0, 1_300)), TransformVerdict::Stale);
+        assert_eq!(p.transform(&facts(PREDATOR, C2, 2, 1, 1_300, FOREST, C1, false, false, 10.0, 1_300)), TransformVerdict::Accepted);
+        // no row refuses it: another seat's hold ends with the death, and the row is the simulator's
+        let mut q = Props::default();
+        assert_eq!(q.claim(PREDATOR, C3, FOREST, touch::GRAB, 1_000), ClaimVerdict::Granted(1));
+        assert!(q.held(PREDATOR));
+        assert_eq!(q.died(PREDATOR, C2, FOREST, 1_100), 2);
+        assert!(!q.held(PREDATOR));
+        assert_eq!(q.live_owner(PREDATOR), C2);
+        // the allowance is the prop's, as at a grant: a death at the moment c2's first sample spent all of it buys
+        // none, and 50 ms on the prop's clock has run 300 units at 6,000 a second
+        let mut r = Props::default();
+        assert_eq!(r.died(PREDATOR, C2, FOREST, 1_000), 1);
+        assert_eq!(r.sample(PREDATOR, C2, FOREST, C1, false, PROP_FIRST_SAMPLE_UNITS, 1_000), TransformVerdict::Accepted);
+        assert_eq!(r.died(PREDATOR, C3, FOREST, 1_000), 2);
+        assert_eq!(r.sample(PREDATOR, C3, FOREST, C1, false, 1.0, 1_000), TransformVerdict::TooFast);
+        assert_eq!(r.sample(PREDATOR, C3, FOREST, C1, false, 301.0, 1_050), TransformVerdict::TooFast);
+        assert_eq!(r.sample(PREDATOR, C3, FOREST, C1, false, 300.0, 1_050), TransformVerdict::Accepted);
+    }
+
+    #[test]
+    fn the_cores_rest_returns_a_live_row_once_and_nothing_else() {
+        // the dwell's rest is the core's judgment, not a sample: the live row returns to the host at e+1 with a word,
+        // a second rest finds nothing live (0, no word), and a sample under the death's word is Stale after it
+        let mut p = Props::default();
+        assert_eq!(p.died(PREDATOR, C2, FOREST, 1_000), 1);
+        assert_eq!(p.rested(PREDATOR), 2);
+        assert_eq!(p.epoch_of(PREDATOR), 2);
+        assert_eq!(p.live_owner(PREDATOR), 0);
+        assert_eq!(p.owner_of(PREDATOR, C1), C1);
+        assert_eq!(p.rested(PREDATOR), 0);
+        assert_eq!(p.epoch_of(PREDATOR), 2);
+        assert_eq!(p.transform(&facts(PREDATOR, C2, 1, 1, 1_100, FOREST, C1, false, false, 10.0, 1_100)), TransformVerdict::Stale);
+        // a departure or an unload returned the row already: nothing to rest
+        let mut g = Props::default();
+        assert_eq!(g.died(PREDATOR, C2, FOREST, 1_000), 1);
+        assert_eq!(g.gone(C2), vec![(PREDATOR, 2)]);
+        assert_eq!(g.rested(PREDATOR), 0);
+        assert_eq!(g.epoch_of(PREDATOR), 2);
+        let mut u = Props::default();
+        assert_eq!(u.died(PREDATOR, C2, FOREST, 1_000), 1);
+        assert_eq!(u.unloaded(C2, FOREST), vec![(PREDATOR, 2)]);
+        assert_eq!(u.rested(PREDATOR), 0);
+        assert_eq!(u.epoch_of(PREDATOR), 2);
+        // nor on no row
+        let mut n = Props::default();
+        assert_eq!(n.rested(PREDATOR), 0);
+        assert_eq!(n.epoch_of(PREDATOR), 0);
+        // kind-blind: a held row returns as a live row does, its hold ended, and the next touch is a grant
+        let mut h = Props::default();
+        assert_eq!(h.claim(BASKET, C2, CELL, touch::GRAB, 1_000), ClaimVerdict::Granted(1));
+        assert_eq!(h.rested(BASKET), 2);
+        assert!(!h.held(BASKET));
+        assert_eq!(h.claim(BASKET, C3, CELL, touch::CONTACT, 1_100), ClaimVerdict::Granted(3));
+    }
+
+    #[test]
+    fn a_bodys_end_removes_its_row_and_its_epoch_outlives_it() {
+        // the body stands again: its row goes and the epoch rises (a word any seat holds is of an ended tenure); a
+        // second end finds nothing (0); the next death starts above every word before it, its row afresh with a full
+        // first allowance, and a rested row ends too
+        let mut p = Props::default();
+        assert_eq!(p.died(PREDATOR, C2, FOREST, 1_000), 1);
+        assert_eq!(p.ended(PREDATOR), 2);
+        assert!(p.rows().is_empty());
+        assert_eq!(p.epoch_of(PREDATOR), 2);
+        assert_eq!(p.live_owner(PREDATOR), 0);
+        assert_eq!(p.owner_of(PREDATOR, C1), C1);
+        assert_eq!(p.ended(PREDATOR), 0);
+        assert_eq!(p.epoch_of(PREDATOR), 2);
+        assert_eq!(p.died(PREDATOR, C3, FOREST, 90_000), 3);
+        assert_eq!(p.live_owner(PREDATOR), C3);
+        assert_eq!(p.transform(&facts(PREDATOR, C2, 2, 1, 90_000, FOREST, C1, false, false, 10.0, 90_000)), TransformVerdict::Stale);
+        assert_eq!(p.sample(PREDATOR, C3, FOREST, C1, false, PROP_FIRST_SAMPLE_UNITS, 90_000), TransformVerdict::Accepted);
+        assert_eq!(p.rested(PREDATOR), 4);
+        assert_eq!(p.ended(PREDATOR), 5);
+        assert_eq!(p.died(PREDATOR, C2, FOREST, 200_000), 6);
+        // no row, no end: a prop nobody ever touched keeps its epoch
+        assert_eq!(p.ended(BASKET), 0);
+        assert_eq!(p.epoch_of(BASKET), 0);
+    }
+
     proptest! {
         #[test]
         fn no_owners_stream_carries_a_prop_past_the_cap(
             // (what: 0 to 2 a sample by the seat that streams the prop, the
             // host's wake while it rests; 3 the other seat's grab, a grant at a
-            // new epoch; 4 the streamer's rest, a return at one; the
-            // sequence's step, 0 a repeat; the streamer's clock's step, back
-            // or ahead; the server's gap, under or past the client's 100 ms;
-            // the step, under one or past an epoch's first allowance)
-            steps in prop::collection::vec((0_u8..5, 0_u16..3, -500_i64..2_000, prop_oneof![0_u64..10, 0_u64..250], prop_oneof![0.0_f32..900.0, 0.0_f32..3_500.0]), 1..300),
+            // new epoch; 4 the streamer's rest, a return at one; 5 a death
+            // naming nobody, c2 or c3 by the sequence's step (physics rung
+            // 5a), a new epoch too; the sequence's step, 0 a repeat; the
+            // streamer's clock's step, back or ahead; the server's gap, under
+            // or past the client's 100 ms; the step, under one or past an
+            // epoch's first allowance)
+            steps in prop::collection::vec((0_u8..6, 0_u16..3, -500_i64..2_000, prop_oneof![0_u64..10, 0_u64..250], prop_oneof![0.0_f32..900.0, 0.0_f32..3_500.0]), 1..300),
         ) {
             // whatever three seats stream, at any pace, with any step, any
             // sequence and any clock (bunched, crafted ahead, run backwards),
-            // trading the prop by grabs, rests and the host's wakes (each a new
-            // epoch, whose first sample may spend half a second of the prop's
-            // clock, physics rung 3a), the record moves no farther than the
-            // cap allows for the server's elapsed time and the clock's slack,
-            // plus one first sample's allowance, once however often the epoch
-            // rises (the build plan's refill at each rise gained it at each)
+            // trading the prop by grabs, rests, the host's wakes and the
+            // server's deaths (each a new epoch, whose first sample may spend
+            // half a second of the prop's clock, physics rung 3a), the record
+            // moves no farther than the cap allows for the server's elapsed
+            // time and the clock's slack, plus one first sample's allowance,
+            // once however often the epoch rises (the build plan's refill at
+            // each rise gained it at each)
             let seats = [C1, C2, C3];
             let mut p = Props::default();
             prop_assert_eq!(p.claim(BASKET, C2, CELL, touch::CONTACT, 1_000), ClaimVerdict::Granted(1));
@@ -1747,6 +1976,12 @@ mod tests {
                     // a grab takes a moving prop (A2) unless another seat holds it
                     let grabber = if streamer == C2 { C3 } else { C2 };
                     let _ = p.claim(BASKET, grabber, CELL, touch::GRAB, now);
+                    continue;
+                }
+                if what == 5 {
+                    // the death takes the row whoever streams it, the allowance kept
+                    let simulator = match seq_step { 0 => 0, 1 => C2, _ => C3 };
+                    let _ = p.died(BASKET, simulator, CELL, now);
                     continue;
                 }
                 let at = seats.iter().position(|&s| s == streamer).unwrap_or(0);
@@ -1770,39 +2005,50 @@ mod tests {
 
         #[test]
         fn three_seats_keep_one_owner_and_every_word_raises_the_epoch(
-            // (what, which seat, the touch, asleep (for an unload: unload or
-            // load), the step, the gap before it, the sample's epoch against
-            // the prop's (0 one below, 1 the prop's, 2 one above), its
-            // sequence's step (0 a repeat), its hold)
-            ops in prop::collection::vec((0_u8..6, 0_usize..3, 0_u8..4, any::<bool>(), 0.0_f32..50.0, 0_u64..700, 0_u32..3, 0_u16..3, any::<bool>()), 1..200),
+            // (what (0 and 1 a claim, 2 and 3 a sample, 4 a departure, 5 an
+            // unload or a load, 6 a death, 7 the core's rest of the body, 8
+            // its end), which seat, the touch (for a death, 0 no simulator),
+            // asleep (for an unload: unload or load), the step, the gap
+            // before it, the sample's epoch against the prop's (0 one below,
+            // 1 the prop's, 2 one above), its sequence's step (0 a repeat),
+            // its hold)
+            ops in prop::collection::vec((0_u8..9, 0_usize..3, 0_u8..4, any::<bool>(), 0.0_f32..50.0, 0_u64..700, 0_u32..3, 0_u16..3, any::<bool>()), 1..200),
         ) {
             // A1 to A7 over any interleaving of three seats' claims, samples,
-            // departures and unloads, c1 hosting the cell: the record moves for
-            // the owner alone and only at the prop's epoch; every word raises
-            // the epoch by one, nothing else moves it, and it never falls; a
-            // repeated or overtaken sequence is Late; a live row names its
-            // owner whoever hosts; and no contact, drop or impulse takes a row
+            // departures and unloads and the server's deaths, rests and ends
+            // (physics rung 5a), c1 hosting the cell: the record moves for
+            // the owner alone and only at the prop's epoch; every word (a
+            // death, a rest and an end among them) raises the epoch by one,
+            // nothing else moves it, and it never falls; a repeated or
+            // overtaken sequence is Late; a live row names its owner whoever
+            // hosts; a death names its simulator unless that seat's game has
+            // the cell unloaded; and no contact, drop or impulse takes a row
             // another seat holds or streams inside its moving window
             let seats = [C1, C2, C3];
             let mut p = Props::default();
             let mut now = 1_000_u64;
             // the stream as the words left it: its owner, its last accepted
-            // sample (or the grant's or the claim's time) and its grab mark
+            // sample (or the grant's, the claim's or the death's time) and its
+            // grab mark
             let mut stream: Option<(u32, u64, bool)> = None;
             // the last accepted sequence at the prop's epoch (0 before any),
             // and each seat's own counter
             let mut last_seq = 0_u16;
             let mut sent = [0_u16; 3];
+            // each seat's unload of the cell, not loaded since
+            let mut away = [false; 3];
             for (what, seat, touch, asleep, moved, gap, epoch_at, seq_step, held) in ops {
                 now = now.saturating_add(gap);
                 let player = seats.get(seat).copied().unwrap_or(C1);
                 let epoch = p.epoch_of(BASKET);
                 let owner = p.owner_of(BASKET, C1);
                 let raised = epoch.saturating_add(1);
+                let unloaded_here = away.get(seat).copied().unwrap_or(false);
                 match what {
                     0 | 1 => match p.claim(BASKET, player, CELL, touch, now) {
                         ClaimVerdict::Granted(e) => {
                             prop_assert_eq!(e, raised);
+                            prop_assert!(!unloaded_here);
                             if let Some((streamer, last, held)) = stream {
                                 prop_assert!(streamer != player, "a grant to the streaming seat itself");
                                 prop_assert!(!held, "a grant over {:x}'s hold", streamer);
@@ -1825,7 +2071,10 @@ mod tests {
                             prop_assert!(touch != touch::GRAB);
                             prop_assert!(matches!(stream, Some((s, last, false)) if s != player && now < last.saturating_add(PROP_MOVING_MS)));
                         }
-                        ClaimVerdict::Away => prop_assert_eq!(p.epoch_of(BASKET), epoch),
+                        ClaimVerdict::Away => {
+                            prop_assert!(unloaded_here);
+                            prop_assert_eq!(p.epoch_of(BASKET), epoch);
+                        }
                     },
                     2 | 3 => {
                         let worded = epoch.saturating_add(epoch_at).saturating_sub(1);
@@ -1890,6 +2139,7 @@ mod tests {
                             }
                             TransformVerdict::Away => {
                                 // a live owner's own stream passes its unload's state
+                                prop_assert!(unloaded_here);
                                 prop_assert!(stream.map(|s| s.0) != Some(player));
                                 prop_assert_eq!(p.epoch_of(BASKET), epoch);
                             }
@@ -1906,8 +2156,11 @@ mod tests {
                         } else {
                             prop_assert_eq!(returned, vec![]);
                         }
+                        if let Some(a) = away.get_mut(seat) {
+                            *a = false;
+                        }
                     }
-                    _ if asleep => {
+                    5 if asleep => {
                         let returned = p.unloaded(player, CELL);
                         if stream.is_some_and(|s| s.0 == player) {
                             prop_assert_eq!(returned, vec![(BASKET, raised)]);
@@ -1916,8 +2169,49 @@ mod tests {
                         } else {
                             prop_assert_eq!(returned, vec![]);
                         }
+                        if let Some(a) = away.get_mut(seat) {
+                            *a = true;
+                        }
                     }
-                    _ => p.loaded(player, CELL),
+                    5 => {
+                        p.loaded(player, CELL);
+                        if let Some(a) = away.get_mut(seat) {
+                            *a = false;
+                        }
+                    }
+                    6 => {
+                        // the server's death, whatever stood (a hold, a stream, the same seat's live row): a new epoch
+                        // always, the row the simulator's from now unless there is none or its game has the cell
+                        // unloaded
+                        let simulator = if touch == 0 { 0 } else { player };
+                        prop_assert_eq!(p.died(BASKET, simulator, CELL, now), raised);
+                        prop_assert_eq!(p.epoch_of(BASKET), raised);
+                        stream = if simulator == 0 || unloaded_here { None } else { Some((simulator, now, false)) };
+                        last_seq = 0;
+                    }
+                    7 => {
+                        // the core's rest: a live row returns to the host at one, and nothing else changes
+                        let rested = p.rested(BASKET);
+                        if stream.is_some() {
+                            prop_assert_eq!(rested, raised);
+                            prop_assert_eq!(p.epoch_of(BASKET), raised);
+                            stream = None;
+                            last_seq = 0;
+                        } else {
+                            prop_assert_eq!(rested, 0);
+                            prop_assert_eq!(p.epoch_of(BASKET), epoch);
+                        }
+                    }
+                    _ => {
+                        // the body's end: no row is left, and the epoch rises by one if a row stood
+                        let stood = p.rows().iter().any(|(refr, _)| *refr == BASKET);
+                        let ended = p.ended(BASKET);
+                        prop_assert_eq!(ended, if stood { raised } else { 0 });
+                        prop_assert_eq!(p.epoch_of(BASKET), if stood { raised } else { epoch });
+                        prop_assert!(p.rows().is_empty());
+                        stream = None;
+                        last_seq = 0;
+                    }
                 }
                 // one owner, by the word alone (A1): the table's live row is
                 // the stream's, and it names its owner whoever hosts the cell;

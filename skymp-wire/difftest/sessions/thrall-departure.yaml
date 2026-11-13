@@ -24,7 +24,8 @@
 # word to both games (UpdateHoster: false to c1, true to c2). T2 reaches no stand-up (a
 # HostedActorState names its actor by idx, which the fake client cannot name for a created
 # actor, and T2's settings leave npcEnabled off), so the record holds the body dead by the
-# console's Kill (isDead true to both games, the death's container to the cell's host). c1's
+# console's Kill (isDead true to both games, twice to the cell's host by the copy's own listener
+# entry, the death's container to the cell's host). c1's
 # script then ends and c1 leaves after the fake client's settle while it hosts the cell: the
 # departure's ThrallExpired finds the body dead and does nothing, and its ClaimGone, whose cell
 # rule answers the leaver, names nobody (PartOne.cpp's ClaimGone guard): no keyframe goes to the
@@ -112,8 +113,8 @@ divergences:
   - client: c1
     msg: {t: 7, propName: isDead, dataDump: "true"}
     legacy: 0
-    wire: 1
-    reason: the copy's death word to every listening game (thuum docs/verbs/npc-fate.md, ADR-048's seam); the legacy server never killed it
+    wire: 2
+    reason: the copy's death word to every listening game (thuum docs/verbs/npc-fate.md, ADR-048's seam), twice to its cell's host, as the T2 of 8464f322 (2026-11-13) drew it; the copy is its own actor listener (MoveOnGrid's neighbours hold it, Subscribe admits emitter == listener), and SendMessageToActorListeners hands each listener's word to GetActorToSendTo, which for the copy, a listener with no user, is its host, c1, beside c1's own actor (canon's since 5b90e4c5); the legacy server never killed it
   - client: c2
     msg: {t: 7, propName: isDead, dataDump: "true"}
     legacy: 0

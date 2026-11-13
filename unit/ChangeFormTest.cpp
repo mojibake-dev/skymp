@@ -823,3 +823,47 @@ TEST_CASE("A fated respawn drops the body's held change-form record",
 
   Leave(p, 0, kHost);
 }
+
+// physics rung 5a (ADR-071 decision 5): a body is a row of the prop table,
+// its death's simulator's, while the change-form rule stays the cell's (Eli's
+// D-PH11 A moves a body's record to the word the sender holds with SCHEMA 47,
+// rung 5's): the host's record of a body whose live row it holds is still
+// recorded at the cell's epoch, the row's epoch apart from it
+TEST_CASE("A host's change form for a body whose live row it holds is "
+          "recorded at the cell's epoch",
+          "[ChangeForm][NpcFate][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& host = Arrive(p, 0, kHost);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  actor.SetChangeFormRecord(std::nullopt);
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  const auto cellHost = p.GetCellHost(kForestCell);
+  REQUIRE(cellHost.hosted);
+  actor.Kill(nullptr);
+  // a stand-up and a second death move the row's epoch two on, so the
+  // record's epoch is the cell's alone
+  if (p.PropEpochOf(actor) == cellHost.epoch) {
+    actor.Respawn(false);
+    actor.Kill(nullptr);
+  }
+  REQUIRE(actor.IsDead());
+  REQUIRE(p.PropLiveOwner(actor) == kHost);
+  REQUIRE(p.PropEpochOf(actor) != cellHost.epoch);
+
+  p.Messages().clear();
+  Report(p, 0, Record(cellHost.epoch, kPredator, kRecordHex));
+  const auto record = actor.GetChangeFormRecord();
+  REQUIRE(record.has_value());
+  REQUIRE(record->epoch == cellHost.epoch);
+  REQUIRE(record->sender == kHost);
+  REQUIRE(SentTo<ChangeFormAckMessage>(p, 0).size() == 1);
+
+  actor.SetChangeFormRecord(std::nullopt);
+  actor.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kPredator);
+  Leave(p, 0, kHost);
+}

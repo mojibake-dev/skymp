@@ -1483,6 +1483,22 @@ void PartOne::Init()
   worldState.propLiveOwnerOf = [this](uint32_t refr) {
     return pImpl->props->prop_live_owner(refr);
   };
+  // physics rung 5a (ADR-071 decision 5): and a body's row, the prop
+  // table's, from its death to its stand-up, so the one owner table names
+  // whose samples move a corpse
+  worldState.bodyWord = [this](const MpActor& body, WorldState::BodyWord word,
+                               uint32_t simulator,
+                               uint64_t nowMs) -> uint32_t {
+    switch (word) {
+      case WorldState::BodyWord::Died:
+        return BodyDied(body, simulator, nowMs);
+      case WorldState::BodyWord::Rested:
+        return BodyRested(body);
+      case WorldState::BodyWord::Ended:
+        return BodyEnded(body);
+    }
+    return 0;
+  };
   // thuum docs/verbs/leveling.md: the skill table's cost of a level, for a
   // server set of a skill (MpActor::SetActorValueBaseByServer moves the
   // progress entry with the base; x-lockpick v4's read, 2026-10-31)
@@ -3481,6 +3497,26 @@ uint32_t PartOne::PropOwnerOf(const MpObjectReference& prop) const
 uint32_t PartOne::PropEpochOf(const MpObjectReference& prop) const
 {
   return pImpl->props->prop_epoch_of(prop.GetFormId());
+}
+
+uint32_t PartOne::BodyDied(const MpActor& body, uint32_t simulator,
+                           uint64_t nowMs)
+{
+  // the row's cell is the death's: the movement path never moves it (rung
+  // 5's stream does), so an unload of the cell the body died in returns it
+  const auto cell = worldState.CellOf(body);
+  return pImpl->props->prop_died(body.GetFormId(), simulator, cell.value_or(0),
+                                 nowMs);
+}
+
+uint32_t PartOne::BodyRested(const MpActor& body)
+{
+  return pImpl->props->prop_rested(body.GetFormId());
+}
+
+uint32_t PartOne::BodyEnded(const MpActor& body)
+{
+  return pImpl->props->prop_ended(body.GetFormId());
 }
 
 namespace {

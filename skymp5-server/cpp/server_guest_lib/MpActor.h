@@ -463,24 +463,31 @@ public:
   std::optional<std::chrono::milliseconds> HostStoodUpAgo(
     std::chrono::steady_clock::time_point now) const;
   static constexpr uint64_t kReanimatedEndMs = 90'000;
-  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4): a
-  // corpse is a physics object under the prop rule. One mover simulates the
-  // ragdoll, the engine that owned the actor at its death (the simulator,
-  // PartOne::SimulatorOf; 0 when none, and the first simulator to report
-  // inside the window claims it); for WorldState::bodySettleMs from the
-  // recorded death its movement samples move the record (R2: recorded, not
-  // judged, inside the movement bounds), and every other seat's are refused
-  // (E_BODY_NOT_OWNER). The body is AT REST when its accepted samples have
-  // stayed within kBodyRestUnits and kBodyRestDegrees of one sample (the
-  // dwell's anchor, the last one past those bounds) for kBodyRestDwellMs, no
-  // sooner than kBodyRestMinMs after the recorded death, or when the window
-  // ends (PartOne::TickBodies); from then every sample is refused
-  // (E_BODY_AT_REST) until a later claim (a drag or a push: the prop claim,
-  // not this slice). A resurrection (Respawn, every stand-up's path) clears
-  // it. Begun by SendAndSetDeathState for a game-file or server-made NPC;
-  // a body dead since before this process or placed dead has no window and
-  // keeps the host's samples as before (TODO: its rest at load, with the
-  // prop claim). Times are the TickDeaths clock (monotonic ms)
+  // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4;
+  // physics rung 5a, ADR-071 decision 5): a corpse is a physics object, a
+  // row of the prop table (wire-rules props) from its death to its stand-up,
+  // told through WorldState::bodyWord. The death writes the row: the
+  // simulator's at the death (HostedBy(): the cell's host, a follow's player
+  // or a dialogue's claimant), or nobody's when none simulates it or its
+  // game has the cell unloaded, so the cell's host's by default. For
+  // WorldState::bodySettleMs from the recorded death the row's owner
+  // (PartOne::PropOwnerOf) moves the record with its ragdoll's samples (R2:
+  // recorded, not judged, inside the movement bounds), and every other
+  // seat's are refused (E_PROP_NOT_OWNER); a departure or an unload of the
+  // owner returns the row to the host with its word, as any prop's (D-PH2
+  // A). The body is AT REST when its accepted samples have stayed within
+  // kBodyRestUnits and kBodyRestDegrees of one sample (the dwell's anchor,
+  // the last one past those bounds) for kBodyRestDwellMs, no sooner than
+  // kBodyRestMinMs after the recorded death, which also returns the row to
+  // the host at a new epoch; or when the window ends (PartOne::TickBodies),
+  // which ends the settle and never the row (no clock moves a row). From
+  // then every sample is refused (E_BODY_AT_REST) until a later claim (a
+  // drag or a push: rung 5). A resurrection (Respawn, every stand-up's path)
+  // clears it and ends the row. Begun by SendAndSetDeathState for a
+  // game-file or server-made NPC; a body dead since before this process or
+  // placed dead has no window and no row and keeps the host's samples as
+  // before (TODO: its rest at load, with the prop claim). Times are the
+  // TickDeaths clock (monotonic ms)
   void BeginBodySettle(uint64_t nowMs);
   // a death of this process recorded for this body (settling or at rest)
   bool HasBodySettle() const;
@@ -490,8 +497,6 @@ public:
   // when the rest was set; 0 while not at rest
   uint64_t BodyRestAtMs() const;
   uint64_t BodyDiedAtMs() const;
-  uint32_t BodyOwnerId() const;
-  void ClaimBodyOwner(uint32_t ownerId);
   uint32_t BodySampleCount() const;
   // whether `pos` and `rot` at `nowMs` end the dwell: within the rest bounds
   // of its anchor, the anchor kBodyRestDwellMs old and the death
@@ -501,11 +506,13 @@ public:
                        uint64_t nowMs) const;
   // the owner's accepted sample, after the record took it: counted, the
   // dwell's anchor moved to it when it left the anchor's bounds; true when
-  // it put the body at rest
+  // it put the body at rest (and returned its row to the host)
   bool NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
                       uint64_t nowMs);
-  // the window's end: true when the body came to rest now
+  // the window's end: true when the body came to rest now; its row stays
+  // as it stood (a clock moves no row)
   bool SettleBodyIfDue(uint64_t nowMs);
+  // the stand-up: the settle cleared and the body's row ended
   void ClearBodyRest();
   static constexpr float kBodyRestUnits = 2.f;
   static constexpr float kBodyRestDegrees = 2.f;
@@ -749,8 +756,10 @@ private:
                             const std::array<bool, 3>& touched,
                             const BaseActorValues& maxBefore, uint32_t caster);
   // thuum docs/verbs/npc-fate.md ("The body's rest"): the body at rest now,
-  // by `why`: the state, the record's save at once, the one log line
-  void SettleBody(uint64_t nowMs, const char* why);
+  // by `why`: the state, the record's save at once, the one log line; the
+  // row returned to the host when `returnsRow` (the dwell's rest alone,
+  // physics rung 5a)
+  void SettleBody(uint64_t nowMs, const char* why, bool returnsRow);
 
   struct Impl;
   std::shared_ptr<Impl> pImpl;

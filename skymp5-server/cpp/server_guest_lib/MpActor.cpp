@@ -85,12 +85,12 @@ struct MpActor::Impl
   uint32_t loginGeneration = 0;
   std::chrono::steady_clock::time_point hostStoodUpAt{};
   // npc-fate.md "The body's rest" (ADR-067): the corpse as a physics object.
-  // The simulator at the death owns the ragdoll (0 none); the window runs
-  // from the recorded death on the TickDeaths clock; the owner's accepted
-  // samples are counted and the dwell's anchor kept (the last sample past
-  // the rest bounds, and when it came), so a dwell held long enough is the
-  // rest; restAtMs is 0 until then
-  uint32_t bodyOwner = 0;
+  // Who owns the ragdoll is the prop table's row (physics rung 5a,
+  // WorldState::bodyWord), not this; the window runs from the recorded death
+  // on the TickDeaths clock; the owner's accepted samples are counted and
+  // the dwell's anchor kept (the last sample past the rest bounds, and when
+  // it came), so a dwell held long enough is the rest; restAtMs is 0 until
+  // then
   uint64_t bodyDiedAtMs = 0;
   bool bodyAtRest = false;
   uint64_t bodyRestAtMs = 0;
@@ -3207,17 +3207,43 @@ std::optional<std::chrono::milliseconds> MpActor::HostStoodUpAgo(
 
 // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4)
 
+namespace {
+// the body's live row's owner (awake or held), else 0: nobody's row, the
+// cell's host by default (physics rung 5a; PartOne::PropLiveOwner)
+uint32_t BodyLiveOwner(const WorldState* worldState, uint32_t refr)
+{
+  return worldState && worldState->propLiveOwnerOf
+    ? worldState->propLiveOwnerOf(refr)
+    : 0u;
+}
+}
+
 void MpActor::BeginBodySettle(uint64_t nowMs)
 {
-  MpActor* host = HostedBy();
-  pImpl->bodyOwner = host ? host->GetFormId() : 0u;
   pImpl->bodyDiedAtMs = nowMs;
   pImpl->bodyAtRest = false;
   pImpl->bodyRestAtMs = 0;
   pImpl->bodySamples = 0;
   pImpl->bodyDwellSinceMs = 0;
-  if (auto worldState = GetParent()) {
-    worldState->settlingBodies.insert(GetFormId());
+  auto worldState = GetParent();
+  if (!worldState) {
+    return;
+  }
+  worldState->settlingBodies.insert(GetFormId());
+  // physics rung 5a (ADR-071 decision 5): the body is a row of the prop
+  // table, the death's simulator's. Asked here, ahead of onDeathState, so
+  // the simulator is the one that played the death, before any release a
+  // death's hook makes
+  if (worldState->bodyWord) {
+    MpActor* simulator = HostedBy();
+    const uint32_t simulatorId = simulator ? simulator->GetFormId() : 0u;
+    const uint32_t epoch = worldState->bodyWord(
+      *this, WorldState::BodyWord::Died, simulatorId, nowMs);
+    spdlog::info("[verb:npc-fate] body {:x}: its row at epoch {}, {:x}'s "
+                 "(the death's simulator {:x}; 0 is nobody's, the cell's "
+                 "host by default)",
+                 GetFormId(), epoch, BodyLiveOwner(worldState, GetFormId()),
+                 simulatorId);
   }
 }
 
@@ -3244,19 +3270,6 @@ uint64_t MpActor::BodyRestAtMs() const
 uint64_t MpActor::BodyDiedAtMs() const
 {
   return pImpl->bodyDiedAtMs;
-}
-
-uint32_t MpActor::BodyOwnerId() const
-{
-  return pImpl->bodyOwner;
-}
-
-void MpActor::ClaimBodyOwner(uint32_t ownerId)
-{
-  spdlog::info("[verb:npc-fate] body {:x} had no simulator at its death; "
-               "{:x} simulates it now and owns its ragdoll",
-               GetFormId(), ownerId);
-  pImpl->bodyOwner = ownerId;
 }
 
 uint32_t MpActor::BodySampleCount() const
@@ -3318,15 +3331,20 @@ bool MpActor::NoteBodySample(const NiPoint3& pos, const NiPoint3& rot,
     pImpl->bodyDwellSinceMs = nowMs;
   }
   if (first) {
+    // the live row's owner, or 0: nobody's row, the cell's host's samples
     spdlog::info("[verb:npc-fate] body {:x} settling under {:x}: ({:.0f}, "
                  "{:.0f}, {:.0f})",
-                 GetFormId(), pImpl->bodyOwner, pos.x, pos.y, pos.z);
+                 GetFormId(), BodyLiveOwner(GetParent(), GetFormId()), pos.x,
+                 pos.y, pos.z);
     return false;
   }
   if (!rests) {
     return false;
   }
-  SettleBody(nowMs, "still for the dwell");
+  // the dwell is the core's judgment of its owner's samples, the body's
+  // asleep sample: the row returns to the host, as a prop's does at its
+  // owner's own asleep sample (physics rung 5a)
+  SettleBody(nowMs, "still for the dwell", true);
   return true;
 }
 
@@ -3340,26 +3358,40 @@ bool MpActor::SettleBodyIfDue(uint64_t nowMs)
   if (nowMs < pImpl->bodyDiedAtMs + settleMs) {
     return false;
   }
-  SettleBody(nowMs, "the settle window ended");
+  // a clock ends the settle, never the row (wire-rules props: no timer
+  // hands a body back): its owner keeps it until its departure, its unload
+  // or the stand-up, and E_BODY_AT_REST refuses its samples meanwhile
+  SettleBody(nowMs, "the settle window ended", false);
   return true;
 }
 
-void MpActor::SettleBody(uint64_t nowMs, const char* why)
+void MpActor::SettleBody(uint64_t nowMs, const char* why, bool returnsRow)
 {
   pImpl->bodyAtRest = true;
   pImpl->bodyRestAtMs = nowMs;
-  if (auto worldState = GetParent()) {
+  auto worldState = GetParent();
+  if (worldState) {
     worldState->settlingBodies.erase(GetFormId());
   }
   // the rest pose is the record's final sample: saved at once, as a prop's
   // is at sleep (ADR-058), not at the movement path's 30 s
   FlushUnsavedEdit();
+  const uint32_t owner = BodyLiveOwner(worldState, GetFormId());
+  uint32_t returnedAt = 0;
+  if (returnsRow && worldState && worldState->bodyWord) {
+    returnedAt =
+      worldState->bodyWord(*this, WorldState::BodyWord::Rested, 0, nowMs);
+  }
   const auto& at = GetPos();
-  spdlog::info("[verb:npc-fate] body {:x} at rest at ({:.0f}, {:.0f}, {:.0f}) "
-               "after {} ms, {} samples; {} (owner {:x})",
-               GetFormId(), at.x, at.y, at.z,
-               nowMs >= pImpl->bodyDiedAtMs ? nowMs - pImpl->bodyDiedAtMs : 0u,
-               pImpl->bodySamples, why, pImpl->bodyOwner);
+  spdlog::info(
+    "[verb:npc-fate] body {:x} at rest at ({:.0f}, {:.0f}, {:.0f}) "
+    "after {} ms, {} samples; {} (owner {:x}{})",
+    GetFormId(), at.x, at.y, at.z,
+    nowMs >= pImpl->bodyDiedAtMs ? nowMs - pImpl->bodyDiedAtMs : 0u,
+    pImpl->bodySamples, why, owner,
+    returnedAt != 0
+      ? fmt::format("; the row the host's again at epoch {}", returnedAt)
+      : std::string());
 }
 
 void MpActor::ClearBodyRest()
@@ -3367,7 +3399,6 @@ void MpActor::ClearBodyRest()
   if (pImpl->bodyDiedAtMs == 0 && !pImpl->bodyAtRest) {
     return;
   }
-  pImpl->bodyOwner = 0;
   pImpl->bodyDiedAtMs = 0;
   pImpl->bodyAtRest = false;
   pImpl->bodyRestAtMs = 0;
@@ -3375,6 +3406,12 @@ void MpActor::ClearBodyRest()
   pImpl->bodyDwellSinceMs = 0;
   if (auto worldState = GetParent()) {
     worldState->settlingBodies.erase(GetFormId());
+    // physics rung 5a: a body that stands again is no body; its row goes
+    // and the epoch rises, so a word or a sample under the dead tenure is
+    // stale and the next death starts above it
+    if (worldState->bodyWord) {
+      worldState->bodyWord(*this, WorldState::BodyWord::Ended, 0, 0);
+    }
   }
 }
 

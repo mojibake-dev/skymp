@@ -333,6 +333,26 @@ public:
   // keeps that owner and the prop a pair where the grid would part them, as
   // it keeps an actor's simulator (D6); none installed, the grid alone
   std::function<uint32_t(uint32_t refr)> propLiveOwnerOf;
+  // thuum docs/verbs/npc-fate.md ("The body's rest"; physics rung 5a, ADR-071
+  // decision 5: a dead actor's row is owned by the death's simulator): a
+  // body's word to the prop table (wire-rules props), from MpActor's settle.
+  // Died at a death this process records (`simulator` the engine that
+  // simulated the actor then, HostedBy(), 0 for none; `nowMs` the settle's
+  // clock): the row the simulator's at a new epoch. Rested at the dwell's
+  // rest alone, never at the settle window's end (no clock moves a row): a
+  // live row the host's again at a new epoch. Ended at the stand-up
+  // (ClearBodyRest): the row gone, the epoch up. Returns the epoch after the
+  // word, 0 when nothing changed; installed by PartOne (BodyDied, BodyRested,
+  // BodyEnded); none installed, a body has no row
+  enum class BodyWord
+  {
+    Died,
+    Rested,
+    Ended
+  };
+  std::function<uint32_t(const MpActor& body, BodyWord word,
+                         uint32_t simulator, uint64_t nowMs)>
+    bodyWord;
   // thuum docs/verbs/npc-handoff.md D6, the door: whether a hosted NPC may
   // cross a teleport door into `destWorldOrCell` at `destPos` (PartOne's
   // follow verdict for its simulator), installed by PartOne; none installed,
@@ -456,8 +476,9 @@ public:
   bool npcEngineDeaths = true;
   // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067 decision 4): a
   // corpse is a physics object under the prop rule. After a death this
-  // process records, the body's owner (the simulator at the death) moves the
-  // record with its ragdoll's samples for bodySettleMs (server setting), or
+  // process records, the body's owner (its prop row's, the simulator at the
+  // death, through bodyWord; physics rung 5a) moves the record with its
+  // ragdoll's samples for bodySettleMs (server setting), or
   // until they hold still for the dwell (MpActor::kBodyRestUnits,
   // kBodyRestDegrees, kBodyRestDwellMs, no sooner than kBodyRestMinMs);
   // the body is then at rest and every later sample is refused until a

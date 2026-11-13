@@ -792,6 +792,9 @@ mod ffi {
         /// A state that changes no value (Invisibility, Light,
         /// Etherealize; thuum docs/verbs/self-cast.md).
         State,
+        /// Archetype 4, absorb: its caster gains what its bearer loses
+        /// (wire-rules magic::EffectKind::Absorb).
+        Absorb,
     }
 
     /// How an effect arrives.
@@ -840,6 +843,9 @@ mod ffi {
         current: f32,
         /// The change to the temporary modifier.
         modifier: f32,
+        /// Whose value moves: 0 for the effect's bearer, else that actor's
+        /// form id (an Absorb's caster).
+        actor: u32,
     }
 
     /// A running effect, as the change form keeps it.
@@ -4817,6 +4823,7 @@ fn to_magic_facts(f: EffectFacts) -> magic::EffectFacts {
         EffectKind::PeakValue => magic::EffectKind::PeakValue,
         EffectKind::DualValue => magic::EffectKind::DualValue,
         EffectKind::State => magic::EffectKind::State,
+        EffectKind::Absorb => magic::EffectKind::Absorb,
         _ => magic::EffectKind::Value,
     };
     let second_av = if second_av == u32::MAX { None } else { Some(second_av) };
@@ -4830,6 +4837,7 @@ fn from_magic_facts(f: magic::EffectFacts) -> EffectFacts {
         magic::EffectKind::PeakValue => EffectKind::PeakValue,
         magic::EffectKind::DualValue => EffectKind::DualValue,
         magic::EffectKind::State => EffectKind::State,
+        magic::EffectKind::Absorb => EffectKind::Absorb,
     };
     EffectFacts { effect, source, kind, av, second_av: second_av.unwrap_or(u32::MAX), second_weight, magnitude, duration_s, recover, detrimental, no_duration }
 }
@@ -4843,7 +4851,7 @@ fn from_magic_entry(e: &magic::EffectEntry) -> EffectEntry {
 }
 
 fn from_magic_changes(changes: &[magic::AvChange]) -> Vec<AvChange> {
-    changes.iter().map(|c| AvChange { av: c.av, current: c.current, modifier: c.modifier }).collect()
+    changes.iter().map(|c| AvChange { av: c.av, current: c.current, modifier: c.modifier, actor: c.actor }).collect()
 }
 
 fn apply_effect(facts: EffectFacts, scale: f32, caster: u32, arrival: EffectArrival) -> EffectApplied {

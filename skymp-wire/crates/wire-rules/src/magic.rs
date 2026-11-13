@@ -49,6 +49,13 @@ pub enum EffectKind {
     /// as the actor's running state, which its rules read and every game
     /// shows (thuum docs/verbs/self-cast.md).
     State,
+    /// Archetype 4, absorb: a value modifier on its target whose amount its
+    /// caster gains on the same actor value (CommonLibSSE-NG
+    /// include/RE/A/AbsorbEffect.h:7-18, a ValueModifierEffect overriding
+    /// ModifyOnStart, ModifyOnUpdate and ModifyOnFinish; thuum
+    /// docs/verbs/magic-effects.md, playtest 51's drain). A caster of 0
+    /// gains nothing. Never a buff: no Absorb in the masters carries Recover.
+    Absorb,
 }
 
 /// How the effect arrives: a concentration spell's hits each bring the
@@ -91,7 +98,9 @@ pub struct EffectFacts {
 
 /// A change to one actor value. `current` moves the value alone (a heal, a
 /// wound); `modifier` moves the temporary modifier, so the maximum and the
-/// current value move together (a buff, and its end).
+/// current value move together (a buff, and its end). `actor` names whose
+/// value moves: 0 for the effect's own bearer (every change but an
+/// Absorb's gain), else that actor's form id (the Absorb's caster).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AvChange {
     /// The actor value.
@@ -100,6 +109,8 @@ pub struct AvChange {
     pub current: f32,
     /// The change to the temporary modifier.
     pub modifier: f32,
+    /// Whose value moves: 0 for the bearer, else that actor's form id.
+    pub actor: u32,
 }
 
 /// A running effect, as the change form keeps it.
@@ -143,18 +154,22 @@ fn finite(facts: &EffectFacts) -> bool {
 
 /// The changes `amount` (signed) makes through `facts`' actor values: the
 /// primary at once, a dual modifier's second at its weight; `as_modifier`
-/// moves the temporary modifier, otherwise the current value.
-fn changes_of(facts: &EffectFacts, amount: f32, as_modifier: bool) -> Vec<AvChange> {
+/// moves the temporary modifier, otherwise the current value. An Absorb's
+/// `caster`, if any, gains what its bearer loses on the same value.
+fn changes_of(facts: &EffectFacts, amount: f32, as_modifier: bool, caster: u32) -> Vec<AvChange> {
     let make = |av: u32, amount: f32| {
         if as_modifier {
-            AvChange { av, current: 0.0, modifier: amount }
+            AvChange { av, current: 0.0, modifier: amount, actor: 0 }
         } else {
-            AvChange { av, current: amount, modifier: 0.0 }
+            AvChange { av, current: amount, modifier: 0.0, actor: 0 }
         }
     };
     let mut out = vec![make(facts.av, amount)];
     if let (EffectKind::DualValue, Some(second)) = (facts.kind, facts.second_av) {
         out.push(make(second, amount * facts.second_weight));
+    }
+    if facts.kind == EffectKind::Absorb && caster != 0 && !as_modifier {
+        out.push(AvChange { av: facts.av, current: -amount, modifier: 0.0, actor: caster });
     }
     out
 }
@@ -163,7 +178,7 @@ fn changes_of(facts: &EffectFacts, amount: f32, as_modifier: bool) -> Vec<AvChan
 /// and gives it back) rather than heals or wounds: Recover on a value or
 /// peak value modifier, and a peak value modifier always moves the maximum.
 fn buffs(facts: &EffectFacts) -> bool {
-    facts.kind != EffectKind::State && (facts.recover || facts.kind == EffectKind::PeakValue)
+    !matches!(facts.kind, EffectKind::State | EffectKind::Absorb) && (facts.recover || facts.kind == EffectKind::PeakValue)
 }
 
 /// Applies one effect at `scale` times its magnitude, cast by `caster`: a
@@ -188,14 +203,14 @@ pub fn apply(facts: EffectFacts, scale: f32, caster: u32, arrival: Arrival) -> A
     }
     if buffs(&facts) && !instant {
         return Applied {
-            changes: changes_of(&facts, amount, true),
+            changes: changes_of(&facts, amount, true, caster),
             entry: Some(EffectEntry { facts, caster, elapsed_s: 0.0 }),
         };
     }
     if instant {
         // a peak modifier with no duration has nothing to give back: its
         // change is the value's own
-        return Applied { changes: changes_of(&facts, amount, false), entry: None };
+        return Applied { changes: changes_of(&facts, amount, false, caster), entry: None };
     }
     Applied { changes: Vec::new(), entry: Some(EffectEntry { facts, caster, elapsed_s: 0.0 }) }
 }
@@ -220,10 +235,10 @@ pub fn advance(entries: &mut Vec<EffectEntry>, dt_s: f32) -> Vec<AvChange> {
         }
         if buffs(&facts) {
             if entry.elapsed_s >= facts.duration_s {
-                out.extend(changes_of(&facts, -amount, true));
+                out.extend(changes_of(&facts, -amount, true, entry.caster));
             }
         } else if after > before {
-            out.extend(changes_of(&facts, amount * (after - before), false));
+            out.extend(changes_of(&facts, amount * (after - before), false, entry.caster));
         }
     }
     entries.retain(|e| e.elapsed_s < e.facts.duration_s);
@@ -254,11 +269,12 @@ pub fn modifier(entries: &[EffectEntry], av: u32) -> f32 {
 /// the engine keeps them from the first frame, a Nord's 50 ResistFrost and
 /// an Altmer's 50 Magicka above all. Every value-moving kind counts, with
 /// its sign; nothing here has a duration, so nothing is given back
-/// (thuum docs/verbs/spell-cast.md, Hailstone).
+/// (thuum docs/verbs/spell-cast.md, Hailstone). An Absorb is never a
+/// standing modifier on its bearer.
 pub fn constant_modifier(facts: &[EffectFacts], av: u32) -> f32 {
     facts
         .iter()
-        .filter(|f| f.kind != EffectKind::State)
+        .filter(|f| matches!(f.kind, EffectKind::Value | EffectKind::PeakValue | EffectKind::DualValue))
         .map(|f| {
             let amount = f.magnitude * sign(f);
             let primary = if f.av == av { amount } else { 0.0 };
@@ -296,7 +312,7 @@ pub fn remove(entries: &mut Vec<EffectEntry>, effects: &[u32]) -> Vec<AvChange> 
     for gone in entries.iter().filter(|e| effects.contains(&e.facts.effect)) {
         if buffs(&gone.facts) {
             let amount = gone.facts.magnitude * sign(&gone.facts);
-            out.extend(changes_of(&gone.facts, -amount, true));
+            out.extend(changes_of(&gone.facts, -amount, true, gone.caster));
         }
     }
     entries.retain(|e| !effects.contains(&e.facts.effect));
@@ -326,7 +342,7 @@ pub fn admit(entries: &mut Vec<EffectEntry>, entry: EffectEntry) -> Vec<AvChange
                 let gone = entries.remove(i);
                 if buffs(&gone.facts) {
                     let amount = gone.facts.magnitude * sign(&gone.facts);
-                    out.extend(changes_of(&gone.facts, -amount, true));
+                    out.extend(changes_of(&gone.facts, -amount, true, gone.caster));
                 }
             }
         }
@@ -593,5 +609,68 @@ mod tests {
         // a weakness adds
         assert!((resistance_factor(-50.0, 0.0, 85.0) - 1.5).abs() < 1e-6);
         assert!((resistance_factor(f32::NAN, 0.0, 85.0) - 1.0).abs() < 1e-6);
+    }
+
+    fn of(changes: &[AvChange], av: u32, actor: u32) -> f32 {
+        changes.iter().filter(|c| c.av == av && c.actor == actor).map(|c| c.current + c.modifier).sum()
+    }
+
+    // CrVampireDrain00 0x107AA1's one effect, crVampireAbsorbHealthConcAimed
+    // 0x8D5C5: archetype 4 (Absorb), actor value 24, magnitude 3, Detrimental
+    // (Dawnguard.esm's override, numidium's lab/esm.py read of playtest 51's
+    // drain, 2026-11-13)
+    fn drain() -> EffectFacts {
+        EffectFacts { effect: 0x8d5c5, source: 0x107aa1, kind: EffectKind::Absorb, detrimental: true, ..facts(EffectKind::Absorb, 3.0, 1.0) }
+    }
+
+    #[test]
+    fn a_drain_stream_moves_health_from_its_target_to_its_caster() {
+        // half a second of the stream: 1.5 out of the target, 1.5 into its caster
+        let applied = apply(drain(), 0.5, 0xff00_0000, Arrival::Stream);
+        assert_eq!(applied.entry, None);
+        assert!(near(of(&applied.changes, HEALTH, 0), -1.5), "{:?}", applied.changes);
+        assert!(near(of(&applied.changes, HEALTH, 0xff00_0000), 1.5), "{:?}", applied.changes);
+        assert!(applied.changes.iter().all(|c| c.modifier == 0.0));
+    }
+
+    #[test]
+    fn a_running_absorb_pays_its_caster_each_second_of_its_duration() {
+        // a fire-and-forget Absorb of 15 a second for 10 s
+        let f = EffectFacts { duration_s: 10.0, magnitude: 15.0, ..drain() };
+        let applied = apply(f, 1.0, 0xff00_0001, Arrival::Once);
+        assert!(applied.changes.is_empty());
+        let mut entries = applied.entry.into_iter().collect::<Vec<_>>();
+        let (mut lost, mut gained) = (0.0, 0.0);
+        for _ in 0..10 {
+            let changes = advance(&mut entries, 1.0);
+            lost += of(&changes, HEALTH, 0);
+            gained += of(&changes, HEALTH, 0xff00_0001);
+        }
+        assert!(near(lost, -150.0), "{lost}");
+        assert!(near(gained, 150.0), "{gained}");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn an_absorb_with_no_caster_only_wounds() {
+        let applied = apply(drain(), 1.0, 0, Arrival::Stream);
+        assert_eq!(applied.changes.len(), 1);
+        assert!(near(of(&applied.changes, HEALTH, 0), -3.0));
+    }
+
+    #[test]
+    fn an_absorb_is_no_buff_and_no_standing_modifier() {
+        let running = vec![EffectEntry { facts: EffectFacts { duration_s: 10.0, recover: true, ..drain() }, caster: 0xff00_0000, elapsed_s: 0.0 }];
+        assert!(modifier(&running, HEALTH).abs() < 1e-6);
+        assert!(constant_modifier(&[drain()], HEALTH).abs() < 1e-6);
+        // a Recover flag (none in the masters) still makes no buff of it
+        let applied = apply(EffectFacts { duration_s: 10.0, recover: true, ..drain() }, 1.0, 0xff00_0000, Arrival::Once);
+        assert!(applied.changes.is_empty());
+    }
+
+    #[test]
+    fn every_change_but_an_absorbs_gain_names_its_bearer() {
+        let applied = apply(EffectFacts { no_duration: true, ..facts(EffectKind::Value, 25.0, 0.0) }, 1.0, 0xff00_0000, Arrival::Once);
+        assert!(applied.changes.iter().all(|c| c.actor == 0));
     }
 }

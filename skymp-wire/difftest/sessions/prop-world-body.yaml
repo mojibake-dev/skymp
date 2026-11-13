@@ -5,13 +5,14 @@
 # are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003, see melee-reach), at
 # the spawn (startPoints: 133857, -61130, 14662 in Tamriel), the server's grid square (32,
 # -14): a position over 4096, truncated toward zero, as libespm's chunk index
-# (Browser.cpp:288-289) and the listeners' grid count squares. The subject is the ore vein
-# 0x10e6cb (ACTI MineOreMoonstone03_LFallForestRocks, base 0x10db20, at (133493.1, -61558.7,
-# 14494.8), rotation (-12.1, 28.3, 347) degrees, scale 1; lab/esm.py ref on sky-srv, 2026-11-13
-# UTC, and no override of it in T2's 17 plugins): the server's square (32, -15), 562 units from
-# the spawn, so both games are sent its create word at login on both stacks and are its
-# listeners, in the engine's exterior cell 0xbbd2, Tamriel's (32, -16) (CellOf floors), which
-# nobody hosts here. An activator is a world body by its kind (PropKindOf: a game-file
+# (Browser.cpp:288-289) and as the listeners' grid counts them (MpObjectReference.cpp:178,
+# GetGridPos). The subject is the ore vein 0x10e6cb (ACTI MineOreMoonstone03_LFallForestRocks,
+# base 0x10db20, at (133493.1, -61558.7, 14494.8), rotation (-12.1, 28.3, 347) degrees, scale 1;
+# lab/esm.py ref on sky-srv, 2026-11-13 UTC, and no override of it in T2's 17 plugins): the
+# server's square (32, -15), 562 units from the spawn across the ground (587 with the height),
+# so both games are sent its create word at login on both stacks and are its listeners, in the
+# engine's exterior cell 0xbbd2, Tamriel's (32, -16) (CellOf floors), which nobody hosts here.
+# An activator is a world body by its kind (PropKindOf: a game-file
 # reference that is no item, actor, door, container, furniture or static), and since rung 4 a
 # world body is claimed by any touch, as an item is (D-PH9 A; before it, the core refused every
 # touch on one but an impulse, D-S3 point 4). At 2.5 s c1 claims the vein by contact (PropClaim

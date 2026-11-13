@@ -503,7 +503,9 @@ private:
   // thuum docs/verbs/npc-fate.md (ADR-060): an accepted reanimate hands the
   // body to the caster's seat until its engine ends the effect (the cells
   // rule's commanded claim, no lease); the caster's own engine ran the spell
-  // and runs the effect, the get-up, the shader and the commanded packages
+  // and runs the effect, the get-up, the shader and the commanded packages.
+  // Only where the spell's Reanimate effect's conditions hold on the body
+  // (ADR-039, MpActor::EffectConditionsHold, as the stand-up applies it)
   void ClaimReanimated(MpActor& caster, MpActor& body, uint32_t spell,
                        const std::vector<espm::Effects::Effect>& effects);
 

@@ -1292,7 +1292,8 @@ TEST_CASE("A hosted game-file actor's swing lands with the weapon its "
 // kReanimate), and Dead Thrall 0x7e8df, its effect ReanimateThrallFFAimed
 // 0x7e8e0, read here from the records themselves. Dead Thrall's full
 // thrall sections are the next case's, on a humanoid body: 0x7e8e0's
-// conditions want ActorTypeNPC, which the predator lacks (pipeline 5939).
+// conditions want ActorTypeNPC, which the predator lacks (pipeline 5939);
+// here Dead Thrall's hit at the predator is the claim's refusal (ADR-039).
 TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
           "for the effect's life; its death ends the claim; the host's own "
           "cast keeps the body its own",
@@ -1538,6 +1539,50 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(p.worldState.HostOf(body) == &host);
     REQUIRE(hosterWordsTo(0) >= 1);
     REQUIRE(hosterWordsTo(1) >= 1);
+  }
+
+  // ClaimReanimated's gate (ADR-039, as the stand-up applies the effect):
+  // Dead Thrall's Reanimate effect 0x7e8e0 wants HasKeyword ActorTypeNPC,
+  // which the predator's race lacks, so Dead Thrall's hit at it commands
+  // nothing and no word goes (pipeline 5939: the command stood here, a full
+  // thrall's, with no Reanimate state on the record); Reanimate Corpse's at
+  // the same body still commands it, as the first section has it
+  SECTION("by a player who is not the host: Dead Thrall's hit at a body its "
+          "Reanimate effect's conditions refuse commands nothing, the cell's "
+          "host keeping it, and Reanimate Corpse's hit then commands it")
+  {
+    // Skyrim.esm's ActorTypeNPC (the full thrall case's kActorTypeNpc)
+    constexpr uint32_t kActorTypeNpc = 0x13794;
+    REQUIRE_FALSE(
+      ConditionFunctions::HasKeyword::ActorHasKeyword(body, kActorTypeNpc));
+    Equipment eq;
+    eq.rightSpell = kDeadThrall;
+    caster.SetEquipment(eq);
+    p.Messages().clear();
+    {
+      LogCapture log;
+      casts(1, kDeadThrall);
+      hits(1, kDeadThrall);
+      REQUIRE(log.Count("[verb:npc-fate] reanimate 7e8df by ff000d36 on "
+                        "85547: its Reanimate effect 7e8e0's conditions fail "
+                        "on the body (failing: HasKeyword(0x13794, 0x0) on "
+                        "Subject == 1: got 0); no command, the body stays "
+                        "its cell's") == 1);
+      REQUIRE(log.Count("commands it until its engine ends the effect") == 0);
+    }
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(p.worldState.HostOf(body) == &host);
+    REQUIRE(hosterWordsTo(0) == 0);
+    REQUIRE(hosterWordsTo(1) == 0);
+    // Reanimate Corpse's hit at the same body: the caster's seat's, as ever
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
   }
 
   SECTION("by a player who is not the host: the thrall's ash after its death "

@@ -10136,7 +10136,9 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any
   // body"; ADR-060): a reanimate's accepted hit on a dead body hands the
   // body to the caster's seat, whose engine ran the spell and runs the
-  // effect; its samples stand the record up (the hosted-state rule)
+  // effect; its samples stand the record up (the hosted-state rule). The
+  // claim asks the Reanimate effect's conditions first (ADR-039,
+  // ClaimReanimated)
   if (targetActorPtr->IsDead() &&
       ReanimateEffectOf(&partOne.worldState, effects).has_value()) {
     // the stamp a placed corpse's stand-up is read against
@@ -10569,6 +10571,42 @@ void ActionListener::ClaimReanimated(
                  spell, caster.GetFormId(), body.GetFormId());
     return;
   }
+  // thuum ADR-039, the stand-up's gate at the claim: the spell's Reanimate
+  // effect commands the body only where that effect's own conditions hold on
+  // it, read as the stand-up's ApplyEffects reads them (this caster, no dual
+  // cast; OnHostedActorState), so no command stands where the record can
+  // take no Reanimate state (pipeline 5939: Dead Thrall's 0x7e8e0 wants
+  // HasKeyword ActorTypeNPC, and at the forest's predator, an animal, the
+  // command was a full thrall's, 86,313,600 s, while the record held no
+  // state for the departure's rule or the return to read). The rows are the
+  // engine's own data in the server's load order (the lab's Odin override
+  // of 0x7e8e0 drops its ActorTypeNPC row, thuum
+  // lab/.cache/drafts/reanimate-fx.md 6.1), and in the masters keyword rows
+  // alone (MagicNoReanimate, ActorTypeNPC; section 1 there), which answer on
+  // the dead body here as on the living one at the stand-up. The caller's
+  // accepted stamp stays: a stand-up it admits comes from the body's
+  // simulator alone (ActorUpdatableBy), which a refusal leaves where it was.
+  // HYPOTHESIS: the engine also refuses a Reanimate effect whose conditions
+  // fail on its target (Dead Thrall at an animal under the masters' record
+  // stands nothing), unread on the lab
+  const auto effectId = ReanimateEffectOf(&partOne.worldState, effects);
+  for (const auto& effect : effects) {
+    if (!effectId || effect.effectId != *effectId) {
+      continue;
+    }
+    std::string failing;
+    if (!MpActor::EffectConditionsHold(&partOne.worldState, effect, spell,
+                                       body, caster, false, &failing)) {
+      spdlog::info(
+        "[verb:npc-fate] reanimate {:x} by {:x} on {:x}: its "
+        "Reanimate effect {:x}'s conditions fail on the body ({}); "
+        "no command, the body stays its cell's (thuum ADR-039)",
+        spell, caster.GetFormId(), body.GetFormId(), effect.effectId,
+        failing.empty() ? std::string("EffectConditionsHold's line names why")
+                        : "failing: " + failing);
+      return;
+    }
+  }
   // the seat whose engine ran the spell: the caster when a user plays it,
   // else the caster's host (a hosted necromancer's thrall is its host's)
   MpActor* commander =
@@ -10591,7 +10629,6 @@ void ActionListener::ClaimReanimated(
   // 86,313,600 s), stays alive, a timed one dies; dual casting, perks and
   // the spell's level set the engine's own timer
   uint32_t recordSeconds = 0;
-  const auto effectId = ReanimateEffectOf(&partOne.worldState, effects);
   for (const auto& effect : effects) {
     if (effectId && effect.effectId == *effectId) {
       recordSeconds = effect.duration;

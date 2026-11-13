@@ -1,14 +1,14 @@
-import { ContainerChangedEvent, FormType, MotionType, ObjectReference, PropContactEvent, PropImpulseEvent, ScriptCall } from "skyrimPlatform";
+import { BodyClass, ContainerChangedEvent, FormType, MotionType, ObjectReference, PropContactEvent, PropImpulseEvent, ScriptCall } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
 import { PropOwnerMessage } from "../messages/propOwnerMessage";
-import { PropTransformMessage } from "../messages/propTransformMessage";
+import { PropBone, PropTransformMessage } from "../messages/propTransformMessage";
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { NiPoint3 } from "../../sync/movement";
-import { FOLLOW_SAMPLES_MAX, FollowSample, FollowStep, PropFollow } from "../../sync/propFollow";
+import { FOLLOW_SAMPLES_MAX, FollowBone, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones } from "../../sync/propFollow";
 import { FormModel } from "../../view/model";
 import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -24,8 +24,9 @@ const TOUCH_CONTACT = 0;
 const TOUCH_GRAB = 1;
 const TOUCH_DROP = 2;
 // a shout's or spell's impulse, and ADR-068 D-S3 point 4's: a trap body this
-// seat's own script set moving (the server admits a world object that is no
-// item for this touch alone)
+// seat's own script set moving (since physics rung 4 the server admits every
+// touch on a world body, D-PH9 A; a trap body still moves by a firing alone,
+// this client's own rule)
 const TOUCH_IMPULSE = 3;
 
 // How often the tracked set is rebuilt from the view's references, ms
@@ -37,8 +38,24 @@ const RESCAN_MS = 500;
 // 3, B5: the rescan's keeps)
 const TRACK_RADIUS = 1024;
 const TRACK_MAX = 64;
-// game-file item references the server subscribed this seat to, remembered from their CreateActor (see engineRefs)
+// game-file references the server subscribed this seat to, remembered from their CreateActor (see engineRefs)
 const ENGINE_REFS_MAX = 1024;
+// Physics rung 4 (ADR-071, D-PH10 A, a world body's parts as bones): the
+// most a sample carries (wire-schema lib.rs:360, cap::PROP_BONES), how far
+// one may lie from the sample's pos (wire-validate lib.rs:83,
+// PROP_BONE_REACH_UNITS), and engineRefs' eviction line, said at the first
+// and every hundredth
+const BONES_MAX = 64;
+const BONE_REACH_UNITS = 512;
+const ENGINE_REFS_SAY_EVERY = 100;
+// Physics rung 4: the base types that are never a row here whatever their
+// class (kindOf, after the items): an actor (its reference's type and its
+// base's), a door, a container, a furniture, a static (D-PH9 A: a STAT with
+// a dynamic model gets no row, the server's PropKindOf too), and two this
+// client adds, a flora and a tree (dealWithRef keyframes a flora with an
+// ingredient, objectReferenceEx.ts, and the items' route would undo it)
+const NO_ROW_TYPES: number[] = [FormType.Character, FormType.NPC, FormType.Door, FormType.Container, FormType.Furniture,
+    FormType.Static, FormType.Flora, FormType.Tree];
 // A prop just tracked is left alone this long: the view's SpawnProcess places
 // a server-made copy over a few frames (setPosition, enable, then its own
 // setMotionType Keyframed), and a motion type set under that chain would be
@@ -170,9 +187,13 @@ type Pose = { pos: NiPoint3; rot: NiPoint3 };
 // ang radians a second, motion Havok's type (1, 2, 3 and 6 dynamic, 4
 // Keyframed, 5 Fixed), awake its island in the world's active list; island,
 // when the read asked for it (physics rung 3), the island's other dynamic
-// members by this engine's id and their bases' FormType numbers
+// members by this engine's id and their bases' FormType numbers; bones
+// (physics rung 4), a body of several parts' poses in the platform's walk
+// order, game units and Havok's [x, y, z, w], absent for a whole body (and
+// for a walk past 64 parts), awake then any part's, motion, lin and ang the
+// fastest part's, pos and rot still the root's
 type Member = { localId: number; formType: number };
-type Body = Pose & { formId: number; lin: NiPoint3; ang: NiPoint3; motion: number; awake: boolean; island?: Member[] };
+type Body = Pose & { formId: number; lin: NiPoint3; ang: NiPoint3; motion: number; awake: boolean; island?: Member[]; bones?: PropBone[] };
 
 // a take-over waiting for its placement to land (takeOver): the newest
 // sample's velocities to hand, its sequence, how far the copy jumped ahead
@@ -206,8 +227,14 @@ type Prop = {
     effective: number | undefined; // the simulator last computed (0 the host, by fallback)
     motionAsked: MotionType | undefined;
     loaded3D: boolean;
+    // physics rung 4 (D-PH9 A, D-PH10 A; kindOf): a world body (no item),
+    // and its parts as this seat's class reads them, 0 for a whole body (the
+    // items' route: one body, Keyframed while another seat streams it)
+    world: boolean;
+    parts: number;
     // the simulator's side
-    lastSent: Pose | undefined;    // the last sample out, or the first read as a baseline
+    lastSent: (Pose & { bones?: PropBone[] }) | undefined; // the last sample out, or the first read as a baseline (a body of parts with its bones)
+    dropRow: string | undefined;   // the stream found it no row (bonesOf, L3 or L4): untracked after the update's sends, why
     lastSendAt: number;
     sentHeld: boolean;             // the last sample out said held
     awakeAt: number;               // the engine last read the body awake (or the stream opened, or a hand let go)
@@ -225,12 +252,39 @@ type Prop = {
     lastAppliedLog: number;
     lastClaimAt: number;
     restAt: number;                // the render clock applied the stream's asleep sample then, for the Dynamic set after it (0 none)
+    // physics rung 4, a body of parts followed (route K3, D-PH26 A: each part
+    // stays a live Havok body the platform drives toward the stream): poses
+    // stored in the platform's table (imposeBodies, released at the follow's
+    // end), the follow's frames imposed and skipped (a count mismatch, a
+    // refusal), whether the follow called the platform yet (its first call
+    // said), whether the stream's rest was imposed (rest true), and whether a
+    // sample's bones on a body this seat reads as one were said
+    imposing: boolean;
+    imposed: number;
+    imposeSkipped: number;
+    imposeCalled: boolean;
+    restImposed: boolean;
+    bonesSaid: boolean;
     // the "body" lines (propBodyReadLog): their next read (0 none), and whether the first track's is asked
     bodyLogDue: number;
     bodyTracked: boolean;
     badBodySaid: boolean;          // the platform read no body for it, or one the wire cannot carry: said once
-    trap: boolean;                 // ADR-068 D-S3: a trap body (no item; see trapBodies)
+    trap: boolean;                 // ADR-068 D-S3: a trap body (no item, no world body of rung 4's; see trapBodies)
 };
+
+// Physics rung 4 (kindOf): what a reference is to this service, by its base
+// and this seat's class read. "item" and "world" are rows, "trap" a trap
+// family reference (D-S3's own path), "none" no row. Rung 5 adds "body", a
+// dead actor (5a's bodyWord, WorldState.h)
+type PropKind = "item" | "world" | "trap" | "none";
+
+// one binding's verdict (kindOf, by local id and the record it is bound to):
+// item its base an item; world physics rung 4's, { parts } a world body (0
+// whole), null no row (a type, a server-made reference, a class no row
+// takes, a trap family's), undefined not judged; family a trap family
+// reference (kindOf's "trap"); trap D-S3's verdict on a family reference's
+// record (judgeTrapRecord: a body a firing moved before this session)
+type KindEntry = { refr: number; item: boolean; family?: boolean; world?: { parts: number } | null; trap?: boolean };
 
 // the server's last word on a prop: the player (0 the cell's host by
 // default) and its epoch, and when it came (a hold reads it against its own
@@ -316,9 +370,9 @@ const triple = (v: NiPoint3): string => `${v[0].toFixed(1)}, ${v[1].toFixed(1)},
 // the wire; the server's record answer (seq 0) to a refused sample places the
 // copy at the record. The engine is read through readBodies (rule 9: one call
 // an update, a resting body answered only at its fall), never the reference.
-// Items (FormTypeEx.isItem's types) and trap bodies are the rows: a static and
-// a ragdoll are rungs 4 and 5's, pushed meanwhile by their own engine's cause
-// alone (D-PH5). The tracked set is the nearest TRACK_MAX within TRACK_RADIUS
+// Items (FormTypeEx.isItem's types), world bodies and trap bodies are the
+// rows (kindOf); a ragdoll is rung 5's, pushed meanwhile by its own engine's
+// cause alone (D-PH5). The tracked set is the nearest TRACK_MAX within TRACK_RADIUS
 // of the player and the rescan's keeps at any distance (TRACK_RADIUS's note).
 // Everything the engine is asked happens on the update (a message handler
 // queues; Skyrim Platform refuses natives in its context).
@@ -368,13 +422,43 @@ const triple = (v: NiPoint3): string => `${v[0].toFixed(1)}, ${v[1].toFixed(1)},
 // rests away from this engine's copy (a restart, a late join) is placed at its
 // record. Trap bodies are tracked at any distance in the player's world or
 // cell and past the item cap, take no grace, and are never claimed by a
-// contact, a grab or a drop (the server admits touch 3 alone for them). A
+// contact, a grab or a drop (this client's rule: since physics rung 4 the
+// server admits every touch on a world body, trap rocks included, D-PH9 A). A
 // trap's trigger is never a trap body (trapBodyRole; playtest 48): its own
 // script's motion calls claim nothing and a word on it is never followed, so
 // each seat's own copy moves its own (a tripwire's rope, a bone alarm's
 // bones), while the rocks it fires stay the firing seat's streamed bodies.
 // HYPOTHESIS H-AW (the neutral arguments hold a followed body) and H-KF (a
 // Keyframed follower rock may never hurt its own seat's player), the design's.
+//
+// Physics rung 4 (ADR-071; D-PH9 A, D-PH10 A, D-PH26 A; the build spec's
+// section A C4): a game-file reference the server holds whose base is no item
+// and none of NO_ROW_TYPES, no trap family's, and whose loaded 3D this seat's
+// platform reads as dynamic (the root's BSX kDynamic, getBodyClass) with a
+// moving part, is a world body (kindOf, its class said once per binding). A
+// whole one (one body, none Fixed: a wheel) takes the items' route, Keyframed
+// while another seat streams it. One of several parts (the Riverwood Trader's
+// sign, seven bodies on a Fixed anchor) streams its parts' poses as the
+// sample's bones (bonesOf), and its follower's parts stay live Havok bodies
+// the platform drives toward the stream every update (route K3: imposeBodies,
+// imposeParts), placed outright at the stream's rest, with no reference-wide
+// motion set ever (setMotion's guard: TESObjectREFR::SetMotionType recurses
+// from the root and would free the Fixed anchor, risk H-T1). A watcher's own
+// capsule or local cause nudges such a copy for a frame and the drive pulls
+// it back, and a watcher can grab it mid-swing: D-PH26 A's declared limits.
+// The class is each seat's own word, unvalidated (R2, rule 5); the server
+// bounds a world body by its kind gate, its listener check, the step budget
+// and the tether. The client settings propWorldBodies (false: no world body
+// is a row, setWorldBodyContacts off, rung 3's tracked set) and propBodyParts
+// (false: no body of parts is a row, D-PH10 B with no build) are read live.
+// HYPOTHESIS (the spec's section F): that BSX kDynamic on the loaded 3D
+// agrees on both seats and with rung 0's census (F1); that the walk lists the
+// same parts in the same order on both seats (F2; a count mismatch imposes
+// nothing, L6's skipped count); that K3 holds each part within 32 units of
+// the owner's pose (F3); that a sign's parts lie within 512 of its root
+// (F12; L3 counts the others); that the trap-family verdict is read after the
+// scripts bind (F14); that a trap rock is whole (F18); and that engineRefs'
+// 1024 holds Riverwood with every MSTT (F20; L10 counts the evictions).
 export class PropService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -489,6 +573,14 @@ export class PropService extends ClientListener {
         // the seat the word names at the sample's epoch (0 the cell's host),
         // none yet when the sample came ahead of its word
         const seat = m.epoch === known ? (word ? word.player : 0) : undefined;
+        // physics rung 4: a world body's parts in the owner's walk order (the
+        // server relays them, never records them: DEF-4c); on a body this
+        // seat reads as one part they are said once and kept unshown
+        const bones = PropService.followBones(m.bones);
+        if (bones.length > 0 && prop.parts === 0 && !prop.bonesSaid) {
+            prop.bonesSaid = true;
+            logLab(TAG, `prop ${m.refr.toString(16)}: a sample of ${bones.length} parts for a body this seat reads as one: its parts not shown`);
+        }
         const sample: FollowSample = {
             epoch: m.epoch,
             seq: m.seq,
@@ -499,6 +591,7 @@ export class PropService extends ClientListener {
             ang: [m.ang[0], m.ang[1], m.ang[2]],
             asleep: m.asleep,
             held: m.held,
+            bones,
         };
         const f = prop.follow;
         if (f !== undefined) {
@@ -564,7 +657,9 @@ export class PropService extends ClientListener {
     // streams followed under them. The sequences this seat sent stay: a
     // reconnect's server still holds each row's last one at its epoch, and a
     // restarted one holds none, so either takes the next
-    // Game-file item references the server subscribed this seat to, keyed by
+    // Game-file references the server subscribed this seat to (items, and
+    // since physics rung 4 every movable static and other world object the
+    // server holds: kindOf's step 5), keyed by
     // the engine's id (a game-file reference's record id is its engine id),
     // with the record's pose from the CreateActor (the login's place). The
     // view never models them: RemoteServer.skipFormViewCreation sends every
@@ -574,8 +669,12 @@ export class PropService extends ClientListener {
     // 133010 and x-prop-pass 133232 at the union's stage: zero PropService
     // lines on any seat across ten runs, the server untouched). Bounded; an
     // entry whose reference is unloaded or far is simply not found at a
-    // rescan; the server's unsubscribe needs no handling here
+    // rescan; the server's unsubscribe needs no handling here. Full, the
+    // oldest entry kindOf already judged no row goes first, else the oldest
+    // (noteEngineRef)
     private engineRefs = new Map<number, { baseId: number; pos: NiPoint3; rot: NiPoint3; worldOrCell: number }>();
+    // the entries let go since the login, for the eviction's line
+    private engineRefsLetGo = 0;
 
     private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
         if (!e.message.isMe) {
@@ -584,6 +683,7 @@ export class PropService extends ClientListener {
         }
         this.owners.clear();
         this.echoSaid.clear();
+        this.engineRefsLetGo = 0;
         this.props.forEach((prop) => {
             prop.effective = undefined;
             this.endFollow(prop);
@@ -599,9 +699,21 @@ export class PropService extends ClientListener {
             return;
         }
         if (!this.engineRefs.has(refrId) && this.engineRefs.size >= ENGINE_REFS_MAX) {
-            const oldest = this.engineRefs.keys().next().value;
-            if (oldest !== undefined) {
-                this.engineRefs.delete(oldest);
+            // physics rung 4: the server now subscribes this seat to every
+            // movable static near it (H-S1, mostly effects), so the oldest one
+            // kindOf judged no row goes before any row or unjudged reference.
+            // A cap by kind at the create word cannot work: its baseRecordType
+            // names only DOOR, NPC_ and a spell placement's base
+            // (createActorMessage.ts), and a message handler makes no game call
+            const ids = Array.from(this.engineRefs.keys());
+            const noRow = ids.find((id) => this.knownNoRow(id));
+            const victim = noRow !== undefined ? noRow : ids[0];
+            if (victim !== undefined) {
+                this.engineRefs.delete(victim);
+                this.engineRefsLetGo += 1;
+                if (this.engineRefsLetGo === 1 || this.engineRefsLetGo % ENGINE_REFS_SAY_EVERY === 0) {
+                    logLab(TAG, `engine refs full at ${ENGINE_REFS_MAX}: ${this.engineRefsLetGo} let go since the login, the last ${victim.toString(16)} (${noRow !== undefined ? "no row" : this.cachedKindName(victim)})`);
+                }
             }
         }
         const t = msg.transform;
@@ -697,6 +809,7 @@ export class PropService extends ClientListener {
 
     private onUpdate() {
         this.applyImpulseRule();
+        this.applyWorldBodyContacts();
         if (!this.enabled()) {
             if (this.props.size > 0) {
                 this.untrackAll();
@@ -862,7 +975,12 @@ export class PropService extends ClientListener {
             if (prop.loaded3D) {
                 this.setMotion(prop, refr, MotionType.Keyframed, false);
             }
-            logLab(TAG, `prop ${prop.refr.toString(16)}: another seat owns it while this hand held it; the hold ends`);
+            // physics rung 4: a body of parts takes no motion set (setMotion's
+            // guard), so the engine's spring may fight the drive until the
+            // next press (risk H-C2, a declared limit; no endGrab before rung 5)
+            logLab(TAG, prop.parts > 0
+                ? `prop ${prop.refr.toString(16)}: another seat owns it while this hand held it; its parts follow the stream`
+                : `prop ${prop.refr.toString(16)}: another seat owns it while this hand held it; the hold ends`);
         }
         if (prop.simulating !== simulate) {
             // a word that names this seat is a touch granted: the body wakes
@@ -919,7 +1037,10 @@ export class PropService extends ClientListener {
             return;
         }
         const pose = this.recordOf(prop.refr);
-        if (!pose) {
+        // physics rung 4: a body of parts is placed at once, with no
+        // translate: its record is its root's (the Fixed anchor), which never
+        // moves, and the parts' rest is each engine's own (DEF-4c)
+        if (!pose || prop.parts > 0) {
             prop.placed = true;
             prop.placedAt = now;
             this.bodyTrack(prop, now);
@@ -1019,8 +1140,19 @@ export class PropService extends ClientListener {
             const f = prop.follow;
             const live = f !== undefined && f.live(now, this.followDelayMs(), FOLLOW_QUIET_MS);
             const newest = f !== undefined ? f.newest() : undefined;
+            if (f !== undefined) {
+                this.sayPartsRest(prop, f);
+            }
             this.endFollow(prop);
-            if (live && newest !== undefined) {
+            if (prop.parts > 0) {
+                // physics rung 4 (K3): no take-over, the copy is Dynamic and
+                // already moving under the drive, and its engine's from here
+                // once the drive lets go (endFollow released it)
+                this.releaseImpose(prop);
+                if (live && newest !== undefined) {
+                    logLab(TAG, `took over ${prop.refr.toString(16)} at seq ${newest.seq}: ${prop.parts} parts, released from the drive`);
+                }
+            } else if (live && newest !== undefined) {
                 this.takeOver(prop, refr, newest, now);
             } else if (prop.motionAsked !== MotionType.Dynamic) {
                 // D73: a body already Dynamic (a resting follower kicked or
@@ -1123,8 +1255,18 @@ export class PropService extends ClientListener {
     // v9 021439 on the physics stage), so every body this seat simulates is set
     // Dynamic with it; the stream's lazy baseline (nothing out until a move)
     // keeps a resting cell's clutter silent. Keyframed as dealWithRef sets it.
-    // HYPOTHESIS until v10: a body denied activation is inert to the controller
+    // HYPOTHESIS until v10: a body denied activation is inert to the controller.
+    // Physics rung 4 (route K3, D-PH26 A): a body of several parts never takes
+    // a reference-wide motion set, here or anywhere: TESObjectREFR::
+    // SetMotionType recurses from the 3D root with a_arg2 true (CommonLibSSE-NG
+    // src/RE/T/TESObjectREFR.cpp:879-890) and would reach the Fixed anchor
+    // (risk H-T1); its parts stay Dynamic, driven while another seat streams
+    // them, so the motion asked reads Dynamic
     private setMotion(prop: Prop, refr: ObjectReference, type: MotionType, wake: boolean) {
+        if (prop.parts > 0) {
+            prop.motionAsked = MotionType.Dynamic;
+            return;
+        }
         prop.motionAsked = type;
         refr.setMotionType(type, wake).catch((err) => {
             prop.motionAsked = undefined;
@@ -1210,10 +1352,15 @@ export class PropService extends ClientListener {
                 return;
             }
             // the baseline: nothing goes out until the body moves from here
-            prop.lastSent = { pos: body.pos, rot: body.rot };
+            prop.lastSent = { pos: body.pos, rot: body.rot, bones: body.bones };
             return;
         }
-        const moved = PropService.apart(body, prop.lastSent, SAMPLE_UNITS, SAMPLE_DEGREES);
+        // physics rung 4: a body of parts moved when any part moved or turned
+        // past the dead band (its root, the Fixed anchor, never does)
+        const last = prop.lastSent;
+        const moved = PropService.apart(body, last, SAMPLE_UNITS, SAMPLE_DEGREES)
+            || (prop.parts > 0 && body.bones !== undefined
+                && (last.bones === undefined || bonesApart(body.bones, last.bones, SAMPLE_UNITS, SAMPLE_DEGREES)));
         if (!prop.held && !body.awake) {
             // the owner's own final sample, the engine's rest: the server
             // returns the prop to the cell's host on it and its word (player 0)
@@ -1252,7 +1399,9 @@ export class PropService extends ClientListener {
     // SEND_BUDGET_BURST and SEND_BUDGET_PER_S): the rests first and always,
     // then the awake ones by priority while a whole token is left; the unsent
     // are made due again by the next update's stream, their priority grown with
-    // their wait. A sample sent says its stream's opening or its rest
+    // their wait. A sample sent says its stream's opening or its rest (and a
+    // body of parts' opening its parts, physics rung 4); a prop whose read the
+    // stream found no row (bonesOf) is untracked after the sends
     private sendDue(now: number) {
         if (this.due.length === 0) {
             return;
@@ -1280,6 +1429,15 @@ export class PropService extends ClientListener {
                 d.prop.streaming = true;
                 d.prop.awakeAt = now;
                 logLab(TAG, `stream ${id} ${d.line}`);
+                if (d.prop.parts > 0) {
+                    logLab(TAG, `stream ${id}: ${d.prop.parts} parts as bones`);
+                }
+            }
+        }
+        for (const d of due) {
+            const why = d.prop.dropRow;
+            if (why !== undefined && this.props.get(d.prop.refr) === d.prop) {
+                this.untrack(d.prop, why);
             }
         }
     }
@@ -1296,10 +1454,14 @@ export class PropService extends ClientListener {
     // word this seat holds (0 with none), the next sequence within it (from 1
     // at a new epoch, SEQ_MAX wrapping to 1), the read's time on the owner's
     // clock (tMsOf), the body's place, turn, velocities and hand within the
-    // wire's bounds, no bones (an item is one body); a token of the budget
-    // spent. Returns the sequence, or 0 for a read the wire cannot carry (a
-    // place or turn that is not a number, a place outside the world), which
-    // goes nowhere and is said
+    // wire's bounds, no bones for a body of one part (an item, a whole world
+    // body) and a body of parts' bones (bonesOf, physics rung 4); a token of
+    // the budget spent. Returns the sequence, or 0 for a read the wire cannot
+    // carry (a place or turn that is not a number, a place outside the world,
+    // parts bonesOf refuses), which goes nowhere and is said. A rest whose
+    // parts made the prop no row still goes, its pose alone, so the server
+    // returns the row (a world body takes a sample with no bones); so does
+    // the untrack's final sample after it
     private send(prop: Prop, body: Body, asleep: boolean, now: number): number {
         const pos = body.pos;
         const rot: NiPoint3 = [body.rot[0] % 360, body.rot[1] % 360, body.rot[2] % 360];
@@ -1311,6 +1473,14 @@ export class PropService extends ClientListener {
                 }
                 return 0;
             }
+        }
+        let bones: PropBone[] = [];
+        if (prop.parts > 0 && prop.dropRow === undefined) {
+            const read = this.bonesOf(prop, body);
+            if (read === undefined && (prop.dropRow === undefined || !asleep)) {
+                return 0;
+            }
+            bones = read !== undefined ? read : [];
         }
         const word = this.owners.get(prop.refr);
         const epoch = word ? word.epoch : 0;
@@ -1331,14 +1501,14 @@ export class PropService extends ClientListener {
             ang: bounded(body.ang, ANG_MAX_RAD_PER_S),
             asleep,
             held,
-            bones: [],
+            bones,
         };
         this.controller.emitter.emit("sendMessage", {
             message,
             reliability: asleep ? "reliable" : "unreliable",
         });
         this.budget -= 1;
-        prop.lastSent = { pos: message.pos, rot };
+        prop.lastSent = { pos: message.pos, rot, bones };
         prop.lastSendAt = now;
         prop.sentHeld = held;
         // the record in this seat's model follows its own samples too
@@ -1346,8 +1516,62 @@ export class PropService extends ClientListener {
         return seq;
     }
 
+    // Physics rung 4 (D-PH10 A): a body of parts' poses for its sample, in
+    // the platform's walk order, each checked as the wire's validator checks
+    // a bone (wire-validate lib.rs check_prop_transform): a count other than
+    // this seat's class read (a walk past 64 parts reads none) or a part past
+    // the wire's 512 from the sample's pos (its root's) makes the prop no row
+    // here, its binding's verdict cached and the prop untracked after the
+    // update's sends (sendDue), said once; a value that is not a number, a
+    // place outside the world or a quaternion of no length is no sample (not
+    // sent), said once. Each quaternion goes normalized, inside the wire's
+    // 0.01 (wire-validate lib.rs:86)
+    private bonesOf(prop: Prop, body: Body): PropBone[] | undefined {
+        const read = body.bones !== undefined ? body.bones : [];
+        const id = prop.refr.toString(16);
+        if (read.length !== prop.parts) {
+            logLab(TAG, `prop ${id} read ${read.length} parts where its class has ${prop.parts}: no row`);
+            this.noRow(prop, `${read.length} parts read where its class has ${prop.parts}`);
+            return undefined;
+        }
+        const bones: PropBone[] = [];
+        for (let i = 0; i < read.length; ++i) {
+            const b = read[i];
+            const n = Math.sqrt(b.quat[0] * b.quat[0] + b.quat[1] * b.quat[1] + b.quat[2] * b.quat[2] + b.quat[3] * b.quat[3]);
+            let pose = isFinite(n) && n > 0;
+            for (let k = 0; k < 3; ++k) {
+                pose = pose && isFinite(b.pos[k]) && Math.abs(b.pos[k]) <= WORLD_ABS_MAX;
+            }
+            if (!pose) {
+                if (!prop.badBodySaid) {
+                    prop.badBodySaid = true;
+                    logError(this, `prop ${id}'s part ${i} read (${b.pos.join(", ")}) (${b.quat.join(", ")}) is no pose: not sent`);
+                }
+                return undefined;
+            }
+            const reach = ObjectReferenceEx.getDistance(b.pos, body.pos);
+            if (reach > BONE_REACH_UNITS) {
+                logLab(TAG, `prop ${id}'s part ${i} lies ${reach.toFixed(1)} units from its reference, past the wire's ${BONE_REACH_UNITS}: no row`);
+                this.noRow(prop, `its part ${i} past the wire's reach`);
+                return undefined;
+            }
+            bones.push({ pos: [b.pos[0], b.pos[1], b.pos[2]], quat: [b.quat[0] / n, b.quat[1] / n, b.quat[2] / n, b.quat[3] / n] });
+        }
+        return bones;
+    }
+
+    // a prop this seat's stream found no row (bonesOf): its binding's verdict
+    // cached so no rescan takes it again, and untracked after the update's
+    // sends (sendDue)
+    private noRow(prop: Prop, why: string) {
+        prop.dropRow = why;
+        this.cacheKind(prop.localId, prop.refr, { item: false, world: null });
+    }
+
     // The follower: the stream followed rendered on its clock (one translate a
-    // segment, the rest applied when the render clock reaches it) and its end
+    // segment, the rest applied when the render clock reaches it) and its end;
+    // a body of parts (physics rung 4) imposed every update instead
+    // (imposeParts), its copy never Keyframed (setMotion's guard)
     private follow(prop: Prop, refr: ObjectReference, now: number) {
         const f = prop.follow;
         if (f !== undefined) {
@@ -1364,7 +1588,9 @@ export class PropService extends ClientListener {
                 this.holdTrapBody(prop.refr);
             }
             const step = f.step(now, this.followDelayMs());
-            if (step.fresh) {
+            if (prop.parts > 0) {
+                this.imposeParts(prop, f, step);
+            } else if (step.fresh) {
                 this.apply(prop, refr, f, step, now);
             }
             if (step.rested) {
@@ -1388,6 +1614,7 @@ export class PropService extends ClientListener {
                 logTrace(this, `prop ${prop.refr.toString(16)} at rest: Dynamic (${rested ? "the stream ended" : "the stream went quiet"})`);
             }
             if (f !== undefined) {
+                this.sayPartsRest(prop, f);
                 this.endFollow(prop);
                 this.bodyLogAt(prop, now + REST_DYNAMIC_MS);
             }
@@ -1443,6 +1670,108 @@ export class PropService extends ClientListener {
         }
     }
 
+    // Physics rung 4 (D-PH10 A; route K3 under D-PH26 A): a body of parts
+    // another seat streams, imposed on every update the render clock is in a
+    // pair (not only at a segment's entry): the parts' poses between the
+    // pair's two samples at the render clock (lerpBones), handed to the
+    // platform's drain, which drives each live part toward its pose
+    // (imposeBodies); a count other than this seat's class read, on either
+    // sample or here, imposes nothing and counts as skipped (L6), as does a
+    // refusal. At the render clock's rest the rest's poses go once with rest
+    // true, which places every part outright and ends the drive there; no
+    // call after it. Nothing before the first pair, and nothing with no 3D
+    // (the platform drops a form that loses it)
+    private imposeParts(prop: Prop, f: PropFollow, step: FollowStep) {
+        if (!prop.loaded3D || prop.restAt !== 0) {
+            return;
+        }
+        if (step.rested) {
+            const rest = f.newest().bones;
+            if (rest.length === prop.parts && this.imposeBodies(prop, f, rest, true)) {
+                prop.imposing = false;
+                prop.restImposed = true;
+                prop.imposed += 1;
+            } else {
+                prop.imposeSkipped += 1;
+                this.releaseImpose(prop);
+            }
+            return;
+        }
+        if (step.from === undefined) {
+            return;
+        }
+        const bones = lerpBones(step.from.bones, step.target.bones, step.alpha);
+        if (bones === undefined || bones.length !== prop.parts) {
+            prop.imposeSkipped += 1;
+            return;
+        }
+        if (this.imposeBodies(prop, f, bones, false)) {
+            prop.imposing = true;
+            prop.imposed += 1;
+        } else {
+            prop.imposeSkipped += 1;
+        }
+    }
+
+    // the platform's impose (imposeBodies), its first call of a follow said
+    // with the seat it follows; an older platform imposes nothing, said once
+    private imposeBodies(prop: Prop, f: PropFollow, bones: FollowBone[], rest: boolean): boolean {
+        if (!prop.imposeCalled) {
+            prop.imposeCalled = true;
+            const seat = f.seat === undefined ? "unheard" : f.seat.toString(16);
+            logLab(TAG, `impose ${prop.refr.toString(16)} from ${seat}: ${prop.parts} parts`);
+        }
+        try {
+            return this.sp.imposeBodies(prop.localId, bones, rest);
+        } catch (e) {
+            if (!this.imposeSaid) {
+                this.imposeSaid = true;
+                logError(this, `imposeBodies unavailable on this platform: ${e}`);
+            }
+            return false;
+        }
+    }
+
+    // the drive let go (releaseBodies): the platform's poses for the form
+    // dropped, so no later drain lays them on it (a follow's end, a
+    // take-over, a rebind); a table operation, safe from any context
+    private releaseImpose(prop: Prop) {
+        if (!prop.imposing) {
+            return;
+        }
+        prop.imposing = false;
+        try {
+            this.sp.releaseBodies(prop.localId);
+        } catch (e) {
+            if (!this.imposeSaid) {
+                this.imposeSaid = true;
+                logError(this, `releaseBodies unavailable on this platform: ${e}`);
+            }
+        }
+    }
+
+    // A body of parts whose stream's rest was imposed, REST_DYNAMIC_MS later
+    // (the follow's end at its rest, here or at this seat's simulation):
+    // how far its parts settled from the rest's poses, the farthest part's
+    // distance, read whole (readBody); nothing when the read has another
+    // count. On the update (the read is a game call's context's)
+    private sayPartsRest(prop: Prop, f: PropFollow) {
+        if (prop.parts === 0 || !prop.restImposed) {
+            return;
+        }
+        const rest = f.newest().bones;
+        const body = this.readBody(prop);
+        const read = body !== undefined && body.bones !== undefined ? body.bones : [];
+        if (read.length !== rest.length || read.length === 0) {
+            return;
+        }
+        let farthest = 0;
+        for (let i = 0; i < read.length; ++i) {
+            farthest = Math.max(farthest, ObjectReferenceEx.getDistance(read[i].pos, rest[i].pos));
+        }
+        logLab(TAG, `follow ${prop.refr.toString(16)} epoch ${f.epoch()}: ${prop.parts} parts at rest within ${farthest.toFixed(1)} units of the stream's rest`);
+    }
+
     // Whether another seat streams the prop awake as this seat sees it: the
     // stream followed live on its render clock (its newest sample awake and
     // under FOLLOW_QUIET_MS behind it), or a word naming another seat, newer
@@ -1479,6 +1808,18 @@ export class PropService extends ClientListener {
         const seat = f.seat === undefined ? "unheard" : f.seat.toString(16);
         logLab(TAG, `follow ${id} epoch ${f.epoch()} from ${seat}: ${f.samples} samples, ${f.gaps()} seq gaps, ${f.dry} dry frames, ${f.jumps} jumps`);
         logLab(TAG, `follow ${id} epoch ${f.epoch()}: largest step ${f.largestStep.toFixed(1)} units, delay ${this.followDelayMs()} ms`);
+        // physics rung 4: a body of parts' drive let go unless its rest
+        // ended it (the platform drops a form at its rest's placement), and
+        // its figures; no game call here (a record answer ends a follow in
+        // its message's handler)
+        this.releaseImpose(prop);
+        if (prop.parts > 0) {
+            logLab(TAG, `follow ${id} epoch ${f.epoch()}: ${prop.parts} parts, ${prop.imposed} frames imposed, ${prop.imposeSkipped} skipped`);
+        }
+        prop.imposed = 0;
+        prop.imposeSkipped = 0;
+        prop.imposeCalled = false;
+        prop.restImposed = false;
     }
 
     // The hand, read from the engine once per update (ADR-071's D-PH3 A: a
@@ -1534,7 +1875,10 @@ export class PropService extends ClientListener {
     // seat does not simulate is claimed (touch 0), at most once per
     // CLAIM_EVERY_MS per prop (a granted claim comes back as PropOwner, after
     // which the body is this seat's and the next contacts say so); the
-    // expected body is the follower's, Keyframed (motion 4)
+    // expected body is the follower's, Keyframed (motion 4), or (physics rung
+    // 4) a world body's part, whose layer passes the platform's filter by its
+    // dynamic motion while setWorldBodyContacts holds (a follower's parts
+    // stay Dynamic under the drive, K3)
     private claimContacts(now: number) {
         const contacts = this.contacts;
         this.contacts = [];
@@ -1608,8 +1952,9 @@ export class PropService extends ClientListener {
     // this seat's own cause gave since the last update, folded by impact
     // number and a cone's by its cause (a cone raises a new impact number at
     // each HandleHits frame that pushed, so its events fold by cause for
-    // CONE_BATCH_MS), every other kind's claimed at once. Each impact's rows (items and trap bodies; a static and a ragdoll
-    // are no row before rungs 4 and 5) are tracked in place at any distance
+    // CONE_BATCH_MS), every other kind's claimed at once. Each impact's rows
+    // (items, world bodies since rung 4 and trap bodies, rowInPlace; a
+    // ragdoll is no row before rung 5) are tracked in place at any distance
     // (B5), and the ones this seat does not own go in one claim by touch 3; a
     // row another seat streams awake stays home (A3: the server refuses it
     // E_PROP_MOVING, and its Keyframed copy here took no push, E27). A row this
@@ -1705,10 +2050,12 @@ export class PropService extends ClientListener {
             if (!prop) {
                 const localId = remoteIdToLocalId(w.message.refr);
                 const body = this.trapBodies.get(w.message.refr);
-                // an item's stream; a trap body is D-S3's, an unknown one taken at its word
+                // an item's or a world body's stream (kindOf); a trap body is
+                // D-S3's, an unknown one taken at its word
+                const kind = localId && !body ? this.kindOf(localId, w.message.refr) : "none";
                 prop = !localId ? undefined
                     : body ? this.trackTrapBody(w.message.refr, body, w.at, false)
-                    : this.isItem(localId, w.message.refr) ? this.trackInPlace(w.message.refr, localId, undefined, "its stream arrived")
+                    : kind === "item" || kind === "world" ? this.trackInPlace(w.message.refr, localId, undefined, "its stream arrived")
                     : undefined;
             }
             if (prop) {
@@ -1718,17 +2065,21 @@ export class PropService extends ClientListener {
     }
 
     // A body an engine read named (an impact's, an island member's), by this
-    // engine's id and its base's FormType number, as a tracked row: an item,
-    // or a trap body this seat knows (the server's world-body row, touch 3
-    // alone), tracked in place; undefined for a static, a ragdoll, an
+    // engine's id and its base's FormType number, as a tracked row: an item
+    // or a world body (kindOf, the event's FormType sparing the base's read),
+    // or a trap body this seat knows (D-S3's, its firing's alone), tracked in
+    // place; undefined for a static, a ragdoll, a class no row takes, an
     // unloaded reference or one the server has no id for here
     private rowInPlace(r: Member, now: number, why: string): Prop | undefined {
         const refr = localIdToRemoteId(r.localId);
         if (!refr) {
             return undefined;
         }
-        if (!FormTypeEx.isItem(r.formType as FormType) && !this.trapBodies.has(refr)) {
-            return undefined;
+        if (!this.trapBodies.has(refr)) {
+            const kind = this.kindOf(r.localId, refr, r.formType);
+            if (kind !== "item" && kind !== "world") {
+                return undefined;
+            }
         }
         const known = this.props.get(refr);
         if (known) {
@@ -1755,8 +2106,8 @@ export class PropService extends ClientListener {
     // reference loaded in the player's world or cell, placed already (an
     // engine's own body in flight is never put back at the record; the record
     // follows its stream), no grace (no copy is being spawned), `motion` the
-    // body's as read (undefined: the tick sets it, D73). Undefined when the
-    // reference is not loaded here
+    // body's as read (undefined: the tick sets it, D73), a world body's class
+    // as kindOf cached it. Undefined when the reference is not loaded here
     private trackInPlace(refr: number, localId: number, motion: MotionType | undefined, why: string): Prop | undefined {
         const ref = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
         const player = this.sp.Game.getPlayer();
@@ -1770,11 +2121,13 @@ export class PropService extends ClientListener {
         const now = clockMs();
         const distance = ObjectReferenceEx.getDistance(ObjectReferenceEx.getPos(player), ObjectReferenceEx.getPos(ref));
         const cell = ref.getParentCell();
-        const prop = PropService.newProp(refr, localId, -1, cell ? cell.getFormID() : 0, distance, 0);
+        const world = this.worldOf(localId, refr);
+        const prop = PropService.newProp(refr, localId, -1, cell ? cell.getFormID() : 0, distance, 0, world !== undefined, world !== undefined ? world.parts : 0);
         prop.placed = true;
         prop.placedAt = now;
         prop.loaded3D = true;
-        prop.motionAsked = motion;
+        // setMotion's guard: a body of parts never takes a motion set
+        prop.motionAsked = prop.parts > 0 ? MotionType.Dynamic : motion;
         this.props.set(refr, prop);
         this.byLocal.set(localId, refr);
         logTrace(this, `prop ${refr.toString(16)} tracked in place, ${Math.round(distance)} units off: ${why}`);
@@ -1788,7 +2141,9 @@ export class PropService extends ClientListener {
     }
 
     // The tracked set, from the view's references: every bound view whose
-    // record is no actor's and whose base is an item (read once per binding),
+    // record is no actor's and whose reference is a row (an item or, since
+    // physics rung 4, a world body: kindOf, read once per binding), and the
+    // game-file references the server subscribed this seat to (engineRefs),
     // in the player's world or cell, within TRACK_RADIUS; the nearest
     // TRACK_MAX are tracked, with the trap bodies and (physics rung 3, B5) the
     // props kept at any distance (keptAnywhere) and the far items this seat's
@@ -1805,9 +2160,9 @@ export class PropService extends ClientListener {
         const playerWorldOrCell = ObjectReferenceEx.getWorldOrCell(player);
         const views = view.getFormViews();
         const n = views.getFormViewsArrayLength();
-        type Found = { refr: number; localId: number; formIdx: number; distance: number; cell: number; baseId: number };
+        type Found = { refr: number; localId: number; formIdx: number; distance: number; cell: number; baseId: number; world: boolean; parts: number };
         const found: Found[] = [];
-        // the items past TRACK_RADIUS, by this engine's id, for wakeFar
+        // the rows past TRACK_RADIUS (items and world bodies), by this engine's id, for wakeFar
         const far: number[] = [];
         for (let i = 0; i < n; ++i) {
             if (i === world.playerCharacterFormIdx) {
@@ -1833,7 +2188,8 @@ export class PropService extends ClientListener {
             if (form.movement && playerWorldOrCell !== 0 && form.movement.worldOrCell !== playerWorldOrCell) {
                 continue;
             }
-            if (!this.isItem(localId, form.refrId)) {
+            const kind = this.kindOf(localId, form.refrId);
+            if (kind !== "item" && kind !== "world") {
                 continue;
             }
             const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
@@ -1846,9 +2202,12 @@ export class PropService extends ClientListener {
                 continue;
             }
             const cell = refr.getParentCell();
-            found.push({ refr: form.refrId, localId, formIdx: i, distance, cell: cell ? cell.getFormID() : 0, baseId: form.baseId || 0 });
+            const body = this.worldOf(localId, form.refrId);
+            found.push({ refr: form.refrId, localId, formIdx: i, distance, cell: cell ? cell.getFormID() : 0, baseId: form.baseId || 0,
+                world: body !== undefined, parts: body !== undefined ? body.parts : 0 });
         }
-        // the game-file items the server subscribed this seat to (no view, no model: engineRefs)
+        // the game-file references the server subscribed this seat to (no
+        // view, no model: engineRefs), its items and world bodies
         this.engineRefs.forEach((rec, refrId) => {
             if (found.some((c) => c.refr === refrId)) {
                 return;
@@ -1856,8 +2215,9 @@ export class PropService extends ClientListener {
             if (playerWorldOrCell !== 0 && rec.worldOrCell !== playerWorldOrCell) {
                 return;
             }
-            if (!this.isItem(refrId, refrId)) {
-                // ADR-068 D-S3 point 4: no item, but perhaps a trap body a
+            const kind = this.kindOf(refrId, refrId);
+            if (kind !== "item" && kind !== "world") {
+                // ADR-068 D-S3 point 4: no row, but perhaps a trap body a
                 // firing moved before this session (the trap bodies' loop
                 // below takes it)
                 this.judgeTrapRecord(refrId, rec);
@@ -1873,7 +2233,9 @@ export class PropService extends ClientListener {
                 return;
             }
             const cell = refr.getParentCell();
-            found.push({ refr: refrId, localId: refrId, formIdx: -1, distance, cell: cell ? cell.getFormID() : 0, baseId: rec.baseId });
+            const body = this.worldOf(refrId, refrId);
+            found.push({ refr: refrId, localId: refrId, formIdx: -1, distance, cell: cell ? cell.getFormID() : 0, baseId: rec.baseId,
+                world: body !== undefined, parts: body !== undefined ? body.parts : 0 });
         });
         found.sort((a, b) => a.distance - b.distance);
         const chosen = found.slice(0, TRACK_MAX);
@@ -1893,7 +2255,7 @@ export class PropService extends ClientListener {
             }
             const cell = refr.getParentCell();
             const distance = ObjectReferenceEx.getDistance(playerPos, ObjectReferenceEx.getPos(refr));
-            chosen.push({ refr: refrId, localId: body.localId, formIdx: -1, distance, cell: cell ? cell.getFormID() : 0, baseId: 0 });
+            chosen.push({ refr: refrId, localId: body.localId, formIdx: -1, distance, cell: cell ? cell.getFormID() : 0, baseId: 0, world: false, parts: 0 });
         });
         const keep = new Set<number>();
         for (const c of chosen) {
@@ -1908,7 +2270,7 @@ export class PropService extends ClientListener {
                     keep.delete(c.refr);
                 }
             } else if (!prop) {
-                prop = PropService.newProp(c.refr, c.localId, c.formIdx, c.cell, c.distance, now);
+                prop = PropService.newProp(c.refr, c.localId, c.formIdx, c.cell, c.distance, now, c.world, c.parts);
                 // a follower's new prop was silent (placed within two units, Keyframed from the start): one line per track
                 logTrace(this, `prop ${c.refr.toString(16)} tracked, ${Math.round(c.distance)} units off`);
                 this.props.set(c.refr, prop);
@@ -1917,9 +2279,16 @@ export class PropService extends ClientListener {
             } else {
                 if (prop.localId !== c.localId) {
                     // the view rebound the record to another reference (a
-                    // respawned copy): the body is a new one, placed and set anew
+                    // respawned copy): the body is a new one, placed and set
+                    // anew, its class its own (the old one's drive let go
+                    // under the old id first)
+                    this.releaseImpose(prop);
                     this.byLocal.delete(prop.localId);
                     prop.localId = c.localId;
+                    prop.world = c.world;
+                    prop.parts = c.parts;
+                    prop.dropRow = undefined;
+                    prop.bonesSaid = false;
                     this.byLocal.set(c.localId, c.refr);
                     prop.placed = false;
                     prop.placing = false;
@@ -1983,7 +2352,8 @@ export class PropService extends ClientListener {
 
     // Physics rung 3 (B5): the far items this seat's own engine woke (an NPC
     // knocking clutter far from the player), read once a rescan by one
-    // readBodies with all false over the untracked items past TRACK_RADIUS
+    // readBodies with all false over the untracked rows past TRACK_RADIUS (since
+    // physics rung 4 a world body's among them, its parts' fastest read)
     // (filtered in native, rule 9: answered while awake), at most
     // ENGINE_REFS_MAX ids; an awake one in a cell this seat hosts is tracked
     // in place, so it streams as the host's wake (A7). Another seat's far
@@ -2037,25 +2407,194 @@ export class PropService extends ClientListener {
         this.claim(prop, TOUCH_DROP, now);
     }
 
-    // Whether the reference's base is an item (FormTypeEx.isItem's types),
-    // read once per binding of a local id to a record
-    private isItem(localId: number, refr: number): boolean {
+    // Physics rung 4 (ADR-071; D-PH9 A: each seat reads the class from its
+    // loaded 3D; the build spec's section A C4): what a reference is to this
+    // service, judged once per binding of a local id to a record and cached
+    // (kinds), the verdicts that may change unjudged (no reference, no create
+    // word, no 3D, no class) left uncached so a later rescan judges them:
+    //  1. a cached verdict;
+    //  2. the base's type (formType, an engine event's, spares the read); no
+    //     reference, or no base, is "none";
+    //  3. an item (FormTypeEx.isItem's types) is "item";
+    //  4. a server-made reference (an id at or above 0xff000000, the server's
+    //     own split, WorldState.cpp; DEF-4e: a world body is a game-file
+    //     reference) is "none";
+    //  5. one the server sent no create word for (engineRefs) is "none", not
+    //     cached;
+    //  6. NO_ROW_TYPES' bases are "none";
+    //  7. a trap family reference (ObjectReferenceEx.isTrapFamily) is
+    //     "trap", D-S3's own path (its ropes and triggers stay each seat's,
+    //     the spec's 0.2), its class still said for the census;
+    //  8. with the client setting propWorldBodies false, "none" (rung 3's
+    //     set), not cached;
+    //  9. no 3D is "none", not cached;
+    // 10. the class (getBodyClass): none read is "none", not cached; not
+    //     dynamic (the root's BSX kDynamic), no moving part or a walk past 64
+    //     parts is "none"; one body and none Fixed is a whole world body (the
+    //     items' route, parts 0); otherwise a world body of its parts' count.
+    //     Said once per binding: "body class <refr> <base>: BSX 0x<hex>,
+    //     dynamic yes|no, <b> bodies, <f> fixed, walk <node>:<motion>, ...:
+    //     <verdict>".
+    // The two client settings apply after the cache (withSettings), so a
+    // relaunch-files change takes effect live. The server's PropKindOf
+    // (ActionListener.cpp) is the wider side: the class is this seat's own
+    // unvalidated word (R2, rule 5), inside the server's bounds
+    private kindOf(localId: number, refr: number, formType?: number): PropKind {
         const known = this.kinds.get(localId);
-        if (known && known.refr === refr) {
-            return known.item;
+        if (known !== undefined && known.refr === refr && (known.item || known.world !== undefined)) {
+            return this.withSettings(known);
         }
         const ref = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
         if (!ref) {
             // not loaded in this game yet: decided when it is, so no cache entry
-            return false;
+            return "none";
         }
-        const base = ref.getBaseObject();
-        const item = base !== null && FormTypeEx.isItem(base.getType());
-        if (this.kinds.size > 4096) {
+        let type = formType;
+        if (type === undefined) {
+            const base = ref.getBaseObject();
+            if (!base) {
+                return "none";
+            }
+            type = base.getType();
+        }
+        if (FormTypeEx.isItem(type as FormType)) {
+            this.cacheKind(localId, refr, { item: true, world: undefined });
+            return "item";
+        }
+        if (refr >= 0xff000000) {
+            this.cacheKind(localId, refr, { item: false, world: null });
+            return "none";
+        }
+        if (!this.engineRefs.has(refr)) {
+            return "none";
+        }
+        if (NO_ROW_TYPES.indexOf(type) >= 0) {
+            this.cacheKind(localId, refr, { item: false, world: null });
+            return "none";
+        }
+        if (ObjectReferenceEx.isTrapFamily(localId)) {
+            this.cacheKind(localId, refr, { item: false, family: true, world: null });
+            if (this.worldBodies() && ref.is3DLoaded()) {
+                const trapClass = this.bodyClass(localId);
+                if (trapClass !== null) {
+                    this.sayClass(refr, ref, trapClass, "no row: a trap's");
+                }
+            }
+            return "trap";
+        }
+        if (!this.worldBodies() || !ref.is3DLoaded()) {
+            return "none";
+        }
+        const c = this.bodyClass(localId);
+        if (c === null) {
+            return "none";
+        }
+        let verdict: string;
+        let world: { parts: number } | null = null;
+        if (!c.dynamic) {
+            verdict = "no row: not dynamic";
+        } else if (c.parts.length === 0) {
+            verdict = "no row: no moving part";
+        } else if (c.cut || c.parts.length > BONES_MAX) {
+            verdict = "no row: past 64 parts";
+        } else if (c.bodies === 1 && c.fixed === 0) {
+            world = { parts: 0 };
+            verdict = "a world body";
+        } else {
+            world = { parts: c.parts.length };
+            verdict = this.bodyParts() ? `a world body of ${c.parts.length} parts` : "no row: parts off";
+        }
+        const entry = this.cacheKind(localId, refr, { item: false, world });
+        this.sayClass(refr, ref, c, verdict);
+        return this.withSettings(entry);
+    }
+
+    // a cached verdict under the two client settings: propWorldBodies false
+    // makes every world body "none", propBodyParts false every body of parts
+    private withSettings(k: KindEntry): PropKind {
+        if (k.item) {
+            return "item";
+        }
+        if (k.family === true) {
+            return "trap";
+        }
+        const w = k.world;
+        if (!w || !this.worldBodies() || (w.parts > 0 && !this.bodyParts())) {
+            return "none";
+        }
+        return "world";
+    }
+
+    // the binding's world body as kindOf cached it (undefined for no world body)
+    private worldOf(localId: number, refr: number): { parts: number } | undefined {
+        const k = this.kinds.get(localId);
+        return k !== undefined && k.refr === refr && k.world ? k.world : undefined;
+    }
+
+    // an engineRefs entry (a game-file reference: its local id is its record
+    // id) kindOf judged no row: no item, no world body, no trap's
+    private knownNoRow(refrId: number): boolean {
+        const k = this.kinds.get(refrId);
+        return k !== undefined && k.refr === refrId && !k.item && k.world === null && k.family !== true && k.trap !== true;
+    }
+
+    // the cached verdict's name for a line ("unjudged" for none yet)
+    private cachedKindName(refrId: number): string {
+        const k = this.kinds.get(refrId);
+        if (k === undefined || k.refr !== refrId || (!k.item && k.world === undefined)) {
+            return "unjudged";
+        }
+        return this.withSettings(k);
+    }
+
+    // a binding's verdict cached, merged with what the binding already holds
+    // (D-S3's trap verdict, judgeTrapRecord's); bounded as before
+    private cacheKind(localId: number, refr: number, fields: Partial<KindEntry>): KindEntry {
+        const prev = this.kinds.get(localId);
+        if (prev === undefined && this.kinds.size > 4096) {
             this.kinds.clear();
         }
-        this.kinds.set(localId, { refr, item });
-        return item;
+        const entry: KindEntry = prev !== undefined && prev.refr === refr ? prev : { refr, item: false };
+        if (fields.item !== undefined) {
+            entry.item = fields.item;
+        }
+        if (fields.family !== undefined) {
+            entry.family = fields.family;
+        }
+        if ("world" in fields) {
+            entry.world = fields.world;
+        }
+        if (fields.trap !== undefined) {
+            entry.trap = fields.trap;
+        }
+        this.kinds.set(localId, entry);
+        return entry;
+    }
+
+    // the platform's class read (getBodyClass, on the JS thread, no log of
+    // its own); null for none, never cached; an older platform reads none,
+    // said once
+    private bodyClass(localId: number): BodyClass | null {
+        try {
+            return this.sp.getBodyClass(localId);
+        } catch (e) {
+            if (!this.bodyClassSaid) {
+                this.bodyClassSaid = true;
+                logError(this, `getBodyClass unavailable on this platform: ${e}`);
+            }
+            return null;
+        }
+    }
+
+    // the class line, once per binding (kindOf): the root's BSX flags, their
+    // kDynamic bit, the bodies and the Fixed ones, each part by its node's
+    // name (or "(no name)") and motion type in walk order ("none" for no
+    // part), and the verdict
+    private sayClass(refr: number, ref: ObjectReference, c: BodyClass, verdict: string) {
+        const base = ref.getBaseObject();
+        const baseId = base ? base.getFormID() : 0;
+        const walk = c.parts.length > 0 ? c.parts.map((p) => `${p.node !== "" ? p.node : "(no name)"}:${p.motion}`).join(", ") : "none";
+        logLab(TAG, `body class ${refr.toString(16)} ${baseId.toString(16)}: BSX 0x${c.bsx.toString(16)}, dynamic ${c.dynamic ? "yes" : "no"}, ${c.bodies} bodies, ${c.fixed} fixed, walk ${walk}: ${verdict}`);
     }
 
     private untrack(prop: Prop, why: string) {
@@ -2136,7 +2675,9 @@ export class PropService extends ClientListener {
     // as the engine's own reads are, so any update context reads them, and
     // with no engine lock there (rung 2's fresh review, finding 1: an engine
     // thread can wait on this one while it holds a world lock); with islands,
-    // an awake dynamic body's island too (physics rung 3). A platform without
+    // an awake dynamic body's island too (physics rung 3); a body of several
+    // parts' bones as the wire's quadruples (physics rung 4: the platform's
+    // one walk of the whole 3D, absent for a whole body). A platform without
     // the export (an older dist) reads no body, said once
     private readBodies(localIds: number[], all: boolean, islands = false): Body[] {
         try {
@@ -2149,6 +2690,10 @@ export class PropService extends ClientListener {
                 lin: [b.lin[0], b.lin[1], b.lin[2]],
                 ang: [b.ang[0], b.ang[1], b.ang[2]],
                 island: b.island !== undefined ? b.island.map((r) => ({ localId: r.refrId, formType: r.formType })) : undefined,
+                bones: b.bones !== undefined ? b.bones.map((x): PropBone => ({
+                    pos: [x.pos[0], x.pos[1], x.pos[2]],
+                    quat: [x.quat[0], x.quat[1], x.quat[2], x.quat[3]],
+                })) : undefined,
             }));
         } catch (e) {
             if (!this.readBodiesSaid) {
@@ -2161,10 +2706,11 @@ export class PropService extends ClientListener {
 
     // One prop's body read whole (all true, the filter left alone): a
     // placement's test, the follower's segment, the grant's first sample, a
-    // hand on a resting body, an open stream's end, the take-over's jump and
-    // the "body" lines. A loaded 3D the platform reads no body for (none on its
-    // root or the root's children, or no cell world) is said once: its stream
-    // cannot run (a body of several parts is rung 4's walk)
+    // hand on a resting body, an open stream's end, the take-over's jump, a
+    // body of parts' settle at its rest and the "body" lines. A loaded 3D the
+    // platform reads no body for (since physics rung 4 none anywhere in its
+    // walk, a walk that faulted, or no cell world) is said once: its stream
+    // cannot run
     private readBody(prop: Prop): Body | undefined {
         const body = this.readBodies([prop.localId], true)[0];
         if (body === undefined && prop.loaded3D && !prop.badBodySaid) {
@@ -2180,7 +2726,10 @@ export class PropService extends ClientListener {
     // read's premise P0; rung 3's check that no body parts from its reference,
     // havok-props.md E21), at a prop's first track once any placement landed
     // and at each stream's end, on every seat. Two lines, since one with both
-    // places passes the console's 128-byte cut (InGameConsolePrinter.cpp:26-28)
+    // places passes the console's 128-byte cut (InGameConsolePrinter.cpp:26-28);
+    // a body of parts (physics rung 4) a third, its parts and the farthest
+    // one's distance from the root's place, the sample's pos (the wire's reach
+    // is measured from it)
     private logBody(prop: Prop, refr: ObjectReference) {
         const body = this.readBody(prop);
         if (body === undefined) {
@@ -2196,6 +2745,13 @@ export class PropService extends ClientListener {
         const fromRecord = record ? `its record by ${ObjectReferenceEx.getDistance(body.pos, record.pos).toFixed(1)} units` : "no record known";
         logLab(TAG, `body ${id} node (${triple(body.pos)}) (${triple(body.rot)}), motion ${body.motion}`);
         logLab(TAG, `body ${id} off its reference by ${ObjectReferenceEx.getDistance(body.pos, ref.pos).toFixed(1)} units and ${turned.toFixed(1)} degrees, ${fromRecord}`);
+        if (prop.parts > 0 && body.bones !== undefined) {
+            let farthest = 0;
+            for (const b of body.bones) {
+                farthest = Math.max(farthest, ObjectReferenceEx.getDistance(b.pos, body.pos));
+            }
+            logLab(TAG, `body ${id}: ${body.bones.length} parts, the farthest ${farthest.toFixed(1)} units from its reference`);
+        }
     }
 
     // the "body" lines asked for at `at` (propBodyReadLog on), and at the
@@ -2288,6 +2844,44 @@ export class PropService extends ClientListener {
         return s !== undefined && s["propBodyReadLog"] === true;
     }
 
+    // Physics rung 4's kill switch (D-PH9 A; .claude/rules/native.md's): the
+    // client setting propWorldBodies, on unless false. Off, no world body is
+    // a row (kindOf) and the platform's contact hook keeps rung 3's filter
+    // (applyWorldBodyContacts): rung 3's tracked set
+    private worldBodies(): boolean {
+        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+        return s === undefined || s["propWorldBodies"] !== false;
+    }
+
+    // D-PH10 B with no build: the client setting propBodyParts, on unless
+    // false. Off, no world body of several parts is a row (kindOf); a whole
+    // one still is
+    private bodyParts(): boolean {
+        const s = this.sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+        return s === undefined || s["propBodyParts"] !== false;
+    }
+
+    // Physics rung 4 (D-PH9 A): the platform's world-body contact switch
+    // (setWorldBodyContacts), on while propPhysics and propWorldBodies are,
+    // told when it changes (at the first update, and at a settings change):
+    // on, the player's contact with a body of a dynamic motion type on any
+    // layer raises propContact, so a walk into a world body's part claims
+    // it; off (the platform's default), rung 3's layers alone. The platform
+    // says "world-body contacts on" or "off"; an older one has no switch,
+    // said at each change
+    private applyWorldBodyContacts() {
+        const want = this.enabled() && this.worldBodies();
+        if (want === this.worldBodyContactsSent) {
+            return;
+        }
+        this.worldBodyContactsSent = want;
+        try {
+            this.sp.setWorldBodyContacts(want);
+        } catch (e) {
+            logError(this, `setWorldBodyContacts unavailable on this platform: ${e}`);
+        }
+    }
+
     // the reference's own place and turn: the proximity read's, and the
     // fallback where the platform reads no body
     private static read(refr: ObjectReference): Pose {
@@ -2304,6 +2898,26 @@ export class PropService extends ClientListener {
             || motion === MotionType.BoxInertia || motion === MotionType.ThinBoxInertia;
     }
 
+    // physics rung 4: a relayed sample's bones as the follower keeps them
+    // (FollowBone), none for a sample with no list (an item's, a whole
+    // body's, an older peer's) or one of another shape (untrusted input, rule
+    // 5: read in a message handler, so it never throws; the count mismatch
+    // then imposes nothing)
+    private static followBones(bones: PropBone[] | undefined): FollowBone[] {
+        if (!Array.isArray(bones)) {
+            return [];
+        }
+        const shaped = bones.every((b) => b !== null && typeof b === "object" && Array.isArray(b.pos) && b.pos.length === 3
+            && Array.isArray(b.quat) && b.quat.length === 4);
+        if (!shaped) {
+            return [];
+        }
+        return bones.map((b) => ({
+            pos: [b.pos[0], b.pos[1], b.pos[2]],
+            quat: [b.quat[0], b.quat[1], b.quat[2], b.quat[3]],
+        }));
+    }
+
     // whether two transforms differ past the thresholds (any axis of the turn)
     private static apart(a: Pose, b: Pose, units: number, degrees: number): boolean {
         if (ObjectReferenceEx.getDistance(a.pos, b.pos) > units) {
@@ -2317,7 +2931,8 @@ export class PropService extends ClientListener {
         return false;
     }
 
-    private static newProp(refr: number, localId: number, formIdx: number, cell: number, distance: number, now: number): Prop {
+    private static newProp(refr: number, localId: number, formIdx: number, cell: number, distance: number, now: number,
+        world: boolean, parts: number): Prop {
         return {
             refr,
             localId,
@@ -2333,7 +2948,10 @@ export class PropService extends ClientListener {
             effective: undefined,
             motionAsked: undefined,
             loaded3D: false,
+            world,
+            parts,
             lastSent: undefined,
+            dropRow: undefined,
             lastSendAt: 0,
             sentHeld: false,
             awakeAt: 0,
@@ -2349,6 +2967,12 @@ export class PropService extends ClientListener {
             lastAppliedLog: 0,
             lastClaimAt: 0,
             restAt: 0,
+            imposing: false,
+            imposed: 0,
+            imposeSkipped: 0,
+            imposeCalled: false,
+            restImposed: false,
+            bonesSaid: false,
             bodyLogDue: 0,
             bodyTracked: false,
             badBodySaid: false,
@@ -2595,7 +3219,7 @@ export class PropService extends ClientListener {
         const player = this.sp.Game.getPlayer();
         const distance = player ? ObjectReferenceEx.getDistance(ObjectReferenceEx.getPos(player), ObjectReferenceEx.getPos(ref)) : 0;
         const cell = ref.getParentCell();
-        const prop = PropService.newProp(refr, body.localId, -1, cell ? cell.getFormID() : 0, distance, now);
+        const prop = PropService.newProp(refr, body.localId, -1, cell ? cell.getFormID() : 0, distance, now, false, 0);
         prop.trap = true;
         prop.placed = !atRecord;
         prop.placedAt = now;
@@ -2613,7 +3237,7 @@ export class PropService extends ClientListener {
     // from this engine's copy is a trap body a firing moved before this
     // session (a restart, a late join): taken, and placed at its record when
     // tracked ("placed at its recorded rest"). Judged once per binding, as
-    // isItem's verdict is; a body this seat already knows is its firing's. A
+    // kindOf's verdict is; a body this seat already knows is its firing's. A
     // trap's trigger is none (trapBodyRole), whatever its record says (a world
     // saved while a build before playtest 48's fix streamed one)
     private judgeTrapRecord(refrId: number, rec: { pos: NiPoint3 }) {
@@ -2631,7 +3255,9 @@ export class PropService extends ClientListener {
         const off = ObjectReferenceEx.getDistance(ObjectReferenceEx.getPos(refr), rec.pos);
         const moved = off > TRAP_MOVED_UNITS
             && this.trapBodyRole(refrId, refrId, `${Math.round(off)} units from its record`) === "body";
-        this.kinds.set(refrId, { refr: refrId, item: false, trap: moved });
+        // merged with kindOf's verdict on the binding (physics rung 4), which
+        // this one never replaces
+        this.cacheKind(refrId, refrId, { trap: moved });
         if (moved && this.addTrapBody(refrId, refrId)) {
             logTrace(this, `trap body ${refrId.toString(16)}: its record rests ${Math.round(off)} units from this engine's copy`);
         }
@@ -2652,9 +3278,14 @@ export class PropService extends ClientListener {
     private budget = SEND_BUDGET_BURST;
     private budgetAt = 0;
     private readBodiesSaid = false;
-    // each local id's base verdict, by the record it is bound to (trap: D-S3's
-    // verdict on a family reference's record, for a reference no item)
-    private readonly kinds = new Map<number, { refr: number; item: boolean; trap?: boolean }>();
+    // each local id's verdict, by the record it is bound to (KindEntry)
+    private readonly kinds = new Map<number, KindEntry>();
+    // physics rung 4: getBodyClass and imposeBodies or releaseBodies missing
+    // from this platform, said once each; the world-body contact switch as
+    // last told to the platform (applyWorldBodyContacts)
+    private bodyClassSaid = false;
+    private imposeSaid = false;
+    private worldBodyContactsSent: boolean | undefined = undefined;
     private readonly echoSaid = new Set<number>();
     // the controller's contacts since the last update, by local id
     private contacts: Array<{ localId: number; layer: number; motionType: number }> = [];

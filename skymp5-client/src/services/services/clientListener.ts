@@ -143,7 +143,11 @@ declare module "skyrimPlatform" {
     // controller's contact callback, Address Library 79131), one event per
     // reference per 250 ms: the reference's form id, the body's collision
     // layer (4 clutter, 10 props) and its motion type (4 Keyframed, the body
-    // of a prop this seat does not simulate). No game call in its handler.
+    // of a prop this seat does not simulate). Since ADR-071 rung 4, while
+    // setWorldBodyContacts(true) holds, also a body of a dynamic motion type
+    // (1, 2, 3 or 6) on any other layer (a world body's part, 29 clutter
+    // large, 32 a corpse's dead biped); never the player's own reference. No
+    // game call in its handler.
     interface PropContactEvent {
         refrId: number;
         layer: number;
@@ -343,8 +347,21 @@ declare module "skyrimPlatform" {
     // queues the take-over's velocities to the same body on the main thread
     // (true when queued) and its task logs "[verb:prop-physics] velocity set
     // on <id>" or "velocity not set on <id>" with why. Definitions.txt
-    // carries the same
-    interface BodyRead { formId: number; awake: boolean; motion: number; pos: number[]; rot: number[]; lin: number[]; ang: number[] }
+    // carries the same.
+    // Since ADR-071 rung 4 the bodies are one walk of the whole 3D in the
+    // scene graph's order (the node's own body, then its children's in array
+    // order, depth first): a whole reference (one body, not Fixed: an item, a
+    // trap rock) answers its one body at any depth, one with no part (an
+    // all-Fixed static) its first body, motion 5, and one with a part (a body
+    // that is not Invalid, Fixed or Character: a sign's boards on their Fixed
+    // anchor) answers awake when any part is, motion, lin and ang the fastest
+    // part's, and bones, every part's pose in walk order (BodyBone), absent
+    // when the walk passed 64 parts, 512 nodes or 32 levels; pos and rot the
+    // root's either way; an id whose walk faulted is left out too (said in
+    // the platform's log). setBodyVelocity sets a whole body's alone: its
+    // task refuses one of several bodies, "velocity not set on <id>: a body
+    // of several parts (imposeBodies drives it)"
+    interface BodyRead { formId: number; awake: boolean; motion: number; pos: number[]; rot: number[]; lin: number[]; ang: number[]; bones?: BodyBone[] }
     function readBodies(formIds: number[], all: boolean): BodyRead[];
     function setBodyVelocity(formId: number, lin: number[], ang: number[]): boolean;
     // physics rung 3 (the island's claim): with islands true an awake body of
@@ -358,6 +375,59 @@ declare module "skyrimPlatform" {
     interface BodyIslandRead extends BodyRead { island?: BodyRef[] }
     function readBodies(formIds: number[], all: boolean, islands: boolean): BodyIslandRead[];
     function setImpulseCauseRule(on: boolean): boolean;
+    // thuum docs/DECISIONS.md ADR-071 rung 4 (D-PH9 A: each seat reads the
+    // class from its loaded 3D): one part of a reference's 3D, a rigid body
+    // whose motion type is not Invalid, Fixed or Character (1, 2, 3, 4 or 6):
+    // node its node's name ("" for none), motion its motion type
+    interface BodyPart { node: string; motion: number }
+    // a reference's class as this seat's loaded 3D has it: bsx the 3D root's
+    // BSX flags (0 with no block), dynamic their kDynamic bit (1 << 6),
+    // bodies every rigid body under the root, fixed the Fixed ones, parts
+    // each part in walk order (the scene graph's order: the node's own body,
+    // then its children's in array order, depth first), cut a walk past 64
+    // parts, 512 nodes or 32 levels (its counts partial). The client's
+    // verdict: not dynamic, no part or cut is no row; one body and none Fixed
+    // is a whole world body (the items' route); otherwise a world body of
+    // parts.length parts
+    interface BodyClass { bsx: number; dynamic: boolean; bodies: number; fixed: number; parts: BodyPart[]; cut: boolean }
+    // the class read on the JS thread (the root's BSX block, then the walk),
+    // no task, no log of its own; null with no reference, no 3D or a faulted
+    // walk (never cache a null)
+    function getBodyClass(formId: number): BodyClass | null;
+    // D-PH10 A: one part's pose, readBodies' bones and imposeBodies' input:
+    // pos the body origin's world position in game units, quat its rotation
+    // as Havok keeps it, [x, y, z, w], unit within 0.01; a sample's bones
+    // within 512 of its pos (the wire's reach)
+    interface BodyBone { pos: number[]; quat: number[] }
+    // the follower's impose, route K3 under D-PH26 A: the newest poses for a
+    // reference's parts, bone i for this seat's walk's part i, stored on the
+    // JS thread and laid on the parts by one drain on the main thread (SKSE's
+    // UI task queue, never waited for): with rest, or a part more than 64
+    // units from its pose, every part placed outright ("[verb:prop-physics]
+    // impose <id> placed: part <i> <d> units off" for the latter, at most
+    // once a second; a rest then drops the form), otherwise every part driven
+    // by velocity toward its pose over its world's step, so each part stays a
+    // live Havok body; a count other than the walk's parts imposes nothing
+    // ("impose <id> skipped: <n> poses against <m> parts here", once), a form
+    // with no 3D is dropped ("impose <id>: no reference with 3D, dropped");
+    // the first drain logs "impose drain on thread <tid>, Main's <tid>". True
+    // when stored; false for 0, the player's own id, no pose, more than 64, a
+    // value not a number, a quat off unit length by more than 0.01, or 64
+    // forms already held; a bone of another shape throws
+    function imposeBodies(formId: number, bones: BodyBone[], rest: boolean): boolean;
+    // the form's stored poses dropped, so the drain lays no more on it (a
+    // take-over, a quiet stream, a follow's end); under K3 nothing else, the
+    // parts' motion types never changed; true when poses were held, false
+    // for 0, the player's own id or none held; a table operation on the JS
+    // thread, no game call
+    function releaseBodies(formId: number): boolean;
+    // D-PH9 A (the native kill switch): the contact hook's world-body switch,
+    // off by default (rung 3's filter: layers 4 and 10 at any motion); on, the
+    // player's contact with a body of a dynamic motion type on any layer
+    // raises propContact too; the client setting propWorldBodies' mirror;
+    // logs "[verb:prop-physics] world-body contacts on" or "off"; stored with
+    // no game call; true
+    function setWorldBodyContacts(on: boolean): boolean;
     // thuum docs/DECISIONS.md D-W1 A and D-C2 A (a trigger volume's entry is
     // its presser's owner's; docs/research/fifty-fixes-2026-11-07.md 1(b)):
     // the gate's presser rule, off by default in the platform so an older

@@ -18,11 +18,20 @@ import { NiPoint3 } from "./movement";
 // times feed the offset alone; no segment is timed by them. Past the newest
 // sample the copy holds there and the frame is counted dry (ADR-058 decision
 // 3, "Nothing predicts"); an asleep sample, the stream's rest, applies when the
-// render clock reaches it, never at its arrival.
+// render clock reaches it, never at its arrival. Since physics rung 4 a sample
+// also carries a world body's parts (bones), each step names the pair the
+// render clock is in and how far through it (from, target, alpha), and the
+// parts' poses between the two are lerpBones'.
+
+// One part's pose in a sample (thuum ADR-071 rung 4, D-PH10 A; PropTransform
+// v2's bones, wire-schema skymp.rs PropBone): pos the body origin's world
+// position in game units, quat its rotation as Havok keeps it, [x, y, z, w]
+export type FollowBone = { pos: NiPoint3; quat: [number, number, number, number] };
 
 // One relayed sample as the follower keeps it: PropTransform v2's fields (tMs
 // the owner's clock at its read, lin game units a second, ang radians a
-// second)
+// second); bones a world body's parts in the owner's walk order (rung 4),
+// empty for a body of one part
 export type FollowSample = {
     epoch: number;
     seq: number;
@@ -33,6 +42,7 @@ export type FollowSample = {
     ang: NiPoint3;
     asleep: boolean;
     held: boolean;
+    bones: FollowBone[];
 };
 
 // The seat a sample came from, as the word this seat holds at the sample's
@@ -47,13 +57,20 @@ export type FollowSeat = number | undefined;
 // of that segment on the owner's clock (0 or less once the render clock passed
 // it), whether this update is a dry frame (the render clock past the newest
 // awake sample: the copy holds there), and whether the render clock reached
-// the stream's asleep sample at this update (the rest applies now, once)
+// the stream's asleep sample at this update (the rest applies now, once).
+// Physics rung 4 (a body of several parts, imposed every update): from, the
+// start of the pair the render clock is in (the newest once the render clock
+// is past it; undefined before the first sample), and alpha, how far the
+// render clock is from `from` to `target` on the owner's clock, 0 to 1 (1
+// when the two are one sample)
 export type FollowStep = {
     target: FollowSample;
     fresh: boolean;
     remainingMs: number;
     dry: boolean;
     rested: boolean;
+    from: FollowSample | undefined;
+    alpha: number;
 };
 
 // The samples a stream keeps, and the arrivals its offset is the least of
@@ -68,6 +85,81 @@ export const FOLLOW_OFFSET_SAMPLES = 16;
 export const seqNewer = (a: number, b: number): boolean => {
     const d = (((a - b) % 65536) + 65536) % 65536;
     return d >= 1 && d <= 32767;
+};
+
+// Physics rung 4 (D-PH10 A, the follower's impose): the parts' poses between
+// two samples at alpha (0 at a, 1 at b): each position linear, each rotation
+// the normalized linear blend of the two quaternions, b's sign turned when
+// the two lie in opposite hemispheres so the blend takes the short way round
+// (q and -q are one rotation); undefined when the two carry a different
+// number of parts. The blend's angular speed is not constant across a
+// segment, which a 100 ms segment does not show (accessible: Blow,
+// "Understanding Slerp, Then Not Using It", The Inner Product, 2004;
+// foundational: Shoemake, "Animating Rotation with Quaternion Curves",
+// SIGGRAPH 1985)
+export const lerpBones = (a: FollowBone[], b: FollowBone[], alpha: number): FollowBone[] | undefined => {
+    if (a.length !== b.length) {
+        return undefined;
+    }
+    const t = Math.min(1, Math.max(0, alpha));
+    const out: FollowBone[] = [];
+    for (let i = 0; i < a.length; ++i) {
+        const p = a[i];
+        const q = b[i];
+        const pos: NiPoint3 = [
+            p.pos[0] + (q.pos[0] - p.pos[0]) * t,
+            p.pos[1] + (q.pos[1] - p.pos[1]) * t,
+            p.pos[2] + (q.pos[2] - p.pos[2]) * t,
+        ];
+        const dot = p.quat[0] * q.quat[0] + p.quat[1] * q.quat[1] + p.quat[2] * q.quat[2] + p.quat[3] * q.quat[3];
+        const s = dot < 0 ? -t : t;
+        const x = p.quat[0] * (1 - t) + q.quat[0] * s;
+        const y = p.quat[1] * (1 - t) + q.quat[1] * s;
+        const z = p.quat[2] * (1 - t) + q.quat[2] * s;
+        const w = p.quat[3] * (1 - t) + q.quat[3] * s;
+        const n = Math.sqrt(x * x + y * y + z * z + w * w);
+        // a zero blend needs two opposite unit quaternions, which the sign
+        // turn excludes; b's own then
+        const quat: [number, number, number, number] = n > 0 && isFinite(n)
+            ? [x / n, y / n, z / n, w / n]
+            : [q.quat[0], q.quat[1], q.quat[2], q.quat[3]];
+        out.push({ pos, quat });
+    }
+    return out;
+};
+
+// Physics rung 4 (the owner's stream, its dead band for a body of several
+// parts): whether two sets of the parts' poses differ past `units` (any
+// part's position, game units) or `degrees` (any part's turn: the angle
+// between its two rotations, 2 acos |q1 . q2| for unit quaternions;
+// accessible: Eigen's QuaternionBase::angularDistance; foundational: Huynh,
+// "Metrics for 3D Rotations: Comparison and Analysis", Journal of
+// Mathematical Imaging and Vision 35, 2009); a different number of parts, or
+// a quaternion of no length, is apart
+export const bonesApart = (a: FollowBone[], b: FollowBone[], units: number, degrees: number): boolean => {
+    if (a.length !== b.length) {
+        return true;
+    }
+    for (let i = 0; i < a.length; ++i) {
+        const p = a[i];
+        const q = b[i];
+        const dx = p.pos[0] - q.pos[0];
+        const dy = p.pos[1] - q.pos[1];
+        const dz = p.pos[2] - q.pos[2];
+        if (Math.sqrt(dx * dx + dy * dy + dz * dz) > units) {
+            return true;
+        }
+        const np = Math.sqrt(p.quat[0] * p.quat[0] + p.quat[1] * p.quat[1] + p.quat[2] * p.quat[2] + p.quat[3] * p.quat[3]);
+        const nq = Math.sqrt(q.quat[0] * q.quat[0] + q.quat[1] * q.quat[1] + q.quat[2] * q.quat[2] + q.quat[3] * q.quat[3]);
+        if (!(np > 0) || !(nq > 0)) {
+            return true;
+        }
+        const dot = Math.abs(p.quat[0] * q.quat[0] + p.quat[1] * q.quat[1] + p.quat[2] * q.quat[2] + p.quat[3] * q.quat[3]) / (np * nq);
+        if ((2 * Math.acos(Math.min(1, dot)) * 180) / Math.PI > degrees) {
+            return true;
+        }
+    }
+    return false;
 };
 
 // whether sample a comes before b in a stream: by epoch, then by sequence
@@ -174,6 +266,9 @@ export class PropFollow {
         }
         const passed = i >= buf.length;
         const target = passed ? newest : buf[i];
+        const from = passed ? newest : i > 0 ? buf[i - 1] : undefined;
+        const segmentMs = from !== undefined ? target.tMs - from.tMs : 0;
+        const alpha = from === undefined ? 0 : segmentMs > 0 ? Math.min(1, Math.max(0, (render - from.tMs) / segmentMs)) : 1;
         const fresh = this.target === undefined || this.target.epoch !== target.epoch || this.target.seq !== target.seq;
         this.target = target;
         const dry = passed && !newest.asleep;
@@ -188,7 +283,7 @@ export class PropFollow {
         if (keepFrom > 0) {
             buf.splice(0, keepFrom);
         }
-        return { target, fresh, remainingMs: target.tMs - render, dry, rested };
+        return { target, fresh, remainingMs: target.tMs - render, dry, rested, from, alpha };
     }
 
     // Whether the stream is live on the render clock: its newest sample awake

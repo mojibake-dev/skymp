@@ -1,4 +1,4 @@
-import { Actor, CellAttachDetachEvent, CombatEvent, DeathEvent, ObjectReference, Spell } from "skyrimPlatform";
+import { Actor, CellAttachDetachEvent, CombatEvent, DeathEvent, MagicEffect, ObjectReference, Spell } from "skyrimPlatform";
 import { logError, logLab, logTrace } from "../../logging";
 import { Movement } from "../../sync/movement";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
@@ -581,6 +581,21 @@ export class PuppetService extends ClientListener {
     // sits on AtronachFlameRace 0x131f5; none of its five effects has a hit
     // shader, and its cloak effect AbAtronachCloakFire 0x64459 has no look at
     // all; the flames are AbFXAtronachFlame 0x60da1's hit effect art.
+    // Train 53, R-V4 (playtest 52's golden fire on Movarth's Lair's vampires):
+    // an ability's effect plays on the host's actor only while its conditions
+    // hold there, and SunAffectsNPCVampires' _SunDamageNPC (SPID-given to every
+    // Vampire-keyword NPC) burns with FireCloakFXShader 0x2acd8 only outdoors,
+    // by day, in combat and under half health, so the watcher's puppet burned
+    // in a cave where the host showed nothing. The host's answer would be the
+    // R2 shape (ADR-073 decision 4: a condition is answered by the owner of the
+    // state it reads), but no record of it reaches this seat: the server's
+    // runningEffects and its MagicEffects message hold only the effects the
+    // server itself applied (MpActor::ApplyEffects, from self casts, landed
+    // hits, poisons and bonds; ReapplyMagicEffects for the old saves), and
+    // HostedActorState carries no effect. So an effect
+    // that carries conditions (abilityLooks, effectConditioned) is skipped,
+    // said once per effect, and only an unconditioned constant effect's look
+    // is played, as before
     private playCloakLook(localId: number, ac: Actor): void {
         if (!this.cloakLook || this.cloakLooks.has(localId)) {
             return;
@@ -671,6 +686,9 @@ export class PuppetService extends ClientListener {
                     if (!effect || effect.getCastingType() !== 0 || effect.getDeliveryType() !== 0) {
                         continue;
                     }
+                    if (this.effectConditioned(spell, j, effect)) {
+                        continue;
+                    }
                     const shader = effect.getHitShader();
                     if (shader && !seenForms.has(shader.getFormID())) {
                         seenForms.add(shader.getFormID());
@@ -686,6 +704,62 @@ export class PuppetService extends ClientListener {
             }
         }
         return out;
+    }
+
+    // R-V4: whether the ability's effect at the index carries conditions,
+    // either on the spell's effect item or on the effect's own record (the
+    // engine checks both), read through powerofthree's Papyrus Extender (the
+    // essentials layer's powerofthree-s-papyrus-extender-6.4.0):
+    // PO3_SKSEFunctions.GetConditionList(form, index) returns the condition
+    // list as strings, empty when the form has none (v6.4.0
+    // src/Papyrus/Functions/Form/Functions.cpp:119-135; its
+    // CONDITION::GetConditions, src/Papyrus/Util/ConditionParser.cpp:1520-1537,
+    // takes a magic item's effects[index] conditions and an effect's own). The
+    // records never change, so each answer is kept by ability and index. A
+    // seat without the reader (the call throws, or answers no array) takes
+    // every effect as conditioned and plays no look: a look the host may not
+    // show is the fault R-V4 fixes, so the unknown case falls on its side,
+    // said once. HYPOTHESIS until the lab: the platform's callNative returns
+    // the Papyrus string[] as a JavaScript array (the array results of fork
+    // c1fd8fc7)
+    private effectConditioned(spell: Spell, index: number, effect: MagicEffect): boolean {
+        const abilityId = spell.getFormID();
+        const key = `${abilityId}:${index}`;
+        const known = this.conditionedEffects.get(key);
+        if (known !== undefined) {
+            return known;
+        }
+        let onItem: number | undefined;
+        let onEffect: number | undefined;
+        let readError = "";
+        try {
+            onItem = PuppetService.conditionCount(this.sp.callNative("PO3_SKSEFunctions", "GetConditionList", undefined, spell, index));
+            onEffect = PuppetService.conditionCount(this.sp.callNative("PO3_SKSEFunctions", "GetConditionList", undefined, effect, 0));
+        } catch (e) {
+            readError = String(e).slice(0, 64);
+        }
+        const effectId = effect.getFormID();
+        let conditioned: boolean;
+        if (onItem === undefined || onEffect === undefined) {
+            conditioned = true;
+            if (!this.conditionReaderSaid) {
+                this.conditionReaderSaid = true;
+                logError(this, `cloak look: PO3_SKSEFunctions.GetConditionList ${readError ? `threw (${readError})` : "answered no array"} on effect ${effectId.toString(16)} of ability ${abilityId.toString(16)}: every ability effect is taken as conditioned and no look is played`);
+            }
+        } else {
+            conditioned = onItem + onEffect > 0;
+            if (conditioned && !this.conditionedSaid.has(effectId)) {
+                this.conditionedSaid.add(effectId);
+                logTrace(this, `cloak look: effect ${effectId.toString(16)} of ability ${abilityId.toString(16)} skipped as conditioned (${onItem} condition(s) on the spell's effect, ${onEffect} on the effect): the host's engine answers them, and no record of its answer reaches this seat`);
+            }
+        }
+        this.conditionedEffects.set(key, conditioned);
+        return conditioned;
+    }
+
+    // a GetConditionList answer's length; undefined for anything but an array
+    private static conditionCount(raw: unknown): number | undefined {
+        return Array.isArray(raw) ? raw.length : undefined;
     }
 
     private forget(localId: number) {
@@ -755,6 +829,11 @@ export class PuppetService extends ClientListener {
     // the looks playing on each puppet, by local id (an empty list once the
     // lists were read for the current 3D)
     private readonly cloakLooks = new Map<number, CloakLook[]>();
+    // R-V4: each ability effect's verdict by "<ability>:<index>", the effects
+    // whose skip was said, and whether a missing reader was said
+    private readonly conditionedEffects = new Map<string, boolean>();
+    private readonly conditionedSaid = new Set<number>();
+    private conditionReaderSaid = false;
     // The Skyrim Platform API reads an effect's hit effect art
     // (MagicEffect.getHitEffectArt) but plays only a VisualEffect (an RFCT
     // wrapping an art, a shader or both), and nothing maps an art to one; the

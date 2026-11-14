@@ -399,7 +399,13 @@ impl Cells {
     /// `player` hosts `cell` from `now_ms` at the next epoch; any follow into
     /// the cell ends with the grant.
     fn grant(&mut self, player: u32, cell: u32, now_ms: u64) -> Decision {
-        self.follows.retain(|_, f| f.cell != cell);
+        // a grant into the cell ends its follow and margin rows (the host
+        // simulates them now); a dialogue claim outranks the host (ADR-052)
+        // and stays, whoever the grant names (playtest 36, 2026-10-28: a
+        // regrant of 9732 to the claimant itself dropped its claim on Sven,
+        // and its release met E_CLAIM_NONE; to a third player it would have
+        // flipped the actor away mid-dialogue)
+        self.follows.retain(|_, f| f.cell != cell || f.kind == FollowKind::Claim);
         self.first_grant_ms.get_or_insert(now_ms);
         let state = self.cells.entry(cell).or_default();
         let epoch = state.epoch.saturating_add(1);
@@ -1353,12 +1359,46 @@ mod tests {
         // a claimant that has not loaded the cell gets nothing
         const EAST: u32 = 0x9733;
         assert_eq!(c.claim(SVEN, C2, EAST, 4_000), ClaimVerdict::Unloaded);
-        // a grant into the cell ends a claim (the cell stays the policy)
+        // a grant into the cell keeps a claim for its lease (ADR-052 as amended
+        // 2026-10-28: playtest 36's regrant of 9732 to the claimant dropped its
+        // claim on Sven and its release met E_CLAIM_NONE; to a third player the
+        // actor would have flipped away mid-dialogue). Here c1 leaves and the
+        // cell goes to c2, the claimant: the claim stands and its release finds it
         assert_eq!(c.claim(SVEN, C2, RIVERWOOD, 5_000), ClaimVerdict::Granted);
         let _ = c.unloaded(C1, RIVERWOOD, 5_100);
         let regrant = c.tick(5_100 + GRACE_MS + 1);
         assert!(regrant.iter().any(|d| matches!(d, Decision::Grant { player: C2, cell: RIVERWOOD, .. })));
+        assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
+        assert!(c.release_claim(SVEN, C2));
         assert_eq!(c.claims(), vec![]);
+    }
+
+    #[test]
+    fn a_grant_to_another_player_keeps_a_dialogue_claim_until_its_lease() {
+        // the third-player case: c2 holds Sven for a dialogue in c1's cell;
+        // c1 leaves and the cell goes to c3 (the lower round trip; c2 stays
+        // in the cell, since its own unload ends its claim, ADR-052 decision
+        // 2); Sven stays c2's for the lease, the lease still ends it, and c3
+        // simulates him then
+        const SVEN: u32 = 0x13491;
+        const C3: u32 = 0xff00_0002;
+        let mut c = both_in_reach();
+        assert_eq!(c.loaded(C1, RIVERWOOD, 1_000), vec![Decision::Grant { player: C1, cell: RIVERWOOD, epoch: 1 }]);
+        assert_eq!(c.loaded(C2, RIVERWOOD, 1_100), vec![]);
+        assert_eq!(c.loaded(C3, RIVERWOOD, 1_200), vec![]);
+        let _ = c.reach(C3, &[RIVERWOOD], 1_250);
+        c.rtt(C2, 80);
+        c.rtt(C3, 20);
+        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, 2_000), ClaimVerdict::Granted);
+        let _ = c.unloaded(C1, RIVERWOOD, 2_100);
+        let regrant = c.tick(2_100 + GRACE_MS + 1);
+        assert!(regrant.iter().any(|d| matches!(d, Decision::Grant { player: C3, cell: RIVERWOOD, .. })), "{regrant:?}");
+        assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
+        let ended = c.tick(2_000 + CLAIM_LEASE_MS);
+        assert!(ended.iter().any(|d| matches!(d, Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD })), "{ended:?}");
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C3);
     }
     #[test]
     fn a_claim_travels_with_its_actor_across_cells() {

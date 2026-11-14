@@ -319,6 +319,28 @@ constexpr QuestRowName kQuestRows[] = { { "Quest", "SetCurrentStageID",
 constexpr std::pair<const char*, const char*> kGlobalSetRow{ "GlobalVariable",
                                                              "SetValue" };
 
+// V-scene (thuum ADR-073, D-A2 C: the stage's cause seat owns a scene a
+// fragment starts; playtest 52's ritual scene 5dba7, started and stopped on
+// the guest that applied the relayed stage 185, read R-V1 of train 53): the
+// two natives that start a scene (FunctionsDump.txt: Scene's `ForceStart()`
+// and `Start()`, not latent, no return), whose call inside another player's
+// acting scope rooted at a relay (ActingScope::RootKind::kRelayed: a stage,
+// a start or a stop another seat set, applied here, and everything chained
+// inside it) is skipped here (OnCall's step (0)), this seat not the stage's
+// cause seat; the cause seat runs the fragment natively and starts the scene
+// there. A scope rooted at a trigger entry (kTrigger), its chained stages'
+// included, is left alone: this seat's engine set those stages for the
+// presser (defaultStartSceneTrigScript; MS13's 38386 stage 10). No table row
+// holds them (NativeRows.inc), so InstallHooks binds the game module's
+// IFunction of each by class and name, written before the dispatch hook
+// attaches and never after
+constexpr std::pair<const char*, const char*> kSceneStartNatives[] = {
+  { "Scene", "Start" },
+  { "Scene", "ForceStart" }
+};
+std::array<const RE::BSScript::IFunction*, std::size(kSceneStartNatives)>
+  g_sceneStarts{};
+
 // thuum train 52, Fix 2 (the plan's section 2; ADR-068 decision 6, D-S2 B,
 // D-H1 B): the row whose call inside this seat's own player's effect may
 // place a local helper, PlaceAtMe (FunctionsDump.txt: `ObjectReference
@@ -465,7 +487,8 @@ std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
 
 // rung 5: the acting scope's swaps in the frames of natives the table does
 // not hold (a PlayerRef property is a 0x14 self on any native: the plan's
-// finding 5), raised at the flush as one row, "untabled native (acting)"
+// finding 5), and since train 53 its skipped scene starts (V-scene), raised
+// at the flush as one row, "untabled native (acting)"
 std::atomic<std::uint32_t> g_actingUntabled{ 0 };
 
 // an everyone row's selves in one window, the flip's bound (kSelvesPerRow)
@@ -704,6 +727,89 @@ CallArg ReadArg(const RE::BSScript::Variable& v,
     }
   }
   return arg;
+}
+
+// train 53's R-V2 (playtest 52: "ff000000's own Actor.RemoveSpell 0 (from
+// QF_VC01_0005C625.Fragment_7)", refused by the server): ReadArg's null
+// object argument, an object whose handle names no plain form the form
+// table knows (the client's "None"), its raw handle logged once per site
+// (the calling script and its handler, the native, the argument's index),
+// every later read at the site counted and said at the census's flush with
+// the last handle. HYPOTHESIS H-NA1: a property's handle that failed to load
+// at the save's restore reads 0x0000FFFF00000000, the empty handle LoadHandle
+// (Address Library 53523) writes on failure (thuum docs/research/
+// adr065-papyrus-state-2026-11-03.md:138-139, a decompile). Taken only
+// on a null read, under one mutex; at most kMaxSites sites, the rest counted
+// as one
+namespace NullArgs {
+constexpr std::size_t kMaxSites = 64;
+
+struct Site
+{
+  std::uint32_t later = 0;
+  RE::VMHandle last = 0;
+};
+
+struct
+{
+  std::map<std::string, Site> sites;
+  std::uint32_t others = 0;
+  std::mutex m;
+} g_table;
+
+void Note(std::size_t row, std::uint32_t index, const std::string& caller,
+          const std::string& handler, RE::VMHandle handle)
+{
+  std::string site =
+    fmt::format("{}.{} argument {} from {}.{}", kRows[row].cls, kRows[row].fn,
+                index, caller, handler);
+  {
+    std::lock_guard<std::mutex> lock(g_table.m);
+    const auto it = g_table.sites.find(site);
+    if (it != g_table.sites.end()) {
+      ++it->second.later;
+      it->second.last = handle;
+      return;
+    }
+    if (g_table.sites.size() >= kMaxSites) {
+      ++g_table.others;
+      return;
+    }
+    g_table.sites.emplace(site, Site{});
+  }
+  logger::info("[verb:scripts] {}: a null object argument, its handle {:x} "
+               "naming no plain form the form table knows (R-V2; later ones "
+               "at this site counted)",
+               site, handle);
+}
+
+// the window's counts, one line per site that read another null, and one
+// for the sites past the bound
+void Flush()
+{
+  std::vector<std::pair<std::string, Site>> moved;
+  std::uint32_t others = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_table.m);
+    for (auto& [site, entry] : g_table.sites) {
+      if (entry.later != 0) {
+        moved.emplace_back(site, entry);
+        entry.later = 0;
+      }
+    }
+    others = std::exchange(g_table.others, 0);
+  }
+  for (const auto& [site, entry] : moved) {
+    logger::info("[verb:scripts] {}: {} more null object argument(s) in {} "
+                 "s, the last handle {:x} (R-V2)",
+                 site, entry.later, kFlushMs / 1000, entry.last);
+  }
+  if (others != 0) {
+    logger::info("[verb:scripts] {} null object argument(s) in {} s at sites "
+                 "past the first {} (R-V2)",
+                 others, kFlushMs / 1000, kMaxSites);
+  }
+}
 }
 
 // the calling script and its handler: the frame below the native's own
@@ -1003,6 +1109,9 @@ std::array<LineSlots, kRowCount> g_skipLines{};
 // 2's call on a helper, on the same slots and bound
 std::array<LineSlots, kRowCount> g_effectLines{};
 std::array<LineSlots, kRowCount> g_helperLines{};
+// train 53's V-scene: the skipped scene starts' lines, by the scene's form
+// id, on the same slots and bound
+LineSlots g_sceneLines{};
 
 // true when the self takes a free slot of its row's window, its line due;
 // false for a self already logged this window or past the bound
@@ -1204,6 +1313,9 @@ std::optional<QueuedCall> CallFromFrame(
   call.latent = info.latent;
   call.stackId = stack->stackID;
   call.argCount = info.params;
+  // the caller named first, so R-V2's line names the site of a null object
+  // argument (NullArgs)
+  NameCaller(top->previousFrame, call.caller, call.handler);
   if (info.params > 0) {
     if (page == kNoPage) {
       page = top->GetPageForFrame();
@@ -1213,11 +1325,14 @@ std::optional<QueuedCall> CallFromFrame(
       return std::nullopt;
     }
     for (std::uint32_t i = 0; i < info.params; ++i) {
-      call.args[i] =
-        ReadArg(top->GetStackFrameVariable(i, page), info.types[i]);
+      const RE::BSScript::Variable& v = top->GetStackFrameVariable(i, page);
+      call.args[i] = ReadArg(v, info.types[i]);
+      const RE::BSScript::Object* object = ObjectOf(v);
+      if (object && call.args[i].kind == CallArg::Kind::Null) {
+        NullArgs::Note(row, i, call.caller, call.handler, object->GetHandle());
+      }
     }
   }
-  NameCaller(top->previousFrame, call.caller, call.handler);
   const RE::TESObjectREFR* callerRef = CallerRefOf(top->previousFrame);
   call.callerSelf = callerRef ? callerRef->formID : 0;
   return call;
@@ -1969,6 +2084,36 @@ std::uint32_t SwapPlayer(const RE::BSScript::IFunction* fn,
   return swapped;
 }
 
+// V-scene's test: one of the bound scene starts (kSceneStartNatives), asked
+// only on a stack scoped to a relay's root (rule 9)
+bool IsSceneStart(const RE::BSScript::IFunction* fn)
+{
+  return std::find(g_sceneStarts.begin(), g_sceneStarts.end(), fn) !=
+    g_sceneStarts.end();
+}
+
+// V-scene's line, the first per scene in each census window (g_sceneLines;
+// the scene by its self's handle, EveryoneSelfId's read, 0 when it names no
+// form): which start, the calling script, the scope's player, and why
+void LogSceneSkipped(const RE::BSScript::IFunction* fn,
+                     const RE::BSScript::Stack* stack,
+                     const ActingScope::Scope& scope)
+{
+  const RE::BSScript::StackFrame* top = stack->top;
+  const std::uint32_t scene = EveryoneSelfId(top->self);
+  if (!SelfLineDue(g_sceneLines, scene)) {
+    return;
+  }
+  std::string caller;
+  std::string handler;
+  NameCaller(top->previousFrame, caller, handler);
+  logger::info("[verb:quests] {}.{} on {:x} from {}.{}: skipped inside acting "
+               "player {:x}'s relayed scope, stack {}; the stage's cause "
+               "seat starts the scene (ADR-073 D-A2 C)",
+               fn->GetObjectTypeName().c_str(), fn->GetName().c_str(), scene,
+               caller, handler, scope.player.serverId, stack->stackID);
+}
+
 // a request's stage or word as the lines name it
 std::string StageText(std::int32_t stage)
 {
@@ -2022,10 +2167,12 @@ void PropagateScope(std::size_t row, const RowInfo& info,
     case QuestRow::None:
       return;
   }
+  // the parent scope's root inherited unchanged (V-scene: a trigger's
+  // chained stage stays its host's to start scenes in)
   ActingScope::Request(quest, stage, scope.player, ActingScope::kChainedMs,
-                       ActingScope::Origin::kChained);
+                       ActingScope::Origin::kChained, scope.root);
   if (stage < 0) {
-    ActingScope::Arm(quest, scope.player, ActingScope::kArmMs);
+    ActingScope::Arm(quest, scope.player, ActingScope::kArmMs, scope.root);
   }
   if (ActingScope::LineDue(scope.seq, ActingScope::Line::kChain)) {
     logger::info("[verb:quests] {}.{} on {:x} ({}) inside acting player "
@@ -2290,14 +2437,36 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // any judgment below reads the frame
   const std::optional<ActingScope::Scope> scope = ScopeOfCall(fn, stack);
   bool absentSelf = false;
-  const std::uint32_t swapped =
-    scope ? SwapPlayer(fn, stack, *scope, absentSelf) : 0;
+  // (a relayed scope with no acting player, setRelayedScope's, swaps
+  // nothing: ActingScope::Swaps)
+  const std::uint32_t swapped = scope && ActingScope::Swaps(*scope)
+    ? SwapPlayer(fn, stack, *scope, absentSelf)
+    : 0;
   // a self naming the player with the figure absent here: the frame left
   // alone, the body skipped, the native's declared return's empty result
   // left in its place (the lever's path, SetEmptyResult; FIX FIRST 2)
   if (absentSelf) {
     marks.skip = true;
     marks.result = fn->GetReturnType().GetUnmangledRawType();
+  }
+  // V-scene (ADR-073 D-A2 C): a Scene.Start or ForceStart inside another
+  // player's acting scope rooted at a relay (kRelayed: a stage or a word
+  // another seat set, applied here, or a stage chained inside one; never a
+  // trigger entry's root, whose stages this seat's engine set) is the stage's
+  // cause seat's, whose own fragment starts the scene there; here it is
+  // skipped as a call on an absent figure is (the frame left alone, the
+  // native's declared return's empty result, None), counted on the untabled
+  // row, its line logged (LogSceneSkipped).
+  // HYPOTHESIS H-VS1: a relayed fragment's Scene.Start runs on the stack its
+  // first native joined (Fragment_7's Game.GetPlayer, before the start), so
+  // the guest logs this line for scene 5dba7 and no PuppetService stop of it
+  if (scope && !marks.skip && scope->root == ActingScope::RootKind::kRelayed &&
+      IsSceneStart(fn)) {
+    marks.skip = true;
+    marks.result = fn->GetReturnType().GetUnmangledRawType();
+    g_actingUntabled.fetch_add(1, std::memory_order_relaxed);
+    LogSceneSkipped(fn, stack, *scope);
+    return marks;
   }
   // (a) not a tabled native: nothing more, the only cost of every other
   // native in the game (step (0)'s one relaxed load outside a scope, and one
@@ -2369,7 +2538,7 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // is written over once the original returns (marks.swapReturn,
   // SwapReturn), counted " (acting)"
   if (native.kind == NativeKind::Local) {
-    if (scope && info.getPlayer) {
+    if (scope && ActingScope::Swaps(*scope) && info.getPlayer) {
       marks.swapReturn = true;
       marks.scope = *scope;
       marks.line =
@@ -2406,7 +2575,8 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     // body is skipped, the row's empty result returned (SetValue's None),
     // counted " (acting)"; the acting player's own seat runs the call
     // natively and its PlayerGlobals report carries the value
-    if (scope && info.globalSet && ActingScope::PlayerGlobals::Is(selfId)) {
+    if (scope && ActingScope::Swaps(*scope) && info.globalSet &&
+        ActingScope::PlayerGlobals::Is(selfId)) {
       marks.skip = true;
       marks.result = info.result;
       Count(row, kCountActing);
@@ -2881,6 +3051,8 @@ void FlushCensus(uint64_t now)
     FreeLineSlots(g_effectLines[row]);
     FreeLineSlots(g_helperLines[row]);
   }
+  // V-scene's skipped scenes, logged again in the next window
+  FreeLineSlots(g_sceneLines);
   // rung 5: the acting scope's swaps on natives no row holds, one row
   const uint32_t untabled = g_actingUntabled.exchange(0);
   if (untabled != 0) {
@@ -2893,6 +3065,8 @@ void FlushCensus(uint64_t now)
                  "with the VM's policy (the encoding HYPOTHESIS of adr065 Q1)",
                  misses, kFlushMs / 1000);
   }
+  // R-V2: the window's later null object arguments, by site
+  NullArgs::Flush();
   if (rows.empty()) {
     return;
   }
@@ -3298,6 +3472,30 @@ void ScriptNatives::InstallHooks()
   logger::info("[verb:scripts] {} of {} table rows bound (NativeRows.inc, "
                "thuum docs/NATIVES.md)",
                boundRows, kRowCount);
+  // V-scene: the scene starts, the game module's binding of each name, found
+  // as the rows are
+  for (std::size_t i = 0; i < std::size(kSceneStartNatives); ++i) {
+    const auto& [sceneCls, sceneFn] = kSceneStartNatives[i];
+    for (const auto& [cls, name, func, moduleBase, offset, longSig] : bound) {
+      if (moduleBase == gameBase && _stricmp(cls.c_str(), sceneCls) == 0 &&
+          _stricmp(name.c_str(), sceneFn) == 0) {
+        g_sceneStarts[i] = func;
+        break;
+      }
+    }
+    if (g_sceneStarts[i]) {
+      logger::info("[verb:quests] {}.{} bound: inside another player's "
+                   "acting scope rooted at a relay its call is skipped, the "
+                   "stage's cause seat starts the scene; a trigger entry's "
+                   "root runs it (ADR-073 D-A2 C)",
+                   sceneCls, sceneFn);
+    } else {
+      logger::warn("[verb:quests] {}.{} is not among the game module's "
+                   "bindings; a scene a relayed fragment starts runs here "
+                   "too",
+                   sceneCls, sceneFn);
+    }
+  }
   // the seam's name lists, found by class and name as the rows are
   for (const auto& batched : kBatchedStateRows) {
     WarnUnbound("batched state", batched.cls, batched.fn);

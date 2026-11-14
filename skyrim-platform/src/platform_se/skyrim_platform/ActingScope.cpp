@@ -11,6 +11,7 @@ struct RequestEntry
 {
   ActingScope::Player player;
   ActingScope::Origin origin = ActingScope::Origin::kRelayed;
+  ActingScope::RootKind root = ActingScope::RootKind::kTrigger;
   uint64_t createdMs = 0;
   uint64_t untilMs = 0;
   bool taken = false;
@@ -138,7 +139,7 @@ uint64_t ActingScope::NowMs()
 }
 
 void ActingScope::Request(uint32_t subject, int32_t stage, Player player,
-                          uint64_t ttlMs, Origin origin)
+                          uint64_t ttlMs, Origin origin, RootKind root)
 {
   const uint64_t now = NowMs();
   const uint64_t key = KeyOf(subject, stage);
@@ -152,6 +153,7 @@ void ActingScope::Request(uint32_t subject, int32_t stage, Player player,
   RequestEntry& entry = g_scope.requests[key];
   entry.player = player;
   entry.origin = origin;
+  entry.root = root;
   entry.createdMs = now;
   entry.untilMs = now + ttlMs;
   entry.taken = false;
@@ -179,7 +181,7 @@ std::optional<ActingScope::Taken> ActingScope::Take(uint32_t subject,
     return std::nullopt;
   }
   it->second.taken = true;
-  return Taken{ it->second.player, it->second.origin };
+  return Taken{ it->second.player, it->second.origin, it->second.root };
 }
 
 uint32_t ActingScope::ServerIdOf(uint32_t subject, int32_t stage)
@@ -207,7 +209,8 @@ bool ActingScope::Requested()
 }
 
 ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
-                                    uint64_t ttlMs, uint32_t maxJoins)
+                                    uint64_t ttlMs, RootKind root,
+                                    uint32_t maxJoins)
 {
   const uint64_t now = NowMs();
   std::lock_guard l(g_scope.m);
@@ -219,6 +222,7 @@ ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
   ArmEntry& entry = g_scope.arms[subject];
   entry.scope.player = player;
   entry.scope.seq = g_scope.nextSeq++;
+  entry.scope.root = root;
   entry.createdMs = now;
   entry.untilMs = now + ttlMs;
   entry.joins = 0;

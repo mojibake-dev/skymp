@@ -10221,7 +10221,22 @@ void ActionListener::DeliverSpellLanding(MpActor& caster, MpActor& target,
   static std::map<std::tuple<uint32_t, uint32_t, uint32_t>,
                   std::chrono::steady_clock::time_point>
     lastDelivery;
+  // the victim's own game runs the caster: its engine's own hit already
+  // lands on its player, zeroed, scripts run (numidium's review N2: a
+  // delivery there would apply the spell a second time)
+  if (WorldState* worldState = caster.GetParent();
+      worldState && worldState->HostOf(caster) == &target) {
+    return;
+  }
   const auto now = std::chrono::steady_clock::now();
+  // contacts older than the window are forgotten (numidium's review N1)
+  for (auto it = lastDelivery.begin(); it != lastDelivery.end();) {
+    if (now - it->second >= std::chrono::seconds(1)) {
+      it = lastDelivery.erase(it);
+    } else {
+      ++it;
+    }
+  }
   auto& last = lastDelivery[{ caster.GetFormId(), spell, target.GetFormId() }];
   const bool sameContact = last.time_since_epoch().count() != 0 &&
     now - last < std::chrono::seconds(1);

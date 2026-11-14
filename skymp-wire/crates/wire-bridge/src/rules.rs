@@ -826,6 +826,9 @@ mod ffi {
         /// A state that changes no value (Invisibility, Light,
         /// Etherealize; thuum docs/verbs/self-cast.md).
         State,
+        /// Archetype 4, absorb: its caster gains what its bearer loses
+        /// (wire-rules magic::EffectKind::Absorb).
+        Absorb,
     }
 
     /// How an effect arrives.
@@ -874,6 +877,9 @@ mod ffi {
         current: f32,
         /// The change to the temporary modifier.
         modifier: f32,
+        /// Whose value moves: 0 for the effect's bearer, else that actor's
+        /// form id (an Absorb's caster).
+        actor: u32,
     }
 
     /// A running effect, as the change form keeps it.
@@ -2843,6 +2849,10 @@ mod ffi {
         /// `actor` began a cast at `now_ms` (a monotonic clock). True: the
         /// cast's relay waits for its first hit (`CastFacts::lands_on_target`).
         fn start(self: &mut SpellCasts, actor: u32, facts: CastFacts, now_ms: u64) -> bool;
+        /// Whether `actor`'s concentration cast reported now is its open
+        /// stream reported again (wire-rules casts::Casts::continues): the
+        /// stream keeps its count, and the caller relays and starts nothing.
+        fn continues(self: &mut SpellCasts, actor: u32, facts: CastFacts, now_ms: u64) -> bool;
         /// `actor`'s stream in `hand` ended.
         fn end(self: &mut SpellCasts, actor: u32, hand: u8);
         /// Whether `actor` holds a stream open in `hand`.
@@ -4926,6 +4936,7 @@ fn to_magic_facts(f: EffectFacts) -> magic::EffectFacts {
         EffectKind::PeakValue => magic::EffectKind::PeakValue,
         EffectKind::DualValue => magic::EffectKind::DualValue,
         EffectKind::State => magic::EffectKind::State,
+        EffectKind::Absorb => magic::EffectKind::Absorb,
         _ => magic::EffectKind::Value,
     };
     let second_av = if second_av == u32::MAX { None } else { Some(second_av) };
@@ -4939,6 +4950,7 @@ fn from_magic_facts(f: magic::EffectFacts) -> EffectFacts {
         magic::EffectKind::PeakValue => EffectKind::PeakValue,
         magic::EffectKind::DualValue => EffectKind::DualValue,
         magic::EffectKind::State => EffectKind::State,
+        magic::EffectKind::Absorb => EffectKind::Absorb,
     };
     EffectFacts { effect, source, kind, av, second_av: second_av.unwrap_or(u32::MAX), second_weight, magnitude, duration_s, recover, detrimental, no_duration }
 }
@@ -4952,7 +4964,7 @@ fn from_magic_entry(e: &magic::EffectEntry) -> EffectEntry {
 }
 
 fn from_magic_changes(changes: &[magic::AvChange]) -> Vec<AvChange> {
-    changes.iter().map(|c| AvChange { av: c.av, current: c.current, modifier: c.modifier }).collect()
+    changes.iter().map(|c| AvChange { av: c.av, current: c.current, modifier: c.modifier, actor: c.actor }).collect()
 }
 
 fn apply_effect(facts: EffectFacts, scale: f32, caster: u32, arrival: EffectArrival) -> EffectApplied {
@@ -5037,6 +5049,15 @@ impl SpellCasts {
             _ => casts::CastKind::FireAndForget,
         };
         self.0.start(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual }, now_ms)
+    }
+
+    fn continues(&mut self, actor: u32, facts: CastFacts, now_ms: u64) -> bool {
+        let CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual } = facts;
+        let kind = match kind {
+            CastKind::Concentration => casts::CastKind::Concentration,
+            _ => casts::CastKind::FireAndForget,
+        };
+        self.0.continues(actor, casts::CastFacts { spell, hand, kind, area, reach, x, y, z, reached, linger_ms, reached_concentration, lands_on_target, hazard_ms, dual }, now_ms)
     }
 
     fn end(&mut self, actor: u32, hand: u8) {

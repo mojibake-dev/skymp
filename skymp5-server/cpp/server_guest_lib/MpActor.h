@@ -758,6 +758,12 @@ private:
   void ApplyAttributeDeltas(const std::array<float, 3>& deltas,
                             const std::array<bool, 3>& touched,
                             const BaseActorValues& maxBefore, uint32_t caster);
+  // thuum docs/verbs/magic-effects.md (Absorb): Health, Magicka and Stamina
+  // points other actors gain from this actor's effects, by form id, each
+  // moved on that actor through its own ApplyAttributeDeltas
+  void PayOthers(
+    const std::map<
+      uint32_t, std::pair<std::array<float, 3>, std::array<bool, 3>>>& gains);
   // thuum docs/verbs/npc-fate.md ("The body's rest"): the body at rest now,
   // by `why`: the state, the record's save at once, the one log line; the
   // row returned to the host when `returnsRow` (the dwell's rest alone,

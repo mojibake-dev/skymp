@@ -519,7 +519,86 @@ export class ObjectAnimationService extends ClientListener {
       return;
     }
     const keepSeq = this.subscribed.has(localId) ? (seq ?? this.newestSeq(localId)) : undefined;
-    this.playRelayed(refr, event, "relayed", remoteRefr, true, keepSeq);
+    const pillar = this.isPillar(refr);
+    if (pillar) {
+      // a later relay of the pillar supersedes a refused turn still queued
+      this.pillarRelays.set(localId, (this.pillarRelays.get(localId) ?? 0) + 1);
+    }
+    const played = this.playRelayed(refr, event, "relayed", remoteRefr, true, keepSeq);
+    const side = pillar && /^Trigger0[1-3]$/i.test(event) ? sideOfRecord(event) : undefined;
+    if (!played && side !== undefined && this.controller.lookupListener(HostService).epochForActor(refr) === 0) {
+      void this.settleRefusedTurn(localId, remoteRefr, event, side);
+    }
+  }
+
+  // Train 53, R-C4 (playtest 52's Temple pillar, lab/.cache/drafts/reads-53/
+  // r-c1-c2-c4-claw.md): a relayed turn the guest's graph refuses was
+  // dropped, and nothing corrected the side after it; Trigger03 was taken at
+  // 20:48:41.803 and Trigger01 refused 2.54 s later on a guest about 8,300
+  // units from the pillar (HYPOTHESIS: the engine does not advance a far
+  // reference's graph, so that turn never reached side 1). So a refused turn
+  // is queued once, PILLAR_TURN_S on (a nearby graph still in its last turn
+  // takes it then and shows the animation), and if the graph refuses it
+  // again the pillar jumps to the side the server recorded (sideOfRecord):
+  // StartState0N for sides 2 and 3, and for side 1, which has no jump,
+  // StartState03 then Trigger03 half a second apart (placeOnSide's and
+  // resync's route). A guest's alone (a seat that hosts the cell plays its
+  // script's graph, playtest 46), stopped by a later relay of the pillar, by
+  // the pillar's loss or by a grant of its cell here, each said; the pillar
+  // is taken again by id after every wait (a wrapper lives one Papyrus
+  // update, resync's note). Like resync's plays, the jump marks nothing
+  // self-played (F6). Its line: "[verb:traps] pillar <refr> relayed <event>
+  // refused: ..." with each play's answer. HYPOTHESIS until the lab: a far
+  // graph takes the jump, and lands on the side once the guest comes near
+  private async settleRefusedTurn(id: number, remoteRefr: number, event: string, side: number): Promise<void> {
+    const host = this.controller.lookupListener(HostService);
+    const relay = this.pillarRelays.get(id) ?? 0;
+    const head = `pillar ${remoteRefr.toString(16)} relayed ${event} refused`;
+    const reason = (refr: ObjectReference | null): string => {
+      if (!refr) {
+        return 'the pillar is gone';
+      }
+      if ((this.pillarRelays.get(id) ?? 0) !== relay) {
+        return 'a later relay of it came first';
+      }
+      return host.epochForActor(refr) !== 0 ? 'this seat hosts its cell now' : '';
+    };
+    let step = 'the queued turn';
+    try {
+      await Utility.wait(PILLAR_TURN_S);
+      let refr = ObjectReference.from(this.sp.Game.getFormEx(id));
+      let why = reason(refr);
+      if (!refr || why) {
+        logLab('verb:traps', `${head}: its queued turn not played, ${why}`);
+        return;
+      }
+      const queued = this.playOn(refr, id, event, true);
+      if (queued.played) {
+        logLab('verb:traps', `${head}: taken at its queued turn ${PILLAR_TURN_S} s on${queued.jump}`);
+        return;
+      }
+      let jumps: string;
+      if (side === 1) {
+        step = 'StartState03';
+        const first = refr.playAnimation('StartState03');
+        await Utility.wait(0.5);
+        refr = ObjectReference.from(this.sp.Game.getFormEx(id));
+        why = reason(refr);
+        if (!refr || why) {
+          logLab('verb:traps', `${head}, and again at its queued turn${queued.jump}: not on the recorded side 1 (StartState03 ${first ? 'taken' : 'refused'}), then ${why}`);
+          return;
+        }
+        step = 'Trigger03';
+        const second = refr.playAnimation('Trigger03');
+        jumps = `StartState03 ${first ? 'taken' : 'refused'}, Trigger03 ${second ? 'taken' : 'refused'}`;
+      } else {
+        step = `StartState0${side}`;
+        jumps = `StartState0${side} ${refr.playAnimation(`StartState0${side}`) ? 'taken' : 'refused'}`;
+      }
+      logLab('verb:traps', `${head}, and again at its queued turn${queued.jump}: jumped to the recorded side ${side} (${jumps})`);
+    } catch (e) {
+      logError(this, `${head}: the jump to the recorded side ${side} failed at ${step}: ${e}`);
+    }
   }
 
   // Behavior00.hkx, the puzzle pillar's graph (RuinsPuzzlePillar01.hkx's
@@ -1118,6 +1197,8 @@ export class ObjectAnimationService extends ClientListener {
   private scriptSide = new Map<number, number>();
   private recordEvent = new Map<number, string>();
   private pillars = new Set<number>();
+  // R-C4: the relays each pillar took here, the queued turn's supersede test
+  private pillarRelays = new Map<number, number>();
   private resyncing = new Set<number>();
   // this seat's script's animation acts per pillar (noteScriptSide), read by
   // placeOnSide's guard

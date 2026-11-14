@@ -7,7 +7,7 @@ import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { applyRaceOverlay, parseRaceOverlay } from "../sync/raceOverlay";
 import { RaceOverlay } from "../services/messages/raceOverlay";
-import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands } from "../sync/equipment";
+import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands, cannotDress } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { applyBodyInventory } from "../sync/inventory";
 import * as sp from "skyrimPlatform";
@@ -1101,7 +1101,7 @@ export class FormView {
       // host streams what its actor wears, the server checks it against the
       // actor's own record and relays it)
       const ac = Actor.from(refr);
-      if (ac && !ac.isDeleted() && Date.now() - this.eqState.lastEqMoment > 500) {
+      if (ac && !cannotDress(ac) && Date.now() - this.eqState.lastEqMoment > 500) {
         applyHands(ac, model.equipment);
         this.eqState.lastNumChanges = model.equipment.numChanges;
         this.eqState.lastEqMoment = Date.now();
@@ -1132,7 +1132,7 @@ export class FormView {
         // 1. Place ~90 bots and force them to reequip iron swords to the left hand (rate should be ~50ms)
         // 2. Open your inventory and reequip different items fast
         // 3. After 1-2 minutes close your inventory and see that HUD disappeared
-        if (ac && !ac.isDeleted() && !isBadMenuShown() &&
+        if (ac && !cannotDress(ac) && !isBadMenuShown() &&
           Date.now() - this.eqState.lastEqMoment > 500 &&
           Date.now() - this.spawnMoment > -1 &&
           this.spawnMoment > 0

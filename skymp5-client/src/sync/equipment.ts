@@ -144,6 +144,20 @@ export const syncSpellEquipment = (
   }
 };
 
+// A reference the engine is letting go has nothing to dress, and the
+// equipment natives on it crash the engine: a deleted one (a copy the
+// cleaner or a respawn let go: c2's UnequipAll crash in x-handoff-door
+// 20261024-001915, EXCEPTION_ACCESS_VIOLATION on "test 1" flagged
+// kDeleted), and a disabled one on its way there (FormView.destroy disables
+// a copy, latent until the engine has it out of its process lists, then
+// deletes it, so between the two its AI process is gone and kDeleted is
+// not yet set: c2's crash at rotfern's race change in thuum
+// 20261114-083256, SkyrimSE+0x6D88F0 under Actor.UnequipAll reading the
+// process's equipped object, its minidump read 2026-11-14). A figure the
+// server holds disabled is dressed once it is enabled again: FormView
+// keeps its apply pending until one lands.
+export const cannotDress = (ac: Actor): boolean => ac.isDeleted() || ac.isDisabled();
+
 // thuum docs/verbs/npc-stream.md (ADR-050, slice 3): a puppet dressed by its
 // engine from the fate's roll keeps its outfit; its hands follow the host's
 // record. The right hand is the worn weapon (a WEAP record among the worn
@@ -153,7 +167,7 @@ export const syncSpellEquipment = (
 // look, not a loot), and the hands' spells follow as a figure's do.
 // HYPOTHESIS H6 until a probe reads a hosted actor's draw on the puppet seat.
 export const applyHands = (ac: Actor, eq: Equipment): void => {
-  if (ac.isDeleted()) {
+  if (cannotDress(ac)) {
     return;
   }
   const typeOf = (baseId: number): number => Game.getFormEx(baseId)?.getType() ?? 0;
@@ -276,7 +290,7 @@ export const keepOnlyServerSpells = (ac: Actor, eq: Equipment, keepAlso: readonl
 // relaunch. LATER: SetInventory's ammo through the ammo path with no slot,
 // a platform change that every figure's quiver goes through as well
 export const applyPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe = false): void => {
-  if (ac.isDeleted()) {
+  if (cannotDress(ac)) {
     return;
   }
   const right = playerHandsOf(eq).right;
@@ -345,7 +359,7 @@ export const equippedAmmoAmong = (ac: Actor, changed: Set<number>): Equipment | 
 // login's wipe (afterLoginWipe), whose ammo is equipped whatever isEquipped
 // reads (playtest 48 above)
 const equipPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe: boolean): void => {
-  if (ac.isDeleted()) {
+  if (cannotDress(ac)) {
     return;
   }
   const { right, left, ammo } = playerHandsOf(eq);
@@ -383,10 +397,7 @@ const equipPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe: boolean): vo
 };
 
 export const applyEquipment = (ac: Actor, eq: Equipment, keepAlso: readonly number[] = []): boolean => {
-  // a deleted reference (a copy the cleaner or a respawn let go) crashes
-  // the engine in UnequipAll (c2's crash in x-handoff-door 20261024-001915:
-  // EXCEPTION_ACCESS_VIOLATION on "test 1" flagged kDeleted); nothing to dress
-  if (ac.isDeleted()) {
+  if (cannotDress(ac)) {
     return false;
   }
   ac.removeAllItems(null, false, true);

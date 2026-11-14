@@ -350,7 +350,10 @@ const START_UP_MEMORY_MAX = 2048;
 // puppetSceneStopped event), and the quest's stops here go unreported until
 // its next start here or PUPPET_STOP_MS after the scene's stop (the fresh
 // review's note 4), said once a quest a connection: "quest <q>'s stop not
-// reported: its scene <s> was stopped here by the puppet rule".
+// reported: its scene <s> was stopped here by the puppet rule". Since train
+// 53 (R-V1) a stage the stopped scene's own fragment script sets meanwhile
+// (its end fragment, run by the stop) is held the same way
+// (puppetSceneStage).
 // A client-only plugin's quest: a quest of a plugin the server does not
 // serve is this seat's own, a stage and a run word alike. The server
 // refuses its report as E_QUEST_UNKNOWN before any judging (OnQuestStage's
@@ -1161,19 +1164,64 @@ export class QuestStageService extends ClientListener {
     private sayPuppetStop(questId: number) {
         const scene = this.puppetScenes.get(questId)?.scene;
         const which = scene !== undefined && scene > 0 ? `its scene ${scene.toString(16)}` : "its scene";
-        const line = `quest ${questId.toString(16)}'s stop not reported: ${which} was stopped here by the puppet rule`;
-        if (this.puppetStopSaid.has(questId)) {
+        this.sayPuppetHeld(this.puppetStopSaid, questId, `quest ${questId.toString(16)}'s stop not reported: ${which} was stopped here by the puppet rule`);
+    }
+
+    // a line of the puppet rule's holds: a lab line the first time a quest
+    // a connection, a trace after
+    private sayPuppetHeld(said: Set<number>, questId: number, line: string) {
+        if (said.has(questId)) {
             logTrace(this, line);
             return;
         }
-        if (this.puppetStopSaid.size >= PUPPET_SCENE_MEMORY_MAX) {
-            const oldest = this.puppetStopSaid.values().next().value;
+        if (said.size >= PUPPET_SCENE_MEMORY_MAX) {
+            const oldest = said.values().next().value;
             if (oldest !== undefined) {
-                this.puppetStopSaid.delete(oldest);
+                said.delete(oldest);
             }
         }
-        this.puppetStopSaid.add(questId);
+        said.add(questId);
         logLab(TAG, line);
+    }
+
+    // Train 53, V-scene's client half (lab/.cache/drafts/reads-53/
+    // r-v1-v2-vc1-cure.md, R-V1): a scene the puppet rule stops still runs its
+    // end fragment here, and its stage is this seat's own as the quest's stop
+    // is. Playtest 52's Rising at Dawn: c2 applied rotfern's relayed 185, its
+    // Fragment_7 started scene 5dba7 here, PuppetService stopped it (Falion a
+    // puppet), and its end fragment's `if GetStage() < 195: SetStage(195)` set
+    // 195 on c2, reported; the server stamped Ariadne as its acting player and
+    // relayed it to c1, whose 200 then cured Ariadne's figure. So a stage of a
+    // quest under the puppet rule's mark whose cause's root is the stopped
+    // scene's fragment script is held, unreported, until the quest's next start
+    // here or PUPPET_STOP_MS after the stop, as reportRun holds the stop. The
+    // root names the script: the Creation Kit's SF_<editor id>_<form id> (the
+    // server's "root SF_VC01VampirismCureRitual_0005DBA7.Fragment_0" for scene
+    // 5dba7), its id the plugin's own as the kit saw it, so the id is compared
+    // within its plugin (the low 24 bits, a light plugin's low 12: the
+    // client-only rule's reading of this game's load order). A root naming
+    // another script, or none, reports as before. Line: "quest <q>'s stage <s>
+    // not reported: set by <root>, the end fragment of its scene <scene>
+    // stopped here by the puppet rule"
+    private puppetSceneStage(questId: number, stage: number, cause: Cause): boolean {
+        const mark = this.puppetScenes.get(questId);
+        if (mark === undefined || !QuestStageService.rootsInScene(cause.root, mark.scene) || !this.puppetStopMarked(questId)) {
+            return false;
+        }
+        this.sayPuppetHeld(this.puppetStageSaid, questId, `quest ${questId.toString(16)}'s stage ${stage} not reported: set by ${cause.root}, the end fragment of its scene ${mark.scene.toString(16)} stopped here by the puppet rule`);
+        return true;
+    }
+
+    // whether a cause's root is a function of the scene's fragment script
+    // (puppetSceneStage's reading of its name)
+    private static rootsInScene(root: string, scene: number): boolean {
+        const m = /^SF_\w*_([0-9A-Fa-f]{8})\./.exec(root);
+        if (m === null || !Number.isInteger(scene) || scene <= 0) {
+            return false;
+        }
+        const named = parseInt(m[1], 16);
+        const within = (scene >>> 24) === 0xfe ? 0xfff : 0xffffff;
+        return (named & within) === (scene & within);
     }
 
     // the client-only plugins' list for this connection, asked once (at the
@@ -1431,6 +1479,9 @@ export class QuestStageService extends ClientListener {
         if (this.skipClientOnly(questId, false)) {
             return false;
         }
+        if (this.puppetSceneStage(questId, stage, cause)) {
+            return false;
+        }
         if (stage === 0 && !this.worldCaused(cause)) {
             this.holdByCause(cause, false);
             return false;
@@ -1516,6 +1567,7 @@ export class QuestStageService extends ClientListener {
             this.resetSends();
         }
         this.puppetStopSaid.clear();
+        this.puppetStageSaid.clear();
         this.endSkipped();
         this.keepOrDropPluginList();
         this.pluginListMissSaid = false;
@@ -1940,9 +1992,11 @@ export class QuestStageService extends ClientListener {
     // the puppet rule's scene stop: the quests whose scene PuppetService
     // stopped here on a host's puppet (the scene and the time of its stop by
     // quest), each until the quest's next start here or PUPPET_STOP_MS, and
-    // the quests whose unreported stop this connection said
+    // the quests whose unreported stop, and stage (puppetSceneStage), this
+    // connection said
     private puppetScenes = new Map<number, { scene: number; at: number }>();
     private puppetStopSaid = new Set<number>();
+    private puppetStageSaid = new Set<number>();
     // a client-only plugin's quest: the client-only plugins by this game's
     // own load order (a full plugin by its index, a light one by its index
     // at 0xFE) from the last answer, kept across a reconnect to the same

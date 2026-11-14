@@ -324,8 +324,12 @@ constexpr std::pair<const char*, const char*> kGlobalSetRow{ "GlobalVariable",
 // the guest that applied the relayed stage 185, read R-V1 of train 53): the
 // two natives that start a scene (FunctionsDump.txt: Scene's `ForceStart()`
 // and `Start()`, not latent, no return), whose call inside another player's
-// acting scope is skipped here (OnCall's step (0)); the acting player's own
-// seat runs the fragment natively and starts the scene there. No table row
+// acting scope opened on a quest (ActingScope::SubjectKind::kQuest: a
+// relayed stage's fragment, a start or a stop) is skipped here (OnCall's
+// step (0)); the acting player's own seat runs the fragment natively and
+// starts the scene there. A trigger's scope (kTrigger, a relayed entry) is
+// left alone: the trigger's host runs its scripts for the presser, a scene
+// start among them (defaultStartSceneTrigScript). No table row
 // holds them (NativeRows.inc), so InstallHooks binds the game module's
 // IFunction of each by class and name, written before the dispatch hook
 // attaches and never after
@@ -2080,7 +2084,7 @@ std::uint32_t SwapPlayer(const RE::BSScript::IFunction* fn,
 }
 
 // V-scene's test: one of the bound scene starts (kSceneStartNatives), asked
-// only on a scoped stack (rule 9)
+// only on a stack scoped to a quest (rule 9)
 bool IsSceneStart(const RE::BSScript::IFunction* fn)
 {
   return std::find(g_sceneStarts.begin(), g_sceneStarts.end(), fn) !=
@@ -2103,8 +2107,8 @@ void LogSceneSkipped(const RE::BSScript::IFunction* fn,
   std::string handler;
   NameCaller(top->previousFrame, caller, handler);
   logger::info("[verb:quests] {}.{} on {:x} from {}.{}: skipped inside acting "
-               "player {:x}'s scope, stack {}; the stage's cause seat starts "
-               "the scene (ADR-073 D-A2 C)",
+               "player {:x}'s quest scope, stack {}; the stage's cause seat "
+               "starts the scene (ADR-073 D-A2 C)",
                fn->GetObjectTypeName().c_str(), fn->GetName().c_str(), scene,
                caller, handler, scope.player.serverId, stack->stackID);
 }
@@ -2165,7 +2169,8 @@ void PropagateScope(std::size_t row, const RowInfo& info,
   ActingScope::Request(quest, stage, scope.player, ActingScope::kChainedMs,
                        ActingScope::Origin::kChained);
   if (stage < 0) {
-    ActingScope::Arm(quest, scope.player, ActingScope::kArmMs);
+    ActingScope::Arm(quest, scope.player, ActingScope::kArmMs,
+                     ActingScope::SubjectKind::kQuest);
   }
   if (ActingScope::LineDue(scope.seq, ActingScope::Line::kChain)) {
     logger::info("[verb:quests] {}.{} on {:x} ({}) inside acting player "
@@ -2440,14 +2445,17 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     marks.result = fn->GetReturnType().GetUnmangledRawType();
   }
   // V-scene (ADR-073 D-A2 C): a Scene.Start or ForceStart inside another
-  // player's acting scope is the stage's cause seat's, whose own fragment
-  // starts the scene there; here it is skipped as a call on an absent figure
+  // player's acting scope opened on a quest (a relayed stage's fragment, a
+  // start or a stop; never a trigger entry's, whose host runs the trigger's
+  // scripts) is the stage's cause seat's, whose own fragment starts the
+  // scene there; here it is skipped as a call on an absent figure
   // is (the frame left alone, the native's declared return's empty result,
   // None), counted on the untabled row, its line logged (LogSceneSkipped).
   // HYPOTHESIS H-VS1: a relayed fragment's Scene.Start runs on the stack its
   // first native joined (Fragment_7's Game.GetPlayer, before the start), so
   // the guest logs this line for scene 5dba7 and no PuppetService stop of it
-  if (scope && !marks.skip && IsSceneStart(fn)) {
+  if (scope && !marks.skip &&
+      scope->subject == ActingScope::SubjectKind::kQuest && IsSceneStart(fn)) {
     marks.skip = true;
     marks.result = fn->GetReturnType().GetUnmangledRawType();
     g_actingUntabled.fetch_add(1, std::memory_order_relaxed);
@@ -3470,12 +3478,14 @@ void ScriptNatives::InstallHooks()
     }
     if (g_sceneStarts[i]) {
       logger::info("[verb:quests] {}.{} bound: inside another player's "
-                   "acting scope its call is skipped, the stage's cause seat "
-                   "starts the scene (ADR-073 D-A2 C)",
+                   "acting scope on a quest its call is skipped, the stage's "
+                   "cause seat starts the scene; a trigger entry's scope runs "
+                   "it (ADR-073 D-A2 C)",
                    sceneCls, sceneFn);
     } else {
       logger::warn("[verb:quests] {}.{} is not among the game module's "
-                   "bindings; a scene a scoped fragment starts runs here too",
+                   "bindings; a scene a quest-scoped fragment starts runs "
+                   "here too",
                    sceneCls, sceneFn);
     }
   }

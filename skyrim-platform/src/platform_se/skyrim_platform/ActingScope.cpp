@@ -207,7 +207,8 @@ bool ActingScope::Requested()
 }
 
 ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
-                                    uint64_t ttlMs, uint32_t maxJoins)
+                                    uint64_t ttlMs, SubjectKind kind,
+                                    uint32_t maxJoins)
 {
   const uint64_t now = NowMs();
   std::lock_guard l(g_scope.m);
@@ -219,6 +220,7 @@ ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
   ArmEntry& entry = g_scope.arms[subject];
   entry.scope.player = player;
   entry.scope.seq = g_scope.nextSeq++;
+  entry.scope.subject = kind;
   entry.createdMs = now;
   entry.untilMs = now + ttlMs;
   entry.joins = 0;

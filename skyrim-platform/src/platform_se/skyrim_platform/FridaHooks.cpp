@@ -3225,7 +3225,8 @@ RE::BSEventNotifyControl QuestStageSinkReplacement(
     // scope at its first native call (H-AP1) and runs for the acting player.
     // One atomic read for every other stage event
     if (const auto taken = ActingScope::Take(event->formID, event->stage)) {
-      ActingScope::Arm(event->formID, taken->player, ActingScope::kArmMs);
+      ActingScope::Arm(event->formID, taken->player, ActingScope::kArmMs,
+                       ActingScope::SubjectKind::kQuest);
       logger::info("[verb:quest-stage] fragment of {:x} stage {} runs for "
                    "acting player {:x} ({})",
                    event->formID, event->stage, taken->player.serverId,

@@ -70,12 +70,26 @@ struct Player
   uint32_t serverId = 0;
 };
 
-// a scope: its player, and the arm that opened it (a sequence number, the
-// lines' key: "the first three per scope")
+// the kind of subject an arm names, set where each scope is opened: a quest
+// (the quest stage sink's arm of a taken stage request, setActingPlayer's
+// start or stop word, the seam's propagation of a start or a stop) or a
+// trigger (SendTriggerEvent's arm of a relayed entry). Train 53's V-scene
+// skips a scene start in a quest's scope alone: a trigger's host runs the
+// trigger's own scripts for the presser, its scene starts among them
+// (defaultStartSceneTrigScript)
+enum class SubjectKind : uint8_t
+{
+  kQuest,
+  kTrigger
+};
+
+// a scope: its player, the arm that opened it (a sequence number, the
+// lines' key: "the first three per scope") and that arm's subject's kind
 struct Scope
 {
   Player player;
   uint64_t seq = 0;
+  SubjectKind subject = SubjectKind::kQuest;
 };
 
 // where a request came from: setActingPlayer's relay, or the seam's
@@ -115,11 +129,12 @@ uint32_t ServerIdOf(uint32_t subject, int32_t stage);
 bool Requested();
 
 // the subject armed for its player for ttlMs, replacing an older arm of the
-// subject; the new scope answered for the caller's line. maxJoins caps the
-// stacks the arm joins (0 for no cap): a relayed trigger entry's arm joins
-// at most the trigger's own attached scripts' handlers (rung 5's fresh
-// review, note 9)
-Scope Arm(uint32_t subject, Player player, uint64_t ttlMs,
+// subject; the new scope answered for the caller's line. kind is the
+// subject's (a quest or a trigger), carried by every stack the arm joins.
+// maxJoins caps the stacks the arm joins (0 for no cap): a relayed trigger
+// entry's arm joins at most the trigger's own attached scripts' handlers
+// (rung 5's fresh review, note 9)
+Scope Arm(uint32_t subject, Player player, uint64_t ttlMs, SubjectKind kind,
           uint32_t maxJoins = 0);
 // any arm, one atomic read
 bool Armed();

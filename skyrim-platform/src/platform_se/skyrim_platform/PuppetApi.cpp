@@ -407,7 +407,8 @@ Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
   const bool word =
     stage == ActingScope::kStart || stage == ActingScope::kStop;
   if (word) {
-    ActingScope::Arm(questId, player, ActingScope::kArmMs);
+    ActingScope::Arm(questId, player, ActingScope::kArmMs,
+                     ActingScope::SubjectKind::kQuest);
   }
   const ActingScope::Counts counts = ActingScope::Count();
   logger::info(

@@ -911,6 +911,23 @@ bool ContainerMoveByOccupant(MpActor& actor, MpObjectReference& container)
   if (container.IsContainerOccupant(&actor)) {
     return true;
   }
+  // ADR-063 (one engine owns each piece of the world; playtest 51's break,
+  // Gorm's letter): a living NPC's own inventory is the game's that
+  // simulates it, its cell's host or its claimant (a dialogue's talk lease
+  // included: wire-rules cells simulator_of reads the claim first), so a
+  // move its scripts make there (a quest's RemoveItem to its player) is
+  // that engine's own and taken. A player's actor is its own game's, never
+  // its cell host's, and a corpse's and a container's stay their holder's
+  if (MpActor* living = container.AsActor();
+      living && !living->IsDead() && !living->IsCreatedAsPlayer()) {
+    if (WorldState* worldState = container.GetParent();
+        worldState && worldState->HostOf(container) == &actor) {
+      spdlog::info("[verb:containers] {:x} moves an item of {:x}, the actor "
+                   "its game simulates (ADR-063)",
+                   actor.GetFormId(), container.GetFormId());
+      return true;
+    }
+  }
   spdlog::warn("[verb:containers] E_CONTAINER_OCCUPANT: {:x} doesn't occupy "
                "{:x}; the move refused, the mover resynced",
                actor.GetFormId(), container.GetFormId());

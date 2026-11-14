@@ -378,7 +378,10 @@ TEST_CASE("A spell off the list asks nothing; a listed cast nobody reports "
 
   // the next cast in the hand (the old request dropped) and the refusals:
   // another's set, another player's report, a base the entry does not name,
-  // too near, too far, too high
+  // too near, too far, too high. The first stream ends first: a cast in the
+  // same hand with no end between is that stream reported again, no new
+  // cast (wire-rules casts::Casts::continues, playtest 51's drain)
+  Cast(p, kFlames, 1, true);
   p.Messages().clear();
   t0 = NowMs();
   Cast(p, kFlames, 1, false);

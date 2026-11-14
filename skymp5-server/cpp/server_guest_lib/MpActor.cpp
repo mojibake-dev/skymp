@@ -3975,6 +3975,12 @@ std::optional<skymp::rules::EffectFacts> EffectFactsOf(
     case espm::MGEF::EffectType::Etherealize:
       facts.kind = skymp::rules::EffectKind::State;
       break;
+    // thuum docs/verbs/magic-effects.md (playtest 51's vampire drain): an
+    // absorb moves its value off its bearer and onto its caster (wire-rules
+    // magic::EffectKind::Absorb; CommonLibSSE-NG include/RE/A/AbsorbEffect.h)
+    case espm::MGEF::EffectType::Absorb:
+      facts.kind = skymp::rules::EffectKind::Absorb;
+      break;
     default:
       return std::nullopt;
   }
@@ -4022,6 +4028,7 @@ rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
       e.facts.kind = r.kind == 1 ? skymp::rules::EffectKind::PeakValue
         : r.kind == 2            ? skymp::rules::EffectKind::DualValue
         : r.kind == 3            ? skymp::rules::EffectKind::State
+        : r.kind == 4            ? skymp::rules::EffectKind::Absorb
                                  : skymp::rules::EffectKind::Value;
       e.facts.av = static_cast<uint32_t>(r.av);
       e.facts.second_av =
@@ -4073,6 +4080,7 @@ std::optional<std::vector<RunningEffect>> RunningEffectsOf(
     r.kind = e.facts.kind == skymp::rules::EffectKind::PeakValue ? 1
       : e.facts.kind == skymp::rules::EffectKind::DualValue      ? 2
       : e.facts.kind == skymp::rules::EffectKind::State          ? 3
+      : e.facts.kind == skymp::rules::EffectKind::Absorb         ? 4
                                                                  : 0;
     r.av = static_cast<int32_t>(e.facts.av);
     r.secondAv = e.facts.second_av == kNoSecond
@@ -4097,13 +4105,27 @@ std::optional<std::vector<RunningEffect>> RunningEffectsOf(
 // it matters (the regeneration rates). A god actor (thuum
 // docs/verbs/god-mode.md) loses nothing of a current value, while a buff's
 // maximum still moves.
+// Another actor's change (an Absorb's caster's gain, wire-rules
+// magic::AvChange::actor) is kept out of `deltas` and summed into `others`
+// by that actor's form id, if given; this actor's own (`self`) counts here.
+using OtherDeltas =
+  std::map<uint32_t, std::pair<std::array<float, 3>, std::array<bool, 3>>>;
 template <class Changes>
 void SumAttributeChanges(const Changes& changes, std::array<float, 3>& deltas,
-                         std::array<bool, 3>& touched, bool god)
+                         std::array<bool, 3>& touched, bool god,
+                         uint32_t self = 0, OtherDeltas* others = nullptr)
 {
   for (const auto& c : changes) {
     const int i = c.av == 24 ? 0 : c.av == 25 ? 1 : c.av == 26 ? 2 : -1;
     if (i < 0) {
+      continue;
+    }
+    if (c.actor != 0 && c.actor != self) {
+      if (others) {
+        auto& other = (*others)[c.actor];
+        other.first[i] += c.current + c.modifier;
+        other.second[i] = true;
+      }
       continue;
     }
     deltas[i] += (god && c.current < 0.f ? 0.f : c.current) + c.modifier;
@@ -4604,6 +4626,7 @@ void MpActor::ApplyEffects(uint32_t source,
   std::vector<MagicEffectsMessage::Effect> shownOnce;
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
+  OtherDeltas others;
   for (const auto& effect : effects) {
     if (casterActor) {
       if (!EffectConditionsHold(worldState, effect, source, *this,
@@ -4632,10 +4655,12 @@ void MpActor::ApplyEffects(uint32_t source,
       skymp::rules::apply_effect(*facts, resisted, caster,
                                  stream ? skymp::rules::EffectArrival::Stream
                                         : skymp::rules::EffectArrival::Once);
-    SumAttributeChanges(applied.changes, deltas, touched, pImpl->godMode);
+    SumAttributeChanges(applied.changes, deltas, touched, pImpl->godMode,
+                        GetFormId(), &others);
     if (applied.has_entry) {
       SumAttributeChanges(skymp::rules::admit_effect(entries, applied.entry),
-                          deltas, touched, pImpl->godMode);
+                          deltas, touched, pImpl->godMode, GetFormId(),
+                          &others);
     } else if (!applied.changes.empty() && !stream) {
       // an effect without duration: shown once (a stream's hits show
       // through the caster's figure's stream instead)
@@ -4663,6 +4688,7 @@ void MpActor::ApplyEffects(uint32_t source,
                                 true);
   }
   ApplyAttributeDeltas(deltas, touched, maxBefore, caster);
+  PayOthers(others);
 }
 
 void MpActor::AdvanceEffects(float dtSeconds)
@@ -4687,7 +4713,9 @@ void MpActor::AdvanceEffects(float dtSeconds)
     [&](MpChangeForm& changeForm) { changeForm.runningEffects = running; });
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
-  SumAttributeChanges(changes, deltas, touched, pImpl->godMode);
+  OtherDeltas others;
+  SumAttributeChanges(changes, deltas, touched, pImpl->godMode, GetFormId(),
+                      &others);
   if (entries.size() != entriesBefore) {
     // an effect ended: every game drops it (each counts the seconds down
     // itself, so a running one needs no message), before the values, as in
@@ -4695,6 +4723,31 @@ void MpActor::AdvanceEffects(float dtSeconds)
     SendMessageToActorListeners(MagicEffectsOf(GetIdx(), entries, {}), true);
   }
   ApplyAttributeDeltas(deltas, touched, maxBefore, 0);
+  PayOthers(others);
+}
+
+// thuum docs/verbs/magic-effects.md (Absorb): each other actor's share of
+// this actor's effects (an absorb's caster gains what this actor lost), on
+// that actor's own values and to every game, after this actor's own; a
+// caster gone or dead gains nothing, as the engine's absorb on a null actor
+// does nothing (HYPOTHESIS: AbsorbEffect's ModifyOnUpdate, a decompile read)
+void MpActor::PayOthers(
+  const std::map<uint32_t,
+                 std::pair<std::array<float, 3>, std::array<bool, 3>>>& gains)
+{
+  WorldState* worldState = GetParent();
+  if (!worldState) {
+    return;
+  }
+  for (const auto& [id, gain] : gains) {
+    const auto& form = worldState->LookupFormByIdNoLoad(id);
+    MpActor* other = form ? form->AsActor() : nullptr;
+    if (!other || other == this || other->IsDead()) {
+      continue;
+    }
+    const BaseActorValues maxBefore = other->GetMaximumValues();
+    other->ApplyAttributeDeltas(gain.first, gain.second, maxBefore, 0);
+  }
 }
 
 void MpActor::SendMagicEffectsTo(MpActor& listener)

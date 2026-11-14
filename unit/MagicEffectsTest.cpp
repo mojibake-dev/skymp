@@ -312,3 +312,45 @@ TEST_CASE("The change form keeps an actor's running effects, and older "
   auto olderElement = parser.parse(olderDump).value();
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).runningEffects);
 }
+
+// thuum docs/verbs/magic-effects.md (Absorb; playtest 51's vampire drain):
+// CrVampireDrain00 0x107AA1's one effect, crVampireAbsorbHealthConcAimed
+// 0x8D5C5, absorbs Health 3 a second (archetype 4, actor value 24, magnitude
+// 3 in Skyrim.esm and in Dawnguard.esm's override; lab/esm.py, 2026-11-13)
+// and carries no condition; a stream's hit counts the seconds it held
+TEST_CASE("A drain moves Health from its target to its caster",
+          "[MagicEffects][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& target = Drinker(p, 0.5f);
+  constexpr uint32_t kCaster = 0xff000001;
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, { 100, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kCaster);
+  auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
+  ActorValueRecord record;
+  record.bases = { { 24, 100.f } };
+  REQUIRE(caster.SetActorValueRecord(record));
+  ActorValues values = caster.GetActorValues();
+  values.healthPercentage = 0.5f;
+  caster.SetPercentages(values);
+
+  // two seconds of the stream: 6 points out of the target, 6 into the caster
+  target.ApplyEffects(0x107AA1, MpActor::EffectsOf(&p.worldState, 0x107AA1),
+                      2.f, kCaster, true);
+  REQUIRE(Health(target) == Catch::Approx(0.44f));
+  REQUIRE(Health(caster) == Catch::Approx(0.56f));
+  REQUIRE(!target.HasRunningEffects());
+
+  // a caster at full health gains nothing past its maximum
+  values.healthPercentage = 1.f;
+  caster.SetPercentages(values);
+  target.ApplyEffects(0x107AA1, MpActor::EffectsOf(&p.worldState, 0x107AA1),
+                      1.f, kCaster, true);
+  REQUIRE(Health(target) == Catch::Approx(0.41f));
+  REQUIRE(Health(caster) == Catch::Approx(1.f));
+
+  p.DestroyActor(kCaster);
+  DoDisconnect(p, 1);
+  Leave(p);
+}

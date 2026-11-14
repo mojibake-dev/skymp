@@ -71,6 +71,8 @@ const SCOPE_STOP = -2;
 // The players' actors are server ids from here up (the validator refuses an
 // `acting` below it)
 const FIRST_SERVER_ID = 0xff000000;
+// this game's own player, the figure a relayed scope with no swap names
+const PLAYER_ID = 0x14;
 
 // How long the acting scope a live apply names holds, ms: the fragment
 // mark's window, for the same reason (the VM sets a stage queued on a quest
@@ -253,8 +255,11 @@ const START_UP_MEMORY_MAX = 2048;
 // here (a chained stage, a relayed trigger's script). Before a live apply,
 // setActingPlayer names the server's `acting` for the pair: its figure here
 // (remoteIdToLocalId, 0 when this seat holds none) and its server id, for
-// ACTING_TTL_MS; never for this seat's own actor (its own player is the
-// player already) and never for a served apply (a load). The fragment: a
+// ACTING_TTL_MS; never for a served apply (a load). For this seat's own
+// actor, or a relay with no stamp, the scope is a relayed one with no swap
+// (train 53, V-scene: the platform's root kRelayed, Game.GetPlayer this
+// seat's own player), which needs the platform's relayed-scope API
+// (m4-train-53-platform) and arms nothing until then. The fragment: a
 // served stage always carries the mark (the login's replay is a load, D-Q3
 // A); a live stage carries it while the setting questFragmentLive is false
 // (the default, the H-A1 fallback, until x-acting-player v1 is green), and
@@ -1389,15 +1394,24 @@ export class QuestStageService extends ClientListener {
 
     // the acting scope for a live apply (the class comment): the server's
     // acting player for the pair, its figure here or 0; none for a served
-    // apply, for a relay with no stamp, or for this seat's own actor
+    // apply (a load). Train 53 (V-scene): every live apply is a relay, this
+    // seat not the stage's cause seat, so its scope is armed even for this
+    // seat's own actor or a relay with no stamp, with no swap
+    // (nameRelayedScope): unscoped, the fragment's Scene.Start ran on this
+    // seat's puppets, the puppet rule stopped it and its end fragment set a
+    // stage (playtest 52's cure; MS13's argument scene on the guest)
     private nameActing(item: QuestItem, scopeStage: number) {
         const acting = item.acting;
-        if (item.served || acting === undefined || this.actingExportsMissing || this.isMe(acting)) {
+        if (item.served || this.actingExportsMissing) {
             return;
         }
         if (typeof this.sp.setActingPlayer !== "function") {
             this.actingExportsMissing = true;
             logLab(TAG, "setActingPlayer unavailable on this platform; a relayed request runs as this seat's own player");
+            return;
+        }
+        if (acting === undefined || this.isMe(acting)) {
+            this.nameRelayedScope(item, scopeStage, acting);
             return;
         }
         const figure = remoteIdToLocalId(acting);
@@ -1408,6 +1422,42 @@ export class QuestStageService extends ClientListener {
         } catch (err) {
             logError(this, "setActingPlayer threw for quest", item.quest.toString(16), "stage", scopeStage, err);
         }
+    }
+
+    // a relayed scope with no swap, for a live apply whose acting player is
+    // this seat's own or unstamped: the platform's root is kRelayed (its
+    // V-scene skip reads it) while Game.GetPlayer stays this seat's own
+    // player, named as the figure 0x14; the scope's server id is the stamp, or
+    // this seat's own for none (the reporter, which the server takes for an
+    // unstamped report anyway). setActingPlayer as it stands on
+    // m4-train-53-platform (bbf67821, PuppetApi.cpp) refuses 0x14 as the
+    // figure, nothing stored, and its figure 0 would make Game.GetPlayer None
+    // inside the scope, so until the relayed-scope API lands this call arms
+    // nothing: said once, a trace after
+    private nameRelayedScope(item: QuestItem, scopeStage: number, acting: number | undefined) {
+        const mine = this.controller.lookupListener(RemoteServer).getMyRemoteRefrId();
+        const serverId = acting ?? (mine > 0 ? mine % 0x100000000 : 0);
+        if (serverId < FIRST_SERVER_ID) {
+            return;
+        }
+        let armed: unknown;
+        try {
+            // needs the platform's relayed-scope API (m4-train-53-platform)
+            armed = this.sp.setActingPlayer(item.quest, scopeStage, PLAYER_ID, serverId, ACTING_TTL_MS);
+        } catch (err) {
+            logError(this, "setActingPlayer threw for the relayed scope of quest", item.quest.toString(16), "stage", scopeStage, err);
+            return;
+        }
+        if (armed === true) {
+            return;
+        }
+        const line = `quest ${item.quest.toString(16)} stage ${scopeStage}: no relayed scope armed (${acting === undefined ? "unstamped" : "this seat's own acting player"}): this platform's setActingPlayer takes another player's figure alone, so the relay runs unscoped until the platform's relayed-scope API (m4-train-53-platform)`;
+        if (this.relayedScopeSaid) {
+            logTrace(this, line);
+            return;
+        }
+        this.relayedScopeSaid = true;
+        logLab(TAG, line);
     }
 
     // the scope's player the platform names for a reported pair, a server id;
@@ -1935,6 +1985,8 @@ export class QuestStageService extends ClientListener {
     private runsOffSaid = false;
     // an older platform without setActingPlayer and getActingPlayer
     private actingExportsMissing = false;
+    // train 53: whether a relayed scope the platform refused was said
+    private relayedScopeSaid = false;
     // note 7: the start-up stages each quest's last start word named
     private startUpStages = new Map<number, number[]>();
     // the player-class quests the login named (each seat runs its own

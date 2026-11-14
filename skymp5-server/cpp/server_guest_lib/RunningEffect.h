@@ -22,7 +22,8 @@ struct RunningEffect
   // caster
   std::optional<FormDesc> caster;
   uint32_t kind = 0; // 0 value, 1 peak value, 2 dual value modifier, 3 a
-                     // state (wire-rules magic::EffectKind)
+                     // state, 4 an absorb (its caster gains its loss;
+                     // wire-rules magic::EffectKind)
   int32_t av = -1;
   int32_t secondAv = -1; // a dual modifier's second actor value, -1 for none
   float secondWeight = 0.f;

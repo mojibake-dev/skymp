@@ -495,6 +495,10 @@ private:
   // engine's rule gives it, played in the victim's game
   void NotifyStagger(MpActor& aggressor, MpActor& target,
                      const HitData& hitData, bool dealtDamage);
+  // playtest 51's infection: the victim's own game applies another actor's
+  // spell from that actor's figure (its numbers zeroed there, its scripts
+  // run), once a contact
+  void DeliverSpellLanding(MpActor& caster, MpActor& target, uint32_t spell);
   // the stagger of `magnitude` played in the target's game, the aggressor's
   // figure its source, and relayed to every game that sees the target
   // (thuum docs/verbs/stagger.md); `what` names the hit for the log

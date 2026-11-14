@@ -1585,7 +1585,7 @@ std::string SendTriggerImpl(RE::TESObjectREFR* refr, std::string_view name,
     // its joins capped at the trigger's own attached scripts, the handlers
     // this send starts (rung 5's fresh review, note 9)
     ActingScope::Arm(formId, taken->player, ActingScope::kArmMs,
-                     ActingScope::SubjectKind::kTrigger, target.scripts);
+                     ActingScope::RootKind::kTrigger, target.scripts);
     if (LogThis(g_triggerArmLines)) {
       logger::info("[verb:quests] SendTriggerEvent {} to {:x} by {:x}: the "
                    "presser's scope armed for {} ms (acting player {:x})",

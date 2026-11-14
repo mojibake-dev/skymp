@@ -402,13 +402,17 @@ Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
   ActingScope::Player player;
   player.figure = figure;
   player.serverId = serverId;
-  ActingScope::Request(questId, stage, player, ttlMs,
-                       ActingScope::Origin::kRelayed);
+  // the scope's root (V-scene): a relayed stage or word is kRelayed, this
+  // seat not its cause seat; an entry's arm is SendTriggerEvent's, kTrigger
+  ActingScope::Request(
+    questId, stage, player, ttlMs, ActingScope::Origin::kRelayed,
+    stage == ActingScope::kEntry ? ActingScope::RootKind::kTrigger
+                                 : ActingScope::RootKind::kRelayed);
   const bool word =
     stage == ActingScope::kStart || stage == ActingScope::kStop;
   if (word) {
     ActingScope::Arm(questId, player, ActingScope::kArmMs,
-                     ActingScope::SubjectKind::kQuest);
+                     ActingScope::RootKind::kRelayed);
   }
   const ActingScope::Counts counts = ActingScope::Count();
   logger::info(

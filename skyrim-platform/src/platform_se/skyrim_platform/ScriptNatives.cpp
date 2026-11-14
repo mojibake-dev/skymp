@@ -324,12 +324,13 @@ constexpr std::pair<const char*, const char*> kGlobalSetRow{ "GlobalVariable",
 // the guest that applied the relayed stage 185, read R-V1 of train 53): the
 // two natives that start a scene (FunctionsDump.txt: Scene's `ForceStart()`
 // and `Start()`, not latent, no return), whose call inside another player's
-// acting scope opened on a quest (ActingScope::SubjectKind::kQuest: a
-// relayed stage's fragment, a start or a stop) is skipped here (OnCall's
-// step (0)); the acting player's own seat runs the fragment natively and
-// starts the scene there. A trigger's scope (kTrigger, a relayed entry) is
-// left alone: the trigger's host runs its scripts for the presser, a scene
-// start among them (defaultStartSceneTrigScript). No table row
+// acting scope rooted at a relay (ActingScope::RootKind::kRelayed: a stage,
+// a start or a stop another seat set, applied here, and everything chained
+// inside it) is skipped here (OnCall's step (0)), this seat not the stage's
+// cause seat; the cause seat runs the fragment natively and starts the scene
+// there. A scope rooted at a trigger entry (kTrigger), its chained stages'
+// included, is left alone: this seat's engine set those stages for the
+// presser (defaultStartSceneTrigScript; MS13's 38386 stage 10). No table row
 // holds them (NativeRows.inc), so InstallHooks binds the game module's
 // IFunction of each by class and name, written before the dispatch hook
 // attaches and never after
@@ -2084,7 +2085,7 @@ std::uint32_t SwapPlayer(const RE::BSScript::IFunction* fn,
 }
 
 // V-scene's test: one of the bound scene starts (kSceneStartNatives), asked
-// only on a stack scoped to a quest (rule 9)
+// only on a stack scoped to a relay's root (rule 9)
 bool IsSceneStart(const RE::BSScript::IFunction* fn)
 {
   return std::find(g_sceneStarts.begin(), g_sceneStarts.end(), fn) !=
@@ -2107,8 +2108,8 @@ void LogSceneSkipped(const RE::BSScript::IFunction* fn,
   std::string handler;
   NameCaller(top->previousFrame, caller, handler);
   logger::info("[verb:quests] {}.{} on {:x} from {}.{}: skipped inside acting "
-               "player {:x}'s quest scope, stack {}; the stage's cause seat "
-               "starts the scene (ADR-073 D-A2 C)",
+               "player {:x}'s relayed scope, stack {}; the stage's cause "
+               "seat starts the scene (ADR-073 D-A2 C)",
                fn->GetObjectTypeName().c_str(), fn->GetName().c_str(), scene,
                caller, handler, scope.player.serverId, stack->stackID);
 }
@@ -2166,11 +2167,12 @@ void PropagateScope(std::size_t row, const RowInfo& info,
     case QuestRow::None:
       return;
   }
+  // the parent scope's root inherited unchanged (V-scene: a trigger's
+  // chained stage stays its host's to start scenes in)
   ActingScope::Request(quest, stage, scope.player, ActingScope::kChainedMs,
-                       ActingScope::Origin::kChained);
+                       ActingScope::Origin::kChained, scope.root);
   if (stage < 0) {
-    ActingScope::Arm(quest, scope.player, ActingScope::kArmMs,
-                     ActingScope::SubjectKind::kQuest);
+    ActingScope::Arm(quest, scope.player, ActingScope::kArmMs, scope.root);
   }
   if (ActingScope::LineDue(scope.seq, ActingScope::Line::kChain)) {
     logger::info("[verb:quests] {}.{} on {:x} ({}) inside acting player "
@@ -2445,17 +2447,18 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     marks.result = fn->GetReturnType().GetUnmangledRawType();
   }
   // V-scene (ADR-073 D-A2 C): a Scene.Start or ForceStart inside another
-  // player's acting scope opened on a quest (a relayed stage's fragment, a
-  // start or a stop; never a trigger entry's, whose host runs the trigger's
-  // scripts) is the stage's cause seat's, whose own fragment starts the
-  // scene there; here it is skipped as a call on an absent figure
-  // is (the frame left alone, the native's declared return's empty result,
-  // None), counted on the untabled row, its line logged (LogSceneSkipped).
+  // player's acting scope rooted at a relay (kRelayed: a stage or a word
+  // another seat set, applied here, or a stage chained inside one; never a
+  // trigger entry's root, whose stages this seat's engine set) is the stage's
+  // cause seat's, whose own fragment starts the scene there; here it is
+  // skipped as a call on an absent figure is (the frame left alone, the
+  // native's declared return's empty result, None), counted on the untabled
+  // row, its line logged (LogSceneSkipped).
   // HYPOTHESIS H-VS1: a relayed fragment's Scene.Start runs on the stack its
   // first native joined (Fragment_7's Game.GetPlayer, before the start), so
   // the guest logs this line for scene 5dba7 and no PuppetService stop of it
-  if (scope && !marks.skip &&
-      scope->subject == ActingScope::SubjectKind::kQuest && IsSceneStart(fn)) {
+  if (scope && !marks.skip && scope->root == ActingScope::RootKind::kRelayed &&
+      IsSceneStart(fn)) {
     marks.skip = true;
     marks.result = fn->GetReturnType().GetUnmangledRawType();
     g_actingUntabled.fetch_add(1, std::memory_order_relaxed);
@@ -3478,14 +3481,14 @@ void ScriptNatives::InstallHooks()
     }
     if (g_sceneStarts[i]) {
       logger::info("[verb:quests] {}.{} bound: inside another player's "
-                   "acting scope on a quest its call is skipped, the stage's "
-                   "cause seat starts the scene; a trigger entry's scope runs "
-                   "it (ADR-073 D-A2 C)",
+                   "acting scope rooted at a relay its call is skipped, the "
+                   "stage's cause seat starts the scene; a trigger entry's "
+                   "root runs it (ADR-073 D-A2 C)",
                    sceneCls, sceneFn);
     } else {
       logger::warn("[verb:quests] {}.{} is not among the game module's "
-                   "bindings; a scene a quest-scoped fragment starts runs "
-                   "here too",
+                   "bindings; a scene a relayed fragment starts runs here "
+                   "too",
                    sceneCls, sceneFn);
     }
   }

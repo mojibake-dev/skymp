@@ -70,26 +70,31 @@ struct Player
   uint32_t serverId = 0;
 };
 
-// the kind of subject an arm names, set where each scope is opened: a quest
-// (the quest stage sink's arm of a taken stage request, setActingPlayer's
-// start or stop word, the seam's propagation of a start or a stop) or a
-// trigger (SendTriggerEvent's arm of a relayed entry). Train 53's V-scene
-// skips a scene start in a quest's scope alone: a trigger's host runs the
-// trigger's own scripts for the presser, its scene starts among them
-// (defaultStartSceneTrigScript)
-enum class SubjectKind : uint8_t
+// a scope's root, what opened the chain it belongs to: kRelayed, a stage or
+// a start or stop word another seat set, which this seat applies from the
+// relay (setActingPlayer's request, taken by the quest stage sink, and its
+// word's arm), so this seat is not the stage's cause seat; kTrigger, a
+// relayed trigger entry this seat runs for the presser (SendTriggerEvent's
+// arm), whose stages this seat's own engine sets, so this seat is their
+// cause seat. A chained request or arm (the seam's propagation inside a
+// scoped stack) inherits its parent scope's root unchanged. Train 53's
+// V-scene skips a scene start under kRelayed alone (ADR-073 D-A2 C): a
+// trigger's host starts the trigger's scenes (defaultStartSceneTrigScript)
+// and its stages' fragments' scenes (MS13's 38386 stage 10, Lucan and
+// Camilla the host's). A default Scope's kTrigger skips nothing
+enum class RootKind : uint8_t
 {
-  kQuest,
+  kRelayed,
   kTrigger
 };
 
 // a scope: its player, the arm that opened it (a sequence number, the
-// lines' key: "the first three per scope") and that arm's subject's kind
+// lines' key: "the first three per scope") and its chain's root
 struct Scope
 {
   Player player;
   uint64_t seq = 0;
-  SubjectKind subject = SubjectKind::kQuest;
+  RootKind root = RootKind::kTrigger;
 };
 
 // where a request came from: setActingPlayer's relay, or the seam's
@@ -104,6 +109,7 @@ struct Taken
 {
   Player player;
   Origin origin = Origin::kRelayed;
+  RootKind root = RootKind::kTrigger;
 };
 
 struct Joined
@@ -116,9 +122,10 @@ struct Joined
 // the steady clock in milliseconds (ScriptNatives.cpp's)
 uint64_t NowMs();
 
-// a request for the pair, replacing an older one, for ttlMs
+// a request for the pair, replacing an older one, for ttlMs; root is the
+// scope's root the sink's arm gives it when it is taken
 void Request(uint32_t subject, int32_t stage, Player player, uint64_t ttlMs,
-             Origin origin);
+             Origin origin, RootKind root);
 // the pair's request taken at its event: once (a taken request arms nothing
 // again), nothing for none, a taken or an expired one
 std::optional<Taken> Take(uint32_t subject, int32_t stage);
@@ -129,12 +136,12 @@ uint32_t ServerIdOf(uint32_t subject, int32_t stage);
 bool Requested();
 
 // the subject armed for its player for ttlMs, replacing an older arm of the
-// subject; the new scope answered for the caller's line. kind is the
-// subject's (a quest or a trigger), carried by every stack the arm joins.
-// maxJoins caps the stacks the arm joins (0 for no cap): a relayed trigger
+// subject; the new scope answered for the caller's line. root is the
+// scope's root (RootKind), carried by every stack the arm joins. maxJoins
+// caps the stacks the arm joins (0 for no cap): a relayed trigger
 // entry's arm joins at most the trigger's own attached scripts' handlers
 // (rung 5's fresh review, note 9)
-Scope Arm(uint32_t subject, Player player, uint64_t ttlMs, SubjectKind kind,
+Scope Arm(uint32_t subject, Player player, uint64_t ttlMs, RootKind root,
           uint32_t maxJoins = 0);
 // any arm, one atomic read
 bool Armed();

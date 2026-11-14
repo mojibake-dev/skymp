@@ -724,6 +724,89 @@ CallArg ReadArg(const RE::BSScript::Variable& v,
   return arg;
 }
 
+// train 53's R-V2 (playtest 52: "ff000000's own Actor.RemoveSpell 0 (from
+// QF_VC01_0005C625.Fragment_7)", refused by the server): ReadArg's null
+// object argument, an object whose handle names no plain form the form
+// table knows (the client's "None"), its raw handle logged once per site
+// (the calling script and its handler, the native, the argument's index),
+// every later read at the site counted and said at the census's flush with
+// the last handle. HYPOTHESIS H-NA1: a property's handle that failed to load
+// at the save's restore reads 0x0000FFFF00000000, the empty handle LoadHandle
+// (Address Library 53523) writes on failure (thuum docs/research/
+// adr065-papyrus-state-2026-11-03.md:138-139, a decompile). Taken only
+// on a null read, under one mutex; at most kMaxSites sites, the rest counted
+// as one
+namespace NullArgs {
+constexpr std::size_t kMaxSites = 64;
+
+struct Site
+{
+  std::uint32_t later = 0;
+  RE::VMHandle last = 0;
+};
+
+struct
+{
+  std::map<std::string, Site> sites;
+  std::uint32_t others = 0;
+  std::mutex m;
+} g_table;
+
+void Note(std::size_t row, std::uint32_t index, const std::string& caller,
+          const std::string& handler, RE::VMHandle handle)
+{
+  std::string site =
+    fmt::format("{}.{} argument {} from {}.{}", kRows[row].cls, kRows[row].fn,
+                index, caller, handler);
+  {
+    std::lock_guard<std::mutex> lock(g_table.m);
+    const auto it = g_table.sites.find(site);
+    if (it != g_table.sites.end()) {
+      ++it->second.later;
+      it->second.last = handle;
+      return;
+    }
+    if (g_table.sites.size() >= kMaxSites) {
+      ++g_table.others;
+      return;
+    }
+    g_table.sites.emplace(site, Site{});
+  }
+  logger::info("[verb:scripts] {}: a null object argument, its handle {:x} "
+               "naming no plain form the form table knows (R-V2; later ones "
+               "at this site counted)",
+               site, handle);
+}
+
+// the window's counts, one line per site that read another null, and one
+// for the sites past the bound
+void Flush()
+{
+  std::vector<std::pair<std::string, Site>> moved;
+  std::uint32_t others = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_table.m);
+    for (auto& [site, entry] : g_table.sites) {
+      if (entry.later != 0) {
+        moved.emplace_back(site, entry);
+        entry.later = 0;
+      }
+    }
+    others = std::exchange(g_table.others, 0);
+  }
+  for (const auto& [site, entry] : moved) {
+    logger::info("[verb:scripts] {}: {} more null object argument(s) in {} "
+                 "s, the last handle {:x} (R-V2)",
+                 site, entry.later, kFlushMs / 1000, entry.last);
+  }
+  if (others != 0) {
+    logger::info("[verb:scripts] {} null object argument(s) in {} s at sites "
+                 "past the first {} (R-V2)",
+                 others, kFlushMs / 1000, kMaxSites);
+  }
+}
+}
+
 // the calling script and its handler: the frame below the native's own
 // (the research's finding 9; H-S3, HYPOTHESIS until x-native-frame v1's
 // caller rows read defaultPuzzlePillarScript), its owningObjectType's name
@@ -1225,6 +1308,9 @@ std::optional<QueuedCall> CallFromFrame(
   call.latent = info.latent;
   call.stackId = stack->stackID;
   call.argCount = info.params;
+  // the caller named first, so R-V2's line names the site of a null object
+  // argument (NullArgs)
+  NameCaller(top->previousFrame, call.caller, call.handler);
   if (info.params > 0) {
     if (page == kNoPage) {
       page = top->GetPageForFrame();
@@ -1234,11 +1320,14 @@ std::optional<QueuedCall> CallFromFrame(
       return std::nullopt;
     }
     for (std::uint32_t i = 0; i < info.params; ++i) {
-      call.args[i] =
-        ReadArg(top->GetStackFrameVariable(i, page), info.types[i]);
+      const RE::BSScript::Variable& v = top->GetStackFrameVariable(i, page);
+      call.args[i] = ReadArg(v, info.types[i]);
+      const RE::BSScript::Object* object = ObjectOf(v);
+      if (object && call.args[i].kind == CallArg::Kind::Null) {
+        NullArgs::Note(row, i, call.caller, call.handler, object->GetHandle());
+      }
     }
   }
-  NameCaller(top->previousFrame, call.caller, call.handler);
   const RE::TESObjectREFR* callerRef = CallerRefOf(top->previousFrame);
   call.callerSelf = callerRef ? callerRef->formID : 0;
   return call;
@@ -2961,6 +3050,8 @@ void FlushCensus(uint64_t now)
                  "with the VM's policy (the encoding HYPOTHESIS of adr065 Q1)",
                  misses, kFlushMs / 1000);
   }
+  // R-V2: the window's later null object arguments, by site
+  NullArgs::Flush();
   if (rows.empty()) {
     return;
   }

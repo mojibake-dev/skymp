@@ -483,16 +483,21 @@ wire_struct! {
     /// and a world trigger's script runs on the cell's host, so a seat that
     /// does not host the cell reports its own presser's entry (`entry` set,
     /// `caster` the presser, `target` the trigger) and the server relays it
-    /// to the host alone as [`RelayedActivation`] with the same `entry`. R2:
-    /// the presser's owner's engine saw the entry; the server checks the
-    /// shape it can (the trigger, the presser, the cell, the reach) and
-    /// records nothing. Not idempotent: each report is one event on the
-    /// host. Reason codes for an entry: `E_VAL_RANGE` (an entry other than 1
-    /// or 2, a second activation, a caster of 0, a target of 0 or
+    /// to the host alone as [`RelayedActivation`] with the same `entry`: to
+    /// the sender itself when its grant of the cell came while the report
+    /// was in flight (train 53's C-entry; its gate blanked the entry, so the
+    /// presser comes back as the sender's own actor id, not 0x14), and an
+    /// enter that arrives while nobody hosts the cell waits for the cell's
+    /// grant. R2: the presser's owner's engine saw the entry; the server
+    /// checks the shape it can (the trigger, the presser, the cell, the
+    /// reach) and records nothing. Not idempotent: each report is one event
+    /// on the host. Reason codes for an entry: `E_VAL_RANGE` (an entry other
+    /// than 1 or 2, a second activation, a caster of 0, a target of 0 or
     /// 0xff000000 and up), `E_VAL_RATE` (the sender's entry budget); the
     /// server logs `E_ENTRY_NO_REF`, `E_ENTRY_ACTOR`, `E_ENTRY_PRESSER`,
-    /// `E_ENTRY_NOT_LOADER`, `E_ENTRY_HOST`, `E_ENTRY_NO_HOST` and
-    /// `E_ENTRY_REACH` by name (wire-rules trigger_entry).
+    /// `E_ENTRY_NOT_LOADER`, `E_ENTRY_NO_HOST`, `E_ENTRY_REACH`,
+    /// `E_ENTRY_UNPAIRED`, `E_ENTRY_HELD_FULL`, `E_ENTRY_HELD_LEFT` and
+    /// `E_ENTRY_HELD_EXPIRED` by name (wire-rules trigger_entry).
     pub struct Activate {
         /// `"t": 6`.
         #[serde(default)]

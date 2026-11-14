@@ -1038,8 +1038,14 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           this_->pImpl->teleportLooks.erase(actor->GetFormId());
           // and the trigger enters it has not left (thuum ADR-068 D-C2: a
           // leave pairs with its enter; its presence on the host's copy
-          // goes with the figure)
-          this_->pImpl->triggerEntries->forget(actor->GetFormId());
+          // goes with the figure), and the enters it reported or pressed
+          // that waited for a grant (train 53's C-entry)
+          if (const size_t heldEntries =
+                this_->pImpl->triggerEntries->forget(actor->GetFormId())) {
+            spdlog::info("[verb:traps] {:x} left: {} held trigger enter(s) "
+                         "of its forgotten (C-entry)",
+                         actor->GetFormId(), heldEntries);
+          }
           // TGM and TIM are the session's (thuum docs/verbs/god-mode.md)
           actor->SetGodMode(false);
           actor->SetImmortal(false);
@@ -2283,6 +2289,10 @@ void ApplyHostDecisions(PartOne& partOne,
                                      grant, true);
         FlipHostedFlags(partOne, *host, d.cell, host);
         partOne.ReplayHeldSightings(d.cell, *host);
+        // train 53's C-entry: the trigger enters held while nobody hosted
+        // the cell, judged again now that its host's gate is open (after the
+        // grant's word on the same ordered channel)
+        partOne.GetActionListener().ReplayHeldTriggerEntries(d.cell);
         break;
       }
       case skymp::rules::HostKind::Release: {
@@ -2956,6 +2966,8 @@ void PartOne::TickCellHostsEverySecond()
   TickDeaths(SteadyNowMs());
   TickBodies(SteadyNowMs());
   SweepHeldSightings(SteadyNowMs());
+  // train 53's C-entry: trigger enters held past their window
+  GetActionListener().SweepHeldTriggerEntries(SteadyNowMs());
 }
 
 void PartOne::TickBodies(uint64_t nowMs)

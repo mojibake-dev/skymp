@@ -264,8 +264,20 @@ public:
   // the presser as the caster and the same entry, and nothing is recorded
   // (R2); every refusal is logged by name, once a minute per reporter and
   // code. The edge spends the sender's entry budget (wire-validate
-  // ClientGuard::entry_budget), so no window is kept here
+  // ClientGuard::entry_budget), so no window is kept here. Train 53's
+  // C-entry: the cell's host's own report is one its gate blanked (its grant
+  // came while the report was in flight), relayed back to its own game; an
+  // enter nobody hosts the cell for is held for the cell's grant
+  // (ReplayHeldTriggerEntries)
   void OnTriggerEntry(MpActor& reporter, const ActivateMessage& msg);
+  // C-entry: `cell` was granted (PartOne's ApplyHostDecisions, after the
+  // grant's word and the held sightings): its held enters are judged again
+  // as fresh reports over this moment's facts, OnActorSighting's replay
+  // shape; those held past the window are dropped and said
+  void ReplayHeldTriggerEntries(uint32_t cell);
+  // C-entry: the held enters past the window go, each said by its code
+  // (PartOne's once-a-second tick; a test with its own clock)
+  void SweepHeldTriggerEntries(uint64_t nowMs);
 
   // thuum docs/verbs/change-form.md (ADR-065 system 1): an actor's change
   // form as the owner's engine serialized it. The wire validated the shape
@@ -584,10 +596,20 @@ private:
            std::pair<std::chrono::steady_clock::time_point, uint32_t>>
     questLines;
   // thuum D-C2: when each reporter's trigger entry refusal of each code was
-  // last said (one a minute, the rest counted)
+  // last said (one a minute, the rest counted), and each hold and drop of
+  // C-entry's by the same rule (TriggerEntryLineDue)
   std::map<std::pair<uint32_t, std::string>,
            std::pair<std::chrono::steady_clock::time_point, uint32_t>>
     triggerEntryRefusals;
+  // the count since the last line of `code` for `reporter`, including this
+  // one, when a line is due (one a minute); none while it is not
+  std::optional<uint32_t> TriggerEntryLineDue(uint32_t reporter,
+                                              const std::string& code);
+  // a trigger entry's refusal or a held enter's drop, said by its code:
+  // `reporter`'s report of `presser` entering or leaving `trigger`
+  void SayTriggerEntryRefusal(uint32_t reporter, uint32_t presser, bool leave,
+                              uint32_t trigger, const std::string& code,
+                              const std::string& why);
   // thuum ADR-068 rung 3: when each form's record line was last said (one a
   // minute, the rest at debug), and each refusal's, by sender, form and code
   // (one a minute, the rest counted)

@@ -24,12 +24,40 @@
 //! [`entry`] judges a presser's owner's report that its actor entered or left
 //! a trigger whose world script runs on the cell's host (D-C2): the trigger a
 //! world object the server holds or places, the presser the reporter's own,
-//! the reporter a game with the cell loaded that does not host it, a host to
-//! send it to, and the presser within the trigger's activation reach.
-//! Accepted, the entry goes to the host alone, whose engine sends the event to
-//! the trigger's scripts with the presser as akActionRef. R2: the presser's
-//! owner's engine computed the entry; the server relays it and records
-//! nothing but the pairing below.
+//! the reporter a game with the cell loaded, a host to send it to, and the
+//! presser within the trigger's activation reach. Accepted, the entry goes to
+//! the host alone, whose engine sends the event to the trigger's scripts with
+//! the presser as akActionRef. R2: the presser's owner's engine computed the
+//! entry; the server relays it and records nothing but the pairing and the
+//! hold below.
+//!
+//! The host's own report goes back to the host (C-entry, train 53; thuum
+//! lab/.cache/drafts/reads-53/r-c1-c2-c4-claw.md, R-C1). The platform's gate
+//! tells an entry only when it blanked it, in a cell its seat does not host
+//! (FridaHooks.cpp's presser rule), so a report from the cell's host is one
+//! whose grant came while the report was in flight, and its engine never ran
+//! the script. Playtest 51: rotfern's player entered MS13ArgueTriggerREF
+//! 0x78b9a 430 ms before its seat hosted cell 0x133c9, the report reached the
+//! server 33 ms after the grant, and the rule's old premise ("its own engine
+//! ran the trigger's script", `E_ENTRY_HOST`) refused it, so the argument's
+//! stage (0x38386 stage 10) waited for the next player. Every other check
+//! stays.
+//!
+//! An enter refused only because nobody hosts its cell (`E_ENTRY_NO_HOST`:
+//! before the cell's first grant, or while its host's game is gone) and that
+//! passes the reach is held for the cell's next grant ([`Entries::granted`]),
+//! when the core judges it again over that moment's facts; the same read: a
+//! player who walks into an unhosted cell standing in a world trigger lost
+//! the enter whichever message came first. The hold is bounded per cell
+//! ([`HELD_PER_CELL`]), in total ([`HELD_TOTAL`]) and in time ([`HELD_MS`],
+//! [`Entries::sweep`]); a leave of a held enter drops both; a reporter's
+//! disconnect drops its own ([`Entries::forget`]). Each drop has a code the
+//! core logs once a minute per reporter and code (`E_ENTRY_HELD_FULL`,
+//! `E_ENTRY_HELD_LEFT`, `E_ENTRY_HELD_EXPIRED`). The read's rejected
+//! alternative, D-W3 B's client store keeping the owned presser's blanked
+//! enter, cannot know whether the relay was taken elsewhere, so it could play
+//! twice; the gate tells only this seat's own pressers and D-W3 B holds only
+//! undecided ones, so this hold and that store never hold the same enter.
 //!
 //! A leave pairs with its enter ([`Entries`]; the builder's call on the
 //! probe review of D-C2, 2026-11-07): a guest who leaves a world trigger by
@@ -48,6 +76,7 @@
 use std::collections::HashMap;
 
 use crate::activation;
+use crate::cells;
 use crate::script_state::RefKind;
 use crate::Verdict;
 
@@ -218,15 +247,23 @@ pub enum EntryCode {
     Presser,
     /// The reporter's game has not reported the trigger's cell loaded.
     NotLoader,
-    /// The reporter hosts the cell: its own engine ran the trigger's script.
-    Host,
-    /// Nobody hosts the cell: no engine runs the trigger's script.
+    /// Nobody hosts the cell: no engine runs the trigger's script (a leave;
+    /// an enter is held instead, [`EntryVerdict::Held`]).
     NoHost,
     /// The presser stands outside the trigger's activation reach.
     Reach,
     /// A leave with no accepted enter of the same presser into the same
     /// trigger to end.
     Unpaired,
+    /// An enter nobody hosts the cell for, not held: the cell holds
+    /// [`HELD_PER_CELL`] already, or every cell together [`HELD_TOTAL`].
+    HeldFull,
+    /// A leave of an enter held for its cell's grant: both go, neither having
+    /// reached an engine.
+    HeldLeft,
+    /// A held enter whose cell had no grant within [`HELD_MS`], dropped
+    /// ([`Entries::sweep`], [`Entries::granted`]); never a judgment's word.
+    HeldExpired,
 }
 
 impl EntryCode {
@@ -238,10 +275,12 @@ impl EntryCode {
             EntryCode::Actor => "E_ENTRY_ACTOR",
             EntryCode::Presser => "E_ENTRY_PRESSER",
             EntryCode::NotLoader => "E_ENTRY_NOT_LOADER",
-            EntryCode::Host => "E_ENTRY_HOST",
             EntryCode::NoHost => "E_ENTRY_NO_HOST",
             EntryCode::Reach => "E_ENTRY_REACH",
             EntryCode::Unpaired => "E_ENTRY_UNPAIRED",
+            EntryCode::HeldFull => "E_ENTRY_HELD_FULL",
+            EntryCode::HeldLeft => "E_ENTRY_HELD_LEFT",
+            EntryCode::HeldExpired => "E_ENTRY_HELD_EXPIRED",
         }
     }
 }
@@ -249,10 +288,17 @@ impl EntryCode {
 /// The rule's word on a reported entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryVerdict {
-    /// Relayed to the cell's host alone, its actor named.
+    /// Relayed to the cell's host alone, its actor named: the reporter's own
+    /// when it hosts the cell (its gate blanked the entry).
     Relay {
         /// The host's actor.
         host: u32,
+    },
+    /// An enter nobody hosts the cell for, held for its grant
+    /// ([`Entries::granted`]).
+    Held {
+        /// The trigger's cell.
+        cell: u32,
     },
     /// Refused, logged by the code's name.
     Refuse(Refusal<EntryCode>),
@@ -273,7 +319,9 @@ pub fn entry(facts: &EntryFacts) -> EntryVerdict {
 /// The entry's checks in their order: the cell's host to relay to, or the
 /// first refusal. An enter's are every check; a paired leave's skip the
 /// loader and the reach (`enter` false), since its pairing proves the
-/// presser was inside: its accepted enter passed both.
+/// presser was inside: its accepted enter passed both. A host that is the
+/// reporter is relayed to like any other (C-entry: its gate blanked the
+/// entry, so its engine never ran the script).
 fn admit(facts: &EntryFacts, enter: bool) -> Result<u32, Refusal<EntryCode>> {
     let refuse = |code, why: String| Err(Refusal { code, why });
     match facts.trigger {
@@ -291,55 +339,128 @@ fn admit(facts: &EntryFacts, enter: bool) -> Result<u32, Refusal<EntryCode>> {
     if enter && !facts.loader {
         return refuse(EntryCode::NotLoader, format!("its game has not loaded cell {:x}", facts.cell));
     }
-    if facts.host == facts.reporter {
-        return refuse(EntryCode::Host, format!("it hosts cell {:x}: its own engine ran the trigger's script", facts.cell));
-    }
     if facts.host == 0 {
         return refuse(EntryCode::NoHost, format!("nobody hosts cell {:x}: no engine runs the trigger's script", facts.cell));
     }
     if !enter {
         return Ok(facts.host);
     }
+    reach(facts)?;
+    Ok(facts.host)
+}
+
+/// An enter's last check: the presser within the trigger's activation reach.
+fn reach(facts: &EntryFacts) -> Result<(), Refusal<EntryCode>> {
+    let refuse = |why: String| Err(Refusal { code: EntryCode::Reach, why });
     let Some(distance) = measured(facts.distance) else {
-        return refuse(EntryCode::Reach, "the presser stands in another cell or world".to_owned());
+        return refuse("the presser stands in another cell or world".to_owned());
     };
     let within = activation::within_reach(distance, facts.trigger_size);
     if !within.allowed {
-        return refuse(EntryCode::Reach, format!("the presser {distance:.0} units off the trigger, the reach {:.0}", within.bound));
+        return refuse(format!("the presser {distance:.0} units off the trigger, the reach {:.0}", within.bound));
     }
-    Ok(facts.host)
+    Ok(())
 }
 
 /// How many accepted enters one presser keeps open (UNMEASURED): a new one
 /// past them drops the oldest, whose leave is then `E_ENTRY_UNPAIRED`.
 pub const ENTRIES_KEPT: usize = 64;
 
+/// How long an enter held for its cell's grant waits (UNMEASURED): twice the
+/// cells rule's grace ([`cells::GRACE_MS`]), the longest a loaded cell goes
+/// without a host by design (its host's game gone, the grace before the cell
+/// passes on). A first grant follows the loaded report at once: playtest
+/// 51's enter was told 430 ms before its seat's grant.
+pub const HELD_MS: u64 = cells::GRACE_MS.saturating_mul(2);
+
+/// How many enters one cell holds for its grant (UNMEASURED): one per
+/// reporter, presser and trigger, the seats' own players and the actors they
+/// simulate there; past it a new one is `E_ENTRY_HELD_FULL`.
+pub const HELD_PER_CELL: usize = 16;
+
+/// How many enters every cell together holds (UNMEASURED).
+pub const HELD_TOTAL: usize = 256;
+
+/// An enter held for its cell's grant: who reported which presser into which
+/// trigger in which cell, and when (the core's monotonic clock, ms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    /// The reporter's actor.
+    pub reporter: u32,
+    /// The presser: the reporter's own actor for its player, or another.
+    pub presser: u32,
+    /// The trigger's form id.
+    pub trigger_id: u32,
+    /// The trigger's cell.
+    pub cell: u32,
+    /// When it was held.
+    pub at_ms: u64,
+}
+
+impl Held {
+    /// How long it has been held at `now_ms`.
+    #[must_use]
+    pub fn age_ms(&self, now_ms: u64) -> u64 {
+        now_ms.saturating_sub(self.at_ms)
+    }
+
+    fn expired(&self, now_ms: u64) -> bool {
+        self.age_ms(now_ms) > HELD_MS
+    }
+}
+
+/// What a cell's grant takes out of the hold.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Granted {
+    /// The enters the core judges again over the grant's facts, oldest
+    /// first.
+    pub replay: Vec<Held>,
+    /// The enters held past [`HELD_MS`], dropped (`E_ENTRY_HELD_EXPIRED`).
+    pub expired: Vec<Held>,
+}
+
 /// Each presser's accepted enters it has not left, by trigger, oldest first:
-/// what a leave pairs with. Runtime only: a restart forgets them, and a
-/// leave after one is unpaired.
+/// what a leave pairs with; and the enters held for their cell's grant, by
+/// cell, oldest first. Runtime only: a restart forgets both, and a leave
+/// after one is unpaired.
 #[derive(Debug, Default)]
 pub struct Entries {
     open: HashMap<u32, Vec<u32>>,
+    held: HashMap<u32, Vec<Held>>,
 }
 
 impl Entries {
-    /// The rule on one reported entry with its pairing: an enter judged by
-    /// [`entry`], and kept open when relayed (a second enter of the same
-    /// trigger keeps one, the newest); a leave first by its pairing,
-    /// `E_ENTRY_UNPAIRED` before any other judgment when it ends no open
-    /// enter of its presser's into its trigger, then by every check but the
-    /// loader and the reach (a presser that left by a door into another
-    /// cell, whose unload the server heard first, still ends its presence
-    /// on the host), relayed and closed.
-    pub fn judge(&mut self, facts: &EntryFacts) -> EntryVerdict {
+    /// The rule on one reported entry with its pairing, at `now_ms`: an enter
+    /// judged by [`entry`], and kept open when relayed (a second enter of the
+    /// same trigger keeps one, the newest), or held for its cell's grant
+    /// when nobody hosts the cell and it passes the reach; a leave first by
+    /// its pairing, `E_ENTRY_UNPAIRED` before any other judgment when it ends
+    /// no open enter of its presser's into its trigger (`E_ENTRY_HELD_LEFT`
+    /// when it ends its reporter's held one instead, which goes), then by
+    /// every check but the loader and the reach (a presser that left by a
+    /// door into another cell, whose unload the server heard first, still
+    /// ends its presence on the host), relayed and closed.
+    pub fn judge(&mut self, facts: &EntryFacts, now_ms: u64) -> EntryVerdict {
         if !facts.leave {
-            let verdict = entry(facts);
-            if matches!(verdict, EntryVerdict::Relay { .. }) {
-                self.opened(facts.presser, facts.trigger_id);
-            }
-            return verdict;
+            return match entry(facts) {
+                EntryVerdict::Relay { host } => {
+                    self.opened(facts.presser, facts.trigger_id);
+                    EntryVerdict::Relay { host }
+                }
+                EntryVerdict::Refuse(r) if r.code == EntryCode::NoHost => match reach(facts) {
+                    Ok(()) => self.hold(facts, now_ms),
+                    Err(refused) => EntryVerdict::Refuse(refused),
+                },
+                verdict => verdict,
+            };
         }
         if !self.is_open(facts.presser, facts.trigger_id) {
+            if let Some(held) = self.unhold(facts.cell, facts.reporter, facts.presser, facts.trigger_id) {
+                return EntryVerdict::Refuse(Refusal {
+                    code: EntryCode::HeldLeft,
+                    why: format!("its enter, held {} ms for cell {:x}'s grant, goes with it", held.age_ms(now_ms), held.cell),
+                });
+            }
             return EntryVerdict::Refuse(Refusal {
                 code: EntryCode::Unpaired,
                 why: format!("no accepted entry of {:x} into {:x} to end", facts.presser, facts.trigger_id),
@@ -354,15 +475,94 @@ impl Entries {
         }
     }
 
-    /// The presser's game left (its disconnect): its open enters go.
-    pub fn forget(&mut self, presser: u32) {
+    /// `cell` was granted, to any seat, at `now_ms`: its held enters leave
+    /// the hold, those within [`HELD_MS`] for the core to judge again over
+    /// the grant's facts (a new host's own goes back to it, another's to it
+    /// as a guest's), the rest dropped.
+    pub fn granted(&mut self, cell: u32, now_ms: u64) -> Granted {
+        let mut out = Granted::default();
+        for held in self.held.remove(&cell).unwrap_or_default() {
+            if held.expired(now_ms) {
+                out.expired.push(held);
+            } else {
+                out.replay.push(held);
+            }
+        }
+        out
+    }
+
+    /// The held enters past [`HELD_MS`] at `now_ms` go, each given back for
+    /// its line (the core's once-a-second tick).
+    pub fn sweep(&mut self, now_ms: u64) -> Vec<Held> {
+        let mut gone = Vec::new();
+        self.held.retain(|_, held| {
+            let (old, kept): (Vec<Held>, Vec<Held>) = held.drain(..).partition(|h| h.expired(now_ms));
+            gone.extend(old);
+            *held = kept;
+            !held.is_empty()
+        });
+        gone
+    }
+
+    /// The presser's game left (its disconnect): its open enters go, and
+    /// every held enter it reported or pressed; how many held ones went.
+    pub fn forget(&mut self, presser: u32) -> usize {
         self.open.remove(&presser);
+        let mut forgotten = 0usize;
+        self.held.retain(|_, held| {
+            let before = held.len();
+            held.retain(|h| h.reporter != presser && h.presser != presser);
+            forgotten = forgotten.saturating_add(before.saturating_sub(held.len()));
+            !held.is_empty()
+        });
+        forgotten
     }
 
     /// Whether the presser has an open enter into the trigger.
     #[must_use]
     pub fn is_open(&self, presser: u32, trigger: u32) -> bool {
         self.open.get(&presser).is_some_and(|t| t.contains(&trigger))
+    }
+
+    /// How many enters `cell` holds for its grant.
+    #[must_use]
+    pub fn held_in(&self, cell: u32) -> usize {
+        self.held.get(&cell).map_or(0, Vec::len)
+    }
+
+    /// The enter held, a second of the same reporter, presser and trigger
+    /// keeping one, the newest; refused when the cell's hold or the whole
+    /// hold is full.
+    fn hold(&mut self, facts: &EntryFacts, now_ms: u64) -> EntryVerdict {
+        let full = |why: String| EntryVerdict::Refuse(Refusal { code: EntryCode::HeldFull, why });
+        // the same enter again gives way to this one, so the counts below
+        // always have its room
+        let _ = self.unhold(facts.cell, facts.reporter, facts.presser, facts.trigger_id);
+        let total = self.held.values().map(Vec::len).fold(0usize, usize::saturating_add);
+        if total >= HELD_TOTAL {
+            return full(format!("nobody hosts cell {:x}, and {HELD_TOTAL} enters wait for their grants already", facts.cell));
+        }
+        if self.held_in(facts.cell) >= HELD_PER_CELL {
+            return full(format!("nobody hosts cell {:x}, which holds {HELD_PER_CELL} enters already", facts.cell));
+        }
+        self.held.entry(facts.cell).or_default().push(Held {
+            reporter: facts.reporter,
+            presser: facts.presser,
+            trigger_id: facts.trigger_id,
+            cell: facts.cell,
+            at_ms: now_ms,
+        });
+        EntryVerdict::Held { cell: facts.cell }
+    }
+
+    fn unhold(&mut self, cell: u32, reporter: u32, presser: u32, trigger: u32) -> Option<Held> {
+        let held = self.held.get_mut(&cell)?;
+        let at = held.iter().position(|h| h.reporter == reporter && h.presser == presser && h.trigger_id == trigger)?;
+        let taken = held.remove(at);
+        if held.is_empty() {
+            self.held.remove(&cell);
+        }
+        Some(taken)
     }
 
     fn opened(&mut self, presser: u32, trigger: u32) {
@@ -410,6 +610,12 @@ mod tests {
     const WEB_SIZE: f32 = 100.0;
     // a draugr of the temple, the guest's by a claim (ADR-052)
     const DRAUGR: u32 = 0x380b3;
+    // the core's monotonic clock at a report, ms
+    const NOW: u64 = 1_000_000;
+    // playtest 51's argument trigger 0x78b9a (MS13ArgueTriggerREF) in the
+    // Riverwood Trader 0x133c9, its host rotfern's seat (R-C1)
+    const TRADER: u32 = 0x133c9;
+    const ARGUE: u32 = 0x78b9a;
 
     fn guest_firing() -> FiringFacts {
         FiringFacts { reporter: GUEST, cell: TEMPLE, host: HOST, loader: true, nearest: Some(40.0), trigger_size: PLATE_SIZE }
@@ -512,8 +718,6 @@ mod tests {
         assert_eq!(entry(&EntryFacts { presser: DRAUGR, presser_owner: HOST, ..guest_entry() }), entry_refusal(EntryCode::Presser, "the presser 380b3 is ff000000's, not the reporter's"));
         assert_eq!(entry(&EntryFacts { presser: DRAUGR, presser_owner: 0, ..guest_entry() }), entry_refusal(EntryCode::Presser, "the presser 380b3 is nobody's, not the reporter's"));
         assert_eq!(entry(&EntryFacts { loader: false, ..guest_entry() }), entry_refusal(EntryCode::NotLoader, "its game has not loaded cell 371de"));
-        let host = EntryFacts { reporter: HOST, presser: HOST, presser_owner: HOST, ..guest_entry() };
-        assert_eq!(entry(&host), entry_refusal(EntryCode::Host, "it hosts cell 371de: its own engine ran the trigger's script"));
         assert_eq!(entry(&EntryFacts { host: 0, ..guest_entry() }), entry_refusal(EntryCode::NoHost, "nobody hosts cell 371de: no engine runs the trigger's script"));
         assert_eq!(entry(&EntryFacts { distance: Some(553.0), ..guest_entry() }), entry_refusal(EntryCode::Reach, "the presser 553 units off the trigger, the reach 552"));
         assert_eq!(entry(&EntryFacts { distance: None, ..guest_entry() }), entry_refusal(EntryCode::Reach, "the presser stands in another cell or world"));
@@ -525,9 +729,151 @@ mod tests {
         assert_eq!(entry(&EntryFacts { loader: false, host: 0, ..guest_entry() }), entry_refusal(EntryCode::NotLoader, "its game has not loaded cell 371de"));
         // a reporter of 0 owns nothing, even a presser of nobody's
         assert_eq!(entry(&EntryFacts { reporter: 0, presser: 0, presser_owner: 0, ..guest_entry() }), entry_refusal(EntryCode::Presser, "the presser 0 is nobody's, not the reporter's"));
-        // the names, in the rule's order
-        let names: Vec<&str> = [EntryCode::NoRef, EntryCode::Actor, EntryCode::Presser, EntryCode::NotLoader, EntryCode::Host, EntryCode::NoHost, EntryCode::Reach].iter().map(|c| c.name()).collect();
-        assert_eq!(names, ["E_ENTRY_NO_REF", "E_ENTRY_ACTOR", "E_ENTRY_PRESSER", "E_ENTRY_NOT_LOADER", "E_ENTRY_HOST", "E_ENTRY_NO_HOST", "E_ENTRY_REACH"]);
+        // the names, in the rule's order, then the pairing's and the hold's
+        let names: Vec<&str> = [EntryCode::NoRef, EntryCode::Actor, EntryCode::Presser, EntryCode::NotLoader, EntryCode::NoHost, EntryCode::Reach, EntryCode::Unpaired, EntryCode::HeldFull, EntryCode::HeldLeft, EntryCode::HeldExpired].iter().map(|c| c.name()).collect();
+        assert_eq!(names, ["E_ENTRY_NO_REF", "E_ENTRY_ACTOR", "E_ENTRY_PRESSER", "E_ENTRY_NOT_LOADER", "E_ENTRY_NO_HOST", "E_ENTRY_REACH", "E_ENTRY_UNPAIRED", "E_ENTRY_HELD_FULL", "E_ENTRY_HELD_LEFT", "E_ENTRY_HELD_EXPIRED"]);
+    }
+
+    fn host_entry() -> EntryFacts {
+        EntryFacts { reporter: HOST, presser: HOST, presser_owner: HOST, cell: TRADER, trigger_id: ARGUE, ..guest_entry() }
+    }
+
+    #[test]
+    fn the_hosts_own_entry_is_one_its_gate_blanked_and_goes_back_to_it() {
+        // playtest 51: rotfern's player entered the argument's trigger while
+        // its seat did not host the trader yet; the report reached the
+        // server just after the grant, so the reporter is the host
+        assert_eq!(entry(&host_entry()), EntryVerdict::Relay { host: HOST });
+        // an NPC its game simulates the same way
+        assert_eq!(entry(&EntryFacts { presser: DRAUGR, ..host_entry() }), EntryVerdict::Relay { host: HOST });
+        // every other check stays: the loader, the reach, the presser
+        assert_eq!(entry(&EntryFacts { loader: false, ..host_entry() }), entry_refusal(EntryCode::NotLoader, "its game has not loaded cell 133c9"));
+        assert_eq!(entry(&EntryFacts { distance: Some(553.0), ..host_entry() }), entry_refusal(EntryCode::Reach, "the presser 553 units off the trigger, the reach 552"));
+        assert_eq!(entry(&EntryFacts { presser: GUEST, presser_owner: GUEST, ..host_entry() }), entry_refusal(EntryCode::Presser, "the presser ff000001 is ff000001's, not the reporter's"));
+        // relayed back, it opens the pairing, and its leave goes back too
+        let mut e = Entries::default();
+        assert_eq!(e.judge(&host_entry(), NOW), EntryVerdict::Relay { host: HOST });
+        assert!(e.is_open(HOST, ARGUE));
+        assert_eq!(e.judge(&EntryFacts { leave: true, distance: Some(1800.0), ..host_entry() }, NOW), EntryVerdict::Relay { host: HOST });
+        assert!(!e.is_open(HOST, ARGUE));
+    }
+
+    #[test]
+    fn an_enter_before_any_grant_is_held_and_the_grant_gives_it_back() {
+        // the same enter arriving before the grant: nobody hosts the trader
+        let mut e = Entries::default();
+        let early = EntryFacts { host: 0, ..host_entry() };
+        assert_eq!(e.judge(&early, NOW), EntryVerdict::Held { cell: TRADER });
+        assert_eq!(e.held_in(TRADER), 1);
+        // held, not open: nothing reached an engine
+        assert!(!e.is_open(HOST, ARGUE));
+        // the same enter again keeps one, the newest
+        assert_eq!(e.judge(&early, NOW + 200), EntryVerdict::Held { cell: TRADER });
+        assert_eq!(e.held_in(TRADER), 1);
+        // a guest's too, into the same trigger: its own
+        assert_eq!(e.judge(&EntryFacts { host: 0, cell: TRADER, trigger_id: ARGUE, ..guest_entry() }, NOW + 300), EntryVerdict::Held { cell: TRADER });
+        assert_eq!(e.held_in(TRADER), 2);
+        // another cell's grant takes nothing
+        assert_eq!(e.granted(TEMPLE, NOW + 400), Granted::default());
+        // the trader's grant gives both back, oldest first, for the core to
+        // judge again over the grant's facts
+        let back = e.granted(TRADER, NOW + 430);
+        let held = |reporter: u32, at_ms: u64| Held { reporter, presser: reporter, trigger_id: ARGUE, cell: TRADER, at_ms };
+        assert_eq!(back, Granted { replay: vec![held(HOST, NOW + 200), held(GUEST, NOW + 300)], expired: vec![] });
+        assert_eq!(e.held_in(TRADER), 0);
+        assert_eq!(e.granted(TRADER, NOW + 500), Granted::default());
+        // judged again with the grant's host, the host's own goes back to it
+        // and the guest's to the host, and each opens its pairing
+        assert_eq!(e.judge(&host_entry(), NOW + 430), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&EntryFacts { cell: TRADER, trigger_id: ARGUE, ..guest_entry() }, NOW + 430), EntryVerdict::Relay { host: HOST });
+        assert!(e.is_open(HOST, ARGUE) && e.is_open(GUEST, ARGUE));
+    }
+
+    #[test]
+    fn only_an_enter_refused_for_want_of_a_host_alone_is_held() {
+        let mut e = Entries::default();
+        let early = EntryFacts { host: 0, ..host_entry() };
+        // every check before the host's still refuses, and the reach after it
+        assert_eq!(e.judge(&EntryFacts { loader: false, ..early }, NOW), entry_refusal(EntryCode::NotLoader, "its game has not loaded cell 133c9"));
+        assert_eq!(e.judge(&EntryFacts { presser_owner: GUEST, ..early }, NOW), entry_refusal(EntryCode::Presser, "the presser ff000000 is ff000001's, not the reporter's"));
+        assert_eq!(e.judge(&EntryFacts { distance: Some(553.0), ..early }, NOW), entry_refusal(EntryCode::Reach, "the presser 553 units off the trigger, the reach 552"));
+        assert_eq!(e.judge(&EntryFacts { distance: None, ..early }, NOW), entry_refusal(EntryCode::Reach, "the presser stands in another cell or world"));
+        assert_eq!(e.held_in(TRADER), 0);
+        // a paired leave nobody hosts the cell for is refused as before: its
+        // enter reached an engine that no longer runs the cell
+        assert_eq!(e.judge(&guest_entry(), NOW), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&EntryFacts { host: 0, ..leave_of(guest_entry()) }, NOW), entry_refusal(EntryCode::NoHost, "nobody hosts cell 371de: no engine runs the trigger's script"));
+        assert_eq!(e.held_in(TEMPLE), 0);
+    }
+
+    #[test]
+    fn a_leave_of_a_held_enter_drops_both() {
+        let mut e = Entries::default();
+        let early = EntryFacts { host: 0, ..host_entry() };
+        assert_eq!(e.judge(&early, NOW), EntryVerdict::Held { cell: TRADER });
+        // another game's leave of the same presser ends nothing of it
+        let others = EntryFacts { reporter: GUEST, presser_owner: GUEST, leave: true, ..early };
+        assert_eq!(e.judge(&others, NOW + 100), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000000 into 78b9a to end"));
+        assert_eq!(e.held_in(TRADER), 1);
+        // its own leave, from far off: both go, nothing relayed
+        let leave = EntryFacts { leave: true, distance: Some(1800.0), ..early };
+        assert_eq!(e.judge(&leave, NOW + 250), entry_refusal(EntryCode::HeldLeft, "its enter, held 250 ms for cell 133c9's grant, goes with it"));
+        assert_eq!(e.held_in(TRADER), 0);
+        assert_eq!(e.granted(TRADER, NOW + 400), Granted::default());
+        // a second leave is unpaired
+        assert_eq!(e.judge(&leave, NOW + 300), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000000 into 78b9a to end"));
+    }
+
+    #[test]
+    fn the_hold_is_bounded_per_cell_in_total_and_in_time() {
+        let mut e = Entries::default();
+        let early = |cell: u32, trigger_id: u32| EntryFacts { host: 0, cell, trigger_id, ..host_entry() };
+        // a cell's sixteen, then the seventeenth refused
+        for t in 1..=u32::try_from(HELD_PER_CELL).unwrap_or(16) {
+            assert_eq!(e.judge(&early(TRADER, t), NOW), EntryVerdict::Held { cell: TRADER });
+        }
+        assert_eq!(e.judge(&early(TRADER, 100), NOW), entry_refusal(EntryCode::HeldFull, "nobody hosts cell 133c9, which holds 16 enters already"));
+        assert_eq!(e.held_in(TRADER), HELD_PER_CELL);
+        // the same enter again still has its room
+        assert_eq!(e.judge(&early(TRADER, 1), NOW), EntryVerdict::Held { cell: TRADER });
+        // every cell together: 256, then refused in a cell with room
+        let cells = u32::try_from(HELD_TOTAL / HELD_PER_CELL).unwrap_or(16);
+        for cell in 1..cells {
+            for t in 1..=u32::try_from(HELD_PER_CELL).unwrap_or(16) {
+                assert_eq!(e.judge(&early(cell, t), NOW), EntryVerdict::Held { cell });
+            }
+        }
+        assert_eq!(e.judge(&early(TEMPLE, 1), NOW), entry_refusal(EntryCode::HeldFull, "nobody hosts cell 371de, and 256 enters wait for their grants already"));
+        assert_eq!(e.held_in(TEMPLE), 0);
+        // in time: kept to the window's edge, gone past it
+        assert!(e.sweep(NOW + HELD_MS).is_empty());
+        let gone = e.sweep(NOW + HELD_MS + 1);
+        assert_eq!(gone.len(), HELD_TOTAL);
+        assert!(gone.iter().all(|h| h.age_ms(NOW + HELD_MS + 1) == HELD_MS + 1));
+        assert_eq!(e.held_in(TRADER), 0);
+        // a grant past the window gives the expired back as dropped
+        assert_eq!(e.judge(&early(TRADER, 1), NOW), EntryVerdict::Held { cell: TRADER });
+        let late = e.granted(TRADER, NOW + HELD_MS + 1);
+        assert!(late.replay.is_empty());
+        assert_eq!(late.expired.len(), 1);
+        // the window: twice the cells rule's grace
+        assert_eq!(HELD_MS, 10_000);
+        assert_eq!((HELD_PER_CELL, HELD_TOTAL), (16, 256));
+    }
+
+    #[test]
+    fn a_reporters_disconnect_forgets_what_it_held() {
+        let mut e = Entries::default();
+        let early = EntryFacts { host: 0, ..host_entry() };
+        assert_eq!(e.judge(&early, NOW), EntryVerdict::Held { cell: TRADER });
+        // an NPC its game simulates, and a guest's own player
+        assert_eq!(e.judge(&EntryFacts { presser: DRAUGR, ..early }, NOW), EntryVerdict::Held { cell: TRADER });
+        assert_eq!(e.judge(&EntryFacts { host: 0, cell: TRADER, ..guest_entry() }, NOW), EntryVerdict::Held { cell: TRADER });
+        assert_eq!(e.forget(HOST), 2);
+        assert_eq!(e.held_in(TRADER), 1);
+        assert_eq!(e.forget(HOST), 0);
+        assert_eq!(e.forget(GUEST), 1);
+        assert_eq!(e.held_in(TRADER), 0);
     }
 
     fn leave_of(facts: EntryFacts) -> EntryFacts {
@@ -538,15 +884,15 @@ mod tests {
     fn a_leave_after_an_accepted_enter_is_relayed_without_the_reach() {
         let mut e = Entries::default();
         // the guest's player walks into the web: relayed, kept open
-        assert_eq!(e.judge(&guest_entry()), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&guest_entry(), NOW), EntryVerdict::Relay { host: HOST });
         assert!(e.is_open(GUEST, WEB));
         // it leaves by a door, 1,800 units off when the leave arrives, and
         // in another world at worst: the pairing takes it, not the reach
         let far = EntryFacts { distance: Some(1800.0), ..leave_of(guest_entry()) };
-        assert_eq!(e.judge(&far), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&far, NOW), EntryVerdict::Relay { host: HOST });
         assert!(!e.is_open(GUEST, WEB));
-        assert_eq!(e.judge(&guest_entry()), EntryVerdict::Relay { host: HOST });
-        assert_eq!(e.judge(&EntryFacts { distance: None, ..leave_of(guest_entry()) }), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&guest_entry(), NOW), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&EntryFacts { distance: None, ..leave_of(guest_entry()) }, NOW), EntryVerdict::Relay { host: HOST });
     }
 
     #[test]
@@ -554,41 +900,44 @@ mod tests {
         let mut e = Entries::default();
         let leave = leave_of(guest_entry());
         // in reach, but never entered
-        assert_eq!(e.judge(&leave), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
+        assert_eq!(e.judge(&leave, NOW), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
         assert_eq!(EntryCode::Unpaired.name(), "E_ENTRY_UNPAIRED");
         // before any other judgment: another's presser, a game without the
         // cell, an actor for a trigger
         for unpaired in [EntryFacts { presser_owner: HOST, ..leave }, EntryFacts { loader: false, ..leave }, EntryFacts { trigger: RefKind::Actor, ..leave }] {
-            assert_eq!(e.judge(&unpaired), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
+            assert_eq!(e.judge(&unpaired, NOW), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
         }
         // entered and left once: the second leave ends nothing
-        assert_eq!(e.judge(&guest_entry()), EntryVerdict::Relay { host: HOST });
-        assert_eq!(e.judge(&leave), EntryVerdict::Relay { host: HOST });
-        assert_eq!(e.judge(&leave), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
+        assert_eq!(e.judge(&guest_entry(), NOW), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&leave, NOW), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&leave, NOW), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
         // an enter the rule refused opens nothing: its leave is unpaired
         let far_enter = EntryFacts { distance: Some(553.0), ..guest_entry() };
-        assert_eq!(e.judge(&far_enter), entry_refusal(EntryCode::Reach, "the presser 553 units off the trigger, the reach 552"));
-        assert_eq!(e.judge(&leave), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
+        assert_eq!(e.judge(&far_enter, NOW), entry_refusal(EntryCode::Reach, "the presser 553 units off the trigger, the reach 552"));
+        assert_eq!(e.judge(&leave, NOW), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
         // another trigger's enter pairs with that trigger's leave alone
-        assert_eq!(e.judge(&EntryFacts { trigger_id: OTHER_WEB, ..guest_entry() }), EntryVerdict::Relay { host: HOST });
-        assert_eq!(e.judge(&leave), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
-        assert_eq!(e.judge(&EntryFacts { trigger_id: OTHER_WEB, ..leave }), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&EntryFacts { trigger_id: OTHER_WEB, ..guest_entry() }, NOW), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&leave, NOW), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
+        assert_eq!(e.judge(&EntryFacts { trigger_id: OTHER_WEB, ..leave }, NOW), EntryVerdict::Relay { host: HOST });
     }
 
     #[test]
     fn a_paired_leave_keeps_every_check_but_the_loader_and_the_reach() {
         let mut e = Entries::default();
-        assert_eq!(e.judge(&guest_entry()), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&guest_entry(), NOW), EntryVerdict::Relay { host: HOST });
         let leave = EntryFacts { distance: Some(1800.0), ..leave_of(guest_entry()) };
         // another's presser is refused by the presser, its enter kept open
-        assert_eq!(e.judge(&EntryFacts { presser_owner: HOST, ..leave }), entry_refusal(EntryCode::Presser, "the presser ff000001 is ff000000's, not the reporter's"));
-        assert_eq!(e.judge(&EntryFacts { host: 0, ..leave }), entry_refusal(EntryCode::NoHost, "nobody hosts cell 371de: no engine runs the trigger's script"));
-        assert_eq!(e.judge(&EntryFacts { trigger: RefKind::Actor, ..leave }), entry_refusal(EntryCode::Actor, "the trigger is an actor"));
+        assert_eq!(e.judge(&EntryFacts { presser_owner: HOST, ..leave }, NOW), entry_refusal(EntryCode::Presser, "the presser ff000001 is ff000000's, not the reporter's"));
+        assert_eq!(e.judge(&EntryFacts { host: 0, ..leave }, NOW), entry_refusal(EntryCode::NoHost, "nobody hosts cell 371de: no engine runs the trigger's script"));
+        assert_eq!(e.judge(&EntryFacts { trigger: RefKind::Actor, ..leave }, NOW), entry_refusal(EntryCode::Actor, "the trigger is an actor"));
         assert!(e.is_open(GUEST, WEB));
-        // the guest became the host: its own engine runs the script now
+        // the guest became the host while its leave was in flight: its gate
+        // blanked the leave, so it goes back to its own game and closes
+        // (C-entry)
         let hosting = EntryFacts { host: GUEST, ..leave };
-        assert_eq!(e.judge(&hosting), entry_refusal(EntryCode::Host, "it hosts cell 371de: its own engine ran the trigger's script"));
-        assert_eq!(e.judge(&leave), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&hosting, NOW), EntryVerdict::Relay { host: GUEST });
+        assert!(!e.is_open(GUEST, WEB));
+        assert_eq!(e.judge(&leave, NOW), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
     }
 
     #[test]
@@ -599,40 +948,40 @@ mod tests {
         // in another world or cell by then: the leave still ends the
         // presence on the host
         let mut e = Entries::default();
-        assert_eq!(e.judge(&guest_entry()), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&guest_entry(), NOW), EntryVerdict::Relay { host: HOST });
         let gone = EntryFacts { loader: false, distance: None, ..leave_of(guest_entry()) };
-        assert_eq!(e.judge(&gone), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&gone, NOW), EntryVerdict::Relay { host: HOST });
         assert!(!e.is_open(GUEST, WEB));
         // an enter keeps the loader: from a game without the cell, refused,
         // nothing opened, so its leave is unpaired
         let unloaded_enter = EntryFacts { loader: false, ..guest_entry() };
-        assert_eq!(e.judge(&unloaded_enter), entry_refusal(EntryCode::NotLoader, "its game has not loaded cell 371de"));
-        assert_eq!(e.judge(&gone), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
+        assert_eq!(e.judge(&unloaded_enter, NOW), entry_refusal(EntryCode::NotLoader, "its game has not loaded cell 371de"));
+        assert_eq!(e.judge(&gone, NOW), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
     }
 
     #[test]
     fn a_pressers_open_enters_go_with_its_disconnect_and_past_the_bound() {
         let mut e = Entries::default();
-        assert_eq!(e.judge(&guest_entry()), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&guest_entry(), NOW), EntryVerdict::Relay { host: HOST });
         e.forget(GUEST);
         assert!(!e.is_open(GUEST, WEB));
-        assert_eq!(e.judge(&leave_of(guest_entry())), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
+        assert_eq!(e.judge(&leave_of(guest_entry()), NOW), entry_refusal(EntryCode::Unpaired, "no accepted entry of ff000001 into 37281 to end"));
         // sixty-four open at once; the sixty-fifth drops the oldest
         let enter = |t: u32| EntryFacts { trigger_id: t, ..guest_entry() };
         for t in 1..=u32::try_from(ENTRIES_KEPT).unwrap_or(64) {
-            assert_eq!(e.judge(&enter(t)), EntryVerdict::Relay { host: HOST });
+            assert_eq!(e.judge(&enter(t), NOW), EntryVerdict::Relay { host: HOST });
         }
         assert!(e.is_open(GUEST, 1));
-        assert_eq!(e.judge(&enter(65)), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&enter(65), NOW), EntryVerdict::Relay { host: HOST });
         assert!(!e.is_open(GUEST, 1));
         assert!(e.is_open(GUEST, 2) && e.is_open(GUEST, 65));
         // a second enter of an open trigger makes it the newest
-        assert_eq!(e.judge(&enter(2)), EntryVerdict::Relay { host: HOST });
-        assert_eq!(e.judge(&enter(66)), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&enter(2), NOW), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&enter(66), NOW), EntryVerdict::Relay { host: HOST });
         assert!(e.is_open(GUEST, 2) && !e.is_open(GUEST, 3));
         // another presser's are its own
         let npc = EntryFacts { presser: DRAUGR, ..guest_entry() };
-        assert_eq!(e.judge(&npc), EntryVerdict::Relay { host: HOST });
+        assert_eq!(e.judge(&npc, NOW), EntryVerdict::Relay { host: HOST });
         e.forget(GUEST);
         assert!(e.is_open(DRAUGR, WEB));
         assert_eq!(ENTRIES_KEPT, 64);
@@ -701,7 +1050,6 @@ mod tests {
                 (EntryCode::NoRef, cell != 0),
                 (EntryCode::Presser, reporter != 0 && presser_owner == reporter),
                 (EntryCode::NotLoader, loader),
-                (EntryCode::Host, host != reporter),
                 (EntryCode::NoHost, host != 0),
                 (EntryCode::Reach, within),
             ];
@@ -710,12 +1058,72 @@ mod tests {
                 EntryVerdict::Relay { host: to } => {
                     prop_assert_eq!(first_failed, None);
                     prop_assert_eq!(to, host);
-                    prop_assert!(to != 0 && to != reporter);
+                    // the reporter's own game when it hosts the cell (C-entry)
+                    prop_assert!(to != 0);
                 }
+                EntryVerdict::Held { .. } => prop_assert!(false, "entry holds nothing; Entries::judge does"),
                 EntryVerdict::Refuse(r) => {
                     prop_assert_eq!(Some(r.code), first_failed);
                     prop_assert!(!r.why.is_empty());
                 }
+            }
+        }
+
+        #[test]
+        fn an_enter_is_held_only_for_want_of_a_host_and_the_hold_stays_bounded(
+            steps in proptest::collection::vec((0u32..4, 0u32..24, 0u32..3, any::<bool>(), any::<bool>(), 0u64..30_000, 0u8..8), 0..400),
+        ) {
+            // the model: per cell, the held (reporter, presser, trigger)
+            // keys; four cells, the host's and the guest's reports, the
+            // host's actor and two NPCs as pressers, a step's clock moving on
+            let cells = [TRADER, TEMPLE, 0x9731, 0xbbb1];
+            let pressers = [HOST, DRAUGR, 0x380b4];
+            let mut e = Entries::default();
+            let mut now = NOW;
+            for (c, t, p, hosted, near, dt, op) in steps {
+                now = now.saturating_add(dt);
+                let cell = cells.get(usize::try_from(c).unwrap_or(0)).copied().unwrap_or(TRADER);
+                match op {
+                    // a grant: what it gives back is that cell's alone, each
+                    // within the window or dropped past it
+                    0 => {
+                        let back = e.granted(cell, now);
+                        prop_assert!(back.replay.iter().all(|h| h.cell == cell && h.age_ms(now) <= HELD_MS));
+                        prop_assert!(back.expired.iter().all(|h| h.cell == cell && h.age_ms(now) > HELD_MS));
+                        prop_assert_eq!(e.held_in(cell), 0);
+                    }
+                    // the tick's sweep: nothing past the window stays
+                    1 => {
+                        prop_assert!(e.sweep(now).iter().all(|h| h.age_ms(now) > HELD_MS));
+                    }
+                    _ => {
+                        let presser = pressers.get(usize::try_from(p).unwrap_or(0)).copied().unwrap_or(HOST);
+                        let facts = EntryFacts {
+                            presser,
+                            cell,
+                            trigger_id: t,
+                            host: if hosted { HOST } else { 0 },
+                            distance: Some(if near { 30.0 } else { 1800.0 }),
+                            ..host_entry()
+                        };
+                        let before = e.held_in(cell);
+                        match e.judge(&facts, now) {
+                            EntryVerdict::Held { cell: at } => {
+                                prop_assert!(!hosted && near);
+                                prop_assert_eq!(at, cell);
+                                prop_assert!(e.held_in(cell) >= 1 && e.held_in(cell) <= before.saturating_add(1));
+                            }
+                            EntryVerdict::Relay { host } => prop_assert!(hosted && near && host == HOST),
+                            EntryVerdict::Refuse(r) => match r.code {
+                                EntryCode::Reach => prop_assert!(!near),
+                                EntryCode::HeldFull => prop_assert!(!hosted && near),
+                                other => prop_assert!(false, "an enter refused {:?}", other),
+                            },
+                        }
+                    }
+                }
+                prop_assert!(cells.iter().all(|&c| e.held_in(c) <= HELD_PER_CELL));
+                prop_assert!(cells.iter().map(|&c| e.held_in(c)).sum::<usize>() <= HELD_TOTAL);
             }
         }
 
@@ -741,7 +1149,7 @@ mod tests {
                     ..guest_entry()
                 };
                 let was_open = open.contains(&(presser, trigger));
-                match e.judge(&facts) {
+                match e.judge(&facts, NOW) {
                     EntryVerdict::Relay { host } => {
                         prop_assert_eq!(host, HOST);
                         prop_assert!(owned);
@@ -771,6 +1179,8 @@ mod tests {
                         prop_assert_eq!(r.code, expected);
                         prop_assert!(!(leave && owned && was_open));
                     }
+                    // the host is always there: nothing waits for a grant
+                    EntryVerdict::Held { .. } => prop_assert!(false, "held with a host"),
                 }
                 for &(op, ot) in &open {
                     prop_assert!(e.is_open(op, ot));

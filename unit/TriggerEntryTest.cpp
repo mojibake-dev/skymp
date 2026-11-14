@@ -20,9 +20,11 @@ PartOne& GetPartOne();
 // (-1495.9, 1020.1, -54.4), its navmesh floor at -15.1
 // (lab/.cache/drafts/fifty/trigger-entry-static.md section 6); the draugr
 // 0x380b3 an ACHR of the Temple (TrapRelayTest's). The rule is wire-rules
-// trigger_entry's entry (S1's crate tests hold its every branch, the order
-// among them and E_ENTRY_NO_HOST, which a T0 world hosts at the first
-// loaded report); here the handler's facts and its relay.
+// trigger_entry's entry (S1's crate tests hold its every branch and the
+// order among them); here the handler's facts and its relay. A T0 world
+// hosts a cell at its first loaded report, so nobody hosts it here only
+// while its host's game is gone (its grace): train 53's C-entry holds an
+// enter then for the cell's grant.
 namespace {
 constexpr uint32_t kHostActor = 0xff000fe1;
 constexpr uint32_t kGuestActor = 0xff000fe2;
@@ -197,9 +199,9 @@ TEST_CASE("A guest's entry into a world trigger goes to the cell's host "
   Leave(p);
 }
 
-TEST_CASE("A trigger entry from the host, for another's presser, from a "
-          "game without the cell, from beyond reach, of an actor or of no "
-          "reference is refused by name and sends nothing (D-C2)",
+TEST_CASE("A trigger entry for another's presser, from a game without the "
+          "cell, from beyond reach, of an actor or of no reference is "
+          "refused by name and sends nothing (D-C2)",
           "[TriggerEntry][espm]")
 {
   PartOne& p = GetPartOne();
@@ -219,10 +221,6 @@ TEST_CASE("A trigger entry from the host, for another's presser, from a "
           "[verb:traps] E_ENTRY_NOT_LOADER: ff000fe2 "
           "reports ff000fe2 entering 37281");
   Loaded(p, 1, kTemple);
-  // the host's own engine ran the script
-  refused(0, 0x14, kWeb,
-          "[verb:traps] E_ENTRY_HOST: ff000fe1 reports "
-          "ff000fe1 entering 37281");
   // the host's player is the host's own presser, not the guest's
   refused(1, kHostActor, kWeb,
           "[verb:traps] E_ENTRY_PRESSER: ff000fe2 "
@@ -245,6 +243,164 @@ TEST_CASE("A trigger entry from the host, for another's presser, from a "
           "[verb:traps] E_ENTRY_REACH: ff000fe2 reports "
           "ff000fe2 entering 37281");
   Leave(p);
+}
+
+// train 53's C-entry (thuum lab/.cache/drafts/reads-53/r-c1-c2-c4-claw.md,
+// R-C1): the platform's gate tells an entry only when it blanked it, in a
+// cell its seat does not host, so the host's own report is one whose grant
+// came while it was in flight (playtest 51: the argument's trigger 0x78b9a,
+// refused E_ENTRY_HOST 33 ms after the grant of cell 0x133c9). It goes back
+// to the host's own game, its presser by its server id; every other check
+// stays
+TEST_CASE("A trigger entry the cell's host reports is one its gate blanked "
+          "before the grant: relayed back to its own game (C-entry)",
+          "[TriggerEntry][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Entry(p, 0, 0x14, kWeb, 1);
+    REQUIRE(log.Count("[verb:traps] ff000fe1 reports ff000fe1 entering 37281 "
+                      "in cell 371de, which it hosts: its gate blanked it "
+                      "before the grant, relayed back to its own game "
+                      "(C-entry)") == 1);
+    REQUIRE(log.Count("E_ENTRY_") == 0);
+  }
+  auto relayed = RelayedTo(p, 0);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0].target == kWeb);
+  REQUIRE(relayed[0].caster == kHostActor);
+  REQUIRE(relayed[0].entry == std::optional<uint32_t>(1));
+  REQUIRE(RelayedTo(p, 1).empty());
+  // its leave, paired, goes back the same way
+  p.Messages().clear();
+  Entry(p, 0, 0x14, kWeb, 2);
+  relayed = RelayedTo(p, 0);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0].entry == std::optional<uint32_t>(2));
+  // the reach still holds the host's own: from 2000 units off, refused
+  Stand(p, kHostActor, kFarFromTheWeb);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    REQUIRE_NOTHROW(Entry(p, 0, 0x14, kWeb, 1));
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_REACH: ff000fe1 reports "
+                      "ff000fe1 entering 37281") == 1);
+    REQUIRE(log.Count("relayed back") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  Leave(p);
+}
+
+// C-entry: before any grant the same enter met E_ENTRY_NO_HOST (the read:
+// a player who walks into an unhosted cell standing in a world trigger lost
+// the enter whichever message came first). Nobody hosts the Temple while
+// its host's game is gone; the guest's enter is held, and the grace's end
+// grants the Temple to the guest, whose enter goes back to its own game
+// after the grant's word
+TEST_CASE("An enter nobody hosts the cell for is held for the cell's grant "
+          "and judged again there (C-entry)",
+          "[TriggerEntry][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  Loaded(p, 1, kTemple);
+  DoDisconnect(p, 0);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Entry(p, 1, 0x14, kWeb, 1);
+    REQUIRE(log.Count("[verb:traps] ff000fe2 reports ff000fe2 entering "
+                      "37281: nobody hosts cell 371de yet: held for its "
+                      "grant, judged again then (C-entry; 1 since the last "
+                      "line)") == 1);
+    REQUIRE(log.Count("E_ENTRY_") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).empty());
+  {
+    LogCapture log;
+    p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + 2'000);
+    REQUIRE(p.GetCellHost(kTemple).hosted);
+    REQUIRE(p.GetCellHost(kTemple).player == kGuestActor);
+    REQUIRE(log.Count("[verb:traps] ff000fe2 reports ff000fe2 entering "
+                      "37281 in cell 371de, which it hosts: its gate "
+                      "blanked it before the grant, relayed back to its own "
+                      "game (C-entry)") == 1);
+    REQUIRE(log.Count("[verb:traps] cell 371de granted: 1 trigger enter(s) "
+                      "held before the grant judged again (C-entry)") == 1);
+  }
+  const auto relayed = RelayedTo(p, 1);
+  REQUIRE(relayed.size() == 1);
+  REQUIRE(relayed[0].target == kWeb);
+  REQUIRE(relayed[0].caster == kGuestActor);
+  REQUIRE(relayed[0].entry == std::optional<uint32_t>(1));
+  // the grant's word first, on the same ordered channel
+  size_t at = 0;
+  size_t grantAt = 0;
+  size_t relayAt = 0;
+  for (auto& m : p.Messages()) {
+    ++at;
+    if (m.userId != 1) {
+      continue;
+    }
+    if (dynamic_cast<HostGrantMessage*>(m.message.get())) {
+      grantAt = at;
+    }
+    if (dynamic_cast<RelayedActivationMessage*>(m.message.get())) {
+      relayAt = at;
+    }
+  }
+  REQUIRE(grantAt != 0);
+  REQUIRE(grantAt < relayAt);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kHostActor);
+  p.DestroyActor(kGuestActor);
+}
+
+TEST_CASE("A held enter's leave drops both, and one held past its window "
+          "is dropped by name; the grant then replays nothing (C-entry)",
+          "[TriggerEntry][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  Loaded(p, 1, kTemple);
+  DoDisconnect(p, 0);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Entry(p, 1, 0x14, kWeb, 1);
+    Entry(p, 1, 0x14, kWeb, 2);
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_HELD_LEFT: ff000fe2 reports "
+                      "ff000fe2 leaving 37281: its enter, held ") == 1);
+    REQUIRE(log.Count("for cell 371de's grant, goes with it; refused, 1 "
+                      "since the last line") == 1);
+  }
+  // held again, then past the window
+  {
+    LogCapture log;
+    Entry(p, 1, 0x14, kWeb, 1);
+    p.GetActionListener().SweepHeldTriggerEntries(
+      NowMs() + skymp::rules::trigger_entry_held_ms() + 1'000);
+    REQUIRE(log.Count("[verb:traps] E_ENTRY_HELD_EXPIRED: ff000fe2 reports "
+                      "ff000fe2 entering 37281: held ") == 1);
+    REQUIRE(log.Count("and no grant of cell 371de within 10000 ms; "
+                      "refused, 1 since the last line") == 1);
+  }
+  {
+    LogCapture log;
+    p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + 2'000);
+    REQUIRE(p.GetCellHost(kTemple).player == kGuestActor);
+    REQUIRE(log.Count("held before the grant judged again") == 0);
+    REQUIRE(log.Count("relayed back") == 0);
+  }
+  REQUIRE(RelayedTo(p, 0).empty());
+  REQUIRE(RelayedTo(p, 1).empty());
+  DoDisconnect(p, 1);
+  p.DestroyActor(kHostActor);
+  p.DestroyActor(kGuestActor);
 }
 
 // the train's review, note 2: an entry counts where the engine counts it,

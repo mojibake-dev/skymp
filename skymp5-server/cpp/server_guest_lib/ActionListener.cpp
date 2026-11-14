@@ -5938,9 +5938,17 @@ bool ActionListener::IsScriptedWorldObject(const MpObjectReference& target)
 // places by its record, no actor (E_ENTRY_NO_REF, E_ENTRY_ACTOR); the
 // presser the reporter's own actor or one its game simulates
 // (E_ENTRY_PRESSER); the reporter a loader of the trigger's cell
-// (E_ENTRY_NOT_LOADER) that does not host it (E_ENTRY_HOST: its own engine
-// ran the script); a host there (E_ENTRY_NO_HOST: nothing runs the script);
-// the presser within the trigger's activation reach (E_ENTRY_REACH). A leave
+// (E_ENTRY_NOT_LOADER); a host there (E_ENTRY_NO_HOST: nothing runs the
+// script); the presser within the trigger's activation reach
+// (E_ENTRY_REACH). The host may be the reporter (train 53's C-entry): the
+// platform's gate tells an entry only when it blanked it, in a cell its seat
+// does not host, so the host's own report is one whose grant came while it
+// was in flight, and it goes back to the host's own game (playtest 51: the
+// argument's trigger 0x78b9a, refused E_ENTRY_HOST 33 ms after the grant of
+// cell 0x133c9). An enter nobody hosts the cell for, within the reach, is
+// held for the cell's grant (wire-rules trigger_entry::Entries; the grant
+// judges it again here, ReplayHeldTriggerEntries), each drop said by its
+// code (E_ENTRY_HELD_FULL, E_ENTRY_HELD_LEFT, E_ENTRY_HELD_EXPIRED). A leave
 // pairs with its enter (wire-rules trigger_entry::Entries, PartOne's; the
 // builder's call on the probe review of D-C2): one ending none is
 // E_ENTRY_UNPAIRED before any other check; one ending an accepted enter of
@@ -5977,20 +5985,8 @@ void ActionListener::OnTriggerEntry(MpActor& reporter,
   }
 
   const auto refuse = [&](const std::string& code, const std::string& why) {
-    const auto now = std::chrono::steady_clock::now();
-    auto& [since, count] =
-      triggerEntryRefusals[{ reporter.GetFormId(), code }];
-    ++count;
-    if (since.time_since_epoch().count() != 0 &&
-        now - since < std::chrono::minutes(1)) {
-      return;
-    }
-    spdlog::info("[verb:traps] {}: {:x} reports {:x} {} {:x}: {}; refused, "
-                 "{} since the last line",
-                 code, reporter.GetFormId(), presserId, moving, triggerId, why,
-                 count);
-    since = now;
-    count = 0;
+    SayTriggerEntryRefusal(reporter.GetFormId(), presserId, entry == 2,
+                           triggerId, code, why);
   };
 
   // the trigger's facts: trigger_kind 0 no reference, 1 a world object the
@@ -6082,9 +6078,23 @@ void ActionListener::OnTriggerEntry(MpActor& reporter,
   facts.trigger_id = triggerId;
   facts.leave = entry == 2;
 
-  // relayed, the verdict names the one game to send it to, the host's; a
-  // leave pairs with its presser's accepted enter
-  const auto verdict = partOne.GetTriggerEntries().judge(facts);
+  // relayed, the verdict names the one game to send it to, the host's (the
+  // reporter's own when it hosts the cell); a leave pairs with its presser's
+  // accepted enter; an enter nobody hosts the cell for is held for its grant
+  const uint64_t nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+  const auto verdict = partOne.GetTriggerEntries().judge(facts, nowMs);
+  if (verdict.code == skymp::rules::TriggerEntryCode::Held) {
+    if (const auto since = TriggerEntryLineDue(reporter.GetFormId(), "held")) {
+      spdlog::info("[verb:traps] {:x} reports {:x} {} {:x}: {}, judged again "
+                   "then (C-entry; {} since the last line)",
+                   reporter.GetFormId(), presserId, moving, triggerId,
+                   std::string(verdict.why), *since);
+    }
+    return;
+  }
   if (verdict.code != skymp::rules::TriggerEntryCode::Relay) {
     return refuse(std::string(verdict.name), std::string(verdict.why));
   }
@@ -6096,15 +6106,112 @@ void ActionListener::OnTriggerEntry(MpActor& reporter,
     // script either, as the rule's own E_ENTRY_NO_HOST
     return refuse("E_ENTRY_NO_HOST", "the cell's host has no game connected");
   }
+  // the presser by its server id, the host's own player's too: a relay back
+  // to the host names its own actor, which its client maps to 0x14
   RelayedActivationMessage relay;
   relay.target = triggerId;
   relay.caster = presserId;
   relay.entry = entry;
   host->SendToUser(relay, true);
+  if (verdict.host == reporter.GetFormId()) {
+    spdlog::info("[verb:traps] {:x} reports {:x} {} {:x} in cell {:x}, "
+                 "which it hosts: its gate blanked it before the grant, "
+                 "relayed back to its own game (C-entry)",
+                 reporter.GetFormId(), presserId, moving, triggerId,
+                 facts.cell);
+    return;
+  }
   spdlog::info("[verb:traps] {:x} reports {:x} {} {:x} in cell {:x} (its "
                "host {:x}): relayed to the host",
                reporter.GetFormId(), presserId, moving, triggerId, facts.cell,
                verdict.host);
+}
+
+std::optional<uint32_t> ActionListener::TriggerEntryLineDue(
+  uint32_t reporter, const std::string& code)
+{
+  const auto now = std::chrono::steady_clock::now();
+  auto& [since, count] = triggerEntryRefusals[{ reporter, code }];
+  ++count;
+  if (since.time_since_epoch().count() != 0 &&
+      now - since < std::chrono::minutes(1)) {
+    return std::nullopt;
+  }
+  const uint32_t said = count;
+  since = now;
+  count = 0;
+  return said;
+}
+
+void ActionListener::SayTriggerEntryRefusal(uint32_t reporter,
+                                            uint32_t presser, bool leave,
+                                            uint32_t trigger,
+                                            const std::string& code,
+                                            const std::string& why)
+{
+  const auto since = TriggerEntryLineDue(reporter, code);
+  if (!since) {
+    return;
+  }
+  spdlog::info("[verb:traps] {}: {:x} reports {:x} {} {:x}: {}; refused, "
+               "{} since the last line",
+               code, reporter, presser, leave ? "leaving" : "entering",
+               trigger, why, *since);
+}
+
+// train 53's C-entry: the grant's replay, OnActorSighting's shape
+// (PartOne::ReplayHeldSightings): each held enter within the window comes
+// back as the report it was, the presser as the wire named it (0x14 for the
+// reporter's own player), judged over this moment's facts (the new host,
+// the presser's owner and its place now), so a new host's own goes back to
+// it and a guest's to the host; a leave that came first dropped its enter
+// already (E_ENTRY_HELD_LEFT). A reporter whose game left has nothing here:
+// its disconnect forgot it (PartOne's forget)
+void ActionListener::ReplayHeldTriggerEntries(uint32_t cell)
+{
+  const uint64_t nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
+  const auto held = partOne.GetTriggerEntries().granted(cell, nowMs);
+  size_t replayed = 0;
+  for (const auto& h : held) {
+    if (!h.name.empty()) {
+      SayTriggerEntryRefusal(h.reporter, h.presser, false, h.trigger_id,
+                             std::string(h.name), std::string(h.why));
+      continue;
+    }
+    const auto& form = partOne.worldState.LookupFormByIdNoLoad(h.reporter);
+    MpActor* reporter = form ? form->AsActor() : nullptr;
+    if (!reporter ||
+        partOne.serverState.UserByActor(reporter) ==
+          Networking::InvalidUserId) {
+      spdlog::info("[verb:traps] {:x}'s held enter of {:x} into {:x} "
+                   "dropped at the grant of cell {:x}: its game is gone",
+                   h.reporter, h.presser, h.trigger_id, cell);
+      continue;
+    }
+    ActivateMessage msg;
+    msg.data.caster = h.presser == h.reporter ? 0x14 : h.presser;
+    msg.data.target = h.trigger_id;
+    msg.data.isSecondActivation = false;
+    msg.data.entry = 1;
+    OnTriggerEntry(*reporter, msg);
+    ++replayed;
+  }
+  if (replayed > 0) {
+    spdlog::info("[verb:traps] cell {:x} granted: {} trigger enter(s) held "
+                 "before the grant judged again (C-entry)",
+                 cell, replayed);
+  }
+}
+
+void ActionListener::SweepHeldTriggerEntries(uint64_t nowMs)
+{
+  for (const auto& h : partOne.GetTriggerEntries().sweep(nowMs)) {
+    SayTriggerEntryRefusal(h.reporter, h.presser, false, h.trigger_id,
+                           std::string(h.name), std::string(h.why));
+  }
 }
 
 void ActionListener::RelayActivationToHost(MpActor& player,

@@ -1764,10 +1764,8 @@ mod ffi {
         Presser,
         /// E_ENTRY_NOT_LOADER: the reporter has not loaded the cell.
         NotLoader,
-        /// E_ENTRY_HOST: the reporter hosts the cell, its own engine ran the
-        /// script.
-        Host,
-        /// E_ENTRY_NO_HOST: nobody hosts the cell, no engine runs the script.
+        /// E_ENTRY_NO_HOST: nobody hosts the cell, no engine runs the script
+        /// (a leave; an enter is held).
         NoHost,
         /// E_ENTRY_REACH: the presser stands outside the trigger's
         /// activation reach.
@@ -1775,6 +1773,17 @@ mod ffi {
         /// E_ENTRY_UNPAIRED: a leave with no accepted enter of the same
         /// presser into the same trigger to end.
         Unpaired,
+        /// An enter nobody hosts the cell for, held for the cell's grant
+        /// (`host` 0; TriggerEntries::granted gives it back).
+        Held,
+        /// E_ENTRY_HELD_FULL: such an enter, not held: the cell's hold or
+        /// the whole hold is full.
+        HeldFull,
+        /// E_ENTRY_HELD_LEFT: a leave of a held enter; both go.
+        HeldLeft,
+        /// E_ENTRY_HELD_EXPIRED: a held enter past the hold's window; the
+        /// name of TriggerEntryHeld's drop, never a judgment's word.
+        HeldExpired,
     }
 
     /// The verdict on one reported entry.
@@ -1786,8 +1795,31 @@ mod ffi {
         name: String,
         /// Why, for the log; empty when relayed.
         why: String,
-        /// The host's actor to relay to (relayed), 0 otherwise.
+        /// The host's actor to relay to (relayed; the reporter's own when it
+        /// hosts the cell, C-entry), 0 otherwise.
         host: u32,
+    }
+
+    /// An enter held for its cell's grant as the hold gives it back
+    /// (wire-rules trigger_entry::Held): at the grant, for the core to judge
+    /// again over the grant's facts, or dropped past the hold's window.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct TriggerEntryHeld {
+        /// The reporter's actor.
+        reporter: u32,
+        /// The presser: the reporter's own actor for its player, or another.
+        presser: u32,
+        /// The trigger's form id.
+        trigger_id: u32,
+        /// The trigger's cell.
+        cell: u32,
+        /// How long it was held, ms.
+        age_ms: u64,
+        /// Empty for an enter to judge again; the drop's stable name for the
+        /// log otherwise (E_ENTRY_HELD_EXPIRED).
+        name: String,
+        /// Why, for the log; empty with the name.
+        why: String,
     }
 
     /// What the core knows of a reported world object's graph event's
@@ -3120,16 +3152,31 @@ mod ffi {
         /// No enter open.
         fn new_trigger_entries() -> Box<TriggerEntries>;
         /// A presser's owner's report of an entry into a world trigger whose
-        /// script runs on the cell's host: an enter judged by the trigger,
-        /// the presser, the loader, the host and the reach, in that order,
-        /// and kept open when relayed; a leave first by its pairing
-        /// (E_ENTRY_UNPAIRED when it ends no open enter of its presser's
-        /// into its trigger), then by the same checks but the loader and the
-        /// reach (wire-rules trigger_entry::Entries::judge); relayed, `host`
-        /// names the one game to send it to.
-        fn judge(self: &mut TriggerEntries, facts: &TriggerEntryFacts) -> TriggerEntryVerdict;
-        /// The presser's game left: its open enters go.
-        fn forget(self: &mut TriggerEntries, presser: u32);
+        /// script runs on the cell's host, at `now_ms` (the core's monotonic
+        /// clock): an enter judged by the trigger, the presser, the loader,
+        /// the host and the reach, in that order, kept open when relayed and
+        /// held for the cell's grant when nobody hosts the cell (Held, or
+        /// E_ENTRY_HELD_FULL); a leave first by its pairing (E_ENTRY_UNPAIRED
+        /// when it ends no open enter of its presser's into its trigger,
+        /// E_ENTRY_HELD_LEFT when it ends its reporter's held one), then by
+        /// the same checks but the loader and the reach (wire-rules
+        /// trigger_entry::Entries::judge); relayed, `host` names the one game
+        /// to send it to, the reporter's own when it hosts the cell (C-entry:
+        /// its gate blanked the entry).
+        fn judge(self: &mut TriggerEntries, facts: &TriggerEntryFacts, now_ms: u64) -> TriggerEntryVerdict;
+        /// `cell` was granted at `now_ms`: its held enters, oldest first,
+        /// each to judge again (`name` empty) or dropped past the window
+        /// (E_ENTRY_HELD_EXPIRED).
+        fn granted(self: &mut TriggerEntries, cell: u32, now_ms: u64) -> Vec<TriggerEntryHeld>;
+        /// The held enters past the window at `now_ms` go, each named for
+        /// its line (E_ENTRY_HELD_EXPIRED).
+        fn sweep(self: &mut TriggerEntries, now_ms: u64) -> Vec<TriggerEntryHeld>;
+        /// The presser's game left: its open enters go, and every held enter
+        /// it reported or pressed; how many held ones went.
+        fn forget(self: &mut TriggerEntries, presser: u32) -> usize;
+        /// How long a held enter waits for its cell's grant, ms (wire-rules
+        /// trigger_entry::HELD_MS).
+        fn trigger_entry_held_ms() -> u64;
         /// The fifty fixes' furniture rule: who owns a world object's
         /// reported graph event, a furniture's recorded occupant's owner for
         /// a furniture in use, else the cell's host, and whether it is kept
@@ -3378,7 +3425,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -5437,7 +5484,7 @@ fn new_trigger_entries() -> Box<TriggerEntries> {
 }
 
 impl TriggerEntries {
-    fn judge(&mut self, f: &TriggerEntryFacts) -> TriggerEntryVerdict {
+    fn judge(&mut self, f: &TriggerEntryFacts, now_ms: u64) -> TriggerEntryVerdict {
         let trigger = match f.trigger_kind {
             1 => script_state::RefKind::WorldObject,
             2 => script_state::RefKind::Actor,
@@ -5456,27 +5503,54 @@ impl TriggerEntries {
             trigger_id: f.trigger_id,
             leave: f.leave,
         };
-        entry_verdict(self.0.judge(&facts))
+        entry_verdict(self.0.judge(&facts, now_ms))
     }
 
-    fn forget(&mut self, presser: u32) {
-        self.0.forget(presser);
+    fn granted(&mut self, cell: u32, now_ms: u64) -> Vec<TriggerEntryHeld> {
+        let back = self.0.granted(cell, now_ms);
+        let replay = back.replay.into_iter().map(|h| held_row(&h, now_ms, false));
+        replay.chain(back.expired.into_iter().map(|h| held_row(&h, now_ms, true))).collect()
     }
+
+    fn sweep(&mut self, now_ms: u64) -> Vec<TriggerEntryHeld> {
+        self.0.sweep(now_ms).into_iter().map(|h| held_row(&h, now_ms, true)).collect()
+    }
+
+    fn forget(&mut self, presser: u32) -> usize {
+        self.0.forget(presser)
+    }
+}
+
+const fn trigger_entry_held_ms() -> u64 {
+    trigger_entry::HELD_MS
+}
+
+/// A held enter for the core: to judge again, or dropped past the window.
+fn held_row(h: &trigger_entry::Held, now_ms: u64, expired: bool) -> TriggerEntryHeld {
+    let (name, why) = if expired {
+        (trigger_entry::EntryCode::HeldExpired.name().to_owned(), format!("held {} ms, and no grant of cell {:x} within {} ms", h.age_ms(now_ms), h.cell, trigger_entry::HELD_MS))
+    } else {
+        (String::new(), String::new())
+    };
+    TriggerEntryHeld { reporter: h.reporter, presser: h.presser, trigger_id: h.trigger_id, cell: h.cell, age_ms: h.age_ms(now_ms), name, why }
 }
 
 fn entry_verdict(verdict: trigger_entry::EntryVerdict) -> TriggerEntryVerdict {
     match verdict {
         trigger_entry::EntryVerdict::Relay { host } => TriggerEntryVerdict { code: TriggerEntryCode::Relay, name: String::new(), why: String::new(), host },
+        trigger_entry::EntryVerdict::Held { cell } => TriggerEntryVerdict { code: TriggerEntryCode::Held, name: String::new(), why: format!("nobody hosts cell {cell:x} yet: held for its grant"), host: 0 },
         trigger_entry::EntryVerdict::Refuse(r) => TriggerEntryVerdict {
             code: match r.code {
                 trigger_entry::EntryCode::NoRef => TriggerEntryCode::NoRef,
                 trigger_entry::EntryCode::Actor => TriggerEntryCode::Actor,
                 trigger_entry::EntryCode::Presser => TriggerEntryCode::Presser,
                 trigger_entry::EntryCode::NotLoader => TriggerEntryCode::NotLoader,
-                trigger_entry::EntryCode::Host => TriggerEntryCode::Host,
                 trigger_entry::EntryCode::NoHost => TriggerEntryCode::NoHost,
                 trigger_entry::EntryCode::Reach => TriggerEntryCode::Reach,
                 trigger_entry::EntryCode::Unpaired => TriggerEntryCode::Unpaired,
+                trigger_entry::EntryCode::HeldFull => TriggerEntryCode::HeldFull,
+                trigger_entry::EntryCode::HeldLeft => TriggerEntryCode::HeldLeft,
+                trigger_entry::EntryCode::HeldExpired => TriggerEntryCode::HeldExpired,
             },
             name: r.code.name().to_owned(),
             why: r.why,
@@ -7286,24 +7360,24 @@ mod tests {
         // stand-in size of 100), relayed to the host alone
         let entry = TriggerEntryFacts { reporter: 0xff00_0001, trigger_kind: 1, presser: 0xff00_0001, presser_owner: 0xff00_0001, cell: 0x371de, host: 0xff00_0000, loader: true, distance: 30.0, trigger_size: 100.0, trigger_id: 0x3758c, leave: false };
         let mut entries = new_trigger_entries();
-        let relayed = entries.judge(&entry);
+        let relayed = entries.judge(&entry, 1_000);
         assert_eq!((relayed.code, relayed.name.as_str(), relayed.why.as_str(), relayed.host), (TriggerEntryCode::Relay, "", "", 0xff00_0000));
         // its leave from 1,800 units off, after a door: paired, relayed; a
         // second leave ends nothing
         let leave = TriggerEntryFacts { leave: true, distance: 1800.0, ..entry };
-        assert_eq!(entries.judge(&leave).code, TriggerEntryCode::Relay);
-        let unpaired = entries.judge(&leave);
+        assert_eq!(entries.judge(&leave, 1_000).code, TriggerEntryCode::Relay);
+        let unpaired = entries.judge(&leave, 1_000);
         assert_eq!((unpaired.code, unpaired.name.as_str(), unpaired.host), (TriggerEntryCode::Unpaired, "E_ENTRY_UNPAIRED", 0));
         // through a door into another cell, its game with the cell
         // unloaded: still paired, relayed
-        assert_eq!(entries.judge(&entry).code, TriggerEntryCode::Relay);
-        assert_eq!(entries.judge(&TriggerEntryFacts { loader: false, distance: -1.0, ..leave }).code, TriggerEntryCode::Relay);
+        assert_eq!(entries.judge(&entry, 1_000).code, TriggerEntryCode::Relay);
+        assert_eq!(entries.judge(&TriggerEntryFacts { loader: false, distance: -1.0, ..leave }, 1_000).code, TriggerEntryCode::Relay);
         // the presser's disconnect drops its open enters
-        assert_eq!(entries.judge(&entry).code, TriggerEntryCode::Relay);
+        assert_eq!(entries.judge(&entry, 1_000).code, TriggerEntryCode::Relay);
         entries.forget(0xff00_0001);
-        assert_eq!(entries.judge(&leave).code, TriggerEntryCode::Unpaired);
+        assert_eq!(entries.judge(&leave, 1_000).code, TriggerEntryCode::Unpaired);
         let refused = |f: TriggerEntryFacts| {
-            let v = new_trigger_entries().judge(&f);
+            let v = new_trigger_entries().judge(&f, 1_000);
             (v.code, v.name, v.host)
         };
         assert_eq!(refused(TriggerEntryFacts { trigger_kind: 0, ..entry }), (TriggerEntryCode::NoRef, "E_ENTRY_NO_REF".to_owned(), 0));
@@ -7311,9 +7385,36 @@ mod tests {
         assert_eq!(refused(TriggerEntryFacts { trigger_kind: 2, ..entry }), (TriggerEntryCode::Actor, "E_ENTRY_ACTOR".to_owned(), 0));
         assert_eq!(refused(TriggerEntryFacts { presser_owner: 0xff00_0000, ..entry }), (TriggerEntryCode::Presser, "E_ENTRY_PRESSER".to_owned(), 0));
         assert_eq!(refused(TriggerEntryFacts { loader: false, ..entry }), (TriggerEntryCode::NotLoader, "E_ENTRY_NOT_LOADER".to_owned(), 0));
+        // C-entry: the host's own report is one its gate blanked, relayed
+        // back to it
         let host = TriggerEntryFacts { reporter: 0xff00_0000, presser: 0xff00_0000, presser_owner: 0xff00_0000, ..entry };
-        assert_eq!(refused(host), (TriggerEntryCode::Host, "E_ENTRY_HOST".to_owned(), 0));
-        assert_eq!(refused(TriggerEntryFacts { host: 0, ..entry }), (TriggerEntryCode::NoHost, "E_ENTRY_NO_HOST".to_owned(), 0));
+        assert_eq!(refused(host), (TriggerEntryCode::Relay, String::new(), 0xff00_0000));
+        // a paired leave nobody hosts the cell for is refused as before
+        let mut paired = new_trigger_entries();
+        assert_eq!(paired.judge(&entry, 1_000).code, TriggerEntryCode::Relay);
+        let no_host = paired.judge(&TriggerEntryFacts { host: 0, ..leave }, 1_000);
+        assert_eq!((no_host.code, no_host.name.as_str(), no_host.host), (TriggerEntryCode::NoHost, "E_ENTRY_NO_HOST", 0));
+        // an enter before any grant is held; the grant gives it back to be
+        // judged again, and a held enter past the window is named dropped
+        let mut held = new_trigger_entries();
+        let early = held.judge(&TriggerEntryFacts { host: 0, ..entry }, 1_000);
+        assert_eq!((early.code, early.name.as_str(), early.why.as_str(), early.host), (TriggerEntryCode::Held, "", "nobody hosts cell 371de yet: held for its grant", 0));
+        let back = held.granted(0x371de, 1_430);
+        assert_eq!(back, vec![TriggerEntryHeld { reporter: 0xff00_0001, presser: 0xff00_0001, trigger_id: 0x3758c, cell: 0x371de, age_ms: 430, name: String::new(), why: String::new() }]);
+        assert!(held.granted(0x371de, 1_500).is_empty());
+        assert_eq!(held.judge(&TriggerEntryFacts { host: 0, ..entry }, 2_000).code, TriggerEntryCode::Held);
+        let late = held.granted(0x371de, 2_000 + trigger_entry_held_ms() + 1);
+        assert_eq!(late.iter().map(|h| (h.name.as_str(), h.why.as_str())).collect::<Vec<_>>(), [("E_ENTRY_HELD_EXPIRED", "held 10001 ms, and no grant of cell 371de within 10000 ms")]);
+        assert_eq!(held.judge(&TriggerEntryFacts { host: 0, ..entry }, 3_000).code, TriggerEntryCode::Held);
+        assert!(held.sweep(3_000 + trigger_entry_held_ms()).is_empty());
+        assert_eq!(held.sweep(3_001 + trigger_entry_held_ms()).iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["E_ENTRY_HELD_EXPIRED"]);
+        // its leave before the grant drops both; the disconnect forgets one
+        assert_eq!(held.judge(&TriggerEntryFacts { host: 0, ..entry }, 4_000).code, TriggerEntryCode::Held);
+        let left = held.judge(&TriggerEntryFacts { host: 0, ..leave }, 4_100);
+        assert_eq!((left.code, left.name.as_str()), (TriggerEntryCode::HeldLeft, "E_ENTRY_HELD_LEFT"));
+        assert_eq!(held.judge(&TriggerEntryFacts { host: 0, ..entry }, 5_000).code, TriggerEntryCode::Held);
+        assert_eq!(held.forget(0xff00_0001), 1);
+        assert!(held.granted(0x371de, 5_100).is_empty());
         assert_eq!(refused(TriggerEntryFacts { distance: 553.0, ..entry }), (TriggerEntryCode::Reach, "E_ENTRY_REACH".to_owned(), 0));
         assert_eq!(refused(TriggerEntryFacts { distance: -1.0, ..entry }), (TriggerEntryCode::Reach, "E_ENTRY_REACH".to_owned(), 0));
     }

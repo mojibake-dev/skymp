@@ -24,8 +24,11 @@
 # 1}. Two entries send nothing, each said by its name in the wire server's
 # log: at 3.7 s c2 reports c1's actor 0xff000002 entering (E_ENTRY_PRESSER:
 # neither its own nor one its game simulates), and at 6 s c1, the host,
-# reports its own player entering (E_ENTRY_HOST: its own engine ran the
-# script). The legacy server knows no entry and reads each Activate as an
+# reports its own player entering from the spawn, about 4,890 units off the
+# vein (E_ENTRY_REACH: train 53's C-entry relays a host's own entry back to
+# it, its gate having blanked it before the grant, but every other check
+# stays; the relay back is T0's and the crate's). The legacy server knows
+# no entry and reads each Activate as an
 # activation: c2's own as c2 activating the vein where it stands, c1's as
 # c1 activating it from the spawn (the legacy server has no reach), each
 # answered with the vein's OpenContainer to its activator (an ACTI's
@@ -70,7 +73,7 @@ divergences:
     msg: {t: 21, target: 0x10e6c5}
     legacy: 1
     wire: 0
-    reason: the legacy server reads the host's entry as its activation of the vein from the spawn, without a reach; the wire server refuses the entry (E_ENTRY_HOST) and activates nothing
+    reason: the legacy server reads the host's entry as its activation of the vein from the spawn, without a reach; the wire server refuses the entry from there (E_ENTRY_REACH, the host's own entry otherwise relayed back to it since train 53's C-entry) and activates nothing
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0

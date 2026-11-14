@@ -5,8 +5,11 @@ import { RelayedActivationMessage } from '../messages/relayedActivationMessage';
 import { remoteIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
 import { PuppetService } from './puppetService';
+import { RemoteServer } from './remoteServer';
 
 const TAG = 'verb:traps';
+// this game's own player
+const PLAYER_ID = 0x14;
 
 // thuum docs/DECISIONS.md ADR-068 rung 5 (the acting scope; docs/research/
 // rung5-quests-2026-11-09.md 1(c), read 7): the stage the platform's
@@ -145,8 +148,9 @@ export class RelayedActivationService extends ClientListener {
     const target = ObjectReference.from(
       this.sp.Game.getFormEx(remoteIdToLocalId(remoteTarget)),
     );
+    const own = this.isOwnPlayer(remoteCaster);
     const caster = ObjectReference.from(
-      this.sp.Game.getFormEx(remoteIdToLocalId(remoteCaster)),
+      this.sp.Game.getFormEx(own ? PLAYER_ID : remoteIdToLocalId(remoteCaster)),
     );
     if (!target || !caster) {
       logLab(TAG, `${head}: ${event} not sent, no ${target ? 'presser' : 'trigger'} here`);
@@ -167,7 +171,25 @@ export class RelayedActivationService extends ClientListener {
       logLab(TAG, `${head}: ${event} not sent, the native threw (${text.slice(0, 32)})`);
       return;
     }
-    logLab(TAG, `${head}: ${describeTriggerSend(raw, event)}`);
+    logLab(TAG, `${head}${own ? ' (this seat\'s own player, its entry the gate blanked here)' : ''}: ${describeTriggerSend(raw, event)}`);
+  }
+
+  // Train 53, C-entry (lab/.cache/drafts/reads-53/r-c1-c2-c4-claw.md, R-C1):
+  // the server sends a host's own entry back to it when the gate blanked it
+  // here before the cell's grant (the seat's own presser entering a world
+  // trigger of a cell it did not host yet, then granted the cell before the
+  // server read the entry), so the presser is this seat's own player.
+  // remoteIdToLocalId cannot name it: the view holds no form view of this
+  // connection's own actor (FormViewArray's updateAll and syncFormView skip
+  // playerCharacterFormIdx unless show-me is set, and with show-me its view
+  // is an offset copy, not the player), so the own server id is the player,
+  // 0x14, here. A server id compared by its low 32 bits, as
+  // QuestStageService.isMe reads one. No acting player is named for it
+  // (nameEntryActing takes figures alone): the trigger's script reads
+  // Game.GetPlayer() as this seat's own player, its presser
+  private isOwnPlayer(remoteId: number): boolean {
+    const mine = this.controller.lookupListener(RemoteServer).getMyRemoteRefrId();
+    return mine > 0 && mine % 0x100000000 === remoteId;
   }
 
   // rung 5: a relayed entry's acting player, when its presser here is

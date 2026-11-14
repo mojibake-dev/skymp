@@ -348,12 +348,13 @@ export class FormView {
             ) as ObjectReference;
           },
 
-          triggerSpawnProcess(spawningRefr: ObjectReference, spawnPosition: [number, number, number], appearance: Appearance | null, callback: () => void) {
+          triggerSpawnProcess(spawningRefr: ObjectReference, spawnPosition: [number, number, number], appearance: Appearance | null, isCurrent: () => boolean, callback: () => void) {
             new SpawnProcess(
               appearance,
               spawnPosition,
               spawningRefr.getFormID(),
-              callback
+              callback,
+              isCurrent
             );
           }
         };
@@ -365,7 +366,8 @@ export class FormView {
             return ref;
           },
 
-          triggerSpawnProcess(spawningRefr: ObjectReference, spawnPosition: [number, number, number], appearance: Appearance | null, callback: () => void) {
+          // the stub's chain is not this file's: its callback alone is guarded
+          triggerSpawnProcess(spawningRefr: ObjectReference, spawnPosition: [number, number, number], appearance: Appearance | null, _isCurrent: () => boolean, callback: () => void) {
             const f = storage["formViewFunc2"] as Function;
             f(spawningRefr, spawnPosition, appearance, callback);
           }
@@ -465,7 +467,22 @@ export class FormView {
         }
 
         if (refr) {
-          spawnMethod.triggerSpawnProcess(refr, spawnPos, model.appearance || null, () => {
+          // a spawn ends for the reference it placed: once destroy() has let
+          // it go (a respawn over it, a cell change, the view dropped), its
+          // chain stops and its end never marks the view ready. thuum
+          // 20261114-082602 and 083256: rotfern's two look words 148 to 161 ms
+          // apart respawned c2's figure inside the first spawn's chain, whose
+          // end could then mark the view ready for the second copy while
+          // placeAtMe still held it disabled
+          const spawnedId = refr.getFormID();
+          const generation = this.spawnGeneration;
+          const isCurrent = () => this.spawnGeneration === generation;
+          spawnMethod.triggerSpawnProcess(refr, spawnPos, model.appearance || null, isCurrent, () => {
+            if (!isCurrent()) {
+              const now = this.refrId === spawnedId ? "let it go" : `moved to ${this.refrId.toString(16)}`;
+              logTrace("FormView", `spawn of ${spawnedId.toString(16)} finished after the view ${now}; not marked ready`);
+              return;
+            }
             this.ready = true;
             this.spawnMoment = Date.now();
           });
@@ -509,6 +526,8 @@ export class FormView {
   destroy(lost = false): void {
     this.isOnScreen = false;
     this.spawnMoment = 0;
+    // every spawn still running for the reference let go here is superseded
+    this.spawnGeneration++;
     const refrId = this.refrId;
     once("update", () => {
       if (refrId && refrId < 0xff000000 && lost) {
@@ -1621,6 +1640,8 @@ export class FormView {
   private lastPcWorldOrCell = 0;
   private lastWorldOrCell = 0;
   private spawnMoment = 0;
+  // bumped by destroy(): a spawn started under an older one is superseded
+  private spawnGeneration = 0;
   private wasHostedByOther: boolean | undefined = undefined;
   private state = {};
   private localImmortal = false;

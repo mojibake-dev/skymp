@@ -59,26 +59,6 @@
 //! report's root and the game files' alias scripts), only ever toward the
 //! seat's own, so a forged root gains a seat nothing it could not get by
 //! reporting the seat's cause itself.
-//!
-//! V-scene (train 53; thuum lab/.cache/drafts/reads-53/r-v1-v2-vc1-cure.md,
-//! R-V1, CONFIRMED): a stage the core records is stamped with an acting
-//! player, the report's when it names a connected player, else the
-//! reporter's. A scene fragment's stage is the exception ([`stage_acting`]):
-//! a scene runs past the fragment that started it, so the stage its own
-//! fragment sets names no scope even when another player's stage started the
-//! scene. Playtest 51: c2 ran VC01's (0x5c625) stage 185 under rotfern's
-//! scope, started its own copy of scene 0x5dba7, the puppet rule stopped it,
-//! and its end fragment's stage 195 (root
-//! SF_VC01VampirismCureRitual_0005DBA7.Fragment_0) was stamped Ariadne, so
-//! each seat cured the other's figure. Such a stage keeps the acting player
-//! of the quest's last recorded stage or run word ([`QuestRuns::last_acting`],
-//! the run's record: the quest record itself keeps no acting player), the
-//! nearest the server knows to the stage that started the scene, and is
-//! refused when the server knows none (`E_QUEST_SCENE_ACTING`); never the
-//! reporter by default. The approximation is HYPOTHESIS: a scene started by
-//! another quest's fragment, or by dialogue, takes this quest's last acting
-//! player, and a restart forgets the record, so a quest's first scene stage
-//! after one is refused.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 
@@ -104,15 +84,6 @@ pub const RUN_RECORD_CAP: usize = 2048;
 /// How many (quest, seat) pairs the churn counter keeps; past it the pair
 /// flipped longest ago is forgotten (its next word counts from none).
 pub const RUN_TRACK_CAP: usize = 4096;
-
-/// How many quests' last acting players the run keeps (V-scene): the run
-/// record's own bound; a quest new to a full table is not kept, so its scene
-/// fragments' stages are `E_QUEST_SCENE_ACTING` until a restart.
-pub const ACTING_CAP: usize = RUN_RECORD_CAP;
-
-/// The stable name of a scene fragment's stage the server can stamp with no
-/// acting player ([`stage_acting`]).
-pub const SCENE_ACTING: &str = "E_QUEST_SCENE_ACTING";
 
 /// A run word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -278,53 +249,6 @@ pub fn root_is_seat_own(function: &str, script_on_player_aliases_only: bool) -> 
     script_on_player_aliases_only && PLAYER_ALIAS_EVENTS.iter().any(|e| e.eq_ignore_ascii_case(function))
 }
 
-/// Whether a report's root is a scene's fragment (V-scene): the root's
-/// script, its part before the last dot, is named `SF_...`, without case,
-/// as the Creation Kit names a scene's fragment script (playtest 51's root
-/// SF_VC01VampirismCureRitual_0005DBA7.Fragment_0, scene 0x5dba7; a stage
-/// fragment's is `QF_...`, a dialogue's `TIF__...`).
-#[must_use]
-pub fn root_is_scene_fragment(root: &str) -> bool {
-    let script = root.rsplit_once('.').map_or(root, |(script, _)| script);
-    script.get(..3).is_some_and(|prefix| prefix.eq_ignore_ascii_case("SF_"))
-}
-
-/// Whose scope a reported stage is stamped with (V-scene).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StageActing {
-    /// The connected player the report names (a relayed fragment's chained
-    /// set on its seat, read 7).
-    Named(u32),
-    /// The reporter: the report names no connected player and its root is
-    /// no scene fragment.
-    Reporter(u32),
-    /// A scene fragment's stage naming no connected player: the acting
-    /// player of the quest's last recorded stage or run word, who may be the
-    /// reporter.
-    LastStage(u32),
-    /// A scene fragment's stage the server knows no acting player for
-    /// ([`SCENE_ACTING`]): not recorded, nothing relayed.
-    Refuse(String),
-}
-
-/// The acting player of a stage `reporter` reported: `named` the connected
-/// player its report names (the core resolves connectedness; none when it
-/// names none, itself or nobody connected), `root` its stack's root (empty
-/// for none), `last` the quest's last acting player while connected.
-#[must_use]
-pub fn stage_acting(reporter: u32, named: Option<u32>, root: &str, last: Option<u32>) -> StageActing {
-    if let Some(named) = named {
-        return StageActing::Named(named);
-    }
-    if !root_is_scene_fragment(root) {
-        return StageActing::Reporter(reporter);
-    }
-    match last {
-        Some(last) => StageActing::LastStage(last),
-        None => StageActing::Refuse(format!("rooted at the scene fragment {root} and naming no acting player, and the quest has no acting player recorded this run who is still connected: a scene's stage is never its reporter's by default (V-scene)")),
-    }
-}
-
 /// Whether a player alias's event roots its seat's own cause
 /// (`questPlayerAliasCause`, D-Q9; a quest setting's default, ADR-070's
 /// frame): a one-line flip of the server's settings either way.
@@ -448,7 +372,6 @@ pub struct QuestRuns {
     held: BTreeSet<(u32, String)>,
     story: BTreeSet<(u32, String)>,
     instances: StoryInstances,
-    acting: HashMap<(u32, String), u32>,
 }
 
 /// A held quest's key: its id and its plugin without case, as FormDesc's
@@ -568,24 +491,6 @@ impl QuestRuns {
     /// `seat` left: its counters go (a reconnect counts from none).
     pub fn gone(&mut self, seat: u32) {
         self.tracks.retain(|(_, s), _| *s != seat);
-    }
-
-    /// V-scene: `acting` is the acting player of `quest`'s latest recorded
-    /// stage or run word, kept for the run (a quest new to a full table,
-    /// [`ACTING_CAP`], is not kept).
-    pub fn record_acting(&mut self, quest: &FormDesc, acting: u32) {
-        let key = held_key(quest);
-        if self.acting.len() >= ACTING_CAP && !self.acting.contains_key(&key) {
-            return;
-        }
-        self.acting.insert(key, acting);
-    }
-
-    /// The acting player of `quest`'s latest recorded stage or run word this
-    /// run, if any.
-    #[must_use]
-    pub fn last_acting(&self, quest: &FormDesc) -> Option<u32> {
-        self.acting.get(&held_key(quest)).copied()
     }
 
     /// What the login sends around the stages, in the record's order: the
@@ -1009,98 +914,5 @@ mod tests {
         runs.set_story(&[quest(LETTER_SM)], StoryInstances::World);
         let (starts, stops) = runs.at_login(&record, &all, &stages);
         assert_eq!((ids(&starts), ids(&stops)), (vec![EMBERSHARD, MS13, LETTER_SM], vec![MS13, LETTER, LETTER_SM]));
-    }
-
-    // playtest 51's Rising at Dawn VC01 0x5c625 (R-V1): stage 185 set by
-    // rotfern's seat in its own scope starts scene 0x5dba7, whose end
-    // fragment sets 195
-    const VC01: u32 = 0x5c625;
-    const SCENE_ROOT: &str = "SF_VC01VampirismCureRitual_0005DBA7.Fragment_0";
-
-    #[test]
-    fn a_scene_fragment_is_its_roots_sf_script() {
-        assert!(root_is_scene_fragment(SCENE_ROOT));
-        assert!(root_is_scene_fragment("sf_MS13ArgueScene_000382C0.Fragment_2"));
-        // a stage fragment, a dialogue's, a trigger's, none
-        for root in ["QF_VC01_0005C625.Fragment_7", "TIF__000E7697.Fragment_0", "defaultsetStageTrigSCRIPT.OnTriggerEnter", "", "SF", "SF_", "Fragment_0"] {
-            assert_eq!(root_is_scene_fragment(root), root == "SF_", "{root}");
-        }
-        // the script part alone: a function named SF_ is no scene's
-        assert!(!root_is_scene_fragment("QF_X.SF_Y"));
-    }
-
-    #[test]
-    fn a_scene_fragments_stage_keeps_the_quests_last_acting_player_never_its_reporter() {
-        // c2 (Ariadne) reports 195 from its stopped copy of the scene, naming
-        // no acting player; VC01's last stage was rotfern's
-        assert_eq!(stage_acting(C2, None, SCENE_ROOT, Some(C1)), StageActing::LastStage(C1));
-        // rotfern's own copy of the scene: its own, by the record
-        assert_eq!(stage_acting(C1, None, SCENE_ROOT, Some(C1)), StageActing::LastStage(C1));
-        // the server knows none (a restart, or a scene of a quest with no
-        // stage recorded this run): refused
-        let StageActing::Refuse(why) = stage_acting(C2, None, SCENE_ROOT, None) else { panic!("not refused") };
-        assert!(why.contains(SCENE_ROOT) && why.contains("never its reporter's"));
-        assert_eq!(SCENE_ACTING, "E_QUEST_SCENE_ACTING");
-        // a report naming a connected player keeps it, scene or not
-        assert_eq!(stage_acting(C2, Some(C1), SCENE_ROOT, None), StageActing::Named(C1));
-        assert_eq!(stage_acting(C2, Some(C1), "QF_VC01_0005C625.Fragment_9", Some(C2)), StageActing::Named(C1));
-        // any other root naming none is the reporter's, as before
-        assert_eq!(stage_acting(C2, None, "QF_VC01_0005C625.Fragment_9", Some(C1)), StageActing::Reporter(C2));
-        assert_eq!(stage_acting(C2, None, "", None), StageActing::Reporter(C2));
-    }
-
-    #[test]
-    fn the_run_keeps_each_quests_last_acting_player_bounded() {
-        let mut runs = QuestRuns::default();
-        assert_eq!(runs.last_acting(&quest(VC01)), None);
-        runs.record_acting(&quest(VC01), C1);
-        assert_eq!(runs.last_acting(&quest(VC01)), Some(C1));
-        // the latest wins; the plugin's case is not the quest's
-        runs.record_acting(&FormDesc { short_id: VC01, file: "SKYRIM.ESM".to_owned() }, C2);
-        assert_eq!(runs.last_acting(&quest(VC01)), Some(C2));
-        assert_eq!(runs.last_acting(&quest(LETTER)), None);
-        // a seat's leaving keeps the record (the core asks whether the
-        // player is still connected)
-        runs.gone(C2);
-        assert_eq!(runs.last_acting(&quest(VC01)), Some(C2));
-        // full: a quest new to the table is not kept, a kept one still moves
-        for id in 1..u32::try_from(ACTING_CAP).unwrap_or(2048) {
-            runs.record_acting(&quest(id), C1);
-        }
-        runs.record_acting(&quest(LETTER), C1);
-        assert_eq!(runs.last_acting(&quest(LETTER)), None);
-        runs.record_acting(&quest(VC01), C1);
-        assert_eq!(runs.last_acting(&quest(VC01)), Some(C1));
-    }
-
-    proptest::proptest! {
-        #[test]
-        fn a_stage_is_never_its_reporters_by_default_when_a_scene_roots_it(
-            reporter in proptest::prelude::any::<u32>(),
-            named in proptest::option::of(proptest::prelude::any::<u32>()),
-            last in proptest::option::of(proptest::prelude::any::<u32>()),
-            root in proptest::prop_oneof![
-                proptest::strategy::Just(SCENE_ROOT.to_owned()),
-                proptest::strategy::Just("QF_VC01_0005C625.Fragment_7".to_owned()),
-                "[A-Za-z_]{0,12}(\\.[A-Za-z_0-9]{0,12})?",
-            ],
-        ) {
-            let scene = root_is_scene_fragment(&root);
-            match stage_acting(reporter, named, &root, last) {
-                StageActing::Named(n) => proptest::prop_assert_eq!(Some(n), named),
-                StageActing::Reporter(r) => {
-                    proptest::prop_assert!(named.is_none() && !scene);
-                    proptest::prop_assert_eq!(r, reporter);
-                }
-                StageActing::LastStage(l) => {
-                    proptest::prop_assert!(named.is_none() && scene);
-                    proptest::prop_assert_eq!(Some(l), last);
-                }
-                StageActing::Refuse(why) => {
-                    proptest::prop_assert!(named.is_none() && scene && last.is_none());
-                    proptest::prop_assert!(!why.is_empty());
-                }
-            }
-        }
     }
 }

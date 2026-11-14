@@ -147,7 +147,9 @@ void InstallQuitDisconnectHook()
  *   MagicEffects carries);
  * - an effect that another actor's spell, power, shout or scroll
  *   (include/RE/M/MagicSystem.h:60-80) lands on the player and that modifies
- *   Health, Magicka or Stamina: a value modifier archetype
+ *   Health, Magicka or Stamina is not refused but lands with its number
+ *   zeroed, so its script still runs (playtest 51, the drain's infection;
+ *   the thunk below): a value modifier archetype
  *   (include/RE/E/EffectArchetypes.h:10-44) by its primary or second actor
  *   value (include/RE/E/EffectSetting.h:89, :94). The server computes the
  *   damage one actor deals another and sends the percentages (ADR-028).
@@ -227,7 +229,17 @@ struct PlayerAddTarget
       auto caster = a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
       if (caster && !caster->IsPlayerRef() && IsCast(a_data.magicItem) &&
           ChangesServerValue(a_data.effect)) {
-        return false;
+        // playtest 51 (Eli: "whatever does the drain needs to also be
+        // transmitting the infection chance"): the effect lands with its
+        // number zeroed (AddTargetData::magnitude +0x3C,
+        // include/RE/M/MagicTarget.h:64), so the server's number stays the
+        // only one (ADR-028) while the effect's own script runs here, in
+        // the player's own game (ADR-031): a vampire's drain's
+        // VampireAbsorbHealthScript rolls Sanguinare Vampiris at its
+        // OnEffectStart. Refusing it took the script along with the number.
+        // HYPOTHESIS until a run reads it: a zero-magnitude effect still
+        // starts and runs its script (x-infection v1)
+        a_data.magnitude = 0.f;
       }
     }
     return func(a_this, a_data);

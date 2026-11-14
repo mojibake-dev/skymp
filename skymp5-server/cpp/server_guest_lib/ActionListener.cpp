@@ -10022,6 +10022,40 @@ void ActionListener::OnUnknown(const RawMessageData& rawMsgData)
   spdlog::warn("ActionListener::OnUnknown - Got unhandled message");
 }
 
+namespace {
+// Whether `effect` changes Health, Magicka or Stamina, by the same reading as
+// skyrim-platform Hooks.cpp's PlayerAddTarget::ChangesServerValue: a value,
+// peak value, accumulate or value-and-parts modifier by its primary actor
+// value, a dual modifier or an absorb by either
+bool MovesServerValue(WorldState* worldState,
+                      const espm::Effects::Effect& effect)
+{
+  try {
+    const auto data =
+      espm::GetData<espm::MGEF>(effect.effectId, worldState).data;
+    auto server = [](espm::ActorValue av) {
+      return av == espm::ActorValue::Health ||
+        av == espm::ActorValue::Magicka || av == espm::ActorValue::Stamina;
+    };
+    using Type = espm::MGEF::EffectType;
+    switch (data.effectType) {
+      case Type::ValueMod:
+      case Type::PeakValueMod:
+      case Type::AccumulateMagnitude:
+      case Type::ValueAndParts:
+        return server(data.primaryAV);
+      case Type::Dual:
+      case Type::Absorb:
+        return server(data.primaryAV) || server(data.secondaryAV);
+      default:
+        return false;
+    }
+  } catch (std::exception&) {
+    return false;
+  }
+}
+}
+
 void ActionListener::OnSpellHit(MpActor* aggressor,
                                 MpObjectReference* targetRef,
                                 const HitData& hitData, float magnitudeScale,
@@ -10156,6 +10190,60 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
     NotifyHostility(*aggressor, *targetActorPtr,
                     std::chrono::steady_clock::now());
   }
+
+  // playtest 51 (Eli: "whatever does the drain needs to also be
+  // transmitting the infection chance"): another actor's spell whose every
+  // effect moves Health, Magicka or Stamina has its numbers here (R0,
+  // ADR-028), but its effects' scripts run only where an effect lands, in the
+  // victim's own game (ADR-031): a vampire's drain's
+  // VampireAbsorbHealthScript rolls Sanguinare Vampiris at OnEffectStart. An
+  // aimed cast's relay carries no target, so the victim's game is told the
+  // spell landed: the caster's figure applies it to that game's player,
+  // whose AddTarget zeroes its numbers (skyrim-platform Hooks.cpp
+  // PlayerAddTarget) and runs its scripts. Once a contact: a stream's hits
+  // within a second of the last delivery are the same contact (HYPOTHESIS:
+  // the engine starts a concentration effect once a contact, not once a
+  // hit; x-infection v1 reads it)
+  if (aggressor != targetActorPtr && !aggressor->IsCreatedAsPlayer() &&
+      partOne.serverState.UserByActor(targetActorPtr) !=
+        Networking::InvalidUserId &&
+      !effects.empty() &&
+      std::all_of(effects.begin(), effects.end(), [&](const auto& effect) {
+        return MovesServerValue(&partOne.worldState, effect);
+      })) {
+    DeliverSpellLanding(*aggressor, *targetActorPtr, hitData.source);
+  }
+}
+
+void ActionListener::DeliverSpellLanding(MpActor& caster, MpActor& target,
+                                         uint32_t spell)
+{
+  static std::map<std::tuple<uint32_t, uint32_t, uint32_t>,
+                  std::chrono::steady_clock::time_point>
+    lastDelivery;
+  const auto now = std::chrono::steady_clock::now();
+  auto& last = lastDelivery[{ caster.GetFormId(), spell, target.GetFormId() }];
+  const bool sameContact = last.time_since_epoch().count() != 0 &&
+    now - last < std::chrono::seconds(1);
+  last = now;
+  if (sameContact) {
+    return;
+  }
+  SpSnippetObjectArgument spellArg;
+  spellArg.formId = spell;
+  spellArg.type = "Spell";
+  SpSnippetObjectArgument player;
+  player.formId = 0x14;
+  player.type = "ObjectReference";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ spellArg, player };
+  SpSnippet("Actor", "DoCombatSpellApply", args, caster.GetFormId())
+    .Execute(&target, SpSnippetMode::kNoReturnResult);
+  spdlog::info("[verb:magic-effects] {:x}'s {:x} landed on {:x}: applied in "
+               "its own game, numbers zeroed there, scripts run (playtest "
+               "51's infection)",
+               caster.GetFormId(), spell, target.GetFormId());
 }
 
 void ActionListener::OnWeaponHit(MpActor* aggressor,

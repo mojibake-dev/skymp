@@ -1223,3 +1223,84 @@ TEST_CASE("A recorded head part swap brings the stored RaceMenu look's part "
   REQUIRE(!p.WearHeadPartInLook(none, kEyesIceBlue));
   Leave(p);
 }
+
+// thuum train 53's V-look (lab/.cache/drafts/reads-53/r-v3-v4-v5-look.md,
+// R-V3): a recorded SetRace wrote only the race, so every figure of the
+// player loaded the old stored look over the new race and put the old
+// race's parts back (playtest 51: Ariadne's Khajiit eyes 0xEE878 on her
+// vampire figure on the host's screen). The parts the new race may not wear
+// by their HDPT's race list leave the look and the stored look, and the
+// stored look goes to the watcher ahead of the look. Over the head-part
+// case's vanilla parts: MaleEyesArgonian 0x5150a's list holds ArgonianRace
+// 0x13740 alone, so BretonRace may not wear it; HairMaleNord01 0x51507 is
+// judged by its own record here
+TEST_CASE("A recorded SetRace drops the head parts its race may not wear "
+          "from the look and the stored RaceMenu look, the stored look sent "
+          "ahead of the look (V-look)",
+          "[PlayerOwn][espm]")
+{
+  constexpr uint32_t kEyesArgonian = 0x5150a;
+  constexpr uint32_t kHairNord01 = 0x51507;
+  constexpr uint32_t kArgonianRace = 0x13740;
+  const std::string kLook =
+    R"({"actor": {"weight": 50},
+  "headParts": [{"formIdentifier": "Skyrim.esm|05150A", "type": 2},
+                {"formIdentifier": "Skyrim.esm|051507", "type": 3}]})";
+  PartOne& p = GetPartOne();
+  // the record's answers, the rewrite's reading: a list that holds the
+  // race, one that does not, and no answer for a form that is no HDPT
+  REQUIRE(p.HeadPartRaceListHolds(kEyesArgonian, kArgonianRace) ==
+          std::optional<bool>(true));
+  REQUIRE(p.HeadPartRaceListHolds(kEyesArgonian, kBretonRace) ==
+          std::optional<bool>(false));
+  REQUIRE(!p.HeadPartRaceListHolds(kBretonRace, kBretonRace).has_value());
+  const auto hairHolds = p.HeadPartRaceListHolds(kHairNord01, kBretonRace);
+  const bool hairStays = !hairHolds.has_value() || *hairHolds;
+  const std::vector<uint32_t> kept =
+    hairStays ? std::vector<uint32_t>{ kHairNord01 } : std::vector<uint32_t>{};
+
+  Enter(p);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  Appearance worn = *turned.GetAppearance();
+  worn.headpartIds = { kEyesArgonian, kHairNord01 };
+  turned.SetAppearance(&worn);
+  REQUIRE(turned.SetRaceMenuPreset(kLook));
+  p.Messages().clear();
+
+  SetRace(p, kBretonRace, "PlayerVampireQuestScript");
+  const auto now = turned.GetAppearance();
+  REQUIRE(now->raceId == kBretonRace);
+  REQUIRE(now->headpartIds == kept);
+  const auto stored = nlohmann::json::parse(turned.GetRaceMenuPreset());
+  REQUIRE(stored["headParts"].size() == kept.size());
+  if (hairStays) {
+    REQUIRE(stored["headParts"][0]["formIdentifier"] == "Skyrim.esm|051507");
+    REQUIRE(stored["headParts"][0]["type"] == 3);
+  }
+  REQUIRE(stored["actor"]["weight"] == 50);
+  REQUIRE(log.Count("its RaceMenu look's head parts the race may not wear "
+                    "dropped and sent to 1 game(s)") == 1);
+
+  // the watcher hears the stored look, then the look; the player's own game
+  // wears both already
+  size_t at = 0;
+  size_t presetAt = 0;
+  size_t lookAt = 0;
+  for (auto& m : p.Messages()) {
+    ++at;
+    if (m.userId != 1 || !m.j.is_object()) {
+      continue;
+    }
+    if (m.j.value("t", -1) == static_cast<int>(MsgType::RaceMenuPreset)) {
+      presetAt = at;
+    }
+    if (m.j.value("t", -1) == static_cast<int>(MsgType::UpdateAppearance)) {
+      lookAt = at;
+    }
+  }
+  REQUIRE(presetAt != 0);
+  REQUIRE(presetAt < lookAt);
+  REQUIRE(LooksTo(p, 0).empty());
+  Leave(p);
+}

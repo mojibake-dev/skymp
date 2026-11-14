@@ -4596,24 +4596,34 @@ const std::vector<uint32_t>& PartOne::LeveledReach(uint32_t list)
 
 bool PartOne::HeadPartFitsRace(uint32_t part, uint32_t race)
 {
-  if (!HasEspm() || race == 0) {
+  if (race == 0) {
     return false;
+  }
+  // a part that lists no race is no race's
+  return HeadPartRaceListHolds(part, race).value_or(false);
+}
+
+std::optional<bool> PartOne::HeadPartRaceListHolds(uint32_t part,
+                                                   uint32_t race)
+{
+  if (!HasEspm()) {
+    return std::nullopt;
   }
   auto& browser = GetEspm().GetBrowser();
   auto& cache = worldState.GetEspmCache();
   const auto lookup = browser.LookupById(part);
   const auto* hdpt = espm::Convert<espm::HDPT>(lookup.rec);
   if (!hdpt) {
-    return false;
+    return std::nullopt;
   }
   const uint32_t validRaces = hdpt->GetData(cache).validRaces;
   if (validRaces == 0) {
-    return false; // a part that lists no race is no race's
+    return std::nullopt;
   }
   const auto list = browser.LookupById(lookup.ToGlobalId(validRaces));
   const auto* flst = espm::Convert<espm::FLST>(list.rec);
   if (!flst) {
-    return false;
+    return std::nullopt;
   }
   for (uint32_t member : flst->GetData(cache).formIds) {
     if (list.ToGlobalId(member) == race) {
@@ -4723,6 +4733,53 @@ PartOne::HeadPartRecord PartOne::RecordHeadPart(MpActor& actor, uint32_t part)
   std::string preset = actor.GetRaceMenuPreset();
   if (WearHeadPartInLook(preset, part) &&
       actor.SetRaceMenuPreset(std::move(preset))) {
+    recorded.preset = true;
+  }
+  return recorded;
+}
+
+PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
+{
+  HeadPartRecord recorded;
+  if (!HasEspm() || race == 0) {
+    return recorded;
+  }
+  // the record's answer that the race may not wear the part; no answer
+  // keeps it
+  const auto barred = [&](uint32_t part) {
+    const auto holds = HeadPartRaceListHolds(part, race);
+    return holds.has_value() && !*holds;
+  };
+  if (const auto current = actor.GetAppearance()) {
+    Appearance look = *current;
+    auto& parts = look.headpartIds;
+    const size_t before = parts.size();
+    parts.erase(std::remove_if(parts.begin(), parts.end(), barred),
+                parts.end());
+    if (parts.size() != before) {
+      actor.SetAppearance(&look);
+      recorded.look = true;
+    }
+  }
+  const std::string preset = actor.GetRaceMenuPreset();
+  if (preset.empty()) {
+    return recorded;
+  }
+  const auto facts = skymp::rules::racemenu_look_facts(rust::Str(preset));
+  if (!facts.ok) {
+    return recorded;
+  }
+  // one byte a listed part, in the look's order: kept or not; a part in a
+  // plugin the server does not load gives no answer and stays
+  std::vector<uint8_t> keep;
+  keep.reserve(facts.parts.size());
+  for (const auto& ref : facts.parts) {
+    const uint32_t listed = LookFormIdOf(std::string(ref.plugin), ref.id);
+    keep.push_back(listed != 0 && barred(listed) ? 0 : 1);
+  }
+  const auto rewritten = skymp::rules::racemenu_without_head_parts(
+    rust::Str(preset), rust::Slice<const uint8_t>(keep.data(), keep.size()));
+  if (!rewritten.empty() && actor.SetRaceMenuPreset(std::string(rewritten))) {
     recorded.preset = true;
   }
   return recorded;

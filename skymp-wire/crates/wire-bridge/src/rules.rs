@@ -2507,6 +2507,13 @@ mod ffi {
         /// that type (wire-rules racemenu::with_head_part); empty when
         /// nothing changes or the look would pass the wire's preset cap.
         fn racemenu_with_head_part(preset: &str, same_type: &[u8], plugin: &str, id: u32) -> String;
+        /// thuum train 53's V-look: the stored look without the head parts
+        /// a recorded SetRace's race may not wear, `keep` one byte per
+        /// `headParts` entry in order, zero for a part that goes (the core
+        /// reads each part's HDPT RNAM list; wire-rules
+        /// racemenu::without_head_parts); empty when nothing goes or the look
+        /// would pass the wire's preset cap.
+        fn racemenu_without_head_parts(preset: &str, keep: &[u8]) -> String;
         /// Whether an actor values report is within bounds, given the
         /// values the server holds (thuum docs/verbs/actor-values.md).
         fn actor_values_report_ok(report: &AvSnapshot, held: &[AvBase]) -> bool;
@@ -3808,6 +3815,11 @@ fn racemenu_with_head_part(preset: &str, same_type: &[u8], plugin: &str, id: u32
     let same: Vec<bool> = same_type.iter().map(|&b| b != 0).collect();
     let part = racemenu::FormRef { plugin: plugin.to_owned(), id };
     racemenu::with_head_part(preset, &same, &part).filter(|look| look.len() <= wire_schema::cap::RACEMENU_PRESET).unwrap_or_default()
+}
+
+fn racemenu_without_head_parts(preset: &str, keep: &[u8]) -> String {
+    let keep: Vec<bool> = keep.iter().map(|&b| b != 0).collect();
+    racemenu::without_head_parts(preset, &keep).filter(|look| look.len() <= wire_schema::cap::RACEMENU_PRESET).unwrap_or_default()
 }
 
 fn av_snapshot(s: &AvSnapshot) -> actor_values::Snapshot {
@@ -7135,6 +7147,12 @@ mod tests {
         assert_eq!(parts, vec![("rotfern.esp".to_owned(), 0x02E117), ("rotfern.esp".to_owned(), 0x023F0E)]);
         // no part of the type, or a look past the preset cap once written: nothing
         assert!(racemenu_with_head_part(look, &[0, 0], "rotfern.esp", 0x023F0E).is_empty());
+        // train 53's V-look: a part the new race may not wear leaves the
+        // look; nothing to drop, or facts that do not cover the look, nothing
+        let dropped = racemenu_without_head_parts(look, &[1, 0]);
+        assert_eq!(racemenu_look_facts(&dropped).parts.len(), 1);
+        assert!(racemenu_without_head_parts(look, &[1, 1]).is_empty());
+        assert!(racemenu_without_head_parts(look, &[0]).is_empty());
         let padding = "x".repeat(wire_schema::cap::RACEMENU_PRESET);
         let big = format!(r#"{{"pad": "{padding}", "headParts": [{{"formIdentifier": "rotfern.esp|014C06", "type": 2}}]}}"#);
         assert!(racemenu_with_head_part(&big, &[1], "rotfern.esp", 0x023F0E).is_empty());

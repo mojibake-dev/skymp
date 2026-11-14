@@ -159,6 +159,36 @@ pub fn with_head_part(text: &str, same_type: &[bool], part: &FormRef) -> Option<
     preset_ok(&out).then_some(out)
 }
 
+/// The stored look without the head parts its new race may not wear (thuum
+/// train 53's V-look; lab/.cache/drafts/reads-53/r-v3-v4-v5-look.md, R-V3).
+/// A recorded `Actor.SetRace` writes only the appearance's race, and every
+/// figure a game builds of the player loads the stored look over it
+/// (raceMenuService's LoadCharacterPresetEx, APPLY_ALL), whose head parts
+/// replace the base's by type, so a part the new race may not wear comes
+/// back on the new race's figure (playtest 51: Ariadne's
+/// FemaleEyesKhajiitBlueNarrow 0xEE878, KhajiitRace's alone, on her vampire
+/// figure on rotfern's screen). `keep` says, for each `headParts` entry in
+/// order, whether its part stays (the core reads each part's valid-race list,
+/// HDPT RNAM, against the new race); every other field of a kept entry, and
+/// the rest of the look, stay as they are. None when `text` is no look,
+/// `keep` does not cover its entries one for one, nothing goes, or the
+/// result is no preset ([`preset_ok`]).
+#[must_use]
+pub fn without_head_parts(text: &str, keep: &[bool]) -> Option<String> {
+    if !preset_ok(text) {
+        return None;
+    }
+    let mut look: Value = serde_json::from_str(text).ok()?;
+    let entries = look.get_mut("headParts")?.as_array_mut()?;
+    if entries.len() != keep.len() || keep.iter().all(|&k| k) {
+        return None;
+    }
+    let kept: Vec<Value> = std::mem::take(entries).into_iter().zip(keep).filter(|(_, &k)| k).map(|(entry, _)| entry).collect();
+    *entries = kept;
+    let out = serde_json::to_string(&look).ok()?;
+    preset_ok(&out).then_some(out)
+}
+
 /// What the core knows of one head part a look names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartFacts {
@@ -316,6 +346,51 @@ mod tests {
         // the first names it already: the later one still goes
         let eyes = FormRef { plugin: "rotfern.esp".into(), id: 0x014C06 };
         assert_eq!(parts_of(with_head_part(two, &[true, true], &eyes).as_deref()), vec![("rotfern.esp".to_owned(), 0x014C06)]);
+    }
+
+    // Ariadne's look before her turn (playtest 51, R-V3): her eyes
+    // FemaleEyesKhajiitBlueNarrow 0xEE878 (Skyrim.esm, KhajiitRace's alone by
+    // its RNAM list, the read's esm read) between two parts that stand in
+    #[test]
+    fn a_new_races_look_drops_the_parts_it_may_not_wear_and_keeps_the_rest() {
+        let look = r#"{"actor": {"weight": 30, "hairColor": 1193046},
+            "headParts": [{"formIdentifier": "rotfern.esp|02E117", "type": 0},
+                          {"formIdentifier": "Skyrim.esm|0EE878", "type": 2},
+                          {"formIdentifier": "rotfern.esp|02E11A", "type": 3}],
+            "tintInfo": [{"color": 1, "index": 4}]}"#;
+        let out = without_head_parts(look, &[true, false, true]);
+        assert_eq!(parts_of(out.as_deref()), vec![("rotfern.esp".to_owned(), 0x02E117), ("rotfern.esp".to_owned(), 0x02E11A)]);
+        // the rest of the look, and each kept entry's fields, as they were
+        let text = out.unwrap_or_default();
+        let v: Value = serde_json::from_str(&text).unwrap_or_default();
+        assert_eq!(v.get("headParts").and_then(|h| h.get(1)).and_then(|e| e.get("type")).and_then(Value::as_u64), Some(3));
+        assert_eq!(look_facts(&text).and_then(|f| f.weight), Some(30.0));
+        assert_eq!(look_facts(&text).and_then(|f| f.hair_color), Some(1_193_046));
+        assert!(v.get("tintInfo").is_some_and(Value::is_array));
+        // every part dropped: an empty list, still a look
+        assert_eq!(parts_of(without_head_parts(look, &[false, false, false]).as_deref()), Vec::<(String, u32)>::new());
+        // nothing to drop, facts that do not cover the entries, no look
+        assert_eq!(without_head_parts(look, &[true, true, true]), None);
+        assert_eq!(without_head_parts(look, &[true, false]), None);
+        assert_eq!(without_head_parts("{}", &[]), None);
+        assert_eq!(without_head_parts("[]", &[]), None);
+        assert_eq!(without_head_parts(r#"{"headParts": 3}"#, &[]), None);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_dropped_look_keeps_exactly_the_kept_parts_in_order(keep in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..12)) {
+            let entries: Vec<String> = (0..keep.len()).map(|i| format!(r#"{{"formIdentifier": "Skyrim.esm|{:06X}", "type": {}}}"#, i.saturating_add(1), i & 3)).collect();
+            let look = format!(r#"{{"actor": {{"weight": 10}}, "headParts": [{}]}}"#, entries.join(","));
+            let out = without_head_parts(&look, &keep);
+            if keep.iter().all(|&k| k) {
+                proptest::prop_assert_eq!(out, None);
+            } else {
+                let ids: Vec<u32> = parts_of(out.as_deref()).into_iter().map(|(_, id)| id).collect();
+                let want: Vec<u32> = keep.iter().enumerate().filter(|(_, &k)| k).filter_map(|(i, _)| u32::try_from(i.saturating_add(1)).ok()).collect();
+                proptest::prop_assert_eq!(ids, want);
+            }
+        }
     }
 
     #[test]

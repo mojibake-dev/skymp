@@ -5194,7 +5194,28 @@ void RecordPlayerOwn(
         Appearance appearance = *look;
         appearance.raceId = form;
         reporter.SetAppearance(&appearance);
-        SendAppearanceToOthers(partOne, reporter, appearance);
+        // train 53's V-look (thuum lab/.cache/drafts/reads-53/
+        // r-v3-v4-v5-look.md, R-V3): the head parts the new race may not
+        // wear leave the look and the stored RaceMenu look
+        // (PartOne::RecordRaceLook), the stored look sent first to every
+        // game that sees the player, then the look, the head part branch's
+        // shape: each figure is built again at the appearance and loads the
+        // stored look its game holds then (raceMenuService's
+        // LoadCharacterPresetEx, APPLY_ALL), which would put the old race's
+        // parts back by type
+        const auto recorded = partOne.RecordRaceLook(reporter, form);
+        if (recorded.preset) {
+          what += fmt::format(", its RaceMenu look's head parts the race may "
+                              "not wear dropped and sent to {} game(s)",
+                              SendRaceMenuPresetToOthers(partOne, reporter));
+        }
+        if (const auto now = reporter.GetAppearance()) {
+          SendAppearanceToOthers(partOne, reporter, *now);
+          if (recorded.look) {
+            what += fmt::format(", {} head part(s) left on its look",
+                                now->headpartIds.size());
+          }
+        }
         what += fmt::format(", its look's race {:x} sent to every game that "
                             "sees it",
                             form);

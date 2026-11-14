@@ -413,6 +413,13 @@ public:
   // false when it wears it already or `part` is no HDPT
   bool HeadPartFitsRace(uint32_t part, uint32_t race);
   bool WearHeadPart(Appearance& look, uint32_t part);
+  // the record's answer behind both readings of a head part's races: whether
+  // `part`'s HDPT valid-race FormList (RNAM) holds `race`; none when the
+  // record gives no answer (no HDPT, no RNAM, an RNAM that is no FormList).
+  // HeadPartFitsRace takes none as no (D-E1 A: a part that lists no race is
+  // no race's); the look's derivation (ADR-026) and RecordRaceLook take it
+  // as yes
+  std::optional<bool> HeadPartRaceListHolds(uint32_t part, uint32_t race);
   // thuum D-R1 C's leveled gap (train 52, D-R2 B): the bases the leveled
   // list `list` can roll (LeveledListUtils::Reach over the game files: its
   // entries, nested lists followed), read once per list and kept until the
@@ -442,6 +449,18 @@ public:
     bool preset = false;
   };
   HeadPartRecord RecordHeadPart(MpActor& actor, uint32_t part);
+  // thuum train 53's V-look (lab/.cache/drafts/reads-53/r-v3-v4-v5-look.md,
+  // R-V3): a recorded SetRace's look for its new race, `actor`'s appearance
+  // already wearing `race`. Every head part whose race list
+  // (HeadPartRaceListHolds) answers that `race` may not wear it leaves the
+  // look and the stored RaceMenu look (wire-rules
+  // racemenu::without_head_parts), since that look's load on a figure puts
+  // its parts back by type over the new race's base (playtest 51: Ariadne's
+  // Khajiit eyes 0xEE878 on her vampire figure on the host's screen); a part
+  // the record gives no answer for stays. What each record took; the words
+  // to the other games are the caller's. Which parts the engine puts in the
+  // dropped parts' place is HYPOTHESIS (the race's defaults, for the lab)
+  HeadPartRecord RecordRaceLook(MpActor& actor, uint32_t race);
 
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
   // server places at an accepted cast of a listed spell,

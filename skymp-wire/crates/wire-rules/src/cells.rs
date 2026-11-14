@@ -49,9 +49,19 @@ pub const PASS_MARGIN_UNITS: u32 = 256;
 
 /// A dialogue claim's lease (ADR-052, thuum docs/verbs/npc-talk.md): a player
 /// given an NPC for a conversation keeps it this long unless it releases it,
-/// leaves the cell or the server, the cell is granted anew or the actor dies.
-/// UNMEASURED.
+/// leaves the cell or the server, or the actor dies; a grant into the cell
+/// passes over it (ADR-073 decision 6, D-L2 B). The lease is the talk
+/// purpose's alone: a lead and a scene end on their own judged events, never
+/// a timer (ADR-063). UNMEASURED.
 pub const CLAIM_LEASE_MS: u64 = 120_000;
+
+/// How many quests' leads one actor's claim row holds at once (ADR-073
+/// decision 6 as D-53-4 amends it: a quest's own package on an actor that
+/// fills one of its aliases is that quest's lead). An actor fills a few
+/// quests' aliases at a time; a fifth quest's lead is refused
+/// ([`ClaimVerdict::Full`]) rather than a held one dropped. A bound, not a
+/// measurement.
+pub const MAX_LEADS: usize = 4;
 
 /// What the server answers a simulator's report that moves an actor
 /// (ADR-047 D6, thuum docs/verbs/npc-handoff.md): the core turns it into
@@ -120,13 +130,89 @@ pub enum Decision {
         /// The cell.
         cell: u32,
     },
-    /// A player's claim on `actor` in `cell` ended with its lease (ADR-052):
-    /// the cell's rule names the simulator again, the word follows.
+    /// A player's claim row on `actor` in `cell` ended with its last purpose
+    /// (ADR-052, ADR-073 decision 6): the cell's rule names the simulator
+    /// again, the word follows.
     ClaimEnded {
         /// The actor.
         actor: u32,
         /// The cell its claim named.
         cell: u32,
+        /// The actor's owner epoch after the end (ADR-066 decision 1).
+        epoch: u32,
+        /// What ended it.
+        why: ClaimEnd,
+    },
+}
+
+/// What ended a claim row (ADR-073 decision 6: each kind declares its own end
+/// events), named in the core's log and carried as the bridge's code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ClaimEnd {
+    /// The talk's lease ran out (CLAIM_LEASE_MS).
+    Lease = 0,
+    /// The holder released its last purpose.
+    Release = 1,
+    /// The quest of its leads, or of its scene, stopped.
+    QuestStop = 2,
+    /// The alias its lead read now names another reference, or none.
+    Alias = 3,
+    /// The actor died.
+    Death = 4,
+    /// The holder left the server.
+    Gone = 5,
+    /// The holder's connection stayed silent past GRACE_MS: its leads and its
+    /// scene end, as its cells pass on.
+    Stale = 6,
+    /// The holder unloaded the actor's cell: a talk's end (ADR-052 decision 2).
+    Unloaded = 7,
+}
+
+impl ClaimEnd {
+    /// The word the core logs.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            ClaimEnd::Lease => "its lease",
+            ClaimEnd::Release => "its release",
+            ClaimEnd::QuestStop => "its quest's stop",
+            ClaimEnd::Alias => "its alias's fill",
+            ClaimEnd::Death => "the actor's death",
+            ClaimEnd::Gone => "its holder's departure",
+            ClaimEnd::Stale => "its holder's silence",
+            ClaimEnd::Unloaded => "its holder's unload",
+        }
+    }
+}
+
+/// What a claim holds its actor for (ADR-073 decision 6; thuum
+/// docs/verbs/npc-talk.md): one claim row per actor, holding one or more of
+/// these, ending when its last one ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// A dialogue (ADR-052): for CLAIM_LEASE_MS unless released, the
+    /// claimant's unload or departure, or the actor's death.
+    Talk,
+    /// A quest's own package (its QNAM the quest) running on an actor that
+    /// fills one of the quest's aliases (D-53-4, amending decision 6's lead):
+    /// the quest's claim, until the quest releases the actor (its alias names
+    /// another, or the holder's release), stops, or the actor dies. Only the
+    /// actor's simulator opens one (D-PO2 A, "the running game claims it").
+    Lead {
+        /// The QUST.
+        quest: u32,
+        /// The quest's alias the actor fills, the server's own read.
+        alias: u32,
+    },
+    /// A scene the claimant's seat started (D-L2 B; D-A2 C, the stage's
+    /// cause seat for a scene a fragment starts): until it ends (the holder's
+    /// release) or its quest stops.
+    Scene {
+        /// The SCEN.
+        scene: u32,
+        /// The scene's own quest (its PNAM outside an action).
+        quest: u32,
     },
 }
 
@@ -174,42 +260,140 @@ pub struct CellMove {
 
 /// Why a player simulates one actor against the cell's rule: a follow into a
 /// cell nobody hosts (ADR-047 D6), the pass margin's hold in another host's
-/// cell (D22), or a claim a player asked for (ADR-052, a dialogue).
+/// cell (D22), or a claim a player asked for, for a dialogue, a quest's lead
+/// or a scene (ADR-052, ADR-073 decision 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FollowKind {
     /// Into a cell nobody hosts (ADR-047 D6).
     Follow,
     /// The pass margin's hold in another host's cell (ADR-047 D22).
     Margin,
-    /// A player's claim for a dialogue (ADR-052).
+    /// A player's claim, its purposes on the row (ADR-052, ADR-073 decision
+    /// 6): it travels with its actor and outlives a grant into its cell.
     Claim,
 }
 
 /// A host simulating an actor in a cell nobody hosts (ADR-047 D6), or, within
 /// the pass margin, in another host's cell it has just crossed into (D22), or
-/// a player holding an actor it claimed (ADR-052): the owner table ADR-050
-/// decision 4 named, one row per actor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// a player holding an actor it claimed (ADR-052, ADR-073 decision 6): the
+/// owner table ADR-050 decision 4 named, one row per actor. A claim row holds
+/// at least one purpose while it stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Follow {
     player: u32,
     cell: u32,
     since_ms: u64,
     kind: FollowKind,
-    /// A claim's lease; none for the other kinds.
+    /// A claim's talk: its lease's end; none for a claim held for a lead or a
+    /// scene alone, and for the other kinds.
     lease_until_ms: Option<u64>,
+    /// A claim's leads, (quest, alias), at most MAX_LEADS.
+    leads: Vec<(u32, u32)>,
+    /// A claim's scene, (scene, quest).
+    scene: Option<(u32, u32)>,
+    /// A claim's owner epoch at its grant (ADR-066 decision 1, the actor's
+    /// counter); 0 for the other kinds.
+    epoch: u32,
 }
 
-/// The answer to a claim (ADR-052).
+impl Follow {
+    /// A row of `kind` with no purpose yet: a follow, a margin hold, or the
+    /// claim a purpose is about to join.
+    fn moved(player: u32, cell: u32, since_ms: u64, kind: FollowKind) -> Follow {
+        Follow { player, cell, since_ms, kind, lease_until_ms: None, leads: Vec::new(), scene: None, epoch: 0 }
+    }
+
+    /// A claim row whose last purpose ended.
+    fn holds_nothing(&self) -> bool {
+        self.lease_until_ms.is_none() && self.leads.is_empty() && self.scene.is_none()
+    }
+
+    /// `purpose` joins the row: Reclaimed when it held the same one (a talk's
+    /// lease renewed, a lead of the same quest, the same scene), Granted for a
+    /// new one, Full for a lead past MAX_LEADS.
+    fn join(&mut self, purpose: Purpose, now_ms: u64) -> ClaimVerdict {
+        match purpose {
+            Purpose::Talk => {
+                let renewed = self.lease_until_ms.is_some();
+                self.lease_until_ms = Some(now_ms.saturating_add(CLAIM_LEASE_MS));
+                if renewed {
+                    ClaimVerdict::Reclaimed
+                } else {
+                    ClaimVerdict::Granted
+                }
+            }
+            Purpose::Lead { quest, alias } => {
+                if let Some(held) = self.leads.iter_mut().find(|(q, _)| *q == quest) {
+                    held.1 = alias;
+                    ClaimVerdict::Reclaimed
+                } else if self.leads.len() >= MAX_LEADS {
+                    ClaimVerdict::Full
+                } else {
+                    self.leads.push((quest, alias));
+                    ClaimVerdict::Granted
+                }
+            }
+            Purpose::Scene { scene, quest } => {
+                let same = self.scene.is_some_and(|(s, _)| s == scene);
+                self.scene = Some((scene, quest));
+                if same {
+                    ClaimVerdict::Reclaimed
+                } else {
+                    ClaimVerdict::Granted
+                }
+            }
+        }
+    }
+}
+
+/// The answer to a claim (ADR-052, ADR-073 decision 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimVerdict {
-    /// The claimant simulates the actor from now, for the lease.
+    /// The claimant simulates the actor from now, for the purpose's life: a
+    /// new row, or a new purpose joining the claimant's own.
     Granted,
-    /// Another player holds a claim on the actor.
+    /// Another player holds a claim on the actor, for any purpose: the first
+    /// holder keeps it.
     Held,
-    /// The claimant has not loaded the actor's cell.
+    /// A talk or a scene from a claimant that has not loaded the actor's cell.
     Unloaded,
-    /// The claimant held it already; the lease is renewed.
+    /// The claimant held the same purpose already (a talk's lease renewed).
     Reclaimed,
+    /// A lead from a player that does not simulate the actor where it stands.
+    NotSimulator,
+    /// A lead past the row's MAX_LEADS quests.
+    Full,
+}
+
+/// What a release did (ADR-052, ADR-073 decision 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Release {
+    /// The player holds no such purpose on the actor.
+    NotHeld,
+    /// The purpose ended and the row stands for the others: the holder still
+    /// simulates the actor.
+    Kept,
+    /// The row's last purpose ended: its ClaimEnded.
+    Ended(Decision),
+}
+
+/// One claim row, for the lab's reading and the core's log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimRow {
+    /// The actor.
+    pub actor: u32,
+    /// The holder.
+    pub player: u32,
+    /// The cell its row names.
+    pub cell: u32,
+    /// It holds a talk.
+    pub talk: bool,
+    /// Its leads, (quest, alias).
+    pub leads: Vec<(u32, u32)>,
+    /// Its scene, (scene, quest).
+    pub scene: Option<(u32, u32)>,
+    /// Its owner epoch at the grant (ADR-066 decision 1).
+    pub epoch: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -227,6 +411,10 @@ struct PlayerState {
     /// anywhere, its hosted cells in their grace, its loaded set kept for
     /// its return (thuum docs/verbs/cell-host.md, the quitting host).
     stale: bool,
+    /// When the connection went silent (the first `stale` since it was last
+    /// heard): its claims' leads and scene end GRACE_MS after it, as its
+    /// cells pass on (ADR-073 decision 6).
+    stale_since_ms: Option<u64>,
     /// The player's actor is dead (thuum docs/research/m3/
     /// decisions-after-playtest-34.md D18): no candidate anywhere, its
     /// hosted cells in their grace from the death, its loaded set kept for
@@ -243,6 +431,10 @@ pub struct Cells {
     follows: HashMap<u32, Follow>,
     /// The first grant's time, the cold start's window opening; None until it.
     first_grant_ms: Option<u64>,
+    /// Each claimed actor's owner epoch (ADR-066 decision 1): up at every
+    /// claim row's grant and at its end; ADR-073 step 5b carries it on the
+    /// word and stamps the other changes of simulator.
+    owner_epochs: HashMap<u32, u32>,
 }
 
 impl Cells {
@@ -291,21 +483,42 @@ impl Cells {
     }
 
     /// `player` reports `cell` unloaded at `now_ms`: its grace starts when it
-    /// hosts the cell; otherwise it only stops being a candidate.
+    /// hosts the cell; otherwise it only stops being a candidate. Its follows
+    /// into the cell end, and its claims' talks there (a claim row with no
+    /// purpose left ends, its word first); a lead or a scene stays.
     pub fn unloaded(&mut self, player: u32, cell: u32, now_ms: u64) -> Vec<Decision> {
         if let Some(p) = self.players.get_mut(&player) {
             p.loaded.remove(&cell);
         }
-        // a follow into an exterior the follower no longer loads ends (ADR-047 D6)
-        self.follows.retain(|_, f| !(f.player == player && f.cell == cell));
-        self.consider(player, cell, now_ms)
+        // a follow into an exterior the follower no longer loads ends (ADR-047
+        // D6), and so does a claim's talk (the claimant leaving the cell,
+        // ADR-052 decision 2); a lead or a scene stays, since its holder's
+        // engine runs the actor in a cell its game has unloaded (R-C2: rotfern
+        // inside the trader while its game walked Camilla out of the door)
+        self.follows.retain(|_, f| f.kind == FollowKind::Claim || !(f.player == player && f.cell == cell));
+        let mut out = self.end_purposes(ClaimEnd::Unloaded, |_, f| {
+            if f.player == player && f.cell == cell {
+                f.lease_until_ms = None;
+            }
+        });
+        out.extend(self.consider(player, cell, now_ms));
+        out
     }
 
     /// `player` left the server at `now_ms`: every cell it hosts starts its
-    /// grace, and it is no candidate anywhere.
+    /// grace, and it is no candidate anywhere. Its follows go with it, and
+    /// each claim row it held ends whole, a ClaimEnded apiece (by actor id),
+    /// so the word names the cell's rule again.
     pub fn gone(&mut self, player: u32, now_ms: u64) -> Vec<Decision> {
         self.players.remove(&player);
-        self.follows.retain(|_, f| f.player != player);
+        self.follows.retain(|_, f| f.kind == FollowKind::Claim || f.player != player);
+        let out = self.end_purposes(ClaimEnd::Gone, |_, f| {
+            if f.player == player {
+                f.lease_until_ms = None;
+                f.leads.clear();
+                f.scene = None;
+            }
+        });
         for state in self.cells.values_mut() {
             if let Some(ref mut host) = state.host {
                 if host.player == player && host.leaving_since_ms.is_none() {
@@ -313,7 +526,7 @@ impl Cells {
                 }
             }
         }
-        Vec::new()
+        out
     }
 
     /// `player`'s connection went silent at `now_ms` (the game killed,
@@ -322,7 +535,9 @@ impl Cells {
     /// loaded set and reach stay, so a return within netcode's patience is
     /// `revived` and not a fresh arrival.
     pub fn stale(&mut self, player: u32, now_ms: u64) -> Vec<Decision> {
-        self.players.entry(player).or_default().stale = true;
+        let p = self.players.entry(player).or_default();
+        p.stale = true;
+        p.stale_since_ms.get_or_insert(now_ms);
         for state in self.cells.values_mut() {
             if let Some(ref mut host) = state.host {
                 if host.player == player && host.leaving_since_ms.is_none() {
@@ -341,6 +556,7 @@ impl Cells {
             return Vec::new();
         };
         p.stale = false;
+        p.stale_since_ms = None;
         let mut cells: Vec<u32> = p.loaded.keys().copied().collect();
         cells.sort_unstable();
         cells.into_iter().flat_map(|cell| self.consider(player, cell, now_ms)).collect()
@@ -396,15 +612,18 @@ impl Cells {
         self.first_grant_ms.is_none_or(|t| now_ms.saturating_sub(t) < COLD_START_MS)
     }
 
-    /// `player` hosts `cell` from `now_ms` at the next epoch; any follow into
-    /// the cell ends with the grant.
+    /// `player` hosts `cell` from `now_ms` at the next epoch; the follow and
+    /// margin rows into the cell end with the grant, and a claim passes over
+    /// it (ADR-073 decision 6, D-L2 B: a claim outlives a grant for its life).
     fn grant(&mut self, player: u32, cell: u32, now_ms: u64) -> Decision {
         // a grant into the cell ends its follow and margin rows (the host
-        // simulates them now); a dialogue claim outranks the host (ADR-052)
-        // and stays, whoever the grant names (playtest 36, 2026-10-28: a
+        // simulates them now); a claim (a talk, a lead, a scene) outranks the
+        // host and stays, whoever the grant names (playtest 36, 2026-10-28: a
         // regrant of 9732 to the claimant itself dropped its claim on Sven,
         // and its release met E_CLAIM_NONE; to a third player it would have
-        // flipped the actor away mid-dialogue)
+        // flipped the actor away mid-dialogue; R-C2, playtest 52: the grant of
+        // 9731 to ff000001 dropped rotfern's follow of Camilla on her lead,
+        // and every report of its game was refused from then)
         self.follows.retain(|_, f| f.cell != cell || f.kind == FollowKind::Claim);
         self.first_grant_ms.get_or_insert(now_ms);
         let state = self.cells.entry(cell).or_default();
@@ -420,9 +639,11 @@ impl Cells {
     /// the core's word, routing and sighting gate read (ADR-047 D6).
     #[must_use]
     pub fn simulator_of(&self, actor: u32, cell: u32) -> u32 {
-        // a follow names the simulator first: into a cell nobody hosts (D6) or,
-        // within the pass margin, into another host's cell the follower has
-        // just crossed into (D22); a grant into the cell ends either
+        // a row names the simulator first: a follow into a cell nobody hosts
+        // (D6) or, within the pass margin, into another host's cell the
+        // follower has just crossed into (D22), either ended by a grant into
+        // the cell; or a claim (ADR-052, ADR-073 decision 6), which a grant
+        // passes over
         if let Some(f) = self.follows.get(&actor) {
             if f.cell == cell {
                 return f.player;
@@ -453,7 +674,9 @@ impl Cells {
         // verdict made the row a margin follow and a step deeper a pass, and
         // the claim ended with no word, the client's flag never cleared): the
         // claimant's report into any cell is accepted, the row keeps its kind
-        // and its lease and names the new cell (may_move)
+        // and its purposes and names the new cell (may_move); a lead's holder
+        // walks her through a door into a cell another seat hosts with no pass
+        // while she is claimed (R-C2)
         if dest != 0 && self.follows.get(&actor).is_some_and(|f| f.kind == FollowKind::Claim && f.player == sender) {
             return MoveVerdict::Accept;
         }
@@ -539,7 +762,7 @@ impl Cells {
             MoveVerdict::Follow => {
                 // into a cell nobody hosts (D6), or another host's within the margin (D22)
                 let kind = if self.host_of(m.dest).is_some() { FollowKind::Margin } else { FollowKind::Follow };
-                self.follows.insert(m.actor, Follow { player: m.sender, cell: m.dest, since_ms: now_ms, kind, lease_until_ms: None });
+                self.follows.insert(m.actor, Follow::moved(m.sender, m.dest, now_ms, kind));
             }
             MoveVerdict::Accept if m.dest != m.origin => {
                 // a claim follows its actor into the new cell (ADR-052)
@@ -560,37 +783,155 @@ impl Cells {
         verdict
     }
 
-    /// `player` claims `actor`, which stands in `cell`, for a dialogue
-    /// (ADR-052): granted when the player has the cell loaded and nobody else
-    /// holds a claim on the actor; a follow or margin row gives way, the
-    /// claimant's own claim is renewed. The row names the claimant as the
-    /// simulator (`simulator_of`) until the release, the lease, the
-    /// claimant's unload or departure, or a grant into the cell.
-    pub fn claim(&mut self, actor: u32, player: u32, cell: u32, now_ms: u64) -> ClaimVerdict {
-        if !self.players.get(&player).is_some_and(|p| p.loaded.contains_key(&cell)) {
+    /// `player` claims `actor`, which stands in `cell`, for `purpose`
+    /// (ADR-052, ADR-073 decision 6). A talk and a scene want the cell loaded
+    /// by the claimant; a lead wants the claimant to be the actor's simulator
+    /// there (D-PO2 A), loaded or not. Another player's claim of any purpose
+    /// holds the actor (the first holder keeps it); the claimant's own row
+    /// takes the purpose beside its others; a follow or margin row gives way.
+    /// A new row is the actor's next owner epoch. The row names the claimant
+    /// as the simulator (`simulator_of`) until its last purpose ends.
+    pub fn claim(&mut self, actor: u32, player: u32, cell: u32, purpose: Purpose, now_ms: u64) -> ClaimVerdict {
+        let lead = matches!(purpose, Purpose::Lead { .. });
+        // the simulator may run a lead's actor in a cell its game has
+        // unloaded (R-C2); a talk and a scene are the cell's visitors'
+        if !lead && !self.players.get(&player).is_some_and(|p| p.loaded.contains_key(&cell)) {
             return ClaimVerdict::Unloaded;
         }
-        let verdict = match self.follows.get(&actor) {
+        match self.follows.get_mut(&actor) {
             Some(f) if f.kind == FollowKind::Claim && f.player != player => return ClaimVerdict::Held,
-            Some(f) if f.kind == FollowKind::Claim => ClaimVerdict::Reclaimed,
-            _ => ClaimVerdict::Granted,
-        };
-        self.follows.insert(
-            actor,
-            Follow { player, cell, since_ms: now_ms, kind: FollowKind::Claim, lease_until_ms: Some(now_ms.saturating_add(CLAIM_LEASE_MS)) },
-        );
+            Some(f) if f.kind == FollowKind::Claim => {
+                let verdict = f.join(purpose, now_ms);
+                if verdict != ClaimVerdict::Full {
+                    f.cell = cell;
+                }
+                return verdict;
+            }
+            _ => {}
+        }
+        if lead && self.simulator_of(actor, cell) != player {
+            return ClaimVerdict::NotSimulator;
+        }
+        let mut row = Follow::moved(player, cell, now_ms, FollowKind::Claim);
+        row.epoch = self.bump(actor);
+        let verdict = row.join(purpose, now_ms);
+        self.follows.insert(actor, row);
         verdict
     }
 
-    /// `player` releases its claim on `actor`; false when it holds none.
-    pub fn release_claim(&mut self, actor: u32, player: u32) -> bool {
-        match self.follows.get(&actor) {
-            Some(f) if f.kind == FollowKind::Claim && f.player == player => {
-                self.follows.remove(&actor);
-                true
-            }
-            _ => false,
+    /// `player` releases `purpose` of its claim on `actor`: a talk, the lead
+    /// of the purpose's quest, or the purpose's scene (the other fields are
+    /// not read). The row stands while another purpose holds it; its last
+    /// one's release ends it.
+    pub fn release_claim(&mut self, actor: u32, player: u32, purpose: Purpose) -> Release {
+        let Some(f) = self.follows.get_mut(&actor) else {
+            return Release::NotHeld;
+        };
+        if f.kind != FollowKind::Claim || f.player != player {
+            return Release::NotHeld;
         }
+        let held = match purpose {
+            Purpose::Talk => f.lease_until_ms.take().is_some(),
+            Purpose::Lead { quest, .. } => {
+                let before = f.leads.len();
+                f.leads.retain(|(q, _)| *q != quest);
+                f.leads.len() != before
+            }
+            Purpose::Scene { scene, .. } => {
+                let held = f.scene.is_some_and(|(s, _)| s == scene);
+                if held {
+                    f.scene = None;
+                }
+                held
+            }
+        };
+        if !held {
+            return Release::NotHeld;
+        }
+        if !f.holds_nothing() {
+            return Release::Kept;
+        }
+        let cell = f.cell;
+        self.follows.remove(&actor);
+        let epoch = self.bump(actor);
+        Release::Ended(Decision::ClaimEnded { actor, cell, epoch, why: ClaimEnd::Release })
+    }
+
+    /// `quest` stopped (the world's record took its stop): its leads end, and
+    /// the scenes whose quest it is.
+    pub fn quest_stopped(&mut self, quest: u32) -> Vec<Decision> {
+        self.end_purposes(ClaimEnd::QuestStop, |_, f| {
+            f.leads.retain(|(q, _)| *q != quest);
+            if f.scene.is_some_and(|(_, q)| q == quest) {
+                f.scene = None;
+            }
+        })
+    }
+
+    /// `quest`'s alias `alias` now names `refr` (0 a clear): a lead that read
+    /// the alias on any other actor ends (the quest released her, D-53-4).
+    pub fn alias_filled(&mut self, quest: u32, alias: u32, refr: u32) -> Vec<Decision> {
+        self.end_purposes(ClaimEnd::Alias, |actor, f| {
+            if actor != refr {
+                f.leads.retain(|&(q, a)| !(q == quest && a == alias));
+            }
+        })
+    }
+
+    /// `actor` died: its claim row ends whole (ADR-052 decision 2, D-53-4).
+    pub fn actor_died(&mut self, actor: u32) -> Vec<Decision> {
+        self.end_purposes(ClaimEnd::Death, |a, f| {
+            if a == actor {
+                f.lease_until_ms = None;
+                f.leads.clear();
+                f.scene = None;
+            }
+        })
+    }
+
+    /// Whether `player` holds a lead or a scene on any actor: a seat whose
+    /// silence the core must judge though it hosts no cell.
+    #[must_use]
+    pub fn holds_lead_or_scene(&self, player: u32) -> bool {
+        self.follows.values().any(|f| f.kind == FollowKind::Claim && f.player == player && (!f.leads.is_empty() || f.scene.is_some()))
+    }
+
+    /// `actor`'s owner epoch (ADR-066 decision 1): 0 before its first claim.
+    #[must_use]
+    pub fn owner_epoch_of(&self, actor: u32) -> u32 {
+        self.owner_epochs.get(&actor).copied().unwrap_or(0)
+    }
+
+    /// The actor's next owner epoch, kept.
+    fn bump(&mut self, actor: u32) -> u32 {
+        let epoch = self.owner_epochs.entry(actor).or_insert(0);
+        *epoch = epoch.saturating_add(1);
+        *epoch
+    }
+
+    /// Ends, on every claim row, the purposes `strip` removes (it is given
+    /// the actor and the row); each row left with none goes, its actor's
+    /// epoch up, as one ClaimEnded `why`, by actor id.
+    fn end_purposes(&mut self, why: ClaimEnd, mut strip: impl FnMut(u32, &mut Follow)) -> Vec<Decision> {
+        let mut ended: Vec<(u32, u32)> = Vec::new();
+        for (&actor, f) in &mut self.follows {
+            if f.kind != FollowKind::Claim {
+                continue;
+            }
+            strip(actor, f);
+            if f.holds_nothing() {
+                ended.push((actor, f.cell));
+            }
+        }
+        ended.sort_unstable();
+        ended
+            .into_iter()
+            .map(|(actor, cell)| {
+                self.follows.remove(&actor);
+                let epoch = self.bump(actor);
+                Decision::ClaimEnded { actor, cell, epoch, why }
+            })
+            .collect()
     }
 
     /// Every claim, by actor id: the actor, its claimant and the cell.
@@ -599,6 +940,28 @@ impl Cells {
         let mut rows: Vec<(u32, u32, u32)> =
             self.follows.iter().filter(|(_, f)| f.kind == FollowKind::Claim).map(|(&a, f)| (a, f.player, f.cell)).collect();
         rows.sort_unstable();
+        rows
+    }
+
+    /// Every claim row with its purposes and epoch, by actor id (the lab's
+    /// reading, the core's log).
+    #[must_use]
+    pub fn claim_rows(&self) -> Vec<ClaimRow> {
+        let mut rows: Vec<ClaimRow> = self
+            .follows
+            .iter()
+            .filter(|(_, f)| f.kind == FollowKind::Claim)
+            .map(|(&actor, f)| ClaimRow {
+                actor,
+                player: f.player,
+                cell: f.cell,
+                talk: f.lease_until_ms.is_some(),
+                leads: f.leads.clone(),
+                scene: f.scene,
+                epoch: f.epoch,
+            })
+            .collect();
+        rows.sort_unstable_by_key(|r| r.actor);
         rows
     }
 
@@ -648,16 +1011,29 @@ impl Cells {
     /// to the visitor with the cell loaded and in reach whose round trip is
     /// lowest (earliest loaded on a tie), or to nobody.
     pub fn tick(&mut self, now_ms: u64) -> Vec<Decision> {
-        // a claim past its lease ends (ADR-052)
-        let mut ended: Vec<(u32, u32)> = self
-            .follows
+        // a talk past its lease ends (ADR-052); a lead or a scene ends on its
+        // own events, never a timer (ADR-063)
+        let mut out = self.end_purposes(ClaimEnd::Lease, |_, f| {
+            if f.lease_until_ms.is_some_and(|t| now_ms >= t) {
+                f.lease_until_ms = None;
+            }
+        });
+        // a holder silent past the grace loses its leads and its scene, the
+        // judgment its cells get (a dead holder keeps them: its engine still
+        // runs the actor)
+        let silent: Vec<u32> = self
+            .players
             .iter()
-            .filter(|(_, f)| f.kind == FollowKind::Claim && f.lease_until_ms.is_some_and(|t| now_ms >= t))
-            .map(|(&a, f)| (a, f.cell))
+            .filter(|(_, p)| p.stale_since_ms.is_some_and(|t| now_ms.saturating_sub(t) >= GRACE_MS))
+            .map(|(&id, _)| id)
             .collect();
-        ended.sort_unstable();
-        for (actor, _) in &ended {
-            self.follows.remove(actor);
+        if !silent.is_empty() {
+            out.extend(self.end_purposes(ClaimEnd::Stale, |_, f| {
+                if silent.contains(&f.player) {
+                    f.leads.clear();
+                    f.scene = None;
+                }
+            }));
         }
         let mut due: Vec<(u32, Host)> = Vec::new();
         for (&cell, state) in &self.cells {
@@ -670,7 +1046,6 @@ impl Cells {
             }
         }
         due.sort_by_key(|&(cell, _)| cell);
-        let mut out: Vec<Decision> = ended.into_iter().map(|(actor, cell)| Decision::ClaimEnded { actor, cell }).collect();
         for (cell, old) in due {
             out.push(Decision::Release { player: old.player, cell, epoch: old.epoch });
             let next = self.candidate(cell, old.player);
@@ -1329,7 +1704,7 @@ mod tests {
     }
 
     #[test]
-    fn a_claim_gives_one_actor_to_the_claimant_until_its_release_its_lease_or_a_grant() {
+    fn a_talk_gives_one_actor_to_the_claimant_until_its_release_or_its_lease_and_outlives_a_grant() {
         // ADR-052 (thuum docs/verbs/npc-talk.md): a guest in the host's cell
         // asks for Sven for a dialogue
         const SVEN: u32 = 0x13491;
@@ -1338,39 +1713,43 @@ mod tests {
         assert_eq!(c.loaded(C2, RIVERWOOD, 1_100), vec![]);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
         // the claim: c2 simulates him; his reports are c2's now, c1's refused
-        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, Purpose::Talk, 2_000), ClaimVerdict::Granted);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
         assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
         assert_eq!(c.may_move(&CellMove { sender: C2, actor: SVEN, origin: RIVERWOOD, dest: RIVERWOOD, adjacent: false, door: false, edge_units: u32::MAX }, 2_100), MoveVerdict::Accept);
         assert_eq!(c.may_move(&CellMove { sender: C1, actor: SVEN, origin: RIVERWOOD, dest: RIVERWOOD, adjacent: false, door: false, edge_units: u32::MAX }, 2_200), MoveVerdict::Refuse);
         // a third player's claim is refused while c2 holds it; c2's own renews
-        assert_eq!(c.claim(SVEN, C1, RIVERWOOD, 2_300), ClaimVerdict::Held);
-        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, 2_400), ClaimVerdict::Reclaimed);
+        assert_eq!(c.claim(SVEN, C1, RIVERWOOD, Purpose::Talk, 2_300), ClaimVerdict::Held);
+        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, Purpose::Talk, 2_400), ClaimVerdict::Reclaimed);
+        assert_eq!(c.owner_epoch_of(SVEN), 1, "a renewal changes no owner");
         // the release: the cell's host again
-        assert!(!c.release_claim(SVEN, C1));
-        assert!(c.release_claim(SVEN, C2));
+        assert_eq!(c.release_claim(SVEN, C1, Purpose::Talk), Release::NotHeld);
+        assert_eq!(
+            c.release_claim(SVEN, C2, Purpose::Talk),
+            Release::Ended(Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD, epoch: 2, why: ClaimEnd::Release })
+        );
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
         // the lease: the tick ends a claim nobody released
-        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, 3_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, Purpose::Talk, 3_000), ClaimVerdict::Granted);
         assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS - 1), vec![]);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
-        assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD }]);
+        assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD, epoch: 4, why: ClaimEnd::Lease }]);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
         // a claimant that has not loaded the cell gets nothing
         const EAST: u32 = 0x9733;
-        assert_eq!(c.claim(SVEN, C2, EAST, 4_000), ClaimVerdict::Unloaded);
+        assert_eq!(c.claim(SVEN, C2, EAST, Purpose::Talk, 4_000), ClaimVerdict::Unloaded);
         // a grant into the cell keeps a claim for its lease (ADR-052 as amended
         // 2026-10-28: playtest 36's regrant of 9732 to the claimant dropped its
         // claim on Sven and its release met E_CLAIM_NONE; to a third player the
         // actor would have flipped away mid-dialogue). Here c1 leaves and the
         // cell goes to c2, the claimant: the claim stands and its release finds it
-        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, 5_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, Purpose::Talk, 5_000), ClaimVerdict::Granted);
         let _ = c.unloaded(C1, RIVERWOOD, 5_100);
         let regrant = c.tick(5_100 + GRACE_MS + 1);
         assert!(regrant.iter().any(|d| matches!(d, Decision::Grant { player: C2, cell: RIVERWOOD, .. })));
         assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
-        assert!(c.release_claim(SVEN, C2));
+        assert!(matches!(c.release_claim(SVEN, C2, Purpose::Talk), Release::Ended(_)));
         assert_eq!(c.claims(), vec![]);
     }
 
@@ -1390,16 +1769,17 @@ mod tests {
         let _ = c.reach(C3, &[RIVERWOOD], 1_250);
         c.rtt(C2, 80);
         c.rtt(C3, 20);
-        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, Purpose::Talk, 2_000), ClaimVerdict::Granted);
         let _ = c.unloaded(C1, RIVERWOOD, 2_100);
         let regrant = c.tick(2_100 + GRACE_MS + 1);
         assert!(regrant.iter().any(|d| matches!(d, Decision::Grant { player: C3, cell: RIVERWOOD, .. })), "{regrant:?}");
         assert_eq!(c.claims(), vec![(SVEN, C2, RIVERWOOD)]);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
         let ended = c.tick(2_000 + CLAIM_LEASE_MS);
-        assert!(ended.iter().any(|d| matches!(d, Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD })), "{ended:?}");
+        assert!(ended.iter().any(|d| matches!(d, Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD, why: ClaimEnd::Lease, .. })), "{ended:?}");
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C3);
     }
+
     #[test]
     fn a_claim_travels_with_its_actor_across_cells() {
         // playtest 35 (2026-10-27): Hilde walked from 9732 into 9731, both the
@@ -1413,7 +1793,7 @@ mod tests {
         assert_eq!(c.loaded(C1, WEST, 1_050), vec![]);
         assert_eq!(c.reach(C1, &[RIVERWOOD, WEST], 1_100), vec![Decision::Grant { player: C1, cell: WEST, epoch: 1 }]);
         assert_eq!(c.loaded(C2, RIVERWOOD, 1_200), vec![]);
-        assert_eq!(c.claim(HILDE, C2, RIVERWOOD, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim(HILDE, C2, RIVERWOOD, Purpose::Talk, 2_000), ClaimVerdict::Granted);
         assert_eq!(c.simulator_of(HILDE, RIVERWOOD), C2);
         // deep into the other host's next cell at once: no pass, the claim moves
         assert_eq!(c.may_move(&CellMove { sender: C2, actor: HILDE, origin: RIVERWOOD, dest: WEST, adjacent: true, door: false, edge_units: 300 }, 2_500), MoveVerdict::Accept);
@@ -1426,12 +1806,280 @@ mod tests {
         // the host's own report of her is refused while the claim stands
         assert_eq!(c.may_move(&CellMove { sender: C1, actor: HILDE, origin: RIVERWOOD, dest: WEST, adjacent: true, door: false, edge_units: 300 }, 2_700), MoveVerdict::Refuse);
         // the release finds the claim after the crossings; the lease ends it in its current cell
-        assert!(c.release_claim(HILDE, C2));
+        assert!(matches!(c.release_claim(HILDE, C2, Purpose::Talk), Release::Ended(_)));
         assert_eq!(c.simulator_of(HILDE, RIVERWOOD), C1);
-        assert_eq!(c.claim(HILDE, C2, RIVERWOOD, 3_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim(HILDE, C2, RIVERWOOD, Purpose::Talk, 3_000), ClaimVerdict::Granted);
         assert_eq!(c.may_move(&CellMove { sender: C2, actor: HILDE, origin: RIVERWOOD, dest: WEST, adjacent: true, door: false, edge_units: 300 }, 3_100), MoveVerdict::Accept);
-        assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: HILDE, cell: WEST }]);
+        assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: HILDE, cell: WEST, epoch: 4, why: ClaimEnd::Lease }]);
         assert_eq!(c.simulator_of(HILDE, WEST), C1);
         assert_eq!(c.claims(), vec![]);
+    }
+
+    // MS13 0x39645 and Riverwood Trader's people as Skyrim.esm and USSEP
+    // hold them (records read on sky-srv, 2026-11-14): MS13's alias 9
+    // "Camilla" fills by her unique actor (ALUA 0x1347b, her ACHR 0x13488 in
+    // RiverwoodTrader 0x133c9, whose door gives on 0x9731); 0x38386's scene
+    // 0x3839b, the argument, with Lucan 0x13487 its alias 0 and Camilla its
+    // alias 2
+    const MS13: u32 = 0x39645;
+    const CAMILLA: u32 = 0x13488;
+    const LUCAN: u32 = 0x13487;
+    const TRADER: u32 = 0x133c9;
+    const OUTSIDE: u32 = 0x9731;
+    const ARGUMENT: u32 = 0x3839b;
+    const ARGUMENT_QUEST: u32 = 0x38386;
+    const CAMILLA_LEAD: Purpose = Purpose::Lead { quest: MS13, alias: 9 };
+
+    #[test]
+    fn a_lead_is_the_simulators_alone_and_wants_no_loaded_cell() {
+        // D-53-4 and D-PO2 A ("the running game claims it"): the game running
+        // a quest's own package on the quest's alias actor claims her; another
+        // seat's lead is refused, and the simulator's wants no loaded report
+        // (its engine may run her where its game has unloaded the cell)
+        let mut c = both_in_reach();
+        c.reach(C1, &[RIVERWOOD, TRADER], 0);
+        c.reach(C2, &[RIVERWOOD, TRADER], 0);
+        assert_eq!(c.loaded(C1, TRADER, 1_000), vec![Decision::Grant { player: C1, cell: TRADER, epoch: 1 }]);
+        assert_eq!(c.loaded(C2, TRADER, 1_100), vec![]);
+        assert_eq!(c.claim(CAMILLA, C2, TRADER, CAMILLA_LEAD, 2_000), ClaimVerdict::NotSimulator);
+        assert_eq!(c.claims(), vec![]);
+        assert_eq!(c.owner_epoch_of(CAMILLA), 0);
+        assert_eq!(c.claim(CAMILLA, C1, TRADER, CAMILLA_LEAD, 2_100), ClaimVerdict::Granted);
+        assert_eq!(
+            c.claim_rows(),
+            vec![ClaimRow { actor: CAMILLA, player: C1, cell: TRADER, talk: false, leads: vec![(MS13, 9)], scene: None, epoch: 1 }]
+        );
+        // the same quest's lead again: renewed, no new owner
+        assert_eq!(c.claim(CAMILLA, C1, TRADER, CAMILLA_LEAD, 2_200), ClaimVerdict::Reclaimed);
+        assert_eq!(c.owner_epoch_of(CAMILLA), 1);
+        // no lease: the lead outlasts any talk's
+        assert_eq!(c.tick(2_100 + 10 * CLAIM_LEASE_MS), vec![]);
+        assert_eq!(c.simulator_of(CAMILLA, TRADER), C1);
+        // the simulator of an actor it followed through a door into a cell its
+        // game never loaded: the lead takes the follow's place; a talk there
+        // wants the cell loaded, a lead's holder or not
+        let mut d = both_in_reach();
+        d.reach(C1, &[RIVERWOOD, TRADER], 0);
+        d.loaded(C1, TRADER, 1_000);
+        let door = CellMove { sender: C1, actor: CAMILLA, origin: TRADER, dest: OUTSIDE, adjacent: false, door: true, edge_units: u32::MAX };
+        assert_eq!(d.may_move(&door, 2_000), MoveVerdict::Follow);
+        assert_eq!(d.claim(CAMILLA, C1, OUTSIDE, CAMILLA_LEAD, 2_100), ClaimVerdict::Granted);
+        assert_eq!(d.claims(), vec![(CAMILLA, C1, OUTSIDE)]);
+        assert_eq!(d.claim(CAMILLA, C1, OUTSIDE, Purpose::Talk, 2_200), ClaimVerdict::Unloaded);
+    }
+
+    #[test]
+    fn camillas_lead_goes_through_the_door_and_outlives_the_grant_of_the_cell_outside() {
+        // R-C2 (playtest 52, 20:34:01Z to 20:34:53Z): rotfern's game hosted the
+        // trader and walked Camilla out of its door on MS13's travel package
+        // 0x2e4cc, a follow into 9731, which nobody hosted; ff000001 took 9731,
+        // the grant dropped the follow, and every report of rotfern's game was
+        // refused from then ("may not move 13488") while Ariadne's game ran
+        // her own state. As a lead the row is a claim: it goes through the
+        // door, the grant passes over it, the new host's report is refused and
+        // the holder's accepted, the holder's unload of the outside keeps it,
+        // and the quest's stop ends it
+        let mut c = both_in_reach();
+        c.reach(C1, &[RIVERWOOD, TRADER], 0);
+        assert_eq!(c.loaded(C1, TRADER, 1_000), vec![Decision::Grant { player: C1, cell: TRADER, epoch: 1 }]);
+        assert_eq!(c.claim(CAMILLA, C1, TRADER, CAMILLA_LEAD, 2_000), ClaimVerdict::Granted);
+        let door = CellMove { sender: C1, actor: CAMILLA, origin: TRADER, dest: OUTSIDE, adjacent: false, door: true, edge_units: u32::MAX };
+        assert_eq!(c.may_move(&door, 3_000), MoveVerdict::Accept);
+        assert_eq!(c.claims(), vec![(CAMILLA, C1, OUTSIDE)]);
+        assert_eq!(c.follows(), vec![(CAMILLA, C1, OUTSIDE)]);
+        // c2 reaches and loads the outside: granted, the lead passes over it
+        assert_eq!(c.reach(C2, &[RIVERWOOD, OUTSIDE], 3_500), vec![]);
+        assert_eq!(c.loaded(C2, OUTSIDE, 4_000), vec![Decision::Grant { player: C2, cell: OUTSIDE, epoch: 1 }]);
+        assert_eq!(c.claims(), vec![(CAMILLA, C1, OUTSIDE)]);
+        assert_eq!(c.simulator_of(CAMILLA, OUTSIDE), C1);
+        let at = |sender| CellMove { sender, actor: CAMILLA, origin: OUTSIDE, dest: OUTSIDE, adjacent: false, door: false, edge_units: 900 };
+        assert_eq!(c.may_move(&at(C2), 4_100), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&at(C1), 4_200), MoveVerdict::Accept);
+        // the holder's game reporting the outside unloaded ends no lead, and
+        // the new host's own departure passes over it too
+        assert_eq!(c.unloaded(C1, OUTSIDE, 5_000), vec![]);
+        assert_eq!(c.unloaded(C2, OUTSIDE, 6_000), vec![]);
+        assert_eq!(c.tick(6_000 + GRACE_MS), vec![Decision::Release { player: C2, cell: OUTSIDE, epoch: 1 }, Decision::Unhosted { cell: OUTSIDE }]);
+        assert_eq!(c.simulator_of(CAMILLA, OUTSIDE), C1);
+        // MS13's stop ends it: the cell's rule again, nobody's there
+        assert_eq!(c.quest_stopped(MS13), vec![Decision::ClaimEnded { actor: CAMILLA, cell: OUTSIDE, epoch: 2, why: ClaimEnd::QuestStop }]);
+        assert_eq!(c.simulator_of(CAMILLA, OUTSIDE), 0);
+    }
+
+    #[test]
+    fn an_unload_ends_a_talk_and_keeps_a_lead() {
+        // ADR-052 decision 2: the claimant leaving the cell ends its talk; a
+        // lead stays (R-C2), and a row holding both loses the talk alone
+        const SVEN: u32 = 0x13491;
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.loaded(C2, RIVERWOOD, 1_100);
+        assert_eq!(c.claim(SVEN, C2, RIVERWOOD, Purpose::Talk, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.unloaded(C2, RIVERWOOD, 3_000), vec![Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD, epoch: 2, why: ClaimEnd::Unloaded }]);
+        assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
+        // the host's own talk beside its lead: the unload takes the talk
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, CAMILLA_LEAD, 4_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, Purpose::Talk, 4_100), ClaimVerdict::Granted);
+        assert_eq!(c.owner_epoch_of(CAMILLA), 1, "a purpose joining its holder's row changes no owner");
+        assert_eq!(c.unloaded(C1, RIVERWOOD, 5_000), vec![]);
+        assert_eq!(
+            c.claim_rows(),
+            vec![ClaimRow { actor: CAMILLA, player: C1, cell: RIVERWOOD, talk: false, leads: vec![(MS13, 9)], scene: None, epoch: 1 }]
+        );
+    }
+
+    #[test]
+    fn each_end_of_a_claim_names_why_and_moves_the_owner_epoch() {
+        // ADR-073 decision 6: each kind declares its own end events and
+        // carries an ADR-066 epoch, up at the grant (1) and at the end (2)
+        const SVEN: u32 = 0x13491;
+        let setup = || {
+            let mut c = both_in_reach();
+            c.loaded(C1, RIVERWOOD, 1_000);
+            c.loaded(C2, RIVERWOOD, 1_100);
+            assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, CAMILLA_LEAD, 2_000), ClaimVerdict::Granted);
+            c
+        };
+        let ended = |why| Decision::ClaimEnded { actor: CAMILLA, cell: RIVERWOOD, epoch: 2, why };
+        // the quest's stop; another quest's stops nothing
+        let mut c = setup();
+        assert_eq!(c.quest_stopped(ARGUMENT_QUEST), vec![]);
+        assert_eq!(c.quest_stopped(MS13), vec![ended(ClaimEnd::QuestStop)]);
+        assert_eq!(c.owner_epoch_of(CAMILLA), 2);
+        // the alias cleared or given another: her own fill, or another alias's, keeps it
+        let mut c = setup();
+        assert_eq!(c.alias_filled(MS13, 9, CAMILLA), vec![]);
+        assert_eq!(c.alias_filled(MS13, 2, 0), vec![]);
+        assert_eq!(c.alias_filled(MS13, 9, LUCAN), vec![ended(ClaimEnd::Alias)]);
+        // the actor's death
+        let mut c = setup();
+        assert_eq!(c.actor_died(LUCAN), vec![]);
+        assert_eq!(c.actor_died(CAMILLA), vec![ended(ClaimEnd::Death)]);
+        // the holder's departure
+        let mut c = setup();
+        assert_eq!(c.gone(C1, 3_000), vec![ended(ClaimEnd::Gone)]);
+        assert_eq!(c.claims(), vec![]);
+        // the holder's release; a release of what it does not hold, or by another, is none
+        let mut c = setup();
+        assert_eq!(c.release_claim(CAMILLA, C1, Purpose::Lead { quest: ARGUMENT_QUEST, alias: 9 }), Release::NotHeld);
+        assert_eq!(c.release_claim(CAMILLA, C1, Purpose::Talk), Release::NotHeld);
+        assert_eq!(c.release_claim(CAMILLA, C2, CAMILLA_LEAD), Release::NotHeld);
+        assert_eq!(c.release_claim(CAMILLA, C1, Purpose::Lead { quest: MS13, alias: 0 }), Release::Ended(ended(ClaimEnd::Release)));
+        // the holder's silence past the grace ends its lead, not its talk (the
+        // talk keeps its lease); heard again inside the grace, it keeps both
+        let mut c = setup();
+        assert_eq!(c.claim(SVEN, C1, RIVERWOOD, Purpose::Talk, 2_500), ClaimVerdict::Granted);
+        assert!(c.holds_lead_or_scene(C1));
+        assert_eq!(c.stale(C1, 3_000), vec![]);
+        assert_eq!(c.tick(3_000 + GRACE_MS - 1), vec![]);
+        let out = c.tick(3_000 + GRACE_MS);
+        assert!(out.contains(&ended(ClaimEnd::Stale)), "{out:?}");
+        assert_eq!(c.claims(), vec![(SVEN, C1, RIVERWOOD)]);
+        assert!(!c.holds_lead_or_scene(C1));
+        let mut c = setup();
+        assert_eq!(c.stale(C1, 3_000), vec![]);
+        assert_eq!(c.revived(C1, 4_000), vec![]);
+        assert_eq!(c.tick(3_000 + GRACE_MS), vec![]);
+        assert_eq!(c.claims(), vec![(CAMILLA, C1, RIVERWOOD)]);
+        // a dead holder keeps it: its engine still runs her, past the grace and the grant it gives
+        let mut c = setup();
+        assert_eq!(c.died(C1, 3_000), vec![]);
+        let out = c.tick(3_000 + GRACE_MS);
+        assert!(out.contains(&Decision::Grant { player: C2, cell: RIVERWOOD, epoch: 2 }), "{out:?}");
+        assert!(!out.iter().any(|d| matches!(d, Decision::ClaimEnded { .. })), "{out:?}");
+        assert_eq!(c.simulator_of(CAMILLA, RIVERWOOD), C1);
+    }
+
+    #[test]
+    fn the_lease_ends_a_talk_and_keeps_the_lead_beside_it() {
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, Purpose::Talk, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, CAMILLA_LEAD, 2_100), ClaimVerdict::Granted);
+        assert_eq!(c.tick(2_000 + CLAIM_LEASE_MS), vec![]);
+        assert_eq!(
+            c.claim_rows(),
+            vec![ClaimRow { actor: CAMILLA, player: C1, cell: RIVERWOOD, talk: false, leads: vec![(MS13, 9)], scene: None, epoch: 1 }]
+        );
+        // the talk's release leaves the lead the same way
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, Purpose::Talk, 3_000), ClaimVerdict::Granted);
+        assert_eq!(c.release_claim(CAMILLA, C1, Purpose::Talk), Release::Kept);
+        assert_eq!(c.claims(), vec![(CAMILLA, C1, RIVERWOOD)]);
+        assert_eq!(c.owner_epoch_of(CAMILLA), 1);
+    }
+
+    #[test]
+    fn the_first_holder_keeps_the_actor_against_any_purpose_and_takes_its_own() {
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.loaded(C2, RIVERWOOD, 1_100);
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, CAMILLA_LEAD, 2_000), ClaimVerdict::Granted);
+        // another seat, any purpose: held
+        assert_eq!(c.claim(CAMILLA, C2, RIVERWOOD, Purpose::Talk, 2_100), ClaimVerdict::Held);
+        assert_eq!(c.claim(CAMILLA, C2, RIVERWOOD, Purpose::Scene { scene: ARGUMENT, quest: ARGUMENT_QUEST }, 2_200), ClaimVerdict::Held);
+        assert_eq!(c.claim(CAMILLA, C2, RIVERWOOD, Purpose::Lead { quest: ARGUMENT_QUEST, alias: 2 }, 2_300), ClaimVerdict::Held);
+        // the holder's own talk joins its lead, and its release leaves the lead
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, Purpose::Talk, 2_400), ClaimVerdict::Granted);
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, Purpose::Talk, 2_500), ClaimVerdict::Reclaimed);
+        assert_eq!(c.release_claim(CAMILLA, C1, Purpose::Talk), Release::Kept);
+        assert_eq!(c.release_claim(CAMILLA, C1, Purpose::Talk), Release::NotHeld);
+        assert_eq!(c.simulator_of(CAMILLA, RIVERWOOD), C1);
+        // up to MAX_LEADS quests' leads; a fifth is refused and nothing held is dropped
+        for quest in [ARGUMENT_QUEST, 0x5c625, 0x74a83] {
+            assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, Purpose::Lead { quest, alias: 0 }, 3_000), ClaimVerdict::Granted);
+        }
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, Purpose::Lead { quest: 0x25185, alias: 0 }, 3_100), ClaimVerdict::Full);
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, CAMILLA_LEAD, 3_200), ClaimVerdict::Reclaimed);
+        assert_eq!(c.claim_rows().iter().map(|r| r.leads.len()).sum::<usize>(), MAX_LEADS);
+        assert_eq!(c.owner_epoch_of(CAMILLA), 1);
+    }
+
+    #[test]
+    fn a_scene_takes_its_actors_from_the_host_to_its_starter_until_it_ends() {
+        // D-L2 B (the starting seat owns a scene, claiming its actors until it
+        // ends) and D-A2 C (a fragment's scene is the stage's cause seat's; R2,
+        // the first claim wins): c2 hosts the trader, c1 visits it and starts
+        // the argument 0x3839b of 0x38386
+        let mut c = both_in_reach();
+        c.reach(C1, &[RIVERWOOD, TRADER], 0);
+        c.reach(C2, &[RIVERWOOD, TRADER], 0);
+        assert_eq!(c.loaded(C2, TRADER, 1_000), vec![Decision::Grant { player: C2, cell: TRADER, epoch: 1 }]);
+        assert_eq!(c.loaded(C1, TRADER, 1_100), vec![]);
+        let scene = Purpose::Scene { scene: ARGUMENT, quest: ARGUMENT_QUEST };
+        assert_eq!(c.claim(LUCAN, C1, TRADER, scene, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim(CAMILLA, C1, TRADER, scene, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.simulator_of(LUCAN, TRADER), C1);
+        assert!(c.holds_lead_or_scene(C1));
+        assert!(!c.holds_lead_or_scene(C2));
+        // the host's reports of them refused, the starter's accepted
+        let at = |sender, actor| CellMove { sender, actor, origin: TRADER, dest: TRADER, adjacent: false, door: false, edge_units: u32::MAX };
+        assert_eq!(c.may_move(&at(C2, LUCAN), 2_100), MoveVerdict::Refuse);
+        assert_eq!(c.may_move(&at(C1, LUCAN), 2_200), MoveVerdict::Accept);
+        // the host's own copy of the same scene claims nothing: the first claim wins
+        assert_eq!(c.claim(LUCAN, C2, TRADER, scene, 2_300), ClaimVerdict::Held);
+        // a seat that has not loaded the cell starts no scene in it
+        const C3: u32 = 0xff00_0002;
+        assert_eq!(c.claim(0x1348a, C3, TRADER, scene, 2_400), ClaimVerdict::Unloaded);
+        // no lease
+        assert_eq!(c.tick(2_000 + CLAIM_LEASE_MS), vec![]);
+        // the quest's stop ends both, by actor id; the host again
+        assert_eq!(
+            c.quest_stopped(ARGUMENT_QUEST),
+            vec![
+                Decision::ClaimEnded { actor: LUCAN, cell: TRADER, epoch: 2, why: ClaimEnd::QuestStop },
+                Decision::ClaimEnded { actor: CAMILLA, cell: TRADER, epoch: 2, why: ClaimEnd::QuestStop },
+            ]
+        );
+        assert_eq!(c.simulator_of(LUCAN, TRADER), C2);
+        assert!(!c.holds_lead_or_scene(C1));
+        // the release at the scene's end returns its actor the same way (the
+        // release names the scene; its quest is not read)
+        assert_eq!(c.claim(LUCAN, C1, TRADER, scene, 3_000), ClaimVerdict::Granted);
+        assert_eq!(c.release_claim(LUCAN, C1, Purpose::Scene { scene: 0x5dba7, quest: ARGUMENT_QUEST }), Release::NotHeld);
+        assert_eq!(
+            c.release_claim(LUCAN, C1, Purpose::Scene { scene: ARGUMENT, quest: 0 }),
+            Release::Ended(Decision::ClaimEnded { actor: LUCAN, cell: TRADER, epoch: 4, why: ClaimEnd::Release })
+        );
+        assert_eq!(c.simulator_of(LUCAN, TRADER), C2);
     }
 }

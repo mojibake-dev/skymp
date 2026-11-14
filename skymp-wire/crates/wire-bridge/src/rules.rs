@@ -4388,7 +4388,7 @@ fn host_decisions(table: &cells::Cells, decisions: Vec<cells::Decision>) -> Vec<
             cells::Decision::Unhosted { cell } => {
                 HostDecision { actor: 0, kind: HostKind::Unhosted, player: 0, cell, epoch: table.epoch_of(cell) }
             }
-            cells::Decision::ClaimEnded { actor, cell } => {
+            cells::Decision::ClaimEnded { actor, cell, .. } => {
                 HostDecision { actor, kind: HostKind::ClaimEnded, player: 0, cell, epoch: table.epoch_of(cell) }
             }
         })
@@ -4506,16 +4506,19 @@ impl Cells {
     }
 
     fn claim_actor(&mut self, actor: u32, player: u32, cell: u32, now_ms: u64) -> u8 {
-        match self.0.claim(actor, player, cell, now_ms) {
+        match self.0.claim(actor, player, cell, cells::Purpose::Talk, now_ms) {
             cells::ClaimVerdict::Granted => 0,
             cells::ClaimVerdict::Held => 1,
             cells::ClaimVerdict::Unloaded => 2,
             cells::ClaimVerdict::Reclaimed => 3,
+            // a lead's alone (ADR-073 decision 6); no talk meets them
+            cells::ClaimVerdict::NotSimulator => 4,
+            cells::ClaimVerdict::Full => 5,
         }
     }
 
     fn release_claim(&mut self, actor: u32, player: u32) -> bool {
-        self.0.release_claim(actor, player)
+        !matches!(self.0.release_claim(actor, player, cells::Purpose::Talk), cells::Release::NotHeld)
     }
 
     fn simulator_of(&self, actor: u32, cell: u32) -> u32 {

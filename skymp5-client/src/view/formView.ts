@@ -1101,7 +1101,7 @@ export class FormView {
       // host streams what its actor wears, the server checks it against the
       // actor's own record and relays it)
       const ac = Actor.from(refr);
-      if (ac && !cannotDress(ac) && Date.now() - this.eqState.lastEqMoment > 500) {
+      if (ac && !cannotDress(ac) && ac.is3DLoaded() && Date.now() - this.eqState.lastEqMoment > 500) {
         applyHands(ac, model.equipment);
         this.eqState.lastNumChanges = model.equipment.numChanges;
         this.eqState.lastEqMoment = Date.now();
@@ -1119,7 +1119,7 @@ export class FormView {
       if (!FormView.isNpcModel(model) && this.spawnMoment > 0 && Date.now() - this.spellSweepAt > 10000) {
         this.spellSweepAt = Date.now();
         const figure = Actor.from(refr);
-        if (figure && isFigureBase(figure)) {
+        if (figure && !cannotDress(figure) && figure.is3DLoaded() && isFigureBase(figure)) {
           const removed = keepOnlyServerSpells(figure, model.equipment, FormView.overlaySpells(model));
           if (removed > 0) {
             printConsole(`figure ${refr.getFormID().toString(16)}: ${removed} spell(s) a distributor added removed (ADR-046)`);
@@ -1132,7 +1132,7 @@ export class FormView {
         // 1. Place ~90 bots and force them to reequip iron swords to the left hand (rate should be ~50ms)
         // 2. Open your inventory and reequip different items fast
         // 3. After 1-2 minutes close your inventory and see that HUD disappeared
-        if (ac && !cannotDress(ac) && !isBadMenuShown() &&
+        if (ac && !cannotDress(ac) && ac.is3DLoaded() && !isBadMenuShown() &&
           Date.now() - this.eqState.lastEqMoment > 500 &&
           Date.now() - this.spawnMoment > -1 &&
           this.spawnMoment > 0

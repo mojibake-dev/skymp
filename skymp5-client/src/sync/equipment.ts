@@ -155,7 +155,13 @@ export const syncSpellEquipment = (
 // 20261114-083256, SkyrimSE+0x6D88F0 under Actor.UnequipAll reading the
 // process's equipped object, its minidump read 2026-11-14). A figure the
 // server holds disabled is dressed once it is enabled again: FormView
-// keeps its apply pending until one lands.
+// keeps its apply pending until one lands. FormView also waits for a
+// copy's 3D (an actor with loaded 3D is in a process list): a copy just
+// enabled at its spawn may not be in one yet, which isDisabled() cannot
+// see (apocrypha's review of 79226502: 082602's crash came right after
+// the third spawn's resurrect, 083256's right after a teardown). The
+// player's own paths take this test alone: its process is permanent and
+// its 3D is out during loads.
 export const cannotDress = (ac: Actor): boolean => ac.isDeleted() || ac.isDisabled();
 
 // thuum docs/verbs/npc-stream.md (ADR-050, slice 3): a puppet dressed by its

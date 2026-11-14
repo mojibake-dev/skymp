@@ -44,6 +44,14 @@ Napi::Value IsHosted(const Napi::CallbackInfo& info);
 // scope at once. False for a quest 0, a stage outside -3 to 65535, a
 // serverId 0, the player's own id as the figure, a ttl outside 1 to 60000
 Napi::Value SetActingPlayer(const Napi::CallbackInfo& info);
+// train 53's V-scene (ADR-073 D-A2 C): setRelayedScope(questId, stage,
+// ttlMs), a relayed stage (0 to 65535), start (-1) or stop (-2) whose cause
+// seat is elsewhere and whose acting player is this seat's own or unnamed:
+// requested, and a word armed at once, rooted kRelayed with no acting player
+// (ActingScope::Swaps false), so a scene start its fragment makes is skipped
+// and nothing is swapped. False for a quest 0, a stage outside -2 to 65535,
+// a ttl outside 1 to 60000
+Napi::Value SetRelayedScope(const Napi::CallbackInfo& info);
 // getActingPlayer(questId, stage): the server id of the acting player whose
 // scope requested the pair here (relayed, or chained by a scoped stack), 0
 // for none; the C2S QuestStage's `acting`
@@ -243,6 +251,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "setActingPlayer",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetActingPlayer)));
+  exports.Set(
+    "setRelayedScope",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetRelayedScope)));
   exports.Set(
     "getActingPlayer",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetActingPlayer)));

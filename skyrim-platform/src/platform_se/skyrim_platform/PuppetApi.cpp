@@ -425,6 +425,49 @@ Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+// train 53's V-scene (ADR-073 D-A2 C: the stage's cause seat owns a scene a
+// fragment starts): every stage, start or stop this seat applies from a
+// relay whose cause seat is elsewhere is scoped kRelayed, whoever its acting
+// player is. setActingPlayer covers another player (the swap); this covers
+// this seat's own player and an unnamed one, which setActingPlayer refuses
+// (a serverId 0, the player's own id as the figure): the pair requested, and
+// a start or a stop armed at once, with no acting player (ActingScope::
+// Swaps false), so the fragment's frames and Game.GetPlayer stay this
+// seat's, PQ-3 skips nothing, a scene start it makes is skipped (the cause
+// seat starts it) and the stages it chains carry the root on, their reports
+// naming no acting player as before (getActingPlayer answers 0). False,
+// nothing stored, for a quest 0, a stage outside -2 to 65535 (an entry is a
+// trigger's, setActingPlayer's -3), or a ttl outside 1 to
+// ActingScope::kMaxRequestMs. Logged for the lab
+Napi::Value PuppetApi::SetRelayedScope(const Napi::CallbackInfo& info)
+{
+  const auto questId = NapiHelper::ExtractUInt32(info[0], "questId");
+  const auto stage = NapiHelper::ExtractInt32(info[1], "stage");
+  const auto ttlMs = NapiHelper::ExtractUInt32(info[2], "ttlMs");
+  if (questId == 0 || stage < ActingScope::kStop || stage > 0xFFFF ||
+      ttlMs == 0 || ttlMs > ActingScope::kMaxRequestMs) {
+    return Napi::Boolean::New(info.Env(), false);
+  }
+  const ActingScope::Player none{};
+  ActingScope::Request(questId, stage, none, ttlMs,
+                       ActingScope::Origin::kRelayed,
+                       ActingScope::RootKind::kRelayed);
+  const bool word =
+    stage == ActingScope::kStart || stage == ActingScope::kStop;
+  if (word) {
+    ActingScope::Arm(questId, none, ActingScope::kArmMs,
+                     ActingScope::RootKind::kRelayed);
+  }
+  const ActingScope::Counts counts = ActingScope::Count();
+  logger::info("[verb:quests] setRelayedScope({:x}, {}, {}): {}, rooted at "
+               "the relay with no acting player swapped; {} request(s), {} "
+               "arm(s), {} joined stack(s)",
+               questId, stage, ttlMs,
+               word ? "requested and armed" : "requested", counts.requests,
+               counts.arms, counts.joined);
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 // getActingPlayer(questId, stage): the server id of the acting player whose
 // scope requested the pair on this seat, a relayed request or a stage, a
 // start or a stop a scoped stack set (the seam's propagation), until the

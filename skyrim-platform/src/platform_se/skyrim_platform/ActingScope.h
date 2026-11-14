@@ -73,15 +73,17 @@ struct Player
 // a scope's root, what opened the chain it belongs to: kRelayed, a stage or
 // a start or stop word another seat set, which this seat applies from the
 // relay (setActingPlayer's request, taken by the quest stage sink, and its
-// word's arm), so this seat is not the stage's cause seat; kTrigger, a
-// relayed trigger entry this seat runs for the presser (SendTriggerEvent's
-// arm), whose stages this seat's own engine sets, so this seat is their
-// cause seat. A chained request or arm (the seam's propagation inside a
-// scoped stack) inherits its parent scope's root unchanged. Train 53's
-// V-scene skips a scene start under kRelayed alone (ADR-073 D-A2 C): a
-// trigger's host starts the trigger's scenes (defaultStartSceneTrigScript)
-// and its stages' fragments' scenes (MS13's 38386 stage 10, Lucan and
-// Camilla the host's). A default Scope's kTrigger skips nothing
+// word's arm; setRelayedScope's, the same for a relay whose acting player is
+// this seat's own or unnamed), so this seat is not the stage's cause seat;
+// kTrigger, a relayed trigger entry this seat runs for the presser
+// (SendTriggerEvent's arm), whose stages this seat's own engine sets, so
+// this seat is their cause seat. A chained request or arm (the seam's
+// propagation inside a scoped stack) inherits its parent scope's root
+// unchanged. Train 53's V-scene skips a scene start under kRelayed alone
+// (ADR-073 D-A2 C): a trigger's host starts the trigger's scenes
+// (defaultStartSceneTrigScript) and its stages' fragments' scenes (MS13's
+// 38386 stage 10, Lucan and Camilla the host's). A default Scope's kTrigger
+// skips nothing
 enum class RootKind : uint8_t
 {
   kRelayed,
@@ -96,6 +98,16 @@ struct Scope
   uint64_t seq = 0;
   RootKind root = RootKind::kTrigger;
 };
+
+// whether the scope names an acting player to swap in (setActingPlayer's,
+// whose serverId is never 0): the seam's swaps of the player's own actor,
+// Game.GetPlayer's return and PQ-3's skip read it. False for
+// setRelayedScope's scope, a relay this seat applies whose acting player is
+// its own or unnamed: rooted kRelayed for V-scene, nothing swapped
+inline bool Swaps(const Scope& scope)
+{
+  return scope.player.serverId != 0;
+}
 
 // where a request came from: setActingPlayer's relay, or the seam's
 // propagation inside a scoped stack (the sink's line says which)

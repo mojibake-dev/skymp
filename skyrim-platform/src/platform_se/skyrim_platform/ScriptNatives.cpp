@@ -2437,8 +2437,11 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // any judgment below reads the frame
   const std::optional<ActingScope::Scope> scope = ScopeOfCall(fn, stack);
   bool absentSelf = false;
-  const std::uint32_t swapped =
-    scope ? SwapPlayer(fn, stack, *scope, absentSelf) : 0;
+  // (a relayed scope with no acting player, setRelayedScope's, swaps
+  // nothing: ActingScope::Swaps)
+  const std::uint32_t swapped = scope && ActingScope::Swaps(*scope)
+    ? SwapPlayer(fn, stack, *scope, absentSelf)
+    : 0;
   // a self naming the player with the figure absent here: the frame left
   // alone, the body skipped, the native's declared return's empty result
   // left in its place (the lever's path, SetEmptyResult; FIX FIRST 2)
@@ -2535,7 +2538,7 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // is written over once the original returns (marks.swapReturn,
   // SwapReturn), counted " (acting)"
   if (native.kind == NativeKind::Local) {
-    if (scope && info.getPlayer) {
+    if (scope && ActingScope::Swaps(*scope) && info.getPlayer) {
       marks.swapReturn = true;
       marks.scope = *scope;
       marks.line =
@@ -2572,7 +2575,8 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     // body is skipped, the row's empty result returned (SetValue's None),
     // counted " (acting)"; the acting player's own seat runs the call
     // natively and its PlayerGlobals report carries the value
-    if (scope && info.globalSet && ActingScope::PlayerGlobals::Is(selfId)) {
+    if (scope && ActingScope::Swaps(*scope) && info.globalSet &&
+        ActingScope::PlayerGlobals::Is(selfId)) {
       marks.skip = true;
       marks.result = info.result;
       Count(row, kCountActing);

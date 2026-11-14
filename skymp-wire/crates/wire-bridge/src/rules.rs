@@ -2130,6 +2130,22 @@ mod ffi {
         seq: u32,
     }
 
+    /// Whose scope a reported stage is stamped with (thuum train 53's
+    /// V-scene; wire-rules quest_runs::StageActing).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct QuestStageActing {
+        /// 0 the connected player the report names, 1 the reporter, 2 the
+        /// quest's last acting player (a scene fragment's stage), 3 refused
+        /// (`E_QUEST_SCENE_ACTING`: not recorded, nothing relayed).
+        how: u8,
+        /// The acting player's actor, 0 when refused.
+        acting: u32,
+        /// The refusal's stable name for the log, empty otherwise.
+        name: String,
+        /// Why, for the log; empty with the name.
+        why: String,
+    }
+
     /// The rule's word on one run word (wire-rules quest_runs::Verdict).
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct QuestRunVerdict {
@@ -3315,6 +3331,22 @@ mod ffi {
         fn quest_runs_story_count(self: &QuestRuns) -> usize;
         /// Whether the quest is held (a seat's churn) for the run.
         fn quest_runs_held(self: &QuestRuns, short_id: u32, file: &str) -> bool;
+        /// thuum train 53's V-scene: `acting` is the acting player of the
+        /// quest's latest recorded stage or run word, kept for the run
+        /// (wire-rules quest_runs::QuestRuns::record_acting).
+        fn quest_runs_record_acting(self: &mut QuestRuns, short_id: u32, file: &str, acting: u32);
+        /// The acting player of the quest's latest recorded stage or run
+        /// word this run, 0 for none.
+        fn quest_runs_last_acting(self: &QuestRuns, short_id: u32, file: &str) -> u32;
+        /// V-scene: the acting player of a stage `reporter` reported,
+        /// `named` the connected player its report names (0 for none,
+        /// itself, or nobody connected), `root` its stack's root (empty for
+        /// none), `last` the quest's last acting player while connected (0
+        /// for none): the named player, else the reporter unless a scene
+        /// fragment roots the stage, which takes `last` or is refused
+        /// (E_QUEST_SCENE_ACTING); never the reporter by default
+        /// (wire-rules quest_runs::stage_acting).
+        fn quest_stage_acting(reporter: u32, named: u32, root: &str, last: u32) -> QuestStageActing;
         /// `seat` left: its churn counters go.
         fn quest_runs_gone(self: &mut QuestRuns, seat: u32);
         /// What the login sends around the stages: the quests recorded
@@ -3425,7 +3457,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestStageActing, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -5823,6 +5855,17 @@ fn quest_root_is_seat_own(function: &str, script_on_player_aliases_only: bool) -
     quest_runs::root_is_seat_own(function, script_on_player_aliases_only)
 }
 
+fn quest_stage_acting(reporter: u32, named: u32, root: &str, last: u32) -> QuestStageActing {
+    let some = |id: u32| (id != 0).then_some(id);
+    let out = |how, acting| QuestStageActing { how, acting, name: String::new(), why: String::new() };
+    match quest_runs::stage_acting(reporter, some(named), root, some(last)) {
+        quest_runs::StageActing::Named(acting) => out(0, acting),
+        quest_runs::StageActing::Reporter(acting) => out(1, acting),
+        quest_runs::StageActing::LastStage(acting) => out(2, acting),
+        quest_runs::StageActing::Refuse(why) => QuestStageActing { how: 3, acting: 0, name: quest_runs::SCENE_ACTING.to_owned(), why },
+    }
+}
+
 impl QuestRuns {
     #[allow(clippy::too_many_arguments)]
     fn quest_runs_judge(&mut self, record: &[QuestRunRow], short_id: u32, file: &str, word: u8, cause: u8, seat: u32, now_ms: u64) -> QuestRunVerdict {
@@ -5862,6 +5905,14 @@ impl QuestRuns {
 
     fn quest_runs_gone(&mut self, seat: u32) {
         self.0.gone(seat);
+    }
+
+    fn quest_runs_record_acting(&mut self, short_id: u32, file: &str, acting: u32) {
+        self.0.record_acting(&forms::FormDesc { short_id, file: file.to_owned() }, acting);
+    }
+
+    fn quest_runs_last_acting(&self, short_id: u32, file: &str) -> u32 {
+        self.0.last_acting(&forms::FormDesc { short_id, file: file.to_owned() }).unwrap_or(0)
     }
 
     fn quest_runs_at_login(&self, record: &[QuestRunRow], shared: &SharedQuests, stages: &[QuestStageEntry]) -> QuestRunsLogin {
@@ -6860,6 +6911,29 @@ mod tests {
         let alias = |id: u32, forced: u32, unique_actor: u32| QuestScopeAliasRow { id, location: false, forced, unique_actor, created: 0, create_at: 0, external: false, external_forced: 0, external_unique_actor: 0 };
         assert_eq!(quest_scope_player_aliases(&[alias(119, 0x14, 0), alias(12, 0, 0x2bfb3), alias(7, 0, 7)]), vec![119, 7]);
         assert!(quest_scope_player_aliases(&[QuestScopeAliasRow { location: true, ..alias(3, 0x14, 0) }]).is_empty());
+    }
+
+    #[test]
+    fn the_bridge_stamps_a_scene_fragments_stage_with_the_quests_last_acting_player() {
+        // thuum train 53's V-scene (playtest 51): VC01 0x5c625's stage 185
+        // recorded for rotfern (0xff000000); Ariadne's (0xff000001) stopped
+        // copy of scene 0x5dba7 reports 195 naming nobody
+        let scene = "SF_VC01VampirismCureRitual_0005DBA7.Fragment_0";
+        let mut runs = new_quest_runs();
+        assert_eq!(runs.quest_runs_last_acting(0x5c625, "Skyrim.esm"), 0);
+        runs.quest_runs_record_acting(0x5c625, "Skyrim.esm", 0xff00_0000);
+        let last = runs.quest_runs_last_acting(0x5c625, "skyrim.esm");
+        assert_eq!(last, 0xff00_0000);
+        let stamp = quest_stage_acting(0xff00_0001, 0, scene, last);
+        assert_eq!((stamp.how, stamp.acting, stamp.name.as_str()), (2, 0xff00_0000, ""));
+        // none recorded: refused by name, never the reporter
+        let refused = quest_stage_acting(0xff00_0001, 0, scene, 0);
+        assert_eq!((refused.how, refused.acting, refused.name.as_str()), (3, 0, "E_QUEST_SCENE_ACTING"));
+        assert!(!refused.why.is_empty());
+        // a named player, and any other root as before
+        assert_eq!(quest_stage_acting(0xff00_0001, 0xff00_0000, scene, 0).how, 0);
+        let fragment = quest_stage_acting(0xff00_0001, 0, "QF_VC01_0005C625.Fragment_9", last);
+        assert_eq!((fragment.how, fragment.acting), (1, 0xff00_0001));
     }
 
     #[test]

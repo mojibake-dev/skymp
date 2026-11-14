@@ -3452,7 +3452,10 @@ std::vector<MpChangeFormREFR::QuestRun> QuestRunsOf(
 // mode all, and never a player-class quest while the quest scope acts,
 // E_QUEST_PLAYER; R1), stamps the acting player (the report's when it names
 // a connected player, the scope's player of read 7, else the reporter,
-// E_QUEST_ACTING once a minute per seat; the reported `acting` is R2) and
+// E_QUEST_ACTING once a minute per seat; the reported `acting` is R2; train
+// 53's V-scene: a stage a scene fragment roots that names none takes the
+// quest's last acting player this run, or is refused, E_QUEST_SCENE_ACTING,
+// never the reporter by default: wire-rules quest_runs::stage_acting) and
 // records it as the world's (R0): a stage the record has is a no-op, a word
 // equal to the quest's run is folded, a seat flipping one quest's run past
 // the churn bound is held out of the record (E_QUEST_CHURN, wire-rules
@@ -3573,23 +3576,25 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
 
   // the acting player: the report's when it names a connected player (a
   // relayed fragment's chained set on this seat, read 7), else the reporter
-  uint32_t acting = actor->GetFormId();
+  // (a stage's below, after the record's own checks, by V-scene's rule)
+  uint32_t named = 0;
   if (msg.acting && *msg.acting != actor->GetFormId()) {
     if (MpActor* scoped = ConnectedPlayer(partOne, *msg.acting)) {
-      acting = scoped->GetFormId();
+      named = scoped->GetFormId();
     } else {
       uint32_t since = 0;
       if (QuestLineDue(questLines, actor->GetFormId(), "E_QUEST_ACTING",
                        since)) {
         spdlog::info("E_QUEST_ACTING: user {} actor {:x} reported {} {} of "
                      "{} acting for {:x}, no connected player's actor: "
-                     "stamped as the reporter; {} such report(s) since the "
-                     "last line",
+                     "stamped as one naming none; {} such report(s) since "
+                     "the last line",
                      rawMsgData.userId, actor->GetFormId(), verb, msg.stage,
                      quest.ToString(), *msg.acting, since);
       }
     }
   }
+  uint32_t acting = named != 0 ? named : actor->GetFormId();
 
   const auto relayToOthers = [&](const QuestStageMessage& relay) {
     size_t relayed = 0;
@@ -3759,6 +3764,9 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     }
     partOne.SetQuestRuns(QuestRunsOf(skymp::rules::quest_runs_merge(
       record, quest.shortFormId, quest.file, what)));
+    // V-scene: the run's record of the quest's latest acting player
+    partOne.GetQuestRunRules().quest_runs_record_acting(quest.shortFormId,
+                                                        quest.file, acting);
     QuestStageMessage relay;
     relay.quest = msg.quest;
     relay.stage = 0;
@@ -3800,11 +3808,53 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
     }
     return;
   }
+  // train 53's V-scene (thuum lab/.cache/drafts/reads-53/r-v1-v2-vc1-cure.md,
+  // R-V1): a scene runs past the fragment that started it, so the stage its
+  // own fragment sets names no scope even when another player's stage
+  // started the scene (playtest 51: Ariadne's stopped copy of VC01's scene
+  // 0x5dba7 set 195, stamped hers, and each seat cured the other's figure).
+  // Such a stage takes the acting player of the quest's latest recorded
+  // stage or word while that player is connected (the run's record; the
+  // quest record keeps none), and with none is refused; any other stage is
+  // stamped as before (wire-rules quest_runs::stage_acting)
+  {
+    uint32_t last = partOne.GetQuestRunRules().quest_runs_last_acting(
+      quest.shortFormId, quest.file);
+    if (last != 0 && !ConnectedPlayer(partOne, last)) {
+      last = 0;
+    }
+    const std::string root = msg.root.value_or(std::string());
+    const auto stamp =
+      skymp::rules::quest_stage_acting(actor->GetFormId(), named, root, last);
+    if (stamp.how == 3) {
+      uint32_t since = 0;
+      if (QuestLineDue(questLines, actor->GetFormId(), std::string(stamp.name),
+                       since)) {
+        spdlog::info("{}: user {} actor {:x} reported stage {} of {}{}: {}; "
+                     "not recorded, nothing relayed; {} such report(s) since "
+                     "the last line",
+                     std::string(stamp.name), rawMsgData.userId,
+                     actor->GetFormId(), msg.stage, quest.ToString(),
+                     causeText, std::string(stamp.why), since);
+      }
+      return;
+    }
+    acting = stamp.acting;
+    if (stamp.how == 2 && acting != actor->GetFormId()) {
+      spdlog::info("[verb:quest-stage] {:x}'s stage {} of {}, rooted at the "
+                   "scene fragment {} and naming no acting player, stamped "
+                   "{:x}, the quest's last acting player (V-scene)",
+                   actor->GetFormId(), msg.stage, quest.ToString(), root,
+                   acting);
+    }
+  }
   const auto before = partOne.GetQuestStages();
   const bool firstStage =
     std::none_of(before.begin(), before.end(),
                  [&](const auto& stage) { return stage.quest == quest; });
   partOne.SetQuestStages(partOne.MergeQuestStage(done));
+  partOne.GetQuestRunRules().quest_runs_record_acting(quest.shortFormId,
+                                                      quest.file, acting);
   // thuum ADR-068 rung 4 (amendment B, read 8): a quest the world records
   // for the first time has filled its aliases, so the items its aliases
   // create go into their containers already attached, once each

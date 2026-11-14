@@ -1240,3 +1240,65 @@ TEST_CASE("The world's quest stages survive a restart through the journal's "
   restarted.DestroyActor(kReporter);
   DoDisconnect(restarted, 0);
 }
+
+// train 53's V-scene (thuum lab/.cache/drafts/reads-53/r-v1-v2-vc1-cure.md,
+// R-V1): a scene runs past the fragment that started it, so the stage its
+// own fragment sets names no scope even when another player's stage started
+// it (playtest 51: Ariadne's stopped copy of VC01's scene set 195, stamped
+// hers). A stage a scene fragment roots that names no acting player takes
+// the quest's last acting player this run while connected, else is refused
+// (E_QUEST_SCENE_ACTING); never the reporter by default. The root is the
+// seat's word (R2): the server reads only its script's SF_ prefix, and
+// playtest 51's VC01 root stands in on MS13's stages here
+TEST_CASE("A scene fragment's stage naming no acting player keeps the "
+          "quest's last acting player, and with none connected is refused "
+          "(E_QUEST_SCENE_ACTING, V-scene)",
+          "[QuestStage][espm]")
+{
+  const char* const kSceneRoot =
+    "SF_VC01VampirismCureRitual_0005DBA7.Fragment_0";
+  PartOne& p = GetPartOne();
+  Enter(p);
+  QuestLog log;
+  // the reporter's own stage: its scope, the quest's last acting player
+  Report(p, 0, kMs13, 5);
+  REQUIRE(WordsTo(p, 1) == std::vector<Word>{ W(kMs13, 5, 0, kReporter) });
+  // the watcher's copy of the scene that stage started sets 10, naming no
+  // one: stamped the reporter, recorded and relayed so
+  p.Messages().clear();
+  ReportCaused(p, 1, kMs13, 10, 0, 1, kSceneRoot);
+  REQUIRE(WordsTo(p, 0) == std::vector<Word>{ W(kMs13, 10, 0, kReporter) });
+  REQUIRE(log.Count("[verb:quest-stage] ff000bd1's stage 10 of "
+                    "39645:Skyrim.esm, rooted at the scene fragment "
+                    "SF_VC01VampirismCureRitual_0005DBA7.Fragment_0 and "
+                    "naming no acting player, stamped ff000bd0, the quest's "
+                    "last acting player (V-scene)") == 1);
+  // the reporter's own copy sets 20: its own, by the record, no line
+  p.Messages().clear();
+  ReportCaused(p, 0, kMs13, 20, 0, 1, kSceneRoot);
+  REQUIRE(WordsTo(p, 1) == std::vector<Word>{ W(kMs13, 20, 0, kReporter) });
+  REQUIRE(log.Count("(V-scene)") == 1);
+  const auto ms13 = FormDesc::FromString("39645:Skyrim.esm");
+  REQUIRE(
+    p.GetQuestStages() ==
+    std::vector<QuestStageDone>{ { ms13, 5 }, { ms13, 10 }, { ms13, 20 } });
+  REQUIRE(log.Count("E_QUEST_") == 0);
+  // the quest's last acting player gone: the scene's stage is refused,
+  // nothing recorded; a stage of any other root is still the reporter's
+  p.SetQuestStages({});
+  DoDisconnect(p, 0);
+  ReportCaused(p, 1, kMs13, 5, 0, 1, kSceneRoot);
+  REQUIRE(p.GetQuestStages().empty());
+  REQUIRE(log.Count("E_QUEST_SCENE_ACTING: user 1 actor ff000bd1 reported "
+                    "stage 5 of 39645:Skyrim.esm (cause world, root "
+                    "SF_VC01VampirismCureRitual_0005DBA7.Fragment_0, R2): "
+                    "rooted at the scene fragment") == 1);
+  REQUIRE(log.Count("not recorded, nothing relayed; 1 such report(s) since "
+                    "the last line") == 1);
+  Report(p, 1, kMs13, 5);
+  REQUIRE(p.GetQuestStages() == std::vector<QuestStageDone>{ { ms13, 5 } });
+  p.SetSharedQuestsSettings("[]");
+  p.DestroyActor(kReporter);
+  p.DestroyActor(kWatcher);
+  DoDisconnect(p, 1);
+}

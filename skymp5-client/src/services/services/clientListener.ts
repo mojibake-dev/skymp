@@ -267,6 +267,12 @@ declare module "skyrimPlatform" {
     // writes the bodies on its own branch; an older platform has none, and
     // every use is guarded
     function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number): boolean;
+    // train 53, V-scene (m4-train-53-platform b29ea207, Definitions.txt): a
+    // relay's stage (0 to 65535), start (-1) or stop (-2) whose acting player
+    // is this seat's own or unnamed, scoped at the relay with no swap; false,
+    // nothing stored, for a quest 0, a stage outside -2 to 65535 or a ttl
+    // outside 1 to 60000; an older platform has none, and its use is guarded
+    function setRelayedScope(questId: number, stage: number, ttlMs: number): boolean;
     function getActingPlayer(questId: number, stage: number): number;
     // ADR-068 rung 5, D-Q4 C (the platform's QuestCause.h): a cause this
     // seat's own act names for the quest's next start (-1), stop (-2) or

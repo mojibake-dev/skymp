@@ -253,8 +253,10 @@ const START_UP_MEMORY_MAX = 2048;
 // here (a chained stage, a relayed trigger's script). Before a live apply,
 // setActingPlayer names the server's `acting` for the pair: its figure here
 // (remoteIdToLocalId, 0 when this seat holds none) and its server id, for
-// ACTING_TTL_MS; never for this seat's own actor (its own player is the
-// player already) and never for a served apply (a load). The fragment: a
+// ACTING_TTL_MS; never for a served apply (a load). For this seat's own
+// actor, or a relay with no stamp, the scope is a relayed one with no swap
+// (train 53, V-scene: the platform's setRelayedScope, its root kRelayed,
+// Game.GetPlayer this seat's own player). The fragment: a
 // served stage always carries the mark (the login's replay is a load, D-Q3
 // A); a live stage carries it while the setting questFragmentLive is false
 // (the default, the H-A1 fallback, until x-acting-player v1 is green), and
@@ -350,7 +352,10 @@ const START_UP_MEMORY_MAX = 2048;
 // puppetSceneStopped event), and the quest's stops here go unreported until
 // its next start here or PUPPET_STOP_MS after the scene's stop (the fresh
 // review's note 4), said once a quest a connection: "quest <q>'s stop not
-// reported: its scene <s> was stopped here by the puppet rule".
+// reported: its scene <s> was stopped here by the puppet rule". Since train
+// 53 (R-V1) a stage the stopped scene's own fragment script sets meanwhile
+// (its end fragment, run by the stop) is held the same way
+// (puppetSceneStage).
 // A client-only plugin's quest: a quest of a plugin the server does not
 // serve is this seat's own, a stage and a run word alike. The server
 // refuses its report as E_QUEST_UNKNOWN before any judging (OnQuestStage's
@@ -1161,19 +1166,64 @@ export class QuestStageService extends ClientListener {
     private sayPuppetStop(questId: number) {
         const scene = this.puppetScenes.get(questId)?.scene;
         const which = scene !== undefined && scene > 0 ? `its scene ${scene.toString(16)}` : "its scene";
-        const line = `quest ${questId.toString(16)}'s stop not reported: ${which} was stopped here by the puppet rule`;
-        if (this.puppetStopSaid.has(questId)) {
+        this.sayPuppetHeld(this.puppetStopSaid, questId, `quest ${questId.toString(16)}'s stop not reported: ${which} was stopped here by the puppet rule`);
+    }
+
+    // a line of the puppet rule's holds: a lab line the first time a quest
+    // a connection, a trace after
+    private sayPuppetHeld(said: Set<number>, questId: number, line: string) {
+        if (said.has(questId)) {
             logTrace(this, line);
             return;
         }
-        if (this.puppetStopSaid.size >= PUPPET_SCENE_MEMORY_MAX) {
-            const oldest = this.puppetStopSaid.values().next().value;
+        if (said.size >= PUPPET_SCENE_MEMORY_MAX) {
+            const oldest = said.values().next().value;
             if (oldest !== undefined) {
-                this.puppetStopSaid.delete(oldest);
+                said.delete(oldest);
             }
         }
-        this.puppetStopSaid.add(questId);
+        said.add(questId);
         logLab(TAG, line);
+    }
+
+    // Train 53, V-scene's client half (lab/.cache/drafts/reads-53/
+    // r-v1-v2-vc1-cure.md, R-V1): a scene the puppet rule stops still runs its
+    // end fragment here, and its stage is this seat's own as the quest's stop
+    // is. Playtest 52's Rising at Dawn: c2 applied rotfern's relayed 185, its
+    // Fragment_7 started scene 5dba7 here, PuppetService stopped it (Falion a
+    // puppet), and its end fragment's `if GetStage() < 195: SetStage(195)` set
+    // 195 on c2, reported; the server stamped Ariadne as its acting player and
+    // relayed it to c1, whose 200 then cured Ariadne's figure. So a stage of a
+    // quest under the puppet rule's mark whose cause's root is the stopped
+    // scene's fragment script is held, unreported, until the quest's next start
+    // here or PUPPET_STOP_MS after the stop, as reportRun holds the stop. The
+    // root names the script: the Creation Kit's SF_<editor id>_<form id> (the
+    // server's "root SF_VC01VampirismCureRitual_0005DBA7.Fragment_0" for scene
+    // 5dba7), its id the plugin's own as the kit saw it, so the id is compared
+    // within its plugin (the low 24 bits, a light plugin's low 12: the
+    // client-only rule's reading of this game's load order). A root naming
+    // another script, or none, reports as before. Line: "quest <q>'s stage <s>
+    // not reported: set by <root>, the end fragment of its scene <scene>
+    // stopped here by the puppet rule"
+    private puppetSceneStage(questId: number, stage: number, cause: Cause): boolean {
+        const mark = this.puppetScenes.get(questId);
+        if (mark === undefined || !QuestStageService.rootsInScene(cause.root, mark.scene) || !this.puppetStopMarked(questId)) {
+            return false;
+        }
+        this.sayPuppetHeld(this.puppetStageSaid, questId, `quest ${questId.toString(16)}'s stage ${stage} not reported: set by ${cause.root}, the end fragment of its scene ${mark.scene.toString(16)} stopped here by the puppet rule`);
+        return true;
+    }
+
+    // whether a cause's root is a function of the scene's fragment script
+    // (puppetSceneStage's reading of its name)
+    private static rootsInScene(root: string, scene: number): boolean {
+        const m = /^SF_\w*_([0-9A-Fa-f]{8})\./.exec(root);
+        if (m === null || !Number.isInteger(scene) || scene <= 0) {
+            return false;
+        }
+        const named = parseInt(m[1], 16);
+        const within = (scene >>> 24) === 0xfe ? 0xfff : 0xffffff;
+        return (named & within) === (scene & within);
     }
 
     // the client-only plugins' list for this connection, asked once (at the
@@ -1341,15 +1391,24 @@ export class QuestStageService extends ClientListener {
 
     // the acting scope for a live apply (the class comment): the server's
     // acting player for the pair, its figure here or 0; none for a served
-    // apply, for a relay with no stamp, or for this seat's own actor
+    // apply (a load). Train 53 (V-scene): every live apply is a relay, this
+    // seat not the stage's cause seat, so its scope is armed even for this
+    // seat's own actor or a relay with no stamp, with no swap
+    // (nameRelayedScope): unscoped, the fragment's Scene.Start ran on this
+    // seat's puppets, the puppet rule stopped it and its end fragment set a
+    // stage (playtest 52's cure; MS13's argument scene on the guest)
     private nameActing(item: QuestItem, scopeStage: number) {
         const acting = item.acting;
-        if (item.served || acting === undefined || this.actingExportsMissing || this.isMe(acting)) {
+        if (item.served || this.actingExportsMissing) {
             return;
         }
         if (typeof this.sp.setActingPlayer !== "function") {
             this.actingExportsMissing = true;
             logLab(TAG, "setActingPlayer unavailable on this platform; a relayed request runs as this seat's own player");
+            return;
+        }
+        if (acting === undefined || this.isMe(acting)) {
+            this.nameRelayedScope(item, scopeStage, acting);
             return;
         }
         const figure = remoteIdToLocalId(acting);
@@ -1359,6 +1418,36 @@ export class QuestStageService extends ClientListener {
             }
         } catch (err) {
             logError(this, "setActingPlayer threw for quest", item.quest.toString(16), "stage", scopeStage, err);
+        }
+    }
+
+    // a relayed scope with no swap, for a live apply whose acting player is
+    // this seat's own or unstamped: the platform's setRelayedScope
+    // (m4-train-53-platform b29ea207) requests the pair as setActingPlayer
+    // does, a start or a stop armed at once, rooted at the relay (kRelayed)
+    // with no acting player, so Game.GetPlayer and the player's own actor stay
+    // this seat's and its own globals are written, while a Scene.Start or
+    // ForceStart in the fragment, or in the fragment of a stage it chains, is
+    // skipped here (V-scene); a stage it chains reports no acting player
+    // (getActingPlayer answers 0). Same scope stage and ACTING_TTL_MS as
+    // setActingPlayer's. A platform without the export, said once: the relay
+    // runs unscoped, as before
+    private nameRelayedScope(item: QuestItem, scopeStage: number, acting: number | undefined) {
+        if (this.relayedScopeMissing) {
+            return;
+        }
+        const why = acting === undefined ? "unstamped" : "this seat's own acting player";
+        if (typeof this.sp.setRelayedScope !== "function") {
+            this.relayedScopeMissing = true;
+            logLab(TAG, `setRelayedScope unavailable on this platform; a relay whose acting player is this seat's own or unstamped runs unscoped (first: quest ${item.quest.toString(16)} stage ${scopeStage}, ${why})`);
+            return;
+        }
+        try {
+            if (this.sp.setRelayedScope(item.quest, scopeStage, ACTING_TTL_MS) !== true) {
+                logError(this, "setRelayedScope refused quest", item.quest.toString(16), "stage", scopeStage, "(" + why + ")");
+            }
+        } catch (err) {
+            logError(this, "setRelayedScope threw for quest", item.quest.toString(16), "stage", scopeStage, err);
         }
     }
 
@@ -1429,6 +1518,9 @@ export class QuestStageService extends ClientListener {
             return false;
         }
         if (this.skipClientOnly(questId, false)) {
+            return false;
+        }
+        if (this.puppetSceneStage(questId, stage, cause)) {
             return false;
         }
         if (stage === 0 && !this.worldCaused(cause)) {
@@ -1516,6 +1608,7 @@ export class QuestStageService extends ClientListener {
             this.resetSends();
         }
         this.puppetStopSaid.clear();
+        this.puppetStageSaid.clear();
         this.endSkipped();
         this.keepOrDropPluginList();
         this.pluginListMissSaid = false;
@@ -1883,6 +1976,8 @@ export class QuestStageService extends ClientListener {
     private runsOffSaid = false;
     // an older platform without setActingPlayer and getActingPlayer
     private actingExportsMissing = false;
+    // train 53: an older platform without setRelayedScope
+    private relayedScopeMissing = false;
     // note 7: the start-up stages each quest's last start word named
     private startUpStages = new Map<number, number[]>();
     // the player-class quests the login named (each seat runs its own
@@ -1940,9 +2035,11 @@ export class QuestStageService extends ClientListener {
     // the puppet rule's scene stop: the quests whose scene PuppetService
     // stopped here on a host's puppet (the scene and the time of its stop by
     // quest), each until the quest's next start here or PUPPET_STOP_MS, and
-    // the quests whose unreported stop this connection said
+    // the quests whose unreported stop, and stage (puppetSceneStage), this
+    // connection said
     private puppetScenes = new Map<number, { scene: number; at: number }>();
     private puppetStopSaid = new Set<number>();
+    private puppetStageSaid = new Set<number>();
     // a client-only plugin's quest: the client-only plugins by this game's
     // own load order (a full plugin by its index, a light one by its index
     // at 0xFE) from the last answer, kept across a reconnect to the same

@@ -5392,8 +5392,10 @@ MarkerCause MarkerCauseOf(PartOne& partOne, const std::string& caller)
 // keeps: unlisted, denied, or a player's class) goes on the reporter's own
 // change form alone. A marker the record holds already (another seat's run
 // of the same fragment, the same call again) changes nothing and is relayed
-// to no one. R1: the cause and the marker judged (wire-rules natives'
-// marker_owner), the travel flag the engine's word. A stopgap until step 1's
+// to no one. R2: recorded as reported, the marker, the cause and its live
+// quest consistency bounds (wire-rules natives' marker_owner), the calling
+// script (ScriptCall's caller) and the travel flag the reporter's word
+// (thuum docs/verbs/map-markers.md's Known limit). A stopgap until step 1's
 // quest record holds the quest's own markers
 void RecordQuestMarker(PartOne& partOne, MpActor& reporter,
                        const ScriptCallMessage& msg,

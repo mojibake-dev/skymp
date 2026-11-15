@@ -79,8 +79,11 @@
 //! (QF, TIF or SF, by the game files' attachment) whose quest the server
 //! holds live for the reporter. It takes no sequence and spends the record
 //! rows' budget; the core records the marker with its travel flag for every
-//! player the quest is shown to and relays it live to the others. R1, a
-//! stopgap until step 1's quest record holds quest-owned markers.
+//! player the quest is shown to and relays it live to the others. R2
+//! (recorded as reported: the marker, a cause attached and the cause's live
+//! quest are consistency bounds, and the calling script is the reporter's
+//! word; thuum docs/verbs/map-markers.md), a stopgap until step 1's quest
+//! record holds quest-owned markers.
 //!
 //! The look channel (thuum ADR-068 D-W2 A, Eli 2026-11-07; docs/research/
 //! fifty-fixes-2026-11-07.md section 7.2(b)): during a firing its presser's
@@ -289,7 +292,10 @@ pub enum RecordKind {
     /// shown to (thuum docs/verbs/map-markers.md: the world's for a world
     /// quest, served at every login; the reporter's own for a quest each
     /// seat keeps), relayed live as AddToMap to the other players shown it.
-    /// R1. A stopgap (ADR-073 decision 5 (c)), replaced by step 1's quest
+    /// R2: recorded as reported, the marker, the cause and its live quest
+    /// consistency bounds, the calling script the reporter's word (thuum
+    /// docs/verbs/map-markers.md's Known limit; ADR-063's default rung). A
+    /// stopgap (ADR-073 decision 5 (c)), replaced by step 1's quest
     /// record holding quest-owned markers (decision 2 (c)); deletes when
     /// that record serves them.
     Marker,
@@ -1268,7 +1274,12 @@ fn record_owner(subject: u32, kind: RecordKind, facts: &Facts) -> Result<(), Ref
 /// `E_SCRIPTCALL_OWNER`). The rate is the record rows' own budget, spent at
 /// the shape step. No epoch is read (a map's marker is no hosted object's),
 /// and the travel flag is never judged (the engine's word, as discovery's
-/// is). R1.
+/// is). R2: the three are consistency bounds (ADR-073 decision 2 (d)), not
+/// a validation of the cause, which comes from ScriptCall's `caller`, the
+/// reporter's word; so a seat can name any marker from any script a live
+/// quest attaches (thuum docs/verbs/map-markers.md's Known limit, the
+/// review of S6's SHOULD 5; fast travel stays off,
+/// disableFastTravelService.ts).
 fn marker_owner(subject: u32, facts: &Facts) -> Result<(), Refusal> {
     if !facts.marker {
         return Err(refusal(

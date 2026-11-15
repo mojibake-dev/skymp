@@ -1644,11 +1644,20 @@ export class PropService extends ClientListener {
     // segment on the owner's clock (at least SEGMENT_MIN_MS), so the copy
     // arrives as the render clock does and is still moving when the next
     // segment starts; from JUMP_UNITS a jump within JUMP_MS, counted; a turn in
-    // place by setAngle; a reference with no 3D placed (setPosition, then
-    // setAngle). The copy's place is its body's (readBody), its reference's
-    // where the platform reads no body. H-P4 (pass v10b 025124): a body placed
-    // by setPosition and later set Dynamic flew on every seat it happened to;
-    // the engine's keyframed translate moves the collision with the node
+    // place by the same translate (to where it stands, the rotation unlimited);
+    // a reference with no 3D placed (setPosition, then setAngle). The copy's
+    // place is its body's (readBody), its reference's where the platform reads
+    // no body. H-P4 (pass v10b 025124): a body placed by setPosition and later
+    // set Dynamic flew on every seat it happened to; the engine's keyframed
+    // translate moves the collision with the node. #50 (20261115-202110): a
+    // loaded copy turned by setAngle lost its Havok notify (coFlags 0x3f00008d
+    // to 0x30300081) and the grab then lifted its body but never its
+    // reference: SetAngle's native (Address Library 56122, REA on sky-re) is a
+    // TESObjectREFR::MoveTo at the reference's own place, which rebuilds the
+    // body; TranslateTo's native (the one TranslateTo registers, REA) adds a
+    // path and moves the reference with no MoveTo, a rotation speed of 0
+    // stored as unlimited. HYPOTHESIS until a trace: a translate of no
+    // distance still turns the body
     private apply(prop: Prop, refr: ObjectReference, f: PropFollow, step: FollowStep, now: number) {
         const s = step.target;
         const body = prop.loaded3D ? this.readBody(prop) : undefined;
@@ -1670,8 +1679,6 @@ export class PropService extends ClientListener {
                     return again ? again.setAngle(ax, ay, az) : undefined;
                 })
                 .catch((err) => logError(this, `placing prop ${prop.refr.toString(16)} at its sample failed`, err));
-        } else if (distance < 0.1) {
-            refr.setAngle(ax, ay, az).catch((err) => logError(this, `turning prop ${prop.refr.toString(16)} failed`, err));
         } else {
             const jumped = distance >= JUMP_UNITS;
             const windowMs = jumped ? JUMP_MS : Math.max(SEGMENT_MIN_MS, step.remainingMs);

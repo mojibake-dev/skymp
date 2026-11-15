@@ -357,7 +357,8 @@ const START_UP_MEMORY_MAX = 2048;
 // reported: its scene <s> was stopped here by the puppet rule". Since train
 // 53 (R-V1) a stage the stopped scene's own fragment script sets meanwhile
 // (its end fragment, run by the stop) is held the same way
-// (puppetSceneStage).
+// (puppetSceneStage), and so is every later stage of the quest while the
+// mark lasts (its chain, VC01's 195 then 200).
 // A client-only plugin's quest: a quest of a plugin the server does not
 // serve is this seat's own, a stage and a run word alike. The server
 // refuses its report as E_QUEST_UNKNOWN before any judging (OnQuestStage's
@@ -1144,7 +1145,10 @@ export class QuestStageService extends ClientListener {
                 this.puppetScenes.delete(oldest);
             }
         }
-        this.puppetScenes.set(e.quest, { scene: e.scene, at: Date.now() });
+        // a chain already held under a live mark stays held under its renewal
+        const prior = this.puppetScenes.get(e.quest);
+        const chained = prior !== undefined && prior.chained && Date.now() - prior.at < PUPPET_STOP_MS;
+        this.puppetScenes.set(e.quest, { scene: e.scene, at: Date.now(), chained });
     }
 
     // whether the puppet rule's mark still holds the quest's stop: set under
@@ -1204,8 +1208,16 @@ export class QuestStageService extends ClientListener {
     // compared as this game's form id (train 53's review, correctness-6 and
     // rules-2: the Creation Kit's SF_<editor id>_<form id> name it once read
     // was a script name standing for an owner, which ADR-073 decision 6
-    // forbids). Any other stage of a marked quest reports as before, said
-    // once a quest a connection (decision 7): "quest <q>'s stage <s>
+    // forbids). The platform roots a chained stage at its own fragment's
+    // stack (QuestCause::Join keeps the joining root), so once a stage of
+    // the quest is held under this mark every later stage of the quest is
+    // held too while the mark lasts (the mark's chained flag, which lives and
+    // dies with the mark): the held 195's Fragment_9 runs in this engine all
+    // the same, and its SetStage(200), rooted at QF_VC01_0005C625.Fragment_9,
+    // went out unheld, recorded and relayed served, so c1's Fragment_4 never
+    // cured rotfern (train 53's review, correctness-3). Any other stage of a
+    // marked quest reports as before, said once a quest a connection
+    // (decision 7): "quest <q>'s stage <s>
     // reported under the puppet rule's mark: its root <root> (self <x>) is
     // not scene <scene>'s"; an older platform names no self, and every such
     // stage reports so. Line: "quest <q>'s stage <s> not reported: set by
@@ -1221,11 +1233,14 @@ export class QuestStageService extends ClientListener {
             return false;
         }
         const self = cause.rootSelf.toString(16);
-        if (mark.scene <= 0 || cause.rootSelf !== (mark.scene >>> 0)) {
+        const own = mark.scene > 0 && cause.rootSelf === (mark.scene >>> 0);
+        if (!own && !mark.chained) {
             this.sayPuppetHeld(this.puppetStageFellSaid, questId, `quest ${questId.toString(16)}'s stage ${stage} reported under the puppet rule's mark: its root ${cause.root || "none"} (self ${self}) is not scene ${mark.scene.toString(16)}'s`);
             return false;
         }
-        this.sayPuppetHeld(this.puppetStageSaid, questId, `quest ${questId.toString(16)}'s stage ${stage} not reported: set by ${cause.root || "no script"} (self ${self}), the end fragment of its scene ${mark.scene.toString(16)} stopped here by the puppet rule`);
+        mark.chained = true;
+        const by = own ? "the end fragment of" : "chained from the end fragment of";
+        this.sayPuppetHeld(this.puppetStageSaid, questId, `quest ${questId.toString(16)}'s stage ${stage} not reported: set by ${cause.root || "no script"} (self ${self}), ${by} its scene ${mark.scene.toString(16)} stopped here by the puppet rule`);
         return true;
     }
 
@@ -2042,7 +2057,7 @@ export class QuestStageService extends ClientListener {
     // quest), each until the quest's next start here or PUPPET_STOP_MS, and
     // the quests whose unreported stop, and stage (puppetSceneStage), this
     // connection said, and whose stage the mark did not hold (decision 7)
-    private puppetScenes = new Map<number, { scene: number; at: number }>();
+    private puppetScenes = new Map<number, { scene: number; at: number; chained: boolean }>();
     private puppetStopSaid = new Set<number>();
     private puppetStageSaid = new Set<number>();
     private puppetStageFellSaid = new Set<number>();

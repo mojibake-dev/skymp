@@ -2236,11 +2236,16 @@ wire_struct! {
     /// reliable. Reason codes: `E_VAL_RANGE` (a target or caster of 0, an
     /// entry other than 1 or 2).
     ///
-    /// Since SCHEMA_VERSION 40 (thuum D-C2): with `entry` it is a guest's
-    /// trigger entry ([`Activate`]'s), sent to the cell's host alone, whose
-    /// engine sends that event (OnTriggerEnter for [`ENTRY_ENTER`],
-    /// OnTriggerLeave for [`ENTRY_LEAVE`]) to the target's scripts with the
-    /// caster, the presser, as akActionRef, instead of activating.
+    /// Since SCHEMA_VERSION 40 (thuum D-C2): with `entry` it is a trigger
+    /// entry ([`Activate`]'s), sent to the cell's host alone, whose engine
+    /// sends that event (OnTriggerEnter for [`ENTRY_ENTER`], OnTriggerLeave
+    /// for [`ENTRY_LEAVE`]) to the target's scripts with the caster, the
+    /// presser, as akActionRef, instead of activating. Since train 53's
+    /// C-entry the host may be the reporter itself (its gate blanked the
+    /// entry before its grant of the cell): `caster` is then the receiver's
+    /// own actor id for its own player, which the receiver maps to 0x14; an
+    /// enter that came while nobody hosted the cell arrives after the cell's
+    /// HostGrant, on the same ordered channel.
     pub struct RelayedActivation {
         /// `"t": 70`.
         #[serde(default)]

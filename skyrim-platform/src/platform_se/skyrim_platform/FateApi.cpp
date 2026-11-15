@@ -588,8 +588,10 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   // entries away and writing the fate's weapons again. The detour's arms of
   // this owner on this thread are witnessed across 37323 (Fates::
   // ArmWitness), and the reset runs only when 37323 armed nothing (its init
-  // elsewhere, or none), the order as before. HYPOTHESIS until a re-roll
-  // logs "armed" once and its copy wears the fate (x-anim-listener's run).
+  // elsewhere, or none), the order as before. HYPOTHESIS until a run of
+  // this branch's build logs each re-roll "armed 1 time(s) by 37323's own
+  // init, the inventory reset false" and dump-state reads its copy in the
+  // fate's worn set (x-anim-listener runs canon, without this branch).
   std::uint32_t armedBy37323 = 0;
   {
     Fates::ArmWitness witness(refrId);
@@ -660,6 +662,21 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
 
 void RerollTask(uint32_t refrId, uint32_t tick);
 
+// the branch of RerollOnGameThread that reaches 37323: a living leveled
+// clone whose pick is not the fate's (its dead and redress-alone branches
+// never re-roll)
+bool ReachesEngineReroll(RE::Actor* actor, const Fates::Fate& fate)
+{
+  if (actor->IsDead() ||
+      !actor->extraList.HasType(RE::ExtraDataType::kLeveledCreature)) {
+    return false;
+  }
+  const auto* leveled = actor->extraList.GetByType<RE::ExtraLeveledCreature>();
+  const uint32_t pickedId =
+    leveled && leveled->templateBase ? leveled->templateBase->formID : 0;
+  return !(pickedId != 0 && pickedId == fate.baseId);
+}
+
 // thuum lab/.cache/drafts/reads-53/r-c3-temple-crash.md (playtest 51 break
 // 7, candidate A, HYPOTHESIS until x-anim-listener's trace): the re-roll's
 // one entry for both of its callers (rerollActor's task and the stand-up's),
@@ -669,12 +686,23 @@ void RerollTask(uint32_t refrId, uint32_t tick);
 // without cancelling it while the request waits, which the manager's
 // dispatcher (63997) then calls. Deferred to a later tick, bounded
 // (WeaponAnimGuard); the deferred run reads the fate and the actor again.
-// What a request the re-roll's own reload starts meets inside this task is
-// not waited on (a known limit, the trace's to read).
+// Only the branch that reaches 37323 waits (ReachesEngineReroll): the dead
+// reconcile and the two redress-alone branches run at once, as redressActor
+// and dressBody do, so the stand-up's same-task redress of a matching pick
+// (npc-fate.md 1e) stays in its task. What a request the re-roll's own
+// reload starts meets inside this task is not waited on (a known limit, the
+// trace's to read).
 WeaponAnimGuard::Decision RerollWhenIdle(RE::Actor* actor,
                                          const Fates::Fate& fate,
                                          uint32_t refrId, uint32_t tick)
 {
+  if (!ReachesEngineReroll(actor, fate)) {
+    if (tick > 0) {
+      WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kReroll, refrId);
+    }
+    RerollOnGameThread(actor, fate, refrId);
+    return WeaponAnimGuard::Decision::kRun;
+  }
   const auto decision = WeaponAnimGuard::Check(
     WeaponAnimGuard::Kind::kReroll, actor, refrId, tick,
     [refrId](uint32_t next) {

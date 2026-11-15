@@ -26,8 +26,11 @@ static_assert(offsetof(RE::AIProcess, middleHigh) == 0x8);
 static_assert(offsetof(RE::MiddleHighProcessData, unk1B8) == 0x1B8);
 static_assert(offsetof(RE::MiddleHighProcessData, unk1F0) == 0x1F0);
 // the request in the record unk1B8 points to (REA, 1.6.1170: 39295 stores
-// 39778's return at [record+0x40], 39296 cancels it from there when the
-// count at [record+0x58] is 0 and zeroes it): HYPOTHESIS until the trace
+// 39778's return at [record+0x40]; 40110, the callback the dispatcher calls,
+// zeroes it at 0x1407217dd; 39296 zeroes it, cancelling only when the
+// equipped ids differ from +0x1F8/+0x1FA and the loaded set's size at
+// [record+0x58] (a BSTArray at +0x48, swapped with unk1D0 at 0x1406e043a,
+// MiddleHighProcessData.h:164) is 0): HYPOTHESIS until the trace
 constexpr std::size_t kRecordRequest = 0x40;
 
 using WeaponAnimGuard::Decision;

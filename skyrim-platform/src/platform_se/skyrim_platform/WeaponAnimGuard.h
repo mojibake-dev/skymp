@@ -23,7 +23,10 @@ class Actor;
 // the engine holds a weapon-animation request for it; the work goes to a
 // later tick, bounded, and its first deferral of each kind is said once.
 // HYPOTHESIS, every part, until lab/frida/anim-listener.js reads candidate A
-// (x-anim-listener by path, lab/.cache/drafts/train53/probes).
+// (x-anim-listener by path, lab/.cache/drafts/train53/probes) with the freed
+// listener's request made before the freeing fate task (its request row's
+// stack outside that task), and a run of this branch's build reads no
+// pendingAtFree weapon dtor; a free inside the task is not what this defers.
 namespace WeaponAnimGuard {
 
 // the work a deferral holds up; each has its own once-per-kind lines and
@@ -52,7 +55,9 @@ inline constexpr std::uint32_t kMaxTicks = 120;
 // MiddleHighProcessData::unk1B8 (include/RE/M/MiddleHighProcessData.h:163)
 // is typed BSTArray<void*>, but the engine reads its first word as a pointer
 // to a record whose +0x40 holds the request 39778 returned (39295 at
-// 0x1406e026c, 39296 at 0x1406e0411 and 0x1406e0431, REA); callback, when
+// 0x1406e026c, 39296 at 0x1406e0411 and 0x1406e0431, REA) until the
+// dispatcher's call of 40110 zeroes it (0x1407217dd) or 39296 does at the
+// equip's finish, cancelling only on its mismatch path; callback, when
 // given, the WeaponAnimationLoadedCallback held at +0x1F0 (:166). A peek
 // without the spinlock at +0x1E8 (:165) that 39295 and 39296 take: a stale
 // read costs one tick more, or one run as before this guard. Nothing on SE.

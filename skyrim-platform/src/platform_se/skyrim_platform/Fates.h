@@ -83,8 +83,9 @@ Dressing AddWornTagged(RE::InventoryChanges* changes, RE::BGSOutfit* outfit,
 // while the witness lives, so the re-roll can arm once (FateApi.cpp
 // RerollOnGameThread skips its reset when 37323's own init armed). A scope
 // on the game thread, nested ones each counting their own owner; the
-// detour calls Note at each arm. HYPOTHESIS until a re-roll logs "armed"
-// once and its copy wears the fate (the trace's x-anim-listener read).
+// detour calls Note at each arm. HYPOTHESIS until a run of this branch's
+// build logs "armed" once per re-roll and its copy wears the fate
+// (x-anim-listener runs canon, without this branch).
 class ArmWitness
 {
 public:

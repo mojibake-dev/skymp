@@ -1548,6 +1548,12 @@ void ApplyOnMainThread(const ApplyJob& job, std::uint32_t tick)
     // (FateApi's shape: a lookup under the forms map's lock belongs where
     // the engine takes that lock itself)
     auto* again = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
+    // a deferred apply whose reference is gone, or no longer an actor,
+    // never reaches the guard again: its waiting mark goes here, so the
+    // form's next apply is not refused as folded
+    if (tick > 0 && !(again && again->As<RE::Actor>())) {
+      WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kLoadGame, formId);
+    }
     // thuum lab/.cache/drafts/reads-53/r-c3-temple-crash.md (playtest 51
     // break 7, candidates A and B, HYPOTHESIS until x-anim-listener's
     // trace): the lay's Actor::LoadGame (slot 0x0F) rebuilds the copy's

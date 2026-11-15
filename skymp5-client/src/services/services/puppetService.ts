@@ -708,20 +708,18 @@ export class PuppetService extends ClientListener {
 
     // R-V4: whether the ability's effect at the index carries conditions,
     // either on the spell's effect item or on the effect's own record (the
-    // engine checks both), read through powerofthree's Papyrus Extender (the
-    // essentials layer's powerofthree-s-papyrus-extender-6.4.0):
-    // PO3_SKSEFunctions.GetConditionList(form, index) returns the condition
-    // list as strings, empty when the form has none (v6.4.0
-    // src/Papyrus/Functions/Form/Functions.cpp:119-135; its
-    // CONDITION::GetConditions, src/Papyrus/Util/ConditionParser.cpp:1520-1537,
-    // takes a magic item's effects[index] conditions and an effect's own). The
-    // records never change, so each answer is kept by ability and index. A
-    // seat without the reader (the call throws, or answers no array) takes
-    // every effect as conditioned and plays no look: a look the host may not
-    // show is the fault R-V4 fixes, so the unknown case falls on its side,
-    // said once. HYPOTHESIS until the lab: the platform's callNative returns
-    // the Papyrus string[] as a JavaScript array (the array results of fork
-    // c1fd8fc7)
+    // engine checks both), read by the platform's effectConditioned from
+    // CommonLib's two condition lists (m4-train-53-platform's PuppetApi;
+    // train 53's review, rules-5: the PO3_SKSEFunctions.GetConditionList
+    // read it replaces was an undeclared dependency, absent on a 1.7.104
+    // seat by design). The records never change, so each answer is kept by
+    // ability and index. A platform without the export (`just client-hot`
+    // can put this client on an older one), or an answer that is no
+    // boolean, plays every effect's look as canon did, said once (the
+    // review's correctness-5): falling the other way would drop every
+    // unconditioned look (Skyrim.esm's 13, among them GhostAbility 0x5030b on
+    // 43 bases and the atronachs' flames) to hide R-V4's few, so R-V4's fault
+    // stays on that seat, and loud
     private effectConditioned(spell: Spell, index: number, effect: MagicEffect): boolean {
         const abilityId = spell.getFormID();
         const key = `${abilityId}:${index}`;
@@ -729,37 +727,25 @@ export class PuppetService extends ClientListener {
         if (known !== undefined) {
             return known;
         }
-        let onItem: number | undefined;
-        let onEffect: number | undefined;
-        let readError = "";
-        try {
-            onItem = PuppetService.conditionCount(this.sp.callNative("PO3_SKSEFunctions", "GetConditionList", undefined, spell, index));
-            onEffect = PuppetService.conditionCount(this.sp.callNative("PO3_SKSEFunctions", "GetConditionList", undefined, effect, 0));
-        } catch (e) {
-            readError = String(e).slice(0, 64);
-        }
         const effectId = effect.getFormID();
+        const answer = typeof this.sp.effectConditioned === "function" ? this.sp.effectConditioned(abilityId, index) : undefined;
         let conditioned: boolean;
-        if (onItem === undefined || onEffect === undefined) {
-            conditioned = true;
+        if (typeof answer !== "boolean") {
+            conditioned = false;
             if (!this.conditionReaderSaid) {
                 this.conditionReaderSaid = true;
-                logError(this, `cloak look: PO3_SKSEFunctions.GetConditionList ${readError ? `threw (${readError})` : "answered no array"} on effect ${effectId.toString(16)} of ability ${abilityId.toString(16)}: every ability effect is taken as conditioned and no look is played`);
+                const why = answer === undefined ? "effectConditioned unavailable on this platform" : "effectConditioned found no effect";
+                logLab("verb:npc-puppet", `cloak look: ${why} at ${index} of ability ${abilityId.toString(16)} (effect ${effectId.toString(16)}): conditions unread, every ability effect's look plays as before (R-V4's fault stays on this seat)`);
             }
         } else {
-            conditioned = onItem + onEffect > 0;
+            conditioned = answer;
             if (conditioned && !this.conditionedSaid.has(effectId)) {
                 this.conditionedSaid.add(effectId);
-                logTrace(this, `cloak look: effect ${effectId.toString(16)} of ability ${abilityId.toString(16)} skipped as conditioned (${onItem} condition(s) on the spell's effect, ${onEffect} on the effect): the host's engine answers them, and no record of its answer reaches this seat`);
+                logTrace(this, `cloak look: effect ${effectId.toString(16)} of ability ${abilityId.toString(16)} skipped as conditioned: the host's engine answers its conditions, and no record of its answer reaches this seat`);
             }
         }
         this.conditionedEffects.set(key, conditioned);
         return conditioned;
-    }
-
-    // a GetConditionList answer's length; undefined for anything but an array
-    private static conditionCount(raw: unknown): number | undefined {
-        return Array.isArray(raw) ? raw.length : undefined;
     }
 
     private forget(localId: number) {

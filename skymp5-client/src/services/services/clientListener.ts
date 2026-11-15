@@ -273,6 +273,12 @@ declare module "skyrimPlatform" {
     // nothing stored, for a quest 0, a stage outside -2 to 65535 or a ttl
     // outside 1 to 60000; an older platform has none, and its use is guarded
     function setRelayedScope(questId: number, stage: number, ttlMs: number): boolean;
+    // train 53, R-V4 (m4-train-53-platform's PuppetApi, Definitions.txt):
+    // whether the magic item's effect at the index carries conditions, on its
+    // effect item or its base effect; null for no magic item, an index past
+    // its effects or an empty slot; an older platform has none, and its use
+    // is guarded
+    function effectConditioned(spellFormId: number, index: number): boolean | null;
     function getActingPlayer(questId: number, stage: number): number;
     // ADR-068 rung 5, D-Q4 C (the platform's QuestCause.h): a cause this
     // seat's own act names for the quest's next start (-1), stop (-2) or

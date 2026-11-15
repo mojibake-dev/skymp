@@ -48,8 +48,9 @@
 //! passes the reach is held for the cell's next grant ([`Entries::granted`]),
 //! when the core judges it again over that moment's facts; the same read: a
 //! player who walks into an unhosted cell standing in a world trigger lost
-//! the enter whichever message came first. The hold is bounded per cell
-//! ([`HELD_PER_CELL`]), in total ([`HELD_TOTAL`]) and in time ([`HELD_MS`],
+//! the enter whichever message came first. The hold is bounded per reporter
+//! ([`HELD_PER_REPORTER`]), per cell ([`HELD_PER_CELL`]), in total
+//! ([`HELD_TOTAL`]) and in time ([`HELD_MS`],
 //! [`Entries::sweep`]); a leave of a held enter drops both; a reporter's
 //! disconnect drops its own ([`Entries::forget`]). Each drop has a code the
 //! core logs once a minute per reporter and code (`E_ENTRY_HELD_FULL`,
@@ -256,7 +257,8 @@ pub enum EntryCode {
     /// trigger to end.
     Unpaired,
     /// An enter nobody hosts the cell for, not held: the cell holds
-    /// [`HELD_PER_CELL`] already, or every cell together [`HELD_TOTAL`].
+    /// [`HELD_PER_CELL`] already, every cell together [`HELD_TOTAL`], or its
+    /// reporter [`HELD_PER_REPORTER`] over every cell.
     HeldFull,
     /// A leave of an enter held for its cell's grant: both go, neither having
     /// reached an engine.
@@ -380,6 +382,12 @@ pub const HELD_PER_CELL: usize = 16;
 
 /// How many enters every cell together holds (UNMEASURED).
 pub const HELD_TOTAL: usize = 256;
+
+/// How many enters one reporter holds over every cell (UNMEASURED): its own
+/// player and the actors it simulates, half a cell's [`HELD_PER_CELL`], so
+/// one game never fills a cell's hold for the others (.claude/rules/rust.md's
+/// per-connection cap); past it a new one is `E_ENTRY_HELD_FULL`.
+pub const HELD_PER_REPORTER: usize = HELD_PER_CELL / 2;
 
 /// An enter held for its cell's grant: who reported which presser into which
 /// trigger in which cell, and when (the core's monotonic clock, ms).
@@ -530,9 +538,15 @@ impl Entries {
         self.held.get(&cell).map_or(0, Vec::len)
     }
 
+    /// How many enters `reporter` holds for their grants, over every cell.
+    #[must_use]
+    pub fn held_by(&self, reporter: u32) -> usize {
+        self.held.values().flatten().filter(|h| h.reporter == reporter).count()
+    }
+
     /// The enter held, a second of the same reporter, presser and trigger
-    /// keeping one, the newest; refused when the cell's hold or the whole
-    /// hold is full.
+    /// keeping one, the newest; refused when the cell's hold, the whole
+    /// hold or the reporter's share is full.
     fn hold(&mut self, facts: &EntryFacts, now_ms: u64) -> EntryVerdict {
         let full = |why: String| EntryVerdict::Refuse(Refusal { code: EntryCode::HeldFull, why });
         // the same enter again gives way to this one, so the counts below
@@ -544,6 +558,9 @@ impl Entries {
         }
         if self.held_in(facts.cell) >= HELD_PER_CELL {
             return full(format!("nobody hosts cell {:x}, which holds {HELD_PER_CELL} enters already", facts.cell));
+        }
+        if self.held_by(facts.reporter) >= HELD_PER_REPORTER {
+            return full(format!("nobody hosts cell {:x}, and its reporter holds {HELD_PER_REPORTER} enters already", facts.cell));
         }
         self.held.entry(facts.cell).or_default().push(Held {
             reporter: facts.reporter,
@@ -827,7 +844,12 @@ mod tests {
     #[test]
     fn the_hold_is_bounded_per_cell_in_total_and_in_time() {
         let mut e = Entries::default();
-        let early = |cell: u32, trigger_id: u32| EntryFacts { host: 0, cell, trigger_id, ..host_entry() };
+        // a reporter per slot (its own player the presser), so the reporter's
+        // share never decides here
+        let early = |cell: u32, trigger_id: u32| {
+            let seat = 0xff00_1000u32.saturating_add(cell.saturating_mul(32)).saturating_add(trigger_id);
+            EntryFacts { host: 0, cell, trigger_id, reporter: seat, presser: seat, presser_owner: seat, ..host_entry() }
+        };
         // a cell's sixteen, then the seventeenth refused
         for t in 1..=u32::try_from(HELD_PER_CELL).unwrap_or(16) {
             assert_eq!(e.judge(&early(TRADER, t), NOW), EntryVerdict::Held { cell: TRADER });
@@ -859,6 +881,31 @@ mod tests {
         // the window: twice the cells rule's grace
         assert_eq!(HELD_MS, 10_000);
         assert_eq!((HELD_PER_CELL, HELD_TOTAL), (16, 256));
+    }
+
+    #[test]
+    fn one_reporter_holds_half_a_cell_at_most_over_every_cell() {
+        let mut e = Entries::default();
+        let early = |cell: u32, trigger_id: u32| EntryFacts { host: 0, cell, trigger_id, ..host_entry() };
+        // the host's game: eight in the trader's, then refused there and in
+        // a cell with room
+        for t in 1..=u32::try_from(HELD_PER_REPORTER).unwrap_or(8) {
+            assert_eq!(e.judge(&early(TRADER, t), NOW), EntryVerdict::Held { cell: TRADER });
+        }
+        assert_eq!(e.held_by(HOST), HELD_PER_REPORTER);
+        assert_eq!(e.judge(&early(TRADER, 100), NOW), entry_refusal(EntryCode::HeldFull, "nobody hosts cell 133c9, and its reporter holds 8 enters already"));
+        assert_eq!(e.judge(&early(TEMPLE, 100), NOW), entry_refusal(EntryCode::HeldFull, "nobody hosts cell 371de, and its reporter holds 8 enters already"));
+        // the same enter again still has its room
+        assert_eq!(e.judge(&early(TRADER, 1), NOW), EntryVerdict::Held { cell: TRADER });
+        // an NPC its game simulates is its share too
+        assert_eq!(e.judge(&EntryFacts { presser: DRAUGR, ..early(TRADER, 100) }, NOW), entry_refusal(EntryCode::HeldFull, "nobody hosts cell 133c9, and its reporter holds 8 enters already"));
+        // another game's enter into the same cell is held
+        assert_eq!(e.judge(&EntryFacts { host: 0, cell: TRADER, trigger_id: ARGUE, ..guest_entry() }, NOW), EntryVerdict::Held { cell: TRADER });
+        assert_eq!((e.held_in(TRADER), e.held_by(GUEST)), (HELD_PER_REPORTER.saturating_add(1), 1));
+        // a grant gives the share back
+        assert_eq!(e.granted(TRADER, NOW + 100).replay.len(), HELD_PER_REPORTER.saturating_add(1));
+        assert_eq!(e.held_by(HOST), 0);
+        assert_eq!(HELD_PER_REPORTER, 8);
     }
 
     #[test]
@@ -1071,16 +1118,17 @@ mod tests {
 
         #[test]
         fn an_enter_is_held_only_for_want_of_a_host_and_the_hold_stays_bounded(
-            steps in proptest::collection::vec((0u32..4, 0u32..24, 0u32..3, any::<bool>(), any::<bool>(), 0u64..30_000, 0u8..8), 0..400),
+            steps in proptest::collection::vec((0u32..4, 0u32..24, 0u32..3, any::<bool>(), any::<bool>(), 0u64..30_000, 0u8..8, 0u32..3), 0..400),
         ) {
             // the model: per cell, the held (reporter, presser, trigger)
-            // keys; four cells, the host's and the guest's reports, the
-            // host's actor and two NPCs as pressers, a step's clock moving on
+            // keys; four cells, three games' reports, a game's actor and two
+            // NPCs as pressers, a step's clock moving on
             let cells = [TRADER, TEMPLE, 0x9731, 0xbbb1];
             let pressers = [HOST, DRAUGR, 0x380b4];
+            let reporters = [HOST, GUEST, 0xff00_0002];
             let mut e = Entries::default();
             let mut now = NOW;
-            for (c, t, p, hosted, near, dt, op) in steps {
+            for (c, t, p, hosted, near, dt, op, r) in steps {
                 now = now.saturating_add(dt);
                 let cell = cells.get(usize::try_from(c).unwrap_or(0)).copied().unwrap_or(TRADER);
                 match op {
@@ -1098,8 +1146,11 @@ mod tests {
                     }
                     _ => {
                         let presser = pressers.get(usize::try_from(p).unwrap_or(0)).copied().unwrap_or(HOST);
+                        let reporter = reporters.get(usize::try_from(r).unwrap_or(0)).copied().unwrap_or(HOST);
                         let facts = EntryFacts {
+                            reporter,
                             presser,
+                            presser_owner: reporter,
                             cell,
                             trigger_id: t,
                             host: if hosted { HOST } else { 0 },
@@ -1124,6 +1175,7 @@ mod tests {
                 }
                 prop_assert!(cells.iter().all(|&c| e.held_in(c) <= HELD_PER_CELL));
                 prop_assert!(cells.iter().map(|&c| e.held_in(c)).sum::<usize>() <= HELD_TOTAL);
+                prop_assert!(reporters.iter().all(|&r| e.held_by(r) <= HELD_PER_REPORTER));
             }
         }
 

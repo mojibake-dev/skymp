@@ -1776,8 +1776,8 @@ mod ffi {
         /// An enter nobody hosts the cell for, held for the cell's grant
         /// (`host` 0; TriggerEntries::granted gives it back).
         Held,
-        /// E_ENTRY_HELD_FULL: such an enter, not held: the cell's hold or
-        /// the whole hold is full.
+        /// E_ENTRY_HELD_FULL: such an enter, not held: the reporter's share,
+        /// the cell's hold or the whole hold is full.
         HeldFull,
         /// E_ENTRY_HELD_LEFT: a leave of a held enter; both go.
         HeldLeft,

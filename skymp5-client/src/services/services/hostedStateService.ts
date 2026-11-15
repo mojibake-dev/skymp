@@ -173,8 +173,9 @@ export class HostedStateService extends ClientListener {
             logTrace(this, `state ${remoteId.toString(16)}: health ${sample.health.toFixed(3)} magicka ${sample.magicka.toFixed(3)} stamina ${sample.stamina.toFixed(3)} target ${sample.combatTarget.toString(16)} package ${sample.package.toString(16)} gaze ${sample.gazeTarget.toString(16)} slot ${sample.gazeSlot} emotion ${sample.emotionType} ${sample.emotionValue}${last ? "" : " (keyframe)"}`);
         }
         // slice 5: the gaze and the face read on the game thread for the next
-        // poll (one task; rule 9)
-        this.sp.pollHostedGaze(Array.from(seen));
+        // poll (one task; rule 9), into this seat's own table (own = true), so
+        // a lab read (npc-state, its own table) never empties it (#56)
+        this.sp.pollHostedGaze(Array.from(seen), true);
         for (const remoteId of hosted) {
             if (remoteId === 0x14) {
                 continue;
@@ -317,7 +318,7 @@ export class HostedStateService extends ClientListener {
         const target = actor.getCombatTarget();
         const targetLocal = target ? target.getFormID() : 0;
         // slice 5: the last poll's read of the gaze and the face
-        const gaze = this.sp.hostedGaze(localId);
+        const gaze = this.sp.hostedGaze(localId, true);
         const gazeLocal = gaze && gaze[0] ? gaze[0] : 0;
         return {
             health: pct("health"),
@@ -348,7 +349,7 @@ export class HostedStateService extends ClientListener {
             }
             return undefined;
         }
-        const read = this.sp.hostedEffects(localId);
+        const read = this.sp.hostedEffects(localId, true);
         if (!Array.isArray(read)) {
             return undefined;
         }

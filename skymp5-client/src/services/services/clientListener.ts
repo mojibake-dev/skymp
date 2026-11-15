@@ -550,13 +550,15 @@ declare module "skyrimPlatform" {
     // engine damage (npcEngineDamage's mirror)
     function damageActor(actorFormId: number, health: number, attackerFormId: number, killMove: boolean): boolean;
     // slice 5: the gaze and the face read on the game thread per poll ([target, slot, emotionType, emotionValue, exprOverride, exprIndex, exprValue])
-    function pollHostedGaze(actorFormIds: number[]): void;
-    function hostedGaze(actorFormId: number): number[] | null;
+    // own: true for this seat's own poll, whose table its sends read; absent
+    // for any other reader (the lab's), which keeps a table of its own (#56)
+    function pollHostedGaze(actorFormIds: number[], own?: boolean): void;
+    function hostedGaze(actorFormId: number, own?: boolean): number[] | null;
     // thuum docs/verbs/npc-puppet.md (Ownership): the same poll's running
     // effects whose look the engine keeps on the actor, base effect form ids
     // ascending, each once; null when the last poll did not read the actor;
     // an older platform has none, and its use is guarded
-    function hostedEffects(actorFormId: number): number[] | null;
+    function hostedEffects(actorFormId: number, own?: boolean): number[] | null;
     function pollNodeRotation(refrId: number, nodeNames: string[]): void;
     function nodeRotation(refrId: number): Array<{ node: string; has: boolean; world: number[]; local: number[] }> | null;
     // thuum D-53-8 B (train 53's V-live): the head parts the player's own

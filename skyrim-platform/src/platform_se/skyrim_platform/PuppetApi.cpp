@@ -34,6 +34,7 @@
 #include <RE/U/UI.h>
 #include <RE/U/UIMessage.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cfloat>
 #include <chrono>
@@ -1994,8 +1995,29 @@ struct HostedGazeRead
   // keeps, by base effect form id, ascending, each once (ReadEffectLooks)
   std::vector<uint32_t> effects;
 };
+// Two tables (thuum tracker #56, 2026-11-15): the seat's own poll
+// (HostedStateService, every hosted actor each 500 ms, passing own = true),
+// whose table its sends read, and any other reader's (lab-driver's npc-state,
+// which passes nothing). A poll replaces only its own table. With one shared
+// table, each npc-state on a host left one entry, every other hosted actor's
+// gaze and face read null at the seat's next poll and went out as 0, and the
+// poll after sent them back: in b-npc-stream-face 20261111-082307 the host c1
+// sent its eight residents zeroed at 08:26:30.0 and 32.0 and back at 30.5 and
+// 32.5, and the watcher c2 logged "face: 1066df gaze cleared" each time, then
+// aimed again. The lab's reader is the default so a deployed lab-driver,
+// which calls with no flag, moves to its own table with no redeploy
 std::mutex g_gazeMutex;
-std::unordered_map<uint32_t, HostedGazeRead> g_gaze;
+std::array<std::unordered_map<uint32_t, HostedGazeRead>, 2> g_gaze;
+
+// the table the optional own flag at info[index] names: 1 for the seat's own
+// poll (true), 0 for every other reader (absent, undefined or false)
+size_t GazeTable(const Napi::CallbackInfo& info, size_t index)
+{
+  if (info.Length() <= index || info[index].IsUndefined()) {
+    return 0;
+  }
+  return NapiHelper::ExtractBoolean(info[index], "own") ? 1 : 0;
+}
 
 // thuum docs/verbs/traps.md "The pillar's side" (x-puzzle-guest-view v1
 // 20261104-220217): a named node's rotation on any loaded reference, read on
@@ -2266,9 +2288,10 @@ Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
     const std::string name = "actorFormIds[" + std::to_string(i) + "]";
     actorIds.push_back(NapiHelper::ExtractUInt32(ids.Get(i), name.c_str()));
   }
+  const size_t table = GazeTable(info, 1);
   // the engine's fields read on the game thread (setPuppet's reason); a few
   // field reads per hosted actor per poll (rule 9)
-  g_nativeCallRequirements.gameThrQ->AddTask([actorIds](Viet::Void) {
+  g_nativeCallRequirements.gameThrQ->AddTask([actorIds, table](Viet::Void) {
     std::unordered_map<uint32_t, HostedGazeRead> reads;
     for (const auto id : actorIds) {
       auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
@@ -2313,7 +2336,7 @@ Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
       reads[id] = std::move(read);
     }
     std::lock_guard<std::mutex> lock(g_gazeMutex);
-    g_gaze.swap(reads);
+    g_gaze[table].swap(reads);
   });
   return info.Env().Undefined();
 }
@@ -2500,11 +2523,12 @@ Napi::Value PuppetApi::OwnHeadParts(const Napi::CallbackInfo& info)
 Napi::Value PuppetApi::HostedGaze(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const auto& table = g_gaze[GazeTable(info, 1)];
   HostedGazeRead read;
   {
     std::lock_guard<std::mutex> lock(g_gazeMutex);
-    const auto it = g_gaze.find(actorFormId);
-    if (it == g_gaze.end()) {
+    const auto it = table.find(actorFormId);
+    if (it == table.end()) {
       return info.Env().Null();
     }
     read = it->second;
@@ -2523,11 +2547,12 @@ Napi::Value PuppetApi::HostedGaze(const Napi::CallbackInfo& info)
 Napi::Value PuppetApi::HostedEffects(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const auto& table = g_gaze[GazeTable(info, 1)];
   std::vector<uint32_t> effects;
   {
     std::lock_guard<std::mutex> lock(g_gazeMutex);
-    const auto it = g_gaze.find(actorFormId);
-    if (it == g_gaze.end()) {
+    const auto it = table.find(actorFormId);
+    if (it == table.end()) {
       return info.Env().Null();
     }
     effects = it->second.effects;

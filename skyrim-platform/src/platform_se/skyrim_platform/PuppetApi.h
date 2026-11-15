@@ -250,7 +250,10 @@ Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 // (thuum docs/verbs/npc-puppet.md, Ownership: ReadEffectLooks in
 // PuppetApi.cpp); hostedEffects(actorFormId) answers them as base effect
 // form ids, ascending, each once, or null when the last poll did not read
-// the actor
+// the actor. Each of the three takes an optional own flag: true is the
+// seat's own poll, whose table its sends read; absent or false is any other
+// reader's (the lab's), a table of its own, so a lab read never replaces the
+// seat's (tracker #56)
 Napi::Value PollHostedGaze(const Napi::CallbackInfo& info);
 Napi::Value HostedEffects(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-talk.md (ADR-052): activatePickRef() runs the

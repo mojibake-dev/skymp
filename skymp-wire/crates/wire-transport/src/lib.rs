@@ -94,17 +94,27 @@ pub enum Inbound {
 /// What a refused message was, for the server's count and its line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RefusedMsg {
-    /// The variant's stable name ([`Message::name`]).
+    /// The variant's stable name ([`Message::name`]), and "SpellCast end"
+    /// for a cast's end (see [`RefusedMsg::of`]).
     pub name: &'static str,
     /// SkyMP's MsgType, 0 for the M0 family ([`Message::msg_type`]).
     pub msg_type: u8,
 }
 
 impl RefusedMsg {
-    /// The kind of `msg`.
+    /// The kind of `msg`. A cast's end (a SpellCast with `interrupt_cast`)
+    /// is "SpellCast end": it spends a budget of its own (wire-validate's
+    /// `ClientGuard::cast_end_budget`), and named "SpellCast" it shared one
+    /// count with the casts' refused re-reports, so a refused end was said
+    /// only where it fell in that shared count (the review of
+    /// m4-fix-cast-end, finding 1).
     pub fn of(msg: &Message) -> Self {
+        let name = match msg {
+            Message::SpellCast(m) if m.data.interrupt_cast => "SpellCast end",
+            _ => msg.name(),
+        };
         Self {
-            name: msg.name(),
+            name,
             msg_type: msg.msg_type().unwrap_or(0),
         }
     }
@@ -884,7 +894,41 @@ mod tests {
     fn refused_msg_names_the_variant_and_its_msg_type() {
         let cast = Message::SpellCast(wire_schema::skymp::SpellCast::default());
         assert_eq!(RefusedMsg::of(&cast), RefusedMsg { name: "SpellCast", msg_type: 23 });
+        assert_eq!(RefusedMsg::of(&cast_end(0x107aa1)), RefusedMsg { name: "SpellCast end", msg_type: 23 });
         assert_eq!(RefusedMsg::of(&Message::Movement(movement(1))), RefusedMsg { name: "Movement", msg_type: 0 });
+    }
+
+    fn cast_end(spell: u32) -> Message {
+        Message::SpellCast(wire_schema::skymp::SpellCast {
+            data: wire_schema::skymp::SpellCastData { spell, interrupt_cast: true, ..Default::default() },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn an_end_refused_at_its_own_budget_is_named_an_end() {
+        // the review of m4-fix-cast-end, finding 1: an end refused for rate
+        // is counted and said apart from the casts' refused re-reports. The
+        // end budget is eight at once: the ninth end at the same instant is
+        // refused, and named
+        let bytes = wire_codec::encode(&cast_end(0x107aa1)).expect("encode");
+        let (mut guard, mut budget, limits) = (ClientGuard::default(), ByteBudget::default(), Limits::default());
+        for _ in 0..8 {
+            let taken = ingest(1, &bytes, &mut guard, &mut budget, &limits, 0);
+            assert!(matches!(taken, Inbound::Message { .. }), "{taken:?}");
+        }
+        let refused = ingest(1, &bytes, &mut guard, &mut budget, &limits, 0);
+        assert!(
+            matches!(
+                refused,
+                Inbound::Rejected {
+                    reject: RejectKind::Validate(Reject::Rate),
+                    msg: Some(RefusedMsg { name: "SpellCast end", msg_type: 23 }),
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
     }
 
     #[test]

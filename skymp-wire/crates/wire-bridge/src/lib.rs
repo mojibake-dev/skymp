@@ -17,7 +17,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use wire_schema::Message;
-use wire_transport::{limits::Limits, token, Delivery, Encoded, Inbound, TransportError};
+use wire_transport::{limits::Limits, token, Delivery, Encoded, Inbound, RefusedMsg, TransportError};
 
 #[cxx::bridge(namespace = "skymp::wire")]
 mod ffi {
@@ -53,6 +53,13 @@ mod ffi {
         /// For logs: why it was rejected (with the refused message's name
         /// when it decoded, "E_VAL_RATE (SpellCast)"), or why the client left.
         detail: String,
+        /// The refused message's name when its bytes decoded ("SpellCast",
+        /// "SpellCast end", "Movement"), else empty: with `reason`, the key
+        /// the core counts refusals by, so a cast's end is counted apart
+        /// from the casts and the M0 family's members apart from each other,
+        /// which share `msg_type` (thuum ADR-073 decision 7; the review of
+        /// m4-fix-cast-end, finding 1).
+        refused: String,
     }
 
     /// How to bind.
@@ -227,29 +234,26 @@ impl Server {
                         ..event(ffi::EventKind::Message, client)
                     },
                     // an M0 message has no JSON form: the core cannot take it
-                    Err(e) => {
-                        let refused = wire_transport::RefusedMsg::of(&msg);
-                        self.rejection(client, json_code(&e), refused.msg_type, format!("{e} ({})", refused.name))
-                    }
+                    Err(e) => self.rejection(client, json_code(&e), Some(RefusedMsg::of(&msg)), e.to_string()),
                 },
                 Inbound::Rejected { client, reject, msg } => {
-                    let code = wire_transport::reason_code(&reject);
-                    match msg {
-                        Some(m) => self.rejection(client, code, m.msg_type, format!("{reject} ({})", m.name)),
-                        None => self.rejection(client, code, 0, reject.to_string()),
-                    }
+                    self.rejection(client, wire_transport::reason_code(&reject), msg, reject.to_string())
                 }
             });
         }
     }
 
-    fn rejection(&mut self, client: u64, reason: u16, msg_type: u8, detail: String) -> WireEvent {
+    fn rejection(&mut self, client: u64, reason: u16, refused: Option<RefusedMsg>, why: String) -> WireEvent {
         let n = self.rejected.entry(reason).or_insert(0);
         *n = n.saturating_add(1);
         WireEvent {
-            msg_type,
+            msg_type: refused.map_or(0, |m| m.msg_type),
             reason,
-            detail,
+            detail: match refused {
+                Some(m) => format!("{why} ({})", m.name),
+                None => why,
+            },
+            refused: refused.map(|m| m.name.to_string()).unwrap_or_default(),
             ..event(ffi::EventKind::Rejected, client)
         }
     }
@@ -356,6 +360,7 @@ fn event(kind: ffi::EventKind, client: u64) -> WireEvent {
         json: String::new(),
         reason: 0,
         detail: String::new(),
+        refused: String::new(),
     }
 }
 
@@ -450,7 +455,20 @@ mod tests {
             .iter()
             .any(|e| e.kind == EventKind::Rejected)));
         let r = out.iter().find(|e| e.kind == EventKind::Rejected).expect("rejected");
-        assert_eq!((r.reason, r.msg_type, r.detail.as_str()), (207, 23, "E_VAL_RANGE (SpellCast)"));
+        assert_eq!((r.reason, r.msg_type, r.detail.as_str(), r.refused.as_str()), (207, 23, "E_VAL_RANGE (SpellCast)", "SpellCast"));
+        // an end naming no spell is named an end (the review of
+        // m4-fix-cast-end, finding 1: the core's count key)
+        out.clear();
+        let end = wire_schema::skymp::SpellCast {
+            data: wire_schema::skymp::SpellCastData { interrupt_cast: true, ..Default::default() },
+            ..Default::default()
+        };
+        client.send(&Message::SpellCast(end)).expect("send");
+        assert!(pump(&mut server, &mut client, &mut out, &mut inbox, |o, _| o
+            .iter()
+            .any(|e| e.kind == EventKind::Rejected)));
+        let r = out.iter().find(|e| e.kind == EventKind::Rejected).expect("rejected");
+        assert_eq!((r.reason, r.msg_type, r.detail.as_str(), r.refused.as_str()), (207, 23, "E_VAL_RANGE (SpellCast end)", "SpellCast end"));
     }
 
     #[test]

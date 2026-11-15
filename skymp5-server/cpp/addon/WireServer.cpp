@@ -181,13 +181,17 @@ private:
         return;
       }
       case skymp::wire::EventKind::Rejected: {
-        // thuum ADR-073 decision 7: counted per (code, message type), the
-        // detail naming the type ("E_VAL_RATE (SpellCast)"), the first of
+        // thuum ADR-073 decision 7: counted per (code, message), the
+        // detail naming the message ("E_VAL_RATE (SpellCast)"), the first of
         // each in full and then at its 2nd, 4th, 8th and so on. Keyed by
         // the code alone and logged at the first and every thousandth, the
         // one E_VAL_RATE line of x-drain-watch 20261115-032536 named no
-        // type and every later one was silent
-        auto& n = rejected[{ ev.reason, ev.msg_type }];
+        // type and every later one was silent. The message is the bridge's
+        // name for it, not its MsgType: a cast's end ("SpellCast end") is
+        // counted apart from the casts' refused re-reports, which share
+        // type 23, and the M0 family apart from each other, which share 0
+        // (the review of m4-fix-cast-end, finding 1)
+        auto& n = rejected[{ ev.reason, std::string(ev.refused) }];
         ++n;
         if ((n & (n - 1)) == 0) {
           const Networking::UserId userId = Find(ev.client);
@@ -256,8 +260,9 @@ private:
   std::vector<std::optional<uint64_t>> clientsByUser;
   std::deque<skymp::wire::WireEvent> pending;
   std::string buffer;
-  // by (reason code, SkyMP MsgType, 0 for none)
-  std::map<std::pair<uint16_t, uint8_t>, uint64_t> rejected;
+  // by (reason code, the refused message's name, empty for none); the
+  // names are a fixed set (the schema's variants and "SpellCast end")
+  std::map<std::pair<uint16_t, std::string>, uint64_t> rejected;
   std::map<uint16_t, uint64_t> refused;
   std::chrono::time_point<std::chrono::steady_clock> lastMetricsUpdate;
   prometheus::Gauge<double&> connectedClientsGauge;

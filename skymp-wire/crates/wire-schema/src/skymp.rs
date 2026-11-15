@@ -1216,7 +1216,10 @@ wire_struct! {
     /// its relay. Not idempotent. Reason codes: `E_VAL_NONFINITE`,
     /// `E_VAL_RANGE` (no spell, a hand SkyMP does not know, an aim or a
     /// launch pitched past a quarter turn, a launch's fields set without
-    /// `has_launch`), `E_VAL_OUT_OF_WORLD` (a launch's origin), `E_VAL_RATE`.
+    /// `has_launch`), `E_VAL_OUT_OF_WORLD` (a launch's origin), `E_VAL_RATE`
+    /// (a cast past the client's cast budget; an end, `interrupt_cast`, past
+    /// its own end budget, which casts never spend: wire-validate's
+    /// ClientGuard).
     pub struct SpellCast {
         /// `"t": 23`.
         #[serde(default)]

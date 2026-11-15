@@ -11,7 +11,7 @@ import { HostService } from './hostService';
 import { ScriptStateService } from './scriptStateService';
 import { SpSnippetService } from './spSnippetService';
 import { ObjectReferenceEx } from '../../extensions/objectReferenceEx';
-import { localIdToRemoteId, remoteIdToLocalId } from '../../view/worldViewMisc';
+import { localIdToRemoteId, remoteIdToLocalId, snippetIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
 
 // thuum docs/verbs/traps.md (ADR-059 decision 3): the cell's host runs the
@@ -178,6 +178,55 @@ type KeptVar = {
   value: number | boolean;
   seq: number;             // the object's seq of the call that set it
 };
+// The 3D keep of a relayed look (thuum 3df63969, the reanimate-fx memo's 6.4
+// D6 B, lab/.cache/drafts/reanimate-fx.md): the seam relays an actor's look
+// rows from its simulator to its listeners, and SpSnippetService ran each at
+// once. A look draws on its subject's 3D, so one that lands before the copy's
+// 3D does nothing there, and one the 3D's unload takes is gone at its reload
+// (apocrypha's code read of 2026-11-14, evening: EffectShader.Play,
+// VisualEffect.Play and SetEyeTexture need the loaded 3D; the unload's part
+// HYPOTHESIS). Undead FX plays a stage's flat shader with no duration and
+// again every 2.5 s, and a transition shader for 2.5 s (the memo's 6.2), so a
+// copy that walks back in waits up to 2.5 s for its holes, and a transition
+// that lands with no 3D is never seen. So a look whose subject this seat does
+// not own (an actor's simulator, HostService.isMineLocal; any other
+// reference's cell host, epochForActor) is kept on the subject's entry here,
+// beside its graph variables: the last Play per (subject, shader or effect)
+// and the last eye texture. One whose 3D is here plays at once ("played"); one
+// whose 3D is not is kept and plays at the load ("held for 3D"); each later 3D
+// load plays every kept one again ("replayed at load", pollOne's same poll,
+// no scan of its own: rule 9), a timed Play for the seconds it has left from
+// its message's arrival, one with no duration until its Stop; a Stop stops
+// it here and clears it; a timed one whose seconds ran out goes ("dropped as
+// expired"). A look this seat owns, a subject no create word named, or a row
+// that keeps nothing runs as it always has. Each outcome's first line is said
+// whole, the rest counted in LOOK_SUMMARY_MS windows (ADR-073 decision 7).
+// The kinds: an EffectShader's Play and Stop ("shader"), a VisualEffect's
+// ("effect"), Actor.SetEyeTexture ("eyes": its subject the call's self, one
+// kept per subject, no Stop). HYPOTHESIS until x-reanimate-claim v2's U3 (the
+// memo's 6.5) reads the stage on a copy that walked off and back
+export type LookKind = 'shader' | 'effect' | 'eyes';
+// a relayed look as SpSnippetService reads it off its snippet
+export type RelayedLook = {
+  row: string;      // its class.function as relayed, for the lines
+  kind: LookKind;
+  stop: boolean;    // a Stop, which clears what it names
+  subject: number;  // the subject's server id (a Self row's may be a long id)
+  form: number;     // the shader's, the effect's or the texture set's server id (0: None)
+  seconds: number;  // a Play's duration as relayed, below 0 for none (the eyes: -1)
+  facing: number;   // VisualEffect.Play's akFacingObject by server id, 0 for None
+  seq: number;      // the relay's seq (the effect form's for an Arg0Method row)
+  arrived: number;  // Date.now() at its message
+};
+type KeptLook = {
+  row: string;
+  kind: LookKind;
+  form: number;
+  seconds: number;
+  facing: number;
+  seq: number;
+  at: number;       // its message's arrival: a timed one replays what is left from here
+};
 type LastAnimation = {
   event: string;    // "" when the entry holds graph variables alone
   seq: number;
@@ -187,11 +236,34 @@ type LastAnimation = {
   lookAt: number;   // the next look, at the earliest (0: every update)
   vars: Map<string, KeptVar>;  // the graph variables by lower-case name, at most GRAPH_VARS_MAX
   varsShown: boolean;          // all of them set on the 3D now loaded
+  looks: Map<string, KeptLook>;  // the relayed looks by kind and form (lookKey), at most LOOKS_MAX
+  looksShown: boolean;           // all of them played on the 3D now loaded
+  actor: boolean;   // an actor's entry: its looks are its simulator's, not its cell's
+  flips: number;    // HostService.ownerFlips at the looks' last owner test (pollOne)
 };
 // the wire's cap on a record's graph variables (cap::GRAPH_VARS, UNMEASURED):
 // past it the longest unset name goes
 const GRAPH_VARS_MAX = 16;
 const varText = (v: KeptVar): string => (typeof v.value === 'number' ? String(Math.round(v.value * 1000) / 1000) : String(v.value));
+// the looks kept per subject (a decay's flat shader and its transition, v4's
+// fade-in, the eyes' effect and texture fit), past it the longest unplayed
+// goes; the subjects holding looks, past it the longest unplayed subject's
+// looks go, so the looks never take more than half of KEPT_MAX from the world
+// objects' animations (consistency bounds, ADR-073 decision 5 (b))
+const LOOKS_MAX = 8;
+const LOOK_SUBJECTS_MAX = 64;
+// the looks' counts, said once a window when any moved
+const LOOK_SUMMARY_MS = 30_000;
+// the outcomes counted, and the kinds whose first line was said at most
+// (bounded by construction: the outcomes, the drop reasons and the rows'
+// fall-throughs; the bound a guard)
+type LookOutcome = 'played' | 'held' | 'replayed' | 'expired' | 'stopped' | 'dropped' | 'through';
+const LOOK_SAID_MAX = 64;
+const lookKey = (kind: LookKind, form: number): string => (kind === 'eyes' ? 'eyes' : `${kind}:${form}`);
+// a kept look's seconds left at `now`: -1 for none (until its Stop), 0 once
+// they ran out
+const lookLeft = (look: KeptLook, now: number): number => (look.seconds < 0 ? -1 : Math.max(0, look.seconds - (now - look.at) / 1000));
+const lookSecs = (s: number): string => (s < 0 ? 'until a Stop' : `${Math.round(s * 10) / 10} s`);
 
 export class ObjectAnimationService extends ClientListener {
   constructor(
@@ -245,6 +317,8 @@ export class ObjectAnimationService extends ClientListener {
       this.lastAnimations.clear();
       this.subscribed.clear();
       this.subscribedIdx.clear();
+      // the looks' first lines are each connection's
+      this.lookSaid.clear();
     });
     // the server's unsubscribe (DestroyActor, the create word's emitter idx,
     // PartOne.cpp's onSubscribe and onUnsubscribe) ends the reference's
@@ -252,7 +326,9 @@ export class ObjectAnimationService extends ClientListener {
     // can load before the next create word (the lab's teleport is the
     // client's), and a word kept from before the seat left must not replay
     // over what changed while it was away (the review of b86884a5, note 1).
-    // A message handler: JS state alone
+    // An actor's kept looks go the same way: the subject left the view, and
+    // a Stop sent while it was away never came. A message handler: JS state
+    // alone
     this.controller.emitter.on('destroyActorMessage', (e) => {
       const localId = this.subscribedIdx.get(e.message.idx);
       if (localId === undefined) {
@@ -260,7 +336,7 @@ export class ObjectAnimationService extends ClientListener {
       }
       this.subscribedIdx.delete(e.message.idx);
       this.subscribed.delete(localId);
-      this.lastAnimations.delete(localId);
+      this.forgetEntry(localId, 'left the view');
     });
     for (const pattern of EVENT_PATTERNS) {
       const handler = {
@@ -298,7 +374,7 @@ export class ObjectAnimationService extends ClientListener {
     // FX, is relayed to its cell's loaders with nothing kept, a one-shot)
     if (!msg.isMe && msg.refrId !== undefined && msg.refrId < 0xff000000) {
       const localId = remoteIdToLocalId(msg.refrId);
-      this.lastAnimations.delete(localId);
+      this.forgetEntry(localId, 'a new create word');
       if (this.subscribed.size >= SUBSCRIBED_MAX) {
         this.subscribed.clear();
         this.subscribedIdx.clear();
@@ -921,10 +997,13 @@ export class ObjectAnimationService extends ClientListener {
     // Map iteration is insertion order: a keep moves the entry last, so the
     // longest unkept goes past KEPT_MAX
     this.lastAnimations.delete(localId);
-    // D-C3 A: the graph variables kept for the object stay with it
+    // D-C3 A: the graph variables kept for the object stay with it, and so
+    // do its looks
     this.lastAnimations.set(localId, {
       event, seq, cell: parent ? parent.getFormID() : 0, shown, tries: 0, lookAt: 0,
       vars: old !== undefined ? old.vars : new Map<string, KeptVar>(), varsShown: old !== undefined ? old.varsShown : true,
+      looks: old !== undefined ? old.looks : new Map<string, KeptLook>(), looksShown: old !== undefined ? old.looksShown : true,
+      actor: false, flips: old !== undefined ? old.flips : 0,
     });
     this.capKept();
   }
@@ -935,9 +1014,20 @@ export class ObjectAnimationService extends ClientListener {
     if (this.lastAnimations.size > KEPT_MAX) {
       const oldest = this.lastAnimations.keys().next().value;
       if (oldest !== undefined) {
-        this.lastAnimations.delete(oldest);
+        this.forgetEntry(oldest, 'past the cap');
       }
     }
+  }
+
+  // an entry gone (its subject's unsubscribe, a new create word, the cap),
+  // its looks counted as dropped for the reason. JS state alone
+  private forgetEntry(localId: number, why: string): void {
+    const kept = this.lastAnimations.get(localId);
+    if (kept === undefined) {
+      return;
+    }
+    this.lastAnimations.delete(localId);
+    kept.looks.forEach((look) => this.sayLookDropped(localId, look, why));
   }
 
   // D-C3 A: one graph variable kept for the object, the newest seq per name;
@@ -955,7 +1045,10 @@ export class ObjectAnimationService extends ClientListener {
     }
     if (kept === undefined) {
       const parent = refr.getParentCell();
-      kept = { event: '', seq: 0, cell: parent ? parent.getFormID() : 0, shown: false, tries: 0, lookAt: 0, vars: new Map<string, KeptVar>(), varsShown: true };
+      kept = {
+        event: '', seq: 0, cell: parent ? parent.getFormID() : 0, shown: false, tries: 0, lookAt: 0, vars: new Map<string, KeptVar>(), varsShown: true,
+        looks: new Map<string, KeptLook>(), looksShown: true, actor: false, flips: 0,
+      };
     }
     if (old === undefined && kept.vars.size >= GRAPH_VARS_MAX) {
       const oldest = kept.vars.keys().next().value;
@@ -1053,6 +1146,292 @@ export class ObjectAnimationService extends ClientListener {
     this.keep(refr, refr.getFormID(), view, seq, false);
   }
 
+  // SpSnippetService's, for a relayed look of the 3D keep's rows (the header
+  // above LookKind): true when taken here (played, held for 3D, or stopped),
+  // false for the snippet to run as it always has, said once per (row, why)
+  // and counted: the keep off (scriptRecord false, the kept animations'
+  // switch), no reference or no form here, no create word for the subject
+  // (a relay is kept for a subscribed reference alone, play's rule), or a
+  // subject this seat owns (its own engine draws its looks). An update's
+  // context
+  look(l: RelayedLook): boolean {
+    const localId = snippetIdToLocalId(l.subject);
+    const refr = localId !== 0 ? ObjectReference.from(this.sp.Game.getFormEx(localId)) : null;
+    if (!this.keepEnabled || !refr || !this.subscribed.has(localId)) {
+      const why = !this.keepEnabled ? 'scriptRecord off' : !refr ? 'no reference here' : 'no create word for it';
+      this.lookFallsThrough(l.row, localId || l.subject, why);
+      return false;
+    }
+    const actor = this.sp.Actor.from(refr) !== null;
+    if (this.ownsHere(refr, localId, actor)) {
+      this.lookFallsThrough(l.row, localId, 'its subject owned here');
+      return false;
+    }
+    const key = lookKey(l.kind, l.form);
+    const kept = this.lastAnimations.get(localId);
+    const had = l.stop || l.form === 0 ? kept !== undefined && kept.looks.delete(key) : false;
+    if (kept !== undefined && this.holdsNothing(kept)) {
+      this.lastAnimations.delete(localId);
+    }
+    // SetEyeTexture(None): what the engine makes of it is unread, so it runs
+    // as it always has and the eye texture kept before it goes
+    if (l.form === 0) {
+      this.lookFallsThrough(l.row, localId, `None${had ? ', its kept texture cleared' : ''}`);
+      return false;
+    }
+    if (this.sp.Game.getFormEx(snippetIdToLocalId(l.form)) === null) {
+      this.lookFallsThrough(l.row, localId, 'its form not here');
+      return false;
+    }
+    const head = `look ${localId.toString(16)} ${l.row} ${l.form.toString(16)}`;
+    if (l.stop) {
+      this.stopLook(refr, l.kind, l.form);
+      this.sayLook('stopped', 'stopped', () => `${head} stopped (seq ${l.seq}, ${had ? 'its kept Play cleared' : 'nothing kept'})`);
+      return true;
+    }
+    const look: KeptLook = { row: l.row, kind: l.kind, form: l.form, seconds: l.seconds, facing: l.facing, seq: l.seq, at: l.arrived };
+    const shown = this.drawable(refr);
+    if (shown) {
+      this.showLook(refr, look, l.seconds, false);
+      this.sayLook('played', 'played', () => `${head} played (seq ${l.seq}, ${lookSecs(l.seconds)})`);
+    } else {
+      this.sayLook('held', 'held', () => `${head} held for 3D (seq ${l.seq}, ${lookSecs(l.seconds)})`);
+    }
+    this.keepLook(refr, localId, actor, key, look, shown);
+    return true;
+  }
+
+  // a relayed look the 3D keep does not take, which runs as it always has:
+  // its first line per (row, why) names the list, the row that fell through
+  // and one subject, the rest are counted (ADR-073 decision 7). Also
+  // SpSnippetService's, for 3df63969's three actor look rows the keep has no
+  // kind for (SetAlpha, SetCriticalStage, AttachAshPile: a one-shot each, which
+  // a replay at every 3D load would repeat). JS state alone
+  lookFallsThrough(row: string, subject: number, why: string): void {
+    this.sayLook('through', `through:${row}:${why}`, () => `look ${subject.toString(16)} ${row} falls through the 3D keep (${why}): run as always`);
+  }
+
+  // whether this seat owns the look's subject: its own player; an actor this
+  // seat simulates (the server's word per actor, HostService.isMineLocal, so
+  // a thrall's commander and not its cell's host); any other reference whose
+  // cell this seat hosts (epochForActor, pollOne's test). An update's context
+  private ownsHere(refr: ObjectReference, localId: number, actor: boolean): boolean {
+    if (localId === PLAYER_ID) {
+      return true;
+    }
+    const host = this.controller.lookupListener(HostService);
+    return actor ? host.isMineLocal(localId) : host.epochForActor(refr) !== 0;
+  }
+
+  // a look draws on a loaded 3D, of a reference neither disabled nor deleted
+  // (sync/equipment.ts cannotDress's two: apocrypha's read of 2026-11-14 gives
+  // no replay to a copy that cannot dress, and none of a look either)
+  private drawable(refr: ObjectReference): boolean {
+    return refr.is3DLoaded() && !refr.isDisabled() && !refr.isDeleted();
+  }
+
+  // one look kept on its subject's entry (one shape with the graph
+  // variables', keepVariable), the newest per key, moved last as keep moves an
+  // entry; `shown` whether it plays on the 3D now loaded. An update's context
+  private keepLook(refr: ObjectReference, localId: number, actor: boolean, key: string, look: KeptLook, shown: boolean): void {
+    if ((this.lastAnimations.get(localId)?.looks.size ?? 0) === 0) {
+      this.capLookSubjects();
+    }
+    let kept = this.lastAnimations.get(localId);
+    if (kept === undefined) {
+      const parent = refr.getParentCell();
+      kept = {
+        event: '', seq: 0, cell: parent ? parent.getFormID() : 0, shown: false, tries: 0, lookAt: 0, vars: new Map<string, KeptVar>(), varsShown: true,
+        looks: new Map<string, KeptLook>(), looksShown: true, actor, flips: 0,
+      };
+    }
+    if (!kept.looks.has(key) && kept.looks.size >= LOOKS_MAX) {
+      const oldest = kept.looks.keys().next().value;
+      const gone = oldest !== undefined ? kept.looks.get(oldest) : undefined;
+      if (oldest !== undefined && gone !== undefined) {
+        kept.looks.delete(oldest);
+        this.sayLookDropped(localId, gone, 'past the cap');
+      }
+    }
+    kept.looks.delete(key);
+    kept.looks.set(key, look);
+    kept.looksShown = kept.looksShown && shown;
+    kept.actor = actor;
+    // look's owner test just ran
+    kept.flips = this.controller.lookupListener(HostService).ownerFlips();
+    this.lastAnimations.delete(localId);
+    this.lastAnimations.set(localId, kept);
+    this.capKept();
+  }
+
+  // past LOOK_SUBJECTS_MAX subjects holding looks, the longest unkept one's
+  // looks go, its entry with them when it holds nothing else; a walk of the
+  // kept set (KEPT_MAX at most) only when a subject takes its first look
+  private capLookSubjects(): void {
+    const entries = Array.from(this.lastAnimations.entries());
+    let holding = 0;
+    let oldest = -1;
+    for (const [id, entry] of entries) {
+      if (entry.looks.size > 0) {
+        holding++;
+        if (oldest === -1) {
+          oldest = id;
+        }
+      }
+    }
+    const kept = oldest !== -1 ? this.lastAnimations.get(oldest) : undefined;
+    if (holding < LOOK_SUBJECTS_MAX || kept === undefined) {
+      return;
+    }
+    kept.looks.forEach((look) => this.sayLookDropped(oldest, look, 'past the cap'));
+    kept.looks.clear();
+    if (this.holdsNothing(kept)) {
+      this.lastAnimations.delete(oldest);
+    }
+  }
+
+  // one look on the subject's 3D through the platform's own calls
+  // (CallNativeApi's Override: the seam counts them "(platform)" and batches
+  // none, so nothing played here is reported back, setOne's rule); false when
+  // its form is not here. `again` at a 3D load: a shader or an effect is
+  // stopped on the subject first, since whether the unload dropped the
+  // running one or only suspended it for the reload is unread
+  // (ShaderReferenceEffect overrides ReferenceEffect's Suspend and Resume and
+  // calls itself stackable, CommonLibSSE-NG include/RE/S/ShaderReferenceEffect.h:61,
+  // :66-67 and include/RE/R/ReferenceEffect.h:33-34), so a bare second Play
+  // could draw it twice, and a Stop of one already gone is nothing
+  // (HYPOTHESIS both ways until U3 reads it)
+  private showLook(refr: ObjectReference, look: KeptLook, seconds: number, again: boolean): boolean {
+    const form = this.sp.Game.getFormEx(snippetIdToLocalId(look.form));
+    if (look.kind === 'eyes') {
+      const set = this.sp.TextureSet.from(form);
+      const actor = this.sp.Actor.from(refr);
+      if (!set || !actor) {
+        return false;
+      }
+      actor.setEyeTexture(set);
+      return true;
+    }
+    if (look.kind === 'shader') {
+      const shader = this.sp.EffectShader.from(form);
+      if (!shader) {
+        return false;
+      }
+      if (again) {
+        shader.stop(refr);
+      }
+      shader.play(refr, seconds);
+      return true;
+    }
+    const effect = this.sp.VisualEffect.from(form);
+    if (!effect) {
+      return false;
+    }
+    const facingId = look.facing !== 0 ? snippetIdToLocalId(look.facing) : 0;
+    const facing = facingId !== 0 ? ObjectReference.from(this.sp.Game.getFormEx(facingId)) : null;
+    if (again) {
+      effect.stop(refr);
+    }
+    effect.play(refr, seconds, facing);
+    return true;
+  }
+
+  // a relayed Stop, run here whatever was kept (as the snippet ran it)
+  private stopLook(refr: ObjectReference, kind: LookKind, form: number): void {
+    const f = this.sp.Game.getFormEx(snippetIdToLocalId(form));
+    if (kind === 'shader') {
+      this.sp.EffectShader.from(f)?.stop(refr);
+    } else if (kind === 'effect') {
+      this.sp.VisualEffect.from(f)?.stop(refr);
+    }
+  }
+
+  // pollOne's, at a 3D load that has not had the kept looks: each played
+  // again, a timed one for its seconds left (expireLooks took those run out
+  // just before); every one dropped once this seat owns the subject (a
+  // hand-off: its own engine draws them now); none on a copy that cannot
+  // draw one (asked again at the next look). The update's context
+  private replayLooks(refr: ObjectReference, id: number, kept: LastAnimation, now: number): void {
+    if (this.ownsHere(refr, id, kept.actor)) {
+      this.dropOwnedLooks(id, kept);
+      return;
+    }
+    if (!this.drawable(refr)) {
+      return;
+    }
+    kept.looksShown = true;
+    kept.looks.forEach((look, key) => {
+      const left = lookLeft(look, now);
+      if (!this.showLook(refr, look, left, true)) {
+        kept.looks.delete(key);
+        this.sayLookDropped(id, look, 'its form not here');
+        return;
+      }
+      this.sayLook('replayed', 'replayed', () => `look ${id.toString(16)} ${look.row} ${look.form.toString(16)} replayed at load (${left < 0 ? lookSecs(left) : `${lookSecs(left)} left of ${lookSecs(look.seconds)}`})`);
+    });
+  }
+
+  // every kept timed look whose seconds ran out, gone (Map.forEach takes a
+  // delete of the entry it is on). JS state alone
+  private expireLooks(id: number, kept: LastAnimation, now: number): void {
+    kept.looks.forEach((look, key) => {
+      if (lookLeft(look, now) !== 0) {
+        return;
+      }
+      kept.looks.delete(key);
+      this.sayLook('expired', 'expired', () => `look ${id.toString(16)} ${look.row} ${look.form.toString(16)} dropped as expired (${lookSecs(look.seconds)}, ${kept.looksShown ? 'shown' : 'not shown'})`);
+    });
+  }
+
+  // the subject's looks gone, this seat its owner now
+  private dropOwnedLooks(id: number, kept: LastAnimation): void {
+    kept.looks.forEach((look) => this.sayLookDropped(id, look, 'its subject owned here'));
+    kept.looks.clear();
+    kept.looksShown = true;
+  }
+
+  private holdsNothing(kept: LastAnimation): boolean {
+    return kept.event === '' && kept.vars.size === 0 && kept.looks.size === 0;
+  }
+
+  private sayLookDropped(localId: number, look: KeptLook, why: string): void {
+    this.sayLook('dropped', `dropped:${why}`, () => `look ${localId.toString(16)} ${look.row} ${look.form.toString(16)} dropped: ${why}`);
+  }
+
+  // one outcome counted, its kind's first line said whole (each connection's)
+  private sayLook(outcome: LookOutcome, kind: string, line: () => string): void {
+    this.lookCounts[outcome]++;
+    if (this.lookSaid.has(kind) || this.lookSaid.size >= LOOK_SAID_MAX) {
+      return;
+    }
+    this.lookSaid.add(kind);
+    logLab('verb:scripts', line());
+  }
+
+  // the window's counts, said once a window when any moved (the second line
+  // only for drops and fall-throughs), short of printConsole's 128-byte cut
+  private sayLookCounts(now: number): void {
+    if (now - this.lookSummaryAt < LOOK_SUMMARY_MS) {
+      return;
+    }
+    this.lookSummaryAt = now;
+    const c = this.lookCounts;
+    const s = LOOK_SUMMARY_MS / 1000;
+    if (c.played + c.held + c.replayed + c.expired + c.stopped > 0) {
+      logLab('verb:scripts', `looks in ${s} s: ${c.played} played, ${c.held} held for 3D, ${c.replayed} replayed at load, ${c.expired} dropped as expired, ${c.stopped} stopped`);
+    }
+    if (c.dropped + c.through > 0) {
+      logLab('verb:scripts', `looks in ${s} s: ${c.dropped} dropped, ${c.through} fell through the 3D keep (run as always)`);
+    }
+    c.played = 0;
+    c.held = 0;
+    c.replayed = 0;
+    c.expired = 0;
+    c.stopped = 0;
+    c.dropped = 0;
+    c.through = 0;
+  }
+
   // a world object whose last animation is kept and re-applied here: never an
   // actor (the stream's) nor a trap family reference (every seat fires the
   // family itself, D-S3; remoteServer's replay skips it the same way), nor,
@@ -1086,18 +1465,22 @@ export class ObjectAnimationService extends ClientListener {
 
   // a release of a cell this seat hosted (HostService's, a reconnect's too):
   // its own script drove the cell's graphs past the words kept here, so they
-  // go, and the next relay or record keeps them again. A message handler: JS
-  // state alone
+  // go, and the next relay or record keeps them again. An actor's entry
+  // stays: its looks are its simulator's (ADR-060's commander need not host
+  // the cell), and the poll drops them once this seat simulates it. A message
+  // handler: JS state alone
   private dropCell(cell: number): void {
     this.lastAnimations.forEach((kept, id) => {
-      if (kept.cell === cell) {
-        this.lastAnimations.delete(id);
+      if (kept.cell === cell && !kept.actor) {
+        this.forgetEntry(id, 'cell released here');
       }
     });
   }
 
   // the kept references' 3D, POLLS_PER_UPDATE of them an update in turn
   private pollLastAnimations(): void {
+    const now = Date.now();
+    this.sayLookCounts(now);
     if (!this.keepEnabled) {
       return;
     }
@@ -1107,11 +1490,11 @@ export class ObjectAnimationService extends ClientListener {
     }
     const entries = Array.from(this.lastAnimations.entries());
     const n = Math.min(size, POLLS_PER_UPDATE);
-    const now = Date.now();
+    const flips = this.controller.lookupListener(HostService).ownerFlips();
     for (let i = 0; i < n; i++) {
       const [id, kept] = entries[(this.pollAt + i) % size];
       try {
-        this.pollOne(id, kept, now);
+        this.pollOne(id, kept, now, flips);
       } catch (e) {
         this.lastAnimations.delete(id);
         logError(this, `object animation ${id.toString(16)}: its 3D poll threw, its last animation dropped: ${e}`);
@@ -1130,20 +1513,51 @@ export class ObjectAnimationService extends ClientListener {
   // epochForActor's, which also finds a persistent exterior reference's host
   // through its worldspace (its parent cell is the worldspace's persistent
   // cell, where isHostedHere misses it: the review of b86884a5, note 2).
-  // A 3D here and shown is looked at every update, so its unload is seen
-  private pollOne(id: number, kept: LastAnimation, now: number): void {
+  // A 3D here and shown is looked at every update, so its unload is seen.
+  // The looks go first, on their own owner test (ownsHere): an actor's are
+  // its simulator's, which the cell's host need not be. The test runs at
+  // each 3D load (replayLooks) and whenever this seat's owners grew since the
+  // last one (`flips`, HostService.ownerFlips: a promote, a gate's opening),
+  // so a hand-off to this seat ends the kept looks whether or not the 3D
+  // reloads, and costs one comparison an entry otherwise
+  private pollOne(id: number, kept: LastAnimation, now: number, flips: number): void {
     if (now < kept.lookAt) {
       return;
     }
+    if (kept.looks.size > 0) {
+      this.expireLooks(id, kept, now);
+      if (this.holdsNothing(kept)) {
+        this.lastAnimations.delete(id);
+        return;
+      }
+    }
     const refr = ObjectReference.from(this.sp.Game.getFormEx(id));
+    if (refr && kept.looks.size > 0 && kept.flips !== flips) {
+      kept.flips = flips;
+      if (this.ownsHere(refr, id, kept.actor)) {
+        this.dropOwnedLooks(id, kept);
+        if (this.holdsNothing(kept)) {
+          this.lastAnimations.delete(id);
+          return;
+        }
+      }
+    }
     if (!refr || !refr.is3DLoaded()) {
       kept.shown = false;
       kept.varsShown = false;
+      kept.looksShown = false;
       kept.tries = 0;
       kept.lookAt = now + REAPPLY_WAIT_MS;
       return;
     }
     kept.lookAt = 0;
+    if (kept.looks.size > 0 && !kept.looksShown) {
+      this.replayLooks(refr, id, kept, now);
+      if (this.holdsNothing(kept)) {
+        this.lastAnimations.delete(id);
+        return;
+      }
+    }
     // D-C3 A: the graph variables this 3D has not had, then the event
     const varsDue = kept.vars.size > 0 && !kept.varsShown;
     const eventDue = kept.event !== '' && !kept.shown;
@@ -1217,6 +1631,11 @@ export class ObjectAnimationService extends ClientListener {
   private pollAt = 0;
   private reappliedSaidAt = new Map<number, number>();
   private varsSaidAt = new Map<number, number>();
+  // the 3D keep's lines: each kind's first said (this connection's), the
+  // window's counts, when the window began
+  private lookSaid = new Set<string>();
+  private lookCounts: Record<LookOutcome, number> = { played: 0, held: 0, replayed: 0, expired: 0, stopped: 0, dropped: 0, through: 0 };
+  private lookSummaryAt = 0;
   private subscribed = new Set<number>();
   // the create word's emitter idx for each subscribed reference, so its
   // DestroyActor (which names the idx alone) ends it (note 1)

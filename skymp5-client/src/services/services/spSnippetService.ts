@@ -3,7 +3,7 @@ import { ConnectionMessage } from "../events/connectionMessage";
 import { FinishSpSnippetMessage } from "../messages/finishSpSnippetMessage";
 import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
-import { ObjectAnimationService } from "./objectAnimationService";
+import { LookKind, ObjectAnimationService } from "./objectAnimationService";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 
 // TODO: refactor worldViewMisc into service
@@ -50,6 +50,28 @@ const DETECTION_LEVEL_MAX = 100;
 const GAME_FILE_LINES = 3;
 const GAME_FILE_LINE_WINDOW_MS = 60_000;
 const GAME_FILE_SAID_MAX = 256;
+// thuum 3df63969 (the reanimate-fx memo's 6.4 D6 B): an actor's eight look
+// rows as the seam relays them (its kActorLookRows; class.function in lower
+// case), each with its seq: the five ObjectAnimationService's 3D keep has a
+// kind for, by the kind each keeps and whether it is a Stop, and the three it
+// has none for (a one-shot each), which run as they always have and are
+// counted as falling through. Content-specific code (ADR-073 decision 5 (c)):
+// a stopgap for the rows' own keep (wire-rules natives_table.rs, where these
+// eight read Keep::Nothing): a keep kind there that the relay carries to the
+// client replaces both tables and deletes them when it lands
+const KEPT_LOOK_ROWS: Record<string, { kind: LookKind; stop: boolean }> = {
+  "effectshader.play": { kind: "shader", stop: false },
+  "effectshader.stop": { kind: "shader", stop: true },
+  "visualeffect.play": { kind: "effect", stop: false },
+  "visualeffect.stop": { kind: "effect", stop: true },
+  "actor.seteyetexture": { kind: "eyes", stop: false },
+};
+const UNKEPT_LOOK_ROWS = new Set<string>(["actor.setalpha", "actor.setcriticalstage", "actor.attachashpile"]);
+// a snippet argument's form id, 0 for None or an argument that is no object
+const formIdOf = (arg: unknown): number => {
+  const formId = arg !== null && typeof arg === "object" ? (arg as { formId?: unknown }).formId : undefined;
+  return typeof formId === "number" && Number.isInteger(formId) && formId > 0 ? formId : 0;
+};
 
 export class SpSnippetService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
@@ -69,9 +91,11 @@ export class SpSnippetService extends ClientListener {
   private onSpSnippetMessage(event: ConnectionMessage<SpSnippetMessage>): void {
     const msg = event.message;
     const inOrder = this.takeSeq(msg);
+    // a kept look's seconds count from here (ObjectAnimationService's 3D keep)
+    const arrived = Date.now();
 
     this.controller.once('update', async () => {
-      (inOrder ? this.apply(msg) : Promise.resolve(undefined))
+      (inOrder ? this.apply(msg, arrived) : Promise.resolve(undefined))
         .then((res) => {
           const isNoResultSnippet = msg.snippetIdx === 0xffffffff;
           if (isNoResultSnippet) {
@@ -128,9 +152,16 @@ export class SpSnippetService extends ClientListener {
   // Int or Float on a game-file reference, with a name and a value of the
   // setter's type, goes through ObjectAnimationService.setVariable the same
   // way (run, then kept with the call's seq, so a seat that does not host the
-  // cell sets it again at each 3D load). Every other snippet runs as it
-  // always has
-  private apply(snippet: SpSnippetMessage): Promise<unknown> {
+  // cell sets it again at each 3D load). thuum 3df63969's actor look rows
+  // with a seq (the reanimate-fx memo's 6.4 D6 B): EffectShader.Play and
+  // Stop, VisualEffect.Play and Stop and Actor.SetEyeTexture go through
+  // ObjectAnimationService.look, which plays one on a 3D here, holds one for
+  // its 3D's load otherwise, keeps the last Play per (subject, shader or
+  // effect) and the last eye texture, and plays them again at each later 3D
+  // load of a subject this seat does not own; one it does not take, and the
+  // other three rows, run as before (relayedLook). Every other snippet runs as
+  // it always has
+  private apply(snippet: SpSnippetMessage, arrived: number): Promise<unknown> {
     const event = snippet.arguments[0];
     const look = this.lookSubject(snippet);
     // nothing else checks that a look's subject is a trigger: a modified guest
@@ -168,12 +199,58 @@ export class SpSnippetService extends ClientListener {
       }
       return Promise.resolve(undefined);
     }
+    if (look === undefined && typeof snippet.seq === "number" && this.relayedLook(snippet, snippet.seq, arrived)) {
+      return Promise.resolve(undefined);
+    }
     if (look === undefined) {
       return this.run(snippet);
     }
     return this.run(snippet).then((res) => {
       this.sayLook(snippet, look);
       return res;
+    });
+  }
+
+  // an actor look row (KEPT_LOOK_ROWS) read off its snippet for
+  // ObjectAnimationService.look, true when that took it. An Arg0Method row
+  // (EffectShader, VisualEffect) names its subject in its first argument and
+  // its form in its self; SetEyeTexture is the subject's own method, its self
+  // the actor (a game-file actor the server holds by its long id,
+  // MakeLongFormId) and its one argument the TextureSet. Rule 5: the server
+  // checked that the reporter simulates the subject (3df63969's validator);
+  // what the arguments hold is read here, and a subject or an effect form
+  // that is no object, or a Play's duration that is no finite number, runs as
+  // it always has (said as falling through). The update's context
+  private relayedLook(snippet: SpSnippetMessage, seq: number, arrived: number): boolean {
+    const row = `${snippet.class.toLowerCase()}.${snippet.function.toLowerCase()}`;
+    const objectAnimation = this.controller.lookupListener(ObjectAnimationService);
+    const name = `${snippet.class}.${snippet.function}`;
+    const rule = KEPT_LOOK_ROWS[row];
+    if (rule === undefined) {
+      if (UNKEPT_LOOK_ROWS.has(row)) {
+        objectAnimation.lookFallsThrough(name, snippetIdToLocalId(snippet.selfId) || snippet.selfId, "its row keeps nothing");
+      }
+      return false;
+    }
+    const eyes = rule.kind === "eyes";
+    const subject = eyes ? (snippet.selfId > 0 ? snippet.selfId : 0) : formIdOf(snippet.arguments[0]);
+    const form = eyes ? formIdOf(snippet.arguments[0]) : (snippet.selfId > 0 ? snippet.selfId : 0);
+    const duration = snippet.arguments[1];
+    const timed = !eyes && !rule.stop;
+    if (subject === 0 || (!eyes && form === 0) || (timed && (typeof duration !== "number" || !Number.isFinite(duration)))) {
+      objectAnimation.lookFallsThrough(name, subject || snippet.selfId, "its arguments unread");
+      return false;
+    }
+    return objectAnimation.look({
+      row: name,
+      kind: rule.kind,
+      stop: rule.stop,
+      subject,
+      form,
+      seconds: timed ? (duration as number) : -1,
+      facing: rule.kind === "effect" && !rule.stop ? formIdOf(snippet.arguments[2]) : 0,
+      seq,
+      arrived,
     });
   }
 

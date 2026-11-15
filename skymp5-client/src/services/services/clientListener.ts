@@ -213,11 +213,18 @@ declare module "skyrimPlatform" {
     // (platform)", " (not hosted)", " (local)", " (unrelayable)", " (unresolved)",
     // " (frame mismatch)", " (skipped)" (the scriptNonOwnerSkip lever, off by default),
     // " (effect)" (train 52: a PlaceAtMe on a self this seat does not own, run inside
-    // this seat's own player's effect, its result a local helper) and " (helper)" (a
+    // this seat's own player's effect, its result a local helper; and an actor's look
+    // row on a game-file actor this seat does not simulate, run inside an effect this
+    // seat's own player casts, queued in scriptCalls for the server to judge),
+    // " (effect ended)" (an actor's look row on a dead game-file actor this seat does
+    // not simulate, run by an ActiveMagicEffect script whose effect has ended, its
+    // handle the VM's empty one, queued in scriptCalls for the server to judge:
+    // vanilla ReanimateAshPile's TurnToAsh after its Waits) and " (helper)" (a
     // call on such a helper, run here and crossing nowhere),
     // the bare "Class.Name" (an owned self's state row, run here) and "Class.Name on
-    // <hex id>" or " on others" (an everyone row's selves); a call in scriptCalls is
-    // never counted here. No game call in its handler.
+    // <hex id>" or " on others" (an everyone row's selves); apart from the two effect
+    // look kinds and a trap trigger's " (look)", a call in scriptCalls is never
+    // counted here. No game call in its handler.
     interface ScriptCensusEvent {
         rows: { row: string; count: number }[];
     }

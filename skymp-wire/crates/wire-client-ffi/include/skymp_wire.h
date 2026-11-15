@@ -334,7 +334,8 @@ typedef struct SkympNativeRow {
   uint8_t keep;
   /**
    * For a record keep, its record kind's code (1 the ref state, 2 the
-   * standing, 3 a placement, 4 a player's own); 0 for any other keep.
+   * standing, 3 a placement, 4 a player's own, 5 a quest's map marker);
+   * 0 for any other keep.
    */
   uint8_t record;
   /**

@@ -7,6 +7,7 @@
 #include "libespm/FACT.h"
 #include "libespm/GroupDataInternal.h"
 #include "libespm/GroupUtils.h"
+#include "libespm/INFO.h"
 #include "libespm/KYWD.h"
 #include "libespm/LCTN.h"
 #include "libespm/MGEF.h"
@@ -19,6 +20,7 @@
 #include "libespm/RecordHeader.h"
 #include "libespm/RecordHeaderAccess.h"
 #include "libespm/RefrKey.h"
+#include "libespm/SCEN.h"
 #include "libespm/SMQN.h"
 #include "libespm/SPEL.h"
 #include "libespm/WRLD.h"
@@ -68,6 +70,10 @@ struct Browser::Impl
   // thuum ADR-068 rung 5 (D-Q4 C): the Story Manager's quest nodes, whose
   // NNAMs name the quests the Story Manager starts per seat
   std::vector<const RecordHeader*> storyQuestNodes;
+  // thuum ADR-073 step 4's S6 (D-NT4 A): the topic infos and the scenes,
+  // whose VMADs attach their fragment scripts, a quest marker's cause
+  std::vector<const RecordHeader*> topicInfos;
+  std::vector<const RecordHeader*> scenes;
   std::vector<const RecordHeader*> cells;
 
   GroupStack grStack;
@@ -184,9 +190,15 @@ const std::vector<const RecordHeader*>& Browser::GetRecordsByType(
   if (!std::strcmp(type, espm::SMQN::kType)) {
     return pImpl->storyQuestNodes;
   }
+  if (!std::strcmp(type, espm::INFO::kType)) {
+    return pImpl->topicInfos;
+  }
+  if (!std::strcmp(type, espm::SCEN::kType)) {
+    return pImpl->scenes;
+  }
   throw std::runtime_error("GetRecordsByType currently supports only REFR, "
                            "COBJ, KYWD, LCTN, FACT, QUST, WRLD, CELL, REGN, "
-                           "PERK, MGEF, SPEL and SMQN records");
+                           "PERK, MGEF, SPEL, SMQN, INFO and SCEN records");
 }
 
 const std::vector<const RecordHeader*>& Browser::GetRecordsAtPos(
@@ -327,6 +339,14 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
 
     if (utils::Is<espm::SMQN>(t)) {
       pImpl->storyQuestNodes.push_back(recHeader);
+    }
+
+    if (utils::Is<espm::INFO>(t)) {
+      pImpl->topicInfos.push_back(recHeader);
+    }
+
+    if (utils::Is<espm::SCEN>(t)) {
+      pImpl->scenes.push_back(recHeader);
     }
 
     if (utils::Is<espm::NAVM>(t)) {

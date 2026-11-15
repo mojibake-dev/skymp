@@ -2801,10 +2801,28 @@ void ActionListener::OnMapMarkerDiscovered(
 }
 
 // thuum docs/verbs/map-markers.md: show the player's recorded markers on its
-// client's map, Papyrus ObjectReference.AddToMap with each marker as self
+// client's map, Papyrus ObjectReference.AddToMap with each marker as self:
+// its own (its discoveries and its own quests' markers) and, since thuum
+// ADR-073 step 4's S6 (Eli's D-NT4 A), every world quest's the journal
+// records (PartOne::GetWorldMapMarkers), so a late joiner and a player back
+// after a restart are shown them; a marker of both once, with the wider
+// travel flag
 void ActionListener::SendMapMarkers(MpActor& actor)
 {
-  const auto markers = actor.GetMapMarkers();
+  auto markers = actor.GetMapMarkers();
+  size_t world = 0;
+  for (const auto& marker : partOne.GetWorldMapMarkers()) {
+    auto own =
+      std::find_if(markers.begin(), markers.end(),
+                   [&](const MapMarker& m) { return m.refr == marker.refr; });
+    if (own == markers.end()) {
+      markers.push_back(marker);
+      ++world;
+    } else {
+      own->canTravel = skymp::rules::map_marker_travel_after(own->canTravel,
+                                                             marker.canTravel);
+    }
+  }
   for (const auto& marker : markers) {
     std::vector<std::optional<
       std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
@@ -2814,8 +2832,11 @@ void ActionListener::SendMapMarkers(MpActor& actor)
       .Execute(&actor, SpSnippetMode::kNoReturnResult);
   }
   if (!markers.empty()) {
-    spdlog::info("MapMarker: actor {:x} shown its {} markers after a login",
-                 actor.GetFormId(), markers.size());
+    spdlog::info("MapMarker: actor {:x} shown its {} markers after a login{}",
+                 actor.GetFormId(), markers.size(),
+                 world == 0
+                   ? std::string()
+                   : fmt::format(", {} of them a world quest's", world));
   }
 }
 
@@ -5312,6 +5333,139 @@ void KeepScriptVariable(MpObjectReference& subject,
                         uint32_t seq);
 }
 
+namespace {
+// thuum ADR-073 step 4's S6 (Eli's D-NT4 A): whether `id` is a map marker by
+// the master files, a reference whose base is the MapMarker STAT
+// (kMapMarkerBase): the held reference's base, or for one the server holds
+// none of (a STAT's placement the loader never attaches) its REFR's NAME
+bool IsMapMarker(WorldState& worldState, uint32_t id,
+                 const MpObjectReference* held)
+{
+  if (held) {
+    return held->GetBaseId() == kMapMarkerBase;
+  }
+  if (!worldState.HasEspm()) {
+    return false;
+  }
+  const auto lookup = worldState.GetEspm().GetBrowser().LookupById(id);
+  const auto* refr = espm::Convert<espm::REFR>(lookup.rec);
+  if (!refr) {
+    return false;
+  }
+  const auto data = refr->GetData(worldState.GetEspmCache());
+  return data.baseId != 0 && lookup.ToGlobalId(data.baseId) == kMapMarkerBase;
+}
+
+// a quest marker's cause (wire-rules natives::Cause): the first of its
+// calling script's attachments (PartOne::ScriptCausesOf, a QUST's, an INFO's
+// or a SCEN's) whose quest is live (PartOne::QuestCauseLive), else the first
+// attachment, not live; kind 0 for a class no such record attaches
+struct MarkerCause
+{
+  uint8_t kind = 0;
+  uint32_t quest = 0;
+  bool live = false;
+};
+
+MarkerCause MarkerCauseOf(PartOne& partOne, const std::string& caller)
+{
+  MarkerCause out;
+  for (const auto& cause : partOne.ScriptCausesOf(caller)) {
+    if (partOne.QuestCauseLive(cause.quest)) {
+      return MarkerCause{ cause.kind, cause.quest, true };
+    }
+    if (out.kind == 0) {
+      out.kind = cause.kind;
+      out.quest = cause.quest;
+    }
+  }
+  return out;
+}
+
+// thuum ADR-073 step 4's S6 (Eli's D-NT4 A; D-PO1 B and D-G6 A, thuum
+// docs/verbs/map-markers.md): an accepted quest marker, recorded with its
+// travel flag for every player its quest is shown to. A world quest's (the
+// shared quests' word 0) goes on the world's map-markers record, the
+// journal's, which every login serves beside the player's own and a restart
+// keeps, and is relayed at once as AddToMap to every other connected player
+// (the reporter's own engine ran it); any other quest's (one each seat
+// keeps: unlisted, denied, or a player's class) goes on the reporter's own
+// change form alone. A marker the record holds already (another seat's run
+// of the same fragment, the same call again) changes nothing and is relayed
+// to no one. R1: the cause and the marker judged (wire-rules natives'
+// marker_owner), the travel flag the engine's word. A stopgap until step 1's
+// quest record holds the quest's own markers
+void RecordQuestMarker(PartOne& partOne, MpActor& reporter,
+                       const ScriptCallMessage& msg,
+                       const skymp::rules::ScriptCallVerdict& verdict,
+                       const MarkerCause& cause)
+{
+  bool canTravel = false;
+  if (!msg.args.empty() && msg.args.front()) {
+    if (auto flag = std::get_if<bool>(&*msg.args.front())) {
+      canTravel = *flag;
+    }
+  }
+  const auto& files = partOne.worldState.espmFiles;
+  FormDesc refr;
+  FormDesc quest;
+  try {
+    refr = FormDesc::FromFormId(verdict.subject, files);
+    quest = FormDesc::FromFormId(cause.quest, files);
+  } catch (const std::exception& e) {
+    return spdlog::warn("[verb:map-markers] {:x}'s {}.{} on {:x} (from "
+                        "{}.{}): no form of the load order ({}); not recorded",
+                        reporter.GetFormId(), msg.cls, msg.fn, verdict.subject,
+                        msg.caller, msg.handler, e.what());
+  }
+  if (partOne.CheckSharedQuest(quest) != 0) {
+    const bool changed = reporter.RecordMapMarker(refr, canTravel);
+    return spdlog::info("[verb:map-markers] {:x} reports {}.{} on {:x}{} "
+                        "(from {}.{}): quest {:x} is each seat's own, {} on "
+                        "its own map",
+                        reporter.GetFormId(), msg.cls, msg.fn, verdict.subject,
+                        canTravel ? ", fast travel" : "", msg.caller,
+                        msg.handler, cause.quest,
+                        changed ? "recorded" : "already recorded");
+  }
+  if (!partOne.RecordWorldMapMarker(refr, canTravel)) {
+    return spdlog::info("[verb:map-markers] {:x} reports {}.{} on {:x}{} "
+                        "(from {}.{}): quest {:x} is the world's, already "
+                        "recorded, relayed to no one",
+                        reporter.GetFormId(), msg.cls, msg.fn, verdict.subject,
+                        canTravel ? ", fast travel" : "", msg.caller,
+                        msg.handler, cause.quest);
+  }
+  // the record's travel flag after the call, the wider of the two
+  bool travel = canTravel;
+  for (const auto& marker : partOne.GetWorldMapMarkers()) {
+    if (marker.refr == refr) {
+      travel = marker.canTravel;
+    }
+  }
+  std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ travel };
+  SpSnippet relay("ObjectReference", "AddToMap", args, verdict.subject);
+  size_t relayed = 0;
+  for (size_t i = 0, n = partOne.serverState.maxConnectedId; i <= n; ++i) {
+    MpActor* player =
+      partOne.serverState.ActorByUser(static_cast<Networking::UserId>(i));
+    if (!player || player == &reporter) {
+      continue;
+    }
+    relay.Serve(player);
+    ++relayed;
+  }
+  spdlog::info("[verb:map-markers] {:x} reports {}.{} on {:x}{} (from "
+               "{}.{}): quest {:x} is the world's, recorded for every player "
+               "and relayed to {} other player(s)",
+               reporter.GetFormId(), msg.cls, msg.fn, verdict.subject,
+               travel ? ", fast travel" : "", msg.caller, msg.handler,
+               cause.quest, relayed);
+}
+}
+
 // A game-file placement the loader never attaches (a moving static: the hall
 // door's FX, rung 2's merged-head review) is judged by its record instead:
 // its record's cell, its listeners the games that report that cell loaded,
@@ -5538,6 +5692,18 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     }
   }
 
+  // thuum ADR-073 step 4's S6 (Eli's D-NT4 A): a quest marker's facts, its
+  // record kind 5 (AddToMap): the subject a map marker by the master files,
+  // and the calling script's cause by the game files' attachment of its
+  // class (a QUST's, an INFO's or a SCEN's), its quest live or not
+  MarkerCause markerCause;
+  if (at.record == 5) {
+    facts.marker = IsMapMarker(partOne.worldState, shape.subject, subject);
+    markerCause = MarkerCauseOf(partOne, msg.caller);
+    facts.cause = markerCause.kind;
+    facts.cause_live = markerCause.live;
+  }
+
   // the owner step on the shaped call, over its subject's facts
   const auto verdict = scriptCalls.owner(facts);
   if (verdict.code == skymp::rules::ScriptCallCode::Skipped) {
@@ -5593,6 +5759,10 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   // player at any epoch (the owner step reads none), judged by player_own
   if (verdict.record == 4) {
     return RecordPlayerOwn(partOne, *reporter, msg, stateRowRefusals);
+  }
+  // thuum ADR-073 step 4's S6: a quest's map marker, from its live cause
+  if (verdict.record == 5) {
+    return RecordQuestMarker(partOne, *reporter, msg, verdict, markerCause);
   }
   if (verdict.record == 3) {
     uint32_t worldOrCell = 0;

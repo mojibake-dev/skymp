@@ -171,7 +171,8 @@ pub struct SkympNativeRow {
     /// What the server keeps (`SKYMP_NATIVE_KEEP_*`).
     pub keep: u8,
     /// For a record keep, its record kind's code (1 the ref state, 2 the
-    /// standing, 3 a placement, 4 a player's own); 0 for any other keep.
+    /// standing, 3 a placement, 4 a player's own, 5 a quest's map marker);
+    /// 0 for any other keep.
     pub record: u8,
     /// Whether a call may cross as a firing's look (`SKYMP_NATIVE_LOOK_*`).
     pub look: u8,

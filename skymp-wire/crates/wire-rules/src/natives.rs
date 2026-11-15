@@ -70,6 +70,18 @@
 //! engine's word, recorded; the record's own rule (wire-rules ref_state,
 //! standing, placements) judges what it must.
 //!
+//! One everyone row passes as a record too (thuum ADR-073 step 4's S6, Eli's
+//! D-NT4 A; D-PO1 B and D-G6 A): ObjectReference.AddToMap, a quest script's
+//! reveal of a map marker, which every seat that runs it reports
+//! ([`RecordKind::Marker`]). Its owner step ([`marker_owner`]) asks no
+//! object's owner: the subject is a map marker by the server's master-file
+//! facts, and the calling script a quest's, a topic info's or a scene's
+//! (QF, TIF or SF, by the game files' attachment) whose quest the server
+//! holds live for the reporter. It takes no sequence and spends the record
+//! rows' budget; the core records the marker with its travel flag for every
+//! player the quest is shown to and relays it live to the others. R1, a
+//! stopgap until step 1's quest record holds quest-owned markers.
+//!
 //! The look channel (thuum ADR-068 D-W2 A, Eli 2026-11-07; docs/research/
 //! fifty-fixes-2026-11-07.md section 7.2(b)): during a firing its presser's
 //! owner started, that seat owns the trap family trigger's own calls on
@@ -266,11 +278,27 @@ pub enum RecordKind {
     /// ObjectReference.AddItem and RemoveItem, recorded as the seat reports
     /// them with no bound (R2, rule 5's "record it as unvalidated").
     PlayerOwn,
+    /// A quest's map marker (thuum ADR-073 step 4's S6, Eli's D-NT4 A; D-PO1
+    /// B and D-G6 A: a quest script's AddToMap reveals the marker on the map
+    /// of everyone the quest is shown to): ObjectReference.AddToMap, an
+    /// everyone row every seat that runs it reports, judged by
+    /// [`marker_owner`] (the subject a map marker by the server's
+    /// master-file facts, the calling script a quest's, a topic info's or a
+    /// scene's whose quest the server holds live) and recorded with its
+    /// travel flag on the map-markers record of every player the quest is
+    /// shown to (thuum docs/verbs/map-markers.md: the world's for a world
+    /// quest, served at every login; the reporter's own for a quest each
+    /// seat keeps), relayed live as AddToMap to the other players shown it.
+    /// R1. A stopgap (ADR-073 decision 5 (c)), replaced by step 1's quest
+    /// record holding quest-owned markers (decision 2 (c)); deletes when
+    /// that record serves them.
+    Marker,
 }
 
 impl RecordKind {
     /// The bridge's number for the kind: 1 the ref state, 2 the standing, 3
-    /// a placement, 4 a player's own; 0 is no record.
+    /// a placement, 4 a player's own, 5 a quest's map marker; 0 is no
+    /// record.
     #[must_use]
     pub fn code(self) -> u8 {
         match self {
@@ -278,6 +306,7 @@ impl RecordKind {
             RecordKind::Standing => 2,
             RecordKind::Placement => 3,
             RecordKind::PlayerOwn => 4,
+            RecordKind::Marker => 5,
         }
     }
 }
@@ -806,6 +835,23 @@ pub enum SubjectKind {
     Actor,
 }
 
+/// Whose script made a call, by the game files' attachment of the calling
+/// script's class (its VMAD on a QUST, an INFO or a SCEN record: a quest's
+/// fragment or script, a topic info's fragment, a scene's fragment), for a
+/// quest's map marker ([`RecordKind::Marker`]); the class is never read by
+/// its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    /// No QUST, INFO or SCEN of the game files attaches the calling script.
+    None,
+    /// A quest's (QF_ fragments, and the quest's own scripts).
+    Quest,
+    /// A topic info's (TIF fragments), its quest its topic's (DIAL QNAM).
+    TopicInfo,
+    /// A scene's (SF fragments), its quest the scene's (SCEN PNAM).
+    Scene,
+}
+
 /// What the core knows of a reported call.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Facts {
@@ -848,6 +894,19 @@ pub struct Facts {
     /// The subject's size: the farthest point of its bounds, times its
     /// scale (a look's facts).
     pub subject_size: f32,
+    /// The subject is a map marker by the server's master-file facts: a
+    /// reference whose base is the MapMarker STAT, Skyrim.esm 0x00000010
+    /// (thuum docs/verbs/map-markers.md; a quest marker's facts, gathered
+    /// for a [`RecordKind::Marker`] row alone; false otherwise).
+    pub marker: bool,
+    /// Whose script made the call (a quest marker's facts; [`Cause::None`]
+    /// otherwise).
+    pub cause: Cause,
+    /// The cause's quest is live for the reporter as the server holds it: a
+    /// world quest the journal records running or staged, or a Start Game
+    /// Enabled one it records no stop of; a quest the scope classes the
+    /// player's (a quest marker's facts; false otherwise).
+    pub cause_live: bool,
 }
 
 /// Why a reported call is refused.
@@ -1002,8 +1061,9 @@ enum Channel {
 
 /// The channel a call of `row` leaves by: an action row the table relays to
 /// the subject's listeners, a state row it keeps as evidence or as its
-/// subject's record; any other row is refused by its row
-/// (`E_SCRIPTCALL_ROW`).
+/// subject's record, an everyone row it keeps as a record (AddToMap's quest
+/// marker, thuum ADR-073 step 4's S6: every seat that runs it reports it);
+/// any other row is refused by its row (`E_SCRIPTCALL_ROW`).
 fn channel_of(row: &Row) -> Result<Channel, Refusal> {
     if row.staged {
         return Err(refusal(Code::Row, "a staged row (thuum ADR-073 step 4's S5): counted on its seat and run there as before, never sent until its batch unstages".to_owned()));
@@ -1027,7 +1087,17 @@ fn channel_of(row: &Row) -> Result<Channel, Refusal> {
                 )),
             };
         }
-        Kind::Everyone => return Err(refusal(Code::Row, "an everyone row: every seat runs it (rung 5), never relayed as an action".to_owned())),
+        // an everyone row with a record keep is that record's report from
+        // every seat that runs it (D-NT4 A's quest marker), judged by its
+        // record's owner step; every other everyone row stays its seat's
+        Kind::Everyone => {
+            return match row.keep {
+                Keep::Record(kind) => Ok(Channel::Record(kind)),
+                Keep::Nothing | Keep::Last | Keep::Evidence | Keep::Variable => {
+                    Err(refusal(Code::Row, "an everyone row: every seat runs it (rung 5), never relayed as an action".to_owned()))
+                }
+            };
+        }
         Kind::Local => return Err(refusal(Code::Row, "a local row: its consequence stays on its seat".to_owned())),
     }
     let Some((cls, func)) = row.relay_target() else {
@@ -1127,6 +1197,10 @@ fn record_owner(subject: u32, kind: RecordKind, facts: &Facts) -> Result<(), Ref
             "the reporter's own player: a record row on it is its own seat's (the standing waits for rung 5's acting-player scope)".to_owned(),
         ));
     }
+    // D-NT4 A: a quest's marker is nobody's object; its owner is its cause
+    if kind == RecordKind::Marker {
+        return marker_owner(subject, facts);
+    }
     let placed = if facts.kind == SubjectKind::Record { BY_RECORD } else { "" };
     match (kind, facts.kind) {
         (_, SubjectKind::Unknown) => Err(refusal(Code::Owner, "the server holds no such reference".to_owned())),
@@ -1145,9 +1219,44 @@ fn record_owner(subject: u32, kind: RecordKind, facts: &Facts) -> Result<(), Ref
         (RecordKind::RefState | RecordKind::Placement, SubjectKind::WorldObject | SubjectKind::Record | SubjectKind::DoorOrContainer) => {
             hosts_at_epoch(facts, facts.owner, facts.owner_epoch, placed)
         }
-        // judged above, its subject alone
-        (RecordKind::PlayerOwn, _) => Ok(()),
+        // judged above, its subject alone, and its cause alone
+        (RecordKind::PlayerOwn | RecordKind::Marker, _) => Ok(()),
     }
+}
+
+/// The owner step on a quest's map marker ([`RecordKind::Marker`], thuum
+/// ADR-073 step 4's S6, Eli's D-NT4 A): the record's arm of
+/// [`record_owner`], which takes any reporter with a live fragment cause.
+/// The subject is a map marker by the server's master-file facts
+/// ([`Facts::marker`]: its base the MapMarker STAT, else
+/// `E_SCRIPTCALL_ROW`, AddToMap's record being a map marker's); the calling
+/// script is a quest's, a topic info's or a scene's by the game files'
+/// attachment ([`Facts::cause`], QF, TIF or SF: else `E_SCRIPTCALL_OWNER`,
+/// no cause to own the marker); and the cause's quest is live for the
+/// reporter as the server holds it ([`Facts::cause_live`], else
+/// `E_SCRIPTCALL_OWNER`). The rate is the record rows' own budget, spent at
+/// the shape step. No epoch is read (a map's marker is no hosted object's),
+/// and the travel flag is never judged (the engine's word, as discovery's
+/// is). R1.
+fn marker_owner(subject: u32, facts: &Facts) -> Result<(), Refusal> {
+    if !facts.marker {
+        return Err(refusal(
+            Code::Row,
+            format!("{subject:x} is no map marker by the master files (its base is not the MapMarker STAT): AddToMap's record is a map marker's"),
+        ));
+    }
+    let cause = match facts.cause {
+        Cause::None => {
+            return Err(refusal(Code::Owner, "no fragment cause: the calling script is attached to no quest, topic info or scene of the game files".to_owned()));
+        }
+        Cause::Quest => "quest",
+        Cause::TopicInfo => "topic info",
+        Cause::Scene => "scene",
+    };
+    if !facts.cause_live {
+        return Err(refusal(Code::Owner, format!("the calling {cause}'s quest is not live for the reporter (no run, stage or start the server holds)")));
+    }
+    Ok(())
 }
 
 /// A reported call the shape step passed: its row, the subject it names and
@@ -1392,7 +1501,10 @@ impl ScriptCalls {
             Channel::Evidence => return keep_evidence(subject, facts),
             Channel::Record(kind) => {
                 return match record_owner(subject, kind, facts) {
-                    Ok(()) if kind == RecordKind::PlayerOwn => Verdict::Record { subject, seq: 0, kind },
+                    // a player's own row and a quest's marker take no
+                    // object's sequence: the one is each reporter's own
+                    // player, the other a map's, which no receiver orders
+                    Ok(()) if matches!(kind, RecordKind::PlayerOwn | RecordKind::Marker) => Verdict::Record { subject, seq: 0, kind },
                     Ok(()) => Verdict::Record { subject, seq: self.next_seq(subject), kind },
                     Err(refused) => Verdict::Refuse(refused),
                 };
@@ -1545,7 +1657,7 @@ mod tests {
     const GUEST: u32 = 0xff00_0001;
 
     fn hosted(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0, marker: false, cause: Cause::None, cause_live: false }
     }
 
     fn accepted(v: &Verdict) -> Accept {
@@ -1967,10 +2079,11 @@ mod tests {
         // ReferenceAlias.Clear), D-W2's Sound.Play and CreateDetectionEvent
         // and rung 5's seven player's own rows (D-E1 A's ChangeHeadPart the
         // seventh), then train 53's two scene starts (thuum ADR-073 step 4's
-        // S4, the V-scene hook): "52 of 52 table rows bound". D-R1 C keeps the
-        // flip's AddItem and RemoveItem as the player's own inventory in
-        // place, so nine rows are the player's own, in player_own's order
-        assert_eq!(live().count(), 52);
+        // S4, the V-scene hook) and AddToMap's quest marker (S6, D-NT4 A):
+        // "53 of 53 table rows bound". D-R1 C keeps the flip's AddItem and
+        // RemoveItem as the player's own inventory in place, so nine rows are
+        // the player's own, in player_own's order
+        assert_eq!(live().count(), 53);
         let own: Vec<(&str, &str)> = live().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func)).collect();
         assert_eq!(own, crate::player_own::rows().collect::<Vec<_>>());
         assert_eq!(own.len(), 9);
@@ -2017,6 +2130,13 @@ mod tests {
                 // first parameter the object the evidence names
                 assert_eq!((r.kind, r.subject, r.audience, r.relay), (Kind::State, Subject::SelfRef, Audience::Nobody, Relay::Never), "{name}");
                 assert_eq!(r.params.first(), Some(&Param::Object), "{name}");
+            } else if r.keep == Keep::Record(RecordKind::Marker) {
+                // a quest's map marker (S6, D-NT4 A) is an everyone row on its
+                // self, every player shown the quest its audience, never
+                // relayed as an action (the core relays the record's own
+                // AddToMap), one Bool its travel flag
+                assert_eq!((r.kind, r.subject, r.audience, r.relay), (Kind::Everyone, Subject::SelfRef, Audience::Everyone, Relay::Never), "{name}");
+                assert_eq!(r.params, &[Param::Bool], "{name}");
             } else if let Keep::Record(kind) = r.keep {
                 // a row kept as its subject's record is a state row on its
                 // self, heard by nobody as an action, never relayed; whose
@@ -2052,7 +2172,7 @@ mod tests {
             }
         }
         let everyone: Vec<String> = live().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
-        assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
+        assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear", "ObjectReference.AddToMap"]);
         // the flip's nineteen state rows, D-S3's three, the standing's six and
         // rung 5's seven player's own; the two scene starts are creations,
         // judged as state rows (channel_of)
@@ -2060,6 +2180,10 @@ mod tests {
         let creations: Vec<String> = live().filter(|r| r.kind == Kind::Create).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(creations, ["Scene.Start", "Scene.ForceStart"]);
         assert_eq!((row_index("Scene", "Start"), row_index("Scene", "ForceStart")), (Some(50), Some(51)));
+        // S6's quest marker is appended after them: every earlier row keeps
+        // its place
+        assert_eq!(row_index("ObjectReference", "AddToMap"), Some(52));
+        assert_eq!(live().filter(|r| r.keep == Keep::Record(RecordKind::Marker)).map(|r| r.func).collect::<Vec<_>>(), ["AddToMap"]);
         // the hooks (thuum ADR-073 step 4's S4): each code's rows, the seam's
         // ten name lists and the V-scene's scene starts as one column, and
         // every code a line under decision 5 naming its verb doc
@@ -2103,6 +2227,7 @@ mod tests {
         assert_eq!(row_index("Actor", "SetFactionRank"), Some(34));
         assert_eq!(row_index("ReferenceAlias", "Clear"), Some(40));
         assert_eq!((RecordKind::RefState.code(), RecordKind::Standing.code(), RecordKind::Placement.code()), (1, 2, 3));
+        assert_eq!(RecordKind::Marker.code(), 5);
     }
 
     // thuum ADR-073 step 4's S4: channel_of reads no owner (decision 6, owners
@@ -2132,8 +2257,8 @@ mod tests {
     #[test]
     fn every_native_has_a_row_found_by_the_index_and_a_staged_one_is_refused() {
         assert_eq!(TABLE.len(), 1408);
-        assert_eq!(TABLE.iter().filter(|r| r.staged).count(), 1356);
-        assert_eq!(TABLE.iter().position(|r| r.staged), Some(52));
+        assert_eq!(TABLE.iter().filter(|r| r.staged).count(), 1355);
+        assert_eq!(TABLE.iter().position(|r| r.staged), Some(53));
         assert_eq!(INDEX.len().checked_sub(1), Some(INDEX_MASK));
         assert!(INDEX.len() >= TABLE.len().saturating_mul(2) && INDEX.len().is_power_of_two());
         let mut longest = 0usize;
@@ -2192,7 +2317,7 @@ mod tests {
     // the draugr in the temple, simulated by the host (its cell's), the
     // reporter
     fn simulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, marker: false, cause: Cause::None, cause_live: false }
     }
 
     #[test]
@@ -2271,7 +2396,7 @@ mod tests {
 
     // an actor nobody simulates, its cell's host at epoch 3 the reporter
     fn unsimulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, marker: false, cause: Cause::None, cause_live: false }
     }
 
     #[test]
@@ -2714,6 +2839,143 @@ mod tests {
                             Code::Owner => prop_assert!(cell == 0 || (owner != 0 && owner == sender) || !loader),
                             other => prop_assert!(false, "unexpected {:?}", other),
                         }
+                    }
+                    other => prop_assert!(false, "unexpected {:?}", other),
+                }
+            }
+        }
+    }
+
+    // thuum ADR-073 step 4's S6 (Eli's D-NT4 A; D-PO1 B and D-G6 A): a quest
+    // script's AddToMap, the map-markers record's report from every seat that
+    // runs it. Riverwood's Sleeping Giant Inn rumor, Skyrim.esm INFO 0x24528
+    // (DIAL 0x24390 DA01IntroRumorsTopic, QNAM DA01Intro 0x92e25), whose
+    // fragment script TIF__00024528 names MapMarker 0x92496 (the Shrine of
+    // Azura's REFR, base 0x10 the MapMarker STAT); MS13's Camilla scene, SCEN
+    // 0x383a3 (PNAM MS13 0x39645), whose SF_MS13CamillaStage10Scene_000383A3
+    // names BleakFallsMapMarker 0x16232 (base 0x10); lab/esm.py's VMAD and
+    // NAME reads of the cached Skyrim.esm, 2026-11-15
+    mod quest_marker {
+        use super::*;
+        use proptest::prelude::*;
+
+        const AZURA: u32 = 0x92496;
+        const BLEAK_FALLS: u32 = 0x16232;
+
+        // the reporter's call of AddToMap(true) on a marker of the master
+        // files, its cause a topic info whose quest the server holds live
+        fn live_marker(self_id: u32) -> Facts {
+            Facts { kind: SubjectKind::Record, marker: true, cause: Cause::TopicInfo, cause_live: true, ..hosted(self_id) }
+        }
+
+        fn add_to_map() -> Option<&'static Row> {
+            row("ObjectReference", "AddToMap")
+        }
+
+        fn refused(v: Verdict) -> (Code, String) {
+            match v {
+                Verdict::Refuse(r) => (r.code, r.why),
+                other => panic!("not refused: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn the_row_is_an_everyone_row_kept_as_a_quest_marker_record() {
+            let r = add_to_map();
+            assert_eq!(
+                r.map(|r| (r.kind, r.subject, r.owner, r.audience, r.relay, r.keep, r.staged)),
+                Some((Kind::Everyone, Subject::SelfRef, Owner::Nobody, Audience::Everyone, Relay::Never, Keep::Record(RecordKind::Marker), false))
+            );
+            assert!(r.is_some_and(|r| matches!(channel_of(r), Ok(Channel::Record(RecordKind::Marker)))));
+            // every other everyone row keeps its refusal: every seat runs it
+            for other in live().filter(|r| r.kind == Kind::Everyone && r.keep == Keep::Nothing) {
+                let refused = channel_of(other).err();
+                assert!(refused.is_some_and(|r| r.code == Code::Row && r.why.starts_with("an everyone row")), "{}.{}", other.cls, other.func);
+            }
+        }
+
+        #[test]
+        fn a_live_cause_on_a_marker_is_recorded_with_no_sequence() {
+            let mut s = ScriptCalls::default();
+            assert_eq!(s.judge(add_to_map(), &[Arg::Bool], &live_marker(AZURA), 0), Verdict::Record { subject: AZURA, seq: 0, kind: RecordKind::Marker });
+            // every cause kind, from any reporter (no epoch, no host read): a
+            // guest's scene fragment, a quest's fragment at a stale epoch
+            let scene = Facts { sender: GUEST, owner: 0, cause: Cause::Scene, ..live_marker(BLEAK_FALLS) };
+            assert_eq!(s.judge(add_to_map(), &[Arg::Bool], &scene, 0), Verdict::Record { subject: BLEAK_FALLS, seq: 0, kind: RecordKind::Marker });
+            let quest = Facts { epoch: 9, cause: Cause::Quest, ..live_marker(BLEAK_FALLS) };
+            assert_eq!(s.judge(add_to_map(), &[Arg::Bool], &quest, 0), Verdict::Record { subject: BLEAK_FALLS, seq: 0, kind: RecordKind::Marker });
+            // no object's sequence moves
+            assert_eq!((s.seq_of(AZURA), s.seq_of(BLEAK_FALLS)), (0, 0));
+        }
+
+        #[test]
+        fn a_marker_needs_a_marker_a_cause_and_a_live_quest() {
+            let mut s = ScriptCalls::default();
+            let row = add_to_map();
+            let (not_marker, why) = refused(s.judge(row, &[Arg::Bool], &Facts { marker: false, ..live_marker(PILLAR) }, 0));
+            assert_eq!(not_marker, Code::Row);
+            assert!(why.starts_with("aa8cb is no map marker by the master files"), "{why}");
+            assert_eq!(
+                refused(s.judge(row, &[Arg::Bool], &Facts { cause: Cause::None, ..live_marker(AZURA) }, 0)),
+                (Code::Owner, "no fragment cause: the calling script is attached to no quest, topic info or scene of the game files".to_owned())
+            );
+            assert_eq!(
+                refused(s.judge(row, &[Arg::Bool], &Facts { cause_live: false, ..live_marker(AZURA) }, 0)),
+                (Code::Owner, "the calling topic info's quest is not live for the reporter (no run, stage or start the server holds)".to_owned())
+            );
+            // the reporter's own player is no marker's subject
+            assert_eq!(code(&s.judge(row, &[Arg::Bool], &Facts { kind: SubjectKind::Actor, ..live_marker(0x14) }, 0)), Some(Code::Row));
+            // the shape: one Bool, the travel flag
+            assert_eq!(code(&s.judge(row, &[], &live_marker(AZURA), 0)), Some(Code::Args));
+            assert_eq!(code(&s.judge(row, &[Arg::Number], &live_marker(AZURA), 0)), Some(Code::Args));
+        }
+
+        #[test]
+        fn markers_spend_the_record_rows_budget() {
+            let mut s = ScriptCalls::default();
+            let row = add_to_map();
+            let f = live_marker(AZURA);
+            for _ in 0..BURST_RECORD {
+                assert!(matches!(s.judge(row, &[Arg::Bool], &f, 0), Verdict::Record { .. }));
+            }
+            assert_eq!(code(&s.judge(row, &[Arg::Bool], &f, 0)), Some(Code::Rate));
+            // the actions' budget is the actions' own
+            assert!(matches!(s.judge(super::row("ObjectReference", "PlayAnimation"), &[Arg::String], &hosted(PILLAR), 0), Verdict::Accept(_)));
+            // a second later, the record rows' own refill
+            assert!(matches!(s.judge(row, &[Arg::Bool], &f, 1000), Verdict::Record { .. }));
+        }
+
+        proptest! {
+            // the marker's owner step over any facts: recorded with no
+            // sequence exactly when the subject is a marker, the cause one
+            // of the three and its quest live, and never the reporter's own
+            // player; any other verdict a refusal by row or owner
+            #[test]
+            fn recorded_iff_a_marker_with_a_live_cause(
+                self_id in prop_oneof![Just(AZURA), Just(BLEAK_FALLS), Just(0x14u32), 1u32..0xff00_0000],
+                sender in prop_oneof![Just(HOST), Just(GUEST)],
+                epoch in 0u32..5,
+                kind in prop_oneof![Just(SubjectKind::Unknown), Just(SubjectKind::WorldObject), Just(SubjectKind::Record), Just(SubjectKind::DoorOrContainer), Just(SubjectKind::Actor)],
+                marker in any::<bool>(),
+                cause in prop_oneof![Just(Cause::None), Just(Cause::Quest), Just(Cause::TopicInfo), Just(Cause::Scene)],
+                cause_live in any::<bool>(),
+                travel in any::<bool>(),
+            ) {
+                let _ = travel;
+                let mut s = ScriptCalls::default();
+                let facts = Facts { sender, epoch, kind, marker, cause, cause_live, ..hosted(self_id) };
+                let takes = self_id != 0x14 && marker && cause != Cause::None && cause_live;
+                match s.judge(add_to_map(), &[Arg::Bool], &facts, 0) {
+                    Verdict::Record { subject, seq, kind: RecordKind::Marker } => {
+                        prop_assert!(takes);
+                        prop_assert_eq!((subject, seq), (self_id, 0));
+                        prop_assert_eq!(s.seq_of(self_id), 0);
+                    }
+                    Verdict::Refuse(r) => {
+                        prop_assert!(!takes);
+                        prop_assert!(matches!(r.code, Code::Row | Code::Owner), "{:?}", r.code);
+                        let dash = !r.why.contains('\u{2014}');
+                        prop_assert!(dash, "a refusal's words hold no em dash");
                     }
                     other => prop_assert!(false, "unexpected {:?}", other),
                 }

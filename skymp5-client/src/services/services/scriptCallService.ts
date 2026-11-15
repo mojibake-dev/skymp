@@ -97,6 +97,14 @@ import { TrapResultService } from "./trapResultService";
 // the platform names that player's figure where the script named the
 // player, a self that is never 0x14 and never batched (not this seat's), so
 // a relayed fragment's grant is reported once, by the acting seat.
+// thuum ADR-073 step 4's S6 (Eli's D-NT4 A; D-PO1 B, D-G6 A): a quest
+// script's ObjectReference.AddToMap, an everyone row the platform batches on
+// every seat that runs it (kind "everyone", the generated table's "marker"
+// family), goes the same way through the record queue, one piece per marker
+// in the frame: the server judges its cause (the calling script a quest's, a
+// topic info's or a scene's whose quest it holds live) and its subject (a
+// map marker by the master files), records it for every player the quest is
+// shown to and relays AddToMap to the others (docs/verbs/map-markers.md).
 // Every batched call keeps rung 3's read trigger (noteCall below).
 type Outgoing = {
     call: ScriptCall;
@@ -172,7 +180,9 @@ export class ScriptCallService extends ClientListener {
             if (call.cls === "ObjectReference" && call.fn === "ProcessTrapHit") {
                 this.noteTrapHit(call);
             }
-            if (call.kind === "state") {
+            // a state row's record, and since ADR-073 step 4's S6 an everyone
+            // row's (AddToMap's quest marker), by the generated keep column
+            if (call.kind === "state" || call.kind === "everyone") {
                 const family = ScriptCallService.recordFamily(call);
                 if (family !== undefined) {
                     this.noteRecord(call, family);
@@ -247,7 +257,7 @@ export class ScriptCallService extends ClientListener {
     // it, E_SCRIPTCALL_ROW), and its ref state is its seat's own (ADR-068
     // decision 6; a recorded disable of a player's actor would end its next
     // login, PartOne::SetUserActor)
-    private noteRecord(call: ScriptCall, family: "ref" | "standing" | "own") {
+    private noteRecord(call: ScriptCall, family: "ref" | "standing" | "own" | "marker") {
         if (family === "own") {
             // rung 5's transformation rows and D-R1 C's inventory rows: the
             // player's own alone, unfolded
@@ -378,16 +388,17 @@ export class ScriptCallService extends ClientListener {
     // two of its inventory), by the table's spelling: the generated table's
     // keep column (thuum ADR-073 step 4's S4, nativeRows.generated.ts), never
     // a list of names here
-    private static recordFamily(call: ScriptCall): "ref" | "standing" | "own" | undefined {
+    private static recordFamily(call: ScriptCall): "ref" | "standing" | "own" | "marker" | undefined {
         const native = `${call.cls}.${call.fn}`;
         return Object.prototype.hasOwnProperty.call(NATIVE_RECORD_FAMILIES, native) ? NATIVE_RECORD_FAMILIES[native] : undefined;
     }
 
     // the piece of state a record row's call sets (noteRecord's key with its
-    // self); undefined for ModFactionRank, a step that is never folded
-    private static recordSlot(call: ScriptCall, family: "ref" | "standing" | "own"): string | undefined {
-        if (family === "ref") {
-            return "ref";
+    // self); undefined for ModFactionRank, a step that is never folded. A
+    // quest marker's is the marker itself (S6: the frame's last call wins)
+    private static recordSlot(call: ScriptCall, family: "ref" | "standing" | "own" | "marker"): string | undefined {
+        if (family === "ref" || family === "marker") {
+            return family;
         }
         const first = call.args[0];
         const form = first !== null && typeof first === "object" ? first.formId.toString(16) : "none";

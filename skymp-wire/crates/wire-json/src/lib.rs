@@ -436,19 +436,27 @@ mod tests {
     /// C's leveled gap) is MS01's stage 39 reward on the seat's own player,
     /// LvlQuestReward02Medium 0xc0405 x1, with the roll its AddItemFunctor
     /// landed, Gold001 0xf x400 (x-additem-functor 20261110-151634); the
-    /// other five carry no `landed` and render none. The SpSnippet
-    /// fixture 2 is the pillar's relay with the subject's sequence; 0 and 1,
-    /// the snippets without one, render no `seq`.
+    /// other six carry no `landed` and render none. 6 (thuum ADR-073 step
+    /// 4's S6, Eli's D-NT4 A) is Riverwood's rumor's AddToMap(true) on the
+    /// Shrine of Azura's marker 0x92496 from its topic info's fragment,
+    /// TIF__00024528.Fragment_0 (Skyrim.esm INFO 0x24528's VMAD, lab/esm.py
+    /// 2026-11-15), the quest marker record's report: the shape alone at the
+    /// edge, its cause and its marker judged by wire-rules natives. The
+    /// SpSnippet fixture 2 is the pillar's relay with the subject's
+    /// sequence; 0 and 1, the snippets without one, render no `seq`, nor
+    /// does 3, the server's AddToMap(true) on that marker, the quest
+    /// marker's live relay and its login serve.
     #[test]
     fn script_call_fixtures_validate_as_named() {
         use wire_validate::{validate_server, Reject};
-        let verdicts: [(&str, Result<(), Reject>); 6] = [
+        let verdicts: [(&str, Result<(), Reject>); 7] = [
             ("75-ScriptCall-0.json", Ok(())),
             ("75-ScriptCall-1.json", Ok(())),
             ("75-ScriptCall-2.json", Ok(())),
             ("75-ScriptCall-3.json", Err(Reject::Range)),
             ("75-ScriptCall-4.json", Err(Reject::Range)),
             ("75-ScriptCall-5.json", Ok(())),
+            ("75-ScriptCall-6.json", Ok(())),
         ];
         for (name, want) in verdicts {
             let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
@@ -474,7 +482,17 @@ mod tests {
             Ok(Message::SpSnippet(s)) => assert_eq!(s.seq, Some(1)),
             other => panic!("{other:?}"),
         }
-        for name in ["30-SpSnippet-0.json", "30-SpSnippet-1.json"] {
+        // S6's quest marker: the report names the marker by its load-order
+        // id and its cause's script by name, one Bool its travel flag
+        let text = std::fs::read_to_string(fixtures_dir().join("75-ScriptCall-6.json")).unwrap_or_default();
+        match recognize(&text) {
+            Ok(Message::ScriptCall(c)) => {
+                assert_eq!((c.self_id, c.cls.as_str(), c.func.as_str(), c.caller.as_str(), c.handler.as_str()), (0x92496, "ObjectReference", "AddToMap", "TIF__00024528", "Fragment_0"));
+                assert_eq!(c.args.len(), 1);
+            }
+            other => panic!("{other:?}"),
+        }
+        for name in ["30-SpSnippet-0.json", "30-SpSnippet-1.json", "30-SpSnippet-3.json"] {
             let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
             let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(matches!(&m, Message::SpSnippet(s) if s.seq.is_none()), "{name}");

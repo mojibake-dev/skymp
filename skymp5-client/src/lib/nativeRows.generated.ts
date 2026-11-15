@@ -8,9 +8,10 @@
 // relay's in lower case as SpSnippetService compares them.
 
 // the record rows by their keep (Keep::Record): "ref" the ref state's, "standing"
-// the standing's, "own" a player's own; a placement's is none of them (W3:
-// the platform never batches it)
-export const NATIVE_RECORD_FAMILIES: { readonly [native: string]: "ref" | "standing" | "own" } = {
+// the standing's, "own" a player's own, "marker" a quest's map marker (an
+// everyone row, ADR-073 step 4's S6); a placement's is none of them (W3: the
+// platform never batches it)
+export const NATIVE_RECORD_FAMILIES: { readonly [native: string]: "ref" | "standing" | "own" | "marker" } = {
   "ObjectReference.AddItem": "own",
   "ObjectReference.RemoveItem": "own",
   "ObjectReference.Enable": "ref",
@@ -31,6 +32,7 @@ export const NATIVE_RECORD_FAMILIES: { readonly [native: string]: "ref" | "stand
   "Actor.RemoveShout": "own",
   "Actor.EquipItem": "own",
   "Actor.ChangeHeadPart": "own",
+  "ObjectReference.AddToMap": "marker",
 };
 
 // the look rows as a relay names them (class.function in lower case): every

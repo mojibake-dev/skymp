@@ -217,13 +217,22 @@ std::array<NativeRow, kRowCount> g_natives{};
 // under every lever (SkipsBody): only the player's own is recorded, so
 // nothing else carries a skipped body's item. Inside another player's acting
 // scope the self is that player's figure by now (step (0) of OnCall), never
-// 0x14, so the fragment's grant crosses once, from the acting seat
+// 0x14, so the fragment's grant crosses once, from the acting seat.
+// Since thuum ADR-073 step 4's S6 (Eli's D-NT4 A; D-PO1 B, D-G6 A) one
+// everyone row's record too, its record kind 5: ObjectReference.AddToMap
+// (FunctionsDump.txt: `AddToMap(Bool abAllowFastTravel)`, not latent), a
+// quest script's reveal of a map marker, batched on every seat that runs it
+// (OnCall's everyone branch, as an alias row is) with its self the marker,
+// its argument and its caller, and run here as before; the server judges its
+// cause and its marker and records it for every player the quest is shown
+// to (thuum docs/verbs/map-markers.md)
 enum class RecordRow : std::uint8_t
 {
   None,
   RefState,
   Standing,
-  PlayerOwn
+  PlayerOwn,
+  Marker
 };
 
 // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
@@ -418,7 +427,8 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // (QueueTouch: the script record's trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
 // flip's "Class.Name on <id>"), except an alias row's, batched on every seat
-// since rung 4; a batched call is the batch's, never counted
+// since rung 4, and a quest marker's (AddToMap, since ADR-073 step 4's S6);
+// a batched call is the batch's, never counted
 enum CountKind : std::size_t
 {
   kCountOwned,
@@ -2854,6 +2864,22 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
       return marks;
     }
     const std::uint32_t selfId = EveryoneSelfId(top->self);
+    // ADR-073 step 4's S6 (D-NT4 A): a quest's map marker row is batched on
+    // every seat that runs it, its self the marker (a reference's plain
+    // handle, EveryoneSelfId's id), and run here as before; a self that
+    // names no form is counted " (unresolved)" and never crosses
+    if (info.record == RecordRow::Marker) {
+      if (selfId == 0) {
+        Count(row, kCountUnresolved);
+        return marks;
+      }
+      if (!info.relayable) {
+        Count(row, kCountUnrelayable);
+        return marks;
+      }
+      QueueFromFrame(row, info, stack, top, kNoPage, selfId);
+      return marks;
+    }
     if (scope && info.quest != QuestRow::None) {
       PropagateScope(row, info, stack, top, selfId, *scope);
     }
@@ -3127,6 +3153,9 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
       case 4:
         info.record = RecordRow::PlayerOwn;
         break;
+      case 5:
+        info.record = RecordRow::Marker;
+        break;
       default:
         break;
     }
@@ -3246,6 +3275,8 @@ const char* CrossingNote(const RowInfo& info)
       return ", batched (a standing record row)";
     case RecordRow::PlayerOwn:
       return ", batched on the seat's own player alone (a player's own row)";
+    case RecordRow::Marker:
+      return ", batched on every seat (a quest's map marker record)";
     case RecordRow::None:
       break;
   }

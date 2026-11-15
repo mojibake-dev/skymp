@@ -19,7 +19,9 @@
 //! name lists held, and train 53's two scene starts follow the fifty, their
 //! hook a stopgap until step 5a. Since S5 every other native's row follows
 //! them in the dump's order, derived and staged ([`Generated::staged_rows`]),
-//! and the table carries its generated O(1) index ([`index_of`]). The platform
+//! and the table carries its generated O(1) index ([`index_of`]); since S6
+//! AddToMap is a live row after the scene starts, an everyone row kept as a
+//! quest's map marker record (D-NT4 A). The platform
 //! reads the live rows through wire-client-ffi's generated header (D-NT1 C)
 //! and the client through skymp5-client's nativeRows.generated.ts
 //! ([`ts_source`]), never a copy. The `natives-gen` tool
@@ -1121,9 +1123,11 @@ const TABLE_DOC: &str = concat!(
     "/// and D-E1 A's head part; the flip's AddItem and RemoveItem keep the\n",
     "/// player's own inventory on its own 0x14 since D-R1 C; then train 53's two\n",
     "/// scene starts (ADR-073 step 4's S4), creations judged as state rows whose\n",
-    "/// hook is V-scene's count. Every owner on a subject is asked (ADR-073\n",
-    "/// decision 6), and the hook column holds what the seam's name lists held.\n",
-    "/// Fifty-two live rows; then (step 4's S5) every other native of\n",
+    "/// hook is V-scene's count; then (step 4's S6, D-NT4 A) AddToMap, an\n",
+    "/// everyone row kept as a quest's map marker record. Every owner on a\n",
+    "/// subject is asked (ADR-073 decision 6), and the hook column holds what\n",
+    "/// the seam's name lists held. Fifty-three live rows; then (step 4's S5)\n",
+    "/// every other native of\n",
     "/// FunctionsDump.txt, staged: counted on its seat by what it would do and\n",
     "/// run there as before, refused by the server until its batch unstages.\n",
     "/// A native with no live row has no channel.\n",
@@ -1256,15 +1260,17 @@ pub fn ts_source(generated: &Generated) -> String {
     let rows: Vec<TableRow> = generated.live_rows().map(TableRow::of_generated).collect();
     let mut out = String::from(TS_HEADER);
     out.push_str("\n// the record rows by their keep (Keep::Record): \"ref\" the ref state's, \"standing\"\n");
-    out.push_str("// the standing's, \"own\" a player's own; a placement's is none of them (W3:\n");
-    out.push_str("// the platform never batches it)\n");
-    out.push_str("export const NATIVE_RECORD_FAMILIES: { readonly [native: string]: \"ref\" | \"standing\" | \"own\" } = {\n");
+    out.push_str("// the standing's, \"own\" a player's own, \"marker\" a quest's map marker (an\n");
+    out.push_str("// everyone row, ADR-073 step 4's S6); a placement's is none of them (W3: the\n");
+    out.push_str("// platform never batches it)\n");
+    out.push_str("export const NATIVE_RECORD_FAMILIES: { readonly [native: string]: \"ref\" | \"standing\" | \"own\" | \"marker\" } = {\n");
     for row in &rows {
         let family = match row.keep {
             Keep::Record(RecordKind::RefState) => "ref",
             Keep::Record(RecordKind::Standing) => "standing",
             Keep::Record(RecordKind::PlayerOwn) => "own",
-            _ => continue,
+            Keep::Record(RecordKind::Marker) => "marker",
+            Keep::Record(RecordKind::Placement) | Keep::Nothing | Keep::Last | Keep::Evidence | Keep::Variable => continue,
         };
         out.push_str(&format!("  {}: {},\n", ts_text(&format!("{}.{}", row.cls, row.func)), ts_text(family)));
     }
@@ -1641,10 +1647,11 @@ mod tests {
             .map(|k| g.rows.iter().filter(|r| of(r) == k).count())
         };
         // the rules' kinds (Local, State, Everyone, Action, Create), then the
-        // overlay's: BlockActivation Local, the weather's release Everyone,
-        // CreateDetectionEvent an action and the two placements state rows
+        // overlay's: BlockActivation Local, the weather's release and
+        // AddToMap's quest marker Everyone (S6), CreateDetectionEvent an action
+        // and the two placements state rows
         assert_eq!(kinds(&|r| r.derived.cells.kind), [800, 342, 239, 22, 5]);
-        assert_eq!(kinds(&|r| r.cells.kind), [801, 341, 240, 23, 3]);
+        assert_eq!(kinds(&|r| r.cells.kind), [801, 340, 241, 23, 3]);
         let by_rule: Vec<(&str, usize)> = rule_counts(&g)
             .iter()
             .map(|(r, n, _)| (r.code(), *n))
@@ -1674,19 +1681,24 @@ mod tests {
             assert_eq!(generated, committed);
             assert_eq!(generated.line(), committed.line());
         }
-        // the fifty-two live rows first, every other native after them
+        // the fifty-three live rows first, every other native after them
         // staged (S5), the dump's whole
         assert_eq!(table.len(), 1408);
-        assert_eq!(table.iter().position(|r| r.staged), Some(52));
-        assert!(table.iter().skip(52).all(|r| r.staged));
+        assert_eq!(table.iter().position(|r| r.staged), Some(53));
+        assert!(table.iter().skip(53).all(|r| r.staged));
         assert_eq!(index_of(&rows), natives::INDEX.to_vec());
         // every live row is a decided entry's, or a stopgap's whose only cell
         // is a hook naming its own deleting condition (the scene starts,
-        // V-scene's until step 5a): the table is decisions over the rules
+        // V-scene's until step 5a), or D-NT4 A's stopgap, AddToMap's record,
+        // whose entry names the step 1 quest record that replaces it: the
+        // table is decisions over the rules
         for r in g.live_rows() {
             match r.entry.map(|e| (e.class, e.cells)) {
                 Some((Class::Decided { .. }, _)) => {}
                 Some((Class::Stopgap { .. }, [Cell::Hook(hook)])) => assert!(hook.line().contains("deletes"), "{}", r.func),
+                Some((Class::Stopgap { replaced_by, deletes }, _)) if r.cells.keep == Keep::Record(RecordKind::Marker) => {
+                    assert!(replaced_by.contains("step 1's quest record") && deletes.contains("step 1's quest record"), "{}", r.func);
+                }
                 other => panic!("{}.{}: {other:?}", r.cls, r.func),
             }
         }
@@ -1739,6 +1751,7 @@ mod tests {
             ("ObjectReference", &["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"][..], "ref"),
             ("Actor", &["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"][..], "standing"),
             ("Actor", &["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem", "ChangeHeadPart"][..], "own"),
+            ("ObjectReference", &["AddToMap"][..], "marker"),
         ] {
             families.extend(funcs.iter().map(|f| format!("\"{cls}.{f}\": \"{family}\"")));
         }

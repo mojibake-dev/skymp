@@ -58,9 +58,14 @@ const SCENE_CLAIM: &str = "step 5a's scene row (ADR-073 decision 6, D-L2 B: the 
 /// Its deleting condition.
 const SCENE_CLAIM_DELETES: &str = "at 5a's scene row, when the cause seat's start claims the scene and the other seats skip theirs";
 
-/// Every overlay entry: the live table's fifty-two rows in its order (rung
-/// 5's fifty, then the two scene starts), then the derived rows' decided
-/// cells and stopgaps.
+/// AddToMap's quest marker (step 4's S6, Eli's D-NT4 A): its replacing rule.
+const QUEST_MARKERS: &str = "step 1's quest record (ADR-073 decision 2 (c); D-G6 A: the markers are the quest record's): a quest-owned marker kept on its quest's record and shown to everyone the quest is shown to";
+/// Its deleting condition.
+const QUEST_MARKERS_DELETES: &str = "when step 1's quest record holds the quest's markers and serves them at a login and to a late joiner";
+
+/// Every overlay entry: the live table's fifty-three rows in its order (rung
+/// 5's fifty, the two scene starts, then AddToMap's quest marker), then the
+/// derived rows' decided cells and stopgaps.
 pub const OVERLAY: &[Entry] = &[
     Entry {
         native: "ObjectReference.PlayAnimation",
@@ -506,6 +511,30 @@ pub const OVERLAY: &[Entry] = &[
         live: true,
         note: &[],
         cells: &[Cell::Hook(Hook::SceneStart)],
+    },
+    // step 4's S6 (Eli's D-NT4 A; D-PO1 B and D-G6 A): a quest script's
+    // AddToMap, the map-markers record's report from every seat that runs it,
+    // a stopgap until step 1's quest record holds the quest's own markers
+    Entry {
+        native: "ObjectReference.AddToMap",
+        class: Class::Stopgap { replaced_by: QUEST_MARKERS, deletes: QUEST_MARKERS_DELETES },
+        live: true,
+        note: &[
+            "ADR-073 step 4's S6 (Eli's D-NT4 A; D-PO1 B, D-G6 A): a quest script's",
+            "AddToMap reveals its marker on the map of everyone the quest is shown",
+            "to. An everyone row every seat that runs it reports, judged by its",
+            "cause (a quest's, a topic info's or a scene's script whose quest the",
+            "server holds live) and its subject (a map marker by the master files),",
+            "recorded on the map-markers record (thuum docs/verbs/map-markers.md)",
+            "and relayed live as AddToMap. Appended so no earlier row's place moves",
+        ],
+        cells: &[
+            Cell::Kind(natives::Kind::Everyone),
+            Cell::Owner(natives::Owner::Nobody),
+            Cell::Audience(Audience::Everyone),
+            Cell::Relay(Relay::Never),
+            Cell::Keep(Keep::Record(RecordKind::Marker)),
+        ],
     },
     // ADR-062's BlockActivation row (DECISIONS.md:4020, "no hook
     // (host-local)": the engine's own gate on each seat), a declared per-seat

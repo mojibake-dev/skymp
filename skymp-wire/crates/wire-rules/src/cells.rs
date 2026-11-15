@@ -63,6 +63,12 @@ pub const CLAIM_LEASE_MS: u64 = 120_000;
 /// measurement.
 pub const MAX_LEADS: usize = 4;
 
+/// The alias a lead records when the server cannot tell which of its
+/// quest's aliases holds the actor (alias_fills::ActorFill::Unresolved,
+/// R2): no alias's refill ends that lead; its quest's stop, its holder's
+/// release or the actor's death does.
+pub const UNRESOLVED_ALIAS: u32 = u32::MAX;
+
 /// What the server answers a simulator's report that moves an actor
 /// (ADR-047 D6, thuum docs/verbs/npc-handoff.md): the core turns it into
 /// the accept, the follow's record or the drop.
@@ -872,11 +878,12 @@ impl Cells {
     }
 
     /// `quest`'s alias `alias` now names `refr` (0 a clear): a lead that read
-    /// the alias on any other actor ends (the quest released her, D-53-4).
+    /// the alias on any other actor ends (the quest released her, D-53-4); a
+    /// lead at UNRESOLVED_ALIAS read no alias, and no refill ends it.
     pub fn alias_filled(&mut self, quest: u32, alias: u32, refr: u32) -> Vec<Decision> {
         self.end_purposes(ClaimEnd::Alias, |actor, f| {
             if actor != refr {
-                f.leads.retain(|&(q, a)| !(q == quest && a == alias));
+                f.leads.retain(|&(q, a)| a == UNRESOLVED_ALIAS || !(q == quest && a == alias));
             }
         })
     }
@@ -1991,6 +1998,23 @@ mod tests {
         assert!(out.contains(&Decision::Grant { player: C2, cell: RIVERWOOD, epoch: 2 }), "{out:?}");
         assert!(!out.iter().any(|d| matches!(d, Decision::ClaimEnded { .. })), "{out:?}");
         assert_eq!(c.simulator_of(CAMILLA, RIVERWOOD), C1);
+    }
+
+    #[test]
+    fn an_unresolved_lead_ends_at_no_aliass_refill_and_at_its_quests_stop() {
+        // a lead the server cannot place on one of its quest's aliases
+        // (alias_fills::ActorFill::Unresolved, R2) records UNRESOLVED_ALIAS,
+        // never alias 0, a real alias id: neither alias 0's refill nor the
+        // alias she really fills ends it; its quest's stop does
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        let unresolved = Purpose::Lead { quest: MS13, alias: UNRESOLVED_ALIAS };
+        assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, unresolved, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.alias_filled(MS13, 0, LUCAN), vec![]);
+        assert_eq!(c.alias_filled(MS13, 9, LUCAN), vec![]);
+        assert_eq!(c.claims(), vec![(CAMILLA, C1, RIVERWOOD)]);
+        assert_eq!(c.quest_stopped(MS13), vec![Decision::ClaimEnded { actor: CAMILLA, cell: RIVERWOOD, player: C1, epoch: 2, why: ClaimEnd::QuestStop }]);
+        assert_eq!(c.claims(), vec![]);
     }
 
     #[test]

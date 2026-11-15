@@ -2,11 +2,14 @@
 #include "MpActor.h"
 #include "MpObjectReference.h"
 #include "MsgType.h"
+#include "PartOneListener.h"
 #include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
 #include "TestUtils.hpp"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
+#include <map>
+#include <nlohmann/json.hpp>
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
@@ -196,6 +199,53 @@ TEST_CASE("A player's activation of a world book opens it in its own game "
   REQUIRE(OpensSentTo(p, 0, kWatcher) == 0);
   REQUIRE(reader.GetInventory().GetItemCount(kWatcherBase) == 1);
   REQUIRE(reader.GetOpenBook() == 0);
+
+  Leave(p, 0, kReader);
+}
+
+namespace {
+// the gamemode's activation events, by reference (ActivateParentTest's shape)
+class ActivateCount : public PartOneListener
+{
+public:
+  void OnConnect(Networking::UserId) override {}
+  void OnDisconnect(Networking::UserId) override {}
+  void OnCustomPacket(Networking::UserId,
+                      const simdjson::dom::element&) override
+  {
+  }
+  bool OnMpApiEvent(const GameModeEvent& event) override
+  {
+    if (event.GetName() == std::string("onActivate")) {
+      auto arr = nlohmann::json::parse(event.GetArgumentsJsonArray());
+      ++count[arr[0].get<uint32_t>()];
+    }
+    return true;
+  }
+  std::map<uint32_t, uint32_t> count;
+};
+}
+
+// thuum D-53-10: the Take is the engine's pickup from the Book Menu, never a
+// second activation, so the book's activation event fires once, at the open
+TEST_CASE("A book's Take fires no activation of its own: the gamemode sees "
+          "one activation, the open's",
+          "[Books][PartOne][espm]")
+{
+  auto& p = GetPartOne();
+  auto activations = std::make_shared<ActivateCount>();
+  p.AddListener(activations);
+  auto& book = p.worldState.GetFormAt<MpObjectReference>(kWatcher);
+  auto& reader = EnterInn(p, 0, kReader);
+
+  ActivateAsPlayer(p, 0, kWatcher);
+  REQUIRE(reader.GetOpenBook() == kWatcher);
+  REQUIRE(activations->count[kWatcher] == 1);
+
+  ActivateAsPlayer(p, 0, kWatcher);
+  REQUIRE(book.IsHarvested());
+  REQUIRE(reader.GetInventory().GetItemCount(kWatcherBase) == 1);
+  REQUIRE(activations->count[kWatcher] == 1);
 
   Leave(p, 0, kReader);
 }

@@ -259,6 +259,11 @@ public:
   // rule, which judges a book's Take alone (RefusePropPickup)
   bool IsBookReadBy(const MpObjectReference& activationSource,
                     bool reportedByHost) const;
+  // the read's Take: the player's open book is this one, so its activation is
+  // the Book Menu's Take, the engine's pickup and no activation of its own
+  // (Activate runs the pickup alone, thuum D-53-10)
+  bool IsBookTakeBy(const MpObjectReference& activationSource,
+                    bool reportedByHost) const;
   void SetRelootTime(std::chrono::system_clock::duration newRelootTime);
   void SetChanceNoneOverride(uint8_t chanceNone);
   void SetCellOrWorld(const FormDesc& worldOrCell);

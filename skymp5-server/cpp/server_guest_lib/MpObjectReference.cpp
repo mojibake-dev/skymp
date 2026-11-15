@@ -547,6 +547,18 @@ void MpObjectReference::Activate(MpObjectReference& activationSource,
       auto arg = activationSource.ToVarValue();
       SendPapyrusEvent("SkympOnActivateClose", &arg, 1);
     }
+  } else if (IsBookTakeBy(activationSource, reportedByHost)) {
+    // thuum D-53-10 (Eli: B, 2026-11-14): the Book Menu's Take reaches the
+    // server as the book's next activation, but in the engine it is a pickup
+    // (PlayerCharacter::PickUpObject from the menu, HYPOTHESIS until a trace;
+    // x-book-take reads the pickup), never an activation: the open was the
+    // book's one activation, and its ActivateEvent, linked activations and
+    // OnActivate fired there. So the Take runs the pickup alone; a gamemode
+    // that blocks a book's activation blocks it at the open, which then never
+    // happens
+    if (!activationBlocked || defaultProcessingOnly) {
+      ProcessActivateNormal(activationSource, reportedByHost);
+    }
   } else {
     ActivateEvent activateEvent(GetFormId(), activationSource.GetFormId());
 
@@ -2408,6 +2420,14 @@ bool MpObjectReference::IsBookReadBy(const MpObjectReference& activationSource,
   return !espm::Convert<espm::BOOK>(base.rec)
             ->GetData(worldState->GetEspmCache())
             .IsFlagSet(espm::BOOK::Flags::TeachesSpell);
+}
+
+bool MpObjectReference::IsBookTakeBy(const MpObjectReference& activationSource,
+                                     bool reportedByHost) const
+{
+  const auto actorActivator = activationSource.AsActor();
+  return actorActivator && actorActivator->GetOpenBook() == GetFormId() &&
+    IsBookReadBy(activationSource, reportedByHost);
 }
 
 void MpObjectReference::ProcessActivateNormal(

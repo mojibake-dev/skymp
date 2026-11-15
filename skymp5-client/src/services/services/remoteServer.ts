@@ -573,8 +573,20 @@ export class RemoteServer extends ClientListener {
   }
 
   private onBookMenuClose(e: MenuCloseEvent): void {
+    if (e.name !== Menu.Book) {
+      return;
+    }
     const book = this.bookOpen;
-    if (e.name !== Menu.Book || book === undefined) {
+    if (book === undefined) {
+      // ADR-073 decision 7: a Book Menu no server open is pending for (a
+      // book read from the inventory, a menu the engine opened by itself,
+      // one that showed after E_BOOK_MENU_NONE sent its closing activation)
+      // sends nothing; said once a session, since every inventory read
+      // closes here
+      if (!this.bookMenuCloseUnownedLogged) {
+        this.bookMenuCloseUnownedLogged = true;
+        logLab("verb:books", "the Book Menu closed with no server open pending here (an inventory read, or a menu after E_BOOK_MENU_NONE); nothing sent (said once a session)");
+      }
       return;
     }
     this.endBookOpen(book);
@@ -632,6 +644,8 @@ export class RemoteServer extends ClientListener {
   }
 
   private bookOpen: BookOpen | undefined;
+  // onBookMenuClose's line for a close with no open pending, once a session
+  private bookMenuCloseUnownedLogged = false;
   // the Book Menu showed 183 ms after the activate in 040825 (its trace's
   // rows 9 to 15); a menu not open by this is the engine's refusal
   private static readonly bookMenuDeadlineMs = 5000;

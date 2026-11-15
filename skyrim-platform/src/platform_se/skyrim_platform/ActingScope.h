@@ -79,11 +79,12 @@ struct Player
 // (SendTriggerEvent's arm), whose stages this seat's own engine sets, so
 // this seat is their cause seat. A chained request or arm (the seam's
 // propagation inside a scoped stack) inherits its parent scope's root
-// unchanged. Train 53's V-scene skips a scene start under kRelayed alone
-// (ADR-073 D-A2 C): a trigger's host starts the trigger's scenes
+// unchanged. Train 53's V-scene counts a scene start under kRelayed alone
+// (ADR-073 D-A2 C; the skip waits on step 5a's scene claim, its review's
+// correctness-1): a trigger's host starts the trigger's scenes
 // (defaultStartSceneTrigScript) and its stages' fragments' scenes (MS13's
 // 38386 stage 10, Lucan and Camilla the host's). A default Scope's kTrigger
-// skips nothing
+// counts nothing
 enum class RootKind : uint8_t
 {
   kRelayed,

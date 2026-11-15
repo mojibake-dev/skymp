@@ -433,8 +433,9 @@ Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
 // (a serverId 0, the player's own id as the figure): the pair requested, and
 // a start or a stop armed at once, with no acting player (ActingScope::
 // Swaps false), so the fragment's frames and Game.GetPlayer stay this
-// seat's, PQ-3 skips nothing, a scene start it makes is skipped (the cause
-// seat starts it) and the stages it chains carry the root on, their reports
+// seat's, PQ-3 skips nothing, a scene start it makes is counted (run until
+// ADR-073 step 5a's scene claim lets the cause seat start it alone) and the
+// stages it chains carry the root on, their reports
 // naming no acting player as before (getActingPlayer answers 0). False,
 // nothing stored, for a quest 0, a stage outside -2 to 65535 (an entry is a
 // trigger's, setActingPlayer's -3), or a ttl outside 1 to

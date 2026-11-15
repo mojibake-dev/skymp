@@ -48,9 +48,9 @@ Napi::Value SetActingPlayer(const Napi::CallbackInfo& info);
 // ttlMs), a relayed stage (0 to 65535), start (-1) or stop (-2) whose cause
 // seat is elsewhere and whose acting player is this seat's own or unnamed:
 // requested, and a word armed at once, rooted kRelayed with no acting player
-// (ActingScope::Swaps false), so a scene start its fragment makes is skipped
-// and nothing is swapped. False for a quest 0, a stage outside -2 to 65535,
-// a ttl outside 1 to 60000
+// (ActingScope::Swaps false), so a scene start its fragment makes is counted
+// (run until ADR-073 step 5a's scene claim) and nothing is swapped. False for
+// a quest 0, a stage outside -2 to 65535, a ttl outside 1 to 60000
 Napi::Value SetRelayedScope(const Napi::CallbackInfo& info);
 // getActingPlayer(questId, stage): the server id of the acting player whose
 // scope requested the pair here (relayed, or chained by a scoped stack), 0

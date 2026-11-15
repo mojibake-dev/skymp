@@ -542,7 +542,11 @@ export class ObjectAnimationService extends ClientListener {
   // again the pillar jumps to the side the server recorded (sideOfRecord):
   // StartState0N for sides 2 and 3, and for side 1, which has no jump,
   // StartState03 then Trigger03 half a second apart (placeOnSide's and
-  // resync's route). A guest's alone (a seat that hosts the cell plays its
+  // resync's route). That route is the turn playOn already tried twice, a
+  // half second between, so side 1's line says "turned toward", never
+  // "jumped" (train 53's review, correctness-9; HYPOTHESIS, R-C4's far
+  // graph: it stalls until the guest comes near, then animates the stale
+  // turn). A guest's alone (a seat that hosts the cell plays its
   // script's graph, playtest 46), stopped by a later relay of the pillar, by
   // the pillar's loss or by a grant of its cell here, each said; the pillar
   // is taken again by id after every wait (a wrapper lives one Papyrus
@@ -595,7 +599,10 @@ export class ObjectAnimationService extends ClientListener {
         step = `StartState0${side}`;
         jumps = `StartState0${side} ${refr.playAnimation(`StartState0${side}`) ? 'taken' : 'refused'}`;
       }
-      logLab('verb:traps', `${head}, and again at its queued turn${queued.jump}: jumped to the recorded side ${side} (${jumps})`);
+      const landed = side === 1
+        ? `turned toward the recorded side 1 (no jump reaches side 1: ${jumps})`
+        : `jumped to the recorded side ${side} (${jumps})`;
+      logLab('verb:traps', `${head}, and again at its queued turn${queued.jump}: ${landed}`);
     } catch (e) {
       logError(this, `${head}: the jump to the recorded side ${side} failed at ${step}: ${e}`);
     }

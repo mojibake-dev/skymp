@@ -689,9 +689,10 @@ fn check_race_overlay(o: &skymp::RaceOverlay) -> Result<(), Reject> {
 /// would strip a face) and no part named twice (the engine's lists hold each
 /// part once). The count, at most `cap::HEADPARTS`, holds at decode. Whether
 /// the race is the one the server records for the sender's player and each
-/// part an HDPT is the server's rule (`E_HEADPARTS_RACE`,
-/// `E_HEADPARTS_KIND`); the message names no actor, so it is only ever the
-/// sender's own.
+/// part an HDPT that race may wear is the server's rule (wire-rules
+/// player_own::own_head_parts: `E_HEADPARTS_RACE`, `E_HEADPARTS_KIND`,
+/// `E_HEADPARTS_RACE_LIST`); the message names no actor, so it is only ever
+/// the sender's own.
 fn check_own_head_parts(m: &skymp::OwnHeadParts) -> Result<(), Reject> {
     let form = |id: u32| id != 0 && id < PLAYER_FORMS;
     let parts = m.parts.as_slice();

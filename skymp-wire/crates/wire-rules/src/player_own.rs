@@ -93,6 +93,18 @@
 //! logs in as the player's own race. Runtime only, like the beast form it
 //! carries: a restart has none. Its lists are bounded by the bound rule (a
 //! form must be one the game files name for the calling script).
+//!
+//! One report beside the rows (thuum D-53-8 B, train 53's V-live): after its
+//! own race changed, a seat reports the head parts its own game draws on its
+//! player (OwnHeadParts 82, naming no actor, so only ever the sender's own),
+//! R2: the seat computes, the core records them on the player's look and
+//! relays them as a recorded ChangeHeadPart is. [`own_head_parts`] holds rule
+//! 5's bounds on it before the core writes anything: a recorded look, the
+//! race that look records (a race overlay's, D-T1 A, never reaches the change
+//! form, and a report under any other race is stale), 1 to [`HEAD_PARTS`]
+//! parts, each an HDPT the recorded race may wear (D-E1 A's race-list bound,
+//! read as the look's derivation and a recorded SetRace's look read it: a
+//! part whose record gives no answer passes).
 
 use std::collections::BTreeMap;
 
@@ -510,6 +522,115 @@ impl PlayerOverlays {
     }
 }
 
+/// Head parts one player's own head parts report may name (thuum D-53-8 B,
+/// OwnHeadParts 82): the wire's cap on one character, wire-schema
+/// `cap::HEADPARTS` (wire-bridge's tests hold the two equal).
+pub const HEAD_PARTS: usize = 64;
+
+/// What the core knows of a player's own head parts report beside its parts
+/// (thuum D-53-8 B, OwnHeadParts 82).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OwnHeadPartsFacts {
+    /// The player has a recorded look (its change form's appearance).
+    pub has_look: bool,
+    /// The race that look records (an overlay never moves it, D-T1 A).
+    pub recorded_race: u32,
+    /// The race the report names its parts under, the seat's word.
+    pub reported_race: u32,
+    /// The server holds the game files the parts are read from.
+    pub files: bool,
+}
+
+/// What the core knows of one part of a player's own head parts report,
+/// read from the game files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HeadPartFacts {
+    /// The part's form id, as the report names it.
+    pub form: u32,
+    /// The part's record is an HDPT.
+    pub kind: bool,
+    /// The part's HDPT valid-race FormList (RNAM) does not keep it from the
+    /// recorded race: the list holds the race, or the record gives no answer
+    /// (no RNAM, an RNAM that is no FormList), as the look's derivation
+    /// (ADR-026) and a recorded SetRace's look read it; a whole face reported
+    /// after that SetRace keeps what its look kept.
+    pub race_valid: bool,
+}
+
+/// Why a player's own head parts report is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadPartsCode {
+    /// The player has no recorded look to wear the parts.
+    NoLook,
+    /// The report's race is not the one the look records: a race overlay's
+    /// (D-T1 A) or a stale report (a SetRace the server refused, or has not
+    /// recorded yet).
+    Race,
+    /// No part, or more than [`HEAD_PARTS`].
+    Count,
+    /// A part is no HDPT record, or the server holds no game files to read
+    /// the parts from.
+    Kind,
+    /// A part is one the recorded race may not wear: its HDPT's valid-race
+    /// list (RNAM) lacks the race (D-E1 A's bound, ChangeHeadPart's).
+    RaceList,
+}
+
+impl HeadPartsCode {
+    /// The stable name the server logs.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            HeadPartsCode::NoLook => "E_HEADPARTS_NO_LOOK",
+            HeadPartsCode::Race => "E_HEADPARTS_RACE",
+            HeadPartsCode::Count => "E_HEADPARTS_COUNT",
+            HeadPartsCode::Kind => "E_HEADPARTS_KIND",
+            HeadPartsCode::RaceList => "E_HEADPARTS_RACE_LIST",
+        }
+    }
+}
+
+/// The rule's word on a player's own head parts report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadPartsVerdict {
+    /// Within the bounds: the core writes the parts on the look and the
+    /// stored RaceMenu look, or folds when both wear them already.
+    Record,
+    /// Refused, logged by the code's name with why; nothing is written.
+    Refuse(HeadPartsCode, String),
+}
+
+/// A player's own head parts report (thuum D-53-8 B, OwnHeadParts 82, R2),
+/// judged before the core writes anything, in this order: a recorded look
+/// (`E_HEADPARTS_NO_LOOK`), the race that look records
+/// (`E_HEADPARTS_RACE`), 1 to [`HEAD_PARTS`] parts (`E_HEADPARTS_COUNT`),
+/// the game files and every part an HDPT (`E_HEADPARTS_KIND`), then every
+/// part one the recorded race may wear (`E_HEADPARTS_RACE_LIST`). The first
+/// part that breaks a bound names the refusal, and a refusal writes none of
+/// the report: a face is one report.
+#[must_use]
+pub fn own_head_parts(facts: OwnHeadPartsFacts, parts: &[HeadPartFacts]) -> HeadPartsVerdict {
+    if !facts.has_look {
+        return HeadPartsVerdict::Refuse(HeadPartsCode::NoLook, "no recorded look to wear them".to_owned());
+    }
+    if facts.reported_race != facts.recorded_race {
+        return HeadPartsVerdict::Refuse(HeadPartsCode::Race, format!("its look records race {:x}, so the report is stale or its race overlay's", facts.recorded_race));
+    }
+    if parts.is_empty() || parts.len() > HEAD_PARTS {
+        return HeadPartsVerdict::Refuse(HeadPartsCode::Count, format!("1 to {HEAD_PARTS} parts are a face"));
+    }
+    if !facts.files {
+        return HeadPartsVerdict::Refuse(HeadPartsCode::Kind, "the server holds no game files to read the parts from".to_owned());
+    }
+    if let Some(part) = parts.iter().find(|p| !p.kind) {
+        return HeadPartsVerdict::Refuse(HeadPartsCode::Kind, format!("{:x} is no HDPT record", part.form));
+    }
+    if let Some(part) = parts.iter().find(|p| !p.race_valid) {
+        return HeadPartsVerdict::Refuse(HeadPartsCode::RaceList, format!("{:x} may not be worn by race {:x} (its HDPT's valid-race list, RNAM, lacks the race)", part.form, facts.recorded_race));
+    }
+    HeadPartsVerdict::Record
+}
+
 #[cfg(test)]
 #[allow(clippy::panic)] // a test's failure message, never a packet's path
 mod tests {
@@ -853,5 +974,67 @@ mod tests {
         let ended = Overlay { race: HOWL, base: NORD, spells: vec![ABILITY], ..Overlay::default() };
         assert_eq!(o.judge(ARIADNE, Row::SetRace, NORD_VAMPIRE, &script, nord), Verdict::Record { ended: Some(ended) });
         assert!(o.overlay(ARIADNE).is_none());
+    }
+
+    // thuum D-53-8 B: Ariadne's overlay list after her turn on train 53
+    // (20261115-031800 steps/184-c2-head-parts.json): FemaleHeadKhajiit,
+    // FemaleMouthKhajiit, FemaleEyesKhajiitVampire 0xee87f,
+    // BrowsFemaleArgonian00, HairFemaleOrc05, HairLineFemaleOrc05 and
+    // MarksFemaleKhajiitScar08, every one an HDPT on AllTheRaces in that load
+    // order
+    const ARIADNE_OVERLAY: [u32; 7] = [0x51612, 0x511a8, 0xee87f, 0xd82f6, 0x85de9, 0x85ddf, 0xf3916];
+
+    fn ariadne_parts() -> Vec<HeadPartFacts> {
+        ARIADNE_OVERLAY.iter().map(|&form| HeadPartFacts { form, kind: true, race_valid: true }).collect()
+    }
+
+    fn turned() -> OwnHeadPartsFacts {
+        OwnHeadPartsFacts { has_look: true, recorded_race: KHAJIIT_VAMPIRE, reported_race: KHAJIIT_VAMPIRE, files: true }
+    }
+
+    #[test]
+    fn an_own_head_parts_report_under_the_recorded_race_is_recorded() {
+        assert_eq!(own_head_parts(turned(), &ariadne_parts()), HeadPartsVerdict::Record);
+        assert_eq!(own_head_parts(turned(), &ariadne_parts()[..1]), HeadPartsVerdict::Record);
+        let names = [HeadPartsCode::NoLook, HeadPartsCode::Race, HeadPartsCode::Count, HeadPartsCode::Kind, HeadPartsCode::RaceList].map(HeadPartsCode::name);
+        assert_eq!(names, ["E_HEADPARTS_NO_LOOK", "E_HEADPARTS_RACE", "E_HEADPARTS_COUNT", "E_HEADPARTS_KIND", "E_HEADPARTS_RACE_LIST"]);
+    }
+
+    #[test]
+    fn an_own_head_parts_report_past_a_bound_is_refused_by_the_first_it_breaks() {
+        let code = |v: HeadPartsVerdict| match v {
+            HeadPartsVerdict::Refuse(code, _) => Some(code),
+            HeadPartsVerdict::Record => None,
+        };
+        let parts = ariadne_parts();
+        assert_eq!(code(own_head_parts(OwnHeadPartsFacts { has_look: false, ..turned() }, &parts)), Some(HeadPartsCode::NoLook));
+        // her base race before the turn's record, or a race overlay's
+        // (WerewolfBeastRace): stale either way
+        assert_eq!(code(own_head_parts(OwnHeadPartsFacts { reported_race: KHAJIIT, ..turned() }, &parts)), Some(HeadPartsCode::Race));
+        assert_eq!(code(own_head_parts(OwnHeadPartsFacts { reported_race: BEAST, ..turned() }, &parts)), Some(HeadPartsCode::Race));
+        assert_eq!(code(own_head_parts(turned(), &[])), Some(HeadPartsCode::Count));
+        let many = vec![HeadPartFacts { form: 0x51612, kind: true, race_valid: true }; HEAD_PARTS + 1];
+        assert_eq!(code(own_head_parts(turned(), &many)), Some(HeadPartsCode::Count));
+        assert_eq!(code(own_head_parts(turned(), &many[..HEAD_PARTS])), None);
+        assert_eq!(code(own_head_parts(OwnHeadPartsFacts { files: false, ..turned() }, &parts)), Some(HeadPartsCode::Kind));
+        // a RACE named as a part
+        let mut raced = parts.clone();
+        raced[2] = HeadPartFacts { form: KHAJIIT_VAMPIRE, kind: false, race_valid: true };
+        match own_head_parts(turned(), &raced) {
+            HeadPartsVerdict::Refuse(HeadPartsCode::Kind, why) => assert_eq!(why, "88845 is no HDPT record"),
+            other => panic!("{other:?}"),
+        }
+        // Skyrim.esm alone: her BlueNarrow eyes 0xee878 list HeadPartsKhajiit
+        // [KhajiitRace], which KhajiitRaceVampire may not wear
+        let mut kept = parts;
+        kept[2] = HeadPartFacts { form: 0xee878, kind: true, race_valid: false };
+        match own_head_parts(turned(), &kept) {
+            HeadPartsVerdict::Refuse(HeadPartsCode::RaceList, why) => assert!(why.starts_with("ee878 may not be worn by race 88845"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        // the kind before the race list, whichever part comes first
+        let mut both = kept;
+        both[6] = HeadPartFacts { form: KHAJIIT, kind: false, race_valid: true };
+        assert_eq!(code(own_head_parts(turned(), &both)), Some(HeadPartsCode::Kind));
     }
 }

@@ -3056,8 +3056,10 @@ wire_struct! {
     /// computes, the server records): the message names no actor, so it is
     /// only ever the sender's own player's; the server takes it when the race
     /// is the one it records for that player (a race overlay's, D-T1 A, or a
-    /// stale report's, is refused by name), every part is an HDPT, and the
-    /// look does not wear exactly these parts already, then records them as
+    /// stale report's, is refused by name), every part is an HDPT that race
+    /// may wear (its valid-race list, RNAM, a part whose record gives none
+    /// passing), and the look does not wear exactly these parts already
+    /// (wire-rules player_own::own_head_parts), then records them as
     /// the look's head parts with the stored RaceMenu look's part of each
     /// type the report names once rewritten to them, and sends both to every
     /// other game that sees the player, the stored look first, as a recorded
@@ -3065,8 +3067,8 @@ wire_struct! {
     /// already is folded. Reason codes: `E_VAL_RANGE` (a race or a part of 0
     /// or 0xff000000 and up, no part, a part named twice; from the server
     /// any), `E_VAL_RATE`; the server logs `E_HEADPARTS_NO_LOOK`,
-    /// `E_HEADPARTS_RACE`, `E_HEADPARTS_COUNT` and `E_HEADPARTS_KIND` by
-    /// name.
+    /// `E_HEADPARTS_RACE`, `E_HEADPARTS_COUNT`, `E_HEADPARTS_KIND` and
+    /// `E_HEADPARTS_RACE_LIST` by name.
     pub struct OwnHeadParts {
         /// `"t": 82`.
         #[serde(default)]

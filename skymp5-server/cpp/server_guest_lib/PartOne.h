@@ -467,7 +467,8 @@ public:
   // thuum D-53-8 B (train 53's V-live; lab/.cache/drafts/reads-53/
   // stage53-reads.md, train53-greens): a player's own game's report of the
   // head parts it draws on its own player (OwnHeadParts 82, R2), judged by
-  // the caller (its race the recorded one, every part an HDPT). `actor`'s
+  // the caller (wire-rules player_own::own_head_parts: its race the recorded
+  // one, every part an HDPT that race may wear). `actor`'s
   // look wears exactly `parts`, in the engine's order, when it does not wear
   // that set already; and the stored RaceMenu look names each reported part
   // whose HDPT type the report names once in place of its entry of that type

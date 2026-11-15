@@ -313,13 +313,6 @@ TEST_CASE("The change form keeps an actor's running effects, and older "
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).runningEffects);
 }
 
-// thuum docs/verbs/npc-fate.md (ADR-060; rule 6): a thrall's reanimate state
-// is kept as a state, kind 3, with the optional key "reanimate". A server
-// that predates the key reads a plain state, which it shows and ends by its
-// clock; a kind of its own would read there as a value modifier on no actor
-// value, whose sum (actor value 4294967295) the wire refuses in every set of
-// the actor (wire-validate, an actor value past the engine's). A record
-// without the key reads as a plain state.
 // thuum docs/verbs/npc-fate.md C4: a server's first player, 0xff000000,
 // has the FormDesc an empty one has ("0"), so the record keeps whether there
 // is a caster beside the desc: that caster is written and read back as one,
@@ -359,6 +352,13 @@ TEST_CASE("A running effect's caster 0xff000000 is kept as a caster, not as "
   REQUIRE_FALSE((*reread)[1].caster.has_value());
 }
 
+// thuum docs/verbs/npc-fate.md (ADR-060; rule 6): a thrall's reanimate state
+// is kept as a state, kind 3, with the optional key "reanimate". A server
+// that predates the key reads a plain state, which it shows and ends by its
+// clock; a kind of its own would read there as a value modifier on no actor
+// value, whose sum (actor value 4294967295) the wire refuses in every set of
+// the actor (wire-validate, an actor value past the engine's). A record
+// without the key reads as a plain state.
 TEST_CASE("A thrall's reanimate state is kept as a state with its key, and "
           "a state without the key reads as a plain one",
           "[MagicEffects]")

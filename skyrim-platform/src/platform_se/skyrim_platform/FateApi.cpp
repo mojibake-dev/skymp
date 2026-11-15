@@ -269,126 +269,146 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   size_t removed = 0;
   size_t added = 0;
   size_t kept = 0;
-  size_t unequipped = 0;
+  size_t wornRemoved = 0;
   // the leveled-list bases the engine lists for a container with no rolled
   // entry yet are no items (the review of 7c3c9f79, finding 3): left out
-  auto inventory = actor->GetInventory(
-    [](RE::TESBoundObject& o) { return !o.Is(RE::FormType::LeveledItem); });
-  for (auto& [object, entry] : inventory) {
-    if (!object || entry.first <= 0) {
-      continue;
-    }
-    const int32_t have = entry.first;
-    const auto it = want.find(object->formID);
-    const int32_t target = it == want.end() ? 0 : it->second;
-    if (have > target) {
-      // thuum docs/verbs/npc-fate.md 1c, the 06:12Z crashes on 18531 (the
-      // re-analyst's static read of the three stacks, 2026-11-04,
-      // HYPOTHESIS until the Frida trace): Actor::RemoveItem of a weapon
-      // queues the next-best weapon's equip on the process (MiddleHigh
-      // ProcessData::itemstoEquipUnequip, include/RE/M/
-      // MiddleHighProcessData.h:157) with that entry's ExtraDataList, and
-      // purges queued nodes only where the node's list is the a_extraList
-      // passed (nullptr matched none of them); this loop then removed the
-      // queued weapon too, freed its list, and the next actor-update job
-      // on a job thread read it (39814 to EquipObject/UnequipObject, three
-      // of three). The engine's own order instead: a worn stack is
-      // unequipped first with the queue off and applied now (ActorEquip
-      // Manager::UnequipObject, include/RE/A/ActorEquipManager.h:22), and
-      // every stack is removed BY ITS OWN LIST (InventoryEntryData::
-      // extraLists, include/RE/I/InventoryEntryData.h:61; ExtraDataList::
-      // GetCount and HasType, include/RE/E/ExtraDataList.h) so the purge
-      // matches; the listless remainder goes with nullptr as before. The
-      // lists are copied out first: a removal frees the list it is given.
-      // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip, read from
-      // the code alone since no seat's log covers 20:24 to 20:32Z:
-      // Embershard's b6fe4 and b6dbb wore 13911 and 10594f on their host's
-      // engine, items the record lacked, E_EQUIP_REFUSED at 20:19:23Z; their
-      // change forms were served to the seat that hosted next, and after its
-      // lay this loop takes such a worn piece and adds the record's own
-      // unworn: a naked body, its armor loose, as Ariadne's loot found one).
-      // One rule for a body's inventory, which the client's apply of the
-      // record's list keeps too (sync/inventory.ts applyBodyInventory): a
-      // worn stack counts toward its item's row and the unworn stacks leave
-      // first, by their own lists, then the count no list carries; a worn
-      // stack leaves only when the record holds fewer of the item than the
-      // copy wears, and the record's worn armor left unworn is dressed again
-      // after the loop. HYPOTHESIS: RemoveItem with no list takes the count
-      // no list carries; a worn piece it takes instead is dressed again too
-      int32_t toRemove = have - target;
-      std::vector<RE::ExtraDataList*> unwornLists;
-      std::vector<RE::ExtraDataList*> wornLists;
+  const auto items = [](RE::TESBoundObject& o) {
+    return !o.Is(RE::FormType::LeveledItem);
+  };
+  const auto targetOf = [&](RE::FormID id) {
+    const auto it = want.find(id);
+    return it == want.end() ? 0 : it->second;
+  };
+  // thuum #62 (on 2026-11-15 every Temple run with npc-fate on crashed a game
+  // after its relaunch, the drop's deploy included, 20261115-220337; with
+  // npcFate off, 2 of 2 ran clean): the engine's own order for
+  // taking stacks out of a loaded actor, Actor::RemoveOutfitItems (Address
+  // Library 19690, CommonLibSSE-NG src/RE/A/Actor.cpp:1300-1305; its body by
+  // REA on sky-re, Ghidra 12.1.4, 2026-11-15), the remover CommonLib's own
+  // SetDefaultOutfit calls (:1016-1029): for each list it takes, one call to
+  // the actor's RemoveItem (vtable +0x2B0, TESObjectREFR::RemoveItem's slot
+  // 0x56, include/RE/T/TESObjectREFR.h:282) with that list and no
+  // UnequipObject before it, worn or not, and after every removal it reads
+  // the inventory changes again from the top, since a removal can free or
+  // merge lists. This loop did otherwise since 802842d9 (2026-11-04): it
+  // copied out every list of an item first, then for a worn one called
+  // ActorEquipManager::UnequipObject applied now and then RemoveItem with the
+  // same pointer, so a list the unequip or an earlier removal merged or freed
+  // reached RemoveItem dangling (HYPOTHESIS: the heap write behind #62's
+  // scattered crashes; the Temple's late reconciles strip worn stacks from
+  // corpses and from Arvel's live copy in one millisecond, 20261115-132319 c1
+  // 05:30:11.134). Now one stack a pass, read afresh each pass, by its own
+  // list (the purge of a queued equip still matches it, the 06:12Z crashes'
+  // rule): an unworn list first, then the count no list carries, then a
+  // worn list, which RemoveItem unequips as the engine's remover relies on.
+  // A removal that leaves an item's count where it was ends that item's
+  // turn (its later passes skip it), and the passes are bounded
+  constexpr int kRemovePassesMax = 512;
+  std::set<RE::FormID> stuck;
+  int passes = 0;
+  for (; passes < kRemovePassesMax; ++passes) {
+    RE::TESBoundObject* object = nullptr;
+    RE::ExtraDataList* list = nullptr;
+    int32_t count = 0;
+    int32_t have = 0;
+    bool worn = false;
+    auto inventory = actor->GetInventory(items);
+    for (auto& [candidate, entry] : inventory) {
+      if (!candidate || entry.first <= 0 ||
+          stuck.count(candidate->formID) != 0) {
+        continue;
+      }
+      const int32_t over = entry.first - targetOf(candidate->formID);
+      if (over <= 0) {
+        continue;
+      }
+      RE::ExtraDataList* unworn = nullptr;
+      RE::ExtraDataList* wornList = nullptr;
       int32_t inLists = 0;
       if (entry.second && entry.second->extraLists) {
-        for (auto* list : *entry.second->extraLists) {
-          if (!list) {
+        for (auto* l : *entry.second->extraLists) {
+          if (!l) {
             continue;
           }
-          inLists += std::max<int32_t>(1, list->GetCount());
-          if (IsWornList(*list)) {
-            wornLists.push_back(list);
-          } else {
-            unwornLists.push_back(list);
+          inLists += std::max<int32_t>(1, l->GetCount());
+          if (IsWornList(*l)) {
+            if (!wornList) {
+              wornList = l;
+            }
+          } else if (!unworn) {
+            unworn = l;
           }
         }
       }
-      for (auto* list : unwornLists) {
-        if (toRemove <= 0) {
-          break;
-        }
-        const int32_t n =
-          std::min(std::max<int32_t>(1, list->GetCount()), toRemove);
-        // TESObjectREFR::RemoveItem (include/RE/T/TESObjectREFR.h:282),
-        // the handle it answers unread
-        (void)actor->RemoveItem(object, n, RE::ITEM_REMOVE_REASON::kRemove,
-                                list, nullptr);
-        toRemove -= n;
+      const int32_t loose = std::max<int32_t>(0, entry.first - inLists);
+      object = candidate;
+      have = entry.first;
+      if (unworn) {
+        list = unworn;
+        count = std::min(std::max<int32_t>(1, unworn->GetCount()), over);
+      } else if (loose > 0) {
+        list = nullptr;
+        count = std::min(loose, over);
+      } else if (wornList) {
+        list = wornList;
+        worn = true;
+        count = std::min(std::max<int32_t>(1, wornList->GetCount()), over);
+      } else {
+        list = nullptr;
+        count = over;
       }
-      const int32_t loose = std::max<int32_t>(0, have - inLists);
-      if (toRemove > 0 && loose > 0) {
-        const int32_t n = std::min(loose, toRemove);
-        (void)actor->RemoveItem(object, n, RE::ITEM_REMOVE_REASON::kRemove,
-                                nullptr, nullptr);
-        toRemove -= n;
-      }
-      auto* equipManager = RE::ActorEquipManager::GetSingleton();
-      for (auto* list : wornLists) {
-        if (toRemove <= 0) {
-          break;
-        }
-        const int32_t n =
-          std::min(std::max<int32_t>(1, list->GetCount()), toRemove);
-        if (equipManager) {
-          equipManager->UnequipObject(actor, object, list,
-                                      static_cast<std::uint32_t>(n), nullptr,
-                                      false, false, false, true);
-          ++unequipped;
-        }
-        (void)actor->RemoveItem(object, n, RE::ITEM_REMOVE_REASON::kRemove,
-                                list, nullptr);
-        toRemove -= n;
-      }
-      if (toRemove > 0) {
-        (void)actor->RemoveItem(
-          object, toRemove, RE::ITEM_REMOVE_REASON::kRemove, nullptr, nullptr);
-      }
-      removed += static_cast<size_t>(have - target);
-    } else {
-      kept += static_cast<size_t>(have);
+      break;
     }
-    if (it != want.end()) {
-      it->second = target - std::min(have, target);
+    if (!object) {
+      break;
     }
-  }
-  for (const auto& [baseId, missing] : want) {
-    if (missing <= 0) {
+    // TESObjectREFR::RemoveItem (include/RE/T/TESObjectREFR.h:282), the
+    // handle it answers unread; `list` is the entry's own, read this pass
+    (void)actor->RemoveItem(object, count, RE::ITEM_REMOVE_REASON::kRemove,
+                            list, nullptr);
+    const auto after = actor->GetInventoryCounts(items);
+    const auto left = after.find(object);
+    const int32_t now = left == after.end() ? 0 : left->second;
+    if (now >= have) {
+      stuck.insert(object->formID);
+      logger::warn("[verb:npc-fate] inventory of {:x}: {} of {:x} not "
+                   "removed (it holds {} still), left as it is",
+                   refrId, count, object->formID, now);
       continue;
     }
+    removed += static_cast<size_t>(have - now);
+    if (worn) {
+      ++wornRemoved;
+    }
+  }
+  if (passes == kRemovePassesMax) {
+    logger::warn("[verb:npc-fate] inventory of {:x}: removals stopped after "
+                 "{} passes",
+                 refrId, kRemovePassesMax);
+  }
+  // then the adds, from the counts as they stand: each row's missing count by
+  // the engine's adder, TESObjectREFR::AddObjectToContainer
+  // (include/RE/T/TESObjectREFR.h:286)
+  const auto counts = actor->GetInventoryCounts(items);
+  for (const auto& [object, have] : counts) {
+    if (object && have > 0) {
+      kept += static_cast<size_t>(std::min(have, targetOf(object->formID)));
+    }
+  }
+  for (const auto& [baseId, target] : want) {
     auto* bound = RE::TESForm::LookupByID<RE::TESBoundObject>(baseId);
     if (!bound) {
-      logger::warn("[verb:npc-fate] inventory row {:x} for {:x} is no bound "
-                   "object in this game, skipped",
-                   baseId, refrId);
+      if (target > 0) {
+        logger::warn("[verb:npc-fate] inventory row {:x} for {:x} is no "
+                     "bound object in this game, skipped",
+                     baseId, refrId);
+      }
+      continue;
+    }
+    const auto it = counts.find(bound);
+    const int32_t have = it == counts.end() ? 0 : it->second;
+    const int32_t missing = target - have;
+    if (missing <= 0) {
       continue;
     }
     actor->AddObjectToContainer(bound, nullptr, missing, nullptr);
@@ -403,11 +423,11 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   // after a burst of these removals on live copies, on BSJobs threads
   // reading the same actors)
   logger::info("[verb:npc-fate] inventory of {:x} reconciled to the record: "
-               "{} row(s) and {} worn, {} removed ({} worn stack(s) "
-               "unequipped first), {} added, {} kept, {} worn piece(s) "
-               "dressed again, on {}",
-               refrId, fate.inv.size(), fate.worn.size(), removed, unequipped,
-               added, kept, dressed, FateThreadNote());
+               "{} row(s) and {} worn, {} removed ({} worn stack(s) among "
+               "them, by their own lists, {} pass(es)), {} added, {} kept, {} "
+               "worn piece(s) dressed again, on {}",
+               refrId, fate.inv.size(), fate.worn.size(), removed, wornRemoved,
+               passes, added, kept, dressed, FateThreadNote());
 }
 
 // The copy's worn OUTFIT set against the fate's, as sets of base ids: the

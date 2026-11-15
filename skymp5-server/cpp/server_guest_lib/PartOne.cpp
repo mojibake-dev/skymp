@@ -2292,8 +2292,10 @@ void ApplyHostDecisions(PartOne& partOne,
         FlipHostedFlags(partOne, *host, d.cell, host);
         partOne.ReplayHeldSightings(d.cell, *host);
         // train 53's C-entry: the trigger enters held while nobody hosted
-        // the cell, judged again now that its host's gate is open (after the
-        // grant's word on the same ordered channel)
+        // the cell, judged again now, after the grant's word on the same
+        // ordered channel; the host's client plays a relayed entry only once
+        // its grant's pass has opened the gate (RelayedActivationService,
+        // ScriptStateService.afterHosting)
         partOne.GetActionListener().ReplayHeldTriggerEntries(d.cell);
         break;
       }

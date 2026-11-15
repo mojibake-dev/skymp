@@ -6,6 +6,7 @@ import { remoteIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
 import { PuppetService } from './puppetService';
 import { RemoteServer } from './remoteServer';
+import { ScriptStateService } from './scriptStateService';
 
 const TAG = 'verb:traps';
 // this game's own player
@@ -106,7 +107,20 @@ export class RelayedActivationService extends ClientListener {
       logError(this, `relayed entry ${target.toString(16)} by ${caster.toString(16)}: entry ${String(entry)} names no trigger event, not sent`);
       return;
     }
-    this.controller.once('update', () => this.playEntry(target, caster, entry));
+    // C-entry: a relay that comes with this seat's grant of the trigger's
+    // cell (its own blanked entry sent back, or an enter held for the grant)
+    // waits for the grant's pass, as ObjectAnimationService and
+    // LoginCellService do: the cell's script records and ref state applied
+    // and the gate open (HostService.openGate) before the event reaches the
+    // trigger's scripts, so its natives are judged as the owner's (OwnedHere);
+    // with no pass waiting it plays on the update after. The trigger's cell
+    // needs a game call, hence the first update (train 53's review,
+    // contracts-1)
+    this.controller.once('update', () => {
+      const trigger = ObjectReference.from(this.sp.Game.getFormEx(remoteIdToLocalId(target)));
+      const cell = trigger?.getParentCell()?.getFormID() ?? 0;
+      this.controller.lookupListener(ScriptStateService).afterHosting(cell, () => this.playEntry(target, caster, entry));
+    });
   }
 
   private play(remoteTarget: number, remoteCaster: number) {

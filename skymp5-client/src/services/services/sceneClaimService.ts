@@ -54,7 +54,8 @@ const hex = (n: number) => n.toString(16);
 // actors being promoted as it starts. H-S4: the sceneStart tick task lands
 // before PuppetService's next poll would stop the scene (a stop before it is
 // the playtest 41 rule, as before) and before the scene's first action here
-// (an action first would mark a relayed fragment's copy this seat's own).
+// (an action first marks a relayed fragment's copy this seat's own until the
+// start is read, which disowns the mark and releases its claims).
 export class SceneClaimService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -93,6 +94,14 @@ export class SceneClaimService extends ClientListener {
         const native = e.forced ? "Scene.ForceStart" : "Scene.Start";
         const acting = typeof e.acting === "number" ? e.acting : 0;
         if (acting !== 0) {
+            const taken = this.marks.disown(e.sceneId, `${native} inside acting player ${hex(acting)}'s scope`);
+            if (taken) {
+                for (const c of taken) {
+                    claimOutbox.push(claimMessage(c.remoteId, false, { purpose: CLAIM_SCENE, quest: c.quest, scene: e.sceneId }), `scene ${hex(e.sceneId)} of ${hex(c.quest)} released ${hex(c.remoteId)}: a relayed fragment started it (D-A2 C) after this seat's action marked it`);
+                }
+                logLab(TAG, `scene ${hex(e.sceneId)} started here by ${native} inside acting player ${hex(acting)}'s scope, read after this seat's action marked it its own (H-S4's order lost): that seat's (D-A2 C), ${taken.length} claim(s) released`);
+                return;
+            }
             if (this.marks.mark(e.sceneId, Date.now(), `${native} inside acting player ${hex(acting)}'s scope`, false)) {
                 logLab(TAG, `scene ${hex(e.sceneId)} started here by ${native} inside acting player ${hex(acting)}'s scope: that seat's (D-A2 C), nothing claimed here`);
                 this.nextPoll = 0;
@@ -127,7 +136,7 @@ export class SceneClaimService extends ClientListener {
             return;
         }
         const how = `an action on ${hex(localId)}, which this seat simulates`;
-        if (this.marks.mark(sceneId, Date.now(), how, true)) {
+        if (this.marks.mark(sceneId, Date.now(), how, true, true)) {
             logLab(TAG, `scene ${hex(sceneId)} of ${hex(quest.getFormID())} plays here with ${how}: this seat's own (D-L2 B), its actors claimed at the next poll`);
             this.nextPoll = 0;
         }

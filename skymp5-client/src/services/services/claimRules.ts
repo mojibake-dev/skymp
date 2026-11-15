@@ -53,8 +53,8 @@ export function claimMessage(remoteId: number, claim: boolean, form: ClaimForm):
 // UNMEASURED) less a talk's: TalkService sends outside it, so its claims keep
 // 2 at once and half a token a second clear of the leads' and the scenes'.
 // A message past the bucket waits here instead of being refused there (a
-// refused release would leave the server's row standing); the oldest goes
-// past OUTBOX_MAX. AliasFillService's mirrored bucket.
+// refused release would leave the server's row standing); nothing is dropped
+// (ClaimOutbox.push). AliasFillService's mirrored bucket.
 export const CLAIM_BURST = 6;
 export const CLAIM_PER_S = 1.5;
 export const OUTBOX_MAX = 64;
@@ -62,10 +62,22 @@ export const OUTBOX_MAX = 64;
 export type Outgoing = { message: MessageWithRefrId<ActorClaimMessage>; line: string };
 
 export class ClaimOutbox {
+    // a release cancels its own claim still queued (the server hears
+    // neither); nothing else is dropped: a lost release leaves the server's
+    // row standing with no timer to end it (ADR-063), a lost claim leaves the
+    // service holding what the server never granted. Each service asks a key
+    // once, so the queue is bounded by the actors it claims; past OUTBOX_MAX
+    // it is only counted
     push(message: MessageWithRefrId<ActorClaimMessage>, line: string): void {
+        if (!message.claim) {
+            const queued = this.queue.findIndex((o) => o.message.claim && o.message._refrId === message._refrId && o.message.purpose === message.purpose && o.message.quest === message.quest && o.message.scene === message.scene);
+            if (queued >= 0) {
+                this.queue.splice(queued, 1);
+                return;
+            }
+        }
         if (this.queue.length >= OUTBOX_MAX) {
-            this.queue.shift();
-            this.dropped++;
+            this.overBound++;
         }
         this.queue.push({ message, line });
     }
@@ -92,7 +104,7 @@ export class ClaimOutbox {
         return this.queue.length;
     }
 
-    dropped = 0;
+    overBound = 0;
     private queue: Outgoing[] = [];
     private tokens = CLAIM_BURST;
     private refilledAt = 0;
@@ -116,11 +128,12 @@ export type LeadVerdict = { act: "keep" } | { act: "forget"; why: string } | { a
 // D-53-4: a quest's own package on that quest's NPC is the quest's claim,
 // until the quest releases her, stops, or she dies. The seat forgets a lead
 // the server ends itself (her death; the word naming another seat: a
-// refusal, a holder's silence) and releases one its engine ends (the quest
-// stopped here, no alias of it naming her here)
+// refusal, a holder's silence) and releases one its engine ends (the actor
+// gone from this game, which no server end matches since a lead outlives its
+// holder's unload; the quest stopped here; no alias of it naming her here)
 export function judgeLead(r: LeadReading): LeadVerdict {
     if (!r.present()) {
-        return { act: "forget", why: "the actor is not in this game" };
+        return { act: "release", why: "the actor is not in this game" };
     }
     if (r.dead()) {
         return { act: "forget", why: "her death (the server's death ends the row)" };
@@ -149,13 +162,16 @@ export function opensLead(r: LeadReading): boolean {
 // and the puppet rule waits on their claims. A cause seat's mark is this
 // seat's copy of a scene a relayed fragment started inside another player's
 // acting scope: nothing is claimed for it, and it keeps the scene from being
-// taken for this seat's own by its actions here. A mark not seen playing
-// within SCENE_START_WAIT_MS is let go (a start the engine refused); one seen
-// playing and then not has ended. A claim is pending for CLAIM_PENDING_MS
-// (TalkService's unanswered claim, 3 s), from its mark until it is sent,
-// then from its send; a claim of an actor this seat simulated when it was
-// sent is never pending once she is a puppet here (the word took her after
-// the claim: another seat's claim won her, the first claim winning).
+// taken for this seat's own by its actions here; read after an action that
+// marked it own, it disowns that mark (disown) and its claims are released.
+// A mark not seen playing within SCENE_START_WAIT_MS is let go (a start the
+// engine refused); one seen playing and then not has ended. A claim is
+// pending for CLAIM_PENDING_MS (TalkService's unanswered claim, 3 s), from
+// its mark until it is pushed to the claims' outbox, then from its push
+// (behind a backlog the window can pass before the claim leaves); a claim of
+// an actor this seat simulated when it was sent is never pending once she is
+// a puppet here (the word took her after the claim: another seat's claim won
+// her, the first claim winning).
 export const SCENE_START_WAIT_MS = 10_000;
 export const CLAIM_PENDING_MS = 3_000;
 export const MARKS_MAX = 64;
@@ -165,16 +181,19 @@ export type SceneState = "waiting" | "playing" | "ended" | "expired";
 // mine: the actor was this seat's to simulate when the claim was sent
 export type SceneClaim = { localId: number; remoteId: number; sceneId: number; quest: number; at: number; mine: boolean };
 
-type Mark = { since: number; how: string; own: boolean; seenPlaying: boolean; playing: boolean };
+// byAction: own by this seat's sceneAction alone (no start of its own was
+// seen), which a relayed fragment's start read after it disowns
+type Mark = { since: number; how: string; own: boolean; byAction: boolean; seenPlaying: boolean; playing: boolean };
 
 export class SceneMarks {
     // true for a scene newly marked, or a cause seat's mark this seat's own
     // start makes its own
-    mark(sceneId: number, now: number, how: string, own: boolean): boolean {
+    mark(sceneId: number, now: number, how: string, own: boolean, byAction = false): boolean {
         const known = this.marks.get(sceneId);
         if (known) {
             if (own && !known.own) {
                 known.own = true;
+                known.byAction = byAction;
                 known.how = how;
                 return true;
             }
@@ -183,11 +202,34 @@ export class SceneMarks {
         if (this.marks.size >= MARKS_MAX) {
             const oldest = this.marks.keys().next();
             if (!oldest.done) {
-                this.drop(oldest.value);
+                for (const c of this.drop(oldest.value)) {
+                    claimOutbox.push(claimMessage(c.remoteId, false, { purpose: CLAIM_SCENE, quest: c.quest, scene: c.sceneId }), `scene ${c.sceneId.toString(16)} of ${c.quest.toString(16)} released ${c.remoteId.toString(16)}: its mark was evicted past MARKS_MAX`);
+                }
             }
         }
-        this.marks.set(sceneId, { since: now, how, own, seenPlaying: false, playing: false });
+        this.marks.set(sceneId, { since: now, how, own, byAction, seenPlaying: false, playing: false });
         return true;
+    }
+
+    // a relayed fragment's start read after this seat's own action marked
+    // the scene (H-S4's order lost): the cause seat's after all; the
+    // claims made under the own mark, to release
+    disown(sceneId: number, how: string): SceneClaim[] | null {
+        const mark = this.marks.get(sceneId);
+        if (!mark || !mark.own || !mark.byAction) {
+            return null;
+        }
+        mark.own = false;
+        mark.byAction = false;
+        mark.how = how;
+        const out: SceneClaim[] = [];
+        this.claimsMade.forEach((claim, key) => {
+            if (claim.sceneId === sceneId) {
+                out.push(claim);
+                this.claimsMade.delete(key);
+            }
+        });
+        return out;
     }
 
     has(sceneId: number): boolean {

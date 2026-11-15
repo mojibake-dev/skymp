@@ -641,7 +641,7 @@ TEST_CASE("Under questScope derived a player-class quest's stage and word are "
   REQUIRE(cure > 0);
   p.SetPlayerQuestSettings(
     "{}", "{}", fmt::format(R"({{"5c625:Skyrim.esm": [{}]}})", cure));
-  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])");
+  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])", "[]");
   QuestLog log;
   REQUIRE(p.CheckSharedQuest(FormDesc::FromString("2ba16:Skyrim.esm")) == 3);
   REQUIRE(p.CheckSharedQuest(FormDesc::FromString("eafd5:Skyrim.esm")) == 3);

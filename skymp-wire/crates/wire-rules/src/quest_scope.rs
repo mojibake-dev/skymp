@@ -5,7 +5,7 @@
 //! werewolf's) crossing would turn every seat's player. ADR-020's shape:
 //! the rule is here, over facts the core gathers from the game files.
 //!
-//! Two halves. The alias half reads libespm's QUST aliases (libespm
+//! Three halves. The alias half reads libespm's QUST aliases (libespm
 //! QUST.h's Alias): a quest whose aliases are all the player's is Player,
 //! an alias being the player's when it is forced to the player's reference
 //! (ALFR [`PLAYER_REF`] 0x14), fills with the player's unique actor (ALUA
@@ -23,6 +23,21 @@
 //! scripts' state natives all aim at the player, read H-QS2); the list
 //! never overrides an alias, so a listed quest with a world alias stays
 //! World. A quest with no alias the list does not name is World.
+//!
+//! The started half is the generated setting `playerStartedQuests`
+//! (FormDescs, the same census's emit; thuum D-VC2 B, Eli 2026-11-14
+//! 23:15Z, narrowing D-VC1 B: "a quest is the player's only if what starts it
+//! reads the player's own state, such as Falion's topic for a vampire"): a
+//! quest one of whose fragments calls into a player quest's scripts and
+//! every one of whose starts reads the player's own state (the census's
+//! rule, lab/tools/quest-census.py's docstring) is Player, whatever its
+//! aliases. This half overrides the alias rule, for the quests it names
+//! alone: Rising at Dawn VC01 0x5c625, whose aliases are Falion and his
+//! markers (the world's), is the player's, since each of its seven starts is
+//! the player's vampirism (PlayerVampireQuestScript's VampireChange, or a
+//! condition on the player's Vampire keyword), and it reached both journals
+//! in playtest 52 when Falion's topic set its stage 100 on the world. A
+//! named quest's class is Player whether or not the other halves agree.
 //!
 //! The setting `questScope` says whether the class acts: "off" (the
 //! default) measures only, the core's startup line naming the marked set
@@ -144,9 +159,21 @@ pub fn player_alias_ids(aliases: &[Alias]) -> Vec<u32> {
     aliases.iter().filter(|a| !a.location && is_players(a, aliases)).map(|a| a.id).collect()
 }
 
+/// A quest's class from all three halves: Player when `playerStartedQuests`
+/// names it (`started`), whatever its aliases; otherwise [`classify`]'s.
+#[must_use]
+pub fn class_of(aliases: &[Alias], listed: bool, started: bool) -> Class {
+    if started {
+        Class::Player
+    } else {
+        classify(aliases, listed)
+    }
+}
+
 /// A quest's class from its `aliases` and whether `playerQuests` names it
-/// (`listed`): with aliases, Player when every one is the player's, World
-/// otherwise whatever the list says; with none, Player when listed.
+/// (`listed`), the alias and list halves: with aliases, Player when every one
+/// is the player's, World otherwise whatever the list says; with none, Player
+/// when listed.
 #[must_use]
 pub fn classify(aliases: &[Alias], listed: bool) -> Class {
     if aliases.is_empty() {
@@ -159,40 +186,51 @@ pub fn classify(aliases: &[Alias], listed: bool) -> Class {
     }
 }
 
-/// The two settings: whether the class acts and the generated list half.
+/// The three settings: whether the class acts, the generated list half and
+/// the generated started half.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct QuestScope {
     mode: Mode,
     listed: Vec<FormDesc>,
+    started: Vec<FormDesc>,
+}
+
+/// A setting's list of quests, `setting` naming it in the error: a JSON
+/// list of "<hex id>:<plugin>" strings, each quest once.
+fn quest_list(setting: &str, json: &str) -> Result<Vec<FormDesc>, SettingsError> {
+    let entries = match serde_json::from_str::<serde_json::Value>(json).map_err(|e| SettingsError(format!("{setting}: {e}")))? {
+        serde_json::Value::Array(entries) => entries,
+        other => return Err(SettingsError(format!("{setting}: {other} is not a list of \"<hex id>:<plugin>\""))),
+    };
+    let mut out: Vec<FormDesc> = Vec::with_capacity(entries.len());
+    for e in &entries {
+        let serde_json::Value::String(name) = e else {
+            return Err(SettingsError(format!("{setting}: {e} is not \"<hex id>:<plugin>\"")));
+        };
+        let d = FormDesc::parse(name).map_err(|why| SettingsError(format!("{setting}: {why}")))?;
+        if out.iter().any(|q| q.is(d.short_id, &d.file)) {
+            return Err(SettingsError(format!("{setting}: {name:?} is listed twice")));
+        }
+        out.push(d);
+    }
+    Ok(out)
 }
 
 impl QuestScope {
     /// The settings from their JSON texts: `questScope`'s value, the string
-    /// "off" or "derived", and `playerQuests`', a list of "<hex id>:<plugin>"
-    /// strings (`[]` for none), each quest once. The core passes `"off"` and
-    /// `[]` for a key the file lacks. The error names what is wrong.
-    pub fn from_settings(mode_json: &str, player_quests_json: &str) -> Result<Self, SettingsError> {
+    /// "off" or "derived", and `playerQuests`' and `playerStartedQuests`',
+    /// each a list of "<hex id>:<plugin>" strings (`[]` for none), each quest
+    /// once in its list. The core passes `"off"` and `[]` for a key the file
+    /// lacks. The error names what is wrong.
+    pub fn from_settings(mode_json: &str, player_quests_json: &str, player_started_quests_json: &str) -> Result<Self, SettingsError> {
         let mode = match serde_json::from_str::<serde_json::Value>(mode_json).map_err(|e| SettingsError(format!("questScope: {e}")))? {
             serde_json::Value::String(m) if m == "off" => Mode::Off,
             serde_json::Value::String(m) if m == "derived" => Mode::Derived,
             other => return Err(SettingsError(format!("questScope: {other} is neither \"off\" nor \"derived\""))),
         };
-        let entries = match serde_json::from_str::<serde_json::Value>(player_quests_json).map_err(|e| SettingsError(format!("playerQuests: {e}")))? {
-            serde_json::Value::Array(entries) => entries,
-            other => return Err(SettingsError(format!("playerQuests: {other} is not a list of \"<hex id>:<plugin>\""))),
-        };
-        let mut listed: Vec<FormDesc> = Vec::with_capacity(entries.len());
-        for e in &entries {
-            let serde_json::Value::String(name) = e else {
-                return Err(SettingsError(format!("playerQuests: {e} is not \"<hex id>:<plugin>\"")));
-            };
-            let d = FormDesc::parse(name).map_err(|why| SettingsError(format!("playerQuests: {why}")))?;
-            if listed.iter().any(|q| q.is(d.short_id, &d.file)) {
-                return Err(SettingsError(format!("playerQuests: {name:?} is listed twice")));
-            }
-            listed.push(d);
-        }
-        Ok(Self { mode, listed })
+        let listed = quest_list("playerQuests", player_quests_json)?;
+        let started = quest_list("playerStartedQuests", player_started_quests_json)?;
+        Ok(Self { mode, listed, started })
     }
 
     /// Whether the class acts.
@@ -213,10 +251,22 @@ impl QuestScope {
         self.listed.iter().any(|q| q.is(short_id, file))
     }
 
-    /// The quest's class from its aliases and the list half.
+    /// The started half, in the setting's order.
+    #[must_use]
+    pub fn started(&self) -> &[FormDesc] {
+        &self.started
+    }
+
+    /// Whether `playerStartedQuests` names the quest `short_id` in `file`.
+    #[must_use]
+    pub fn is_started(&self, short_id: u32, file: &str) -> bool {
+        self.started.iter().any(|q| q.is(short_id, file))
+    }
+
+    /// The quest's class from its aliases and the list and started halves.
     #[must_use]
     pub fn class(&self, quest: &FormDesc, aliases: &[Alias]) -> Class {
-        classify(aliases, self.is_listed(quest.short_id, &quest.file))
+        class_of(aliases, self.is_listed(quest.short_id, &quest.file), self.is_started(quest.short_id, &quest.file))
     }
 }
 
@@ -293,9 +343,39 @@ mod tests {
     }
 
     #[test]
+    fn a_quest_whose_start_reads_the_player_is_the_players_whatever_its_aliases() {
+        // thuum D-VC2 B: VC01 0x5c625's aliases are Falion's unique actor
+        // 0x135e9, a soul gem 0x2e500 created in him and two markers (the
+        // census, 2026-11-15: alias 0 ALUA 0x135e9, 1 ALCO 0x2e500 in alias
+        // 0, 2 and 3 forced 0x44389 and 0x1eb95), so the alias half makes it
+        // World; the started half names it, so it is the player's
+        let vc01 = [
+            Alias { id: 0, unique_actor: 0x135e9, ..Alias::default() },
+            Alias { id: 1, created: 0x2e500, create_at: CREATE_IN, ..Alias::default() },
+            forced(2, 0x44389),
+            forced(3, 0x1eb95),
+        ];
+        assert_eq!(classify(&vc01, false), Class::World);
+        assert_eq!(class_of(&vc01, false, true), Class::Player);
+        assert_eq!(class_of(&vc01, false, false), Class::World, "without the start fact the alias half decides");
+        assert_eq!(class_of(&[], false, true), Class::Player, "with no alias, the started half alone");
+        let scope = QuestScope::from_settings(r#""derived""#, r#"["0eafd5:Skyrim.esm"]"#, r#"["5c625:Skyrim.esm"]"#).unwrap_or_default();
+        assert_eq!(scope.started(), &[FormDesc { short_id: 0x5c625, file: "Skyrim.esm".to_owned() }]);
+        assert!(scope.is_started(0x5c625, "skyrim.esm") && !scope.is_started(0x5c625, "Dawnguard.esm"));
+        assert_eq!(scope.class(&FormDesc { short_id: 0x5c625, file: "Skyrim.esm".to_owned() }, &vc01), Class::Player);
+        // MS13 0x39645 has a world alias and no start fact: World, as before
+        let ms13 = [Alias { id: 1, unique_actor: 0x39646, ..Alias::default() }, forced(10, 0x1fc43)];
+        assert_eq!(scope.class(&FormDesc { short_id: 0x39645, file: "Skyrim.esm".to_owned() }, &ms13), Class::World);
+        // the list half unchanged: a listed quest with no alias is Player, a
+        // listed quest with a world alias stays World
+        assert_eq!(scope.class(&FormDesc { short_id: 0xeafd5, file: "Skyrim.esm".to_owned() }, &[]), Class::Player);
+        assert_eq!(scope.class(&FormDesc { short_id: 0xeafd5, file: "Skyrim.esm".to_owned() }, &ms13), Class::World);
+    }
+
+    #[test]
     fn a_quest_with_no_alias_is_the_lists() {
         // PlayerVampireQuest 0xeafd5 has no alias (read H-QS2): the list's
-        let scope = QuestScope::from_settings(r#""derived""#, r#"["0eafd5:Skyrim.esm"]"#).unwrap_or_default();
+        let scope = QuestScope::from_settings(r#""derived""#, r#"["0eafd5:Skyrim.esm"]"#, "[]").unwrap_or_default();
         assert_eq!(scope.mode(), Mode::Derived);
         assert_eq!(scope.class(&FormDesc { short_id: 0xeafd5, file: "skyrim.esm".to_owned() }, &[]), Class::Player);
         assert_eq!(scope.class(&FormDesc { short_id: 0x74a83, file: "Skyrim.esm".to_owned() }, &[]), Class::World);
@@ -304,13 +384,21 @@ mod tests {
 
     #[test]
     fn the_settings_parse_and_refuse_by_name() {
-        let off = QuestScope::from_settings(r#""off""#, "[]");
-        assert!(off.as_ref().is_ok_and(|s| s.mode() == Mode::Off && s.listed().is_empty()));
+        let off = QuestScope::from_settings(r#""off""#, "[]", "[]");
+        assert!(off.as_ref().is_ok_and(|s| s.mode() == Mode::Off && s.listed().is_empty() && s.started().is_empty()));
         assert_eq!(QuestScope::default().mode(), Mode::Off);
-        let two = QuestScope::from_settings(r#""derived""#, r#"["0eafd5:Skyrim.esm", "0x2ba16:Skyrim.esm"]"#);
+        let two = QuestScope::from_settings(r#""derived""#, r#"["0eafd5:Skyrim.esm", "0x2ba16:Skyrim.esm"]"#, "[]");
         assert!(two.as_ref().is_ok_and(|s| s.listed().len() == 2 && s.is_listed(0x2ba16, "SKYRIM.ESM") && !s.is_listed(0x2ba16, "Dawnguard.esm")));
+        // the same quest in both lists is no error: each list is its own half
+        let both = QuestScope::from_settings(r#""derived""#, r#"["5c625:Skyrim.esm"]"#, r#"["5c625:Skyrim.esm"]"#);
+        assert!(both.as_ref().is_ok_and(|s| s.is_listed(0x5c625, "Skyrim.esm") && s.is_started(0x5c625, "Skyrim.esm")));
         for (mode, list) in [(r#""aliases""#, "[]"), ("1", "[]"), ("off", "[]"), (r#""off""#, r#"{"0eafd5:Skyrim.esm": 1}"#), (r#""off""#, r#"["0eafd5"]"#), (r#""off""#, r#"[7]"#), (r#""off""#, r#"["0eafd5:Skyrim.esm", "eafd5:Skyrim.esm"]"#)] {
-            assert!(QuestScope::from_settings(mode, list).is_err(), "{mode} {list}");
+            assert!(QuestScope::from_settings(mode, list, "[]").is_err(), "{mode} {list}");
+            // the started half takes the list half's validation, by its own name
+            if mode == r#""off""# {
+                let refused = QuestScope::from_settings(mode, "[]", list);
+                assert!(refused.as_ref().is_err_and(|e| e.0.starts_with("playerStartedQuests: ")), "{list}: {refused:?}");
+            }
         }
     }
 
@@ -328,6 +416,14 @@ mod tests {
     }
 
     proptest! {
+        // the started half: a named quest is Player whatever its aliases and
+        // the list; an unnamed one is the other two halves'
+        #[test]
+        fn a_named_quest_is_the_players_and_an_unnamed_one_the_other_halves(aliases in proptest::collection::vec(alias(), 0..8), listed in any::<bool>()) {
+            prop_assert_eq!(class_of(&aliases, listed, true), Class::Player);
+            prop_assert_eq!(class_of(&aliases, listed, false), classify(&aliases, listed));
+        }
+
         // any facts: a class, never a panic; a quest with an alias that is
         // not the player's is World whatever the list says, one with none is
         // the list's, and a world alias never turns Player by another alias

@@ -475,7 +475,8 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
         : std::string("[]"));
     // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md
     // section 8(a)): the quest scope, `questScope` ("off", the default,
-    // measures; "derived" acts) and `playerQuests` (the census's list half);
+    // measures; "derived" acts), `playerQuests` (the census's list half) and
+    // `playerStartedQuests` (its started half, thuum D-VC2 B);
     // the condition-read script variables, `conditionVariables` (D-V1 B);
     // and the census's per-quest companions, `playerQuestGlobals`,
     // `playerQuestVariables` and `playerQuestCallers`, the same way (an
@@ -486,7 +487,8 @@ ScampServer::ScampServer(const Napi::CallbackInfo& info)
                                           : std::string(fallback);
     };
     partOne->SetQuestScopeSettings(settingOr("questScope", "\"off\""),
-                                   settingOr("playerQuests", "[]"));
+                                   settingOr("playerQuests", "[]"),
+                                   settingOr("playerStartedQuests", "[]"));
     partOne->SetScriptVariablesSettings(settingOr("conditionVariables", "[]"));
     partOne->SetPlayerQuestSettings(settingOr("playerQuestGlobals", "{}"),
                                     settingOr("playerQuestVariables", "{}"),

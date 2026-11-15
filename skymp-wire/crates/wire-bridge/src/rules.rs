@@ -3524,12 +3524,13 @@ mod ffi {
         fn quest_runs_without(record: &[QuestRunRow], short_id: u32, file: &str) -> Vec<QuestRunRow>;
 
         /// thuum ADR-068 rung 5 (D-Q1's derivation whole): the settings
-        /// `questScope` ("off" measures, "derived" acts) and `playerQuests`
-        /// (the generated list half), wire-rules quest_scope.
+        /// `questScope` ("off" measures, "derived" acts), `playerQuests`
+        /// (the generated list half) and `playerStartedQuests` (the
+        /// generated started half, thuum D-VC2 B), wire-rules quest_scope.
         type QuestScope;
-        /// The settings from their values' JSON texts (pass `"off"` and `[]`
-        /// for a key the file lacks); the error names what is wrong.
-        fn new_quest_scope(mode_json: &str, player_quests_json: &str) -> Result<Box<QuestScope>>;
+        /// The settings from their values' JSON texts (pass `"off"`, `[]`
+        /// and `[]` for a key the file lacks); the error names what is wrong.
+        fn new_quest_scope(mode_json: &str, player_quests_json: &str, player_started_quests_json: &str) -> Result<Box<QuestScope>>;
         /// Whether the class acts ("derived"): compose the marked quests in
         /// (shared_quests_set_player, script_variables_set_player) and
         /// refuse a marked quest's report. False ("off"): log the
@@ -3537,11 +3538,14 @@ mod ffi {
         fn quest_scope_acting(self: &QuestScope) -> bool;
         /// The list half, in the setting's order (stage 0).
         fn quest_scope_listed(self: &QuestScope) -> Vec<QuestStageEntry>;
+        /// The started half, in the setting's order (stage 0).
+        fn quest_scope_started(self: &QuestScope) -> Vec<QuestStageEntry>;
         /// The class of the quest `short_id` in `file` from its `aliases`
         /// (every ALST and ALLS of its QUST record, libespm's order): 1
-        /// Player (every alias the player's, or none and the list names
-        /// it), 0 World (a world alias, whatever the list says, or none and
-        /// unlisted).
+        /// Player (the started half names it, whatever its aliases; every
+        /// alias the player's; or none and the list names it), 0 World (the
+        /// started half silent, and a world alias whatever the list says,
+        /// or none and unlisted).
         fn quest_scope_class(self: &QuestScope, short_id: u32, file: &str, aliases: &[QuestScopeAliasRow]) -> u8;
         /// thuum D-Q9 B: the ids of the reference aliases among a quest's
         /// `aliases` (every ALST and ALLS of its QUST record) that are the
@@ -6252,8 +6256,8 @@ fn quest_runs_without(record: &[QuestRunRow], short_id: u32, file: &str) -> Vec<
 /// thuum ADR-068 rung 5: the quest scope's settings (wire-rules quest_scope).
 pub struct QuestScope(quest_scope::QuestScope);
 
-fn new_quest_scope(mode_json: &str, player_quests_json: &str) -> Result<Box<QuestScope>, clock::SettingsError> {
-    quest_scope::QuestScope::from_settings(mode_json, player_quests_json).map(|s| Box::new(QuestScope(s)))
+fn new_quest_scope(mode_json: &str, player_quests_json: &str, player_started_quests_json: &str) -> Result<Box<QuestScope>, clock::SettingsError> {
+    quest_scope::QuestScope::from_settings(mode_json, player_quests_json, player_started_quests_json).map(|s| Box::new(QuestScope(s)))
 }
 
 impl QuestScope {
@@ -6263,6 +6267,10 @@ impl QuestScope {
 
     fn quest_scope_listed(&self) -> Vec<QuestStageEntry> {
         quest_entries(self.0.listed())
+    }
+
+    fn quest_scope_started(&self) -> Vec<QuestStageEntry> {
+        quest_entries(self.0.started())
     }
 
     fn quest_scope_class(&self, short_id: u32, file: &str, aliases: &[QuestScopeAliasRow]) -> u8 {
@@ -7446,13 +7454,17 @@ mod tests {
     }
 
     #[test]
-    fn the_bridge_classes_a_quest_by_its_aliases_and_the_list() {
+    fn the_bridge_classes_a_quest_by_its_aliases_the_list_and_its_start() {
         // thuum ADR-068 rung 5: PlayerWerewolfQuest 0x2ba16's alias by ALUA
         // 0x7, PlayerVampireQuest 0xeafd5 by the list, MS13 0x39645 World
         let alias = |id: u32, forced: u32, unique_actor: u32| QuestScopeAliasRow { id, location: false, forced, unique_actor, created: 0, create_at: 0, external: false, external_forced: 0, external_unique_actor: 0 };
-        let scope = new_quest_scope(r#""derived""#, r#"["0eafd5:Skyrim.esm"]"#).unwrap_or_else(|_| Box::new(QuestScope(quest_scope::QuestScope::default())));
+        let scope = new_quest_scope(r#""derived""#, r#"["0eafd5:Skyrim.esm"]"#, r#"["5c625:Skyrim.esm"]"#).unwrap_or_else(|_| Box::new(QuestScope(quest_scope::QuestScope::default())));
         assert!(scope.quest_scope_acting());
         assert_eq!(scope.quest_scope_listed(), vec![QuestStageEntry { short_id: 0xeafd5, file: "Skyrim.esm".to_owned(), stage: 0 }]);
+        assert_eq!(scope.quest_scope_started(), vec![QuestStageEntry { short_id: 0x5c625, file: "Skyrim.esm".to_owned(), stage: 0 }]);
+        // thuum D-VC2 B: VC01 0x5c625 by the started half, its world aliases
+        // (Falion's unique actor, a marker) whatever
+        assert_eq!(scope.quest_scope_class(0x5c625, "Skyrim.esm", &[alias(0, 0, 0x135e9), alias(3, 0x1eb95, 0)]), 1);
         assert_eq!(scope.quest_scope_class(0x2ba16, "Skyrim.esm", &[alias(0, 0, 7)]), 1);
         assert_eq!(scope.quest_scope_class(0xeafd5, "Skyrim.esm", &[]), 1);
         assert_eq!(scope.quest_scope_class(0x39645, "Skyrim.esm", &[alias(1, 0, 0x39646), alias(10, 0x1fc43, 0)]), 0);
@@ -7463,10 +7475,11 @@ mod tests {
         let created = QuestScopeAliasRow { created: 0x39647, create_at: alias_fills::CREATE_IN, ..alias(1, 0, 0) };
         assert_eq!(scope.quest_scope_class(0x12345, "Skyrim.esm", &[alias(0, 0x14, 0), created, QuestScopeAliasRow { id: 2, ..external }]), 1);
         assert_eq!(scope.quest_scope_class(0x12345, "Skyrim.esm", &[alias(0, 0x14, 0), QuestScopeAliasRow { location: true, ..alias(0, 0, 0) }]), 0);
-        let off = new_quest_scope(r#""off""#, "[]");
-        assert!(off.as_ref().is_ok_and(|s| !s.quest_scope_acting() && s.quest_scope_listed().is_empty()));
-        assert!(new_quest_scope(r#""aliases""#, "[]").is_err());
-        assert!(new_quest_scope(r#""off""#, r#"["0eafd5"]"#).is_err());
+        let off = new_quest_scope(r#""off""#, "[]", "[]");
+        assert!(off.as_ref().is_ok_and(|s| !s.quest_scope_acting() && s.quest_scope_listed().is_empty() && s.quest_scope_started().is_empty()));
+        assert!(new_quest_scope(r#""aliases""#, "[]", "[]").is_err());
+        assert!(new_quest_scope(r#""off""#, r#"["0eafd5"]"#, "[]").is_err());
+        assert!(new_quest_scope(r#""off""#, "[]", r#"["5c625"]"#).is_err());
     }
 
     #[test]

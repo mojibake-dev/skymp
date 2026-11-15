@@ -15,7 +15,9 @@ PartOne& GetPartOne();
 // libespm reads them (AliasCreatedTest's idiom: the game files through
 // GetPartOne()'s loader, the five masters), the generated list half
 // (`playerQuests`) naming the quests with no alias whose scripts' state
-// natives all aim at the player. PlayerWerewolfQuest 0x2ba16 is the player's
+// natives all aim at the player, and the started half
+// (`playerStartedQuests`, thuum D-VC2 B) naming the quests whose start reads
+// the player's own state. PlayerWerewolfQuest 0x2ba16 is the player's
 // by its alias 0's ALUA 0x7 (no ALFR), PlayerVampireQuest 0xeafd5 by the
 // list (it has no alias), Dawnguard's DLC1PlayerVampireQuest 0x020071d0 by
 // its aliases (the census over the deployed files); the vampire castle's
@@ -105,7 +107,7 @@ TEST_CASE("The quest scope classes the masters' quests: the werewolf by its "
   ScopeLog log;
   p.SetSharedQuestsSettings(
     R"({"mode":"all","denied":["4e50d:Skyrim.esm"],"allowed":["39645:Skyrim.esm"]})");
-  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])");
+  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])", "[]");
 
   // the player's (H-QS1 by ALUA 0x7, H-QS2 by the list, Dawnguard's by its
   // aliases)
@@ -155,20 +157,52 @@ TEST_CASE("Under questScope off the class is measured and composed nowhere; "
 {
   PartOne& p = GetPartOne();
   p.SetSharedQuestsSettings(R"({"mode":"all","denied":[]})");
-  p.SetQuestScopeSettings(R"("off")", R"(["eafd5:Skyrim.esm"])");
+  p.SetQuestScopeSettings(R"("off")", R"(["eafd5:Skyrim.esm"])", "[]");
   REQUIRE(Marked(p, "2ba16:Skyrim.esm"));
   REQUIRE(Marked(p, "eafd5:Skyrim.esm"));
   REQUIRE(p.PlayerClassQuests().empty());
   REQUIRE(p.CheckSharedQuest(FormDesc::FromString("2ba16:Skyrim.esm")) == 0);
   REQUIRE(p.SharedQuestsListed().empty());
-  REQUIRE_THROWS(p.SetQuestScopeSettings(R"("aliases")", "[]"));
-  REQUIRE_THROWS(p.SetQuestScopeSettings(R"("off")", R"(["eafd5"])"));
+  REQUIRE_THROWS(p.SetQuestScopeSettings(R"("aliases")", "[]", "[]"));
+  REQUIRE_THROWS(p.SetQuestScopeSettings(R"("off")", R"(["eafd5"])", "[]"));
   REQUIRE_THROWS(
     p.SetPlayerQuestSettings(R"({"eafd5:Skyrim.esm": "x"})", "{}", "{}"));
   REQUIRE_THROWS(p.SetPlayerQuestSettings(
     "{}", R"({"eafd5:Skyrim.esm": ["NoSeparator"]})", "{}"));
   REQUIRE_THROWS(
     p.SetPlayerQuestSettings("{}", "{}", R"({"5c625:Skyrim.esm": [70000]})"));
+}
+
+TEST_CASE("The started half makes a quest the player's whatever its "
+          "aliases (thuum D-VC2 B): Rising at Dawn by playerStartedQuests, a "
+          "name no QUST holds logged, a malformed list stopped at the setting",
+          "[QuestScope][espm]")
+{
+  PartOne& p = GetPartOne();
+  ScopeLog log;
+  p.SetSharedQuestsSettings(R"({"mode":"all","denied":[]})");
+  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])",
+                          R"(["5c625:Skyrim.esm", "1:NoSuch.esp"])");
+  // VC01's aliases are Falion and his markers, the world's by the alias
+  // half; the census's started half names it, so it is the player's
+  REQUIRE(Marked(p, "5c625:Skyrim.esm"));
+  REQUIRE(Marked(p, "eafd5:Skyrim.esm"));
+  REQUIRE_FALSE(Marked(p, "39645:Skyrim.esm"));
+  REQUIRE(p.CheckSharedQuest(FormDesc::FromString("5c625:Skyrim.esm")) == 3);
+  const std::string line = log.oss.str();
+  REQUIRE(line.find("; 2 named by its start (playerStartedQuests), ") !=
+          std::string::npos);
+  REQUIRE(line.find("NoSuch.esp naming no quest of the game files") !=
+          std::string::npos);
+
+  // unnamed, the world's again
+  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])", "[]");
+  REQUIRE_FALSE(Marked(p, "5c625:Skyrim.esm"));
+  REQUIRE(p.CheckSharedQuest(FormDesc::FromString("5c625:Skyrim.esm")) == 0);
+  REQUIRE_THROWS(p.SetQuestScopeSettings(R"("off")", "[]", R"(["5c625"])"));
+  REQUIRE_THROWS(p.SetQuestScopeSettings(
+    R"("off")", "[]", R"(["5c625:Skyrim.esm", "5c625:skyrim.esm"])"));
+  p.SetQuestScopeSettings(R"("off")", "[]", "[]");
 }
 
 TEST_CASE("The player class's globals join the player globals while the "
@@ -186,10 +220,10 @@ TEST_CASE("The player class's globals join the player globals while the "
     const auto watch = p.PlayerGlobalsWatch();
     return std::find(watch.begin(), watch.end(), global) != watch.end();
   };
-  p.SetQuestScopeSettings(R"("off")", R"(["eafd5:Skyrim.esm"])");
+  p.SetQuestScopeSettings(R"("off")", R"(["eafd5:Skyrim.esm"])", "[]");
   REQUIRE(watching(0x38));
   REQUIRE_FALSE(watching(0xed06d));
-  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])");
+  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])", "[]");
   REQUIRE(watching(0x38));
   REQUIRE(watching(0xed06d));
   REQUIRE(watching(0xf69cf));
@@ -197,6 +231,6 @@ TEST_CASE("The player class's globals join the player globals while the "
   // the setting rewritten keeps the class's
   p.SetPlayerGlobalsSettings(R"(["38:Skyrim.esm", "ed06d:Skyrim.esm"])");
   REQUIRE(p.PlayerGlobalsWatch().size() == 3);
-  p.SetQuestScopeSettings(R"("off")", "[]");
+  p.SetQuestScopeSettings(R"("off")", "[]", "[]");
   REQUIRE(p.PlayerGlobalsWatch().size() == 2);
 }

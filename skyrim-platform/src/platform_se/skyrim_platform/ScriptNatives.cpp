@@ -2029,18 +2029,6 @@ std::optional<ActingScope::Scope> ScopeOfCall(
   if (!joined) {
     return std::nullopt;
   }
-  if (joined->capped) {
-    // a stack its arm's cap left out (H-AP3's reading; a trigger entry's
-    // cap too; train 53's review, correctness-2): the first three per
-    // scope, then every hundredth overall
-    if (ActingScope::LineDue(joined->scope.seq, ActingScope::Line::kRefuse)) {
-      logger::info("[verb:quests] stack {} rooted at {:x} left out of {}: "
-                   "its arm joined its {} stack(s)",
-                   stack->stackID, root, ScopeText(joined->scope),
-                   joined->joins);
-    }
-    return std::nullopt;
-  }
   if (ActingScope::LineDue(joined->scope.seq, ActingScope::Line::kJoin)) {
     logger::info("[verb:quests] stack {} rooted at {:x} joined {} ({} "
                  "stack(s) joined by its arm)",

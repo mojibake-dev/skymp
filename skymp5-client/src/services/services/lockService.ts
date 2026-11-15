@@ -191,9 +191,12 @@ export class LockService extends ClientListener {
     if (typeof this.sp.pollLinkedDoors === 'function') {
       this.sp.pollLinkedDoors([localId]);
     }
-    if (this.mayOwn(ref)) {
+    const state = this.mayOwnState(ref);
+    if (state === 'yes') {
       this.standingOwned.add(localId);
       this.reportEngineWrite(ref, true, 'standing');
+    } else if (state === 'unknown') {
+      this.hold(ref, 'standing');
     }
   }
 
@@ -243,29 +246,92 @@ export class LockService extends ClientListener {
   // low process and writes their doors (Riverwood's houses on c1, 256
   // refusals in one run); those writes are no fact and stay here (ADR-063:
   // non-owners never simulate). The server still judges every report
-  private mayOwn(ref: ObjectReference): boolean {
+  // thuum #63 (x-house-night-lock 20261115-150328: 256 E_LOCK_OWNER refusals
+  // in 4 minutes, each pushed back to the seat that wrote it, both seats, no
+  // "not reported" line on either): a door whose link had not answered yet
+  // counted as owned, and a night's schedule writes a town's doors in one
+  // burst before their links answer, so every one was reported and refused.
+  // An unanswered link is now "unknown": the write waits for it (pending,
+  // resolvePending) and goes only if the answer makes this game an owner
+  private mayOwnState(ref: ObjectReference): 'yes' | 'no' | 'unknown' {
     const host = this.controller.lookupListener(HostService);
     if (host.hostsRef(ref)) {
-      return true;
+      return 'yes';
     }
     if (this.controller.lookupListener(WorldGlobalService).isStreaming()) {
-      return true;
+      return 'yes';
     }
     if (typeof this.sp.linkedDoorOf !== 'function') {
-      return true;
+      return 'yes';
     }
     const pair = this.sp.linkedDoorOf(ref.getFormID());
     if (pair === null) {
-      return true;
+      return 'unknown';
     }
     if (pair === 0) {
-      return false;
+      return 'no';
     }
     const pairRef = ObjectReference.from(this.sp.Game.getFormEx(pair));
-    return !!pairRef && host.hostsRef(pairRef);
+    return !!pairRef && host.hostsRef(pairRef) ? 'yes' : 'no';
+  }
+
+  private mayOwn(ref: ObjectReference): boolean {
+    return this.mayOwnState(ref) === 'yes';
+  }
+
+  // a write or a standing lock whose owner test waits for its door's link:
+  // asked on the game thread, held at most pendingMs, then reported when the
+  // answer makes this game an owner, dropped when it does not
+  private hold(ref: ObjectReference, why: string): void {
+    const localId = ref.getFormID();
+    if (typeof this.sp.pollLinkedDoors === 'function') {
+      this.sp.pollLinkedDoors([localId]);
+    }
+    if (this.pending.size >= LockService.unrecordedMax && !this.pending.has(localId)) {
+      return;
+    }
+    this.pending.set(localId, { until: Date.now() + LockService.pendingMs, why });
+  }
+
+  private resolvePending(): void {
+    if (this.pending.size === 0) {
+      return;
+    }
+    const now = Date.now();
+    this.pending.forEach((p, localId) => {
+      const ref = ObjectReference.from(this.sp.Game.getFormEx(localId));
+      if (!ref) {
+        this.pending.delete(localId);
+        return;
+      }
+      const state = this.mayOwnState(ref);
+      if (state === 'unknown') {
+        if (now > p.until) {
+          this.pending.delete(localId);
+          this.sayOnce('link unanswered', `lock ${localId.toString(16)}: its door's link never answered within ${LockService.pendingMs} ms; not reported (#63)`);
+        }
+        return;
+      }
+      this.pending.delete(localId);
+      if (state === 'no') {
+        this.sayOnce('not owned', `lock ${localId.toString(16)}: its engine wrote it, and this game hosts neither its cell nor its door's other side and is no world streamer; not reported (#63)`);
+        return;
+      }
+      if (p.why === 'standing') {
+        this.standingOwned.add(localId);
+      }
+      if (p.why === 'standing') {
+        this.reportEngineWrite(ref, true, 'standing');
+      } else {
+        this.reportEngineWrite(ref, false, 'write', true);
+      }
+    });
   }
 
   private unrecorded = new Map<number, number>();
+  // thuum #63: the locks whose owner test waits for their door's link
+  private pending = new Map<number, { until: number; why: string }>();
+  private static readonly pendingMs = 5000;
   private standingOwned = new Set<number>();
   private recheckUntil = 0;
   private lastRecheck = 0;
@@ -273,13 +339,21 @@ export class LockService extends ClientListener {
   private static readonly recheckMs = 3000;
   private static readonly recheckEveryMs = 500;
 
-  private reportEngineWrite(ref: ObjectReference, force = false, why = 'write') {
+  private reportEngineWrite(ref: ObjectReference, force = false, why = 'write', ownerChecked = false) {
     const localId = ref.getFormID();
-    // thuum #63: a write this game cannot own stays here (mayOwn); the
-    // prompted player's word on a lock no game wrote is its own (#47)
-    if (why === 'write' && !this.mayOwn(ref)) {
-      this.sayOnce('not owned', `lock ${localId.toString(16)}: its engine wrote it, and this game hosts neither its cell nor its door's other side and is no world streamer; not reported (#63)`);
-      return;
+    // thuum #63: a write this game cannot own stays here (mayOwn), and one
+    // whose door's link has not answered waits for it (hold); the prompted
+    // player's word on a lock no game wrote is its own (#47)
+    if (why === 'write' && !ownerChecked) {
+      const state = this.mayOwnState(ref);
+      if (state === 'unknown') {
+        this.hold(ref, 'write');
+        return;
+      }
+      if (state === 'no') {
+        this.sayOnce('not owned', `lock ${localId.toString(16)}: its engine wrote it, and this game hosts neither its cell nor its door's other side and is no world streamer; not reported (#63)`);
+        return;
+      }
     }
     const locked = ref.isLocked();
     const level = ref.getLockLevel();
@@ -349,6 +423,7 @@ export class LockService extends ClientListener {
 
   private onUpdate() {
     this.recheckStanding();
+    this.resolvePending();
     const a = this.attempt;
     if (!a || a.menuOpened) {
       return;

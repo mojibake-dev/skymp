@@ -3,6 +3,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace SaveFile_ {
@@ -205,6 +206,25 @@ struct SaveFile
   GlobalVariables::GlobalVariable* GetGlobalvariableByRefID(RefID& refID);
   int64_t FindIndexInFormIdArray(uint32_t refID);
   void OverwritePluginInfo(std::vector<std::string>& newPlaginNames);
+
+  // thuum: the plugin list for a game that loaded `loaded` (its full plugins
+  // in load order): the save's own entries keep their indices and names, so
+  // every form id already in the save names the plugin it was saved under,
+  // and each loaded plugin the list lacks goes after them, in load order. The
+  // game matches a save's list to its plugins by name and moves each form id
+  // onto its plugin's index as it loads (HYPOTHESIS: Ghidra on 1.6.1170,
+  // until a lab run). Returns the save's plugins `loaded` lacks.
+  std::vector<std::string> MergePluginInfo(
+    const std::vector<std::string>& loaded);
+
+  // The plugin's index in the list, by name in any case, as the game matches
+  // them; -1 if the list does not name it.
+  int FindPluginIndex(std::string_view name) const;
+
+  // `formId`'s low 24 bits under the index the list gives the plugin `name`,
+  // or nullopt if the list does not name it.
+  std::optional<uint32_t> FormIdUnderPlugin(std::string_view name,
+                                            uint32_t formId) const;
 };
 
 struct MiscStats

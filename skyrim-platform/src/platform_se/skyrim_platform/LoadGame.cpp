@@ -7,6 +7,8 @@
 #include "savefile/SFSeekerOfDifferences.h"
 #include "savefile/SFWriter.h"
 
+#include <spdlog/spdlog.h>
+
 namespace fs = std::filesystem;
 
 CMRC_DECLARE(skyrim_plugin_resources);
@@ -68,7 +70,7 @@ public:
 extern bool g_allowHideMainMenu;
 
 std::shared_ptr<SaveFile_::SaveFile> LoadGame::PrepareSaveFile(
-  const char* pathInAssets)
+  const char* pathInAssets, const std::vector<std::string>* loadOrder)
 {
   cmrc::file file;
   try {
@@ -84,27 +86,25 @@ std::shared_ptr<SaveFile_::SaveFile> LoadGame::PrepareSaveFile(
     }
     throw std::runtime_error(ss.str());
   }
-  return SaveFile_::Reader((uint8_t*)(file.begin()), file.size())
-    .GetStructure();
+  auto save =
+    SaveFile_::Reader((uint8_t*)(file.begin()), file.size()).GetStructure();
+  ModifyPluginInfo(save, loadOrder);
+  return save;
 }
 
 void LoadGame::Run(std::shared_ptr<SaveFile_::SaveFile> save,
                    const std::array<float, 3>& pos,
                    const std::array<float, 3>& angle, uint32_t cellOrWorld,
                    Time* time, SaveFile_::Weather* _weather,
-                   SaveFile_::ChangeFormNPC_* changeFormNPC,
-                   std::vector<std::string>* loadOrder)
+                   SaveFile_::ChangeFormNPC_* changeFormNPC)
 {
   if (!save) {
     throw std::runtime_error("Bad SaveFile");
   }
 
-  ModifyPluginInfo(save);
-
   ModifySaveTime(save, time);
   ModifySaveWeather(save, _weather);
   ModifyPlayerFormNPC(save, changeFormNPC);
-  ModifyLoadOrder(save, loadOrder);
   ModifyEssStructure(save, pos, angle, cellOrWorld);
 
   auto name = g_saveFilePrefix + GenerateGuid();
@@ -141,20 +141,91 @@ std::wstring LoadGame::GetPathToMyDocuments()
   return myPath;
 }
 
-void LoadGame::ModifyPluginInfo(std::shared_ptr<SaveFile_::SaveFile>& save)
+// thuum: the template's plugin list keeps its entries, and the seat's other
+// plugins go after them (SaveFile::MergePluginInfo); the game matches the list
+// to its own plugins by name as it loads. This wrote the seat's load order
+// over the list by position (dataHandler->files, then the client's list from
+// ModifyLoadOrder), and no form id in the template moved with it: the
+// template lists 02 Dragonborn, 03 Dawnguard and 04 HearthFires and the
+// deployed order 02 Dawnguard, 03 HearthFires and 04 Dragonborn, so VC01's
+// DLC1VampireChange (0x0300283B in the template) named HearthFires.esm, which
+// has no such form, and reached the scripts as None (playtest 52's
+// E_SCRIPTCALL_UNNAMED Actor.RemoveSpell 0). The list is the caller's load
+// order (the client sends Game.getModName's), else the game's loaded plugins.
+void LoadGame::ModifyPluginInfo(std::shared_ptr<SaveFile_::SaveFile>& save,
+                                const std::vector<std::string>* loadOrder)
 {
-  std::vector<std::string> newPlugins;
-  auto dataHandler = RE::TESDataHandler::GetSingleton();
+  std::vector<std::string> loaded;
+  if (loadOrder) {
+    loaded = *loadOrder;
+  } else {
+    auto dataHandler = RE::TESDataHandler::GetSingleton();
+    if (!dataHandler) {
+      throw NullPointerException("dataHandler");
+    }
+    const auto files = dataHandler->GetLoadedMods();
+    for (uint32_t i = 0; i < dataHandler->GetLoadedModCount(); ++i) {
+      loaded.push_back(files[i]->fileName);
+    }
+  }
 
+  const auto missing = save->MergePluginInfo(loaded);
+
+  const auto& names = save->pluginInfo.pluginsName;
+  std::string written;
+  for (size_t i = 0; i < names.size(); ++i) {
+    written += fmt::format("{}{:02X} {}", i ? ", " : "", i, names[i]);
+  }
+  std::string lacks;
+  for (auto& name : missing) {
+    lacks += (lacks.empty() ? "" : ", ") + name;
+  }
+  spdlog::info("[loadGame] the login save's plugin list as written ({}): {}; "
+               "template plugins this seat lacks: {}",
+               names.size(), written, lacks.empty() ? "none" : lacks);
+}
+
+// A form id of this game, its plugin by compileIndex, goes into the save
+// under the index the save's list gives that plugin's name. Skyrim.esm's (00)
+// and a created form (FF) read the same in both. A light plugin's (FE) has no
+// index in a list of form version 74, which carries no light list, and a form
+// whose plugin the list does not name has none either: each is written as it
+// is, with a line.
+uint32_t LoadGame::FormIdInSave(const SaveFile_::SaveFile& save,
+                                uint32_t formId)
+{
+  const uint32_t plugin = formId >> 24;
+  if (plugin == 0x00 || plugin == 0xff) {
+    return formId;
+  }
+  if (plugin == 0xfe) {
+    spdlog::info("[loadGame] {:08X} is a light plugin's form, and the login "
+                 "save (form version {}) carries no light list; written as it "
+                 "is",
+                 formId, static_cast<int>(save.formVersion));
+    return formId;
+  }
+
+  auto dataHandler = RE::TESDataHandler::GetSingleton();
   if (!dataHandler) {
     throw NullPointerException("dataHandler");
   }
-
-  for (auto& file : dataHandler->files) {
-    newPlugins.push_back(std::string(file->fileName));
+  const RE::TESFile* file =
+    dataHandler->LookupLoadedModByIndex(static_cast<uint8_t>(plugin));
+  if (!file) {
+    spdlog::info("[loadGame] {:08X}: no loaded plugin has index {:02X}; "
+                 "written as it is",
+                 formId, plugin);
+    return formId;
   }
-
-  save->OverwritePluginInfo(newPlugins);
+  const auto inSave = save.FormIdUnderPlugin(file->fileName, formId);
+  if (!inSave) {
+    spdlog::info("[loadGame] {:08X}: {} is not in the login save's plugin "
+                 "list; written as it is",
+                 formId, file->fileName);
+    return formId;
+  }
+  return *inSave;
 }
 
 void LoadGame::ModifySaveTime(std::shared_ptr<SaveFile_::SaveFile>& save,
@@ -228,14 +299,6 @@ void LoadGame::ModifyPlayerFormNPC(std::shared_ptr<SaveFile_::SaveFile> save,
   }
 }
 
-void LoadGame::ModifyLoadOrder(std::shared_ptr<SaveFile_::SaveFile> save,
-                               std::vector<std::string>* loadOrder)
-{
-  if (loadOrder) {
-    save->OverwritePluginInfo(*loadOrder);
-  }
-}
-
 void LoadGame::FillChangeForm(
   std::shared_ptr<SaveFile_::SaveFile> save, SaveFile_::ChangeForm* form,
   std::pair<uint32_t, std::vector<uint8_t>>& newValues)
@@ -266,7 +329,8 @@ void LoadGame::ModifyEssStructure(std::shared_ptr<SaveFile_::SaveFile> save,
     throw std::runtime_error("Couldn't find PlayerLocation in the save file");
   }
 
-  auto worldRefId = SaveFile_::RefID::CreateRefId(*save, cellOrWorld);
+  auto worldRefId =
+    SaveFile_::RefID::CreateRefId(*save, FormIdInSave(*save, cellOrWorld));
   *playerLoc = CreatePlayerLocation(pos, worldRefId);
 
   auto player = std::find_if(

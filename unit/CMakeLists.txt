@@ -53,6 +53,7 @@ if(BUILD_UNIT_TESTS AND NOT EMSCRIPTEN)
     UNIT_DATA_DIR=\"${UNIT_DATA_DIR}\"
     DIST_DIR=\"${CMAKE_BINARY_DIR}/dist\"
     WIRE_FIXTURES_DIR=\"${CMAKE_SOURCE_DIR}/skymp-wire/crates/wire-json/fixtures\"
+    TEMPLATE_ESS_PATH=\"${CMAKE_SOURCE_DIR}/skyrim-platform/src/platform_se/skyrim_platform/assets/template.ess\"
   )
 
   if(WIN32)

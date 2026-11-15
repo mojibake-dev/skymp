@@ -1,7 +1,20 @@
 #include "savefile/SFStructure.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <stdexcept>
+
+namespace {
+bool SamePluginName(std::string_view a, std::string_view b)
+{
+  return a.size() == b.size() &&
+    std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+           return std::tolower(static_cast<unsigned char>(x)) ==
+             std::tolower(static_cast<unsigned char>(y));
+         });
+}
+}
 
 SaveFile_::RefID SaveFile_::RefID::CreateRefId(SaveFile& parentSaveFile,
                                                uint32_t formId)
@@ -104,4 +117,55 @@ void SaveFile_::SaveFile::OverwritePluginInfo(
   this->fileLocationTable.globalDataTable2Offset += addSize;
   this->fileLocationTable.changeFormsOffset += addSize;
   this->fileLocationTable.globalDataTable3Offset += addSize;
+}
+
+std::vector<std::string> SaveFile_::SaveFile::MergePluginInfo(
+  const std::vector<std::string>& loaded)
+{
+  std::vector<std::string> missing;
+  for (auto& name : pluginInfo.pluginsName) {
+    if (std::none_of(loaded.begin(), loaded.end(),
+                     [&](auto& l) { return SamePluginName(l, name); })) {
+      missing.push_back(name);
+    }
+  }
+
+  std::vector<std::string> merged = pluginInfo.pluginsName;
+  for (auto& name : loaded) {
+    if (std::none_of(merged.begin(), merged.end(),
+                     [&](auto& m) { return SamePluginName(m, name); })) {
+      merged.push_back(name);
+    }
+  }
+
+  // a form id's index 0xFE names a light plugin and 0xFF a created form, so
+  // the list holds 0x00 to 0xFD
+  if (merged.size() > 0xFE) {
+    throw std::runtime_error("the save's plugin list would hold " +
+                             std::to_string(merged.size()) +
+                             " plugins; a form id indexes at most 254");
+  }
+  OverwritePluginInfo(merged);
+  return missing;
+}
+
+int SaveFile_::SaveFile::FindPluginIndex(std::string_view name) const
+{
+  const auto& names = pluginInfo.pluginsName;
+  for (size_t i = 0; i < names.size(); ++i) {
+    if (SamePluginName(names[i], name)) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+std::optional<uint32_t> SaveFile_::SaveFile::FormIdUnderPlugin(
+  std::string_view name, uint32_t formId) const
+{
+  const int index = FindPluginIndex(name);
+  if (index < 0) {
+    return std::nullopt;
+  }
+  return (static_cast<uint32_t>(index) << 24) | (formId & 0x00ffffff);
 }

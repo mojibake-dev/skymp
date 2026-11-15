@@ -28,16 +28,19 @@ uint32_t RgbToAbgr(int32_t rgb)
 // RefID): Skyrim.esm's forms as the id itself (type 1), forms made in a
 // session (plugin index 0xFF) as created ones (type 2), and every other
 // plugin's through the save's formIDArray (type 0), whose entries are form
-// ids under the save's plugin list, which LoadGame sets to the client's load
-// order. Every form outside Skyrim.esm used to go out as type 2, a created
-// form that does not exist, so a race or head part from a DLC or a mod came
-// back as the template's (thuum: rotfern's race read back as Nord after a
-// relaunch, run 20261006-055423-a-rotfern).
+// ids under the save's own plugin list (the template's, then the seat's other
+// plugins: LoadGame::ModifyPluginInfo), so a form id of this game goes in
+// under its plugin's index there (LoadGame::FormIdInSave). Every form outside
+// Skyrim.esm used to go out as type 2, a created form that does not exist, so
+// a race or head part from a DLC or a mod came back as the template's (thuum:
+// rotfern's race read back as Nord after a relaunch, run
+// 20261006-055423-a-rotfern).
 SaveFile_::RefID FormIdToRefId(SaveFile_::SaveFile& save, uint32_t formId)
 {
   const uint32_t plugin = formId >> 24;
   if (plugin != 0x00 && plugin != 0xff) {
-    return SaveFile_::RefID::CreateRefId(save, formId);
+    return SaveFile_::RefID::CreateRefId(save,
+                                         LoadGame::FormIdInSave(save, formId));
   }
   const uint32_t type = plugin == 0x00 ? 1 : 2;
   const uint32_t ref = (type << 22) | (formId & 0x3fffff);
@@ -142,7 +145,7 @@ std::unique_ptr<LoadGame::Time> CreateTime(
 }
 
 std::unique_ptr<std::vector<std::string>> CreateLoadOrder(
-  std::shared_ptr<SaveFile_::SaveFile>, Napi::Array loadOrder_)
+  Napi::Array loadOrder_)
 {
   std::unique_ptr<std::vector<std::string>> loadOrder;
   loadOrder.reset(new std::vector<std::string>);
@@ -171,7 +174,12 @@ Napi::Value LoadGameApi::LoadGame(const Napi::CallbackInfo& info)
 
   const char* pathInAsset = kPathInAssetsMale;
 
-  auto save = LoadGame::PrepareSaveFile(pathInAsset);
+  std::unique_ptr<std::vector<std::string>> saveLoadOrder =
+    (info[4].IsUndefined() || info[4].IsNull())
+    ? nullptr
+    : CreateLoadOrder(NapiHelper::ExtractArray(info[4], "loadOrder"));
+
+  auto save = LoadGame::PrepareSaveFile(pathInAsset, saveLoadOrder.get());
   if (!save) {
     throw NullPointerException("save");
   }
@@ -180,11 +188,6 @@ Napi::Value LoadGameApi::LoadGame(const Napi::CallbackInfo& info)
     (info[3].IsUndefined() || info[3].IsNull())
     ? nullptr
     : CreateChangeFormNpc(save, NapiHelper::ExtractObject(info[3], "npcData"));
-
-  std::unique_ptr<std::vector<std::string>> saveLoadOrder =
-    (info[4].IsUndefined() || info[4].IsNull())
-    ? nullptr
-    : CreateLoadOrder(save, NapiHelper::ExtractArray(info[4], "loadOrder"));
 
   std::unique_ptr<LoadGame::Time> saveFileTime =
     (info[5].IsUndefined() || info[5].IsNull())
@@ -198,9 +201,8 @@ Napi::Value LoadGameApi::LoadGame(const Napi::CallbackInfo& info)
   const auto& _time = saveFileTime.get();
   SaveFile_::Weather* _weather = nullptr;
   SaveFile_::ChangeFormNPC_* _changeFormNPC = changeFormNpc.get();
-  std::vector<std::string>* _loadOrder = saveLoadOrder.get();
   LoadGame::Run(_baseSavefile, _pos, _angle, _cellOrWorld, _time, _weather,
-                _changeFormNPC, _loadOrder);
+                _changeFormNPC);
 
   return info.Env().Undefined();
 }

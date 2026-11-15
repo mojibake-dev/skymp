@@ -337,6 +337,17 @@ constexpr std::pair<const char*, const char*> kDeleteRow{ "ObjectReference",
 constexpr std::pair<const char*, const char*> kAddItemRow{ "ObjectReference",
                                                            "AddItem" };
 
+// thuum ADR-073 step 5a (decision 6 with D-L2 B, "a scene row owned by the
+// seat that started it", and D-A2 C, "the stage's cause seat owns a scene a
+// fragment starts"): the two natives that start a scene (FunctionsDump.txt's
+// Scene: `Start()` and `ForceStart()`, neither latent), no table rows: their
+// dispatch raises sceneStart with the stack's acting player (NoteSceneStart)
+// and runs as before
+constexpr std::pair<const char*, const char*> kSceneStartRows[] = {
+  { "Scene", "Start" },
+  { "Scene", "ForceStart" }
+};
+
 // at most 11 arguments (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
 // "native supports max 11")
 constexpr std::uint32_t kMaxArgs = 11;
@@ -391,6 +402,12 @@ std::array<RowInfo, kRowCount> g_rows{};
 // a row's bound IFunction, the `this` of its every dispatch, to its index:
 // written by InstallHooks before the dispatch hook attaches and never after
 std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
+// kSceneStartRows' bound IFunctions in their order (null for one the game's
+// module binds nothing of), written by InstallHooks before the dispatch hook
+// attaches and never after, as g_rowOf is; and the starts told so far
+std::array<const RE::BSScript::IFunction*, std::size(kSceneStartRows)>
+  g_sceneStarts{};
+std::atomic<uint64_t> g_sceneStartsTold{ 0 };
 
 // the census's kinds, a fixed index per row (6.11 item 11: no lock, no
 // string and no allocation on the path; the names are built at the flush,
@@ -2279,6 +2296,72 @@ std::optional<EffectPlacement> EffectPlacementOf(
   return EffectPlacement{ *base, role, root };
 }
 
+// thuum ADR-073 step 5a (decision 6 with D-L2 B and D-A2 C): whether a
+// dispatch is one of kSceneStartRows' bound natives, two pointer compares
+// (rule 9: the only cost to every other native)
+bool IsSceneStart(const RE::BSScript::IFunction* fn)
+{
+  return fn &&
+    std::find(g_sceneStarts.begin(), g_sceneStarts.end(), fn) !=
+    g_sceneStarts.end();
+}
+
+// a Scene.Start or ForceStart, told to the client on the next tick as
+// sceneStart: the scene's form id by its self's handle (a plain form's, the
+// encoding above), whether it was forced, and the acting player whose scope
+// the stack runs in (its server id, 0 for none). Outside a scope the start is
+// this seat's own, and the client's SceneClaimService marks the scene so and
+// claims its actors (D-L2 B); inside another player's acting scope it is a
+// relayed fragment's, the stage's cause seat's (D-A2 C; V-scene's skip of
+// it here is not this step), and the client notes the scene as that seat's, so
+// its copy here is never taken for this seat's own. Asked only for those two
+// natives (rule 9). HYPOTHESIS H-S1: a quest fragment's Scene.Start reaches
+// this dispatch with the native's own frame on top (the seam's H-S1) and the
+// scene as its self; the first three told and every hundredth are logged, so
+// one lab run reads it
+void NoteSceneStart(const RE::BSScript::IFunction* fn,
+                    const RE::BSScript::Stack* stack,
+                    std::uint32_t actingPlayer)
+{
+  const RE::BSScript::StackFrame* top = stack ? stack->top : nullptr;
+  if (!top || top->owningFunction.get() != fn) {
+    return;
+  }
+  const RE::BSScript::Object* object = ObjectOf(top->self);
+  if (!object) {
+    return;
+  }
+  const RE::VMHandle handle = object->GetHandle();
+  if (!IsPlainFormHandle(handle)) {
+    return;
+  }
+  const std::uint32_t sceneId = FormIdOfHandle(handle);
+  const bool forced = fn == g_sceneStarts[1];
+  const auto n = g_sceneStartsTold.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (n <= 3 || n % 100 == 0) {
+    if (actingPlayer == 0) {
+      logger::info("[verb:npc-talk] Scene.{} on {:x}, stack {}: this seat's "
+                   "own start, told as sceneStart ({} so far)",
+                   forced ? "ForceStart" : "Start", sceneId, stack->stackID,
+                   n);
+    } else {
+      logger::info("[verb:npc-talk] Scene.{} on {:x}, stack {}: inside "
+                   "acting player {:x}'s scope, that seat's start, told as "
+                   "sceneStart ({} so far)",
+                   forced ? "ForceStart" : "Start", sceneId, stack->stackID,
+                   actingPlayer, n);
+    }
+  }
+  SkyrimPlatform::GetSingleton()->AddTickTask(
+    [sceneId, forced, actingPlayer](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "sceneId", sceneId);
+      AddObjProperty(&obj, "forced", forced);
+      AddObjProperty(&obj, "acting", actingPlayer);
+      EventsApi::SendEvent("sceneStart", { obj });
+    });
+}
+
 // the seam's judgment of one dispatch, 6.2's order (rule 9: the cheapest
 // test first). The body runs unless the lever skips it (marks.skip)
 Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
@@ -2299,9 +2382,15 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     marks.skip = true;
     marks.result = fn->GetReturnType().GetUnmangledRawType();
   }
+  // thuum ADR-073 step 5a: a scene start is told to the client with the
+  // acting player whose scope the stack runs in, none for this seat's own
+  // (NoteSceneStart); its body runs as before
+  if (IsSceneStart(fn)) {
+    NoteSceneStart(fn, stack, scope ? scope->player.serverId : 0);
+  }
   // (a) not a tabled native: nothing more, the only cost of every other
-  // native in the game (step (0)'s one relaxed load outside a scope, and one
-  // hash lookup)
+  // native in the game (step (0)'s one relaxed load outside a scope, the
+  // scene starts' two pointer compares, and one hash lookup)
   const auto it = g_rowOf.find(fn);
   if (it == g_rowOf.end()) {
     if (swapped != 0) {
@@ -3298,6 +3387,27 @@ void ScriptNatives::InstallHooks()
   logger::info("[verb:scripts] {} of {} table rows bound (NativeRows.inc, "
                "thuum docs/NATIVES.md)",
                boundRows, kRowCount);
+  // thuum ADR-073 step 5a: the scene starts, the game's module's bindings
+  // found by class and name without case as the rows are; never table rows
+  for (std::size_t i = 0; i < std::size(kSceneStartRows); ++i) {
+    const auto& [sceneCls, sceneFn] = kSceneStartRows[i];
+    for (const auto& [cls, name, func, moduleBase, offset, longSig] : bound) {
+      if (moduleBase == gameBase && _stricmp(cls.c_str(), sceneCls) == 0 &&
+          _stricmp(name.c_str(), sceneFn) == 0) {
+        g_sceneStarts[i] = func;
+        break;
+      }
+    }
+    if (g_sceneStarts[i]) {
+      logger::info("[verb:npc-talk] {}.{} bound: a call raises sceneStart "
+                   "with its stack's acting player",
+                   sceneCls, sceneFn);
+    } else {
+      logger::warn("[verb:npc-talk] {}.{} is not among the game's bindings; "
+                   "no sceneStart is raised for it",
+                   sceneCls, sceneFn);
+    }
+  }
   // the seam's name lists, found by class and name as the rows are
   for (const auto& batched : kBatchedStateRows) {
     WarnUnbound("batched state", batched.cls, batched.fn);

@@ -390,6 +390,12 @@ export interface FurnitureAnimationEvent {
   event: string;
   took: boolean;
 }
+// thuum docs/DECISIONS.md ADR-073 step 5a (decision 6 with D-L2 B, the seat that started a scene owns it, and D-A2 C, the stage's cause seat owns a scene a fragment starts): a Scene.Start (forced false) or Scene.ForceStart (forced true) a script called on this seat, read by the seam at the native's dispatch and raised on the next tick: sceneId the scene's form id, acting the server id of the acting player whose scope the calling stack runs in (a relayed fragment's start, that player's seat's), 0 for this seat's own start. The call itself runs as before. No game call in its handler
+export interface SceneStartEvent {
+  sceneId: number;
+  forced: boolean;
+  acting: number;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -808,6 +814,8 @@ export declare function on(eventName: 'triggerEntry', callback: (event: TriggerE
 export declare function once(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle
 export declare function on(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle
 export declare function once(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle
+export declare function on(eventName: 'sceneStart', callback: (event: SceneStartEvent) => void): EventHandle
+export declare function once(eventName: 'sceneStart', callback: (event: SceneStartEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle

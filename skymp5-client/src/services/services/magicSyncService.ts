@@ -671,6 +671,7 @@ export class MagicSyncService extends ClientListener {
         const byHand = this.lastHostedCastByHand.get(e.actorId);
         const cast = byHand?.get(hand);
         if (!byHand || !cast) {
+            this.sayNoCastToEnd(e.actorId, hand);
             return;
         }
         byHand.delete(hand);
@@ -682,8 +683,26 @@ export class MagicSyncService extends ClientListener {
         };
         this.sendCast(msg);
         this.hostedCastEnds.set(MagicSyncService.castKey(e.actorId, cast.spell), Date.now());
+        // x-drain-watch 20261115-032536: the end was sent (its launch drop
+        // says so) and never reached the watcher, and no line said it left
+        logTrace(this, `hosted cast end ${cast.spell.toString(16)} by ${e.actorId.toString(16)} hand ${hand} sent (${e.eventName})`);
     }
 
+    // a hosted caster's equipped event with no cast of that hand recorded
+    // here (a weapon's or a spell's draw, or an end whose cast event never
+    // came): no end goes. Said in full at a caster's first and then as its
+    // count at the 2nd, 4th, 8th and so on (thuum ADR-073 decision 7)
+    private sayNoCastToEnd(actorId: number, hand: number) {
+        const n = (this.noCastToEnd.get(actorId) ?? 0) + 1;
+        this.noCastToEnd.set(actorId, n);
+        if ((n & (n - 1)) !== 0) {
+            return;
+        }
+        const head = `equipped event on ${actorId.toString(16)} hand ${hand} with no cast recorded`;
+        logTrace(this, n === 1 ? `${head}: no end sent` : `${head}: ${n} such event(s) on this caster so far`);
+    }
+
+    private noCastToEnd = new Map<number, number>();
     private lastHostedCastByHand = new Map<number, Map<number, SpellCastMsgData>>();
     // R-V5: when each hosted caster's event cast of a spell last ended here
     // (onHostedAction), by caster and spell, and the launches dropped by kind

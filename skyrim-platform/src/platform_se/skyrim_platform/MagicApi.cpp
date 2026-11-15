@@ -293,6 +293,31 @@ bool HasMasterGraph(const RE::Actor& actor)
             .IsEmpty();
 }
 
+// thuum ADR-073 decision 7 (x-drain-watch 20261115-032536): a relayed end
+// InterruptCast did not perform, counted by kind on the game thread (where
+// its task runs) and said in full at the kind's first, then as the kind's
+// count at its 2nd, 4th, 8th and so on
+uint64_t g_endsWithNoActor = 0;
+uint64_t g_endsWithVariablesRefused = 0;
+
+void SayEndNotPerformed(uint64_t& count, const char* why, uint32_t actorFormId,
+                        int castingSource)
+{
+  ++count;
+  if ((count & (count - 1)) != 0) {
+    return;
+  }
+  if (count == 1) {
+    logger::info("[verb:spell-cast] cast end on {:x} hand {} not performed: "
+                 "{}",
+                 actorFormId, castingSource, why);
+    return;
+  }
+  logger::info("[verb:spell-cast] cast end on {:x} hand {} not performed: "
+               "{} ({} such end(s) so far)",
+               actorFormId, castingSource, why, count);
+}
+
 } // namespace skymp::magic::details
 
 Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
@@ -511,6 +536,9 @@ Napi::Value MagicApi::InterruptCast(const Napi::CallbackInfo& info)
        NapiHelper::ExtractObject(info[2], "animationVariables"))](Viet::Void) {
       const auto pActor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
       if (!pActor) {
+        skymp::magic::details::SayEndNotPerformed(
+          skymp::magic::details::g_endsWithNoActor, "no such actor here",
+          actorFormId, static_cast<int>(castingSource));
         return;
       }
 
@@ -521,6 +549,10 @@ Napi::Value MagicApi::InterruptCast(const Napi::CallbackInfo& info)
           AnimationGraphMasterBehaviourDescriptor{ std::move(animVars) }
             .ApplyVariablesToActor(*pActor);
         if (!isAnimationVariablesApplied) {
+          skymp::magic::details::SayEndNotPerformed(
+            skymp::magic::details::g_endsWithVariablesRefused,
+            "its animation variables did not apply, the cast left running",
+            actorFormId, static_cast<int>(castingSource));
           return;
         }
       }

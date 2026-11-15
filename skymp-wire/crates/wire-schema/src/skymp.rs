@@ -2833,10 +2833,11 @@ wire_struct! {
     /// release of the cell, at the epoch it released); the server judges the
     /// epoch and the owner (wire-rules script_state) and keeps the last
     /// record beside the reference's change form, stamping the object's
-    /// sequence and the reference's last animation event, and never relays it
-    /// live: it serves it as [`ScriptStateApply`]. Safe to receive twice: a
-    /// record replaces the last. Reason codes: `E_VAL_RANGE` (a form id of 0
-    /// or 0xff000000 and up; not 1 to 16 scripts; an empty type; flags
+    /// sequence and the reference's last animation event, and serves it as
+    /// [`ScriptStateApply`], live only when its `graph` moved (below). Safe
+    /// to receive twice: a record replaces the last. Reason codes:
+    /// `E_VAL_RANGE` (a form id of 0 or 0xff000000 and up; not 1 to 16
+    /// scripts; an empty type; flags
     /// without constructed 0x01 or initialized 0x08, or with the lock 0x04; a
     /// kind outside 0 to 5 and 10 to 15; a payload that does not match its
     /// kind, an element of another kind than its array's `k - 10`, an `elem`
@@ -2846,6 +2847,20 @@ wire_struct! {
     /// record for), `E_VAL_NONFINITE`, `E_VAL_RATE` (the sender's budget);
     /// the server logs `E_SCRIPTSTATE_NO_REF`, `E_SCRIPTSTATE_KIND`,
     /// `E_SCRIPTSTATE_OWNER` and `E_SCRIPTSTATE_EPOCH` by name.
+    ///
+    /// Graph state (thuum docs/verbs/traps.md "The graph state"; ADR-065
+    /// decision 2, ADR-073 decision 10's observe point): `graph`, the
+    /// reference's animation graph as the owner's engine saves it for a 3D
+    /// unload and a save (cap::GRAPH_STATE's frame, as lowercase hex), read
+    /// with the scripts once its last animation settled; absent when the
+    /// owner's engine had none to give (no 3D, nothing animated, the
+    /// platform without the native). The server keeps the last one given
+    /// (a record without it keeps the graph the record it replaces
+    /// carried) and, when it moved, serves the record at once to the
+    /// reference's other listeners. Reason codes beside the record's:
+    /// `E_VAL_RANGE` (hex of odd length or not lowercase, a frame whose size
+    /// value is not the engine's width code or does not match the bytes, an
+    /// empty data).
     pub struct ScriptState {
         /// `"t": 76`.
         #[serde(default)]
@@ -2861,6 +2876,9 @@ wire_struct! {
         pub fnv1a: u32,
         /// The scripts attached to the reference, 1 to 16.
         pub scripts: Vec<ScriptObjectState, { cap::SCRIPT_OBJECTS }>,
+        /// The reference's animation graph state as the owner's engine saved
+        /// it, lowercase hex of the engine's frame; absent when it gave none.
+        pub graph: Option<String<{ cap::GRAPH_STATE_HEX }>>,
     }
 }
 
@@ -2894,8 +2912,8 @@ wire_struct! {
     /// served to a seat, to the seat about to host the reference's cell
     /// right ahead of its HostGrant, and to a seat that does not host the
     /// cell right behind the reference's create word (a late joiner, a
-    /// restart). Server to client, reliable, R0 output; never relayed live.
-    /// `seq` is the object's sequence when the record was taken and `event`
+    /// restart). Server to client, reliable, R0 output; relayed live only
+    /// when an owner's record moved its `graph` (below). `seq` is the object's sequence when the record was taken and `event`
     /// the reference's last animation event then, its view (amendment A),
     /// absent when none had reached it: the receiver applies the scripts and
     /// replays the view where its own sequence for the object differs. Safe
@@ -2912,6 +2930,20 @@ wire_struct! {
     /// `E_VAL_RANGE` (a name empty, with a NUL or named twice; a kind
     /// outside 3 to 5 or a payload not its kind's; a seq of 0),
     /// `E_VAL_NONFINITE` (a float that is not finite).
+    ///
+    /// Graph state (thuum docs/verbs/traps.md "The graph state"): `graph`,
+    /// the reference's animation graph state the server keeps from its
+    /// owner's records (ScriptState's `graph`, the last one given), served
+    /// with the record behind the create word and ahead of a grant, and at
+    /// once to the reference's listeners but its owner when an owner's
+    /// record moved it (the one serve not behind a create word or ahead of
+    /// a grant). The receiver restores it through its engine's own restore
+    /// of a 3D load (BGSLoadGameSubBuffer::LoadAnimation, 36012) in place
+    /// of the view's replay, or leaves it in the reference's saved
+    /// animation for its next 3D load; a seat that hosts the cell restores
+    /// it only as the grant's new owner. Absent when none is kept. Reason
+    /// codes beside the record's: ScriptState's `graph` shape
+    /// (`E_VAL_RANGE`).
     pub struct ScriptStateApply {
         /// `"t": 77`.
         #[serde(default)]
@@ -2929,6 +2961,10 @@ wire_struct! {
         /// The reference's graph variables at the serve, at most 16 (thuum
         /// D-C3 A, PENDING Eli); absent when none is kept.
         pub graph_vars: Option<Vec<GraphVar, { cap::GRAPH_VARS }>>,
+        /// The reference's animation graph state as the server keeps it
+        /// from its owner's records, lowercase hex of the engine's frame;
+        /// absent when none is kept.
+        pub graph: Option<String<{ cap::GRAPH_STATE_HEX }>>,
     }
 }
 

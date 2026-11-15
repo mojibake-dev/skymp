@@ -1023,6 +1023,9 @@ bool MpObjectReference::BuildScriptStateApply(
   out.seq = record->seq;
   out.event = record->event;
   out.scripts = record->scripts;
+  // thuum docs/verbs/traps.md "The graph state": the last graph state an
+  // owner's record gave, as its engine saved it
+  out.graph = record->graph;
   // thuum D-C3 A (PENDING Eli; docs/research/fifty-fixes-2026-11-07.md read
   // 7): the reference's graph variables as kept now, at the serve, each with
   // its own sequence, never stamped at the record's take (a stack whose only

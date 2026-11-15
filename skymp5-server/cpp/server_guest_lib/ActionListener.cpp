@@ -7077,9 +7077,18 @@ void KeepScriptVariable(MpObjectReference& subject,
 // first, so the sequence never steps back after a restart) and its view, the
 // reference's lastAnimation now (amendment A: the Temple pillar's OnCellLoad
 // turns the graph only once, so a late seat cannot render the record from
-// the script). A record is never relayed live: PartOne serves it ahead of a
-// grant and behind a create word, every send at once, never the deferred
-// queue (OnChangeForm's shape, less its ack and its live serve).
+// the script). PartOne serves it ahead of a grant and behind a create word,
+// every send at once, never the deferred queue (OnChangeForm's shape, less
+// its ack). Since thuum docs/verbs/traps.md "The graph state" (ADR-065
+// decision 2, ADR-063: the server records and relays): the record carries
+// the reference's animation graph state as its owner's engine saved it; a
+// record without one keeps the graph state the record it replaces carried
+// (R2, kept last: an owner whose 3D is gone saves none, and its graph has not
+// moved since), and a record whose graph state moved is served at once to
+// the reference's other listeners (OnChangeForm's live serve), whose engines
+// restore it in place of replaying an event. The graph's bytes are the
+// owner's engine's and are never read here (R2, recorded unvalidated beyond
+// the frame wire-validate holds).
 void ActionListener::OnScriptState(const RawMessageData& rawMsgData,
                                    const ScriptStateMessage& msg)
 {
@@ -7161,8 +7170,10 @@ void ActionListener::OnScriptState(const RawMessageData& rawMsgData,
   // before a restart), so the record taken now never names a sequence below
   // the one the last record was served with
   auto& scriptCalls = partOne.GetScriptCalls();
+  std::optional<std::string> graphBefore;
   if (const auto& before = refr->GetScriptState()) {
     scriptCalls.seed(msg.formId, before->seq);
+    graphBefore = before->graph;
   }
   ScriptStateRecord record;
   record.epoch = msg.epoch;
@@ -7179,9 +7190,36 @@ void ActionListener::OnScriptState(const RawMessageData& rawMsgData,
     record.event = std::move(event);
   }
   record.scripts = msg.scripts;
+  // the last graph state given: this record's, else the one before it
+  const bool graphMoved = msg.graph.has_value() && msg.graph != graphBefore;
+  record.graph = msg.graph ? msg.graph : graphBefore;
+  const size_t graphBytes = record.graph ? record.graph->size() / 2 : 0;
   const uint32_t seq = record.seq;
   const std::string view = record.event.value_or("");
   refr->SetScriptState(std::move(record));
+
+  // a graph state that moved goes at once to the reference's other
+  // listeners, the record whole (its scripts keep every guest's copy current
+  // for a later hand-off), reliable and in order behind the create word each
+  // already heard
+  if (graphMoved) {
+    ScriptStateApplyMessage apply;
+    size_t served = 0;
+    if (refr->BuildScriptStateApply(apply)) {
+      for (MpActor* listener : refr->GetActorListeners()) {
+        if (listener == sender ||
+            partOne.serverState.UserByActor(listener) ==
+              Networking::InvalidUserId) {
+          continue;
+        }
+        listener->SendToUser(apply, true);
+        ++served;
+      }
+    }
+    spdlog::info("[verb:scripts] script state {:x} graph state moved ({} "
+                 "bytes, seq {}): served at once to {} listener(s)",
+                 msg.formId, graphBytes, seq, served);
+  }
 
   // one info line a minute per form, the rest at debug: an owner reports at
   // every stack's end that moved the hash; a release read is said every

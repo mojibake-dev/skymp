@@ -25,7 +25,11 @@
 // and on references nobody reported, read as none: an optional key,
 // formVersion kept (this fork's migration for a new field). Its field list
 // is its JSON form, written and read by the archives (Appearance's round
-// trip).
+// trip). Since thuum docs/verbs/traps.md "The graph state": `graph`, the
+// reference's animation graph state as its owner's engine saved it, the last
+// one an owner's record gave (a record without one keeps it), stored raw as
+// the wire's lowercase hex; absent in older records and read as none, the
+// same optional key's migration.
 struct ScriptStateRecord
 {
   template <class Archive>
@@ -37,7 +41,8 @@ struct ScriptStateRecord
       .Serialize("at", atMs)
       .Serialize("seq", seq)
       .Serialize("event", event)
-      .Serialize("scripts", scripts);
+      .Serialize("scripts", scripts)
+      .Serialize("graph", graph);
   }
 
   uint32_t epoch = 0;  // the cell's host epoch the report named
@@ -47,10 +52,12 @@ struct ScriptStateRecord
   uint32_t seq = 0;    // the object's sequence when the record was taken
   std::optional<std::string> event;       // the reference's lastAnimation
   std::vector<ScriptStateObject> scripts; // 1 to 16, as the owner read them
+  std::optional<std::string> graph;       // the last graph state, hex
 
   auto ToTuple() const
   {
-    return std::make_tuple(epoch, fnv1a, sender, atMs, seq, event, scripts);
+    return std::make_tuple(epoch, fnv1a, sender, atMs, seq, event, scripts,
+                           graph);
   }
   friend bool operator==(const ScriptStateRecord& lhs,
                          const ScriptStateRecord& rhs)

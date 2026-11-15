@@ -3,6 +3,8 @@
 #include "MsgType.h"
 #include "ScriptStateTypes.h"
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -16,9 +18,14 @@
 // check_script_state: 1 to 16 scripts, each read at a quiescent point, every
 // variable's kind and payload), the server judges the epoch and the owner
 // (wire-rules script_state, ActionListener::OnScriptState) and keeps the
-// last record on the reference, never relayed live: it is served as
-// ScriptStateApply. The contract is skymp-wire's (wire-schema skymp.rs,
-// ScriptState, MsgType 76, wire id 84).
+// last record on the reference, served as ScriptStateApply, at once to the
+// reference's other listeners only when its graph state moved. Since thuum
+// docs/verbs/traps.md "The graph state": `graph`, the reference's animation
+// graph as its owner's engine saved it (the platform's SerializeGraphState,
+// the engine's frame as lowercase hex; wire-validate check_graph_state holds
+// the frame), absent when the engine gave none, in which case the server
+// keeps the graph state the record it replaces carried. The contract is
+// skymp-wire's (wire-schema skymp.rs, ScriptState, MsgType 76, wire id 84).
 struct ScriptStateMessage : public MessageBase<ScriptStateMessage>
 {
   static constexpr auto kMsgType =
@@ -31,11 +38,16 @@ struct ScriptStateMessage : public MessageBase<ScriptStateMessage>
       .Serialize("epoch", epoch)
       .Serialize("formId", formId)
       .Serialize("fnv1a", fnv1a)
-      .Serialize("scripts", scripts);
+      .Serialize("scripts", scripts)
+      .Serialize("graph", graph);
   }
 
   uint32_t epoch = 0;  // the cell's host epoch the owner holds
   uint32_t formId = 0; // the reference, a game-file placement
   uint32_t fnv1a = 0;  // the owner's FNV-1a 32 over the record's dump
   std::vector<ScriptStateObject> scripts; // 1 to 16, as the owner read them
+  // the reference's animation graph state as the owner's engine saved it
+  // (lowercase hex of the engine's frame, at most 16384 characters); absent
+  // when it gave none
+  std::optional<std::string> graph;
 };

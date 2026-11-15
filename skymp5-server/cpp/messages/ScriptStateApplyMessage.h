@@ -15,11 +15,14 @@
 // (PartOne's onSubscribe: a late joiner, a restart), with the object's
 // sequence when the record was taken and its view then, the reference's
 // lastAnimation (none when no animation had reached it). Server to client,
-// reliable, R0 output; never relayed live (MpObjectReference::
-// BuildScriptStateApply). The receiver applies the scripts and replays the
-// view where its own sequence for the object differs. The contract is
-// skymp-wire's (wire-schema skymp.rs, ScriptStateApply, MsgType 77, wire id
-// 85).
+// reliable, R0 output (MpObjectReference::BuildScriptStateApply); relayed
+// live, to the reference's listeners but its owner, only when an owner's
+// record moved its graph state (ActionListener::OnScriptState). The receiver
+// applies the scripts, then restores the graph state through its engine's
+// own 3D-load restore where one is served, else replays the view where its
+// own sequence for the object differs (thuum docs/verbs/traps.md "The graph
+// state"). The contract is skymp-wire's (wire-schema skymp.rs,
+// ScriptStateApply, MsgType 77, wire id 85).
 struct ScriptStateApplyMessage : public MessageBase<ScriptStateApplyMessage>
 {
   static constexpr auto kMsgType =
@@ -35,7 +38,8 @@ struct ScriptStateApplyMessage : public MessageBase<ScriptStateApplyMessage>
       .Serialize("seq", seq)
       .Serialize("event", event)
       .Serialize("scripts", scripts)
-      .Serialize("graphVars", graphVars);
+      .Serialize("graphVars", graphVars)
+      .Serialize("graph", graph);
   }
 
   uint32_t formId = 0; // the reference
@@ -47,4 +51,8 @@ struct ScriptStateApplyMessage : public MessageBase<ScriptStateApplyMessage>
   // variables as kept at the serve, each with its own sequence, not stamped
   // at the record's take (at most 16); absent when none is kept
   std::optional<std::vector<ScriptStateGraphVar>> graphVars;
+  // thuum docs/verbs/traps.md "The graph state": the reference's animation
+  // graph state as the server keeps it from its owner's records (lowercase
+  // hex of the engine's frame); absent when none is kept
+  std::optional<std::string> graph;
 };

@@ -2847,7 +2847,10 @@ Napi::Value PuppetApi::PollCellGrids(const Napi::CallbackInfo& info)
         CellGrid grid;
         if (!cell->IsInteriorCell()) {
           if (const auto* coordinates = cell->GetCoordinates()) {
-            grid.world = cell->worldSpace ? cell->worldSpace->GetFormID() : 0;
+            // CommonLibSSE-NG keeps the cell's world space in its runtime data
+            // (TESObjectCELL.h:222-249)
+            const auto* world = cell->GetRuntimeData().worldSpace;
+            grid.world = world ? world->GetFormID() : 0;
             grid.x = coordinates->cellX;
             grid.y = coordinates->cellY;
           }

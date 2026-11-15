@@ -358,13 +358,17 @@ declare module "skyrimPlatform" {
     // 2.8.0 types name the quest alone; an older platform raises neither
     // field, and QuestStageService reports as before when they are absent.
     // Optional here as in Definitions.txt, so the two merge
+    // rootSelf (train 53, m4-train-53-platform's QuestCause::Verdict): the
+    // root frame's self's form id, a scene fragment's scene, 0 for none
     interface QuestStartStopEvent {
         cause?: 'world' | 'seat';
         root?: string;
+        rootSelf?: number;
     }
     interface QuestStageEvent {
         cause?: 'world' | 'seat';
         root?: string;
+        rootSelf?: number;
     }
     // thuum ADR-068 amendment A (rung 3, the script record): a reference whose
     // served record carries a view, so the gate holds its OnLoad and OnCellLoad

@@ -157,8 +157,10 @@ const ROOT_SHAPE = /^[A-Za-z0-9_.]+$/;
 const CAUSE_SAY_MS = 60000;
 
 // a quest event's cause as the platform named it: world true or false, or
-// undefined from a platform that names none; its stack's root, "" for none
-type Cause = { world: boolean | undefined; root: string };
+// undefined from a platform that names none; its stack's root, "" for none;
+// the root frame's self's form id (train 53's review, correctness-6), 0 for
+// none or from an older platform
+type Cause = { world: boolean | undefined; root: string; rootSelf: number };
 
 // one of the server's quest words or stages waiting for the update pass
 type QuestItem = {
@@ -1194,36 +1196,37 @@ export class QuestStageService extends ClientListener {
     // puppet), and its end fragment's `if GetStage() < 195: SetStage(195)` set
     // 195 on c2, reported; the server stamped Ariadne as its acting player and
     // relayed it to c1, whose 200 then cured Ariadne's figure. So a stage of a
-    // quest under the puppet rule's mark whose cause's root is the stopped
-    // scene's fragment script is held, unreported, until the quest's next start
-    // here or PUPPET_STOP_MS after the stop, as reportRun holds the stop. The
-    // root names the script: the Creation Kit's SF_<editor id>_<form id> (the
-    // server's "root SF_VC01VampirismCureRitual_0005DBA7.Fragment_0" for scene
-    // 5dba7), its id the plugin's own as the kit saw it, so the id is compared
-    // within its plugin (the low 24 bits, a light plugin's low 12: the
-    // client-only rule's reading of this game's load order). A root naming
-    // another script, or none, reports as before. Line: "quest <q>'s stage <s>
-    // not reported: set by <root>, the end fragment of its scene <scene>
-    // stopped here by the puppet rule"
+    // quest under the puppet rule's mark whose cause's root frame ran in the
+    // stopped scene is held, unreported, until the quest's next start here or
+    // PUPPET_STOP_MS after the stop, as reportRun holds the stop. The root
+    // frame's self (the platform's rootSelf, SubjectOfFrame; HYPOTHESIS until
+    // a lab read: a scene fragment's self is its scene) is the stopped scene,
+    // compared as this game's form id (train 53's review, correctness-6 and
+    // rules-2: the Creation Kit's SF_<editor id>_<form id> name it once read
+    // was a script name standing for an owner, which ADR-073 decision 6
+    // forbids). Any other stage of a marked quest reports as before, said
+    // once a quest a connection (decision 7): "quest <q>'s stage <s>
+    // reported under the puppet rule's mark: its root <root> (self <x>) is
+    // not scene <scene>'s"; an older platform names no self, and every such
+    // stage reports so. Line: "quest <q>'s stage <s> not reported: set by
+    // <root> (self <x>), the end fragment of its scene <scene> stopped here
+    // by the puppet rule". A stopgap (ADR-073 decision 5 (c): a hold where an
+    // owner should be asked): ADR-073 step 5's scene claim (m4-owners-5a)
+    // replaces it, and it goes when a seat asks owner_of before a scene
+    // starts (thuum docs/verbs/quest-stage.md, Ownership; the review's
+    // contracts-4)
     private puppetSceneStage(questId: number, stage: number, cause: Cause): boolean {
         const mark = this.puppetScenes.get(questId);
-        if (mark === undefined || !QuestStageService.rootsInScene(cause.root, mark.scene) || !this.puppetStopMarked(questId)) {
+        if (mark === undefined || !this.puppetStopMarked(questId)) {
             return false;
         }
-        this.sayPuppetHeld(this.puppetStageSaid, questId, `quest ${questId.toString(16)}'s stage ${stage} not reported: set by ${cause.root}, the end fragment of its scene ${mark.scene.toString(16)} stopped here by the puppet rule`);
+        const self = cause.rootSelf.toString(16);
+        if (mark.scene <= 0 || cause.rootSelf !== (mark.scene >>> 0)) {
+            this.sayPuppetHeld(this.puppetStageFellSaid, questId, `quest ${questId.toString(16)}'s stage ${stage} reported under the puppet rule's mark: its root ${cause.root || "none"} (self ${self}) is not scene ${mark.scene.toString(16)}'s`);
+            return false;
+        }
+        this.sayPuppetHeld(this.puppetStageSaid, questId, `quest ${questId.toString(16)}'s stage ${stage} not reported: set by ${cause.root || "no script"} (self ${self}), the end fragment of its scene ${mark.scene.toString(16)} stopped here by the puppet rule`);
         return true;
-    }
-
-    // whether a cause's root is a function of the scene's fragment script
-    // (puppetSceneStage's reading of its name)
-    private static rootsInScene(root: string, scene: number): boolean {
-        const m = /^SF_\w*_([0-9A-Fa-f]{8})\./.exec(root);
-        if (m === null || !Number.isInteger(scene) || scene <= 0) {
-            return false;
-        }
-        const named = parseInt(m[1], 16);
-        const within = (scene >>> 24) === 0xfe ? 0xfff : 0xffffff;
-        return (named & within) === (scene & within);
     }
 
     // the client-only plugins' list for this connection, asked once (at the
@@ -1609,6 +1612,7 @@ export class QuestStageService extends ClientListener {
         }
         this.puppetStopSaid.clear();
         this.puppetStageSaid.clear();
+        this.puppetStageFellSaid.clear();
         this.endSkipped();
         this.keepOrDropPluginList();
         this.pluginListMissSaid = false;
@@ -1859,9 +1863,10 @@ export class QuestStageService extends ClientListener {
 
     // D-Q4 C: an event's cause as the platform named it (the class comment);
     // world undefined from a platform that names none
-    private causeOf(e: { cause?: unknown; root?: unknown }): Cause {
+    private causeOf(e: { cause?: unknown; root?: unknown; rootSelf?: unknown }): Cause {
         const world = e.cause === "world" ? true : e.cause === "seat" ? false : undefined;
-        return { world, root: typeof e.root === "string" ? e.root : "" };
+        const rootSelf = typeof e.rootSelf === "number" && Number.isInteger(e.rootSelf) ? e.rootSelf >>> 0 : 0;
+        return { world, root: typeof e.root === "string" ? e.root : "", rootSelf };
     }
 
     // the per-event trace, every event; the claimed words first, under
@@ -2036,10 +2041,11 @@ export class QuestStageService extends ClientListener {
     // stopped here on a host's puppet (the scene and the time of its stop by
     // quest), each until the quest's next start here or PUPPET_STOP_MS, and
     // the quests whose unreported stop, and stage (puppetSceneStage), this
-    // connection said
+    // connection said, and whose stage the mark did not hold (decision 7)
     private puppetScenes = new Map<number, { scene: number; at: number }>();
     private puppetStopSaid = new Set<number>();
     private puppetStageSaid = new Set<number>();
+    private puppetStageFellSaid = new Set<number>();
     // a client-only plugin's quest: the client-only plugins by this game's
     // own load order (a full plugin by its index, a light one by its index
     // at 0xFE) from the last answer, kept across a reconnect to the same

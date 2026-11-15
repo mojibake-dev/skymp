@@ -2649,6 +2649,16 @@ bool MpObjectReference::ProcessActivateSecond(
                    actorActivator->GetFormId(), GetFormId());
       return true;
     }
+    // ADR-073 decision 7: the client half (skymp5-client remoteServer.ts
+    // onBookMenuClose) sends this close for a menu the server no longer has
+    // open: the book taken by a second activation before the open reply's
+    // menu showed, or the open forgotten at a disconnect (PartOne.cpp) while
+    // that game's menu stayed open across its reconnect. The branch says so
+    // before it falls to the false below
+    spdlog::info("[verb:books] {:x} closes book {:x} with no open here (open "
+                 "{:x}); nothing to forget",
+                 actorActivator->GetFormId(), GetFormId(),
+                 actorActivator->GetOpenBook());
   }
 
   return false;

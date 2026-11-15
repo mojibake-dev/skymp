@@ -1250,6 +1250,11 @@ void OnSendEventEnter(GumInvocationContext* ic)
             !TrapFamily::Exempt::Is(handle)) {
           TrapFamily::Firing::Note(selfId, NowMs());
         }
+        // the server's C-entry (wire-rules trigger_entry.rs admit, train 53)
+        // relays a cell host's own entry back to it on the premise that this
+        // tell fires only for an entry blanked here, never in a hosted cell
+        // (hostedWorldScript below); a tell of an entry the engine also ran
+        // would play twice on the host (train 53's review, rules-4)
         if (family || (!inHostedCell && HasAttachedScript(vm, handle))) {
           const uint32_t refrId = selfId;
           const uint32_t presserId = presser->formID;

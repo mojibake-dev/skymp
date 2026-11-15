@@ -395,6 +395,12 @@ export interface FurnitureAnimationEvent {
   event: string;
   took: boolean;
 }
+// thuum docs/DECISIONS.md ADR-073 step 5a (decision 6 with D-L2 B, the seat that started a scene owns it, and D-A2 C, the stage's cause seat owns a scene a fragment starts): a Scene.Start (forced false) or Scene.ForceStart (forced true) a script called on this seat, read by the seam at the native's dispatch and raised on the next tick: sceneId the scene's form id, acting the server id of the player whose seat's start it is, 0 for this seat's own start. Only a start that runs here is raised, and each is this seat's own (acting 0): one outside an acting scope, or inside a relayed trigger entry's scope, whose stages this seat's engine set; a start inside a scope rooted at a relay is skipped on this seat and never raised (train 53's V-scene, ADR-073 D-A2 C). No game call in its handler
+export interface SceneStartEvent {
+  sceneId: number;
+  forced: boolean;
+  acting: number;
+}
 
 export interface OpenCloseEvent {
   target: ObjectReference
@@ -815,6 +821,8 @@ export declare function on(eventName: 'triggerEntry', callback: (event: TriggerE
 export declare function once(eventName: 'triggerEntry', callback: (event: TriggerEntryEvent) => void): EventHandle
 export declare function on(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle
 export declare function once(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle
+export declare function on(eventName: 'sceneStart', callback: (event: SceneStartEvent) => void): EventHandle
+export declare function once(eventName: 'sceneStart', callback: (event: SceneStartEvent) => void): EventHandle
 
 export declare function on(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
 export declare function once(eventName: 'open', callback: (event: OpenCloseEvent) => void): EventHandle
@@ -1839,7 +1847,7 @@ export declare function setHosted(actorFormId: number, hosted: boolean): boolean
 export declare function isHosted(actorFormId: number): boolean;
 // thuum ADR-068 rung 5 (the acting scope; docs/research/rung5-quests-2026-11-09.md 1(c)): the acting player of a request the server relayed, written before the client applies it: stage 0 to 65535 a stage (the quest stage sink takes it at the pair's event and arms the quest's scope, so the stage's fragment runs for that player: Game.GetPlayer answers figureLocalId's figure, and the player's own actor in a native's frame is that figure), -1 a start and -2 a stop (the quest's scope armed at once), -3 a relayed trigger entry (questId the trigger; TESModPlatform.SendTriggerEvent takes its serverId); figureLocalId 0 when the acting player's figure is absent here (Game.GetPlayer answers None in the scope); ttlMs the request's life, 1 to 60000; false, nothing stored, for a quest 0, a stage outside -3 to 65535, a serverId 0 or the player's own id as the figure; stored with no game call
 export declare function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number): boolean;
-// thuum ADR-073 D-A2 C (train 53's V-scene: the stage's cause seat owns a scene a fragment starts): a stage (0 to 65535), start (-1) or stop (-2) this seat applies from a relay whose cause seat is elsewhere and whose acting player is this seat's own or unnamed (setActingPlayer covers another player): requested as setActingPlayer requests it, a start or a stop armed at once, rooted at the relay with no acting player, so nothing is swapped (Game.GetPlayer and the player's own actor stay this seat's, and a player's own global is written) while a Scene.Start or ForceStart in its fragment, or in the fragment of a stage it chains, is counted on this seat and run (the skip waits on ADR-073 step 5a's scene claim); ttlMs the request's life, 1 to 60000; false, nothing stored, for a quest 0, a stage outside -2 to 65535 or a ttl outside 1 to 60000; stored with no game call
+// thuum ADR-073 D-A2 C (train 53's V-scene: the stage's cause seat owns a scene a fragment starts): a stage (0 to 65535), start (-1) or stop (-2) this seat applies from a relay whose cause seat is elsewhere and whose acting player is this seat's own or unnamed (setActingPlayer covers another player): requested as setActingPlayer requests it, a start or a stop armed at once, rooted at the relay with no acting player, so nothing is swapped (Game.GetPlayer and the player's own actor stay this seat's, and a player's own global is written) while a Scene.Start or ForceStart in its fragment, or in the fragment of a stage it chains, is skipped on this seat (the cause seat starts the scene and claims its actors, ADR-073 step 5a's scene claim); ttlMs the request's life, 1 to 60000; false, nothing stored, for a quest 0, a stage outside -2 to 65535 or a ttl outside 1 to 60000; stored with no game call
 export declare function setRelayedScope(questId: number, stage: number, ttlMs: number): boolean;
 // thuum train 53, R-V4: whether the magic item's effect at the index carries conditions, on its effect item or on its base effect (CommonLibSSE-NG Effect::conditions, EffectSetting::conditions), which the host's engine answers; a form-table read, no Papyrus call; null for a form that is no magic item, an index past its effects or an empty slot
 export declare function effectConditioned(spellFormId: number, index: number): boolean | null;

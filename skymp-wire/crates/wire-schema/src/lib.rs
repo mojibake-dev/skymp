@@ -143,7 +143,14 @@ use bounded::{String, Vec};
 /// and counts the engine's roll put in its inventory, read inside the call's
 /// AddItemFunctor, so the server records the roll where it refused the list
 /// by name (E_SCRIPTCALL_LEVELED).
-pub const SCHEMA_VERSION: u16 = 44;
+/// 47: ActorClaim's optional `purpose`, `quest`, `package` and `scene` (thuum
+/// ADR-073 step 5a, decision 6 with D-L2 B and D-53-4, m4-owners-5a): a claim
+/// names a talk, a quest's lead (its own package on its alias actor) or a
+/// scene its seat started, and outlives a grant into its cell. Taken as the
+/// number D-53-3's merge order gives ADR-073's first step after canon's 44,
+/// C4's 45 (m4-reanimate-return) and the physics heads' 46, whose history
+/// lines are on their branches; numidium settles it at the merge.
+pub const SCHEMA_VERSION: u16 = 47;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -773,7 +780,10 @@ const TABLE: [Row; 90] = [
     row("HostedActorState", 53, 64, Both),
     row("ActorSpeech", 54, 32, Both),
     row("DamageCause", 55, 32, S2C),
-    row("ActorClaim", 56, 16, C2S),
+    // an idx, the flag and since SCHEMA_VERSION 47 a purpose and three form
+    // ids, each with its presence byte: 27 bytes at the caps (thuum ADR-073
+    // step 5a)
+    row("ActorClaim", 56, 48, C2S),
     row("QuestStage", 57, 4 * KIB, Both),
     row("PropTransform", 58, 64, Both),
     row("PropClaim", 59, 16, C2S),
@@ -1552,6 +1562,27 @@ mod tests {
             assert_eq!(bytes.first().copied().map(u32::from), Some(m.wire_id()), "{}", m.name());
             assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0), "{}", m.name());
         }
+    }
+
+    #[test]
+    fn an_actor_claim_at_its_caps_fits_its_byte_cap() {
+        // thuum ADR-073 step 5a (SCHEMA_VERSION 47): the wire id, a five-byte
+        // idx, the flag, then the purpose's two bytes and three five-byte
+        // ids, each behind its presence byte; a talk as canon sent it costs
+        // the four presence bytes alone
+        let full = Message::ActorClaim(skymp::ActorClaim {
+            idx: u32::MAX,
+            claim: true,
+            purpose: Some(u8::MAX),
+            quest: Some(u32::MAX),
+            package: Some(u32::MAX),
+            scene: Some(u32::MAX),
+            ..Default::default()
+        });
+        assert_eq!(postcard::to_allocvec(&full).map(|b| b.len()), Ok(27));
+        assert_eq!(Message::max_len(full.wire_id()), Some(48));
+        let talk = Message::ActorClaim(skymp::ActorClaim { idx: u32::MAX, claim: true, ..Default::default() });
+        assert_eq!(postcard::to_allocvec(&talk).map(|b| b.len()), Ok(11));
     }
 
     #[test]

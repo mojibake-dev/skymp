@@ -63,6 +63,8 @@ import { DamageCauseService } from "./services/services/damageCauseService";
 import { NodeOverridesService } from "./services/services/nodeOverridesService";
 import { PuppetFaceService } from "./services/services/puppetFaceService";
 import { TalkService } from "./services/services/talkService";
+import { LeadClaimService } from "./services/services/leadClaimService";
+import { SceneClaimService } from "./services/services/sceneClaimService";
 import { VoiceService } from "./services/services/voiceService";
 import { SpSnippetService } from "./services/services/spSnippetService";
 import { SweetTaffyDynamicPerksService } from "./services/services/sweetTaffyDynamicPerksService";
@@ -165,6 +167,8 @@ const main = () => {
       new NodeOverridesService(sp, controller),
       new PuppetFaceService(sp, controller),
       new TalkService(sp, controller),
+      new LeadClaimService(sp, controller),
+      new SceneClaimService(sp, controller),
       new VoiceService(sp, controller),
       new SpSnippetService(sp, controller),
       new SettingsService(sp, controller),

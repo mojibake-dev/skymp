@@ -47,6 +47,10 @@ void EventManager::InitCustom()
   // an engine event to a furniture's own graph (FridaHooks'
   // furnitureAnimation, the animation hook's)
   manager->EmplaceEvent("furnitureAnimation");
+  // thuum docs/DECISIONS.md ADR-073 step 5a (decision 6 with D-L2 B and
+  // D-A2 C): a Scene.Start or ForceStart this seat's own scripts called, the
+  // seam's (ScriptNatives.cpp NoteSceneStart)
+  manager->EmplaceEvent("sceneStart");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

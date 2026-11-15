@@ -831,6 +831,31 @@ TEST_CASE("SMQN names the quests a Story Manager quest node starts, and the "
             .size() >= 448);
 }
 
+TEST_CASE("PACK names its owner quest, and SCEN its quest and its actor "
+          "aliases outside its actions",
+          "[espm]")
+{
+  // thuum ADR-073 step 5a: a lead is a quest's own package (TESPackage's
+  // ownerQuest, QNAM, CommonLibSSE-NG include/RE/T/TESPackage.h:310); a
+  // scene's quest and actors are its PNAM and ALIDs outside its actions
+  // (include/RE/B/BGSScene.h:94 and :90), an action's ALID and PNAMs its own
+  // (BGSSceneAction.h:54). Skyrim.esm as read on sky-srv 2026-11-14:
+  // MS13CamillaTravelMarker00Package 0x2e4cc's one QNAM is MS13 0x39645,
+  // MS13CamillaWorkTrader 0x63b2a has none; MS13LucanCamillaSceneView
+  // 0x3839b names aliases 0 and 2 ahead of its actions and quest 0x38386 in
+  // its last PNAM, after its actions' packages 0x383c0, 0x383bf and 0x63b2a;
+  // VC01VampirismCureRitual 0x5dba7 names alias 0 and VC01 0x5c625
+  MyEspmProvider provider;
+  REQUIRE(espm::GetData<espm::PACK>(0x2e4cc, &provider).ownerQuest == 0x39645);
+  REQUIRE(espm::GetData<espm::PACK>(0x63b2a, &provider).ownerQuest == 0);
+  const auto argument = espm::GetData<espm::SCEN>(0x3839b, &provider);
+  REQUIRE(argument.quest == 0x38386);
+  REQUIRE(argument.actorAliases == std::vector<uint32_t>{ 0, 2 });
+  const auto ritual = espm::GetData<espm::SCEN>(0x5dba7, &provider);
+  REQUIRE(ritual.quest == 0x5c625);
+  REQUIRE(ritual.actorAliases == std::vector<uint32_t>{ 0 });
+}
+
 TEST_CASE("PERK carries its DATA, its next rank and the conditions before "
           "its sections",
           "[espm]")

@@ -26,10 +26,13 @@
 #include "libespm/GMST.h"
 #include "libespm/HDPT.h"
 #include "libespm/LVLI.h"
+#include "libespm/NPC_.h"
 #include "libespm/ObjectBounds.h"
+#include "libespm/PACK.h"
 #include "libespm/QUST.h"
 #include "libespm/RACE.h"
 #include "libespm/REFR.h"
+#include "libespm/SCEN.h"
 #include "libespm/SHOU.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
@@ -841,8 +844,77 @@ namespace {
 // defined with the activation rule below (the reach a dialogue claim shares
 // with an activation, wire-rules activation)
 float ActivationTargetSize(MpObjectReference& target);
+// defined with the journal's alias fills below (thuum ADR-073 step 5a): how
+// `actor` fills one of `quest`'s reference aliases, `only` the aliases a
+// scene names when it is given
+skymp::rules::AliasActorFill ActorAliasFill(PartOne& partOne,
+                                            const MpActor& actor,
+                                            uint32_t quest,
+                                            const std::vector<uint32_t>* only);
+
+// thuum ADR-073 step 5a: whether the world's run record holds `quest`
+// stopped (its last recorded word a stop, wire-rules quest_runs); a quest
+// the record never took a word of is not
+bool QuestRecordedStopped(PartOne& partOne, uint32_t quest)
+{
+  FormDesc desc;
+  try {
+    desc = FormDesc::FromFormId(quest, partOne.worldState.espmFiles);
+  } catch (const std::exception&) {
+    return false;
+  }
+  for (const auto& run : partOne.GetQuestRuns()) {
+    if (run.quest == desc) {
+      return !run.running;
+    }
+  }
+  return false;
 }
 
+// the claim `actor`'s row holds, for a refusal's line: "ff000000's lead of
+// 39645", "ff000001's talk", or "none"
+std::string DescribeClaim(const PartOne& partOne, const MpActor& actor)
+{
+  for (const auto& row : partOne.GetFollows()) {
+    if (row.actor != actor.GetFormId()) {
+      continue;
+    }
+    std::vector<std::string> purposes;
+    if (row.talk) {
+      purposes.push_back("talk");
+    }
+    if (!row.leads.empty()) {
+      std::vector<std::string> quests;
+      for (uint32_t quest : row.leads) {
+        quests.push_back(fmt::format("{:x}", quest));
+      }
+      purposes.push_back(
+        fmt::format("lead of {}", fmt::join(quests, " and ")));
+    }
+    if (row.scene != 0) {
+      purposes.push_back(fmt::format("scene {:x}", row.scene));
+    }
+    if (!purposes.empty()) {
+      return fmt::format("{:x}'s {}", row.player, fmt::join(purposes, ", "));
+    }
+  }
+  return "none";
+}
+}
+
+// thuum docs/verbs/npc-talk.md (ADR-052) and thuum ADR-073 decision 6 (step
+// 5a): a player's claim on an NPC, or its release, for a purpose. A talk (a
+// dialogue) as before: the claimant stands within activation reach in the
+// actor's cell and the actor fights nothing. A lead (D-53-4): the quest's
+// own package running on the actor, which fills one of the quest's aliases;
+// the claimant must be the actor's simulator (D-PO2 A), anywhere. A scene
+// (D-L2 B, D-A2 C): a scene the claimant's seat started, the actor one of
+// its actors; the claimant has the cell loaded, the first claim wins. A
+// lead's and a scene's records are read here (rule 5: the quest a QUST the
+// world's record does not hold stopped, the package's QNAM, the scene's own
+// PNAM, the alias the actor fills); an alias the server cannot read is
+// accepted as the seat's word and logged unvalidated (R2). Every purpose is
+// an NPC's, alive.
 void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
                                   const ActorClaimMessage& msg)
 {
@@ -852,23 +924,49 @@ void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
   }
   MpForm* form = partOne.worldState.LookupFormByIdx(msg.idx);
   MpActor* actor = form ? form->AsActor() : nullptr;
+  const uint32_t kind = msg.purpose.value_or(0);
+  PartOne::ClaimPurpose purpose;
+  purpose.kind = static_cast<uint8_t>(kind <= 2 ? kind : 0);
+  purpose.quest = msg.quest.value_or(0);
+  purpose.scene = msg.scene.value_or(0);
+  const uint32_t package = msg.package.value_or(0);
+  // a talk's lines read as before; a lead's and a scene's name it
+  const std::string what = kind == 1
+    ? fmt::format(" for the lead of {:x} (package {:x})", purpose.quest,
+                  package)
+    : kind == 2
+    ? fmt::format(" for the scene {:x} of {:x}", purpose.scene, purpose.quest)
+    : std::string();
   const auto refuse = [&](const char* code, const std::string& why) {
-    spdlog::warn("[verb:npc-talk] {}: {:x} {} idx {} ({:x}); {}", code,
+    spdlog::warn("[verb:npc-talk] {}: {:x} {} idx {} ({:x}){}; {}", code,
                  myActor->GetFormId(), msg.claim ? "claims" : "releases",
-                 msg.idx, actor ? actor->GetFormId() : 0u, why);
+                 msg.idx, actor ? actor->GetFormId() : 0u, what, why);
   };
   if (!actor) {
     refuse("E_CLAIM_NO_ACTOR", "no such actor");
     return;
   }
+  if (kind > 2) {
+    // the validator refuses it first (wire-validate check_actor_claim)
+    refuse("E_CLAIM_PURPOSE", fmt::format("no purpose {}", kind));
+    return;
+  }
   if (!msg.claim) {
-    if (!partOne.ReleaseClaim(*myActor, *actor)) {
+    const auto released = partOne.ReleaseClaim(*myActor, *actor, purpose);
+    if (released == PartOne::ClaimRelease::NotHeld) {
       refuse("E_CLAIM_NONE", "it holds no claim on it");
       return;
     }
-    spdlog::info("[verb:npc-talk] {:x} releases {:x}; the cell's rule names "
+    if (released == PartOne::ClaimRelease::Kept) {
+      spdlog::info("[verb:npc-talk] {:x} releases {:x}{}; its claim stands "
+                   "for its other purposes ({})",
+                   myActor->GetFormId(), actor->GetFormId(), what,
+                   DescribeClaim(partOne, *actor));
+      return;
+    }
+    spdlog::info("[verb:npc-talk] {:x} releases {:x}{}; the cell's rule names "
                  "{:x}",
-                 myActor->GetFormId(), actor->GetFormId(),
+                 myActor->GetFormId(), actor->GetFormId(), what,
                  partOne.SimulatorOf(*actor));
     return;
   }
@@ -881,39 +979,145 @@ void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
     refuse("E_CLAIM_DEAD", "the actor is dead");
     return;
   }
-  if (actor->GetHostedCombatTarget() != 0) {
-    refuse("E_CLAIM_COMBAT", "the actor fights (its host's last state)");
-    return;
+  std::string fillWords;
+  if (kind == 0) {
+    if (actor->GetHostedCombatTarget() != 0) {
+      refuse("E_CLAIM_COMBAT", "the actor fights (its host's last state)");
+      return;
+    }
+    if (myActor->GetCellOrWorld() != actor->GetCellOrWorld()) {
+      refuse("E_CLAIM_REACH", "another cell or world");
+      return;
+    }
+    const float distance = (myActor->GetPos() - actor->GetPos()).Length();
+    const auto reach = skymp::rules::activation_within_reach(
+      distance, ActivationTargetSize(*actor));
+    if (!reach.allowed) {
+      refuse("E_CLAIM_REACH",
+             fmt::format("{:.0f} units from its record, reach {:.0f}",
+                         distance, reach.bound));
+      return;
+    }
+  } else {
+    // a lead or a scene has no reach, cell or combat gate: its claimant's
+    // engine runs the actor wherever the quest or the scene takes it
+    if (!partOne.HasEspm()) {
+      refuse("E_CLAIM_QUEST", "no master files");
+      return;
+    }
+    const auto& browser = partOne.GetEspm().GetBrowser();
+    auto& cache = partOne.worldState.GetEspmCache();
+    if (!espm::Convert<espm::QUST>(browser.LookupById(purpose.quest).rec)) {
+      refuse("E_CLAIM_QUEST",
+             fmt::format("{:x} is no QUST record", purpose.quest));
+      return;
+    }
+    if (QuestRecordedStopped(partOne, purpose.quest)) {
+      refuse("E_CLAIM_QUEST", "the world's record holds the quest stopped");
+      return;
+    }
+    std::vector<uint32_t> sceneActors;
+    if (kind == 1) {
+      // the package's owner quest (QNAM, TESPackage::ownerQuest), the
+      // winning plugin's record (USSEP's names MS13 on 0xced81 where
+      // Skyrim.esm's names none)
+      const auto packLookup = browser.LookupById(package);
+      const auto* pack = espm::Convert<espm::PACK>(packLookup.rec);
+      const uint32_t raw = pack ? pack->GetData(cache).ownerQuest : 0;
+      const uint32_t owner = raw ? packLookup.ToGlobalId(raw) : 0;
+      if (owner != purpose.quest) {
+        refuse("E_CLAIM_PACKAGE",
+               pack ? fmt::format("its owner quest (QNAM) is {:x}", owner)
+                    : fmt::format("{:x} is no PACK record", package));
+        return;
+      }
+    } else {
+      // the scene's own quest (its PNAM outside an action) and its actors
+      const auto sceneLookup = browser.LookupById(purpose.scene);
+      const auto* scen = espm::Convert<espm::SCEN>(sceneLookup.rec);
+      if (!scen) {
+        refuse("E_CLAIM_SCENE",
+               fmt::format("{:x} is no SCEN record", purpose.scene));
+        return;
+      }
+      auto data = scen->GetData(cache);
+      const uint32_t owner =
+        data.quest ? sceneLookup.ToGlobalId(data.quest) : 0;
+      if (owner != purpose.quest) {
+        refuse("E_CLAIM_SCENE",
+               fmt::format("its quest (PNAM) is {:x}", owner));
+        return;
+      }
+      sceneActors = std::move(data.actorAliases);
+    }
+    const auto fill = ActorAliasFill(partOne, *actor, purpose.quest,
+                                     kind == 2 ? &sceneActors : nullptr);
+    switch (fill.kind) {
+      case 0:
+        refuse("E_CLAIM_ALIAS",
+               kind == 2 ? "none of the scene's actor aliases can hold it"
+                         : "none of the quest's aliases can hold it");
+        return;
+      case 1:
+        fillWords =
+          fmt::format(", its alias {} by the journal's fill", fill.alias);
+        break;
+      case 2:
+        fillWords = fmt::format(", its alias {} forced", fill.alias);
+        break;
+      case 3:
+        fillWords = fmt::format(", its alias {} its unique actor", fill.alias);
+        break;
+      default:
+        fillWords = ", by an alias the server cannot read: unvalidated (R2)";
+        break;
+    }
+    purpose.alias = fill.alias;
   }
-  if (myActor->GetCellOrWorld() != actor->GetCellOrWorld()) {
-    refuse("E_CLAIM_REACH", "another cell or world");
-    return;
-  }
-  const float distance = (myActor->GetPos() - actor->GetPos()).Length();
-  const auto reach = skymp::rules::activation_within_reach(
-    distance, ActivationTargetSize(*actor));
-  if (!reach.allowed) {
-    refuse("E_CLAIM_REACH",
-           fmt::format("{:.0f} units from its record, reach {:.0f}", distance,
-                       reach.bound));
-    return;
-  }
-  const auto verdict = partOne.ClaimActor(*myActor, *actor);
+  const auto verdict = partOne.ClaimActor(*myActor, *actor, purpose);
   switch (verdict) {
     case PartOne::ClaimVerdict::Granted:
     case PartOne::ClaimVerdict::Reclaimed:
-      spdlog::info("[verb:npc-talk] {:x} claims {:x} in cell {:x} for a "
-                   "dialogue{}; it simulates the actor for the lease",
-                   myActor->GetFormId(), actor->GetFormId(),
-                   partOne.worldState.CellOf(*actor).value_or(0),
-                   verdict == PartOne::ClaimVerdict::Reclaimed ? " (renewed)"
-                                                               : "");
+      if (kind == 0) {
+        spdlog::info("[verb:npc-talk] {:x} claims {:x} in cell {:x} for a "
+                     "dialogue{}; it simulates the actor for the lease",
+                     myActor->GetFormId(), actor->GetFormId(),
+                     partOne.worldState.CellOf(*actor).value_or(0),
+                     verdict == PartOne::ClaimVerdict::Reclaimed ? " (renewed)"
+                                                                 : "");
+      } else {
+        spdlog::info(
+          "[verb:npc-talk] {:x} claims {:x} in cell {:x}{}{}{}; "
+          "it simulates the actor until {}",
+          myActor->GetFormId(), actor->GetFormId(),
+          partOne.worldState.CellOf(*actor).value_or(0), what, fillWords,
+          verdict == PartOne::ClaimVerdict::Reclaimed ? " (held)" : "",
+          kind == 1 ? "the quest releases it, stops, or it dies"
+                    : "the scene ends, its quest stops, or it "
+                      "dies");
+      }
       break;
     case PartOne::ClaimVerdict::Held:
-      refuse("E_CLAIM_HELD", "another player holds a claim on it");
+      refuse("E_CLAIM_HELD",
+             fmt::format("another player holds a claim on it ({})",
+                         DescribeClaim(partOne, *actor)));
       break;
     case PartOne::ClaimVerdict::Unloaded:
       refuse("E_CLAIM_UNLOADED", "the claimant has not loaded its cell");
+      break;
+    case PartOne::ClaimVerdict::NotSimulator:
+      refuse("E_CLAIM_NOT_SIMULATOR",
+             fmt::format("its simulator is {:x}; a lead is the game's that "
+                         "runs the actor",
+                         partOne.SimulatorOf(*actor)));
+      break;
+    case PartOne::ClaimVerdict::Full:
+      refuse("E_CLAIM_FULL",
+             fmt::format("its claim holds the most quests' leads it may ({})",
+                         DescribeClaim(partOne, *actor)));
+      break;
+    case PartOne::ClaimVerdict::NoPurpose:
+      refuse("E_CLAIM_PURPOSE", "the rules know no such purpose");
       break;
   }
 }
@@ -3784,6 +3988,11 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
                                  fmt::join(*relay.wordStages, ", "))
                    : std::string(),
                  causeText);
+    // thuum ADR-073 decision 6: a recorded stop ends the quest's leads and
+    // the claims of its scenes (their words name the cells' rules again)
+    if (what == 2) {
+      partOne.QuestStopped(msg.quest);
+    }
     return;
   }
 
@@ -4389,6 +4598,82 @@ void RefuseStateRow(
 bool IsClearedFill(const FormDesc& refr)
 {
   return refr.shortFormId == 0 && refr.file.empty();
+}
+
+// the journal's alias fills as the rules read them (the ref half's entries,
+// a clear as 0; a fill whose plugin this load order lacks names nothing here)
+std::vector<skymp::rules::AliasFillEntry> JournalFillEntries(
+  const std::vector<MpChangeFormREFR::AliasFill>& fills,
+  const EspmFileList& files)
+{
+  std::vector<skymp::rules::AliasFillEntry> record;
+  for (const auto& fill : fills) {
+    if (!fill.refr) {
+      continue;
+    }
+    try {
+      skymp::rules::AliasFillEntry entry{};
+      entry.quest = fill.quest.ToFormId(files);
+      entry.alias = fill.alias;
+      entry.refr = IsClearedFill(*fill.refr) ? 0 : fill.refr->ToFormId(files);
+      record.push_back(entry);
+    } catch (const std::exception&) {
+      // a fill whose plugin this load order lacks names nothing here
+    }
+  }
+  return record;
+}
+
+// thuum ADR-073 step 5a: how `actor` fills one of `quest`'s reference
+// aliases (wire-rules alias_fills::fills_actor), over the record's aliases
+// (libespm QUST::GetQuestAliases with the location aliases set apart, ALFR
+// and ALUA in the load order, as AliasCreationsOf reads them; a scene's
+// claim reads only the aliases its SCEN names, `only`), the journal's
+// reported fills (OnAliasFill's record) and the base's unique flag (its
+// NPC_'s ACBS, libespm NPC_::Data::isUnique)
+skymp::rules::AliasActorFill ActorAliasFill(PartOne& partOne,
+                                            const MpActor& actor,
+                                            uint32_t quest,
+                                            const std::vector<uint32_t>* only)
+{
+  const auto& browser = partOne.GetEspm().GetBrowser();
+  auto& cache = partOne.worldState.GetEspmCache();
+  std::vector<skymp::rules::QuestAliasRow> rows;
+  const auto lookup = browser.LookupById(quest);
+  if (const auto* qust = espm::Convert<espm::QUST>(lookup.rec)) {
+    for (const auto& alias : qust->GetQuestAliases(cache)) {
+      if (alias.locationAlias) {
+        continue;
+      }
+      if (only &&
+          std::find(only->begin(), only->end(), alias.aliasID) ==
+            only->end()) {
+        continue;
+      }
+      skymp::rules::QuestAliasRow row{};
+      row.id = alias.aliasID;
+      row.created = alias.aliasCreatedObject
+        ? lookup.ToGlobalId(alias.aliasCreatedObject)
+        : 0;
+      row.create_at = alias.createAt;
+      row.forced = alias.aliasForcedReference
+        ? lookup.ToGlobalId(alias.aliasForcedReference)
+        : 0;
+      row.unique_actor =
+        alias.aliasUniqueActor ? lookup.ToGlobalId(alias.aliasUniqueActor) : 0;
+      rows.push_back(row);
+    }
+  }
+  const auto journal =
+    JournalFillEntries(partOne.GetAliasFills(), partOne.worldState.espmFiles);
+  const uint32_t base = actor.GetBaseId();
+  const auto* npc = espm::Convert<espm::NPC_>(browser.LookupById(base).rec);
+  const bool unique = npc && npc->GetData(cache).isUnique;
+  return skymp::rules::alias_fills_actor(
+    rust::Slice<const skymp::rules::QuestAliasRow>(rows.data(), rows.size()),
+    rust::Slice<const skymp::rules::AliasFillEntry>(journal.data(),
+                                                    journal.size()),
+    quest, actor.GetFormId(), base, unique);
 }
 
 // kConstant, a GLOB record's flag (CommonLibSSE-NG include/RE/T/
@@ -6846,21 +7131,7 @@ void ActionListener::OnAliasFill(const RawMessageData& rawMsgData,
 
   // the journal's fills as the rule reads them (the ref half's entries)
   auto fills = partOne.GetAliasFills();
-  std::vector<skymp::rules::AliasFillEntry> record;
-  for (const auto& fill : fills) {
-    if (!fill.refr) {
-      continue;
-    }
-    try {
-      skymp::rules::AliasFillEntry entry{};
-      entry.quest = fill.quest.ToFormId(files);
-      entry.alias = fill.alias;
-      entry.refr = IsClearedFill(*fill.refr) ? 0 : fill.refr->ToFormId(files);
-      record.push_back(entry);
-    } catch (const std::exception&) {
-      // a fill whose plugin this load order lacks names nothing here
-    }
-  }
+  const auto record = JournalFillEntries(fills, files);
   skymp::rules::AliasFillEntry reported{};
   reported.quest = msg.quest;
   reported.alias = msg.alias;
@@ -6910,6 +7181,9 @@ void ActionListener::OnAliasFill(const RawMessageData& rawMsgData,
   }
   entry->refr = refrDesc;
   partOne.SetAliasFills(std::move(fills));
+  // thuum ADR-073 decision 6 (D-53-4): the quest released whoever its lead
+  // read this alias on, unless the fill names it again
+  partOne.AliasFilled(msg.quest, msg.alias, msg.refr);
 
   AliasFillMessage relay;
   relay.quest = msg.quest;

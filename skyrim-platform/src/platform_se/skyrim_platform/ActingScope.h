@@ -45,8 +45,9 @@ constexpr int32_t kStart = -1;
 constexpr int32_t kStop = -2;
 constexpr int32_t kEntry = -3;
 
-// ARM_MS, UNMEASURED (HYPOTHESIS H-AP3: the window joins only the relayed
-// fragment's stacks; x-acting-player v1 records the joins per arm)
+// ARM_MS, UNMEASURED (HYPOTHESIS H-AP3: a stage's arm joins its fragment's
+// stack alone, one join per item, a word's every stack in the window;
+// x-acting-player v1 reads the refused joins, Line::kRefuse)
 constexpr uint64_t kArmMs = 2000;
 // JOINED_MS: a joined stack keeps its scope this long at most
 constexpr uint64_t kJoinedMs = 120000;
@@ -79,12 +80,14 @@ struct Player
 // (SendTriggerEvent's arm), whose stages this seat's own engine sets, so
 // this seat is their cause seat. A chained request or arm (the seam's
 // propagation inside a scoped stack) inherits its parent scope's root
-// unchanged. Train 53's V-scene counts a scene start under kRelayed alone
-// (ADR-073 D-A2 C; the skip waits on step 5a's scene claim, its review's
-// correctness-1): a trigger's host starts the trigger's scenes
+// unchanged. Train 53's V-scene skips a scene start under kRelayed alone
+// (ADR-073 D-A2 C, back with step 5a's scene claim, its review's
+// correctness-1: the cause seat starts the scene and claims its actors), and
+// a start under kTrigger is this seat's own (step 5a's sceneStart, acting
+// none): a trigger's host starts the trigger's scenes
 // (defaultStartSceneTrigScript) and its stages' fragments' scenes (MS13's
 // 38386 stage 10, Lucan and Camilla the host's). A default Scope's kTrigger
-// counts nothing
+// skips nothing
 enum class RootKind : uint8_t
 {
   kRelayed,
@@ -130,6 +133,9 @@ struct Joined
   Scope scope;
   // the stacks this arm joined so far (H-AP3's reading)
   uint32_t joins = 0;
+  // the arm had joined its cap: the stack is left out of the scope (train
+  // 53's review, correctness-2)
+  bool capped = false;
 };
 
 // the steady clock in milliseconds (ScriptNatives.cpp's)
@@ -153,9 +159,14 @@ bool Requested();
 // scope's root (RootKind), carried by every stack the arm joins. maxJoins
 // caps the stacks the arm joins (0 for no cap): a relayed trigger
 // entry's arm joins at most the trigger's own attached scripts' handlers
-// (rung 5's fresh review, note 9)
+// (rung 5's fresh review, note 9), and a taken stage request's arm its
+// fragment's own stack, one a passing item (train 53's review,
+// correctness-2); stage, a stage's arm's, lets Widen find it
 Scope Arm(uint32_t subject, Player player, uint64_t ttlMs, RootKind root,
-          uint32_t maxJoins = 0);
+          uint32_t maxJoins = 0, std::optional<int32_t> stage = std::nullopt);
+// a later item's event of the stage that opened the subject's live capped
+// arm (H-AP8): the arm joins one stack more; false for none
+bool Widen(uint32_t subject, int32_t stage);
 // any arm, one atomic read
 bool Armed();
 
@@ -165,7 +176,8 @@ bool Any();
 // a joined stack's scope, nothing for a stack never joined or expired
 std::optional<Scope> Of(RE::VMStackID stackId);
 // the stack joined to the scope armed for its root frame's subject, nothing
-// when no live arm names the subject or the arm has joined its cap
+// when no live arm names the subject, or a capped Joined (the stack left
+// out, nothing stored) when the arm has joined its cap
 std::optional<Joined> Join(RE::VMStackID stackId, uint32_t rootSubject);
 
 // the lines a scope makes, each kind throttled on its own, so a scope's
@@ -177,7 +189,8 @@ enum class Line : uint8_t
   kSwap,
   kReturn,
   kChain,
-  kSkip
+  kSkip,
+  kRefuse
 };
 // a scope's line of that kind is due: its first three and every hundredth of
 // the kind overall (the map of counts cleared past 1024 keys)

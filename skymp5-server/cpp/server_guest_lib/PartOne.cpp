@@ -983,6 +983,10 @@ spdlog::logger& PartOne::GetLogger()
 }
 
 namespace {
+// defined with the cell host's decisions below (FlipHostedFlags' caller)
+void ApplyHostDecisions(
+  PartOne& partOne, const rust::Vec<skymp::rules::HostDecision>& decisions);
+
 class ScopedTask
 {
 public:
@@ -1062,8 +1066,12 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
             container->RemoveContainerOccupant(*actor);
           }
           // every cell it hosts starts its grace (thuum
-          // docs/verbs/cell-host.md); the clock passes them on
-          this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs());
+          // docs/verbs/cell-host.md); the clock passes them on. Each claim it
+          // held ends here with its word (thuum ADR-073 decision 6; dropped
+          // without one until step 5a)
+          ApplyHostDecisions(
+            *this_,
+            this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs()));
           // and the world streamer hands its stream on (thuum ADR-068 rung
           // 4)
           SendStreamWords(
@@ -2222,7 +2230,9 @@ void FlipHostedFlags(PartOne& partOne, MpActor& viewer, uint32_t cell,
     // the per-actor rows survive a grant or a release they do not concern
     // (ADR-047's follows, D22's margin hold, ADR-052's claims): the word
     // names the simulator the table answers, which is the host for an actor
-    // with no row (a grant into the cell ends the rows into it)
+    // with no row (a grant into the cell ends the follow and margin rows into
+    // it and passes over a claim, thuum ADR-073 decision 6, so a claimed
+    // actor's word names its holder)
     const uint32_t simulator = partOne.SimulatorOf(*actor);
     // the record ahead of EVERY word to the game the word names, the host's
     // or another's (non-owning-seat.md section 3; the grant bounce of 055217
@@ -2327,15 +2337,24 @@ void ApplyHostDecisions(PartOne& partOne,
         partOne.NoteCellHostDecision(PartOne::CellHostNote::Unhosted, d.cell);
         break;
       case skymp::rules::HostKind::ClaimEnded: {
-        // thuum docs/verbs/npc-talk.md (ADR-052): a claim's lease ran out;
-        // the cell's rule names the simulator again and the word follows
+        // thuum docs/verbs/npc-talk.md (ADR-052, thuum ADR-073 decision 6):
+        // a claim's last purpose ended (its lease, its release, its quest's
+        // stop, its alias's fill, the actor's death, or its holder's
+        // departure, silence or unload); the cell's rule names the simulator
+        // again and the word follows, unless the rule names the holder
+        // itself (a host's own lead or talk: the keyframe would set the
+        // actor its engine runs back to its record)
         auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
         MpActor* actor = form ? form->AsActor() : nullptr;
+        const uint32_t simulator = actor ? partOne.SimulatorOf(*actor) : 0;
         spdlog::info("[verb:npc-talk] the claim on {:x} in cell {:x} ended "
-                     "with its lease; the cell's rule stands",
-                     d.actor, d.cell);
-        if (actor) {
-          const uint32_t simulator = partOne.SimulatorOf(*actor);
+                     "with {}; the cell's rule stands (owner epoch {}): "
+                     "{:x} simulates it{}",
+                     d.actor, d.cell,
+                     std::string(skymp::rules::claim_end_name(d.why)), d.epoch,
+                     simulator,
+                     simulator == d.player ? ", its holder still" : "");
+        if (actor && simulator != d.player) {
           if (MpActor* sim = PlayerActor(partOne, simulator)) {
             partOne.SendActorKeyframe(*actor, *sim);
           }
@@ -2611,6 +2630,12 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
 
 void PartOne::OnDeathState(MpActor& actor, bool isDead)
 {
+  // thuum ADR-073 decision 6: an actor's death ends its claim, whatever it
+  // held it for (D-53-4's "or she dies"); both death paths reach here
+  // (MpActor::SendAndSetDeathState), a player's actor holding none
+  if (isDead) {
+    ApplyHostDecisions(*this, pImpl->cells->actor_died(actor.GetFormId()));
+  }
   // a player's actor alone: an NPC's death is npc-fate's and hosts nothing
   if (serverState.UserByActor(&actor) == Networking::InvalidUserId) {
     return;
@@ -3120,7 +3145,10 @@ void PartOne::TickCellHosts(uint64_t nowMs)
             return true;
           }
         }
-        return false;
+        // thuum ADR-073 decision 6: a seat holding a lead or a scene runs
+        // its actor wherever it goes, so its silence is judged too (the
+        // table ends those purposes at the grace)
+        return pImpl->cells->holds_lead_or_scene(actor->GetFormId());
       }();
       // thuum ADR-068 rung 4: the world streamer reads the same silence for
       // every seat (its own eligibility wants a movement report first, so a
@@ -3206,7 +3234,15 @@ std::vector<PartOne::CellFollowEntry> PartOne::GetFollows() const
 {
   std::vector<CellFollowEntry> out;
   for (const auto& row : pImpl->cells->follows()) {
-    out.push_back({ row.actor, row.player, row.cell });
+    CellFollowEntry entry;
+    entry.actor = row.actor;
+    entry.player = row.player;
+    entry.cell = row.cell;
+    entry.talk = row.talk;
+    entry.leads.assign(row.leads.begin(), row.leads.end());
+    entry.scene = row.scene;
+    entry.epoch = row.epoch;
+    out.push_back(std::move(entry));
   }
   return out;
 }
@@ -3313,30 +3349,43 @@ uint32_t PartOne::SimulatorOf(const MpActor& actor) const
   return cell ? pImpl->cells->simulator_of(actor.GetFormId(), *cell) : 0u;
 }
 
-PartOne::ClaimVerdict PartOne::ClaimActor(MpActor& claimant, MpActor& actor)
+PartOne::ClaimVerdict PartOne::ClaimActor(MpActor& claimant, MpActor& actor,
+                                          const ClaimPurpose& purpose)
 {
   const auto cell = worldState.CellOf(actor);
   if (!cell) {
     return ClaimVerdict::Unloaded;
   }
+  const uint32_t before = SimulatorOf(actor);
   const auto code = pImpl->cells->claim_actor(
-    actor.GetFormId(), claimant.GetFormId(), *cell, SteadyNowMs());
+    actor.GetFormId(), claimant.GetFormId(), *cell, purpose.kind,
+    purpose.quest, purpose.alias, purpose.scene, SteadyNowMs());
   const auto verdict = static_cast<ClaimVerdict>(code);
-  if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
-    // the record ahead of the word, then the word to every listening game:
-    // the claimant simulates it now
+  // the record ahead of the word, then the word to every listening game:
+  // the claimant simulates it now. Only when the claim moved the simulator
+  // (thuum ADR-073 step 5a): a host's own claim, a purpose joining its
+  // holder's row and a renewal move none, and a keyframe to the game
+  // already running the actor would set it back to its record
+  if ((verdict == ClaimVerdict::Granted ||
+       verdict == ClaimVerdict::Reclaimed) &&
+      SimulatorOf(actor) != before) {
     SendActorKeyframe(actor, claimant);
     actor.UpdateHoster(claimant.GetFormId());
   }
   return verdict;
 }
 
-bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
+PartOne::ClaimRelease PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor,
+                                            const ClaimPurpose& purpose)
 {
-  const bool released =
-    pImpl->cells->release_claim(actor.GetFormId(), claimant.GetFormId());
-  if (released) {
-    const uint32_t simulator = SimulatorOf(actor);
+  const uint32_t before = SimulatorOf(actor);
+  const auto released = static_cast<ClaimRelease>(
+    pImpl->cells->release_claim(actor.GetFormId(), claimant.GetFormId(),
+                                purpose.kind, purpose.quest, purpose.scene));
+  const uint32_t simulator = SimulatorOf(actor);
+  // the word only when the release moved the simulator (a host's own claim
+  // ends with the host still running the actor)
+  if (released == ClaimRelease::Ended && simulator != before) {
     auto& form = worldState.LookupFormByIdNoLoad(simulator);
     if (MpActor* sim = form ? form->AsActor() : nullptr) {
       SendActorKeyframe(actor, *sim);
@@ -3344,6 +3393,16 @@ bool PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor)
     actor.UpdateHoster(simulator);
   }
   return released;
+}
+
+void PartOne::QuestStopped(uint32_t quest)
+{
+  ApplyHostDecisions(*this, pImpl->cells->quest_stopped(quest));
+}
+
+void PartOne::AliasFilled(uint32_t quest, uint32_t alias, uint32_t refr)
+{
+  ApplyHostDecisions(*this, pImpl->cells->alias_filled(quest, alias, refr));
 }
 
 void PartOne::SendActorKeyframe(MpActor& actor, MpActor& to)

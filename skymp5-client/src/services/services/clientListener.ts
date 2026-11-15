@@ -357,6 +357,23 @@ declare module "skyrimPlatform" {
     function on(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle;
     function once(eventName: 'furnitureAnimation', callback: (event: FurnitureAnimationEvent) => void): EventHandle;
     function setFurnitureAnimation(enabled: boolean): boolean;
+    // thuum docs/DECISIONS.md ADR-073 step 5a (decision 6 with D-L2 B and
+    // D-A2 C): a Scene.Start (forced false) or ForceStart (forced true) a
+    // script called on this seat, read at the platform's native dispatch
+    // (ScriptNatives.cpp NoteSceneStart) and raised on a tick task: the
+    // scene's form id, and the player whose seat's start it is (its server
+    // id; 0 for this seat's own start). The platform raises only a start that
+    // runs here, each this seat's own (0): one under a relay's root is skipped
+    // there (train 53's V-scene). No game call in its handler. An older
+    // platform has no such event and refuses the subscription, which
+    // SceneClaimService guards (said once)
+    interface SceneStartEvent {
+        sceneId: number;
+        forced: boolean;
+        acting: number;
+    }
+    function on(eventName: 'sceneStart', callback: (event: SceneStartEvent) => void): EventHandle;
+    function once(eventName: 'sceneStart', callback: (event: SceneStartEvent) => void): EventHandle;
     // thuum ADR-068 rung 5, D-Q4 C (the platform's QuestCause.h): a quest's
     // start, stop or stage with its cause as the seam read it at the call that
     // made it ('world' or 'seat') and the root frame of that call's stack

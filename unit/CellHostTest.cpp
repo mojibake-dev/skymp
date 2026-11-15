@@ -1,6 +1,7 @@
 #include "ActionListener.h"
 #include "ActorClaimMessage.h"
 #include "ActorSpeechMessage.h"
+#include "AliasFillMessage.h"
 #include "ChangeValuesMessage.h"
 #include "ConsoleCommandMessage.h"
 #include "CreateActorMessage.h"
@@ -2118,6 +2119,221 @@ TEST_CASE("A guest's claim on a hosted NPC names the guest as the simulator "
   DoDisconnect(p, 0);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
+}
+
+// thuum ADR-073 step 5a (decision 6, D-53-4; R-C2, playtest 52): the game
+// running a quest's own package on the quest's alias actor claims her for
+// the quest's lead, and a scene's starter its actors. Skyrim.esm as read on
+// sky-srv 2026-11-14: Camilla Valerius 0x13488 (her NPC_ 0x1347b a unique
+// actor) in RiverwoodTrader 0x133c9 fills MS13 0x39645's alias 9 by that
+// unique actor; MS13CamillaTravelMarker00Package 0x2e4cc's QNAM is MS13,
+// MS13CamillaWorkTrader 0x63b2a has none, XMarker 0x3b is no quest;
+// MS13LucanCamillaScene 0x38386's scene 0x3839b has Lucan 0x13487 (its
+// alias 0, his NPC_ 0x1347a) among its actors, and the ritual 0x5dba7 is
+// VC01's. Read the same way 2026-11-15, for the refusals the fresh review of
+// 4bf1e21c found untested (NIT 6): 0x38386's aliases 0 and 2 are the unique
+// actors Lucan 0x1347a and Camilla 0x1347b, and Hod 0x1348a's NPC_ is
+// 0x1347d, neither; four more quests whose own package names them (QNAM),
+// each with a reference alias by no forced reference or unique actor:
+// CRTwinsPostQuest 0x10fe25 (CRTwinsPostQuestHangOut 0x10fe26), CR12PostQuest
+// 0x10b10f (CR12PostQuestAelaPray 0x10b110), DialogueGenericScene04 0x1b112
+// (DGS04OgleHotLadies 0x1c56d) and DA07intro 0x94d89
+// (DA07SerenTraveltoArguePackage 0x94d8d), none of the eight records
+// overridden by Update.esm, the three DLC masters or USSEP
+TEST_CASE("A host's lead on a quest's alias actor is its claim, outlives a "
+          "grant to another seat and ends at the alias's refill and the "
+          "actor's death; a scene's starter claims its actor until the "
+          "quest stops; the wrong seat, package, quest or scene is refused",
+          "[CellHost][Talk][espm]")
+{
+  constexpr uint32_t kCamilla = 0x13488;
+  constexpr uint32_t kLucan = 0x13487;
+  constexpr uint32_t kTrader = 0x133c9;
+  constexpr uint32_t kMs13 = 0x39645;
+  constexpr uint32_t kTravel = 0x2e4cc;
+  constexpr uint32_t kWorkTrader = 0x63b2a;
+  constexpr uint32_t kArgueQuest = 0x38386;
+  constexpr uint32_t kArgument = 0x3839b;
+  constexpr uint32_t kRitual = 0x5dba7;
+  constexpr uint32_t kHod = 0x1348a;
+  constexpr uint32_t kTwinsPost = 0x10fe25;
+  constexpr uint32_t kTwinsHangOut = 0x10fe26;
+  constexpr uint32_t kAelaPost = 0x10b10f;
+  constexpr uint32_t kAelaPray = 0x10b110;
+  constexpr uint32_t kOgle = 0x1b112;
+  constexpr uint32_t kOgleLadies = 0x1c56d;
+  constexpr uint32_t kSilusIntro = 0x94d89;
+  constexpr uint32_t kSerenTravel = 0x94d8d;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kTrader));
+  auto& camillaForm = p.worldState.LookupFormById(kCamilla);
+  REQUIRE(camillaForm);
+  MpActor* actor = camillaForm->AsActor();
+  REQUIRE(actor);
+  auto& lucanForm = p.worldState.LookupFormById(kLucan);
+  REQUIRE(lucanForm);
+  MpActor* lucan = lucanForm->AsActor();
+  REQUIRE(lucan);
+  REQUIRE(p.worldState.CellOf(*actor) == kTrader);
+  REQUIRE(p.worldState.CellOf(*lucan) == kTrader);
+  const NiPoint3 kAt = actor->GetPos();
+  DoConnect(p, 0);
+  p.CreateActor(kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f }, 0, kTrader);
+  p.SetUserActor(0, kC1);
+  DoConnect(p, 1);
+  p.CreateActor(kC2, kAt + NiPoint3{ 80.f, 0.f, 0.f }, 0, kTrader);
+  p.SetUserActor(1, kC2);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  CellLoaded(p, 0, kTrader);
+  CellLoaded(p, 1, kTrader);
+  p.TickCellHosts(NowMs());
+  REQUIRE(p.GetCellHost(kTrader).player == kC1);
+  REQUIRE(p.worldState.HostOf(*actor) == &c1);
+
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  const auto claim = [&](Networking::UserId user, MpActor& who,
+                         uint32_t purpose, uint32_t quest, uint32_t form) {
+    RawMessageData raw;
+    raw.userId = user;
+    raw.unparsed = unparsed;
+    raw.unparsedLength = sizeof(unparsed);
+    ActorClaimMessage msg;
+    msg.idx = who.GetIdx();
+    msg.claim = true;
+    msg.purpose = purpose;
+    msg.quest = quest;
+    if (purpose == 1) {
+      msg.package = form;
+    } else {
+      msg.scene = form;
+    }
+    p.GetActionListener().OnActorClaim(raw, msg);
+  };
+  // the quests a claim row's leads hold, and its scene
+  const auto leadsOf = [&](uint32_t id) -> std::vector<uint32_t> {
+    for (const auto& row : p.GetFollows()) {
+      if (row.actor == id) {
+        return row.leads;
+      }
+    }
+    return {};
+  };
+  const auto sceneOf = [&](uint32_t id) -> uint32_t {
+    for (const auto& row : p.GetFollows()) {
+      if (row.actor == id) {
+        return row.scene;
+      }
+    }
+    return 0;
+  };
+  // whether any row (a follow, or a claim of any purpose) holds the actor
+  const auto rowed = [&](uint32_t id) {
+    for (const auto& row : p.GetFollows()) {
+      if (row.actor == id) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // another seat's lead (c1's game runs her: E_CLAIM_NOT_SIMULATOR), a
+  // package MS13 does not own (E_CLAIM_PACKAGE), a form that is no quest
+  // (E_CLAIM_QUEST), a purpose the contract names none of (E_CLAIM_PURPOSE,
+  // past the validator): no row
+  claim(1, *actor, 1, kMs13, kTravel);
+  claim(0, *actor, 1, kMs13, kWorkTrader);
+  claim(0, *actor, 1, 0x3b, kTravel);
+  claim(0, *actor, 3, kMs13, kTravel);
+  REQUIRE(leadsOf(kCamilla).empty());
+  REQUIRE_FALSE(rowed(kCamilla));
+  // the host's own lead from its travel package: its claim, and no word,
+  // since its game already runs her
+  p.Messages().clear();
+  claim(0, *actor, 1, kMs13, kTravel);
+  REQUIRE(leadsOf(kCamilla) == std::vector<uint32_t>{ kMs13 });
+  REQUIRE(p.SimulatorOf(*actor) == kC1);
+  REQUIRE(LastHostedWord(p, 0, *actor).empty());
+  REQUIRE(LastHostedWord(p, 1, *actor).empty());
+
+  // c1 unloads the trader and the grace passes it to c2 (R-C2's grant): the
+  // lead outlives it, c1 still simulates her and both seats are told so
+  const auto now = NowMs();
+  CellLoaded(p, 0, kTrader, false);
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);
+  REQUIRE(p.GetCellHost(kTrader).player == kC2);
+  REQUIRE(leadsOf(kCamilla) == std::vector<uint32_t>{ kMs13 });
+  REQUIRE(p.SimulatorOf(*actor) == kC1);
+  REQUIRE(LastHostedWord(p, 0, *actor) == "false");
+  REQUIRE(LastHostedWord(p, 1, *actor) == "true");
+
+  // MS13's alias 9 refilled with Lucan (a seat's ForceRefTo): the quest
+  // released her, the claim ends and the cell's host simulates her
+  {
+    AliasFillMessage fill;
+    fill.quest = kMs13;
+    fill.alias = 9;
+    fill.refr = kLucan;
+    fill.served = false;
+    RawMessageData raw;
+    raw.userId = 1;
+    p.GetActionListener().OnAliasFill(raw, fill);
+  }
+  REQUIRE(leadsOf(kCamilla).empty());
+  REQUIRE(p.SimulatorOf(*actor) == kC2);
+  REQUIRE(LastHostedWord(p, 1, *actor) == "false");
+  REQUIRE(LastHostedWord(p, 0, *actor) == "true");
+
+  // the argument scene, started by c1 in the trader c2 hosts: before c1
+  // loads the trader again it is refused (E_CLAIM_UNLOADED: a scene is its
+  // cell's visitors'); a scene of another quest is refused (E_CLAIM_SCENE),
+  // and so is an actor none of its actor aliases can hold (Hod:
+  // E_CLAIM_ALIAS); the argument's takes Lucan to c1 until its quest stops
+  claim(0, *lucan, 2, kArgueQuest, kArgument);
+  REQUIRE(sceneOf(kLucan) == 0);
+  REQUIRE(p.SimulatorOf(*lucan) == kC2);
+  CellLoaded(p, 0, kTrader);
+  claim(0, *lucan, 2, kArgueQuest, kRitual);
+  REQUIRE(sceneOf(kLucan) == 0);
+  REQUIRE(p.SimulatorOf(*lucan) == kC2);
+  auto& hodForm = p.worldState.LookupFormById(kHod);
+  REQUIRE(hodForm);
+  MpActor* hod = hodForm->AsActor();
+  REQUIRE(hod);
+  claim(0, *hod, 2, kArgueQuest, kArgument);
+  REQUIRE_FALSE(rowed(kHod));
+  claim(0, *lucan, 2, kArgueQuest, kArgument);
+  REQUIRE(sceneOf(kLucan) == kArgument);
+  REQUIRE(p.SimulatorOf(*lucan) == kC1);
+  REQUIRE(LastHostedWord(p, 0, *lucan) == "false");
+  REQUIRE(LastHostedWord(p, 1, *lucan) == "true");
+  p.QuestStopped(kArgueQuest);
+  REQUIRE(sceneOf(kLucan) == 0);
+  REQUIRE(p.SimulatorOf(*lucan) == kC2);
+  REQUIRE(LastHostedWord(p, 1, *lucan) == "false");
+
+  // the host's own lead again (alias 9 is Lucan's now, so the claim rides
+  // MS13's aliases the server cannot read: unvalidated, R2), then her death
+  // ends it
+  claim(1, *actor, 1, kMs13, kTravel);
+  REQUIRE(leadsOf(kCamilla) == std::vector<uint32_t>{ kMs13 });
+  // three more quests' own packages fill her row's MAX_LEADS (each rides an
+  // alias the server cannot read: unvalidated, R2); a fifth quest's is
+  // refused (E_CLAIM_FULL) and nothing held is dropped
+  claim(1, *actor, 1, kTwinsPost, kTwinsHangOut);
+  claim(1, *actor, 1, kAelaPost, kAelaPray);
+  claim(1, *actor, 1, kOgle, kOgleLadies);
+  claim(1, *actor, 1, kSilusIntro, kSerenTravel);
+  REQUIRE(leadsOf(kCamilla) ==
+          std::vector<uint32_t>{ kMs13, kTwinsPost, kAelaPost, kOgle });
+  actor->Kill(nullptr);
+  REQUIRE(leadsOf(kCamilla).empty());
+
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kHod);
 }
 
 // thuum docs/research/m3/decisions-after-playtest-34.md D18 (b-cell-host

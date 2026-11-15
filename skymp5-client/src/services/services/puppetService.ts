@@ -6,6 +6,7 @@ import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
+import { SceneClaimService } from "./sceneClaimService";
 
 // thuum docs/verbs/npc-puppet.md (ADR-045): every NPC this game does not host
 // is a puppet, the engine's own placed reference (or a server-made copy) with
@@ -389,6 +390,10 @@ export class PuppetService extends ClientListener {
     // the engine plays here on a puppet is stopped (Papyrus Scene.Stop), once
     // per scene and actor until the engine starts it again (the poll re-stops
     // it). A live actor's scene (this seat hosts it) is left alone.
+    // thuum ADR-073 step 5a (decision 6 with D-L2 B): a scene this seat
+    // started is its own, and its claim of the actor promotes the actor here;
+    // while that claim is unsent or unanswered the scene plays on
+    // (SceneClaimService.holdsScene) and the poll asks again after it
     private stopLocalScene(localId: number, ac: Actor): void {
         const scene = ac.getCurrentScene();
         if (!scene || !scene.isPlaying()) {
@@ -397,6 +402,9 @@ export class PuppetService extends ClientListener {
         }
         const sceneId = scene.getFormID();
         if (this.scenesStopped.get(localId) === sceneId) {
+            return;
+        }
+        if (this.controller.lookupListener(SceneClaimService).holdsScene(localId, sceneId)) {
             return;
         }
         this.scenesStopped.set(localId, sceneId);

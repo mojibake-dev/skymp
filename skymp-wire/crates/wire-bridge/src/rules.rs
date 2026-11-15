@@ -1358,8 +1358,9 @@ mod ffi {
         /// What ended a ClaimEnded, wire-rules cells::ClaimEnd's code (0 a
         /// lease, 1 a release, 2 its quest's stop, 3 its alias's fill, 4 the
         /// actor's death, 5 its holder's departure, 6 its holder's silence,
-        /// 7 its holder's unload; `claim_end_name` words it); 0 for the
-        /// others.
+        /// 7 its holder's unload, 8 its holder's game leaving the quest's own
+        /// packages, 9 its holder's game unloading the actor; `claim_end_name`
+        /// words it); 0 for the others.
         why: u8,
     }
 
@@ -3036,10 +3037,14 @@ mod ffi {
         /// such purpose.
         fn claim_actor(self: &mut Cells, actor: u32, player: u32, cell: u32, purpose: u8, quest: u32, alias: u32, scene: u32, now_ms: u64) -> u8;
         /// `player` releases `purpose` of its claim on `actor` (0 a talk, 1
-        /// the lead of `quest`, 2 the scene `scene`): 0 it holds no such
-        /// purpose, 1 the purpose ended and the claim stands for its others,
-        /// 2 the claim ended (the cell's rule names the simulator again).
-        fn release_claim(self: &mut Cells, actor: u32, player: u32, purpose: u8, quest: u32, scene: u32) -> u8;
+        /// the lead of `quest`, 2 the scene `scene`), `why` a lead's release's
+        /// (thuum D-53-5 B, the holder's own report: 0 a release, 1 its game
+        /// left the quest's own packages, 2 its game unloaded the actor): 0
+        /// it holds no such purpose, 1 the purpose ended and the claim stands
+        /// for its others, 2 the claim ended (the cell's rule names the
+        /// simulator again). A `why` on any purpose but a lead, or past 2,
+        /// holds nothing (0); the validator and the core refuse it first.
+        fn release_claim(self: &mut Cells, actor: u32, player: u32, purpose: u8, quest: u32, scene: u32, why: u8) -> u8;
         /// thuum ADR-073 decision 6: `quest` stopped; its leads and the
         /// scenes of it end (ClaimEnded for each claim left empty).
         fn quest_stopped(self: &mut Cells, quest: u32) -> Vec<HostDecision>;
@@ -4581,11 +4586,19 @@ impl Cells {
         }
     }
 
-    fn release_claim(&mut self, actor: u32, player: u32, purpose: u8, quest: u32, scene: u32) -> u8 {
-        let Some(purpose) = claim_purpose(purpose, quest, 0, scene) else {
-            return 0;
+    fn release_claim(&mut self, actor: u32, player: u32, purpose: u8, quest: u32, scene: u32, why: u8) -> u8 {
+        let released = match (purpose, why) {
+            (_, 0) => {
+                let Some(purpose) = claim_purpose(purpose, quest, 0, scene) else {
+                    return 0;
+                };
+                self.0.release_claim(actor, player, purpose)
+            }
+            (1, 1) => self.0.not_running(actor, player, quest, cells::NotRunning::PackageChanged),
+            (1, 2) => self.0.not_running(actor, player, quest, cells::NotRunning::Unloaded),
+            _ => return 0,
         };
-        match self.0.release_claim(actor, player, purpose) {
+        match released {
             cells::Release::NotHeld => 0,
             cells::Release::Kept => 1,
             cells::Release::Ended(_) => 2,
@@ -4674,6 +4687,8 @@ fn claim_end_code(why: cells::ClaimEnd) -> u8 {
         cells::ClaimEnd::Gone => 5,
         cells::ClaimEnd::Stale => 6,
         cells::ClaimEnd::Unloaded => 7,
+        cells::ClaimEnd::NotRunning(cells::NotRunning::PackageChanged) => 8,
+        cells::ClaimEnd::NotRunning(cells::NotRunning::Unloaded) => 9,
     }
 }
 
@@ -4687,6 +4702,8 @@ fn claim_end_name(why: u8) -> String {
         5 => cells::ClaimEnd::Gone,
         6 => cells::ClaimEnd::Stale,
         7 => cells::ClaimEnd::Unloaded,
+        8 => cells::ClaimEnd::NotRunning(cells::NotRunning::PackageChanged),
+        9 => cells::ClaimEnd::NotRunning(cells::NotRunning::Unloaded),
         _ => return format!("an unknown end {why}"),
     };
     end.name().to_owned()
@@ -6233,9 +6250,9 @@ mod tests {
         );
         // the host's own talk joins it, its release keeps the lead (1), a release of nothing held is 0
         assert_eq!(c.claim_actor(camilla, c1, trader, 0, 0, 0, 0, 2_500), 0);
-        assert_eq!(c.release_claim(camilla, c1, 0, 0, 0), 1);
-        assert_eq!(c.release_claim(camilla, c1, 0, 0, 0), 0);
-        assert_eq!(c.release_claim(camilla, c1, 7, ms13, 0), 0);
+        assert_eq!(c.release_claim(camilla, c1, 0, 0, 0, 0), 1);
+        assert_eq!(c.release_claim(camilla, c1, 0, 0, 0, 0), 0);
+        assert_eq!(c.release_claim(camilla, c1, 7, ms13, 0, 0), 0);
         // its alias given to Lucan ends it, the end crossing with its why and the owner epoch
         assert_eq!(
             c.alias_filled(ms13, 9, 0x13487),
@@ -6243,15 +6260,30 @@ mod tests {
         );
         assert_eq!(claim_end_name(3), "its alias's fill");
         assert_eq!(claim_end_name(0), "its lease");
-        assert_eq!(claim_end_name(8), "an unknown end 8", "a default branch says what fell through (ADR-073 decision 7)");
+        assert_eq!(claim_end_name(8), "its holder's game leaving the quest's own packages");
+        assert_eq!(claim_end_name(9), "its holder's game unloading the actor");
+        assert_eq!(claim_end_name(10), "an unknown end 10", "a default branch says what fell through (ADR-073 decision 7)");
         // a scene's claim ends at its quest's stop, a lead's release at its quest, a death the whole row
         assert_eq!(c.claim_actor(0x13487, c2, trader, 2, 0x38386, 0, 0x3839b, 3_000), 0);
         assert_eq!(c.quest_stopped(0x38386).first().map(|d| (d.actor, d.why)), Some((0x13487, 2)));
         assert_eq!(c.claim_actor(camilla, c1, trader, 1, ms13, 9, 0, 3_100), 0);
-        assert_eq!(c.release_claim(camilla, c1, 1, ms13, 0), 2);
+        assert_eq!(c.release_claim(camilla, c1, 1, ms13, 0, 0), 2);
         assert_eq!(c.claim_actor(camilla, c1, trader, 1, ms13, 9, 0, 3_200), 0);
         assert_eq!(c.actor_died(camilla).first().map(|d| (d.actor, d.why, d.epoch)), Some((camilla, 4, 6)));
         assert!(!c.holds_lead_or_scene(c1));
+        // D-53-5 B: the holder's game no longer running her ends the lead as
+        // its release does (2), its why a lead's alone: on a talk, past 2, or
+        // for a lead not held it holds nothing (0)
+        assert_eq!(c.claim_actor(camilla, c1, trader, 1, ms13, 9, 0, 3_300), 0);
+        assert_eq!(c.claim_actor(camilla, c1, trader, 1, 0x38386, 2, 0, 3_400), 0);
+        assert_eq!(c.release_claim(camilla, c1, 0, 0, 0, 2), 0);
+        assert_eq!(c.release_claim(camilla, c1, 1, ms13, 0, 3), 0);
+        assert_eq!(c.release_claim(camilla, c2, 1, ms13, 0, 1), 0);
+        assert_eq!(c.release_claim(camilla, c1, 1, ms13, 0, 1), 1);
+        assert_eq!(c.release_claim(camilla, c1, 1, 0x38386, 0, 2), 2);
+        assert_eq!(c.simulator_of(camilla, trader), c1, "the trader's host runs her again: its own");
+        assert_eq!(claim_end_code(cells::ClaimEnd::NotRunning(cells::NotRunning::PackageChanged)), 8);
+        assert_eq!(claim_end_code(cells::ClaimEnd::NotRunning(cells::NotRunning::Unloaded)), 9);
     }
 
     #[test]

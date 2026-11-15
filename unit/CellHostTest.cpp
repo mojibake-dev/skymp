@@ -2326,6 +2326,37 @@ TEST_CASE("A host's lead on a quest's alias actor is its claim, outlives a "
   claim(1, *actor, 1, kSilusIntro, kSerenTravel);
   REQUIRE(leadsOf(kCamilla) ==
           std::vector<uint32_t>{ kMs13, kTwinsPost, kAelaPost, kOgle });
+  // D-53-5 B: a lead's release saying its game stopped running her ends
+  // that lead as a release does, the why the holder's own report (R2); a
+  // why past 2, or on a talk's release, is refused (E_CLAIM_WHY, past the
+  // validator) and ends nothing; Ogle's package left (why 1) ends its lead
+  // alone, and the host still runs her
+  const auto release = [&](Networking::UserId user, MpActor& who,
+                           uint32_t purpose, uint32_t quest, uint32_t package,
+                           uint32_t why) {
+    RawMessageData raw;
+    raw.userId = user;
+    raw.unparsed = unparsed;
+    raw.unparsedLength = sizeof(unparsed);
+    ActorClaimMessage msg;
+    msg.idx = who.GetIdx();
+    msg.claim = false;
+    msg.purpose = purpose;
+    if (purpose == 1) {
+      msg.quest = quest;
+      msg.package = package;
+    }
+    msg.why = why;
+    p.GetActionListener().OnActorClaim(raw, msg);
+  };
+  release(1, *actor, 1, kOgle, kOgleLadies, 3);
+  release(1, *actor, 0, 0, 0, 2);
+  REQUIRE(leadsOf(kCamilla) ==
+          std::vector<uint32_t>{ kMs13, kTwinsPost, kAelaPost, kOgle });
+  release(1, *actor, 1, kOgle, kOgleLadies, 1);
+  REQUIRE(leadsOf(kCamilla) ==
+          std::vector<uint32_t>{ kMs13, kTwinsPost, kAelaPost });
+  REQUIRE(p.SimulatorOf(*actor) == kC2);
   actor->Kill(nullptr);
   REQUIRE(leadsOf(kCamilla).empty());
 

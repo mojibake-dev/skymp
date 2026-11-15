@@ -82,7 +82,7 @@ void Report(PartOne& p, Networking::UserId user, uint32_t self, const char* fn,
   p.GetActionListener().OnScriptCall(raw, msg);
 }
 
-Arg Object(uint32_t id, const char* type)
+Arg ObjectArg(uint32_t id, const char* type)
 {
   SpSnippetObjectArgument object;
   object.formId = id;
@@ -147,7 +147,7 @@ TEST_CASE("A spell's wall is the caster's: placed, moved, shown, risen and "
   // PlaceAtMe(wall, 1, false, true) on the caster's own player: a copy,
   // off every screen until its first Enable
   Report(p, 0, 0x14, "PlaceAtMe",
-         { Object(kXMarker, "Static"), Arg(1.0), Arg(false), Arg(true) },
+         { ObjectArg(kXMarker, "Static"), Arg(1.0), Arg(false), Arg(true) },
          kWallLocal);
   const auto bound = p.GetCreatedRefs().created_local(kHostActor, kWallLocal);
   REQUIRE(bound.accepted);
@@ -158,9 +158,9 @@ TEST_CASE("A spell's wall is the caster's: placed, moved, shown, risen and "
   REQUIRE(PlacedTo(p, 1).empty());
 
   // MoveTo(player, 0, 192, -288, true): the copy's record stands there
-  Report(
-    p, 0, kWallLocal, "MoveTo",
-    { Object(0x14, "Actor"), Arg(0.0), Arg(192.0), Arg(-288.0), Arg(true) });
+  Report(p, 0, kWallLocal, "MoveTo",
+         { ObjectArg(0x14, "Actor"), Arg(0.0), Arg(192.0), Arg(-288.0),
+           Arg(true) });
   const auto& wall = p.worldState.GetFormAt<MpObjectReference>(copy);
   REQUIRE(wall.GetPos().x == Catch::Approx(kInTheTemple.x));
   REQUIRE(wall.GetPos().y == Catch::Approx(kInTheTemple.y + 192.f));
@@ -199,10 +199,10 @@ TEST_CASE("A spell's wall is the caster's: placed, moved, shown, risen and "
   // an explosion placed on the created reference: each engine places its
   // own, the call relayed on the copy
   p.Messages().clear();
-  Report(
-    p, 0, kWallLocal, "PlaceAtMe",
-    { Object(kTrapExplosion, "Explosion"), Arg(1.0), Arg(false), Arg(false) },
-    kBoomLocal);
+  Report(p, 0, kWallLocal, "PlaceAtMe",
+         { ObjectArg(kTrapExplosion, "Explosion"), Arg(1.0), Arg(false),
+           Arg(false) },
+         kBoomLocal);
   const auto boom = SnippetsTo(p, 1);
   REQUIRE(boom.size() == 1);
   REQUIRE(boom[0]["function"] == "PlaceAtMe");
@@ -223,7 +223,7 @@ TEST_CASE("A creator's copies go with it", "[CreatedChannel][espm]")
   auto& p = GetPartOne();
   Enter(p);
   Report(p, 0, 0x14, "PlaceAtMe",
-         { Object(kXMarker, "Static"), Arg(1.0), Arg(false), Arg(false) },
+         { ObjectArg(kXMarker, "Static"), Arg(1.0), Arg(false), Arg(false) },
          kWallLocal);
   const auto bound = p.GetCreatedRefs().created_local(kHostActor, kWallLocal);
   REQUIRE(bound.accepted);

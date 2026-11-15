@@ -557,9 +557,10 @@ private:
 
   // thuum docs/verbs/spell-cast.md: a cast as the server resolved it (its
   // caster a form id, never the sender's 0x14) to every user listening to
-  // the caster but the sender, reliably, as a bow shot's relay
-  void RelayCast(MpActor& caster, const MpActor& sender,
-                 const SpellCastData& data);
+  // the caster but the sender, reliably, as a bow shot's relay. Returns how
+  // many games it was sent to (a cast's end logs it)
+  size_t RelayCast(MpActor& caster, const MpActor& sender,
+                   const SpellCastData& data);
 
   PartOne& partOne;
   // thuum docs/verbs/locks.md: when each player last reported on each lock

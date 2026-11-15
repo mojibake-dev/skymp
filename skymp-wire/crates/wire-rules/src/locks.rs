@@ -14,6 +14,16 @@
 //! Creation Kit's values follow the engine's LOCK_LEVEL (CommonLibSSE-NG
 //! ExtraLock.h:9-18): HYPOTHESIS on where exactly a value between two of them
 //! falls (a leveled lock, flag 0x04, writes such a value at runtime).
+//!
+//! The owner's write (thuum ADR-073 decision 12, step 3): every lock write a
+//! game's engine makes by itself (a script's Lock or SetLockLevel, the owners'
+//! door walk at a package's start, an NPC's key or pick) is that game's to
+//! report, and the record takes it from the reference's owner, the host of
+//! its cell or of its load door's other side (the pair shares one lock in the
+//! engine; MpObjectReference::LockPairId). A write equal to the record folds,
+//! whoever sends it; a different one from a game that owns neither side is
+//! refused, and the server sends that game the record back, so a non-owner
+//! renders the owner's lock (ADR-063).
 
 /// A lock's tier, as the engine names it (CommonLibSSE-NG ExtraLock.h:9-18,
 /// LOCK_LEVEL).
@@ -135,8 +145,20 @@ pub enum Change {
     Unlocked,
     /// This many Lockpicks leave the record (clamped to the count held).
     PicksBroken(u8),
+    /// The record took the owner's engine write (ADR-073 step 3).
+    Written,
     /// Nothing.
     Nothing,
+}
+
+/// A lock as a game's engine holds it after its own write (ADR-073 step 3):
+/// locked or not, and the level byte (255 requires its key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineLock {
+    /// Locked now in that engine.
+    pub locked: bool,
+    /// The level byte in that engine.
+    pub level: u8,
 }
 
 /// Why a report changed nothing.
@@ -154,6 +176,9 @@ pub enum Refusal {
     Range,
     /// Two reports inside the gap (E_LOCK_RATE).
     Rate,
+    /// An engine write from a game that owns neither the reference nor its
+    /// load door's other side (E_LOCK_OWNER); the record goes back to it.
+    NotOwner,
 }
 
 /// `player` activates a reference whose lock is `state`, holding the key or
@@ -214,6 +239,29 @@ pub fn report(
         }
         Outcome::Left => Ok((Change::Nothing, state)),
     }
+}
+
+/// An engine's write of a lock (ADR-073 step 3): `record` the server's lock
+/// (None for a reference the record and the game files give none), `written`
+/// the reporting engine's lock after its write, `owns` whether the reporter
+/// hosts the reference's cell or its load door's other side's. A write equal
+/// to the record folds (Nothing), whoever sends it; a lockless reference's
+/// unlocked one folds too. Any other write is the owner's to make: recorded
+/// with the record's key and broken count kept (no native writes a key), a
+/// new lock keyless; refused from a non-owner.
+pub fn owner_write(record: Option<LockState>, written: EngineLock, owns: bool) -> Result<(Change, LockState), Refusal> {
+    let before = record.unwrap_or(LockState { level: written.level, key: 0, locked: false, broken: 0 });
+    let equal = match record {
+        Some(state) => state.locked == written.locked && state.level == written.level,
+        None => !written.locked,
+    };
+    if equal {
+        return Ok((Change::Nothing, before));
+    }
+    if !owns {
+        return Err(Refusal::NotOwner);
+    }
+    Ok((Change::Written, LockState { level: written.level, locked: written.locked, ..before }))
 }
 
 #[cfg(test)]
@@ -302,5 +350,45 @@ mod tests {
         assert_eq!(report(novice(), Outcome::Broken(MAX_BROKEN_PER_REPORT + 1), true, 10, None), Err(Refusal::Range));
         // leaving changes nothing
         assert_eq!(report(novice(), Outcome::Left, true, 0, None), Ok((Change::Nothing, novice())));
+    }
+
+    #[test]
+    fn an_owners_engine_write_is_recorded_and_a_non_owners_refused_unless_it_folds() {
+        // thuum ADR-073 step 3: Alvor and Sigrid's house, the pair's lock at
+        // level 0 with its key (0x133fb's XLOC, Skyrim.esm), locked at load
+        let house = LockState::from_xloc(0, 0x36a3d, true);
+        let unlocked = EngineLock { locked: false, level: 0 };
+        // the host's morning unlock: recorded, the key and the count kept
+        assert_eq!(owner_write(Some(house), unlocked, true), Ok((Change::Written, LockState { locked: false, ..house })));
+        // the same write from a guest's engine: refused, the record goes back
+        assert_eq!(owner_write(Some(house), unlocked, false), Err(Refusal::NotOwner));
+        // a write equal to the record folds, from anyone (an apply's echo, a
+        // world quest every seat ran)
+        let locked = EngineLock { locked: true, level: 0 };
+        assert_eq!(owner_write(Some(house), locked, false), Ok((Change::Nothing, house)));
+        assert_eq!(owner_write(Some(house), locked, true), Ok((Change::Nothing, house)));
+        // a level alone is a write (SetLockLevel on a standing lock)
+        let releveled = EngineLock { locked: true, level: 50 };
+        assert_eq!(owner_write(Some(house), releveled, true), Ok((Change::Written, LockState { level: 50, ..house })));
+        // a broken count rides along untouched
+        let worn = LockState { broken: 3, ..house };
+        assert_eq!(owner_write(Some(worn), unlocked, true), Ok((Change::Written, LockState { locked: false, ..worn })));
+    }
+
+    #[test]
+    fn a_lockless_reference_takes_a_new_keyless_lock_from_its_owner_and_an_unlocked_word_folds() {
+        // a script's Lock on a reference the record and the game files give
+        // no lock: the engine makes a new one (Papyrus Lock's GetLock or a new
+        // REFR_LOCK, HYPOTHESIS by decompile), keyless
+        let lock = EngineLock { locked: true, level: 25 };
+        assert_eq!(owner_write(None, lock, true), Ok((Change::Written, LockState { level: 25, key: 0, locked: true, broken: 0 })));
+        assert_eq!(owner_write(None, lock, false), Err(Refusal::NotOwner));
+        // no lock and none written: nothing, from anyone
+        let open = EngineLock { locked: false, level: 0 };
+        assert_eq!(owner_write(None, open, false).map(|(c, _)| c), Ok(Change::Nothing));
+        // a key lock's owner may open it by script (the gate's own fragment)
+        let gate = LockState::from_xloc(REQUIRES_KEY_LEVEL, 0xd8f0c, true);
+        let opened = EngineLock { locked: false, level: REQUIRES_KEY_LEVEL };
+        assert_eq!(owner_write(Some(gate), opened, true), Ok((Change::Written, LockState { locked: false, ..gate })));
     }
 }

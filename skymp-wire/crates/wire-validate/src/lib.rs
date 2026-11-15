@@ -244,7 +244,11 @@ pub struct ClientGuard {
     /// (UNMEASURED).
     pub skill_use_budget: TokenBucket,
     /// Budget for a player's lock reports (LockReport, thuum docs/verbs/
-    /// locks.md): one per attempt; a burst of 8 then 2 a second (UNMEASURED).
+    /// locks.md): one per attempt, and since ADR-073 step 3 one per engine
+    /// write a host's game makes (the owners' door walk at a package's start
+    /// locks every owned door within its reach at once, and a load door's
+    /// other side reports its fold); a burst of 32 then 8 a second
+    /// (UNMEASURED).
     pub lock_report_budget: TokenBucket,
     /// Budget for a player's perk picks (PerkPick, thuum docs/verbs/perks.md):
     /// one per pick; a burst of 8 then 2 a second (UNMEASURED).
@@ -334,7 +338,7 @@ impl Default for ClientGuard {
             prop_claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             placed_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             skill_use_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
-            lock_report_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
+            lock_report_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
             perk_pick_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             word_wall_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             object_animation_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
@@ -1012,11 +1016,22 @@ fn check_placed_report(m: &skymp::PlacedReport) -> Result<(), Reject> {
 }
 
 /// A player's lock report (docs/verbs/locks.md): a reference (never 0), an
-/// outcome the contract names (0 picked, 1 broken, 2 left) and at most 8
-/// picks broken. The rest (locked, the reach, the tier, the picks held, the
-/// gap) is the server's rule (wire-rules locks).
+/// outcome the contract names (0 picked, 1 broken, 2 left, 3 the engine's
+/// write) and at most 8 picks broken. An engine write (thuum ADR-073 step 3)
+/// carries `locked` and `level` and breaks no pick; a pick's outcome carries
+/// neither. The rest (locked, the reach, the tier, the picks held, the gap;
+/// for a write, who owns the reference and the record it meets) is the
+/// server's rule (wire-rules locks).
 fn check_lock_report(m: &skymp::LockReport) -> Result<(), Reject> {
-    if m.refr == 0 || m.outcome > 2 || m.broken > 8 {
+    if m.refr == 0 || m.outcome > skymp::LOCK_ENGINE_WRITE || m.broken > 8 {
+        return Err(Reject::Range);
+    }
+    let carries = m.locked.is_some() || m.level.is_some();
+    if m.outcome == skymp::LOCK_ENGINE_WRITE {
+        if m.broken != 0 || m.locked.is_none() || m.level.is_none() {
+            return Err(Reject::Range);
+        }
+    } else if carries {
         return Err(Reject::Range);
     }
     Ok(())
@@ -3473,20 +3488,37 @@ mod tests {
 
     #[test]
     fn lock_reports_name_a_reference_an_outcome_and_a_bounded_break_count_and_are_rate_limited() {
-        use wire_schema::skymp::{LockPrompt, LockReport};
+        use wire_schema::skymp::{LockPrompt, LockReport, LOCK_ENGINE_WRITE};
         let report = |refr, outcome, broken| Message::LockReport(LockReport { refr, outcome, broken, ..Default::default() });
         assert_eq!(validate_server(&report(0x371e9, 0, 0)), Ok(()));
         assert_eq!(validate_server(&report(0x371e9, 1, 3)), Ok(()));
         assert_eq!(validate_server(&report(0x371e9, 2, 0)), Ok(()));
         assert_eq!(validate_server(&report(0, 0, 0)), Err(Reject::Range));
-        assert_eq!(validate_server(&report(0x371e9, 3, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x371e9, 4, 0)), Err(Reject::Range));
         assert_eq!(validate_server(&report(0x371e9, 1, 9)), Err(Reject::Range));
+        // thuum ADR-073 step 3: an engine write names its lock and breaks no
+        // pick; a pick's outcome names no lock
+        let write = |locked: Option<bool>, level: Option<u8>, broken| {
+            Message::LockReport(LockReport { refr: 0x133fb, outcome: LOCK_ENGINE_WRITE, broken, locked, level, ..Default::default() })
+        };
+        assert_eq!(validate_server(&write(Some(true), Some(0), 0)), Ok(()));
+        assert_eq!(validate_server(&write(Some(false), Some(255), 0)), Ok(()));
+        assert_eq!(validate_server(&report(0x371e9, LOCK_ENGINE_WRITE, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&write(Some(true), None, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&write(None, Some(0), 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&write(Some(true), Some(0), 1)), Err(Reject::Range));
+        let picked_with_a_lock = Message::LockReport(LockReport { refr: 0x371e9, outcome: 0, locked: Some(false), ..Default::default() });
+        assert_eq!(validate_server(&picked_with_a_lock), Err(Reject::Range));
+        let left_with_a_level = Message::LockReport(LockReport { refr: 0x371e9, outcome: 2, level: Some(0), ..Default::default() });
+        assert_eq!(validate_server(&left_with_a_level), Err(Reject::Range));
+        // the budget: 32, then 8 a second
         let mut guard = ClientGuard::default();
-        for _ in 0..8 {
+        for _ in 0..32 {
             assert_eq!(validate(&report(0x371e9, 2, 0), &mut guard, 1_000), Ok(()));
         }
         assert_eq!(validate(&report(0x371e9, 2, 0), &mut guard, 1_000), Err(Reject::Rate));
-        assert_eq!(validate(&report(0x371e9, 2, 0), &mut guard, 1_500), Ok(()));
+        assert_eq!(validate(&write(Some(true), Some(0), 0), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&report(0x371e9, 2, 0), &mut guard, 1_125), Ok(()));
         let prompt = |refr| Message::LockPrompt(LockPrompt { refr, ..Default::default() });
         assert_eq!(validate_server(&prompt(0x371e9)), Ok(()));
         assert_eq!(validate_server(&prompt(0)), Err(Reject::Range));
@@ -3845,12 +3877,18 @@ mod tests {
         }
 
         #[test]
-        fn lock_messages_never_panic(refr in any::<u32>(), outcome in any::<u8>(), broken in any::<u8>(), now in any::<u64>()) {
-            use wire_schema::skymp::{LockPrompt, LockReport};
+        fn lock_messages_never_panic(refr in any::<u32>(), outcome in any::<u8>(), broken in any::<u8>(), locked in any::<Option<bool>>(), level in any::<Option<u8>>(), now in any::<u64>()) {
+            use wire_schema::skymp::{LockPrompt, LockReport, LOCK_ENGINE_WRITE};
             let mut g = ClientGuard::default();
-            let m = Message::LockReport(LockReport { refr, outcome, broken, ..Default::default() });
+            let m = Message::LockReport(LockReport { refr, outcome, broken, locked, level, ..Default::default() });
             let _ = validate(&m, &mut g, now);
-            prop_assert_eq!(validate_server(&m), if refr == 0 || outcome > 2 || broken > 8 { Err(Reject::Range) } else { Ok(()) });
+            let shape = if outcome == LOCK_ENGINE_WRITE {
+                broken == 0 && locked.is_some() && level.is_some()
+            } else {
+                locked.is_none() && level.is_none()
+            };
+            let bad = refr == 0 || outcome > LOCK_ENGINE_WRITE || broken > 8 || !shape;
+            prop_assert_eq!(validate_server(&m), if bad { Err(Reject::Range) } else { Ok(()) });
             let _ = validate_server(&Message::LockPrompt(LockPrompt { refr, ..Default::default() }));
         }
 

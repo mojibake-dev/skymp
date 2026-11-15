@@ -760,25 +760,22 @@ void MpObjectReference::SetOpen(bool open)
   }
 }
 
-std::optional<MpChangeFormREFR::Lock> MpObjectReference::GetLock() const
+namespace {
+// thuum docs/verbs/locks.md: a placed reference's lock in the game files, its
+// XLOC (the level byte, the key made global; a reference that carries one
+// starts locked), none for a form the files give no XLOC
+std::optional<MpChangeFormREFR::Lock> XlocLock(WorldState& worldState,
+                                               uint32_t formId)
 {
-  auto worldState = GetParent();
-  if (!worldState || !worldState->locksEnabled) {
+  if (!worldState.HasEspm() || formId == 0 || formId >= 0xff000000) {
     return std::nullopt;
   }
-  if (ChangeForm().lock.has_value()) {
-    return ChangeForm().lock;
-  }
-  if (!worldState->HasEspm() || !IsEspmForm()) {
-    return std::nullopt;
-  }
-  const auto lookupRes =
-    worldState->GetEspm().GetBrowser().LookupById(GetFormId());
+  const auto lookupRes = worldState.GetEspm().GetBrowser().LookupById(formId);
   const auto refr = espm::Convert<espm::REFR>(lookupRes.rec);
   if (!refr) {
     return std::nullopt;
   }
-  const auto data = refr->GetData(worldState->GetEspmCache());
+  const auto data = refr->GetData(worldState.GetEspmCache());
   if (!data.hasLock) {
     return std::nullopt;
   }
@@ -789,20 +786,137 @@ std::optional<MpChangeFormREFR::Lock> MpObjectReference::GetLock() const
   return lock;
 }
 
+std::string LockDump(const MpChangeFormREFR::Lock& lock)
+{
+  const nlohmann::json value = { { "level", lock.level },
+                                 { "key", lock.key },
+                                 { "locked", lock.locked } };
+  return value.dump();
+}
+}
+
+std::optional<uint32_t> MpObjectReference::LockPairId() const
+{
+  auto worldState = GetParent();
+  if (!worldState || !worldState->HasEspm() || !IsEspmForm()) {
+    return std::nullopt;
+  }
+  auto& br = worldState->GetEspm().GetBrowser();
+  const auto lookupRes = br.LookupById(GetFormId());
+  const auto refr = espm::Convert<espm::REFR>(lookupRes.rec);
+  if (!refr) {
+    return std::nullopt;
+  }
+  const auto data = refr->GetData(worldState->GetEspmCache());
+  if (!data.teleport || data.teleport->destinationDoor == 0) {
+    return std::nullopt;
+  }
+  const uint32_t pair = lookupRes.ToGlobalId(data.teleport->destinationDoor);
+  if (pair == 0 || pair == GetFormId()) {
+    return std::nullopt;
+  }
+  // both sides locked by the game files: two locks, each its own
+  if (data.hasLock && XlocLock(*worldState, pair)) {
+    return std::nullopt;
+  }
+  return pair;
+}
+
+std::optional<MpChangeFormREFR::Lock> MpObjectReference::GetLock() const
+{
+  auto worldState = GetParent();
+  if (!worldState || !worldState->locksEnabled) {
+    return std::nullopt;
+  }
+  if (ChangeForm().lock.has_value()) {
+    return ChangeForm().lock;
+  }
+  const auto pair = LockPairId();
+  if (pair) {
+    // the other side's record where the server holds it loaded: SetLock
+    // keeps both sides' records, so this finds a write whose mirror missed
+    // this side (one made before the pair rule, or with this side unloaded)
+    const auto& pairForm = worldState->LookupFormByIdNoLoad(*pair);
+    const MpObjectReference* pairRef =
+      pairForm ? pairForm->AsObjectReference() : nullptr;
+    if (pairRef && pairRef->ChangeForm().lock.has_value()) {
+      return pairRef->ChangeForm().lock;
+    }
+  }
+  if (!IsEspmForm()) {
+    return std::nullopt;
+  }
+  if (auto own = XlocLock(*worldState, GetFormId())) {
+    return own;
+  }
+  if (pair) {
+    return XlocLock(*worldState, *pair);
+  }
+  return std::nullopt;
+}
+
 void MpObjectReference::SetLock(const MpChangeFormREFR::Lock& lock)
 {
   const auto before = GetLock();
   EditChangeForm(
     [&](MpChangeFormREFR& changeForm) { changeForm.lock = lock; });
+  // thuum ADR-073 decision 12: keyed as the engine keys it, the pair's one
+  // lock on both sides' records (the other side loaded for the write, as an
+  // activation's child is)
+  MpObjectReference* pairRef = nullptr;
+  if (const auto pair = LockPairId(); pair && GetParent()) {
+    const auto& pairForm = GetParent()->LookupFormById(*pair);
+    pairRef = pairForm ? pairForm->AsObjectReference() : nullptr;
+    if (pairRef) {
+      pairRef->EditChangeForm(
+        [&](MpChangeFormREFR& changeForm) { changeForm.lock = lock; });
+    }
+  }
   if (!before || !(*before == lock)) {
-    const nlohmann::json value = { { "level", lock.level },
-                                   { "key", lock.key },
-                                   { "locked", lock.locked } };
-    SendMessageToActorListeners(
-      CreatePropertyMessage_(this, "lock", value.dump()), true);
-    spdlog::info("[verb:locks] {:x} {} (level {}, key {:x}, {} broken)",
-                 GetFormId(), lock.locked ? "locked" : "unlocked", lock.level,
-                 lock.key, lock.broken);
+    const std::string dump = LockDump(lock);
+    SendMessageToActorListeners(CreatePropertyMessage_(this, "lock", dump),
+                                true);
+    if (pairRef) {
+      pairRef->SendMessageToActorListeners(
+        pairRef->CreatePropertyMessage_(pairRef, "lock", dump), true);
+    }
+    spdlog::info(
+      "[verb:locks] {:x} {} (level {}, key {:x}, {} broken){}", GetFormId(),
+      lock.locked ? "locked" : "unlocked", lock.level, lock.key, lock.broken,
+      pairRef ? fmt::format(", with its pair {:x}", pairRef->GetFormId())
+              : std::string());
+  }
+}
+
+void MpObjectReference::SendLockTo(MpActor& to)
+{
+  // no lock on the record reads unlocked (Lock's defaults)
+  const std::string dump =
+    LockDump(GetLock().value_or(MpChangeFormREFR::Lock{}));
+  const auto listens = [&](const MpObjectReference& ref) {
+    const auto& listeners = ref.GetActorListeners();
+    return std::find(listeners.begin(), listeners.end(), &to) !=
+      listeners.end();
+  };
+  size_t sent = 0;
+  if (listens(*this)) {
+    to.SendToUser(CreatePropertyMessage_(this, "lock", dump), true);
+    ++sent;
+  }
+  if (const auto pair = LockPairId(); pair && GetParent()) {
+    const auto& pairForm = GetParent()->LookupFormByIdNoLoad(*pair);
+    MpObjectReference* pairRef =
+      pairForm ? pairForm->AsObjectReference() : nullptr;
+    if (pairRef && listens(*pairRef)) {
+      to.SendToUser(pairRef->CreatePropertyMessage_(pairRef, "lock", dump),
+                    true);
+      ++sent;
+    }
+  }
+  if (sent == 0) {
+    spdlog::info("[verb:locks] {:x}'s record for {:x} not sent back: it "
+                 "listens to neither side",
+                 to.GetFormId(), GetFormId());
   }
 }
 

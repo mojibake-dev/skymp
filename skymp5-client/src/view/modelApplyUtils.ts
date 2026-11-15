@@ -68,13 +68,39 @@ export class ModelApplyUtils {
   static applyModelLock(refr: ObjectReference, lock: { level: number; key: number; locked: boolean } | undefined): void {
     if (!lock) {
       if (refr.isLocked()) {
+        ModelApplyUtils.noteLockApplied(refr.getFormID(), false, refr.getLockLevel());
         refr.lock(false, false);
       }
       return;
     }
+    ModelApplyUtils.noteLockApplied(refr.getFormID(), lock.locked, lock.level);
     refr.setLockLevel(lock.level);
     refr.lock(lock.locked, false);
     logTrace("ModelApplyUtils", `lock ${refr.getFormID().toString(16)} applied: ${lock.locked ? "locked" : "unlocked"}, level ${lock.level}, key ${lock.key.toString(16)}`);
+  }
+
+  // thuum ADR-073 step 3: the lock this game last wrote from the server's
+  // record, per local reference, so LockService tells the engine's echo of
+  // that write (its lockChanged) from the engine's own write (a script, an
+  // owner's door walk), which it reports; bounded as lidState is
+  private static appliedLocks = new Map<number, { locked: boolean; level: number }>();
+  private static readonly appliedLocksMax = 4096;
+
+  static noteLockApplied(localId: number, locked: boolean, level: number): void {
+    if (ModelApplyUtils.appliedLocks.size >= ModelApplyUtils.appliedLocksMax && !ModelApplyUtils.appliedLocks.has(localId)) {
+      const oldest = ModelApplyUtils.appliedLocks.keys().next().value;
+      if (oldest !== undefined) {
+        ModelApplyUtils.appliedLocks.delete(oldest);
+      }
+    }
+    ModelApplyUtils.appliedLocks.set(localId, { locked, level });
+  }
+
+  // true when the engine's lock on the reference is the one this game last
+  // applied from the record (its own write's echo, nothing to report)
+  static isAppliedLock(localId: number, locked: boolean, level: number): boolean {
+    const a = ModelApplyUtils.appliedLocks.get(localId);
+    return !!a && a.locked === locked && (!locked || a.level === level);
   }
 
   // the isOpen last applied per container reference (the lid's animation

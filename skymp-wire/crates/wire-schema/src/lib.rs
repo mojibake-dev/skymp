@@ -845,6 +845,9 @@ const TABLE: [Row; 90] = [
     row("PlacedRequest", 61, 64, S2C),
     row("PlacedReport", 62, 48, C2S),
     row("SkillUse", 63, 128, C2S),
+    // a five-byte refr, the outcome and the broken count, and since ADR-073
+    // step 3 an engine write's `locked` and `level`, each behind its presence
+    // byte: 12 bytes with the wire id (an_engine_lock_write_fits_its_byte_cap)
     row("LockReport", 64, 16, C2S),
     row("LockPrompt", 65, 8, S2C),
     row("SetWeather", 66, 16, S2C),
@@ -1452,7 +1455,7 @@ mod tests {
                 ..Default::default()
             }),
             // a lock report and a prompt at their longest (thuum docs/verbs/locks.md)
-            Message::LockReport(skymp::LockReport { refr: u32::MAX, outcome: u8::MAX, broken: u8::MAX, ..Default::default() }),
+            Message::LockReport(skymp::LockReport { refr: u32::MAX, outcome: u8::MAX, broken: u8::MAX, locked: Some(true), level: Some(u8::MAX), ..Default::default() }),
             Message::LockPrompt(skymp::LockPrompt { refr: u32::MAX, ..Default::default() }),
             // a weather word at its longest (thuum docs/verbs/weather.md)
             Message::SetWeather(skymp::SetWeather { place: u32::MAX, weather: u32::MAX, transition: true, ..Default::default() }),
@@ -1665,6 +1668,25 @@ mod tests {
             assert_eq!(bytes.first().copied().map(u32::from), Some(m.wire_id()), "{}", m.name());
             assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0), "{}", m.name());
         }
+    }
+
+    #[test]
+    fn an_engine_lock_write_fits_its_byte_cap() {
+        // thuum ADR-073 step 3: the wire id, a five-byte refr, the outcome,
+        // the broken count, then `locked` and `level` behind their presence
+        // bytes; a pick's report as canon sent it costs the two presence
+        // bytes alone
+        let write = Message::LockReport(skymp::LockReport {
+            refr: u32::MAX,
+            outcome: skymp::LOCK_ENGINE_WRITE,
+            locked: Some(true),
+            level: Some(u8::MAX),
+            ..Default::default()
+        });
+        assert_eq!(postcard::to_allocvec(&write).map(|b| b.len()), Ok(12));
+        assert_eq!(Message::max_len(write.wire_id()), Some(16));
+        let pick = Message::LockReport(skymp::LockReport { refr: u32::MAX, ..Default::default() });
+        assert_eq!(postcard::to_allocvec(&pick).map(|b| b.len()), Ok(10));
     }
 
     #[test]

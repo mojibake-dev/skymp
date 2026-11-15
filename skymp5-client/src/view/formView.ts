@@ -290,7 +290,11 @@ export class FormView {
             // host's own actor keeps its engine behavior (Rule A)
             Actor.from(refr)?.setActorValue("attackDamageMult", 0);
           } else if (base) {
-            ObjectReferenceEx.dealWithRef(refr, base);
+            // thuum ADR-073 step 3 (read 2's F1): the record's lock stands on
+            // the engine's reference, a load door's included; without it
+            // dealWithRef unlocked every game-file door this game binds
+            ObjectReferenceEx.dealWithRef(refr, base, FormView.lockOf(model));
+            this.lastLockKey = FormView.lockKey(FormView.lockOf(model));
           }
         }
       }
@@ -526,6 +530,8 @@ export class FormView {
   destroy(lost = false): void {
     this.isOnScreen = false;
     this.spawnMoment = 0;
+    // the next reference this view takes gets the record's lock afresh
+    this.lastLockKey = "";
     // every spawn still running for the reference let go here is superseded
     this.spawnGeneration++;
     const refrId = this.refrId;
@@ -598,6 +604,22 @@ export class FormView {
 
   private lastHarvestedApply = 0;
   private lastOpenApply = 0;
+  // the record's lock last applied to the reference ("" none applied yet)
+  private lastLockKey = "";
+
+  // the lock the record carries (the create word's props.lock or a later
+  // "lock" property), or undefined for none
+  static lockOf(model: FormModel): { level: number; key: number; locked: boolean } | undefined {
+    const lock = (model as Record<string, unknown>)["lock"] as { level?: unknown; key?: unknown; locked?: unknown } | undefined;
+    if (!lock || typeof lock.level !== "number" || typeof lock.locked !== "boolean") {
+      return undefined;
+    }
+    return { level: lock.level, key: typeof lock.key === "number" ? lock.key : 0, locked: lock.locked };
+  }
+
+  static lockKey(lock: { level: number; key: number; locked: boolean } | undefined): string {
+    return lock ? `${lock.locked ? 1 : 0}:${lock.level}:${lock.key}` : "none";
+  }
   private deadCheckAt = 0;
   // the dead word applied at this 3D load (the bind), see the dead check
   private deadWordBound = false;
@@ -729,6 +751,18 @@ export class FormView {
     if (!isActor && now - this.lastOpenApply > 133) {
       this.lastOpenApply = now;
       ModelApplyUtils.applyModelIsOpen(refr, !!model.isOpen);
+    }
+    // thuum ADR-073 step 3: a change of the record's lock (a pick, an owner's
+    // write the server recorded) reaches this game's reference, a door's
+    // included, when it changes and never on a timer (each lock() raises the
+    // engine's lockChanged)
+    if (!isActor) {
+      const lock = FormView.lockOf(model);
+      const key = FormView.lockKey(lock);
+      if (key !== this.lastLockKey) {
+        this.lastLockKey = key;
+        ModelApplyUtils.applyModelLock(refr, lock);
+      }
     }
     // thuum docs/verbs/racemenu-sync.md (playtest 35, 2026-10-27: rotfern's
     // head node read 0.94 against RaceMenu's 1 after every teleport and after

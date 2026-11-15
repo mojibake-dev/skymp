@@ -10,6 +10,8 @@ import { logTrace } from '../../logging';
 import { ConnectionMessage } from '../events/connectionMessage';
 import { LockPromptMessage } from '../messages/lockPromptMessage';
 import { ClientListener, CombinedController, Sp } from './clientListener';
+import { ModelApplyUtils } from '../../view/modelApplyUtils';
+import { localIdToRemoteId } from '../../view/worldViewMisc';
 
 // thuum docs/verbs/locks.md (M4): the lock is the server's. Every door and
 // container is activation-blocked in this game (objectReferenceEx's
@@ -95,18 +97,74 @@ export class LockService extends ClientListener {
 
   private onLockChanged(e: LockChangedEvent) {
     const a = this.attempt;
-    if (
-      !a ||
-      a.reported ||
-      !e.lockedObject ||
-      e.lockedObject.getFormID() !== a.localId
-    ) {
+    if (!e.lockedObject) {
       return;
     }
-    if (!e.lockedObject.isLocked()) {
-      this.report(a, 0, Math.max(0, a.picksBefore - this.picksHeld()));
+    if (a && !a.reported && e.lockedObject.getFormID() === a.localId) {
+      if (!e.lockedObject.isLocked()) {
+        this.report(a, 0, Math.max(0, a.picksBefore - this.picksHeld()));
+      }
+      return;
+    }
+    if (a && e.lockedObject.getFormID() === a.localId) {
+      return;
+    }
+    this.reportEngineWrite(e.lockedObject);
+  }
+
+  // thuum ADR-073 step 3 (decision 12): a lock this engine wrote by itself
+  // (a script's Lock or SetLockLevel, an owner's door walk at a package's
+  // start, an NPC's key or pick), never this game's own apply of the record
+  // (ModelApplyUtils remembers each), goes to the server as outcome 3 with the
+  // lock as the engine holds it. The server records it from the seat that
+  // hosts the reference's cell or its load door's other side, folds a write
+  // equal to the record, and sends the record back to any other seat (R0,
+  // rule 5), so this game never judges ownership itself.
+  private reportEngineWrite(ref: ObjectReference) {
+    const localId = ref.getFormID();
+    const locked = ref.isLocked();
+    const level = ref.getLockLevel();
+    if (ModelApplyUtils.isAppliedLock(localId, locked, level)) {
+      return;
+    }
+    const remoteId = localId < 0xff000000 ? localId : localIdToRemoteId(localId);
+    if (!remoteId) {
+      this.sayOnce('unmapped', `lock ${localId.toString(16)}: its engine wrote the lock on a reference with no server id here; not reported`);
+      return;
+    }
+    // the write is this engine's state now: a second event for the same lock
+    // reports nothing more
+    ModelApplyUtils.noteLockApplied(localId, locked, level);
+    this.controller.emitter.emit('sendMessage', {
+      message: {
+        t: MsgType.LockReport,
+        refr: remoteId,
+        outcome: 3,
+        broken: 0,
+        locked,
+        level: Math.max(0, Math.min(255, Math.round(level))),
+      },
+      reliability: 'reliable',
+    });
+    this.sayOnce(
+      'write',
+      `lock ${remoteId.toString(16)}: its engine wrote it ${locked ? 'locked' : 'unlocked'} (level ${level}), reported as the owner's write (ADR-073 step 3)`,
+    );
+  }
+
+  // ADR-073 decision 7: a kind's first line in full, then a count at the
+  // 2nd, 4th, 8th and so on
+  private sayOnce(kind: string, line: string) {
+    const n = (this.said.get(kind) ?? 0) + 1;
+    this.said.set(kind, n);
+    if (n === 1) {
+      logTrace(this, line);
+    } else if ((n & (n - 1)) === 0) {
+      logTrace(this, `${line} (${n} so far)`);
     }
   }
+
+  private said = new Map<string, number>();
 
   private onMenuClose(e: MenuCloseEvent) {
     if (e.name !== LockService.menu || !this.attempt) {

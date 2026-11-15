@@ -687,6 +687,31 @@ mod tests {
         }
     }
 
+    /// thuum ADR-073 step 3 (decision 12): an owner's engine write.
+    /// 64-LockReport-2 is a host's report that its engine locked Alvor and
+    /// Sigrid's house, the interior door 0x133fb (78843), whose XLOC holds the
+    /// pair's lock at level 0 (Skyrim.esm, read on sky-srv 2026-11-15); the
+    /// picks' 64-0 and 64-1 carry no lock and render none.
+    #[test]
+    fn an_engine_lock_write_validates_and_its_lock_renders_only_when_present() {
+        use wire_validate::{validate, ClientGuard};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        match recognize(&read("64-LockReport-2.json")) {
+            Ok(m @ Message::LockReport(_)) => {
+                assert_eq!(validate(&m, &mut ClientGuard::default(), 0), Ok(()));
+                if let Message::LockReport(r) = m {
+                    assert_eq!((r.refr, r.outcome, r.broken, r.locked, r.level), (0x133fb, 3, 0, Some(true), Some(0)));
+                }
+            }
+            other => panic!("64-LockReport-2.json: {other:?}"),
+        }
+        for n in 0..=1 {
+            let name = format!("64-LockReport-{n}.json");
+            let text = render(&recognize(&read(&name)).unwrap_or_else(|e| panic!("{name}: {e}"))).unwrap_or_default();
+            assert!(!text.contains("\"locked\"") && !text.contains("\"level\""), "{name}: a pick's report names no lock");
+        }
+    }
+
     /// thuum ADR-073 step 5a (SCHEMA_VERSION 47): a claim's purpose.
     /// 56-ActorClaim-2 is c1's lead on Camilla (idx 41 illustrative) for MS13
     /// 0x39645 (235077) from its travel package 0x2e4cc (189644), -4 its

@@ -201,3 +201,11 @@ divergences:
     legacy: 1
     wire: 0
     reason: the same create word without the flag or the death, the legacy server's; the wire's was set aside by the declaration above
+  - client: c2
+    msg: {t: 60, refr: 0xff000003, player: 0, epoch: 2}
+    legacy: 0
+    wire: 1
+    reason: >-
+      the physics unit's departure word (thuum ADR-071 rung 1, PartOne's departure words): c1's departure hands what it
+      owned to the cell's host, the copy's body among them, PropOwner player 0 at epoch 2; the legacy server has no prop
+      owners (T2 of m4-sitting-53 1713463d, 2026-11-15, the physics unit's first run with C4's sessions)

@@ -277,3 +277,11 @@ divergences:
     legacy: 0
     wire: 1
     reason: c1 named for Camilla's copy at epoch 1's grant, c2 then a visitor beside it
+  - client: c2
+    msg: {t: 25}
+    legacy: 0
+    wire: 54
+    reason: >-
+      the rest of c2's DestroyActor words when its setpos off the map (409600) takes every form of the spawn's cell out of
+      its view, one per form (the clean world's spawn holds 54 beside the five declared above); the legacy stack sends none
+      for the console's setpos (T2 of m4-sitting-53 1713463d, 2026-11-15, the count read from that run)

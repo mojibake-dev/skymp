@@ -11,7 +11,7 @@ import {
 } from 'skyrimPlatform';
 
 import { logTrace } from '../logging';
-import { Entry, Inventory, getInventory } from './inventory';
+import { Entry, Inventory, getInventory, readWorn } from './inventory';
 
 export const enum SpellType {
   Left,
@@ -164,36 +164,59 @@ export const syncSpellEquipment = (
 // its 3D is out during loads.
 export const cannotDress = (ac: Actor): boolean => ac.isDeleted() || ac.isDisabled();
 
-// thuum docs/verbs/npc-stream.md (ADR-050, slice 3): a puppet dressed by its
-// engine from the fate's roll keeps its outfit; its hands follow the host's
-// record. The right hand is the worn weapon (a WEAP record among the worn
-// entries), the left the wornLeft entry (a weapon, a shield, a torch); each
-// hand is changed only when it differs from what the puppet holds, the item
-// added to the puppet when its engine's roll lacks it (one count, silent; a
-// look, not a loot), and the hands' spells follow as a figure's do.
-// HYPOTHESIS H6 until a probe reads a hosted actor's draw on the puppet seat.
-export const applyHands = (ac: Actor, eq: Equipment): void => {
+// thuum docs/verbs/npc-stream.md (fork m4-npc-worn; ADR-063: the engine that
+// simulates an NPC owns what it wears, the other seats render it): an NPC
+// copy this game does not simulate wears what its simulator's engine has
+// on, as a change to what its own engine dressed it in (the fate's roll at
+// its load, its base's outfit), never a strip: each item the simulator
+// wears and the copy does not is equipped (added first when the copy lacks
+// it, one count, silent: a look, not a loot), each item the copy wears and
+// the simulator does not is taken off, and nothing is removed from its
+// inventory. The hands keep slice 3's rule: the right hand the worn weapon
+// (a WEAP record, FormType 41, among the worn entries), the left the
+// wornLeft entry (a weapon, a shield, a torch), each changed only when it
+// differs from what the copy holds, their spells as a figure's. The rest of
+// the list (the biped slots: armor, a skin a script equipped, the quiver)
+// is the copy's own worn read (readWorn, the engine's worn flags) against
+// the list. The caller holds the guards (cannotDress, the copy's 3D, the
+// update's context: FormView's applyNpcWorn). Returns the base ids it
+// equipped and took off, for the view's line.
+export const applyWorn = (ac: Actor, eq: Equipment): { equipped: number[]; unequipped: number[] } => {
+  const done = { equipped: new Array<number>(), unequipped: new Array<number>() };
   if (cannotDress(ac)) {
-    return;
+    return done;
   }
   const typeOf = (baseId: number): number => Game.getFormEx(baseId)?.getType() ?? 0;
   const right = eq.inv.entries.find((e) => e.worn && typeOf(e.baseId) === 41)?.baseId ?? 0;
   const left = eq.inv.entries.find((e) => e.wornLeft)?.baseId ?? 0;
-  // equipItemEx's slots: 1 the right hand, 2 the left; getEquippedObject's:
-  // 1 the right hand, 0 the left
-  const hands: Array<{ slot: number; location: number; baseId: number }> = [
-    { slot: 1, location: 1, baseId: right },
-    { slot: 2, location: 0, baseId: left },
+  // equipItemEx's slots: 1 the right hand, 2 the left, 0 the item's own;
+  // getEquippedObject's: 1 the right hand, 0 the left
+  const heldRight = ac.getEquippedObject(1)?.getFormID() ?? 0;
+  const heldLeft = ac.getEquippedObject(0)?.getFormID() ?? 0;
+  // the copy's worn read before any change below, the hands set apart
+  const hands = new Set<number>([right, left, heldRight, heldLeft].filter((id) => id !== 0));
+  const has = readWorn(ac.getFormID()).filter((id) => !hands.has(id));
+  // the rest of the list: what it wears beyond the hands; a weapon is a
+  // hand's alone (a second worn weapon in a record is no slot's)
+  const want = new Set<number>();
+  for (const e of eq.inv.entries) {
+    if (e.worn && !e.wornLeft && e.baseId !== 0 && !hands.has(e.baseId) && typeOf(e.baseId) !== 41) {
+      want.add(e.baseId);
+    }
+  }
+  const handRows: Array<{ slot: number; current: number; baseId: number }> = [
+    { slot: 1, current: heldRight, baseId: right },
+    { slot: 2, current: heldLeft, baseId: left },
   ];
-  for (const hand of hands) {
-    const current = ac.getEquippedObject(hand.location)?.getFormID() ?? 0;
-    if (current === hand.baseId) {
+  for (const hand of handRows) {
+    if (hand.current === hand.baseId) {
       continue;
     }
-    if (current !== 0) {
-      const held = Game.getFormEx(current);
+    if (hand.current !== 0) {
+      const held = Game.getFormEx(hand.current);
       if (held) {
         ac.unequipItem(held, false, true);
+        done.unequipped.push(hand.current);
       }
     }
     if (hand.baseId !== 0) {
@@ -203,11 +226,40 @@ export const applyHands = (ac: Actor, eq: Equipment): void => {
           ac.addItem(form, 1, true);
         }
         ac.equipItemEx(form, hand.slot, false, false);
+        done.equipped.push(hand.baseId);
       }
     }
   }
+  // taken off first, then put on, so a piece sharing a slot with one going
+  // finds the slot free (the engine's own order: SetDefaultOutfit removes,
+  // then dresses)
+  for (const baseId of has) {
+    if (want.has(baseId)) {
+      continue;
+    }
+    const form = Game.getFormEx(baseId);
+    if (form) {
+      ac.unequipItem(form, false, true);
+      done.unequipped.push(baseId);
+    }
+  }
+  const worn = new Set<number>(has);
+  want.forEach((baseId) => {
+    if (worn.has(baseId)) {
+      return;
+    }
+    const form = Game.getFormEx(baseId);
+    if (form) {
+      if (ac.getItemCount(form) < 1) {
+        ac.addItem(form, 1, true);
+      }
+      ac.equipItemEx(form, 0, false, false);
+      done.equipped.push(baseId);
+    }
+  });
   syncSpellEquipment(ac, eq.leftSpell, SpellType.Left);
   syncSpellEquipment(ac, eq.rightSpell, SpellType.Right);
+  return done;
 };
 
 // a player's figure: a copy on the Player base 0x7 or on a base this game
@@ -257,8 +309,8 @@ export const keepOnlyServerSpells = (ac: Actor, eq: Equipment, keepAlso: readonl
 // only armor is equipped after relogging"). Three seconds after the load that
 // service reports the engine's hands, empty, the server replaces the record's
 // equipment whole, and the bow is gone: every shot was judged against an
-// empty hand. So the player's hands are set the way applyHands sets a
-// puppet's: the worn weapon to the right hand, the wornLeft entry to the
+// empty hand. So the player's hands are set the way applyWorn sets an NPC
+// copy's: the worn weapon to the right hand, the wornLeft entry to the
 // left, the worn ammo by equipItem, each only when the hand does not hold it
 // already and the item is in the inventory. Nothing is added here; the
 // inventory sync brings the items, and one not landed yet is the second
@@ -371,7 +423,7 @@ const equipPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe: boolean): vo
   const { right, left, ammo } = playerHandsOf(eq);
   const done: string[] = [];
   // equipItemEx's slots: 1 the right hand, 2 the left; getEquippedObject's:
-  // 1 the right hand, 0 the left (as applyHands)
+  // 1 the right hand, 0 the left (as applyWorn)
   const hands: Array<{ name: string; slot: number; location: number; baseId: number }> = [
     { name: 'right', slot: 1, location: 1, baseId: right },
     { name: 'left', slot: 2, location: 0, baseId: left },

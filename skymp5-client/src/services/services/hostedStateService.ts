@@ -9,7 +9,7 @@ import { LeadClaimService } from "./leadClaimService";
 import { RemoteServer } from "./remoteServer";
 import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { getEquipedSpell, SpellType } from "../../sync/equipment";
-import { Inventory } from "../../sync/inventory";
+import { Inventory, readWorn } from "../../sync/inventory";
 import { logLab, logTrace } from "../../logging";
 
 // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 2): the state of
@@ -38,18 +38,25 @@ import { logLab, logTrace } from "../../logging";
 // filter (rule 9's cost, accepted: a package change is minutes apart per
 // actor); HYPOTHESIS H3 until a probe reads the 8:00 switch through them.
 //
-// The equipment (slice 3): the same poll reads each hosted actor's hands
-// (getEquippedObject 1 and 0, two calls) and, when they change or at the
-// first poll for the actor, sends UpdateEquipment under the actor's idx with
-// what it wears (the worn slots and the hands, worn flags set; never its
-// whole inventory, which is npc-fate's record) and the hands' spells; the
-// server checks the worn items against the actor's own record and the
-// puppets' hands follow (view/formView.ts applyHands). The record's hands
-// are what the server's hit path judges a hosted actor's swing against
-// (E_HIT_WEAPON, playtest 34: two bandits' every swing dropped), so this is
-// the stream that makes a hosted NPC's hits count. A poll, not the equip
-// events: whether the engine raises them for an AI's equip is unread (H4),
-// and a cell's attach would raise one per resident's outfit at once.
+// The equipment (slice 3; fork m4-npc-worn, ADR-063: the engine that
+// simulates an actor owns what it wears): the same poll reads what each
+// hosted actor wears, its hands (getEquippedObject 1 and 0, two calls) and
+// its engine's worn flags (sync/inventory.ts readWorn, one call: the biped
+// slots' armor, a skin a script equipped, the quiver), and, when any of it
+// changes, sends UpdateEquipment under the actor's idx with what it wears
+// (worn flags set; never its whole inventory, which is npc-fate's record)
+// and the hands' spells; the server records it (R2) and relays it, and
+// every other seat's copy wears it (view/formView.ts applyNpcWorn). The
+// record's hands are what the server's hit path judges a hosted actor's
+// swing against (E_HIT_WEAPON, playtest 34: two bandits' every swing
+// dropped), so this is also the stream that makes a hosted NPC's hits
+// count. A poll, not the equip events: whether the engine raises them for
+// an AI's equip is unread (H4), and a cell's attach would raise one per
+// resident's outfit at once. The first report for an engine reference waits
+// for two equal reads half a second apart: a copy read before its engine
+// dressed it (playtest 37's finding 46, the placed ff000002 of 2026-11-10
+// first read with one of its four pieces) would show every other seat a
+// strip that its next report undoes.
 export class HostedStateService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -155,20 +162,32 @@ export class HostedStateService extends ClientListener {
             // re-npc-roll.md 8.1); polled before it the copy wears nothing
             // and its hands are empty, and that report emptied the record's
             // worn set, the fate's source, so the next fate redressed the
-            // copy naked. The server keeps its outfit against such a report
-            // now; the poll waits for the model all the same. HYPOTHESIS
-            // until a trace: the dressing precedes the 3D-loaded flag
+            // copy naked. The server takes off only what this game's own
+            // earlier report wore (ActionListener::OnUpdateEquipment), and
+            // the poll waits for the model and for two equal reads. HYPOTHESIS
+            // until a trace: the dressing precedes the 3D-loaded flag. A copy
+            // out of its 3D, or dead, is read afresh when it is back (its
+            // engine may dress it again at the load)
             if (!actor || actor.isDead() || !actor.is3DLoaded()) {
+                if (localId) {
+                    this.worn.delete(localId);
+                }
                 continue;
             }
             const right = actor.getEquippedObject(1)?.getFormID() ?? 0;
             const left = actor.getEquippedObject(0)?.getFormID() ?? 0;
-            const prev = this.hands.get(localId);
-            if (prev && prev.right === right && prev.left === left) {
+            const worn = readWorn(localId);
+            const key = `${right}:${left}:${worn.join(",")}`;
+            const prev = this.worn.get(localId);
+            if (prev?.sent === key) {
                 continue;
             }
-            this.hands.set(localId, { right, left });
-            this.sendEquipment(actor, localId, remoteId, right, left);
+            if (prev?.sent === undefined && prev?.pending !== key) {
+                this.worn.set(localId, { pending: key });
+                continue;
+            }
+            this.worn.set(localId, { sent: key });
+            this.sendEquipment(actor, localId, remoteId, right, left, worn);
         }
         // an actor that left the hosted list starts over at its next grant
         // (a keyframe again); its package and its engine's isDead are
@@ -188,21 +207,21 @@ export class HostedStateService extends ClientListener {
                 this.packages.delete(id);
             }
         }
-        for (const id of Array.from(this.hands.keys())) {
+        for (const id of Array.from(this.worn.keys())) {
             if (!seen.has(id)) {
-                this.hands.delete(id);
+                this.worn.delete(id);
                 this.equipChanges.delete(id);
             }
         }
     }
 
-    // what the actor wears, as the server's equipment lists it: the worn
-    // slots (getWornForm over the 32 biped slots, armor and the shield) and
-    // the hands, each entry a count of one with its worn flag (worn the
-    // right hand and the slots, wornLeft the left hand), the hands' spells;
-    // numChanges counts up from the record's own (the view applies on a
-    // change of the number)
-    private sendEquipment(actor: Actor, localId: number, remoteId: number, right: number, left: number) {
+    // what the actor wears, as the server's equipment lists it: what its
+    // engine flags worn (readWorn: the biped slots' armor and the shield, a
+    // skin, the quiver) and the hands, each entry a count of one with its
+    // worn flag (worn the right hand and the rest, wornLeft the left hand),
+    // the hands' spells; numChanges counts up from the record's own (the
+    // view applies on a change of the number)
+    private sendEquipment(actor: Actor, localId: number, remoteId: number, right: number, left: number, worn: number[]) {
         const entries: Inventory["entries"] = [];
         const add = (baseId: number, wornLeft: boolean) => {
             if (!baseId) {
@@ -219,8 +238,10 @@ export class HostedStateService extends ClientListener {
             }
             entries.push(wornLeft ? { baseId, count: 1, wornLeft: true } : { baseId, count: 1, worn: true });
         };
-        for (let slot = 0; slot < 32; ++slot) {
-            add(actor.getWornForm(1 << slot)?.getFormID() ?? 0, false);
+        for (const baseId of worn) {
+            if (baseId !== right && baseId !== left) {
+                add(baseId, false);
+            }
         }
         // a spell in a hand is the hand's spell, not a worn item (x-npc-spell
         // 221906: the mage's SparksRightHand in the worn list refused the whole
@@ -296,7 +317,9 @@ export class HostedStateService extends ClientListener {
     private readonly lastSent = new Map<number, HostedStateSample>();
     // the engine's isDead at the last poll, per hosted actor (finding 54)
     private readonly dead = new Map<number, boolean>();
-    private readonly hands = new Map<number, { right: number; left: number }>();
+    // per hosted actor: the read last sent, or the first read waiting for
+    // its equal (the first report's two reads)
+    private readonly worn = new Map<number, { sent?: string; pending?: string }>();
     private readonly equipChanges = new Map<number, number>();
     private lastPoll = 0;
     private static readonly pollMs = 500;

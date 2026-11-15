@@ -1,0 +1,83 @@
+# difftest scene-claim (thuum ADR-073 decision 6 with D-L2 B and D-A2 C, step 5a; docs/verbs/npc-talk.md): the seat
+# that starts a scene claims its actors from the cell's host until the scene ends; the host's own copy of the scene
+# claims nothing, the first claim winning (R2: the cause seat is recorded, not judged); the release at the scene's end
+# returns them (wire-rules cells claim(), release_claim(); T0 a_scene_takes_its_actors_from_the_host_to_its_starter_
+# until_it_ends). c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003, see melee-reach);
+# c2 starts 1.5 s after c1, each client's times its own. The records (Skyrim.esm, read on sky-srv for step 5a's design
+# and its fixes, 2026-11-14): the argument, scene 0x3839b, whose own quest (its PNAM outside an action) is 0x38386;
+# 0x38386's alias 0 is Lucan Valerius by his unique actor 0x1347a and its alias 2 Camilla by hers, 0x1347b; their
+# ACHRs 0x13487 and 0x13488 stand in RiverwoodTrader 0x133c9. Each client reaches the trader through `moveto` onto
+# Camilla's record (an owner's console command, see claim-outlives-grant) and names the actors by the server's index,
+# "{{idx:0x13487}}" and "{{idx:0x13488}}" (fork wire-fakeclient). The legacy server knows neither MsgType 56 nor
+# `moveto`: on the legacy stack both clients stay at the spawn and nothing below happens.
+#
+# c1 goes to Camilla at 0.2 s and reports nothing loaded yet. c2 goes to her at 0.5 s of its own and at 1 s reports the
+# trader loaded: the first loader in reach hosts it (HostGrant {cell 0x133c9, epoch 1}), and the grant's flip names c2
+# for both (their keyframes to c2, isHostedByOther false to c2 and true to c1). At 4 s c1 reports the trader loaded
+# (hosted: nothing; the cold start passes a cell only to a nearer square, and both stand in the one interior). At 5 s
+# and 5.2 s c1, the seat whose game started the argument, claims Lucan and Camilla for it {purpose 2, quest 0x38386,
+# scene 0x3839b}: the server reads the scene's PNAM and its actor aliases, finds each actor's alias (0 and 2, their
+# unique actors), and the table grants both to c1, who has the cell loaded (their keyframes to c1, isHostedByOther
+# false to c1 and true to c2). At 5 s of its own c2, the host and now the actors' puppet seat, claims Lucan for the
+# same scene: Held (E_CLAIM_HELD in the wire server's log, c1's scene named), nothing sent. At 9 s and 9.2 s, the
+# scene's end, c1 releases each {claim false, purpose 2, quest 0x38386, scene 0x3839b}: the rows end and the cell's
+# rule names its host again (their keyframes to c2, isHostedByOther false to c2 and true to c1). c2 reports the trader
+# loaded again at 11.5 s of its own (a repeat: nothing), so it outlives c1 and sees c1's departure, both in the trader.
+#
+# UpdateMovement compares exactly here (not as presence): the server sends a keyframe (PartOne::SendActorKeyframe, a
+# t:2) to the simulator ahead of each word, neither client moves, and a keyframe in relays_seen could not be declared.
+#
+# Not declared yet: the first T2 of this session (ONLY=scene-claim) draws what the code alone does not fix: the forms
+# of the spawn leaving each client's view at its moveto (DestroyActor 25, the lock chest 0xf321a among them); the
+# trader's references entering it (CreateActor 33, Lucan and Camilla among them); each player's create word for the
+# other, at the spawn on the legacy stack and in the trader on the wire; the words (UpdateProperty 7 isHostedByOther
+# on Lucan and Camilla, one to each listening player per grant, claim and release flip) and the keyframes, by count;
+# and any fate (ActorFate 51), record (ChangeFormApply 74) or script state (ScriptStateApply 77, ahead of a grant) the
+# trader's load and grant serve. Each is read against the paragraph above before it is declared.
+id: scene-claim
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+volatile: [3, 24]
+steps:
+  - {client: c1, at_ms: 200, send: {t: 12, data: {t: 12, commandName: moveto, args: [20, 0x13488]}}, reliable: true}
+  - {client: c2, at_ms: 500, send: {t: 12, data: {t: 12, commandName: moveto, args: [20, 0x13488]}}, reliable: true}
+  - {client: c2, at_ms: 1000, send: {t: 47, cell: 0x133c9, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 47, cell: 0x133c9, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 5000, send: {t: 56, idx: "{{idx:0x13487}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c1, at_ms: 5200, send: {t: 56, idx: "{{idx:0x13488}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c2, at_ms: 5000, send: {t: 56, idx: "{{idx:0x13487}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c1, at_ms: 9000, send: {t: 56, idx: "{{idx:0x13487}}", claim: false, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c1, at_ms: 9200, send: {t: 56, idx: "{{idx:0x13488}}", claim: false, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c2, at_ms: 11500, send: {t: 47, cell: 0x133c9, loaded: true}, reliable: true}
+divergences:
+  - client: c1
+    msg: {t: 41, text: "moveto done", refused: false}
+    legacy: 0
+    wire: 1
+    reason: an owner's moveto runs the server's teleport and answers with a line (thuum docs/verbs/console-commands.md); the legacy server does not know the command
+  - client: c1
+    msg: {t: 20, idx: "refr:ff000002", worldOrCell: 0x133c9}
+    legacy: 0
+    wire: 1
+    reason: the moveto's teleport onto Camilla's record in RiverwoodTrader 0x133c9 (MpActor::Teleport); the legacy server stays silent
+  - client: c2
+    msg: {t: 41, text: "moveto done", refused: false}
+    legacy: 0
+    wire: 1
+    reason: an owner's moveto, as c1's; the legacy server does not know the command
+  - client: c2
+    msg: {t: 20, idx: "refr:ff000003", worldOrCell: 0x133c9}
+    legacy: 0
+    wire: 1
+    reason: c2's teleport onto Camilla's record in the trader
+  - client: c2
+    msg: {t: 48, cell: 0x133c9, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the trader (HostGrant, thuum docs/verbs/cell-host.md); c1 had it in reach and not loaded; the legacy server has no cell hosts
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout (both clients in the trader on the wire)

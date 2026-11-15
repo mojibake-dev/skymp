@@ -52,6 +52,15 @@ Napi::Value SetActingPlayer(const Napi::CallbackInfo& info);
 // (run until ADR-073 step 5a's scene claim) and nothing is swapped. False for
 // a quest 0, a stage outside -2 to 65535, a ttl outside 1 to 60000
 Napi::Value SetRelayedScope(const Napi::CallbackInfo& info);
+// train 53's R-V4 (its review's rules-5): effectConditioned(spellFormId,
+// index), whether the magic item's effect at the index carries conditions
+// on its effect item (Effect::conditions, CommonLibSSE-NG
+// include/RE/E/Effect.h:42) or on its base effect (EffectSetting::
+// conditions, include/RE/E/EffectSetting.h:155), as the engine checks both;
+// a form-table read on the JS thread, as MarkQuestCause reads its quest, no
+// Papyrus call; null for a form that is no magic item, an index past its
+// effects or an empty slot
+Napi::Value EffectConditioned(const Napi::CallbackInfo& info);
 // getActingPlayer(questId, stage): the server id of the acting player whose
 // scope requested the pair here (relayed, or chained by a scoped stack), 0
 // for none; the C2S QuestStage's `acting`
@@ -254,6 +263,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "setRelayedScope",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetRelayedScope)));
+  exports.Set("effectConditioned",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(EffectConditioned)));
   exports.Set(
     "getActingPlayer",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetActingPlayer)));

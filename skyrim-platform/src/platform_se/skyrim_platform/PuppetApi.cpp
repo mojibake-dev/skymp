@@ -15,7 +15,10 @@
 #include <RE/C/ContainerMenu.h>
 #include <RE/C/CrosshairPickData.h>
 #include <RE/D/DialogueMenu.h>
+#include <RE/E/Effect.h>
+#include <RE/E/EffectSetting.h>
 #include <RE/I/InterfaceStrings.h>
+#include <RE/M/MagicItem.h>
 #include <RE/M/MenuTopicManager.h>
 #include <RE/P/PlayerControls.h>
 #include <RE/T/TESFaction.h>
@@ -467,6 +470,32 @@ Napi::Value PuppetApi::SetRelayedScope(const Napi::CallbackInfo& info)
                word ? "requested and armed" : "requested", counts.requests,
                counts.arms, counts.joined);
   return Napi::Boolean::New(info.Env(), true);
+}
+
+// train 53's R-V4 (its review's rules-5: the PO3_SKSEFunctions read it
+// replaces had no declared dependency, and a seat without the extender lost
+// every puppet ability look): the effect's two condition lists, read from
+// the records the engine's own check reads, Effect::conditions and the base
+// effect's EffectSetting::conditions (TESCondition's operator bool, a head
+// that is not null: CommonLibSSE-NG src/RE/T/TESCondition.cpp:68-71). A
+// form-table read on the JS thread, as MarkQuestCause's quest; MagicApi's
+// LookupByID<RE::MagicItem> the precedent. Null for a form that is no magic
+// item, an index past its effects or an empty slot
+Napi::Value PuppetApi::EffectConditioned(const Napi::CallbackInfo& info)
+{
+  const auto spellFormId = NapiHelper::ExtractUInt32(info[0], "spellFormId");
+  const auto index = NapiHelper::ExtractUInt32(info[1], "index");
+  const auto* item = RE::TESForm::LookupByID<RE::MagicItem>(spellFormId);
+  if (!item || index >= item->effects.size()) {
+    return info.Env().Null();
+  }
+  const auto* effect = item->effects[index];
+  if (!effect) {
+    return info.Env().Null();
+  }
+  const bool conditioned = static_cast<bool>(effect->conditions) ||
+    (effect->baseEffect && static_cast<bool>(effect->baseEffect->conditions));
+  return Napi::Boolean::New(info.Env(), conditioned);
 }
 
 // getActingPlayer(questId, stage): the server id of the acting player whose

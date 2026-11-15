@@ -12,16 +12,17 @@
 #include "TrapFamily.h"
 #include "game/Offsets.h"
 #include <RE/A/ActivateHandler.h>
+#include <RE/A/ActiveEffect.h>
 #include <RE/B/BSXFlags.h>
 #include <RE/C/Calendar.h>
 #include <RE/C/ContainerMenu.h>
 #include <RE/C/CrosshairPickData.h>
 #include <RE/D/DialogueMenu.h>
-#include <RE/E/Effect.h>
 #include <RE/E/EffectSetting.h>
 #include <RE/E/ExtraTeleport.h>
 #include <RE/I/InterfaceStrings.h>
-#include <RE/M/MagicItem.h>
+#include <RE/M/MagicSystem.h>
+#include <RE/M/MagicTarget.h>
 #include <RE/M/Main.h>
 #include <RE/M/MenuTopicManager.h>
 #include <RE/P/PlayerControls.h>
@@ -44,6 +45,7 @@
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include <xmmintrin.h>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
@@ -477,32 +479,6 @@ Napi::Value PuppetApi::SetRelayedScope(const Napi::CallbackInfo& info)
                word ? "requested and armed" : "requested", counts.requests,
                counts.arms, counts.joined);
   return Napi::Boolean::New(info.Env(), true);
-}
-
-// train 53's R-V4 (its review's rules-5: the PO3_SKSEFunctions read it
-// replaces had no declared dependency, and a seat without the extender lost
-// every puppet ability look): the effect's two condition lists, read from
-// the records the engine's own check reads, Effect::conditions and the base
-// effect's EffectSetting::conditions (TESCondition's operator bool, a head
-// that is not null: CommonLibSSE-NG src/RE/T/TESCondition.cpp:68-71). A
-// form-table read on the JS thread, as MarkQuestCause's quest; MagicApi's
-// LookupByID<RE::MagicItem> the precedent. Null for a form that is no magic
-// item, an index past its effects or an empty slot
-Napi::Value PuppetApi::EffectConditioned(const Napi::CallbackInfo& info)
-{
-  const auto spellFormId = NapiHelper::ExtractUInt32(info[0], "spellFormId");
-  const auto index = NapiHelper::ExtractUInt32(info[1], "index");
-  const auto* item = RE::TESForm::LookupByID<RE::MagicItem>(spellFormId);
-  if (!item || index >= item->effects.size()) {
-    return info.Env().Null();
-  }
-  const auto* effect = item->effects[index];
-  if (!effect) {
-    return info.Env().Null();
-  }
-  const bool conditioned = static_cast<bool>(effect->conditions) ||
-    (effect->baseEffect && static_cast<bool>(effect->baseEffect->conditions));
-  return Napi::Boolean::New(info.Env(), conditioned);
 }
 
 // getActingPlayer(questId, stage): the server id of the acting player whose
@@ -2013,6 +1989,10 @@ struct HostedGazeRead
   uint32_t exprOverride = 0;
   uint32_t exprIndex = 0;
   float exprValue = 0.f;
+  // thuum docs/verbs/npc-puppet.md, Ownership (ADR-063, ADR-073 decision
+  // 1): the running effects whose look the engine draws on the actor and
+  // keeps, by base effect form id, ascending, each once (ReadEffectLooks)
+  std::vector<uint32_t> effects;
 };
 std::mutex g_gazeMutex;
 std::unordered_map<uint32_t, HostedGazeRead> g_gaze;
@@ -2219,6 +2199,63 @@ Napi::Value PuppetApi::ConsumeActivatePress(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+namespace {
+// thuum docs/verbs/npc-puppet.md, Ownership (ADR-063, ADR-073 decision 1):
+// the host's engine runs the actor's effects and draws their looks, so the
+// host reads which of them a watcher must draw on its puppet. Each entry of
+// the actor's active effect list (Actor::AsMagicTarget, CommonLibSSE-NG
+// include/RE/A/Actor.h:720; MagicTarget::GetActiveEffectList,
+// include/RE/M/MagicTarget.h:84) that is neither inactive (its conditions
+// false: ActiveEffect::Flag::kInactive, include/RE/A/ActiveEffect.h:50) nor
+// dispelled (kDispelled, :51; the flags at :111), whose base effect
+// (GetBaseObject, :91) has a look (EffectSettingData's effectShader, the hit
+// shader, include/RE/E/EffectSetting.h:80, or its hitEffectArt, :96) the
+// record does not turn off (Flag::kNoHitEffect, :64), and whose look stays
+// while the effect runs: a constant effect (castingType, :92;
+// MagicSystem::CastingType::kConstantEffect, include/RE/M/MagicSystem.h:33),
+// an ability's, or one flagged FX Persist (Flag::kFXPersist, :57). A
+// fire-and-forget look without FX Persist flashes once at the effect's start
+// and is its cause's (the hit, the relayed cast), never a poll's. What
+// kNoHitEffect and kFXPersist do is the Creation Kit's reading of the
+// flags: HYPOTHESIS until a probe reads the two looks on a watcher
+// (Skyrim.esm's AbFXAtronachFlame 0x60da1, a constant effect with a hit
+// effect art and no FX Persist, DATA flags 0x00200802 by lab/esm.py on
+// sky-srv, 2026-11-14, is drawn on the host for as long as it runs)
+std::vector<uint32_t> ReadEffectLooks(RE::Actor& actor)
+{
+  std::vector<uint32_t> out;
+  auto* target = actor.AsMagicTarget();
+  auto* list = target ? target->GetActiveEffectList() : nullptr;
+  if (!list) {
+    return out;
+  }
+  using Flag = RE::ActiveEffect::Flag;
+  using DataFlag = RE::EffectSetting::EffectSettingData::Flag;
+  for (RE::ActiveEffect* effect : *list) {
+    if (!effect || effect->flags.any(Flag::kInactive, Flag::kDispelled)) {
+      continue;
+    }
+    const auto* base = effect->GetBaseObject();
+    if (!base || base->data.flags.any(DataFlag::kNoHitEffect)) {
+      continue;
+    }
+    if (!base->data.effectShader && !base->data.hitEffectArt) {
+      continue;
+    }
+    const bool stays = base->data.castingType ==
+        RE::MagicSystem::CastingType::kConstantEffect ||
+      base->data.flags.any(DataFlag::kFXPersist);
+    if (!stays) {
+      continue;
+    }
+    out.push_back(base->formID);
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+}
+
 Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
 {
   const auto ids = NapiHelper::ExtractArray(info[0], "actorFormIds");
@@ -2272,7 +2309,8 @@ Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
           }
         }
       }
-      reads[id] = read;
+      read.effects = ReadEffectLooks(*actor);
+      reads[id] = std::move(read);
     }
     std::lock_guard<std::mutex> lock(g_gazeMutex);
     g_gaze.swap(reads);
@@ -2479,6 +2517,25 @@ Napi::Value PuppetApi::HostedGaze(const Napi::CallbackInfo& info)
   res.Set(uint32_t(4), Napi::Number::New(info.Env(), read.exprOverride));
   res.Set(uint32_t(5), Napi::Number::New(info.Env(), read.exprIndex));
   res.Set(uint32_t(6), Napi::Number::New(info.Env(), read.exprValue));
+  return res;
+}
+
+Napi::Value PuppetApi::HostedEffects(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  std::vector<uint32_t> effects;
+  {
+    std::lock_guard<std::mutex> lock(g_gazeMutex);
+    const auto it = g_gaze.find(actorFormId);
+    if (it == g_gaze.end()) {
+      return info.Env().Null();
+    }
+    effects = it->second.effects;
+  }
+  auto res = Napi::Array::New(info.Env(), effects.size());
+  for (uint32_t i = 0; i < effects.size(); ++i) {
+    res.Set(i, Napi::Number::New(info.Env(), effects[i]));
+  }
   return res;
 }
 

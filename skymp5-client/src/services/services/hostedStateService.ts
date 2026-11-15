@@ -57,6 +57,17 @@ import { logLab, logTrace } from "../../logging";
 // dressed it (playtest 37's finding 46, the placed ff000002 of 2026-11-10
 // first read with one of its four pieces) would show every other seat a
 // strip that its next report undoes.
+//
+// thuum docs/verbs/npc-puppet.md (Ownership; ADR-063, ADR-073 decision 1):
+// this engine runs the hosted actor's effects and draws their looks, so the
+// same poll's game-thread read (the platform's pollHostedGaze, read back by
+// hostedEffects) names the running effects whose look it keeps: active,
+// neither inactive (conditions false) nor dispelled, a hit shader or a hit
+// effect art, a constant effect or FX Persist (PuppetApi.cpp ReadEffectLooks).
+// The set rides the state as `effects` on the first report with the read and
+// whenever it changes (that report goes reliable), and is absent otherwise;
+// the server records it (R2) and relays it, and each watching seat plays the
+// looks of exactly that set on its puppet (PuppetService).
 export class HostedStateService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -119,7 +130,13 @@ export class HostedStateService extends ClientListener {
             this.dead.set(localId, dead);
             const sample = this.read(actor, localId);
             const last = this.lastSent.get(localId);
-            if (last && !stoodUp && !fellDead && HostedStateService.same(last, sample)) {
+            // the running effects with a look: sent when the engine's read
+            // differs from the set this seat last sent for the actor (its
+            // first read after a grant included), and then reliable
+            const effects = this.readEffects(localId, remoteId);
+            const sentEffects = this.lastEffects.get(localId);
+            const effectsChanged = effects !== undefined && !HostedStateService.sameIds(effects, sentEffects);
+            if (last && !stoodUp && !fellDead && !effectsChanged && HostedStateService.same(last, sample)) {
                 continue;
             }
             const message: MessageWithRefrId<HostedActorStateMessage> = {
@@ -135,11 +152,18 @@ export class HostedStateService extends ClientListener {
                 emotionValue: sample.emotionValue,
                 _refrId: remoteId,
             };
+            if (effectsChanged && effects !== undefined) {
+                message.effects = effects;
+            }
             this.controller.emitter.emit("sendMessageWithRefrId", {
                 message,
-                reliability: last && !stoodUp && !fellDead ? "unreliable" : "reliable",
+                reliability: last && !stoodUp && !fellDead && !effectsChanged ? "unreliable" : "reliable",
             });
             this.lastSent.set(localId, sample);
+            if (effectsChanged && effects !== undefined) {
+                this.lastEffects.set(localId, effects);
+                logLab("verb:npc-puppet", `effects ${remoteId.toString(16)}: ${effects.length} running with a look on this engine (${effects.length ? effects.map((id) => id.toString(16)).join(", ") : "none"}), sent reliable${sentEffects === undefined ? " (its first read here)" : ""}`);
+            }
             if (fellDead) {
                 logLab("verb:npc-fate", `${remoteId.toString(16)} fell dead on this engine: health ${sample.health.toFixed(3)}, the sample sent reliable (the host's dead-sample stamp)`);
             }
@@ -195,6 +219,11 @@ export class HostedStateService extends ClientListener {
         for (const id of Array.from(this.lastSent.keys())) {
             if (!seen.has(id)) {
                 this.lastSent.delete(id);
+            }
+        }
+        for (const id of Array.from(this.lastEffects.keys())) {
+            if (!seen.has(id)) {
+                this.lastEffects.delete(id);
             }
         }
         for (const id of Array.from(this.dead.keys())) {
@@ -303,6 +332,60 @@ export class HostedStateService extends ClientListener {
         };
     }
 
+    // The engine's running effects with a look on a hosted actor, from the
+    // last poll's game-thread read (undefined until a read of the actor,
+    // and on a platform without the export, said once): base effect ids,
+    // ascending, each once, as the wire wants them. ADR-073 decision 7: what
+    // the wire cannot carry falls through, each kind said once with its
+    // first case and then counted at the 2nd, 4th, 8th and so on: a runtime
+    // form (0xff000000 and up, this engine's own, no id elsewhere) and an
+    // effect past the cap (the first 32 by id are sent)
+    private readEffects(localId: number, remoteId: number): number[] | undefined {
+        if (typeof this.sp.hostedEffects !== "function") {
+            if (!this.effectsReaderSaid) {
+                this.effectsReaderSaid = true;
+                logLab("verb:npc-puppet", "effects: hostedEffects unavailable on this platform: no running effect is reported, and the watchers' puppets show no look of this seat's actors");
+            }
+            return undefined;
+        }
+        const read = this.sp.hostedEffects(localId);
+        if (!Array.isArray(read)) {
+            return undefined;
+        }
+        const ids: number[] = [];
+        for (const id of read) {
+            if (typeof id !== "number" || !Number.isInteger(id) || id <= 0) {
+                continue;
+            }
+            if (id >= 0xff000000) {
+                this.fellThrough("runtime", `${id.toString(16)} on ${remoteId.toString(16)} is a runtime form, which no other seat can resolve`);
+                continue;
+            }
+            ids.push(id);
+        }
+        ids.sort((a, b) => a - b);
+        const unique = ids.filter((id, i) => i === 0 || ids[i - 1] !== id);
+        if (unique.length > HostedStateService.maxEffects) {
+            this.fellThrough("cap", `${remoteId.toString(16)} runs ${unique.length} effects with a look, past the wire's ${HostedStateService.maxEffects}; the first ${HostedStateService.maxEffects} by id are sent`);
+            return unique.slice(0, HostedStateService.maxEffects);
+        }
+        return unique;
+    }
+
+    private fellThrough(kind: string, first: string) {
+        const n = (this.fallThrough.get(kind) ?? 0) + 1;
+        this.fallThrough.set(kind, n);
+        if (n === 1) {
+            logLab("verb:npc-puppet", `effects: ${first} (falls through, said once; then counted)`);
+        } else if ((n & (n - 1)) === 0) {
+            logLab("verb:npc-puppet", `effects: ${n} ${kind} fall-through(s) so far, the last: ${first}`);
+        }
+    }
+
+    private static sameIds(a: number[], b: number[] | undefined): boolean {
+        return b !== undefined && a.length === b.length && a.every((id, i) => id === b[i]);
+    }
+
     // a change worth a send: a percentage moved half a point, or the target
     // or the package changed (regeneration moves a value every frame)
     private static same(a: HostedStateSample, b: HostedStateSample): boolean {
@@ -315,6 +398,12 @@ export class HostedStateService extends ClientListener {
 
     private readonly packages = new Map<number, number>();
     private readonly lastSent = new Map<number, HostedStateSample>();
+    // the running effects last sent per hosted actor (Ownership)
+    private readonly lastEffects = new Map<number, number[]>();
+    private effectsReaderSaid = false;
+    private readonly fallThrough = new Map<string, number>();
+    // the wire's bound (wire-schema cap::MAGIC_EFFECTS)
+    private static readonly maxEffects = 32;
     // the engine's isDead at the last poll, per hosted actor (finding 54)
     private readonly dead = new Map<number, boolean>();
     // per hosted actor: the read last sent, or the first read waiting for

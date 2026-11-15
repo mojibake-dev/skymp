@@ -29,4 +29,12 @@ export interface HostedActorStateMessage {
     gazeSlot: number;
     emotionType: number;
     emotionValue: number;
+    // thuum docs/verbs/npc-puppet.md (Ownership, ADR-073 decision 1): the
+    // running effects whose look the host's engine draws on the actor and
+    // keeps, base effect form ids in the load order (under 0xff000000),
+    // ascending, each once, at most 32; present on the first report with the
+    // engine's read and on a change (that report goes reliable), absent when
+    // unchanged; the server records it (R2) and relays it, and serves the
+    // record to a game that subscribes later (PuppetService plays the looks)
+    effects?: number[];
 }

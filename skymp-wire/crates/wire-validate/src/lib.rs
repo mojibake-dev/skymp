@@ -1387,6 +1387,15 @@ fn check_hosted_state(m: &skymp::HostedActorState) -> Result<(), Reject> {
     if m.gaze_slot >= 6 || m.emotion_type > 7 || m.emotion_value > 100 {
         return Err(Reject::Range);
     }
+    // the host's running effects (docs/verbs/npc-puppet.md, Ownership): a
+    // set of load-order forms, so each id is neither 0 nor a runtime form
+    // (0xff000000 and up, the sender's own engine's), and the list is
+    // strictly ascending (each once); the count is the bound's
+    if let Some(effects) = &m.effects {
+        if effects.iter().any(|&id| id == 0 || id >= 0xff00_0000) || effects.windows(2).any(|w| matches!(w, [a, b] if a >= b)) {
+            return Err(Reject::Range);
+        }
+    }
     Ok(())
 }
 
@@ -3276,6 +3285,42 @@ mod tests {
         assert_eq!(validate_server(&face(0, 0, 101)), Err(Reject::Range));
     }
 
+    // thuum docs/verbs/npc-puppet.md, Ownership: the host's running effects
+    // are a set of load-order forms, ascending and each once; absent is the
+    // record's last set, empty is none running
+    #[test]
+    fn a_hosted_states_effects_are_load_order_forms_ascending_once() {
+        use wire_schema::skymp::HostedActorState;
+        let with = |ids: &[u32]| {
+            Message::HostedActorState(HostedActorState {
+                idx: 7,
+                health: 1.0,
+                magicka: 1.0,
+                stamina: 1.0,
+                effects: ids.to_vec().try_into().ok(),
+                ..Default::default()
+            })
+        };
+        let absent = Message::HostedActorState(HostedActorState { idx: 7, health: 1.0, magicka: 1.0, stamina: 1.0, ..Default::default() });
+        assert_eq!(validate_server(&absent), Ok(()));
+        assert_eq!(validate_server(&with(&[])), Ok(()));
+        // AbFXAtronachFlame 0x60da1, a light plugin's form and the last id
+        // under the runtime range
+        assert_eq!(validate_server(&with(&[0x60da1, 0xfe00_0801, 0xfeff_ffff])), Ok(()));
+        assert_eq!(validate_server(&with(&[0])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[0x60da1, 0xff00_0001])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[0x60da1, 0x2f3b5])), Err(Reject::Range));
+        assert_eq!(validate_server(&with(&[0x60da1, 0x60da1])), Err(Reject::Range));
+        // the cap is the bound's: a 33rd id fails before any check
+        let full: Vec<u32> = (1..=u32::try_from(cap::MAGIC_EFFECTS).unwrap_or(0)).collect();
+        assert_eq!(validate_server(&with(&full)), Ok(()));
+        let over: Result<wire_schema::bounded::Vec<u32, { cap::MAGIC_EFFECTS }>, _> = (1..=u32::try_from(cap::MAGIC_EFFECTS).unwrap_or(0) + 1).collect::<Vec<_>>().try_into();
+        assert!(over.is_err());
+        // and through the client's guard too (the host sends it)
+        assert_eq!(validate(&with(&[0x60da1]), &mut ClientGuard::default(), 0), Ok(()));
+        assert_eq!(validate(&with(&[0xff00_0001]), &mut ClientGuard::default(), 0), Err(Reject::Range));
+    }
+
     fn hosted_state(idx: u32, health: f32, magicka: f32, stamina: f32) -> Message {
         Message::HostedActorState(wire_schema::skymp::HostedActorState {
             idx,
@@ -4227,9 +4272,11 @@ mod tests {
         fn hosted_state_never_panics(
             idx in any::<u32>(), health in any::<f32>(), magicka in any::<f32>(), stamina in any::<f32>(),
             target in any::<u32>(), package in any::<u32>(), now in any::<u64>(),
+            effects in proptest::option::of(proptest::collection::vec(any::<u32>(), 0..=cap::MAGIC_EFFECTS)),
         ) {
             let m = Message::HostedActorState(wire_schema::skymp::HostedActorState {
-                idx, health, magicka, stamina, combat_target: target, package, ..Default::default()
+                idx, health, magicka, stamina, combat_target: target, package,
+                effects: effects.and_then(|e| e.try_into().ok()), ..Default::default()
             });
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);

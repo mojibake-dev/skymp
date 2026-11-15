@@ -1699,9 +1699,12 @@ void MpObjectReference::Subscribe(MpObjectReference* emitter,
   if (!hasPrimitive) {
     emitter->callbacks->subscribe(emitter, listener);
     // thuum docs/verbs/magic-effects.md: a game that first sees an actor
-    // hears the effects already running on it, after the actor's creation
+    // hears the effects already running on it, after the actor's creation;
+    // and docs/verbs/npc-puppet.md (Ownership): the effects its host's
+    // engine runs on it with a look, as recorded, unless it is that host
     if (actorEmitter && actorListener && actorEmitter != actorListener) {
       actorEmitter->SendMagicEffectsTo(*actorListener);
+      actorEmitter->SendHostedEffectsTo(*actorListener);
     }
   }
 

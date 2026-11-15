@@ -53,15 +53,6 @@ Napi::Value SetActingPlayer(const Napi::CallbackInfo& info);
 // nothing is swapped. False for a quest 0, a stage outside -2 to 65535, a ttl
 // outside 1 to 60000
 Napi::Value SetRelayedScope(const Napi::CallbackInfo& info);
-// train 53's R-V4 (its review's rules-5): effectConditioned(spellFormId,
-// index), whether the magic item's effect at the index carries conditions
-// on its effect item (Effect::conditions, CommonLibSSE-NG
-// include/RE/E/Effect.h:42) or on its base effect (EffectSetting::
-// conditions, include/RE/E/EffectSetting.h:155), as the engine checks both;
-// a form-table read on the JS thread, as MarkQuestCause reads its quest, no
-// Papyrus call; null for a form that is no magic item, an index past its
-// effects or an empty slot
-Napi::Value EffectConditioned(const Napi::CallbackInfo& info);
 // getActingPlayer(questId, stage): the server id of the acting player whose
 // scope requested the pair here (relayed, or chained by a scoped stack), 0
 // for none; the C2S QuestStage's `acting`
@@ -254,8 +245,14 @@ Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 // headTracked, CommonLibSSE-NG HighProcessData.h:217-218, the types at
 // :80-94) and its emotion (Actor::GetEmotionType and GetEmotionValue,
 // Actor.h:464-466) into a table; hostedGaze(actorFormId) answers the last
-// read as [targetFormId, slot, emotionType, emotionValue], or null
+// read as [targetFormId, slot, emotionType, emotionValue], or null. The same
+// read takes the actor's running effects whose look the engine keeps
+// (thuum docs/verbs/npc-puppet.md, Ownership: ReadEffectLooks in
+// PuppetApi.cpp); hostedEffects(actorFormId) answers them as base effect
+// form ids, ascending, each once, or null when the last poll did not read
+// the actor
 Napi::Value PollHostedGaze(const Napi::CallbackInfo& info);
+Napi::Value HostedEffects(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-talk.md (ADR-052): activatePickRef() runs the
 // player's own activation of its crosshair pick on the game thread
 // (PlayerCharacter::ActivatePickRef, CommonLibSSE-NG PlayerCharacter.h:544),
@@ -366,9 +363,6 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "setRelayedScope",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetRelayedScope)));
-  exports.Set("effectConditioned",
-              Napi::Function::New(
-                env, NapiHelper::WrapCppExceptions(EffectConditioned)));
   exports.Set(
     "getActingPlayer",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(GetActingPlayer)));
@@ -451,6 +445,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "hostedGaze",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(HostedGaze)));
+  exports.Set(
+    "hostedEffects",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(HostedEffects)));
   exports.Set(
     "pollNodeRotation",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollNodeRotation)));

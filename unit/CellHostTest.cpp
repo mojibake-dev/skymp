@@ -24,6 +24,8 @@
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <optional>
+#include <vector>
 
 PartOne& GetPartOne();
 
@@ -140,7 +142,8 @@ void Act(PartOne& p, Networking::UserId user, uint32_t actorId)
 void State(PartOne& p, Networking::UserId user, uint32_t actorId, float health,
            float magicka, float stamina, uint32_t target, uint32_t package,
            uint32_t gazeTarget = 0, uint32_t gazeSlot = 0,
-           uint32_t emotionType = 0, uint32_t emotionValue = 0)
+           uint32_t emotionType = 0, uint32_t emotionValue = 0,
+           std::optional<std::vector<uint32_t>> effects = std::nullopt)
 {
   static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
   RawMessageData raw;
@@ -158,6 +161,7 @@ void State(PartOne& p, Networking::UserId user, uint32_t actorId, float health,
   msg.gazeSlot = gazeSlot;
   msg.emotionType = emotionType;
   msg.emotionValue = emotionValue;
+  msg.effects = std::move(effects);
   p.GetActionListener().OnHostedActorState(raw, msg);
 }
 
@@ -1737,6 +1741,136 @@ TEST_CASE("A hosted actor's state is its host's word bounded by the server's "
   p.DestroyActor(kActor);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
+}
+
+// thuum docs/verbs/npc-puppet.md, Ownership (ADR-063, ADR-073 decision 1):
+// the effects the host's engine runs on its actor with a look are that
+// engine's; the server records the set the host names (R2), relays a report
+// that carries it reliable to the actor's other games and never the host,
+// keeps it through a report without it, takes it even when the values are
+// dropped as a dead record's, serves it to a game that subscribes later, and
+// drops a non-host's at the gate. Uncompiled where it was written (the
+// server builds on sky-srv and in CI)
+TEST_CASE("The host's running effects are recorded, relayed reliable to the "
+          "actor's other games and served to a later one; a non-host's are "
+          "dropped",
+          "[CellHost][HostedState][HostedEffects]")
+{
+  auto& p = GetPartOne();
+  constexpr uint32_t kActor = 0xff000c0a;
+  // AbFXAtronachFlame and another load-order effect (any ids serve: the
+  // record is the host's word, the wire checks the shape)
+  constexpr uint32_t kFlames = 0x60da1;
+  constexpr uint32_t kOther = 0x64459;
+  const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
+  Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
+  p.CreateActor(kActor, kAt + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& actor = p.worldState.GetFormAt<MpActor>(kActor);
+  actor.SetPos(actor.GetPos());
+  const auto cell = p.worldState.CellOf(actor);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  REQUIRE(p.worldState.HostOf(actor) == &c1);
+  REQUIRE(actor.GetHostedEffects().empty());
+
+  // the states a user was sent for the actor, with their reliability
+  const auto statesTo = [&](Networking::UserId user) {
+    std::vector<std::pair<HostedActorStateMessage, bool>> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId != user) {
+        continue;
+      }
+      if (auto typed = dynamic_cast<HostedActorStateMessage*>(m.message.get());
+          typed && typed->idx == actor.GetIdx()) {
+        out.emplace_back(*typed, m.reliable);
+      }
+    }
+    return out;
+  };
+
+  // the host's first report with its engine's read: recorded, relayed
+  // reliable to the other game with the set, never to the host
+  p.Messages().clear();
+  State(p, 0, kActor, 1.f, 1.f, 1.f, 0, 0, 0, 0, 0, 0,
+        std::vector<uint32_t>{ kFlames, kOther });
+  REQUIRE(actor.GetHostedEffects() ==
+          std::vector<uint32_t>{ kFlames, kOther });
+  {
+    const auto toC2 = statesTo(1);
+    REQUIRE(toC2.size() == 1);
+    REQUIRE(toC2.front().second);
+    REQUIRE(toC2.front().first.effects.has_value());
+    REQUIRE(*toC2.front().first.effects ==
+            std::vector<uint32_t>{ kFlames, kOther });
+    REQUIRE(statesTo(0).empty());
+  }
+
+  // a report without the set: the record keeps it, the relay is unreliable
+  // and carries none
+  p.Messages().clear();
+  State(p, 0, kActor, 0.9f, 1.f, 1.f, 0, 0);
+  REQUIRE(actor.GetHostedEffects() ==
+          std::vector<uint32_t>{ kFlames, kOther });
+  {
+    const auto toC2 = statesTo(1);
+    REQUIRE(toC2.size() == 1);
+    REQUIRE_FALSE(toC2.front().second);
+    REQUIRE_FALSE(toC2.front().first.effects.has_value());
+  }
+
+  // the other game's report of the same actor: dropped at the gate, the
+  // record untouched
+  State(p, 1, kActor, 0.9f, 1.f, 1.f, 0, 0, 0, 0, 0, 0,
+        std::vector<uint32_t>{});
+  REQUIRE(actor.GetHostedEffects() ==
+          std::vector<uint32_t>{ kFlames, kOther });
+
+  // an effect left the set (its conditions went false on the host's
+  // engine: the kInactive flag): the record and the relay follow
+  p.Messages().clear();
+  State(p, 0, kActor, 0.9f, 1.f, 1.f, 0, 0, 0, 0, 0, 0,
+        std::vector<uint32_t>{ kFlames });
+  REQUIRE(actor.GetHostedEffects() == std::vector<uint32_t>{ kFlames });
+  REQUIRE(statesTo(1).size() == 1);
+  REQUIRE(statesTo(1).front().second);
+
+  // a game that subscribes later hears the record after the actor's
+  // creation, reliable; the host is never served its own
+  p.Messages().clear();
+  Player(p, 2, kC3, kAt + NiPoint3{ 80.f, 0.f, 0.f });
+  {
+    const auto toC3 = statesTo(2);
+    REQUIRE(toC3.size() == 1);
+    REQUIRE(toC3.front().second);
+    REQUIRE(toC3.front().first.effects.has_value());
+    REQUIRE(*toC3.front().first.effects == std::vector<uint32_t>{ kFlames });
+    REQUIRE(statesTo(0).empty());
+  }
+
+  // a dead record drops the values but takes the set the host's engine
+  // keeps on the body, relayed reliable
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+  p.Messages().clear();
+  State(p, 0, kActor, 0.f, 0.f, 0.f, 0, 0, 0, 0, 0, 0,
+        std::vector<uint32_t>{});
+  REQUIRE(actor.GetHostedEffects().empty());
+  REQUIRE(statesTo(1).size() == 1);
+  REQUIRE(statesTo(1).front().second);
+  // and an empty record serves nothing to a later game
+  p.Messages().clear();
+  actor.SendHostedEffectsTo(p.worldState.GetFormAt<MpActor>(kC2));
+  REQUIRE(statesTo(1).empty());
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 2);
+  p.DestroyActor(kActor);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kC3);
 }
 
 // `user`'s equipment report for `actorId`: one worn item in the right hand

@@ -1,0 +1,14 @@
+{
+  "combatTarget": 0,
+  "effects": [],
+  "emotionType": 0,
+  "emotionValue": 0,
+  "gazeSlot": 0,
+  "gazeTarget": 0,
+  "health": 0.5,
+  "idx": 11,
+  "magicka": 1.0,
+  "package": 0,
+  "stamina": 1.0,
+  "t": 53
+}

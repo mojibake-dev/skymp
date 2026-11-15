@@ -2,7 +2,9 @@
 #include "MessageBase.h"
 #include "MsgType.h"
 #include <cstdint>
+#include <optional>
 #include <type_traits>
+#include <vector>
 
 // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 2): a host's
 // state for an actor it simulates, as its engine has it: the three
@@ -12,8 +14,11 @@
 // reliable), on a change at most twice a second. The server judges the
 // values against its own numbers (wire-rules hosted_state) and records the
 // rest; its output is ChangeValues to the actor's other listeners
-// (ActionListener::OnHostedActorState). The contract is skymp-wire's
-// (wire-schema skymp.rs, HostedActorState, MsgType 53, wire id 61).
+// (ActionListener::OnHostedActorState). The running effects (thuum
+// docs/verbs/npc-puppet.md, Ownership) ride it: present on a change, sent
+// and relayed reliable, recorded on the actor (R2) and served to a later
+// subscriber. The contract is skymp-wire's (wire-schema skymp.rs,
+// HostedActorState, MsgType 53, wire id 61).
 struct HostedActorStateMessage : public MessageBase<HostedActorStateMessage>
 {
   static constexpr auto kMsgType =
@@ -33,7 +38,8 @@ struct HostedActorStateMessage : public MessageBase<HostedActorStateMessage>
       .Serialize("gazeTarget", gazeTarget)
       .Serialize("gazeSlot", gazeSlot)
       .Serialize("emotionType", emotionType)
-      .Serialize("emotionValue", emotionValue);
+      .Serialize("emotionValue", emotionValue)
+      .Serialize("effects", effects);
   }
 
   uint32_t idx = 0;
@@ -51,4 +57,11 @@ struct HostedActorStateMessage : public MessageBase<HostedActorStateMessage>
   uint32_t gazeSlot = 0;
   uint32_t emotionType = 0;
   uint32_t emotionValue = 0;
+  // the effects whose look the host's engine draws on the actor and keeps
+  // (active, neither inactive nor dispelled, a hit shader or a hit effect
+  // art, a constant effect or FX Persist): base effect form ids in the load
+  // order, ascending, each once, at most 32 (the wire's check); present on
+  // the first report with the engine's read and on a change, absent when
+  // unchanged (the record keeps the last set)
+  std::optional<std::vector<uint32_t>> effects;
 };

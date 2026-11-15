@@ -1,5 +1,7 @@
-import { Actor, CellAttachDetachEvent, CombatEvent, DeathEvent, MagicEffect, ObjectReference, Spell } from "skyrimPlatform";
+import { Actor, Art, CellAttachDetachEvent, CombatEvent, DeathEvent, EffectShader, ObjectReference } from "skyrimPlatform";
 import { logError, logLab, logTrace } from "../../logging";
+import { ConnectionMessage } from "../events/connectionMessage";
+import { HostedActorStateMessage } from "../messages/hostedActorStateMessage";
 import { Movement } from "../../sync/movement";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
@@ -41,8 +43,11 @@ import { SceneClaimService } from "./sceneClaimService";
 // the JavaScript tick (skyrim-platform main.cpp OnUpdate: JsTick, then
 // gameThrQ->Update) and would undo a block issued in the lift's own tick.
 
-// one look played on a puppet: an effect's hit shader, or its hit effect art
-type CloakLook = { kind: "shader" | "art"; formId: number; abilityId: number };
+// thuum docs/verbs/npc-puppet.md (Ownership; ADR-063, ADR-073 decision 1):
+// the looks this seat plays on an actor another seat hosts: the record's
+// effect set they came from (the very array, so a new record is a new
+// reference) and the hit shaders and hit effect arts playing, by form id
+type EffectLooks = { from: number[]; shaders: Set<number>; arts: Set<number> };
 
 export class PuppetService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -53,9 +58,12 @@ export class PuppetService extends ClientListener {
         // deferred kill holds puppets alone. Off (npcEngineDamage false, the
         // bisect), every NPC holds at zero for the server's word as before
         this.engineDeaths = this.sp.settings["skymp5-client"]["npcEngineDamage"] !== false;
-        // playtest 37 finding 60, the visuals slice: a puppet's ability shaders
-        // (the atronach's cloak) are played here; off, a puppet stands bare
-        this.cloakLook = this.sp.settings["skymp5-client"]["npcCloakLook"] !== false;
+        // thuum docs/verbs/npc-puppet.md (Ownership): the looks of the effects
+        // the host's engine runs on its actor, as the server records them, are
+        // played on this seat's puppet of it (playtest 37 finding 60's
+        // atronach, R-V4's sunlit vampire); off, a puppet stands bare (a bisect
+        // switch, its old name kept)
+        this.effectLooksOn = this.sp.settings["skymp5-client"]["npcCloakLook"] !== false;
         if (!this.enabled) {
             logTrace(this, "npcPuppet is off in settings: no actor's AI is switched (a bisect switch, not a play mode)");
         }
@@ -68,6 +76,16 @@ export class PuppetService extends ClientListener {
         // laid at the death's start; the poll below is its backstop
         this.controller.on("deathStart", (e) => this.onDeathStart(e));
         this.controller.on("update", () => this.onUpdate());
+        this.controller.emitter.on("hostedActorStateMessage", (e) => this.onHostedState(e));
+        // a create word starts the actor's record over here: the server
+        // serves its recorded effects right behind it when it holds any
+        // (MpActor::SendHostedEffectsTo), so a set kept from an earlier sight
+        // of the actor never outlives an empty record
+        this.controller.emitter.on("createActorMessage", (e) => {
+            if (e.message.refrId !== undefined) {
+                this.recordedEffects.delete(e.message.refrId);
+            }
+        });
     }
 
     // The one function. `mine` is the server's word as the caller read it
@@ -106,10 +124,10 @@ export class PuppetService extends ClientListener {
         const flagged = this.sp.isPuppet(localId);
         const now = Date.now();
         if (!has3D) {
-            // a shader played on an actor ends with the 3D it was attached to
-            // (Papyrus's OnLoad re-play idiom), so the look is read and played
-            // again on the next 3D
-            this.cloakLooks.delete(localId);
+            // a shader or an art played on an actor ends with the 3D it was
+            // attached to (Papyrus's OnLoad re-play idiom), so the record's
+            // looks are played again on the next 3D
+            this.effectLooks.delete(localId);
         }
 
         // the deferred kill (re-armed after a resurrect): a puppet never dies
@@ -159,6 +177,10 @@ export class PuppetService extends ClientListener {
             // game simulates the actor: its actions stream from here (the
             // hosted set the action hook reads)
             host.markHosted(localId, true);
+            // and this engine runs its effects and draws their looks itself
+            // (Ownership): any look of the record this seat played on it while
+            // it was another's, a puppet's or a released body's, is stopped
+            this.stopEffectLooks(localId, ac);
             // ADR-067 decision 6 (D-C2 A): a body this seat hosts is blocked
             // like a CONT. The dead read (a native) runs on the poll's pass and
             // on the first pass two tick counts after a native lift, not on
@@ -210,7 +232,6 @@ export class PuppetService extends ClientListener {
             // the live NPC; playtest 37's exprOverride true on the talker's
             // Orgnar)
             ac.clearExpressionOverride();
-            this.stopCloakLook(localId, ac);
             this.sp.setPuppet(localId, false);
             // ADR-068 D-W3 B: an owner gained here (the flag is off from this
             // call on, PuppetApi.cpp), so the platform's held trigger entries
@@ -237,6 +258,13 @@ export class PuppetService extends ClientListener {
         // every update: the gate's hang at a landing, 2026-10-21, under
         // reading: the demote must not race the loader on a half-made actor)
         host.markHosted(localId, false);
+        // thuum docs/verbs/npc-puppet.md (Ownership): the looks of the effects
+        // its host's engine runs on it, as recorded, alive or a body (the
+        // host's engine dispels what a death dispels, and its next report
+        // says so)
+        if (has3D) {
+            this.showEffectLooks(localId, ac);
+        }
         if (ac.isDead()) {
             // thuum docs/verbs/npc-fate.md (the deaths, as revised by playtest
             // 37's findings 58 and 62): a dead NPC body is never a puppet, on
@@ -334,12 +362,6 @@ export class PuppetService extends ClientListener {
             logTrace(this, `puppet ${localId.toString(16)}`);
         }
         this.stopLocalScene(localId, ac);
-        if (ac.isDead()) {
-            // a corpse carries no ability on the engine either
-            this.stopCloakLook(localId, ac);
-        } else {
-            this.playCloakLook(localId, ac);
-        }
     }
 
     // The poll: every actor in the engine's high-process list (a named
@@ -572,218 +594,159 @@ export class PuppetService extends ClientListener {
         this.blockDeadBody(localId, dying, "its death started here");
     }
 
-    // thuum docs/verbs/npc-stream.md, playtest 37 finding 60 (the visuals
-    // slice): a creature's constant-effect ability is the engine's to apply
-    // to its actor, and the watcher's puppet stood without its look while
-    // the host's atronach burned (HYPOTHESIS from the finding: the engine
-    // applies no ability on an AI-off actor). The look alone is restored, R3:
-    // among the abilities the puppet's race and base list, each constant
-    // effect on self is played on the puppet for the puppet period by its
-    // hit shader (EffectShader.play) and its hit effect art
-    // (TESModPlatform.ApplyArtObject, the engine's own ApplyArtObject), -1
-    // being Papyrus's until stopped; stopped at the promote; read once per
-    // 3D. No spell is added to the puppet: the ability on this engine would
-    // burn this game's own player, and the cloak's damage is the server's
-    // (PartOne::AbilityReaching).
-    // Read from Skyrim.esm (lab/esm.py, 2026-10-28): AbFlameAtronach 0x2f3b5
-    // sits on AtronachFlameRace 0x131f5; none of its five effects has a hit
-    // shader, and its cloak effect AbAtronachCloakFire 0x64459 has no look at
-    // all; the flames are AbFXAtronachFlame 0x60da1's hit effect art.
-    // Train 53, R-V4 (playtest 52's golden fire on Movarth's Lair's vampires):
-    // an ability's effect plays on the host's actor only while its conditions
-    // hold there, and SunAffectsNPCVampires' _SunDamageNPC (SPID-given to every
-    // Vampire-keyword NPC) burns with FireCloakFXShader 0x2acd8 only outdoors,
-    // by day, in combat and under half health, so the watcher's puppet burned
-    // in a cave where the host showed nothing. The host's answer would be the
-    // R2 shape (ADR-073 decision 4: a condition is answered by the owner of the
-    // state it reads), but no record of it reaches this seat: the server's
-    // runningEffects and its MagicEffects message hold only the effects the
-    // server itself applied (MpActor::ApplyEffects, from self casts, landed
-    // hits, poisons and bonds; ReapplyMagicEffects for the old saves), and
-    // HostedActorState carries no effect. So an effect
-    // that carries conditions (abilityLooks, effectConditioned) is skipped,
-    // said once per effect, and only an unconditioned constant effect's look
-    // is played, as before
-    private playCloakLook(localId: number, ac: Actor): void {
-        if (!this.cloakLook || this.cloakLooks.has(localId)) {
+    // thuum docs/verbs/npc-puppet.md (Ownership; ADR-063, ADR-073 decision
+    // 1): the actor's effects are its host's engine's, which runs them and
+    // draws their looks; the host reports the effects whose look its engine
+    // keeps (HostedStateService, the platform's ReadEffectLooks: active,
+    // neither inactive nor dispelled, a hit shader or a hit effect art, a
+    // constant effect or FX Persist), the server records the set on the
+    // actor (R2) and relays it with the hosted state, and serves the record
+    // to a seat that subscribes later. The last set per actor, by server id;
+    // the actor's next pass (the view's update, the poll) plays it
+    private onHostedState(event: ConnectionMessage<HostedActorStateMessage>) {
+        const effects = event.message.effects;
+        if (!Array.isArray(effects)) {
             return;
         }
-        const looks = this.abilityLooks(ac);
-        const playing: CloakLook[] = [];
-        for (const look of looks) {
-            const form = this.sp.Game.getFormEx(look.formId);
-            const id = localId.toString(16);
-            // a copy the engine kept across the 3D's reload would stack a
-            // second one; a stop of a look not playing does nothing
-            if (look.kind === "shader") {
-                const shader = this.sp.EffectShader.from(form);
-                if (!shader) {
-                    continue;
+        const remote = this.controller.lookupListener(RemoteServer);
+        const i = remote.getIdManager().getId(event.message.idx);
+        const form = i >= 0 ? remote.getWorldModel().forms[i] : undefined;
+        const refrId = form ? form.refrId : undefined;
+        if (!refrId) {
+            logTrace(this, `effects: no form here for idx ${event.message.idx}, the record's ${effects.length} effect(s) not kept`);
+            return;
+        }
+        this.recordedEffects.set(refrId, effects.slice());
+    }
+
+    // The record's looks on an actor this seat does not host: for each
+    // recorded effect, its record's hit shader (MagicEffect.getHitShader,
+    // EffectShader.play until stopped) and its hit effect art
+    // (MagicEffect.getHitEffectArt, played through TESModPlatform.
+    // ApplyArtObject, the engine's own TESObjectREFR::ApplyArtObject, until
+    // stopped), each form once; a look whose effects all left the record is
+    // stopped (EffectShader.stop, TESModPlatform.StopArtObject). Exactly the
+    // record: an actor with none recorded shows none, so an effect the host's
+    // engine holds inactive (SunAffectsNPCVampires' burn in a cave, R-V4)
+    // shows nowhere. Played again on a new record or a new 3D only.
+    private showEffectLooks(localId: number, ac: Actor): void {
+        if (!this.effectLooksOn) {
+            return;
+        }
+        const refrId = localIdToRemoteId(localId);
+        const want = (refrId ? this.recordedEffects.get(refrId) : undefined) ?? PuppetService.noEffects;
+        const shown = this.effectLooks.get(localId);
+        if (shown && shown.from === want) {
+            return;
+        }
+        const shaders = new Map<number, EffectShader>();
+        const arts = new Map<number, Art>();
+        for (const effectId of want) {
+            const mgef = this.sp.MagicEffect.from(this.sp.Game.getFormEx(effectId));
+            if (!mgef) {
+                // ADR-073 decision 7: said once per kind, then counted
+                const n = ++this.unresolvedEffects;
+                if (n === 1 || (n & (n - 1)) === 0) {
+                    logLab("verb:npc-puppet", `effects: ${effectId.toString(16)} on ${localId.toString(16)} is no magic effect in this load order (${n} so far): its look falls through`);
                 }
+                continue;
+            }
+            const shader = mgef.getHitShader();
+            if (shader) {
+                shaders.set(shader.getFormID(), shader);
+            }
+            const art = mgef.getHitEffectArt();
+            if (art) {
+                arts.set(art.getFormID(), art);
+            }
+        }
+        const id = localId.toString(16);
+        const before = shown ?? { from: PuppetService.noEffects, shaders: new Set<number>(), arts: new Set<number>() };
+        const now: EffectLooks = { from: want, shaders: new Set<number>(), arts: new Set<number>() };
+        let played = 0;
+        let stopped = 0;
+        try {
+            shaders.forEach((shader, shaderId) => {
+                now.shaders.add(shaderId);
+                if (before.shaders.has(shaderId)) {
+                    return;
+                }
+                // a copy the engine kept across a 3D's reload would stack a
+                // second one; a stop of a look not playing does nothing
                 shader.stop(ac);
                 shader.play(ac, -1);
-                logTrace(this, `cloak look: ${id} plays shader ${look.formId.toString(16)} of ability ${look.abilityId.toString(16)}`);
-            } else {
-                const art = this.sp.Art.from(form);
-                if (!art) {
-                    continue;
+                ++played;
+                logTrace(this, `effects: ${id} plays shader ${shaderId.toString(16)}`);
+            });
+            arts.forEach((art, artId) => {
+                if (before.arts.has(artId)) {
+                    now.arts.add(artId);
+                    return;
                 }
-                // a second play of the art replaces this game's first (the
-                // native's), so the art needs no stop first
-                try {
-                    if (this.sp.callNative("TESModPlatform", "ApplyArtObject", undefined, ac, art, -1) !== true) {
-                        continue;
-                    }
-                } catch (err) {
-                    logError(this, "TESModPlatform.ApplyArtObject failed", err);
-                    continue;
+                // a second play of the art replaces this native's first
+                // (PapyrusTESModPlatform.cpp ApplyArtObject); false without a 3D
+                if (this.sp.callNative("TESModPlatform", "ApplyArtObject", undefined, ac, art, -1) === true) {
+                    now.arts.add(artId);
+                    ++played;
+                    logTrace(this, `effects: ${id} plays art ${artId.toString(16)}`);
+                } else {
+                    logTrace(this, `effects: ${id} took no art ${artId.toString(16)} (no 3D yet)`);
                 }
-                logTrace(this, `cloak look: ${id} plays art ${look.formId.toString(16)} of ability ${look.abilityId.toString(16)}`);
-            }
-            playing.push(look);
+            });
+            before.shaders.forEach((shaderId) => {
+                if (!now.shaders.has(shaderId)) {
+                    this.sp.EffectShader.from(this.sp.Game.getFormEx(shaderId))?.stop(ac);
+                    ++stopped;
+                }
+            });
+            before.arts.forEach((artId) => {
+                if (now.arts.has(artId)) {
+                    return;
+                }
+                const art = this.sp.Art.from(this.sp.Game.getFormEx(artId));
+                if (art) {
+                    this.sp.callNative("TESModPlatform", "StopArtObject", undefined, ac, art);
+                    ++stopped;
+                }
+            });
+        } catch (err) {
+            logError(this, `effects: the looks on ${id} failed`, err);
         }
-        // an empty list is a read too: the lists are not walked again for
-        // this 3D (reconcile runs every update for every viewed actor)
-        this.cloakLooks.set(localId, playing);
+        this.effectLooks.set(localId, now);
+        if (played > 0 || stopped > 0) {
+            logLab("verb:npc-puppet", `effects: ${id} shows the record's ${want.length} effect(s) (${want.length ? want.map((e) => e.toString(16)).join(", ") : "none"}): ${played} look(s) played, ${stopped} stopped, ${now.shaders.size} shader(s) and ${now.arts.size} art(s) on`);
+        }
     }
 
-    private stopCloakLook(localId: number, ac: Actor): void {
-        const playing = this.cloakLooks.get(localId);
-        this.cloakLooks.delete(localId);
-        if (!playing) {
+    // every look this seat played on the actor, stopped: its engine draws
+    // them from the promote on (the live actor's own effects), or it is gone
+    private stopEffectLooks(localId: number, ac: Actor): void {
+        const shown = this.effectLooks.get(localId);
+        this.effectLooks.delete(localId);
+        if (!shown) {
             return;
         }
-        for (const look of playing) {
-            const form = this.sp.Game.getFormEx(look.formId);
-            if (look.kind === "shader") {
-                this.sp.EffectShader.from(form)?.stop(ac);
-                continue;
-            }
-            const art = this.sp.Art.from(form);
-            if (!art) {
-                continue;
-            }
-            // every live copy of the art this game played on the puppet,
-            // where the engine applies no ability (the slice's HYPOTHESIS above)
-            try {
-                this.sp.callNative("TESModPlatform", "StopArtObject", undefined, ac, art);
-            } catch (err) {
-                logError(this, "TESModPlatform.StopArtObject failed", err);
-            }
-        }
-    }
-
-    // The looks of the actor's abilities: every spell the race's list and
-    // the base's hold (a creature's abilities live there; the actor's own
-    // added spells are its host engine's and a distributor's), each of its
-    // effects that is a constant effect delivered to self (an ability's
-    // shape, never a listed combat spell's: MagicSystem::CastingType
-    // kConstantEffect 0 and Delivery kSelf 0, CommonLibSSE-NG
-    // include/RE/M/MagicSystem.h), by its hit shader and its hit effect art,
-    // once per form.
-    private abilityLooks(ac: Actor): CloakLook[] {
-        const out: CloakLook[] = [];
-        const seenForms = new Set<number>();
-        const seenSpells = new Set<number>();
-        const lists: { getSpellCount(): number; getNthSpell(n: number): Spell | null }[] = [];
-        const race = ac.getRace();
-        if (race) {
-            lists.push(race);
-        }
-        const base = ac.getLeveledActorBase();
-        if (base) {
-            lists.push(base);
-        }
-        for (const list of lists) {
-            const count = list.getSpellCount();
-            for (let i = 0; i < count; ++i) {
-                const spell = list.getNthSpell(i);
-                if (!spell) {
-                    continue;
+        try {
+            shown.shaders.forEach((shaderId) => {
+                this.sp.EffectShader.from(this.sp.Game.getFormEx(shaderId))?.stop(ac);
+            });
+            shown.arts.forEach((artId) => {
+                const art = this.sp.Art.from(this.sp.Game.getFormEx(artId));
+                if (art) {
+                    this.sp.callNative("TESModPlatform", "StopArtObject", undefined, ac, art);
                 }
-                const abilityId = spell.getFormID();
-                if (seenSpells.has(abilityId)) {
-                    continue;
-                }
-                seenSpells.add(abilityId);
-                const effects = spell.getNumEffects();
-                for (let j = 0; j < effects; ++j) {
-                    const effect = spell.getNthEffectMagicEffect(j);
-                    if (!effect || effect.getCastingType() !== 0 || effect.getDeliveryType() !== 0) {
-                        continue;
-                    }
-                    if (this.effectConditioned(spell, j, effect)) {
-                        // ADR-073 decision 7 (train 53's review, rules-6):
-                        // each effect's first skip is effectConditioned's
-                        // line; every skip is counted, said at the 2nd,
-                        // 4th, 8th and so on
-                        const n = ++this.conditionedSkips;
-                        if (n > 1 && (n & (n - 1)) === 0) {
-                            logTrace(this, `cloak look: ${n} conditioned ability effect skip(s) so far, the last ${effect.getFormID().toString(16)} of ability ${abilityId.toString(16)} on ${ac.getFormID().toString(16)}`);
-                        }
-                        continue;
-                    }
-                    const shader = effect.getHitShader();
-                    if (shader && !seenForms.has(shader.getFormID())) {
-                        seenForms.add(shader.getFormID());
-                        out.push({ kind: "shader", formId: shader.getFormID(), abilityId });
-                    }
-                    const art = effect.getHitEffectArt();
-                    if (art && !seenForms.has(art.getFormID())) {
-                        seenForms.add(art.getFormID());
-                        out.push({ kind: "art", formId: art.getFormID(), abilityId });
-                    }
-                }
-            }
+            });
+        } catch (err) {
+            logError(this, `effects: stopping the looks on ${localId.toString(16)} failed`, err);
         }
-        return out;
-    }
-
-    // R-V4: whether the ability's effect at the index carries conditions,
-    // either on the spell's effect item or on the effect's own record (the
-    // engine checks both), read by the platform's effectConditioned from
-    // CommonLib's two condition lists (m4-train-53-platform's PuppetApi;
-    // train 53's review, rules-5: the PO3_SKSEFunctions.GetConditionList
-    // read it replaces was an undeclared dependency, absent on a 1.7.104
-    // seat by design). The records never change, so each answer is kept by
-    // ability and index. A platform without the export (`just client-hot`
-    // can put this client on an older one), or an answer that is no
-    // boolean, plays every effect's look as canon did, said once (the
-    // review's correctness-5): falling the other way would drop every
-    // unconditioned look (Skyrim.esm's 13, among them GhostAbility 0x5030b on
-    // 43 bases and the atronachs' flames) to hide R-V4's few, so R-V4's fault
-    // stays on that seat, and loud
-    private effectConditioned(spell: Spell, index: number, effect: MagicEffect): boolean {
-        const abilityId = spell.getFormID();
-        const key = `${abilityId}:${index}`;
-        const known = this.conditionedEffects.get(key);
-        if (known !== undefined) {
-            return known;
+        if (shown.shaders.size > 0 || shown.arts.size > 0) {
+            logLab("verb:npc-puppet", `effects: ${localId.toString(16)} is this seat's to run: ${shown.shaders.size} shader(s) and ${shown.arts.size} art(s) of the record stopped, its engine draws its own`);
         }
-        const effectId = effect.getFormID();
-        const answer = typeof this.sp.effectConditioned === "function" ? this.sp.effectConditioned(abilityId, index) : undefined;
-        let conditioned: boolean;
-        if (typeof answer !== "boolean") {
-            conditioned = false;
-            if (!this.conditionReaderSaid) {
-                this.conditionReaderSaid = true;
-                const why = answer === undefined ? "effectConditioned unavailable on this platform" : "effectConditioned found no effect";
-                logLab("verb:npc-puppet", `cloak look: ${why} at ${index} of ability ${abilityId.toString(16)} (effect ${effectId.toString(16)}): conditions unread, every ability effect's look plays as before (R-V4's fault stays on this seat)`);
-            }
-        } else {
-            conditioned = answer;
-            if (conditioned && !this.conditionedSaid.has(effectId)) {
-                this.conditionedSaid.add(effectId);
-                logTrace(this, `cloak look: effect ${effectId.toString(16)} of ability ${abilityId.toString(16)} skipped as conditioned: the host's engine answers its conditions, and no record of its answer reaches this seat`);
-            }
-        }
-        this.conditionedEffects.set(key, conditioned);
-        return conditioned;
     }
 
     private forget(localId: number) {
         this.puppets.delete(localId);
-        this.cloakLooks.delete(localId);
+        this.effectLooks.delete(localId);
         this.attached.delete(localId);
         this.deferredArmed.delete(localId);
         this.unloadedSince.delete(localId);
@@ -845,16 +808,13 @@ export class PuppetService extends ClientListener {
     // be called in this context" 27 times).
 
     private readonly puppets = new Set<number>();
-    // the looks playing on each puppet, by local id (an empty list once the
-    // lists were read for the current 3D)
-    private readonly cloakLooks = new Map<number, CloakLook[]>();
-    // R-V4: each ability effect's verdict by "<ability>:<index>", the effects
-    // whose skip was said, and whether a missing reader was said
-    private readonly conditionedEffects = new Map<string, boolean>();
-    private readonly conditionedSaid = new Set<number>();
-    private conditionReaderSaid = false;
-    // and every skip counted (rules-6, decision 7)
-    private conditionedSkips = 0;
+    // Ownership: the host's recorded effect set per actor, by server id, and
+    // the looks playing on each actor this seat does not host, by local id
+    private readonly recordedEffects = new Map<number, number[]>();
+    private readonly effectLooks = new Map<number, EffectLooks>();
+    private static readonly noEffects: number[] = [];
+    // ADR-073 decision 7: recorded effects that are no MGEF here, counted
+    private unresolvedEffects = 0;
     private readonly attached = new Set<number>();
     private readonly deferredArmed = new Set<number>();
     // the moment a dead puppet was first seen dead here (the flag's settle)
@@ -878,5 +838,5 @@ export class PuppetService extends ClientListener {
     private static readonly releaseGraceMs = 4000;
     private readonly enabled: boolean;
     private readonly engineDeaths: boolean;
-    private readonly cloakLook: boolean;
+    private readonly effectLooksOn: boolean;
 }

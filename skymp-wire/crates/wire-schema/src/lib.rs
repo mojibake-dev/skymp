@@ -223,7 +223,17 @@ use bounded::{String, Vec};
 /// (D-53-3's merge order), one number per shape (D-PH1 A's reason: postcard
 /// writes one presence byte per Option, so a 52 peer would misread every
 /// CreateActor and SpSnippet of a 53 server while the handshake passed).
-pub const SCHEMA_VERSION: u16 = 53;
+/// 54: HostedActorState's optional `effects` (thuum #56, docs/verbs/
+/// npc-puppet.md, Ownership; ADR-073 decision 1, ADR-063): the running
+/// effects whose look the host's engine draws on an actor it simulates,
+/// recorded by the server and relayed, so a watcher plays exactly those on
+/// its puppet in place of the ability scan and its conditioned skip (the
+/// flame atronach's art, x-reanimate-look F6; the vampires' sunlight fire,
+/// R-V4). Built on m4-host-running-effects and merged after 53's tree, so it
+/// takes the next number, one number per shape (D-PH1 A's reason: postcard
+/// writes one presence byte per Option, so a 53 peer would misread every
+/// HostedActorState of a 54 server while the handshake passed).
+pub const SCHEMA_VERSION: u16 = 54;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -867,7 +877,12 @@ const TABLE: [Row; 91] = [
     row("ActorSightings", 50, 4 * KIB, C2S),
     row("ActorFate", 51, 32 * KIB, S2C),
     row("ActorDeath", 52, KIB, C2S),
-    row("HostedActorState", 53, 64, Both),
+    // the tag, the idx, three floats, five ids and three bytes (36 at their
+    // widest), and the host's running effects: a presence byte, a one-byte
+    // length and 32 ids of five bytes (198 at the caps, pinned by
+    // a_hosted_state_with_its_effects_at_the_cap_fits_its_byte_cap; thuum
+    // docs/verbs/npc-puppet.md, Ownership)
+    row("HostedActorState", 53, 256, Both),
     row("ActorSpeech", 54, 32, Both),
     row("DamageCause", 55, 32, S2C),
     // an idx, the flag and since SCHEMA_VERSION 47 a purpose, three form ids
@@ -1415,6 +1430,34 @@ mod tests {
         assert!(over.is_err());
     }
 
+    // thuum docs/verbs/npc-puppet.md, Ownership: a host's state with its
+    // running effects at the cap fits the row's 256 bytes; an absent set
+    // costs its presence byte alone
+    #[test]
+    fn a_hosted_state_with_its_effects_at_the_cap_fits_its_byte_cap() {
+        let widest = skymp::HostedActorState {
+            idx: u32::MAX,
+            health: f32::MAX,
+            magicka: f32::MAX,
+            stamina: f32::MAX,
+            combat_target: u32::MAX,
+            package: u32::MAX,
+            gaze_target: u32::MAX,
+            gaze_slot: u8::MAX,
+            emotion_type: u8::MAX,
+            emotion_value: u8::MAX,
+            effects: (0..cap::MAGIC_EFFECTS).map(|_| 0xfeff_ffff).collect::<alloc::vec::Vec<_>>().try_into().ok(),
+            ..Default::default()
+        };
+        assert_eq!(widest.effects.as_ref().map(|e| e.len()), Some(cap::MAGIC_EFFECTS));
+        let m = Message::HostedActorState(widest.clone());
+        let bytes = postcard::to_allocvec(&m).unwrap_or_default();
+        assert_eq!(bytes.len(), 198);
+        assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
+        let plain = Message::HostedActorState(skymp::HostedActorState { effects: None, ..widest });
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(37));
+    }
+
     #[test]
     fn wire_id_matches_postcard_variant_index() {
         let samples = vec![
@@ -1477,6 +1520,12 @@ mod tests {
                 stamina: f32::MAX,
                 combat_target: u32::MAX,
                 package: u32::MAX,
+                gaze_target: u32::MAX,
+                gaze_slot: u8::MAX,
+                emotion_type: u8::MAX,
+                emotion_value: u8::MAX,
+                // the host's running effects at their cap (docs/verbs/npc-puppet.md)
+                effects: (0..cap::MAGIC_EFFECTS).map(|_| u32::MAX).collect::<alloc::vec::Vec<_>>().try_into().ok(),
                 ..Default::default()
             }),
             Message::ActorSpeech(skymp::ActorSpeech { idx: u32::MAX, topic: u32::MAX, info: u32::MAX, ..Default::default() }),

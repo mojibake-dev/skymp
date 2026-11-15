@@ -1925,10 +1925,13 @@ wire_struct! {
     /// named. Absolute: a lost one is replaced by the next, the newest wins.
     /// No epoch: the server's host table already refuses a sender that is
     /// not the actor's host, and a client cannot name a persistent
-    /// reference's cell (the verb doc's Q1, revised at the build). Reason
-    /// codes: `E_VAL_NONFINITE` (a percentage that is not a number),
-    /// `E_VAL_RANGE` (a percentage outside 0 to 1, an idx of u32::MAX),
-    /// `E_VAL_RATE` (the budget).
+    /// reference's cell (the verb doc's Q1, revised at the build). A report
+    /// that carries `effects` goes reliable, and the server relays it
+    /// reliable (thuum docs/verbs/npc-puppet.md, Ownership). Reason codes:
+    /// `E_VAL_NONFINITE` (a percentage that is not a number), `E_VAL_RANGE`
+    /// (a percentage outside 0 to 1, an idx of u32::MAX, an effect id of 0
+    /// or of 0xff000000 and up, effect ids out of ascending order or
+    /// repeated), `E_VAL_RATE` (the budget).
     pub struct HostedActorState {
         /// `"t": 53`.
         #[serde(default)]
@@ -1960,6 +1963,23 @@ wire_struct! {
         pub emotion_type: u8,
         /// The emotion's strength, 0 to 100.
         pub emotion_value: u8,
+        /// Since SCHEMA_VERSION 54 (thuum #56). The running effects whose
+        /// look the host's engine draws on the actor and keeps (thuum
+        /// ADR-073 decision 1, ADR-063; docs/verbs/
+        /// npc-puppet.md, Ownership): the base effect (MGEF) of each active
+        /// effect in the actor's MagicTarget list that is neither inactive
+        /// (its conditions false) nor dispelled, has a hit shader or a hit
+        /// effect art, and is a constant effect or flagged FX Persist; each
+        /// a form in the load order both ends share, ascending, once, at
+        /// most cap::MAGIC_EFFECTS. Present on the first report after a
+        /// grant that has the engine's read and whenever the set changed
+        /// since the sender's last report, absent otherwise (the record
+        /// keeps the last set). The server
+        /// records it on the actor (R2, unvalidated beyond this shape) and
+        /// relays it to the actor's other listeners and to a later
+        /// subscriber, whose seats play each effect's hit shader and hit
+        /// effect art on their puppet of the actor.
+        pub effects: Option<Vec<u32, { cap::MAGIC_EFFECTS }>>,
     }
 }
 

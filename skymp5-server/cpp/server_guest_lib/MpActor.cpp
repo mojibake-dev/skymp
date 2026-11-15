@@ -49,6 +49,7 @@
 #include <utility>
 
 #include "ChangeValuesMessage.h"
+#include "HostedActorStateMessage.h"
 #include "MagicEffectsMessage.h"
 #include "TeleportMessage.h"
 #include "UpdateEquipmentMessage.h"
@@ -109,6 +110,8 @@ struct MpActor::Impl
   uint32_t hostedGazeSlot = 0;
   uint32_t hostedEmotionType = 0;
   uint32_t hostedEmotionValue = 0;
+  // npc-puppet.md, Ownership: the host's running effects with a look
+  std::vector<uint32_t> hostedEffects;
   bool isBlockActive = false;
   std::chrono::steady_clock::time_point lastAttributesUpdateTimePoint;
   std::vector<std::pair<uint32_t, std::chrono::steady_clock::time_point>>
@@ -451,6 +454,55 @@ uint32_t MpActor::GetHostedEmotionType() const
 uint32_t MpActor::GetHostedEmotionValue() const
 {
   return pImpl->hostedEmotionValue;
+}
+
+bool MpActor::SetHostedEffects(const std::vector<uint32_t>& effects)
+{
+  if (pImpl->hostedEffects == effects) {
+    return false;
+  }
+  pImpl->hostedEffects = effects;
+  return true;
+}
+
+const std::vector<uint32_t>& MpActor::GetHostedEffects() const
+{
+  return pImpl->hostedEffects;
+}
+
+void MpActor::SendHostedEffectsTo(MpActor& listener)
+{
+  if (pImpl->hostedEffects.empty() || &listener == this ||
+      listener.GetUserId() == Networking::InvalidUserId ||
+      HostedBy() == &listener) {
+    return;
+  }
+  // the record as one state: the judged percentages, the recorded target,
+  // package, gaze and face, and the effects (a puppet's seat reads the gaze,
+  // the face and the effects; the values stay the ChangeValues'). The
+  // percentages are clamped into the wire's 0 to 1, which the edge checks on
+  // the way out too (wire-bridge encode, validate_server)
+  const auto pct = [](float v) {
+    return std::isfinite(v) ? std::clamp(v, 0.f, 1.f) : 0.f;
+  };
+  const ActorValues& values = GetActorValues();
+  HostedActorStateMessage msg;
+  msg.idx = GetIdx();
+  msg.health = pct(values.healthPercentage);
+  msg.magicka = pct(values.magickaPercentage);
+  msg.stamina = pct(values.staminaPercentage);
+  msg.combatTarget = pImpl->hostedCombatTarget;
+  msg.package = pImpl->hostedPackage;
+  msg.gazeTarget = pImpl->hostedGazeTarget;
+  msg.gazeSlot = pImpl->hostedGazeSlot;
+  msg.emotionType = pImpl->hostedEmotionType;
+  msg.emotionValue = pImpl->hostedEmotionValue;
+  msg.effects = pImpl->hostedEffects;
+  listener.SendToUser(msg, true);
+  spdlog::info(
+    "[verb:npc-puppet] effects {:x}: the record's {} served to {:x} "
+    "at its subscription",
+    GetFormId(), pImpl->hostedEffects.size(), listener.GetFormId());
 }
 
 uint32_t MpActor::GetHostedCombatTarget() const

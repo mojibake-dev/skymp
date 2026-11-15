@@ -312,12 +312,6 @@ declare module "skyrimPlatform" {
     // nothing stored, for a quest 0, a stage outside -2 to 65535 or a ttl
     // outside 1 to 60000; an older platform has none, and its use is guarded
     function setRelayedScope(questId: number, stage: number, ttlMs: number): boolean;
-    // train 53, R-V4 (m4-train-53-platform's PuppetApi, Definitions.txt):
-    // whether the magic item's effect at the index carries conditions, on its
-    // effect item or its base effect; null for no magic item, an index past
-    // its effects or an empty slot; an older platform has none, and its use
-    // is guarded
-    function effectConditioned(spellFormId: number, index: number): boolean | null;
     function getActingPlayer(questId: number, stage: number): number;
     // ADR-068 rung 5, D-Q4 C (the platform's QuestCause.h): a cause this
     // seat's own act names for the quest's next start (-1), stop (-2) or
@@ -551,6 +545,11 @@ declare module "skyrimPlatform" {
     // slice 5: the gaze and the face read on the game thread per poll ([target, slot, emotionType, emotionValue, exprOverride, exprIndex, exprValue])
     function pollHostedGaze(actorFormIds: number[]): void;
     function hostedGaze(actorFormId: number): number[] | null;
+    // thuum docs/verbs/npc-puppet.md (Ownership): the same poll's running
+    // effects whose look the engine keeps on the actor, base effect form ids
+    // ascending, each once; null when the last poll did not read the actor;
+    // an older platform has none, and its use is guarded
+    function hostedEffects(actorFormId: number): number[] | null;
     function pollNodeRotation(refrId: number, nodeNames: string[]): void;
     function nodeRotation(refrId: number): Array<{ node: string; has: boolean; world: number[]; local: number[] }> | null;
     // thuum D-53-8 B (train 53's V-live): the head parts the player's own

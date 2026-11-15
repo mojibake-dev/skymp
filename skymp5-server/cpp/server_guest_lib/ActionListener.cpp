@@ -1172,8 +1172,11 @@ void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
 // the transition). The changed values are written as judged (no kill, no
 // respawn check) and go as ChangeValues to every listener with a user but
 // the host (Rule A: the host's engine has them). The target and the package
-// are recorded in memory. One info line a minute per actor with the counts,
-// the first state at once (the lab's read).
+// are recorded in memory. The running effects (docs/verbs/npc-puppet.md,
+// Ownership) are recorded whatever the values' verdict, one info line per
+// change, and a report carrying them is relayed reliable. One info line a
+// minute per actor with the counts, the first state at once (the lab's
+// read).
 void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
                                         const HostedActorStateMessage& msg)
 {
@@ -1378,6 +1381,41 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
   const skymp::rules::HostedStateVerdict verdict =
     skymp::rules::hosted_state_judge(facts);
 
+  // thuum docs/verbs/npc-puppet.md, Ownership (ADR-063, ADR-073 decision 1):
+  // the effects the host's engine runs on the actor with a look it keeps are
+  // that engine's, so the record takes them whatever the values' verdict
+  // (R2: the host's word, the wire's shape checked; a dead record's body
+  // keeps what its host's engine keeps on it). A report carries them only on
+  // a change or its first read after a grant, so its relay goes reliable,
+  // and a later subscriber hears the record (MpActor::SendHostedEffectsTo)
+  const bool carriesEffects = msg.effects.has_value();
+  if (carriesEffects && actor->SetHostedEffects(*msg.effects)) {
+    std::vector<std::string> ids;
+    ids.reserve(msg.effects->size());
+    for (uint32_t id : *msg.effects) {
+      ids.push_back(fmt::format("{:x}", id));
+    }
+    spdlog::info("[verb:npc-puppet] effects {:x} by {:x}: {} running ({}), "
+                 "recorded and relayed reliable to its other listeners",
+                 actor->GetFormId(), myActor->GetFormId(), ids.size(),
+                 ids.empty() ? std::string("none")
+                             : fmt::format("{}", fmt::join(ids, ", ")));
+  }
+  // the message itself to every listener with a user but the host, whose
+  // puppets aim, make the face and play the effects' looks; unreliable but
+  // for a report that carries the effects
+  const auto relay = [&]() {
+    HostedActorStateMessage out = msg;
+    out.idx = actor->GetIdx();
+    for (auto listener : actor->GetActorListeners()) {
+      if (listener == myActor ||
+          listener->GetUserId() == Networking::InvalidUserId) {
+        continue;
+      }
+      listener->SendToUser(out, carriesEffects);
+    }
+  };
+
   static std::unordered_map<
     uint32_t,
     std::tuple<std::chrono::steady_clock::time_point, uint32_t, uint32_t>>
@@ -1385,6 +1423,12 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
   auto& [since, taken, dropped] = lines[actor->GetFormId()];
   if (verdict.dead) {
     ++dropped;
+    // the values are dropped; a change of the effects still reaches the
+    // other games (their gaze and face read a puppet's, and a body here is
+    // released from the puppet state after its ragdoll)
+    if (carriesEffects) {
+      relay();
+    }
   } else {
     ++taken;
     actor->SetJudgedPercentages(
@@ -1396,22 +1440,12 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
                               : std::nullopt);
     actor->SetHostedState(msg.combatTarget, msg.package);
     // slice 5 (the gaze and the face): recorded, and the message itself
-    // relayed unreliable to every listener with a user but the host, whose
+    // relayed (above) to every listener with a user but the host, whose
     // puppets aim and make the face (the percentages stay the judged
     // ChangeValues below; a puppet seat ignores the message's values)
     actor->SetHostedGaze(msg.gazeTarget, msg.gazeSlot, msg.emotionType,
                          msg.emotionValue);
-    {
-      HostedActorStateMessage relay = msg;
-      relay.idx = actor->GetIdx();
-      for (auto listener : actor->GetActorListeners()) {
-        if (listener == myActor ||
-            listener->GetUserId() == Networking::InvalidUserId) {
-          continue;
-        }
-        listener->SendToUser(relay, false);
-      }
-    }
+    relay();
     if (verdict.health.changed || verdict.magicka.changed ||
         verdict.stamina.changed) {
       ChangeValuesMessage out;

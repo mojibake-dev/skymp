@@ -769,6 +769,16 @@ public:
   uint32_t GetHostedGazeSlot() const;
   uint32_t GetHostedEmotionType() const;
   uint32_t GetHostedEmotionValue() const;
+  // thuum docs/verbs/npc-puppet.md, Ownership (ADR-063, ADR-073 decision 1):
+  // the running effects whose look the host's engine draws on the actor, as
+  // its last report carrying them named them (R2: the host's word, the
+  // wire's shape checked; in memory, the next host's first report replaces
+  // it); true when the set changed. A later subscriber hears it as a
+  // HostedActorState after the actor's creation (MpObjectReference::
+  // Subscribe), never the host itself, and nothing when the set is empty
+  bool SetHostedEffects(const std::vector<uint32_t>& effects);
+  const std::vector<uint32_t>& GetHostedEffects() const;
+  void SendHostedEffectsTo(MpActor& listener);
 
   // thuum docs/verbs/change-form.md (ADR-065 system 1): the latest change
   // form the actor's owner reported, kept on its change form (persisted,

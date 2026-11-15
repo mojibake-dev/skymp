@@ -332,16 +332,23 @@ constexpr std::pair<const char*, const char*> kGlobalSetRow{ "GlobalVariable",
 // it), this seat not the stage's cause seat, counted and said; the cause
 // seat runs the fragment natively, starts the scene there and claims its
 // actors (the client's SceneClaimService), so the scene plays there whoever
-// hosts the cell. Every other call runs and is told to the client as this
+// hosts the cell, while that claim takes: a claim refused (another seat's
+// claim of any purpose holds an actor, the host's D-53-4 lead among them,
+// E_CLAIM_HELD; or the server has no load of the actor's cell by this seat,
+// E_CLAIM_UNLOADED) or never sent (an actor outside high process there)
+// leaves the cause seat's copy to the puppet rule's stop and its end
+// fragment's stage held, and no seat plays the scene (thuum quest-stage.md
+// Known limits). Every other call runs and is told to the client as this
 // seat's own start (sceneStart): one outside a scope, or under a trigger
 // entry's root (kTrigger), whose stages this seat's engine set for the
 // presser (defaultStartSceneTrigScript; MS13's 38386 stage 10), so this seat
 // is their cause seat. A stopgap under ADR-073 decision 5 (c): step 4's
 // generated rows, sending a non-owner's call to the scene's owner (decision
-// 11), replace it. No table row holds them (NativeRows.inc,
-// natives_table.rs and NATIVES.md are unchanged by them), so InstallHooks
-// binds the game module's IFunction of each by class and name without case,
-// written before the dispatch hook attaches and never after
+// 11), replace it. No table row holds them (no row in NativeRows.inc or
+// natives_table.rs; thuum NATIVES.md's Scene.Start and Scene.ForceStart rows
+// carry them as hand-kept notes), so InstallHooks binds the game module's
+// IFunction of each by class and name without case, written before the
+// dispatch hook attaches and never after
 constexpr std::pair<const char*, const char*> kSceneStartNatives[] = {
   { "Scene", "Start" },
   { "Scene", "ForceStart" }
@@ -2564,7 +2571,8 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // returns with the claim (train 53's review, correctness-1, rule 3):
   // before it, a scene a guest's own stage started in a cell another seat
   // hosts played on no seat; now the guest's start claims the host's actors
-  // and the puppet rule leaves its copy playing while the claim is pending.
+  // and the puppet rule leaves its copy playing while the claim is pending;
+  // a refused or unsent claim still plays it on no seat (kSceneStartNatives).
   // HYPOTHESIS H-VS1: a relayed fragment's Scene.Start runs on the stack its
   // first native joined (Fragment_7's Game.GetPlayer, before the start), so
   // the guest logs the skip for scene 5dba7 and no PuppetService stop of it

@@ -1,4 +1,4 @@
-import { Actor } from "skyrimPlatform";
+import { Actor, ContainerChangedEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logLab, logTrace } from "../../logging";
 import { NiPoint3 } from "../../sync/movement";
@@ -224,13 +224,51 @@ export class ChangeFormService extends ClientListener {
             }
         });
         this.controller.on("update", () => this.onUpdate());
+        // thuum #62 (x-gate-everyone 20261115-115958): a body's record is its
+        // owner's engine's save (ADR-065), so a change to its contents on that
+        // engine (a take through its container menu, the server's inventory
+        // applied after another seat's take, the fate's reconcile) is a new
+        // record. Only the at-rest moment recorded a body before, so after a
+        // take its record kept the armor the take removed: every later lay put
+        // it back on, and the fate's pass stripped it again from the freshly
+        // laid corpse on every seat, the last act before each of the run's
+        // crashes. The event's context allows no game call: the body is noted
+        // here and recorded on the next update, sent only when it differs
+        // from the acked record and only with an epoch this seat holds
+        this.controller.on("containerChanged", (e) => this.onContainerChanged(e));
+    }
+
+    private onContainerChanged(e: ContainerChangedEvent): void {
+        for (const ref of [e.oldContainer, e.newContainer]) {
+            const id = ref ? ref.getFormID() : 0;
+            if (id !== 0 && id < 0xff000000 && id !== 0x14) {
+                this.contentsChanged.add(id);
+            }
+        }
+    }
+
+    // the bodies whose contents changed on this engine since the last update,
+    // recorded again there when they are dead game-file actors
+    private recordChangedBodies(): void {
+        if (this.contentsChanged.size === 0) {
+            return;
+        }
+        const ids = Array.from(this.contentsChanged);
+        this.contentsChanged.clear();
+        for (const id of ids) {
+            const body = Actor.from(this.sp.Game.getFormEx(id));
+            if (!body || !body.isDead() || !body.is3DLoaded()) {
+                continue;
+            }
+            this.onBodyAtRest(id, body, [body.getPositionX(), body.getPositionY(), body.getPositionZ()], "its contents changed");
+        }
     }
 
     // the owner's trigger (sendInputsService, the at-rest moment of a dead
     // hosted actor): the body's own change form, serialized by the engine's
     // recipe and sent when it differs from the acked record. Runs in the
     // update's context (the sender's tick), where the native is allowed
-    onBodyAtRest(remoteId: number, body: Actor, pos: NiPoint3): void {
+    onBodyAtRest(remoteId: number, body: Actor, pos: NiPoint3, why: string = "at rest"): void {
         const hex = remoteId.toString(16);
         if (remoteId >= 0xff000000) {
             logTrace(this, `changeform ${hex}: a server-made copy's record is not this slice's (game-file actors alone)`);
@@ -274,7 +312,7 @@ export class ChangeFormService extends ClientListener {
             return;
         }
         const now = Date.now();
-        const at = `at rest (${pos[0].toFixed(0)}, ${pos[1].toFixed(0)}, ${pos[2].toFixed(0)})`;
+        const at = `${why} (${pos[0].toFixed(0)}, ${pos[1].toFixed(0)}, ${pos[2].toFixed(0)})`;
         const message: ChangeFormMessage = {
             t: MsgType.ChangeForm,
             epoch: 0,
@@ -633,6 +671,7 @@ export class ChangeFormService extends ClientListener {
     // messages
     private onUpdate(): void {
         const now = Date.now();
+        this.recordChangedBodies();
         if (this.records.size > 0) {
             this.records.forEach((rec) => {
                 if (rec.queuedAt > 0) {
@@ -669,6 +708,9 @@ export class ChangeFormService extends ClientListener {
 
     // the last acked hash per form (the owner's compare baseline)
     private readonly acked = new Map<number, number>();
+    // thuum #62: the containers whose contents changed on this engine since
+    // the last update (onContainerChanged)
+    private readonly contentsChanged = new Set<number>();
     // the owner's messages waiting for an epoch or an ack, by form id
     private readonly pending = new Map<number, PendingSend>();
     // the served records by form id (a game-file actor's id is the same on

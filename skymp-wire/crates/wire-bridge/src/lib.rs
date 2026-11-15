@@ -42,13 +42,16 @@ mod ffi {
         kind: EventKind,
         /// The transport's id for the client.
         client: u64,
-        /// SkyMP MsgType for messages, else 0.
+        /// SkyMP MsgType for messages, and for a refused message whose bytes
+        /// decoded (a direction or validation refusal, so the core counts
+        /// refusals per code and type, thuum ADR-073 decision 7); else 0.
         msg_type: u8,
         /// SkyMP JSON for messages, else empty.
         json: String,
         /// Reason code for rejections, else 0.
         reason: u16,
-        /// For logs: why it was rejected, or why the client left.
+        /// For logs: why it was rejected (with the refused message's name
+        /// when it decoded, "E_VAL_RATE (SpellCast)"), or why the client left.
         detail: String,
     }
 
@@ -224,19 +227,27 @@ impl Server {
                         ..event(ffi::EventKind::Message, client)
                     },
                     // an M0 message has no JSON form: the core cannot take it
-                    Err(e) => self.rejection(client, json_code(&e), e.to_string()),
+                    Err(e) => {
+                        let refused = wire_transport::RefusedMsg::of(&msg);
+                        self.rejection(client, json_code(&e), refused.msg_type, format!("{e} ({})", refused.name))
+                    }
                 },
-                Inbound::Rejected { client, reject } => {
-                    self.rejection(client, wire_transport::reason_code(&reject), reject.to_string())
+                Inbound::Rejected { client, reject, msg } => {
+                    let code = wire_transport::reason_code(&reject);
+                    match msg {
+                        Some(m) => self.rejection(client, code, m.msg_type, format!("{reject} ({})", m.name)),
+                        None => self.rejection(client, code, 0, reject.to_string()),
+                    }
                 }
             });
         }
     }
 
-    fn rejection(&mut self, client: u64, reason: u16, detail: String) -> WireEvent {
+    fn rejection(&mut self, client: u64, reason: u16, msg_type: u8, detail: String) -> WireEvent {
         let n = self.rejected.entry(reason).or_insert(0);
         *n = n.saturating_add(1);
         WireEvent {
+            msg_type,
             reason,
             detail,
             ..event(ffi::EventKind::Rejected, client)
@@ -418,6 +429,28 @@ mod tests {
         assert_eq!(server.send(id + 1, r#"{"t":25,"idx":1}"#, true), 304, "no such client");
         let stats = server.stats_json();
         assert!(stats.contains("\"sent\":2") && stats.contains("\"302\":1"), "{stats}");
+    }
+
+    #[test]
+    fn a_refusal_names_the_message_it_refused() {
+        // thuum ADR-073 decision 7: the core counts and names refusals per
+        // (code, type); x-drain-watch 20261115-032536's one E_VAL_RATE line
+        // named no type
+        let mut server = bind("");
+        let mut client =
+            Client::connect(server.local_addr(), token::ConnectToken(Vec::new())).expect("connect");
+        let (mut out, mut inbox) = (Vec::new(), Vec::new());
+        assert!(pump(&mut server, &mut client, &mut out, &mut inbox, |o, _| o
+            .iter()
+            .any(|e| e.kind == EventKind::Connected)));
+        out.clear();
+        // a cast naming no spell (E_VAL_RANGE, 207)
+        client.send(&Message::SpellCast(wire_schema::skymp::SpellCast::default())).expect("send");
+        assert!(pump(&mut server, &mut client, &mut out, &mut inbox, |o, _| o
+            .iter()
+            .any(|e| e.kind == EventKind::Rejected)));
+        let r = out.iter().find(|e| e.kind == EventKind::Rejected).expect("rejected");
+        assert_eq!((r.reason, r.msg_type, r.detail.as_str()), (207, 23, "E_VAL_RANGE (SpellCast)"));
     }
 
     #[test]

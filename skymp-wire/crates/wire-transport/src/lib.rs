@@ -82,7 +82,32 @@ pub enum Inbound {
         client: u64,
         /// Why.
         reject: RejectKind,
+        /// The refused message's kind when its bytes decoded (a direction or
+        /// validation refusal); none for bytes refused before or at decode.
+        /// The server counts and names refusals per (code, message type)
+        /// with it (thuum ADR-073 decision 7: x-drain-watch 20261115-032536's
+        /// one E_VAL_RATE line named no type, and every later one was silent).
+        msg: Option<RefusedMsg>,
     },
+}
+
+/// What a refused message was, for the server's count and its line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefusedMsg {
+    /// The variant's stable name ([`Message::name`]).
+    pub name: &'static str,
+    /// SkyMP's MsgType, 0 for the M0 family ([`Message::msg_type`]).
+    pub msg_type: u8,
+}
+
+impl RefusedMsg {
+    /// The kind of `msg`.
+    pub fn of(msg: &Message) -> Self {
+        Self {
+            name: msg.name(),
+            msg_type: msg.msg_type().unwrap_or(0),
+        }
+    }
 }
 
 /// Why an inbound packet was dropped.
@@ -475,6 +500,7 @@ impl Server {
                             out.push(Inbound::Rejected {
                                 client: client_id,
                                 reject: RejectKind::Password,
+                                msg: None,
                             });
                             continue;
                         }
@@ -581,21 +607,25 @@ fn ingest(
         return Inbound::Rejected {
             client,
             reject: RejectKind::Limit,
+            msg: None,
         };
     }
     match wire_codec::decode(bytes) {
         Err(e) => Inbound::Rejected {
             client,
             reject: RejectKind::Decode(e),
+            msg: None,
         },
         Ok(msg) if !client_may_send(&msg) => Inbound::Rejected {
             client,
             reject: RejectKind::Direction,
+            msg: Some(RefusedMsg::of(&msg)),
         },
         Ok(msg) => match wire_validate::validate(&msg, guard, now_ms) {
             Err(r) => Inbound::Rejected {
                 client,
                 reject: RejectKind::Validate(r),
+                msg: Some(RefusedMsg::of(&msg)),
             },
             Ok(()) => Inbound::Message { client, msg },
         },
@@ -851,6 +881,13 @@ mod tests {
     }
 
     #[test]
+    fn refused_msg_names_the_variant_and_its_msg_type() {
+        let cast = Message::SpellCast(wire_schema::skymp::SpellCast::default());
+        assert_eq!(RefusedMsg::of(&cast), RefusedMsg { name: "SpellCast", msg_type: 23 });
+        assert_eq!(RefusedMsg::of(&Message::Movement(movement(1))), RefusedMsg { name: "Movement", msg_type: 0 });
+    }
+
+    #[test]
     fn reason_codes_are_distinct() {
         use wire_codec::WireError as W;
         let kinds = [
@@ -997,6 +1034,14 @@ mod tests {
             rejects.first(),
             Some(Inbound::Rejected {
                 reject: RejectKind::Validate(Reject::SeqReplay),
+                ..
+            })
+        ));
+        // the refusal names what it refused (thuum ADR-073 decision 7)
+        assert!(matches!(
+            rejects.first(),
+            Some(Inbound::Rejected {
+                msg: Some(RefusedMsg { name: "Movement", msg_type: 0 }),
                 ..
             })
         ));

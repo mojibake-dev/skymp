@@ -10,6 +10,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <fmt/format.h>
@@ -180,12 +181,22 @@ private:
         return;
       }
       case skymp::wire::EventKind::Rejected: {
-        auto& n = rejected[ev.reason];
+        // thuum ADR-073 decision 7: counted per (code, message type), the
+        // detail naming the type ("E_VAL_RATE (SpellCast)"), the first of
+        // each in full and then at its 2nd, 4th, 8th and so on. Keyed by
+        // the code alone and logged at the first and every thousandth, the
+        // one E_VAL_RATE line of x-drain-watch 20261115-032536 named no
+        // type and every later one was silent
+        auto& n = rejected[{ ev.reason, ev.msg_type }];
         ++n;
-        // the first of each kind, then every thousandth
-        if (n == 1 || n % 1000 == 0) {
-          spdlog::warn("WireServer: rejected from client {:x}: {} (x{})",
-                       ev.client, std::string(ev.detail), n);
+        if ((n & (n - 1)) == 0) {
+          const Networking::UserId userId = Find(ev.client);
+          spdlog::warn("WireServer: rejected from client {:x}{}: {} (x{})",
+                       ev.client,
+                       userId == Networking::InvalidUserId
+                         ? std::string()
+                         : fmt::format(" (user {})", userId),
+                       std::string(ev.detail), n);
         }
         return;
       }
@@ -245,7 +256,8 @@ private:
   std::vector<std::optional<uint64_t>> clientsByUser;
   std::deque<skymp::wire::WireEvent> pending;
   std::string buffer;
-  std::map<uint16_t, uint64_t> rejected;
+  // by (reason code, SkyMP MsgType, 0 for none)
+  std::map<std::pair<uint16_t, uint8_t>, uint64_t> rejected;
   std::map<uint16_t, uint64_t> refused;
   std::chrono::time_point<std::chrono::steady_clock> lastMetricsUpdate;
   prometheus::Gauge<double&> connectedClientsGauge;

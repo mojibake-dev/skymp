@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
+#include <functional>
 #include <iterator>
 #include <mutex>
 #include <string>
@@ -1141,10 +1142,12 @@ std::string SerializeImpl(RE::TESObjectREFR* refr)
   return result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
-// the body of Apply; the public wrapper at the end catches what it throws
+// the body of Apply; the public wrapper at the end catches what it throws.
+// laid is set once the finish pass has run: the engine laid the record,
+// whatever the answer says after
 std::string ApplyImpl(RE::TESObjectREFR* refr, std::string_view bodyHex,
                       std::uint32_t flags, std::uint32_t version,
-                      std::string_view remapRows)
+                      std::string_view remapRows, bool& laid)
 {
   const auto t0 = std::chrono::steady_clock::now();
   const RE::FormID formId = refr ? refr->formID : 0;
@@ -1419,8 +1422,28 @@ std::string ApplyImpl(RE::TESObjectREFR* refr, std::string_view bodyHex,
   result["rootAfterApply"] = refr->Get3D2() != nullptr;
 
   // the finish pass: InitLoadGame, the flush of the queued Havok block,
-  // FinishLoadGame; bare, as the engine's promotion batch runs it
+  // FinishLoadGame; bare, as the engine's promotion batch runs it.
+  // x-anim-listener 20261115-051655 (row 115): FinishLoadGame's 39432 reads
+  // the weapon listener at MiddleHighProcessData::unk1F0 without the lock
+  // and hands it to its own request without a reference when set (the
+  // ghidra MCP on sky-re, 0x1406e9b6d to 0x1406e9bc0, HYPOTHESIS). The
+  // guard's Check before the apply waited for it to clear; one set here was
+  // set since (an equip on a job thread, or one inside 35568), the residual
+  // no peek closes, said so a run can count it
+  if (p.actor) {
+    const auto inFlight = WeaponAnimGuard::Peek(p.actor);
+    result["listenerAtFinish"] = PtrStr(inFlight.listener);
+    if (inFlight.listener) {
+      logger::warn("[verb:change-form] weapon-animation guard: the finish "
+                   "pass of {:#x} meets the listener {} (the request {}) set "
+                   "after the guard's check, which 39432 hands to its own "
+                   "request without a reference (the residual, HYPOTHESIS)",
+                   formId, fmt::ptr(inFlight.listener),
+                   fmt::ptr(inFlight.request));
+    }
+  }
   e.finishPass(p.game, 0);
+  laid = true;
   ChangeValue afterFinish;
   const bool foundFinish = e.changesRead(p.map, formId, &afterFinish);
   result["entryAfterFinish"] = { { "found", foundFinish },
@@ -1492,6 +1515,16 @@ std::mutex g_applyMutex;
 std::unordered_set<RE::FormID> g_applyInFlight;
 std::unordered_map<RE::FormID, std::string> g_applyAnswers;
 
+// the fate passes an in-flight apply holds for its dead copy (HoldForApply,
+// ChangeForm.h), each with the name its guard kind gives it, settled once
+// at the apply's answer
+struct HeldPass
+{
+  const char* what = "";
+  std::function<void()> run;
+};
+std::unordered_map<RE::FormID, std::vector<HeldPass>> g_applyHeld;
+
 std::string ApplyRefusal(RE::FormID formId, const std::string& reason)
 {
   nlohmann::json r = nlohmann::json::object();
@@ -1517,9 +1550,10 @@ struct ApplyJob
   std::uint32_t from = 0;
 };
 
-// the task's last word: its answer stored for ApplyChangeFormResult and the
-// form's in-flight mark released
-void Answer(RE::FormID formId, std::string answer, std::uint32_t from)
+// the task's last word: its answer stored for ApplyChangeFormResult, the
+// form's in-flight mark released, and the fate passes it held handed back
+std::vector<HeldPass> Answer(RE::FormID formId, std::string answer,
+                             std::uint32_t from)
 {
   const auto* main = RE::Main::GetSingleton();
   const std::uint32_t here = ThreadId();
@@ -1528,9 +1562,56 @@ void Answer(RE::FormID formId, std::string answer, std::uint32_t from)
                "(thread {} main {}, queued from {})",
                formId, onMain ? "the main thread" : "another thread", here,
                main ? main->threadID : 0u, from);
+  std::vector<HeldPass> held;
   std::lock_guard<std::mutex> lock(g_applyMutex);
   g_applyInFlight.erase(formId);
   g_applyAnswers[formId] = std::move(answer);
+  if (auto it = g_applyHeld.find(formId); it != g_applyHeld.end()) {
+    held = std::move(it->second);
+    g_applyHeld.erase(it);
+  }
+  return held;
+}
+
+std::string HeldNames(const std::vector<HeldPass>& held)
+{
+  std::string names;
+  for (const auto& pass : held) {
+    names += names.empty() ? "" : ", ";
+    names += pass.what;
+  }
+  return names;
+}
+
+// the held fate passes after the answer, on the main thread: after an
+// applied answer the laid body is the record's and the client's reconcile
+// after the lay is the one pass, so they go; after a refusal nothing the
+// client reads as a lay happened, so they run now, in their order, each
+// through its own guard again
+void SettleHeld(RE::FormID formId, bool applied, std::vector<HeldPass> held)
+{
+  if (held.empty()) {
+    return;
+  }
+  if (applied) {
+    logger::info("[verb:change-form] ApplyChangeForm {:#x} laid: the {} "
+                 "fate pass(es) it held ({}) dropped, the lay dressed the "
+                 "copy and the client's reconcile after the lay follows",
+                 formId, held.size(), HeldNames(held));
+    return;
+  }
+  logger::info("[verb:change-form] ApplyChangeForm {:#x} refused: the {} "
+               "fate pass(es) it held ({}) run now",
+               formId, held.size(), HeldNames(held));
+  for (auto& pass : held) {
+    try {
+      pass.run();
+    } catch (const std::exception& e) {
+      logger::error("[verb:change-form] ApplyChangeForm {:#x}: the held {} "
+                    "threw on the main thread: {}",
+                    formId, pass.what, e.what());
+    }
+  }
 }
 
 // the apply on the main thread; tick 0 from the queue, the deferral's count
@@ -1543,6 +1624,9 @@ void ApplyOnMainThread(const ApplyJob& job, std::uint32_t tick)
   const std::uint32_t version = job.version;
   const std::string& rows = job.rows;
   std::string answer;
+  // the answer says applied, the lay done: the client's reconcile after the
+  // lay follows (changeFormService.ts onApplyResult), so the held passes go
+  bool applied = false;
   try {
     // the reference looked up on the thread that runs the apply
     // (FateApi's shape: a lookup under the forms map's lock belongs where
@@ -1554,18 +1638,16 @@ void ApplyOnMainThread(const ApplyJob& job, std::uint32_t tick)
     if (tick > 0 && !(again && again->As<RE::Actor>())) {
       WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kLoadGame, formId);
     }
-    // thuum lab/.cache/drafts/reads-53/r-c3-temple-crash.md (playtest 51
-    // break 7, candidates A and B, HYPOTHESIS until x-anim-listener's
-    // trace): the lay's Actor::LoadGame (slot 0x0F) rebuilds the copy's
-    // process while the engine may hold a weapon-animation request for it,
-    // whose listener a rebuild frees with the request still waiting; so
-    // the whole apply (the dying completion, the arrows, the lay) waits
-    // that request out on a later tick, bounded, its in-flight mark kept
-    // and its answer unwritten meanwhile (the bound, 120 ticks, about 2 s
-    // at 60 frames a second if gameThrQ drains once a frame, HYPOTHESIS;
-    // the seat gives up at 15 s). Candidate B's own listeners
-    // (ProcessCallbackAdapter, MovementControllerNPC) are not what this
-    // check reads.
+    // x-anim-listener 20261115-051655 (WeaponAnimGuard.h): the lay is the
+    // copy's one dress this load, so it waits out a weapon-animation
+    // request a pass before it left outstanding, the handle or its
+    // listener (FinishLoadGame's 39432 would hand that listener, raw, to a
+    // request of its own); the whole apply (the dying completion, the
+    // arrows, the lay) goes to a later tick, bounded, its in-flight mark
+    // kept and its answer unwritten meanwhile, so the fate passes on the
+    // dead copy are held for it (HoldForApply) and none starts a request
+    // beside it (the bound, 120 ticks, about 2 s at 60 frames a second if
+    // gameThrQ drains once a frame, HYPOTHESIS; the seat gives up at 15 s)
     if (auto* actor = again ? again->As<RE::Actor>() : nullptr) {
       const auto decision = WeaponAnimGuard::Check(
         WeaponAnimGuard::Kind::kLoadGame, actor, formId, tick,
@@ -1574,11 +1656,20 @@ void ApplyOnMainThread(const ApplyJob& job, std::uint32_t tick)
           if (!tasks) {
             WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kLoadGame,
                                     job.formId);
-            Answer(job.formId,
-                   ApplyRefusal(job.formId,
-                                "at task: deferred, then no SKSE task "
-                                "interface"),
-                   job.from);
+            auto held =
+              Answer(job.formId,
+                     ApplyRefusal(job.formId,
+                                  "at task: deferred, then no SKSE task "
+                                  "interface"),
+                     job.from);
+            // this runs where gameThrQ drains, not on the main thread, and
+            // with no task interface no fate pass can be queued there
+            if (!held.empty()) {
+              logger::warn("[verb:change-form] ApplyChangeForm {:#x}: the "
+                           "{} fate pass(es) it held ({}) dropped with it "
+                           "(no SKSE task interface)",
+                           job.formId, held.size(), HeldNames(held));
+            }
             return;
           }
           tasks->AddUITask([job, next]() { ApplyOnMainThread(job, next); });
@@ -1592,14 +1683,16 @@ void ApplyOnMainThread(const ApplyJob& job, std::uint32_t tick)
         // through the queue, so the mark goes and this apply is refused
         // for the next serve to retry
         WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kLoadGame, formId);
-        Answer(formId,
-               ApplyRefusal(
-                 formId,
-                 decision == WeaponAnimGuard::Decision::kDropped
-                   ? "at task: a weapon-animation request in flight on the "
-                     "copy past the guard's bound"
-                   : "at task: folded into a waiting apply of this form"),
-               job.from);
+        SettleHeld(
+          formId, false,
+          Answer(formId,
+                 ApplyRefusal(
+                   formId,
+                   decision == WeaponAnimGuard::Decision::kDropped
+                     ? "at task: a weapon-animation request outstanding on "
+                       "the copy past the guard's bound"
+                     : "at task: folded into a waiting apply of this form"),
+                 job.from));
         return;
       }
     }
@@ -1658,8 +1751,11 @@ void ApplyOnMainThread(const ApplyJob& job, std::uint32_t tick)
                    "it)",
                    formId);
     }
-    answer = again ? ApplyImpl(again, body, flags, version, rows)
+    bool finished = false;
+    answer = again ? ApplyImpl(again, body, flags, version, rows, finished)
                    : ApplyRefusal(formId, "at task: the reference is gone");
+    // ApplyImpl returned: its answer says applied exactly when it laid
+    applied = finished;
     // x-corpse-record v4 (20261104-063832): every lay answered "lifeState
     // 2 then 1", the owner's own reconnect apply included. The record's
     // actor block carries what the owner's engine held at its at-rest
@@ -1688,11 +1784,23 @@ void ApplyOnMainThread(const ApplyJob& job, std::uint32_t tick)
     logger::error("[verb:change-form] ApplyChangeForm {:#x} threw: {}", formId,
                   e.what());
     answer = ApplyRefusal(formId, std::string("exception: ") + e.what());
+    applied = false;
   }
-  Answer(formId, std::move(answer), job.from);
+  SettleHeld(formId, applied, Answer(formId, std::move(answer), job.from));
 }
 
 } // namespace
+
+bool ChangeForm::HoldForApply(std::uint32_t formId, const char* what,
+                              std::function<void()> owed)
+{
+  std::lock_guard<std::mutex> lock(g_applyMutex);
+  if (g_applyInFlight.count(formId) == 0) {
+    return false;
+  }
+  g_applyHeld[formId].push_back(HeldPass{ what, std::move(owed) });
+  return true;
+}
 
 std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
                               std::string_view bodyHex, std::uint32_t flags,

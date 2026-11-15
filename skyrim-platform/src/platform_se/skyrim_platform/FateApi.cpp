@@ -7,6 +7,7 @@
 #include "game/Offsets.h"
 #include <RE/M/Main.h>
 #include <algorithm>
+#include <fmt/format.h>
 #include <functional>
 #include <set>
 #include <string>
@@ -662,47 +663,25 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
 
 void RerollTask(uint32_t refrId, uint32_t tick);
 
-// the branch of RerollOnGameThread that reaches 37323: a living leveled
-// clone whose pick is not the fate's (its dead and redress-alone branches
-// never re-roll)
-bool ReachesEngineReroll(RE::Actor* actor, const Fates::Fate& fate)
-{
-  if (actor->IsDead() ||
-      !actor->extraList.HasType(RE::ExtraDataType::kLeveledCreature)) {
-    return false;
-  }
-  const auto* leveled = actor->extraList.GetByType<RE::ExtraLeveledCreature>();
-  const uint32_t pickedId =
-    leveled && leveled->templateBase ? leveled->templateBase->formID : 0;
-  return !(pickedId != 0 && pickedId == fate.baseId);
-}
-
-// thuum lab/.cache/drafts/reads-53/r-c3-temple-crash.md (playtest 51 break
-// 7, candidate A, HYPOTHESIS until x-anim-listener's trace): the re-roll's
-// one entry for both of its callers (rerollActor's task and the stand-up's),
-// never while the engine holds a weapon-animation request for the actor: the
-// re-roll drops the 3D, re-inits the inventory and re-equips, and an equip's
-// finish (39296) or a new equip (39295) releases the request's listener
-// without cancelling it while the request waits, which the manager's
-// dispatcher (63997) then calls. Deferred to a later tick, bounded
-// (WeaponAnimGuard); the deferred run reads the fate and the actor again.
-// Only the branch that reaches 37323 waits (ReachesEngineReroll): the dead
-// reconcile and the two redress-alone branches run at once, as redressActor
-// and dressBody do, so the stand-up's same-task redress of a matching pick
-// (npc-fate.md 1e) stays in its task. What a request the re-roll's own
-// reload starts meets inside this task is not waited on (a known limit, the
-// trace's to read).
+// x-anim-listener 20261115-051655 (WeaponAnimGuard.h): the re-roll's one
+// entry for both of its callers (rerollActor's task and the stand-up's),
+// every branch of it a dress (the dead copy's reconcile and its
+// DressBodyOnGameThread, the redress's strip and AddWornOutfit, 37323's
+// re-roll and its rebuild), so every branch passes the guard: a dead copy
+// whose record's apply is queued or running is held for that apply (the
+// lay dresses it; 051655's 0x375aa was dressed here 43 ms before its
+// apply's finish pass), and no branch starts while a weapon-animation
+// request is outstanding on the actor (a second dress while one waits,
+// which 39295 answers by releasing the waiting request's listener
+// uncancelled when the weapons differ and the loaded set is not empty).
+// Deferred to a later tick, bounded; the deferred or held run reads the
+// fate and the actor again. A request the pass itself starts and meets
+// later inside the same task (37323's reload, then the redress) is the
+// pass's own, the engine's attach order (a known limit).
 WeaponAnimGuard::Decision RerollWhenIdle(RE::Actor* actor,
                                          const Fates::Fate& fate,
                                          uint32_t refrId, uint32_t tick)
 {
-  if (!ReachesEngineReroll(actor, fate)) {
-    if (tick > 0) {
-      WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kReroll, refrId);
-    }
-    RerollOnGameThread(actor, fate, refrId);
-    return WeaponAnimGuard::Decision::kRun;
-  }
   const auto decision = WeaponAnimGuard::Check(
     WeaponAnimGuard::Kind::kReroll, actor, refrId, tick,
     [refrId](uint32_t next) {
@@ -710,29 +689,63 @@ WeaponAnimGuard::Decision RerollWhenIdle(RE::Actor* actor,
                          [refrId, next]() { RerollTask(refrId, next); })) {
         WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kReroll, refrId);
       }
-    });
+    },
+    [refrId]() { RerollTask(refrId, 0); });
   if (decision == WeaponAnimGuard::Decision::kRun) {
     RerollOnGameThread(actor, fate, refrId);
   }
   return decision;
 }
 
-// a deferred re-roll on its later tick, on the main thread: the newest fate
-// the server sent and the actor as it is now
+// a deferred re-roll on its later tick, or a held one (tick 0) after its
+// apply answered refused, on the main thread: the newest fate the server
+// sent and the actor as it is now
 void RerollTask(uint32_t refrId, uint32_t tick)
 {
   auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
   Fates::Fate fate;
   if (!actor || !Fates::Enabled() || !Fates::Get(refrId, fate)) {
     WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kReroll, refrId);
-    logger::info("[verb:npc-fate] rerollActor({:x}): deferred {} tick(s), "
-                 "then {}: nothing re-rolled",
-                 refrId, tick,
+    logger::info("[verb:npc-fate] rerollActor({:x}): {}, then {}: nothing "
+                 "re-rolled",
+                 refrId,
+                 tick > 0 ? fmt::format("deferred {} tick(s)", tick)
+                          : std::string("held for a refused apply"),
                  actor ? "its fate is gone or the switch is off"
                        : "no such actor");
     return;
   }
   (void)RerollWhenIdle(actor, fate, refrId, tick);
+}
+
+// redressActor's pass on the main thread, tick 0 from the native and the
+// deferral's count after (a held one runs at 0 again): the guard first, as
+// the re-roll's, then the newest fate's redress (RedressOnGameThread looks
+// the actor up again, as it always has)
+void RedressTask(uint32_t refrId, uint32_t tick)
+{
+  auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
+  Fates::Fate fate;
+  if (!actor || !Fates::Enabled() || !Fates::Get(refrId, fate)) {
+    WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kRedress, refrId);
+    logger::warn("[verb:npc-fate] redressActor({:x}): {}", refrId,
+                 actor ? "its fate is gone or the switch is off, nothing "
+                         "redressed"
+                       : "no such actor");
+    return;
+  }
+  const auto decision = WeaponAnimGuard::Check(
+    WeaponAnimGuard::Kind::kRedress, actor, refrId, tick,
+    [refrId](uint32_t next) {
+      if (!QueueFateTask("redressActor", refrId,
+                         [refrId, next]() { RedressTask(refrId, next); })) {
+        WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kRedress, refrId);
+      }
+    },
+    [refrId]() { RedressTask(refrId, 0); });
+  if (decision == WeaponAnimGuard::Decision::kRun) {
+    RedressOnGameThread(refrId, fate);
+  }
 }
 
 const char* DecisionName(WeaponAnimGuard::Decision d)
@@ -746,6 +759,8 @@ const char* DecisionName(WeaponAnimGuard::Decision d)
       return "folded";
     case WeaponAnimGuard::Decision::kDropped:
       return "dropped";
+    case WeaponAnimGuard::Decision::kHeld:
+      return "held for the record's apply";
     default:
       return "unknown";
   }
@@ -786,11 +801,81 @@ Napi::Value FateApi::RedressActor(const Napi::CallbackInfo& info)
   }
   // the actor is looked up on the game thread alone (rerollActor's and
   // setPuppet's shape, the 2026-10-21 hang), where the three engine calls
-  // have to run anyway; the fate travels by value
-  const bool queued = QueueFateTask("redressActor", refrId, [refrId, fate]() {
-    RedressOnGameThread(refrId, fate);
-  });
+  // have to run anyway; the task reads the newest fate there, past the
+  // guard (RedressTask)
+  const bool queued = QueueFateTask("redressActor", refrId,
+                                    [refrId]() { RedressTask(refrId, 0); });
   return Napi::Boolean::New(info.Env(), queued);
+}
+
+namespace {
+// the newest worn list dressBody was given for each body still to dress: on
+// the main thread alone (dressBody's tasks, the guard's later ticks and a
+// refused apply's held passes all run there), so a dress the guard folds,
+// defers or holds dresses the list its last ask gave
+std::unordered_map<uint32_t, std::vector<uint32_t>>& BodyWorn()
+{
+  static std::unordered_map<uint32_t, std::vector<uint32_t>> worn;
+  return worn;
+}
+
+// dressBody's pass on the main thread, tick 0 for an ask and the deferral's
+// count after: the guard first (WeaponAnimGuard.h), then the record's worn
+// armor the body holds unworn equipped again
+void DressBodyTask(uint32_t refrId, uint32_t tick)
+{
+  auto& slots = BodyWorn();
+  const auto slot = slots.find(refrId);
+  auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
+  if (slot == slots.end() || !actor || !actor->IsDead()) {
+    WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kBody, refrId);
+    if (slot != slots.end()) {
+      slots.erase(slot);
+    }
+    if (!actor) {
+      logger::warn("[verb:npc-fate] dressBody({:x}): no such actor", refrId);
+    } else if (!actor->IsDead()) {
+      // a living copy's worn set is its outfit's (redressActor), never this
+      logger::info("[verb:npc-fate] dressBody({:x}): the copy is alive "
+                   "here, nothing dressed",
+                   refrId);
+    }
+    return;
+  }
+  const auto decision = WeaponAnimGuard::Check(
+    WeaponAnimGuard::Kind::kBody, actor, refrId, tick,
+    [refrId](uint32_t next) {
+      if (!QueueFateTask("dressBody", refrId,
+                         [refrId, next]() { DressBodyTask(refrId, next); })) {
+        WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kBody, refrId);
+      }
+    },
+    [refrId, worn = slot->second]() {
+      // a refused apply hands it back with its list; the held passes run
+      // in their order right after the answer, so the newest list held is
+      // the last one written
+      BodyWorn()[refrId] = worn;
+      DressBodyTask(refrId, 0);
+    });
+  if (decision == WeaponAnimGuard::Decision::kDeferred ||
+      decision == WeaponAnimGuard::Decision::kFolded) {
+    // the list stays for the dress that waits
+    return;
+  }
+  const auto worn = std::move(slot->second);
+  slots.erase(slot);
+  if (decision != WeaponAnimGuard::Decision::kRun) {
+    return;
+  }
+  const size_t dressed = DressBodyOnGameThread(actor, worn);
+  // an open item menu on the body hears it as AddItemEx's changes do
+  if (dressed > 0) {
+    (void)ItemMenuRefresh::TryPost(*actor);
+  }
+  logger::info("[verb:npc-fate] body {:x}: {} worn piece(s) of the "
+               "record's {} dressed again after the client's apply, on {}",
+               refrId, dressed, worn.size(), FateThreadNote());
+}
 }
 
 Napi::Value FateApi::DressBody(const Napi::CallbackInfo& info)
@@ -818,26 +903,9 @@ Napi::Value FateApi::DressBody(const Napi::CallbackInfo& info)
   // could run on the main thread before them
   g_nativeCallRequirements.gameThrQ->AddTask([refrId, worn](Viet::Void) {
     (void)QueueFateTask("dressBody", refrId, [refrId, worn]() {
-      auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
-      if (!actor) {
-        logger::warn("[verb:npc-fate] dressBody({:x}): no such actor", refrId);
-        return;
-      }
-      // a living copy's worn set is its outfit's (redressActor), never this
-      if (!actor->IsDead()) {
-        logger::info("[verb:npc-fate] dressBody({:x}): the copy is alive "
-                     "here, nothing dressed",
-                     refrId);
-        return;
-      }
-      const size_t dressed = DressBodyOnGameThread(actor, worn);
-      // an open item menu on the body hears it as AddItemEx's changes do
-      if (dressed > 0) {
-        (void)ItemMenuRefresh::TryPost(*actor);
-      }
-      logger::info("[verb:npc-fate] body {:x}: {} worn piece(s) of the "
-                   "record's {} dressed again after the client's apply, on {}",
-                   refrId, dressed, worn.size(), FateThreadNote());
+      // the newest list wins: a dress still waiting reads it at its run
+      BodyWorn()[refrId] = worn;
+      DressBodyTask(refrId, 0);
     });
   });
   return Napi::Boolean::New(info.Env(), true);
@@ -912,18 +980,19 @@ void ResurrectOnGameThread(uint32_t refrId, uint32_t tick)
   // c1-relaunch-080: "redressed 39fe4" at :534 and this stand-up in the
   // same millisecond, Resurrect(true, true)'s inventory reset re-dressing
   // the engine's own outfit over the redress): the record's dress follows
-  // the reset HERE, in the same task, so the stood-up copy wears the fate
-  // (the pick's swap, if any, is the late fate's rerollActor after this)
+  // the reset, never before it, so the stood-up copy wears the fate (the
+  // pick's swap, if any, is the late fate's rerollActor after this)
   Fates::Fate fate;
   bool fated = false;
   const char* rerolled = "not asked";
   if (!actor->IsDead() && Fates::Enabled() && Fates::Get(refrId, fate)) {
     // the whole decision, not the redress alone: a respawn's fate that
     // names another pick re-rolls the stood-up clone through the engine
-    // here, in the same task, after the engine's reset; the stand-up's own
-    // attach may have started a weapon-animation request, so the re-roll
-    // passes the guard again (r-c3-temple-crash.md) and may run a tick
-    // later
+    // after the engine's reset. The reset's own equips may have left a
+    // weapon-animation request outstanding, and a dress beside it is the
+    // second dress WeaponAnimGuard.h names, so the decision passes the
+    // guard: in this task when nothing is outstanding, else on the tick
+    // after the request completes, still after the reset
     rerolled = DecisionName(RerollWhenIdle(actor, fate, refrId, 0));
     fated = true;
   }

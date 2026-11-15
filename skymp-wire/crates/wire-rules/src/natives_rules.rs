@@ -13,11 +13,16 @@
 //! The live table ([`crate::natives::TABLE`], natives_table.rs) is the
 //! overlay's live entries in the overlay's order: the fifty rows of thuum
 //! ADR-068's rungs, each through its decided entry, so the generated table
-//! is the hand-kept one byte for byte, its header aside (the spec's G1;
-//! [`table_source`]). Every other native's row is derived and held back until
-//! step 4's S5 lands the derived rows staged. The platform reads the live
-//! rows through wire-client-ffi's generated header (D-NT1 C), never a copy. The `natives-gen` tool (src/bin/natives-gen.rs) does
-//! the I/O; this module reads no file.
+//! was the hand-kept one byte for byte at step 4's S2, its header aside (the
+//! spec's G1; [`table_source`]); since S4 every owner on a subject is the
+//! rules' asked one (decision 6), the hook column holds what the platform's
+//! name lists held, and train 53's two scene starts follow the fifty, their
+//! hook a stopgap until step 5a. Every other native's row is derived and
+//! held back until step 4's S5 lands the derived rows staged. The platform
+//! reads the live rows through wire-client-ffi's generated header (D-NT1 C)
+//! and the client through skymp5-client's nativeRows.generated.ts
+//! ([`ts_source`]), never a copy. The `natives-gen` tool
+//! (src/bin/natives-gen.rs) does the I/O; this module reads no file.
 //!
 //! The rules, in the order they are tried ([`Rule`]); each says its decision
 //! 5 class, and `natives-gen` names each rule once with one native and then
@@ -70,7 +75,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
-use crate::natives::{self, Audience, Keep, Look, Param, RecordKind, Relay, Subject};
+use crate::natives::{self, Audience, Hook, Keep, Kind, Look, Owner, Param, RecordKind, Relay, Subject};
 
 /// One argument of a native as the dump declares it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,33 +307,6 @@ impl Dump {
     }
 }
 
-/// What a call of a native is: the table's kind, or one the table holds from
-/// a later step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    /// A kind the table holds.
-    Row(natives::Kind),
-    /// A call that creates a reference or starts a scene (decision 6's
-    /// created reference, its creator's): judged as State until decision
-    /// 13's placement.
-    Create,
-}
-
-/// Who owns a call's subject: the table's owner, or one the table holds
-/// from a later step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Owner {
-    /// An owner the table holds.
-    Row(natives::Owner),
-    /// Asked of owner_of at the call (decision 6: owners are asked, never
-    /// inferred); the table holds it from step 4's S4, with natives.rs's
-    /// action rule.
-    Asked,
-    /// The seat that created the subject or started the scene (decision 6;
-    /// D-L2 B for a scene).
-    Creator,
-}
-
 /// What a call does inside another player's acting scope (the spec's New
 /// 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -442,6 +420,9 @@ pub struct Cells {
     /// Its parameters in order; none when one is an array (the wire's
     /// SnippetArg carries no array, so such a row is never relayed).
     pub params: Option<Vec<Param>>,
+    /// What the seam or the client does beyond the rest: the overlay's
+    /// alone, every rule giving none.
+    pub hook: Hook,
 }
 
 /// A native's derived row: the rule that set its kind and its cells.
@@ -554,7 +535,7 @@ pub fn derive(dump: &Dump, native: &Native) -> Derived {
     let creates_reference =
         native.ret.raw == "Object" && native.ret.object.is_some_and(|o| dump.is_reference(o));
     let (rule, kind) = if has_result && READ_WORDS.iter().any(|w| begins(name, &[*w])) {
-        (Rule::Read, Kind::Row(natives::Kind::Local))
+        (Rule::Read, Kind::Local)
     } else if begins(name, &["register", "for"])
         || begins(name, &["unregister", "for"])
         || begins(name, &["wait"])
@@ -562,9 +543,9 @@ pub fn derive(dump: &Dump, native: &Native) -> Derived {
         || contains_words(name, &["object", "profiling"])
         || contains_words(name, &["mod", "event"])
     {
-        (Rule::Vm, Kind::Row(natives::Kind::Local))
+        (Rule::Vm, Kind::Local)
     } else if SCREEN_WORDS.iter().any(|w| begins(name, &[*w])) || in_lineage(&SCREEN) {
-        (Rule::Screen, Kind::Row(natives::Kind::Local))
+        (Rule::Screen, Kind::Local)
     } else if subject != Subject::Nothing
         && (begins(name, &["play"])
             || begins(name, &["say"])
@@ -574,9 +555,9 @@ pub fn derive(dump: &Dump, native: &Native) -> Derived {
                 && words(name).last().is_some_and(|w| w == "variable"))
             || (subject == Subject::Arg0Method && begins(name, &["stop"])))
     {
-        (Rule::Render, Kind::Row(natives::Kind::Action))
+        (Rule::Render, Kind::Action)
     } else if native.is_static && subject == Subject::Nothing {
-        (Rule::OwnGame, Kind::Row(natives::Kind::State))
+        (Rule::OwnGame, Kind::State)
     } else if creates_reference
         || (scene
             && (name.eq_ignore_ascii_case("Start") || name.eq_ignore_ascii_case("ForceStart")))
@@ -588,30 +569,30 @@ pub fn derive(dump: &Dump, native: &Native) -> Derived {
                 && !in_lineage(&["scene", "activemagiceffect"])
                 && subject != Subject::Arg0Method))
     {
-        (Rule::Nobodys, Kind::Row(natives::Kind::Everyone))
+        (Rule::Nobodys, Kind::Everyone)
     } else {
-        (Rule::Owned, Kind::Row(natives::Kind::State))
+        (Rule::Owned, Kind::State)
     };
     let mut owner = match (kind, rule) {
-        (Kind::Row(natives::Kind::Local), _) | (_, Rule::OwnGame) => {
-            Owner::Row(natives::Owner::Player)
+        (Kind::Local, _) | (_, Rule::OwnGame) => {
+            Owner::Player
         }
-        (Kind::Row(natives::Kind::Everyone), _) => Owner::Row(natives::Owner::Nobody),
+        (Kind::Everyone, _) => Owner::Nobody,
         (Kind::Create, _) => Owner::Creator,
-        (Kind::Row(natives::Kind::Action | natives::Kind::State), _) => Owner::Asked,
+        (Kind::Action | Kind::State, _) => Owner::Asked,
     };
-    if scene && kind != Kind::Row(natives::Kind::Local) {
+    if scene && kind != Kind::Local {
         owner = Owner::Creator;
     }
     let audience = match kind {
-        Kind::Row(natives::Kind::Action) => Audience::Listeners,
-        Kind::Row(natives::Kind::Everyone) => Audience::Everyone,
-        Kind::Row(natives::Kind::State | natives::Kind::Local) | Kind::Create => Audience::Nobody,
+        Kind::Action => Audience::Listeners,
+        Kind::Everyone => Audience::Everyone,
+        Kind::State | Kind::Local | Kind::Create => Audience::Nobody,
     };
     let params: Option<Vec<Param>> = native.args.iter().map(|a| param_of(&a.ty)).collect();
     let relayed = matches!(
         kind,
-        Kind::Row(natives::Kind::Action | natives::Kind::State)
+        Kind::Action | Kind::State
     ) && subject != Subject::Nothing
         && params.is_some();
     let relay = if !relayed {
@@ -626,7 +607,7 @@ pub fn derive(dump: &Dump, native: &Native) -> Derived {
     } else {
         Keep::Nothing
     };
-    let look = if kind == Kind::Row(natives::Kind::Action) {
+    let look = if kind == Kind::Action {
         Look::Also
     } else {
         Look::Never
@@ -648,6 +629,7 @@ pub fn derive(dump: &Dump, native: &Native) -> Derived {
             look,
             scoped,
             params,
+            hook: Hook::None,
         },
     }
 }
@@ -711,9 +693,9 @@ pub enum Class {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cell {
     /// The kind.
-    Kind(natives::Kind),
+    Kind(Kind),
     /// The owner.
-    Owner(natives::Owner),
+    Owner(Owner),
     /// The audience.
     Audience(Audience),
     /// The relay.
@@ -724,6 +706,9 @@ pub enum Cell {
     Look(Look),
     /// The acting scope's rule.
     Scoped(Scoped),
+    /// The hook (the seam's name lists as one column, thuum ADR-073 step 4's
+    /// S4), each code's line its decision 5 class ([`Hook::line`]).
+    Hook(Hook),
 }
 
 impl Cell {
@@ -736,31 +721,34 @@ impl Cell {
             Cell::Keep(_) => "keep",
             Cell::Look(_) => "look",
             Cell::Scoped(_) => "scoped",
+            Cell::Hook(_) => "hook",
         }
     }
 
     /// Whether `cells` already holds this cell's value.
     fn holds(self, cells: &Cells) -> bool {
         match self {
-            Cell::Kind(k) => cells.kind == Kind::Row(k),
-            Cell::Owner(o) => cells.owner == Owner::Row(o),
+            Cell::Kind(k) => cells.kind == k,
+            Cell::Owner(o) => cells.owner == o,
             Cell::Audience(a) => cells.audience == a,
             Cell::Relay(r) => cells.relay == r,
             Cell::Keep(k) => cells.keep == k,
             Cell::Look(l) => cells.look == l,
             Cell::Scoped(s) => cells.scoped == s,
+            Cell::Hook(h) => cells.hook == h,
         }
     }
 
     fn set(self, cells: &mut Cells) {
         match self {
-            Cell::Kind(k) => cells.kind = Kind::Row(k),
-            Cell::Owner(o) => cells.owner = Owner::Row(o),
+            Cell::Kind(k) => cells.kind = k,
+            Cell::Owner(o) => cells.owner = o,
             Cell::Audience(a) => cells.audience = a,
             Cell::Relay(r) => cells.relay = r,
             Cell::Keep(k) => cells.keep = k,
             Cell::Look(l) => cells.look = l,
             Cell::Scoped(s) => cells.scoped = s,
+            Cell::Hook(h) => cells.hook = h,
         }
     }
 }
@@ -983,11 +971,11 @@ pub struct TableRow {
     /// The name.
     pub func: &'static str,
     /// The kind.
-    pub kind: natives::Kind,
+    pub kind: Kind,
     /// The subject.
     pub subject: Subject,
     /// The owner.
-    pub owner: natives::Owner,
+    pub owner: Owner,
     /// The audience.
     pub audience: Audience,
     /// The relay.
@@ -998,6 +986,8 @@ pub struct TableRow {
     pub look: Look,
     /// The parameters.
     pub params: Vec<Param>,
+    /// The hook.
+    pub hook: Hook,
 }
 
 impl TableRow {
@@ -1015,32 +1005,28 @@ impl TableRow {
             keep: row.keep,
             look: row.look,
             params: row.params.to_vec(),
+            hook: row.hook,
         }
     }
 
     /// A generated row in the table's types; the name of a cell the table
     /// does not hold yet.
     pub fn of_generated(row: &GeneratedRow) -> Result<Self, &'static str> {
-        let Kind::Row(kind) = row.cells.kind else {
-            return Err("kind");
-        };
-        let Owner::Row(owner) = row.cells.owner else {
-            return Err("owner");
-        };
         let Some(params) = row.cells.params.clone() else {
             return Err("params");
         };
         Ok(TableRow {
             cls: row.cls,
             func: row.func,
-            kind,
+            kind: row.cells.kind,
             subject: row.cells.subject,
-            owner,
+            owner: row.cells.owner,
             audience: row.cells.audience,
             relay: row.cells.relay,
             keep: row.cells.keep,
             look: row.cells.look,
             params,
+            hook: row.cells.hook,
         })
     }
 
@@ -1068,7 +1054,7 @@ impl TableRow {
             .map(|p| format!("Param::{p:?}"))
             .collect();
         format!(
-            "    Row {{ cls: \"{}\", func: \"{}\", kind: Kind::{:?}, subject: Subject::{:?}, owner: Owner::{:?}, audience: Audience::{:?}, relay: {relay}, keep: {keep}, look: Look::{:?}, params: &[{}] }},",
+            "    Row {{ cls: \"{}\", func: \"{}\", kind: Kind::{:?}, subject: Subject::{:?}, owner: Owner::{:?}, audience: Audience::{:?}, relay: {relay}, keep: {keep}, look: Look::{:?}, params: &[{}], hook: Hook::{:?} }},",
             self.cls,
             self.func,
             self.kind,
@@ -1076,7 +1062,8 @@ impl TableRow {
             self.owner,
             self.audience,
             self.look,
-            params.join(", ")
+            params.join(", "),
+            self.hook
         )
     }
 }
@@ -1086,17 +1073,18 @@ const TABLE_HEADER: &str = concat!(
     "// Generated by wire-rules natives-gen (thuum ADR-073 step 4, Eli's D-NT1 C);\n",
     "// do not edit by hand. Each row is natives_rules.rs's derivation from\n",
     "// skyrim-platform's FunctionsDump.txt, every parameter list the native's own,\n",
-    "// with its decided overlay entry's cells over it (natives_overlay.rs, which\n",
-    "// holds the comment above a row and the decision each row cites); the rows\n",
-    "// are the overlay's live entries in its order, so no earlier row's place\n",
-    "// moves. Edit the overlay and run `cargo run -p wire-rules --bin\n",
+    "// with its overlay entry's cells over it (natives_overlay.rs, which holds\n",
+    "// the comment above a row and the decision each row cites, or for a\n",
+    "// stopgap's hook its replacing rule); the rows are the overlay's live\n",
+    "// entries in its order, so no earlier row's place moves. Edit the overlay\n",
+    "// and run `cargo run -p wire-rules --bin\n",
     "// natives-gen`; natives_rules.rs's generated-table test refuses a copy that\n",
     "// differs. The platform reads these rows through wire-client-ffi's generated\n",
     "// header (skymp_wire.h's SkympNativeRows), never a copy of its own. Included\n",
     "// by natives.rs, whose types it names.\n",
 );
 
-/// The live table's doc comment, as rung 5 and D-E1 A left it.
+/// The live table's doc comment, as rung 5, D-E1 A and step 4's S4 left it.
 const TABLE_DOC: &str = concat!(
     "/// Every tabled native (thuum ADR-068 decision 3): rung 2's set, the six\n",
     "/// action rows, the flip's twenty-four state and everyone rows and\n",
@@ -1107,8 +1095,11 @@ const TABLE_DOC: &str = concat!(
     "/// CreateDetectionEvent, a firing's looks alone; then rung 5's six, a\n",
     "/// player's own race, spells, shouts and equipment, kept as its own record,\n",
     "/// and D-E1 A's head part; the flip's AddItem and RemoveItem keep the\n",
-    "/// player's own inventory on its own 0x14 since D-R1 C. A native with no row\n",
-    "/// has no channel. Fifty rows.\n",
+    "/// player's own inventory on its own 0x14 since D-R1 C; then train 53's two\n",
+    "/// scene starts (ADR-073 step 4's S4), creations judged as state rows whose\n",
+    "/// hook is V-scene's count. Every owner on a subject is asked (ADR-073\n",
+    "/// decision 6), and the hook column holds what the seam's name lists held.\n",
+    "/// A native with no row has no channel. Fifty-two rows.\n",
 );
 
 /// natives_table.rs as the live rows make it: the header, the table's doc
@@ -1139,19 +1130,116 @@ pub fn table_source(generated: &Generated) -> Result<String, Vec<Refusal>> {
     Ok(out)
 }
 
-fn kind_name(kind: Kind) -> String {
-    match kind {
-        Kind::Row(k) => format!("{k:?}"),
-        Kind::Create => "Create".to_owned(),
+/// The client's generated file (skymp5-client src/lib/nativeRows.generated.ts),
+/// its header.
+const TS_HEADER: &str = concat!(
+    "// Generated by wire-rules natives-gen (thuum ADR-073 step 4, Eli's D-NT1 C);\n",
+    "// do not edit by hand. The live table's columns (skymp-wire wire-rules\n",
+    "// natives_table.rs) as the client reads them, in place of the name lists its\n",
+    "// services kept (scriptCallService.ts's record rows, spSnippetService.ts's\n",
+    "// look rows and graph variables): natives-gen derives each from the table's\n",
+    "// keep, look, subject and relay cells, and natives_rules.rs's generated-table\n",
+    "// test refuses a copy that differs. Names are the table's spelling, a\n",
+    "// relay's in lower case as SpSnippetService compares them.\n",
+);
+
+/// A live row's relay native, or the row itself for one never relayed.
+fn relay_or_self(row: &TableRow) -> (&'static str, &'static str) {
+    match row.relay {
+        Relay::Same | Relay::Never => (row.cls, row.func),
+        Relay::Twin { cls, func, .. } => (cls, func),
     }
 }
 
-fn owner_name(owner: Owner) -> String {
-    match owner {
-        Owner::Row(o) => format!("{o:?}"),
-        Owner::Asked => "Asked".to_owned(),
-        Owner::Creator => "Creator".to_owned(),
+/// A TypeScript string literal of `text`, which a native's name never needs
+/// escaped beyond a quote or a backslash.
+fn ts_text(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// nativeRows.generated.ts as the live rows make it: the record rows by
+/// family, the look rows as a relay names them, the look-only rows a relay
+/// names with its subject's sequence, and the graph variable rows' value
+/// kinds. natives-gen writes it; the generated-table test compares it with
+/// the committed file byte for byte.
+pub fn ts_source(generated: &Generated) -> Result<String, Vec<Refusal>> {
+    let mut rows = Vec::new();
+    for row in generated.live_rows() {
+        let native = row.entry.map_or("", |e| e.native);
+        rows.push(TableRow::of_generated(row).map_err(|cell| vec![Refusal::NotTabled { native, cell }])?);
     }
+    let mut out = String::from(TS_HEADER);
+    out.push_str("\n// the record rows by their keep (Keep::Record): \"ref\" the ref state's, \"standing\"\n");
+    out.push_str("// the standing's, \"own\" a player's own; a placement's is none of them (W3:\n");
+    out.push_str("// the platform never batches it)\n");
+    out.push_str("export const NATIVE_RECORD_FAMILIES: { readonly [native: string]: \"ref\" | \"standing\" | \"own\" } = {\n");
+    for row in &rows {
+        let family = match row.keep {
+            Keep::Record(RecordKind::RefState) => "ref",
+            Keep::Record(RecordKind::Standing) => "standing",
+            Keep::Record(RecordKind::PlayerOwn) => "own",
+            _ => continue,
+        };
+        out.push_str(&format!("  {}: {},\n", ts_text(&format!("{}.{}", row.cls, row.func)), ts_text(family)));
+    }
+    out.push_str("};\n");
+    let names = |keep: &dyn Fn(&TableRow) -> Option<String>| -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        for row in &rows {
+            if let Some(name) = keep(row).filter(|n| !seen.contains(n)) {
+                seen.push(name);
+            }
+        }
+        seen
+    };
+    let relays = names(&|r| {
+        (r.look != Look::Never).then(|| {
+            let (cls, func) = relay_or_self(r);
+            format!("{cls}.{func}").to_ascii_lowercase()
+        })
+    });
+    let look_only = names(&|r| (r.look == Look::Only && r.subject != Subject::Arg0Method).then(|| r.func.to_ascii_lowercase()));
+    out.push_str("\n// the look rows as a relay names them (class.function in lower case): every\n");
+    out.push_str("// row whose look is Also or Only (ADR-068 D-W2 A), by its relay native, a\n");
+    out.push_str("// twin's for a latent row, or by itself for a row never relayed as an action\n");
+    out.push_str("export const NATIVE_LOOK_RELAYS: readonly string[] = [\n");
+    for name in &relays {
+        out.push_str(&format!("  {},\n", ts_text(name)));
+    }
+    out.push_str("];\n");
+    out.push_str("\n// the look-only rows a relay names with its subject's seq (Look::Only on a\n");
+    out.push_str("// subject its self names, so not Sound.Play's), by function in lower case\n");
+    out.push_str("export const NATIVE_LOOK_ONLY_FNS: readonly string[] = [\n");
+    for name in &look_only {
+        out.push_str(&format!("  {},\n", ts_text(name)));
+    }
+    out.push_str("];\n");
+    out.push_str("\n// the graph variable rows (Keep::Variable, the fifty fixes' D-C3 A) by\n");
+    out.push_str("// function in lower case: ScriptVar's folded kind of the value, its second\n");
+    out.push_str("// parameter's (3 an int, 4 a float, 5 a bool)\n");
+    out.push_str("export const NATIVE_GRAPH_VAR_KINDS: { readonly [fn: string]: number } = {\n");
+    for row in &rows {
+        if row.keep != Keep::Variable {
+            continue;
+        }
+        let kind = match row.params.get(1) {
+            Some(Param::Int) => 3,
+            Some(Param::Float) => 4,
+            Some(Param::Bool) => 5,
+            _ => continue,
+        };
+        out.push_str(&format!("  {}: {kind},\n", row.func.to_ascii_lowercase()));
+    }
+    out.push_str("};\n");
+    Ok(out)
+}
+
+fn kind_name(kind: Kind) -> String {
+    format!("{kind:?}")
+}
+
+fn owner_name(owner: Owner) -> String {
+    format!("{owner:?}")
 }
 
 fn relay_name(relay: Relay) -> String {
@@ -1187,7 +1275,7 @@ pub fn signature(n: &Native) -> String {
 }
 
 /// The TSV's header line.
-pub const TSV_HEADER: &str = "native\tsignature\tkind\tsubject\towner\taudience\trelay\tkeep\tlook\tscoped\tparams\trule\trow\tsource\tevidence";
+pub const TSV_HEADER: &str = "native\tsignature\tkind\tsubject\towner\taudience\trelay\tkeep\tlook\tscoped\thook\tparams\trule\trow\tsource\tevidence";
 
 /// Every native's row as natives.tsv, which thuum's lab/ledger.py joins into
 /// docs/NATIVES.md: one line per native, the header first. `row` is the
@@ -1238,6 +1326,7 @@ pub fn tsv(generated: &Generated) -> String {
             keep,
             format!("{:?}", c.look),
             format!("{:?}", c.scoped),
+            if c.hook == Hook::None { "none".to_owned() } else { c.hook.name().to_owned() },
             params,
             row.derived.rule.code().to_owned(),
             place,
@@ -1339,30 +1428,30 @@ mod tests {
         // K1: a question with a result
         assert_eq!(
             k("Actor", "WornHasKeyword"),
-            (Rule::Read, Kind::Row(K::Local), Owner::Row(O::Player))
+            (Rule::Read, K::Local, O::Player)
         );
         assert_eq!(
             k("Game", "GetPlayer"),
-            (Rule::Read, Kind::Row(K::Local), Owner::Row(O::Player))
+            (Rule::Read, K::Local, O::Player)
         );
         // K2: a wait is the VM's own
         assert_eq!(
             k("ObjectReference", "WaitForAnimationEvent"),
-            (Rule::Vm, Kind::Row(K::Local), Owner::Row(O::Player))
+            (Rule::Vm, K::Local, O::Player)
         );
         assert_eq!(
             k("utility", "Wait"),
-            (Rule::Vm, Kind::Row(K::Local), Owner::Row(O::Player))
+            (Rule::Vm, K::Local, O::Player)
         );
         // K3: the screen
         assert_eq!(
             k("ImageSpaceModifier", "Apply"),
-            (Rule::Screen, Kind::Row(K::Local), Owner::Row(O::Player))
+            (Rule::Screen, K::Local, O::Player)
         );
         // K4: a render on an object, a static's on its first argument
         assert_eq!(
             k("Debug", "SendAnimationEvent"),
-            (Rule::Render, Kind::Row(K::Action), Owner::Asked)
+            (Rule::Render, K::Action, Owner::Asked)
         );
         assert_eq!(
             derived(&d, "Debug", "SendAnimationEvent").cells.subject,
@@ -1372,7 +1461,7 @@ mod tests {
         // first word and is nobody's, a Form's
         assert_eq!(
             k("Form", "PlayerKnows"),
-            (Rule::Nobodys, Kind::Row(K::Everyone), Owner::Row(O::Nobody))
+            (Rule::Nobodys, K::Everyone, O::Nobody)
         );
         // K5: a static on no object is the player's own state, never Local
         // (New 1): the word wall's TeachWord, its skip by its subject
@@ -1386,9 +1475,9 @@ mod tests {
             ),
             (
                 Rule::OwnGame,
-                Kind::Row(K::State),
+                K::State,
                 Subject::Nothing,
-                Owner::Row(O::Player)
+                O::Player
             )
         );
         assert_eq!(teach.cells.scoped, Scoped::ActingSeatAlone);
@@ -1411,12 +1500,12 @@ mod tests {
         // K7: a faction is nobody's
         assert_eq!(
             k("Faction", "SetEnemy"),
-            (Rule::Nobodys, Kind::Row(K::Everyone), Owner::Row(O::Nobody))
+            (Rule::Nobodys, K::Everyone, O::Nobody)
         );
         // K8: a hire is no longer Local (decision 6's hire row, step 5)
         assert_eq!(
             k("Actor", "SetPlayerTeammate"),
-            (Rule::Owned, Kind::Row(K::State), Owner::Asked)
+            (Rule::Owned, K::State, Owner::Asked)
         );
     }
 
@@ -1462,10 +1551,10 @@ mod tests {
         use natives::Kind as K;
         let kinds = |of: &dyn Fn(&GeneratedRow) -> Kind| {
             [
-                Kind::Row(K::Local),
-                Kind::Row(K::State),
-                Kind::Row(K::Everyone),
-                Kind::Row(K::Action),
+                K::Local,
+                K::State,
+                K::Everyone,
+                K::Action,
                 Kind::Create,
             ]
             .map(|k| g.rows.iter().filter(|r| of(r) == k).count())
@@ -1507,11 +1596,16 @@ mod tests {
             assert_eq!(generated, committed);
             assert_eq!(generated.line(), committed.line());
         }
-        // every live row is a decided entry's: the table is decisions over
-        // the rules, never a stopgap
-        assert!(g
-            .live_rows()
-            .all(|r| matches!(r.entry.map(|e| e.class), Some(Class::Decided { .. }))));
+        // every live row is a decided entry's, or a stopgap's whose only cell
+        // is a hook naming its own deleting condition (the scene starts,
+        // V-scene's until step 5a): the table is decisions over the rules
+        for r in g.live_rows() {
+            match r.entry.map(|e| (e.class, e.cells)) {
+                Some((Class::Decided { .. }, _)) => {}
+                Some((Class::Stopgap { .. }, [Cell::Hook(hook)])) => assert!(hook.line().contains("deletes"), "{}", r.func),
+                other => panic!("{}.{}: {other:?}", r.cls, r.func),
+            }
+        }
     }
 
     // the generated-table check (it replaces the parity test against the
@@ -1530,6 +1624,61 @@ mod tests {
             panic!("natives_table.rs is stale (first differing line {at:?}): run `cargo run -p wire-rules --bin natives-gen`");
         }
         assert_eq!(made.matches("    Row {").count(), natives::TABLE.len());
+        // and the client's file (step 4's S4: the TS lists read it)
+        let ts = ts_source(&g).unwrap_or_else(|r| panic!("{r:?}"));
+        let committed = include_str!("../../../../skymp5-client/src/lib/nativeRows.generated.ts");
+        if ts != committed {
+            panic!("skymp5-client src/lib/nativeRows.generated.ts is stale: run `cargo run -p wire-rules --bin natives-gen`");
+        }
+    }
+
+    // the client's file holds exactly the name lists it replaced
+    // (scriptCallService.ts's refStateRows, standingRows, playerOwnRows and
+    // playerItemRows; spSnippetService.ts's LOOK_ROWS, LOOK_ONLY_FNS and
+    // GRAPH_VAR_KINDS), each now a column's
+    #[test]
+    fn the_client_file_holds_the_lists_it_replaced() {
+        let ts = ts_source(&generated()).unwrap_or_else(|r| panic!("{r:?}"));
+        let section = |from: &str| -> Vec<String> {
+            let start = ts.find(from).unwrap_or_else(|| panic!("{from}"));
+            ts.get(start..)
+                .unwrap_or_default()
+                .lines()
+                .skip(1)
+                .take_while(|l| l.starts_with("  "))
+                .map(|l| l.trim().trim_end_matches(',').to_owned())
+                .collect()
+        };
+        let mut families: Vec<String> = Vec::new();
+        for (cls, funcs, family) in [
+            ("ObjectReference", &["AddItem", "RemoveItem"][..], "own"),
+            ("ObjectReference", &["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"][..], "ref"),
+            ("Actor", &["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"][..], "standing"),
+            ("Actor", &["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem", "ChangeHeadPart"][..], "own"),
+        ] {
+            families.extend(funcs.iter().map(|f| format!("\"{cls}.{f}\": \"{family}\"")));
+        }
+        let mut got = section("NATIVE_RECORD_FAMILIES");
+        got.sort();
+        families.sort();
+        assert_eq!(got, families);
+        assert_eq!(
+            section("NATIVE_LOOK_RELAYS"),
+            [
+                "\"objectreference.playanimation\"",
+                "\"debug.sendanimationevent\"",
+                "\"objectreference.setanimationvariablebool\"",
+                "\"objectreference.setanimationvariableint\"",
+                "\"objectreference.setanimationvariablefloat\"",
+                "\"objectreference.setmotiontype\"",
+                "\"objectreference.applyhavokimpulse\"",
+                "\"sound.play\"",
+                "\"objectreference.createdetectionevent\"",
+            ]
+        );
+        assert_eq!(section("NATIVE_LOOK_ONLY_FNS"), ["\"setmotiontype\"", "\"applyhavokimpulse\"", "\"createdetectionevent\""]);
+        assert_eq!(section("NATIVE_GRAPH_VAR_KINDS"), ["setanimationvariablebool: 5", "setanimationvariableint: 3", "setanimationvariablefloat: 4"]);
+        assert!(!ts.contains('\u{2014}'));
     }
 
     #[test]
@@ -1624,9 +1773,11 @@ mod tests {
             )]),
             [Refusal::NoTwin("ObjectReference.MoveTo")]
         );
-        // a live row with a cell the table holds from S4 on (an asked owner)
+        // a live row with a cell the table does not hold yet: an array
+        // parameter (FormList.AddForms), which the table's parameters cannot
+        // name until step 4's S5
         let live = Entry {
-            native: "Actor.SetGhost",
+            native: "FormList.AddForms",
             class: decided,
             live: true,
             note: &[],
@@ -1635,8 +1786,8 @@ mod tests {
         assert_eq!(
             refused(&[live]),
             [Refusal::NotTabled {
-                native: "Actor.SetGhost",
-                cell: "owner"
+                native: "FormList.AddForms",
+                cell: "params"
             }]
         );
     }

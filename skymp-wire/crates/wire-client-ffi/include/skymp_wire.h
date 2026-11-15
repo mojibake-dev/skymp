@@ -15,7 +15,7 @@
  * checks it against the table; after natives-gen changes the count, set it
  * here and run `just wire-header`.
  */
-#define SKYMP_NATIVE_ROWS 50
+#define SKYMP_NATIVE_ROWS 52
 
 /**
  * A native takes at most eleven parameters (CommonLibSSE-NG
@@ -44,6 +44,12 @@
 #define SKYMP_NATIVE_KIND_LOCAL 3
 
 /**
+ * Kind: a creation (a reference placed, a scene started), judged as a state
+ * row until ADR-073 decision 13's placement.
+ */
+#define SKYMP_NATIVE_KIND_CREATE 4
+
+/**
  * Subject: the call's self.
  */
 #define SKYMP_NATIVE_SUBJECT_SELF 0
@@ -64,17 +70,18 @@
 #define SKYMP_NATIVE_SUBJECT_ARG0_METHOD 3
 
 /**
- * Owner: the host of the subject's cell.
+ * Owner: asked at the call (ADR-073 decision 6; the platform's OwnedHere and
+ * OwnedForRecord until step 5's owner_of).
  */
-#define SKYMP_NATIVE_OWNER_CELL_HOST 0
+#define SKYMP_NATIVE_OWNER_ASKED 0
 
 /**
- * Owner: the actor's simulator.
+ * Owner: the seat that created the subject or started the scene.
  */
-#define SKYMP_NATIVE_OWNER_SIMULATOR 1
+#define SKYMP_NATIVE_OWNER_CREATOR 1
 
 /**
- * Owner: the player's own seat.
+ * Owner: the seat's own game.
  */
 #define SKYMP_NATIVE_OWNER_PLAYER 2
 
@@ -82,11 +89,6 @@
  * Owner: nobody.
  */
 #define SKYMP_NATIVE_OWNER_NOBODY 3
-
-/**
- * Owner: the seat whose firing moved a trap body.
- */
-#define SKYMP_NATIVE_OWNER_TOUCHER 4
 
 /**
  * Audience: the subject's listeners.
@@ -174,6 +176,89 @@
 #define SKYMP_NATIVE_PARAM_OBJECT 4
 
 /**
+ * Hook: nothing beyond the row's other columns.
+ */
+#define SKYMP_NATIVE_HOOK_NONE 0
+
+/**
+ * Hook: Actor.Kill and KillSilent, batched for the death report.
+ */
+#define SKYMP_NATIVE_HOOK_DEATH_REPORT 1
+
+/**
+ * Hook: SetDestroyed on a trap family reference, batched.
+ */
+#define SKYMP_NATIVE_HOOK_TRAP_DESTROYED 2
+
+/**
+ * Hook: SetMotionType on a trap family body (its motion type the neutral
+ * argument).
+ */
+#define SKYMP_NATIVE_HOOK_TRAP_MOTION 3
+
+/**
+ * Hook: ApplyHavokImpulse on a trap family body (its magnitude the neutral
+ * argument).
+ */
+#define SKYMP_NATIVE_HOOK_TRAP_IMPULSE 4
+
+/**
+ * Hook: an alias fill, batched on every seat.
+ */
+#define SKYMP_NATIVE_HOOK_ALIAS_FILL 5
+
+/**
+ * Hook: Game.GetPlayer's result swapped inside an acting scope.
+ */
+#define SKYMP_NATIVE_HOOK_ACTING_RETURN 6
+
+/**
+ * Hook: a quest's stage, carrying the acting scope and its cause.
+ */
+#define SKYMP_NATIVE_HOOK_QUEST_STAGE 7
+
+/**
+ * Hook: a quest's start, likewise.
+ */
+#define SKYMP_NATIVE_HOOK_QUEST_START 8
+
+/**
+ * Hook: a quest's stop, likewise.
+ */
+#define SKYMP_NATIVE_HOOK_QUEST_STOP 9
+
+/**
+ * Hook: a global's write, skipped on a player's own inside another's scope.
+ */
+#define SKYMP_NATIVE_HOOK_PLAYER_GLOBAL 10
+
+/**
+ * Hook: a placement that may make this seat's local helper.
+ */
+#define SKYMP_NATIVE_HOOK_EFFECT_HELPER 11
+
+/**
+ * Hook: a deletion that lets a local helper go.
+ */
+#define SKYMP_NATIVE_HOOK_HELPER_DELETE 12
+
+/**
+ * Hook: an AddItem whose leveled roll is parked until it lands.
+ */
+#define SKYMP_NATIVE_HOOK_LEVELED_LANDING 13
+
+/**
+ * Hook: a scene's start, counted inside a scope rooted at a relay.
+ */
+#define SKYMP_NATIVE_HOOK_SCENE_START 14
+
+/**
+ * The largest hook code: a row with a larger one is a table this build does
+ * not read.
+ */
+#define SKYMP_NATIVE_HOOK_LAST 14
+
+/**
  * The callback `Tick` calls once per event: packet type, content and its
  * length, an error text (never null), and the caller's state. Null is
  * allowed and means "drop the events". It may unwind: Skyrim Platform calls
@@ -237,6 +322,11 @@ typedef struct SkympNativeRow {
    * Its parameters' types in order (`SKYMP_NATIVE_PARAM_*`).
    */
   uint8_t params[SKYMP_NATIVE_MAX_PARAMS];
+  /**
+   * What the seam does with its call beyond the rest (`SKYMP_NATIVE_HOOK_*`,
+   * wire-rules' `Hook::code`).
+   */
+  uint8_t hook;
 } SkympNativeRow;
 
 #ifdef __cplusplus

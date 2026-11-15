@@ -23,7 +23,7 @@ use crate::{guard, log};
 /// plugin whose table holds another count binds no row there. The compiler
 /// checks it against the table; after natives-gen changes the count, set it
 /// here and run `just wire-header`.
-pub const SKYMP_NATIVE_ROWS: usize = 50;
+pub const SKYMP_NATIVE_ROWS: usize = 52;
 const _: () = assert!(
     SKYMP_NATIVE_ROWS == TABLE.len(),
     "SKYMP_NATIVE_ROWS is wire-rules' TABLE.len()"
@@ -41,6 +41,9 @@ pub const SKYMP_NATIVE_KIND_STATE: u8 = 1;
 pub const SKYMP_NATIVE_KIND_EVERYONE: u8 = 2;
 /// Kind: never sent.
 pub const SKYMP_NATIVE_KIND_LOCAL: u8 = 3;
+/// Kind: a creation (a reference placed, a scene started), judged as a state
+/// row until ADR-073 decision 13's placement.
+pub const SKYMP_NATIVE_KIND_CREATE: u8 = 4;
 
 /// Subject: the call's self.
 pub const SKYMP_NATIVE_SUBJECT_SELF: u8 = 0;
@@ -51,16 +54,15 @@ pub const SKYMP_NATIVE_SUBJECT_NONE: u8 = 2;
 /// Subject: a method's first argument, its self another form.
 pub const SKYMP_NATIVE_SUBJECT_ARG0_METHOD: u8 = 3;
 
-/// Owner: the host of the subject's cell.
-pub const SKYMP_NATIVE_OWNER_CELL_HOST: u8 = 0;
-/// Owner: the actor's simulator.
-pub const SKYMP_NATIVE_OWNER_SIMULATOR: u8 = 1;
-/// Owner: the player's own seat.
+/// Owner: asked at the call (ADR-073 decision 6; the platform's OwnedHere and
+/// OwnedForRecord until step 5's owner_of).
+pub const SKYMP_NATIVE_OWNER_ASKED: u8 = 0;
+/// Owner: the seat that created the subject or started the scene.
+pub const SKYMP_NATIVE_OWNER_CREATOR: u8 = 1;
+/// Owner: the seat's own game.
 pub const SKYMP_NATIVE_OWNER_PLAYER: u8 = 2;
 /// Owner: nobody.
 pub const SKYMP_NATIVE_OWNER_NOBODY: u8 = 3;
-/// Owner: the seat whose firing moved a trap body.
-pub const SKYMP_NATIVE_OWNER_TOUCHER: u8 = 4;
 
 /// Audience: the subject's listeners.
 pub const SKYMP_NATIVE_AUDIENCE_LISTENERS: u8 = 0;
@@ -100,6 +102,42 @@ pub const SKYMP_NATIVE_PARAM_STRING: u8 = 3;
 /// Parameter: an object.
 pub const SKYMP_NATIVE_PARAM_OBJECT: u8 = 4;
 
+/// Hook: nothing beyond the row's other columns.
+pub const SKYMP_NATIVE_HOOK_NONE: u8 = 0;
+/// Hook: Actor.Kill and KillSilent, batched for the death report.
+pub const SKYMP_NATIVE_HOOK_DEATH_REPORT: u8 = 1;
+/// Hook: SetDestroyed on a trap family reference, batched.
+pub const SKYMP_NATIVE_HOOK_TRAP_DESTROYED: u8 = 2;
+/// Hook: SetMotionType on a trap family body (its motion type the neutral
+/// argument).
+pub const SKYMP_NATIVE_HOOK_TRAP_MOTION: u8 = 3;
+/// Hook: ApplyHavokImpulse on a trap family body (its magnitude the neutral
+/// argument).
+pub const SKYMP_NATIVE_HOOK_TRAP_IMPULSE: u8 = 4;
+/// Hook: an alias fill, batched on every seat.
+pub const SKYMP_NATIVE_HOOK_ALIAS_FILL: u8 = 5;
+/// Hook: Game.GetPlayer's result swapped inside an acting scope.
+pub const SKYMP_NATIVE_HOOK_ACTING_RETURN: u8 = 6;
+/// Hook: a quest's stage, carrying the acting scope and its cause.
+pub const SKYMP_NATIVE_HOOK_QUEST_STAGE: u8 = 7;
+/// Hook: a quest's start, likewise.
+pub const SKYMP_NATIVE_HOOK_QUEST_START: u8 = 8;
+/// Hook: a quest's stop, likewise.
+pub const SKYMP_NATIVE_HOOK_QUEST_STOP: u8 = 9;
+/// Hook: a global's write, skipped on a player's own inside another's scope.
+pub const SKYMP_NATIVE_HOOK_PLAYER_GLOBAL: u8 = 10;
+/// Hook: a placement that may make this seat's local helper.
+pub const SKYMP_NATIVE_HOOK_EFFECT_HELPER: u8 = 11;
+/// Hook: a deletion that lets a local helper go.
+pub const SKYMP_NATIVE_HOOK_HELPER_DELETE: u8 = 12;
+/// Hook: an AddItem whose leveled roll is parked until it lands.
+pub const SKYMP_NATIVE_HOOK_LEVELED_LANDING: u8 = 13;
+/// Hook: a scene's start, counted inside a scope rooted at a relay.
+pub const SKYMP_NATIVE_HOOK_SCENE_START: u8 = 14;
+/// The largest hook code: a row with a larger one is a table this build does
+/// not read.
+pub const SKYMP_NATIVE_HOOK_LAST: u8 = 14;
+
 /// One row of the table, every string NUL-terminated and valid for the
 /// process's life.
 #[repr(C)]
@@ -129,6 +167,9 @@ pub struct SkympNativeRow {
     pub param_count: u8,
     /// Its parameters' types in order (`SKYMP_NATIVE_PARAM_*`).
     pub params: [u8; SKYMP_NATIVE_MAX_PARAMS],
+    /// What the seam does with its call beyond the rest (`SKYMP_NATIVE_HOOK_*`,
+    /// wire-rules' `Hook::code`).
+    pub hook: u8,
 }
 
 fn kind_code(kind: Kind) -> u8 {
@@ -137,6 +178,7 @@ fn kind_code(kind: Kind) -> u8 {
         Kind::State => SKYMP_NATIVE_KIND_STATE,
         Kind::Everyone => SKYMP_NATIVE_KIND_EVERYONE,
         Kind::Local => SKYMP_NATIVE_KIND_LOCAL,
+        Kind::Create => SKYMP_NATIVE_KIND_CREATE,
     }
 }
 
@@ -151,11 +193,10 @@ fn subject_code(subject: Subject) -> u8 {
 
 fn owner_code(owner: Owner) -> u8 {
     match owner {
-        Owner::CellHost => SKYMP_NATIVE_OWNER_CELL_HOST,
-        Owner::Simulator => SKYMP_NATIVE_OWNER_SIMULATOR,
+        Owner::Asked => SKYMP_NATIVE_OWNER_ASKED,
+        Owner::Creator => SKYMP_NATIVE_OWNER_CREATOR,
         Owner::Player => SKYMP_NATIVE_OWNER_PLAYER,
         Owner::Nobody => SKYMP_NATIVE_OWNER_NOBODY,
-        Owner::Toucher => SKYMP_NATIVE_OWNER_TOUCHER,
     }
 }
 
@@ -256,6 +297,7 @@ fn build() -> Option<Rows> {
             look: look_code(row.look),
             param_count: u8::try_from(row.params.len()).ok()?,
             params,
+            hook: row.hook.code(),
         });
     }
     Some(Rows {
@@ -296,6 +338,7 @@ pub unsafe extern "C" fn SkympNativeRows(count: *mut usize) -> *const SkympNativ
 mod tests {
     use super::*;
     use std::ffi::CStr;
+    use wire_rules::natives::Hook;
 
     fn text(p: *const c_char) -> &'static str {
         assert!(!p.is_null());
@@ -328,10 +371,32 @@ mod tests {
             );
             assert_eq!((r.keep, r.record), keep_codes(t.keep));
             assert_eq!(r.look, look_code(t.look));
+            assert_eq!(r.hook, t.hook.code());
             assert_eq!(usize::from(r.param_count), t.params.len());
             let params: Vec<u8> = t.params.iter().map(|p| param_code(*p)).collect();
             assert_eq!(r.params.get(..t.params.len()), Some(params.as_slice()));
         }
+        // the header's hook codes are wire-rules' own
+        let codes = [
+            SKYMP_NATIVE_HOOK_NONE,
+            SKYMP_NATIVE_HOOK_DEATH_REPORT,
+            SKYMP_NATIVE_HOOK_TRAP_DESTROYED,
+            SKYMP_NATIVE_HOOK_TRAP_MOTION,
+            SKYMP_NATIVE_HOOK_TRAP_IMPULSE,
+            SKYMP_NATIVE_HOOK_ALIAS_FILL,
+            SKYMP_NATIVE_HOOK_ACTING_RETURN,
+            SKYMP_NATIVE_HOOK_QUEST_STAGE,
+            SKYMP_NATIVE_HOOK_QUEST_START,
+            SKYMP_NATIVE_HOOK_QUEST_STOP,
+            SKYMP_NATIVE_HOOK_PLAYER_GLOBAL,
+            SKYMP_NATIVE_HOOK_EFFECT_HELPER,
+            SKYMP_NATIVE_HOOK_HELPER_DELETE,
+            SKYMP_NATIVE_HOOK_LEVELED_LANDING,
+            SKYMP_NATIVE_HOOK_SCENE_START,
+        ];
+        assert_eq!(codes.map(usize::from), std::array::from_fn(|i| i));
+        assert_eq!(Hook::ALL.map(Hook::code), codes);
+        assert_eq!(Some(&SKYMP_NATIVE_HOOK_LAST), codes.last());
         // the install line's relay words, as NativeRows.inc spelled them
         let relays: Vec<&str> = rows.iter().map(|r| text(r.relay)).collect();
         assert_eq!(

@@ -115,6 +115,11 @@ pub enum Kind {
     Everyone,
     /// A call whose consequence stays on its seat; never sent.
     Local,
+    /// A call that creates a reference or starts a scene (thuum ADR-073
+    /// decision 6: a created reference is its creator's, a scene its
+    /// starter's, D-L2 B): judged as a state row until decision 13's
+    /// placement ([`channel_of`]).
+    Create,
 }
 
 /// Where a call's subject stands.
@@ -134,20 +139,26 @@ pub enum Subject {
     Nothing,
 }
 
-/// Who owns the subject's scripts (6.6, ADR-063 decision 1).
+/// Who owns the subject's scripts (6.6, ADR-063 decision 1). Since thuum
+/// ADR-073 step 4's S4 the table names no owner a subject's kind would
+/// infer (decision 6: "owners are asked, never inferred"): a row on a
+/// subject asks, and each end keeps its runtime test until step 5's
+/// owner_of (the server's owner steps over the facts the core gathers, the
+/// platform's OwnedHere and OwnedForRecord).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Owner {
-    /// A world object's: the host of its cell.
-    CellHost,
-    /// An actor's: its simulator (hosted and not a puppet).
-    Simulator,
-    /// The player's own: its seat.
+    /// Asked of owner_of at the call: the cell's host for a world object, the
+    /// simulator for an actor, the toucher for a moving trap body, the
+    /// player's own seat for its own actor (decision 6's open row kinds).
+    Asked,
+    /// The seat that created the subject or started the scene (decision 6;
+    /// D-L2 B for a scene, D-A2 C's cause seat for a stage's).
+    Creator,
+    /// The seat's own game: a static on no object (the spec's New 1), or a
+    /// row that never leaves its seat.
     Player,
     /// A quest's, a global's, an alias's: nobody's (D-F1 C).
     Nobody,
-    /// A trap body's: the seat whose firing moved it (ADR-068 D-S3 point 4,
-    /// ADR-058's toucher rule for props).
-    Toucher,
 }
 
 /// Who hears an accepted call.
@@ -280,6 +291,160 @@ pub enum Look {
     Only,
 }
 
+/// What the platform's seam or the client does with a row's call beyond its
+/// other cells (thuum ADR-073 step 4's S4): the seam's name lists
+/// (ScriptNatives.cpp's ten and the V-scene's scene starts) made one column,
+/// set by the overlay's entries. Each code is a list under decision 5 and
+/// says its class, its replacing rule and its deleting condition in
+/// [`Hook::line`], the "Content-specific code:" line of [`Hook::verb`]'s doc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hook {
+    /// Nothing beyond the row's other cells.
+    None,
+    /// Actor.Kill, KillSilent: batched, the death report's cause 3.
+    DeathReport,
+    /// ObjectReference.SetDestroyed on a trap family reference: batched,
+    /// DestructionStage's single-use result (ADR-068 D-S3 point 3).
+    TrapDestroyed,
+    /// ObjectReference.SetMotionType on a trap family body: batched for the
+    /// prop claim, neutralized on a followed body (D-S3 point 4).
+    TrapMotion,
+    /// ObjectReference.ApplyHavokImpulse on a trap family body: as
+    /// [`Hook::TrapMotion`], its magnitude the neutral argument.
+    TrapImpulse,
+    /// ReferenceAlias.ForceRefTo, Clear: batched on every seat as AliasFill
+    /// 79 (ADR-068 rung 4, amendment B).
+    AliasFill,
+    /// Game.GetPlayer: its result the acting player's figure inside another
+    /// player's acting scope (rung 5's return swap).
+    ActingReturn,
+    /// Quest.SetCurrentStageID: the acting scope carried to the stage it
+    /// sets, its cause marked (read 7's propagation, D-Q4 C).
+    QuestStage,
+    /// Quest.Start: as [`Hook::QuestStage`], for the start.
+    QuestStart,
+    /// Quest.Stop: as [`Hook::QuestStage`], for the stop.
+    QuestStop,
+    /// GlobalVariable.SetValue: never written on a player's own global inside
+    /// another player's acting scope (PQ-3).
+    PlayerGlobal,
+    /// ObjectReference.PlaceAtMe: a helper's placement inside this seat's own
+    /// player's effect (train 52's Fix 2, D-H1 B).
+    EffectHelper,
+    /// ObjectReference.Delete: a helper let go (train 52's Fix 2).
+    HelperDelete,
+    /// ObjectReference.AddItem: a leveled list on the seat's own player
+    /// parked until its roll lands (train 52's Fix 1).
+    LeveledLanding,
+    /// Scene.Start, ForceStart: counted and run inside a scope rooted at a
+    /// relay (train 53's V-scene, ADR-073 D-A2 C).
+    SceneStart,
+}
+
+impl Hook {
+    /// Every code, in the order of its number.
+    pub const ALL: [Hook; 15] = [
+        Hook::None,
+        Hook::DeathReport,
+        Hook::TrapDestroyed,
+        Hook::TrapMotion,
+        Hook::TrapImpulse,
+        Hook::AliasFill,
+        Hook::ActingReturn,
+        Hook::QuestStage,
+        Hook::QuestStart,
+        Hook::QuestStop,
+        Hook::PlayerGlobal,
+        Hook::EffectHelper,
+        Hook::HelperDelete,
+        Hook::LeveledLanding,
+        Hook::SceneStart,
+    ];
+
+    /// The code's number, skymp_wire.h's `SKYMP_NATIVE_HOOK_*`.
+    #[must_use]
+    pub fn code(self) -> u8 {
+        match self {
+            Hook::None => 0,
+            Hook::DeathReport => 1,
+            Hook::TrapDestroyed => 2,
+            Hook::TrapMotion => 3,
+            Hook::TrapImpulse => 4,
+            Hook::AliasFill => 5,
+            Hook::ActingReturn => 6,
+            Hook::QuestStage => 7,
+            Hook::QuestStart => 8,
+            Hook::QuestStop => 9,
+            Hook::PlayerGlobal => 10,
+            Hook::EffectHelper => 11,
+            Hook::HelperDelete => 12,
+            Hook::LeveledLanding => 13,
+            Hook::SceneStart => 14,
+        }
+    }
+
+    /// The code's name in the ledger and the generated client file.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Hook::None => "",
+            Hook::DeathReport => "death-report",
+            Hook::TrapDestroyed => "trap-destroyed",
+            Hook::TrapMotion => "trap-motion",
+            Hook::TrapImpulse => "trap-impulse",
+            Hook::AliasFill => "alias-fill",
+            Hook::ActingReturn => "acting-return",
+            Hook::QuestStage => "quest-stage",
+            Hook::QuestStart => "quest-start",
+            Hook::QuestStop => "quest-stop",
+            Hook::PlayerGlobal => "player-global",
+            Hook::EffectHelper => "effect-helper",
+            Hook::HelperDelete => "helper-delete",
+            Hook::LeveledLanding => "leveled-landing",
+            Hook::SceneStart => "scene-start",
+        }
+    }
+
+    /// The verb doc (thuum docs/verbs/) whose Ownership section carries the
+    /// code's "Content-specific code:" line; none for [`Hook::None`].
+    #[must_use]
+    pub fn verb(self) -> &'static str {
+        match self {
+            Hook::None => "",
+            Hook::DeathReport => "npc-fate.md",
+            Hook::TrapDestroyed | Hook::TrapMotion | Hook::TrapImpulse => "traps.md",
+            Hook::AliasFill | Hook::ActingReturn | Hook::QuestStage | Hook::QuestStart | Hook::QuestStop | Hook::SceneStart => "quest-stage.md",
+            Hook::PlayerGlobal => "player-globals.md",
+            Hook::EffectHelper | Hook::HelperDelete => "second-hand.md",
+            Hook::LeveledLanding => "papyrus-events.md",
+        }
+    }
+
+    /// The code's line under thuum ADR-073 decision 5: its class ((a) a
+    /// declared R3 set, (b) a consistency bound, (c) a stopgap), and for a
+    /// stopgap the rule that replaces it and the condition that deletes it.
+    #[must_use]
+    pub fn line(self) -> &'static str {
+        match self {
+            Hook::None => "",
+            Hook::DeathReport => "Actor.Kill and KillSilent are batched for the client's DeathReportService, which reads a script's kill as cause 3: a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the actor's change form carries its death); deletes when ChangeForm 72 carries a living actor's death and the death report reads its cause there",
+            Hook::TrapDestroyed => "ObjectReference.SetDestroyed on a trap family reference is batched as DestructionStage's single-use result (ADR-068 D-S3 point 3): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the reference's change form carries its destroyed flag); deletes when ChangeForm 72 carries a non-actor reference's destruction",
+            Hook::TrapMotion => "ObjectReference.SetMotionType on a trap family body is batched for PropService's claim and, on a body another seat streams, run with motion type 4 (Keyframed) (ADR-068 D-S3 point 4): a stopgap (decision 5 (c)), replaced by ADR-071's one prop stream (every Havok body one prop row, owned by the engine that set it moving); deletes when a trap body's claim comes from that stream's own motion read",
+            Hook::TrapImpulse => "ObjectReference.ApplyHavokImpulse on a trap family body is batched for PropService's claim and, on a body another seat streams, run with magnitude 0 (ADR-068 D-S3 point 4): a stopgap (decision 5 (c)), replaced by ADR-071's one prop stream; deletes with the trap-motion hook",
+            Hook::AliasFill => "ReferenceAlias.ForceRefTo and Clear are batched on every seat as AliasFill 79 (ADR-068 rung 4, amendment B; D-F1 C): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the quest's change form carries its alias fills, HYPOTHESIS until read); deletes when ChangeForm 72 carries a quest's aliases",
+            Hook::ActingReturn => "Game.GetPlayer's result is the acting player's figure inside another player's acting scope (ADR-068 rung 5's return swap): a stopgap (decision 5 (c)), replaced by D2's singleton sink evidence (the spec's New 1 and G8: a read whose result is the player singleton, by its sink); deletes when x-native-effects reads GetPlayer's result as the singleton and the rule keys on it",
+            Hook::QuestStage => "Quest.SetCurrentStageID carries the acting scope to the stage it sets (rung 5's read 7) and marks its cause (D-Q4 C): a stopgap (decision 5 (c)), replaced by the stage's own engine event (the quest stage sink) reading the setting stack's scope and cause, decision 11's cause key; deletes when step 1's quest record and the forward take the cause from the sink alone",
+            Hook::QuestStart => "Quest.Start carries the acting scope to the start and marks its cause: as the quest-stage hook, a stopgap (decision 5 (c)) with the same replacing rule and deleting condition",
+            Hook::QuestStop => "Quest.Stop carries the acting scope to the stop and marks its cause: as the quest-stage hook, a stopgap (decision 5 (c)) with the same replacing rule and deleting condition",
+            Hook::PlayerGlobal => "GlobalVariable.SetValue is skipped on a player's own global (playerGlobals) inside another player's acting scope (PQ-3): a stopgap (decision 5 (c)), replaced by the spec's New 1 acting-seat rule keyed on a global ADR-073 makes derived (playerGlobals from every reader); deletes when playerGlobals is derived and the scoped column carries it",
+            Hook::EffectHelper => "ObjectReference.PlaceAtMe of an activator, a static or a light inside this seat's own player's effect places a local helper (train 52's Fix 2, D-H1 B): a declared R3 set (decision 5 (a): an effect's local helpers, ADR-073's R3 list), its natives named by this hook until decision 13's spell channel types a spell's placement; deletes with spellPlacedObjects when that channel lands",
+            Hook::HelperDelete => "ObjectReference.Delete on a local helper lets it go (train 52's Fix 2): the effect-helper hook's declared R3 set (decision 5 (a)), deleting with it",
+            Hook::LeveledLanding => "ObjectReference.AddItem of a leveled list on the seat's own player is parked until its AddItemFunctor lands the roll (train 52's Fix 1, D-R1 C's leveled gap): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the player's inventory change form carries what landed); deletes when the player's inventory travels by its change form",
+            Hook::SceneStart => "Scene.Start and ForceStart are counted and run inside a scope rooted at a relay (train 53's V-scene, ADR-073 D-A2 C): a stopgap (decision 5 (c)), replaced by step 5a's scene row (decision 6, D-L2 B: the starting seat, the stage's cause seat, claims the scene's actors); deletes at 5a's scene row",
+        }
+    }
+}
+
 /// A parameter's Papyrus type, as the platform reads the frame's variable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Param {
@@ -318,6 +483,8 @@ pub struct Row {
     pub look: Look,
     /// Its parameters in order (FunctionsDump.txt's types for the native).
     pub params: &'static [Param],
+    /// What the seam or the client does with its call beyond the rest.
+    pub hook: Hook,
 }
 
 include!("natives_table.rs");
@@ -326,7 +493,9 @@ include!("natives_table.rs");
 /// ObjectAnimation (MsgType 71) carried: an accepted call of a row relayed
 /// as one of these also writes the "animates" line ObjectAnimation's handler
 /// wrote (b-puzzle-relay and its kin claim it), until rung 7 retires
-/// lastAnimation.
+/// lastAnimation. Content-specific code (thuum ADR-073 decision 5): a
+/// stopgap (decision 5 (c)), replaced by rung 7's script record carrying the
+/// graph's own state; deletes with lastAnimation at rung 7.
 const GRAPH_EVENT_RELAYS: [(&str, &str); 2] = [("ObjectReference", "PlayAnimation"), ("Debug", "SendAnimationEvent")];
 
 /// Argument indices for a relay of every argument: a native takes at most
@@ -773,7 +942,9 @@ fn channel_of(row: &Row) -> Result<Channel, Refusal> {
     }
     match row.kind {
         Kind::Action => {}
-        Kind::State => {
+        // a creation is judged as a state row until ADR-073 decision 13's
+        // placement (the step 4 spec's 2.1)
+        Kind::State | Kind::Create => {
             return match row.keep {
                 Keep::Evidence => Ok(Channel::Evidence),
                 Keep::Record(kind) => Ok(Channel::Record(kind)),
@@ -789,8 +960,10 @@ fn channel_of(row: &Row) -> Result<Channel, Refusal> {
     let Some((cls, func)) = row.relay_target() else {
         return Err(refusal(Code::Row, "an action row the table never relays".to_owned()));
     };
-    if row.owner != Owner::CellHost || row.audience != Audience::Listeners {
-        return Err(refusal(Code::Row, format!("an action row owned by the {:?} for the {:?}: no relay before its rung", row.owner, row.audience)));
+    // the owner is asked at the owner step (thuum ADR-073 decision 6), never
+    // read from the row: an action row is relayed to its subject's listeners
+    if row.audience != Audience::Listeners {
+        return Err(refusal(Code::Row, format!("an action row for the {:?}: no relay before its rung", row.audience)));
     }
     Ok(Channel::Relay { cls, func })
 }
@@ -1714,13 +1887,15 @@ mod tests {
         // three trap rows, rung 4's seven (the standing's six and
         // ReferenceAlias.Clear), D-W2's Sound.Play and CreateDetectionEvent
         // and rung 5's seven player's own rows (D-E1 A's ChangeHeadPart the
-        // seventh): "50 of 50 table rows bound". D-R1 C keeps the flip's
-        // AddItem and RemoveItem as the player's own inventory in place, so
-        // nine rows are the player's own, in player_own's order
-        assert_eq!(TABLE.len(), 50);
+        // seventh), then train 53's two scene starts (thuum ADR-073 step 4's
+        // S4, the V-scene hook): "52 of 52 table rows bound". D-R1 C keeps the
+        // flip's AddItem and RemoveItem as the player's own inventory in
+        // place, so nine rows are the player's own, in player_own's order
+        assert_eq!(TABLE.len(), 52);
         let own: Vec<(&str, &str)> = TABLE.iter().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func)).collect();
-        assert_eq!(own, crate::player_own::ROWS);
-        assert!(own.iter().all(|(c, f)| crate::player_own::Row::of(c, f).is_some()));
+        assert_eq!(own, crate::player_own::rows().collect::<Vec<_>>());
+        assert_eq!(own.len(), 9);
+        assert!(own.iter().all(|(c, f)| crate::player_own::Row::of(c, f).is_some_and(|r| r.class() == *c)));
         assert_eq!((row_index("ObjectReference", "AddItem"), row_index("ObjectReference", "RemoveItem")), (Some(6), Some(7)));
         assert_eq!(row_index("Actor", "SetRace"), Some(43));
         let actions: Vec<&str> = TABLE.iter().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
@@ -1742,28 +1917,35 @@ mod tests {
             assert!(r.params.len() <= EVERY_ARG.len(), "{name}");
             // an action row relays to the subject's listeners, its twin's
             // arguments among the call's; every other row is never relayed
+            // every owner on a subject is asked (ADR-073 decision 6), a
+            // creation's its creator's, nobody's row nobody's, and the seat's
+            // own row (Game.GetPlayer) its player's
+            let owner = match r.kind {
+                Kind::Everyone => Owner::Nobody,
+                Kind::Local => Owner::Player,
+                Kind::Create => Owner::Creator,
+                Kind::Action | Kind::State if r.keep == Keep::Record(RecordKind::Placement) => Owner::Creator,
+                Kind::Action | Kind::State => Owner::Asked,
+            };
+            assert_eq!(r.owner, owner, "{name}");
             if r.kind == Kind::Action {
                 let audience = r.audience == Audience::Listeners || (r.look == Look::Only && r.audience == Audience::Host);
-                assert!(r.relay_target().is_some() && audience && r.owner == Owner::CellHost, "{name}");
+                assert!(r.relay_target().is_some() && audience, "{name}");
                 assert!(r.relay_args().iter().all(|&a| usize::from(a) < r.params.len()), "{name}");
             } else if r.keep == Keep::Evidence {
                 // a row kept as evidence is an actor's state row, its
                 // simulator's, heard by nobody, its subject its self and its
                 // first parameter the object the evidence names
-                assert_eq!((r.kind, r.subject, r.owner, r.audience, r.relay), (Kind::State, Subject::SelfRef, Owner::Simulator, Audience::Nobody, Relay::Never), "{name}");
+                assert_eq!((r.kind, r.subject, r.audience, r.relay), (Kind::State, Subject::SelfRef, Audience::Nobody, Relay::Never), "{name}");
                 assert_eq!(r.params.first(), Some(&Param::Object), "{name}");
             } else if let Keep::Record(kind) = r.keep {
                 // a row kept as its subject's record is a state row on its
-                // self, heard by nobody as an action, never relayed: the
-                // ref state and the placements a world object's (the cell's
-                // host), the standing an NPC's (its simulator)
+                // self, heard by nobody as an action, never relayed; whose
+                // record it is the owner step asks (record_owner: the cell's
+                // host for the ref state, the simulator for the standing, the
+                // reporter's own player for a player's own)
                 assert_eq!((r.kind, r.subject, r.audience, r.relay), (Kind::State, Subject::SelfRef, Audience::Nobody, Relay::Never), "{name}");
-                let owner = match kind {
-                    RecordKind::Standing => Owner::Simulator,
-                    RecordKind::PlayerOwn => Owner::Player,
-                    RecordKind::RefState | RecordKind::Placement => Owner::CellHost,
-                };
-                assert_eq!(r.owner, owner, "{name}");
+                assert!(matches!(kind, RecordKind::RefState | RecordKind::Standing | RecordKind::Placement | RecordKind::PlayerOwn), "{name}");
             } else {
                 assert_eq!((r.relay, r.keep), (Relay::Never, Keep::Nothing), "{name}");
             }
@@ -1775,7 +1957,7 @@ mod tests {
             // a look-only row is on a world object's own call: an action row's
             // shape or a trap row's state, never kept
             if r.look == Look::Only {
-                assert_eq!((r.keep, r.owner == Owner::Simulator), (Keep::Nothing, false), "{name}");
+                assert_eq!(r.keep, Keep::Nothing, "{name}");
             }
             // a kept row keeps a graph event
             if r.keep == Keep::Last {
@@ -1793,8 +1975,36 @@ mod tests {
         let everyone: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
         // the flip's nineteen state rows, D-S3's three, the standing's six and
-        // rung 5's seven player's own
+        // rung 5's seven player's own; the two scene starts are creations,
+        // judged as state rows (channel_of)
         assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 35);
+        let creations: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Create).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        assert_eq!(creations, ["Scene.Start", "Scene.ForceStart"]);
+        assert_eq!((row_index("Scene", "Start"), row_index("Scene", "ForceStart")), (Some(50), Some(51)));
+        // the hooks (thuum ADR-073 step 4's S4): each code's rows, the seam's
+        // ten name lists and the V-scene's scene starts as one column, and
+        // every code a line under decision 5 naming its verb doc
+        let hooked = |hook: Hook| -> Vec<String> { TABLE.iter().filter(|r| r.hook == hook).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
+        assert_eq!(hooked(Hook::DeathReport), ["Actor.Kill", "Actor.KillSilent"]);
+        assert_eq!(hooked(Hook::TrapDestroyed), ["ObjectReference.SetDestroyed"]);
+        assert_eq!(hooked(Hook::TrapMotion), ["ObjectReference.SetMotionType"]);
+        assert_eq!(hooked(Hook::TrapImpulse), ["ObjectReference.ApplyHavokImpulse"]);
+        assert_eq!(hooked(Hook::AliasFill), ["ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
+        assert_eq!(hooked(Hook::ActingReturn), ["Game.GetPlayer"]);
+        assert_eq!(hooked(Hook::QuestStage), ["Quest.SetCurrentStageID"]);
+        assert_eq!(hooked(Hook::QuestStart), ["Quest.Start"]);
+        assert_eq!(hooked(Hook::QuestStop), ["Quest.Stop"]);
+        assert_eq!(hooked(Hook::PlayerGlobal), ["GlobalVariable.SetValue"]);
+        assert_eq!(hooked(Hook::EffectHelper), ["ObjectReference.PlaceAtMe"]);
+        assert_eq!(hooked(Hook::HelperDelete), ["ObjectReference.Delete"]);
+        assert_eq!(hooked(Hook::LeveledLanding), ["ObjectReference.AddItem"]);
+        assert_eq!(hooked(Hook::SceneStart), ["Scene.Start", "Scene.ForceStart"]);
+        for (i, hook) in Hook::ALL.iter().enumerate() {
+            assert_eq!(usize::from(hook.code()), i, "{hook:?}");
+            assert_eq!((hook.name().is_empty(), hook.verb().is_empty(), hook.line().is_empty()), (*hook == Hook::None, *hook == Hook::None, *hook == Hook::None), "{hook:?}");
+            assert!(*hook == Hook::None || hook.line().contains("decision 5 ("), "{hook:?}");
+            assert!(!hook.line().contains('\u{2014}'), "{hook:?}");
+        }
         assert_eq!(row("Game", "GetPlayer").map(|r| r.kind), Some(Kind::Local));
         // the three rows kept as their subject's variable (the fifty fixes'
         // D-C3 A)
@@ -1814,6 +2024,27 @@ mod tests {
         assert_eq!(row_index("Actor", "SetFactionRank"), Some(34));
         assert_eq!(row_index("ReferenceAlias", "Clear"), Some(40));
         assert_eq!((RecordKind::RefState.code(), RecordKind::Standing.code(), RecordKind::Placement.code()), (1, 2, 3));
+    }
+
+    // thuum ADR-073 step 4's S4: channel_of reads no owner (decision 6, owners
+    // asked at the owner step), so an action row whose owner is asked is
+    // relayed, and a creation is judged as a state row until decision 13
+    #[test]
+    fn an_asked_action_row_is_relayed_and_a_creation_is_judged_as_state() {
+        let play = row("ObjectReference", "PlayAnimation");
+        assert_eq!(play.map(|r| r.owner), Some(Owner::Asked));
+        assert!(play.is_some_and(|r| matches!(channel_of(r), Ok(Channel::Relay { .. }))));
+        let mut s = ScriptCalls::default();
+        assert!(matches!(s.judge(play, &[Arg::String], &hosted(PILLAR), 0), Verdict::Accept(_)));
+        // every action row of the table passes channel_of
+        assert!(TABLE.iter().filter(|r| r.kind == Kind::Action).all(|r| channel_of(r).is_ok()), "an action row refused by its row");
+        // a scene's start: a creation, its starter's, with no record channel
+        let start = row("Scene", "Start");
+        assert_eq!(start.map(|r| (r.kind, r.owner, r.hook)), Some((Kind::Create, Owner::Creator, Hook::SceneStart)));
+        let refused = start.and_then(|r| channel_of(r).err());
+        assert_eq!(refused.as_ref().map(|r| r.code), Some(Code::Row));
+        assert!(refused.is_some_and(|r| r.why.starts_with("a state row with no record channel")));
+        assert_eq!(code(&s.judge(start, &[], &hosted(PILLAR), 0)), Some(Code::Row));
     }
 
     // Bleak Falls Temple's ambush draugr 0x800a6, which the hanging blades

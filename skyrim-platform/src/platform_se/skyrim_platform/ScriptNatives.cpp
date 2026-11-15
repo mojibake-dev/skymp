@@ -95,13 +95,17 @@ uint64_t NowMs()
  */
 
 // a row's kind and subject, wire-rules natives_table.rs's columns as
-// skymp_wire.h codes them (thuum docs/NATIVES.md)
+// skymp_wire.h codes them (thuum docs/NATIVES.md). Create (thuum ADR-073
+// decision 6, step 4's S4): a creation, a reference placed or a scene
+// started, judged as a state row until decision 13's placement; only the
+// scene starts are tabled so (their hook), and the seam judges them by it
 enum class NativeKind : std::uint8_t
 {
   Action,
   State,
   Everyone,
-  Local
+  Local,
+  Create
 };
 
 // Arg0Method (thuum ADR-068 D-W2 A, the plan's section 7.2(a)): a method
@@ -118,12 +122,12 @@ enum class NativeSubject : std::uint8_t
 
 // skymp_wire.h's codes are these enums' values (wire-client-ffi
 // native_rows.rs), so a row's code is its enum's value
-static_assert(static_cast<int>(NativeKind::Action) ==
-                SKYMP_NATIVE_KIND_ACTION &&
-              static_cast<int>(NativeKind::State) == SKYMP_NATIVE_KIND_STATE &&
-              static_cast<int>(NativeKind::Everyone) ==
-                SKYMP_NATIVE_KIND_EVERYONE &&
-              static_cast<int>(NativeKind::Local) == SKYMP_NATIVE_KIND_LOCAL);
+static_assert(
+  static_cast<int>(NativeKind::Action) == SKYMP_NATIVE_KIND_ACTION &&
+  static_cast<int>(NativeKind::State) == SKYMP_NATIVE_KIND_STATE &&
+  static_cast<int>(NativeKind::Everyone) == SKYMP_NATIVE_KIND_EVERYONE &&
+  static_cast<int>(NativeKind::Local) == SKYMP_NATIVE_KIND_LOCAL &&
+  static_cast<int>(NativeKind::Create) == SKYMP_NATIVE_KIND_CREATE);
 static_assert(
   static_cast<int>(NativeSubject::Self) == SKYMP_NATIVE_SUBJECT_SELF &&
   static_cast<int>(NativeSubject::Arg0) == SKYMP_NATIVE_SUBJECT_ARG0 &&
@@ -141,8 +145,8 @@ struct NativeRow
   // "none"): the server's table relays by it; said in the install line
   const char* relay = "none";
   // the row as MpClientPlugin hands it, its other columns (owner, audience,
-  // keep and its record kind, look, parameters) the seam reads from ADR-073
-  // step 4's S4 on
+  // keep and its record kind, look, parameters, hook), which ReadRow reads
+  // in place of the seam's name lists (ADR-073 step 4's S4)
   SkympNativeRow columns{};
 };
 
@@ -158,7 +162,10 @@ constexpr std::size_t kRowCount = SKYMP_NATIVE_ROWS;
 std::array<NativeRow, kRowCount> g_natives{};
 
 // the state rows whose owned call crosses in the batch, as kind "state",
-// with its arguments, its caller and the caller's self (QueueFromFrame):
+// with its arguments, its caller and the caller's self (QueueFromFrame),
+// read from each row's columns since thuum ADR-073 step 4's S4 (ReadRow:
+// a record keep but a placement's, the evidence keep, or the death-report
+// hook), where a list named them before:
 // rung 2's two, whose kill the client's death report reads there (cause 3,
 // skymp5-client's DeathReportService), the flip's never-dropped kill rows;
 // ProcessTrapHit, a trap's hit on an actor this seat simulates (its self the
@@ -218,47 +225,16 @@ enum class RecordRow : std::uint8_t
   PlayerOwn
 };
 
-struct BatchedRowName
-{
-  const char* cls;
-  const char* fn;
-  RecordRow record;
-};
-
-constexpr BatchedRowName kBatchedStateRows[] = {
-  { "Actor", "Kill", RecordRow::None },
-  { "Actor", "KillSilent", RecordRow::None },
-  { "ObjectReference", "ProcessTrapHit", RecordRow::None },
-  { "ObjectReference", "Enable", RecordRow::RefState },
-  { "ObjectReference", "EnableNoWait", RecordRow::RefState },
-  { "ObjectReference", "Disable", RecordRow::RefState },
-  { "ObjectReference", "DisableNoWait", RecordRow::RefState },
-  { "ObjectReference", "Delete", RecordRow::RefState },
-  { "Actor", "SetFactionRank", RecordRow::Standing },
-  { "Actor", "ModFactionRank", RecordRow::Standing },
-  { "Actor", "RemoveFromFaction", RecordRow::Standing },
-  { "Actor", "RemoveFromAllFactions", RecordRow::Standing },
-  { "Actor", "SetCrimeFaction", RecordRow::Standing },
-  { "Actor", "SetRelationshipRank", RecordRow::Standing },
-  { "Actor", "SetRace", RecordRow::PlayerOwn },
-  { "Actor", "AddSpell", RecordRow::PlayerOwn },
-  { "Actor", "RemoveSpell", RecordRow::PlayerOwn },
-  { "Actor", "AddShout", RecordRow::PlayerOwn },
-  { "Actor", "RemoveShout", RecordRow::PlayerOwn },
-  { "Actor", "EquipItem", RecordRow::PlayerOwn },
-  { "Actor", "ChangeHeadPart", RecordRow::PlayerOwn },
-  { "ObjectReference", "AddItem", RecordRow::PlayerOwn },
-  { "ObjectReference", "RemoveItem", RecordRow::PlayerOwn }
-};
-
 // thuum docs/DECISIONS.md ADR-068 D-S3 (traps follow the interaction;
 // TrapFamily.h): the three state rows whose call on a trap family reference
 // crosses in the batch as kind "state" (the slice's interface of
-// 2026-11-05): SetDestroyed, a single-use result skymp5-client reports as
-// DestructionStage (point 3), and SetMotionType and ApplyHavokImpulse, the
-// firing that sets a trap body moving, which the client's prop stream claims
-// (point 4). On a body another seat streams (TrapFamily::Followed) the two
-// motion rows run with a neutral argument instead and are not queued
+// 2026-11-05), each by its row's hook since ADR-073 step 4's S4: SetDestroyed
+// (trap-destroyed), a single-use result skymp5-client reports as
+// DestructionStage (point 3), and SetMotionType and ApplyHavokImpulse
+// (trap-motion, trap-impulse), the firing that sets a trap body moving,
+// which the client's prop stream claims (point 4). On a body another seat
+// streams (TrapFamily::Followed) the two motion rows run with a neutral
+// argument instead and are not queued
 enum class TrapRow : std::uint8_t
 {
   None,
@@ -267,60 +243,40 @@ enum class TrapRow : std::uint8_t
   Impulse
 };
 
-struct TrapRowName
-{
-  const char* cls;
-  const char* fn;
-  TrapRow trap;
-};
-
-constexpr TrapRowName kTrapRows[] = {
-  { "ObjectReference", "SetDestroyed", TrapRow::Destroyed },
-  { "ObjectReference", "SetMotionType", TrapRow::Motion },
-  { "ObjectReference", "ApplyHavokImpulse", TrapRow::Impulse }
-};
-
 // thuum ADR-068 amendment B (rung 4, AliasFill's reference half; the plan's
-// 1(a)): the two everyone rows whose call crosses in the batch on every
-// seat, as kind "everyone" (OnAliasCall): ReferenceAlias.ForceRefTo (its
-// argument the reference) and Clear, which skymp5-client reports as
-// AliasFill 79. An alias has no owner (D-F1 C: every seat's quests run), so
-// every seat runs the call and reports it, and the server keeps the latest
-// fill per quest and alias; the call's self is the alias's quest and its
-// alias the alias's id (AliasIdOfHandle)
-constexpr std::pair<const char*, const char*> kAliasRows[] = {
-  { "ReferenceAlias", "ForceRefTo" },
-  { "ReferenceAlias", "Clear" }
-};
-
+// 1(a)): the everyone rows whose call crosses in the batch on every seat, as
+// kind "everyone" (OnAliasCall), by the row's alias-fill hook since ADR-073
+// step 4's S4: ReferenceAlias.ForceRefTo (its argument the reference) and
+// Clear, which skymp5-client reports as AliasFill 79. An alias has no owner
+// (D-F1 C: every seat's quests run), so every seat runs the call and reports
+// it, and the server keeps the latest fill per quest and alias; the call's
+// self is the alias's quest and its alias the alias's id (AliasIdOfHandle).
+//
 // thuum ADR-068 D-W2 A (the trigger's own calls from its firing seat; the
-// plan's section 7.2(a)): the look-only rows, which cross only as a trap
-// family trigger's look (OnFamilyCall) and are counted " (local)" and never
-// queued anywhere else, so a hosted world script's sound or noise stays
-// local as today. Sound.Play (FunctionsDump.txt: `Int Play(ObjectReference
-// akSource)`, not latent; NativeSubject::Arg0Method, its subject the source,
-// its call's self the Sound), and ObjectReference.CreateDetectionEvent
-// (`CreateDetectionEvent(Actor akOwner, Int aiSoundLevel)`, not latent; its
-// subject and self the reference it is called on, the trigger: SoundTrap's
-// [active] onBeginState calls it on self with lastTriggerRef as akOwner, op
-// 23 of USSEP's copy by lab/pex.py), carried so a guest's bone alarm still
-// wakes the NPCs its cell's host simulates. Every other look row is a row of
-// its own kind: the action rows, and kTrapRows' SetMotionType and
-// ApplyHavokImpulse
-constexpr std::pair<const char*, const char*> kLookOnlyRows[] = {
-  { "Sound", "Play" },
-  { "ObjectReference", "CreateDetectionEvent" }
-};
-
+// plan's section 7.2(a)): the look-only rows, an action row whose look column
+// is Only (RowInfo::lookOnly, read from the columns since S4), which cross
+// only as a trap family trigger's look (OnFamilyCall) and are counted
+// " (local)" and never queued anywhere else, so a hosted world script's sound
+// or noise stays local as today. Sound.Play (FunctionsDump.txt: `Int
+// Play(ObjectReference akSource)`, not latent; NativeSubject::Arg0Method, its
+// subject the source, its call's self the Sound), and
+// ObjectReference.CreateDetectionEvent (`CreateDetectionEvent(Actor akOwner,
+// Int aiSoundLevel)`, not latent; its subject and self the reference it is
+// called on, the trigger: SoundTrap's [active] onBeginState calls it on self
+// with lastTriggerRef as akOwner, op 23 of USSEP's copy by lab/pex.py),
+// carried so a guest's bone alarm still wakes the NPCs its cell's host
+// simulates. Every other look row is a row of its own kind: the action rows,
+// and the trap rows' SetMotionType and ApplyHavokImpulse.
+//
 // thuum ADR-068 rung 5 (the acting scope, ActingScope.h; docs/research/
-// rung5-quests-2026-11-09.md 1(c)): the local row whose result a scoped
-// stack reads as the acting player's figure (Game.GetPlayer, the Local
-// branch's swapReturn), and the three everyone rows whose call inside a
-// scoped stack carries the scope to the stage or the word it sets (read 7's
-// propagation, PropagateScope)
-constexpr std::pair<const char*, const char*> kPlayerRow{ "Game",
-                                                          "GetPlayer" };
-
+// rung5-quests-2026-11-09.md 1(c)), by the rows' hooks since S4: the local
+// row whose result a scoped stack reads as the acting player's figure
+// (acting-return, Game.GetPlayer, the Local branch's swapReturn), and the
+// three everyone rows whose call inside a scoped stack carries the scope to
+// the stage or the word it sets (quest-stage, quest-start, quest-stop:
+// read 7's propagation, PropagateScope); and PQ-3 (the plan's section
+// 8(a)): the everyone row a scoped stack never runs on a player's own global
+// (player-global, GlobalVariable.SetValue; ActingScope::PlayerGlobals)
 enum class QuestRow : std::uint8_t
 {
   None,
@@ -329,28 +285,13 @@ enum class QuestRow : std::uint8_t
   Stop
 };
 
-struct QuestRowName
-{
-  const char* cls;
-  const char* fn;
-  QuestRow quest;
-};
-
-constexpr QuestRowName kQuestRows[] = { { "Quest", "SetCurrentStageID",
-                                          QuestRow::Stage },
-                                        { "Quest", "Start", QuestRow::Start },
-                                        { "Quest", "Stop", QuestRow::Stop } };
-
-// PQ-3 (the plan's section 8(a)): the everyone row a scoped stack never runs
-// on a player's own global (ActingScope::PlayerGlobals)
-constexpr std::pair<const char*, const char*> kGlobalSetRow{ "GlobalVariable",
-                                                             "SetValue" };
-
 // V-scene (thuum ADR-073, D-A2 C: the stage's cause seat owns a scene a
 // fragment starts; playtest 52's ritual scene 5dba7, started and stopped on
 // the guest that applied the relayed stage 185, read R-V1 of train 53): the
 // two natives that start a scene (FunctionsDump.txt: Scene's `ForceStart()`
-// and `Start()`, not latent, no return), whose call inside an acting scope
+// and `Start()`, not latent, no return; the scene-start hook's rows since
+// ADR-073 step 4's S4, creations the seam judges by the hook alone, where
+// a list of their names stood before), whose call inside an acting scope
 // rooted at a relay (ActingScope::RootKind::kRelayed: a stage, a start or a
 // stop another seat set, applied here, and everything chained inside it) is
 // counted and said here (OnCall's step (0)), and run. The skip D-A2 C asks
@@ -364,34 +305,20 @@ constexpr std::pair<const char*, const char*> kGlobalSetRow{ "GlobalVariable",
 // seat's copy is stopped and its end fragment's stage held (82b209da). A
 // scope rooted at a trigger entry (kTrigger), its chained stages' included,
 // is not counted: this seat's engine set those stages for the presser
-// (defaultStartSceneTrigScript; MS13's 38386 stage 10). No table row holds
-// them (wire-rules natives_table.rs), so InstallHooks binds the game module's
-// IFunction of each by class and name, written before the dispatch hook
-// attaches and never after
-constexpr std::pair<const char*, const char*> kSceneStartNatives[] = {
-  { "Scene", "Start" },
-  { "Scene", "ForceStart" }
-};
-std::array<const RE::BSScript::IFunction*, std::size(kSceneStartNatives)>
-  g_sceneStarts{};
+// (defaultStartSceneTrigScript; MS13's 38386 stage 10). Every other call of
+// a scene start runs as an untabled native's did, uncounted (OnCall)
 
 // thuum train 52, Fix 2 (the plan's section 2; ADR-068 decision 6, D-S2 B,
-// D-H1 B): the row whose call inside this seat's own player's effect may
-// place a local helper, PlaceAtMe (FunctionsDump.txt: `ObjectReference
+// D-H1 B), by the rows' hooks since ADR-073 step 4's S4: the row whose call
+// inside this seat's own player's effect may place a local helper
+// (effect-helper, PlaceAtMe; FunctionsDump.txt: `ObjectReference
 // PlaceAtMe(Form akFormToPlace, Int aiCount, Bool abForcePersist, Bool
 // abInitiallyDisabled)`, not latent), and the row whose call on a helper
-// lets it go, Delete
-constexpr std::pair<const char*, const char*> kPlaceAtMeRow{ "ObjectReference",
-                                                             "PlaceAtMe" };
-constexpr std::pair<const char*, const char*> kDeleteRow{ "ObjectReference",
-                                                          "Delete" };
-
-// thuum train 52, Fix 1 (D-R1 C's leveled gap; the plan's section 1.3): the
-// row whose call of a leveled list on the seat's own player is parked until
-// its AddItemFunctor lands the roll, AddItem (FunctionsDump.txt: `AddItem(Form
-// akItemToAdd, Int aiCount, Bool abSilent)`, latent)
-constexpr std::pair<const char*, const char*> kAddItemRow{ "ObjectReference",
-                                                           "AddItem" };
+// lets it go (helper-delete, Delete). And train 52, Fix 1 (D-R1 C's leveled
+// gap; the plan's section 1.3): the row whose call of a leveled list on the
+// seat's own player is parked until its AddItemFunctor lands the roll
+// (leveled-landing, AddItem; FunctionsDump.txt: `AddItem(Form akItemToAdd,
+// Int aiCount, Bool abSilent)`, latent)
 
 // at most 11 arguments (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15,
 // "native supports max 11")
@@ -412,32 +339,37 @@ struct RowInfo
   // no array parameter and at most kMaxArgs of them: the wire's SnippetArg
   // carries a bool, a number, a string or an object, never an array
   bool relayable = false;
+  // every field below is read from the row's columns (ReadRow, ADR-073 step
+  // 4's S4): a batched state row (the batch's rows, above)
   bool batchedState = false;
-  // the row's record kind among kBatchedStateRows (rung 4), None for every
-  // other row: a RefState row's owner is OwnedForRecord's, and the lever's
-  // `recorded` skips its latent body on a non-owner; a standing row's owner
-  // is OwnedHere's and its body is never skipped (the fresh review, note 1)
+  // the row's record kind by its keep (rung 4), None for every other row: a
+  // RefState row's owner is OwnedForRecord's, and the lever's `recorded`
+  // skips its latent body on a non-owner; a standing row's owner is
+  // OwnedHere's and its body is never skipped (the fresh review, note 1)
   RecordRow record = RecordRow::None;
-  // one of kAliasRows (rung 4): batched on every seat (OnAliasCall)
+  // the alias-fill hook (rung 4): batched on every seat (OnAliasCall)
   bool alias = false;
-  // the row's place among kTrapRows (D-S3), None for every other row
+  // the row's trap hook (D-S3), None for every other row
   TrapRow trap = TrapRow::None;
-  // D-W2 A: a look row (an action row, SetMotionType, ApplyHavokImpulse, a
-  // look-only row), and one of kLookOnlyRows
+  // D-W2 A: a look row (its look column Also or Only: an action row,
+  // SetMotionType, ApplyHavokImpulse, a look-only row), and a look-only row
   bool look = false;
   bool lookOnly = false;
-  // rung 5: Game.GetPlayer's row (kPlayerRow), and the row's place among
-  // kQuestRows, None for every other row
+  // rung 5: the acting-return hook (Game.GetPlayer), and the row's quest
+  // hook, None for every other row
   bool getPlayer = false;
   QuestRow quest = QuestRow::None;
-  // PQ-3: GlobalVariable.SetValue's row (kGlobalSetRow)
+  // PQ-3: the player-global hook (GlobalVariable.SetValue)
   bool globalSet = false;
-  // train 52's Fix 2: PlaceAtMe's row (kPlaceAtMeRow) and Delete's
-  // (kDeleteRow)
+  // train 52's Fix 2: the effect-helper hook (PlaceAtMe) and the
+  // helper-delete hook (Delete)
   bool placeAtMe = false;
   bool deletes = false;
-  // train 52's Fix 1: AddItem's row (kAddItemRow)
+  // train 52's Fix 1: the leveled-landing hook (AddItem)
   bool addItem = false;
+  // train 53's V-scene: the scene-start hook (Scene.Start, ForceStart),
+  // judged by its hook alone
+  bool sceneStart = false;
   // the declared return's kind (TypeInfo::GetUnmangledRawType)
   RE::BSScript::TypeInfo::RawType result =
     RE::BSScript::TypeInfo::RawType::kNone;
@@ -673,7 +605,13 @@ std::uint32_t EveryoneSelfId(const RE::BSScript::Variable& self)
 // the player's own actor (0x14) is this seat's; a live actor is its
 // simulator's (hosted here and no puppet, Hosted.h and Puppets.h; a figure,
 // 0xff000000 and up, is never in the hosted set); a world object is its
-// cell host's (Frida::IsCellHosted, the set SetCellHosted keeps)
+// cell host's (Frida::IsCellHosted, the set SetCellHosted keeps). Every row
+// on a subject names its owner Asked (thuum ADR-073 step 4's S4), and this
+// is the seat's runtime answer until step 5's owner_of. Content-specific
+// code (ADR-073 decision 5): the player's id 0x14 and the parent cell stand
+// for an owner here, a stopgap (decision 5 (c)), replaced by step 5's
+// owner_of mirrored from the server's owner table (decision 6); deletes when
+// ActorOwner and OwnerAck land (ADR-066 decisions 2 and 5)
 bool OwnedHere(const RE::TESObjectREFR* ref, bool isActor)
 {
   const std::uint32_t id = ref->formID;
@@ -696,7 +634,10 @@ bool OwnedHere(const RE::TESObjectREFR* ref, bool isActor)
 // docs/research/trap-census-2026-11-05.md:162), and its cell's host enables
 // it. An actor at or above 0xff000000 never is (the players'
 // figures and what they place begin there, the gate's line in OnCall): its
-// owner is the server's word alone
+// owner is the server's word alone. Content-specific code (ADR-073
+// decision 5): the id range and the parent cell stand for an owner here, a
+// stopgap (decision 5 (c)) with OwnedHere's replacing rule and deleting
+// condition (step 5's owner_of)
 bool OwnedForRecord(const RE::TESObjectREFR* ref, bool isActor)
 {
   const std::uint32_t id = ref->formID;
@@ -954,6 +895,8 @@ const char* KindName(NativeKind kind)
       return "state";
     case NativeKind::Everyone:
       return "everyone";
+    case NativeKind::Create:
+      return "create";
     case NativeKind::Local:
       break;
   }
@@ -1781,8 +1724,8 @@ bool Neutralize(const RowInfo& info, const RE::BSScript::StackFrame* top,
 // extent, so the engine-level animation hooks leave it too, and is never
 // queued (every seat plays it from its own firing: no ScriptCall, no mirror,
 // no lastAnimation). A state row is the copy's own state, except the three
-// kTrapRows, which cross in the batch as kind "state"; a followed body's two
-// motion rows run neutralized instead, counted " (followed)".
+// trap hooks' rows, which cross in the batch as kind "state"; a followed
+// body's two motion rows run neutralized instead, counted " (followed)".
 //
 // First, D-W2's look (thuum docs/DECISIONS.md ADR-068, "D-W2 A and D-C3 A",
 // Eli 2026-11-07; docs/research/fifty-fixes-2026-11-07.md section 7.2(a)):
@@ -1881,10 +1824,10 @@ Marks OnFamilyCall(std::size_t row, const RowInfo& info,
 }
 
 // rung 4's AliasFill, the reference half (thuum ADR-068 amendment B; the
-// plan's 1(a)): an alias row's call (kAliasRows) queued on every seat, its
-// self the alias's quest (the handle's low 32 bits, EveryoneSelfId's id) and
-// beside it the alias's id (AliasIdOfHandle), its arguments, caller and
-// caller's self as every batched call carries them; never counted (a
+// plan's 1(a)): an alias row's call (the alias-fill hook) queued on every
+// seat, its self the alias's quest (the handle's low 32 bits, EveryoneSelfId's
+// id) and beside it the alias's id (AliasIdOfHandle), its arguments, caller
+// and caller's self as every batched call carries them; never counted (a
 // batched call is the batch's). Filtered here (rule 9) as the engine's own
 // GetObjectForHandle filters an alias's handle (adr065 Q1: 53512 refuses a
 // form that is no Quest, FormTypes.h:217): a self whose handle is no
@@ -2131,14 +2074,6 @@ std::uint32_t SwapPlayer(const RE::BSScript::IFunction* fn,
   return swapped;
 }
 
-// V-scene's test: one of the bound scene starts (kSceneStartNatives), asked
-// only on a stack scoped to a relay's root (rule 9)
-bool IsSceneStart(const RE::BSScript::IFunction* fn)
-{
-  return std::find(g_sceneStarts.begin(), g_sceneStarts.end(), fn) !=
-    g_sceneStarts.end();
-}
-
 // V-scene's line, the first per scene in each census window (g_sceneLines;
 // the scene by its self's handle, EveryoneSelfId's read, 0 when it names no
 // form): which start, the calling script, the scope's player, and why it
@@ -2258,7 +2193,7 @@ QuestCause::Self SelfKindOf(std::uint32_t subject)
 }
 
 // D-Q4 C (QuestCause.h; the run-cause read's rule): a Quest row's call (the
-// table's SetCurrentStageID, Start and Stop, kQuestRows) marked with its
+// table's SetCurrentStageID, Start and Stop, the quest hooks) marked with its
 // verdict for the pair it sets. The verdict is the stack's own once it joined
 // a fragment's, else its root frame's class, read in one walk (RootFrameOf;
 // the frame's script and function as NameCaller reads a caller's, its self's
@@ -2499,31 +2434,35 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     marks.skip = true;
     marks.result = fn->GetReturnType().GetUnmangledRawType();
   }
-  // V-scene (ADR-073 D-A2 C): a Scene.Start or ForceStart inside an acting
-  // scope rooted at a relay (kRelayed: a stage or a word another seat set,
-  // applied here, or a stage chained inside one; never a trigger entry's
-  // root, whose stages this seat's engine set) is the stage's cause seat's.
-  // Until ADR-073 step 5a's scene claim (D-L2 B) gives the cause seat the
-  // scene's actors, the call runs here and PuppetService's rule decides:
-  // the host plays it, a puppet seat's copy is stopped and its end
-  // fragment's stage held (82b209da); the would-be skip is counted on its
-  // own census row and said (LogRelayedSceneStart). Scene.Start is untabled,
-  // so returning here equals falling through (train 53's review,
-  // correctness-1: the skip ships with the claim, rule 3).
+  // (a) the table's row of this native: one hash lookup, the only cost of
+  // every untabled native in the game beside step (0)'s one relaxed load
+  // outside a scope
+  const auto it = g_rowOf.find(fn);
+  // V-scene (ADR-073 D-A2 C): a Scene.Start or ForceStart (the scene-start
+  // hook's rows) inside an acting scope rooted at a relay (kRelayed: a stage
+  // or a word another seat set, applied here, or a stage chained inside one;
+  // never a trigger entry's root, whose stages this seat's engine set) is the
+  // stage's cause seat's. Until ADR-073 step 5a's scene claim (D-L2 B) gives
+  // the cause seat the scene's actors, the call runs here and
+  // PuppetService's rule decides: the host plays it, a puppet seat's copy is
+  // stopped and its end fragment's stage held (82b209da); the would-be skip
+  // is counted on its own census row and said (LogRelayedSceneStart). A
+  // scene start's row is judged by its hook alone, so returning here equals
+  // falling through (train 53's review, correctness-1: the skip ships with
+  // the claim, rule 3).
   // HYPOTHESIS H-VS1: a relayed fragment's Scene.Start runs on the stack its
   // first native joined (Fragment_7's Game.GetPlayer, before the start), so
   // the guest logs this line for scene 5dba7
+  const bool sceneStart = it != g_rowOf.end() && g_rows[it->second].sceneStart;
   if (scope && !marks.skip && scope->root == ActingScope::RootKind::kRelayed &&
-      IsSceneStart(fn)) {
+      sceneStart) {
     g_sceneCounted.fetch_add(1, std::memory_order_relaxed);
     LogRelayedSceneStart(fn, stack, *scope);
     return marks;
   }
-  // (a) not a tabled native: nothing more, the only cost of every other
-  // native in the game (step (0)'s one relaxed load outside a scope, and one
-  // hash lookup)
-  const auto it = g_rowOf.find(fn);
-  if (it == g_rowOf.end()) {
+  // not a tabled native, or a scene start outside a relayed scope: nothing
+  // more, as before the scene starts had rows
+  if (it == g_rowOf.end() || sceneStart) {
     if (swapped != 0) {
       g_actingUntabled.fetch_add(1, std::memory_order_relaxed);
     }
@@ -2687,7 +2626,10 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // whoever hosts its cell (OnFamilyCall). An actor never is:
   // ProcessTrapHit's self is the hit actor, judged by (d) below, so the hit
   // counts on that actor's own seat alone and a non-owner's copy is counted,
-  // or skipped by the lever
+  // or skipped by the lever. Content-specific code (thuum ADR-073 decision
+  // 5): the id range and the parent cell stand for an owner here, a stopgap
+  // (decision 5 (c)), replaced by step 5's owner_of (decision 6, a toucher's
+  // row for a moving trap body); deletes with OwnedHere's lines
   if (!isActor && ref->formID < 0xff000000 && ref->GetParentCell()) {
     const RE::BSScript::Object* object = ObjectOf(*subject);
     if (object && TrapFamily::IsFamily(ref, object->GetHandle())) {
@@ -2712,7 +2654,11 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // helper's base makes another helper (WB_CrackleNew_Script's TheShooter,
   // placed at TheBox); a Delete on one lets it go. Asked only for a
   // non-actor at or above 0xff000000 (where the players' figures and what
-  // they place begin), one atomic load while the table is empty (rule 9)
+  // they place begin), one atomic load while the table is empty (rule 9).
+  // Content-specific code (thuum ADR-073 decision 5): the id range stands for
+  // the creator here, a stopgap (decision 5 (c)), replaced by step 5's
+  // owner_of answering a created reference's creator (decision 6, D-NT3 A);
+  // deletes with OwnedHere's lines
   if (!isActor && ref->formID >= 0xff000000 && IsHelper(*ref)) {
     Count(row, kCountHelper);
     if (SelfLineDue(g_helperLines[row], ref->formID)) {
@@ -2859,55 +2805,71 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
     static_cast<const RE::BSScript::NF_util::NativeFunctionBase*>(function)
       ->GetIsLatent();
   info.result = function->GetReturnType().GetUnmangledRawType();
-  for (const auto& batched : kBatchedStateRows) {
-    if (_stricmp(g_natives[row].cls, batched.cls) == 0 &&
-        _stricmp(g_natives[row].fn, batched.fn) == 0) {
-      info.batchedState = true;
-      info.record = batched.record;
+  // every judgment below is read from the row's columns (thuum ADR-073 step
+  // 4's S4: the generated table's keep, look and hook, where the seam's name
+  // lists stood), so a row is never judged by a spelling
+  const SkympNativeRow& columns = g_natives[row].columns;
+  // the record kind by the row's keep (rung 4): a placement's is none, its
+  // row never batched. Content-specific code (ADR-073 decision 5): W3's
+  // placement wait, a stopgap (decision 5 (c)), replaced by decision 13's
+  // channel (a script's placement through one typed channel, its creator's);
+  // deletes when that channel lands
+  if (columns.keep == SKYMP_NATIVE_KEEP_RECORD) {
+    switch (columns.record) {
+      case 1:
+        info.record = RecordRow::RefState;
+        break;
+      case 2:
+        info.record = RecordRow::Standing;
+        break;
+      case 4:
+        info.record = RecordRow::PlayerOwn;
+        break;
+      default:
+        break;
     }
   }
-  for (const auto& trapRow : kTrapRows) {
-    if (_stricmp(g_natives[row].cls, trapRow.cls) == 0 &&
-        _stricmp(g_natives[row].fn, trapRow.fn) == 0) {
-      info.trap = trapRow.trap;
-    }
+  // the batch's state rows: a record row but a placement, the evidence row
+  // (ProcessTrapHit), and the death report's (Kill, KillSilent)
+  info.batchedState = info.record != RecordRow::None ||
+    columns.keep == SKYMP_NATIVE_KEEP_EVIDENCE ||
+    columns.hook == SKYMP_NATIVE_HOOK_DEATH_REPORT;
+  switch (columns.hook) {
+    case SKYMP_NATIVE_HOOK_TRAP_DESTROYED:
+      info.trap = TrapRow::Destroyed;
+      break;
+    case SKYMP_NATIVE_HOOK_TRAP_MOTION:
+      info.trap = TrapRow::Motion;
+      break;
+    case SKYMP_NATIVE_HOOK_TRAP_IMPULSE:
+      info.trap = TrapRow::Impulse;
+      break;
+    case SKYMP_NATIVE_HOOK_QUEST_STAGE:
+      info.quest = QuestRow::Stage;
+      break;
+    case SKYMP_NATIVE_HOOK_QUEST_START:
+      info.quest = QuestRow::Start;
+      break;
+    case SKYMP_NATIVE_HOOK_QUEST_STOP:
+      info.quest = QuestRow::Stop;
+      break;
+    default:
+      break;
   }
-  for (const auto& [cls, name] : kAliasRows) {
-    if (_stricmp(g_natives[row].cls, cls) == 0 &&
-        _stricmp(g_natives[row].fn, name) == 0) {
-      info.alias = true;
-    }
-  }
-  for (const auto& [cls, name] : kLookOnlyRows) {
-    if (_stricmp(g_natives[row].cls, cls) == 0 &&
-        _stricmp(g_natives[row].fn, name) == 0) {
-      info.lookOnly = true;
-    }
-  }
-  // rung 5's acting scope: GetPlayer's row and the Quest rows, by name
-  info.getPlayer = _stricmp(g_natives[row].cls, kPlayerRow.first) == 0 &&
-    _stricmp(g_natives[row].fn, kPlayerRow.second) == 0;
-  for (const auto& questRow : kQuestRows) {
-    if (_stricmp(g_natives[row].cls, questRow.cls) == 0 &&
-        _stricmp(g_natives[row].fn, questRow.fn) == 0) {
-      info.quest = questRow.quest;
-    }
-  }
-  info.globalSet = _stricmp(g_natives[row].cls, kGlobalSetRow.first) == 0 &&
-    _stricmp(g_natives[row].fn, kGlobalSetRow.second) == 0;
-  // train 52's Fix 2: the effect rule's two rows, by name
-  info.placeAtMe = _stricmp(g_natives[row].cls, kPlaceAtMeRow.first) == 0 &&
-    _stricmp(g_natives[row].fn, kPlaceAtMeRow.second) == 0;
-  info.deletes = _stricmp(g_natives[row].cls, kDeleteRow.first) == 0 &&
-    _stricmp(g_natives[row].fn, kDeleteRow.second) == 0;
-  // train 52's Fix 1: the leveled landing's row, by name
-  info.addItem = _stricmp(g_natives[row].cls, kAddItemRow.first) == 0 &&
-    _stricmp(g_natives[row].fn, kAddItemRow.second) == 0;
-  // D-W2 A's look rows (the plan's section 7.2(a)): the action rows, the two
-  // motion rows among kTrapRows, and the look-only rows
-  info.look = g_natives[row].kind == NativeKind::Action ||
-    info.trap == TrapRow::Motion || info.trap == TrapRow::Impulse ||
-    info.lookOnly;
+  info.alias = columns.hook == SKYMP_NATIVE_HOOK_ALIAS_FILL;
+  info.getPlayer = columns.hook == SKYMP_NATIVE_HOOK_ACTING_RETURN;
+  info.globalSet = columns.hook == SKYMP_NATIVE_HOOK_PLAYER_GLOBAL;
+  info.placeAtMe = columns.hook == SKYMP_NATIVE_HOOK_EFFECT_HELPER;
+  info.deletes = columns.hook == SKYMP_NATIVE_HOOK_HELPER_DELETE;
+  info.addItem = columns.hook == SKYMP_NATIVE_HOOK_LEVELED_LANDING;
+  info.sceneStart = columns.hook == SKYMP_NATIVE_HOOK_SCENE_START;
+  // D-W2 A's look rows (the plan's section 7.2(a)): every row whose look
+  // column is Also or Only (the action rows, the two trap motion rows and
+  // the look-only rows), a look-only row an action row whose look is Only
+  // (Sound.Play, CreateDetectionEvent)
+  info.look = columns.look != SKYMP_NATIVE_LOOK_NEVER;
+  info.lookOnly = columns.look == SKYMP_NATIVE_LOOK_ONLY &&
+    columns.kind == SKYMP_NATIVE_KIND_ACTION;
 }
 
 // the table's rows from MpClientPlugin's SkympNativeRows (thuum ADR-073 step
@@ -2937,11 +2899,12 @@ bool LoadRows()
   for (std::size_t row = 0; row < kRowCount; ++row) {
     const SkympNativeRow& wire = rows[row];
     if (!wire.cls || !wire.func || !wire.relay ||
-        wire.kind > SKYMP_NATIVE_KIND_LOCAL ||
-        wire.subject > SKYMP_NATIVE_SUBJECT_ARG0_METHOD) {
+        wire.kind > SKYMP_NATIVE_KIND_CREATE ||
+        wire.subject > SKYMP_NATIVE_SUBJECT_ARG0_METHOD ||
+        wire.hook > SKYMP_NATIVE_HOOK_LAST) {
       logger::error("[verb:scripts] no table: MpClientPlugin's row {} holds "
-                    "a name, a kind or a subject this build does not read; "
-                    "no table row is bound",
+                    "a name, a kind, a subject or a hook this build does not "
+                    "read; no table row is bound",
                     row);
       return false;
     }
@@ -2958,23 +2921,6 @@ bool LoadRows()
   return true;
 }
 
-// a name among the seam's lists (kBatchedStateRows, kTrapRows, kAliasRows)
-// that no bound table row carries, said once at kDataLoaded: the lists find
-// their rows by class and name, so a row the table lacks or spells
-// otherwise is never silent
-void WarnUnbound(const char* list, const char* cls, const char* fn)
-{
-  for (std::size_t row = 0; row < kRowCount; ++row) {
-    if (g_rows[row].fn && _stricmp(g_natives[row].cls, cls) == 0 &&
-        _stricmp(g_natives[row].fn, fn) == 0) {
-      return;
-    }
-  }
-  logger::warn("[verb:scripts] the {} row {}.{} is no bound table row; "
-               "never judged as one",
-               list, cls, fn);
-}
-
 // how InstallHooks names a row's crossing beside its latency
 const char* CrossingNote(const RowInfo& info)
 {
@@ -2984,6 +2930,10 @@ const char* CrossingNote(const RowInfo& info)
   }
   if (info.alias) {
     return ", batched on every seat (an alias fill)";
+  }
+  if (info.sceneStart) {
+    return ", a scene start (V-scene: counted inside a scope rooted at a "
+           "relay, run until step 5a's scene claim)";
   }
   switch (info.record) {
     case RecordRow::RefState:
@@ -3576,55 +3526,18 @@ void ScriptNatives::InstallHooks()
                  info.latent ? "latent" : "not latent",
                  info.relayable ? "" : ", unrelayable (an array parameter)",
                  CrossingNote(info), native.relay);
-  }
-  logger::info("[verb:scripts] {} of {} table rows bound (wire-rules "
-               "natives_table.rs through skymp_wire.h, thuum docs/NATIVES.md)",
-               boundRows, kRowCount);
-  // V-scene: the scene starts, the game module's binding of each name, found
-  // as the rows are
-  for (std::size_t i = 0; i < std::size(kSceneStartNatives); ++i) {
-    const auto& [sceneCls, sceneFn] = kSceneStartNatives[i];
-    for (const auto& [cls, name, func, moduleBase, offset, longSig] : bound) {
-      if (moduleBase == gameBase && _stricmp(cls.c_str(), sceneCls) == 0 &&
-          _stricmp(name.c_str(), sceneFn) == 0) {
-        g_sceneStarts[i] = func;
-        break;
-      }
-    }
-    if (g_sceneStarts[i]) {
+    // V-scene's line, as it stood beside its list of the scene starts
+    if (info.sceneStart) {
       logger::info("[verb:quests] {}.{} bound: inside a scope rooted at a "
                    "relay its call is counted and run until step 5a's scene "
                    "claim; a trigger entry's root runs it uncounted (ADR-073 "
                    "D-A2 C)",
-                   sceneCls, sceneFn);
-    } else {
-      logger::warn("[verb:quests] {}.{} is not among the game module's "
-                   "bindings; a scene a relayed fragment starts here goes "
-                   "uncounted",
-                   sceneCls, sceneFn);
+                   native.cls, native.fn);
     }
   }
-  // the seam's name lists, found by class and name as the rows are
-  for (const auto& batched : kBatchedStateRows) {
-    WarnUnbound("batched state", batched.cls, batched.fn);
-  }
-  for (const auto& trapRow : kTrapRows) {
-    WarnUnbound("trap", trapRow.cls, trapRow.fn);
-  }
-  for (const auto& [cls, name] : kAliasRows) {
-    WarnUnbound("alias", cls, name);
-  }
-  for (const auto& [cls, name] : kLookOnlyRows) {
-    WarnUnbound("look-only", cls, name);
-  }
-  WarnUnbound("acting player", kPlayerRow.first, kPlayerRow.second);
-  for (const auto& questRow : kQuestRows) {
-    WarnUnbound("acting quest", questRow.cls, questRow.fn);
-  }
-  WarnUnbound("player global", kGlobalSetRow.first, kGlobalSetRow.second);
-  WarnUnbound("effect helper", kPlaceAtMeRow.first, kPlaceAtMeRow.second);
-  WarnUnbound("helper delete", kDeleteRow.first, kDeleteRow.second);
-  WarnUnbound("leveled landing", kAddItemRow.first, kAddItemRow.second);
+  logger::info("[verb:scripts] {} of {} table rows bound (wire-rules "
+               "natives_table.rs through skymp_wire.h, thuum docs/NATIVES.md)",
+               boundRows, kRowCount);
   // thuum ADR-068 D-S3: the trap family the gate and this seam read, named
   // once per process beside the table it extends (TrapFamily.h)
   TrapFamily::LogReady();

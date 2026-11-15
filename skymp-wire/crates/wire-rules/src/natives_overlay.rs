@@ -4,7 +4,10 @@
 // names the rule that replaces it and the condition that deletes it), and
 // sets only the cells the rules give otherwise; natives_rules::generate
 // refuses any other. The live entries are the live table in its order, each
-// with the comment natives_table.rs writes above its row. Edit this file,
+// with the comment natives_table.rs writes above its row. Since step 4's S4
+// no entry sets an owner the rules ask (decision 6), and the hook cells hold
+// what the platform's name lists held (natives::Hook, each code's decision 5
+// line). Edit this file,
 // then `cargo run -p wire-rules --bin natives-gen` writes the table;
 // natives_rules.rs's generated-table test refuses a stale one.
 
@@ -50,8 +53,14 @@ const SINK: &str = "D2's singleton sink evidence (the spec's New 1 and G8): a na
 /// Its deleting condition.
 const SINK_DELETES: &str = "when x-native-effects reads the native's sink and the rule keys on it (the row's evidence a trace)";
 
-/// Every overlay entry: the live table's fifty rows in its order, then the
-/// derived rows' decided cells and stopgaps.
+/// The scene starts' stopgap (train 53's V-scene hook): its replacing rule.
+const SCENE_CLAIM: &str = "step 5a's scene row (ADR-073 decision 6, D-L2 B: the seat that started a scene, the stage's cause seat by D-A2 C, claims its actors for its life)";
+/// Its deleting condition.
+const SCENE_CLAIM_DELETES: &str = "at 5a's scene row, when the cause seat's start claims the scene and the other seats skip theirs";
+
+/// Every overlay entry: the live table's fifty-two rows in its order (rung
+/// 5's fifty, then the two scene starts), then the derived rows' decided
+/// cells and stopgaps.
 pub const OVERLAY: &[Entry] = &[
     Entry {
         native: "ObjectReference.PlayAnimation",
@@ -61,42 +70,42 @@ pub const OVERLAY: &[Entry] = &[
             "the actions: relayed to the subject's listeners as the row's relay",
             "native, the graph variables' kept on the subject as well",
         ],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Keep(Keep::Last)],
+        cells: &[Cell::Keep(Keep::Last)],
     },
     Entry {
         native: "ObjectReference.PlayAnimationAndWait",
         class: Class::Decided { cites: ANIMATION },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Keep(Keep::Last)],
+        cells: &[Cell::Keep(Keep::Last)],
     },
     Entry {
         native: "Debug.SendAnimationEvent",
         class: Class::Decided { cites: STATIC_ANIMATION },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost)],
+        cells: &[],
     },
     Entry {
         native: "ObjectReference.SetAnimationVariableBool",
         class: Class::Decided { cites: VARIABLE },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Keep(Keep::Variable)],
+        cells: &[Cell::Keep(Keep::Variable)],
     },
     Entry {
         native: "ObjectReference.SetAnimationVariableInt",
         class: Class::Decided { cites: VARIABLE },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Keep(Keep::Variable)],
+        cells: &[Cell::Keep(Keep::Variable)],
     },
     Entry {
         native: "ObjectReference.SetAnimationVariableFloat",
         class: Class::Decided { cites: VARIABLE },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Keep(Keep::Variable)],
+        cells: &[Cell::Keep(Keep::Variable)],
     },
     Entry {
         native: "ObjectReference.AddItem",
@@ -113,133 +122,133 @@ pub const OVERLAY: &[Entry] = &[
             "on any other subject they are the counted state rows they were, with",
             "no channel (record_owner's E_SCRIPTCALL_ROW)",
         ],
-        cells: &[Cell::Owner(natives::Owner::Player), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
+        cells: &[Cell::Keep(Keep::Record(RecordKind::PlayerOwn)), Cell::Hook(Hook::LeveledLanding)],
     },
     Entry {
         native: "ObjectReference.RemoveItem",
         class: Class::Decided { cites: OWN_INVENTORY },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Player), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
+        cells: &[Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
     },
     Entry {
         native: "ObjectReference.Enable",
         class: Class::Decided { cites: REF_STATE },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::RefState))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::RefState))],
     },
     Entry {
         native: "ObjectReference.EnableNoWait",
         class: Class::Decided { cites: REF_STATE },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::RefState))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::RefState))],
     },
     Entry {
         native: "ObjectReference.Disable",
         class: Class::Decided { cites: REF_STATE },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::RefState))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::RefState))],
     },
     Entry {
         native: "ObjectReference.DisableNoWait",
         class: Class::Decided { cites: REF_STATE },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::RefState))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::RefState))],
     },
     Entry {
         native: "ObjectReference.Delete",
         class: Class::Decided { cites: REF_STATE },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Keep(Keep::Record(RecordKind::RefState))],
+        cells: &[Cell::Keep(Keep::Record(RecordKind::RefState)), Cell::Hook(Hook::HelperDelete)],
     },
     Entry {
         native: "ObjectReference.PlaceAtMe",
         class: Class::Decided { cites: PLACEMENT },
         live: true,
         note: &[],
-        cells: &[Cell::Kind(natives::Kind::State), Cell::Owner(natives::Owner::CellHost)],
+        cells: &[Cell::Kind(natives::Kind::State), Cell::Hook(Hook::EffectHelper)],
     },
     Entry {
         native: "ObjectReference.PlaceActorAtMe",
         class: Class::Decided { cites: PLACEMENT },
         live: true,
         note: &[],
-        cells: &[Cell::Kind(natives::Kind::State), Cell::Owner(natives::Owner::CellHost)],
+        cells: &[Cell::Kind(natives::Kind::State)],
     },
     Entry {
         native: "ObjectReference.MoveTo",
         class: Class::Decided { cites: FLIP_OBJECT },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost)],
+        cells: &[],
     },
     Entry {
         native: "ObjectReference.SetOpen",
         class: Class::Decided { cites: FLIP_OBJECT },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Relay(Relay::Never)],
+        cells: &[Cell::Relay(Relay::Never)],
     },
     Entry {
         native: "ObjectReference.Lock",
         class: Class::Decided { cites: FLIP_OBJECT },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Relay(Relay::Never)],
+        cells: &[Cell::Relay(Relay::Never)],
     },
     Entry {
         native: "ObjectReference.SetLockLevel",
         class: Class::Decided { cites: FLIP_OBJECT },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Relay(Relay::Never)],
+        cells: &[Cell::Relay(Relay::Never)],
     },
     Entry {
         native: "ObjectReference.Activate",
         class: Class::Decided { cites: FLIP_OBJECT },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Relay(Relay::Never)],
+        cells: &[Cell::Relay(Relay::Never)],
     },
     Entry {
         native: "ObjectReference.SetDestroyed",
         class: Class::Decided { cites: FLIP_OBJECT },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Relay(Relay::Never)],
+        cells: &[Cell::Relay(Relay::Never), Cell::Hook(Hook::TrapDestroyed)],
     },
     Entry {
         native: "ObjectReference.DamageObject",
         class: Class::Decided { cites: FLIP_OBJECT },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::CellHost)],
+        cells: &[],
     },
     Entry {
         native: "Actor.Kill",
         class: Class::Decided { cites: FLIP_ACTOR },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Simulator), Cell::Relay(Relay::Never)],
+        cells: &[Cell::Relay(Relay::Never), Cell::Hook(Hook::DeathReport)],
     },
     Entry {
         native: "Actor.KillSilent",
         class: Class::Decided { cites: FLIP_ACTOR },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Simulator), Cell::Relay(Relay::Never)],
+        cells: &[Cell::Relay(Relay::Never), Cell::Hook(Hook::DeathReport)],
     },
     Entry {
         native: "Actor.Resurrect",
         class: Class::Decided { cites: FLIP_ACTOR },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Simulator)],
+        cells: &[],
     },
     Entry {
         native: "Quest.SetCurrentStageID",
@@ -248,35 +257,35 @@ pub const OVERLAY: &[Entry] = &[
         note: &[
             "the flip's everyone rows: nobody owns them, every seat runs them (rung 5)",
         ],
-        cells: &[],
+        cells: &[Cell::Hook(Hook::QuestStage)],
     },
     Entry {
         native: "Quest.Start",
         class: Class::Decided { cites: NOBODYS },
         live: true,
         note: &[],
-        cells: &[],
+        cells: &[Cell::Hook(Hook::QuestStart)],
     },
     Entry {
         native: "Quest.Stop",
         class: Class::Decided { cites: NOBODYS },
         live: true,
         note: &[],
-        cells: &[],
+        cells: &[Cell::Hook(Hook::QuestStop)],
     },
     Entry {
         native: "GlobalVariable.SetValue",
         class: Class::Decided { cites: NOBODYS },
         live: true,
         note: &[],
-        cells: &[],
+        cells: &[Cell::Hook(Hook::PlayerGlobal)],
     },
     Entry {
         native: "ReferenceAlias.ForceRefTo",
         class: Class::Decided { cites: NOBODYS },
         live: true,
         note: &[],
-        cells: &[],
+        cells: &[Cell::Hook(Hook::AliasFill)],
     },
     Entry {
         native: "Game.GetPlayer",
@@ -285,7 +294,7 @@ pub const OVERLAY: &[Entry] = &[
         note: &[
             "local: the seat's own (rung 5 adds the acting player's scope)",
         ],
-        cells: &[],
+        cells: &[Cell::Hook(Hook::ActingReturn)],
     },
     Entry {
         native: "ObjectReference.ProcessTrapHit",
@@ -300,21 +309,21 @@ pub const OVERLAY: &[Entry] = &[
             "thuum docs/verbs/npc-fate.md, playtest 48: a blade kill after its",
             "trigger's 30 s was refused)",
         ],
-        cells: &[Cell::Owner(natives::Owner::Simulator), Cell::Relay(Relay::Never), Cell::Keep(Keep::Evidence)],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Evidence)],
     },
     Entry {
         native: "ObjectReference.SetMotionType",
         class: Class::Decided { cites: TRAP_MOTION },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Toucher), Cell::Look(Look::Only)],
+        cells: &[Cell::Look(Look::Only), Cell::Hook(Hook::TrapMotion)],
     },
     Entry {
         native: "ObjectReference.ApplyHavokImpulse",
         class: Class::Decided { cites: TRAP_MOTION },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Toucher), Cell::Look(Look::Only)],
+        cells: &[Cell::Look(Look::Only), Cell::Hook(Hook::TrapImpulse)],
     },
     Entry {
         native: "Actor.SetFactionRank",
@@ -329,49 +338,49 @@ pub const OVERLAY: &[Entry] = &[
             "the alias's clear, nobody's like ForceRefTo (D-F1 C), which every seat",
             "runs and AliasFill 79 carries. Appended so no earlier row's place moves",
         ],
-        cells: &[Cell::Owner(natives::Owner::Simulator), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
     },
     Entry {
         native: "Actor.ModFactionRank",
         class: Class::Decided { cites: STANDING },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Simulator), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
     },
     Entry {
         native: "Actor.RemoveFromFaction",
         class: Class::Decided { cites: STANDING },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Simulator), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
     },
     Entry {
         native: "Actor.RemoveFromAllFactions",
         class: Class::Decided { cites: STANDING },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Simulator), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
     },
     Entry {
         native: "Actor.SetCrimeFaction",
         class: Class::Decided { cites: STANDING },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Simulator), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
     },
     Entry {
         native: "Actor.SetRelationshipRank",
         class: Class::Decided { cites: STANDING },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Simulator), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::Standing))],
     },
     Entry {
         native: "ReferenceAlias.Clear",
         class: Class::Decided { cites: ALIAS_CLEAR },
         live: true,
         note: &[],
-        cells: &[],
+        cells: &[Cell::Hook(Hook::AliasFill)],
     },
     Entry {
         native: "Sound.Play",
@@ -386,7 +395,7 @@ pub const OVERLAY: &[Entry] = &[
             "Play(ObjectReference akSource), a member native returning the instance.",
             "Appended so no earlier row's place moves",
         ],
-        cells: &[Cell::Owner(natives::Owner::CellHost), Cell::Look(Look::Only)],
+        cells: &[Cell::Look(Look::Only)],
     },
     Entry {
         native: "ObjectReference.CreateDetectionEvent",
@@ -401,7 +410,7 @@ pub const OVERLAY: &[Entry] = &[
             "the NPCs the host simulates; FunctionsDump's CreateDetectionEvent(Actor",
             "akOwner, Int aiSoundLevel). Appended so no earlier row's place moves",
         ],
-        cells: &[Cell::Kind(natives::Kind::Action), Cell::Owner(natives::Owner::CellHost), Cell::Audience(Audience::Host), Cell::Look(Look::Only)],
+        cells: &[Cell::Kind(natives::Kind::Action), Cell::Audience(Audience::Host), Cell::Look(Look::Only)],
     },
     Entry {
         native: "Actor.SetRace",
@@ -421,42 +430,42 @@ pub const OVERLAY: &[Entry] = &[
             "abPreventRemoval, Bool abSilent). Appended so no earlier row's place",
             "moves",
         ],
-        cells: &[Cell::Owner(natives::Owner::Player), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
     },
     Entry {
         native: "Actor.AddSpell",
         class: Class::Decided { cites: PLAYER_OWN },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Player), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
     },
     Entry {
         native: "Actor.RemoveSpell",
         class: Class::Decided { cites: PLAYER_OWN },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Player), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
     },
     Entry {
         native: "Actor.AddShout",
         class: Class::Decided { cites: PLAYER_OWN },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Player), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
     },
     Entry {
         native: "Actor.RemoveShout",
         class: Class::Decided { cites: PLAYER_OWN },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Player), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
     },
     Entry {
         native: "Actor.EquipItem",
         class: Class::Decided { cites: PLAYER_OWN },
         live: true,
         note: &[],
-        cells: &[Cell::Owner(natives::Owner::Player), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
     },
     Entry {
         native: "Actor.ChangeHeadPart",
@@ -470,7 +479,33 @@ pub const OVERLAY: &[Entry] = &[
             "the look; FunctionsDump's ChangeHeadPart(HeadPart hPart). Appended so",
             "no earlier row's place moves",
         ],
-        cells: &[Cell::Owner(natives::Owner::Player), Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
+        cells: &[Cell::Relay(Relay::Never), Cell::Keep(Keep::Record(RecordKind::PlayerOwn))],
+    },
+    // train 53's V-scene (fork 1943abdc; ADR-073 D-A2 C): the two natives that
+    // start a scene, whose call inside a scope rooted at a relay the seam
+    // counts and runs until step 5a's scene claim, the hook that replaces the
+    // platform's own list of them (step 4's S4); creations, judged as state
+    // rows, their row never sent
+    Entry {
+        native: "Scene.Start",
+        class: Class::Stopgap { replaced_by: SCENE_CLAIM, deletes: SCENE_CLAIM_DELETES },
+        live: true,
+        note: &[
+            "train 53's V-scene (ADR-073 D-A2 C, the stage's cause seat owns a",
+            "scene a fragment starts): Scene's Start() and ForceStart(), creations",
+            "judged as state rows and never sent, whose call inside a scope rooted",
+            "at a relay the platform counts and runs (their hook) until step 5a's",
+            "scene row claims the scene's actors for its starting seat (D-L2 B).",
+            "Appended so no earlier row's place moves",
+        ],
+        cells: &[Cell::Hook(Hook::SceneStart)],
+    },
+    Entry {
+        native: "Scene.ForceStart",
+        class: Class::Stopgap { replaced_by: SCENE_CLAIM, deletes: SCENE_CLAIM_DELETES },
+        live: true,
+        note: &[],
+        cells: &[Cell::Hook(Hook::SceneStart)],
     },
     // ADR-062's BlockActivation row (DECISIONS.md:4020, "no hook
     // (host-local)": the engine's own gate on each seat), a declared per-seat

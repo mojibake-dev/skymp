@@ -1,4 +1,5 @@
 import { ScriptCall, ScriptCallsEvent, ScriptCensusEvent } from "skyrimPlatform";
+import { NATIVE_RECORD_FAMILIES } from "../../lib/nativeRows.generated";
 import { logError, logLab, logTrace } from "../../logging";
 import { MsgType } from "../../messages";
 import { ScriptCallMessage } from "../messages/scriptCallMessage";
@@ -349,7 +350,7 @@ export class ScriptCallService extends ClientListener {
     // instead (HYPOTHESIS H-RW1: an apply in the tick before the hold is
     // healed by the server's SetInventory echo). JS state alone
     private holdOwnItem(call: ScriptCall, now: number) {
-        if (call.self !== 0x14 || call.cls !== "ObjectReference" || !ScriptCallService.playerItemRows.has(call.fn)) {
+        if (call.self !== 0x14 || call.cls !== "ObjectReference" || ScriptCallService.recordFamily(call) !== "own") {
             return;
         }
         const until = now + ScriptCallService.ownItemHoldMs;
@@ -374,21 +375,12 @@ export class ScriptCallService extends ClientListener {
 
     // the record rows (docs/NATIVES.md's keep column, Record(RefState) and
     // Record(Standing), and rung 5's seven of the player's own with D-R1 C's
-    // two of its inventory), by the table's spelling
+    // two of its inventory), by the table's spelling: the generated table's
+    // keep column (thuum ADR-073 step 4's S4, nativeRows.generated.ts), never
+    // a list of names here
     private static recordFamily(call: ScriptCall): "ref" | "standing" | "own" | undefined {
-        if (call.cls === "ObjectReference" && ScriptCallService.refStateRows.has(call.fn)) {
-            return "ref";
-        }
-        if (call.cls === "ObjectReference" && ScriptCallService.playerItemRows.has(call.fn)) {
-            return "own";
-        }
-        if (call.cls === "Actor" && ScriptCallService.standingRows.has(call.fn)) {
-            return "standing";
-        }
-        if (call.cls === "Actor" && ScriptCallService.playerOwnRows.has(call.fn)) {
-            return "own";
-        }
-        return undefined;
+        const native = `${call.cls}.${call.fn}`;
+        return Object.prototype.hasOwnProperty.call(NATIVE_RECORD_FAMILIES, native) ? NATIVE_RECORD_FAMILIES[native] : undefined;
     }
 
     // the piece of state a record row's call sets (noteRecord's key with its
@@ -676,11 +668,6 @@ export class ScriptCallService extends ClientListener {
     private static readonly recordPerS = 32;
     // UNMEASURED: four thousand calls are over two minutes of the record budget
     private static readonly outgoingMax = 4096;
-    private static readonly refStateRows = new Set<string>(["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"]);
-    private static readonly standingRows = new Set<string>(["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"]);
-    private static readonly playerOwnRows = new Set<string>(["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem", "ChangeHeadPart"]);
-    // D-R1 C: the player's inventory, ObjectReference's two
-    private static readonly playerItemRows = new Set<string>(["AddItem", "RemoveItem"]);
     // UNMEASURED: two of remoteServer.ts's 5 s apply periods, far past a
     // report's round trip to the server's SetInventory
     private static readonly ownItemHoldMs = 10_000;

@@ -2288,6 +2288,55 @@ void MpObjectReference::ProcessActivateNormal(
 
   bool pickable = espm::utils::Is<espm::TREE>(t) ||
     espm::utils::Is<espm::FLOR>(t) || espm::utils::IsItem(t);
+
+  // thuum playtest 52 break 3 (lab/.cache/drafts/reads-53/r-rw-and-r-b.md,
+  // R-B): a world book's "Read" put the book in the bag, since the branch
+  // below picks up any item. Vanilla's TESObjectBOOK::Activate opens the
+  // Book Menu for the player unless the book teaches a spell (a spell tome is
+  // picked up in the world), and the menu's Take is the pickup (the static
+  // read of 2026-11-14, HYPOTHESIS until x-book-take). So a player's own
+  // activation of a world book gets flora's reply, the open (its game runs
+  // the engine's own activation, whose Book Menu is that game's alone, R3),
+  // and takes nothing; its next activation of the same book is the Take
+  // (HYPOTHESIS: the shape the client half reports it in, unbuilt until the
+  // read), and the pickup below runs as it always has. The open is forgotten
+  // at the take, at the menu's closing activation (ProcessActivateSecond),
+  // at the player's activation of anything else (its menu has closed by
+  // then) and at its disconnect. Every other activator and every other item
+  // keeps the pickup exactly as it was (only a player's game ever has a book
+  // open, and nothing else here asks who plays the activator).
+  if (actorActivator && actorActivator->GetOpenBook() != 0 &&
+      actorActivator->GetOpenBook() != GetFormId()) {
+    actorActivator->SetOpenBook(0);
+  }
+  if (pickable && espm::utils::Is<espm::BOOK>(t) && actorActivator &&
+      !reportedByHost &&
+      actorActivator->GetUserId() != Networking::InvalidUserId &&
+      !espm::Convert<espm::BOOK>(base.rec)
+         ->GetData(compressedFieldsCache)
+         .IsFlagSet(espm::BOOK::Flags::TeachesSpell)) {
+    const bool take = actorActivator->GetOpenBook() == GetFormId();
+    actorActivator->SetOpenBook(0);
+    if (IsHarvested()) {
+      return spdlog::info("[verb:books] {:x} activates book {:x}, taken "
+                          "already; nothing to open or take",
+                          actorActivator->GetFormId(), GetFormId());
+    }
+    if (!take) {
+      actorActivator->SetOpenBook(GetFormId());
+      spdlog::info("[verb:books] {:x} opens book {:x} (base {:x}) in its own "
+                   "game; the take waits for its next activation",
+                   actorActivator->GetFormId(), GetFormId(), GetBaseId());
+      // SendOpenContainer being used to activate the object
+      // TODO: rename SendOpenContainer to SendActivate
+      activationSource.SendOpenContainer(GetFormId());
+      return;
+    }
+    spdlog::info("[verb:books] {:x} takes book {:x} (base {:x}) from its "
+                 "Book Menu",
+                 actorActivator->GetFormId(), GetFormId(), GetBaseId());
+  }
+
   if (pickable && !IsHarvested()) {
     GivePickupItemsToActivationSource(activationSource, base);
     SetHarvested(true);
@@ -2526,6 +2575,16 @@ bool MpObjectReference::ProcessActivateSecond(
     if (this->occupant == &activationSource) {
       this->occupant->RemoveEventSink(this->occupantDestroySink);
       this->occupant = nullptr;
+      return true;
+    }
+  } else if (espm::utils::Is<espm::BOOK>(t) && actorActivator) {
+    // thuum playtest 52 break 3: the Book Menu's close, sent as a container's
+    // closing activation, forgets the open (ProcessActivateNormal's book
+    // branch), so the player's next activation of the book opens it again
+    if (actorActivator->GetOpenBook() == GetFormId()) {
+      actorActivator->SetOpenBook(0);
+      spdlog::info("[verb:books] {:x} closes book {:x}; nothing taken",
+                   actorActivator->GetFormId(), GetFormId());
       return true;
     }
   }

@@ -116,6 +116,9 @@ struct MpActor::Impl
   uint32_t lastBedId = 0;
   std::chrono::steady_clock::time_point lastBedTimePoint;
   uint64_t restedGrant = 0;
+  // thuum playtest 52 break 3: the world book whose Book Menu the server
+  // opened in this player's game (0 when none)
+  uint32_t openBookId = 0;
   // thuum docs/verbs/map-markers.md: the login's markers not sent yet
   bool mapMarkersPending = false;
   // thuum docs/verbs/racemenu-sync.md: the server opened the race menu and
@@ -1535,6 +1538,16 @@ std::pair<uint32_t, std::chrono::steady_clock::time_point>
 MpActor::GetLastBed() const
 {
   return { pImpl->lastBedId, pImpl->lastBedTimePoint };
+}
+
+void MpActor::SetOpenBook(uint32_t refrId)
+{
+  pImpl->openBookId = refrId;
+}
+
+uint32_t MpActor::GetOpenBook() const
+{
+  return pImpl->openBookId;
 }
 
 uint64_t MpActor::NextRestedGrant()

@@ -76,18 +76,35 @@ export class SceneClaimService extends ClientListener {
     }
 
     // PuppetService's ask (stopLocalScene): whether this seat started the
-    // scene and its claim of the actor is still unsent or unanswered
+    // scene and its claim of the actor is still unsent or unanswered, or was
+    // made and no other game's word has taken the actor since.
+    // thuum #70 (x-lead-claim 20261115-210725): rotfern started Camilla's
+    // escort scene 383b6 in the Riverwood Trader and claimed Lucan and
+    // Camilla for it (the server: "it simulates the actor until the scene
+    // ends"); when she stepped out, Lucan left her game's reach (the server
+    // took his form back, demoteOnLoss), the demote made him a puppet here,
+    // and the stop below ended her own scene 0.6 s before Camilla's escort to
+    // the bridge would have started (MS13CamillaEscorttoBridgePackage 0xced81
+    // follows the scene). A puppet by lost reach is no other seat's win: the
+    // claim stands for the scene's life (D-L2 B), so the scene plays on; one
+    // another game's word holds is stopped as before (playtest 41's Sven
+    // scene, the first claim winning)
     holdsScene(localId: number, sceneId: number): boolean {
-        if (!this.marks.holdsStop(localId, sceneId, Date.now())) {
+        const pending = this.marks.holdsStop(localId, sceneId, Date.now());
+        const kept = !pending && this.marks.isOwn(sceneId) && this.marks.claimed(localId, sceneId)
+            && !this.controller.lookupListener(HostService).isOthersLocal(localId);
+        if (!pending && !kept) {
             return false;
         }
-        const key = `${localId}:${sceneId}`;
+        const key = `${pending ? "p" : "k"}:${localId}:${sceneId}`;
         if (!this.heldLines.has(key)) {
             if (this.heldLines.size >= HELD_LINES_MAX) {
                 this.heldLines.clear();
             }
             this.heldLines.add(key);
-            logTrace(this, `scene ${hex(sceneId)} left playing on puppet ${hex(localId)}: this seat started it (${this.marks.how(sceneId)}) and its claim is pending`);
+            logTrace(this, pending
+                ? `scene ${hex(sceneId)} left playing on puppet ${hex(localId)}: this seat started it (${this.marks.how(sceneId)}) and its claim is pending`
+                : `scene ${hex(sceneId)} left playing on puppet ${hex(localId)}: this seat started it (${this.marks.how(sceneId)}) and claimed the actor, and no other game's word holds it (out of this seat's reach)`);
         }
         return true;
     }

@@ -1166,7 +1166,7 @@ TEST_CASE("A hosted game-file actor's swing lands with the weapon its "
           "record's hands hold, falls with one the record lacks until its "
           "host's equipment stream names it, and the stream's weapon is "
           "recorded beside the server's outfit, which a report lacking the "
-          "outfit never shrinks",
+          "outfit shrinks only by what the host itself wore",
           "[NpcFate][HostedEquipment][espm]")
 {
   enum : uint32_t
@@ -1178,7 +1178,8 @@ TEST_CASE("A hosted game-file actor's swing lands with the weapon its "
     kIronSword = 0x12eb7,
     kSteelWarAxe = 0x13983,
     kHideBoots = 0x13910,
-    kHideHelmet = 0x13913
+    kHideHelmet = 0x13913,
+    kFlames = 0x12fcd
   };
   auto& p = GetPartOne();
   p.worldState.npcEnabled = true;
@@ -1248,29 +1249,144 @@ TEST_CASE("A hosted game-file actor's swing lands with the weapon its "
   REQUIRE(HealthOf(p, kOther) < afterSword);
 
   // a report with nothing worn (the copy polled before its dressing): the
-  // hands follow it, the outfit stays the server's
+  // axe its last report wore comes off, the boots no report of this host
+  // wore stay the server's
   Wears(p, predator, {}, 2);
   REQUIRE_FALSE(Wearing(predator, kSteelWarAxe));
   REQUIRE(Wearing(predator, kHideBoots));
   REQUIRE(predator.GetEquipment().numChanges == 2);
 
-  // a worn item that is no weapon and that the record lacks refuses the
-  // report as before
-  Wears(p, predator, { kHideHelmet }, 3);
-  REQUIRE_FALSE(predator.GetInventory().HasItem(kHideHelmet));
-  REQUIRE_FALSE(Wearing(predator, kHideHelmet));
+  // an armor piece the record lacks (fork m4-npc-worn: a helmet the host's
+  // engine put on, a skin a script equipped) is the engine's own as a
+  // weapon is: recorded R2, into the record's inventory and worn set, the
+  // boots kept beside it (no shared slot: BOD2 0x1002 against 0x80,
+  // lab/esm.py id on sky-srv, 2026-11-14)
+  {
+    LogCapture log;
+    Wears(p, predator, { kHideHelmet }, 3);
+    REQUIRE(log.Count("E_EQUIP_UNKNOWN_ITEM") == 1);
+    REQUIRE(log.Count("E_EQUIP_REFUSED") == 0);
+  }
+  REQUIRE(predator.GetInventory().HasItem(kHideHelmet));
+  REQUIRE(Wearing(predator, kHideHelmet));
   REQUIRE(Wearing(predator, kHideBoots));
-  REQUIRE(predator.GetEquipment().numChanges == 2);
+  REQUIRE(predator.GetEquipment().numChanges == 3);
+
+  // the host's engine takes the helmet off: it leaves the worn set (the
+  // last report wore it) and stays in the inventory; the boots stay
+  Wears(p, predator, {}, 4);
+  REQUIRE_FALSE(Wearing(predator, kHideHelmet));
+  REQUIRE(predator.GetInventory().HasItem(kHideHelmet));
+  REQUIRE(Wearing(predator, kHideBoots));
+  REQUIRE(predator.GetEquipment().numChanges == 4);
+
+  // a worn form that is no item (Skyrim.esm's Flames 0x12fcd, a SPEL:
+  // lab/esm.py id on sky-srv, 2026-11-14) refuses the report as before, the
+  // record standing (E_EQUIP_REFUSED is one line a minute per actor, so the
+  // entry's own line is what is counted)
+  {
+    LogCapture log;
+    Wears(p, predator, { kFlames }, 5);
+    REQUIRE(log.Count("inventory does not contain item 12fcd") == 1);
+  }
+  REQUIRE(predator.GetEquipment().numChanges == 4);
+  REQUIRE(Wearing(predator, kHideBoots));
 
   // the shared world: the predator's hands and inventory as found
   predator.SetEquipment(Equipment{});
   predator.RemoveItem(kIronSword, 1, nullptr);
   predator.RemoveItem(kHideBoots, 1, nullptr);
   predator.RemoveItem(kSteelWarAxe, 1, nullptr);
+  predator.RemoveItem(kHideHelmet, 1, nullptr);
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
   p.DestroyActor(kHost);
   p.DestroyActor(kOther);
+}
+
+// thuum docs/verbs/npc-stream.md (fork m4-npc-worn; ADR-063: the engine that
+// simulates an actor owns what it wears): the record's worn set changes by
+// what its simulator's engine changed. A host's report takes off what that
+// host's own last report wore and now does not; what no report of the
+// connection wore yet stays, so a relaunched host (a new connection, the
+// case of 29600 after c1's relaunch in playtest 37, finding 46) whose first
+// read comes before its engine dressed the copy leaves the record whole.
+TEST_CASE("A hosted actor's worn set loses what its host took off and "
+          "nothing a new connection's first report lacks",
+          "[NpcFate][HostedEquipment][espm]")
+{
+  enum : uint32_t
+  {
+    kHost = 0xff000d70,
+    // Skyrim.esm: ArmorHideBoots, ArmorHideHelmet (BOD2 0x80 and 0x1002,
+    // lab/esm.py id on sky-srv, 2026-11-14)
+    kHideBoots = 0x13910,
+    kHideHelmet = 0x13913
+  };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kForest, 0, kTamriel);
+  p.SetUserActor(0, kHost);
+  p.TickCellHosts(FateNowMs());
+  auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form);
+  MpActor* predatorPtr = form->AsActor();
+  REQUIRE(predatorPtr);
+  MpActor& predator = *predatorPtr;
+  if (predator.IsDead()) {
+    predator.Respawn(false);
+  }
+  p.worldState.fateRespawnDue.erase(kPredator);
+  predator.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  HostGrants(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(predator) ==
+          &p.worldState.GetFormAt<MpActor>(kHost));
+
+  // the record's dress: the helmet and the boots, both held
+  predator.AddItem(kHideHelmet, 1);
+  predator.AddItem(kHideBoots, 1);
+  Equipment rolled;
+  rolled.inv.entries.push_back(Inventory::Entry(kHideHelmet, 1, kWornRight));
+  rolled.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  predator.SetEquipment(rolled);
+
+  // the host's first report names the boots alone (a read before its
+  // engine put the helmet on): nothing comes off
+  Wears(p, predator, { kHideBoots }, 1);
+  REQUIRE(Wearing(predator, kHideHelmet));
+  REQUIRE(Wearing(predator, kHideBoots));
+
+  // its engine wears both, then takes the helmet off: the helmet comes off
+  // the worn set and stays in the inventory
+  Wears(p, predator, { kHideHelmet, kHideBoots }, 2);
+  Wears(p, predator, { kHideBoots }, 3);
+  REQUIRE_FALSE(Wearing(predator, kHideHelmet));
+  REQUIRE(predator.GetInventory().HasItem(kHideHelmet));
+  REQUIRE(Wearing(predator, kHideBoots));
+  REQUIRE(predator.GetEquipment().numChanges == 3);
+
+  // the helmet on again, then the host relaunches: a new connection's first
+  // report lacking the helmet leaves it worn
+  Wears(p, predator, { kHideHelmet, kHideBoots }, 4);
+  REQUIRE(Wearing(predator, kHideHelmet));
+  DoDisconnect(p, 0);
+  DoConnect(p, 0);
+  p.SetUserActor(0, kHost);
+  HostGrants(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(predator) ==
+          &p.worldState.GetFormAt<MpActor>(kHost));
+  Wears(p, predator, { kHideBoots }, 5);
+  REQUIRE(predator.GetEquipment().numChanges == 5);
+  REQUIRE(Wearing(predator, kHideHelmet));
+  REQUIRE(Wearing(predator, kHideBoots));
+
+  // the shared world: the predator's dress and inventory as found
+  predator.SetEquipment(Equipment{});
+  predator.RemoveItem(kHideHelmet, 1, nullptr);
+  predator.RemoveItem(kHideBoots, 1, nullptr);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kHost);
 }
 
 // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any body";

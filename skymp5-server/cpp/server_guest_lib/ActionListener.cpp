@@ -2099,39 +2099,24 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 
   std::vector<uint32_t> itemIdsToUnequip;
 
-  // thuum docs/verbs/npc-fate.md (playtest 37, 2026-10-28, findings 43 and
-  // 46): a hosted actor's engine wields what its own inventory roll gave it
-  // when the fate reached it late (an interior's actor, a login's or a
-  // teleport's neighbours): the late path redresses the outfit from the
-  // server's list and leaves the engine's rolled weapon beside the server's
-  // (FateApi.cpp RedressOnGameThread; re-npc-roll.md section 11, the dresser
-  // picks by score), so the host's hands report named a weapon the record's
-  // inventory lacked (39fe4's steel war axe, 39fe2's hunting bow), the whole
-  // report was refused and every swing fell at E_HIT_WEAPON. A worn WEAP the
-  // record lacks is the engine's own roll: recorded, R2 (rule 5), the item
-  // added to the record's inventory (the body holds what it swung) with one
-  // line, so the record's hands hold what the engine wields and the hit gate
-  // stands as it is. Anything else the record lacks refuses the report as
-  // before
-  std::vector<uint32_t> engineWeapons;
-  const auto recordTypeIs = [&](uint32_t formId, const char* type) -> bool {
+  // thuum docs/verbs/npc-stream.md (fork m4-npc-worn; ADR-063: the engine
+  // that simulates an actor owns what it wears, R2): a hosted actor wears
+  // what its simulator's engine has on, so an item its report names that the
+  // record's inventory lacks is that engine's own (its roll where the fate
+  // came late, findings 43 and 46; a light its AI lit, Eli's word of
+  // 2026-11-04; a skin a script equipped, Undead FX's on a thrall; a helmet
+  // a bandit took up): recorded unvalidated (rule 5) when its record is an
+  // item the game files know (libespm utils::IsItem, the inventory's own
+  // test), the item added to the record's inventory (the body holds what it
+  // wore), one line per actor and item. Anything else (an id no file has, a
+  // form that is no item) refuses the report as before
+  std::vector<uint32_t> engineItems;
+  const auto isItemRecord = [&](uint32_t formId) -> bool {
     if (!partOne.HasEspm()) {
       return false;
     }
     const auto rec = partOne.GetEspm().GetBrowser().LookupById(formId).rec;
-    return rec && rec->GetType() == type;
-  };
-  // thuum docs/verbs/npc-fate.md (Eli's word of 2026-11-04 after oracle v4
-  // 190713's Torch01): a hosted actor's HANDS are its host's engine's, a
-  // weapon or a light its AI took up (a torch lit in a dark hall), recorded
-  // R2 as reported; its DRESS is the server's roll, the armor the fate
-  // dresses every copy from
-  const auto isHandRecord = [&](uint32_t formId) -> bool {
-    return recordTypeIs(formId, espm::WEAP::kType) ||
-      recordTypeIs(formId, espm::LIGH::kType);
-  };
-  const auto isArmorRecord = [&](uint32_t formId) -> bool {
-    return recordTypeIs(formId, espm::ARMO::kType);
+    return rec && espm::utils::IsItem(rec->GetType());
   };
 
   const auto& inventory = actor->GetInventory();
@@ -2146,11 +2131,10 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         ++it;
         continue;
       }
-      if (hosted && isHandRecord(it->baseId)) {
-        // the engine's own roll in a hosted actor's hands (findings 43 and
-        // 46), a light its AI lit the same: the entry stays in the report
+      if (hosted && isItemRecord(it->baseId)) {
+        // the simulator's engine's own item: the entry stays in the report
         // and is recorded below
-        engineWeapons.push_back(it->baseId);
+        engineItems.push_back(it->baseId);
         ++it;
         continue;
       }
@@ -2286,45 +2270,124 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   } else {
     SendToNeighbours(msg.idx, rawMsgData, true);
   }
+  // the record's worn set as the hosted report changes it (below), for the
+  // accepted line
+  size_t keptWorn = 0;
+  size_t takenOff = 0;
+  size_t displaced = 0;
   if (hosted) {
-    for (const auto weaponId : engineWeapons) {
+    for (const auto itemId : engineItems) {
       // the add's SetInventory goes to the actor's own user, which a hosted
       // actor has none of (PartOne's sendToUserDeferred drops it); nothing
       // reaches the host's game
-      actor->AddItem(weaponId, 1);
-      spdlog::info("[verb:npc-stream] E_EQUIP_UNKNOWN_WEAPON: {:x}'s hands by "
-                   "{:x} hold {:x} (a weapon or a light), which its record's "
-                   "inventory lacks "
-                   "(the engine's own roll); recorded unvalidated, the item "
-                   "added to the record",
-                   actorFormId, myActor->GetFormId(), weaponId);
+      actor->AddItem(itemId, 1);
+      const auto rec = partOne.GetEspm().GetBrowser().LookupById(itemId).rec;
+      spdlog::info("[verb:npc-stream] E_EQUIP_UNKNOWN_ITEM: {:x} by {:x} "
+                   "wears {:x} (a {} record), which its record's inventory "
+                   "lacks (its simulator's engine's own); recorded "
+                   "unvalidated, the item added to the record",
+                   actorFormId, myActor->GetFormId(), itemId,
+                   rec ? rec->GetType().ToString() : std::string("?"));
     }
-    // finding 46 (the naked bandit): the record's worn set is the fate's
-    // worn list (PartOne's FateOf), the outfit every seat's engine dresses
-    // the copy from, and this report replaced it whole: a copy polled before
-    // its dressing (nothing worn yet) or one already undressed reported no
-    // outfit, the record kept none, and the next fate redressed the copy
-    // naked on every seat (29600, "1 worn, right 1397e left 0" accepted).
-    // The outfit is the server's roll (R0): a worn ARMOR entry of the record
-    // that the report lacks stays; everything else worn (a weapon, a light,
-    // the ammo) is the host's engine's hands and follows the report, so a
-    // torch the AI put away leaves the record's hands as it left the host's
-    // (oracle v4 190713 kept Torch01 worn in the record 25 s after the
-    // re-roll while the host's actor held nothing)
-    size_t keptOutfit = 0;
+    // the record's worn set changes by what its simulator changed (ADR-063,
+    // R2; the design law's "the wire carries DELTAS"): an entry the record
+    // wears that this report lacks comes off when this connection's previous
+    // report about the actor wore it (the simulator's engine took it off),
+    // or when an entry of the report takes its place (one object a hand, one
+    // armor a biped slot: the engine's own rule); any other stays. The
+    // record's worn set is the fate's worn list (PartOne's FateOf), the
+    // dress every seat's engine puts on the copy, and a simulator's first
+    // read can come before its engine dressed the copy (finding 46, the
+    // naked bandit: 29600's "1 worn, right 1397e left 0" replaced the record
+    // whole and redressed the copy naked on every seat; the placed ff000002
+    // of 2026-11-10 first read with one of its four pieces), so a first read
+    // never shrinks the record, and every later change of the engine's (a
+    // helmet taken off, a torch put away: oracle v4 190713 kept Torch01 25 s
+    // after the host's actor let it go) does. The previous report is the
+    // connection's (UserInfo::hostedWorn), so a new host or a relaunched one
+    // starts with nothing taken off
+    std::vector<uint32_t>* previous = nullptr;
+    if (partOne.serverState.IsConnected(rawMsgData.userId)) {
+      previous = &partOne.serverState.userInfo[rawMsgData.userId]
+                    ->hostedWorn[actorFormId];
+    }
+    const auto wasReported = [&](uint32_t baseId) {
+      return previous &&
+        std::binary_search(previous->begin(), previous->end(), baseId);
+    };
+    WorldState* espmWorld = actor->GetParent();
+    // an ARMO record's biped slots (its BOD2, else its BODT), none for any
+    // other record
+    const auto armorSlots = [&](uint32_t baseId) -> std::optional<uint32_t> {
+      if (!espmWorld || !espmWorld->HasEspm()) {
+        return std::nullopt;
+      }
+      const auto res = espmWorld->GetEspm().GetBrowser().LookupById(baseId);
+      if (!res.rec || res.rec->GetType() != espm::ARMO::kType) {
+        return std::nullopt;
+      }
+      const auto armo = espm::GetData<espm::ARMO>(baseId, espmWorld);
+      return armo.bod2.present ? armo.bod2.bodyPartFlags
+        : armo.bodt.present    ? armo.bodt.bodyPartFlags
+                               : 0u;
+    };
+    // the hand an entry holds: a shield is armor in the left hand, any other
+    // armor holds none, the rest the hand its flag names
+    const auto handOf = [&](const Inventory::Entry& entry,
+                            const std::optional<uint32_t>& slots) {
+      const auto worn = entry.GetWorn();
+      if (slots && worn != Inventory::Worn::Left) {
+        return Inventory::Worn::None;
+      }
+      return worn;
+    };
+    const auto takesPlaceOf = [&](const Inventory::Entry& recordEntry) {
+      const auto slots = armorSlots(recordEntry.baseId);
+      const auto hand = handOf(recordEntry, slots);
+      for (const auto& reported : kept.inv.entries) {
+        if (reported.GetWorn() == Inventory::Worn::None) {
+          continue;
+        }
+        const auto reportedSlots = armorSlots(reported.baseId);
+        if ((slots.value_or(0) & reportedSlots.value_or(0)) != 0 ||
+            (hand != Inventory::Worn::None &&
+             hand == handOf(reported, reportedSlots))) {
+          return true;
+        }
+      }
+      return false;
+    };
+    std::vector<uint32_t> reportedWorn;
+    for (const auto& entry : kept.inv.entries) {
+      if (entry.GetWorn() != Inventory::Worn::None) {
+        reportedWorn.push_back(entry.baseId);
+      }
+    }
+    std::vector<Inventory::Entry> stays;
     for (const auto& entry : actor->GetEquipment().inv.entries) {
       if (entry.GetWorn() == Inventory::Worn::None ||
-          kept.inv.HasItem(entry.baseId) || !isArmorRecord(entry.baseId)) {
+          kept.inv.HasItem(entry.baseId)) {
         continue;
       }
-      kept.inv.AddItems({ entry });
-      ++keptOutfit;
+      if (wasReported(entry.baseId)) {
+        ++takenOff;
+        continue;
+      }
+      if (takesPlaceOf(entry)) {
+        ++displaced;
+        continue;
+      }
+      stays.push_back(entry);
     }
-    if (keptOutfit > 0) {
-      spdlog::info("[verb:npc-stream] outfit kept for {:x}: {} worn item(s) "
-                   "of the server's roll the host's report lacked (a copy "
-                   "before its dressing, or undressed)",
-                   actorFormId, keptOutfit);
+    if (!stays.empty()) {
+      kept.inv.AddItems(stays);
+      keptWorn = stays.size();
+    }
+    if (previous) {
+      std::sort(reportedWorn.begin(), reportedWorn.end());
+      reportedWorn.erase(std::unique(reportedWorn.begin(), reportedWorn.end()),
+                         reportedWorn.end());
+      *previous = std::move(reportedWorn);
     }
   }
   // D-T1 A (the fresh review's note 5): an entry that passed by the overlay
@@ -2377,9 +2440,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       }
     }
     spdlog::info("[verb:npc-stream] equipment {:x} by {:x}: {} worn, "
-                 "right {:x} left {:x}, spells {:x} {:x}, numChanges {}",
+                 "right {:x} left {:x}, spells {:x} {:x}, numChanges {}; of "
+                 "the record's worn {} kept (not yet worn in this host's "
+                 "reports), {} taken off by it, {} displaced",
                  actorFormId, myActor->GetFormId(), worn, right, left,
-                 rightSpell, leftSpell, data.numChanges);
+                 rightSpell, leftSpell, data.numChanges, keptWorn, takenOff,
+                 displaced);
   }
 
   if (dropped) {

@@ -239,6 +239,32 @@ const getExtraContainerChangesAsInventory = (
   return res;
 };
 
+// thuum docs/verbs/npc-stream.md (fork m4-npc-worn; ADR-063, ADR-065): what
+// a reference wears, as its engine records it: the base ids of its inventory
+// changes' entries one of whose extra lists carries ExtraWorn or
+// ExtraWornLeft (ADR-065: the state the engine already keeps), the flags
+// CommonLibSSE-NG's Actor::GetWornArmor tests through InventoryEntryData::IsWorn
+// (src/RE/A/Actor.cpp:642-660, src/RE/I/InventoryEntryData.cpp:223-234). One
+// native call (getExtraContainerChanges, InventoryApi.cpp), no form lookups,
+// so a poll can afford it for every actor a game simulates. An item the
+// actor wears always has a changes entry: the equip writes the flag on one
+// of its lists. Sorted by base id, each once.
+export const readWorn = (refrId: number): number[] => {
+  const worn = new Set<number>();
+  (getExtraContainerChanges(refrId) || []).forEach((entry) => {
+    if (!entry.baseId) {
+      return;
+    }
+    for (const extraList of entry.extendDataList || []) {
+      if ((extraList || []).some((extra) => extra.type === "Worn" || extra.type === "WornLeft")) {
+        worn.add(entry.baseId);
+        return;
+      }
+    }
+  });
+  return Array.from(worn).sort((a, b) => a - b);
+};
+
 const getBaseContainerAsInventory = (refr: ObjectReference): Inventory => {
   return {
     entries: getContainer((refr.getBaseObject() as ActorBase).getFormID()),

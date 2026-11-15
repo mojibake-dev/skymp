@@ -7,7 +7,7 @@ import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { applyRaceOverlay, parseRaceOverlay } from "../sync/raceOverlay";
 import { RaceOverlay } from "../services/messages/raceOverlay";
-import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands, cannotDress } from "../sync/equipment";
+import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyWorn, cannotDress, Equipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { applyBodyInventory } from "../sync/inventory";
 import * as sp from "skyrimPlatform";
@@ -81,13 +81,11 @@ export class FormView {
   // (npc-handoff D9's pass, or a door's pass since 2026-10-28)
   private hostedBefore: boolean | undefined = undefined;
 
-  // thuum docs/verbs/npc-fate.md: the fate switch (settings
-  // skymp5-client.npcFate, default off until x-npc-fate-roll): on, engine
-  // references are dressed by the engine from the server's roll
   // thuum docs/verbs/npc-stream.md (slice 1 v2): two bisect switches for the
   // puppet side of the stream, on unless the settings file says false:
   // npcStreamActions (a puppet performs or plays the host's actions at all)
-  // and npcStreamHands (a puppet's hands follow the record). Read once.
+  // and npcStreamHands (an NPC copy wears its simulator's worn list, fork
+  // m4-npc-worn; the hands alone before). Read once.
   private static streamSwitch(key: string): boolean {
     let on = FormView.streamSwitches.get(key);
     if (on === undefined) {
@@ -98,17 +96,6 @@ export class FormView {
     return on;
   }
   private static readonly streamSwitches = new Map<string, boolean>();
-
-  private static npcFateEnabled(): boolean {
-    if (FormView.npcFate === undefined) {
-      const s = settings["skymp5-client"] as Record<string, unknown> | undefined;
-      // on unless the settings file says false (ADR-046 decision 1 held at
-      // T3: x-npc-fate-pin v3 GREEN 053914, both seats, both paths)
-      FormView.npcFate = !s || s["npcFate"] !== false;
-    }
-    return FormView.npcFate;
-  }
-  private static npcFate: boolean | undefined = undefined;
 
   update(model: FormModel): void {
     // Other players mutate into PC clones when moving to another location
@@ -745,6 +732,20 @@ export class FormView {
     } else if (!loaded3D) {
       this.nodeOverridesOn3D = false;
     }
+    // thuum docs/verbs/npc-stream.md (fork m4-npc-worn): an NPC copy's worn
+    // list goes on again at each 3D load (applyNpcWorn below), as the node
+    // overrides do, since a copy whose engine dressed it anew at the load (a
+    // cell's reset, the fate's detour at a re-init) would otherwise keep that
+    // dress until its simulator's next change; where the engine kept what it
+    // wore, the apply finds nothing to change
+    if (loaded3D && !this.wornOn3D) {
+      this.wornOn3D = true;
+      if (FormView.isNpcModel(model)) {
+        this.eqState.lastNumChanges = -1;
+      }
+    } else if (!loaded3D) {
+      this.wornOn3D = false;
+    }
 
     // thuum docs/verbs/npc-fate.md (the deaths): the record's death or life
     // is this seat's too. A dead record on a live engine reference is killed
@@ -1106,36 +1107,28 @@ export class FormView {
     }
 
     // (Rule A again: a hosted actor's equipment is its engine's)
-    // thuum docs/verbs/npc-fate.md (ADR-046 decision 1): under the fate switch
-    // an engine reference is dressed by the engine itself from the server's
-    // roll (the outfit detour at its first dressing), the one shape for the
-    // host's own actor and a puppet alike, so the apply below is for copies
-    // (figures and 0xff actors) alone
-    const engineDressed = FormView.npcFateEnabled() && this.refrId !== 0 && this.refrId < 0xff000000;
-    if (model.equipment && !alreadyHosted && engineDressed && FormView.isNpcModel(model) &&
+    // thuum docs/verbs/npc-stream.md (fork m4-npc-worn; ADR-063): an NPC
+    // copy this game does not simulate wears what its simulator's engine has
+    // on, a game-file actor and a server-made copy alike: its engine dresses
+    // it from the server's roll (the fate's outfit detour at its first
+    // dressing, ADR-046 decision 1; a server-made copy's armed fate, ADR-050
+    // decision 3), and each report of its simulator changes that dress by
+    // what differs (sync/equipment.ts applyWorn), never a strip
+    // (removeAllItems, unequipAll) on an NPC
+    if (model.equipment && !alreadyHosted && FormView.isNpcModel(model) &&
       FormView.streamSwitch("npcStreamHands") &&
       this.eqState.lastNumChanges !== model.equipment.numChanges) {
-      // thuum docs/verbs/npc-stream.md (ADR-050, slice 3): an engine-dressed
-      // puppet keeps its outfit; its hands follow the host's record (the
-      // host streams what its actor wears, the server checks it against the
-      // actor's own record and relays it)
-      const ac = Actor.from(refr);
-      if (ac && !cannotDress(ac) && ac.is3DLoaded() && Date.now() - this.eqState.lastEqMoment > 500) {
-        applyHands(ac, model.equipment);
-        this.eqState.lastNumChanges = model.equipment.numChanges;
-        this.eqState.lastEqMoment = Date.now();
-      }
+      this.applyNpcWorn(refr, model.refrId ?? 0, model.equipment);
     }
     // thuum ADR-050 decision 3 (D29-C, 2026-10-26): a server-made copy this
     // game hosts is never dressed by this view (train-47's once-dress is
-    // reverted here, D28-B); train 51 pins the server's roll into it the way
-    // a game-file actor's fate does, so Rule A holds from the first apply
-    if (model.equipment && !alreadyHosted && !engineDressed) {
+    // reverted here, D28-B); a player's figure is dressed from its record
+    if (model.equipment && !alreadyHosted && !FormView.isNpcModel(model)) {
       // thuum ADR-046, decision 2: a figure's spells stay the server's. A
       // distributor adds its abilities at the actor's load, after the
       // equipment's apply, so the figure is swept every ten seconds (a few
       // Papyrus calls per figure) beside the apply's own strip
-      if (!FormView.isNpcModel(model) && this.spawnMoment > 0 && Date.now() - this.spellSweepAt > 10000) {
+      if (this.spawnMoment > 0 && Date.now() - this.spellSweepAt > 10000) {
         this.spellSweepAt = Date.now();
         const figure = Actor.from(refr);
         if (figure && !cannotDress(figure) && figure.is3DLoaded() && isFigureBase(figure)) {
@@ -1285,6 +1278,48 @@ export class FormView {
 
     return this.leveledBaseId;
   }
+
+  // thuum docs/verbs/npc-stream.md (fork m4-npc-worn): the worn list's apply
+  // to an NPC copy, run from update() alone (the main thread's update
+  // context) and only on a copy the equipment natives can take: not deleted
+  // or disabled (cannotDress: the engine is letting it go, and its AI
+  // process may be gone, 79226502), its 3D loaded (an actor with loaded 3D
+  // is in a process list, fbb5fea1; Actor.UnequipAll on a copy without one
+  // was 2026-11-14's crash), and no inventory menu open (the copies' rule
+  // below). A copy held back keeps its apply pending for the next update;
+  // the first deferral of each kind is one line, the rest a count the apply
+  // line carries (ADR-073 decision 7). One apply in half a second per copy.
+  // Each apply is one line: the record's numChanges, what went on, what came
+  // off.
+  private applyNpcWorn(refr: ObjectReference, remoteId: number, eq: Equipment) {
+    const ac = Actor.from(refr);
+    const why = !ac ? "no actor"
+      : cannotDress(ac) ? "deleted or disabled"
+        : !ac.is3DLoaded() ? "3D not loaded"
+          : isBadMenuShown() ? "an inventory menu open"
+            : "";
+    if (!ac || why) {
+      const n = (this.wornDeferrals.get(why) ?? 0) + 1;
+      this.wornDeferrals.set(why, n);
+      if (n === 1) {
+        logLab("verb:npc-stream", `worn ${remoteId.toString(16)} deferred: ${why}, numChanges ${eq.numChanges} pending (local ${refr.getFormID().toString(16)})`);
+      }
+      return;
+    }
+    if (Date.now() - this.eqState.lastEqMoment <= 500) {
+      return;
+    }
+    const done = applyWorn(ac, eq);
+    this.eqState.lastNumChanges = eq.numChanges;
+    this.eqState.lastEqMoment = Date.now();
+    const hex = (ids: number[]) => ids.map((id) => id.toString(16)).join(" ");
+    const deferred = Array.from(this.wornDeferrals.entries()).map(([kind, n]) => `${kind} ${n}`).join(", ");
+    this.wornDeferrals.clear();
+    logLab("verb:npc-stream", `worn ${remoteId.toString(16)} applied: numChanges ${eq.numChanges}, on [${hex(done.equipped)}], off [${hex(done.unequipped)}]${deferred ? `, after deferrals (${deferred})` : ""} (local ${refr.getFormID().toString(16)})`);
+  }
+  private readonly wornDeferrals = new Map<string, number>();
+  // whether this view saw the copy's 3D loaded at its last update
+  private wornOn3D = false;
 
   // thuum docs/DECISIONS.md ADR-068 rung 5, D-T1 A (sync/raceOverlay.ts):
   // the overlay the model carries (its CreateActor's props, then each

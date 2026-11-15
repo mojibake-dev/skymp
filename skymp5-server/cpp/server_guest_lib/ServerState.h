@@ -10,6 +10,7 @@
 #include <optional>
 #include <simdjson.h>
 #include <unordered_map>
+#include <vector>
 
 class MpActor;
 
@@ -57,6 +58,13 @@ struct UserInfo
   // a refused sample's and a refused claim's alike)
   std::optional<std::chrono::time_point<std::chrono::steady_clock>>
     lastPropRefusalLine;
+
+  // thuum docs/verbs/npc-stream.md (fork m4-npc-worn): per actor this
+  // connection simulates, by form id, the base ids its last accepted
+  // equipment report wore, sorted: what its engine can be said to take off
+  // (ActionListener::OnUpdateEquipment). In memory, the connection's own; a
+  // new connection starts with none
+  std::unordered_map<uint32_t, std::vector<uint32_t>> hostedWorn;
 };
 
 class ServerState

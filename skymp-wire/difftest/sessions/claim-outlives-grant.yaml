@@ -17,9 +17,11 @@
 # loaded at 1.5 s (hosted: nothing) and at 2.5 s claims Lucan for a dialogue: granted, so the word names c2 (Lucan's
 # keyframe to c2, isHostedByOther false to c2 and true to c1). At 5.5 s c1 reports the trader unloaded: its grace
 # arms, and at its end (5 s, at the next once-a-second tick) the cell passes to c2, the only visitor with it loaded
-# and in reach (HostRelease {epoch 1} to c1, HostGrant {epoch 2} to c2). The claim stands. At 12.5 s c1 loads the
-# trader again (hosted by c2: nothing) and at 13 s claims Lucan: Held (E_CLAIM_HELD in the wire server's log), so no
-# word and no keyframe reach c1; a grant that had dropped the claim would have given c1 Lucan here.
+# and in reach (HostRelease {epoch 1} to c1, HostGrant {epoch 2} to c2). The claim stands. Both flips of the swap
+# word Lucan and Camilla, the release's running after the grant has named c2 (PartOne FlipHostedFlags), so c2 hears
+# two keyframes and two "false" for each and c1 two "true". At 12.5 s c1 loads the trader again (hosted by c2:
+# nothing) and at 13 s claims Lucan: Held (E_CLAIM_HELD in the wire server's log), so no word and no keyframe reach
+# c1; a grant that had dropped the claim would have given c1 Lucan here.
 #
 # Leg 2, the grant to another player. The claimant c2 now hosts the trader; at 12 s of its own it goes to Sven
 # 0x13491 in Riverwood's exterior (moveto again, Teleport 20), which takes the trader off the server's grid for c2
@@ -33,16 +35,26 @@
 # lease (CLAIM_LEASE_MS, 120 s) outlasts every session and is T0's. c1 reports the trader loaded again at 24.5 s (a
 # repeat: nothing) and c2 at 27 s of its own, so each stays connected through the other's last word and c2 outlives c1.
 #
-# UpdateMovement compares exactly here (not as presence): the server sends a keyframe (PartOne::SendActorKeyframe, a
-# t:2) to the simulator ahead of each word, neither client moves, and a keyframe in relays_seen could not be declared.
+# UpdateMovement compares exactly here (not as presence): the server sends a keyframe (PartOne::SendActorKeyframe, the
+# one UpdateMovement the core builds, a t:2) to the simulator ahead of each word, neither client moves, and a
+# keyframe in relays_seen could not be declared. The keyframes and the words (UpdateProperty 7 isHostedByOther,
+# MpObjectReference::UpdateHoster at a grant's or a release's flip, a claim, a release and a ClaimEnded) are declared
+# below by count, read from PartOne.cpp; each reason names the events it counts and what a grant that dropped the
+# claim, or a claim that took Lucan from its holder, would read instead.
+#
+# What the first run decides (premises the code alone does not fix): both players listen to Lucan and Camilla whenever
+# they stand in the trader, and c2 to neither once it stands by Sven (the counts below rest on both); and the legacy
+# C++ fakeclient sends "{{idx:0x13487}}" through unchanged, as it sends prop-physics' "{{created:}}" (no "{{idx"
+# string has been tried there). A talk reads no quest record, so the run record's quests do not enter here.
 #
 # Not declared yet: the first T2 of this session (ONLY=claim-outlives-grant) draws what the code alone does not fix:
 # the forms of the spawn leaving each client's view at its moveto (DestroyActor 25, the lock chest 0xf321a among
 # them); the trader's references entering it (CreateActor 33, Lucan and Camilla among them) and, for c2, Riverwood's;
+# the trader's references leaving c2's view at its moveto onto Sven (DestroyActor 25, Lucan and Camilla among them);
 # each player's create word for the other, at the spawn on the legacy stack and in the trader on the wire; the words
-# (UpdateProperty 7 isHostedByOther on Lucan and Camilla, one to each listening player per grant, release, claim and
-# release flip) and the keyframes, by count; and any fate (ActorFate 51), record (ChangeFormApply 74) or script state
-# (ScriptStateApply 77, ahead of a grant) the trader's load and grants serve. Each is read against the paragraphs
+# and keyframes of any actor of the trader besides Lucan and Camilla; and any fate (ActorFate 51), record
+# (ChangeFormApply 74) or script state (ScriptStateApply 77, ahead of a grant) the trader's load and grants serve, and
+# Riverwood's fates for c2 at its moveto onto Sven (SendFates in RefreshReach). Each is read against the paragraphs
 # above before it is declared.
 id: claim-outlives-grant
 clients:
@@ -123,3 +135,53 @@ divergences:
     legacy: 0
     wire: 1
     reason: c1 left c2's view when c2 left the trader; c1's departure later reaches nobody who sees it (the legacy stack's RakNet timeout outlasts c2)
+  - client: c1
+    msg: {t: 2, idx: "refr:13487"}
+    legacy: 0
+    wire: 2
+    reason: Lucan's record ahead of each word naming c1 for him, epoch 1's grant and c2's release (epoch 3's grant names c2, whose game no longer sees him, so no keyframe goes); a grant that dropped the claim, or a claim of c1's that took him, reads 3 (c1's claim granted)
+  - client: c1
+    msg: {t: 7, refrId: 0x13487, propName: isHostedByOther, dataDump: "false"}
+    legacy: 0
+    wire: 2
+    reason: c1 named for Lucan at epoch 1's grant and at c2's release; a dropped or a taken claim reads 3
+  - client: c1
+    msg: {t: 7, refrId: 0x13487, propName: isHostedByOther, dataDump: "true"}
+    legacy: 0
+    wire: 4
+    reason: c2 named for Lucan at its claim, epoch 1's release, epoch 2's grant and epoch 3's grant passing over the claim; a dropped or a taken claim reads 3
+  - client: c1
+    msg: {t: 2, idx: "refr:13488"}
+    legacy: 0
+    wire: 2
+    reason: Camilla, with no row, follows the cell's host; her record ahead of each word naming c1, at epoch 1's grant and epoch 3's
+  - client: c1
+    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "false"}
+    legacy: 0
+    wire: 2
+    reason: c1 named for Camilla at epoch 1's grant and epoch 3's
+  - client: c1
+    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "true"}
+    legacy: 0
+    wire: 2
+    reason: c2 named for Camilla by both flips of the swap to epoch 2 (the release's flip runs after the grant has named c2)
+  - client: c2
+    msg: {t: 2, idx: "refr:13487"}
+    legacy: 0
+    wire: 3
+    reason: Lucan's record ahead of each word naming c2 for him, its claim and both flips of the swap to epoch 2; FlipHostedFlags keys the claim's holder though its game runs him (ClaimActor and ClaimEnded skip that case), and with that skip this reads 1
+  - client: c2
+    msg: {t: 7, refrId: 0x13487, propName: isHostedByOther, dataDump: "false"}
+    legacy: 0
+    wire: 3
+    reason: c2 named for Lucan at its claim and by both flips of the swap to epoch 2, which pass over the claim; c2 left the trader before epoch 3's grant and its release, so neither reaches it
+  - client: c2
+    msg: {t: 2, idx: "refr:13488"}
+    legacy: 0
+    wire: 2
+    reason: Camilla's record ahead of the two words of the swap to epoch 2 naming c2, the new host (the release's flip and the grant's)
+  - client: c2
+    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "false"}
+    legacy: 0
+    wire: 2
+    reason: c2 named for Camilla by both flips of the swap to epoch 2; c2 came after epoch 1's grant and left before epoch 3's

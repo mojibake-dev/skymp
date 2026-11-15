@@ -2557,9 +2557,10 @@ void MpObjectReference::ProcessActivateNormal(
         // taken as the lock's (PromptedOnUnrecordedLock)
         unrecordedPromptTo = actorActivator->GetFormId();
         unrecordedPromptAt = std::chrono::steady_clock::now();
-        spdlog::info("[verb:locks] {:x} activates {:x}: its lock is the game "
-                     "file's seed (level {}, key {:x}), no game wrote it; the "
-                     "player's game decides by its engine's lock (#47)",
+        spdlog::info("[verb:locks] E_ACTIVATE_LOCKED: {:x} activates {:x} "
+                     "(level {}, key {:x}); the player's game is prompted, "
+                     "and decides by its engine's lock, since no game wrote "
+                     "this one (the game file's seed, #47)",
                      actorActivator->GetFormId(), GetFormId(), lock->level,
                      lock->key);
         SendLockPrompt(*actorActivator);

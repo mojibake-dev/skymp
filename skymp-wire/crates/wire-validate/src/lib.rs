@@ -683,9 +683,6 @@ fn check_race_overlay(o: &skymp::RaceOverlay) -> Result<(), Reject> {
     Ok(())
 }
 
-/// UpdateAppearance (MsgType 4): its optional overlay is the server's word
-/// on another player's figure ([`check_race_overlay`]); a client's own look
-/// carries none ([`validate`]).
 /// A player's own head parts report (thuum D-53-8 B, OwnHeadParts 82),
 /// structural only: a race and every part a load-order form (not 0, below
 /// 0xff000000, the server's forms), at least one part (a report with none
@@ -709,6 +706,9 @@ fn check_own_head_parts(m: &skymp::OwnHeadParts) -> Result<(), Reject> {
     Ok(())
 }
 
+/// UpdateAppearance (MsgType 4): its optional overlay is the server's word
+/// on another player's figure ([`check_race_overlay`]); a client's own look
+/// carries none ([`validate`]).
 fn check_update_appearance(m: &skymp::UpdateAppearance) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);

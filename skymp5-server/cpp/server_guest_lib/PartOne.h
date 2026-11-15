@@ -305,7 +305,9 @@ public:
   // thuum ADR-068 rung 5 (D-Q1's derivation whole; docs/research/
   // rung5-quests-2026-11-09.md section 8(a)): the quest scope, from
   // server-settings.json's `questScope` ("off", the default, measures;
-  // "derived" acts) and `playerQuests` (the census's list half), each as its
+  // "derived" acts), `playerQuests` (the census's list half) and
+  // `playerStartedQuests` (its started half, thuum D-VC2 B: a quest named
+  // there is the player's whatever its aliases), each as its
   // value's JSON text; `conditionVariables`, the condition-read keys (D-V1
   // B); and the census's per-quest companions as JSON maps keyed by the
   // quest's "<hex id>:<plugin>": `playerQuestGlobals` (to the GLOBs its
@@ -321,7 +323,8 @@ public:
   // names of the quest's game-time registration). Every setter recomposes,
   // as AttachEspm does.
   void SetQuestScopeSettings(const std::string& modeJson,
-                             const std::string& playerQuestsJson);
+                             const std::string& playerQuestsJson,
+                             const std::string& playerStartedQuestsJson);
   void SetScriptVariablesSettings(const std::string& conditionVariablesJson);
   void SetPlayerQuestSettings(const std::string& globalsJson,
                               const std::string& variablesJson,

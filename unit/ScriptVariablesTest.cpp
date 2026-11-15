@@ -177,7 +177,7 @@ TEST_CASE("A player-class quest's keys are its player's own: the world's "
   PartOne& p = GetPartOne();
   p.SetScriptVariablesSettings(kKeys);
   p.SetPlayerQuestSettings("{}", kOwnVariables, "{}");
-  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])");
+  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])", "[]");
   Enter(p);
   VarLog log;
   Report(p, 0,
@@ -274,7 +274,7 @@ TEST_CASE("The login's watch and record go after the world globals, at most "
   }
   vars += "]}";
   p.SetPlayerQuestSettings("{}", vars, "{}");
-  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])");
+  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])", "[]");
   p.SetWorldGlobalsEnabled(true);
   p.SetWorldGlobals({ { FormDesc::FromString("17424:Skyrim.esm"), 2.f } });
   Enter(p);

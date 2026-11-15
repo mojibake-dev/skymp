@@ -343,8 +343,9 @@ struct PartOne::Impl
 
   // thuum ADR-068 rung 5: the run record's churn counter and held quests
   // (wire-rules quest_runs, runtime only), the quest scope's settings
-  // (questScope, playerQuests), the condition-read variables
-  // (conditionVariables) and every player's race overlay (player_own)
+  // (questScope, playerQuests, playerStartedQuests), the condition-read
+  // variables (conditionVariables) and every player's race overlay
+  // (player_own)
   rust::Box<skymp::rules::QuestRuns> questRuns =
     skymp::rules::new_quest_runs();
   // D-Q4 C: `questStoryInstances` "world" (false: "seat", the default), the
@@ -356,7 +357,7 @@ struct PartOne::Impl
   bool questPlayerAliasWorld = false;
   const std::unordered_map<std::string, bool>* playerAliasScripts = nullptr;
   rust::Box<skymp::rules::QuestScope> questScope =
-    skymp::rules::new_quest_scope("\"off\"", "[]");
+    skymp::rules::new_quest_scope("\"off\"", "[]", "[]");
   rust::Box<skymp::rules::ScriptVariables> scriptVariables =
     skymp::rules::new_script_variables("[]");
   rust::Box<skymp::rules::PlayerOverlays> playerOverlays =
@@ -4140,13 +4141,14 @@ const StoryIndex& StoryIndexOf(WorldState& worldState)
 }
 
 void PartOne::SetQuestScopeSettings(const std::string& modeJson,
-                                    const std::string& playerQuestsJson)
+                                    const std::string& playerQuestsJson,
+                                    const std::string& playerStartedQuestsJson)
 {
-  pImpl->questScope =
-    skymp::rules::new_quest_scope(modeJson, playerQuestsJson);
+  pImpl->questScope = skymp::rules::new_quest_scope(modeJson, playerQuestsJson,
+                                                    playerStartedQuestsJson);
   spdlog::info("PartOne::SetQuestScopeSettings - questScope {}, playerQuests "
-               "{}",
-               modeJson, playerQuestsJson);
+               "{}, playerStartedQuests {}",
+               modeJson, playerQuestsJson, playerStartedQuestsJson);
   ComposeQuestScope();
 }
 
@@ -4297,7 +4299,9 @@ void PartOne::ComposeQuestScope()
 
   // the measurement (D-Q1's "measured against today's lists"): the class and
   // its overlap with the denied list and the retired allowed one, either
-  // mode, before anything is composed
+  // mode, before anything is composed; and the started half (thuum D-VC2 B):
+  // how many it names, and each it names that no QUST of the game files is
+  // (a list left logs what falls through, ADR-073)
   size_t denied = 0;
   size_t allowed = 0;
   std::string ids;
@@ -4310,10 +4314,27 @@ void PartOne::ComposeQuestScope()
     }
     ids += (ids.empty() ? "" : ", ") + q.ToString();
   }
-  spdlog::info("[verb:quest-stage] quest scope ({}): {} per player: {}; {} "
-               "denied, {} allowed",
-               acting ? "derived" : "off", marked.size(), ids, denied,
-               allowed);
+  const auto started = pImpl->questScope->quest_scope_started();
+  std::string unknown;
+  for (const auto& entry : started) {
+    const FormDesc quest(entry.short_id, std::string(entry.file));
+    const bool known =
+      std::any_of(facts.begin(), facts.end(), [&](const QuestScopeFacts& q) {
+        return SameForm(q.quest, quest);
+      });
+    if (!known) {
+      unknown += (unknown.empty() ? "" : ", ") + quest.ToString();
+    }
+  }
+  spdlog::info(
+    "[verb:quest-stage] quest scope ({}): {} per player: {}; {} "
+    "denied, {} allowed; {} named by its start "
+    "(playerStartedQuests){}",
+    acting ? "derived" : "off", marked.size(), ids, denied, allowed,
+    started.size(),
+    unknown.empty()
+      ? std::string()
+      : fmt::format(", {} naming no quest of the game files", unknown));
   pImpl->questScopeMarked = marked;
 
   // the composition, while the scope acts ("off" leaves the settings as

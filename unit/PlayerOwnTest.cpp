@@ -351,11 +351,11 @@ TEST_CASE("A script's attachment names nothing until it is live for the "
   REQUIRE(!p.QuestAttachmentLive(kVampireQuest));
 
   // so does the scope's class while it acts (the playerQuests list)
-  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])");
+  p.SetQuestScopeSettings(R"("derived")", R"(["eafd5:Skyrim.esm"])", "[]");
   REQUIRE(p.QuestAttachmentLive(kVampireQuest));
   SetRace(p, kNordRace, "PlayerVampireQuestScript");
   REQUIRE(turned.GetAppearance()->raceId == kNordRace);
-  p.SetQuestScopeSettings(R"("off")", "[]");
+  p.SetQuestScopeSettings(R"("off")", "[]", "[]");
   REQUIRE(!p.QuestAttachmentLive(kVampireQuest));
   Leave(p);
 }

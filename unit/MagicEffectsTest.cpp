@@ -417,3 +417,65 @@ TEST_CASE("A drain moves Health from its target to its caster",
   DoDisconnect(p, 1);
   Leave(p);
 }
+
+// thuum docs/verbs/magic-effects.md (Absorb; rule 6): a timed absorb is kept
+// as kind 4 with no reanimate key and, read back from its record, still pays
+// its caster each second. The drain's crVampireAbsorbHealthConcAimed 0x8D5C5
+// of CrVampireDrain00 0x107AA1 (3 a second, see the drain case above), given
+// 10 s by hand: no timed Absorb in the masters is known (HYPOTHESIS).
+// It goes through the change form's two record mappings, EffectEntriesOf and
+// RunningEffectsOf (AdvanceEffects reads the record and writes it back), so
+// dropping kind 4 from either one fails it: read back as a Value, the effect
+// pays no caster; written back as kind 0, the kept kind is not 4.
+TEST_CASE("A timed absorb keeps its kind through the change form and pays "
+          "its caster each second",
+          "[MagicEffects][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& target = Drinker(p, 0.5f);
+  constexpr uint32_t kCaster = 0xff000001;
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, { 100, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kCaster);
+  auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
+  ActorValueRecord record;
+  record.bases = { { 24, 100.f } };
+  REQUIRE(caster.SetActorValueRecord(record));
+  ActorValues values = caster.GetActorValues();
+  values.healthPercentage = 0.5f;
+  caster.SetPercentages(values);
+  const auto nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+
+  RunningEffect absorb;
+  absorb.effect = FormDesc::FromString("8d5c5:Skyrim.esm");
+  absorb.source = FormDesc::FromString("107aa1:Skyrim.esm");
+  absorb.caster = FormDesc::FromString("1");
+  absorb.kind = 4;
+  absorb.av = 24;
+  absorb.magnitude = 3.f;
+  absorb.durationS = 10.f;
+  absorb.asOfMs = nowMs;
+  absorb.detrimental = true;
+
+  MpChangeForm changeForm = target.GetChangeForm();
+  changeForm.runningEffects = std::vector<RunningEffect>{ absorb };
+  target.ApplyChangeForm(changeForm);
+  REQUIRE(target.HasRunningEffects());
+
+  // one second: 3 points out of the target, 3 into the caster
+  target.AdvanceEffects(1.f);
+  const auto kept = target.GetChangeForm().runningEffects;
+  REQUIRE(kept);
+  REQUIRE(kept->size() == 1);
+  REQUIRE((*kept)[0].kind == 4);
+  REQUIRE_FALSE((*kept)[0].reanimate);
+  REQUIRE(Health(target) == Catch::Approx(0.47f).margin(0.005f));
+  REQUIRE(Health(caster) == Catch::Approx(0.53f).margin(0.005f));
+
+  p.DestroyActor(kCaster);
+  DoDisconnect(p, 1);
+  Leave(p);
+}

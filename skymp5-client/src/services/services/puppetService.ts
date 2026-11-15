@@ -687,6 +687,14 @@ export class PuppetService extends ClientListener {
                         continue;
                     }
                     if (this.effectConditioned(spell, j, effect)) {
+                        // ADR-073 decision 7 (train 53's review, rules-6):
+                        // each effect's first skip is effectConditioned's
+                        // line; every skip is counted, said at the 2nd,
+                        // 4th, 8th and so on
+                        const n = ++this.conditionedSkips;
+                        if (n > 1 && (n & (n - 1)) === 0) {
+                            logTrace(this, `cloak look: ${n} conditioned ability effect skip(s) so far, the last ${effect.getFormID().toString(16)} of ability ${abilityId.toString(16)} on ${ac.getFormID().toString(16)}`);
+                        }
                         continue;
                     }
                     const shader = effect.getHitShader();
@@ -820,6 +828,8 @@ export class PuppetService extends ClientListener {
     private readonly conditionedEffects = new Map<string, boolean>();
     private readonly conditionedSaid = new Set<number>();
     private conditionReaderSaid = false;
+    // and every skip counted (rules-6, decision 7)
+    private conditionedSkips = 0;
     // The Skyrim Platform API reads an effect's hit effect art
     // (MagicEffect.getHitEffectArt) but plays only a VisualEffect (an RFCT
     // wrapping an art, a shader or both), and nothing maps an art to one; the

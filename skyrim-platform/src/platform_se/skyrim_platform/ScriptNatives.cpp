@@ -3797,14 +3797,21 @@ bool LoadRows()
     const SkympNativeRow& wire = rows[row];
     // every code ReadRow switches on is held to this build's range, so a
     // plugin from another sha never falls into a silent default there
-    // (decision 7; thuum ADR-073 step 4's review, NIT 5)
+    // (decision 7; thuum ADR-073 step 4's review, NIT 5). The `record` field
+    // carries a code for two keeps: a record row's RecordKind (1 to 5) and,
+    // since #52's look keep, an actor's look row's LookKeep (1 to 5,
+    // skymp_wire.h's SKYMP_NATIVE_KEEP_LOOK). Before that branch the bound
+    // stopped at KEEP_VARIABLE, so the merge that added the look rows
+    // (c858061b) made every seat refuse the whole table and bind no row
+    // (thuum #68: "no table: MpClientPlugin's row 53 ...", every run from
+    // 20261115-112748 on)
+    const bool coded = wire.keep == SKYMP_NATIVE_KEEP_RECORD ||
+      wire.keep == SKYMP_NATIVE_KEEP_LOOK;
     if (!wire.cls || !wire.func || !wire.relay ||
         wire.kind > SKYMP_NATIVE_KIND_CREATE ||
         wire.subject > SKYMP_NATIVE_SUBJECT_ARG0_METHOD ||
-        wire.keep > SKYMP_NATIVE_KEEP_VARIABLE ||
-        (wire.keep == SKYMP_NATIVE_KEEP_RECORD
-           ? wire.record < 1 || wire.record > 5
-           : wire.record != 0) ||
+        wire.keep > SKYMP_NATIVE_KEEP_LOOK ||
+        (coded ? wire.record < 1 || wire.record > 5 : wire.record != 0) ||
         wire.look > SKYMP_NATIVE_LOOK_ONLY ||
         wire.hook > SKYMP_NATIVE_HOOK_LAST ||
         wire.scoped > SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE) {

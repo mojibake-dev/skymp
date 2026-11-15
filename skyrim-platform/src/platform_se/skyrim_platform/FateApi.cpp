@@ -399,12 +399,15 @@ void ReconcileInventoryOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   // (Actor::IsDead, include/RE/A/Actor.h)
   const size_t dressed =
     actor->IsDead() ? DressBodyOnGameThread(actor, fate.worn) : 0;
+  // the thread it ran on (thuum #62: the Temple crashes came 150 to 380 ms
+  // after a burst of these removals on live copies, on BSJobs threads
+  // reading the same actors)
   logger::info("[verb:npc-fate] inventory of {:x} reconciled to the record: "
                "{} row(s) and {} worn, {} removed ({} worn stack(s) "
                "unequipped first), {} added, {} kept, {} worn piece(s) "
-               "dressed again",
+               "dressed again, on {}",
                refrId, fate.inv.size(), fate.worn.size(), removed, unequipped,
-               added, kept, dressed);
+               added, kept, dressed, FateThreadNote());
 }
 
 // The copy's worn OUTFIT set against the fate's, as sets of base ids: the
@@ -518,11 +521,12 @@ void RedressOnGameThread(uint32_t refrId, const Fates::Fate& fate)
   ReconcileInventoryOnGameThread(actor, fate, refrId);
   actor->AddWornOutfit(outfit, false);
   logger::info("[verb:npc-fate] redressed {:x} from the server's roll: {} "
-               "of {} tagged for outfit {:x} and worn ({} already tagged, "
-               "3D loaded {}), the record's rows reconciled first, the  on {}"
-               "dress unqueued",
+               "of {} tagged for outfit {:x} and worn ({} already tagged, {} "
+               "worn weapon(s) held already, 3D loaded {}), the record's rows "
+               "reconciled first, the dress unqueued, on {}",
                refrId, dressed.added, fate.worn.size(), outfit->formID,
-               dressed.carried, actor->Is3DLoaded(), FateThreadNote());
+               dressed.carried, dressed.held, actor->Is3DLoaded(),
+               FateThreadNote());
 }
 }
 

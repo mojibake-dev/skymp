@@ -255,6 +255,66 @@ bool CarriesOutfitTag(RE::InventoryChanges* changes, RE::TESBoundObject* form,
   return false;
 }
 
+// What the copy holds already, by base id: the base's fixed (non-leveled)
+// CNTO rows the engine keeps without a changes entry (TESContainer::
+// ForEachContainerObject, include/RE/T/TESContainer.h:44; the owner's base
+// is a TESNPC, a TESContainer) and the changes made so far
+// (InventoryChanges::entryList, include/RE/I/InventoryChanges.h:63; the
+// entry's countDelta, include/RE/I/InventoryEntryData.h:61). The two
+// writers of a fate's rows (the outfit detour's AddWornTagged and the
+// container detour) take from it, so a row lands once (the review of
+// 7c3c9f79, findings 2 and 4; thuum #62 for the worn weapons).
+std::unordered_map<std::uint32_t, std::int64_t> HeldCounts(
+  RE::InventoryChanges* changes)
+{
+  std::unordered_map<std::uint32_t, std::int64_t> held;
+  if (!changes) {
+    return held;
+  }
+  if (changes->owner) {
+    if (auto* base = changes->owner->GetBaseObject()) {
+      if (auto* container = base->As<RE::TESContainer>()) {
+        container->ForEachContainerObject([&](RE::ContainerObject& co) {
+          if (co.obj && !co.obj->Is(RE::FormType::LeveledItem)) {
+            held[co.obj->formID] += co.count;
+          }
+          return RE::BSContainer::ForEachResult::kContinue;
+        });
+      }
+    }
+  }
+  if (changes->entryList) {
+    for (auto* entry : *changes->entryList) {
+      if (entry && entry->object) {
+        held[entry->object->formID] += entry->countDelta;
+      }
+    }
+  }
+  return held;
+}
+
+// A worn weapon of the fate the copy holds already, taken from `held` when
+// it does (thuum #62, the Temple crashes of 2026-11-15: both writers wrote
+// every worn weapon, so each fated copy with an outfit held its server
+// weapon twice, and the late redress's reconcile took the spare off the
+// live copy while its AI equipped the weapon; x-gate-everyone 20261115-
+// 102616, c1's draugr 380bb: "dressed ... 3 of 3 tagged", "armed ... 1 of
+// the server's weapons", then "3 worn, 1 removed, 2 kept, 0 added").
+// TESForm::IsWeapon, include/RE/T/TESForm.h:347.
+bool TakeHeldWeapon(std::unordered_map<std::uint32_t, std::int64_t>& held,
+                    const RE::TESForm& form)
+{
+  if (!form.IsWeapon()) {
+    return false;
+  }
+  const auto it = held.find(form.formID);
+  if (it == held.end() || it->second <= 0) {
+    return false;
+  }
+  --it->second;
+  return true;
+}
+
 bool OutfitResolveReplacement(RE::BSTArray<RE::TESForm*>* items,
                               OutfitInitCtx* ctx)
 {
@@ -285,9 +345,10 @@ bool OutfitResolveReplacement(RE::BSTArray<RE::TESForm*>* items,
     Fates::AddWornTagged(ctx->changes, ctx->outfit, fate, owner->formID);
   logger::info("[verb:npc-fate] dressed {:x} from the server's roll inside "
                "the outfit roll: {} of {} tagged for outfit {:x} (npc level "
-               "{}, {} already tagged, the engine's outfit roll skipped)",
+               "{}, {} already tagged, {} worn weapon(s) held already, the "
+               "engine's outfit roll skipped)",
                owner->formID, dressed.added, fate.worn.size(),
-               ctx->outfit->formID, ctx->level, dressed.carried);
+               ctx->outfit->formID, ctx->level, dressed.carried, dressed.held);
   return true;
 }
 }
@@ -306,6 +367,10 @@ Fates::Dressing Fates::AddWornTagged(RE::InventoryChanges* changes,
   REL::Relocation<AddEntryWithListFn> addEntry{
     Offsets::Fate::AddEntryWithList
   };
+  // a worn weapon the copy holds already is not added again (TakeHeldWeapon):
+  // the container detour writes the fate's worn weapons too, and whichever
+  // of the two runs second finds it held
+  auto held = HeldCounts(changes);
   for (const auto wornId : fate.worn) {
     // an inventory entry needs a bound object (InventoryEntryData::object,
     // include/RE/I/InventoryEntryData.h:59; AddObjectToContainer's first
@@ -319,7 +384,13 @@ Fates::Dressing Fates::AddWornTagged(RE::InventoryChanges* changes,
       continue;
     }
     if (CarriesOutfitTag(changes, bound, outfit->formID)) {
+      // the tagged entry is in `held` too: it answers for this worn item
+      (void)TakeHeldWeapon(held, *bound);
       ++result.carried;
+      continue;
+    }
+    if (TakeHeldWeapon(held, *bound)) {
+      ++result.held;
       continue;
     }
     auto* list = CreateExtraList();
@@ -412,10 +483,23 @@ void ContainerAddReplacement(RE::InventoryChanges* changes,
   picks->clear();
   std::size_t written = 0;
   std::size_t rows = 0;
+  std::size_t heldWeapons = 0;
   if (arm) {
+    // the record's rows, each less what the copy holds already (HeldCounts:
+    // the base's fixed CNTO rows and the changes made so far), so a
+    // reconciled or re-rolled copy gets no second copy (the review of
+    // 7c3c9f79, findings 2 and 4), and the worn weapons the same way: the
+    // outfit detour, which runs first in one init (its "dressed" line comes
+    // before this "armed" one), adds every worn form, weapons included, and
+    // a weapon it added is not written again here (thuum #62)
+    auto held = HeldCounts(changes);
     for (const auto id : fate.worn) {
       auto* weapon = RE::TESForm::LookupByID<RE::TESObjectWEAP>(id);
       if (!weapon) {
+        continue;
+      }
+      if (TakeHeldWeapon(held, *weapon)) {
+        ++heldWeapons;
         continue;
       }
       auto& pick = picks->emplace_back();
@@ -425,31 +509,9 @@ void ContainerAddReplacement(RE::InventoryChanges* changes,
       pick.pad0C = 0;
       ++written;
     }
-    // the record's rows, each less what the copy holds already: the base's
-    // fixed (non-leveled) CNTO rows the engine keeps without a changes entry
-    // (TESContainer::ForEachContainerObject, include/RE/T/TESContainer.h:44;
-    // the owner's base is a TESNPC, a TESContainer) and the changes made so
-    // far (InventoryChanges::entryList, include/RE/I/InventoryChanges.h:63;
-    // the entry's countDelta), so a reconciled or re-rolled copy gets no
-    // second copy (the review of 7c3c9f79, findings 2 and 4)
-    std::unordered_map<std::uint32_t, std::int64_t> held;
-    if (auto* base = changes->owner->GetBaseObject()) {
-      if (auto* container = base->As<RE::TESContainer>()) {
-        container->ForEachContainerObject([&](RE::ContainerObject& co) {
-          if (co.obj && !co.obj->Is(RE::FormType::LeveledItem)) {
-            held[co.obj->formID] += co.count;
-          }
-          return RE::BSContainer::ForEachResult::kContinue;
-        });
-      }
-    }
-    if (changes->entryList) {
-      for (auto* entry : *changes->entryList) {
-        if (entry && entry->object) {
-          held[entry->object->formID] += entry->countDelta;
-        }
-      }
-    }
+    // the inventory rows next, from what the worn weapons left in `held`
+    // (a worn weapon the copy held answers for its worn copy, so an
+    // inventory row of the same weapon still lands)
     for (const auto& [baseId, count] : fate.inv) {
       auto* bound = RE::TESForm::LookupByID<RE::TESBoundObject>(baseId);
       if (!bound || count == 0) {
@@ -472,8 +534,10 @@ void ContainerAddReplacement(RE::InventoryChanges* changes,
     t_armedOrdinal = ordinal;
     logger::info("[verb:npc-fate] armed {:x} from the server's roll at entry "
                  "{}: {} engine pick(s) dropped ({} weapon(s)), {} of the "
-                 "server's weapons and {} inventory row(s) written",
-                 ownerId, ordinal, dropped, droppedWeapons, written, rows);
+                 "server's weapons and {} inventory row(s) written, {} worn "
+                 "weapon(s) held already",
+                 ownerId, ordinal, dropped, droppedWeapons, written, rows,
+                 heldWeapons);
     Fates::ArmWitness::Note(ownerId);
   } else {
     logger::debug("[verb:npc-fate] {:x}'s entry {}: {} engine pick(s) "

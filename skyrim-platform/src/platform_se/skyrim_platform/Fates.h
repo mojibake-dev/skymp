@@ -59,20 +59,24 @@ size_t Count();
 void Arm(uint32_t baseId, const Fate& fate);
 bool BindArmed(RE::TESObjectREFR* ref);
 
-// What one dressing did: the entries it added and the forms it found
-// already carrying the outfit's tag (the engine's own skip at the site).
+// What one dressing did: the entries it added, the forms it found
+// already carrying the outfit's tag (the engine's own skip at the site), and
+// the worn weapons it found the copy holding already, from the container
+// detour or the base's fixed rows (thuum #62: a worn weapon lands once).
 struct Dressing
 {
   size_t added = 0;
   size_t carried = 0;
+  size_t held = 0;
 };
 
 // The one "add tagged" loop the outfit detour and redressActor share
 // (FateHooks.cpp): for each worn form of the fate, a fresh ExtraDataList
 // tagged ExtraOutfitItem{outfit} by the engine's own setter and added to the
 // changes through the engine's own entry adder (re-npc-roll.md 8.4); a form
-// that is no bound object in this game is skipped with a warn. Runs inside
-// the engine's roll (the detour) or on the game thread (the redress).
+// that is no bound object in this game is skipped with a warn, and a worn
+// weapon the copy holds already is skipped and counted (Dressing::held). Runs
+// inside the engine's roll (the detour) or on the game thread (the redress).
 Dressing AddWornTagged(RE::InventoryChanges* changes, RE::BGSOutfit* outfit,
                        const Fate& fate, uint32_t ownerId);
 

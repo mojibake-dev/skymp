@@ -450,6 +450,12 @@ public:
     // RecordRaceLook's (the V-look review's correctness-4): the stashed head
     // parts the new race may wear, given back to both records
     size_t given = 0;
+    // RecordRaceLook's (ADR-073 decision 7, the review's rules-10): the
+    // stored look's head parts kept because the records give no answer (no
+    // HDPT, no RNAM FormList, a plugin the server does not load), and why
+    // its drop left the stored look as it was, nullptr when it did not
+    size_t unanswered = 0;
+    const char* presetLeft = nullptr;
   };
   HeadPartRecord RecordHeadPart(MpActor& actor, uint32_t part);
   // thuum train 53's V-look (lab/.cache/drafts/reads-53/r-v3-v4-v5-look.md,

@@ -1362,5 +1362,21 @@ TEST_CASE("A recorded SetRace drops the head parts its race may not wear "
   }
   REQUIRE(presetAt != 0);
   REQUIRE(presetAt < lookAt);
+
+  // the review's rules-10 (ADR-073 decision 7): a look the wire took whose
+  // rewrite passes its preset cap (serde writes 1e9 back as 1000000000.0) is
+  // left as stored, and the record says why
+  std::string pad;
+  for (int i = 0; i < 30000; ++i) {
+    pad += i ? ",1e9" : "1e9";
+  }
+  const std::string kBig = R"({"pad": [)" + pad +
+    R"(], "headParts": [{"formIdentifier": "Skyrim.esm|05150A", "type": 2}]})";
+  REQUIRE(kBig.size() <= 192 * 1024);
+  REQUIRE(turned.SetRaceMenuPreset(kBig));
+  const auto left = p.RecordRaceLook(turned, kBretonRace);
+  REQUIRE(!left.preset);
+  REQUIRE(left.presetLeft != nullptr);
+  REQUIRE(turned.GetRaceMenuPreset() == kBig);
   Leave(p);
 }

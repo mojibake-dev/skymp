@@ -5179,6 +5179,17 @@ void RecordPlayerOwn(
                               recorded.given,
                               SendRaceMenuPresetToOthers(partOne, reporter));
         }
+        // ADR-073 decision 7 (the review's rules-10): what the drop left
+        // and why
+        if (recorded.presetLeft) {
+          what += fmt::format(", its RaceMenu look left as stored ({})",
+                              recorded.presetLeft);
+        }
+        if (recorded.unanswered != 0) {
+          what += fmt::format(", {} of its RaceMenu look's head part(s) "
+                              "kept with no race list to read",
+                              recorded.unanswered);
+        }
         if (const auto now = reporter.GetAppearance()) {
           SendAppearanceToOthers(partOne, reporter, *now);
           if (recorded.look) {

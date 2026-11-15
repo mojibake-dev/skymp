@@ -4793,14 +4793,27 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
   bool presetChanged = false;
   if (!preset.empty()) {
     const auto facts = skymp::rules::racemenu_look_facts(rust::Str(preset));
-    if (facts.ok) {
+    if (!facts.ok) {
+      // ADR-073 decision 7: the fall-through says why (the review's rules-10)
+      recorded.presetLeft = "no look the rules read, its head parts unread";
+    } else {
       // one byte a listed part, in the look's order: kept or not; a part in
-      // a plugin the server does not load gives no answer and stays
+      // a plugin the server does not load, or whose records give no race
+      // list, gives no answer and stays (counted)
       std::vector<uint8_t> keep;
       keep.reserve(facts.parts.size());
+      bool anyBarred = false;
       for (const auto& ref : facts.parts) {
         const uint32_t listed = idOf(ref);
-        keep.push_back(listed != 0 && barred(listed) ? 0 : 1);
+        const std::optional<bool> fits = listed != 0
+          ? HeadPartRaceListHolds(listed, race)
+          : std::optional<bool>();
+        if (!fits) {
+          ++recorded.unanswered;
+        }
+        const bool drop = fits.has_value() && !*fits;
+        anyBarred = anyBarred || drop;
+        keep.push_back(drop ? 0 : 1);
       }
       const auto rewritten = skymp::rules::racemenu_without_head_parts(
         rust::Str(preset),
@@ -4808,6 +4821,13 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
       if (!rewritten.empty()) {
         preset = std::string(rewritten);
         presetChanged = true;
+      } else if (anyBarred) {
+        // keep covers the look's entries one for one (look_facts reads
+        // every one or none) and drops one, so the bridge's empty answer is
+        // its rewrite past the wire's preset cap (serde writes 1e9 back as
+        // 1000000000.0)
+        recorded.presetLeft = "its rewrite past the wire's preset cap, the "
+                              "part(s) the race may not wear kept";
       }
     }
     const auto stash = skymp::rules::racemenu_race_stash(rust::Str(preset));

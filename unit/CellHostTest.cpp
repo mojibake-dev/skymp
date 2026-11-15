@@ -2130,7 +2130,7 @@ TEST_CASE("A guest's claim on a hosted NPC names the guest as the simulator "
 // MS13CamillaWorkTrader 0x63b2a has none, XMarker 0x3b is no quest;
 // MS13LucanCamillaScene 0x38386's scene 0x3839b has Lucan 0x13487 (its
 // alias 0, his NPC_ 0x1347a) among its actors, and the ritual 0x5dba7 is
-// VC01's. Read the same way 2026-11-15, for the refusals the fresh review of
+// VC01's. Read the same way 2026-11-14, for the refusals the fresh review of
 // 4bf1e21c found untested (NIT 6): 0x38386's aliases 0 and 2 are the unique
 // actors Lucan 0x1347a and Camilla 0x1347b, and Hod 0x1348a's NPC_ is
 // 0x1347d, neither; four more quests whose own package names them (QNAM),

@@ -2853,12 +2853,12 @@ void InstallApplyMasksToRenderTargetsHook()
  * race, TESNPC+0x158, and an overlay-map entry), so a race with neither
  * laid the player's pre-switch parts over its own: x-rotfern-vampire-eyes
  * 20261114-224641 read rotfern's own face keeping RotfernEyes over the
- * RotfernEyesVampire her script set (Eli, 2026-11-15: "fix the eyes. fix
+ * RotfernEyesVampire her script set (Eli, 2026-11-14: "fix the eyes. fix
  * the overlay flag"). Paired with thuum D-E1 A'' (D-E2 B): the layer's
  * lab/layer/plugin-patches.tsv row "race-flags 02019D08 clear 04000000"
  * clears rotfernRaceVampire's kOverlayHeadPartList at build; laid without
  * that row, her vampire race carries the flag and her own face keeps the
- * engine's overlay copy. Read 2026-11-15 over the seats' engine order
+ * engine's overlay copy. Read 2026-11-14 over the seats' engine order
  * (sky-srv's persist, 101 plugins, apocrypha's race_winners): every
  * PlayableVampireList race's winning record carries kOverlayHeadPartList
  * (0x54A08942, USSEP's or Dawnguard.esm's), so a vanilla vampire's own face

@@ -205,7 +205,14 @@ use bounded::{String, Vec};
 /// positional, so a 50 client's report arrives two presence bytes short and is
 /// refused as Malformed while the handshake passed (D-PH1 A's reason, 42's and
 /// 48's precedent).
-pub const SCHEMA_VERSION: u16 = 51;
+/// 52: MagicEffects' per-effect `caster` (thuum docs/verbs/npc-fate.md C4,
+/// ADR-060's return, m4-reanimate-return 7ae7d7c2, 45 on its branch): the
+/// server's form id of who applied each effect, 0 for none, so a fresh game
+/// that simulates a full thrall knows whether its own player is the
+/// thrall's caster and commands it. Merged into m4-sitting-53 after 51's
+/// tree, so it takes the next number (D-53-3's merge order), one number,
+/// one shape (D-PH1 A's reason).
+pub const SCHEMA_VERSION: u16 = 52;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

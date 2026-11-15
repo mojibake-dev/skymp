@@ -63,6 +63,23 @@ Napi::Value DressBody(const Napi::CallbackInfo& info);
 Napi::Value ResurrectActor(const Napi::CallbackInfo& info);
 // actorFateCount(): the table's size
 Napi::Value ActorFateCount(const Napi::CallbackInfo& info);
+// commandActor(refrId, on): thuum docs/verbs/npc-fate.md C4 (ADR-060's
+// return; Eli, 2026-11-12: "thrall returns to caster obvs"), the command of a
+// living thrall this game's player cast and simulates though its engine
+// holds no effect on it (a fresh game after its caster's return). One task
+// on the main thread (SKSE's UI task queue), deciding by the engine's state,
+// so one call starts, refreshes and ends: `on` and the thrall alive, its AI
+// on and no puppet, not commanded yet: 37490(thrall, 1) when its life state
+// is not kReanimate, then 38798(thrall, player, null); commanded by this
+// export already: 38799(thrall, player, null); `on` false, or the thrall
+// dead: 38800(thrall, null). The engine's own command (the player's
+// commandedActors entry holding an effect: the original cast's) is left
+// alone, and a thrall whose entry the engine removed without this export's
+// 38800 (40056's eviction) is never linked again. The client calls it every
+// 30 updates while the record names its player the thrall's caster and this
+// game simulates the thrall. False for an invalid id or without SKSE's task
+// interface; a reference the game cannot find is a warn on the main thread.
+Napi::Value CommandActor(const Napi::CallbackInfo& info);
 
 inline void Register(Napi::Env env, Napi::Object& exports)
 {
@@ -93,5 +110,8 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "actorFateCount",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(ActorFateCount)));
+  exports.Set(
+    "commandActor",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(CommandActor)));
 }
 }

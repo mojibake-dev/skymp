@@ -313,6 +313,108 @@ TEST_CASE("The change form keeps an actor's running effects, and older "
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).runningEffects);
 }
 
+// thuum docs/verbs/npc-fate.md C4: a server's first player, 0xff000000,
+// has the FormDesc an empty one has ("0"), so the record keeps whether there
+// is a caster beside the desc: that caster is written and read back as one,
+// and an effect with none writes no caster
+TEST_CASE("A running effect's caster 0xff000000 is kept as a caster, not as "
+          "none",
+          "[MagicEffects]")
+{
+  const std::vector<std::string> noFiles;
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::ACHR;
+  RunningEffect thrall;
+  thrall.effect = FormDesc::FromString("7e8e0:Skyrim.esm");
+  thrall.source = FormDesc::FromString("7e8df:Skyrim.esm");
+  thrall.caster = FormDesc::FromFormId(0xff000000, noFiles);
+  thrall.kind = 3;
+  thrall.reanimate = true;
+  thrall.magnitude = 40.f;
+  thrall.durationS = 86313600.f;
+  RunningEffect potion;
+  potion.effect = FormDesc::FromString("3eaf3:Skyrim.esm");
+  potion.source = FormDesc::FromString("3eaf2:Skyrim.esm");
+  potion.durationS = 60.f;
+  changeForm.runningEffects = std::vector<RunningEffect>{ thrall, potion };
+
+  const nlohmann::json json = MpChangeForm::ToJson(changeForm);
+  REQUIRE(json["runningEffects"]["entries"][0]["caster"] == "0");
+  REQUIRE(!json["runningEffects"]["entries"][1].contains("caster"));
+  simdjson::dom::parser parser;
+  const std::string dump = json.dump();
+  auto element = parser.parse(dump).value();
+  const auto reread = MpChangeForm::JsonToChangeForm(element).runningEffects;
+  REQUIRE(reread == changeForm.runningEffects);
+  REQUIRE(reread.has_value());
+  REQUIRE((*reread)[0].caster.has_value());
+  REQUIRE((*reread)[0].caster->ToFormId(noFiles) == 0xff000000);
+  REQUIRE_FALSE((*reread)[1].caster.has_value());
+}
+
+// thuum docs/verbs/npc-fate.md (ADR-060; rule 6): a thrall's reanimate state
+// is kept as a state, kind 3, with the optional key "reanimate". A server
+// that predates the key reads a plain state, which it shows and ends by its
+// clock; a kind of its own would read there as a value modifier on no actor
+// value, whose sum (actor value 4294967295) the wire refuses in every set of
+// the actor (wire-validate, an actor value past the engine's). A record
+// without the key reads as a plain state.
+TEST_CASE("A thrall's reanimate state is kept as a state with its key, and "
+          "a state without the key reads as a plain one",
+          "[MagicEffects]")
+{
+  MpChangeForm changeForm;
+  changeForm.recType = MpChangeForm::ACHR;
+
+  // DeadThrall's ReanimateThrallFFAimed, 40 for 86,313,600 s, 5 s in, from
+  // its commander; InvisibillityFFSelf, 30 s, a plain state (Skyrim.esm,
+  // thuum lab/esm.py)
+  RunningEffect thrall;
+  thrall.effect = FormDesc::FromString("7e8e0:Skyrim.esm");
+  thrall.source = FormDesc::FromString("7e8df:Skyrim.esm");
+  thrall.caster = FormDesc::FromString("3");
+  thrall.kind = 3;
+  thrall.reanimate = true;
+  thrall.magnitude = 40.f;
+  thrall.durationS = 86313600.f;
+  thrall.elapsedS = 5.f;
+  thrall.asOfMs = 1762934400123;
+  thrall.recover = true;
+
+  RunningEffect invisible;
+  invisible.effect = FormDesc::FromString("1ea6a:Skyrim.esm");
+  invisible.source = FormDesc::FromString("27eb6:Skyrim.esm");
+  invisible.kind = 3;
+  invisible.av = 54;
+  invisible.durationS = 30.f;
+  invisible.recover = true;
+
+  changeForm.runningEffects = std::vector<RunningEffect>{ thrall, invisible };
+
+  simdjson::dom::parser parser;
+  const nlohmann::json json = MpChangeForm::ToJson(changeForm);
+  const auto& entries = json["runningEffects"]["entries"];
+  REQUIRE(entries[0]["kind"] == 3);
+  REQUIRE(entries[0]["reanimate"] == true);
+  REQUIRE(!entries[1].contains("reanimate"));
+  const std::string dump = json.dump();
+  auto element = parser.parse(dump).value();
+  REQUIRE(MpChangeForm::JsonToChangeForm(element).runningEffects ==
+          changeForm.runningEffects);
+
+  // without the key the thrall's entry reads as a plain state
+  nlohmann::json without = json;
+  without["runningEffects"]["entries"][0].erase("reanimate");
+  const std::string withoutDump = without.dump();
+  auto withoutElement = parser.parse(withoutDump).value();
+  const auto read =
+    MpChangeForm::JsonToChangeForm(withoutElement).runningEffects;
+  REQUIRE(read);
+  REQUIRE(read->size() == 2);
+  REQUIRE((*read)[0].kind == 3);
+  REQUIRE_FALSE((*read)[0].reanimate);
+}
+
 // thuum docs/verbs/magic-effects.md (Absorb; playtest 51's vampire drain):
 // CrVampireDrain00 0x107AA1's one effect, crVampireAbsorbHealthConcAimed
 // 0x8D5C5, absorbs Health 3 a second (archetype 4, actor value 24, magnitude
@@ -349,6 +451,68 @@ TEST_CASE("A drain moves Health from its target to its caster",
                       1.f, kCaster, true);
   REQUIRE(Health(target) == Catch::Approx(0.41f));
   REQUIRE(Health(caster) == Catch::Approx(1.f));
+
+  p.DestroyActor(kCaster);
+  DoDisconnect(p, 1);
+  Leave(p);
+}
+
+// thuum docs/verbs/magic-effects.md (Absorb; rule 6): a timed absorb is kept
+// as kind 4 with no reanimate key and, read back from its record, still pays
+// its caster each second. The drain's crVampireAbsorbHealthConcAimed 0x8D5C5
+// of CrVampireDrain00 0x107AA1 (3 a second, see the drain case above), given
+// 10 s by hand: no timed Absorb in the masters is known (HYPOTHESIS).
+// It goes through the change form's two record mappings, EffectEntriesOf and
+// RunningEffectsOf (AdvanceEffects reads the record and writes it back), so
+// dropping kind 4 from either one fails it: read back as a Value, the effect
+// pays no caster; written back as kind 0, the kept kind is not 4.
+TEST_CASE("A timed absorb keeps its kind through the change form and pays "
+          "its caster each second",
+          "[MagicEffects][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& target = Drinker(p, 0.5f);
+  constexpr uint32_t kCaster = 0xff000001;
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, { 100, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kCaster);
+  auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
+  ActorValueRecord record;
+  record.bases = { { 24, 100.f } };
+  REQUIRE(caster.SetActorValueRecord(record));
+  ActorValues values = caster.GetActorValues();
+  values.healthPercentage = 0.5f;
+  caster.SetPercentages(values);
+  const auto nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+
+  RunningEffect absorb;
+  absorb.effect = FormDesc::FromString("8d5c5:Skyrim.esm");
+  absorb.source = FormDesc::FromString("107aa1:Skyrim.esm");
+  absorb.caster = FormDesc::FromString("1");
+  absorb.kind = 4;
+  absorb.av = 24;
+  absorb.magnitude = 3.f;
+  absorb.durationS = 10.f;
+  absorb.asOfMs = nowMs;
+  absorb.detrimental = true;
+
+  MpChangeForm changeForm = target.GetChangeForm();
+  changeForm.runningEffects = std::vector<RunningEffect>{ absorb };
+  target.ApplyChangeForm(changeForm);
+  REQUIRE(target.HasRunningEffects());
+
+  // one second: 3 points out of the target, 3 into the caster
+  target.AdvanceEffects(1.f);
+  const auto kept = target.GetChangeForm().runningEffects;
+  REQUIRE(kept);
+  REQUIRE(kept->size() == 1);
+  REQUIRE((*kept)[0].kind == 4);
+  REQUIRE_FALSE((*kept)[0].reanimate);
+  REQUIRE(Health(target) == Catch::Approx(0.47f).margin(0.005f));
+  REQUIRE(Health(caster) == Catch::Approx(0.53f).margin(0.005f));
 
   p.DestroyActor(kCaster);
   DoDisconnect(p, 1);

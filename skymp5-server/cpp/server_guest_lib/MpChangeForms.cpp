@@ -723,8 +723,9 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
   }
 
   // thuum docs/verbs/magic-effects.md; absent in older records, read as
-  // none. A caster is written only when there is one: an empty FormDesc
-  // would read back as 0xff000000
+  // none. A caster is written only when there is one, a server's first
+  // player (0xff000000, "0") included (thuum docs/verbs/npc-fate.md C4): an
+  // older server reads "0" as none, as it wrote it
   if (changeForm.runningEffects.has_value() &&
       !changeForm.runningEffects->empty()) {
     auto entries = nlohmann::json::array();
@@ -742,8 +743,13 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
                            { "recover", e.recover },
                            { "detrimental", e.detrimental },
                            { "noDuration", e.noDuration } };
-      if (e.caster.shortFormId != 0 || !e.caster.file.empty()) {
-        j["caster"] = e.caster.ToString();
+      if (e.caster.has_value()) {
+        j["caster"] = e.caster->ToString();
+      }
+      // a thrall's reanimate state, written only when it is one (rule 6:
+      // a server that predates the key reads kind 3, a plain state)
+      if (e.reanimate) {
+        j["reanimate"] = true;
       }
       entries.push_back(j);
     }
@@ -1597,7 +1603,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       secondAv("secondAv"), secondWeight("secondWeight"),
       magnitude("magnitude"), durationS("durationS"), elapsedS("elapsedS"),
       asOf("asOf"), recover("recover"), detrimental("detrimental"),
-      noDuration("noDuration");
+      noDuration("noDuration"), reanimate("reanimate");
 
     std::vector<simdjson::dom::element> parsedEntries;
     ReadVector(jTmp, entries, &parsedEntries);
@@ -1630,6 +1636,12 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       ReadEx(parsedEntries[i], recover, &e.recover);
       ReadEx(parsedEntries[i], detrimental, &e.detrimental);
       ReadEx(parsedEntries[i], noDuration, &e.noDuration);
+      // absent in records written before it was kept, and in every effect
+      // but a thrall's reanimate
+      if (parsedEntries[i].at_pointer(reanimate.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        ReadEx(parsedEntries[i], reanimate, &e.reanimate);
+      }
     }
     res.runningEffects = running;
   }

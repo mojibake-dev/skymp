@@ -1,4 +1,5 @@
 #include "ActionListener.h"
+#include "ActorDeathMessage.h"
 #include "ActorFateMessage.h"
 #include "ActorValueRecord.h"
 #include "CellLoadedMessage.h"
@@ -12,6 +13,7 @@
 #include "TestUtils.hpp"
 #include "UpdateEquipmentMessage.h"
 #include "UpdatePropertyMessage.h"
+#include "condition_functions/HasKeyword.h"
 #include "libespm/Loader.h"
 #include "libespm/MGEF.h"
 #include "libespm/NPC_.h"
@@ -27,6 +29,7 @@
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <string>
+#include <variant>
 #include <vector>
 
 PartOne& GetPartOne();
@@ -1391,43 +1394,53 @@ TEST_CASE("A hosted actor's worn set loses what its host took off and "
 
 // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any body";
 // Eli, playtest 37: "anyone should be able to reanimate any corpse, that's
-// Just Gameplay"): a reanimate cast by a player who does not host the body's
-// cell reaches the host's game as the server's own Spell.Cast from the
-// caster's figure at the body, since only the host's engine can stand it,
-// and the relayed cast skips that host when the cast names the body. The
-// host's own cast needs nothing. Skyrim.esm: Reanimate Corpse 0x65bd7, its
-// effect ReanimateFFAimed25 0x96d0b of the Reanimate archetype (libespm
+// Just Gameplay"; ADR-060, playtest 41, Eli: "and yes go with A"): a
+// reanimate's accepted hit hands the body to the caster's seat for the
+// effect's life (the cells rule's commanded claim, UpdateHoster to every
+// game); the caster's own engine ran the spell and runs the effect, so the
+// get-up, the shader and the commanded packages play where the commander
+// is. The former host hears the relayed cast as any cast's look; the
+// snippet that cast the spell again on the host's engine (playtest 41: the
+// effect ran there with a figure as the commander, "puts him back on his
+// normal path") is gone. Skyrim.esm: Reanimate Corpse 0x65bd7, its effect
+// ReanimateFFAimed25 0x96d0b of the Reanimate archetype (libespm
 // MGEF::EffectType::Reanimate, 22, as CommonLibSSE-NG's EffectArchetypes.h
-// kReanimate), read here from the record itself.
-TEST_CASE("A reanimate cast by a player who does not host the body's cell "
-          "is cast again on the host's engine by the server's word, once "
-          "per accepted hit; the host's own cast sends nothing",
+// kReanimate), and Dead Thrall 0x7e8df, its effect ReanimateThrallFFAimed
+// 0x7e8e0, read here from the records themselves. Dead Thrall's full
+// thrall sections are the next case's, on a humanoid body: 0x7e8e0's
+// conditions want ActorTypeNPC, which the predator lacks (pipeline 5939);
+// here Dead Thrall's hit at the predator is the claim's refusal (ADR-039).
+TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
+          "for the effect's life; its death ends the claim; the host's own "
+          "cast keeps the body its own",
           "[NpcFate][Reanimate][espm]")
 {
   constexpr uint32_t kHost = 0xff000d35;
   constexpr uint32_t kCaster = 0xff000d36;
   constexpr uint32_t kReanimateCorpse = 0x65bd7;
   constexpr uint32_t kReanimateEffect = 0x96d0b;
+  constexpr uint32_t kDeadThrall = 0x7e8df;
+  constexpr uint32_t kDeadThrallEffect = 0x7e8e0;
   auto& p = GetPartOne();
   p.worldState.npcEnabled = true;
 
-  // the record itself: the spell's Reanimate effect is 0x96d0b
-  {
-    const auto spell =
-      espm::GetData<espm::SPEL>(kReanimateCorpse, &p.worldState);
+  // the record itself: `spell`'s Reanimate effect is `effectId`
+  const auto reanimatesBy = [&](uint32_t spellId, uint32_t effectId) {
+    const auto spell = espm::GetData<espm::SPEL>(spellId, &p.worldState);
     REQUIRE(spell.spellItem != nullptr);
     bool reanimates = false;
-    for (const auto& effect :
-         MpActor::EffectsOf(&p.worldState, kReanimateCorpse)) {
+    for (const auto& effect : MpActor::EffectsOf(&p.worldState, spellId)) {
       const auto mgef =
         espm::GetData<espm::MGEF>(effect.effectId, &p.worldState);
       if (mgef.data.effectType == espm::MGEF::EffectType::Reanimate) {
-        REQUIRE(effect.effectId == kReanimateEffect);
+        REQUIRE(effect.effectId == effectId);
         reanimates = true;
       }
     }
     REQUIRE(reanimates);
-  }
+  };
+  reanimatesBy(kReanimateCorpse, kReanimateEffect);
+  reanimatesBy(kDeadThrall, kDeadThrallEffect);
 
   // the host takes the forest's cell; the caster arrives beside the body,
   // which lies dead, hosted by user 0
@@ -1449,25 +1462,47 @@ TEST_CASE("A reanimate cast by a player who does not host the body's cell "
   p.worldState.fateRespawnDue.erase(kPredator);
   body.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
   HostGrants(p, 0, kForestCell);
+  // the caster's game has the cell loaded too, as its client reports it: a
+  // command needs its commander to have the body's cell loaded (cells.rs
+  // claim_commanded answers Unloaded otherwise, E_COMMAND_UNLOADED); the
+  // host holds the cell, so the load grants nothing
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kForestCell;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
   auto& host = p.worldState.GetFormAt<MpActor>(kHost);
   auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
   REQUIRE(p.worldState.HostOf(body) == &host);
+  // the claim's gate (ADR-039, ClaimReanimated): Reanimate Corpse's
+  // 0x96d0b holds on the predator for this caster, the premise of every
+  // section that has it command the body
+  for (const auto& effect :
+       MpActor::EffectsOf(&p.worldState, kReanimateCorpse)) {
+    if (effect.effectId == kReanimateEffect) {
+      REQUIRE(MpActor::EffectConditionsHold(&p.worldState, effect,
+                                            kReanimateCorpse, body, caster));
+    }
+  }
   body.Kill(nullptr);
   REQUIRE(body.IsDead());
 
-  // `user`'s cast of Reanimate Corpse through the packet path, as its
-  // client's message arrives: the caster 0x14, the target the body (a
-  // client naming the crosshair's actor; the engine's own word for an aimed
-  // cast names the caster, and then the relay stands and the look doubles
-  // on the host once, RelayCast)
-  const auto casts = [&](Networking::UserId user) {
+  // `user`'s cast of `spell` (Reanimate Corpse or Dead Thrall) through the
+  // packet path, as its client's message arrives: the caster 0x14, the
+  // target the body (a client naming the crosshair's actor; the engine's own
+  // word for an aimed cast names the caster, and then the relay stands and
+  // the look doubles on the host once, RelayCast)
+  const auto casts = [&](Networking::UserId user, uint32_t spell) {
     DoMessage(p, user,
               nlohmann::json{
                 { "t", static_cast<int>(MsgType::SpellCast) },
                 { "data",
                   { { "caster", 0x14 },
                     { "target", kPredator },
-                    { "spell", kReanimateCorpse },
+                    { "spell", spell },
                     { "isDualCasting", false },
                     { "interruptCast", false },
                     { "castingSource", 1 },
@@ -1484,14 +1519,14 @@ TEST_CASE("A reanimate cast by a player who does not host the body's cell "
                         { "floats", nlohmann::json::array() },
                         { "integers", nlohmann::json::array() } } } } } });
   };
-  // `user`'s report of its own hit on the body with the spell
-  const auto hits = [&](Networking::UserId user) {
+  // `user`'s report of its own hit on the body with `spell`
+  const auto hits = [&](Networking::UserId user, uint32_t spell) {
     RawMessageData raw;
     raw.userId = user;
     HitMessage hit;
     hit.data.aggressor = 0x14;
     hit.data.target = kPredator;
-    hit.data.source = kReanimateCorpse;
+    hit.data.source = spell;
     p.GetActionListener().OnHit(raw, hit);
   };
   // the Spell.Cast snippets sent to `user` since the last clear, known by
@@ -1509,49 +1544,695 @@ TEST_CASE("A reanimate cast by a player who does not host the body's cell "
     return out;
   };
 
-  SECTION("by a player who is not the host: one Spell.Cast on the host's "
-          "game, from the caster's figure at the body, and the relay skips "
-          "the host")
+  // UpdateProperty isHostedByOther for the body sent to `user` since the
+  // last clear (UpdateHoster's word)
+  const auto hosterWordsTo = [&](Networking::UserId user) {
+    size_t count = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.contains("propName") && m.j["propName"] == "isHostedByOther" &&
+          m.j.contains("idx") && m.j["idx"] == body.GetIdx()) {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  // the same word saying this game simulates it (isHostedByOther false)
+  const auto hostedFalseTo = [&](Networking::UserId user) {
+    size_t count = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.contains("propName") && m.j["propName"] == "isHostedByOther" &&
+          m.j.contains("idx") && m.j["idx"] == body.GetIdx() &&
+          m.j.value("dataDump", std::string()) == "false") {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  // the MagicEffects words for the body sent to `user` since the last clear
+  // (MagicEffectsTest's idiom); a listener NPC the host hosts doubles the
+  // host's, so a test reads every word, not their count
+  const auto effectWordsTo = [&](Networking::UserId user) {
+    std::vector<nlohmann::json> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::MagicEffects) &&
+          m.j.contains("idx") && m.j["idx"] == body.GetIdx()) {
+        out.push_back(m.j);
+      }
+    }
+    return out;
+  };
+
+  // the record's own duration of `spell`'s Reanimate effect, seconds: the
+  // command's side at its commander's departure, a day and more a full
+  // thrall's (wire-rules magic::FULL_THRALL_MIN_S, 86,400 s), less a timed
+  // one's; never a lease or a clock
+  const auto recordSecondsOf = [&](uint32_t spell, uint32_t effectId) {
+    uint32_t seconds = 0;
+    for (const auto& effect : MpActor::EffectsOf(&p.worldState, spell)) {
+      if (effect.effectId == effectId) {
+        seconds = effect.duration;
+      }
+    }
+    return seconds;
+  };
+
+  // the commander's engine stands the thrall: its live sample of the body,
+  // the death past the grace and the reanimate's hit inside its window
+  // (OnHostedActorState's resurrection branch, PartOne::ResurrectByHost),
+  // the one respawn a command survives
+  const auto standsOn = [&](Networking::UserId user) {
+    body.RecordDeathAt(
+      std::chrono::steady_clock::now() -
+      std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+    State(p, user, kPredator, 1.f);
+  };
+
+  // the items the body carries, every entry's count: a death item's roll
+  // adds one at least, whatever species the predator rolled (each of
+  // LCharAnimalForestPredator 0x42297's has a death item of chance none 0
+  // and Use All holding a base item: a tail, a pelt, venom or fat;
+  // Skyrim.esm)
+  const auto items = [&] {
+    uint32_t n = 0;
+    for (const auto& entry : body.GetInventory().entries) {
+      n += entry.count;
+    }
+    return n;
+  };
+
+  SECTION("by a player who is not the host: the body is the caster's seat's "
+          "from the hit, both games hear the word, no snippet, the relay "
+          "reaches the host as any cast's; the body's death ends the claim")
   {
     Equipment eq;
     eq.rightSpell = kReanimateCorpse;
     caster.SetEquipment(eq);
     p.Messages().clear();
-    casts(1);
-    // the cast names the body the server holds dead: its host is skipped
-    REQUIRE(SentOfType(p, 0, MsgType::SpellCast) == 0);
-    hits(1);
-    p.Tick(); // snippets are deferred (SpSnippet.cpp)
-    const auto toHost = castSnippetsTo(0);
-    REQUIRE(toHost.size() == 1);
-    // the selfId is the spell's long id (a Spell is no actor, so its own)
-    REQUIRE(toHost[0]["selfId"].get<uint64_t>() ==
-            SpSnippet::MakeLongFormId(&p.worldState, kReanimateCorpse));
-    REQUIRE(toHost[0]["arguments"].size() == 2);
-    REQUIRE(toHost[0]["arguments"][0]["formId"].get<uint64_t>() == kCaster);
-    REQUIRE(toHost[0]["arguments"][0]["type"] == "ObjectReference");
-    REQUIRE(toHost[0]["arguments"][1]["formId"].get<uint64_t>() == kPredator);
-    REQUIRE(toHost[0]["arguments"][1]["type"] == "ObjectReference");
+    casts(1, kReanimateCorpse);
+    // the relay reaches the host as any cast's look (the skip is gone)
+    REQUIRE(SentOfType(p, 0, MsgType::SpellCast) == 1);
+    hits(1, kReanimateCorpse);
+    p.Tick(); // snippets would be deferred (SpSnippet.cpp): none come
+    REQUIRE(castSnippetsTo(0).empty());
     REQUIRE(castSnippetsTo(1).empty());
+    // the caster's seat simulates the body from the hit (ADR-060)
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.worldState.HostOf(body) == &caster);
+    REQUIRE(hosterWordsTo(0) >= 1);
+    REQUIRE(hosterWordsTo(1) >= 1);
+    // a second hit renews the command, nothing else
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    // the commander's engine stands the thrall: the command stands through
+    // it
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    // the thrall's death (the effect's end in the commander's engine, its
+    // report) ends the claim: the cell's host simulates the body again
+    p.Messages().clear();
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(p.worldState.HostOf(body) == &host);
+    REQUIRE(hosterWordsTo(0) >= 1);
+    REQUIRE(hosterWordsTo(1) >= 1);
   }
 
-  SECTION("by the host itself: no snippet, its own engine ran the effect, "
-          "and the relay reaches the other game as any cast's")
+  // ClaimReanimated's gate (ADR-039, as the stand-up applies the effect):
+  // Dead Thrall's Reanimate effect 0x7e8e0 wants HasKeyword ActorTypeNPC,
+  // which the predator's race lacks, so Dead Thrall's hit at it commands
+  // nothing and no word goes (pipeline 5939: the command stood here, a full
+  // thrall's, with no Reanimate state on the record); Reanimate Corpse's at
+  // the same body still commands it, as the first section has it
+  SECTION("by a player who is not the host: Dead Thrall's hit at a body its "
+          "Reanimate effect's conditions refuse commands nothing, the cell's "
+          "host keeping it, and Reanimate Corpse's hit then commands it")
+  {
+    // Skyrim.esm's ActorTypeNPC (the full thrall case's kActorTypeNpc)
+    constexpr uint32_t kActorTypeNpc = 0x13794;
+    REQUIRE_FALSE(
+      ConditionFunctions::HasKeyword::ActorHasKeyword(body, kActorTypeNpc));
+    Equipment eq;
+    eq.rightSpell = kDeadThrall;
+    caster.SetEquipment(eq);
+    p.Messages().clear();
+    {
+      LogCapture log;
+      casts(1, kDeadThrall);
+      hits(1, kDeadThrall);
+      REQUIRE(log.Count("[verb:npc-fate] reanimate 7e8df by ff000d36 on "
+                        "85547: its Reanimate effect 7e8e0's conditions fail "
+                        "on the body (failing: HasKeyword(0x13794, 0x0) on "
+                        "Subject == 1: got 0); no command, the body stays "
+                        "its cell's") == 1);
+      REQUIRE(log.Count("commands it until its engine ends the effect") == 0);
+    }
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(p.worldState.HostOf(body) == &host);
+    REQUIRE(hosterWordsTo(0) == 0);
+    REQUIRE(hosterWordsTo(1) == 0);
+    // Reanimate Corpse's hit at the same body: the caster's seat's, as ever
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+  }
+
+  SECTION("by a player who is not the host: the thrall's ash after its death "
+          "is its reanimate's caster's for wire-rules natives' "
+          "ASH_WINDOW_MS, relayed to the host, and refused past it (the "
+          "reanimate-fx memo's D3 B)")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(body.ReanimateAcceptedCaster() == kCaster);
+    // the effect's end in the commander's engine: the command ends at the
+    // death, the cell's host simulates the body again
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+
+    // vanilla ReanimateAshPile's TurnToAsh on the commander's engine (MGEF
+    // 0xf52ab), as its seat reports it: AttachAshPile(None) on the body and
+    // ShockDisintegrate01FXS 0xd22fb's Stop on it
+    using Arg = std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
+    SpSnippetObjectArgument none;
+    none.formId = 0;
+    none.type = "Form";
+    SpSnippetObjectArgument victim;
+    victim.formId = kPredator;
+    victim.type = "Actor";
+    const auto ashCall = [&](uint32_t selfId, const char* cls, const char* fn,
+                             std::vector<Arg> args) {
+      ScriptCallMessage msg;
+      msg.selfId = selfId;
+      msg.cls = cls;
+      msg.fn = fn;
+      msg.args = std::move(args);
+      msg.caller = "ReanimateAshPile";
+      msg.handler = "TurnToAsh";
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnScriptCall(raw, msg);
+    };
+    // the relays of `fn` sent to `user` since the last clear
+    const auto relaysTo = [&](Networking::UserId user, const char* fn) {
+      size_t count = 0;
+      for (auto& m : p.Messages()) {
+        if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+            m.j["t"] == static_cast<int>(MsgType::SpSnippet) &&
+            m.j.contains("function") && m.j["function"] == fn) {
+          ++count;
+        }
+      }
+      return count;
+    };
+
+    // inside the window: the caster's calls go to the body's other
+    // listener, the host, never back to the caster
+    p.Messages().clear();
+    ashCall(kPredator, "Actor", "AttachAshPile", { Arg(none) });
+    ashCall(0xd22fb, "EffectShader", "Stop", { Arg(victim) });
+    REQUIRE(relaysTo(0, "AttachAshPile") == 1);
+    REQUIRE(relaysTo(0, "Stop") == 1);
+    REQUIRE(relaysTo(1, "AttachAshPile") == 0);
+
+    // past it: the simulator's refusal, nothing relayed
+    body.RecordDeathAt(
+      std::chrono::steady_clock::now() -
+      std::chrono::milliseconds(
+        static_cast<int64_t>(skymp::rules::script_ash_window_ms()) + 1000));
+    p.Messages().clear();
+    {
+      LogCapture log;
+      ashCall(kPredator, "Actor", "AttachAshPile", { Arg(none) });
+      REQUIRE(log.Count("E_SCRIPTCALL_OWNER") == 1);
+      REQUIRE(log.Count("past the ash window") == 1);
+    }
+    REQUIRE(relaysTo(0, "AttachAshPile") == 0);
+  }
+
+  SECTION("by a player who is not the host: the stand-up's MagicEffects "
+          "names the Reanimate effect with no end (-1) to both games, and the "
+          "thrall's death sends both the emptied set (its look, ADR-060)")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    // a dead target takes nothing at the hit
+    REQUIRE_FALSE(body.HasRunningEffects());
+    // the commander's engine stands it (standsOn: its live sample past the
+    // death's grace, inside the hit's window); the words read below are the
+    // stand-up's
+    p.Messages().clear();
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    // a state with no clock, sent as -1, no end (thuum docs/WIRE.md,
+    // MagicEffects' remaining; the platform review of 3a31c05a, F5), while
+    // the record keeps its 60 s (Skyrim.esm's EFIT) below; the Dark Souls
+    // rider fails its HasPerk on the caster (EffectConditionsTest) and the
+    // ash's script effect is no state of the server's, so the set is the one
+    // effect
+    for (const Networking::UserId user : { 0, 1 }) {
+      auto words = effectWordsTo(user);
+      REQUIRE_FALSE(words.empty());
+      for (auto& word : words) {
+        REQUIRE(word["effects"].size() == 1);
+        REQUIRE(word["effects"][0]["effect"] == kReanimateEffect);
+        REQUIRE(word["effects"][0]["source"] == kReanimateCorpse);
+        REQUIRE(word["effects"][0]["remaining"].get<float>() == -1.f);
+      }
+    }
+    const auto running = body.GetRunningEffects();
+    REQUIRE(running.size() == 1);
+    REQUIRE(running[0].effect == kReanimateEffect);
+    REQUIRE(running[0].secondsLeft ==
+            Catch::Approx(static_cast<float>(
+              recordSecondsOf(kReanimateCorpse, kReanimateEffect))));
+    // the commander's engine is its timer (ADR-060 as amended): past the
+    // record's 60 s and past a day the state runs on and no word drops it,
+    // so no game dispels a living thrall
+    p.Messages().clear();
+    body.AdvanceEffects(61.f);
+    body.AdvanceEffects(86'400.f);
+    REQUIRE(body.GetRunningEffects().size() == 1);
+    REQUIRE(effectWordsTo(0).empty());
+    REQUIRE(effectWordsTo(1).empty());
+    // its death: the effects tick that reads it ends the set and tells both
+    // games, so each stops the shader at the death
+    p.Messages().clear();
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    body.AdvanceEffects(0.25f);
+    REQUIRE_FALSE(body.HasRunningEffects());
+    for (const Networking::UserId user : { 0, 1 }) {
+      auto words = effectWordsTo(user);
+      REQUIRE_FALSE(words.empty());
+      for (auto& word : words) {
+        REQUIRE(word["effects"].empty());
+      }
+    }
+  }
+
+  SECTION("by a player who is not the host: no lease ends the command at "
+          "the record's duration, and its commander's report of the thrall's "
+          "death ends it at any time, past the reanimation's 90 s window")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    // Reanimate Corpse's record says 60 s (the old lease, 70 s with its
+    // margin): the clock past it ends nothing (Eli, 2026-11-12: "summons
+    // and resurrections should obey the timers the level of spell")
+    p.TickCellHosts(FateNowMs() + 71'000);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    // the commander's engine stood the thrall long ago (a dual cast's or a
+    // perk's longer effect) and now ends it: the hit and the stand-up older
+    // than every other evidence's window, the record alive
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    const auto now = std::chrono::steady_clock::now();
+    body.NoteHitBy(kCaster, now - std::chrono::seconds(130));
+    body.NoteHostStoodUp(now -
+                         std::chrono::milliseconds(MpActor::kReanimatedEndMs) -
+                         std::chrono::seconds(30));
+    const bool reportsBefore = p.worldState.npcDeathReports;
+    p.worldState.npcDeathReports = true;
+    {
+      ActorDeathMessage report;
+      report.refrId = kPredator;
+      report.cause = 0;
+      report.killer = 0;
+      const auto& at = body.GetPos();
+      report.pos = { at.x, at.y, at.z };
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnActorDeath(raw, report);
+    }
+    p.worldState.npcDeathReports = reportsBefore;
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+  }
+
+  SECTION("by a player who is not the host: the thrall's death at its "
+          "commander's report rolls no death item, its body keeping what it "
+          "carried; respawned, the NPC's next death rolls it (single "
+          "player's rule, MpActor's StandsByReanimation)")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    // the stand-up's reanimate state on the record, the server's own fact
+    const auto running = body.GetChangeForm().runningEffects;
+    REQUIRE(running.has_value());
+    REQUIRE(std::any_of(running->begin(), running->end(),
+                        [](const RunningEffect& r) { return r.reanimate; }));
+    const uint32_t carried = items();
+    const auto now = std::chrono::steady_clock::now();
+    body.NoteHitBy(kCaster, now - std::chrono::seconds(130));
+    body.NoteHostStoodUp(now -
+                         std::chrono::milliseconds(MpActor::kReanimatedEndMs) -
+                         std::chrono::seconds(30));
+    const bool reportsBefore = p.worldState.npcDeathReports;
+    p.worldState.npcDeathReports = true;
+    {
+      LogCapture log;
+      ActorDeathMessage report;
+      report.refrId = kPredator;
+      report.cause = 0;
+      report.killer = 0;
+      const auto& at = body.GetPos();
+      report.pos = { at.x, at.y, at.z };
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnActorDeath(raw, report);
+      REQUIRE(log.Count("dies from its reanimation: no death item rolled") ==
+              1);
+    }
+    p.worldState.npcDeathReports = reportsBefore;
+    REQUIRE(body.IsDead());
+    REQUIRE(items() == carried);
+    // the death's effects tick ends the state; a respawn stands the NPC
+    // alive with none, and its next death rolls the death item
+    body.AdvanceEffects(0.25f);
+    REQUIRE_FALSE(body.HasRunningEffects());
+    body.Respawn(false);
+    REQUIRE_FALSE(body.IsDead());
+    const uint32_t standing = items();
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    REQUIRE(items() > standing);
+  }
+
+  SECTION("by a player who is not the host: the command outlives its "
+          "commander's unload of the thrall's cell, with no word (Eli, "
+          "2026-11-12: \"leaving a cell should not kill the thrall\")")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    p.Messages().clear();
+    {
+      RawMessageData raw;
+      raw.userId = 1;
+      CellLoadedMessage unloaded;
+      unloaded.cell = kForestCell;
+      unloaded.loaded = false;
+      p.GetActionListener().OnCellLoaded(raw, unloaded);
+    }
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.worldState.HostOf(body) == &caster);
+    REQUIRE(hosterWordsTo(0) == 0);
+    REQUIRE(hosterWordsTo(1) == 0);
+  }
+
+  SECTION("by a player who is not the host: the commander's disconnect kills "
+          "a timed thrall at once by the server's word, then hands the body "
+          "to the cell's host with the word, no clock kept (Eli, "
+          "2026-11-12: \"'but as a plain resident with no undead look' "
+          "should simply die\")")
+  {
+    // Reanimate Corpse's record: a timed thrall's, under a day
+    REQUIRE(recordSecondsOf(kReanimateCorpse, kReanimateEffect) > 0);
+    REQUIRE(
+      static_cast<float>(recordSecondsOf(kReanimateCorpse, kReanimateEffect)) <
+      skymp::rules::full_thrall_min_s());
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    const uint32_t carried = items();
+    p.Messages().clear();
+    DoDisconnect(p, 1);
+    REQUIRE(body.IsDead());
+    // the departure's kill rolls no death item (single player's rule)
+    REQUIRE(items() == carried);
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(p.worldState.HostOf(body) == &host);
+    // the kill's word reaches the host ahead of the hoster word, so the
+    // host's engine promotes a body, never a living copy no effect holds
+    size_t deadAt = p.Messages().size();
+    size_t hostedAt = p.Messages().size();
+    for (size_t i = 0; i < p.Messages().size(); ++i) {
+      const auto& m = p.Messages()[i];
+      if (m.userId != 0 || !m.j.is_object() ||
+          m.j.value("t", -1) != static_cast<int>(MsgType::UpdateProperty) ||
+          m.j.value("refrId", 0u) != kPredator) {
+        continue;
+      }
+      const auto prop = m.j.value("propName", std::string());
+      const auto dump = m.j.value("dataDump", std::string());
+      if (prop == "isDead" && dump == "true") {
+        deadAt = std::min(deadAt, i);
+      }
+      if (prop == "isHostedByOther" && dump == "false") {
+        hostedAt = std::min(hostedAt, i);
+      }
+    }
+    REQUIRE(deadAt < p.Messages().size());
+    REQUIRE(hostedAt < p.Messages().size());
+    REQUIRE(deadAt < hostedAt);
+    // no estimate is kept: the clock past the record's duration changes
+    // nothing
+    p.TickCellHosts(FateNowMs() + 200'000);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    // the shared cleanup below disconnects the caster again
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
+  }
+
+  SECTION("by a player who is not the host: a command its engine never stood "
+          "ends at any other respawn, and the old commander's report of the "
+          "living actor is a stranger's (E_DEATH_NOT_HOST)")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(body.IsDead());
+    // the fate's own stand-up (the sweep's RespawnFated; the console's
+    // Resurrect and the lab's respawn-ref take the same path): no engine of
+    // the commander's stood it, so the command ends
+    body.RespawnFated();
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    // the old commander's cause-0 report of it: refused, not the simulator
+    const bool reportsBefore = p.worldState.npcDeathReports;
+    p.worldState.npcDeathReports = true;
+    {
+      ActorDeathMessage report;
+      report.refrId = kPredator;
+      report.cause = 0;
+      report.killer = 0;
+      const auto& at = body.GetPos();
+      report.pos = { at.x, at.y, at.z };
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnActorDeath(raw, report);
+    }
+    p.worldState.npcDeathReports = reportsBefore;
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+  }
+
+  SECTION("by a player who is not the host: the commander's report of a body "
+          "its engine never stood ends the command, the body dead here "
+          "already")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(body.IsDead());
+    const bool reportsBefore = p.worldState.npcDeathReports;
+    p.worldState.npcDeathReports = true;
+    {
+      ActorDeathMessage report;
+      report.refrId = kPredator;
+      report.cause = 0;
+      report.killer = 0;
+      const auto& at = body.GetPos();
+      report.pos = { at.x, at.y, at.z };
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnActorDeath(raw, report);
+    }
+    p.worldState.npcDeathReports = reportsBefore;
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+  }
+
+  SECTION("by a player at another player's body: no command, no word")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    host.Kill(nullptr);
+    casts(1, kReanimateCorpse);
+    p.Messages().clear();
+    {
+      LogCapture log;
+      RawMessageData raw;
+      raw.userId = 1;
+      HitMessage hit;
+      hit.data.aggressor = 0x14;
+      hit.data.target = kHost;
+      hit.data.source = kReanimateCorpse;
+      p.GetActionListener().OnHit(raw, hit);
+      REQUIRE(log.Count("a player's body is nobody's to command") == 1);
+    }
+    REQUIRE(p.CommanderOf(host) == 0);
+    for (auto& m : p.Messages()) {
+      REQUIRE_FALSE(
+        (m.j.is_object() &&
+         m.j.value("propName", std::string()) == "isHostedByOther" &&
+         m.j.value("refrId", 0u) == kHost));
+    }
+    host.Respawn(false);
+  }
+
+  SECTION("by the host itself: no snippet, the body stays the host's, the "
+          "relay reaches the other game as any cast's")
   {
     Equipment eq;
     eq.rightSpell = kReanimateCorpse;
     host.SetEquipment(eq);
     p.Messages().clear();
-    casts(0);
+    casts(0, kReanimateCorpse);
     REQUIRE(SentOfType(p, 1, MsgType::SpellCast) == 1);
-    hits(0);
+    hits(0, kReanimateCorpse);
     p.Tick();
     REQUIRE(castSnippetsTo(0).empty());
     REQUIRE(castSnippetsTo(1).empty());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(p.ReleaseAnyClaim(body) == kHost);
+    REQUIRE(p.SimulatorOf(body) == kHost);
   }
 
-  // the shared world: the body stood up again with no deadline, the fight a
-  // hit may have begun forgotten, the players gone
+  // thuum lab/.cache/drafts/reanimate/read-stage-125536.md 4.2
+  // (x-reanimate-claim 20261112-125536's terminate): a commander that hosts
+  // its thrall's cell is that cell's rule's answer through its own grace
+  // (cells.rs gone()), so the departure's ClaimGone named the leaver and
+  // sent it a keyframe its freed user could not take, in a ScopedTask's
+  // destructor. The test's send target records what the live one throws on
+  SECTION("by the host itself: its departure while it commands a timed "
+          "thrall sends its own user nothing, the thrall dies by the "
+          "server's word first, and the cell's next host takes the body")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    host.SetEquipment(eq);
+    casts(0, kReanimateCorpse);
+    hits(0, kReanimateCorpse);
+    REQUIRE(p.CommanderOf(body) == kHost);
+    standsOn(0);
+    REQUIRE_FALSE(body.IsDead());
+    p.Messages().clear();
+    {
+      LogCapture log;
+      REQUIRE_NOTHROW(DoDisconnect(p, 0));
+      // the claim's end names nobody (PartOne.cpp's ClaimGone guard), and
+      // every decision of the departure completed
+      REQUIRE(log.Count("the claimant hosting the cell: the word waits for "
+                        "its next host") == 1);
+      REQUIRE(log.Count("a host decision threw") == 0);
+    }
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    // nothing to the leaver's user: no keyframe and no hoster word
+    const auto toLeaver =
+      std::count_if(p.Messages().begin(), p.Messages().end(),
+                    [](const PartOne::Message& m) { return m.userId == 0; });
+    REQUIRE(toLeaver == 0);
+    // the other game hears the death, the server's word (ThrallExpired),
+    // ahead of the word that nobody simulates the body yet
+    size_t deadAt = p.Messages().size();
+    size_t hostedAt = p.Messages().size();
+    for (size_t i = 0; i < p.Messages().size(); ++i) {
+      const auto& m = p.Messages()[i];
+      if (m.userId != 1 || !m.j.is_object() ||
+          m.j.value("t", -1) != static_cast<int>(MsgType::UpdateProperty) ||
+          m.j.value("refrId", 0u) != kPredator) {
+        continue;
+      }
+      const auto prop = m.j.value("propName", std::string());
+      const auto dump = m.j.value("dataDump", std::string());
+      if (prop == "isDead" && dump == "true") {
+        deadAt = std::min(deadAt, i);
+      }
+      if (prop == "isHostedByOther" && dump == "true") {
+        hostedAt = std::min(hostedAt, i);
+      }
+    }
+    REQUIRE(deadAt < p.Messages().size());
+    REQUIRE(hostedAt < p.Messages().size());
+    REQUIRE(deadAt < hostedAt);
+    // the grace passes: the caster's game, which has the cell loaded, hosts
+    // it next and is named the body's simulator; the record stays dead
+    p.Messages().clear();
+    p.TickCellHosts(FateNowMs() + skymp::rules::host_grace_ms() + 2'000);
+    REQUIRE(SentOfType(p, 1, MsgType::HostGrant) >= 1);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.worldState.HostOf(body) == &caster);
+    REQUIRE(hostedFalseTo(1) >= 1);
+    REQUIRE(body.IsDead());
+    // the shared cleanup below disconnects the host again
+    DoConnect(p, 0);
+    p.SetUserActor(0, kHost);
+  }
+
+  // the shared world: no claim on the body, the body stood up again with no
+  // deadline, the fight a hit may have begun forgotten, the players gone
+  p.ReleaseAnyClaim(body);
   body.Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);
   p.GetFights().forget(kCaster);
@@ -1560,6 +2241,975 @@ TEST_CASE("A reanimate cast by a player who does not host the body's cell "
   DoDisconnect(p, 1);
   p.DestroyActor(kHost);
   p.DestroyActor(kCaster);
+}
+
+// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12; C4, the full
+// thrall's return): the reanimate case's Dead Thrall sections, on a body
+// Dead Thrall's Reanimate effect applies to. ReanimateThrallFFAimed 0x7E8E0
+// wants HasKeyword ActorTypeNPC (Skyrim.esm 0x13794) == 1 on Subject beside
+// MagicNoReanimate == 0 (thuum lab/.cache/drafts/reanimate-fx.md section 1;
+// the server's own row, "HasKeyword(0x13794, 0x0) on Subject == 1", in
+// pipeline 5939's log), so on the forest's leveled predator, an animal, the
+// stand-up's ApplyEffects (ADR-039) put no Reanimate state on the record and
+// the return's GetReanimateCaster named nobody (pipeline 5939, job 21195:
+// "0 == 4278193462 (0xff000d36)" at both return sections). The body here is
+// a server-made Nord bandit (base EncBandit01Melee2HBerserkNordM 0x3DE6F,
+// NordRace), the full thrall's look case's below, whose stand-up there puts
+// 0x7E8E0 on the record for its 86,313,600 s; it lies where the reanimate
+// case sets the predator, in the forest's cell 0x9810, between that case's
+// host and caster
+TEST_CASE("A full thrall (Dead Thrall) stays at its commander's disconnect "
+          "and is its caster's again at the caster's return, on a body its "
+          "Reanimate effect's conditions take",
+          "[NpcFate][Reanimate][espm]")
+{
+  constexpr uint32_t kHost = 0xff000d35;
+  constexpr uint32_t kCaster = 0xff000d36;
+  constexpr uint32_t kBody = 0xff000d3d;
+  constexpr uint32_t kBanditBase = 0x3de6f;
+  constexpr uint32_t kDeadThrall = 0x7e8df;
+  constexpr uint32_t kDeadThrallEffect = 0x7e8e0;
+  // Skyrim.esm's ActorTypeNPC, the keyword of 0x7E8E0's HasKeyword row (the
+  // row's own parameter in pipeline 5939's log; thuum
+  // docs/verbs/natures-balance.md, NordRaceVampire's KWDA)
+  constexpr uint32_t kActorTypeNpc = 0x13794;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+
+  // the record itself: Dead Thrall's Reanimate effect is 0x7E8E0, kept as
+  // the stand-up applies it
+  std::optional<espm::Effects::Effect> thrallEffect;
+  for (const auto& effect : MpActor::EffectsOf(&p.worldState, kDeadThrall)) {
+    if (espm::GetData<espm::MGEF>(effect.effectId, &p.worldState)
+          .data.effectType == espm::MGEF::EffectType::Reanimate) {
+      REQUIRE(effect.effectId == kDeadThrallEffect);
+      thrallEffect = effect;
+    }
+  }
+  REQUIRE(thrallEffect.has_value());
+
+  // the host takes the forest's cell, the caster has it loaded too (a
+  // command needs its commander to have the body's cell loaded, cells.rs
+  // claim_commanded; the full thrall's look case's order); the bandit lies
+  // dead beside them, hosted by user 0
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kForest, 0, kTamriel);
+  p.SetUserActor(0, kHost);
+  HostGrants(p, 0, kForestCell);
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, kForest, 0, kTamriel);
+  p.SetUserActor(1, kCaster);
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kForestCell;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kBody, p.worldState.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  saved.position = kForest + NiPoint3{ 100.f, 0.f, 0.f };
+  saved.angle = { 0.f, 0.f, 0.f };
+  p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+  p.worldState.LoadDeferredActors();
+  auto& form = p.worldState.LookupFormByIdNoLoad(kBody);
+  REQUIRE(form);
+  MpActor* bodyPtr = form->AsActor();
+  REQUIRE(bodyPtr);
+  MpActor& body = *bodyPtr;
+  p.worldState.fateRespawnDue.erase(kBody);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
+  REQUIRE(p.worldState.CellOf(body) == kForestCell);
+  REQUIRE(p.worldState.HostOf(body) == &host);
+
+  // every section's premise (Catch2 runs this setup ahead of each one): the
+  // body carries ActorTypeNPC, and 0x7E8E0's conditions hold on it for this
+  // caster as the stand-up's ApplyEffects reads them (EffectConditionsHold,
+  // ADR-039), so the stand-up puts the Reanimate state naming the caster on
+  // the record, the row the return reads
+  REQUIRE(
+    ConditionFunctions::HasKeyword::ActorHasKeyword(body, kActorTypeNpc));
+  REQUIRE(MpActor::EffectConditionsHold(&p.worldState, *thrallEffect,
+                                        kDeadThrall, body, caster));
+  body.Kill(nullptr);
+  REQUIRE(body.IsDead());
+
+  // `user`'s cast of `spell` through the packet path, as its client's
+  // message arrives, the target the body (the reanimate case's casts)
+  const auto casts = [&](Networking::UserId user, uint32_t spell) {
+    DoMessage(p, user,
+              nlohmann::json{
+                { "t", static_cast<int>(MsgType::SpellCast) },
+                { "data",
+                  { { "caster", 0x14 },
+                    { "target", kBody },
+                    { "spell", spell },
+                    { "isDualCasting", false },
+                    { "interruptCast", false },
+                    { "castingSource", 1 },
+                    { "aimAngle", 0.f },
+                    { "aimHeading", 0.f },
+                    { "hasLaunch", false },
+                    { "originX", 0.f },
+                    { "originY", 0.f },
+                    { "originZ", 0.f },
+                    { "launchAngleX", 0.f },
+                    { "launchAngleZ", 0.f },
+                    { "actorAnimationVariables",
+                      { { "booleans", nlohmann::json::array() },
+                        { "floats", nlohmann::json::array() },
+                        { "integers", nlohmann::json::array() } } } } } });
+  };
+  // `user`'s report of its own hit on the body with `spell`
+  const auto hits = [&](Networking::UserId user, uint32_t spell) {
+    RawMessageData raw;
+    raw.userId = user;
+    HitMessage hit;
+    hit.data.aggressor = 0x14;
+    hit.data.target = kBody;
+    hit.data.source = spell;
+    p.GetActionListener().OnHit(raw, hit);
+  };
+
+  // UpdateProperty isHostedByOther for the body sent to `user` since the
+  // last clear (UpdateHoster's word)
+  const auto hosterWordsTo = [&](Networking::UserId user) {
+    size_t count = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.contains("propName") && m.j["propName"] == "isHostedByOther" &&
+          m.j.contains("idx") && m.j["idx"] == body.GetIdx()) {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  // the same word saying this game simulates it (isHostedByOther false)
+  const auto hostedFalseTo = [&](Networking::UserId user) {
+    size_t count = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.contains("propName") && m.j["propName"] == "isHostedByOther" &&
+          m.j.contains("idx") && m.j["idx"] == body.GetIdx() &&
+          m.j.value("dataDump", std::string()) == "false") {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  // the MagicEffects words for the body sent to `user` since the last clear
+  // (MagicEffectsTest's idiom)
+  const auto effectWordsTo = [&](Networking::UserId user) {
+    std::vector<nlohmann::json> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::MagicEffects) &&
+          m.j.contains("idx") && m.j["idx"] == body.GetIdx()) {
+        out.push_back(m.j);
+      }
+    }
+    return out;
+  };
+
+  // the commander's engine stands the thrall: its live sample of the body,
+  // the death past the grace and the reanimate's hit inside its window
+  // (OnHostedActorState's resurrection branch, PartOne::ResurrectByHost)
+  const auto standsOn = [&](Networking::UserId user) {
+    body.RecordDeathAt(
+      std::chrono::steady_clock::now() -
+      std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+    State(p, user, kBody, 1.f);
+  };
+
+  SECTION("by a player who is not the host: a full thrall (Dead Thrall, a "
+          "day and more on the record) stays alive at its commander's "
+          "disconnect, the cell's host simulating it, and no clock ends it "
+          "(Eli, 2026-11-12: \"if it's a full thrall at 999 days, should "
+          "just stay\")")
+  {
+    const uint32_t seconds = thrallEffect->duration;
+    REQUIRE(static_cast<float>(seconds) >= skymp::rules::full_thrall_min_s());
+    Equipment eq;
+    eq.rightSpell = kDeadThrall;
+    caster.SetEquipment(eq);
+    casts(1, kDeadThrall);
+    hits(1, kDeadThrall);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    // the stand-up's Reanimate state on the record names its caster
+    REQUIRE(body.GetReanimateCaster().caster == kCaster);
+    p.Messages().clear();
+    DoDisconnect(p, 1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(p.worldState.HostOf(body) == &host);
+    REQUIRE(hostedFalseTo(0) >= 1);
+    // past the record's own duration, 999 days: still alive
+    p.TickCellHosts(FateNowMs() + static_cast<uint64_t>(seconds) * 1000 +
+                    1'000);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    // the shared cleanup below disconnects the caster again
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
+  }
+
+  SECTION("by a player who is not the host: a full thrall that stayed at its "
+          "commander's disconnect is its caster's again when the caster's "
+          "next game reports the thrall's cell loaded, the record its "
+          "dormant row and the host keeping the cell (C4; Eli, 2026-11-12: "
+          "\"thrall returns to caster obvs\")")
+  {
+    Equipment eq;
+    eq.rightSpell = kDeadThrall;
+    caster.SetEquipment(eq);
+    casts(1, kDeadThrall);
+    hits(1, kDeadThrall);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    // the record names its caster: the dormant row
+    REQUIRE(body.GetReanimateCaster().caster == kCaster);
+    REQUIRE(body.GetReanimateCaster().recordSeconds >=
+            skymp::rules::full_thrall_min_s());
+    DoDisconnect(p, 1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(body.GetReanimateCaster().caster == kCaster);
+
+    // the caster's next login: the body's set names it (MagicEffects'
+    // caster), and nothing returns before its game reports the cell loaded
+    LogCapture log;
+    p.Messages().clear();
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(hostedFalseTo(1) == 0);
+    bool named = false;
+    for (auto& word : effectWordsTo(1)) {
+      for (auto& effect : word["effects"]) {
+        if (effect["effect"] == kDeadThrallEffect) {
+          REQUIRE(effect["caster"] == kCaster);
+          REQUIRE(effect["remaining"].get<float>() == -1.f);
+          named = true;
+        }
+      }
+    }
+    REQUIRE(named);
+
+    // its game reports the thrall's cell loaded, the host still hosting it:
+    // the caster commands the thrall again, both games hear the word, and
+    // the host keeps its cell
+    const auto loadsTheCell = [&] {
+      RawMessageData raw;
+      raw.userId = 1;
+      CellLoadedMessage loaded;
+      loaded.cell = kForestCell;
+      loaded.loaded = true;
+      p.GetActionListener().OnCellLoaded(raw, loaded);
+    };
+    p.Messages().clear();
+    loadsTheCell();
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(p.worldState.HostOf(body) == &caster);
+    REQUIRE(p.GetCellHost(kForestCell).player == kHost);
+    REQUIRE(hostedFalseTo(1) >= 1);
+    REQUIRE(hosterWordsTo(0) >= 1);
+    REQUIRE(
+      log.Count("ff000d3d returns to its caster ff000d36 in cell 9810: a "
+                "full thrall its record names") == 1);
+    // a later load claims nothing again: its own command stands
+    loadsTheCell();
+    REQUIRE(log.Count("returns to its caster ff000d36") == 1);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    // the returned command is the cast's own: the thrall's death ends it
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+  }
+
+  SECTION("by a player who is not the host: a full thrall killed while its "
+          "caster was away is no thrall at the caster's return (C4)")
+  {
+    Equipment eq;
+    eq.rightSpell = kDeadThrall;
+    caster.SetEquipment(eq);
+    casts(1, kDeadThrall);
+    hits(1, kDeadThrall);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    // the record names its caster: the death below, not a missing state, is
+    // why no return comes
+    REQUIRE(body.GetReanimateCaster().caster == kCaster);
+    DoDisconnect(p, 1);
+    REQUIRE_FALSE(body.IsDead());
+    // the host's engine kills it while its caster is away
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    LogCapture log;
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
+    {
+      RawMessageData raw;
+      raw.userId = 1;
+      CellLoadedMessage loaded;
+      loaded.cell = kForestCell;
+      loaded.loaded = true;
+      p.GetActionListener().OnCellLoaded(raw, loaded);
+    }
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(log.Count("returns to its caster") == 0);
+  }
+
+  SECTION("by a player who is not the host: a full thrall served to its "
+          "caster's next game after that game reported the thrall's cell "
+          "loaded is claimed at the subscribe, once, its create word naming "
+          "the caster its simulator (C4: the engine's 5x5 runs ahead of the "
+          "server's 3x3)")
+  {
+    Equipment eq;
+    eq.rightSpell = kDeadThrall;
+    caster.SetEquipment(eq);
+    casts(1, kDeadThrall);
+    hits(1, kDeadThrall);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    // the stand-up's Reanimate state on the record names its caster
+    REQUIRE(body.GetReanimateCaster().caster == kCaster);
+    DoDisconnect(p, 1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(body.GetReanimateCaster().caster == kCaster);
+    // the caster's next game starts three grid squares east: the body is no
+    // emitter of its, so its load of the body's cell meets no thrall
+    caster.SetPos(kForest + NiPoint3{ 3 * 4096.f, 0.f, 0.f });
+    LogCapture log;
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
+    REQUIRE(caster.GetEmitters().count(&body) == 0);
+    const auto loadsTheCell = [&] {
+      RawMessageData raw;
+      raw.userId = 1;
+      CellLoadedMessage loaded;
+      loaded.cell = kForestCell;
+      loaded.loaded = true;
+      p.GetActionListener().OnCellLoaded(raw, loaded);
+    };
+    loadsTheCell();
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(log.Count("returns to its caster ff000d36") == 0);
+    // it comes back beside the body: the grid serves the body to its game,
+    // and the subscribe claims it ahead of the create word
+    p.Messages().clear();
+    caster.SetPos(kForest + NiPoint3{ 50.f, 0.f, 0.f });
+    REQUIRE(caster.GetEmitters().count(&body) == 1);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(
+      log.Count("ff000d3d returns to its caster ff000d36 in cell 9810") == 1);
+    bool created = false;
+    for (auto& m : p.Messages()) {
+      if (m.userId == 1 && m.j.is_object() &&
+          m.j.value("t", -1) == static_cast<int>(MsgType::CreateActor) &&
+          m.j.contains("refrId") && m.j["refrId"] == kBody) {
+        REQUIRE(m.j["props"]["isHostedByOther"] == false);
+        created = true;
+      }
+    }
+    REQUIRE(created);
+    // a later load claims nothing again: its own command stands
+    loadsTheCell();
+    REQUIRE(log.Count("returns to its caster ff000d36") == 1);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+  }
+
+  // the shared world: no claim on the body, which goes, the fight a hit may
+  // have begun forgotten, the players gone
+  p.ReleaseAnyClaim(body);
+  body.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kBody);
+  p.GetFights().forget(kCaster);
+  p.GetFights().forget(kHost);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kBody);
+  p.DestroyActor(kHost);
+  p.DestroyActor(kCaster);
+}
+
+// thuum docs/verbs/npc-fate.md (ADR-060; the fresh review of f89115af, C3):
+// a thrall's end its commander reports is the commander's word (R2), and
+// the engine's essential and protected rules (MpActor::MayDie) are a check
+// on the owner there, as on a host-run script's kill (ADR-063 decision 4);
+// before, a protected base's thrall had that report refused
+// E_DEATH_IMMORTAL and, with no lease, no end at all. Jenassa 0xe1ba9 (base
+// HirelingJenassa 0xb9982, protected and not essential in Skyrim.esm, read
+// here from the record) in WhiterunDrunkenHuntsman 0x165b7, hosted by user
+// 0 and raised by user 1
+TEST_CASE("A protected base's thrall ends at its commander's report of the "
+          "effect's end",
+          "[NpcFate][Reanimate][espm]")
+{
+  constexpr uint32_t kJenassa = 0xe1ba9;
+  constexpr uint32_t kInn = 0x165b7;
+  constexpr uint32_t kHost = 0xff000d38;
+  constexpr uint32_t kCaster = 0xff000d39;
+  constexpr uint32_t kReanimateCorpse = 0x65bd7;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kInn));
+  auto& body = p.worldState.GetFormAt<MpActor>(kJenassa);
+  const auto npc = espm::GetData<espm::NPC_>(body.GetBaseId(), &p.worldState);
+  REQUIRE(npc.isProtected);
+  REQUIRE_FALSE(npc.isEssential);
+  REQUIRE(body.IsFateRespawned());
+  REQUIRE(p.worldState.CellOf(body) == kInn);
+  if (body.IsDead()) {
+    body.Respawn(false);
+  }
+
+  // the host stands in the inn and takes it; the caster beside her has the
+  // inn loaded too, as its client reports it
+  DoConnect(p, 0);
+  p.CreateActor(kHost, body.GetPos() + NiPoint3{ 100.f, 0.f, 0.f }, 0, kInn);
+  p.SetUserActor(0, kHost);
+  HostGrants(p, 0, kInn);
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, body.GetPos() + NiPoint3{ -100.f, 0.f, 0.f }, 0,
+                kInn);
+  p.SetUserActor(1, kCaster);
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kInn;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
+  REQUIRE(p.worldState.HostOf(body) == &host);
+  body.Kill(nullptr);
+  REQUIRE(body.IsDead());
+
+  // the caster's Reanimate Corpse at her body, as its client's messages
+  // arrive: the cast, then its hit
+  Equipment eq;
+  eq.rightSpell = kReanimateCorpse;
+  caster.SetEquipment(eq);
+  DoMessage(
+    p, 1,
+    nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
+                    { "data",
+                      { { "caster", 0x14 },
+                        { "target", kJenassa },
+                        { "spell", kReanimateCorpse },
+                        { "isDualCasting", false },
+                        { "interruptCast", false },
+                        { "castingSource", 1 },
+                        { "aimAngle", 0.f },
+                        { "aimHeading", 0.f },
+                        { "hasLaunch", false },
+                        { "originX", 0.f },
+                        { "originY", 0.f },
+                        { "originZ", 0.f },
+                        { "launchAngleX", 0.f },
+                        { "launchAngleZ", 0.f },
+                        { "actorAnimationVariables",
+                          { { "booleans", nlohmann::json::array() },
+                            { "floats", nlohmann::json::array() },
+                            { "integers", nlohmann::json::array() } } } } } });
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    HitMessage hit;
+    hit.data.aggressor = 0x14;
+    hit.data.target = kJenassa;
+    hit.data.source = kReanimateCorpse;
+    p.GetActionListener().OnHit(raw, hit);
+  }
+  REQUIRE(p.CommanderOf(body) == kCaster);
+
+  // the commander's engine stands her (its live sample, the death past the
+  // grace): alive and still commanded, a death the engine's rule refuses to
+  // any hand but a player's
+  body.RecordDeathAt(
+    std::chrono::steady_clock::now() -
+    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+  State(p, 1, kJenassa, 1.f);
+  REQUIRE_FALSE(body.IsDead());
+  REQUIRE(p.CommanderOf(body) == kCaster);
+  REQUIRE_FALSE(body.MayDie(nullptr));
+
+  // its engine ends the effect: the commander's cause-0 report, the hit and
+  // the stand-up older than every other evidence's window
+  const auto now = std::chrono::steady_clock::now();
+  body.NoteHitBy(kCaster, now - std::chrono::seconds(130));
+  body.NoteHostStoodUp(now -
+                       std::chrono::milliseconds(MpActor::kReanimatedEndMs) -
+                       std::chrono::seconds(30));
+  const bool reportsBefore = p.worldState.npcDeathReports;
+  p.worldState.npcDeathReports = true;
+  {
+    ActorDeathMessage report;
+    report.refrId = kJenassa;
+    report.cause = 0;
+    report.killer = 0;
+    const auto& at = body.GetPos();
+    report.pos = { at.x, at.y, at.z };
+    RawMessageData raw;
+    raw.userId = 1;
+    p.GetActionListener().OnActorDeath(raw, report);
+  }
+  p.worldState.npcDeathReports = reportsBefore;
+  REQUIRE(body.IsDead());
+  REQUIRE(p.CommanderOf(body) == 0);
+  REQUIRE(p.SimulatorOf(body) == kHost);
+
+  // the shared world: no claim on her, standing again with no deadline, the
+  // fight a hit may have begun forgotten, the players gone
+  p.ReleaseAnyClaim(body);
+  body.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kJenassa);
+  p.GetFights().forget(kCaster);
+  p.GetFights().forget(kHost);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kHost);
+  p.DestroyActor(kCaster);
+}
+
+// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12, Eli: "if
+// it's a full thrall at 999 days, should just stay. i want it to keep it's
+// undead look though"): Dead Thrall 0x7E8DF's ReanimateThrallFFAimed
+// 0x7E8E0 lasts 86,313,600 s in Skyrim.esm (a scratch reader over thuum
+// lab/esm.py, 2026-11-12), a full thrall's by wire-rules
+// magic::FULL_THRALL_MIN_S: the record keeps that duration whole, every game
+// hears the look from the stand-up, and the commander's departure ends
+// neither the thrall nor its look on the host's game or a later arrival's;
+// its death's emptied set ends it. The effect's own conditions want
+// ActorTypeNPC, so the body is a server-made Nord bandit (base
+// EncBandit01Melee2HBerserkNordM 0x3DE6F, NordRace), the dead server-made
+// NPC case's.
+TEST_CASE("A full thrall's look is the record's for the record's whole "
+          "duration and outlasts its commander's departure; its death ends "
+          "it",
+          "[NpcFate][Reanimate][espm]")
+{
+  constexpr uint32_t kHost = 0xff000d38;
+  constexpr uint32_t kCaster = 0xff000d39;
+  constexpr uint32_t kThrall = 0xff000d3a;
+  constexpr uint32_t kLater = 0xff000d3b;
+  constexpr uint32_t kBanditBase = 0x3de6f;
+  constexpr uint32_t kDeadThrall = 0x7e8df;
+  constexpr uint32_t kThrallEffect = 0x7e8e0;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+
+  // the record itself: Dead Thrall's Reanimate effect and its duration
+  float recordSeconds = 0.f;
+  for (const auto& effect : MpActor::EffectsOf(&p.worldState, kDeadThrall)) {
+    if (espm::GetData<espm::MGEF>(effect.effectId, &p.worldState)
+          .data.effectType == espm::MGEF::EffectType::Reanimate) {
+      REQUIRE(effect.effectId == kThrallEffect);
+      recordSeconds = static_cast<float>(effect.duration);
+    }
+  }
+  REQUIRE(recordSeconds == 86'313'600.f);
+
+  // the host takes the forest's cell, the caster has it loaded too; the
+  // bandit lies dead beside them, hosted by user 0
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kForest, 0, kTamriel);
+  p.SetUserActor(0, kHost);
+  HostGrants(p, 0, kForestCell);
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, kForest, 0, kTamriel);
+  p.SetUserActor(1, kCaster);
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kForestCell;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kThrall, p.worldState.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  saved.position = kForest + NiPoint3{ 100.f, 0.f, 0.f };
+  saved.angle = { 0.f, 0.f, 0.f };
+  p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+  p.worldState.LoadDeferredActors();
+  auto& form = p.worldState.LookupFormByIdNoLoad(kThrall);
+  REQUIRE(form);
+  MpActor* thrallPtr = form->AsActor();
+  REQUIRE(thrallPtr);
+  MpActor& thrall = *thrallPtr;
+  p.worldState.fateRespawnDue.erase(kThrall);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& caster = p.worldState.GetFormAt<MpActor>(kCaster);
+  REQUIRE(p.worldState.HostOf(thrall) == &host);
+  thrall.Kill(nullptr);
+  REQUIRE(thrall.IsDead());
+
+  // the MagicEffects words for the thrall sent to `user` since the last
+  // clear, every one read (the reanimate case's idiom)
+  const auto effectWordsTo = [&](Networking::UserId user) {
+    std::vector<nlohmann::json> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() && m.j.contains("t") &&
+          m.j["t"] == static_cast<int>(MsgType::MagicEffects) &&
+          m.j.contains("idx") && m.j["idx"] == thrall.GetIdx()) {
+        out.push_back(m.j);
+      }
+    }
+    return out;
+  };
+  // the thrall's Reanimate effect's seconds left in a word, nothing when the
+  // word names none
+  const auto lookIn = [&](nlohmann::json& word) -> std::optional<float> {
+    for (auto& effect : word["effects"]) {
+      if (effect["effect"] == kThrallEffect) {
+        return effect["remaining"].get<float>();
+      }
+    }
+    return std::nullopt;
+  };
+
+  // the caster's cast and hit through the packet path, then its engine's
+  // stand-up: its live sample past the death's grace, inside the window
+  Equipment eq;
+  eq.rightSpell = kDeadThrall;
+  caster.SetEquipment(eq);
+  DoMessage(
+    p, 1,
+    nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
+                    { "data",
+                      { { "caster", 0x14 },
+                        { "target", kThrall },
+                        { "spell", kDeadThrall },
+                        { "isDualCasting", false },
+                        { "interruptCast", false },
+                        { "castingSource", 1 },
+                        { "aimAngle", 0.f },
+                        { "aimHeading", 0.f },
+                        { "hasLaunch", false },
+                        { "originX", 0.f },
+                        { "originY", 0.f },
+                        { "originZ", 0.f },
+                        { "launchAngleX", 0.f },
+                        { "launchAngleZ", 0.f },
+                        { "actorAnimationVariables",
+                          { { "booleans", nlohmann::json::array() },
+                            { "floats", nlohmann::json::array() },
+                            { "integers", nlohmann::json::array() } } } } } });
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    HitMessage hit;
+    hit.data.aggressor = 0x14;
+    hit.data.target = kThrall;
+    hit.data.source = kDeadThrall;
+    p.GetActionListener().OnHit(raw, hit);
+  }
+  REQUIRE(p.CommanderOf(thrall) == kCaster);
+  thrall.RecordDeathAt(
+    std::chrono::steady_clock::now() -
+    std::chrono::milliseconds(MpActor::kPendingDeathMs + 1000));
+  p.Messages().clear();
+  State(p, 1, kThrall, 1.f);
+  REQUIRE_FALSE(thrall.IsDead());
+
+  // both games hear the look with no end (-1, a state with no clock: thuum
+  // docs/WIRE.md, MagicEffects' remaining; the platform review of 3a31c05a,
+  // F5); the record keeps its 86,313,600 s, not a day's
+  for (const Networking::UserId user : { 0, 1 }) {
+    auto words = effectWordsTo(user);
+    REQUIRE_FALSE(words.empty());
+    for (auto& word : words) {
+      REQUIRE(lookIn(word) == -1.f);
+    }
+  }
+  const auto lookOnRecord = [&] {
+    for (const auto& e : thrall.GetRunningEffects()) {
+      if (e.effect == kThrallEffect) {
+        return e.secondsLeft;
+      }
+    }
+    return -1.f;
+  };
+  REQUIRE(lookOnRecord() == Catch::Approx(recordSeconds));
+
+  // its commander leaves: the thrall stays on the cell's host, alive, its
+  // look kept whole on the record; no word ends it on the host's game
+  p.Messages().clear();
+  DoDisconnect(p, 1);
+  REQUIRE(p.CommanderOf(thrall) == 0);
+  REQUIRE(p.SimulatorOf(thrall) == kHost);
+  REQUIRE_FALSE(thrall.IsDead());
+  REQUIRE(effectWordsTo(0).empty());
+  REQUIRE(lookOnRecord() == Catch::Approx(recordSeconds));
+
+  // a later arrival's game first sees the thrall and hears the look whole
+  // (the subscription's SendMagicEffectsTo)
+  DoConnect(p, 2);
+  p.CreateActor(kLater, kForest, 0, kTamriel);
+  p.SetUserActor(2, kLater);
+  {
+    auto words = effectWordsTo(2);
+    REQUIRE_FALSE(words.empty());
+    for (auto& word : words) {
+      REQUIRE(lookIn(word) == -1.f);
+    }
+  }
+
+  // its death: the emptied set to every game that sees it
+  p.Messages().clear();
+  thrall.Kill(nullptr);
+  REQUIRE(thrall.IsDead());
+  thrall.AdvanceEffects(0.25f);
+  REQUIRE_FALSE(thrall.HasRunningEffects());
+  for (const Networking::UserId user : { 0, 2 }) {
+    auto words = effectWordsTo(user);
+    REQUIRE_FALSE(words.empty());
+    for (auto& word : words) {
+      REQUIRE(word["effects"].empty());
+    }
+  }
+
+  // the shared world
+  p.ReleaseAnyClaim(thrall);
+  thrall.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kThrall);
+  p.GetFights().forget(kCaster);
+  p.GetFights().forget(kHost);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 2);
+  p.DestroyActor(kThrall);
+  p.DestroyActor(kHost);
+  p.DestroyActor(kCaster);
+  p.DestroyActor(kLater);
+}
+
+// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12): a restart is
+// every commander's departure, the cells rule's commands living in memory
+// alone, so a thrall its saved record brings back alive with its Reanimate
+// state (MpActor::ApplyChangeForm's ReapplyMagicEffects, at the load) is
+// judged by the state's record duration: a timed thrall dies by the server's
+// word at the world's next tick, a full thrall stays with its look. The
+// record is a server-made Nord bandit's (base 0x3DE6F), loaded through
+// WorldState::LoadChangeForm as the boot loads a saved one
+TEST_CASE("At a restart a timed thrall's record dies by the server's word "
+          "and a full thrall's stays with its look",
+          "[NpcFate][Reanimate][espm]")
+{
+  constexpr uint32_t kThrall = 0xff000d3c;
+  constexpr uint32_t kBanditBase = 0x3de6f;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  const auto wallNowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+
+  // the saved record: alive at the forest, its reanimate state 5 s in as of
+  // now, kept as a state with its key
+  const auto load = [&](uint32_t effect, uint32_t spell, float magnitude,
+                        float recordSeconds) -> MpActor& {
+    MpChangeForm saved;
+    saved.recType = MpChangeForm::ACHR;
+    saved.formDesc = FormDesc::FromFormId(kThrall, p.worldState.espmFiles);
+    saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+    saved.worldOrCellDesc = FormDesc::Tamriel();
+    saved.position = kForest;
+    saved.angle = { 0.f, 0.f, 0.f };
+    RunningEffect state;
+    state.effect = FormDesc::FromFormId(effect, p.worldState.espmFiles);
+    state.source = FormDesc::FromFormId(spell, p.worldState.espmFiles);
+    state.kind = 3;
+    state.reanimate = true;
+    state.magnitude = magnitude;
+    state.durationS = recordSeconds;
+    state.elapsedS = 5.f;
+    state.asOfMs = wallNowMs;
+    state.recover = true;
+    saved.runningEffects = std::vector<RunningEffect>{ state };
+    p.worldState.LoadChangeForm(saved, p.CreateFormCallbacks());
+    p.worldState.LoadDeferredActors();
+    p.worldState.fateRespawnDue.erase(kThrall);
+    return p.worldState.GetFormAt<MpActor>(kThrall);
+  };
+
+  SECTION("Reanimate Corpse's 0x96D0B, the record's 60 s: a timed thrall, "
+          "the server's word ends it once the load is done")
+  {
+    LogCapture log;
+    auto& thrall = load(0x96d0b, 0x65bd7, 13.f, 60.f);
+    REQUIRE_FALSE(thrall.IsDead());
+    // the items it carries, every entry's count
+    const auto items = [&] {
+      uint32_t n = 0;
+      for (const auto& entry : thrall.GetInventory().entries) {
+        n += entry.count;
+      }
+      return n;
+    };
+    const uint32_t carried = items();
+    p.Tick();
+    REQUIRE(thrall.IsDead());
+    // the restart's kill of a standing thrall rolls no death item (single
+    // player's rule)
+    REQUIRE(items() == carried);
+    REQUIRE(log.Count("dies from its reanimation: no death item rolled") == 1);
+    REQUIRE(log.Count("commander left at the server's restart and its effect "
+                      "is a timed thrall's (the record's 60 s): the server's "
+                      "word ends it") == 1);
+  }
+
+  SECTION("Dead Thrall's 0x7E8E0, the record's 86,313,600 s: a full thrall "
+          "stays, its look kept")
+  {
+    LogCapture log;
+    auto& thrall = load(0x7e8e0, 0x7e8df, 40.f, 86'313'600.f);
+    p.Tick();
+    REQUIRE_FALSE(thrall.IsDead());
+    REQUIRE(log.Count("commander left at the server's restart and its effect "
+                      "is a full thrall's (the record's 86313600 s): it "
+                      "stays, its look kept") == 1);
+    const auto running = thrall.GetRunningEffects();
+    REQUIRE(running.size() == 1);
+    REQUIRE(running[0].effect == 0x7e8e0);
+    REQUIRE(running[0].secondsLeft == Catch::Approx(86'313'595.f));
+  }
+
+  // the shared world
+  auto& thrall = p.worldState.GetFormAt<MpActor>(kThrall);
+  thrall.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kThrall);
+  p.DestroyActor(kThrall);
+}
+
+// thuum docs/verbs/npc-fate.md C4 (ADR-060's return; rule 6's option A,
+// 2026-11-12): the dormant row is the record, so a restart keeps it. A full
+// thrall's saved record that names its caster, written to the change form's
+// JSON and read back into a fresh world (the database's round trip, a
+// restart), stays alive with its look at the load and is its caster's again
+// once the caster's game reports the thrall's cell loaded, whoever hosts
+// the cell; another player's load claims nothing
+TEST_CASE("After a restart a full thrall's record still names its caster, "
+          "and the caster's return commands it again (C4)",
+          "[NpcFate][Reanimate][espm]")
+{
+  constexpr uint32_t kThrall = 0xff000d3e;
+  constexpr uint32_t kCaster = 0xff000d3f;
+  constexpr uint32_t kOther = 0xff000d40;
+  constexpr uint32_t kBanditBase = 0x3de6f;
+  constexpr uint32_t kDeadThrall = 0x7e8df;
+  constexpr uint32_t kDeadThrallEffect = 0x7e8e0;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  const auto wallNowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch())
+      .count());
+
+  // the saved record: alive at the forest, Dead Thrall's state 5 s in as of
+  // now, kept as a state with its key and its caster
+  MpChangeForm saved;
+  saved.recType = MpChangeForm::ACHR;
+  saved.formDesc = FormDesc::FromFormId(kThrall, p.worldState.espmFiles);
+  saved.baseDesc = FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+  saved.worldOrCellDesc = FormDesc::Tamriel();
+  saved.position = kForest;
+  saved.angle = { 0.f, 0.f, 0.f };
+  RunningEffect state;
+  state.effect =
+    FormDesc::FromFormId(kDeadThrallEffect, p.worldState.espmFiles);
+  state.source = FormDesc::FromFormId(kDeadThrall, p.worldState.espmFiles);
+  state.caster = FormDesc::FromFormId(kCaster, p.worldState.espmFiles);
+  state.kind = 3;
+  state.reanimate = true;
+  state.magnitude = 40.f;
+  state.durationS = 86'313'600.f;
+  state.elapsedS = 5.f;
+  state.asOfMs = wallNowMs;
+  state.recover = true;
+  saved.runningEffects = std::vector<RunningEffect>{ state };
+
+  // the database's round trip: the change form's JSON and back
+  simdjson::dom::parser parser;
+  const std::string dump = MpChangeForm::ToJson(saved).dump();
+  auto element = parser.parse(dump).value();
+  const MpChangeForm reread = MpChangeForm::JsonToChangeForm(element);
+  REQUIRE(reread.runningEffects == saved.runningEffects);
+
+  LogCapture log;
+  p.worldState.LoadChangeForm(reread, p.CreateFormCallbacks());
+  p.worldState.LoadDeferredActors();
+  p.worldState.fateRespawnDue.erase(kThrall);
+  auto& thrall = p.worldState.GetFormAt<MpActor>(kThrall);
+  p.Tick();
+  REQUIRE_FALSE(thrall.IsDead());
+  REQUIRE(thrall.GetReanimateCaster().caster == kCaster);
+  REQUIRE(log.Count("is a full thrall's (the record's 86313600 s): it stays, "
+                    "its look kept, until its caster ff000d3f returns") == 1);
+
+  // another player takes the forest's cell first: its load claims nothing
+  DoConnect(p, 0);
+  p.CreateActor(kOther, kForest, 0, kTamriel);
+  p.SetUserActor(0, kOther);
+  HostGrants(p, 0, kForestCell);
+  REQUIRE(p.CommanderOf(thrall) == 0);
+  REQUIRE(p.GetCellHost(kForestCell).player == kOther);
+
+  // the caster returns: commanded once its game reports the cell loaded
+  DoConnect(p, 1);
+  p.CreateActor(kCaster, kForest + NiPoint3{ 50.f, 0.f, 0.f }, 0, kTamriel);
+  p.SetUserActor(1, kCaster);
+  REQUIRE(p.CommanderOf(thrall) == 0);
+  {
+    RawMessageData raw;
+    raw.userId = 1;
+    CellLoadedMessage loaded;
+    loaded.cell = kForestCell;
+    loaded.loaded = true;
+    p.GetActionListener().OnCellLoaded(raw, loaded);
+  }
+  REQUIRE(p.CommanderOf(thrall) == kCaster);
+  REQUIRE(p.SimulatorOf(thrall) == kCaster);
+  REQUIRE(p.GetCellHost(kForestCell).player == kOther);
+  REQUIRE(log.Count("returns to its caster ff000d3f in cell 9810") == 1);
+
+  // the shared world
+  p.ReleaseAnyClaim(thrall);
+  thrall.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kThrall);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kOther);
+  p.DestroyActor(kCaster);
+  p.DestroyActor(kThrall);
 }
 
 // thuum docs/verbs/npc-fate.md (playtest 38's finding 65; the train's
@@ -1625,9 +3275,9 @@ TEST_CASE("A placed-dead body ignores its host's live sample until the "
   REQUIRE(liveWords() == 0);
 
   // a reanimate the server accepted on it (the host's own cast, then its
-  // hit: OnHit's stamp ahead of CastReanimateOnHost, which sends nothing to
-  // the caster's own seat): the next live sample is the engine's stand-up,
-  // recorded with the live word
+  // hit: OnHit's stamp ahead of ClaimReanimated, whose commanded claim names
+  // the host's own seat, the simulator already): the next live sample is the
+  // engine's stand-up, recorded with the live word
   Equipment eq;
   eq.rightSpell = kReanimateCorpse;
   host.SetEquipment(eq);

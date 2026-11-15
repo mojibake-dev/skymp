@@ -27,8 +27,11 @@
 // docs/DECISIONS.md, rung 5's stage-eve words) gives the flip's AddItem and
 // RemoveItem the same keep on the player's own 0x14 (Owner::Player,
 // Keep::Record(RecordKind::PlayerOwn)), in place: NativeRows.inc has no
-// owner or keep column, so its lines stand. Included by natives.rs, whose
-// types it names.
+// owner or keep column, so its lines stand. The Undead FX build (thuum
+// ADR-060's amendment of 2026-11-12; the reanimate-fx memo's D6 B and D3 B)
+// appends an actor's eight look rows, action rows owned by the actor's
+// simulator (Owner::Simulator); fifty-eight rows, their NativeRows.inc lines
+// in the same commit. Included by natives.rs, whose types it names.
 
 /// Every tabled native (thuum ADR-068 decision 3): rung 2's set, the six
 /// action rows, the flip's twenty-four state and everyone rows and
@@ -39,8 +42,9 @@
 /// CreateDetectionEvent, a firing's looks alone; then rung 5's six, a
 /// player's own race, spells, shouts and equipment, kept as its own record,
 /// and D-E1 A's head part; the flip's AddItem and RemoveItem keep the
-/// player's own inventory on its own 0x14 since D-R1 C. A native with no row
-/// has no channel. Fifty rows.
+/// player's own inventory on its own 0x14 since D-R1 C; then the Undead FX
+/// build's eight, an actor's looks from the script its simulator runs. A
+/// native with no row has no channel. Fifty-eight rows.
 pub const TABLE: &[Row] = &[
     // the actions: relayed to the subject's listeners as the row's relay
     // native, the graph variables' kept on the subject as well
@@ -151,4 +155,34 @@ pub const TABLE: &[Row] = &[
     // the look; FunctionsDump's ChangeHeadPart(HeadPart hPart). Appended so
     // no earlier row's place moves
     Row { cls: "Actor", func: "ChangeHeadPart", kind: Kind::State, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Record(RecordKind::PlayerOwn), look: Look::Never, params: &[Param::Object] },
+    // the Undead FX build (thuum ADR-060's amendment of 2026-11-12, Eli:
+    // "all of it but note we're talking about the mod decay FX"; the
+    // reanimate-fx memo's D6 B and D3 B): an actor's own looks, ADR-068
+    // decision 1's ACTION ("a shader"), which the script its simulator runs
+    // makes (decision 6): Undead FX's decay shaders and v4's eyes
+    // (EffectShader.Play and Stop, VisualEffect.Play and Stop,
+    // Actor.SetEyeTexture) and vanilla ReanimateAshPile's TurnToAsh (the
+    // disintegrate shader, SetAlpha, SetCriticalStage, and AttachAshPile,
+    // whose pile is an activator each seat's engine places for itself, D-H1
+    // B's local helper kind, so the call crosses and the pile never does).
+    // Judged by the actor's simulator, the epoch unread, relayed to the
+    // actor's listeners as the same native and kept nowhere: a late joiner
+    // has the owner's next call (Undead FX replays its stage's shader every
+    // 2.5 s while it runs), since the server's lastAnimation keeps a graph
+    // event alone (Keep::Last). An effect form's subject is its first
+    // argument and its self the form (Subject::Arg0Method, Sound.Play's
+    // shape). FunctionsDump's EffectShader Play(ObjectReference, Float) and
+    // Stop(ObjectReference), VisualEffect Play(ObjectReference, Float,
+    // ObjectReference) and Stop(ObjectReference), SetEyeTexture(TextureSet
+    // akNewTexture), SetAlpha(Float afTargetAlpha, Bool abFade),
+    // SetCriticalStage(Int aiStage) and AttachAshPile(Form akAshPileBase),
+    // none latent. Appended so no earlier row's place moves
+    Row { cls: "EffectShader", func: "Play", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object, Param::Float] },
+    Row { cls: "EffectShader", func: "Stop", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },
+    Row { cls: "VisualEffect", func: "Play", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object, Param::Float, Param::Object] },
+    Row { cls: "VisualEffect", func: "Stop", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "SetEyeTexture", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "SetAlpha", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Float, Param::Bool] },
+    Row { cls: "Actor", func: "SetCriticalStage", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Int] },
+    Row { cls: "Actor", func: "AttachAshPile", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },
 ];

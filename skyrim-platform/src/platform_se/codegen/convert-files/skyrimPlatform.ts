@@ -390,7 +390,7 @@ export interface ScriptCallsEvent {
     landed?: { formId: number; count: number }[];
   }[];
 }
-// thuum docs/DECISIONS.md ADR-068 (rung 2): the seam's census every 30 s, one row per counted kind of call: "Class.Name (platform)" (the platform's own call), "Class.Name (not hosted)" (a self this seat does not own), "Class.Name (local)" (a row that never crosses, an animation row on an actor), "Class.Name (unrelayable)", "Class.Name (unresolved)" (a subject that names no reference, or an alias row's self that names no alias of a quest), "Class.Name (frame mismatch)", "Class.Name (skipped)" (a non-owned state row's body skipped by the platform's scriptNonOwnerSkip lever, off by default: nonLatent skips a non-latent body, recorded a latent record row's too), "Class.Name (look)" (a trap family trigger's own call on itself queued as kind "look" in scriptCalls and run here, ADR-068 D-W2 A), "Class.Name (effect)" (a PlaceAtMe of an activator, a static or a light on a self this seat does not own, run inside this seat's own player's effect, its result this seat's local helper; train 52, scriptEffectHelpers on unless false) and "Class.Name (helper)" (a call on such a helper, run here and crossing nowhere), the bare "Class.Name" (an owned self's state row, run here) and "Class.Name on <hex id>" or "Class.Name on others" for an everyone row's selves (a quest, a global; an alias row's calls cross in scriptCalls instead). A call in scriptCalls is never counted here. No game call in its handler
+// thuum docs/DECISIONS.md ADR-068 (rung 2): the seam's census every 30 s, one row per counted kind of call: "Class.Name (platform)" (the platform's own call), "Class.Name (not hosted)" (a self this seat does not own), "Class.Name (local)" (a row that never crosses, an animation row on an actor), "Class.Name (unrelayable)", "Class.Name (unresolved)" (a subject that names no reference, or an alias row's self that names no alias of a quest), "Class.Name (frame mismatch)", "Class.Name (skipped)" (a non-owned state row's body skipped by the platform's scriptNonOwnerSkip lever, off by default: nonLatent skips a non-latent body, recorded a latent record row's too), "Class.Name (look)" (a trap family trigger's own call on itself queued as kind "look" in scriptCalls and run here, ADR-068 D-W2 A), "Class.Name (effect)" (a PlaceAtMe of an activator, a static or a light on a self this seat does not own, run inside this seat's own player's effect, its result this seat's local helper; train 52, scriptEffectHelpers on unless false; and an actor's look row on a game-file actor this seat does not simulate, run inside an effect this seat's own player casts, queued in scriptCalls for the server to judge, ADR-068 decision 6), "Class.Name (effect ended)" (an actor's look row on a dead game-file actor this seat does not simulate, run by an ActiveMagicEffect script whose effect has ended, its handle the VM's empty one, queued in scriptCalls for the server to judge: vanilla ReanimateAshPile's TurnToAsh after its Waits; scriptEffectHelpers on unless false) and "Class.Name (helper)" (a call on such a helper, run here and crossing nowhere), the bare "Class.Name" (an owned self's state row, run here) and "Class.Name on <hex id>" or "Class.Name on others" for an everyone row's selves (a quest, a global; an alias row's calls cross in scriptCalls instead). Apart from the three look kinds, " (look)", the look case of " (effect)" and " (effect ended)", a call in scriptCalls is never counted here. No game call in its handler
 export interface ScriptCensusEvent {
   rows: { row: string; count: number }[];
 }
@@ -1962,6 +1962,8 @@ export declare function redressActor(refrId: number): boolean;
 // thuum docs/verbs/npc-fate.md (playtest 48, the loot strip): after the client laid the record's list into a dead body, the armor of worn (the record's equipment) that the body holds but does not wear is equipped again, the fate reconcile's own dress, queued behind the tick's addItemEx tasks and run on the main thread; false for an invalid id
 export declare function dressBody(refrId: number, worn: number[]): boolean;
 export declare function actorFateCount(): number;
+// thuum docs/verbs/npc-fate.md C4 (ADR-060's return): the command of a living thrall this game's player cast and simulates though its engine holds no effect on it, in one main-thread task that starts (37490, 38798), refreshes (38799) or ends it (38800) by the engine's state; the engine's own command is left alone; false for an invalid id
+export declare function commandActor(refrId: number, on: boolean): boolean;
 export declare function getAnimationVariablesFromActor(actorFormId: number): ActorAnimationVariables;
 export declare function applyAnimationVariablesToActor(actorFormId: number, animationVariables: ActorAnimationVariables): boolean;
 
@@ -3602,6 +3604,7 @@ export declare class SoundDescriptor extends Form {
 export declare class TESModPlatform extends PapyrusObject {
   static from(papyrusObject: PapyrusObject | null): TESModPlatform | null
   static addItemEx(containerRefr: ObjectReference | null, item: Form | null, countDelta: number, health: number, enchantment: Enchantment | null, maxCharge: number, removeEnchantmentOnUnequip: boolean, chargePercent: number, textDisplayData: string, soul: number, poison: Potion | null, poisonCount: number): void
+  static applyArtObject(refr: ObjectReference | null, art: Art | null, duration: number): boolean
   static applyChangeForm(refr: ObjectReference | null, bodyHex: string, flags: number, version: number, remapRows: string): string
   static clearTintMasks(targetActor: Actor | null): void
   static createNpc(): ActorBase | null
@@ -3623,6 +3626,7 @@ export declare class TESModPlatform extends PapyrusObject {
   static setNpcSex(npc: ActorBase | null, sex: number): void
   static setNpcSkinColor(npc: ActorBase | null, skinColor: number): void
   static setWeaponDrawnMode(actor: Actor | null, mode: number): void
+  static stopArtObject(refr: ObjectReference | null, art: Art | null): boolean
   static updateEquipment(actor: Actor | null, item: Form | null, leftHand: boolean): void
 }
 

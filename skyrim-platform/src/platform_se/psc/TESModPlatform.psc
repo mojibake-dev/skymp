@@ -84,6 +84,15 @@ Function SetPotionEffectsBlocked(Bool blocked) global native
 
 Bool Function ModPlayerActorValue(Int av, Float delta) global native
 
+; thuum docs/verbs/magic-effects.md, the hit art: an effect's hit effect art
+; played on refr as the engine plays one (TESObjectREFR::ApplyArtObject), for
+; duration seconds, -1 until stopped, a second play of the art on refr
+; replacing this native's first, false when refr has no 3D; and an art this
+; native played on refr stopped, every live copy of it on refr with it, an
+; engine-drawn one included, false when nothing was stopped
+Bool Function ApplyArtObject(ObjectReference refr, Art art, Float duration) global native
+Bool Function StopArtObject(ObjectReference refr, Art art) global native
+
 ; thuum docs/verbs/stagger.md: the engine's own stagger of target at
 ; magnitude from source, as a hit's reaction starts it (the server's verdict)
 Bool Function Stagger(Actor target, Float magnitude, Actor source) global native

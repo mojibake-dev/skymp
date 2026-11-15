@@ -447,6 +447,10 @@ struct PartOne::Impl
     const char* kind = "none";
   };
   std::unordered_map<uint32_t, CellGrantNote> cellGrantNotes;
+  // thuum docs/verbs/npc-fate.md (ADR-060): the actor standing again by its
+  // simulator's engine for the length of ResurrectByHost's call, 0 for none:
+  // the death state's listener keeps its claims through that stand-up alone
+  uint32_t standingUpByHost = 0;
   // the prop owner table (thuum docs/verbs/prop-physics.md, ADR-058): which
   // seat simulates each physics prop, the cell's host by default
   rust::Box<skymp::rules::Props> props = skymp::rules::new_props();
@@ -512,6 +516,11 @@ struct PartOne::Impl
 };
 
 namespace {
+// the cell host table's decisions, applied (defined below, beside
+// FlipHostedFlags); a disconnect's claims need them first (ADR-060)
+void ApplyHostDecisions(
+  PartOne& partOne, const rust::Vec<skymp::rules::HostDecision>& decisions);
+
 // thuum ADR-068 rung 4: the stream words of one election, at once, never
 // the deferred queue: false to the seat whose stream ends, true to the new
 // streamer, each naming the election's epoch
@@ -1076,12 +1085,33 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // that book is an open, never a take
           actor->SetOpenBook(0);
           // every cell it hosts starts its grace (thuum
-          // docs/verbs/cell-host.md); the clock passes them on. Each claim it
-          // held ends here with its word (thuum ADR-073 decision 6; dropped
-          // without one until step 5a)
-          ApplyHostDecisions(
-            *this_,
-            this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs()));
+          // docs/verbs/cell-host.md); the clock passes them on. And its
+          // claims end with a word each, a thrall's command's and a
+          // dialogue's (ADR-060): the cell's simulator takes each actor
+          // back, never left a puppet nobody simulates; a timed thrall dies
+          // by the server's word first, a full one stays alive there (ADR-060
+          // as amended 2026-11-12). The decisions are applied under a try
+          // that logs (thuum lab/.cache/drafts/reanimate/
+          // read-stage-125536.md 4.2): this task runs in a ScopedTask's
+          // destructor, where an exception ends the process, and the
+          // transport has freed the leaver's user before it runs, so a
+          // direct send to the leaver threw "User with id 2 doesn't exist"
+          // and terminated the server (x-reanimate-claim 20261112-125536);
+          // a throw now skips the decisions after it, logged, and the rest
+          // of the departure below still runs
+          try {
+            ApplyHostDecisions(
+              *this_,
+              this_->pImpl->cells->gone(actor->GetFormId(), SteadyNowMs()));
+          } catch (std::exception& e) {
+            spdlog::error("[verb:cell-host] {:x}'s departure: a host "
+                          "decision threw, the ones after it skipped: {}",
+                          actor->GetFormId(), e.what());
+          } catch (...) {
+            spdlog::error("[verb:cell-host] {:x}'s departure: a host "
+                          "decision threw, the ones after it skipped",
+                          actor->GetFormId());
+          }
           // and the world streamer hands its stream on (thuum ADR-068 rung
           // 4)
           SendStreamWords(
@@ -1605,6 +1635,22 @@ void PartOne::Init()
       if (warned.insert(actor.GetFormId()).second) {
         spdlog::error("PartOne - npc-fate: {:x}'s roll at its create word "
                       "to {:x} threw, the actor served unrolled: {}",
+                      actor.GetFormId(), listener.GetFormId(), e.what());
+      }
+    }
+    // thuum docs/verbs/npc-fate.md C4 (ADR-060's return): a full thrall
+    // served to its caster's game after that game reported the thrall's
+    // cell loaded (the engine's 5x5 runs ahead of the server's 3x3, so the
+    // load met no emitter) is commanded by it again here, ahead of the
+    // create word, which then names the caster the simulator; the word
+    // reaches the games already listening. Under the same rule as the roll:
+    // a throw never unwinds the subscribe
+    if (actor.HasRunningEffects()) {
+      try {
+        ReturnThralls(listener, { &actor });
+      } catch (const std::exception& e) {
+        spdlog::error("[verb:npc-fate] {:x}'s return to {:x} at its create "
+                      "word threw: {}",
                       actor.GetFormId(), listener.GetFormId(), e.what());
       }
     }
@@ -2381,29 +2427,72 @@ void ApplyHostDecisions(PartOne& partOne,
                      d.cell, d.epoch);
         partOne.NoteCellHostDecision(PartOne::CellHostNote::Unhosted, d.cell);
         break;
-      case skymp::rules::HostKind::ClaimEnded: {
+      case skymp::rules::HostKind::ClaimEnded:
+      case skymp::rules::HostKind::ClaimGone: {
         // thuum docs/verbs/npc-talk.md (ADR-052, thuum ADR-073 decision 6):
         // a claim's last purpose ended (its lease, its release, its quest's
         // stop, its alias's fill, the actor's death, or its holder's
-        // departure, silence or unload); the cell's rule names the simulator
-        // again and the word follows, unless the rule names the holder
-        // itself (a host's own lead or talk: the keyframe would set the
-        // actor its engine runs back to its record)
+        // departure, silence or unload), or (ADR-060) a thrall's commander
+        // left the server (ClaimGone); the cell's rule names the simulator
+        // again and the word follows, so no actor stays a puppet nobody
+        // simulates
         auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
         MpActor* actor = form ? form->AsActor() : nullptr;
-        const uint32_t simulator = actor ? partOne.SimulatorOf(*actor) : 0;
-        spdlog::info("[verb:npc-talk] the claim on {:x} in cell {:x} ended "
-                     "with {}; the cell's rule stands (owner epoch {}): "
-                     "{:x} simulates it{}",
-                     d.actor, d.cell,
-                     std::string(skymp::rules::claim_end_name(d.why)), d.epoch,
-                     simulator,
-                     simulator == d.player ? ", its holder still" : "");
-        if (actor && simulator != d.player) {
+        uint32_t simulator = actor ? partOne.SimulatorOf(*actor) : 0u;
+        const bool gone = d.kind == skymp::rules::HostKind::ClaimGone;
+        // thuum lab/.cache/drafts/reanimate/read-stage-125536.md 4.2: a
+        // departing commander that hosts the actor's cell is the cell's
+        // rule's answer through its grace, and the leaver gets no word (its
+        // user is gone from the transport; the keyframe threw). The actor
+        // waits for its cell's next host
+        const bool leaverSimulates = gone && simulator == d.player;
+        if (leaverSimulates) {
+          simulator = 0;
+        }
+        if (!gone) {
+          spdlog::info("[verb:npc-talk] the claim on {:x} in cell {:x} ended "
+                       "with {}; the cell's rule stands (owner epoch {}): "
+                       "{:x} simulates it{}",
+                       d.actor, d.cell,
+                       std::string(skymp::rules::claim_end_name(d.why)),
+                       d.epoch, simulator,
+                       simulator == d.player ? ", its holder still" : "");
+        } else {
+          spdlog::info("[verb:npc-talk] the claim on {:x} in cell {:x} ended "
+                       "with its claimant {:x}'s departure; {:x} simulates "
+                       "it (ADR-052, ADR-060){}",
+                       d.actor, d.cell, d.player, simulator,
+                       leaverSimulates ? ", the claimant hosting the cell: "
+                                         "the word waits for its next host"
+                                       : "");
+        }
+        // a claim's end where the rule names the holder itself (a host's own
+        // lead or talk) sends nothing: the keyframe would set the actor its
+        // engine runs back to its record
+        if (actor && (gone || simulator != d.player)) {
           if (MpActor* sim = PlayerActor(partOne, simulator)) {
             partOne.SendActorKeyframe(*actor, *sim);
           }
           actor->UpdateHoster(simulator);
+        }
+        break;
+      }
+      case skymp::rules::HostKind::ThrallExpired: {
+        // thuum docs/verbs/npc-fate.md (ADR-060 as amended; Eli,
+        // 2026-11-12: "'but as a plain resident with no undead look' should
+        // simply die"): a timed thrall's commander left and no engine runs
+        // its effect now, so the server's word ends it at once. It comes
+        // ahead of the departure's ClaimGone for the same actor, so the
+        // cell's simulator is handed a body and never promotes a living copy
+        // no effect holds
+        auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
+        MpActor* actor = form ? form->AsActor() : nullptr;
+        if (actor && !actor->IsDead()) {
+          spdlog::info("[verb:npc-fate] {:x} dies at its commander {:x}'s "
+                       "departure: a timed thrall, its effect no engine's "
+                       "now, ends by the server's word (ADR-060)",
+                       d.actor, d.player);
+          actor->Kill(nullptr);
         }
         break;
       }
@@ -2652,6 +2741,7 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
   // there (the create word's copy may predate the record, or the engine's
   // 5x5 may run ahead of the server's 3x3); the receiver's hash compare
   // makes a repeat free
+  std::vector<MpActor*> inCell;
   if (loaded) {
     size_t served = 0;
     for (MpObjectReference* emitter : player.GetEmitters()) {
@@ -2661,6 +2751,7 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
           worldState.CellOf(*actor) != cell) {
         continue;
       }
+      inCell.push_back(actor);
       ChangeFormApplyMessage apply;
       if (actor->BuildChangeFormApply(apply)) {
         player.SendToUser(apply, true);
@@ -2699,15 +2790,50 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
     *this,
     loaded ? pImpl->cells->loaded(player.GetFormId(), cell, nowMs)
            : pImpl->cells->unloaded(player.GetFormId(), cell, nowMs));
+  // thuum docs/verbs/npc-fate.md C4 (ADR-060's return): a full thrall its
+  // record names this player the caster of is commanded by it again once
+  // its game has the thrall's cell loaded (the cells table knows the load
+  // only from here on); a thrall the grid serves it later is the
+  // subscribe's (onActorSubscribe)
+  if (loaded && !inCell.empty()) {
+    ReturnThralls(player, inCell);
+  }
 }
 
 void PartOne::OnDeathState(MpActor& actor, bool isDead)
 {
   // thuum ADR-073 decision 6: an actor's death ends its claim, whatever it
-  // held it for (D-53-4's "or she dies"); both death paths reach here
+  // held it for (D-53-4's "or she dies"), and (ADR-060) a commanded actor's
+  // death ends its commander's claim (the effect's end kills the thrall in
+  // the commander's engine, vanilla's ash pile); both death paths reach here
   // (MpActor::SendAndSetDeathState), a player's actor holding none
   if (isDead) {
-    ApplyHostDecisions(*this, pImpl->cells->actor_died(actor.GetFormId()));
+    const uint32_t commander = CommanderOf(actor);
+    if (commander != 0) {
+      if (ReleaseAnyClaim(actor) != 0) {
+        spdlog::info("[verb:npc-fate] {:x} died under {:x}'s command: the "
+                     "claim ends, {:x} simulates it (ADR-060)",
+                     actor.GetFormId(), commander, SimulatorOf(actor));
+      }
+    } else {
+      ApplyHostDecisions(*this, pImpl->cells->actor_died(actor.GetFormId()));
+    }
+  } else if (pImpl->standingUpByHost != actor.GetFormId()) {
+    // a respawn the engine did not make starts a new life: its accepted
+    // reanimate, spell and caster end (the server review of 3a31c05a, N2)
+    actor.NoteReanimateAccepted({});
+    // and a respawn its simulator's engine did not stand (the fate's sweep,
+    // the console's Resurrect, the lab's respawn-ref) ends any claim on it:
+    // a command whose engine never stood the body would name its commander
+    // on the living actor in any cell, and that commander's cause-0 report
+    // would kill it (the fresh review of f89115af, C2); the commander's own
+    // stand-up (ResurrectByHost) keeps it
+    if (const uint32_t former = ReleaseAnyClaim(actor); former != 0) {
+      spdlog::info("[verb:npc-fate] {:x} stands again by a respawn its "
+                   "simulator's engine did not make: {:x}'s claim ends, {:x} "
+                   "simulates it (ADR-060)",
+                   actor.GetFormId(), former, SimulatorOf(actor));
+    }
   }
   // a player's actor alone: an NPC's death is npc-fate's and hosts nothing
   if (serverState.UserByActor(&actor) == Networking::InvalidUserId) {
@@ -3477,6 +3603,108 @@ void PartOne::QuestStopped(uint32_t quest)
 void PartOne::AliasFilled(uint32_t quest, uint32_t alias, uint32_t refr)
 {
   ApplyHostDecisions(*this, pImpl->cells->alias_filled(quest, alias, refr));
+}
+
+std::vector<uint32_t> PartOne::ReturnThralls(
+  MpActor& player, const std::vector<MpActor*>& actors)
+{
+  std::vector<skymp::rules::ThrallRecord> records;
+  std::unordered_map<uint32_t, MpActor*> byId;
+  for (MpActor* actor : actors) {
+    if (!actor || actor == &player || !actor->HasRunningEffects() ||
+        serverState.UserByActor(actor) != Networking::InvalidUserId) {
+      continue;
+    }
+    const auto reanimate = actor->GetReanimateCaster();
+    if (reanimate.caster == 0 || reanimate.caster != player.GetFormId() ||
+        !std::isfinite(reanimate.recordSeconds)) {
+      continue;
+    }
+    const auto cell = worldState.CellOf(*actor);
+    if (!cell) {
+      continue;
+    }
+    skymp::rules::ThrallRecord record;
+    record.actor = actor->GetFormId();
+    record.cell = *cell;
+    record.caster = reanimate.caster;
+    record.record_s =
+      static_cast<uint32_t>(std::clamp(reanimate.recordSeconds, 0.f, 4.0e9f));
+    record.alive = !actor->IsDead() && !actor->IsRespawning();
+    records.push_back(record);
+    byId[record.actor] = actor;
+  }
+  if (records.empty()) {
+    return {};
+  }
+  const auto claimed =
+    pImpl->cells->returning(player.GetFormId(),
+                            rust::Slice<const skymp::rules::ThrallRecord>(
+                              records.data(), records.size()),
+                            SteadyNowMs());
+  std::vector<uint32_t> returned;
+  for (const uint32_t id : claimed) {
+    const auto it = byId.find(id);
+    if (it == byId.end()) {
+      continue;
+    }
+    MpActor& actor = *it->second;
+    const auto cell = worldState.CellOf(actor);
+    spdlog::info("[verb:npc-fate] {:x} returns to its caster {:x} in cell "
+                 "{:x}: a full thrall its record names (the record's {:.0f} "
+                 "s), commanded again (ADR-060)",
+                 id, player.GetFormId(), cell.value_or(0u),
+                 actor.GetReanimateCaster().recordSeconds);
+    // ClaimGone's shape for a living actor: the record is the truth for
+    // this one moment, so the new simulator's copy is placed at it first
+    // (SendActorKeyframe sends only to a game that sees the actor)
+    SendActorKeyframe(actor, player);
+    actor.UpdateHoster(player.GetFormId());
+    returned.push_back(id);
+  }
+  return returned;
+}
+
+PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,
+                                              MpActor& actor,
+                                              uint32_t recordSeconds)
+{
+  const auto cell = worldState.CellOf(actor);
+  if (!cell) {
+    return ClaimVerdict::Unloaded;
+  }
+  const auto code =
+    pImpl->cells->claim_commanded(actor.GetFormId(), commander.GetFormId(),
+                                  *cell, recordSeconds, SteadyNowMs());
+  const auto verdict = static_cast<ClaimVerdict>(code);
+  if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
+    // the word to every listening game: the commander simulates it now
+    actor.UpdateHoster(commander.GetFormId());
+  }
+  return verdict;
+}
+
+uint32_t PartOne::CommanderOf(const MpActor& actor) const
+{
+  return pImpl->cells->commander_of(actor.GetFormId());
+}
+
+uint32_t PartOne::ReleaseAnyClaim(MpActor& actor)
+{
+  const uint32_t former = pImpl->cells->release_any_claim(actor.GetFormId());
+  if (former != 0) {
+    actor.UpdateHoster(SimulatorOf(actor));
+  }
+  return former;
+}
+
+void PartOne::ResurrectByHost(MpActor& actor)
+{
+  // the mark lives for the call alone: a gamemode listener may block the
+  // respawn (GameModeEvent::Fire), and then no death state reads it
+  pImpl->standingUpByHost = actor.GetFormId();
+  ScopedTask clear([this] { pImpl->standingUpByHost = 0; });
+  actor.Respawn(false);
 }
 
 void PartOne::SendActorKeyframe(MpActor& actor, MpActor& to)

@@ -552,12 +552,14 @@ private:
   // (thuum docs/verbs/stagger.md); `what` names the hit for the log
   void PlayStagger(MpActor& aggressor, MpActor& target, float magnitude,
                    const std::string& what);
-  // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any
-  // body"): a reanimate's accepted hit on a dead body another game hosts,
-  // cast again by the server's word on that host's engine, from the
-  // caster's figure at the body (Spell.Cast by SpSnippet); nothing when the
-  // body's host is the caster's own game
-  void CastReanimateOnHost(MpActor& caster, MpActor& body, uint32_t spell);
+  // thuum docs/verbs/npc-fate.md (ADR-060): an accepted reanimate hands the
+  // body to the caster's seat until its engine ends the effect (the cells
+  // rule's commanded claim, no lease); the caster's own engine ran the spell
+  // and runs the effect, the get-up, the shader and the commanded packages.
+  // Only where the spell's Reanimate effect's conditions hold on the body
+  // (ADR-039, MpActor::EffectConditionsHold, as the stand-up applies it)
+  void ClaimReanimated(MpActor& caster, MpActor& body, uint32_t spell,
+                       const std::vector<espm::Effects::Effect>& effects);
 
   void SendPapyrusOnHitEvent(MpActor* aggressor, MpObjectReference* target,
                              const HitData& hitData);

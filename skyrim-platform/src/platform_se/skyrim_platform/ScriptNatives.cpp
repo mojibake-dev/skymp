@@ -285,6 +285,36 @@ constexpr std::pair<const char*, const char*> kLookOnlyRows[] = {
   { "ObjectReference", "CreateDetectionEvent" }
 };
 
+// the Undead FX build (thuum ADR-060's amendment of 2026-11-12; the
+// reanimate-fx memo's D6 B and D3 B): an actor's look rows, the action rows
+// a script makes on an actor, which its simulator's engine plays and every
+// other seat plays as the call (ADR-068 decision 1's ACTION, "a shader";
+// decision 6, an actor's scripts are its simulator's). Undead FX's decay and
+// eyes: EffectShader.Play and Stop (FunctionsDump.txt `Play(ObjectReference,
+// Float)`, `Stop(ObjectReference)`), VisualEffect.Play and Stop
+// (`Play(ObjectReference, Float, ObjectReference)`, `Stop(ObjectReference)`),
+// each NativeSubject::Arg0Method, its subject the first argument and its
+// call's self the effect form, and Actor.SetEyeTexture (`SetEyeTexture(
+// TextureSet akNewTexture)`); vanilla ReanimateAshPile's TurnToAsh: the
+// shader, Actor.SetAlpha (`SetAlpha(Float afTargetAlpha, Bool abFade)`),
+// SetCriticalStage (`SetCriticalStage(Int aiStage)`) and AttachAshPile
+// (`AttachAshPile(Form akAshPileBase)`); none latent. On a game-file actor
+// this seat simulates, each crosses in the batch as kind "action", its self
+// the effect form for an Arg0Method row (QueueLook), and the server relays
+// it to the actor's listeners. On a world object, on this seat's own player
+// or on an actor at or above 0xff000000 (a figure, what a seat places) it is
+// counted " (local)" and runs here alone, as before the rows: the server's
+// table gives these rows to an actor's simulator alone (wire-rules natives,
+// Owner::Simulator), and skymp5-client reads an Arg0Method row's epoch from
+// its self, which names no cell (scriptCallService's subjectOf names
+// Sound.Play's source alone), so a world object's look would be refused
+constexpr std::pair<const char*, const char*> kActorLookRows[] = {
+  { "EffectShader", "Play" },      { "EffectShader", "Stop" },
+  { "VisualEffect", "Play" },      { "VisualEffect", "Stop" },
+  { "Actor", "SetEyeTexture" },    { "Actor", "SetAlpha" },
+  { "Actor", "SetCriticalStage" }, { "Actor", "AttachAshPile" }
+};
+
 // thuum ADR-068 rung 5 (the acting scope, ActingScope.h; docs/research/
 // rung5-quests-2026-11-09.md 1(c)): the local row whose result a scoped
 // stack reads as the acting player's figure (Game.GetPlayer, the Local
@@ -409,6 +439,8 @@ struct RowInfo
   // look-only row), and one of kLookOnlyRows
   bool look = false;
   bool lookOnly = false;
+  // the Undead FX build: one of kActorLookRows, an actor's look
+  bool actorLook = false;
   // rung 5: Game.GetPlayer's row (kPlayerRow), and the row's place among
   // kQuestRows, None for every other row
   bool getPlayer = false;
@@ -437,9 +469,10 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // PlatformCall::Scope or on the platform's borrowed stack, or a latent one
 // whose Stack's callback is a live VmCallback); " (not hosted)" a self this
 // seat does not own; " (local)" a row that never crosses (Game.GetPlayer,
-// an animation row on an actor); " (unrelayable)" an owned action row with
-// an array parameter; " (unresolved)" a subject that names no reference,
-// or an alias row's self that names no alias of a quest (rung 4);
+// an animation row on an actor, an actor's look row on anything but a
+// game-file actor, the Undead FX build's); " (unrelayable)" an owned action
+// row with an array parameter; " (unresolved)" a subject that names no
+// reference, or an alias row's self that names no alias of a quest (rung 4);
 // " (frame mismatch)" a dispatch whose top frame is not the native's own, or
 // whose arguments' page cannot be found (H-S1 failing), or a followed body's
 // motion call whose frame does not hold the row's declared shape; " (skipped)"
@@ -458,10 +491,17 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // place of its " (local)", or a player's own global's SetValue skipped in
 // place of its self's count, PQ-3); " (effect)" a PlaceAtMe on a self this
 // seat does not own, run inside this seat's own player's effect, its result
-// this seat's local helper (train 52's Fix 2, clause 1); " (helper)" a call
-// on such a helper, run here and crossing nowhere (clause 2); no suffix,
-// an owned self's state row, run here and counted, and since rung 3 touched
-// (QueueTouch: the script record's trigger).
+// this seat's local helper (train 52's Fix 2, clause 1), or an actor's look
+// row on an actor this seat does not simulate, run inside an effect this
+// seat's own player cast and queued as this seat's (the Undead FX build,
+// D3 B); " (helper)" a call on such a helper, run here and crossing nowhere
+// (clause 2); " (effect ended)" an actor's look row on a dead game-file
+// actor this seat does not simulate, run on a stack whose root is an
+// ActiveMagicEffect script whose effect has ended (its handle the VM's
+// EmptyHandle, RootEffectEnded) and queued as this seat's for the server to
+// judge (the ash fix, the ash read's recommendation B); no suffix, an owned
+// self's state row, run here and counted,
+// and since rung 3 touched (QueueTouch: the script record's trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
 // flip's "Class.Name on <id>"), except an alias row's, batched on every seat
 // since rung 4; a batched call is the batch's, never counted
@@ -481,6 +521,7 @@ enum CountKind : std::size_t
   kCountActing,
   kCountEffect,
   kCountHelper,
+  kCountEffectEnded,
   kCountKinds
 };
 
@@ -497,7 +538,8 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
                                                     " (look)",
                                                     " (acting)",
                                                     " (effect)",
-                                                    " (helper)" };
+                                                    " (helper)",
+                                                    " (effect ended)" };
 
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
@@ -665,7 +707,7 @@ bool OwnedHere(const RE::TESObjectREFR* ref, bool isActor)
     return true;
   }
   if (isActor) {
-    return Hosted::Is(id) && !Puppets::Is(id);
+    return Hosted::SimulatedHere(id);
   }
   const RE::TESObjectCELL* cell = ref->GetParentCell();
   return cell && Frida::IsCellHosted(cell->formID);
@@ -1133,6 +1175,11 @@ std::array<LineSlots, kRowCount> g_helperLines{};
 // train 53's V-scene: the skipped scene starts' lines, by the scene's form
 // id, on the same slots and bound
 LineSlots g_sceneLines{};
+// the ash fix's line (thuum ADR-073 decision 7: logged once per list and
+// kind at info, naming one subject, then counted in the census's flush): a
+// row's first call counted " (effect ended)" logged once for the process,
+// every later one counted alone; never freed at the flush
+std::array<std::atomic<bool>, kRowCount> g_effectEndedSaid{};
 
 // true when the self takes a free slot of its row's window, its line due;
 // false for a self already logged this window or past the bound
@@ -2452,6 +2499,59 @@ struct EffectPlacement
   const RE::BSScript::StackFrame* root = nullptr;
 };
 
+// the effect rule's one test, the helper's and the look's: the stack's root
+// frame (RootFrameOf, left in `root`) and its self's role as an active
+// effect this seat runs for its own player (Frida::PlayersEffect), kNone for
+// a root that is no such effect's
+Frida::PlayersEffectRole RootEffectRole(
+  const RE::BSScript::Stack* stack, RE::BSScript::IObjectHandlePolicy* policy,
+  const RE::BSScript::StackFrame*& root)
+{
+  root = RootFrameOf(stack);
+  const RE::BSScript::Object* object = root ? ObjectOf(root->self) : nullptr;
+  if (!object || !policy) {
+    return Frida::PlayersEffectRole::kNone;
+  }
+  return Frida::PlayersEffect(policy, object->GetHandle());
+}
+
+// the ash fix (thuum lab/.cache/drafts/reanimate/read-ash-075817.md,
+// recommendation B): true when RootEffectRole's `root` has as its self an
+// ActiveMagicEffect script whose effect has ended: the object's handle
+// (Object::GetHandle, Address Library 104247 at CommonLibSSE-NG
+// src/RE/O/Object.cpp:20, declared at include/RE/O/Object.h:19) equal to the
+// VM's own policy's EmptyHandle (include/RE/I/IObjectHandlePolicy.h:22, the
+// policy OnCall reads from the VM), and its class chain naming
+// ActiveMagicEffect (Object::GetTypeInfo, Object.h:21; ObjectTypeInfo::GetName
+// and GetParent, include/RE/O/ObjectTypeInfo.h:126-128, a BSFixedString's
+// c_str never null, include/RE/B/BSFixedString.h:116-123; AdmittedByChain's
+// walk in FridaHooks.cpp, 16 classes at most, compared without case).
+// HYPOTHESIS (the read's 3.2 and 3.3, decompiler output) until a run's line on
+// TurnToAsh's rows (the look branch's once-a-row line, printed only after this
+// test held on that row) or the read's section 7 trace: the engine ends an
+// effect on its own clock (its duration, a dispel, its conditions failing),
+// and SkyrimVM's TESActiveEffectApplyRemoveEvent sink then queues
+// OnEffectFinish and has the VM's HandleCObjectDeletion set the handle of each
+// script object bound to the effect that something still holds to EmptyHandle,
+// so a stack in Utility.Wait (TurnToAsh's) runs on after its effect with its
+// object and variables intact and an empty handle, which
+// Frida::PlayersEffect's HandleIsType(142) answers false
+bool RootEffectEnded(const RE::BSScript::StackFrame* root,
+                     RE::BSScript::IObjectHandlePolicy* policy)
+{
+  const RE::BSScript::Object* object = root ? ObjectOf(root->self) : nullptr;
+  if (!object || !policy || object->GetHandle() != policy->EmptyHandle()) {
+    return false;
+  }
+  const RE::BSScript::ObjectTypeInfo* type = object->GetTypeInfo();
+  for (int depth = 0; type && depth < 16; ++depth, type = type->GetParent()) {
+    if (_stricmp(type->GetName(), "ActiveMagicEffect") == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::optional<EffectPlacement> EffectPlacementOf(
   const RowInfo& info, const RE::BSScript::Stack* stack,
   const RE::BSScript::StackFrame* top, std::uint32_t page,
@@ -2461,13 +2561,8 @@ std::optional<EffectPlacement> EffectPlacementOf(
   if (!base || !policy) {
     return std::nullopt;
   }
-  const RE::BSScript::StackFrame* root = RootFrameOf(stack);
-  const RE::BSScript::Object* object = root ? ObjectOf(root->self) : nullptr;
-  if (!object) {
-    return std::nullopt;
-  }
-  const Frida::PlayersEffectRole role =
-    Frida::PlayersEffect(policy, object->GetHandle());
+  const RE::BSScript::StackFrame* root = nullptr;
+  const Frida::PlayersEffectRole role = RootEffectRole(stack, policy, root);
   if (role == Frida::PlayersEffectRole::kNone) {
     return std::nullopt;
   }
@@ -2528,6 +2623,32 @@ void NoteSceneStart(const RE::BSScript::IFunction* fn,
       AddObjProperty(&obj, "acting", actingPlayer);
       EventsApi::SendEvent("sceneStart", { obj });
     });
+}
+
+// the Undead FX build: an actor's look row's call queued as kind "action"
+// (OnCall's owned branch and the effect rule's), its self the subject, or
+// for an Arg0Method row the method's own, the effect form (EveryoneSelfId's
+// read, as a firing's look takes Sound.Play's Sound in OnFamilyCall), which
+// the server relays it on and the receiver runs it on; false, counted, when
+// the row cannot cross (an array parameter) or that self names no form, and
+// when the frame's arguments cannot be read (CallFromFrame's count)
+bool QueueLook(std::size_t row, const RowInfo& info,
+               const RE::BSScript::Stack* stack,
+               const RE::BSScript::StackFrame* top, std::uint32_t page,
+               std::uint32_t subject)
+{
+  if (!info.relayable) {
+    Count(row, kCountUnrelayable);
+    return false;
+  }
+  const std::uint32_t self = kRows[row].subject == NativeSubject::Arg0Method
+    ? EveryoneSelfId(top->self)
+    : subject;
+  if (self == 0) {
+    Count(row, kCountUnresolved);
+    return false;
+  }
+  return QueueFromFrame(row, info, stack, top, page, self);
 }
 
 // the seam's judgment of one dispatch, 6.2's order (rule 9: the cheapest
@@ -2741,8 +2862,17 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   const bool isActor = ref->GetFormType() == RE::FormType::ActorCharacter;
   // an animation row on an actor is the stream's (6.7: the boundary emits
   // nothing for actor animation rows; the table's Debug.SendAnimationEvent
-  // on an actor is local): every rung 2 action row is an animation row
-  if (native.kind == NativeKind::Action && isActor) {
+  // on an actor is local): every rung 2 action row is an animation row. An
+  // actor's look row (kActorLookRows, the Undead FX build) is none: it goes
+  // on to the owner below on a game-file actor other than this seat's own
+  // player, the one subject its channel names, and stays here, counted
+  // local, on anything else
+  if (native.kind == NativeKind::Action && isActor && !info.actorLook) {
+    Count(row, kCountLocal);
+    return marks;
+  }
+  if (info.actorLook &&
+      (!isActor || ref->formID == 0x14 || ref->formID >= 0xff000000)) {
     Count(row, kCountLocal);
     return marks;
   }
@@ -2845,6 +2975,94 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
         return marks;
       }
     }
+    // the Undead FX build (the reanimate-fx memo's D3 B; the fix
+    // docs/verbs/second-hand.md owes: "a call made inside an active effect
+    // whose caster is the seat's own player counts as that seat's"): an
+    // actor's look row on a stack whose root is an active effect this seat
+    // runs with its own player the caster (RootEffectRole, the gate's own
+    // test) is this seat's whoever simulates the actor now, so the look a
+    // player's spell makes on its target crosses from the caster's seat.
+    // Queued as an owned look is (QueueLook), under the script action's mark,
+    // and counted " (effect)", the first selves a window logged. An effect on
+    // this seat's own player (kTarget) keeps the owner's judgment.
+    // The ash fix (thuum lab/.cache/drafts/reanimate/read-ash-075817.md,
+    // recommendation B): that live test cannot carry vanilla
+    // ReanimateAshPile's TurnToAsh, the script it was built for, on any build.
+    // The engine ends the script's effect on its own clock, at or before the
+    // thrall's death, and empties the script's handle (RootEffectEnded;
+    // HYPOTHESIS until a run's line on TurnToAsh's rows, or the read's section
+    // 7 trace): TurnToAsh's rows after its Waits (AttachAshPile, then the
+    // shader's Stop, SetAlpha and SetCriticalStage) were counted " (not
+    // hosted)" in 20261113-075817, by the read Frida::PlayersEffect's
+    // HandleIsType false on that empty handle (its exit 2, HYPOTHESIS
+    // likewise). So the look also crosses from an effect's script after its
+    // effect ended: an actor's look row on a dead game-file actor
+    // (TESObjectREFR::IsDead, CommonLibSSE-NG
+    // include/RE/T/TESObjectREFR.h:353, mirroring the server's facts.dead;
+    // HYPOTHESIS that the read is safe on the dispatch thread) on a stack
+    // whose root is such a script is queued the same way, under the same mark,
+    // and counted " (effect ended)", each row's first logged once (ADR-073
+    // decision 7). It asks no live effect, so it holds whichever of the
+    // effect's ends came first. IsDead's read, decompiler output (rule 2):
+    // Character's vtable (VTABLE_Character, include/RE/Offsets_VTABLE.h:2215,
+    // AE 207886, `just addr` 0x18a5558) holds at slot 0x99, Actor's override
+    // (include/RE/A/Actor.h:345), 0x140674ed0 in the sky-re Ghidra program for
+    // 1.6.1170, one 32-bit read at +0xC8, ActorState's actorState1 (ActorState
+    // at 0xC0 on AE, Actor.h:128; actorState1 at +0x08,
+    // include/RE/A/ActorState.h:203), the life state its bits 21 to 24
+    // (ActorState.h:114): true with a_notEssential for kDying, kDead and
+    // kRecycle, false for kReanimate (ActorState.h:7-18), with no call and no
+    // lock. So a raised thrall still standing never passes; whether a row run
+    // at OnDying already finds kDying is unread. The client proposes and the
+    // server judges on its own facts alone (rule 5): wire-rules natives'
+    // actor_look_owner takes the actor's simulator, or the caster of the
+    // reanimate it accepted on a dead thrall for ASH_WINDOW_MS after the death
+    // it recorded, and refuses any other seat's report (E_SCRIPTCALL_OWNER),
+    // that refusal the read. The PlaceAtMe helper rule (EffectPlacementOf)
+    // keeps the live test
+    if (info.actorLook && g_effectHelpers) {
+      const RE::BSScript::StackFrame* root = nullptr;
+      if (RootEffectRole(stack, policy, root) ==
+          Frida::PlayersEffectRole::kCaster) {
+        if (!QueueLook(row, info, stack, top, page, ref->formID)) {
+          return marks;
+        }
+        marks.action = true;
+        Count(row, kCountEffect);
+        if (SelfLineDue(g_effectLines[row], ref->formID)) {
+          std::string script;
+          std::string function;
+          NameCaller(root, script, function);
+          logger::info("[verb:scripts] {}.{} on {:x}: run inside this seat's "
+                       "own player's effect ({}.{}, the player its caster) on "
+                       "an actor this seat does not simulate, queued as this "
+                       "seat's look (ADR-068 decision 6)",
+                       native.cls, native.fn, ref->formID, script, function);
+        }
+        return marks;
+      }
+      if (RootEffectEnded(root, policy) && ref->IsDead()) {
+        if (!QueueLook(row, info, stack, top, page, ref->formID)) {
+          return marks;
+        }
+        marks.action = true;
+        Count(row, kCountEffectEnded);
+        if (!g_effectEndedSaid[row].exchange(true,
+                                             std::memory_order_relaxed)) {
+          std::string script;
+          std::string function;
+          NameCaller(root, script, function);
+          logger::info(
+            "[verb:scripts] {}.{} on {:x}: an actor's look row run by an "
+            "ended effect's script ({}.{}, its handle the VM's empty one) on "
+            "a dead actor this seat does not simulate, queued as this seat's "
+            "look for the server to judge; this row's later ones counted "
+            "\" (effect ended)\" alone (ADR-073 decision 7)",
+            native.cls, native.fn, ref->formID, script, function);
+        }
+        return marks;
+      }
+    }
     if (native.kind == NativeKind::State && SkipsBody(info)) {
       marks.skip = true;
       marks.result = info.result;
@@ -2873,7 +3091,13 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // an owned action row's extent is the script action's (6.7) once its call
   // is queued below: a path that drops the call (unrelayable, a frame
   // mismatch) leaves the mark down, so the engine-level hooks still report the
-  // animation and nothing goes silent (rung 2's review, finding 5)
+  // animation and nothing goes silent (rung 2's review, finding 5). An
+  // actor's look row, the actor simulated here, is queued with its effect
+  // form for an Arg0Method row's self (QueueLook)
+  if (info.actorLook) {
+    marks.action = QueueLook(row, info, stack, top, page, ref->formID);
+    return marks;
+  }
   if (!info.relayable) {
     Count(row, kCountUnrelayable);
     return marks;
@@ -2951,6 +3175,13 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
       info.lookOnly = true;
     }
   }
+  // the Undead FX build's actor look rows, by name
+  for (const auto& [cls, name] : kActorLookRows) {
+    if (_stricmp(kRows[row].cls, cls) == 0 &&
+        _stricmp(kRows[row].fn, name) == 0) {
+      info.actorLook = true;
+    }
+  }
   // rung 5's acting scope: GetPlayer's row and the Quest rows, by name
   info.getPlayer = _stricmp(kRows[row].cls, kPlayerRow.first) == 0 &&
     _stricmp(kRows[row].fn, kPlayerRow.second) == 0;
@@ -2971,8 +3202,10 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
   info.addItem = _stricmp(kRows[row].cls, kAddItemRow.first) == 0 &&
     _stricmp(kRows[row].fn, kAddItemRow.second) == 0;
   // D-W2 A's look rows (the plan's section 7.2(a)): the action rows, the two
-  // motion rows among kTrapRows, and the look-only rows
-  info.look = kRows[row].kind == NativeKind::Action ||
+  // motion rows among kTrapRows, and the look-only rows; an actor's look row
+  // is never a trigger's own call on itself (OnCall keeps it off a world
+  // object before the trap family)
+  info.look = (kRows[row].kind == NativeKind::Action && !info.actorLook) ||
     info.trap == TrapRow::Motion || info.trap == TrapRow::Impulse ||
     info.lookOnly;
 }
@@ -3000,6 +3233,10 @@ const char* CrossingNote(const RowInfo& info)
   if (info.lookOnly) {
     return ", look only (D-W2: a family trigger's own call from its firing "
            "seat)";
+  }
+  if (info.actorLook) {
+    return ", an actor's look (batched from its simulator, the Undead FX "
+           "build)";
   }
   if (info.alias) {
     return ", batched on every seat (an alias fill)";
@@ -3647,6 +3884,9 @@ void ScriptNatives::InstallHooks()
   for (const auto& [cls, name] : kLookOnlyRows) {
     WarnUnbound("look-only", cls, name);
   }
+  for (const auto& [cls, name] : kActorLookRows) {
+    WarnUnbound("actor look", cls, name);
+  }
   WarnUnbound("acting player", kPlayerRow.first, kPlayerRow.second);
   for (const auto& questRow : kQuestRows) {
     WarnUnbound("acting quest", questRow.cls, questRow.fn);
@@ -3683,17 +3923,34 @@ void ScriptNatives::InstallHooks()
   }
   logger::info("[verb:scripts] scriptNonOwnerSkip {}: {}",
                LeverName(g_nonOwnerSkip), skipping);
-  // train 52's Fix 2: the effect rule's switch, read beside the lever
+  // train 52's Fix 2: the effect rule's switch, read beside the lever; since
+  // the Undead FX build it carries an actor's look inside an effect this
+  // seat's own player cast as well
   g_effectHelpers = ClientSwitchOn("scriptEffectHelpers");
   if (g_effectHelpers) {
     logger::info("[verb:scripts] scriptEffectHelpers on: a PlaceAtMe of an "
                  "activator, a static or a light inside this seat's own "
                  "player's effect runs whatever its subject's owner, and what "
-                 "it places is this seat's local helper");
+                 "it places is this seat's local helper; an actor's look "
+                 "inside an effect this seat's player cast is this seat's");
   } else {
-    logger::info("[verb:scripts] scriptEffectHelpers off: a PlaceAtMe inside "
-                 "this seat's own player's effect is judged by its subject's "
-                 "owner, as every call is");
+    logger::info("[verb:scripts] scriptEffectHelpers off: a PlaceAtMe or an "
+                 "actor's look inside this seat's own player's effect is "
+                 "judged by its subject's owner, as every call is");
+  }
+  // the Undead FX build: the Papyrus event gate's owner rule (FridaHooks.cpp
+  // OnSendEventEnter, the reanimate-fx memo's D5 B), its switch read here
+  // with the seam's by the one reader, before the game's scripts run
+  const bool ownerEvents = ClientSwitchOn("scriptOwnerEvents");
+  Frida::SetScriptOwnerEvents(ownerEvents);
+  if (ownerEvents) {
+    logger::info("[verb:papyrus-events] scriptOwnerEvents on: one to an "
+                 "effect on an actor that is not the player on the seat that "
+                 "simulates it, each tallied as \"owner rule tally\" (D5 B)");
+  } else {
+    logger::info("[verb:papyrus-events] scriptOwnerEvents off: the owner "
+                 "rule asks nothing, and an alias's or an actor's effect's "
+                 "events keep the block's rules (D5 B)");
   }
   // train 52's Fix 1: the leveled landing's switch, read beside the lever,
   // and the AddItemFunctor hook Hooks::Install wrote at the plugin's load,

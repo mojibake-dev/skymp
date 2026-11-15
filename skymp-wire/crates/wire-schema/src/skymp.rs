@@ -930,8 +930,20 @@ wire_struct! {
         pub source: u32,
         /// Its magnitude, scaled as the server applied it.
         pub magnitude: f32,
-        /// Seconds left; 0 for an effect without duration, shown once.
+        /// Seconds left, at most a day (wire-rules magic::MAX_DURATION_S); 0
+        /// for an effect without duration, shown once; -1 for a state with
+        /// no clock, a thrall's reanimate, which ends with its actor's death
+        /// alone (the client reads a negative as no end). Any finite value
+        /// validates.
         pub remaining: f32,
+        /// Who applied it, 0 for none: the server's form id of the caster its
+        /// record keeps (a player's actor from 0xff000000 up, a game-file
+        /// NPC's own id). A thrall's reanimate names its caster here, the
+        /// one game whose engine commands the thrall when that game also
+        /// simulates it (thuum docs/verbs/npc-fate.md C4, ADR-060's return).
+        /// Any value validates.
+        #[serde(default)]
+        pub caster: u32,
     }
 }
 

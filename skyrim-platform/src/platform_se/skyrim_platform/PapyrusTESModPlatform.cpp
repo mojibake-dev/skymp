@@ -12,6 +12,7 @@
 #include "ScriptState.h"
 #include "TrapFamily.h"
 
+#include <RE/B/BGSArtObject.h>
 #include <RE/B/BGSLocation.h>
 #include <RE/B/BGSStoryEventManager.h>
 #include <RE/B/BSPointerHandle.h>
@@ -20,7 +21,9 @@
 #include <RE/I/InventoryChanges.h>
 #include <RE/I/InventoryEntryData.h>
 #include <RE/M/MagicFavorites.h>
+#include <RE/M/ModelReferenceEffect.h>
 #include <RE/N/NiPoint3.h>
+#include <RE/P/ProcessLists.h>
 #include <RE/P/Projectile.h>
 #include <RE/T/TESDataHandler.h>
 #include <RE/T/TESGlobal.h>
@@ -1440,6 +1443,127 @@ bool TESModPlatform::ModPlayerActorValue(IVM* vm, StackID stackId,
   return true;
 }
 
+namespace {
+// thuum docs/verbs/magic-effects.md, the hit art: the (reference, art) pairs
+// ApplyArtObject played that no stop has finished, by form id alone. Nothing
+// of the engine's is held: on 1.6.1170, Address Library 22769 answers no
+// effect (thuum lab/.cache/drafts/reanimate/read-stage-125536.md 2.4, REA:
+// it tail-jumps 34762, then 41386, then 36975 or 41439, RAX left over; on a
+// failed Init the answer is the freed effect; c1's write to 0x9 in
+// x-reanimate-claim 20261112-125536 was a held answer of 1). A pair's
+// effects are found again in the engine's own list, which holds its own
+// reference (ProcessLists::magicEffects, include/RE/P/ProcessLists.h:77-78),
+// by their art and target (include/RE/M/ModelReferenceEffect.h:60,
+// include/RE/R/ReferenceEffect.h:44). A pair leaves at its stop and comes
+// back at its replay. The natives alone touch it (the update's thread inside
+// callNative), under its own mutex; allocated once and never freed
+struct PlayedArt
+{
+  uint32_t refrId = 0;
+  uint32_t artId = 0;
+};
+std::mutex g_playedArtsMutex;
+
+std::vector<PlayedArt>& PlayedArts()
+{
+  static auto* played = new std::vector<PlayedArt>();
+  return *played;
+}
+
+// under g_playedArtsMutex: when this native played the art on refr, every
+// live ModelReferenceEffect of that art on refr finished, as CommonLib's
+// ProcessLists::StopAllMagicEffects finishes a reference's
+// (src/RE/P/ProcessLists.cpp:96-106: the target compared with the
+// reference's handle, finished set inside ForEachMagicTempEffect's lock,
+// :48-58, here through ForEachModelEffect, :60-69), and the pair dropped;
+// how many were finished. An engine-drawn copy of the same art on refr is
+// finished with them (the limit magic-effects.md records)
+size_t FinishPlayedArts(RE::TESObjectREFR* refr, RE::BGSArtObject* art)
+{
+  auto& playedArts = PlayedArts();
+  const auto played = std::find_if(
+    playedArts.begin(), playedArts.end(), [&](const PlayedArt& a_played) {
+      return a_played.refrId == refr->formID && a_played.artId == art->formID;
+    });
+  if (played == playedArts.end()) {
+    return 0;
+  }
+  playedArts.erase(played);
+  auto* lists = RE::ProcessLists::GetSingleton();
+  if (!lists) {
+    return 0;
+  }
+  const auto handle = refr->CreateRefHandle();
+  size_t finished = 0;
+  lists->ForEachModelEffect([&](RE::ModelReferenceEffect* a_effect) {
+    if (a_effect->artObject == art && a_effect->target == handle) {
+      a_effect->finished = true;
+      ++finished;
+    }
+    return RE::BSContainer::ForEachResult::kContinue;
+  });
+  return finished;
+}
+}
+
+// thuum docs/verbs/magic-effects.md, the hit art: CommonLibSSE-NG's
+// TESObjectREFR::ApplyArtObject (include/RE/T/TESObjectREFR.h:368;
+// src/RE/T/TESObjectREFR.cpp:59-64, RELOCATION_ID(22289, 22769), so Address
+// Library 22769 on 1.6.1170), the rest of its arguments at their defaults:
+// no facing reference, not on the camera, the reference's own root, no
+// interface effect. Its answer is never read, as the engine's own callers
+// discard it (above; four of its five, VisualEffect.Play 55308 among them),
+// and the 3D is checked first, as 55308 checks it before its call
+// (TESObjectREFR::Get3D, TESObjectREFR.h:375). A replay finishes this native's
+// earlier copies of the pair first (FinishPlayedArts); HYPOTHESIS: off the
+// main thread 41386 queues the engine's add (36975), so a replay before that
+// add lands may stack a second copy. True when the apply was asked of the
+// engine
+bool TESModPlatform::ApplyArtObject(IVM* vm, StackID stackId,
+                                    RE::StaticFunctionTag*,
+                                    RE::TESObjectREFR* refr,
+                                    RE::BGSArtObject* art, float duration)
+{
+  if (!refr || !art || !std::isfinite(duration) || !refr->Get3D()) {
+    return false;
+  }
+  try {
+    std::lock_guard<std::mutex> lock(g_playedArtsMutex);
+    FinishPlayedArts(refr, art);
+    refr->ApplyArtObject(art, duration);
+    PlayedArts().push_back({ refr->formID, art->formID });
+    return true;
+  } catch (std::exception& e) {
+    logger::error("[verb:magic-effects] ApplyArtObject {:x} on {:x} threw: {}",
+                  art->formID, refr->formID, e.what());
+  } catch (...) {
+    logger::error("[verb:magic-effects] ApplyArtObject {:x} on {:x} threw",
+                  art->formID, refr->formID);
+  }
+  return false;
+}
+
+bool TESModPlatform::StopArtObject(IVM* vm, StackID stackId,
+                                   RE::StaticFunctionTag*,
+                                   RE::TESObjectREFR* refr,
+                                   RE::BGSArtObject* art)
+{
+  if (!refr || !art) {
+    return false;
+  }
+  try {
+    std::lock_guard<std::mutex> lock(g_playedArtsMutex);
+    return FinishPlayedArts(refr, art) > 0;
+  } catch (std::exception& e) {
+    logger::error("[verb:magic-effects] StopArtObject {:x} on {:x} threw: {}",
+                  art->formID, refr->formID, e.what());
+  } catch (...) {
+    logger::error("[verb:magic-effects] StopArtObject {:x} on {:x} threw",
+                  art->formID, refr->formID);
+  }
+  return false;
+}
+
 // The engine's start of a stagger, Address Library ID 37710 on 1.6.1170
 // (thuum ghidra/notes/block-formula.md, read under the ID 1.7.104 shares:
 // void(Actor* target, float magnitude, Actor* source), HYPOTHESIS until the
@@ -2098,6 +2222,18 @@ bool TESModPlatform::Register(IVM* vm)
     new RE::BSScript::NativeFunction<true, decltype(ModPlayerActorValue), bool,
                                      RE::StaticFunctionTag*, int32_t, float>(
       "ModPlayerActorValue", "TESModPlatform", ModPlayerActorValue));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<
+      true, decltype(ApplyArtObject), bool, RE::StaticFunctionTag*,
+      RE::TESObjectREFR*, RE::BGSArtObject*, float>(
+      "ApplyArtObject", "TESModPlatform", ApplyArtObject));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(StopArtObject), bool,
+                                     RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*, RE::BGSArtObject*>(
+      "StopArtObject", "TESModPlatform", StopArtObject));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(Stagger), bool,

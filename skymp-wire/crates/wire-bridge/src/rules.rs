@@ -828,6 +828,10 @@ mod ffi {
         /// A state that changes no value (Invisibility, Light,
         /// Etherealize; thuum docs/verbs/self-cast.md).
         State,
+        /// Archetype 22, reanimate: the thrall's state (thuum
+        /// docs/verbs/npc-fate.md), which its actor's death alone ends
+        /// (wire-rules magic::EffectKind::Reanimate).
+        Reanimate,
         /// Archetype 4, absorb: its caster gains what its bearer loses
         /// (wire-rules magic::EffectKind::Absorb).
         Absorb,
@@ -1384,6 +1388,14 @@ mod ffi {
         /// (ADR-052, thuum ADR-073 decision 6), `why` saying what ended it:
         /// the cell's rule names the simulator again.
         ClaimEnded,
+        /// A claim on `actor` in `cell` ended with its claimant `player`'s
+        /// departure (ADR-060; a dialogue's alike): the cell's rule names
+        /// the simulator again, the word follows.
+        ClaimGone,
+        /// A timed thrall's commander `player` left (ADR-060 as amended
+        /// 2026-11-12): the server's word ends it at once, ahead of the
+        /// departure's ClaimGone for the same actor.
+        ThrallExpired,
     }
 
     /// One decision of the cell host table, for the core to send to its
@@ -1392,7 +1404,8 @@ mod ffi {
     struct HostDecision {
         /// Which decision.
         kind: HostKind,
-        /// The player it concerns (0 for Unhosted; a ClaimEnded's holder).
+        /// The player it concerns (0 for Unhosted; a ClaimEnded's holder; the
+        /// claimant that left for ClaimGone and ThrallExpired).
         player: u32,
         /// The cell.
         cell: u32,
@@ -1400,7 +1413,8 @@ mod ffi {
         /// ClaimEnded the actor's owner epoch after the end, ADR-066
         /// decision 1).
         epoch: u32,
-        /// The actor a ClaimEnded concerns (0 for the others).
+        /// The actor a ClaimEnded, ClaimGone or ThrallExpired concerns (0 for
+        /// the others).
         actor: u32,
         /// What ended a ClaimEnded, wire-rules cells::ClaimEnd's code (0 a
         /// lease, 1 a release, 2 its quest's stop, 3 its alias's fill, 4 the
@@ -1435,6 +1449,25 @@ mod ffi {
         /// Units from the reported position to the destination square's nearest
         /// edge (u32::MAX for an interior): the pass margin's fact (D22).
         edge_units: u32,
+    }
+
+    /// A thrall's record as the core reads it for `returning` (ADR-060's
+    /// return, thuum docs/verbs/npc-fate.md C4): the thrall, the cell its
+    /// record stands in, the caster its Reanimate state names (0 for none),
+    /// that state's record duration in seconds, and whether the record is
+    /// alive.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ThrallRecord {
+        /// The thrall.
+        actor: u32,
+        /// The cell its record stands in.
+        cell: u32,
+        /// The caster its Reanimate state names, 0 for none.
+        caster: u32,
+        /// That state's record duration, seconds.
+        record_s: u32,
+        /// Whether the record is alive.
+        alive: bool,
     }
 
     /// A follow (ADR-047 D6, thuum docs/verbs/npc-handoff.md): `player`
@@ -1549,8 +1582,8 @@ mod ffi {
         cell: u32,
         /// The host of that cell, 0 while nobody hosts it, for a world
         /// object, held or placed by its record; an actor's simulator for an
-        /// actor (0 for none), which a row kept as evidence reads; 0 for
-        /// every other kind.
+        /// actor (0 for none), which a row kept as evidence and an actor's
+        /// look row read; 0 for every other kind.
         owner: u32,
         /// That host's standing epoch (unread for an actor).
         owner_epoch: u32,
@@ -1569,6 +1602,17 @@ mod ffi {
         /// reporter and cell are the call's, so one never gathered (all
         /// zero) reads as a game without the cell loaded.
         firing: TriggerFiringFacts,
+        /// The subject actor is dead on the record (an actor's facts, which
+        /// an actor's look row reads for wire-rules natives ASH_WINDOW_MS);
+        /// false for every other kind.
+        dead: bool,
+        /// How long ago the subject actor last died on the server's clock,
+        /// ms (MpActor::DiedAgo); u64::MAX for none, and for a subject that
+        /// is no actor.
+        died_ago_ms: u64,
+        /// The caster of the reanimate the server last accepted on the
+        /// subject actor (MpActor::ReanimateAcceptedCaster), 0 for none.
+        reanimate_caster: u32,
     }
 
     /// The rule's word on a reported script call.
@@ -1613,7 +1657,9 @@ mod ffi {
         /// The subject's form id (accepted).
         subject: u32,
         /// The subject's sequence after this call, 1 for its first
-        /// (accepted).
+        /// (accepted); an actor's look row on an effect form (EffectShader,
+        /// VisualEffect) takes its relay's self's, the form's, the key a
+        /// receiver orders a relay by.
         seq: u32,
         /// The relay native's class (accepted).
         relay_cls: String,
@@ -1621,8 +1667,9 @@ mod ffi {
         relay_fn: String,
         /// The call's arguments the relay carries, by index, in order.
         relay_args: Vec<u8>,
-        /// The relay's self: the subject for a method native, 0 for a static
-        /// one.
+        /// The relay's self: the subject for a method native, the method's
+        /// own for one whose subject is its first argument (the effect
+        /// form, the Sound), 0 for a static one.
         relay_self: u32,
         /// Who hears it: 0 the subject's listeners, 1 every seat, 2 none, 3
         /// the subject's cell's host alone (a look's CreateDetectionEvent,
@@ -2995,6 +3042,11 @@ mod ffi {
         /// The share of a hostile effect's magnitude a target takes, by its
         /// element and magic resistances under `cap`.
         fn resistance_factor(resist: f32, magic_resist: f32, cap: f32) -> f32;
+        /// A Reanimate effect at least this long is a full thrall's, seconds
+        /// (wire-rules magic::FULL_THRALL_MIN_S), for the core's restart:
+        /// every commander's departure, at which a full thrall stays and a
+        /// timed one dies.
+        fn full_thrall_min_s() -> f32;
 
         /// Every player actor's recent spell casts and open streams.
         type SpellCasts;
@@ -3215,6 +3267,22 @@ mod ffi {
         fn owner_epoch_of(self: &Cells, actor: u32) -> u32;
         /// The words for a ClaimEnded's `why`, for the log.
         fn claim_end_name(why: u8) -> String;
+        /// ADR-060: `player`'s spell commands `actor` in `cell` until its
+        /// engine ends the effect (the thrall's death; no lease); `effect_s`
+        /// the record's duration of the Reanimate effect, seconds, the one
+        /// line at its commander's departure (a full thrall's, a day and
+        /// more, stays; a timed one dies): the same codes as claim_actor.
+        fn claim_commanded(self: &mut Cells, actor: u32, player: u32, cell: u32, effect_s: u32, now_ms: u64) -> u8;
+        /// ADR-060's return (thuum docs/verbs/npc-fate.md C4): `player`'s
+        /// game has a cell loaded; each thrall record there that is alive, a
+        /// full thrall's and names `player` its caster, under no live
+        /// command, is commanded by `player` again. The actors claimed.
+        fn returning(self: &mut Cells, player: u32, thralls: &[ThrallRecord], now_ms: u64) -> Vec<u32>;
+        /// Any claim on `actor` ends (its death, or a respawn its simulator's
+        /// engine did not stand): the claimant it had, 0 when none.
+        fn release_any_claim(self: &mut Cells, actor: u32) -> u32;
+        /// ADR-060: the player commanding `actor`, 0 when none.
+        fn commander_of(self: &Cells, actor: u32) -> u32;
         /// Every follow, by actor id.
         fn follows(self: &Cells) -> Vec<CellFollowRow>;
         /// The grace a host keeps its cell after leaving it, ms
@@ -3327,6 +3395,10 @@ mod ffi {
         /// thuum ADR-068 (the one seam): the row of a reported script call
         /// and its subject, the row for the core's shape step.
         fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) -> ScriptCallSubject;
+        /// How long after a dead thrall's death its reanimate's caster still
+        /// owns the actor's looks on it, ms (wire-rules natives
+        /// ASH_WINDOW_MS), for the core's tests.
+        fn script_ash_window_ms() -> u64;
         /// Every reporter's budget and every subject's sequence (wire-rules
         /// natives), and the call the shape step passed until the owner
         /// step takes it.
@@ -3685,7 +3757,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4734,6 +4806,12 @@ fn host_decisions(table: &cells::Cells, decisions: Vec<cells::Decision>) -> Vec<
             cells::Decision::ClaimEnded { actor, cell, player, epoch, why } => {
                 HostDecision { actor, kind: HostKind::ClaimEnded, player, cell, epoch, why: claim_end_code(why) }
             }
+            cells::Decision::ClaimGone { actor, cell, player } => {
+                HostDecision { actor, kind: HostKind::ClaimGone, player, cell, epoch: table.epoch_of(cell), why: 0 }
+            }
+            cells::Decision::ThrallExpired { actor, cell, player } => {
+                HostDecision { actor, kind: HostKind::ThrallExpired, player, cell, epoch: table.epoch_of(cell), why: 0 }
+            }
         })
         .collect()
 }
@@ -4863,6 +4941,25 @@ impl Cells {
         }
     }
 
+    fn claim_commanded(&mut self, actor: u32, player: u32, cell: u32, effect_s: u32, now_ms: u64) -> u8 {
+        match self.0.claim_commanded(actor, player, cell, effect_s, now_ms) {
+            cells::ClaimVerdict::Granted => 0,
+            cells::ClaimVerdict::Held => 1,
+            cells::ClaimVerdict::Unloaded => 2,
+            cells::ClaimVerdict::Reclaimed => 3,
+            cells::ClaimVerdict::NotSimulator => 4,
+            cells::ClaimVerdict::Full => 5,
+        }
+    }
+
+    fn returning(&mut self, player: u32, thralls: &[ThrallRecord], now_ms: u64) -> Vec<u32> {
+        let records: Vec<cells::ThrallRecord> = thralls
+            .iter()
+            .map(|t| cells::ThrallRecord { actor: t.actor, cell: t.cell, caster: t.caster, record_s: t.record_s, alive: t.alive })
+            .collect();
+        self.0.returning(player, &records, now_ms)
+    }
+
     fn release_claim(&mut self, actor: u32, player: u32, purpose: u8, quest: u32, scene: u32, why: u8) -> u8 {
         let released = match (purpose, why) {
             (_, 0) => {
@@ -4903,6 +5000,14 @@ impl Cells {
 
     fn owner_epoch_of(&self, actor: u32) -> u32 {
         self.0.owner_epoch_of(actor)
+    }
+
+    fn release_any_claim(&mut self, actor: u32) -> u32 {
+        self.0.release_any_claim(actor)
+    }
+
+    fn commander_of(&self, actor: u32) -> u32 {
+        self.0.commander_of(actor)
     }
 
     fn simulator_of(&self, actor: u32, cell: u32) -> u32 {
@@ -5322,6 +5427,7 @@ fn to_magic_facts(f: EffectFacts) -> magic::EffectFacts {
         EffectKind::PeakValue => magic::EffectKind::PeakValue,
         EffectKind::DualValue => magic::EffectKind::DualValue,
         EffectKind::State => magic::EffectKind::State,
+        EffectKind::Reanimate => magic::EffectKind::Reanimate,
         EffectKind::Absorb => magic::EffectKind::Absorb,
         _ => magic::EffectKind::Value,
     };
@@ -5336,6 +5442,7 @@ fn from_magic_facts(f: magic::EffectFacts) -> EffectFacts {
         magic::EffectKind::PeakValue => EffectKind::PeakValue,
         magic::EffectKind::DualValue => EffectKind::DualValue,
         magic::EffectKind::State => EffectKind::State,
+        magic::EffectKind::Reanimate => EffectKind::Reanimate,
         magic::EffectKind::Absorb => EffectKind::Absorb,
     };
     EffectFacts { effect, source, kind, av, second_av: second_av.unwrap_or(u32::MAX), second_weight, magnitude, duration_s, recover, detrimental, no_duration }
@@ -5404,6 +5511,10 @@ fn ability_modifier(facts: &Vec<EffectFacts>, av: u32) -> f32 {
 
 fn resistance_factor(resist: f32, magic_resist: f32, cap: f32) -> f32 {
     magic::resistance_factor(resist, magic_resist, cap)
+}
+
+const fn full_thrall_min_s() -> f32 {
+    magic::FULL_THRALL_MIN_S
 }
 
 /// Every player actor's recent spell casts and open streams (wire-rules
@@ -5672,6 +5783,10 @@ fn native_args(args: &[ScriptArg]) -> Vec<natives::Arg> {
     args.iter().map(native_arg).collect()
 }
 
+const fn script_ash_window_ms() -> u64 {
+    natives::ASH_WINDOW_MS
+}
+
 fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) -> ScriptCallSubject {
     let Some(index) = natives::row_index(cls, func) else {
         return ScriptCallSubject { row: -1, subject: 0, record: 0, look: 0 };
@@ -5793,6 +5908,9 @@ impl ScriptCalls {
             loader: gathered && f.firing.loader,
             nearest: if gathered { distance_of(f.firing.nearest) } else { None },
             subject_size: if gathered { f.firing.trigger_size } else { 0.0 },
+            dead: f.dead,
+            died_ago_ms: (f.died_ago_ms != u64::MAX).then_some(f.died_ago_ms),
+            reanimate_caster: f.reanimate_caster,
         };
         let mut out = quiet_script_call();
         match self.0.owner(shaped, &facts) {
@@ -6668,6 +6786,61 @@ mod tests {
         assert_eq!(alias_fills_actor(&aliases, &journal, 0x39645, 0x13487, 0x1347a, true), AliasActorFill { kind: 1, alias: 1 });
     }
 
+    // ADR-060 as amended (Eli, 2026-11-12): a commander's departure crosses
+    // as a word naming its claimant, a timed thrall's end ahead of its word,
+    // a full thrall's word alone, and no clock after it
+    #[test]
+    fn a_commanders_departure_crosses_as_a_timed_thralls_end_and_a_word() {
+        let mut k = new_cells();
+        assert!(k.reach(0xff00_0002, &[0x9731], 0).is_empty());
+        assert!(k.reach(0xff00_0003, &[0x9731], 0).is_empty());
+        assert_eq!(k.loaded(0xff00_0002, 0x9731, 1_000).len(), 1);
+        assert!(k.loaded(0xff00_0003, 0x9731, 1_100).is_empty());
+        // Reanimate Corpse's 60 s on Hilde, Dead Thrall's 86,313,600 s on Sven
+        assert_eq!(k.claim_commanded(0x35534, 0xff00_0003, 0x9731, 60, 1_500), 0);
+        assert_eq!(k.claim_commanded(0x13491, 0xff00_0003, 0x9731, 86_313_600, 1_500), 0);
+        assert_eq!(k.commander_of(0x35534), 0xff00_0003);
+        assert_eq!(
+            k.gone(0xff00_0003, 2_000),
+            vec![
+                HostDecision { actor: 0x13491, kind: HostKind::ClaimGone, player: 0xff00_0003, cell: 0x9731, epoch: 1, why: 0 },
+                HostDecision { actor: 0x35534, kind: HostKind::ThrallExpired, player: 0xff00_0003, cell: 0x9731, epoch: 1, why: 0 },
+                HostDecision { actor: 0x35534, kind: HostKind::ClaimGone, player: 0xff00_0003, cell: 0x9731, epoch: 1, why: 0 },
+            ]
+        );
+        assert_eq!(k.commander_of(0x35534), 0);
+        assert_eq!(k.commander_of(0x13491), 0);
+        assert!(k.tick(1_500 + 60_000).is_empty());
+    }
+
+    // ADR-060's return (thuum docs/verbs/npc-fate.md C4): the core's records
+    // of a loaded cell cross as slices; the full thrall naming its returning
+    // caster is claimed for it, the timed one is not, and the word is the
+    // core's to send (UpdateHoster, as ClaimCommanded's)
+    #[test]
+    fn a_full_thralls_record_returns_it_to_its_caster_across_the_bridge() {
+        let mut k = new_cells();
+        assert!(k.reach(0xff00_0002, &[0x9731], 0).is_empty());
+        assert!(k.reach(0xff00_0003, &[0x9731], 0).is_empty());
+        assert_eq!(k.loaded(0xff00_0002, 0x9731, 1_000).len(), 1);
+        assert!(k.loaded(0xff00_0003, 0x9731, 1_100).is_empty());
+        assert_eq!(k.claim_commanded(0x13491, 0xff00_0003, 0x9731, 86_313_600, 1_500), 0);
+        assert_eq!(k.gone(0xff00_0003, 2_000).len(), 1);
+        assert_eq!(k.commander_of(0x13491), 0);
+        assert_eq!(k.simulator_of(0x13491, 0x9731), 0xff00_0002);
+        assert!(k.reach(0xff00_0003, &[0x9731], 3_000).is_empty());
+        assert!(k.loaded(0xff00_0003, 0x9731, 3_000).is_empty());
+        let records = [
+            ThrallRecord { actor: 0x13491, cell: 0x9731, caster: 0xff00_0003, record_s: 86_313_600, alive: true },
+            ThrallRecord { actor: 0x35534, cell: 0x9731, caster: 0xff00_0003, record_s: 60, alive: true },
+        ];
+        assert_eq!(k.returning(0xff00_0003, &records, 3_000), vec![0x13491]);
+        assert_eq!(k.commander_of(0x13491), 0xff00_0003);
+        assert_eq!(k.simulator_of(0x13491, 0x9731), 0xff00_0003);
+        assert_eq!(k.commander_of(0x35534), 0);
+        assert!(k.returning(0xff00_0003, &records, 3_100).is_empty());
+    }
+
     // a prop sample as the core gathers it, the sender's clock read as the
     // server's and its engine holding nothing
     #[allow(clippy::too_many_arguments)]
@@ -7239,6 +7412,12 @@ mod tests {
         assert!(!hit.has_entry);
         let magicka: f32 = hit.changes.iter().filter(|c| c.av == 25).map(|c| c.current).sum();
         assert!((magicka + 1.0).abs() < 1e-3);
+        // Dead Thrall's reanimate: a state, its record's 86,313,600 s kept
+        let thrall = EffectFacts { effect: 0x7e8e0, source: 0x7e8df, kind: EffectKind::Reanimate, av: u32::MAX, magnitude: 40.0, duration_s: 86_313_600.0, recover: true, detrimental: false, ..poison };
+        let raised = apply_effect(thrall, 1.0, 7, EffectArrival::Once);
+        assert!(raised.changes.is_empty() && raised.has_entry);
+        assert!(matches!(raised.entry.facts.kind, EffectKind::Reanimate));
+        assert!((raised.entry.facts.duration_s - 86_313_600.0).abs() < 1.0);
     }
 
     #[test]
@@ -7414,7 +7593,7 @@ mod tests {
         assert_eq!(send.subject, 0xaa8cb);
         assert_eq!(script_call_subject("Debug", "Notification", 0, &[text]), ScriptCallSubject { row: -1, subject: 0, record: 0, look: 0 });
         assert_eq!(at.record, 0, "an action row keeps no record");
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[text, text], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.relay_self), (ScriptCallCode::Accepted, 0xaa8cb, 1, 0xaa8cb));
@@ -7461,7 +7640,7 @@ mod tests {
         let at = script_call_subject("ObjectReference", "ProcessTrapHit", 0x800a6, &args);
         assert!(at.row >= 0);
         assert_eq!(at.subject, 0x800a6);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3, firing: NO_FIRING };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &args, &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x800a6, 0, true, false, 2));
@@ -7477,6 +7656,78 @@ mod tests {
         let pillar = ScriptCallFacts { self_id: 0xaa8cb, subject_kind: 1, owner_epoch: 3, ..facts };
         let relayed = s.judge(play.row, &[text], &pillar, 0);
         assert_eq!((relayed.code, relayed.keep_evidence, relayed.seq), (ScriptCallCode::Accepted, false, 1));
+    }
+
+    #[test]
+    fn the_bridge_relays_an_actors_look_on_its_selfs_sequence() {
+        // the Undead FX build (the reanimate-fx memo, D6 B and D3 B):
+        // TurnToAsh's ShockDisintegrate01FXS 0xd22fb played on the draugr
+        // 0x800a6 by its simulator 0xff000000, kind 3, the facts' owner; the
+        // relay is the shader's, on the shader's sequence, no firing's look,
+        // nothing kept, so the core relays it with its seq to the actor's
+        // listeners and logs its "relayed to" line
+        let number = ScriptArg { kind: 2, form_id: 0 };
+        let draugr = ScriptArg { kind: 4, form_id: 0x800a6 };
+        let at = script_call_subject("EffectShader", "Play", 0xd22fb, &[draugr, number]);
+        assert!(at.row >= 0);
+        assert_eq!((at.subject, at.record, at.look), (0x800a6, 0, 0));
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xd22fb, epoch: 0, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0 };
+        let mut s = new_script_calls();
+        let v = s.judge(at.row, &[draugr, number], &facts, 0);
+        assert_eq!((v.code, v.subject, v.seq, v.relay_self, v.audience), (ScriptCallCode::Accepted, 0x800a6, 1, 0xd22fb, 0));
+        assert_eq!((v.relay_cls.as_str(), v.relay_fn.as_str(), v.relay_args.as_slice()), ("EffectShader", "Play", &[0u8, 1][..]));
+        assert_eq!((v.look, v.keep_last, v.keep_evidence, v.record, v.event_arg, v.keep_var, v.figure_args), (false, false, false, 0, -1, 0, false));
+        // a row on the actor's self: its own sequence, the actor its self
+        let flag = ScriptArg { kind: 1, form_id: 0 };
+        let alpha = script_call_subject("Actor", "SetAlpha", 0x800a6, &[number, flag]);
+        let on_self = s.judge(alpha.row, &[number, flag], &ScriptCallFacts { self_id: 0x800a6, ..facts }, 0);
+        assert_eq!((on_self.code, on_self.seq, on_self.relay_self), (ScriptCallCode::Accepted, 1, 0x800a6));
+        // another seat's report and a world object cross with their names
+        let guest = s.judge(at.row, &[draugr, number], &ScriptCallFacts { sender: 0xff00_0001, ..facts }, 0);
+        assert_eq!((guest.code, guest.name.as_str()), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER"));
+        let object = s.judge(at.row, &[draugr, number], &ScriptCallFacts { subject_kind: 1, ..facts }, 0);
+        assert_eq!((object.code, object.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
+    }
+
+    #[test]
+    fn the_bridge_takes_a_dead_thralls_ash_from_its_reanimate_caster_for_the_window() {
+        // TurnToAsh's AttachAshPile on the thrall 0x35534 after its death,
+        // from its reanimate's caster 0xff000001 while the cell's host
+        // 0xff000000 simulates the body again (ADR-060's release at the
+        // death); the window wire-rules natives names, the bridge's getter
+        // the core's tests read
+        let none = ScriptArg { kind: 4, form_id: 0 };
+        let at = script_call_subject("Actor", "AttachAshPile", 0x35534, &[none]);
+        assert!(at.row >= 0);
+        let window = script_ash_window_ms();
+        assert_eq!(window, natives::ASH_WINDOW_MS);
+        let facts = ScriptCallFacts {
+            sender: 0xff00_0001,
+            self_id: 0x35534,
+            epoch: 0,
+            subject_kind: 3,
+            cell: 0x371de,
+            owner: 0xff00_0000,
+            owner_epoch: 0,
+            host: 0,
+            host_epoch: 0,
+            firing: NO_FIRING,
+            dead: true,
+            died_ago_ms: 1_250,
+            reanimate_caster: 0xff00_0001,
+        };
+        let mut s = new_script_calls();
+        let v = s.judge(at.row, &[none], &facts, 0);
+        assert_eq!((v.code, v.subject, v.seq, v.relay_self, v.relay_fn.as_str()), (ScriptCallCode::Accepted, 0x35534, 1, 0x35534, "AttachAshPile"));
+        // the window's edge, past it, and no death recorded (u64::MAX)
+        assert_eq!(s.judge(at.row, &[none], &ScriptCallFacts { died_ago_ms: window, ..facts }, 0).code, ScriptCallCode::Accepted);
+        let past = s.judge(at.row, &[none], &ScriptCallFacts { died_ago_ms: window + 1, ..facts }, 0);
+        assert_eq!((past.code, past.name.as_str()), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER"));
+        assert!(past.why.starts_with("ff000000 simulates 35534, not the reporter (its reanimate's caster, "), "{}", past.why);
+        assert_eq!(s.judge(at.row, &[none], &ScriptCallFacts { died_ago_ms: u64::MAX, ..facts }, 0).code, ScriptCallCode::Owner);
+        // another seat, or a living thrall: the simulator's refusal
+        assert_eq!(s.judge(at.row, &[none], &ScriptCallFacts { reanimate_caster: 0xff00_0002, ..facts }, 0).code, ScriptCallCode::Owner);
+        assert_eq!(s.judge(at.row, &[none], &ScriptCallFacts { dead: false, ..facts }, 0).code, ScriptCallCode::Owner);
     }
 
     #[test]
@@ -7680,7 +7931,7 @@ mod tests {
         let at = script_call_subject("Actor", "SetRace", 0x14, &[race]);
         assert!(at.row >= 0);
         assert_eq!((at.subject, at.record), (0x14, 4));
-        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0x14, epoch: 0, subject_kind: 3, cell: 0, owner: 0, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING };
+        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0x14, epoch: 0, subject_kind: 3, cell: 0, owner: 0, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[race], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.record, v.audience), (ScriptCallCode::Accepted, 0x14, 0, 4, 2));
@@ -7862,7 +8113,7 @@ mod tests {
         let at = script_call_subject("ObjectReference", "Disable", 0x1fc43, &[flag]);
         assert!(at.row >= 0);
         assert_eq!(at.subject, 0x1fc43);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x1fc43, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x1fc43, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[flag], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.record, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x1fc43, 1, 1, false, false, 2));
@@ -8005,7 +8256,7 @@ mod tests {
         // of malformed calls is cut off by the rate
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0 };
         let mut s = new_script_calls();
         // a shape that holds names the subject whose facts the core gathers
         let shaped = s.shape(at.row, &[text], facts.sender, facts.self_id, 0);
@@ -8068,7 +8319,7 @@ mod tests {
         // the next relay runs on from there
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0 };
         let mut calls = new_script_calls();
         assert_eq!(calls.seq_of(0xaa8cb), 0);
         calls.seed(0xaa8cb, 5);
@@ -8186,7 +8437,7 @@ mod tests {
         let float = ScriptArg { kind: 2, form_id: 0 };
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "SetAnimationVariableFloat", 0x3758c, &[text, float]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x3758c, epoch: 1, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 1, host: 0, host_epoch: 0, firing: NO_FIRING };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x3758c, epoch: 1, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 1, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0 };
         let mut calls = new_script_calls();
         let v = calls.judge(at.row, &[text, float], &facts, 0);
         assert_eq!((v.code, v.seq, v.keep_var, v.keep_last, v.relay_fn.as_str()), (ScriptCallCode::Accepted, 1, 4, false, "SetAnimationVariableFloat"));
@@ -8214,7 +8465,7 @@ mod tests {
         assert_eq!(script_call_subject("ObjectReference", "PlayAnimation", 0xb6d3f, &[text]).look, 1);
         assert_eq!(script_call_subject("ObjectReference", "SetOpen", 0xb6d3f, &[flag]).look, 0);
         let firing = TriggerFiringFacts { reporter: 0xff00_0001, cell: 0x371de, host: 0xff00_0000, loader: true, nearest: 40.0, trigger_size: 64.0 };
-        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0xb6d3f, epoch: 0, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing };
+        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0xb6d3f, epoch: 0, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0 };
         let mut calls = new_script_calls();
         let v = calls.judge(motion.row, &[number, flag], &facts, 0);
         assert_eq!((v.code, v.look, v.seq, v.relay_self, v.relay_fn.as_str(), v.relay_args.as_slice()), (ScriptCallCode::Accepted, true, 1, 0xb6d3f, "SetMotionType", &[0u8, 1][..]));

@@ -92,15 +92,6 @@ std::optional<uint32_t> ReanimateEffectOf(
   }
   return std::nullopt;
 }
-
-// whether `spell` carries a Reanimate effect at all; a relay knows the
-// cast's spell alone
-bool CarriesReanimate(WorldState* worldState, uint32_t spell)
-{
-  return spell != 0 &&
-    ReanimateEffectOf(worldState, MpActor::EffectsOf(worldState, spell))
-      .has_value();
-}
 }
 
 MpActor* ActionListener::ActorUpdatableBy(uint32_t idx,
@@ -215,31 +206,13 @@ size_t ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
 {
   SpellCastMessage relay;
   relay.data = data;
-  // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any
-  // body"): a reanimate cast at a dead body another game hosts reaches that
-  // host as the server's own Spell.Cast at the hit (CastReanimateOnHost),
-  // so the host is not handed the relayed cast as well: its figure of the
-  // caster would launch the spell there twice. Every other listener keeps
-  // the relay, its look of the cast. The skip needs the cast to name the
-  // body, which is the caster's game's word at the cast: the client names
-  // the crosshair's actor for a spell delivered to its target and keeps the
-  // engine's word for an aimed one, and the engine's MagicTarget names the
-  // caster itself (magicSyncService's castTarget). A cast naming no body
-  // the server holds dead is relayed as it stands, and the snippet then
-  // doubles the look on the host once: the trade for a reanimation that
-  // stands on every screen.
+  // thuum docs/verbs/npc-fate.md (ADR-060): a reanimate at a dead body
+  // reaches every other game as any cast's look; the body's host used to be
+  // skipped for the server's own Spell.Cast snippet there, retired with
+  // the commanded claim (the caster's own engine runs the effect, the body
+  // is its seat's from the hit; the former host's copy is a puppet and
+  // stands by the server's live word, HYPOTHESIS H1 of ADR-060)
   size_t games = 0;
-  const MpActor* bodyHost = nullptr;
-  if (data.target != 0 && CarriesReanimate(&partOne.worldState, data.spell)) {
-    const auto& targetForm =
-      partOne.worldState.LookupFormByIdNoLoad(data.target);
-    MpActor* body = targetForm ? targetForm->AsActor() : nullptr;
-    MpActor* host =
-      body && body->IsDead() ? partOne.worldState.HostOf(*body) : nullptr;
-    if (host && host != &sender) {
-      bodyHost = host;
-    }
-  }
   for (auto listener : caster.GetActorListeners()) {
     // A relay is one game's report for the other games, so only a listener
     // with a user hears it, and directly. GetActorToSendTo hands an offline
@@ -253,14 +226,6 @@ size_t ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
     if (listener == &sender ||
         partOne.serverState.UserByActor(listener) ==
           Networking::InvalidUserId) {
-      continue;
-    }
-    if (listener == bodyHost) {
-      spdlog::info("[verb:npc-fate] reanimate {:x} by {:x} at {:x}: the "
-                   "relay skips the body's host {:x}, which casts it by the "
-                   "server's word at the hit",
-                   data.spell, caster.GetFormId(), data.target,
-                   listener->GetFormId());
       continue;
     }
     listener->SendToUser(relay, true);
@@ -1007,6 +972,15 @@ void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
     const auto released = partOne.ReleaseClaim(*myActor, *actor, purpose,
                                                static_cast<uint8_t>(why));
     if (released == PartOne::ClaimRelease::NotHeld) {
+      // ADR-060: the commander's own dialogue with its thrall claimed
+      // nothing (its command names it already), so its close releases
+      // nothing and the command stands
+      if (partOne.CommanderOf(*actor) == myActor->GetFormId()) {
+        spdlog::info("[verb:npc-talk] {:x} closes its dialogue with its "
+                     "thrall {:x}; the command stands (ADR-060)",
+                     myActor->GetFormId(), actor->GetFormId());
+        return;
+      }
       refuse("E_CLAIM_NONE", "it holds no claim on it");
       return;
     }
@@ -1131,6 +1105,16 @@ void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
   switch (verdict) {
     case PartOne::ClaimVerdict::Granted:
     case PartOne::ClaimVerdict::Reclaimed:
+      // ADR-060: the commander's own dialogue with its thrall renews
+      // nothing; its command names it, with no lease
+      if (verdict == PartOne::ClaimVerdict::Reclaimed &&
+          partOne.CommanderOf(*actor) == myActor->GetFormId()) {
+        spdlog::info("[verb:npc-talk] {:x} talks to its thrall {:x} in cell "
+                     "{:x}; the command stands, no lease (ADR-060)",
+                     myActor->GetFormId(), actor->GetFormId(),
+                     partOne.worldState.CellOf(*actor).value_or(0));
+        break;
+      }
       if (kind == 0) {
         spdlog::info("[verb:npc-talk] {:x} claims {:x} in cell {:x} for a "
                      "dialogue{}; it simulates the actor for the lease",
@@ -1278,7 +1262,7 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
     // took the first sample above one point as a resurrection). Its
     // stand-up is the cast's rule alone: a reanimate hit the server accepted
     // on it within MpActor::kReanimateWindowMs (NoteReanimateAccepted at
-    // OnHit, ahead of CastReanimateOnHost). Any other live sample of it
+    // OnHit, ahead of ClaimReanimated). Any other live sample of it
     // stays a sample of a dead record, judged dead below; said once in ten
     // seconds per body, at debug
     const auto reanimatedAgo = actor->ReanimateAcceptedAgo(now);
@@ -1344,7 +1328,37 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
             : std::string("its death before this process"));
         actor->ClearHostSampledDead();
         actor->NoteHostStoodUp(now);
-        actor->Respawn(false);
+        // through PartOne: a claim on the body stands through its
+        // simulator's own stand-up (a reanimation's command) and ends at
+        // any other respawn (ADR-060)
+        partOne.ResurrectByHost(*actor);
+        // thuum docs/verbs/npc-fate.md (ADR-060, the reanimate's look): the
+        // accepted reanimate's effects land now, on the living record at the
+        // record's magnitudes and under their conditions (ADR-039), since a
+        // dead target takes none at the hit. Its Reanimate effect is the
+        // thrall's state, which every game that sees the body shows
+        // (MagicEffects: the hit shader for the seconds left), a later load
+        // included, until the death's emptied set
+        const uint32_t spell = actor->ReanimateAcceptedSpell();
+        const bool commanded =
+          partOne.CommanderOf(*actor) == myActor->GetFormId();
+        if ((reanimated || commanded) && spell != 0 && !actor->IsDead()) {
+          const uint32_t caster = actor->ReanimateAcceptedCaster();
+          actor->ApplyEffects(spell,
+                              MpActor::EffectsOf(&partOne.worldState, spell),
+                              1.f, caster, false);
+          std::string running;
+          for (const auto& e : actor->GetRunningEffects()) {
+            running +=
+              fmt::format("{}{:x} for {:.0f} s", running.empty() ? "" : ", ",
+                          e.effect, e.secondsLeft);
+          }
+          spdlog::info("[verb:npc-fate] {:x} stands by reanimate {:x} of "
+                       "{:x}: its effects on the record ({}), every game "
+                       "told (MagicEffects, ADR-060)",
+                       actor->GetFormId(), spell, caster,
+                       running.empty() ? std::string("none") : running);
+        }
       }
     }
   } else if (actor->IsFateRespawned() && msg.health <= onePoint) {
@@ -6065,6 +6079,8 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   facts.sender = reporter->GetFormId();
   facts.self_id = msg.selfId;
   facts.epoch = msg.epoch;
+  // no death recorded unless an actor's below
+  facts.died_ago_ms = std::numeric_limits<uint64_t>::max();
   MpObjectReference* subject = nullptr;
   // a world object's world or cell and position, the reference's or its
   // record's
@@ -6108,10 +6124,24 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     } else if (MpActor* actor = subject->AsActor()) {
       // an actor's owner is its simulator (ADR-063 decision 1; the death
       // report's own E_DEATH_NOT_HOST rule), which a row kept as evidence
-      // reads (wire-rules natives Keep::Evidence: ProcessTrapHit's); an
-      // action row on an actor is the streams' and refused by its kind
+      // reads (wire-rules natives Keep::Evidence: ProcessTrapHit's) and an
+      // actor's look row; an animation row on an actor is the streams' and
+      // refused by its kind
       facts.subject_kind = 3;
       facts.owner = partOne.SimulatorOf(*actor);
+      // the Undead FX build (the reanimate-fx memo's D3 B): a dead thrall's
+      // looks are its reanimate's caster's for wire-rules natives'
+      // ASH_WINDOW_MS after its death, once ADR-060 ended the command there;
+      // the server's own facts, the reanimate hit it accepted (OnHit's
+      // NoteReanimateAccepted) and the death it recorded
+      // (SendAndSetDeathState), never the reporter's word
+      facts.dead = actor->IsDead();
+      facts.reanimate_caster = actor->ReanimateAcceptedCaster();
+      if (const auto diedAgo =
+            actor->DiedAgo(std::chrono::steady_clock::now())) {
+        facts.died_ago_ms =
+          static_cast<uint64_t>(std::max<int64_t>(0, diedAgo->count()));
+      }
       if (const auto cell = partOne.worldState.CellOf(*actor)) {
         facts.cell = *cell;
         if (recordRow) {
@@ -8947,10 +8977,24 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
                              std::chrono::steady_clock::now());
   if (actor->IsDead()) {
     // the server's own kill reached the host first, or a second report:
-    // nothing to do and no warning, the race is the expected one
+    // nothing to do and no warning, the race is the expected one. A command
+    // on the body ends with its commander's report all the same (ADR-060;
+    // the fresh review of f89115af, C2): a raise its engine never stood
+    // would leave the command on the corpse, and on the actor its respawn
+    // stands
+    const bool commandEnds =
+      partOne.CommanderOf(*actor) == reporter->GetFormId();
+    if (commandEnds) {
+      partOne.ReleaseAnyClaim(*actor);
+    }
     spdlog::info("[verb:npc-fate] death report: {:x} says {:x} died of {}; "
-                 "already dead here, nothing to do",
-                 reporter->GetFormId(), msg.refrId, DeathCauseName(msg.cause));
+                 "already dead here, {}",
+                 reporter->GetFormId(), msg.refrId, DeathCauseName(msg.cause),
+                 commandEnds
+                   ? fmt::format("its command ends, {:x} simulates it "
+                                 "(ADR-060)",
+                                 partOne.SimulatorOf(*actor))
+                   : std::string("nothing to do"));
     return;
   }
   MpActor* killer = nullptr;
@@ -8965,7 +9009,14 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
   // host itself streams are checks on the owner, not on consistency, so
   // they do not apply to it (npc-fate.md's Authority row)
   const bool scripted = msg.cause == 3;
-  if (!scripted && !actor->MayDie(killer)) {
+  // ADR-060: a thrall's end its commander reports (cause 0) is the
+  // command's end, the commander's word (R2); the essential and protected
+  // rules are a check on the owner there too, so they never refuse it (a
+  // protected base's thrall had no other end once its lease was gone); the
+  // body's place is still checked (the fresh review of f89115af, C3)
+  const bool commandEnd =
+    msg.cause == 0 && partOne.CommanderOf(*actor) == reporter->GetFormId();
+  if (!scripted && !commandEnd && !actor->MayDie(killer)) {
     refuse("E_DEATH_IMMORTAL",
            "an essential or protected base (the engine's rule, "
            "MpActor::MayDie)");
@@ -9082,6 +9133,16 @@ void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
           fmt::format("a drop of {:.0f} units in the host's samples", *drop);
       } else if (hazardSeen) {
         evidence = hazardEvidence();
+      } else if (partOne.CommanderOf(*actor) == reporter->GetFormId()) {
+        // thuum docs/verbs/npc-fate.md (ADR-060; Eli, 2026-11-12: "summons
+        // and resurrections should obey the timers the level of spell"): a
+        // commanded thrall dies when its commander's engine ends the effect,
+        // on that engine's own timer (dual casting, perks, the spell's
+        // level), which no window of the server's bounds; its commander's
+        // report of the death is the effect's end, at any time (R2,
+        // recorded: the thrall is the commander's, ADR-063)
+        evidence = "the command's end: its commander's engine ended the "
+                   "effect (ADR-060)";
       } else if (const auto stoodUp = actor->HostStoodUpAgo(now); stoodUp &&
                  actor->ReanimateAcceptedAgo(now) &&
                  stoodUp->count() <=
@@ -11241,14 +11302,20 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                               std::chrono::steady_clock::now());
   }
   // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any
-  // body"): a reanimate's accepted hit on a dead body stands it through the
-  // one engine that owns the body, its cell's host's
+  // body"; ADR-060): a reanimate's accepted hit on a dead body hands the
+  // body to the caster's seat, whose engine ran the spell and runs the
+  // effect; its samples stand the record up (the hosted-state rule). The
+  // claim asks the Reanimate effect's conditions first (ADR-039,
+  // ClaimReanimated)
   if (targetActorPtr->IsDead() &&
       ReanimateEffectOf(&partOne.worldState, effects).has_value()) {
     // the stamp a placed corpse's stand-up is read against
-    // (OnHostedActorState, finding 65)
-    targetActorPtr->NoteReanimateAccepted(std::chrono::steady_clock::now());
-    CastReanimateOnHost(*aggressor, *targetActorPtr, hitData.source);
+    // (OnHostedActorState, finding 65), with the spell and its caster,
+    // whose effects the stand-up applies
+    targetActorPtr->NoteReanimateAccepted(std::chrono::steady_clock::now(),
+                                          hitData.source,
+                                          aggressor->GetFormId());
+    ClaimReanimated(*aggressor, *targetActorPtr, hitData.source, effects);
   }
 
   // thuum docs/verbs/stagger.md: a spell's Stagger effect (Unrelenting
@@ -11716,51 +11783,117 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
 
 // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any body";
 // Eli, playtest 37: "anyone should be able to reanimate any corpse, that's
-// Just Gameplay"): the engine's Reanimate effect runs in the caster's own
-// game, where a body in a cell another game hosts is a puppet with its AI
-// off, which the platform leaves alone by design; the one engine that can
-// stand the body is its host's. So the accepted hit tells the host's game to
-// cast the spell itself, from the caster's figure at the body (Spell.Cast
-// with the two as its source and target, on the host's engine), the level
-// cap and the thrall's duration the engine's there, the reanimation hook
-// (fork 4ec01060) keeping the hosted body's AI and the host's sampler
-// reporting it alive. A body hosted by the caster's own game needs nothing:
-// that engine ran the effect itself. The caster's game is its user's for a
-// player and its host's for a hosted caster (a necromancer's cast at a body
-// in another game's cell). The record's life stays R0, the thrall's
-// behaviour R2.
-void ActionListener::CastReanimateOnHost(MpActor& caster, MpActor& body,
-                                         uint32_t spell)
+// Just Gameplay"; ADR-060, playtest 41): the engine's Reanimate effect runs
+// in the caster's own game, the one that knows what the commander wants, so
+// the accepted hit makes that game the body's simulator until its engine
+// ends the effect (the cells rule's commanded claim, no lease; UpdateHoster
+// to every listening game): its engine stands the body and runs the get-up
+// and the commanded packages, and its samples stand the record
+// (OnHostedActorState: inside MpActor::kReanimateWindowMs of the hit, or
+// after its own dead sample). The
+// caster's game is its user's for a player and its host's for a hosted
+// caster (a necromancer's cast at a body in another game's cell). The claim
+// is R0, the thrall's behaviour R2 (ADR-060's H1 to H3 open until
+// x-reanimate-claim reads them).
+void ActionListener::ClaimReanimated(
+  MpActor& caster, MpActor& body, uint32_t spell,
+  const std::vector<espm::Effects::Effect>& effects)
 {
-  MpActor* host = partOne.worldState.HostOf(body);
-  if (!host) {
+  // ADR-060 commands an NPC: a player's body is its own seat's (ADR-063;
+  // OnActorClaim's E_CLAIM_NPC), so it takes no command and no hoster word
+  if (body.IsCreatedAsPlayer() ||
+      partOne.serverState.UserByActor(&body) != Networking::InvalidUserId) {
+    spdlog::info("[verb:npc-fate] reanimate {:x} by {:x} on {:x}: a player's "
+                 "body is nobody's to command (ADR-063)",
+                 spell, caster.GetFormId(), body.GetFormId());
     return;
   }
-  MpActor* casterSeat =
+  // thuum ADR-039, the stand-up's gate at the claim: the spell's Reanimate
+  // effect commands the body only where that effect's own conditions hold on
+  // it, read as the stand-up's ApplyEffects reads them (this caster, no dual
+  // cast; OnHostedActorState), so no command stands where the record can
+  // take no Reanimate state (pipeline 5939: Dead Thrall's 0x7e8e0 wants
+  // HasKeyword ActorTypeNPC, and at the forest's predator, an animal, the
+  // command was a full thrall's, 86,313,600 s, while the record held no
+  // state for the departure's rule or the return to read). The rows are the
+  // engine's own data in the server's load order (the lab's Odin override
+  // of 0x7e8e0 drops its ActorTypeNPC row, thuum
+  // lab/.cache/drafts/reanimate-fx.md 6.1), and in the masters keyword rows
+  // alone (MagicNoReanimate, ActorTypeNPC; section 1 there), which answer on
+  // the dead body here as on the living one at the stand-up. The caller's
+  // accepted stamp stays: a stand-up it admits comes from the body's
+  // simulator alone (ActorUpdatableBy), which a refusal leaves where it was.
+  // HYPOTHESIS: the engine also refuses a Reanimate effect whose conditions
+  // fail on its target (Dead Thrall at an animal under the masters' record
+  // stands nothing; UESP's Skyrim:Dead_Thrall says "Only works on
+  // people"), unread on the lab
+  const auto effectId = ReanimateEffectOf(&partOne.worldState, effects);
+  for (const auto& effect : effects) {
+    if (!effectId || effect.effectId != *effectId) {
+      continue;
+    }
+    std::string failing;
+    if (!MpActor::EffectConditionsHold(&partOne.worldState, effect, spell,
+                                       body, caster, false, &failing)) {
+      spdlog::info(
+        "[verb:npc-fate] reanimate {:x} by {:x} on {:x}: its "
+        "Reanimate effect {:x}'s conditions fail on the body ({}); "
+        "no command, the body stays its cell's (thuum ADR-039)",
+        spell, caster.GetFormId(), body.GetFormId(), effect.effectId,
+        failing.empty() ? std::string("EffectConditionsHold's line names why")
+                        : "failing: " + failing);
+      return;
+    }
+  }
+  // the seat whose engine ran the spell: the caster when a user plays it,
+  // else the caster's host (a hosted necromancer's thrall is its host's)
+  MpActor* commander =
     partOne.serverState.UserByActor(&caster) != Networking::InvalidUserId
     ? &caster
     : partOne.worldState.HostOf(caster);
-  if (host == casterSeat) {
+  if (!commander) {
+    spdlog::info("[verb:npc-fate] reanimate {:x} by {:x} on {:x}: no seat "
+                 "runs the caster; the body stays its cell's",
+                 spell, caster.GetFormId(), body.GetFormId());
     return;
   }
-  // the two by their server ids, which the host's game resolves to its
-  // figure of the caster and its copy of the body (spSnippetService's
-  // deserializeArg, remoteIdToLocalId); the spell's own id is the selfId, a
-  // method call on the Spell form
-  SpSnippetObjectArgument source;
-  source.formId = caster.GetFormId();
-  source.type = "ObjectReference";
-  SpSnippetObjectArgument target;
-  target.formId = body.GetFormId();
-  target.type = "ObjectReference";
-  const std::vector<std::optional<
-    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-    args{ source, target };
-  SpSnippet("Spell", "Cast", args, spell)
-    .Execute(host, SpSnippetMode::kNoReturnResult);
-  spdlog::info("[verb:npc-fate] reanimate {:x} by {:x} on {:x}: cast on its "
-               "host {:x} for the engine's own effect",
-               spell, caster.GetFormId(), body.GetFormId(), host->GetFormId());
+  // no lease (Eli, 2026-11-12: "summons and resurrections should obey the
+  // timers the level of spell"): the command lasts until the commander's
+  // engine ends the effect, the thrall's death, which its seat reports
+  // (OnActorDeath's command's end, OnDeathState's release). The record's
+  // duration (its EFIT, seconds) is named for the lab and read for one line
+  // alone, the commander's departure (wire-rules cells.rs gone, ADR-060 as
+  // amended 2026-11-12): a full thrall's, a day and more (Dead Thrall's
+  // 86,313,600 s), stays alive, a timed one dies; dual casting, perks and
+  // the spell's level set the engine's own timer
+  uint32_t recordSeconds = 0;
+  for (const auto& effect : effects) {
+    if (effectId && effect.effectId == *effectId) {
+      recordSeconds = effect.duration;
+    }
+  }
+  const auto verdict = partOne.ClaimCommanded(*commander, body, recordSeconds);
+  switch (verdict) {
+    case PartOne::ClaimVerdict::Granted:
+    case PartOne::ClaimVerdict::Reclaimed:
+      spdlog::info(
+        "[verb:npc-fate] reanimate {:x} by {:x} on {:x}: {:x} "
+        "commands it until its engine ends the effect (the record's {} s) "
+        "(ADR-060){}",
+        spell, caster.GetFormId(), body.GetFormId(), commander->GetFormId(),
+        recordSeconds,
+        verdict == PartOne::ClaimVerdict::Reclaimed ? ", renewed" : "");
+      break;
+    case PartOne::ClaimVerdict::Unloaded:
+      spdlog::warn("[verb:npc-fate] E_COMMAND_UNLOADED: reanimate {:x} by "
+                   "{:x} on {:x}: {:x} has not loaded the body's cell; the "
+                   "body stays its cell's",
+                   spell, caster.GetFormId(), body.GetFormId(),
+                   commander->GetFormId());
+      break;
+    case PartOne::ClaimVerdict::Held:
+      break;
+  }
 }
 
 void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,

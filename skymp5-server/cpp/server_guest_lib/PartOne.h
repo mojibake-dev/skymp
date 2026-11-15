@@ -957,6 +957,49 @@ public:
   // words of the ends go out here (a claim's ClaimEnded)
   void QuestStopped(uint32_t quest);
   void AliasFilled(uint32_t quest, uint32_t alias, uint32_t refr);
+  // thuum docs/verbs/npc-fate.md (ADR-060): a commanded NPC is simulated by
+  // its commander's game until that engine ends the effect, the thrall's
+  // death on the engine's own timer, with no lease (Eli, 2026-11-12:
+  // "summons and resurrections should obey the timers the level of
+  // spell"). `commander` is the seat whose engine ran the spell (the caster
+  // when a user plays it, else the caster's host). The word is UpdateHoster
+  // to every listening game,
+  // with no SendActorKeyframe ahead of it: the grant runs on a dead record
+  // (the reanimate's hit), which a promote never places (a body is never
+  // moved, D78 C; the client's dead hold), so the keyframe would place
+  // nothing
+  // `recordSeconds` is the record's duration of the spell's Reanimate
+  // effect, read for one line alone (wire-rules cells.rs and
+  // magic::FULL_THRALL_MIN_S; ADR-060 as amended 2026-11-12): a full
+  // thrall's (a day and more, Dead Thrall's) stays alive at its commander's
+  // departure, a timed one dies by the server's word; never a lease
+  ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor,
+                              uint32_t recordSeconds);
+  // thuum docs/verbs/npc-fate.md C4 (ADR-060's return; Eli, 2026-11-12:
+  // "thrall returns to caster obvs"): of `actors`, every one whose record's
+  // Reanimate state names `player` its caster, alive, a full thrall's, in a
+  // cell `player`'s game has loaded and under no live command, is commanded
+  // by `player` again (wire-rules cells.rs returning, the record the dormant
+  // row), whoever hosts its cell; each claim's word follows, a keyframe to
+  // the caster's game when it sees the thrall already and UpdateHoster to
+  // every listening game. The actors claimed
+  std::vector<uint32_t> ReturnThralls(MpActor& player,
+                                      const std::vector<MpActor*>& actors);
+  // the player commanding `actor` (ADR-060), 0 when none: whose report of
+  // the thrall's death is its effect's end
+  uint32_t CommanderOf(const MpActor& actor) const;
+  // any claim on `actor` ends (its death, or a respawn its simulator's
+  // engine did not stand): the claimant it had, 0 for none; the cell's rule
+  // names the simulator again and the word follows, with no keyframe
+  uint32_t ReleaseAnyClaim(MpActor& actor);
+  // thuum docs/verbs/npc-fate.md (ADR-060): `actor` stands again by its
+  // simulator's engine (ActionListener::OnHostedActorState's resurrection
+  // branch, a reanimation's own get-up): the death cleared without a
+  // teleport, any claim on it kept. Every other respawn (the fate's sweep,
+  // the console's Resurrect, the lab's respawn-ref) ends any claim on the
+  // actor in OnDeathState, so a command its engine never stood names no
+  // commander on the living actor
+  void ResurrectByHost(MpActor& actor);
   // thuum docs/engine/non-owning-seat.md section 3: the actor's record (its
   // transform and flags, as a movement message) to the game about to
   // simulate it, reliable and ahead of the hoster word on the same channel,

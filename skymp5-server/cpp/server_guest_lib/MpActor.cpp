@@ -76,8 +76,11 @@ struct MpActor::Impl
   // npc-fate.md finding 48: the last death's time on the server's clock
   std::chrono::steady_clock::time_point diedAt{};
   // npc-fate.md finding 65: the last reanimate hit the server accepted on
-  // this body, the window a placed corpse's stand-up is read within
+  // this body, the window a placed corpse's stand-up is read within; its
+  // spell and caster, whose effects the stand-up applies (the look, ADR-060)
   std::chrono::steady_clock::time_point reanimateAcceptedAt{};
+  uint32_t reanimateSpell = 0;
+  uint32_t reanimateCaster = 0;
   bool deadStamped = false;
   uint32_t deadStampHost = 0;
   uint32_t deadStampLogin = 0;
@@ -2603,6 +2606,26 @@ void MpActor::EnsureTemplateChainEvaluated(espm::Loader& loader,
     mode);
 }
 
+namespace {
+// thuum docs/verbs/npc-fate.md (ADR-060; Eli's standing rule, "whatever
+// happens in single player"): whether a body stands by a reanimation, a
+// thrall's reanimate state on its record (RunningEffect's `reanimate` key,
+// the server's own fact). Its death rolls no death item, as the engine's:
+// Actor::KillImpl (Address Library 37896) reads the life state before it
+// marks the actor dying and skips the death item's add (37198) when that
+// state was kReanimate (4); a Resurrect (37321) or a respawn stands the
+// actor alive with no such state, so its next death rolls again. HYPOTHESIS
+// (a static read: lab/.cache/drafts/reanimate/death-item-second-death.md,
+// sha1 5c4c03e2, its Frida trace unrun)
+bool StandsByReanimation(const MpChangeForm& changeForm)
+{
+  const auto& running = changeForm.runningEffects;
+  return running &&
+    std::any_of(running->begin(), running->end(),
+                [](const RunningEffect& r) { return r.reanimate; });
+}
+}
+
 void MpActor::AddDeathItem()
 {
   auto map = EvaluateDeathItem();
@@ -2836,6 +2859,9 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
     spdlog::trace("MpActor::Kill {:x} - already dead, nothing", GetFormId());
     return;
   }
+  // read before the death changes anything, as the engine's KillImpl reads
+  // the life state before it marks the actor dying (StandsByReanimation)
+  const bool reanimated = StandsByReanimation(ChangeForm());
   if (pImpl->pendingDeath) {
     pImpl->pendingDeath = false;
     if (auto worldState = GetParent()) {
@@ -2860,7 +2886,15 @@ void MpActor::Kill(MpActor* killer, bool shouldTeleport)
                         staminaPercentageBeforeDeath);
   deathEvent.Fire(GetParent());
 
-  AddDeathItem();
+  // a thrall's death rolls no death item: its body keeps what it carried
+  if (reanimated) {
+    spdlog::info("[verb:npc-fate] {:x} dies from its reanimation: no death "
+                 "item rolled, as the engine's kill from kReanimate (ADR-060, "
+                 "HYPOTHESIS)",
+                 GetFormId());
+  } else {
+    AddDeathItem();
+  }
 }
 
 void MpActor::RespawnWithDelay(bool shouldTeleport)
@@ -3147,9 +3181,22 @@ std::optional<std::chrono::milliseconds> MpActor::DiedAgo(
                                                                pImpl->diedAt);
 }
 
-void MpActor::NoteReanimateAccepted(std::chrono::steady_clock::time_point at)
+void MpActor::NoteReanimateAccepted(std::chrono::steady_clock::time_point at,
+                                    uint32_t spell, uint32_t caster)
 {
   pImpl->reanimateAcceptedAt = at;
+  pImpl->reanimateSpell = spell;
+  pImpl->reanimateCaster = caster;
+}
+
+uint32_t MpActor::ReanimateAcceptedSpell() const
+{
+  return pImpl->reanimateSpell;
+}
+
+uint32_t MpActor::ReanimateAcceptedCaster() const
+{
+  return pImpl->reanimateCaster;
 }
 
 std::optional<std::chrono::milliseconds> MpActor::ReanimateAcceptedAgo(
@@ -3674,6 +3721,8 @@ void MpActor::SetIsDead(bool isDead)
 
   if (isDead) {
     if (IsDead() == false) {
+      // as Kill reads it, before the death changes anything
+      const bool reanimated = StandsByReanimation(ChangeForm());
       auto& changeForm = ChangeForm();
       const float healthPercentageBeforeDeath =
         changeForm.actorValues.healthPercentage;
@@ -3690,7 +3739,9 @@ void MpActor::SetIsDead(bool isDead)
                             staminaPercentageBeforeDeath);
       deathEvent.Fire(GetParent());
 
-      AddDeathItem();
+      if (!reanimated) {
+        AddDeathItem();
+      }
 
       spdlog::trace("MpActor::SetIsDead {:x} - actor is now dead",
                     GetFormId());
@@ -4055,6 +4106,12 @@ std::optional<skymp::rules::EffectFacts> EffectFactsOf(
     case espm::MGEF::EffectType::Etherealize:
       facts.kind = skymp::rules::EffectKind::State;
       break;
+    // thuum docs/verbs/npc-fate.md (ADR-060, the reanimate's look): the
+    // thrall's state from its stand-up, which every game shows (its hit
+    // shader for the seconds left) until its death
+    case espm::MGEF::EffectType::Reanimate:
+      facts.kind = skymp::rules::EffectKind::Reanimate;
+      break;
     // thuum docs/verbs/magic-effects.md (playtest 51's vampire drain): an
     // absorb moves its value off its bearer and onto its caster (wire-rules
     // magic::EffectKind::Absorb; CommonLibSSE-NG include/RE/A/AbsorbEffect.h)
@@ -4065,7 +4122,8 @@ std::optional<skymp::rules::EffectFacts> EffectFactsOf(
       return std::nullopt;
   }
   if (mgef.primaryAV == espm::ActorValue::None &&
-      facts.kind != skymp::rules::EffectKind::State) {
+      facts.kind != skymp::rules::EffectKind::State &&
+      facts.kind != skymp::rules::EffectKind::Reanimate) {
     return std::nullopt;
   }
   constexpr uint32_t kNoSecond = std::numeric_limits<uint32_t>::max();
@@ -4085,11 +4143,6 @@ std::optional<skymp::rules::EffectFacts> EffectFactsOf(
   return facts;
 }
 
-bool IsNoForm(const FormDesc& desc)
-{
-  return desc.shortFormId == 0 && desc.file.empty();
-}
-
 // The change form's running effects as the rule's entries; one whose
 // plugin is no longer loaded is dropped
 rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
@@ -4105,11 +4158,13 @@ rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
       skymp::rules::EffectEntry e{};
       e.facts.effect = r.effect.ToFormId(files);
       e.facts.source = r.source.ToFormId(files);
+      // a thrall's reanimate is kept as a state with its key (rule 6)
       e.facts.kind = r.kind == 1 ? skymp::rules::EffectKind::PeakValue
         : r.kind == 2            ? skymp::rules::EffectKind::DualValue
-        : r.kind == 3            ? skymp::rules::EffectKind::State
-        : r.kind == 4            ? skymp::rules::EffectKind::Absorb
-                                 : skymp::rules::EffectKind::Value;
+        : r.kind == 3 ? (r.reanimate ? skymp::rules::EffectKind::Reanimate
+                                     : skymp::rules::EffectKind::State)
+        : r.kind == 4 ? skymp::rules::EffectKind::Absorb
+                      : skymp::rules::EffectKind::Value;
       e.facts.av = static_cast<uint32_t>(r.av);
       e.facts.second_av =
         r.secondAv < 0 ? kNoSecond : static_cast<uint32_t>(r.secondAv);
@@ -4119,7 +4174,9 @@ rust::Vec<skymp::rules::EffectEntry> EffectEntriesOf(
       e.facts.recover = r.recover;
       e.facts.detrimental = r.detrimental;
       e.facts.no_duration = r.noDuration;
-      e.caster = IsNoForm(r.caster) ? 0 : r.caster.ToFormId(files);
+      // a caster kept is a form, 0xff000000's FormDesc {0, ""} too (thuum
+      // docs/verbs/npc-fate.md C4); none is the optional's own
+      e.caster = r.caster.has_value() ? r.caster->ToFormId(files) : 0;
       e.elapsed_s = r.elapsedS;
       entries.push_back(e);
     } catch (std::exception& ex) {
@@ -4156,12 +4213,17 @@ std::optional<std::vector<RunningEffect>> RunningEffectsOf(
     RunningEffect r;
     r.effect = FormDesc::FromFormId(e.facts.effect, files);
     r.source = FormDesc::FromFormId(e.facts.source, files);
-    r.caster = e.caster ? FormDesc::FromFormId(e.caster, files) : FormDesc();
-    r.kind = e.facts.kind == skymp::rules::EffectKind::PeakValue ? 1
-      : e.facts.kind == skymp::rules::EffectKind::DualValue      ? 2
-      : e.facts.kind == skymp::rules::EffectKind::State          ? 3
-      : e.facts.kind == skymp::rules::EffectKind::Absorb         ? 4
-                                                                 : 0;
+    r.caster = e.caster
+      ? std::optional<FormDesc>(FormDesc::FromFormId(e.caster, files))
+      : std::nullopt;
+    // a thrall's reanimate is kept as a state with its key (rule 6: a
+    // server that predates the key reads a plain state)
+    r.reanimate = e.facts.kind == skymp::rules::EffectKind::Reanimate;
+    r.kind = e.facts.kind == skymp::rules::EffectKind::PeakValue       ? 1
+      : e.facts.kind == skymp::rules::EffectKind::DualValue            ? 2
+      : e.facts.kind == skymp::rules::EffectKind::State || r.reanimate ? 3
+      : e.facts.kind == skymp::rules::EffectKind::Absorb               ? 4
+                                                                       : 0;
     r.av = static_cast<int32_t>(e.facts.av);
     r.secondAv = e.facts.second_av == kNoSecond
       ? -1
@@ -4253,7 +4315,17 @@ MagicEffectsMessage MagicEffectsOf(
     effect.effect = e.facts.effect;
     effect.source = e.facts.source;
     effect.magnitude = e.facts.magnitude;
-    effect.remaining = std::max(e.facts.duration_s - e.elapsed_s, 0.f);
+    // a state with no clock, a thrall's reanimate, which ends with its
+    // actor's death alone, is sent as -1, no end: its record's seconds left
+    // would read 0 past them, which a game shows for a moment (thuum
+    // docs/WIRE.md, MagicEffects' remaining; the platform review of
+    // 3a31c05a, F5)
+    effect.remaining = e.facts.kind == skymp::rules::EffectKind::Reanimate
+      ? -1.f
+      : std::max(e.facts.duration_s - e.elapsed_s, 0.f);
+    // who applied it (thuum docs/verbs/npc-fate.md C4): a thrall's caster
+    // tells the game that simulates it whether its engine commands it
+    effect.caster = e.caster;
     msg.effects.push_back(effect);
   }
   for (const auto& effect : shownOnce) {
@@ -4499,6 +4571,53 @@ void MpActor::ReapplyMagicEffects()
   if (asOfMs != 0 && nowMs > asOfMs) {
     AdvanceEffects(static_cast<float>(nowMs - asOfMs) / 1000.f);
   }
+  // thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12): a restart
+  // is every commander's departure, since the cells rule's commands live in
+  // memory alone, and a saved record is applied here once a process, at its
+  // load (WorldState::AddForm at the boot, a game-file form's first attach).
+  // A thrall its record brings back alive is judged as a departure judges
+  // one, by its Reanimate state's record duration: a full thrall's
+  // (FULL_THRALL_MIN_S or longer) stays with its look; a timed one dies by
+  // the server's word, as ThrallExpired's does, at the world's next tick,
+  // once the load is done
+  if (!IsDead()) {
+    for (const auto& e :
+         EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
+      if (e.facts.kind != skymp::rules::EffectKind::Reanimate) {
+        continue;
+      }
+      const uint32_t formId = GetFormId();
+      const float recordSeconds = e.facts.duration_s;
+      if (recordSeconds >= skymp::rules::full_thrall_min_s()) {
+        // C4 (thuum docs/verbs/npc-fate.md, rule 6's option A): the record
+        // keeps its caster, so the caster's return commands it again
+        // (PartOne::ReturnThralls) after a restart as without one
+        spdlog::info(
+          "[verb:npc-fate] {:x}'s commander left at the server's "
+          "restart and its effect is a full thrall's (the "
+          "record's {:.0f} s): it stays, its look kept{} (ADR-060)",
+          formId, recordSeconds,
+          e.caster != 0
+            ? fmt::format(", until its caster {:x} returns", e.caster)
+            : std::string());
+      } else {
+        worldState->SetTimer(std::chrono::milliseconds(0))
+          .Then([worldState, formId, recordSeconds](Viet::Void) {
+            auto& form = worldState->LookupFormByIdNoLoad(formId);
+            MpActor* actor = form ? form->AsActor() : nullptr;
+            if (actor && !actor->IsDead()) {
+              spdlog::info("[verb:npc-fate] {:x}'s commander left at the "
+                           "server's restart and its effect is a timed "
+                           "thrall's (the record's {:.0f} s): the server's "
+                           "word ends it (ADR-060)",
+                           formId, recordSeconds);
+              actor->Kill(nullptr);
+            }
+          });
+      }
+      break;
+    }
+  }
   if (HasRunningEffects()) {
     worldState->TrackEffects(GetFormId());
   }
@@ -4520,6 +4639,23 @@ std::vector<MpActor::RunningEffectView> MpActor::GetRunningEffects() const
     res.push_back(view);
   }
   return res;
+}
+
+MpActor::ReanimateCasterView MpActor::GetReanimateCaster() const
+{
+  ReanimateCasterView view;
+  WorldState* worldState = GetParent();
+  if (!worldState || !HasRunningEffects()) {
+    return view;
+  }
+  for (const auto& e : EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
+    if (e.facts.kind == skymp::rules::EffectKind::Reanimate && e.caster != 0) {
+      view.caster = e.caster;
+      view.recordSeconds = e.facts.duration_s;
+      break;
+    }
+  }
+  return view;
 }
 
 std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,
@@ -4748,6 +4884,7 @@ void MpActor::ApplyEffects(uint32_t source,
       once.effect = facts->effect;
       once.source = source;
       once.magnitude = facts->magnitude * resisted;
+      once.caster = caster;
       shownOnce.push_back(once);
     }
   }
@@ -4778,9 +4915,14 @@ void MpActor::AdvanceEffects(float dtSeconds)
     return;
   }
   if (IsDead()) {
-    // a death ends the effects; the respawn restores the attributes
+    // a death ends the effects; the respawn restores the attributes. Every
+    // game drops them with the emptied set, so a shader played for seconds
+    // left stops at the death (thuum docs/verbs/npc-fate.md, the
+    // reanimate's look: a full thrall's runs for its record's 999 days)
     EditChangeForm(
       [&](MpChangeForm& changeForm) { changeForm.runningEffects.reset(); });
+    const rust::Vec<skymp::rules::EffectEntry> none;
+    SendMessageToActorListeners(MagicEffectsOf(GetIdx(), none, {}), true);
     return;
   }
   const auto& files = worldState->espmFiles;

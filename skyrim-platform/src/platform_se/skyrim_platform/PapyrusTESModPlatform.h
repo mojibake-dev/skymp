@@ -155,6 +155,19 @@ void SetPotionEffectsBlocked(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 bool ArePotionEffectsBlocked();
 bool ModPlayerActorValue(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                          int32_t av, float delta);
+// The hit art beside the hit shader (thuum docs/verbs/magic-effects.md; the
+// reanimation look's D2 B, thuum lab/.cache/drafts/reanimate-fx.md 4): an
+// effect's hit effect art played on refr as the engine plays one
+// (TESObjectREFR::ApplyArtObject, its answer never read), for duration
+// seconds, -1 until stopped, a second play of the art on refr replacing this
+// native's first, false when refr has no 3D; and an art this native played on
+// refr stopped, every live copy of it on refr with it, an engine-drawn one
+// included, false when nothing was stopped
+bool ApplyArtObject(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                    RE::TESObjectREFR* refr, RE::BGSArtObject* art,
+                    float duration);
+bool StopArtObject(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+                   RE::TESObjectREFR* refr, RE::BGSArtObject* art);
 
 // The server's stagger in this game (thuum docs/verbs/stagger.md): the
 // engine's own start of a stagger on `target` at `magnitude` from `source`,

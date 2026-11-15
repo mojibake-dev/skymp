@@ -2257,7 +2257,9 @@ TEST_CASE("A host's lead on a quest's alias actor is its claim, outlives a "
   REQUIRE(LastHostedWord(p, 1, *actor).empty());
 
   // c1 unloads the trader and the grace passes it to c2 (R-C2's grant): the
-  // lead outlives it, c1 still simulates her and both seats are told so
+  // lead outlives it, c1 still simulates her and both seats are told so (the
+  // server's half: c1's own why-2 release, D-53-5 B, would end it, and this
+  // case sends none)
   const auto now = NowMs();
   CellLoaded(p, 0, kTrader, false);
   p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);

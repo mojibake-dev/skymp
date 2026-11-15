@@ -115,7 +115,11 @@ export class OwnLookService extends ClientListener {
         };
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
         logLab("verb:appearance", `own head parts reported: ${read.parts.length} from its ${read.overlay ? "overlay" : "base"} list under race ${read.race.toString(16)} (D-53-8 B)`);
-        logTrace(this, `own head parts ${read.parts.map((p) => p.toString(16)).join(" ")}; HasOverlays ${read.hasOverlays}, ${read.overlayCount} overlay part(s), the race ${read.flagged ? "flagged" : "unflagged"}, ${now - w.since} ms after the SetRace`);
+        // the one read that departs from CommonLib's (the platform's
+        // pollOwnHeadParts): HasOverlays true over an empty overlay list,
+        // where CommonLib's reading names no part and the base list is taken
+        const departs = read.hasOverlays && read.overlayCount === 0 ? "; HasOverlays true over an empty overlay list, so the base list taken where CommonLib's reading names no part" : "";
+        logTrace(this, `own head parts ${read.parts.map((p) => p.toString(16)).join(" ")}; HasOverlays ${read.hasOverlays}, ${read.overlayCount} overlay part(s), the race ${read.flagged ? "flagged" : "unflagged"}, ${now - w.since} ms after the SetRace${departs}`);
     }
 
     private enabled(): boolean {

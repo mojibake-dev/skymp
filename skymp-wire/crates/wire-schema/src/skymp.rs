@@ -3048,8 +3048,11 @@ wire_struct! {
     /// include/RE/T/TESNPC.h:242-255 and :285-286): its overlay list
     /// (GetBaseOverlays, GetNumBaseOverlays) while the engine answers
     /// HasOverlays and the list holds parts, else its base list (headParts,
-    /// numHeadParts), CommonLib's own reading of a type's current part
-    /// (src/RE/T/TESNPC.cpp:94-97). Train 53 read the gap it closes: after
+    /// numHeadParts): CommonLib's reading of a type's current part
+    /// (src/RE/T/TESNPC.cpp:94-97) while the overlay list holds parts, but
+    /// where HasOverlays answers true over an empty overlay list CommonLib's
+    /// reading names no part (:111-123) and this read takes the base list.
+    /// Train 53 read the gap it closes: after
     /// Ariadne's turn her own game drew FemaleEyesKhajiitVampire 0xee87f from
     /// her overlay list while every other game's figure of her kept her
     /// stored look's eyes 0xee878. Client to server, reliable, R2 (the owner

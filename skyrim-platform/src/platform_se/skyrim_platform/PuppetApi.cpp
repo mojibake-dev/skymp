@@ -2350,14 +2350,19 @@ Napi::Value PuppetApi::NodeRotation(const Napi::CallbackInfo& info)
 namespace {
 // thuum D-53-8 B (train 53's V-live; lab/.cache/drafts/reads-53/
 // stage53-reads.md, train53-greens): the head parts the player's own base
-// draws, read on the game thread as the node rotations are. The list is
-// CommonLibSSE-NG's reading of a type's current part, taken over the whole
-// list (TESNPC::GetCurrentHeadPartByType, src/RE/T/TESNPC.cpp:94-97: the
-// overlay list while HasOverlays answers true, else the base list): the
+// draws, read on the game thread as the node rotations are. The list
+// follows CommonLibSSE-NG's reading of a type's current part, taken over the
+// whole list (TESNPC::GetCurrentHeadPartByType, src/RE/T/TESNPC.cpp:94-97:
+// the overlay list while HasOverlays answers true, else the base list): the
 // overlay list (TESNPC::GetBaseOverlays and GetNumBaseOverlays,
 // include/RE/T/TESNPC.h:242 and :247) while TESNPC::HasOverlays (:255)
 // answers true and the list holds parts, else the base list
-// (TESNPC::headParts and numHeadParts, :285-286). HasOverlays is called
+// (TESNPC::headParts and numHeadParts, :285-286). One case departs from
+// CommonLib's reading: HasOverlays true over an empty overlay list, where
+// GetHeadPartOverlayByType (:111-123) names no part of any type and this
+// read takes the base list; its answer says so (hasOverlays true,
+// overlayCount 0, overlay false), and what the engine draws then is unread
+// (HYPOTHESIS). HasOverlays is called
 // through this platform's own replacement of it (FridaHooks.cpp,
 // InstallHasOverlaysHook), so the answer is the one the engine's head build
 // gets: the engine's own on the player's base while its race carries a head

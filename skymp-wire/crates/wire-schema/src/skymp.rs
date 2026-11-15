@@ -3025,6 +3025,49 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 82, thuum's (D-53-8 B, train 53's V-live; thuum
+    /// lab/.cache/drafts/reads-53/stage53-reads.md, train53-greens): the head
+    /// parts a player's own game draws on its own player after that player's
+    /// race changed, read from the player's base (CommonLibSSE-NG TESNPC,
+    /// include/RE/T/TESNPC.h:242-255 and :285-286): its overlay list
+    /// (GetBaseOverlays, GetNumBaseOverlays) while the engine answers
+    /// HasOverlays and the list holds parts, else its base list (headParts,
+    /// numHeadParts), CommonLib's own reading of a type's current part
+    /// (src/RE/T/TESNPC.cpp:94-97). Train 53 read the gap it closes: after
+    /// Ariadne's turn her own game drew FemaleEyesKhajiitVampire 0xee87f from
+    /// her overlay list while every other game's figure of her kept her
+    /// stored look's eyes 0xee878. Client to server, reliable, R2 (the owner
+    /// computes, the server records): the message names no actor, so it is
+    /// only ever the sender's own player's; the server takes it when the race
+    /// is the one it records for that player (a race overlay's, D-T1 A, or a
+    /// stale report's, is refused by name), every part is an HDPT, and the
+    /// look does not wear exactly these parts already, then records them as
+    /// the look's head parts with the stored RaceMenu look's part of each
+    /// type the report names once rewritten to them, and sends both to every
+    /// other game that sees the player, the stored look first, as a recorded
+    /// ChangeHeadPart is. Safe to receive twice: a report the look wears
+    /// already is folded. Reason codes: `E_VAL_RANGE` (a race or a part of 0
+    /// or 0xff000000 and up, no part, a part named twice; from the server
+    /// any), `E_VAL_RATE`; the server logs `E_HEADPARTS_NO_LOOK`,
+    /// `E_HEADPARTS_RACE`, `E_HEADPARTS_COUNT` and `E_HEADPARTS_KIND` by
+    /// name.
+    pub struct OwnHeadParts {
+        /// `"t": 82`.
+        #[serde(default)]
+        pub t: MsgT<82>,
+        /// The race the parts are drawn under, the player's own as its game
+        /// has it; a load-order form, never 0.
+        pub race: u32,
+        /// The parts in the engine's order, each once; 1 to 64 (the
+        /// appearance's own cap, `cap::HEADPARTS`).
+        pub parts: Vec<u32, { cap::HEADPARTS }>,
+        /// The parts are the base's overlay list (else its base list), for
+        /// the server's line; never judged.
+        pub overlay: bool,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

@@ -459,8 +459,30 @@ public:
     // its drop left the stored look as it was, nullptr when it did not
     size_t unanswered = 0;
     const char* presetLeft = nullptr;
+    // RecordOwnHeadParts's (thuum D-53-8 B): the reported parts the stored
+    // look now names in place of its entry of their HDPT type
+    size_t rewritten = 0;
   };
   HeadPartRecord RecordHeadPart(MpActor& actor, uint32_t part);
+  // thuum D-53-8 B (train 53's V-live; lab/.cache/drafts/reads-53/
+  // stage53-reads.md, train53-greens): a player's own game's report of the
+  // head parts it draws on its own player (OwnHeadParts 82, R2), judged by
+  // the caller (its race the recorded one, every part an HDPT). `actor`'s
+  // look wears exactly `parts`, in the engine's order, when it does not wear
+  // that set already; and the stored RaceMenu look names each reported part
+  // whose HDPT type the report names once in place of its entry of that type
+  // (WearHeadPartInLook, a recorded ChangeHeadPart's write), since that
+  // look's load on a figure, and on the player after a login, replaces the
+  // base's parts by type and would put the old part back (thuum
+  // docs/verbs/racemenu-sync.md; train 53: Ariadne's own game drew
+  // FemaleEyesKhajiitVampire 0xEE87F from her overlay list while every
+  // figure of her loaded her stored look's 0xEE878). A type the report names
+  // more than once (two Misc parts, a mouth and a hairline) is no slot to
+  // rewrite by, so the stored look's entries of it stay; a stored look entry
+  // of a type the report lacks stays too. What each record took; the words
+  // to the other games are the caller's
+  HeadPartRecord RecordOwnHeadParts(MpActor& actor,
+                                    const std::vector<uint32_t>& parts);
   // thuum train 53's V-look (lab/.cache/drafts/reads-53/r-v3-v4-v5-look.md,
   // R-V3): a recorded SetRace's look for its new race, `actor`'s appearance
   // already wearing `race`. Every head part whose race list

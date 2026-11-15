@@ -139,5 +139,8 @@ enum class MsgType : uint8_t
   ScriptVariables = 81, // thuum ADR-068 rung 5: the condition-read script
                         // variables any seat reports, the latest write
                         // recorded per key, a player's own keys its own
+  OwnHeadParts = 82,    // thuum D-53-8 B: the head parts a player's own game
+                        // draws on its own player after its race changed,
+                        // recorded as its look (R2)
   Max
 };

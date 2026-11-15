@@ -3314,6 +3314,85 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
   }
 }
 
+void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
+                                    const OwnHeadPartsMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnOwnHeadParts - no actor for user {}",
+                        rawMsgData.userId);
+  }
+  // the head of every line: whose, under which race, from which list
+  const std::string head =
+    fmt::format("{:x}'s own head parts under race {:x} ({} from its {} list)",
+                actor->GetFormId(), msg.race, msg.parts.size(),
+                msg.overlay ? "overlay" : "base");
+  const auto refused = [&](const char* code, const std::string& why) {
+    spdlog::warn("[verb:appearance] {}: {}: {}; nothing written (D-53-8 B)",
+                 code, head, why);
+  };
+  // rule 5's bounds before anything is read: the reporter's own player
+  // alone (the message names no actor), a recorded look to write, the race
+  // that look records (a race overlay's, D-T1 A, never reaches the change
+  // form, and a report under a race the server refused or has not recorded
+  // yet is stale), the wire's count, and every part an HDPT
+  const auto look = actor->GetAppearance();
+  if (!look) {
+    return refused("E_HEADPARTS_NO_LOOK", "no recorded look to wear them");
+  }
+  if (msg.race != look->raceId) {
+    return refused("E_HEADPARTS_RACE",
+                   fmt::format("its look records race {:x}, so the report "
+                               "is stale or its race overlay's",
+                               look->raceId));
+  }
+  constexpr size_t kMaxParts = 64; // wire-schema cap::HEADPARTS
+  if (msg.parts.empty() || msg.parts.size() > kMaxParts) {
+    return refused("E_HEADPARTS_COUNT",
+                   fmt::format("1 to {} parts are a face", kMaxParts));
+  }
+  if (!partOne.HasEspm()) {
+    return refused("E_HEADPARTS_KIND",
+                   "the server holds no game files to read the parts from");
+  }
+  for (uint32_t part : msg.parts) {
+    const auto rec = partOne.GetEspm().GetBrowser().LookupById(part).rec;
+    if (!rec || rec->GetType() != espm::HDPT::kType) {
+      return refused("E_HEADPARTS_KIND",
+                     fmt::format("{:x} is no HDPT record", part));
+    }
+  }
+
+  // R2, the seat's word: the look wears exactly the reported parts and the
+  // stored look names each one of a type the report names once; the stored
+  // look goes first to every game that sees the player, then the look, the
+  // head part row's shape (each figure is built again at the appearance and
+  // loads the stored look its game holds then)
+  const auto recorded = partOne.RecordOwnHeadParts(*actor, msg.parts);
+  if (!recorded.look && !recorded.preset) {
+    return spdlog::info("[verb:appearance] {}: folded, its look wears them "
+                        "already (D-53-8 B)",
+                        head);
+  }
+  std::string what = "recorded on its look as its seat reported them "
+                     "(D-53-8 B, R2)";
+  if (recorded.preset) {
+    what += fmt::format(", its RaceMenu look's part(s) of {} type(s) "
+                        "rewritten to them and sent to {} game(s)",
+                        recorded.rewritten,
+                        SendRaceMenuPresetToOthers(partOne, *actor));
+  }
+  if (recorded.look) {
+    if (const auto now = actor->GetAppearance()) {
+      SendAppearanceToOthers(partOne, *actor, *now);
+      what += fmt::format(", its look's {} head part(s) sent to every game "
+                          "that sees it",
+                          now->headpartIds.size());
+    }
+  }
+  spdlog::info("[verb:appearance] {}: {}", head, what);
+}
+
 void ActionListener::SendRaceMenuPreset(MpActor& actor)
 {
   auto preset = actor.GetRaceMenuPreset();

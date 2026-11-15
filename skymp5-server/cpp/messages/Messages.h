@@ -42,6 +42,7 @@
 #include "ObjectAnimationMessage.h"
 #include "OnEquipMessage.h"
 #include "OpenContainerMessage.h"
+#include "OwnHeadPartsMessage.h"
 #include "PerkPickMessage.h"
 #include "PerkStateMessage.h"
 #include "PlacedReportMessage.h"
@@ -162,4 +163,5 @@
   REGISTER_MESSAGE(ScriptStateApplyMessage)                                   \
   REGISTER_MESSAGE(AliasFillMessage)                                          \
   REGISTER_MESSAGE(WorldGlobalMessage)                                        \
-  REGISTER_MESSAGE(ScriptVariablesMessage)
+  REGISTER_MESSAGE(ScriptVariablesMessage)                                    \
+  REGISTER_MESSAGE(OwnHeadPartsMessage)

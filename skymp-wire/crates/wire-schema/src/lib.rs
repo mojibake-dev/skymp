@@ -179,7 +179,12 @@ use bounded::{String, Vec};
 /// reason, 42's precedent). In D-53-3's merge order C4 (m4-reanimate-return,
 /// 45 on its branch, a number physics rung 1 also shipped) takes the number
 /// its merge comes to.
-pub const SCHEMA_VERSION: u16 = 48;
+/// 49: OwnHeadParts (MsgType 82, wire id 90; thuum D-53-8 B, train 53's
+/// V-live, m4-fix-vlive-look): the head parts a player's own game draws on its
+/// own player after its race changed (its base's overlay list where the
+/// engine answers HasOverlays, else its base list), recorded as the player's
+/// look and sent to every other game that sees the player, R2.
+pub const SCHEMA_VERSION: u16 = 49;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -726,6 +731,8 @@ pub enum Message {
     WorldGlobal(skymp::WorldGlobal),
     /// 89, MsgType 81 (thuum ADR-068 rung 5). See [`skymp::ScriptVariables`].
     ScriptVariables(skymp::ScriptVariables),
+    /// 90, MsgType 82 (thuum D-53-8 B). See [`skymp::OwnHeadParts`].
+    OwnHeadParts(skymp::OwnHeadParts),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -754,7 +761,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 90] = [
+const TABLE: [Row; 91] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -876,14 +883,17 @@ const TABLE: [Row; 90] = [
     // bytes at the longest, pinned by the size test), under the 256 KiB the
     // transport takes from a client
     row("ScriptVariables", 81, 144 * KIB, Both),
+    // a race and 64 parts at five-byte varints, the count and the flag
+    // (thuum D-53-8 B; 328 bytes at the longest, pinned by the size test)
+    row("OwnHeadParts", 82, 512, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 90;
-const _: () = assert!(TABLE.len() == 90, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 91;
+const _: () = assert!(TABLE.len() == 91, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -998,6 +1008,7 @@ impl Message {
             Message::AliasFill(_) => 87,
             Message::WorldGlobal(_) => 88,
             Message::ScriptVariables(_) => 89,
+            Message::OwnHeadParts(_) => 90,
         }
     }
 
@@ -1047,6 +1058,7 @@ mod tests {
         assert_eq!(Message::AliasFill(skymp::AliasFill::default()).name(), "AliasFill");
         assert_eq!(Message::WorldGlobal(skymp::WorldGlobal::default()).name(), "WorldGlobal");
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).name(), "ScriptVariables");
+        assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).name(), "OwnHeadParts");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -1119,7 +1131,12 @@ mod tests {
         assert_eq!(name_of_msg_type(80), Some("WorldGlobal"));
         // ADR-068 rung 5's one, after 80: wire id 89
         assert_eq!(name_of_msg_type(81), Some("ScriptVariables"));
-        assert_eq!(name_of_msg_type(82), None);
+        // D-53-8 B's one, after 81: wire id 90
+        assert_eq!(name_of_msg_type(82), Some("OwnHeadParts"));
+        assert_eq!(name_of_msg_type(83), None);
+        assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).wire_id(), 90);
+        assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).msg_type(), Some(82));
+        assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).direction(), Direction::ClientToServer);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).wire_id(), 89);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).msg_type(), Some(81));
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).direction(), Direction::Both);
@@ -1542,6 +1559,8 @@ mod tests {
             // the condition-read variables at their caps and a stage word at
             // its longest (thuum ADR-068 rung 5)
             Message::ScriptVariables(script_variables_at_their_caps()),
+            // the fullest own head parts report (thuum D-53-8 B)
+            Message::OwnHeadParts(own_head_parts_at_their_caps()),
             Message::QuestStage(skymp::QuestStage { quest: u32::MAX, stage: u16::MAX, word: Some(u8::MAX), acting: Some(u32::MAX), served: Some(true), word_stages: Some(core::iter::repeat_n(u16::MAX, cap::WORD_STAGES).collect::<alloc::vec::Vec<u16>>().try_into().unwrap_or_default()), cause: Some(u8::MAX), root: Some("QF_dunEmbershardQST_000B6FEF.Fragment_16".try_into().unwrap_or_default()), ..Default::default() }),
             // and its relay, the sequence carried (thuum ADR-068)
             Message::SpSnippet(skymp::SpSnippet {
@@ -1655,6 +1674,37 @@ mod tests {
             assert_eq!(bytes.first().copied().map(u32::from), Some(m.wire_id()), "{}", m.name());
             assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0), "{}", m.name());
         }
+    }
+
+    /// An own head parts report at its caps (thuum D-53-8 B): the widest race
+    /// and 64 parts at their widest varints, the overlay flag set.
+    fn own_head_parts_at_their_caps() -> skymp::OwnHeadParts {
+        skymp::OwnHeadParts {
+            race: u32::MAX,
+            parts: core::iter::repeat_n(u32::MAX, cap::HEADPARTS).collect::<alloc::vec::Vec<u32>>().try_into().unwrap_or_default(),
+            overlay: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn own_head_parts_at_their_caps_fit_their_byte_cap() {
+        // thuum D-53-8 B (SCHEMA_VERSION 49): the wire id, a five-byte race,
+        // the count's one byte, 64 five-byte parts and the flag; Ariadne's
+        // seven-part overlay list of train 53, every id a three-byte varint,
+        // costs 27
+        let full = Message::OwnHeadParts(own_head_parts_at_their_caps());
+        assert_eq!(postcard::to_allocvec(&full).map(|b| b.len()), Ok(328));
+        assert_eq!(Message::max_len(full.wire_id()), Some(512));
+        let ariadne = Message::OwnHeadParts(skymp::OwnHeadParts {
+            race: 0x88845,
+            parts: alloc::vec![0x51612, 0x511a8, 0xee87f, 0xd82f6, 0x85de9, 0x85ddf, 0xf3916].try_into().unwrap_or_default(),
+            overlay: true,
+            ..Default::default()
+        });
+        assert_eq!(postcard::to_allocvec(&ariadne).map(|b| b.len()), Ok(27));
+        let over: Result<bounded::Vec<u32, { cap::HEADPARTS }>, _> = core::iter::repeat_n(1u32, cap::HEADPARTS + 1).collect::<alloc::vec::Vec<u32>>().try_into();
+        assert!(over.is_err());
     }
 
     #[test]

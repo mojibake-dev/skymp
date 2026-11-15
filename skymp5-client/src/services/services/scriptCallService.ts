@@ -618,8 +618,20 @@ export class ScriptCallService extends ClientListener {
             return arg;
         }
         const form = this.sp.Game.getFormEx(arg.formId);
-        const type = form && this.sp.Actor.from(form) ? "Actor" : form && this.sp.ObjectReference.from(form) ? "ObjectReference"
-            : form && this.sp.Faction.from(form) ? "Faction" : "Form";
+        // thuum #54 (x-raise-wall-v6 20261115-134951): a form with no Papyrus
+        // type (a moving static, Raise Wall's MSTT 0x98529) makes a class's
+        // from() throw "Expected 'objectTypeInfo' to not to be nullptr", which
+        // took the whole call down unsent: each cast is asked in turn, and a
+        // form none of them takes is a Form
+        const casts = (cls: { from(f: unknown): unknown }): boolean => {
+            try {
+                return !!form && !!cls.from(form);
+            } catch (e) {
+                return false;
+            }
+        };
+        const type = casts(this.sp.Actor) ? "Actor" : casts(this.sp.ObjectReference) ? "ObjectReference"
+            : casts(this.sp.Faction) ? "Faction" : "Form";
         const formId = localIdToRemoteId(arg.formId, newCast);
         if (formId === 0 && arg.formId !== 0) {
             return undefined;

@@ -4,6 +4,7 @@ import { Inventory } from "../../sync/inventory";
 import { Transform } from "../../sync/movement";
 import { Animation } from "../../sync/animation";
 import { RaceOverlay } from "./raceOverlay";
+import { ServedLookProp } from "./servedLookProp";
 import { MsgType } from "src/messages";
 
 export interface SetNodeTextureSetEntry {
@@ -98,5 +99,5 @@ export interface CreateActorMessageAdditionalProps {
     // to the actor's simulator. keep 1 a shader's Play, 3 a visual effect's,
     // 5 an eye texture; seconds left, -1 until its Stop (and the eyes);
     // facing as this engine numbers it
-    looks?: { keep: number; form: number; seconds: number; facing: number; seq: number }[];
+    looks?: ServedLookProp[];
 }

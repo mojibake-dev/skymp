@@ -374,8 +374,8 @@ impl Rule {
             Rule::Render => "a render by its name's words: a stopgap (decision 5 (c)), replaced by x-native-effects; deletes when every K4 row's evidence is a trace",
             Rule::OwnGame => "a static on no object: keyed on the subject, no list (the spec's New 1)",
             Rule::Creates => "a reference's creation by its result, a scene's start by its name: a stopgap (decision 5 (c)), replaced by x-native-effects; deletes when every K6 row's evidence is a trace",
-            Rule::Nobodys => "nobody's by its class (D-F1 C's quest, alias and global, and the forms no seat owns): a stopgap (decision 5 (c)), replaced by x-native-effects; deletes when every K7 row's evidence is a trace",
-            Rule::Owned => "an owned object's: the default, keyed on the subject, no list",
+            Rule::Nobodys => "nobody's by its class (D-F1 C's quest, alias and global, and the forms no seat owns), and by the subject rule's class exclusion: a method's reference first argument is its subject except on a scene, an active magic effect or Form itself, whose subject is their self (so Form's own methods land here, and a scene's and an effect's in K8): a stopgap (decision 5 (c)), replaced by x-native-effects; deletes when every K7 row's evidence is a trace",
+            Rule::Owned => "an owned object's: the default, keyed on the subject, no list but the subject rule's class exclusion (a scene's and an active magic effect's methods here with their self as subject: K7's line, its stopgap and deleting condition)",
         }
     }
 
@@ -449,9 +449,9 @@ const READ_WORDS: [&str; 8] = [
     "worn",
     "calculate",
 ];
-/// The call's leading arguments, by index, for a twin's relay: a native
-/// takes at most eleven.
-const LEADING: [u8; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+/// The call's leading arguments, by index, for a twin's relay: at most
+/// [`natives::MAX_RELAYED_ARGS`], a row with more never relayed.
+const LEADING: [u8; natives::MAX_RELAYED_ARGS] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 /// A name's words: its camel-case runs (SetSubGraphFloatVariable is Set,
 /// Sub, Graph, Float, Variable), lower-cased.
@@ -589,11 +589,15 @@ pub fn derive(dump: &Dump, native: &Native) -> Derived {
     };
     // parse_dump admits no other raw type, so every argument has its Param
     let params: Vec<Param> = native.args.iter().filter_map(|a| param_of(&a.ty)).collect();
+    // a row with more parameters than a relay carries is never relayed
+    // (natives::MAX_RELAYED_ARGS: a relay of none of its arguments would
+    // otherwise go out)
     let relayed = matches!(
         kind,
         Kind::Action | Kind::State
     ) && subject != Subject::Nothing
-        && !params.iter().any(|p| p.is_array());
+        && !params.iter().any(|p| p.is_array())
+        && params.len() <= natives::MAX_RELAYED_ARGS;
     let relay = if !relayed {
         Relay::Never
     } else if !native.latent {
@@ -1865,6 +1869,49 @@ mod tests {
             )]),
             [Refusal::NoTwin("ObjectReference.MoveTo")]
         );
+    }
+
+    #[test]
+    fn two_natives_one_name_without_case_are_refused() {
+        // the index cannot tell them apart (Papyrus names compare without
+        // case); the real dump holds no such pair
+        let d = parse_dump(
+            r#"{"types": {"Foo": {"parent": "Form", "globalFunctions": [
+                {"name": "Bar", "isLatent": false, "arguments": [], "returnType": {"rawType": "None"}},
+                {"name": "bar", "isLatent": false, "arguments": [], "returnType": {"rawType": "None"}}
+            ], "memberFunctions": []}}}"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(generate(&d, &[]).err(), Some(vec![Refusal::Collides("bar")]));
+        assert!(generate(&dump(), &[]).is_ok());
+    }
+
+    #[test]
+    fn a_row_past_a_relays_arguments_is_never_relayed() {
+        // TESModPlatform.AddItemEx takes twelve: relayed as itself it would
+        // carry none of them (relay_args' EVERY_ARG holds eleven)
+        let g = generated();
+        let r = g
+            .rows
+            .iter()
+            .find(|r| r.native.cls == "TESModPlatform" && r.native.name == "AddItemEx")
+            .unwrap_or_else(|| panic!("AddItemEx"));
+        assert_eq!((r.cells.subject, r.cells.params.len()), (Subject::Arg0, 12));
+        assert_eq!(r.cells.relay, Relay::Never);
+        for row in &g.rows {
+            if row.cells.relay != Relay::Never {
+                assert!(row.cells.params.len() <= natives::MAX_RELAYED_ARGS, "{}.{}", row.cls, row.func);
+            }
+        }
+        for row in natives::TABLE {
+            if row.relay != Relay::Never {
+                assert_eq!(row.relay_args().len(), match row.relay {
+                    Relay::Same => row.params.len(),
+                    Relay::Twin { args, .. } => args.len(),
+                    Relay::Never => 0,
+                }, "{}.{}", row.cls, row.func);
+            }
+        }
     }
 
     #[test]

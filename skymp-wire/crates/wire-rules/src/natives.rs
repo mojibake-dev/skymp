@@ -11,7 +11,7 @@
 //! scripts (owner), who hears it (audience), what a receiver runs for it
 //! (relay), what the server keeps of it (keep) and its parameters' types.
 //! Since step 4's S5 every native of FunctionsDump.txt has a row: the
-//! fifty-two live rows the seam judges, then every derived row staged
+//! fifty-three live rows the seam judges, then every derived row staged
 //! ([`Row::staged`]), which the seam counts by what it would do and runs as
 //! before and the shape step refuses by its row (`E_SCRIPTCALL_ROW`) until
 //! its batch unstages; a row is found through the generated index
@@ -468,7 +468,7 @@ impl Hook {
             Hook::TrapImpulse => "ObjectReference.ApplyHavokImpulse on a trap family body is batched for PropService's claim and, on a body another seat streams, run with magnitude 0 (ADR-068 D-S3 point 4): a stopgap (decision 5 (c)), replaced by ADR-071's one prop stream; deletes with the trap-motion hook",
             Hook::AliasFill => "ReferenceAlias.ForceRefTo and Clear are batched on every seat as AliasFill 79 (ADR-068 rung 4, amendment B; D-F1 C): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the quest's change form carries its alias fills, HYPOTHESIS until read); deletes when ChangeForm 72 carries a quest's aliases",
             Hook::ActingReturn => "Game.GetPlayer's result is the acting player's figure inside another player's acting scope (ADR-068 rung 5's return swap): a stopgap (decision 5 (c)), replaced by D2's singleton sink evidence (the spec's New 1 and G8: a read whose result is the player singleton, by its sink); deletes when x-native-effects reads GetPlayer's result as the singleton and the rule keys on it",
-            Hook::QuestStage => "Quest.SetCurrentStageID carries the acting scope to the stage it sets (rung 5's read 7) and marks its cause (D-Q4 C): a stopgap (decision 5 (c)), replaced by the stage's own engine event (the quest stage sink) reading the setting stack's scope and cause, decision 11's cause key; deletes when step 1's quest record and the forward take the cause from the sink alone",
+            Hook::QuestStage => "Quest.SetCurrentStageID carries the acting scope to the stage it sets (rung 5's read 7) and marks its cause (D-Q4 C): a stopgap (decision 5 (c)), replaced by decision 2 (c)'s quest record (the server's record of the quest's stages and run words, D-F1 C) carrying the stage's cause as decision 11's cause key; deletes when step 1's quest record and the forward take the cause from the record alone",
             Hook::QuestStart => "Quest.Start carries the acting scope to the start and marks its cause: as the quest-stage hook, a stopgap (decision 5 (c)) with the same replacing rule and deleting condition",
             Hook::QuestStop => "Quest.Stop carries the acting scope to the stop and marks its cause: as the quest-stage hook, a stopgap (decision 5 (c)) with the same replacing rule and deleting condition",
             Hook::PlayerGlobal => "GlobalVariable.SetValue is skipped on a player's own global (playerGlobals) inside another player's acting scope (PQ-3): a stopgap (decision 5 (c)), replaced by the spec's New 1 acting-seat rule keyed on a global ADR-073 makes derived (playerGlobals from every reader); deletes when playerGlobals is derived and the scoped column carries it",
@@ -560,7 +560,7 @@ pub struct Row {
     /// A derived row (thuum ADR-073 step 4's S5): the seam counts its call
     /// by what it would do and runs it as before, and the server refuses it
     /// by its row (`E_SCRIPTCALL_ROW`) until its batch unstages (S8). The
-    /// live rows (the fifty-two) are never staged.
+    /// live rows (the fifty-three) are never staged.
     pub staged: bool,
 }
 
@@ -596,9 +596,16 @@ pub fn index_slot(hash: u64) -> usize {
 /// graph's own state; deletes with lastAnimation at rung 7.
 const GRAPH_EVENT_RELAYS: [(&str, &str); 2] = [("ObjectReference", "PlayAnimation"), ("Debug", "SendAnimationEvent")];
 
-/// Argument indices for a relay of every argument: a native takes at most
-/// eleven.
-const EVERY_ARG: [u8; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+/// The most arguments a relay carries: a game native takes at most eleven
+/// (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15, "native supports max
+/// 11"), and a row with more (the platform's own TESModPlatform.Add and
+/// AddItemEx, twelve) is never relayed: natives_rules' derive gives it
+/// `Relay::Never` (thuum ADR-073 step 4's review, NIT 2).
+pub const MAX_RELAYED_ARGS: usize = 11;
+
+/// Argument indices for a relay of every argument, at most
+/// [`MAX_RELAYED_ARGS`].
+const EVERY_ARG: [u8; MAX_RELAYED_ARGS] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 /// Where the players' figures and the server's own forms begin: a client
 /// names neither (the server does).
@@ -1693,8 +1700,8 @@ mod tests {
         shaped.err().map(|r| r.code)
     }
 
-    // the live rows (thuum ADR-073 step 4's S5): the table's first fifty-two,
-    // every other row staged
+    // the live rows (thuum ADR-073 step 4's S5 and S6): the table's first
+    // fifty-three, every other row staged
     fn live() -> impl Iterator<Item = &'static Row> {
         TABLE.iter().filter(|r| !r.staged)
     }

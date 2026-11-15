@@ -16,7 +16,7 @@ const ANIMATION: &str = "ADR-068 rung 2 (docs/research/scripts-one-system-2026-1
 /// Cited by Debug.SendAnimationEvent.
 const STATIC_ANIMATION: &str = "ADR-068 rung 2 (docs/research/scripts-one-system-2026-11-05.md 6.3): an action row on a static's first argument, the cell's host's";
 /// Cited by ObjectReference.SetAnimationVariableBool, ObjectReference.SetAnimationVariableInt, ObjectReference.SetAnimationVariableFloat.
-const VARIABLE: &str = "ADR-068 rung 2 (docs/research/scripts-one-system-2026-11-05.md 6.3): an action row, the cell's host's; its variable kept on its subject by the fifty fixes' D-C3 A (PENDING ELI; docs/research/fifty-fixes-2026-11-07.md section 1(c))";
+const VARIABLE: &str = "ADR-068 rung 2 (docs/research/scripts-one-system-2026-11-05.md 6.3): an action row, the cell's host's; its variable kept on its subject by the fifty fixes' D-C3 A (accepted by Eli 2026-11-07, thuum docs/DECISIONS.md:4953; docs/research/fifty-fixes-2026-11-07.md section 1(c))";
 /// Cited by ObjectReference.AddItem, ObjectReference.RemoveItem.
 const OWN_INVENTORY: &str = "Eli's D-R1 C (thuum docs/DECISIONS.md, rung 5's stage-eve words): the player's own inventory, its own seat's, kept as its own record";
 /// Cited by ObjectReference.Enable, ObjectReference.EnableNoWait, ObjectReference.Disable, ObjectReference.DisableNoWait, ObjectReference.Delete.

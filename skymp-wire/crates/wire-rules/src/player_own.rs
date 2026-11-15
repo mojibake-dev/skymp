@@ -146,7 +146,16 @@ impl Row {
     /// other native.
     #[must_use]
     pub fn of(cls: &str, func: &str) -> Option<Self> {
-        let at = rows().position(|(c, f)| c.eq_ignore_ascii_case(cls) && f.eq_ignore_ascii_case(func))?;
+        // the table's generated index (O(1)), then the row's place among the
+        // nine: the live rows come first in the table, so this counts at most
+        // the live rows before it, never the staged ones (thuum ADR-073 step
+        // 4's review, NIT 8: no scan of the 1,408 rows on an accepted call)
+        let i = natives::row_index(cls, func)?;
+        let own = |r: &natives::Row| !r.staged && r.keep == Keep::Record(RecordKind::PlayerOwn);
+        if !natives::TABLE.get(i).is_some_and(own) {
+            return None;
+        }
+        let at = natives::TABLE.get(..i)?.iter().filter(|r| own(r)).count();
         IN_TABLE_ORDER.get(at).copied()
     }
 

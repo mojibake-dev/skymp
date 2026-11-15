@@ -447,6 +447,9 @@ public:
   {
     bool look = false;
     bool preset = false;
+    // RecordRaceLook's (the V-look review's correctness-4): the stashed head
+    // parts the new race may wear, given back to both records
+    size_t given = 0;
   };
   HeadPartRecord RecordHeadPart(MpActor& actor, uint32_t part);
   // thuum train 53's V-look (lab/.cache/drafts/reads-53/r-v3-v4-v5-look.md,
@@ -457,10 +460,20 @@ public:
   // racemenu::without_head_parts), since that look's load on a figure puts
   // its parts back by type over the new race's base (playtest 51: Ariadne's
   // Khajiit eyes 0xEE878 on her vampire figure on the host's screen); a part
-  // the record gives no answer for stays. What each record took; the words
-  // to the other games are the caller's. Which parts the engine puts in the
-  // dropped parts' place is HYPOTHESIS (the race's defaults, for the lab)
+  // the record gives no answer for stays, and an extra part a dropped part
+  // brings (HDPT HNAM) goes with it from the look unless a part that stays
+  // lists it too. What goes is kept in the stored look's stash (wire-rules
+  // racemenu::RACE_STASH, the server's own record), and the stash's parts
+  // `race` may wear come back to both records, each in place of its HDPT
+  // type's part, with its extras on the look (racemenu::with_race_parts; the
+  // V-look review's correctness-4: VampireCure's SetRace back to the base
+  // race got nothing back). What each record took; the words to the other
+  // games are the caller's. Which parts the engine puts in the dropped
+  // parts' place is HYPOTHESIS (the race's defaults, for the lab)
   HeadPartRecord RecordRaceLook(MpActor& actor, uint32_t race);
+  // the stored RaceMenu look as a game is sent it: without the stash
+  // (racemenu::without_race_stash), which is the server's alone
+  static std::string RaceMenuPresetForGames(std::string stored);
 
   // thuum docs/verbs/spell-placed-object.md (ADR-057): the objects the
   // server places at an accepted cast of a listed spell,

@@ -1852,7 +1852,9 @@ void PartOne::Init()
       if (auto preset = emitterAsActor->GetRaceMenuPreset(); !preset.empty()) {
         RaceMenuPresetMessage presetMessage;
         presetMessage.actor = emitterAsActor->GetFormId();
-        presetMessage.preset = std::move(preset);
+        // without the server's own stash of a race's dropped parts (the
+        // V-look review's correctness-4)
+        presetMessage.preset = RaceMenuPresetForGames(std::move(preset));
         sendTarget->Send(listenerUserId, presetMessage, true);
       }
     }
@@ -4744,45 +4746,174 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
   if (!HasEspm() || race == 0) {
     return recorded;
   }
+  auto& browser = GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
   // the record's answer that the race may not wear the part; no answer
   // keeps it
   const auto barred = [&](uint32_t part) {
     const auto holds = HeadPartRaceListHolds(part, race);
     return holds.has_value() && !*holds;
   };
+  // a part's HDPT type (PNAM), WearHeadPartInLook's reading, and the extra
+  // parts it brings (HNAM), the look's derivation's (ADR-026)
+  const auto typeOf = [&](uint32_t id) -> std::optional<uint32_t> {
+    const auto* hdpt = espm::Convert<espm::HDPT>(browser.LookupById(id).rec);
+    return hdpt ? std::optional<uint32_t>(hdpt->GetData(cache).type)
+                : std::nullopt;
+  };
+  const auto extrasOf = [&](uint32_t id) {
+    std::vector<uint32_t> extras;
+    const auto part = browser.LookupById(id);
+    if (const auto* hdpt = espm::Convert<espm::HDPT>(part.rec)) {
+      for (uint32_t extra : hdpt->GetData(cache).extraParts) {
+        extras.push_back(part.ToGlobalId(extra));
+      }
+    }
+    return extras;
+  };
+  const auto holds = [](const std::vector<uint32_t>& ids, uint32_t id) {
+    return std::find(ids.begin(), ids.end(), id) != ids.end();
+  };
+  // a look's entry by its form id here, 0 for a plugin the server does not
+  // load; and its type for the rules, u32::MAX for none (racemenu::NO_TYPE)
+  const auto idOf = [&](const skymp::rules::LookRef& ref) {
+    return LookFormIdOf(std::string(ref.plugin), ref.id);
+  };
+  const auto typeFor = [&](uint32_t id) {
+    const auto type = id != 0 ? typeOf(id) : std::nullopt;
+    return type.value_or(std::numeric_limits<uint32_t>::max());
+  };
+
+  // the stored look first. Its parts the race may not wear go to its stash
+  // (racemenu::without_head_parts); then its stashed parts the race may wear
+  // come back (racemenu::with_race_parts), the drop first so a part that
+  // goes is stashed before a stashed part of its type could take its place
+  std::vector<uint32_t> given;
+  std::string preset = actor.GetRaceMenuPreset();
+  bool presetChanged = false;
+  if (!preset.empty()) {
+    const auto facts = skymp::rules::racemenu_look_facts(rust::Str(preset));
+    if (facts.ok) {
+      // one byte a listed part, in the look's order: kept or not; a part in
+      // a plugin the server does not load gives no answer and stays
+      std::vector<uint8_t> keep;
+      keep.reserve(facts.parts.size());
+      for (const auto& ref : facts.parts) {
+        const uint32_t listed = idOf(ref);
+        keep.push_back(listed != 0 && barred(listed) ? 0 : 1);
+      }
+      const auto rewritten = skymp::rules::racemenu_without_head_parts(
+        rust::Str(preset),
+        rust::Slice<const uint8_t>(keep.data(), keep.size()));
+      if (!rewritten.empty()) {
+        preset = std::string(rewritten);
+        presetChanged = true;
+      }
+    }
+    const auto stash = skymp::rules::racemenu_race_stash(rust::Str(preset));
+    const auto now = skymp::rules::racemenu_look_facts(rust::Str(preset));
+    if (stash.ok && !stash.parts.empty() && now.ok) {
+      // one flag and one type a stashed part (no answer fits, the drop's
+      // own reading; a part the server does not load stays stashed), one
+      // type a current entry
+      std::vector<uint32_t> stashed;
+      std::vector<uint8_t> fits;
+      std::vector<uint32_t> stashType;
+      std::vector<uint32_t> entryType;
+      for (const auto& ref : stash.parts) {
+        const uint32_t id = idOf(ref);
+        stashed.push_back(id);
+        fits.push_back(id != 0 && !barred(id) ? 1 : 0);
+        stashType.push_back(typeFor(id));
+      }
+      for (const auto& ref : now.parts) {
+        entryType.push_back(typeFor(idOf(ref)));
+      }
+      const auto rewritten = skymp::rules::racemenu_with_race_parts(
+        rust::Str(preset),
+        rust::Slice<const uint8_t>(fits.data(), fits.size()),
+        rust::Slice<const uint32_t>(stashType.data(), stashType.size()),
+        rust::Slice<const uint32_t>(entryType.data(), entryType.size()));
+      if (!rewritten.empty()) {
+        preset = std::string(rewritten);
+        presetChanged = true;
+        for (size_t i = 0; i < stashed.size(); ++i) {
+          if (fits[i] &&
+              stashType[i] != std::numeric_limits<uint32_t>::max()) {
+            given.push_back(stashed[i]);
+          }
+        }
+      }
+    }
+    if (presetChanged && actor.SetRaceMenuPreset(std::string(preset))) {
+      recorded.preset = true;
+    }
+  }
+
+  // then the look: its parts the race may not wear go, and an extra a part
+  // that goes brings goes with it unless a part that stays lists it too;
+  // each part the stash gave back is worn in its type's place
+  // (WearHeadPart), its extras with it
   if (const auto current = actor.GetAppearance()) {
     Appearance look = *current;
     auto& parts = look.headpartIds;
+    std::vector<uint32_t> going;
+    for (uint32_t id : parts) {
+      if (barred(id)) {
+        going.push_back(id);
+      }
+    }
+    if (!going.empty()) {
+      std::vector<uint32_t> brought;
+      for (uint32_t id : going) {
+        for (uint32_t extra : extrasOf(id)) {
+          brought.push_back(extra);
+        }
+      }
+      std::vector<uint32_t> listed;
+      for (uint32_t id : parts) {
+        if (!holds(going, id) && !holds(brought, id)) {
+          for (uint32_t extra : extrasOf(id)) {
+            listed.push_back(extra);
+          }
+        }
+      }
+      for (uint32_t extra : brought) {
+        if (holds(parts, extra) && !holds(listed, extra) &&
+            !holds(going, extra)) {
+          going.push_back(extra);
+        }
+      }
+    }
     const size_t before = parts.size();
-    parts.erase(std::remove_if(parts.begin(), parts.end(), barred),
+    parts.erase(std::remove_if(parts.begin(), parts.end(),
+                               [&](uint32_t id) { return holds(going, id); }),
                 parts.end());
-    if (parts.size() != before) {
+    bool changed = parts.size() != before;
+    for (uint32_t id : given) {
+      if (WearHeadPart(look, id)) {
+        changed = true;
+      }
+      for (uint32_t extra : extrasOf(id)) {
+        if (!holds(parts, extra)) {
+          parts.push_back(extra);
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
       actor.SetAppearance(&look);
       recorded.look = true;
     }
   }
-  const std::string preset = actor.GetRaceMenuPreset();
-  if (preset.empty()) {
-    return recorded;
-  }
-  const auto facts = skymp::rules::racemenu_look_facts(rust::Str(preset));
-  if (!facts.ok) {
-    return recorded;
-  }
-  // one byte a listed part, in the look's order: kept or not; a part in a
-  // plugin the server does not load gives no answer and stays
-  std::vector<uint8_t> keep;
-  keep.reserve(facts.parts.size());
-  for (const auto& ref : facts.parts) {
-    const uint32_t listed = LookFormIdOf(std::string(ref.plugin), ref.id);
-    keep.push_back(listed != 0 && barred(listed) ? 0 : 1);
-  }
-  const auto rewritten = skymp::rules::racemenu_without_head_parts(
-    rust::Str(preset), rust::Slice<const uint8_t>(keep.data(), keep.size()));
-  if (!rewritten.empty() && actor.SetRaceMenuPreset(std::string(rewritten))) {
-    recorded.preset = true;
-  }
+  recorded.given = given.size();
   return recorded;
+}
+
+std::string PartOne::RaceMenuPresetForGames(std::string stored)
+{
+  auto stripped = skymp::rules::racemenu_without_race_stash(rust::Str(stored));
+  return stripped.empty() ? stored : std::string(stripped);
 }
 
 void PartOne::SetRestrictedRacesSettings(

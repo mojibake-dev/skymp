@@ -1110,6 +1110,17 @@ mod ffi {
         parts: Vec<u32>,
     }
 
+    /// thuum train 53's V-look (its review's correctness-4): the head parts
+    /// the stored look's stash holds, the oldest first; `ok` false for text
+    /// that is no look or a stash the rules do not read.
+    #[derive(Debug, Clone)]
+    struct LookStash {
+        /// The text is a look whose stash, if any, the rules read.
+        ok: bool,
+        /// The stashed parts in the stash's order.
+        parts: Vec<LookRef>,
+    }
+
     /// The record after a report, and the server's values still held.
     #[derive(Debug)]
     struct AvMerge {
@@ -2498,6 +2509,22 @@ mod ffi {
         /// racemenu::without_head_parts); empty when nothing goes or the look
         /// would pass the wire's preset cap.
         fn racemenu_without_head_parts(preset: &str, keep: &[u8]) -> String;
+        /// The V-look review's correctness-4: the head parts the stored
+        /// look's stash holds (wire-rules racemenu::race_stash, the parts
+        /// racemenu_without_head_parts took off at an earlier SetRace).
+        fn racemenu_race_stash(preset: &str) -> LookStash;
+        /// The stored look with each stashed part the new race may wear
+        /// given back in place of its HDPT type's entries, `fits` one byte
+        /// per stashed entry (nonzero for a part the race may wear),
+        /// `stash_type` its type and `entry_type` each current `headParts`
+        /// entry's, u32::MAX for a record with no answer (wire-rules
+        /// racemenu::with_race_parts); empty when nothing comes back or the
+        /// look would pass the wire's preset cap.
+        fn racemenu_with_race_parts(preset: &str, fits: &[u8], stash_type: &[u32], entry_type: &[u32]) -> String;
+        /// The look without its stash, as a game is sent it and as a look a
+        /// game sends is recorded (wire-rules racemenu::without_race_stash);
+        /// empty when it has none.
+        fn racemenu_without_race_stash(preset: &str) -> String;
         /// Whether an actor values report is within bounds, given the
         /// values the server holds (thuum docs/verbs/actor-values.md).
         fn actor_values_report_ok(report: &AvSnapshot, held: &[AvBase]) -> bool;
@@ -3432,7 +3459,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -3788,6 +3815,22 @@ fn racemenu_with_head_part(preset: &str, same_type: &[u8], plugin: &str, id: u32
 fn racemenu_without_head_parts(preset: &str, keep: &[u8]) -> String {
     let keep: Vec<bool> = keep.iter().map(|&b| b != 0).collect();
     racemenu::without_head_parts(preset, &keep).filter(|look| look.len() <= wire_schema::cap::RACEMENU_PRESET).unwrap_or_default()
+}
+
+fn racemenu_race_stash(preset: &str) -> LookStash {
+    racemenu::race_stash(preset).map_or_else(
+        || LookStash { ok: false, parts: Vec::new() },
+        |parts| LookStash { ok: true, parts: parts.iter().map(|p| look_ref(Some(p))).collect() },
+    )
+}
+
+fn racemenu_with_race_parts(preset: &str, fits: &[u8], stash_type: &[u32], entry_type: &[u32]) -> String {
+    let fits: Vec<bool> = fits.iter().map(|&b| b != 0).collect();
+    racemenu::with_race_parts(preset, &fits, stash_type, entry_type).filter(|look| look.len() <= wire_schema::cap::RACEMENU_PRESET).unwrap_or_default()
+}
+
+fn racemenu_without_race_stash(preset: &str) -> String {
+    racemenu::without_race_stash(preset).unwrap_or_default()
 }
 
 fn av_snapshot(s: &AvSnapshot) -> actor_values::Snapshot {
@@ -7082,6 +7125,27 @@ mod tests {
         let padding = "x".repeat(wire_schema::cap::RACEMENU_PRESET);
         let big = format!(r#"{{"pad": "{padding}", "headParts": [{{"formIdentifier": "rotfern.esp|014C06", "type": 2}}]}}"#);
         assert!(racemenu_with_head_part(&big, &[1], "rotfern.esp", 0x023F0E).is_empty());
+    }
+
+    #[test]
+    fn a_dropped_part_is_stashed_and_given_back_and_no_game_sees_the_stash() {
+        // the V-look review's correctness-4: the turn stashes the part the
+        // new race may not wear, the cure gives it back
+        let look = r#"{"headParts": [{"formIdentifier": "rotfern.esp|02E117", "type": 0}, {"formIdentifier": "Skyrim.esm|0EE878", "type": 2}]}"#;
+        let turned = racemenu_without_head_parts(look, &[1, 0]);
+        let stash = racemenu_race_stash(&turned);
+        assert!(stash.ok);
+        assert_eq!(stash.parts.into_iter().map(|p| (p.plugin, p.id)).collect::<Vec<_>>(), vec![("Skyrim.esm".to_owned(), 0x0EE878)]);
+        assert!(racemenu_with_race_parts(&turned, &[0], &[2], &[0]).is_empty());
+        let cured = racemenu_with_race_parts(&turned, &[1], &[2], &[0]);
+        assert_eq!(racemenu_look_facts(&cured).parts.len(), 2);
+        let none = racemenu_race_stash(&cured);
+        assert!(none.ok && none.parts.is_empty());
+        // a game's copy: the stash stripped; a look with none is left alone
+        let sent = racemenu_without_race_stash(&turned);
+        assert!(!sent.is_empty() && !sent.contains("thuumRaceDropped"), "{sent}");
+        assert!(racemenu_without_race_stash(look).is_empty());
+        assert!(!racemenu_race_stash("[]").ok);
     }
 
     #[test]

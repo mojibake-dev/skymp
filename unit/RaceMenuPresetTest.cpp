@@ -28,6 +28,8 @@ constexpr uint32_t kActorGateOther = 0xff000fb7;
 constexpr uint32_t kActorDerive = 0xff000fb8;
 constexpr uint32_t kActorRefuse = 0xff000fb9;
 constexpr uint32_t kActorLookFirst = 0xff000fba;
+constexpr uint32_t kActorStash = 0xff000fbb;
+constexpr uint32_t kActorStashOther = 0xff000fbc;
 constexpr uint32_t kTamriel = 0x0000003c;
 
 const std::string kPreset =
@@ -336,4 +338,31 @@ TEST_CASE("An appearance that comes after the look follows the look",
           std::vector<uint32_t>{ 0x051631, 0x05162f, 0x051507, 0x051505 });
   p.DestroyActor(kActorLookFirst);
   DoDisconnect(p, 0);
+}
+
+// thuum train 53's V-look review, correctness-4: the stored look's stash of
+// the head parts a race took off (PartOne::RecordRaceLook) is the server's
+// own record, so a look a game sends with one is recorded without it (rule
+// 5: a modified seat could otherwise plant parts there for a later SetRace
+// to give back outside the race menu's check), and no game is sent one
+TEST_CASE("A preset a game sends with the server's stash is recorded and "
+          "sent without it",
+          "[RaceMenuPreset]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p, 0, kActorStash);
+  Player(p, 1, kActorStashOther);
+  const std::string planted =
+    R"({"headParts": [], "thuumRaceDropped": [{"formIdentifier": "Skyrim.esm|05150A", "type": 2}]})";
+  Report(p, 0, planted);
+  const std::string recorded = ac.GetRaceMenuPreset();
+  REQUIRE(!recorded.empty());
+  REQUIRE(recorded.find("thuumRaceDropped") == std::string::npos);
+  REQUIRE(nlohmann::json::parse(recorded) ==
+          nlohmann::json::parse(R"({"headParts": []})"));
+  const auto sent = Sent(p, 1);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0].second.find("thuumRaceDropped") == std::string::npos);
+  Leave(p, 1, kActorStashOther);
+  Leave(p, 0, kActorStash);
 }

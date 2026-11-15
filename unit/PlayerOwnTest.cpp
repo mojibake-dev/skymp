@@ -1302,5 +1302,65 @@ TEST_CASE("A recorded SetRace drops the head parts its race may not wear "
   REQUIRE(presetAt != 0);
   REQUIRE(presetAt < lookAt);
   REQUIRE(LooksTo(p, 0).empty());
+
+  // the review's correctness-4: the dropped eyes wait in the stored look's
+  // stash, the server's alone (the watcher's copy carries none), and a
+  // SetRace to a race that may wear them gives them back to both records,
+  // the stored look again ahead of the look
+  REQUIRE(stored["thuumRaceDropped"].size() == (hairStays ? 1u : 2u));
+  REQUIRE(stored["thuumRaceDropped"][0]["formIdentifier"] ==
+          "Skyrim.esm|05150A");
+  for (auto& m : p.Messages()) {
+    if (m.userId == 1 && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::RaceMenuPreset)) {
+      REQUIRE(m.j["preset"].get<std::string>().find("thuumRaceDropped") ==
+              std::string::npos);
+    }
+  }
+  const auto hairOnArgonian =
+    p.HeadPartRaceListHolds(kHairNord01, kArgonianRace);
+  // the hair is worn on the Argonian look whenever its list lets it be:
+  // kept from the Breton look, or given back from the stash
+  const bool hairStaysBack = !hairOnArgonian.has_value() || *hairOnArgonian;
+  const size_t givenBack = (!hairStays && hairStaysBack) ? 2 : 1;
+  p.Messages().clear();
+  SetRace(p, kArgonianRace, "PlayerVampireQuestScript");
+  const auto back = turned.GetAppearance();
+  REQUIRE(back->raceId == kArgonianRace);
+  REQUIRE(std::count(back->headpartIds.begin(), back->headpartIds.end(),
+                     kEyesArgonian) == 1);
+  REQUIRE(std::count(back->headpartIds.begin(), back->headpartIds.end(),
+                     kHairNord01) == (hairStaysBack ? 1 : 0));
+  const auto restored = nlohmann::json::parse(turned.GetRaceMenuPreset());
+  size_t eyes = 0;
+  for (auto& entry : restored["headParts"]) {
+    if (entry["formIdentifier"] == "Skyrim.esm|05150A") {
+      ++eyes;
+      REQUIRE(entry["type"] == 2);
+    }
+  }
+  REQUIRE(eyes == 1);
+  // the stash keeps only a part this race may not wear (the hair, when its
+  // list bars ArgonianRace)
+  REQUIRE(restored.contains("thuumRaceDropped") == !hairStaysBack);
+  REQUIRE(log.Count(fmt::format("{} stashed one(s) it may wear given back",
+                                givenBack)) == 1);
+  presetAt = 0;
+  lookAt = 0;
+  at = 0;
+  for (auto& m : p.Messages()) {
+    ++at;
+    if (m.userId != 1 || !m.j.is_object()) {
+      continue;
+    }
+    if (m.j.value("t", -1) == static_cast<int>(MsgType::RaceMenuPreset)) {
+      presetAt = at;
+    }
+    if (m.j.value("t", -1) == static_cast<int>(MsgType::UpdateAppearance)) {
+      lookAt = at;
+    }
+  }
+  REQUIRE(presetAt != 0);
+  REQUIRE(presetAt < lookAt);
   Leave(p);
 }

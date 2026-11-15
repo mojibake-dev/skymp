@@ -1342,7 +1342,9 @@ size_t SendRaceMenuPresetToOthers(PartOne& partOne, MpActor& actor)
 {
   RaceMenuPresetMessage out;
   out.actor = actor.GetFormId();
-  out.preset = actor.GetRaceMenuPreset();
+  // without the server's own stash of a race's dropped parts (the V-look
+  // review's correctness-4)
+  out.preset = PartOne::RaceMenuPresetForGames(actor.GetRaceMenuPreset());
   size_t sent = 0;
   for (auto listener : actor.GetActorListeners()) {
     if (listener == &actor ||
@@ -3016,12 +3018,18 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
                         rawMsgData.userId, actor->GetFormId(),
                         msg.preset.size());
   }
+  // the V-look review's correctness-4: the stash of the head parts a race
+  // took off (PartOne::RecordRaceLook, wire-rules racemenu::RACE_STASH) is
+  // the server's own record, never a seat's word (rule 5), and a race
+  // menu's new look replaces any stash
+  const std::string preset =
+    PartOne::RaceMenuPresetForGames(std::string(msg.preset));
   // thuum ADR-026: a look whose head parts the server lacks or the race may
   // not wear is no look either, and does not use up the opening
   Appearance derived;
   LookVerdict verdict = LookVerdict::kNotJudged;
   if (auto current = actor->GetAppearance()) {
-    verdict = AppearanceFromLook(partOne, *current, msg.preset, derived);
+    verdict = AppearanceFromLook(partOne, *current, preset, derived);
   }
   if (verdict == LookVerdict::kRefused) {
     return spdlog::info("RaceMenu: user {} actor {:x} preset of {} bytes "
@@ -3038,7 +3046,7 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
                         rawMsgData.userId, actor->GetFormId(),
                         msg.preset.size());
   }
-  if (!actor->SetRaceMenuPreset(msg.preset)) {
+  if (!actor->SetRaceMenuPreset(preset)) {
     return spdlog::info("RaceMenu: user {} actor {:x} preset unchanged",
                         rawMsgData.userId, actor->GetFormId());
   }
@@ -3066,7 +3074,9 @@ void ActionListener::SendRaceMenuPreset(MpActor& actor)
   }
   RaceMenuPresetMessage message;
   message.actor = actor.GetFormId();
-  message.preset = std::move(preset);
+  // the player's own game too gets no stash (the V-look review's
+  // correctness-4)
+  message.preset = PartOne::RaceMenuPresetForGames(std::move(preset));
   actor.SendToUser(message, true);
   spdlog::info("RaceMenu: actor {:x} sent its preset of {} bytes after a "
                "login",
@@ -5153,10 +5163,20 @@ void RecordPlayerOwn(
         // stored look its game holds then (raceMenuService's
         // LoadCharacterPresetEx, APPLY_ALL), which would put the old race's
         // parts back by type
+        // (the review's correctness-4: the dropped parts kept in the stored
+        // look's stash, and a stashed part the race may wear given back, the
+        // cure's return to the base race)
         const auto recorded = partOne.RecordRaceLook(reporter, form);
-        if (recorded.preset) {
+        if (recorded.preset && recorded.given == 0) {
           what += fmt::format(", its RaceMenu look's head parts the race may "
                               "not wear dropped and sent to {} game(s)",
+                              SendRaceMenuPresetToOthers(partOne, reporter));
+        } else if (recorded.preset) {
+          what += fmt::format(", its RaceMenu look's head parts fitted to "
+                              "the race (any it may not wear dropped, {} "
+                              "stashed one(s) it may wear given back) and "
+                              "sent to {} game(s)",
+                              recorded.given,
                               SendRaceMenuPresetToOthers(partOne, reporter));
         }
         if (const auto now = reporter.GetAppearance()) {

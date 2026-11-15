@@ -5369,9 +5369,12 @@ bool PartOne::HoldOwnOverlayParts(uint32_t actorId,
   std::vector<uint32_t> b = parts;
   std::sort(a.begin(), a.end());
   std::sort(b.begin(), b.end());
-  const bool changed = a != b;
+  if (a == b) {
+    // a fold sends nothing, so the order the other games were sent stays
+    return false;
+  }
   held = std::move(parts);
-  return changed;
+  return true;
 }
 
 bool PartOne::EndOwnOverlayParts(uint32_t actorId)

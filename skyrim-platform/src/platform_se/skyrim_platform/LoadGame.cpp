@@ -7,6 +7,8 @@
 #include "savefile/SFSeekerOfDifferences.h"
 #include "savefile/SFWriter.h"
 
+#include <algorithm>
+#include <cstring>
 #include <spdlog/spdlog.h>
 
 namespace fs = std::filesystem;
@@ -14,6 +16,56 @@ namespace fs = std::filesystem;
 CMRC_DECLARE(skyrim_plugin_resources);
 
 constexpr auto g_saveFilePrefix = "TESMODPLATFORM-";
+
+namespace {
+// FormIdInSave's fall-throughs at one login: PrepareSaveFile starts a login,
+// each kind's first id gets a line, and Run ends the login with the counts
+// when a kind fell through more than once (ADR-073 decision 7). loadGame runs
+// on the JS thread, one login at a time.
+enum FallThroughKind
+{
+  kLight,
+  kNoPlugin,
+  kNotListed,
+  kFallThroughKinds
+};
+constexpr const char* kFallThroughNames[kFallThroughKinds] = { "light",
+                                                               "no plugin",
+                                                               "not listed" };
+int g_fallThroughs[kFallThroughKinds] = {};
+
+uint32_t FellThrough(FallThroughKind kind, uint32_t formId,
+                     spdlog::level::level_enum level, const std::string& why)
+{
+  if (g_fallThroughs[kind]++ == 0) {
+    spdlog::log(level,
+                "[loadGame] FormIdInSave fell through ({}): {:08X}; written "
+                "as it is ({})",
+                kFallThroughNames[kind], formId, why);
+  }
+  return formId;
+}
+
+void StartFallThroughs()
+{
+  std::fill(std::begin(g_fallThroughs), std::end(g_fallThroughs), 0);
+}
+
+void EndFallThroughs()
+{
+  if (std::none_of(std::begin(g_fallThroughs), std::end(g_fallThroughs),
+                   [](int n) { return n > 1; })) {
+    return;
+  }
+  std::string counts;
+  for (int k = 0; k < kFallThroughKinds; ++k) {
+    counts += fmt::format("{}{} {}", k ? ", " : "", kFallThroughNames[k],
+                          g_fallThroughs[k]);
+  }
+  spdlog::info("[loadGame] FormIdInSave fell through at this login: {}",
+               counts);
+}
+}
 
 class LoadGameEventSink : public RE::BSTEventSink<RE::TESLoadGameEvent>
 {
@@ -88,6 +140,7 @@ std::shared_ptr<SaveFile_::SaveFile> LoadGame::PrepareSaveFile(
   }
   auto save =
     SaveFile_::Reader((uint8_t*)(file.begin()), file.size()).GetStructure();
+  StartFallThroughs();
   ModifyPluginInfo(save, loadOrder);
   return save;
 }
@@ -106,6 +159,7 @@ void LoadGame::Run(std::shared_ptr<SaveFile_::SaveFile> save,
   ModifySaveWeather(save, _weather);
   ModifyPlayerFormNPC(save, changeFormNPC);
   ModifyEssStructure(save, pos, angle, cellOrWorld);
+  EndFallThroughs();
 
   auto name = g_saveFilePrefix + GenerateGuid();
   if (!SaveFile_::Writer(save).CreateSaveFile(GetSaveFullPath(name))) {
@@ -143,29 +197,56 @@ std::wstring LoadGame::GetPathToMyDocuments()
 
 // thuum: the template's plugin list keeps its entries, and the seat's other
 // plugins go after them (SaveFile::MergePluginInfo); the game matches the list
-// to its own plugins by name as it loads. This wrote the seat's load order
-// over the list by position (dataHandler->files, then the client's list from
-// ModifyLoadOrder), and no form id in the template moved with it: the
-// template lists 02 Dragonborn, 03 Dawnguard and 04 HearthFires and the
-// deployed order 02 Dawnguard, 03 HearthFires and 04 Dragonborn, so VC01's
-// DLC1VampireChange (0x0300283B in the template) named HearthFires.esm, which
-// has no such form, and reached the scripts as None (playtest 52's
-// E_SCRIPTCALL_UNNAMED Actor.RemoveSpell 0). The list is the caller's load
-// order (the client sends Game.getModName's), else the game's loaded plugins.
+// to its own plugins by name as it loads (HYPOTHESIS: Ghidra on sky-re,
+// 1.6.1170, 0x140606df0 and 0x1406057e0, until a lab run). This wrote the
+// seat's load order over the list by position (dataHandler->files, then the
+// client's list from ModifyLoadOrder), and no form id in the template moved
+// with it: the template lists 02 Dragonborn, 03 Dawnguard and 04 HearthFires
+// and the deployed order 02 Dawnguard, 03 HearthFires and 04 Dragonborn, so
+// VC01's DLC1VampireChange (0x0300283B in the template) named HearthFires.esm,
+// which has no such form, and reached the scripts as None (playtest 52's
+// E_SCRIPTCALL_UNNAMED Actor.RemoveSpell 0).
+//
+// The plugins appended are the game's own loaded ones (TESDataHandler's
+// compiled files, GetLoadedMods), the list the game compares the save's with
+// and FormIdInSave looks plugins up in, so one source serves both. A caller's
+// load order (the client sends Game.getModName's, the same files:
+// CallNativeApi.cpp) is only compared with it, by index and in any case as
+// the game compares names, with one line where it differs.
+//
+// A template plugin the seat lacks is logged at warn: on Skyrim Platform's
+// Load the game goes on with that plugin's forms resolving to none
+// (HYPOTHESIS: Ghidra on sky-re, 1.6.1170: Load's last argument, true,
+// reaches 0x140605f90 as its param_3 through LoadRequest's byte +0x24 at
+// 0x140613dfc, and 0x140605f90 stops at a missing plugin only when param_3 is
+// 0; 0x140606df0 keeps a null file for it, which 0x1406057e0 reads as form 0).
 void LoadGame::ModifyPluginInfo(std::shared_ptr<SaveFile_::SaveFile>& save,
                                 const std::vector<std::string>* loadOrder)
 {
+  auto dataHandler = RE::TESDataHandler::GetSingleton();
+  if (!dataHandler) {
+    throw NullPointerException("dataHandler");
+  }
   std::vector<std::string> loaded;
-  if (loadOrder) {
-    loaded = *loadOrder;
-  } else {
-    auto dataHandler = RE::TESDataHandler::GetSingleton();
-    if (!dataHandler) {
-      throw NullPointerException("dataHandler");
-    }
-    const auto files = dataHandler->GetLoadedMods();
-    for (uint32_t i = 0; i < dataHandler->GetLoadedModCount(); ++i) {
+  const auto files = dataHandler->GetLoadedMods();
+  for (uint32_t i = 0; i < dataHandler->GetLoadedModCount(); ++i) {
+    // the game checks each entry before it reads a name (0x140a50d70)
+    if (files[i]) {
       loaded.push_back(files[i]->fileName);
+    }
+  }
+
+  if (loadOrder) {
+    const size_t n = std::max(loadOrder->size(), loaded.size());
+    for (size_t i = 0; i < n; ++i) {
+      const bool both = i < loadOrder->size() && i < loaded.size();
+      if (!both || _stricmp((*loadOrder)[i].c_str(), loaded[i].c_str()) != 0) {
+        spdlog::info("[loadGame] the caller's load order differs from the "
+                     "game's at {} ({} vs {}); the game's is used",
+                     i, i < loadOrder->size() ? (*loadOrder)[i] : "(none)",
+                     i < loaded.size() ? loaded[i] : "(none)");
+        break;
+      }
     }
   }
 
@@ -180,17 +261,24 @@ void LoadGame::ModifyPluginInfo(std::shared_ptr<SaveFile_::SaveFile>& save,
   for (auto& name : missing) {
     lacks += (lacks.empty() ? "" : ", ") + name;
   }
-  spdlog::info("[loadGame] the login save's plugin list as written ({}): {}; "
-               "template plugins this seat lacks: {}",
-               names.size(), written, lacks.empty() ? "none" : lacks);
+  spdlog::log(missing.empty() ? spdlog::level::info : spdlog::level::warn,
+              "[loadGame] the login save's plugin list ({}); template plugins "
+              "this seat lacks: {}; {}",
+              names.size(), lacks.empty() ? "none" : lacks, written);
 }
 
 // A form id of this game, its plugin by compileIndex, goes into the save
 // under the index the save's list gives that plugin's name. Skyrim.esm's (00)
 // and a created form (FF) read the same in both. A light plugin's (FE) has no
-// index in a list of form version 74, which carries no light list, and a form
-// whose plugin the list does not name has none either: each is written as it
-// is, with a line.
+// index in a list of form version 74, which carries no light list
+// (HYPOTHESIS: Ghidra on sky-re, 1.6.1170, 0x140606df0 and 0x1406057e0, until
+// a lab run), and is written as it is. So is an id under an index no loaded
+// plugin has: it names nothing here, and nothing in the save while the save's
+// list is no longer than the game's (0x1406057e0 gives 0 past the count); a
+// template plugin the seat lacks makes the save's list longer, and then such
+// an id names an appended plugin. Every loaded plugin is in the save's list
+// once ModifyPluginInfo has merged the game's own, so "not listed" is an
+// alarm that should never fire.
 uint32_t LoadGame::FormIdInSave(const SaveFile_::SaveFile& save,
                                 uint32_t formId)
 {
@@ -199,11 +287,10 @@ uint32_t LoadGame::FormIdInSave(const SaveFile_::SaveFile& save,
     return formId;
   }
   if (plugin == 0xfe) {
-    spdlog::info("[loadGame] {:08X} is a light plugin's form, and the login "
-                 "save (form version {}) carries no light list; written as it "
-                 "is",
-                 formId, static_cast<int>(save.formVersion));
-    return formId;
+    return FellThrough(kLight, formId, spdlog::level::info,
+                       fmt::format("the login save, form version {}, "
+                                   "carries no light list",
+                                   static_cast<int>(save.formVersion)));
   }
 
   auto dataHandler = RE::TESDataHandler::GetSingleton();
@@ -213,17 +300,15 @@ uint32_t LoadGame::FormIdInSave(const SaveFile_::SaveFile& save,
   const RE::TESFile* file =
     dataHandler->LookupLoadedModByIndex(static_cast<uint8_t>(plugin));
   if (!file) {
-    spdlog::info("[loadGame] {:08X}: no loaded plugin has index {:02X}; "
-                 "written as it is",
-                 formId, plugin);
-    return formId;
+    return FellThrough(
+      kNoPlugin, formId, spdlog::level::info,
+      fmt::format("no loaded plugin has index {:02X}", plugin));
   }
   const auto inSave = save.FormIdUnderPlugin(file->fileName, formId);
   if (!inSave) {
-    spdlog::info("[loadGame] {:08X}: {} is not in the login save's plugin "
-                 "list; written as it is",
-                 formId, file->fileName);
-    return formId;
+    return FellThrough(kNotListed, formId, spdlog::level::warn,
+                       fmt::format("{} is not in the login save's plugin list",
+                                   file->fileName));
   }
   return *inSave;
 }

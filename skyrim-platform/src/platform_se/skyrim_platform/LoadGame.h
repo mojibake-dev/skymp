@@ -36,7 +36,9 @@ public:
   };
 
   // The template, its plugin list already this seat's (ModifyPluginInfo), so
-  // that every form id written into it after goes under that list.
+  // that every form id written into it after goes under that list. The list
+  // comes from the game's loaded plugins; `loadOrder`, the caller's, is only
+  // compared with them (loadGame's loadOrder argument, kept for the API).
   static std::shared_ptr<SaveFile_::SaveFile> PrepareSaveFile(
     const char* pathInAssets, const std::vector<std::string>* loadOrder);
 

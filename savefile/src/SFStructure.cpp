@@ -23,7 +23,8 @@ SaveFile_::RefID SaveFile_::RefID::CreateRefId(SaveFile& parentSaveFile,
   // the index starts at 1, 0 meaning form 0). An entry already there is
   // reused; a new one goes at the end, and the tables after the array move
   // by its four bytes. (It used to copy countWas bytes of the old array
-  // instead of countWas entries, and leaked the copy; nothing called it.)
+  // instead of countWas entries, and leaked the copy; LoadGame's
+  // CreateRefId(cellOrWorld) called it at every login since 84b1a42e.)
   uint32_t index = 0;
   if (const int64_t found = parentSaveFile.FindIndexInFormIdArray(formId);
       found >= 0) {
@@ -132,7 +133,8 @@ std::vector<std::string> SaveFile_::SaveFile::MergePluginInfo(
 
   std::vector<std::string> merged = pluginInfo.pluginsName;
   for (auto& name : loaded) {
-    if (std::none_of(merged.begin(), merged.end(),
+    if (!name.empty() &&
+        std::none_of(merged.begin(), merged.end(),
                      [&](auto& m) { return SamePluginName(m, name); })) {
       merged.push_back(name);
     }

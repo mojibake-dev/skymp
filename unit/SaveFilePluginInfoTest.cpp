@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <stdexcept>
 
 // thuum: every seat logs in through one template save, Skyrim Platform's
 // assets/template.ess, whose plugin list is 00 Skyrim, 01 Update, 02
@@ -14,7 +15,9 @@
 // index, so VC01's DLC1VampireChange (0x0300283B) named HearthFires.esm and
 // reached the scripts as None (playtest 52). The login save keeps the
 // template's entries and appends the seat's others (LoadGame's
-// ModifyPluginInfo), and the game matches the list to its plugins by name.
+// ModifyPluginInfo), and the game matches the list to its plugins by name
+// (HYPOTHESIS: Ghidra on sky-re, 1.6.1170, 0x140606df0 and 0x1406057e0, until
+// a lab run).
 
 namespace {
 std::shared_ptr<SaveFile_::SaveFile> ReadTemplate()
@@ -106,6 +109,15 @@ TEST_CASE("The login save keeps template.ess's plugins at their indices and "
           std::nullopt);
   REQUIRE(save->FindPluginIndex("DAWNGUARD.ESM") == 3);
 
+  // and through CreateRefId it reuses the template's own entry: RefID 00 25
+  // F6, the Papyrus handle's, and the formIDArray keeps its size
+  const auto arraySize = save->formIDArray.size();
+  const auto ref = SaveFile_::RefID::CreateRefId(*save, 0x030037E9);
+  REQUIRE(ref.byte0 == 0x00);
+  REQUIRE(ref.byte1 == 0x25);
+  REQUIRE(ref.byte2 == 0xF6);
+  REQUIRE(save->formIDArray.size() == arraySize);
+
   // the save written and read again holds the same list and ids
   const auto path =
     std::filesystem::temp_directory_path() / "thuum-plugin-merge-test.ess";
@@ -127,14 +139,37 @@ TEST_CASE("A template plugin the seat lacks keeps its index and is returned",
   auto save = ReadTemplate();
   const auto before = save->pluginInfoSize;
 
-  const auto missing =
-    save->MergePluginInfo({ "skyrim.esm", "Update.esm", "Dawnguard.esm",
-                            "HearthFires.esm", "Dawnguard.esm", "Mod.esp" });
+  const auto missing = save->MergePluginInfo(
+    { "skyrim.esm", "Update.esm", "Dawnguard.esm", "HearthFires.esm",
+      "Dawnguard.esm", "", "Mod.esp" });
   REQUIRE(missing == std::vector<std::string>{ "Dragonborn.esm" });
-  // matched in any case, each name once
+  // matched in any case, each name once, an empty one skipped
   REQUIRE(save->pluginInfo.pluginsName ==
           std::vector<std::string>{ "Skyrim.esm", "Update.esm",
                                     "Dragonborn.esm", "Dawnguard.esm",
                                     "HearthFires.esm", "Mod.esp" });
   REQUIRE(save->pluginInfoSize == before + NamesSize({ "Mod.esp" }));
+}
+
+TEST_CASE("A plugin list past 254 entries throws and leaves the save's list "
+          "as it was",
+          "[SaveFile]")
+{
+  auto save = ReadTemplate();
+  const auto before = save->pluginInfoSize;
+
+  // the template's five, then 249 more: 254 entries, 0x00 to 0xFD
+  std::vector<std::string> loaded = kTemplatePlugins;
+  for (int i = 0; loaded.size() < 254; ++i) {
+    loaded.push_back("Mod" + std::to_string(i) + ".esp");
+  }
+  auto atCap = ReadTemplate();
+  REQUIRE_NOTHROW(atCap->MergePluginInfo(loaded));
+  REQUIRE(atCap->pluginInfo.pluginsName.size() == 254);
+
+  // one more would put a plugin at 0xFE, a light plugin's index
+  loaded.push_back("OneTooMany.esp");
+  REQUIRE_THROWS_AS(save->MergePluginInfo(loaded), std::runtime_error);
+  REQUIRE(save->pluginInfo.pluginsName == kTemplatePlugins);
+  REQUIRE(save->pluginInfoSize == before);
 }

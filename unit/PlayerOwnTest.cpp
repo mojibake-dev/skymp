@@ -1386,8 +1386,11 @@ TEST_CASE("A recorded SetRace drops the head parts its race may not wear "
 // FemaleEyesKhajiitVampire 0xee87f from her overlay list while every figure
 // of her loaded her stored look's FemaleEyesKhajiitBlueNarrow 0xee878. Her
 // own game reports the parts it draws (OwnHeadParts 82, R2), and the server
-// records them on her look and her stored RaceMenu look and sends both to
-// the watcher, the stored look first. Her look and stored look are hers as
+// records a report from her base list on her look and her stored RaceMenu
+// look and sends both to the watcher, the stored look first (a report from
+// her overlay list is held in memory instead, thuum D-53-11, the case
+// below). The recorded report here is the vampire face as a base list, the
+// recording's mechanics alone. Her look and stored look are hers as
 // 20261115-031800's head-parts steps read them (015 before the turn, 184
 // after): FemaleHeadKhajiit 0x51612 (Face), FemaleMouthKhajiit 0x511a8 and
 // HairLineFemaleOrc05 0x85ddf (both Misc), BrowsFemaleArgonian00 0xd82f6,
@@ -1410,11 +1413,11 @@ TEST_CASE("A recorded SetRace drops the head parts its race may not wear "
 // stored look names the Orc hairline as its one Misc entry, so a rewrite by a
 // type the report names twice (the mouth and the Khajiit hairline) would
 // show
-TEST_CASE("A player's own head parts report is recorded on its look and its "
-          "stored RaceMenu look under the race it records, the stored look "
-          "sent ahead of the look; a stale race, a part that is no HDPT, a "
-          "part the race may not wear and an empty report are refused by "
-          "name, a repeat folded (D-53-8 B)",
+TEST_CASE("A player's own head parts report from its base list is recorded "
+          "on its look and its stored RaceMenu look under the race it "
+          "records, the stored look sent ahead of the look; a stale race, a "
+          "part that is no HDPT, a part the race may not wear and an empty "
+          "report are refused by name, a repeat folded (D-53-8 B)",
           "[PlayerOwn][espm]")
 {
   constexpr uint32_t kKhajiitRace = 0x13745;
@@ -1442,11 +1445,11 @@ TEST_CASE("A player's own head parts report is recorded on its look and its "
                 {"formIdentifier": "Skyrim.esm|0F3916", "type": 5},
                 {"formIdentifier": "Skyrim.esm|0EE878", "type": 2}]})";
   const auto report = [](PartOne& p, uint32_t race,
-                         std::vector<uint32_t> parts) {
+                         std::vector<uint32_t> parts, bool overlay) {
     OwnHeadPartsMessage msg;
     msg.race = race;
     msg.parts = std::move(parts);
-    msg.overlay = true;
+    msg.overlay = overlay;
     RawMessageData raw;
     raw.userId = 0;
     p.GetActionListener().OnOwnHeadParts(raw, msg);
@@ -1473,7 +1476,7 @@ TEST_CASE("A player's own head parts report is recorded on its look and its "
 
   // her own overlay list under these files' lists: refused by its first part
   // the race may not wear, nothing written or sent
-  report(p, kKhajiitRaceVampire, kHerOverlay);
+  report(p, kKhajiitRaceVampire, kHerOverlay, true);
   REQUIRE(log.Count("E_HEADPARTS_RACE_LIST: ff000c71's own head parts under "
                     "race 88845 (7 from its overlay list): d82f6 may not be "
                     "worn by race 88845") == 1);
@@ -1481,7 +1484,7 @@ TEST_CASE("A player's own head parts report is recorded on its look and its "
   REQUIRE(turned.GetRaceMenuPreset() == kStored);
   REQUIRE(p.Messages().empty());
 
-  report(p, kKhajiitRaceVampire, kOverlay);
+  report(p, kKhajiitRaceVampire, kOverlay, false);
   REQUIRE(turned.GetAppearance()->headpartIds == kOverlay);
   REQUIRE(turned.GetAppearance()->raceId == kKhajiitRaceVampire);
   // the eyes and the hair: the Misc type is named twice (the mouth and the
@@ -1498,7 +1501,7 @@ TEST_CASE("A player's own head parts report is recorded on its look and its "
   REQUIRE(stored["headParts"][5]["type"] == 2);
   REQUIRE(stored["actor"]["weight"] == 100);
   REQUIRE(log.Count("ff000c71's own head parts under race 88845 (6 from its "
-                    "overlay list): recorded on its look as its seat "
+                    "base list): recorded on its look as its seat "
                     "reported them (D-53-8 B, R2), its RaceMenu look's "
                     "part(s) of 2 type(s) rewritten to them and sent to 1 "
                     "game(s), its look's 6 head part(s) sent to every game "
@@ -1532,7 +1535,7 @@ TEST_CASE("A player's own head parts report is recorded on its look and its "
   p.Messages().clear();
   std::vector<uint32_t> reordered = kOverlay;
   std::reverse(reordered.begin(), reordered.end());
-  report(p, kKhajiitRaceVampire, reordered);
+  report(p, kKhajiitRaceVampire, reordered, false);
   REQUIRE(log.Count("folded, its look wears them already") == 1);
   REQUIRE(turned.GetAppearance()->headpartIds == kOverlay);
   REQUIRE(p.Messages().empty());
@@ -1540,14 +1543,220 @@ TEST_CASE("A player's own head parts report is recorded on its look and its "
   // a race the look does not record (her base race before the turn's
   // record, or a race overlay's), a RACE named as a part, and no part at all:
   // each refused by name, nothing written or sent
-  report(p, kKhajiitRace, kBefore);
+  report(p, kKhajiitRace, kBefore, true);
   REQUIRE(log.Count("E_HEADPARTS_RACE: ") == 1);
-  report(p, kKhajiitRaceVampire, { 0x51612, kKhajiitRaceVampire });
+  report(p, kKhajiitRaceVampire, { 0x51612, kKhajiitRaceVampire }, true);
   REQUIRE(log.Count("E_HEADPARTS_KIND") == 1);
   REQUIRE(log.Count("88845 is no HDPT record") == 1);
-  report(p, kKhajiitRaceVampire, {});
+  report(p, kKhajiitRaceVampire, {}, true);
   REQUIRE(log.Count("E_HEADPARTS_COUNT") == 1);
   REQUIRE(turned.GetAppearance()->headpartIds == kOverlay);
   REQUIRE(p.Messages().empty());
+  Leave(p);
+}
+
+// thuum D-53-11 (A; the fresh review of 84eb42db, finding 2): a report from
+// the overlay list is held in memory as her figure's and never reaches the
+// change form. With it on the record, a login applied the vampire eyes to
+// her own base list (the login's look apply replaces her base's parts), and
+// the cure's KhajiitRace, which carries no head part list flag, then drew
+// them from that list on both screens. Her look and stored look as the case
+// above has them; the cure's parts are ones KhajiitRace may wear in these
+// files (her head, mouth and scar on HeadPartsKhajiitandVampire 0xa8036, the
+// Khajiit hair and hairline on it too, her BlueNarrow eyes on
+// HeadPartsKhajiit 0xa8030)
+TEST_CASE("A player's own overlay head parts are held in memory and sent to "
+          "every other game, never written to its change form; a watcher's "
+          "login gets them, its own login the record; its disconnect, a "
+          "base list report and its next SetRace end them, and after a "
+          "relog the cure leaves its base eyes on its record (D-53-11)",
+          "[PlayerOwn][espm]")
+{
+  constexpr uint32_t kKhajiitRace = 0x13745;
+  constexpr uint32_t kKhajiitRaceVampire = 0x88845;
+  constexpr uint32_t kEyesBlueNarrow = 0xee878;
+  constexpr uint32_t kEyesVampire = 0xee87f;
+  constexpr uint32_t kHairKhajiit = 0xee85b;
+  constexpr uint32_t kHairlineKhajiit = 0xee857;
+  const std::vector<uint32_t> kBefore = { 0x51612,        0x511a8, 0xd82f6,
+                                          0x85de9,        0x85ddf, 0xf3916,
+                                          kEyesBlueNarrow };
+  const std::vector<uint32_t> kOverlay = { 0x51612,          0x511a8,
+                                           kEyesVampire,     kHairKhajiit,
+                                           kHairlineKhajiit, 0xf3916 };
+  const std::vector<uint32_t> kCured = { 0x51612,          0x511a8,
+                                         kEyesBlueNarrow,  kHairKhajiit,
+                                         kHairlineKhajiit, 0xf3916 };
+  const std::string kLook =
+    R"({"actor": {"weight": 100},
+  "headParts": [{"formIdentifier": "Skyrim.esm|051612", "type": 1},
+                {"formIdentifier": "Skyrim.esm|085DDF", "type": 0},
+                {"formIdentifier": "Skyrim.esm|0D82F6", "type": 6},
+                {"formIdentifier": "Skyrim.esm|085DE9", "type": 3},
+                {"formIdentifier": "Skyrim.esm|0F3916", "type": 5},
+                {"formIdentifier": "Skyrim.esm|0EE878", "type": 2}]})";
+  const auto report = [](PartOne& p, uint32_t race,
+                         std::vector<uint32_t> parts, bool overlay) {
+    OwnHeadPartsMessage msg;
+    msg.race = race;
+    msg.parts = std::move(parts);
+    msg.overlay = overlay;
+    RawMessageData raw;
+    raw.userId = 0;
+    p.GetActionListener().OnOwnHeadParts(raw, msg);
+  };
+  // the stored looks `user` heard of her, parsed, in order
+  const auto presetsTo = [](PartOne& p, Networking::UserId user) {
+    std::vector<nlohmann::json> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() &&
+          m.j.value("t", -1) == static_cast<int>(MsgType::RaceMenuPreset) &&
+          m.j.value("actor", 0u) == kTurned) {
+        out.push_back(nlohmann::json::parse(m.j["preset"].get<std::string>()));
+      }
+    }
+    return out;
+  };
+  // the eyes entry of a stored look (type 2), "" for none
+  const auto eyesOf = [](const nlohmann::json& look) {
+    for (const auto& part : look["headParts"]) {
+      if (part.value("type", -1) == 2) {
+        return part["formIdentifier"].get<std::string>();
+      }
+    }
+    return std::string();
+  };
+  // her figure's CreateActor heard by `user`: its head parts
+  const auto createdWith = [](PartOne& p, Networking::UserId user) {
+    std::optional<std::vector<uint32_t>> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() &&
+          m.j.value("t", -1) == static_cast<int>(MsgType::CreateActor) &&
+          m.j.value("refrId", 0u) == kTurned && m.j.contains("appearance")) {
+        out = m.j["appearance"]["headpartIds"].get<std::vector<uint32_t>>();
+      }
+    }
+    return out;
+  };
+  const auto has = [](const std::vector<uint32_t>& ids, uint32_t id) {
+    return std::find(ids.begin(), ids.end(), id) != ids.end();
+  };
+  PartOne& p = GetPartOne();
+  Enter(p);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  Appearance worn = *turned.GetAppearance();
+  worn.raceId = kKhajiitRaceVampire;
+  worn.headpartIds = kBefore;
+  turned.SetAppearance(&worn);
+  REQUIRE(turned.SetRaceMenuPreset(kLook));
+  const std::string kStored = turned.GetRaceMenuPreset();
+  p.Messages().clear();
+  for (uint32_t part : kCured) {
+    REQUIRE(p.HeadPartRaceListHolds(part, kKhajiitRace) ==
+            std::optional<bool>(true));
+  }
+
+  // the turn's report from her overlay list: held, the record untouched; the
+  // watcher hears the stored look with the vampire eyes, then the look with
+  // the held parts; her own game hears neither
+  report(p, kKhajiitRaceVampire, kOverlay, true);
+  REQUIRE(log.Count("ff000c71's own head parts under race 88845 (6 from its "
+                    "overlay list): held in memory as its figure's, never on "
+                    "its change form (D-53-11, R2), its RaceMenu look with "
+                    "them sent to 1 game(s), its look with their 6 head "
+                    "part(s) sent to every game that sees it") == 1);
+  REQUIRE(turned.GetAppearance()->headpartIds == kBefore);
+  REQUIRE(turned.GetRaceMenuPreset() == kStored);
+  REQUIRE(p.OwnOverlayPartsOf(kTurned) != nullptr);
+  auto presets = presetsTo(p, 1);
+  REQUIRE(presets.size() == 1);
+  REQUIRE(eyesOf(presets[0]) == "Skyrim.esm|0EE87F");
+  auto looks = LooksTo(p, 1);
+  REQUIRE(looks.size() == 1);
+  REQUIRE(looks[0]["data"]["headpartIds"].get<std::vector<uint32_t>>() ==
+          kOverlay);
+  REQUIRE(LooksTo(p, 0).empty());
+  REQUIRE(presetsTo(p, 0).empty());
+
+  // the same parts again, in another order: folded, nothing sent
+  p.Messages().clear();
+  std::vector<uint32_t> reordered = kOverlay;
+  std::reverse(reordered.begin(), reordered.end());
+  report(p, kKhajiitRaceVampire, reordered, true);
+  REQUIRE(log.Count("folded, its figure wears them already (D-53-11)") == 1);
+  REQUIRE(p.Messages().empty());
+
+  // the watcher logs in again: its CreateActor of her carries the held parts
+  // and its stored look the vampire eyes
+  p.Messages().clear();
+  p.SetUserActor(1, kWatcher);
+  const auto watcherLogin = createdWith(p, 1);
+  REQUIRE(watcherLogin.has_value());
+  REQUIRE(*watcherLogin == kOverlay);
+  presets = presetsTo(p, 1);
+  REQUIRE(!presets.empty());
+  REQUIRE(eyesOf(presets.back()) == "Skyrim.esm|0EE87F");
+
+  // her disconnect ends them; her own login is sent the record, and so is
+  // the watcher, until her game reports them again
+  p.Messages().clear();
+  DoDisconnect(p, 0);
+  REQUIRE(log.Count("ff000c71's held overlay head parts ended at its "
+                    "disconnect, its record's look stands (D-53-11)") == 1);
+  REQUIRE(p.OwnOverlayPartsOf(kTurned) == nullptr);
+  DoConnect(p, 0);
+  p.SetUserActor(0, kTurned);
+  turned.SetPos({ 0, 0, 0 });
+  turned.ForceSubscriptionsUpdate();
+  const auto ownLogin = createdWith(p, 0);
+  REQUIRE(ownLogin.has_value());
+  REQUIRE(*ownLogin == kBefore);
+  const auto watcherSees = createdWith(p, 1);
+  REQUIRE(watcherSees.has_value());
+  REQUIRE(*watcherSees == kBefore);
+  REQUIRE(turned.GetAppearance()->headpartIds == kBefore);
+  p.Messages().clear();
+  report(p, kKhajiitRaceVampire, kOverlay, true);
+  REQUIRE(LooksTo(p, 1).size() == 1);
+  REQUIRE(
+    LooksTo(p, 1)[0]["data"]["headpartIds"].get<std::vector<uint32_t>>() ==
+    kOverlay);
+  REQUIRE(turned.GetAppearance()->headpartIds == kBefore);
+
+  // the cure: her SetRace back ends them, and the watcher hears the record's
+  // stored look and look, the BlueNarrow eyes; her game's report from its
+  // base list under KhajiitRace is then recorded, the BlueNarrow eyes on her
+  // record
+  p.Messages().clear();
+  SetRace(p, kKhajiitRace, "PlayerVampireQuestScript");
+  REQUIRE(log.Count("; its held overlay head parts ended (D-53-11)") == 1);
+  REQUIRE(p.OwnOverlayPartsOf(kTurned) == nullptr);
+  REQUIRE(turned.GetAppearance()->raceId == kKhajiitRace);
+  presets = presetsTo(p, 1);
+  REQUIRE(!presets.empty());
+  REQUIRE(eyesOf(presets.back()) == "Skyrim.esm|0EE878");
+  looks = LooksTo(p, 1);
+  REQUIRE(!looks.empty());
+  const auto cureLook =
+    looks.back()["data"]["headpartIds"].get<std::vector<uint32_t>>();
+  REQUIRE(has(cureLook, kEyesBlueNarrow));
+  REQUIRE(!has(cureLook, kEyesVampire));
+  report(p, kKhajiitRace, kCured, false);
+  REQUIRE(turned.GetAppearance()->headpartIds == kCured);
+  REQUIRE(eyesOf(nlohmann::json::parse(turned.GetRaceMenuPreset())) ==
+          "Skyrim.esm|0EE878");
+
+  // a base list report ends held parts as well, and the watcher hears the
+  // record again even where the record folds
+  report(p, kKhajiitRace, kCured, true);
+  REQUIRE(p.OwnOverlayPartsOf(kTurned) != nullptr);
+  p.Messages().clear();
+  report(p, kKhajiitRace, kCured, false);
+  REQUIRE(log.Count("folded on its look (D-53-8 B); its held overlay head "
+                    "parts ended (D-53-11)") == 1);
+  REQUIRE(p.OwnOverlayPartsOf(kTurned) == nullptr);
+  REQUIRE(LooksTo(p, 1).size() == 1);
+  REQUIRE(LooksTo(p, 0).empty());
   Leave(p);
 }

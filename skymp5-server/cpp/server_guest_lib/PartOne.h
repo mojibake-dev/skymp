@@ -440,6 +440,12 @@ public:
   // its record), false when it names `part` already, names no part of that
   // type, is no look, or `part` is no HDPT
   bool WearHeadPartInLook(std::string& look, uint32_t part);
+  // thuum D-53-8 B: each of `parts` whose HDPT type `parts` names once worn
+  // in `preset` in place of its entry of that type (WearHeadPartInLook); a
+  // type named twice (two Misc parts) is no slot to rewrite by. How many
+  // entries it rewrote
+  size_t WearOwnPartsInLook(std::string& preset,
+                            const std::vector<uint32_t>& parts);
   // Eli's D-E1 A, a recorded ChangeHeadPart: `actor`'s look wears `part`
   // (WearHeadPart) and its stored RaceMenu look follows (WearHeadPartInLook),
   // since that look's load on a figure, or on the player after a login,
@@ -484,6 +490,33 @@ public:
   // to the other games are the caller's
   HeadPartRecord RecordOwnHeadParts(MpActor& actor,
                                     const std::vector<uint32_t>& parts);
+  // thuum D-53-11 (A, the fresh review of 84eb42db's finding 2): the head
+  // parts a player's own game draws from its race's overlay list (an
+  // OwnHeadParts report with `overlay` set, judged as RecordOwnHeadParts's
+  // caller judges it) are held here, in memory, and never reach the change
+  // form, in D-T1 A's shape. A login applies the change form's look to the
+  // player's own base, so an overlay written there became the base's own
+  // parts after a relog, and the cure's race (no head part list flag) then
+  // drew the vampire eyes from the base list on every screen. The held parts
+  // end at the player's next recorded SetRace, at a report from its base
+  // list, and at its disconnect; its own game reports them again after its
+  // login (OwnLookService's login window). Whether `parts` differ from the
+  // ones held
+  bool HoldOwnOverlayParts(uint32_t actorId, std::vector<uint32_t> parts);
+  // the held parts gone (the three ends above): whether any were held
+  bool EndOwnOverlayParts(uint32_t actorId);
+  // the held parts, nullptr for none
+  const std::vector<uint32_t>* OwnOverlayPartsOf(uint32_t actorId) const;
+  // the look and the stored RaceMenu look as every other game is sent them:
+  // the record's, with the held overlay parts in place of the look's head
+  // parts and, in the stored look, each in place of its entry of its HDPT
+  // type as RecordOwnHeadParts writes it (a type named twice stays); the
+  // record's as it is while none are held. The player's own game is always
+  // sent the record. The preset is without the server's stash
+  // (RaceMenuPresetForGames)
+  Appearance AppearanceForOthers(const MpActor& actor,
+                                 const Appearance& look) const;
+  std::string RaceMenuPresetForOthers(const MpActor& actor);
   // thuum train 53's V-look (lab/.cache/drafts/reads-53/r-v3-v4-v5-look.md,
   // R-V3): a recorded SetRace's look for its new race, `actor`'s appearance
   // already wearing `race`. Every head part whose race list

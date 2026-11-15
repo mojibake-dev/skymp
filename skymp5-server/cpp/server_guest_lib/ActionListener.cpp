@@ -1588,13 +1588,15 @@ LookVerdict AppearanceFromLook(PartOne& partOne, const Appearance& current,
 // the player's derived appearance to everyone who sees it but the player,
 // whose own game already wears it; with the race overlay it wears beyond its
 // record, if any (thuum ADR-068 rung 5, D-T1 A: the figure's look and its
-// overlay travel together, an UpdateAppearance without one ending it)
+// overlay travel together, an UpdateAppearance without one ending it), and
+// the head parts its own game draws from its race's overlay list, held in
+// memory (thuum D-53-11, PartOne::AppearanceForOthers)
 void SendAppearanceToOthers(PartOne& partOne, MpActor& actor,
                             const Appearance& appearance)
 {
   UpdateAppearanceMessage out;
   out.idx = actor.GetIdx();
-  out.data = appearance;
+  out.data = partOne.AppearanceForOthers(actor, appearance);
   out.overlay = partOne.PlayerOverlayOf(actor.GetFormId());
   for (auto listener : actor.GetActorListeners()) {
     if (listener == &actor ||
@@ -1614,8 +1616,9 @@ size_t SendRaceMenuPresetToOthers(PartOne& partOne, MpActor& actor)
   RaceMenuPresetMessage out;
   out.actor = actor.GetFormId();
   // without the server's own stash of a race's dropped parts (the V-look
-  // review's correctness-4)
-  out.preset = PartOne::RaceMenuPresetForGames(actor.GetRaceMenuPreset());
+  // review's correctness-4), with the held overlay head parts (thuum
+  // D-53-11, PartOne::RaceMenuPresetForOthers)
+  out.preset = partOne.RaceMenuPresetForOthers(actor);
   size_t sent = 0;
   for (auto listener : actor.GetActorListeners()) {
     if (listener == &actor ||
@@ -1670,10 +1673,11 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
       spdlog::info("RaceMenu: actor {:x} appearance follows its look "
                    "(ADR-026): {} head parts",
                    actor->GetFormId(), derived.headpartIds.size());
-    } else if (partOne.PlayerOverlayOf(actor->GetFormId())) {
+    } else if (partOne.PlayerOverlayOf(actor->GetFormId()) ||
+               partOne.OwnOverlayPartsOf(actor->GetFormId())) {
       // thuum ADR-068 rung 5 (D-T1 A): the seat's look relayed as is would
       // drop the figure's overlay on every other screen; the server's word
-      // carries both
+      // carries both (and the held overlay head parts, thuum D-53-11)
       actor->SetAppearance(&msg.data.value());
       SendAppearanceToOthers(partOne, *actor, msg.data.value());
     } else {
@@ -3480,26 +3484,62 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
       std::string(verdict.name), head, std::string(verdict.why));
   }
 
-  // R2, the seat's word: the look wears exactly the reported parts and the
-  // stored look names each one of a type the report names once; the stored
-  // look goes first to every game that sees the player, then the look, the
-  // head part row's shape (each figure is built again at the appearance and
-  // loads the stored look its game holds then)
+  // thuum D-53-11 (A): the overlay list's parts are held in memory as the
+  // figure's, never on the change form. A login applies the change form's
+  // look to the player's own base, so an overlay written there became the
+  // base's own parts after a relog, and the cure's race then drew them from
+  // the base list. The stored look goes first to every other game, then the
+  // look, both the record's with the held parts in place
+  // (PartOne::AppearanceForOthers, RaceMenuPresetForOthers); the player's own
+  // game draws them already
+  if (msg.overlay) {
+    if (!partOne.HoldOwnOverlayParts(actor->GetFormId(), msg.parts)) {
+      return spdlog::info("[verb:appearance] {}: folded, its figure wears "
+                          "them already (D-53-11)",
+                          head);
+    }
+    std::string what = "held in memory as its figure's, never on its change "
+                       "form (D-53-11, R2)";
+    if (!actor->GetRaceMenuPreset().empty()) {
+      what += fmt::format(", its RaceMenu look with them sent to {} game(s)",
+                          SendRaceMenuPresetToOthers(partOne, *actor));
+    }
+    SendAppearanceToOthers(partOne, *actor, *look);
+    what += fmt::format(", its look with their {} head part(s) sent to every "
+                        "game that sees it",
+                        msg.parts.size());
+    return spdlog::info("[verb:appearance] {}: {}", head, what);
+  }
+
+  // R2, the seat's word from its base list: the look wears exactly the
+  // reported parts and the stored look names each one of a type the report
+  // names once; the stored look goes first to every game that sees the
+  // player, then the look, the head part row's shape (each figure is built
+  // again at the appearance and loads the stored look its game holds then).
+  // A base list report ends any held overlay parts (D-53-11), so the other
+  // games are sent the record again even where it folds
+  const bool ended = partOne.EndOwnOverlayParts(actor->GetFormId());
   const auto recorded = partOne.RecordOwnHeadParts(*actor, msg.parts);
-  if (!recorded.look && !recorded.preset) {
+  if (!recorded.look && !recorded.preset && !ended) {
     return spdlog::info("[verb:appearance] {}: folded, its look wears them "
                         "already (D-53-8 B)",
                         head);
   }
-  std::string what = "recorded on its look as its seat reported them "
-                     "(D-53-8 B, R2)";
-  if (recorded.preset) {
-    what += fmt::format(", its RaceMenu look's part(s) of {} type(s) "
-                        "rewritten to them and sent to {} game(s)",
-                        recorded.rewritten,
-                        SendRaceMenuPresetToOthers(partOne, *actor));
+  std::string what = recorded.look || recorded.preset
+    ? "recorded on its look as its seat reported them (D-53-8 B, R2)"
+    : "folded on its look (D-53-8 B)";
+  if (ended) {
+    what += "; its held overlay head parts ended (D-53-11)";
   }
-  if (recorded.look) {
+  if (recorded.preset || (ended && !actor->GetRaceMenuPreset().empty())) {
+    const size_t sent = SendRaceMenuPresetToOthers(partOne, *actor);
+    what += recorded.preset
+      ? fmt::format(", its RaceMenu look's part(s) of {} type(s) rewritten "
+                    "to them and sent to {} game(s)",
+                    recorded.rewritten, sent)
+      : fmt::format(", its RaceMenu look sent to {} game(s)", sent);
+  }
+  if (recorded.look || ended) {
     if (const auto now = actor->GetAppearance()) {
       SendAppearanceToOthers(partOne, *actor, *now);
       what += fmt::format(", its look's {} head part(s) sent to every game "
@@ -5821,6 +5861,12 @@ void RecordPlayerOwn(
         Appearance appearance = *look;
         appearance.raceId = form;
         reporter.SetAppearance(&appearance);
+        // thuum D-53-11: the held overlay head parts end at the race's
+        // change (the cure's SetRace back among them); the new race's are
+        // its own game's next report. So every other game hears the record's
+        // stored look below, even where the race's fit leaves it unchanged
+        const bool overlayEnded =
+          partOne.EndOwnOverlayParts(reporter.GetFormId());
         // train 53's V-look (thuum lab/.cache/drafts/reads-53/
         // r-v3-v4-v5-look.md, R-V3): the head parts the new race may not
         // wear leave the look and the stored RaceMenu look
@@ -5845,6 +5891,13 @@ void RecordPlayerOwn(
                               "sent to {} game(s)",
                               recorded.given,
                               SendRaceMenuPresetToOthers(partOne, reporter));
+        }
+        if (overlayEnded) {
+          what += "; its held overlay head parts ended (D-53-11)";
+          if (!recorded.preset && !reporter.GetRaceMenuPreset().empty()) {
+            what += fmt::format(", its RaceMenu look sent to {} game(s)",
+                                SendRaceMenuPresetToOthers(partOne, reporter));
+          }
         }
         // ADR-073 decision 7 (the review's rules-10): what the drop left
         // and why

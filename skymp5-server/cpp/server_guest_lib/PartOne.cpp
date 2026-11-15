@@ -478,6 +478,9 @@ struct PartOne::Impl
   // witness back
   uint32_t loginSerial = 0;
   std::unordered_map<uint32_t, Square> lastSquareByPlayer;
+  // thuum D-53-11: each player's held overlay head parts
+  // (HoldOwnOverlayParts), in memory, never on the change form
+  std::unordered_map<uint32_t, std::vector<uint32_t>> ownOverlayParts;
   std::function<int64_t(Networking::UserId)> roundTripSource;
   // the quitting host (docs/verbs/cell-host.md): each connection's silence
   // and the users the table holds stale for it
@@ -1138,6 +1141,14 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // its race overlay ends with the connection (D-T1 A: a relaunch
           // mid-form logs in as its own race)
           this_->pImpl->questRuns->quest_runs_gone(actor->GetFormId());
+          // thuum D-53-11: its held overlay head parts end with the
+          // connection; its own game reports them again after its login
+          if (this_->EndOwnOverlayParts(actor->GetFormId())) {
+            spdlog::info("[verb:appearance] {:x}'s held overlay head parts "
+                         "ended at its disconnect, its record's look stands "
+                         "(D-53-11)",
+                         actor->GetFormId());
+          }
           const auto overlay =
             this_->pImpl->playerOverlays->player_overlay_gone(
               actor->GetFormId());
@@ -1838,6 +1849,12 @@ void PartOne::Init()
     // player's race overlay, which never touches its change form
     if (hasUser && !isMe) {
       message.props.overlay = PlayerOverlayOf(emitter->GetFormId());
+      // thuum D-53-11: and the head parts its own game draws from its
+      // race's overlay list, held in memory; its own game gets the record
+      if (message.appearance) {
+        message.appearance =
+          AppearanceForOthers(*emitterAsActor, *message.appearance);
+      }
     }
 
     message.idx = emitter->GetIdx();
@@ -1948,12 +1965,13 @@ void PartOne::Init()
     // with its figure, after CreateActor on the same ordered channel; its
     // own client gets it after its login instead (ActionListener)
     if (emitterAsActor && !isMe && hasUser) {
-      if (auto preset = emitterAsActor->GetRaceMenuPreset(); !preset.empty()) {
+      if (!emitterAsActor->GetRaceMenuPreset().empty()) {
         RaceMenuPresetMessage presetMessage;
         presetMessage.actor = emitterAsActor->GetFormId();
         // without the server's own stash of a race's dropped parts (the
-        // V-look review's correctness-4)
-        presetMessage.preset = RaceMenuPresetForGames(std::move(preset));
+        // V-look review's correctness-4), with the held overlay head parts
+        // (thuum D-53-11)
+        presetMessage.preset = RaceMenuPresetForOthers(*emitterAsActor);
         sendTarget->Send(listenerUserId, presetMessage, true);
       }
     }
@@ -5276,13 +5294,11 @@ PartOne::HeadPartRecord PartOne::RecordHeadPart(MpActor& actor, uint32_t part)
   return recorded;
 }
 
-PartOne::HeadPartRecord PartOne::RecordOwnHeadParts(
-  MpActor& actor, const std::vector<uint32_t>& parts)
+size_t PartOne::WearOwnPartsInLook(std::string& preset,
+                                   const std::vector<uint32_t>& parts)
 {
-  HeadPartRecord recorded;
-  const auto current = actor.GetAppearance();
-  if (!HasEspm() || !current || parts.empty()) {
-    return recorded;
+  if (!HasEspm() || preset.empty()) {
+    return 0;
   }
   auto& browser = GetEspm().GetBrowser();
   auto& cache = worldState.GetEspmCache();
@@ -5297,19 +5313,33 @@ PartOne::HeadPartRecord PartOne::RecordOwnHeadParts(
   for (uint32_t part : parts) {
     types.push_back(typeOf(part));
   }
-
-  // the stored look first: each part of a type the report names once,
-  // ChangeHeadPart's rewrite (a look that names it already, or names no part
-  // of its type, is left as it is)
-  std::string preset = actor.GetRaceMenuPreset();
+  // each part of a type the report names once, ChangeHeadPart's rewrite (a
+  // look that names it already, or names no part of its type, is left as it
+  // is)
+  size_t rewritten = 0;
   for (size_t i = 0; i < parts.size(); ++i) {
     if (!types[i] || std::count(types.begin(), types.end(), types[i]) != 1) {
       continue;
     }
     if (WearHeadPartInLook(preset, parts[i])) {
-      ++recorded.rewritten;
+      ++rewritten;
     }
   }
+  return rewritten;
+}
+
+PartOne::HeadPartRecord PartOne::RecordOwnHeadParts(
+  MpActor& actor, const std::vector<uint32_t>& parts)
+{
+  HeadPartRecord recorded;
+  const auto current = actor.GetAppearance();
+  if (!HasEspm() || !current || parts.empty()) {
+    return recorded;
+  }
+
+  // the stored look first (WearOwnPartsInLook)
+  std::string preset = actor.GetRaceMenuPreset();
+  recorded.rewritten = WearOwnPartsInLook(preset, parts);
   if (recorded.rewritten != 0) {
     recorded.preset = actor.SetRaceMenuPreset(std::move(preset));
     if (!recorded.preset) {
@@ -5329,6 +5359,49 @@ PartOne::HeadPartRecord PartOne::RecordOwnHeadParts(
     recorded.look = true;
   }
   return recorded;
+}
+
+bool PartOne::HoldOwnOverlayParts(uint32_t actorId,
+                                  std::vector<uint32_t> parts)
+{
+  auto& held = pImpl->ownOverlayParts[actorId];
+  std::vector<uint32_t> a = held;
+  std::vector<uint32_t> b = parts;
+  std::sort(a.begin(), a.end());
+  std::sort(b.begin(), b.end());
+  const bool changed = a != b;
+  held = std::move(parts);
+  return changed;
+}
+
+bool PartOne::EndOwnOverlayParts(uint32_t actorId)
+{
+  return pImpl->ownOverlayParts.erase(actorId) != 0;
+}
+
+const std::vector<uint32_t>* PartOne::OwnOverlayPartsOf(uint32_t actorId) const
+{
+  const auto it = pImpl->ownOverlayParts.find(actorId);
+  return it == pImpl->ownOverlayParts.end() ? nullptr : &it->second;
+}
+
+Appearance PartOne::AppearanceForOthers(const MpActor& actor,
+                                        const Appearance& look) const
+{
+  Appearance out = look;
+  if (const auto* held = OwnOverlayPartsOf(actor.GetFormId())) {
+    out.headpartIds = *held;
+  }
+  return out;
+}
+
+std::string PartOne::RaceMenuPresetForOthers(const MpActor& actor)
+{
+  std::string preset = actor.GetRaceMenuPreset();
+  if (const auto* held = OwnOverlayPartsOf(actor.GetFormId())) {
+    WearOwnPartsInLook(preset, *held);
+  }
+  return RaceMenuPresetForGames(std::move(preset));
 }
 
 PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)

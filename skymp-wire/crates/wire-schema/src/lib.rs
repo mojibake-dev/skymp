@@ -197,7 +197,15 @@ use bounded::{String, Vec};
 /// on its branch while m4-sitting-53 took 49 for ActorClaim's `why`
 /// (c4621a8b), so the merge moves it here: one number, one shape (D-PH1 A's
 /// reason), and a 49 peer, which knows no wire id 90, fails the handshake.
-pub const SCHEMA_VERSION: u16 = 50;
+/// 51: LockReport's optional `locked` and `level` and its outcome 3, the
+/// owner's engine write (thuum ADR-073 step 3, decision 12, m4-step3-locks
+/// 524ac581): a lock an engine wrote by itself, recorded from the seat that
+/// hosts the reference or its load door's other side. Merged after 50's images
+/// (m4-sitting-53 f0c378ec) carried LockReport without them: postcard is
+/// positional, so a 50 client's report arrives two presence bytes short and is
+/// refused as Malformed while the handshake passed (D-PH1 A's reason, 42's and
+/// 48's precedent).
+pub const SCHEMA_VERSION: u16 = 51;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

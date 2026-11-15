@@ -2323,22 +2323,24 @@ Frida::PlayersEffectRole RootEffectRole(
 // the ash fix (thuum lab/.cache/drafts/reanimate/read-ash-075817.md,
 // recommendation B): true when RootEffectRole's `root` has as its self an
 // ActiveMagicEffect script whose effect has ended: the object's handle
-// (Object::GetHandle, Address Library 104247, CommonLibSSE-NG
-// include/RE/O/Object.h:19) equal to the VM's own policy's EmptyHandle
-// (include/RE/I/IObjectHandlePolicy.h:22, the policy OnCall reads from the
-// VM), and its class chain naming ActiveMagicEffect (Object::GetTypeInfo,
-// Object.h:21; ObjectTypeInfo::GetName and GetParent,
-// include/RE/O/ObjectTypeInfo.h:126-128, a BSFixedString's c_str never null,
-// include/RE/B/BSFixedString.h:116-123; AdmittedByChain's walk in
-// FridaHooks.cpp, 16 classes at most, compared without case). HYPOTHESIS
-// (the read's 3.2 and 3.3, decompiler output; its section 7 trace decides):
-// the engine ends an effect on its own clock (its duration, a dispel, its
-// conditions failing), and SkyrimVM's TESActiveEffectApplyRemoveEvent sink
-// then queues OnEffectFinish and has the VM's HandleCObjectDeletion set the
-// handle of each script object bound to the effect that something still
-// holds to EmptyHandle, so a stack in Utility.Wait (TurnToAsh's) runs on
-// after its effect with its object and variables intact and an empty handle,
-// which Frida::PlayersEffect's HandleIsType(142) answers false
+// (Object::GetHandle, Address Library 104247 at CommonLibSSE-NG
+// src/RE/O/Object.cpp:20, declared at include/RE/O/Object.h:19) equal to the
+// VM's own policy's EmptyHandle (include/RE/I/IObjectHandlePolicy.h:22, the
+// policy OnCall reads from the VM), and its class chain naming
+// ActiveMagicEffect (Object::GetTypeInfo, Object.h:21; ObjectTypeInfo::GetName
+// and GetParent, include/RE/O/ObjectTypeInfo.h:126-128, a BSFixedString's
+// c_str never null, include/RE/B/BSFixedString.h:116-123; AdmittedByChain's
+// walk in FridaHooks.cpp, 16 classes at most, compared without case).
+// HYPOTHESIS (the read's 3.2 and 3.3, decompiler output) until a run's line on
+// TurnToAsh's rows (the look branch's once-a-row line, printed only after this
+// test held on that row) or the read's section 7 trace: the engine ends an
+// effect on its own clock (its duration, a dispel, its conditions failing),
+// and SkyrimVM's TESActiveEffectApplyRemoveEvent sink then queues
+// OnEffectFinish and has the VM's HandleCObjectDeletion set the handle of each
+// script object bound to the effect that something still holds to EmptyHandle,
+// so a stack in Utility.Wait (TurnToAsh's) runs on after its effect with its
+// object and variables intact and an empty handle, which
+// Frida::PlayersEffect's HandleIsType(142) answers false
 bool RootEffectEnded(const RE::BSScript::StackFrame* root,
                      RE::BSScript::IObjectHandlePolicy* policy)
 {
@@ -2697,27 +2699,39 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     // this seat's own player (kTarget) keeps the owner's judgment.
     // The ash fix (thuum lab/.cache/drafts/reanimate/read-ash-075817.md,
     // recommendation B): that live test cannot carry vanilla
-    // ReanimateAshPile's TurnToAsh, the script it was built for, on any
-    // build. The engine ends the script's effect on its own clock, at or
-    // before the thrall's death, and empties the script's handle
-    // (RootEffectEnded; HYPOTHESIS until the read's section 7 trace):
-    // TurnToAsh's rows after its Waits (AttachAshPile, then the shader's Stop,
-    // SetAlpha and SetCriticalStage) were counted " (not hosted)" in
-    // 20261113-075817, by the read Frida::PlayersEffect's HandleIsType false
-    // on that empty handle (its exit 2, HYPOTHESIS likewise). So the look also
-    // crosses from an effect's script after its effect ended: an actor's look
-    // row on a dead game-file actor (TESObjectREFR::IsDead, CommonLibSSE-NG
+    // ReanimateAshPile's TurnToAsh, the script it was built for, on any build.
+    // The engine ends the script's effect on its own clock, at or before the
+    // thrall's death, and empties the script's handle (RootEffectEnded;
+    // HYPOTHESIS until a run's line on TurnToAsh's rows, or the read's section
+    // 7 trace): TurnToAsh's rows after its Waits (AttachAshPile, then the
+    // shader's Stop, SetAlpha and SetCriticalStage) were counted " (not
+    // hosted)" in 20261113-075817, by the read Frida::PlayersEffect's
+    // HandleIsType false on that empty handle (its exit 2, HYPOTHESIS
+    // likewise). So the look also crosses from an effect's script after its
+    // effect ended: an actor's look row on a dead game-file actor
+    // (TESObjectREFR::IsDead, CommonLibSSE-NG
     // include/RE/T/TESObjectREFR.h:353, mirroring the server's facts.dead;
     // HYPOTHESIS that the read is safe on the dispatch thread) on a stack
-    // whose root is such a script is queued the same way, under the same
-    // mark, and counted " (effect ended)", each row's first logged once
-    // (ADR-073 decision 7). It asks no live effect, so it holds whichever of
-    // the effect's ends came first. The client proposes and the server judges
-    // on its own facts alone (rule 5): wire-rules natives' actor_look_owner
-    // takes the actor's simulator, or the caster of the reanimate it accepted
-    // on a dead thrall for ASH_WINDOW_MS after the death it recorded, and
-    // refuses any other seat's report (E_SCRIPTCALL_OWNER), that refusal the
-    // read. The PlaceAtMe helper rule (EffectPlacementOf) keeps the live test
+    // whose root is such a script is queued the same way, under the same mark,
+    // and counted " (effect ended)", each row's first logged once (ADR-073
+    // decision 7). It asks no live effect, so it holds whichever of the
+    // effect's ends came first. IsDead's read, decompiler output (rule 2):
+    // Character's vtable (VTABLE_Character, include/RE/Offsets_VTABLE.h:2215,
+    // AE 207886, `just addr` 0x18a5558) holds at slot 0x99, Actor's override
+    // (include/RE/A/Actor.h:345), 0x140674ed0 in the sky-re Ghidra program for
+    // 1.6.1170, one 32-bit read at +0xC8, ActorState's actorState1 (ActorState
+    // at 0xC0 on AE, Actor.h:128; actorState1 at +0x08,
+    // include/RE/A/ActorState.h:203), the life state its bits 21 to 24
+    // (ActorState.h:114): true with a_notEssential for kDying, kDead and
+    // kRecycle, false for kReanimate (ActorState.h:7-18), with no call and no
+    // lock. So a raised thrall still standing never passes; whether a row run
+    // at OnDying already finds kDying is unread. The client proposes and the
+    // server judges on its own facts alone (rule 5): wire-rules natives'
+    // actor_look_owner takes the actor's simulator, or the caster of the
+    // reanimate it accepted on a dead thrall for ASH_WINDOW_MS after the death
+    // it recorded, and refuses any other seat's report (E_SCRIPTCALL_OWNER),
+    // that refusal the read. The PlaceAtMe helper rule (EffectPlacementOf)
+    // keeps the live test
     if (info.actorLook && g_effectHelpers) {
       const RE::BSScript::StackFrame* root = nullptr;
       if (RootEffectRole(stack, policy, root) ==

@@ -98,7 +98,17 @@ const hex = (n: number) => n.toString(16);
 // include/RE/D/DialoguePackage.h:9) raising one would reach onPackage as
 // package 0 or a 0xff id with no owning quest (EventHandler.cpp:1087-1090)
 // and end the lead as why 1 at each conversation. The probe: x-lead-claim's
-// why-1 release lines around 17e01 ("she runs <id>").
+// why-1 release lines around 17e01, the package from HostedStateService's
+// state lines ("package 0 " or "package ff<id> "; the why-1 line's "she runs
+// <id>" is past the console's 128-byte cut). H-L8: her 3D goes null on this
+// seat for other reasons than a door while its engine still runs her (an
+// Actor::DoReset3D, CommonLibSSE-NG include/RE/A/Actor.h:520; the npc-fate
+// reroll's drop and reload, FateApi.cpp:620-633; a race change; a load's
+// gap), and a poll inside the gap releases her lead as why 2. It opens again
+// here only once she is loaded, on one of the quest's packages and this
+// seat's again (opensLead), so where another player hosts her cell that host
+// takes her. The probe: x-lead-claim's why-2 lines against c1's is3DLoaded
+// snapshots and her record's position.
 export class LeadClaimService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();

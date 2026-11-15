@@ -1873,9 +1873,30 @@ export class PropService extends ClientListener {
                 prop.heldAt = now;
                 prop.holdLost = false;
                 logLab(TAG, `prop ${prop.refr.toString(16)} held: the engine's grab names it`);
+                this.wakeHeld(prop);
                 this.claim(prop, TOUCH_GRAB, now);
             }
         }
+    }
+
+    // D-53-14: a hold's start wakes a resting Dynamic body. A body this seat
+    // set Dynamic without a wake, or tracked in place at the engine's own
+    // motion, can sleep under the hand: in x-held-pose 20261115-064118 leg A,
+    // c2's grab of ff000005 had its spring and motion type 3 but no writer
+    // and no lift, and the grant's flip set no motion on a body already
+    // Dynamic (D73). HYPOTHESIS until x-held-pose's next leg A: the sleeping
+    // body is the cause. A Keyframed copy (another seat's live stream) is
+    // left to the claim's take-over, and a body of parts to setMotion's guard
+    private wakeHeld(prop: Prop) {
+        if (!prop.loaded3D || prop.motionAsked === MotionType.Keyframed || prop.parts > 0) {
+            return;
+        }
+        const refr = this.refOf(prop);
+        if (!refr || !refr.is3DLoaded()) {
+            return;
+        }
+        this.setMotion(prop, refr, MotionType.Dynamic, true);
+        logLab(TAG, `prop ${prop.refr.toString(16)} woken for the hand: Dynamic`);
     }
 
     // a hold that ended (the engine's grab, or the prop leaving the tracked

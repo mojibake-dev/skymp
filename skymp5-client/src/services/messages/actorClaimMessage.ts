@@ -13,7 +13,10 @@ import { MsgType } from "../../messages";
 // (`quest` and `package`: the quest's own package this game runs on the actor,
 // which fills one of the quest's aliases; D-53-4), 2 a scene this game
 // started (`quest` and `scene`; D-L2 B). The server reads the records and
-// finds the alias itself.
+// finds the alias itself. A lead's release may say `why` (D-53-5 B): 1 this
+// game started a package on the actor that is not one of the quest's own, 2
+// the actor is no longer loaded in this game; the server records it as the
+// lead's end (R2) and the actor returns to her cell's host.
 export interface ActorClaimMessage {
     t: MsgType.ActorClaim;
     idx: number;
@@ -22,4 +25,5 @@ export interface ActorClaimMessage {
     quest?: number;
     package?: number;
     scene?: number;
+    why?: number;
 }

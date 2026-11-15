@@ -1966,6 +1966,13 @@ pub const CLAIM_LEAD: u8 = 1;
 /// An ActorClaim's purpose: a scene the sender's seat started (D-L2 B; D-A2
 /// C, the stage's cause seat for a scene a fragment starts).
 pub const CLAIM_SCENE: u8 = 2;
+/// A lead's release `why` (thuum D-53-5 B, SCHEMA_VERSION 47): the package
+/// the sender's engine started on the actor is not one of the lead's quest's
+/// own (its QNAM another quest, or none).
+pub const CLAIM_WHY_PACKAGE: u8 = 1;
+/// A lead's release `why` (D-53-5 B): the actor is no longer loaded in the
+/// sender's game.
+pub const CLAIM_WHY_UNLOADED: u8 = 2;
 
 wire_struct! {
     /// MsgType 56, thuum's (docs/verbs/npc-talk.md, ADR-052): a player asks
@@ -1987,11 +1994,15 @@ wire_struct! {
     /// `scene`, a scene the sender's seat started (the server reads the
     /// scene's own PNAM and its actor aliases; it ends at its release or the
     /// quest's stop). A claim of any purpose outlives a grant into its cell,
-    /// and another player's claim of any purpose holds the actor. Reason
-    /// codes besides: `E_VAL_RANGE` (a purpose above 2; a lead without its
-    /// quest or package, or with a scene; a scene without its quest or
-    /// scene, or with a package; a talk with any of the three; any of them 0
-    /// or at or above 0xff000000).
+    /// and another player's claim of any purpose holds the actor. A lead's
+    /// release may say `why` (thuum D-53-5 B): absent or 0 a release,
+    /// [`CLAIM_WHY_PACKAGE`] or [`CLAIM_WHY_UNLOADED`] the sender's game no
+    /// longer running the actor, its own report (R2), which the server
+    /// records as the lead's end. Reason codes besides: `E_VAL_RANGE` (a
+    /// purpose above 2; a lead without its quest or package, or with a
+    /// scene; a scene without its quest or scene, or with a package; a talk
+    /// with any of the three; any of them 0 or at or above 0xff000000; a
+    /// `why` above 2, or on a claim, a talk or a scene).
     pub struct ActorClaim {
         /// `"t": 56`.
         #[serde(default)]
@@ -2011,6 +2022,11 @@ wire_struct! {
         pub package: Option<u32>,
         /// Since SCHEMA_VERSION 47: a scene's SCEN.
         pub scene: Option<u32>,
+        /// Since SCHEMA_VERSION 47 (D-53-5 B), a lead's release only: why
+        /// the sender's game stopped running the actor,
+        /// [`CLAIM_WHY_PACKAGE`] or [`CLAIM_WHY_UNLOADED`]; absent or 0 a
+        /// release.
+        pub why: Option<u8>,
     }
 }
 

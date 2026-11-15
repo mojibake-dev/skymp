@@ -935,7 +935,10 @@ std::string DescribeClaim(const PartOne& partOne, const MpActor& actor)
 // world's record does not hold stopped, the package's QNAM, the scene's own
 // PNAM, the alias the actor fills); an alias the server cannot read is
 // accepted as the seat's word and logged unvalidated (R2). Every purpose is
-// an NPC's, alive.
+// an NPC's, alive. A lead's release may say why its seat's game stopped
+// running the actor (D-53-5 B: a package that is not the quest's own, her
+// unload there), the holder's own report, recorded as the lead's end (R2);
+// the actor then returns to its cell's rule.
 void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
                                   const ActorClaimMessage& msg)
 {
@@ -972,22 +975,48 @@ void ActionListener::OnActorClaim(const RawMessageData& rawMsgData,
     refuse("E_CLAIM_PURPOSE", fmt::format("no purpose {}", kind));
     return;
   }
+  const uint32_t why = msg.why.value_or(0);
+  if (msg.why && (msg.claim || kind != 1 || why > 2)) {
+    // the validator refuses it first: a why rides a lead's release alone
+    refuse("E_CLAIM_WHY",
+           fmt::format("a why {} rides a lead's release alone", why));
+    return;
+  }
   if (!msg.claim) {
-    const auto released = partOne.ReleaseClaim(*myActor, *actor, purpose);
+    // D-53-5 B: the holder's game no longer running her, its own report
+    // (R2), one line per why (ADR-073 decision 7)
+    std::string whyWords;
+    switch (why) {
+      case 0:
+        break;
+      case 1:
+        whyWords = ": its game started a package that is not one of the "
+                   "quest's own (the holder's report, R2)";
+        break;
+      case 2:
+        whyWords = ": it is no longer loaded in its game (the holder's "
+                   "report, R2)";
+        break;
+      default:
+        whyWords = fmt::format(": an unknown why {}", why);
+        break;
+    }
+    const auto released = partOne.ReleaseClaim(*myActor, *actor, purpose,
+                                               static_cast<uint8_t>(why));
     if (released == PartOne::ClaimRelease::NotHeld) {
       refuse("E_CLAIM_NONE", "it holds no claim on it");
       return;
     }
     if (released == PartOne::ClaimRelease::Kept) {
-      spdlog::info("[verb:npc-talk] {:x} releases {:x}{}; its claim stands "
+      spdlog::info("[verb:npc-talk] {:x} releases {:x}{}{}; its claim stands "
                    "for its other purposes ({})",
-                   myActor->GetFormId(), actor->GetFormId(), what,
+                   myActor->GetFormId(), actor->GetFormId(), what, whyWords,
                    DescribeClaim(partOne, *actor));
       return;
     }
-    spdlog::info("[verb:npc-talk] {:x} releases {:x}{}; the cell's rule names "
-                 "{:x}",
-                 myActor->GetFormId(), actor->GetFormId(), what,
+    spdlog::info("[verb:npc-talk] {:x} releases {:x}{}{}; the cell's rule "
+                 "names {:x}",
+                 myActor->GetFormId(), actor->GetFormId(), what, whyWords,
                  partOne.SimulatorOf(*actor));
     return;
   }

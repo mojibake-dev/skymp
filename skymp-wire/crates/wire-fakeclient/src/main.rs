@@ -19,6 +19,11 @@
 //!     told of by a CreateActor with that base: a drop or a placement whose
 //!     id the server's generator chose, so a session names it without
 //!     assuming the generator's state; 0 and an error event when none came),
+//!     and "{{idx:<formId>}}" (the id hex with 0x, or decimal) the index the
+//!     latest CreateActor naming that form paired it with: a game-file NPC
+//!     a message names by the server's index (ActorClaim 56), as the game's
+//!     client turns a form id into the index its world model holds; u32::MAX,
+//!     never a form's index, and an error event when none came),
 //!     plus an optional "reliable" (default true).
 //! Output: one JSON object per line. Exit 0 on success, 1 on any failure or
 //! timeout, 2 on bad options.
@@ -135,6 +140,44 @@ struct Session {
     /// The latest form id each CreateActor named per base id (the
     /// "{{created:<baseId>}}" placeholder's table).
     created: BTreeMap<u64, u64>,
+    /// The index the latest CreateActor paired with each form id (the
+    /// "{{idx:<formId>}}" placeholder's table). The server keeps a form's
+    /// index while the form exists, so a form that left this client's view
+    /// keeps its entry.
+    idx_by_form: BTreeMap<u64, u64>,
+}
+
+/// Every `"{{idx:<formId>}}"` in `raw` replaced by the index `idx_by_form`
+/// holds for that form (its id hex with 0x, or decimal); a form no
+/// CreateActor named yet becomes u32::MAX, which no form's index is (the
+/// server's FormIndex::g_invalidIdx; ActorClaim's validator refuses it), and
+/// is named in the returned list (0 for an id that does not parse).
+fn substitute_idx(raw: &str, idx_by_form: &BTreeMap<u64, u64>) -> (String, Vec<u64>) {
+    const OPEN: &str = "\"{{idx:";
+    const CLOSE: &str = "}}\"";
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    let mut missing = Vec::new();
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start.saturating_add(OPEN.len())..];
+        let Some(end) = after.find(CLOSE) else {
+            out.push_str(&rest[start..]);
+            rest = "";
+            break;
+        };
+        let form = parse_u32(after[..end].trim()).map_or(0, u64::from);
+        match idx_by_form.get(&form) {
+            Some(idx) => out.push_str(&idx.to_string()),
+            None => {
+                missing.push(form);
+                out.push_str(&u32::MAX.to_string());
+            }
+        }
+        rest = &after[end.saturating_add(CLOSE.len())..];
+    }
+    out.push_str(rest);
+    (out, missing)
 }
 
 /// Every `"{{created:<baseId>}}"` in `raw` replaced by the form id
@@ -189,6 +232,11 @@ impl Session {
                         (msg.get("baseId").and_then(Value::as_u64), msg.get("refrId").and_then(Value::as_u64))
                     {
                         self.created.insert(base, refr);
+                    }
+                    if let (Some(idx), Some(refr)) =
+                        (msg.get("idx").and_then(Value::as_u64), msg.get("refrId").and_then(Value::as_u64))
+                    {
+                        self.idx_by_form.insert(refr, idx);
                     }
                 }
                 if t == 33 && msg.get("isMe").and_then(Value::as_bool).unwrap_or(false) {
@@ -316,6 +364,10 @@ fn run_script(s: &mut Session, path: &str, settle_ms: u64) -> i32 {
         for base in missing {
             emit(&json!({"event": "error", "error": format!("no CreateActor with base {base} yet; {{{{created:{base}}}}} sent as 0")}));
         }
+        let (raw, unknown) = substitute_idx(&raw, &s.idx_by_form);
+        for form in unknown {
+            emit(&json!({"event": "error", "error": format!("no CreateActor for form {form:x} yet; {{{{idx:{form:#x}}}}} sent as {}", u32::MAX)}));
+        }
         match serde_json::from_str::<Value>(&raw) {
             Ok(msg) => s.send(&msg, reliable),
             Err(_) => {
@@ -353,6 +405,7 @@ fn main() -> std::process::ExitCode {
         failure: None,
         pending_snippets: Vec::new(),
         created: BTreeMap::new(),
+        idx_by_form: BTreeMap::new(),
     };
     let timeout = Duration::from_millis(o.timeout_ms);
     if !s.wait_for(timeout, |s| s.client.is_connected()) {
@@ -403,6 +456,29 @@ mod created_tests {
         assert_eq!(missing, vec![7]);
         let (same, none) = substitute_created(r#"{"refr":5}"#, &created);
         assert_eq!(same, r#"{"refr":5}"#);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn the_idx_placeholder_names_the_index_a_create_word_paired_with_the_form() {
+        // Camilla Valerius 0x13488 at the server's index 41, Lucan 0x13487 at 40
+        let mut idx_by_form = BTreeMap::new();
+        idx_by_form.insert(0x13488, 41);
+        idx_by_form.insert(0x13487, 40);
+        let (out, missing) = substitute_idx(r#"{"t":56,"idx":"{{idx:0x13488}}","claim":true}"#, &idx_by_form);
+        assert_eq!(out, r#"{"t":56,"idx":41,"claim":true}"#);
+        assert!(missing.is_empty());
+        // decimal too, and every placeholder in the line
+        let (out, missing) = substitute_idx(r#"{"a":"{{idx:78983}}","b":"{{idx:0x13488}}"}"#, &idx_by_form);
+        assert_eq!(out, r#"{"a":40,"b":41}"#);
+        assert!(missing.is_empty());
+        // a form no create word named: u32::MAX, never a form's index, and named
+        let (out, missing) = substitute_idx(r#"{"idx":"{{idx:0x13491}}"}"#, &idx_by_form);
+        assert_eq!(out, r#"{"idx":4294967295}"#);
+        assert_eq!(missing, vec![0x13491]);
+        // the player's own "{{idx}}" is another token, left to its own replace
+        let (same, none) = substitute_idx(r#"{"idx":"{{idx}}"}"#, &idx_by_form);
+        assert_eq!(same, r#"{"idx":"{{idx}}"}"#);
         assert!(none.is_empty());
     }
 }

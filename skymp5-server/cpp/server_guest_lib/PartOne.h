@@ -37,6 +37,7 @@ struct TriggerEntries;  // wire-bridge's (thuum ADR-068 D-C2), opaque here
 struct QuestRuns;       // wire-bridge's (thuum ADR-068 rung 5), opaque here
 struct ScriptVariables; // wire-bridge's (thuum ADR-068 rung 5), opaque here
 struct PlayerOverlays;  // wire-bridge's (thuum ADR-068 rung 5), opaque here
+struct CreatedRefs;     // wire-bridge's (thuum #54), opaque here
 }
 
 using ProfileId = int32_t;

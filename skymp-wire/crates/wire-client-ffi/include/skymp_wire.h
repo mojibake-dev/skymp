@@ -153,6 +153,18 @@
 #define SKYMP_NATIVE_LOOK_ONLY 2
 
 /**
+ * Scoped: inside another player's acting scope the call runs as the scope
+ * has it.
+ */
+#define SKYMP_NATIVE_SCOPED_RUNS 0
+
+/**
+ * Scoped: inside another player's acting scope the call runs on the acting
+ * player's seat alone (the spec's New 1, PQ-3's skip by the row's cell).
+ */
+#define SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE 1
+
+/**
  * Parameter: Bool.
  */
 #define SKYMP_NATIVE_PARAM_BOOL 0
@@ -365,6 +377,13 @@ typedef struct SkympNativeRow {
    * by what it would do and run as before); 0 for a live row.
    */
   uint8_t staged;
+  /**
+   * What a call does inside another player's acting scope
+   * (`SKYMP_NATIVE_SCOPED_*`): natives_rules.rs's rule with the overlay's
+   * stopgaps over it, read by the platform's count in place of a copy of
+   * the rule (thuum ADR-073 step 4's review, SHOULD 4).
+   */
+  uint8_t scoped;
 } SkympNativeRow;
 
 #ifdef __cplusplus

@@ -514,6 +514,19 @@ impl Param {
     }
 }
 
+/// What a call does inside another player's acting scope (the spec's New
+/// 1), the platform's to read from the row (SkympNativeRow's `scoped`;
+/// thuum ADR-073 step 4's review, SHOULD 4: one copy of the rule, natives-gen
+/// its maker, the overlay's stopgaps on it reaching the seam).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scoped {
+    /// It runs as the scope has it (the acting scope's swaps).
+    Runs,
+    /// It runs on the acting player's seat alone: PQ-3's skip, keyed on the
+    /// row's subject instead of a name.
+    ActingSeatAlone,
+}
+
 /// One native's row of the table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -535,6 +548,8 @@ pub struct Row {
     pub keep: Keep,
     /// Whether a call of it may cross as a firing's look.
     pub look: Look,
+    /// What a call of it does inside another player's acting scope.
+    pub scoped: Scoped,
     /// Its parameters in order (FunctionsDump.txt's types for the native).
     pub params: &'static [Param],
     /// What the seam or the client does with its call beyond the rest.

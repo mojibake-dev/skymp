@@ -15,7 +15,7 @@
 use std::ffi::{c_char, CString};
 use std::sync::OnceLock;
 
-use wire_rules::natives::{Audience, Keep, Kind, Look, Owner, Param, Relay, Subject, TABLE};
+use wire_rules::natives::{Audience, Keep, Kind, Look, Owner, Param, Relay, Scoped, Subject, TABLE};
 
 use crate::{guard, log};
 
@@ -92,6 +92,13 @@ pub const SKYMP_NATIVE_LOOK_NEVER: u8 = 0;
 pub const SKYMP_NATIVE_LOOK_ALSO: u8 = 1;
 /// Look: the look channel alone.
 pub const SKYMP_NATIVE_LOOK_ONLY: u8 = 2;
+
+/// Scoped: inside another player's acting scope the call runs as the scope
+/// has it.
+pub const SKYMP_NATIVE_SCOPED_RUNS: u8 = 0;
+/// Scoped: inside another player's acting scope the call runs on the acting
+/// player's seat alone (the spec's New 1, PQ-3's skip by the row's cell).
+pub const SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE: u8 = 1;
 
 /// Parameter: Bool.
 pub const SKYMP_NATIVE_PARAM_BOOL: u8 = 0;
@@ -189,6 +196,11 @@ pub struct SkympNativeRow {
     /// 1 for a staged row (thuum ADR-073 step 4's S5: a derived row, counted
     /// by what it would do and run as before); 0 for a live row.
     pub staged: u8,
+    /// What a call does inside another player's acting scope
+    /// (`SKYMP_NATIVE_SCOPED_*`): natives_rules.rs's rule with the overlay's
+    /// stopgaps over it, read by the platform's count in place of a copy of
+    /// the rule (thuum ADR-073 step 4's review, SHOULD 4).
+    pub scoped: u8,
 }
 
 fn kind_code(kind: Kind) -> u8 {
@@ -243,6 +255,13 @@ fn look_code(look: Look) -> u8 {
         Look::Never => SKYMP_NATIVE_LOOK_NEVER,
         Look::Also => SKYMP_NATIVE_LOOK_ALSO,
         Look::Only => SKYMP_NATIVE_LOOK_ONLY,
+    }
+}
+
+fn scoped_code(scoped: Scoped) -> u8 {
+    match scoped {
+        Scoped::Runs => SKYMP_NATIVE_SCOPED_RUNS,
+        Scoped::ActingSeatAlone => SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE,
     }
 }
 
@@ -324,6 +343,7 @@ fn build() -> Option<Rows> {
             hook: row.hook.code(),
             latent: u8::from(row.latent),
             staged: u8::from(row.staged),
+            scoped: scoped_code(row.scoped),
         });
     }
     Some(Rows {
@@ -399,6 +419,7 @@ mod tests {
             assert_eq!(r.look, look_code(t.look));
             assert_eq!(r.hook, t.hook.code());
             assert_eq!((r.latent, r.staged), (u8::from(t.latent), u8::from(t.staged)));
+            assert_eq!(r.scoped, scoped_code(t.scoped));
             assert_eq!(usize::from(r.param_count), t.params.len());
             let params: Vec<u8> = t.params.iter().map(|p| param_code(*p)).collect();
             assert_eq!(r.params.get(..t.params.len()), Some(params.as_slice()));
@@ -424,6 +445,32 @@ mod tests {
         assert_eq!(codes.map(usize::from), std::array::from_fn(|i| i));
         assert_eq!(Hook::ALL.map(Hook::code), codes);
         assert_eq!(Some(&SKYMP_NATIVE_HOOK_LAST), codes.last());
+        // the scoped cell reaches the platform as the table holds it: the
+        // rule's statics on no object, the overlay's twelve stopgaps on
+        // member natives (New 1's player-implicit set), and its weather
+        // entry's Runs over the rule (New 3)
+        let scoped = |cls: &str, func: &str| {
+            rows.iter()
+                .find(|r| text(r.cls).eq_ignore_ascii_case(cls) && text(r.func).eq_ignore_ascii_case(func))
+                .map(|r| r.scoped)
+        };
+        for (cls, func) in [
+            ("Game", "TeachWord"),
+            ("Faction", "SetCrimeGold"),
+            ("Actor", "SetPlayerResistingArrest"),
+            ("ImageSpaceModifier", "Apply"),
+            ("Quest", "SetActive"),
+        ] {
+            assert_eq!(scoped(cls, func), Some(SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE), "{cls}.{func}");
+        }
+        for (cls, func) in [("Weather", "ReleaseOverride"), ("utility", "Wait"), ("Game", "GetPlayer")] {
+            assert_eq!(scoped(cls, func), Some(SKYMP_NATIVE_SCOPED_RUNS), "{cls}.{func}");
+        }
+        assert_eq!(
+            rows.iter().filter(|r| r.staged == 0 && r.scoped != SKYMP_NATIVE_SCOPED_RUNS).count(),
+            0,
+            "no live row is scoped to the acting seat"
+        );
         // the install line's relay words, as NativeRows.inc spelled them
         let relays: Vec<&str> = rows.iter().map(|r| text(r.relay)).collect();
         assert_eq!(

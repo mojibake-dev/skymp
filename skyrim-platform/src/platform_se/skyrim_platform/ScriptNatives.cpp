@@ -480,9 +480,11 @@ std::atomic<std::uint32_t> g_actingUntabled{ 0 };
 // decision 11's forward), would-relay (an action on a world object it owns),
 // would-filter (a state call on a subject it does not own, from a seat-own
 // root such as a lifecycle handler: the amendment's filter), would-skip (a
-// non-latent call with no result on no object, inside another player's
-// acting scope: the spec's New 1), would-run (the owner's own, nobody's, or
-// no world cause). Each kind's first call is named once in the log
+// call its row's scoped column runs on the acting player's seat alone,
+// inside another player's acting scope: the spec's New 1, the rule's
+// statics on no object and the overlay's stopgaps on member natives alike),
+// would-run (the owner's own, nobody's, or no world cause). Each kind's
+// first call is named once in the log
 enum StagedVerdict : std::size_t
 {
   kWouldForward,
@@ -2669,7 +2671,16 @@ void OnStaged(std::size_t row, const RowInfo& info,
               const std::optional<ActingScope::Scope>& scope)
 {
   const NativeRow& native = g_natives[row];
-  if (native.kind == NativeKind::Local) {
+  // the spec's New 1 by the row's scoped column, natives-gen's rule with the
+  // overlay's stopgaps over it, never a copy of the rule here (thuum ADR-073
+  // step 4's review, SHOULD 4): inside another player's acting scope a call
+  // so scoped would run on the acting player's seat alone, whatever its kind
+  // (Faction.SetCrimeGold an everyone row, Actor.SetPlayerResistingArrest a
+  // state row, ImageSpaceModifier.Apply a local one)
+  const bool actingSeatAlone =
+    native.columns.scoped == SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE && scope &&
+    ActingScope::Swaps(*scope);
+  if (native.kind == NativeKind::Local && !actingSeatAlone) {
     CountStagedPlain(row, kStagedLocal);
     return;
   }
@@ -2689,20 +2700,23 @@ void OnStaged(std::size_t row, const RowInfo& info,
     CountStagedPlain(row, kStagedFrame);
     return;
   }
-  // nobody's (D-F1 C): every seat runs it; its self named by its handle's
-  // low 32 bits (SubjectOfFrame, no lookup) for its kind's first line
+  // the acting player's seat alone (New 1), counted by its scope; its self
+  // named by its handle's low 32 bits (SubjectOfFrame, no lookup) for its
+  // kind's first line
+  if (actingSeatAlone) {
+    CountStaged(row, kWouldSkip, ScopeRootOf(scope), SubjectOfFrame(top), top);
+    return;
+  }
+  // nobody's (D-F1 C): every seat runs it, its self named as above
   if (native.kind == NativeKind::Everyone) {
     CountStaged(row, kWouldRun, ScopeRootOf(scope), SubjectOfFrame(top), top);
     return;
   }
-  // a static on no object: the seat's own game, run on the acting player's
-  // seat alone inside another player's scope when it is not latent and has
-  // no result (the spec's New 1, PQ-3's skip keyed on the subject)
+  // a static on no object the scoped column runs as the scope has it (a
+  // latent one, one with a result, the decided weather cells): the seat's
+  // own game, run here
   if (native.subject == NativeSubject::None) {
-    const bool acting = scope && ActingScope::Swaps(*scope) && !info.latent &&
-      info.result == RE::BSScript::TypeInfo::RawType::kNone;
-    CountStaged(row, acting ? kWouldSkip : kWouldRun, ScopeRootOf(scope), 0,
-                top);
+    CountStaged(row, kWouldRun, ScopeRootOf(scope), 0, top);
     return;
   }
   // the subject, read as OnCall's reads it: the frame's self, or the first
@@ -3268,9 +3282,9 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
 // the table's rows from MpClientPlugin's SkympNativeRows (thuum ADR-073 step
 // 4, D-NT1 C), read once at kDataLoaded before any row binds: all or none,
 // so a plugin that is missing, has no such export, holds another count than
-// this build's skymp_wire.h or a kind, subject, keep, record, look or hook
-// code this build has no value for leaves every row unloaded, said once, and
-// no row is bound
+// this build's skymp_wire.h or a kind, subject, keep, record, look, hook or
+// scoped code this build has no value for leaves every row unloaded, said
+// once, and no row is bound
 bool LoadRows()
 {
   std::size_t count = 0;
@@ -3303,10 +3317,12 @@ bool LoadRows()
            ? wire.record < 1 || wire.record > 5
            : wire.record != 0) ||
         wire.look > SKYMP_NATIVE_LOOK_ONLY ||
-        wire.hook > SKYMP_NATIVE_HOOK_LAST) {
+        wire.hook > SKYMP_NATIVE_HOOK_LAST ||
+        wire.scoped > SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE) {
       logger::error("[verb:scripts] no table: MpClientPlugin's row {} holds "
-                    "a name, a kind, a subject, a keep, a record, a look or a "
-                    "hook this build does not read; no table row is bound",
+                    "a name, a kind, a subject, a keep, a record, a look, a "
+                    "hook or a scoped code this build does not read; no table "
+                    "row is bound",
                     row);
       return false;
     }

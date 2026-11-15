@@ -78,6 +78,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
+pub use crate::natives::Scoped;
 use crate::natives::{self, Audience, Hook, Keep, Kind, Look, Owner, Param, RecordKind, Relay, Subject};
 
 /// One argument of a native as the dump declares it.
@@ -308,17 +309,6 @@ impl Dump {
             .iter()
             .find(|n| n.cls.eq_ignore_ascii_case(cls) && n.name.eq_ignore_ascii_case(name))
     }
-}
-
-/// What a call does inside another player's acting scope (the spec's New
-/// 1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Scoped {
-    /// It runs as the scope has it (the acting scope's swaps).
-    Runs,
-    /// It runs on the acting player's seat alone: PQ-3's skip, keyed on the
-    /// row's subject instead of a name.
-    ActingSeatAlone,
 }
 
 /// Which rule set a row's kind ([`derive`] tries them in this order).
@@ -1002,6 +992,8 @@ pub struct TableRow {
     pub keep: Keep,
     /// The look.
     pub look: Look,
+    /// What it does inside another player's acting scope.
+    pub scoped: Scoped,
     /// The parameters.
     pub params: Vec<Param>,
     /// The hook.
@@ -1026,6 +1018,7 @@ impl TableRow {
             relay: row.relay,
             keep: row.keep,
             look: row.look,
+            scoped: row.scoped,
             params: row.params.to_vec(),
             hook: row.hook,
             latent: row.latent,
@@ -1047,6 +1040,7 @@ impl TableRow {
             relay: row.cells.relay,
             keep: row.cells.keep,
             look: row.cells.look,
+            scoped: row.cells.scoped,
             params: row.cells.params.clone(),
             hook: row.cells.hook,
             latent: row.native.latent,
@@ -1078,7 +1072,7 @@ impl TableRow {
             .map(|p| format!("Param::{p:?}"))
             .collect();
         format!(
-            "    Row {{ cls: \"{}\", func: \"{}\", kind: Kind::{:?}, subject: Subject::{:?}, owner: Owner::{:?}, audience: Audience::{:?}, relay: {relay}, keep: {keep}, look: Look::{:?}, params: &[{}], hook: Hook::{:?}, latent: {}, staged: {} }},",
+            "    Row {{ cls: \"{}\", func: \"{}\", kind: Kind::{:?}, subject: Subject::{:?}, owner: Owner::{:?}, audience: Audience::{:?}, relay: {relay}, keep: {keep}, look: Look::{:?}, scoped: Scoped::{:?}, params: &[{}], hook: Hook::{:?}, latent: {}, staged: {} }},",
             self.cls,
             self.func,
             self.kind,
@@ -1086,6 +1080,7 @@ impl TableRow {
             self.owner,
             self.audience,
             self.look,
+            self.scoped,
             params.join(", "),
             self.hook,
             self.latent,

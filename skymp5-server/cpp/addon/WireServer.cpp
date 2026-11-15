@@ -69,8 +69,7 @@ public:
     try {
       rust::Str json(text, textLength); // checks UTF-8, throws if not
       if (uint16_t code = server->send(client, json, reliable)) {
-        LogRefusal(id, code,
-                   std::string(skymp::wire::send_refused_name(json)),
+        LogRefusal(id, code, std::string(skymp::wire::send_refused_name(json)),
                    std::string(text, std::min<size_t>(textLength, 160)));
       }
     } catch (const std::invalid_argument&) {

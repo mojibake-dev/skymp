@@ -1071,6 +1071,10 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
                          actor->GetFormId(), container->GetFormId());
             container->RemoveContainerOccupant(*actor);
           }
+          // and the world book its game had open (thuum playtest 52 break
+          // 3): the next game holds no Book Menu, so its first activation of
+          // that book is an open, never a take
+          actor->SetOpenBook(0);
           // every cell it hosts starts its grace (thuum
           // docs/verbs/cell-host.md); the clock passes them on. Each claim it
           // held ends here with its word (thuum ADR-073 decision 6; dropped

@@ -241,6 +241,14 @@ public:
                   std::chrono::steady_clock::time_point timePoint);
   std::pair<uint32_t, std::chrono::steady_clock::time_point> GetLastBed()
     const;
+  // thuum playtest 52 break 3 (the R-B read, fork m4-book-read): the world
+  // book whose Book Menu the server opened in this player's game (0 when
+  // none), so its next activation of that book is the menu's Take
+  // (MpObjectReference::ProcessActivateNormal); forgotten at the take, at the
+  // menu's closing activation, at its activation of anything else that
+  // reaches ProcessActivateNormal and at its disconnect
+  void SetOpenBook(uint32_t refrId);
+  uint32_t GetOpenBook() const;
   uint64_t NextRestedGrant();
   uint64_t GetRestedGrant() const;
   // thuum docs/verbs/map-markers.md: the map markers this player discovered,

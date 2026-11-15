@@ -17,6 +17,7 @@
 #include "UpdateEquipmentMessage.h"
 #include "UpdateMovementMessage.h"
 #include "UpdatePropertyMessage.h"
+#include "libespm/Loader.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
@@ -1763,7 +1764,7 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
           "against the actor's own record: a worn item the record holds goes "
           "into the actor's record and to the other game alone, the host "
           "player's record stays, a non-host's report is dropped, and an "
-          "item the record lacks is refused with nothing sent to the host",
+          "item the record lacks is recorded with nothing sent to the host",
           "[CellHost][HostedEquipment][espm]")
 {
   // thuum docs/verbs/npc-stream.md (ADR-050 decision 1, slice 3): the
@@ -1778,7 +1779,9 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   // Skyrim.esm's steel sword, a WEAP the record lacks, and its steel helmet
   // ArmorSteelHelmetA, an ARMO the record lacks (lab/esm.py): the actor's
   // fate dresses it in the iron set, so the iron helmet 0x12e4d is already
-  // its own (3b's first T0, "outfit kept ... 4 worn item(s)", right 12e4d)
+  // its own (3b's first T0, "outfit kept ... 4 worn item(s)", right 12e4d).
+  // Both helmets' BOD2 name the slots 0x1002 (lab/esm.py id, sky-srv,
+  // 2026-11-14): the steel one takes the iron one's place
   constexpr uint32_t kElsewhere = 0x13989;
   constexpr uint32_t kSteelHelmet = 0x13954;
   // Skyrim.esm's Torch01, a LIGH record the record lacks
@@ -1819,11 +1822,12 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   // the relay once, the host hears nothing, the host player's own record
   // stays as it was
   const auto c1Before = c1.GetEquipment();
-  // the record's worn outfit before the report: what no report may shrink
-  // (fate-dress, playtest 37's finding 46: the fate's worn list is the
-  // outfit every seat dresses the copy from, so a hosted report keeps the
-  // record's worn ARMOR entries it lacks; the hands, a weapon or a light,
-  // are the host's and follow the report, Eli's word of 2026-11-04)
+  // the record's worn outfit before the report: what a first report never
+  // shrinks (playtest 37's finding 46: the fate's worn list is the outfit
+  // every seat dresses the copy from, and a host's first read can come
+  // before its engine dressed the copy); fork m4-npc-worn: an entry the
+  // record wears comes off when this host's own earlier report wore it, or
+  // when a reported entry takes its hand or its armor slots
   const auto isArmor = [&](uint32_t baseId) {
     const auto rec = p.GetEspm().GetBrowser().LookupById(baseId).rec;
     return rec && rec->GetType() == "ARMO";
@@ -1868,41 +1872,76 @@ TEST_CASE("A hosted actor's equipment is its host's engine's word checked "
   REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
   REQUIRE(sentOfType(0, MsgType::SpSnippet) == 0);
 
-  // an ARMOR the record lacks: refused as before, the record stands, nothing
-  // sent to the host
+  // an ARMOR the record lacks (a helmet the host's engine put on, a skin a
+  // script equipped): recorded R2 like the weapon, into the record's
+  // inventory and worn set, relayed once, nothing sent to the host; the
+  // steel sword the host's last report wore and this one does not comes off
+  // the record's worn set and stays in its inventory; the roll's iron
+  // helmet, whose slots the steel one takes, comes off too, and the rest of
+  // the roll's outfit stays (no report of this host wore it yet)
+  const auto shareSlots = [&](uint32_t a, uint32_t b) {
+    if (!isArmor(a) || !isArmor(b)) {
+      return false;
+    }
+    const auto slots = [&](uint32_t id) {
+      const auto data = espm::GetData<espm::ARMO>(id, &p.worldState);
+      return data.bod2.present ? data.bod2.bodyPartFlags
+                               : data.bodt.bodyPartFlags;
+    };
+    return (slots(a) & slots(b)) != 0;
+  };
+  std::vector<uint32_t> outfitLeft;
+  for (const auto baseId : outfitBefore) {
+    if (!shareSlots(baseId, kSteelHelmet)) {
+      outfitLeft.push_back(baseId);
+    }
+  }
   p.Messages().clear();
   Wear(p, 0, kActor, kSteelHelmet, 4);
   p.Tick();
-  REQUIRE(!actor.GetEquipment().inv.HasItem(kSteelHelmet));
-  REQUIRE(actor.GetEquipment().numChanges == 3);
-  REQUIRE(relays(1) == 0);
+  REQUIRE(actor.GetEquipment().inv.HasItem(kSteelHelmet));
+  REQUIRE(actor.GetInventory().HasItem(kSteelHelmet));
+  REQUIRE_FALSE(actor.GetEquipment().inv.HasItem(kElsewhere));
+  REQUIRE(actor.GetInventory().HasItem(kElsewhere));
+  for (const auto baseId : outfitBefore) {
+    REQUIRE(actor.GetEquipment().inv.HasItem(baseId) ==
+            !shareSlots(baseId, kSteelHelmet));
+  }
+  REQUIRE(actor.GetEquipment().numChanges == 4);
+  REQUIRE(relays(1) == 1);
   REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
   REQUIRE(sentOfType(0, MsgType::SpSnippet) == 0);
 
   // a LIGHT the record lacks, lit by the host's AI (Skyrim.esm Torch01
   // 0x1d4ec; thuum docs/verbs/npc-fate.md, Eli's word of 2026-11-04 after
   // oracle v4 190713: the AI's torch is an equip every seat shows, the hands
-  // are the host's): recorded R2 like the engine's own weapon, relayed once
+  // are the host's): recorded R2 like the engine's own weapon, relayed once;
+  // the steel helmet the last report wore comes off the worn set
   p.Messages().clear();
   Wear(p, 0, kActor, kTorch, 5);
   p.Tick();
   REQUIRE(actor.GetEquipment().inv.HasItem(kTorch));
   REQUIRE(actor.GetInventory().HasItem(kTorch));
+  REQUIRE_FALSE(actor.GetEquipment().inv.HasItem(kSteelHelmet));
+  REQUIRE(actor.GetInventory().HasItem(kSteelHelmet));
+  for (const auto baseId : outfitLeft) {
+    REQUIRE(actor.GetEquipment().inv.HasItem(baseId));
+  }
   REQUIRE(actor.GetEquipment().numChanges == 5);
   REQUIRE(relays(1) == 1);
   REQUIRE(sentOfType(0, MsgType::SetInventory) == 0);
 
   // the host's next report without it (the AI put the torch away): the
-  // torch leaves the record's hands and stays in its inventory, while the
-  // roll's armor the report lacks is kept as before (the dress is the
-  // server's, the hands the host's)
+  // torch leaves the record's worn set and stays in its inventory, the
+  // sword is worn again, and the roll's outfit no report of this host wore
+  // stays
   p.Messages().clear();
   Wear(p, 0, kActor, kIronSword, 6);
   p.Tick();
-  REQUIRE(!actor.GetEquipment().inv.HasItem(kTorch));
+  REQUIRE_FALSE(actor.GetEquipment().inv.HasItem(kTorch));
   REQUIRE(actor.GetInventory().HasItem(kTorch));
   REQUIRE(actor.GetEquipment().inv.HasItem(kIronSword));
-  for (const auto baseId : outfitBefore) {
+  for (const auto baseId : outfitLeft) {
     REQUIRE(actor.GetEquipment().inv.HasItem(baseId));
   }
   REQUIRE(actor.GetEquipment().numChanges == 6);

@@ -7,7 +7,7 @@ import { figureAimHeading } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { applyRaceOverlay, parseRaceOverlay } from "../sync/raceOverlay";
 import { RaceOverlay } from "../services/messages/raceOverlay";
-import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands } from "../sync/equipment";
+import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyHands, cannotDress } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { applyBodyInventory } from "../sync/inventory";
 import * as sp from "skyrimPlatform";
@@ -348,12 +348,13 @@ export class FormView {
             ) as ObjectReference;
           },
 
-          triggerSpawnProcess(spawningRefr: ObjectReference, spawnPosition: [number, number, number], appearance: Appearance | null, callback: () => void) {
+          triggerSpawnProcess(spawningRefr: ObjectReference, spawnPosition: [number, number, number], appearance: Appearance | null, isCurrent: () => boolean, callback: () => void) {
             new SpawnProcess(
               appearance,
               spawnPosition,
               spawningRefr.getFormID(),
-              callback
+              callback,
+              isCurrent
             );
           }
         };
@@ -365,7 +366,8 @@ export class FormView {
             return ref;
           },
 
-          triggerSpawnProcess(spawningRefr: ObjectReference, spawnPosition: [number, number, number], appearance: Appearance | null, callback: () => void) {
+          // the stub's chain is not this file's: its callback alone is guarded
+          triggerSpawnProcess(spawningRefr: ObjectReference, spawnPosition: [number, number, number], appearance: Appearance | null, _isCurrent: () => boolean, callback: () => void) {
             const f = storage["formViewFunc2"] as Function;
             f(spawningRefr, spawnPosition, appearance, callback);
           }
@@ -465,7 +467,22 @@ export class FormView {
         }
 
         if (refr) {
-          spawnMethod.triggerSpawnProcess(refr, spawnPos, model.appearance || null, () => {
+          // a spawn ends for the reference it placed: once destroy() has let
+          // it go (a respawn over it, a cell change, the view dropped), its
+          // chain stops and its end never marks the view ready. thuum
+          // 20261114-082602 and 083256: rotfern's two look words 148 to 161 ms
+          // apart respawned c2's figure inside the first spawn's chain, whose
+          // end could then mark the view ready for the second copy while
+          // placeAtMe still held it disabled
+          const spawnedId = refr.getFormID();
+          const generation = this.spawnGeneration;
+          const isCurrent = () => this.spawnGeneration === generation;
+          spawnMethod.triggerSpawnProcess(refr, spawnPos, model.appearance || null, isCurrent, () => {
+            if (!isCurrent()) {
+              const now = this.refrId === spawnedId ? "let it go" : `moved to ${this.refrId.toString(16)}`;
+              logTrace("FormView", `spawn of ${spawnedId.toString(16)} finished after the view ${now}; not marked ready`);
+              return;
+            }
             this.ready = true;
             this.spawnMoment = Date.now();
           });
@@ -509,6 +526,8 @@ export class FormView {
   destroy(lost = false): void {
     this.isOnScreen = false;
     this.spawnMoment = 0;
+    // every spawn still running for the reference let go here is superseded
+    this.spawnGeneration++;
     const refrId = this.refrId;
     once("update", () => {
       if (refrId && refrId < 0xff000000 && lost) {
@@ -1101,7 +1120,7 @@ export class FormView {
       // host streams what its actor wears, the server checks it against the
       // actor's own record and relays it)
       const ac = Actor.from(refr);
-      if (ac && !ac.isDeleted() && Date.now() - this.eqState.lastEqMoment > 500) {
+      if (ac && !cannotDress(ac) && ac.is3DLoaded() && Date.now() - this.eqState.lastEqMoment > 500) {
         applyHands(ac, model.equipment);
         this.eqState.lastNumChanges = model.equipment.numChanges;
         this.eqState.lastEqMoment = Date.now();
@@ -1119,7 +1138,7 @@ export class FormView {
       if (!FormView.isNpcModel(model) && this.spawnMoment > 0 && Date.now() - this.spellSweepAt > 10000) {
         this.spellSweepAt = Date.now();
         const figure = Actor.from(refr);
-        if (figure && isFigureBase(figure)) {
+        if (figure && !cannotDress(figure) && figure.is3DLoaded() && isFigureBase(figure)) {
           const removed = keepOnlyServerSpells(figure, model.equipment, FormView.overlaySpells(model));
           if (removed > 0) {
             printConsole(`figure ${refr.getFormID().toString(16)}: ${removed} spell(s) a distributor added removed (ADR-046)`);
@@ -1132,7 +1151,7 @@ export class FormView {
         // 1. Place ~90 bots and force them to reequip iron swords to the left hand (rate should be ~50ms)
         // 2. Open your inventory and reequip different items fast
         // 3. After 1-2 minutes close your inventory and see that HUD disappeared
-        if (ac && !ac.isDeleted() && !isBadMenuShown() &&
+        if (ac && !cannotDress(ac) && ac.is3DLoaded() && !isBadMenuShown() &&
           Date.now() - this.eqState.lastEqMoment > 500 &&
           Date.now() - this.spawnMoment > -1 &&
           this.spawnMoment > 0
@@ -1621,6 +1640,8 @@ export class FormView {
   private lastPcWorldOrCell = 0;
   private lastWorldOrCell = 0;
   private spawnMoment = 0;
+  // bumped by destroy(): a spawn started under an older one is superseded
+  private spawnGeneration = 0;
   private wasHostedByOther: boolean | undefined = undefined;
   private state = {};
   private localImmortal = false;

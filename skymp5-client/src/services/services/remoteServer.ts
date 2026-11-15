@@ -789,6 +789,23 @@ export class RemoteServer extends ClientListener {
           degreesToRadians(msg.rot[1]),
           degreesToRadians(msg.rot[2]),
         );
+        // thuum docs/verbs/npc-fate.md (x-reanimate-claim 20261115-082651, D-53-18):
+        // the move above took the actor's ragdoll out of the world, and a live
+        // actor's engine builds its controller again at the move, but a corpse's
+        // only collision is its ragdoll, which nothing put back: a watcher's copy
+        // of a body placed at its record took no aimed projectile (the non-host's
+        // Reanimate Corpse passed through it, no hit, no claim) and no hit at all.
+        // So a dead actor's ragdoll goes back into the world once it stands at the
+        // record (HYPOTHESIS until x-reanimate-claim reads the non-host's raise)
+        if (actor && refrId && actor.isDead()) {
+          const dead = Actor.from(Game.getFormEx(refrId));
+          if (dead) {
+            dead.forceAddRagdollToWorld().then(
+              () => logTrace(this, `corpse ${refrId.toString(16)} placed at its record: its ragdoll back in the world`),
+              (err) => logTrace(this, `corpse ${refrId.toString(16)} placed at its record: forceAddRagdollToWorld refused: ${String(err)}`),
+            );
+          }
+        }
       };
       const actor = Actor.from(refr);
       if (actor /*&& actor.getFormID() === 0x14*/) {

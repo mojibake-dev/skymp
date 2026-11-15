@@ -54,13 +54,14 @@ export class HostedStateService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         this.controller.on("update", () => this.onUpdate());
-        this.controller.on("packageStart", (e) => this.onPackage(e));
-        this.controller.on("packageChange", (e) => this.onPackage(e));
+        this.controller.on("packageStart", (e) => this.onPackage(e, true));
+        this.controller.on("packageChange", (e) => this.onPackage(e, false));
     }
 
     // the package events run in the update's context (EventHandler.cpp posts
-    // them as update tasks), so the form reads are allowed here
-    private onPackage(e: PackageEvent) {
+    // them as update tasks), so the form reads are allowed here; started: a
+    // packageStart (LeadClaimService reads the package she runs from it alone)
+    private onPackage(e: PackageEvent, started: boolean) {
         if (!e.actor) {
             return;
         }
@@ -70,8 +71,9 @@ export class HostedStateService extends ClientListener {
         }
         this.packages.set(localId, e.package ? e.package.getFormID() : 0);
         // thuum ADR-073 step 5a (D-53-4): a quest's own package opens that
-        // quest's lead on its alias actor, LeadClaimService's to ask
-        this.controller.lookupListener(LeadClaimService).onPackage(localId, e.package ? e.package : null);
+        // quest's lead on its alias actor, LeadClaimService's to ask; another
+        // ends it (D-53-5 B)
+        this.controller.lookupListener(LeadClaimService).onPackage(localId, e.package ? e.package : null, started);
     }
 
     private onUpdate() {

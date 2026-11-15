@@ -10,6 +10,7 @@ import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
 import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 import { HostService } from "./hostService";
 import { RagdollService } from "./ragdollService";
+import { ActorFateService } from "./actorFateService";
 
 // thuum docs/verbs/change-form.md (ADR-065 for system 1: the save is the
 // state), the TypeScript of the pipeline over the natives of
@@ -610,12 +611,17 @@ export class ChangeFormService extends ClientListener {
         // lay just imposed it, over the fate's reconcile of the server's rows;
         // the body's container contents are the server's (R0), so the fate's
         // native runs once more after the lay: on a dead copy it reconciles
-        // the inventory alone and leaves the laid body as it is
-        try {
-            const reconciled = this.sp.rerollActor(rec.formId);
-            logLab("verb:npc-fate", `corpse ${hex}: the record's inventory reconciled after the lay (${reconciled ? "queued" : "refused: no fate here"})`);
-        } catch (e) {
-            logLab("verb:npc-fate", `corpse ${hex}: no reconcile after the lay, the native is missing on this platform (${e})`);
+        // the inventory alone and leaves the laid body as it is. Not with
+        // #62's bisect switch off (ActorFateService.lateWorkOn)
+        if (!this.controller.lookupListener(ActorFateService).lateWorkOn()) {
+            logLab("verb:npc-fate", `corpse ${hex}: no reconcile after the lay, npcFateLateWork off`);
+        } else {
+            try {
+                const reconciled = this.sp.rerollActor(rec.formId);
+                logLab("verb:npc-fate", `corpse ${hex}: the record's inventory reconciled after the lay (${reconciled ? "queued" : "refused: no fate here"})`);
+            } catch (e) {
+                logLab("verb:npc-fate", `corpse ${hex}: no reconcile after the lay, the native is missing on this platform (${e})`);
+            }
         }
         logLab("verb:npc-fate", `corpse ${hex} applied from the record: fnv ${rec.fnv.toString(16)}, ${rec.remap.length} rows remapped; patched fnv ${result.fnvPatched.toString(16)}, ${when}, ${now - rec.receivedAt} ms after the record came; ${result.detail}`);
     }

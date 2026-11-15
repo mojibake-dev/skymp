@@ -35,6 +35,18 @@ export class ActorFateService extends ClientListener {
         logTrace(this, this.enabled
             ? "npcFate is on (the default): the engine rolls what the server rolled (the two detours armed)"
             : "npcFate is off by the settings file: fates are kept, the detours pass every roll through");
+        // thuum #62's bisect (x-gate-everyone-fate-off 20261115-212353 and
+        // 213250 clean where every Temple run with npcFate on crashed): the
+        // switch npcFateLateWork (settings skymp5-client.npcFateLateWork, on
+        // unless the file says false) splits npc-fate's two halves. Off, the
+        // detours stay armed (a reference the engine loads after its fate rolls
+        // the server's roll), and no engine work runs on an actor the engine
+        // holds already: no late fate's re-roll or redress, and no reconcile
+        // after a record's lay (ChangeFormService asks lateWorkOn)
+        this.lateWork = this.sp.settings["skymp5-client"]["npcFateLateWork"] !== false;
+        if (!this.lateWork) {
+            logTrace(this, "npcFateLateWork is off by the settings file: no re-roll, redress or reconcile of a loaded actor (the detours stay armed)");
+        }
         this.controller.emitter.on("actorFateMessage", (e) => this.onActorFate(e));
     }
 
@@ -90,6 +102,10 @@ export class ActorFateService extends ClientListener {
     // reloading engine renders at load). A reference the engine no longer
     // has is forgotten.
     private lateFate(refrId: number) {
+        if (!this.lateWork) {
+            logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: npcFateLateWork off, no engine work`);
+            return;
+        }
         // the engine has the reference already (the save around the player
         // at a login, a cell attached ahead of the fate, a respawn's new
         // roll): its own re-roll goes through the detour
@@ -167,9 +183,16 @@ export class ActorFateService extends ClientListener {
         return this.copyFates.get(remoteId);
     }
 
+    // #62's bisect switch (the constructor's note): whether the fate's engine
+    // work runs on an actor the engine holds already
+    lateWorkOn(): boolean {
+        return this.lateWork;
+    }
+
     // the last fate applied per reference (base and worn), so a repeated fate
     // for the same roll re-rolls nothing
     private applied = new Map<number, string>();
     private copyFates = new Map<number, { baseId: number; worn: number[]; inv: number[] }>();
     private enabled: boolean;
+    private lateWork: boolean;
 }

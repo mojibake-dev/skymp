@@ -1,7 +1,8 @@
 import { ObjectReference, Actor, Game, FormType, TextureSet, NetImmerse } from "skyrimPlatform";
 import { Inventory, applyInventory } from "../sync/inventory";
 import { FormTypeEx } from "../extensions/formTypeEx";
-import { logError, logTrace } from "../logging";
+import { logError, logLab, logTrace } from "../logging";
+import { bookHeld } from "../sync/bookHold";
 import { SetNodeScaleEntry, SetNodeTextureSetEntry } from "src/services/messages/createActorMessage";
 
 // For 0xff000000+ used from FormView
@@ -127,6 +128,21 @@ export class ModelApplyUtils {
         // the server's DestructionStage word (RefStateService)
         const wasHarvested = refr.isDisabled();
         if (isHarvested != wasHarvested) {
+          // thuum playtest 52 break 3 (the books client half,
+          // sync/bookHold.ts): a world book this game holds open, or holds
+          // through its Take's echo, is never enabled here, so the reference
+          // the Book Menu took is still gone at the close that reads it (an
+          // enable would make the Take read as a close); the record's
+          // harvested word (another reader's Take, or this one's echo) still
+          // lands
+          const book = isHarvested ? undefined : bookHeld(refr.getFormID(), Date.now());
+          if (book !== undefined) {
+            if (!book.viewLogged) {
+              book.viewLogged = true;
+              logLab("verb:books", `book ${refr.getFormID().toString(16)}: the view's enable held ${book.why} (the reference reads disabled, the record not harvested)`);
+            }
+            return;
+          }
           if (isHarvested) {
             const id = refr.getFormID();
             refr.disable(false).then(() => {

@@ -138,6 +138,9 @@ pub enum Decision {
         actor: u32,
         /// The cell its claim named.
         cell: u32,
+        /// The holder, its simulator until the end (the core's word skips a
+        /// game the cell's rule names again).
+        player: u32,
         /// The actor's owner epoch after the end (ADR-066 decision 1).
         epoch: u32,
         /// What ended it.
@@ -851,10 +854,10 @@ impl Cells {
         if !f.holds_nothing() {
             return Release::Kept;
         }
-        let cell = f.cell;
+        let (cell, player) = (f.cell, f.player);
         self.follows.remove(&actor);
         let epoch = self.bump(actor);
-        Release::Ended(Decision::ClaimEnded { actor, cell, epoch, why: ClaimEnd::Release })
+        Release::Ended(Decision::ClaimEnded { actor, cell, player, epoch, why: ClaimEnd::Release })
     }
 
     /// `quest` stopped (the world's record took its stop): its leads end, and
@@ -913,23 +916,23 @@ impl Cells {
     /// the actor and the row); each row left with none goes, its actor's
     /// epoch up, as one ClaimEnded `why`, by actor id.
     fn end_purposes(&mut self, why: ClaimEnd, mut strip: impl FnMut(u32, &mut Follow)) -> Vec<Decision> {
-        let mut ended: Vec<(u32, u32)> = Vec::new();
+        let mut ended: Vec<(u32, u32, u32)> = Vec::new();
         for (&actor, f) in &mut self.follows {
             if f.kind != FollowKind::Claim {
                 continue;
             }
             strip(actor, f);
             if f.holds_nothing() {
-                ended.push((actor, f.cell));
+                ended.push((actor, f.cell, f.player));
             }
         }
         ended.sort_unstable();
         ended
             .into_iter()
-            .map(|(actor, cell)| {
+            .map(|(actor, cell, player)| {
                 self.follows.remove(&actor);
                 let epoch = self.bump(actor);
-                Decision::ClaimEnded { actor, cell, epoch, why }
+                Decision::ClaimEnded { actor, cell, player, epoch, why }
             })
             .collect()
     }
@@ -1726,14 +1729,14 @@ mod tests {
         assert_eq!(c.release_claim(SVEN, C1, Purpose::Talk), Release::NotHeld);
         assert_eq!(
             c.release_claim(SVEN, C2, Purpose::Talk),
-            Release::Ended(Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD, epoch: 2, why: ClaimEnd::Release })
+            Release::Ended(Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD, player: C2, epoch: 2, why: ClaimEnd::Release })
         );
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
         // the lease: the tick ends a claim nobody released
         assert_eq!(c.claim(SVEN, C2, RIVERWOOD, Purpose::Talk, 3_000), ClaimVerdict::Granted);
         assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS - 1), vec![]);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C2);
-        assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD, epoch: 4, why: ClaimEnd::Lease }]);
+        assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD, player: C2, epoch: 4, why: ClaimEnd::Lease }]);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
         // a claimant that has not loaded the cell gets nothing
         const EAST: u32 = 0x9733;
@@ -1810,7 +1813,7 @@ mod tests {
         assert_eq!(c.simulator_of(HILDE, RIVERWOOD), C1);
         assert_eq!(c.claim(HILDE, C2, RIVERWOOD, Purpose::Talk, 3_000), ClaimVerdict::Granted);
         assert_eq!(c.may_move(&CellMove { sender: C2, actor: HILDE, origin: RIVERWOOD, dest: WEST, adjacent: true, door: false, edge_units: 300 }, 3_100), MoveVerdict::Accept);
-        assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: HILDE, cell: WEST, epoch: 4, why: ClaimEnd::Lease }]);
+        assert_eq!(c.tick(3_000 + CLAIM_LEASE_MS), vec![Decision::ClaimEnded { actor: HILDE, cell: WEST, player: C2, epoch: 4, why: ClaimEnd::Lease }]);
         assert_eq!(c.simulator_of(HILDE, WEST), C1);
         assert_eq!(c.claims(), vec![]);
     }
@@ -1902,7 +1905,7 @@ mod tests {
         assert_eq!(c.tick(6_000 + GRACE_MS), vec![Decision::Release { player: C2, cell: OUTSIDE, epoch: 1 }, Decision::Unhosted { cell: OUTSIDE }]);
         assert_eq!(c.simulator_of(CAMILLA, OUTSIDE), C1);
         // MS13's stop ends it: the cell's rule again, nobody's there
-        assert_eq!(c.quest_stopped(MS13), vec![Decision::ClaimEnded { actor: CAMILLA, cell: OUTSIDE, epoch: 2, why: ClaimEnd::QuestStop }]);
+        assert_eq!(c.quest_stopped(MS13), vec![Decision::ClaimEnded { actor: CAMILLA, cell: OUTSIDE, player: C1, epoch: 2, why: ClaimEnd::QuestStop }]);
         assert_eq!(c.simulator_of(CAMILLA, OUTSIDE), 0);
     }
 
@@ -1915,7 +1918,7 @@ mod tests {
         c.loaded(C1, RIVERWOOD, 1_000);
         c.loaded(C2, RIVERWOOD, 1_100);
         assert_eq!(c.claim(SVEN, C2, RIVERWOOD, Purpose::Talk, 2_000), ClaimVerdict::Granted);
-        assert_eq!(c.unloaded(C2, RIVERWOOD, 3_000), vec![Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD, epoch: 2, why: ClaimEnd::Unloaded }]);
+        assert_eq!(c.unloaded(C2, RIVERWOOD, 3_000), vec![Decision::ClaimEnded { actor: SVEN, cell: RIVERWOOD, player: C2, epoch: 2, why: ClaimEnd::Unloaded }]);
         assert_eq!(c.simulator_of(SVEN, RIVERWOOD), C1);
         // the host's own talk beside its lead: the unload takes the talk
         assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, CAMILLA_LEAD, 4_000), ClaimVerdict::Granted);
@@ -1940,7 +1943,7 @@ mod tests {
             assert_eq!(c.claim(CAMILLA, C1, RIVERWOOD, CAMILLA_LEAD, 2_000), ClaimVerdict::Granted);
             c
         };
-        let ended = |why| Decision::ClaimEnded { actor: CAMILLA, cell: RIVERWOOD, epoch: 2, why };
+        let ended = |why| Decision::ClaimEnded { actor: CAMILLA, cell: RIVERWOOD, player: C1, epoch: 2, why };
         // the quest's stop; another quest's stops nothing
         let mut c = setup();
         assert_eq!(c.quest_stopped(ARGUMENT_QUEST), vec![]);
@@ -2066,8 +2069,8 @@ mod tests {
         assert_eq!(
             c.quest_stopped(ARGUMENT_QUEST),
             vec![
-                Decision::ClaimEnded { actor: LUCAN, cell: TRADER, epoch: 2, why: ClaimEnd::QuestStop },
-                Decision::ClaimEnded { actor: CAMILLA, cell: TRADER, epoch: 2, why: ClaimEnd::QuestStop },
+                Decision::ClaimEnded { actor: LUCAN, cell: TRADER, player: C1, epoch: 2, why: ClaimEnd::QuestStop },
+                Decision::ClaimEnded { actor: CAMILLA, cell: TRADER, player: C1, epoch: 2, why: ClaimEnd::QuestStop },
             ]
         );
         assert_eq!(c.simulator_of(LUCAN, TRADER), C2);
@@ -2078,7 +2081,7 @@ mod tests {
         assert_eq!(c.release_claim(LUCAN, C1, Purpose::Scene { scene: 0x5dba7, quest: ARGUMENT_QUEST }), Release::NotHeld);
         assert_eq!(
             c.release_claim(LUCAN, C1, Purpose::Scene { scene: ARGUMENT, quest: 0 }),
-            Release::Ended(Decision::ClaimEnded { actor: LUCAN, cell: TRADER, epoch: 4, why: ClaimEnd::Release })
+            Release::Ended(Decision::ClaimEnded { actor: LUCAN, cell: TRADER, player: C1, epoch: 4, why: ClaimEnd::Release })
         );
         assert_eq!(c.simulator_of(LUCAN, TRADER), C2);
     }

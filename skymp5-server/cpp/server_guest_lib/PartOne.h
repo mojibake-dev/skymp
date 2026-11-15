@@ -840,16 +840,53 @@ public:
   // is at rest where the record has it (MpActor::SettleBodyIfDue)
   void TickBodies(uint64_t nowMs);
   // thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC for a
-  // dialogue, the per-actor row beside the cell's host; the word follows
+  // dialogue, the per-actor row beside the cell's host; the word follows.
+  // thuum ADR-073 decision 6 (step 5a): the row holds its actor for a talk,
+  // a quest's leads or a scene, outlives a grant into its cell and ends with
+  // its last purpose (wire-rules cells::Purpose); the verdicts in the
+  // bridge's code order
   enum class ClaimVerdict
   {
     Granted,
     Held,
     Unloaded,
-    Reclaimed
+    Reclaimed,
+    // a lead from a player that does not simulate the actor
+    NotSimulator,
+    // a lead past the row's MAX_LEADS quests
+    Full,
+    // a purpose code the rules do not know
+    NoPurpose
   };
-  ClaimVerdict ClaimActor(MpActor& claimant, MpActor& actor);
-  bool ReleaseClaim(MpActor& claimant, MpActor& actor);
+  // what a claim or a release is for: `kind` 0 a talk, 1 the lead of `quest`
+  // through its alias `alias` (the server's read), 2 the scene `scene` of
+  // `quest`; a release reads the lead's quest or the scene alone
+  struct ClaimPurpose
+  {
+    uint8_t kind = 0;
+    uint32_t quest = 0;
+    uint32_t alias = 0;
+    uint32_t scene = 0;
+  };
+  ClaimVerdict ClaimActor(MpActor& claimant, MpActor& actor,
+                          const ClaimPurpose& purpose);
+  // what a release did, in the bridge's code order: nothing held for that
+  // purpose, the purpose ended with the claim standing for its others, or
+  // the claim ended (the cell's rule names the simulator again)
+  enum class ClaimRelease
+  {
+    NotHeld,
+    Kept,
+    Ended
+  };
+  ClaimRelease ReleaseClaim(MpActor& claimant, MpActor& actor,
+                            const ClaimPurpose& purpose);
+  // thuum ADR-073 decision 6: the world's record took `quest`'s stop, so its
+  // leads and the claims of its scenes end; `quest`'s alias `alias` now names
+  // `refr` (0 a clear), so a lead that read it on another actor ends. The
+  // words of the ends go out here (a claim's ClaimEnded)
+  void QuestStopped(uint32_t quest);
+  void AliasFilled(uint32_t quest, uint32_t alias, uint32_t refr);
   // thuum docs/engine/non-owning-seat.md section 3: the actor's record (its
   // transform and flags, as a movement message) to the game about to
   // simulate it, reliable and ahead of the hoster word on the same channel,
@@ -1033,12 +1070,19 @@ public:
   };
   std::vector<CellHostEntry> GetCellHosts() const;
   // Every follow (thuum docs/verbs/npc-handoff.md D6, ADR-047): an actor a
-  // host simulates in a cell nobody hosts, for the lab's reading.
+  // host simulates in a cell nobody hosts, for the lab's reading; a margin
+  // hold; or a claim with its purposes (ADR-052, thuum ADR-073 decision 6)
   struct CellFollowEntry
   {
     uint32_t actor = 0;
     uint32_t player = 0;
     uint32_t cell = 0;
+    // a claim's: it holds a talk, the quests whose leads it holds, its scene
+    // (0 for none) and its owner epoch at the grant (ADR-066 decision 1)
+    bool talk = false;
+    std::vector<uint32_t> leads;
+    uint32_t scene = 0;
+    uint32_t epoch = 0;
   };
   std::vector<CellFollowEntry> GetFollows() const;
   // The cell-change rule (thuum docs/verbs/cell-host.md; npc-handoff D6):

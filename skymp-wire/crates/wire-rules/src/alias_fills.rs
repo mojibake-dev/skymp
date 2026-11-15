@@ -25,6 +25,11 @@
 //! by conditions, a creation at an alias rather than in it, an alias the
 //! quest lacks) is `E_ALIASFILL_UNRESOLVED`, logged once by the core, and
 //! that item stays each seat's own.
+//!
+//! Which alias an actor fills is the server's read too (thuum ADR-073 step
+//! 5a; D-53-4: a quest's lead is its own package running on an actor that
+//! fills one of its aliases): [`fills_actor`] over the record's aliases and
+//! the journal's reported fills.
 
 /// One reference alias's fill, by form ids in the load order both ends
 /// share.
@@ -204,6 +209,69 @@ pub fn due(marks: &[Mark], quest: u32, alias: u32) -> bool {
     !marks.iter().any(|m| m.quest == quest && m.alias == alias && m.added)
 }
 
+/// How an actor fills one of a quest's reference aliases, as far as the
+/// server can tell (thuum ADR-073 step 5a). The record reaches a fill only as
+/// a seat reported it (AliasFill 79, a script's ForceRefTo or Clear) or as the
+/// game files fix it (ALFR, ALUA); an alias filled by conditions, from
+/// another quest's alias, or by a creation is no fact here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActorFill {
+    /// The journal's latest reported fill of the alias (its id) names the
+    /// actor.
+    Reported(u32),
+    /// The alias's forced reference (ALFR) is the actor.
+    Forced(u32),
+    /// The alias's unique actor (ALUA) is the actor's base, a unique NPC_
+    /// (ACBS flag 0x20: its one reference).
+    Unique(u32),
+    /// No alias is known to hold the actor, but one the server cannot read
+    /// may: R2, the seat's word, recorded as unvalidated.
+    Unresolved,
+    /// None of the quest's aliases can hold the actor.
+    No,
+}
+
+/// Which of `quest`'s reference aliases `aliases` (in the record's order) the
+/// actor `refr`, of base `base` (`unique` when that base is a unique NPC_),
+/// fills, over the journal's reported fills `journal`: a reported fill
+/// stands for its alias over the record's fill type (a script's ForceRefTo
+/// moved it, or its Clear emptied it); else a forced reference, else a unique
+/// actor; the first alias a fact names wins. Else Unresolved when any alias
+/// fills in a way the server cannot read (by conditions, from another
+/// quest's alias, by a creation, or a unique actor of the actor's base that
+/// is no unique NPC_), else No.
+#[must_use]
+pub fn fills_actor(aliases: &[Alias], journal: &[Fill], quest: u32, refr: u32, base: u32, unique: bool) -> ActorFill {
+    let mut unresolved = false;
+    for a in aliases {
+        if let Some(fill) = journal.iter().find(|f| f.quest == quest && f.alias == a.id) {
+            if refr != 0 && fill.refr == refr {
+                return ActorFill::Reported(a.id);
+            }
+            continue;
+        }
+        if a.forced != 0 {
+            if a.forced == refr {
+                return ActorFill::Forced(a.id);
+            }
+        } else if a.unique_actor != 0 {
+            if a.unique_actor == base {
+                if unique {
+                    return ActorFill::Unique(a.id);
+                }
+                unresolved = true;
+            }
+        } else {
+            unresolved = true;
+        }
+    }
+    if unresolved {
+        ActorFill::Unresolved
+    } else {
+        ActorFill::No
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +349,49 @@ mod tests {
         // another alias is its own entry
         let record = merge(&record, Fill { alias: 3, ..first });
         assert_eq!(record.len(), 2);
+    }
+
+    #[test]
+    fn an_actor_fills_the_alias_a_fact_names() {
+        // thuum ADR-073 step 5a (D-53-4). MS13's alias 9 "Camilla" is her
+        // unique actor (ALUA 0x1347b, a unique NPC_, her ACHR 0x13488);
+        // MS13LucanCamillaScene 0x38386's alias 0 is Lucan's (ALUA 0x1347a,
+        // his ACHR 0x13487), 2 Camilla's, 3 a forced marker 0x383be
+        // (Skyrim.esm and USSEP, records read on sky-srv 2026-11-14)
+        const CAMILLA: u32 = 0x13488;
+        const CAMILLA_BASE: u32 = 0x1347b;
+        const LUCAN: u32 = 0x13487;
+        const LUCAN_BASE: u32 = 0x1347a;
+        const ARGUE: u32 = 0x38386;
+        let camilla = Alias { id: 9, unique_actor: CAMILLA_BASE, ..Alias::default() };
+        let mut ms13 = ms13();
+        ms13.push(camilla);
+        assert_eq!(fills_actor(&ms13, &[], MS13, CAMILLA, CAMILLA_BASE, true), ActorFill::Unique(9));
+        // a base that is no unique NPC_: the server cannot tell which reference
+        assert_eq!(fills_actor(&[camilla], &[], MS13, CAMILLA, CAMILLA_BASE, false), ActorFill::Unresolved);
+        // the argument's aliases: Lucan's alias 0, the marker forced
+        let argue = [
+            Alias { id: 0, unique_actor: LUCAN_BASE, ..Alias::default() },
+            Alias { id: 2, unique_actor: CAMILLA_BASE, ..Alias::default() },
+            Alias { id: 3, forced: 0x383be, ..Alias::default() },
+        ];
+        assert_eq!(fills_actor(&argue, &[], ARGUE, LUCAN, LUCAN_BASE, true), ActorFill::Unique(0));
+        assert_eq!(fills_actor(&argue, &[], ARGUE, CAMILLA, CAMILLA_BASE, true), ActorFill::Unique(2));
+        assert_eq!(fills_actor(&argue, &[], ARGUE, 0x383be, 0x3b, false), ActorFill::Forced(3));
+        // every alias a fact the actor is not: no alias holds it
+        assert_eq!(fills_actor(&argue, &[], ARGUE, 0x1348a, 0x1347c, true), ActorFill::No);
+        // the journal's fill stands over the record's: a script moved alias 2 to
+        // Lucan, so Camilla no longer fills it and Lucan does (alias 0 first)
+        let moved = [Fill { quest: ARGUE, alias: 2, refr: LUCAN }];
+        assert_eq!(fills_actor(&argue, &moved, ARGUE, CAMILLA, CAMILLA_BASE, true), ActorFill::No);
+        assert_eq!(fills_actor(&argue[1..], &moved, ARGUE, LUCAN, LUCAN_BASE, true), ActorFill::Reported(2));
+        // a clear empties it for everyone; another quest's fill of the same id is no fact here
+        let cleared = [Fill { quest: ARGUE, alias: 2, refr: 0 }];
+        assert_eq!(fills_actor(&argue, &cleared, ARGUE, CAMILLA, CAMILLA_BASE, true), ActorFill::No);
+        let elsewhere = [Fill { quest: MS13, alias: 2, refr: LUCAN }];
+        assert_eq!(fills_actor(&argue, &elsewhere, ARGUE, CAMILLA, CAMILLA_BASE, true), ActorFill::Unique(2));
+        // MS13's created and conditional aliases leave a stranger unresolved
+        assert_eq!(fills_actor(&ms13, &[], MS13, 0x1348a, 0x1347c, true), ActorFill::Unresolved);
     }
 
     #[test]

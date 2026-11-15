@@ -4,7 +4,10 @@
 // mp.get(0, "cellFollows"): every follow the server's cell table holds
 // (thuum docs/verbs/npc-handoff.md D6, ADR-047), each {actor, player, cell}:
 // an actor a host's game simulates in a cell nobody hosts; read-only, the
-// lab reads it through the gamemode's labState as it reads cellHosts.
+// lab reads it through the gamemode's labState as it reads cellHosts. Since
+// thuum ADR-073 step 5a each row also carries `purposes` (a claim's "talk",
+// "lead" and "scene"; empty for a follow or a margin hold), `leads` (the
+// quests), `scene` (0 for none) and `epoch` (the claim's owner epoch).
 class CellFollowsBinding : public PropertyBinding
 {
 public:

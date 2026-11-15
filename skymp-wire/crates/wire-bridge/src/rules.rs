@@ -1333,8 +1333,9 @@ mod ffi {
         Release,
         /// Nobody hosts `cell`: it freezes at its record, the epoch kept.
         Unhosted,
-        /// A player's claim on `actor` in `cell` ended with its lease
-        /// (ADR-052): the cell's rule names the simulator again.
+        /// A player's claim on `actor` in `cell` ended with its last purpose
+        /// (ADR-052, thuum ADR-073 decision 6), `why` saying what ended it:
+        /// the cell's rule names the simulator again.
         ClaimEnded,
     }
 
@@ -1344,14 +1345,22 @@ mod ffi {
     struct HostDecision {
         /// Which decision.
         kind: HostKind,
-        /// The player it concerns (0 for Unhosted).
+        /// The player it concerns (0 for Unhosted; a ClaimEnded's holder).
         player: u32,
         /// The cell.
         cell: u32,
-        /// The grant's epoch (the cell's kept epoch for Unhosted).
+        /// The grant's epoch (the cell's kept epoch for Unhosted; for a
+        /// ClaimEnded the actor's owner epoch after the end, ADR-066
+        /// decision 1).
         epoch: u32,
         /// The actor a ClaimEnded concerns (0 for the others).
         actor: u32,
+        /// What ended a ClaimEnded, wire-rules cells::ClaimEnd's code (0 a
+        /// lease, 1 a release, 2 its quest's stop, 3 its alias's fill, 4 the
+        /// actor's death, 5 its holder's departure, 6 its holder's silence,
+        /// 7 its holder's unload; `claim_end_name` words it); 0 for the
+        /// others.
+        why: u8,
     }
 
     /// A simulator's report moving an actor between cells, the facts the
@@ -1381,15 +1390,38 @@ mod ffi {
     }
 
     /// A follow (ADR-047 D6, thuum docs/verbs/npc-handoff.md): `player`
-    /// simulates `actor` in `cell`, a cell nobody hosts, for the lab's reading.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// simulates `actor` in `cell`, a cell nobody hosts, for the lab's reading;
+    /// or a margin hold, or a claim with its purposes (ADR-052, thuum ADR-073
+    /// decision 6).
+    #[derive(Debug, Clone, PartialEq, Eq)]
     struct CellFollowRow {
         /// The actor followed.
         actor: u32,
         /// The player whose game simulates it.
         player: u32,
-        /// The cell nobody hosts that it stands in.
+        /// The cell its row names.
         cell: u32,
+        /// A claim's: it holds a talk.
+        talk: bool,
+        /// A claim's: the quests whose leads it holds.
+        leads: Vec<u32>,
+        /// A claim's: the scene it holds, 0 for none.
+        scene: u32,
+        /// A claim's owner epoch at its grant (ADR-066 decision 1), 0 for the
+        /// other rows.
+        epoch: u32,
+    }
+
+    /// How an actor fills one of a quest's aliases (wire-rules
+    /// alias_fills::fills_actor, thuum ADR-073 step 5a).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AliasActorFill {
+        /// 0 no alias can hold it, 1 the journal's reported fill, 2 a forced
+        /// reference (ALFR), 3 a unique actor (ALUA), 4 unresolved (R2, the
+        /// seat's word recorded unvalidated).
+        kind: u8,
+        /// The alias that holds it for kinds 1 to 3, 0 otherwise.
+        alias: u32,
     }
 
     /// One cell the host table knows, for the lab's reading of the server.
@@ -2994,12 +3026,35 @@ mod ffi {
         /// Who simulates `actor` standing in `cell`: the host, else the
         /// follower, else 0.
         fn simulator_of(self: &Cells, actor: u32, cell: u32) -> u32;
-        /// ADR-052: `player` claims `actor` in `cell` for a dialogue; 0
-        /// granted, 1 held by another, 2 the claimant has not loaded the
-        /// cell, 3 renewed.
-        fn claim_actor(self: &mut Cells, actor: u32, player: u32, cell: u32, now_ms: u64) -> u8;
-        /// `player` releases its claim on `actor`; false when it holds none.
-        fn release_claim(self: &mut Cells, actor: u32, player: u32) -> bool;
+        /// ADR-052, thuum ADR-073 decision 6: `player` claims `actor` in
+        /// `cell` for `purpose`: 0 a talk, 1 the lead of `quest` through its
+        /// alias `alias`, 2 the scene `scene` of `quest`. 0 granted, 1 held by
+        /// another player (any purpose), 2 the claimant has not loaded the
+        /// cell (a talk or a scene), 3 renewed, 4 a lead from a player that
+        /// does not simulate the actor, 5 a lead past MAX_LEADS quests, 6 no
+        /// such purpose.
+        fn claim_actor(self: &mut Cells, actor: u32, player: u32, cell: u32, purpose: u8, quest: u32, alias: u32, scene: u32, now_ms: u64) -> u8;
+        /// `player` releases `purpose` of its claim on `actor` (0 a talk, 1
+        /// the lead of `quest`, 2 the scene `scene`): 0 it holds no such
+        /// purpose, 1 the purpose ended and the claim stands for its others,
+        /// 2 the claim ended (the cell's rule names the simulator again).
+        fn release_claim(self: &mut Cells, actor: u32, player: u32, purpose: u8, quest: u32, scene: u32) -> u8;
+        /// thuum ADR-073 decision 6: `quest` stopped; its leads and the
+        /// scenes of it end (ClaimEnded for each claim left empty).
+        fn quest_stopped(self: &mut Cells, quest: u32) -> Vec<HostDecision>;
+        /// `quest`'s alias `alias` now names `refr` (0 a clear): a lead that
+        /// read the alias on any other actor ends.
+        fn alias_filled(self: &mut Cells, quest: u32, alias: u32, refr: u32) -> Vec<HostDecision>;
+        /// `actor` died: its claim ends whole.
+        fn actor_died(self: &mut Cells, actor: u32) -> Vec<HostDecision>;
+        /// Whether `player` holds a lead or a scene on any actor (a seat
+        /// whose silence the core judges though it hosts no cell).
+        fn holds_lead_or_scene(self: &Cells, player: u32) -> bool;
+        /// `actor`'s owner epoch (ADR-066 decision 1), 0 before its first
+        /// claim.
+        fn owner_epoch_of(self: &Cells, actor: u32) -> u32;
+        /// The words for a ClaimEnded's `why`, for the log.
+        fn claim_end_name(why: u8) -> String;
         /// Every follow, by actor id.
         fn follows(self: &Cells) -> Vec<CellFollowRow>;
         /// The grace a host keeps its cell after leaving it, ms
@@ -3148,6 +3203,11 @@ mod ffi {
         /// Whether the created alias `alias` of `quest` still owes its item:
         /// no mark of the journal's says it was added.
         fn alias_created_due(marks: &[AliasMarkRow], quest: u32, alias: u32) -> bool;
+        /// thuum ADR-073 step 5a: which of `quest`'s reference aliases
+        /// (`aliases`, the record's order) the actor `refr` of base `base`
+        /// fills (`unique` when the base is a unique NPC_), over the
+        /// journal's fills (wire-rules alias_fills::fills_actor).
+        fn alias_fills_actor(aliases: &[QuestAliasRow], journal: &[AliasFillEntry], quest: u32, refr: u32, base: u32, unique: bool) -> AliasActorFill;
         /// thuum ADR-068 rung 4 (AliasFill 79): one reported fill against
         /// the journal's fills, over the facts the core gathered (wire-rules
         /// alias_fills::judge).
@@ -3378,7 +3438,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4381,15 +4441,15 @@ fn host_decisions(table: &cells::Cells, decisions: Vec<cells::Decision>) -> Vec<
     decisions
         .into_iter()
         .map(|d| match d {
-            cells::Decision::Grant { player, cell, epoch } => HostDecision { actor: 0, kind: HostKind::Grant, player, cell, epoch },
+            cells::Decision::Grant { player, cell, epoch } => HostDecision { actor: 0, kind: HostKind::Grant, player, cell, epoch, why: 0 },
             cells::Decision::Release { player, cell, epoch } => {
-                HostDecision { actor: 0, kind: HostKind::Release, player, cell, epoch }
+                HostDecision { actor: 0, kind: HostKind::Release, player, cell, epoch, why: 0 }
             }
             cells::Decision::Unhosted { cell } => {
-                HostDecision { actor: 0, kind: HostKind::Unhosted, player: 0, cell, epoch: table.epoch_of(cell) }
+                HostDecision { actor: 0, kind: HostKind::Unhosted, player: 0, cell, epoch: table.epoch_of(cell), why: 0 }
             }
-            cells::Decision::ClaimEnded { actor, cell, .. } => {
-                HostDecision { actor, kind: HostKind::ClaimEnded, player: 0, cell, epoch: table.epoch_of(cell) }
+            cells::Decision::ClaimEnded { actor, cell, player, epoch, why } => {
+                HostDecision { actor, kind: HostKind::ClaimEnded, player, cell, epoch, why: claim_end_code(why) }
             }
         })
         .collect()
@@ -4505,20 +4565,53 @@ impl Cells {
         }
     }
 
-    fn claim_actor(&mut self, actor: u32, player: u32, cell: u32, now_ms: u64) -> u8 {
-        match self.0.claim(actor, player, cell, cells::Purpose::Talk, now_ms) {
+    #[allow(clippy::too_many_arguments)]
+    fn claim_actor(&mut self, actor: u32, player: u32, cell: u32, purpose: u8, quest: u32, alias: u32, scene: u32, now_ms: u64) -> u8 {
+        let Some(purpose) = claim_purpose(purpose, quest, alias, scene) else {
+            return 6;
+        };
+        match self.0.claim(actor, player, cell, purpose, now_ms) {
             cells::ClaimVerdict::Granted => 0,
             cells::ClaimVerdict::Held => 1,
             cells::ClaimVerdict::Unloaded => 2,
             cells::ClaimVerdict::Reclaimed => 3,
-            // a lead's alone (ADR-073 decision 6); no talk meets them
             cells::ClaimVerdict::NotSimulator => 4,
             cells::ClaimVerdict::Full => 5,
         }
     }
 
-    fn release_claim(&mut self, actor: u32, player: u32) -> bool {
-        !matches!(self.0.release_claim(actor, player, cells::Purpose::Talk), cells::Release::NotHeld)
+    fn release_claim(&mut self, actor: u32, player: u32, purpose: u8, quest: u32, scene: u32) -> u8 {
+        let Some(purpose) = claim_purpose(purpose, quest, 0, scene) else {
+            return 0;
+        };
+        match self.0.release_claim(actor, player, purpose) {
+            cells::Release::NotHeld => 0,
+            cells::Release::Kept => 1,
+            cells::Release::Ended(_) => 2,
+        }
+    }
+
+    fn quest_stopped(&mut self, quest: u32) -> Vec<HostDecision> {
+        let decisions = self.0.quest_stopped(quest);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn alias_filled(&mut self, quest: u32, alias: u32, refr: u32) -> Vec<HostDecision> {
+        let decisions = self.0.alias_filled(quest, alias, refr);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn actor_died(&mut self, actor: u32) -> Vec<HostDecision> {
+        let decisions = self.0.actor_died(actor);
+        host_decisions(&self.0, decisions)
+    }
+
+    fn holds_lead_or_scene(&self, player: u32) -> bool {
+        self.0.holds_lead_or_scene(player)
+    }
+
+    fn owner_epoch_of(&self, actor: u32) -> u32 {
+        self.0.owner_epoch_of(actor)
     }
 
     fn simulator_of(&self, actor: u32, cell: u32) -> u32 {
@@ -4526,7 +4619,23 @@ impl Cells {
     }
 
     fn follows(&self) -> Vec<CellFollowRow> {
-        self.0.follows().into_iter().map(|(actor, player, cell)| CellFollowRow { actor, player, cell }).collect()
+        let claims = self.0.claim_rows();
+        self.0
+            .follows()
+            .into_iter()
+            .map(|(actor, player, cell)| match claims.iter().find(|c| c.actor == actor) {
+                Some(c) => CellFollowRow {
+                    actor,
+                    player,
+                    cell,
+                    talk: c.talk,
+                    leads: c.leads.iter().map(|&(quest, _)| quest).collect(),
+                    scene: c.scene.map_or(0, |(scene, _)| scene),
+                    epoch: c.epoch,
+                },
+                None => CellFollowRow { actor, player, cell, talk: false, leads: Vec::new(), scene: 0, epoch: 0 },
+            })
+            .collect()
     }
 
     fn hosts(&self) -> Vec<CellHostRow> {
@@ -4540,6 +4649,46 @@ impl Cells {
 
 const fn host_grace_ms() -> u64 {
     cells::GRACE_MS
+}
+
+/// A claim's purpose from the core's code (thuum ADR-073 decision 6): 0 a
+/// talk, 1 a lead, 2 a scene; none for any other.
+fn claim_purpose(purpose: u8, quest: u32, alias: u32, scene: u32) -> Option<cells::Purpose> {
+    match purpose {
+        0 => Some(cells::Purpose::Talk),
+        1 => Some(cells::Purpose::Lead { quest, alias }),
+        2 => Some(cells::Purpose::Scene { scene, quest }),
+        _ => None,
+    }
+}
+
+/// A claim's end as the core's code (`HostDecision::why`).
+fn claim_end_code(why: cells::ClaimEnd) -> u8 {
+    match why {
+        cells::ClaimEnd::Lease => 0,
+        cells::ClaimEnd::Release => 1,
+        cells::ClaimEnd::QuestStop => 2,
+        cells::ClaimEnd::Alias => 3,
+        cells::ClaimEnd::Death => 4,
+        cells::ClaimEnd::Gone => 5,
+        cells::ClaimEnd::Stale => 6,
+        cells::ClaimEnd::Unloaded => 7,
+    }
+}
+
+fn claim_end_name(why: u8) -> String {
+    let end = match why {
+        0 => cells::ClaimEnd::Lease,
+        1 => cells::ClaimEnd::Release,
+        2 => cells::ClaimEnd::QuestStop,
+        3 => cells::ClaimEnd::Alias,
+        4 => cells::ClaimEnd::Death,
+        5 => cells::ClaimEnd::Gone,
+        6 => cells::ClaimEnd::Stale,
+        7 => cells::ClaimEnd::Unloaded,
+        _ => return String::new(),
+    };
+    end.name().to_owned()
 }
 
 /// A claim's verdict as the core's code: 0 granted, 1 held, 2 the same
@@ -5538,6 +5687,19 @@ fn alias_creations(aliases: &[QuestAliasRow]) -> Vec<AliasCreationRow> {
         .collect()
 }
 
+fn alias_fills_actor(aliases: &[QuestAliasRow], journal: &[AliasFillEntry], quest: u32, refr: u32, base: u32, unique: bool) -> AliasActorFill {
+    let parsed: Vec<alias_fills::Alias> =
+        aliases.iter().map(|a| alias_fills::Alias { id: a.id, created: a.created, create_at: a.create_at, forced: a.forced, unique_actor: a.unique_actor }).collect();
+    let fills: Vec<alias_fills::Fill> = journal.iter().map(alias_fill_of).collect();
+    match alias_fills::fills_actor(&parsed, &fills, quest, refr, base, unique) {
+        alias_fills::ActorFill::No => AliasActorFill { kind: 0, alias: 0 },
+        alias_fills::ActorFill::Reported(alias) => AliasActorFill { kind: 1, alias },
+        alias_fills::ActorFill::Forced(alias) => AliasActorFill { kind: 2, alias },
+        alias_fills::ActorFill::Unique(alias) => AliasActorFill { kind: 3, alias },
+        alias_fills::ActorFill::Unresolved => AliasActorFill { kind: 4, alias: 0 },
+    }
+}
+
 fn alias_fill_of(e: &AliasFillEntry) -> alias_fills::Fill {
     alias_fills::Fill { quest: e.quest, alias: e.alias, refr: e.refr }
 }
@@ -6021,7 +6183,7 @@ mod tests {
         assert!(c.reach(0xff00_0001, &[0x9732], 0).is_empty());
         assert_eq!(
             c.loaded(0xff00_0000, 0x9732, 1_000),
-            vec![HostDecision { actor: 0, kind: HostKind::Grant, player: 0xff00_0000, cell: 0x9732, epoch: 1 }]
+            vec![HostDecision { actor: 0, kind: HostKind::Grant, player: 0xff00_0000, cell: 0x9732, epoch: 1, why: 0 }]
         );
         assert_eq!(c.host_of(0x9732), CellHost { hosted: true, player: 0xff00_0000, epoch: 1 });
         assert!(c.accepts(0x9732, 0xff00_0000, 1));
@@ -6037,13 +6199,75 @@ mod tests {
         assert_eq!(
             c.tick(2_000 + host_grace_ms()),
             vec![
-                HostDecision { actor: 0, kind: HostKind::Release, player: 0xff00_0000, cell: 0x9732, epoch: 1 },
-                HostDecision { actor: 0, kind: HostKind::Unhosted, player: 0, cell: 0x9732, epoch: 1 },
+                HostDecision { actor: 0, kind: HostKind::Release, player: 0xff00_0000, cell: 0x9732, epoch: 1, why: 0 },
+                HostDecision { actor: 0, kind: HostKind::Unhosted, player: 0, cell: 0x9732, epoch: 1, why: 0 },
             ]
         );
         assert_eq!(c.host_of(0x9732), CellHost { hosted: false, player: 0, epoch: 1 });
         assert_eq!(c.epoch_of(0x9732), 1);
         assert_eq!(c.hosts(), vec![CellHostRow { cell: 0x9732, hosted: false, player: 0, epoch: 1 }]);
+    }
+
+    #[test]
+    fn the_claims_cross_as_codes_and_their_ends_as_decisions() {
+        // thuum ADR-073 decision 6 (step 5a): Camilla 0x13488's lead of MS13
+        // 0x39645 through its alias 9, held by the trader 0x133c9's host
+        let (c1, c2, trader, camilla, ms13) = (0xff00_0000, 0xff00_0001, 0x133c9, 0x13488, 0x39645);
+        let mut c = new_cells();
+        assert!(c.reach(c1, &[trader], 0).is_empty());
+        assert!(c.reach(c2, &[trader], 0).is_empty());
+        assert_eq!(c.loaded(c1, trader, 1_000).len(), 1);
+        assert!(c.loaded(c2, trader, 1_100).is_empty());
+        // c2's lead: not the simulator; c1's granted, again renewed; a sixth purpose code is none
+        assert_eq!(c.claim_actor(camilla, c2, trader, 1, ms13, 9, 0, 2_000), 4);
+        assert_eq!(c.claim_actor(camilla, c1, trader, 1, ms13, 9, 0, 2_100), 0);
+        assert_eq!(c.claim_actor(camilla, c1, trader, 1, ms13, 9, 0, 2_200), 3);
+        assert_eq!(c.claim_actor(camilla, c1, trader, 9, ms13, 9, 0, 2_300), 6);
+        assert_eq!(c.claim_actor(camilla, c2, trader, 0, 0, 0, 0, 2_400), 1);
+        assert!(c.holds_lead_or_scene(c1));
+        assert_eq!(c.owner_epoch_of(camilla), 1);
+        assert_eq!(
+            c.follows(),
+            vec![CellFollowRow { actor: camilla, player: c1, cell: trader, talk: false, leads: vec![ms13], scene: 0, epoch: 1 }]
+        );
+        // the host's own talk joins it, its release keeps the lead (1), a release of nothing held is 0
+        assert_eq!(c.claim_actor(camilla, c1, trader, 0, 0, 0, 0, 2_500), 0);
+        assert_eq!(c.release_claim(camilla, c1, 0, 0, 0), 1);
+        assert_eq!(c.release_claim(camilla, c1, 0, 0, 0), 0);
+        assert_eq!(c.release_claim(camilla, c1, 7, ms13, 0), 0);
+        // its alias given to Lucan ends it, the end crossing with its why and the owner epoch
+        assert_eq!(
+            c.alias_filled(ms13, 9, 0x13487),
+            vec![HostDecision { actor: camilla, kind: HostKind::ClaimEnded, player: c1, cell: trader, epoch: 2, why: 3 }]
+        );
+        assert_eq!(claim_end_name(3), "its alias's fill");
+        assert_eq!(claim_end_name(0), "its lease");
+        assert_eq!(claim_end_name(8), "");
+        // a scene's claim ends at its quest's stop, a lead's release at its quest, a death the whole row
+        assert_eq!(c.claim_actor(0x13487, c2, trader, 2, 0x38386, 0, 0x3839b, 3_000), 0);
+        assert_eq!(c.quest_stopped(0x38386).first().map(|d| (d.actor, d.why)), Some((0x13487, 2)));
+        assert_eq!(c.claim_actor(camilla, c1, trader, 1, ms13, 9, 0, 3_100), 0);
+        assert_eq!(c.release_claim(camilla, c1, 1, ms13, 0), 2);
+        assert_eq!(c.claim_actor(camilla, c1, trader, 1, ms13, 9, 0, 3_200), 0);
+        assert_eq!(c.actor_died(camilla).first().map(|d| (d.actor, d.why, d.epoch)), Some((camilla, 4, 6)));
+        assert!(!c.holds_lead_or_scene(c1));
+    }
+
+    #[test]
+    fn an_actors_alias_fill_crosses_as_a_kind() {
+        // thuum ADR-073 step 5a: Camilla's unique actor fills MS13's alias 9;
+        // a stranger's is unresolved past a conditional alias, none past facts alone
+        let aliases = [
+            QuestAliasRow { id: 1, created: 0, create_at: 0, forced: 0, unique_actor: 0 },
+            QuestAliasRow { id: 9, created: 0, create_at: 0, forced: 0, unique_actor: 0x1347b },
+        ];
+        assert_eq!(alias_fills_actor(&aliases, &[], 0x39645, 0x13488, 0x1347b, true), AliasActorFill { kind: 3, alias: 9 });
+        assert_eq!(alias_fills_actor(&aliases, &[], 0x39645, 0x13487, 0x1347a, true), AliasActorFill { kind: 4, alias: 0 });
+        let facts = [QuestAliasRow { id: 3, created: 0, create_at: 0, forced: 0x383be, unique_actor: 0 }];
+        assert_eq!(alias_fills_actor(&facts, &[], 0x38386, 0x13487, 0x1347a, true), AliasActorFill { kind: 0, alias: 0 });
+        assert_eq!(alias_fills_actor(&facts, &[], 0x38386, 0x383be, 0x3b, false), AliasActorFill { kind: 2, alias: 3 });
+        let journal = [AliasFillEntry { quest: 0x39645, alias: 1, refr: 0x13487 }];
+        assert_eq!(alias_fills_actor(&aliases, &journal, 0x39645, 0x13487, 0x1347a, true), AliasActorFill { kind: 1, alias: 1 });
     }
 
     fn sample(refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, moved: f32, now_ms: u64) -> PropSampleFacts {

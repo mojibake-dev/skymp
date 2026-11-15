@@ -91,7 +91,14 @@ const hex = (n: number) => n.toString(16);
 // her; H-L1 (the holder streams her with the exterior unloaded) no longer
 // arises for a lead. H-L6: the release reaches the server after her 3D
 // unloads here (sendMessageWithRefrId maps her remote id while the client's
-// world model still holds her form; claimRules.ts's S2 residual).
+// world model still holds her form; claimRules.ts's S2 residual). H-L7: a
+// dialogue on her (MS13's own forcegreet 0x17e0d voicing 17e01, or a
+// player's talk) raises no packageStart naming a package outside the quest;
+// the engine's runtime DialoguePackage (CommonLibSSE-NG
+// include/RE/D/DialoguePackage.h:9) raising one would reach onPackage as
+// package 0 or a 0xff id with no owning quest (EventHandler.cpp:1087-1090)
+// and end the lead as why 1 at each conversation. The probe: x-lead-claim's
+// why-1 release lines around 17e01 ("she runs <id>").
 export class LeadClaimService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();

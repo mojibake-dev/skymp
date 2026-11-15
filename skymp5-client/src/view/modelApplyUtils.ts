@@ -87,6 +87,16 @@ export class ModelApplyUtils {
   private static appliedLocks = new Map<number, { locked: boolean; level: number }>();
   private static readonly appliedLocksMax = 4096;
 
+  // thuum ADR-073 step 3: a reference bound with no recorded lock; LockService
+  // registers the report of its standing lock (outcome 3)
+  static onUnrecordedLock: ((refr: ObjectReference) => void) | undefined;
+
+  static unrecordedLock(refr: ObjectReference): void {
+    if (ModelApplyUtils.onUnrecordedLock) {
+      ModelApplyUtils.onUnrecordedLock(refr);
+    }
+  }
+
   static noteLockApplied(localId: number, locked: boolean, level: number): void {
     if (ModelApplyUtils.appliedLocks.size >= ModelApplyUtils.appliedLocksMax && !ModelApplyUtils.appliedLocks.has(localId)) {
       const oldest = ModelApplyUtils.appliedLocks.keys().next().value;

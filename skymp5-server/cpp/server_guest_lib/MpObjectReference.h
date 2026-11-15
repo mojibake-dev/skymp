@@ -170,6 +170,14 @@ public:
   // else the other side's; SetLock writes both records and sends the `lock`
   // property to both doors' listeners.
   std::optional<MpChangeFormREFR::Lock> GetLock() const;
+  // thuum ADR-073 step 3 (ADR-065: the save is the state): true when an
+  // owner's engine wrote this reference's lock, or its load door pair's, so
+  // the record holds a lock fact of its own. A lock GetLock reads from the
+  // game file's XLOC alone is the engine's load default, which the owner's
+  // schedule may already have changed (a shop's door unlocked by day), so
+  // no seat is sent it: each keeps its own engine's lock until an owner's
+  // report (its standing lock at bind, or a write) records one
+  bool LockRecorded() const;
   void SetLock(const MpChangeFormREFR::Lock& lock);
   void SendLockPrompt(MpActor& to);
   // The other side of a load door (its XTEL) when the engine shares one lock

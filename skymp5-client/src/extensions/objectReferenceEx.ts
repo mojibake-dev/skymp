@@ -155,9 +155,13 @@ export class ObjectReferenceEx {
       self.setLockLevel(lock.level);
       self.lock(lock.locked, false);
       logTrace("ObjectReferenceEx", `lock ${self.getFormID().toString(16)} set at creation: ${lock.locked ? "locked" : "unlocked"}, level ${lock.level}, key ${lock.key.toString(16)}`);
-    } else if (self.isLocked()) {
-      ModelApplyUtils.noteLockApplied(self.getFormID(), false, self.getLockLevel());
-      self.lock(false, false);
+    } else {
+      // thuum ADR-073 step 3 (ADR-065: the save is the state): the record holds
+      // no lock an owner wrote, so this engine's own lock stands (an XLOC seed
+      // is the load default the owner's schedule may have moved past, a shop's
+      // door unlocked by day), and its standing lock goes to the server as the
+      // owner's report, which the server keeps from the cell's host alone
+      ModelApplyUtils.unrecordedLock(self);
     }
 
     // thuum ADR-071 rung 3 (lab/.cache/drafts/physics/rung3-plan.md B6): an

@@ -746,7 +746,9 @@ export class FormView {
     if (!isActor) {
       const lock = FormView.lockOf(model);
       const key = FormView.lockKey(lock);
-      if (key !== this.lastLockKey) {
+      // no recorded lock keeps this engine's own (dealWithRef's report of its
+      // standing lock went at the bind)
+      if (lock && key !== this.lastLockKey) {
         this.lastLockKey = key;
         ModelApplyUtils.applyModelLock(refr, lock);
       }

@@ -420,8 +420,10 @@ void MpObjectReference::VisitProperties(CreateActorMessage& message,
     message.props.isOpen = true;
   }
 
-  // thuum docs/verbs/locks.md: the lock the client applies to its reference
-  if (const auto lock = GetLock()) {
+  // thuum docs/verbs/locks.md: the lock the client applies to its reference,
+  // a recorded one alone (LockRecorded: an XLOC seed is the engine's load
+  // default, which each seat's own engine already holds or has moved past)
+  if (const auto lock = LockRecorded() ? GetLock() : std::nullopt) {
     LockProp prop;
     prop.level = lock->level;
     prop.key = lock->key;
@@ -888,8 +890,29 @@ void MpObjectReference::SetLock(const MpChangeFormREFR::Lock& lock)
   }
 }
 
+bool MpObjectReference::LockRecorded() const
+{
+  if (ChangeForm().lock.has_value()) {
+    return true;
+  }
+  const auto pair = LockPairId();
+  auto worldState = GetParent();
+  if (!pair || !worldState) {
+    return false;
+  }
+  const auto& pairForm = worldState->LookupFormByIdNoLoad(*pair);
+  const MpObjectReference* pairRef =
+    pairForm ? pairForm->AsObjectReference() : nullptr;
+  return pairRef && pairRef->ChangeForm().lock.has_value();
+}
+
 void MpObjectReference::SendLockTo(MpActor& to)
 {
+  // an unrecorded lock (the XLOC seed alone) is no fact to send back: the
+  // seat keeps its own engine's (LockRecorded)
+  if (!LockRecorded()) {
+    return;
+  }
   // no lock on the record reads unlocked (Lock's defaults)
   const std::string dump =
     LockDump(GetLock().value_or(MpChangeFormREFR::Lock{}));

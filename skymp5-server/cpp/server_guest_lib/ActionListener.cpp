@@ -7409,6 +7409,15 @@ void ActionListener::OnLockEngineWrite(MpActor& actor,
       owns = owns || other == &actor;
     }
   }
+  // ADR-073 decision 6: what nobody hosts is the world streamer's, the one
+  // seat elected to run what no host owns (wire-rules world_streamer). A
+  // reference whose cell and whose pair's cell nobody hosts takes its lock
+  // from the streamer's engine, whose low process runs the owners' schedules
+  // there (a shop's door locked at night and unlocked by day)
+  if (!host && pairHost == 0 && !owns &&
+      partOne.WorldStreamer().first == actor.GetFormId()) {
+    owns = true;
+  }
   const auto lock = ref->GetLock();
   skymp::rules::LockStateRow row{};
   if (lock) {

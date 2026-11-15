@@ -47,6 +47,15 @@ export class LockService extends ClientListener {
     this.controller.on('menuOpen', (e) => this.onMenuOpen(e));
     this.controller.on('menuClose', (e) => this.onMenuClose(e));
     this.controller.on('lockChanged', (e) => this.onLockChanged(e));
+    // thuum ADR-073 step 3: a bound reference with no recorded lock reports its
+    // engine's standing lock, and again when this game starts hosting its cell
+    // (a report from a seat that hosted neither side was not kept)
+    ModelApplyUtils.onUnrecordedLock = (refr) => this.reportStanding(refr);
+    this.controller.emitter.on('cellHostChanged', (e) => {
+      if (e.hosted) {
+        this.controller.once('update', () => this.reportStandingIn(e.cell));
+      }
+    });
     this.controller.on('update', () => this.onUpdate());
   }
 
@@ -120,11 +129,50 @@ export class LockService extends ClientListener {
   // hosts the reference's cell or its load door's other side, folds a write
   // equal to the record, and sends the record back to any other seat (R0,
   // rule 5), so this game never judges ownership itself.
-  private reportEngineWrite(ref: ObjectReference) {
+  // a reference bound with no recorded lock (dealWithRef): its standing lock,
+  // when it has one at all, goes as the owner's report, and the reference is
+  // kept by its cell for the re-report at a grant (bounded)
+  private reportStanding(ref: ObjectReference) {
+    const localId = ref.getFormID();
+    if (!ref.isLocked() && ref.getLockLevel() <= 0) {
+      return;
+    }
+    const cell = ref.getParentCell()?.getFormID() ?? 0;
+    if (this.unrecorded.size >= LockService.unrecordedMax && !this.unrecorded.has(localId)) {
+      const oldest = this.unrecorded.keys().next().value;
+      if (oldest !== undefined) {
+        this.unrecorded.delete(oldest);
+      }
+    }
+    this.unrecorded.set(localId, cell);
+    this.reportEngineWrite(ref, true, 'standing');
+  }
+
+  private reportStandingIn(cell: number) {
+    let n = 0;
+    this.unrecorded.forEach((refCell, localId) => {
+      if (refCell !== cell) {
+        return;
+      }
+      const ref = ObjectReference.from(this.sp.Game.getFormEx(localId));
+      if (ref) {
+        this.reportEngineWrite(ref, true, 'standing at the grant');
+        ++n;
+      }
+    });
+    if (n > 0) {
+      this.sayOnce('grant', `cell ${cell.toString(16)} hosted here: ${n} standing lock(s) reported again`);
+    }
+  }
+
+  private unrecorded = new Map<number, number>();
+  private static readonly unrecordedMax = 2048;
+
+  private reportEngineWrite(ref: ObjectReference, force = false, why = 'write') {
     const localId = ref.getFormID();
     const locked = ref.isLocked();
     const level = ref.getLockLevel();
-    if (ModelApplyUtils.isAppliedLock(localId, locked, level)) {
+    if (!force && ModelApplyUtils.isAppliedLock(localId, locked, level)) {
       return;
     }
     const remoteId = localId < 0xff000000 ? localId : localIdToRemoteId(localId);
@@ -147,8 +195,10 @@ export class LockService extends ClientListener {
       reliability: 'reliable',
     });
     this.sayOnce(
-      'write',
-      `lock ${remoteId.toString(16)}: its engine wrote it ${locked ? 'locked' : 'unlocked'} (level ${level}), reported as the owner's write (ADR-073 step 3)`,
+      why,
+      why === 'write'
+        ? `lock ${remoteId.toString(16)}: its engine wrote it ${locked ? 'locked' : 'unlocked'} (level ${level}), reported as the owner's write (ADR-073 step 3)`
+        : `lock ${remoteId.toString(16)}: no recorded lock, its engine's standing lock ${locked ? 'locked' : 'unlocked'} (level ${level}) reported (${why}, ADR-073 step 3)`,
     );
   }
 

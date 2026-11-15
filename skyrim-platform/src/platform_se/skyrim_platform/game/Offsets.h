@@ -195,6 +195,27 @@ inline REL::Relocation<std::uintptr_t> Reanimate{ REL::ID(38820) };
 // 2026-10-29). AE only, as Reanimate.
 inline REL::Relocation<std::uintptr_t> CharProxyContactPointAdded{ REL::ID(
   79131) };
+// thuum docs/DECISIONS.md ADR-071 decision 4 (rung 3, an impulse's cause;
+// docs/verbs/prop-physics.md): the engine's gameplay impulse scale,
+// TESHavokUtilities::ScaleGameplayImpulseForce, `float (float a_inputForce,
+// bhkRigidBody* a_body, bool a_factorMass)` (CommonLibSSE-NG
+// include/RE/T/TESHavokUtilities.h:18), the one site every prop push on both
+// seats went through (x-prop-blast 20261111-223256, H2), the cone's and the
+// arrow's included (x-prop-cone 20261112-080520, x-prop-arrow 080858); and
+// the explosion's push of a node tree, AddExplosionImpulse, `void
+// (NiAVObject* a_obj3D, hkVector4& a_pos, float a_force, const HitData*
+// a_hitData)` (TESHavokUtilities.h:14), a ragdoll's one push (080520's 34
+// calls on c2, none sized by 26004). The ids are CommonLib's own, copied
+// from its bodies since include/RE/Offsets.h names neither:
+// src/RE/T/TESHavokUtilities.cpp:38, RELOCATION_ID(25467, 26004), and :10,
+// RELOCATION_ID(25468, 26005);
+// addrlib: 26004 at 0x3fd450, 26005 at 0x3fd570 (1.6.1170, `just addr`)
+// on 2026-11-12. Installed on AE alone, since the reads are 1.6.1170's
+inline REL::Relocation<std::uintptr_t> ScaleGameplayImpulseForce{
+  RELOCATION_ID(25467, 26004)
+};
+inline REL::Relocation<std::uintptr_t> AddExplosionImpulse{ RELOCATION_ID(
+  25468, 26005) };
 inline REL::Relocation<std::uintptr_t> ApplyMasksToRenderTargets{
   RELOCATION_ID(26454, 27040)
 };

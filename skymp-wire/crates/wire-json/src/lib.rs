@@ -482,6 +482,51 @@ mod tests {
         }
     }
 
+    /// thuum ADR-071 decision 6 (physics rung 2, SCHEMA_VERSION 46): the
+    /// prop fixtures in the v2 shapes. 58-0 and 58-1 are v1's two samples
+    /// (Riverwood's basket 0x54a44 awake, a drop 0xff000004 at rest) with an
+    /// epoch, a sequence, the owner's clock and the velocities; 58-2 a held
+    /// sample; 58-3 the server's record answer to a refused sample (sequence
+    /// 0, the owner's clock 0, at rest, no velocity), which a client may never
+    /// send; 58-4 a sample with two body poses (rung 4's and rung 5's shape,
+    /// exercised now so no later rung adds one). 59-0 and 59-1 are v1's claims
+    /// as one-element lists; 59-2 an impact of the Riverwood Trader's six
+    /// cabbages 0x1c0c6 to 0x1c0cb by one impulse.
+    #[test]
+    fn prop_fixtures_validate_as_named() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        let verdicts: [(&str, Result<(), Reject>); 8] = [
+            ("58-PropTransform-0.json", Ok(())),
+            ("58-PropTransform-1.json", Ok(())),
+            ("58-PropTransform-2.json", Ok(())),
+            ("58-PropTransform-3.json", Err(Reject::Range)),
+            ("58-PropTransform-4.json", Ok(())),
+            ("59-PropClaim-0.json", Ok(())),
+            ("59-PropClaim-1.json", Ok(())),
+            ("59-PropClaim-2.json", Ok(())),
+        ];
+        for (name, from_a_client) in verdicts {
+            let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+            let m = recognize(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), Ok(()), "{name}");
+            assert_eq!(validate(&m, &mut ClientGuard::default(), 0), from_a_client, "{name}");
+        }
+        let text = std::fs::read_to_string(fixtures_dir().join("58-PropTransform-4.json")).unwrap_or_default();
+        match recognize(&text) {
+            Ok(Message::PropTransform(t)) => assert_eq!((t.seq, t.held, t.bones.len()), (2, true, 2)),
+            other => panic!("{other:?}"),
+        }
+        let text = std::fs::read_to_string(fixtures_dir().join("59-PropClaim-2.json")).unwrap_or_default();
+        match recognize(&text) {
+            Ok(Message::PropClaim(c)) => assert_eq!((c.refrs.to_vec(), c.touch), ((0x1c0c6..=0x1c0cb).collect::<Vec<u32>>(), 3)),
+            other => panic!("{other:?}"),
+        }
+        // a v1 sample (no epoch, sequence, clock, velocities, hold or bones)
+        // and a v1 claim (one refr) are no shape now
+        assert!(recognize("{\"t\": 58, \"refr\": 346692, \"pos\": [0.0, 0.0, 0.0], \"rot\": [0.0, 0.0, 0.0], \"asleep\": false}").is_err());
+        assert!(recognize("{\"t\": 59, \"refr\": 346692, \"touch\": 0}").is_err());
+    }
+
     /// thuum D-S3 (ADR-068's DestructionStage row): one fixture each way.
     /// 0 is a seat's report, Bleak Falls Temple's oil lamp 0x9b0fb at its
     /// first stage (the census's TrapFallingOilLampColLayer, its first shot's

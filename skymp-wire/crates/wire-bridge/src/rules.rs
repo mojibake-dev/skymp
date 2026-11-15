@@ -51,24 +51,58 @@ mod ffi {
         target_scale: f32,
     }
 
+    /// A prop returned to its cell's host by a departure or an unload
+    /// (props_gone, props_unloaded): the reference and the new epoch the
+    /// word (PropOwner, player 0) carries.
+    #[derive(Debug)]
+    struct PropReturn {
+        /// The prop's reference id.
+        refr: u32,
+        /// The epoch the word carries.
+        epoch: u32,
+    }
+
     /// What the core knows about a simulator's sample of a physics prop
-    /// (wire-rules props, thuum docs/verbs/prop-physics.md).
+    /// (wire-rules props, thuum docs/verbs/prop-physics.md; PropTransform v2,
+    /// physics rung 2).
     #[derive(Debug)]
     struct PropSampleFacts {
         /// The prop's reference id.
         refr: u32,
         /// The sender's actor id.
         player: u32,
+        /// The owner epoch of the word the sender holds.
+        epoch: u32,
+        /// The sender's sample number within (refr, epoch).
+        seq: u16,
+        /// The owner's own clock at the read, ms.
+        t_ms: u32,
         /// The cell the sample's position lands in, 0 for none.
         cell: u32,
         /// The host of the cell the RECORD stands in, 0 while nobody.
         cell_host: u32,
         /// The body's reported state.
         asleep: bool,
+        /// The sender's engine holds the body (its grab).
+        held: bool,
         /// Units between the sample and the record.
         moved: f32,
         /// The server's wall clock, ms.
         now_ms: u64,
+    }
+
+    /// The rule's answer to a prop sample (prop_transform): the code, the
+    /// prop's owner epoch after the judgment (the word's at a return, a clamp
+    /// or a wake) and a clamp's distance.
+    #[derive(Debug, PartialEq)]
+    struct PropSampleVerdict {
+        /// 0 accepted to 11 late (`prop_transform`'s list).
+        code: u8,
+        /// The prop's owner epoch after the judgment.
+        epoch: u32,
+        /// For a clamp (code 5), the units the record moves from where it
+        /// stands toward the sample; 0 for every other code.
+        allowed: f32,
     }
 
     /// What the core knows about the direction of a player's melee hit on a
@@ -3128,47 +3162,108 @@ mod ffi {
         /// (wire-rules cells::GRACE_MS), for the core's timer.
         fn host_grace_ms() -> u64;
 
-        /// thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
-        /// physics prop, the cell's host by default, the last toucher while
-        /// its lease holds; the owner table's "prop" rows.
+        /// thuum docs/verbs/prop-physics.md (ADR-058; A1 to A7 of ADR-063's
+        /// props note, ADR-071 decision 2): one simulating seat per physics
+        /// prop, the cell's host by default, the toucher while it moves, a
+        /// grabber while its engine holds it; ownership changes by the word
+        /// alone and no clock lapses a row; the owner table's "prop" rows.
         type Props;
         /// No prop claimed.
         fn new_props() -> Box<Props>;
         /// `player` touched `refr` in `cell` by `touch` (0 contact, 1 grab, 2
-        /// drop, 3 impulse) at `now_ms`: 0 granted (the epoch is
-        /// `prop_epoch_of`), 1 held by another's grab, 2 the claimant
-        /// simulates it already.
+        /// drop, 3 impulse; a trap's world body by 3 alone, the core's gate)
+        /// at `now_ms`: 0 granted (the epoch is `prop_epoch_of`), 1 held by
+        /// another's grab, 2 the claimant simulates it already, 3 another
+        /// seat streams it awake and the touch is no grab (a trap body's
+        /// second firing among them: the first firing wins), 4 the
+        /// claimant's game reported the prop's cell unloaded and has not
+        /// loaded or reached it since (Away); a grab ends the claimant's hold
+        /// of any other prop first (one hand per player).
         fn claim_prop(self: &mut Props, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8;
-        /// thuum D-S3 point 4: `player`'s seat claims `refr`, a trap's world
-        /// body in `cell` (a world object its own script set moving; the core
-        /// admits it by the impulse touch alone), at `now_ms`: the codes of
-        /// `claim_prop`, and 3 Moving, another seat's firing set the body
-        /// moving and it is awake under that seat's live row (the first firing
-        /// wins).
-        fn claim_prop_world_body(self: &mut Props, refr: u32, player: u32, cell: u32, now_ms: u64) -> u8;
-        /// The prop's owner epoch, up at every grant; 0 before any.
+        /// `player` picks `refr` up at `now_ms` (its activation of the item
+        /// reference, which gives the item and deletes a server-made one for
+        /// every seat), a take read off the claim's rows for a touch that is
+        /// no grab: 0 taken (the picker's own row, or one at rest, stalled or
+        /// unclaimed), 1 held by another's grab, 2 another seat streams it
+        /// awake; it changes no row.
+        fn pickup_prop(self: &Props, refr: u32, player: u32, now_ms: u64) -> u8;
+        /// The prop's owner epoch, up at every word (a grant, a return, the
+        /// host's wake); 0 before any.
         fn prop_epoch_of(self: &Props, refr: u32) -> u32;
         /// `player`'s transform of `refr`, landing in `cell` (0 for none)
-        /// whose host is `cell_host` (0 while nobody), the body asleep or
-        /// not, `moved` units from the record: 0 accepted (the record takes
-        /// it), 1 not the owner's, 2 no cell or an unhosted cell nobody holds
-        /// (the prop freezes), 3 farther than the step budget allows (the
-        /// record stands); `cell_host` hosts the cell the RECORD stands in.
-        fn prop_transform(self: &mut Props, facts: &PropSampleFacts) -> u8;
-        /// The row's owner while the row is live, else 0: the word a late
-        /// listener gets at its subscription.
-        fn prop_live_owner(self: &Props, refr: u32, now_ms: u64) -> u32;
-        /// Who simulates `refr` now, given its cell's host (0 while nobody):
-        /// the toucher while awake or inside its lease, else the host.
-        fn prop_owner_of(self: &Props, refr: u32, cell_host: u32, now_ms: u64) -> u32;
-        /// `host` now hosts `cell`: the rows nobody holds live name it, their
-        /// epochs kept.
-        fn props_host_changed(self: &mut Props, cell: u32, host: u32, now_ms: u64);
-        /// `player` left: its rows fall back to their cells' hosts.
-        fn props_gone(self: &mut Props, player: u32);
-        /// The lease a toucher keeps a sleeping prop for, ms (wire-rules
-        /// props::PROP_LEASE_MS), for the core's log.
-        fn prop_lease_ms() -> u64;
+        /// whose host is `cell_host` (0 while nobody), the body asleep or not
+        /// and held or not, `moved` units from the record, under the word's
+        /// `epoch`, numbered `seq`, read at `t_ms` on the owner's clock; the
+        /// code: 0 accepted (the record takes it, the grab its `held`), 1
+        /// not the owner's at the prop's epoch, 2 no cell at the sample's
+        /// point (the record stands, whoever sent it), 3 an awake sample
+        /// farther than the step budget allows (the record stands), 4
+        /// accepted and the rest returned the prop to the host (the word with
+        /// player 0 at the verdict's epoch), 5 an asleep sample over the
+        /// budget, clamped (the record moves `allowed` units toward the
+        /// sample, the rest returned as 4's), 6 woken by the host's own
+        /// sample of a prop that was not its live row (the row the host's at
+        /// the verdict's epoch, the word NAMING THE HOST by id), 7 a wake by
+        /// a sender whose game reported the sample's cell unloaded and not
+        /// loaded or reached since (Away; a live owner's own stream passes),
+        /// 8 a resting prop in a cell nobody hosts (it freezes at the
+        /// record), 9 an epoch below the prop's (Stale), 10 above it
+        /// (Future), 11 the owner's sequence not newer than its last at the
+        /// epoch (Late: dropped, no fault); `cell_host` hosts the cell the
+        /// RECORD stands in.
+        fn prop_transform(self: &mut Props, facts: &PropSampleFacts) -> PropSampleVerdict;
+        /// The row's owner while the row is live (awake or held), else 0: the
+        /// word a late listener gets at its subscription (with the epoch, 0
+        /// names the host by default).
+        fn prop_live_owner(self: &Props, refr: u32) -> u32;
+        /// Whether the live row's owner's engine holds the prop: the record
+        /// answer's `held`.
+        fn prop_held(self: &Props, refr: u32) -> bool;
+        /// Who simulates `refr` now, given its record's cell's host (0 while
+        /// nobody): the toucher while awake or held, else the host; no clock.
+        fn prop_owner_of(self: &Props, refr: u32, cell_host: u32) -> u32;
+        /// `player`'s game unloaded `cell`: every live row of its there (a
+        /// held one included) returns to the host by default at a new epoch;
+        /// the core sends `PropOwner` with player 0 for every (refr, epoch).
+        /// Its grants and wakes there are refused (Away) until its load
+        /// report or the cell's return to its reach.
+        fn props_unloaded(self: &mut Props, player: u32, cell: u32) -> Vec<PropReturn>;
+        /// `player`'s game reported `cell` loaded: the end of the unload's
+        /// state, its claims and samples there judged again.
+        fn props_loaded(self: &mut Props, player: u32, cell: u32);
+        /// `cells` are in `player`'s reach now (RefreshReach): the unload's
+        /// state ends for each, as a follow vouches by loaded or reach.
+        fn props_reached(self: &mut Props, player: u32, cells: &[u32]);
+        /// `player` left: its live rows (awake or held) return to their
+        /// cells' hosts at a new epoch each; the core sends `PropOwner` with
+        /// player 0 for every (refr, epoch) returned.
+        fn props_gone(self: &mut Props, player: u32) -> Vec<PropReturn>;
+        /// Physics rung 5a (thuum ADR-071 decision 5: a dead actor's row is
+        /// owned by the death's simulator): `refr`, an actor, died in `cell`
+        /// at `now_ms` with `simulator` simulating it (0 for none). The row
+        /// is written afresh at a new epoch, returned, whatever stood (no
+        /// row refuses the server's fact): `simulator`'s, awake and not
+        /// held, or nobody's (the cell's host by default) for 0 or for a
+        /// simulator whose game reported the cell unloaded and has not
+        /// loaded or reached it since.
+        fn prop_died(self: &mut Props, refr: u32, simulator: u32, cell: u32, now_ms: u64) -> u32;
+        /// The core judged `refr`'s body at rest (its dwell, never a
+        /// clock): a live row (awake or held) returns to the host by
+        /// default, asleep, at a new epoch, returned, with no word (in 5a
+        /// none goes out at the death or the rest, only a departure or an
+        /// unload words a live dead row; rung 5's R5-1 words the death and
+        /// the rest); 0 when no live row stood (one at rest, one naming
+        /// nobody, none), and nothing changes.
+        fn prop_rested(self: &mut Props, refr: u32) -> u32;
+        /// `refr`'s body ended (its actor stood again): the row goes and the
+        /// epoch rises, returned (epochs outlive rows, so a later death
+        /// starts above every word before it); 0 when no row stood, and
+        /// nothing changes.
+        fn prop_ended(self: &mut Props, refr: u32) -> u32;
+        /// How recent the owner's last sample must be for a prop to count as
+        /// moving, ms (wire-rules props::PROP_MOVING_MS): a contact, a drop or
+        /// an impulse from another seat is refused on it (claim code 3).
+        fn prop_moving_ms() -> u64;
 
         /// thuum ADR-068 (the one seam): the row of a reported script call
         /// and its subject, the row for the core's shape step.
@@ -3520,7 +3615,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropSampleFacts, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -4795,13 +4890,15 @@ fn claim_end_name(why: u8) -> String {
 }
 
 /// A claim's verdict as the core's code: 0 granted, 1 held, 2 the same
-/// simulator, 3 a world body another seat's firing moves (thuum D-S3).
+/// simulator, 3 moving (another seat streams it awake, a trap body's first
+/// firing among them, thuum D-S3), 4 away (the claimant unloaded the cell).
 fn claim_code(verdict: props::ClaimVerdict) -> u8 {
     match verdict {
         props::ClaimVerdict::Granted(_) => 0,
         props::ClaimVerdict::Held => 1,
         props::ClaimVerdict::Same => 2,
         props::ClaimVerdict::Moving => 3,
+        props::ClaimVerdict::Away => 4,
     }
 }
 
@@ -4813,56 +4910,102 @@ fn new_props() -> Box<Props> {
     Box::default()
 }
 
+/// The props a departure or an unload returned, as the core's rows.
+fn prop_returns(returned: Vec<(u32, u32)>) -> Vec<PropReturn> {
+    returned.into_iter().map(|(refr, epoch)| PropReturn { refr, epoch }).collect()
+}
+
 impl Props {
     fn claim_prop(&mut self, refr: u32, player: u32, cell: u32, touch: u8, now_ms: u64) -> u8 {
         claim_code(self.0.claim(refr, player, cell, touch, now_ms))
     }
 
-    fn claim_prop_world_body(&mut self, refr: u32, player: u32, cell: u32, now_ms: u64) -> u8 {
-        claim_code(self.0.claim_world_body(refr, player, cell, now_ms))
+    fn pickup_prop(&self, refr: u32, player: u32, now_ms: u64) -> u8 {
+        match self.0.pickup(refr, player, now_ms) {
+            props::PickupVerdict::Taken => 0,
+            props::PickupVerdict::Held => 1,
+            props::PickupVerdict::Moving => 2,
+        }
     }
 
     fn prop_epoch_of(&self, refr: u32) -> u32 {
         self.0.epoch_of(refr)
     }
 
-    fn prop_transform(&mut self, f: &PropSampleFacts) -> u8 {
+    fn prop_transform(&mut self, f: &PropSampleFacts) -> PropSampleVerdict {
         let facts = props::SampleFacts {
             refr: f.refr,
             player: f.player,
+            epoch: f.epoch,
+            seq: f.seq,
+            t_ms: f.t_ms,
             cell: f.cell,
             cell_host: f.cell_host,
             asleep: f.asleep,
+            held: f.held,
             moved: f.moved,
             now_ms: f.now_ms,
         };
-        match self.0.transform(&facts) {
-            props::TransformVerdict::Accepted => 0,
-            props::TransformVerdict::NotOwner => 1,
-            props::TransformVerdict::WrongCell => 2,
-            props::TransformVerdict::TooFast => 3,
-        }
+        let (code, allowed) = match self.0.transform(&facts) {
+            props::TransformVerdict::Accepted => (0, 0.0),
+            props::TransformVerdict::NotOwner => (1, 0.0),
+            props::TransformVerdict::Outside => (2, 0.0),
+            props::TransformVerdict::TooFast => (3, 0.0),
+            props::TransformVerdict::Returned(_) => (4, 0.0),
+            props::TransformVerdict::Clamped { allowed, .. } => (5, allowed),
+            props::TransformVerdict::Woken(_) => (6, 0.0),
+            props::TransformVerdict::Away => (7, 0.0),
+            props::TransformVerdict::Frozen => (8, 0.0),
+            props::TransformVerdict::Stale => (9, 0.0),
+            props::TransformVerdict::Future => (10, 0.0),
+            props::TransformVerdict::Late => (11, 0.0),
+        };
+        PropSampleVerdict { code, epoch: self.0.epoch_of(f.refr), allowed }
     }
 
-    fn prop_live_owner(&self, refr: u32, now_ms: u64) -> u32 {
-        self.0.live_owner(refr, now_ms)
+    fn prop_live_owner(&self, refr: u32) -> u32 {
+        self.0.live_owner(refr)
     }
 
-    fn prop_owner_of(&self, refr: u32, cell_host: u32, now_ms: u64) -> u32 {
-        self.0.owner_of(refr, cell_host, now_ms)
+    fn prop_held(&self, refr: u32) -> bool {
+        self.0.held(refr)
     }
 
-    fn props_host_changed(&mut self, cell: u32, host: u32, now_ms: u64) {
-        self.0.host_changed(cell, host, now_ms);
+    fn prop_owner_of(&self, refr: u32, cell_host: u32) -> u32 {
+        self.0.owner_of(refr, cell_host)
     }
 
-    fn props_gone(&mut self, player: u32) {
-        self.0.gone(player);
+    fn props_unloaded(&mut self, player: u32, cell: u32) -> Vec<PropReturn> {
+        prop_returns(self.0.unloaded(player, cell))
+    }
+
+    fn props_loaded(&mut self, player: u32, cell: u32) {
+        self.0.loaded(player, cell);
+    }
+
+    fn props_reached(&mut self, player: u32, cells: &[u32]) {
+        self.0.reached(player, cells);
+    }
+
+    fn props_gone(&mut self, player: u32) -> Vec<PropReturn> {
+        prop_returns(self.0.gone(player))
+    }
+
+    fn prop_died(&mut self, refr: u32, simulator: u32, cell: u32, now_ms: u64) -> u32 {
+        self.0.died(refr, simulator, cell, now_ms)
+    }
+
+    fn prop_rested(&mut self, refr: u32) -> u32 {
+        self.0.rested(refr)
+    }
+
+    fn prop_ended(&mut self, refr: u32) -> u32 {
+        self.0.ended(refr)
     }
 }
 
-const fn prop_lease_ms() -> u64 {
-    props::PROP_LEASE_MS
+const fn prop_moving_ms() -> u64 {
+    props::PROP_MOVING_MS
 }
 
 /// The spells the server names as teleports (wire-rules teleports).
@@ -6400,52 +6543,168 @@ mod tests {
         assert_eq!(alias_fills_actor(&aliases, &journal, 0x39645, 0x13487, 0x1347a, true), AliasActorFill { kind: 1, alias: 1 });
     }
 
-    fn sample(refr: u32, player: u32, cell: u32, cell_host: u32, asleep: bool, moved: f32, now_ms: u64) -> PropSampleFacts {
-        PropSampleFacts { refr, player, cell, cell_host, asleep, moved, now_ms }
+    // a prop sample as the core gathers it, the sender's clock read as the
+    // server's and its engine holding nothing
+    #[allow(clippy::too_many_arguments)]
+    fn sample(refr: u32, player: u32, epoch: u32, seq: u16, cell: u32, cell_host: u32, asleep: bool, moved: f32, now_ms: u64) -> PropSampleFacts {
+        PropSampleFacts { refr, player, epoch, seq, t_ms: u32::try_from(now_ms).unwrap_or(u32::MAX), cell, cell_host, asleep, held: false, moved, now_ms }
     }
 
     #[test]
     fn the_prop_table_crosses_as_codes() {
-        // thuum docs/verbs/prop-physics.md (ADR-058): the claim's and the
-        // transform's codes, the epoch and the lease's end as the core reads them
+        // thuum docs/verbs/prop-physics.md (A1 to A7, ADR-071 decision 2):
+        // the claim's codes (0 granted, 1 held, 2 same, 3 moving, 4 away),
+        // a grab ending the claimant's other hold, the transform's (0
+        // accepted, 1 not owner, 2 outside, 3 too fast, 4 returned, 5
+        // clamped, 6 woken, 7 away, 8 frozen), the epoch and the returns of
+        // an unload and a departure as the core reads them
         let mut p = new_props();
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 0), 0xff00_0002);
+        let code = |v: PropSampleVerdict| v.code;
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002), 0xff00_0002);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
         assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 1, 1_100), 2);
-        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 0, 1_200), 1);
-        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 0x9732, 0xff00_0002, false, 10.0, 1_300)), 1);
-        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 10.0, 1_300)), 0);
-        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0, 0xff00_0002, true, 10.0, 1_300)), 2);
-        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 5_000.0, 1_300)), 3);
-        assert_eq!(p.prop_live_owner(0x2ad9c, 1_300), 0xff00_0003);
-        // the grab holds through the sleep; the holder's drop and its rest start the lease
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms()), 0xff00_0003);
+        // c3's grab of another prop ends its hold of the first, which stays its awake row: a contact on it is moving (3)
+        assert_eq!(p.claim_prop(0x54a44, 0xff00_0003, 0x9732, 1, 1_150), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 0, 1_200), 3);
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 1, 1, 0x9732, 0xff00_0002, false, 10.0, 1_300))), 1);
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 1, 0x9732, 0xff00_0002, false, 10.0, 1_300))), 0);
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 2, 0, 0xff00_0002, false, 10.0, 1_300))), 2);
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 2, 0x9732, 0xff00_0002, false, 5_000.0, 1_300))), 3);
+        assert_eq!(p.prop_live_owner(0x2ad9c), 0xff00_0003);
+        // its release (touch 2) is its own row's (2); a contact on the falling prop is moving (3); its rest returns it (4)
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 2, 1_300), 2);
-        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0x9732, 0xff00_0002, true, 10.0, 1_300)), 0);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms() - 1), 0xff00_0003);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 1_300 + prop_lease_ms()), 0xff00_0002);
-        p.props_host_changed(0x9732, 0xff00_0004, 9_000);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0004, 9_000), 0xff00_0004);
-        p.props_gone(0xff00_0004);
-        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002, 9_100), 0xff00_0002);
-        assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 2, 0x9732, 0xff00_0002, false, 10.0, 1_400))), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 0, 1_500), 3);
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 3, 0x9732, 0xff00_0002, true, 10.0, 1_600))), 4);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 2);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0002), 0xff00_0002);
+        assert_eq!(p.prop_live_owner(0x2ad9c), 0);
+        // the host's wake by id (6), its asleep sample over the budget clamped (5), a resting prop nobody hosts (8)
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 2, 1, 0x9732, 0xff00_0002, false, 10.0, 1_700))), 6);
+        assert_eq!(p.prop_live_owner(0x2ad9c), 0xff00_0002);
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 3, 1, 0x9732, 0xff00_0002, true, 5_000.0, 1_800))), 5);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 4);
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 4, 1, 0x9732, 0, false, 10.0, 1_900))), 8);
+        // an unload returns the live rows there with their new epochs, and refuses the claim (4) and the wake (7)
+        // there until the load report or the reach
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 1, 9_100), 0);
+        let unloaded = p.props_unloaded(0xff00_0003, 0x9732);
+        assert_eq!(unloaded.iter().map(|r| (r.refr, r.epoch)).collect::<Vec<_>>(), vec![(0x2ad9c, 6), (0x54a44, 2)]);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 9_150), 4);
+        assert!(p.props_unloaded(0xff00_0002, 0x9732).is_empty());
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 6, 1, 0x9732, 0xff00_0002, false, 10.0, 9_200))), 7);
+        p.props_loaded(0xff00_0003, 0x9732);
+        p.props_reached(0xff00_0002, &[0x9732]);
+        assert_eq!(code(p.prop_transform(&sample(0x2ad9c, 0xff00_0002, 6, 1, 0x9732, 0xff00_0002, false, 10.0, 9_300))), 6);
+        // a departure returns the live rows with their new epochs
+        let returned = p.props_gone(0xff00_0002);
+        assert_eq!(returned.iter().map(|r| (r.refr, r.epoch)).collect::<Vec<_>>(), vec![(0x2ad9c, 8)]);
+        assert_eq!(p.prop_owner_of(0x2ad9c, 0xff00_0004), 0xff00_0004);
+        assert!(prop_moving_ms() >= 100);
+    }
+
+    #[test]
+    fn a_v2_sample_crosses_with_its_epoch_and_its_clamp() {
+        // physics rung 2 (ADR-071 decision 6): the verdict the core reads is
+        // the code, the prop's epoch after it and a clamp's distance; 9 stale,
+        // 10 future, 11 late; the record answer's hold
+        let mut p = new_props();
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
+        let v = |code: u8, epoch: u32, allowed: f32| PropSampleVerdict { code, epoch, allowed };
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 0, 1, 0x9732, 0xff00_0002, false, 10.0, 1_100)), v(9, 1, 0.0));
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 2, 1, 0x9732, 0xff00_0002, false, 10.0, 1_100)), v(10, 1, 0.0));
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 1, 0x9732, 0xff00_0002, false, 10.0, 1_100)), v(0, 1, 0.0));
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 1, 0x9732, 0xff00_0002, false, 10.0, 1_150)), v(11, 1, 0.0));
+        // the engine's hold rides the sample
+        assert!(!p.prop_held(0x2ad9c));
+        let held = PropSampleFacts { held: true, ..sample(0x2ad9c, 0xff00_0003, 1, 2, 0x9732, 0xff00_0002, false, 10.0, 1_200) };
+        assert_eq!(p.prop_transform(&held), v(0, 1, 0.0));
+        assert!(p.prop_held(0x2ad9c));
+        // its rest 5,000 units off: clamped to the step the budget holds, the prop the host's at 2
+        let rest = p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 3, 0x9732, 0xff00_0002, true, 5_000.0, 1_300));
+        assert_eq!(rest, v(5, 2, wire_rules::props::PROP_STEP_ALLOWANCE_UNITS));
+        assert!(!p.prop_held(0x2ad9c));
+        assert_eq!(p.prop_live_owner(0x2ad9c), 0);
+    }
+
+    #[test]
+    fn a_samples_velocity_bound_is_the_rules_speed_cap() {
+        // thuum ADR-071 decision 6: wire-validate bounds a sample's linear
+        // velocity by the server's speed cap, and the two crates depend on
+        // neither, so the bridge, which depends on both, pins them equal
+        assert_eq!(wire_validate::PROP_MAX_LIN_UNITS_PER_S.to_bits(), props::PROP_MAX_SPEED_UNITS_PER_S.to_bits());
     }
 
     #[test]
     fn a_trap_bodys_claim_crosses_as_codes() {
-        // thuum D-S3 point 4: Embershard's rock 0xb6d45 in the mine 0xb6be6;
-        // the firing seat's grant, the second firing's Moving (3), the
-        // firing seat's own Same (2); an item's impulse keeps its grant
+        // thuum D-S3 point 4 under A3 (ADR-071 decision 8): Embershard's rock
+        // 0xb6d45 in the mine 0xb6be6, claimed by the impulse touch like any
+        // prop: the firing seat's grant, the second firing's Moving (3), the
+        // firing seat's own Same (2), the rest's return (4), then a new
+        // firing's grant; an item's impulse on a prop another seat streams is
+        // moving too
         let mut p = new_props();
-        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0003, 0xb6be6, 1_000), 0);
+        assert_eq!(p.claim_prop(0xb6d45, 0xff00_0003, 0xb6be6, 3, 1_000), 0);
         assert_eq!(p.prop_epoch_of(0xb6d45), 1);
-        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0002, 0xb6be6, 1_050), 3);
-        assert_eq!(p.claim_prop_world_body(0xb6d45, 0xff00_0003, 0xb6be6, 1_100), 2);
+        assert_eq!(p.claim_prop(0xb6d45, 0xff00_0002, 0xb6be6, 3, 1_050), 3);
+        assert_eq!(p.claim_prop(0xb6d45, 0xff00_0003, 0xb6be6, 3, 1_100), 2);
         assert_eq!(p.prop_epoch_of(0xb6d45), 1);
-        assert_eq!(p.prop_live_owner(0xb6d45, 1_100), 0xff00_0003);
+        assert_eq!(p.prop_live_owner(0xb6d45), 0xff00_0003);
+        assert_eq!(p.prop_transform(&sample(0xb6d45, 0xff00_0003, 1, 1, 0xb6be6, 0xff00_0002, true, 40.0, 1_200)).code, 4);
+        assert_eq!(p.claim_prop(0xb6d45, 0xff00_0002, 0xb6be6, 3, 1_300), 0);
+        assert_eq!(p.prop_epoch_of(0xb6d45), 3);
         assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 0, 1_000), 0);
-        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 3, 1_050), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0002, 0x9732, 3, 1_050), 3);
+    }
+
+    #[test]
+    fn a_pickup_crosses_as_codes() {
+        // a pickup is a take (ADR-071 decision 2's table): 0 taken (an
+        // unclaimed prop, the holder's own, a resting one), 1 another's hold,
+        // 2 another seat's awake stream (the holder's release, then its fall);
+        // no code moves the epoch
+        let mut p = new_props();
+        assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0002, 1_000), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 1, 1_000), 0);
+        assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0002, 1_100), 1);
+        assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0003, 1_100), 0);
+        assert_eq!(p.claim_prop(0x2ad9c, 0xff00_0003, 0x9732, 2, 1_200), 2);
+        assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0002, 1_300), 2);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 1);
+        assert_eq!(p.prop_transform(&sample(0x2ad9c, 0xff00_0003, 1, 1, 0x9732, 0xff00_0002, true, 10.0, 1_400)).code, 4);
+        assert_eq!(p.pickup_prop(0x2ad9c, 0xff00_0002, 1_500), 0);
+        assert_eq!(p.prop_epoch_of(0x2ad9c), 2);
+    }
+
+    #[test]
+    fn a_dead_actors_row_crosses_as_epochs() {
+        // physics rung 5a (ADR-071 decision 5): the death's, the rest's and the end's epochs as the core reads them, 0
+        // where nothing changed; the forest's predators 0x85547 and 0x85549 in Tamriel's cell 0x9810 (ActorDeathTest's),
+        // c1 0xff00_0002 hosting
+        let mut p = new_props();
+        assert_eq!(p.prop_died(0x85547, 0xff00_0003, 0x9810, 1_000), 1);
+        assert_eq!(p.prop_owner_of(0x85547, 0xff00_0002), 0xff00_0003);
+        assert_eq!(p.prop_live_owner(0x85547), 0xff00_0003);
+        assert!(!p.prop_held(0x85547));
+        assert_eq!(p.prop_rested(0x85547), 2);
+        assert_eq!(p.prop_rested(0x85547), 0);
+        assert_eq!(p.prop_owner_of(0x85547, 0xff00_0002), 0xff00_0002);
+        assert_eq!(p.prop_ended(0x85547), 3);
+        assert_eq!(p.prop_ended(0x85547), 0);
+        assert_eq!(p.prop_epoch_of(0x85547), 3);
+        // no simulator: the host's by default, nothing for the rest to return
+        assert_eq!(p.prop_died(0x85547, 0, 0x9810, 2_000), 4);
+        assert_eq!(p.prop_live_owner(0x85547), 0);
+        assert_eq!(p.prop_rested(0x85547), 0);
+        // a departure returns a live dead row with its word's epoch, as any prop's
+        assert_eq!(p.prop_died(0x85547, 0xff00_0003, 0x9810, 3_000), 5);
+        let returned = p.props_gone(0xff00_0003);
+        assert_eq!(returned.iter().map(|r| (r.refr, r.epoch)).collect::<Vec<_>>(), vec![(0x85547, 6)]);
+        // a simulator whose game unloaded the cell holds no row
+        assert!(p.props_unloaded(0xff00_0004, 0x9810).is_empty());
+        assert_eq!(p.prop_died(0x85549, 0xff00_0004, 0x9810, 4_000), 1);
+        assert_eq!(p.prop_live_owner(0x85549), 0);
     }
 
     #[test]

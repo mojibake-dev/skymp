@@ -67,8 +67,9 @@ struct WorldState::Impl
   std::array<std::shared_ptr<std::vector<uint32_t>>, 0x100>
     allFormsByModIndexCache;
   // the records LoadForm could not attach, each id once: a lookup of one the
-  // loader never attaches repeats (a moving static a script call names, the
-  // hall door's FX review, finding 1); GetAllForms drops each from its list
+  // loader never attaches repeats (a STAT a script call names; the hall
+  // door's FX review, finding 1, whose MSTT the loader holds since physics
+  // rung 4); GetAllForms drops each from its list
   std::set<uint32_t> attachEspmRecordFailures;
   // thuum docs/verbs/magic-effects.md: actors with running effects and when
   // they were last advanced
@@ -459,6 +460,7 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
   bool isNpc = t == "NPC_";
   bool isFurniture = t == "FURN";
   bool isActivator = t == "ACTI";
+  bool isMovableStatic = t == "MSTT";
   bool isDoor = t == "DOOR";
   bool isContainer = t == "CONT";
   bool isFlor = t == "FLOR" &&
@@ -470,11 +472,15 @@ bool WorldState::AttachEspmRecord(const espm::CombineBrowser& br,
   // recorded attaches whatever its base (an XMarker, a collision marker, a
   // talking activator a script enables), so the server holds what it
   // records; an ACHR keeps its rule, an actor's base or nothing (a leveled
-  // actor's placement never attaches as an object)
+  // actor's placement never attaches as an object). Since physics rung 4
+  // (thuum ADR-071, Eli's D-PH9 A) the server holds every movable static
+  // (MSTT) and never its class: whether one is a world body is each seat's
+  // read of its loaded 3D (the root's BSX kDynamic), and the server's kind
+  // gate, listener check, step budget and tether bound what a seat says
   const bool recordedRefr = recorded && record->GetType() == "REFR";
   if (!recordedRefr && !isNpc && !isFurniture && !isActivator &&
-      !espm::utils::IsItem(t) && !isDoor && !isContainer && !isFlor &&
-      !isTree) {
+      !isMovableStatic && !espm::utils::IsItem(t) && !isDoor && !isContainer &&
+      !isFlor && !isTree) {
     if (optionalOutTrace) {
       *optionalOutTrace << fmt::format(
         "AttachEspmRecord - the server skips base type {} \n", t.ToString());

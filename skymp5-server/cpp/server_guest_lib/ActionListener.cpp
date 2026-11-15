@@ -285,8 +285,10 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
   bool hostedCellChange = false;
   bool passed = false;
   // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): the report is
-  // a dead NPC's, from the body's owner, inside its settle window
+  // a dead NPC's, from the body's owner, inside its settle window; and that
+  // owner, the sender (the settling line names it)
   bool bodySample = false;
+  uint32_t bodySender = 0;
   const uint64_t nowMs = static_cast<uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch())
@@ -315,21 +317,34 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // 4): a dead NPC's movement report is a BODY sample, never a
       // stand-up: the message's healthPercentage and isDead are not read
       // on this path, and a stand-up is OnHostedActorState's alone, from
-      // the health the host samples. The corpse is a physics object under
-      // the prop rule: its owner, the engine that simulated the actor at
-      // its death, moves the record with its ragdoll for the settle window
-      // (WorldState::bodySettleMs) and the record keeps the pose the
-      // ragdoll rests at (its samples still for the dwell), so a watcher
-      // places its corpse there and the loot reach measures from it
+      // the health the host samples. The corpse is a physics object, a row
+      // of the prop table (physics rung 5a, ADR-071 decision 5: a dead
+      // actor's row is owned by the death's simulator): its owner
+      // (PartOne::PropOwnerOf: the engine that simulated the actor at its
+      // death while its row is live, else the host of the cell the record
+      // stands in, one owner table for props and bodies) moves the record
+      // with its ragdoll for the settle window (WorldState::bodySettleMs)
+      // and the record keeps the pose the ragdoll rests at (its samples
+      // still for the dwell, which returns the row to the host), so a
+      // watcher places its corpse there and the loot reach measures from it
       // (playtest 42's F4 and F6: a watcher's body 1,700 units down Bleak
       // Falls' slope while the record kept the death point). Every other
-      // seat's report is refused, and once at rest so is the owner's, until
-      // a later claim (a drag or a push: the prop claim, not this slice).
-      // R2 (rule 5): the owner's ragdoll is recorded, not judged, inside
-      // the movement bounds below. Each refusal is said once a minute per
-      // sender and body, the rest counted. A body dead since before this
-      // process or placed dead has no window here and keeps the host's
-      // samples as before (TODO: its rest at load, with the prop claim)
+      // seat's report is refused (E_PROP_NOT_OWNER), and once at rest so is
+      // the owner's (E_BODY_AT_REST), until a later claim (a drag or a
+      // push: rung 5). Declared narrowings: a body nobody simulated at its
+      // death is its cell's host's alone (a follower or a claimant after
+      // it is refused, where the first simulator to report claimed it
+      // before); the owner's departure or unload of the death's cell
+      // returns the row to the host with its word mid-settle (D-PH2 A), so
+      // the new host's samples move the record from then; and the row keeps
+      // the death's cell, which this path never moves (rung 5's stream
+      // does). R2 (rule 5): the owner's ragdoll is recorded, not judged,
+      // inside the movement bounds below. Each refusal is said once a
+      // minute per sender and body, the rest counted, its line "moves body"
+      // (apart from the prop stream's "moves prop"). A body dead since
+      // before this process or placed dead has no window and no row here
+      // and keeps the host's samples as before (TODO: its rest at load,
+      // with the prop claim)
       if (moved->IsDead() && moved->IsFateRespawned() &&
           moved->HasBodySettle()) {
         const auto refuseBody = [&](const char* code, const std::string& why) {
@@ -374,21 +389,26 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
                           : 0u));
           return;
         }
-        if (moved->BodyOwnerId() == 0 &&
-            partOne.SimulatorOf(*moved) == myActor->GetFormId()) {
-          moved->ClaimBodyOwner(myActor->GetFormId());
-        }
-        if (moved->BodyOwnerId() != myActor->GetFormId()) {
-          refuseBody("E_BODY_NOT_OWNER",
-                     moved->BodyOwnerId()
-                       ? fmt::format("{:x} owns the body (the engine that "
-                                     "simulated it at its death)",
-                                     moved->BodyOwnerId())
-                       : std::string("nobody simulated it at its death and "
-                                     "the sender does not simulate it now"));
+        // the one owner table's answer: the live row's owner, else the
+        // host of the record's cell
+        const uint32_t owner = partOne.PropOwnerOf(*moved);
+        if (owner != myActor->GetFormId()) {
+          refuseBody(
+            "E_PROP_NOT_OWNER",
+            owner == 0
+              ? std::string("nobody simulates it (no live row, and nobody "
+                            "hosts the cell its record stands in)")
+              : partOne.PropLiveOwner(*moved) == owner
+              ? fmt::format("{:x} simulates it (its row's, the engine that "
+                            "simulated it at its death)",
+                            owner)
+              : fmt::format("{:x} simulates it (the host of the cell its "
+                            "record stands in, its row nobody's)",
+                            owner));
           return;
         }
         bodySample = true;
+        bodySender = owner;
       }
       auto verdict =
         partOne.MayMoveActor(*myActor, *moved, msg.data.worldOrCell, destPos);
@@ -398,8 +418,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         // the body's owner inside the record's cell: the cell-host rule
         // stands aside for the ragdoll's owner within the window (ADR-063,
         // ownership, not permission; a host change mid-ragdoll leaves the
-        // body with its mover); a roll across a cell border keeps the
-        // cell-change rule
+        // body with its mover while its game keeps the cell loaded, its
+        // unload or departure returning the row); a roll across a cell
+        // border keeps the cell-change rule
         verdict = PartOne::MoveVerdict::Accept;
       }
       if (verdict == PartOne::MoveVerdict::Refuse) {
@@ -671,7 +692,7 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // samples held still for the dwell, saves the record at once and ends
     // the window
     if (bodySample) {
-      actor->NoteBodySample(reportedPos, reportedRot, nowMs);
+      actor->NoteBodySample(reportedPos, reportedRot, nowMs, bodySender);
     }
     actor->SetAnimationVariableBool(
       AnimationVariableBool::kVariable_bInJumpState, msg.data.isInJumpState);
@@ -2653,6 +2674,14 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
     }
   }
 
+  // thuum docs/verbs/prop-physics.md (ADR-071 decision 2's table): a pickup
+  // is a take, refused on a prop another seat holds or streams awake, the
+  // reference standing for every seat (RefusePropPickup)
+  if (!msg.data.isSecondActivation &&
+      RefusePropPickup(rawMsgData, *ac, *targetPtr)) {
+    return;
+  }
+
   // thuum docs/verbs/npc-fate.md (ADR-048's B): where things were set off
   // lately, a hazard death's evidence
   if (!msg.data.isSecondActivation) {
@@ -4050,60 +4079,131 @@ void ActionListener::OnQuestStage(const RawMessageData& rawMsgData,
 }
 
 namespace {
-// thuum docs/verbs/prop-physics.md (ADR-058, slice one): a prop is an item
-// reference (libespm's item types, the client's FormTypeEx.isItem set), from
-// the game files or server-made (a drop); a door, a container, an activator
-// or an actor is no prop, whatever a seat claims or streams
-bool IsPropKind(MpObjectReference& refr)
+// thuum docs/verbs/prop-physics.md (ADR-058, slice one; physics rung 4,
+// ADR-071 and Eli's D-PH9 A): what a reference is to the prop stream, read
+// from the server's own record alone, never a record lookup and never the
+// body's class. An item (libespm's item types, the client's
+// FormTypeEx.isItem set, a key and a light among them: libespm
+// src/Utils.cpp:41-49), from the game files or server-made (a drop), is a
+// prop whose body is one part. A world body is any other game-file reference
+// that is no actor, door, container, furniture or static: a trap's rock or
+// tripwire (thuum D-S3 point 4; thuum docs/research/trap-census-2026-11-05.md
+// row 18), a hinged sign, a cart's wheel. The server holds every movable
+// static (WorldState's loader) and no class: whether a world body moves at
+// all is each seat's read of its loaded 3D (the root's BSX kDynamic), its
+// unvalidated word (R2), bounded here by the kind, the listener check
+// (E_PROP_UNSEEN), the step budget and the tether (kWorldBodyTether). A
+// server-made reference is no world body (DEF-4e: it has no game-file
+// position to be tethered to; WorldState.cpp's split of the ids at
+// 0xff000000), nor is a static (DEF-4f: D-PH9 A gives a STAT with a dynamic
+// model no row). An actor answers None: a dead actor's row is rung 5's
+// (Body; MpActor::IsDead), and the prop and destruction handlers refuse an
+// actor before they ask (RefusePropPickup asks for an item alone).
+// A world body is also the one kind whose destruction a seat's report
+// records (OnDestructionStage, E_DESTRUCTION_KIND; D-S3 point 3)
+enum class PropKind
 {
-  return !refr.AsActor() &&
-    espm::utils::IsItem(espm::Type(refr.GetBaseType().c_str()));
-}
+  None,
+  Item,
+  WorldBody
+};
 
-// thuum D-S3 (traps follow the interaction, point 4): a trap's world body,
-// a world object a seat's own script sets moving (Embershard's falling
-// rocks and its tripwire, ACTIs: thuum docs/research/trap-census-2026-11-05.md
-// rows 18 and the tripwire's), joins the prop stream by the impulse touch
-// alone; an actor, a door, a container or furniture never does, and an item
-// is a prop by IsPropKind. Point 3: a world body is also the one kind whose
-// destruction a seat's report records (OnDestructionStage, E_DESTRUCTION_KIND)
-bool IsWorldBodyKind(MpObjectReference& refr)
+PropKind PropKindOf(MpObjectReference& refr)
 {
-  if (refr.AsActor() || IsPropKind(refr)) {
-    return false;
+  if (refr.AsActor()) {
+    return PropKind::None;
   }
   const auto& baseType = refr.GetBaseType();
-  return baseType != "DOOR" && baseType != "CONT" && baseType != "FURN" &&
-    baseType != "NPC_";
+  if (espm::utils::IsItem(espm::Type(baseType.c_str()))) {
+    return PropKind::Item;
+  }
+  if (!refr.IsEspmForm()) {
+    return PropKind::None;
+  }
+  if (baseType == "DOOR" || baseType == "CONT" || baseType == "FURN" ||
+      baseType == "NPC_" || baseType == "STAT") {
+    return PropKind::None;
+  }
+  return PropKind::WorldBody;
 }
 
-// how far a touch reaches, in units from the claimant's record to the prop's:
-// the controller's contact and the grab at arm's length, a drop at the
-// player's feet with the client's drop match slack, an impulse (a shout, a
-// spell) across a room. UNMEASURED budgets (the stage sizes them).
-constexpr float kPropTouchReach = 256.f;
-constexpr float kPropDropReach = 512.f;
-constexpr float kPropImpulseReach = 2048.f;
+// thuum docs/verbs/prop-physics.md (A1 to A7 of ADR-071 decision 2): whether
+// `actor` is a listener of `refr`: the server sent its game the reference's
+// create word and has not told it the reference is gone (the subscription
+// the 3x3 grid squares around each keep, MpObjectReference's
+// ForceSubscriptionsUpdate). A consistency fact of the server's own state,
+// never a judgment of where the claimant stands (ADR-063 decision 4); it
+// replaces the claimant-in-cell gate and the reach gate (E_PROP_CELL,
+// E_PROP_REACH), which retire with A1 to A7
+bool IsPropListener(const MpObjectReference& refr, const MpActor& actor)
+{
+  const auto& listeners = refr.GetActorListeners();
+  return std::find(listeners.begin(), listeners.end(), &actor) !=
+    listeners.end();
+}
 
 // thuum D-S3 point 4 (the review of 9ff1895e, finding 2): how far a world
-// body's sample may stand from the body's game-file position. "A trap's
-// world body" admits almost every world object (IsWorldBodyKind), and a
-// crafted seat could claim one by the impulse and carry it off for good at
-// the step budget's pace; the tether keeps every one within a fall of where
-// the game files place it. UNMEASURED: a fall's extent (x-trap-boulders
-// reads Embershard's rocks)
+// body's sample may stand from the body's game-file position. A world body
+// is almost every world object (PropKindOf), and since physics rung 4 any
+// touch claims one (D-PH9 A), so a crafted seat could carry one off for good
+// at the step budget's pace; the tether keeps every one within a fall of
+// where the game files place it. UNMEASURED: a fall's extent (x-trap-boulders
+// reads Embershard's rocks; DEF-4b keeps 2048 for rung 4)
 constexpr float kWorldBodyTether = 2048.f;
+
+// physics rung 4 (DEF-4h): the most bones a sample may carry, the wire's own
+// cap (skymp-wire wire-schema lib.rs:360, cap::PROP_BONES); the Rust edge
+// refuses more at decode, and the legacy path's JSON is held to it here
+constexpr size_t kPropBonesMax = 64;
+
+// thuum docs/verbs/prop-physics.md: whether a prop refusal's line is due for
+// its sender, one line per 10 s per seat, a refused sample's and a refused
+// claim's alike, the first at once (the review of 3892415e, finding 4: a
+// claim's references were each said, up to 32 warn lines a second per seat);
+// every refusal is counted all the same (CountStream). The last line's time
+// is the connection's (UserInfo), so a seat's reconnect starts afresh and the
+// table is never larger than the connections
+bool PropRefusalLineDue(ServerState& serverState, Networking::UserId user,
+                        std::chrono::steady_clock::time_point now)
+{
+  if (!serverState.IsConnected(user)) {
+    return true;
+  }
+  auto& last = serverState.userInfo[user]->lastPropRefusalLine;
+  if (last && now - *last < std::chrono::seconds(10)) {
+    return false;
+  }
+  last = now;
+  return true;
+}
 }
 
-// thuum docs/verbs/prop-physics.md (ADR-058 decision 1): a player's game
-// touched a physics prop it does not simulate. The gates: the reference a
-// prop the server holds (not an actor), the claimant standing in its cell
-// (the cell the record's position names, WorldState::CellOf); then the rule
-// (wire-rules props): the newest touch wins, one epoch per prop, unless the
-// claimant simulates it already or another player holds it grabbed. Granted,
-// the word (PropOwner) goes reliable to every listener of the prop with a
-// user, the claimant among them (it learns its epoch); the old simulator's
-// seat goes Keyframed on it, the claimant's Dynamic.
+// thuum docs/verbs/prop-physics.md (ADR-058 decision 1; A2, A3 and A5 of
+// ADR-071 decision 2): a player's game touched a physics prop it does not
+// simulate; since physics rung 2 (ADR-071 decision 6) one claim names one to
+// sixteen props, each judged alone, its own verdict, word and line. The
+// gates, per reference: the reference a prop the server holds (an item, or
+// since physics rung 4 a world body by any touch, D-PH9 A's admission: the
+// server holds no class, PropKindOf; never an actor; E_PROP_KIND), a touch
+// the contract names, the claimant a listener of the prop (E_PROP_UNSEEN:
+// the server's own record of which games it sent the prop), and the prop's
+// record in a cell (E_PROP_OUTSIDE: the cell is the rule's row key, never a
+// gate on the claimant). Then the rule (wire-rules props), a world body's as
+// an item's: a prop at rest or stalled is the newest toucher's, one epoch
+// per prop; a grabbed prop refuses everything (E_PROP_HELD); a prop another
+// seat streams awake refuses a contact, a drop or an impulse (E_PROP_MOVING,
+// A3; a grab takes it, A2), a trap body's second firing among them; a claim
+// from a game that unloaded the prop's cell waits for its load report
+// (E_PROP_AWAY); a grab ends the claimant's hold of any other prop (one
+// grabbed object per player). Granted, the word (PropOwner) goes reliable to
+// every listener of the prop with a user, the claimant among them (it
+// learns its epoch); a refused claimant hears the current word, once per
+// prop per second, and every refusal counts in the stream counters. The two
+// gates that stood here, the claimant in the prop's cell (E_PROP_CELL) and
+// within 256, 512 or 2048 units of the record (E_PROP_REACH), retire with
+// A1 to A7 (ADR-071 decision 2): they refused playtest 41's carried bucket
+// and playtest 44's kettle at the mill's cell edge against records the
+// carrier had already moved.
 void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
                                  const PropClaimMessage& msg)
 {
@@ -4111,81 +4211,148 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
   if (!myActor) {
     return;
   }
-  // every touch names a reference the server holds already (NoLoad: a
-  // claim never loads the id a seat chose, the review of 9ff1895e's finding
-  // 4): an item, or under an impulse (thuum D-S3 point 4) a trap's world
-  // body, which stands loaded with the chunks the claimant's own grid pass
-  // loads around it (GetNeighborsByPosition, the 3x3 squares of 4096 units,
-  // so every body within kPropImpulseReach of the claimant)
-  const bool impulse = msg.touch == 3;
-  const auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.refr);
-  MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
-  const auto refuse = [&](const char* code, const char* why) {
-    spdlog::warn(
-      "[verb:prop-physics] {}: {:x} claims prop {:x} by touch {}; {}", code,
-      myActor->GetFormId(), msg.refr, msg.touch, why);
-  };
-  if (!prop || prop->AsActor()) {
-    return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
-  }
-  const bool worldBody = IsWorldBodyKind(*prop);
-  if (!IsPropKind(*prop) && !worldBody) {
-    return refuse("E_PROP_KIND", "not an item reference");
-  }
-  if (worldBody && !impulse) {
-    return refuse("E_PROP_KIND", "a world body, which only an impulse claims");
-  }
-  if (msg.touch > 3) {
-    return refuse("E_PROP_RANGE", "a touch the contract does not name");
-  }
-  const auto cell = partOne.worldState.CellOf(*prop);
-  if (!cell || partOne.worldState.CellOf(*myActor) != cell) {
-    return refuse("E_PROP_CELL", "the claimant is not in the prop's cell");
-  }
-  const float reach = msg.touch == 3 ? kPropImpulseReach
-    : msg.touch == 2                 ? kPropDropReach
-                                     : kPropTouchReach;
-  if ((myActor->GetPos() - prop->GetPos()).Length() > reach) {
-    return refuse("E_PROP_REACH", "the claimant is too far from the prop");
-  }
-  const auto verdict = partOne.ClaimProp(
-    *myActor, *prop, *cell, static_cast<uint8_t>(msg.touch), worldBody);
-  switch (verdict) {
-    case PartOne::PropClaimVerdict::Granted: {
-      PropOwnerMessage word;
-      word.refr = prop->GetFormId();
-      word.player = myActor->GetFormId();
-      word.epoch = partOne.PropEpochOf(*prop);
-      size_t told = 0;
-      for (auto listener : prop->GetActorListeners()) {
-        const auto targetUserId = partOne.serverState.UserByActor(listener);
-        if (targetUserId != Networking::InvalidUserId) {
-          partOne.GetSendTarget().Send(targetUserId, word, true);
-          ++told;
-        }
+  const auto now = std::chrono::steady_clock::now();
+  // physics rung 2 (ADR-071 decision 6): one to sixteen references, each
+  // judged alone through the gates below, with its own verdict, its own word
+  // or answer and its own line, the line a lone reference's (the probes
+  // count it by its text); a refusal's line is said once per 10 s per seat,
+  // with the seat's refused samples (PropRefusalLineDue)
+  const auto claimOne = [&](uint32_t refr) {
+    // every touch names a reference the server holds already (NoLoad: a
+    // claim never loads the id a seat chose, the review of 9ff1895e's
+    // finding 4): an item, or a world body (thuum D-S3 point 4; any touch
+    // since physics rung 4), which stands loaded with the chunks the
+    // claimant's own grid pass loads around it (GetNeighborsByPosition, the
+    // 3x3 squares of 4096 units)
+    const auto& form = partOne.worldState.LookupFormByIdNoLoad(refr);
+    MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
+    const auto refuse = [&](const char* code, const char* why) {
+      partOne.serverState.CountStream(
+        rawMsgData.userId, static_cast<uint8_t>(MsgType::PropClaim), false);
+      if (PropRefusalLineDue(partOne.serverState, rawMsgData.userId, now)) {
+        spdlog::warn(
+          "[verb:prop-physics] {}: {:x} claims prop {:x} by touch {}; {}",
+          code, myActor->GetFormId(), refr, msg.touch, why);
       }
-      spdlog::info("[verb:prop-physics] {:x} claims prop {:x} by touch {}: "
-                   "granted, epoch {}; {} listener(s) told",
-                   myActor->GetFormId(), prop->GetFormId(), msg.touch,
-                   word.epoch, told);
-      break;
+    };
+    if (!prop || prop->AsActor()) {
+      return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
     }
-    case PartOne::PropClaimVerdict::Held:
-      refuse("E_PROP_HELD", "another player holds it grabbed");
-      break;
-    case PartOne::PropClaimVerdict::Same:
-      spdlog::debug("[verb:prop-physics] {:x} claims prop {:x} by touch {}: "
-                    "it simulates it already",
-                    myActor->GetFormId(), prop->GetFormId(), msg.touch);
-      break;
-    case PartOne::PropClaimVerdict::Moving:
-      // thuum D-S3 point 4: the claimant heard the first firing's owner word
-      // at its grant, so its seat follows the body until the owner's rest
-      refuse("E_PROP_MOVING",
-             "another seat's firing set the body moving, the first firing "
-             "wins");
-      break;
+    // physics rung 4 (D-PH9 A): a world body by any touch, as an item; the
+    // impulse-only gate of D-S3 point 4 retires with it
+    const PropKind kind = PropKindOf(*prop);
+    if (kind == PropKind::None) {
+      return refuse("E_PROP_KIND", "neither an item nor a world body");
+    }
+    if (msg.touch > 3) {
+      return refuse("E_PROP_RANGE", "a touch the contract does not name");
+    }
+    // a game the server never sent the prop, or told it is gone, has no copy
+    // to heal, so no word answers it (a claim racing an unsubscription reads
+    // here too)
+    if (!IsPropListener(*prop, *myActor)) {
+      return refuse("E_PROP_UNSEEN",
+                    "the claimant is no listener of the prop (its game was "
+                    "never sent it, or was told it is gone)");
+    }
+    // the prop's own cell is the rule's row key, not a gate on the claimant
+    const auto cell = partOne.worldState.CellOf(*prop);
+    if (!cell) {
+      return refuse("E_PROP_OUTSIDE", "the prop's record stands in no cell");
+    }
+    const auto verdict = partOne.ClaimProp(*myActor, *prop, *cell,
+                                           static_cast<uint8_t>(msg.touch));
+    switch (verdict) {
+      case PartOne::PropClaimVerdict::Granted: {
+        const auto epoch = partOne.PropEpochOf(*prop);
+        const size_t told = partOne.SendPropOwnerWord(
+          prop->GetFormId(), myActor->GetFormId(), epoch);
+        spdlog::info("[verb:prop-physics] {:x} claims prop {:x} by touch {}: "
+                     "granted, epoch {}; {} listener(s) told",
+                     myActor->GetFormId(), prop->GetFormId(), msg.touch, epoch,
+                     told);
+        break;
+      }
+      case PartOne::PropClaimVerdict::Held:
+        refuse("E_PROP_HELD", "another player holds it grabbed");
+        // the claimant hears who (A5: a refused claim is an owner conflict,
+        // answered; the loser of a double grab lets go)
+        partOne.AnswerPropWord(rawMsgData.userId, *prop);
+        break;
+      case PartOne::PropClaimVerdict::Same:
+        spdlog::debug("[verb:prop-physics] {:x} claims prop {:x} by touch {}: "
+                      "it simulates it already",
+                      myActor->GetFormId(), prop->GetFormId(), msg.touch);
+        break;
+      case PartOne::PropClaimVerdict::Moving:
+        // A3, a consistency refusal between two owners, not a check on the
+        // claimant (playtest 41: the newest touch from any copy took a prop
+        // the other seat was moving); a trap body's second firing reads here
+        // too, the first firing winning, and its seat follows the body by the
+        // word it heard at the grant until the owner's rest
+        refuse(
+          "E_PROP_MOVING",
+          "another seat streams it awake: a contact, a drop or an impulse "
+          "takes a prop at rest, a grab takes it at once");
+        partOne.AnswerPropWord(rawMsgData.userId, *prop);
+        break;
+      case PartOne::PropClaimVerdict::Away:
+        // the unload is a state (D-PH2 A, the review of 2026-11-03): the
+        // claimant's game reported the prop's cell unloaded and has not
+        // reported it loaded since, nor had the cell back in its reach, so
+        // this claim is a late one (a grab release after a door, a report that
+        // raced the unload); the row returned to the host at the unload and
+        // stays there
+        refuse("E_PROP_AWAY",
+               "its game unloaded the prop's cell and has not loaded or "
+               "reached it since");
+        partOne.AnswerPropWord(rawMsgData.userId, *prop);
+        break;
+    }
+  };
+  for (const uint32_t refr : msg.refrs) {
+    claimOne(refr);
   }
+}
+
+// thuum docs/verbs/prop-physics.md (A2 and A3 of ADR-071 decision 2, physics
+// rung 1): a pickup is a take. An item reference's activation gives the item
+// and deletes a server-made reference for every seat (ProcessActivateNormal's
+// pickable branch), and a grab the engine refuses in its own frame ends in
+// such a pickup at the key's release (havok-props.md E16 and E28): in
+// x-moving-press 20261112-082448 c1's key-up deleted the ingot c2 was
+// moving. The rule (wire-rules props) reads the claim's rows for a touch that
+// is no grab: a prop another player holds is taken by nothing (E_PROP_HELD),
+// one another seat streams awake by a grab alone (E_PROP_MOVING); the
+// picker's own row and a prop at rest, stalled or unclaimed are taken as
+// before. A refused pickup does nothing else: the reference stands for every
+// seat, nothing reaches the picker's inventory, and its game hears the
+// current word, once per prop per second (A5). The picker is the reporting
+// game's player, the id the rows name, a hosted caster's pickup its host's.
+bool ActionListener::RefusePropPickup(const RawMessageData& rawMsgData,
+                                      const MpActor& picker,
+                                      MpObjectReference& target)
+{
+  if (PropKindOf(target) != PropKind::Item) {
+    return false;
+  }
+  const auto refuse = [&](const char* code, const char* why) {
+    spdlog::warn("[verb:prop-physics] {}: {:x} picks up prop {:x}; {}", code,
+                 picker.GetFormId(), target.GetFormId(), why);
+    partOne.AnswerPropWord(rawMsgData.userId, target);
+    return true;
+  };
+  switch (partOne.PropPickup(picker, target)) {
+    case PartOne::PropPickupVerdict::Taken:
+      return false;
+    case PartOne::PropPickupVerdict::Held:
+      return refuse("E_PROP_HELD", "another player holds it grabbed");
+    case PartOne::PropPickupVerdict::Moving:
+      return refuse("E_PROP_MOVING",
+                    "another seat streams it awake: a pickup takes a prop at "
+                    "rest, a grab takes it at once");
+  }
+  return false;
 }
 
 // thuum docs/verbs/spell-placed-object.md (ADR-057 shape A, D70): the
@@ -4269,10 +4436,14 @@ skymp::rules::ScriptArg ScriptArgOf(
 // an actor's, the streams'), whether its base is a door or a container, the
 // world or cell its group names (the load order's id) and its position; none
 // for another record, for no record, or for one with no base or no place.
-// The loader attaches no moving static (MSTT), so Bleak Falls Sanctum
-// 0x371dd's door FX 0x5256c, which HallofStoriesKeyholeScript.openDoor
-// plays FXDoorOpen on, is no reference of the server's (lab/esm.py,
-// 2026-11-05: base 0x52172 RuinsPuzzleDoorFX, at (128, -320, -256)).
+// The script seam's placements are a STAT or another base the loader never
+// attaches (a room marker, an XMarker a script names), and the prop tether
+// (OnPropTransform) reads a held world body's own record here; since physics
+// rung 4 (D-PH9 A) the loader holds every movable static (MSTT), so Bleak
+// Falls Sanctum 0x371dd's door FX 0x5256c, which
+// HallofStoriesKeyholeScript.openDoor plays FXDoorOpen on, is a held
+// reference (lab/esm.py, 2026-11-05: base 0x52172 RuinsPuzzleDoorFX, at
+// (128, -320, -256)).
 // `actors` (thuum ADR-068 rung 4, a record row's subject): an ACHR is
 // placed too, by its record's cell, so an actor the loader never held (an
 // initially disabled ambush draugr, Bleak Falls Temple 0x371de's 0x380ba,
@@ -5597,10 +5768,11 @@ void KeepScriptVariable(MpObjectReference& subject,
                         uint32_t seq);
 }
 
-// A game-file placement the loader never attaches (a moving static: the hall
-// door's FX, rung 2's merged-head review) is judged by its record instead:
-// its record's cell, its listeners the games that report that cell loaded,
-// and nothing kept, since no reference of the server's carries it.
+// A game-file placement the loader never attaches (a STAT or another base
+// the loader skips; since physics rung 4 the hall door's FX of rung 2's
+// merged-head review is a held reference, D-PH9 A) is judged by its record
+// instead: its record's cell, its listeners the games that report that cell
+// loaded, and nothing kept, since no reference of the server's carries it.
 // An accepted action goes at once (SpSnippet::Relay, never the deferred queue)
 // to the subject's listeners but the reporter as the row's relay native
 // (PlayAnimationAndWait as PlayAnimation), with the subject's sequence; the
@@ -5921,8 +6093,9 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     }
   }
   // a placement by its record keeps nothing: no reference of the server's
-  // carries a lastAnimation to a late joiner (the hall door's FX is a
-  // one-shot; the door it dresses, 0x4e2b8, is an ACTI the server holds)
+  // carries a lastAnimation to a late joiner (a STAT or another base the
+  // loader skips); since physics rung 4 the hall door's FX is a held
+  // reference (D-PH9 A), which keeps its event as any world object does
   if (subject && verdict.keep_last && !event.empty()) {
     subject->SetLastAnimation(event);
   }
@@ -6952,10 +7125,11 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
 // game-file reference the server holds or loads (LookupFormById: a trap's
 // lamp may stand outside the chunks loaded around the players), no actor
 // (an actor's death is the NPC fate's; an ACHR is refused by its record
-// before the lookup could load it), a world body (IsWorldBodyKind: the
-// lamp and the tripwire are ACTIs; a door, a container, furniture or an item
-// is no trap's result, whatever a seat reports, the review of 9ff1895e's
-// finding 1), and the reference's cell loaded in the reporter's game
+// before the lookup could load it), a world body (PropKindOf: the lamp and
+// the tripwire are ACTIs; a door, a container, furniture or an item is no
+// trap's result, whatever a seat reports, the review of 9ff1895e's finding
+// 1, and since physics rung 4 nor is a static the server attached by its
+// record, DEF-4f), and the reference's cell loaded in the reporter's game
 // (PartOne::GetCellLoaders): the seat whose engine reached the step reports
 // it, the cell's host or a guest alike (R2: the engine computed it, the
 // server records it, nothing of it validated beyond these checks). A
@@ -7001,7 +7175,7 @@ void ActionListener::OnDestructionStage(const RawMessageData& rawMsgData,
     return refuse("E_DESTRUCTION_ACTOR",
                   "an actor, whose death is the NPC fate's");
   }
-  if (!IsWorldBodyKind(*refrPtr)) {
+  if (PropKindOf(*refrPtr) != PropKind::WorldBody) {
     return refuse("E_DESTRUCTION_KIND",
                   "not a trap or destructible world body");
   }
@@ -7722,22 +7896,53 @@ void ActionListener::SendWorldGlobals(MpActor& actor)
                entries.size(), actor.GetFormId(), epoch);
 }
 
-// thuum docs/verbs/prop-physics.md (ADR-058 decision 2): a simulator's
-// sample of a prop. The record takes it from the prop's owner alone (the
-// toucher while awake or inside its lease, else the host of the cell the
-// RECORD stands in; wire-rules props), within the rule's step budget against
-// the record (a seat cannot carry a prop across the world in one message),
-// a trap's world body within kWorldBodyTether of its game-file position (nor
-// carry one off over many: E_PROP_FAR, thuum D-S3 point 4's review),
-// landing in the cell the sample's position names in the prop's own world or
-// cell (HYPOTHESIS: a prop never changes world or interior by physics, so
-// the record's worldOrCell stands; a kick through a load door is a later
-// read); then the same bytes go to the prop's other listeners, unreliable
-// while awake and reliable at sleep (the record's final sample). The write
-// is the movement path's (OnUpdateMovement's SetPos and SetAngle): saved
-// from time to time while the body moves, at once when it rests. A refusal
-// is logged once per 10 s per seat: a seat that lost the lease keeps
-// streaming until its own timer ends.
+// thuum docs/verbs/prop-physics.md (ADR-058 decision 2; A4, A5 and A7 of
+// ADR-071 decision 2; physics rung 2's v2, ADR-071 decision 6; physics rung
+// 4, D-PH9 A and D-PH10 A): a simulator's sample of a prop, an item or a
+// world body (PropKindOf; E_PROP_KIND for neither). Since rung 4 a world
+// body's sample may carry bones, the poses of its parts in its seat's walk
+// order, and an item's may not (E_PROP_KIND: its body is one part); more
+// bones than the wire's cap (kPropBonesMax) or a value that is not a number,
+// the sample's or a bone's, is refused (E_PROP_RANGE) before any arithmetic
+// on it. The bones are relayed and never recorded or budgeted (DEF-4c):
+// the record keeps the sample's pos and rot, the root's (a hinged sign's
+// anchor), and the rule judges those alone. A world body joins the stream
+// by any touch or by its host's own wake (DEF-4a: the epoch-0 refusal of
+// D-S3 point 4 retires, so a resting one the host's engine moved is A7's
+// Woken, as an item is).
+// The record takes a sample by the rule (wire-rules props): never at a point
+// in no cell (E_PROP_OUTSIDE) nor for a resting prop in a cell nobody hosts
+// (E_PROP_FROZEN) nor a wake from a game that unloaded the cell
+// (E_PROP_AWAY); then by its epoch first (one below the prop's E_PROP_STALE,
+// above it E_PROP_FUTURE, ADR-066 decision 4), then from the prop's owner
+// alone at that epoch (the toucher while awake or held, else the host of the
+// cell the RECORD stands in; E_PROP_NOT_OWNER), then in order (a sequence not
+// newer than the last at the epoch is Late: dropped and counted, with no line
+// and no answer), then within the step budget, refilled by the owner's clock
+// bounded by the server's (E_PROP_STEP for an awake sample past it), a
+// world body within kWorldBodyTether of its game-file position (E_PROP_FAR,
+// thuum D-S3 point 4's review), landing in the cell the sample's position
+// names in the prop's own world or cell (HYPOTHESIS: a prop never changes
+// world or interior by physics, so the record's worldOrCell stands; a kick
+// through a load door is a later read); the same bytes then go to the prop's
+// other listeners, unreliable while awake and reliable at sleep (the
+// record's final sample). The write is the movement path's
+// (OnUpdateMovement's SetPos and SetAngle): saved from time to time while
+// the body moves, at once when it rests. Every asleep sample returns the
+// prop to the cell's host at once with the word (player 0) to every listener
+// (A4), the host's own and a holder's included; one past the step budget is
+// clamped (the record moves the budget's distance toward it, every other
+// listener hears that rest re-encoded, its bones moved rigidly with it,
+// DEF-4g, and the sender hears the record), so every seat ends at one
+// record; the host's own wake of a resting prop is a word naming it by id
+// (A7), and a wake from a game that is no listener of the prop is refused
+// (E_PROP_UNSEEN). A refused sample (stale, future, not the owner's, past the
+// step budget, outside, frozen) is answered with the current word and the
+// record, once per prop per second per seat, so a
+// divergent word and copy heal (A5; ADR-071 decision 6), but for the live
+// owner's own stale sample, whose word is on its way and whose body is ahead
+// of the record. Refusals are logged once per 10 s per seat, with the seat's
+// refused claims (PropRefusalLineDue).
 void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                                      const PropTransformMessage& msg)
 {
@@ -7746,18 +7951,12 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
     return;
   }
   const auto now = std::chrono::steady_clock::now();
-  static std::unordered_map<Networking::UserId,
-                            std::chrono::steady_clock::time_point>
-    lastRefusal;
   const auto refuse = [&](const char* code, const char* why) {
     partOne.serverState.CountStream(
       rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), false);
-    auto& last = lastRefusal[rawMsgData.userId];
-    if (last == std::chrono::steady_clock::time_point() ||
-        now - last >= std::chrono::seconds(10)) {
+    if (PropRefusalLineDue(partOne.serverState, rawMsgData.userId, now)) {
       spdlog::warn("[verb:prop-physics] {}: {:x} moves prop {:x}; {}", code,
                    myActor->GetFormId(), msg.refr, why);
-      last = now;
     }
   };
   const auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.refr);
@@ -7765,21 +7964,41 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   if (!prop || prop->AsActor()) {
     return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
   }
-  const bool worldBody = IsWorldBodyKind(*prop);
-  if (!IsPropKind(*prop) && !worldBody) {
-    return refuse("E_PROP_KIND", "not an item reference");
+  // physics rung 4 (D-PH9 A): a world body's samples are judged as an
+  // item's from its first, its host's own wake included (DEF-4a)
+  const PropKind kind = PropKindOf(*prop);
+  if (kind == PropKind::None) {
+    return refuse("E_PROP_KIND", "neither an item nor a world body");
   }
-  // thuum D-S3 point 4: a trap's world body is on the stream once an impulse
-  // claimed it (its epoch above 0: OnPropClaim admits no other touch on it,
-  // and found it loaded), its samples then judged as an item's
-  if (worldBody && partOne.PropEpochOf(*prop) == 0) {
-    return refuse("E_PROP_KIND", "a world body no impulse claimed");
+  // physics rung 2's bones: the parts of a body of several, a world body's
+  // since rung 4 (D-PH10 A) and a dead actor's at rung 5; an item's body is
+  // one part, so its sample with bones moves nothing and reaches nobody
+  if (!msg.bones.empty() && kind == PropKind::Item) {
+    return refuse("E_PROP_KIND",
+                  "a sample with bones on an item, whose body is one part");
+  }
+  // DEF-4h: the Rust edge caps the bones at decode (wire-schema
+  // cap::PROP_BONES); the legacy path's JSON is held to the same cap here
+  if (msg.bones.size() > kPropBonesMax) {
+    return refuse("E_PROP_RANGE", "more bones than the wire carries");
   }
   // the Rust edge refuses a non-finite transform (wire-validate); the legacy
   // path parses JSON, where 1e999 reads as infinity, so the check stands
-  // here too before any arithmetic on it
+  // here too before any arithmetic on it or any message built from it, each
+  // bone's pose among it (DEF-4h)
   for (int i = 0; i < 3; ++i) {
-    if (!std::isfinite(msg.pos[i]) || !std::isfinite(msg.rot[i])) {
+    if (!std::isfinite(msg.pos[i]) || !std::isfinite(msg.rot[i]) ||
+        !std::isfinite(msg.lin[i]) || !std::isfinite(msg.ang[i])) {
+      return refuse("E_PROP_RANGE", "a transform that is not a number");
+    }
+  }
+  for (const auto& bone : msg.bones) {
+    const bool finite =
+      std::all_of(bone.pos.begin(), bone.pos.end(),
+                  [](float v) { return std::isfinite(v); }) &&
+      std::all_of(bone.quat.begin(), bone.quat.end(),
+                  [](float v) { return std::isfinite(v); });
+    if (!finite) {
       return refuse("E_PROP_RANGE", "a transform that is not a number");
     }
   }
@@ -7789,9 +8008,9 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   // sample lands within kWorldBodyTether of the body's game-file position
   // (its REFR record's, PlacementOfRecord), whoever owns it, before the rule
   // judges or spends anything; one with no game-file placement (no REFR
-  // record of the load order: a server-made reference) has nothing to be
-  // held to and takes no sample
-  if (worldBody) {
+  // record of the load order) has nothing to be held to and takes no sample
+  // (a server-made reference is no world body at all, DEF-4e)
+  if (kind == PropKind::WorldBody) {
     const auto placement =
       PlacementOfRecord(partOne.worldState, prop->GetFormId());
     if (!placement) {
@@ -7803,34 +8022,48 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
                     "allows");
     }
   }
+  // a sender with no live row of its own (a host's wake, a non-owner) is a
+  // listener of the prop or has no copy to stream; a live owner's own stream
+  // passes wherever its samples land (the record follows them)
+  if (partOne.PropLiveOwner(*prop) != myActor->GetFormId() &&
+      !IsPropListener(*prop, *myActor)) {
+    return refuse("E_PROP_UNSEEN",
+                  "the sender is no listener of the prop and streams no live "
+                  "row of its own");
+  }
   const uint32_t worldOrCell =
     prop->GetCellOrWorld().ToFormId(partOne.worldState.espmFiles);
   const auto cell = partOne.worldState.CellOf(worldOrCell, pos);
   const auto recordCell = partOne.worldState.CellOf(*prop);
   const float moved = (pos - prop->GetPos()).Length();
-  const auto verdict =
-    partOne.PropTransform(*myActor, *prop, cell.value_or(0),
-                          recordCell.value_or(0), msg.asleep, moved);
-  switch (verdict) {
-    case PartOne::PropTransformVerdict::Accepted: {
-      const auto mode =
-        msg.asleep ? SetPosMode::Other : SetPosMode::CalledByUpdateMovement;
-      prop->SetPos(pos, mode);
-      prop->SetAngle(rot, mode);
-      size_t sent = 0;
-      for (auto listener : prop->GetActorListeners()) {
-        if (listener == myActor) {
-          continue;
-        }
-        const auto targetUserId = partOne.serverState.UserByActor(listener);
-        if (targetUserId != Networking::InvalidUserId) {
-          partOne.GetSendTarget().Send(targetUserId, rawMsgData.unparsed,
-                                       rawMsgData.unparsedLength, msg.asleep);
-          ++sent;
-        }
+  const auto outcome = partOne.PropTransform(
+    *myActor, *prop, cell.value_or(0), recordCell.value_or(0), msg.epoch,
+    msg.seq, msg.tMs, msg.asleep, msg.held, moved);
+  // the record takes the sample and the bytes go to the other listeners
+  const auto applyAndRelay = [&]() -> size_t {
+    const auto mode =
+      msg.asleep ? SetPosMode::Other : SetPosMode::CalledByUpdateMovement;
+    prop->SetPos(pos, mode);
+    prop->SetAngle(rot, mode);
+    size_t sent = 0;
+    for (auto listener : prop->GetActorListeners()) {
+      if (listener == myActor) {
+        continue;
       }
-      partOne.serverState.CountStream(
-        rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), true);
+      const auto targetUserId = partOne.serverState.UserByActor(listener);
+      if (targetUserId != Networking::InvalidUserId) {
+        partOne.GetSendTarget().Send(targetUserId, rawMsgData.unparsed,
+                                     rawMsgData.unparsedLength, msg.asleep);
+        ++sent;
+      }
+    }
+    partOne.serverState.CountStream(
+      rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), true);
+    return sent;
+  };
+  switch (outcome.verdict) {
+    case PartOne::PropTransformVerdict::Accepted: {
+      const auto sent = applyAndRelay();
       spdlog::trace(
         "[verb:prop-physics] prop {:x} by {:x} at ({:.0f}, {:.0f}, "
         "{:.0f}){} in cell {:x}; relayed to {} listener(s)",
@@ -7838,16 +8071,154 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
         msg.asleep ? ", asleep" : "", cell.value_or(0), sent);
       break;
     }
+    case PartOne::PropTransformVerdict::Returned: {
+      // A4: ownership returns to the host only at rest on the owner's
+      // screen, by the owner's own final sample, and the return is a word
+      // (player 0, the host by default), never a timer's silent lapse
+      // (playtest 41: a blasted prop's owner refused while it still flew);
+      // a holder's rest ends its hold here too (D-PH3 A: a held body never
+      // rests on the wire)
+      const auto sent = applyAndRelay();
+      const auto told =
+        partOne.SendPropOwnerWord(prop->GetFormId(), 0, outcome.epoch);
+      spdlog::info("[verb:prop-physics] prop {:x} rests on {:x}'s screen at "
+                   "({:.0f}, {:.0f}, {:.0f}): the host's again at epoch {}; "
+                   "the sample relayed to {} listener(s), the word to {}",
+                   prop->GetFormId(), myActor->GetFormId(), pos.x, pos.y,
+                   pos.z, outcome.epoch, sent, told);
+      break;
+    }
     case PartOne::PropTransformVerdict::NotOwner:
       refuse("E_PROP_NOT_OWNER", "another seat simulates it");
+      // the answer: the current word and the record to the sender, once per
+      // prop per second (A5; ADR-071 decision 6: a seat whose word diverged
+      // hears who owns the prop and where it stands instead of streaming
+      // into refusals)
+      partOne.AnswerPropRecord(rawMsgData.userId, *prop);
       break;
-    case PartOne::PropTransformVerdict::WrongCell:
-      refuse("E_PROP_CELL",
-             "no cell at the point, or a cell nobody hosts and nobody holds");
+    case PartOne::PropTransformVerdict::Clamped: {
+      // ADR-071 decision 6: a live owner's rest past the step budget is
+      // clamped and taken. The rule knows no position, so the record moves
+      // the budget's distance from where it stands toward the sample here;
+      // every other listener hears that rest re-encoded (never the sender's
+      // bytes, which name the far point), relay first, as at any rest, then
+      // the word; the prop is the host's again; and the sender hears the
+      // record, unlimited (one clamp an epoch, the outcome of its own rest,
+      // not a refusal's answer), so every seat ends at one record. Rung 1's
+      // RestRefused left the record standing and the sender's copy apart
+      const NiPoint3 from = prop->GetPos();
+      const NiPoint3 toward = pos - from;
+      const float length = toward.Length();
+      NiPoint3 rest = from;
+      if (std::isfinite(length) && length > 0.f) {
+        rest = from + toward * (outcome.allowed / length);
+      }
+      prop->SetPos(rest, SetPosMode::Other);
+      prop->SetAngle(rot, SetPosMode::Other);
+      PropTransformMessage relay = msg;
+      relay.pos = { rest.x, rest.y, rest.z };
+      // physics rung 4 (DEF-4g): a world body's parts move rigidly with the
+      // record, each bone shifted by the clamp's own delta, so every bone
+      // stays where it stood from the root (within the edge's 512, which the
+      // outbound validator holds, wire-validate lib.rs:83 and validate_server;
+      // HYPOTHESIS for how often a clamped rest would otherwise miss it)
+      const NiPoint3 shift = rest - pos;
+      for (auto& bone : relay.bones) {
+        bone.pos = { bone.pos[0] + shift.x, bone.pos[1] + shift.y,
+                     bone.pos[2] + shift.z };
+      }
+      size_t sent = 0;
+      for (auto listener : prop->GetActorListeners()) {
+        if (listener == myActor ||
+            listener->GetUserId() == Networking::InvalidUserId) {
+          continue;
+        }
+        listener->SendToUser(relay, true);
+        ++sent;
+      }
+      partOne.serverState.CountStream(
+        rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform), true);
+      const auto told =
+        partOne.SendPropOwnerWord(prop->GetFormId(), 0, outcome.epoch);
+      partOne.SendPropRecord(rawMsgData.userId, *prop);
+      spdlog::info("[verb:prop-physics] prop {:x} rests on {:x}'s screen at "
+                   "({:.0f}, {:.0f}, {:.0f}): the host's again at epoch {}; "
+                   "the sample relayed to {} listener(s), the word to {}, "
+                   "clamped from ({:.0f}, {:.0f}, {:.0f})",
+                   prop->GetFormId(), myActor->GetFormId(), rest.x, rest.y,
+                   rest.z, outcome.epoch, sent, told, pos.x, pos.y, pos.z);
+      break;
+    }
+    case PartOne::PropTransformVerdict::Woken: {
+      // A7: the host's own engine moved a prop that was not its live row (a
+      // resting prop kicked): the row is the host's at a new epoch and every
+      // listener hears the word NAMING THE HOST, so the seat that streams is
+      // the seat every word names and a host change leaves it streaming
+      // until its rest (the review of 2026-11-03: a word of player 0 over a
+      // row naming the host left a prop nobody simulated after a host change)
+      const auto sent = applyAndRelay();
+      const auto told = partOne.SendPropOwnerWord(
+        prop->GetFormId(), myActor->GetFormId(), outcome.epoch);
+      spdlog::info("[verb:prop-physics] prop {:x} woken by its host {:x} at "
+                   "({:.0f}, {:.0f}, {:.0f}): the host's by name at epoch {}; "
+                   "the sample relayed to {} listener(s), the word to {}",
+                   prop->GetFormId(), myActor->GetFormId(), pos.x, pos.y,
+                   pos.z, outcome.epoch, sent, told);
+      break;
+    }
+    case PartOne::PropTransformVerdict::Outside:
+      // ADR-071 decision 6's conservation: no record outside a cell, whoever
+      // streams it; the sender hears where the record stands
+      refuse("E_PROP_OUTSIDE", "no cell at the sample's point");
+      partOne.AnswerPropRecord(rawMsgData.userId, *prop);
+      break;
+    case PartOne::PropTransformVerdict::Frozen:
+      // the design law's freeze: an unhosted cell's resting prop stands at
+      // its record until a host or a toucher takes it, and the sender's copy
+      // goes back to it
+      refuse("E_PROP_FROZEN", "a resting prop in a cell nobody hosts");
+      partOne.AnswerPropRecord(rawMsgData.userId, *prop);
       break;
     case PartOne::PropTransformVerdict::TooFast:
       refuse("E_PROP_STEP",
              "farther from the record than the step budget allows");
+      partOne.AnswerPropRecord(rawMsgData.userId, *prop);
+      break;
+    case PartOne::PropTransformVerdict::Away:
+      // a wake by an unloading host still in its grace (D-PH2 A, the review
+      // of 2026-11-03): refused until its load report or the cell's return
+      // to its reach, the record standing, and not answered (its game's 3D
+      // of the prop went with the cell); a live owner's own stream passes
+      refuse("E_PROP_AWAY",
+             "its game unloaded the cell and has not loaded or reached it "
+             "since");
+      break;
+    case PartOne::PropTransformVerdict::Stale:
+      // ADR-066 decision 4: a sample of an earlier tenure (an old owner's in
+      // flight, a woken host's sent before its wake's word reached it) is
+      // never read as a pass or a move. Its sender hears the word and the
+      // record, unless it is the prop's live owner itself (a woken host, a
+      // grabber whose grant is on its way): its newer word is already on the
+      // reliable channel and the record lags the body it simulates, which
+      // the answer would only rewind, so a record answer is always a place
+      // its receiver puts its copy
+      refuse("E_PROP_STALE",
+             "an epoch below the prop's: a sample of an earlier tenure");
+      if (partOne.PropLiveOwner(*prop) != myActor->GetFormId()) {
+        partOne.AnswerPropRecord(rawMsgData.userId, *prop);
+      }
+      break;
+    case PartOne::PropTransformVerdict::Future:
+      refuse("E_PROP_FUTURE",
+             "an epoch above the prop's, a word the server never said");
+      partOne.AnswerPropRecord(rawMsgData.userId, *prop);
+      break;
+    case PartOne::PropTransformVerdict::Late:
+      // a repeat, or an unreliable sample overtaken in flight: no fault, so
+      // counted with no line and no answer
+      partOne.serverState.CountStream(
+        rawMsgData.userId, static_cast<uint8_t>(MsgType::PropTransform),
+        false);
       break;
   }
 }

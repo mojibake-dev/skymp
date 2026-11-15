@@ -23,9 +23,10 @@
 //! gathers for its subject: a world object whose cell the reporter hosts at
 //! the reported epoch (`E_SCRIPTCALL_OWNER`), a reference the server holds or
 //! a game-file placement it holds none for, placed by its record
-//! ([`SubjectKind::Record`]: the loader attaches no moving static, so Bleak
-//! Falls Sanctum's door FX is no reference of the server's). A door's or a
-//! container's call is dropped quietly (its open is Activate's isOpen, as
+//! ([`SubjectKind::Record`]: a STAT or another base the loader never
+//! attaches; since physics rung 4, D-PH9 A, the loader holds every movable
+//! static, so Bleak Falls Sanctum's door FX is a held reference). A door's or
+//! a container's call is dropped quietly (its open is Activate's isOpen, as
 //! ObjectAnimation's handler drops it) and an actor's is refused as the
 //! streams' (`E_SCRIPTCALL_ROW`: the row is local for an actor). A value is
 //! never judged (ADR-062's amendment). An accepted call takes its subject's
@@ -553,9 +554,11 @@ pub enum SubjectKind {
     WorldObject,
     /// A world object the server holds no reference for: a game-file
     /// placement (a REFR, never an actor's ACHR) whose base the loader never
-    /// attaches (a moving static: Bleak Falls Sanctum's door FX 0x5256c,
-    /// which HallofStoriesKeyholeScript.openDoor plays FXDoorOpen on), placed
-    /// by its record's cell. Judged as a world object; its listeners are the
+    /// attaches (a STAT or another base it skips: Bleak Falls Sanctum's room
+    /// marker 0x23358; the door FX 0x5256c, which
+    /// HallofStoriesKeyholeScript.openDoor plays FXDoorOpen on, was one until
+    /// physics rung 4 held every movable static), placed by its record's
+    /// cell. Judged as a world object; its listeners are the
     /// games with that cell loaded, since no reference of the server's has
     /// any, and the server keeps nothing of it.
     Record,
@@ -1547,9 +1550,11 @@ mod tests {
     }
 
     // Bleak Falls Sanctum 0x371dd's door FX 0x5256c (base RuinsPuzzleDoorFX
-    // 0x52172, an MSTT the loader never attaches; lab/esm.py, 2026-11-05),
-    // which HallofStoriesKeyholeScript.openDoor plays FXDoorOpen on (rung 2's
-    // merged-head review, the hall door's FX)
+    // 0x52172, an MSTT the loader attached no reference for until physics
+    // rung 4; lab/esm.py, 2026-11-05), which
+    // HallofStoriesKeyholeScript.openDoor plays FXDoorOpen on (rung 2's
+    // merged-head review, the hall door's FX): the facts here stand for any
+    // placement by its record
     const DOOR_FX: u32 = 0x5256c;
     const SANCTUM: u32 = 0x371dd;
 

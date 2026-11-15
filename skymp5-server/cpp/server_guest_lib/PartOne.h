@@ -875,7 +875,8 @@ public:
   void TickDeaths(uint64_t nowMs);
   // thuum docs/verbs/npc-fate.md ("The body's rest", ADR-067): a corpse
   // whose settle window passed with no two agreeing samples from its owner
-  // is at rest where the record has it (MpActor::SettleBodyIfDue)
+  // is at rest where the record has it (MpActor::SettleBodyIfDue); its row
+  // stays as it stood (physics rung 5a: no clock returns a row)
   void TickBodies(uint64_t nowMs);
   // thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC for a
   // dialogue, the per-actor row beside the cell's host; the word follows.
@@ -933,52 +934,161 @@ public:
   // a release and a lease end send this). Nothing is sent to a game with no
   // user.
   void SendActorKeyframe(MpActor& actor, MpActor& to);
-  // thuum docs/verbs/prop-physics.md (ADR-058): one simulating seat per
-  // physics prop, the cell's host by default, the last toucher while its
-  // lease holds; the owner table's "prop" rows (wire-rules props). The
-  // handlers gather the facts (the reference, its cell, the claimant) and
-  // ask here; the word (PropOwner) is the claim handler's.
+  // thuum docs/verbs/prop-physics.md (ADR-058; A1 to A7 of ADR-071 decision
+  // 2): one simulating seat per physics prop, the cell's host by default,
+  // the toucher while it moves, a grabber while its engine holds it, the
+  // host by name from its own wake of a resting prop until its rest; every
+  // change a word, no clock lapsing a row; the owner table's "prop" rows
+  // (wire-rules props). The handlers gather the facts (the reference, its
+  // cell, the claimant) and ask here; the words go out through
+  // SendPropOwnerWord and AnswerPropWord.
   enum class PropClaimVerdict
   {
     Granted,
     Held,
     Same,
-    Moving
+    // another seat streams the prop awake and the touch is no grab (A3: a
+    // non-owner's contact never takes a moving prop; a trap body's second
+    // firing among them, the first firing wins)
+    Moving,
+    // the claimant's game reported the prop's cell unloaded and not loaded
+    // since, nor had it back in its reach: a late claim, refused until then
+    // (the unload is a state, not a moment)
+    Away
   };
-  // `worldBody`: the prop is a trap's world body (thuum D-S3 point 4: a
-  // world object a seat's own script set moving, claimed by the impulse
-  // alone), whose first firing wins: Moving while another seat's firing has
-  // it awake (wire-rules props' claim_world_body); an item's claim keeps
-  // ADR-058's newest touch wins
+  // A world body (thuum D-S3 point 4; since physics rung 4, Eli's D-PH9 A,
+  // by any touch, ActionListener's PropKindOf) is claimed here like any prop
   PropClaimVerdict ClaimProp(const MpActor& claimant,
                              const MpObjectReference& prop, uint32_t cell,
-                             uint8_t touch, bool worldBody);
+                             uint8_t touch);
+  // A pickup is a take (ADR-071 decision 2's table): `picker`'s activation
+  // of the item `prop`, which gives the item and deletes a server-made
+  // reference for every seat, judged by the claim's rows for a touch that is
+  // no grab; it changes no row (wire-rules props' pickup)
+  enum class PropPickupVerdict
+  {
+    Taken,
+    // another player holds the prop grabbed
+    Held,
+    // another seat streams the prop awake, and a grab alone takes a moving
+    // prop
+    Moving
+  };
+  PropPickupVerdict PropPickup(const MpActor& picker,
+                               const MpObjectReference& prop) const;
   enum class PropTransformVerdict
   {
     Accepted,
     NotOwner,
-    WrongCell,
-    TooFast
+    // no cell at the sample's point: refused whoever sends it (ADR-071
+    // decision 6's conservation)
+    Outside,
+    TooFast,
+    // taken, and the owner's rest returned the prop to the cell's host at a
+    // new epoch: the word with player 0 goes out (A4)
+    Returned,
+    // an asleep sample past the step budget, clamped and taken (ADR-071
+    // decision 6, physics rung 2, in rung 1's RestRefused's place): the
+    // record moves the outcome's `allowed` units toward the sample and the
+    // prop is the host's again at the outcome's epoch, the word with player 0
+    Clamped,
+    // woken: the host's own awake sample of a prop that was not its live
+    // row (a resting prop its engine moved); the row is the host's at a new
+    // epoch and the word names the host BY ID, so a host change leaves the
+    // old host streaming until its rest (A7)
+    Woken,
+    // a wake by a sender whose game reported the sample's cell unloaded and
+    // not loaded or reached since: an unloading host in its grace waking the
+    // prop it just left; refused (a live owner's own stream passes)
+    Away,
+    // a resting prop in a cell nobody hosts: it freezes at the record
+    Frozen,
+    // the sample names an epoch below the prop's (a sample of an earlier
+    // tenure) or above it (a word the server never said): dropped whoever
+    // sent it (ADR-066 decision 4: by the epoch first)
+    Stale,
+    Future,
+    // the owner's sample at the prop's epoch whose sequence is not newer than
+    // its last accepted one there (a repeat, or an unreliable sample
+    // overtaken in flight): dropped, no fault
+    Late
+  };
+  // The rule's answer to a sample: the verdict, the prop's owner epoch after
+  // it (the word's at a return, a clamp or a wake) and a clamp's distance.
+  struct PropTransformOutcome
+  {
+    PropTransformVerdict verdict = PropTransformVerdict::Accepted;
+    uint32_t epoch = 0;
+    float allowed = 0.f;
   };
   // `sender`'s sample of `prop` landing in `cell` (0 for none), judged by
   // the host of `recordCell` (the cell the record stands in, read from the
-  // host table), the body asleep or not, `moved` units from the record (the
-  // rule's step budget)
-  PropTransformVerdict PropTransform(const MpActor& sender,
+  // host table), under the word's `epoch`, numbered `seq`, read at `tMs` on
+  // the owner's clock, the body asleep or not and held or not, `moved` units
+  // from the record (the rule's step budget)
+  PropTransformOutcome PropTransform(const MpActor& sender,
                                      const MpObjectReference& prop,
                                      uint32_t cell, uint32_t recordCell,
-                                     bool asleep, float moved);
-  // The prop's live row's owner, else 0: the word a listener arriving while a
-  // seat simulates the prop gets at its subscription (onSubscribe).
+                                     uint32_t epoch, uint16_t seq,
+                                     uint32_t tMs, bool asleep, bool held,
+                                     float moved);
+  // The prop's live row's owner (awake or held), else 0: who the word a
+  // listener arriving at the prop gets names (onSubscribe), the host's own
+  // live row by its id like any other's.
   uint32_t PropLiveOwner(const MpObjectReference& prop) const;
+  // The host of the cell `prop`'s record stands in, else 0: the owner
+  // table's default owner, worded as player 0.
+  uint32_t PropCellHost(const MpObjectReference& prop) const;
   // Who simulates `prop` where its record stands: the toucher while awake or
-  // inside its lease, else its cell's host, else 0.
+  // held, else its cell's host, else 0.
   uint32_t PropOwnerOf(const MpObjectReference& prop) const;
-  // The prop's owner epoch, up at every grant; 0 before any.
+  // The prop's owner epoch, up at every word (a grant, a return, the host's
+  // wake, a departure, an unload) and at a body's death, rest and end (with
+  // no word in 5a); 0 before any.
   uint32_t PropEpochOf(const MpObjectReference& prop) const;
-  // `host` now hosts `cell` (ApplyHostDecisions' grant): the props in it
-  // nobody holds live name the host, their epochs kept.
-  void PropsHostChanged(uint32_t cell, uint32_t host);
+  // thuum docs/verbs/npc-fate.md ("The body's rest"; physics rung 5a,
+  // ADR-071 decision 5: a dead actor's row is owned by the death's
+  // simulator): a body is a row of the prop table from its death to its
+  // stand-up, so PropOwnerOf names whose samples move the corpse
+  // (OnUpdateMovement's body branch) and a departure or an unload returns
+  // the row with its word as any prop's. The death (MpActor's settle, R0,
+  // the server's own fact, no claim): the row `simulator`'s (the engine that
+  // simulated the actor then, 0 for none) in the cell the body died in, awake
+  // at a new epoch, or nobody's (its cell's host by default) for 0, for a
+  // simulator no user plays (a departed host in its grace) or for one whose
+  // game has that cell unloaded. No word goes out at the
+  // death: the seats learn a body's owner from the cells rule's, as before
+  // (rung 5 words it). Returns the epoch.
+  uint32_t BodyDied(const MpActor& body, uint32_t simulator, uint64_t nowMs);
+  // The dwell's rest (MpActor::NoteBodySample, never the settle window's
+  // end): a live row the host's again, asleep, at a new epoch, returned, with
+  // no word (as at the death); 0 when no live row stood.
+  uint32_t BodyRested(const MpActor& body);
+  // The body stood again (Respawn's ClearBodyRest): its row gone and the
+  // epoch up, returned (epochs outlive rows); 0 when no row stood.
+  uint32_t BodyEnded(const MpActor& body);
+  // The word PropOwner {refr, player, epoch} to every listener of the prop
+  // with a user but `exceptActor` (0 for none), reliable; player 0 names the
+  // cell's host by default (A4). Returns how many were told.
+  size_t SendPropOwnerWord(uint32_t refr, uint32_t player, uint32_t epoch,
+                           uint32_t exceptActor = 0);
+  // The current word (the live owner or 0, the epoch) to one user, at most
+  // once per prop per second: the answer to a refused claim, so a seat whose
+  // word diverged hears who owns the prop (A5).
+  void AnswerPropWord(Networking::UserId user, const MpObjectReference& prop);
+  // The current word and then the record (SendPropRecord) to one user, on
+  // the one reliable ordered channel, under AnswerPropWord's limit of one a
+  // second per prop: the answer to a refused sample (ADR-071 decision 6:
+  // every refusal answered with the record), so the sender's word and copy
+  // heal to the prop's owner and the record.
+  void AnswerPropRecord(Networking::UserId user,
+                        const MpObjectReference& prop);
+  // The record as a sample, reliable, to one user: PropTransform at seq 0
+  // (the mark no client may send), tMs 0, no velocity and no bones, at the
+  // record's position and angle under the prop's epoch, asleep while no live
+  // row moves the prop, held as the row's grab. A clamp's sender gets it
+  // unlimited, as the clamp's outcome; AnswerPropRecord sends it limited.
+  void SendPropRecord(Networking::UserId user, const MpObjectReference& prop);
   // thuum docs/verbs/npc-fate.md (the deaths): the bodies whose deadline
   // (fateDiedAt plus WorldState::FateRespawnHours()) the installed game
   // clock has passed stand again; once a second from Tick, directly from a

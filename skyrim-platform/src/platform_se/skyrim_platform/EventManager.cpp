@@ -31,6 +31,10 @@ void EventManager::InitCustom()
   // thuum docs/verbs/prop-physics.md (ADR-058): the player's character
   // controller touched a prop's Havok body (FridaHooks' propContact)
   manager->EmplaceEvent("propContact");
+  // thuum docs/DECISIONS.md ADR-071 rung 3: the bodies an impulse this
+  // seat's own cause gave pushed in one engine frame (FridaHooks'
+  // propImpulse, the impulse rule's)
+  manager->EmplaceEvent("propImpulse");
   // thuum docs/verbs/leveling.md: the player's UseSkill (FridaHooks' skillUse)
   manager->EmplaceEvent("skillUse");
   // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam): the calls this

@@ -29,6 +29,7 @@
 #include "PerkStateMessage.h"
 #include "PlacedRequestMessage.h"
 #include "PropOwnerMessage.h"
+#include "PropTransformMessage.h"
 #include "RaceMenuPresetMessage.h"
 #include "ScriptStateApplyMessage.h"
 #include "SetGameTimeMessage.h"
@@ -448,6 +449,10 @@ struct PartOne::Impl
   // the prop owner table (thuum docs/verbs/prop-physics.md, ADR-058): which
   // seat simulates each physics prop, the cell's host by default
   rust::Box<skymp::rules::Props> props = skymp::rules::new_props();
+  // the answers to refused prop claims and samples, by (user, prop): one
+  // word a second each at most (AnswerPropWord)
+  std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
+    propWordsAnswered;
   // the script calls' budgets and sequences (thuum ADR-068, wire-rules
   // natives): runtime only, every budget full and every sequence 0 at a start
   rust::Box<skymp::rules::ScriptCalls> scriptCalls =
@@ -1077,9 +1082,18 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           SendStreamWords(
             *this_, this_->pImpl->worldStreamer->gone(actor->GetFormId()));
           this_->pImpl->streamerStaleUsers.erase(userId);
-          // and its props fall back to their cells' hosts (thuum
-          // docs/verbs/prop-physics.md)
-          this_->pImpl->props->props_gone(actor->GetFormId());
+          // and its live props return to their cells' hosts, each with the
+          // word, player 0 (thuum docs/verbs/prop-physics.md, A7: the return
+          // is a word, never a silent lapse)
+          for (const auto& r :
+               this_->pImpl->props->props_gone(actor->GetFormId())) {
+            const auto told =
+              this_->SendPropOwnerWord(r.refr, 0, r.epoch, actor->GetFormId());
+            spdlog::info("[verb:prop-physics] prop {:x}: its simulator {:x} "
+                         "left; the host's again at epoch {}; the word to {} "
+                         "listener(s)",
+                         r.refr, actor->GetFormId(), r.epoch, told);
+          }
           // and the sightings it held for a grant that never came (thuum
           // docs/verbs/npc-puppet.md, finding 66's hold)
           this_->ForgetHeldSightings(actor->GetFormId());
@@ -1477,6 +1491,28 @@ void PartOne::Init()
   worldState.simulatorOf = [this](uint32_t actor, uint32_t cell) {
     return pImpl->cells->simulator_of(actor, cell);
   };
+  // thuum docs/verbs/prop-physics.md (physics rung 3): and who streams a
+  // prop's live row, so a body flown past its owner's grid squares keeps the
+  // owner's subscription, and the owner's walk keeps the body's
+  worldState.propLiveOwnerOf = [this](uint32_t refr) {
+    return pImpl->props->prop_live_owner(refr);
+  };
+  // physics rung 5a (ADR-071 decision 5): and a body's row, the prop
+  // table's, from its death to its stand-up, so the one owner table names
+  // whose samples move a corpse
+  worldState.bodyWord = [this](const MpActor& body, WorldState::BodyWord word,
+                               uint32_t simulator,
+                               uint64_t nowMs) -> uint32_t {
+    switch (word) {
+      case WorldState::BodyWord::Died:
+        return BodyDied(body, simulator, nowMs);
+      case WorldState::BodyWord::Rested:
+        return BodyRested(body);
+      case WorldState::BodyWord::Ended:
+        return BodyEnded(body);
+    }
+    return 0;
+  };
   // thuum docs/verbs/leveling.md: the skill table's cost of a level, for a
   // server set of a skill (MpActor::SetActorValueBaseByServer moves the
   // progress entry with the base; x-lockpick v4's read, 2026-10-31)
@@ -1786,17 +1822,20 @@ void PartOne::Init()
       }
     }
 
-    // thuum docs/verbs/prop-physics.md (ADR-058): a listener arriving while
-    // a seat simulates this prop hears who, after the create word, so it
-    // neither simulates the prop as the host's default nor drops the stream
-    // as echoes; with no live row the listener's own fallback (the cell's
-    // host) is the answer
+    // thuum docs/verbs/prop-physics.md (ADR-058; A5): a listener arriving at
+    // a prop that ever had a word hears the current one after the create
+    // word (the live owner, or 0 for the host by default), so a seat that
+    // missed a return never keeps an older word, and it neither simulates
+    // the prop as the host's default nor drops the stream as echoes; a prop
+    // with no word yet is the host's on every seat
     if (!emitterAsActor) {
-      if (const uint32_t liveOwner = PropLiveOwner(*emitter); liveOwner != 0) {
+      if (const uint32_t epoch = PropEpochOf(*emitter); epoch != 0) {
         PropOwnerMessage word;
         word.refr = emitter->GetFormId();
-        word.player = liveOwner;
-        word.epoch = PropEpochOf(*emitter);
+        // the live owner by id, the host's own live row included (its wake
+        // word named it so), else 0 for the host by default
+        word.player = PropLiveOwner(*emitter);
+        word.epoch = epoch;
         sendTarget->Send(listenerUserId, word, true);
       }
     }
@@ -2254,9 +2293,9 @@ void ApplyHostDecisions(PartOne& partOne,
         spdlog::info("PartOne - cell-host: {:x} hosts cell {:x} at epoch {}",
                      d.player, d.cell, d.epoch);
         partOne.NoteCellHostDecision(PartOne::CellHostNote::Grant, d.cell);
-        // the cell's props nobody holds live are the new host's (thuum
-        // docs/verbs/prop-physics.md, ADR-058 decision 1)
-        partOne.PropsHostChanged(d.cell, d.player);
+        // no prop row changes at a grant (thuum docs/verbs/prop-physics.md,
+        // A7): a resting prop names nobody, so the new host simulates it by
+        // default, and a live row stays its owner's until its rest's word
         // thuum ADR-068 rung 3: the grant ends the release read the cell's
         // last release left open; from here the old host's epoch stands
         // behind the cell's (wire-rules script_state)
@@ -2391,6 +2430,13 @@ void PartOne::RefreshReach(MpActor& player)
     cells.push_back(cell);
     rings.push_back(ring);
   }
+  // thuum docs/verbs/prop-physics.md (A7, D-PH2 A): a cell in the player's
+  // reach ends its unload state for props there, as a follow vouches by
+  // loaded or reach (a load report a seat never sent would otherwise refuse
+  // it for good)
+  pImpl->props->props_reached(
+    player.GetFormId(),
+    rust::Slice<const uint32_t>(cells.data(), cells.size()));
   ApplyHostDecisions(*this,
                      pImpl->cells->reach_ranked(
                        player.GetFormId(),
@@ -2619,6 +2665,27 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
       spdlog::info("[verb:change-form] cell {:x} loaded by {:x}: {} record(s) "
                    "served",
                    cell, player.GetFormId(), served);
+    }
+  }
+  if (loaded) {
+    // the end of the unload's state below: the player's prop claims and
+    // samples in the cell are judged again
+    pImpl->props->props_loaded(player.GetFormId(), cell);
+  } else {
+    // thuum docs/verbs/prop-physics.md (A7, D-PH2 A): the player's 3D of
+    // every prop in the cell went with the cell, so its stream ends with no
+    // final sample; its live rows there return to the host by default with
+    // the word (player 0), as its departure's would, and until its load
+    // report, or the cell's return to its reach, its grants and wakes there
+    // are refused (Away): an unloading host still hosts through its grace,
+    // and its late wake or claim would otherwise take the prop back
+    for (const auto& r :
+         pImpl->props->props_unloaded(player.GetFormId(), cell)) {
+      const auto told = SendPropOwnerWord(r.refr, 0, r.epoch);
+      spdlog::info("[verb:prop-physics] prop {:x}: its simulator {:x} "
+                   "unloaded cell {:x}; the host's again at epoch {}; the "
+                   "word to {} listener(s)",
+                   r.refr, player.GetFormId(), cell, r.epoch, told);
     }
   }
   const auto nowMs = SteadyNowMs();
@@ -3437,20 +3504,25 @@ void PartOne::SendActorKeyframe(MpActor& actor, MpActor& to)
 
 PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,
                                              const MpObjectReference& prop,
-                                             uint32_t cell, uint8_t touch,
-                                             bool worldBody)
+                                             uint32_t cell, uint8_t touch)
 {
-  const auto code = worldBody
-    ? pImpl->props->claim_prop_world_body(
-        prop.GetFormId(), claimant.GetFormId(), cell, SteadyNowMs())
-    : pImpl->props->claim_prop(prop.GetFormId(), claimant.GetFormId(), cell,
-                               touch, SteadyNowMs());
+  const auto code = pImpl->props->claim_prop(
+    prop.GetFormId(), claimant.GetFormId(), cell, touch, SteadyNowMs());
   return static_cast<PropClaimVerdict>(code);
 }
 
-PartOne::PropTransformVerdict PartOne::PropTransform(
+PartOne::PropPickupVerdict PartOne::PropPickup(
+  const MpActor& picker, const MpObjectReference& prop) const
+{
+  const auto code = pImpl->props->pickup_prop(
+    prop.GetFormId(), picker.GetFormId(), SteadyNowMs());
+  return static_cast<PropPickupVerdict>(code);
+}
+
+PartOne::PropTransformOutcome PartOne::PropTransform(
   const MpActor& sender, const MpObjectReference& prop, uint32_t cell,
-  uint32_t recordCell, bool asleep, float moved)
+  uint32_t recordCell, uint32_t epoch, uint16_t seq, uint32_t tMs, bool asleep,
+  bool held, float moved)
 {
   uint32_t cellHost = 0;
   if (recordCell != 0) {
@@ -3460,30 +3532,41 @@ PartOne::PropTransformVerdict PartOne::PropTransform(
   skymp::rules::PropSampleFacts facts{};
   facts.refr = prop.GetFormId();
   facts.player = sender.GetFormId();
+  facts.epoch = epoch;
+  facts.seq = seq;
+  facts.t_ms = tMs;
   facts.cell = cell;
   facts.cell_host = cellHost;
   facts.asleep = asleep;
+  facts.held = held;
   facts.moved = moved;
   facts.now_ms = SteadyNowMs();
-  const auto code = pImpl->props->prop_transform(facts);
-  return static_cast<PropTransformVerdict>(code);
+  const auto verdict = pImpl->props->prop_transform(facts);
+  PropTransformOutcome outcome;
+  outcome.verdict = static_cast<PropTransformVerdict>(verdict.code);
+  outcome.epoch = verdict.epoch;
+  outcome.allowed = verdict.allowed;
+  return outcome;
 }
 
 uint32_t PartOne::PropLiveOwner(const MpObjectReference& prop) const
 {
-  return pImpl->props->prop_live_owner(prop.GetFormId(), SteadyNowMs());
+  return pImpl->props->prop_live_owner(prop.GetFormId());
+}
+
+uint32_t PartOne::PropCellHost(const MpObjectReference& prop) const
+{
+  const auto cell = worldState.CellOf(prop);
+  if (!cell) {
+    return 0;
+  }
+  const auto host = pImpl->cells->host_of(*cell);
+  return host.hosted ? host.player : 0u;
 }
 
 uint32_t PartOne::PropOwnerOf(const MpObjectReference& prop) const
 {
-  const auto cell = worldState.CellOf(prop);
-  uint32_t cellHost = 0;
-  if (cell) {
-    const auto host = pImpl->cells->host_of(*cell);
-    cellHost = host.hosted ? host.player : 0u;
-  }
-  return pImpl->props->prop_owner_of(prop.GetFormId(), cellHost,
-                                     SteadyNowMs());
+  return pImpl->props->prop_owner_of(prop.GetFormId(), PropCellHost(prop));
 }
 
 uint32_t PartOne::PropEpochOf(const MpObjectReference& prop) const
@@ -3491,9 +3574,139 @@ uint32_t PartOne::PropEpochOf(const MpObjectReference& prop) const
   return pImpl->props->prop_epoch_of(prop.GetFormId());
 }
 
-void PartOne::PropsHostChanged(uint32_t cell, uint32_t host)
+uint32_t PartOne::BodyDied(const MpActor& body, uint32_t simulator,
+                           uint64_t nowMs)
 {
-  pImpl->props->props_host_changed(cell, host, SteadyNowMs());
+  // a simulator no user plays names nobody: a departed host still hosts
+  // its cells through its grace (wire-rules cells gone), its actor still in
+  // the world, and its departure's props_gone has run, so a row naming it
+  // would stand live with no game to stream it and no departure to return
+  // it; owner_of answers the cell's host instead (the review of 71b30412)
+  if (simulator != 0 && !PlayerActor(*this, simulator)) {
+    simulator = 0;
+  }
+  // the row's cell is the death's: the movement path never moves it (rung
+  // 5's stream does), so an unload of the cell the body died in returns it
+  const auto cell = worldState.CellOf(body);
+  return pImpl->props->prop_died(body.GetFormId(), simulator, cell.value_or(0),
+                                 nowMs);
+}
+
+uint32_t PartOne::BodyRested(const MpActor& body)
+{
+  return pImpl->props->prop_rested(body.GetFormId());
+}
+
+uint32_t PartOne::BodyEnded(const MpActor& body)
+{
+  return pImpl->props->prop_ended(body.GetFormId());
+}
+
+namespace {
+// whether an answer to `user` about the prop `refr` is due: at most one a
+// second per (user, prop), a refused claim's word and a refused sample's word
+// and record alike. Keyed by user and prop; pruned when it grows, so the map
+// stays the size of the recent refusals
+bool PropAnswerDue(
+  std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>&
+    answered,
+  Networking::UserId user, uint32_t refr)
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (answered.size() > 1024) {
+    for (auto it = answered.begin(); it != answered.end();) {
+      it = now - it->second > std::chrono::seconds(10) ? answered.erase(it)
+                                                       : std::next(it);
+    }
+  }
+  const uint64_t key =
+    (static_cast<uint64_t>(user) << 32) | static_cast<uint64_t>(refr);
+  auto& at = answered[key];
+  if (at != std::chrono::steady_clock::time_point() &&
+      now - at < std::chrono::seconds(1)) {
+    return false;
+  }
+  at = now;
+  return true;
+}
+
+// the current word (the live owner or 0, the epoch) to one user, reliable
+void SendCurrentPropWord(PartOne& partOne, Networking::UserId user,
+                         const MpObjectReference& prop)
+{
+  PropOwnerMessage word;
+  word.refr = prop.GetFormId();
+  word.player = partOne.PropLiveOwner(prop);
+  word.epoch = partOne.PropEpochOf(prop);
+  partOne.GetSendTarget().Send(user, word, true);
+}
+}
+
+void PartOne::AnswerPropWord(Networking::UserId user,
+                             const MpObjectReference& prop)
+{
+  if (PropAnswerDue(pImpl->propWordsAnswered, user, prop.GetFormId())) {
+    SendCurrentPropWord(*this, user, prop);
+  }
+}
+
+void PartOne::AnswerPropRecord(Networking::UserId user,
+                               const MpObjectReference& prop)
+{
+  // the word first, then the record, on the one reliable ordered channel: a
+  // seat applies the record under the word it heard just before it
+  if (PropAnswerDue(pImpl->propWordsAnswered, user, prop.GetFormId())) {
+    SendCurrentPropWord(*this, user, prop);
+    SendPropRecord(user, prop);
+  }
+}
+
+void PartOne::SendPropRecord(Networking::UserId user,
+                             const MpObjectReference& prop)
+{
+  PropTransformMessage record;
+  record.refr = prop.GetFormId();
+  record.epoch = PropEpochOf(prop);
+  // the record, not a stream: the mark wire-validate refuses from a client
+  record.seq = 0;
+  record.tMs = 0;
+  const auto& pos = prop.GetPos();
+  const auto& rot = prop.GetAngle();
+  record.pos = { pos.x, pos.y, pos.z };
+  // the contract's bound, each angle within one turn: an angle the record
+  // took past one (a script's SetAngle) is the same angle, where the edge's
+  // encoder (validate_server) would refuse the answer and count it
+  record.rot = { std::fmod(rot.x, 360.f), std::fmod(rot.y, 360.f),
+                 std::fmod(rot.z, 360.f) };
+  record.asleep = PropLiveOwner(prop) == 0;
+  record.held = pImpl->props->prop_held(prop.GetFormId());
+  GetSendTarget().Send(user, record, true);
+}
+
+size_t PartOne::SendPropOwnerWord(uint32_t refr, uint32_t player,
+                                  uint32_t epoch, uint32_t exceptActor)
+{
+  const auto& form = worldState.LookupFormByIdNoLoad(refr);
+  MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
+  if (!prop) {
+    return 0;
+  }
+  PropOwnerMessage word;
+  word.refr = refr;
+  word.player = player;
+  word.epoch = epoch;
+  size_t told = 0;
+  for (auto listener : prop->GetActorListeners()) {
+    if (exceptActor != 0 && listener->GetFormId() == exceptActor) {
+      continue;
+    }
+    const auto userId = serverState.UserByActor(listener);
+    if (userId != Networking::InvalidUserId) {
+      GetSendTarget().Send(userId, word, true);
+      ++told;
+    }
+  }
+  return told;
 }
 
 void PartOne::SetFollowEnabled(bool enabled)

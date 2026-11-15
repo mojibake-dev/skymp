@@ -51,6 +51,12 @@ struct UserInfo
   std::vector<std::vector<DeferredMessage>> deferredChannels;
 
   std::string guid;
+
+  // thuum docs/verbs/prop-physics.md: when this connection's last prop
+  // refusal line was said (ActionListener's PropRefusalLineDue: one a 10 s,
+  // a refused sample's and a refused claim's alike)
+  std::optional<std::chrono::time_point<std::chrono::steady_clock>>
+    lastPropRefusalLine;
 };
 
 class ServerState

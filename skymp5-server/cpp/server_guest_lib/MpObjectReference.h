@@ -163,10 +163,29 @@ public:
   // for a reference the files leave unlocked), its write (the record and the
   // `lock` property to every listener), and the word to a player whose
   // activation met the lock without its key (the engine's own activation on
-  // the player's locked reference runs the minigame)
+  // the player's locked reference runs the minigame).
+  // thuum ADR-073 decision 12 (step 3): the lock is keyed as the engine keys
+  // it, a load door pair's one lock where the engine shares it (LockPairId):
+  // GetLock reads this record, else the other side's, else this side's XLOC,
+  // else the other side's; SetLock writes both records and sends the `lock`
+  // property to both doors' listeners.
   std::optional<MpChangeFormREFR::Lock> GetLock() const;
   void SetLock(const MpChangeFormREFR::Lock& lock);
   void SendLockPrompt(MpActor& to);
+  // The other side of a load door (its XTEL) when the engine shares one lock
+  // between the two: a door with no lock of its own reads and writes its
+  // linked door's (HYPOTHESIS by decompile, sky-re's Ghidra on 1.6.1170:
+  // TESObjectREFR::GetLock 20223 looks up the linked door through the
+  // teleport data when the door has no ExtraLock, and the lock bookkeeping
+  // 19512 forwards to it; thuum docs/engine/ai-world-state.md E6 and E7).
+  // None for a reference with no XTEL, and for a pair whose two sides
+  // both carry an XLOC in the game files (two locks).
+  std::optional<uint32_t> LockPairId() const;
+  // The record's lock (none read as unlocked) as the `lock` property, to
+  // `to` alone, for this reference and its pair's other side, each where
+  // `to` is among its listeners: the record sent back to a game whose engine
+  // wrote the lock without owning it (ADR-063: a non-owner renders).
+  void SendLockTo(MpActor& to);
   // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage
   // row): the reference's destruction as the server recorded it (the stage
   // the engine reached, the destroyed flag), none while nobody reported one

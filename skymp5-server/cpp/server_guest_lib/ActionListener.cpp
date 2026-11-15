@@ -7234,6 +7234,9 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
   if (!actor) {
     return;
   }
+  if (msg.outcome == LockReportMessage::kEngineWrite) {
+    return OnLockEngineWrite(*actor, msg);
+  }
   const auto form = partOne.worldState.LookupFormByIdNoLoad(msg.refr);
   MpObjectReference* ref = form ? form->AsObjectReference() : nullptr;
   if (!ref) {
@@ -7310,6 +7313,117 @@ void ActionListener::OnLockReport(const RawMessageData& rawMsgData,
                    ref->GetFormId());
       break;
   }
+}
+
+namespace {
+// ADR-073 decision 7: true at a count's 1st, 2nd, 4th, 8th and so on
+bool LockLineDue(uint64_t& count)
+{
+  ++count;
+  return (count & (count - 1)) == 0;
+}
+}
+
+void ActionListener::OnLockEngineWrite(MpActor& actor,
+                                       const LockReportMessage& msg)
+{
+  auto& worldState = partOne.worldState;
+  if (!worldState.locksEnabled) {
+    // the switch off: no lock is the server's, every engine keeps its own
+    return;
+  }
+  if (!msg.locked || !msg.level) {
+    // the edge refuses this shape (wire-validate check_lock_report); a
+    // message from any other path is said and dropped
+    if (LockLineDue(lockEngineWrites[4])) {
+      spdlog::warn("[verb:locks] E_LOCK_RANGE: {:x}'s engine write on {:x} "
+                   "names no lock ({} so far)",
+                   actor.GetFormId(), msg.refr, lockEngineWrites[4]);
+    }
+    return;
+  }
+  // the reference the engine named: one the server holds, else a game-file
+  // placement (a REFR record) loaded for the write, as a destruction's is
+  // (an interior door whose cell nobody has loaded, named by the lock's
+  // holder in the engine's event)
+  MpObjectReference* ref = nullptr;
+  if (const auto& held = worldState.LookupFormByIdNoLoad(msg.refr)) {
+    ref = held->AsObjectReference();
+  } else if (msg.refr < 0xff000000 && worldState.HasEspm()) {
+    const auto rec =
+      worldState.GetEspm().GetBrowser().LookupById(msg.refr).rec;
+    if (rec && rec->GetType() == espm::REFR::kType) {
+      const auto& loaded = worldState.LookupFormById(msg.refr);
+      ref = loaded ? loaded->AsObjectReference() : nullptr;
+    }
+  }
+  if (!ref) {
+    if (LockLineDue(lockEngineWrites[3])) {
+      spdlog::warn("[verb:locks] E_LOCK_NO_REF: {:x}'s engine wrote {:x}, no "
+                   "such reference ({} so far)",
+                   actor.GetFormId(), msg.refr, lockEngineWrites[3]);
+    }
+    return;
+  }
+  // the owner: the host of the reference's cell, or of its load door's
+  // other side's when the two share the engine's one lock
+  const MpActor* host = worldState.HostOf(*ref);
+  bool owns = host == &actor;
+  uint32_t pairHost = 0;
+  if (const auto pair = ref->LockPairId()) {
+    const auto& pairForm = worldState.LookupFormById(*pair);
+    if (MpObjectReference* pairRef =
+          pairForm ? pairForm->AsObjectReference() : nullptr) {
+      const MpActor* other = worldState.HostOf(*pairRef);
+      pairHost = other ? other->GetFormId() : 0;
+      owns = owns || other == &actor;
+    }
+  }
+  const auto lock = ref->GetLock();
+  skymp::rules::LockStateRow row{};
+  if (lock) {
+    row.level = lock->level;
+    row.key = lock->key;
+    row.locked = lock->locked;
+    row.broken = lock->broken;
+  }
+  const bool locked = *msg.locked;
+  const auto level = static_cast<uint8_t>(std::min<uint32_t>(*msg.level, 255));
+  const auto verdict =
+    skymp::rules::lock_owner_write(row, lock.has_value(), locked, level, owns);
+  if (!verdict.accepted) {
+    // E_LOCK_OWNER (why 7), the one refusal the rule gives a write
+    if (LockLineDue(lockEngineWrites[2])) {
+      spdlog::info(
+        "[verb:locks] E_LOCK_OWNER: {:x}'s engine wrote {:x} {} "
+        "(level {}), and it hosts neither side (host {:x}, the "
+        "pair's {:x}); the record goes back to it ({} so far)",
+        actor.GetFormId(), ref->GetFormId(), locked ? "locked" : "unlocked",
+        level, host ? host->GetFormId() : 0, pairHost, lockEngineWrites[2]);
+    }
+    ref->SendLockTo(actor);
+    return;
+  }
+  if (verdict.change == 0) {
+    if (LockLineDue(lockEngineWrites[0])) {
+      spdlog::info("[verb:locks] {:x}'s engine wrote {:x} {} (level {}), the "
+                   "record's already: folded ({} so far)",
+                   actor.GetFormId(), ref->GetFormId(),
+                   locked ? "locked" : "unlocked", level, lockEngineWrites[0]);
+    }
+    return;
+  }
+  ++lockEngineWrites[1];
+  spdlog::info("[verb:locks] {:x}'s engine wrote {:x} {} (level {}): the "
+               "owner's write recorded ({} so far)",
+               actor.GetFormId(), ref->GetFormId(),
+               locked ? "locked" : "unlocked", level, lockEngineWrites[1]);
+  MpChangeFormREFR::Lock after;
+  after.level = verdict.state.level;
+  after.key = verdict.state.key;
+  after.locked = verdict.state.locked;
+  after.broken = verdict.state.broken;
+  ref->SetLock(after);
 }
 
 // thuum D-S3 (traps follow the interaction; ADR-068's DestructionStage row;

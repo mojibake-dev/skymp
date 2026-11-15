@@ -2251,6 +2251,14 @@ wire_struct! {
     }
 }
 
+/// A LockReport's outcome (thuum ADR-073 decision 12, step 3): the reporting
+/// game's engine wrote the reference's lock outside a pick (a script's Lock or
+/// SetLockLevel, the owners' door walk at a package's start, an NPC's key or
+/// pick at TESObjectDOOR::Activate; every one reaches the engine's lock
+/// bookkeeping, which raises TESLockChangedEvent), and `locked` and `level`
+/// carry the lock as that engine holds it after the write.
+pub const LOCK_ENGINE_WRITE: u8 = 3;
+
 wire_struct! {
     /// MsgType 64, thuum's (docs/verbs/locks.md, M4): a player's game reports
     /// how its lockpicking attempt on a locked reference ended. Client to
@@ -2258,8 +2266,15 @@ wire_struct! {
     /// the report (the reference locked and within the activation reach, the
     /// lock's tier open to picks, a Lockpick held, a gap between reports;
     /// wire-rules locks) and writes the unlock or takes the broken picks from
-    /// the record. Reason codes: `E_VAL_RANGE` (a refr of 0, an outcome past
-    /// 2, more than 8 picks broken), `E_VAL_RATE`.
+    /// the record. Since ADR-073 step 3 (decision 12) the same message
+    /// carries the owner's write, outcome [`LOCK_ENGINE_WRITE`]: the game's
+    /// engine changed the lock by itself, and the server records it (R0, the
+    /// record of the owner's write) when the reporter owns the reference or
+    /// its load door's other side (the cell's host), folds a write equal to
+    /// the record, and sends the record back to a reporter that owns neither.
+    /// Reason codes: `E_VAL_RANGE` (a refr of 0, an outcome past 3, more than
+    /// 8 picks broken; an engine write with picks broken or without its
+    /// `locked` and `level`, a pick's outcome with either), `E_VAL_RATE`.
     pub struct LockReport {
         /// `"t": 64`.
         #[serde(default)]
@@ -2267,10 +2282,18 @@ wire_struct! {
         /// The reference's form id; never 0.
         pub refr: u32,
         /// 0 the lock turned, 1 picks broke and the lock stands, 2 the menu
-        /// was left with the lock standing.
+        /// was left with the lock standing, 3 ([`LOCK_ENGINE_WRITE`]) the
+        /// engine wrote the lock.
         pub outcome: u8,
-        /// Picks broken in this attempt, 0 to 8.
+        /// Picks broken in this attempt, 0 to 8; 0 for an engine write.
         pub broken: u8,
+        /// ADR-073 step 3, an engine write only: the lock stands locked in
+        /// the reporting engine after the write.
+        pub locked: Option<bool>,
+        /// ADR-073 step 3, an engine write only: the lock's level byte in the
+        /// reporting engine after the write (the XLOC byte, 255 requires its
+        /// key).
+        pub level: Option<u8>,
     }
 }
 

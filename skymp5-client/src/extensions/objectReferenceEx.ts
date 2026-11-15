@@ -1,4 +1,5 @@
 import { Flora, Form, FormType, MotionType, ObjectReference, getTrapRole } from "skyrimPlatform";
+import { ModelApplyUtils } from "../view/modelApplyUtils";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { HostService } from "../services/services/hostService";
 import { NiPoint3 } from "../sync/movement";
@@ -150,10 +151,12 @@ export class ObjectReferenceEx {
     // (x-lockpick 20261031-134850 counted the property change's line, which
     // no creation writes); a change later logs "lock <id> applied" instead.
     if (lock) {
+      ModelApplyUtils.noteLockApplied(self.getFormID(), lock.locked, lock.level);
       self.setLockLevel(lock.level);
       self.lock(lock.locked, false);
       logTrace("ObjectReferenceEx", `lock ${self.getFormID().toString(16)} set at creation: ${lock.locked ? "locked" : "unlocked"}, level ${lock.level}, key ${lock.key.toString(16)}`);
     } else if (self.isLocked()) {
+      ModelApplyUtils.noteLockApplied(self.getFormID(), false, self.getLockLevel());
       self.lock(false, false);
     }
 

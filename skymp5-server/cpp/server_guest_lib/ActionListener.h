@@ -9,6 +9,7 @@
 #include "SpellCastData.h"
 #include "SweetHidePlayerNamesService.h"
 #include "libespm/Loader.h"
+#include <array>
 #include <chrono>
 #include <deque>
 #include <map>
@@ -141,7 +142,10 @@ public:
   // thuum docs/verbs/locks.md (M4): how a player's lockpicking attempt ended;
   // judged by the rule (the reference locked and within the activation
   // reach, its tier open to picks, a Lockpick held, a gap between reports)
-  // into the record: the unlock, or the broken picks taken
+  // into the record: the unlock, or the broken picks taken. Since thuum
+  // ADR-073 step 3 (decision 12) also a game's report that its engine wrote
+  // the lock by itself (outcome 3), recorded from the reference's owner
+  // (OnLockEngineWrite)
   virtual void OnLockReport(const RawMessageData& rawMsgData,
                             const LockReportMessage& msg);
 
@@ -594,10 +598,24 @@ private:
   size_t RelayCast(MpActor& caster, const MpActor& sender,
                    const SpellCastData& data);
 
+  // thuum ADR-073 decision 12 (step 3): a game's report that its engine
+  // wrote the lock of `msg.refr` by itself (a script's Lock or SetLockLevel,
+  // the owners' door walk, an NPC's key or pick). The record takes it from
+  // the reference's owner, the host of its cell or of its load door's other
+  // side's (WorldState::HostOf; the pair shares one lock, LockPairId); a
+  // write equal to the record folds, whoever sends it; any other write from
+  // a game that owns neither side is refused (E_LOCK_OWNER) and the record
+  // goes back to it (MpObjectReference::SendLockTo)
+  void OnLockEngineWrite(MpActor& actor, const LockReportMessage& msg);
+
   PartOne& partOne;
   // thuum docs/verbs/locks.md: when each player last reported on each lock
   // (monotonic ms), for the rule's gap
   std::map<std::pair<uint32_t, uint32_t>, uint64_t> lastLockReportMs;
+  // thuum ADR-073 decision 7: the engine writes' outcomes counted, each
+  // said at its 1st, 2nd, 4th, 8th and so on: [0] folded, [1] recorded, [2]
+  // refused as a non-owner's, [3] no such reference, [4] no lock fields
+  std::array<uint64_t, 5> lockEngineWrites{};
   // thuum docs/verbs/traps.md: a reporting game's linked activations, at
   // most 8 in any second (UNMEASURED; the read counts the engine's own)
   struct LinkedActivationWindow

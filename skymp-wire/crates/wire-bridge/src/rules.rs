@@ -592,15 +592,17 @@ mod ffi {
 
     /// A lock report judged (thuum docs/verbs/locks.md): accepted, or `why` 1
     /// not locked, 2 out of reach, 3 a key lock, 4 no pick held, 5 a broken
-    /// count out of range, 6 inside the gap; `change` 0 nothing, 1 unlocked,
-    /// 2 picks broken (`picks` of them leave the record); the state after.
+    /// count out of range, 6 inside the gap, 7 an engine write from a game
+    /// that owns neither side (ADR-073 step 3); `change` 0 nothing, 1
+    /// unlocked, 2 picks broken (`picks` of them leave the record), 3 the
+    /// owner's engine write recorded; the state after.
     #[derive(Debug, Clone, PartialEq)]
     struct LockReportVerdict {
         /// Accepted.
         accepted: bool,
         /// Why not, as above; 0 when accepted.
         why: u8,
-        /// 0 nothing, 1 unlocked, 2 picks broken.
+        /// 0 nothing, 1 unlocked, 2 picks broken, 3 the owner's write.
         change: u8,
         /// Lockpicks to remove from the record for change 2.
         picks: u8,
@@ -2945,6 +2947,10 @@ mod ffi {
         /// against the state, the player's reach, the Lockpicks it holds and the gap since its last
         /// report on this lock (u64::MAX for none).
         fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool, picks_held: u32, since_last_ms: u64) -> LockReportVerdict;
+        /// A game's report that its engine wrote a lock (thuum ADR-073 step 3): `state` the record's lock
+        /// when `has_record`, `locked` and `level` the reporting engine's after its write, `owns` whether
+        /// the reporter hosts the reference's cell or its load door's other side's.
+        fn lock_owner_write(state: &LockStateRow, has_record: bool, locked: bool, level: u8, owns: bool) -> LockReportVerdict;
 
         /// A seat's report of a reference's destruction `stage` and
         /// `destroyed` flag against its record (thuum D-S3; the game files'
@@ -4377,27 +4383,42 @@ fn lock_report(state: &LockStateRow, outcome: u8, broken: u8, within_reach: bool
     let since = (since_last_ms != u64::MAX).then_some(since_last_ms);
     match locks::report(lock_state_of(state), outcome, within_reach, picks_held, since) {
         Ok((change, after)) => {
-            let (change, picks) = match change {
-                locks::Change::Nothing => (0, 0),
-                locks::Change::Unlocked => (1, 0),
-                locks::Change::PicksBroken(n) => (2, n),
-            };
+            let (change, picks) = lock_change_code(change);
             LockReportVerdict { accepted: true, why: 0, change, picks, state: lock_row_of(after) }
         }
-        Err(why) => LockReportVerdict {
-            accepted: false,
-            why: match why {
-                locks::Refusal::Open => 1,
-                locks::Refusal::Reach => 2,
-                locks::Refusal::Key => 3,
-                locks::Refusal::NoPick => 4,
-                locks::Refusal::Range => 5,
-                locks::Refusal::Rate => 6,
-            },
-            change: 0,
-            picks: 0,
-            state: state.clone(),
-        },
+        Err(why) => LockReportVerdict { accepted: false, why: lock_refusal_code(why), change: 0, picks: 0, state: state.clone() },
+    }
+}
+
+fn lock_change_code(change: locks::Change) -> (u8, u8) {
+    match change {
+        locks::Change::Nothing => (0, 0),
+        locks::Change::Unlocked => (1, 0),
+        locks::Change::PicksBroken(n) => (2, n),
+        locks::Change::Written => (3, 0),
+    }
+}
+
+fn lock_refusal_code(why: locks::Refusal) -> u8 {
+    match why {
+        locks::Refusal::Open => 1,
+        locks::Refusal::Reach => 2,
+        locks::Refusal::Key => 3,
+        locks::Refusal::NoPick => 4,
+        locks::Refusal::Range => 5,
+        locks::Refusal::Rate => 6,
+        locks::Refusal::NotOwner => 7,
+    }
+}
+
+fn lock_owner_write(state: &LockStateRow, has_record: bool, locked: bool, level: u8, owns: bool) -> LockReportVerdict {
+    let record = has_record.then(|| lock_state_of(state));
+    match locks::owner_write(record, locks::EngineLock { locked, level }, owns) {
+        Ok((change, after)) => {
+            let (change, picks) = lock_change_code(change);
+            LockReportVerdict { accepted: true, why: 0, change, picks, state: lock_row_of(after) }
+        }
+        Err(why) => LockReportVerdict { accepted: false, why: lock_refusal_code(why), change: 0, picks: 0, state: state.clone() },
     }
 }
 
@@ -7105,6 +7126,20 @@ mod tests {
         assert!(broke.accepted && broke.change == 2 && broke.picks == 2 && broke.state.locked && broke.state.broken == 2, "{broke:?}");
         let left = lock_report(&novice, 2, 0, true, 0, u64::MAX);
         assert!(left.accepted && left.change == 0 && left.state == novice, "{left:?}");
+        // thuum ADR-073 step 3: the owner's engine write recorded with the
+        // key kept, a non-owner's refused by 7, an equal one folded, a
+        // lockless reference's new lock keyless
+        let house = LockStateRow { level: 0, key: 0x36a3d, locked: true, broken: 0 };
+        let opened = lock_owner_write(&house, true, false, 0, true);
+        assert!(opened.accepted && opened.change == 3 && !opened.state.locked && opened.state.key == 0x36a3d, "{opened:?}");
+        let refused = lock_owner_write(&house, true, false, 0, false);
+        assert!(!refused.accepted && refused.why == 7 && refused.state == house, "{refused:?}");
+        let folded = lock_owner_write(&house, true, true, 0, false);
+        assert!(folded.accepted && folded.change == 0, "{folded:?}");
+        let none = LockStateRow { level: 0, key: 0, locked: false, broken: 0 };
+        let made = lock_owner_write(&none, false, true, 25, true);
+        assert!(made.accepted && made.change == 3 && made.state == LockStateRow { level: 25, key: 0, locked: true, broken: 0 }, "{made:?}");
+        assert_eq!(lock_owner_write(&none, false, false, 0, false).change, 0);
     }
 
     #[test]

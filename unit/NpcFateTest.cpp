@@ -1791,6 +1791,103 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(relaysTo(0, "AttachAshPile") == 0);
   }
 
+  SECTION("by a player who is not the host: the thrall's decay shader is "
+          "kept as its look and served with its create word to a watcher "
+          "that arrives later, never to its commander; its Stop clears it "
+          "(#52)")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+
+    using Arg = std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
+    SpSnippetObjectArgument thrall;
+    thrall.formId = kPredator;
+    thrall.type = "Actor";
+    // the commander's engine runs the decay's script: ShockDisintegrate01FXS
+    // 0xd22fb on the thrall with no duration, as Undead FX's flat shader is
+    const auto shaderCall = [&](const char* fn, std::vector<Arg> args) {
+      ScriptCallMessage msg;
+      msg.selfId = 0xd22fb;
+      msg.cls = "EffectShader";
+      msg.fn = fn;
+      msg.args = std::move(args);
+      msg.caller = "US_DecayScript";
+      msg.handler = "OnEffectStart";
+      RawMessageData raw;
+      raw.userId = 1;
+      p.GetActionListener().OnScriptCall(raw, msg);
+    };
+    // the looks the thrall's CreateActor to `user` carried, since the last
+    // clear; nullopt for no CreateActor of it
+    const auto createdLooks =
+      [&](Networking::UserId user) -> std::optional<nlohmann::json> {
+      std::optional<nlohmann::json> out;
+      for (auto& m : p.Messages()) {
+        if (m.userId == user && m.j.is_object() &&
+            m.j.value("t", -1) == static_cast<int>(MsgType::CreateActor) &&
+            m.j.value("refrId", 0u) == kPredator) {
+          out = m.j.contains("props") && m.j["props"].contains("looks")
+            ? m.j["props"]["looks"]
+            : nlohmann::json::array();
+        }
+      }
+      return out;
+    };
+
+    // the Play: relayed to the host with its keep code 1, kept
+    p.Messages().clear();
+    {
+      LogCapture log;
+      shaderCall("Play", { Arg(thrall), Arg(-1.0) });
+      REQUIRE(log.Count("85547's look EffectShader.Play d22fb (seq ") == 1);
+      REQUIRE(log.Count("): kept as its actor's look, served with its "
+                        "create word (#52)") == 1);
+    }
+    bool relayedWithKeep = false;
+    for (auto& m : p.Messages()) {
+      if (m.userId == 0 && m.j.is_object() &&
+          m.j.value("t", -1) == static_cast<int>(MsgType::SpSnippet) &&
+          m.j.value("function", std::string()) == "Play") {
+        relayedWithKeep = m.j.value("keep", 0) == 1;
+      }
+    }
+    REQUIRE(relayedWithKeep);
+
+    // the host's subscription begins again (a walk off and back, a
+    // reconnect): its create word of the thrall carries the shader
+    p.Messages().clear();
+    p.SetUserActor(0, kHost);
+    const auto hostLooks = createdLooks(0);
+    REQUIRE(hostLooks.has_value());
+    REQUIRE(hostLooks->size() == 1);
+    REQUIRE((*hostLooks)[0]["keep"] == 1);
+    REQUIRE((*hostLooks)[0]["form"] == 0xd22fb);
+    REQUIRE((*hostLooks)[0]["seconds"] == -1.0);
+    REQUIRE((*hostLooks)[0]["facing"] == 0);
+
+    // the commander's own subscription: its engine draws the look, so none
+    p.Messages().clear();
+    p.SetUserActor(1, kCaster);
+    const auto casterLooks = createdLooks(1);
+    REQUIRE(casterLooks.has_value());
+    REQUIRE(casterLooks->empty());
+
+    // the Stop clears it: the host's next create word carries none
+    shaderCall("Stop", { Arg(thrall) });
+    p.Messages().clear();
+    p.SetUserActor(0, kHost);
+    const auto afterStop = createdLooks(0);
+    REQUIRE(afterStop.has_value());
+    REQUIRE(afterStop->empty());
+  }
+
   SECTION("by a player who is not the host: the stand-up's MagicEffects "
           "names the Reanimate effect with no end (-1) to both games, and the "
           "thrall's death sends both the emptied set (its look, ADR-060)")

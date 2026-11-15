@@ -8,6 +8,7 @@
 #include "NiPoint3.h"
 #include "PartOneListener.h"
 #include "RaceOverlay.h"
+#include "ServedLookProp.h"
 #include "ServerState.h"
 #include "SpellCastData.h"
 #include "WorldState.h"
@@ -902,6 +903,21 @@ public:
   // every subject's sequence (the rule and its state are Rust's, wire-rules
   // natives); ActionListener::OnScriptCall asks it for each reported call
   skymp::rules::ScriptCalls& GetScriptCalls();
+  // thuum #52 (wire-rules actor_looks, through the bridge's keep_look): an
+  // accepted look call on `actor`, its row's keep code `keep`, the relay's
+  // self, its arguments in the row's own order (an object's server id or 0,
+  // a number or NaN) and its sequence, kept on the core's monotonic clock.
+  // What it did: 1 kept, 2 kept in place of the one before, 3 cleared, 4
+  // nothing to clear, 5 a Play of no seconds, 0 a code that names no look
+  uint8_t KeepActorLook(uint32_t actor, uint8_t keep, uint32_t relaySelf,
+                        uint64_t object0, double number1, uint64_t object2,
+                        uint32_t seq);
+  // the looks `actor` keeps now, for its create word to `listener`: none to
+  // the seat that simulates it (SimulatorOf), whose own engine draws them; a
+  // facing object as the listener's engine numbers it (SpSnippet::
+  // ClientFormId)
+  std::vector<ServedLookProp> LooksServedTo(const MpActor& actor,
+                                            const MpActor& listener);
 
   // thuum ADR-068 rung 3 (the script record): the release each cell last saw
   // until its next grant (wire-rules script_state; ApplyHostDecisions notes

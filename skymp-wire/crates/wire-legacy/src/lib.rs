@@ -128,6 +128,10 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     // (SCHEMA_VERSION 41, 2026-11-09)
     ("CreateActorProps", "overlay"),
     ("UpdateAppearance", "overlay"),
+    // an actor's kept looks and a relayed look's keep (SCHEMA_VERSION 51,
+    // 2026-11-14: the review of the client's 3D keep, eaa6ba47)
+    ("CreateActorProps", "looks"),
+    ("SpSnippet", "keep"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,
@@ -422,6 +426,8 @@ mod tests {
                 assert_eq!(m.props.permitted_races, None);
                 // thuum ADR-068 rung 5: the race overlay (2026-11-09)
                 assert_eq!(m.props.overlay, None);
+                // an actor's kept looks (2026-11-14)
+                assert_eq!(m.props.looks, None);
             }
             other => panic!("{other:?}"),
         }
@@ -442,6 +448,7 @@ mod tests {
                 assert_eq!((s.class.as_str(), s.function.as_str(), s.self_id, s.snippet_idx), ("A", "B", 0x14, 7));
                 assert!(s.arguments.is_empty());
                 assert_eq!(s.seq, None);
+                assert_eq!(s.keep, None);
             }
             other => panic!("{other:?}"),
         }

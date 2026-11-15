@@ -764,6 +764,14 @@ fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
         }
         check_race_overlay(overlay)?;
     }
+    // SCHEMA_VERSION 51 (the client 3D keep's review of eaa6ba47): an
+    // actor's kept looks; a player's own CreateActor never carries any
+    if let Some(looks) = &m.props.looks {
+        if m.is_me {
+            return Err(Reject::Range);
+        }
+        check_looks(looks)?;
+    }
     if let Some(caster) = m.props.placed_by {
         let placed_kind = m.base_record_type.as_ref().is_some_and(|t| PLACED_KINDS.contains(&t.as_str()));
         if caster == 0 || !placed_kind {
@@ -791,6 +799,49 @@ fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
         _ => return Err(Reject::Range),
     }
     Ok(())
+}
+
+/// An actor's kept looks on its CreateActor (SCHEMA_VERSION 51; wire-rules
+/// actor_looks, the client 3D keep's review of eaa6ba47): each a shader's or
+/// a visual effect's Play or the eye texture (`keep` 1, 3 or 5, a Stop's 2
+/// and 4 never kept), a form of the load order (never 0 nor a server form),
+/// a Play's seconds above 0 or exactly -1 (until its Stop), the eyes' -1, a
+/// facing object on a visual effect alone, a sequence above 0, and each
+/// (keep, form) once, the eyes once. Anything else is out of range; a
+/// non-finite second is the message's NonFinite before this.
+fn check_looks(looks: &[skymp::ServedLook]) -> Result<(), Reject> {
+    for (i, l) in looks.iter().enumerate() {
+        let until_stop = l.seconds == -1.0;
+        let seconds_ok = l.seconds > 0.0 || until_stop;
+        let shape = match l.keep {
+            1 => seconds_ok && l.facing == 0,
+            3 => seconds_ok,
+            5 => until_stop && l.facing == 0,
+            _ => false,
+        };
+        if !shape || l.form == 0 || l.form >= PLAYER_FORMS || l.seq == 0 {
+            return Err(Reject::Range);
+        }
+        if looks.iter().take(i).any(|p| p.keep == l.keep && (l.keep == 5 || p.form == l.form)) {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
+/// SpSnippet (MsgType 30): since SCHEMA_VERSION 51 a relayed call the server
+/// keeps as its actor's look names the row's keep (`keep` 1 to 5, wire-rules
+/// natives LookKeep::code), on a relay alone (with its `seq`); anything else
+/// is out of range.
+fn check_sp_snippet(m: &skymp::SpSnippet) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    match m.keep {
+        None => Ok(()),
+        Some(k) if (1..=5).contains(&k) && m.seq.is_some() => Ok(()),
+        Some(_) => Err(Reject::Range),
+    }
 }
 
 fn check_player_globals(m: &skymp::PlayerGlobals) -> Result<(), Reject> {
@@ -2155,6 +2206,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::OwnHeadParts(m) => check_own_head_parts(m),
         Message::CreateActor(m) => check_create_actor(m),
         Message::UpdateAppearance(m) => check_update_appearance(m),
+        Message::SpSnippet(m) => check_sp_snippet(m),
         // Everything else: the checks all messages share. A server-to-client
         // message arriving from a client is shape-valid here; the transport
         // rejects it by direction before it gets this far.
@@ -5806,6 +5858,109 @@ mod race_overlay_tests {
             let want = if shape_ok { Ok(()) } else { Err(Reject::Range) };
             prop_assert_eq!(validate_server(&appearance(Some(o.clone()))), want);
             prop_assert_eq!(validate_server(&figure(Some(o), is_me)), if is_me { Err(Reject::Range) } else { want });
+        }
+    }
+}
+
+#[cfg(test)]
+mod look_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+    use wire_schema::skymp::{CreateActor, CreateActorProps, ServedLook, SpSnippet};
+
+    // the reanimate-fx memo's forms: Undead FX's US_Disintegrate_full_flat
+    // 0x2b050cba for good, ShockDisintegrate01FXS 0xd22fb with 2.5 s left,
+    // DA10ReanimateTargetFX 0x107d9b facing the receiver's own player, and
+    // the eyes' texture set 0x2b01264b
+    fn looks() -> Vec<ServedLook> {
+        vec![
+            ServedLook { keep: 1, form: 0x2b05_0cba, seconds: -1.0, facing: 0, seq: 4 },
+            ServedLook { keep: 1, form: 0xd22fb, seconds: 2.5, facing: 0, seq: 1 },
+            ServedLook { keep: 3, form: 0x10_7d9b, seconds: -1.0, facing: 0x14, seq: 2 },
+            ServedLook { keep: 5, form: 0x2b01_264b, seconds: -1.0, facing: 0, seq: 3 },
+        ]
+    }
+
+    fn thrall(looks: Option<Vec<ServedLook>>, is_me: bool) -> Message {
+        let looks = looks.map(|l| l.try_into().unwrap_or_default());
+        Message::CreateActor(CreateActor { idx: 7, is_me, props: CreateActorProps { looks, ..Default::default() }, ..Default::default() })
+    }
+
+    fn relay(seq: Option<u32>, keep: Option<u8>) -> Message {
+        Message::SpSnippet(SpSnippet { self_id: 0xd22fb, snippet_idx: i64::from(u32::MAX), seq, keep, ..Default::default() })
+    }
+
+    #[test]
+    fn an_actors_kept_looks_ride_its_create_word_and_never_a_players_own() {
+        assert_eq!(validate_server(&thrall(Some(looks()), false)), Ok(()));
+        assert_eq!(validate_server(&thrall(None, false)), Ok(()));
+        assert_eq!(validate_server(&thrall(Some(Vec::new()), false)), Ok(()));
+        assert_eq!(validate_server(&thrall(Some(looks()), true)), Err(Reject::Range));
+        let first = ServedLook { keep: 1, form: 0xd22fb, seconds: 2.5, facing: 0, seq: 1 };
+        let refused = [
+            // a Stop is never kept, nor any other code
+            ServedLook { keep: 2, ..first },
+            ServedLook { keep: 0, ..first },
+            ServedLook { keep: 6, ..first },
+            // a form of the load order, a sequence above 0
+            ServedLook { form: 0, ..first },
+            ServedLook { form: 0xff00_0001, ..first },
+            ServedLook { seq: 0, ..first },
+            // seconds above 0 or exactly -1, the eyes' always -1
+            ServedLook { seconds: 0.0, ..first },
+            ServedLook { seconds: -2.0, ..first },
+            ServedLook { keep: 5, seconds: 2.5, ..first },
+            // a facing object on a visual effect alone
+            ServedLook { facing: 0x14, ..first },
+            ServedLook { keep: 5, seconds: -1.0, facing: 0x14, ..first },
+        ];
+        for l in refused {
+            assert_eq!(validate_server(&thrall(Some(vec![l.clone()]), false)), Err(Reject::Range), "{l:?}");
+        }
+        assert_eq!(validate_server(&thrall(Some(vec![ServedLook { seconds: f32::NAN, ..first }]), false)), Err(Reject::NonFinite));
+        // each (keep, form) once, the eyes once; one form as a shader and
+        // as an effect is two looks
+        let twice = |a: ServedLook, b: ServedLook| validate_server(&thrall(Some(vec![a, b]), false));
+        assert_eq!(twice(first.clone(), ServedLook { seq: 2, ..first }), Err(Reject::Range));
+        let eyes = ServedLook { keep: 5, form: 0x2b01_264b, seconds: -1.0, facing: 0, seq: 3 };
+        assert_eq!(twice(eyes.clone(), ServedLook { form: 0x2b01_264c, ..eyes }), Err(Reject::Range));
+        assert_eq!(twice(first.clone(), ServedLook { keep: 3, ..first }), Ok(()));
+    }
+
+    #[test]
+    fn a_relays_keep_names_a_look_row_on_a_relay_alone() {
+        for k in 1..=5u8 {
+            assert_eq!(validate_server(&relay(Some(1), Some(k))), Ok(()), "{k}");
+        }
+        assert_eq!(validate_server(&relay(Some(1), None)), Ok(()));
+        assert_eq!(validate_server(&relay(None, None)), Ok(()));
+        assert_eq!(validate_server(&relay(Some(1), Some(0))), Err(Reject::Range));
+        assert_eq!(validate_server(&relay(Some(1), Some(6))), Err(Reject::Range));
+        assert_eq!(validate_server(&relay(None, Some(1))), Err(Reject::Range));
+    }
+
+    proptest! {
+        // any looks up to the cap: a verdict, never a panic, and the rule's
+        #[test]
+        fn looks_never_panic_and_judge_their_shapes(
+            draws in proptest::collection::vec((0u8..7, prop_oneof![Just(0u32), 1u32..4, Just(0xff00_0000u32), any::<u32>()], prop_oneof![Just(-1.0f32), Just(0.0f32), -10.0f32..10.0], prop_oneof![Just(0u32), Just(0x14u32)], 0u32..3), 0..=cap::LOOKS),
+            is_me in any::<bool>(),
+        ) {
+            let looks: Vec<ServedLook> = draws.iter().map(|&(keep, form, seconds, facing, seq)| ServedLook { keep, form, seconds, facing, seq }).collect();
+            let shape = |l: &ServedLook| {
+                let seconds_ok = l.seconds > 0.0 || l.seconds == -1.0;
+                let kind_ok = match l.keep {
+                    1 => seconds_ok && l.facing == 0,
+                    3 => seconds_ok,
+                    5 => l.seconds == -1.0 && l.facing == 0,
+                    _ => false,
+                };
+                kind_ok && l.form != 0 && l.form < 0xff00_0000 && l.seq != 0
+            };
+            let once = looks.iter().enumerate().all(|(i, l)| !looks.iter().take(i).any(|p| p.keep == l.keep && (l.keep == 5 || p.form == l.form)));
+            let want = if is_me || !looks.iter().all(shape) || !once { Err(Reject::Range) } else { Ok(()) };
+            prop_assert_eq!(validate_server(&thrall(Some(looks), is_me)), want);
         }
     }
 }

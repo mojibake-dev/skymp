@@ -6030,6 +6030,12 @@ void RecordPlayerOwn(
 void KeepScriptVariable(MpObjectReference& subject,
                         const ScriptCallMessage& msg, uint8_t kind,
                         uint32_t seq);
+
+// thuum #52: a look row's call kept as its actor's look (PartOne::
+// KeepActorLook); defined beside KeepScriptVariable below
+void KeepActorLook(PartOne& partOne, MpActor& reporter,
+                   const skymp::rules::ScriptCallVerdict& verdict,
+                   const ScriptCallMessage& msg);
 }
 
 // A game-file placement the loader never attaches (a STAT or another base
@@ -6386,6 +6392,13 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   if (subject && verdict.keep_var != 0) {
     KeepScriptVariable(*subject, msg, verdict.keep_var, verdict.seq);
   }
+  // thuum #52 (the reanimate-fx memo's 6.4 D6 B; wire-rules actor_looks): a
+  // look row's call is kept as its actor's look, served with the actor's
+  // create word to a seat whose subscription begins later, and the relay
+  // names its keep so the receiver's 3D keep needs no row table
+  if (subject && verdict.keep_look != 0) {
+    KeepActorLook(partOne, *reporter, verdict, msg);
+  }
 
   std::vector<std::optional<
     std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
@@ -6426,7 +6439,7 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     if (verdict.look && verdict.seq == 0) {
       relay.Serve(listener);
     } else {
-      relay.Relay(listener, verdict.seq);
+      relay.Relay(listener, verdict.seq, verdict.keep_look);
     }
     ++relayed;
   };
@@ -6483,6 +6496,46 @@ namespace {
 // cap::ANIM_EVENT): a record's view past it would make its apply
 // unrenderable, so such a view is not kept
 constexpr size_t kAnimEventBytes = 128;
+
+// thuum #52 (wire-rules actor_looks): a look row's accepted call kept as
+// its actor's look, the arguments read in the row's own order: an object's
+// form id (the reporter's own player, 0x14 in its engine, as the reporter's
+// actor), a number, or 0 and NaN for anything else. R2: the simulator's
+// word, recorded; the rule bounds how many it keeps
+void KeepActorLook(PartOne& partOne, MpActor& reporter,
+                   const skymp::rules::ScriptCallVerdict& verdict,
+                   const ScriptCallMessage& msg)
+{
+  const auto objectAt = [&](size_t i) -> uint64_t {
+    if (i >= msg.args.size() || !msg.args[i]) {
+      return 0;
+    }
+    const auto* object = std::get_if<SpSnippetObjectArgument>(&*msg.args[i]);
+    if (!object) {
+      return 0;
+    }
+    return object->formId == 0x14 ? reporter.GetFormId() : object->formId;
+  };
+  double number1 = std::numeric_limits<double>::quiet_NaN();
+  if (msg.args.size() > 1 && msg.args[1]) {
+    if (const auto* number = std::get_if<double>(&*msg.args[1])) {
+      number1 = *number;
+    }
+  }
+  const uint8_t kept = partOne.KeepActorLook(
+    verdict.subject, verdict.keep_look, verdict.relay_self, objectAt(0),
+    number1, objectAt(2), verdict.seq);
+  static const char* const kKept[] = { "no look",
+                                       "kept",
+                                       "kept in place of the one before",
+                                       "cleared",
+                                       "nothing kept to clear",
+                                       "a Play of no seconds, nothing kept" };
+  spdlog::info("[verb:scripts] {:x}'s look {}.{} {:x} (seq {}): {} as its "
+               "actor's look, served with its create word (#52)",
+               verdict.subject, msg.cls, msg.fn, verdict.relay_self,
+               verdict.seq, kept < 6 ? kKept[kept] : "no look");
+}
 
 // the fifty fixes' D-C3 A (PENDING ELI): the variable a SetAnimationVariable
 // call names (its first argument) and the value it sets (its second), of

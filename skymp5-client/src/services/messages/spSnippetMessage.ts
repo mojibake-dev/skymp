@@ -20,4 +20,10 @@ export interface SpSnippetMessage {
     // subject's relayed calls in seq order and drops one at or below the last
     // it applied (SpSnippetService)
     seq?: number;
+    // thuum #52 (wire-schema SpSnippet's `keep`, SCHEMA_VERSION 53): on a
+    // relayed call the server keeps as its actor's look, the row's keep code
+    // (1 EffectShader.Play, 2 its Stop, 3 VisualEffect.Play, 4 its Stop, 5
+    // Actor.SetEyeTexture); absent on every other snippet, and only with seq.
+    // ObjectAnimationService's 3D keep takes a look by it
+    keep?: number;
 };

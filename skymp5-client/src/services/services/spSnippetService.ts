@@ -50,23 +50,18 @@ const DETECTION_LEVEL_MAX = 100;
 const GAME_FILE_LINES = 3;
 const GAME_FILE_LINE_WINDOW_MS = 60_000;
 const GAME_FILE_SAID_MAX = 256;
-// thuum 3df63969 (the reanimate-fx memo's 6.4 D6 B): an actor's eight look
-// rows as the seam relays them (its kActorLookRows; class.function in lower
-// case), each with its seq: the five ObjectAnimationService's 3D keep has a
-// kind for, by the kind each keeps and whether it is a Stop, and the three it
-// has none for (a one-shot each), which run as they always have and are
-// counted as falling through. Content-specific code (ADR-073 decision 5 (c)):
-// a stopgap for the rows' own keep (wire-rules natives_table.rs, where these
-// eight read Keep::Nothing): a keep kind there that the relay carries to the
-// client replaces both tables and deletes them when it lands
-const KEPT_LOOK_ROWS: Record<string, { kind: LookKind; stop: boolean }> = {
-  "effectshader.play": { kind: "shader", stop: false },
-  "effectshader.stop": { kind: "shader", stop: true },
-  "visualeffect.play": { kind: "effect", stop: false },
-  "visualeffect.stop": { kind: "effect", stop: true },
-  "actor.seteyetexture": { kind: "eyes", stop: false },
+// thuum #52 (the review of the client's 3D keep, eaa6ba47, finding 2): the
+// server names a look row's keep on its relay (SpSnippet's `keep`, wire-rules
+// natives LookKeep::code), so the 3D keep reads the row's own word and holds
+// no row table: the kind it keeps by each code and whether it is a Stop. A
+// relay without one keeps nothing and runs as it always has
+export const LOOK_KEEP_CODES: Record<number, { kind: LookKind; stop: boolean }> = {
+  1: { kind: "shader", stop: false },
+  2: { kind: "shader", stop: true },
+  3: { kind: "effect", stop: false },
+  4: { kind: "effect", stop: true },
+  5: { kind: "eyes", stop: false },
 };
-const UNKEPT_LOOK_ROWS = new Set<string>(["actor.setalpha", "actor.setcriticalstage", "actor.attachashpile"]);
 // a snippet argument's form id, 0 for None or an argument that is no object
 const formIdOf = (arg: unknown): number => {
   const formId = arg !== null && typeof arg === "object" ? (arg as { formId?: unknown }).formId : undefined;
@@ -211,7 +206,7 @@ export class SpSnippetService extends ClientListener {
     });
   }
 
-  // an actor look row (KEPT_LOOK_ROWS) read off its snippet for
+  // an actor look row (its relay's keep code, LOOK_KEEP_CODES) read off its snippet for
   // ObjectAnimationService.look, true when that took it. An Arg0Method row
   // (EffectShader, VisualEffect) names its subject in its first argument and
   // its form in its self; SetEyeTexture is the subject's own method, its self
@@ -222,14 +217,10 @@ export class SpSnippetService extends ClientListener {
   // that is no object, or a Play's duration that is no finite number, runs as
   // it always has (said as falling through). The update's context
   private relayedLook(snippet: SpSnippetMessage, seq: number, arrived: number): boolean {
-    const row = `${snippet.class.toLowerCase()}.${snippet.function.toLowerCase()}`;
     const objectAnimation = this.controller.lookupListener(ObjectAnimationService);
     const name = `${snippet.class}.${snippet.function}`;
-    const rule = KEPT_LOOK_ROWS[row];
+    const rule = typeof snippet.keep === "number" ? LOOK_KEEP_CODES[snippet.keep] : undefined;
     if (rule === undefined) {
-      if (UNKEPT_LOOK_ROWS.has(row)) {
-        objectAnimation.lookFallsThrough(name, snippetIdToLocalId(snippet.selfId) || snippet.selfId, "its row keeps nothing");
-      }
       return false;
     }
     const eyes = rule.kind === "eyes";

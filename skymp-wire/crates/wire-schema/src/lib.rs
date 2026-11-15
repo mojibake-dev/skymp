@@ -212,7 +212,18 @@ use bounded::{String, Vec};
 /// thrall's caster and commands it. Merged into m4-sitting-53 after 51's
 /// tree, so it takes the next number (D-53-3's merge order), one number,
 /// one shape (D-PH1 A's reason).
-pub const SCHEMA_VERSION: u16 = 52;
+/// 53: CreateActorProps' optional `looks` and SpSnippet's optional `keep`
+/// (thuum #52, the Undead FX build, the reanimate-fx memo's 6.4 D6 B; the
+/// review of the client's 3D keep, eaa6ba47, findings 1 and 2): the looks an
+/// actor's simulator's script drew on it and has not stopped, kept by the
+/// server (wire-rules actor_looks) and served with the actor's create word,
+/// and the keep of a relayed look row named on its relay, so the client's 3D
+/// keep has no row table of its own. Written as 51 on m4-reanimate-look-3d
+/// over canon's 44 and merged after 52's tree, so it takes the next number
+/// (D-53-3's merge order), one number per shape (D-PH1 A's reason: postcard
+/// writes one presence byte per Option, so a 52 peer would misread every
+/// CreateActor and SpSnippet of a 53 server while the handshake passed).
+pub const SCHEMA_VERSION: u16 = 53;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -265,6 +276,11 @@ pub mod cap {
     /// werewolf's level abilities, its howl and WolfSkinFXArmor are a few),
     /// the client's own bound (sync/raceOverlay.ts).
     pub const OVERLAY_FORMS: usize = 64;
+    /// Looks one actor's CreateActor serves (the Undead FX build; the
+    /// review of the client's 3D keep, eaa6ba47): the server keeps at most
+    /// this many per actor (wire-rules actor_looks::LOOKS_KEPT), as the
+    /// client does (LOOKS_MAX, objectAnimationService.ts).
+    pub const LOOKS: usize = 8;
     /// Node overrides on one reference.
     pub const NODES: usize = 256;
     /// A node name in a model.
@@ -1600,6 +1616,7 @@ mod tests {
                 self_id: 0xfeff_ffff,
                 snippet_idx: i64::from(u32::MAX),
                 seq: Some(u32::MAX),
+                keep: Some(u8::MAX),
                 ..Default::default()
             }),
             Message::PerkState(skymp::PerkState {

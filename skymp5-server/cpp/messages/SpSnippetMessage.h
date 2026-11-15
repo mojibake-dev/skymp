@@ -29,7 +29,8 @@ struct SpSnippetMessage : public MessageBase<SpSnippetMessage>
       .Serialize("arguments", arguments)
       .Serialize("selfId", selfId)
       .Serialize("snippetIdx", snippetIdx)
-      .Serialize("seq", seq);
+      .Serialize("seq", seq)
+      .Serialize("keep", keep);
   }
 
   std::string class_;
@@ -43,4 +44,11 @@ struct SpSnippetMessage : public MessageBase<SpSnippetMessage>
   // relayed script call (ScriptCall), up by one at every accepted call on
   // that object; empty, and no key, for every other snippet
   std::optional<uint32_t> seq;
+  // thuum #52 (wire-schema SpSnippet's `keep`, SCHEMA_VERSION 53): on a
+  // relayed call the server keeps as its actor's look, the row's keep code
+  // (wire-rules natives LookKeep::code: 1 EffectShader.Play, 2 its Stop, 3
+  // VisualEffect.Play, 4 its Stop, 5 Actor.SetEyeTexture), so the receiver
+  // keeps it for its copy's 3D loads by the row's own word; absent on every
+  // other snippet, and only with `seq`
+  std::optional<uint32_t> keep;
 };

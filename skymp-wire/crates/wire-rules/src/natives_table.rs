@@ -31,7 +31,11 @@
 // ADR-060's amendment of 2026-11-12; the reanimate-fx memo's D6 B and D3 B)
 // appends an actor's eight look rows, action rows owned by the actor's
 // simulator (Owner::Simulator); fifty-eight rows, their NativeRows.inc lines
-// in the same commit. Included by natives.rs, whose types it names.
+// in the same commit. The client 3D keep's review (eaa6ba47, findings 1 and
+// 2) gives five of them their keep (Keep::Look, kept by wire-rules
+// actor_looks and served with the actor's create word), in place:
+// NativeRows.inc has no keep column, so its lines stand. Included by
+// natives.rs, whose types it names.
 
 /// Every tabled native (thuum ADR-068 decision 3): rung 2's set, the six
 /// action rows, the flip's twenty-four state and everyone rows and
@@ -166,10 +170,14 @@ pub const TABLE: &[Row] = &[
     // whose pile is an activator each seat's engine places for itself, D-H1
     // B's local helper kind, so the call crosses and the pile never does).
     // Judged by the actor's simulator, the epoch unread, relayed to the
-    // actor's listeners as the same native and kept nowhere: a late joiner
-    // has the owner's next call (Undead FX replays its stage's shader every
-    // 2.5 s while it runs), since the server's lastAnimation keeps a graph
-    // event alone (Keep::Last). An effect form's subject is its first
+    // actor's listeners as the same native. The shaders', the visual
+    // effects' and the eye texture's five are kept as the actor's look
+    // (Keep::Look; the client 3D keep's review of eaa6ba47, findings 1 and
+    // 2: a seat that walks back into the actor's grid had nothing until the
+    // owner's next call, a single SetEyeTexture never), served with its
+    // create word and named on the relay; SetAlpha, SetCriticalStage and
+    // AttachAshPile, one-shots a replay would repeat, are kept nowhere. An
+    // effect form's subject is its first
     // argument and its self the form (Subject::Arg0Method, Sound.Play's
     // shape). FunctionsDump's EffectShader Play(ObjectReference, Float) and
     // Stop(ObjectReference), VisualEffect Play(ObjectReference, Float,
@@ -177,11 +185,11 @@ pub const TABLE: &[Row] = &[
     // akNewTexture), SetAlpha(Float afTargetAlpha, Bool abFade),
     // SetCriticalStage(Int aiStage) and AttachAshPile(Form akAshPileBase),
     // none latent. Appended so no earlier row's place moves
-    Row { cls: "EffectShader", func: "Play", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object, Param::Float] },
-    Row { cls: "EffectShader", func: "Stop", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },
-    Row { cls: "VisualEffect", func: "Play", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object, Param::Float, Param::Object] },
-    Row { cls: "VisualEffect", func: "Stop", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },
-    Row { cls: "Actor", func: "SetEyeTexture", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },
+    Row { cls: "EffectShader", func: "Play", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Look(LookKeep::ShaderPlay), look: Look::Never, params: &[Param::Object, Param::Float] },
+    Row { cls: "EffectShader", func: "Stop", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Look(LookKeep::ShaderStop), look: Look::Never, params: &[Param::Object] },
+    Row { cls: "VisualEffect", func: "Play", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Look(LookKeep::EffectPlay), look: Look::Never, params: &[Param::Object, Param::Float, Param::Object] },
+    Row { cls: "VisualEffect", func: "Stop", kind: Kind::Action, subject: Subject::Arg0Method, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Look(LookKeep::EffectStop), look: Look::Never, params: &[Param::Object] },
+    Row { cls: "Actor", func: "SetEyeTexture", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Look(LookKeep::Eyes), look: Look::Never, params: &[Param::Object] },
     Row { cls: "Actor", func: "SetAlpha", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Float, Param::Bool] },
     Row { cls: "Actor", func: "SetCriticalStage", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Int] },
     Row { cls: "Actor", func: "AttachAshPile", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::Simulator, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, params: &[Param::Object] },

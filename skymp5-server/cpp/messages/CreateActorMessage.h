@@ -6,6 +6,7 @@
 #include "MessageBase.h"
 #include "MsgType.h"
 #include "RaceOverlay.h"
+#include "ServedLookProp.h"
 #include <map>
 #include <type_traits>
 
@@ -118,7 +119,8 @@ struct CreateActorMessageAdditionalProps
       .Serialize("lock", lock)
       .Serialize("restrictedRaces", restrictedRaces)
       .Serialize("permittedRaces", permittedRaces)
-      .Serialize("overlay", overlay);
+      .Serialize("overlay", overlay)
+      .Serialize("looks", looks);
   }
 
   std::optional<bool> isOpen;
@@ -169,6 +171,11 @@ struct CreateActorMessageAdditionalProps
   // thuum ADR-068 rung 5 (D-T1 A): the race overlay another player's figure
   // wears beyond its record; never on a player's own CreateActor
   std::optional<RaceOverlay> overlay;
+
+  // thuum #52: the looks an actor's simulator's script drew on it and has
+  // not stopped (wire-rules actor_looks), on an actor's CreateActor to a
+  // seat that does not simulate it; never on a player's own
+  std::optional<std::vector<ServedLookProp>> looks;
 };
 
 struct CreateActorMessageMainProps

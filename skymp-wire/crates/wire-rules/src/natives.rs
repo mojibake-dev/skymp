@@ -115,8 +115,13 @@
 //! the next sequence of its relay's self, the receiver's key: the actor's for
 //! a row on its self, the effect form's for a [`Subject::Arg0Method`] row
 //! (one shader played on many actors keeps the server's order on every
-//! receiver, and none is dropped as stale), and is kept nowhere. R2: the look
-//! is the simulator's engine's word, its arguments never judged.
+//! receiver, and none is dropped as stale). The shaders', the visual
+//! effects' and the eye texture's five are kept as the actor's look
+//! ([`Keep::Look`], wire-rules actor_looks; the client 3D keep's review of
+//! eaa6ba47, findings 1 and 2), served with its create word and named on the
+//! relay; SetAlpha, SetCriticalStage and AttachAshPile, one-shots, are kept
+//! nowhere. R2: the look is the simulator's engine's word, its arguments
+//! never judged.
 
 use std::collections::HashMap;
 
@@ -242,6 +247,86 @@ pub enum Keep {
     /// The three SetAnimationVariable rows. R2: recorded as reported, the
     /// value never judged.
     Variable,
+    /// The call as its actor's look ([`LookKeep`]; the Undead FX build, the
+    /// reanimate-fx memo's 6.4 D6 B, and the review of the client's 3D keep,
+    /// eaa6ba47, findings 1 and 2): an actor's look row its simulator's
+    /// script ran, kept on the actor by wire-rules actor_looks (the last Play
+    /// per shader and per visual effect and the last eye texture, each
+    /// cleared by its Stop or by None) and served with the actor's create
+    /// word, so a seat whose subscription to the actor begins after the call
+    /// draws what the simulator's engine drew. The call is still relayed as
+    /// an action, its keep named on the relay ([`LookKeep::code`], SpSnippet's
+    /// `keep`), so a receiver keeps it for its copy's 3D loads by the row's
+    /// own word. R2: recorded as reported, the forms and the seconds never
+    /// judged.
+    Look(LookKeep),
+}
+
+/// Which look an actor's look row keeps on its actor ([`Keep::Look`]): a
+/// Play is kept per (actor, form) until its Stop or its seconds run out, an
+/// eye texture per actor until None or the next one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookKeep {
+    /// EffectShader.Play(akObject, afDuration): the shader on the actor, for
+    /// its seconds, below 0 until its Stop.
+    ShaderPlay,
+    /// EffectShader.Stop(akObject): the shader's kept Play cleared.
+    ShaderStop,
+    /// VisualEffect.Play(akObject, afTime, akFacingObject): the effect on
+    /// the actor, for its seconds, below 0 until its Stop, facing an object
+    /// or None.
+    EffectPlay,
+    /// VisualEffect.Stop(akObject): the effect's kept Play cleared.
+    EffectStop,
+    /// Actor.SetEyeTexture(akNewTexture): the actor's eye texture; None
+    /// clears the kept one.
+    Eyes,
+}
+
+impl LookKeep {
+    /// Its number on the wire (SpSnippet's `keep`, a served look's `keep`)
+    /// and the bridge's: 1 a shader's Play, 2 its Stop, 3 a visual effect's
+    /// Play, 4 its Stop, 5 an eye texture; 0 is no look.
+    #[must_use]
+    pub fn code(self) -> u8 {
+        match self {
+            LookKeep::ShaderPlay => 1,
+            LookKeep::ShaderStop => 2,
+            LookKeep::EffectPlay => 3,
+            LookKeep::EffectStop => 4,
+            LookKeep::Eyes => 5,
+        }
+    }
+
+    /// The kind a code names, none for any other number.
+    #[must_use]
+    pub fn of_code(code: u8) -> Option<LookKeep> {
+        match code {
+            1 => Some(LookKeep::ShaderPlay),
+            2 => Some(LookKeep::ShaderStop),
+            3 => Some(LookKeep::EffectPlay),
+            4 => Some(LookKeep::EffectStop),
+            5 => Some(LookKeep::Eyes),
+            _ => None,
+        }
+    }
+
+    /// The kept look a call of this kind names: a Stop names its Play's,
+    /// every other kind its own.
+    #[must_use]
+    pub fn kept_as(self) -> LookKeep {
+        match self {
+            LookKeep::ShaderStop => LookKeep::ShaderPlay,
+            LookKeep::EffectStop => LookKeep::EffectPlay,
+            other => other,
+        }
+    }
+
+    /// A Stop, which clears what it names and keeps nothing.
+    #[must_use]
+    pub fn is_stop(self) -> bool {
+        matches!(self, LookKeep::ShaderStop | LookKeep::EffectStop)
+    }
 }
 
 /// Which record a row kept as its subject's record moves (thuum ADR-068 rung
@@ -819,7 +904,7 @@ fn channel_of(row: &Row) -> Result<Channel, Refusal> {
             return match row.keep {
                 Keep::Evidence => Ok(Channel::Evidence),
                 Keep::Record(kind) => Ok(Channel::Record(kind)),
-                Keep::Nothing | Keep::Last | Keep::Variable => Err(refusal(
+                Keep::Nothing | Keep::Last | Keep::Variable | Keep::Look(_) => Err(refusal(
                     Code::Row,
                     "a state row with no record channel: its consequence travels as the object's change form or a typed verb, never as an action".to_owned(),
                 )),
@@ -1928,14 +2013,16 @@ mod tests {
             // arguments among the call's; every other row is never relayed.
             // A world object's is its cell host's; an actor's look is its
             // simulator's, on its self or an effect form's first argument,
-            // relayed as itself, kept nowhere and never a firing's look
+            // relayed as itself, kept as the actor's look or nowhere, and
+            // never a firing's look
             if r.kind == Kind::Action {
                 let audience = r.audience == Audience::Listeners || (r.look == Look::Only && r.audience == Audience::Host);
                 assert!(r.relay_target().is_some() && audience && matches!(r.owner, Owner::CellHost | Owner::Simulator), "{name}");
                 assert!(r.relay_args().iter().all(|&a| usize::from(a) < r.params.len()), "{name}");
                 if r.owner == Owner::Simulator {
                     assert!(matches!(r.subject, Subject::SelfRef | Subject::Arg0Method), "{name}");
-                    assert_eq!((r.audience, r.relay, r.keep, r.look), (Audience::Listeners, Relay::Same, Keep::Nothing, Look::Never), "{name}");
+                    assert_eq!((r.audience, r.relay, r.look), (Audience::Listeners, Relay::Same, Look::Never), "{name}");
+                    assert!(matches!(r.keep, Keep::Nothing | Keep::Look(_)), "{name}");
                 }
             } else if r.keep == Keep::Evidence {
                 // a row kept as evidence is an actor's state row, its
@@ -1991,6 +2078,29 @@ mod tests {
         // D-C3 A)
         let variables: Vec<&str> = TABLE.iter().filter(|r| r.keep == Keep::Variable).map(|r| r.func).collect();
         assert_eq!(variables, ["SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat"]);
+        // the five rows kept as their actor's look (the client 3D keep's
+        // review of eaa6ba47, findings 1 and 2), each kind once; the other
+        // three look rows, one-shots, keep nothing
+        let looks: Vec<(String, u8)> = TABLE
+            .iter()
+            .filter_map(|r| match r.keep {
+                Keep::Look(k) => Some((format!("{}.{}", r.cls, r.func), k.code())),
+                _ => None,
+            })
+            .collect();
+        let named: Vec<(&str, u8)> = looks.iter().map(|(n, c)| (n.as_str(), *c)).collect();
+        assert_eq!(named, [("EffectShader.Play", 1), ("EffectShader.Stop", 2), ("VisualEffect.Play", 3), ("VisualEffect.Stop", 4), ("Actor.SetEyeTexture", 5)]);
+        for func in ["SetAlpha", "SetCriticalStage", "AttachAshPile"] {
+            assert_eq!(row("Actor", func).map(|r| r.keep), Some(Keep::Nothing), "{func}");
+        }
+        // every code names its kind back, a Stop its Play's, and no other
+        // number is a look
+        for k in [LookKeep::ShaderPlay, LookKeep::ShaderStop, LookKeep::EffectPlay, LookKeep::EffectStop, LookKeep::Eyes] {
+            assert_eq!(LookKeep::of_code(k.code()), Some(k));
+            assert!(!k.kept_as().is_stop());
+            assert_eq!(k.is_stop(), k.kept_as() != k);
+        }
+        assert_eq!((LookKeep::of_code(0), LookKeep::of_code(6)), (None, None));
         // one row kept as evidence: a trap's hit on an actor (playtest 48)
         let evidence: Vec<String> = TABLE.iter().filter(|r| r.keep == Keep::Evidence).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(evidence, ["ObjectReference.ProcessTrapHit"]);
@@ -2107,11 +2217,12 @@ mod tests {
         let on = |actor: u32| [Arg::Object(u64::from(actor)), Arg::Number];
         // TurnToAsh's ShockDisintegrate01FXS.Play(Victim, 4.0) from the
         // simulator: relayed on the shader to the actor's listeners, every
-        // argument, the shader's sequence, kept nowhere, no firing's look
+        // argument, the shader's sequence, kept as the actor's look (the
+        // client 3D keep's review of eaa6ba47), no firing's look
         let a = accepted(&s.judge(play, &on(DRAUGR), &played_on(DISINTEGRATE, DRAUGR), 0));
         assert_eq!((a.subject, a.relay_self, a.seq), (DRAUGR, DISINTEGRATE, 1));
         assert_eq!((a.relay_cls, a.relay_fn, a.relay_args), ("EffectShader", "Play", &[0u8, 1][..]));
-        assert_eq!((a.audience, a.keep, a.graph_event_arg, a.variable_kind, a.look, a.figure_args), (Audience::Listeners, Keep::Nothing, None, None, false, false));
+        assert_eq!((a.audience, a.keep, a.graph_event_arg, a.variable_kind, a.look, a.figure_args), (Audience::Listeners, Keep::Look(LookKeep::ShaderPlay), None, None, false, false));
         // the same shader on another actor runs on the shader's sequence, so
         // a receiver keyed by the relay's self drops neither as stale
         assert_eq!(accepted(&s.judge(play, &on(THRALL), &played_on(DISINTEGRATE, THRALL), 0)).seq, 2);
@@ -2120,7 +2231,7 @@ mod tests {
         let decay = accepted(&s.judge(play, &on(THRALL), &played_on(DECAY_FULL, THRALL), 0));
         assert_eq!((decay.relay_self, decay.seq), (DECAY_FULL, 1));
         let stop = accepted(&s.judge(row("EffectShader", "Stop"), &[Arg::Object(u64::from(THRALL))], &played_on(DECAY_FULL, THRALL), 0));
-        assert_eq!((stop.relay_fn, stop.relay_self, stop.seq, stop.relay_args), ("Stop", DECAY_FULL, 2, &[0u8][..]));
+        assert_eq!((stop.relay_fn, stop.relay_self, stop.seq, stop.relay_args, stop.keep), ("Stop", DECAY_FULL, 2, &[0u8][..], Keep::Look(LookKeep::ShaderStop)));
         // a visual effect's three arguments, its facing object None
         let fx = accepted(&s.judge(row("VisualEffect", "Play"), &[Arg::Object(u64::from(THRALL)), Arg::Number, Arg::Absent], &played_on(REANIMATE_FX, THRALL), 0));
         assert_eq!((fx.relay_cls, fx.relay_self, fx.seq, fx.relay_args), ("VisualEffect", REANIMATE_FX, 1, &[0u8, 1, 2][..]));
@@ -2133,7 +2244,7 @@ mod tests {
         let alpha = accepted(&s.judge(row("Actor", "SetAlpha"), &[Arg::Number, Arg::Bool], &simulated(DRAUGR), 0));
         assert_eq!((alpha.relay_self, alpha.seq, alpha.relay_args), (DRAUGR, 3, &[0u8, 1][..]));
         let eyes = accepted(&s.judge(row("Actor", "SetEyeTexture"), &[Arg::Object(0x2b01_264b)], &simulated(THRALL), 0));
-        assert_eq!((eyes.relay_self, eyes.seq), (THRALL, 1));
+        assert_eq!((eyes.relay_self, eyes.seq, eyes.keep), (THRALL, 1, Keep::Look(LookKeep::Eyes)));
         // an actor's owner is its simulator: the epoch is not read
         assert!(matches!(s.judge(play, &on(DRAUGR), &Facts { epoch: 0, ..played_on(DISINTEGRATE, DRAUGR) }, 0), Verdict::Accept(_)));
     }

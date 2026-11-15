@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, object_animation, placements, player_globals, player_own, props, quest_runs, quest_scope, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, script_variables, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
+use wire_rules::{activation, actor_looks, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, object_animation, placements, player_globals, player_own, props, quest_runs, quest_scope, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, script_variables, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1703,6 +1703,14 @@ mod ffi {
         /// Keep::Variable, the fifty fixes' D-C3 A, PENDING ELI); 0 for
         /// none.
         keep_var: u8,
+        /// The call is kept as its actor's look (wire-rules natives
+        /// Keep::Look, kept by actor_looks; the client 3D keep's review of
+        /// eaa6ba47), by its kind's code, which the relay names (SpSnippet's
+        /// `keep`): 1 a shader's Play, 2 its Stop, 3 a visual effect's Play,
+        /// 4 its Stop, 5 an eye texture; 0 for none. The core hands the call
+        /// to `keep_look` and serves the kept looks with the actor's create
+        /// word (`looks_served`).
+        keep_look: u8,
         /// Taken as a firing's look (thuum ADR-068 D-W2 A, wire-rules
         /// natives' look channel): relayed to the subject's listeners as
         /// `relay_cls`.`relay_fn`, kept nowhere, `seq` 0 for a relay with no
@@ -1736,6 +1744,44 @@ mod ffi {
         code: u8,
         /// The entry replaced (code 0), else 0.
         index: u32,
+    }
+
+    /// One accepted look call as the core read it off its message, for
+    /// `keep_look` (wire-rules actor_looks::LookCall): the arguments in the
+    /// row's own order, whatever the row, so the core needs no row's shape.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct LookCallRow {
+        /// The verdict's `keep_look`.
+        keep: u8,
+        /// The verdict's `relay_self` (the shader or the visual effect; the
+        /// actor for SetEyeTexture).
+        relay_self: u32,
+        /// The first argument's form id when it is an object, else 0.
+        object0: u64,
+        /// The second argument when it is a number, else NaN.
+        number1: f64,
+        /// The third argument's form id when it is an object, else 0.
+        object2: u64,
+        /// The verdict's `seq`.
+        seq: u32,
+    }
+
+    /// One look an actor keeps, served with its create word
+    /// (CreateActorProps' `looks`; wire-rules actor_looks::ServedLook).
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct ServedLookRow {
+        /// 1 a shader's Play, 3 a visual effect's Play, 5 an eye texture.
+        keep: u8,
+        /// The shader's, the visual effect's or the texture set's form id.
+        form: u32,
+        /// The seconds it has left, above 0; -1 until its Stop (and the
+        /// eyes).
+        seconds: f32,
+        /// VisualEffect.Play's facing object, 0 for None and every other
+        /// kind.
+        facing: u32,
+        /// The relay's sequence it was kept at.
+        seq: u32,
     }
 
     /// What the core knows of a reported script record (thuum ADR-068 rung
@@ -3437,6 +3483,17 @@ mod ffi {
         /// restart the next accepted call on the object takes a number above
         /// the record's (wire-rules natives' seed).
         fn seed(self: &mut ScriptCalls, subject: u32, seq: u32);
+        /// An accepted look call on `actor` (a verdict whose `keep_look` is
+        /// not 0), at `now_ms` on the core's monotonic clock: a Stop or
+        /// SetEyeTexture(None) clears the kept look it names, a Play or an
+        /// eye texture takes its place (wire-rules actor_looks::Looks::keep,
+        /// at most eight an actor). What it did: 1 kept, 2 kept in place of
+        /// the one before, 3 cleared, 4 nothing to clear, 5 a Play of no
+        /// seconds, nothing kept; 0 for a code that names no look.
+        fn keep_look(self: &mut ScriptCalls, actor: u32, call: &LookCallRow, now_ms: u64) -> u8;
+        /// The looks `actor` keeps at `now_ms`, for its create word, a timed
+        /// Play with its seconds left (wire-rules actor_looks::Looks::served).
+        fn looks_served(self: &mut ScriptCalls, actor: u32, now_ms: u64) -> Vec<ServedLookRow>;
 
         /// thuum ADR-068 rung 3 (the script record): the release each cell
         /// last saw, until its next grant (wire-rules script_state).
@@ -3757,7 +3814,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord};
+pub use ffi::{OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -5809,7 +5866,7 @@ fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) 
 /// and the call the shape step passed, held until the owner step takes it
 /// (natives::Shaped, which the shape step alone makes).
 #[derive(Debug, Default)]
-pub struct ScriptCalls(natives::ScriptCalls, Option<natives::Shaped>);
+pub struct ScriptCalls(natives::ScriptCalls, Option<natives::Shaped>, actor_looks::Looks);
 
 fn new_script_calls() -> Box<ScriptCalls> {
     Box::default()
@@ -5833,6 +5890,7 @@ fn quiet_script_call() -> ScriptCallVerdict {
         record: 0,
         event_arg: -1,
         keep_var: 0,
+        keep_look: 0,
         look: false,
         figure_args: false,
     }
@@ -5930,6 +5988,10 @@ impl ScriptCalls {
                 };
                 out.keep_last = a.keep == natives::Keep::Last;
                 out.keep_var = a.variable_kind.unwrap_or(0);
+                out.keep_look = match a.keep {
+                    natives::Keep::Look(k) => k.code(),
+                    _ => 0,
+                };
                 out.look = a.look;
                 out.figure_args = a.figure_args;
                 out.event_arg = a.graph_event_arg.and_then(|i| i8::try_from(i).ok()).unwrap_or(-1);
@@ -5969,6 +6031,25 @@ impl ScriptCalls {
 
     fn seed(&mut self, subject: u32, seq: u32) {
         self.0.seed(subject, seq);
+    }
+
+    fn keep_look(&mut self, actor: u32, call: &LookCallRow, now_ms: u64) -> u8 {
+        let Some(keep) = natives::LookKeep::of_code(call.keep) else {
+            return 0;
+        };
+        let number1 = (!call.number1.is_nan()).then_some(call.number1);
+        let look = actor_looks::LookCall { keep, relay_self: call.relay_self, object0: call.object0, number1, object2: call.object2, seq: call.seq };
+        match self.2.keep(actor, &look, now_ms) {
+            actor_looks::Kept::Kept => 1,
+            actor_looks::Kept::Replaced => 2,
+            actor_looks::Kept::Cleared => 3,
+            actor_looks::Kept::Nothing => 4,
+            actor_looks::Kept::Spent => 5,
+        }
+    }
+
+    fn looks_served(&mut self, actor: u32, now_ms: u64) -> Vec<ServedLookRow> {
+        self.2.served(actor, now_ms).into_iter().map(|l| ServedLookRow { keep: l.keep.code(), form: l.form, seconds: l.seconds, facing: l.facing, seq: l.seq }).collect()
     }
 }
 
@@ -7664,8 +7745,9 @@ mod tests {
         // TurnToAsh's ShockDisintegrate01FXS 0xd22fb played on the draugr
         // 0x800a6 by its simulator 0xff000000, kind 3, the facts' owner; the
         // relay is the shader's, on the shader's sequence, no firing's look,
-        // nothing kept, so the core relays it with its seq to the actor's
-        // listeners and logs its "relayed to" line
+        // kept as the actor's look (keep_look 1, the client 3D keep's review
+        // of eaa6ba47), so the core relays it with its seq and its keep to
+        // the actor's listeners and logs its "relayed to" line
         let number = ScriptArg { kind: 2, form_id: 0 };
         let draugr = ScriptArg { kind: 4, form_id: 0x800a6 };
         let at = script_call_subject("EffectShader", "Play", 0xd22fb, &[draugr, number]);
@@ -7676,17 +7758,44 @@ mod tests {
         let v = s.judge(at.row, &[draugr, number], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.relay_self, v.audience), (ScriptCallCode::Accepted, 0x800a6, 1, 0xd22fb, 0));
         assert_eq!((v.relay_cls.as_str(), v.relay_fn.as_str(), v.relay_args.as_slice()), ("EffectShader", "Play", &[0u8, 1][..]));
-        assert_eq!((v.look, v.keep_last, v.keep_evidence, v.record, v.event_arg, v.keep_var, v.figure_args), (false, false, false, 0, -1, 0, false));
-        // a row on the actor's self: its own sequence, the actor its self
+        assert_eq!((v.look, v.keep_last, v.keep_evidence, v.record, v.event_arg, v.keep_var, v.keep_look, v.figure_args), (false, false, false, 0, -1, 0, 1, false));
+        // a row on the actor's self: its own sequence, the actor its self;
+        // SetAlpha, a one-shot, keeps nothing
         let flag = ScriptArg { kind: 1, form_id: 0 };
         let alpha = script_call_subject("Actor", "SetAlpha", 0x800a6, &[number, flag]);
         let on_self = s.judge(alpha.row, &[number, flag], &ScriptCallFacts { self_id: 0x800a6, ..facts }, 0);
-        assert_eq!((on_self.code, on_self.seq, on_self.relay_self), (ScriptCallCode::Accepted, 1, 0x800a6));
+        assert_eq!((on_self.code, on_self.seq, on_self.relay_self, on_self.keep_look), (ScriptCallCode::Accepted, 1, 0x800a6, 0));
         // another seat's report and a world object cross with their names
         let guest = s.judge(at.row, &[draugr, number], &ScriptCallFacts { sender: 0xff00_0001, ..facts }, 0);
         assert_eq!((guest.code, guest.name.as_str()), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER"));
         let object = s.judge(at.row, &[draugr, number], &ScriptCallFacts { subject_kind: 1, ..facts }, 0);
         assert_eq!((object.code, object.name.as_str()), (ScriptCallCode::Row, "E_SCRIPTCALL_ROW"));
+    }
+
+    #[test]
+    fn the_bridge_keeps_an_actors_look_and_serves_it_with_its_seconds_left() {
+        // the client 3D keep's review of eaa6ba47 (findings 1 and 2): the
+        // draugr 0x800a6's shader 0xd22fb for 4 s at 1 s on the core's clock,
+        // its eyes 0x2b01264b, then the shader's Stop
+        let mut s = new_script_calls();
+        let play = LookCallRow { keep: 1, relay_self: 0xd22fb, object0: 0x800a6, number1: 4.0, object2: 0, seq: 1 };
+        assert_eq!(s.keep_look(0x800a6, &play, 1_000), 1);
+        let eyes = LookCallRow { keep: 5, relay_self: 0x800a6, object0: 0x2b01_264b, number1: f64::NAN, object2: 0, seq: 1 };
+        assert_eq!(s.keep_look(0x800a6, &eyes, 1_000), 1);
+        let served = s.looks_served(0x800a6, 2_000);
+        assert_eq!(served, [ServedLookRow { keep: 1, form: 0xd22fb, seconds: 3.0, facing: 0, seq: 1 }, ServedLookRow { keep: 5, form: 0x2b01_264b, seconds: -1.0, facing: 0, seq: 1 }]);
+        // the same Play again takes its place; its Stop clears it, a second
+        // Stop names nothing
+        assert_eq!(s.keep_look(0x800a6, &LookCallRow { seq: 2, ..play }, 2_000), 2);
+        let stop = LookCallRow { keep: 2, number1: f64::NAN, seq: 3, ..play };
+        assert_eq!(s.keep_look(0x800a6, &stop, 2_000), 3);
+        assert_eq!(s.keep_look(0x800a6, &stop, 2_000), 4);
+        assert_eq!(s.looks_served(0x800a6, 2_000).iter().map(|l| l.keep).collect::<Vec<_>>(), [5]);
+        // a Play of no seconds keeps nothing; a code that is no look is 0
+        assert_eq!(s.keep_look(0x800a6, &LookCallRow { number1: 0.0, ..play }, 2_000), 5);
+        assert_eq!(s.keep_look(0x800a6, &LookCallRow { keep: 9, ..play }, 2_000), 0);
+        // another actor keeps nothing of it
+        assert!(s.looks_served(0x35534, 2_000).is_empty());
     }
 
     #[test]

@@ -1847,6 +1847,16 @@ void PartOne::Init()
 
     // thuum ADR-068 rung 5 (D-T1 A): another player's figure wears that
     // player's race overlay, which never touches its change form
+    // thuum #52 (wire-rules actor_looks): an actor's kept looks ride its
+    // create word to every seat but its own player's and its simulator's,
+    // so a watcher whose subscription begins after the calls draws them
+    if (emitterAsActor && !isMe) {
+      if (auto looks = LooksServedTo(*emitterAsActor, *listenerAsActor);
+          !looks.empty()) {
+        message.props.looks = std::move(looks);
+      }
+    }
+
     if (hasUser && !isMe) {
       message.props.overlay = PlayerOverlayOf(emitter->GetFormId());
       // thuum D-53-11: and the head parts its own game draws from its
@@ -2191,6 +2201,36 @@ skymp::rules::Fights& PartOne::GetFights()
 skymp::rules::ScriptCalls& PartOne::GetScriptCalls()
 {
   return *pImpl->scriptCalls;
+}
+
+uint8_t PartOne::KeepActorLook(uint32_t actor, uint8_t keep,
+                               uint32_t relaySelf, uint64_t object0,
+                               double number1, uint64_t object2, uint32_t seq)
+{
+  const skymp::rules::LookCallRow row{ keep,    relaySelf, object0,
+                                       number1, object2,   seq };
+  return pImpl->scriptCalls->keep_look(actor, row, SteadyNowMs());
+}
+
+std::vector<ServedLookProp> PartOne::LooksServedTo(const MpActor& actor,
+                                                   const MpActor& listener)
+{
+  std::vector<ServedLookProp> out;
+  if (SimulatorOf(actor) == listener.GetFormId()) {
+    return out;
+  }
+  for (const auto& look :
+       pImpl->scriptCalls->looks_served(actor.GetFormId(), SteadyNowMs())) {
+    ServedLookProp prop;
+    prop.keep = look.keep;
+    prop.form = look.form;
+    prop.seconds = look.seconds;
+    prop.facing =
+      look.facing != 0 ? SpSnippet::ClientFormId(look.facing, &listener) : 0;
+    prop.seq = look.seq;
+    out.push_back(prop);
+  }
+  return out;
 }
 
 skymp::rules::ScriptStates& PartOne::GetScriptStates()

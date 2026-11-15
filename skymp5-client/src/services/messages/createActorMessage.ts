@@ -92,4 +92,11 @@ export interface CreateActorMessageAdditionalProps {
     // for none. Never on the player's own CreateActor (a relaunch mid-form
     // logs in as the player's own race)
     overlay?: RaceOverlay;
+    // thuum #52 (wire-schema ServedLook, SCHEMA_VERSION 53): the looks the
+    // actor's simulator's script drew on it and has not stopped, as the
+    // server keeps them, in the order kept; never on a player's own, never
+    // to the actor's simulator. keep 1 a shader's Play, 3 a visual effect's,
+    // 5 an eye texture; seconds left, -1 until its Stop (and the eyes);
+    // facing as this engine numbers it
+    looks?: { keep: number; form: number; seconds: number; facing: number; seq: number }[];
 }

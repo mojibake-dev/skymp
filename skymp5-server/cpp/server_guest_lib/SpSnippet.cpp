@@ -48,7 +48,7 @@ Viet::Promise<VarValue> SpSnippet::Execute(MpActor* actorExecutor,
   return promise;
 }
 
-void SpSnippet::Relay(MpActor* listener, uint32_t seq)
+void SpSnippet::Relay(MpActor* listener, uint32_t seq, uint8_t keep)
 {
   if (!listener->IsCreatedAsPlayer()) {
     return;
@@ -56,6 +56,9 @@ void SpSnippet::Relay(MpActor* listener, uint32_t seq)
   SpSnippetMessage message =
     MakeMessage(listener, std::numeric_limits<uint32_t>::max());
   message.seq = seq;
+  if (keep != 0) {
+    message.keep = keep;
+  }
   listener->SendToUser(message, true);
 }
 

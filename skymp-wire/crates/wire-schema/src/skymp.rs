@@ -292,6 +292,39 @@ wire_struct! {
         /// scripts added), on that figure's CreateActor alone, never on a
         /// player's own; absent while it wears its record.
         pub overlay: Option<RaceOverlay>,
+        /// Since SCHEMA_VERSION 53 (thuum #52, the Undead FX build; the review of the
+        /// client's 3D keep, eaa6ba47, findings 1 and 2): the looks the
+        /// actor's simulator's script drew on it and has not stopped, as the
+        /// server keeps them (wire-rules actor_looks), in the order they
+        /// were kept, so a seat whose subscription begins after the calls
+        /// draws them on its copy. On an actor's CreateActor alone, never a
+        /// player's own and never to the actor's simulator; absent when it
+        /// keeps none.
+        pub looks: Option<Vec<ServedLook, { cap::LOOKS }>>,
+    }
+}
+
+wire_struct! {
+    /// One look an actor keeps (wire-rules actor_looks::ServedLook): the
+    /// last Play of a shader or a visual effect on it, or its eye texture.
+    /// R2: the simulator's engine's word, recorded; the receiver plays it on
+    /// its copy at each 3D load while it does not own the actor.
+    pub struct ServedLook {
+        /// What it is, by its row's keep (wire-rules natives LookKeep::code):
+        /// 1 EffectShader.Play, 3 VisualEffect.Play, 5 Actor.SetEyeTexture.
+        pub keep: u8,
+        /// The shader's, the visual effect's or the texture set's form id, a
+        /// form of the load order (below 0xff000000, never 0).
+        pub form: u32,
+        /// The seconds the Play has left, above 0, or -1 until its Stop (and
+        /// for the eyes).
+        pub seconds: f32,
+        /// VisualEffect.Play's facing object (the receiver's own player as
+        /// 0x14), 0 for None and for every other kind.
+        pub facing: u32,
+        /// The relay's sequence it was kept at (the form's for a shader or a
+        /// visual effect, the actor's for the eyes), above 0.
+        pub seq: u32,
     }
 }
 
@@ -1381,6 +1414,14 @@ wire_struct! {
         /// the relayed calls for one subject in this order and drops one at
         /// or below the last it applied.
         pub seq: Option<u32>,
+        /// Since SCHEMA_VERSION 53 (thuum #52; the review of the client's 3D keep,
+        /// eaa6ba47, finding 2): on a relayed call the server keeps as its
+        /// actor's look, the row's keep (wire-rules natives LookKeep::code:
+        /// 1 EffectShader.Play, 2 its Stop, 3 VisualEffect.Play, 4 its
+        /// Stop, 5 Actor.SetEyeTexture), so the receiver keeps it for its
+        /// copy's 3D loads by the row's own word; absent on every other
+        /// snippet, and only with `seq`.
+        pub keep: Option<u8>,
     }
 }
 

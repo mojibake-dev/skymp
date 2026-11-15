@@ -9,7 +9,7 @@ import { GraphVar } from '../messages/scriptStateApplyMessage';
 import { MsgType } from '../../messages';
 import { HostService } from './hostService';
 import { ScriptStateService } from './scriptStateService';
-import { SpSnippetService } from './spSnippetService';
+import { LOOK_KEEP_CODES, SpSnippetService } from './spSnippetService';
 import { ObjectReferenceEx } from '../../extensions/objectReferenceEx';
 import { localIdToRemoteId, remoteIdToLocalId, snippetIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
@@ -383,6 +383,26 @@ export class ObjectAnimationService extends ClientListener {
       }
       this.subscribed.add(localId);
       this.subscribedIdx.set(msg.idx, localId);
+      // thuum #52: the looks the server kept for the actor ride its create
+      // word (wire-rules actor_looks), so a copy whose subscription began
+      // after its simulator's calls draws them; each taken as the relay it
+      // stands for, on the next update (look needs the game), a timed one
+      // for the seconds it has left from here
+      const served = msg.props?.looks;
+      const subject = msg.refrId;
+      if (served !== undefined && served.length > 0) {
+        const arrived = Date.now();
+        this.controller.once('update', () => {
+          for (const l of served) {
+            const rule = LOOK_KEEP_CODES[l.keep];
+            if (rule === undefined || rule.stop) {
+              continue;
+            }
+            const row = rule.kind === 'shader' ? 'EffectShader.Play' : rule.kind === 'effect' ? 'VisualEffect.Play' : 'Actor.SetEyeTexture';
+            this.look({ row, kind: rule.kind, stop: false, subject, form: l.form, seconds: l.seconds, facing: l.facing, seq: l.seq, arrived });
+          }
+        });
+      }
     }
     // no self-played mark here (the review of 066cce4e, finding 1): the replay this message announces comes two seconds or more
     // later and a hosting seat never replays, so a mark set now could be used up by the seat's own genuine event (its

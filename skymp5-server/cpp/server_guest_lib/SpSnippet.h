@@ -32,7 +32,9 @@ public:
   // `seq` on the message, sent at once (MpActor::SendToUser, reliable),
   // never through the deferred queue Execute's snippets take (6.11 item 1: a
   // relay must not land behind the object's later record or relay)
-  void Relay(MpActor* listener, uint32_t seq);
+  // and a look row's keep code (thuum #52, SpSnippetMessage's `keep`), 0
+  // for none
+  void Relay(MpActor* listener, uint32_t seq, uint8_t keep = 0);
 
   // thuum ADR-068 rung 4 (the standing's serve): a recorded state's applier
   // to one listener's game behind a create word, at once, no answer and no

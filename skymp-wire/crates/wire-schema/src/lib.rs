@@ -166,9 +166,7 @@ use bounded::{String, Vec};
 /// 47: ActorClaim's optional `purpose`, `quest`, `package` and `scene` (thuum
 /// ADR-073 step 5a, decision 6 with D-L2 B and D-53-4, m4-owners-5a): a claim
 /// names a talk, a quest's lead (its own package on its alias actor) or a
-/// scene its seat started, and outlives a grant into its cell; and its
-/// optional `why` (D-53-5 B): a lead's release says its game stopped running
-/// the actor (another quest's package or none, her unload there). Taken as the
+/// scene its seat started, and outlives a grant into its cell. Taken as the
 /// number D-53-3's merge order gives ADR-073's first step after canon's 44,
 /// C4's 45 and the physics heads' 46; it shipped alone in the fork's
 /// pipelines 6031 (m4-owners-5a 938acfeb) and 6032 (m4-owners-5a-client
@@ -181,7 +179,17 @@ use bounded::{String, Vec};
 /// reason, 42's precedent). In D-53-3's merge order C4 (m4-reanimate-return,
 /// 45 on its branch, a number physics rung 1 also shipped) takes the number
 /// its merge comes to.
-pub const SCHEMA_VERSION: u16 = 48;
+/// 49: ActorClaim's optional `why` (thuum D-53-5 B, ADR-073 step 5a,
+/// m4-owners-5a 763bd460): a lead's release says its game stopped running
+/// the actor (another quest's package or none, her unload there). It was
+/// written under 47 on its branch, but m4-sitting-53's 48 images (5c772d9d's
+/// pipeline, its server image and its Windows dist with MpClientPlugin.dll)
+/// carried ActorClaim without it. postcard writes a struct's fields in order
+/// with one presence byte per Option, so a 48 client's claim arrives one byte
+/// short and wire-codec's decode refuses it as Malformed: every claim, a talk
+/// as canon sends it included, would fail while the handshake passed (D-PH1
+/// A's reason, 42's and 48's precedent).
+pub const SCHEMA_VERSION: u16 = 49;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -1661,9 +1669,10 @@ mod tests {
 
     #[test]
     fn an_actor_claim_at_its_caps_fits_its_byte_cap() {
-        // thuum ADR-073 step 5a (SCHEMA_VERSION 47): the wire id, a five-byte
-        // idx, the flag, then the purpose's two bytes, three five-byte ids
-        // and the release's why (D-53-5 B), each behind its presence byte; a
+        // thuum ADR-073 step 5a (SCHEMA_VERSION 47; the why since 49): the
+        // wire id, a five-byte idx, the flag, then the purpose's two bytes,
+        // three five-byte ids and the release's why (D-53-5 B), each behind
+        // its presence byte; a
         // talk as canon sent it costs the five presence bytes alone
         let full = Message::ActorClaim(skymp::ActorClaim {
             idx: u32::MAX,

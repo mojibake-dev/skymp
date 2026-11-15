@@ -50,7 +50,7 @@ struct ActorClaimMessage : public MessageBase<ActorClaimMessage>
   std::optional<uint32_t> package;
   // a scene's SCEN
   std::optional<uint32_t> scene;
-  // since SCHEMA_VERSION 47 (D-53-5 B), a lead's release only: 1 its game
+  // since SCHEMA_VERSION 49 (D-53-5 B), a lead's release only: 1 its game
   // left the quest's own packages, 2 its game unloaded the actor (a u8 on
   // the wire); absent or 0 a release
   std::optional<uint32_t> why;

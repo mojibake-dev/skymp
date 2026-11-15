@@ -1966,7 +1966,7 @@ pub const CLAIM_LEAD: u8 = 1;
 /// An ActorClaim's purpose: a scene the sender's seat started (D-L2 B; D-A2
 /// C, the stage's cause seat for a scene a fragment starts).
 pub const CLAIM_SCENE: u8 = 2;
-/// A lead's release `why` (thuum D-53-5 B, SCHEMA_VERSION 47): the package
+/// A lead's release `why` (thuum D-53-5 B, SCHEMA_VERSION 49): the package
 /// the sender's engine started on the actor is not one of the lead's quest's
 /// own (its QNAM another quest, or none).
 pub const CLAIM_WHY_PACKAGE: u8 = 1;
@@ -2022,7 +2022,7 @@ wire_struct! {
         pub package: Option<u32>,
         /// Since SCHEMA_VERSION 47: a scene's SCEN.
         pub scene: Option<u32>,
-        /// Since SCHEMA_VERSION 47 (D-53-5 B), a lead's release only: why
+        /// Since SCHEMA_VERSION 49 (D-53-5 B), a lead's release only: why
         /// the sender's game stopped running the actor,
         /// [`CLAIM_WHY_PACKAGE`] or [`CLAIM_WHY_UNLOADED`]; absent or 0 a
         /// release.

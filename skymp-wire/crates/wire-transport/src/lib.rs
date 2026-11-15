@@ -289,6 +289,10 @@ pub struct Server {
     last_heard_ms: HashMap<u64, u64>,
     limits: Limits,
     password: Option<[u8; token::USER_DATA_BYTES]>,
+    /// The polled time, whole: the clock the rate budgets, the byte budget
+    /// and the silence reading run on is derived from it (`now_ms`), so no
+    /// poll's fraction of a millisecond is lost.
+    elapsed: Duration,
     now_ms: u64,
     local_addr: SocketAddr,
     unsecure: bool,
@@ -359,6 +363,7 @@ impl Server {
             password: password
                 .filter(|p| !p.is_empty())
                 .map(|p| token::password_user_data(&p)),
+            elapsed: Duration::ZERO,
             now_ms: 0,
             local_addr,
             unsecure,
@@ -438,7 +443,15 @@ impl Server {
     /// between flushes waits at most one interval, and an idle connection
     /// costs one small packet per flush instead of one per poll.
     pub fn poll(&mut self, dt: Duration, out: &mut Vec<Inbound>) {
-        self.now_ms = self.now_ms.saturating_add(ms(dt));
+        // The polled time accumulates whole and the millisecond clock is read
+        // from the total, as the flush clock keeps its remainder (Fiedler,
+        // "Fix Your Timestep!"). Adding each poll's whole milliseconds
+        // dropped every poll's fraction: at the gamemode's ~815 polls a second
+        // (about 1.2 ms each) the clock ran at about 0.8 of real time, and
+        // every rate budget refilled that much slower (thuum x-drain-watch
+        // 20261115-032536, HYPOTHESIS: the spread of dt is unmeasured).
+        self.elapsed = self.elapsed.saturating_add(dt);
+        self.now_ms = ms(self.elapsed);
         // renet's own clock first, then the transport's: every connection's
         // current_time advances here and nowhere else (renet 2.0.0
         // server.rs:241-245, remote_connection.rs: update), and the
@@ -611,6 +624,8 @@ pub struct Client {
     renet: RenetClient,
     transport: NetcodeClientTransport,
     limits: Limits,
+    /// The polled time, whole (the server's `elapsed`).
+    elapsed: Duration,
     now_ms: u64,
     rejected: u64,
     io_errors: u64,
@@ -660,6 +675,7 @@ impl Client {
             renet,
             transport,
             limits,
+            elapsed: Duration::ZERO,
             now_ms: 0,
             rejected: 0,
             io_errors: 0,
@@ -708,7 +724,9 @@ impl Client {
     /// Advance by `dt`, then drain decoded server messages into `out`, oldest
     /// first per channel. Outgoing packets are flushed at the end.
     pub fn poll(&mut self, dt: Duration, out: &mut Vec<Message>) {
-        self.now_ms = self.now_ms.saturating_add(ms(dt));
+        // the server's clock (its poll says why)
+        self.elapsed = self.elapsed.saturating_add(dt);
+        self.now_ms = ms(self.elapsed);
         // renet's clock first (the server's poll says why)
         self.renet.update(dt);
         if self.transport.update(dt, &mut self.renet).is_err() {
@@ -809,6 +827,27 @@ mod tests {
         let mut every = FlushClock::new(Duration::ZERO);
         assert!(every.tick(Duration::ZERO));
         assert!(every.tick(Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn the_server_clock_keeps_each_poll_s_fraction_of_a_millisecond() {
+        // x-drain-watch 20261115-032536: the gamemode polls about every
+        // 1.2 ms, and a clock of whole milliseconds a poll ran at about 0.8
+        // of real time, the rate budgets' refill with it
+        let localhost: SocketAddr = "127.0.0.1:0".parse().expect("literal");
+        let mut server =
+            Server::bind(localhost, Limits::default(), token::Auth::Unsecure).expect("bind");
+        let mut events = Vec::new();
+        for _ in 0..1_000 {
+            server.poll(Duration::from_micros(1_227), &mut events);
+        }
+        assert_eq!(server.now_ms, 1_227);
+        // under a millisecond a poll, the clock still moves
+        for _ in 0..1_000 {
+            server.poll(Duration::from_micros(500), &mut events);
+        }
+        assert_eq!(server.now_ms, 1_727);
+        assert!(events.is_empty(), "{events:?}");
     }
 
     #[test]

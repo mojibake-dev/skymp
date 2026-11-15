@@ -5,6 +5,7 @@ import { HostedActorStateMessage } from "../messages/hostedActorStateMessage";
 import { UpdateEquipmentMessage } from "../messages/updateEquipmentMessage";
 import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
 import { HostService } from "./hostService";
+import { LeadClaimService } from "./leadClaimService";
 import { RemoteServer } from "./remoteServer";
 import { localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { getEquipedSpell, SpellType } from "../../sync/equipment";
@@ -68,6 +69,9 @@ export class HostedStateService extends ClientListener {
             return;
         }
         this.packages.set(localId, e.package ? e.package.getFormID() : 0);
+        // thuum ADR-073 step 5a (D-53-4): a quest's own package opens that
+        // quest's lead on its alias actor, LeadClaimService's to ask
+        this.controller.lookupListener(LeadClaimService).onPackage(localId, e.package ? e.package : null);
     }
 
     private onUpdate() {

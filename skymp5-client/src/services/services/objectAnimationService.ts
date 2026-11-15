@@ -393,14 +393,20 @@ export class ObjectAnimationService extends ClientListener {
       if (served !== undefined && served.length > 0) {
         const arrived = Date.now();
         this.controller.once('update', () => {
+          let taken = 0;
           for (const l of served) {
             const rule = LOOK_KEEP_CODES[l.keep];
             if (rule === undefined || rule.stop) {
               continue;
             }
             const row = rule.kind === 'shader' ? 'EffectShader.Play' : rule.kind === 'effect' ? 'VisualEffect.Play' : 'Actor.SetEyeTexture';
-            this.look({ row, kind: rule.kind, stop: false, subject, form: l.form, seconds: l.seconds, facing: l.facing, seq: l.seq, arrived });
+            if (this.look({ row, kind: rule.kind, stop: false, subject, form: l.form, seconds: l.seconds, facing: l.facing, seq: l.seq, arrived })) {
+              ++taken;
+            }
           }
+          // one line a create word that carries looks (rare: a kept actor's
+          // return), the probe's read of the serve
+          logLab('verb:scripts', `look ${localId.toString(16)}: ${served.length} served with its create word, ${taken} taken (#52)`);
         });
       }
     }

@@ -35,15 +35,22 @@ public:
     bool hasData = false;
   };
 
+  // The template, its plugin list already this seat's (ModifyPluginInfo), so
+  // that every form id written into it after goes under that list. The list
+  // comes from the game's loaded plugins; `loadOrder`, the caller's, is only
+  // compared with them (loadGame's loadOrder argument, kept for the API).
   static std::shared_ptr<SaveFile_::SaveFile> PrepareSaveFile(
-    const char* pathInAssets);
+    const char* pathInAssets, const std::vector<std::string>* loadOrder);
 
   static void Run(std::shared_ptr<SaveFile_::SaveFile> baseSavefile,
                   const std::array<float, 3>& pos,
                   const std::array<float, 3>& angle, uint32_t cellOrWorld,
                   Time* time = nullptr, SaveFile_::Weather* _weather = nullptr,
-                  SaveFile_::ChangeFormNPC_* changeFormNPC = nullptr,
-                  std::vector<std::string>* loadOrder = nullptr);
+                  SaveFile_::ChangeFormNPC_* changeFormNPC = nullptr);
+
+  // A form id of this game as the save's plugin list names it.
+  static uint32_t FormIdInSave(const SaveFile_::SaveFile& save,
+                               uint32_t formId);
 
   static std::wstring GetPathToMyDocuments();
 
@@ -81,7 +88,8 @@ private:
                                  std::array<float, 3> angle,
                                  uint32_t cellOrWorld);
 
-  static void ModifyPluginInfo(std::shared_ptr<SaveFile_::SaveFile>& save);
+  static void ModifyPluginInfo(std::shared_ptr<SaveFile_::SaveFile>& save,
+                               const std::vector<std::string>* loadOrder);
 
   static void ModifySaveTime(std::shared_ptr<SaveFile_::SaveFile>& save,
                              Time* time);
@@ -91,9 +99,6 @@ private:
 
   static void ModifyPlayerFormNPC(std::shared_ptr<SaveFile_::SaveFile> save,
                                   SaveFile_::ChangeFormNPC_* changeFormNPC);
-
-  static void ModifyLoadOrder(std::shared_ptr<SaveFile_::SaveFile> save,
-                              std::vector<std::string>* loadOrder);
 
   static void FillChangeForm(
     std::shared_ptr<SaveFile_::SaveFile> save, SaveFile_::ChangeForm* form,

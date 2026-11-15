@@ -3,6 +3,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace SaveFile_ {
@@ -205,6 +206,38 @@ struct SaveFile
   GlobalVariables::GlobalVariable* GetGlobalvariableByRefID(RefID& refID);
   int64_t FindIndexInFormIdArray(uint32_t refID);
   void OverwritePluginInfo(std::vector<std::string>& newPlaginNames);
+
+  // thuum: the plugin list for a game that loaded `loaded` (its full plugins
+  // in load order): the save's own entries keep their indices and names, so
+  // every form id already in the save names the plugin it was saved under,
+  // and each loaded plugin the list lacks goes after them, in load order
+  // (an empty name is skipped). The game matches a save's list to its plugins
+  // by name and moves each form id onto its plugin's index as it loads
+  // (HYPOTHESIS: Ghidra on 1.6.1170, until a lab run). Returns the save's
+  // plugins `loaded` lacks.
+  //
+  // The appended plugins keep `loaded`'s order and the save's own entries
+  // keep their spelling: the game also compares the save's non-official
+  // plugins (all but Skyrim.esm, the four official masters and Creation Club
+  // files) with its loaded ones in order, and aborts the load on a mismatch
+  // (HYPOTHESIS: Ghidra 1.6.1170, 0x140606df0, 0x14152dac0, 0x140a50d70; the
+  // check runs on Skyrim Platform's Load, at 0x1406060fe, LoadRequest's byte
+  // +0x25 being 0 at 0x140613dfc). The game's list holds its light plugins
+  // after its full ones, and a save list that is a prefix of it passes. A
+  // template entry outside that set would have to sit where the seat loads
+  // it.
+  std::vector<std::string> MergePluginInfo(
+    const std::vector<std::string>& loaded);
+
+  // The plugin's index in the list, by name in any case, as the game matches
+  // them (HYPOTHESIS: Ghidra on sky-re, 1.6.1170, 0x140606df0 and
+  // 0x1406057e0, until a lab run); -1 if the list does not name it.
+  int FindPluginIndex(std::string_view name) const;
+
+  // `formId`'s low 24 bits under the index the list gives the plugin `name`,
+  // or nullopt if the list does not name it.
+  std::optional<uint32_t> FormIdUnderPlugin(std::string_view name,
+                                            uint32_t formId) const;
 };
 
 struct MiscStats

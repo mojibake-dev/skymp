@@ -7760,13 +7760,15 @@ mod tests {
         assert!(stale.why.contains("its look records race 88845"), "{}", stale.why);
         assert_eq!(player_own_head_parts(&OwnHeadPartsFacts { has_look: false, ..turned }, &parts).name, "E_HEADPARTS_NO_LOOK");
         assert_eq!(player_own_head_parts(&turned, &[]).name, "E_HEADPARTS_COUNT");
-        let mut kept = parts;
-        kept[2] = OwnHeadPartFacts { form: 0xee878, kind: true, race_valid: false };
+        // her BlueNarrow eyes in the vampire eyes' place, then a RACE in her
+        // head's (no indexing: the workspace's clippy refuses it)
+        let swap = |parts: &[OwnHeadPartFacts], at: usize, part: OwnHeadPartFacts| -> Vec<OwnHeadPartFacts> { parts.iter().enumerate().map(|(i, &p)| if i == at { part } else { p }).collect() };
+        let kept = swap(&parts, 2, OwnHeadPartFacts { form: 0xee878, kind: true, race_valid: false });
         let list = player_own_head_parts(&turned, &kept);
         assert_eq!((list.code, list.name.as_str()), (4, "E_HEADPARTS_RACE_LIST"));
         assert!(list.why.starts_with("ee878 may not be worn by race 88845"), "{}", list.why);
-        kept[0] = OwnHeadPartFacts { form: 0x88845, kind: false, race_valid: true };
-        assert_eq!(player_own_head_parts(&turned, &kept).name, "E_HEADPARTS_KIND");
+        let raced = swap(&kept, 0, OwnHeadPartFacts { form: 0x88845, kind: false, race_valid: true });
+        assert_eq!(player_own_head_parts(&turned, &raced).name, "E_HEADPARTS_KIND");
     }
 
     #[test]

@@ -988,6 +988,12 @@ mod tests {
         ARIADNE_OVERLAY.iter().map(|&form| HeadPartFacts { form, kind: true, race_valid: true }).collect()
     }
 
+    // `parts` with the part at `at` replaced by `part` (no indexing: the
+    // workspace's clippy refuses it)
+    fn with_part(parts: &[HeadPartFacts], at: usize, part: HeadPartFacts) -> Vec<HeadPartFacts> {
+        parts.iter().enumerate().map(|(i, &p)| if i == at { part } else { p }).collect()
+    }
+
     fn turned() -> OwnHeadPartsFacts {
         OwnHeadPartsFacts { has_look: true, recorded_race: KHAJIIT_VAMPIRE, reported_race: KHAJIIT_VAMPIRE, files: true }
     }
@@ -995,7 +1001,7 @@ mod tests {
     #[test]
     fn an_own_head_parts_report_under_the_recorded_race_is_recorded() {
         assert_eq!(own_head_parts(turned(), &ariadne_parts()), HeadPartsVerdict::Record);
-        assert_eq!(own_head_parts(turned(), &ariadne_parts()[..1]), HeadPartsVerdict::Record);
+        assert_eq!(own_head_parts(turned(), ariadne_parts().get(..1).unwrap_or_default()), HeadPartsVerdict::Record);
         let names = [HeadPartsCode::NoLook, HeadPartsCode::Race, HeadPartsCode::Count, HeadPartsCode::Kind, HeadPartsCode::RaceList].map(HeadPartsCode::name);
         assert_eq!(names, ["E_HEADPARTS_NO_LOOK", "E_HEADPARTS_RACE", "E_HEADPARTS_COUNT", "E_HEADPARTS_KIND", "E_HEADPARTS_RACE_LIST"]);
     }
@@ -1015,26 +1021,23 @@ mod tests {
         assert_eq!(code(own_head_parts(turned(), &[])), Some(HeadPartsCode::Count));
         let many = vec![HeadPartFacts { form: 0x51612, kind: true, race_valid: true }; HEAD_PARTS + 1];
         assert_eq!(code(own_head_parts(turned(), &many)), Some(HeadPartsCode::Count));
-        assert_eq!(code(own_head_parts(turned(), &many[..HEAD_PARTS])), None);
+        assert_eq!(code(own_head_parts(turned(), many.get(..HEAD_PARTS).unwrap_or_default())), None);
         assert_eq!(code(own_head_parts(OwnHeadPartsFacts { files: false, ..turned() }, &parts)), Some(HeadPartsCode::Kind));
         // a RACE named as a part
-        let mut raced = parts.clone();
-        raced[2] = HeadPartFacts { form: KHAJIIT_VAMPIRE, kind: false, race_valid: true };
+        let raced = with_part(&parts, 2, HeadPartFacts { form: KHAJIIT_VAMPIRE, kind: false, race_valid: true });
         match own_head_parts(turned(), &raced) {
             HeadPartsVerdict::Refuse(HeadPartsCode::Kind, why) => assert_eq!(why, "88845 is no HDPT record"),
             other => panic!("{other:?}"),
         }
         // Skyrim.esm alone: her BlueNarrow eyes 0xee878 list HeadPartsKhajiit
         // [KhajiitRace], which KhajiitRaceVampire may not wear
-        let mut kept = parts;
-        kept[2] = HeadPartFacts { form: 0xee878, kind: true, race_valid: false };
+        let kept = with_part(&parts, 2, HeadPartFacts { form: 0xee878, kind: true, race_valid: false });
         match own_head_parts(turned(), &kept) {
             HeadPartsVerdict::Refuse(HeadPartsCode::RaceList, why) => assert!(why.starts_with("ee878 may not be worn by race 88845"), "{why}"),
             other => panic!("{other:?}"),
         }
         // the kind before the race list, whichever part comes first
-        let mut both = kept;
-        both[6] = HeadPartFacts { form: KHAJIIT, kind: false, race_valid: true };
+        let both = with_part(&kept, 6, HeadPartFacts { form: KHAJIIT, kind: false, race_valid: true });
         assert_eq!(code(own_head_parts(turned(), &both)), Some(HeadPartsCode::Kind));
     }
 }

@@ -30,7 +30,10 @@ const hex = (n: number) => n.toString(16);
 // scene the cause seat's instead (D-A2 C): this seat's copy of a relayed
 // fragment's scene, never claimed, and never taken for this seat's own by its
 // actions on the actors this seat still simulates (x-scene-claim's leg 2,
-// where the guest hosts). At each poll (500 ms, while a scene is marked)
+// where the guest hosts; on a platform with V-scene's skip, fork 5b4def61, a
+// start under a relay's root is skipped and never raised, so this mark and
+// its disown are reached only from a platform that tells such a start). At
+// each poll (500 ms, while a scene is marked)
 // every high-process actor whose current scene is an own mark playing here is
 // claimed once, ActorClaim {purpose 2, quest (the scene's owning quest),
 // scene}, through the claims' outbox; the server checks the scene's own PNAM
@@ -55,7 +58,10 @@ const hex = (n: number) => n.toString(16);
 // before PuppetService's next poll would stop the scene (a stop before it is
 // the playtest 41 rule, as before) and before the scene's first action here
 // (an action first marks a relayed fragment's copy this seat's own until the
-// start is read, which disowns the mark and releases its claims).
+// start is read, which disowns the mark and releases its claims; on a
+// platform with V-scene's skip, fork 5b4def61, a start under a relay's root
+// is skipped and never raised, so this mark and disown are reached only from
+// a platform that tells such a start).
 export class SceneClaimService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
@@ -93,6 +99,11 @@ export class SceneClaimService extends ClientListener {
         }
         const native = e.forced ? "Scene.ForceStart" : "Scene.Start";
         const acting = typeof e.acting === "number" ? e.acting : 0;
+        // a start inside another player's acting scope: the cause seat's mark,
+        // or the disown of a mark this seat's action made its own (on a
+        // platform with V-scene's skip, fork 5b4def61, a start under a relay's
+        // root is skipped and never raised, so this mark and disown are
+        // reached only from a platform that tells such a start)
         if (acting !== 0) {
             const taken = this.marks.disown(e.sceneId, `${native} inside acting player ${hex(acting)}'s scope`);
             if (taken) {

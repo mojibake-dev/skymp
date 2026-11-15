@@ -163,9 +163,12 @@ export function opensLead(r: LeadReading): boolean {
 // seat's copy of a scene a relayed fragment started inside another player's
 // acting scope: nothing is claimed for it, and it keeps the scene from being
 // taken for this seat's own by its actions here; read after an action that
-// marked it own, it disowns that mark (disown) and its claims are released.
-// A mark not seen playing within SCENE_START_WAIT_MS is let go (a start the
-// engine refused); one seen playing and then not has ended. A claim is
+// marked it own, it disowns that mark (disown) and its claims are released
+// (on a platform with V-scene's skip, fork 5b4def61, a start under a relay's
+// root is skipped and never raised, so this mark and disown are reached only
+// from a platform that tells such a start). A mark not seen playing within
+// SCENE_START_WAIT_MS is let go (a start the engine refused); one seen
+// playing and then not has ended. A claim is
 // pending for CLAIM_PENDING_MS (TalkService's unanswered claim, 3 s), from
 // its mark until it is pushed to the claims' outbox, then from its push
 // (behind a backlog the window can pass before the claim leaves); a claim of

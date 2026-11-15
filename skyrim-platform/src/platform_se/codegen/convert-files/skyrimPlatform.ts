@@ -1927,6 +1927,9 @@ export declare function pollHostedGaze(actorFormIds: number[]): void;
 export declare function hostedGaze(actorFormId: number): number[] | null;
 export declare function pollNodeRotation(refrId: number, nodeNames: string[]): void;
 export declare function nodeRotation(refrId: number): Array<{ node: string; has: boolean; world: number[]; local: number[] }> | null;
+// thuum D-53-8 B (train 53's V-live): the head parts the player's own base draws, read on the game thread (one task per poll; rule 9): its overlay list (CommonLibSSE-NG TESNPC::GetBaseOverlays and GetNumBaseOverlays) while TESNPC::HasOverlays answers true (through this platform's own HasOverlays replacement) and the list holds parts, else its base list (TESNPC::headParts); ownHeadParts answers the last read, its seq counting reads since launch, race the base's, flagged whether that race carries a head part list flag (kOverlayHeadPartList or kOverrideHeadPartList), overlay whether the parts are the overlay list, each part once in the list's order; null before the first read
+export declare function pollOwnHeadParts(): void;
+export declare function ownHeadParts(): { seq: number; race: number; flagged: boolean; hasOverlays: boolean; overlayCount: number; overlay: boolean; parts: number[] } | null;
 // thuum playtest 37 (the probe before any head build): the actor's FaceGen keyframes copied on the game thread (BSFaceGenAnimationData's expression, modifier and phoneme keyframes and its override flag); faceKeyframes answers the last read as [expression[], modifier[], phoneme[], override, sets[][]], or null; sets are every keyframe set of BSFaceGenAnimationData, 0x20 to 0x180 in header order (the lip sync's set is among the unnamed ones, 2026-10-28)
 export declare function pollFaceKeyframes(actorFormId: number): void;
 export declare function faceKeyframes(actorFormId: number): [number[], number[], number[], boolean, number[][]] | null;

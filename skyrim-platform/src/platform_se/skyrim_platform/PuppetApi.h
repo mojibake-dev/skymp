@@ -270,6 +270,17 @@ Napi::Value HostedGaze(const Napi::CallbackInfo& info);
 // puzzle pillar, which no Papyrus native can give without an out-array)
 Napi::Value PollNodeRotation(const Napi::CallbackInfo& info);
 Napi::Value NodeRotation(const Napi::CallbackInfo& info);
+// thuum D-53-8 B (train 53's V-live): pollOwnHeadParts() reads, on the game
+// thread, the head parts the player's own base draws: its overlay list
+// (CommonLibSSE-NG TESNPC::GetBaseOverlays and GetNumBaseOverlays) while
+// TESNPC::HasOverlays answers true and the list holds parts, else its base
+// list (TESNPC::headParts, numHeadParts), with the base's race and whether
+// that race carries a head part list flag; ownHeadParts() answers the last
+// read as { seq, race, flagged, hasOverlays, overlayCount, overlay, parts },
+// or null before one (OwnLookService reports it to the server after the
+// player's own race changed, OwnHeadParts 82)
+Napi::Value PollOwnHeadParts(const Napi::CallbackInfo& info);
+Napi::Value OwnHeadParts(const Napi::CallbackInfo& info);
 // thuum playtest 37 (the probe before any head build): pollFaceKeyframes
 // (actorFormId) copies, on the game thread, the actor's FaceGen keyframes
 // (BSFaceGenAnimationData's expression, modifier and phoneme keyframes,
@@ -426,6 +437,12 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "nodeRotation",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(NodeRotation)));
+  exports.Set(
+    "pollOwnHeadParts",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollOwnHeadParts)));
+  exports.Set(
+    "ownHeadParts",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(OwnHeadParts)));
   exports.Set("pollFaceKeyframes",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(PollFaceKeyframes)));

@@ -67,6 +67,7 @@ import { SetWeatherMessage } from "./setWeatherMessage";
 import { PerkPickMessage } from "./perkPickMessage";
 import { PerkStateMessage } from "./perkStateMessage";
 import { WordWallMessage } from "./wordWallMessage";
+import { OwnHeadPartsMessage } from "./ownHeadPartsMessage";
 import { RelayedActivationMessage } from "./relayedActivationMessage";
 import { ObjectAnimationMessage } from "./objectAnimationMessage";
 import { SkillUseMessage } from "./skillUseMessage";
@@ -156,6 +157,7 @@ export type AnyMessage = ActivateMessage
     | AliasFillMessage
     | WorldGlobalMessage
     | ScriptVariablesMessage
+    | OwnHeadPartsMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

@@ -1420,7 +1420,8 @@ mod ffi {
         /// reference (ALFR), 3 a unique actor (ALUA), 4 unresolved (R2, the
         /// seat's word recorded unvalidated).
         kind: u8,
-        /// The alias that holds it for kinds 1 to 3, 0 otherwise.
+        /// The alias that holds it for kinds 1 to 3; 0 for kind 0,
+        /// cells::UNRESOLVED_ALIAS for kind 4.
         alias: u32,
     }
 
@@ -4686,7 +4687,7 @@ fn claim_end_name(why: u8) -> String {
         5 => cells::ClaimEnd::Gone,
         6 => cells::ClaimEnd::Stale,
         7 => cells::ClaimEnd::Unloaded,
-        _ => return String::new(),
+        _ => return format!("an unknown end {why}"),
     };
     end.name().to_owned()
 }
@@ -5696,7 +5697,7 @@ fn alias_fills_actor(aliases: &[QuestAliasRow], journal: &[AliasFillEntry], ques
         alias_fills::ActorFill::Reported(alias) => AliasActorFill { kind: 1, alias },
         alias_fills::ActorFill::Forced(alias) => AliasActorFill { kind: 2, alias },
         alias_fills::ActorFill::Unique(alias) => AliasActorFill { kind: 3, alias },
-        alias_fills::ActorFill::Unresolved => AliasActorFill { kind: 4, alias: 0 },
+        alias_fills::ActorFill::Unresolved => AliasActorFill { kind: 4, alias: cells::UNRESOLVED_ALIAS },
     }
 }
 
@@ -6242,7 +6243,7 @@ mod tests {
         );
         assert_eq!(claim_end_name(3), "its alias's fill");
         assert_eq!(claim_end_name(0), "its lease");
-        assert_eq!(claim_end_name(8), "");
+        assert_eq!(claim_end_name(8), "an unknown end 8", "a default branch says what fell through (ADR-073 decision 7)");
         // a scene's claim ends at its quest's stop, a lead's release at its quest, a death the whole row
         assert_eq!(c.claim_actor(0x13487, c2, trader, 2, 0x38386, 0, 0x3839b, 3_000), 0);
         assert_eq!(c.quest_stopped(0x38386).first().map(|d| (d.actor, d.why)), Some((0x13487, 2)));
@@ -6262,7 +6263,7 @@ mod tests {
             QuestAliasRow { id: 9, created: 0, create_at: 0, forced: 0, unique_actor: 0x1347b },
         ];
         assert_eq!(alias_fills_actor(&aliases, &[], 0x39645, 0x13488, 0x1347b, true), AliasActorFill { kind: 3, alias: 9 });
-        assert_eq!(alias_fills_actor(&aliases, &[], 0x39645, 0x13487, 0x1347a, true), AliasActorFill { kind: 4, alias: 0 });
+        assert_eq!(alias_fills_actor(&aliases, &[], 0x39645, 0x13487, 0x1347a, true), AliasActorFill { kind: 4, alias: u32::MAX });
         let facts = [QuestAliasRow { id: 3, created: 0, create_at: 0, forced: 0x383be, unique_actor: 0 }];
         assert_eq!(alias_fills_actor(&facts, &[], 0x38386, 0x13487, 0x1347a, true), AliasActorFill { kind: 0, alias: 0 });
         assert_eq!(alias_fills_actor(&facts, &[], 0x38386, 0x383be, 0x3b, false), AliasActorFill { kind: 2, alias: 3 });

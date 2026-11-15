@@ -862,10 +862,6 @@ fn check_prop_transform(m: &skymp::PropTransform) -> Result<(), Reject> {
     Ok(())
 }
 
-/// A seat's prop claim (docs/verbs/prop-physics.md): a reference (never 0)
-/// and a touch the contract names (0 contact, 1 grab, 2 drop, 3 impulse).
-/// Whether the claimant stands in the prop's cell and whether the prop is
-/// another's to hold is the server's rule.
 /// A player's claim on an NPC or its release (docs/verbs/npc-talk.md,
 /// ADR-052; thuum ADR-073 decision 6 since SCHEMA_VERSION 47): an idx in
 /// range and a purpose's shape. A talk (`purpose` absent or 0) names no
@@ -891,6 +887,10 @@ fn check_actor_claim(m: &skymp::ActorClaim) -> Result<(), Reject> {
     }
 }
 
+/// A seat's prop claim (docs/verbs/prop-physics.md): a reference (never 0)
+/// and a touch the contract names (0 contact, 1 grab, 2 drop, 3 impulse).
+/// Whether the claimant stands in the prop's cell and whether the prop is
+/// another's to hold is the server's rule.
 fn check_prop_claim(m: &skymp::PropClaim) -> Result<(), Reject> {
     if m.refr == 0 || m.touch > 3 {
         return Err(Reject::Range);

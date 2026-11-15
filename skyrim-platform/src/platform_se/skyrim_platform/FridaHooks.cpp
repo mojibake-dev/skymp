@@ -8,7 +8,6 @@
 #include "Hosted.h"
 #include "JsUtils.h"
 #include "MagicApi.h"
-#include "Override.h"
 #include "PapyrusTESModPlatform.h"
 #include "PlatformCall.h"
 #include "PropBodies.h"
@@ -795,10 +794,10 @@ void Frida::SetTriggerPresserRule(bool on)
 // and C4's owner rule takes the rest when m4-reanimate-return lands), and any
 // other handle with no self. Each kind's first event is logged with its
 // handle, its first script's class and its quest, then counted, the window's
-// counts flushed with the census (FlushEveryonePass). The lines are the step
+// counts flushed with the census (FlushGatePasses). The lines are the step
 // 0 tally's shape (step0-spec.md section B.1), its pass table's everyone row
 // before that table exists: when m4-loud-seat's P2 lands, these counts fold
-// into its table and FlushEveryonePass into its FlushGateTally.
+// into its table and FlushGatePasses into its FlushGateTally.
 // The switch (D-S0-29 B) is off unless the client setting
 // scriptEveryoneEvents is true, so a stage A/Bs one build and a client that
 // never sets it changes nothing. It is a list under ADR-073 decision 5 (c), a
@@ -946,6 +945,145 @@ bool EveryonePasses(VM* vm, RE::BSScript::IObjectHandlePolicy* policy,
   }
   return false;
 }
+
+/**
+ * The platform pass (thuum D-S0-14 B)
+ */
+
+// thuum docs/DECISIONS.md D-S0-14 B (Eli 2026-11-14 19:19:35Z, step 0's
+// recommendations; the dated note under it, read 1's control
+// x-golden-claw-alias v1.1 20261115-040058): an event raised inside the
+// platform's own call passes the gate (OnSendEventEnter), told by the seam's
+// one mark, PlatformCall::Active() (PlatformCall.h), a thread-local depth
+// raised only on the thread that runs the call: the worker's Scope around a
+// native's body (SkyrimPlatform.cpp, RunInIOContext), callNative's Scope
+// around a direct addItem or removeItem on the JavaScript thread
+// (CallNativeApi.cpp), a latent call's extent on its Papyrus thread
+// (ScriptNatives.cpp's Call hook) and ScriptState's sends. It replaces
+// callNative's Override, a process-wide flag: every thread's event passed
+// while any non-latent call was open, so a world event on another thread
+// passed or was judged by when it landed (read 1's H1a), and the first of
+// two overlapping calls to end cleared it while the second still ran (R11).
+// HYPOTHESIS (read 1's control): the engine raises the call's own events
+// synchronously inside the call, on the call's thread (RemoveItem's
+// OnContainerChanged on the JavaScript thread); an event the engine queues
+// to another thread meets the rules below, as any world event does.
+// The pass is a census (ADR-073 decision 7's shape, step0-spec.md section
+// B.1's platform row): counted by the handle's kind, asked of the VM's
+// handle policy alone (IObjectHandlePolicy::HandleIsType, CommonLibSSE-NG
+// include/RE/I/IObjectHandlePolicy.h:20): the everyone pass's quest and
+// aliases, then its scene and effect, then the actor
+// (FormType::ActorCharacter 0x3E, include/RE/F/FormTypes.h:202) before the
+// reference (FormType::Reference 0x3D, :201), so an actor's handle names the
+// actor whichever HandleIsType answers for 0x3D on it, then any other. Each
+// kind's first is logged with its event, handle, first script's class, self
+// and thread, then counted, the window's counts flushed with the everyone
+// row (FlushGatePasses)
+enum class PlatformKind : uint8_t
+{
+  kQuest,
+  kRefAlias,
+  kLocAlias,
+  kBaseAlias,
+  kScene,
+  kEffect,
+  kActor,
+  kReference,
+  kOther
+};
+
+// each kind's name with its VM type number (the tally's names, B.1)
+constexpr const char* kPlatformKindNames[] = {
+  "quest 77",   "alias 140", "alias 141",    "alias 139", "scene 122",
+  "effect 142", "actor 62",  "reference 61", "other"
+};
+
+std::atomic<uint32_t> g_platformPassed[std::size(kPlatformKindNames)]{};
+std::atomic<bool> g_platformPassedSaid[std::size(kPlatformKindNames)]{};
+
+PlatformKind PlatformKindOf(RE::BSScript::IObjectHandlePolicy* policy,
+                            RE::VMHandle handle)
+{
+  if (!policy) {
+    return PlatformKind::kOther;
+  }
+  switch (EveryoneKindOf(policy, handle)) {
+    case EveryoneKind::kQuest:
+      return PlatformKind::kQuest;
+    case EveryoneKind::kRefAlias:
+      return PlatformKind::kRefAlias;
+    case EveryoneKind::kLocAlias:
+      return PlatformKind::kLocAlias;
+    case EveryoneKind::kBaseAlias:
+      return PlatformKind::kBaseAlias;
+    case EveryoneKind::kNone:
+      break;
+  }
+  switch (EveryoneLeftOf(policy, handle)) {
+    case EveryoneLeft::kScene:
+      return PlatformKind::kScene;
+    case EveryoneLeft::kEffect:
+      return PlatformKind::kEffect;
+    case EveryoneLeft::kOther:
+      break;
+  }
+  if (policy->HandleIsType(RE::FormType::ActorCharacter, handle)) {
+    return PlatformKind::kActor;
+  }
+  if (policy->HandleIsType(RE::FormType::Reference, handle)) {
+    return PlatformKind::kReference;
+  }
+  return PlatformKind::kOther;
+}
+
+// a kind's self for its first line: a quest's or an alias's quest
+// (EveryoneQuestOf), an actor's or a reference's form, nothing for the rest
+std::string PlatformSelfOf(RE::BSScript::IObjectHandlePolicy* policy,
+                           RE::VMHandle handle, PlatformKind kind)
+{
+  if (!policy) {
+    return std::string("no self read");
+  }
+  switch (kind) {
+    case PlatformKind::kQuest:
+      return EveryoneQuestOf(policy, handle, EveryoneKind::kQuest);
+    case PlatformKind::kRefAlias:
+      return EveryoneQuestOf(policy, handle, EveryoneKind::kRefAlias);
+    case PlatformKind::kLocAlias:
+      return EveryoneQuestOf(policy, handle, EveryoneKind::kLocAlias);
+    case PlatformKind::kBaseAlias:
+      return EveryoneQuestOf(policy, handle, EveryoneKind::kBaseAlias);
+    case PlatformKind::kActor:
+    case PlatformKind::kReference: {
+      const RE::TESForm* self = policy->GetObjectForHandle(
+        kind == PlatformKind::kActor ? RE::FormType::ActorCharacter
+                                     : RE::FormType::Reference,
+        handle);
+      return self ? fmt::format("self {:x}", self->GetFormID())
+                  : std::string("no self read");
+    }
+    default:
+      return std::string("no self read");
+  }
+}
+
+// the pass's count (OnSendEventEnter, after the record-death and
+// record-apply blanks, the gate's first pass)
+void CountPlatformPass(RE::VMHandle handle, const char* eventName)
+{
+  auto* vm = VM::GetSingleton();
+  auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+  const PlatformKind kind = PlatformKindOf(policy, handle);
+  const auto i = static_cast<size_t>(kind);
+  g_platformPassed[i].fetch_add(1, std::memory_order_relaxed);
+  if (!g_platformPassedSaid[i].exchange(true, std::memory_order_relaxed)) {
+    logger::info("[census] k9-gate-passes passed: platform {}; {} to handle "
+                 "{:x}, {}, {}, thread {} (first of this kind)",
+                 kPlatformKindNames[i], eventName ? eventName : "", handle,
+                 FirstAttachedClass(vm, handle),
+                 PlatformSelfOf(policy, handle, kind), GetCurrentThreadId());
+  }
+}
 }
 
 void Frida::SetScriptEveryoneEvents(bool on)
@@ -953,9 +1091,17 @@ void Frida::SetScriptEveryoneEvents(bool on)
   g_scriptEveryoneEvents.store(on, std::memory_order_relaxed);
 }
 
-void Frida::FlushEveryonePass(uint64_t windowMs)
+void Frida::FlushGatePasses(uint64_t windowMs)
 {
   const uint64_t seconds = windowMs / 1000;
+  for (size_t i = 0; i < std::size(g_platformPassed); ++i) {
+    const uint32_t n =
+      g_platformPassed[i].exchange(0, std::memory_order_relaxed);
+    if (n != 0) {
+      logger::info("[census] k9-gate-passes passed in {} s: platform {} x{}",
+                   seconds, kPlatformKindNames[i], n);
+    }
+  }
   for (size_t i = 1; i < std::size(g_everyonePassed); ++i) {
     const uint32_t n =
       g_everyonePassed[i].exchange(0, std::memory_order_relaxed);
@@ -976,8 +1122,9 @@ void Frida::FlushEveryonePass(uint64_t windowMs)
 
 namespace {
 // ADR-068 D-W3 B (the held entries, above): TESModPlatform.ReplayHeldEntries'
-// body, on the update thread inside callNative, whose Override is the
-// platform's mark the gate passes. The expired pairs go first, each with its
+// body, on the worker inside callNative, under its PlatformCall::Scope
+// (SkyrimPlatform.cpp), the platform's mark the gate passes on this thread
+// (the platform pass, above). The expired pairs go first, each with its
 // line. Then a pair is due when its presser is this seat's by the gate's own
 // rule (OwnerOf: the client's hosting state as the client told it, through
 // setHosted, setPuppet and SetCellHosted) and its trigger stands in a cell
@@ -1182,7 +1329,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // interaction; TrapFamily.h): every event raised to a reference whose
   // server record skymp5-client is applying (setRecordApplying) runs no script
   // either, whatever its name and inside the platform's own calls too, so the
-  // test comes before the Override check: the record is the world's past, its
+  // test comes before the platform pass: the record is the world's past, its
   // consequences ran where they happened, and a late joiner's oil lamp must
   // not replay its fall. Like the record-death blank it comes before the
   // sendPapyrusEvent hook below, so JS hears none of these events. The set is
@@ -1206,15 +1353,17 @@ void OnSendEventEnter(GumInvocationContext* ic)
       return;
     }
   }
-  if (Override::IsOverriden()) {
-    // the platform's own window passes every event, as before; a lifecycle
-    // event passed in it was served all the same (thuum ADR-068 rung 3's
-    // seen set, ScriptState.h)
-    auto overridenName =
-      (char**)gum_invocation_context_get_nth_argument(ic, 2);
-    ScriptState::Seen::OnEvent(
-      (RE::VMHandle)gum_invocation_context_get_nth_argument(ic, 1),
-      overridenName ? *overridenName : nullptr, true);
+  // thuum D-S0-14 B (the platform pass, above): an event raised inside the
+  // platform's own call, on the thread that runs it, passes, counted by its
+  // kind; a lifecycle event passed here was served all the same (thuum
+  // ADR-068 rung 3's seen set, ScriptState.h)
+  if (PlatformCall::Active()) {
+    const auto platformHandle =
+      (RE::VMHandle)gum_invocation_context_get_nth_argument(ic, 1);
+    auto platformName = (char**)gum_invocation_context_get_nth_argument(ic, 2);
+    const char* platformEvent = platformName ? *platformName : nullptr;
+    CountPlatformPass(platformHandle, platformEvent);
+    ScriptState::Seen::OnEvent(platformHandle, platformEvent, true);
     return;
   }
   auto handle = (RE::VMHandle)gum_invocation_context_get_nth_argument(ic, 1);
@@ -1229,15 +1378,14 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // graph from the script's first side, then sets doOnce: the plan's first
   // read). The name is kept for the apply's answer (blanked) and
   // skymp5-client sends it again through SendScriptEvent once the record is
-  // written. After the Override return and never inside a platform call
-  // (PlatformCall.h), so the platform's own resend passes. The client's
+  // written. After the platform pass, so it is never asked inside a
+  // platform call and the platform's own resend passes. The client's
   // setting scriptRecord false sets no mark, so the blank is off with it;
   // the set is empty outside a pending apply, so the cost is one atomic
   // read. Like the record-apply blank above, it comes before the
   // sendPapyrusEvent hook, so JS hears none of these events
   if (ScriptState::Pending::Any() && eventName && *eventName &&
-      ScriptState::Pending::IsBlankedName(*eventName) &&
-      !PlatformCall::Active()) {
+      ScriptState::Pending::IsBlankedName(*eventName)) {
     const auto pendingId = SelfIdOfHandle(handle);
     if (pendingId != 0 && ScriptState::Pending::Is(pendingId)) {
       ScriptState::Pending::NoteBlanked(pendingId, *eventName);
@@ -1336,7 +1484,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // what it causes crosses from there (a trap family trigger's firing as its
   // first link, RelayedActivation 70; a world script's entry to the cell's
   // host as Activate's entry, played there by TESModPlatform.SendTriggerEvent,
-  // which this gate passes under the platform's Override above). An owned
+  // which this gate passes by the platform pass above). An owned
   // entry on a trap family trigger, or on a scripted trigger in a cell this
   // seat does not host, is told to skymp5-client as triggerEntry on the next
   // tick (a tick task, never a handler's PushAndWait: the plan's read 1) and
@@ -1612,7 +1760,7 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // actor's or a reference's event (selfId resolved above) never asks; a
   // handle the pass leaves is counted by its kind and goes on to the rules
   // below. The record, pending and never-admitted blanks, the spent trap and
-  // Override's pass returned above, and PlayersEffect's pass came just
+  // the platform pass returned above, and PlayersEffect's pass came just
   // before, so each stays as it was. Off, nothing here is asked
   if (blockEvents && selfId == 0 && policy &&
       g_scriptEveryoneEvents.load(std::memory_order_relaxed) &&
@@ -1725,7 +1873,9 @@ void OnSendEventEnter(GumInvocationContext* ic)
 
 void OnSendEventLeave(GumInvocationContext* ic)
 {
-  if (Override::IsOverriden()) {
+  // the enter's platform pass on the same thread's mark, so the two agree
+  // (the depth is the same at an event's enter and its leave)
+  if (PlatformCall::Active()) {
     return;
   }
   EventsApi::SendPapyrusEventLeave();
@@ -1829,12 +1979,13 @@ void InstallDrawSheatheWeaponActorHook()
  * furniture code alone: TESFurniture::Activate's NoPlayer branch (17420)
  * sends one 'Lever_PlayerPush' to the lever's own graph (HYPOTHESIS H-LF2),
  * on the puller's seat alone, synchronously inside the client's own
- * `activate(player, true)` (remoteServer.ts), a non-latent callNative under
- * the process-wide Override (CallNativeApi.cpp; H-LF4). The handlers cannot
- * take it there: the hook reaches them through Hook.cpp's PushAndWait to the
+ * `activate(player, true)` (remoteServer.ts), a non-latent callNative whose
+ * body runs on the worker under the platform's mark (PlatformCall::Scope,
+ * SkyrimPlatform.cpp's RunInIOContext; H-LF4). The handlers cannot take it
+ * there: the hook reaches them through Hook.cpp's PushAndWait to the
  * JavaScript pool thread, the very thread that waits on that call
  * (SkyrimPlatform.cpp's PushToWorkerAndWait), so it would never return, the
- * reason the Override test stood first. So a furniture holder's event is
+ * reason the platform's mark returns first. So a furniture holder's event is
  * noted here, filtered in native (rule 9: a plain reference whose base is a
  * FURN, and no name pattern, the names being the engine's idle data's),
  * never reaches the handlers, and crosses after the call's leave as
@@ -1848,8 +1999,8 @@ void InstallDrawSheatheWeaponActorHook()
  * FURN's plain reference is sent reaching the sendAnimationEvent handlers
  * (they see none of them). Inside a script action the event stays the
  * seam's (a script's own call on a FURN is reported once, by the boundary),
- * so that test stays first; then the furniture note, under Override or not;
- * then the Override return for every other holder.
+ * so that test stays first; then the furniture note, inside the platform's
+ * call or not; then the platform's return for every other holder.
  *
  * HYPOTHESIS H-LF6: frida-gum's attach on 38048 (the actor holders' slot 1,
  * a thunk whose one instruction is a JMP to 32901) follows the jump, so this
@@ -1946,8 +2097,8 @@ void OnSendAnimationEventEnter(GumInvocationContext* ic)
   // docs/research/scripts-one-system-2026-11-05.md 6.7): an owned action
   // row's call (a script's PlayAnimation on a world object in a cell this
   // game hosts) is reported once, by the boundary (ScriptNatives.cpp's
-  // scriptCalls), so the event its body sends is left alone here, as an
-  // Override window's is; the leave below stands down on the same mark, so
+  // scriptCalls), so the event its body sends is left alone here, as a
+  // platform call's is; the leave below stands down on the same mark, so
   // the hook's enter and leave stay paired (Hook.cpp). HYPOTHESIS (6.7,
   // H-D1): the native's body reaches this entry synchronously on its own
   // thread, inside the mark's extent; a body that queued the event would
@@ -1955,8 +2106,8 @@ void OnSendAnimationEventEnter(GumInvocationContext* ic)
   if (ScriptNatives::InScriptAction()) {
     return;
   }
-  // the furniture branch (above), under Override or not: noted, never sent
-  // to the handlers
+  // the furniture branch (above), inside the platform's call or not: noted,
+  // never sent to the handlers
   if (g_furnitureAnimation.load(std::memory_order_relaxed)) {
     if (auto* furniture = FurnitureOf(ic->cpu_context->rcx)) {
       auto furnitureEvent =
@@ -1970,10 +2121,13 @@ void OnSendAnimationEventEnter(GumInvocationContext* ic)
       }
     }
   }
-  // the platform's own window: no handler is called (Hook.cpp's
-  // PushAndWait would wait on the waiting thread, the furniture branch's
-  // read 1)
-  if (Override::IsOverriden()) {
+  // inside the platform's own call on this thread (PlatformCall.h; thuum
+  // D-S0-14 B): no handler is called, since Hook.cpp's PushAndWait would
+  // wait on the JavaScript thread that waits on this call (the furniture
+  // branch's read 1; callNative's direct addItem and removeItem run on that
+  // thread itself). Another thread's event reaches the handlers as any
+  // engine event does, its leave paired by the same thread's mark
+  if (PlatformCall::Active()) {
     return;
   }
   auto refr = ic->cpu_context->rcx
@@ -2033,7 +2187,7 @@ void OnSendAnimationEventLeave(GumInvocationContext* ic)
     });
     return;
   }
-  if (Override::IsOverriden() || ScriptNatives::InScriptAction()) {
+  if (PlatformCall::Active() || ScriptNatives::InScriptAction()) {
     return;
   }
   bool res = !!gum_invocation_context_get_return_value(ic);
@@ -2082,8 +2236,9 @@ void OnPlayAnimationEnter(GumInvocationContext* ic)
   // (OnSendAnimationEventEnter's note, 6.7): a script's PlayAnimation and
   // PlayAnimationAndWait reach PlayAnimation_Impl from their bodies (the
   // note above; synchronously on their thread, the same HYPOTHESIS), so the
-  // pillar's Trigger02 crosses once, as the call
-  if (Override::IsOverriden() || ScriptNatives::InScriptAction()) {
+  // pillar's Trigger02 crosses once, as the call; inside the platform's own
+  // call on this thread, no handler (the graph hook's reason above)
+  if (PlatformCall::Active() || ScriptNatives::InScriptAction()) {
     return;
   }
   auto refr = reinterpret_cast<RE::TESObjectREFR*>(ic->cpu_context->rcx);
@@ -2102,7 +2257,7 @@ void OnPlayAnimationEnter(GumInvocationContext* ic)
 
 void OnPlayAnimationLeave(GumInvocationContext* ic)
 {
-  if (Override::IsOverriden() || ScriptNatives::InScriptAction()) {
+  if (PlatformCall::Active() || ScriptNatives::InScriptAction()) {
     return;
   }
   EventsApi::SendAnimationEventLeave(true);

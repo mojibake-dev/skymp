@@ -109,13 +109,13 @@ std::string Send(RE::TESObjectREFR* refr, std::string_view name,
 // scripts and relayed to its aliases with actionRef as the event's one
 // argument, akActionRef: Send's mechanism with CommonLibSSE-NG's
 // one-object FunctionArguments in place of the ZeroFunctionArguments, under
-// the platform's mark (callNative's Override passes it at the gate, before
-// the gate's presser rule reads any argument). A JSON object as a string:
-// { formId, event, sent, scripts (the attached scripts it was sent to),
-// reason }; refused for a name that is no trigger event, a None actionRef,
-// an actor trigger and a reference with no attached script. Since rung 5,
-// when the client's entry request (setActingPlayer with stage -3) names this
-// presser as the acting player's figure, the trigger's acting scope
+// the platform's mark (the gate's platform pass takes it on this thread,
+// before the gate's presser rule reads any argument). A JSON object as a
+// string: { formId, event, sent, scripts (the attached scripts it was sent
+// to), reason }; refused for a name that is no trigger event, a None
+// actionRef, an actor trigger and a reference with no attached script. Since
+// rung 5, when the client's entry request (setActingPlayer with stage -3)
+// names this presser as the acting player's figure, the trigger's acting scope
 // (ActingScope.h) is armed before the send, so the handler reads
 // Game.GetPlayer() as the figure; no other presser arms it.
 std::string SendTrigger(RE::TESObjectREFR* refr, std::string_view name,

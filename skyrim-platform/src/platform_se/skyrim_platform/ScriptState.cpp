@@ -1451,9 +1451,9 @@ bool TargetOf(RE::TESObjectREFR* refr, EventTarget& target, std::string& why)
 // fork's overlay patch 07 asks every caller (the implementation pointer sits
 // at 0x210 on 1.7.x; SendAndRelayEvent reads `impl` at 0x200), with the
 // caller's arguments on its own stack as the engine's own sinks pass theirs
-// (adr065 Q4; H-R10). Under the platform's mark: callNative's Override
-// passes the event at the gate (FridaHooks.cpp), and the pending blank
-// stands down inside a platform call
+// (adr065 Q4; H-R10). Under the platform's mark, raised here on this
+// thread: the gate's platform pass takes the event (FridaHooks.cpp, before
+// the pending blank, so the blank never meets the platform's resend)
 void SendAndRelay(const EventTarget& target, const char* name,
                   RE::BSScript::IFunctionArguments* args)
 {

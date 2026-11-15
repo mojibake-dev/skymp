@@ -44,16 +44,17 @@ import { logError, logLab, logTrace } from '../../logging';
 // The furniture (thuum docs/DECISIONS.md D-W1 and D-C2's lever item, H-P1;
 // docs/research/fifty-fixes-2026-11-07.md 1(d)): a FURN's own graph event
 // (the puzzle lever's Lever_PlayerPush, which the engine's NoPlayer branch
-// sends inside remoteServer's activate(player, true), under Override, where
-// the hook above never crosses) comes from the platform's furniture branch as
-// furnitureAnimation, whatever its name (the idle data picks it, so no
-// pattern), and is noted beside the hook's events. Its owner is its user
+// sends inside remoteServer's activate(player, true), under the platform's
+// mark on the worker, where the hook above never crosses) comes from the
+// platform's furniture branch as furnitureAnimation, whatever its name (the
+// idle data picks it, so no pattern), and is noted beside the hook's events. Its owner is its user
 // (ADR-063, a container's opener's rule): this seat while the server's
 // OpenContainer named it here (until this seat's closing activation or
 // USE_MS, or while the player's furniture is it), else the seat that hosts
 // its cell (an NPC's use); the server checks the recorded occupant's owner.
-// A relay's play here re-enters through the furniture branch (it notes under
-// Override too, unlike the hook above), and its self-played mark drops it.
+// A relay's play here re-enters through the furniture branch (it notes inside
+// the platform's call too, unlike the hook above), and its self-played mark
+// drops it.
 // A furniture's event is kept nowhere (a lever back at rest would push again
 // at every late join and every 3D load). The client setting
 // furnitureAnimation (on unless false) turns on the platform's branch
@@ -110,9 +111,11 @@ const sideOfRecord = (event: string): number | undefined => {
 // mark outlives remoteServer's five 2 s retries
 // one retry interval of remoteServer's record replay: a mark hides an engine
 // event equal to the marked one for this long and is consumed on its hit
-// (the review of 843fed95, F2: a TypeScript playAnimation runs under
-// CallNativeApi's Override, which the animation hooks return early under,
-// so no replay re-enters the hook; the marks only ever hid genuine reports,
+// (the review of 843fed95, F2: a TypeScript playAnimation runs under the
+// platform's mark on the thread that runs it, PlatformCall.h, which the
+// animation hooks return early under, so no replay re-enters the hook;
+// HYPOTHESIS: the graph's event is raised on that thread, inside the call;
+// the marks only ever hid genuine reports,
 // the host's first turn within 20 s of a pillar's CreateActor among them)
 const SELF_PLAYED_MS = 3_000;
 // thuum docs/DECISIONS.md ADR-068 rung 3 (the script record), its view past a
@@ -331,13 +334,13 @@ export class ObjectAnimationService extends ClientListener {
   // this seat owns is reported at the boundary now, as ScriptCall
   // (ScriptCallService, with this path's "reported" line): the platform's two
   // animation hooks return early inside a tabled action native's extent (the
-  // Call hook's "inside a script action" depth), as they do under Override,
-  // so that note never reaches the handlers above. What still reaches this
-  // path and goes out as ObjectAnimation: an event the engine drives itself
-  // (no script native on the stack), an untabled native's (no row in
-  // docs/NATIVES.md), and a script's call the platform judged not this seat's
-  // while HostService already hosts the cell (the update before SetCellHosted
-  // lands). H-D1 counts what is left; rung 7 retires this path if it is none
+  // Call hook's "inside a script action" depth), as they do inside the
+  // platform's own call, so that note never reaches the handlers above. What
+  // still reaches this path and goes out as ObjectAnimation: an event the
+  // engine drives itself (no script native on the stack), an untabled
+  // native's (no row in docs/NATIVES.md), and a script's call the platform
+  // judged not this seat's while HostService already hosts the cell (the
+  // update before SetCellHosted lands). H-D1 counts what is left; rung 7 retires this path if it is none
   private onUpdate() {
     if (this.noted.length === 0) {
       return;
@@ -972,8 +975,8 @@ export class ObjectAnimationService extends ClientListener {
   }
 
   // one variable on the reference's graph through the platform's own calls
-  // (CallNativeApi's Override: the seam tallies them "(platform)" and batches
-  // none, so nothing set here is reported back)
+  // (the platform's mark, PlatformCall.h: the seam tallies them "(platform)"
+  // and batches none, so nothing set here is reported back)
   private setOne(refr: ObjectReference, v: KeptVar): void {
     if (v.k === 5) {
       refr.setAnimationVariableBool(v.name, v.value === true);

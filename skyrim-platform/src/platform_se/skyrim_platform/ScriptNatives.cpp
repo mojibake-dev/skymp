@@ -494,9 +494,12 @@ std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
 
 // rung 5: the acting scope's swaps in the frames of natives the table does
 // not hold (a PlayerRef property is a 0x14 self on any native: the plan's
-// finding 5), and since train 53 its counted scene starts (V-scene), raised
-// at the flush as one row, "untabled native (acting)"
+// finding 5), raised at the flush as one row, "untabled native (acting)"
 std::atomic<std::uint32_t> g_actingUntabled{ 0 };
+// train 53's V-scene: the scene starts counted inside a relayed scope (run
+// until ADR-073 step 5a's scene claim), raised at the flush as their own
+// row, so the acting row counts swaps alone (its review's contracts-6)
+std::atomic<std::uint32_t> g_sceneCounted{ 0 };
 
 // an everyone row's selves in one window, the flip's bound (kSelvesPerRow)
 // on fixed slots: a slot's key is kSlotUsed | the self's form id, 0 while
@@ -1980,6 +1983,16 @@ std::uint32_t RootSubjectOf(const RE::BSScript::Stack* stack)
   return SubjectOfFrame(RootFrameOf(stack));
 }
 
+// a scope as the lines name it: its acting player's, or a relay's that names
+// none (setRelayedScope's, ActingScope::Swaps false), never "acting player
+// 0" (train 53's review, contracts-6)
+std::string ScopeText(const ActingScope::Scope& scope)
+{
+  return ActingScope::Swaps(scope)
+    ? fmt::format("acting player {:x}'s scope", scope.player.serverId)
+    : std::string("a relay's scope with no acting player");
+}
+
 // step (0)'s scope: the stack's own once it joined one (kept for its life,
 // ActingScope::kJoinedMs), else, inside an armed window, the arm's for the
 // stack's root subject, joined at this call. Asked for every native the game
@@ -2017,9 +2030,9 @@ std::optional<ActingScope::Scope> ScopeOfCall(
     return std::nullopt;
   }
   if (ActingScope::LineDue(joined->scope.seq, ActingScope::Line::kJoin)) {
-    logger::info("[verb:quests] stack {} rooted at {:x} joined acting "
-                 "player {:x}'s scope ({} stack(s) joined by its arm)",
-                 stack->stackID, root, joined->scope.player.serverId,
+    logger::info("[verb:quests] stack {} rooted at {:x} joined {} ({} "
+                 "stack(s) joined by its arm)",
+                 stack->stackID, root, ScopeText(joined->scope),
                  joined->joins);
   }
   return joined->scope;
@@ -2115,12 +2128,11 @@ void LogRelayedSceneStart(const RE::BSScript::IFunction* fn,
   std::string caller;
   std::string handler;
   NameCaller(top->previousFrame, caller, handler);
-  logger::info("[verb:quests] {}.{} on {:x} from {}.{}: run inside acting "
-               "player {:x}'s relayed scope, stack {}; the skip (ADR-073 "
-               "D-A2 C) waits on step 5a's scene claim, the puppet rule "
-               "decides until then",
+  logger::info("[verb:quests] {}.{} on {:x} from {}.{}: run inside {}, "
+               "rooted at a relay, stack {}; the skip (ADR-073 D-A2 C) waits "
+               "on step 5a's scene claim, the puppet rule decides until then",
                fn->GetObjectTypeName().c_str(), fn->GetName().c_str(), scene,
-               caller, handler, scope.player.serverId, stack->stackID);
+               caller, handler, ScopeText(scope), stack->stackID);
 }
 
 // a request's stage or word as the lines name it
@@ -2184,11 +2196,10 @@ void PropagateScope(std::size_t row, const RowInfo& info,
     ActingScope::Arm(quest, scope.player, ActingScope::kArmMs, scope.root);
   }
   if (ActingScope::LineDue(scope.seq, ActingScope::Line::kChain)) {
-    logger::info("[verb:quests] {}.{} on {:x} ({}) inside acting player "
-                 "{:x}'s scope, stack {}: the scope requested for it "
-                 "(chained)",
+    logger::info("[verb:quests] {}.{} on {:x} ({}) inside {}, stack {}: the "
+                 "scope requested for it (chained)",
                  kRows[row].cls, kRows[row].fn, quest, StageText(stage),
-                 scope.player.serverId, stack->stackID);
+                 ScopeText(scope), stack->stackID);
   }
 }
 
@@ -2465,8 +2476,8 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // Until ADR-073 step 5a's scene claim (D-L2 B) gives the cause seat the
   // scene's actors, the call runs here and PuppetService's rule decides:
   // the host plays it, a puppet seat's copy is stopped and its end
-  // fragment's stage held (82b209da); the would-be skip is counted on the
-  // untabled row and said (LogRelayedSceneStart). Scene.Start is untabled,
+  // fragment's stage held (82b209da); the would-be skip is counted on its
+  // own census row and said (LogRelayedSceneStart). Scene.Start is untabled,
   // so returning here equals falling through (train 53's review,
   // correctness-1: the skip ships with the claim, rule 3).
   // HYPOTHESIS H-VS1: a relayed fragment's Scene.Start runs on the stack its
@@ -2474,7 +2485,7 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // the guest logs this line for scene 5dba7
   if (scope && !marks.skip && scope->root == ActingScope::RootKind::kRelayed &&
       IsSceneStart(fn)) {
-    g_actingUntabled.fetch_add(1, std::memory_order_relaxed);
+    g_sceneCounted.fetch_add(1, std::memory_order_relaxed);
     LogRelayedSceneStart(fn, stack, *scope);
     return marks;
   }
@@ -3069,6 +3080,13 @@ void FlushCensus(uint64_t now)
     rows.emplace_back("untabled native (acting)", untabled);
     total += untabled;
   }
+  // V-scene's would-be skips, run until step 5a's scene claim
+  if (const uint32_t scenes = g_sceneCounted.exchange(0)) {
+    rows.emplace_back("scene start in a relayed scope (V-scene, run until "
+                      "step 5a)",
+                      scenes);
+    total += scenes;
+  }
   const uint32_t misses = g_handleMisses.exchange(0);
   if (misses != 0) {
     logger::warn("[verb:scripts] {} plain-form handle(s) in {} s disagreed "
@@ -3494,10 +3512,10 @@ void ScriptNatives::InstallHooks()
       }
     }
     if (g_sceneStarts[i]) {
-      logger::info("[verb:quests] {}.{} bound: inside another player's "
-                   "acting scope rooted at a relay its call is counted and "
-                   "run until step 5a's scene claim; a trigger entry's root "
-                   "runs it uncounted (ADR-073 D-A2 C)",
+      logger::info("[verb:quests] {}.{} bound: inside a scope rooted at a "
+                   "relay its call is counted and run until step 5a's scene "
+                   "claim; a trigger entry's root runs it uncounted (ADR-073 "
+                   "D-A2 C)",
                    sceneCls, sceneFn);
     } else {
       logger::warn("[verb:quests] {}.{} is not among the game module's "

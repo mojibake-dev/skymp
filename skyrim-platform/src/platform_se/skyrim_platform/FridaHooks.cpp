@@ -3229,11 +3229,17 @@ RE::BSEventNotifyControl QuestStageSinkReplacement(
       // relayed from another seat, its parent's for a chained one (V-scene)
       ActingScope::Arm(event->formID, taken->player, ActingScope::kArmMs,
                        taken->root);
-      logger::info("[verb:quest-stage] fragment of {:x} stage {} runs for "
-                   "acting player {:x} ({})",
-                   event->formID, event->stage, taken->player.serverId,
-                   taken->origin == ActingScope::Origin::kChained ? "chained"
-                                                                  : "relayed");
+      // a relay's scope with no acting player (setRelayedScope's) named as
+      // such, never "acting player 0" (train 53's review, contracts-6)
+      logger::info(
+        "[verb:quest-stage] fragment of {:x} stage {} runs for "
+        "{} ({})",
+        event->formID, event->stage,
+        taken->player.serverId != 0
+          ? fmt::format("acting player {:x}", taken->player.serverId)
+          : std::string("no acting player"),
+        taken->origin == ActingScope::Origin::kChained ? "chained"
+                                                       : "relayed");
     }
     // thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): the stage's verdict (its
     // setter's mark, the start or stop it rides, or none: a stage the engine

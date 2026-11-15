@@ -1,4 +1,4 @@
-import { FormType, FurnitureAnimationEvent, ObjectReference, Utility } from 'skyrimPlatform';
+import { EffectShader, FormType, FurnitureAnimationEvent, ObjectReference, TextureSet, Utility, VisualEffect } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { ConnectionMessage } from '../events/connectionMessage';
 import { ObjectAnimationMessage } from '../messages/objectAnimationMessage';
@@ -258,6 +258,7 @@ const LOOK_SUMMARY_MS = 30_000;
 // (bounded by construction: the outcomes, the drop reasons and the rows'
 // fall-throughs; the bound a guard)
 type LookOutcome = 'played' | 'held' | 'replayed' | 'expired' | 'stopped' | 'dropped' | 'through';
+const noLookCounts = (): Record<LookOutcome, number> => ({ played: 0, held: 0, replayed: 0, expired: 0, stopped: 0, dropped: 0, through: 0 });
 const LOOK_SAID_MAX = 64;
 const lookKey = (kind: LookKind, form: number): string => (kind === 'eyes' ? 'eyes' : `${kind}:${form}`);
 // a kept look's seconds left at `now`: -1 for none (until its Stop), 0 once
@@ -317,8 +318,9 @@ export class ObjectAnimationService extends ClientListener {
       this.lastAnimations.clear();
       this.subscribed.clear();
       this.subscribedIdx.clear();
-      // the looks' first lines are each connection's
+      // the looks' first lines and their counts are each connection's
       this.lookSaid.clear();
+      this.lookCounts = noLookCounts();
     });
     // the server's unsubscribe (DestroyActor, the create word's emitter idx,
     // PartOne.cpp's onSubscribe and onUnsubscribe) ends the reference's
@@ -1152,11 +1154,21 @@ export class ObjectAnimationService extends ClientListener {
   // and counted: the keep off (scriptRecord false, the kept animations'
   // switch), no reference or no form here, no create word for the subject
   // (a relay is kept for a subscribed reference alone, play's rule), or a
-  // subject this seat owns (its own engine draws its looks). An update's
-  // context
+  // subject this seat owns (its own engine draws its looks). A Stop, and
+  // SetEyeTexture(None), clears what it names first, whichever way the
+  // snippet then goes, so no kept Play outlives its Stop (the review of
+  // eaa6ba47, finding 3: a Stop that fell through for its form not loaded
+  // yet, a subscription table just cleared or a subject owned here left its
+  // Play to the next 3D load). An update's context
   look(l: RelayedLook): boolean {
     const localId = snippetIdToLocalId(l.subject);
     const refr = localId !== 0 ? ObjectReference.from(this.sp.Game.getFormEx(localId)) : null;
+    const key = lookKey(l.kind, l.form);
+    const kept = this.lastAnimations.get(localId);
+    const had = (l.stop || l.form === 0) && kept !== undefined && kept.looks.delete(key);
+    if (kept !== undefined && this.holdsNothing(kept)) {
+      this.lastAnimations.delete(localId);
+    }
     if (!this.keepEnabled || !refr || !this.subscribed.has(localId)) {
       const why = !this.keepEnabled ? 'scriptRecord off' : !refr ? 'no reference here' : 'no create word for it';
       this.lookFallsThrough(l.row, localId || l.subject, why);
@@ -1167,19 +1179,16 @@ export class ObjectAnimationService extends ClientListener {
       this.lookFallsThrough(l.row, localId, 'its subject owned here');
       return false;
     }
-    const key = lookKey(l.kind, l.form);
-    const kept = this.lastAnimations.get(localId);
-    const had = l.stop || l.form === 0 ? kept !== undefined && kept.looks.delete(key) : false;
-    if (kept !== undefined && this.holdsNothing(kept)) {
-      this.lastAnimations.delete(localId);
-    }
     // SetEyeTexture(None): what the engine makes of it is unread, so it runs
     // as it always has and the eye texture kept before it goes
     if (l.form === 0) {
       this.lookFallsThrough(l.row, localId, `None${had ? ', its kept texture cleared' : ''}`);
       return false;
     }
-    if (this.sp.Game.getFormEx(snippetIdToLocalId(l.form)) === null) {
+    // the form as its kind's type (the review's finding 6): one that is here
+    // but no TextureSet, EffectShader or VisualEffect as the row needs runs
+    // as it always has, never said "played" and kept
+    if (this.lookForm(l.kind, l.form) === null) {
       this.lookFallsThrough(l.row, localId, 'its form not here');
       return false;
     }
@@ -1346,17 +1355,29 @@ export class ObjectAnimationService extends ClientListener {
     }
   }
 
+  // a look's form as its kind's type, the TextureSet, the EffectShader or
+  // the VisualEffect showLook plays; null for one not here or of another
+  // type
+  private lookForm(kind: LookKind, form: number): TextureSet | EffectShader | VisualEffect | null {
+    const f = this.sp.Game.getFormEx(snippetIdToLocalId(form));
+    return kind === 'eyes' ? this.sp.TextureSet.from(f) : kind === 'shader' ? this.sp.EffectShader.from(f) : this.sp.VisualEffect.from(f);
+  }
+
   // pollOne's, at a 3D load that has not had the kept looks: each played
   // again, a timed one for its seconds left (expireLooks took those run out
   // just before); every one dropped once this seat owns the subject (a
   // hand-off: its own engine draws them now); none on a copy that cannot
-  // draw one (asked again at the next look). The update's context
+  // draw one, which waits REAPPLY_WAIT_MS for its next look and pays no
+  // owner test meanwhile (the review of eaa6ba47, finding 5: ownsHere's
+  // actor test walks the world model, HostService.isMineLocal). The update's
+  // context
   private replayLooks(refr: ObjectReference, id: number, kept: LastAnimation, now: number): void {
-    if (this.ownsHere(refr, id, kept.actor)) {
-      this.dropOwnedLooks(id, kept);
+    if (!this.drawable(refr)) {
+      kept.lookAt = now + REAPPLY_WAIT_MS;
       return;
     }
-    if (!this.drawable(refr)) {
+    if (this.ownsHere(refr, id, kept.actor)) {
+      this.dropOwnedLooks(id, kept);
       return;
     }
     kept.looksShown = true;
@@ -1409,7 +1430,10 @@ export class ObjectAnimationService extends ClientListener {
   }
 
   // the window's counts, said once a window when any moved (the second line
-  // only for drops and fall-throughs), short of printConsole's 128-byte cut
+  // only for drops and fall-throughs), short of printConsole's 128-byte cut;
+  // a line names only the counts that moved (the review of eaa6ba47, finding
+  // 4: a window with nothing replayed said "0 replayed at load", which a
+  // probe's "replayed at load" matched)
   private sayLookCounts(now: number): void {
     if (now - this.lookSummaryAt < LOOK_SUMMARY_MS) {
       return;
@@ -1417,19 +1441,16 @@ export class ObjectAnimationService extends ClientListener {
     this.lookSummaryAt = now;
     const c = this.lookCounts;
     const s = LOOK_SUMMARY_MS / 1000;
-    if (c.played + c.held + c.replayed + c.expired + c.stopped > 0) {
-      logLab('verb:scripts', `looks in ${s} s: ${c.played} played, ${c.held} held for 3D, ${c.replayed} replayed at load, ${c.expired} dropped as expired, ${c.stopped} stopped`);
+    const moved = (terms: [number, string][]): string => terms.filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`).join(', ');
+    const shown = moved([[c.played, 'played'], [c.held, 'held for 3D'], [c.replayed, 'replayed at load'], [c.expired, 'dropped as expired'], [c.stopped, 'stopped']]);
+    if (shown !== '') {
+      logLab('verb:scripts', `looks in ${s} s: ${shown}`);
     }
-    if (c.dropped + c.through > 0) {
-      logLab('verb:scripts', `looks in ${s} s: ${c.dropped} dropped, ${c.through} fell through the 3D keep (run as always)`);
+    const gone = moved([[c.dropped, 'dropped'], [c.through, 'fell through the 3D keep (run as always)']]);
+    if (gone !== '') {
+      logLab('verb:scripts', `looks in ${s} s: ${gone}`);
     }
-    c.played = 0;
-    c.held = 0;
-    c.replayed = 0;
-    c.expired = 0;
-    c.stopped = 0;
-    c.dropped = 0;
-    c.through = 0;
+    this.lookCounts = noLookCounts();
   }
 
   // a world object whose last animation is kept and re-applied here: never an
@@ -1496,7 +1517,8 @@ export class ObjectAnimationService extends ClientListener {
       try {
         this.pollOne(id, kept, now, flips);
       } catch (e) {
-        this.lastAnimations.delete(id);
+        // its looks counted as they go (the review of eaa6ba47, finding 7)
+        this.forgetEntry(id, 'its 3D poll threw');
         logError(this, `object animation ${id.toString(16)}: its 3D poll threw, its last animation dropped: ${e}`);
       }
     }
@@ -1634,7 +1656,7 @@ export class ObjectAnimationService extends ClientListener {
   // the 3D keep's lines: each kind's first said (this connection's), the
   // window's counts, when the window began
   private lookSaid = new Set<string>();
-  private lookCounts: Record<LookOutcome, number> = { played: 0, held: 0, replayed: 0, expired: 0, stopped: 0, dropped: 0, through: 0 };
+  private lookCounts: Record<LookOutcome, number> = noLookCounts();
   private lookSummaryAt = 0;
   private subscribed = new Set<number>();
   // the create word's emitter idx for each subscribed reference, so its

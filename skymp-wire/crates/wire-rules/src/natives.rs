@@ -593,8 +593,17 @@ pub fn index_slot(hash: u64) -> usize {
 /// wrote (b-puzzle-relay and its kin claim it), until rung 7 retires
 /// lastAnimation. Content-specific code (thuum ADR-073 decision 5): a
 /// stopgap (decision 5 (c)), replaced by rung 7's script record carrying the
-/// graph's own state; deletes with lastAnimation at rung 7.
+/// graph's own state; deletes with lastAnimation at rung 7. The client reads
+/// it through natives-gen's NATIVE_GRAPH_EVENT_RELAYS, never a copy
+/// ([`relays_graph_event`]).
 const GRAPH_EVENT_RELAYS: [(&str, &str); 2] = [("ObjectReference", "PlayAnimation"), ("Debug", "SendAnimationEvent")];
+
+/// Whether a relay of `cls`.`func` sends a behavior graph event
+/// ([`GRAPH_EVENT_RELAYS`]); names compare without case.
+#[must_use]
+pub fn relays_graph_event(cls: &str, func: &str) -> bool {
+    GRAPH_EVENT_RELAYS.iter().any(|(c, f)| c.eq_ignore_ascii_case(cls) && f.eq_ignore_ascii_case(func))
+}
 
 /// The most arguments a relay carries: a game native takes at most eleven
 /// (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15, "native supports max
@@ -676,7 +685,7 @@ impl Row {
     #[must_use]
     pub fn graph_event_arg(&self) -> Option<u8> {
         let (cls, func) = self.relay_target()?;
-        if !GRAPH_EVENT_RELAYS.iter().any(|(c, f)| c.eq_ignore_ascii_case(cls) && f.eq_ignore_ascii_case(func)) {
+        if !relays_graph_event(cls, func) {
             return None;
         }
         self.params.iter().position(|p| *p == Param::String).and_then(|i| u8::try_from(i).ok())

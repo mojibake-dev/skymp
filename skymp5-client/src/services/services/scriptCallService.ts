@@ -1,5 +1,5 @@
 import { ScriptCall, ScriptCallsEvent, ScriptCensusEvent } from "skyrimPlatform";
-import { NATIVE_RECORD_FAMILIES } from "../../lib/nativeRows.generated";
+import { NATIVE_ARG0_SUBJECTS, NATIVE_EVIDENCE, NATIVE_GRAPH_EVENT_RELAYS, NATIVE_HOOKS, NATIVE_RECORD_FAMILIES } from "../../lib/nativeRows.generated";
 import { logError, logLab, logTrace } from "../../logging";
 import { MsgType } from "../../messages";
 import { ScriptCallMessage } from "../messages/scriptCallMessage";
@@ -164,20 +164,25 @@ export class ScriptCallService extends ClientListener {
                 const from = call.caller || call.handler ? ` from ${call.caller}.${call.handler}` : "";
                 logLab("verb:scripts", `native ${name} on ${call.self.toString(16)} ${call.kind}${call.latent ? " latent" : ""}: ${args}${from}`);
             }
-            if (call.cls === "Actor" && (call.fn === "Kill" || call.fn === "KillSilent")) {
+            // the batch's readers by the generated table's hook and keep
+            // columns (thuum ADR-073 step 4's review, SHOULD 6), never by a
+            // native's spelling: a row the overlay gives a hook reaches its
+            // reader with no change here
+            const hook = ScriptCallService.hookOf(name);
+            if (hook === "death-report") {
                 if (this.kills.size >= 64) {
                     this.kills.clear();
                 }
                 const killer = call.args[0];
                 this.kills.set(call.self, { at: Date.now(), killer: killer !== null && typeof killer === "object" ? killer.formId : 0 });
             }
-            if (call.cls === "ObjectReference" && call.fn === "SetDestroyed") {
+            if (hook === "trap-destroyed") {
                 this.controller.lookupListener(TrapResultService).noteSetDestroyed(call.self, call.args[0] === true);
             }
-            if (call.cls === "ObjectReference" && (call.fn === "SetMotionType" || call.fn === "ApplyHavokImpulse")) {
+            if (hook === "trap-motion" || hook === "trap-impulse") {
                 this.controller.lookupListener(PropService).noteTrapMotion(call.self, call.fn, call.args);
             }
-            if (call.cls === "ObjectReference" && call.fn === "ProcessTrapHit") {
+            if (NATIVE_EVIDENCE.includes(name)) {
                 this.noteTrapHit(call);
             }
             // a state row's record, and since ADR-073 step 4's S6 an everyone
@@ -188,15 +193,15 @@ export class ScriptCallService extends ClientListener {
                     this.noteRecord(call, family);
                 }
             }
-            if (call.kind === "everyone" && call.cls === "ReferenceAlias" && (call.fn === "ForceRefTo" || call.fn === "Clear")) {
+            if (call.kind === "everyone" && hook === "alias-fill") {
                 this.controller.lookupListener(AliasFillService).noteFill(call);
             }
             if (call.kind === "action") {
                 this.queue({ call, record: false, key: undefined, dropped: false });
                 // the hooks never see an owned call's animation (the seam's
                 // mark), so a pillar's side is noted from the call itself
-                const event = call.args[0];
-                if (ScriptCallService.isAnimationRow(call) && typeof event === "string") {
+                const event = ScriptCallService.graphEventOf(call);
+                if (event !== undefined) {
                     this.controller.lookupListener(ObjectAnimationService).noteScriptSide(call.self, event);
                 }
             }
@@ -217,7 +222,7 @@ export class ScriptCallService extends ClientListener {
     // HostService holds for the subject's cell) for the server to judge by
     // the firing's facts (the cell's host, or a game with the cell loaded and
     // an actor in reach) and play on the subject's other listeners, kept
-    // nowhere. The motion rows reached PropService above by their names, whose
+    // nowhere. The motion rows reached PropService above by their hooks, whose
     // trigger rule makes no body and no claim of a trigger (the 48 rule,
     // unchanged); a trigger is no pillar, so no side is noted. JS state alone.
     // D-W2's detection row (the platform's P3): the trigger script's
@@ -521,8 +526,8 @@ export class ScriptCallService extends ClientListener {
         // ObjectAnimationService's report line, byte for byte, for an
         // animation row on a world object (an actor's animation is the
         // stream's): its own report path stays for the engine-driven family
-        const event = call.args[0];
-        if (ScriptCallService.isAnimationRow(call) && typeof event === "string" && refr && !this.sp.Actor.from(refr)) {
+        const event = ScriptCallService.graphEventOf(call);
+        if (event !== undefined && refr && !this.sp.Actor.from(refr)) {
             logTrace(this, `object animation ${call.self.toString(16)} ${event} reported`);
         }
         return true;
@@ -554,20 +559,35 @@ export class ScriptCallService extends ClientListener {
         return { formId, type };
     }
 
-    // a call's subject: its self, but Sound.Play's source in its first
-    // argument (D-W2's look row whose self is the Sound)
+    // a call's subject: its self, but a method's first argument where its
+    // row's subject is that argument (the generated table's subject column,
+    // NATIVE_ARG0_SUBJECTS: Sound.Play's source, D-W2's look row whose self is
+    // the Sound)
     private static subjectOf(call: ScriptCall): number {
-        if (call.cls === "Sound" && call.fn === "Play") {
+        if (NATIVE_ARG0_SUBJECTS.includes(`${call.cls}.${call.fn}`)) {
             const first = call.args[0];
             return first !== null && typeof first === "object" ? first.formId : 0;
         }
         return call.self;
     }
 
-    // the table's animation rows (docs/NATIVES.md): PlayAnimationAndWait is
-    // relayed as its twin PlayAnimation, the event its first argument
-    private static isAnimationRow(call: ScriptCall): boolean {
-        return call.cls === "ObjectReference" && (call.fn === "PlayAnimation" || call.fn === "PlayAnimationAndWait");
+    // a row's hook code (the generated table's hook column, wire-rules
+    // natives.rs Hook::name), undefined for a row with none
+    private static hookOf(native: string): string | undefined {
+        return Object.prototype.hasOwnProperty.call(NATIVE_HOOKS, native) ? NATIVE_HOOKS[native] : undefined;
+    }
+
+    // the call's behavior graph event when its row's relay sends one on its
+    // own self (the generated table's NATIVE_GRAPH_EVENT_RELAYS, the event's
+    // argument by its row's first string parameter: PlayAnimationAndWait is
+    // relayed as its twin PlayAnimation); undefined otherwise
+    private static graphEventOf(call: ScriptCall): string | undefined {
+        const native = `${call.cls}.${call.fn}`;
+        if (!Object.prototype.hasOwnProperty.call(NATIVE_GRAPH_EVENT_RELAYS, native)) {
+            return undefined;
+        }
+        const event = call.args[NATIVE_GRAPH_EVENT_RELAYS[native]];
+        return typeof event === "string" ? event : undefined;
     }
 
     // an argument as a census-side line shows it: a form by its id in hex,

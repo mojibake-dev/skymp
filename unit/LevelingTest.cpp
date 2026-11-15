@@ -1,11 +1,16 @@
 #include "ActionListener.h"
 #include "ActorValuesMessage.h"
 #include "ConsoleCommandMessage.h"
+#include "MpObjectReference.h"
 #include "MsgType.h"
 #include "OnEquipMessage.h"
 #include "TestUtils.hpp"
+#include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <cmath>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 
 PartOne& GetPartOne();
 
@@ -307,6 +312,256 @@ TEST_CASE("A skill book read takes its skill one level and the base, carries "
   REQUIRE(record->skills[0].level == 16.f);
   REQUIRE(!ac.IsBookRead(kOneHandedBook2));
   REQUIRE(RecordsTo(p, 0).empty());
+
+  Leave(p, kActor);
+}
+
+// thuum docs/verbs/books.md, S2 (fork m4-book-read 2255e2d4's merge
+// condition): a player's activation of a world book that teaches no spell is
+// answered with the open (BookActivationTest), and the open reads the book as
+// the engine reads it at its Book Menu's open (TESObjectBOOK::Read at
+// BookMenu::OpenBookMenu's end, docs/verbs/leveling.md, HYPOTHESIS): the
+// inventory read's skill branch (ReadBookEvent), once a book a character
+// (readBooks), its record held for the open's end (the close or the Take),
+// since the reader's engine raises the skill itself after the open reply.
+// The game files as lab/esm.py reads Skyrim.esm (2026-11-14 PST):
+// DawnstarBrinasHouse 0x13a87 holds REFR 0x10859a of BOOK 0x1afe3
+// SkillOneHanded1 (DATA flags 0x01 TeachesSkill, teaches 6) at (-1203.2,
+// -450.8, 11.2), beside PeltFloor01 0x0e0463 at (-1095.4, -618.1, 0.5);
+// MorthalMoorsideInn 0x138ce holds REFR 0x10544d of BOOK 0xed63f
+// Book2CommonWatcherofStones (DATA flags 0x00) at (943.6, -723.3, 74.6),
+// beside PeltFloor02 0x0e00f0 at (1061, -721, 1) (BookActivationTest's).
+namespace {
+constexpr uint32_t kBrinasHouse = 0x13a87;
+constexpr uint32_t kWorldOneHandedBook = 0x10859a; // base kOneHandedBook
+constexpr uint32_t kInn = 0x138ce;
+constexpr uint32_t kWatcher = 0x10544d;
+constexpr uint32_t kWatcherBase = 0xed63f;
+// on the pelts, about 200 units from the skill book, and on the inn's rug,
+// 116 to 140 from its books: inside the activation reach
+const NiPoint3 kByTheSkillBook{ -1095.f, -618.f, 0.f };
+const NiPoint3 kOnTheInnRug{ 1060.f, -722.f, 0.f };
+
+// the player (user 0, kActor) in `cell` at `at`, its bag empty
+MpActor& ReaderIn(PartOne& p, uint32_t cell, const NiPoint3& at)
+{
+  DoConnect(p, 0);
+  p.CreateActor(kActor, at, 0, cell);
+  p.SetUserActor(0, kActor);
+  auto& actor = p.worldState.GetFormAt<MpActor>(kActor);
+  actor.RemoveAllItems();
+  p.Tick(); // RemoveAllItems' deferred SetInventory
+  p.Messages().clear();
+  return actor;
+}
+
+// the player's own activation of `target`, as its game sends it: the open
+// or the Take (`close` false), the Book Menu's close (`close` true)
+void ActivateBook(PartOne& p, uint32_t target, bool close = false)
+{
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::Activate },
+                            { "data",
+                              { { "caster", 0x14 },
+                                { "target", target },
+                                { "isSecondActivation", close } } } });
+  p.Tick(); // the deferred inventory
+}
+
+size_t OpensSent(PartOne& p, uint32_t target)
+{
+  return std::count_if(
+    p.Messages().begin(), p.Messages().end(), [&](PartOne::Message& m) {
+      return m.userId == 0 && m.j.is_object() && m.j.contains("t") &&
+        m.j["t"] == static_cast<int>(MsgType::OpenContainer) &&
+        m.j.contains("target") && m.j["target"] == target;
+    });
+}
+
+// the default logger's lines at info and above while the guard lives
+// (PropTest's shape), restored at its end
+struct LogCapture
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  LogCapture()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger = std::make_shared<spdlog::logger>("leveling-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~LogCapture() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (size_t at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
+
+const std::string kRaisedAtOpen =
+  "[verb:leveling] ff000fd1 reads skill book 1afe3: skill 6 one level up; "
+  "the record goes to its game at its open's end";
+const std::string kAgainAtOpen =
+  "[verb:leveling] ff000fd1 reads skill book 1afe3 again (skill 6): read "
+  "before, nothing; the record goes back to its game at its open's end";
+const std::string kRecordAtEnd = "[verb:books] ff000fd1 ends its open of "
+                                 "book 10859a: the skill book's record goes "
+                                 "to its game";
+}
+
+TEST_CASE("A world skill book's open raises its skill once, the record going "
+          "to the player's game at the menu's close; a second open raises "
+          "nothing and sends the record again at its close",
+          "[Leveling][Books][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& book = p.worldState.GetFormAt<MpObjectReference>(kWorldOneHandedBook);
+  REQUIRE(book.GetBaseId() == kOneHandedBook);
+  auto& ac = ReaderIn(p, kBrinasHouse, kByTheSkillBook);
+  FirstReport(p);
+  p.SetLevelingEnabled(true);
+  p.Messages().clear();
+  LogCapture log;
+
+  // the open: the skill one level up on the server, the book read, the
+  // record held (its engine raises the skill after this reply)
+  ActivateBook(p, kWorldOneHandedBook);
+  REQUIRE(OpensSent(p, kWorldOneHandedBook) == 1);
+  REQUIRE(ac.GetOpenBook() == kWorldOneHandedBook);
+  auto record = ac.GetActorValueRecord();
+  REQUIRE(record.has_value());
+  REQUIRE(record->skills.size() == 1);
+  REQUIRE(record->skills[0].level == 16.f);
+  REQUIRE(record->skills[0].xp == Catch::Approx(0.f).margin(0.001));
+  REQUIRE(record->bases ==
+          std::vector<std::pair<uint8_t, float>>{ { kOneHanded, 16.f } });
+  REQUIRE(record->level == 1);
+  REQUIRE(record->xp == Catch::Approx(16.f));
+  REQUIRE(ac.IsBookRead(kOneHandedBook));
+  REQUIRE(RecordsTo(p, 0).empty());
+  REQUIRE(log.Count(kRaisedAtOpen) == 1);
+  REQUIRE(log.Count(kRecordAtEnd) == 0);
+  // nothing taken
+  REQUIRE(!book.IsHarvested());
+  REQUIRE(ac.GetInventory().GetItemCount(kOneHandedBook) == 0);
+
+  // the close: the record goes, the server's 16
+  p.Messages().clear();
+  ActivateBook(p, kWorldOneHandedBook, true);
+  REQUIRE(ac.GetOpenBook() == 0);
+  auto sent = RecordsTo(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0].bases.size() == 1);
+  REQUIRE(sent[0].bases[0].base == 16.f);
+  REQUIRE(sent[0].skills.size() == 1);
+  REQUIRE(sent[0].skills[0].level == 16.f);
+  REQUIRE(log.Count(kRecordAtEnd) == 1);
+
+  // the second open: read before, nothing moves, the record held again
+  p.Messages().clear();
+  ActivateBook(p, kWorldOneHandedBook);
+  REQUIRE(OpensSent(p, kWorldOneHandedBook) == 1);
+  record = ac.GetActorValueRecord();
+  REQUIRE(record->skills[0].level == 16.f);
+  REQUIRE(record->xp == Catch::Approx(16.f));
+  REQUIRE(RecordsTo(p, 0).empty());
+  REQUIRE(log.Count(kRaisedAtOpen) == 1);
+  REQUIRE(log.Count(kAgainAtOpen) == 1);
+
+  // its close: the record again (a seat whose engine raised the skill once
+  // more goes back to 16), still 16
+  p.Messages().clear();
+  ActivateBook(p, kWorldOneHandedBook, true);
+  sent = RecordsTo(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0].skills[0].level == 16.f);
+  REQUIRE(log.Count(kRecordAtEnd) == 2);
+  REQUIRE(ac.GetChangeForm().readBooks.GetReadBooks() ==
+          std::vector<uint32_t>{ kOneHandedBook });
+
+  Leave(p, kActor);
+}
+
+TEST_CASE("A skill book read from the inventory raises nothing when a world "
+          "copy of it is opened; the copy's Take sends the record and takes "
+          "the book",
+          "[Leveling][Books][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& book = p.worldState.GetFormAt<MpObjectReference>(kWorldOneHandedBook);
+  auto& ac = ReaderIn(p, kBrinasHouse, kByTheSkillBook);
+  FirstReport(p);
+  p.SetLevelingEnabled(true);
+  ac.AddItem(kOneHandedBook, 1);
+  Read(p, kOneHandedBook);
+  REQUIRE(ac.IsBookRead(kOneHandedBook));
+  REQUIRE(ac.GetActorValueRecord()->skills[0].level == 16.f);
+  p.Messages().clear();
+  LogCapture log;
+
+  ActivateBook(p, kWorldOneHandedBook);
+  REQUIRE(OpensSent(p, kWorldOneHandedBook) == 1);
+  auto record = ac.GetActorValueRecord();
+  REQUIRE(record->skills[0].level == 16.f);
+  REQUIRE(record->xp == Catch::Approx(16.f));
+  REQUIRE(RecordsTo(p, 0).empty());
+  REQUIRE(log.Count(kAgainAtOpen) == 1);
+  REQUIRE(log.Count(kRaisedAtOpen) == 0);
+
+  // the Take: the record at the open's end, the book into the bag
+  p.Messages().clear();
+  ActivateBook(p, kWorldOneHandedBook);
+  REQUIRE(OpensSent(p, kWorldOneHandedBook) == 0);
+  const auto sent = RecordsTo(p, 0);
+  REQUIRE(sent.size() == 1);
+  REQUIRE(sent[0].skills[0].level == 16.f);
+  REQUIRE(log.Count(kRecordAtEnd) == 1);
+  REQUIRE(book.IsHarvested());
+  REQUIRE(ac.GetInventory().GetItemCount(kOneHandedBook) == 2);
+  REQUIRE(ac.GetOpenBook() == 0);
+  REQUIRE(ac.GetActorValueRecord()->skills[0].level == 16.f);
+
+  Leave(p, kActor);
+}
+
+TEST_CASE("A world book that teaches no skill raises nothing at its open and "
+          "sends no record at its close",
+          "[Leveling][Books][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& book = p.worldState.GetFormAt<MpObjectReference>(kWatcher);
+  REQUIRE(book.GetBaseId() == kWatcherBase);
+  auto& ac = ReaderIn(p, kInn, kOnTheInnRug);
+  FirstReport(p);
+  p.SetLevelingEnabled(true);
+  p.Messages().clear();
+  LogCapture log;
+
+  ActivateBook(p, kWatcher);
+  REQUIRE(OpensSent(p, kWatcher) == 1);
+  REQUIRE(ac.GetOpenBook() == kWatcher);
+  auto record = ac.GetActorValueRecord();
+  REQUIRE(record->skills.size() == 1);
+  REQUIRE(record->skills[0].level == 15.f);
+  REQUIRE(record->xp == Catch::Approx(0.f).margin(0.001));
+  REQUIRE(!ac.IsBookRead(kWatcherBase));
+  REQUIRE(RecordsTo(p, 0).empty());
+  REQUIRE(log.Count("[verb:books] ff000fd1 reads book ed63f: no skill book, "
+                    "nothing to raise") == 1);
+
+  p.Messages().clear();
+  ActivateBook(p, kWatcher, true);
+  REQUIRE(ac.GetOpenBook() == 0);
+  REQUIRE(RecordsTo(p, 0).empty());
+  REQUIRE(log.Count("ends its open of book") == 0);
+  REQUIRE(ac.GetChangeForm().readBooks.GetReadBooks().empty());
 
   Leave(p, kActor);
 }

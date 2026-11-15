@@ -560,8 +560,10 @@ public:
   // (R0: the rule's apply_book), the record sent whatever moved so the
   // seat's own increment is replaced by this number; once per book per
   // character is the caller's (ReadBookEvent and the record's readBooks).
-  // False with leveling off or before the first actor values report
-  bool ApplySkillBook(MpActor& actor, uint8_t skillAv);
+  // `sendRecord` false leaves the record's send to the caller (a world
+  // book's read at its open: books.md, S2). False with leveling off or
+  // before the first actor values report
+  bool ApplySkillBook(MpActor& actor, uint8_t skillAv, bool sendRecord = true);
   void TickPlacements(uint64_t nowMs);
   bool ReportPlacedObject(MpActor& caster, uint64_t set, uint32_t baseId,
                           const NiPoint3& pos, float yaw);

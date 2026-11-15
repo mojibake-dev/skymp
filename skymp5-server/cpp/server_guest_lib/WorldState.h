@@ -371,8 +371,11 @@ public:
   // `actor`'s skill at `skillAv` through PartOne's leveling table and record
   // write (ApplySkillBook); installed by PartOne. True when the record took
   // it (the book is spent for this character); none installed, or leveling
-  // off, false and the read stands nowhere
-  std::function<bool(MpActor& actor, uint8_t skillAv)> applySkillBook;
+  // off, false and the read stands nowhere. `sendRecord` false holds the
+  // record's send for the caller (a world book's read at its open, whose
+  // record goes at the open's end; docs/verbs/books.md, S2)
+  std::function<bool(MpActor& actor, uint8_t skillAv, bool sendRecord)>
+    applySkillBook;
   // thuum docs/verbs/perks.md (the second half): a value through the perk
   // records' entry points the owner's held perks carry (wire-rules perks),
   // installed by PartOne with its perk table; the formulas call it with the

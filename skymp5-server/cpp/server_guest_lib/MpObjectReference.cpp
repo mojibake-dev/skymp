@@ -2278,10 +2278,11 @@ void MpObjectReference::ProcessActivateNormal(
 {
   auto actorActivator = activationSource.AsActor();
   // thuum playtest 52 break 3: the player's activation of anything else
-  // forgets its open book (the book branch below), before any early return
+  // ends its open book (the book branch below), before any early return; a
+  // skill book's held record goes to its game there (MpActor::EndOpenBook)
   if (actorActivator && actorActivator->GetOpenBook() != 0 &&
       actorActivator->GetOpenBook() != GetFormId()) {
-    actorActivator->SetOpenBook(0);
+    actorActivator->EndOpenBook();
   }
 
   auto worldState = GetParent();
@@ -2368,11 +2369,20 @@ void MpObjectReference::ProcessActivateNormal(
   // open of a book another player holds grabbed or another seat streams
   // awake reaches this branch, and a Take the rule refuses (E_PROP_HELD,
   // E_PROP_MOVING) never does, its open forgotten there and the player's
-  // inventory sent back as at a take of a book taken already
+  // inventory sent back as at a take of a book taken already.
+  // docs/verbs/books.md, S2: the open also reads the book, as the engine
+  // reads it at its Book Menu's open (TESObjectBOOK::Read at
+  // BookMenu::OpenBookMenu's end, docs/verbs/leveling.md, HYPOTHESIS): a
+  // skill book raises its skill once a character (the inventory read's
+  // ReadBookEvent branch, R0, decided by the base's DATA, never by the
+  // player's game), and its record waits for the open's end (EndOpenBook at
+  // the take, the close, a refused take, the player's activation of anything
+  // else), since that game's engine raises the skill itself after the open
+  // reply
   if (pickable && actorActivator &&
       IsBookReadBy(activationSource, reportedByHost)) {
     const bool take = actorActivator->GetOpenBook() == GetFormId();
-    actorActivator->SetOpenBook(0);
+    actorActivator->EndOpenBook();
     if (IsHarvested()) {
       if (take) {
         // its own game's Book Menu took a copy the server never gave
@@ -2392,6 +2402,7 @@ void MpObjectReference::ProcessActivateNormal(
       // SendOpenContainer being used to activate the object
       // TODO: rename SendOpenContainer to SendActivate
       activationSource.SendOpenContainer(GetFormId());
+      actorActivator->ReadBookAtOpen(GetBaseId());
       return;
     }
     spdlog::info("[verb:books] {:x} takes book {:x} (base {:x}) from its "
@@ -2641,12 +2652,13 @@ bool MpObjectReference::ProcessActivateSecond(
     }
   } else if (espm::utils::Is<espm::BOOK>(t) && actorActivator) {
     // thuum playtest 52 break 3: the Book Menu's close, sent as a container's
-    // closing activation, forgets the open (ProcessActivateNormal's book
-    // branch), so the player's next activation of the book opens it again
+    // closing activation, ends the open (ProcessActivateNormal's book
+    // branch), so the player's next activation of the book opens it again; a
+    // skill book's held record goes to its game here (books.md, S2)
     if (actorActivator->GetOpenBook() == GetFormId()) {
-      actorActivator->SetOpenBook(0);
       spdlog::info("[verb:books] {:x} closes book {:x}; nothing taken",
                    actorActivator->GetFormId(), GetFormId());
+      actorActivator->EndOpenBook();
       return true;
     }
     // ADR-073 decision 7: the client half (skymp5-client remoteServer.ts

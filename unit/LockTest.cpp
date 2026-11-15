@@ -189,6 +189,74 @@ TEST_CASE("A locked chest's activation prompts the player's game instead of "
   Leave(p);
 }
 
+// thuum #47 (x-lead-claim 20261115-094229): a lock no game wrote is the game
+// file's seed, no server fact, and the prompted player's engine decides it.
+// The Riverwood Trader's door was locked by its XLOC on the server while the
+// guest's engine had it open by day; the guest's engine walked it in after
+// the prompt and the server put it back. Now the prompted player's engine
+// word on such a lock is recorded, and the activation that follows passes
+TEST_CASE("A lock no game wrote prompts the activator, whose engine's word "
+          "on it is then recorded, so the next activation opens (#47)",
+          "[Locks][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p);
+  auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBanditChest);
+  // the cases before leave a lock on the record: this one starts from none,
+  // the game file's seed alone, and puts the record back as it found it
+  const MpChangeForm before = chest.GetChangeForm();
+  MpChangeForm seeded = before;
+  seeded.lock = std::nullopt;
+  p.worldState.LoadChangeForm(seeded, p.CreateFormCallbacks());
+  REQUIRE_FALSE(chest.LockRecorded());
+  REQUIRE(chest.GetLock()->locked);
+
+  // the activation on the seed: prompted, nothing opened
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", static_cast<int>(MsgType::Activate) },
+                            { "data",
+                              { { "caster", 0x14 },
+                                { "target", kBanditChest },
+                                { "isSecondActivation", false } } } });
+  REQUIRE(SentTo<LockPromptMessage>(p, 0).size() == 1);
+  REQUIRE(SentTo<OpenContainerMessage>(p, 0).empty());
+  REQUIRE(chest.PromptedOnUnrecordedLock(kPicker, 10'000));
+  REQUIRE_FALSE(chest.PromptedOnUnrecordedLock(kWatcher, 10'000));
+
+  // the prompted player's engine has it unlocked: its word is recorded
+  p.Messages().clear();
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", static_cast<int>(MsgType::LockReport) },
+                            { "refr", kBanditChest },
+                            { "outcome", 3 },
+                            { "broken", 0 },
+                            { "locked", false },
+                            { "level", 0 } });
+  REQUIRE(chest.LockRecorded());
+  REQUIRE_FALSE(chest.GetLock()->locked);
+
+  // the activation again: it opens
+  p.Messages().clear();
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", static_cast<int>(MsgType::Activate) },
+                            { "data",
+                              { { "caster", 0x14 },
+                                { "target", kBanditChest },
+                                { "isSecondActivation", false } } } });
+  REQUIRE(SentTo<LockPromptMessage>(p, 0).empty());
+  REQUIRE(SentTo<OpenContainerMessage>(p, 0).size() == 1);
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", static_cast<int>(MsgType::Activate) },
+                            { "data",
+                              { { "caster", 0x14 },
+                                { "target", kBanditChest },
+                                { "isSecondActivation", true } } } });
+
+  // left as found
+  p.worldState.LoadChangeForm(before, p.CreateFormCallbacks());
+  Leave(p);
+}
+
 TEST_CASE("Broken picks cost Lockpicks and no more than held; a report "
           "from afar, inside the gap, or on a key lock is refused",
           "[Locks][espm]")

@@ -7632,6 +7632,13 @@ bool LockLineDue(uint64_t& count)
 }
 }
 
+namespace {
+// thuum #47: how long after its prompt on a lock no game wrote a player's
+// engine word on that lock is taken (the client reports at the prompt's
+// update, LockService.prompt; lab seats' clocks and the wire inside it)
+constexpr uint64_t kLockPromptWindowMs = 10'000;
+}
+
 void ActionListener::OnLockEngineWrite(MpActor& actor,
                                        const LockReportMessage& msg)
 {
@@ -7696,6 +7703,17 @@ void ActionListener::OnLockEngineWrite(MpActor& actor,
       partOne.WorldStreamer().first == actor.GetFormId()) {
     owns = true;
   }
+  // thuum #47: a lock no game has written (the game file's seed) on which
+  // this player was just prompted at its activation: its engine's word is
+  // the lock's, since no owner's write stands against it (R2, recorded as
+  // its engine reports it, the shape bounded; the same trust a pick report
+  // has). A recorded lock keeps its owners
+  bool prompted = false;
+  if (!owns && !ref->LockRecorded() &&
+      ref->PromptedOnUnrecordedLock(actor.GetFormId(), kLockPromptWindowMs)) {
+    owns = true;
+    prompted = true;
+  }
   const auto lock = ref->GetLock();
   skymp::rules::LockStateRow row{};
   if (lock) {
@@ -7731,10 +7749,14 @@ void ActionListener::OnLockEngineWrite(MpActor& actor,
     return;
   }
   ++lockEngineWrites[1];
-  spdlog::info("[verb:locks] {:x}'s engine wrote {:x} {} (level {}): the "
-               "owner's write recorded ({} so far)",
+  spdlog::info("[verb:locks] {:x}'s engine wrote {:x} {} (level {}): {} "
+               "({} so far)",
                actor.GetFormId(), ref->GetFormId(),
-               locked ? "locked" : "unlocked", level, lockEngineWrites[1]);
+               locked ? "locked" : "unlocked", level,
+               prompted ? "the prompted player's engine word on a lock no "
+                          "game wrote, recorded (#47)"
+                        : "the owner's write recorded",
+               lockEngineWrites[1]);
   MpChangeFormREFR::Lock after;
   after.level = verdict.state.level;
   after.key = verdict.state.key;

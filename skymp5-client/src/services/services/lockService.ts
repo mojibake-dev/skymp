@@ -86,12 +86,50 @@ export class LockService extends ClientListener {
       menuOpened: false,
       reported: false,
     };
+    // thuum #47: the server prompts on a lock no game has written (the game
+    // file's seed) as on any lock it holds locked. Where this engine has it
+    // unlocked (a shop's door by day, which the owner's schedule opened
+    // here), the engine's own activation would walk the player through a
+    // door the server never opened, and the server would put the player back.
+    // So this engine's lock goes to the server as the prompted player's word,
+    // which the server takes on a lock no game wrote, and the activation goes
+    // again, once per lock in reactivateMs (a refused report prompts again,
+    // and that prompt runs the engine's own activation)
+    const now = Date.now();
+    const last = this.reactivated.get(remoteId) ?? 0;
+    if (!refr.isLocked() && now - last > LockService.reactivateMs) {
+      this.attempt = undefined;
+      this.reactivated.set(remoteId, now);
+      if (this.reactivated.size > LockService.unrecordedMax) {
+        const oldest = this.reactivated.keys().next().value;
+        if (oldest !== undefined) {
+          this.reactivated.delete(oldest);
+        }
+      }
+      this.reportEngineWrite(refr, true, 'prompted');
+      const caster = localIdToRemoteId(0x14);
+      if (caster) {
+        this.controller.emitter.emit('sendMessage', {
+          message: { t: MsgType.Activate, data: { caster, target: remoteId, isSecondActivation: false } },
+          reliability: 'reliable',
+        });
+      }
+      logTrace(
+        this,
+        `lock prompt ${remoteId.toString(16)}: unlocked in this engine (level ${refr.getLockLevel()}); its lock reported and the activation sent again (#47)`,
+      );
+      return;
+    }
     logTrace(
       this,
       `lock prompt ${remoteId.toString(16)}: the engine's activation run (locked ${refr.isLocked()}, level ${refr.getLockLevel()}, ${this.attempt.picksBefore} picks held)`,
     );
     refr.activate(this.sp.Game.getPlayer(), true);
   }
+
+  // thuum #47: the locks whose activation went again after a prompt, when
+  private reactivated = new Map<number, number>();
+  private static readonly reactivateMs = 10000;
 
   private onMenuOpen(e: MenuOpenEvent) {
     if (e.name !== LockService.menu || !this.attempt) {

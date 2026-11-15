@@ -955,6 +955,18 @@ void MpObjectReference::SendLockTo(MpActor& to)
   }
 }
 
+bool MpObjectReference::PromptedOnUnrecordedLock(uint32_t actorId,
+                                                 uint64_t windowMs) const
+{
+  if (actorId == 0 || unrecordedPromptTo != actorId) {
+    return false;
+  }
+  const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - unrecordedPromptAt);
+  return since.count() >= 0 &&
+    static_cast<uint64_t>(since.count()) <= windowMs;
+}
+
 void MpObjectReference::SendLockPrompt(MpActor& to)
 {
   LockPromptMessage prompt;
@@ -2535,6 +2547,23 @@ void MpObjectReference::ProcessActivateNormal(
         spdlog::info("[verb:locks] {:x} opens {:x} with its key {:x}",
                      actorActivator->GetFormId(), GetFormId(), lock->key);
         SetLock(opened);
+      } else if (verdict.verdict == 2 && !LockRecorded()) {
+        // thuum #47: no game has written this lock, so the game file's seed
+        // is no server fact (LockRecorded). The player's game decides by its
+        // own engine's lock: locked, the engine's lockpicking runs as for any
+        // locked reference; unlocked (a shop's door by day, which the
+        // owner's schedule opened in that engine), the game reports its
+        // engine's lock and activates again (LockService), and the report is
+        // taken as the lock's (PromptedOnUnrecordedLock)
+        unrecordedPromptTo = actorActivator->GetFormId();
+        unrecordedPromptAt = std::chrono::steady_clock::now();
+        spdlog::info("[verb:locks] {:x} activates {:x}: its lock is the game "
+                     "file's seed (level {}, key {:x}), no game wrote it; the "
+                     "player's game decides by its engine's lock (#47)",
+                     actorActivator->GetFormId(), GetFormId(), lock->level,
+                     lock->key);
+        SendLockPrompt(*actorActivator);
+        return;
       } else if (verdict.verdict == 2) {
         spdlog::info("[verb:locks] E_ACTIVATE_LOCKED: {:x} activates {:x} "
                      "(level {}, key {:x}); the player's game is prompted",

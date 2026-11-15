@@ -180,6 +180,12 @@ public:
   bool LockRecorded() const;
   void SetLock(const MpChangeFormREFR::Lock& lock);
   void SendLockPrompt(MpActor& to);
+  // thuum #47: whether `actorId` was prompted on this reference's lock
+  // within `windowMs`, while no game had written the lock (the activation's
+  // prompt on an unrecorded lock, ProcessActivateNormal). Its engine's word
+  // on that lock is then the lock's (ActionListener::OnLockEngineWrite):
+  // with no owner's write, the activator's own engine decides
+  bool PromptedOnUnrecordedLock(uint32_t actorId, uint64_t windowMs) const;
   // The other side of a load door (its XTEL) when the engine shares one lock
   // between the two: a door with no lock of its own reads and writes its
   // linked door's (HYPOTHESIS by decompile, sky-re's Ghidra on 1.6.1170:
@@ -425,6 +431,10 @@ protected:
                                    bool reliable) const;
 
 private:
+  // thuum #47: the last prompt on an unrecorded lock, its actor and when
+  uint32_t unrecordedPromptTo = 0;
+  std::chrono::steady_clock::time_point unrecordedPromptAt{};
+
   // thuum docs/verbs/npc-fate.md (ADR-049): `pcLevel` is the level a leveled
   // item entry rolls at (an actor's fate level, else 1)
   void AddContainerObject(const espm::CONT::ContainerObject& containerObject,

@@ -229,6 +229,13 @@ export class LeadClaimService extends ClientListener {
         if (verdict.code === CLAIM_WHY_PACKAGE) {
             const of = lead.started.quest !== 0 ? `quest ${hex(lead.started.quest)}'s` : "no quest's";
             said = `, why ${verdict.code}: she runs ${hex(lead.started.pkg)}, ${of}; this game no longer runs her for the quest and her cell's host takes her`;
+            // the package started on her, in a line of its own: the console
+            // keeps a line's first 128 bytes, and the release line below
+            // (whose wording x-lead-claim counts) names it past them. In
+            // x-lead-claim 135235 (13:57:42.351Z, Camilla mid-escort) it was
+            // cut, so whether H-L7's dialogue package or another ended her
+            // lead went unread (#70)
+            logLab(TAG, `lead ${hex(lead.quest)} on ${hex(lead.remoteId)}: why 1, she runs ${hex(lead.started.pkg)}, ${of}`);
         } else if (verdict.code !== 0) {
             said = `, why ${verdict.code}: this game no longer runs her and her cell's host takes her`;
         }

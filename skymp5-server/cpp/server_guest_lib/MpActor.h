@@ -267,13 +267,11 @@ public:
   void EndOpenBook();
   uint64_t NextRestedGrant();
   uint64_t GetRestedGrant() const;
-  // thuum docs/verbs/map-markers.md: the map markers this player discovered,
-  // kept in its change form; recording one again keeps the wider travel
-  // flag, and returns whether anything changed. The pending flag is set at
-  // login and taken by the first movement after it, when the client's world
-  // is up to show them.
-  std::vector<MapMarker> GetMapMarkers() const;
-  bool RecordMapMarker(const FormDesc& refr, bool canTravel);
+  // thuum docs/verbs/map-markers.md: the map markers this player discovered
+  // or its own quests revealed are its change form's
+  // (MpObjectReference::GetMapMarkers). The pending flag is set at login and
+  // taken by the first movement after it, when the client's world is up to
+  // show them.
   void SetMapMarkersPending(bool pending);
   bool TakeMapMarkersPending();
   // thuum docs/verbs/learned-effects.md: the ingredient effects this player

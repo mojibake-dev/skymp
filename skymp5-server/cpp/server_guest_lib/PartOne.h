@@ -292,6 +292,19 @@ public:
   std::vector<PlayerGlobal> GetWorldGlobals();
   bool SetWorldGlobals(std::vector<PlayerGlobal> globals);
 
+  // thuum ADR-073 step 4's S6 (Eli's D-NT4 A; D-PO1 B and D-G6 A, thuum
+  // docs/verbs/map-markers.md): a world quest's map markers, the ones its
+  // scripts revealed (ObjectReference.AddToMap's record), on the journal
+  // beside its stages, so every player is shown them at its login beside its
+  // own and a restart keeps them; a read makes no journal (GetAliasFills says
+  // why), the first write does. Recording one again keeps the wider travel
+  // flag and returns whether anything changed; setting the list, false when
+  // unchanged. A stopgap until step 1's quest record holds the quest's own
+  // markers
+  std::vector<MapMarker> GetWorldMapMarkers();
+  bool SetWorldMapMarkers(std::vector<MapMarker> markers);
+  bool RecordWorldMapMarker(const FormDesc& refr, bool canTravel);
+
   // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md section
   // 1(b), rule 6): the world's quest runs (QuestStage 57's words) and the
   // world's condition-read script variables (ScriptVariables 81's world
@@ -406,6 +419,28 @@ public:
   // attaches or without the game files
   const std::vector<ScriptAttachment>& ScriptAttachmentsOf(
     const std::string& scriptClass) const;
+  // thuum ADR-073 step 4's S6 (Eli's D-NT4 A): a script call's cause, by the
+  // game files' attachment of its calling script's class (wire-rules
+  // natives::Cause): one QUST, INFO or SCEN of the game files whose VMAD
+  // attaches the class (libespm's RecordHeader::GetScriptData, the winning
+  // record of each form), with its quest: a QUST's own, an INFO's its
+  // topic's (the DIAL of its TOPIC_CHILDREN group, QNAM), a SCEN's its PNAM.
+  // Indexed once per set of game files at AttachEspm, by the class's name
+  // without case; none for a class no such record attaches or without the
+  // game files. The class is never read by its name's prefix (QF, TIF, SF)
+  struct ScriptCause
+  {
+    uint8_t kind = 0;   // natives::Cause: 1 a quest, 2 a topic info, 3 a scene
+    uint32_t form = 0;  // the QUST's, INFO's or SCEN's id in the load order
+    uint32_t quest = 0; // its quest's id in the load order, 0 for none
+  };
+  const std::vector<ScriptCause>& ScriptCausesOf(
+    const std::string& scriptClass) const;
+  // whether a cause's quest is live as the server holds it: an attachment
+  // the R1 bound counts (QuestAttachmentLive: a player-class quest, or one
+  // the journal records running or staged), or a Start Game Enabled quest of
+  // the game files (its DNAM main flags) the journal records no stop of
+  bool QuestCauseLive(uint32_t questId);
   // whether a QUST attachment counts for the bound: the quest scope classes
   // the quest a player's (PlayerClassQuests, while the scope acts) or the
   // world's journal records it running (questRuns) or staged (questStages)

@@ -10,6 +10,302 @@
 #include <stdlib.h>
 
 /**
+ * The table's row count: the platform's per-row slots are this many, and a
+ * plugin whose table holds another count binds no row there. The compiler
+ * checks it against the table; after natives-gen changes the count, set it
+ * here and run `just wire-header`.
+ */
+#define SKYMP_NATIVE_ROWS 1410
+
+/**
+ * A row's parameters: at most twelve, the dump's longest list (the
+ * platform's own TESModPlatform.Add and AddItemEx). A game native takes at
+ * most eleven (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15, "native
+ * supports max 11"), which the platform reads of a frame.
+ */
+#define SKYMP_NATIVE_MAX_PARAMS 12
+
+/**
+ * Kind: the call itself is the message, relayed.
+ */
+#define SKYMP_NATIVE_KIND_ACTION 0
+
+/**
+ * Kind: a saved consequence, carried by its record or its verb.
+ */
+#define SKYMP_NATIVE_KIND_STATE 1
+
+/**
+ * Kind: nobody's, every seat runs it.
+ */
+#define SKYMP_NATIVE_KIND_EVERYONE 2
+
+/**
+ * Kind: never sent.
+ */
+#define SKYMP_NATIVE_KIND_LOCAL 3
+
+/**
+ * Kind: a creation (a reference placed, a scene started), judged as a state
+ * row until ADR-073 decision 13's placement.
+ */
+#define SKYMP_NATIVE_KIND_CREATE 4
+
+/**
+ * Subject: the call's self.
+ */
+#define SKYMP_NATIVE_SUBJECT_SELF 0
+
+/**
+ * Subject: a static's first argument.
+ */
+#define SKYMP_NATIVE_SUBJECT_ARG0 1
+
+/**
+ * Subject: none.
+ */
+#define SKYMP_NATIVE_SUBJECT_NONE 2
+
+/**
+ * Subject: a method's first argument, its self another form.
+ */
+#define SKYMP_NATIVE_SUBJECT_ARG0_METHOD 3
+
+/**
+ * Owner: asked at the call (ADR-073 decision 6; the platform's OwnedHere and
+ * OwnedForRecord until step 5's owner_of).
+ */
+#define SKYMP_NATIVE_OWNER_ASKED 0
+
+/**
+ * Owner: the seat that created the subject or started the scene.
+ */
+#define SKYMP_NATIVE_OWNER_CREATOR 1
+
+/**
+ * Owner: the seat's own game.
+ */
+#define SKYMP_NATIVE_OWNER_PLAYER 2
+
+/**
+ * Owner: nobody.
+ */
+#define SKYMP_NATIVE_OWNER_NOBODY 3
+
+/**
+ * Audience: the subject's listeners.
+ */
+#define SKYMP_NATIVE_AUDIENCE_LISTENERS 0
+
+/**
+ * Audience: every seat.
+ */
+#define SKYMP_NATIVE_AUDIENCE_EVERYONE 1
+
+/**
+ * Audience: no seat.
+ */
+#define SKYMP_NATIVE_AUDIENCE_NOBODY 2
+
+/**
+ * Audience: the subject's cell's host alone.
+ */
+#define SKYMP_NATIVE_AUDIENCE_HOST 3
+
+/**
+ * Keep: nothing.
+ */
+#define SKYMP_NATIVE_KEEP_NOTHING 0
+
+/**
+ * Keep: the call's graph event as the subject's lastAnimation.
+ */
+#define SKYMP_NATIVE_KEEP_LAST 1
+
+/**
+ * Keep: the call as its subject's evidence.
+ */
+#define SKYMP_NATIVE_KEEP_EVIDENCE 2
+
+/**
+ * Keep: the call as its subject's record (the row's `record` names which).
+ */
+#define SKYMP_NATIVE_KEEP_RECORD 3
+
+/**
+ * Keep: the call's graph variable on its subject.
+ */
+#define SKYMP_NATIVE_KEEP_VARIABLE 4
+
+/**
+ * Keep: the call as its actor's look (thuum #52, wire-rules actor_looks; the
+ * row's `record` carries its look's code, wire-rules natives
+ * LookKeep::code: 1 a shader's Play, 2 its Stop, 3 a visual effect's Play,
+ * 4 its Stop, 5 an eye texture).
+ */
+#define SKYMP_NATIVE_KEEP_LOOK 5
+
+/**
+ * Look: never.
+ */
+#define SKYMP_NATIVE_LOOK_NEVER 0
+
+/**
+ * Look: its own channel first, then the look channel.
+ */
+#define SKYMP_NATIVE_LOOK_ALSO 1
+
+/**
+ * Look: the look channel alone.
+ */
+#define SKYMP_NATIVE_LOOK_ONLY 2
+
+/**
+ * Scoped: inside another player's acting scope the call runs as the scope
+ * has it.
+ */
+#define SKYMP_NATIVE_SCOPED_RUNS 0
+
+/**
+ * Scoped: inside another player's acting scope the call runs on the acting
+ * player's seat alone (the spec's New 1, PQ-3's skip by the row's cell).
+ */
+#define SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE 1
+
+/**
+ * Parameter: Bool.
+ */
+#define SKYMP_NATIVE_PARAM_BOOL 0
+
+/**
+ * Parameter: Int.
+ */
+#define SKYMP_NATIVE_PARAM_INT 1
+
+/**
+ * Parameter: Float.
+ */
+#define SKYMP_NATIVE_PARAM_FLOAT 2
+
+/**
+ * Parameter: String.
+ */
+#define SKYMP_NATIVE_PARAM_STRING 3
+
+/**
+ * Parameter: an object.
+ */
+#define SKYMP_NATIVE_PARAM_OBJECT 4
+
+/**
+ * Parameter: an array of Bools.
+ */
+#define SKYMP_NATIVE_PARAM_BOOL_ARRAY 5
+
+/**
+ * Parameter: an array of Ints.
+ */
+#define SKYMP_NATIVE_PARAM_INT_ARRAY 6
+
+/**
+ * Parameter: an array of Floats.
+ */
+#define SKYMP_NATIVE_PARAM_FLOAT_ARRAY 7
+
+/**
+ * Parameter: an array of Strings.
+ */
+#define SKYMP_NATIVE_PARAM_STRING_ARRAY 8
+
+/**
+ * Parameter: an array of objects.
+ */
+#define SKYMP_NATIVE_PARAM_OBJECT_ARRAY 9
+
+/**
+ * Hook: nothing beyond the row's other columns.
+ */
+#define SKYMP_NATIVE_HOOK_NONE 0
+
+/**
+ * Hook: Actor.Kill and KillSilent, batched for the death report.
+ */
+#define SKYMP_NATIVE_HOOK_DEATH_REPORT 1
+
+/**
+ * Hook: SetDestroyed on a trap family reference, batched.
+ */
+#define SKYMP_NATIVE_HOOK_TRAP_DESTROYED 2
+
+/**
+ * Hook: SetMotionType on a trap family body (its motion type the neutral
+ * argument).
+ */
+#define SKYMP_NATIVE_HOOK_TRAP_MOTION 3
+
+/**
+ * Hook: ApplyHavokImpulse on a trap family body (its magnitude the neutral
+ * argument).
+ */
+#define SKYMP_NATIVE_HOOK_TRAP_IMPULSE 4
+
+/**
+ * Hook: an alias fill, batched on every seat.
+ */
+#define SKYMP_NATIVE_HOOK_ALIAS_FILL 5
+
+/**
+ * Hook: Game.GetPlayer's result swapped inside an acting scope.
+ */
+#define SKYMP_NATIVE_HOOK_ACTING_RETURN 6
+
+/**
+ * Hook: a quest's stage, carrying the acting scope and its cause.
+ */
+#define SKYMP_NATIVE_HOOK_QUEST_STAGE 7
+
+/**
+ * Hook: a quest's start, likewise.
+ */
+#define SKYMP_NATIVE_HOOK_QUEST_START 8
+
+/**
+ * Hook: a quest's stop, likewise.
+ */
+#define SKYMP_NATIVE_HOOK_QUEST_STOP 9
+
+/**
+ * Hook: a global's write, skipped on a player's own inside another's scope.
+ */
+#define SKYMP_NATIVE_HOOK_PLAYER_GLOBAL 10
+
+/**
+ * Hook: a placement that may make this seat's local helper.
+ */
+#define SKYMP_NATIVE_HOOK_EFFECT_HELPER 11
+
+/**
+ * Hook: a deletion that lets a local helper go.
+ */
+#define SKYMP_NATIVE_HOOK_HELPER_DELETE 12
+
+/**
+ * Hook: an AddItem whose leveled roll is parked until it lands.
+ */
+#define SKYMP_NATIVE_HOOK_LEVELED_LANDING 13
+
+/**
+ * Hook: a scene's start, counted inside a scope rooted at a relay.
+ */
+#define SKYMP_NATIVE_HOOK_SCENE_START 14
+
+/**
+ * The largest hook code: a row with a larger one is a table this build does
+ * not read.
+ */
+#define SKYMP_NATIVE_HOOK_LAST 14
+
+/**
  * The callback `Tick` calls once per event: packet type, content and its
  * length, an error text (never null), and the caller's state. Null is
  * allowed and means "drop the events". It may unwind: Skyrim Platform calls
@@ -18,6 +314,91 @@
  * plugin (hence `C-unwind`).
  */
 typedef void (*OnPacket)(int32_t, const char*, size_t, const char*, void*);
+
+/**
+ * One row of the table, every string NUL-terminated and valid for the
+ * process's life.
+ */
+typedef struct SkympNativeRow {
+  /**
+   * The native's Papyrus class, as the table spells it.
+   */
+  const char *cls;
+  /**
+   * The native's name.
+   */
+  const char *func;
+  /**
+   * Its kind (`SKYMP_NATIVE_KIND_*`).
+   */
+  uint8_t kind;
+  /**
+   * Its subject (`SKYMP_NATIVE_SUBJECT_*`).
+   */
+  uint8_t subject;
+  /**
+   * Its subject's owner (`SKYMP_NATIVE_OWNER_*`).
+   */
+  uint8_t owner;
+  /**
+   * Who hears an accepted call (`SKYMP_NATIVE_AUDIENCE_*`).
+   */
+  uint8_t audience;
+  /**
+   * What a receiver runs: "same", "twin:<Class.Name>" or "none".
+   */
+  const char *relay;
+  /**
+   * What the server keeps (`SKYMP_NATIVE_KEEP_*`).
+   */
+  uint8_t keep;
+  /**
+   * For a record keep, its record kind's code (1 the ref state, 2 the
+   * standing, 3 a placement, 4 a player's own, 5 a quest's map marker);
+   * for a look keep, its look's code (thuum #52: 1 a shader's Play, 2 its
+   * Stop, 3 a visual effect's Play, 4 its Stop, 5 an eye texture); 0 for
+   * any other keep.
+   */
+  uint8_t record;
+  /**
+   * Whether a call may cross as a firing's look (`SKYMP_NATIVE_LOOK_*`).
+   */
+  uint8_t look;
+  /**
+   * How many of `params` are its parameters.
+   */
+  uint8_t param_count;
+  /**
+   * Its parameters' types in order (`SKYMP_NATIVE_PARAM_*`).
+   */
+  uint8_t params[SKYMP_NATIVE_MAX_PARAMS];
+  /**
+   * What the seam does with its call beyond the rest (`SKYMP_NATIVE_HOOK_*`,
+   * wire-rules' `Hook::code`).
+   */
+  uint8_t hook;
+  /**
+   * 1 for a latent native (FunctionsDump.txt's isLatent), which the
+   * platform's install check holds against the VM's binding; 0 otherwise.
+   */
+  uint8_t latent;
+  /**
+   * 1 for a staged row (thuum ADR-073 step 4's S5: a derived row, counted
+   * by what it would do and run as before); 0 for a live row.
+   */
+  uint8_t staged;
+  /**
+   * What a call does inside another player's acting scope
+   * (`SKYMP_NATIVE_SCOPED_*`): natives_rules.rs's rule with the overlay's
+   * stopgaps over it, read by the platform's count in place of a copy of
+   * the rule (thuum ADR-073 step 4's review, SHOULD 4).
+   */
+  uint8_t scoped;
+} SkympNativeRow;
+
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
 
 /**
  * The version string. Nothing in skymp5-client reads it; it marks the wire.
@@ -75,5 +456,20 @@ void Send(const char *json, bool reliable);
  * borrowed for the call.
  */
 void SendRaw(const void *data, size_t size, bool reliable);
+
+/**
+ * The natives table's rows, valid for the process's life, their count
+ * written to `count` when it is not null; null with a count of 0 when the
+ * rows could not be built (logged as E_NATIVE_ROWS), which the platform
+ * reads as no table.
+ *
+ * # Safety
+ * `count` is null or points to a writable `size_t`.
+ */
+const struct SkympNativeRow *SkympNativeRows(size_t *count);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  /* SKYMP_WIRE_H */

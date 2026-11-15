@@ -365,6 +365,17 @@ public:
   std::vector<PlayerGlobal> GetWorldGlobals() const;
   bool SetWorldGlobals(std::vector<PlayerGlobal> globals);
 
+  // thuum docs/verbs/map-markers.md: the map markers in this reference's
+  // change form, a player's (its discoveries and its own quests' markers) or,
+  // since thuum ADR-073 step 4's S6 (Eli's D-NT4 A), the world journal's (a
+  // world quest's markers, served to every player at its login); empty when
+  // none. Recording one again keeps the wider travel flag
+  // (wire-rules markers' map_marker_travel_after) and returns whether
+  // anything changed; setting the whole list returns false when unchanged
+  std::vector<MapMarker> GetMapMarkers() const;
+  bool RecordMapMarker(const FormDesc& refr, bool canTravel);
+  bool SetMapMarkers(std::vector<MapMarker> markers);
+
   // thuum ADR-068 rung 5: the world's quest runs, on the same journal; and
   // the condition-read script variables, the journal's the world's keys, a
   // player's actor's its own; empty when none; false when unchanged

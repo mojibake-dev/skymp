@@ -1,0 +1,13 @@
+{
+  "args": [
+    true
+  ],
+  "caller": "TIF__00024528",
+  "cls": "ObjectReference",
+  "epoch": 0,
+  "fn": "AddToMap",
+  "handler": "Fragment_0",
+  "latent": false,
+  "selfId": 599190,
+  "t": 75
+}

@@ -108,6 +108,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::natives::{self, Keep, RecordKind};
+
 /// Stacks the player's record holds before an AddItem that needs a new one
 /// is refused (`E_SCRIPTCALL_FULL`; D-R1 C's resource bound, rule 12): the
 /// wire's stacks in one inventory, wire-schema `cap::INVENTORY` (wire-bridge's
@@ -115,9 +117,16 @@ use std::collections::BTreeMap;
 /// player still carries its whole inventory past the server's edge.
 pub const INVENTORY_STACKS: usize = 4096;
 
-/// The nine rows, by Papyrus class and name (natives_table.rs's order: the
-/// flip's AddItem and RemoveItem first, D-R1 C keeping them in place).
-pub const ROWS: [(&str, &str); 9] = [("ObjectReference", "AddItem"), ("ObjectReference", "RemoveItem"), ("Actor", "SetRace"), ("Actor", "AddSpell"), ("Actor", "RemoveSpell"), ("Actor", "AddShout"), ("Actor", "RemoveShout"), ("Actor", "EquipItem"), ("Actor", "ChangeHeadPart")];
+/// The nine rows, by Papyrus class and name, derived from the table (thuum
+/// ADR-073 step 4's S4: every row natives_table.rs keeps as a player's own
+/// record, in its order: the flip's AddItem and RemoveItem first, D-R1 C
+/// keeping them in place), never a list of their own.
+pub fn rows() -> impl Iterator<Item = (&'static str, &'static str)> {
+    natives::TABLE.iter().filter(|r| !r.staged && r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func))
+}
+
+/// The rows' natives, in [`rows`]'s order: what the core judges each by.
+const IN_TABLE_ORDER: [Row; 9] = [Row::AddItem, Row::RemoveItem, Row::SetRace, Row::AddSpell, Row::RemoveSpell, Row::AddShout, Row::RemoveShout, Row::EquipItem, Row::ChangeHeadPart];
 
 /// One of the nine natives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,8 +158,17 @@ impl Row {
     /// other native.
     #[must_use]
     pub fn of(cls: &str, func: &str) -> Option<Self> {
-        let at = ROWS.iter().position(|(c, f)| c.eq_ignore_ascii_case(cls) && f.eq_ignore_ascii_case(func))?;
-        [Row::AddItem, Row::RemoveItem, Row::SetRace, Row::AddSpell, Row::RemoveSpell, Row::AddShout, Row::RemoveShout, Row::EquipItem, Row::ChangeHeadPart].get(at).copied()
+        // the table's generated index (O(1)), then the row's place among the
+        // nine: the live rows come first in the table, so this counts at most
+        // the live rows before it, never the staged ones (thuum ADR-073 step
+        // 4's review, NIT 8: no scan of the 1,408 rows on an accepted call)
+        let i = natives::row_index(cls, func)?;
+        let own = |r: &natives::Row| !r.staged && r.keep == Keep::Record(RecordKind::PlayerOwn);
+        if !natives::TABLE.get(i).is_some_and(own) {
+            return None;
+        }
+        let at = natives::TABLE.get(..i)?.iter().filter(|r| own(r)).count();
+        IN_TABLE_ORDER.get(at).copied()
     }
 
     /// The row's Papyrus class, as a refusal names its native.

@@ -1,4 +1,5 @@
 import { ScriptCall, ScriptCallsEvent, ScriptCensusEvent } from "skyrimPlatform";
+import { NATIVE_ARG0_SUBJECTS, NATIVE_EVIDENCE, NATIVE_GRAPH_EVENT_RELAYS, NATIVE_HOOKS, NATIVE_RECORD_FAMILIES } from "../../lib/nativeRows.generated";
 import { logError, logLab, logTrace } from "../../logging";
 import { MsgType } from "../../messages";
 import { ScriptCallMessage } from "../messages/scriptCallMessage";
@@ -97,6 +98,14 @@ import { TrapResultService } from "./trapResultService";
 // the platform names that player's figure where the script named the
 // player, a self that is never 0x14 and never batched (not this seat's), so
 // a relayed fragment's grant is reported once, by the acting seat.
+// thuum ADR-073 step 4's S6 (Eli's D-NT4 A; D-PO1 B, D-G6 A): a quest
+// script's ObjectReference.AddToMap, an everyone row the platform batches on
+// every seat that runs it (kind "everyone", the generated table's "marker"
+// family), goes the same way through the record queue, one piece per marker
+// in the frame: the server judges its cause (the calling script a quest's, a
+// topic info's or a scene's whose quest it holds live) and its subject (a
+// map marker by the master files), records it for every player the quest is
+// shown to and relays AddToMap to the others (docs/verbs/map-markers.md).
 // Every batched call keeps rung 3's read trigger (noteCall below).
 type Outgoing = {
     call: ScriptCall;
@@ -156,37 +165,44 @@ export class ScriptCallService extends ClientListener {
                 const from = call.caller || call.handler ? ` from ${call.caller}.${call.handler}` : "";
                 logLab("verb:scripts", `native ${name} on ${call.self.toString(16)} ${call.kind}${call.latent ? " latent" : ""}: ${args}${from}`);
             }
-            if (call.cls === "Actor" && (call.fn === "Kill" || call.fn === "KillSilent")) {
+            // the batch's readers by the generated table's hook and keep
+            // columns (thuum ADR-073 step 4's review, SHOULD 6), never by a
+            // native's spelling: a row the overlay gives a hook reaches its
+            // reader with no change here
+            const hook = ScriptCallService.hookOf(name);
+            if (hook === "death-report") {
                 if (this.kills.size >= 64) {
                     this.kills.clear();
                 }
                 const killer = call.args[0];
                 this.kills.set(call.self, { at: Date.now(), killer: killer !== null && typeof killer === "object" ? killer.formId : 0 });
             }
-            if (call.cls === "ObjectReference" && call.fn === "SetDestroyed") {
+            if (hook === "trap-destroyed") {
                 this.controller.lookupListener(TrapResultService).noteSetDestroyed(call.self, call.args[0] === true);
             }
-            if (call.cls === "ObjectReference" && (call.fn === "SetMotionType" || call.fn === "ApplyHavokImpulse")) {
+            if (hook === "trap-motion" || hook === "trap-impulse") {
                 this.controller.lookupListener(PropService).noteTrapMotion(call.self, call.fn, call.args);
             }
-            if (call.cls === "ObjectReference" && call.fn === "ProcessTrapHit") {
+            if (NATIVE_EVIDENCE.includes(name)) {
                 this.noteTrapHit(call);
             }
-            if (call.kind === "state") {
+            // a state row's record, and since ADR-073 step 4's S6 an everyone
+            // row's (AddToMap's quest marker), by the generated keep column
+            if (call.kind === "state" || call.kind === "everyone") {
                 const family = ScriptCallService.recordFamily(call);
                 if (family !== undefined) {
                     this.noteRecord(call, family);
                 }
             }
-            if (call.kind === "everyone" && call.cls === "ReferenceAlias" && (call.fn === "ForceRefTo" || call.fn === "Clear")) {
+            if (call.kind === "everyone" && hook === "alias-fill") {
                 this.controller.lookupListener(AliasFillService).noteFill(call);
             }
             if (call.kind === "action") {
                 this.queue({ call, record: false, key: undefined, dropped: false });
                 // the hooks never see an owned call's animation (the seam's
                 // mark), so a pillar's side is noted from the call itself
-                const event = call.args[0];
-                if (ScriptCallService.isAnimationRow(call) && typeof event === "string") {
+                const event = ScriptCallService.graphEventOf(call);
+                if (event !== undefined) {
                     this.controller.lookupListener(ObjectAnimationService).noteScriptSide(call.self, event);
                 }
             }
@@ -207,7 +223,7 @@ export class ScriptCallService extends ClientListener {
     // HostService holds for the subject's cell) for the server to judge by
     // the firing's facts (the cell's host, or a game with the cell loaded and
     // an actor in reach) and play on the subject's other listeners, kept
-    // nowhere. The motion rows reached PropService above by their names, whose
+    // nowhere. The motion rows reached PropService above by their hooks, whose
     // trigger rule makes no body and no claim of a trigger (the 48 rule,
     // unchanged); a trigger is no pillar, so no side is noted. JS state alone.
     // D-W2's detection row (the platform's P3): the trigger script's
@@ -247,7 +263,7 @@ export class ScriptCallService extends ClientListener {
     // it, E_SCRIPTCALL_ROW), and its ref state is its seat's own (ADR-068
     // decision 6; a recorded disable of a player's actor would end its next
     // login, PartOne::SetUserActor)
-    private noteRecord(call: ScriptCall, family: "ref" | "standing" | "own") {
+    private noteRecord(call: ScriptCall, family: "ref" | "standing" | "own" | "marker") {
         if (family === "own") {
             // rung 5's transformation rows and D-R1 C's inventory rows: the
             // player's own alone, unfolded
@@ -357,7 +373,7 @@ export class ScriptCallService extends ClientListener {
     // instead (HYPOTHESIS H-RW1: an apply in the tick before the hold is
     // healed by the server's SetInventory echo). JS state alone
     private holdOwnItem(call: ScriptCall, now: number) {
-        if (call.self !== 0x14 || call.cls !== "ObjectReference" || !ScriptCallService.playerItemRows.has(call.fn)) {
+        if (call.self !== 0x14 || call.cls !== "ObjectReference" || ScriptCallService.recordFamily(call) !== "own") {
             return;
         }
         const until = now + ScriptCallService.ownItemHoldMs;
@@ -382,28 +398,20 @@ export class ScriptCallService extends ClientListener {
 
     // the record rows (docs/NATIVES.md's keep column, Record(RefState) and
     // Record(Standing), and rung 5's seven of the player's own with D-R1 C's
-    // two of its inventory), by the table's spelling
-    private static recordFamily(call: ScriptCall): "ref" | "standing" | "own" | undefined {
-        if (call.cls === "ObjectReference" && ScriptCallService.refStateRows.has(call.fn)) {
-            return "ref";
-        }
-        if (call.cls === "ObjectReference" && ScriptCallService.playerItemRows.has(call.fn)) {
-            return "own";
-        }
-        if (call.cls === "Actor" && ScriptCallService.standingRows.has(call.fn)) {
-            return "standing";
-        }
-        if (call.cls === "Actor" && ScriptCallService.playerOwnRows.has(call.fn)) {
-            return "own";
-        }
-        return undefined;
+    // two of its inventory), by the table's spelling: the generated table's
+    // keep column (thuum ADR-073 step 4's S4, nativeRows.generated.ts), never
+    // a list of names here
+    private static recordFamily(call: ScriptCall): "ref" | "standing" | "own" | "marker" | undefined {
+        const native = `${call.cls}.${call.fn}`;
+        return Object.prototype.hasOwnProperty.call(NATIVE_RECORD_FAMILIES, native) ? NATIVE_RECORD_FAMILIES[native] : undefined;
     }
 
     // the piece of state a record row's call sets (noteRecord's key with its
-    // self); undefined for ModFactionRank, a step that is never folded
-    private static recordSlot(call: ScriptCall, family: "ref" | "standing" | "own"): string | undefined {
-        if (family === "ref") {
-            return "ref";
+    // self); undefined for ModFactionRank, a step that is never folded. A
+    // quest marker's is the marker itself (S6: the frame's last call wins)
+    private static recordSlot(call: ScriptCall, family: "ref" | "standing" | "own" | "marker"): string | undefined {
+        if (family === "ref" || family === "marker") {
+            return family;
         }
         const first = call.args[0];
         const form = first !== null && typeof first === "object" ? first.formId.toString(16) : "none";
@@ -526,8 +534,8 @@ export class ScriptCallService extends ClientListener {
         // ObjectAnimationService's report line, byte for byte, for an
         // animation row on a world object (an actor's animation is the
         // stream's): its own report path stays for the engine-driven family
-        const event = call.args[0];
-        if (ScriptCallService.isAnimationRow(call) && typeof event === "string" && refr && !this.sp.Actor.from(refr)) {
+        const event = ScriptCallService.graphEventOf(call);
+        if (event !== undefined && refr && !this.sp.Actor.from(refr)) {
             logTrace(this, `object animation ${call.self.toString(16)} ${event} reported`);
         }
         return true;
@@ -559,20 +567,35 @@ export class ScriptCallService extends ClientListener {
         return { formId, type };
     }
 
-    // a call's subject: its self, but Sound.Play's source in its first
-    // argument (D-W2's look row whose self is the Sound)
+    // a call's subject: its self, but a method's first argument where its
+    // row's subject is that argument (the generated table's subject column,
+    // NATIVE_ARG0_SUBJECTS: Sound.Play's source, D-W2's look row whose self is
+    // the Sound)
     private static subjectOf(call: ScriptCall): number {
-        if (call.cls === "Sound" && call.fn === "Play") {
+        if (NATIVE_ARG0_SUBJECTS.includes(`${call.cls}.${call.fn}`)) {
             const first = call.args[0];
             return first !== null && typeof first === "object" ? first.formId : 0;
         }
         return call.self;
     }
 
-    // the table's animation rows (docs/NATIVES.md): PlayAnimationAndWait is
-    // relayed as its twin PlayAnimation, the event its first argument
-    private static isAnimationRow(call: ScriptCall): boolean {
-        return call.cls === "ObjectReference" && (call.fn === "PlayAnimation" || call.fn === "PlayAnimationAndWait");
+    // a row's hook code (the generated table's hook column, wire-rules
+    // natives.rs Hook::name), undefined for a row with none
+    private static hookOf(native: string): string | undefined {
+        return Object.prototype.hasOwnProperty.call(NATIVE_HOOKS, native) ? NATIVE_HOOKS[native] : undefined;
+    }
+
+    // the call's behavior graph event when its row's relay sends one on its
+    // own self (the generated table's NATIVE_GRAPH_EVENT_RELAYS, the event's
+    // argument by its row's first string parameter: PlayAnimationAndWait is
+    // relayed as its twin PlayAnimation); undefined otherwise
+    private static graphEventOf(call: ScriptCall): string | undefined {
+        const native = `${call.cls}.${call.fn}`;
+        if (!Object.prototype.hasOwnProperty.call(NATIVE_GRAPH_EVENT_RELAYS, native)) {
+            return undefined;
+        }
+        const event = call.args[NATIVE_GRAPH_EVENT_RELAYS[native]];
+        return typeof event === "string" ? event : undefined;
     }
 
     // an argument as a census-side line shows it: a form by its id in hex,
@@ -684,11 +707,6 @@ export class ScriptCallService extends ClientListener {
     private static readonly recordPerS = 32;
     // UNMEASURED: four thousand calls are over two minutes of the record budget
     private static readonly outgoingMax = 4096;
-    private static readonly refStateRows = new Set<string>(["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"]);
-    private static readonly standingRows = new Set<string>(["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"]);
-    private static readonly playerOwnRows = new Set<string>(["SetRace", "AddSpell", "RemoveSpell", "AddShout", "RemoveShout", "EquipItem", "ChangeHeadPart"]);
-    // D-R1 C: the player's inventory, ObjectReference's two
-    private static readonly playerItemRows = new Set<string>(["AddItem", "RemoveItem"]);
     // UNMEASURED: two of remoteServer.ts's 5 s apply periods, far past a
     // report's round trip to the server's SetInventory
     private static readonly ownItemHoldMs = 10_000;

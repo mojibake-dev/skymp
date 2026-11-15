@@ -50,11 +50,14 @@
 #include "libespm/ARMO.h"
 #include "libespm/AVIF.h"
 #include "libespm/CELL.h"
+#include "libespm/DIAL.h"
 #include "libespm/FLST.h"
 #include "libespm/HDPT.h"
+#include "libespm/INFO.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
 #include "libespm/QUST.h"
+#include "libespm/SCEN.h"
 #include "libespm/SMQN.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
@@ -383,6 +386,10 @@ struct PartOne::Impl
   const std::unordered_map<
     std::string, std::vector<PartOne::ScriptAttachment>>* scriptAttachments =
     nullptr;
+  // ADR-073 step 4's S6: a quest marker's causes, indexed at AttachEspm, by
+  // the class's name without case
+  const std::unordered_map<std::string, std::vector<PartOne::ScriptCause>>*
+    scriptCauses = nullptr;
   // D-R1 C's leveled gap (train 52): each leveled list's reach as a landing
   // first asked for it, by the list's form id (only lists of the game files:
   // the caller checks the form is an LVLI first), cleared at AttachEspm
@@ -850,6 +857,8 @@ const std::unordered_map<std::string, std::vector<PartOne::ScriptAttachment>>&
 ScriptAttachmentIndexOf(WorldState& worldState);
 const std::unordered_map<std::string, bool>& PlayerAliasScriptIndexOf(
   WorldState& worldState);
+const std::unordered_map<std::string, std::vector<PartOne::ScriptCause>>&
+ScriptCauseIndexOf(WorldState& worldState);
 }
 
 void PartOne::AttachEspm(espm::Loader* espm)
@@ -867,6 +876,9 @@ void PartOne::AttachEspm(espm::Loader* espm)
   // and the R1 bound's script attachments, read here and not at a seat's
   // first call (the fresh review's note 3)
   pImpl->scriptAttachments = &ScriptAttachmentIndexOf(worldState);
+  // and ADR-073 step 4's S6: a quest marker's causes, the QUSTs', INFOs'
+  // and SCENs' script attachments with their quests
+  pImpl->scriptCauses = &ScriptCauseIndexOf(worldState);
   // a leveled list's reach is read again from these game files
   pImpl->leveledReach.clear();
   // and D-Q9 B's alias scripts: which ride player aliases alone
@@ -4638,6 +4650,79 @@ ScriptAttachmentIndexOf(WorldState& worldState)
     .first->second;
 }
 
+// thuum ADR-073 step 4's S6 (Eli's D-NT4 A): every QUST's, INFO's and SCEN's
+// script attachments by class (their VMADs' primary scripts, where the
+// Creation Kit attaches a quest's QF_, a topic info's TIF__ and a scene's SF_
+// fragment script beside any other: Skyrim.esm's INFO 0x24528 attaches
+// TIF__00024528, SCEN 0x383a3 SF_MS13CamillaStage10Scene_000383A3, lab/esm.py
+// 2026-11-15), each with its quest: a QUST's own; an INFO's its topic's, the
+// DIAL that labels its TOPIC_CHILDREN group (GroupHeader::GetParentDIAL), by
+// its QNAM (DA01IntroRumorsTopic 0x24390 names DA01Intro 0x92e25); a SCEN's
+// its PNAM (0x383a3 names MS13 0x39645). A quest marker's cause is its
+// ScriptCall's `caller` class read by these, never by its name's prefix. A
+// script a record marks removed (status 3) is skipped, as the attachments
+// skip it; read once per set of game files (ScriptAttachmentIndexOf's
+// shape: built whole before it is kept)
+const std::unordered_map<std::string, std::vector<PartOne::ScriptCause>>&
+ScriptCauseIndexOf(WorldState& worldState)
+{
+  using Index =
+    std::unordered_map<std::string, std::vector<PartOne::ScriptCause>>;
+  static std::map<const espm::Loader*, Index> g_index;
+  auto it = g_index.find(&worldState.GetEspm());
+  if (it != g_index.end()) {
+    return it->second;
+  }
+  Index index;
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto add = [&](const espm::LookupResult& lookup, uint8_t kind,
+                       uint32_t quest) {
+    espm::ScriptData scriptData;
+    lookup.rec->GetScriptData(&scriptData, cache);
+    const uint32_t form = lookup.ToGlobalId(lookup.rec->GetId());
+    for (const auto& script : scriptData.scripts) {
+      if (script.status == 3 || script.scriptName.empty()) {
+        continue;
+      }
+      auto& causes = index[LowerScriptClass(script.scriptName)];
+      if (std::none_of(causes.begin(), causes.end(),
+                       [&](const auto& c) { return c.form == form; })) {
+        causes.push_back(PartOne::ScriptCause{ kind, form, quest });
+      }
+    }
+  };
+  for (const auto& lookup :
+       browser.GetDistinctRecordsByType(espm::QUST::kType)) {
+    add(lookup, 1, lookup.ToGlobalId(lookup.rec->GetId()));
+  }
+  for (const auto& lookup :
+       browser.GetDistinctRecordsByType(espm::INFO::kType)) {
+    uint32_t quest = 0;
+    const auto& groups = browser.GetParentGroupsEnsured(lookup.rec);
+    uint32_t dial = 0;
+    if (!groups.empty() && groups.back()->GetParentDIAL(dial)) {
+      const auto topic = browser.LookupById(lookup.ToGlobalId(dial));
+      if (const auto* d = espm::Convert<espm::DIAL>(topic.rec)) {
+        const uint32_t named = d->GetData(cache).quest;
+        quest = named ? topic.ToGlobalId(named) : 0;
+      }
+    }
+    add(lookup, 2, quest);
+  }
+  for (const auto& lookup :
+       browser.GetDistinctRecordsByType(espm::SCEN::kType)) {
+    uint32_t quest = 0;
+    if (const auto* scene = espm::Convert<espm::SCEN>(lookup.rec)) {
+      const uint32_t named = scene->GetData(cache).quest;
+      quest = named ? lookup.ToGlobalId(named) : 0;
+    }
+    add(lookup, 3, quest);
+  }
+  return g_index.emplace(&worldState.GetEspm(), std::move(index))
+    .first->second;
+}
+
 std::vector<skymp::rules::QuestStageEntry> QuestEntries(
   const std::vector<FormDesc>& quests)
 {
@@ -5169,6 +5254,52 @@ bool PartOne::QuestAttachmentLive(uint32_t questId)
   const auto stages = GetQuestStages();
   return std::any_of(stages.begin(), stages.end(), [&](const auto& stage) {
     return SameForm(stage.quest, quest);
+  });
+}
+
+const std::vector<PartOne::ScriptCause>& PartOne::ScriptCausesOf(
+  const std::string& scriptClass) const
+{
+  static const std::vector<ScriptCause> kNone;
+  if (!pImpl->scriptCauses) {
+    return kNone;
+  }
+  const auto it = pImpl->scriptCauses->find(LowerScriptClass(scriptClass));
+  return it == pImpl->scriptCauses->end() ? kNone : it->second;
+}
+
+bool PartOne::QuestCauseLive(uint32_t questId)
+{
+  if (questId == 0 || !HasEspm()) {
+    return false;
+  }
+  if (QuestAttachmentLive(questId)) {
+    return true;
+  }
+  // a Start Game Enabled quest runs on every seat from the game's start
+  // (UESP, "Skyrim Mod:Mod File Format/QUST", DNAM main flags 0x01; libespm
+  // QUST::QuestData::StartGameEnabled), live until the journal records its
+  // stop: Riverwood's rumor's DA01Intro 0x92e25 holds no stage before its
+  // topic info's fragment sets one
+  const auto* qust =
+    espm::Convert<espm::QUST>(GetEspm().GetBrowser().LookupById(questId).rec);
+  if (!qust) {
+    return false;
+  }
+  const auto data = qust->GetData(worldState.GetEspmCache());
+  if (!data.questData ||
+      !(data.questData->mainFlags & espm::QUST::QuestData::StartGameEnabled)) {
+    return false;
+  }
+  FormDesc quest;
+  try {
+    quest = FormDesc::FromFormId(questId, worldState.espmFiles);
+  } catch (const std::exception&) {
+    return false;
+  }
+  const auto runs = GetQuestRuns();
+  return std::none_of(runs.begin(), runs.end(), [&](const auto& run) {
+    return !run.running && SameForm(run.quest, quest);
   });
 }
 
@@ -5910,6 +6041,28 @@ std::vector<MpChangeFormREFR::AliasFill> PartOne::GetAliasFills()
 bool PartOne::SetAliasFills(std::vector<MpChangeFormREFR::AliasFill> fills)
 {
   return WorldJournal().SetAliasFills(std::move(fills));
+}
+
+std::vector<MapMarker> PartOne::GetWorldMapMarkers()
+{
+  // a read makes no journal (GetAliasFills says why): every login reads it
+  if (!worldState.LookupFormById(kWorldJournalRefId)) {
+    return {};
+  }
+  return WorldJournal().GetMapMarkers();
+}
+
+bool PartOne::SetWorldMapMarkers(std::vector<MapMarker> markers)
+{
+  if (markers.empty() && !worldState.LookupFormById(kWorldJournalRefId)) {
+    return false; // nothing to write, and no journal made for it
+  }
+  return WorldJournal().SetMapMarkers(std::move(markers));
+}
+
+bool PartOne::RecordWorldMapMarker(const FormDesc& refr, bool canTravel)
+{
+  return WorldJournal().RecordMapMarker(refr, canTravel);
 }
 
 namespace {

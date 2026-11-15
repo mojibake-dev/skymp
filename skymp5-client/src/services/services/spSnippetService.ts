@@ -8,16 +8,15 @@ import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 
 // TODO: refactor worldViewMisc into service
 import { gameFileIdOfLongId, remoteIdToLocalId, snippetIdToLocalId } from '../../view/worldViewMisc';
+import { NATIVE_GRAPH_VAR_KINDS, NATIVE_LOOK_ONLY_FNS, NATIVE_LOOK_RELAYS } from "../../lib/nativeRows.generated";
 import { logError, logLab, logTrace } from "../../logging";
 import { WorldView } from "../../view/worldView";
 
 // D-C3 A (PENDING ELI): the graph variable setters a relayed script call
-// carries, by ScriptVar's folded kinds (3 int, 4 float, 5 bool)
-const GRAPH_VAR_KINDS: Record<string, number> = {
-  setanimationvariableint: 3,
-  setanimationvariablefloat: 4,
-  setanimationvariablebool: 5,
-};
+// carries, by ScriptVar's folded kinds (3 int, 4 float, 5 bool): the
+// generated table's Keep::Variable rows (thuum ADR-073 step 4's S4,
+// nativeRows.generated.ts)
+const GRAPH_VAR_KINDS: { readonly [fn: string]: number } = NATIVE_GRAPH_VAR_KINDS;
 
 // thuum docs/DECISIONS.md D-W2 A (docs/research/fifty-fixes-2026-11-07.md
 // 7.2(c)): the look rows as a relay names them (class.function in lower
@@ -26,22 +25,14 @@ const GRAPH_VAR_KINDS: Record<string, number> = {
 // row (selfId 0) name their subject in their first argument; every look but
 // Sound.Play's carries its subject's seq. D-W2's detection row,
 // CreateDetectionEvent during a firing, comes to the cell's host alone
-// (playDetection); its seq is not asked for
-const LOOK_ROWS = new Set<string>([
-  "objectreference.playanimation",
-  "debug.sendanimationevent",
-  "objectreference.setanimationvariablebool",
-  "objectreference.setanimationvariableint",
-  "objectreference.setanimationvariablefloat",
-  "objectreference.setmotiontype",
-  "objectreference.applyhavokimpulse",
-  "sound.play",
-  "objectreference.createdetectionevent",
-]);
+// (playDetection); its seq is not asked for. The generated table's look
+// column (thuum ADR-073 step 4's S4, nativeRows.generated.ts), never a list
+// of names here
+const LOOK_ROWS = new Set<string>(NATIVE_LOOK_RELAYS);
 // m4-train-50's D-W2 review, note 3 (rule 5): the rows relayed with a seq only
 // as a look, so a seq-carrying one whose subject is no trap family trigger
 // here is dropped; and the detection's sound level at most SoundTrap's (100)
-const LOOK_ONLY_FNS = new Set<string>(["setmotiontype", "applyhavokimpulse", "createdetectionevent"]);
+const LOOK_ONLY_FNS = new Set<string>(NATIVE_LOOK_ONLY_FNS);
 const DETECTION_LEVEL_MAX = 100;
 // thuum train 52, 4.2: the line of a long id run on (or passed as) its
 // game-file reference, the first three a minute for each long id, so a

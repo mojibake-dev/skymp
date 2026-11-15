@@ -6,6 +6,10 @@
 //! wire's: renet over netcode, postcard, every capacity checked, recognized
 //! in Rust before anything else sees them ([`client`]).
 //!
+//! Since thuum ADR-073 step 4 (Eli's D-NT1 C) an eighth export,
+//! `SkympNativeRows` ([`native_rows`]), hands Skyrim Platform's seam the
+//! natives table wire-rules generates, read once at kDataLoaded.
+//!
 //! Memory: every pointer the exports take is borrowed for the call only and
 //! never retained. Every pointer `Tick` hands its callback is valid for that
 //! callback only; Skyrim Platform copies the content into an ArrayBuffer at
@@ -14,6 +18,7 @@
 //! runs, so the callback may call `Send` or `DestroyClient`.
 
 pub mod client;
+pub mod native_rows;
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io::Write;

@@ -4,10 +4,18 @@
 //! passes the engine's one dispatch (NativeFunctionBase::Call), where the
 //! platform reads the call's typed frame and the owner reports a tabled call
 //! as ScriptCall (MsgType 75). The table is data, one row per native
-//! ([`TABLE`], natives_table.rs): what a call is (kind), whose object it
-//! concerns (subject), who owns that object's scripts (owner), who hears it
-//! (audience), what a receiver runs for it (relay), what the server keeps of
-//! it (keep) and its parameters' types.
+//! ([`TABLE`], natives_table.rs, which wire-rules natives-gen writes from
+//! natives_rules.rs's rules and its overlay, thuum ADR-073 step 4, D-NT1 C;
+//! the platform reads it through wire-client-ffi's generated header): what a
+//! call is (kind), whose object it concerns (subject), who owns that object's
+//! scripts (owner), who hears it (audience), what a receiver runs for it
+//! (relay), what the server keeps of it (keep) and its parameters' types.
+//! Since step 4's S5 every native of FunctionsDump.txt has a row: the
+//! fifty-three live rows the seam judges, then every derived row staged
+//! ([`Row::staged`]), which the seam counts by what it would do and runs as
+//! before and the shape step refuses by its row (`E_SCRIPTCALL_ROW`) until
+//! its batch unstages; a row is found through the generated index
+//! ([`row_index`], O(1)).
 //!
 //! The server never understands an action: the shape is the gate, judged in
 //! two steps. The shape step ([`ScriptCalls::shape`]) comes first, before the
@@ -64,6 +72,21 @@
 //! engine's word, recorded; the record's own rule (wire-rules ref_state,
 //! standing, placements) judges what it must.
 //!
+//! One everyone row passes as a record too (thuum ADR-073 step 4's S6, Eli's
+//! D-NT4 A; D-PO1 B and D-G6 A): ObjectReference.AddToMap, a quest script's
+//! reveal of a map marker, which every seat that runs it reports
+//! ([`RecordKind::Marker`]). Its owner step ([`marker_owner`]) asks no
+//! object's owner: the subject is a map marker by the server's master-file
+//! facts, and the calling script a quest's, a topic info's or a scene's
+//! (QF, TIF or SF, by the game files' attachment) whose quest the server
+//! holds live for the reporter. It takes no sequence and spends the record
+//! rows' budget; the core records the marker with its travel flag for every
+//! player the quest is shown to and relays it live to the others. R2
+//! (recorded as reported: the marker, a cause attached and the cause's live
+//! quest are consistency bounds, and the calling script is the reporter's
+//! word; thuum docs/verbs/map-markers.md), a stopgap until step 1's quest
+//! record holds quest-owned markers.
+//!
 //! The look channel (thuum ADR-068 D-W2 A, Eli 2026-11-07; docs/research/
 //! fifty-fixes-2026-11-07.md section 7.2(b)): during a firing its presser's
 //! owner started, that seat owns the trap family trigger's own calls on
@@ -96,10 +119,11 @@
 //! is.
 //!
 //! An actor's look rows (thuum ADR-060's amendment of 2026-11-12, the Undead
-//! FX build; the reanimate-fx memo's D6 B and D3 B): an action row the table
-//! gives the actor's simulator ([`Owner::Simulator`]: EffectShader.Play and
-//! Stop, VisualEffect.Play and Stop, Actor.SetEyeTexture, SetAlpha,
-//! SetCriticalStage and AttachAshPile) is a look a script on an actor makes,
+//! FX build; the reanimate-fx memo's D6 B and D3 B): an action row that is an
+//! actor's look ([`Row::actor_look`]: EffectShader.Play and Stop,
+//! VisualEffect.Play and Stop, Actor.SetEyeTexture, SetAlpha,
+//! SetCriticalStage and AttachAshPile), whose asked owner (ADR-073 decision
+//! 6) is the actor's simulator, is a look a script on an actor makes,
 //! which the engine running that script plays and every other seat plays as
 //! the call (ADR-068 decision 6: an actor's scripts are its simulator's). Its
 //! owner step is an actor's ([`simulated_by_reporter`], the evidence row's
@@ -143,6 +167,11 @@ pub enum Kind {
     Everyone,
     /// A call whose consequence stays on its seat; never sent.
     Local,
+    /// A call that creates a reference or starts a scene (thuum ADR-073
+    /// decision 6: a created reference is its creator's, a scene its
+    /// starter's, D-L2 B): judged as a state row until decision 13's
+    /// placement ([`channel_of`]).
+    Create,
 }
 
 /// Where a call's subject stands.
@@ -162,20 +191,26 @@ pub enum Subject {
     Nothing,
 }
 
-/// Who owns the subject's scripts (6.6, ADR-063 decision 1).
+/// Who owns the subject's scripts (6.6, ADR-063 decision 1). Since thuum
+/// ADR-073 step 4's S4 the table names no owner a subject's kind would
+/// infer (decision 6: "owners are asked, never inferred"): a row on a
+/// subject asks, and each end keeps its runtime test until step 5's
+/// owner_of (the server's owner steps over the facts the core gathers, the
+/// platform's OwnedHere and OwnedForRecord).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Owner {
-    /// A world object's: the host of its cell.
-    CellHost,
-    /// An actor's: its simulator (hosted and not a puppet).
-    Simulator,
-    /// The player's own: its seat.
+    /// Asked of owner_of at the call: the cell's host for a world object, the
+    /// simulator for an actor, the toucher for a moving trap body, the
+    /// player's own seat for its own actor (decision 6's open row kinds).
+    Asked,
+    /// The seat that created the subject or started the scene (decision 6;
+    /// D-L2 B for a scene, D-A2 C's cause seat for a stage's).
+    Creator,
+    /// The seat's own game: a static on no object (the spec's New 1), or a
+    /// row that never leaves its seat.
     Player,
     /// A quest's, a global's, an alias's: nobody's (D-F1 C).
     Nobody,
-    /// A trap body's: the seat whose firing moved it (ADR-068 D-S3 point 4,
-    /// ADR-058's toucher rule for props).
-    Toucher,
 }
 
 /// Who hears an accepted call.
@@ -357,11 +392,30 @@ pub enum RecordKind {
     /// ObjectReference.AddItem and RemoveItem, recorded as the seat reports
     /// them with no bound (R2, rule 5's "record it as unvalidated").
     PlayerOwn,
+    /// A quest's map marker (thuum ADR-073 step 4's S6, Eli's D-NT4 A; D-PO1
+    /// B and D-G6 A: a quest script's AddToMap reveals the marker on the map
+    /// of everyone the quest is shown to): ObjectReference.AddToMap, an
+    /// everyone row every seat that runs it reports, judged by
+    /// [`marker_owner`] (the subject a map marker by the server's
+    /// master-file facts, the calling script a quest's, a topic info's or a
+    /// scene's whose quest the server holds live) and recorded with its
+    /// travel flag on the map-markers record of every player the quest is
+    /// shown to (thuum docs/verbs/map-markers.md: the world's for a world
+    /// quest, served at every login; the reporter's own for a quest each
+    /// seat keeps), relayed live as AddToMap to the other players shown it.
+    /// R2: recorded as reported, the marker, the cause and its live quest
+    /// consistency bounds, the calling script the reporter's word (thuum
+    /// docs/verbs/map-markers.md's Known limit; ADR-063's default rung). A
+    /// stopgap (ADR-073 decision 5 (c)), replaced by step 1's quest
+    /// record holding quest-owned markers (decision 2 (c)); deletes when
+    /// that record serves them.
+    Marker,
 }
 
 impl RecordKind {
     /// The bridge's number for the kind: 1 the ref state, 2 the standing, 3
-    /// a placement, 4 a player's own; 0 is no record.
+    /// a placement, 4 a player's own, 5 a quest's map marker; 0 is no
+    /// record.
     #[must_use]
     pub fn code(self) -> u8 {
         match self {
@@ -369,6 +423,7 @@ impl RecordKind {
             RecordKind::Standing => 2,
             RecordKind::Placement => 3,
             RecordKind::PlayerOwn => 4,
+            RecordKind::Marker => 5,
         }
     }
 }
@@ -388,6 +443,160 @@ pub enum Look {
     Only,
 }
 
+/// What the platform's seam or the client does with a row's call beyond its
+/// other cells (thuum ADR-073 step 4's S4): the seam's name lists
+/// (ScriptNatives.cpp's ten and the V-scene's scene starts) made one column,
+/// set by the overlay's entries. Each code is a list under decision 5 and
+/// says its class, its replacing rule and its deleting condition in
+/// [`Hook::line`], the "Content-specific code:" line of [`Hook::verb`]'s doc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hook {
+    /// Nothing beyond the row's other cells.
+    None,
+    /// Actor.Kill, KillSilent: batched, the death report's cause 3.
+    DeathReport,
+    /// ObjectReference.SetDestroyed on a trap family reference: batched,
+    /// DestructionStage's single-use result (ADR-068 D-S3 point 3).
+    TrapDestroyed,
+    /// ObjectReference.SetMotionType on a trap family body: batched for the
+    /// prop claim, neutralized on a followed body (D-S3 point 4).
+    TrapMotion,
+    /// ObjectReference.ApplyHavokImpulse on a trap family body: as
+    /// [`Hook::TrapMotion`], its magnitude the neutral argument.
+    TrapImpulse,
+    /// ReferenceAlias.ForceRefTo, Clear: batched on every seat as AliasFill
+    /// 79 (ADR-068 rung 4, amendment B).
+    AliasFill,
+    /// Game.GetPlayer: its result the acting player's figure inside another
+    /// player's acting scope (rung 5's return swap).
+    ActingReturn,
+    /// Quest.SetCurrentStageID: the acting scope carried to the stage it
+    /// sets, its cause marked (read 7's propagation, D-Q4 C).
+    QuestStage,
+    /// Quest.Start: as [`Hook::QuestStage`], for the start.
+    QuestStart,
+    /// Quest.Stop: as [`Hook::QuestStage`], for the stop.
+    QuestStop,
+    /// GlobalVariable.SetValue: never written on a player's own global inside
+    /// another player's acting scope (PQ-3).
+    PlayerGlobal,
+    /// ObjectReference.PlaceAtMe: a helper's placement inside this seat's own
+    /// player's effect (train 52's Fix 2, D-H1 B).
+    EffectHelper,
+    /// ObjectReference.Delete: a helper let go (train 52's Fix 2).
+    HelperDelete,
+    /// ObjectReference.AddItem: a leveled list on the seat's own player
+    /// parked until its roll lands (train 52's Fix 1).
+    LeveledLanding,
+    /// Scene.Start, ForceStart: counted and run inside a scope rooted at a
+    /// relay (train 53's V-scene, ADR-073 D-A2 C).
+    SceneStart,
+}
+
+impl Hook {
+    /// Every code, in the order of its number.
+    pub const ALL: [Hook; 15] = [
+        Hook::None,
+        Hook::DeathReport,
+        Hook::TrapDestroyed,
+        Hook::TrapMotion,
+        Hook::TrapImpulse,
+        Hook::AliasFill,
+        Hook::ActingReturn,
+        Hook::QuestStage,
+        Hook::QuestStart,
+        Hook::QuestStop,
+        Hook::PlayerGlobal,
+        Hook::EffectHelper,
+        Hook::HelperDelete,
+        Hook::LeveledLanding,
+        Hook::SceneStart,
+    ];
+
+    /// The code's number, skymp_wire.h's `SKYMP_NATIVE_HOOK_*`.
+    #[must_use]
+    pub fn code(self) -> u8 {
+        match self {
+            Hook::None => 0,
+            Hook::DeathReport => 1,
+            Hook::TrapDestroyed => 2,
+            Hook::TrapMotion => 3,
+            Hook::TrapImpulse => 4,
+            Hook::AliasFill => 5,
+            Hook::ActingReturn => 6,
+            Hook::QuestStage => 7,
+            Hook::QuestStart => 8,
+            Hook::QuestStop => 9,
+            Hook::PlayerGlobal => 10,
+            Hook::EffectHelper => 11,
+            Hook::HelperDelete => 12,
+            Hook::LeveledLanding => 13,
+            Hook::SceneStart => 14,
+        }
+    }
+
+    /// The code's name in the ledger and the generated client file.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Hook::None => "",
+            Hook::DeathReport => "death-report",
+            Hook::TrapDestroyed => "trap-destroyed",
+            Hook::TrapMotion => "trap-motion",
+            Hook::TrapImpulse => "trap-impulse",
+            Hook::AliasFill => "alias-fill",
+            Hook::ActingReturn => "acting-return",
+            Hook::QuestStage => "quest-stage",
+            Hook::QuestStart => "quest-start",
+            Hook::QuestStop => "quest-stop",
+            Hook::PlayerGlobal => "player-global",
+            Hook::EffectHelper => "effect-helper",
+            Hook::HelperDelete => "helper-delete",
+            Hook::LeveledLanding => "leveled-landing",
+            Hook::SceneStart => "scene-start",
+        }
+    }
+
+    /// The verb doc (thuum docs/verbs/) whose Ownership section carries the
+    /// code's "Content-specific code:" line; none for [`Hook::None`].
+    #[must_use]
+    pub fn verb(self) -> &'static str {
+        match self {
+            Hook::None => "",
+            Hook::DeathReport => "npc-fate.md",
+            Hook::TrapDestroyed | Hook::TrapMotion | Hook::TrapImpulse => "traps.md",
+            Hook::AliasFill | Hook::ActingReturn | Hook::QuestStage | Hook::QuestStart | Hook::QuestStop | Hook::SceneStart => "quest-stage.md",
+            Hook::PlayerGlobal => "player-globals.md",
+            Hook::EffectHelper | Hook::HelperDelete => "second-hand.md",
+            Hook::LeveledLanding => "papyrus-events.md",
+        }
+    }
+
+    /// The code's line under thuum ADR-073 decision 5: its class ((a) a
+    /// declared R3 set, (b) a consistency bound, (c) a stopgap), and for a
+    /// stopgap the rule that replaces it and the condition that deletes it.
+    #[must_use]
+    pub fn line(self) -> &'static str {
+        match self {
+            Hook::None => "",
+            Hook::DeathReport => "Actor.Kill and KillSilent are batched for the client's DeathReportService, which reads a script's kill as cause 3: a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the actor's change form carries its death); deletes when ChangeForm 72 carries a living actor's death and the death report reads its cause there",
+            Hook::TrapDestroyed => "ObjectReference.SetDestroyed on a trap family reference is batched as DestructionStage's single-use result (ADR-068 D-S3 point 3): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the reference's change form carries its destroyed flag); deletes when ChangeForm 72 carries a non-actor reference's destruction",
+            Hook::TrapMotion => "ObjectReference.SetMotionType on a trap family body is batched for PropService's claim and, on a body another seat streams, run with motion type 4 (Keyframed) (ADR-068 D-S3 point 4): a stopgap (decision 5 (c)), replaced by ADR-071's one prop stream (every Havok body one prop row, owned by the engine that set it moving); deletes when a trap body's claim comes from that stream's own motion read",
+            Hook::TrapImpulse => "ObjectReference.ApplyHavokImpulse on a trap family body is batched for PropService's claim and, on a body another seat streams, run with magnitude 0 (ADR-068 D-S3 point 4): a stopgap (decision 5 (c)), replaced by ADR-071's one prop stream; deletes with the trap-motion hook",
+            Hook::AliasFill => "ReferenceAlias.ForceRefTo and Clear are batched on every seat as AliasFill 79 (ADR-068 rung 4, amendment B; D-F1 C): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the quest's change form carries its alias fills, HYPOTHESIS until read); deletes when ChangeForm 72 carries a quest's aliases",
+            Hook::ActingReturn => "Game.GetPlayer's result is the acting player's figure inside another player's acting scope (ADR-068 rung 5's return swap): a stopgap (decision 5 (c)), replaced by D2's singleton sink evidence (the spec's New 1 and G8: a read whose result is the player singleton, by its sink); deletes when x-native-effects reads GetPlayer's result as the singleton and the rule keys on it",
+            Hook::QuestStage => "Quest.SetCurrentStageID carries the acting scope to the stage it sets (rung 5's read 7) and marks its cause (D-Q4 C): a stopgap (decision 5 (c)), replaced by decision 2 (c)'s quest record (the server's record of the quest's stages and run words, D-F1 C) carrying the stage's cause as decision 11's cause key; deletes when step 1's quest record and the forward take the cause from the record alone",
+            Hook::QuestStart => "Quest.Start carries the acting scope to the start and marks its cause: as the quest-stage hook, a stopgap (decision 5 (c)) with the same replacing rule and deleting condition",
+            Hook::QuestStop => "Quest.Stop carries the acting scope to the stop and marks its cause: as the quest-stage hook, a stopgap (decision 5 (c)) with the same replacing rule and deleting condition",
+            Hook::PlayerGlobal => "GlobalVariable.SetValue is skipped on a player's own global (playerGlobals) inside another player's acting scope (PQ-3): a stopgap (decision 5 (c)), replaced by the spec's New 1 acting-seat rule keyed on a global ADR-073 makes derived (playerGlobals from every reader); deletes when playerGlobals is derived and the scoped column carries it",
+            Hook::EffectHelper => "ObjectReference.PlaceAtMe of an activator, a static or a light inside this seat's own player's effect places a local helper (train 52's Fix 2, D-H1 B): a declared R3 set (decision 5 (a): an effect's local helpers, ADR-073's R3 list), its natives named by this hook until decision 13's spell channel types a spell's placement; deletes with spellPlacedObjects when that channel lands",
+            Hook::HelperDelete => "ObjectReference.Delete on a local helper lets it go (train 52's Fix 2): the effect-helper hook's declared R3 set (decision 5 (a)), deleting with it",
+            Hook::LeveledLanding => "ObjectReference.AddItem of a leveled list on the seat's own player is parked until its AddItemFunctor lands the roll (train 52's Fix 1, D-R1 C's leveled gap): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the player's inventory change form carries what landed); deletes when the player's inventory travels by its change form",
+            Hook::SceneStart => "Scene.Start and ForceStart are counted and run inside a scope rooted at a relay (train 53's V-scene, ADR-073 D-A2 C): a stopgap (decision 5 (c)), replaced by step 5a's scene row (decision 6, D-L2 B: the starting seat, the stage's cause seat, claims the scene's actors); deletes at 5a's scene row",
+        }
+    }
+}
+
 /// A parameter's Papyrus type, as the platform reads the frame's variable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Param {
@@ -401,6 +610,38 @@ pub enum Param {
     String,
     /// An object, its form id and type name on the wire, or None.
     Object,
+    /// An array of Bools: the wire's SnippetArg carries no array, so a row
+    /// with an array parameter is never relayed and no call fits it.
+    BoolArray,
+    /// An array of Ints.
+    IntArray,
+    /// An array of Floats.
+    FloatArray,
+    /// An array of Strings.
+    StringArray,
+    /// An array of objects.
+    ObjectArray,
+}
+
+impl Param {
+    /// Whether the parameter is an array, which no call on the wire fits.
+    #[must_use]
+    pub fn is_array(self) -> bool {
+        matches!(self, Param::BoolArray | Param::IntArray | Param::FloatArray | Param::StringArray | Param::ObjectArray)
+    }
+}
+
+/// What a call does inside another player's acting scope (the spec's New
+/// 1), the platform's to read from the row (SkympNativeRow's `scoped`;
+/// thuum ADR-073 step 4's review, SHOULD 4: one copy of the rule, natives-gen
+/// its maker, the overlay's stopgaps on it reaching the seam).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scoped {
+    /// It runs as the scope has it (the acting scope's swaps).
+    Runs,
+    /// It runs on the acting player's seat alone: PQ-3's skip, keyed on the
+    /// row's subject instead of a name.
+    ActingSeatAlone,
 }
 
 /// One native's row of the table.
@@ -424,22 +665,73 @@ pub struct Row {
     pub keep: Keep,
     /// Whether a call of it may cross as a firing's look.
     pub look: Look,
+    /// What a call of it does inside another player's acting scope.
+    pub scoped: Scoped,
     /// Its parameters in order (FunctionsDump.txt's types for the native).
     pub params: &'static [Param],
+    /// What the seam or the client does with its call beyond the rest.
+    pub hook: Hook,
+    /// The native is latent (FunctionsDump.txt's isLatent), which the
+    /// platform's install check holds against the VM's own binding.
+    pub latent: bool,
+    /// A derived row (thuum ADR-073 step 4's S5): the seam counts its call
+    /// by what it would do and runs it as before, and the server refuses it
+    /// by its row (`E_SCRIPTCALL_ROW`) until its batch unstages (S8). The
+    /// live rows (the fifty-three) are never staged.
+    pub staged: bool,
 }
 
 include!("natives_table.rs");
+
+/// The generated index's empty slot.
+const NO_ROW: u16 = u16::MAX;
+
+/// A pair's key for the generated index: FNV-1a over the class's and the
+/// name's bytes lower-cased, a dot between (Papyrus names compare without
+/// case). natives-gen places each row by it; [`row_index`] finds one by it.
+#[must_use]
+pub fn row_key_hash(cls: &str, func: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in cls.bytes().chain(std::iter::once(b'.')).chain(func.bytes()) {
+        hash = (hash ^ u64::from(b.to_ascii_lowercase())).wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// The first slot a key's probe reads in [`INDEX`].
+#[must_use]
+pub fn index_slot(hash: u64) -> usize {
+    usize::from(u16::try_from(hash & 0xffff).unwrap_or(0)) & INDEX_MASK
+}
 
 /// The natives whose relay sends a behavior graph event, the family
 /// ObjectAnimation (MsgType 71) carried: an accepted call of a row relayed
 /// as one of these also writes the "animates" line ObjectAnimation's handler
 /// wrote (b-puzzle-relay and its kin claim it), until rung 7 retires
-/// lastAnimation.
+/// lastAnimation. Content-specific code (thuum ADR-073 decision 5): a
+/// stopgap (decision 5 (c)), replaced by rung 7's script record carrying the
+/// graph's own state; deletes with lastAnimation at rung 7. The client reads
+/// it through natives-gen's NATIVE_GRAPH_EVENT_RELAYS, never a copy
+/// ([`relays_graph_event`]).
 const GRAPH_EVENT_RELAYS: [(&str, &str); 2] = [("ObjectReference", "PlayAnimation"), ("Debug", "SendAnimationEvent")];
 
-/// Argument indices for a relay of every argument: a native takes at most
-/// eleven.
-const EVERY_ARG: [u8; 11] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+/// Whether a relay of `cls`.`func` sends a behavior graph event
+/// ([`GRAPH_EVENT_RELAYS`]); names compare without case.
+#[must_use]
+pub fn relays_graph_event(cls: &str, func: &str) -> bool {
+    GRAPH_EVENT_RELAYS.iter().any(|(c, f)| c.eq_ignore_ascii_case(cls) && f.eq_ignore_ascii_case(func))
+}
+
+/// The most arguments a relay carries: a game native takes at most eleven
+/// (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15, "native supports max
+/// 11"), and a row with more (the platform's own TESModPlatform.Add and
+/// AddItemEx, twelve) is never relayed: natives_rules' derive gives it
+/// `Relay::Never` (thuum ADR-073 step 4's review, NIT 2).
+pub const MAX_RELAYED_ARGS: usize = 11;
+
+/// Argument indices for a relay of every argument, at most
+/// [`MAX_RELAYED_ARGS`].
+const EVERY_ARG: [u8; MAX_RELAYED_ARGS] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 /// Where the players' figures and the server's own forms begin: a client
 /// names neither (the server does).
@@ -454,10 +746,26 @@ const OWN_PLAYER: u32 = 0x14;
 const BY_RECORD: &str = " (a reference the server does not load, placed by its game-file record)";
 
 /// The row of `cls`.`func`, its place in [`TABLE`]; Papyrus names compare
-/// without case.
+/// without case. O(1) through the generated open-addressed [`INDEX`]
+/// (thuum ADR-073 step 4's S5, rule 12: the bridge asks it before the shape
+/// step's rate, so no packet scans the table): a probe from the key's slot
+/// reads at most the table's longest run, which natives-gen fixes and the
+/// tests pin, and stops at the first empty slot.
 #[must_use]
 pub fn row_index(cls: &str, func: &str) -> Option<usize> {
-    TABLE.iter().position(|r| r.cls.eq_ignore_ascii_case(cls) && r.func.eq_ignore_ascii_case(func))
+    let start = index_slot(row_key_hash(cls, func));
+    for probe in 0..INDEX.len() {
+        let at = start.wrapping_add(probe) & INDEX_MASK;
+        let row = *INDEX.get(at)?;
+        if row == NO_ROW {
+            return None;
+        }
+        let i = usize::from(row);
+        if TABLE.get(i).is_some_and(|r| r.cls.eq_ignore_ascii_case(cls) && r.func.eq_ignore_ascii_case(func)) {
+            return Some(i);
+        }
+    }
+    None
 }
 
 /// The row of `cls`.`func`.
@@ -467,6 +775,17 @@ pub fn row(cls: &str, func: &str) -> Option<&'static Row> {
 }
 
 impl Row {
+    /// An actor's look row (the Undead FX build; ADR-073 decision 6's asked
+    /// owner, the actor's simulator, [`actor_look_owner`]): an action row an
+    /// effect form's look keeps on its actor ([`Keep::Look`]), or an action
+    /// row of the Actor class, a render a script on an actor makes on it.
+    /// ObjectReference's animation rows stay the action and animation
+    /// streams' on an actor.
+    #[must_use]
+    pub fn actor_look(&self) -> bool {
+        self.kind == Kind::Action && (matches!(self.keep, Keep::Look(_)) || self.cls == "Actor")
+    }
+
     /// The native a receiver runs for an accepted call, none when the row is
     /// never relayed.
     #[must_use]
@@ -494,7 +813,7 @@ impl Row {
     #[must_use]
     pub fn graph_event_arg(&self) -> Option<u8> {
         let (cls, func) = self.relay_target()?;
-        if !GRAPH_EVENT_RELAYS.iter().any(|(c, f)| c.eq_ignore_ascii_case(cls) && f.eq_ignore_ascii_case(func)) {
+        if !relays_graph_event(cls, func) {
             return None;
         }
         self.params.iter().position(|p| *p == Param::String).and_then(|i| u8::try_from(i).ok())
@@ -677,6 +996,23 @@ pub enum SubjectKind {
     Actor,
 }
 
+/// Whose script made a call, by the game files' attachment of the calling
+/// script's class (its VMAD on a QUST, an INFO or a SCEN record: a quest's
+/// fragment or script, a topic info's fragment, a scene's fragment), for a
+/// quest's map marker ([`RecordKind::Marker`]); the class is never read by
+/// its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    /// No QUST, INFO or SCEN of the game files attaches the calling script.
+    None,
+    /// A quest's (QF_ fragments, and the quest's own scripts).
+    Quest,
+    /// A topic info's (TIF fragments), its quest its topic's (DIAL QNAM).
+    TopicInfo,
+    /// A scene's (SF fragments), its quest the scene's (SCEN PNAM).
+    Scene,
+}
+
 /// What the core knows of a reported call.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Facts {
@@ -731,6 +1067,19 @@ pub struct Facts {
     /// actor (MpActor::ReanimateAcceptedCaster, from the hit the server
     /// numbered: a server fact, never the reporter's word), 0 for none.
     pub reanimate_caster: u32,
+    /// The subject is a map marker by the server's master-file facts: a
+    /// reference whose base is the MapMarker STAT, Skyrim.esm 0x00000010
+    /// (thuum docs/verbs/map-markers.md; a quest marker's facts, gathered
+    /// for a [`RecordKind::Marker`] row alone; false otherwise).
+    pub marker: bool,
+    /// Whose script made the call (a quest marker's facts; [`Cause::None`]
+    /// otherwise).
+    pub cause: Cause,
+    /// The cause's quest is live for the reporter as the server holds it: a
+    /// world quest the journal records running or staged, or a Start Game
+    /// Enabled one it records no stop of; a quest the scope classes the
+    /// player's (a quest marker's facts; false otherwise).
+    pub cause_live: bool,
 }
 
 /// Why a reported call is refused.
@@ -890,9 +1239,13 @@ enum Channel {
 /// The channel a call of `row` leaves by: an action row the table relays to
 /// the subject's listeners (a world object's, its cell host's, or an actor's
 /// look, its simulator's), a state row it keeps as evidence or as its
-/// subject's record; any other row is refused by its row
-/// (`E_SCRIPTCALL_ROW`).
+/// subject's record, an everyone row it keeps as a record (AddToMap's quest
+/// marker, thuum ADR-073 step 4's S6: every seat that runs it reports it);
+/// any other row is refused by its row (`E_SCRIPTCALL_ROW`).
 fn channel_of(row: &Row) -> Result<Channel, Refusal> {
+    if row.staged {
+        return Err(refusal(Code::Row, "a staged row (thuum ADR-073 step 4's S5): counted on its seat and run there as before, never sent until its batch unstages".to_owned()));
+    }
     if row.look == Look::Only {
         // a row never relayed as an action crosses a look as the call itself
         let (cls, func) = row.relay_target().unwrap_or((row.cls, row.func));
@@ -900,7 +1253,9 @@ fn channel_of(row: &Row) -> Result<Channel, Refusal> {
     }
     match row.kind {
         Kind::Action => {}
-        Kind::State => {
+        // a creation is judged as a state row until ADR-073 decision 13's
+        // placement (the step 4 spec's 2.1)
+        Kind::State | Kind::Create => {
             return match row.keep {
                 Keep::Evidence => Ok(Channel::Evidence),
                 Keep::Record(kind) => Ok(Channel::Record(kind)),
@@ -910,14 +1265,26 @@ fn channel_of(row: &Row) -> Result<Channel, Refusal> {
                 )),
             };
         }
-        Kind::Everyone => return Err(refusal(Code::Row, "an everyone row: every seat runs it (rung 5), never relayed as an action".to_owned())),
+        // an everyone row with a record keep is that record's report from
+        // every seat that runs it (D-NT4 A's quest marker), judged by its
+        // record's owner step; every other everyone row stays its seat's
+        Kind::Everyone => {
+            return match row.keep {
+                Keep::Record(kind) => Ok(Channel::Record(kind)),
+                Keep::Nothing | Keep::Last | Keep::Evidence | Keep::Variable | Keep::Look(_) => {
+                    Err(refusal(Code::Row, "an everyone row: every seat runs it (rung 5), never relayed as an action".to_owned()))
+                }
+            };
+        }
         Kind::Local => return Err(refusal(Code::Row, "a local row: its consequence stays on its seat".to_owned())),
     }
     let Some((cls, func)) = row.relay_target() else {
         return Err(refusal(Code::Row, "an action row the table never relays".to_owned()));
     };
-    if !matches!(row.owner, Owner::CellHost | Owner::Simulator) || row.audience != Audience::Listeners {
-        return Err(refusal(Code::Row, format!("an action row owned by the {:?} for the {:?}: no relay before its rung", row.owner, row.audience)));
+    // the owner is asked at the owner step (thuum ADR-073 decision 6), never
+    // read from the row: an action row is relayed to its subject's listeners
+    if row.audience != Audience::Listeners {
+        return Err(refusal(Code::Row, format!("an action row for the {:?}: no relay before its rung", row.audience)));
     }
     Ok(Channel::Relay { cls, func })
 }
@@ -1046,6 +1413,10 @@ fn record_owner(subject: u32, kind: RecordKind, facts: &Facts) -> Result<(), Ref
             "the reporter's own player: a record row on it is its own seat's (the standing waits for rung 5's acting-player scope)".to_owned(),
         ));
     }
+    // D-NT4 A: a quest's marker is nobody's object; its owner is its cause
+    if kind == RecordKind::Marker {
+        return marker_owner(subject, facts);
+    }
     let placed = if facts.kind == SubjectKind::Record { BY_RECORD } else { "" };
     match (kind, facts.kind) {
         (_, SubjectKind::Unknown) => Err(refusal(Code::Owner, "the server holds no such reference".to_owned())),
@@ -1064,9 +1435,49 @@ fn record_owner(subject: u32, kind: RecordKind, facts: &Facts) -> Result<(), Ref
         (RecordKind::RefState | RecordKind::Placement, SubjectKind::WorldObject | SubjectKind::Record | SubjectKind::DoorOrContainer) => {
             hosts_at_epoch(facts, facts.owner, facts.owner_epoch, placed)
         }
-        // judged above, its subject alone
-        (RecordKind::PlayerOwn, _) => Ok(()),
+        // judged above, its subject alone, and its cause alone
+        (RecordKind::PlayerOwn | RecordKind::Marker, _) => Ok(()),
     }
+}
+
+/// The owner step on a quest's map marker ([`RecordKind::Marker`], thuum
+/// ADR-073 step 4's S6, Eli's D-NT4 A): the record's arm of
+/// [`record_owner`], which takes any reporter with a live fragment cause.
+/// The subject is a map marker by the server's master-file facts
+/// ([`Facts::marker`]: its base the MapMarker STAT, else
+/// `E_SCRIPTCALL_ROW`, AddToMap's record being a map marker's); the calling
+/// script is a quest's, a topic info's or a scene's by the game files'
+/// attachment ([`Facts::cause`], QF, TIF or SF: else `E_SCRIPTCALL_OWNER`,
+/// no cause to own the marker); and the cause's quest is live for the
+/// reporter as the server holds it ([`Facts::cause_live`], else
+/// `E_SCRIPTCALL_OWNER`). The rate is the record rows' own budget, spent at
+/// the shape step. No epoch is read (a map's marker is no hosted object's),
+/// and the travel flag is never judged (the engine's word, as discovery's
+/// is). R2: the three are consistency bounds (ADR-073 decision 2 (d)), not
+/// a validation of the cause, which comes from ScriptCall's `caller`, the
+/// reporter's word; so a seat can name any marker from any script a live
+/// quest attaches (thuum docs/verbs/map-markers.md's Known limit, the
+/// review of S6's SHOULD 5; fast travel stays off,
+/// disableFastTravelService.ts).
+fn marker_owner(subject: u32, facts: &Facts) -> Result<(), Refusal> {
+    if !facts.marker {
+        return Err(refusal(
+            Code::Row,
+            format!("{subject:x} is no map marker by the master files (its base is not the MapMarker STAT): AddToMap's record is a map marker's"),
+        ));
+    }
+    let cause = match facts.cause {
+        Cause::None => {
+            return Err(refusal(Code::Owner, "no fragment cause: the calling script is attached to no quest, topic info or scene of the game files".to_owned()));
+        }
+        Cause::Quest => "quest",
+        Cause::TopicInfo => "topic info",
+        Cause::Scene => "scene",
+    };
+    if !facts.cause_live {
+        return Err(refusal(Code::Owner, format!("the calling {cause}'s quest is not live for the reporter (no run, stage or start the server holds)")));
+    }
+    Ok(())
 }
 
 /// A reported call the shape step passed: its row, the subject it names and
@@ -1273,7 +1684,7 @@ impl ScriptCalls {
     /// arguments and the subject's form. A call refused here costs the core
     /// no lookup.
     pub fn shape(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64) -> Result<Shaped, Refusal> {
-        let record = row.is_some_and(|r| matches!(r.keep, Keep::Record(_)));
+        let record = row.is_some_and(|r| matches!(r.keep, Keep::Record(_)) && !r.staged);
         let (budgets, burst, per_second, whose) =
             if record { (&mut self.record_budgets, BURST_RECORD, PER_SECOND_RECORD, " (its record rows' own budget)") } else { (&mut self.budgets, BURST, PER_SECOND, "") };
         if !budgets.entry(sender).or_insert_with(|| Bucket::full(burst, now_ms)).take(burst, per_second, now_ms) {
@@ -1327,7 +1738,10 @@ impl ScriptCalls {
             Channel::Evidence => return keep_evidence(subject, facts),
             Channel::Record(kind) => {
                 return match record_owner(subject, kind, facts) {
-                    Ok(()) if kind == RecordKind::PlayerOwn => Verdict::Record { subject, seq: 0, kind },
+                    // a player's own row and a quest's marker take no
+                    // object's sequence: the one is each reporter's own
+                    // player, the other a map's, which no receiver orders
+                    Ok(()) if matches!(kind, RecordKind::PlayerOwn | RecordKind::Marker) => Verdict::Record { subject, seq: 0, kind },
                     Ok(()) => Verdict::Record { subject, seq: self.next_seq(subject), kind },
                     Err(refused) => Verdict::Refuse(refused),
                 };
@@ -1352,7 +1766,7 @@ impl ScriptCalls {
         };
         // an actor's look row (the Undead FX build): its simulator's, or a
         // dead thrall's reanimate caster's inside the ash window
-        if row.owner == Owner::Simulator {
+        if row.actor_look() {
             return match actor_look_owner(subject, facts) {
                 Ok(()) => self.actor_look(row, subject, method_self, relay_cls, relay_fn),
                 Err(refused) => Verdict::Refuse(refused),
@@ -1514,47 +1928,8 @@ mod tests {
     const HOST: u32 = 0xff00_0000;
     const GUEST: u32 = 0xff00_0001;
 
-    // the platform's copy of the table (skyrim-platform's NativeRows.inc,
-    // hand-written until thuum's ledger generates both) holds the same rows in
-    // the same order with the same kind, subject and relay: a cheap guard
-    // until one generator writes both files (rung 2's review, finding 9)
-    #[test]
-    fn the_platform_table_matches_this_one() {
-        let inc = include_str!("../../../../skyrim-platform/src/platform_se/skyrim_platform/NativeRows.inc");
-        let rows: Vec<&str> = inc.lines().map(str::trim).filter(|l| l.starts_with('{')).collect();
-        assert_eq!(rows.len(), TABLE.len(), "row count");
-        for (line, row) in rows.iter().zip(TABLE.iter()) {
-            let fields: Vec<&str> = line.trim_start_matches('{').trim_end_matches(['}', ',', ' ']).split(',').map(str::trim).collect();
-            let [cls, func, kind_field, subject_field, relay_field] = fields.as_slice() else {
-                panic!("five fields: {line}");
-            };
-            assert_eq!(*cls, format!("\"{}\"", row.cls), "{line}");
-            assert_eq!(*func, format!("\"{}\"", row.func), "{line}");
-            let kind = match row.kind {
-                Kind::Action => "NativeKind::Action",
-                Kind::State => "NativeKind::State",
-                Kind::Everyone => "NativeKind::Everyone",
-                Kind::Local => "NativeKind::Local",
-            };
-            assert_eq!(*kind_field, kind, "{line}");
-            let subject = match row.subject {
-                Subject::SelfRef => "NativeSubject::Self",
-                Subject::Arg0 => "NativeSubject::Arg0",
-                Subject::Arg0Method => "NativeSubject::Arg0Method",
-                Subject::Nothing => "NativeSubject::None",
-            };
-            assert_eq!(*subject_field, subject, "{line}");
-            let relay = match row.relay {
-                Relay::Same => "\"same\"".to_string(),
-                Relay::Twin { cls, func, .. } => format!("\"twin:{cls}.{func}\""),
-                Relay::Never => "\"none\"".to_string(),
-            };
-            assert_eq!(*relay_field, relay, "{line}");
-        }
-    }
-
     fn hosted(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false }
     }
 
     fn accepted(v: &Verdict) -> Accept {
@@ -1573,6 +1948,12 @@ mod tests {
 
     fn refused_by(shaped: Result<Shaped, Refusal>) -> Option<Code> {
         shaped.err().map(|r| r.code)
+    }
+
+    // the live rows (thuum ADR-073 step 4's S5 and S6): the table's first
+    // fifty-three, every other row staged
+    fn live() -> impl Iterator<Item = &'static Row> {
+        TABLE.iter().filter(|r| !r.staged)
     }
 
     #[test]
@@ -1971,55 +2352,66 @@ mod tests {
         // three trap rows, rung 4's seven (the standing's six and
         // ReferenceAlias.Clear), D-W2's Sound.Play and CreateDetectionEvent
         // and rung 5's seven player's own rows (D-E1 A's ChangeHeadPart the
-        // seventh), then the Undead FX build's eight look rows of an actor:
-        // "58 of 58 table rows bound". D-R1 C keeps the flip's AddItem and
-        // RemoveItem as the player's own inventory in place, so nine rows
-        // are the player's own, in player_own's order
-        assert_eq!(TABLE.len(), 58);
-        let own: Vec<(&str, &str)> = TABLE.iter().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func)).collect();
-        assert_eq!(own, crate::player_own::ROWS);
-        assert!(own.iter().all(|(c, f)| crate::player_own::Row::of(c, f).is_some()));
+        // seventh), then train 53's two scene starts (thuum ADR-073 step 4's
+        // S4, the V-scene hook), AddToMap's quest marker (S6, D-NT4 A) and the
+        // Undead FX build's eight look rows of an actor: "61 of 61 table rows
+        // bound". D-R1 C keeps the flip's AddItem and
+        // RemoveItem as the player's own inventory in place, so nine rows are
+        // the player's own, in player_own's order
+        assert_eq!(live().count(), 61);
+        let own: Vec<(&str, &str)> = live().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func)).collect();
+        assert_eq!(own, crate::player_own::rows().collect::<Vec<_>>());
+        assert_eq!(own.len(), 9);
+        assert!(own.iter().all(|(c, f)| crate::player_own::Row::of(c, f).is_some_and(|r| r.class() == *c)));
         assert_eq!((row_index("ObjectReference", "AddItem"), row_index("ObjectReference", "RemoveItem")), (Some(6), Some(7)));
         assert_eq!(row_index("Actor", "SetRace"), Some(43));
-        let actions: Vec<&str> = TABLE.iter().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
-        assert_eq!(
-            actions,
-            ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat", "Play", "CreateDetectionEvent", "Play", "Stop", "Play", "Stop", "SetEyeTexture", "SetAlpha", "SetCriticalStage", "AttachAshPile"]
-        );
-        // the Undead FX build's eight, an actor's looks, its simulator's:
-        // appended, so every earlier row keeps its place
-        let actor_looks: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Action && r.owner == Owner::Simulator).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        let actions: Vec<&str> = live().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
+        assert_eq!(actions, ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat", "Play", "CreateDetectionEvent", "Play", "Stop", "Play", "Stop", "SetEyeTexture", "SetAlpha", "SetCriticalStage", "AttachAshPile"]);
+        // the Undead FX build's eight, an actor's looks, its simulator's by the
+        // owner step (decision 6's asked owner, actor_look_owner): appended,
+        // so every earlier row keeps its place
+        let actor_looks: Vec<String> = live().filter(|r| r.actor_look()).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(
             actor_looks,
             ["EffectShader.Play", "EffectShader.Stop", "VisualEffect.Play", "VisualEffect.Stop", "Actor.SetEyeTexture", "Actor.SetAlpha", "Actor.SetCriticalStage", "Actor.AttachAshPile"]
         );
-        assert_eq!((row_index("Actor", "ChangeHeadPart"), row_index("EffectShader", "Play"), row_index("Actor", "AttachAshPile")), (Some(49), Some(50), Some(57)));
+        assert_eq!(
+            (row_index("Actor", "ChangeHeadPart"), row_index("ObjectReference", "AddToMap"), row_index("EffectShader", "Play"), row_index("Actor", "AttachAshPile")),
+            (Some(49), Some(52), Some(53), Some(60))
+        );
         // D-W2 A's look column: the six action rows also, the two motion rows
         // and the sound alone, every other row never
-        let looks = |look: Look| -> Vec<String> { TABLE.iter().filter(|r| r.look == look).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
+        let looks = |look: Look| -> Vec<String> { live().filter(|r| r.look == look).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
         assert_eq!(looks(Look::Also), ["ObjectReference.PlayAnimation", "ObjectReference.PlayAnimationAndWait", "Debug.SendAnimationEvent", "ObjectReference.SetAnimationVariableBool", "ObjectReference.SetAnimationVariableInt", "ObjectReference.SetAnimationVariableFloat"]);
         assert_eq!(looks(Look::Only), ["ObjectReference.SetMotionType", "ObjectReference.ApplyHavokImpulse", "Sound.Play", "ObjectReference.CreateDetectionEvent"]);
         assert_eq!(row_index("Sound", "Play"), Some(41));
         assert_eq!(row_index("ObjectReference", "CreateDetectionEvent"), Some(42));
         // one row goes to the cell's host alone: the detection event
-        let to_host: Vec<&str> = TABLE.iter().filter(|r| r.audience == Audience::Host).map(|r| r.func).collect();
+        let to_host: Vec<&str> = live().filter(|r| r.audience == Audience::Host).map(|r| r.func).collect();
         assert_eq!(to_host, ["CreateDetectionEvent"]);
-        for (i, r) in TABLE.iter().enumerate() {
+        for (i, r) in live().enumerate() {
             let name = format!("{}.{}", r.cls, r.func);
             // one row per pair, names compared without case
             assert_eq!(row_index(r.cls, r.func), Some(i), "{name}");
             assert!(r.params.len() <= EVERY_ARG.len(), "{name}");
             // an action row relays to the subject's listeners, its twin's
-            // arguments among the call's; every other row is never relayed.
-            // A world object's is its cell host's; an actor's look is its
-            // simulator's, on its self or an effect form's first argument,
-            // relayed as itself, kept as the actor's look or nowhere, and
-            // never a firing's look
+            // arguments among the call's; every other row is never relayed
+            // every owner on a subject is asked (ADR-073 decision 6), a
+            // creation's its creator's, nobody's row nobody's, and the seat's
+            // own row (Game.GetPlayer) its player's
+            let owner = match r.kind {
+                Kind::Everyone => Owner::Nobody,
+                Kind::Local => Owner::Player,
+                Kind::Create => Owner::Creator,
+                Kind::Action | Kind::State if r.keep == Keep::Record(RecordKind::Placement) => Owner::Creator,
+                Kind::Action | Kind::State => Owner::Asked,
+            };
+            assert_eq!(r.owner, owner, "{name}");
             if r.kind == Kind::Action {
                 let audience = r.audience == Audience::Listeners || (r.look == Look::Only && r.audience == Audience::Host);
-                assert!(r.relay_target().is_some() && audience && matches!(r.owner, Owner::CellHost | Owner::Simulator), "{name}");
+                assert!(r.relay_target().is_some() && audience, "{name}");
                 assert!(r.relay_args().iter().all(|&a| usize::from(a) < r.params.len()), "{name}");
-                if r.owner == Owner::Simulator {
+                if r.actor_look() {
                     assert!(matches!(r.subject, Subject::SelfRef | Subject::Arg0Method), "{name}");
                     assert_eq!((r.audience, r.relay, r.look), (Audience::Listeners, Relay::Same, Look::Never), "{name}");
                     assert!(matches!(r.keep, Keep::Nothing | Keep::Look(_)), "{name}");
@@ -2028,20 +2420,23 @@ mod tests {
                 // a row kept as evidence is an actor's state row, its
                 // simulator's, heard by nobody, its subject its self and its
                 // first parameter the object the evidence names
-                assert_eq!((r.kind, r.subject, r.owner, r.audience, r.relay), (Kind::State, Subject::SelfRef, Owner::Simulator, Audience::Nobody, Relay::Never), "{name}");
+                assert_eq!((r.kind, r.subject, r.audience, r.relay), (Kind::State, Subject::SelfRef, Audience::Nobody, Relay::Never), "{name}");
                 assert_eq!(r.params.first(), Some(&Param::Object), "{name}");
+            } else if r.keep == Keep::Record(RecordKind::Marker) {
+                // a quest's map marker (S6, D-NT4 A) is an everyone row on its
+                // self, every player shown the quest its audience, never
+                // relayed as an action (the core relays the record's own
+                // AddToMap), one Bool its travel flag
+                assert_eq!((r.kind, r.subject, r.audience, r.relay), (Kind::Everyone, Subject::SelfRef, Audience::Everyone, Relay::Never), "{name}");
+                assert_eq!(r.params, &[Param::Bool], "{name}");
             } else if let Keep::Record(kind) = r.keep {
                 // a row kept as its subject's record is a state row on its
-                // self, heard by nobody as an action, never relayed: the
-                // ref state and the placements a world object's (the cell's
-                // host), the standing an NPC's (its simulator)
+                // self, heard by nobody as an action, never relayed; whose
+                // record it is the owner step asks (record_owner: the cell's
+                // host for the ref state, the simulator for the standing, the
+                // reporter's own player for a player's own)
                 assert_eq!((r.kind, r.subject, r.audience, r.relay), (Kind::State, Subject::SelfRef, Audience::Nobody, Relay::Never), "{name}");
-                let owner = match kind {
-                    RecordKind::Standing => Owner::Simulator,
-                    RecordKind::PlayerOwn => Owner::Player,
-                    RecordKind::RefState | RecordKind::Placement => Owner::CellHost,
-                };
-                assert_eq!(r.owner, owner, "{name}");
+                assert!(matches!(kind, RecordKind::RefState | RecordKind::Standing | RecordKind::Placement | RecordKind::PlayerOwn), "{name}");
             } else {
                 assert_eq!((r.relay, r.keep), (Relay::Never, Keep::Nothing), "{name}");
             }
@@ -2053,7 +2448,7 @@ mod tests {
             // a look-only row is on a world object's own call: an action row's
             // shape or a trap row's state, never kept
             if r.look == Look::Only {
-                assert_eq!((r.keep, r.owner == Owner::Simulator), (Keep::Nothing, false), "{name}");
+                assert_eq!(r.keep, Keep::Nothing, "{name}");
             }
             // a kept row keeps a graph event
             if r.keep == Keep::Last {
@@ -2068,15 +2463,47 @@ mod tests {
                 assert_eq!(r.variable_kind(), None, "{name}");
             }
         }
-        let everyone: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
-        assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
+        let everyone: Vec<String> = live().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear", "ObjectReference.AddToMap"]);
         // the flip's nineteen state rows, D-S3's three, the standing's six and
-        // rung 5's seven player's own
-        assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 35);
+        // rung 5's seven player's own; the two scene starts are creations,
+        // judged as state rows (channel_of)
+        assert_eq!(live().filter(|r| r.kind == Kind::State).count(), 35);
+        let creations: Vec<String> = live().filter(|r| r.kind == Kind::Create).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        assert_eq!(creations, ["Scene.Start", "Scene.ForceStart"]);
+        assert_eq!((row_index("Scene", "Start"), row_index("Scene", "ForceStart")), (Some(50), Some(51)));
+        // S6's quest marker is appended after them: every earlier row keeps
+        // its place
+        assert_eq!(row_index("ObjectReference", "AddToMap"), Some(52));
+        assert_eq!(live().filter(|r| r.keep == Keep::Record(RecordKind::Marker)).map(|r| r.func).collect::<Vec<_>>(), ["AddToMap"]);
+        // the hooks (thuum ADR-073 step 4's S4): each code's rows, the seam's
+        // ten name lists and the V-scene's scene starts as one column, and
+        // every code a line under decision 5 naming its verb doc
+        let hooked = |hook: Hook| -> Vec<String> { live().filter(|r| r.hook == hook).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
+        assert_eq!(hooked(Hook::DeathReport), ["Actor.Kill", "Actor.KillSilent"]);
+        assert_eq!(hooked(Hook::TrapDestroyed), ["ObjectReference.SetDestroyed"]);
+        assert_eq!(hooked(Hook::TrapMotion), ["ObjectReference.SetMotionType"]);
+        assert_eq!(hooked(Hook::TrapImpulse), ["ObjectReference.ApplyHavokImpulse"]);
+        assert_eq!(hooked(Hook::AliasFill), ["ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
+        assert_eq!(hooked(Hook::ActingReturn), ["Game.GetPlayer"]);
+        assert_eq!(hooked(Hook::QuestStage), ["Quest.SetCurrentStageID"]);
+        assert_eq!(hooked(Hook::QuestStart), ["Quest.Start"]);
+        assert_eq!(hooked(Hook::QuestStop), ["Quest.Stop"]);
+        assert_eq!(hooked(Hook::PlayerGlobal), ["GlobalVariable.SetValue"]);
+        assert_eq!(hooked(Hook::EffectHelper), ["ObjectReference.PlaceAtMe"]);
+        assert_eq!(hooked(Hook::HelperDelete), ["ObjectReference.Delete"]);
+        assert_eq!(hooked(Hook::LeveledLanding), ["ObjectReference.AddItem"]);
+        assert_eq!(hooked(Hook::SceneStart), ["Scene.Start", "Scene.ForceStart"]);
+        for (i, hook) in Hook::ALL.iter().enumerate() {
+            assert_eq!(usize::from(hook.code()), i, "{hook:?}");
+            assert_eq!((hook.name().is_empty(), hook.verb().is_empty(), hook.line().is_empty()), (*hook == Hook::None, *hook == Hook::None, *hook == Hook::None), "{hook:?}");
+            assert!(*hook == Hook::None || hook.line().contains("decision 5 ("), "{hook:?}");
+            assert!(!hook.line().contains('\u{2014}'), "{hook:?}");
+        }
         assert_eq!(row("Game", "GetPlayer").map(|r| r.kind), Some(Kind::Local));
         // the three rows kept as their subject's variable (the fifty fixes'
         // D-C3 A)
-        let variables: Vec<&str> = TABLE.iter().filter(|r| r.keep == Keep::Variable).map(|r| r.func).collect();
+        let variables: Vec<&str> = live().filter(|r| r.keep == Keep::Variable).map(|r| r.func).collect();
         assert_eq!(variables, ["SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat"]);
         // the five rows kept as their actor's look (the client 3D keep's
         // review of eaa6ba47, findings 1 and 2), each kind once; the other
@@ -2102,19 +2529,90 @@ mod tests {
         }
         assert_eq!((LookKeep::of_code(0), LookKeep::of_code(6)), (None, None));
         // one row kept as evidence: a trap's hit on an actor (playtest 48)
-        let evidence: Vec<String> = TABLE.iter().filter(|r| r.keep == Keep::Evidence).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        let evidence: Vec<String> = live().filter(|r| r.keep == Keep::Evidence).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(evidence, ["ObjectReference.ProcessTrapHit"]);
         // the thirteen rows kept as their subject's record, by kind
-        let records = |kind: RecordKind| -> Vec<&str> { TABLE.iter().filter(|r| r.keep == Keep::Record(kind)).map(|r| r.func).collect() };
+        let records = |kind: RecordKind| -> Vec<&str> { live().filter(|r| r.keep == Keep::Record(kind)).map(|r| r.func).collect() };
         assert_eq!(records(RecordKind::RefState), ["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"]);
         assert_eq!(records(RecordKind::Placement), ["PlaceAtMe", "PlaceActorAtMe"]);
         assert_eq!(records(RecordKind::Standing), ["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"]);
-        assert!(TABLE.iter().filter(|r| matches!(r.keep, Keep::Record(RecordKind::Standing))).all(|r| r.cls == "Actor"));
+        assert!(live().filter(|r| matches!(r.keep, Keep::Record(RecordKind::Standing))).all(|r| r.cls == "Actor"));
         // rung 4's seven are appended: every earlier row keeps its place
         assert_eq!(row_index("ObjectReference", "ApplyHavokImpulse"), Some(33));
         assert_eq!(row_index("Actor", "SetFactionRank"), Some(34));
         assert_eq!(row_index("ReferenceAlias", "Clear"), Some(40));
         assert_eq!((RecordKind::RefState.code(), RecordKind::Standing.code(), RecordKind::Placement.code()), (1, 2, 3));
+        assert_eq!(RecordKind::Marker.code(), 5);
+    }
+
+    // thuum ADR-073 step 4's S4: channel_of reads no owner (decision 6, owners
+    // asked at the owner step), so an action row whose owner is asked is
+    // relayed, and a creation is judged as a state row until decision 13
+    #[test]
+    fn an_asked_action_row_is_relayed_and_a_creation_is_judged_as_state() {
+        let play = row("ObjectReference", "PlayAnimation");
+        assert_eq!(play.map(|r| r.owner), Some(Owner::Asked));
+        assert!(play.is_some_and(|r| matches!(channel_of(r), Ok(Channel::Relay { .. }))));
+        let mut s = ScriptCalls::default();
+        assert!(matches!(s.judge(play, &[Arg::String], &hosted(PILLAR), 0), Verdict::Accept(_)));
+        // every action row of the table passes channel_of
+        assert!(live().filter(|r| r.kind == Kind::Action).all(|r| channel_of(r).is_ok()), "an action row refused by its row");
+        // a scene's start: a creation, its starter's, with no record channel
+        let start = row("Scene", "Start");
+        assert_eq!(start.map(|r| (r.kind, r.owner, r.hook)), Some((Kind::Create, Owner::Creator, Hook::SceneStart)));
+        let refused = start.and_then(|r| channel_of(r).err());
+        assert_eq!(refused.as_ref().map(|r| r.code), Some(Code::Row));
+        assert!(refused.is_some_and(|r| r.why.starts_with("a state row with no record channel")));
+        assert_eq!(code(&s.judge(start, &[], &hosted(PILLAR), 0)), Some(Code::Row));
+    }
+
+    // step 4's S5: every native of FunctionsDump.txt has a row, the derived
+    // ones staged after the live, each found in O(1) by its pair without case
+    // and refused by its row until its batch unstages
+    #[test]
+    fn every_native_has_a_row_found_by_the_index_and_a_staged_one_is_refused() {
+        assert_eq!(TABLE.len(), 1410);
+        assert_eq!(TABLE.iter().filter(|r| r.staged).count(), 1349);
+        assert_eq!(TABLE.iter().position(|r| r.staged), Some(61));
+        assert_eq!(INDEX.len().checked_sub(1), Some(INDEX_MASK));
+        assert!(INDEX.len() >= TABLE.len().saturating_mul(2) && INDEX.len().is_power_of_two());
+        let mut longest = 0usize;
+        for (i, r) in TABLE.iter().enumerate() {
+            assert_eq!(row_index(r.cls, r.func), Some(i), "{}.{}", r.cls, r.func);
+            assert_eq!(row_index(&r.cls.to_ascii_uppercase(), &r.func.to_ascii_lowercase()), Some(i), "{}.{}", r.cls, r.func);
+            // the probe's length from the key's slot to the row's
+            let start = index_slot(row_key_hash(r.cls, r.func));
+            let at = INDEX.iter().position(|&x| usize::from(x) == i).unwrap_or_else(|| panic!("{}.{} has no slot", r.cls, r.func));
+            longest = longest.max(at.wrapping_sub(start) & INDEX_MASK);
+        }
+        // the longest probe a found pair reads (natives-gen's layout, pinned:
+        // a table whose probes grow past it is a hash to look at again)
+        assert!(longest <= 16, "longest probe {longest}");
+        // a pair no row holds stops at an empty slot
+        for (cls, func) in [("ObjectReference", "Unlock"), ("Debug", "Notifications"), ("", ""), ("ObjectReference.", "PlayAnimation")] {
+            assert_eq!(row_index(cls, func), None, "{cls}.{func}");
+        }
+        assert_eq!(INDEX.iter().filter(|&&x| x == NO_ROW).count(), INDEX.len().saturating_sub(TABLE.len()));
+        // Game.TeachWord, staged: the word wall's grant, refused by its row
+        // with no rate spent on the record budget
+        let teach = row("Game", "TeachWord");
+        assert_eq!(teach.map(|r| (r.kind, r.owner, r.staged)), Some((Kind::State, Owner::Player, true)));
+        let refused = teach.and_then(|r| channel_of(r).err());
+        assert!(refused.is_some_and(|r| r.code == Code::Row && r.why.starts_with("a staged row")));
+        let mut s = ScriptCalls::default();
+        assert_eq!(code(&s.judge(row("Actor", "SetGhost"), &[Arg::Bool], &hosted(PILLAR), 0)), Some(Code::Row));
+        // a staged action row is never relayed (ObjectReference.PlayGamebryoAnimation)
+        let gamebryo = row("ObjectReference", "PlayGamebryoAnimation");
+        assert_eq!(gamebryo.map(|r| (r.kind, r.staged)), Some((Kind::Action, true)));
+        assert!(gamebryo.is_some_and(|r| channel_of(r).is_err()));
+        // an array parameter fits no argument, and its row is never relayed
+        let forms = row("FormList", "AddForms");
+        assert_eq!(forms.map(|r| (r.params, r.relay)), Some((&[Param::ObjectArray][..], Relay::Never)));
+        assert!(TABLE.iter().filter(|r| r.params.iter().any(|p| p.is_array())).all(|r| r.relay == Relay::Never));
+        // the live rows' latency is the dump's (the platform's install check
+        // holds it against the VM's binding)
+        let latent: Vec<String> = live().filter(|r| r.latent).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        assert_eq!(latent.len(), 13, "{latent:?}");
     }
 
     // Bleak Falls Temple's ambush draugr 0x800a6, which the hanging blades
@@ -2134,7 +2632,7 @@ mod tests {
     // the draugr in the temple, simulated by the host (its cell's), the
     // reporter
     fn simulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false }
     }
 
     #[test]
@@ -2360,7 +2858,7 @@ mod tests {
 
     // an actor nobody simulates, its cell's host at epoch 3 the reporter
     fn unsimulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false }
     }
 
     #[test]
@@ -2803,6 +3301,143 @@ mod tests {
                             Code::Owner => prop_assert!(cell == 0 || (owner != 0 && owner == sender) || !loader),
                             other => prop_assert!(false, "unexpected {:?}", other),
                         }
+                    }
+                    other => prop_assert!(false, "unexpected {:?}", other),
+                }
+            }
+        }
+    }
+
+    // thuum ADR-073 step 4's S6 (Eli's D-NT4 A; D-PO1 B and D-G6 A): a quest
+    // script's AddToMap, the map-markers record's report from every seat that
+    // runs it. Riverwood's Sleeping Giant Inn rumor, Skyrim.esm INFO 0x24528
+    // (DIAL 0x24390 DA01IntroRumorsTopic, QNAM DA01Intro 0x92e25), whose
+    // fragment script TIF__00024528 names MapMarker 0x92496 (the Shrine of
+    // Azura's REFR, base 0x10 the MapMarker STAT); MS13's Camilla scene, SCEN
+    // 0x383a3 (PNAM MS13 0x39645), whose SF_MS13CamillaStage10Scene_000383A3
+    // names BleakFallsMapMarker 0x16232 (base 0x10); lab/esm.py's VMAD and
+    // NAME reads of the cached Skyrim.esm, 2026-11-15
+    mod quest_marker {
+        use super::*;
+        use proptest::prelude::*;
+
+        const AZURA: u32 = 0x92496;
+        const BLEAK_FALLS: u32 = 0x16232;
+
+        // the reporter's call of AddToMap(true) on a marker of the master
+        // files, its cause a topic info whose quest the server holds live
+        fn live_marker(self_id: u32) -> Facts {
+            Facts { kind: SubjectKind::Record, marker: true, cause: Cause::TopicInfo, cause_live: true, ..hosted(self_id) }
+        }
+
+        fn add_to_map() -> Option<&'static Row> {
+            row("ObjectReference", "AddToMap")
+        }
+
+        fn refused(v: Verdict) -> (Code, String) {
+            match v {
+                Verdict::Refuse(r) => (r.code, r.why),
+                other => panic!("not refused: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn the_row_is_an_everyone_row_kept_as_a_quest_marker_record() {
+            let r = add_to_map();
+            assert_eq!(
+                r.map(|r| (r.kind, r.subject, r.owner, r.audience, r.relay, r.keep, r.staged)),
+                Some((Kind::Everyone, Subject::SelfRef, Owner::Nobody, Audience::Everyone, Relay::Never, Keep::Record(RecordKind::Marker), false))
+            );
+            assert!(r.is_some_and(|r| matches!(channel_of(r), Ok(Channel::Record(RecordKind::Marker)))));
+            // every other everyone row keeps its refusal: every seat runs it
+            for other in live().filter(|r| r.kind == Kind::Everyone && r.keep == Keep::Nothing) {
+                let refused = channel_of(other).err();
+                assert!(refused.is_some_and(|r| r.code == Code::Row && r.why.starts_with("an everyone row")), "{}.{}", other.cls, other.func);
+            }
+        }
+
+        #[test]
+        fn a_live_cause_on_a_marker_is_recorded_with_no_sequence() {
+            let mut s = ScriptCalls::default();
+            assert_eq!(s.judge(add_to_map(), &[Arg::Bool], &live_marker(AZURA), 0), Verdict::Record { subject: AZURA, seq: 0, kind: RecordKind::Marker });
+            // every cause kind, from any reporter (no epoch, no host read): a
+            // guest's scene fragment, a quest's fragment at a stale epoch
+            let scene = Facts { sender: GUEST, owner: 0, cause: Cause::Scene, ..live_marker(BLEAK_FALLS) };
+            assert_eq!(s.judge(add_to_map(), &[Arg::Bool], &scene, 0), Verdict::Record { subject: BLEAK_FALLS, seq: 0, kind: RecordKind::Marker });
+            let quest = Facts { epoch: 9, cause: Cause::Quest, ..live_marker(BLEAK_FALLS) };
+            assert_eq!(s.judge(add_to_map(), &[Arg::Bool], &quest, 0), Verdict::Record { subject: BLEAK_FALLS, seq: 0, kind: RecordKind::Marker });
+            // no object's sequence moves
+            assert_eq!((s.seq_of(AZURA), s.seq_of(BLEAK_FALLS)), (0, 0));
+        }
+
+        #[test]
+        fn a_marker_needs_a_marker_a_cause_and_a_live_quest() {
+            let mut s = ScriptCalls::default();
+            let row = add_to_map();
+            let (not_marker, why) = refused(s.judge(row, &[Arg::Bool], &Facts { marker: false, ..live_marker(PILLAR) }, 0));
+            assert_eq!(not_marker, Code::Row);
+            assert!(why.starts_with("aa8cb is no map marker by the master files"), "{why}");
+            assert_eq!(
+                refused(s.judge(row, &[Arg::Bool], &Facts { cause: Cause::None, ..live_marker(AZURA) }, 0)),
+                (Code::Owner, "no fragment cause: the calling script is attached to no quest, topic info or scene of the game files".to_owned())
+            );
+            assert_eq!(
+                refused(s.judge(row, &[Arg::Bool], &Facts { cause_live: false, ..live_marker(AZURA) }, 0)),
+                (Code::Owner, "the calling topic info's quest is not live for the reporter (no run, stage or start the server holds)".to_owned())
+            );
+            // the reporter's own player is no marker's subject
+            assert_eq!(code(&s.judge(row, &[Arg::Bool], &Facts { kind: SubjectKind::Actor, ..live_marker(0x14) }, 0)), Some(Code::Row));
+            // the shape: one Bool, the travel flag
+            assert_eq!(code(&s.judge(row, &[], &live_marker(AZURA), 0)), Some(Code::Args));
+            assert_eq!(code(&s.judge(row, &[Arg::Number], &live_marker(AZURA), 0)), Some(Code::Args));
+        }
+
+        #[test]
+        fn markers_spend_the_record_rows_budget() {
+            let mut s = ScriptCalls::default();
+            let row = add_to_map();
+            let f = live_marker(AZURA);
+            for _ in 0..BURST_RECORD {
+                assert!(matches!(s.judge(row, &[Arg::Bool], &f, 0), Verdict::Record { .. }));
+            }
+            assert_eq!(code(&s.judge(row, &[Arg::Bool], &f, 0)), Some(Code::Rate));
+            // the actions' budget is the actions' own
+            assert!(matches!(s.judge(super::row("ObjectReference", "PlayAnimation"), &[Arg::String], &hosted(PILLAR), 0), Verdict::Accept(_)));
+            // a second later, the record rows' own refill
+            assert!(matches!(s.judge(row, &[Arg::Bool], &f, 1000), Verdict::Record { .. }));
+        }
+
+        proptest! {
+            // the marker's owner step over any facts: recorded with no
+            // sequence exactly when the subject is a marker, the cause one
+            // of the three and its quest live, and never the reporter's own
+            // player; any other verdict a refusal by row or owner
+            #[test]
+            fn recorded_iff_a_marker_with_a_live_cause(
+                self_id in prop_oneof![Just(AZURA), Just(BLEAK_FALLS), Just(0x14u32), 1u32..0xff00_0000],
+                sender in prop_oneof![Just(HOST), Just(GUEST)],
+                epoch in 0u32..5,
+                kind in prop_oneof![Just(SubjectKind::Unknown), Just(SubjectKind::WorldObject), Just(SubjectKind::Record), Just(SubjectKind::DoorOrContainer), Just(SubjectKind::Actor)],
+                marker in any::<bool>(),
+                cause in prop_oneof![Just(Cause::None), Just(Cause::Quest), Just(Cause::TopicInfo), Just(Cause::Scene)],
+                cause_live in any::<bool>(),
+                travel in any::<bool>(),
+            ) {
+                let _ = travel;
+                let mut s = ScriptCalls::default();
+                let facts = Facts { sender, epoch, kind, marker, cause, cause_live, ..hosted(self_id) };
+                let takes = self_id != 0x14 && marker && cause != Cause::None && cause_live;
+                match s.judge(add_to_map(), &[Arg::Bool], &facts, 0) {
+                    Verdict::Record { subject, seq, kind: RecordKind::Marker } => {
+                        prop_assert!(takes);
+                        prop_assert_eq!((subject, seq), (self_id, 0));
+                        prop_assert_eq!(s.seq_of(self_id), 0);
+                    }
+                    Verdict::Refuse(r) => {
+                        prop_assert!(!takes);
+                        prop_assert!(matches!(r.code, Code::Row | Code::Owner), "{:?}", r.code);
+                        let dash = !r.why.contains('\u{2014}');
+                        prop_assert!(dash, "a refusal's words hold no em dash");
                     }
                     other => prop_assert!(false, "unexpected {:?}", other),
                 }

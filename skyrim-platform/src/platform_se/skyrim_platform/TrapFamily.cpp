@@ -67,6 +67,14 @@ namespace {
 //   SoundTrap's sets itself Dynamic and pushes itself (ApplyHavokImpulse):
 //   the winning copies' disassembly (lab/pex.py), each run by the seat
 //   whose copy fired
+// Content-specific code (thuum ADR-073 decision 5): the four roots and the
+// "trap" prefix are script class names standing for the family's owner, a
+// stopgap (decision 5 (c)) for ADR-068 D-S3 point 1 (traps follow the
+// interaction), replaced by decision 6's toucher row (a trap's firing owned
+// by the seat whose engine touched it, asked through step 5's owner_of
+// mirrored from the server's owner table; this replacing rule is a reading
+// of decision 6, not a cited decision); deletes when owner_of answers a
+// trap's firing seat. thuum docs/verbs/traps.md carries the same line
 constexpr const char kTriggerRoot[] = "TrapTriggerBase";
 constexpr const char* kFamilyRoots[] = { "TrapBase", kTriggerRoot,
                                          "TrapHitBase", "HazardBase" };

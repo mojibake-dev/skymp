@@ -16,6 +16,8 @@ import {
   once, // TODO: use this.controller.once instead
   Spell,
   storage, // TODO: use this.sp.storage instead
+  MenuOpenEvent,
+  MenuCloseEvent,
 } from 'skyrimPlatform';
 
 import * as messages from '../../messages';
@@ -28,7 +30,8 @@ import { setActorValuePercentage } from '../../sync/actorvalues';
 import { applyAppearanceToPlayer } from '../../sync/appearance';
 import { withOverlayRace } from '../../sync/raceOverlay';
 import { applyEquipment, isBadMenuShown, applyPlayerHands, Equipment, equippedAmmoAmong, handsTouchedBy } from '../../sync/equipment';
-import { Inventory, applyInventory, ApplyInventoryReport } from '../../sync/inventory';
+import { Inventory, applyInventory, ApplyInventoryReport, keepSurplus } from '../../sync/inventory';
+import { holdBook, releaseBook, heldBookBases } from '../../sync/bookHold';
 import { ContainerApplyQueue } from '../../view/containerApplyQueue';
 import { Movement } from '../../sync/movement';
 import { syncSpells } from '../../sync/spell';
@@ -131,6 +134,13 @@ const pcInvKept = (now: number): Map<number, number> | undefined => {
     kept = kept ?? new Map<number, number>();
     kept.set(baseId, held.sides);
   });
+  // thuum playtest 52 break 3 (sync/bookHold.ts): an open world book's base
+  // keeps the engine's surplus while its Book Menu decides and through a
+  // Take's echo, so the close still reads the Take's copy
+  heldBookBases(now).forEach((baseId) => {
+    kept = kept ?? new Map<number, number>();
+    kept.set(baseId, (kept.get(baseId) ?? 0) | keepSurplus);
+  });
   return kept;
 };
 
@@ -219,6 +229,21 @@ const maxQueuedActions = 16;
 // bCastReady 20, NotCasting 59), packed one byte each
 const figureCastingBooleanIndexes = [5, 7, 8, 14, 15, 20, 59];
 
+// a world book's open on this seat, from the server's open reply to its Book
+// Menu's close (RemoteServer's book branch)
+interface BookOpen {
+  remoteId: number;
+  localId: number;
+  baseId: number;
+  // the reference's parent cell before the engine's activation (0 for none)
+  cellId: number;
+  // the player's count of the base before the engine's activation
+  heldBefore: number;
+  menuOpened: boolean;
+  // the open deadline's timer (TimersService), 0 when none runs
+  deadline: number;
+}
+
 export class RemoteServer extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
@@ -250,6 +275,10 @@ export class RemoteServer extends ClientListener {
     this.controller.emitter.on("actorJumpMessage", (e) => this.onActorJumpMessage(e));
     this.controller.emitter.on("updateAnimVariablesMessage", (e) => this.onUpdateAnimVariablesMessage(e));
     this.controller.emitter.on("updateActionMessage", (e) => this.onUpdateActionMessage(e));
+    // the books client half: a world book's Book Menu, opened on the
+    // server's reply, is decided at its close (onBookMenuClose)
+    this.controller.on("menuOpen", (e) => this.onBookMenuOpen(e));
+    this.controller.on("menuClose", (e) => this.onBookMenuClose(e));
 
   }
 
@@ -341,7 +370,16 @@ export class RemoteServer extends ClientListener {
         }
       }
 
+      // the books client half (onBookMenuClose): the facts a world book's
+      // close is decided by, read before the engine's activation
+      const book = baseType === FormType.Book && baseObject ? this.bookOpenAt(refr, remoteId, baseObject) : undefined;
+
       refr.activate(Game.getPlayer(), true);
+
+      if (book !== undefined) {
+        this.awaitBookMenu(book);
+        return;
+      }
 
       let functionChecker: (() => boolean) | null = null;
       // a bed's own open fact, set on the furniture path alone (F2 below)
@@ -445,6 +483,173 @@ export class RemoteServer extends ClientListener {
       })().catch((err) => logError(this, "onOpenContainerMesage - the open's chain threw", err));
     });
   }
+
+  // thuum playtest 52 break 3, the books client half (the R-B read,
+  // lab/.cache/drafts/reads-53/r-rw-and-r-b.md; x-book-take v1's read of
+  // 20261115-040825). The server half (the fork's MpObjectReference::
+  // ProcessActivateNormal book branch, ProcessActivateSecond's, and
+  // ActionListener::OnActivate's pickup rule; 2255e2d4, 667753a6) answers a
+  // player's activation of a world book that teaches no spell with this open
+  // reply and takes nothing, keeping the book open for that player; the
+  // activate above runs the engine's own activation of the book, which opens
+  // this game's Book Menu (R3; 040825 read it open from the same default
+  // processing only call, rehearsed by its lever, its kShow 183 ms after the
+  // activate). The menu's close is decided by outcome, never by mechanism:
+  // the reference gone from the world (not found, deleted, disabled, or out
+  // of the cell it stood in) and the player holding more of its base than
+  // before the open is a Take, sent first as the one Activate the server's
+  // book branch takes as the pickup; anything else is a close, sent as the
+  // closing activation (isSecondActivation true), which forgets the open.
+  // Exactly one of the two per open, each with its line; a refused case (no
+  // menu within bookMenuDeadlineMs, the reference gone with no copy held, a
+  // copy held with the reference still placed) sends the closing activation
+  // and logs its own; an open replaced by the server's next before its close
+  // sends nothing (the server forgets an open at the player's activation of
+  // anything else that reaches ProcessActivateNormal). No scan and no new
+  // crossing (rule 9): the menu's own events decide, Skyrim Platform's
+  // menuOpen and menuClose, which already reach JS for LockService and the
+  // other menu listeners (raised on the update after the engine's
+  // MenuOpenCloseEvent, skyrim-platform EventHandler.cpp, so natives are
+  // legal there, as LockService reads them), and one TimersService
+  // deadline. The two loops that would erase the facts first are held for
+  // the book (sync/bookHold.ts).
+  // HYPOTHESIS until x-book-take v1.1 reads it: the Take is the menu's Accept
+  // calling the player's PickUpObject (CommonLibSSE-NG include/RE/A/Actor.h:
+  // 402, slot 0CC) straight from BookMenu::ProcessMessage, with no
+  // ActivateRef and no script event (thuum lab/frida/book-take.js's header,
+  // the static read), the reference leaving the world and the base landing
+  // in the player's inventory before the menu's close event; the menu's take
+  // is on E ("E Steal" on an owned book in 040825's shots, where Enter
+  // raised no user event)
+  private bookOpenAt(refr: ObjectReference, remoteId: number, base: Form): BookOpen {
+    const player = Game.getPlayer();
+    const cell = refr.getParentCell();
+    return {
+      remoteId,
+      localId: refr.getFormID(),
+      baseId: base.getFormID(),
+      cellId: cell ? cell.getFormID() : 0,
+      heldBefore: player ? player.getItemCount(base) : 0,
+      menuOpened: false,
+      deadline: 0,
+    };
+  }
+
+  private awaitBookMenu(book: BookOpen): void {
+    const last = this.bookOpen;
+    if (last !== undefined) {
+      this.endBookOpen(last);
+      logLab("verb:books", `E_BOOK_OPEN_SUPERSEDED: book ${last.remoteId.toString(16)} (base ${last.baseId.toString(16)}): the server's open of book ${book.remoteId.toString(16)} came before its Book Menu closed; nothing sent for ${last.remoteId.toString(16)} (the activation the new open answers made the server forget it)`);
+    }
+    this.bookOpen = book;
+    holdBook(book.localId, book.baseId, Infinity, "while its Book Menu decides");
+    book.deadline = this.controller.lookupListener(TimersService).setTimeout(() => this.onBookMenuDeadline(book), RemoteServer.bookMenuDeadlineMs);
+    logLab("verb:books", `book ${book.remoteId.toString(16)} (base ${book.baseId.toString(16)}): the server's open run here; waiting for the Book Menu (held ${book.heldBefore})`);
+  }
+
+  private onBookMenuOpen(e: MenuOpenEvent): void {
+    const book = this.bookOpen;
+    if (e.name !== Menu.Book || book === undefined || book.menuOpened) {
+      return;
+    }
+    book.menuOpened = true;
+    logLab("verb:books", `book ${book.remoteId.toString(16)}: the Book Menu is open`);
+  }
+
+  private onBookMenuDeadline(book: BookOpen): void {
+    book.deadline = 0;
+    if (this.bookOpen !== book || book.menuOpened) {
+      return;
+    }
+    // RE::BookMenu::MENU_NAME (CommonLibSSE-NG include/RE/B/BookMenu.h:36)
+    if (Ui.isMenuOpen(Menu.Book)) {
+      book.menuOpened = true;
+      logLab("verb:books", `book ${book.remoteId.toString(16)}: the Book Menu is open with no menuOpen event within ${RemoteServer.bookMenuDeadlineMs} ms; its close decides`);
+      return;
+    }
+    this.endBookOpen(book);
+    this.sendBookActivation(book, true);
+    logLab("verb:books", `E_BOOK_MENU_NONE: book ${book.remoteId.toString(16)} (base ${book.baseId.toString(16)}): no Book Menu within ${RemoteServer.bookMenuDeadlineMs} ms of the open; closing activation sent`);
+  }
+
+  private onBookMenuClose(e: MenuCloseEvent): void {
+    if (e.name !== Menu.Book) {
+      return;
+    }
+    const book = this.bookOpen;
+    if (book === undefined) {
+      // ADR-073 decision 7: a Book Menu no server open is pending for (a
+      // book read from the inventory, a menu the engine opened by itself,
+      // one that showed after E_BOOK_MENU_NONE sent its closing activation)
+      // sends nothing; said once a session, since every inventory read
+      // closes here
+      if (!this.bookMenuCloseUnownedLogged) {
+        this.bookMenuCloseUnownedLogged = true;
+        logLab("verb:books", "the Book Menu closed with no server open pending here (an inventory read, or a menu after E_BOOK_MENU_NONE); nothing sent (said once a session)");
+      }
+      return;
+    }
+    this.endBookOpen(book);
+    const refr = ObjectReference.from(Game.getFormEx(book.localId));
+    const deleted = refr === null || refr.isDeleted();
+    const disabled = refr !== null && refr.isDisabled();
+    const cell = refr === null ? null : refr.getParentCell();
+    const cellId = cell ? cell.getFormID() : 0;
+    const gone = deleted || disabled || cellId !== book.cellId;
+    const base = Game.getFormEx(book.baseId);
+    const player = Game.getPlayer();
+    const heldNow = player && base ? player.getItemCount(base) : 0;
+    const gained = heldNow > book.heldBefore;
+    const id = book.remoteId.toString(16);
+    const facts = `(reference ${refr === null ? "not found" : "found"}, deleted ${deleted}, disabled ${disabled}, cell ${book.cellId.toString(16)} to ${cellId.toString(16)}; base ${book.baseId.toString(16)} held ${book.heldBefore} to ${heldNow}; menu seen open ${book.menuOpened})`;
+    if (gone && gained) {
+      this.sendBookActivation(book, false);
+      // the Take's echo, as an own AddItem's (ScriptCallService's
+      // ownItemHoldMs): the server's SetInventory and harvested word come
+      // back within it, a refused Take's record landing at its lapse
+      holdBook(book.localId, book.baseId, Date.now() + RemoteServer.bookEchoMs, "until the server's record of its Take comes back");
+      logLab("verb:books", `book ${id}: taken in the Book Menu ${facts}; its Take sent as an Activate`);
+      return;
+    }
+    this.sendBookActivation(book, true);
+    if (gone) {
+      logLab("verb:books", `E_BOOK_TAKE_UNHELD: book ${id}: the reference left the world at the Book Menu's close with no more of its base held ${facts}; closing activation sent, no Take`);
+    } else if (gained) {
+      logLab("verb:books", `E_BOOK_TAKE_PLACED: book ${id}: more of its base held at the Book Menu's close with the reference still placed ${facts}; closing activation sent, no Take`);
+    } else {
+      logLab("verb:books", `book ${id}: the Book Menu closed with nothing taken ${facts}; closing activation sent`);
+    }
+  }
+
+  // the open's end, whichever decides it: its deadline stopped, its holds
+  // released (a Take's echo hold follows), the book forgotten
+  private endBookOpen(book: BookOpen): void {
+    if (book.deadline !== 0) {
+      // never undefined: TimersService.clearTimeout(undefined) clears every timer
+      this.controller.lookupListener(TimersService).clearTimeout(book.deadline);
+      book.deadline = 0;
+    }
+    releaseBook(book.localId);
+    if (this.bookOpen === book) {
+      this.bookOpen = undefined;
+    }
+  }
+
+  private sendBookActivation(book: BookOpen, isSecondActivation: boolean): void {
+    const message: ActivateMessage = {
+      t: messages.MsgType.Activate,
+      data: { caster: 0x14, target: book.remoteId, isSecondActivation },
+    };
+    this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
+  }
+
+  private bookOpen: BookOpen | undefined;
+  // onBookMenuClose's line for a close with no open pending, once a session
+  private bookMenuCloseUnownedLogged = false;
+  // the Book Menu showed 183 ms after the activate in 040825 (its trace's
+  // rows 9 to 15); a menu not open by this is the engine's refusal
+  private static readonly bookMenuDeadlineMs = 5000;
+  private static readonly bookEchoMs = 10_000;
 
   // D71: a released body's open, step by step on the timers service (the
   // handler's awaits after the AI switch never resumed in four lab runs):

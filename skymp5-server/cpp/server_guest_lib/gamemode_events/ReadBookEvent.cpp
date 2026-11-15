@@ -15,9 +15,11 @@ constexpr uint32_t kFirstSkillAv = 6;
 constexpr uint32_t kLastSkillAv = 23;
 }
 
-ReadBookEvent::ReadBookEvent(MpActor* actor_, uint32_t baseId_)
+ReadBookEvent::ReadBookEvent(MpActor* actor_, uint32_t baseId_,
+                             RecordSend recordSend_)
   : actor(actor_)
   , baseId(baseId_)
+  , recordSend(recordSend_)
 {
 }
 
@@ -40,6 +42,20 @@ std::string ReadBookEvent::GetArgumentsJsonArray() const
 bool ReadBookEvent::SpellLearned() const
 {
   return spellLearned;
+}
+
+bool ReadBookEvent::RecordHeld() const
+{
+  return recordHeld;
+}
+
+void ReadBookEvent::SendRecord()
+{
+  if (recordSend == RecordSend::kNow) {
+    actor->SendActorValueRecord();
+  } else {
+    recordHeld = true;
+  }
 }
 
 void ReadBookEvent::OnFireSuccess(WorldState* worldState)
@@ -83,12 +99,17 @@ void ReadBookEvent::OnFireSuccess(WorldState* worldState)
                    actor->GetFormId(), baseId, skillAv);
       return;
     }
+    // thuum docs/verbs/books.md (S2): a world book's read at the server's
+    // open holds the record for the open's end, after its game's engine has
+    // raised the skill at the Book Menu's open; the lines say so
+    const bool atOpenEnd = recordSend == RecordSend::kAtOpenEnd;
     if (actor->IsBookRead(baseId)) {
       spdlog::info("[verb:leveling] {:x} reads skill book {:x} again (skill "
                    "{}): read before, nothing; the record goes back to its "
-                   "game",
-                   actor->GetFormId(), baseId, skillAv);
-      actor->SendActorValueRecord();
+                   "game{}",
+                   actor->GetFormId(), baseId, skillAv,
+                   atOpenEnd ? " at its open's end" : "");
+      SendRecord();
       return;
     }
     if (!worldState->applySkillBook) {
@@ -97,14 +118,24 @@ void ReadBookEvent::OnFireSuccess(WorldState* worldState)
                    actor->GetFormId(), baseId, skillAv);
       return;
     }
-    if (worldState->applySkillBook(*actor, static_cast<uint8_t>(skillAv))) {
+    if (worldState->applySkillBook(*actor, static_cast<uint8_t>(skillAv),
+                                   !atOpenEnd)) {
       actor->MarkBookRead(baseId);
-      spdlog::info("[verb:leveling] {:x} reads skill book {:x}: skill {} one "
-                   "level up",
-                   actor->GetFormId(), baseId, skillAv);
+      spdlog::info(
+        "[verb:leveling] {:x} reads skill book {:x}: skill {} one "
+        "level up{}",
+        actor->GetFormId(), baseId, skillAv,
+        atOpenEnd ? "; the record goes to its game at its open's end" : "");
+      recordHeld = atOpenEnd;
     }
     return;
   }
+
+  // ADR-073 decision 7: a book that teaches neither (a note, a journal, a
+  // lore book) raises nothing, and the branch says so
+  spdlog::info("[verb:books] {:x} reads book {:x}: no skill book, nothing to "
+               "raise",
+               actor->GetFormId(), baseId);
 }
 
 void ReadBookEvent::OnFireBlocked(WorldState* worldState)
@@ -119,8 +150,9 @@ void ReadBookEvent::OnFireBlocked(WorldState* worldState)
   if (!bookData.IsFlagSet(espm::BOOK::Flags::TeachesSpell)) {
     if (bookData.IsFlagSet(espm::BOOK::Flags::TeachesSkill)) {
       // the seat's own engine raised the skill when the book opened; the
-      // record goes back so its number is the server's (leveling.md)
-      actor->SendActorValueRecord();
+      // record goes back so its number is the server's (leveling.md), at
+      // once or at a world book's open's end (books.md, S2)
+      SendRecord();
     }
     return;
   }

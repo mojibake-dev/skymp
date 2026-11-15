@@ -1526,8 +1526,9 @@ void PartOne::Init()
   };
   // and a skill book's level (ReadBookEvent's skill branch): the increment
   // is the server's (leveling.md, skill books)
-  worldState.applySkillBook = [this](MpActor& actor, uint8_t skillAv) {
-    return ApplySkillBook(actor, skillAv);
+  worldState.applySkillBook = [this](MpActor& actor, uint8_t skillAv,
+                                     bool sendRecord) {
+    return ApplySkillBook(actor, skillAv, sendRecord);
   };
   // and a hosted NPC's door (npc-handoff D6, and D9's pass through a door
   // since 2026-10-28): the crossing judged by the move verdict for its
@@ -5888,16 +5889,29 @@ const char* LevelingRefusal(uint8_t why)
   return why < 4 ? kWhy[why] : "E_SKILL_UNKNOWN";
 }
 
+// when WriteLevelingOutcome sends the record to the player's game
+enum class LevelingSend
+{
+  // a skill use's: when a level moved
+  kOnLevel,
+  // a skill book's read: always, the seat's own increment replaced by this
+  // number
+  kAlways,
+  // a world skill book's read at its open: never here, the caller sends it
+  // at the open's end, after the seat's engine raised the skill itself
+  // (docs/verbs/books.md, S2)
+  kCaller
+};
+
 // the judged standing into the record: the skill's progress entry (by the
 // engine's skill index) and its base (the level the game shows), the
 // character; then the record to the actor and the events to the log. The
-// record goes to the game when a level moved, or always with `sendAlways`
-// (a skill book's read: the seat's own increment is replaced by this number)
+// record goes to the game as `send` says; the perk state when a level moved
 void WriteLevelingOutcome(MpActor& actor, ActorValueRecord& record,
                           uint8_t skillAv,
                           const skymp::rules::LevelingOutcome& outcome,
                           const skymp::rules::LevelingTable& leveling,
-                          bool perksEnabled, bool sendAlways)
+                          bool perksEnabled, LevelingSend send)
 {
   const uint8_t skillIndex = static_cast<uint8_t>(skillAv - kFirstSkillAv);
   for (const auto& s : outcome.skills) {
@@ -5939,13 +5953,15 @@ void WriteLevelingOutcome(MpActor& actor, ActorValueRecord& record,
                    actor.GetFormId(), e.level);
     }
   }
-  if (sendAlways || !outcome.events.empty()) {
+  const bool leveled = !outcome.events.empty();
+  if (send == LevelingSend::kAlways ||
+      (send == LevelingSend::kOnLevel && leveled)) {
     // the game shows the new level and the bar from the record (R0)
     actor.SendActorValueRecord();
-    // a level moves the perk points (thuum docs/verbs/perks.md)
-    if (perksEnabled && !outcome.events.empty()) {
-      actor.SendPerkState();
-    }
+  }
+  // a level moves the perk points (thuum docs/verbs/perks.md)
+  if (perksEnabled && leveled) {
+    actor.SendPerkState();
   }
 }
 }
@@ -5971,11 +5987,11 @@ bool PartOne::ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount)
     return false;
   }
   WriteLevelingOutcome(actor, *record, skillAv, outcome, *pImpl->leveling,
-                       pImpl->perksEnabled, false);
+                       pImpl->perksEnabled, LevelingSend::kOnLevel);
   return true;
 }
 
-bool PartOne::ApplySkillBook(MpActor& actor, uint8_t skillAv)
+bool PartOne::ApplySkillBook(MpActor& actor, uint8_t skillAv, bool sendRecord)
 {
   if (!pImpl->levelingEnabled) {
     spdlog::debug("[verb:leveling] {:x} reads a skill book for skill {} with "
@@ -6005,8 +6021,9 @@ bool PartOne::ApplySkillBook(MpActor& actor, uint8_t skillAv)
                  "cap: the book is spent, nothing moves",
                  actor.GetFormId(), skillAv);
   }
-  WriteLevelingOutcome(actor, *record, skillAv, outcome, *pImpl->leveling,
-                       pImpl->perksEnabled, true);
+  WriteLevelingOutcome(
+    actor, *record, skillAv, outcome, *pImpl->leveling, pImpl->perksEnabled,
+    sendRecord ? LevelingSend::kAlways : LevelingSend::kCaller);
   return true;
 }
 

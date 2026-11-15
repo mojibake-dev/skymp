@@ -117,8 +117,10 @@ struct MpActor::Impl
   std::chrono::steady_clock::time_point lastBedTimePoint;
   uint64_t restedGrant = 0;
   // thuum playtest 52 break 3: the world book whose Book Menu the server
-  // opened in this player's game (0 when none)
+  // opened in this player's game (0 when none), and whether its read at the
+  // open held the record's send for the open's end (books.md, S2)
   uint32_t openBookId = 0;
+  bool openBookRecordHeld = false;
   // thuum docs/verbs/map-markers.md: the login's markers not sent yet
   bool mapMarkersPending = false;
   // thuum docs/verbs/racemenu-sync.md: the server opened the race menu and
@@ -1543,11 +1545,39 @@ MpActor::GetLastBed() const
 void MpActor::SetOpenBook(uint32_t refrId)
 {
   pImpl->openBookId = refrId;
+  pImpl->openBookRecordHeld = false;
 }
 
 uint32_t MpActor::GetOpenBook() const
 {
   return pImpl->openBookId;
+}
+
+void MpActor::ReadBookAtOpen(uint32_t baseId)
+{
+  ReadBookEvent readBookEvent(this, baseId,
+                              ReadBookEvent::RecordSend::kAtOpenEnd);
+  readBookEvent.Fire(GetParent());
+  pImpl->openBookRecordHeld =
+    pImpl->openBookId != 0 && readBookEvent.RecordHeld();
+}
+
+void MpActor::EndOpenBook()
+{
+  const uint32_t refrId = pImpl->openBookId;
+  const bool held = pImpl->openBookRecordHeld;
+  SetOpenBook(0);
+  if (!held) {
+    return;
+  }
+  // its game's engine raised the skill at the Book Menu's open, after the
+  // open reply; this record replaces that number with the server's
+  // (actorValuesService.ts apply: SetActorValueBase, SetPlayerSkill), as the
+  // inventory read's does (docs/verbs/leveling.md)
+  spdlog::info("[verb:books] {:x} ends its open of book {:x}: the skill "
+               "book's record goes to its game",
+               GetFormId(), refrId);
+  SendActorValueRecord();
 }
 
 uint64_t MpActor::NextRestedGrant()

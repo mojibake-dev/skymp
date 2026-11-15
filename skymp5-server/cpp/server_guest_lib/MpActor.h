@@ -244,11 +244,27 @@ public:
   // thuum playtest 52 break 3 (the R-B read, fork m4-book-read): the world
   // book whose Book Menu the server opened in this player's game (0 when
   // none), so its next activation of that book is the menu's Take
-  // (MpObjectReference::ProcessActivateNormal); forgotten at the take, at the
-  // menu's closing activation, at its activation of anything else that
-  // reaches ProcessActivateNormal and at its disconnect
+  // (MpObjectReference::ProcessActivateNormal); ended at the take, at the
+  // menu's closing activation, at a take physics' pickup rule refuses and at
+  // its activation of anything else that reaches ProcessActivateNormal
+  // (EndOpenBook), and forgotten at its disconnect. Setting it forgets any
+  // held record (ReadBookAtOpen)
   void SetOpenBook(uint32_t refrId);
   uint32_t GetOpenBook() const;
+  // thuum docs/verbs/books.md, S2: the open book's read at the server's open,
+  // where this player's engine reads it at its Book Menu's open
+  // (TESObjectBOOK::Read at BookMenu::OpenBookMenu's end,
+  // docs/verbs/leveling.md, HYPOTHESIS): the inventory read's branch
+  // (ReadBookEvent), the skill's raise R0 and once a book a character
+  // (readBooks), decided by the base's DATA, with the record's send held for
+  // the open's end, since that engine raises the skill itself after the open
+  // reply and a record sent first would be raised again on top
+  void ReadBookAtOpen(uint32_t baseId);
+  // the open's end on its game's word (the four ends SetOpenBook names):
+  // forgets the open, and a skill book's held record goes to its game, whose
+  // engine has read the book by then (the menu's open comes before the close
+  // or the Take its game reports)
+  void EndOpenBook();
   uint64_t NextRestedGrant();
   uint64_t GetRestedGrant() const;
   // thuum docs/verbs/map-markers.md: the map markers this player discovered,

@@ -2715,9 +2715,10 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   // a world book takes nothing (thuum playtest 52 break 3, the book branch
   // of MpObjectReference::ProcessActivateNormal), so the rule judges a
   // book's Take alone, never its open (the merge review of 5f9c1601, SHOULD
-  // 1). A Take it refuses forgets the open, as a take does, so the player's
-  // next activation opens the book again, and sends the player's inventory
-  // back, since its own game's Book Menu took a copy the server never gave
+  // 1). A Take it refuses ends the open, as a take does (a skill book's held
+  // record going to its game, MpActor::EndOpenBook), so the player's next
+  // activation opens the book again, and sends the player's inventory back,
+  // since its own game's Book Menu took a copy the server never gave
   // (HYPOTHESIS, x-book-take)
   const bool bookRead = targetPtr->IsBookReadBy(caster, reportedByHost);
   const bool bookOpen =
@@ -2725,7 +2726,7 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (!msg.data.isSecondActivation && !bookOpen &&
       RefusePropPickup(rawMsgData, *ac, *targetPtr)) {
     if (bookRead) {
-      ac->SetOpenBook(0);
+      ac->EndOpenBook();
       ac->SendInventoryUpdate();
     }
     return;

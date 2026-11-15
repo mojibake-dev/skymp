@@ -153,8 +153,11 @@ pub struct ClientGuard {
     /// stream from its launches (the server folds them, wire-rules
     /// casts::Casts::continues), about six a second in x-drain-watch
     /// 20261115-032536, which drains it, so a re-report can be refused
-    /// here (harmless: the stream is open on the server). A cast's end
-    /// rides [`ClientGuard::cast_end_budget`] instead.
+    /// here, and so can the client's next start while re-reports outpace
+    /// the refill (a hosted stream past about four seconds at
+    /// x-drain-watch's rate): its player's own cast, or another hosted
+    /// caster's, which spend this one bucket. A cast's end rides
+    /// [`ClientGuard::cast_end_budget`] instead.
     pub cast_budget: TokenBucket,
     /// Budget for a cast's end (a SpellCast with `interrupt_cast`): one per
     /// cast, from two hands at once, eight at once and four a second after

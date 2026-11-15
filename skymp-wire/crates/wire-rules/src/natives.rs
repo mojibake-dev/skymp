@@ -4,10 +4,12 @@
 //! passes the engine's one dispatch (NativeFunctionBase::Call), where the
 //! platform reads the call's typed frame and the owner reports a tabled call
 //! as ScriptCall (MsgType 75). The table is data, one row per native
-//! ([`TABLE`], natives_table.rs): what a call is (kind), whose object it
-//! concerns (subject), who owns that object's scripts (owner), who hears it
-//! (audience), what a receiver runs for it (relay), what the server keeps of
-//! it (keep) and its parameters' types.
+//! ([`TABLE`], natives_table.rs, which wire-rules natives-gen writes from
+//! natives_rules.rs's rules and its overlay, thuum ADR-073 step 4, D-NT1 C;
+//! the platform reads it through wire-client-ffi's generated header): what a
+//! call is (kind), whose object it concerns (subject), who owns that object's
+//! scripts (owner), who hears it (audience), what a receiver runs for it
+//! (relay), what the server keeps of it (keep) and its parameters' types.
 //!
 //! The server never understands an action: the shape is the gate, judged in
 //! two steps. The shape step ([`ScriptCalls::shape`]) comes first, before the
@@ -1295,45 +1297,6 @@ mod tests {
     const TEMPLE: u32 = 0x371de;
     const HOST: u32 = 0xff00_0000;
     const GUEST: u32 = 0xff00_0001;
-
-    // the platform's copy of the table (skyrim-platform's NativeRows.inc,
-    // hand-written until thuum's ledger generates both) holds the same rows in
-    // the same order with the same kind, subject and relay: a cheap guard
-    // until one generator writes both files (rung 2's review, finding 9)
-    #[test]
-    fn the_platform_table_matches_this_one() {
-        let inc = include_str!("../../../../skyrim-platform/src/platform_se/skyrim_platform/NativeRows.inc");
-        let rows: Vec<&str> = inc.lines().map(str::trim).filter(|l| l.starts_with('{')).collect();
-        assert_eq!(rows.len(), TABLE.len(), "row count");
-        for (line, row) in rows.iter().zip(TABLE.iter()) {
-            let fields: Vec<&str> = line.trim_start_matches('{').trim_end_matches(['}', ',', ' ']).split(',').map(str::trim).collect();
-            let [cls, func, kind_field, subject_field, relay_field] = fields.as_slice() else {
-                panic!("five fields: {line}");
-            };
-            assert_eq!(*cls, format!("\"{}\"", row.cls), "{line}");
-            assert_eq!(*func, format!("\"{}\"", row.func), "{line}");
-            let kind = match row.kind {
-                Kind::Action => "NativeKind::Action",
-                Kind::State => "NativeKind::State",
-                Kind::Everyone => "NativeKind::Everyone",
-                Kind::Local => "NativeKind::Local",
-            };
-            assert_eq!(*kind_field, kind, "{line}");
-            let subject = match row.subject {
-                Subject::SelfRef => "NativeSubject::Self",
-                Subject::Arg0 => "NativeSubject::Arg0",
-                Subject::Arg0Method => "NativeSubject::Arg0Method",
-                Subject::Nothing => "NativeSubject::None",
-            };
-            assert_eq!(*subject_field, subject, "{line}");
-            let relay = match row.relay {
-                Relay::Same => "\"same\"".to_string(),
-                Relay::Twin { cls, func, .. } => format!("\"twin:{cls}.{func}\""),
-                Relay::Never => "\"none\"".to_string(),
-            };
-            assert_eq!(*relay_field, relay, "{line}");
-        }
-    }
 
     fn hosted(self_id: u32) -> Facts {
         Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0 }

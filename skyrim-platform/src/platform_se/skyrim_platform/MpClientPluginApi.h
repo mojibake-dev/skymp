@@ -1,5 +1,10 @@
 #pragma once
 #include "NapiHelper.h"
+#include <cstddef>
+#include <string>
+
+// skymp_wire.h's row of the natives table (wire-client-ffi native_rows.rs)
+struct SkympNativeRow;
 
 namespace MpClientPluginApi {
 Napi::Value GetVersion(const Napi::CallbackInfo& info);
@@ -26,6 +31,12 @@ bool DestroyClientAtQuit();
 // from its settings (quitFastExit, default on); off until it says so
 Napi::Value SetQuitFastExit(const Napi::CallbackInfo& info);
 bool QuitFastExit();
+
+// thuum ADR-073 step 4 (Eli's D-NT1 C): the natives table's rows, the
+// plugin's SkympNativeRows export (skymp_wire.h), their count in `count`,
+// valid for the process's life; null, with the reason in `error`, when the
+// plugin or its export is missing, which ScriptNatives reads as no table
+const SkympNativeRow* NativeRows(std::size_t* count, std::string& error);
 
 inline void Register(Napi::Env env, Napi::Object& exports)
 {

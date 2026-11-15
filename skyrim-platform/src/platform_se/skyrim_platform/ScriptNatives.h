@@ -10,8 +10,9 @@ class IFunction;
 // native dispatch, BSScript::NF_util::NativeFunctionBase::Call
 // (CommonLibSSE-NG include/RE/N/NativeFunctionBase.h:47, IFunction's slot
 // 0x0F; Address Library 104651, game/Offsets.h NativeFunctionCall), hooked
-// once for every tabled native (NativeRows.inc, thuum docs/NATIVES.md's
-// rows): the call judged from its typed frame, the subject's owner tested
+// once for every tabled native (wire-rules natives_table.rs, read through
+// skymp_wire.h; thuum docs/NATIVES.md's rows): the call judged from its
+// typed frame, the subject's owner tested
 // (a world object's cell host, an actor's simulator, the player's own seat;
 // a trap family reference every seat's own, ADR-068 D-S3, TrapFamily.h),
 // an owned action row's call (and a script's Kill, a trap's ProcessTrapHit

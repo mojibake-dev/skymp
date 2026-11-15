@@ -10,6 +10,170 @@
 #include <stdlib.h>
 
 /**
+ * The table's row count: the platform's per-row slots are this many, and a
+ * plugin whose table holds another count binds no row there. The compiler
+ * checks it against the table; after natives-gen changes the count, set it
+ * here and run `just wire-header`.
+ */
+#define SKYMP_NATIVE_ROWS 50
+
+/**
+ * A native takes at most eleven parameters (CommonLibSSE-NG
+ * src/RE/N/NativeFunctionBase.cpp:15, "native supports max 11").
+ */
+#define SKYMP_NATIVE_MAX_PARAMS 11
+
+/**
+ * Kind: the call itself is the message, relayed.
+ */
+#define SKYMP_NATIVE_KIND_ACTION 0
+
+/**
+ * Kind: a saved consequence, carried by its record or its verb.
+ */
+#define SKYMP_NATIVE_KIND_STATE 1
+
+/**
+ * Kind: nobody's, every seat runs it.
+ */
+#define SKYMP_NATIVE_KIND_EVERYONE 2
+
+/**
+ * Kind: never sent.
+ */
+#define SKYMP_NATIVE_KIND_LOCAL 3
+
+/**
+ * Subject: the call's self.
+ */
+#define SKYMP_NATIVE_SUBJECT_SELF 0
+
+/**
+ * Subject: a static's first argument.
+ */
+#define SKYMP_NATIVE_SUBJECT_ARG0 1
+
+/**
+ * Subject: none.
+ */
+#define SKYMP_NATIVE_SUBJECT_NONE 2
+
+/**
+ * Subject: a method's first argument, its self another form.
+ */
+#define SKYMP_NATIVE_SUBJECT_ARG0_METHOD 3
+
+/**
+ * Owner: the host of the subject's cell.
+ */
+#define SKYMP_NATIVE_OWNER_CELL_HOST 0
+
+/**
+ * Owner: the actor's simulator.
+ */
+#define SKYMP_NATIVE_OWNER_SIMULATOR 1
+
+/**
+ * Owner: the player's own seat.
+ */
+#define SKYMP_NATIVE_OWNER_PLAYER 2
+
+/**
+ * Owner: nobody.
+ */
+#define SKYMP_NATIVE_OWNER_NOBODY 3
+
+/**
+ * Owner: the seat whose firing moved a trap body.
+ */
+#define SKYMP_NATIVE_OWNER_TOUCHER 4
+
+/**
+ * Audience: the subject's listeners.
+ */
+#define SKYMP_NATIVE_AUDIENCE_LISTENERS 0
+
+/**
+ * Audience: every seat.
+ */
+#define SKYMP_NATIVE_AUDIENCE_EVERYONE 1
+
+/**
+ * Audience: no seat.
+ */
+#define SKYMP_NATIVE_AUDIENCE_NOBODY 2
+
+/**
+ * Audience: the subject's cell's host alone.
+ */
+#define SKYMP_NATIVE_AUDIENCE_HOST 3
+
+/**
+ * Keep: nothing.
+ */
+#define SKYMP_NATIVE_KEEP_NOTHING 0
+
+/**
+ * Keep: the call's graph event as the subject's lastAnimation.
+ */
+#define SKYMP_NATIVE_KEEP_LAST 1
+
+/**
+ * Keep: the call as its subject's evidence.
+ */
+#define SKYMP_NATIVE_KEEP_EVIDENCE 2
+
+/**
+ * Keep: the call as its subject's record (the row's `record` names which).
+ */
+#define SKYMP_NATIVE_KEEP_RECORD 3
+
+/**
+ * Keep: the call's graph variable on its subject.
+ */
+#define SKYMP_NATIVE_KEEP_VARIABLE 4
+
+/**
+ * Look: never.
+ */
+#define SKYMP_NATIVE_LOOK_NEVER 0
+
+/**
+ * Look: its own channel first, then the look channel.
+ */
+#define SKYMP_NATIVE_LOOK_ALSO 1
+
+/**
+ * Look: the look channel alone.
+ */
+#define SKYMP_NATIVE_LOOK_ONLY 2
+
+/**
+ * Parameter: Bool.
+ */
+#define SKYMP_NATIVE_PARAM_BOOL 0
+
+/**
+ * Parameter: Int.
+ */
+#define SKYMP_NATIVE_PARAM_INT 1
+
+/**
+ * Parameter: Float.
+ */
+#define SKYMP_NATIVE_PARAM_FLOAT 2
+
+/**
+ * Parameter: String.
+ */
+#define SKYMP_NATIVE_PARAM_STRING 3
+
+/**
+ * Parameter: an object.
+ */
+#define SKYMP_NATIVE_PARAM_OBJECT 4
+
+/**
  * The callback `Tick` calls once per event: packet type, content and its
  * length, an error text (never null), and the caller's state. Null is
  * allowed and means "drop the events". It may unwind: Skyrim Platform calls
@@ -18,6 +182,66 @@
  * plugin (hence `C-unwind`).
  */
 typedef void (*OnPacket)(int32_t, const char*, size_t, const char*, void*);
+
+/**
+ * One row of the table, every string NUL-terminated and valid for the
+ * process's life.
+ */
+typedef struct SkympNativeRow {
+  /**
+   * The native's Papyrus class, as the table spells it.
+   */
+  const char *cls;
+  /**
+   * The native's name.
+   */
+  const char *func;
+  /**
+   * Its kind (`SKYMP_NATIVE_KIND_*`).
+   */
+  uint8_t kind;
+  /**
+   * Its subject (`SKYMP_NATIVE_SUBJECT_*`).
+   */
+  uint8_t subject;
+  /**
+   * Its subject's owner (`SKYMP_NATIVE_OWNER_*`).
+   */
+  uint8_t owner;
+  /**
+   * Who hears an accepted call (`SKYMP_NATIVE_AUDIENCE_*`).
+   */
+  uint8_t audience;
+  /**
+   * What a receiver runs: "same", "twin:<Class.Name>" or "none".
+   */
+  const char *relay;
+  /**
+   * What the server keeps (`SKYMP_NATIVE_KEEP_*`).
+   */
+  uint8_t keep;
+  /**
+   * For a record keep, its record kind's code (1 the ref state, 2 the
+   * standing, 3 a placement, 4 a player's own); 0 for any other keep.
+   */
+  uint8_t record;
+  /**
+   * Whether a call may cross as a firing's look (`SKYMP_NATIVE_LOOK_*`).
+   */
+  uint8_t look;
+  /**
+   * How many of `params` are its parameters.
+   */
+  uint8_t param_count;
+  /**
+   * Its parameters' types in order (`SKYMP_NATIVE_PARAM_*`).
+   */
+  uint8_t params[SKYMP_NATIVE_MAX_PARAMS];
+} SkympNativeRow;
+
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
 
 /**
  * The version string. Nothing in skymp5-client reads it; it marks the wire.
@@ -75,5 +299,20 @@ void Send(const char *json, bool reliable);
  * borrowed for the call.
  */
 void SendRaw(const void *data, size_t size, bool reliable);
+
+/**
+ * The natives table's rows, valid for the process's life, their count
+ * written to `count` when it is not null; null with a count of 0 when the
+ * rows could not be built (logged as E_NATIVE_ROWS), which the platform
+ * reads as no table.
+ *
+ * # Safety
+ * `count` is null or points to a writable `size_t`.
+ */
+const struct SkympNativeRow *SkympNativeRows(size_t *count);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif  // __cplusplus
 
 #endif  /* SKYMP_WIRE_H */

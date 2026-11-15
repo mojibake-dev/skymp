@@ -1,16 +1,20 @@
 //! natives-gen (thuum ADR-073 step 4, Eli's D-NT1 C): the natives table's
 //! generator. It reads skyrim-platform's FunctionsDump.txt (never a native's
 //! offset), derives every native's row by wire-rules' natives_rules and lays
-//! the overlay over it, and says once per rule how many natives it took and
-//! the first (decision 7's merge rule: named once, then counted).
+//! the overlay over it, says once per rule how many natives it took and the
+//! first (decision 7's merge rule: named once, then counted), and writes
+//! wire-rules' natives_table.rs, the live table the server judges by and the
+//! platform reads through wire-client-ffi's generated header.
 //!
 //! ```text
-//! natives-gen [--dump <FunctionsDump.txt>] [--tsv <natives.tsv>]
+//! natives-gen [--dump <FunctionsDump.txt>] [--table <natives_table.rs>] [--check] [--tsv <natives.tsv>]
 //! ```
 //!
-//! `--tsv` writes every native's row for thuum's lab/ledger.py, which joins
-//! it into docs/NATIVES.md. An overlay entry the rules refuse is named and
-//! the tool exits 1.
+//! `--check` writes nothing and exits 1 when the committed table is not what
+//! the rules and the overlay make (the generated-table test's check, for a
+//! shell). `--tsv` writes every native's row for thuum's lab/ledger.py, which
+//! joins it into docs/NATIVES.md. An overlay entry the rules refuse is named
+//! and the tool exits 1.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,14 +27,21 @@ const DUMP: &str = concat!(
     "/../../../skyrim-platform/src/platform_se/codegen/convert-files/FunctionsDump.txt"
 );
 
+/// The committed table, from this crate's directory.
+const TABLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/natives_table.rs");
+
 struct Args {
     dump: PathBuf,
+    table: PathBuf,
+    check: bool,
     tsv: Option<PathBuf>,
 }
 
 fn args() -> Result<Args, String> {
     let mut out = Args {
         dump: PathBuf::from(DUMP),
+        table: PathBuf::from(TABLE),
+        check: false,
         tsv: None,
     };
     let mut it = std::env::args().skip(1);
@@ -42,8 +53,10 @@ fn args() -> Result<Args, String> {
         };
         match arg.as_str() {
             "--dump" => out.dump = value()?,
+            "--table" => out.table = value()?,
+            "--check" => out.check = true,
             "--tsv" => out.tsv = Some(value()?),
-            other => return Err(format!("unknown argument {other}; natives-gen [--dump <FunctionsDump.txt>] [--tsv <natives.tsv>]")),
+            other => return Err(format!("unknown argument {other}; natives-gen [--dump <FunctionsDump.txt>] [--table <natives_table.rs>] [--check] [--tsv <natives.tsv>]")),
         }
     }
     Ok(out)
@@ -86,6 +99,25 @@ fn run() -> Result<(), String> {
         OVERLAY.len().saturating_sub(decided),
         generated.live.len()
     );
+    let made = natives_rules::table_source(&generated).map_err(|refusals| {
+        let lines: Vec<String> = refusals
+            .iter()
+            .map(|r| format!("natives-gen: table refused: {r}"))
+            .collect();
+        lines.join("\n")
+    })?;
+    let committed = std::fs::read_to_string(&args.table).unwrap_or_default();
+    if made == committed {
+        println!("  {} is up to date", args.table.display());
+    } else if args.check {
+        return Err(format!(
+            "natives-gen: {} is stale: run `cargo run -p wire-rules --bin natives-gen`",
+            args.table.display()
+        ));
+    } else {
+        std::fs::write(&args.table, &made).map_err(|e| format!("{}: {e}", args.table.display()))?;
+        println!("  wrote {}", args.table.display());
+    }
     if let Some(path) = args.tsv {
         std::fs::write(&path, natives_rules::tsv(&generated))
             .map_err(|e| format!("{}: {e}", path.display()))?;

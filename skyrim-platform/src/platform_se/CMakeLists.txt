@@ -93,6 +93,9 @@ if(NOT "${SKIP_SKYRIM_PLATFORM_BUILDING}")
     set_target_properties(skyrim_platform PROPERTIES OUTPUT_NAME "SkyrimPlatformImpl")
     target_include_directories(skyrim_platform PRIVATE "${tilted}")
     target_include_directories(skyrim_platform PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/include)
+    # skymp_wire.h, wire-client-ffi's generated header: the natives table's row
+    # and SkympNativeRows, which ScriptNatives reads (thuum ADR-073 step 4, D-NT1 C)
+    target_include_directories(skyrim_platform PRIVATE "${CMAKE_SOURCE_DIR}/skymp-wire/crates/wire-client-ffi/include")
     target_link_libraries(skyrim_platform PRIVATE papyrus-vm-lib savefile skyrim_plugin_resources ui cef platform_lib viet serialization)
     target_link_libraries(skyrim_platform PRIVATE node-embedder-api)
     

@@ -4,8 +4,9 @@
 // names the rule that replaces it and the condition that deletes it), and
 // sets only the cells the rules give otherwise; natives_rules::generate
 // refuses any other. The live entries are the live table in its order, each
-// with the comment natives_table.rs writes above its row; natives_rules.rs's
-// test reads the committed table against them.
+// with the comment natives_table.rs writes above its row. Edit this file,
+// then `cargo run -p wire-rules --bin natives-gen` writes the table;
+// natives_rules.rs's generated-table test refuses a stale one.
 
 /// Cited by ObjectReference.PlayAnimation, ObjectReference.PlayAnimationAndWait.
 const ANIMATION: &str = "ADR-068 rung 2 (docs/research/scripts-one-system-2026-11-05.md 6.3): an action row, the cell's host's, its graph event kept as the subject's lastAnimation (rung 7 retires it)";

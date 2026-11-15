@@ -107,6 +107,19 @@ bool MpClientPluginApi::QuitFastExit()
   return g_quitFastExit;
 }
 
+const SkympNativeRow* MpClientPluginApi::NativeRows(std::size_t* count,
+                                                    std::string& error)
+{
+  try {
+    typedef const SkympNativeRow* (*NativeRowsFn)(size_t* count);
+    auto f = (NativeRowsFn)GetMpClientPlugin()->GetFunction("SkympNativeRows");
+    return f(count);
+  } catch (const std::exception& e) {
+    error = e.what();
+    return nullptr;
+  }
+}
+
 Napi::Value MpClientPluginApi::DestroyClient(const Napi::CallbackInfo& info)
 {
   typedef void (*DestroyClient)();

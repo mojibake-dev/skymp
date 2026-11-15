@@ -8,12 +8,14 @@
 #include "Hooks.h"
 #include "Hosted.h"
 #include "JsUtils.h"
+#include "MpClientPluginApi.h"
 #include "PlatformCall.h"
 #include "Puppets.h"
 #include "QuestCause.h"
 #include "Settings.h"
 #include "SkyrimPlatform.h"
 #include "TrapFamily.h"
+#include "skymp_wire.h"
 #include <RE/A/Actor.h>
 #include <RE/F/FormTypes.h>
 #include <RE/I/IFunction.h>
@@ -92,7 +94,8 @@ uint64_t NowMs()
  * and its judgment of one call
  */
 
-// a row's kind and subject, NativeRows.inc's columns (thuum docs/NATIVES.md)
+// a row's kind and subject, wire-rules natives_table.rs's columns as
+// skymp_wire.h codes them (thuum docs/NATIVES.md)
 enum class NativeKind : std::uint8_t
 {
   Action,
@@ -113,22 +116,46 @@ enum class NativeSubject : std::uint8_t
   Arg0Method
 };
 
+// skymp_wire.h's codes are these enums' values (wire-client-ffi
+// native_rows.rs), so a row's code is its enum's value
+static_assert(static_cast<int>(NativeKind::Action) ==
+                SKYMP_NATIVE_KIND_ACTION &&
+              static_cast<int>(NativeKind::State) == SKYMP_NATIVE_KIND_STATE &&
+              static_cast<int>(NativeKind::Everyone) ==
+                SKYMP_NATIVE_KIND_EVERYONE &&
+              static_cast<int>(NativeKind::Local) == SKYMP_NATIVE_KIND_LOCAL);
+static_assert(
+  static_cast<int>(NativeSubject::Self) == SKYMP_NATIVE_SUBJECT_SELF &&
+  static_cast<int>(NativeSubject::Arg0) == SKYMP_NATIVE_SUBJECT_ARG0 &&
+  static_cast<int>(NativeSubject::None) == SKYMP_NATIVE_SUBJECT_NONE &&
+  static_cast<int>(NativeSubject::Arg0Method) ==
+    SKYMP_NATIVE_SUBJECT_ARG0_METHOD);
+
 struct NativeRow
 {
-  const char* cls;
-  const char* fn;
-  NativeKind kind;
-  NativeSubject subject;
+  const char* cls = "";
+  const char* fn = "";
+  NativeKind kind = NativeKind::Local;
+  NativeSubject subject = NativeSubject::None;
   // the receiver's native for an action row ("same", "twin:<Class.Name>",
-  // "none"): the server's table relays by it; carried here so the generated
-  // file is one source, and said in the install line
-  const char* relay;
+  // "none"): the server's table relays by it; said in the install line
+  const char* relay = "none";
+  // the row as MpClientPlugin hands it, its other columns (owner, audience,
+  // keep and its record kind, look, parameters) the seam reads from ADR-073
+  // step 4's S4 on
+  SkympNativeRow columns{};
 };
 
-constexpr NativeRow kRows[] = {
-#include "NativeRows.inc"
-};
-constexpr std::size_t kRowCount = std::size(kRows);
+// the table (thuum ADR-068 decision 3): wire-rules natives_table.rs as
+// natives-gen writes it from FunctionsDump.txt and its overlay (ADR-073 step
+// 4, Eli's D-NT1 C), read once by LoadRows at kDataLoaded through
+// MpClientPlugin's SkympNativeRows (skymp_wire.h, the route D-L3 A takes for
+// the R0 kinds, checked by just wire-header-check), so the platform keeps no
+// copy of its own; the header's SKYMP_NATIVE_ROWS sizes every per-row slot
+// at build time. Written before the dispatch hook attaches and never after,
+// as g_rows is; a row not loaded names "" and is never bound
+constexpr std::size_t kRowCount = SKYMP_NATIVE_ROWS;
+std::array<NativeRow, kRowCount> g_natives{};
 
 // the state rows whose owned call crosses in the batch, as kind "state",
 // with its arguments, its caller and the caller's self (QueueFromFrame):
@@ -338,9 +365,9 @@ constexpr std::pair<const char*, const char*> kGlobalSetRow{ "GlobalVariable",
 // scope rooted at a trigger entry (kTrigger), its chained stages' included,
 // is not counted: this seat's engine set those stages for the presser
 // (defaultStartSceneTrigScript; MS13's 38386 stage 10). No table row holds
-// them (NativeRows.inc), so InstallHooks binds the game module's IFunction
-// of each by class and name, written before the dispatch hook attaches and
-// never after
+// them (wire-rules natives_table.rs), so InstallHooks binds the game module's
+// IFunction of each by class and name, written before the dispatch hook
+// attaches and never after
 constexpr std::pair<const char*, const char*> kSceneStartNatives[] = {
   { "Scene", "Start" },
   { "Scene", "ForceStart" }
@@ -771,8 +798,8 @@ void Note(std::size_t row, std::uint32_t index, const std::string& caller,
           const std::string& handler, RE::VMHandle handle)
 {
   std::string site =
-    fmt::format("{}.{} argument {} from {}.{}", kRows[row].cls, kRows[row].fn,
-                index, caller, handler);
+    fmt::format("{}.{} argument {} from {}.{}", g_natives[row].cls,
+                g_natives[row].fn, index, caller, handler);
   {
     std::lock_guard<std::mutex> lock(g_table.m);
     const auto it = g_table.sites.find(site);
@@ -964,7 +991,7 @@ Napi::Value ArgToJs(Napi::Env env, const CallArg& arg)
 // call
 Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
 {
-  const NativeRow& native = kRows[call.row];
+  const NativeRow& native = g_natives[call.row];
   auto obj = Napi::Object::New(env);
   AddObjProperty(&obj, "cls", native.cls);
   AddObjProperty(&obj, "fn", native.fn);
@@ -1154,7 +1181,7 @@ void LogSkipped(std::size_t row, std::uint32_t selfId)
   if (SelfLineDue(g_skipLines[row], selfId)) {
     logger::info("[verb:scripts] {}.{} on {:x}: skipped, not hosted here "
                  "({})",
-                 kRows[row].cls, kRows[row].fn, selfId,
+                 g_natives[row].cls, g_natives[row].fn, selfId,
                  LeverName(g_nonOwnerSkip));
   }
 }
@@ -1447,8 +1474,8 @@ std::string ParkedName(const QueuedCall& call)
     ? call.args[0].formId
     : 0;
   return fmt::format("{}.{} {:x} on {:x} (from {}.{}), stack {}",
-                     kRows[call.row].cls, kRows[call.row].fn, list, call.self,
-                     call.caller, call.handler, call.stackId);
+                     g_natives[call.row].cls, g_natives[call.row].fn, list,
+                     call.self, call.caller, call.handler, call.stackId);
 }
 
 // a parked call let go with nothing reported, the line one a minute with the
@@ -1781,7 +1808,7 @@ Marks OnFamilyCall(std::size_t row, const RowInfo& info,
                    std::uint32_t self)
 {
   Marks marks;
-  const NativeRow& native = kRows[row];
+  const NativeRow& native = g_natives[row];
   if (info.look && g_triggerLook.load(std::memory_order_relaxed) &&
       Frida::TriggerPresserRuleOn() &&
       TrapFamily::Firing::Open(self, NowMs())) {
@@ -1882,7 +1909,7 @@ void OnAliasCall(std::size_t row, const RowInfo& info,
                    "alias of a quest the form table knows (H-AF3's encoding: "
                    "kind 0, a middle word below 0xFFFF, the quest in the low "
                    "32 bits); counted (unresolved), not batched",
-                   kRows[row].cls, kRows[row].fn, handle);
+                   g_natives[row].cls, g_natives[row].fn, handle);
     }
     return;
   }
@@ -2198,8 +2225,8 @@ void PropagateScope(std::size_t row, const RowInfo& info,
   if (ActingScope::LineDue(scope.seq, ActingScope::Line::kChain)) {
     logger::info("[verb:quests] {}.{} on {:x} ({}) inside {}, stack {}: the "
                  "scope requested for it (chained)",
-                 kRows[row].cls, kRows[row].fn, quest, StageText(stage),
-                 ScopeText(scope), stack->stackID);
+                 g_natives[row].cls, g_natives[row].fn, quest,
+                 StageText(stage), ScopeText(scope), stack->stackID);
   }
 }
 
@@ -2339,7 +2366,7 @@ void MarkQuestCause(std::size_t row, const RowInfo& info,
   QuestCause::Count(world, carried);
   logger::trace("[verb:quest-stage] {}.{} on {:x} ({}): cause {} (root {}, "
                 "self {:x}), stack {}",
-                kRows[row].cls, kRows[row].fn, quest, StageText(stage),
+                g_natives[row].cls, g_natives[row].fn, quest, StageText(stage),
                 world ? "world" : "seat", root.empty() ? "none" : root,
                 rootSelf, stack->stackID);
 }
@@ -2503,7 +2530,7 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     return marks;
   }
   const std::size_t row = it->second;
-  const NativeRow& native = kRows[row];
+  const NativeRow& native = g_natives[row];
   const RowInfo& info = g_rows[row];
   if (swapped != 0) {
     Count(row, kCountActing);
@@ -2833,54 +2860,102 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
       ->GetIsLatent();
   info.result = function->GetReturnType().GetUnmangledRawType();
   for (const auto& batched : kBatchedStateRows) {
-    if (_stricmp(kRows[row].cls, batched.cls) == 0 &&
-        _stricmp(kRows[row].fn, batched.fn) == 0) {
+    if (_stricmp(g_natives[row].cls, batched.cls) == 0 &&
+        _stricmp(g_natives[row].fn, batched.fn) == 0) {
       info.batchedState = true;
       info.record = batched.record;
     }
   }
   for (const auto& trapRow : kTrapRows) {
-    if (_stricmp(kRows[row].cls, trapRow.cls) == 0 &&
-        _stricmp(kRows[row].fn, trapRow.fn) == 0) {
+    if (_stricmp(g_natives[row].cls, trapRow.cls) == 0 &&
+        _stricmp(g_natives[row].fn, trapRow.fn) == 0) {
       info.trap = trapRow.trap;
     }
   }
   for (const auto& [cls, name] : kAliasRows) {
-    if (_stricmp(kRows[row].cls, cls) == 0 &&
-        _stricmp(kRows[row].fn, name) == 0) {
+    if (_stricmp(g_natives[row].cls, cls) == 0 &&
+        _stricmp(g_natives[row].fn, name) == 0) {
       info.alias = true;
     }
   }
   for (const auto& [cls, name] : kLookOnlyRows) {
-    if (_stricmp(kRows[row].cls, cls) == 0 &&
-        _stricmp(kRows[row].fn, name) == 0) {
+    if (_stricmp(g_natives[row].cls, cls) == 0 &&
+        _stricmp(g_natives[row].fn, name) == 0) {
       info.lookOnly = true;
     }
   }
   // rung 5's acting scope: GetPlayer's row and the Quest rows, by name
-  info.getPlayer = _stricmp(kRows[row].cls, kPlayerRow.first) == 0 &&
-    _stricmp(kRows[row].fn, kPlayerRow.second) == 0;
+  info.getPlayer = _stricmp(g_natives[row].cls, kPlayerRow.first) == 0 &&
+    _stricmp(g_natives[row].fn, kPlayerRow.second) == 0;
   for (const auto& questRow : kQuestRows) {
-    if (_stricmp(kRows[row].cls, questRow.cls) == 0 &&
-        _stricmp(kRows[row].fn, questRow.fn) == 0) {
+    if (_stricmp(g_natives[row].cls, questRow.cls) == 0 &&
+        _stricmp(g_natives[row].fn, questRow.fn) == 0) {
       info.quest = questRow.quest;
     }
   }
-  info.globalSet = _stricmp(kRows[row].cls, kGlobalSetRow.first) == 0 &&
-    _stricmp(kRows[row].fn, kGlobalSetRow.second) == 0;
+  info.globalSet = _stricmp(g_natives[row].cls, kGlobalSetRow.first) == 0 &&
+    _stricmp(g_natives[row].fn, kGlobalSetRow.second) == 0;
   // train 52's Fix 2: the effect rule's two rows, by name
-  info.placeAtMe = _stricmp(kRows[row].cls, kPlaceAtMeRow.first) == 0 &&
-    _stricmp(kRows[row].fn, kPlaceAtMeRow.second) == 0;
-  info.deletes = _stricmp(kRows[row].cls, kDeleteRow.first) == 0 &&
-    _stricmp(kRows[row].fn, kDeleteRow.second) == 0;
+  info.placeAtMe = _stricmp(g_natives[row].cls, kPlaceAtMeRow.first) == 0 &&
+    _stricmp(g_natives[row].fn, kPlaceAtMeRow.second) == 0;
+  info.deletes = _stricmp(g_natives[row].cls, kDeleteRow.first) == 0 &&
+    _stricmp(g_natives[row].fn, kDeleteRow.second) == 0;
   // train 52's Fix 1: the leveled landing's row, by name
-  info.addItem = _stricmp(kRows[row].cls, kAddItemRow.first) == 0 &&
-    _stricmp(kRows[row].fn, kAddItemRow.second) == 0;
+  info.addItem = _stricmp(g_natives[row].cls, kAddItemRow.first) == 0 &&
+    _stricmp(g_natives[row].fn, kAddItemRow.second) == 0;
   // D-W2 A's look rows (the plan's section 7.2(a)): the action rows, the two
   // motion rows among kTrapRows, and the look-only rows
-  info.look = kRows[row].kind == NativeKind::Action ||
+  info.look = g_natives[row].kind == NativeKind::Action ||
     info.trap == TrapRow::Motion || info.trap == TrapRow::Impulse ||
     info.lookOnly;
+}
+
+// the table's rows from MpClientPlugin's SkympNativeRows (thuum ADR-073 step
+// 4, D-NT1 C), read once at kDataLoaded before any row binds: all or none,
+// so a plugin that is missing, has no such export, holds another count than
+// this build's skymp_wire.h or a kind or subject this build has no value for
+// leaves every row unloaded, said once, and no row is bound
+bool LoadRows()
+{
+  std::size_t count = 0;
+  std::string error;
+  const SkympNativeRow* rows = MpClientPluginApi::NativeRows(&count, error);
+  if (!rows) {
+    logger::error("[verb:scripts] no table: MpClientPlugin's SkympNativeRows "
+                  "gave no rows ({}); no table row is bound",
+                  error.empty() ? std::string("E_NATIVE_ROWS in its log")
+                                : error);
+    return false;
+  }
+  if (count != kRowCount) {
+    logger::error("[verb:scripts] no table: MpClientPlugin's table holds {} "
+                  "rows and this build's skymp_wire.h {}; no table row is "
+                  "bound",
+                  count, kRowCount);
+    return false;
+  }
+  for (std::size_t row = 0; row < kRowCount; ++row) {
+    const SkympNativeRow& wire = rows[row];
+    if (!wire.cls || !wire.func || !wire.relay ||
+        wire.kind > SKYMP_NATIVE_KIND_LOCAL ||
+        wire.subject > SKYMP_NATIVE_SUBJECT_ARG0_METHOD) {
+      logger::error("[verb:scripts] no table: MpClientPlugin's row {} holds "
+                    "a name, a kind or a subject this build does not read; "
+                    "no table row is bound",
+                    row);
+      return false;
+    }
+  }
+  for (std::size_t row = 0; row < kRowCount; ++row) {
+    const SkympNativeRow& wire = rows[row];
+    g_natives[row] = NativeRow{ wire.cls,
+                                wire.func,
+                                static_cast<NativeKind>(wire.kind),
+                                static_cast<NativeSubject>(wire.subject),
+                                wire.relay,
+                                wire };
+  }
+  return true;
 }
 
 // a name among the seam's lists (kBatchedStateRows, kTrapRows, kAliasRows)
@@ -2890,8 +2965,8 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
 void WarnUnbound(const char* list, const char* cls, const char* fn)
 {
   for (std::size_t row = 0; row < kRowCount; ++row) {
-    if (g_rows[row].fn && _stricmp(kRows[row].cls, cls) == 0 &&
-        _stricmp(kRows[row].fn, fn) == 0) {
+    if (g_rows[row].fn && _stricmp(g_natives[row].cls, cls) == 0 &&
+        _stricmp(g_natives[row].fn, fn) == 0) {
       return;
     }
   }
@@ -3041,7 +3116,8 @@ void FlushCensus(uint64_t now)
   std::vector<std::pair<std::string, uint32_t>> rows;
   uint64_t total = 0;
   for (size_t row = 0; row < kRowCount; ++row) {
-    const std::string name = std::string(kRows[row].cls) + "." + kRows[row].fn;
+    const std::string name =
+      std::string(g_natives[row].cls) + "." + g_natives[row].fn;
     for (size_t kind = 0; kind < kCountKinds; ++kind) {
       const uint32_t n = g_counts[row][kind].exchange(0);
       if (n != 0) {
@@ -3448,13 +3524,14 @@ void ScriptNatives::InstallHooks()
   // latest binding being the one the VM dispatches is part of it
   const auto gameBase = REL::Module::get().base();
   const auto bound = Hooks::GetBoundNatives();
-  // the table (NativeRows.inc): each row's IFunction, the `this` of its
+  // the table (LoadRows): each row's IFunction, the `this` of its
   // every dispatch, found by class and name without case (Papyrus's rule;
   // the platform's dump spells Game.GetPlayer "getplayer") and read once,
   // all of it before the dispatch is replaced below
+  const bool tabled = LoadRows();
   size_t boundRows = 0;
-  for (size_t row = 0; row < kRowCount; ++row) {
-    const NativeRow& native = kRows[row];
+  for (size_t row = 0; tabled && row < kRowCount; ++row) {
+    const NativeRow& native = g_natives[row];
     const RE::BSScript::IFunction* function = nullptr;
     const RE::BSScript::IFunction* other = nullptr;
     std::uintptr_t otherBase = 0;
@@ -3500,8 +3577,8 @@ void ScriptNatives::InstallHooks()
                  info.relayable ? "" : ", unrelayable (an array parameter)",
                  CrossingNote(info), native.relay);
   }
-  logger::info("[verb:scripts] {} of {} table rows bound (NativeRows.inc, "
-               "thuum docs/NATIVES.md)",
+  logger::info("[verb:scripts] {} of {} table rows bound (wire-rules "
+               "natives_table.rs through skymp_wire.h, thuum docs/NATIVES.md)",
                boundRows, kRowCount);
   // V-scene: the scene starts, the game module's binding of each name, found
   // as the rows are
@@ -3565,7 +3642,7 @@ void ScriptNatives::InstallHooks()
           g_rows[row].record != RecordRow::None) {
         latentRecords +=
           fmt::format("{}{}.{}", latentRecords.empty() ? "" : ", ",
-                      kRows[row].cls, kRows[row].fn);
+                      g_natives[row].cls, g_natives[row].fn);
       }
     }
     skipping = fmt::format(

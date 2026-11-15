@@ -18,6 +18,7 @@ wire-schema = { path = "../wire-schema" }
 wire-json = { path = "../wire-json" }
 wire-validate = { path = "../wire-validate" }
 wire-transport = { path = "../wire-transport" }
+wire-rules = { path = "../wire-rules" }   # the natives table the platform's seam reads through SkympNativeRows (thuum ADR-073 step 4, D-NT1 C)
 
 [lints.rust]
 unsafe_code = "allow"   # FFI crate. Every unsafe block carries a SAFETY comment.

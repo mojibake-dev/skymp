@@ -1007,6 +1007,7 @@ name = "wire-client-ffi"
 version = "0.0.1"
 dependencies = [
  "wire-json",
+ "wire-rules",
  "wire-schema",
  "wire-transport",
  "wire-validate",

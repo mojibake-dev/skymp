@@ -671,7 +671,7 @@ export class MagicSyncService extends ClientListener {
         const byHand = this.lastHostedCastByHand.get(e.actorId);
         const cast = byHand?.get(hand);
         if (!byHand || !cast) {
-            this.sayNoCastToEnd(e.actorId, hand);
+            this.sayNoCastToEnd(!byHand ? "no cast recorded for this caster" : "no cast recorded in this hand", e.actorId, hand);
             return;
         }
         byHand.delete(hand);
@@ -689,20 +689,25 @@ export class MagicSyncService extends ClientListener {
     }
 
     // a hosted caster's equipped event with no cast of that hand recorded
-    // here (a weapon's or a spell's draw, or an end whose cast event never
-    // came): no end goes. Said in full at a caster's first and then as its
-    // count at the 2nd, 4th, 8th and so on (thuum ADR-073 decision 7)
-    private sayNoCastToEnd(actorId: number, hand: number) {
-        const n = (this.noCastToEnd.get(actorId) ?? 0) + 1;
-        this.noCastToEnd.set(actorId, n);
+    // here: a weapon's or a spell's draw, or the end of a cast whose report
+    // never entered lastHostedCastByHand (a cast reported from its launch
+    // never does, nor one whose cast event never came), so either kind can
+    // hide a lost end. No end goes. Said in full at a kind's first, naming
+    // that event's caster, and then as the kind's count at its 2nd, 4th, 8th
+    // and so on (thuum ADR-073 decision 7: once per kind with one subject,
+    // then counted; the review of m4-fix-cast-end, finding 5); a count, not
+    // an alarm
+    private sayNoCastToEnd(kind: "no cast recorded for this caster" | "no cast recorded in this hand", actorId: number, hand: number) {
+        const n = (this.noCastToEnd.get(kind) ?? 0) + 1;
+        this.noCastToEnd.set(kind, n);
         if ((n & (n - 1)) !== 0) {
             return;
         }
-        const head = `equipped event on ${actorId.toString(16)} hand ${hand} with no cast recorded`;
-        logTrace(this, n === 1 ? `${head}: no end sent` : `${head}: ${n} such event(s) on this caster so far`);
+        const head = `equipped event on ${actorId.toString(16)} hand ${hand}, ${kind}`;
+        logTrace(this, n === 1 ? `${head}: no end sent` : `${head}: ${n} such event(s) so far`);
     }
 
-    private noCastToEnd = new Map<number, number>();
+    private noCastToEnd = new Map<string, number>();
     private lastHostedCastByHand = new Map<number, Map<number, SpellCastMsgData>>();
     // R-V5: when each hosted caster's event cast of a spell last ended here
     // (onHostedAction), by caster and spell, and the launches dropped by kind

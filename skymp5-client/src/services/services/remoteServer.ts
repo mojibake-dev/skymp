@@ -1639,7 +1639,7 @@ export class RemoteServer extends ClientListener {
       const casterIsMe = msg.data.caster !== 0 && msg.data.caster === this.worldModel.playerCharacterRefrId;
       const ac = Actor.from(Game.getFormEx(casterIsMe ? 0x14 : remoteIdToLocalId(msg.data.caster)));
       if (!ac) {
-        this.sayRelayedCastDropped(msg.data.caster, msg.data.spell, msg.data.interruptCast);
+        this.sayRelayedCastDropped(msg.data.interruptCast ? "end" : "cast", "no actor here", msg.data.caster, msg.data.spell);
         return;
       }
 
@@ -1745,19 +1745,22 @@ export class RemoteServer extends ClientListener {
   // logged once (finding 53)
   private readonly hostedCastRelaysLogged = new Set<number>();
 
-  // a relayed cast or end whose caster has no actor in this game: said in
-  // full at a caster's first and then as its count at the 2nd, 4th, 8th and
-  // so on (thuum ADR-073 decision 7; x-drain-watch 20261115-032536 could not
-  // rule this return out by a line)
-  private readonly relayedCastDrops = new Map<number, number>();
-  private sayRelayedCastDropped(caster: number, spell: number, isEnd: boolean): void {
-    const n = (this.relayedCastDrops.get(caster) ?? 0) + 1;
-    this.relayedCastDrops.set(caster, n);
+  // a relayed cast or end this game did not perform, by kind (cast or end,
+  // and why): said in full at a kind's first, naming that message's caster
+  // and spell, and then as the kind's count at its 2nd, 4th, 8th and so on
+  // (thuum ADR-073 decision 7: once per kind with one subject, then
+  // counted; the review of m4-fix-cast-end, finding 5; x-drain-watch
+  // 20261115-032536 could not rule the no-actor return out by a line)
+  private readonly relayedCastDrops = new Map<string, number>();
+  private sayRelayedCastDropped(what: "cast" | "end", why: "no actor here", caster: number, spell: number): void {
+    const kind = `${what}: ${why}`;
+    const n = (this.relayedCastDrops.get(kind) ?? 0) + 1;
+    this.relayedCastDrops.set(kind, n);
     if ((n & (n - 1)) !== 0) {
       return;
     }
-    const head = `relayed ${isEnd ? "end" : "cast"} ${spell.toString(16)} for ${caster.toString(16)}: no actor here, dropped`;
-    logTrace(this, n === 1 ? head : `${head} (${n} relayed casts and ends for this caster dropped so far)`);
+    const head = `relayed ${what} ${spell.toString(16)} for ${caster.toString(16)}: ${why}, dropped`;
+    logTrace(this, n === 1 ? head : `${head} (${n} relayed ${what}s dropped as ${why} so far)`);
   }
 
   // A spell with a target-location effect that has an area and no

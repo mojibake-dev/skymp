@@ -3347,6 +3347,89 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
   }
 }
 
+void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
+                                    const OwnHeadPartsMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnOwnHeadParts - no actor for user {}",
+                        rawMsgData.userId);
+  }
+  // the head of every line: whose, under which race, from which list
+  const std::string head =
+    fmt::format("{:x}'s own head parts under race {:x} ({} from its {} list)",
+                actor->GetFormId(), msg.race, msg.parts.size(),
+                msg.overlay ? "overlay" : "base");
+  // rule 5's bounds before anything is written, judged by wire-rules
+  // player_own::own_head_parts over what the core reads here: the
+  // reporter's own player alone (the message names no actor), a recorded
+  // look to write, the race that look records (a race overlay's, D-T1 A,
+  // never reaches the change form, and a report under a race the server
+  // refused or has not recorded yet is stale), 1 to 64 parts, the game files
+  // and every part an HDPT, and every part one the recorded race may wear
+  // (D-E1 A's bound, ChangeHeadPart's: its HDPT's valid-race list, RNAM, read
+  // as the look's derivation and RecordRaceLook read it, a record that gives
+  // no answer taken as yes)
+  const auto look = actor->GetAppearance();
+  skymp::rules::OwnHeadPartsFacts facts{};
+  facts.has_look = static_cast<bool>(look);
+  facts.recorded_race = look ? look->raceId : 0;
+  facts.reported_race = msg.race;
+  facts.files = partOne.HasEspm();
+  std::vector<skymp::rules::OwnHeadPartFacts> parts;
+  parts.reserve(msg.parts.size());
+  for (uint32_t part : msg.parts) {
+    skymp::rules::OwnHeadPartFacts row{};
+    row.form = part;
+    if (facts.files) {
+      const auto rec = partOne.GetEspm().GetBrowser().LookupById(part).rec;
+      row.kind = rec && rec->GetType() == espm::HDPT::kType;
+      row.race_valid = row.kind &&
+        partOne.HeadPartRaceListHolds(part, facts.recorded_race)
+          .value_or(true);
+    }
+    parts.push_back(row);
+  }
+  const auto verdict = skymp::rules::player_own_head_parts(
+    facts,
+    rust::Slice<const skymp::rules::OwnHeadPartFacts>(parts.data(),
+                                                      parts.size()));
+  if (verdict.code != 0) {
+    return spdlog::warn(
+      "[verb:appearance] {}: {}: {}; nothing written (D-53-8 B)",
+      std::string(verdict.name), head, std::string(verdict.why));
+  }
+
+  // R2, the seat's word: the look wears exactly the reported parts and the
+  // stored look names each one of a type the report names once; the stored
+  // look goes first to every game that sees the player, then the look, the
+  // head part row's shape (each figure is built again at the appearance and
+  // loads the stored look its game holds then)
+  const auto recorded = partOne.RecordOwnHeadParts(*actor, msg.parts);
+  if (!recorded.look && !recorded.preset) {
+    return spdlog::info("[verb:appearance] {}: folded, its look wears them "
+                        "already (D-53-8 B)",
+                        head);
+  }
+  std::string what = "recorded on its look as its seat reported them "
+                     "(D-53-8 B, R2)";
+  if (recorded.preset) {
+    what += fmt::format(", its RaceMenu look's part(s) of {} type(s) "
+                        "rewritten to them and sent to {} game(s)",
+                        recorded.rewritten,
+                        SendRaceMenuPresetToOthers(partOne, *actor));
+  }
+  if (recorded.look) {
+    if (const auto now = actor->GetAppearance()) {
+      SendAppearanceToOthers(partOne, *actor, *now);
+      what += fmt::format(", its look's {} head part(s) sent to every game "
+                          "that sees it",
+                          now->headpartIds.size());
+    }
+  }
+  spdlog::info("[verb:appearance] {}: {}", head, what);
+}
+
 void ActionListener::SendRaceMenuPreset(MpActor& actor)
 {
   auto preset = actor.GetRaceMenuPreset();

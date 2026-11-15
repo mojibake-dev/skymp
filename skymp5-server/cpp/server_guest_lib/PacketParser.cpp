@@ -345,6 +345,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnScriptVariables(rawMsgData, *message);
         return;
       }
+      case MsgType::OwnHeadParts: {
+        auto message =
+          reinterpret_cast<OwnHeadPartsMessage*>(result->message.get());
+        actionListener.OnOwnHeadParts(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

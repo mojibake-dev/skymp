@@ -546,6 +546,12 @@ declare module "skyrimPlatform" {
     function hostedGaze(actorFormId: number): number[] | null;
     function pollNodeRotation(refrId: number, nodeNames: string[]): void;
     function nodeRotation(refrId: number): Array<{ node: string; has: boolean; world: number[]; local: number[] }> | null;
+    // thuum D-53-8 B (train 53's V-live): the head parts the player's own
+    // base draws, read on the game thread per poll (its overlay list while
+    // TESNPC::HasOverlays answers true and the list holds parts, else its
+    // base list), and the last read; an older platform has neither
+    function pollOwnHeadParts(): void;
+    function ownHeadParts(): { seq: number; race: number; flagged: boolean; hasOverlays: boolean; overlayCount: number; overlay: boolean; parts: number[] } | null;
     function setEngineDamageCut(on: boolean): void;
     // thuum D-T4 (ADR-028): whether DamageActor's replacement went in, the player's cut of another actor's damage with it
     function isDamageActorReplaced(): boolean;

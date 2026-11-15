@@ -5048,6 +5048,61 @@ PartOne::HeadPartRecord PartOne::RecordHeadPart(MpActor& actor, uint32_t part)
   return recorded;
 }
 
+PartOne::HeadPartRecord PartOne::RecordOwnHeadParts(
+  MpActor& actor, const std::vector<uint32_t>& parts)
+{
+  HeadPartRecord recorded;
+  const auto current = actor.GetAppearance();
+  if (!HasEspm() || !current || parts.empty()) {
+    return recorded;
+  }
+  auto& browser = GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  // a part's HDPT type (PNAM), WearHeadPart's reading
+  const auto typeOf = [&](uint32_t id) -> std::optional<uint32_t> {
+    const auto* hdpt = espm::Convert<espm::HDPT>(browser.LookupById(id).rec);
+    return hdpt ? std::optional<uint32_t>(hdpt->GetData(cache).type)
+                : std::nullopt;
+  };
+  std::vector<std::optional<uint32_t>> types;
+  types.reserve(parts.size());
+  for (uint32_t part : parts) {
+    types.push_back(typeOf(part));
+  }
+
+  // the stored look first: each part of a type the report names once,
+  // ChangeHeadPart's rewrite (a look that names it already, or names no part
+  // of its type, is left as it is)
+  std::string preset = actor.GetRaceMenuPreset();
+  for (size_t i = 0; i < parts.size(); ++i) {
+    if (!types[i] || std::count(types.begin(), types.end(), types[i]) != 1) {
+      continue;
+    }
+    if (WearHeadPartInLook(preset, parts[i])) {
+      ++recorded.rewritten;
+    }
+  }
+  if (recorded.rewritten != 0) {
+    recorded.preset = actor.SetRaceMenuPreset(std::move(preset));
+    if (!recorded.preset) {
+      recorded.rewritten = 0;
+    }
+  }
+
+  // the look: exactly the reported set, in the engine's order
+  std::vector<uint32_t> worn = current->headpartIds;
+  std::vector<uint32_t> reported = parts;
+  std::sort(worn.begin(), worn.end());
+  std::sort(reported.begin(), reported.end());
+  if (worn != reported) {
+    Appearance look = *current;
+    look.headpartIds = parts;
+    actor.SetAppearance(&look);
+    recorded.look = true;
+  }
+  return recorded;
+}
+
 PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
 {
   HeadPartRecord recorded;

@@ -1,0 +1,36 @@
+# difftest own-head-parts (thuum D-53-8 B, train 53's V-live): a player's own game reports the head parts it draws on its
+# own player after its race changed (OwnHeadParts, MsgType 82), R2: the server records them as the player's look when the
+# race is the one it records and every part is an HDPT, and sends the look to every other game that sees the player.
+# player-own's frame: c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003, see
+# melee-reach), so the server opens c1's race menu at its login, and at 3 s c1 answers with NordRace 0x13746 and no head
+# parts, which both stacks take and relay alike. The parts are Skyrim.esm's (unit/PlayerOwnTest.cpp's head-part case,
+# lab/esm.py): MaleEyesHumanIceBlue 0x24244 (Eyes) and HairMaleNord01 0x51507 (Hair). At 4 s c1 reports the two under
+# NordRace from its base list: the wire server records them on c1's look and sends c2 that look (UpdateAppearance,
+# headpartIds holding both); c1 has no stored RaceMenu look, so no RaceMenuPreset goes. Three reports send nothing, each
+# said by its name in the wire server's log: at 4.5 s the same two under NordRaceVampire 0x88794, a race the server does
+# not record for c1 (E_HEADPARTS_RACE: a stale report, or a race overlay's, D-T1 A); at 5 s a part that is NordRace
+# itself, no HDPT (E_HEADPARTS_KIND); at 5.5 s the 4 s report again, which the look wears already (folded). The legacy
+# server knows no MsgType 82 and drops all four. c2 steps at 6 s of its own and so outlives c1, as in every session.
+id: own-head-parts
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 3000, send: {t: 4, idx: "{{idx}}", data: {isFemale: false, raceId: 0x13746, weight: 50, skinColor: 0, hairColor: 0, headpartIds: [], headTextureSetId: 0, options: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], presets: [0, 0, 0, 0], tints: [], name: difftest}}}
+  - {client: c1, at_ms: 4000, send: {t: 82, race: 0x13746, parts: [0x24244, 0x51507], overlay: false}, reliable: true}
+  - {client: c1, at_ms: 4500, send: {t: 82, race: 0x88794, parts: [0x24244, 0x51507], overlay: true}, reliable: true}
+  - {client: c1, at_ms: 5000, send: {t: 82, race: 0x13746, parts: [0x24244, 0x13746], overlay: false}, reliable: true}
+  - {client: c1, at_ms: 5500, send: {t: 82, race: 0x13746, parts: [0x51507, 0x24244], overlay: false}, reliable: true}
+  - {client: c2, at_ms: 0, move: {dy: 30}}
+  - {client: c2, at_ms: 6000, move: {dy: 60}}
+divergences:
+  - client: c2
+    msg: {t: 4, data: {raceId: 0x13746, headpartIds: [0x24244, 0x51507]}}
+    legacy: 0
+    wire: 1
+    reason: c1's own head parts recorded on its look and sent to c2 (D-53-8 B, R2), once, the 5.5 s report folded; the legacy server knows no MsgType 82
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

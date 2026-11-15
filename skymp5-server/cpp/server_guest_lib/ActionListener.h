@@ -246,6 +246,22 @@ public:
   virtual void OnScriptVariables(const RawMessageData& rawMsgData,
                                  const ScriptVariablesMessage& msg);
 
+  // thuum D-53-8 B (train 53's V-live; OwnHeadParts 82): the head parts the
+  // reporter's own game draws on its own player after its race changed, R2
+  // (the owner computes, the server records), within rule 5's bounds, which
+  // wire-rules player_own::own_head_parts judges over the facts read here:
+  // the reporter's own player alone (the message names no actor), a recorded
+  // look (E_HEADPARTS_NO_LOOK), the race it records (a race overlay's or a
+  // stale report's is refused, E_HEADPARTS_RACE), 1 to 64 parts
+  // (E_HEADPARTS_COUNT), each an HDPT (E_HEADPARTS_KIND) the recorded race
+  // may wear (E_HEADPARTS_RACE_LIST, D-E1 A's bound, a part whose record
+  // gives no race list passing). Recorded on the look and the stored RaceMenu
+  // look (PartOne::RecordOwnHeadParts) and sent to every other game that
+  // sees the player, the stored look first, as a recorded ChangeHeadPart is;
+  // a report the look wears already is folded
+  virtual void OnOwnHeadParts(const RawMessageData& rawMsgData,
+                              const OwnHeadPartsMessage& msg);
+
   // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
   // reports (a reference that is no actor activating the reference whose
   // activation parents name it): recorded through Activate's own path, and

@@ -9,6 +9,7 @@ import { AliasFillService } from "./aliasFillService";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { ObjectAnimationService } from "./objectAnimationService";
+import { OwnLookService } from "./ownLookService";
 import { PropService } from "./propService";
 import { holdPcInventoryBase } from "./remoteServer";
 import { ScriptStateService } from "./scriptStateService";
@@ -253,6 +254,13 @@ export class ScriptCallService extends ClientListener {
             if (call.self === 0x14) {
                 this.holdOwnItem(call, Date.now());
                 this.queue({ call, record: true, key: undefined, dropped: false });
+                // thuum D-53-8 B: after its own race change this game reports
+                // the head parts its engine draws (OwnLookService, JS state
+                // here)
+                const race = call.args[0];
+                if (call.cls === "Actor" && call.fn === "SetRace" && race !== null && typeof race === "object") {
+                    this.controller.lookupListener(OwnLookService).noteOwnRace(race.formId);
+                }
             }
             return;
         }

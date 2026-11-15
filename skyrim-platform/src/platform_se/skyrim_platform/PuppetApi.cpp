@@ -2347,6 +2347,116 @@ Napi::Value PuppetApi::NodeRotation(const Napi::CallbackInfo& info)
   return res;
 }
 
+namespace {
+// thuum D-53-8 B (train 53's V-live; lab/.cache/drafts/reads-53/
+// stage53-reads.md, train53-greens): the head parts the player's own base
+// draws, read on the game thread as the node rotations are. The list
+// follows CommonLibSSE-NG's reading of a type's current part, taken over the
+// whole list (TESNPC::GetCurrentHeadPartByType, src/RE/T/TESNPC.cpp:94-97:
+// the overlay list while HasOverlays answers true, else the base list): the
+// overlay list (TESNPC::GetBaseOverlays and GetNumBaseOverlays,
+// include/RE/T/TESNPC.h:242 and :247) while TESNPC::HasOverlays (:255)
+// answers true and the list holds parts, else the base list
+// (TESNPC::headParts and numHeadParts, :285-286). One case departs from
+// CommonLib's reading: HasOverlays true over an empty overlay list, where
+// GetHeadPartOverlayByType (:111-123) names no part of any type and this
+// read takes the base list; its answer says so (hasOverlays true,
+// overlayCount 0, overlay false), and what the engine draws then is unread
+// (HYPOTHESIS). HasOverlays is called
+// through this platform's own replacement of it (FridaHooks.cpp,
+// InstallHasOverlaysHook), so the answer is the one the engine's head build
+// gets: the engine's own on the player's base while its race carries a head
+// part list flag (TESRace.h:77-78), false otherwise. Train 53 read the two
+// lists apart after Ariadne's turn (20261115-031800
+// steps/184-c2-head-parts.json: her base list kept
+// FemaleEyesKhajiitBlueNarrow 0xee878, her overlay list held
+// FemaleEyesKhajiitVampire 0xee87f in its place), and her face drew the
+// overlay's (steps 186 to 194). HYPOTHESIS (rule 2): that the engine's head
+// build reads the list HasOverlays picks, as CommonLib's reading does
+struct OwnHeadPartsRead
+{
+  uint32_t seq = 0;            // reads since launch, this one's
+  uint32_t race = 0;           // the base's race (TESNPC::GetRace), 0 for none
+  bool flagged = false;        // that race carries kOverlayHeadPartList or
+                               // kOverrideHeadPartList (TESRace.h:77-78)
+  bool hasOverlays = false;    // TESNPC::HasOverlays's answer
+  uint32_t overlayCount = 0;   // TESNPC::GetNumBaseOverlays
+  bool overlay = false;        // the parts are the overlay list
+  std::vector<uint32_t> parts; // each once, in the list's order
+};
+std::mutex g_ownHeadPartsMutex;
+std::optional<OwnHeadPartsRead> g_ownHeadParts;
+uint32_t g_ownHeadPartsSeq = 0; // under the mutex
+}
+
+Napi::Value PuppetApi::PollOwnHeadParts(const Napi::CallbackInfo& info)
+{
+  g_nativeCallRequirements.gameThrQ->AddTask([](Viet::Void) {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    RE::TESNPC* base = player ? player->GetActorBase() : nullptr;
+    if (!base) {
+      return;
+    }
+    OwnHeadPartsRead read;
+    const RE::TESRace* race = base->GetRace();
+    read.race = race ? race->formID : 0u;
+    read.flagged = race &&
+      race->data.flags.any(RE::RACE_DATA::Flag::kOverlayHeadPartList,
+                           RE::RACE_DATA::Flag::kOverrideHeadPartList);
+    read.hasOverlays = base->HasOverlays();
+    read.overlayCount = base->GetNumBaseOverlays();
+    RE::BGSHeadPart** overlays =
+      read.overlayCount != 0 ? base->GetBaseOverlays() : nullptr;
+    read.overlay = read.hasOverlays && overlays != nullptr;
+    const auto take = [&read](const RE::BGSHeadPart* part) {
+      if (part &&
+          std::find(read.parts.begin(), read.parts.end(), part->formID) ==
+            read.parts.end()) {
+        read.parts.push_back(part->formID);
+      }
+    };
+    if (read.overlay) {
+      for (uint32_t i = 0; i < read.overlayCount; ++i) {
+        take(overlays[i]);
+      }
+    } else if (base->headParts) {
+      for (std::int8_t i = 0; i < base->numHeadParts; ++i) {
+        take(base->headParts[i]);
+      }
+    }
+    std::lock_guard<std::mutex> lock(g_ownHeadPartsMutex);
+    read.seq = ++g_ownHeadPartsSeq;
+    g_ownHeadParts = std::move(read);
+  });
+  return info.Env().Undefined();
+}
+
+Napi::Value PuppetApi::OwnHeadParts(const Napi::CallbackInfo& info)
+{
+  OwnHeadPartsRead read;
+  {
+    std::lock_guard<std::mutex> lock(g_ownHeadPartsMutex);
+    if (!g_ownHeadParts) {
+      return info.Env().Null();
+    }
+    read = *g_ownHeadParts;
+  }
+  auto env = info.Env();
+  auto res = Napi::Object::New(env);
+  res.Set("seq", Napi::Number::New(env, read.seq));
+  res.Set("race", Napi::Number::New(env, read.race));
+  res.Set("flagged", Napi::Boolean::New(env, read.flagged));
+  res.Set("hasOverlays", Napi::Boolean::New(env, read.hasOverlays));
+  res.Set("overlayCount", Napi::Number::New(env, read.overlayCount));
+  res.Set("overlay", Napi::Boolean::New(env, read.overlay));
+  auto parts = Napi::Array::New(env, read.parts.size());
+  for (uint32_t i = 0; i < static_cast<uint32_t>(read.parts.size()); ++i) {
+    parts.Set(i, Napi::Number::New(env, read.parts[i]));
+  }
+  res.Set("parts", parts);
+  return res;
+}
+
 Napi::Value PuppetApi::HostedGaze(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");

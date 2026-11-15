@@ -309,6 +309,11 @@ pub struct ClientGuard {
     /// batched; 4 at once, 1 a second after (WorldGlobal's shape,
     /// UNMEASURED).
     pub script_variables_budget: TokenBucket,
+    /// Budget for a seat's own head parts reports (OwnHeadParts, thuum
+    /// D-53-8 B): one when its own player's race changed and one more when
+    /// the engine's overlay list comes after it, so 4 at once, then 1 a
+    /// second (UNMEASURED; a vampire's turn and its cure are minutes apart).
+    pub own_head_parts_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -360,6 +365,7 @@ impl Default for ClientGuard {
             world_global_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             entry_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             script_variables_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
+            own_head_parts_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
         }
     }
 }
@@ -688,6 +694,30 @@ fn check_race_overlay(o: &skymp::RaceOverlay) -> Result<(), Reject> {
     }
     if !form(o.race) || !form(o.base) || o.race == o.base || !distinct(&o.spells) || !distinct(&o.shouts) || !distinct(&o.items) {
         return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// A player's own head parts report (thuum D-53-8 B, OwnHeadParts 82),
+/// structural only: a race and every part a load-order form (not 0, below
+/// 0xff000000, the server's forms), at least one part (a report with none
+/// would strip a face) and no part named twice (the engine's lists hold each
+/// part once). The count, at most `cap::HEADPARTS`, holds at decode. Whether
+/// the race is the one the server records for the sender's player and each
+/// part an HDPT that race may wear is the server's rule (wire-rules
+/// player_own::own_head_parts: `E_HEADPARTS_RACE`, `E_HEADPARTS_KIND`,
+/// `E_HEADPARTS_RACE_LIST`); the message names no actor, so it is only ever
+/// the sender's own.
+fn check_own_head_parts(m: &skymp::OwnHeadParts) -> Result<(), Reject> {
+    let form = |id: u32| id != 0 && id < PLAYER_FORMS;
+    let parts = m.parts.as_slice();
+    if !form(m.race) || parts.is_empty() {
+        return Err(Reject::Range);
+    }
+    for (i, &part) in parts.iter().enumerate() {
+        if !form(part) || parts.iter().take(i).any(|&earlier| earlier == part) {
+            return Err(Reject::Range);
+        }
     }
     Ok(())
 }
@@ -1908,6 +1938,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             }
             take(&mut guard.script_variables_budget, now_ms)
         }
+        Message::OwnHeadParts(_) => take(&mut guard.own_head_parts_budget, now_ms),
         // thuum ADR-068 rung 5 (D-T1 A): a seat sends its own look; a
         // figure's overlay is the server's word
         Message::UpdateAppearance(m) if m.overlay.is_some() => Err(Reject::Range),
@@ -2105,6 +2136,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::AliasFill(m) => check_alias_fill(m),
         Message::WorldGlobal(m) => check_world_global(m),
         Message::ScriptVariables(m) => check_script_variables(m),
+        Message::OwnHeadParts(m) => check_own_head_parts(m),
         Message::CreateActor(m) => check_create_actor(m),
         Message::UpdateAppearance(m) => check_update_appearance(m),
         // Everything else: the checks all messages share. A server-to-client
@@ -3584,6 +3616,35 @@ mod tests {
         assert_eq!(validate(&report(0x709d2), &mut guard, 2_000), Ok(()));
     }
 
+    /// thuum D-53-8 B: Ariadne's overlay list after her turn on train 53
+    /// (20261115-031800 steps/184-c2-head-parts.json, KhajiitRaceVampire
+    /// 0x88845 with FemaleEyesKhajiitVampire 0xee87f), then each shape rule
+    /// broken once, and the budget.
+    #[test]
+    fn own_head_parts_name_a_race_and_each_part_once_and_are_rate_limited() {
+        use wire_schema::skymp::OwnHeadParts;
+        const ARIADNE: [u32; 7] = [0x51612, 0x511a8, 0xee87f, 0xd82f6, 0x85de9, 0x85ddf, 0xf3916];
+        let report = |race: u32, parts: &[u32]| Message::OwnHeadParts(OwnHeadParts { race, parts: parts.to_vec().try_into().unwrap_or_default(), overlay: true, ..Default::default() });
+        assert_eq!(validate_server(&report(0x88845, &ARIADNE)), Ok(()));
+        assert_eq!(validate_server(&report(0x88845, &[0x51612])), Ok(()));
+        assert_eq!(validate_server(&report(0, &ARIADNE)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0xff00_0000, &ARIADNE)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x88845, &[])), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x88845, &[0x51612, 0])), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x88845, &[0x51612, 0xff00_0001])), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x88845, &[0x51612, 0xee87f, 0x51612])), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..4 {
+            assert_eq!(validate(&report(0x88845, &ARIADNE), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&report(0x88845, &ARIADNE), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&report(0x88845, &ARIADNE), &mut guard, 2_000), Ok(()));
+        // a refused shape spends no token
+        let mut fresh = ClientGuard::default();
+        assert_eq!(validate(&report(0x88845, &[]), &mut fresh, 0), Err(Reject::Range));
+        assert_eq!(fresh.own_head_parts_budget.tokens, 4);
+    }
+
     #[test]
     fn object_animations_name_a_reference_and_an_event_and_are_rate_limited() {
         use wire_schema::skymp::ObjectAnimation;
@@ -3934,6 +3995,18 @@ mod tests {
             let m = Message::WordWall(WordWall { wall, ..Default::default() });
             let _ = validate(&m, &mut g, now);
             prop_assert_eq!(validate_server(&m), if wall == 0 { Err(Reject::Range) } else { Ok(()) });
+        }
+
+        #[test]
+        fn own_head_parts_never_panic_and_judge_their_shape(race in any::<u32>(), parts in proptest::collection::vec(any::<u32>(), 0..=cap::HEADPARTS), overlay in any::<bool>(), now in any::<u64>()) {
+            use wire_schema::skymp::OwnHeadParts;
+            let mut g = ClientGuard::default();
+            let m = Message::OwnHeadParts(OwnHeadParts { race, parts: parts.clone().try_into().unwrap_or_default(), overlay, ..Default::default() });
+            let _ = validate(&m, &mut g, now);
+            let form = |id: u32| id != 0 && id < 0xff00_0000;
+            let once = parts.iter().enumerate().all(|(i, p)| !parts.iter().take(i).any(|e| e == p));
+            let ok = form(race) && !parts.is_empty() && parts.iter().all(|&p| form(p)) && once;
+            prop_assert_eq!(validate_server(&m), if ok { Ok(()) } else { Err(Reject::Range) });
         }
 
         #[test]

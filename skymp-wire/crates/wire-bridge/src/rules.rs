@@ -2484,6 +2484,54 @@ mod ffi {
         count: u32,
     }
 
+    /// thuum D-53-8 B (OwnHeadParts 82): what the core knows of a player's
+    /// own head parts report beside its parts (wire-rules
+    /// player_own::OwnHeadPartsFacts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct OwnHeadPartsFacts {
+        /// The player has a recorded look (MpActor::GetAppearance).
+        has_look: bool,
+        /// The race that look records (its appearance's raceId; an overlay
+        /// never moves it, D-T1 A).
+        recorded_race: u32,
+        /// The race the report names its parts under, the seat's word.
+        reported_race: u32,
+        /// The server holds the game files (PartOne::HasEspm).
+        files: bool,
+    }
+
+    /// thuum D-53-8 B: what the core knows of one part of a player's own
+    /// head parts report, read from the game files (wire-rules
+    /// player_own::HeadPartFacts).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct OwnHeadPartFacts {
+        /// The part's form id, as the report names it.
+        form: u32,
+        /// The part's record is an HDPT.
+        kind: bool,
+        /// The part's HDPT valid-race FormList (RNAM) does not keep it from
+        /// the recorded race (PartOne::HeadPartRaceListHolds, no answer
+        /// taken as yes, as the look's derivation and RecordRaceLook take
+        /// it).
+        race_valid: bool,
+    }
+
+    /// The rule's word on a player's own head parts report (wire-rules
+    /// player_own::own_head_parts).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct OwnHeadPartsVerdict {
+        /// 0 within the bounds (the core writes the parts, or folds when
+        /// the look and the stored look wear them already), 4 refused
+        /// (PlayerOwnVerdict's codes).
+        code: u8,
+        /// The refusal's stable name (E_HEADPARTS_NO_LOOK, E_HEADPARTS_RACE,
+        /// E_HEADPARTS_COUNT, E_HEADPARTS_KIND or E_HEADPARTS_RACE_LIST),
+        /// empty otherwise.
+        name: String,
+        /// Why, for the log; empty otherwise.
+        why: String,
+    }
+
     extern "Rust" {
         /// A client's first activation of a target `distance` units away,
         /// `target_size` being its bounds' farthest point times its scale.
@@ -3621,10 +3669,17 @@ mod ffi {
         /// `player` left: its overlay ends with the connection, given back
         /// for the core's line (`open` false for none).
         fn player_overlay_gone(self: &mut PlayerOverlays, player: u32) -> PlayerOverlayRow;
+        /// thuum D-53-8 B: rule 5's bounds on a player's own head parts
+        /// report (OwnHeadParts 82, R2), judged before the core writes
+        /// anything: a recorded look, the race it records, 1 to 64 parts
+        /// (wire-rules player_own::HEAD_PARTS), the game files, every part
+        /// an HDPT, then every part one the recorded race may wear; `parts`
+        /// one row per reported part, in the report's order.
+        fn player_own_head_parts(facts: &OwnHeadPartsFacts, parts: &[OwnHeadPartFacts]) -> OwnHeadPartsVerdict;
     }
 }
 
-pub use ffi::{PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
+pub use ffi::{OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -6448,6 +6503,15 @@ impl PlayerOverlays {
     }
 }
 
+fn player_own_head_parts(facts: &OwnHeadPartsFacts, parts: &[OwnHeadPartFacts]) -> OwnHeadPartsVerdict {
+    let f = player_own::OwnHeadPartsFacts { has_look: facts.has_look, recorded_race: facts.recorded_race, reported_race: facts.reported_race, files: facts.files };
+    let rows: Vec<player_own::HeadPartFacts> = parts.iter().map(|p| player_own::HeadPartFacts { form: p.form, kind: p.kind, race_valid: p.race_valid }).collect();
+    match player_own::own_head_parts(f, &rows) {
+        player_own::HeadPartsVerdict::Record => OwnHeadPartsVerdict { code: 0, name: String::new(), why: String::new() },
+        player_own::HeadPartsVerdict::Refuse(code, why) => OwnHeadPartsVerdict { code: 4, name: code.name().to_owned(), why },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7678,6 +7742,33 @@ mod tests {
         assert!(!sent.is_empty() && !sent.contains("thuumRaceDropped"), "{sent}");
         assert!(racemenu_without_race_stash(look).is_empty());
         assert!(!racemenu_race_stash("[]").ok);
+    }
+
+    #[test]
+    fn an_own_head_parts_report_crosses_as_its_bounds_judge_it() {
+        // thuum D-53-8 B: the report's cap is the wire's, so a report the
+        // wire carries is never refused by the count alone
+        assert_eq!(player_own::HEAD_PARTS, wire_schema::cap::HEADPARTS);
+        // Ariadne's overlay list after her turn on train 53 (KhajiitRaceVampire
+        // 0x88845, FemaleEyesKhajiitVampire 0xee87f third)
+        let parts: Vec<OwnHeadPartFacts> = [0x51612, 0x511a8, 0xee87f, 0xd82f6, 0x85de9, 0x85ddf, 0xf3916].iter().map(|&form| OwnHeadPartFacts { form, kind: true, race_valid: true }).collect();
+        let turned = OwnHeadPartsFacts { has_look: true, recorded_race: 0x88845, reported_race: 0x88845, files: true };
+        let v = player_own_head_parts(&turned, &parts);
+        assert_eq!((v.code, v.name.as_str(), v.why.as_str()), (0, "", ""));
+        let stale = player_own_head_parts(&OwnHeadPartsFacts { reported_race: 0x13745, ..turned }, &parts);
+        assert_eq!((stale.code, stale.name.as_str()), (4, "E_HEADPARTS_RACE"));
+        assert!(stale.why.contains("its look records race 88845"), "{}", stale.why);
+        assert_eq!(player_own_head_parts(&OwnHeadPartsFacts { has_look: false, ..turned }, &parts).name, "E_HEADPARTS_NO_LOOK");
+        assert_eq!(player_own_head_parts(&turned, &[]).name, "E_HEADPARTS_COUNT");
+        // her BlueNarrow eyes in the vampire eyes' place, then a RACE in her
+        // head's (no indexing: the workspace's clippy refuses it)
+        let swap = |parts: &[OwnHeadPartFacts], at: usize, part: OwnHeadPartFacts| -> Vec<OwnHeadPartFacts> { parts.iter().enumerate().map(|(i, &p)| if i == at { part } else { p }).collect() };
+        let kept = swap(&parts, 2, OwnHeadPartFacts { form: 0xee878, kind: true, race_valid: false });
+        let list = player_own_head_parts(&turned, &kept);
+        assert_eq!((list.code, list.name.as_str()), (4, "E_HEADPARTS_RACE_LIST"));
+        assert!(list.why.starts_with("ee878 may not be worn by race 88845"), "{}", list.why);
+        let raced = swap(&kept, 0, OwnHeadPartFacts { form: 0x88845, kind: false, race_valid: true });
+        assert_eq!(player_own_head_parts(&turned, &raced).name, "E_HEADPARTS_KIND");
     }
 
     #[test]

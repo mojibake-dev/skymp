@@ -77,7 +77,7 @@ macro_rules! skymp_family {
             58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
             72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall,
             76 ScriptState, 77 ScriptStateApply, 78 DestructionStage, 79 AliasFill,
-            80 WorldGlobal, 81 ScriptVariables
+            80 WorldGlobal, 81 ScriptVariables, 82 OwnHeadParts
         }
     };
 }
@@ -357,7 +357,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 81, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 82, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with
@@ -823,6 +823,30 @@ mod tests {
         // a report's watch may be absent (a client's spelling of none)
         let bare = read("81-ScriptVariables-0.json").replacen("\"watch\": []", "\"absent\": 0", 1);
         assert!(matches!(recognize(&bare), Ok(Message::ScriptVariables(v)) if v.watch.is_empty() && v.entries.len() == 1));
+    }
+
+    /// thuum D-53-8 B (SCHEMA_VERSION 50): OwnHeadParts 82. 82-0 is
+    /// Ariadne's overlay list after her turn on train 53 (20261115-031800's
+    /// steps/184-c2-head-parts.json: KhajiitRaceVampire 0x88845, her eyes
+    /// FemaleEyesKhajiitVampire 0xee87f), 82-1 her base list under
+    /// KhajiitRace 0x13745 before it (steps/015, her look's eyes
+    /// FemaleEyesKhajiitBlueNarrow 0xee878), 82-2 a part named twice,
+    /// refused by the shape from either side.
+    #[test]
+    fn own_head_parts_fixtures_validate_as_named() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        type Verdict = (&'static str, Result<(), Reject>);
+        let verdicts: [Verdict; 3] = [("82-OwnHeadParts-0.json", Ok(())), ("82-OwnHeadParts-1.json", Ok(())), ("82-OwnHeadParts-2.json", Err(Reject::Range))];
+        for (name, verdict) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), verdict, "{name}");
+            assert_eq!(validate(&m, &mut ClientGuard::default(), 0), verdict, "{name}");
+        }
+        match recognize(&read("82-OwnHeadParts-0.json")) {
+            Ok(Message::OwnHeadParts(o)) => assert_eq!((o.race, o.parts.len(), o.parts.get(2).copied(), o.overlay), (0x88845, 7, Some(0xee87f), true)),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// thuum ADR-068 rung 4: a script set's placement names its reporter on

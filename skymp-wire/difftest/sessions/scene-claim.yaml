@@ -2,160 +2,213 @@
 # that starts a scene claims its actors from the cell's host until the scene ends; the host's own copy of the scene
 # claims nothing, the first claim winning (R2: the cause seat is recorded, not judged); the release at the scene's end
 # returns them (wire-rules cells claim(), release_claim(); T0 a_scene_takes_its_actors_from_the_host_to_its_starter_
-# until_it_ends). c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003, see melee-reach);
-# c2 starts 1.5 s after c1, each client's times its own. The records (Skyrim.esm, read on sky-srv for step 5a's design
-# and its fixes, 2026-11-14): the argument, scene 0x3839b, whose own quest (its PNAM outside an action) is 0x38386;
-# 0x38386's alias 0 is Lucan Valerius by his unique actor 0x1347a and its alias 2 Camilla by hers, 0x1347b; their
-# ACHRs 0x13487 and 0x13488 stand in RiverwoodTrader 0x133c9. Each client reaches the trader through `moveto` onto
-# Camilla's record (an owner's console command, see claim-outlives-grant) and names the actors by the server's index,
-# "{{idx:0x13487}}" and "{{idx:0x13488}}" (fork wire-fakeclient). The legacy server knows neither MsgType 56 nor
-# `moveto`: on the legacy stack both clients stay at the spawn and nothing below happens.
+# until_it_ends). c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002 and 0xff000003, see melee-reach),
+# both at the spawn in Tamriel's exterior cell (32, -15), form 0xbbb1 (cell-host's read); c2 starts 1.5 s after c1,
+# each client's times its own. The records (Skyrim.esm, read on sky-srv for step 5a's design and its fixes, and again
+# with lab/esm.py id, 2026-11-14): the argument, scene 0x3839b (MS13LucanCamillaSceneView), whose own quest (its PNAM
+# outside an action) is 0x38386 (MS13LucanCamillaScene); 0x38386's alias 0 is Lucan Valerius by his unique actor
+# 0x1347a and its alias 2 Camilla by hers, 0x1347b (both NPC_ records with ACBS's unique flag 0x20).
 #
-# c1 goes to Camilla at 0.2 s and reports nothing loaded yet. c2 goes to her at 0.5 s of its own and at 1 s reports the
-# trader loaded: the first loader in reach hosts it (HostGrant {cell 0x133c9, epoch 1}), and the grant's flip names c2
-# for both (their keyframes to c2, isHostedByOther false to c2 and true to c1). At 4 s c1 reports the trader loaded
-# (hosted: nothing; the cold start passes a cell only to a nearer square, and both stand in the one interior). At 5 s
-# and 5.2 s c1, the seat whose game started the argument, claims Lucan and Camilla for it {purpose 2, quest 0x38386,
-# scene 0x3839b}: the server reads the scene's PNAM and its actor aliases, finds each actor's alias (0 and 2, their
-# unique actors), and the table grants both to c1, who has the cell loaded (their keyframes to c1, isHostedByOther
-# false to c1 and true to c2). At 5 s of its own c2, the host and now the actors' puppet seat, claims Lucan for the
-# same scene: Held (E_CLAIM_HELD in the wire server's log, c1's scene named), nothing sent. At 9 s and 9.2 s, the
-# scene's end, c1 releases each {claim false, purpose 2, quest 0x38386, scene 0x3839b}: the rows end and the cell's
-# rule names its host again (their keyframes to c2, isHostedByOther false to c2 and true to c1).
+# The actors are server-made copies: T2 holds no game-file NPC (its settings carry no npcEnabled, and the server
+# attaches no NPC_ placement under the default false, by chunk or by lookup; claim-outlives-grant's note, read at this
+# session's first T2, fork 8a66e537, 2026-11-14 9:42 PM PST, where each `moveto` onto Camilla 0x13488 answered "Failed:
+# Form with id 0x13488 doesn't exist"). At 0.3 s and 0.5 s of its own c2 places Lucan's base 0x1347a and Camilla's
+# 0x1347b at its own position through the console's PlaceAtMe (PapyrusObjectReference::PlaceAt, an MpActor for an
+# NPC_ base under any npcEnabled; the legacy server's is upstream's and does the same), after both logins, so the
+# copies are 0xff000004 and 0xff000005 on both stacks and both players listen to both from their creation (see
+# claim-outlives-grant). The claims name the copies by the server's index, "{{idx:0xff000004}}" and
+# "{{idx:0xff000005}}" (fork wire-fakeclient 4ce3fb6d; the legacy C++ fakeclient sends the strings, to a server that
+# knows no MsgType 56, and the first T2 showed no legacy difference for them): on the legacy stack the copies are
+# placed and told, and nothing else below happens. The alias read takes each copy for its actor: wire-rules
+# alias_fills::fills_actor's Unique arm compares the alias's unique actor with the actor's base and the base's unique
+# flag, never the reference. HYPOTHESIS (unread): the engine's own unique-actor fill names the placements 0x13487 and
+# 0x13488 alone; this session rests on the server's rule as it stands, which a rule holding a scene's actor to the
+# game-file reference would turn to E_CLAIM_ALIAS here.
 #
-# Then the holder is the host. At 9 s of its own c2 claims Lucan for the scene: the host's own claim moves no
-# simulator, so nothing is sent. At 11.5 s c1 claims him for it again: Held, nothing sent. This leg tells a hold from
-# a takeover: c2's claim at 5 s, answered by c1's release at 9 s, gives the same counts either way (a claim that took
-# him would send at once what the release sends later), while a claim of c1's that took him from c2 here would give c1
-# his keyframe and "false" a second time and c2 a second "true". c2 reports the trader loaded again at 14 s of its own
-# (a repeat: nothing), so it outlives c1 and sees c1's departure, both in the trader.
+# At 1.5 s of its own c2 reports the spawn's cell loaded, c1 having reported nothing: the first loader in reach hosts
+# it (HostGrant {cell 0xbbb1, epoch 1}), and the grant's flip names c2 for both copies (their keyframes to c2,
+# isHostedByOther false to c2 and true to c1). At 4.5 s c1 reports the cell loaded (hosted: nothing; the cold start
+# passes a cell only to a nearer square, and both stand in the one square). At 5.5 s and 5.7 s c1, the seat whose game
+# started the argument, claims Lucan's and Camilla's copies for it {purpose 2, quest 0x38386, scene 0x3839b}: the
+# server reads the scene's PNAM and its actor aliases, finds each copy's alias (0 and 2, their unique actors), and the
+# table grants both to c1, who has the cell loaded (their keyframes to c1, isHostedByOther false to c1 and true to c2).
+# At 5.5 s of its own c2, the host and now the copies' puppet seat, claims Lucan's for the same scene: Held
+# (E_CLAIM_HELD in the wire server's log, c1's scene named), nothing sent. At 9.5 s and 9.7 s, the scene's end, c1
+# releases each {claim false, purpose 2, quest 0x38386, scene 0x3839b}: the rows end and the cell's rule names its host
+# again (their keyframes to c2, isHostedByOther false to c2 and true to c1).
+#
+# Then the holder is the host. At 9.5 s of its own c2 claims Lucan's copy for the scene: the host's own claim moves no
+# simulator, so nothing is sent. At 12 s c1 claims it for the scene again: Held, nothing sent. This leg tells a hold
+# from a takeover: c2's claim at 5.5 s, answered by c1's release at 9.5 s, gives the same counts either way (a claim
+# that took him would send at once what the release sends later), while a claim of c1's that took him from c2 here
+# would give c1 his keyframe and "false" a second time and c2 a second "true". c2 reports the cell loaded again at 15 s
+# of its own (a repeat: nothing), so it outlives c1 and sees c1's departure, both at the spawn.
 #
 # UpdateMovement compares exactly here (not as presence): the server sends a keyframe (PartOne::SendActorKeyframe, the
 # one UpdateMovement the core builds, a t:2) to the simulator ahead of each word, neither client moves, and a
 # keyframe in relays_seen could not be declared. The keyframes and the words (UpdateProperty 7 isHostedByOther,
 # MpObjectReference::UpdateHoster at a grant's flip, a claim and a release) are declared below by count, read from
-# PartOne.cpp; each reason names the events it counts.
+# PartOne.cpp; each reason names the events it counts. A copy's fate and create word are declared as the wire's and
+# the legacy server's halves, as claim-outlives-grant declares them (the wire's create word carries isHostedByOther
+# true while nobody hosts the cell; upstream's carries no flag for an actor nobody hosts).
 #
-# What the first run decides (premises the code alone does not fix): both players listen to Lucan and Camilla
-# whenever they stand in the trader (the counts below rest on it); the clean T2 world's quest-run record does not
-# hold 0x38386 stopped (QuestRecordedStopped, ActionListener.cpp; otherwise each scene claim here reads
-# E_CLAIM_QUEST); the new SCEN reader (espm), not yet compiled when this was written, reads 0x3839b's own PNAM as
-# 0x38386 and its actor aliases 0 and 2; and the legacy C++ fakeclient sends "{{idx:0x13487}}" through unchanged, as
-# it sends prop-physics' "{{created:}}" (no "{{idx" string has been tried there).
-#
-# Not declared yet: the first T2 of this session (ONLY=scene-claim) draws what the code alone does not fix: the forms
-# of the spawn leaving each client's view at its moveto (DestroyActor 25, the lock chest 0xf321a among them); the
-# trader's references entering it (CreateActor 33, Lucan and Camilla among them); each player's create word for the
-# other, at the spawn on the legacy stack and in the trader on the wire; the words and keyframes of any actor of the
-# trader besides Lucan and Camilla; and any fate (ActorFate 51), record (ChangeFormApply 74) or script state
-# (ScriptStateApply 77, ahead of a grant) the trader's load and grant serve. Each is read against the paragraphs above
-# before it is declared.
+# What the first run decides (premises the code alone does not fix): the legacy server places both copies at the same
+# ids and tells both clients; the wire's fate for each copy goes ahead of its create word (ActorFate 51, PlaceAt's
+# roll); the clean T2 world's quest-run record does not hold 0x38386 stopped (QuestRecordedStopped, ActionListener.cpp;
+# otherwise each scene claim here reads E_CLAIM_QUEST) and its alias journal holds no fill of 0x38386's aliases 0 and 2
+# (a reported fill stands for its alias over the unique actor, E_CLAIM_ALIAS for a copy it does not name); and the SCEN
+# reader (espm) reads 0x3839b's own PNAM as 0x38386 and its actor aliases 0 and 2.
 id: scene-claim
 clients:
   c1: {profile_id: 9}
   c2: {profile_id: 10}
 volatile: [3, 24]
 steps:
-  - {client: c1, at_ms: 200, send: {t: 12, data: {t: 12, commandName: moveto, args: [20, 0x13488]}}, reliable: true}
-  - {client: c2, at_ms: 500, send: {t: 12, data: {t: 12, commandName: moveto, args: [20, 0x13488]}}, reliable: true}
-  - {client: c2, at_ms: 1000, send: {t: 47, cell: 0x133c9, loaded: true}, reliable: true}
-  - {client: c1, at_ms: 4000, send: {t: 47, cell: 0x133c9, loaded: true}, reliable: true}
-  - {client: c1, at_ms: 5000, send: {t: 56, idx: "{{idx:0x13487}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
-  - {client: c1, at_ms: 5200, send: {t: 56, idx: "{{idx:0x13488}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
-  - {client: c2, at_ms: 5000, send: {t: 56, idx: "{{idx:0x13487}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
-  - {client: c1, at_ms: 9000, send: {t: 56, idx: "{{idx:0x13487}}", claim: false, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
-  - {client: c1, at_ms: 9200, send: {t: 56, idx: "{{idx:0x13488}}", claim: false, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
-  - {client: c2, at_ms: 9000, send: {t: 56, idx: "{{idx:0x13487}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
-  - {client: c1, at_ms: 11500, send: {t: 56, idx: "{{idx:0x13487}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
-  - {client: c2, at_ms: 14000, send: {t: 47, cell: 0x133c9, loaded: true}, reliable: true}
+  - {client: c2, at_ms: 300, send: {t: 12, data: {t: 12, commandName: placeatme, args: [20, 0x1347a]}}, reliable: true}
+  - {client: c2, at_ms: 500, send: {t: 12, data: {t: 12, commandName: placeatme, args: [20, 0x1347b]}}, reliable: true}
+  - {client: c2, at_ms: 1500, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 4500, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 5500, send: {t: 56, idx: "{{idx:0xff000004}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c1, at_ms: 5700, send: {t: 56, idx: "{{idx:0xff000005}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c2, at_ms: 5500, send: {t: 56, idx: "{{idx:0xff000004}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c1, at_ms: 9500, send: {t: 56, idx: "{{idx:0xff000004}}", claim: false, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c1, at_ms: 9700, send: {t: 56, idx: "{{idx:0xff000005}}", claim: false, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c2, at_ms: 9500, send: {t: 56, idx: "{{idx:0xff000004}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c1, at_ms: 12000, send: {t: 56, idx: "{{idx:0xff000004}}", claim: true, purpose: 2, quest: 0x38386, scene: 0x3839b}, reliable: true}
+  - {client: c2, at_ms: 15000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
 divergences:
+  - client: c2
+    msg: {t: 41, text: "placeatme done", refused: false}
+    legacy: 0
+    wire: 2
+    reason: c2's two placements, each answered with a line (ConsoleCommands::Execute, thuum docs/verbs/console-commands.md); the legacy server runs upstream's PlaceAtMe and prints nothing back
   - client: c1
-    msg: {t: 41, text: "moveto done", refused: false}
+    msg: {t: 51, fates: [{refrId: 0xff000004}]}
     legacy: 0
     wire: 1
-    reason: an owner's moveto runs the server's teleport and answers with a line (thuum docs/verbs/console-commands.md); the legacy server does not know the command
+    reason: Lucan's copy's fate ahead of its create word (ActorFate 51, the roll PlaceAt makes for a server-made NPC, thuum ADR-050 decision 3); the legacy server has none
   - client: c1
-    msg: {t: 20, idx: "refr:ff000002", worldOrCell: 0x133c9}
+    msg: {t: 33, idx: "refr:ff000004", props: {isHostedByOther: true}}
     legacy: 0
     wire: 1
-    reason: the moveto's teleport onto Camilla's record in RiverwoodTrader 0x133c9 (MpActor::Teleport); the legacy server stays silent
+    reason: Lucan's copy's create word, hosted by other on every screen while nobody hosts its cell (PartOne's onSubscribe, thuum docs/verbs/cell-host.md); upstream's carries no flag for an actor nobody hosts
+  - client: c1
+    msg: {t: 33, idx: "refr:ff000004"}
+    legacy: 1
+    wire: 0
+    reason: the same copy's create word as the legacy server's PlaceAtMe sends it; the wire's was set aside by the declaration above
+  - client: c1
+    msg: {t: 51, fates: [{refrId: 0xff000005}]}
+    legacy: 0
+    wire: 1
+    reason: Camilla's copy's fate ahead of its create word, as Lucan's
+  - client: c1
+    msg: {t: 33, idx: "refr:ff000005", props: {isHostedByOther: true}}
+    legacy: 0
+    wire: 1
+    reason: Camilla's copy's create word, hosted by other while nobody hosts its cell, as Lucan's
+  - client: c1
+    msg: {t: 33, idx: "refr:ff000005"}
+    legacy: 1
+    wire: 0
+    reason: the same copy's create word as the legacy server sends it; the wire's was set aside by the declaration above
   - client: c2
-    msg: {t: 41, text: "moveto done", refused: false}
+    msg: {t: 51, fates: [{refrId: 0xff000004}]}
     legacy: 0
     wire: 1
-    reason: an owner's moveto, as c1's; the legacy server does not know the command
+    reason: Lucan's copy's fate ahead of its create word to its placer, as to c1
   - client: c2
-    msg: {t: 20, idx: "refr:ff000003", worldOrCell: 0x133c9}
+    msg: {t: 33, idx: "refr:ff000004", props: {isHostedByOther: true}}
     legacy: 0
     wire: 1
-    reason: c2's teleport onto Camilla's record in the trader
+    reason: Lucan's copy's create word to its placer, hosted by other while nobody hosts its cell (c2's grant comes a second after), as to c1
   - client: c2
-    msg: {t: 48, cell: 0x133c9, epoch: 1}
+    msg: {t: 33, idx: "refr:ff000004"}
+    legacy: 1
+    wire: 0
+    reason: the same copy's create word as the legacy server sends it; the wire's was set aside by the declaration above
+  - client: c2
+    msg: {t: 51, fates: [{refrId: 0xff000005}]}
     legacy: 0
     wire: 1
-    reason: the first loader in reach hosts the trader (HostGrant, thuum docs/verbs/cell-host.md); c1 had it in reach and not loaded; the legacy server has no cell hosts
+    reason: Camilla's copy's fate ahead of its create word to its placer, as to c1
+  - client: c2
+    msg: {t: 33, idx: "refr:ff000005", props: {isHostedByOther: true}}
+    legacy: 0
+    wire: 1
+    reason: Camilla's copy's create word to its placer, hosted by other while nobody hosts its cell, as to c1
+  - client: c2
+    msg: {t: 33, idx: "refr:ff000005"}
+    legacy: 1
+    wire: 0
+    reason: the same copy's create word as the legacy server sends it; the wire's was set aside by the declaration above
+  - client: c2
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the spawn's cell (HostGrant, thuum docs/verbs/cell-host.md); c1 had it in reach and not loaded; the legacy server has no cell hosts
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
-    reason: departure detection, graceful close on the wire against RakNet's timeout (both clients in the trader on the wire)
+    reason: departure detection, graceful close on the wire against RakNet's timeout
   - client: c1
-    msg: {t: 2, idx: "refr:13487"}
+    msg: {t: 2, idx: "refr:ff000004"}
     legacy: 0
     wire: 1
-    reason: Lucan's record ahead of the word naming c1 for him at its scene claim; a claim of c1's that took him from c2 at 11.5 s reads 2
+    reason: Lucan's copy's record ahead of the word naming c1 for him at its scene claim; a claim of c1's that took him from c2 at 12 s reads 2
   - client: c1
-    msg: {t: 7, refrId: 0x13487, propName: isHostedByOther, dataDump: "false"}
+    msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
     wire: 1
-    reason: c1 named for Lucan at its scene claim; a claim of c1's that took him from c2 at 11.5 s reads 2
+    reason: c1 named for Lucan's copy at its scene claim; a claim of c1's that took him from c2 at 12 s reads 2
   - client: c1
-    msg: {t: 7, refrId: 0x13487, propName: isHostedByOther, dataDump: "true"}
+    msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
     wire: 2
-    reason: c2 named for Lucan at epoch 1's grant and at c1's release at the scene's end
+    reason: c2 named for Lucan's copy at epoch 1's grant and at c1's release at the scene's end
   - client: c1
-    msg: {t: 2, idx: "refr:13488"}
+    msg: {t: 2, idx: "refr:ff000005"}
     legacy: 0
     wire: 1
-    reason: Camilla's record ahead of the word naming c1 for her at its scene claim
+    reason: Camilla's copy's record ahead of the word naming c1 for her at its scene claim
   - client: c1
-    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "false"}
+    msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
     wire: 1
-    reason: c1 named for Camilla at its scene claim
+    reason: c1 named for Camilla's copy at its scene claim
   - client: c1
-    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "true"}
+    msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
     wire: 2
-    reason: c2 named for Camilla at epoch 1's grant and at c1's release at the scene's end
+    reason: c2 named for Camilla's copy at epoch 1's grant and at c1's release at the scene's end
   - client: c2
-    msg: {t: 2, idx: "refr:13487"}
+    msg: {t: 2, idx: "refr:ff000004"}
     legacy: 0
     wire: 2
-    reason: Lucan's record ahead of each word naming c2 for him, epoch 1's grant and c1's release; c2's own claim after it moves nothing (a host's own claim)
+    reason: Lucan's copy's record ahead of each word naming c2 for him, epoch 1's grant and c1's release; c2's own claim after it moves nothing (a host's own claim)
   - client: c2
-    msg: {t: 7, refrId: 0x13487, propName: isHostedByOther, dataDump: "false"}
+    msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
     wire: 2
-    reason: c2 named for Lucan at epoch 1's grant and at c1's release
+    reason: c2 named for Lucan's copy at epoch 1's grant and at c1's release
   - client: c2
-    msg: {t: 7, refrId: 0x13487, propName: isHostedByOther, dataDump: "true"}
+    msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
     wire: 1
-    reason: c1 named for Lucan at its scene claim; its second claim is held, where a claim that took him from c2 reads 2
+    reason: c1 named for Lucan's copy at its scene claim; its second claim is held, where a claim that took him from c2 reads 2
   - client: c2
-    msg: {t: 2, idx: "refr:13488"}
+    msg: {t: 2, idx: "refr:ff000005"}
     legacy: 0
     wire: 2
-    reason: Camilla's record ahead of each word naming c2 for her, epoch 1's grant and c1's release
+    reason: Camilla's copy's record ahead of each word naming c2 for her, epoch 1's grant and c1's release
   - client: c2
-    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "false"}
+    msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
     wire: 2
-    reason: c2 named for Camilla at epoch 1's grant and at c1's release
+    reason: c2 named for Camilla's copy at epoch 1's grant and at c1's release
   - client: c2
-    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "true"}
+    msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
     wire: 1
-    reason: c1 named for Camilla at its scene claim
+    reason: c1 named for Camilla's copy at its scene claim

@@ -4,39 +4,53 @@
 # any purpose, and ends at its release (wire-rules cells claim(), grant(), unloaded(); T0 a_lead_is_the_simulators_
 # alone_and_wants_no_loaded_cell, camillas_lead_goes_through_the_door_and_outlives_the_grant_of_the_cell_outside,
 # the_first_holder_keeps_the_actor_against_any_purpose_and_takes_its_own). c1 and c2 are new characters (profiles 9
-# and 10, actors 0xff000002 and 0xff000003, see melee-reach); c2 starts 1.5 s after c1, each client's times its own.
-# The records (Skyrim.esm, read on sky-srv for step 5a's design, 2026-11-14): MS13 0x39645's alias 9 "Camilla" fills
-# by her unique actor (ALUA 0x1347b), her ACHR 0x13488 in RiverwoodTrader 0x133c9; the package 0x2e4cc's owner quest
-# (QNAM) is MS13. Each client reaches the trader through `moveto` onto Camilla's record (an owner's console command,
-# see claim-outlives-grant) and names her by the server's index, "{{idx:0x13488}}" (fork wire-fakeclient). The
-# legacy server knows neither MsgType 56 nor `moveto`: on the legacy stack both clients stay at the spawn and nothing
-# below happens.
+# and 10, actors 0xff000002 and 0xff000003, see melee-reach), both at the spawn in Tamriel's exterior cell (32, -15),
+# form 0xbbb1 (cell-host's read); c2 starts 1.5 s after c1, each client's times its own. The records (Skyrim.esm, read
+# on sky-srv for step 5a's design and again with lab/esm.py id, 2026-11-14): MS13 0x39645's alias 9 "Camilla" fills
+# by her unique actor (ALUA 0x1347b, CamillaValerius, an NPC_ whose ACBS carries the unique flag 0x20); the package
+# 0x2e4cc (MS13CamillaTravelMarker00Package) names MS13 as its owner quest (QNAM 0x39645).
 #
-# At 0.2 s c1 goes to Camilla and at 1 s reports the trader loaded: it hosts the cell (HostGrant {cell 0x133c9, epoch
-# 1}), so its game simulates her. c2 goes to Camilla at 0.5 s of its own and at 1 s of its own claims her lead
-# {purpose 1, quest 0x39645, package 0x2e4cc}: no row holds her yet and c1's game runs her, so NotSimulator
-# (E_CLAIM_NOT_SIMULATOR in the wire server's log, c1 named) and nothing is sent; a claim past a missing check would
-# give c2 her keyframe and the words. c2 reports the trader loaded at 1.5 s of its own (hosted: nothing). At 3.5 s c1
-# claims her lead: the server reads the quest (a QUST its run record does not hold stopped), the package's QNAM (MS13)
-# and her fill (alias 9, its unique actor), and the table grants it to the simulator; a host's own lead moves no
-# simulator, so no keyframe and no word. At 4.5 s c1 reports the trader unloaded: the unload keeps the lead (its
-# holder's engine may run her in a cell its game has unloaded, R-C2) and arms c1's grace; at its end the cell passes
-# to c2 (HostRelease {epoch 1} to c1, HostGrant {epoch 2} to c2), and the grant passes over the lead: the flips name
-# c1 for Camilla (her keyframe to c1, isHostedByOther false to c1 and true to c2) and c2 for Lucan 0x13487 (his
-# keyframe to c2, the words the other way), twice each, the release's flip running after the grant has named c2
-# (PartOne FlipHostedFlags). At 10.5 s of its own c2, now the host, claims the same lead, and at 11 s a dialogue with
-# her: both Held (E_CLAIM_HELD in the wire server's log, the holder's purpose named; a hold is read before the
-# simulator, cells claim()), so nothing reaches either game. At 14 s c1 releases the lead {claim false, purpose 1,
-# quest 0x39645, package 0x2e4cc}: the row ends and the cell's rule names its host, c2 (her keyframe to c2,
-# isHostedByOther false to c2 and true to c1).
+# The actors are server-made copies: T2 holds no game-file NPC (its settings carry no npcEnabled, and the server
+# attaches no NPC_ placement under the default false, by chunk or by lookup; claim-outlives-grant's note, read at this
+# session's first T2, fork 8a66e537, 2026-11-14 9:42 PM PST, where each `moveto` onto Camilla 0x13488 answered "Failed:
+# Form with id 0x13488 doesn't exist"). At 0.3 s and 0.5 s of its own c2 places Lucan Valerius's base 0x1347a and
+# Camilla's 0x1347b at its own position through the console's PlaceAtMe (PapyrusObjectReference::PlaceAt, an MpActor
+# for an NPC_ base under any npcEnabled; the legacy server's is upstream's and does the same), after both logins, so
+# the copies are 0xff000004 and 0xff000005 on both stacks and both players listen to both from their creation (see
+# claim-outlives-grant). The claims name Camilla's copy by the server's index, "{{idx:0xff000005}}" (fork
+# wire-fakeclient 4ce3fb6d; the legacy C++ fakeclient sends the string, to a server that knows no MsgType 56, and the
+# first T2 showed no legacy difference for it): on the legacy stack the copies are placed and told, and nothing else
+# below happens. The alias read takes the copy for her: wire-rules alias_fills::fills_actor's Unique arm compares the
+# alias's unique actor with the actor's base and the base's unique flag, never the reference, so a copy of 0x1347b
+# fills alias 9 as her placement 0x13488 would. HYPOTHESIS (unread): the engine's own unique-actor fill names her
+# placement alone; this session rests on the server's rule as it stands, which a rule holding a lead to the game-file
+# reference would turn to E_CLAIM_ALIAS here.
 #
-# Then the holder is the host. At 13 s of its own c2 claims her lead: the host's own lead moves no simulator, so
-# nothing is sent. At 15 s c1 loads the trader again (hosted by c2: nothing) and at 15.5 s claims a dialogue with
-# her: Held, nothing sent. This leg tells a hold from a takeover: c2's claims at 10.5 and 11 s, each answered by c1's
-# release at 14 s, give the same counts either way (a claim that took her would send at once what the release sends
-# later), while a claim of c1's that took her from c2 here would send c1 a fourth keyframe and "false" for her and c2
-# a third "true". c2 reports the trader loaded again at 18 s of its own (a repeat: nothing), so it outlives c1 and
-# sees c1's departure, both in the trader.
+# At 4 s c1 reports the spawn's cell loaded: it hosts the cell (HostGrant {cell 0xbbb1, epoch 1}), so its game
+# simulates both copies, and the grant's flip names c1 for each (their keyframes to c1, isHostedByOther false to c1 and
+# true to c2). At 3 s of its own c2 claims Camilla's lead {purpose 1, quest 0x39645, package 0x2e4cc}: no row holds her
+# and c1's game runs her (or, were the grant still to come, nobody's), so NotSimulator (E_CLAIM_NOT_SIMULATOR in the
+# wire server's log) and nothing is sent; a claim past a missing check would give c2 her keyframe and the words. c2
+# reports the cell loaded at 3.5 s of its own (hosted: nothing). At 6 s c1 claims her lead: the server reads the quest
+# (a QUST its run record does not hold stopped), the package's QNAM (MS13) and her fill (alias 9, its unique actor),
+# and the table grants it to the simulator; a host's own lead moves no simulator, so no keyframe and no word. At 7 s c1
+# reports the cell unloaded: the unload keeps the lead (its holder's engine may run her in a cell its game has
+# unloaded, R-C2) and arms c1's grace; at its end the cell passes to c2 (HostRelease {epoch 1} to c1, HostGrant {epoch
+# 2} to c2), and the grant passes over the lead: the flips name c1 for Camilla's copy (her keyframe to c1,
+# isHostedByOther false to c1 and true to c2) and c2 for Lucan's (his keyframe to c2, the words the other way), twice
+# each, the release's flip running after the grant has named c2 (PartOne FlipHostedFlags). At 13 s of its own c2, now
+# the host, claims the same lead, and at 13.5 s a dialogue with her: both Held (E_CLAIM_HELD in the wire server's log,
+# the holder's purpose named; a hold is read before the simulator, cells claim()), so nothing reaches either game. At
+# 17 s c1 releases the lead {claim false, purpose 1, quest 0x39645, package 0x2e4cc}: the row ends and the cell's rule
+# names its host, c2 (her keyframe to c2, isHostedByOther false to c2 and true to c1).
+#
+# Then the holder is the host. At 16.5 s of its own c2 claims her lead: the host's own lead moves no simulator, so
+# nothing is sent. At 19.5 s c1 loads the cell again (hosted by c2: nothing) and at 20 s claims a dialogue with her:
+# Held, nothing sent. This leg tells a hold from a takeover: c2's claims at 13 and 13.5 s, each answered by c1's
+# release at 17 s, give the same counts either way (a claim that took her would send at once what the release sends
+# later), while a claim of c1's that took her from c2 here would send c1 a fourth keyframe and "false" for her and c2 a
+# fourth "true". c2 reports the cell loaded again at 22.5 s of its own (a repeat: nothing), so it outlives c1 and sees
+# c1's departure, both at the spawn.
 #
 # The lead ends here at its release. Its quest's stop stays T0's (wire-rules cells quest_stopped, in camillas_lead_
 # goes_through_the_door_and_outlives_the_grant_of_the_cell_outside and each_end_of_a_claim_names_why_and_moves_the_
@@ -49,135 +63,179 @@
 # keyframe in relays_seen could not be declared. The keyframes and the words (UpdateProperty 7 isHostedByOther,
 # MpObjectReference::UpdateHoster at a grant's or a release's flip, a claim, a release and a ClaimEnded) are declared
 # below by count, read from PartOne.cpp; each reason names the events it counts and what a grant that dropped the
-# lead would read instead.
+# lead would read instead. A copy's fate and create word are declared as the wire's and the legacy server's halves,
+# as claim-outlives-grant declares them (the wire's create word carries isHostedByOther true while nobody hosts the
+# cell; upstream's carries no flag for an actor nobody hosts).
 #
-# What the first run decides (premises the code alone does not fix): both players listen to Lucan and Camilla
-# whenever they stand in the trader (the counts below rest on it); the clean T2 world's quest-run record does not
-# hold MS13 stopped (QuestRecordedStopped, ActionListener.cpp; otherwise each lead claim here reads E_CLAIM_QUEST);
-# the new PACK reader (espm), not yet compiled when this was written, reads 0x2e4cc's QNAM as MS13; and the legacy
-# C++ fakeclient sends "{{idx:0x13488}}" through unchanged, as it sends prop-physics' "{{created:}}" (no "{{idx"
-# string has been tried there).
-#
-# Not declared yet: the first T2 of this session (ONLY=npc-lead) draws what the code alone does not fix: the forms of
-# the spawn leaving each client's view at its moveto (DestroyActor 25, the lock chest 0xf321a among them); the trader's
-# references entering it (CreateActor 33, Lucan and Camilla among them); each player's create word for the other, at
-# the spawn on the legacy stack and in the trader on the wire; the words and keyframes of any actor of the trader
-# besides Lucan and Camilla; and any fate (ActorFate 51), record (ChangeFormApply 74) or script state
-# (ScriptStateApply 77, ahead of a grant) the trader's load and grants serve. Each is read against the paragraphs
-# above before it is declared.
+# What the first run decides (premises the code alone does not fix): the legacy server places both copies at the same
+# ids and tells both clients; the wire's fate for each copy goes ahead of its create word (ActorFate 51, PlaceAt's
+# roll); the clean T2 world's quest-run record does not hold MS13 stopped (QuestRecordedStopped, ActionListener.cpp;
+# otherwise each lead claim here reads E_CLAIM_QUEST) and its alias journal holds no fill of MS13's alias 9 (a
+# reported fill stands for the alias over its unique actor, and a fill naming her placement would leave the copy no
+# fact: E_CLAIM_ALIAS); and the PACK reader (espm) reads 0x2e4cc's QNAM as the record holds it.
 id: npc-lead
 clients:
   c1: {profile_id: 9}
   c2: {profile_id: 10}
 volatile: [3, 24]
 steps:
-  - {client: c1, at_ms: 200, send: {t: 12, data: {t: 12, commandName: moveto, args: [20, 0x13488]}}, reliable: true}
-  - {client: c1, at_ms: 1000, send: {t: 47, cell: 0x133c9, loaded: true}, reliable: true}
-  - {client: c1, at_ms: 3500, send: {t: 56, idx: "{{idx:0x13488}}", claim: true, purpose: 1, quest: 0x39645, package: 0x2e4cc}, reliable: true}
-  - {client: c2, at_ms: 500, send: {t: 12, data: {t: 12, commandName: moveto, args: [20, 0x13488]}}, reliable: true}
-  - {client: c2, at_ms: 1000, send: {t: 56, idx: "{{idx:0x13488}}", claim: true, purpose: 1, quest: 0x39645, package: 0x2e4cc}, reliable: true}
-  - {client: c2, at_ms: 1500, send: {t: 47, cell: 0x133c9, loaded: true}, reliable: true}
-  - {client: c1, at_ms: 4500, send: {t: 47, cell: 0x133c9, loaded: false}, reliable: true}
-  - {client: c2, at_ms: 10500, send: {t: 56, idx: "{{idx:0x13488}}", claim: true, purpose: 1, quest: 0x39645, package: 0x2e4cc}, reliable: true}
-  - {client: c2, at_ms: 11000, send: {t: 56, idx: "{{idx:0x13488}}", claim: true}, reliable: true}
-  - {client: c1, at_ms: 14000, send: {t: 56, idx: "{{idx:0x13488}}", claim: false, purpose: 1, quest: 0x39645, package: 0x2e4cc}, reliable: true}
-  - {client: c2, at_ms: 13000, send: {t: 56, idx: "{{idx:0x13488}}", claim: true, purpose: 1, quest: 0x39645, package: 0x2e4cc}, reliable: true}
-  - {client: c1, at_ms: 15000, send: {t: 47, cell: 0x133c9, loaded: true}, reliable: true}
-  - {client: c1, at_ms: 15500, send: {t: 56, idx: "{{idx:0x13488}}", claim: true}, reliable: true}
-  - {client: c2, at_ms: 18000, send: {t: 47, cell: 0x133c9, loaded: true}, reliable: true}
+  - {client: c2, at_ms: 300, send: {t: 12, data: {t: 12, commandName: placeatme, args: [20, 0x1347a]}}, reliable: true}
+  - {client: c2, at_ms: 500, send: {t: 12, data: {t: 12, commandName: placeatme, args: [20, 0x1347b]}}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 6000, send: {t: 56, idx: "{{idx:0xff000005}}", claim: true, purpose: 1, quest: 0x39645, package: 0x2e4cc}, reliable: true}
+  - {client: c2, at_ms: 3000, send: {t: 56, idx: "{{idx:0xff000005}}", claim: true, purpose: 1, quest: 0x39645, package: 0x2e4cc}, reliable: true}
+  - {client: c2, at_ms: 3500, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 7000, send: {t: 47, cell: 0xbbb1, loaded: false}, reliable: true}
+  - {client: c2, at_ms: 13000, send: {t: 56, idx: "{{idx:0xff000005}}", claim: true, purpose: 1, quest: 0x39645, package: 0x2e4cc}, reliable: true}
+  - {client: c2, at_ms: 13500, send: {t: 56, idx: "{{idx:0xff000005}}", claim: true}, reliable: true}
+  - {client: c1, at_ms: 17000, send: {t: 56, idx: "{{idx:0xff000005}}", claim: false, purpose: 1, quest: 0x39645, package: 0x2e4cc}, reliable: true}
+  - {client: c2, at_ms: 16500, send: {t: 56, idx: "{{idx:0xff000005}}", claim: true, purpose: 1, quest: 0x39645, package: 0x2e4cc}, reliable: true}
+  - {client: c1, at_ms: 19500, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 20000, send: {t: 56, idx: "{{idx:0xff000005}}", claim: true}, reliable: true}
+  - {client: c2, at_ms: 22500, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
 divergences:
-  - client: c1
-    msg: {t: 41, text: "moveto done", refused: false}
-    legacy: 0
-    wire: 1
-    reason: an owner's moveto runs the server's teleport and answers with a line (thuum docs/verbs/console-commands.md); the legacy server does not know the command
-  - client: c1
-    msg: {t: 20, idx: "refr:ff000002", worldOrCell: 0x133c9}
-    legacy: 0
-    wire: 1
-    reason: the moveto's teleport onto Camilla's record in RiverwoodTrader 0x133c9 (MpActor::Teleport); the legacy server stays silent
-  - client: c1
-    msg: {t: 48, cell: 0x133c9, epoch: 1}
-    legacy: 0
-    wire: 1
-    reason: the first loader in reach hosts the trader (HostGrant, thuum docs/verbs/cell-host.md), and so simulates Camilla, the lead's claimant (D-PO2 A); the legacy server has no cell hosts
-  - client: c1
-    msg: {t: 49, cell: 0x133c9, epoch: 1}
-    legacy: 0
-    wire: 1
-    reason: c1's unload ran out its grace and the trader passed to c2 (HostRelease of epoch 1); its lead stays, an unload ends a talk alone
   - client: c2
-    msg: {t: 41, text: "moveto done", refused: false}
+    msg: {t: 41, text: "placeatme done", refused: false}
+    legacy: 0
+    wire: 2
+    reason: c2's two placements, each answered with a line (ConsoleCommands::Execute, thuum docs/verbs/console-commands.md); the legacy server runs upstream's PlaceAtMe and prints nothing back
+  - client: c1
+    msg: {t: 51, fates: [{refrId: 0xff000004}]}
     legacy: 0
     wire: 1
-    reason: an owner's moveto, as c1's; the legacy server does not know the command
+    reason: Lucan's copy's fate ahead of its create word (ActorFate 51, the roll PlaceAt makes for a server-made NPC, thuum ADR-050 decision 3); the legacy server has none
+  - client: c1
+    msg: {t: 33, idx: "refr:ff000004", props: {isHostedByOther: true}}
+    legacy: 0
+    wire: 1
+    reason: Lucan's copy's create word, hosted by other on every screen while nobody hosts its cell (PartOne's onSubscribe, thuum docs/verbs/cell-host.md); upstream's carries no flag for an actor nobody hosts
+  - client: c1
+    msg: {t: 33, idx: "refr:ff000004"}
+    legacy: 1
+    wire: 0
+    reason: the same copy's create word as the legacy server's PlaceAtMe sends it; the wire's was set aside by the declaration above
+  - client: c1
+    msg: {t: 51, fates: [{refrId: 0xff000005}]}
+    legacy: 0
+    wire: 1
+    reason: Camilla's copy's fate ahead of its create word, as Lucan's
+  - client: c1
+    msg: {t: 33, idx: "refr:ff000005", props: {isHostedByOther: true}}
+    legacy: 0
+    wire: 1
+    reason: Camilla's copy's create word, hosted by other while nobody hosts its cell, as Lucan's
+  - client: c1
+    msg: {t: 33, idx: "refr:ff000005"}
+    legacy: 1
+    wire: 0
+    reason: the same copy's create word as the legacy server sends it; the wire's was set aside by the declaration above
   - client: c2
-    msg: {t: 20, idx: "refr:ff000003", worldOrCell: 0x133c9}
+    msg: {t: 51, fates: [{refrId: 0xff000004}]}
     legacy: 0
     wire: 1
-    reason: c2's teleport onto Camilla's record in the trader
+    reason: Lucan's copy's fate ahead of its create word to its placer, as to c1
   - client: c2
-    msg: {t: 48, cell: 0x133c9, epoch: 2}
+    msg: {t: 33, idx: "refr:ff000004", props: {isHostedByOther: true}}
     legacy: 0
     wire: 1
-    reason: the trader passed to the visitor with it loaded and in reach, at the next epoch; c1's lead on Camilla passes over the grant (ADR-073 decision 6)
+    reason: Lucan's copy's create word to its placer, hosted by other while nobody hosts its cell, as to c1
+  - client: c2
+    msg: {t: 33, idx: "refr:ff000004"}
+    legacy: 1
+    wire: 0
+    reason: the same copy's create word as the legacy server sends it; the wire's was set aside by the declaration above
+  - client: c2
+    msg: {t: 51, fates: [{refrId: 0xff000005}]}
+    legacy: 0
+    wire: 1
+    reason: Camilla's copy's fate ahead of its create word to its placer, as to c1
+  - client: c2
+    msg: {t: 33, idx: "refr:ff000005", props: {isHostedByOther: true}}
+    legacy: 0
+    wire: 1
+    reason: Camilla's copy's create word to its placer, hosted by other while nobody hosts its cell, as to c1
+  - client: c2
+    msg: {t: 33, idx: "refr:ff000005"}
+    legacy: 1
+    wire: 0
+    reason: the same copy's create word as the legacy server sends it; the wire's was set aside by the declaration above
+  - client: c1
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the spawn's cell (HostGrant, thuum docs/verbs/cell-host.md), and so simulates Camilla's copy, the lead's claimant (D-PO2 A); the legacy server has no cell hosts
+  - client: c1
+    msg: {t: 49, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: c1's unload ran out its grace and the cell passed to c2 (HostRelease of epoch 1); its lead stays, an unload ends a talk alone
+  - client: c2
+    msg: {t: 48, cell: 0xbbb1, epoch: 2}
+    legacy: 0
+    wire: 1
+    reason: the cell passed to the visitor with it loaded and in reach, at the next epoch; c1's lead on Camilla's copy passes over the grant (ADR-073 decision 6)
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
-    reason: departure detection, graceful close on the wire against RakNet's timeout (both clients in the trader on the wire)
+    reason: departure detection, graceful close on the wire against RakNet's timeout
   - client: c1
-    msg: {t: 2, idx: "refr:13487"}
+    msg: {t: 2, idx: "refr:ff000004"}
     legacy: 0
     wire: 1
-    reason: Lucan, with no row, follows the cell's host; his record ahead of epoch 1's word naming c1 (c2 had not come to the trader yet)
+    reason: Lucan's copy, with no row, follows the cell's host; his record ahead of epoch 1's word naming c1
   - client: c1
-    msg: {t: 7, refrId: 0x13487, propName: isHostedByOther, dataDump: "false"}
+    msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
     wire: 1
-    reason: c1 named for Lucan at epoch 1's grant
+    reason: c1 named for Lucan's copy at epoch 1's grant
   - client: c1
-    msg: {t: 7, refrId: 0x13487, propName: isHostedByOther, dataDump: "true"}
+    msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
     wire: 2
-    reason: c2 named for Lucan by both flips of the swap to epoch 2 (the release's flip runs after the grant has named c2)
+    reason: c2 named for Lucan's copy by both flips of the swap to epoch 2 (the release's flip runs after the grant has named c2)
   - client: c1
-    msg: {t: 2, idx: "refr:13488"}
+    msg: {t: 2, idx: "refr:ff000005"}
     legacy: 0
     wire: 3
-    reason: Camilla's record ahead of each word naming c1 for her, epoch 1's grant and both flips of the swap to epoch 2 passing over its lead; FlipHostedFlags keys the lead's holder though its engine runs her (ClaimActor and ClaimEnded skip that case), and with that skip this reads 1; a grant that dropped the lead reads 1, and a claim of c1's that took her from c2 at 15.5 s reads 4
+    reason: Camilla's copy's record ahead of each word naming c1 for her, epoch 1's grant and both flips of the swap to epoch 2 passing over its lead; FlipHostedFlags keys the lead's holder though its engine runs her (ClaimActor and ClaimEnded skip that case), and with that skip this reads 1; a grant that dropped the lead reads 1, and a claim of c1's that took her from c2 at 20 s reads 4
   - client: c1
-    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "false"}
+    msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
     wire: 3
-    reason: c1 named for Camilla at epoch 1's grant and by both flips of the swap passing over its lead; a grant that dropped the lead reads 1, and a claim of c1's that took her from c2 at 15.5 s reads 4
+    reason: c1 named for Camilla's copy at epoch 1's grant and by both flips of the swap passing over its lead; a grant that dropped the lead reads 1, and a claim of c1's that took her from c2 at 20 s reads 4
   - client: c1
-    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "true"}
+    msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
     wire: 1
-    reason: c2 named for Camilla at c1's release of the lead (the cell's rule names its host); a grant that dropped the lead reads 2, its two flips naming c2
+    reason: c2 named for Camilla's copy at c1's release of the lead (the cell's rule names its host); a grant that dropped the lead reads 2, its two flips naming c2
   - client: c2
-    msg: {t: 2, idx: "refr:13487"}
+    msg: {t: 2, idx: "refr:ff000004"}
     legacy: 0
     wire: 2
-    reason: Lucan's record ahead of the two words of the swap to epoch 2 naming c2, the new host (the release's flip and the grant's)
+    reason: Lucan's copy's record ahead of the two words of the swap to epoch 2 naming c2, the new host (the release's flip and the grant's)
   - client: c2
-    msg: {t: 7, refrId: 0x13487, propName: isHostedByOther, dataDump: "false"}
+    msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
     wire: 2
-    reason: c2 named for Lucan by both flips of the swap to epoch 2; c2 came after epoch 1's grant
+    reason: c2 named for Lucan's copy by both flips of the swap to epoch 2
   - client: c2
-    msg: {t: 2, idx: "refr:13488"}
+    msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
     wire: 1
-    reason: Camilla's record ahead of the word naming c2 for her at c1's release of the lead; c2's own lead after it moves nothing (a host's own claim); a grant that dropped the lead reads 2, its two flips naming c2
+    reason: c1 named for Lucan's copy at epoch 1's grant, c2 then a visitor beside it
   - client: c2
-    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "false"}
+    msg: {t: 2, idx: "refr:ff000005"}
     legacy: 0
     wire: 1
-    reason: c2 named for Camilla at c1's release of the lead; a grant that dropped the lead reads 2
+    reason: Camilla's copy's record ahead of the word naming c2 for her at c1's release of the lead; c2's own lead after it moves nothing (a host's own claim); a grant that dropped the lead reads 2, its two flips naming c2
   - client: c2
-    msg: {t: 7, refrId: 0x13488, propName: isHostedByOther, dataDump: "true"}
+    msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
-    wire: 2
-    reason: c1 named for Camilla by both flips of the swap to epoch 2, which pass over its lead; a grant that dropped the lead reads 0, and a claim of c1's that took her at 15.5 s reads 3
+    wire: 1
+    reason: c2 named for Camilla's copy at c1's release of the lead; a grant that dropped the lead reads 2
+  - client: c2
+    msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "true"}
+    legacy: 0
+    wire: 3
+    reason: c1 named for Camilla's copy at epoch 1's grant and by both flips of the swap to epoch 2, which pass over its lead; a grant that dropped the lead reads 1, and a claim of c1's that took her at 20 s reads 4

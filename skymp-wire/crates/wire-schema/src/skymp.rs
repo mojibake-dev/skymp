@@ -1952,6 +1952,16 @@ wire_struct! {
     }
 }
 
+/// An ActorClaim's purpose (thuum ADR-073 decision 6, SCHEMA_VERSION 47): a
+/// dialogue (ADR-052), also when `purpose` is absent.
+pub const CLAIM_TALK: u8 = 0;
+/// An ActorClaim's purpose: a quest's lead, the quest's own package (its
+/// QNAM) running on an actor that fills one of the quest's aliases (D-53-4).
+pub const CLAIM_LEAD: u8 = 1;
+/// An ActorClaim's purpose: a scene the sender's seat started (D-L2 B; D-A2
+/// C, the stage's cause seat for a scene a fragment starts).
+pub const CLAIM_SCENE: u8 = 2;
+
 wire_struct! {
     /// MsgType 56, thuum's (docs/verbs/npc-talk.md, ADR-052): a player asks
     /// for an NPC some other player's game simulates, for a dialogue (`claim`
@@ -1961,6 +1971,22 @@ wire_struct! {
     /// and unclaimed; the word (isHostedByOther) then names the claimant as
     /// the simulator for the claim's lease. Reason codes: `E_VAL_RANGE` (an
     /// idx of u32::MAX), `E_VAL_RATE` (the budget).
+    ///
+    /// Since SCHEMA_VERSION 47 (thuum ADR-073 decision 6, step 5a) a claim or
+    /// a release names its purpose: absent or [`CLAIM_TALK`] the dialogue as
+    /// before; [`CLAIM_LEAD`] with `quest` and `package`, the game running
+    /// the quest's own package on the actor (the server reads the package's
+    /// QNAM and finds the alias the actor fills itself; a lead has no lease
+    /// and no reach, and ends at the quest's stop, its alias's refill, the
+    /// actor's death or its release); [`CLAIM_SCENE`] with `quest` and
+    /// `scene`, a scene the sender's seat started (the server reads the
+    /// scene's own PNAM and its actor aliases; it ends at its release or the
+    /// quest's stop). A claim of any purpose outlives a grant into its cell,
+    /// and another player's claim of any purpose holds the actor. Reason
+    /// codes besides: `E_VAL_RANGE` (a purpose above 2; a lead without its
+    /// quest or package, or with a scene; a scene without its quest or
+    /// scene, or with a package; a talk with any of the three; any of them 0
+    /// or at or above 0xff000000).
     pub struct ActorClaim {
         /// `"t": 56`.
         #[serde(default)]
@@ -1969,6 +1995,17 @@ wire_struct! {
         pub idx: u32,
         /// True asks for the actor, false releases it.
         pub claim: bool,
+        /// Since SCHEMA_VERSION 47: [`CLAIM_TALK`], [`CLAIM_LEAD`] or
+        /// [`CLAIM_SCENE`]; absent means a talk.
+        pub purpose: Option<u8>,
+        /// Since SCHEMA_VERSION 47: a lead's or a scene's QUST, its form id in
+        /// the load order both ends share.
+        pub quest: Option<u32>,
+        /// Since SCHEMA_VERSION 47: a lead's PACK, the package the sender's
+        /// engine runs on the actor (TESPackage's ownerQuest the quest).
+        pub package: Option<u32>,
+        /// Since SCHEMA_VERSION 47: a scene's SCEN.
+        pub scene: Option<u32>,
     }
 }
 

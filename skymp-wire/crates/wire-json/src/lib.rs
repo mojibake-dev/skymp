@@ -642,6 +642,39 @@ mod tests {
         }
     }
 
+    /// thuum ADR-073 step 5a (SCHEMA_VERSION 47): a claim's purpose.
+    /// 56-ActorClaim-2 is c1's lead on Camilla (idx 41 illustrative) for MS13
+    /// 0x39645 (235077) from its travel package 0x2e4cc (189644), -4 its
+    /// release, -3 c1's scene claim on Lucan (idx 40) for 0x38386's argument
+    /// 0x3839b (230278, 230299; Skyrim.esm, records read on sky-srv
+    /// 2026-11-14). The talks 56-0 and 56-1 carry no purpose and render none.
+    #[test]
+    fn a_claims_purpose_validates_and_renders_only_when_present() {
+        use wire_validate::{validate, ClientGuard};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        let named = [
+            ("56-ActorClaim-2.json", (true, Some(1), Some(0x39645), Some(0x2e4cc), None)),
+            ("56-ActorClaim-3.json", (true, Some(2), Some(0x38386), None, Some(0x3839b))),
+            ("56-ActorClaim-4.json", (false, Some(1), Some(0x39645), Some(0x2e4cc), None)),
+        ];
+        for (name, want) in named {
+            match recognize(&read(name)) {
+                Ok(m @ Message::ActorClaim(_)) => {
+                    assert_eq!(validate(&m, &mut ClientGuard::default(), 0), Ok(()), "{name}");
+                    if let Message::ActorClaim(c) = m {
+                        assert_eq!((c.claim, c.purpose, c.quest, c.package, c.scene), want, "{name}");
+                    }
+                }
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        for n in 0..=1 {
+            let name = format!("56-ActorClaim-{n}.json");
+            let text = render(&recognize(&read(&name)).unwrap_or_else(|e| panic!("{name}: {e}"))).unwrap_or_default();
+            assert!(!text.contains("\"purpose\"") && !text.contains("\"quest\"") && !text.contains("\"package\"") && !text.contains("\"scene\""), "{name}: an absent purpose and its forms are no keys");
+        }
+    }
+
     /// thuum ADR-068 rung 5 (D-T1 A): a player's race overlay on another
     /// player's figure. 33-CreateActor-4 is rotfern's figure (0xff000000)
     /// in Bleak Falls Barrow wearing WerewolfBeastRace 0xcdd84 over NordRace

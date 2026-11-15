@@ -866,6 +866,31 @@ fn check_prop_transform(m: &skymp::PropTransform) -> Result<(), Reject> {
 /// and a touch the contract names (0 contact, 1 grab, 2 drop, 3 impulse).
 /// Whether the claimant stands in the prop's cell and whether the prop is
 /// another's to hold is the server's rule.
+/// A player's claim on an NPC or its release (docs/verbs/npc-talk.md,
+/// ADR-052; thuum ADR-073 decision 6 since SCHEMA_VERSION 47): an idx in
+/// range and a purpose's shape. A talk (`purpose` absent or 0) names no
+/// quest, package or scene; a lead (1) names its quest and package and no
+/// scene; a scene (2) its quest and scene and no package; each a game file's
+/// form, nonzero and under 0xff000000. Whether they hold (the package's
+/// QNAM, the alias the actor fills, the scene's PNAM) is the server's read.
+fn check_actor_claim(m: &skymp::ActorClaim) -> Result<(), Reject> {
+    if m.idx == u32::MAX {
+        return Err(Reject::Range);
+    }
+    let form = |id: Option<u32>| id.is_some_and(|id| id != 0 && id < PLAYER_FORMS);
+    let shaped = match m.purpose.unwrap_or(skymp::CLAIM_TALK) {
+        skymp::CLAIM_TALK => m.quest.is_none() && m.package.is_none() && m.scene.is_none(),
+        skymp::CLAIM_LEAD => form(m.quest) && form(m.package) && m.scene.is_none(),
+        skymp::CLAIM_SCENE => form(m.quest) && form(m.scene) && m.package.is_none(),
+        _ => false,
+    };
+    if shaped {
+        Ok(())
+    } else {
+        Err(Reject::Range)
+    }
+}
+
 fn check_prop_claim(m: &skymp::PropClaim) -> Result<(), Reject> {
     if m.refr == 0 || m.touch > 3 {
         return Err(Reject::Range);
@@ -1952,13 +1977,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::HostedActorState(m) => check_hosted_state(m),
         Message::ActorSpeech(m) => check_actor_speech(m),
         Message::DamageCause(m) => check_damage_cause(m),
-        Message::ActorClaim(m) => {
-            if m.idx == u32::MAX {
-                Err(Reject::Range)
-            } else {
-                Ok(())
-            }
-        }
+        Message::ActorClaim(m) => check_actor_claim(m),
         Message::PropTransform(m) => check_prop_transform(m),
         Message::PropClaim(m) => check_prop_claim(m),
         Message::PropOwner(m) => check_prop_owner(m),
@@ -3076,6 +3095,83 @@ mod tests {
         }
         assert_eq!(validate(&claim(7, true), &mut guard, 1_000), Err(Reject::Rate));
         assert_eq!(validate(&claim(7, false), &mut guard, 1_500), Ok(()));
+    }
+
+    // thuum ADR-073 step 5a (SCHEMA_VERSION 47): a claim's purpose and its
+    // forms. Camilla's lead is MS13 0x39645's travel package 0x2e4cc (its
+    // QNAM the quest); the argument is 0x38386's scene 0x3839b (Skyrim.esm,
+    // records read on sky-srv 2026-11-14)
+    fn purposed(purpose: Option<u8>, quest: Option<u32>, package: Option<u32>, scene: Option<u32>) -> Message {
+        Message::ActorClaim(wire_schema::skymp::ActorClaim { idx: 7, claim: true, purpose, quest, package, scene, ..Default::default() })
+    }
+
+    #[test]
+    fn an_actor_claim_names_its_purpose_and_the_forms_it_takes() {
+        use wire_schema::skymp::{CLAIM_LEAD, CLAIM_SCENE, CLAIM_TALK};
+        let (ms13, travel, argument_quest, argument) = (Some(0x39645), Some(0x2e4cc), Some(0x38386), Some(0x3839b));
+        // a talk, as canon sent it or named
+        assert_eq!(validate_server(&purposed(None, None, None, None)), Ok(()));
+        assert_eq!(validate_server(&purposed(Some(CLAIM_TALK), None, None, None)), Ok(()));
+        // a lead and its release; a scene
+        assert_eq!(validate_server(&purposed(Some(CLAIM_LEAD), ms13, travel, None)), Ok(()));
+        let release = Message::ActorClaim(wire_schema::skymp::ActorClaim { idx: 7, claim: false, purpose: Some(CLAIM_LEAD), quest: ms13, package: travel, ..Default::default() });
+        assert_eq!(validate_server(&release), Ok(()));
+        assert_eq!(validate_server(&purposed(Some(CLAIM_SCENE), argument_quest, None, argument)), Ok(()));
+        let refused = [
+            // a purpose above 2
+            purposed(Some(3), ms13, travel, None),
+            purposed(Some(u8::MAX), None, None, None),
+            // a talk with any form
+            purposed(None, ms13, None, None),
+            purposed(Some(CLAIM_TALK), None, travel, None),
+            purposed(None, None, None, argument),
+            // a lead without its quest or package, or with a scene
+            purposed(Some(CLAIM_LEAD), None, travel, None),
+            purposed(Some(CLAIM_LEAD), ms13, None, None),
+            purposed(Some(CLAIM_LEAD), ms13, travel, argument),
+            // a scene without its quest or scene, or with a package
+            purposed(Some(CLAIM_SCENE), None, None, argument),
+            purposed(Some(CLAIM_SCENE), argument_quest, None, None),
+            purposed(Some(CLAIM_SCENE), argument_quest, travel, argument),
+            // a form 0 or a server-made id
+            purposed(Some(CLAIM_LEAD), Some(0), travel, None),
+            purposed(Some(CLAIM_LEAD), ms13, Some(0xff00_0001), None),
+            purposed(Some(CLAIM_SCENE), Some(0xff00_0000), None, argument),
+        ];
+        for m in refused {
+            assert_eq!(validate_server(&m), Err(Reject::Range), "{m:?}");
+        }
+        // the budget is the talk's, every purpose sharing it
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&purposed(Some(CLAIM_LEAD), ms13, travel, None), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&purposed(Some(CLAIM_SCENE), argument_quest, None, argument), &mut guard, 1_000), Err(Reject::Rate));
+    }
+
+    proptest! {
+        // any purpose and any forms: a verdict, never a panic, and the
+        // verdict the shape gives
+        #[test]
+        fn actor_claims_never_panic_and_judge_their_purposes(
+            idx in prop_oneof![Just(u32::MAX), any::<u32>()],
+            claim in any::<bool>(),
+            purpose in proptest::option::of(prop_oneof![0u8..=3, any::<u8>()]),
+            quest in proptest::option::of(prop_oneof![Just(0u32), Just(0xff00_0000u32), 1u32..0x100_0000, any::<u32>()]),
+            package in proptest::option::of(prop_oneof![Just(0u32), 1u32..0x100_0000, any::<u32>()]),
+            scene in proptest::option::of(prop_oneof![Just(0u32), 1u32..0x100_0000, any::<u32>()]),
+        ) {
+            let m = Message::ActorClaim(wire_schema::skymp::ActorClaim { idx, claim, purpose, quest, package, scene, ..Default::default() });
+            let form = |id: Option<u32>| id.is_some_and(|id| id != 0 && id < 0xff00_0000);
+            let shaped = match purpose.unwrap_or(0) {
+                0 => quest.is_none() && package.is_none() && scene.is_none(),
+                1 => form(quest) && form(package) && scene.is_none(),
+                2 => form(quest) && form(scene) && package.is_none(),
+                _ => false,
+            };
+            let want = if idx != u32::MAX && shaped { Ok(()) } else { Err(Reject::Range) };
+            prop_assert_eq!(validate_server(&m), want);
+        }
     }
 
     // thuum docs/verbs/prop-physics.md (ADR-058): a simulator's prop sample

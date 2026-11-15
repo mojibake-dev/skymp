@@ -826,9 +826,9 @@ TEST_CASE("A fated respawn drops the body's held change-form record",
 
 // physics rung 5a (ADR-071 decision 5): a body is a row of the prop table,
 // its death's simulator's, while the change-form rule stays the cell's (Eli's
-// D-PH11 A moves a body's record to the word the sender holds with SCHEMA 47,
-// rung 5's): the host's record of a body whose live row it holds is still
-// recorded at the cell's epoch, the row's epoch apart from it
+// D-PH11 A moves a body's record to the word the sender holds with rung 5's
+// own SCHEMA bump): the host's record of a body whose live row it holds is
+// still recorded at the cell's epoch, the row's epoch apart from it
 TEST_CASE("A host's change form for a body whose live row it holds is "
           "recorded at the cell's epoch",
           "[ChangeForm][NpcFate][espm]")

@@ -168,10 +168,18 @@ use bounded::{String, Vec};
 /// names a talk, a quest's lead (its own package on its alias actor) or a
 /// scene its seat started, and outlives a grant into its cell. Taken as the
 /// number D-53-3's merge order gives ADR-073's first step after canon's 44,
-/// C4's 45 (m4-reanimate-return, whose line is on its branch) and the
-/// physics heads' 46 (rung 1's 45 and rung 2's 46 above, merged into
-/// m4-sitting-53 after this step and carried under 47).
-pub const SCHEMA_VERSION: u16 = 47;
+/// C4's 45 and the physics heads' 46; it shipped alone in the fork's
+/// pipelines 6031 (m4-owners-5a 938acfeb) and 6032 (m4-owners-5a-client
+/// 604071a5).
+/// 48: no shape of its own: the physics heads' 45 and 46 above (PropOwner's
+/// player 0, PropTransform v2 and PropClaim v2; thuum ADR-071 rungs 1 to 5a,
+/// m4-physics-4-statics e7e4d413), merged into m4-sitting-53 after 47's
+/// images carried step 5a alone, so a 47 peer would pass the handshake and
+/// drop each v2 sample, claim and player-0 word with no sign (D-PH1 A's
+/// reason, 42's precedent). In D-53-3's merge order C4 (m4-reanimate-return,
+/// 45 on its branch, a number physics rung 1 also shipped) takes the number
+/// its merge comes to.
+pub const SCHEMA_VERSION: u16 = 48;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

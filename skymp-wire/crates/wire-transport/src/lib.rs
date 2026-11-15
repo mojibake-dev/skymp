@@ -694,9 +694,6 @@ pub struct Client {
     renet: RenetClient,
     transport: NetcodeClientTransport,
     limits: Limits,
-    /// The polled time, whole (the server's `elapsed`).
-    elapsed: Duration,
-    now_ms: u64,
     rejected: u64,
     refusals: Vec<Refusal>,
     io_errors: u64,
@@ -746,8 +743,6 @@ impl Client {
             renet,
             transport,
             limits,
-            elapsed: Duration::ZERO,
-            now_ms: 0,
             rejected: 0,
             refusals: Vec::new(),
             io_errors: 0,
@@ -812,10 +807,8 @@ impl Client {
     /// Advance by `dt`, then drain decoded server messages into `out`, oldest
     /// first per channel. Outgoing packets are flushed at the end.
     pub fn poll(&mut self, dt: Duration, out: &mut Vec<Message>) {
-        // the server's clock (its poll says why)
-        self.elapsed = self.elapsed.saturating_add(dt);
-        self.now_ms = ms(self.elapsed);
-        // renet's clock first (the server's poll says why)
+        // renet's clock first (the server's poll says why). The client keeps
+        // no millisecond clock of its own: no budget runs on this side
         self.renet.update(dt);
         if self.transport.update(dt, &mut self.renet).is_err() {
             self.io_errors = self.io_errors.saturating_add(1);

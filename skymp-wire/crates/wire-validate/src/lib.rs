@@ -961,18 +961,22 @@ fn check_prop_transform(m: &skymp::PropTransform) -> Result<(), Reject> {
 /// scene; a scene (2) its quest and scene and no package; each a game file's
 /// form, nonzero and under 0xff000000. Whether they hold (the package's
 /// QNAM, the alias the actor fills, the scene's PNAM) is the server's read.
+/// A `why` (thuum D-53-5 B) rides a lead's release alone, 0 to 2; that the
+/// sender's game stopped running the actor is its own report (R2).
 fn check_actor_claim(m: &skymp::ActorClaim) -> Result<(), Reject> {
     if m.idx == u32::MAX {
         return Err(Reject::Range);
     }
     let form = |id: Option<u32>| id.is_some_and(|id| id != 0 && id < PLAYER_FORMS);
-    let shaped = match m.purpose.unwrap_or(skymp::CLAIM_TALK) {
+    let purpose = m.purpose.unwrap_or(skymp::CLAIM_TALK);
+    let shaped = match purpose {
         skymp::CLAIM_TALK => m.quest.is_none() && m.package.is_none() && m.scene.is_none(),
         skymp::CLAIM_LEAD => form(m.quest) && form(m.package) && m.scene.is_none(),
         skymp::CLAIM_SCENE => form(m.quest) && form(m.scene) && m.package.is_none(),
         _ => false,
     };
-    if shaped {
+    let why = m.why.is_none_or(|why| !m.claim && purpose == skymp::CLAIM_LEAD && why <= skymp::CLAIM_WHY_UNLOADED);
+    if shaped && why {
         Ok(())
     } else {
         Err(Reject::Range)
@@ -3218,7 +3222,7 @@ mod tests {
 
     #[test]
     fn an_actor_claim_names_its_purpose_and_the_forms_it_takes() {
-        use wire_schema::skymp::{CLAIM_LEAD, CLAIM_SCENE, CLAIM_TALK};
+        use wire_schema::skymp::{CLAIM_LEAD, CLAIM_SCENE, CLAIM_TALK, CLAIM_WHY_PACKAGE, CLAIM_WHY_UNLOADED};
         let (ms13, travel, argument_quest, argument) = (Some(0x39645), Some(0x2e4cc), Some(0x38386), Some(0x3839b));
         // a talk, as canon sent it or named
         assert_eq!(validate_server(&purposed(None, None, None, None)), Ok(()));
@@ -3227,6 +3231,18 @@ mod tests {
         assert_eq!(validate_server(&purposed(Some(CLAIM_LEAD), ms13, travel, None)), Ok(()));
         let release = Message::ActorClaim(wire_schema::skymp::ActorClaim { idx: 7, claim: false, purpose: Some(CLAIM_LEAD), quest: ms13, package: travel, ..Default::default() });
         assert_eq!(validate_server(&release), Ok(()));
+        // a lead's release saying why its game stopped running her (D-53-5 B)
+        let released = |purpose, quest, package, scene, why| {
+            Message::ActorClaim(wire_schema::skymp::ActorClaim { idx: 7, claim: false, purpose, quest, package, scene, why, ..Default::default() })
+        };
+        for why in [0, CLAIM_WHY_PACKAGE, CLAIM_WHY_UNLOADED] {
+            assert_eq!(validate_server(&released(Some(CLAIM_LEAD), ms13, travel, None, Some(why))), Ok(()), "why {why}");
+        }
+        assert_eq!(validate_server(&released(Some(CLAIM_LEAD), ms13, travel, None, Some(3))), Err(Reject::Range));
+        assert_eq!(validate_server(&released(None, None, None, None, Some(CLAIM_WHY_UNLOADED))), Err(Reject::Range));
+        assert_eq!(validate_server(&released(Some(CLAIM_SCENE), argument_quest, None, argument, Some(CLAIM_WHY_PACKAGE))), Err(Reject::Range));
+        let claimed = Message::ActorClaim(wire_schema::skymp::ActorClaim { idx: 7, claim: true, purpose: Some(CLAIM_LEAD), quest: ms13, package: travel, why: Some(CLAIM_WHY_PACKAGE), ..Default::default() });
+        assert_eq!(validate_server(&claimed), Err(Reject::Range));
         assert_eq!(validate_server(&purposed(Some(CLAIM_SCENE), argument_quest, None, argument)), Ok(()));
         let refused = [
             // a purpose above 2
@@ -3271,8 +3287,9 @@ mod tests {
             quest in proptest::option::of(prop_oneof![Just(0u32), Just(0xff00_0000u32), 1u32..0x100_0000, any::<u32>()]),
             package in proptest::option::of(prop_oneof![Just(0u32), 1u32..0x100_0000, any::<u32>()]),
             scene in proptest::option::of(prop_oneof![Just(0u32), 1u32..0x100_0000, any::<u32>()]),
+            why in proptest::option::of(prop_oneof![0u8..=3, any::<u8>()]),
         ) {
-            let m = Message::ActorClaim(wire_schema::skymp::ActorClaim { idx, claim, purpose, quest, package, scene, ..Default::default() });
+            let m = Message::ActorClaim(wire_schema::skymp::ActorClaim { idx, claim, purpose, quest, package, scene, why, ..Default::default() });
             let form = |id: Option<u32>| id.is_some_and(|id| id != 0 && id < 0xff00_0000);
             let shaped = match purpose.unwrap_or(0) {
                 0 => quest.is_none() && package.is_none() && scene.is_none(),
@@ -3280,7 +3297,8 @@ mod tests {
                 2 => form(quest) && form(scene) && package.is_none(),
                 _ => false,
             };
-            let want = if idx != u32::MAX && shaped { Ok(()) } else { Err(Reject::Range) };
+            let said = why.is_none_or(|why| !claim && purpose == Some(1) && why <= 2);
+            let want = if idx != u32::MAX && shaped && said { Ok(()) } else { Err(Reject::Range) };
             prop_assert_eq!(validate_server(&m), want);
         }
     }

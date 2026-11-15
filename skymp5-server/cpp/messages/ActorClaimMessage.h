@@ -16,8 +16,11 @@
 // before, 1 a quest's lead (`quest` and `package`: the quest's own package
 // running on the actor, which fills one of its aliases; D-53-4), 2 a scene
 // the sender's seat started (`quest` and `scene`; D-L2 B), each absent unless
-// set, so a talk reads and writes as before. The contract is skymp-wire's
-// (wire-schema skymp.rs, ActorClaim, MsgType 56, wire id 64).
+// set, so a talk reads and writes as before. A lead's release may say `why`
+// (thuum D-53-5 B): 1 the sender's game started a package that is not one of
+// the quest's own, 2 the actor is no longer loaded in the sender's game; its
+// own report (R2). The contract is skymp-wire's (wire-schema skymp.rs,
+// ActorClaim, MsgType 56, wire id 64).
 struct ActorClaimMessage : public MessageBase<ActorClaimMessage>
 {
   static constexpr auto kMsgType =
@@ -32,7 +35,8 @@ struct ActorClaimMessage : public MessageBase<ActorClaimMessage>
       .Serialize("purpose", purpose)
       .Serialize("quest", quest)
       .Serialize("package", package)
-      .Serialize("scene", scene);
+      .Serialize("scene", scene)
+      .Serialize("why", why);
   }
 
   uint32_t idx = 0;
@@ -46,4 +50,8 @@ struct ActorClaimMessage : public MessageBase<ActorClaimMessage>
   std::optional<uint32_t> package;
   // a scene's SCEN
   std::optional<uint32_t> scene;
+  // since SCHEMA_VERSION 49 (D-53-5 B), a lead's release only: 1 its game
+  // left the quest's own packages, 2 its game unloaded the actor (a u8 on
+  // the wire); absent or 0 a release
+  std::optional<uint32_t> why;
 };

@@ -3448,12 +3448,13 @@ PartOne::ClaimVerdict PartOne::ClaimActor(MpActor& claimant, MpActor& actor,
 }
 
 PartOne::ClaimRelease PartOne::ReleaseClaim(MpActor& claimant, MpActor& actor,
-                                            const ClaimPurpose& purpose)
+                                            const ClaimPurpose& purpose,
+                                            uint8_t why)
 {
   const uint32_t before = SimulatorOf(actor);
-  const auto released = static_cast<ClaimRelease>(
-    pImpl->cells->release_claim(actor.GetFormId(), claimant.GetFormId(),
-                                purpose.kind, purpose.quest, purpose.scene));
+  const auto released = static_cast<ClaimRelease>(pImpl->cells->release_claim(
+    actor.GetFormId(), claimant.GetFormId(), purpose.kind, purpose.quest,
+    purpose.scene, why));
   const uint32_t simulator = SimulatorOf(actor);
   // the word only when the release moved the simulator (a host's own claim
   // ends with the host still running the actor)

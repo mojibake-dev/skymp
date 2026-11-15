@@ -14,6 +14,13 @@ import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
 export const CLAIM_LEAD = 1;
 export const CLAIM_SCENE = 2;
 
+// a lead's release's why (D-53-5 B: a lead also ends when its holder's game
+// stops running the actor, the holder's own report, R2): the package this
+// engine started on her is not one of the lead's quest's own; she is no
+// longer loaded in this game. Absent, a release
+export const CLAIM_WHY_PACKAGE = 1;
+export const CLAIM_WHY_UNLOADED = 2;
+
 // the server's row holds a quest's leads up to 4 per actor (wire-rules
 // cells.rs; a fifth is refused E_CLAIM_FULL), so a seat never asks a fifth
 export const LEADS_PER_ACTOR = 4;
@@ -31,8 +38,9 @@ export type ClaimForm = LeadForm | SceneForm;
 // the message for a claim (claim true) or its release (claim false): a lead
 // names its quest and package, a scene its quest and scene, the release as
 // its claim did (the validator refuses a lead without its package and a scene
-// without its scene, either way)
-export function claimMessage(remoteId: number, claim: boolean, form: ClaimForm): MessageWithRefrId<ActorClaimMessage> {
+// without its scene, either way); a lead's release may carry its why (the
+// validator refuses one anywhere else)
+export function claimMessage(remoteId: number, claim: boolean, form: ClaimForm, why = 0): MessageWithRefrId<ActorClaimMessage> {
     const message: MessageWithRefrId<ActorClaimMessage> = {
         t: MsgType.ActorClaim,
         claim,
@@ -42,6 +50,9 @@ export function claimMessage(remoteId: number, claim: boolean, form: ClaimForm):
     };
     if (form.purpose === CLAIM_LEAD) {
         message.package = form.package;
+        if (!claim && why !== 0) {
+            message.why = why;
+        }
     } else {
         message.scene = form.scene;
     }
@@ -114,26 +125,35 @@ export const claimOutbox = new ClaimOutbox();
 
 // A held lead's reading, each answer asked of the engine only when the one
 // before it did not decide (a lazy reading: a lead on an actor the word took
-// reads no alias)
+// reads no alias). loaded: her 3D is loaded in this game (is3DLoaded);
+// packageOwn: the package this engine last started on her is one of the
+// lead's quest's own (its owning quest the lead's)
 export type LeadReading = {
     present: () => boolean;
     dead: () => boolean;
     mine: () => boolean;
+    loaded: () => boolean;
     questRunning: () => boolean;
     aliasNames: () => boolean;
+    packageOwn: () => boolean;
 };
 
-export type LeadVerdict = { act: "keep" } | { act: "forget"; why: string } | { act: "release"; why: string };
+// a release's code is the message's why (0 none)
+export type LeadVerdict = { act: "keep" } | { act: "forget"; why: string } | { act: "release"; why: string; code: number };
 
 // D-53-4: a quest's own package on that quest's NPC is the quest's claim,
-// until the quest releases her, stops, or she dies. The seat forgets a lead
-// the server ends itself (her death; the word naming another seat: a
-// refusal, a holder's silence) and releases one its engine ends (the actor
-// gone from this game, which no server end matches since a lead outlives its
-// holder's unload; the quest stopped here; no alias of it naming her here)
+// until the quest releases her, stops, or she dies; D-53-5 B: or until this
+// seat's game stops running her (another quest's package or none, her unload
+// here), its own report. The seat forgets a lead the server ends itself (her
+// death; the word naming another seat: a refusal, a holder's silence) and
+// releases one its engine ends: the actor gone from this game or her 3D
+// unloaded here (why 2), the quest stopped here, no alias of it naming her
+// here (a release), the package it started on her not the quest's own (why
+// 1). A holder that stops reporting is the server's Stale end, one that
+// leaves its Gone end; nothing here is a timer (ADR-063)
 export function judgeLead(r: LeadReading): LeadVerdict {
     if (!r.present()) {
-        return { act: "release", why: "the actor is not in this game" };
+        return { act: "release", why: "the actor is not in this game", code: CLAIM_WHY_UNLOADED };
     }
     if (r.dead()) {
         return { act: "forget", why: "her death (the server's death ends the row)" };
@@ -141,19 +161,26 @@ export function judgeLead(r: LeadReading): LeadVerdict {
     if (!r.mine()) {
         return { act: "forget", why: "the word names another seat" };
     }
+    if (!r.loaded()) {
+        return { act: "release", why: "her 3D unloaded on this seat", code: CLAIM_WHY_UNLOADED };
+    }
     if (!r.questRunning()) {
-        return { act: "release", why: "the quest stopped here" };
+        return { act: "release", why: "the quest stopped here", code: 0 };
     }
     if (!r.aliasNames()) {
-        return { act: "release", why: "no alias of the quest names her here" };
+        return { act: "release", why: "no alias of the quest names her here", code: 0 };
+    }
+    if (!r.packageOwn()) {
+        return { act: "release", why: "a package that is not one of the quest's own started on her here", code: CLAIM_WHY_PACKAGE };
     }
     return { act: "keep" };
 }
 
-// a lead opens on an actor this seat simulates, alive, whose quest runs here
-// and one of whose aliases names her, its package already the quest's own
+// a lead opens on an actor this seat simulates, alive, loaded here, whose
+// quest runs here and one of whose aliases names her, the package started on
+// her the quest's own
 export function opensLead(r: LeadReading): boolean {
-    return r.present() && !r.dead() && r.mine() && r.questRunning() && r.aliasNames();
+    return r.present() && !r.dead() && r.mine() && r.loaded() && r.questRunning() && r.aliasNames() && r.packageOwn();
 }
 
 // A scene's mark (D-L2 B: the seat that started a scene owns it, claiming its

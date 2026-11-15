@@ -179,12 +179,25 @@ use bounded::{String, Vec};
 /// reason, 42's precedent). In D-53-3's merge order C4 (m4-reanimate-return,
 /// 45 on its branch, a number physics rung 1 also shipped) takes the number
 /// its merge comes to.
-/// 49: OwnHeadParts (MsgType 82, wire id 90; thuum D-53-8 B, train 53's
+/// 49: ActorClaim's optional `why` (thuum D-53-5 B, ADR-073 step 5a,
+/// m4-owners-5a 763bd460): a lead's release says its game stopped running
+/// the actor (another quest's package or none, her unload there). It was
+/// written under 47 on its branch, but m4-sitting-53's 48 images (5c772d9d's
+/// pipeline, its server image and its Windows dist with MpClientPlugin.dll)
+/// carried ActorClaim without it. postcard writes a struct's fields in order
+/// with one presence byte per Option, so a 48 client's claim arrives one byte
+/// short and wire-codec's decode refuses it as Malformed: every claim, a talk
+/// as canon sends it included, would fail while the handshake passed (D-PH1
+/// A's reason, 42's and 48's precedent).
+/// 50: OwnHeadParts (MsgType 82, wire id 90; thuum D-53-8 B, train 53's
 /// V-live, m4-fix-vlive-look): the head parts a player's own game draws on its
 /// own player after its race changed (its base's overlay list where the
 /// engine answers HasOverlays, else its base list), recorded as the player's
-/// look and sent to every other game that sees the player, R2.
-pub const SCHEMA_VERSION: u16 = 49;
+/// look and sent to every other game that sees the player, R2. Written as 49
+/// on its branch while m4-sitting-53 took 49 for ActorClaim's `why`
+/// (c4621a8b), so the merge moves it here: one number, one shape (D-PH1 A's
+/// reason), and a 49 peer, which knows no wire id 90, fails the handshake.
+pub const SCHEMA_VERSION: u16 = 50;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -826,9 +839,9 @@ const TABLE: [Row; 91] = [
     row("HostedActorState", 53, 64, Both),
     row("ActorSpeech", 54, 32, Both),
     row("DamageCause", 55, 32, S2C),
-    // an idx, the flag and since SCHEMA_VERSION 47 a purpose and three form
-    // ids, each with its presence byte: 27 bytes at the caps (thuum ADR-073
-    // step 5a)
+    // an idx, the flag and since SCHEMA_VERSION 47 a purpose, three form ids
+    // and a release's why, each with its presence byte: 29 bytes at the caps
+    // (thuum ADR-073 step 5a, D-53-5 B)
     row("ActorClaim", 56, 48, C2S),
     row("QuestStage", 57, 4 * KIB, Both),
     // every id and the sequence at their widest varints, the four vectors,
@@ -1689,7 +1702,7 @@ mod tests {
 
     #[test]
     fn own_head_parts_at_their_caps_fit_their_byte_cap() {
-        // thuum D-53-8 B (SCHEMA_VERSION 49): the wire id, a five-byte race,
+        // thuum D-53-8 B (SCHEMA_VERSION 50): the wire id, a five-byte race,
         // the count's one byte, 64 five-byte parts and the flag; Ariadne's
         // seven-part overlay list of train 53, every id a three-byte varint,
         // costs 27
@@ -1709,10 +1722,11 @@ mod tests {
 
     #[test]
     fn an_actor_claim_at_its_caps_fits_its_byte_cap() {
-        // thuum ADR-073 step 5a (SCHEMA_VERSION 47): the wire id, a five-byte
-        // idx, the flag, then the purpose's two bytes and three five-byte
-        // ids, each behind its presence byte; a talk as canon sent it costs
-        // the four presence bytes alone
+        // thuum ADR-073 step 5a (SCHEMA_VERSION 47; the why since 49): the
+        // wire id, a five-byte idx, the flag, then the purpose's two bytes,
+        // three five-byte ids and the release's why (D-53-5 B), each behind
+        // its presence byte; a
+        // talk as canon sent it costs the five presence bytes alone
         let full = Message::ActorClaim(skymp::ActorClaim {
             idx: u32::MAX,
             claim: true,
@@ -1720,12 +1734,13 @@ mod tests {
             quest: Some(u32::MAX),
             package: Some(u32::MAX),
             scene: Some(u32::MAX),
+            why: Some(u8::MAX),
             ..Default::default()
         });
-        assert_eq!(postcard::to_allocvec(&full).map(|b| b.len()), Ok(27));
+        assert_eq!(postcard::to_allocvec(&full).map(|b| b.len()), Ok(29));
         assert_eq!(Message::max_len(full.wire_id()), Some(48));
         let talk = Message::ActorClaim(skymp::ActorClaim { idx: u32::MAX, claim: true, ..Default::default() });
-        assert_eq!(postcard::to_allocvec(&talk).map(|b| b.len()), Ok(11));
+        assert_eq!(postcard::to_allocvec(&talk).map(|b| b.len()), Ok(12));
     }
 
     #[test]

@@ -176,6 +176,22 @@ pub enum ClaimEnd {
     Stale = 6,
     /// The holder unloaded the actor's cell: a talk's end (ADR-052 decision 2).
     Unloaded = 7,
+    /// The holder's game stopped running the actor on the lead's quest, its
+    /// own report (D-53-5 B, R2): a lead's end.
+    NotRunning(NotRunning) = 8,
+}
+
+/// How a holder's game stopped running its lead's actor (D-53-5 B, D-PO2 A's
+/// reading: the running game claims her while it runs her), each the
+/// holder's own report (R2): the server records it and cannot check it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotRunning {
+    /// The package the holder's engine started on her is not one of the
+    /// lead's quest's own packages (its QNAM another quest, or none).
+    PackageChanged,
+    /// The actor is no longer loaded in the holder's game (her 3D unloaded
+    /// there, or the game holds her no more).
+    Unloaded,
 }
 
 impl ClaimEnd {
@@ -191,6 +207,8 @@ impl ClaimEnd {
             ClaimEnd::Gone => "its holder's departure",
             ClaimEnd::Stale => "its holder's silence",
             ClaimEnd::Unloaded => "its holder's unload",
+            ClaimEnd::NotRunning(NotRunning::PackageChanged) => "its holder's game leaving the quest's own packages",
+            ClaimEnd::NotRunning(NotRunning::Unloaded) => "its holder's game unloading the actor",
         }
     }
 }
@@ -206,7 +224,9 @@ pub enum Purpose {
     /// A quest's own package (its QNAM the quest) running on an actor that
     /// fills one of the quest's aliases (D-53-4, amending decision 6's lead):
     /// the quest's claim, until the quest releases the actor (its alias names
-    /// another, or the holder's release), stops, or the actor dies. Only the
+    /// another, or the holder's release), stops, or the actor dies, or the
+    /// holder's game stops running her (D-53-5 B: another quest's package or
+    /// none, her unload there, the holder's departure or silence). Only the
     /// actor's simulator opens one (D-PO2 A, "the running game claims it").
     Lead {
         /// The QUST.
@@ -501,9 +521,10 @@ impl Cells {
         }
         // a follow into an exterior the follower no longer loads ends (ADR-047
         // D6), and so does a claim's talk (the claimant leaving the cell,
-        // ADR-052 decision 2); a lead or a scene stays, since its holder's
-        // engine runs the actor in a cell its game has unloaded (R-C2: rotfern
-        // inside the trader while its game walked Camilla out of the door)
+        // ADR-052 decision 2); a lead or a scene stays: the row's cell is her
+        // last report's and she may have left it beside the holder (an escort
+        // through a door), so a lead ends at its holder's own report that its
+        // game no longer runs her (D-53-5 B, why 2 at her unload there)
         self.follows.retain(|_, f| f.kind == FollowKind::Claim || !(f.player == player && f.cell == cell));
         let mut out = self.end_purposes(ClaimEnd::Unloaded, |_, f| {
             if f.player == player && f.cell == cell {
@@ -802,8 +823,10 @@ impl Cells {
     /// as the simulator (`simulator_of`) until its last purpose ends.
     pub fn claim(&mut self, actor: u32, player: u32, cell: u32, purpose: Purpose, now_ms: u64) -> ClaimVerdict {
         let lead = matches!(purpose, Purpose::Lead { .. });
-        // the simulator may run a lead's actor in a cell its game has
-        // unloaded (R-C2); a talk and a scene are the cell's visitors'
+        // a lead's cell is its record's, which may trail the holder's game;
+        // the holder asks only while its game has her loaded and ends it at
+        // her unload there (D-53-5 B); a talk and a scene are the cell's
+        // visitors'
         if !lead && !self.players.get(&player).is_some_and(|p| p.loaded.contains_key(&cell)) {
             return ClaimVerdict::Unloaded;
         }
@@ -833,6 +856,21 @@ impl Cells {
     /// not read). The row stands while another purpose holds it; its last
     /// one's release ends it.
     pub fn release_claim(&mut self, actor: u32, player: u32, purpose: Purpose) -> Release {
+        self.release_for(actor, player, purpose, ClaimEnd::Release)
+    }
+
+    /// `player`'s game stopped running `actor` on its lead of `quest` (D-53-5
+    /// B), `how` its own report (R2): that lead ends as its release does, and
+    /// the actor returns to its cell's rule (its host, or nobody) once the
+    /// row holds nothing else; a lead it does not hold is none. Judged from
+    /// the report, never a timer (ADR-063); a holder that stops reporting is
+    /// `tick`'s Stale end, one that leaves `gone`'s.
+    pub fn not_running(&mut self, actor: u32, player: u32, quest: u32, how: NotRunning) -> Release {
+        self.release_for(actor, player, Purpose::Lead { quest, alias: 0 }, ClaimEnd::NotRunning(how))
+    }
+
+    /// The holder's end of one purpose, `why` its ClaimEnded's.
+    fn release_for(&mut self, actor: u32, player: u32, purpose: Purpose, why: ClaimEnd) -> Release {
         let Some(f) = self.follows.get_mut(&actor) else {
             return Release::NotHeld;
         };
@@ -863,7 +901,7 @@ impl Cells {
         let (cell, player) = (f.cell, f.player);
         self.follows.remove(&actor);
         let epoch = self.bump(actor);
-        Release::Ended(Decision::ClaimEnded { actor, cell, player, epoch, why: ClaimEnd::Release })
+        Release::Ended(Decision::ClaimEnded { actor, cell, player, epoch, why })
     }
 
     /// `quest` stopped (the world's record took its stop): its leads end, and
@@ -2015,6 +2053,111 @@ mod tests {
         assert_eq!(c.claims(), vec![(CAMILLA, C1, RIVERWOOD)]);
         assert_eq!(c.quest_stopped(MS13), vec![Decision::ClaimEnded { actor: CAMILLA, cell: RIVERWOOD, player: C1, epoch: 2, why: ClaimEnd::QuestStop }]);
         assert_eq!(c.claims(), vec![]);
+    }
+
+    #[test]
+    fn a_lead_ends_when_its_holders_game_unloads_her_and_she_returns_to_the_host() {
+        // D-53-5 B: a lead also ends when its holder's game stops running the
+        // actor, the holder's own report (R2), and she returns to her cell's
+        // host. R-C2's shape: rotfern's game walks Camilla out of the trader's
+        // door on her lead, Ariadne's is granted the outside, and rotfern's
+        // game then holds her 3D no more
+        let mut c = both_in_reach();
+        c.reach(C1, &[RIVERWOOD, TRADER], 0);
+        c.loaded(C1, TRADER, 1_000);
+        assert_eq!(c.claim(CAMILLA, C1, TRADER, CAMILLA_LEAD, 2_000), ClaimVerdict::Granted);
+        let door = CellMove { sender: C1, actor: CAMILLA, origin: TRADER, dest: OUTSIDE, adjacent: false, door: true, edge_units: u32::MAX };
+        assert_eq!(c.may_move(&door, 3_000), MoveVerdict::Accept);
+        c.reach(C2, &[RIVERWOOD, OUTSIDE], 3_500);
+        assert_eq!(c.loaded(C2, OUTSIDE, 4_000), vec![Decision::Grant { player: C2, cell: OUTSIDE, epoch: 1 }]);
+        assert_eq!(c.simulator_of(CAMILLA, OUTSIDE), C1);
+        // another player's report, or one for a quest the row does not lead, is none
+        assert_eq!(c.not_running(CAMILLA, C2, MS13, NotRunning::Unloaded), Release::NotHeld);
+        assert_eq!(c.not_running(CAMILLA, C1, ARGUMENT_QUEST, NotRunning::Unloaded), Release::NotHeld);
+        assert_eq!(c.claims(), vec![(CAMILLA, C1, OUTSIDE)]);
+        // the holder's report ends it, its epoch up: the outside's host runs her
+        assert_eq!(
+            c.not_running(CAMILLA, C1, MS13, NotRunning::Unloaded),
+            Release::Ended(Decision::ClaimEnded { actor: CAMILLA, cell: OUTSIDE, player: C1, epoch: 2, why: ClaimEnd::NotRunning(NotRunning::Unloaded) })
+        );
+        assert_eq!(c.claims(), vec![]);
+        assert_eq!(c.simulator_of(CAMILLA, OUTSIDE), C2);
+        let at = |sender| CellMove { sender, actor: CAMILLA, origin: OUTSIDE, dest: OUTSIDE, adjacent: false, door: false, edge_units: 900 };
+        assert_eq!(c.may_move(&at(C2), 4_100), MoveVerdict::Accept);
+        assert_eq!(c.may_move(&at(C1), 4_200), MoveVerdict::Refuse);
+        // a second report finds nothing
+        assert_eq!(c.not_running(CAMILLA, C1, MS13, NotRunning::Unloaded), Release::NotHeld);
+    }
+
+    #[test]
+    fn a_package_of_another_quest_ends_that_quests_lead_alone() {
+        // D-53-5 B: the package the holder's engine started on her is not one
+        // of the lead's quest's own: that lead ends, the row standing for its
+        // other purposes, and her return to the host waits on its last one
+        let mut c = both_in_reach();
+        c.loaded(C1, RIVERWOOD, 1_000);
+        c.loaded(C2, RIVERWOOD, 1_100);
+        assert_eq!(c.claim(CAMILLA, C2, RIVERWOOD, Purpose::Talk, 2_000), ClaimVerdict::Granted);
+        assert_eq!(c.claim(CAMILLA, C2, RIVERWOOD, CAMILLA_LEAD, 2_100), ClaimVerdict::Granted);
+        let argument_lead = Purpose::Lead { quest: ARGUMENT_QUEST, alias: 2 };
+        assert_eq!(c.claim(CAMILLA, C2, RIVERWOOD, argument_lead, 2_200), ClaimVerdict::Granted);
+        assert_eq!(c.not_running(CAMILLA, C2, MS13, NotRunning::PackageChanged), Release::Kept);
+        assert_eq!(c.release_claim(CAMILLA, C2, Purpose::Talk), Release::Kept);
+        assert_eq!(
+            c.claim_rows(),
+            vec![ClaimRow { actor: CAMILLA, player: C2, cell: RIVERWOOD, talk: false, leads: vec![(ARGUMENT_QUEST, 2)], scene: None, epoch: 1 }]
+        );
+        assert_eq!(c.simulator_of(CAMILLA, RIVERWOOD), C2);
+        assert_eq!(
+            c.not_running(CAMILLA, C2, ARGUMENT_QUEST, NotRunning::PackageChanged),
+            Release::Ended(Decision::ClaimEnded {
+                actor: CAMILLA,
+                cell: RIVERWOOD,
+                player: C2,
+                epoch: 2,
+                why: ClaimEnd::NotRunning(NotRunning::PackageChanged)
+            })
+        );
+        assert_eq!(c.simulator_of(CAMILLA, RIVERWOOD), C1);
+        assert_eq!(ClaimEnd::NotRunning(NotRunning::PackageChanged).name(), "its holder's game leaving the quest's own packages");
+        assert_eq!(ClaimEnd::NotRunning(NotRunning::Unloaded).name(), "its holder's game unloading the actor");
+    }
+
+    #[test]
+    fn alvors_lead_ends_when_his_first_host_leaves() {
+        // D-53-5 B's named case: TutorialBlacksmithing 0x105385 (flags 0x11,
+        // start-game enabled) gives Riverwood's Alvor its own package
+        // (0x10538f, QNAM the quest), so no stop need come to end his lead;
+        // it ends when its holder's game stops running him. Walking away is
+        // the holder's why-2 report and a disconnect the Gone end; each hands
+        // him to the cell's next host
+        const ALVOR: u32 = 0x13482;
+        const TUTORIAL: u32 = 0x105385;
+        let lead = Purpose::Lead { quest: TUTORIAL, alias: UNRESOLVED_ALIAS };
+        let setup = || {
+            let mut c = both_in_reach();
+            c.loaded(C1, RIVERWOOD, 1_000);
+            c.loaded(C2, RIVERWOOD, 1_100);
+            assert_eq!(c.claim(ALVOR, C1, RIVERWOOD, lead, 2_000), ClaimVerdict::Granted);
+            c
+        };
+        let handed = |c: &mut Cells| {
+            let out = c.tick(3_000 + GRACE_MS);
+            assert!(out.contains(&Decision::Grant { player: C2, cell: RIVERWOOD, epoch: 2 }), "{out:?}");
+            assert_eq!(c.simulator_of(ALVOR, RIVERWOOD), C2);
+        };
+        let mut c = setup();
+        c.unloaded(C1, RIVERWOOD, 3_000);
+        assert!(matches!(c.not_running(ALVOR, C1, TUTORIAL, NotRunning::Unloaded), Release::Ended(_)));
+        handed(&mut c);
+        let mut c = setup();
+        assert!(matches!(c.gone(C1, 3_000).as_slice(), [Decision::ClaimEnded { why: ClaimEnd::Gone, .. }]));
+        handed(&mut c);
+        // no report: the grant passes over the lead, the pin H-L6 guards
+        let mut c = setup();
+        c.unloaded(C1, RIVERWOOD, 3_000);
+        let _ = c.tick(3_000 + GRACE_MS);
+        assert_eq!(c.simulator_of(ALVOR, RIVERWOOD), C1);
     }
 
     #[test]

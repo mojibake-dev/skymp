@@ -56,9 +56,19 @@ export class RagdollService extends ClientListener {
                 this.pending.delete(id);
                 if (how !== "answered") {
                     logLab("ragdoll", `forceRemoveRagdollFromWorld for ${id.toString(16)} ${how}; the callers run anyway`);
+                } else {
+                    // thuum #62: this seat's own removal, the one a corpse's
+                    // re-add may undo (restoreCorpseRagdoll)
+                    this.removedHere.add(id);
                 }
                 for (const callback of callbacks) {
                     callback();
+                }
+                // a callback that stood the actor up (the respawn's get-up) gave
+                // its ragdoll back to the engine: no re-add is owed for it
+                const after = Actor.from(this.sp.Game.getFormEx(id));
+                if (!after || !after.isDead()) {
+                    this.removedHere.delete(id);
                 }
             });
         };
@@ -79,17 +89,36 @@ export class RagdollService extends ClientListener {
     // lays a dead actor (a Teleport's move, the record's lay after the
     // apply's death completion) its ragdoll goes back into the world, or the
     // copy takes no hit and no aimed spell (the non-host's Reanimate Corpse
-    // passed through it). A live actor's engine rebuilds its controller
-    // itself. A removal still in flight for the actor runs this after it.
-    // HYPOTHESIS until x-reanimate-claim reads the non-host's raise
+    // passed through it). A removal still in flight for the actor runs this
+    // after it.
+    // thuum #62 (x-gate-everyone 20261115-112748: both games crashed in
+    // Havok and ragdoll code, hkaRagdollInstance and bhkBlendCollisionObject
+    // among the objects, after a burst of "laid from its record: its ragdoll
+    // back in the world" on the Temple's corpses in one millisecond): a
+    // corpse the engine loaded or killed holds its ragdoll in the world
+    // already, and adding it again is the engine's to answer for (HYPOTHESIS,
+    // numidium's read). The re-add is owed only for this seat's own removal,
+    // once: an id this service removed and no stand-up gave back
+    // (removedHere), on a corpse whose 3D is loaded (an unloaded copy's next
+    // load builds its ragdoll afresh, so its mark is dropped). Every other
+    // call says why it added nothing.
     public restoreCorpseRagdoll = (id: number, why: string): void => {
         const pending = this.pending.get(id);
         if (pending) {
             pending.push(() => this.restoreCorpseRagdoll(id, why));
             return;
         }
+        const owed = this.removedHere.delete(id);
         const actor = Actor.from(this.sp.Game.getFormEx(id));
         if (!actor || !actor.isDead()) {
+            return;
+        }
+        if (!owed) {
+            logTrace(this, `corpse ${id.toString(16)} ${why}: its ragdoll left as the engine holds it, no removal of this seat's to undo`);
+            return;
+        }
+        if (!actor.is3DLoaded()) {
+            logTrace(this, `corpse ${id.toString(16)} ${why}: no 3D, its next load builds its ragdoll`);
             return;
         }
         actor.forceAddRagdollToWorld().then(
@@ -99,6 +128,10 @@ export class RagdollService extends ClientListener {
     };
 
     private readonly pending = new Map<number, Array<() => void>>();
+    // thuum #62: the actors whose ragdoll this service took out of the world
+    // and nothing has put back (restoreCorpseRagdoll consumes a mark; a
+    // stand-up drops it)
+    private readonly removedHere = new Set<number>();
     private static readonly deadlineMs = 1000;
 
     private onceUpdate() {

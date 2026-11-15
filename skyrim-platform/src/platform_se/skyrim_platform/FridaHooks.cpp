@@ -40,13 +40,16 @@
 #include <RE/H/hkpEntity.h>
 #include <RE/H/hkpRigidBody.h>
 #include <RE/H/hkpRootCdPoint.h>
+#include <RE/I/IFunctionArguments.h>
 #include <RE/M/MagicTarget.h>
 #include <RE/N/NiAVObject.h>
 #include <RE/N/NiControllerSequence.h>
+#include <RE/O/Object.h>
 #include <RE/P/Projectile.h>
 #include <RE/T/TESHavokUtilities.h>
 #include <RE/T/TESQuest.h>
 #include <RE/T/TESQuestStageEvent.h>
+#include <RE/V/Variable.h>
 
 #include <algorithm>
 #include <atomic>
@@ -1217,7 +1220,74 @@ bool OwnedReference(const RE::TESObjectREFR* ref)
   return cell && Frida::IsCellHosted(cell->GetFormID());
 }
 
+// the owner of a container an item moved into, the alias branch's
+// OnContainerChanged (thuum #55): this seat's own player; an actor this
+// seat simulates (Hosted.h, no puppet, the gate's simulatedActor test, a
+// figure never); any other container, its cell's host
+// (Frida::IsCellHosted). The player's take from a body or a chest is its own
+// engine's move, so the take's event is the taker's
+bool ContainerOwnedHere(const RE::TESObjectREFR* container)
+{
+  const uint32_t id = container->formID;
+  if (id == 0x14) {
+    return true;
+  }
+  if (container->GetFormType() == RE::FormType::ActorCharacter) {
+    return Hosted::SimulatedHere(id);
+  }
+  const RE::TESObjectCELL* cell = container->GetParentCell();
+  return cell && Frida::IsCellHosted(cell->GetFormID());
+}
+
+// the reference an event's first argument names, read through CommonLib's
+// own interface (IFunctionArguments' pack, include/RE/I/
+// IFunctionArguments.h:20, into a BSScrapArray of Variables, its size read
+// and never empty(): BSTArray.h:749 answers inverted) and resolved as
+// SelfIdOfHandle resolves a handle (the actor, then the reference); null for
+// no argument, a None, or a value that is no reference
+RE::TESObjectREFR* FirstRefArgument(RE::BSScript::IObjectHandlePolicy* policy,
+                                    const void* argsPtr)
+{
+  if (!argsPtr) {
+    return nullptr;
+  }
+  const auto* args =
+    static_cast<const RE::BSScript::IFunctionArguments*>(argsPtr);
+  RE::BSScrapArray<RE::BSScript::Variable> vars;
+  if (!(*args)(vars) || vars.size() == 0 || !vars[0].IsObject()) {
+    return nullptr;
+  }
+  const auto object = vars[0].GetObject();
+  if (!object) {
+    return nullptr;
+  }
+  const RE::VMHandle h = object->GetHandle();
+  if (RE::TESForm* actor =
+        policy->GetObjectForHandle(RE::FormType::ActorCharacter, h)) {
+    return actor->As<RE::TESObjectREFR>();
+  }
+  if (RE::TESForm* refr =
+        policy->GetObjectForHandle(RE::FormType::Reference, h)) {
+    return refr->As<RE::TESObjectREFR>();
+  }
+  return nullptr;
+}
+
 // the event the rule names, if any, for a handle that names no reference:
+// - an event to a quest's reference alias (BGSRefAlias::VMTYPEID,
+//   BGSRefAlias.h:18; thuum #55, ADR-073 decision 6 as this rule's header
+//   gives it): it passes on the seat that owns the alias's reference
+//   (BGSRefAlias::GetReference, BGSRefAlias.h:149), an actor this seat
+//   simulates or a world object in a cell it hosts (OwnedReference). An
+//   OnContainerChanged is an item's move, and its owner is the new
+//   container's (its first argument, ContainerOwnedHere), so the Golden
+//   Claw's alias script (MS13's alias 11, a runtime reference in the
+//   engine's inventory) runs on the seat whose player took it; a move with
+//   no new container (a drop into the world) asks the reference itself.
+//   A per-player quest's alias passed rung 5's branch above. HYPOTHESIS
+//   until x-gate-owner's leg B: the take raises the alias's
+//   OnContainerChanged through this hook with the player as its first
+//   argument (x-golden-claw-alias v1 read the script run, 20261107-222959);
 // - an active effect (ActiveEffect::VMTYPEID, ActiveEffect.h:31) whose
 //   target (ActiveEffect.h:104, read as a reference through its
 //   MagicTarget's own GetTargetStatsObject, MagicTarget.h:79, which an
@@ -1228,11 +1298,33 @@ bool OwnedReference(const RE::TESObjectREFR* ref)
 // An alias's OnInit never passes SendEvent (the VM dispatches it at the
 // object's birth, 104875; docs/research/adr065-papyrus-state-2026-11-03.md
 // Q4), so the applicators run on every seat and the seam keeps their
-// AddSpell on the owner (x-reanimate-look-u0 20261112-085636); the rule asks
-// effects alone.
+// AddSpell on the owner (x-reanimate-look-u0 20261112-085636).
 std::optional<OwnedEvent> OwnedEventOf(
-  RE::BSScript::IObjectHandlePolicy* policy, RE::VMHandle handle)
+  RE::BSScript::IObjectHandlePolicy* policy, RE::VMHandle handle,
+  const std::string& eventName, const void* args)
 {
+  if (policy->HandleIsType(RE::BGSRefAlias::VMTYPEID, handle)) {
+    const auto* alias = static_cast<const RE::BGSRefAlias*>(
+      policy->GetObjectForHandle(RE::BGSRefAlias::VMTYPEID, handle));
+    if (!alias) {
+      return std::nullopt;
+    }
+    const uint32_t quest =
+      alias->owningQuest ? alias->owningQuest->GetFormID() : 0;
+    RE::TESObjectREFR* ref = alias->GetReference();
+    const uint32_t refId = ref ? ref->formID : 0;
+    if (_stricmp(eventName.c_str(), "OnContainerChanged") == 0) {
+      if (const RE::TESObjectREFR* into = FirstRefArgument(policy, args)) {
+        return ContainerOwnedHere(into)
+          ? std::optional<OwnedEvent>(
+              OwnedEvent{ OwnerBranch::kAlias, refId, quest })
+          : std::nullopt;
+      }
+    }
+    return ref && OwnedReference(ref) ? std::optional<OwnedEvent>(OwnedEvent{
+                                          OwnerBranch::kAlias, refId, quest })
+                                      : std::nullopt;
+  }
   if (policy->HandleIsType(RE::ActiveEffect::VMTYPEID, handle)) {
     auto* effect = static_cast<RE::ActiveEffect*>(
       policy->GetObjectForHandle(RE::ActiveEffect::VMTYPEID, handle));
@@ -1888,7 +1980,9 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // never admitted list and the spent trap returned above, so they stay
   // blanked
   if (blockEvents && selfId == 0 && policy && Frida::ScriptOwnerEventsOn()) {
-    if (const auto owned = OwnedEventOf(policy, handle)) {
+    if (const auto owned =
+          OwnedEventOf(policy, handle, eventNameStr,
+                       gum_invocation_context_get_nth_argument(ic, 3))) {
       const std::string cls = FirstScriptClass(vm, handle);
       if (!cls.empty()) {
         TallyOwnedEvent(*owned, cls, eventNameStr, handle);

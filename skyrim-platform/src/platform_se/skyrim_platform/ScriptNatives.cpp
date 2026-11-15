@@ -456,7 +456,12 @@ std::unordered_map<const RE::BSScript::IFunction*, std::size_t> g_rowOf;
 // row on an actor this seat does not simulate, run inside an effect this
 // seat's own player cast and queued as this seat's (the Undead FX build,
 // D3 B); " (helper)" a call on such a helper, run here and crossing nowhere
-// (clause 2); no suffix, an owned self's state row, run here and counted,
+// (clause 2); " (effect ended)" an actor's look row on a dead game-file
+// actor this seat does not simulate, run on a stack whose root is an
+// ActiveMagicEffect script whose effect has ended (its handle the VM's
+// EmptyHandle, RootEffectEnded) and queued as this seat's for the server to
+// judge (the ash fix, the ash read's recommendation B); no suffix, an owned
+// self's state row, run here and counted,
 // and since rung 3 touched (QueueTouch: the script record's trigger).
 // An everyone row's calls are counted by self instead (g_rowSelves, the
 // flip's "Class.Name on <id>"), except an alias row's, batched on every seat
@@ -477,6 +482,7 @@ enum CountKind : std::size_t
   kCountActing,
   kCountEffect,
   kCountHelper,
+  kCountEffectEnded,
   kCountKinds
 };
 
@@ -493,7 +499,8 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
                                                     " (look)",
                                                     " (acting)",
                                                     " (effect)",
-                                                    " (helper)" };
+                                                    " (helper)",
+                                                    " (effect ended)" };
 
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
@@ -1038,6 +1045,11 @@ std::array<LineSlots, kRowCount> g_skipLines{};
 // 2's call on a helper, on the same slots and bound
 std::array<LineSlots, kRowCount> g_effectLines{};
 std::array<LineSlots, kRowCount> g_helperLines{};
+// the ash fix's line (thuum ADR-073 decision 7: logged once per list and
+// kind at info, naming one subject, then counted in the census's flush): a
+// row's first call counted " (effect ended)" logged once for the process,
+// every later one counted alone; never freed at the flush
+std::array<std::atomic<bool>, kRowCount> g_effectEndedSaid{};
 
 // true when the self takes a free slot of its row's window, its line due;
 // false for a self already logged this window or past the bound
@@ -2308,6 +2320,41 @@ Frida::PlayersEffectRole RootEffectRole(
   return Frida::PlayersEffect(policy, object->GetHandle());
 }
 
+// the ash fix (thuum lab/.cache/drafts/reanimate/read-ash-075817.md,
+// recommendation B): true when RootEffectRole's `root` has as its self an
+// ActiveMagicEffect script whose effect has ended: the object's handle
+// (Object::GetHandle, Address Library 104247, CommonLibSSE-NG
+// include/RE/O/Object.h:19) equal to the VM's own policy's EmptyHandle
+// (include/RE/I/IObjectHandlePolicy.h:22, the policy OnCall reads from the
+// VM), and its class chain naming ActiveMagicEffect (Object::GetTypeInfo,
+// Object.h:21; ObjectTypeInfo::GetName and GetParent,
+// include/RE/O/ObjectTypeInfo.h:126-128, a BSFixedString's c_str never null,
+// include/RE/B/BSFixedString.h:116-123; AdmittedByChain's walk in
+// FridaHooks.cpp, 16 classes at most, compared without case). HYPOTHESIS
+// (the read's 3.2 and 3.3, decompiler output; its section 7 trace decides):
+// the engine ends an effect on its own clock (its duration, a dispel, its
+// conditions failing), and SkyrimVM's TESActiveEffectApplyRemoveEvent sink
+// then queues OnEffectFinish and has the VM's HandleCObjectDeletion set the
+// handle of each script object bound to the effect that something still
+// holds to EmptyHandle, so a stack in Utility.Wait (TurnToAsh's) runs on
+// after its effect with its object and variables intact and an empty handle,
+// which Frida::PlayersEffect's HandleIsType(142) answers false
+bool RootEffectEnded(const RE::BSScript::StackFrame* root,
+                     RE::BSScript::IObjectHandlePolicy* policy)
+{
+  const RE::BSScript::Object* object = root ? ObjectOf(root->self) : nullptr;
+  if (!object || !policy || object->GetHandle() != policy->EmptyHandle()) {
+    return false;
+  }
+  const RE::BSScript::ObjectTypeInfo* type = object->GetTypeInfo();
+  for (int depth = 0; type && depth < 16; ++depth, type = type->GetParent()) {
+    if (_stricmp(type->GetName(), "ActiveMagicEffect") == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::optional<EffectPlacement> EffectPlacementOf(
   const RowInfo& info, const RE::BSScript::Stack* stack,
   const RE::BSScript::StackFrame* top, std::uint32_t page,
@@ -2644,15 +2691,33 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     // actor's look row on a stack whose root is an active effect this seat
     // runs with its own player the caster (RootEffectRole, the gate's own
     // test) is this seat's whoever simulates the actor now, so the look a
-    // player's spell makes on its target crosses from the caster's seat:
-    // vanilla ReanimateAshPile's TurnToAsh on a thrall whose command ADR-060
-    // ends at its death, before the script's first Wait ends. Queued as an
-    // owned look is (QueueLook), under the script action's mark, and counted
-    // " (effect)", the first selves a window logged. An effect on this seat's
-    // own player (kTarget) keeps the owner's judgment. The server judges the
-    // actor by its simulator (wire-rules natives), so a report after the
-    // command's end is refused there (E_SCRIPTCALL_OWNER) until the server
-    // knows an effect's caster: that refusal is the probe's read
+    // player's spell makes on its target crosses from the caster's seat.
+    // Queued as an owned look is (QueueLook), under the script action's mark,
+    // and counted " (effect)", the first selves a window logged. An effect on
+    // this seat's own player (kTarget) keeps the owner's judgment.
+    // The ash fix (thuum lab/.cache/drafts/reanimate/read-ash-075817.md,
+    // recommendation B): that live test cannot carry vanilla
+    // ReanimateAshPile's TurnToAsh, the script it was built for, on any
+    // build. The engine ends the script's effect on its own clock, at or
+    // before the thrall's death, and empties the script's handle
+    // (RootEffectEnded; HYPOTHESIS until the read's section 7 trace):
+    // TurnToAsh's rows after its Waits (AttachAshPile, then the shader's Stop,
+    // SetAlpha and SetCriticalStage) were counted " (not hosted)" in
+    // 20261113-075817, by the read Frida::PlayersEffect's HandleIsType false
+    // on that empty handle (its exit 2, HYPOTHESIS likewise). So the look also
+    // crosses from an effect's script after its effect ended: an actor's look
+    // row on a dead game-file actor (TESObjectREFR::IsDead, CommonLibSSE-NG
+    // include/RE/T/TESObjectREFR.h:353, mirroring the server's facts.dead;
+    // HYPOTHESIS that the read is safe on the dispatch thread) on a stack
+    // whose root is such a script is queued the same way, under the same
+    // mark, and counted " (effect ended)", each row's first logged once
+    // (ADR-073 decision 7). It asks no live effect, so it holds whichever of
+    // the effect's ends came first. The client proposes and the server judges
+    // on its own facts alone (rule 5): wire-rules natives' actor_look_owner
+    // takes the actor's simulator, or the caster of the reanimate it accepted
+    // on a dead thrall for ASH_WINDOW_MS after the death it recorded, and
+    // refuses any other seat's report (E_SCRIPTCALL_OWNER), that refusal the
+    // read. The PlaceAtMe helper rule (EffectPlacementOf) keeps the live test
     if (info.actorLook && g_effectHelpers) {
       const RE::BSScript::StackFrame* root = nullptr;
       if (RootEffectRole(stack, policy, root) ==
@@ -2671,6 +2736,27 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
                        "an actor this seat does not simulate, queued as this "
                        "seat's look (ADR-068 decision 6)",
                        native.cls, native.fn, ref->formID, script, function);
+        }
+        return marks;
+      }
+      if (RootEffectEnded(root, policy) && ref->IsDead()) {
+        if (!QueueLook(row, info, stack, top, page, ref->formID)) {
+          return marks;
+        }
+        marks.action = true;
+        Count(row, kCountEffectEnded);
+        if (!g_effectEndedSaid[row].exchange(true,
+                                             std::memory_order_relaxed)) {
+          std::string script;
+          std::string function;
+          NameCaller(root, script, function);
+          logger::info(
+            "[verb:scripts] {}.{} on {:x}: an actor's look row run by an "
+            "ended effect's script ({}.{}, its handle the VM's empty one) on "
+            "a dead actor this seat does not simulate, queued as this seat's "
+            "look for the server to judge; this row's later ones counted "
+            "\" (effect ended)\" alone (ADR-073 decision 7)",
+            native.cls, native.fn, ref->formID, script, function);
         }
         return marks;
       }

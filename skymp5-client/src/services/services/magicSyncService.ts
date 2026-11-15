@@ -25,6 +25,22 @@ interface PendingHostedLaunch {
     angleZ: number;
     at: number;
     waited: number;
+    // the launch against the stream its caster's cast event reported in the
+    // launch's hand (noteStreamLaunch), as it came: how long that stream had
+    // been silent, or null when that hand holds no reported stream of the
+    // spell (none ever opened, an end closed it, or the cast there is no
+    // stream: fire-and-forget, or another spell)
+    streamSilentMs: number | null;
+}
+
+// a hosted caster's cast its cast event reported, by hand (onSpellCast): the
+// event's message, whether the cast is a stream (a concentration spell, whose
+// engine relaunches its beam while the hand holds it), and when the stream
+// last gave news here (its event, then each launch of it in that hand)
+interface ReportedHandCast {
+    msg: SpellCastMsgData;
+    stream: boolean;
+    newsAt: number;
 }
 
 // a hosted caster's projectile cast event held for its launch (onSpellCast):
@@ -160,14 +176,16 @@ export class MagicSyncService extends ClientListener {
             }
             // thuum docs/verbs/npc-stream.md (train 53): a hosted caster's
             // end comes through its action stream (the hand's equipped event,
-            // actionPerformed), not the player's own graph hook below
+            // actionPerformed), not the player's own graph hook below; a
+            // stream's launches in that hand are withheld while it is open
+            // (streamDrop's "open", D-CE1 A)
             if (casterId !== this.playerId) {
                 let byHand = this.lastHostedCastByHand.get(casterId);
                 if (!byHand) {
-                    byHand = new Map<number, SpellCastMsgData>();
+                    byHand = new Map<number, ReportedHandCast>();
                     this.lastHostedCastByHand.set(casterId, byHand);
                 }
-                byHand.set(msg.castingSource, msg);
+                byHand.set(msg.castingSource, { msg, stream: MagicSyncService.isConcentration(event.spell), newsAt: Date.now() });
             }
         }
 
@@ -255,12 +273,29 @@ export class MagicSyncService extends ClientListener {
         if (!this.isHostedByMe(e.shooter)) {
             return;
         }
+        const at = Date.now();
         this.pendingHostedLaunches.push({
             casterLocal: e.shooter, spell: e.spell, castingSource: e.castingSource,
             originX: e.originX, originY: e.originY, originZ: e.originZ, angleX: e.angleX, angleZ: e.angleZ,
-            at: Date.now(), waited: 0,
+            at, waited: 0,
+            streamSilentMs: this.noteStreamLaunch(e.shooter, e.spell, MagicSyncService.launchHand(e.castingSource), at),
         });
         this.flushHostedLaunches();
+    }
+
+    // D-CE1 A (x-drain-watch 20261115-032536): a launch of the stream its
+    // caster's cast event reported in that hand (the same spell, a
+    // concentration cast) is that stream's news; answers how long the stream
+    // had been silent before it, and makes the launch its latest news. null:
+    // the hand holds no such stream, so the launch is no re-report of one
+    private noteStreamLaunch(casterLocal: number, spell: number, hand: number, at: number): number | null {
+        const reported = this.lastHostedCastByHand.get(casterLocal)?.get(hand);
+        if (!reported || !reported.stream || reported.msg.spell !== spell) {
+            return null;
+        }
+        const silentMs = at - reported.newsAt;
+        reported.newsAt = at;
+        return silentMs;
     }
 
     // the hosted launches waiting for a cast event: one held for this launch
@@ -268,7 +303,8 @@ export class MagicSyncService extends ClientListener {
     // within the match window makes the launch's report redundant; a launch
     // that has waited launchWaitUpdates updates goes as the cast, unless its
     // caster's event cast of the spell ended after the launch or within
-    // launchMatchMs before it (streamDrop). A held cast whose window closed
+    // launchMatchMs before it, or the launch came while that cast's stream
+    // in its hand was open (streamDrop). A held cast whose window closed
     // with no launch goes as the event reported it
     private flushHostedLaunches() {
         const now = Date.now();
@@ -297,7 +333,7 @@ export class MagicSyncService extends ClientListener {
             }
             const drop = this.streamDrop(pending, key);
             if (drop !== null) {
-                this.sayLaunchDrop(drop, pending);
+                this.sayHostedLaunch(drop, pending);
                 continue;
             }
             this.sendHostedLaunchCast(pending);
@@ -375,33 +411,75 @@ export class MagicSyncService extends ClientListener {
     // a launch whose hold spans the end reaches the test, so the bound is one
     // sided: a hitch over 400 ms, or a rate under 15 fps, between the launch
     // and the end no longer lets it out as a new cast (train 53's review,
-    // correctness-7: launchWaitUpdates counts flushes, not time). A launch
-    // while the stream is open goes as before: canon's casts::continues
-    // absorbs every report made while the server's stream is open (R-V5's
-    // read: 88 reports, 16 relayed), and the open test this once had also
-    // dropped a creature's for good, its hand entry never cleared, since a
-    // creature raises no equipped event (the review's correctness-8). A
-    // creature, whose casts no event ends, never has an end, and its launches
-    // go as before
-    private streamDrop(pending: PendingHostedLaunch, key: string): "ended" | null {
+    // correctness-7: launchWaitUpdates counts flushes, not time).
+    //
+    // D-CE1 A (x-drain-watch 20261115-032536, stream 5): a launch that came
+    // while its caster's reported stream in that hand was open ("open") is
+    // withheld too. Its report only re-reported the stream (canon's
+    // casts::continues folds it, R-V5's read: 88 reports, 16 relayed), about
+    // 6.5 a second against the cast budget's refill of 4, and one stream's
+    // re-reports spent the budget the stream's end needed (the edge's
+    // E_VAL_RATE, the likely loss of 032536's one end). The stream was
+    // reported once by its cast event and is ended once by the hand's
+    // equipped event (onHostedAction), the shape of the player's own stream,
+    // which sends no re-report. Open means, as the launch came: its hand holds
+    // the cast its event reported (lastHostedCastByHand), of the launch's
+    // spell, a concentration cast, with no end since, and the stream's last
+    // news (its event, or its last launch in that hand) within
+    // streamHoleMs, the server's own stream hole (casts::HOLE_MS). The
+    // hole closes a stream no event ends: a creature's, which raises no
+    // equipped event, and a weapon-and-drain NPC's that its power attack
+    // cut (7 of 032536's 8 streams), so a launch after the hole ("lapsed",
+    // its line at the send) reports a new stream as before, and its next
+    // launches are that stream's news. A fire-and-forget cast is no stream
+    // (every launch is a cast of its own), so the flame atronach's Firebolt
+    // after one event cast is never withheld (train 53's review,
+    // correctness-8, which an open test without the hole and the cast's
+    // kind failed). A caster with no stream reported in that hand (a
+    // creature whose cast event never comes, a launch-sourced cast) has its
+    // launches go as before, and so does every launch after an end
+    private streamDrop(pending: PendingHostedLaunch, key: string): "ended" | "open" | null {
         const endedAt = this.hostedCastEnds.get(key);
         if (endedAt !== undefined && pending.at <= endedAt + MagicSyncService.launchMatchMs) {
             return "ended";
         }
+        if (pending.streamSilentMs !== null && pending.streamSilentMs <= MagicSyncService.streamHoleMs) {
+            return "open";
+        }
         return null;
     }
 
-    // a drop's line, said in full at its kind's first and then as the kind's
-    // count at the 2nd, 4th, 8th and so on
-    private sayLaunchDrop(kind: "ended", pending: PendingHostedLaunch) {
-        const n = (this.launchDrops.get(kind) ?? 0) + 1;
-        this.launchDrops.set(kind, n);
+    // a held launch's line, said in full at its kind's first and then as the
+    // kind's count at the 2nd, 4th, 8th and so on (thuum ADR-073 decision 7):
+    // "ended" and "open" not sent, "lapsed" sent as a new stream's cast
+    private sayHostedLaunch(kind: "ended" | "open" | "lapsed", pending: PendingHostedLaunch) {
+        const n = (this.launchNotes.get(kind) ?? 0) + 1;
+        this.launchNotes.set(kind, n);
         if ((n & (n - 1)) !== 0) {
             return;
         }
-        const why = `its caster's event cast of the spell ended after the launch or within ${MagicSyncService.launchMatchMs} ms before it, a late launch of the ended stream`;
-        const head = `hosted launch of ${pending.spell.toString(16)} by ${pending.casterLocal.toString(16)} dropped (${kind})`;
-        logTrace(this, n === 1 ? `${head}: ${why}` : `${head}: ${n} launch(es) dropped as ${kind} so far`);
+        const of = `hosted launch of ${pending.spell.toString(16)} by ${pending.casterLocal.toString(16)}`;
+        const hand = MagicSyncService.launchHand(pending.castingSource);
+        const hole = MagicSyncService.streamHoleMs;
+        if (kind === "ended") {
+            const head = `${of} dropped (ended)`;
+            const why = `its caster's event cast of the spell ended after the launch or within ${MagicSyncService.launchMatchMs} ms before it, a late launch of the ended stream`;
+            logTrace(this, n === 1 ? `${head}: ${why}` : `${head}: ${n} launch(es) dropped as ended so far`);
+        } else if (kind === "open") {
+            const head = `${of} hand ${hand} withheld (open)`;
+            const why = `the stream its cast event reported in that hand was open (no end sent, its last news ${pending.streamSilentMs} ms before, within the ${hole} ms hole), so the launch would only re-report it`;
+            logTrace(this, n === 1 ? `${head}: ${why}` : `${head}: ${n} launch(es) withheld as open so far`);
+        } else {
+            const head = `${of} hand ${hand} sent (lapsed)`;
+            const why = `the stream its cast event reported in that hand was silent ${pending.streamSilentMs} ms, past the ${hole} ms hole, with no end sent, so it is taken as closed and the launch reports a new stream`;
+            logTrace(this, n === 1 ? `${head}: ${why}` : `${head}: ${n} launch(es) sent as lapsed so far`);
+        }
+    }
+
+    // a launch's hand: its casting source (MagicSystem::CastingSource, 0 left
+    // to 3 instant, the validator's range); the right hand when it names none
+    private static launchHand(castingSource: number): number {
+        return castingSource >= 0 && castingSource <= 3 ? castingSource : 1;
     }
 
     private sendHostedLaunchCast(pending: PendingHostedLaunch) {
@@ -410,9 +488,7 @@ export class MagicSyncService extends ClientListener {
             logTrace(this, `hosted launch of ${pending.spell.toString(16)} by ${pending.casterLocal.toString(16)} dropped: no remote id`);
             return;
         }
-        // the launch's casting source (MagicSystem::CastingSource, 0 left to
-        // 3 instant, the validator's range); the right hand when it names none
-        const hand = pending.castingSource >= 0 && pending.castingSource <= 3 ? pending.castingSource : 1;
+        const hand = MagicSyncService.launchHand(pending.castingSource);
         const launchOk = [pending.originX, pending.originY, pending.originZ, pending.angleX, pending.angleZ].every((v) => Number.isFinite(v));
         const msg: SpellCastMsgData = {
             caster: remoteId,
@@ -436,6 +512,12 @@ export class MagicSyncService extends ClientListener {
         this.sendCast(msg);
         this.hostedLaunchCasts.set(MagicSyncService.castKey(pending.casterLocal, pending.spell), Date.now());
         logTrace(this, `hosted cast from its launch: ${remoteId.toString(16)} casts ${pending.spell.toString(16)} hand ${hand}${launchOk ? "" : ", no launch"}`);
+        if (pending.streamSilentMs !== null) {
+            // its hand's reported stream fell silent past the hole with no
+            // end: closed, and this launch's cast is a new stream's
+            // (streamDrop)
+            this.sayHostedLaunch("lapsed", pending);
+        }
     }
 
     private static castKey(casterLocal: number, spell: number): string {
@@ -599,6 +681,23 @@ export class MagicSyncService extends ClientListener {
         return false;
     }
 
+    // A stream: an effect cast as concentration (the record's casting type,
+    // MagicEffect.GetCastingType, SKSE), whose beam the engine relaunches
+    // while the hand holds it (D-CE1 A, streamDrop's "open")
+    private static isConcentration(spell: Spell | null): boolean {
+        if (!spell) {
+            return false;
+        }
+        const n = spell.getNumEffects();
+        for (let i = 0; i < n; ++i) {
+            const effect = spell.getNthEffectMagicEffect(i);
+            if (effect && effect.getCastingType() === MagicSyncService.kConcentration) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static launchesAtTargetLocation(spell: Spell | null): boolean {
         if (!spell) {
             return false;
@@ -669,7 +768,7 @@ export class MagicSyncService extends ClientListener {
             return;
         }
         const byHand = this.lastHostedCastByHand.get(e.actorId);
-        const cast = byHand?.get(hand);
+        const cast = byHand?.get(hand)?.msg;
         if (!byHand || !cast) {
             this.sayNoCastToEnd(!byHand ? "no cast recorded for this caster" : "no cast recorded in this hand", e.actorId, hand);
             return;
@@ -708,11 +807,12 @@ export class MagicSyncService extends ClientListener {
     }
 
     private noCastToEnd = new Map<string, number>();
-    private lastHostedCastByHand = new Map<number, Map<number, SpellCastMsgData>>();
+    private lastHostedCastByHand = new Map<number, Map<number, ReportedHandCast>>();
     // R-V5: when each hosted caster's event cast of a spell last ended here
-    // (onHostedAction), by caster and spell, and the launches dropped by kind
+    // (onHostedAction), by caster and spell, and the held launches' lines'
+    // counts by kind (sayHostedLaunch)
     private hostedCastEnds = new Map<string, number>();
-    private launchDrops = new Map<string, number>();
+    private launchNotes = new Map<string, number>();
     // the hosted casts' reports by caster and spell: the cast event's and the
     // launch's, each the other's dedupe within launchMatchMs
     private hostedEventCasts = new Map<string, number>();
@@ -866,8 +966,14 @@ export class MagicSyncService extends ClientListener {
     private static readonly launchWaitUpdates = 6;
     // the launches kept: a cast of several projectile effects launches each
     private static readonly launchesKept = 8;
+    // a reported stream silent this long is closed (D-CE1 A, streamDrop):
+    // the server's own stream hole, wire-rules casts.rs:43 HOLE_MS, past which
+    // its casts::continues takes a report as a new stream
+    private static readonly streamHoleMs = 1000;
     private static readonly kTargetLocation = 4;
     private static readonly kFireAndForget = 1;
+    // CommonLibSSE-NG include/RE/M/MagicSystem.h:35, CastingType
+    private static readonly kConcentration = 2;
     private static readonly kAimed = 2;
     private static readonly kTargetActor = 3;
 }

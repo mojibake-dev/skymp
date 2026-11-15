@@ -76,6 +76,35 @@ struct Dressing
 Dressing AddWornTagged(RE::InventoryChanges* changes, RE::BGSOutfit* outfit,
                        const Fate& fate, uint32_t ownerId);
 
+// thuum lab/.cache/drafts/reads-53/r-c3-temple-crash.md (playtest 51 break
+// 7: every live re-roll before the crash logged "armed" twice, its two init
+// passes, 37323's own and the ResetInventory after it, each writing the
+// fate's weapons): the container detour's arms of one owner on this thread
+// while the witness lives, so the re-roll can arm once (FateApi.cpp
+// RerollOnGameThread skips its reset when 37323's own init armed). A scope
+// on the game thread, nested ones each counting their own owner; the
+// detour calls Note at each arm. HYPOTHESIS until a run of this branch's
+// build logs "armed" once per re-roll and its copy wears the fate
+// (x-anim-listener runs canon, without this branch).
+class ArmWitness
+{
+public:
+  explicit ArmWitness(uint32_t ownerId);
+  ~ArmWitness();
+  ArmWitness(const ArmWitness&) = delete;
+  ArmWitness& operator=(const ArmWitness&) = delete;
+
+  uint32_t Arms() const { return arms; }
+
+  // the container detour's one call per arm (FateHooks.cpp)
+  static void Note(uint32_t ownerId);
+
+private:
+  uint32_t owner;
+  uint32_t arms = 0;
+  ArmWitness* outer;
+};
+
 // the two detours (Frida Gum replacements through FridaHookHandler::Replace,
 // the puppet detours' shape), AE only (ADR-025's 1.6.1170); called once from
 // Frida::InstallHooks

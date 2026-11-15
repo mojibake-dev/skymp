@@ -1,5 +1,6 @@
 #include "ChangeForm.h"
 #include "FridaHookHandler.h"
+#include "WeaponAnimGuard.h"
 #include "game/Offsets.h"
 
 #include <RE/A/AIProcess.h>
@@ -1505,6 +1506,192 @@ std::string ApplyRefusal(RE::FormID formId, const std::string& reason)
   return r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
+// One apply's main-thread task, its fields copied from the queue's call.
+struct ApplyJob
+{
+  RE::FormID formId = 0;
+  std::string body;
+  std::uint32_t flags = 0;
+  std::uint32_t version = 0;
+  std::string rows;
+  std::uint32_t from = 0;
+};
+
+// the task's last word: its answer stored for ApplyChangeFormResult and the
+// form's in-flight mark released
+void Answer(RE::FormID formId, std::string answer, std::uint32_t from)
+{
+  const auto* main = RE::Main::GetSingleton();
+  const std::uint32_t here = ThreadId();
+  const bool onMain = main != nullptr && main->threadID == here;
+  logger::info("[verb:change-form] ApplyChangeForm {:#x} answered on {} "
+               "(thread {} main {}, queued from {})",
+               formId, onMain ? "the main thread" : "another thread", here,
+               main ? main->threadID : 0u, from);
+  std::lock_guard<std::mutex> lock(g_applyMutex);
+  g_applyInFlight.erase(formId);
+  g_applyAnswers[formId] = std::move(answer);
+}
+
+// the apply on the main thread; tick 0 from the queue, the deferral's count
+// after (WeaponAnimGuard)
+void ApplyOnMainThread(const ApplyJob& job, std::uint32_t tick)
+{
+  const RE::FormID formId = job.formId;
+  const std::string& body = job.body;
+  const std::uint32_t flags = job.flags;
+  const std::uint32_t version = job.version;
+  const std::string& rows = job.rows;
+  std::string answer;
+  try {
+    // the reference looked up on the thread that runs the apply
+    // (FateApi's shape: a lookup under the forms map's lock belongs where
+    // the engine takes that lock itself)
+    auto* again = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
+    // a deferred apply whose reference is gone, or no longer an actor,
+    // never reaches the guard again: its waiting mark goes here, so the
+    // form's next apply is not refused as folded
+    if (tick > 0 && !(again && again->As<RE::Actor>())) {
+      WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kLoadGame, formId);
+    }
+    // thuum lab/.cache/drafts/reads-53/r-c3-temple-crash.md (playtest 51
+    // break 7, candidates A and B, HYPOTHESIS until x-anim-listener's
+    // trace): the lay's Actor::LoadGame (slot 0x0F) rebuilds the copy's
+    // process while the engine may hold a weapon-animation request for it,
+    // whose listener a rebuild frees with the request still waiting; so
+    // the whole apply (the dying completion, the arrows, the lay) waits
+    // that request out on a later tick, bounded, its in-flight mark kept
+    // and its answer unwritten meanwhile (the bound, 120 ticks, about 2 s
+    // at 60 frames a second if gameThrQ drains once a frame, HYPOTHESIS;
+    // the seat gives up at 15 s). Candidate B's own listeners
+    // (ProcessCallbackAdapter, MovementControllerNPC) are not what this
+    // check reads.
+    if (auto* actor = again ? again->As<RE::Actor>() : nullptr) {
+      const auto decision = WeaponAnimGuard::Check(
+        WeaponAnimGuard::Kind::kLoadGame, actor, formId, tick,
+        [job](std::uint32_t next) {
+          auto* tasks = SKSE::GetTaskInterface();
+          if (!tasks) {
+            WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kLoadGame,
+                                    job.formId);
+            Answer(job.formId,
+                   ApplyRefusal(job.formId,
+                                "at task: deferred, then no SKSE task "
+                                "interface"),
+                   job.from);
+            return;
+          }
+          tasks->AddUITask([job, next]() { ApplyOnMainThread(job, next); });
+        });
+      if (decision == WeaponAnimGuard::Decision::kDeferred) {
+        return;
+      }
+      if (decision != WeaponAnimGuard::Decision::kRun) {
+        // dropped at the bound, or folded: a fold means a waiting mark
+        // left behind, since the in-flight set lets one apply per form
+        // through the queue, so the mark goes and this apply is refused
+        // for the next serve to retry
+        WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kLoadGame, formId);
+        Answer(formId,
+               ApplyRefusal(
+                 formId,
+                 decision == WeaponAnimGuard::Decision::kDropped
+                   ? "at task: a weapon-animation request in flight on the "
+                     "copy past the guard's bound"
+                   : "at task: folded into a waiting apply of this form"),
+               job.from);
+        return;
+      }
+    }
+    // thuum docs/verbs/change-form.md Dynamic read 5 (the re-analyst,
+    // 2026-11-03 night): a copy killed by the server's word sits in
+    // kDying because the engine completes a death inside the high
+    // process's AI update (fDyingTimer, 2.0 s, ticked there alone,
+    // Actor::KillImmediate at its end), which a puppet with its AI off
+    // never enters, and the fork's release at death returns on IsDead
+    // (kDying counts) before EnableAI(true): a timer nobody ticks. The
+    // record is the server's word that this body is dead, so its
+    // completion is called here, on the main thread the task runs on,
+    // through the engine's own completion (Actor::KillImmediate,
+    // include/RE/A/Actor.h:610: SetLifeState(kDead), the death event, the
+    // sounds and combat ended; Havok untouched, no death items), and the
+    // apply's dead-only premise follows. HYPOTHESIS until x-corpse-record
+    // reads the lay on a watcher's live-death copy.
+    if (auto* actor = again ? again->As<RE::Actor>() : nullptr) {
+      const auto before = actor->AsActorState()->GetLifeState();
+      if (before == RE::ACTOR_LIFE_STATE::kDying) {
+        {
+          RecordDeathScope recordDeath;
+          actor->KillImmediate();
+        }
+        logger::info(
+          "[verb:change-form] completed {:#x}'s dying death "
+          "before the apply: lifeState {} -> {} (read 5)",
+          formId, static_cast<std::uint32_t>(before),
+          static_cast<std::uint32_t>(actor->AsActorState()->GetLifeState()));
+      }
+    }
+    // x-fate-dress-bleak v8 20261104-183635 (c2 at 10:40:56 PST applying
+    // the record of 39fe4's third kill: SkyrimSE.exe+0x184FBF reading a
+    // null's +0x20, no stack; the re-analyst's static read, 2026-11-04,
+    // HYPOTHESIS until a Frida read of 11577 and 12782 under an apply):
+    // the engine's loader of the record's attached-arrows block
+    // (ExtraAttachedArrows3D, extra type 0x98, Address Library 12782)
+    // reads an extra the copy's own list no longer holds. ExtraDataList::
+    // LoadGame (12095) marks at its start every extra type the copy has
+    // whose mask meets the record's flags and later fetches a marked one
+    // by GetByType; the leveled-creature block (0x2D) before the arrows'
+    // calls Set3D(nullptr) while kLoading is clear (this apply's premise),
+    // and Actor::Set3D with a model present removes the copy's own
+    // attached arrows; so a copy with arrows in it, laid from a record
+    // with arrows in it, hands 12782 a null. The copy's own arrows go
+    // first (ExtraDataList::RemoveByType, include/RE/E/ExtraDataList.h:
+    // 179; kAttachedArrows3D, E/ExtraDataTypes.h:326): the block then
+    // takes the loader's allocate-and-add path and the finish pass
+    // re-attaches the record's arrows by bone, the record being the body's
+    // state (ADR-065); a copy without arrows is untouched.
+    if (again &&
+        again->extraList.HasType(RE::ExtraDataType::kAttachedArrows3D)) {
+      again->extraList.RemoveByType(RE::ExtraDataType::kAttachedArrows3D);
+      logger::info("[verb:change-form] {:#x}: the copy's own attached "
+                   "arrows removed before the lay (the record's come with "
+                   "it)",
+                   formId);
+    }
+    answer = again ? ApplyImpl(again, body, flags, version, rows)
+                   : ApplyRefusal(formId, "at task: the reference is gone");
+    // x-corpse-record v4 (20261104-063832): every lay answered "lifeState
+    // 2 then 1", the owner's own reconnect apply included. The record's
+    // actor block carries what the owner's engine held at its at-rest
+    // serialize, which is kDying when the rest (about 1.5 s) comes before
+    // fDyingTimer's flip (2.0 s, or the death action's length), so the lay
+    // puts the copy back where no AI ticks it and the next apply would
+    // need the completion again. The same completion runs after the lay:
+    // a laid body is dead on every seat whatever the record carries, and
+    // the owner's serialize stays its engine's own state. HYPOTHESIS until
+    // x-corpse-record reads "after the lay" and the copy kDead.
+    if (auto* actor = again ? again->As<RE::Actor>() : nullptr) {
+      const auto laid = actor->AsActorState()->GetLifeState();
+      if (laid == RE::ACTOR_LIFE_STATE::kDying) {
+        {
+          RecordDeathScope recordDeath;
+          actor->KillImmediate();
+        }
+        logger::info(
+          "[verb:change-form] completed {:#x}'s dying death after the "
+          "lay: lifeState {} -> {} (read 5)",
+          formId, static_cast<std::uint32_t>(laid),
+          static_cast<std::uint32_t>(actor->AsActorState()->GetLifeState()));
+      }
+    }
+  } catch (const std::exception& e) {
+    logger::error("[verb:change-form] ApplyChangeForm {:#x} threw: {}", formId,
+                  e.what());
+    answer = ApplyRefusal(formId, std::string("exception: ") + e.what());
+  }
+  Answer(formId, std::move(answer), job.from);
+}
+
 } // namespace
 
 std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
@@ -1537,112 +1724,15 @@ std::string ChangeForm::Apply(RE::TESObjectREFR* refr,
     }
     g_applyInFlight.insert(formId);
   }
-  const std::uint32_t from = ThreadId();
-  tasks->AddUITask([formId, body = std::string(bodyHex), flags, version,
-                    rows = std::string(remapRows), from]() {
-    std::string answer;
-    try {
-      // the reference looked up on the thread that runs the apply
-      // (FateApi's shape: a lookup under the forms map's lock belongs where
-      // the engine takes that lock itself)
-      auto* again = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
-      // thuum docs/verbs/change-form.md Dynamic read 5 (the re-analyst,
-      // 2026-11-03 night): a copy killed by the server's word sits in
-      // kDying because the engine completes a death inside the high
-      // process's AI update (fDyingTimer, 2.0 s, ticked there alone,
-      // Actor::KillImmediate at its end), which a puppet with its AI off
-      // never enters, and the fork's release at death returns on IsDead
-      // (kDying counts) before EnableAI(true): a timer nobody ticks. The
-      // record is the server's word that this body is dead, so its
-      // completion is called here, on the main thread the task runs on,
-      // through the engine's own completion (Actor::KillImmediate,
-      // include/RE/A/Actor.h:610: SetLifeState(kDead), the death event, the
-      // sounds and combat ended; Havok untouched, no death items), and the
-      // apply's dead-only premise follows. HYPOTHESIS until x-corpse-record
-      // reads the lay on a watcher's live-death copy.
-      if (auto* actor = again ? again->As<RE::Actor>() : nullptr) {
-        const auto before = actor->AsActorState()->GetLifeState();
-        if (before == RE::ACTOR_LIFE_STATE::kDying) {
-          {
-            RecordDeathScope recordDeath;
-            actor->KillImmediate();
-          }
-          logger::info(
-            "[verb:change-form] completed {:#x}'s dying death "
-            "before the apply: lifeState {} -> {} (read 5)",
-            formId, static_cast<std::uint32_t>(before),
-            static_cast<std::uint32_t>(actor->AsActorState()->GetLifeState()));
-        }
-      }
-      // x-fate-dress-bleak v8 20261104-183635 (c2 at 10:40:56 PST applying
-      // the record of 39fe4's third kill: SkyrimSE.exe+0x184FBF reading a
-      // null's +0x20, no stack; the re-analyst's static read, 2026-11-04,
-      // HYPOTHESIS until a Frida read of 11577 and 12782 under an apply):
-      // the engine's loader of the record's attached-arrows block
-      // (ExtraAttachedArrows3D, extra type 0x98, Address Library 12782)
-      // reads an extra the copy's own list no longer holds. ExtraDataList::
-      // LoadGame (12095) marks at its start every extra type the copy has
-      // whose mask meets the record's flags and later fetches a marked one
-      // by GetByType; the leveled-creature block (0x2D) before the arrows'
-      // calls Set3D(nullptr) while kLoading is clear (this apply's premise),
-      // and Actor::Set3D with a model present removes the copy's own
-      // attached arrows; so a copy with arrows in it, laid from a record
-      // with arrows in it, hands 12782 a null. The copy's own arrows go
-      // first (ExtraDataList::RemoveByType, include/RE/E/ExtraDataList.h:
-      // 179; kAttachedArrows3D, E/ExtraDataTypes.h:326): the block then
-      // takes the loader's allocate-and-add path and the finish pass
-      // re-attaches the record's arrows by bone, the record being the body's
-      // state (ADR-065); a copy without arrows is untouched.
-      if (again &&
-          again->extraList.HasType(RE::ExtraDataType::kAttachedArrows3D)) {
-        again->extraList.RemoveByType(RE::ExtraDataType::kAttachedArrows3D);
-        logger::info("[verb:change-form] {:#x}: the copy's own attached "
-                     "arrows removed before the lay (the record's come with "
-                     "it)",
-                     formId);
-      }
-      answer = again ? ApplyImpl(again, body, flags, version, rows)
-                     : ApplyRefusal(formId, "at task: the reference is gone");
-      // x-corpse-record v4 (20261104-063832): every lay answered "lifeState
-      // 2 then 1", the owner's own reconnect apply included. The record's
-      // actor block carries what the owner's engine held at its at-rest
-      // serialize, which is kDying when the rest (about 1.5 s) comes before
-      // fDyingTimer's flip (2.0 s, or the death action's length), so the lay
-      // puts the copy back where no AI ticks it and the next apply would
-      // need the completion again. The same completion runs after the lay:
-      // a laid body is dead on every seat whatever the record carries, and
-      // the owner's serialize stays its engine's own state. HYPOTHESIS until
-      // x-corpse-record reads "after the lay" and the copy kDead.
-      if (auto* actor = again ? again->As<RE::Actor>() : nullptr) {
-        const auto laid = actor->AsActorState()->GetLifeState();
-        if (laid == RE::ACTOR_LIFE_STATE::kDying) {
-          {
-            RecordDeathScope recordDeath;
-            actor->KillImmediate();
-          }
-          logger::info(
-            "[verb:change-form] completed {:#x}'s dying death after the "
-            "lay: lifeState {} -> {} (read 5)",
-            formId, static_cast<std::uint32_t>(laid),
-            static_cast<std::uint32_t>(actor->AsActorState()->GetLifeState()));
-        }
-      }
-    } catch (const std::exception& e) {
-      logger::error("[verb:change-form] ApplyChangeForm {:#x} threw: {}",
-                    formId, e.what());
-      answer = ApplyRefusal(formId, std::string("exception: ") + e.what());
-    }
-    const auto* main = RE::Main::GetSingleton();
-    const std::uint32_t here = ThreadId();
-    const bool onMain = main != nullptr && main->threadID == here;
-    logger::info("[verb:change-form] ApplyChangeForm {:#x} answered on {} "
-                 "(thread {} main {}, queued from {})",
-                 formId, onMain ? "the main thread" : "another thread", here,
-                 main ? main->threadID : 0u, from);
-    std::lock_guard<std::mutex> lock(g_applyMutex);
-    g_applyInFlight.erase(formId);
-    g_applyAnswers[formId] = std::move(answer);
-  });
+  ApplyJob job;
+  job.formId = formId;
+  job.body = std::string(bodyHex);
+  job.flags = flags;
+  job.version = version;
+  job.rows = std::string(remapRows);
+  job.from = ThreadId();
+  const std::uint32_t from = job.from;
+  tasks->AddUITask([job]() { ApplyOnMainThread(job, 0); });
   logger::info("[verb:change-form] ApplyChangeForm {:#x} queued to the main "
                "thread's UI task queue ({} hex chars, {} remap chars) from "
                "thread {}",

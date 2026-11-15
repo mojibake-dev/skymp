@@ -3306,9 +3306,9 @@ mod ffi {
         /// The class of the quest `short_id` in `file` from its `aliases`
         /// (every ALST and ALLS of its QUST record, libespm's order): 1
         /// Player (the started half names it, whatever its aliases; every
-        /// alias the player's; or none and the list names it), 0 World (a
-        /// world alias, whatever the list says, or none and unlisted, and
-        /// the started half silent).
+        /// alias the player's; or none and the list names it), 0 World (the
+        /// started half silent, and a world alias whatever the list says,
+        /// or none and unlisted).
         fn quest_scope_class(self: &QuestScope, short_id: u32, file: &str, aliases: &[QuestScopeAliasRow]) -> u8;
         /// thuum D-Q9 B: the ids of the reference aliases among a quest's
         /// `aliases` (every ALST and ALLS of its QUST record) that are the
@@ -6838,7 +6838,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bridge_classes_a_quest_by_its_aliases_and_the_list() {
+    fn the_bridge_classes_a_quest_by_its_aliases_the_list_and_its_start() {
         // thuum ADR-068 rung 5: PlayerWerewolfQuest 0x2ba16's alias by ALUA
         // 0x7, PlayerVampireQuest 0xeafd5 by the list, MS13 0x39645 World
         let alias = |id: u32, forced: u32, unique_actor: u32| QuestScopeAliasRow { id, location: false, forced, unique_actor, created: 0, create_at: 0, external: false, external_forced: 0, external_unique_actor: 0 };

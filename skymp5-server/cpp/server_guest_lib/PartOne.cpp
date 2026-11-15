@@ -4386,6 +4386,13 @@ void PartOne::ComposeQuestScope()
   pImpl->servedStages.clear();
   if (acting) {
     for (const auto& [quest, stages] : pImpl->playerQuestCallers) {
+      if (HoldsForm(marked, quest)) {
+        spdlog::info("[verb:quest-stage] playerQuestCallers names {}, a quest "
+                     "the scope marks per player: none of its stages is "
+                     "relayed served (ADR-073)",
+                     quest.ToString());
+        continue;
+      }
       for (uint16_t stage : stages) {
         pImpl->servedStages.emplace_back(quest, stage);
       }

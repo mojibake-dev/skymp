@@ -89,6 +89,12 @@ mod ffi {
         /// refused for (a 4xx code is the JSON's, 2xx the validator's, 3xx
         /// the transport's, 101 the message's byte cap).
         fn send(self: &mut Server, client: u64, json: &str, reliable: bool) -> u16;
+        /// The name of the message in a send's JSON, as an inbound refusal
+        /// names its own ("SpellCast", "SpellCast end"), or empty when the
+        /// JSON is not a message. The core calls it only for a send `send`
+        /// refused, and counts its send refusals per (code, name) (thuum
+        /// ADR-073 decision 7; the review of m4-fix-cast-end, finding 2).
+        fn send_refused_name(json: &str) -> String;
         /// Drop a client; it sees the server close the connection.
         fn disconnect(self: &mut Server, client: u64);
         /// The client's IP address, or an empty string once it is gone.
@@ -186,6 +192,14 @@ pub fn wire_server_bind(options: &BindOptions) -> Result<Box<Server>, BindError>
         refused: BTreeMap::new(),
         rejected: BTreeMap::new(),
     }))
+}
+
+/// See the bridge declaration: recognized a second time, on a refusal only,
+/// so the send path's one recognition stays as it is.
+pub fn send_refused_name(json: &str) -> String {
+    wire_json::recognize(json)
+        .map(|m| RefusedMsg::of(&m).name.to_string())
+        .unwrap_or_default()
 }
 
 /// Reason codes for sends refused before the transport: the JSON's (4xx).
@@ -434,6 +448,23 @@ mod tests {
         assert_eq!(server.send(id + 1, r#"{"t":25,"idx":1}"#, true), 304, "no such client");
         let stats = server.stats_json();
         assert!(stats.contains("\"sent\":2") && stats.contains("\"302\":1"), "{stats}");
+    }
+
+    #[test]
+    fn a_refused_send_is_named_as_an_inbound_refusal_is() {
+        // the review of m4-fix-cast-end, finding 2: the core keys its send
+        // refusals by (code, name), so a relayed end the wire refuses is
+        // counted apart from the relayed casts
+        let end = Message::SpellCast(wire_schema::skymp::SpellCast {
+            data: wire_schema::skymp::SpellCastData { spell: 0x107aa1, interrupt_cast: true, ..Default::default() },
+            ..Default::default()
+        });
+        let json = wire_json::render(&end).expect("render");
+        assert_eq!(send_refused_name(&json), "SpellCast end");
+        let cast = wire_json::render(&Message::SpellCast(wire_schema::skymp::SpellCast::default())).expect("render");
+        assert_eq!(send_refused_name(&cast), "SpellCast");
+        assert_eq!(send_refused_name("{"), "");
+        assert_eq!(send_refused_name(r#"{"t":99}"#), "");
     }
 
     #[test]

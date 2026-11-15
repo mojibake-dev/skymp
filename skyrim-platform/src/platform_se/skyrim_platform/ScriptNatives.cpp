@@ -2919,6 +2919,11 @@ StagedRoot StagedRootOf(const RE::BSScript::Stack* stack,
   return kRootNone;
 }
 
+Marks OnCreatedCall(std::size_t row, const RowInfo& info,
+                    const RE::BSScript::Stack* stack,
+                    const RE::BSScript::StackFrame* top, std::uint32_t page,
+                    const RE::TESObjectREFR& subject, Marks marks);
+
 // thuum ADR-073 step 4's S5: a staged row's call (every derived row of the
 // generated table, its batch unstaged at S8), counted once by what its row
 // would do and run as before it had a row: it never touches the Local
@@ -2931,14 +2936,16 @@ StagedRoot StagedRootOf(const RE::BSScript::Stack* stack,
 // the row's kind, its subject's owner (OwnedHere, read only) and the stack's
 // root kind. It never reads the form table (TESForm::LookupByID, which at
 // the pin copies the form map's lock instead of taking it: thuum ADR-073
-// step 4's review, MUST 1): an everyone row and a static on no object are
+// step 4's review, MUST 1), but for a call on a reference this seat's script
+// created, handed to the spell channel (#54) and read there as a live row's
+// call is: an everyone row and a static on no object are
 // counted by their scope alone (ScopeRootOf), and an owned subject's
 // reference and its root frame's self are read through the VM's handle
 // policy (RefOfObject without its cross-check, SelfKindOfObject)
-void OnStaged(std::size_t row, const RowInfo& info,
-              const RE::BSScript::IFunction* fn,
-              const RE::BSScript::Stack* stack,
-              const std::optional<ActingScope::Scope>& scope)
+Marks OnStaged(std::size_t row, const RowInfo& info,
+               const RE::BSScript::IFunction* fn,
+               const RE::BSScript::Stack* stack,
+               const std::optional<ActingScope::Scope>& scope, Marks marks)
 {
   const NativeRow& native = g_natives[row];
   // the spec's New 1 by the row's scoped column, natives-gen's rule with the
@@ -2952,53 +2959,54 @@ void OnStaged(std::size_t row, const RowInfo& info,
     ActingScope::Swaps(*scope);
   if (native.kind == NativeKind::Local && !actingSeatAlone) {
     CountStagedPlain(row, kStagedLocal);
-    return;
+    return marks;
   }
   if (!stack) {
     CountStagedPlain(row, kStagedUnresolved);
-    return;
+    return marks;
   }
   const bool direct = PlatformCall::Active() ||
     (g_nativeCallRequirements.stackId != 0 &&
      stack->stackID == g_nativeCallRequirements.stackId);
   if (direct || PlatformCall::IsLiveCallback(stack->callback.get())) {
     CountStagedPlain(row, kStagedPlatform);
-    return;
+    return marks;
   }
   const RE::BSScript::StackFrame* top = stack->top;
   if (!top || top->owningFunction.get() != fn) {
     CountStagedPlain(row, kStagedFrame);
-    return;
+    return marks;
   }
   // the acting player's seat alone (New 1), counted by its scope; its self
   // named by its handle's low 32 bits (SubjectOfFrame, no lookup) for its
   // kind's first line
   if (actingSeatAlone) {
     CountStaged(row, kWouldSkip, ScopeRootOf(scope), SubjectOfFrame(top), top);
-    return;
+    return marks;
   }
   // nobody's (D-F1 C): every seat runs it, its self named as above
   if (native.kind == NativeKind::Everyone) {
     CountStaged(row, kWouldRun, ScopeRootOf(scope), SubjectOfFrame(top), top);
-    return;
+    return marks;
   }
   // a static on no object the scoped column runs as the scope has it (a
   // latent one, one with a result, the decided weather cells): the seat's
   // own game, run here
   if (native.subject == NativeSubject::None) {
     CountStaged(row, kWouldRun, ScopeRootOf(scope), 0, top);
-    return;
+    return marks;
   }
   // the subject, read as OnCall's reads it: the frame's self, or the first
   // argument through the engine's accessor with the frame's page
   const RE::BSScript::Variable* subject = nullptr;
+  std::uint32_t page = kNoPage;
   if (native.subject == NativeSubject::Self) {
     subject = &top->self;
   } else if (info.params > 0) {
-    const std::uint32_t page = top->GetPageForFrame();
+    page = top->GetPageForFrame();
     if (page == kNoPage) {
       CountStagedPlain(row, kStagedFrame);
-      return;
+      return marks;
     }
     subject = &top->GetStackFrameVariable(0, page);
   }
@@ -3009,9 +3017,28 @@ void OnStaged(std::size_t row, const RowInfo& info,
     subject ? RefOfObject(policy, ObjectOf(*subject), false) : nullptr;
   if (!ref) {
     CountStagedPlain(row, kStagedUnresolved);
-    return;
+    return marks;
   }
   const bool isActor = ref->GetFormType() == RE::FormType::ActorCharacter;
+  // thuum ADR-073 decision 13 (#54; x-raise-wall-v6 20261115-181850): a
+  // staged state or action row on a reference this seat's script created is
+  // the spell channel's, as a live row is (OnCall's check before its owner
+  // rules), reported as its creator's and run here. Raise Wall's SetAngle and
+  // TranslateTo, the rise itself (TranslateToRef is Papyrus over
+  // TranslateTo), are staged rows, and until this they were counted here and
+  // never sent: the server relayed the wall's MoveTo, Enable, Play, Disable
+  // and Delete, and the watcher's wall never rose from where MoveTo left it,
+  // 288 units down. A staged creation (DropObject) stays counted: the
+  // channel's creation is PlaceAtMe's alone. Its self is read as above,
+  // through the handle policy; only such a call's arguments are then read as
+  // a live row's are (CallFromFrame: ReadArg checks an object argument's form
+  // in the form table), a cost no other staged call pays
+  if (g_createdChannel && !isActor && ref->formID >= 0xff000000 &&
+      (native.kind == NativeKind::State ||
+       native.kind == NativeKind::Action) &&
+      Created::Is(ref->formID)) {
+    return OnCreatedCall(row, info, stack, top, page, *ref, marks);
+  }
   const bool owned = OwnedHere(ref, isActor);
   const StagedRoot root = StagedRootOf(stack, scope, policy);
   StagedVerdict verdict = kWouldRun;
@@ -3035,6 +3062,7 @@ void OnStaged(std::size_t row, const RowInfo& info,
     }
   }
   CountStaged(row, verdict, root, ref->formID, top);
+  return marks;
 }
 
 // the census slot (G2): an untabled native's binding counted by where it was
@@ -3216,7 +3244,7 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
       g_actingUntabled.fetch_add(1, std::memory_order_relaxed);
     }
     if (!marks.skip) {
-      OnStaged(row, info, fn, stack, scope);
+      return OnStaged(row, info, fn, stack, scope, marks);
     }
     return marks;
   }
@@ -4095,8 +4123,18 @@ void FlushCensus(uint64_t now)
   uint64_t total = 0;
   for (size_t row = 0; row < kRowCount; ++row) {
     // a staged row is never counted on its own row (OnStaged's summary,
-    // H2): nothing to read
+    // H2), but for its calls on a reference this seat's script created, the
+    // spell channel's (OnStaged's hand-off, #54), counted " (created)" as a
+    // live row's are, the next window logging its first selves again
     if (g_rows[row].staged) {
+      const uint32_t created = g_counts[row][kCountCreated].exchange(0);
+      if (created != 0) {
+        rows.emplace_back(std::string(g_natives[row].cls) + "." +
+                            g_natives[row].fn + kCountSuffix[kCountCreated],
+                          created);
+        total += created;
+      }
+      FreeLineSlots(g_createdLines[row]);
       continue;
     }
     const std::string name =

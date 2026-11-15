@@ -2739,7 +2739,8 @@ const char* CrossingNote(const RowInfo& info)
 // winning file's value, and nothing when that file lacks the key, is no JSON
 // object or cannot be read, or no file exists. One reader for the seam's
 // switches (train 52 factored it out of the lever's): scriptNonOwnerSkip,
-// scriptEffectHelpers and scriptLeveledLandings
+// scriptEffectHelpers and scriptLeveledLandings, and the Papyrus event
+// gate's scriptEveryoneEvents (thuum ADR-073 decision 9)
 struct ClientSettingRead
 {
   std::optional<nlohmann::json> value;
@@ -2786,6 +2787,15 @@ bool ClientSwitchOn(const char* key)
 {
   const ClientSettingRead read = ClientSetting(key);
   return !(read.value && read.value->is_boolean() && !read.value->get<bool>());
+}
+
+// a switch off unless the winning file sets it true, the client's own
+// settings' rule for an off default (`settings[key] === true`): the
+// everyone pass's (scriptEveryoneEvents, thuum ADR-073 decision 9)
+bool ClientSwitchOnIfTrue(const char* key)
+{
+  const ClientSettingRead read = ClientSetting(key);
+  return read.value && read.value->is_boolean() && read.value->get<bool>();
 }
 
 // the lever's value: "scriptNonOwnerSkip" (ClientSetting's; relaunch {files:
@@ -2844,6 +2854,9 @@ void FlushCensus(uint64_t now)
                  causes.world + causes.seat, kFlushMs / 1000, causes.world,
                  causes.seat, causes.carried);
   }
+  // thuum ADR-073 decision 9: the gate's everyone pass, its window's counts
+  // by kind (nothing while its switch is off)
+  Frida::FlushEveryonePass(kFlushMs);
   std::vector<std::pair<std::string, uint32_t>> rows;
   uint64_t total = 0;
   for (size_t row = 0; row < kRowCount; ++row) {
@@ -3383,6 +3396,19 @@ void ScriptNatives::InstallHooks()
     logger::info("[verb:scripts] scriptLeveledLandings off: a leveled AddItem "
                  "on the seat's own player crosses without its roll");
   }
+  // thuum ADR-073 decision 9 (step 1's first commit, D-S0-29 B): the Papyrus
+  // event gate's everyone pass (FridaHooks.cpp OnSendEventEnter), its switch
+  // read here with the seam's by the one reader, off unless true, before the
+  // game's scripts run; named in one line either way
+  const bool everyoneEvents = ClientSwitchOnIfTrue("scriptEveryoneEvents");
+  Frida::SetScriptEveryoneEvents(everyoneEvents);
+  logger::info(
+    "[verb:papyrus-events] scriptEveryoneEvents {}: {}",
+    everyoneEvents ? "on" : "off",
+    everyoneEvents
+      ? "an event to a quest's or an alias's scripts passes on every seat "
+        "whose engine raises it, counted as everyone (ADR-073 decision 9)"
+      : "a quest's and an alias's events keep the gate's rules as before");
   g_tableReady.store(true, std::memory_order_release);
   // the dispatch replaced, once the table's map and the lever are complete,
   // so it never reads either being written

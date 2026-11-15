@@ -613,8 +613,8 @@ export class ChangeFormService extends ClientListener {
         // native runs once more after the lay: on a dead copy it reconciles
         // the inventory alone and leaves the laid body as it is. Not with
         // #62's bisect switch off (ActorFateService.lateWorkOn)
-        if (!this.controller.lookupListener(ActorFateService).lateWorkOn()) {
-            logLab("verb:npc-fate", `corpse ${hex}: no reconcile after the lay, npcFateLateWork off`);
+        if (!this.controller.lookupListener(ActorFateService).lateWorkOn(true)) {
+            logLab("verb:npc-fate", `corpse ${hex}: no reconcile after the lay, npcFateLateWork leaves out dead actors`);
         } else {
             try {
                 const reconciled = this.sp.rerollActor(rec.formId);

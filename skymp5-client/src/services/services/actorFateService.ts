@@ -42,10 +42,17 @@ export class ActorFateService extends ClientListener {
         // detours stay armed (a reference the engine loads after its fate rolls
         // the server's roll), and no engine work runs on an actor the engine
         // holds already: no late fate's re-roll or redress, and no reconcile
-        // after a record's lay (ChangeFormService asks lateWorkOn)
-        this.lateWork = this.sp.settings["skymp5-client"]["npcFateLateWork"] !== false;
-        if (!this.lateWork) {
-            logTrace(this, "npcFateLateWork is off by the settings file: no re-roll, redress or reconcile of a loaded actor (the detours stay armed)");
+        // after a record's lay (ChangeFormService asks lateWorkOn). The second
+        // split: "live" keeps the late work on live actors alone, "dead" on
+        // dead ones alone (the late fate's corpse reconcile and the after-lay
+        // reconcile)
+        const lateSetting = this.sp.settings["skymp5-client"]["npcFateLateWork"];
+        this.lateWork = lateSetting === false ? "none"
+            : lateSetting === "live" ? "live"
+            : lateSetting === "dead" ? "dead"
+            : "all";
+        if (this.lateWork !== "all") {
+            logTrace(this, `npcFateLateWork is ${this.lateWork} by the settings file: the late work (re-roll, redress, reconcile of a loaded actor) runs on ${this.lateWork === "none" ? "no actor" : `${this.lateWork} actors alone`}; the detours stay armed`);
         }
         this.controller.emitter.on("actorFateMessage", (e) => this.onActorFate(e));
     }
@@ -102,7 +109,7 @@ export class ActorFateService extends ClientListener {
     // reloading engine renders at load). A reference the engine no longer
     // has is forgotten.
     private lateFate(refrId: number) {
-        if (!this.lateWork) {
+        if (this.lateWork === "none") {
             logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: npcFateLateWork off, no engine work`);
             return;
         }
@@ -133,6 +140,10 @@ export class ActorFateService extends ClientListener {
             return;
         }
         this.pending.delete(refrId);
+        if (!this.lateWorkOn(actor.isDead())) {
+            logLab("verb:npc-fate", `late fate for ${refrId.toString(16)}: npcFateLateWork ${this.lateWork}, no engine work on this ${actor.isDead() ? "dead" : "live"} actor`);
+            return;
+        }
         // the export decides on the main thread by the engine's own mark
         // (ExtraLeveledCreature): a clone is re-rolled through the detours, a
         // plain base is redressed. The Papyrus getBaseObject read before
@@ -184,9 +195,9 @@ export class ActorFateService extends ClientListener {
     }
 
     // #62's bisect switch (the constructor's note): whether the fate's engine
-    // work runs on an actor the engine holds already
-    lateWorkOn(): boolean {
-        return this.lateWork;
+    // work runs on an actor the engine holds already, dead or live
+    lateWorkOn(dead: boolean): boolean {
+        return this.lateWork === "all" || this.lateWork === (dead ? "dead" : "live");
     }
 
     // the last fate applied per reference (base and worn), so a repeated fate
@@ -194,5 +205,5 @@ export class ActorFateService extends ClientListener {
     private applied = new Map<number, string>();
     private copyFates = new Map<number, { baseId: number; worn: number[]; inv: number[] }>();
     private enabled: boolean;
-    private lateWork: boolean;
+    private lateWork: "all" | "none" | "live" | "dead";
 }

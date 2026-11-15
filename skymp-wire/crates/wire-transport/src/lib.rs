@@ -120,6 +120,21 @@ impl RefusedMsg {
     }
 }
 
+/// A server message the client refused: the server's [`Inbound::Rejected`]
+/// fields, kept for the caller's log ([`Client::take_refusals`]).
+#[derive(Debug)]
+pub struct Refusal {
+    /// Why.
+    pub reject: RejectKind,
+    /// The refused message's kind when its bytes decoded.
+    pub msg: Option<RefusedMsg>,
+}
+
+/// How many refusals a client keeps untaken. Past this many, only
+/// [`Client::rejected`] counts them, so a caller that never takes them (a
+/// test, a driver) holds a bounded list.
+pub const REFUSALS_KEPT: usize = 256;
+
 /// Why an inbound packet was dropped.
 #[derive(Debug)]
 pub enum RejectKind {
@@ -642,6 +657,21 @@ fn ingest(
     }
 }
 
+/// The client's [`ingest`]: a server message's bytes, checked for size,
+/// decoded, direction-checked and validated, or why not.
+fn from_server(bytes: &[u8], limits: &Limits) -> Result<Message, Refusal> {
+    if bytes.len() > limits.max_from_server {
+        return Err(Refusal { reject: RejectKind::Limit, msg: None });
+    }
+    let msg = wire_codec::decode(bytes).map_err(|e| Refusal { reject: RejectKind::Decode(e), msg: None })?;
+    if !server_may_send(&msg) {
+        return Err(Refusal { reject: RejectKind::Direction, msg: Some(RefusedMsg::of(&msg)) });
+    }
+    wire_validate::validate_server(&msg)
+        .map_err(|r| Refusal { reject: RejectKind::Validate(r), msg: Some(RefusedMsg::of(&msg)) })?;
+    Ok(msg)
+}
+
 /// How a client's connection ended, in netcode's terms without naming netcode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientEnd {
@@ -668,6 +698,7 @@ pub struct Client {
     elapsed: Duration,
     now_ms: u64,
     rejected: u64,
+    refusals: Vec<Refusal>,
     io_errors: u64,
 }
 
@@ -718,6 +749,7 @@ impl Client {
             elapsed: Duration::ZERO,
             now_ms: 0,
             rejected: 0,
+            refusals: Vec::new(),
             io_errors: 0,
         })
     }
@@ -756,6 +788,22 @@ impl Client {
         self.rejected
     }
 
+    /// The refusals since the last take, oldest first (at most
+    /// [`REFUSALS_KEPT`]). wire-client-ffi logs them: the count alone,
+    /// which nothing outside the tests read, left a server message the
+    /// game's client refused unsaid (the review of m4-fix-cast-end,
+    /// finding 3).
+    pub fn take_refusals(&mut self) -> Vec<Refusal> {
+        std::mem::take(&mut self.refusals)
+    }
+
+    fn refuse(&mut self, refusal: Refusal) {
+        self.rejected = self.rejected.saturating_add(1);
+        if self.refusals.len() < REFUSALS_KEPT {
+            self.refusals.push(refusal);
+        }
+    }
+
     /// Socket-level errors seen so far.
     pub fn io_errors(&self) -> u64 {
         self.io_errors
@@ -774,19 +822,9 @@ impl Client {
         }
         for channel in channels::ALL {
             while let Some(bytes) = self.renet.receive_message(channel) {
-                if bytes.len() > self.limits.max_from_server {
-                    self.rejected = self.rejected.saturating_add(1);
-                    continue;
-                }
-                match wire_codec::decode(&bytes) {
-                    Ok(msg)
-                        if server_may_send(&msg)
-                            && wire_validate::validate_server(&msg)
-                                .is_ok() =>
-                    {
-                        out.push(msg)
-                    }
-                    _ => self.rejected = self.rejected.saturating_add(1),
+                match from_server(&bytes, &self.limits) {
+                    Ok(msg) => out.push(msg),
+                    Err(refusal) => self.refuse(refusal),
                 }
             }
         }
@@ -929,6 +967,19 @@ mod tests {
             ),
             "{refused:?}"
         );
+    }
+
+    #[test]
+    fn a_client_keeps_a_bounded_list_of_refusals_and_counts_them_all() {
+        // nothing listens on port 9; no poll runs
+        let mut client = Client::connect("127.0.0.1:9".parse().expect("literal"), token::ConnectToken(Vec::new()))
+            .expect("connect");
+        for _ in 0..REFUSALS_KEPT + 10 {
+            client.refuse(Refusal { reject: RejectKind::Limit, msg: None });
+        }
+        assert_eq!(client.rejected(), u64::try_from(REFUSALS_KEPT + 10).expect("small"));
+        assert_eq!(client.take_refusals().len(), REFUSALS_KEPT);
+        assert!(client.take_refusals().is_empty());
     }
 
     #[test]
@@ -1110,6 +1161,24 @@ mod tests {
         );
         assert!(matches!(inbox.first(), Some(Message::HostGrant(g)) if g.cell == 0x1234 && g.epoch == 1));
         assert_eq!(client.rejected(), 0);
+
+        // what a server may not send is refused, counted, and kept once for
+        // the caller's log (the review of m4-fix-cast-end, finding 3)
+        assert!(client.take_refusals().is_empty());
+        server.send(client_id, &Message::Movement(movement(9))).expect("send");
+        assert!(
+            pump(&mut server, &mut client, &mut events, &mut inbox, |_, _, c| c.rejected() == 1),
+            "refused"
+        );
+        let refusals = client.take_refusals();
+        assert!(
+            matches!(
+                refusals.as_slice(),
+                [Refusal { reject: RejectKind::Direction, msg: Some(RefusedMsg { name: "Movement", msg_type: 0 }) }]
+            ),
+            "{refusals:?}"
+        );
+        assert!(client.take_refusals().is_empty(), "taken once");
 
         client.disconnect();
         assert!(

@@ -11,7 +11,7 @@
 //! game queued. The inbox is bounded; a game that stops draining for long
 //! enough to fill it is disconnected rather than silently desynchronized.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
@@ -20,7 +20,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use wire_schema::Message;
-use wire_transport::{token, Client, ClientEnd, Delivery};
+use wire_transport::{token, Client, ClientEnd, Delivery, RefusedMsg};
 
 /// What happened, in the terms Skyrim Platform's `tick` callback uses
 /// (MpClientPlugin's packet types; the numbers are an ABI).
@@ -323,6 +323,40 @@ fn end_event(end: Option<ClientEnd>, was_connected: bool) -> ClientEvent {
     }
 }
 
+/// What the network thread drops, said in the plugin's log
+/// (MpClientPlugin-logs.txt): a server message the transport refused or
+/// render could not spell, and a send the transport refused. Counted per
+/// (what, code, message), in full at a key's first and then at its 2nd,
+/// 4th, 8th and so on, as WireServer counts the server's (thuum ADR-073
+/// decision 7). All three were silent, so a relayed end lost between the
+/// server and the watcher's game had no line (the review of
+/// m4-fix-cast-end, finding 3).
+#[derive(Default)]
+struct Drops(BTreeMap<(&'static str, String, &'static str), u64>);
+
+impl Drops {
+    fn note(&mut self, what: &'static str, why: &dyn std::fmt::Display, name: &'static str) {
+        if let Some(line) = self.line(what, why, name) {
+            crate::log(&line);
+        }
+    }
+
+    /// The line due for this drop, if its count is a power of two. The
+    /// code is `why`'s text up to its first colon ("E_WIRE_TOO_LONG" of
+    /// "E_WIRE_TOO_LONG: 70000 > 65536"), so a key never carries a length.
+    fn line(&mut self, what: &'static str, why: &dyn std::fmt::Display, name: &'static str) -> Option<String> {
+        let why = why.to_string();
+        let code = why.split(':').next().unwrap_or_default().to_string();
+        let n = self.0.entry((what, code, name)).or_insert(0);
+        *n = n.saturating_add(1);
+        if !n.is_power_of_two() {
+            return None;
+        }
+        let name = if name.is_empty() { String::new() } else { format!(" ({name})") };
+        Some(format!("{what}: {why}{name} (x{n})"))
+    }
+}
+
 fn run(
     mut client: Client,
     commands: Receiver<Command>,
@@ -334,10 +368,14 @@ fn run(
     let mut last = Instant::now();
     let mut was_connected = false;
     let mut inbound = Vec::new();
+    let mut drops = Drops::default();
     loop {
         let now = Instant::now();
         client.poll(now.saturating_duration_since(last), &mut inbound);
         last = now;
+        for r in client.take_refusals() {
+            drops.note("server message refused", &r.reject, r.msg.map_or("", |m| m.name));
+        }
         if !was_connected && client.is_connected() {
             was_connected = true;
             connected.store(true, Ordering::Release);
@@ -353,9 +391,14 @@ fn run(
         }
         for msg in inbound.drain(..) {
             // render() refuses only what the transport already refuses
-            // (M0 variants, non-finite floats); such a message is dropped
-            let Ok(json) = wire_json::render(&msg) else {
-                continue;
+            // (M0 variants, non-finite floats); such a message is dropped,
+            // and said
+            let json = match wire_json::render(&msg) {
+                Ok(json) => json,
+                Err(e) => {
+                    drops.note("server message not rendered", &e, RefusedMsg::of(&msg).name);
+                    continue;
+                }
             };
             let ok = push(
                 &inbox,
@@ -391,9 +434,15 @@ fn run(
         loop {
             match commands.try_recv() {
                 Ok(Command::Send(msg, delivery)) => {
-                    // a full channel or a vanished connection surfaces as the
-                    // connection's end on a later poll
-                    let _ = client.send_with(&msg, delivery);
+                    // A vanished connection surfaces as the connection's end
+                    // on a later poll. A full channel does not: send_with
+                    // refuses it (E_TX_LIMIT) before renet's send_message,
+                    // the one place renet disconnects for an overflow (renet
+                    // 2.0.0 remote_connection.rs:319-334), so the send is
+                    // lost here, and said
+                    if let Err(e) = client.send_with(&msg, delivery) {
+                        drops.note("send dropped by the transport", &e, RefusedMsg::of(&msg).name);
+                    }
                 }
                 Ok(Command::Close) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     client.disconnect();
@@ -475,6 +524,35 @@ mod tests {
         }));
         assert!(!client.is_connected());
         client.close();
+    }
+
+    #[test]
+    fn a_drop_is_said_at_its_first_and_then_at_each_power_of_two() {
+        let mut drops = Drops::default();
+        let limit = wire_transport::TransportError::Limit;
+        let said: Vec<Option<String>> =
+            (0..4).map(|_| drops.line("send dropped by the transport", &limit, "SpellCast end")).collect();
+        assert_eq!(
+            said,
+            [
+                Some("send dropped by the transport: E_TX_LIMIT (SpellCast end) (x1)".to_string()),
+                Some("send dropped by the transport: E_TX_LIMIT (SpellCast end) (x2)".to_string()),
+                None,
+                Some("send dropped by the transport: E_TX_LIMIT (SpellCast end) (x4)".to_string()),
+            ]
+        );
+        // another message is a key of its own
+        assert!(drops.line("send dropped by the transport", &limit, "SpellCast").is_some());
+        // a length is not part of the key (wire-codec's TooLong spells one),
+        // and an undecoded message has no name
+        assert_eq!(
+            drops.line("server message refused", &"E_WIRE_TOO_LONG: 70000 > 65536", ""),
+            Some("server message refused: E_WIRE_TOO_LONG: 70000 > 65536 (x1)".to_string())
+        );
+        assert_eq!(
+            drops.line("server message refused", &"E_WIRE_TOO_LONG: 80000 > 65536", ""),
+            Some("server message refused: E_WIRE_TOO_LONG: 80000 > 65536 (x2)".to_string())
+        );
     }
 
     #[test]

@@ -3226,9 +3226,15 @@ RE::BSEventNotifyControl QuestStageSinkReplacement(
     // One atomic read for every other stage event
     if (const auto taken = ActingScope::Take(event->formID, event->stage)) {
       // the scope's root as the request carried it: kRelayed for a stage
-      // relayed from another seat, its parent's for a chained one (V-scene)
+      // relayed from another seat, its parent's for a chained one (V-scene).
+      // One join, the fragment's own stack at its first native (H-AP1), so
+      // a stage this seat's own engine sets on the quest inside the window
+      // runs unscoped, its scene started here (HYPOTHESIS H-AP3; train 53's
+      // review, correctness-2: playtest 52's c2 Fragment_9, run by c2's own
+      // 195 1.57 s after the relayed 185, joined 185's arm and chained
+      // rotfern's scope to 200)
       ActingScope::Arm(event->formID, taken->player, ActingScope::kArmMs,
-                       taken->root);
+                       taken->root, 1, event->stage);
       // a relay's scope with no acting player (setRelayedScope's) named as
       // such, never "acting player 0" (train 53's review, contracts-6)
       logger::info(
@@ -3240,6 +3246,15 @@ RE::BSEventNotifyControl QuestStageSinkReplacement(
           : std::string("no acting player"),
         taken->origin == ActingScope::Origin::kChained ? "chained"
                                                        : "relayed");
+    } else if (ActingScope::Widen(event->formID, event->stage)) {
+      // another item of the stage that armed the quest (25252 runs every
+      // item of a stage, 25260 sends this event for each whose conditions
+      // pass; HYPOTHESIS H-AP8, a static read of 1.6.1170 in train 53's
+      // review): its fragment's stack joins the arm too
+      logger::info("[verb:quest-stage] fragment of {:x} stage {} entry {} "
+                   "joins the stage's acting scope (another item)",
+                   event->formID, event->stage,
+                   static_cast<unsigned>(event->unk0E));
     }
     // thuum ADR-068 rung 5, D-Q4 C (QuestCause.h): the stage's verdict (its
     // setter's mark, the start or stop it rides, or none: a stage the engine

@@ -25,6 +25,9 @@ struct ArmEntry
   uint32_t joins = 0;
   // the stacks it may join, 0 for no cap (Arm's maxJoins)
   uint32_t maxJoins = 0;
+  // the stage whose taken request armed it (Widen's key), none for a word's
+  // or a trigger's arm
+  std::optional<int32_t> stage;
 };
 
 struct JoinedEntry
@@ -210,7 +213,8 @@ bool ActingScope::Requested()
 
 ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
                                     uint64_t ttlMs, RootKind root,
-                                    uint32_t maxJoins)
+                                    uint32_t maxJoins,
+                                    std::optional<int32_t> stage)
 {
   const uint64_t now = NowMs();
   std::lock_guard l(g_scope.m);
@@ -227,6 +231,7 @@ ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
   entry.untilMs = now + ttlMs;
   entry.joins = 0;
   entry.maxJoins = maxJoins;
+  entry.stage = stage;
   StoreSizes();
   return entry.scope;
 }
@@ -234,6 +239,22 @@ ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
 bool ActingScope::Armed()
 {
   return g_scope.armed.load(std::memory_order_relaxed) != 0;
+}
+
+bool ActingScope::Widen(uint32_t subject, int32_t stage)
+{
+  if (!Armed()) {
+    return false;
+  }
+  const uint64_t now = NowMs();
+  std::lock_guard l(g_scope.m);
+  const auto arm = g_scope.arms.find(subject);
+  if (arm == g_scope.arms.end() || now >= arm->second.untilMs ||
+      arm->second.maxJoins == 0 || arm->second.stage != stage) {
+    return false;
+  }
+  ++arm->second.maxJoins;
+  return true;
 }
 
 bool ActingScope::Any()
@@ -278,7 +299,7 @@ std::optional<ActingScope::Joined> ActingScope::Join(RE::VMStackID stackId,
     return std::nullopt;
   }
   if (arm->second.maxJoins != 0 && arm->second.joins >= arm->second.maxJoins) {
-    return std::nullopt;
+    return Joined{ arm->second.scope, arm->second.joins, true };
   }
   if (g_scope.joined.count(stackId) == 0 &&
       g_scope.joined.size() >= kMaxJoined) {

@@ -500,7 +500,9 @@ constexpr const char* kStagedVerdictName[kStagedVerdicts] = {
 // the root kind: the acting scope's root (a relay applied here, a relayed
 // trigger entry), else the root frame's class by QuestCause::Classify (a
 // quest stage's fragment, a world root, a direct timer, a seat-own root),
-// else none
+// else none; "outside a scope" for an everyone row's or a static's call on
+// no object outside one, counted by its scope alone, its root frame never
+// read (OnStaged)
 enum StagedRoot : std::size_t
 {
   kRootRelayed,
@@ -509,12 +511,14 @@ enum StagedRoot : std::size_t
   kRootWorld,
   kRootTimer,
   kRootSeat,
+  kRootOutside,
   kRootNone,
   kStagedRoots
 };
 
 constexpr const char* kStagedRootName[kStagedRoots] = {
-  "relayed", "trigger", "stage fragment", "world", "timer", "seat", "no root"
+  "relayed", "trigger", "stage fragment",  "world",
+  "timer",   "seat",    "outside a scope", "no root"
 };
 
 // the staged calls counted before a verdict: a Local row's (a read, the VM's
@@ -668,10 +672,16 @@ const RE::BSScript::Object* ObjectOf(const RE::BSScript::Variable& v)
 // IObjectHandlePolicy.h:34), the handle from the engine's own accessor
 // (Object::GetHandle, Address Library 104247); a plain form's handle is held
 // against the encoding above and the form table (TESForm::LookupByID), a
-// disagreement counted and its first three logged. Null for no object, no
-// policy, or a handle that names no reference (an alias's, an effect's)
+// disagreement counted and its first three logged, unless `crossCheck` is
+// off: OnStaged's read on a Papyrus thread for a row that had no read of
+// the form table before it was staged, as TESForm::LookupByID at the pin
+// copies the form map's lock instead of taking it (CommonLibSSE-NG
+// include/RE/T/TESForm.h:209-218; thuum ADR-073 step 4's review, MUST 1).
+// Null for no object, no policy, or a handle that names no reference (an
+// alias's, an effect's)
 RE::TESObjectREFR* RefOfObject(RE::BSScript::IObjectHandlePolicy* policy,
-                               const RE::BSScript::Object* object)
+                               const RE::BSScript::Object* object,
+                               bool crossCheck = true)
 {
   if (!policy || !object) {
     return nullptr;
@@ -685,7 +695,7 @@ RE::TESObjectREFR* RefOfObject(RE::BSScript::IObjectHandlePolicy* policy,
   if (!form) {
     return nullptr;
   }
-  if (IsPlainFormHandle(handle) &&
+  if (crossCheck && IsPlainFormHandle(handle) &&
       (FormIdOfHandle(handle) != form->formID ||
        RE::TESForm::LookupByID(form->formID) != form)) {
     const auto n = g_handleMisses.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -2559,16 +2569,58 @@ void CountStaged(std::size_t row, StagedVerdict verdict, StagedRoot root,
                kStagedVerdictName[verdict], kStagedRootName[root]);
 }
 
-// a staged call's root kind: the acting scope's root first, else the root
-// frame's class (QuestCause::Classify, MarkQuestCause's one rule, over the
-// frame's script and function names, read without a copy, and its self's
-// form type)
+// a staged call's root kind by its acting scope alone: a relay's, a trigger
+// entry's, or outside a scope, the root frame never read
+StagedRoot ScopeRootOf(const std::optional<ActingScope::Scope>& scope)
+{
+  if (!scope) {
+    return kRootOutside;
+  }
+  return scope->root == ActingScope::RootKind::kRelayed ? kRootRelayed
+                                                        : kRootTrigger;
+}
+
+// D-Q4 C's self kind (SelfKindOf's) of a frame's self, read through the VM's
+// own handle policy (IObjectHandlePolicy::GetObjectForHandle with each form
+// type in turn, CommonLibSSE-NG include/RE/I/IObjectHandlePolicy.h:34, as
+// RefOfObject resolves a reference), never the form table: OnStaged's read
+// on a Papyrus thread (TESForm::LookupByID copies the form map's lock
+// instead of taking it at the pin, include/RE/T/TESForm.h:209-218; thuum
+// ADR-073 step 4's review, MUST 1). HYPOTHESIS: the engine's policy reads
+// its handle under the VM's own guard (unread in Ghidra; the VM resolves
+// every script's self through it on these threads)
+QuestCause::Self SelfKindOfObject(RE::BSScript::IObjectHandlePolicy* policy,
+                                  const RE::BSScript::Object* object)
+{
+  if (!policy || !object) {
+    return QuestCause::Self::kNone;
+  }
+  const RE::VMHandle handle = object->GetHandle();
+  constexpr std::pair<RE::FormType, QuestCause::Self> kKinds[] = {
+    { RE::FormType::Quest, QuestCause::Self::kQuest },
+    { RE::FormType::Info, QuestCause::Self::kInfo },
+    { RE::FormType::Scene, QuestCause::Self::kScene },
+    { RE::FormType::Package, QuestCause::Self::kPackage },
+    { RE::FormType::Perk, QuestCause::Self::kPerk },
+  };
+  for (const auto& [type, self] : kKinds) {
+    if (policy->GetObjectForHandle(type, handle)) {
+      return self;
+    }
+  }
+  return QuestCause::Self::kNone;
+}
+
+// a staged call's root kind: the acting scope's root first (ScopeRootOf),
+// else the root frame's class (QuestCause::Classify, MarkQuestCause's one
+// rule, over the frame's script and function names, read without a copy,
+// and its self's form type through the handle policy, SelfKindOfObject)
 StagedRoot StagedRootOf(const RE::BSScript::Stack* stack,
-                        const std::optional<ActingScope::Scope>& scope)
+                        const std::optional<ActingScope::Scope>& scope,
+                        RE::BSScript::IObjectHandlePolicy* policy)
 {
   if (scope) {
-    return scope->root == ActingScope::RootKind::kRelayed ? kRootRelayed
-                                                          : kRootTrigger;
+    return ScopeRootOf(scope);
   }
   const RE::BSScript::StackFrame* root = RootFrameOf(stack);
   if (!root) {
@@ -2578,8 +2630,9 @@ StagedRoot StagedRootOf(const RE::BSScript::Stack* stack,
   const RE::BSScript::IFunction* function = root->owningFunction.get();
   const char* script = type ? type->GetName() : nullptr;
   const char* name = function ? function->GetName().c_str() : nullptr;
-  switch (QuestCause::Classify(script ? script : "", name ? name : "",
-                               SelfKindOf(SubjectOfFrame(root)))) {
+  switch (
+    QuestCause::Classify(script ? script : "", name ? name : "",
+                         SelfKindOfObject(policy, ObjectOf(root->self)))) {
     case QuestCause::Root::kWorld:
       return kRootWorld;
     case QuestCause::Root::kTimer:
@@ -2604,7 +2657,12 @@ StagedRoot StagedRootOf(const RE::BSScript::Stack* stack,
 // platform's latent calls of one among them (a read is a read whoever makes
 // it); then the platform's own, then the frame (H-S1), then the verdict by
 // the row's kind, its subject's owner (OwnedHere, read only) and the stack's
-// root kind
+// root kind. It never reads the form table (TESForm::LookupByID, which at
+// the pin copies the form map's lock instead of taking it: thuum ADR-073
+// step 4's review, MUST 1): an everyone row and a static on no object are
+// counted by their scope alone (ScopeRootOf), and an owned subject's
+// reference and its root frame's self are read through the VM's handle
+// policy (RefOfObject without its cross-check, SelfKindOfObject)
 void OnStaged(std::size_t row, const RowInfo& info,
               const RE::BSScript::IFunction* fn,
               const RE::BSScript::Stack* stack,
@@ -2631,10 +2689,10 @@ void OnStaged(std::size_t row, const RowInfo& info,
     CountStagedPlain(row, kStagedFrame);
     return;
   }
-  const StagedRoot root = StagedRootOf(stack, scope);
-  // nobody's (D-F1 C): every seat runs it
+  // nobody's (D-F1 C): every seat runs it; its self named by its handle's
+  // low 32 bits (SubjectOfFrame, no lookup) for its kind's first line
   if (native.kind == NativeKind::Everyone) {
-    CountStaged(row, kWouldRun, root, EveryoneSelfId(top->self), top);
+    CountStaged(row, kWouldRun, ScopeRootOf(scope), SubjectOfFrame(top), top);
     return;
   }
   // a static on no object: the seat's own game, run on the acting player's
@@ -2643,7 +2701,8 @@ void OnStaged(std::size_t row, const RowInfo& info,
   if (native.subject == NativeSubject::None) {
     const bool acting = scope && ActingScope::Swaps(*scope) && !info.latent &&
       info.result == RE::BSScript::TypeInfo::RawType::kNone;
-    CountStaged(row, acting ? kWouldSkip : kWouldRun, root, 0, top);
+    CountStaged(row, acting ? kWouldSkip : kWouldRun, ScopeRootOf(scope), 0,
+                top);
     return;
   }
   // the subject, read as OnCall's reads it: the frame's self, or the first
@@ -2660,16 +2719,17 @@ void OnStaged(std::size_t row, const RowInfo& info,
     subject = &top->GetStackFrameVariable(0, page);
   }
   auto* vm = VM::GetSingleton();
-  const RE::TESObjectREFR* ref = subject
-    ? RefOfObject(vm ? vm->GetObjectHandlePolicy() : nullptr,
-                  ObjectOf(*subject))
-    : nullptr;
+  RE::BSScript::IObjectHandlePolicy* policy =
+    vm ? vm->GetObjectHandlePolicy() : nullptr;
+  const RE::TESObjectREFR* ref =
+    subject ? RefOfObject(policy, ObjectOf(*subject), false) : nullptr;
   if (!ref) {
     CountStagedPlain(row, kStagedUnresolved);
     return;
   }
   const bool isActor = ref->GetFormType() == RE::FormType::ActorCharacter;
   const bool owned = OwnedHere(ref, isActor);
+  const StagedRoot root = StagedRootOf(stack, scope, policy);
   StagedVerdict verdict = kWouldRun;
   if (native.kind == NativeKind::Action) {
     // an action on an actor is the streams' (6.7); on a world object this
@@ -3208,8 +3268,9 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
 // the table's rows from MpClientPlugin's SkympNativeRows (thuum ADR-073 step
 // 4, D-NT1 C), read once at kDataLoaded before any row binds: all or none,
 // so a plugin that is missing, has no such export, holds another count than
-// this build's skymp_wire.h or a kind or subject this build has no value for
-// leaves every row unloaded, said once, and no row is bound
+// this build's skymp_wire.h or a kind, subject, keep, record, look or hook
+// code this build has no value for leaves every row unloaded, said once, and
+// no row is bound
 bool LoadRows()
 {
   std::size_t count = 0;
@@ -3231,13 +3292,21 @@ bool LoadRows()
   }
   for (std::size_t row = 0; row < kRowCount; ++row) {
     const SkympNativeRow& wire = rows[row];
+    // every code ReadRow switches on is held to this build's range, so a
+    // plugin from another sha never falls into a silent default there
+    // (decision 7; thuum ADR-073 step 4's review, NIT 5)
     if (!wire.cls || !wire.func || !wire.relay ||
         wire.kind > SKYMP_NATIVE_KIND_CREATE ||
         wire.subject > SKYMP_NATIVE_SUBJECT_ARG0_METHOD ||
+        wire.keep > SKYMP_NATIVE_KEEP_VARIABLE ||
+        (wire.keep == SKYMP_NATIVE_KEEP_RECORD
+           ? wire.record < 1 || wire.record > 5
+           : wire.record != 0) ||
+        wire.look > SKYMP_NATIVE_LOOK_ONLY ||
         wire.hook > SKYMP_NATIVE_HOOK_LAST) {
       logger::error("[verb:scripts] no table: MpClientPlugin's row {} holds "
-                    "a name, a kind, a subject or a hook this build does not "
-                    "read; no table row is bound",
+                    "a name, a kind, a subject, a keep, a record, a look or a "
+                    "hook this build does not read; no table row is bound",
                     row);
       return false;
     }
@@ -3967,7 +4036,13 @@ void ScriptNatives::InstallHooks()
       binding.otherBase = moduleBase;
     }
   }
-  size_t boundRows = 0;
+  // the live rows the bound line counts against (thuum ADR-073 step 4's
+  // review, SHOULD 3): the table's rows not staged, none when LoadRows
+  // refused the table
+  size_t liveRows = 0;
+  for (size_t row = 0; tabled && row < kRowCount; ++row) {
+    liveRows += g_natives[row].columns.staged == 0 ? 1 : 0;
+  }
   // the install check's counts (ADR-073 step 4's S5): a staged row is never
   // a line of its own (H2), only counted here
   InstallCounts counts;
@@ -4012,7 +4087,6 @@ void ScriptNatives::InstallHooks()
       continue;
     }
     ReadRow(row, function);
-    ++boundRows;
     const RowInfo& info = g_rows[row];
     if (const char* mismatch = InstallMismatch(native.columns, info)) {
       ++(std::string_view(mismatch) == "latency" ? counts.latency
@@ -4048,9 +4122,13 @@ void ScriptNatives::InstallHooks()
                    native.cls, native.fn);
     }
   }
+  // the live rows bound of the live rows the table holds (a staged row is
+  // the install check's count, never this line's: one staged native the VM
+  // lacks leaves it whole)
   logger::info("[verb:scripts] {} of {} table rows bound (wire-rules "
-               "natives_table.rs through skymp_wire.h, thuum docs/NATIVES.md)",
-               boundRows, kRowCount);
+               "natives_table.rs through skymp_wire.h, thuum docs/NATIVES.md; "
+               "the live rows, the {} staged ones in the install check)",
+               counts.live, liveRows, tabled ? kRowCount - liveRows : 0);
   // the census slot (G2): every binding no row claims, by where it was bound
   for (const auto& [cls, name, func, moduleBase, offset, longSig] : bound) {
     if (!func || g_rowOf.count(func) != 0) {
@@ -4148,9 +4226,10 @@ void ScriptNatives::InstallHooks()
         reinterpret_cast<void**>(&g_nativeCallOriginal))) {
     logger::info("[verb:scripts] native dispatch replaced: "
                  "NativeFunctionBase::Call at +{:x} (Address Library 104651), "
-                 "{} table row(s) judged from the frame, the platform's "
-                 "latent calls marked on the VM's thread",
-                 callAddress - gameBase, g_rowOf.size());
+                 "{} table row(s) judged from the frame and {} staged row(s) "
+                 "counted, the platform's latent calls marked on the VM's "
+                 "thread",
+                 callAddress - gameBase, counts.live, counts.staged);
   } else {
     logger::error("[verb:scripts] NativeFunctionBase::Call at +{:x}: Gum "
                   "refused the replacement; no table row is judged and "

@@ -3,6 +3,7 @@
 #include "Fates.h"
 #include "ItemMenuRefresh.h"
 #include "Puppets.h"
+#include "WeaponAnimGuard.h"
 #include "game/Offsets.h"
 #include <RE/M/Main.h>
 #include <algorithm>
@@ -580,7 +581,21 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   }
   const bool had3D = actor->Is3DLoaded();
   REL::Relocation<ActorRerollFn> reroll{ Offsets::Fate::ActorReroll };
-  reroll(actor, -1);
+  // thuum lab/.cache/drafts/reads-53/r-c3-temple-crash.md (playtest 51 break
+  // 7, "arm once, not twice"): every live re-roll before the crash logged
+  // "armed" twice, 37323's own inventory init through the container detour
+  // and the ResetInventory below, the second one throwing the first one's
+  // entries away and writing the fate's weapons again. The detour's arms of
+  // this owner on this thread are witnessed across 37323 (Fates::
+  // ArmWitness), and the reset runs only when 37323 armed nothing (its init
+  // elsewhere, or none), the order as before. HYPOTHESIS until a re-roll
+  // logs "armed" once and its copy wears the fate (x-anim-listener's run).
+  std::uint32_t armedBy37323 = 0;
+  {
+    Fates::ArmWitness witness(refrId);
+    reroll(actor, -1);
+    armedBy37323 = witness.Arms();
+  }
   // thuum docs/verbs/npc-fate.md 1e, H1 (playtest 44's 39fe1, the host's own
   // live bandit naked and headless after "rerolled ... from pick 37c06
   // toward 9a549"; Eli: "fix the living case before 45"). The engine's
@@ -597,7 +612,10 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   // update; the race is the resolver's own SwitchRace (section 1, step 6).
   // HYPOTHESIS until x-fate-dress-bleak v7 reads the swapped copy dressed,
   // its race the fate's and its facegen node present on both seats.
-  actor->ResetInventory(false);
+  const bool reset = armedBy37323 == 0;
+  if (reset) {
+    actor->ResetInventory(false);
+  }
   // oracle v4 20261104-184338 on cb944530: the redress ran while the model
   // was gone ("3D loaded FALSE" in its line) and the reload's biped init 28
   // ms later wore its own set (four of the fate's five, the cuirass missing),
@@ -633,10 +651,76 @@ void RerollOnGameThread(RE::Actor* actor, const Fates::Fate& fate,
   }
   logger::info("[verb:npc-fate] rerolled {:x} through the engine from pick "
                "{:x} toward the fate's {:x} (3D loaded {} before, {} after; "
-               "the inventory reset, the model reloaded {}, the record "
-               "dressed on it, the skin, head and face passes run {}) on {}",
+               "armed {} time(s) by 37323's own init, the inventory reset {}, "
+               "the model reloaded {}, the record dressed on it, the skin, "
+               "head and face passes run {}) on {}",
                refrId, pickedId, fate.baseId, had3D, actor->Is3DLoaded(),
-               reloaded, updated, FateThreadNote());
+               armedBy37323, reset, reloaded, updated, FateThreadNote());
+}
+
+void RerollTask(uint32_t refrId, uint32_t tick);
+
+// thuum lab/.cache/drafts/reads-53/r-c3-temple-crash.md (playtest 51 break
+// 7, candidate A, HYPOTHESIS until x-anim-listener's trace): the re-roll's
+// one entry for both of its callers (rerollActor's task and the stand-up's),
+// never while the engine holds a weapon-animation request for the actor: the
+// re-roll drops the 3D, re-inits the inventory and re-equips, and an equip's
+// finish (39296) or a new equip (39295) releases the request's listener
+// without cancelling it while the request waits, which the manager's
+// dispatcher (63997) then calls. Deferred to a later tick, bounded
+// (WeaponAnimGuard); the deferred run reads the fate and the actor again.
+// What a request the re-roll's own reload starts meets inside this task is
+// not waited on (a known limit, the trace's to read).
+WeaponAnimGuard::Decision RerollWhenIdle(RE::Actor* actor,
+                                         const Fates::Fate& fate,
+                                         uint32_t refrId, uint32_t tick)
+{
+  const auto decision = WeaponAnimGuard::Check(
+    WeaponAnimGuard::Kind::kReroll, actor, refrId, tick,
+    [refrId](uint32_t next) {
+      if (!QueueFateTask("rerollActor", refrId,
+                         [refrId, next]() { RerollTask(refrId, next); })) {
+        WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kReroll, refrId);
+      }
+    });
+  if (decision == WeaponAnimGuard::Decision::kRun) {
+    RerollOnGameThread(actor, fate, refrId);
+  }
+  return decision;
+}
+
+// a deferred re-roll on its later tick, on the main thread: the newest fate
+// the server sent and the actor as it is now
+void RerollTask(uint32_t refrId, uint32_t tick)
+{
+  auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
+  Fates::Fate fate;
+  if (!actor || !Fates::Enabled() || !Fates::Get(refrId, fate)) {
+    WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kReroll, refrId);
+    logger::info("[verb:npc-fate] rerollActor({:x}): deferred {} tick(s), "
+                 "then {}: nothing re-rolled",
+                 refrId, tick,
+                 actor ? "its fate is gone or the switch is off"
+                       : "no such actor");
+    return;
+  }
+  (void)RerollWhenIdle(actor, fate, refrId, tick);
+}
+
+const char* DecisionName(WeaponAnimGuard::Decision d)
+{
+  switch (d) {
+    case WeaponAnimGuard::Decision::kRun:
+      return "run";
+    case WeaponAnimGuard::Decision::kDeferred:
+      return "deferred";
+    case WeaponAnimGuard::Decision::kFolded:
+      return "folded";
+    case WeaponAnimGuard::Decision::kDropped:
+      return "dropped";
+    default:
+      return "unknown";
+  }
 }
 }
 
@@ -659,7 +743,7 @@ Napi::Value FateApi::RerollActor(const Napi::CallbackInfo& info)
       logger::warn("[verb:npc-fate] rerollActor({:x}): no such actor", refrId);
       return;
     }
-    RerollOnGameThread(actor, fate, refrId);
+    (void)RerollWhenIdle(actor, fate, refrId, 0);
   });
   return Napi::Boolean::New(info.Env(), queued);
 }
@@ -731,6 +815,98 @@ Napi::Value FateApi::DressBody(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+namespace {
+// the stand-up on the main thread; tick 0 for resurrectActor's own task, the
+// deferral's count for a later one (WeaponAnimGuard)
+void ResurrectOnGameThread(uint32_t refrId, uint32_t tick)
+{
+  auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
+  if (!actor) {
+    if (tick > 0) {
+      WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kResurrect, refrId);
+    }
+    logger::warn("[verb:npc-fate] resurrectActor({:x}): no such actor",
+                 refrId);
+    return;
+  }
+  // thuum lab/.cache/drafts/reads-53/r-c3-temple-crash.md (playtest 51 break
+  // 7, candidate A, HYPOTHESIS until x-anim-listener's trace): Resurrect's
+  // inventory reset re-arms the copy through the container detour and its
+  // attach re-equips, so the stand-up waits out a weapon-animation request
+  // the engine still holds for the actor, as the re-roll does
+  const auto decision = WeaponAnimGuard::Check(
+    WeaponAnimGuard::Kind::kResurrect, actor, refrId, tick,
+    [refrId](uint32_t next) {
+      if (!QueueFateTask("resurrectActor", refrId, [refrId, next]() {
+            ResurrectOnGameThread(refrId, next);
+          })) {
+        WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kResurrect, refrId);
+      }
+    });
+  if (decision != WeaponAnimGuard::Decision::kRun) {
+    return;
+  }
+  const bool puppet = Puppets::Is(refrId);
+  const bool wasDead = actor->IsDead();
+  // Actor::EnableAI (A/Actor.h:521), Actor::IsAIEnabled (A/Actor.h:579),
+  // Actor::Resurrect (A/Actor.h:369), TESObjectREFR::SetActivationBlocked
+  // (T/TESObjectREFR.h:464)
+  // the AI on for the call whenever it is off, flagged or not: under AI off
+  // the engine's Resurrect does not take (x-npc-respawn 070508), and since
+  // playtest 37's findings 58 and 62 a dead body is released from the
+  // puppet state on every seat (puppetService, through Promote's dead
+  // branch: the block lifted, the AI left off, the flag cleared), so a
+  // watcher's body arrives here unflagged with its AI off, as the host's
+  // dead-promoted body did (H-54e)
+  const bool aiOff = !actor->IsAIEnabled();
+  if (aiOff) {
+    actor->EnableAI(true);
+  }
+  actor->Resurrect(true, true);
+  if (puppet) {
+    actor->EnableAI(false);
+    actor->SetActivationBlocked(true);
+  } else if (actor->IsDead()) {
+    // the resurrection did not take: the body keeps H-54e's AI off, so
+    // no package walks it (Hooks.cpp HostedResurrect's shape), and keeps
+    // its block (ADR-067 decision 6): the puppet service's dead mark still
+    // holds it, and an unblocked body under that mark would open the
+    // engine's loot menu (the review of cc5c82b6, finding 3)
+    if (aiOff) {
+      actor->EnableAI(false);
+    }
+  } else {
+    // a stood-up actor keeps the AI on, and a watcher's next pass demotes
+    // it; its block from the kill comes off
+    actor->SetActivationBlocked(false);
+  }
+  // thuum docs/verbs/npc-fate.md 1e (x-fate-dress-bleak v5 20261104-070209,
+  // c1-relaunch-080: "redressed 39fe4" at :534 and this stand-up in the
+  // same millisecond, Resurrect(true, true)'s inventory reset re-dressing
+  // the engine's own outfit over the redress): the record's dress follows
+  // the reset HERE, in the same task, so the stood-up copy wears the fate
+  // (the pick's swap, if any, is the late fate's rerollActor after this)
+  Fates::Fate fate;
+  bool fated = false;
+  const char* rerolled = "not asked";
+  if (!actor->IsDead() && Fates::Enabled() && Fates::Get(refrId, fate)) {
+    // the whole decision, not the redress alone: a respawn's fate that
+    // names another pick re-rolls the stood-up clone through the engine
+    // here, in the same task, after the engine's reset; the stand-up's own
+    // attach may have started a weapon-animation request, so the re-roll
+    // passes the guard again (r-c3-temple-crash.md) and may run a tick
+    // later
+    rerolled = DecisionName(RerollWhenIdle(actor, fate, refrId, 0));
+    fated = true;
+  }
+  logger::info("[verb:npc-fate] resurrected {:x} (puppet {}, AI was off {}, "
+               "dead before {}, dead after {}, dressed from the fate {}, "
+               "the re-roll {}) on {}",
+               refrId, puppet, aiOff, wasDead, actor->IsDead(), fated,
+               rerolled, FateThreadNote());
+}
+}
+
 Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
 {
   const auto refrId = NapiHelper::ExtractUInt32(info[0], "refrId");
@@ -738,66 +914,7 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
     return Napi::Boolean::New(info.Env(), false);
   }
   const bool queued = QueueFateTask("resurrectActor", refrId, [refrId]() {
-    auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
-    if (!actor) {
-      logger::warn("[verb:npc-fate] resurrectActor({:x}): no such actor",
-                   refrId);
-      return;
-    }
-    const bool puppet = Puppets::Is(refrId);
-    const bool wasDead = actor->IsDead();
-    // Actor::EnableAI (A/Actor.h:521), Actor::IsAIEnabled (A/Actor.h:579),
-    // Actor::Resurrect (A/Actor.h:369), TESObjectREFR::SetActivationBlocked
-    // (T/TESObjectREFR.h:464)
-    // the AI on for the call whenever it is off, flagged or not: under AI off
-    // the engine's Resurrect does not take (x-npc-respawn 070508), and since
-    // playtest 37's findings 58 and 62 a dead body is released from the
-    // puppet state on every seat (puppetService, through Promote's dead
-    // branch: the block lifted, the AI left off, the flag cleared), so a
-    // watcher's body arrives here unflagged with its AI off, as the host's
-    // dead-promoted body did (H-54e)
-    const bool aiOff = !actor->IsAIEnabled();
-    if (aiOff) {
-      actor->EnableAI(true);
-    }
-    actor->Resurrect(true, true);
-    if (puppet) {
-      actor->EnableAI(false);
-      actor->SetActivationBlocked(true);
-    } else if (actor->IsDead()) {
-      // the resurrection did not take: the body keeps H-54e's AI off, so
-      // no package walks it (Hooks.cpp HostedResurrect's shape), and keeps
-      // its block (ADR-067 decision 6): the puppet service's dead mark still
-      // holds it, and an unblocked body under that mark would open the
-      // engine's loot menu (the review of cc5c82b6, finding 3)
-      if (aiOff) {
-        actor->EnableAI(false);
-      }
-    } else {
-      // a stood-up actor keeps the AI on, and a watcher's next pass demotes
-      // it; its block from the kill comes off
-      actor->SetActivationBlocked(false);
-    }
-    // thuum docs/verbs/npc-fate.md 1e (x-fate-dress-bleak v5 20261104-070209,
-    // c1-relaunch-080: "redressed 39fe4" at :534 and this stand-up in the
-    // same millisecond, Resurrect(true, true)'s inventory reset re-dressing
-    // the engine's own outfit over the redress): the record's dress follows
-    // the reset HERE, in the same task, so the stood-up copy wears the fate
-    // (the pick's swap, if any, is the late fate's rerollActor after this)
-    Fates::Fate fate;
-    bool fated = false;
-    if (!actor->IsDead() && Fates::Enabled() && Fates::Get(refrId, fate)) {
-      // the whole decision, not the redress alone: a respawn's fate that
-      // names another pick re-rolls the stood-up clone through the engine
-      // here, in the same task, after the engine's reset
-      RerollOnGameThread(actor, fate, refrId);
-      fated = true;
-    }
-    logger::info("[verb:npc-fate] resurrected {:x} (puppet {}, AI was off {}, "
-                 "dead before {}, dead after {}, dressed from the fate {}) "
-                 "on {}",
-                 refrId, puppet, aiOff, wasDead, actor->IsDead(), fated,
-                 FateThreadNote());
+    ResurrectOnGameThread(refrId, 0);
   });
   return Napi::Boolean::New(info.Env(), queued);
 }

@@ -374,6 +374,9 @@ ContainerAddFn g_containerAddOriginal = nullptr;
 thread_local std::uint32_t t_armedOwner = 0;
 thread_local std::uint32_t t_armedOrdinal = 0;
 
+// the innermost arm witness open on this thread (Fates::ArmWitness)
+static thread_local Fates::ArmWitness* t_armWitness = nullptr;
+
 void ContainerAddReplacement(RE::InventoryChanges* changes,
                              RE::BSScrapArray<RE::CALCED_OBJECT>* picks,
                              std::uint32_t ordinal, RE::BGSOutfit* outfit)
@@ -471,12 +474,34 @@ void ContainerAddReplacement(RE::InventoryChanges* changes,
                  "{}: {} engine pick(s) dropped ({} weapon(s)), {} of the "
                  "server's weapons and {} inventory row(s) written",
                  ownerId, ordinal, dropped, droppedWeapons, written, rows);
+    Fates::ArmWitness::Note(ownerId);
   } else {
     logger::debug("[verb:npc-fate] {:x}'s entry {}: {} engine pick(s) "
                   "dropped, the record's rows written at entry {}",
                   ownerId, ordinal, dropped, t_armedOrdinal);
   }
   return g_containerAddOriginal(changes, picks, ordinal, outfit);
+}
+
+Fates::ArmWitness::ArmWitness(uint32_t ownerId)
+  : owner(ownerId)
+  , outer(t_armWitness)
+{
+  t_armWitness = this;
+}
+
+Fates::ArmWitness::~ArmWitness()
+{
+  t_armWitness = outer;
+}
+
+void Fates::ArmWitness::Note(uint32_t ownerId)
+{
+  for (auto* w = t_armWitness; w; w = w->outer) {
+    if (w->owner == ownerId) {
+      ++w->arms;
+    }
+  }
 }
 
 void Fates::InstallHooks()

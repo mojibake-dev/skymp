@@ -284,6 +284,51 @@ export class HostService extends ClientListener {
         return cellId !== 0 && this.hosted.has(cellId);
     }
 
+    // thuum #63 and #47: whether this game hosts the cell a reference stands
+    // in. A persistent exterior reference (a load door) reports its
+    // worldspace's persistent cell as its parent, so it is found by its
+    // position against each hosted exterior cell's grid square (the
+    // platform's cellGridOf, read on the game thread at the grant; a square
+    // not read yet is asked for and counts as not hosted until it answers)
+    hostsRef(ref: ObjectReference): boolean {
+        const cell = ref.getParentCell();
+        if (cell && this.hostsCell(cell.getFormID())) {
+            return true;
+        }
+        const world = ref.getWorldSpace();
+        return !!world && this.hostsPosition(world.getFormID(), ref.getPositionX(), ref.getPositionY());
+    }
+
+    hostsPosition(world: number, x: number, y: number): boolean {
+        if (typeof this.sp.cellGridOf !== "function" || typeof this.sp.pollCellGrids !== "function") {
+            return false;
+        }
+        const gx = Math.floor(x / 4096);
+        const gy = Math.floor(y / 4096);
+        const unread: number[] = [];
+        let hosts = false;
+        this.hosted.forEach((_epoch, cell) => {
+            const grid = this.sp.cellGridOf(cell);
+            if (grid === null) {
+                if (!this.gridAsked.has(cell)) {
+                    this.gridAsked.add(cell);
+                    unread.push(cell);
+                }
+                return;
+            }
+            if (grid.world === world && grid.x === gx && grid.y === gy) {
+                hosts = true;
+            }
+        });
+        if (unread.length > 0) {
+            this.sp.pollCellGrids(unread);
+        }
+        return hosts;
+    }
+
+    // the hosted cells whose grid square was asked for (hostsPosition)
+    private gridAsked = new Set<number>();
+
     // thuum docs/verbs/change-form.md (ADR-065, Ownership): the epoch a
     // report of an actor's record carries, the host epoch this client holds
     // for the actor's cell (ADR-066's stamp): its parent cell's grant; for a
@@ -699,6 +744,13 @@ export class HostService extends ClientListener {
         this.lastSightings = 0;
         // the cell's puppets go live (PuppetService, docs/verbs/npc-puppet.md)
         this.controller.emitter.emit("cellHostChanged", { cell, hosted: true });
+        // thuum #63 and #47: the cell's grid square, for the references that
+        // stand in it by position (hostsRef), read before LockService's
+        // re-check at the grant asks
+        if (!this.gridAsked.has(cell) && typeof this.sp.pollCellGrids === "function") {
+            this.gridAsked.add(cell);
+            this.sp.pollCellGrids([cell]);
+        }
     }
 
     private onHostRelease(e: ConnectionMessage<HostReleaseMessage>) {

@@ -12,6 +12,8 @@ import { LockPromptMessage } from '../messages/lockPromptMessage';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { ModelApplyUtils } from '../../view/modelApplyUtils';
 import { localIdToRemoteId } from '../../view/worldViewMisc';
+import { HostService } from './hostService';
+import { WorldGlobalService } from './worldGlobalService';
 
 // thuum docs/verbs/locks.md (M4): the lock is the server's. Every door and
 // container is activation-blocked in this game (objectReferenceEx's
@@ -180,34 +182,105 @@ export class LockService extends ClientListener {
       const oldest = this.unrecorded.keys().next().value;
       if (oldest !== undefined) {
         this.unrecorded.delete(oldest);
+        this.standingOwned.delete(oldest);
       }
     }
     this.unrecorded.set(localId, cell);
-    this.reportEngineWrite(ref, true, 'standing');
+    // thuum #63: a load door's other side, read on the game thread now, so
+    // the owner test knows it by the first write
+    if (typeof this.sp.pollLinkedDoors === 'function') {
+      this.sp.pollLinkedDoors([localId]);
+    }
+    if (this.mayOwn(ref)) {
+      this.standingOwned.add(localId);
+      this.reportEngineWrite(ref, true, 'standing');
+    }
   }
 
-  private reportStandingIn(cell: number) {
+  // thuum #47 and #63: a grant brings this game more to own. Each bound
+  // reference with no recorded lock whose standing lock has not gone as an
+  // owner's goes now if this game may own it, checked every recheckEveryMs
+  // for recheckMs after the grant (the cell's grid square and the doors'
+  // links answer from the game thread a frame or more later). Before, the
+  // re-check matched a reference's parent cell to the granted cell, which a
+  // persistent exterior door never matched (its parent is the worldspace's
+  // persistent cell): the trader's door 0x1341f stood unrecorded under c1's
+  // grant of 0x9731 (x-lead-claim 20261115-094229)
+  private reportStandingIn(_cell: number) {
+    this.recheckUntil = Date.now() + LockService.recheckMs;
+  }
+
+  private recheckStanding() {
+    const now = Date.now();
+    if (now > this.recheckUntil || now - this.lastRecheck < LockService.recheckEveryMs) {
+      return;
+    }
+    this.lastRecheck = now;
     let n = 0;
-    this.unrecorded.forEach((refCell, localId) => {
-      if (refCell !== cell) {
+    this.unrecorded.forEach((_cell, localId) => {
+      if (this.standingOwned.has(localId)) {
         return;
       }
       const ref = ObjectReference.from(this.sp.Game.getFormEx(localId));
-      if (ref) {
+      if (ref && this.mayOwn(ref)) {
+        this.standingOwned.add(localId);
         this.reportEngineWrite(ref, true, 'standing at the grant');
         ++n;
       }
     });
     if (n > 0) {
-      this.sayOnce('grant', `cell ${cell.toString(16)} hosted here: ${n} standing lock(s) reported again`);
+      this.sayOnce('grant', `a grant: ${n} standing lock(s) reported, this game hosting their cell or their door's other side`);
     }
   }
 
+  // thuum #63 (x-door-night-lock 20261115-085512 and 100213): whether this
+  // game may own a write on `ref`'s lock, the server's owner rule as far as
+  // this game can read it: it hosts the cell the reference stands in, or its
+  // load door's other side's (the engine shares one lock between the two),
+  // or it is the world streamer, which owns what nobody hosts (ADR-073
+  // decision 6). A door whose link has not answered yet counts as owned, so
+  // the server judges it. A non-owner's engine runs the owners' schedules in
+  // low process and writes their doors (Riverwood's houses on c1, 256
+  // refusals in one run); those writes are no fact and stay here (ADR-063:
+  // non-owners never simulate). The server still judges every report
+  private mayOwn(ref: ObjectReference): boolean {
+    const host = this.controller.lookupListener(HostService);
+    if (host.hostsRef(ref)) {
+      return true;
+    }
+    if (this.controller.lookupListener(WorldGlobalService).isStreaming()) {
+      return true;
+    }
+    if (typeof this.sp.linkedDoorOf !== 'function') {
+      return true;
+    }
+    const pair = this.sp.linkedDoorOf(ref.getFormID());
+    if (pair === null) {
+      return true;
+    }
+    if (pair === 0) {
+      return false;
+    }
+    const pairRef = ObjectReference.from(this.sp.Game.getFormEx(pair));
+    return !!pairRef && host.hostsRef(pairRef);
+  }
+
   private unrecorded = new Map<number, number>();
+  private standingOwned = new Set<number>();
+  private recheckUntil = 0;
+  private lastRecheck = 0;
   private static readonly unrecordedMax = 2048;
+  private static readonly recheckMs = 3000;
+  private static readonly recheckEveryMs = 500;
 
   private reportEngineWrite(ref: ObjectReference, force = false, why = 'write') {
     const localId = ref.getFormID();
+    // thuum #63: a write this game cannot own stays here (mayOwn); the
+    // prompted player's word on a lock no game wrote is its own (#47)
+    if (why === 'write' && !this.mayOwn(ref)) {
+      this.sayOnce('not owned', `lock ${localId.toString(16)}: its engine wrote it, and this game hosts neither its cell nor its door's other side and is no world streamer; not reported (#63)`);
+      return;
+    }
     const locked = ref.isLocked();
     const level = ref.getLockLevel();
     if (!force && ModelApplyUtils.isAppliedLock(localId, locked, level)) {
@@ -275,6 +348,7 @@ export class LockService extends ClientListener {
   }
 
   private onUpdate() {
+    this.recheckStanding();
     const a = this.attempt;
     if (!a || a.menuOpened) {
       return;

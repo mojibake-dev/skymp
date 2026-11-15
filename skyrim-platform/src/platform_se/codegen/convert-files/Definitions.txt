@@ -1938,6 +1938,14 @@ export declare function damageActor(actorFormId: number, health: number, attacke
 export declare function setEngineDamageCut(on: boolean): void;
 // thuum D-T4 (ADR-028): whether DamageActor's replacement went in at install, the player's cut of another actor's damage with it; the client keeps its world multiplier at 0 without it
 export declare function isDamageActorReplaced(): boolean;
+// thuum #63: each named reference's load door link read on the game thread (CommonLibSSE-NG ExtraTeleport's DoorTeleportData::linkedDoor), one task per call, at most 256 ids
+export declare function pollLinkedDoors(refrIds: number[]): void;
+// thuum #63: the last read of a reference's load door link: the other side's form id, 0 for no load door, null before any read of it
+export declare function linkedDoorOf(refrId: number): number | null;
+// thuum #63 and #47: each named exterior cell's grid square and worldspace read on the game thread (CommonLibSSE-NG TESObjectCELL::GetCoordinates), one task per call, at most 256 ids
+export declare function pollCellGrids(cellIds: number[]): void;
+// thuum #63 and #47: the last read of a cell's grid: {world, x, y} for an exterior cell, {world: 0} for an interior, null before any read of it
+export declare function cellGridOf(cellId: number): { world: number; x?: number; y?: number } | null;
 // thuum docs/verbs/npc-talk.md (ADR-052): the player's own activation of its crosshair pick (PlayerCharacter::ActivatePickRef) on the game thread, the E a claim's word made meaningful; true when queued
 export declare function activatePickRef(): boolean;
 // thuum docs/verbs/npc-fate.md (ADR-046 decision 1, ADR-049): the server's one roll for a leveled placement, held by this game ahead of the engine's own roll: baseId is the NPC_ the server named (0: no actor there, the engine deletes the placement), worn the items it rolled, each added as an inventory entry tagged for the actor's default outfit by the outfit detour (an empty list dresses nothing). Stored on the JS thread, no game call; false for an invalid reference id

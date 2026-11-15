@@ -352,6 +352,12 @@ export class WorldGlobalService extends ClientListener {
 
     // this seat streams at this epoch; 0 for none
     private streamEpoch = 0;
+
+    // thuum #63: whether this seat is the world streamer now (the server's
+    // stream word), the one seat that owns what no host owns
+    isStreaming(): boolean {
+        return this.streamEpoch !== 0;
+    }
     // the highest stream word's epoch this connection brought
     private lastWordEpoch = 0;
     private baselineDue = false;

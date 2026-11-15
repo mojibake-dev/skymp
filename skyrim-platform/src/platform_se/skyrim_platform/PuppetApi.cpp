@@ -19,6 +19,7 @@
 #include <RE/D/DialogueMenu.h>
 #include <RE/E/Effect.h>
 #include <RE/E/EffectSetting.h>
+#include <RE/E/ExtraTeleport.h>
 #include <RE/I/InterfaceStrings.h>
 #include <RE/M/MagicItem.h>
 #include <RE/M/Main.h>
@@ -28,6 +29,7 @@
 #include <RE/T/TESObjectCELL.h>
 #include <RE/T/TESTopic.h>
 #include <RE/T/TESTopicInfo.h>
+#include <RE/T/TESWorldSpace.h>
 #include <RE/U/UI.h>
 #include <RE/U/UIMessage.h>
 #include <algorithm>
@@ -2694,6 +2696,144 @@ Napi::Value PuppetApi::SetEngineDamageCut(const Napi::CallbackInfo& info)
 Napi::Value PuppetApi::IsDamageActorReplaced(const Napi::CallbackInfo& info)
 {
   return Napi::Boolean::New(info.Env(), Frida::IsDamageActorReplaced());
+}
+
+namespace {
+// thuum #63: each read load door link by the door's form id (0: no load
+// door), bounded; written on the game thread, read on the JS thread
+std::mutex g_linkedDoorsMutex;
+std::unordered_map<uint32_t, uint32_t> g_linkedDoors;
+constexpr size_t kLinkedDoorsMax = 8192;
+}
+
+Napi::Value PuppetApi::PollLinkedDoors(const Napi::CallbackInfo& info)
+{
+  std::vector<uint32_t> ids;
+  if (info[0].IsArray()) {
+    const auto array = info[0].As<Napi::Array>();
+    for (uint32_t i = 0; i < array.Length() && ids.size() < 256; ++i) {
+      const Napi::Value v = array.Get(i);
+      if (v.IsNumber()) {
+        ids.push_back(v.As<Napi::Number>().Uint32Value());
+      }
+    }
+  }
+  if (ids.empty()) {
+    return info.Env().Undefined();
+  }
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [ids = std::move(ids)](Viet::Void) {
+      std::vector<std::pair<uint32_t, uint32_t>> read;
+      read.reserve(ids.size());
+      for (const uint32_t id : ids) {
+        uint32_t linked = 0;
+        if (auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(id)) {
+          if (const auto* teleport =
+                refr->extraList.GetByType<RE::ExtraTeleport>();
+              teleport && teleport->teleportData) {
+            if (const auto door = teleport->teleportData->linkedDoor.get()) {
+              linked = door->GetFormID();
+            }
+          }
+        }
+        read.emplace_back(id, linked);
+      }
+      std::lock_guard<std::mutex> lock(g_linkedDoorsMutex);
+      if (g_linkedDoors.size() + read.size() > kLinkedDoorsMax) {
+        g_linkedDoors.clear();
+      }
+      for (const auto& [id, linked] : read) {
+        g_linkedDoors[id] = linked;
+      }
+    });
+  return info.Env().Undefined();
+}
+
+namespace {
+// thuum #63 and #47: each read cell's grid square and worldspace (world 0:
+// an interior), bounded; written on the game thread, read on the JS thread
+struct CellGrid
+{
+  uint32_t world = 0;
+  int32_t x = 0;
+  int32_t y = 0;
+};
+std::mutex g_cellGridsMutex;
+std::unordered_map<uint32_t, CellGrid> g_cellGrids;
+constexpr size_t kCellGridsMax = 4096;
+}
+
+Napi::Value PuppetApi::PollCellGrids(const Napi::CallbackInfo& info)
+{
+  std::vector<uint32_t> ids;
+  if (info[0].IsArray()) {
+    const auto array = info[0].As<Napi::Array>();
+    for (uint32_t i = 0; i < array.Length() && ids.size() < 256; ++i) {
+      const Napi::Value v = array.Get(i);
+      if (v.IsNumber()) {
+        ids.push_back(v.As<Napi::Number>().Uint32Value());
+      }
+    }
+  }
+  if (ids.empty()) {
+    return info.Env().Undefined();
+  }
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [ids = std::move(ids)](Viet::Void) {
+      std::vector<std::pair<uint32_t, CellGrid>> read;
+      read.reserve(ids.size());
+      for (const uint32_t id : ids) {
+        auto* cell = RE::TESForm::LookupByID<RE::TESObjectCELL>(id);
+        if (!cell) {
+          continue;
+        }
+        CellGrid grid;
+        if (!cell->IsInteriorCell()) {
+          if (const auto* coordinates = cell->GetCoordinates()) {
+            grid.world = cell->worldSpace ? cell->worldSpace->GetFormID() : 0;
+            grid.x = coordinates->cellX;
+            grid.y = coordinates->cellY;
+          }
+        }
+        read.emplace_back(id, grid);
+      }
+      std::lock_guard<std::mutex> lock(g_cellGridsMutex);
+      if (g_cellGrids.size() + read.size() > kCellGridsMax) {
+        g_cellGrids.clear();
+      }
+      for (const auto& [id, grid] : read) {
+        g_cellGrids[id] = grid;
+      }
+    });
+  return info.Env().Undefined();
+}
+
+Napi::Value PuppetApi::CellGridOf(const Napi::CallbackInfo& info)
+{
+  const auto id = NapiHelper::ExtractUInt32(info[0], "cellId");
+  std::lock_guard<std::mutex> lock(g_cellGridsMutex);
+  const auto it = g_cellGrids.find(id);
+  if (it == g_cellGrids.end()) {
+    return info.Env().Null();
+  }
+  auto obj = Napi::Object::New(info.Env());
+  obj.Set("world", Napi::Number::New(info.Env(), it->second.world));
+  if (it->second.world != 0) {
+    obj.Set("x", Napi::Number::New(info.Env(), it->second.x));
+    obj.Set("y", Napi::Number::New(info.Env(), it->second.y));
+  }
+  return obj;
+}
+
+Napi::Value PuppetApi::LinkedDoorOf(const Napi::CallbackInfo& info)
+{
+  const auto id = NapiHelper::ExtractUInt32(info[0], "refrId");
+  std::lock_guard<std::mutex> lock(g_linkedDoorsMutex);
+  const auto it = g_linkedDoors.find(id);
+  if (it == g_linkedDoors.end()) {
+    return info.Env().Null();
+  }
+  return Napi::Number::New(info.Env(), it->second);
 }
 
 Napi::Value PuppetApi::SayTopicInfoResult(const Napi::CallbackInfo& info)

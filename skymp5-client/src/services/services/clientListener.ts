@@ -558,6 +558,11 @@ declare module "skyrimPlatform" {
     // TESNPC::HasOverlays answers true and the list holds parts, else its
     // base list), and the last read; an older platform has neither
     function pollOwnHeadParts(): void;
+    // thuum #63 and #47: a load door's other side, and an exterior cell's grid square, each read on the game thread and answered later
+    function pollLinkedDoors(refrIds: number[]): void;
+    function linkedDoorOf(refrId: number): number | null;
+    function pollCellGrids(cellIds: number[]): void;
+    function cellGridOf(cellId: number): { world: number; x?: number; y?: number } | null;
     function ownHeadParts(): { seq: number; race: number; flagged: boolean; hasOverlays: boolean; overlayCount: number; overlay: boolean; parts: number[] } | null;
     function setEngineDamageCut(on: boolean): void;
     // thuum D-T4 (ADR-028): whether DamageActor's replacement went in, the player's cut of another actor's damage with it

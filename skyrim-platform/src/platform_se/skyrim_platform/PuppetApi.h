@@ -316,6 +316,26 @@ Napi::Value SetEngineDamageCut(const Napi::CallbackInfo& info);
 // player's cut of another actor's damage with it (thuum D-T4); the client
 // keeps its world multiplier at 0 without it
 Napi::Value IsDamageActorReplaced(const Napi::CallbackInfo& info);
+// thuum #63: pollLinkedDoors(refrIds) reads, on the game thread (one task per
+// call; a lookup on the JS thread can wait on a cell load's form map lock,
+// SetPuppet's note), each named reference's load door link (CommonLibSSE-NG
+// include/RE/E/ExtraTeleport.h:12, DoorTeleportData::linkedDoor, under the
+// extra list's own lock, BSExtraDataList::GetByType); linkedDoorOf(refrId)
+// answers the last read: the other side's form id, 0 for a reference that
+// is no load door, null before any read of it. A door's link is set at its
+// load and never moves in play
+Napi::Value PollLinkedDoors(const Napi::CallbackInfo& info);
+Napi::Value LinkedDoorOf(const Napi::CallbackInfo& info);
+// thuum #63 and #47: pollCellGrids(cellIds) reads, on the game thread (one
+// task per call), each named exterior cell's grid square (CommonLibSSE-NG
+// include/RE/T/TESObjectCELL.h:58-59, EXTERIOR_DATA's cellX and cellY,
+// through GetCoordinates) and its worldspace; cellGridOf(cellId) answers the
+// last read: {world, x, y} for an exterior cell, {world: 0} for an interior,
+// null before any read. A persistent exterior reference reports its
+// worldspace's persistent cell as its parent, so the client finds the cell a
+// door stands in by its position against these squares
+Napi::Value PollCellGrids(const Napi::CallbackInfo& info);
+Napi::Value CellGridOf(const Napi::CallbackInfo& info);
 
 inline void Register(Napi::Env env, Napi::Object& exports)
 {
@@ -464,5 +484,17 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("isDamageActorReplaced",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(IsDamageActorReplaced)));
+  exports.Set(
+    "pollLinkedDoors",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollLinkedDoors)));
+  exports.Set(
+    "linkedDoorOf",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(LinkedDoorOf)));
+  exports.Set(
+    "pollCellGrids",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollCellGrids)));
+  exports.Set(
+    "cellGridOf",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(CellGridOf)));
 }
 }

@@ -6493,10 +6493,17 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   if (!reporter) {
     return;
   }
-  // thuum ADR-073 decision 13, the spell channel: a creation, or a call that
-  // names a reference the reporter's game created, is the channel's alone
-  if (msg.placed || msg.selfId >= 0xff000000 ||
-      (msg.localArgs.value_or(0) & 1u)) {
+  // thuum ADR-073 decision 13, the spell channel: a creation, or a call whose
+  // subject is a reference the reporter's game created through it (its self
+  // a local id the channel bound for this reporter, or a first argument the
+  // reporter marked), is the channel's alone. Any other self of 0xff000000
+  // and up (another player's actor, a server form) is the table's to judge,
+  // as before the channel (E_SCRIPTCALL_ARGS at the shape)
+  const bool selfCreated = msg.selfId >= 0xff000000 &&
+    partOne.GetCreatedRefs()
+      .created_local(reporter->GetFormId(), msg.selfId)
+      .accepted;
+  if (msg.placed || selfCreated || (msg.localArgs.value_or(0) & 1u)) {
     return OnCreatedCall(*reporter, msg);
   }
   std::vector<skymp::rules::ScriptArg> args;

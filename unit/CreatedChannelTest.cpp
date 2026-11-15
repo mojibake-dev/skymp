@@ -193,7 +193,11 @@ TEST_CASE("A spell's wall is the caster's: placed, moved, shown, risen and "
   Report(p, 1, kWallLocal, "TranslateTo",
          { Arg(0.0), Arg(0.0), Arg(0.0), Arg(0.0), Arg(0.0), Arg(0.0),
            Arg(512.0), Arg(0.0) });
-  REQUIRE(log.Has("E_CREATED_UNKNOWN: ff000c81 reports"));
+  // (the channel binds the id for its creator alone, so the table judges the
+  // other seat's call and refuses it)
+  REQUIRE(
+    log.Has(": ff000c81 reports ObjectReference.TranslateTo on ff0008fa"));
+  REQUIRE(log.Has("refused"));
   REQUIRE(SnippetsTo(p, 0).empty());
 
   // an explosion placed on the created reference: each engine places its

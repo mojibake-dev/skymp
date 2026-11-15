@@ -1,7 +1,7 @@
 import { Actor, isDamageActorReplaced } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { TimersService } from "./timersService";
-import { logError, logLab } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 
 export class RagdollService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -69,6 +69,32 @@ export class RagdollService extends ClientListener {
         this.controller.lookupListener(TimersService).setTimeout(
             () => finish(`unanswered after ${RagdollService.deadlineMs} ms`),
             RagdollService.deadlineMs,
+        );
+    };
+
+    // thuum #48 (D-53-18; x-reanimate-claim 20261115-082651 and 100741): a
+    // corpse's only collision is its ragdoll, which the engine builds at the
+    // kill (Actor::KillImpl adds it to Havok's world), and a removal for a
+    // move or a death taken back leaves out. So wherever this client moves or
+    // lays a dead actor (a Teleport's move, the record's lay after the
+    // apply's death completion) its ragdoll goes back into the world, or the
+    // copy takes no hit and no aimed spell (the non-host's Reanimate Corpse
+    // passed through it). A live actor's engine rebuilds its controller
+    // itself. A removal still in flight for the actor runs this after it.
+    // HYPOTHESIS until x-reanimate-claim reads the non-host's raise
+    public restoreCorpseRagdoll = (id: number, why: string): void => {
+        const pending = this.pending.get(id);
+        if (pending) {
+            pending.push(() => this.restoreCorpseRagdoll(id, why));
+            return;
+        }
+        const actor = Actor.from(this.sp.Game.getFormEx(id));
+        if (!actor || !actor.isDead()) {
+            return;
+        }
+        actor.forceAddRagdollToWorld().then(
+            () => logTrace(this, `corpse ${id.toString(16)} ${why}: its ragdoll back in the world`),
+            (err) => logTrace(this, `corpse ${id.toString(16)} ${why}: forceAddRagdollToWorld refused: ${String(err)}`),
         );
     };
 

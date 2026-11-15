@@ -797,14 +797,10 @@ export class RemoteServer extends ClientListener {
         // Reanimate Corpse passed through it, no hit, no claim) and no hit at all.
         // So a dead actor's ragdoll goes back into the world once it stands at the
         // record (HYPOTHESIS until x-reanimate-claim reads the non-host's raise)
-        if (actor && refrId && actor.isDead()) {
-          const dead = Actor.from(Game.getFormEx(refrId));
-          if (dead) {
-            dead.forceAddRagdollToWorld().then(
-              () => logTrace(this, `corpse ${refrId.toString(16)} placed at its record: its ragdoll back in the world`),
-              (err) => logTrace(this, `corpse ${refrId.toString(16)} placed at its record: forceAddRagdollToWorld refused: ${String(err)}`),
-            );
-          }
+        // (RagdollService.restoreCorpseRagdoll, the one rule the record's lay
+        // shares, thuum #48)
+        if (refrId) {
+          ragdollService.restoreCorpseRagdoll(refrId, "placed at its record");
         }
       };
       const actor = Actor.from(refr);

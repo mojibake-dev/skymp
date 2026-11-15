@@ -9,6 +9,7 @@ import { ChangeFormMessage, ChangeFormRemapRow } from "../messages/changeFormMes
 import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
 import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 import { HostService } from "./hostService";
+import { RagdollService } from "./ragdollService";
 
 // thuum docs/verbs/change-form.md (ADR-065 for system 1: the save is the
 // state), the TypeScript of the pipeline over the natives of
@@ -561,6 +562,11 @@ export class ChangeFormService extends ClientListener {
         }
         rec.applied = true;
         rec.laid = true;
+        // thuum #48: the lay finished the body's death (the platform's
+        // KillImmediate after the lay) and nothing put its ragdoll back, so the
+        // corpse took no hit or aimed spell on this seat (x-reanimate-claim
+        // 20261115-100741: c2's copy died by the apply, not a Teleport)
+        this.controller.lookupListener(RagdollService).restoreCorpseRagdoll(rec.formId, "laid from its record");
         // thuum docs/verbs/npc-fate.md ("canon-4's merge review", finding 1):
         // the record carries the owner's at-rest inventory (kInventory) and the
         // lay just imposed it, over the fate's reconcile of the server's rows;

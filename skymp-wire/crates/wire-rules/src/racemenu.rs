@@ -116,13 +116,20 @@ pub fn look_facts(text: &str) -> Option<LookFacts> {
 /// for each `headParts` entry in order, whether its part is of `part`'s HDPT
 /// type (PNAM; the core reads each part's record). The first such entry
 /// names `part` instead (RaceMenu's `"<plugin>|<six hex digits>"`, every
-/// other field of the entry kept), and any later one goes. None when `text`
-/// is no look, `same_type` does not cover its entries one for one, no entry
-/// is of that type (the look then leaves that type to the appearance), the
-/// entry names `part` already with no later one of the type, or the result
-/// is no preset ([`preset_ok`]).
+/// other field of the entry kept), and any later one goes. A look with no
+/// entry of that type gains one, `{"formIdentifier", "type": kind}` (`kind`
+/// the part's HDPT type, PNAM), at the end of `headParts`: thuum #51,
+/// x-vc01-cure-relog 20261115-145454, where the turn's SetRace had stashed
+/// rotfern's own eyes ([`without_head_parts`]) and her script's recorded
+/// ChangeHeadPart of her vampire eyes found no eyes entry to name, so the
+/// stored look carried no eyes, and RaceMenu's load of it after her login
+/// left her base with none (her game's head parts read mouth, head, ears,
+/// hair, hairline and brows). None when `text` is no look, `same_type` does
+/// not cover its entries one for one, no entry is of that type and `kind`
+/// is [`NO_TYPE`], the entry names `part` already with no later one of the
+/// type, or the result is no preset ([`preset_ok`]).
 #[must_use]
-pub fn with_head_part(text: &str, same_type: &[bool], part: &FormRef) -> Option<String> {
+pub fn with_head_part(text: &str, same_type: &[bool], part: &FormRef, kind: u32) -> Option<String> {
     if !preset_ok(text) {
         return None;
     }
@@ -151,8 +158,18 @@ pub fn with_head_part(text: &str, same_type: &[bool], part: &FormRef) -> Option<
         }
         kept.push(entry);
     }
+    if !placed {
+        if kind == NO_TYPE {
+            return None;
+        }
+        let mut entry = serde_json::Map::new();
+        entry.insert("formIdentifier".to_owned(), Value::String(format!("{}|{:06X}", part.plugin, part.id)));
+        entry.insert("type".to_owned(), Value::from(kind));
+        kept.push(Value::Object(entry));
+        changed = true;
+    }
     *entries = kept;
-    if !placed || !changed {
+    if !changed {
         return None;
     }
     let out = serde_json::to_string(&look).ok()?;
@@ -434,7 +451,7 @@ mod tests {
 
     #[test]
     fn a_swapped_part_takes_its_types_place_in_the_look() {
-        let out = with_head_part(EYES_LOOK, &[false, true, false], &mora());
+        let out = with_head_part(EYES_LOOK, &[false, true, false], &mora(), 2);
         assert_eq!(parts_of(out.as_deref()), vec![("rotfern.esp".to_owned(), 0x02E117), ("rotfern.esp".to_owned(), 0x023F0E), ("rotfern.esp".to_owned(), 0x02E11A)]);
         // written as RaceMenu writes an identifier, the entry's type and the
         // rest of the look kept
@@ -447,24 +464,38 @@ mod tests {
     }
 
     #[test]
-    fn a_look_without_the_type_or_naming_the_part_already_is_left_as_it_is() {
-        // no part of the type: the appearance keeps that type
-        assert_eq!(with_head_part(EYES_LOOK, &[false, false, false], &mora()), None);
+    fn a_look_naming_the_part_already_or_with_no_type_to_give_is_left_as_it_is() {
+        // no part of the type and no type to give the entry: nothing
+        assert_eq!(with_head_part(EYES_LOOK, &[false, false, false], &mora(), NO_TYPE), None);
         // the core's facts must cover every entry
-        assert_eq!(with_head_part(EYES_LOOK, &[false, true], &mora()), None);
+        assert_eq!(with_head_part(EYES_LOOK, &[false, true], &mora(), 2), None);
         // the part already, its plugin named in another case
-        assert_eq!(with_head_part(EYES_LOOK, &[false, true, false], &FormRef { plugin: "ROTFERN.ESP".into(), id: 0x014C06 }), None);
-        assert_eq!(with_head_part("{}", &[], &mora()), None);
-        assert_eq!(with_head_part("[]", &[], &mora()), None);
+        assert_eq!(with_head_part(EYES_LOOK, &[false, true, false], &FormRef { plugin: "ROTFERN.ESP".into(), id: 0x014C06 }, 2), None);
+        assert_eq!(with_head_part("{}", &[], &mora(), 2), None);
+        assert_eq!(with_head_part("[]", &[], &mora(), 2), None);
+    }
+
+    #[test]
+    fn a_look_with_no_entry_of_the_type_gains_one() {
+        // thuum #51 (x-vc01-cure-relog 20261115-145454): the turn stashed her
+        // own eyes, so her script's vampire eyes are added, not lost
+        let out = with_head_part(EYES_LOOK, &[false, false, false], &mora(), 2);
+        assert_eq!(parts_of(out.as_deref()), vec![("rotfern.esp".to_owned(), 0x02E117), ("rotfern.esp".to_owned(), 0x014C06), ("rotfern.esp".to_owned(), 0x02E11A), ("rotfern.esp".to_owned(), 0x023F0E)]);
+        let v: Value = serde_json::from_str(&out.unwrap_or_default()).unwrap_or_default();
+        let added = v.get("headParts").and_then(|h| h.get(3));
+        assert_eq!(added.and_then(|e| e.get("formIdentifier")).and_then(Value::as_str), Some("rotfern.esp|023F0E"));
+        assert_eq!(added.and_then(|e| e.get("type")).and_then(Value::as_u64), Some(2));
+        // a look with no headParts at all gains the list
+        assert_eq!(parts_of(with_head_part(r#"{"headParts": []}"#, &[], &mora(), 2).as_deref()), vec![("rotfern.esp".to_owned(), 0x023F0E)]);
     }
 
     #[test]
     fn a_second_part_of_the_type_goes() {
         let two = r#"{"headParts": [{"formIdentifier": "rotfern.esp|014C06", "type": 2}, {"formIdentifier": "Skyrim.esm|051632", "type": 2}]}"#;
-        assert_eq!(parts_of(with_head_part(two, &[true, true], &mora()).as_deref()), vec![("rotfern.esp".to_owned(), 0x023F0E)]);
+        assert_eq!(parts_of(with_head_part(two, &[true, true], &mora(), 2).as_deref()), vec![("rotfern.esp".to_owned(), 0x023F0E)]);
         // the first names it already: the later one still goes
         let eyes = FormRef { plugin: "rotfern.esp".into(), id: 0x014C06 };
-        assert_eq!(parts_of(with_head_part(two, &[true, true], &eyes).as_deref()), vec![("rotfern.esp".to_owned(), 0x014C06)]);
+        assert_eq!(parts_of(with_head_part(two, &[true, true], &eyes, 2).as_deref()), vec![("rotfern.esp".to_owned(), 0x014C06)]);
     }
 
     // Ariadne's look before her turn (playtest 51, R-V3): her eyes

@@ -1168,8 +1168,8 @@ TEST_CASE("A quest's alias script is that quest's attachment: an alias-only "
 // them), so the bound never takes a vanilla call this far; the write is the
 // core's and is read here over the head-part case's vanilla parts
 TEST_CASE("A recorded head part swap brings the stored RaceMenu look's part "
-          "of its type with it; a look that names it already or names no "
-          "part of its type is left as it is",
+          "of its type with it; a look that names it already is left as it "
+          "is, and one with no part of its type gains it (#51)",
           "[PlayerOwn][espm]")
 {
   constexpr uint32_t kEyesBrown = 0x51632;
@@ -1214,10 +1214,18 @@ TEST_CASE("A recorded head part swap brings the stored RaceMenu look's part "
   REQUIRE(turned.GetRaceMenuPreset().find("Skyrim.esm|024244") !=
           std::string::npos);
 
-  // a look with no eyes, a part that is no HDPT, no look at all
+  // a look with no eyes gains them, as RaceMenu writes an entry (thuum #51,
+  // x-vc01-cure-relog 20261115-145454: a SetRace had stashed the eyes, the
+  // script's new eyes never reached the stored look, and RaceMenu's load of
+  // it after a login left the base with none); a part that is no HDPT, no
+  // look at all: nothing
   std::string noEyes =
     R"({"headParts": [{"formIdentifier": "Skyrim.esm|051507", "type": 3}]})";
-  REQUIRE(!p.WearHeadPartInLook(noEyes, kEyesIceBlue));
+  REQUIRE(p.WearHeadPartInLook(noEyes, kEyesIceBlue));
+  const auto gained = nlohmann::json::parse(noEyes);
+  REQUIRE(gained["headParts"].size() == 2);
+  REQUIRE(gained["headParts"][1]["formIdentifier"] == "Skyrim.esm|024244");
+  REQUIRE(gained["headParts"][1]["type"] == 2);
   REQUIRE(!p.WearHeadPartInLook(noEyes, kNordRace));
   std::string none;
   REQUIRE(!p.WearHeadPartInLook(none, kEyesIceBlue));
@@ -1378,6 +1386,59 @@ TEST_CASE("A recorded SetRace drops the head parts its race may not wear "
   REQUIRE(!left.preset);
   REQUIRE(left.presetLeft != nullptr);
   REQUIRE(turned.GetRaceMenuPreset() == kBig);
+  Leave(p);
+}
+
+// thuum #51 (x-vc01-cure-relog 20261115-145454): rotfern's turn, its SetRace
+// first (her own eyes go to the stored look's stash, her new race may not
+// wear them), then her eye script's recorded ChangeHeadPart of her vampire
+// eyes. The stored look had no eyes entry left to name, so it kept no eyes,
+// and RaceMenu's load of it after her login left her base with none. The
+// swap now adds the entry: both records name the new eyes. Over the V-look
+// case's vanilla parts: the Argonian eyes go at the Breton race, then brown
+// eyes are swapped in
+TEST_CASE("A head part a script swaps in after a SetRace stashed its type "
+          "reaches the stored RaceMenu look (#51)",
+          "[PlayerOwn][espm]")
+{
+  constexpr uint32_t kEyesArgonian = 0x5150a;
+  constexpr uint32_t kEyesBrown = 0x51632;
+  constexpr uint32_t kHairNord01 = 0x51507;
+  const std::string kLook =
+    R"({"actor": {"weight": 50},
+  "headParts": [{"formIdentifier": "Skyrim.esm|05150A", "type": 2},
+                {"formIdentifier": "Skyrim.esm|051507", "type": 3}]})";
+  PartOne& p = GetPartOne();
+  Enter(p);
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  Appearance worn = *turned.GetAppearance();
+  worn.headpartIds = { kEyesArgonian, kHairNord01 };
+  turned.SetAppearance(&worn);
+  REQUIRE(turned.SetRaceMenuPreset(kLook));
+
+  SetRace(p, kBretonRace, "PlayerVampireQuestScript");
+  const auto afterTurn = nlohmann::json::parse(turned.GetRaceMenuPreset());
+  for (const auto& entry : afterTurn["headParts"]) {
+    REQUIRE(entry["type"] != 2);
+  }
+
+  const auto recorded = p.RecordHeadPart(turned, kEyesBrown);
+  REQUIRE(recorded.preset);
+  const auto stored = nlohmann::json::parse(turned.GetRaceMenuPreset());
+  size_t eyes = 0;
+  for (const auto& entry : stored["headParts"]) {
+    if (entry["type"] == 2) {
+      ++eyes;
+      REQUIRE(entry["formIdentifier"] == "Skyrim.esm|051632");
+    }
+  }
+  REQUIRE(eyes == 1);
+  // the stash still holds her own eyes for the cure
+  REQUIRE(stored["thuumRaceDropped"][0]["formIdentifier"] ==
+          "Skyrim.esm|05150A");
+  const auto look = turned.GetAppearance();
+  REQUIRE(std::count(look->headpartIds.begin(), look->headpartIds.end(),
+                     kEyesBrown) == 1);
   Leave(p);
 }
 

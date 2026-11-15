@@ -5540,7 +5540,7 @@ bool PartOne::WearHeadPartInLook(std::string& look, uint32_t part)
   const auto rewritten = skymp::rules::racemenu_with_head_part(
     rust::Str(look),
     rust::Slice<const uint8_t>(sameType.data(), sameType.size()),
-    rust::Str(desc.file), desc.shortFormId);
+    rust::Str(desc.file), desc.shortFormId, *type);
   if (rewritten.empty()) {
     return false;
   }

@@ -29,12 +29,17 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 // first). A race with a head part list flag waits up to overlayWaitMs for
 // the engine's overlay list, then takes what the engine draws. Each list that
 // differs from the last one sent goes once, so a base list read before the
-// overlay came is followed by the overlay list. A race overlay's SetRace (the
-// beast form, D-T1 A) reports too, and the server refuses it by name
-// (E_HEADPARTS_RACE): the overlay never reaches the change form.
+// overlay came is followed by the overlay list, and the last one sent goes
+// once more when the window ends: a report refused because it reached the
+// server before the SetRace's record (E_HEADPARTS_RACE, the row still in the
+// record bucket) lands then, and one recorded already folds. A race
+// overlay's SetRace (the beast form, D-T1 A) reports too, and the server
+// refuses it by name (E_HEADPARTS_RACE): the overlay never reaches the
+// change form.
 //
 // Lines for the lab: "own head parts reported: <n> from its <overlay|base>
-// list under race <race> (D-53-8 B)", and "own head parts unreported under
+// list under race <race> (D-53-8 B)", "own head parts sent again at the
+// window's end: ..." for the last one, and "own head parts unreported under
 // race <race> ..." when a window ends with nothing sent. Off with
 // `ownHeadParts: false` in skymp5-client's settings; an older platform
 // without the two exports reads nothing (said once).
@@ -44,7 +49,7 @@ type Watch = {
     polledAt: number;
     baseSeq: number | undefined;
     sent: string | undefined;
-    sends: number;
+    last: OwnHeadPartsMessage | undefined;
 };
 
 export class OwnLookService extends ClientListener {
@@ -61,7 +66,7 @@ export class OwnLookService extends ClientListener {
         if (race === 0 || !this.enabled()) {
             return;
         }
-        this.watch = { race, since: Date.now(), polledAt: 0, baseSeq: undefined, sent: undefined, sends: 0 };
+        this.watch = { race, since: Date.now(), polledAt: 0, baseSeq: undefined, sent: undefined, last: undefined };
     }
 
     private onUpdate() {
@@ -76,8 +81,14 @@ export class OwnLookService extends ClientListener {
             w.baseSeq = standing ? standing.seq : 0;
         }
         if (now - w.since > OwnLookService.windowMs) {
-            if (w.sends === 0) {
+            if (w.last === undefined) {
                 logLab("verb:appearance", `own head parts unreported under race ${w.race.toString(16)}: no read of it in ${OwnLookService.windowMs} ms (D-53-8 B)`);
+            } else {
+                // the fresh review of 84eb42db, LOW 9: once more, so a report
+                // refused for a SetRace not yet recorded lands, and the
+                // server folds it otherwise
+                this.controller.emitter.emit("sendMessage", { message: w.last, reliability: "reliable" });
+                logLab("verb:appearance", `own head parts sent again at the window's end: ${w.last.parts.length} from its ${w.last.overlay ? "overlay" : "base"} list under race ${w.last.race.toString(16)} (D-53-8 B)`);
             }
             this.watch = undefined;
             return;
@@ -106,13 +117,13 @@ export class OwnLookService extends ClientListener {
             return;
         }
         w.sent = key;
-        w.sends++;
         const message: OwnHeadPartsMessage = {
             t: MsgType.OwnHeadParts,
             race: read.race,
             parts: read.parts,
             overlay: read.overlay,
         };
+        w.last = message;
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
         logLab("verb:appearance", `own head parts reported: ${read.parts.length} from its ${read.overlay ? "overlay" : "base"} list under race ${read.race.toString(16)} (D-53-8 B)`);
         // the one read that departs from CommonLib's (the platform's

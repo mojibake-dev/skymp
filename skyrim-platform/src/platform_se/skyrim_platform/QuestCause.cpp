@@ -393,6 +393,8 @@ std::optional<QuestCause::Verdict> QuestCause::Join(RE::VMStackID stackId,
   JoinedEntry& entry = g_cause.joined[stackId];
   entry.verdict.world = arm->second.verdict.world;
   entry.verdict.root = root;
+  // the joining root's subject, as MarkQuestCause passes it
+  entry.verdict.rootSelf = quest;
   entry.joinedMs = now;
   entry.untilMs = now + kJoinedMs;
   StoreSize();

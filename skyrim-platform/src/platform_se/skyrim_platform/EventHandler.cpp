@@ -1236,9 +1236,11 @@ EventResult EventHandler::ProcessEvent(
   const auto verdict = QuestCause::OfStage(questId, stage);
   const bool world = verdict && verdict->world;
   std::string root = verdict ? verdict->root : std::string();
+  // the root frame's self (train 53's review, correctness-6)
+  const uint32_t rootSelf = verdict ? verdict->rootSelf : 0;
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask(
-    [questId, stage, world, root = std::move(root)](Napi::Env env) {
+    [questId, stage, world, rootSelf, root = std::move(root)](Napi::Env env) {
       auto obj = Napi::Object::New(env);
 
       auto quest = RE::TESForm::LookupByID<RE::TESQuest>(questId);
@@ -1250,6 +1252,7 @@ EventResult EventHandler::ProcessEvent(
       AddObjProperty(&obj, "stage", stage);
       AddObjProperty(&obj, "cause", world ? "world" : "seat");
       AddObjProperty(&obj, "root", root);
+      AddObjProperty(&obj, "rootSelf", rootSelf);
 
       SendEvent("questStage", obj);
     });
@@ -1276,9 +1279,10 @@ EventResult EventHandler::ProcessEvent(
     formId, started ? QuestCause::kStart : QuestCause::kStop);
   const bool world = verdict && verdict->world;
   std::string root = verdict ? verdict->root : std::string();
+  const uint32_t rootSelf = verdict ? verdict->rootSelf : 0;
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask(
-    [formId, started, world, root = std::move(root)](Napi::Env env) {
+    [formId, started, world, rootSelf, root = std::move(root)](Napi::Env env) {
       auto obj = Napi::Object::New(env);
       auto quest = RE::TESForm::LookupByID(formId);
       if (!quest && formId != 0) {
@@ -1288,6 +1292,7 @@ EventResult EventHandler::ProcessEvent(
       AddObjProperty(&obj, "quest", quest, "Quest");
       AddObjProperty(&obj, "cause", world ? "world" : "seat");
       AddObjProperty(&obj, "root", root);
+      AddObjProperty(&obj, "rootSelf", rootSelf);
 
       if (started) {
         SendEvent("questStart", obj);

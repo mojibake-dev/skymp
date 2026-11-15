@@ -111,12 +111,17 @@ constexpr size_t kMaxJoined = 512;
 // two Papyrus names and the dot
 constexpr size_t kMaxRootBytes = 257;
 
-// a call's verdict: a world cause or the seat's own, and the root frame of
-// the stack that made it, "<Script>.<Function>" (empty for no script frame)
+// a call's verdict: a world cause or the seat's own, the root frame of the
+// stack that made it, "<Script>.<Function>" (empty for no script frame), and
+// that frame's self's form id (ScriptNatives.cpp SubjectOfFrame: a scene
+// fragment's scene, a quest fragment's quest), 0 for none or a JS mark;
+// train 53's review (correctness-6, rules-2): the client asks the self, not
+// the script's name, which scene a stage's fragment ran in
 struct Verdict
 {
   bool world = false;
   std::string root;
+  uint32_t rootSelf = 0;
 };
 
 // a root frame's class

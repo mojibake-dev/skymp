@@ -2308,10 +2308,12 @@ void MarkQuestCause(std::size_t row, const RowInfo& info,
   bool carriedWorld = false;
   bool carried = false;
   std::string root;
+  std::uint32_t rootSelf = 0;
   if (const auto joined = QuestCause::Of(stack->stackID)) {
     runWorld = carriedWorld = joined->world;
     carried = true;
     root = joined->root;
+    rootSelf = joined->rootSelf;
   } else {
     const RE::BSScript::StackFrame* frame = RootFrameOf(stack);
     std::string script;
@@ -2321,6 +2323,7 @@ void MarkQuestCause(std::size_t row, const RowInfo& info,
       root = script + "." + function;
     }
     const std::uint32_t subject = SubjectOfFrame(frame);
+    rootSelf = subject;
     switch (QuestCause::Classify(script, function, SelfKindOf(subject))) {
       case QuestCause::Root::kWorld:
         runWorld = carriedWorld = true;
@@ -2340,17 +2343,17 @@ void MarkQuestCause(std::size_t row, const RowInfo& info,
     }
   }
   const bool world = stage < 0 ? runWorld : carriedWorld;
-  QuestCause::Mark(quest, stage, { world, root });
+  QuestCause::Mark(quest, stage, { world, root, rootSelf });
   if (info.quest == QuestRow::Stage && questForm &&
       QuestCause::WordMade(QuestCause::kStart, running, startsEnabled)) {
-    QuestCause::Mark(quest, QuestCause::kStart, { runWorld, root });
+    QuestCause::Mark(quest, QuestCause::kStart, { runWorld, root, rootSelf });
   }
   QuestCause::Count(world, carried);
-  logger::trace("[verb:quest-stage] {}.{} on {:x} ({}): cause {} (root {}), "
-                "stack {}",
+  logger::trace("[verb:quest-stage] {}.{} on {:x} ({}): cause {} (root {}, "
+                "self {:x}), stack {}",
                 kRows[row].cls, kRows[row].fn, quest, StageText(stage),
                 world ? "world" : "seat", root.empty() ? "none" : root,
-                stack->stackID);
+                rootSelf, stack->stackID);
 }
 
 // train 52's Fix 2 (D-H1 B): a helper's base kind, an activator, a static or

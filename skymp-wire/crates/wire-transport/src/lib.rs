@@ -82,8 +82,58 @@ pub enum Inbound {
         client: u64,
         /// Why.
         reject: RejectKind,
+        /// The refused message's kind when its bytes decoded (a direction or
+        /// validation refusal); none for bytes refused before or at decode.
+        /// The server counts and names refusals per (code, message type)
+        /// with it (thuum ADR-073 decision 7: x-drain-watch 20261115-032536's
+        /// one E_VAL_RATE line named no type, and every later one was silent).
+        msg: Option<RefusedMsg>,
     },
 }
+
+/// What a refused message was, for the server's count and its line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefusedMsg {
+    /// The variant's stable name ([`Message::name`]), and "SpellCast end"
+    /// for a cast's end (see [`RefusedMsg::of`]).
+    pub name: &'static str,
+    /// SkyMP's MsgType, 0 for the M0 family ([`Message::msg_type`]).
+    pub msg_type: u8,
+}
+
+impl RefusedMsg {
+    /// The kind of `msg`. A cast's end (a SpellCast with `interrupt_cast`)
+    /// is "SpellCast end": it spends a budget of its own (wire-validate's
+    /// `ClientGuard::cast_end_budget`), and named "SpellCast" it shared one
+    /// count with the casts' refused re-reports, so a refused end was said
+    /// only where it fell in that shared count (the review of
+    /// m4-fix-cast-end, finding 1).
+    pub fn of(msg: &Message) -> Self {
+        let name = match msg {
+            Message::SpellCast(m) if m.data.interrupt_cast => "SpellCast end",
+            _ => msg.name(),
+        };
+        Self {
+            name,
+            msg_type: msg.msg_type().unwrap_or(0),
+        }
+    }
+}
+
+/// A server message the client refused: the server's [`Inbound::Rejected`]
+/// fields, kept for the caller's log ([`Client::take_refusals`]).
+#[derive(Debug)]
+pub struct Refusal {
+    /// Why.
+    pub reject: RejectKind,
+    /// The refused message's kind when its bytes decoded.
+    pub msg: Option<RefusedMsg>,
+}
+
+/// How many refusals a client keeps untaken. Past this many, only
+/// [`Client::rejected`] counts them, so a caller that never takes them (a
+/// test, a driver) holds a bounded list.
+pub const REFUSALS_KEPT: usize = 256;
 
 /// Why an inbound packet was dropped.
 #[derive(Debug)]
@@ -289,6 +339,10 @@ pub struct Server {
     last_heard_ms: HashMap<u64, u64>,
     limits: Limits,
     password: Option<[u8; token::USER_DATA_BYTES]>,
+    /// The polled time, whole: the clock the rate budgets, the byte budget
+    /// and the silence reading run on is derived from it (`now_ms`), so no
+    /// poll's fraction of a millisecond is lost.
+    elapsed: Duration,
     now_ms: u64,
     local_addr: SocketAddr,
     unsecure: bool,
@@ -359,6 +413,7 @@ impl Server {
             password: password
                 .filter(|p| !p.is_empty())
                 .map(|p| token::password_user_data(&p)),
+            elapsed: Duration::ZERO,
             now_ms: 0,
             local_addr,
             unsecure,
@@ -438,7 +493,15 @@ impl Server {
     /// between flushes waits at most one interval, and an idle connection
     /// costs one small packet per flush instead of one per poll.
     pub fn poll(&mut self, dt: Duration, out: &mut Vec<Inbound>) {
-        self.now_ms = self.now_ms.saturating_add(ms(dt));
+        // The polled time accumulates whole and the millisecond clock is read
+        // from the total, as the flush clock keeps its remainder (Fiedler,
+        // "Fix Your Timestep!"). Adding each poll's whole milliseconds
+        // dropped every poll's fraction: at the gamemode's ~815 polls a second
+        // (about 1.2 ms each) the clock ran at about 0.8 of real time, and
+        // every rate budget refilled that much slower (thuum x-drain-watch
+        // 20261115-032536, HYPOTHESIS: the spread of dt is unmeasured).
+        self.elapsed = self.elapsed.saturating_add(dt);
+        self.now_ms = ms(self.elapsed);
         // renet's own clock first, then the transport's: every connection's
         // current_time advances here and nowhere else (renet 2.0.0
         // server.rs:241-245, remote_connection.rs: update), and the
@@ -462,6 +525,7 @@ impl Server {
                             out.push(Inbound::Rejected {
                                 client: client_id,
                                 reject: RejectKind::Password,
+                                msg: None,
                             });
                             continue;
                         }
@@ -568,25 +632,44 @@ fn ingest(
         return Inbound::Rejected {
             client,
             reject: RejectKind::Limit,
+            msg: None,
         };
     }
     match wire_codec::decode(bytes) {
         Err(e) => Inbound::Rejected {
             client,
             reject: RejectKind::Decode(e),
+            msg: None,
         },
         Ok(msg) if !client_may_send(&msg) => Inbound::Rejected {
             client,
             reject: RejectKind::Direction,
+            msg: Some(RefusedMsg::of(&msg)),
         },
         Ok(msg) => match wire_validate::validate(&msg, guard, now_ms) {
             Err(r) => Inbound::Rejected {
                 client,
                 reject: RejectKind::Validate(r),
+                msg: Some(RefusedMsg::of(&msg)),
             },
             Ok(()) => Inbound::Message { client, msg },
         },
     }
+}
+
+/// The client's [`ingest`]: a server message's bytes, checked for size,
+/// decoded, direction-checked and validated, or why not.
+fn from_server(bytes: &[u8], limits: &Limits) -> Result<Message, Refusal> {
+    if bytes.len() > limits.max_from_server {
+        return Err(Refusal { reject: RejectKind::Limit, msg: None });
+    }
+    let msg = wire_codec::decode(bytes).map_err(|e| Refusal { reject: RejectKind::Decode(e), msg: None })?;
+    if !server_may_send(&msg) {
+        return Err(Refusal { reject: RejectKind::Direction, msg: Some(RefusedMsg::of(&msg)) });
+    }
+    wire_validate::validate_server(&msg)
+        .map_err(|r| Refusal { reject: RejectKind::Validate(r), msg: Some(RefusedMsg::of(&msg)) })?;
+    Ok(msg)
 }
 
 /// How a client's connection ended, in netcode's terms without naming netcode.
@@ -611,8 +694,8 @@ pub struct Client {
     renet: RenetClient,
     transport: NetcodeClientTransport,
     limits: Limits,
-    now_ms: u64,
     rejected: u64,
+    refusals: Vec<Refusal>,
     io_errors: u64,
 }
 
@@ -660,8 +743,8 @@ impl Client {
             renet,
             transport,
             limits,
-            now_ms: 0,
             rejected: 0,
+            refusals: Vec::new(),
             io_errors: 0,
         })
     }
@@ -700,6 +783,22 @@ impl Client {
         self.rejected
     }
 
+    /// The refusals since the last take, oldest first (at most
+    /// [`REFUSALS_KEPT`]). wire-client-ffi logs them: the count alone,
+    /// which nothing outside the tests read, left a server message the
+    /// game's client refused unsaid (the review of m4-fix-cast-end,
+    /// finding 3).
+    pub fn take_refusals(&mut self) -> Vec<Refusal> {
+        std::mem::take(&mut self.refusals)
+    }
+
+    fn refuse(&mut self, refusal: Refusal) {
+        self.rejected = self.rejected.saturating_add(1);
+        if self.refusals.len() < REFUSALS_KEPT {
+            self.refusals.push(refusal);
+        }
+    }
+
     /// Socket-level errors seen so far.
     pub fn io_errors(&self) -> u64 {
         self.io_errors
@@ -708,27 +807,17 @@ impl Client {
     /// Advance by `dt`, then drain decoded server messages into `out`, oldest
     /// first per channel. Outgoing packets are flushed at the end.
     pub fn poll(&mut self, dt: Duration, out: &mut Vec<Message>) {
-        self.now_ms = self.now_ms.saturating_add(ms(dt));
-        // renet's clock first (the server's poll says why)
+        // renet's clock first (the server's poll says why). The client keeps
+        // no millisecond clock of its own: no budget runs on this side
         self.renet.update(dt);
         if self.transport.update(dt, &mut self.renet).is_err() {
             self.io_errors = self.io_errors.saturating_add(1);
         }
         for channel in channels::ALL {
             while let Some(bytes) = self.renet.receive_message(channel) {
-                if bytes.len() > self.limits.max_from_server {
-                    self.rejected = self.rejected.saturating_add(1);
-                    continue;
-                }
-                match wire_codec::decode(&bytes) {
-                    Ok(msg)
-                        if server_may_send(&msg)
-                            && wire_validate::validate_server(&msg)
-                                .is_ok() =>
-                    {
-                        out.push(msg)
-                    }
-                    _ => self.rejected = self.rejected.saturating_add(1),
+                match from_server(&bytes, &self.limits) {
+                    Ok(msg) => out.push(msg),
+                    Err(refusal) => self.refuse(refusal),
                 }
             }
         }
@@ -809,6 +898,81 @@ mod tests {
         let mut every = FlushClock::new(Duration::ZERO);
         assert!(every.tick(Duration::ZERO));
         assert!(every.tick(Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn the_server_clock_keeps_each_poll_s_fraction_of_a_millisecond() {
+        // x-drain-watch 20261115-032536: the gamemode polls about every
+        // 1.2 ms, and a clock of whole milliseconds a poll ran at about 0.8
+        // of real time, the rate budgets' refill with it
+        let localhost: SocketAddr = "127.0.0.1:0".parse().expect("literal");
+        let mut server =
+            Server::bind(localhost, Limits::default(), token::Auth::Unsecure).expect("bind");
+        let mut events = Vec::new();
+        for _ in 0..1_000 {
+            server.poll(Duration::from_micros(1_227), &mut events);
+        }
+        assert_eq!(server.now_ms, 1_227);
+        // under a millisecond a poll, the clock still moves
+        for _ in 0..1_000 {
+            server.poll(Duration::from_micros(500), &mut events);
+        }
+        assert_eq!(server.now_ms, 1_727);
+        assert!(events.is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn refused_msg_names_the_variant_and_its_msg_type() {
+        let cast = Message::SpellCast(wire_schema::skymp::SpellCast::default());
+        assert_eq!(RefusedMsg::of(&cast), RefusedMsg { name: "SpellCast", msg_type: 23 });
+        assert_eq!(RefusedMsg::of(&cast_end(0x107aa1)), RefusedMsg { name: "SpellCast end", msg_type: 23 });
+        assert_eq!(RefusedMsg::of(&Message::Movement(movement(1))), RefusedMsg { name: "Movement", msg_type: 0 });
+    }
+
+    fn cast_end(spell: u32) -> Message {
+        Message::SpellCast(wire_schema::skymp::SpellCast {
+            data: wire_schema::skymp::SpellCastData { spell, interrupt_cast: true, ..Default::default() },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn an_end_refused_at_its_own_budget_is_named_an_end() {
+        // the review of m4-fix-cast-end, finding 1: an end refused for rate
+        // is counted and said apart from the casts' refused re-reports. The
+        // end budget is eight at once: the ninth end at the same instant is
+        // refused, and named
+        let bytes = wire_codec::encode(&cast_end(0x107aa1)).expect("encode");
+        let (mut guard, mut budget, limits) = (ClientGuard::default(), ByteBudget::default(), Limits::default());
+        for _ in 0..8 {
+            let taken = ingest(1, &bytes, &mut guard, &mut budget, &limits, 0);
+            assert!(matches!(taken, Inbound::Message { .. }), "{taken:?}");
+        }
+        let refused = ingest(1, &bytes, &mut guard, &mut budget, &limits, 0);
+        assert!(
+            matches!(
+                refused,
+                Inbound::Rejected {
+                    reject: RejectKind::Validate(Reject::Rate),
+                    msg: Some(RefusedMsg { name: "SpellCast end", msg_type: 23 }),
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_client_keeps_a_bounded_list_of_refusals_and_counts_them_all() {
+        // nothing listens on port 9; no poll runs
+        let mut client = Client::connect("127.0.0.1:9".parse().expect("literal"), token::ConnectToken(Vec::new()))
+            .expect("connect");
+        for _ in 0..REFUSALS_KEPT + 10 {
+            client.refuse(Refusal { reject: RejectKind::Limit, msg: None });
+        }
+        assert_eq!(client.rejected(), u64::try_from(REFUSALS_KEPT + 10).expect("small"));
+        assert_eq!(client.take_refusals().len(), REFUSALS_KEPT);
+        assert!(client.take_refusals().is_empty());
     }
 
     #[test]
@@ -961,6 +1125,14 @@ mod tests {
                 ..
             })
         ));
+        // the refusal names what it refused (thuum ADR-073 decision 7)
+        assert!(matches!(
+            rejects.first(),
+            Some(Inbound::Rejected {
+                msg: Some(RefusedMsg { name: "Movement", msg_type: 0 }),
+                ..
+            })
+        ));
         events.clear();
 
         // Server to client on the reliable-ordered channel.
@@ -982,6 +1154,24 @@ mod tests {
         );
         assert!(matches!(inbox.first(), Some(Message::HostGrant(g)) if g.cell == 0x1234 && g.epoch == 1));
         assert_eq!(client.rejected(), 0);
+
+        // what a server may not send is refused, counted, and kept once for
+        // the caller's log (the review of m4-fix-cast-end, finding 3)
+        assert!(client.take_refusals().is_empty());
+        server.send(client_id, &Message::Movement(movement(9))).expect("send");
+        assert!(
+            pump(&mut server, &mut client, &mut events, &mut inbox, |_, _, c| c.rejected() == 1),
+            "refused"
+        );
+        let refusals = client.take_refusals();
+        assert!(
+            matches!(
+                refusals.as_slice(),
+                [Refusal { reject: RejectKind::Direction, msg: Some(RefusedMsg { name: "Movement", msg_type: 0 }) }]
+            ),
+            "{refusals:?}"
+        );
+        assert!(client.take_refusals().is_empty(), "taken once");
 
         client.disconnect();
         assert!(

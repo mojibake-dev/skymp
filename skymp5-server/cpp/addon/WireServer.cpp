@@ -10,6 +10,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <fmt/format.h>
@@ -59,7 +60,7 @@ public:
   {
     const uint64_t client = ClientOf(id);
     if (length < 2 || data[0] != Networking::MinPacketId) {
-      LogRefusal(0, "not a SkyMP packet");
+      LogRefusal(id, 0, std::string(), "not a SkyMP packet");
       return;
     }
     // The core writes 0x86 + JSON (MessageSerializer); Rust takes the JSON.
@@ -68,10 +69,11 @@ public:
     try {
       rust::Str json(text, textLength); // checks UTF-8, throws if not
       if (uint16_t code = server->send(client, json, reliable)) {
-        LogRefusal(code, std::string(text, std::min<size_t>(textLength, 160)));
+        LogRefusal(id, code, std::string(skymp::wire::send_refused_name(json)),
+                   std::string(text, std::min<size_t>(textLength, 160)));
       }
     } catch (const std::invalid_argument&) {
-      LogRefusal(400, "not UTF-8");
+      LogRefusal(id, 400, std::string(), "not UTF-8");
     }
   }
 
@@ -180,25 +182,51 @@ private:
         return;
       }
       case skymp::wire::EventKind::Rejected: {
-        auto& n = rejected[ev.reason];
+        // thuum ADR-073 decision 7: counted per (code, message), the
+        // detail naming the message ("E_VAL_RATE (SpellCast)"), the first of
+        // each in full and then at its 2nd, 4th, 8th and so on. Keyed by
+        // the code alone and logged at the first and every thousandth, the
+        // one E_VAL_RATE line of x-drain-watch 20261115-032536 named no
+        // type and every later one was silent. The message is the bridge's
+        // name for it, not its MsgType: a cast's end ("SpellCast end") is
+        // counted apart from the casts' refused re-reports, which share
+        // type 23, and the M0 family apart from each other, which share 0
+        // (the review of m4-fix-cast-end, finding 1)
+        auto& n = rejected[{ ev.reason, std::string(ev.refused) }];
         ++n;
-        // the first of each kind, then every thousandth
-        if (n == 1 || n % 1000 == 0) {
-          spdlog::warn("WireServer: rejected from client {:x}: {} (x{})",
-                       ev.client, std::string(ev.detail), n);
+        if ((n & (n - 1)) == 0) {
+          const Networking::UserId userId = Find(ev.client);
+          spdlog::warn("WireServer: rejected from client {:x}{}: {} (x{})",
+                       ev.client,
+                       userId == Networking::InvalidUserId
+                         ? std::string()
+                         : fmt::format(" (user {})", userId),
+                       std::string(ev.detail), n);
         }
         return;
       }
     }
   }
 
-  void LogRefusal(uint16_t code, const std::string& what)
+  // thuum ADR-073 decision 7, the inbound refusals' shape: a send the wire
+  // refused, counted per (code, message name, empty when the JSON is not a
+  // message), said in full at each key's first and then at its 2nd, 4th,
+  // 8th and so on, with the user and the message. Keyed by the code alone
+  // and said at the first and every thousandth, a relayed end the wire
+  // refused after its code's first refusal (E_TX_LIMIT on a full channel,
+  // 304 for a client gone) was silent while the end's line still said
+  // "relayed to 1 game(s)" (the review of m4-fix-cast-end, finding 2)
+  void LogRefusal(Networking::UserId userId, uint16_t code,
+                  const std::string& name, const std::string& what)
   {
-    auto& n = refused[code];
+    auto& n = refused[{ code, name }];
     ++n;
-    if (n == 1 || n % 1000 == 0) {
-      spdlog::error("WireServer: send refused with code {} (x{}): {}", code, n,
-                    what);
+    if ((n & (n - 1)) == 0) {
+      spdlog::error("WireServer: send to user {} refused with code {}{} "
+                    "(x{}): {}",
+                    userId, code,
+                    name.empty() ? std::string() : fmt::format(" ({})", name),
+                    n, what);
     }
   }
 
@@ -245,8 +273,11 @@ private:
   std::vector<std::optional<uint64_t>> clientsByUser;
   std::deque<skymp::wire::WireEvent> pending;
   std::string buffer;
-  std::map<uint16_t, uint64_t> rejected;
-  std::map<uint16_t, uint64_t> refused;
+  // by (reason code, the refused message's name, empty for none); the
+  // names are a fixed set (the schema's variants and "SpellCast end")
+  std::map<std::pair<uint16_t, std::string>, uint64_t> rejected;
+  // by (reason code, the refused message's name, empty for none)
+  std::map<std::pair<uint16_t, std::string>, uint64_t> refused;
   std::chrono::time_point<std::chrono::steady_clock> lastMetricsUpdate;
   prometheus::Gauge<double&> connectedClientsGauge;
 };

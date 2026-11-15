@@ -164,13 +164,27 @@ pub struct ClientGuard {
     /// ActorClaim (docs/verbs/npc-talk.md): a dialogue's claim and release; 8
     /// at once, 2 a second after (UNMEASURED).
     pub claim_budget: TokenBucket,
-    /// Budget for spell casts and their ends (thuum docs/verbs/spell-cast.md):
-    /// a cast charges before it goes (Firebolt's SPIT charge time is half a
-    /// second) and a stream's start and end are two messages, from two hands
-    /// at once, so eight at once and four a second after that only ever
-    /// stops a flood; the server's casts rule matches each spell hit to a
-    /// cast.
+    /// Budget for spell casts (thuum docs/verbs/spell-cast.md): a cast
+    /// charges before it goes (Firebolt's SPIT charge time is half a second),
+    /// from two hands at once, eight at once and four a second after that;
+    /// the server's casts rule matches each spell hit to a cast. It does
+    /// not only stop a flood: a host re-reports a hosted caster's open
+    /// stream from its launches (the server folds them, wire-rules
+    /// casts::Casts::continues), about six a second in x-drain-watch
+    /// 20261115-032536, which drains it, so a re-report can be refused
+    /// here, and so can the client's next start while re-reports outpace
+    /// the refill (a hosted stream past about four seconds at
+    /// x-drain-watch's rate): its player's own cast, or another hosted
+    /// caster's, which spend this one bucket. A cast's end rides
+    /// [`ClientGuard::cast_end_budget`] instead.
     pub cast_budget: TokenBucket,
+    /// Budget for a cast's end (a SpellCast with `interrupt_cast`): one per
+    /// cast, from two hands at once, eight at once and four a second after
+    /// that, its own so the stream's re-reports can never spend the token
+    /// its end needs (x-drain-watch 20261115-032536: an end after twenty
+    /// re-reports in four seconds never reached the watcher, the cast
+    /// budget's E_VAL_RATE the likely cause, the refusal unlogged).
+    pub cast_end_budget: TokenBucket,
     /// Budget for equip reports (OnEquip): a potion's drink, a book's read
     /// and every item a player puts on go through it (thuum
     /// docs/verbs/magic-effects.md), and a player's hotkeys or an outfit
@@ -319,6 +333,7 @@ impl Default for ClientGuard {
             speech_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
             claim_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             cast_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
+            cast_end_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             player_globals_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
             quest_stage_budget: TokenBucket { tokens: 32, capacity: 32, refill_per_s: 8, last_refill_ms: 0 },
             equip_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 8, last_refill_ms: 0 },
@@ -1828,6 +1843,9 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::PlayerBowShot(_) => take(&mut guard.shot_budget, now_ms),
         Message::OnHit(_) => take(&mut guard.on_hit_budget, now_ms),
         Message::ActorDeath(_) => take(&mut guard.actor_death_budget, now_ms),
+        // a cast's end spends its own budget, never the casts' (x-drain-watch
+        // 20261115-032536)
+        Message::SpellCast(m) if m.data.interrupt_cast => take(&mut guard.cast_end_budget, now_ms),
         Message::SpellCast(_) => take(&mut guard.cast_budget, now_ms),
         Message::OnEquip(_) => take(&mut guard.equip_budget, now_ms),
         Message::UpdateAction(_) => take(&mut guard.action_budget, now_ms),
@@ -2703,6 +2721,49 @@ mod tests {
             assert_eq!(validate(&spell_cast(0x12fcd, 1, 0.0), &mut g, 1_000), Ok(()));
         }
         assert_eq!(validate(&spell_cast(0x12fcd, 1, 0.0), &mut g, 1_000), Err(Reject::Rate));
+    }
+
+    fn cast_end(spell: u32, casting_source: i32) -> Message {
+        Message::SpellCast(skymp::SpellCast {
+            data: skymp::SpellCastData { spell, casting_source, interrupt_cast: true, ..Default::default() },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn an_end_after_twenty_re_reports_in_four_seconds_is_taken() {
+        // x-drain-watch 20261115-032536's stream 5: a hosted vampire's Drain
+        // Vitality started, its host re-reported the open stream from its
+        // launches about six a second, then the stream ended. Twenty
+        // re-reports, one every 150 ms from 1 s on, spend the cast budget
+        // to nothing (the 19th is refused), and the end at 3.9 s is still
+        // taken, from a budget of its own
+        let mut g = ClientGuard::default();
+        assert_eq!(validate(&spell_cast(0x107aa1, 0, 0.0), &mut g, 0), Ok(()));
+        let refused = (0..20u64)
+            .filter(|i| validate(&spell_cast(0x107aa1, 0, 0.0), &mut g, 1_000 + i * 150) == Err(Reject::Rate))
+            .count();
+        assert_eq!(refused, 1);
+        assert_eq!(validate(&cast_end(0x107aa1, 0), &mut g, 3_900), Ok(()));
+        // the cast budget is spent at that instant: on it, the end was refused
+        assert_eq!(validate(&spell_cast(0x107aa1, 0, 0.0), &mut g, 3_900), Err(Reject::Rate));
+    }
+
+    #[test]
+    fn ends_eight_at_once_then_four_a_second() {
+        let mut g = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&cast_end(0x12fcd, 1), &mut g, 0), Ok(()));
+        }
+        assert_eq!(validate(&cast_end(0x12fcd, 1), &mut g, 0), Err(Reject::Rate));
+        // the casts' budget is untouched by them
+        assert_eq!(validate(&spell_cast(0x12fcd, 1, 0.0), &mut g, 0), Ok(()));
+        for _ in 0..4 {
+            assert_eq!(validate(&cast_end(0x12fcd, 1), &mut g, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&cast_end(0x12fcd, 1), &mut g, 1_000), Err(Reject::Rate));
+        // an end is a cast's shape all the same
+        assert_eq!(validate(&cast_end(0, 1), &mut ClientGuard::default(), 0), Err(Reject::Range));
     }
 
     #[test]

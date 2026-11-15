@@ -210,8 +210,8 @@ MpActor* ActionListener::SendToNeighbours(uint32_t idx,
                           rawMsgData.unparsedLength, reliable, msgType);
 }
 
-void ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
-                               const SpellCastData& data)
+size_t ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
+                                 const SpellCastData& data)
 {
   SpellCastMessage relay;
   relay.data = data;
@@ -228,6 +228,7 @@ void ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
   // the server holds dead is relayed as it stands, and the snippet then
   // doubles the look on the host once: the trade for a reanimation that
   // stands on every screen.
+  size_t games = 0;
   const MpActor* bodyHost = nullptr;
   if (data.target != 0 && CarriesReanimate(&partOne.worldState, data.spell)) {
     const auto& targetForm =
@@ -263,7 +264,9 @@ void ActionListener::RelayCast(MpActor& caster, const MpActor& sender,
       continue;
     }
     listener->SendToUser(relay, true);
+    ++games;
   }
+  return games;
 }
 
 void ActionListener::OnCustomPacket(const RawMessageData& rawMsgData,
@@ -10698,7 +10701,15 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
                    caster->GetFormId(), spellCastData.spell, hand);
       return;
     }
-    RelayCast(*caster, *myActor, spellCastData);
+    // the one line for a relayed end, as a relayed start has its own below:
+    // x-drain-watch 20261115-032536 could not tell an end the server relayed
+    // from one it never received
+    const size_t games = RelayCast(*caster, *myActor, spellCastData);
+    spdlog::info("ActionListener::OnSpellCast - {:x} ended {:x} in hand "
+                 "{}{}; relayed to {} game(s)",
+                 caster->GetFormId(), spellCastData.spell, hand,
+                 caster == myActor ? "" : " (hosted, by its host's report)",
+                 games);
     return;
   }
 

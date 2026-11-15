@@ -17,7 +17,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use wire_schema::Message;
-use wire_transport::{limits::Limits, token, Delivery, Encoded, Inbound, TransportError};
+use wire_transport::{limits::Limits, token, Delivery, Encoded, Inbound, RefusedMsg, TransportError};
 
 #[cxx::bridge(namespace = "skymp::wire")]
 mod ffi {
@@ -42,14 +42,24 @@ mod ffi {
         kind: EventKind,
         /// The transport's id for the client.
         client: u64,
-        /// SkyMP MsgType for messages, else 0.
+        /// SkyMP MsgType for messages, and for a refused message whose bytes
+        /// decoded (a direction or validation refusal, so the core counts
+        /// refusals per code and type, thuum ADR-073 decision 7); else 0.
         msg_type: u8,
         /// SkyMP JSON for messages, else empty.
         json: String,
         /// Reason code for rejections, else 0.
         reason: u16,
-        /// For logs: why it was rejected, or why the client left.
+        /// For logs: why it was rejected (with the refused message's name
+        /// when it decoded, "E_VAL_RATE (SpellCast)"), or why the client left.
         detail: String,
+        /// The refused message's name when its bytes decoded ("SpellCast",
+        /// "SpellCast end", "Movement"), else empty: with `reason`, the key
+        /// the core counts refusals by, so a cast's end is counted apart
+        /// from the casts and the M0 family's members apart from each other,
+        /// which share `msg_type` (thuum ADR-073 decision 7; the review of
+        /// m4-fix-cast-end, finding 1).
+        refused: String,
     }
 
     /// How to bind.
@@ -79,6 +89,12 @@ mod ffi {
         /// refused for (a 4xx code is the JSON's, 2xx the validator's, 3xx
         /// the transport's, 101 the message's byte cap).
         fn send(self: &mut Server, client: u64, json: &str, reliable: bool) -> u16;
+        /// The name of the message in a send's JSON, as an inbound refusal
+        /// names its own ("SpellCast", "SpellCast end"), or empty when the
+        /// JSON is not a message. The core calls it only for a send `send`
+        /// refused, and counts its send refusals per (code, name) (thuum
+        /// ADR-073 decision 7; the review of m4-fix-cast-end, finding 2).
+        fn send_refused_name(json: &str) -> String;
         /// Drop a client; it sees the server close the connection.
         fn disconnect(self: &mut Server, client: u64);
         /// The client's IP address, or an empty string once it is gone.
@@ -178,6 +194,14 @@ pub fn wire_server_bind(options: &BindOptions) -> Result<Box<Server>, BindError>
     }))
 }
 
+/// See the bridge declaration: recognized a second time, on a refusal only,
+/// so the send path's one recognition stays as it is.
+pub fn send_refused_name(json: &str) -> String {
+    wire_json::recognize(json)
+        .map(|m| RefusedMsg::of(&m).name.to_string())
+        .unwrap_or_default()
+}
+
 /// Reason codes for sends refused before the transport: the JSON's (4xx).
 fn json_code(e: &wire_json::JsonError) -> u16 {
     use wire_json::JsonError as J;
@@ -224,21 +248,26 @@ impl Server {
                         ..event(ffi::EventKind::Message, client)
                     },
                     // an M0 message has no JSON form: the core cannot take it
-                    Err(e) => self.rejection(client, json_code(&e), e.to_string()),
+                    Err(e) => self.rejection(client, json_code(&e), Some(RefusedMsg::of(&msg)), e.to_string()),
                 },
-                Inbound::Rejected { client, reject } => {
-                    self.rejection(client, wire_transport::reason_code(&reject), reject.to_string())
+                Inbound::Rejected { client, reject, msg } => {
+                    self.rejection(client, wire_transport::reason_code(&reject), msg, reject.to_string())
                 }
             });
         }
     }
 
-    fn rejection(&mut self, client: u64, reason: u16, detail: String) -> WireEvent {
+    fn rejection(&mut self, client: u64, reason: u16, refused: Option<RefusedMsg>, why: String) -> WireEvent {
         let n = self.rejected.entry(reason).or_insert(0);
         *n = n.saturating_add(1);
         WireEvent {
+            msg_type: refused.map_or(0, |m| m.msg_type),
             reason,
-            detail,
+            detail: match refused {
+                Some(m) => format!("{why} ({})", m.name),
+                None => why,
+            },
+            refused: refused.map(|m| m.name.to_string()).unwrap_or_default(),
             ..event(ffi::EventKind::Rejected, client)
         }
     }
@@ -345,6 +374,7 @@ fn event(kind: ffi::EventKind, client: u64) -> WireEvent {
         json: String::new(),
         reason: 0,
         detail: String::new(),
+        refused: String::new(),
     }
 }
 
@@ -418,6 +448,58 @@ mod tests {
         assert_eq!(server.send(id + 1, r#"{"t":25,"idx":1}"#, true), 304, "no such client");
         let stats = server.stats_json();
         assert!(stats.contains("\"sent\":2") && stats.contains("\"302\":1"), "{stats}");
+    }
+
+    #[test]
+    fn a_refused_send_is_named_as_an_inbound_refusal_is() {
+        // the review of m4-fix-cast-end, finding 2: the core keys its send
+        // refusals by (code, name), so a relayed end the wire refuses is
+        // counted apart from the relayed casts
+        let end = Message::SpellCast(wire_schema::skymp::SpellCast {
+            data: wire_schema::skymp::SpellCastData { spell: 0x107aa1, interrupt_cast: true, ..Default::default() },
+            ..Default::default()
+        });
+        let json = wire_json::render(&end).expect("render");
+        assert_eq!(send_refused_name(&json), "SpellCast end");
+        let cast = wire_json::render(&Message::SpellCast(wire_schema::skymp::SpellCast::default())).expect("render");
+        assert_eq!(send_refused_name(&cast), "SpellCast");
+        assert_eq!(send_refused_name("{"), "");
+        assert_eq!(send_refused_name(r#"{"t":99}"#), "");
+    }
+
+    #[test]
+    fn a_refusal_names_the_message_it_refused() {
+        // thuum ADR-073 decision 7: the core counts and names refusals per
+        // (code, type); x-drain-watch 20261115-032536's one E_VAL_RATE line
+        // named no type
+        let mut server = bind("");
+        let mut client =
+            Client::connect(server.local_addr(), token::ConnectToken(Vec::new())).expect("connect");
+        let (mut out, mut inbox) = (Vec::new(), Vec::new());
+        assert!(pump(&mut server, &mut client, &mut out, &mut inbox, |o, _| o
+            .iter()
+            .any(|e| e.kind == EventKind::Connected)));
+        out.clear();
+        // a cast naming no spell (E_VAL_RANGE, 207)
+        client.send(&Message::SpellCast(wire_schema::skymp::SpellCast::default())).expect("send");
+        assert!(pump(&mut server, &mut client, &mut out, &mut inbox, |o, _| o
+            .iter()
+            .any(|e| e.kind == EventKind::Rejected)));
+        let r = out.iter().find(|e| e.kind == EventKind::Rejected).expect("rejected");
+        assert_eq!((r.reason, r.msg_type, r.detail.as_str(), r.refused.as_str()), (207, 23, "E_VAL_RANGE (SpellCast)", "SpellCast"));
+        // an end naming no spell is named an end (the review of
+        // m4-fix-cast-end, finding 1: the core's count key)
+        out.clear();
+        let end = wire_schema::skymp::SpellCast {
+            data: wire_schema::skymp::SpellCastData { interrupt_cast: true, ..Default::default() },
+            ..Default::default()
+        };
+        client.send(&Message::SpellCast(end)).expect("send");
+        assert!(pump(&mut server, &mut client, &mut out, &mut inbox, |o, _| o
+            .iter()
+            .any(|e| e.kind == EventKind::Rejected)));
+        let r = out.iter().find(|e| e.kind == EventKind::Rejected).expect("rejected");
+        assert_eq!((r.reason, r.msg_type, r.detail.as_str(), r.refused.as_str()), (207, 23, "E_VAL_RANGE (SpellCast end)", "SpellCast end"));
     }
 
     #[test]

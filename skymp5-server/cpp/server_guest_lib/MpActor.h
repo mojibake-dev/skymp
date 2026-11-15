@@ -245,8 +245,8 @@ public:
   // book whose Book Menu the server opened in this player's game (0 when
   // none), so its next activation of that book is the menu's Take
   // (MpObjectReference::ProcessActivateNormal); forgotten at the take, at the
-  // menu's closing activation, at its activation of anything else and at its
-  // disconnect
+  // menu's closing activation, at its activation of anything else that
+  // reaches ProcessActivateNormal and at its disconnect
   void SetOpenBook(uint32_t refrId);
   uint32_t GetOpenBook() const;
   uint64_t NextRestedGrant();

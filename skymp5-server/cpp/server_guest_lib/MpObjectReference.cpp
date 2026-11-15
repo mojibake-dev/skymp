@@ -2227,6 +2227,12 @@ void MpObjectReference::ProcessActivateNormal(
   MpObjectReference& activationSource, bool reportedByHost)
 {
   auto actorActivator = activationSource.AsActor();
+  // thuum playtest 52 break 3: the player's activation of anything else
+  // forgets its open book (the book branch below), before any early return
+  if (actorActivator && actorActivator->GetOpenBook() != 0 &&
+      actorActivator->GetOpenBook() != GetFormId()) {
+    actorActivator->SetOpenBook(0);
+  }
 
   auto worldState = GetParent();
   auto& loader = GetParent()->GetEspm();
@@ -2301,14 +2307,12 @@ void MpObjectReference::ProcessActivateNormal(
   // (HYPOTHESIS: the shape the client half reports it in, unbuilt until the
   // read), and the pickup below runs as it always has. The open is forgotten
   // at the take, at the menu's closing activation (ProcessActivateSecond),
-  // at the player's activation of anything else (its menu has closed by
-  // then) and at its disconnect. Every other activator and every other item
-  // keeps the pickup exactly as it was (only a player's game ever has a book
-  // open, and nothing else here asks who plays the activator).
-  if (actorActivator && actorActivator->GetOpenBook() != 0 &&
-      actorActivator->GetOpenBook() != GetFormId()) {
-    actorActivator->SetOpenBook(0);
-  }
+  // at the player's activation of anything else that reaches this function
+  // (its first lines; its menu has closed by then; an activation refused or
+  // blocked before it keeps the open) and at its disconnect. Every other
+  // activator and every other item keeps the pickup exactly as it was (only
+  // a player's game ever has a book open, and nothing else here asks who
+  // plays the activator).
   if (pickable && espm::utils::Is<espm::BOOK>(t) && actorActivator &&
       !reportedByHost &&
       actorActivator->GetUserId() != Networking::InvalidUserId &&
@@ -2318,6 +2322,12 @@ void MpObjectReference::ProcessActivateNormal(
     const bool take = actorActivator->GetOpenBook() == GetFormId();
     actorActivator->SetOpenBook(0);
     if (IsHarvested()) {
+      if (take) {
+        // its own game's Book Menu took a copy the server never gave
+        // (HYPOTHESIS: the Take is that engine's PickUpObject,
+        // x-book-take); the record goes back so that game drops it
+        actorActivator->SendInventoryUpdate();
+      }
       return spdlog::info("[verb:books] {:x} activates book {:x}, taken "
                           "already; nothing to open or take",
                           actorActivator->GetFormId(), GetFormId());

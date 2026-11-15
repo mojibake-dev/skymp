@@ -80,6 +80,9 @@ MpActor& EnterInn(PartOne& p, Networking::UserId user, uint32_t actorId,
   p.SetUserActor(user, actorId);
   auto& actor = p.worldState.GetFormAt<MpActor>(actorId);
   actor.RemoveAllItems();
+  // RemoveAllItems' SetInventory is deferred (SendInventoryUpdate's
+  // channel 0): sent here, so the first activation's tick sends only its own
+  p.Tick();
   return actor;
 }
 
@@ -184,7 +187,7 @@ TEST_CASE("A player's activation of anything else forgets its open book, so "
 }
 
 TEST_CASE("Two players read one book: the first take wins and the other's "
-          "take finds it taken",
+          "take finds it taken, its own inventory sent back",
           "[Books][PartOne][espm]")
 {
   auto& p = GetPartOne();
@@ -203,9 +206,13 @@ TEST_CASE("Two players read one book: the first take wins and the other's "
   REQUIRE(book.IsHarvested());
   REQUIRE(other.GetInventory().GetItemCount(kWatcherBase) == 1);
 
+  // the loser's take: its game's Book Menu took a copy (HYPOTHESIS,
+  // x-book-take), so its record goes back for that game to drop
   p.Messages().clear();
   ActivateAsPlayer(p, 0, kWatcher);
   REQUIRE(OpensSentTo(p, 0, kWatcher) == 0);
+  REQUIRE(InventorySentTo(p, 0));
+  REQUIRE(!InventorySentTo(p, 1));
   REQUIRE(reader.GetInventory().GetItemCount(kWatcherBase) == 0);
   REQUIRE(reader.GetOpenBook() == 0);
   REQUIRE(other.GetInventory().GetItemCount(kWatcherBase) == 1);

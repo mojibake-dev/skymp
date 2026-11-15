@@ -312,7 +312,7 @@ TEST_CASE("A world quest's AddToMap is recorded for every player, relayed "
   PartOne& p = GetPartOne();
   // no quest a player's class (QuestScopeTest's last setting), the two
   // listed quests the world's
-  p.SetQuestScopeSettings(R"("off")", "[]");
+  p.SetQuestScopeSettings(R"("off")", "[]", "[]");
   p.SetSharedQuestsSettings(R"(["74a83:Skyrim.esm", "39645:Skyrim.esm"])");
   p.SetQuestStages({ { FormDesc::FromString("74a83:Skyrim.esm"), 10 },
                      { FormDesc::FromString("39645:Skyrim.esm"), 10 } });
@@ -371,7 +371,7 @@ TEST_CASE("A quest marker needs a map marker, a cause and a live quest, and "
   PartOne& p = GetPartOne();
   // mode list with nothing listed and no quest a player's class: every
   // quest each seat's own, and live only by the journal or its start
-  p.SetQuestScopeSettings(R"("off")", "[]");
+  p.SetQuestScopeSettings(R"("off")", "[]", "[]");
   p.SetSharedQuestsSettings("[]");
   p.SetQuestStages({});
   p.SetQuestRuns({});

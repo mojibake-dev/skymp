@@ -67,7 +67,7 @@ bool TriggerPresserRuleOn();
 void SetScriptEveryoneEvents(bool on);
 // the everyone pass's counts since the last call, each nonzero kind one line
 // ("[census] k9-gate-passes passed in <s> s: everyone alias 140 x<n>", and
-// "[fall] k9-everyone-pass left in <s> s: <kind> x<n>" for what it left),
+// "[fall] k9-everyone-pass skipped in <s> s: <kind> x<n>" for what it left),
 // then zeroed: ScriptNatives.cpp's FlushCensus, every census window
 void FlushEveryonePass(uint64_t windowMs);
 

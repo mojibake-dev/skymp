@@ -852,24 +852,25 @@ EveryoneLeft EveryoneLeftOf(RE::BSScript::IObjectHandlePolicy* policy,
   return EveryoneLeft::kOther;
 }
 
-// the class of the handle's first attached script, "" for none: the VM's
-// attachedScripts under its own lock (HasAttachedScript's read), on a first
-// line alone. m4-reanimate-return's FirstScriptClass is the same read; when
-// C4 merges one of the two goes
+// the class of the handle's first attached script, "no script" for none
+// and "no class read" for a script whose type names nothing, so a line never
+// prints an empty field: the VM's attachedScripts under its own lock
+// (HasAttachedScript's read), on a first line alone. m4-reanimate-return's
+// FirstScriptClass is the same read; when C4 merges one of the two goes
 std::string FirstAttachedClass(VM* vm, RE::VMHandle handle)
 {
   if (!vm) {
-    return {};
+    return std::string("no script");
   }
   RE::BSSpinLockGuard guard{ vm->attachedScriptsLock };
   const auto it = vm->attachedScripts.find(handle);
   if (it == vm->attachedScripts.end() || it->second.size() == 0) {
-    return {};
+    return std::string("no script");
   }
   const auto* script = it->second[0].get();
   const auto* info = script ? script->GetTypeInfo() : nullptr;
   const char* name = info ? info->GetName() : nullptr;
-  return name ? std::string(name) : std::string();
+  return name ? std::string(name) : std::string("no class read");
 }
 
 // a passed kind's quest for its first line: the quest itself, or an alias's
@@ -908,8 +909,8 @@ bool EveryonePasses(VM* vm, RE::BSScript::IObjectHandlePolicy* policy,
     const auto i = static_cast<size_t>(kind);
     g_everyonePassed[i].fetch_add(1, std::memory_order_relaxed);
     if (!g_everyonePassedSaid[i].exchange(true, std::memory_order_relaxed)) {
-      logger::info("[census] k9-gate-passes passed: everyone {} {}; handle "
-                   "{:x}, {}, {} (first of this kind; ADR-073 decision 9)",
+      logger::info("[census] k9-gate-passes passed: everyone {}; {} to handle "
+                   "{:x}, {}, {} (first of this kind)",
                    kEveryoneKindNames[i], eventName, handle,
                    FirstAttachedClass(vm, handle),
                    EveryoneQuestOf(policy, handle, kind));
@@ -919,8 +920,8 @@ bool EveryonePasses(VM* vm, RE::BSScript::IObjectHandlePolicy* policy,
   const auto left = static_cast<size_t>(EveryoneLeftOf(policy, handle));
   g_everyoneLeft[left].fetch_add(1, std::memory_order_relaxed);
   if (!g_everyoneLeftSaid[left].exchange(true, std::memory_order_relaxed)) {
-    logger::info("[fall] k9-everyone-pass left: {} {}; handle {:x}, {} (first "
-                 "of this kind; on to the gate's other rules)",
+    logger::info("[fall] k9-everyone-pass skipped: {}; {} to handle {:x}, {} "
+                 "(first of this kind)",
                  kEveryoneLeftNames[left], eventName, handle,
                  FirstAttachedClass(vm, handle));
   }
@@ -948,7 +949,7 @@ void Frida::FlushEveryonePass(uint64_t windowMs)
     const uint32_t n =
       g_everyoneLeft[i].exchange(0, std::memory_order_relaxed);
     if (n != 0) {
-      logger::info("[fall] k9-everyone-pass left in {} s: {} x{}", seconds,
+      logger::info("[fall] k9-everyone-pass skipped in {} s: {} x{}", seconds,
                    kEveryoneLeftNames[i], n);
     }
   }

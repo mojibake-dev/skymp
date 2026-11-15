@@ -2250,6 +2250,29 @@ bool MpObjectReference::IsCorpse()
   return actor && actor->IsDead() && !actor->IsCreatedAsPlayer();
 }
 
+bool MpObjectReference::IsBookReadBy(const MpObjectReference& activationSource,
+                                     bool reportedByHost) const
+{
+  // the book branch's own predicate (ProcessActivateNormal): only a player's
+  // game ever has a book open
+  const auto actorActivator = activationSource.AsActor();
+  if (!actorActivator || reportedByHost ||
+      actorActivator->GetUserId() == Networking::InvalidUserId) {
+    return false;
+  }
+  auto worldState = GetParent();
+  if (!worldState || !worldState->HasEspm() || !GetBaseId()) {
+    return false;
+  }
+  auto base = worldState->GetEspm().GetBrowser().LookupById(GetBaseId());
+  if (!base.rec || !espm::utils::Is<espm::BOOK>(base.rec->GetType())) {
+    return false;
+  }
+  return !espm::Convert<espm::BOOK>(base.rec)
+            ->GetData(worldState->GetEspmCache())
+            .IsFlagSet(espm::BOOK::Flags::TeachesSpell);
+}
+
 void MpObjectReference::ProcessActivateNormal(
   MpObjectReference& activationSource, bool reportedByHost)
 {
@@ -2339,13 +2362,15 @@ void MpObjectReference::ProcessActivateNormal(
   // blocked before it keeps the open) and at its disconnect. Every other
   // activator and every other item keeps the pickup exactly as it was (only
   // a player's game ever has a book open, and nothing else here asks who
-  // plays the activator).
-  if (pickable && espm::utils::Is<espm::BOOK>(t) && actorActivator &&
-      !reportedByHost &&
-      actorActivator->GetUserId() != Networking::InvalidUserId &&
-      !espm::Convert<espm::BOOK>(base.rec)
-         ->GetData(compressedFieldsCache)
-         .IsFlagSet(espm::BOOK::Flags::TeachesSpell)) {
+  // plays the activator; IsBookReadBy holds the predicate). Physics' pickup
+  // rule (ActionListener::OnActivate, RefusePropPickup) asks the same
+  // predicate first and judges the Take alone, never the open: a player's
+  // open of a book another player holds grabbed or another seat streams
+  // awake reaches this branch, and a Take the rule refuses (E_PROP_HELD,
+  // E_PROP_MOVING) never does, its open forgotten there and the player's
+  // inventory sent back as at a take of a book taken already
+  if (pickable && actorActivator &&
+      IsBookReadBy(activationSource, reportedByHost)) {
     const bool take = actorActivator->GetOpenBook() == GetFormId();
     actorActivator->SetOpenBook(0);
     if (IsHarvested()) {

@@ -1,9 +1,15 @@
+#include "ActionListener.h"
 #include "MpActor.h"
 #include "MpObjectReference.h"
 #include "MsgType.h"
+#include "PropClaimMessage.h"
+#include "PropOwnerMessage.h"
 #include "TestUtils.hpp"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 
 PartOne& GetPartOne();
 
@@ -91,6 +97,71 @@ void Leave(PartOne& p, Networking::UserId user, uint32_t actorId)
   DoDisconnect(p, user);
   p.DestroyActor(actorId);
 }
+
+// physics' pickup rule's rows (PropTest's shapes): whether `actor`'s game was
+// sent the reference and not told it is gone, `user`'s grab of `refr` (touch
+// 1), and the prop words sent to `user`
+bool Listens(const MpObjectReference& refr, const MpActor& actor)
+{
+  const auto& listeners = refr.GetActorListeners();
+  return std::find(listeners.begin(), listeners.end(), &actor) !=
+    listeners.end();
+}
+
+uint8_t g_unparsed[] = { Networking::MinPacketId, '{', '}' };
+
+void Grab(PartOne& p, Networking::UserId user, uint32_t refr)
+{
+  RawMessageData raw;
+  raw.userId = user;
+  raw.unparsed = g_unparsed;
+  raw.unparsedLength = sizeof(g_unparsed);
+  PropClaimMessage msg;
+  msg.refrs = { refr };
+  msg.touch = 1;
+  p.GetActionListener().OnPropClaim(raw, msg);
+}
+
+std::vector<PropOwnerMessage> PropWordsTo(PartOne& p, Networking::UserId user)
+{
+  std::vector<PropOwnerMessage> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId != user) {
+      continue;
+    }
+    if (auto word = dynamic_cast<PropOwnerMessage*>(m.message.get())) {
+      out.push_back(*word);
+    }
+  }
+  return out;
+}
+
+// the default logger's lines at info and above while the guard lives
+// (PropTest's shape), restored at its end
+struct LogCapture
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  LogCapture()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger = std::make_shared<spdlog::logger>("book-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~LogCapture() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (size_t at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
 }
 
 TEST_CASE("A player's activation of a world book opens it in its own game "
@@ -216,6 +287,67 @@ TEST_CASE("Two players read one book: the first take wins and the other's "
   REQUIRE(reader.GetInventory().GetItemCount(kWatcherBase) == 0);
   REQUIRE(reader.GetOpenBook() == 0);
   REQUIRE(other.GetInventory().GetItemCount(kWatcherBase) == 1);
+
+  Leave(p, 0, kReader);
+  Leave(p, 1, kOther);
+}
+
+// physics' pickup rule (thuum docs/verbs/prop-physics.md, ADR-071 decision
+// 2's table: a pickup is a take; ActionListener's RefusePropPickup) judges a
+// book's Take alone: the open takes nothing, so it is sent whoever holds the
+// book, and a Take the rule refuses forgets the open and sends the reader's
+// inventory back, its own game's Book Menu having taken a copy (HYPOTHESIS,
+// x-book-take; the merge review of 5f9c1601, SHOULD 1)
+TEST_CASE("A player's open of a world book another player holds grabbed is "
+          "sent; its Take is refused E_PROP_HELD, the open forgotten and its "
+          "inventory sent back, and its next activation opens the book again",
+          "[Books][PartOne][espm]")
+{
+  auto& p = GetPartOne();
+  auto& book = p.worldState.GetFormAt<MpObjectReference>(kWatcher);
+  auto& reader = EnterInn(p, 0, kReader);
+  auto& other =
+    EnterInn(p, 1, kOther, kOnTheRug + NiPoint3{ 0.f, -40.f, 0.f });
+  REQUIRE(Listens(book, other));
+
+  Grab(p, 1, kWatcher);
+  REQUIRE(p.PropLiveOwner(book) == kOther);
+  p.Messages().clear();
+
+  {
+    LogCapture log;
+    // the open: sent, nothing taken, no word
+    ActivateAsPlayer(p, 0, kWatcher);
+    REQUIRE(OpensSentTo(p, 0, kWatcher) == 1);
+    REQUIRE(!InventorySentTo(p, 0));
+    REQUIRE(PropWordsTo(p, 0).empty());
+    REQUIRE(reader.GetOpenBook() == kWatcher);
+    REQUIRE(log.Count("picks up prop") == 0);
+
+    // the Take: refused, answered with the holder's word, the inventory
+    // sent back
+    p.Messages().clear();
+    ActivateAsPlayer(p, 0, kWatcher);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_HELD: ff000fb1 picks up "
+                      "prop 10544d; another player holds it grabbed") == 1);
+    REQUIRE(OpensSentTo(p, 0, kWatcher) == 0);
+    REQUIRE(InventorySentTo(p, 0));
+    const auto words = PropWordsTo(p, 0);
+    REQUIRE(words.size() == 1);
+    REQUIRE(words[0].refr == kWatcher);
+    REQUIRE(words[0].player == kOther);
+  }
+  REQUIRE(!book.IsHarvested());
+  REQUIRE(reader.GetInventory().GetItemCount(kWatcherBase) == 0);
+  REQUIRE(reader.GetOpenBook() == 0);
+  REQUIRE(p.PropLiveOwner(book) == kOther);
+
+  // the open forgotten: the next activation opens the book again
+  p.Messages().clear();
+  ActivateAsPlayer(p, 0, kWatcher);
+  REQUIRE(OpensSentTo(p, 0, kWatcher) == 1);
+  REQUIRE(reader.GetOpenBook() == kWatcher);
+  REQUIRE(!book.IsHarvested());
 
   Leave(p, 0, kReader);
   Leave(p, 1, kOther);

@@ -223,6 +223,15 @@ public:
   // activation and by the occupant's destroy or disable; read by the owner
   // of the furniture's graph events (wire-rules object_animation)
   MpActor* GetOccupant() const noexcept { return occupant; }
+  // thuum playtest 52 break 3: whether `activationSource`'s activation of
+  // this reference is a player's read of a world book, which
+  // ProcessActivateNormal's book branch answers with the open, or with the
+  // Take when the player's open book is this one: a BOOK that teaches no
+  // spell, activated by an actor a user plays, in its own game's report (not
+  // a host's). ActionListener::OnActivate asks it before physics' pickup
+  // rule, which judges a book's Take alone (RefusePropPickup)
+  bool IsBookReadBy(const MpObjectReference& activationSource,
+                    bool reportedByHost) const;
   void SetRelootTime(std::chrono::system_clock::duration newRelootTime);
   void SetChanceNoneOverride(uint8_t chanceNone);
   void SetCellOrWorld(const FormDesc& worldOrCell);

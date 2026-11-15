@@ -2674,11 +2674,28 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
     }
   }
 
+  // a hosted caster's activation is its host's report (npc-handoff D6)
+  const bool reportedByHost = msg.data.caster != 0x14;
+
   // thuum docs/verbs/prop-physics.md (ADR-071 decision 2's table): a pickup
   // is a take, refused on a prop another seat holds or streams awake, the
-  // reference standing for every seat (RefusePropPickup)
-  if (!msg.data.isSecondActivation &&
+  // reference standing for every seat (RefusePropPickup). A player's open of
+  // a world book takes nothing (thuum playtest 52 break 3, the book branch
+  // of MpObjectReference::ProcessActivateNormal), so the rule judges a
+  // book's Take alone, never its open (the merge review of 5f9c1601, SHOULD
+  // 1). A Take it refuses forgets the open, as a take does, so the player's
+  // next activation opens the book again, and sends the player's inventory
+  // back, since its own game's Book Menu took a copy the server never gave
+  // (HYPOTHESIS, x-book-take)
+  const bool bookRead = targetPtr->IsBookReadBy(caster, reportedByHost);
+  const bool bookOpen =
+    bookRead && ac->GetOpenBook() != targetPtr->GetFormId();
+  if (!msg.data.isSecondActivation && !bookOpen &&
       RefusePropPickup(rawMsgData, *ac, *targetPtr)) {
+    if (bookRead) {
+      ac->SetOpenBook(0);
+      ac->SendInventoryUpdate();
+    }
     return;
   }
 
@@ -2692,8 +2709,6 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   }
 
   constexpr bool kDefaultProcessingOnlyFalse = false;
-  // a hosted caster's activation is its host's report (npc-handoff D6)
-  const bool reportedByHost = msg.data.caster != 0x14;
   targetPtr->Activate(caster, kDefaultProcessingOnlyFalse,
                       msg.data.isSecondActivation, reportedByHost);
   // thuum docs/verbs/self-cast.md: an actor's activation ends its

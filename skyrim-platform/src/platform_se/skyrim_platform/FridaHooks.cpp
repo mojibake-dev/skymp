@@ -2558,7 +2558,8 @@ void InstallApplyMasksToRenderTargetsHook()
 }
 
 /**
- * HasOverlays on a figure's base (thuum docs/verbs/appearance.md; the fault
+ * HasOverlays on a figure's base, and on the player's own (thuum
+ * docs/verbs/appearance.md; the fault
  * x-vampire-stage recorded at run 20261111-035133: after c1's own player
  * turned vampire, NordRace 0x13746 to NordRaceVampire 0x88794, c1 drew c2's
  * figure with no head, a hollow helmet, while c2's view of c1 stayed right).
@@ -2594,17 +2595,29 @@ void InstallApplyMasksToRenderTargetsHook()
  * by pointer) gets false where the engine said true, so the engine builds
  * the figure's head from its own parts, as a seat whose player is no vampire
  * does; every other NPC gets the engine's answer. The player's own base
- * keeps the engine's true only while its race carries kOverlayHeadPartList
- * (TESRace.h:77): the engine's form id 7 branch never reads that flag
- * (HYPOTHESIS, a static read of 24790 in the unpacked 1.6.1170 exe: the
- * chargen race against the base's race, TESNPC+0x158, and an overlay-map
- * entry), so a race without it laid the player's pre-switch parts over its
- * own: thuum D-E1 A'' clears rotfernRaceVampire's flag at build, and
- * x-rotfern-vampire-eyes 20261114-224641 read her own face keeping
- * RotfernEyes over the RotfernEyesVampire her script set (Eli, 2026-11-15:
- * "fix the eyes. fix the overlay flag"). Skyrim.esm's vampire races carry
- * the flag (NordRaceVampire 0x88794, above), so their own faces keep the
- * engine's answer.
+ * keeps the engine's true only while its race carries a head part list
+ * flag, kOverlayHeadPartList or kOverrideHeadPartList (TESRace.h:77-78):
+ * the engine's form id 7 branch reads neither (HYPOTHESIS, a static read of
+ * 24790 in the unpacked 1.6.1170 exe: the chargen race against the base's
+ * race, TESNPC+0x158, and an overlay-map entry), so a race with neither
+ * laid the player's pre-switch parts over its own: x-rotfern-vampire-eyes
+ * 20261114-224641 read rotfern's own face keeping RotfernEyes over the
+ * RotfernEyesVampire her script set (Eli, 2026-11-15: "fix the eyes. fix
+ * the overlay flag"). Paired with thuum D-E1 A'' (D-E2 B): the layer's
+ * lab/layer/plugin-patches.tsv row "race-flags 02019D08 clear 04000000"
+ * clears rotfernRaceVampire's kOverlayHeadPartList at build; laid without
+ * that row, her vampire race carries the flag and her own face keeps the
+ * engine's overlay copy. Read 2026-11-15 over the seats' engine order
+ * (sky-srv's persist, 101 plugins, apocrypha's race_winners): every
+ * PlayableVampireList race's winning record carries kOverlayHeadPartList
+ * (0x54A08942, USSEP's or Dawnguard.esm's), so a vanilla vampire's own face
+ * keeps the engine's answer; WerewolfBeastRace 0xCDD84 (0x08288940) and
+ * Dawnguard.esm's DLC1VampireBeastRace 0x283A (0x48688940) carry
+ * kOverrideHeadPartList, so a beast form's own face keeps it too; the ten
+ * playable races (0x50A08943) carry neither, so after a switch away from
+ * the chargen race (alignRace's reconnect SetRace, skymp5-client
+ * raceMenuService.ts) the player's own face takes the base's parts, the
+ * record every other screen shows (probably benign, unmeasured).
  * Filtered in native (rule 9): the form id compare comes first, so any other
  * NPC costs Gum's replace (its thread-local bookkeeping and a stack push,
  * FridaHookHandler.cpp's gum_interceptor_replace) and one compare beside the
@@ -2625,9 +2638,12 @@ constexpr uint32_t kPlayerBaseFormId = 0x7;
 // counts, the reporter below reads
 std::atomic<uint64_t> g_hasOverlaysOverrides{ 0 };
 std::atomic<uint32_t> g_hasOverlaysBases{ 0 };
-// the player's own base given false since launch: its race has no
-// kOverlayHeadPartList (thuum D-E1 A''), the reporter's second line
+// the player's own base given false since launch: its race carries neither
+// head part list flag (thuum D-E1 A''); the reporter prints its line before
+// the figures' line
 std::atomic<uint64_t> g_hasOverlaysOwnOverrides{ 0 };
+// the race the own-base line last named, so a new race prints a new line
+std::atomic<uint32_t> g_hasOverlaysOwnLastRace{ 0 };
 
 // the bases given their first line, by pointer. HasOverlays' thread is
 // unread (a 3D load may run on a job thread), so a mutex, taken on the
@@ -2665,20 +2681,24 @@ bool HasOverlaysReplacement(RE::TESNPC* npc)
   }
   if (npc == playerBase) {
     // the player's own base keeps the engine's true (its own overlay parts)
-    // while its race carries the Overlay Head Part List flag, which the
-    // engine's form id 7 branch never reads; a race without it lays no
-    // overlay on the player either (thuum D-E1 A'', above)
+    // while its race carries a head part list flag; the engine's form id 7
+    // branch reads neither, so this hook gives a race with neither no
+    // overlay on the player (thuum D-E1 A'', above)
     const RE::TESRace* race = npc->GetRace();
     if (!race ||
-        race->data.flags.all(RE::RACE_DATA::Flag::kOverlayHeadPartList)) {
+        race->data.flags.any(RE::RACE_DATA::Flag::kOverlayHeadPartList,
+                             RE::RACE_DATA::Flag::kOverrideHeadPartList)) {
       return engine;
     }
-    if (HasOverlaysFirstOverride(npc)) {
+    if (g_hasOverlaysOwnLastRace.exchange(
+          race->formID, std::memory_order_relaxed) != race->formID) {
+      // GetRaceData's slot is 1.6.1170's layout; on 1.7.104 it reads wrong,
+      // so the chargen race printed there is no evidence (the log alone)
       const RE::TESRace* chargenRace = player->GetRaceData().charGenRace;
       logger::info("[verb:appearance] HasOverlays on the player's own base: "
-                   "its race {:x} carries no Overlay Head Part List flag, "
-                   "so the engine's true returned false (its chargen race "
-                   "{:x}; thread {})",
+                   "its race {:x} carries no Overlay Head Part List flag "
+                   "nor an override list, so the engine's true returned "
+                   "false (its chargen race {:x}; thread {})",
                    race->formID, chargenRace ? chargenRace->formID : 0u,
                    GetCurrentThreadId());
     }
@@ -2726,7 +2746,7 @@ void StartHasOverlaysReporter()
       if (own != reportedOwn) {
         logger::info("[verb:appearance] HasOverlays on the player's own "
                      "base: the engine's true returned false {} time(s) so "
-                     "far (its race has no Overlay Head Part List flag)",
+                     "far (its race carries neither head part list flag)",
                      own);
         reportedOwn = own;
       }
@@ -2760,7 +2780,8 @@ void InstallHasOverlaysHook()
         address, reinterpret_cast<void*>(&HasOverlaysReplacement),
         reinterpret_cast<void**>(&g_hasOverlaysOriginal))) {
     logger::error("[verb:appearance] Gum refused the HasOverlays "
-                  "replacement: a figure's base keeps the engine's answer");
+                  "replacement: a figure's base and the player's own "
+                  "keep the engine's answer");
     return;
   }
   StartHasOverlaysReporter();
@@ -2769,7 +2790,9 @@ void InstallHasOverlaysHook()
   logger::info("[verb:appearance] HasOverlays hook installed: "
                "TESNPC::HasOverlays (CommonLibSSE-NG Offset::TESNPC::"
                "HasOverlays, Address Library {} at +{:x}); a figure's base "
-               "gets false where the engine says true",
+               "gets false where the engine says true, and so does the "
+               "player's own when its race carries neither head part list "
+               "flag",
                RE::Offset::TESNPC::HasOverlays.id(),
                address - REL::Module::get().base());
 }

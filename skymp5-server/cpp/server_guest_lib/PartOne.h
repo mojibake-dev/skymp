@@ -872,7 +872,10 @@ public:
                           const ClaimPurpose& purpose);
   // what a release did, in the bridge's code order: nothing held for that
   // purpose, the purpose ended with the claim standing for its others, or
-  // the claim ended (the cell's rule names the simulator again)
+  // the claim ended (the cell's rule names the simulator again). `why` is a
+  // lead's release's (thuum D-53-5 B, the holder's own report, R2): 0 a
+  // release, 1 its game left the quest's own packages, 2 its game unloaded
+  // the actor; on any other purpose, or past 2, nothing is held
   enum class ClaimRelease
   {
     NotHeld,
@@ -880,7 +883,7 @@ public:
     Ended
   };
   ClaimRelease ReleaseClaim(MpActor& claimant, MpActor& actor,
-                            const ClaimPurpose& purpose);
+                            const ClaimPurpose& purpose, uint8_t why = 0);
   // thuum ADR-073 decision 6: the world's record took `quest`'s stop, so its
   // leads and the claims of its scenes end; `quest`'s alias `alias` now names
   // `refr` (0 a clear), so a lead that read it on another actor ends. The

@@ -146,7 +146,9 @@ use bounded::{String, Vec};
 /// 47: ActorClaim's optional `purpose`, `quest`, `package` and `scene` (thuum
 /// ADR-073 step 5a, decision 6 with D-L2 B and D-53-4, m4-owners-5a): a claim
 /// names a talk, a quest's lead (its own package on its alias actor) or a
-/// scene its seat started, and outlives a grant into its cell. Taken as the
+/// scene its seat started, and outlives a grant into its cell; and its
+/// optional `why` (D-53-5 B): a lead's release says its game stopped running
+/// the actor (another quest's package or none, her unload there). Taken as the
 /// number D-53-3's merge order gives ADR-073's first step after canon's 44,
 /// C4's 45 (m4-reanimate-return) and the physics heads' 46, whose history
 /// lines are on their branches; numidium settles it at the merge.
@@ -780,9 +782,9 @@ const TABLE: [Row; 90] = [
     row("HostedActorState", 53, 64, Both),
     row("ActorSpeech", 54, 32, Both),
     row("DamageCause", 55, 32, S2C),
-    // an idx, the flag and since SCHEMA_VERSION 47 a purpose and three form
-    // ids, each with its presence byte: 27 bytes at the caps (thuum ADR-073
-    // step 5a)
+    // an idx, the flag and since SCHEMA_VERSION 47 a purpose, three form ids
+    // and a release's why, each with its presence byte: 29 bytes at the caps
+    // (thuum ADR-073 step 5a, D-53-5 B)
     row("ActorClaim", 56, 48, C2S),
     row("QuestStage", 57, 4 * KIB, Both),
     row("PropTransform", 58, 64, Both),
@@ -1567,9 +1569,9 @@ mod tests {
     #[test]
     fn an_actor_claim_at_its_caps_fits_its_byte_cap() {
         // thuum ADR-073 step 5a (SCHEMA_VERSION 47): the wire id, a five-byte
-        // idx, the flag, then the purpose's two bytes and three five-byte
-        // ids, each behind its presence byte; a talk as canon sent it costs
-        // the four presence bytes alone
+        // idx, the flag, then the purpose's two bytes, three five-byte ids
+        // and the release's why (D-53-5 B), each behind its presence byte; a
+        // talk as canon sent it costs the five presence bytes alone
         let full = Message::ActorClaim(skymp::ActorClaim {
             idx: u32::MAX,
             claim: true,
@@ -1577,12 +1579,13 @@ mod tests {
             quest: Some(u32::MAX),
             package: Some(u32::MAX),
             scene: Some(u32::MAX),
+            why: Some(u8::MAX),
             ..Default::default()
         });
-        assert_eq!(postcard::to_allocvec(&full).map(|b| b.len()), Ok(27));
+        assert_eq!(postcard::to_allocvec(&full).map(|b| b.len()), Ok(29));
         assert_eq!(Message::max_len(full.wire_id()), Some(48));
         let talk = Message::ActorClaim(skymp::ActorClaim { idx: u32::MAX, claim: true, ..Default::default() });
-        assert_eq!(postcard::to_allocvec(&talk).map(|b| b.len()), Ok(11));
+        assert_eq!(postcard::to_allocvec(&talk).map(|b| b.len()), Ok(12));
     }
 
     #[test]

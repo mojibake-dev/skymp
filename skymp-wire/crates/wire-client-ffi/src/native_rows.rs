@@ -23,15 +23,17 @@ use crate::{guard, log};
 /// plugin whose table holds another count binds no row there. The compiler
 /// checks it against the table; after natives-gen changes the count, set it
 /// here and run `just wire-header`.
-pub const SKYMP_NATIVE_ROWS: usize = 52;
+pub const SKYMP_NATIVE_ROWS: usize = 1408;
 const _: () = assert!(
     SKYMP_NATIVE_ROWS == TABLE.len(),
     "SKYMP_NATIVE_ROWS is wire-rules' TABLE.len()"
 );
 
-/// A native takes at most eleven parameters (CommonLibSSE-NG
-/// src/RE/N/NativeFunctionBase.cpp:15, "native supports max 11").
-pub const SKYMP_NATIVE_MAX_PARAMS: usize = 11;
+/// A row's parameters: at most twelve, the dump's longest list (the
+/// platform's own TESModPlatform.Add and AddItemEx). A game native takes at
+/// most eleven (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15, "native
+/// supports max 11"), which the platform reads of a frame.
+pub const SKYMP_NATIVE_MAX_PARAMS: usize = 12;
 
 /// Kind: the call itself is the message, relayed.
 pub const SKYMP_NATIVE_KIND_ACTION: u8 = 0;
@@ -101,6 +103,16 @@ pub const SKYMP_NATIVE_PARAM_FLOAT: u8 = 2;
 pub const SKYMP_NATIVE_PARAM_STRING: u8 = 3;
 /// Parameter: an object.
 pub const SKYMP_NATIVE_PARAM_OBJECT: u8 = 4;
+/// Parameter: an array of Bools.
+pub const SKYMP_NATIVE_PARAM_BOOL_ARRAY: u8 = 5;
+/// Parameter: an array of Ints.
+pub const SKYMP_NATIVE_PARAM_INT_ARRAY: u8 = 6;
+/// Parameter: an array of Floats.
+pub const SKYMP_NATIVE_PARAM_FLOAT_ARRAY: u8 = 7;
+/// Parameter: an array of Strings.
+pub const SKYMP_NATIVE_PARAM_STRING_ARRAY: u8 = 8;
+/// Parameter: an array of objects.
+pub const SKYMP_NATIVE_PARAM_OBJECT_ARRAY: u8 = 9;
 
 /// Hook: nothing beyond the row's other columns.
 pub const SKYMP_NATIVE_HOOK_NONE: u8 = 0;
@@ -170,6 +182,12 @@ pub struct SkympNativeRow {
     /// What the seam does with its call beyond the rest (`SKYMP_NATIVE_HOOK_*`,
     /// wire-rules' `Hook::code`).
     pub hook: u8,
+    /// 1 for a latent native (FunctionsDump.txt's isLatent), which the
+    /// platform's install check holds against the VM's binding; 0 otherwise.
+    pub latent: u8,
+    /// 1 for a staged row (thuum ADR-073 step 4's S5: a derived row, counted
+    /// by what it would do and run as before); 0 for a live row.
+    pub staged: u8,
 }
 
 fn kind_code(kind: Kind) -> u8 {
@@ -234,6 +252,11 @@ fn param_code(param: Param) -> u8 {
         Param::Float => SKYMP_NATIVE_PARAM_FLOAT,
         Param::String => SKYMP_NATIVE_PARAM_STRING,
         Param::Object => SKYMP_NATIVE_PARAM_OBJECT,
+        Param::BoolArray => SKYMP_NATIVE_PARAM_BOOL_ARRAY,
+        Param::IntArray => SKYMP_NATIVE_PARAM_INT_ARRAY,
+        Param::FloatArray => SKYMP_NATIVE_PARAM_FLOAT_ARRAY,
+        Param::StringArray => SKYMP_NATIVE_PARAM_STRING_ARRAY,
+        Param::ObjectArray => SKYMP_NATIVE_PARAM_OBJECT_ARRAY,
     }
 }
 
@@ -298,6 +321,8 @@ fn build() -> Option<Rows> {
             param_count: u8::try_from(row.params.len()).ok()?,
             params,
             hook: row.hook.code(),
+            latent: u8::from(row.latent),
+            staged: u8::from(row.staged),
         });
     }
     Some(Rows {
@@ -372,6 +397,7 @@ mod tests {
             assert_eq!((r.keep, r.record), keep_codes(t.keep));
             assert_eq!(r.look, look_code(t.look));
             assert_eq!(r.hook, t.hook.code());
+            assert_eq!((r.latent, r.staged), (u8::from(t.latent), u8::from(t.staged)));
             assert_eq!(usize::from(r.param_count), t.params.len());
             let params: Vec<u8> = t.params.iter().map(|p| param_code(*p)).collect();
             assert_eq!(r.params.get(..t.params.len()), Some(params.as_slice()));

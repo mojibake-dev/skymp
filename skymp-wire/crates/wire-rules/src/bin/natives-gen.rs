@@ -123,25 +123,14 @@ fn run() -> Result<(), String> {
         .filter(|e| matches!(e.class, Class::Decided { .. }))
         .count();
     println!(
-        "  overlay: {} entries, {decided} decided, {} stopgaps; {} live rows",
+        "  overlay: {} entries, {decided} decided, {} stopgaps; {} live rows, {} staged",
         OVERLAY.len(),
         OVERLAY.len().saturating_sub(decided),
-        generated.live.len()
+        generated.live.len(),
+        generated.staged_rows().count()
     );
-    let made = natives_rules::table_source(&generated).map_err(|refusals| {
-        let lines: Vec<String> = refusals
-            .iter()
-            .map(|r| format!("natives-gen: table refused: {r}"))
-            .collect();
-        lines.join("\n")
-    })?;
-    let client = natives_rules::ts_source(&generated).map_err(|refusals| {
-        let lines: Vec<String> = refusals
-            .iter()
-            .map(|r| format!("natives-gen: client file refused: {r}"))
-            .collect();
-        lines.join("\n")
-    })?;
+    let made = natives_rules::table_source(&generated);
+    let client = natives_rules::ts_source(&generated);
     for (path, made) in [(&args.table, &made), (&args.client, &client)] {
         let committed = std::fs::read_to_string(path).unwrap_or_default();
         if *made == committed {

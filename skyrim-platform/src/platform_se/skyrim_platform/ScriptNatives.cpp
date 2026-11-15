@@ -37,6 +37,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fmt/format.h>
@@ -370,6 +371,10 @@ struct RowInfo
   // train 53's V-scene: the scene-start hook (Scene.Start, ForceStart),
   // judged by its hook alone
   bool sceneStart = false;
+  // thuum ADR-073 step 4's S5: a staged row (every derived row of the
+  // generated table), counted by what it would do and run as before
+  // (OnStaged), never judged by the seam's other steps
+  bool staged = false;
   // the declared return's kind (TypeInfo::GetUnmangledRawType)
   RE::BSScript::TypeInfo::RawType result =
     RE::BSScript::TypeInfo::RawType::kNone;
@@ -451,10 +456,110 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
 
-// rung 5: the acting scope's swaps in the frames of natives the table does
-// not hold (a PlayerRef property is a 0x14 self on any native: the plan's
-// finding 5), raised at the flush as one row, "untabled native (acting)"
+// rung 5: the acting scope's swaps in the frames of natives no live row
+// judges (a PlayerRef property is a 0x14 self on any native: the plan's
+// finding 5; since ADR-073 step 4's S5 a staged row's and a binding's no row
+// claims), raised at the flush as one row, "no live row (acting)"
 std::atomic<std::uint32_t> g_actingUntabled{ 0 };
+
+// thuum ADR-073 step 4's S5 (decision 7's merge rule; H2, one census row per
+// kind and never one per row): a staged row's call counted by what its row
+// would do once its batch unstages (S8), by its stack's root kind, the
+// guest measurement ADR-063 decision 3's amendment asked for: would-forward
+// (a state call on a subject this seat does not own, from a world cause:
+// decision 11's forward), would-relay (an action on a world object it owns),
+// would-filter (a state call on a subject it does not own, from a seat-own
+// root such as a lifecycle handler: the amendment's filter), would-skip (a
+// non-latent call with no result on no object, inside another player's
+// acting scope: the spec's New 1), would-run (the owner's own, nobody's, or
+// no world cause). Each kind's first call is named once in the log
+enum StagedVerdict : std::size_t
+{
+  kWouldForward,
+  kWouldRelay,
+  kWouldFilter,
+  kWouldSkip,
+  kWouldRun,
+  kStagedVerdicts
+};
+
+constexpr const char* kStagedVerdictName[kStagedVerdicts] = {
+  "would-forward", "would-relay", "would-filter", "would-skip", "would-run"
+};
+
+// the root kind: the acting scope's root (a relay applied here, a relayed
+// trigger entry), else the root frame's class by QuestCause::Classify (a
+// quest stage's fragment, a world root, a direct timer, a seat-own root),
+// else none
+enum StagedRoot : std::size_t
+{
+  kRootRelayed,
+  kRootTrigger,
+  kRootStage,
+  kRootWorld,
+  kRootTimer,
+  kRootSeat,
+  kRootNone,
+  kStagedRoots
+};
+
+constexpr const char* kStagedRootName[kStagedRoots] = {
+  "relayed", "trigger", "stage fragment", "world", "timer", "seat", "no root"
+};
+
+// the staged calls counted before a verdict: a Local row's (a read, the VM's
+// own, the screen: R3, never sent), the platform's own, a frame not the
+// native's own, a subject that names no reference
+enum StagedPlain : std::size_t
+{
+  kStagedLocal,
+  kStagedPlatform,
+  kStagedFrame,
+  kStagedUnresolved,
+  kStagedPlains
+};
+
+constexpr const char* kStagedPlainName[kStagedPlains] = {
+  "staged local (R3, never sent)", "staged (platform)",
+  "staged (frame mismatch)", "staged (unresolved)"
+};
+
+std::array<std::array<std::atomic<std::uint32_t>, kStagedRoots>,
+           kStagedVerdicts>
+  g_staged{};
+std::array<std::array<std::atomic<bool>, kStagedRoots>, kStagedVerdicts>
+  g_stagedSaid{};
+std::array<std::atomic<std::uint32_t>, kStagedPlains> g_stagedPlain{};
+std::array<std::atomic<bool>, kStagedPlains> g_stagedPlainSaid{};
+
+// the census slot (thuum ADR-073 step 4's G2, decision 7): a binding no row
+// claims, by where InstallHooks found it (the game's module, another
+// module's, or none: bound after the install), named at its kind's first
+// call and counted. g_unclaimed is written by InstallHooks before the
+// dispatch hook attaches and never after, as g_rowOf is
+enum NoRowKind : std::uint8_t
+{
+  kNoRowGame,
+  kNoRowOther,
+  kNoRowLate,
+  kNoRowKinds
+};
+
+constexpr const char* kNoRowName[kNoRowKinds] = {
+  "no row (the game's module)", "no row (another module)",
+  "no row (bound after the install)"
+};
+
+std::unordered_map<const RE::BSScript::IFunction*, std::uint8_t> g_unclaimed;
+std::array<std::atomic<std::uint32_t>, kNoRowKinds> g_noRow{};
+std::array<std::atomic<bool>, kNoRowKinds> g_noRowSaid{};
+
+// true the first time `said` is raised, once per process
+bool FirstTime(std::atomic<bool>& said)
+{
+  return !said.load(std::memory_order_relaxed) &&
+    !said.exchange(true, std::memory_order_relaxed);
+}
 // train 53's V-scene: the scene starts counted inside a relayed scope (run
 // until ADR-073 step 5a's scene claim), raised at the flush as their own
 // row, so the acting row counts swaps alone (its review's contracts-6)
@@ -2411,6 +2516,188 @@ std::optional<EffectPlacement> EffectPlacementOf(
   return EffectPlacement{ *base, role, root };
 }
 
+// thuum ADR-073 step 4's S5: a staged call counted before its verdict, its
+// kind's first named once
+void CountStagedPlain(std::size_t row, StagedPlain kind)
+{
+  g_stagedPlain[kind].fetch_add(1, std::memory_order_relaxed);
+  if (FirstTime(g_stagedPlainSaid[kind])) {
+    logger::info("[verb:scripts] staged {}.{}: the first call counted as "
+                 "'{}', the kind counted from here (ADR-073 step 4's S5)",
+                 g_natives[row].cls, g_natives[row].fn,
+                 kStagedPlainName[kind]);
+  }
+}
+
+// a staged call's verdict counted by its root kind, the pair's first call
+// named once with its subject and its caller (read only then)
+void CountStaged(std::size_t row, StagedVerdict verdict, StagedRoot root,
+                 std::uint32_t subject, const RE::BSScript::StackFrame* top)
+{
+  g_staged[verdict][root].fetch_add(1, std::memory_order_relaxed);
+  if (!FirstTime(g_stagedSaid[verdict][root])) {
+    return;
+  }
+  std::string caller;
+  std::string handler;
+  NameCaller(top ? top->previousFrame : nullptr, caller, handler);
+  logger::info("[verb:scripts] staged {}.{} on {:x} from {}.{}: {} ({}), "
+               "the first of its kind, counted from here as 'staged {} ({})' "
+               "and run as before (ADR-073 step 4's S5)",
+               g_natives[row].cls, g_natives[row].fn, subject, caller, handler,
+               kStagedVerdictName[verdict], kStagedRootName[root],
+               kStagedVerdictName[verdict], kStagedRootName[root]);
+}
+
+// a staged call's root kind: the acting scope's root first, else the root
+// frame's class (QuestCause::Classify, MarkQuestCause's one rule, over the
+// frame's script and function names, read without a copy, and its self's
+// form type)
+StagedRoot StagedRootOf(const RE::BSScript::Stack* stack,
+                        const std::optional<ActingScope::Scope>& scope)
+{
+  if (scope) {
+    return scope->root == ActingScope::RootKind::kRelayed ? kRootRelayed
+                                                          : kRootTrigger;
+  }
+  const RE::BSScript::StackFrame* root = RootFrameOf(stack);
+  if (!root) {
+    return kRootNone;
+  }
+  const RE::BSScript::ObjectTypeInfo* type = root->owningObjectType.get();
+  const RE::BSScript::IFunction* function = root->owningFunction.get();
+  const char* script = type ? type->GetName() : nullptr;
+  const char* name = function ? function->GetName().c_str() : nullptr;
+  switch (QuestCause::Classify(script ? script : "", name ? name : "",
+                               SelfKindOf(SubjectOfFrame(root)))) {
+    case QuestCause::Root::kWorld:
+      return kRootWorld;
+    case QuestCause::Root::kTimer:
+      return kRootTimer;
+    case QuestCause::Root::kSeat:
+      return kRootSeat;
+    case QuestCause::Root::kStageFragment:
+      return kRootStage;
+    case QuestCause::Root::kUnknown:
+      break;
+  }
+  return kRootNone;
+}
+
+// thuum ADR-073 step 4's S5: a staged row's call (every derived row of the
+// generated table, its batch unstaged at S8), counted once by what its row
+// would do and run as before it had a row: it never touches the Local
+// branch's swap, the everyone rows' hooks, OnFamilyCall's look queue, the
+// helper rule, the owner branch, QueueTouch or QueueFromFrame, and raises no
+// mark (the body runs with the platform's level as it stands). Cheapest
+// first (rule 9): a Local row is counted before anything else, the
+// platform's latent calls of one among them (a read is a read whoever makes
+// it); then the platform's own, then the frame (H-S1), then the verdict by
+// the row's kind, its subject's owner (OwnedHere, read only) and the stack's
+// root kind
+void OnStaged(std::size_t row, const RowInfo& info,
+              const RE::BSScript::IFunction* fn,
+              const RE::BSScript::Stack* stack,
+              const std::optional<ActingScope::Scope>& scope)
+{
+  const NativeRow& native = g_natives[row];
+  if (native.kind == NativeKind::Local) {
+    CountStagedPlain(row, kStagedLocal);
+    return;
+  }
+  if (!stack) {
+    CountStagedPlain(row, kStagedUnresolved);
+    return;
+  }
+  const bool direct = PlatformCall::Active() ||
+    (g_nativeCallRequirements.stackId != 0 &&
+     stack->stackID == g_nativeCallRequirements.stackId);
+  if (direct || PlatformCall::IsLiveCallback(stack->callback.get())) {
+    CountStagedPlain(row, kStagedPlatform);
+    return;
+  }
+  const RE::BSScript::StackFrame* top = stack->top;
+  if (!top || top->owningFunction.get() != fn) {
+    CountStagedPlain(row, kStagedFrame);
+    return;
+  }
+  const StagedRoot root = StagedRootOf(stack, scope);
+  // nobody's (D-F1 C): every seat runs it
+  if (native.kind == NativeKind::Everyone) {
+    CountStaged(row, kWouldRun, root, EveryoneSelfId(top->self), top);
+    return;
+  }
+  // a static on no object: the seat's own game, run on the acting player's
+  // seat alone inside another player's scope when it is not latent and has
+  // no result (the spec's New 1, PQ-3's skip keyed on the subject)
+  if (native.subject == NativeSubject::None) {
+    const bool acting = scope && ActingScope::Swaps(*scope) && !info.latent &&
+      info.result == RE::BSScript::TypeInfo::RawType::kNone;
+    CountStaged(row, acting ? kWouldSkip : kWouldRun, root, 0, top);
+    return;
+  }
+  // the subject, read as OnCall's reads it: the frame's self, or the first
+  // argument through the engine's accessor with the frame's page
+  const RE::BSScript::Variable* subject = nullptr;
+  if (native.subject == NativeSubject::Self) {
+    subject = &top->self;
+  } else if (info.params > 0) {
+    const std::uint32_t page = top->GetPageForFrame();
+    if (page == kNoPage) {
+      CountStagedPlain(row, kStagedFrame);
+      return;
+    }
+    subject = &top->GetStackFrameVariable(0, page);
+  }
+  auto* vm = VM::GetSingleton();
+  const RE::TESObjectREFR* ref = subject
+    ? RefOfObject(vm ? vm->GetObjectHandlePolicy() : nullptr,
+                  ObjectOf(*subject))
+    : nullptr;
+  if (!ref) {
+    CountStagedPlain(row, kStagedUnresolved);
+    return;
+  }
+  const bool isActor = ref->GetFormType() == RE::FormType::ActorCharacter;
+  const bool owned = OwnedHere(ref, isActor);
+  StagedVerdict verdict = kWouldRun;
+  if (native.kind == NativeKind::Action) {
+    // an action on an actor is the streams' (6.7); on a world object this
+    // seat owns it would cross as the action rows do
+    verdict = owned && !isActor ? kWouldRelay : kWouldRun;
+  } else if (!owned) {
+    switch (root) {
+      case kRootSeat:
+        verdict = kWouldFilter;
+        break;
+      case kRootRelayed:
+      case kRootTrigger:
+      case kRootStage:
+      case kRootWorld:
+        verdict = kWouldForward;
+        break;
+      default:
+        break;
+    }
+  }
+  CountStaged(row, verdict, root, ref->formID, top);
+}
+
+// the census slot (G2): an untabled native's binding counted by where it was
+// bound, its kind's first named once
+void CountUnclaimed(const RE::BSScript::IFunction* fn)
+{
+  const auto it = g_unclaimed.find(fn);
+  const std::uint8_t kind = it != g_unclaimed.end() ? it->second : kNoRowLate;
+  g_noRow[kind].fetch_add(1, std::memory_order_relaxed);
+  if (FirstTime(g_noRowSaid[kind])) {
+    logger::info("[verb:scripts] {}.{}: the first call of a binding no table "
+                 "row claims, counted from here as '{}' (ADR-073 decision 7)",
+                 fn->GetObjectTypeName().c_str(), fn->GetName().c_str(),
+                 kNoRowName[kind]);
+  }
+}
+
 // the seam's judgment of one dispatch, 6.2's order (rule 9: the cheapest
 // test first). The body runs unless the lever skips it (marks.skip)
 Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
@@ -2466,11 +2753,26 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     if (swapped != 0) {
       g_actingUntabled.fetch_add(1, std::memory_order_relaxed);
     }
+    if (!sceneStart) {
+      CountUnclaimed(fn);
+    }
     return marks;
   }
   const std::size_t row = it->second;
   const NativeRow& native = g_natives[row];
   const RowInfo& info = g_rows[row];
+  // thuum ADR-073 step 4's S5: a staged row is counted and runs as it did
+  // untabled (a self naming the player with the figure absent here skipped
+  // as before, step (0)'s)
+  if (info.staged) {
+    if (swapped != 0) {
+      g_actingUntabled.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!marks.skip) {
+      OnStaged(row, info, fn, stack, scope);
+    }
+    return marks;
+  }
   if (swapped != 0) {
     Count(row, kCountActing);
   }
@@ -2870,6 +3172,8 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
   info.look = columns.look != SKYMP_NATIVE_LOOK_NEVER;
   info.lookOnly = columns.look == SKYMP_NATIVE_LOOK_ONLY &&
     columns.kind == SKYMP_NATIVE_KIND_ACTION;
+  // ADR-073 step 4's S5: a derived row, counted and run as before (OnStaged)
+  info.staged = columns.staged != 0;
 }
 
 // the table's rows from MpClientPlugin's SkympNativeRows (thuum ADR-073 step
@@ -2947,6 +3251,101 @@ const char* CrossingNote(const RowInfo& info)
   }
   return info.batchedState ? ", batched" : "";
 }
+
+// a binding's or a row's name as InstallHooks keys it: class and name,
+// lower-cased (Papyrus compares them without case; the dump spells
+// Game.GetPlayer "getplayer")
+std::string LowerName(std::string_view cls, std::string_view fn)
+{
+  std::string key;
+  key.reserve(cls.size() + fn.size() + 1);
+  for (const char c : cls) {
+    key.push_back(
+      static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  key.push_back('.');
+  for (const char c : fn) {
+    key.push_back(
+      static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  return key;
+}
+
+// a row's declared parameter type (skymp_wire.h's SKYMP_NATIVE_PARAM_*,
+// FunctionsDump.txt's) against the binding's own (IFunction::GetParam's
+// TypeInfo, its unmangled raw type: CommonLibSSE-NG include/RE/T/
+// TypeInfo.h:12-27, src/RE/T/TypeInfo.cpp:91-99). An object's class is not
+// held (the dump names it, the binding's type pointer is the class's), and
+// an object or an object array the VM types as none passes (HYPOTHESIS: a
+// class the VM has not loaded reads kNone; x-native-table's zero reads it)
+bool ParamMatches(std::uint8_t code, const RE::BSScript::TypeInfo& type)
+{
+  using RawType = RE::BSScript::TypeInfo::RawType;
+  const RawType raw = type.GetUnmangledRawType();
+  switch (code) {
+    case SKYMP_NATIVE_PARAM_BOOL:
+      return raw == RawType::kBool;
+    case SKYMP_NATIVE_PARAM_INT:
+      return raw == RawType::kInt;
+    case SKYMP_NATIVE_PARAM_FLOAT:
+      return raw == RawType::kFloat;
+    case SKYMP_NATIVE_PARAM_STRING:
+      return raw == RawType::kString;
+    case SKYMP_NATIVE_PARAM_OBJECT:
+      return raw == RawType::kObject || raw == RawType::kNone;
+    case SKYMP_NATIVE_PARAM_BOOL_ARRAY:
+      return raw == RawType::kBoolArray;
+    case SKYMP_NATIVE_PARAM_INT_ARRAY:
+      return raw == RawType::kIntArray;
+    case SKYMP_NATIVE_PARAM_FLOAT_ARRAY:
+      return raw == RawType::kFloatArray;
+    case SKYMP_NATIVE_PARAM_STRING_ARRAY:
+      return raw == RawType::kStringArray;
+    case SKYMP_NATIVE_PARAM_OBJECT_ARRAY:
+      return raw == RawType::kObjectArray || raw == RawType::kNoneArray;
+    default:
+      return false;
+  }
+}
+
+// the install check (thuum ADR-073 step 4's S5): a bound row's latency and
+// its parameters' count and types as the table declares them
+// (FunctionsDump.txt's, the row's columns) against the VM's own binding as
+// ReadRow read it (NativeFunctionBase::GetIsLatent, IFunction::GetParamCount
+// and GetParam): what differs first, "latency" or "parameters", or null.
+// HYPOTHESIS (the spec's 2.6) until x-native-table reads zero on both
+// seats: the dump's types and latency are 1.6.1170's
+const char* InstallMismatch(const SkympNativeRow& columns, const RowInfo& info)
+{
+  if ((columns.latent != 0) != info.latent) {
+    return "latency";
+  }
+  if (columns.param_count != info.params) {
+    return "parameters";
+  }
+  for (std::uint32_t i = 0;
+       i < info.params && i < kMaxArgs && i < SKYMP_NATIVE_MAX_PARAMS; ++i) {
+    if (!ParamMatches(columns.params[i], info.types[i])) {
+      return "parameters";
+    }
+  }
+  return nullptr;
+}
+
+// the install check's counts, for its one line
+struct InstallCounts
+{
+  std::size_t live = 0;
+  std::size_t staged = 0;
+  std::size_t stagedUnbound = 0;
+  std::size_t stagedOther = 0;
+  std::size_t stagedShared = 0;
+  std::size_t latency = 0;
+  std::size_t parameters = 0;
+  std::size_t unclaimedGame = 0;
+  std::size_t unclaimedOther = 0;
+  std::string first;
+};
 
 // one key of skymp5-client-settings.txt, found in the platform's plugin
 // folders (SkyrimPlatform.ini's PluginFolders, Settings::GetPluginFolders:
@@ -3066,6 +3465,11 @@ void FlushCensus(uint64_t now)
   std::vector<std::pair<std::string, uint32_t>> rows;
   uint64_t total = 0;
   for (size_t row = 0; row < kRowCount; ++row) {
+    // a staged row is never counted on its own row (OnStaged's summary,
+    // H2): nothing to read
+    if (g_rows[row].staged) {
+      continue;
+    }
     const std::string name =
       std::string(g_natives[row].cls) + "." + g_natives[row].fn;
     for (size_t kind = 0; kind < kCountKinds; ++kind) {
@@ -3103,11 +3507,36 @@ void FlushCensus(uint64_t now)
   }
   // V-scene's counted scenes, logged again in the next window
   FreeLineSlots(g_sceneLines);
-  // rung 5: the acting scope's swaps on natives no row holds, one row
+  // rung 5: the acting scope's swaps on natives no live row judges, one row
   const uint32_t untabled = g_actingUntabled.exchange(0);
   if (untabled != 0) {
-    rows.emplace_back("untabled native (acting)", untabled);
+    rows.emplace_back("no live row (acting)", untabled);
     total += untabled;
+  }
+  // ADR-073 step 4's S5: the staged calls, one row per kind (H2), and the
+  // census slot's, one row per kind of binding no row claims
+  for (size_t verdict = 0; verdict < kStagedVerdicts; ++verdict) {
+    for (size_t root = 0; root < kStagedRoots; ++root) {
+      if (const uint32_t n = g_staged[verdict][root].exchange(0)) {
+        rows.emplace_back(fmt::format("staged {} ({})",
+                                      kStagedVerdictName[verdict],
+                                      kStagedRootName[root]),
+                          n);
+        total += n;
+      }
+    }
+  }
+  for (size_t kind = 0; kind < kStagedPlains; ++kind) {
+    if (const uint32_t n = g_stagedPlain[kind].exchange(0)) {
+      rows.emplace_back(kStagedPlainName[kind], n);
+      total += n;
+    }
+  }
+  for (size_t kind = 0; kind < kNoRowKinds; ++kind) {
+    if (const uint32_t n = g_noRow[kind].exchange(0)) {
+      rows.emplace_back(kNoRowName[kind], n);
+      total += n;
+    }
   }
   // V-scene's would-be skips, run until step 5a's scene claim
   if (const uint32_t scenes = g_sceneCounted.exchange(0)) {
@@ -3452,9 +3881,15 @@ void ScriptNatives::CountPlatformCall(const RE::BSScript::IFunction* fn)
     return;
   }
   const auto it = g_rowOf.find(fn);
-  if (it != g_rowOf.end()) {
-    Count(it->second, kCountPlatform);
+  if (it == g_rowOf.end()) {
+    return;
   }
+  // a staged row's platform call is its summary's (ADR-073 step 4's S5, H2)
+  if (g_rows[it->second].staged) {
+    CountStagedPlain(it->second, kStagedPlatform);
+    return;
+  }
+  Count(it->second, kCountPlatform);
 }
 
 void ScriptNatives::InstallHooks()
@@ -3479,47 +3914,94 @@ void ScriptNatives::InstallHooks()
   // the platform's dump spells Game.GetPlayer "getplayer") and read once,
   // all of it before the dispatch is replaced below
   const bool tabled = LoadRows();
-  size_t boundRows = 0;
-  for (size_t row = 0; tabled && row < kRowCount; ++row) {
-    const NativeRow& native = g_natives[row];
-    const RE::BSScript::IFunction* function = nullptr;
+  // the bindings by class and name without case, read once (ADR-073 step
+  // 4's S5: a table of every native, so no row walks the bindings): each
+  // name's first binding in the game's module, and its latest outside it
+  struct Binding
+  {
+    const RE::BSScript::IFunction* game = nullptr;
     const RE::BSScript::IFunction* other = nullptr;
     std::uintptr_t otherBase = 0;
-    for (const auto& [cls, name, func, moduleBase, offset, longSig] : bound) {
-      if (_stricmp(cls.c_str(), native.cls) != 0 ||
-          _stricmp(name.c_str(), native.fn) != 0) {
-        continue;
+  };
+  std::unordered_map<std::string, Binding> byName;
+  byName.reserve(bound.size());
+  for (const auto& [cls, name, func, moduleBase, offset, longSig] : bound) {
+    Binding& binding = byName[LowerName(cls, name)];
+    if (moduleBase == gameBase) {
+      if (!binding.game) {
+        binding.game = func;
       }
-      if (moduleBase == gameBase) {
-        function = func;
-        break;
-      }
-      other = func;
-      otherBase = moduleBase;
+    } else {
+      binding.other = func;
+      binding.otherBase = moduleBase;
     }
-    const bool fromOther = !function && other;
+  }
+  size_t boundRows = 0;
+  // the install check's counts (ADR-073 step 4's S5): a staged row is never
+  // a line of its own (H2), only counted here
+  InstallCounts counts;
+  for (size_t row = 0; tabled && row < kRowCount; ++row) {
+    const NativeRow& native = g_natives[row];
+    const bool staged = native.columns.staged != 0;
+    const auto found = byName.find(LowerName(native.cls, native.fn));
+    const RE::BSScript::IFunction* function =
+      found != byName.end() ? found->second.game : nullptr;
+    const bool fromOther =
+      !function && found != byName.end() && found->second.other;
     if (fromOther) {
-      function = other;
-      logger::info("[verb:scripts] table row {}.{}: no binding in the game's "
-                   "module; bound from its binding outside it (allocation "
-                   "base {:x}), the VM's latest of its name (H-HP1)",
-                   native.cls, native.fn, otherBase);
+      function = found->second.other;
+      if (staged) {
+        ++counts.stagedOther;
+      } else {
+        logger::info("[verb:scripts] table row {}.{}: no binding in the "
+                     "game's module; bound from its binding outside it "
+                     "(allocation base {:x}), the VM's latest of its name "
+                     "(H-HP1)",
+                     native.cls, native.fn, found->second.otherBase);
+      }
     }
     if (!function) {
-      logger::warn("[verb:scripts] table row {}.{} is not among the VM's "
-                   "bindings; never judged",
-                   native.cls, native.fn);
+      if (staged) {
+        ++counts.stagedUnbound;
+      } else {
+        logger::warn("[verb:scripts] table row {}.{} is not among the VM's "
+                     "bindings; never judged",
+                     native.cls, native.fn);
+      }
       continue;
     }
     if (!g_rowOf.emplace(function, row).second) {
-      logger::warn("[verb:scripts] table row {}.{} binds a function another "
-                   "row holds; the first row judges it",
-                   native.cls, native.fn);
+      if (staged) {
+        ++counts.stagedShared;
+      } else {
+        logger::warn("[verb:scripts] table row {}.{} binds a function "
+                     "another row holds; the first row judges it",
+                     native.cls, native.fn);
+      }
       continue;
     }
     ReadRow(row, function);
     ++boundRows;
     const RowInfo& info = g_rows[row];
+    if (const char* mismatch = InstallMismatch(native.columns, info)) {
+      ++(std::string_view(mismatch) == "latency" ? counts.latency
+                                                 : counts.parameters);
+      if (counts.first.empty()) {
+        counts.first =
+          fmt::format("{}.{}'s {}", native.cls, native.fn, mismatch);
+      }
+      if (!staged) {
+        logger::warn("[verb:scripts] table row {}.{}: the VM's binding "
+                     "differs in its {} (FunctionsDump.txt against the "
+                     "IFunction; the binding's own shape judges the seat)",
+                     native.cls, native.fn, mismatch);
+      }
+    }
+    if (staged) {
+      ++counts.staged;
+      continue;
+    }
+    ++counts.live;
     logger::info("[verb:scripts] table row {}.{}: {} parameter(s), {}{}{}, "
                  "relay {}",
                  native.cls, native.fn, info.params,
@@ -3538,6 +4020,30 @@ void ScriptNatives::InstallHooks()
   logger::info("[verb:scripts] {} of {} table rows bound (wire-rules "
                "natives_table.rs through skymp_wire.h, thuum docs/NATIVES.md)",
                boundRows, kRowCount);
+  // the census slot (G2): every binding no row claims, by where it was bound
+  for (const auto& [cls, name, func, moduleBase, offset, longSig] : bound) {
+    if (!func || g_rowOf.count(func) != 0) {
+      continue;
+    }
+    const std::uint8_t kind =
+      moduleBase == gameBase ? kNoRowGame : kNoRowOther;
+    if (g_unclaimed.emplace(func, kind).second) {
+      ++(kind == kNoRowGame ? counts.unclaimedGame : counts.unclaimedOther);
+    }
+  }
+  // the install check's one line (ADR-073 step 4's S5)
+  logger::info(
+    "[verb:scripts] install check: {} live and {} staged row(s) bound ({} "
+    "staged row(s) unbound, {} bound outside the game's module, {} sharing "
+    "another row's function); {} latency and {} parameter mismatch(es) "
+    "against the VM's bindings{}; {} binding(s) in the game's module and {} "
+    "outside it no row claims, each kind named at its first call and "
+    "counted (ADR-073 step 4's S5)",
+    counts.live, counts.staged, counts.stagedUnbound, counts.stagedOther,
+    counts.stagedShared, counts.latency, counts.parameters,
+    counts.first.empty() ? std::string()
+                         : fmt::format(" (the first {})", counts.first),
+    counts.unclaimedGame, counts.unclaimedOther);
   // thuum ADR-068 D-S3: the trap family the gate and this seam read, named
   // once per process beside the table it extends (TrapFamily.h)
   TrapFamily::LogReady();

@@ -15,13 +15,15 @@
  * checks it against the table; after natives-gen changes the count, set it
  * here and run `just wire-header`.
  */
-#define SKYMP_NATIVE_ROWS 52
+#define SKYMP_NATIVE_ROWS 1408
 
 /**
- * A native takes at most eleven parameters (CommonLibSSE-NG
- * src/RE/N/NativeFunctionBase.cpp:15, "native supports max 11").
+ * A row's parameters: at most twelve, the dump's longest list (the
+ * platform's own TESModPlatform.Add and AddItemEx). A game native takes at
+ * most eleven (CommonLibSSE-NG src/RE/N/NativeFunctionBase.cpp:15, "native
+ * supports max 11"), which the platform reads of a frame.
  */
-#define SKYMP_NATIVE_MAX_PARAMS 11
+#define SKYMP_NATIVE_MAX_PARAMS 12
 
 /**
  * Kind: the call itself is the message, relayed.
@@ -176,6 +178,31 @@
 #define SKYMP_NATIVE_PARAM_OBJECT 4
 
 /**
+ * Parameter: an array of Bools.
+ */
+#define SKYMP_NATIVE_PARAM_BOOL_ARRAY 5
+
+/**
+ * Parameter: an array of Ints.
+ */
+#define SKYMP_NATIVE_PARAM_INT_ARRAY 6
+
+/**
+ * Parameter: an array of Floats.
+ */
+#define SKYMP_NATIVE_PARAM_FLOAT_ARRAY 7
+
+/**
+ * Parameter: an array of Strings.
+ */
+#define SKYMP_NATIVE_PARAM_STRING_ARRAY 8
+
+/**
+ * Parameter: an array of objects.
+ */
+#define SKYMP_NATIVE_PARAM_OBJECT_ARRAY 9
+
+/**
  * Hook: nothing beyond the row's other columns.
  */
 #define SKYMP_NATIVE_HOOK_NONE 0
@@ -327,6 +354,16 @@ typedef struct SkympNativeRow {
    * wire-rules' `Hook::code`).
    */
   uint8_t hook;
+  /**
+   * 1 for a latent native (FunctionsDump.txt's isLatent), which the
+   * platform's install check holds against the VM's binding; 0 otherwise.
+   */
+  uint8_t latent;
+  /**
+   * 1 for a staged row (thuum ADR-073 step 4's S5: a derived row, counted
+   * by what it would do and run as before); 0 for a live row.
+   */
+  uint8_t staged;
 } SkympNativeRow;
 
 #ifdef __cplusplus

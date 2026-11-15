@@ -6786,7 +6786,13 @@ mod tests {
         assert_eq!(at.subject, 0xaa8cb);
         let send = script_call_subject("Debug", "SendAnimationEvent", 0xaa8cb, &[pillar, text]);
         assert_eq!(send.subject, 0xaa8cb);
-        assert_eq!(script_call_subject("Debug", "Notification", 0, &[text]), ScriptCallSubject { row: -1, subject: 0, record: 0, look: 0 });
+        // a pair no row holds has none; since thuum ADR-073 step 4's S5 every
+        // native of FunctionsDump.txt has a row, the derived ones staged
+        // (Debug.Notification, a declared screen row), which the shape step
+        // refuses by its row below
+        assert_eq!(script_call_subject("Debug", "Notifications", 0, &[text]), ScriptCallSubject { row: -1, subject: 0, record: 0, look: 0 });
+        let notification = script_call_subject("Debug", "Notification", 0, &[text]);
+        assert!(notification.row >= 52);
         assert_eq!(at.record, 0, "an action row keeps no record");
         let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING };
         let mut s = new_script_calls();
@@ -6801,6 +6807,7 @@ mod tests {
         let guest = s.judge(at.row, &[text, text], &ScriptCallFacts { sender: 0xff00_0001, ..facts }, 0);
         assert_eq!((guest.code, guest.name.as_str()), (ScriptCallCode::Owner, "E_SCRIPTCALL_OWNER"));
         assert_eq!(s.judge(-1, &[text], &facts, 0).name, "E_SCRIPTCALL_ROW");
+        assert_eq!(s.judge(notification.row, &[text], &facts, 0).name, "E_SCRIPTCALL_ROW");
         assert_eq!(s.judge(at.row, &[text], &facts, 0).name, "E_SCRIPTCALL_ARGS");
         assert_eq!(s.judge(at.row, &[text, text], &ScriptCallFacts { subject_kind: 2, ..facts }, 0).code, ScriptCallCode::Skipped);
         // kind 4, a placement the server holds no reference for (Bleak Falls Sanctum 0x371dd's door FX 0x5256c,

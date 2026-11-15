@@ -10,6 +10,12 @@
 //! call is (kind), whose object it concerns (subject), who owns that object's
 //! scripts (owner), who hears it (audience), what a receiver runs for it
 //! (relay), what the server keeps of it (keep) and its parameters' types.
+//! Since step 4's S5 every native of FunctionsDump.txt has a row: the
+//! fifty-two live rows the seam judges, then every derived row staged
+//! ([`Row::staged`]), which the seam counts by what it would do and runs as
+//! before and the shape step refuses by its row (`E_SCRIPTCALL_ROW`) until
+//! its batch unstages; a row is found through the generated index
+//! ([`row_index`], O(1)).
 //!
 //! The server never understands an action: the shape is the gate, judged in
 //! two steps. The shape step ([`ScriptCalls::shape`]) comes first, before the
@@ -458,6 +464,25 @@ pub enum Param {
     String,
     /// An object, its form id and type name on the wire, or None.
     Object,
+    /// An array of Bools: the wire's SnippetArg carries no array, so a row
+    /// with an array parameter is never relayed and no call fits it.
+    BoolArray,
+    /// An array of Ints.
+    IntArray,
+    /// An array of Floats.
+    FloatArray,
+    /// An array of Strings.
+    StringArray,
+    /// An array of objects.
+    ObjectArray,
+}
+
+impl Param {
+    /// Whether the parameter is an array, which no call on the wire fits.
+    #[must_use]
+    pub fn is_array(self) -> bool {
+        matches!(self, Param::BoolArray | Param::IntArray | Param::FloatArray | Param::StringArray | Param::ObjectArray)
+    }
 }
 
 /// One native's row of the table.
@@ -485,9 +510,38 @@ pub struct Row {
     pub params: &'static [Param],
     /// What the seam or the client does with its call beyond the rest.
     pub hook: Hook,
+    /// The native is latent (FunctionsDump.txt's isLatent), which the
+    /// platform's install check holds against the VM's own binding.
+    pub latent: bool,
+    /// A derived row (thuum ADR-073 step 4's S5): the seam counts its call
+    /// by what it would do and runs it as before, and the server refuses it
+    /// by its row (`E_SCRIPTCALL_ROW`) until its batch unstages (S8). The
+    /// live rows (the fifty-two) are never staged.
+    pub staged: bool,
 }
 
 include!("natives_table.rs");
+
+/// The generated index's empty slot.
+const NO_ROW: u16 = u16::MAX;
+
+/// A pair's key for the generated index: FNV-1a over the class's and the
+/// name's bytes lower-cased, a dot between (Papyrus names compare without
+/// case). natives-gen places each row by it; [`row_index`] finds one by it.
+#[must_use]
+pub fn row_key_hash(cls: &str, func: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in cls.bytes().chain(std::iter::once(b'.')).chain(func.bytes()) {
+        hash = (hash ^ u64::from(b.to_ascii_lowercase())).wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// The first slot a key's probe reads in [`INDEX`].
+#[must_use]
+pub fn index_slot(hash: u64) -> usize {
+    usize::from(u16::try_from(hash & 0xffff).unwrap_or(0)) & INDEX_MASK
+}
 
 /// The natives whose relay sends a behavior graph event, the family
 /// ObjectAnimation (MsgType 71) carried: an accepted call of a row relayed
@@ -515,10 +569,26 @@ const OWN_PLAYER: u32 = 0x14;
 const BY_RECORD: &str = " (a reference the server does not load, placed by its game-file record)";
 
 /// The row of `cls`.`func`, its place in [`TABLE`]; Papyrus names compare
-/// without case.
+/// without case. O(1) through the generated open-addressed [`INDEX`]
+/// (thuum ADR-073 step 4's S5, rule 12: the bridge asks it before the shape
+/// step's rate, so no packet scans the table): a probe from the key's slot
+/// reads at most the table's longest run, which natives-gen fixes and the
+/// tests pin, and stops at the first empty slot.
 #[must_use]
 pub fn row_index(cls: &str, func: &str) -> Option<usize> {
-    TABLE.iter().position(|r| r.cls.eq_ignore_ascii_case(cls) && r.func.eq_ignore_ascii_case(func))
+    let start = index_slot(row_key_hash(cls, func));
+    for probe in 0..INDEX.len() {
+        let at = start.wrapping_add(probe) & INDEX_MASK;
+        let row = *INDEX.get(at)?;
+        if row == NO_ROW {
+            return None;
+        }
+        let i = usize::from(row);
+        if TABLE.get(i).is_some_and(|r| r.cls.eq_ignore_ascii_case(cls) && r.func.eq_ignore_ascii_case(func)) {
+            return Some(i);
+        }
+    }
+    None
 }
 
 /// The row of `cls`.`func`.
@@ -935,6 +1005,9 @@ enum Channel {
 /// subject's record; any other row is refused by its row
 /// (`E_SCRIPTCALL_ROW`).
 fn channel_of(row: &Row) -> Result<Channel, Refusal> {
+    if row.staged {
+        return Err(refusal(Code::Row, "a staged row (thuum ADR-073 step 4's S5): counted on its seat and run there as before, never sent until its batch unstages".to_owned()));
+    }
     if row.look == Look::Only {
         // a row never relayed as an action crosses a look as the call itself
         let (cls, func) = row.relay_target().unwrap_or((row.cls, row.func));
@@ -1265,7 +1338,7 @@ impl ScriptCalls {
     /// arguments and the subject's form. A call refused here costs the core
     /// no lookup.
     pub fn shape(&mut self, row: Option<&Row>, args: &[Arg], sender: u32, self_id: u32, now_ms: u64) -> Result<Shaped, Refusal> {
-        let record = row.is_some_and(|r| matches!(r.keep, Keep::Record(_)));
+        let record = row.is_some_and(|r| matches!(r.keep, Keep::Record(_)) && !r.staged);
         let (budgets, burst, per_second, whose) =
             if record { (&mut self.record_budgets, BURST_RECORD, PER_SECOND_RECORD, " (its record rows' own budget)") } else { (&mut self.budgets, BURST, PER_SECOND, "") };
         if !budgets.entry(sender).or_insert_with(|| Bucket::full(burst, now_ms)).take(burst, per_second, now_ms) {
@@ -1491,6 +1564,12 @@ mod tests {
 
     fn refused_by(shaped: Result<Shaped, Refusal>) -> Option<Code> {
         shaped.err().map(|r| r.code)
+    }
+
+    // the live rows (thuum ADR-073 step 4's S5): the table's first fifty-two,
+    // every other row staged
+    fn live() -> impl Iterator<Item = &'static Row> {
+        TABLE.iter().filter(|r| !r.staged)
     }
 
     #[test]
@@ -1891,26 +1970,26 @@ mod tests {
         // S4, the V-scene hook): "52 of 52 table rows bound". D-R1 C keeps the
         // flip's AddItem and RemoveItem as the player's own inventory in
         // place, so nine rows are the player's own, in player_own's order
-        assert_eq!(TABLE.len(), 52);
-        let own: Vec<(&str, &str)> = TABLE.iter().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func)).collect();
+        assert_eq!(live().count(), 52);
+        let own: Vec<(&str, &str)> = live().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func)).collect();
         assert_eq!(own, crate::player_own::rows().collect::<Vec<_>>());
         assert_eq!(own.len(), 9);
         assert!(own.iter().all(|(c, f)| crate::player_own::Row::of(c, f).is_some_and(|r| r.class() == *c)));
         assert_eq!((row_index("ObjectReference", "AddItem"), row_index("ObjectReference", "RemoveItem")), (Some(6), Some(7)));
         assert_eq!(row_index("Actor", "SetRace"), Some(43));
-        let actions: Vec<&str> = TABLE.iter().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
+        let actions: Vec<&str> = live().filter(|r| r.kind == Kind::Action).map(|r| r.func).collect();
         assert_eq!(actions, ["PlayAnimation", "PlayAnimationAndWait", "SendAnimationEvent", "SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat", "Play", "CreateDetectionEvent"]);
         // D-W2 A's look column: the six action rows also, the two motion rows
         // and the sound alone, every other row never
-        let looks = |look: Look| -> Vec<String> { TABLE.iter().filter(|r| r.look == look).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
+        let looks = |look: Look| -> Vec<String> { live().filter(|r| r.look == look).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
         assert_eq!(looks(Look::Also), ["ObjectReference.PlayAnimation", "ObjectReference.PlayAnimationAndWait", "Debug.SendAnimationEvent", "ObjectReference.SetAnimationVariableBool", "ObjectReference.SetAnimationVariableInt", "ObjectReference.SetAnimationVariableFloat"]);
         assert_eq!(looks(Look::Only), ["ObjectReference.SetMotionType", "ObjectReference.ApplyHavokImpulse", "Sound.Play", "ObjectReference.CreateDetectionEvent"]);
         assert_eq!(row_index("Sound", "Play"), Some(41));
         assert_eq!(row_index("ObjectReference", "CreateDetectionEvent"), Some(42));
         // one row goes to the cell's host alone: the detection event
-        let to_host: Vec<&str> = TABLE.iter().filter(|r| r.audience == Audience::Host).map(|r| r.func).collect();
+        let to_host: Vec<&str> = live().filter(|r| r.audience == Audience::Host).map(|r| r.func).collect();
         assert_eq!(to_host, ["CreateDetectionEvent"]);
-        for (i, r) in TABLE.iter().enumerate() {
+        for (i, r) in live().enumerate() {
             let name = format!("{}.{}", r.cls, r.func);
             // one row per pair, names compared without case
             assert_eq!(row_index(r.cls, r.func), Some(i), "{name}");
@@ -1972,19 +2051,19 @@ mod tests {
                 assert_eq!(r.variable_kind(), None, "{name}");
             }
         }
-        let everyone: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        let everyone: Vec<String> = live().filter(|r| r.kind == Kind::Everyone).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(everyone, ["Quest.SetCurrentStageID", "Quest.Start", "Quest.Stop", "GlobalVariable.SetValue", "ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
         // the flip's nineteen state rows, D-S3's three, the standing's six and
         // rung 5's seven player's own; the two scene starts are creations,
         // judged as state rows (channel_of)
-        assert_eq!(TABLE.iter().filter(|r| r.kind == Kind::State).count(), 35);
-        let creations: Vec<String> = TABLE.iter().filter(|r| r.kind == Kind::Create).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        assert_eq!(live().filter(|r| r.kind == Kind::State).count(), 35);
+        let creations: Vec<String> = live().filter(|r| r.kind == Kind::Create).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(creations, ["Scene.Start", "Scene.ForceStart"]);
         assert_eq!((row_index("Scene", "Start"), row_index("Scene", "ForceStart")), (Some(50), Some(51)));
         // the hooks (thuum ADR-073 step 4's S4): each code's rows, the seam's
         // ten name lists and the V-scene's scene starts as one column, and
         // every code a line under decision 5 naming its verb doc
-        let hooked = |hook: Hook| -> Vec<String> { TABLE.iter().filter(|r| r.hook == hook).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
+        let hooked = |hook: Hook| -> Vec<String> { live().filter(|r| r.hook == hook).map(|r| format!("{}.{}", r.cls, r.func)).collect() };
         assert_eq!(hooked(Hook::DeathReport), ["Actor.Kill", "Actor.KillSilent"]);
         assert_eq!(hooked(Hook::TrapDestroyed), ["ObjectReference.SetDestroyed"]);
         assert_eq!(hooked(Hook::TrapMotion), ["ObjectReference.SetMotionType"]);
@@ -2008,17 +2087,17 @@ mod tests {
         assert_eq!(row("Game", "GetPlayer").map(|r| r.kind), Some(Kind::Local));
         // the three rows kept as their subject's variable (the fifty fixes'
         // D-C3 A)
-        let variables: Vec<&str> = TABLE.iter().filter(|r| r.keep == Keep::Variable).map(|r| r.func).collect();
+        let variables: Vec<&str> = live().filter(|r| r.keep == Keep::Variable).map(|r| r.func).collect();
         assert_eq!(variables, ["SetAnimationVariableBool", "SetAnimationVariableInt", "SetAnimationVariableFloat"]);
         // one row kept as evidence: a trap's hit on an actor (playtest 48)
-        let evidence: Vec<String> = TABLE.iter().filter(|r| r.keep == Keep::Evidence).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        let evidence: Vec<String> = live().filter(|r| r.keep == Keep::Evidence).map(|r| format!("{}.{}", r.cls, r.func)).collect();
         assert_eq!(evidence, ["ObjectReference.ProcessTrapHit"]);
         // the thirteen rows kept as their subject's record, by kind
-        let records = |kind: RecordKind| -> Vec<&str> { TABLE.iter().filter(|r| r.keep == Keep::Record(kind)).map(|r| r.func).collect() };
+        let records = |kind: RecordKind| -> Vec<&str> { live().filter(|r| r.keep == Keep::Record(kind)).map(|r| r.func).collect() };
         assert_eq!(records(RecordKind::RefState), ["Enable", "EnableNoWait", "Disable", "DisableNoWait", "Delete"]);
         assert_eq!(records(RecordKind::Placement), ["PlaceAtMe", "PlaceActorAtMe"]);
         assert_eq!(records(RecordKind::Standing), ["SetFactionRank", "ModFactionRank", "RemoveFromFaction", "RemoveFromAllFactions", "SetCrimeFaction", "SetRelationshipRank"]);
-        assert!(TABLE.iter().filter(|r| matches!(r.keep, Keep::Record(RecordKind::Standing))).all(|r| r.cls == "Actor"));
+        assert!(live().filter(|r| matches!(r.keep, Keep::Record(RecordKind::Standing))).all(|r| r.cls == "Actor"));
         // rung 4's seven are appended: every earlier row keeps its place
         assert_eq!(row_index("ObjectReference", "ApplyHavokImpulse"), Some(33));
         assert_eq!(row_index("Actor", "SetFactionRank"), Some(34));
@@ -2037,7 +2116,7 @@ mod tests {
         let mut s = ScriptCalls::default();
         assert!(matches!(s.judge(play, &[Arg::String], &hosted(PILLAR), 0), Verdict::Accept(_)));
         // every action row of the table passes channel_of
-        assert!(TABLE.iter().filter(|r| r.kind == Kind::Action).all(|r| channel_of(r).is_ok()), "an action row refused by its row");
+        assert!(live().filter(|r| r.kind == Kind::Action).all(|r| channel_of(r).is_ok()), "an action row refused by its row");
         // a scene's start: a creation, its starter's, with no record channel
         let start = row("Scene", "Start");
         assert_eq!(start.map(|r| (r.kind, r.owner, r.hook)), Some((Kind::Create, Owner::Creator, Hook::SceneStart)));
@@ -2045,6 +2124,55 @@ mod tests {
         assert_eq!(refused.as_ref().map(|r| r.code), Some(Code::Row));
         assert!(refused.is_some_and(|r| r.why.starts_with("a state row with no record channel")));
         assert_eq!(code(&s.judge(start, &[], &hosted(PILLAR), 0)), Some(Code::Row));
+    }
+
+    // step 4's S5: every native of FunctionsDump.txt has a row, the derived
+    // ones staged after the live, each found in O(1) by its pair without case
+    // and refused by its row until its batch unstages
+    #[test]
+    fn every_native_has_a_row_found_by_the_index_and_a_staged_one_is_refused() {
+        assert_eq!(TABLE.len(), 1408);
+        assert_eq!(TABLE.iter().filter(|r| r.staged).count(), 1356);
+        assert_eq!(TABLE.iter().position(|r| r.staged), Some(52));
+        assert_eq!(INDEX.len().checked_sub(1), Some(INDEX_MASK));
+        assert!(INDEX.len() >= TABLE.len().saturating_mul(2) && INDEX.len().is_power_of_two());
+        let mut longest = 0usize;
+        for (i, r) in TABLE.iter().enumerate() {
+            assert_eq!(row_index(r.cls, r.func), Some(i), "{}.{}", r.cls, r.func);
+            assert_eq!(row_index(&r.cls.to_ascii_uppercase(), &r.func.to_ascii_lowercase()), Some(i), "{}.{}", r.cls, r.func);
+            // the probe's length from the key's slot to the row's
+            let start = index_slot(row_key_hash(r.cls, r.func));
+            let at = INDEX.iter().position(|&x| usize::from(x) == i).unwrap_or_else(|| panic!("{}.{} has no slot", r.cls, r.func));
+            longest = longest.max(at.wrapping_sub(start) & INDEX_MASK);
+        }
+        // the longest probe a found pair reads (natives-gen's layout, pinned:
+        // a table whose probes grow past it is a hash to look at again)
+        assert!(longest <= 16, "longest probe {longest}");
+        // a pair no row holds stops at an empty slot
+        for (cls, func) in [("ObjectReference", "Unlock"), ("Debug", "Notifications"), ("", ""), ("ObjectReference.", "PlayAnimation")] {
+            assert_eq!(row_index(cls, func), None, "{cls}.{func}");
+        }
+        assert_eq!(INDEX.iter().filter(|&&x| x == NO_ROW).count(), INDEX.len().saturating_sub(TABLE.len()));
+        // Game.TeachWord, staged: the word wall's grant, refused by its row
+        // with no rate spent on the record budget
+        let teach = row("Game", "TeachWord");
+        assert_eq!(teach.map(|r| (r.kind, r.owner, r.staged)), Some((Kind::State, Owner::Player, true)));
+        let refused = teach.and_then(|r| channel_of(r).err());
+        assert!(refused.is_some_and(|r| r.code == Code::Row && r.why.starts_with("a staged row")));
+        let mut s = ScriptCalls::default();
+        assert_eq!(code(&s.judge(row("Actor", "SetGhost"), &[Arg::Bool], &hosted(PILLAR), 0)), Some(Code::Row));
+        // a staged action row is never relayed (ObjectReference.PlayGamebryoAnimation)
+        let gamebryo = row("ObjectReference", "PlayGamebryoAnimation");
+        assert_eq!(gamebryo.map(|r| (r.kind, r.staged)), Some((Kind::Action, true)));
+        assert!(gamebryo.is_some_and(|r| channel_of(r).is_err()));
+        // an array parameter fits no argument, and its row is never relayed
+        let forms = row("FormList", "AddForms");
+        assert_eq!(forms.map(|r| (r.params, r.relay)), Some((&[Param::ObjectArray][..], Relay::Never)));
+        assert!(TABLE.iter().filter(|r| r.params.iter().any(|p| p.is_array())).all(|r| r.relay == Relay::Never));
+        // the live rows' latency is the dump's (the platform's install check
+        // holds it against the VM's binding)
+        let latent: Vec<String> = live().filter(|r| r.latent).map(|r| format!("{}.{}", r.cls, r.func)).collect();
+        assert_eq!(latent.len(), 13, "{latent:?}");
     }
 
     // Bleak Falls Temple's ambush draugr 0x800a6, which the hanging blades

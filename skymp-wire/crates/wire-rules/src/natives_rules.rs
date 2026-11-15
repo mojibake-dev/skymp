@@ -17,8 +17,9 @@
 //! spec's G1; [`table_source`]); since S4 every owner on a subject is the
 //! rules' asked one (decision 6), the hook column holds what the platform's
 //! name lists held, and train 53's two scene starts follow the fifty, their
-//! hook a stopgap until step 5a. Every other native's row is derived and
-//! held back until step 4's S5 lands the derived rows staged. The platform
+//! hook a stopgap until step 5a. Since S5 every other native's row follows
+//! them in the dump's order, derived and staged ([`Generated::staged_rows`]),
+//! and the table carries its generated O(1) index ([`index_of`]). The platform
 //! reads the live rows through wire-client-ffi's generated header (D-NT1 C)
 //! and the client through skymp5-client's nativeRows.generated.ts
 //! ([`ts_source`]), never a copy. The `natives-gen` tool
@@ -417,9 +418,9 @@ pub struct Cells {
     pub look: Look,
     /// What it does inside another player's acting scope.
     pub scoped: Scoped,
-    /// Its parameters in order; none when one is an array (the wire's
+    /// Its parameters in order (an array's among them: the wire's
     /// SnippetArg carries no array, so such a row is never relayed).
-    pub params: Option<Vec<Param>>,
+    pub params: Vec<Param>,
     /// What the seam or the client does beyond the rest: the overlay's
     /// alone, every rule giving none.
     pub hook: Hook,
@@ -497,6 +498,11 @@ fn param_of(ty: &Type) -> Option<Param> {
         "Float" => Some(Param::Float),
         "String" => Some(Param::String),
         "Object" => Some(Param::Object),
+        "BoolArray" => Some(Param::BoolArray),
+        "IntArray" => Some(Param::IntArray),
+        "FloatArray" => Some(Param::FloatArray),
+        "StringArray" => Some(Param::StringArray),
+        "ObjectArray" => Some(Param::ObjectArray),
         _ => None,
     }
 }
@@ -589,12 +595,13 @@ pub fn derive(dump: &Dump, native: &Native) -> Derived {
         Kind::Everyone => Audience::Everyone,
         Kind::State | Kind::Local | Kind::Create => Audience::Nobody,
     };
-    let params: Option<Vec<Param>> = native.args.iter().map(|a| param_of(&a.ty)).collect();
+    // parse_dump admits no other raw type, so every argument has its Param
+    let params: Vec<Param> = native.args.iter().filter_map(|a| param_of(&a.ty)).collect();
     let relayed = matches!(
         kind,
         Kind::Action | Kind::State
     ) && subject != Subject::Nothing
-        && params.is_some();
+        && !params.iter().any(|p| p.is_array());
     let relay = if !relayed {
         Relay::Never
     } else if !native.latent {
@@ -804,13 +811,9 @@ pub enum Refusal {
     },
     /// A twin relay names no non-latent native of the dump.
     NoTwin(&'static str),
-    /// A live row with a cell the table does not hold yet.
-    NotTabled {
-        /// The entry's native.
-        native: &'static str,
-        /// The cell.
-        cell: &'static str,
-    },
+    /// Two natives whose names compare equal without case, which the
+    /// table's index cannot tell apart (the dump holds none).
+    Collides(&'static str),
 }
 
 impl fmt::Display for Refusal {
@@ -822,7 +825,7 @@ impl fmt::Display for Refusal {
             Refusal::Unchanged { native, cell } => write!(f, "{native}: sets {cell} to the rules' own value"),
             Refusal::Repeated { native, cell } => write!(f, "{native}: sets {cell} twice"),
             Refusal::NoTwin(n) => write!(f, "{n}: its twin relay names no non-latent native of the dump"),
-            Refusal::NotTabled { native, cell } => write!(f, "{native}: a live row whose {cell} the table does not hold yet"),
+            Refusal::Collides(n) => write!(f, "{n}: another native's name compares equal without case"),
         }
     }
 }
@@ -939,15 +942,13 @@ pub fn generate(dump: &Dump, overlay: &[Entry]) -> Result<Generated, Vec<Refusal
             live.push(i);
         }
     }
-    let generated = Generated { rows, live };
-    for row in generated.live_rows() {
-        if let Err(cell) = TableRow::of_generated(row) {
-            refusals.push(Refusal::NotTabled {
-                native: row.entry.map_or("", |e| e.native),
-                cell,
-            });
+    let mut keys = std::collections::BTreeSet::new();
+    for row in &rows {
+        if !keys.insert((row.cls.to_ascii_lowercase(), row.func.to_ascii_lowercase())) {
+            refusals.push(Refusal::Collides(row.native.name));
         }
     }
+    let generated = Generated { rows, live };
     if refusals.is_empty() {
         Ok(generated)
     } else {
@@ -959,6 +960,21 @@ impl Generated {
     /// The live table's rows, in its order.
     pub fn live_rows(&self) -> impl Iterator<Item = &GeneratedRow> {
         self.live.iter().filter_map(|&i| self.rows.get(i))
+    }
+
+    /// The derived rows the table holds staged (step 4's S5): every native
+    /// no live entry names, in the dump's order.
+    pub fn staged_rows(&self) -> impl Iterator<Item = &GeneratedRow> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !self.live.contains(i))
+            .map(|(_, r)| r)
+    }
+
+    /// Every row of the table in its order: the live rows, then the staged.
+    pub fn table_rows(&self) -> impl Iterator<Item = &GeneratedRow> {
+        self.live_rows().chain(self.staged_rows())
     }
 }
 
@@ -988,6 +1004,10 @@ pub struct TableRow {
     pub params: Vec<Param>,
     /// The hook.
     pub hook: Hook,
+    /// Latent.
+    pub latent: bool,
+    /// Staged.
+    pub staged: bool,
 }
 
 impl TableRow {
@@ -1006,16 +1026,16 @@ impl TableRow {
             look: row.look,
             params: row.params.to_vec(),
             hook: row.hook,
+            latent: row.latent,
+            staged: row.staged,
         }
     }
 
-    /// A generated row in the table's types; the name of a cell the table
-    /// does not hold yet.
-    pub fn of_generated(row: &GeneratedRow) -> Result<Self, &'static str> {
-        let Some(params) = row.cells.params.clone() else {
-            return Err("params");
-        };
-        Ok(TableRow {
+    /// A generated row in the table's types: staged unless a live entry
+    /// names it.
+    #[must_use]
+    pub fn of_generated(row: &GeneratedRow) -> Self {
+        TableRow {
             cls: row.cls,
             func: row.func,
             kind: row.cells.kind,
@@ -1025,9 +1045,11 @@ impl TableRow {
             relay: row.cells.relay,
             keep: row.cells.keep,
             look: row.cells.look,
-            params,
+            params: row.cells.params.clone(),
             hook: row.cells.hook,
-        })
+            latent: row.native.latent,
+            staged: !row.entry.is_some_and(|e| e.live),
+        }
     }
 
     /// The row's line in natives_table.rs.
@@ -1054,7 +1076,7 @@ impl TableRow {
             .map(|p| format!("Param::{p:?}"))
             .collect();
         format!(
-            "    Row {{ cls: \"{}\", func: \"{}\", kind: Kind::{:?}, subject: Subject::{:?}, owner: Owner::{:?}, audience: Audience::{:?}, relay: {relay}, keep: {keep}, look: Look::{:?}, params: &[{}], hook: Hook::{:?} }},",
+            "    Row {{ cls: \"{}\", func: \"{}\", kind: Kind::{:?}, subject: Subject::{:?}, owner: Owner::{:?}, audience: Audience::{:?}, relay: {relay}, keep: {keep}, look: Look::{:?}, params: &[{}], hook: Hook::{:?}, latent: {}, staged: {} }},",
             self.cls,
             self.func,
             self.kind,
@@ -1063,7 +1085,9 @@ impl TableRow {
             self.audience,
             self.look,
             params.join(", "),
-            self.hook
+            self.hook,
+            self.latent,
+            self.staged
         )
     }
 }
@@ -1099,23 +1123,75 @@ const TABLE_DOC: &str = concat!(
     "/// scene starts (ADR-073 step 4's S4), creations judged as state rows whose\n",
     "/// hook is V-scene's count. Every owner on a subject is asked (ADR-073\n",
     "/// decision 6), and the hook column holds what the seam's name lists held.\n",
-    "/// A native with no row has no channel. Fifty-two rows.\n",
+    "/// Fifty-two live rows; then (step 4's S5) every other native of\n",
+    "/// FunctionsDump.txt, staged: counted on its seat by what it would do and\n",
+    "/// run there as before, refused by the server until its batch unstages.\n",
+    "/// A native with no live row has no channel.\n",
 );
 
-/// natives_table.rs as the live rows make it: the header, the table's doc
+/// The staged rows' comment in natives_table.rs, above the first.
+const STAGED_NOTE: &str = concat!(
+    "    // the derived rows, staged (thuum ADR-073 step 4's S5): every other\n",
+    "    // native of FunctionsDump.txt in the dump's order, its cells the rules'\n",
+    "    // with any overlay entry's over them, counted on its seat as\n",
+    "    // would-forward, would-relay, would-filter, would-skip or would-run by\n",
+    "    // its stack's root kind and run there as before; the server refuses it\n",
+    "    // by its row (channel_of) until its batch unstages (S8)\n",
+);
+
+/// The index's doc comment in natives_table.rs.
+const INDEX_DOC: &str = concat!(
+    "/// The table's open-addressed index (natives-gen): a pair's slot is\n",
+    "/// row_key_hash's low bits under INDEX_MASK, its row the first slot of the\n",
+    "/// probe from there that names it, an empty slot u16::MAX; twice the rows'\n",
+    "/// count rounded up to a power of two, so every probe ends at an empty slot\n",
+    "/// (thuum ADR-073 step 4's S5; rule 12: no packet scans the table).\n",
+);
+
+/// The table's index as natives-gen lays it out: each row of the table, in
+/// its order, at the first free slot of its key's probe.
+#[must_use]
+pub fn index_of(rows: &[TableRow]) -> Vec<u16> {
+    let slots = rows.len().saturating_mul(2).next_power_of_two().max(64);
+    let mask = slots.saturating_sub(1);
+    let mut index = vec![u16::MAX; slots];
+    for (i, row) in rows.iter().enumerate() {
+        let Ok(at) = u16::try_from(i) else {
+            break;
+        };
+        let hash = natives::row_key_hash(row.cls, row.func);
+        let mut slot = usize::from(u16::try_from(hash & 0xffff).unwrap_or(0)) & mask;
+        for _ in 0..slots {
+            match index.get_mut(slot) {
+                Some(free) if *free == u16::MAX => {
+                    *free = at;
+                    break;
+                }
+                _ => slot = slot.wrapping_add(1) & mask,
+            }
+        }
+    }
+    index
+}
+
+/// natives_table.rs as the rows make it: the header, the table's doc
 /// comment, then each live row under its entry's note, in the overlay's
-/// order. natives-gen writes it; the generated-table test compares it with
-/// the committed file byte for byte.
-pub fn table_source(generated: &Generated) -> Result<String, Vec<Refusal>> {
+/// order, then the staged rows in the dump's, then the index. natives-gen
+/// writes it; the generated-table test compares it with the committed file
+/// byte for byte.
+#[must_use]
+pub fn table_source(generated: &Generated) -> String {
     let mut out = String::from(TABLE_HEADER);
     out.push('\n');
     out.push_str(TABLE_DOC);
     out.push_str("pub const TABLE: &[Row] = &[\n");
-    for row in generated.live_rows() {
-        let native = row.entry.map_or("", |e| e.native);
-        let table = TableRow::of_generated(row)
-            .map_err(|cell| vec![Refusal::NotTabled { native, cell }])?;
-        for line in row.entry.map_or(&[][..], |e| e.note) {
+    let mut rows = Vec::new();
+    for (n, row) in generated.table_rows().enumerate() {
+        let table = TableRow::of_generated(row);
+        if n == generated.live.len() {
+            out.push_str(STAGED_NOTE);
+        }
+        for line in row.entry.filter(|e| e.live).map_or(&[][..], |e| e.note) {
             out.push_str("    //");
             if !line.is_empty() {
                 out.push(' ');
@@ -1125,9 +1201,22 @@ pub fn table_source(generated: &Generated) -> Result<String, Vec<Refusal>> {
         }
         out.push_str(&table.line());
         out.push('\n');
+        rows.push(table);
     }
     out.push_str("];\n");
-    Ok(out)
+    let index = index_of(&rows);
+    out.push('\n');
+    out.push_str("/// The mask of a slot in [`INDEX`]: its length less one.\n");
+    out.push_str(&format!("pub const INDEX_MASK: usize = {};\n", index.len().saturating_sub(1)));
+    out.push('\n');
+    out.push_str(INDEX_DOC);
+    out.push_str(&format!("pub const INDEX: [u16; {}] = [\n", index.len()));
+    for chunk in index.chunks(16) {
+        let cells: Vec<String> = chunk.iter().map(u16::to_string).collect();
+        out.push_str(&format!("    {},\n", cells.join(", ")));
+    }
+    out.push_str("];\n");
+    out
 }
 
 /// The client's generated file (skymp5-client src/lib/nativeRows.generated.ts),
@@ -1162,12 +1251,9 @@ fn ts_text(text: &str) -> String {
 /// names with its subject's sequence, and the graph variable rows' value
 /// kinds. natives-gen writes it; the generated-table test compares it with
 /// the committed file byte for byte.
-pub fn ts_source(generated: &Generated) -> Result<String, Vec<Refusal>> {
-    let mut rows = Vec::new();
-    for row in generated.live_rows() {
-        let native = row.entry.map_or("", |e| e.native);
-        rows.push(TableRow::of_generated(row).map_err(|cell| vec![Refusal::NotTabled { native, cell }])?);
-    }
+#[must_use]
+pub fn ts_source(generated: &Generated) -> String {
+    let rows: Vec<TableRow> = generated.live_rows().map(TableRow::of_generated).collect();
     let mut out = String::from(TS_HEADER);
     out.push_str("\n// the record rows by their keep (Keep::Record): \"ref\" the ref state's, \"standing\"\n");
     out.push_str("// the standing's, \"own\" a player's own; a placement's is none of them (W3:\n");
@@ -1231,7 +1317,7 @@ pub fn ts_source(generated: &Generated) -> Result<String, Vec<Refusal>> {
         out.push_str(&format!("  {}: {kind},\n", row.func.to_ascii_lowercase()));
     }
     out.push_str("};\n");
-    Ok(out)
+    out
 }
 
 fn kind_name(kind: Kind) -> String {
@@ -1275,11 +1361,12 @@ pub fn signature(n: &Native) -> String {
 }
 
 /// The TSV's header line.
-pub const TSV_HEADER: &str = "native\tsignature\tkind\tsubject\towner\taudience\trelay\tkeep\tlook\tscoped\thook\tparams\trule\trow\tsource\tevidence";
+pub const TSV_HEADER: &str = "native\tsignature\tkind\tsubject\towner\taudience\trelay\tkeep\tlook\tscoped\thook\tparams\trule\trow\tstage\tsource\tevidence";
 
 /// Every native's row as natives.tsv, which thuum's lab/ledger.py joins into
-/// docs/NATIVES.md: one line per native, the header first. `row` is the
-/// live table's index, else "derived"; `source` the rule's code and decision
+/// docs/NATIVES.md: one line per native, the header first, in the table's
+/// order. `row` is the native's index in the table, `stage` "live" or
+/// "staged" (step 4's S5); `source` the rule's code and decision
 /// 5 line, or the entry's class and citation; `evidence` what the row rests
 /// on ("static": the dump's declaration and a rule; x-native-effects writes
 /// "trace").
@@ -1287,22 +1374,15 @@ pub const TSV_HEADER: &str = "native\tsignature\tkind\tsubject\towner\taudience\
 pub fn tsv(generated: &Generated) -> String {
     let mut out = String::from(TSV_HEADER);
     out.push('\n');
-    for (i, row) in generated.rows.iter().enumerate() {
+    for (place, row) in generated.table_rows().enumerate() {
         let c = &row.cells;
-        let params = c.params.as_ref().map_or_else(
-            || "array".to_owned(),
-            |p| {
-                p.iter()
-                    .map(|x| format!("{x:?}"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            },
-        );
-        let place = generated
-            .live
+        let params = c
+            .params
             .iter()
-            .position(|&l| l == i)
-            .map_or_else(|| "derived".to_owned(), |p| p.to_string());
+            .map(|x| format!("{x:?}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let stage = if row.entry.is_some_and(|e| e.live) { "live" } else { "staged" };
         let source = match row.entry.map(|e| e.class) {
             Some(Class::Decided { cites }) => format!("decided: {cites}"),
             Some(Class::Stopgap {
@@ -1329,7 +1409,8 @@ pub fn tsv(generated: &Generated) -> String {
             if c.hook == Hook::None { "none".to_owned() } else { c.hook.name().to_owned() },
             params,
             row.derived.rule.code().to_owned(),
-            place,
+            place.to_string(),
+            stage.to_owned(),
             source,
             "static".to_owned(),
         ];
@@ -1586,16 +1667,19 @@ mod tests {
     #[test]
     fn the_overlay_reproduces_the_table() {
         let g = generated();
-        let live: Vec<TableRow> = g
-            .live_rows()
-            .map(|r| TableRow::of_generated(r).unwrap_or_else(|c| panic!("{}: {c}", r.func)))
-            .collect();
+        let rows: Vec<TableRow> = g.table_rows().map(TableRow::of_generated).collect();
         let table: Vec<TableRow> = natives::TABLE.iter().map(TableRow::of).collect();
-        assert_eq!(live.len(), table.len());
-        for (generated, committed) in live.iter().zip(&table) {
+        assert_eq!(rows.len(), table.len());
+        for (generated, committed) in rows.iter().zip(&table) {
             assert_eq!(generated, committed);
             assert_eq!(generated.line(), committed.line());
         }
+        // the fifty-two live rows first, every other native after them
+        // staged (S5), the dump's whole
+        assert_eq!(table.len(), 1408);
+        assert_eq!(table.iter().position(|r| r.staged), Some(52));
+        assert!(table.iter().skip(52).all(|r| r.staged));
+        assert_eq!(index_of(&rows), natives::INDEX.to_vec());
         // every live row is a decided entry's, or a stopgap's whose only cell
         // is a hook naming its own deleting condition (the scene starts,
         // V-scene's until step 5a): the table is decisions over the rules
@@ -1614,7 +1698,7 @@ mod tests {
     #[test]
     fn the_generated_table_is_the_committed_one() {
         let g = generated();
-        let made = table_source(&g).unwrap_or_else(|r| panic!("{r:?}"));
+        let made = table_source(&g);
         let committed = include_str!("natives_table.rs");
         if made != committed {
             let at = made
@@ -1625,7 +1709,7 @@ mod tests {
         }
         assert_eq!(made.matches("    Row {").count(), natives::TABLE.len());
         // and the client's file (step 4's S4: the TS lists read it)
-        let ts = ts_source(&g).unwrap_or_else(|r| panic!("{r:?}"));
+        let ts = ts_source(&g);
         let committed = include_str!("../../../../skymp5-client/src/lib/nativeRows.generated.ts");
         if ts != committed {
             panic!("skymp5-client src/lib/nativeRows.generated.ts is stale: run `cargo run -p wire-rules --bin natives-gen`");
@@ -1638,7 +1722,7 @@ mod tests {
     // GRAPH_VAR_KINDS), each now a column's
     #[test]
     fn the_client_file_holds_the_lists_it_replaced() {
-        let ts = ts_source(&generated()).unwrap_or_else(|r| panic!("{r:?}"));
+        let ts = ts_source(&generated());
         let section = |from: &str| -> Vec<String> {
             let start = ts.find(from).unwrap_or_else(|| panic!("{from}"));
             ts.get(start..)
@@ -1772,23 +1856,6 @@ mod tests {
                 })]
             )]),
             [Refusal::NoTwin("ObjectReference.MoveTo")]
-        );
-        // a live row with a cell the table does not hold yet: an array
-        // parameter (FormList.AddForms), which the table's parameters cannot
-        // name until step 4's S5
-        let live = Entry {
-            native: "FormList.AddForms",
-            class: decided,
-            live: true,
-            note: &[],
-            cells: &[],
-        };
-        assert_eq!(
-            refused(&[live]),
-            [Refusal::NotTabled {
-                native: "FormList.AddForms",
-                cell: "params"
-            }]
         );
     }
 

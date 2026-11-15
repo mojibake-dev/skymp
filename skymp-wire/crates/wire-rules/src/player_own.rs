@@ -110,7 +110,7 @@ pub const INVENTORY_STACKS: usize = 4096;
 /// record, in its order: the flip's AddItem and RemoveItem first, D-R1 C
 /// keeping them in place), never a list of their own.
 pub fn rows() -> impl Iterator<Item = (&'static str, &'static str)> {
-    natives::TABLE.iter().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func))
+    natives::TABLE.iter().filter(|r| !r.staged && r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func))
 }
 
 /// The rows' natives, in [`rows`]'s order: what the core judges each by.

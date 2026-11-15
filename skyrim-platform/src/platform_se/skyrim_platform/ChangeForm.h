@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -119,4 +120,17 @@ std::string Apply(RE::TESObjectREFR* refr, std::string_view bodyHex,
 // "[verb:change-form] ApplyChangeForm <id> answered on the main thread"
 // (or "another thread": the probe's claim).
 std::string ApplyResult(RE::TESObjectREFR* refr);
+
+// HoldForApply(formId, what, owed): true while an apply of formId is queued
+// or running (Apply's queue to the task's answer), and then the apply holds
+// `owed`, a fate pass on its dead copy (WeaponAnimGuard::Check's kHeld): the
+// lay is the copy's dress (ADR-065, the save is the state), so the pass does
+// not run beside it. After a lay the held passes are dropped, the client's
+// reconcile after the lay (changeFormService.ts onApplyResult, rerollActor)
+// being the fate's one pass on the laid body; after a refusal they run on
+// the main thread right after the answer, so a refused record never costs
+// the copy its reconcile. Each outcome is logged with the form's id. False
+// when no apply of formId is in flight, `owed` dropped unrun.
+bool HoldForApply(std::uint32_t formId, const char* what,
+                  std::function<void()> owed);
 }

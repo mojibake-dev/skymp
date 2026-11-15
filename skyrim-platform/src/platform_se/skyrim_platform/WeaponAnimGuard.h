@@ -8,67 +8,101 @@ class Actor;
 }
 
 // thuum lab/.cache/drafts/reads-53/r-c3-temple-crash.md (playtest 51 break
-// 7, R-C3; the re-analyst's REA read of 2026-11-14): rotfern's game crashed
-// entering Bleak Falls Temple inside the animation file manager's dispatcher
-// of finished requests (63997+0xC4, on a BSJobs thread), which called a
-// listener (IAnimationSetCallbackFunctor, CommonLibSSE-NG include/RE/I/
-// IAnimationSetCallbackFunctor.h:13) already freed, 0.3 s after this seat's
-// fate burst (arm, re-roll) on the Temple's live NPCs and its change-form
-// applies (Actor::LoadGame) on the dead. Candidate A (medium): a
-// WeaponAnimationLoadedCallback (VTABLE 207865, include/RE/Offsets_VTABLE.h:
-// 2210) released by OnItemEquipped's finish (39296) or a new equip (39295)
-// while its request still waits, since the request holds the listener as a
-// raw pointer and only a cancel (63971) unhooks it. The guard every fate task
-// and the change-form apply pass first: none of them touches an actor while
-// the engine holds a weapon-animation request for it; the work goes to a
-// later tick, bounded, and its first deferral of each kind is said once.
-// HYPOTHESIS, every part, until lab/frida/anim-listener.js reads candidate A
-// (x-anim-listener by path, lab/.cache/drafts/train53/probes) with the freed
-// listener's request made before the freeing fate task (its request row's
-// stack outside that task), and a run of this branch's build reads no
-// pendingAtFree weapon dtor; a free inside the task is not what this defers.
+// 7, R-C3) and x-anim-listener 20261115-051655 (train 53 da5707f7, no
+// guard; its read and adversarial check): c1 died in the animation file
+// manager's dispatcher (63997+0xC1, a BSJobs thread) calling a
+// WeaponAnimationLoadedCallback (VTABLE 207865, CommonLibSSE-NG include/RE/
+// Offsets_VTABLE.h:2210) already freed. On the dead copy 0x375aa npc-fate's
+// reconcile dressed it (FateApi.cpp's dead branch: EquipObject, Actor::
+// OnItemEquipped, slot 0xB2, include/RE/A/Actor.h:376, then 39295), which
+// made request 1 and its listener L, held at MiddleHighProcessData::unk1F0
+// (include/RE/M/MiddleHighProcessData.h:166) with one reference; 43 ms later
+// the record's apply (ChangeForm.cpp) ran its finish pass (35567, Actor::
+// FinishLoadGame 37652, Actor.h:278 slot 0x11, then 39432), which made
+// request 2 on L raw; request 1's completion freed L on thread 1028 (39296),
+// and request 2's dispatch called it: two dress passes on one actor in one
+// load, the second while the first's request was outstanding.
+//
+// The one gate every pass that dresses an actor on the main thread goes
+// through first (FateApi.cpp: the re-roll's decision, the redress, the
+// body's dress and the stand-up; ChangeForm.cpp: the record's apply), so an
+// actor gets one dressing pass at a time per load:
+//   - a dead copy whose record's apply is queued or running is the apply's
+//     (ChangeForm::HoldForApply): its LoadGame and FinishLoadGame lay the
+//     record's worn list (ADR-065, the save is the state), and the client's
+//     reconcile after the lay (changeFormService.ts onApplyResult) is the
+//     fate's one pass; the work held is run after a refused apply;
+//   - nothing runs while a weapon-animation request is outstanding on the
+//     actor's process: its handle at the record's +0x40 or its listener at
+//     unk1F0 set (Peek); the work goes to a later tick, bounded.
+// Every wait, skip, fold and drop is said with its actor's id, one line per
+// work (never per tick), and counted (ADR-073 decision 7).
+// HYPOTHESIS, every engine part, until a counted x-anim-listener run on a
+// build with this reads no pendingAtFree weapon dtor, no flag row and no
+// request row whose listener an earlier request holds (the probe's (i) to
+// (iii)).
 namespace WeaponAnimGuard {
 
-// the work a deferral holds up; each has its own once-per-kind lines and
-// counts (ADR-073 decision 7's merge rule)
+// the work a deferral holds up; each has its own counts
 enum class Kind : std::uint8_t
 {
-  kReroll,    // FateApi.cpp: 37323 and its rebuild (an arm, Load3D, 3D passes)
-  kResurrect, // FateApi.cpp: Actor::Resurrect, whose inventory reset re-arms
-  kLoadGame,  // ChangeForm.cpp: the record's apply, Actor::LoadGame (0x0F)
+  kReroll,    // FateApi.cpp rerollActor: a dead copy's reconcile, a redress
+              // alone, or 37323's re-roll and its rebuild
+  kRedress,   // FateApi.cpp redressActor: the outfit's redress, or a dead
+              // copy's reconcile
+  kBody,      // FateApi.cpp dressBody: a dead copy's record armor worn again
+  kResurrect, // FateApi.cpp resurrectActor: Actor::Resurrect, whose inventory
+              // reset re-arms and whose attach re-equips
+  kLoadGame,  // ChangeForm.cpp: the record's apply (35568's Actor::LoadGame,
+              // slot 0x0F, then 35567's FinishLoadGame)
   kCount
 };
 
 enum class Decision : std::uint8_t
 {
-  kRun,      // no request in flight: the caller does its work now
-  kDeferred, // a request in flight: `again` runs on the next tick
+  kRun,      // nothing outstanding: the caller does its work now
+  kDeferred, // a request or its listener outstanding: `again` runs next tick
   kFolded,   // this work for this actor already waits: the caller drops it
-  kDropped,  // still in flight after kMaxTicks: the work is not done
+  kDropped,  // still outstanding after kMaxTicks: the work is not done
+  kHeld,     // a dead copy's record apply is queued or running: the apply
+             // took the work (`owed`, run if it answers refused)
 };
 
 // the ticks a deferral waits, each one gameThrQ drain (main.cpp's OnUpdate)
 // and then the main thread's UI drain, before the work is dropped
 inline constexpr std::uint32_t kMaxTicks = 120;
 
-// The request the engine holds for the actor's weapon animation, or nullptr:
-// MiddleHighProcessData::unk1B8 (include/RE/M/MiddleHighProcessData.h:163)
-// is typed BSTArray<void*>, but the engine reads its first word as a pointer
-// to a record whose +0x40 holds the request 39778 returned (39295 at
-// 0x1406e026c, 39296 at 0x1406e0411 and 0x1406e0431, REA) until the
-// dispatcher's call of 40110 zeroes it (0x1407217dd) or 39296 does at the
-// equip's finish, cancelling only on its mismatch path; callback, when
-// given, the WeaponAnimationLoadedCallback held at +0x1F0 (:166). A peek
-// without the spinlock at +0x1E8 (:165) that 39295 and 39296 take: a stale
-// read costs one tick more, or one run as before this guard. Nothing on SE.
-const void* InFlightRequest(RE::Actor* actor, const void** callback = nullptr);
+// What the engine holds outstanding for the actor's weapon animation (REA
+// and the ghidra MCP on sky-re, 1.6.1170, HYPOTHESIS): 39295 (0x1406e0070),
+// under the spinlock at unk1E8 (MiddleHighProcessData.h:165), builds the
+// listener, sets unk1F0 to it with a reference and stores 39778's request
+// at the record unk1B8's first word points to, +0x40; the listener's
+// handler 40110 zeroes +0x40 (0x1407217dd) on the dispatcher's thread and
+// 39296 (0x1406e0320, reached through slot 0xB2) then releases unk1F0, so
+// between the two the listener alone is set (051655 row 139, window (a)).
+// 39432 (0x1406e97b0) reads unk1F0 without the lock and hands it raw to its
+// own request when set (0x1406e9b6d to 0x1406e9bc0); when null its request
+// carries 40071, whose body (0x140717750) swaps a loaded set into the record
+// and calls no listener. Read without the lock, as 39432 reads: a stale
+// read costs one tick more.
+struct InFlight
+{
+  const void* request = nullptr;  // the record's +0x40
+  const void* listener = nullptr; // unk1F0
+  bool Any() const { return request != nullptr || listener != nullptr; }
+};
+InFlight Peek(RE::Actor* actor);
 
 // On the main thread, inside the task, before any engine work on the actor.
 // tick is 0 for the first ask and the deferral's count after; again(tick + 1)
-// queues the work anew and runs on the thread that drains gameThrQ. A
-// deferred work that ends without asking again (its actor gone, its queue
-// refused) calls Forget so a later ask is not folded into nothing.
+// queues the work anew and runs on the thread that drains gameThrQ. owed,
+// when given, makes the work one a dead copy's record apply takes (kHeld):
+// it runs on the main thread after the apply answers refused, and is
+// dropped after a lay. A deferred work that ends without asking again (its
+// actor gone, its queue refused) calls Forget so a later ask is not folded
+// into nothing.
 Decision Check(Kind kind, RE::Actor* actor, std::uint32_t refrId,
-               std::uint32_t tick, std::function<void(std::uint32_t)> again);
+               std::uint32_t tick, std::function<void(std::uint32_t)> again,
+               std::function<void()> owed = nullptr);
 void Forget(Kind kind, std::uint32_t refrId);
 }

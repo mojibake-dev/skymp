@@ -27,6 +27,7 @@
 #include <RE/B/BGSBaseAlias.h>
 #include <RE/B/BGSLocAlias.h>
 #include <RE/B/BGSRefAlias.h>
+#include <RE/B/BGSScene.h>
 #include <RE/B/BSTEvent.h>
 #include <RE/B/bhkCharProxyController.h>
 #include <RE/B/bhkRigidBody.h>
@@ -765,6 +766,214 @@ void Frida::SetTriggerPresserRule(bool on)
                   : "every presser's entry counts on every seat (D-S3)");
 }
 
+/**
+ * The everyone pass (thuum ADR-073 decision 9; step 1's first commit)
+ */
+
+// thuum docs/DECISIONS.md ADR-073 decision 9 (D-L1 B, Eli 2026-11-14:
+// "ADR-068 decision 6 as written: every seat whose engine raises the event
+// runs it"; the design is lab/.cache/drafts/step0/step0-spec.md section
+// B.5): under the block, an event to a quest's own scripts or to an alias's
+// passes on every seat whose engine raises it, whatever the script's class.
+// Nobody owns a quest or an alias; their consequences meet the seam at their
+// own selves, and SetStage folds as the idempotent record (ADR-068 decision
+// 7). The kind is the handle's VM type, asked of the VM's handle policy
+// (IObjectHandlePolicy::HandleIsType, CommonLibSSE-NG
+// include/RE/I/IObjectHandlePolicy.h:20; a form type is its VM type,
+// src/RE/I/IObjectHandlePolicy.cpp:7-10): the quest (TESQuest::FORMTYPE,
+// include/RE/T/TESQuest.h:195, 77), then the reference alias
+// (BGSRefAlias::VMTYPEID, include/RE/B/BGSRefAlias.h:18, 140), the location
+// alias (BGSLocAlias.h:13, 141) and the base alias (BGSBaseAlias.h:15, 139),
+// in PlayerQuestOfHandle's order, so the first that holds names it.
+// What the pass leaves goes on to the rules below as before, counted by its
+// kind (ADR-073 decision 7): a scene (BGSScene::FORMTYPE,
+// include/RE/B/BGSScene.h:36, 122), whose run and fragments are the seat's
+// that started it (decisions 6 and 9 as written, D-L2 B; whether that
+// reading governs is ADR-073's own Open question), an effect
+// (ActiveEffect::VMTYPEID, include/RE/A/ActiveEffect.h:31, 142), which
+// decision 9 gives its target's owner (PlayersEffect's pass above it stays,
+// and C4's owner rule takes the rest when m4-reanimate-return lands), and any
+// other handle with no self. Each kind's first event is logged with its
+// handle, its first script's class and its quest, then counted, the window's
+// counts flushed with the census (FlushEveryonePass). The lines are the step
+// 0 tally's shape (step0-spec.md section B.1), its pass table's everyone row
+// before that table exists: when m4-loud-seat's P2 lands, these counts fold
+// into its table and FlushEveryonePass into its FlushGateTally.
+// The switch (D-S0-29 B) is off unless the client setting
+// scriptEveryoneEvents is true, so a stage A/Bs one build and a client that
+// never sets it changes nothing. It is a list under ADR-073 decision 5 (c), a
+// stopgap: decision 9's pass is the rule replacing it, and the commit that
+// lands decision 11's forward flips its default and deletes its off path
+// (risk H7's reason: until the table and the forward exist, a quest's or an
+// alias's script run on every seat calls untabled natives on every seat, as
+// a live fragment does). With it off nothing here is asked
+namespace {
+std::atomic<bool> g_scriptEveryoneEvents{ false };
+
+// the kinds the pass takes, by VM type; kNone is a handle it leaves
+enum class EveryoneKind : uint8_t
+{
+  kNone,
+  kQuest,
+  kRefAlias,
+  kLocAlias,
+  kBaseAlias
+};
+
+// the kinds it leaves to the rules below
+enum class EveryoneLeft : uint8_t
+{
+  kScene,
+  kEffect,
+  kOther
+};
+
+// each kind's name in a line, its VM type number with it (the tally's names,
+// step0-spec.md section B.1); index 0 is kNone's, never logged
+constexpr const char* kEveryoneKindNames[] = { "none", "quest 77", "alias 140",
+                                               "alias 141", "alias 139" };
+constexpr const char* kEveryoneLeftNames[] = { "scene 122", "effect 142",
+                                               "other" };
+
+// the window's counts, each kind's first line claimed once per process
+std::atomic<uint32_t> g_everyonePassed[std::size(kEveryoneKindNames)]{};
+std::atomic<bool> g_everyonePassedSaid[std::size(kEveryoneKindNames)]{};
+std::atomic<uint32_t> g_everyoneLeft[std::size(kEveryoneLeftNames)]{};
+std::atomic<bool> g_everyoneLeftSaid[std::size(kEveryoneLeftNames)]{};
+
+EveryoneKind EveryoneKindOf(RE::BSScript::IObjectHandlePolicy* policy,
+                            RE::VMHandle handle)
+{
+  if (policy->HandleIsType(RE::TESQuest::FORMTYPE, handle)) {
+    return EveryoneKind::kQuest;
+  }
+  if (policy->HandleIsType(RE::BGSRefAlias::VMTYPEID, handle)) {
+    return EveryoneKind::kRefAlias;
+  }
+  if (policy->HandleIsType(RE::BGSLocAlias::VMTYPEID, handle)) {
+    return EveryoneKind::kLocAlias;
+  }
+  if (policy->HandleIsType(RE::BGSBaseAlias::VMTYPEID, handle)) {
+    return EveryoneKind::kBaseAlias;
+  }
+  return EveryoneKind::kNone;
+}
+
+EveryoneLeft EveryoneLeftOf(RE::BSScript::IObjectHandlePolicy* policy,
+                            RE::VMHandle handle)
+{
+  if (policy->HandleIsType(RE::BGSScene::FORMTYPE, handle)) {
+    return EveryoneLeft::kScene;
+  }
+  if (policy->HandleIsType(RE::ActiveEffect::VMTYPEID, handle)) {
+    return EveryoneLeft::kEffect;
+  }
+  return EveryoneLeft::kOther;
+}
+
+// the class of the handle's first attached script, "no script" for none
+// and "no class read" for a script whose type names nothing, so a line never
+// prints an empty field: the VM's attachedScripts under its own lock
+// (HasAttachedScript's read), on a first line alone. m4-reanimate-return's
+// FirstScriptClass is the same read; when C4 merges one of the two goes
+std::string FirstAttachedClass(VM* vm, RE::VMHandle handle)
+{
+  if (!vm) {
+    return std::string("no script");
+  }
+  RE::BSSpinLockGuard guard{ vm->attachedScriptsLock };
+  const auto it = vm->attachedScripts.find(handle);
+  if (it == vm->attachedScripts.end() || it->second.size() == 0) {
+    return std::string("no script");
+  }
+  const auto* script = it->second[0].get();
+  const auto* info = script ? script->GetTypeInfo() : nullptr;
+  const char* name = info ? info->GetName() : nullptr;
+  return name ? std::string(name) : std::string("no class read");
+}
+
+// a passed kind's quest for its first line: the quest itself, or an alias's
+// owning quest and its alias id (BGSBaseAlias::owningQuest and aliasID,
+// include/RE/B/BGSBaseAlias.h:76-77), PlayerQuestOfHandle's reads
+std::string EveryoneQuestOf(RE::BSScript::IObjectHandlePolicy* policy,
+                            RE::VMHandle handle, EveryoneKind kind)
+{
+  if (kind == EveryoneKind::kQuest) {
+    const RE::TESForm* quest =
+      policy->GetObjectForHandle(RE::TESQuest::FORMTYPE, handle);
+    return quest ? fmt::format("quest {:x}", quest->GetFormID())
+                 : std::string("no quest read");
+  }
+  const RE::VMTypeID type = kind == EveryoneKind::kRefAlias
+    ? RE::BGSRefAlias::VMTYPEID
+    : kind == EveryoneKind::kLocAlias ? RE::BGSLocAlias::VMTYPEID
+                                      : RE::BGSBaseAlias::VMTYPEID;
+  const auto* alias = static_cast<const RE::BGSBaseAlias*>(
+    policy->GetObjectForHandle(type, handle));
+  if (!alias || !alias->owningQuest) {
+    return "no quest read";
+  }
+  return fmt::format("quest {:x} alias {}", alias->owningQuest->GetFormID(),
+                     alias->aliasID);
+}
+
+// the pass itself (OnSendEventEnter, after PlayersEffect's pass and before
+// rung 5's): true for a quest's or an alias's handle, counted; a handle it
+// leaves is counted by its kind and goes on through the gate
+bool EveryonePasses(VM* vm, RE::BSScript::IObjectHandlePolicy* policy,
+                    RE::VMHandle handle, const std::string& eventName)
+{
+  const EveryoneKind kind = EveryoneKindOf(policy, handle);
+  if (kind != EveryoneKind::kNone) {
+    const auto i = static_cast<size_t>(kind);
+    g_everyonePassed[i].fetch_add(1, std::memory_order_relaxed);
+    if (!g_everyonePassedSaid[i].exchange(true, std::memory_order_relaxed)) {
+      logger::info("[census] k9-gate-passes passed: everyone {}; {} to handle "
+                   "{:x}, {}, {} (first of this kind)",
+                   kEveryoneKindNames[i], eventName, handle,
+                   FirstAttachedClass(vm, handle),
+                   EveryoneQuestOf(policy, handle, kind));
+    }
+    return true;
+  }
+  const auto left = static_cast<size_t>(EveryoneLeftOf(policy, handle));
+  g_everyoneLeft[left].fetch_add(1, std::memory_order_relaxed);
+  if (!g_everyoneLeftSaid[left].exchange(true, std::memory_order_relaxed)) {
+    logger::info("[fall] k9-everyone-pass skipped: {}; {} to handle {:x}, {} "
+                 "(first of this kind)",
+                 kEveryoneLeftNames[left], eventName, handle,
+                 FirstAttachedClass(vm, handle));
+  }
+  return false;
+}
+}
+
+void Frida::SetScriptEveryoneEvents(bool on)
+{
+  g_scriptEveryoneEvents.store(on, std::memory_order_relaxed);
+}
+
+void Frida::FlushEveryonePass(uint64_t windowMs)
+{
+  const uint64_t seconds = windowMs / 1000;
+  for (size_t i = 1; i < std::size(g_everyonePassed); ++i) {
+    const uint32_t n =
+      g_everyonePassed[i].exchange(0, std::memory_order_relaxed);
+    if (n != 0) {
+      logger::info("[census] k9-gate-passes passed in {} s: everyone {} x{}",
+                   seconds, kEveryoneKindNames[i], n);
+    }
+  }
+  for (size_t i = 0; i < std::size(g_everyoneLeft); ++i) {
+    const uint32_t n =
+      g_everyoneLeft[i].exchange(0, std::memory_order_relaxed);
+    if (n != 0) {
+      logger::info("[fall] k9-everyone-pass skipped in {} s: {} x{}", seconds,
+                   kEveryoneLeftNames[i], n);
+    }
+  }
+}
+
 namespace {
 // ADR-068 D-W3 B (the held entries, above): TESModPlatform.ReplayHeldEntries'
 // body, on the update thread inside callNative, whose Override is the
@@ -1389,6 +1598,25 @@ void OnSendEventEnter(GumInvocationContext* ic)
   if (blockEvents && policy &&
       Frida::PlayersEffect(policy, handle) !=
         Frida::PlayersEffectRole::kNone) {
+    blockEvents = false;
+  }
+
+  // thuum docs/DECISIONS.md ADR-073 decision 9, the everyone pass (above,
+  // beside the presser rule's switch): under its switch, an event to a
+  // quest's or an alias's handle passes here on every seat whose engine
+  // raises it, whatever its class, counted, before rung 5's player quests,
+  // the class chain and the RaceMenu prefix below could pass it. Those three
+  // stay as the off path until the switch's flip, and delete there once the
+  // pass table reads them passing nothing outside the quest and alias kinds
+  // over one stage and one playtest (step0-spec.md section B.5, H-GT10). An
+  // actor's or a reference's event (selfId resolved above) never asks; a
+  // handle the pass leaves is counted by its kind and goes on to the rules
+  // below. The record, pending and never-admitted blanks, the spent trap and
+  // Override's pass returned above, and PlayersEffect's pass came just
+  // before, so each stays as it was. Off, nothing here is asked
+  if (blockEvents && selfId == 0 && policy &&
+      g_scriptEveryoneEvents.load(std::memory_order_relaxed) &&
+      EveryonePasses(vm, policy, handle, eventNameStr)) {
     blockEvents = false;
   }
 

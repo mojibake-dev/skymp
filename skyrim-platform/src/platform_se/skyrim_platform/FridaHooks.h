@@ -81,6 +81,21 @@ bool SetImpulseCauseRule(bool on);
 // world-body contacts on" or "off". Threadsafe
 void SetWorldBodyContacts(bool on);
 
+// thuum docs/DECISIONS.md ADR-073 decision 9 (D-L1 B, "ADR-068 decision 6
+// as written: every seat whose engine raises the event runs it"): the
+// Papyrus event gate's everyone pass on or off (OnSendEventEnter). On, an
+// event to a quest's own scripts or to an alias's (reference, location or
+// base alias) passes on every seat whose engine raises it, counted; off, the
+// default, keeps the gate as it was, so a stage A/Bs one build.
+// ScriptNatives::InstallHooks sets it once at kDataLoaded from the client
+// setting scriptEveryoneEvents, on only when true. Threadsafe
+void SetScriptEveryoneEvents(bool on);
+// the everyone pass's counts since the last call, each nonzero kind one line
+// ("[census] k9-gate-passes passed in <s> s: everyone alias 140 x<n>", and
+// "[fall] k9-everyone-pass skipped in <s> s: <kind> x<n>" for what it left),
+// then zeroed: ScriptNatives.cpp's FlushCensus, every census window
+void FlushEveryonePass(uint64_t windowMs);
+
 // thuum docs/DECISIONS.md ADR-068 decision 6 ("the player's own (0x14, the
 // player's effects, the player-alias quests) are the player's seat's"): this
 // seat's own player in the active effect a VM handle names, its target or

@@ -223,7 +223,7 @@ declare module "skyrimPlatform" {
     interface ScriptCall {
         cls: string;
         fn: string;
-        kind: "action" | "state" | "everyone" | "touch" | "look";
+        kind: "action" | "state" | "everyone" | "touch" | "look" | "created";
         self: number;
         callerSelf?: number;
         args: (boolean | number | string | { formId: number } | null)[];
@@ -237,6 +237,13 @@ declare module "skyrimPlatform" {
         // each base once, its count summed; empty when the roll landed
         // nothing; absent from every other call and from an older platform
         landed?: { formId: number; count: number }[];
+        // thuum ADR-073 decision 13, the spell channel (#54): kind "created" is
+        // a spell's PlaceAtMe on this seat's own player, or a call on what
+        // such a placement returned, by this seat's own ids; placed is a
+        // creation's result (0xff000000 and up), localArgs the arguments that
+        // name a created reference, bit i for argument i
+        placed?: number;
+        localArgs?: number;
     }
     interface ScriptCallsEvent {
         calls: ScriptCall[];

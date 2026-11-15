@@ -72,6 +72,60 @@ export class SpSnippetService extends ClientListener {
       }
     });
     this.spAny = sp as Record<string, any>;
+    this.controller.on("update", () => this.flushHeld());
+  }
+
+  // thuum ADR-073 decision 13, the spell channel (#54): a relayed call (a
+  // snippet with a seq) on a server copy this seat's view has not drawn yet,
+  // or naming one in an argument, waits for it: another seat's created
+  // reference reaches this seat with its first Enable (CreateActor), and the
+  // script's next call (Raise Wall's rise, 0.1 s later) can land before the
+  // view's placement. Each subject's snippets wait in their arrival order, at
+  // most HOLD_MS, then run as they would have, the first a window logged
+  private static readonly holdMs = 3000;
+  private readonly held = new Map<number, { msg: SpSnippetMessage; arrived: number }[]>();
+
+  // the server form a relayed snippet waits for, 0 for none: its self, else
+  // an object argument, at 0xff000000 and up that no view holds yet
+  private static unseenServerForm(msg: SpSnippetMessage): number {
+    if (typeof msg.seq !== "number") {
+      return 0;
+    }
+    if (msg.selfId >= 0xff000000 && snippetIdToLocalId(msg.selfId) === 0) {
+      return msg.selfId;
+    }
+    for (const arg of msg.arguments) {
+      const formId = arg !== null && typeof arg === "object" ? (arg as { formId?: number }).formId : undefined;
+      if (typeof formId === "number" && formId >= 0xff000000 && snippetIdToLocalId(formId) === 0) {
+        return formId;
+      }
+    }
+    return 0;
+  }
+
+  private flushHeld(): void {
+    if (this.held.size === 0) {
+      return;
+    }
+    const now = Date.now();
+    const subjects: number[] = [];
+    this.held.forEach((_, subject) => subjects.push(subject));
+    for (const subject of subjects) {
+      const queue = this.held.get(subject) ?? [];
+      const drawn = snippetIdToLocalId(subject) !== 0;
+      const expired = queue.length > 0 && now - queue[0].arrived > SpSnippetService.holdMs;
+      if (!drawn && !expired) {
+        continue;
+      }
+      this.held.delete(subject);
+      logLab("verb:spell-placed", `${queue.length} relayed call(s) on ${subject.toString(16)} ${drawn ? "run once its copy was drawn" : `run unheld after ${SpSnippetService.holdMs} ms, no copy drawn`}`);
+      let chain: Promise<unknown> = Promise.resolve();
+      for (const { msg, arrived } of queue) {
+        chain = chain.then(() => this.apply(msg, arrived)).catch((e) => {
+          logError(this, 'SpSnippet ' + msg.class + ' ' + msg.function + ' failed ' + e);
+        });
+      }
+    }
   }
 
   private onSpSnippetMessage(event: ConnectionMessage<SpSnippetMessage>): void {
@@ -81,6 +135,19 @@ export class SpSnippetService extends ClientListener {
     const arrived = Date.now();
 
     this.controller.once('update', async () => {
+      if (inOrder) {
+        const waitFor = SpSnippetService.unseenServerForm(msg);
+        const subject = waitFor !== 0 ? waitFor : msg.selfId;
+        const queue = this.held.get(subject);
+        if (waitFor !== 0 || queue !== undefined) {
+          if (queue !== undefined) {
+            queue.push({ msg, arrived });
+          } else {
+            this.held.set(subject, [{ msg, arrived }]);
+          }
+          return;
+        }
+      }
       (inOrder ? this.apply(msg, arrived) : Promise.resolve(undefined))
         .then((res) => {
           const isNoResultSnippet = msg.snippetIdx === 0xffffffff;

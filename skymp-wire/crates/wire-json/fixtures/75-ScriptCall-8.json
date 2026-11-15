@@ -1,0 +1,18 @@
+{
+  "args": [
+    {
+      "formId": 4278192378,
+      "type": "ObjectReference"
+    },
+    -1.0
+  ],
+  "caller": "WB_FabricateWall_Script",
+  "cls": "EffectShader",
+  "epoch": 0,
+  "fn": "Play",
+  "handler": "OnEffectStart",
+  "latent": false,
+  "localArgs": 1,
+  "selfId": 436680167,
+  "t": 75
+}

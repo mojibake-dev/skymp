@@ -26,7 +26,6 @@ import { QuestStageService } from "./services/services/questStageService";
 import { PropService } from "./services/services/propService";
 import { ScriptCallService } from "./services/services/scriptCallService";
 import { ScriptStateService } from "./services/services/scriptStateService";
-import { SpellPlacedService } from "./services/services/spellPlacedService";
 import { LockService } from "./services/services/lockService";
 import { WeatherService } from "./services/services/weatherService";
 import { PerkService } from "./services/services/perkService";
@@ -131,7 +130,6 @@ const main = () => {
       new PropService(sp, controller),
       new ScriptCallService(sp, controller),
       new ScriptStateService(sp, controller),
-      new SpellPlacedService(sp, controller),
       new LockService(sp, controller),
       new WeatherService(sp, controller),
       new PerkService(sp, controller),

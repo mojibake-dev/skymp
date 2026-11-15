@@ -1,0 +1,20 @@
+{
+  "args": [
+    {
+      "formId": 436831529,
+      "type": "MovableStatic"
+    },
+    1.0,
+    false,
+    true
+  ],
+  "caller": "WB_FabricateWall_Script",
+  "cls": "ObjectReference",
+  "epoch": 0,
+  "fn": "PlaceAtMe",
+  "handler": "OnEffectStart",
+  "latent": false,
+  "placed": 4278192378,
+  "selfId": 20,
+  "t": 75
+}

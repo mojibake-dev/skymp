@@ -938,6 +938,23 @@ public:
   // every subject's sequence (the rule and its state are Rust's, wire-rules
   // natives); ActionListener::OnScriptCall asks it for each reported call
   skymp::rules::ScriptCalls& GetScriptCalls();
+  // thuum ADR-073 decision 13, the spell channel (wire-rules created; #54):
+  // the references a seat's script created, by their creator's local id,
+  // and the server's copy of each (ActionListener::OnScriptCall's created
+  // branch). PlaceCreatedCopy places a copy of `baseId` (a `recordType` the
+  // rule copies) for `creator` at `pos` and `rot` in `cellOrWorld`, named to
+  // every other seat as the creator's placement (placedBy); one placed
+  // `disabled` stays off the grid until the creator's first Enable; 0 when
+  // none was placed. DeleteCreatedCopy deletes a copy and unbinds it (a
+  // Delete, its creator's departure); SweepCreatedAtLoad deletes a loaded
+  // channel copy (no creator's references survive a restart).
+  skymp::rules::CreatedRefs& GetCreatedRefs();
+  uint32_t PlaceCreatedCopy(MpActor& creator, uint32_t baseId,
+                            const std::string& recordType, const NiPoint3& pos,
+                            const NiPoint3& rot, const FormDesc& cellOrWorld,
+                            bool disabled);
+  bool DeleteCreatedCopy(uint32_t copy, const char* why);
+  bool SweepCreatedAtLoad(const MpChangeForm& record);
   // thuum #52 (wire-rules actor_looks, through the bridge's keep_look): an
   // accepted look call on `actor`, its row's keep code `keep`, the relay's
   // self, its arguments in the row's own order (an object's server id or 0,

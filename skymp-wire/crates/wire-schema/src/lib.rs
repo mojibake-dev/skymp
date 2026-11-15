@@ -233,7 +233,15 @@ use bounded::{String, Vec};
 /// takes the next number, one number per shape (D-PH1 A's reason: postcard
 /// writes one presence byte per Option, so a 53 peer would misread every
 /// HostedActorState of a 54 server while the handshake passed).
-pub const SCHEMA_VERSION: u16 = 54;
+/// 55: ScriptCall's optional `placed` and a subject or object argument of
+/// 0xff000000 and up naming the sender's own created reference (thuum ADR-073
+/// decision 13, the spell channel's first slice; #54, Raise Wall): a
+/// script's placement and its calls on what it placed reach every screen as
+/// the creator's calls, one shape for every spell, one number per shape
+/// (D-PH1 A's reason: postcard writes one presence byte per Option, so a 54
+/// peer would misread every ScriptCall of a 55 client while the handshake
+/// passed).
+pub const SCHEMA_VERSION: u16 = 55;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -1388,9 +1396,10 @@ mod tests {
 
     /// A reported native call at its caps (thuum ADR-068): eleven arguments,
     /// each a string at SNIPPET_STRING, every name at PAPYRUS_NAME, every
-    /// number a five-byte varint, and since SCHEMA_VERSION 44 (D-R1 C's
-    /// leveled gap) 255 landings, each an item and a count at five varint
-    /// bytes apiece.
+    /// number a five-byte varint, since SCHEMA_VERSION 44 (D-R1 C's leveled
+    /// gap) 255 landings, each an item and a count at five varint bytes
+    /// apiece, and since SCHEMA_VERSION 55 (the spell channel) a creation's
+    /// result and every argument marked as a created reference.
     fn script_call_at_its_caps() -> skymp::ScriptCall {
         let name = || -> String<{ cap::PAPYRUS_NAME }> { "x".repeat(cap::PAPYRUS_NAME).try_into().unwrap_or_default() };
         skymp::ScriptCall {
@@ -1407,6 +1416,8 @@ mod tests {
             handler: name(),
             latent: true,
             landed: (0..cap::SCRIPT_CALL_LANDED).map(|_| ItemDelta { item: FormId(u32::MAX), count: i32::MIN }).collect::<alloc::vec::Vec<_>>().try_into().ok(),
+            placed: Some(u32::MAX),
+            local_args: Some(u16::MAX),
             ..Default::default()
         }
     }
@@ -1419,12 +1430,14 @@ mod tests {
         let m = Message::ScriptCall(full);
         let bytes = postcard::to_allocvec(&m).unwrap_or_default();
         // 180,812 before SCHEMA_VERSION 44, then the landings' presence byte,
-        // their two-byte length and 255 of ten bytes (the table's comment)
-        assert_eq!(bytes.len(), 183_365);
+        // their two-byte length and 255 of ten bytes (the table's comment),
+        // and since SCHEMA_VERSION 55 `placed` (a presence byte and five)
+        // and `local_args` (a presence byte and three)
+        assert_eq!(bytes.len(), 183_375);
         assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
         // an absent landing costs its presence byte alone
         let plain = Message::ScriptCall(skymp::ScriptCall { landed: None, ..script_call_at_its_caps() });
-        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(180_813));
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(180_823));
         // a 256th landing fails at the bound, before any check
         let over: Result<bounded::Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>, _> = (0..=cap::SCRIPT_CALL_LANDED).map(|_| ItemDelta { item: FormId(0xf), count: 1 }).collect::<alloc::vec::Vec<_>>().try_into();
         assert!(over.is_err());

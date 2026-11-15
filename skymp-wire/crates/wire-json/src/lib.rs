@@ -431,8 +431,10 @@ mod tests {
     /// names a player's actor as an object argument (since thuum ADR-068
     /// rung 5 a scoped call's figure, which the edge passes and the server's
     /// rule takes for a connected player alone, wire-rules natives::figures);
-    /// 3 names a subject at 0xff000000 and up and 4 an object argument past
-    /// 32 bits, both refused by the shape. 5 (SCHEMA_VERSION 44, thuum D-R1
+    /// 3 names a subject at 0xff000000 and up, since SCHEMA_VERSION 55 the
+    /// sender's own created reference by its local id (the spell channel,
+    /// the server's rule's to map or refuse), and 4 an object argument past
+    /// 32 bits, refused by the shape. 5 (SCHEMA_VERSION 44, thuum D-R1
     /// C's leveled gap) is MS01's stage 39 reward on the seat's own player,
     /// LvlQuestReward02Medium 0xc0405 x1, with the roll its AddItemFunctor
     /// landed, Gold001 0xf x400 (x-additem-functor 20261110-151634); the
@@ -445,18 +447,26 @@ mod tests {
     /// SpSnippet fixture 2 is the pillar's relay with the subject's
     /// sequence; 0 and 1, the snippets without one, render no `seq`, nor
     /// does 3, the server's AddToMap(true) on that marker, the quest
-    /// marker's live relay and its login serve.
+    /// marker's live relay and its login serve. 7 and 8 (SCHEMA_VERSION 55,
+    /// thuum ADR-073 decision 13, the spell channel; #54) are Raise Wall's
+    /// WB_FabricateWall_Script.OnEffectStart as c1's trace read it in
+    /// x-spell-calls 20261115-034842: the PlaceAtMe of the wall 0x1a098529 on
+    /// the player, its result the caster's ff0008fa (`placed`), and the
+    /// wall's shader 0x1a0735e7 played on that reference, marked as the
+    /// sender's created one (`localArgs` bit 0).
     #[test]
     fn script_call_fixtures_validate_as_named() {
         use wire_validate::{validate_server, Reject};
-        let verdicts: [(&str, Result<(), Reject>); 7] = [
+        let verdicts: [(&str, Result<(), Reject>); 9] = [
             ("75-ScriptCall-0.json", Ok(())),
             ("75-ScriptCall-1.json", Ok(())),
             ("75-ScriptCall-2.json", Ok(())),
-            ("75-ScriptCall-3.json", Err(Reject::Range)),
+            ("75-ScriptCall-3.json", Ok(())),
             ("75-ScriptCall-4.json", Err(Reject::Range)),
             ("75-ScriptCall-5.json", Ok(())),
             ("75-ScriptCall-6.json", Ok(())),
+            ("75-ScriptCall-7.json", Ok(())),
+            ("75-ScriptCall-8.json", Ok(())),
         ];
         for (name, want) in verdicts {
             let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();

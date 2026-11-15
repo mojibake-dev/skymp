@@ -209,6 +209,12 @@ export class ScriptCallService extends ClientListener {
             if (call.kind === "look") {
                 this.noteLook(call);
             }
+            // thuum ADR-073 decision 13, the spell channel (#54): a spell's
+            // placement and every call on what it placed, sent as they ran
+            // here, in the engine's order with this seat's other calls
+            if (call.kind === "created") {
+                this.queue({ call, record: false, key: undefined, dropped: false });
+            }
         }
     }
 
@@ -491,6 +497,9 @@ export class ScriptCallService extends ClientListener {
     // map (a figure or a server copy gone from it) is not sent, counted,
     // rather than sent with None in its place. False when not sent
     private send(call: ScriptCall, host: HostService): boolean {
+        if (call.kind === "created") {
+            return this.sendCreated(call);
+        }
         const selfId = call.self !== 0 ? localIdToRemoteId(call.self) : 0;
         if (selfId === 0) {
             this.unsent++;
@@ -538,6 +547,57 @@ export class ScriptCallService extends ClientListener {
         if (event !== undefined && refr && !this.sp.Actor.from(refr)) {
             logTrace(this, `object animation ${call.self.toString(16)} ${event} reported`);
         }
+        return true;
+    }
+
+    // thuum ADR-073 decision 13, the spell channel (#54; wire-schema
+    // ScriptCall's placed and localArgs, SCHEMA_VERSION 55): a created
+    // reference travels by this seat's own local id, as its self or as an
+    // argument the platform marked, and the server maps it to its copy; this
+    // seat's own player as 0x14, which the server maps to the reporter's
+    // actor; every other form by its server id, as any call's. The epoch is
+    // unread (the creator is the owner). False when an unmarked form has no
+    // server id
+    private sendCreated(call: ScriptCall): boolean {
+        const marks = call.localArgs ?? 0;
+        const local = (formId: number) => formId === 0x14 || formId >= 0xff000000;
+        const selfId = call.self === 0 ? 0 : local(call.self) ? call.self : localIdToRemoteId(call.self);
+        if (selfId === 0) {
+            this.unsent++;
+            return false;
+        }
+        const args: SpSnippetArgument[] = [];
+        for (let i = 0; i < call.args.length; ++i) {
+            const arg = call.args[i];
+            if (i < 16 && (marks & (1 << i)) !== 0 && arg !== null && typeof arg === "object") {
+                args.push({ formId: arg.formId, type: "ObjectReference" });
+                continue;
+            }
+            const packed = this.toSnippetArgument(arg, false);
+            if (packed === undefined) {
+                this.argsUnmapped++;
+                return false;
+            }
+            args.push(packed);
+        }
+        const message: ScriptCallMessage = {
+            t: MsgType.ScriptCall,
+            epoch: 0,
+            selfId,
+            cls: call.cls,
+            fn: call.fn,
+            args,
+            caller: call.caller,
+            handler: call.handler,
+            latent: call.latent,
+        };
+        if (call.placed !== undefined) {
+            message.placed = call.placed;
+        }
+        if (marks !== 0) {
+            message.localArgs = marks;
+        }
+        this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
         return true;
     }
 

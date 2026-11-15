@@ -2669,8 +2669,12 @@ wire_struct! {
         /// The call's subject as the sender's engine numbers it: the self of
         /// a method native, the target argument (the first) of a static one;
         /// a form of the load order both ends share, or 0x14 for the
-        /// sender's own player; never 0xff000000 and up, which the server
-        /// names.
+        /// sender's own player. Since SCHEMA_VERSION 55 (thuum ADR-073
+        /// decision 13, the spell channel; docs/verbs/spell-placed-object.md)
+        /// an id of 0xff000000 and up is a reference the sender's own game
+        /// created, by the sender's local id (a creation's `placed`), which
+        /// the server maps to its own copy; the server's own ids are never
+        /// sent here.
         pub self_id: u32,
         /// The native's Papyrus class, `ObjectReference`.
         pub cls: String<{ cap::PAPYRUS_NAME }>,
@@ -2702,6 +2706,24 @@ wire_struct! {
         /// can roll. Delivered once on the reliable channel; a duplicate
         /// would grant twice, as a plain own AddItem's would.
         pub landed: Option<Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>>,
+        /// Since SCHEMA_VERSION 55 (thuum ADR-073 decisions 6 and 13, the
+        /// spell channel): on an ObjectReference.PlaceAtMe or PlaceActorAtMe
+        /// alone, the local id (0xff000000 and up) of the reference the
+        /// sender's engine returned, which the sender's later calls name as
+        /// their subject or an object argument; absent on every other call
+        /// and on a creation whose result the boundary could not read. R2,
+        /// the sender's word: the server makes its own copy of a placeable
+        /// base for the other seats, naming the sender (placedBy), and maps
+        /// the sender's id to it.
+        pub placed: Option<u32>,
+        /// Since SCHEMA_VERSION 55 (the spell channel): which object
+        /// arguments name a reference the sender's own game created, by the
+        /// sender's local id, bit `i` for argument `i` (a MoveTo's target, an
+        /// EffectShader.Play's object), which the server maps to its own copy
+        /// as it maps a created `self_id`; absent for none. An unmarked
+        /// object argument of 0xff000000 and up stays what rung 5 made it, a
+        /// player's figure by the server's id.
+        pub local_args: Option<u16>,
     }
 }
 

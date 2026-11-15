@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_looks, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, object_animation, placements, player_globals, player_own, props, quest_runs, quest_scope, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, script_variables, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
+use wire_rules::{activation, actor_looks, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, created, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, object_animation, placements, player_globals, player_own, props, quest_runs, quest_scope, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, script_variables, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1528,6 +1528,48 @@ mod ffi {
         player: u32,
         /// The standing grant's epoch (the kept epoch when unhosted).
         epoch: u32,
+    }
+
+    /// The spell channel's verdict (thuum ADR-073 decision 13, wire-rules
+    /// created; #54): on a creation, whether the core places its copy or
+    /// relays the call as a one-shot; on a call on a created reference, its
+    /// copy, its sequence and what the copy's record keeps.
+    #[derive(Debug, Clone, PartialEq)]
+    struct CreatedVerdict {
+        /// The rule took the call.
+        accepted: bool,
+        /// The refusal's name (`E_CREATED_SELF`, `E_CREATED_KIND`,
+        /// `E_CREATED_OWNER`, `E_CREATED_UNKNOWN`, `E_CREATED_BOUND`), empty
+        /// when accepted.
+        name: String,
+        /// Why, for the log; empty when accepted.
+        why: String,
+        /// A creation's: 1 the core places its copy and binds it, 2 a
+        /// one-shot relayed as the call itself to its self's listeners; 0
+        /// for a call.
+        creation: u8,
+        /// A call's copy, a creation's self copy (0 for the reporter's own
+        /// player, its actor), a local id's copy.
+        copy: u32,
+        /// A call's sequence on its copy.
+        seq: u32,
+        /// What the copy's record keeps: 0 nothing, 1 MoveTo's offset from
+        /// its target (`x`, `y`, `z`), 2 SetPosition's position, 3
+        /// SetAngle's angle (`ax`, `ay`, `az`, degrees), 4 TranslateTo's end
+        /// pose (both), 5 enabled, 6 disabled, 7 deleted.
+        keep: u8,
+        /// A kept position or offset, units.
+        x: f32,
+        /// See `x`.
+        y: f32,
+        /// See `x`.
+        z: f32,
+        /// A kept angle, degrees.
+        ax: f32,
+        /// See `ax`.
+        ay: f32,
+        /// See `ax`.
+        az: f32,
     }
 
     /// A reported script call's row and subject (thuum ADR-068, wire-rules
@@ -3464,6 +3506,44 @@ mod ffi {
         /// owns the actor's looks on it, ms (wire-rules natives
         /// ASH_WINDOW_MS), for the core's tests.
         fn script_ash_window_ms() -> u64;
+        /// thuum ADR-073 decision 13, the spell channel (wire-rules created;
+        /// #54): the references a seat's script created, by their creator's
+        /// local id, and the server's copy of each.
+        type CreatedRefs;
+        /// None held.
+        fn new_created_refs() -> Box<CreatedRefs>;
+        /// A creation: `creator`'s PlaceAtMe or PlaceActorAtMe on `self_id`
+        /// (0x14 its own player, 0xff000000 and up its created reference by
+        /// its local id, anything else the table's) of a base of
+        /// `record_type`, its result `placed`. Accepted with `creation` 1
+        /// (the core places its copy, then `created_bind`) or 2 (a one-shot,
+        /// relayed as the call to the self's listeners, `copy` the self's
+        /// copy or 0 for the player); refused with its name otherwise. Every
+        /// creation and call spends one of the creator's tokens at `now_ms`
+        /// on the core's monotonic clock (wire-rules created BURST and
+        /// PER_SECOND, `E_CREATED_BOUND`).
+        fn created_create(self: &mut CreatedRefs, creator: u32, self_id: u32, record_type: &str, placed: u32, now_ms: u64) -> CreatedVerdict;
+        /// The core placed `copy` for `creator`'s `local`. False for a pair
+        /// or a copy bound already.
+        fn created_bind(self: &mut CreatedRefs, creator: u32, local: u32, copy: u32) -> bool;
+        /// A local id an argument names: accepted with its `copy`, or
+        /// `E_CREATED_UNKNOWN`.
+        fn created_local(self: &CreatedRefs, creator: u32, local: u32) -> CreatedVerdict;
+        /// A call `func` on `creator`'s created `local`, its numeric
+        /// arguments in order (NaN for an argument that is no number; the
+        /// edge refused any number that is not finite): accepted with its
+        /// copy, sequence and keep, or refused with its name.
+        fn created_call(self: &mut CreatedRefs, creator: u32, local: u32, func: &str, nums: &[f64], now_ms: u64) -> CreatedVerdict;
+        /// Whose a copy is, 0 for none the channel holds.
+        fn created_creator_of(self: &CreatedRefs, copy: u32) -> u32;
+        /// The copy fell: its id unbound. False for none held.
+        fn created_forget_copy(self: &mut CreatedRefs, copy: u32) -> bool;
+        /// The creator left: every copy it holds, unbound, for the core to
+        /// delete.
+        fn created_forget_creator(self: &mut CreatedRefs, creator: u32) -> Vec<u32>;
+        /// The references held, world-wide.
+        fn created_len(self: &CreatedRefs) -> usize;
+
         /// Every reporter's budget and every subject's sequence (wire-rules
         /// natives), and the call the shape step passed until the owner
         /// step takes it.
@@ -3833,7 +3913,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord};
+pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -5879,6 +5959,108 @@ fn script_call_subject(cls: &str, func: &str, self_id: u32, args: &[ScriptArg]) 
         _ => 0,
     };
     ScriptCallSubject { row: i32::try_from(index).unwrap_or(-1), subject, record, look }
+}
+
+/// The spell channel's table (wire-rules created).
+#[derive(Debug, Default)]
+pub struct CreatedRefs(created::Created);
+
+fn new_created_refs() -> Box<CreatedRefs> {
+    Box::default()
+}
+
+fn created_verdict(r: Result<(), created::Refused>) -> CreatedVerdict {
+    match r {
+        Ok(()) => CreatedVerdict { accepted: true, ..created_empty() },
+        Err(refused) => CreatedVerdict { accepted: false, name: refused.code.name().to_owned(), why: refused.why, ..created_empty() },
+    }
+}
+
+fn created_empty() -> CreatedVerdict {
+    CreatedVerdict { accepted: false, name: String::new(), why: String::new(), creation: 0, copy: 0, seq: 0, keep: 0, x: 0.0, y: 0.0, z: 0.0, ax: 0.0, ay: 0.0, az: 0.0 }
+}
+
+impl CreatedRefs {
+    fn created_create(&mut self, creator: u32, self_id: u32, record_type: &str, placed: u32, now_ms: u64) -> CreatedVerdict {
+        if let Err(refused) = self.0.spend(creator, now_ms) {
+            return created_verdict(Err(refused));
+        }
+        let kind = if self_id == created::OWN_PLAYER {
+            created::SelfKind::OwnPlayer
+        } else if self_id >= created::LOCAL_FIRST {
+            created::SelfKind::Local(self_id)
+        } else {
+            created::SelfKind::Other
+        };
+        match self.0.create(creator, kind, record_type, placed) {
+            Ok(created::Creation::Copy { self_copy }) => CreatedVerdict { creation: 1, copy: self_copy, ..created_verdict(Ok(())) },
+            Ok(created::Creation::OneShot { self_copy }) => CreatedVerdict { creation: 2, copy: self_copy, ..created_verdict(Ok(())) },
+            Err(refused) => created_verdict(Err(refused)),
+        }
+    }
+
+    fn created_bind(&mut self, creator: u32, local: u32, copy: u32) -> bool {
+        self.0.bind(creator, local, copy)
+    }
+
+    fn created_local(&self, creator: u32, local: u32) -> CreatedVerdict {
+        match self.0.local(creator, local) {
+            Ok(copy) => CreatedVerdict { copy, ..created_verdict(Ok(())) },
+            Err(refused) => created_verdict(Err(refused)),
+        }
+    }
+
+    fn created_call(&mut self, creator: u32, local: u32, func: &str, nums: &[f64], now_ms: u64) -> CreatedVerdict {
+        if let Err(refused) = self.0.spend(creator, now_ms) {
+            return created_verdict(Err(refused));
+        }
+        let nums: Vec<Option<f64>> = nums.iter().map(|&v| if v.is_nan() { None } else { Some(v) }).collect();
+        let accepted = match self.0.call(creator, local, func, &nums) {
+            Ok(a) => a,
+            Err(refused) => return created_verdict(Err(refused)),
+        };
+        let mut v = CreatedVerdict { copy: accepted.copy, seq: accepted.seq, ..created_verdict(Ok(())) };
+        match accepted.keep {
+            created::Keep::Nothing => {}
+            created::Keep::MoveTo { offset } => {
+                v.keep = 1;
+                [v.x, v.y, v.z] = offset;
+            }
+            created::Keep::Position(pos) => {
+                v.keep = 2;
+                [v.x, v.y, v.z] = pos;
+            }
+            created::Keep::Angle(rot) => {
+                v.keep = 3;
+                [v.ax, v.ay, v.az] = rot;
+            }
+            created::Keep::Translate { pos, rot } => {
+                v.keep = 4;
+                [v.x, v.y, v.z] = pos;
+                [v.ax, v.ay, v.az] = rot;
+            }
+            created::Keep::Enable => v.keep = 5,
+            created::Keep::Disable => v.keep = 6,
+            created::Keep::Delete => v.keep = 7,
+        }
+        v
+    }
+
+    fn created_creator_of(&self, copy: u32) -> u32 {
+        self.0.creator_of(copy).unwrap_or(0)
+    }
+
+    fn created_forget_copy(&mut self, copy: u32) -> bool {
+        self.0.forget_copy(copy)
+    }
+
+    fn created_forget_creator(&mut self, creator: u32) -> Vec<u32> {
+        self.0.forget_creator(creator)
+    }
+
+    fn created_len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// Every reporter's budget and every subject's sequence (wire-rules natives),
@@ -8683,5 +8865,31 @@ mod tests {
         let alarm = ScriptCallFacts { self_id: 0x10481e, ..facts };
         let woke = calls.judge(detect.row, &[owner, number], &alarm, 0);
         assert_eq!((woke.code, woke.look, woke.audience, woke.figure_args, woke.relay_self), (ScriptCallCode::Accepted, true, 3, true, 0x10481e));
+    }
+
+    // thuum ADR-073 decision 13, the spell channel (#54): Raise Wall's cast as
+    // x-spell-calls 20261115-034842 read it on c1, through the core's view
+    #[test]
+    fn the_spell_channel_maps_the_casters_ids_and_keeps_the_walls_pose() {
+        let mut refs = new_created_refs();
+        let rotfern = 0xff00_0000;
+        let wall = 0xff00_08fa;
+        let placed = refs.created_create(rotfern, 0x14, "MSTT", wall, 0);
+        assert_eq!((placed.accepted, placed.creation, placed.copy), (true, 1, 0));
+        assert!(refs.created_bind(rotfern, wall, 0xff00_0005));
+        let boom = refs.created_create(rotfern, wall, "EXPL", 0xff00_0990, 0);
+        assert_eq!((boom.accepted, boom.creation, boom.copy), (true, 2, 0xff00_0005));
+        let other = refs.created_create(rotfern, 0x1a09_8529, "MSTT", 0xff00_0991, 0);
+        assert_eq!((other.accepted, other.name.as_str()), (false, "E_CREATED_SELF"));
+        let moved = refs.created_call(rotfern, wall, "MoveTo", &[f64::NAN, 0.0, 192.0, -288.0, f64::NAN], 0);
+        assert_eq!((moved.accepted, moved.copy, moved.seq, moved.keep, moved.y, moved.z), (true, 0xff00_0005, 1, 1, 192.0, -288.0));
+        let rise = refs.created_call(rotfern, wall, "TranslateTo", &[133_855.4, -61_303.94, 14_628.6, 0.0, 0.0, 90.0, 512.0, 0.0], 0);
+        assert_eq!((rise.keep, rise.seq, rise.az), (4, 2, 90.0));
+        assert_eq!(refs.created_call(rotfern, wall, "Disable", &[f64::NAN], 0).keep, 6);
+        let stranger = refs.created_local(0xff00_0001, wall);
+        assert_eq!((stranger.accepted, stranger.name.as_str()), (false, "E_CREATED_UNKNOWN"));
+        assert_eq!((refs.created_creator_of(0xff00_0005), refs.created_len()), (rotfern, 1));
+        assert_eq!(refs.created_forget_creator(rotfern), vec![0xff00_0005]);
+        assert_eq!(refs.created_len(), 0);
     }
 }

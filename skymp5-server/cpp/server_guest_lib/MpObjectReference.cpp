@@ -2203,7 +2203,28 @@ void MpObjectReference::SetRefState(bool disabled, bool deleted, uint32_t seq)
 
 bool MpObjectReference::KeepsGridWhileDisabled() const
 {
-  return IsEspmForm() && !AsActor() && ChangeForm().refStateSeq.has_value();
+  return (IsEspmForm() || IsCreatedCopy()) && !AsActor() &&
+    ChangeForm().refStateSeq.has_value();
+}
+
+bool MpObjectReference::IsCreatedCopy() const
+{
+  const auto& placed = ChangeForm().placedByScript;
+  return placed.has_value() && placed->self.file.empty();
+}
+
+void MpObjectReference::SetCreatedRefState(bool disabled,
+                                           std::optional<uint32_t> seq)
+{
+  EditChangeForm([&](MpChangeFormREFR& changeForm) {
+    changeForm.isDisabled = disabled;
+    if (seq) {
+      changeForm.refStateSeq = *seq;
+    }
+  });
+  if (!disabled) {
+    ForceSubscriptionsUpdate();
+  }
 }
 
 std::optional<MpChangeFormREFR::PlacedByScript>

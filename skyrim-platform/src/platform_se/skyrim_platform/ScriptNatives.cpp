@@ -475,6 +475,7 @@ enum CountKind : std::size_t
   kCountEffect,
   kCountHelper,
   kCountEffectEnded,
+  kCountCreated,
   kCountKinds
 };
 
@@ -492,7 +493,8 @@ constexpr const char* kCountSuffix[kCountKinds] = { "",
                                                     " (acting)",
                                                     " (effect)",
                                                     " (helper)",
-                                                    " (effect ended)" };
+                                                    " (effect ended)",
+                                                    " (created)" };
 
 std::array<std::array<std::atomic<std::uint32_t>, kCountKinds>, kRowCount>
   g_counts{};
@@ -1024,6 +1026,14 @@ struct QueuedCall
   // landed it, each base once (empty when the roll landed nothing), raised
   // as `landed`; none on every other call
   std::optional<std::vector<Landing>> landed;
+  // thuum ADR-073 decision 13, the spell channel (#54): a creation or a call
+  // on a reference this seat's script created (OnCreatedCall), raised as
+  // kind "created"; a creation's result by its local id, raised as
+  // `placed`; which arguments name a created reference, bit i for argument
+  // i, raised as `localArgs`
+  bool created = false;
+  std::optional<std::uint32_t> placed;
+  std::uint16_t localArgs = 0;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -1098,8 +1108,10 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   AddObjProperty(&obj, "cls", native.cls);
   AddObjProperty(&obj, "fn", native.fn);
   AddObjProperty(&obj, "kind",
-                 call.touch ? "touch"
-                            : (call.look ? "look" : KindName(native.kind)));
+                 call.touch       ? "touch"
+                   : call.look    ? "look"
+                   : call.created ? "created"
+                                  : KindName(native.kind));
   AddObjProperty(&obj, "self", call.self);
   auto args = Napi::Array::New(env, call.argCount);
   for (uint32_t i = 0; i < call.argCount; ++i) {
@@ -1113,6 +1125,12 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   AddObjProperty(&obj, "stackId", call.stackId);
   if (call.alias) {
     AddObjProperty(&obj, "alias", *call.alias);
+  }
+  if (call.placed) {
+    AddObjProperty(&obj, "placed", *call.placed);
+  }
+  if (call.localArgs != 0) {
+    AddObjProperty(&obj, "localArgs", static_cast<int>(call.localArgs));
   }
   if (call.landed) {
     auto landed = Napi::Array::New(env, call.landed->size());
@@ -1248,6 +1266,8 @@ std::array<LineSlots, kRowCount> g_skipLines{};
 // 2's call on a helper, on the same slots and bound
 std::array<LineSlots, kRowCount> g_effectLines{};
 std::array<LineSlots, kRowCount> g_helperLines{};
+// the spell channel's first calls a window logs, by row and self
+std::array<LineSlots, kRowCount> g_createdLines{};
 // train 53's V-scene: the skipped scene starts' lines, by the scene's form
 // id, on the same slots and bound
 LineSlots g_sceneLines{};
@@ -1392,6 +1412,73 @@ void Clear()
 }
 }
 
+// thuum ADR-073 decision 13, the spell channel (#54; wire-rules created):
+// the references this seat's scripts created through a creation the channel
+// reported (OnCreatedCall, NoteCreated), by their local id, until a Delete or
+// a game load. One atomic load while the table is empty (rule 9); at most
+// kMaxCreated, the oldest let go past it (the server holds a creator to 32)
+namespace Created {
+constexpr std::size_t kMaxCreated = 256;
+
+struct
+{
+  std::unordered_map<std::uint32_t, std::uint64_t> entries;
+  std::mutex m;
+  std::atomic<std::size_t> size{ 0 };
+} g_table;
+
+bool Any()
+{
+  return g_table.size.load(std::memory_order_relaxed) != 0;
+}
+
+void Add(std::uint32_t id, std::uint64_t now)
+{
+  std::lock_guard<std::mutex> lock(g_table.m);
+  if (g_table.entries.count(id) == 0 &&
+      g_table.entries.size() >= kMaxCreated) {
+    auto oldest = g_table.entries.begin();
+    for (auto it = g_table.entries.begin(); it != g_table.entries.end();
+         ++it) {
+      if (it->second < oldest->second) {
+        oldest = it;
+      }
+    }
+    g_table.entries.erase(oldest);
+  }
+  g_table.entries[id] = now;
+  g_table.size.store(g_table.entries.size());
+}
+
+bool Is(std::uint32_t id)
+{
+  if (!Any() || id < 0xff000000) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(g_table.m);
+  return g_table.entries.count(id) != 0;
+}
+
+void Drop(std::uint32_t id)
+{
+  std::lock_guard<std::mutex> lock(g_table.m);
+  g_table.entries.erase(id);
+  g_table.size.store(g_table.entries.size());
+}
+
+void Clear()
+{
+  std::lock_guard<std::mutex> lock(g_table.m);
+  g_table.entries.clear();
+  g_table.size.store(0);
+}
+}
+
+// the spell channel's switch (scriptCreatedChannel, ClientSetting's; thuum
+// .claude/rules/native.md's kill switch), read with the effect rule's; on
+// unless false
+bool g_createdChannel = true;
+
 // the effect rule's switch (scriptEffectHelpers, ClientSetting's; thuum
 // .claude/rules/native.md's kill switch), read once at kDataLoaded before
 // the replacement is installed and never written after; on unless false
@@ -1434,6 +1521,9 @@ struct Marks
   // train 52's Fix 2: a PlaceAtMe whose result is this seat's local helper,
   // recorded once the original answers kCompleted (NoteHelper)
   bool placeHelper = false;
+  // the spell channel: a creation's call, queued with its result once the
+  // original answers kCompleted (NoteCreated)
+  std::optional<QueuedCall> createdCall;
   // train 52's Fix 1: a leveled AddItem parked by its stack id, let go when
   // the original answers anything but kInProgress (no functor queued)
   bool parked = false;
@@ -2964,6 +3054,91 @@ void CountUnclaimed(const RE::BSScript::IFunction* fn)
 
 // the seam's judgment of one dispatch, 6.2's order (rule 9: the cheapest
 // test first). The body runs unless the lever skips it (marks.skip)
+// thuum ADR-073 decision 13, the spell channel's first slice (wire-rules
+// created; docs/verbs/spell-placed-object.md; #54, Raise Wall; the read
+// x-spell-calls 20261115-034842): a PlaceAtMe on this seat's own player
+// inside an effect this seat runs for its own player (a spell's script), or
+// any tabled call on a reference such a creation returned (Created), is
+// this seat's script's own: it runs here, and is batched as kind "created"
+// with its self and its arguments by this seat's own ids, the created ones
+// marked (localArgs), which the server maps to its copies and relays as the
+// same natives to every other seat. A creation waits for its result
+// (marks.createdCall, NoteCreated); a Delete lets its reference go. Counted
+// " (created)", the first selves a window logged. A call on such a
+// reference runs under the script action's mark for its extent, as a
+// helper's does, so the engine-level hooks leave it
+std::uint16_t LocalArgsOf(const QueuedCall& call)
+{
+  std::uint16_t marks = 0;
+  for (std::uint32_t i = 0; i < call.argCount && i < 16; ++i) {
+    const CallArg& arg = call.args[i];
+    if (arg.kind == CallArg::Kind::Form && Created::Is(arg.formId)) {
+      marks = static_cast<std::uint16_t>(marks | (1u << i));
+    }
+  }
+  return marks;
+}
+
+Marks OnCreatedCall(std::size_t row, const RowInfo& info,
+                    const RE::BSScript::Stack* stack,
+                    const RE::BSScript::StackFrame* top, std::uint32_t page,
+                    const RE::TESObjectREFR& subject, Marks marks)
+{
+  const NativeRow& native = g_natives[row];
+  // a method's self, or the shader of an Arg0Method row whose subject is
+  // its first argument (EffectShader.Play's akObject)
+  const std::uint32_t self = native.subject == NativeSubject::Arg0Method
+    ? EveryoneSelfId(top->self)
+    : subject.formID;
+  std::optional<QueuedCall> call =
+    CallFromFrame(row, info, stack, top, page, self);
+  if (!call) {
+    return marks;
+  }
+  call->created = true;
+  call->localArgs = LocalArgsOf(*call);
+  Count(row, kCountCreated);
+  if (SelfLineDue(g_createdLines[row], subject.formID)) {
+    logger::info("[verb:scripts] {}.{} on {:x}: {} this seat's script "
+                 "created, run here and reported as its creator's "
+                 "(ADR-073 decision 13)",
+                 native.cls, native.fn, subject.formID,
+                 info.placeAtMe && subject.formID == 0x14
+                   ? "a placement whose result"
+                   : "a reference");
+  }
+  if (info.placeAtMe) {
+    marks.createdCall = std::move(*call);
+    return marks;
+  }
+  QueueCall(std::move(*call));
+  if (info.deletes) {
+    Created::Drop(subject.formID);
+  }
+  marks.action = native.kind == NativeKind::Action;
+  return marks;
+}
+
+// a creation's result, the reference the original placed, read from the
+// stack's returnValue once it answered kCompleted (Stack.h:79; NoteHelper's
+// read): kept as this seat's created reference and the creation queued with
+// it as `placed`. A None result, an actor (PlaceActorAtMe is no row of this
+// slice) or an id below 0xff000000 queues nothing: the engine placed nothing
+// the channel carries
+void NoteCreated(const RE::BSScript::Stack& stack, QueuedCall&& call)
+{
+  auto* vm = VM::GetSingleton();
+  const RE::TESObjectREFR* ref = RefOfObject(
+    vm ? vm->GetObjectHandlePolicy() : nullptr, ObjectOf(stack.returnValue));
+  if (!ref || ref->formID < 0xff000000 ||
+      ref->GetFormType() == RE::FormType::ActorCharacter) {
+    return;
+  }
+  Created::Add(ref->formID, NowMs());
+  call.placed = ref->formID;
+  QueueCall(std::move(call));
+}
+
 Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
 {
   Marks marks;
@@ -3201,6 +3376,23 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     return marks;
   }
   const bool isActor = ref->GetFormType() == RE::FormType::ActorCharacter;
+  // thuum ADR-073 decision 13, the spell channel (OnCreatedCall): a call on
+  // a reference this seat's script created, or a spell's PlaceAtMe on this
+  // seat's own player, before every other rule (an Arg0Method look row's
+  // subject among them, EffectShader.Play on the wall)
+  if (g_createdChannel) {
+    const bool onCreated =
+      !isActor && ref->formID >= 0xff000000 && Created::Is(ref->formID);
+    bool spellPlacement = false;
+    if (!onCreated && info.placeAtMe && ref->formID == 0x14) {
+      const RE::BSScript::StackFrame* root = nullptr;
+      spellPlacement =
+        RootEffectRole(stack, policy, root) != Frida::PlayersEffectRole::kNone;
+    }
+    if (onCreated || spellPlacement) {
+      return OnCreatedCall(row, info, stack, top, page, *ref, marks);
+    }
+  }
   // an animation row on an actor is the stream's (6.7: the boundary emits
   // nothing for actor animation rows; the table's Debug.SendAnimationEvent
   // on an actor is local): every rung 2 action row is an animation row. An
@@ -3934,6 +4126,7 @@ void FlushCensus(uint64_t now)
     FreeLineSlots(g_skipLines[row]);
     FreeLineSlots(g_effectLines[row]);
     FreeLineSlots(g_helperLines[row]);
+    FreeLineSlots(g_createdLines[row]);
   }
   // V-scene's skipped scenes, logged again in the next window
   FreeLineSlots(g_sceneLines);
@@ -4193,6 +4386,11 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
       result == RE::BSScript::IFunction::CallResult::kCompleted && stack) {
     NoteHelper(*stack.get());
   }
+  // the spell channel: a creation placed its reference by now
+  if (marks.createdCall &&
+      result == RE::BSScript::IFunction::CallResult::kCompleted && stack) {
+    NoteCreated(*stack.get(), QueuedCall(*marks.createdCall));
+  }
   // train 52's Fix 1: a parked call whose native answered anything but
   // kInProgress (IFunction::CallResult, CommonLibSSE-NG
   // include/RE/I/IFunction.h:34-41: kCompleted 0, kInProgress 2) queued no
@@ -4225,6 +4423,8 @@ void ScriptNatives::ClearAtLoad()
   // a parked call's stack id the old world's stack
   Helpers::Clear();
   ClearParked();
+  // the spell channel: a created reference's id names the old world's
+  Created::Clear();
 }
 
 ScriptNatives::FunctorWindow::FunctorWindow(std::uint32_t stackId)
@@ -4513,6 +4713,14 @@ void ScriptNatives::InstallHooks()
   // train 52's Fix 2: the effect rule's switch, read beside the lever; since
   // the Undead FX build it carries an actor's look inside an effect this
   // seat's own player cast as well
+  g_createdChannel = ClientSwitchOn("scriptCreatedChannel");
+  logger::info("[verb:scripts] scriptCreatedChannel {}: {}",
+               g_createdChannel ? "on" : "off",
+               g_createdChannel
+                 ? "a spell's PlaceAtMe on this seat's own player and every "
+                   "call on what it placed are reported as the creator's "
+                   "(ADR-073 decision 13)"
+                 : "a spell's placement stays on this seat, as before");
   g_effectHelpers = ClientSwitchOn("scriptEffectHelpers");
   if (g_effectHelpers) {
     logger::info("[verb:scripts] scriptEffectHelpers on: a PlaceAtMe of an "

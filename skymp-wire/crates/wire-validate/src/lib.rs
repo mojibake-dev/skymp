@@ -1676,7 +1676,10 @@ fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
     }
-    if m.cls.as_str().is_empty() || m.func.as_str().is_empty() || m.self_id >= PLAYER_FORMS {
+    // since SCHEMA_VERSION 55 a subject of 0xff000000 and up is the sender's
+    // own created reference by its local id (the spell channel), which the
+    // server maps to its copy or refuses as one the sender never placed
+    if m.cls.as_str().is_empty() || m.func.as_str().is_empty() {
         return Err(Reject::Range);
     }
     let past_a_form = |a: &Option<skymp::SnippetArg>| {
@@ -1687,6 +1690,43 @@ fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
     }
     if let Some(landed) = &m.landed {
         check_landed(m, landed.as_slice())?;
+    }
+    if let Some(placed) = m.placed {
+        check_placed(m, placed)?;
+    }
+    check_local_args(m)?;
+    Ok(())
+}
+
+/// The marked object arguments (SCHEMA_VERSION 55, the spell channel): each
+/// bit names an argument the call carries, an object of 0xff000000 and up,
+/// the sender's local id of a reference its game created (`E_VAL_RANGE`
+/// otherwise).
+fn check_local_args(m: &skymp::ScriptCall) -> Result<(), Reject> {
+    let marks = m.local_args.unwrap_or(0);
+    for i in 0..16usize {
+        if marks & (1 << i) == 0 {
+            continue;
+        }
+        let local = matches!(m.args.get(i), Some(Some(skymp::SnippetArg::Object(o))) if o.form_id >= u64::from(PLAYER_FORMS));
+        if !local {
+            return Err(Reject::Range);
+        }
+    }
+    Ok(())
+}
+
+/// A creation's result (thuum ADR-073 decision 13, SCHEMA_VERSION 55),
+/// structural only: it rides an ObjectReference.PlaceAtMe or PlaceActorAtMe
+/// (names without case, as the server's table reads them) and no other call,
+/// and names a reference the sender's engine created, 0xff000000 and up
+/// (`E_VAL_RANGE`). Whether the base is one the server places is its rule
+/// (wire-rules natives, the created channel).
+fn check_placed(m: &skymp::ScriptCall, placed: u32) -> Result<(), Reject> {
+    let creation = m.cls.as_str().eq_ignore_ascii_case("ObjectReference")
+        && (m.func.as_str().eq_ignore_ascii_case("PlaceAtMe") || m.func.as_str().eq_ignore_ascii_case("PlaceActorAtMe"));
+    if !creation || placed < PLAYER_FORMS {
+        return Err(Reject::Range);
     }
     Ok(())
 }
@@ -4863,9 +4903,11 @@ mod script_call_tests {
         // the names, never empty
         assert_eq!(validate_server(&call(0xaa8cb, "", "PlayAnimation", vec![text("Open")])), Err(Reject::Range));
         assert_eq!(validate_server(&call(0xaa8cb, "ObjectReference", "", vec![text("Open")])), Err(Reject::Range));
-        // what the server names: its own forms and the players' figures, as
-        // the subject, and no form past 32 bits
-        assert_eq!(validate_server(&call(0xff00_0002, "ObjectReference", "PlayAnimation", vec![text("Open")])), Err(Reject::Range));
+        // since SCHEMA_VERSION 55 a subject of 0xff000000 and up is the
+        // sender's own created reference by its local id (the spell
+        // channel), the server's rule's to map or refuse; no form past 32
+        // bits
+        assert_eq!(validate_server(&call(0xff00_08fa, "ObjectReference", "TranslateTo", vec![])), Ok(()));
         assert_eq!(validate_server(&call(0xfeff_ffff, "ObjectReference", "PlayAnimation", vec![text("Open")])), Ok(()));
         assert_eq!(validate_server(&call(0x10e6c5, "Debug", "SendAnimationEvent", vec![object(0x1_0010_e6c5, "ObjectReference"), text("Open")])), Err(Reject::Range));
         // thuum ADR-068 rung 5: a scoped call's figure, an object argument
@@ -4916,6 +4958,41 @@ mod script_call_tests {
         };
         let landed: Vec<ItemDelta> = landed.iter().map(|&(item, count)| ItemDelta { item: FormId(item), count }).collect();
         Message::ScriptCall(ScriptCall { landed: landed.try_into().ok(), caller: "QF_MS01_00018B4B".try_into().unwrap_or_default(), handler: "Fragment_56".try_into().unwrap_or_default(), ..c })
+    }
+
+    // thuum ADR-073 decision 13, the spell channel (SCHEMA_VERSION 55; #54):
+    // Raise Wall's WB_FabricateWall_Script.OnEffectStart, as c1's trace read
+    // it in x-spell-calls 20261115-034842: PlaceAtMe on the player of the
+    // wall 0x1a098529 returned ff0008fa, MoveTo on the wall named the player,
+    // EffectShader.Play named the wall
+    fn created(self_id: u32, func: &str, args: Vec<Option<SnippetArg>>, placed: Option<u32>, local_args: Option<u16>) -> Message {
+        let Message::ScriptCall(c) = call(self_id, "ObjectReference", func, args) else {
+            return Message::Refuse { reason: 0 };
+        };
+        Message::ScriptCall(ScriptCall { placed, local_args, ..c })
+    }
+
+    #[test]
+    fn a_creation_names_its_result_and_later_calls_name_it_by_the_senders_id() {
+        let wall = || vec![object(0x1a09_8529, "MovableStatic"), Some(SnippetArg::Number(1.0)), Some(SnippetArg::Bool(false)), Some(SnippetArg::Bool(true))];
+        assert_eq!(validate_server(&created(0x14, "PlaceAtMe", wall(), Some(0xff00_08fa), None)), Ok(()));
+        assert_eq!(validate_server(&created(0x14, "placeactoratme", wall(), Some(0xff00_08fa), None)), Ok(()), "names without case");
+        // a result below the created range, and a result on any other call
+        assert_eq!(validate_server(&created(0x14, "PlaceAtMe", wall(), Some(0x1a09_8529), None)), Err(Reject::Range));
+        assert_eq!(validate_server(&created(0xff00_08fa, "MoveTo", vec![object(0x14, "Actor")], Some(0xff00_08fb), None)), Err(Reject::Range));
+        // the wall's MoveTo on the player, and its shader's Play naming the
+        // wall, marked as the sender's created reference
+        let to_player = vec![object(0x14, "Actor"), Some(SnippetArg::Number(0.0)), Some(SnippetArg::Number(192.0)), Some(SnippetArg::Number(-288.0)), Some(SnippetArg::Bool(true))];
+        assert_eq!(validate_server(&created(0xff00_08fa, "MoveTo", to_player.clone(), None, None)), Ok(()));
+        let Message::ScriptCall(play) = call(0x1a07_35e7, "EffectShader", "Play", vec![object(0xff00_08fa, "ObjectReference"), Some(SnippetArg::Number(-1.0))]) else {
+            return;
+        };
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { local_args: Some(1), ..play.clone() })), Ok(()));
+        // a mark on an argument that is no created reference: below the
+        // range, no object, or past the arguments
+        assert_eq!(validate_server(&created(0xff00_08fa, "MoveTo", to_player.clone(), None, Some(1))), Err(Reject::Range));
+        assert_eq!(validate_server(&created(0xff00_08fa, "MoveTo", to_player, None, Some(2))), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { local_args: Some(4), ..play })), Err(Reject::Range));
     }
 
     #[test]

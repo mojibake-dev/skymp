@@ -228,8 +228,21 @@ public:
   void SetRefState(bool disabled, bool deleted, uint32_t seq);
   // a game-file world object whose ref state is recorded keeps its place on
   // the grid while disabled (ForceSubscriptionsUpdate): its create word and
-  // its served state reach every seat that loads its cell
+  // its served state reach every seat that loads its cell; so does a spell
+  // channel copy once its creator first enabled it (IsCreatedCopy), so the
+  // creator's Disable(true) fades on every screen and a later seat is served
+  // its state
   bool KeepsGridWhileDisabled() const;
+  // thuum ADR-073 decision 13, the spell channel (#54): a copy the server
+  // placed for a reference a seat's script created, marked by its script
+  // placement's self, the creator's actor (a runtime form, no plugin)
+  bool IsCreatedCopy() const;
+  // a channel copy's enabled state as its creator's engine set it, kept
+  // quietly (the creator's Enable and Disable are relayed as the natives
+  // themselves, so the receivers' engines fade): disabled and its sequence
+  // written; a copy with no sequence yet (placed disabled, never enabled)
+  // stays off the grid, and an enabled one is put on it
+  void SetCreatedRefState(bool disabled, std::optional<uint32_t> seq);
   // the reference starts disabled as the game files place it (initially
   // disabled, or under an enable parent that disables it), written when the
   // loader attaches it by its record (WorldState::AttachEspmRecord's

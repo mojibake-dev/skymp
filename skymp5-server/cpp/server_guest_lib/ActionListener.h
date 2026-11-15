@@ -186,6 +186,12 @@ public:
   // per reporter and code
   virtual void OnScriptCall(const RawMessageData& rawMsgData,
                             const ScriptCallMessage& msg);
+  // thuum ADR-073 decision 13, the spell channel (wire-rules created; #54):
+  // a reported call that creates a reference (`placed`) or names one the
+  // reporter's game created (a selfId of 0xff000000 and up, an argument
+  // marked in localArgs), judged by its creator alone and relayed as the
+  // same native to the copy's listeners; OnScriptCall's first branch
+  void OnCreatedCall(MpActor& reporter, const ScriptCallMessage& msg);
 
   // thuum ADR-068 rung 3 (the script record): a reference's owner reports
   // the scripts attached to it as its engine read them at a quiescent point.
@@ -635,6 +641,11 @@ private:
   std::map<std::pair<uint32_t, uint8_t>,
            std::pair<std::chrono::steady_clock::time_point, uint32_t>>
     scriptCallRefusals;
+  // the spell channel's refusal lines, by reporter actor and name (one a
+  // minute, the rest counted)
+  std::map<std::pair<uint32_t, std::string>,
+           std::pair<std::chrono::steady_clock::time_point, uint32_t>>
+    createdRefusals;
   // thuum ADR-068 rung 4: when each alias fill's and world global report's
   // refusal line was last said, by reporter actor and code (one a minute,
   // the rest counted)

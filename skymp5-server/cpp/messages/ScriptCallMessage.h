@@ -65,7 +65,9 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
       .Serialize("caller", caller)
       .Serialize("handler", handler)
       .Serialize("latent", latent)
-      .Serialize("landed", landed);
+      .Serialize("landed", landed)
+      .Serialize("placed", placed)
+      .Serialize("localArgs", localArgs);
   }
 
   // the subject's owner epoch the sender holds (the cell's host epoch;
@@ -87,4 +89,11 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
   // sender's own player, at most 255 (TESLeveledList's one-byte entry
   // count); absent on every other call
   std::optional<std::vector<Landing>> landed;
+  // since SCHEMA_VERSION 55 (thuum ADR-073 decision 13, the spell channel):
+  // on a PlaceAtMe or PlaceActorAtMe alone, the sender's local id (0xff000000
+  // and up) of the reference its engine returned; a selfId of 0xff000000 and
+  // up, and an object argument whose bit is set in localArgs, name such a
+  // reference by that id, which the server maps to its own copy
+  std::optional<uint32_t> placed;
+  std::optional<uint32_t> localArgs; // 16 bits on the wire (wire-schema)
 };

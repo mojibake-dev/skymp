@@ -20,7 +20,7 @@ import { SpSnippetArgument } from "./spSnippetMessage";
 export interface ScriptCallMessage {
     t: MsgType.ScriptCall;
     epoch: number;   // the cell's host epoch this client holds for the subject's cell (ADR-066's stamp, HostService.epochForActor), 0 for none
-    selfId: number;  // the subject's server id (a method's self, a static row's first argument), never 0 and never a player's figure: this game's own actor is 0x14
+    selfId: number;  // the subject's server id (a method's self, a static row's first argument), never 0 and never a player's figure: this game's own actor is 0x14; since SCHEMA_VERSION 55, 0xff000000 and up is a reference this game created, by its local id (placed)
     cls: string;     // the Papyrus class the native is declared on, "ObjectReference"
     fn: string;      // the native's name, "PlayAnimationAndWait"
     args: SpSnippetArgument[]; // the script's arguments in SpSnippet's own shape (at most 11; a form by its server id)
@@ -36,4 +36,14 @@ export interface ScriptCallMessage {
     // call. R2, the seat's word: the server records each landing as a plain
     // grant of a base the list can roll (E_SCRIPTCALL_ROLL otherwise)
     landed?: { item: number; count: number }[];
+    // since SCHEMA_VERSION 55 (thuum ADR-073 decision 13, the spell channel;
+    // #54): on a PlaceAtMe or PlaceActorAtMe alone, the local id (0xff000000
+    // and up) of the reference this game's engine returned. This game's later
+    // calls name that reference by the same local id, as their selfId or as
+    // an object argument marked in localArgs (bit i for argument i), and the
+    // server maps it to its own copy, which it places for the other seats
+    // naming this player (placedBy). An unmarked object argument of
+    // 0xff000000 and up stays a player's figure by its server id (rung 5)
+    placed?: number;
+    localArgs?: number;
 }

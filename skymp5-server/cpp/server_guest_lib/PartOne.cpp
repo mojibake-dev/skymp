@@ -404,6 +404,11 @@ struct PartOne::Impl
     skymp::rules::new_placements("[]");
   std::unordered_map<uint64_t, std::vector<uint32_t>> placedSets;
   std::unordered_map<uint32_t, uint32_t> placedCasterByForm;
+  // thuum ADR-073 decision 13, the spell channel (wire-rules created; #54):
+  // the references a seat's script created and the server's copy of each,
+  // whose creator placedCasterByForm names too
+  rust::Box<skymp::rules::CreatedRefs> created =
+    skymp::rules::new_created_refs();
 
   // thuum ADR-068 rung 4 (the created half): a unique actor's attached
   // reference by its base (an ALUA container, noted at its attach), and the
@@ -965,6 +970,8 @@ void PartOne::AttachSaveStorage(
     // thuum docs/verbs/spell-placed-object.md (ADR-057): a spell-placed
     // form never outlives the server that placed it
     SweepSpellPlacedAtLoad(changeForm);
+    // thuum ADR-073 decision 13: nor does a spell channel copy
+    SweepCreatedAtLoad(changeForm);
     if (changeForm.profileId >= 0) {
       ++numPlayerCharacters;
     }
@@ -1132,6 +1139,14 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           SendStreamWords(
             *this_, this_->pImpl->worldStreamer->gone(actor->GetFormId()));
           this_->pImpl->streamerStaleUsers.erase(userId);
+          // and the spell channel's copies of what its scripts created go
+          // with it: its game's references fell with its session (thuum
+          // ADR-073 decision 13, wire-rules created)
+          for (const uint32_t copy :
+               this_->pImpl->created->created_forget_creator(
+                 actor->GetFormId())) {
+            this_->DeleteCreatedCopy(copy, "its creator left");
+          }
           // and its live props return to their cells' hosts, each with the
           // word, player 0 (thuum docs/verbs/prop-physics.md, A7: the return
           // is a word, never a silent lapse)
@@ -2213,6 +2228,92 @@ skymp::rules::Fights& PartOne::GetFights()
 skymp::rules::ScriptCalls& PartOne::GetScriptCalls()
 {
   return *pImpl->scriptCalls;
+}
+
+skymp::rules::CreatedRefs& PartOne::GetCreatedRefs()
+{
+  return *pImpl->created;
+}
+
+uint32_t PartOne::PlaceCreatedCopy(MpActor& creator, uint32_t baseId,
+                                   const std::string& recordType,
+                                   const NiPoint3& pos, const NiPoint3& rot,
+                                   const FormDesc& cellOrWorld, bool disabled)
+{
+  FormDesc self;
+  FormDesc base;
+  try {
+    self = FormDesc::FromFormId(creator.GetFormId(), worldState.espmFiles);
+    base = FormDesc::FromFormId(baseId, worldState.espmFiles);
+  } catch (const std::exception& e) {
+    spdlog::warn("[verb:spell-placed] {:x}'s created base {:x}: {}; no copy",
+                 creator.GetFormId(), baseId, e.what());
+    return 0;
+  }
+  // PlaceSpellObject's constructor: the id the world hands out, the
+  // creator's id in every CreateActor the copy sends (placedCasterByForm),
+  // the script placement's self and base on its record (IsCreatedCopy: the
+  // self a runtime form), so the load sweep finds it after a restart
+  const uint32_t formId = worldState.GenerateFormId();
+  worldState.AddForm(std::make_unique<MpObjectReference>(
+                       LocationalData{ pos, rot, cellOrWorld },
+                       CreateFormCallbacks(), baseId, recordType),
+                     formId);
+  auto& refr = worldState.GetFormAt<MpObjectReference>(formId);
+  refr.SetPlacedByScript(self, base);
+  pImpl->placedCasterByForm[formId] = creator.GetFormId();
+  if (disabled) {
+    // off the grid until the creator's first Enable: no seat draws a copy
+    // the creator's engine holds hidden (PlaceAtMe's abInitiallyDisabled)
+    refr.SetCreatedRefState(true, std::nullopt);
+  } else {
+    refr.ForceSubscriptionsUpdate();
+  }
+  return formId;
+}
+
+bool PartOne::DeleteCreatedCopy(uint32_t copy, const char* why)
+{
+  pImpl->created->created_forget_copy(copy);
+  pImpl->placedCasterByForm.erase(copy);
+  const auto refr = std::dynamic_pointer_cast<MpObjectReference>(
+    worldState.LookupFormByIdNoLoad(copy));
+  if (!refr || refr->IsDeleted()) {
+    return false;
+  }
+  // RemoveSpellPlacedSet's destroy path: the record marked deleted, every
+  // subscriber's DestroyActor, then the reverse edges
+  refr->Delete();
+  refr->UnsubscribeFromAll();
+  spdlog::info("[verb:spell-placed] created copy {:x} deleted: {}", copy, why);
+  return true;
+}
+
+bool PartOne::SweepCreatedAtLoad(const MpChangeForm& record)
+{
+  // a channel copy's script placement names its creator's actor, a runtime
+  // form with no plugin; its creator's engine references fell with that
+  // session, so no copy survives a restart
+  if (!record.placedByScript.has_value() ||
+      !record.placedByScript->self.file.empty()) {
+    return false;
+  }
+  uint32_t formId = 0;
+  try {
+    formId = record.formDesc.ToFormId(worldState.espmFiles);
+  } catch (const std::exception&) {
+    return false;
+  }
+  const auto refr = std::dynamic_pointer_cast<MpObjectReference>(
+    worldState.LookupFormByIdNoLoad(formId));
+  if (!refr || refr->IsDeleted()) {
+    return false;
+  }
+  refr->Delete();
+  spdlog::info("[verb:spell-placed] swept created copy {:x} (base {}) at "
+               "load: its creator's references fell with its session",
+               formId, record.placedByScript->base.ToString());
+  return true;
 }
 
 uint8_t PartOne::KeepActorLook(uint32_t actor, uint8_t keep,

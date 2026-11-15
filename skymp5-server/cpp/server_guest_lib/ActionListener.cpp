@@ -6246,12 +6246,258 @@ void RecordQuestMarker(PartOne& partOne, MpActor& reporter,
 // epoch, or a game with the cell loaded one of whose actors stands by the
 // trigger (the firing's own rule over the subject's gathered facts), relayed
 // to the subject's other listeners and kept nowhere, with its own line.
+// thuum ADR-073 decision 13, the spell channel's first slice (wire-rules
+// created; docs/verbs/spell-placed-object.md; #54, Raise Wall; the read
+// x-spell-calls 20261115-034842): a script on the reporter's game placed a
+// reference with PlaceAtMe on its own player, or on a reference it created
+// before, and moves, turns, shows, hides or deletes it with the engine's own
+// natives. The reporter names each created reference by its own local id;
+// the server maps it to its copy, which every other seat draws as the
+// reporter's placement (placedBy), and relays each call as the same native
+// to the copy's listeners with the copy's sequence, so each receiver's
+// engine runs the script's own motion (the wall's 512 units a second). R2:
+// the creator's engine's word, its numbers bounded by the world alone.
+void ActionListener::OnCreatedCall(MpActor& reporter,
+                                   const ScriptCallMessage& msg)
+{
+  auto& created = partOne.GetCreatedRefs();
+  const uint32_t creator = reporter.GetFormId();
+  const auto refused = [&](const skymp::rules::CreatedVerdict& verdict) {
+    const auto now = std::chrono::steady_clock::now();
+    auto& [since, count] =
+      createdRefusals[{ creator, std::string(verdict.name) }];
+    ++count;
+    if (since.time_since_epoch().count() != 0 &&
+        now - since < std::chrono::minutes(1)) {
+      return;
+    }
+    spdlog::info("[verb:spell-placed] {}: {:x} reports {}.{} on {:x} (from "
+                 "{}.{}): {}; refused, {} since the last line",
+                 std::string(verdict.name), creator, msg.cls, msg.fn,
+                 msg.selfId, msg.caller, msg.handler, std::string(verdict.why),
+                 count);
+    since = now;
+    count = 0;
+  };
+
+  // the arguments as every receiver names them: a created reference's local
+  // id mapped to its copy, the reporter's own player to its actor; and the
+  // numbers for the rule's bounds (NaN for any other argument)
+  auto args = msg.args;
+  const uint32_t marks = msg.localArgs.value_or(0);
+  uint32_t arg0Local = 0;
+  std::vector<double> nums;
+  nums.reserve(args.size());
+  for (size_t i = 0; i < args.size(); ++i) {
+    nums.push_back(std::numeric_limits<double>::quiet_NaN());
+    if (!args[i]) {
+      continue;
+    }
+    if (auto number = std::get_if<double>(&*args[i])) {
+      nums.back() = *number;
+      continue;
+    }
+    auto object = std::get_if<SpSnippetObjectArgument>(&*args[i]);
+    if (!object) {
+      continue;
+    }
+    if (i < 16 && (marks & (1u << i))) {
+      const auto local = static_cast<uint32_t>(object->formId);
+      const auto mapped = created.created_local(creator, local);
+      if (!mapped.accepted) {
+        refused(mapped);
+        return;
+      }
+      if (i == 0) {
+        arg0Local = local;
+      }
+      object->formId = mapped.copy;
+    } else if (object->formId == 0x14) {
+      object->formId = creator;
+    }
+  }
+  const auto copyRef = [&](uint32_t id) -> MpObjectReference* {
+    const auto& form = partOne.worldState.LookupFormByIdNoLoad(id);
+    return form ? form->AsObjectReference() : nullptr;
+  };
+  const auto relayTo = [&](MpObjectReference& subject, uint32_t relaySelf,
+                           uint32_t seq) {
+    SpSnippet relay(msg.cls.c_str(), msg.fn.c_str(), args, relaySelf);
+    size_t relayed = 0;
+    for (MpActor* listener : subject.GetActorListeners()) {
+      if (!listener || listener == &reporter ||
+          partOne.serverState.UserByActor(listener) ==
+            Networking::InvalidUserId) {
+        continue;
+      }
+      relay.Relay(listener, seq, 0);
+      ++relayed;
+    }
+    return relayed;
+  };
+
+  // a creation: a copy for a base the rule copies, or the call relayed as a
+  // one-shot each receiver's engine places itself (an explosion)
+  if (msg.placed) {
+    uint32_t baseId = 0;
+    if (!msg.args.empty() && msg.args.front()) {
+      if (auto base =
+            std::get_if<SpSnippetObjectArgument>(&*msg.args.front())) {
+        baseId = static_cast<uint32_t>(base->formId);
+      }
+    }
+    std::string recordType;
+    if (partOne.HasEspm() && baseId) {
+      if (const auto rec =
+            partOne.GetEspm().GetBrowser().LookupById(baseId).rec) {
+        recordType = rec->GetType().ToString();
+      }
+    }
+    const auto verdict = created.created_create(
+      creator, msg.selfId, recordType, *msg.placed, MonotonicMs());
+    if (!verdict.accepted) {
+      refused(verdict);
+      return;
+    }
+    MpObjectReference* self =
+      msg.selfId == 0x14 ? &reporter : copyRef(verdict.copy);
+    if (verdict.creation == 2) {
+      const size_t relayed = self
+        ? relayTo(*self, self == &reporter ? creator : verdict.copy, 0)
+        : 0;
+      spdlog::info("[verb:spell-placed] {:x}'s script placed {:x} ({}) on "
+                   "{:x} (from {}.{}): a one-shot, relayed to {} game(s), "
+                   "each engine placing its own",
+                   creator, baseId, recordType, msg.selfId, msg.caller,
+                   msg.handler, relayed);
+      return;
+    }
+    if (!self) {
+      spdlog::warn("[verb:spell-placed] {:x}'s script placed {:x} on {:x}: "
+                   "the self's copy is gone; no copy",
+                   creator, baseId, msg.selfId);
+      return;
+    }
+    // PlaceAtMe(akFormToPlace, aiCount, abForcePersist, abInitiallyDisabled)
+    bool disabled = false;
+    if (msg.args.size() > 3 && msg.args[3]) {
+      if (auto flag = std::get_if<bool>(&*msg.args[3])) {
+        disabled = *flag;
+      }
+    }
+    const uint32_t copy = partOne.PlaceCreatedCopy(
+      reporter, baseId, recordType, self->GetPos(), self->GetAngle(),
+      self->GetCellOrWorld(), disabled);
+    if (!copy || !created.created_bind(creator, *msg.placed, copy)) {
+      spdlog::warn("[verb:spell-placed] {:x}'s script placed {:x} on {:x}: "
+                   "its {:x} not bound (copy {:x})",
+                   creator, baseId, msg.selfId, *msg.placed, copy);
+      if (copy) {
+        partOne.DeleteCreatedCopy(copy, "its creator's id was bound already");
+      }
+      return;
+    }
+    spdlog::info("[verb:spell-placed] {:x}'s script placed {:x} ({}) on {:x} "
+                 "(from {}.{}): its {:x} is the server's {:x}{}",
+                 creator, baseId, recordType, msg.selfId, msg.caller,
+                 msg.handler, *msg.placed, copy,
+                 disabled ? ", off every screen until its first Enable" : "");
+    return;
+  }
+
+  // a call on a created reference: its self (a method native's), or its
+  // first argument (EffectShader.Play's object, the shader its self)
+  const bool selfLocal = msg.selfId >= 0xff000000;
+  const uint32_t local = selfLocal ? msg.selfId : arg0Local;
+  if (local == 0) {
+    return;
+  }
+  const auto verdict = created.created_call(
+    creator, local, msg.fn,
+    rust::Slice<const double>(nums.data(), nums.size()), MonotonicMs());
+  if (!verdict.accepted) {
+    refused(verdict);
+    return;
+  }
+  MpObjectReference* copy = copyRef(verdict.copy);
+  if (!copy) {
+    created.created_forget_copy(verdict.copy);
+    return;
+  }
+  const uint32_t relaySelf = selfLocal ? verdict.copy : msg.selfId;
+  // the copy's record, as the creator's engine set it (R2), so a seat whose
+  // subscription begins later draws it where it stands
+  NiPoint3 pos = copy->GetPos();
+  NiPoint3 rot = copy->GetAngle();
+  switch (verdict.keep) {
+    case 1: { // MoveTo(akTarget, afXOffset, afYOffset, afZOffset,
+              // abMatchRotation): the target's pose plus the offset
+      MpObjectReference* target = nullptr;
+      if (!args.empty() && args.front()) {
+        if (auto object =
+              std::get_if<SpSnippetObjectArgument>(&*args.front())) {
+          target = copyRef(static_cast<uint32_t>(object->formId));
+        }
+      }
+      if (target) {
+        pos = target->GetPos() + NiPoint3(verdict.x, verdict.y, verdict.z);
+        bool match = true;
+        if (args.size() > 4 && args[4]) {
+          if (auto flag = std::get_if<bool>(&*args[4])) {
+            match = *flag;
+          }
+        }
+        if (match) {
+          rot = target->GetAngle();
+        }
+        copy->SetPosAndAngleSilent(pos, rot);
+      }
+      break;
+    }
+    case 2:
+      copy->SetPosAndAngleSilent({ verdict.x, verdict.y, verdict.z }, rot);
+      break;
+    case 3:
+      copy->SetPosAndAngleSilent(pos, { verdict.ax, verdict.ay, verdict.az });
+      break;
+    case 4:
+      copy->SetPosAndAngleSilent({ verdict.x, verdict.y, verdict.z },
+                                 { verdict.ax, verdict.ay, verdict.az });
+      break;
+    case 5:
+      copy->SetCreatedRefState(false, verdict.seq);
+      break;
+    case 6:
+      copy->SetCreatedRefState(true, verdict.seq);
+      break;
+    case 7:
+      // the server's delete is the word (every subscriber's DestroyActor);
+      // the native is never relayed
+      partOne.DeleteCreatedCopy(verdict.copy,
+                                "its creator's script deleted it");
+      return;
+    default:
+      break;
+  }
+  const size_t relayed = relayTo(*copy, relaySelf, verdict.seq);
+  spdlog::info("[verb:spell-placed] {:x} reports {}.{} on its created {:x}, "
+               "the server's {:x} (from {}.{}): seq {}, relayed to {} game(s)",
+               creator, msg.cls, msg.fn, local, verdict.copy, msg.caller,
+               msg.handler, verdict.seq, relayed);
+}
+
 void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
                                   const ScriptCallMessage& msg)
 {
   MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
   if (!reporter) {
     return;
+  }
+  // thuum ADR-073 decision 13, the spell channel: a creation, or a call that
+  // names a reference the reporter's game created, is the channel's alone
+  if (msg.placed || msg.selfId >= 0xff000000 ||
+      (msg.localArgs.value_or(0) & 1u)) {
+    return OnCreatedCall(*reporter, msg);
   }
   std::vector<skymp::rules::ScriptArg> args;
   args.reserve(msg.args.size());

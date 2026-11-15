@@ -1,0 +1,78 @@
+# difftest trigger-entry-held (train 53's C-entry, its review's rules-7 and
+# contracts-8: wire-rules trigger_entry::Entries::granted, ActionListener::
+# ReplayHeldTriggerEntries): an enter nobody hosts the cell for is held for
+# the cell's grant, a leave of a held enter drops both, and the grant judges
+# what is held again, so a new host's own enter goes back to its own game.
+# The same world as trigger-entry: c1 and c2 are new characters (profiles 9
+# and 10, actors 0xff000002 and 0xff000003), both at the spawn (133857,
+# -61130, 14662) in Tamriel's exterior cell (32, -15), form 0xbbb1, the
+# trigger script-call's ore vein 0x10e6c5 (ACTI MineOreIron01_LFallForestDirt
+# at (134931, -58398, 10752)); c2 starts 1.5 s after c1, and each client's
+# times below are its own. At 1 s c1 reports the cell loaded and is granted
+# it, HostGrant {cell 0xbbb1, epoch 1}, as in cell-host. c1 steps aside one
+# unit at 2 s, its last step, and leaves at about 4 s (the 2 s settle): its
+# cell's grace (cells::GRACE_MS, 5 s) starts then (Cells::gone), so nobody's
+# game hosts the cell until about 9 s, the record c1's with no game. c2
+# walks onto the vein in trigger-entry's two moves (0.5 s and 2.5 s, its
+# ground budget) and reports the cell loaded at 5.2 s (6.7 s on c1's
+# clock), after the cold start (cells::COLD_START_MS, 5 s from the first
+# grant at 1 s): inside it, the provisional rule would pass the cell to c2 at
+# once, c1 gone and so no nearer (Cells::consider, ring 2 for a player the
+# table dropped); past it the load yields nothing, the cell in c1's grace.
+# At 5.5 s c2 reports its own player (0x14) entering the vein: nobody hosts
+# the cell (the host's game is gone), every other check holds, so the enter
+# is held for the cell's grant, sending nothing. At 5.7 s its leave of the
+# same trigger drops both (E_ENTRY_HELD_LEFT), and at 6 s its enter again is
+# held. At the grace's end (about 9 s on c1's clock, the next second's tick)
+# the cell passes to c2, loaded and in reach, at epoch 2, HostGrant {cell
+# 0xbbb1, epoch 2}, and the held enter, judged again over the grant's facts,
+# goes back to c2's own game: RelayedActivation {target 0x10e6c5, caster
+# 0xff000003, entry 1}, its own actor id, which its client plays as 0x14,
+# after the grant on the same ordered channel. The legacy server knows no
+# entry and no cell host and reads each of c2's three Activates as an
+# activation of the vein where it stands, each answered with the vein's
+# OpenContainer (an ACTI's activation, MpObjectReference::
+# ProcessActivateNormal, one per Activate). c2 steps aside at 9 s, one
+# unit, so it outlives the grant and c1's departure, as in every session.
+# The hold's bounds (E_ENTRY_HELD_FULL, the per-reporter share) and its
+# expiry (E_ENTRY_HELD_EXPIRED) are T0's and the crate's.
+id: trigger-entry-held
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 2000, move: {dx: 1, dy: 0}}
+  - {client: c2, at_ms: 500, move: {dx: 537, dy: 1366, dz: -1955}}
+  - {client: c2, at_ms: 2500, move: {dx: 1074, dy: 2732, dz: -3910}}
+  - {client: c2, at_ms: 5200, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c2, at_ms: 5500, send: {t: 6, data: {caster: 0x14, target: 0x10e6c5, isSecondActivation: false, entry: 1}}, reliable: true}
+  - {client: c2, at_ms: 5700, send: {t: 6, data: {caster: 0x14, target: 0x10e6c5, isSecondActivation: false, entry: 2}}, reliable: true}
+  - {client: c2, at_ms: 6000, send: {t: 6, data: {caster: 0x14, target: 0x10e6c5, isSecondActivation: false, entry: 1}}, reliable: true}
+  - {client: c2, at_ms: 9000, move: {dx: 1075, dy: 2732, dz: -3910}}
+divergences:
+  - client: c1
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the cell (HostGrant, thuum docs/verbs/cell-host.md); the legacy server has no cell hosts
+  - client: c2
+    msg: {t: 48, cell: 0xbbb1, epoch: 2}
+    legacy: 0
+    wire: 1
+    reason: the host's departure passes the cell on after the grace to the visitor with it loaded and in reach, at the next epoch
+  - client: c2
+    msg: {t: 70, target: 0x10e6c5, caster: 0xff000003, entry: 1}
+    legacy: 0
+    wire: 1
+    reason: the enter held while nobody hosted the cell, judged again at the cell's grant and relayed back to the new host's own game with its own actor as the presser (train 53's C-entry); the held enter its leave dropped sends nothing (E_ENTRY_HELD_LEFT); the legacy server knows no entry
+  - client: c2
+    msg: {t: 21, target: 0x10e6c5}
+    legacy: 3
+    wire: 0
+    reason: the legacy server reads each of c2's entries, the leave included, as its activation of the vein and opens it; the wire server holds, drops and relays the entries and activates nothing
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

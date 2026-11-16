@@ -245,8 +245,12 @@ TEST_CASE("A summon's end dispels it: the kill reaches every game, the "
             summon)) == 1);
   REQUIRE(log.Count(fmt::format("{:x} died: no respawn scheduled", summon)) ==
           1);
-  // the kill's death state and the fade's snippet: the watcher's alone, the
-  // caster's engine ran its own end
+  // the kill's death and the fade's snippet: the caster (the summon's
+  // simulator, the host) hears the death state container, the watcher the
+  // isDead property (ADR-048's seam: a game-file actor's death is the
+  // server's word on every seat, the container reaching the host alone and
+  // the other games the property), and the snippet the watcher's alone,
+  // the caster's engine having run its own end
   bool deathToCaster = false, deathToWatcher = false, alphaToCaster = false,
        alphaToWatcher = false;
   for (auto& m : p.Messages()) {
@@ -258,7 +262,12 @@ TEST_CASE("A summon's end dispels it: the kill reaches every game, the "
       (m.userId == 0 ? alphaToCaster : alphaToWatcher) = true;
     }
     if (m.j.value("t", -1) == static_cast<int>(MsgType::DeathStateContainer)) {
-      (m.userId == 0 ? deathToCaster : deathToWatcher) = true;
+      deathToCaster = m.userId == 0;
+    }
+    if (m.j.value("propName", std::string()) == "isDead" &&
+        m.j.value("refrId", 0ull) ==
+          static_cast<decltype(m.j.value("refrId", 0ull))>(summon)) {
+      deathToWatcher = m.userId == 1;
     }
   }
   REQUIRE(deathToCaster);

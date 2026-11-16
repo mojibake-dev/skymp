@@ -2093,8 +2093,10 @@ TEST_CASE("A player's own head parts report keeps on its look each part its "
 
   // a kept part's extras go with it: the Orc hair, which the race's list
   // bars, stays while the report names no Hair part, and its hairline
-  // stays with it although the report names Misc parts (the mouth); the
-  // report's own parts first, then the kept ones in the look's order
+  // stays with it although the report names Misc parts (the mouth). The
+  // look wears exactly the report and the kept parts already, so the report
+  // folds on it and the record keeps its own order (job 22002): read as a
+  // set, as the lab's headParts read is
   worn = *turned.GetAppearance();
   worn.raceId = kKhajiitRaceVampire;
   worn.headpartIds = { 0x51612,      0x511a8, kEyesVampire, kHairOrc,
@@ -2105,7 +2107,7 @@ TEST_CASE("A player's own head parts report keeps on its look each part its "
   const std::vector<uint32_t> kExtrasKept = { 0x51612, 0x511a8,  kEyesVampire,
                                               0xf3916, kHairOrc, kHairlineOrc,
                                               kBrows };
-  REQUIRE(turned.GetAppearance()->headpartIds == kExtrasKept);
+  REQUIRE(sorted(turned.GetAppearance()->headpartIds) == sorted(kExtrasKept));
   REQUIRE(log.Count("3 head part(s) its race's list bars kept on it (the "
                     "player's own, #51), 2 worn again on its own game "
                     "(ChangeHeadPart)") == 1);

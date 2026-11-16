@@ -1,4 +1,4 @@
-import { logLab, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
 import { MsgType } from "../../messages";
 import { SummonMessage } from "../messages/summonMessage";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
@@ -76,7 +76,20 @@ const TAG = "verb:summon";
 //   inside the hold drops it unreported, so no other seat draws a summon its
 //   caster's engine kept for a frame.
 type Live = { at: number; bound: boolean };
-type Held = { e: SummonStartEvent; updates: number; at: number };
+// A held start keeps plain numbers alone: an event's forms are Skyrim
+// Platform's pooled native objects, valid in their own event's frame only
+// (Sp3NativeValueCasts.cpp:40-52; x-summon 20261116-180439: the held event's
+// effect read 3 updates later threw "Invalid _skyrimPlatform_indexInPool"
+// and the Potent summon was never reported)
+type Held = {
+    summonId: number;
+    effectId: number;
+    spellId: number;
+    durationS: number;
+    elapsedS: number;
+    updates: number;
+    at: number;
+};
 
 export class SummonService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -126,25 +139,32 @@ export class SummonService extends ClientListener {
         if (this.live.has(e.summonId) || this.held.has(e.summonId)) {
             return;
         }
-        this.held.set(e.summonId, { e, updates: 0, at: Date.now() });
+        this.held.set(e.summonId, {
+            summonId: e.summonId,
+            effectId: e.effect.getFormID(),
+            spellId: e.spell ? e.spell.getFormID() : 0,
+            durationS: e.durationS,
+            elapsedS: e.elapsedS,
+            updates: 0,
+            at: Date.now(),
+        });
     }
 
     // a held start reported: the summon read again by its id, so one the
     // engine has dropped since is not reported
     private report(h: Held): void {
-        const e = h.e;
-        const summon = this.sp.Actor.from(this.sp.Game.getFormEx(e.summonId));
+        const summon = this.sp.Actor.from(this.sp.Game.getFormEx(h.summonId));
         if (!summon || summon.isDeleted() || summon.isDead()) {
-            logLab(TAG, `the player's summon ${e.summonId.toString(16)} gone before its report: not reported`);
+            logLab(TAG, `the player's summon ${h.summonId.toString(16)} gone before its report: not reported`);
             return;
         }
         const base = summon.getBaseObject();
         const message: SummonMessage = {
             t: MsgType.Summon,
-            localId: e.summonId,
+            localId: h.summonId,
             baseId: base ? base.getFormID() : 0,
-            effectId: e.effect.getFormID(),
-            spellId: e.spell ? e.spell.getFormID() : 0,
+            effectId: h.effectId,
+            spellId: h.spellId,
             pos: ObjectReferenceEx.getPos(summon),
             // the engine's own GetAngle words, degrees, sent raw as the
             // movement family's rotations travel (movementGet.ts:96)
@@ -156,7 +176,7 @@ export class SummonService extends ClientListener {
             worldOrCell: ObjectReferenceEx.getWorldOrCell(summon),
             // at least 0 (the wire's bound; an elapsed past its duration
             // clamps), less the hold's own time
-            remainingS: Math.max(e.durationS - e.elapsedS - (Date.now() - h.at) / 1000, 0),
+            remainingS: Math.max(h.durationS - h.elapsedS - (Date.now() - h.at) / 1000, 0),
             ended: false,
         };
         if (this.live.size >= SummonService.liveMax) {
@@ -165,9 +185,9 @@ export class SummonService extends ClientListener {
                 this.live.delete(oldest.value);
             }
         }
-        this.live.set(e.summonId, { at: Date.now(), bound: false });
+        this.live.set(h.summonId, { at: Date.now(), bound: false });
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
-        logLab(TAG, `the player's summon ${e.summonId.toString(16)} (base ${message.baseId.toString(16)}, effect ${message.effectId.toString(16)}, spell ${message.spellId.toString(16)}) reported: at (${message.pos.map((v) => v.toFixed(0)).join(", ")}) in ${message.worldOrCell.toString(16)}, ${message.remainingS.toFixed(1)} s left`);
+        logLab(TAG, `the player's summon ${h.summonId.toString(16)} (base ${message.baseId.toString(16)}, effect ${message.effectId.toString(16)}, spell ${message.spellId.toString(16)}) reported: at (${message.pos.map((v) => v.toFixed(0)).join(", ")}) in ${message.worldOrCell.toString(16)}, ${message.remainingS.toFixed(1)} s left`);
     }
 
     private onSummonEnd(e: SummonEndEvent): void {
@@ -268,8 +288,15 @@ export class SummonService extends ClientListener {
         for (const id of due) {
             const h = this.held.get(id);
             this.held.delete(id);
-            if (h) {
+            if (!h) {
+                continue;
+            }
+            // a throw never loses a summon silently
+            try {
                 this.report(h);
+            } catch (err) {
+                logError(this, `the player's summon ${id.toString(16)}: its report failed`, err);
+                logLab(TAG, `the player's summon ${id.toString(16)}: its report failed (${err}): not reported`);
             }
         }
     }

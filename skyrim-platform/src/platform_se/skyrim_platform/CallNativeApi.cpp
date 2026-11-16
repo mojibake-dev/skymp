@@ -2,7 +2,7 @@
 #include "CallNative.h"
 #include "CreatePromise.h"
 #include "NullPointerException.h"
-#include "Override.h"
+#include "PlatformCall.h"
 #include "SP3NativeValueCasts.h"
 #include "VmProvider.h"
 
@@ -148,7 +148,18 @@ Napi::Value CallNativeImpl(
     }
     return deferred->Promise();
   } else {
-    Override o;
+    // the platform's own call, marked on this thread for its extent
+    // (PlatformCall.h; thuum docs/DECISIONS.md D-S0-14 B and its dated note,
+    // read 1's control x-golden-claw-alias v1.1 20261115-040058): a direct
+    // addItem or removeItem runs on this, the JavaScript thread
+    // (CallNative.cpp's AddObjectToContainer and RemoveItem), never through
+    // the worker's Scope or NativeFunctionBase::Call, so this Scope is what
+    // tells the Papyrus gate the events it raises are the platform's, and
+    // stands the animation hooks down here, where a handler's PushAndWait
+    // to this same thread would never return. A call the worker runs is
+    // marked on the worker too (SkyrimPlatform.cpp). HYPOTHESIS: the engine
+    // raises such a call's events synchronously inside it, on this thread
+    PlatformCall::Scope platformCall;
     auto res = SP3NativeValueCasts::GetSingleton().NativeValueToJsValue(
       info.Env(), CallNative::CallNativeSafe(callNativeArgs));
     return res;

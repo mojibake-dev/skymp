@@ -477,8 +477,8 @@ declare module "skyrimPlatform" {
     function setTriggerPresserExempt(classes: string[]): boolean;
     // thuum docs/verbs/traps.md H-P1 (the puzzle lever, a NoPlayer FURN;
     // docs/research/fifty-fixes-2026-11-07.md 1(b), the furniture branch): a
-    // FURN's own graph event outside a script action, under Override or not,
-    // raised on a tick task at the animation hook's leave with the graph's
+    // FURN's own graph event outside a script action, in a platform call or
+    // not, raised on a tick task at the animation hook's leave with the graph's
     // answer (took), never through the hook's handlers; off by default in
     // the platform, turned on by ObjectAnimationService from the client
     // setting furnitureAnimation. No game call in its handler. The platform

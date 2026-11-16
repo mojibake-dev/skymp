@@ -4116,9 +4116,10 @@ void FlushCensus(uint64_t now)
                  causes.world + causes.seat, kFlushMs / 1000, causes.world,
                  causes.seat, causes.carried);
   }
-  // thuum ADR-073 decision 9: the gate's everyone pass, its window's counts
-  // by kind (nothing while its switch is off)
-  Frida::FlushEveryonePass(kFlushMs);
+  // the gate's pass census, its window's counts by kind: the platform pass
+  // (thuum D-S0-14 B) and ADR-073 decision 9's everyone pass (nothing while
+  // its switch is off)
+  Frida::FlushGatePasses(kFlushMs);
   std::vector<std::pair<std::string, uint32_t>> rows;
   uint64_t total = 0;
   for (size_t row = 0; row < kRowCount; ++row) {

@@ -90,11 +90,15 @@ void SetWorldBodyContacts(bool on);
 // ScriptNatives::InstallHooks sets it once at kDataLoaded from the client
 // setting scriptEveryoneEvents, on only when true. Threadsafe
 void SetScriptEveryoneEvents(bool on);
-// the everyone pass's counts since the last call, each nonzero kind one line
-// ("[census] k9-gate-passes passed in <s> s: everyone alias 140 x<n>", and
-// "[fall] k9-everyone-pass skipped in <s> s: <kind> x<n>" for what it left),
-// then zeroed: ScriptNatives.cpp's FlushCensus, every census window
-void FlushEveryonePass(uint64_t windowMs);
+// the gate's pass census since the last call, each nonzero kind one line,
+// then zeroed: the platform pass (thuum D-S0-14 B, an event raised inside
+// the platform's own call on its thread: "[census] k9-gate-passes passed in
+// <s> s: platform <kind> x<n>"), the everyone pass ("[census] k9-gate-passes
+// passed in <s> s: everyone alias 140 x<n>") and what it left ("[fall]
+// k9-everyone-pass skipped in <s> s: <kind> x<n>"); each kind's first is
+// logged once at its pass. ScriptNatives.cpp's FlushCensus, every census
+// window
+void FlushGatePasses(uint64_t windowMs);
 
 // thuum docs/DECISIONS.md ADR-068 decision 6 ("the player's own (0x14, the
 // player's effects, the player-alias quests) are the player's seat's"): this

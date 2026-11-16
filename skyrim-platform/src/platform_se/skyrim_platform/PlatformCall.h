@@ -12,7 +12,10 @@
 // - the direct path (callNative's worker inside OnUpdate, every non-latent
 //   SpSnippet, the client applying the server's word through setOpen, lock,
 //   activate, kill, setValue): the native body runs inside fPtr->Call on the
-//   calling thread, so Scope brackets the call (SkyrimPlatform.cpp);
+//   calling thread, so Scope brackets the call (SkyrimPlatform.cpp); and
+//   callNative's own non-latent branch brackets the JavaScript thread's
+//   side too (CallNativeApi.cpp), where a direct addItem or removeItem runs
+//   the engine's call itself;
 // - the latent path (VmCall::Run through DispatchMethodCall2 or
 //   DispatchStaticCall): the VM only enqueues the call and runs the body
 //   later on a Papyrus thread under a new stack id, inside
@@ -25,6 +28,12 @@
 //   extent, as the direct path's Scope does. This replaced the (row, self)
 //   notes with their 15 s expiry and the known limit of a script's call on
 //   the same self inside the window.
+// The same mark is the Papyrus event gate's and the animation hooks' test
+// of the platform's own call (FridaHooks.cpp; thuum docs/DECISIONS.md
+// D-S0-14 B, 2026-11-14), in place of callNative's process-wide Override,
+// which every thread read while any call was open and the first of two
+// overlapping calls cleared: only the thread that runs the call is marked,
+// so another thread's event meets the gate's rules as any world event does.
 namespace PlatformCall {
 inline thread_local int t_depth = 0;
 

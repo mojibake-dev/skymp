@@ -144,6 +144,8 @@ std::vector<nlohmann::json> CreateWordsTo(PartOne& p, Networking::UserId user)
   return out;
 }
 
+} // namespace
+
 TEST_CASE("A summon report places the server's actor, binds its caster and "
           "puppets the watcher; each broken consistency is refused by name, "
           "and a scroll's summon records like a learned spell's (tracker #84)",
@@ -213,19 +215,10 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
   Leave(p);
 }
 
-TEST_CASE(
-  "A summon's end dispels itTEST_CASE(" A
-    summon 's end dispels it: the kill reaches every game, the " "fade' s
-  "
-  "snippet the "
-  "watcher's "
-  "alone, the "
-  "fade's end "
-  "deletes the "
-  "actor "
-  "(tracker "
-  "#84)",
-  "[Summon][espm]")
+TEST_CASE("A summon's end dispels it: the kill reaches every game, the "
+          "fade's snippet the watcher's alone, the fade's end deletes the "
+          "actor (tracker #84)",
+          "[Summon][espm]")
 {
   PartOne& p = GetPartOne();
   Enter(p);

@@ -1271,10 +1271,9 @@ TEST_CASE("A recorded SetRace drops the head parts its race may not wear "
   OwnLog log;
   auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
   Appearance worn = *turned.GetAppearance();
-  // an Argonian wearing her own eyes (thuum #51: the change drops a part the
-  // old race's list holds and the new race's bars; Enter's NordRace holds
-  // neither the eyes nor, below, a part both lists bar)
-  worn.raceId = kArgonianRace;
+  // a Nord wearing eyes neither NordRace's list nor BretonRace's holds: the
+  // turn drops them all the same (thuum #51, Eli 2026-11-15: "Ditch it
+  // everywhere"; 8f0e1277's and ede169b1's keeping reverted)
   worn.headpartIds = { kEyesArgonian, kHairNord01 };
   turned.SetAppearance(&worn);
   REQUIRE(turned.SetRaceMenuPreset(kLook));
@@ -1386,7 +1385,7 @@ TEST_CASE("A recorded SetRace drops the head parts its race may not wear "
     R"(], "headParts": [{"formIdentifier": "Skyrim.esm|05150A", "type": 2}]})";
   REQUIRE(kBig.size() <= 192 * 1024);
   REQUIRE(turned.SetRaceMenuPreset(kBig));
-  const auto left = p.RecordRaceLook(turned, kBretonRace, kArgonianRace);
+  const auto left = p.RecordRaceLook(turned, kBretonRace);
   REQUIRE(!left.preset);
   REQUIRE(left.presetLeft != nullptr);
   REQUIRE(turned.GetRaceMenuPreset() == kBig);
@@ -1412,13 +1411,10 @@ TEST_CASE("A head part a script swaps in after a SetRace stashed its type "
     R"({"actor": {"weight": 50},
   "headParts": [{"formIdentifier": "Skyrim.esm|05150A", "type": 2},
                 {"formIdentifier": "Skyrim.esm|051507", "type": 3}]})";
-  constexpr uint32_t kArgonianRace = 0x13740;
   PartOne& p = GetPartOne();
   Enter(p);
   auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
   Appearance worn = *turned.GetAppearance();
-  // an Argonian, so the turn drops her own eyes (the V-look case's note)
-  worn.raceId = kArgonianRace;
   worn.headpartIds = { kEyesArgonian, kHairNord01 };
   turned.SetAppearance(&worn);
   REQUIRE(turned.SetRaceMenuPreset(kLook));
@@ -1449,22 +1445,17 @@ TEST_CASE("A head part a script swaps in after a SetRace stashed its type "
   Leave(p);
 }
 
-// thuum #51 (x-vc01-cure-relog 20261115-205138): rotfern's scar
-// MarksFemaleHumanoid00NoGash 0xEC1B2 left her stored look at her turn and
-// never came back at her cure. In the lab, Playable Headparts All Races.esp
-// points its list at its own AllTheRaces, which names vanilla races alone,
-// and her races come from rotfern.esp: her preset had put the scar on a race
-// no list holds, the turn stashed it (her vampire race barred), and the cure
-// gave back by her base race's list, which bars it too. A change now drops a
-// part only when the old race's list holds it and the new race's bars it.
-// Here in the test's files (lab/esm.py on sky-srv, 2026-11-15, Skyrim.esm,
-// none overridden by Update.esm or the DLCs): MaleEyesArgonian 0x5150a lists
-// HeadPartsArgonian 0xa8021 (ArgonianRace alone), so a Nord wearing them
-// keeps them through a turn to Breton and back; HairMaleNord01 0x51507 lists
-// HeadPartsHumansandVampires 0xa8023 (Breton and Nord among them) and stays
-// as before
-TEST_CASE("A SetRace keeps a head part neither race's list holds on the look "
-          "and the stored RaceMenu look, and stashes nothing (#51)",
+// thuum #51 (Eli, 2026-11-15: "I never noticed a scar. Ditch it
+// everywhere"): rotfern's scar MarksFemaleHumanoid00NoGash 0xec1b2 sat on
+// her saved look under a race whose list bars it, and her own game never drew
+// it at a login (x-vc01-cure-relog 20261116-071159). A login now fits the
+// saved look to its own race: a part the race's list bars leaves the look and
+// the stored RaceMenu look (into the stash, the server's alone) before the
+// create word carries the look to the player's own game. Here, as the V-look
+// case reads them: MaleEyesArgonian 0x5150a's list (HeadPartsArgonian
+// 0xa8021) bars NordRace, HairMaleNord01 0x51507's holds it
+TEST_CASE("A login fits the saved look to its race: a head part the race's "
+          "list bars leaves the look and the stored RaceMenu look (#51)",
           "[PlayerOwn][espm]")
 {
   constexpr uint32_t kEyesArgonian = 0x5150a;
@@ -1476,38 +1467,61 @@ TEST_CASE("A SetRace keeps a head part neither race's list holds on the look "
   PartOne& p = GetPartOne();
   REQUIRE(p.HeadPartRaceListHolds(kEyesArgonian, kNordRace) ==
           std::optional<bool>(false));
-  REQUIRE(p.HeadPartRaceListHolds(kEyesArgonian, kBretonRace) ==
-          std::optional<bool>(false));
   REQUIRE(p.HeadPartRaceListHolds(kHairNord01, kNordRace) ==
           std::optional<bool>(true));
-  REQUIRE(p.HeadPartRaceListHolds(kHairNord01, kBretonRace) ==
-          std::optional<bool>(true));
-  const std::vector<uint32_t> kWorn = { kEyesArgonian, kHairNord01 };
 
-  Enter(p);
-  OwnLog log;
+  // the saved look as a relaunch finds it: a Nord wearing both parts
+  DoConnect(p, 0);
+  p.CreateActor(kTurned, { 0, 0, 0 }, 0, 0x3c);
   auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
-  Appearance worn = *turned.GetAppearance();
-  REQUIRE(worn.raceId == kNordRace);
-  worn.headpartIds = kWorn;
-  turned.SetAppearance(&worn);
+  Appearance saved;
+  saved.raceId = kNordRace;
+  saved.headpartIds = { kEyesArgonian, kHairNord01 };
+  turned.SetAppearance(&saved);
   REQUIRE(turned.SetRaceMenuPreset(kLook));
+  p.Messages().clear();
+  OwnLog log;
 
-  // the turn, and the cure back: both records keep both parts, the stash
-  // takes nothing, and the record line counts the part kept
-  for (const uint32_t race : { kBretonRace, kNordRace }) {
-    SetRace(p, race, "PlayerVampireQuestScript");
-    const auto now = turned.GetAppearance();
-    REQUIRE(now->raceId == race);
-    REQUIRE(now->headpartIds == kWorn);
-    const auto stored = nlohmann::json::parse(turned.GetRaceMenuPreset());
-    REQUIRE(stored["headParts"].size() == 2);
-    REQUIRE(stored["headParts"][0]["formIdentifier"] == "Skyrim.esm|05150A");
-    REQUIRE(!stored.contains("thuumRaceDropped"));
+  p.SetUserActor(0, kTurned);
+
+  // the record: the look and the stored look keep the hair alone, the eyes
+  // in the stash
+  const auto now = turned.GetAppearance();
+  REQUIRE(now->raceId == kNordRace);
+  REQUIRE(now->headpartIds == std::vector<uint32_t>{ kHairNord01 });
+  const auto stored = nlohmann::json::parse(turned.GetRaceMenuPreset());
+  REQUIRE(stored["headParts"].size() == 1);
+  REQUIRE(stored["headParts"][0]["formIdentifier"] == "Skyrim.esm|051507");
+  REQUIRE(stored["thuumRaceDropped"][0]["formIdentifier"] ==
+          "Skyrim.esm|05150A");
+  REQUIRE(log.Count("ff000c71's look fitted to its race 13746 at its login: "
+                    "1 head part(s) left of 2") == 1);
+
+  // the player's own game: its create word carries the fitted look
+  std::optional<std::vector<uint32_t>> created;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 0 && m.j.is_object() &&
+        m.j.value("t", -1) == static_cast<int>(MsgType::CreateActor) &&
+        m.j.value("isMe", false) && m.j.contains("appearance")) {
+      created = m.j["appearance"]["headpartIds"].get<std::vector<uint32_t>>();
+    }
   }
-  REQUIRE(log.Count("1 head part(s) neither race's list holds kept (the "
-                    "player's own, #51)") == 2);
-  Leave(p);
+  REQUIRE(created == std::vector<uint32_t>{ kHairNord01 });
+
+  // its own report of the barred part puts nothing back (the own report's
+  // bound, D-E1 A)
+  OwnHeadPartsMessage report;
+  report.race = kNordRace;
+  report.overlay = false;
+  report.parts = { kEyesArgonian, kHairNord01 };
+  RawMessageData raw;
+  raw.userId = 0;
+  p.GetActionListener().OnOwnHeadParts(raw, report);
+  REQUIRE(turned.GetAppearance()->headpartIds ==
+          std::vector<uint32_t>{ kHairNord01 });
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kTurned);
 }
 
 // thuum D-53-8 B (train 53's V-live; lab/.cache/drafts/reads-53/
@@ -1828,7 +1842,19 @@ TEST_CASE("A player's own overlay head parts are held in memory and sent to "
   REQUIRE(eyesOf(presets.back()) == "Skyrim.esm|0EE87F");
 
   // her disconnect ends them; her own login is sent the record, and so is
-  // the watcher, until her game reports them again
+  // the watcher, until her game reports them again. The login fits the
+  // record to its race first (thuum #51, Eli 2026-11-15: "Ditch it
+  // everywhere"): under these files' lists her vampire race bars the
+  // brows, the Orc hair and hairline and the BlueNarrow eyes (the case
+  // above's reading), so the record keeps her head, mouth and scar, the rest
+  // stashed
+  const std::vector<uint32_t> kFitted = { 0x51612, 0x511a8, 0xf3916 };
+  for (uint32_t part : kBefore) {
+    const bool kept =
+      std::find(kFitted.begin(), kFitted.end(), part) != kFitted.end();
+    REQUIRE(p.HeadPartRaceListHolds(part, kKhajiitRaceVampire) ==
+            std::optional<bool>(kept));
+  }
   p.Messages().clear();
   DoDisconnect(p, 0);
   REQUIRE(log.Count("ff000c71's held overlay head parts ended at its "
@@ -1838,23 +1864,27 @@ TEST_CASE("A player's own overlay head parts are held in memory and sent to "
   p.SetUserActor(0, kTurned);
   turned.SetPos({ 0, 0, 0 });
   turned.ForceSubscriptionsUpdate();
+  REQUIRE(log.Count("ff000c71's look fitted to its race 88845 at its login: "
+                    "3 head part(s) left of 7") == 1);
   const auto ownLogin = createdWith(p, 0);
   REQUIRE(ownLogin.has_value());
-  REQUIRE(*ownLogin == kBefore);
+  REQUIRE(*ownLogin == kFitted);
   const auto watcherSees = createdWith(p, 1);
   REQUIRE(watcherSees.has_value());
-  REQUIRE(*watcherSees == kBefore);
-  REQUIRE(turned.GetAppearance()->headpartIds == kBefore);
+  REQUIRE(*watcherSees == kFitted);
+  REQUIRE(turned.GetAppearance()->headpartIds == kFitted);
   p.Messages().clear();
   report(p, kKhajiitRaceVampire, kOverlay, true);
   REQUIRE(LooksTo(p, 1).size() == 1);
   REQUIRE(
     LooksTo(p, 1)[0]["data"]["headpartIds"].get<std::vector<uint32_t>>() ==
     kOverlay);
-  REQUIRE(turned.GetAppearance()->headpartIds == kBefore);
+  REQUIRE(turned.GetAppearance()->headpartIds == kFitted);
 
   // the cure: her SetRace back ends them, and the watcher hears the record's
-  // stored look and look, the BlueNarrow eyes; her game's report from its
+  // stored look and look, the BlueNarrow eyes (the stash the login's fit put
+  // them in gives them back, KhajiitRace's list holding them); her game's
+  // report from its
   // base list under KhajiitRace is then recorded, the BlueNarrow eyes on her
   // record
   p.Messages().clear();

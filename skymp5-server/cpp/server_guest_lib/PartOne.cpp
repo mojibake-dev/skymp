@@ -687,6 +687,26 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
         userId, ToMessage(pImpl->gameClock->login(userId, UnixNowMs())), true);
     }
 
+    // thuum #51 (Eli, 2026-11-15: "I never noticed a scar. Ditch it
+    // everywhere"): the saved look holds only head parts its race may wear.
+    // RecordRaceLook with the look's own race takes every part the race's
+    // list bars off the look and the stored RaceMenu look (into the stash,
+    // the server's alone), so the player's own game, the record and every
+    // figure of it agree from the login on: the create words below carry
+    // the fitted look
+    if (const auto look = actor.GetAppearance(); look && look->raceId != 0) {
+      const auto fitted = RecordRaceLook(actor, look->raceId);
+      if (fitted.look || fitted.preset) {
+        const auto now = actor.GetAppearance();
+        spdlog::info("[verb:appearance] {:x}'s look fitted to its race {:x} "
+                     "at its login: {} head part(s) left of {}, its race's "
+                     "list barring the rest (#51)",
+                     actor.GetFormId(), look->raceId,
+                     now ? now->headpartIds.size() : 0,
+                     look->headpartIds.size());
+      }
+    }
+
     actor.ForceSubscriptionsUpdate();
 
     // the sky of the place the player stands in (thuum docs/verbs/weather.md)
@@ -5739,8 +5759,7 @@ std::string PartOne::RaceMenuPresetForOthers(const MpActor& actor)
   return RaceMenuPresetForGames(std::move(preset));
 }
 
-PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race,
-                                                uint32_t fromRace)
+PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
 {
   HeadPartRecord recorded;
   if (!HasEspm() || race == 0) {
@@ -5753,24 +5772,6 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race,
   const auto barred = [&](uint32_t part) {
     const auto holds = HeadPartRaceListHolds(part, race);
     return holds.has_value() && !*holds;
-  };
-  // thuum #51: the change's own drop, a part `race` may not wear that the
-  // look's old race could (its list holds `fromRace`, or gives no answer for
-  // it); a part both lists bar stays, counted once by form
-  std::vector<uint32_t> keptOffList;
-  const auto dropped = [&](uint32_t part) {
-    if (!barred(part)) {
-      return false;
-    }
-    if (fromRace == 0 ||
-        HeadPartRaceListHolds(part, fromRace).value_or(true)) {
-      return true;
-    }
-    if (std::find(keptOffList.begin(), keptOffList.end(), part) ==
-        keptOffList.end()) {
-      keptOffList.push_back(part);
-    }
-    return false;
   };
   // a part's HDPT type (PNAM), WearHeadPartInLook's reading, and the extra
   // parts it brings (HNAM), the look's derivation's (ADR-026)
@@ -5829,8 +5830,7 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race,
         if (!fits) {
           ++recorded.unanswered;
         }
-        const bool drop =
-          listed != 0 && fits.has_value() && !*fits && dropped(listed);
+        const bool drop = fits.has_value() && !*fits;
         anyBarred = anyBarred || drop;
         keep.push_back(drop ? 0 : 1);
       }
@@ -5898,7 +5898,7 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race,
     auto& parts = look.headpartIds;
     std::vector<uint32_t> going;
     for (uint32_t id : parts) {
-      if (dropped(id)) {
+      if (barred(id)) {
         going.push_back(id);
       }
     }
@@ -5946,7 +5946,6 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race,
     }
   }
   recorded.given = given.size();
-  recorded.keptOffList = keptOffList.size();
   return recorded;
 }
 

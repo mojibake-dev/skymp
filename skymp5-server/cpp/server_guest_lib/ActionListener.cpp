@@ -1718,6 +1718,26 @@ void ActionListener::OnUpdateAppearance(const RawMessageData& rawMsgData,
       actor->SetAppearance(&msg.data.value());
       SendToNeighbours(msg.idx, rawMsgData, true);
     }
+    // thuum #51 (Eli, 2026-11-15: "Ditch it everywhere"): the saved look
+    // holds only head parts its race may wear, as the login's fit
+    // (PartOne::SetUserActor) has it; what the fit takes off, every other
+    // game hears at once
+    if (const auto now = actor->GetAppearance()) {
+      const auto fitted = partOne.RecordRaceLook(*actor, now->raceId);
+      if (fitted.preset) {
+        SendRaceMenuPresetToOthers(partOne, *actor);
+      }
+      if (fitted.look) {
+        if (const auto after = actor->GetAppearance()) {
+          SendAppearanceToOthers(partOne, *actor, *after);
+          spdlog::info("RaceMenu: actor {:x}'s look fitted to its race {:x}: "
+                       "{} head part(s) left, its race's list barring the "
+                       "rest (#51)",
+                       actor->GetFormId(), now->raceId,
+                       after->headpartIds.size());
+        }
+      }
+    }
   }
 
   UpdateAppearanceAttemptEvent updateAppearanceAttemptEvent(
@@ -5913,9 +5933,6 @@ void RecordPlayerOwn(
         if (!look) {
           return said("no recorded look to wear the race, nothing written");
         }
-        // the race the look wore before the change (thuum #51: the drop
-        // reads both lists)
-        const uint32_t fromRace = look->raceId;
         Appearance appearance = *look;
         appearance.raceId = form;
         reporter.SetAppearance(&appearance);
@@ -5937,7 +5954,7 @@ void RecordPlayerOwn(
         // (the review's correctness-4: the dropped parts kept in the stored
         // look's stash, and a stashed part the race may wear given back, the
         // cure's return to the base race)
-        const auto recorded = partOne.RecordRaceLook(reporter, form, fromRace);
+        const auto recorded = partOne.RecordRaceLook(reporter, form);
         if (recorded.preset && recorded.given == 0) {
           what += fmt::format(", its RaceMenu look's head parts the race may "
                               "not wear dropped and sent to {} game(s)",
@@ -5967,11 +5984,6 @@ void RecordPlayerOwn(
           what += fmt::format(", {} of its RaceMenu look's head part(s) "
                               "kept with no race list to read",
                               recorded.unanswered);
-        }
-        if (recorded.keptOffList != 0) {
-          what += fmt::format(", {} head part(s) neither race's list holds "
-                              "kept (the player's own, #51)",
-                              recorded.keptOffList);
         }
         if (const auto now = reporter.GetAppearance()) {
           SendAppearanceToOthers(partOne, reporter, *now);

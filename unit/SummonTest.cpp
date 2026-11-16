@@ -262,12 +262,14 @@ TEST_CASE("A summon's end dispels it: the kill reaches every game, the "
       (m.userId == 0 ? alphaToCaster : alphaToWatcher) = true;
     }
     if (m.j.value("t", -1) == static_cast<int>(MsgType::DeathStateContainer)) {
-      deathToCaster = m.userId == 0;
+      deathToCaster = deathToCaster || m.userId == 0;
     }
+    // both seats hear the property; accumulate, never assign, so the
+    // listener set's order decides nothing
     if (m.j.value("propName", std::string()) == "isDead" &&
         m.j.value("refrId", 0ull) ==
           static_cast<decltype(m.j.value("refrId", 0ull))>(summon)) {
-      deathToWatcher = m.userId == 1;
+      deathToWatcher = deathToWatcher || m.userId == 1;
     }
   }
   REQUIRE(deathToCaster);

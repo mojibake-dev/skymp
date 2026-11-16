@@ -8,6 +8,7 @@ import { RagdollService } from "./ragdollService";
 import { PuppetService } from "./puppetService";
 import { ChangeFormService } from "./changeFormService";
 import { RemoteServer } from "./remoteServer";
+import { HostService } from "./hostService";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 
 export class DeathService extends ClientListener {
@@ -369,12 +370,16 @@ export class DeathService extends ClientListener {
       // thuum ADR-065's path (ChangeFormService): a dead record held for this
       // body is stale once the live word stands it up
       this.controller.lookupListener(ChangeFormService).onStoodUp(id);
-      const queued = this.sp.resurrectActor(id);
+      // thuum #48 (x-reanimate-claim v2.4 20261116-015143): a seat that does
+      // not simulate the actor (the server's word, HostService) stands it up
+      // as a puppet, never for a frame with its AI on
+      const simulatedHere = this.controller.lookupListener(HostService).isMineLocal(id);
+      const queued = this.sp.resurrectActor(id, simulatedHere);
       // the reconciler arms the deferred kill again on its next pass
       // (ADR-050 decision 3: the stood-up actor holds at zero for the
       // server's word as before its death)
       this.controller.lookupListener(PuppetService).onResurrected(id);
-      logLab("verb:npc-fate", `resurrect ${id.toString(16)} (puppet ${this.sp.isPuppet(id)}) ${queued ? "queued" : "refused"}`);
+      logLab("verb:npc-fate", `resurrect ${id.toString(16)} (puppet ${this.sp.isPuppet(id)}, simulated here ${simulatedHere}) ${queued ? "queued" : "refused"}`);
     } else {
       throw new RespawnNeededError("needs to be respawned");
     }

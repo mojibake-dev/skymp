@@ -48,7 +48,10 @@ Napi::Value RedressActor(const Napi::CallbackInfo& info);
 // addItemEx tasks and run on the main thread. False for an invalid id; a
 // reference the game cannot find, or one alive, is a line on the main thread.
 Napi::Value DressBody(const Napi::CallbackInfo& info);
-// resurrectActor(refrId): a game-file actor's respawn, the engine's own
+// resurrectActor(refrId, simulatedHere?): a game-file actor's respawn, the
+// engine's own Resurrect, with the client's word on whether this seat
+// simulates the actor (thuum #48: false keeps the stood-up actor a puppet
+// here, its AI off and its activation blocked; absent is true). The
 // Resurrect (A/Actor.h:369: the inventory reset, the 3D attached) run with
 // its AI on, in one main-thread task (SKSE's UI task queue): a puppet is
 // given its AI back for the

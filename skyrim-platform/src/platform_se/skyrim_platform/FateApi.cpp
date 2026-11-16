@@ -942,8 +942,9 @@ Napi::Value FateApi::DressBody(const Napi::CallbackInfo& info)
 
 namespace {
 // the stand-up on the main thread; tick 0 for resurrectActor's own task, the
-// deferral's count for a later one (WeaponAnimGuard)
-void ResurrectOnGameThread(uint32_t refrId, uint32_t tick)
+// deferral's count for a later one (WeaponAnimGuard). `simulatedHere` is the
+// client's word: false when another seat simulates the actor (thuum #48)
+void ResurrectOnGameThread(uint32_t refrId, uint32_t tick, bool simulatedHere)
 {
   auto* actor = RE::TESForm::LookupByID<RE::Actor>(refrId);
   if (!actor) {
@@ -961,10 +962,11 @@ void ResurrectOnGameThread(uint32_t refrId, uint32_t tick)
   // the engine still holds for the actor, as the re-roll does
   const auto decision = WeaponAnimGuard::Check(
     WeaponAnimGuard::Kind::kResurrect, actor, refrId, tick,
-    [refrId](uint32_t next) {
-      if (!QueueFateTask("resurrectActor", refrId, [refrId, next]() {
-            ResurrectOnGameThread(refrId, next);
-          })) {
+    [refrId, simulatedHere](uint32_t next) {
+      if (!QueueFateTask("resurrectActor", refrId,
+                         [refrId, next, simulatedHere]() {
+                           ResurrectOnGameThread(refrId, next, simulatedHere);
+                         })) {
         WeaponAnimGuard::Forget(WeaponAnimGuard::Kind::kResurrect, refrId);
       }
     });
@@ -988,7 +990,16 @@ void ResurrectOnGameThread(uint32_t refrId, uint32_t tick)
     actor->EnableAI(true);
   }
   actor->Resurrect(true, true);
-  if (puppet) {
+  // thuum #48 (x-reanimate-claim v2.4 20261116-015143, step 59): a body
+  // another seat's raise stood up (c2 commanding it) came up here with its
+  // AI on (puppet false: a dead body leaves the puppet state on every seat)
+  // and ran its own AI for 2 s, until PuppetService's next pass demoted it
+  // (c1 17:56:14.607 to 16.611). A seat that does not simulate the actor
+  // never simulates it, not for a frame (ADR-063): it comes up as the
+  // puppet it is, the AI off and its activation blocked, and the pass then
+  // flags it as before
+  const keptPuppet = !puppet && !simulatedHere && !actor->IsDead();
+  if (puppet || keptPuppet) {
     actor->EnableAI(false);
     actor->SetActivationBlocked(true);
   } else if (actor->IsDead()) {
@@ -1025,11 +1036,11 @@ void ResurrectOnGameThread(uint32_t refrId, uint32_t tick)
     rerolled = DecisionName(RerollWhenIdle(actor, fate, refrId, 0));
     fated = true;
   }
-  logger::info("[verb:npc-fate] resurrected {:x} (puppet {}, AI was off {}, "
-               "dead before {}, dead after {}, dressed from the fate {}, "
-               "the re-roll {}) on {}",
-               refrId, puppet, aiOff, wasDead, actor->IsDead(), fated,
-               rerolled, FateThreadNote());
+  logger::info("[verb:npc-fate] resurrected {:x} (puppet {}, simulated here "
+               "{}, kept a puppet {}, AI was off {}, dead before {}, dead "
+               "after {}, dressed from the fate {}, the re-roll {}) on {}",
+               refrId, puppet, simulatedHere, keptPuppet, aiOff, wasDead,
+               actor->IsDead(), fated, rerolled, FateThreadNote());
 }
 }
 
@@ -1039,9 +1050,13 @@ Napi::Value FateApi::ResurrectActor(const Napi::CallbackInfo& info)
   if (refrId == 0 || refrId == 0x14) {
     return Napi::Boolean::New(info.Env(), false);
   }
-  const bool queued = QueueFateTask("resurrectActor", refrId, [refrId]() {
-    ResurrectOnGameThread(refrId, 0);
-  });
+  // thuum #48: the second argument, true when absent (an older client)
+  const bool simulatedHere = info.Length() < 2 || info[1].IsUndefined() ||
+    info[1].IsNull() || NapiHelper::ExtractBoolean(info[1], "simulatedHere");
+  const bool queued =
+    QueueFateTask("resurrectActor", refrId, [refrId, simulatedHere]() {
+      ResurrectOnGameThread(refrId, 0, simulatedHere);
+    });
   return Napi::Boolean::New(info.Env(), queued);
 }
 

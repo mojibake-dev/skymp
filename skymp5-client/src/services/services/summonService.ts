@@ -4,6 +4,7 @@ import { SummonMessage } from "../messages/summonMessage";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { SummonEndEvent, SummonStartEvent } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { WorldCleanerService } from "./worldCleanerService";
 
 const TAG = "verb:summon";
 
@@ -53,7 +54,29 @@ const TAG = "verb:summon";
 // the design's step 4), and the platform's own live list holds 64
 // (EventHandler.cpp:62), so the live map here is bounded at the same 64: the
 // oldest goes first when it fills.
+//
+// Two holds, both from x-summon-track 20261116-172548's trace on c1
+// (lab/frida/summon-track.js; the Potent atronach's spell 0x100e76 placed one
+// summon per effect, MGEF 0x1ceaa's and 0x4e945's, 0.38 s after its start):
+// - the cleaner's guard. The cleaner skips a commanded actor
+//   (worldCleanerService.ts:72-83), but the engine's Finish unlinks the summon
+//   (the trace's unlink row) before its kill, fade and delete, and in that
+//   window the cleaner deleted it too: c1 crashed 0.5 s after the Potent
+//   atronach's Finish, EXCEPTION_ACCESS_VIOLATION at 41702+0x22 in a
+//   MovementControllerNPC job on "Potent Flame Atronach" [0x00000000], the
+//   double delete worldCleanerService.ts:86-95 records for a deer. So every
+//   summon the platform names, every caster's, is protected from the cleaner
+//   from its start until the engine has deleted it (the protection counter
+//   FormView's bind uses, worldCleanerService.ts:14-21); the engine places
+//   and deletes its summons itself.
+// - the report's hold. MGEF 0x1ceaa's summon (the effect Elemental Potency's
+//   condition refuses) appeared and its effect finished one frame later (the
+//   trace's rows: commandedActor read at elapsed 0.381, Finish 31 ms after at
+//   the same elapsed). A start is held reportAfterUpdates updates; an end
+//   inside the hold drops it unreported, so no other seat draws a summon its
+//   caster's engine kept for a frame.
 type Live = { at: number; bound: boolean };
+type Held = { e: SummonStartEvent; updates: number; at: number };
 
 export class SummonService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -89,33 +112,51 @@ export class SummonService extends ClientListener {
     }
 
     private onSummonStart(e: SummonStartEvent): void {
-        if (!e || e.casterId !== 0x14) {
+        if (!e) {
+            return;
+        }
+        // every caster's summon is the engine's to delete
+        this.guard(e.summonId);
+        if (e.casterId !== 0x14) {
             return;
         }
         // once: the platform raises a start once per summon (its live list),
         // and a second start for a live id folds server-side besides (the
         // verb doc's Idempotency)
-        if (this.live.has(e.summonId)) {
+        if (this.live.has(e.summonId) || this.held.has(e.summonId)) {
             return;
         }
-        const base = e.summon.getBaseObject();
+        this.held.set(e.summonId, { e, updates: 0, at: Date.now() });
+    }
+
+    // a held start reported: the summon read again by its id, so one the
+    // engine has dropped since is not reported
+    private report(h: Held): void {
+        const e = h.e;
+        const summon = this.sp.Actor.from(this.sp.Game.getFormEx(e.summonId));
+        if (!summon || summon.isDeleted() || summon.isDead()) {
+            logLab(TAG, `the player's summon ${e.summonId.toString(16)} gone before its report: not reported`);
+            return;
+        }
+        const base = summon.getBaseObject();
         const message: SummonMessage = {
             t: MsgType.Summon,
             localId: e.summonId,
             baseId: base ? base.getFormID() : 0,
             effectId: e.effect.getFormID(),
             spellId: e.spell ? e.spell.getFormID() : 0,
-            pos: ObjectReferenceEx.getPos(e.summon),
+            pos: ObjectReferenceEx.getPos(summon),
             // the engine's own GetAngle words, degrees, sent raw as the
             // movement family's rotations travel (movementGet.ts:96)
             rot: [
-                e.summon.getAngleX(),
-                e.summon.getAngleY(),
-                e.summon.getAngleZ(),
+                summon.getAngleX(),
+                summon.getAngleY(),
+                summon.getAngleZ(),
             ],
-            worldOrCell: ObjectReferenceEx.getWorldOrCell(e.summon),
-            // at least 0 (the wire's bound; an elapsed past its duration clamps)
-            remainingS: Math.max(e.durationS - e.elapsedS, 0),
+            worldOrCell: ObjectReferenceEx.getWorldOrCell(summon),
+            // at least 0 (the wire's bound; an elapsed past its duration
+            // clamps), less the hold's own time
+            remainingS: Math.max(e.durationS - e.elapsedS - (Date.now() - h.at) / 1000, 0),
             ended: false,
         };
         if (this.live.size >= SummonService.liveMax) {
@@ -131,6 +172,13 @@ export class SummonService extends ClientListener {
 
     private onSummonEnd(e: SummonEndEvent): void {
         if (!e || e.casterId !== 0x14) {
+            return;
+        }
+        // an end inside the start's hold: never reported, so nothing to end
+        const held = this.held.get(e.summonId);
+        if (held) {
+            this.held.delete(e.summonId);
+            logLab(TAG, `the player's summon ${e.summonId.toString(16)} ended ${held.updates} update(s) after its start: neither reported`);
             return;
         }
         // the report carries the local id alone; the wire reads nothing else
@@ -158,6 +206,8 @@ export class SummonService extends ClientListener {
     // (the es5 target takes no Map iteration; the pcInv holds' own walk,
     // remoteServer.ts:129) and the refusals go out after it
     private onUpdate(): void {
+        this.reportHeld();
+        this.releaseGuards();
         if (this.live.size === 0) {
             return;
         }
@@ -203,8 +253,75 @@ export class SummonService extends ClientListener {
         logLab(TAG, `summon ${localId.toString(16)} refused (no bind in ${(SummonService.bindWaitMs / 1000).toFixed(0)} s): dispelled locally (killed, faded, deleted in ${seconds.toFixed(1)} s)`);
     }
 
+    // the held starts, reported after their hold
+    private reportHeld(): void {
+        if (this.held.size === 0) {
+            return;
+        }
+        const due: number[] = [];
+        this.held.forEach((h, id) => {
+            h.updates += 1;
+            if (h.updates >= SummonService.reportAfterUpdates) {
+                due.push(id);
+            }
+        });
+        for (const id of due) {
+            const h = this.held.get(id);
+            this.held.delete(id);
+            if (h) {
+                this.report(h);
+            }
+        }
+    }
+
+    // the cleaner's guard on a summon, once
+    private guard(summonId: number): void {
+        if (this.guarded.has(summonId)) {
+            return;
+        }
+        if (this.guarded.size >= SummonService.liveMax) {
+            const oldest = this.guarded.keys().next();
+            if (!oldest.done) {
+                this.unguard(oldest.value);
+            }
+        }
+        this.controller.lookupListener(WorldCleanerService).modWcProtection(summonId, 1);
+        this.guarded.set(summonId, Date.now());
+    }
+
+    private unguard(summonId: number): void {
+        if (this.guarded.delete(summonId)) {
+            this.controller.lookupListener(WorldCleanerService).modWcProtection(summonId, -1);
+        }
+    }
+
+    // a guard ends once the engine has deleted its summon (or the game holds
+    // no such form, after a load)
+    private releaseGuards(): void {
+        if (this.guarded.size === 0) {
+            return;
+        }
+        const gone: number[] = [];
+        this.guarded.forEach((_at, id) => {
+            const ref = this.sp.ObjectReference.from(this.sp.Game.getFormEx(id));
+            if (!ref || ref.isDeleted()) {
+                gone.push(id);
+            }
+        });
+        for (const id of gone) {
+            this.unguard(id);
+        }
+    }
+
     // the starts reported and not yet bound
     private readonly live = new Map<number, Live>();
+    // the starts held before their report
+    private readonly held = new Map<number, Held>();
+    // the summons guarded from the cleaner, by id, since when
+    private readonly guarded = new Map<number, number>();
+    // the report's hold, in updates: the refused effect's summon ended one
+    // frame after it appeared (x-summon-track 20261116-172548's trace)
+    private static readonly reportAfterUpdates = 3;
     // the refusal fallback's window (design step 5: "no bind within 5 s")
     private static readonly bindWaitMs = 5000;
     // the platform's own live ceiling (EventHandler.cpp:62)

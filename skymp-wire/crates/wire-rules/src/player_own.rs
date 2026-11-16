@@ -571,7 +571,10 @@ pub struct HeadPartFacts {
     /// recorded race: the list holds the race, or the record gives no answer
     /// (no RNAM, an RNAM that is no FormList), as the look's derivation
     /// (ADR-026) and a recorded SetRace's look read it; a whole face reported
-    /// after that SetRace keeps what its look kept.
+    /// after that SetRace keeps what its look kept. A part the recorded look
+    /// wears already passes too (thuum #51: a part the list bars is the
+    /// player's own, which the record keeps over a report that lacks it and
+    /// its own game is asked to wear again, so its next report names it).
     pub race_valid: bool,
 }
 
@@ -623,7 +626,8 @@ pub enum HeadPartsVerdict {
 /// (`E_HEADPARTS_NO_LOOK`), the race that look records
 /// (`E_HEADPARTS_RACE`), 1 to [`HEAD_PARTS`] parts (`E_HEADPARTS_COUNT`),
 /// the game files and every part an HDPT (`E_HEADPARTS_KIND`), then every
-/// part one the recorded race may wear (`E_HEADPARTS_RACE_LIST`). The first
+/// part one the recorded race may wear or the recorded look wears already
+/// (`E_HEADPARTS_RACE_LIST`). The first
 /// part that breaks a bound names the refusal, and a refusal writes none of
 /// the report: a face is one report.
 #[must_use]

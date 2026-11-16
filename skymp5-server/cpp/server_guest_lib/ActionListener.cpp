@@ -3486,6 +3486,30 @@ void ActionListener::OnRaceMenuPreset(const RawMessageData& rawMsgData,
   }
 }
 
+namespace {
+// thuum #51: each of `parts` worn again on `actor`'s own game by the engine's
+// ChangeHeadPart (SKSE's Actor.ChangeHeadPart, the call RotfernEyesAlias's
+// UpdateEyes makes), a snippet on the player's own actor (0x14 on its game,
+// SpSnippet::ClientFormId). The platform runs it as its own call, which the
+// own-call seam counts and never reports back (ScriptNatives.cpp,
+// kStagedPlatform). Whether ChangeHeadPart puts on a part the race's list
+// bars, and brings the part's extras (HNAM), is HYPOTHESIS until a lab run
+// reads the seat's own head parts
+void WearOnOwnGame(MpActor& actor, const std::vector<uint32_t>& parts)
+{
+  for (uint32_t part : parts) {
+    SpSnippetObjectArgument headPart;
+    headPart.formId = part;
+    headPart.type = "HeadPart";
+    std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+      args{ headPart };
+    SpSnippet("Actor", "ChangeHeadPart", args, actor.GetFormId())
+      .Execute(&actor, SpSnippetMode::kNoReturnResult);
+  }
+}
+}
+
 void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
                                     const OwnHeadPartsMessage& msg)
 {
@@ -3508,7 +3532,11 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
   // and every part an HDPT, and every part one the recorded race may wear
   // (D-E1 A's bound, ChangeHeadPart's: its HDPT's valid-race list, RNAM, read
   // as the look's derivation and RecordRaceLook read it, a record that gives
-  // no answer taken as yes)
+  // no answer taken as yes) or one the recorded look wears already (thuum
+  // #51: a part the race's list bars is the player's own choice, which the
+  // record keeps over a report that lacks it, PartOne::OwnPartsKept, and
+  // puts back on its own game, WearOnOwnGame; its game's next report then
+  // names it, and adds no part the record lacks)
   const auto look = actor->GetAppearance();
   skymp::rules::OwnHeadPartsFacts facts{};
   facts.has_look = static_cast<bool>(look);
@@ -3523,9 +3551,13 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
     if (facts.files) {
       const auto rec = partOne.GetEspm().GetBrowser().LookupById(part).rec;
       row.kind = rec && rec->GetType() == espm::HDPT::kType;
+      const bool worn = look &&
+        std::find(look->headpartIds.begin(), look->headpartIds.end(), part) !=
+          look->headpartIds.end();
       row.race_valid = row.kind &&
-        partOne.HeadPartRaceListHolds(part, facts.recorded_race)
-          .value_or(true);
+        (worn ||
+         partOne.HeadPartRaceListHolds(part, facts.recorded_race)
+           .value_or(true));
     }
     parts.push_back(row);
   }
@@ -3542,12 +3574,19 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
   // thuum #51: the look's parts the report could never name (a race list
   // bars them, and the report names no part of their type) stay on the
   // record and on the figure the other games draw (PartOne::OwnPartsKept)
-  const auto keptLine = [](size_t kept) {
-    return kept == 0
-      ? std::string()
-      : fmt::format("; {} head part(s) its race's list bars kept on it (the "
-                    "player's own, #51)",
-                    kept);
+  const auto keptLine = [](size_t kept, size_t wornAgain) {
+    if (kept == 0) {
+      return std::string();
+    }
+    std::string line =
+      fmt::format("; {} head part(s) its race's list bars kept on it (the "
+                  "player's own, #51)",
+                  kept);
+    if (wornAgain != 0) {
+      line += fmt::format(", {} worn again on its own game (ChangeHeadPart)",
+                          wornAgain);
+    }
+    return line;
   };
 
   // thuum D-53-11 (A): the overlay list's parts are held in memory as the
@@ -3566,7 +3605,7 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
     if (!partOne.HoldOwnOverlayParts(actor->GetFormId(), std::move(held))) {
       return spdlog::info("[verb:appearance] {}: folded, its figure wears "
                           "them already (D-53-11){}",
-                          head, keptLine(kept.size()));
+                          head, keptLine(kept.size(), 0));
     }
     std::string what = "held in memory as its figure's, never on its change "
                        "form (D-53-11, R2)";
@@ -3579,7 +3618,7 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
                         "game that sees it",
                         heldCount);
     return spdlog::info("[verb:appearance] {}: {}{}", head, what,
-                        keptLine(kept.size()));
+                        keptLine(kept.size(), 0));
   }
 
   // R2, the seat's word from its base list: the look wears exactly the
@@ -3591,10 +3630,15 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
   // games are sent the record again even where it folds
   const bool ended = partOne.EndOwnOverlayParts(actor->GetFormId());
   const auto recorded = partOne.RecordOwnHeadParts(*actor, msg.parts);
+  // thuum #51: the kept parts its own game lacks, worn again there, a fold
+  // too (the cure's report folds on a look that kept the part)
+  WearOnOwnGame(*actor, recorded.wearBack);
+  const std::string kept =
+    keptLine(recorded.keptOffList, recorded.wearBack.size());
   if (!recorded.look && !recorded.preset && !ended) {
     return spdlog::info("[verb:appearance] {}: folded, its look wears them "
                         "already (D-53-8 B){}",
-                        head, keptLine(recorded.keptOffList));
+                        head, kept);
   }
   std::string what = recorded.look || recorded.preset
     ? "recorded on its look as its seat reported them (D-53-8 B, R2)"
@@ -3618,8 +3662,7 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
                           now->headpartIds.size());
     }
   }
-  spdlog::info("[verb:appearance] {}: {}{}", head, what,
-               keptLine(recorded.keptOffList));
+  spdlog::info("[verb:appearance] {}: {}{}", head, what, kept);
 }
 
 void ActionListener::SendRaceMenuPreset(MpActor& actor)

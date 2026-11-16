@@ -510,6 +510,9 @@ public:
     // RecordOwnHeadParts's (thuum D-53-8 B): the reported parts the stored
     // look now names in place of its entry of their HDPT type
     size_t rewritten = 0;
+    // RecordOwnHeadParts's (thuum #51): the kept parts its own game is to
+    // wear again, each kept for itself (OwnPartsKept's `wear`)
+    std::vector<uint32_t> wearBack;
   };
   HeadPartRecord RecordHeadPart(MpActor& actor, uint32_t part);
   // thuum D-53-8 B (train 53's V-live; lab/.cache/drafts/reads-53/
@@ -548,9 +551,14 @@ public:
   // SetRace kept it, and her own game's base list report a second later,
   // which lacked it, was written over the look, so the cure had no scar to
   // keep. Why her own game's list lacks it after the turn is HYPOTHESIS (the
-  // engine's race change dropping a part the new race's list bars; unread)
+  // engine's race change dropping a part the new race's list bars; unread).
+  // `wear`, when given, gets the kept parts kept for themselves, not as
+  // another kept part's extra, in the look's order: the ones its own game
+  // is asked to wear again (ActionListener's ChangeHeadPart snippet, which
+  // brings a part's extras with it, HYPOTHESIS)
   std::vector<uint32_t> OwnPartsKept(const Appearance& look,
-                                     const std::vector<uint32_t>& parts);
+                                     const std::vector<uint32_t>& parts,
+                                     std::vector<uint32_t>* wear = nullptr);
   // thuum D-53-11 (A, the fresh review of 84eb42db's finding 2): the head
   // parts a player's own game draws from its race's overlay list (an
   // OwnHeadParts report with `overlay` set, judged as RecordOwnHeadParts's

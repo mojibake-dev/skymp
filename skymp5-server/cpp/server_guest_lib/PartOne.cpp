@@ -5601,7 +5601,8 @@ size_t PartOne::WearOwnPartsInLook(std::string& preset,
 }
 
 std::vector<uint32_t> PartOne::OwnPartsKept(const Appearance& look,
-                                            const std::vector<uint32_t>& parts)
+                                            const std::vector<uint32_t>& parts,
+                                            std::vector<uint32_t>* wear)
 {
   std::vector<uint32_t> kept;
   if (!HasEspm() || look.raceId == 0) {
@@ -5644,6 +5645,9 @@ std::vector<uint32_t> PartOne::OwnPartsKept(const Appearance& look,
       continue;
     }
     keep[i] = 1;
+    if (wear && !holds(*wear, worn[i])) {
+      wear->push_back(worn[i]);
+    }
     // the extra parts it brings (HNAM), the look's derivation's reading
     // (ADR-026)
     const auto rec = browser.LookupById(worn[i]);
@@ -5688,7 +5692,8 @@ PartOne::HeadPartRecord PartOne::RecordOwnHeadParts(
 
   // the look: the reported set, in the engine's order, then the look's parts
   // the report could never name, in the look's (OwnPartsKept, thuum #51)
-  const std::vector<uint32_t> kept = OwnPartsKept(*current, parts);
+  const std::vector<uint32_t> kept =
+    OwnPartsKept(*current, parts, &recorded.wearBack);
   recorded.keptOffList = kept.size();
   std::vector<uint32_t> next = parts;
   next.insert(next.end(), kept.begin(), kept.end());

@@ -2668,7 +2668,9 @@ mod ffi {
         /// The part's HDPT valid-race FormList (RNAM) does not keep it from
         /// the recorded race (PartOne::HeadPartRaceListHolds, no answer
         /// taken as yes, as the look's derivation and RecordRaceLook take
-        /// it).
+        /// it), or the recorded look wears it already (thuum #51: a part
+        /// the list bars is the player's own, which the record keeps and
+        /// its own game is asked to wear again).
         race_valid: bool,
     }
 

@@ -1,0 +1,60 @@
+# difftest summon (thuum tracker #84, docs/verbs/summon.md, ADR-052 decision 3 as amended 2026-11-16,
+# ADR-063: the caster's row owns its summon): a player's game reports the summon its engine placed at a
+# summon effect's apply (Summon, MsgType 83: the local id, the base, the effect and the spell, the place,
+# the time left) and the server places its own actor, binding the caster's view to the engine's own
+# summon (the create word's ownLocal) while every other game draws a puppet. The forms are the baseline's
+# (x-summon-baseline 20261116-083744, lab/esm.py on sky-srv, 2026-11-16):
+# ConjureFlameAtronachRightHand 1052278 (0x100e76) carries two perk-gated summon effects; 321861
+# (0x4e945, SummonAtronachFlamePotent's effect) summons NPC_ 321856 (0x4e940), so the report names that
+# pair. c1 and c2 are new characters (profiles 9 and 10, ghostwalk's), c1's report 300 units ahead of
+# the origin in Tamriel 60 with 59.5 of the effect's recorded 60 s left, then a second report naming
+# the plain base 132288 (0x204c0) under the potent effect, refused by the rule's E_SUMMON_BASE (the
+# log's word alone: no message either stack sends), then the first summon's end. The legacy server
+# knows no MsgType 83 and drops all three reports.
+id: summon
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: addspell, args: [20, 1052278]}}}
+  - {client: c1, at_ms: 2000, send: {t: 83, localId: 4278192381, baseId: 321856, effectId: 321861, spellId: 1052278, pos: [300.0, 0.0, 0.0], rot: [0.0, 0.0, 90.0], worldOrCell: 60, remainingS: 59.5, ended: false}, reliable: true}
+  - {client: c1, at_ms: 2500, send: {t: 83, localId: 4278192382, baseId: 132288, effectId: 321861, spellId: 1052278, pos: [300.0, 0.0, 0.0], rot: [0.0, 0.0, 90.0], worldOrCell: 60, remainingS: 59.5, ended: false}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 83, localId: 4278192381, ended: true}, reliable: true}
+  - {client: c2, at_ms: 0, move: {dy: 30}}
+  - {client: c2, at_ms: 8000, move: {dy: 60}}
+divergences:
+  - client: c1
+    msg: {t: 41, text: "addspell done: 100e76 recorded", refused: false}
+    legacy: 0
+    wire: 1
+    reason: an owner's AddSpell writes the server's record of learned spells and answers with a line (ghostwalk's); the legacy server does not know the command
+  - client: c1
+    msg: {t: 33, baseId: 321856, baseRecordType: NPC_, props: {ownLocal: 4278192381, isHostedByOther: false}}
+    legacy: 0
+    wire: 1
+    reason: the summon's own create word binds its caster to the engine reference its game holds (tracker #84); the legacy server knows no MsgType 83 and drops the report
+  - client: c2
+    msg: {t: 33, baseId: 321856, baseRecordType: NPC_, props: {isHostedByOther: true}}
+    legacy: 0
+    wire: 1
+    reason: the watcher's word carries no bind, its copy a puppet the caster's game simulates
+  - client: c2
+    msg: {t: 18}
+    legacy: 0
+    wire: 1
+    reason: "the end's dispel kills the summon, its death state reaching every game (no respawn: the summon's marker)"
+  - client: c2
+    msg: {t: 30, class: Actor, function: SetAlpha, arguments: [0.0, true]}
+    legacy: 0
+    wire: 1
+    reason: the dispel's fade served to the watcher's game alone, the caster's engine having run its own end (fSummonedCreatureFadeOutSeconds' look)
+  - client: c1
+    msg: {t: 25}
+    legacy: 0
+    wire: 1
+    reason: the fade's end (the GMST's 1.5 s, read from the records) deletes the server's actor, the DestroyActor to every listener; the caster's client holds its engine reference, the engine's own Finish deleting it
+  - client: c2
+    msg: {t: 25}
+    legacy: 0
+    wire: 1
+    reason: the same delete on the watcher's game, its copy gone with the record

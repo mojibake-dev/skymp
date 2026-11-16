@@ -5660,77 +5660,6 @@ size_t PartOne::WearOwnPartsInLook(std::string& preset,
   return rewritten;
 }
 
-std::vector<uint32_t> PartOne::OwnPartsKept(const Appearance& look,
-                                            const std::vector<uint32_t>& parts,
-                                            std::vector<uint32_t>* wear)
-{
-  std::vector<uint32_t> kept;
-  if (!HasEspm() || look.raceId == 0) {
-    return kept;
-  }
-  auto& browser = GetEspm().GetBrowser();
-  auto& cache = worldState.GetEspmCache();
-  // a part's HDPT type (PNAM), WearHeadPart's reading
-  const auto typeOf = [&](uint32_t id) -> std::optional<uint32_t> {
-    const auto* hdpt = espm::Convert<espm::HDPT>(browser.LookupById(id).rec);
-    return hdpt ? std::optional<uint32_t>(hdpt->GetData(cache).type)
-                : std::nullopt;
-  };
-  const auto holds = [](const std::vector<uint32_t>& ids, uint32_t id) {
-    return std::find(ids.begin(), ids.end(), id) != ids.end();
-  };
-  std::vector<std::optional<uint32_t>> named;
-  named.reserve(parts.size());
-  for (uint32_t part : parts) {
-    named.push_back(typeOf(part));
-  }
-
-  // one flag a worn part: a part the race's list bars, of a type the report
-  // names none of
-  const auto& worn = look.headpartIds;
-  std::vector<uint8_t> keep(worn.size(), 0);
-  std::vector<uint32_t> extras;
-  for (size_t i = 0; i < worn.size(); ++i) {
-    if (holds(parts, worn[i])) {
-      continue;
-    }
-    const std::optional<bool> fits =
-      HeadPartRaceListHolds(worn[i], look.raceId);
-    if (!fits.has_value() || *fits) {
-      continue;
-    }
-    const std::optional<uint32_t> type = typeOf(worn[i]);
-    if (!type.has_value() ||
-        std::find(named.begin(), named.end(), type) != named.end()) {
-      continue;
-    }
-    keep[i] = 1;
-    if (wear && !holds(*wear, worn[i])) {
-      wear->push_back(worn[i]);
-    }
-    // the extra parts it brings (HNAM), the look's derivation's reading
-    // (ADR-026)
-    const auto rec = browser.LookupById(worn[i]);
-    if (const auto* hdpt = espm::Convert<espm::HDPT>(rec.rec)) {
-      for (uint32_t extra : hdpt->GetData(cache).extraParts) {
-        extras.push_back(rec.ToGlobalId(extra));
-      }
-    }
-  }
-  // its extras the look wears go with it
-  for (size_t i = 0; i < worn.size(); ++i) {
-    if (!keep[i] && holds(extras, worn[i]) && !holds(parts, worn[i])) {
-      keep[i] = 1;
-    }
-  }
-  for (size_t i = 0; i < worn.size(); ++i) {
-    if (keep[i] && !holds(kept, worn[i])) {
-      kept.push_back(worn[i]);
-    }
-  }
-  return kept;
-}
-
 PartOne::HeadPartRecord PartOne::RecordOwnHeadParts(
   MpActor& actor, const std::vector<uint32_t>& parts)
 {
@@ -5750,20 +5679,14 @@ PartOne::HeadPartRecord PartOne::RecordOwnHeadParts(
     }
   }
 
-  // the look: the reported set, in the engine's order, then the look's parts
-  // the report could never name, in the look's (OwnPartsKept, thuum #51)
-  const std::vector<uint32_t> kept =
-    OwnPartsKept(*current, parts, &recorded.wearBack);
-  recorded.keptOffList = kept.size();
-  std::vector<uint32_t> next = parts;
-  next.insert(next.end(), kept.begin(), kept.end());
+  // the look: exactly the reported set, in the engine's order
   std::vector<uint32_t> worn = current->headpartIds;
-  std::vector<uint32_t> reported = next;
+  std::vector<uint32_t> reported = parts;
   std::sort(worn.begin(), worn.end());
   std::sort(reported.begin(), reported.end());
   if (worn != reported) {
     Appearance look = *current;
-    look.headpartIds = std::move(next);
+    look.headpartIds = parts;
     actor.SetAppearance(&look);
     recorded.look = true;
   }

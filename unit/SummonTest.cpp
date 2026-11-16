@@ -226,7 +226,10 @@ TEST_CASE("A summon's end dispels it: the kill reaches every game, the "
   Enter(p);
   SummonLog log;
   Report(p, Start(kLocal, kPotentAtronach, kPotentEffect, 59.5f, 300.f));
-  const uint32_t summon = CreateWordsTo(p, 0)[0].value("idx", 0);
+  // the word's idx is the world's change-form index, never the form id;
+  // refrId carries the form id (PartOne.cpp's fill, npc-puppet's note)
+  const uint32_t summon =
+    static_cast<uint32_t>(CreateWordsTo(p, 0)[0].value("refrId", 0ull));
   REQUIRE(summon != 0);
   p.Messages().clear();
 
@@ -296,7 +299,10 @@ TEST_CASE("A summon's caster's departure dispels it, and the backstop "
   Enter(p);
   SummonLog log;
   Report(p, Start(kLocal, kPotentAtronach, kPotentEffect, 0.5f, 300.f));
-  const uint32_t summon = CreateWordsTo(p, 0)[0].value("idx", 0);
+  // the word's idx is the world's change-form index, never the form id;
+  // refrId carries the form id (PartOne.cpp's fill, npc-puppet's note)
+  const uint32_t summon =
+    static_cast<uint32_t>(CreateWordsTo(p, 0)[0].value("refrId", 0ull));
   REQUIRE(summon != 0);
 
   // the backstop: 0.5 s left plus its 5 s, no end report
@@ -307,7 +313,8 @@ TEST_CASE("A summon's caster's departure dispels it, and the backstop "
 
   // the departure: a live summon dispels with its caster
   Report(p, Start(kLocal + 1, kPlainAtronach, kPlainEffect, 59.5f, 300.f));
-  const uint32_t second = CreateWordsTo(p, 0)[1].value("idx", 0);
+  const uint32_t second =
+    static_cast<uint32_t>(CreateWordsTo(p, 0)[1].value("refrId", 0ull));
   DoDisconnect(p, 0);
   REQUIRE(log.Count(fmt::format("{:x} dispels (its caster's departure)",
                                 second)) == 1);

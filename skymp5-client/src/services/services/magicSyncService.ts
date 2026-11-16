@@ -388,7 +388,10 @@ export class MagicSyncService extends ClientListener {
     // launched nothing this game saw (c2-console:2304, 2314), so its hit
     // reached the server 438 ms ahead of its cast and was refused
     // (E_SPELL_NO_CAST, server.log:1293 against :1295), and no command, no
-    // thrall, was recorded
+    // thrall, was recorded. HitService calls this two updates after the hit
+    // (its due queue, the player's sendSpellHit delay), since the engine can
+    // raise the hit ahead of the cast event in one frame (x-npc-raise
+    // 20261116-221847), so the event's cast is held by then
     flushHeldHostedCastBeforeHit(casterLocal: number, spell: number) {
         this.mergeHeldHostedCasts();
         const i = this.heldHostedCasts.findIndex((held) => held.casterLocal === casterLocal && held.msg.spell === spell);

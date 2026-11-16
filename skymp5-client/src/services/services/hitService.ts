@@ -259,11 +259,26 @@ export class HitService extends ClientListener {
             this.heldUnarmed.push({ frame: this.frame, target: e.target.getFormID(), send });
             return;
         }
-        // thuum tracker #106 (x-npc-raise-rec 20261116-213845): a hosted
-        // caster's spell hit goes behind its cast; a cast still held for its
-        // launch goes first (MagicSyncService.flushHeldHostedCastBeforeHit)
+        // thuum tracker #106: a hosted caster's spell hit goes behind its
+        // cast, the player's rule (sendSpellHit's two updates). Its engine
+        // can raise the hit ahead of the cast event in one frame: in
+        // x-npc-raise 20261116-221847 the necromancer's Reanimate Corpse hit
+        // left c2 at about 22:20:33.52, before the cast event's handler
+        // held the cast for a launch (c2-console:2331) and sent it at 33.924
+        // (:2346), and the server refused the hit (server.log:1322 against
+        // :1331). Two updates on, the cast event has gone out or been held
+        // for its launch, and a held one goes first
+        // (MagicSyncService.flushHeldHostedCastBeforeHit)
         if (isSpell && aggressor !== 0x14) {
-            this.controller.lookupListener(MagicSyncService).flushHeldHostedCastBeforeHit(aggressor, e.source.getFormID());
+            const spellId = e.source.getFormID();
+            this.due.push({
+                frame: this.frame + HitService.spellHitDelayUpdates,
+                send: () => {
+                    this.controller.lookupListener(MagicSyncService).flushHeldHostedCastBeforeHit(aggressor, spellId);
+                    send();
+                }
+            });
+            return;
         }
         send();
     }

@@ -182,6 +182,21 @@ pub enum Decision {
         /// The commander that left.
         player: u32,
     },
+    /// A summon's caster left the server (thuum tracker #84, ADR-052
+    /// decision 3 as amended 2026-11-16, ADR-060 as amended 2026-11-15: a
+    /// departure dispels what its player summoned): the core dispels the
+    /// summon, Kill then the fade then the delete, on every game but the
+    /// leaver's, which is already gone. It stands alone, no `ClaimGone`
+    /// behind it: the dispel deletes the actor, so the cell's rule names
+    /// no simulator for it.
+    SummonGone {
+        /// The summon.
+        actor: u32,
+        /// The cell its row named when its caster left.
+        cell: u32,
+        /// The caster that left.
+        player: u32,
+    },
 }
 
 /// What ended a claim row (ADR-073 decision 6: each kind declares its own end
@@ -339,13 +354,22 @@ pub enum FollowKind {
     /// a door, an unload and a grant, ending at the thrall's death, the
     /// commander's departure or a newer command.
     Commanded,
+    /// A summon's caster (thuum tracker #84, ADR-052 decision 3 as amended
+    /// 2026-11-16, ADR-063: the caster's row owns its summon): the player
+    /// whose engine placed the summon simulates it in any cell until one of
+    /// its four ends (the effect's own end, its death, the caster's
+    /// departure, a restart), each the core's dispel except the restart. No
+    /// lease, no claim: a dialogue's or a command's claim on the actor is
+    /// refused while the summon lives (the row stands as it is).
+    Summon,
 }
 
-/// A claim in either shape: a dialogue's (ADR-052) or a commander's
-/// (ADR-060). Both travel with the actor; a dialogue's ends by its lease, a
-/// command by its thrall's death.
+/// A claim in either shape: a dialogue's (ADR-052), a commander's (ADR-060)
+/// or a summon's caster's (tracker #84). All travel with the actor; a
+/// dialogue's ends by its lease, a command by its thrall's death, a
+/// summon's by its dispel.
 const fn is_claim(kind: FollowKind) -> bool {
-    matches!(kind, FollowKind::Claim | FollowKind::Commanded)
+    matches!(kind, FollowKind::Claim | FollowKind::Commanded | FollowKind::Summon)
 }
 
 /// A host simulating an actor in a cell nobody hosts (ADR-047 D6), or, within
@@ -609,11 +633,13 @@ impl Cells {
     /// `player` left the server at `now_ms`: every cell it hosts starts its
     /// grace, and it is no candidate anywhere. Its follows go with it; each
     /// claim row it held ends whole, a ClaimEnded apiece (by actor id), so
-    /// the word names the cell's rule again; and each command it held ends
+    /// the word names the cell's rule again; each command it held ends
     /// with a ClaimGone, its thrall dying first by the server's word
     /// (`ThrallExpired`), a full thrall as a timed one (ADR-060 as amended
     /// 2026-11-15, Eli's executive decision: "thrall dies when player logs
-    /// out").
+    /// out"); and each summon it held ends with a `SummonGone` alone (thuum
+    /// tracker #84, ADR-060 as amended: a departure dispels what its player
+    /// summoned), the core deleting the actor.
     pub fn gone(&mut self, player: u32, now_ms: u64) -> Vec<Decision> {
         self.players.remove(&player);
         let mut commands: Vec<(u32, u32)> = self
@@ -628,6 +654,20 @@ impl Cells {
             self.follows.remove(&actor);
             out.push(Decision::ThrallExpired { actor, cell, player });
             out.push(Decision::ClaimGone { actor, cell, player });
+        }
+        // a summon's caster left (tracker #84, ADR-060 as amended): the
+        // core dispels it, so the row ends here with its own decision and
+        // no ClaimGone behind it, the dispel deleting the actor
+        let mut summons: Vec<(u32, u32)> = self
+            .follows
+            .iter()
+            .filter(|(_, f)| f.kind == FollowKind::Summon && f.player == player)
+            .map(|(&actor, f)| (actor, f.cell))
+            .collect();
+        summons.sort_unstable();
+        for (actor, cell) in summons {
+            self.follows.remove(&actor);
+            out.push(Decision::SummonGone { actor, cell, player });
         }
         self.follows.retain(|_, f| f.kind == FollowKind::Claim || f.player != player);
         out.extend(self.end_purposes(ClaimEnd::Gone, |_, f| {
@@ -755,8 +795,9 @@ impl Cells {
 
     /// Who simulates `actor` standing in `cell`: the cell's host, else the
     /// follower whose follow names the cell, else nobody (0); a command's
-    /// commander in any cell (ADR-060). The one answer the core's word,
-    /// routing and sighting gate read (ADR-047 D6).
+    /// commander in any cell (ADR-060), a summon's caster alike (tracker
+    /// #84). The one answer the core's word, routing and sighting gate read
+    /// (ADR-047 D6).
     #[must_use]
     pub fn simulator_of(&self, actor: u32, cell: u32) -> u32 {
         // a row names the simulator first: a follow into a cell nobody hosts
@@ -764,9 +805,10 @@ impl Cells {
         // follower has just crossed into (D22), either ended by a grant into
         // the cell; or a claim (ADR-052, ADR-073 decision 6), which a grant
         // passes over; or a command, which names its commander wherever the
-        // thrall stands (ADR-060)
+        // thrall stands (ADR-060); or a summon's row, which names its caster
+        // wherever it stands (tracker #84)
         if let Some(f) = self.follows.get(&actor) {
-            if f.cell == cell || f.kind == FollowKind::Commanded {
+            if f.cell == cell || matches!(f.kind, FollowKind::Commanded | FollowKind::Summon) {
                 return f.player;
             }
         }
@@ -926,6 +968,10 @@ impl Cells {
             // the commander's own dialogue with its thrall: the commanded row
             // stands as it is, nothing to renew (ADR-060)
             Some(f) if f.kind == FollowKind::Commanded => return ClaimVerdict::Reclaimed,
+            // a summon's row stands as it is for its caster too: a dialogue
+            // or a lead never takes the summon its caster's engine placed
+            // (tracker #84, the design's "refused by claim()")
+            Some(f) if f.kind == FollowKind::Summon => return ClaimVerdict::Held,
             Some(f) if f.kind == FollowKind::Claim => {
                 let verdict = f.join(purpose, now_ms);
                 if verdict != ClaimVerdict::Full {
@@ -964,10 +1010,37 @@ impl Cells {
         }
         let verdict = match self.follows.get(&actor) {
             Some(f) if f.kind == FollowKind::Commanded && f.player == player => ClaimVerdict::Reclaimed,
+            // a summon lives as its caster's: a command never replaces the
+            // row (tracker #84; the engine refuses a reanimate on a living
+            // actor, and the rule holds the same line)
+            Some(f) if f.kind == FollowKind::Summon => return ClaimVerdict::Held,
             _ => ClaimVerdict::Granted,
         };
         self.follows.insert(actor, Follow::moved(player, cell, now_ms, FollowKind::Commanded));
         verdict
+    }
+
+    /// `player`'s engine placed `actor` standing in `cell` (thuum tracker
+    /// #84, a summon the server accepted): the caster simulates it in any
+    /// cell until its dispel, the row refusing every claim and command on
+    /// the actor meanwhile. The server's actor is fresh, so the row replaces
+    /// nothing; the summons table holds its ends.
+    pub fn summon_row(&mut self, actor: u32, player: u32, cell: u32, now_ms: u64) {
+        self.follows.insert(actor, Follow::moved(player, cell, now_ms, FollowKind::Summon));
+    }
+
+    /// The summon `actor`'s dispel ends its row, its caster returned, 0 when
+    /// no summon row names one (thuum tracker #84): the core's word after
+    /// the table's dispel, so no row outlives the actor it names.
+    pub fn summon_row_end(&mut self, actor: u32) -> u32 {
+        match self.follows.get(&actor) {
+            Some(f) if f.kind == FollowKind::Summon => {
+                let player = f.player;
+                self.follows.remove(&actor);
+                player
+            }
+            _ => 0,
+        }
     }
 
     /// `player`'s game reports a cell loaded and the core read the records of

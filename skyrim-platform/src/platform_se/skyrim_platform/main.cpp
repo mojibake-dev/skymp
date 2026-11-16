@@ -121,6 +121,9 @@ void OnUpdate(IVM* vm, StackID stackId)
 {
   UpdateDumpFunctions();
   ScriptNatives::Tick();
+  // thuum #84: the summon tracker's pass, before the JS tick so a summon
+  // found here is raised in this frame's update
+  EventHandler::TickSummons();
 
   g_nativeCallRequirements.stackId = stackId;
   g_nativeCallRequirements.vm = vm;

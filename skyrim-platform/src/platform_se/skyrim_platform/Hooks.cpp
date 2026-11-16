@@ -309,30 +309,50 @@ void InstallPlayerAddTargetHook()
  */
 struct CharacterAddTarget
 {
-  static bool IsRaise(const RE::Effect* a_effect)
+  // thuum #84 (a player's conjured atronach as an owned actor; ADR-063): a
+  // summon is its caster's game's as a raise is, by D4 B's rule. An item
+  // carrying an effect of archetype kSummonCreature (CommonLibSSE-NG
+  // include/RE/E/EffectArchetypes.h:28) is refused here exactly as a raise
+  // is, so a cast relayed to a watcher's figure (MagicApi.cpp
+  // castSpellImmediate) summons nothing on the watcher's engine: the
+  // caster's engine summons, the server records its summon and every other
+  // game shows the server's copy. The summon's own effect lands on its
+  // caster (a Self or a target-location summon alike, HYPOTHESIS), so the
+  // caster read below is the summoner, a figure's on a watcher. Returns the
+  // archetype that makes the item its caster's game's, kNone for any other
+  static RE::EffectSetting::Archetype OwnedArchetype(
+    const RE::Effect* a_effect)
   {
-    return a_effect && a_effect->baseEffect &&
-      a_effect->baseEffect->HasArchetype(
-        RE::EffectSetting::Archetype::kReanimate);
-  }
-
-  static bool Raises(RE::MagicItem* a_item, const RE::Effect* a_effect)
-  {
-    if (!a_item) {
-      return IsRaise(a_effect);
-    }
-    for (auto* effect : a_item->effects) {
-      if (IsRaise(effect)) {
-        return true;
+    if (a_effect && a_effect->baseEffect) {
+      const auto archetype = a_effect->baseEffect->GetArchetype();
+      if (archetype == RE::EffectSetting::Archetype::kReanimate ||
+          archetype == RE::EffectSetting::Archetype::kSummonCreature) {
+        return archetype;
       }
     }
-    return false;
+    return RE::EffectSetting::Archetype::kNone;
+  }
+
+  static RE::EffectSetting::Archetype Owned(RE::MagicItem* a_item,
+                                            const RE::Effect* a_effect)
+  {
+    if (!a_item) {
+      return OwnedArchetype(a_effect);
+    }
+    for (auto* effect : a_item->effects) {
+      const auto archetype = OwnedArchetype(effect);
+      if (archetype != RE::EffectSetting::Archetype::kNone) {
+        return archetype;
+      }
+    }
+    return RE::EffectSetting::Archetype::kNone;
   }
 
   static bool thunk(RE::MagicTarget* a_this,
                     RE::MagicTarget::AddTargetData& a_data)
   {
-    if (!Raises(a_data.magicItem, a_data.effect)) {
+    const auto owned = Owned(a_data.magicItem, a_data.effect);
+    if (owned == RE::EffectSetting::Archetype::kNone) {
       return func(a_this, a_data);
     }
     const auto caster =
@@ -344,6 +364,15 @@ struct CharacterAddTarget
       return func(a_this, a_data);
     }
     const auto mgef = a_data.effect ? a_data.effect->baseEffect : nullptr;
+    if (owned == RE::EffectSetting::Archetype::kSummonCreature) {
+      logger::info("[verb:summon] summon {:x} (effect {:x}) on {:x} refused "
+                   "here: the summon is {:x}'s game's, its caster's engine "
+                   "summons (thuum #84, D4 B's rule)",
+                   a_data.magicItem ? a_data.magicItem->formID : 0,
+                   mgef ? mgef->formID : 0, body ? body->formID : 0,
+                   raiser->formID);
+      return false;
+    }
     logger::info("[verb:npc-fate] reanimate {:x} (effect {:x}) on {:x} "
                  "refused here: the raise is {:x}'s game's, its commander's "
                  "engine raises the body (ADR-060, D4 B)",

@@ -113,6 +113,13 @@ public:
     std::function<Napi::Object(Napi::Env)> objCreateFunction);
   static void SendEventConsoleMsg(const char* msg);
 
+  // thuum #84: the summon tracker's per-frame pass (EventHandler.cpp), run
+  // from the platform's OnUpdate; nothing while no summon effect is pending
+  static void TickSummons();
+  // thuum #84: the tracker's lists emptied at a load or a new game (their
+  // unique ids name the old world's effects)
+  static void ClearSummons();
+
   void DeactivateAllSinks()
   {
     if (activeSinks.empty()) {
@@ -471,8 +478,10 @@ private:
 
     // script events
     AppendSinkScriptEvent<RE::TESActivateEvent>(std::vector({ "activate" }));
-    AppendSinkScriptEvent<RE::TESActiveEffectApplyRemoveEvent>(
-      std::vector({ "effectStart", "effectFinish" }));
+    // thuum #84: summonStart and summonEnd come from the same sink (the
+    // summon tracker in EventHandler.cpp), so either keeps it active
+    AppendSinkScriptEvent<RE::TESActiveEffectApplyRemoveEvent>(std::vector(
+      { "effectStart", "effectFinish", "summonStart", "summonEnd" }));
     AppendSinkScriptEvent<RE::TESActorLocationChangeEvent>(
       std::vector({ "locationChanged" }));
     AppendSinkScriptEvent<RE::TESCellAttachDetachEvent>(

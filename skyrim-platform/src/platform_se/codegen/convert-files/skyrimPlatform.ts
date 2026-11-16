@@ -244,6 +244,27 @@ export interface ActiveEffectApplyRemoveEvent {
   target: ObjectReference
 }
 
+// thuum #84 (a player's conjured atronach as an owned actor): a summon effect (archetype kSummonCreature, 18) whose actor the engine has placed, raised once on the update after its SummonCreatureEffect::commandedActor resolves; the platform keeps the effect from its apply and finds it again each frame, up to 10 s, filtered in native. Every caster's; casterId and summonId the form ids read then, durationS and elapsedS the active effect's own
+export interface SummonStartEvent {
+  caster: Actor
+  summon: Actor
+  effect: MagicEffect
+  spell: Form | null
+  casterId: number
+  summonId: number
+  durationS: number
+  elapsedS: number
+}
+
+// thuum #84: the remove of a summon effect that raised summonStart, matched by the effect's unique id kept since; a form the game no longer has is null (the engine's Finish deletes the summon), its id kept
+export interface SummonEndEvent {
+  caster: Actor | null
+  summon: Actor | null
+  effect: MagicEffect | null
+  casterId: number
+  summonId: number
+}
+
 export interface MenuOpenEvent {
   name: string
 }
@@ -779,6 +800,12 @@ export declare function once(eventName: 'effectFinish', callback: (event: Active
 
 export declare function on(eventName: 'effectStart', callback: (event: ActiveEffectApplyRemoveEvent) => void): EventHandle
 export declare function once(eventName: 'effectStart', callback: (event: ActiveEffectApplyRemoveEvent) => void): EventHandle
+
+export declare function on(eventName: 'summonStart', callback: (event: SummonStartEvent) => void): EventHandle
+export declare function once(eventName: 'summonStart', callback: (event: SummonStartEvent) => void): EventHandle
+
+export declare function on(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle
+export declare function once(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle
 
 export declare function on(eventName: 'menuOpen', callback: (event: MenuOpenEvent) => void): EventHandle
 export declare function once(eventName: 'menuOpen', callback: (event: MenuOpenEvent) => void): EventHandle

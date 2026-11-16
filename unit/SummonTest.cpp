@@ -9,8 +9,8 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <sstream>
 #include <spdlog/sinks/ostream_sink.h>
+#include <sstream>
 #include <variant>
 
 // thuum tracker #84 (docs/verbs/summon.md, ADR-052 decision 3 as amended
@@ -39,10 +39,10 @@ constexpr uint32_t kLocal = 0xff00_08fd;
 
 uint64_t NowMs()
 {
-  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 std::chrono::steady_clock::now()
-                                   .time_since_epoch())
-                                 .count());
+  return static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch())
+      .count());
 }
 
 struct SummonLog
@@ -147,8 +147,8 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
 
   // the bounds, each by its first name, nothing placed
   Report(p, Start(kLocal, kPotentAtronach, kPotentEffect, 59.5f, 300.f));
-  const auto refused = Start(kLocal + 1, kPotentAtronach, kPotentEffect,
-                             59.5f, 300.f);
+  const auto refused =
+    Start(kLocal + 1, kPotentAtronach, kPotentEffect, 59.5f, 300.f);
   // the spell the record does not hold
   {
     auto msg = refused;
@@ -168,13 +168,13 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
   // the time left past four times the record's 60 s
   Report(p, Start(kLocal + 1, kPotentAtronach, kPotentEffect, 300.f, 300.f));
   REQUIRE(log.Count("E_SUMMON_SPELL: ff000c81's record holds no spell 12fe7; "
-                     "nothing placed") == 1);
+                    "nothing placed") == 1);
   REQUIRE(log.Count("E_SUMMON_EFFECT: 5deb4 is none of spell 100e76's "
-                     "effects; nothing placed") == 1);
+                    "effects; nothing placed") == 1);
   REQUIRE(log.Count("E_SUMMON_BASE: 4e945 summons 4e940, not the reported "
-                     "base 204c0; nothing placed") == 1);
+                    "base 204c0; nothing placed") == 1);
   REQUIRE(log.Count("E_SUMMON_FAR: the place stands 9000 units from "
-                     "ff000c81's record (bound 8192); nothing placed") == 1);
+                    "ff000c81's record (bound 8192); nothing placed") == 1);
   REQUIRE(log.Count("E_SUMMON_LONG") == 1);
   REQUIRE(CreateWordsTo(p, 0).empty());
   p.Messages().clear();
@@ -203,7 +203,7 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
   // a third live summon and the same engine reference twice
   Report(p, Start(kLocal + 2, kPotentAtronach, kPotentEffect, 59.5f, 300.f));
   REQUIRE(log.Count("E_SUMMON_FULL: ff000c81 holds 2 live summons already "
-                     "(bound 2); nothing placed") == 1);
+                    "(bound 2); nothing placed") == 1);
   Report(p, Start(kLocal, kPotentAtronach, kPotentEffect, 59.5f, 300.f));
   REQUIRE(log.Count("E_SUMMON_TWICE") == 1);
 
@@ -240,11 +240,11 @@ TEST_CASE("A summon's end dispels it: the kill reaches every game, the "
     Report(p, end);
   }
   REQUIRE(log.Count(fmt::format(
-              "{:x} dispels (its effect's end, its engine's own word), its "
-              "fade 1.5 s",
-              summon)) == 1);
-  REQUIRE(log.Count(fmt::format(
-              "{:x} died: no respawn scheduled", summon)) == 1);
+            "{:x} dispels (its effect's end, its engine's own word), its "
+            "fade 1.5 s",
+            summon)) == 1);
+  REQUIRE(log.Count(fmt::format("{:x} died: no respawn scheduled", summon)) ==
+          1);
   // the kill's death state and the fade's snippet: the watcher's alone, the
   // caster's engine ran its own end
   bool deathToCaster = false, deathToWatcher = false, alphaToCaster = false,
@@ -301,16 +301,16 @@ TEST_CASE("A summon's caster's departure dispels it, and the backstop "
 
   // the backstop: 0.5 s left plus its 5 s, no end report
   p.TickCellHosts(NowMs() + 6000);
-  REQUIRE(log.Count(fmt::format(
-              "{:x} dispels (its backstop, its end report never came)",
-              summon)) == 1);
+  REQUIRE(
+    log.Count(fmt::format(
+      "{:x} dispels (its backstop, its end report never came)", summon)) == 1);
 
   // the departure: a live summon dispels with its caster
   Report(p, Start(kLocal + 1, kPlainAtronach, kPlainEffect, 59.5f, 300.f));
   const uint32_t second = CreateWordsTo(p, 0)[1].value("idx", 0);
   DoDisconnect(p, 0);
-  REQUIRE(log.Count(fmt::format(
-              "{:x} dispels (its caster's departure)", second)) == 1);
+  REQUIRE(log.Count(fmt::format("{:x} dispels (its caster's departure)",
+                                second)) == 1);
   // the leaver's own word is gone with it: the snippet served the
   // watcher's alone
   int snippets = 0;

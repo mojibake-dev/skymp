@@ -313,7 +313,7 @@ impl Summons {
         if !f.same_world {
             return refuse(Code::Far, format!("the place is in another worldspace or cell than {:x}'s record", f.caster));
         }
-        if !(f.distance <= MAX_DISTANCE) {
+        if !(0.0..=MAX_DISTANCE).contains(&f.distance) {
             return refuse(Code::Far, format!("the place stands {:.0} units from {:x}'s record (bound {MAX_DISTANCE:.0})", f.distance, f.caster));
         }
         if !f.in_cell {

@@ -21,7 +21,6 @@
 #include <vector>
 
 #include "CreateActorMessage.h"
-#include "SummonMessage.h"
 #include "CustomPacketMessage.h"
 #include "DestroyActorMessage.h"
 #include "DestructionStageMessage.h"
@@ -37,6 +36,7 @@
 #include "SetRaceMenuOpenMessage.h"
 #include "SetWeatherMessage.h"
 #include "SpellCastMessage.h"
+#include "SummonMessage.h"
 #include "UpdateGameModeDataMessage.h"
 #include "UpdateMovementMessage.h"
 #include "WorldGlobalMessage.h"
@@ -53,9 +53,9 @@
 #include "libespm/CELL.h"
 #include "libespm/DIAL.h"
 #include "libespm/FLST.h"
+#include "libespm/GMST.h"
 #include "libespm/HDPT.h"
 #include "libespm/INFO.h"
-#include "libespm/GMST.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
 #include "libespm/QUST.h"
@@ -415,8 +415,7 @@ struct PartOne::Impl
   // the server's summons (thuum tracker #84, docs/verbs/summon.md; the
   // rule is Rust's, ADR-020): each live summon by its server actor, its
   // backstop (the reported time left plus 5 s) and its dispel's fade
-  rust::Box<skymp::rules::Summons> summons =
-    skymp::rules::new_summons();
+  rust::Box<skymp::rules::Summons> summons = skymp::rules::new_summons();
 
   // thuum ADR-068 rung 4 (the created half): a unique actor's attached
   // reference by its base (an ALUA container, noted at its attach), and the
@@ -4067,10 +4066,10 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
   const float dy = msg.pos[1] - cpos.y;
   const float dz = msg.pos[2] - cpos.z;
   facts.distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-  facts.in_cell = worldState
-                    .CellOf(msg.worldOrCell,
-                            NiPoint3{ msg.pos[0], msg.pos[1], msg.pos[2] })
-                    .has_value();
+  facts.in_cell =
+    worldState
+      .CellOf(msg.worldOrCell, NiPoint3{ msg.pos[0], msg.pos[1], msg.pos[2] })
+      .has_value();
   if (HasEspm()) {
     for (const auto& effect : MpActor::EffectsOf(&worldState, msg.spellId)) {
       if (effect.effectId == msg.effectId) {
@@ -4099,10 +4098,10 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
   const auto lookup = GetEspm().GetBrowser().LookupById(msg.baseId);
   auto& refr = PapyrusObjectReference::PlaceAt(
     caster, lookup,
-    LocationalData{ { msg.pos[0], msg.pos[1], msg.pos[2] },
-                     { msg.rot[0], msg.rot[1], msg.rot[2] },
-                     FormDesc::FromFormId(msg.worldOrCell,
-                                           worldState.espmFiles) },
+    LocationalData{
+      { msg.pos[0], msg.pos[1], msg.pos[2] },
+      { msg.rot[0], msg.rot[1], msg.rot[2] },
+      FormDesc::FromFormId(msg.worldOrCell, worldState.espmFiles) },
     true);
   auto* summon = refr.AsActor();
   if (!summon) {
@@ -4134,8 +4133,7 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
 
 void PartOne::OnSummonEnd(MpActor& caster, const SummonMessage& msg)
 {
-  const auto end =
-    pImpl->summons->summon_end(caster.GetFormId(), msg.localId);
+  const auto end = pImpl->summons->summon_end(caster.GetFormId(), msg.localId);
   if (end.code != 0) {
     return spdlog::info("[verb:summon] {}: {:x}'s engine reports its summon "
                         "{:x} ended; none live by that id, folded",
@@ -4162,11 +4160,11 @@ void PartOne::DispelSummon(MpActor& summon, const char* reason)
   // the engine's own fade, the GMST read from the records (never from
   // memory): fSummonedCreatureFadeOutSeconds (Skyrim.esm, lab/esm.py on
   // sky-srv, 2026-11-16), 1.5 s
-  const float fadeS =
-    HasEspm() ? espm::GetData<espm::GMST>(kSummonFadeGmst, &worldState).value
-              : 1.5f;
-  if (!pImpl->summons->summon_dispel(
-        id, nowMs, static_cast<uint64_t>(fadeS * 1000.f))) {
+  const float fadeS = HasEspm()
+    ? espm::GetData<espm::GMST>(kSummonFadeGmst, &worldState).value
+    : 1.5f;
+  if (!pImpl->summons->summon_dispel(id, nowMs,
+                                     static_cast<uint64_t>(fadeS * 1000.f))) {
     return spdlog::info("[verb:summon] {:x} dispels ({}): its dispel runs "
                         "already",
                         id, reason);
@@ -4181,9 +4179,8 @@ void PartOne::DispelSummon(MpActor& summon, const char* reason)
     summon.Kill(nullptr);
   }
   if (caster != 0 && HasEspm()) {
-    using Arg =
-      std::optional<std::variant<bool, double, std::string,
-                                 SpSnippetObjectArgument>>;
+    using Arg = std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
     const std::vector<Arg> args{ Arg(0.0), Arg(true) };
     SpSnippet snippet("Actor", "SetAlpha", args, id);
     for (MpActor* listener : summon.GetActorListeners()) {

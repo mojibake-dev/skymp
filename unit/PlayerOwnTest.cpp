@@ -1271,6 +1271,10 @@ TEST_CASE("A recorded SetRace drops the head parts its race may not wear "
   OwnLog log;
   auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
   Appearance worn = *turned.GetAppearance();
+  // an Argonian wearing her own eyes (thuum #51: the change drops a part the
+  // old race's list holds and the new race's bars; Enter's NordRace holds
+  // neither the eyes nor, below, a part both lists bar)
+  worn.raceId = kArgonianRace;
   worn.headpartIds = { kEyesArgonian, kHairNord01 };
   turned.SetAppearance(&worn);
   REQUIRE(turned.SetRaceMenuPreset(kLook));
@@ -1382,7 +1386,7 @@ TEST_CASE("A recorded SetRace drops the head parts its race may not wear "
     R"(], "headParts": [{"formIdentifier": "Skyrim.esm|05150A", "type": 2}]})";
   REQUIRE(kBig.size() <= 192 * 1024);
   REQUIRE(turned.SetRaceMenuPreset(kBig));
-  const auto left = p.RecordRaceLook(turned, kBretonRace);
+  const auto left = p.RecordRaceLook(turned, kBretonRace, kArgonianRace);
   REQUIRE(!left.preset);
   REQUIRE(left.presetLeft != nullptr);
   REQUIRE(turned.GetRaceMenuPreset() == kBig);
@@ -1408,10 +1412,13 @@ TEST_CASE("A head part a script swaps in after a SetRace stashed its type "
     R"({"actor": {"weight": 50},
   "headParts": [{"formIdentifier": "Skyrim.esm|05150A", "type": 2},
                 {"formIdentifier": "Skyrim.esm|051507", "type": 3}]})";
+  constexpr uint32_t kArgonianRace = 0x13740;
   PartOne& p = GetPartOne();
   Enter(p);
   auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
   Appearance worn = *turned.GetAppearance();
+  // an Argonian, so the turn drops her own eyes (the V-look case's note)
+  worn.raceId = kArgonianRace;
   worn.headpartIds = { kEyesArgonian, kHairNord01 };
   turned.SetAppearance(&worn);
   REQUIRE(turned.SetRaceMenuPreset(kLook));
@@ -1439,6 +1446,67 @@ TEST_CASE("A head part a script swaps in after a SetRace stashed its type "
   const auto look = turned.GetAppearance();
   REQUIRE(std::count(look->headpartIds.begin(), look->headpartIds.end(),
                      kEyesBrown) == 1);
+  Leave(p);
+}
+
+// thuum #51 (x-vc01-cure-relog 20261115-205138): rotfern's scar
+// MarksFemaleHumanoid00NoGash 0xEC1B2 left her stored look at her turn and
+// never came back at her cure. In the lab, Playable Headparts All Races.esp
+// points its list at its own AllTheRaces, which names vanilla races alone,
+// and her races come from rotfern.esp: her preset had put the scar on a race
+// no list holds, the turn stashed it (her vampire race barred), and the cure
+// gave back by her base race's list, which bars it too. A change now drops a
+// part only when the old race's list holds it and the new race's bars it.
+// Here in the test's files (lab/esm.py on sky-srv, 2026-11-15, Skyrim.esm,
+// none overridden by Update.esm or the DLCs): MaleEyesArgonian 0x5150a lists
+// HeadPartsArgonian 0xa8021 (ArgonianRace alone), so a Nord wearing them
+// keeps them through a turn to Breton and back; HairMaleNord01 0x51507 lists
+// HeadPartsHumansandVampires 0xa8023 (Breton and Nord among them) and stays
+// as before
+TEST_CASE("A SetRace keeps a head part neither race's list holds on the look "
+          "and the stored RaceMenu look, and stashes nothing (#51)",
+          "[PlayerOwn][espm]")
+{
+  constexpr uint32_t kEyesArgonian = 0x5150a;
+  constexpr uint32_t kHairNord01 = 0x51507;
+  const std::string kLook =
+    R"({"actor": {"weight": 50},
+  "headParts": [{"formIdentifier": "Skyrim.esm|05150A", "type": 2},
+                {"formIdentifier": "Skyrim.esm|051507", "type": 3}]})";
+  PartOne& p = GetPartOne();
+  REQUIRE(p.HeadPartRaceListHolds(kEyesArgonian, kNordRace) ==
+          std::optional<bool>(false));
+  REQUIRE(p.HeadPartRaceListHolds(kEyesArgonian, kBretonRace) ==
+          std::optional<bool>(false));
+  REQUIRE(p.HeadPartRaceListHolds(kHairNord01, kNordRace) ==
+          std::optional<bool>(true));
+  REQUIRE(p.HeadPartRaceListHolds(kHairNord01, kBretonRace) ==
+          std::optional<bool>(true));
+  const std::vector<uint32_t> kWorn = { kEyesArgonian, kHairNord01 };
+
+  Enter(p);
+  OwnLog log;
+  auto& turned = p.worldState.GetFormAt<MpActor>(kTurned);
+  Appearance worn = *turned.GetAppearance();
+  REQUIRE(worn.raceId == kNordRace);
+  worn.headpartIds = kWorn;
+  turned.SetAppearance(&worn);
+  REQUIRE(turned.SetRaceMenuPreset(kLook));
+
+  // the turn, and the cure back: both records keep both parts, the stash
+  // takes nothing, and the record line counts the part kept
+  for (const uint32_t race : { kBretonRace, kNordRace }) {
+    SetRace(p, race, "PlayerVampireQuestScript");
+    const auto now = turned.GetAppearance();
+    REQUIRE(now->raceId == race);
+    REQUIRE(now->headpartIds == kWorn);
+    const auto stored = nlohmann::json::parse(turned.GetRaceMenuPreset());
+    REQUIRE(stored["headParts"].size() == 2);
+    REQUIRE(stored["headParts"][0]["formIdentifier"] == "Skyrim.esm|05150A");
+    REQUIRE(!stored.contains("thuumRaceDropped"));
+  }
+  REQUIRE(log.Count("1 head part(s) neither race's list holds kept (the "
+                    "player's own, #51)") == 2);
   Leave(p);
 }
 

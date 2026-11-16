@@ -502,6 +502,10 @@ public:
     // its drop left the stored look as it was, nullptr when it did not
     size_t unanswered = 0;
     const char* presetLeft = nullptr;
+    // RecordRaceLook's (thuum #51): the head parts the new race's list bars
+    // that stayed, the old race's list barring them too (the look's and the
+    // stored look's, each counted once by form)
+    size_t keptOffList = 0;
     // RecordOwnHeadParts's (thuum D-53-8 B): the reported parts the stored
     // look now names in place of its entry of their HDPT type
     size_t rewritten = 0;
@@ -571,8 +575,17 @@ public:
   // V-look review's correctness-4: VampireCure's SetRace back to the base
   // race got nothing back). What each record took; the words to the other
   // games are the caller's. Which parts the engine puts in the dropped
-  // parts' place is HYPOTHESIS (the race's defaults, for the lab)
-  HeadPartRecord RecordRaceLook(MpActor& actor, uint32_t race);
+  // parts' place is HYPOTHESIS (the race's defaults, for the lab).
+  // thuum #51 (x-vc01-cure-relog 20261115-205138): a part goes only when the
+  // change bars it, its list holding `fromRace` (the race the look wore
+  // before) and not `race`. A part neither list holds is the player's own
+  // choice, which a preset puts on whatever the list says (rotfern's scar
+  // 0xEC1B2 on her rotfern.esp race, which no head part's list names in the
+  // lab), and stays on both records; with `fromRace` 0 the new race's answer
+  // alone decides, as before. The stash gives back by the new race's list
+  // alone, so a part waits there until a race that may wear it
+  HeadPartRecord RecordRaceLook(MpActor& actor, uint32_t race,
+                                uint32_t fromRace);
   // the stored RaceMenu look as a game is sent it: without the stash
   // (racemenu::without_race_stash), which is the server's alone
   static std::string RaceMenuPresetForGames(std::string stored);

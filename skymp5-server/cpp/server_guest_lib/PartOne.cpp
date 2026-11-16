@@ -5679,7 +5679,8 @@ std::string PartOne::RaceMenuPresetForOthers(const MpActor& actor)
   return RaceMenuPresetForGames(std::move(preset));
 }
 
-PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
+PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race,
+                                                uint32_t fromRace)
 {
   HeadPartRecord recorded;
   if (!HasEspm() || race == 0) {
@@ -5692,6 +5693,24 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
   const auto barred = [&](uint32_t part) {
     const auto holds = HeadPartRaceListHolds(part, race);
     return holds.has_value() && !*holds;
+  };
+  // thuum #51: the change's own drop, a part `race` may not wear that the
+  // look's old race could (its list holds `fromRace`, or gives no answer for
+  // it); a part both lists bar stays, counted once by form
+  std::vector<uint32_t> keptOffList;
+  const auto dropped = [&](uint32_t part) {
+    if (!barred(part)) {
+      return false;
+    }
+    if (fromRace == 0 ||
+        HeadPartRaceListHolds(part, fromRace).value_or(true)) {
+      return true;
+    }
+    if (std::find(keptOffList.begin(), keptOffList.end(), part) ==
+        keptOffList.end()) {
+      keptOffList.push_back(part);
+    }
+    return false;
   };
   // a part's HDPT type (PNAM), WearHeadPartInLook's reading, and the extra
   // parts it brings (HNAM), the look's derivation's (ADR-026)
@@ -5750,7 +5769,8 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
         if (!fits) {
           ++recorded.unanswered;
         }
-        const bool drop = fits.has_value() && !*fits;
+        const bool drop =
+          listed != 0 && fits.has_value() && !*fits && dropped(listed);
         anyBarred = anyBarred || drop;
         keep.push_back(drop ? 0 : 1);
       }
@@ -5818,7 +5838,7 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
     auto& parts = look.headpartIds;
     std::vector<uint32_t> going;
     for (uint32_t id : parts) {
-      if (barred(id)) {
+      if (dropped(id)) {
         going.push_back(id);
       }
     }
@@ -5866,6 +5886,7 @@ PartOne::HeadPartRecord PartOne::RecordRaceLook(MpActor& actor, uint32_t race)
     }
   }
   recorded.given = given.size();
+  recorded.keptOffList = keptOffList.size();
   return recorded;
 }
 

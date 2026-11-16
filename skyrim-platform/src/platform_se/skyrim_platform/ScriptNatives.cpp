@@ -600,6 +600,14 @@ constexpr const char* kNoRowName[kNoRowKinds] = {
 };
 
 std::unordered_map<const RE::BSScript::IFunction*, std::uint8_t> g_unclaimed;
+// thuum D-OBS2 (playtest 53, IDRC's "SKSE is not loaded" box): a native bound
+// outside the game's module answers its first kAnswersSaid calls in a line of
+// their own, the answer and its caller, so what another module's native
+// (SKSE's, a plugin's) returned to a script is read, not guessed. One counter
+// per binding, made at the install and only read by its key after it
+std::unordered_map<const RE::BSScript::IFunction*, std::atomic<std::uint8_t>>
+  g_answersSaid;
+constexpr std::uint8_t kAnswersSaid = 3;
 std::array<std::atomic<std::uint32_t>, kNoRowKinds> g_noRow{};
 std::array<std::atomic<bool>, kNoRowKinds> g_noRowSaid{};
 
@@ -1527,6 +1535,11 @@ struct Marks
   // train 52's Fix 1: a leveled AddItem parked by its stack id, let go when
   // the original answers anything but kInProgress (no functor queued)
   bool parked = false;
+  // D-OBS2: the native's answer logged once the original returns
+  // (LogAnswer), its caller read before it
+  bool answerLine = false;
+  std::string answerCaller;
+  std::string answerHandler;
 };
 
 // one call built from its frame (the shared shape's Call): its self (an
@@ -3230,6 +3243,17 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     }
     if (!sceneStart) {
       CountUnclaimed(fn);
+      const auto said = g_answersSaid.find(fn);
+      if (said != g_answersSaid.end() &&
+          said->second.load(std::memory_order_relaxed) < kAnswersSaid &&
+          said->second.fetch_add(1, std::memory_order_relaxed) <
+            kAnswersSaid) {
+        marks.answerLine = true;
+        if (stack && stack->top) {
+          NameCaller(stack->top->previousFrame, marks.answerCaller,
+                     marks.answerHandler);
+        }
+      }
     }
     return marks;
   }
@@ -4398,6 +4422,47 @@ void NoteHelper(const RE::BSScript::Stack& stack)
 // reference in RDX, the logger in R8, the VM in R9, the bool on the stack),
 // the DamageActor note's HYPOTHESIS, read by the first stage's census (the
 // table's rows judged, the game's natives running)
+// D-OBS2: a value as a script reads it, for the answer's line
+std::string AnswerText(const RE::BSScript::Variable& v)
+{
+  if (v.IsBool()) {
+    return v.GetBool() ? "true" : "false";
+  }
+  if (v.IsInt()) {
+    return std::to_string(v.GetSInt());
+  }
+  if (v.IsFloat()) {
+    return fmt::format("{}", v.GetFloat());
+  }
+  if (v.IsString()) {
+    return fmt::format("\"{}\"", v.GetString());
+  }
+  if (v.IsNoneObject() || v.IsNoneArray()) {
+    return "None";
+  }
+  if (v.IsObject()) {
+    return "an object";
+  }
+  return "no value";
+}
+
+void LogAnswer(const RE::BSScript::IFunction* fn,
+               const RE::BSScript::Stack& stack,
+               RE::BSScript::IFunction::CallResult result, const Marks& marks)
+{
+  logger::info("[verb:scripts] {}.{} answered {} to {}{}{} ({}; a binding "
+               "outside the game's module, its first {} calls said, D-OBS2)",
+               fn->GetObjectTypeName().c_str(), fn->GetName().c_str(),
+               AnswerText(stack.returnValue),
+               marks.answerCaller.empty() ? "an unnamed caller"
+                                          : marks.answerCaller,
+               marks.answerHandler.empty() ? "" : ".", marks.answerHandler,
+               result == RE::BSScript::IFunction::CallResult::kCompleted
+                 ? "completed"
+                 : "not completed",
+               kAnswersSaid);
+}
+
 RE::BSScript::IFunction::CallResult NativeCallReplacement(
   RE::BSScript::NF_util::NativeFunctionBase* self,
   const RE::BSTSmartPointer<RE::BSScript::Stack>& stack,
@@ -4436,6 +4501,10 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
   if (marks.createdCall &&
       result == RE::BSScript::IFunction::CallResult::kCompleted && stack) {
     NoteCreated(*stack.get(), QueuedCall(*marks.createdCall));
+  }
+  // D-OBS2: another module's native's answer, its first calls
+  if (marks.answerLine && stack) {
+    LogAnswer(self, *stack.get(), result, marks);
   }
   // train 52's Fix 1: a parked call whose native answered anything but
   // kInProgress (IFunction::CallResult, CommonLibSSE-NG
@@ -4713,6 +4782,9 @@ void ScriptNatives::InstallHooks()
       moduleBase == gameBase ? kNoRowGame : kNoRowOther;
     if (g_unclaimed.emplace(func, kind).second) {
       ++(kind == kNoRowGame ? counts.unclaimedGame : counts.unclaimedOther);
+    }
+    if (kind == kNoRowOther) {
+      g_answersSaid.try_emplace(func);
     }
   }
   // the install check's one line (ADR-073 step 4's S5)

@@ -377,6 +377,29 @@ export class MagicSyncService extends ClientListener {
         this.pendingHostedLaunches = launchesLeft;
     }
 
+    // thuum tracker #106: a hosted caster's spell hit goes behind its cast,
+    // as the player's own does (HitService.sendSpellHit, two updates behind).
+    // A cast event held for its launch (onSpellCast's projectile branch, up
+    // to launchMatchMs) whose own hit comes first goes now, ahead of the hit
+    // on the one reliable channel: with the launch's geometry when a launch
+    // of it is waiting (mergeHeldHostedCasts), else as its event reported
+    // it. x-npc-raise-rec 20261116-213845: the necromancer's Reanimate Corpse
+    // (0xcab65) at Hilde's body, 315 units away, hit in its cast's frame and
+    // launched nothing this game saw (c2-console:2304, 2314), so its hit
+    // reached the server 438 ms ahead of its cast and was refused
+    // (E_SPELL_NO_CAST, server.log:1293 against :1295), and no command, no
+    // thrall, was recorded
+    flushHeldHostedCastBeforeHit(casterLocal: number, spell: number) {
+        this.mergeHeldHostedCasts();
+        const i = this.heldHostedCasts.findIndex((held) => held.casterLocal === casterLocal && held.msg.spell === spell);
+        if (i < 0) {
+            return;
+        }
+        const held = this.heldHostedCasts.splice(i, 1)[0];
+        this.sendCast(held.msg);
+        logTrace(this, `hosted cast ${spell.toString(16)} by ${casterLocal.toString(16)}: its hit came within the launch's window, sent from its event ahead of the hit`);
+    }
+
     private sendHeldHostedCast(held: HeldHostedCast, launch: PendingHostedLaunch) {
         const launchOk = [launch.originX, launch.originY, launch.originZ, launch.angleX, launch.angleZ].every((v) => Number.isFinite(v));
         if (!launchOk) {

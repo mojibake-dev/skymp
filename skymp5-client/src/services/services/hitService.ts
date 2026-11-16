@@ -4,6 +4,7 @@ import { isSyncedActorId, localIdToRemoteId } from "../../view/worldViewMisc";
 import { ActiveMagicEffect, Form, FormType, Game, HitEvent, MagicEffect, ObjectReference, Scroll, Spell, Weapon, printConsole, storage } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
+import { MagicSyncService } from "./magicSyncService";
 import { MsgType } from "../../messages";
 import { Hit } from "../messages/hitMessage";
 import { shoutGate } from "./shoutService";
@@ -257,6 +258,12 @@ export class HitService extends ClientListener {
         if (isWeapon && aggressor === 0x14 && e.source.getFormID() === HitService.kUnarmed) {
             this.heldUnarmed.push({ frame: this.frame, target: e.target.getFormID(), send });
             return;
+        }
+        // thuum tracker #106 (x-npc-raise-rec 20261116-213845): a hosted
+        // caster's spell hit goes behind its cast; a cast still held for its
+        // launch goes first (MagicSyncService.flushHeldHostedCastBeforeHit)
+        if (isSpell && aggressor !== 0x14) {
+            this.controller.lookupListener(MagicSyncService).flushHeldHostedCastBeforeHit(aggressor, e.source.getFormID());
         }
         send();
     }

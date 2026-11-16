@@ -12514,12 +12514,12 @@ void ActionListener::ClaimReanimated(
   // no lease (Eli, 2026-11-12: "summons and resurrections should obey the
   // timers the level of spell"): the command lasts until the commander's
   // engine ends the effect, the thrall's death, which its seat reports
-  // (OnActorDeath's command's end, OnDeathState's release). The record's
-  // duration (its EFIT, seconds) is named for the lab and read for one line
-  // alone, the commander's departure (wire-rules cells.rs gone, ADR-060 as
-  // amended 2026-11-12): a full thrall's, a day and more (Dead Thrall's
-  // 86,313,600 s), stays alive, a timed one dies; dual casting, perks and
-  // the spell's level set the engine's own timer
+  // (OnActorDeath's command's end, OnDeathState's release), or its
+  // commander's departure, at which the thrall dies, a full one (Dead
+  // Thrall's 86,313,600 s) as a timed one (wire-rules cells.rs gone,
+  // MpActor::KillThrall; ADR-060 as amended 2026-11-15). The record's
+  // duration (its EFIT, seconds) is named for the lab alone; dual casting,
+  // perks and the spell's level set the engine's own timer
   uint32_t recordSeconds = 0;
   for (const auto& effect : effects) {
     if (effectId && effect.effectId == *effectId) {

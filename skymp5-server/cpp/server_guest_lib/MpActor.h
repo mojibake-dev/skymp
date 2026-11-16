@@ -643,6 +643,24 @@ public:
     float recordSeconds = 0.f;
   };
   ReanimateCasterView GetReanimateCaster() const;
+  // thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-15, Eli's
+  // executive decision: "thrall dies when player logs out. most undead turn
+  // to ash, there's one that doesn't when it dies, i think it's thrall
+  // specifically. keep that behavior so that the thrall can just be brought
+  // back up. but everything else will either dispell or ash"): a thrall
+  // whose commander's session ended (its departure's ThrallExpired, or the
+  // server's restart) dies by the server's word, a full thrall as a timed
+  // one, and what the death leaves is its raise's own. The raise is the
+  // spell the record's Reanimate state names (the accepted hit's spell when
+  // it names none); a raise one of whose effects runs the ash script
+  // (wire-rules ash: ReanimateAshPile, read from the records) turns the body
+  // to ash on every game listening to it but `commander`'s (0 for none), by
+  // TurnToAsh's own calls at the script's own moments (wire-rules
+  // ash::plan), unless the actor carries one of the script's immunity
+  // keywords; any other raise (Dead Thrall's) leaves the body to be raised
+  // again. The ash is the server's own word, sent with no sequence and kept
+  // nowhere. A dead actor is left alone
+  void KillThrall(uint32_t commander);
   // The running buffs' sum on `av`: the temporary modifier the maximum and
   // the regeneration rates count
   float GetEffectModifier(espm::ActorValue av) const;

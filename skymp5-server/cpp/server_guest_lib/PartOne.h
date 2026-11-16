@@ -971,6 +971,11 @@ public:
   // ClientFormId)
   std::vector<ServedLookProp> LooksServedTo(const MpActor& actor,
                                             const MpActor& listener);
+  // thuum #52 (wire-rules actor_looks, through the bridge's looks_forget):
+  // every look `actor` keeps goes, its death at its commander's departure
+  // (ADR-060 as amended 2026-11-15) leaving no engine to draw them and no
+  // Stop to come, so no later create word serves them. How many it kept
+  size_t ForgetActorLooks(uint32_t actor);
 
   // thuum ADR-068 rung 3 (the script record): the release each cell last saw
   // until its next grant (wire-rules script_state; ApplyHostDecisions notes
@@ -1071,10 +1076,11 @@ public:
   // moved, D78 C; the client's dead hold), so the keyframe would place
   // nothing
   // `recordSeconds` is the record's duration of the spell's Reanimate
-  // effect, read for one line alone (wire-rules cells.rs and
-  // magic::FULL_THRALL_MIN_S; ADR-060 as amended 2026-11-12): a full
-  // thrall's (a day and more, Dead Thrall's) stays alive at its commander's
-  // departure, a timed one dies by the server's word; never a lease
+  // effect, named in the claim's log line alone: never a lease, and since
+  // ADR-060's amendment of 2026-11-15 (Eli's executive decision: "thrall
+  // dies when player logs out") no side of the departure either, every
+  // thrall dying by the server's word at its commander's departure
+  // (wire-rules cells.rs gone, MpActor::KillThrall)
   ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor,
                               uint32_t recordSeconds);
   // thuum docs/verbs/npc-fate.md C4 (ADR-060's return; Eli, 2026-11-12:
@@ -1084,7 +1090,10 @@ public:
   // by `player` again (wire-rules cells.rs returning, the record the dormant
   // row), whoever hosts its cell; each claim's word follows, a keyframe to
   // the caster's game when it sees the thrall already and UpdateHoster to
-  // every listening game. The actors claimed
+  // every listening game. The actors claimed. Since ADR-060's amendment of
+  // 2026-11-15 the caster's departure and a restart kill every thrall, so
+  // no living thrall waits for its caster and this claims none; it stays
+  // until the chaff pass, and nothing depends on it
   std::vector<uint32_t> ReturnThralls(MpActor& player,
                                       const std::vector<MpActor*>& actors);
   // the player commanding `actor` (ADR-060), 0 when none: whose report of

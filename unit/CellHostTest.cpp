@@ -2887,7 +2887,8 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
   constexpr uint32_t kGate = 0x1b1f3;
   constexpr uint32_t kSven = 0x13491;
   constexpr uint32_t kHilde = 0x35534;
-  // Dead Thrall's record duration (a full thrall, ADR-060 as amended)
+  // Dead Thrall's record duration (a full thrall, ADR-060 as amended
+  // 2026-11-12; since 2026-11-15 it dies at its commander's departure too)
   constexpr uint32_t kFullThrallS = 86'313'600;
   // the gate's side in Whiterun and its landing in Tamriel
   // (PartOne_ActivateTest, "Activate WRDoorMainGate01 in Whiterun")
@@ -2980,8 +2981,15 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
   REQUIRE((cow.GetPos() - cowWas).Length() < 1.f);
   REQUIRE(p.CommanderOf(cow) == kC2);
 
+  // the shared world: the commands end first, so the commanders'
+  // disconnects kill nobody (since ADR-060's amendment of 2026-11-15 every
+  // thrall dies at its commander's departure, a full one as a timed one)
+  p.ReleaseAnyClaim(sven);
+  p.ReleaseAnyClaim(hilde);
+  p.ReleaseAnyClaim(cow);
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
+  REQUIRE_FALSE(sven.IsDead());
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
   p.DestroyActor(kSven);

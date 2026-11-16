@@ -502,17 +502,9 @@ public:
     // its drop left the stored look as it was, nullptr when it did not
     size_t unanswered = 0;
     const char* presetLeft = nullptr;
-    // RecordRaceLook's (thuum #51): the head parts the new race's list bars
-    // that stayed, the old race's list barring them too (the look's and the
-    // stored look's, each counted once by form); RecordOwnHeadParts's: the
-    // look's parts the report could never name, kept on it (OwnPartsKept)
-    size_t keptOffList = 0;
     // RecordOwnHeadParts's (thuum D-53-8 B): the reported parts the stored
     // look now names in place of its entry of their HDPT type
     size_t rewritten = 0;
-    // RecordOwnHeadParts's (thuum #51): the kept parts its own game is to
-    // wear again, each kept for itself (OwnPartsKept's `wear`)
-    std::vector<uint32_t> wearBack;
   };
   HeadPartRecord RecordHeadPart(MpActor& actor, uint32_t part);
   // thuum D-53-8 B (train 53's V-live; lab/.cache/drafts/reads-53/
@@ -531,34 +523,10 @@ public:
   // figure of her loaded her stored look's 0xEE878). A type the report names
   // more than once (two Misc parts, a mouth and a hairline) is no slot to
   // rewrite by, so the stored look's entries of it stay; a stored look entry
-  // of a type the report lacks stays too. The look's parts the report could
-  // never name stay on it after the reported ones (OwnPartsKept, thuum #51).
-  // What each record took; the words to the other games are the caller's
+  // of a type the report lacks stays too. What each record took; the words
+  // to the other games are the caller's
   HeadPartRecord RecordOwnHeadParts(MpActor& actor,
                                     const std::vector<uint32_t>& parts);
-  // thuum #51 (x-vc01-cure-relog 20261116-032305): the parts of `look` that
-  // an own head parts report `parts` lacks and could never name, in the
-  // look's order, kept on the record and on the figure over the report. Each
-  // is a part whose race list bars the look's race (HeadPartRaceListHolds
-  // false: a report naming it is refused, E_HEADPARTS_RACE_LIST) and whose
-  // HDPT type (PNAM) `parts` names none of, since a type the report names is
-  // the engine's own part for that slot; and each extra part (HNAM) such a
-  // part brings that the look wears. A part like that is on the look as the
-  // player's own choice: a preset put it there against its list, or
-  // RecordRaceLook kept it through a SetRace (neither race's list holds it).
-  // Rotfern's scar MarksFemaleHumanoid00NoGash 0xEC1B2 (Scar, PNAM 5), on her
-  // rotfern.esp races, which its list does not name in the lab: the turn's
-  // SetRace kept it, and her own game's base list report a second later,
-  // which lacked it, was written over the look, so the cure had no scar to
-  // keep. Why her own game's list lacks it after the turn is HYPOTHESIS (the
-  // engine's race change dropping a part the new race's list bars; unread).
-  // `wear`, when given, gets the kept parts kept for themselves, not as
-  // another kept part's extra, in the look's order: the ones its own game
-  // is asked to wear again (ActionListener's ChangeHeadPart snippet, which
-  // brings a part's extras with it, HYPOTHESIS)
-  std::vector<uint32_t> OwnPartsKept(const Appearance& look,
-                                     const std::vector<uint32_t>& parts,
-                                     std::vector<uint32_t>* wear = nullptr);
   // thuum D-53-11 (A, the fresh review of 84eb42db's finding 2): the head
   // parts a player's own game draws from its race's overlay list (an
   // OwnHeadParts report with `overlay` set, judged as RecordOwnHeadParts's
@@ -603,17 +571,8 @@ public:
   // V-look review's correctness-4: VampireCure's SetRace back to the base
   // race got nothing back). What each record took; the words to the other
   // games are the caller's. Which parts the engine puts in the dropped
-  // parts' place is HYPOTHESIS (the race's defaults, for the lab).
-  // thuum #51 (x-vc01-cure-relog 20261115-205138): a part goes only when the
-  // change bars it, its list holding `fromRace` (the race the look wore
-  // before) and not `race`. A part neither list holds is the player's own
-  // choice, which a preset puts on whatever the list says (rotfern's scar
-  // 0xEC1B2 on her rotfern.esp race, which no head part's list names in the
-  // lab), and stays on both records; with `fromRace` 0 the new race's answer
-  // alone decides, as before. The stash gives back by the new race's list
-  // alone, so a part waits there until a race that may wear it
-  HeadPartRecord RecordRaceLook(MpActor& actor, uint32_t race,
-                                uint32_t fromRace);
+  // parts' place is HYPOTHESIS (the race's defaults, for the lab)
+  HeadPartRecord RecordRaceLook(MpActor& actor, uint32_t race);
   // the stored RaceMenu look as a game is sent it: without the stash
   // (racemenu::without_race_stash), which is the server's alone
   static std::string RaceMenuPresetForGames(std::string stored);

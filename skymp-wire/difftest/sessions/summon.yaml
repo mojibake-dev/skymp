@@ -25,6 +25,17 @@
 # 'true', pipelines 2594 and 2602"), the engine's pre-existing delivery, not the verb's; the client's
 # ActorFateService costs a repeat nothing. c1's copy of the second summon's kill never comes (the
 # departure's disconnecting guard), and the second's fade's delete reaches c2 after c1 is gone.
+#
+# THE TIMELINE, deterministic (the full T2's race: c1's fakeclient exits 2000 ms after its last step,
+# run_script's settle, so a 4000 ms end put its departure at ~6000 while the fade's delete lands
+# between 5500 and 6500 - the fade GMST fSummonedCreatureFadeOutSeconds 1.5 s plus TickCellHosts
+# EverySecond's 1 s guard - a coin flip the loaded full T2 lost: c1 gone before its delete, the corpse's
+# live prop row returning at the departure as a t:60 word, correct by A7's "the return is a word, never
+# a silent lapse" but an artifact of the race, never declared). The ordered clock: the end at 3000, the
+# fade ends 4500, the delete by 5500; c1's keepalive at 7000 keeps its game alive to its exit at ~9000,
+# 3500 ms past the delete; c1's departure then kills the scroll summon, whose fade ends ~10500 and
+# whose delete lands by ~11500; c2's keepalive at 12000 holds its capture to ~14000, 2500 ms past.
+# The first's corpse row is gone at its delete (MpObjectReference::Delete), so no departure word for it.
 id: summon
 clients:
   c1: {profile_id: 9}
@@ -33,9 +44,14 @@ steps:
   - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: addspell, args: [20, 1052278]}}}
   - {client: c1, at_ms: 2000, send: {t: 83, localId: 4278192381, baseId: 321856, effectId: 321861, spellId: 1052278, pos: [134157.0, -61130.0, 14662.0], rot: [0.0, 0.0, 90.0], worldOrCell: 60, remainingS: 59.5, ended: false}, reliable: true}
   - {client: c1, at_ms: 2500, send: {t: 83, localId: 4278192382, baseId: 132288, effectId: 0, spellId: 672929, pos: [134157.0, -61130.0, 14662.0], rot: [0.0, 0.0, 90.0], worldOrCell: 60, remainingS: 59.5, ended: false}, reliable: true}
-  - {client: c1, at_ms: 4000, send: {t: 83, localId: 4278192381, baseId: 0, effectId: 0, spellId: 0, pos: [0.0, 0.0, 0.0], rot: [0.0, 0.0, 0.0], worldOrCell: 0, remainingS: 0, ended: true}, reliable: true}
+  - {client: c1, at_ms: 3000, send: {t: 83, localId: 4278192381, baseId: 0, effectId: 0, spellId: 0, pos: [0.0, 0.0, 0.0], rot: [0.0, 0.0, 0.0], worldOrCell: 0, remainingS: 0, ended: true}, reliable: true}
+  # the keepalives hold both games past the deletes: c1's to ~9000 (its exit is
+  # its last step plus the fakeclient's 2000 ms settle), 3500 ms after its
+  # summon's delete at ~5500; c2's to ~14000, 2500 ms after the scroll
+  # summon's delete at ~11500
+  - {client: c1, at_ms: 7000, move: {dx: 1}}
   - {client: c2, at_ms: 0, move: {dy: 30}}
-  - {client: c2, at_ms: 8000, move: {dy: 60}}
+  - {client: c2, at_ms: 12000, move: {dy: 60}}
 divergences:
   - client: c1
     msg: {t: 41, text: "addspell done: 100e76 recorded", refused: false}

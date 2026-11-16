@@ -598,6 +598,40 @@ declare module "skyrimPlatform" {
     // holds no effect on it, one main-thread task that starts, refreshes or
     // ends it by the engine's state (FateApi.cpp CommandActor)
     function commandActor(refrId: number, on: boolean): boolean;
+
+    // thuum docs/verbs/summon.md (tracker #84): the fork's Skyrim Platform
+    // keeps a summon effect (archetype kSummonCreature) from its apply and
+    // raises summonStart once, on an update task, when its actor has appeared
+    // (its SummonCreatureEffect's commandedActor resolved; every caster's),
+    // then summonEnd at the effect's remove, matched by the unique id kept
+    // since; a form the game no longer holds is null (the engine's Finish
+    // deletes the summon), its id kept. The published 2.8.0 typings name
+    // neither event; these mirror the fork's Declarations.txt and the
+    // generated skyrimPlatform.ts (its SummonStartEvent and SummonEndEvent,
+    // lines 247-266)
+    interface SummonStartEvent {
+        caster: Actor;
+        summon: Actor;
+        effect: MagicEffect;
+        // the spell that applied the effect, null when none is found
+        spell: Form | null;
+        casterId: number;
+        summonId: number;
+        // the active effect's own duration and elapsed seconds
+        durationS: number;
+        elapsedS: number;
+    }
+    interface SummonEndEvent {
+        caster: Actor | null;
+        summon: Actor | null;
+        effect: MagicEffect | null;
+        casterId: number;
+        summonId: number;
+    }
+    function on(eventName: 'summonStart', callback: (event: SummonStartEvent) => void): EventHandle;
+    function once(eventName: 'summonStart', callback: (event: SummonStartEvent) => void): EventHandle;
+    function on(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle;
+    function once(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

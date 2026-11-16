@@ -100,4 +100,12 @@ export interface CreateActorMessageAdditionalProps {
     // 5 an eye texture; seconds left, -1 until its Stop (and the eyes);
     // facing as this engine numbers it
     looks?: ServedLookProp[];
+
+    // thuum docs/verbs/summon.md (tracker #84): on the summon owner's create
+    // word alone (sent to no other listener), the engine reference the word's
+    // form is: the summon's runtime id in this game's engine (the localId the
+    // owner's Summon report named), which FormView binds instead of placing a
+    // copy. Absent on every other create word, the other games' copies of the
+    // summon included
+    ownLocal?: number;
 }

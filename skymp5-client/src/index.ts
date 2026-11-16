@@ -75,6 +75,7 @@ import { DisableFastTravelService } from "./services/services/disableFastTravelS
 import { DisableDifficultySelectionService } from "./services/services/disableDifficultySelectionService";
 import { SweetTaffyPlayerCombatService } from "./services/services/sweetTaffyPlayerCombatService";
 import { WorldCleanerService } from "./services/services/worldCleanerService";
+import { SummonService } from "./services/services/summonService";
 import { SweetTaffySkillMenuService } from "./services/services/sweetTaffySkillMenuService";
 import { LoadOrderVerificationService } from "./services/services/loadOrderVerificationService";
 import { BrowserService } from "./services/services/browserService";
@@ -183,6 +184,7 @@ const main = () => {
       new DisableFastTravelService(sp, controller),
       new DisableDifficultySelectionService(sp, controller),
       new WorldCleanerService(sp, controller),
+      new SummonService(sp, controller),
       new LoadOrderVerificationService(sp, controller),
       new BrowserService(sp, controller),
       new AuthService(sp, controller),

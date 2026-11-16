@@ -69,6 +69,19 @@ export class WorldCleanerService extends ClientListener {
       return;
     }
 
+    // thuum docs/verbs/summon.md (tracker #84; lab/.cache/drafts/summons/
+    // design.md step 2): an actor the engine holds commanded (this game's
+    // own summon, or a hosted NPC's: Actor::IsCommandedActor, CommonLibSSE-NG
+    // include/RE/A/Actor.h:586; the platform's mirror skyrimPlatform.ts:2386)
+    // is never the cleaner's. Without this skip (worldCleanerService.ts:72-83)
+    // the poll below deleted the caster's own atronach before the server
+    // could ever hear of it (x-summon-baseline 20261116-083744: the engine's
+    // 0xff0008fd disabled and deleted by 12 s, and no server word for it),
+    // so a summon can never wait for its bind or its word
+    if (actor.isCommandedActor()) {
+      return;
+    }
+
     // thuum docs/verbs/cell-host.md (b-cell-host 20261021-192835, the lab's
     // first runs with npcEnabled on): findRandomActor hands out the same
     // actor on frame after frame while its latent disable below is still

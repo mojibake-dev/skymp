@@ -29,6 +29,7 @@ import { HostService } from "../services/services/hostService";
 import { PuppetService } from "../services/services/puppetService";
 import { PropService } from "../services/services/propService";
 import { ActorFateService } from "../services/services/actorFateService";
+import { SummonService } from "../services/services/summonService";
 
 // thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
 // (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)
@@ -80,6 +81,10 @@ export class FormView {
   // the word's last value for this view: a flip to "mine" is a promotion
   // (npc-handoff D9's pass, or a door's pass since 2026-10-28)
   private hostedBefore: boolean | undefined = undefined;
+  // thuum docs/verbs/summon.md (#84): this view is bound to the engine's own
+  // summon (a create word whose props carried ownLocal), so destroy() never
+  // deletes or disables it
+  private ownLocalBound = false;
 
   // thuum docs/verbs/npc-stream.md (slice 1 v2): two bisect switches for the
   // puppet side of the stream, on unless the settings file says false:
@@ -195,8 +200,11 @@ export class FormView {
     // Don't spawn dead actors if not already (a copy). An engine reference
     // binds dead and takes the record's death below (thuum docs/verbs/
     // npc-fate.md, the deaths: the body on a seat that was not listening at
-    // the kill, and after the engine's own cell reset stood it up)
-    const engineReference = !!model.refrId && model.refrId < 0xff000000;
+    // the kill, and after the engine's own cell reset stood it up); a bound
+    // summon is an engine reference the same way (this game's own engine
+    // placed it, thuum docs/verbs/summon.md #84)
+    const ownLocal = model.ownLocal || 0;
+    const engineReference = (!!model.refrId && model.refrId < 0xff000000) || ownLocal !== 0;
     if (model.isDead && !engineReference) {
       if (this.refrId === 0) {
         return;
@@ -210,10 +218,12 @@ export class FormView {
         worldOrCell !== 0 &&
         model.movement.worldOrCell !== worldOrCell
       ) {
-        if (this.refrId !== 0 && this.refrId < 0xff000000) {
+        if ((this.refrId !== 0 && this.refrId < 0xff000000) || this.ownLocalBound) {
           // an engine reference in another cell than the player's stands
           // where its record put it; nothing is applied until the player's
-          // cell is its cell again (npc-handoff D6)
+          // cell is its cell again (npc-handoff D6). A bound summon is the
+          // same engine reference (its view stays, its reports move the
+          // record to it; thuum docs/verbs/summon.md #84)
           return;
         }
         this.destroy();
@@ -284,6 +294,33 @@ export class FormView {
             this.lastLockKey = FormView.lockKey(FormView.lockOf(model));
           }
         }
+      }
+    } else if (ownLocal) {
+      // thuum docs/verbs/summon.md (tracker #84; lab/.cache/drafts/summons/
+      // design.md step 5): the create word's props.ownLocal names this
+      // engine's own summon (the server placed a row for it and made this
+      // game its owner, so the word carries isHostedByOther false). The bind
+      // is the game-file id bind's shape (the refId branch above,
+      // formView.ts:272-297): the view takes that reference and places no
+      // copy, ready at once, its damage the server's number as every bound
+      // actor's (attackDamageMult 0, the game-file bind's own row). From
+      // here the view maps the engine's runtime id to the server's id, so
+      // the owner's reports of the summon's movement, actions and hits flow
+      // as any hosted actor's (hostService.hostedActorRemoteIds through
+      // worldViewMisc's mapping). The protection counts it for the cleaner
+      // (its id is a runtime id, in the cleaner's range), and destroy() must
+      // never delete or disable it: the engine's own effect Finish deletes
+      // it at its end, and the cleaner skips a commanded actor besides
+      // (worldCleanerService.ts:72-83)
+      if (this.refrId !== ownLocal) {
+        this.destroy();
+        this.refrId = ownLocal;
+        this.ready = true;
+        this.ownLocalBound = true;
+        Actor.from(Game.getFormEx(ownLocal))?.setActorValue("attackDamageMult", 0);
+        SpApiInteractor.getControllerInstance().lookupListener(WorldCleanerService).modWcProtection(ownLocal, 1);
+        SpApiInteractor.getControllerInstance().lookupListener(SummonService).noteBound(ownLocal);
+        logLab("verb:summon", `the server's summon ${this.remoteRefrId?.toString(16)} bound to this engine's ${ownLocal.toString(16)} (its create word's ownLocal): no copy placed`);
       }
     } else {
       let templateChain = model.templateChain;
@@ -522,6 +559,12 @@ export class FormView {
     // every spawn still running for the reference let go here is superseded
     this.spawnGeneration++;
     const refrId = this.refrId;
+    // thuum docs/verbs/summon.md (tracker #84): whether the reference this
+    // view lets go is a bound summon, the engine's own, which the destroy
+    // releases the protection of but never deletes or disables (the summon
+    // effect's own Finish deletes it at its end)
+    const wasSummonBind = this.ownLocalBound;
+    this.ownLocalBound = false;
     once("update", () => {
       if (refrId && refrId < 0xff000000 && lost) {
         // thuum docs/verbs/npc-puppet.md: an actor from the game files was
@@ -539,6 +582,13 @@ export class FormView {
       if (refrId >= 0xff000000) {
         const refr = ObjectReference.from(Game.getFormEx(refrId));
         SpApiInteractor.getControllerInstance().lookupListener(WorldCleanerService).modWcProtection(refrId, -1);
+        if (wasSummonBind) {
+          // the engine's own summon (#84): the protection is released
+          // alone; no drawn-mode change, no disable, no delete (the summon
+          // effect's own Finish deletes it at its end, and the cleaner
+          // skips a commanded actor besides, worldCleanerService.ts:72-83)
+          return;
+        }
         const ac = Actor.from(refr);
         if (ac) {
           TESModPlatform.setWeaponDrawnMode(ac, -1);

@@ -1921,6 +1921,10 @@ void PartOne::Init()
       if (ownLocal != 0) {
         message.props.ownLocal = ownLocal;
         message.baseRecordType = emitter->GetBaseType();
+        // the bind's word says the caster simulates it, whatever grant
+        // stands on its cell (the design: isHostedByOther false, so the
+        // caster's view is a hosted actor's, its AI on)
+        message.props.isHostedByOther = false;
       }
     }
 

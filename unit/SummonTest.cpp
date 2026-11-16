@@ -41,7 +41,7 @@ constexpr uint32_t kPlainEffect = 0x1ceaa;
 constexpr uint32_t kPlainAtronach = 0x204c0;
 constexpr uint32_t kPotentEffect = 0x4e945;
 constexpr uint32_t kPotentAtronach = 0x4e940;
-constexpr uint32_t kLocal = 0xff00_08fd;
+constexpr uint32_t kLocal = 0xff0008fd;
 constexpr uint32_t kStormScroll = 0xa44a1; // SCRL ConjureStormAtronachScroll
 constexpr uint32_t kBasket = 0x12fe7;      // MISC Basket01
 

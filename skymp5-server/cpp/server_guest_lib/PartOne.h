@@ -1131,12 +1131,18 @@ public:
   // E_SUMMON_*); accepted, the server places its own actor of the base at
   // the place, records the caster's Summon row, and the create word carries
   // props.ownLocal to the caster alone (its game simulates the engine's own
-  // summon through the bind) and a puppet to every other game
-  void OnSummonStart(MpActor& caster, const struct SummonMessage& msg);
+  // summon through the bind) and a puppet to every other game. Since thuum
+  // tracker #106 `caster` is the reporting game's player, the summon's
+  // owner, and `npc` the NPC that cast it when its host reports an NPC's
+  // summon (null for the player's own): the row, the bind and the end stay
+  // the reporting game's, and the NPC names the summon in the log
+  void OnSummonStart(MpActor& caster, const struct SummonMessage& msg,
+                     const MpActor* npc = nullptr);
   // the caster's report of its summon's end (its timer, or the engine's
   // Finish after its death): the summon dispels on every game but the
-  // caster's, which saw its engine's own end
-  void OnSummonEnd(MpActor& caster, const struct SummonMessage& msg);
+  // caster's, which saw its engine's own end; `npc` as OnSummonStart's
+  void OnSummonEnd(MpActor& caster, const struct SummonMessage& msg,
+                   const MpActor* npc = nullptr);
   // the summon's dispel, all four ends' one shape (the end report, the
   // backstop, the caster's departure, the restart's sweep): Kill if alive
   // (its death reaches every game), Actor.SetAlpha(0.0, true) to every

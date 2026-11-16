@@ -275,11 +275,13 @@ public:
   // thuum tracker #84 (docs/verbs/summon.md, ADR-052 decision 3 as amended
   // 2026-11-16, ADR-063: the caster's row owns its summon): the summon this
   // sender's own engine placed at a summon effect's apply, and its end (its
-  // timer, or the engine's Finish after its death). The message names no
-  // actor, so it is only ever the sender's own player's: a start is judged
-  // by wire-rules summons' bounds and the server places its actor, which the
-  // caster's game simulates through the create word's ownLocal bind; an end
-  // dispels the summon on every game but the caster's (PartOne::OnSummonStart,
+  // timer, or the engine's Finish after its death). The caster is the
+  // sender's own player, or since tracker #106 an NPC the sender's game
+  // simulates (casterId, its server id; a start from any other game is
+  // E_SUMMON_CASTER, two owners): a start is judged by wire-rules summons'
+  // bounds and the server places its actor, which the reporting game
+  // simulates through the create word's ownLocal bind; an end dispels the
+  // summon on every game but the reporter's (PartOne::OnSummonStart,
   // PartOne::OnSummonEnd)
   virtual void OnSummon(const RawMessageData& rawMsgData,
                         const SummonMessage& msg);

@@ -4036,13 +4036,19 @@ std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
 // memory: fSummonedCreatureFadeOutSeconds, 1.5 s
 constexpr uint32_t kSummonFadeGmst = 0x0010a196;
 
-void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
+void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg,
+                            const MpActor* npc)
 {
+  // an NPC's summon names the NPC, its host's game the owner (tracker #106)
+  const std::string who = npc
+    ? fmt::format("{:x}'s summon by its host {:x}'s report", npc->GetFormId(),
+                  caster.GetFormId())
+    : fmt::format("{:x}'s summon", caster.GetFormId());
   const std::string head = fmt::format(
-    "{:x}'s summon {:x} (base {:x}, effect {:x}, spell {:x}) at ({:.0f}, "
-    "{:.0f}, {:.0f}) in {:x}, {:.1f} s left",
-    caster.GetFormId(), msg.localId, msg.baseId, msg.effectId, msg.spellId,
-    msg.pos[0], msg.pos[1], msg.pos[2], msg.worldOrCell, msg.remainingS);
+    "{} {:x} (base {:x}, effect {:x}, spell {:x}) at ({:.0f}, {:.0f}, "
+    "{:.0f}) in {:x}, {:.1f} s left",
+    who, msg.localId, msg.baseId, msg.effectId, msg.spellId, msg.pos[0],
+    msg.pos[1], msg.pos[2], msg.worldOrCell, msg.remainingS);
   // the record's consistencies before anything is placed, R2 recorded
   // unvalidated (Eli, 2026-11-16: "'The server checks that the caster has
   // learned the spell' This is an example of an unnecessary check. This is
@@ -4115,15 +4121,19 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
                head, msg.remainingS, caster.GetFormId());
 }
 
-void PartOne::OnSummonEnd(MpActor& caster, const SummonMessage& msg)
+void PartOne::OnSummonEnd(MpActor& caster, const SummonMessage& msg,
+                          const MpActor* npc)
 {
   const uint32_t ended =
     pImpl->summons->summon_end(caster.GetFormId(), msg.localId);
   if (ended == 0) {
     return spdlog::info("[verb:summon] {:x}'s engine reports its summon "
-                        "{:x} ended; the record holds none live by that id, "
-                        "folded (tracker #84)",
-                        caster.GetFormId(), msg.localId);
+                        "{:x}{} ended; the record holds none live by that "
+                        "id, folded (tracker #84)",
+                        caster.GetFormId(), msg.localId,
+                        npc
+                          ? fmt::format(" (of its NPC {:x})", npc->GetFormId())
+                          : std::string());
   }
   const auto& form = worldState.LookupFormByIdNoLoad(ended);
   MpActor* summon = form ? form->AsActor() : nullptr;

@@ -1,7 +1,9 @@
 #include "ActionListener.h"
+#include "CellLoadedMessage.h"
 #include "Messages.h"
 #include "MpActor.h"
 #include "TestUtils.hpp"
+#include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
@@ -129,6 +131,21 @@ void Leave(PartOne& p)
   p.TickCellHosts(NowMs() + 2000);
   p.DestroyActor(kCaster);
   p.DestroyActor(kWatcher);
+}
+
+// `user` hosts `cell` (ActorDeathTest's Host idiom): any earlier host's
+// grace passes first, then the loaded report grants the cell
+void HostCell(PartOne& p, Networking::UserId user, uint32_t cell)
+{
+  const auto past = NowMs() + skymp::rules::host_grace_ms() + 2'000;
+  p.TickCellHosts(past);
+  RawMessageData raw;
+  raw.userId = user;
+  CellLoadedMessage loaded;
+  loaded.cell = cell;
+  loaded.loaded = true;
+  p.GetActionListener().OnCellLoaded(raw, loaded);
+  p.TickCellHosts(past);
 }
 
 // one listener's CreateActor words for the summons placed
@@ -343,4 +360,88 @@ TEST_CASE("A summon's caster's departure dispels it, and the backstop "
   DoConnect(p, 0);
   p.SetUserActor(0, kCaster);
   Leave(p);
+}
+
+// thuum tracker #106 (ADR-063: one engine owns each piece of the world): an
+// NPC's summon is its caster's owner's. The game that simulates the NPC (its
+// cell's host) reports it, naming the NPC by its server id, and simulates the
+// summon through the bind as it would its player's own; another game's report
+// of that NPC's summon would be a second owner, refused by name, as is a
+// caster another user plays. The NPC is a server-made actor 200 units from the
+// players, in the cell the caster's game loaded
+TEST_CASE("An NPC's summon is its host's to report: the host's game binds it, "
+          "any other game's report is refused by name, and its end is taken "
+          "from the row's game (tracker #106)",
+          "[Summon][espm]")
+{
+  PartOne& p = GetPartOne();
+  const bool npcEnabled = p.worldState.npcEnabled;
+  p.worldState.npcEnabled = true;
+  Enter(p);
+  constexpr uint32_t kNpc = 0xff000c90;
+  p.CreateActor(kNpc, { 200, 0, 0 }, 0, 0x3c);
+  auto& npc = p.worldState.GetFormAt<MpActor>(kNpc);
+  npc.SetPos({ 200, 0, 0 });
+  const auto cell = p.worldState.CellOf(npc);
+  REQUIRE(cell.has_value());
+  HostCell(p, 0, *cell);
+  REQUIRE(p.worldState.HostOf(npc) ==
+          &p.worldState.GetFormAt<MpActor>(kCaster));
+  p.Messages().clear();
+  SummonLog log;
+
+  // the watcher's game does not simulate the NPC, and the watcher is a
+  // caster another user plays: both refused by name, nothing placed
+  {
+    auto msg = Start(kLocal + 3, kPotentAtronach, kPotentEffect, 59.5f, 300.f);
+    msg.casterId = kNpc;
+    RawMessageData raw;
+    raw.userId = 1;
+    p.GetActionListener().OnSummon(raw, msg);
+  }
+  REQUIRE(log.Count("E_SUMMON_CASTER: ff000c82 reports summon ff000900 of "
+                    "caster ff000c90, its host ff000c81; nothing placed") ==
+          1);
+  {
+    auto msg = Start(kLocal + 3, kPotentAtronach, kPotentEffect, 59.5f, 300.f);
+    msg.casterId = kWatcher;
+    Report(p, msg);
+  }
+  REQUIRE(log.Count("E_SUMMON_CASTER: ff000c81 reports summon ff000900 of "
+                    "caster ff000c82, an actor another user plays; nothing "
+                    "placed") == 1);
+  REQUIRE(CreateWordsTo(p, 0).empty());
+  REQUIRE(CreateWordsTo(p, 1).empty());
+
+  // the host's report stands: the NPC named, the host's game bound, the
+  // watcher's a puppet
+  {
+    auto msg = Start(kLocal + 3, kPotentAtronach, kPotentEffect, 59.5f, 300.f);
+    msg.casterId = kNpc;
+    Report(p, msg);
+  }
+  REQUIRE(log.Count("ff000c90's summon by its host ff000c81's report ff000900 "
+                    "(base 4e940") == 1);
+  REQUIRE(log.Count("stands for 59.5 s, its owner ff000c81's game") == 1);
+  const auto bound = CreateWordsTo(p, 0);
+  const auto puppet = CreateWordsTo(p, 1);
+  REQUIRE(bound.size() == 1);
+  REQUIRE(puppet.size() == 1);
+  REQUIRE(bound[0]["props"].value("ownLocal", 0) == kLocal + 3);
+  REQUIRE(bound[0]["props"].value("isHostedByOther", true) == false);
+  REQUIRE(puppet[0]["props"].contains("ownLocal") == false);
+
+  // its end from the row's game, the NPC named, dispels it
+  {
+    SummonMessage end;
+    end.localId = kLocal + 3;
+    end.ended = true;
+    end.casterId = kNpc;
+    Report(p, end);
+  }
+  REQUIRE(log.Count("dispels (its effect's end, its engine's own word)") == 1);
+
+  p.DestroyActor(kNpc);
+  Leave(p);
+  p.worldState.npcEnabled = npcEnabled;
 }

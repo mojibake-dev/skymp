@@ -3632,12 +3632,42 @@ void ActionListener::OnSummon(const RawMessageData& rawMsgData,
   if (!actor) {
     return spdlog::warn("OnSummon - no actor for user {}", rawMsgData.userId);
   }
-  // the message names no actor, so it is only ever the sender's own
-  // player's (wire-validate held its shape; the rule holds the rest)
+  // thuum tracker #106 (ADR-063: one engine owns each piece of the world):
+  // the caster is the sender's own player (casterId 0 or absent) or an NPC
+  // the sender's game simulates, by its server id. A summon is its caster's
+  // owner's, so an NPC's summon starts from the NPC's host alone, the rule
+  // OnSpellCast keeps for a hosted caster (an actor a user plays is nobody
+  // else's to report for, a hosted one its cell's host's): two games each
+  // reporting one NPC's summon would be two owners. The reporting game
+  // simulates the summon either way, so the row, the bind and the end stay
+  // keyed on its player; an end is taken from the row's game whoever hosts
+  // the NPC by then (its key is the sender and the local id). wire-validate
+  // held the shape; the rule holds the rest
+  const uint32_t casterId = msg.casterId.value_or(0);
+  MpActor* npc = nullptr;
+  if (casterId != 0 && casterId != 0x14 && casterId != actor->GetFormId()) {
+    const auto& form = partOne.worldState.LookupFormById(casterId);
+    npc = form ? form->AsActor() : nullptr;
+    if (!msg.ended &&
+        (!npc ||
+         partOne.serverState.UserByActor(npc) != Networking::InvalidUserId ||
+         partOne.worldState.HostOf(*npc) != actor)) {
+      const MpActor* host = npc ? partOne.worldState.HostOf(*npc) : nullptr;
+      return spdlog::warn(
+        "[verb:summon] E_SUMMON_CASTER: {:x} reports summon {:x} of caster "
+        "{:x}, {}; nothing placed (tracker #106: an NPC's summon is its "
+        "host's to report)",
+        actor->GetFormId(), msg.localId, casterId,
+        !npc ? std::string("no actor the record holds")
+          : partOne.serverState.UserByActor(npc) != Networking::InvalidUserId
+          ? std::string("an actor another user plays")
+          : fmt::format("its host {:x}", host ? host->GetFormId() : 0u));
+    }
+  }
   if (msg.ended) {
-    partOne.OnSummonEnd(*actor, msg);
+    partOne.OnSummonEnd(*actor, msg, npc);
   } else {
-    partOne.OnSummonStart(*actor, msg);
+    partOne.OnSummonStart(*actor, msg, npc);
   }
 }
 

@@ -3455,6 +3455,7 @@ void PartOne::TickCellHostsEverySecond()
   }
   pImpl->lastCellsTick = now;
   TickCellHosts(SteadyNowMs());
+  EndLostNpcThralls();
   TickDeaths(SteadyNowMs());
   TickBodies(SteadyNowMs());
   SweepHeldSightings(SteadyNowMs());
@@ -3477,6 +3478,62 @@ void PartOne::TickBodies(uint64_t nowMs)
       continue;
     }
     actor->SettleBodyIfDue(nowMs);
+  }
+}
+
+void PartOne::EndLostNpcThralls()
+{
+  // thuum tracker #106 (docs/verbs/npc-fate.md, ADR-063: one engine owns
+  // each piece of the world): an NPC's raise names its caster's host the
+  // commander (ClaimReanimated), the game whose engine ran the spell, and
+  // the command row outlives a grant and an unload (wire-rules cells.rs
+  // FollowKind::Commanded). Once another game runs the caster, the record
+  // names two owners for one raise (the thrall's commander, the caster's
+  // host), and the new host's engine holds no Reanimate effect of the
+  // commander's (HYPOTHESIS until x-npc-raise-handoff-rec reads it), so the
+  // thrall dies by the server's word, as at its commander's departure
+  // (ThrallExpired): Dead Thrall's body stays, an ash raise turns to ash on
+  // every game but the commander's, whose own engine ends the effect
+  // (MpActor::KillThrall). The summon's rule is the same, ended by its
+  // reporting game (SummonService.releaseLostOwners). A player's own
+  // thrall names its caster as its commander and is never this rule's; a
+  // caster in a cell nobody hosts keeps its thrall, the cell frozen
+  for (const auto& row : GetFollows()) {
+    if (row.player == 0 ||
+        pImpl->cells->commander_of(row.actor) != row.player) {
+      continue;
+    }
+    auto& form = worldState.LookupFormByIdNoLoad(row.actor);
+    MpActor* thrall = form ? form->AsActor() : nullptr;
+    if (!thrall || thrall->IsDead()) {
+      continue;
+    }
+    const uint32_t casterId = thrall->ReanimateAcceptedCaster();
+    if (casterId == 0 || casterId == row.player) {
+      continue;
+    }
+    auto& casterForm = worldState.LookupFormByIdNoLoad(casterId);
+    MpActor* caster = casterForm ? casterForm->AsActor() : nullptr;
+    if (!caster ||
+        serverState.UserByActor(caster) != Networking::InvalidUserId) {
+      continue;
+    }
+    const MpActor* host = worldState.HostOf(*caster);
+    if (!host || host->GetFormId() == row.player) {
+      continue;
+    }
+    spdlog::info("[verb:npc-fate] {:x} dies at its caster {:x}'s host "
+                 "change: {:x}'s engine runs the caster now, not its "
+                 "commander {:x}'s (tracker #106, ADR-063)",
+                 row.actor, casterId, host->GetFormId(), row.player);
+    thrall->KillThrall(row.player);
+    // thuum #52: the looks its commander's engine drew on it end with it,
+    // as at the departure (ThrallExpired)
+    if (const size_t forgotten = ForgetActorLooks(row.actor)) {
+      spdlog::info("[verb:npc-fate] {:x}'s {} kept look(s) forgotten at its "
+                   "death: no engine draws them now (#52, tracker #106)",
+                   row.actor, forgotten);
+    }
   }
 }
 
@@ -4003,6 +4060,13 @@ std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
         thrall->GetCellOrWorld().ToFormId(worldState.espmFiles) !=
           fromWorldOrCell ||
         (thrall->GetPos() - fromPos).Length() > kThrallDoorReach) {
+      continue;
+    }
+    // tracker #106: an NPC's thrall stays with its caster, whose host
+    // commands it (ClaimReanimated); a door takes the commander's own raise
+    // alone (the accepted caster 0 for a command no hit stamped)
+    if (const uint32_t caster = thrall->ReanimateAcceptedCaster();
+        caster != 0 && caster != commanderId) {
       continue;
     }
     // the row first, the commander its reporter: a claim's report into any

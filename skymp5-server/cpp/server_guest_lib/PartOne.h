@@ -1013,6 +1013,13 @@ public:
   // is at rest where the record has it (MpActor::SettleBodyIfDue); its row
   // stays as it stood (physics rung 5a: no clock returns a row)
   void TickBodies(uint64_t nowMs);
+  // thuum tracker #106 (docs/verbs/npc-fate.md, ADR-063): an NPC's thrall is
+  // its caster's host's (ClaimReanimated names the host its commander); one
+  // whose caster another game now runs (its cell passed, or it crossed into
+  // another host's cell) dies by the server's word, as at its commander's
+  // departure (MpActor::KillThrall). A caster in a cell nobody hosts keeps
+  // its thrall. Every second, beside TickCellHosts
+  void EndLostNpcThralls();
   // thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC for a
   // dialogue, the per-actor row beside the cell's host; the word follows.
   // thuum ADR-073 decision 6 (step 5a): the row holds its actor for a talk,

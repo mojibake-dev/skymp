@@ -2880,13 +2880,18 @@ TEST_CASE("mp host names the host of the caller's cell, its epoch and how "
 // the thralls are game-file actors set beside it: Sven 0x13491 and Hilde
 // 0x35534 (Riverwood's, moved here) and Whiterun's cow
 TEST_CASE("A player's load door takes the thralls it commands near it "
-          "through with it, the command kept; a far one and another "
-          "player's stay",
+          "through with it, the command kept; a far one, another "
+          "player's and an NPC's raise it commands as its host stay",
           "[CellHost][espm]")
 {
   constexpr uint32_t kGate = 0x1b1f3;
   constexpr uint32_t kSven = 0x13491;
   constexpr uint32_t kHilde = 0x35534;
+  // tracker #106: a body an NPC raised, which c1 commands as its caster's
+  // host (ClaimReanimated), and that NPC's id (the door's rule reads the
+  // accepted caster alone, so no actor stands for it)
+  constexpr uint32_t kNpcRaised = 0xff000c08;
+  constexpr uint32_t kNecromancer = 0xff000c09;
   // Dead Thrall's record duration (a full thrall, ADR-060 as amended
   // 2026-11-12; since 2026-11-15 it dies at its commander's departure too)
   constexpr uint32_t kFullThrallS = 86'313'600;
@@ -2937,10 +2942,20 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
           PartOne::ClaimVerdict::Granted);
   REQUIRE(p.ClaimCommanded(c2, cow, kFullThrallS) ==
           PartOne::ClaimVerdict::Granted);
+  p.CreateActor(kNpcRaised, kAtGate + NiPoint3{ 60.f, -60.f, 0.f }, 0,
+                kWhiterun);
+  auto& npcRaised = p.worldState.GetFormAt<MpActor>(kNpcRaised);
+  npcRaised.SetPos(npcRaised.GetPos());
+  REQUIRE(p.worldState.CellOf(npcRaised) == gateCell);
+  npcRaised.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0,
+                                  kNecromancer);
+  REQUIRE(p.ClaimCommanded(c1, npcRaised, kFullThrallS) ==
+          PartOne::ClaimVerdict::Granted);
   REQUIRE(p.CommanderOf(sven) == kC1);
   REQUIRE(sven.GetListeners().count(&c2) == 1);
   const NiPoint3 hildeWas = hilde.GetPos();
   const NiPoint3 cowWas = cow.GetPos();
+  const NiPoint3 npcRaisedWas = npcRaised.GetPos();
 
   // c1 takes the gate
   p.Messages().clear();
@@ -2980,6 +2995,12 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
   REQUIRE(cow.GetCellOrWorld().ToFormId(p.worldState.espmFiles) == kWhiterun);
   REQUIRE((cow.GetPos() - cowWas).Length() < 1.f);
   REQUIRE(p.CommanderOf(cow) == kC2);
+  // the NPC's raise beside the gate stays with its caster, c1 still its
+  // commander as the caster's host (tracker #106)
+  REQUIRE(npcRaised.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
+          kWhiterun);
+  REQUIRE((npcRaised.GetPos() - npcRaisedWas).Length() < 1.f);
+  REQUIRE(p.CommanderOf(npcRaised) == kC1);
 
   // the shared world: the commands end first, so the commanders'
   // disconnects kill nobody (since ADR-060's amendment of 2026-11-15 every
@@ -2987,6 +3008,7 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
   p.ReleaseAnyClaim(sven);
   p.ReleaseAnyClaim(hilde);
   p.ReleaseAnyClaim(cow);
+  p.ReleaseAnyClaim(npcRaised);
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
   REQUIRE_FALSE(sven.IsDead());
@@ -2995,5 +3017,87 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
   p.DestroyActor(kSven);
   p.DestroyActor(kHilde);
   p.DestroyActor(kCow);
+  p.DestroyActor(kNpcRaised);
+  p.worldState.npcEnabled = npcWas;
+}
+
+// thuum tracker #106 (docs/verbs/npc-fate.md, ADR-063): an NPC's raise is
+// commanded by its caster's host (ClaimReanimated); once another game runs
+// the caster, the thrall dies by the server's word, as at its commander's
+// departure (PartOne::EndLostNpcThralls, MpActor::KillThrall), and its
+// command ends with the death (OnDeathState). A player's own thrall keeps
+// its command through the grant, its row outliving it (wire-rules cells.rs
+// FollowKind::Commanded)
+TEST_CASE("An NPC's thrall dies when another game runs its caster; the "
+          "player's own thrall keeps its command",
+          "[CellHost]")
+{
+  constexpr uint32_t kNecromancer = 0xff000c05;
+  constexpr uint32_t kNpcThrall = 0xff000c06;
+  constexpr uint32_t kOwnThrall = 0xff000c07;
+  // a command's record seconds, named for the lab alone (ClaimReanimated)
+  constexpr uint32_t kRecordS = 60;
+  auto& p = GetPartOne();
+  const bool npcWas = p.worldState.npcEnabled;
+  p.worldState.npcEnabled = true;
+  auto& c1 = Player(p, 0, kC1, kHere);
+  auto& c2 = Player(p, 1, kC2, kHere + NiPoint3{ 100.f, 0.f, 0.f });
+  // a server-made actor joins the grid at its own first SetPos (the first
+  // case's note)
+  const auto make = [&](uint32_t id, const NiPoint3& at) -> MpActor& {
+    p.CreateActor(id, at, 0, kTamriel);
+    auto& actor = p.worldState.GetFormAt<MpActor>(id);
+    actor.SetPos(actor.GetPos());
+    return actor;
+  };
+  auto& necromancer = make(kNecromancer, kHere + NiPoint3{ 50.f, 50.f, 0.f });
+  auto& npcThrall = make(kNpcThrall, kHere + NiPoint3{ 80.f, 60.f, 0.f });
+  auto& ownThrall = make(kOwnThrall, kHere + NiPoint3{ -80.f, 60.f, 0.f });
+  const auto cell = p.worldState.CellOf(necromancer);
+  REQUIRE(cell.has_value());
+  REQUIRE(p.worldState.CellOf(npcThrall) == cell);
+  REQUIRE(p.worldState.CellOf(ownThrall) == cell);
+  CellLoaded(p, 0, *cell);
+  CellLoaded(p, 1, *cell);
+  REQUIRE(p.GetCellHost(*cell).player == kC1);
+  REQUIRE(p.worldState.HostOf(necromancer) == &c1);
+
+  // the raises as OnHit stamps them ahead of ClaimReanimated: the
+  // necromancer's, commanded by its host c1; c1's own
+  const auto at = std::chrono::steady_clock::now();
+  npcThrall.NoteReanimateAccepted(at, 0, kNecromancer);
+  ownThrall.NoteReanimateAccepted(at, 0, kC1);
+  REQUIRE(p.ClaimCommanded(c1, npcThrall, kRecordS) ==
+          PartOne::ClaimVerdict::Granted);
+  REQUIRE(p.ClaimCommanded(c1, ownThrall, kRecordS) ==
+          PartOne::ClaimVerdict::Granted);
+
+  // c1 still runs the necromancer: nothing ends
+  p.EndLostNpcThralls();
+  REQUIRE_FALSE(npcThrall.IsDead());
+  REQUIRE(p.CommanderOf(npcThrall) == kC1);
+
+  // c1 unloads the cell, still connected, and the grace passes it to c2,
+  // which runs the necromancer now: its thrall dies and the command ends;
+  // c1's own thrall keeps its command
+  const auto now = NowMs();
+  CellLoaded(p, 0, *cell, false);
+  p.TickCellHosts(now + skymp::rules::host_grace_ms() + kPastMs);
+  REQUIRE(p.GetCellHost(*cell).player == kC2);
+  REQUIRE(p.worldState.HostOf(necromancer) == &c2);
+  p.EndLostNpcThralls();
+  REQUIRE(npcThrall.IsDead());
+  REQUIRE(p.CommanderOf(npcThrall) == 0);
+  REQUIRE_FALSE(ownThrall.IsDead());
+  REQUIRE(p.CommanderOf(ownThrall) == kC1);
+
+  p.ReleaseAnyClaim(ownThrall);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kNecromancer);
+  p.DestroyActor(kNpcThrall);
+  p.DestroyActor(kOwnThrall);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
   p.worldState.npcEnabled = npcWas;
 }

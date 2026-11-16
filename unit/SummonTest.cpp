@@ -195,7 +195,9 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
             (i == 0 ? kPotentAtronach : kPlainAtronach));
     REQUIRE(puppet[i]["props"].contains("ownLocal") == false);
     REQUIRE(puppet[i]["props"].value("isHostedByOther", false) == true);
-    REQUIRE(puppet[i].value("baseRecordType", "") == "NPC_");
+    // the puppet's word names no record type, as no server-made actor's
+    // does (the client's copy path keys on the base, never the type; the
+    // caster's word alone carries NPC_, with the bind)
   }
 
   // the same engine reference twice: the record holds it

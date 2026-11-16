@@ -2,7 +2,7 @@
 //! facts from its world model and asks; wire-rules decides. Plain values both
 //! ways; the movement budgets and the game clock (ADR-021) live here.
 
-use wire_rules::{activation, actor_looks, actor_values, alias_fills, appearance, attributes, block, bonds, casts, cells, clock, console, created, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, object_animation, placements, player_globals, player_own, props, quest_runs, quest_scope, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, script_variables, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
+use wire_rules::{activation, actor_looks, actor_values, alias_fills, appearance, ash, attributes, block, bonds, casts, cells, clock, console, created, damage, destruction, effects, favorites, forms, headshots, hosted_state, hostility, leveling, locks, magic, markers, melee, movement, natives, object_animation, placements, player_globals, player_own, props, quest_runs, quest_scope, quest_stages, racemenu, ranged, rest, perks, ref_state, script_state, script_variables, scripted_effects, shouts, stagger, standing, teleports, trigger_entry, weather, world_globals, world_streamer};
 
 // the perk table's effect calls carry a CTDA's five parts flat, as add_condition does
 #[allow(clippy::too_many_arguments)]
@@ -1392,9 +1392,9 @@ mod ffi {
         /// departure (ADR-060; a dialogue's alike): the cell's rule names
         /// the simulator again, the word follows.
         ClaimGone,
-        /// A timed thrall's commander `player` left (ADR-060 as amended
-        /// 2026-11-12): the server's word ends it at once, ahead of the
-        /// departure's ClaimGone for the same actor.
+        /// A thrall's commander `player` left, a full thrall's as a timed
+        /// one's (ADR-060 as amended 2026-11-15): the server's word ends it
+        /// at once, ahead of the departure's ClaimGone for the same actor.
         ThrallExpired,
     }
 
@@ -1468,6 +1468,71 @@ mod ffi {
         record_s: u32,
         /// Whether the record is alive.
         alive: bool,
+    }
+
+    /// One property of a script's VMAD as the core read it (libespm
+    /// Property; wire-rules ash::Value::of_kind): its name, its type code
+    /// (1 an object, 4 a float, 5 a bool; any other unread) and the value of
+    /// that type, an object's id global (0 for None).
+    #[derive(Debug, Clone)]
+    struct ScriptProperty {
+        /// Its name as the VMAD writes it.
+        name: String,
+        /// Its VMAD type code.
+        kind: u32,
+        /// An object's form id, global.
+        form: u32,
+        /// A float's value.
+        number: f32,
+        /// A bool's value.
+        flag: bool,
+    }
+
+    /// One of TurnToAsh's calls on a raised body (wire-rules ash::Step).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum AshStep {
+        /// Actor.SetCriticalStage on the body, the stage the call's number.
+        CriticalStage,
+        /// EffectShader.Play on the plan's shader with (the body, the
+        /// call's number in seconds).
+        ShaderPlay,
+        /// Actor.SetAlpha(0.0, True) on the body.
+        AlphaZero,
+        /// Actor.AttachAshPile(the plan's pile, None for 0) on the body.
+        AttachAshPile,
+        /// EffectShader.Stop on the plan's shader with (the body).
+        ShaderStop,
+    }
+
+    /// One call of a raise's ash and its moment (wire-rules ash::Call).
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct AshCall {
+        /// How long after the death, ms.
+        at_ms: u32,
+        /// The call.
+        step: AshStep,
+        /// Its number argument: the stage, the shader's seconds, 0 for the
+        /// others.
+        number: f64,
+    }
+
+    /// A raise's ash as the server plays it on the body (wire-rules
+    /// ash::Plan; thuum ADR-060 as amended 2026-11-15).
+    #[derive(Debug, Clone)]
+    struct AshPlan {
+        /// TurnToAsh's calls in its order, their moments never decreasing;
+        /// empty when the script skips TurnToAsh.
+        calls: Vec<AshCall>,
+        /// MagicEffectShader's form id, 0 for None.
+        shader: u32,
+        /// AshPileObject's form id, 0 for None.
+        pile: u32,
+        /// ActorTypeFamiliar's keyword id, 0 for None: a body carrying it
+        /// is immune.
+        familiar: u32,
+        /// ActorTypeDaedra's keyword id, 0 for None: a body carrying it is
+        /// immune.
+        daedra: u32,
     }
 
     /// A follow (ADR-047 D6, thuum docs/verbs/npc-handoff.md): `player`
@@ -3152,10 +3217,19 @@ mod ffi {
         /// element and magic resistances under `cap`.
         fn resistance_factor(resist: f32, magic_resist: f32, cap: f32) -> f32;
         /// A Reanimate effect at least this long is a full thrall's, seconds
-        /// (wire-rules magic::FULL_THRALL_MIN_S), for the core's restart:
-        /// every commander's departure, at which a full thrall stays and a
-        /// timed one dies.
+        /// (wire-rules magic::FULL_THRALL_MIN_S). Since ADR-060's amendment
+        /// of 2026-11-15 every thrall dies at its commander's departure and
+        /// at a restart, a full one as a timed one, so no departure reads it;
+        /// C4's return (`returning`) still does, and finds no living thrall.
         fn full_thrall_min_s() -> f32;
+        /// Whether a script on a raise's effect is the ash's (wire-rules
+        /// ash::is_ash_script, ReanimateAshPile in any case).
+        fn is_ash_script(name: &str) -> bool;
+        /// The ash's calls for a raise whose effect's VMAD sets `properties`
+        /// on the ash script, timed from the death (wire-rules ash::plan:
+        /// TurnToAsh's calls, a property the VMAD leaves keeping the
+        /// script's own value).
+        fn ash_plan(properties: &Vec<ScriptProperty>) -> AshPlan;
 
         /// Every player actor's recent spell casts and open streams.
         type SpellCasts;
@@ -3377,15 +3451,19 @@ mod ffi {
         /// The words for a ClaimEnded's `why`, for the log.
         fn claim_end_name(why: u8) -> String;
         /// ADR-060: `player`'s spell commands `actor` in `cell` until its
-        /// engine ends the effect (the thrall's death; no lease); `effect_s`
-        /// the record's duration of the Reanimate effect, seconds, the one
-        /// line at its commander's departure (a full thrall's, a day and
-        /// more, stays; a timed one dies): the same codes as claim_actor.
+        /// engine ends the effect (the thrall's death; no lease) or its
+        /// commander leaves, when the thrall dies (ADR-060 as amended
+        /// 2026-11-15); `effect_s` the record's duration of the Reanimate
+        /// effect, seconds, read by no rule since that amendment: the same
+        /// codes as claim_actor.
         fn claim_commanded(self: &mut Cells, actor: u32, player: u32, cell: u32, effect_s: u32, now_ms: u64) -> u8;
         /// ADR-060's return (thuum docs/verbs/npc-fate.md C4): `player`'s
         /// game has a cell loaded; each thrall record there that is alive, a
         /// full thrall's and names `player` its caster, under no live
         /// command, is commanded by `player` again. The actors claimed.
+        /// Since ADR-060's amendment of 2026-11-15 the caster's departure
+        /// and a restart kill every thrall, so this finds none; it stays
+        /// until the chaff pass, and nothing depends on it.
         fn returning(self: &mut Cells, player: u32, thralls: &[ThrallRecord], now_ms: u64) -> Vec<u32>;
         /// Any claim on `actor` ends (its death, or a respawn its simulator's
         /// engine did not stand): the claimant it had, 0 when none.
@@ -3595,6 +3673,11 @@ mod ffi {
         /// The looks `actor` keeps at `now_ms`, for its create word, a timed
         /// Play with its seconds left (wire-rules actor_looks::Looks::served).
         fn looks_served(self: &mut ScriptCalls, actor: u32, now_ms: u64) -> Vec<ServedLookRow>;
+        /// Every look `actor` keeps goes, its death at its commander's
+        /// departure leaving no engine to draw them (ADR-060 as amended
+        /// 2026-11-15; wire-rules actor_looks::Looks::forget). How many it
+        /// kept.
+        fn looks_forget(self: &mut ScriptCalls, actor: u32) -> usize;
 
         /// thuum ADR-068 rung 3 (the script record): the release each cell
         /// last saw, until its next grant (wire-rules script_state).
@@ -3915,7 +3998,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord};
+pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord, ScriptProperty, AshStep, AshCall, AshPlan};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -5675,6 +5758,39 @@ const fn full_thrall_min_s() -> f32 {
     magic::FULL_THRALL_MIN_S
 }
 
+fn is_ash_script(name: &str) -> bool {
+    ash::is_ash_script(name)
+}
+
+// cxx passes a C++ rust::Vec by reference as &Vec
+#[allow(clippy::ptr_arg)]
+fn ash_plan(properties: &Vec<ScriptProperty>) -> AshPlan {
+    let ours: Vec<ash::Property<'_>> =
+        properties.iter().map(|p| ash::Property { name: p.name.as_str(), value: ash::Value::of_kind(p.kind, p.form, p.number, p.flag) }).collect();
+    let plan = ash::plan(&ours);
+    AshPlan {
+        calls: plan
+            .calls
+            .iter()
+            .map(|c| AshCall {
+                at_ms: u32::try_from(c.at_ms).unwrap_or(u32::MAX),
+                step: match c.step {
+                    ash::Step::CriticalStage => AshStep::CriticalStage,
+                    ash::Step::ShaderPlay => AshStep::ShaderPlay,
+                    ash::Step::AlphaZero => AshStep::AlphaZero,
+                    ash::Step::AttachAshPile => AshStep::AttachAshPile,
+                    ash::Step::ShaderStop => AshStep::ShaderStop,
+                },
+                number: c.number,
+            })
+            .collect(),
+        shader: plan.shader,
+        pile: plan.pile,
+        familiar: plan.familiar,
+        daedra: plan.daedra,
+    }
+}
+
 /// Every player actor's recent spell casts and open streams (wire-rules
 /// casts).
 #[derive(Debug, Default)]
@@ -6261,6 +6377,10 @@ impl ScriptCalls {
 
     fn looks_served(&mut self, actor: u32, now_ms: u64) -> Vec<ServedLookRow> {
         self.2.served(actor, now_ms).into_iter().map(|l| ServedLookRow { keep: l.keep.code(), form: l.form, seconds: l.seconds, facing: l.facing, seq: l.seq }).collect()
+    }
+
+    fn looks_forget(&mut self, actor: u32) -> usize {
+        self.2.forget(actor)
     }
 }
 
@@ -7078,11 +7198,12 @@ mod tests {
         assert_eq!(alias_fills_actor(&aliases, &journal, 0x39645, 0x13487, 0x1347a, true), AliasActorFill { kind: 1, alias: 1 });
     }
 
-    // ADR-060 as amended (Eli, 2026-11-12): a commander's departure crosses
-    // as a word naming its claimant, a timed thrall's end ahead of its word,
-    // a full thrall's word alone, and no clock after it
+    // ADR-060 as amended 2026-11-15 (Eli's executive decision: "thrall dies
+    // when player logs out"): a commander's departure crosses as a word
+    // naming its claimant, each thrall's end ahead of its word, a full
+    // thrall's as a timed one's, and no clock after it
     #[test]
-    fn a_commanders_departure_crosses_as_a_timed_thralls_end_and_a_word() {
+    fn a_commanders_departure_crosses_as_each_thralls_end_and_a_word() {
         let mut k = new_cells();
         assert!(k.reach(0xff00_0002, &[0x9731], 0).is_empty());
         assert!(k.reach(0xff00_0003, &[0x9731], 0).is_empty());
@@ -7095,6 +7216,7 @@ mod tests {
         assert_eq!(
             k.gone(0xff00_0003, 2_000),
             vec![
+                HostDecision { actor: 0x13491, kind: HostKind::ThrallExpired, player: 0xff00_0003, cell: 0x9731, epoch: 1, why: 0 },
                 HostDecision { actor: 0x13491, kind: HostKind::ClaimGone, player: 0xff00_0003, cell: 0x9731, epoch: 1, why: 0 },
                 HostDecision { actor: 0x35534, kind: HostKind::ThrallExpired, player: 0xff00_0003, cell: 0x9731, epoch: 1, why: 0 },
                 HostDecision { actor: 0x35534, kind: HostKind::ClaimGone, player: 0xff00_0003, cell: 0x9731, epoch: 1, why: 0 },
@@ -7108,7 +7230,10 @@ mod tests {
     // ADR-060's return (thuum docs/verbs/npc-fate.md C4): the core's records
     // of a loaded cell cross as slices; the full thrall naming its returning
     // caster is claimed for it, the timed one is not, and the word is the
-    // core's to send (UpdateHoster, as ClaimCommanded's)
+    // core's to send (UpdateHoster, as ClaimCommanded's). Since ADR-060's
+    // amendment of 2026-11-15 the departure kills the thrall, so the core's
+    // record of it reads dead and returns nothing; the rule stays until the
+    // chaff pass
     #[test]
     fn a_full_thralls_record_returns_it_to_its_caster_across_the_bridge() {
         let mut k = new_cells();
@@ -7117,7 +7242,7 @@ mod tests {
         assert_eq!(k.loaded(0xff00_0002, 0x9731, 1_000).len(), 1);
         assert!(k.loaded(0xff00_0003, 0x9731, 1_100).is_empty());
         assert_eq!(k.claim_commanded(0x13491, 0xff00_0003, 0x9731, 86_313_600, 1_500), 0);
-        assert_eq!(k.gone(0xff00_0003, 2_000).len(), 1);
+        assert_eq!(k.gone(0xff00_0003, 2_000).len(), 2);
         assert_eq!(k.commander_of(0x13491), 0);
         assert_eq!(k.simulator_of(0x13491, 0x9731), 0xff00_0002);
         assert!(k.reach(0xff00_0003, &[0x9731], 3_000).is_empty());
@@ -7126,11 +7251,50 @@ mod tests {
             ThrallRecord { actor: 0x13491, cell: 0x9731, caster: 0xff00_0003, record_s: 86_313_600, alive: true },
             ThrallRecord { actor: 0x35534, cell: 0x9731, caster: 0xff00_0003, record_s: 60, alive: true },
         ];
+        // the record the core reads after the departure's kill: dead, no return
+        let dead = [ThrallRecord { actor: 0x13491, cell: 0x9731, caster: 0xff00_0003, record_s: 86_313_600, alive: false }];
+        assert!(k.returning(0xff00_0003, &dead, 3_000).is_empty());
         assert_eq!(k.returning(0xff00_0003, &records, 3_000), vec![0x13491]);
         assert_eq!(k.commander_of(0x13491), 0xff00_0003);
         assert_eq!(k.simulator_of(0x13491, 0x9731), 0xff00_0003);
         assert_eq!(k.commander_of(0x35534), 0);
         assert!(k.returning(0xff00_0003, &records, 3_100).is_empty());
+    }
+
+    // ADR-060 as amended 2026-11-15 (wire-rules ash): the core's read of a
+    // raise's VMAD crosses as type codes, and the ash comes back as
+    // TurnToAsh's calls with their moments; Skyrim.esm's six properties on
+    // MGEF 0xF52AB (thuum lab/esm.py on sky-srv, 2026-11-15)
+    #[test]
+    fn a_raises_ash_crosses_as_its_calls_and_their_moments() {
+        assert!(is_ash_script("ReanimateAshPile"));
+        assert!(!is_ash_script("SayOnHitByMagicEffectScript"));
+        let prop = |name: &str, kind: u32, form: u32, number: f32| ScriptProperty { name: name.to_owned(), kind, form, number, flag: false };
+        let properties = vec![
+            prop("ImmunityList", 1, 0xf6534, 0.0),
+            prop("ShaderDuration", 4, 0, 4.0),
+            prop("ActorTypeDaedra", 1, 0x13797, 0.0),
+            prop("MagicEffectShader", 1, 0xd22fb, 0.0),
+            prop("fDelay", 4, 0, 1.25),
+            prop("ActorTypeFamiliar", 1, 0x10ead7, 0.0),
+        ];
+        let plan = ash_plan(&properties);
+        let call = |at_ms: u32, step: AshStep, number: f64| AshCall { at_ms, step, number };
+        assert_eq!(
+            plan.calls,
+            vec![
+                call(0, AshStep::CriticalStage, 3.0),
+                call(0, AshStep::ShaderPlay, 4.0),
+                call(1_250, AshStep::AttachAshPile, 0.0),
+                call(2_900, AshStep::ShaderStop, 0.0),
+                call(2_900, AshStep::AlphaZero, 0.0),
+                call(2_900, AshStep::CriticalStage, 4.0),
+            ]
+        );
+        assert_eq!((plan.shader, plan.pile, plan.familiar, plan.daedra), (0xd22fb, 0, 0x10ead7, 0x13797));
+        // a property of an unread type is no value: fDelay as an int keeps the script's 0.75 s
+        let plan = ash_plan(&vec![prop("fDelay", 3, 0, 1.25)]);
+        assert_eq!(plan.calls.iter().find(|c| c.step == AshStep::AttachAshPile).map(|c| c.at_ms), Some(750));
     }
 
     // a prop sample as the core gathers it, the sender's clock read as the
@@ -8050,6 +8214,11 @@ mod tests {
         assert_eq!(s.keep_look(0x800a6, &LookCallRow { keep: 9, ..play }, 2_000), 0);
         // another actor keeps nothing of it
         assert!(s.looks_served(0x35534, 2_000).is_empty());
+        // a thrall's death at its commander's departure forgets its looks
+        // (ADR-060 as amended 2026-11-15): the eyes go with no Stop
+        assert_eq!(s.looks_forget(0x800a6), 1);
+        assert!(s.looks_served(0x800a6, 2_000).is_empty());
+        assert_eq!(s.looks_forget(0x800a6), 0);
     }
 
     #[test]

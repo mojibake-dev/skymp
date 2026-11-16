@@ -28,8 +28,11 @@ pub const MAX_DURATION_S: f32 = 86_400.0;
 /// A Reanimate effect at least this long is a full thrall's (ADR-060 as
 /// amended 2026-11-12): in the masters every Reanimate effect lasts 60 to
 /// 200 s but Dead Thrall's, 86,313,600 s, and their effects' flags are
-/// equal, so the record's duration is the one line. A full thrall stays at
-/// its commander's departure and keeps its look; a timed one dies.
+/// equal, so the record's duration is the one line. Since the amendment of
+/// 2026-11-15 (Eli's executive decision: "thrall dies when player logs
+/// out") a full thrall dies at its commander's departure as a timed one
+/// does, so only C4's return (cells.rs `returning`) reads the line, and it
+/// finds no living thrall; what the death leaves is the raise's own (ash).
 pub const FULL_THRALL_MIN_S: f32 = MAX_DURATION_S;
 
 /// How long a Self concentration cast's effects run on the server without
@@ -63,8 +66,8 @@ pub enum EffectKind {
     /// commander's engine is its timer (ADR-060 as amended: "summons and
     /// resurrections should obey the timers the level of spell"), so its
     /// record's duration is never cut nor run out here and counts only its
-    /// seconds left for the games. FULL_THRALL_MIN_S is the line its
-    /// commander's departure reads.
+    /// seconds left for the games. Its commander's departure kills it,
+    /// full or timed (ADR-060 as amended 2026-11-15).
     Reanimate,
     /// Archetype 4, absorb: a value modifier on its target whose amount its
     /// caster gains on the same actor value (CommonLibSSE-NG

@@ -20,7 +20,7 @@
 # exited -1 at the cast and sent neither, as rung 1's Activate did, fork d9da7da3), where
 # difftest compares a client's exit code and sends strictly. The wire server takes the hit on a
 # dead body as a reanimate (ActionListener OnSpellHit, ClaimReanimated) and names c1 its
-# commander for the record's 60 s, a timed thrall (cells.rs claim_commanded, full false), its
+# commander (cells.rs claim_commanded; the record's 60 s named for the log alone), its
 # word to both games (UpdateHoster: false to c1, true to c2). T2 reaches no stand-up (a
 # HostedActorState names its actor by idx, which the fake client cannot name for a created
 # actor, and T2's settings leave npcEnabled off), so the record holds the body dead by the

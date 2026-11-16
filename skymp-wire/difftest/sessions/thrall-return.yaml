@@ -10,17 +10,20 @@
 # so the copy is 0xff000003 on both stacks and c2's figure 0xff000004, at 2.5 s kills it ("{{created:218419}}", a console
 # argument may be a string), at 3 s learns Dead Thrall, at 3.5 s wears it, at 4 s casts it at the body and at 4.2 s reports
 # its hit, every typed id a hex literal (the legacy stack's C++ fake client resolves no placeholder). The wire server names c1
-# the commander of a full thrall (cells.rs claim_commanded, full true), its word to both games. T2 reaches no stand-up (a
+# the thrall's commander (cells.rs claim_commanded), its word to both games. T2 reaches no stand-up (a
 # HostedActorState names its actor by idx, which the fake client cannot name for a created actor, and T2's settings leave
 # npcEnabled off), so the record stays dead by the console's Kill and holds no Reanimate state. c1 leaves after the settle,
-# about 6.2 s, while hosting the cell: a full thrall's command ends with ClaimGone alone (no ThrallExpired), whose cell rule
-# answers the leaver and names nobody. c2 reported the cell loaded at 0.5 s of its own, so after the grace (about 11.2 s)
-# it is granted it at epoch 2 and the grant flips the copy to it. c3 logs in at 14 s and reports the cell loaded at 0.5 s of
-# its own: c2 hosts it, so no grant, and no return (PartOne::OnCellLoaded's ReturnThralls finds no Reanimate state naming
-# 0xff000002 on the copy's record): c3's create word of the copy names another's simulation, and no isHostedByOther false
-# reaches c3. The living return (a stood thrall's record naming its caster) is T0's (NpcFateTest's C4 cases, the restart's
-# round trip among them) and T3's (x-reanimate-return v2). c2 steps aside at 20 s of its own, so it outlives c1 and c3. The
-# legacy stack: as thrall-departure's (its console knows PlaceAtMe alone; its fake client sends the kill's placeholder as a
+# about 6.2 s, while hosting the cell: the departure emits ThrallExpired, then ClaimGone, for every thrall (ADR-060 as
+# amended 2026-11-15, a full thrall as a timed one); ThrallExpired finds the copy dead and does nothing (PartOne.cpp's IsDead
+# guard), and ClaimGone's cell rule answers the leaver and names nobody. c2 reported the cell loaded at 0.5 s of its own, so
+# after the grace (about 11.2 s) it is granted it at epoch 2 and the grant flips the copy to it. c3 logs in at 14 s and
+# reports the cell loaded at 0.5 s of its own: c2 hosts it, so no grant, and no return (PartOne::OnCellLoaded's ReturnThralls
+# finds no Reanimate state naming 0xff000002 on the copy's record): c3's create word of the copy names another's simulation,
+# and no isHostedByOther false reaches c3. The living return (a stood thrall's record naming its caster) has no T0 or T3
+# since ADR-060's amendment of 2026-11-15: the departure and a restart kill the thrall, so no living record waits for its
+# caster (NpcFateTest's cases assert the caster's return commands nothing; ReturnThralls stays until the chaff pass). c2
+# steps aside at 20 s of its own, so it outlives c1 and c3. The legacy stack: as thrall-departure's (its console knows
+# PlaceAtMe alone; its fake client sends the kill's placeholder as a
 # string; it refuses the unlearned spell, so its cast relays nothing and its hit counts nothing); it knows no CellLoaded,
 # HostGrant or fate. The declarations were read from the code (2026-11-12). The first T2 (numidium, 2026-11-13 08:06Z to
 # 08:08:29Z, server
@@ -155,7 +158,7 @@ divergences:
     msg: {t: 7, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
     wire: 2
-    reason: the command's word to the other game (ClaimCommanded's UpdateHoster), then the departure's (ClaimGone alone for a full thrall, no ThrallExpired; its cell rule answering the leaver names nobody, thuum docs/verbs/npc-fate.md)
+    reason: the command's word to the other game (ClaimCommanded's UpdateHoster), then the departure's ClaimGone (the ThrallExpired ahead of it, emitted for every thrall since ADR-060's amendment of 2026-11-15, finds the copy dead and sends nothing; the cell rule answering the leaver names nobody, thuum docs/verbs/npc-fate.md)
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 1

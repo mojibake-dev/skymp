@@ -29,6 +29,7 @@
 #include <spdlog/spdlog.h>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <variant>
 #include <vector>
 
@@ -298,6 +299,56 @@ struct LogCapture
     return n;
   }
 };
+
+// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-15;
+// MpActor::KillThrall): the ash's snippets about `thrall` sent to `user`
+// since the last clear, in their order: the server's own word (no sequence,
+// never a relayed script call) whose self is the thrall (its long id for a
+// game-file actor, SpSnippet::MakeLongFormId) or whose first argument names
+// it, one of TurnToAsh's five natives. Known by class and function, the
+// sends being SpSnippet::Serve's, at once (never Execute's deferred queue)
+std::vector<nlohmann::json> AshSnippetsTo(PartOne& p, Networking::UserId user,
+                                          uint32_t thrall)
+{
+  const uint64_t self = SpSnippet::MakeLongFormId(&p.worldState, thrall);
+  std::vector<nlohmann::json> out;
+  for (auto& m : p.Messages()) {
+    if (m.userId != user || !m.j.is_object() ||
+        m.j.value("t", -1) != static_cast<int>(MsgType::SpSnippet) ||
+        (m.j.contains("seq") && !m.j["seq"].is_null())) {
+      continue;
+    }
+    const auto name = m.j.value("class", std::string()) + "." +
+      m.j.value("function", std::string());
+    if (name != "Actor.SetCriticalStage" && name != "EffectShader.Play" &&
+        name != "Actor.SetAlpha" && name != "Actor.AttachAshPile" &&
+        name != "EffectShader.Stop") {
+      continue;
+    }
+    bool about = m.j.value("selfId", uint64_t{ 0 }) == self;
+    if (!about && m.j.contains("arguments") && m.j["arguments"].is_array() &&
+        !m.j["arguments"].empty()) {
+      const auto& first = m.j["arguments"][0];
+      about =
+        first.is_object() && first.value("formId", uint64_t{ 0 }) == thrall;
+    }
+    if (about) {
+      out.push_back(m.j);
+    }
+  }
+  return out;
+}
+
+// the snippets' names, "Class.Function", in their order
+std::vector<std::string> NamesOf(const std::vector<nlohmann::json>& snippets)
+{
+  std::vector<std::string> names;
+  for (const auto& j : snippets) {
+    names.push_back(j.value("class", std::string()) + "." +
+                    j.value("function", std::string()));
+  }
+  return names;
+}
 }
 
 TEST_CASE("A player's arrival rolls the ring's leveled actors at its level "
@@ -1590,9 +1641,9 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   };
 
   // the record's own duration of `spell`'s Reanimate effect, seconds: the
-  // command's side at its commander's departure, a day and more a full
-  // thrall's (wire-rules magic::FULL_THRALL_MIN_S, 86,400 s), less a timed
-  // one's; never a lease or a clock
+  // look's seconds on the record; never a lease or a clock, and since
+  // ADR-060's amendment of 2026-11-15 no side of the commander's departure,
+  // at which every thrall dies
   const auto recordSecondsOf = [&](uint32_t spell, uint32_t effectId) {
     uint32_t seconds = 0;
     for (const auto& effect : MpActor::EffectsOf(&p.worldState, spell)) {
@@ -2080,17 +2131,21 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(hosterWordsTo(1) == 0);
   }
 
+  // ADR-060 as amended 2026-11-15 (Eli's executive decision: "thrall dies
+  // when player logs out. most undead turn to ash ... everything else will
+  // either dispell or ash"): Reanimate Corpse 0x65BD7 carries MGEF 0xF52AB,
+  // whose VMAD runs ReanimateAshPile (Skyrim.esm, thuum lab/esm.py on
+  // sky-srv, 2026-11-15: MagicEffectShader 0xD22FB, ShaderDuration 4.0,
+  // fDelay 1.25; fDelayEnd the script's own 1.65), so the server plays
+  // TurnToAsh's calls on the body for the games that see it (wire-rules
+  // ash::plan): SetCriticalStage(3) and the shader's Play(body, 4.0) at
+  // once, AttachAshPile(None) at 1,250 ms, the shader's Stop, SetAlpha(0.0,
+  // True) and SetCriticalStage(4) at 2,900 ms; never to the leaver
   SECTION("by a player who is not the host: the commander's disconnect kills "
-          "a timed thrall at once by the server's word, then hands the body "
-          "to the cell's host with the word, no clock kept (Eli, "
-          "2026-11-12: \"'but as a plain resident with no undead look' "
-          "should simply die\")")
+          "the thrall at once by the server's word, then hands the body to "
+          "the cell's host with the word, no clock kept, and turns the body "
+          "to ash on the host's game (ADR-060 as amended 2026-11-15)")
   {
-    // Reanimate Corpse's record: a timed thrall's, under a day
-    REQUIRE(recordSecondsOf(kReanimateCorpse, kReanimateEffect) > 0);
-    REQUIRE(
-      static_cast<float>(recordSecondsOf(kReanimateCorpse, kReanimateEffect)) <
-      skymp::rules::full_thrall_min_s());
     Equipment eq;
     eq.rightSpell = kReanimateCorpse;
     caster.SetEquipment(eq);
@@ -2099,10 +2154,49 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     standsOn(1);
     REQUIRE_FALSE(body.IsDead());
     REQUIRE(p.CommanderOf(body) == kCaster);
+    // the commander's engine runs the decay's script on its thrall (#52's
+    // section's call: ShockDisintegrate01FXS 0xd22fb with no duration),
+    // kept as the thrall's look until a Stop, which no engine sends once
+    // the commander has gone
+    {
+      using Arg = std::optional<
+        std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
+      SpSnippetObjectArgument thrall;
+      thrall.formId = kPredator;
+      thrall.type = "Actor";
+      ScriptCallMessage msg;
+      msg.selfId = 0xd22fb;
+      msg.cls = "EffectShader";
+      msg.fn = "Play";
+      msg.args = { Arg(thrall), Arg(-1.0) };
+      msg.caller = "US_DecayScript";
+      msg.handler = "OnEffectStart";
+      RawMessageData raw;
+      raw.userId = 1;
+      LogCapture lookLog;
+      p.GetActionListener().OnScriptCall(raw, msg);
+      REQUIRE(lookLog.Count("85547's look EffectShader.Play d22fb (seq ") ==
+              1);
+      REQUIRE(lookLog.Count("): kept") == 1);
+    }
     const uint32_t carried = items();
     p.Messages().clear();
+    LogCapture log;
     DoDisconnect(p, 1);
     REQUIRE(body.IsDead());
+    REQUIRE(log.Count("85547 dies at its commander ff000d36's departure") ==
+            1);
+    // the kept look dies with it (PartOne's ThrallExpired, #52)
+    REQUIRE(log.Count("kept look(s) forgotten at its death: no engine draws "
+                      "them now") == 1);
+    // the ash's first moment, at once: to the host, never to the leaver
+    REQUIRE(NamesOf(AshSnippetsTo(p, 0, kPredator)) ==
+            std::vector<std::string>{ "Actor.SetCriticalStage",
+                                      "EffectShader.Play" });
+    REQUIRE(AshSnippetsTo(p, 1, kPredator).empty());
+    REQUIRE(log.Count("85547 turns to ash (raise 65bd7, effect f52ab runs "
+                      "ReanimateAshPile), at 0 ms: Actor.SetCriticalStage, "
+                      "EffectShader.Play relayed to 1 game(s)") == 1);
     // the departure's kill rolls no death item (single player's rule)
     REQUIRE(items() == carried);
     REQUIRE(p.CommanderOf(body) == 0);
@@ -2136,9 +2230,74 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     p.TickCellHosts(FateNowMs() + 200'000);
     REQUIRE(body.IsDead());
     REQUIRE(p.SimulatorOf(body) == kHost);
-    // the shared cleanup below disconnects the caster again
+    // the ash's later moments on the world's timer (a test's clock margin
+    // past each): the pile at 1,250 ms, the end at 2,900 ms, in TurnToAsh's
+    // order, each the server's word with no sequence
+    std::this_thread::sleep_for(std::chrono::milliseconds(1'400));
+    p.Tick();
+    {
+      const auto names = NamesOf(AshSnippetsTo(p, 0, kPredator));
+      REQUIRE(std::find(names.begin(), names.end(), "Actor.AttachAshPile") !=
+              names.end());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1'700));
+    p.Tick();
+    const auto ash = AshSnippetsTo(p, 0, kPredator);
+    REQUIRE(
+      NamesOf(ash) ==
+      std::vector<std::string>{ "Actor.SetCriticalStage", "EffectShader.Play",
+                                "Actor.AttachAshPile", "EffectShader.Stop",
+                                "Actor.SetAlpha", "Actor.SetCriticalStage" });
+    const uint64_t self = SpSnippet::MakeLongFormId(&p.worldState, kPredator);
+    REQUIRE(ash[0]["selfId"] == self);
+    REQUIRE(ash[0]["arguments"] == nlohmann::json::array({ 3.0 }));
+    REQUIRE(ash[1]["selfId"] == 0xd22fb);
+    REQUIRE(ash[1]["arguments"][0]["formId"] == kPredator);
+    REQUIRE(ash[1]["arguments"][1] == 4.0);
+    REQUIRE(ash[2]["selfId"] == self);
+    REQUIRE(ash[2]["arguments"].size() == 1);
+    REQUIRE(ash[2]["arguments"][0].is_null());
+    REQUIRE(ash[3]["selfId"] == 0xd22fb);
+    REQUIRE(ash[3]["arguments"][0]["formId"] == kPredator);
+    REQUIRE(ash[4]["selfId"] == self);
+    REQUIRE(ash[4]["arguments"] == nlohmann::json::array({ 0.0, true }));
+    REQUIRE(ash[5]["selfId"] == self);
+    REQUIRE(ash[5]["arguments"] == nlohmann::json::array({ 4.0 }));
+    for (const auto& j : ash) {
+      REQUIRE_FALSE(j.contains("keep"));
+    }
+    REQUIRE(AshSnippetsTo(p, 1, kPredator).empty());
+    REQUIRE(log.Count("85547 turns to ash (raise 65bd7, effect f52ab runs "
+                      "ReanimateAshPile), at 1250 ms: Actor.AttachAshPile "
+                      "relayed to 1 game(s)") == 1);
+    REQUIRE(log.Count("85547 turns to ash (raise 65bd7, effect f52ab runs "
+                      "ReanimateAshPile), at 2900 ms: EffectShader.Stop, "
+                      "Actor.SetAlpha, Actor.SetCriticalStage relayed to 1 "
+                      "game(s)") == 1);
+    // the body is still the record's, dead where it fell: the ash is kept
+    // nowhere (a later loader sees a plain corpse; ADR-060's open item)
+    REQUIRE(body.IsDead());
+    REQUIRE_FALSE(body.IsDisabled());
+    // a later loader that does not simulate the body (the caster's next
+    // game; the host simulates it now): its create word carries no look, so
+    // no decay plays on the corpse (#52's keep forgotten at the death). The
+    // shared cleanup below disconnects the caster again
+    p.Messages().clear();
     DoConnect(p, 1);
     p.SetUserActor(1, kCaster);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    bool created = false;
+    for (auto& m : p.Messages()) {
+      if (m.userId == 1 && m.j.is_object() &&
+          m.j.value("t", -1) == static_cast<int>(MsgType::CreateActor) &&
+          m.j.value("refrId", 0u) == kPredator) {
+        created = true;
+        const bool looks = m.j.contains("props") &&
+          m.j["props"].contains("looks") && !m.j["props"]["looks"].empty();
+        REQUIRE_FALSE(looks);
+      }
+    }
+    REQUIRE(created);
   }
 
   SECTION("by a player who is not the host: a command its engine never stood "
@@ -2261,9 +2420,10 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   // (cells.rs gone()), so the departure's ClaimGone named the leaver and
   // sent it a keyframe its freed user could not take, in a ScopedTask's
   // destructor. The test's send target records what the live one throws on
-  SECTION("by the host itself: its departure while it commands a timed "
-          "thrall sends its own user nothing, the thrall dies by the "
-          "server's word first, and the cell's next host takes the body")
+  SECTION("by the host itself: its departure while it commands a thrall "
+          "sends its own user nothing, the thrall dies by the server's word "
+          "first, its ash going to the other game, and the cell's next host "
+          "takes the body")
   {
     Equipment eq;
     eq.rightSpell = kReanimateCorpse;
@@ -2290,6 +2450,11 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
       std::count_if(p.Messages().begin(), p.Messages().end(),
                     [](const PartOne::Message& m) { return m.userId == 0; });
     REQUIRE(toLeaver == 0);
+    // the ash's first moment goes to the other game alone (Reanimate
+    // Corpse runs ReanimateAshPile; ADR-060 as amended 2026-11-15)
+    REQUIRE(NamesOf(AshSnippetsTo(p, 1, kPredator)) ==
+            std::vector<std::string>{ "Actor.SetCriticalStage",
+                                      "EffectShader.Play" });
     // the other game hears the death, the server's word (ThrallExpired),
     // ahead of the word that nobody simulates the body yet
     size_t deadAt = p.Messages().size();
@@ -2340,8 +2505,11 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
   p.DestroyActor(kCaster);
 }
 
-// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12; C4, the full
-// thrall's return): the reanimate case's Dead Thrall sections, on a body
+// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-15, Eli's
+// executive decision: "thrall dies when player logs out. most undead turn to
+// ash, there's one that doesn't when it dies, i think it's thrall
+// specifically. keep that behavior so that the thrall can just be brought
+// back up"): the reanimate case's Dead Thrall sections, on a body
 // Dead Thrall's Reanimate effect applies to. ReanimateThrallFFAimed 0x7E8E0
 // wants HasKeyword ActorTypeNPC (Skyrim.esm 0x13794) == 1 on Subject beside
 // MagicNoReanimate == 0 (thuum lab/.cache/drafts/reanimate-fx.md section 1;
@@ -2355,9 +2523,10 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
 // 0x7E8E0 on the record for its 86,313,600 s; it lies where the reanimate
 // case sets the predator, in the forest's cell 0x9810, between that case's
 // host and caster
-TEST_CASE("A full thrall (Dead Thrall) stays at its commander's disconnect "
-          "and is its caster's again at the caster's return, on a body its "
-          "Reanimate effect's conditions take",
+TEST_CASE("A full thrall (Dead Thrall) dies at its commander's disconnect, "
+          "its body staying with no ash to be raised again, and its caster's "
+          "return commands nothing, on a body its Reanimate effect's "
+          "conditions take",
           "[NpcFate][Reanimate][espm]")
 {
   constexpr uint32_t kHost = 0xff000d35;
@@ -2527,11 +2696,15 @@ TEST_CASE("A full thrall (Dead Thrall) stays at its commander's disconnect "
     State(p, user, kBody, 1.f);
   };
 
+  // ADR-060 as amended 2026-11-15: Dead Thrall 0x7E8DF's effects are
+  // 0x7E8E0 and 0x8BB2A, neither of whose MGEFs runs ReanimateAshPile
+  // (Skyrim.esm, thuum lab/esm.py on sky-srv, 2026-11-15: 0x7E8E0's VMAD
+  // holds SayOnHitByMagicEffectScript alone, 0x8BB2A has none), so the death
+  // at its commander's departure leaves the body where it fell, whole
   SECTION("by a player who is not the host: a full thrall (Dead Thrall, a "
-          "day and more on the record) stays alive at its commander's "
-          "disconnect, the cell's host simulating it, and no clock ends it "
-          "(Eli, 2026-11-12: \"if it's a full thrall at 999 days, should "
-          "just stay\")")
+          "day and more on the record) dies at its commander's disconnect "
+          "by the server's word, the cell's host simulating its body; the "
+          "body stays, with no ash, and no clock ends anything")
   {
     const uint32_t seconds = thrallEffect->duration;
     REQUIRE(static_cast<float>(seconds) >= skymp::rules::full_thrall_min_s());
@@ -2546,27 +2719,75 @@ TEST_CASE("A full thrall (Dead Thrall) stays at its commander's disconnect "
     // the stand-up's Reanimate state on the record names its caster
     REQUIRE(body.GetReanimateCaster().caster == kCaster);
     p.Messages().clear();
+    LogCapture log;
     DoDisconnect(p, 1);
-    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(body.IsDead());
     REQUIRE(p.CommanderOf(body) == 0);
     REQUIRE(p.SimulatorOf(body) == kHost);
     REQUIRE(p.worldState.HostOf(body) == &host);
     REQUIRE(hostedFalseTo(0) >= 1);
-    // past the record's own duration, 999 days: still alive
+    REQUIRE(log.Count("ff000d3d dies at its commander ff000d36's departure") ==
+            1);
+    REQUIRE(log.Count("ff000d3d's body stays where it fell, to be raised "
+                      "again: its raise 7e8df runs no ash script") == 1);
+    REQUIRE(log.Count("turns to ash") == 0);
+    // the watcher heard the death, the server's word
+    size_t deadWords = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == 0 && m.j.is_object() &&
+          m.j.value("t", -1) == static_cast<int>(MsgType::UpdateProperty) &&
+          m.j.value("refrId", 0u) == kBody &&
+          m.j.value("propName", std::string()) == "isDead" &&
+          m.j.value("dataDump", std::string()) == "true") {
+        ++deadWords;
+      }
+    }
+    REQUIRE(deadWords >= 1);
+    // no ash to anyone at the departure
+    REQUIRE(AshSnippetsTo(p, 0, kBody).empty());
+    REQUIRE(AshSnippetsTo(p, 1, kBody).empty());
+    // the body is the record's, neither deleted nor disabled
+    REQUIRE(p.worldState.LookupFormByIdNoLoad(kBody));
+    REQUIRE_FALSE(body.IsDisabled());
+    // the death's effects tick ends the look on the host's game with the
+    // emptied set. Read ahead of any world tick: the shared world's
+    // TickEffects (WorldState.cpp) runs that advance itself once a quarter
+    // second has passed since any earlier case's tick, and a later explicit
+    // advance then finds no running effect and sends nothing
+    p.Messages().clear();
+    body.AdvanceEffects(0.25f);
+    REQUIRE_FALSE(body.HasRunningEffects());
+    {
+      auto words = effectWordsTo(0);
+      REQUIRE_FALSE(words.empty());
+      for (auto& word : words) {
+        REQUIRE(word["effects"].empty());
+      }
+    }
+    // nor any ash on the world's timer
+    p.Tick();
+    REQUIRE(AshSnippetsTo(p, 0, kBody).empty());
+    // past the record's own duration, 999 days: the body as it was
     p.TickCellHosts(FateNowMs() + static_cast<uint64_t>(seconds) * 1000 +
                     1'000);
-    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(body.IsDead());
+    REQUIRE_FALSE(body.IsDisabled());
     REQUIRE(p.SimulatorOf(body) == kHost);
     // the shared cleanup below disconnects the caster again
     DoConnect(p, 1);
     p.SetUserActor(1, kCaster);
   }
 
-  SECTION("by a player who is not the host: a full thrall that stayed at its "
-          "commander's disconnect is its caster's again when the caster's "
-          "next game reports the thrall's cell loaded, the record its "
-          "dormant row and the host keeping the cell (C4; Eli, 2026-11-12: "
-          "\"thrall returns to caster obvs\")")
+  // C4's return (Eli, 2026-11-12: "thrall returns to caster obvs") read a
+  // living thrall its caster left behind; since ADR-060's amendment of
+  // 2026-11-15 there is none, so the sections that had the caster's next
+  // load or subscribe command it again, and the one that had it killed
+  // while its caster was away, are gone. What stands is the rule's other
+  // side: the caster's return commands nothing, and its Dead Thrall raises
+  // the body again as any cast at a dead body does
+  SECTION("by a player who is not the host: the caster's next login and "
+          "load of the cell command nothing, the thrall dead; its Dead "
+          "Thrall at the body raises it again")
   {
     Equipment eq;
     eq.rightSpell = kDeadThrall;
@@ -2576,89 +2797,17 @@ TEST_CASE("A full thrall (Dead Thrall) stays at its commander's disconnect "
     standsOn(1);
     REQUIRE_FALSE(body.IsDead());
     REQUIRE(p.CommanderOf(body) == kCaster);
-    // the record names its caster: the dormant row
-    REQUIRE(body.GetReanimateCaster().caster == kCaster);
-    REQUIRE(body.GetReanimateCaster().recordSeconds >=
-            skymp::rules::full_thrall_min_s());
     DoDisconnect(p, 1);
-    REQUIRE_FALSE(body.IsDead());
-    REQUIRE(p.CommanderOf(body) == 0);
-    REQUIRE(p.SimulatorOf(body) == kHost);
-    REQUIRE(body.GetReanimateCaster().caster == kCaster);
-
-    // the caster's next login: the body's set names it (MagicEffects'
-    // caster), and nothing returns before its game reports the cell loaded
-    LogCapture log;
-    p.Messages().clear();
-    DoConnect(p, 1);
-    p.SetUserActor(1, kCaster);
-    REQUIRE(p.CommanderOf(body) == 0);
-    REQUIRE(p.SimulatorOf(body) == kHost);
-    REQUIRE(hostedFalseTo(1) == 0);
-    bool named = false;
-    for (auto& word : effectWordsTo(1)) {
-      for (auto& effect : word["effects"]) {
-        if (effect["effect"] == kDeadThrallEffect) {
-          REQUIRE(effect["caster"] == kCaster);
-          REQUIRE(effect["remaining"].get<float>() == -1.f);
-          named = true;
-        }
-      }
-    }
-    REQUIRE(named);
-
-    // its game reports the thrall's cell loaded, the host still hosting it:
-    // the caster commands the thrall again, both games hear the word, and
-    // the host keeps its cell
-    const auto loadsTheCell = [&] {
-      RawMessageData raw;
-      raw.userId = 1;
-      CellLoadedMessage loaded;
-      loaded.cell = kForestCell;
-      loaded.loaded = true;
-      p.GetActionListener().OnCellLoaded(raw, loaded);
-    };
-    p.Messages().clear();
-    loadsTheCell();
-    REQUIRE(p.CommanderOf(body) == kCaster);
-    REQUIRE(p.SimulatorOf(body) == kCaster);
-    REQUIRE(p.worldState.HostOf(body) == &caster);
-    REQUIRE(p.GetCellHost(kForestCell).player == kHost);
-    REQUIRE(hostedFalseTo(1) >= 1);
-    REQUIRE(hosterWordsTo(0) >= 1);
-    REQUIRE(
-      log.Count("ff000d3d returns to its caster ff000d36 in cell 9810: a "
-                "full thrall its record names") == 1);
-    // a later load claims nothing again: its own command stands
-    loadsTheCell();
-    REQUIRE(log.Count("returns to its caster ff000d36") == 1);
-    REQUIRE(p.CommanderOf(body) == kCaster);
-    // the returned command is the cast's own: the thrall's death ends it
-    body.Kill(nullptr);
     REQUIRE(body.IsDead());
     REQUIRE(p.CommanderOf(body) == 0);
-    REQUIRE(p.SimulatorOf(body) == kHost);
-  }
+    // the death's effects tick empties the record (MpActor::AdvanceEffects)
+    body.AdvanceEffects(0.25f);
+    REQUIRE_FALSE(body.HasRunningEffects());
+    REQUIRE(body.GetReanimateCaster().caster == 0);
 
-  SECTION("by a player who is not the host: a full thrall killed while its "
-          "caster was away is no thrall at the caster's return (C4)")
-  {
-    Equipment eq;
-    eq.rightSpell = kDeadThrall;
-    caster.SetEquipment(eq);
-    casts(1, kDeadThrall);
-    hits(1, kDeadThrall);
-    standsOn(1);
-    REQUIRE_FALSE(body.IsDead());
-    // the record names its caster: the death below, not a missing state, is
-    // why no return comes
-    REQUIRE(body.GetReanimateCaster().caster == kCaster);
-    DoDisconnect(p, 1);
-    REQUIRE_FALSE(body.IsDead());
-    // the host's engine kills it while its caster is away
-    body.Kill(nullptr);
-    REQUIRE(body.IsDead());
+    // the caster's next login and its load of the cell: no return
     LogCapture log;
+    p.Messages().clear();
     DoConnect(p, 1);
     p.SetUserActor(1, kCaster);
     {
@@ -2672,14 +2821,29 @@ TEST_CASE("A full thrall (Dead Thrall) stays at its commander's disconnect "
     REQUIRE(body.IsDead());
     REQUIRE(p.CommanderOf(body) == 0);
     REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(hostedFalseTo(1) == 0);
+    REQUIRE(log.Count("returns to its caster") == 0);
+
+    // its Dead Thrall at the body: commanded again, both games hearing the
+    // word, and its engine stands the thrall, the record's state naming its
+    // caster anew
+    caster.SetEquipment(eq);
+    p.Messages().clear();
+    casts(1, kDeadThrall);
+    hits(1, kDeadThrall);
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    REQUIRE(p.SimulatorOf(body) == kCaster);
+    REQUIRE(hosterWordsTo(0) >= 1);
+    REQUIRE(hostedFalseTo(1) >= 1);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(body.GetReanimateCaster().caster == kCaster);
     REQUIRE(log.Count("returns to its caster") == 0);
   }
 
-  SECTION("by a player who is not the host: a full thrall served to its "
-          "caster's next game after that game reported the thrall's cell "
-          "loaded is claimed at the subscribe, once, its create word naming "
-          "the caster its simulator (C4: the engine's 5x5 runs ahead of the "
-          "server's 3x3)")
+  SECTION("by a player who is not the host: the dead body served to its "
+          "caster's next game at the subscribe, after that game reported the "
+          "cell loaded, is commanded by nothing (C4's subscribe path)")
   {
     Equipment eq;
     eq.rightSpell = kDeadThrall;
@@ -2688,54 +2852,41 @@ TEST_CASE("A full thrall (Dead Thrall) stays at its commander's disconnect "
     hits(1, kDeadThrall);
     standsOn(1);
     REQUIRE_FALSE(body.IsDead());
-    // the stand-up's Reanimate state on the record names its caster
-    REQUIRE(body.GetReanimateCaster().caster == kCaster);
     DoDisconnect(p, 1);
-    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(body.IsDead());
     REQUIRE(p.CommanderOf(body) == 0);
-    REQUIRE(body.GetReanimateCaster().caster == kCaster);
-    // the caster's next game starts three grid squares east: the body is no
-    // emitter of its, so its load of the body's cell meets no thrall
+    // the caster's next game starts three grid squares east, so its load of
+    // the body's cell meets no emitter, then comes back beside the body
     caster.SetPos(kForest + NiPoint3{ 3 * 4096.f, 0.f, 0.f });
     LogCapture log;
     DoConnect(p, 1);
     p.SetUserActor(1, kCaster);
     REQUIRE(caster.GetEmitters().count(&body) == 0);
-    const auto loadsTheCell = [&] {
+    {
       RawMessageData raw;
       raw.userId = 1;
       CellLoadedMessage loaded;
       loaded.cell = kForestCell;
       loaded.loaded = true;
       p.GetActionListener().OnCellLoaded(raw, loaded);
-    };
-    loadsTheCell();
-    REQUIRE(p.CommanderOf(body) == 0);
-    REQUIRE(p.SimulatorOf(body) == kHost);
-    REQUIRE(log.Count("returns to its caster ff000d36") == 0);
-    // it comes back beside the body: the grid serves the body to its game,
-    // and the subscribe claims it ahead of the create word
+    }
     p.Messages().clear();
     caster.SetPos(kForest + NiPoint3{ 50.f, 0.f, 0.f });
     REQUIRE(caster.GetEmitters().count(&body) == 1);
-    REQUIRE(p.CommanderOf(body) == kCaster);
-    REQUIRE(p.SimulatorOf(body) == kCaster);
-    REQUIRE(
-      log.Count("ff000d3d returns to its caster ff000d36 in cell 9810") == 1);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE(log.Count("returns to its caster") == 0);
     bool created = false;
     for (auto& m : p.Messages()) {
       if (m.userId == 1 && m.j.is_object() &&
           m.j.value("t", -1) == static_cast<int>(MsgType::CreateActor) &&
           m.j.contains("refrId") && m.j["refrId"] == kBody) {
-        REQUIRE(m.j["props"]["isHostedByOther"] == false);
+        REQUIRE(m.j["props"]["isHostedByOther"] == true);
         created = true;
       }
     }
     REQUIRE(created);
-    // a later load claims nothing again: its own command stands
-    loadsTheCell();
-    REQUIRE(log.Count("returns to its caster ff000d36") == 1);
-    REQUIRE(p.CommanderOf(body) == kCaster);
   }
 
   // the shared world: no claim on the body, which goes, the fight a hit may
@@ -2894,21 +3045,22 @@ TEST_CASE("A protected base's thrall ends at its commander's report of the "
   p.DestroyActor(kCaster);
 }
 
-// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12, Eli: "if
-// it's a full thrall at 999 days, should just stay. i want it to keep it's
-// undead look though"): Dead Thrall 0x7E8DF's ReanimateThrallFFAimed
-// 0x7E8E0 lasts 86,313,600 s in Skyrim.esm (a scratch reader over thuum
-// lab/esm.py, 2026-11-12), a full thrall's by wire-rules
-// magic::FULL_THRALL_MIN_S: the record keeps that duration whole, every game
-// hears the look from the stand-up, and the commander's departure ends
-// neither the thrall nor its look on the host's game or a later arrival's;
-// its death's emptied set ends it. The effect's own conditions want
-// ActorTypeNPC, so the body is a server-made Nord bandit (base
-// EncBandit01Melee2HBerserkNordM 0x3DE6F, NordRace), the dead server-made
-// NPC case's.
+// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12, Eli: "i want
+// it to keep it's undead look though"; and as amended 2026-11-15, Eli's
+// executive decision: "thrall dies when player logs out"): Dead Thrall
+// 0x7E8DF's ReanimateThrallFFAimed 0x7E8E0 lasts 86,313,600 s in
+// Skyrim.esm (a scratch reader over thuum lab/esm.py, 2026-11-12), a full
+// thrall's by wire-rules magic::FULL_THRALL_MIN_S: the record keeps that
+// duration whole and every game hears the look from the stand-up while the
+// thrall lives. Its commander's departure kills it by the server's word, a
+// full thrall as a timed one, and the death's emptied set ends the look on
+// the host's game; a later arrival's game hears none. The effect's own
+// conditions want ActorTypeNPC, so the body is a server-made Nord bandit
+// (base EncBandit01Melee2HBerserkNordM 0x3DE6F, NordRace), the dead
+// server-made NPC case's.
 TEST_CASE("A full thrall's look is the record's for the record's whole "
-          "duration and outlasts its commander's departure; its death ends "
-          "it",
+          "duration while it lives; its commander's departure kills it and "
+          "the death's emptied set ends the look",
           "[NpcFate][Reanimate][espm]")
 {
   constexpr uint32_t kHost = 0xff000d38;
@@ -3058,42 +3210,35 @@ TEST_CASE("A full thrall's look is the record's for the record's whole "
   };
   REQUIRE(lookOnRecord() == Catch::Approx(recordSeconds));
 
-  // its commander leaves: the thrall stays on the cell's host, alive, its
-  // look kept whole on the record; no word ends it on the host's game
+  // its commander leaves: the thrall dies by the server's word (ADR-060 as
+  // amended 2026-11-15), the cell's host simulating its body, and the
+  // death's effects tick sends the host's game the emptied set; Dead
+  // Thrall's raise runs no ash, so its body stays
   p.Messages().clear();
   DoDisconnect(p, 1);
   REQUIRE(p.CommanderOf(thrall) == 0);
   REQUIRE(p.SimulatorOf(thrall) == kHost);
-  REQUIRE_FALSE(thrall.IsDead());
-  REQUIRE(effectWordsTo(0).empty());
-  REQUIRE(lookOnRecord() == Catch::Approx(recordSeconds));
-
-  // a later arrival's game first sees the thrall and hears the look whole
-  // (the subscription's SendMagicEffectsTo)
-  DoConnect(p, 2);
-  p.CreateActor(kLater, kForest, 0, kTamriel);
-  p.SetUserActor(2, kLater);
-  {
-    auto words = effectWordsTo(2);
-    REQUIRE_FALSE(words.empty());
-    for (auto& word : words) {
-      REQUIRE(lookIn(word) == -1.f);
-    }
-  }
-
-  // its death: the emptied set to every game that sees it
-  p.Messages().clear();
-  thrall.Kill(nullptr);
   REQUIRE(thrall.IsDead());
+  REQUIRE(AshSnippetsTo(p, 0, kThrall).empty());
   thrall.AdvanceEffects(0.25f);
   REQUIRE_FALSE(thrall.HasRunningEffects());
-  for (const Networking::UserId user : { 0, 2 }) {
-    auto words = effectWordsTo(user);
+  {
+    auto words = effectWordsTo(0);
     REQUIRE_FALSE(words.empty());
     for (auto& word : words) {
       REQUIRE(word["effects"].empty());
     }
   }
+
+  // a later arrival's game first sees the body and hears no look
+  p.Messages().clear();
+  DoConnect(p, 2);
+  p.CreateActor(kLater, kForest, 0, kTamriel);
+  p.SetUserActor(2, kLater);
+  for (auto& word : effectWordsTo(2)) {
+    REQUIRE_FALSE(lookIn(word).has_value());
+  }
+  REQUIRE(thrall.IsDead());
 
   // the shared world
   p.ReleaseAnyClaim(thrall);
@@ -3109,16 +3254,19 @@ TEST_CASE("A full thrall's look is the record's for the record's whole "
   p.DestroyActor(kLater);
 }
 
-// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12): a restart is
+// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-15, Eli's
+// executive decision: "thrall dies when player logs out"): a restart is
 // every commander's departure, the cells rule's commands living in memory
 // alone, so a thrall its saved record brings back alive with its Reanimate
-// state (MpActor::ApplyChangeForm's ReapplyMagicEffects, at the load) is
-// judged by the state's record duration: a timed thrall dies by the server's
-// word at the world's next tick, a full thrall stays with its look. The
-// record is a server-made Nord bandit's (base 0x3DE6F), loaded through
+// state (MpActor::ApplyChangeForm's ReapplyMagicEffects, at the load) dies
+// by the server's word at the world's next tick, whatever the state's record
+// duration, a full thrall's as a timed one's (MpActor::KillThrall). What the
+// death leaves is the raise's own: Reanimate Corpse's body turns to ash for
+// the games listening then (none at a boot), Dead Thrall's stays. The record
+// is a server-made Nord bandit's (base 0x3DE6F), loaded through
 // WorldState::LoadChangeForm as the boot loads a saved one
-TEST_CASE("At a restart a timed thrall's record dies by the server's word "
-          "and a full thrall's stays with its look",
+TEST_CASE("At a restart every thrall's record dies by the server's word, a "
+          "full thrall's as a timed one's",
           "[NpcFate][Reanimate][espm]")
 {
   constexpr uint32_t kThrall = 0xff000d3c;
@@ -3158,8 +3306,9 @@ TEST_CASE("At a restart a timed thrall's record dies by the server's word "
     return p.worldState.GetFormAt<MpActor>(kThrall);
   };
 
-  SECTION("Reanimate Corpse's 0x96D0B, the record's 60 s: a timed thrall, "
-          "the server's word ends it once the load is done")
+  SECTION("Reanimate Corpse's 0x96D0B, the record's 60 s: the server's word "
+          "ends it once the load is done, its raise's ash played for the "
+          "games listening (none)")
   {
     LogCapture log;
     auto& thrall = load(0x96d0b, 0x65bd7, 13.f, 60.f);
@@ -3179,25 +3328,32 @@ TEST_CASE("At a restart a timed thrall's record dies by the server's word "
     // player's rule)
     REQUIRE(items() == carried);
     REQUIRE(log.Count("dies from its reanimation: no death item rolled") == 1);
-    REQUIRE(log.Count("commander left at the server's restart and its effect "
-                      "is a timed thrall's (the record's 60 s): the server's "
-                      "word ends it") == 1);
+    REQUIRE(log.Count("ff000d3c's commander's session ended at the server's "
+                      "restart: the thrall dies by the server's word (raise "
+                      "65bd7, the record's 60 s") == 1);
+    REQUIRE(log.Count("ff000d3c turns to ash (raise 65bd7, effect f52ab runs "
+                      "ReanimateAshPile), at 0 ms: Actor.SetCriticalStage, "
+                      "EffectShader.Play relayed to 0 game(s)") == 1);
   }
 
   SECTION("Dead Thrall's 0x7E8E0, the record's 86,313,600 s: a full thrall "
-          "stays, its look kept")
+          "dies by the server's word too, its body staying with no ash")
   {
     LogCapture log;
     auto& thrall = load(0x7e8e0, 0x7e8df, 40.f, 86'313'600.f);
-    p.Tick();
     REQUIRE_FALSE(thrall.IsDead());
-    REQUIRE(log.Count("commander left at the server's restart and its effect "
-                      "is a full thrall's (the record's 86313600 s): it "
-                      "stays, its look kept") == 1);
-    const auto running = thrall.GetRunningEffects();
-    REQUIRE(running.size() == 1);
-    REQUIRE(running[0].effect == 0x7e8e0);
-    REQUIRE(running[0].secondsLeft == Catch::Approx(86'313'595.f));
+    p.Tick();
+    REQUIRE(thrall.IsDead());
+    REQUIRE(log.Count("ff000d3c's commander's session ended at the server's "
+                      "restart: the thrall dies by the server's word (raise "
+                      "7e8df, the record's 86313600 s") == 1);
+    REQUIRE(log.Count("ff000d3c's body stays where it fell, to be raised "
+                      "again: its raise 7e8df runs no ash script") == 1);
+    REQUIRE(log.Count("turns to ash") == 0);
+    REQUIRE_FALSE(thrall.IsDisabled());
+    // the death's effects tick empties the record: no look stays
+    thrall.AdvanceEffects(0.25f);
+    REQUIRE_FALSE(thrall.HasRunningEffects());
   }
 
   // the shared world
@@ -3208,14 +3364,15 @@ TEST_CASE("At a restart a timed thrall's record dies by the server's word "
 }
 
 // thuum docs/verbs/npc-fate.md C4 (ADR-060's return; rule 6's option A,
-// 2026-11-12): the dormant row is the record, so a restart keeps it. A full
-// thrall's saved record that names its caster, written to the change form's
-// JSON and read back into a fresh world (the database's round trip, a
-// restart), stays alive with its look at the load and is its caster's again
-// once the caster's game reports the thrall's cell loaded, whoever hosts
-// the cell; another player's load claims nothing
-TEST_CASE("After a restart a full thrall's record still names its caster, "
-          "and the caster's return commands it again (C4)",
+// 2026-11-12) as ADR-060's amendment of 2026-11-15 leaves it: the record
+// keeps its caster through the database (the change form's JSON and back, a
+// restart), but a full thrall's record brought back alive dies by the
+// server's word at the load, so its caster's return finds a body and
+// commands nothing. The return that had it commanded again read a living
+// thrall its caster left behind, which no longer exists, and is gone
+TEST_CASE("After a restart a full thrall's record still names its caster "
+          "through the database, dies by the server's word at the load, and "
+          "its caster's return commands nothing",
           "[NpcFate][Reanimate][espm]")
 {
   constexpr uint32_t kThrall = 0xff000d3e;
@@ -3266,13 +3423,20 @@ TEST_CASE("After a restart a full thrall's record still names its caster, "
   p.worldState.LoadDeferredActors();
   p.worldState.fateRespawnDue.erase(kThrall);
   auto& thrall = p.worldState.GetFormAt<MpActor>(kThrall);
-  p.Tick();
   REQUIRE_FALSE(thrall.IsDead());
   REQUIRE(thrall.GetReanimateCaster().caster == kCaster);
-  REQUIRE(log.Count("is a full thrall's (the record's 86313600 s): it stays, "
-                    "its look kept, until its caster ff000d3f returns") == 1);
+  p.Tick();
+  REQUIRE(thrall.IsDead());
+  REQUIRE(log.Count("ff000d3e's commander's session ended at the server's "
+                    "restart: the thrall dies by the server's word (raise "
+                    "7e8df, the record's 86313600 s") == 1);
+  REQUIRE(log.Count("ff000d3e's body stays where it fell") == 1);
+  // the death's effects tick empties the record, its caster with it
+  thrall.AdvanceEffects(0.25f);
+  REQUIRE_FALSE(thrall.HasRunningEffects());
+  REQUIRE(thrall.GetReanimateCaster().caster == 0);
 
-  // another player takes the forest's cell first: its load claims nothing
+  // another player takes the forest's cell first
   DoConnect(p, 0);
   p.CreateActor(kOther, kForest, 0, kTamriel);
   p.SetUserActor(0, kOther);
@@ -3280,11 +3444,11 @@ TEST_CASE("After a restart a full thrall's record still names its caster, "
   REQUIRE(p.CommanderOf(thrall) == 0);
   REQUIRE(p.GetCellHost(kForestCell).player == kOther);
 
-  // the caster returns: commanded once its game reports the cell loaded
+  // the caster returns and its game reports the cell loaded: nothing
+  // returns, the body stays dead and the host's
   DoConnect(p, 1);
   p.CreateActor(kCaster, kForest + NiPoint3{ 50.f, 0.f, 0.f }, 0, kTamriel);
   p.SetUserActor(1, kCaster);
-  REQUIRE(p.CommanderOf(thrall) == 0);
   {
     RawMessageData raw;
     raw.userId = 1;
@@ -3293,10 +3457,11 @@ TEST_CASE("After a restart a full thrall's record still names its caster, "
     loaded.loaded = true;
     p.GetActionListener().OnCellLoaded(raw, loaded);
   }
-  REQUIRE(p.CommanderOf(thrall) == kCaster);
-  REQUIRE(p.SimulatorOf(thrall) == kCaster);
+  REQUIRE(thrall.IsDead());
+  REQUIRE(p.CommanderOf(thrall) == 0);
+  REQUIRE(p.SimulatorOf(thrall) == kOther);
   REQUIRE(p.GetCellHost(kForestCell).player == kOther);
-  REQUIRE(log.Count("returns to its caster ff000d3f in cell 9810") == 1);
+  REQUIRE(log.Count("returns to its caster") == 0);
 
   // the shared world
   p.ReleaseAnyClaim(thrall);

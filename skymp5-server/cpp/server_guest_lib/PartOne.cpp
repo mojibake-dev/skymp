@@ -1110,9 +1110,9 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           // docs/verbs/cell-host.md); the clock passes them on. And its
           // claims end with a word each, a thrall's command's and a
           // dialogue's (ADR-060): the cell's simulator takes each actor
-          // back, never left a puppet nobody simulates; a timed thrall dies
-          // by the server's word first, a full one stays alive there (ADR-060
-          // as amended 2026-11-12). The decisions are applied under a try
+          // back, never left a puppet nobody simulates; every thrall dies
+          // by the server's word first, a full one as a timed one (ADR-060
+          // as amended 2026-11-15). The decisions are applied under a try
           // that logs (thuum lab/.cache/drafts/reanimate/
           // read-stage-125536.md 4.2): this task runs in a ScopedTask's
           // destructor, where an exception ends the process, and the
@@ -1690,7 +1690,9 @@ void PartOne::Init()
     // load met no emitter) is commanded by it again here, ahead of the
     // create word, which then names the caster the simulator; the word
     // reaches the games already listening. Under the same rule as the roll:
-    // a throw never unwinds the subscribe
+    // a throw never unwinds the subscribe. Since ADR-060's amendment of
+    // 2026-11-15 no thrall outlives its caster's session, so the return
+    // finds none; it stays until the chaff pass
     if (actor.HasRunningEffects()) {
       try {
         ReturnThralls(listener, { &actor });
@@ -2354,6 +2356,11 @@ std::vector<ServedLookProp> PartOne::LooksServedTo(const MpActor& actor,
   return out;
 }
 
+size_t PartOne::ForgetActorLooks(uint32_t actor)
+{
+  return pImpl->scriptCalls->looks_forget(actor);
+}
+
 skymp::rules::ScriptStates& PartOne::GetScriptStates()
 {
   return *pImpl->scriptStates;
@@ -2657,21 +2664,36 @@ void ApplyHostDecisions(PartOne& partOne,
         break;
       }
       case skymp::rules::HostKind::ThrallExpired: {
-        // thuum docs/verbs/npc-fate.md (ADR-060 as amended; Eli,
-        // 2026-11-12: "'but as a plain resident with no undead look' should
-        // simply die"): a timed thrall's commander left and no engine runs
-        // its effect now, so the server's word ends it at once. It comes
-        // ahead of the departure's ClaimGone for the same actor, so the
-        // cell's simulator is handed a body and never promotes a living copy
-        // no effect holds
+        // thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-15, Eli's
+        // executive decision: "thrall dies when player logs out"): a
+        // thrall's commander left, a full thrall's (Dead Thrall's) as a
+        // timed one's, and no engine runs its effect now, so the server's
+        // word ends it at once (MpActor::KillThrall: a raise that runs the
+        // ash script turns the body to ash on the games still listening,
+        // never the leaver's; Dead Thrall's body stays, to be raised again).
+        // It comes ahead of the departure's ClaimGone for the same actor, so
+        // the cell's simulator is handed a body and never promotes a living
+        // copy no effect holds
         auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
         MpActor* actor = form ? form->AsActor() : nullptr;
         if (actor && !actor->IsDead()) {
           spdlog::info("[verb:npc-fate] {:x} dies at its commander {:x}'s "
-                       "departure: a timed thrall, its effect no engine's "
-                       "now, ends by the server's word (ADR-060)",
+                       "departure: its thrall's effect is no engine's now, "
+                       "so the server's word ends it (ADR-060 as amended "
+                       "2026-11-15)",
                        d.actor, d.player);
-          actor->Kill(nullptr);
+          actor->KillThrall(d.player);
+          // thuum #52 (wire-rules actor_looks): the looks its commander's
+          // engine drew on it (Undead FX's decay shader at -1 s) end with
+          // it; no engine draws them now and no Stop will come, so no later
+          // loader's create word serves them on the body (the ash's own
+          // shader calls are the server's word, never kept)
+          if (const size_t forgotten = partOne.ForgetActorLooks(d.actor)) {
+            spdlog::info("[verb:npc-fate] {:x}'s {} kept look(s) forgotten "
+                         "at its death: no engine draws them now (#52; "
+                         "ADR-060 as amended 2026-11-15)",
+                         d.actor, forgotten);
+          }
         }
         break;
       }
@@ -2973,7 +2995,9 @@ void PartOne::OnCellLoaded(MpActor& player, uint32_t cell, bool loaded)
   // record names this player the caster of is commanded by it again once
   // its game has the thrall's cell loaded (the cells table knows the load
   // only from here on); a thrall the grid serves it later is the
-  // subscribe's (onActorSubscribe)
+  // subscribe's (onActorSubscribe). Since ADR-060's amendment of 2026-11-15
+  // the caster's departure kills its thralls, so this finds none; it stays
+  // until the chaff pass
   if (loaded && !inCell.empty()) {
     ReturnThralls(player, inCell);
   }

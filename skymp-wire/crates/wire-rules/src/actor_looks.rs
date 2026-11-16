@@ -16,7 +16,9 @@
 //!
 //! So the server keeps, per actor, the last Play per shader and per visual
 //! effect and the last eye texture ([`Looks::keep`]), each cleared by its
-//! Stop or by SetEyeTexture(None), and serves them with the actor's create
+//! Stop or by SetEyeTexture(None), all of an actor's at once by a thrall's
+//! death at its commander's departure ([`Looks::forget`]; ADR-060 as amended
+//! 2026-11-15), and serves them with the actor's create
 //! word ([`Looks::served`]; CreateActorProps' `looks`), a timed Play for the
 //! seconds it has left. R2: recorded as the simulator reported them, the
 //! forms and the seconds never judged. Runtime only, as the actor's
@@ -266,6 +268,14 @@ impl Looks {
         out
     }
 
+    /// Every look `actor` keeps goes: its death at its commander's
+    /// departure (ADR-060 as amended 2026-11-15), where no engine draws them
+    /// any more and no Stop will come, so a later create word serves none
+    /// on a body nothing animates. How many it kept.
+    pub fn forget(&mut self, actor: u32) -> usize {
+        self.by_actor.remove(&actor).map_or(0, |held| held.looks.len())
+    }
+
     /// How many actors keep looks.
     #[must_use]
     pub fn actors(&self) -> usize {
@@ -368,6 +378,25 @@ mod tests {
         // an id past 32 bits names no form: as None
         assert_eq!(looks.keep(THRALL, &eyes(1 << 40, 4), 0), Kept::Nothing);
         assert_eq!(looks.actors(), 0);
+    }
+
+    #[test]
+    fn a_forgotten_actor_serves_nothing_and_another_keeps_its_own() {
+        // a thrall's death at its commander's departure (ADR-060 as amended
+        // 2026-11-15): the decay's flat shader with no duration and the eyes
+        // go with no Stop; the draugr's look stays
+        let mut looks = Looks::default();
+        assert_eq!(looks.keep(THRALL, &play(DISINTEGRATE, -1.0, 1), 0), Kept::Kept);
+        assert_eq!(looks.keep(THRALL, &eyes(EYES, 1), 0), Kept::Kept);
+        assert_eq!(looks.keep(DRAUGR, &play(DISINTEGRATE, -1.0, 1), 0), Kept::Kept);
+        assert_eq!(looks.forget(THRALL), 2);
+        assert!(looks.served(THRALL, 0).is_empty());
+        assert_eq!(forms(&looks.served(DRAUGR, 0)), [(LookKeep::ShaderPlay, DISINTEGRATE)]);
+        assert_eq!(looks.actors(), 1);
+        // an actor that keeps nothing forgets nothing
+        assert_eq!(looks.forget(THRALL), 0);
+        // a look kept after the forget is kept anew
+        assert_eq!(looks.keep(THRALL, &play(DISINTEGRATE, -1.0, 2), 0), Kept::Kept);
     }
 
     #[test]

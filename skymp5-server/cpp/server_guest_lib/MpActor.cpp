@@ -21,12 +21,15 @@
 #include "SpSnippet.h"
 #include "SpSnippetFunctionGen.h"
 #include "WorldState.h"
+#include "condition_functions/HasKeyword.h"
 #include "gamemode_events/DeathEvent.h"
 #include "gamemode_events/DropItemEvent.h"
 #include "gamemode_events/EatItemEvent.h"
 #include "gamemode_events/ReadBookEvent.h"
 #include "gamemode_events/RespawnEvent.h"
 #include "libespm/NPC_.h"
+#include "libespm/Property.h"
+#include "libespm/ScriptData.h"
 #include "libespm/espm.h"
 #include "papyrus-vm/Utils.h"
 #include "script_objects/EspmGameObject.h"
@@ -4588,15 +4591,17 @@ void MpActor::ReapplyMagicEffects()
   if (asOfMs != 0 && nowMs > asOfMs) {
     AdvanceEffects(static_cast<float>(nowMs - asOfMs) / 1000.f);
   }
-  // thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-12): a restart
-  // is every commander's departure, since the cells rule's commands live in
+  // thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-15, Eli's
+  // executive decision: "thrall dies when player logs out"): a restart is
+  // every commander's departure, since the cells rule's commands live in
   // memory alone, and a saved record is applied here once a process, at its
   // load (WorldState::AddForm at the boot, a game-file form's first attach).
-  // A thrall its record brings back alive is judged as a departure judges
-  // one, by its Reanimate state's record duration: a full thrall's
-  // (FULL_THRALL_MIN_S or longer) stays with its look; a timed one dies by
-  // the server's word, as ThrallExpired's does, at the world's next tick,
-  // once the load is done
+  // A thrall its record brings back alive dies by the server's word as
+  // ThrallExpired's does, whatever its Reanimate state's record duration (a
+  // full thrall's as a timed one's), at the world's next tick once the load
+  // is done (KillThrall: a raise that runs the ash script turns to ash on
+  // the games listening then, none at the boot; Dead Thrall's body stays,
+  // to be raised again)
   if (!IsDead()) {
     for (const auto& e :
          EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
@@ -4604,34 +4609,21 @@ void MpActor::ReapplyMagicEffects()
         continue;
       }
       const uint32_t formId = GetFormId();
+      const uint32_t raise = e.facts.source;
       const float recordSeconds = e.facts.duration_s;
-      if (recordSeconds >= skymp::rules::full_thrall_min_s()) {
-        // C4 (thuum docs/verbs/npc-fate.md, rule 6's option A): the record
-        // keeps its caster, so the caster's return commands it again
-        // (PartOne::ReturnThralls) after a restart as without one
-        spdlog::info(
-          "[verb:npc-fate] {:x}'s commander left at the server's "
-          "restart and its effect is a full thrall's (the "
-          "record's {:.0f} s): it stays, its look kept{} (ADR-060)",
-          formId, recordSeconds,
-          e.caster != 0
-            ? fmt::format(", until its caster {:x} returns", e.caster)
-            : std::string());
-      } else {
-        worldState->SetTimer(std::chrono::milliseconds(0))
-          .Then([worldState, formId, recordSeconds](Viet::Void) {
-            auto& form = worldState->LookupFormByIdNoLoad(formId);
-            MpActor* actor = form ? form->AsActor() : nullptr;
-            if (actor && !actor->IsDead()) {
-              spdlog::info("[verb:npc-fate] {:x}'s commander left at the "
-                           "server's restart and its effect is a timed "
-                           "thrall's (the record's {:.0f} s): the server's "
-                           "word ends it (ADR-060)",
-                           formId, recordSeconds);
-              actor->Kill(nullptr);
-            }
-          });
-      }
+      worldState->SetTimer(std::chrono::milliseconds(0))
+        .Then([worldState, formId, raise, recordSeconds](Viet::Void) {
+          auto& form = worldState->LookupFormByIdNoLoad(formId);
+          MpActor* actor = form ? form->AsActor() : nullptr;
+          if (actor && !actor->IsDead()) {
+            spdlog::info("[verb:npc-fate] {:x}'s commander's session ended "
+                         "at the server's restart: the thrall dies by the "
+                         "server's word (raise {:x}, the record's {:.0f} s; "
+                         "ADR-060 as amended 2026-11-15)",
+                         formId, raise, recordSeconds);
+            actor->KillThrall(0);
+          }
+        });
       break;
     }
   }
@@ -4673,6 +4665,262 @@ MpActor::ReanimateCasterView MpActor::GetReanimateCaster() const
     }
   }
   return view;
+}
+
+namespace {
+// thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-15; wire-rules
+// ash): the ash script on one of the raise `spell`'s effects, read from the
+// records: the first effect of the spell's own list whose MGEF's VMAD runs
+// it (skymp::rules::is_ash_script), that effect's id, and the script's
+// properties as wire-rules ash reads them, an object's id global through
+// the MGEF's own file (an id inside a record counts against that file's
+// masters) and a property the VMAD marks removed left out, so the script's
+// own value holds. Nothing for a raise none of whose effects runs it (Dead
+// Thrall 0x7E8DF's: Skyrim.esm lists 0x7E8E0 and 0x8BB2A, neither scripted
+// so). The server's effect reader keeps no script effect on the record
+// (EffectFactsOf), so the spell is read, never the record's effects
+struct AshScriptRead
+{
+  uint32_t effect = 0;
+  rust::Vec<skymp::rules::ScriptProperty> properties;
+};
+
+std::optional<AshScriptRead> AshScriptOf(WorldState& worldState,
+                                         uint32_t spell)
+{
+  if (spell == 0 || !worldState.HasEspm()) {
+    return std::nullopt;
+  }
+  auto& browser = worldState.GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  for (const auto& effect : MpActor::EffectsOf(&worldState, spell)) {
+    const auto mgefLookup = browser.LookupById(effect.effectId);
+    if (!mgefLookup.rec || mgefLookup.rec->GetType() != espm::MGEF::kType) {
+      continue;
+    }
+    espm::ScriptData scriptData;
+    mgefLookup.rec->GetScriptData(&scriptData, cache);
+    for (const auto& script : scriptData.scripts) {
+      if (!skymp::rules::is_ash_script(rust::Str(script.scriptName))) {
+        continue;
+      }
+      AshScriptRead read;
+      read.effect = effect.effectId;
+      for (const auto& property : script.properties) {
+        if (property.status ==
+            static_cast<uint8_t>(espm::Property::Status::Removed)) {
+          continue;
+        }
+        skymp::rules::ScriptProperty row{};
+        row.name = rust::String(property.name);
+        row.kind = static_cast<uint32_t>(property.type);
+        if (property.type == espm::Property::Type::Object &&
+            property.value.formId != 0) {
+          row.form = mgefLookup.ToGlobalId(property.value.formId);
+        } else if (property.type == espm::Property::Type::Float) {
+          row.number = property.value.floatingPoint;
+        } else if (property.type == espm::Property::Type::Bool) {
+          row.flag = property.value.boolean != 0;
+        }
+        read.properties.push_back(std::move(row));
+      }
+      return read;
+    }
+  }
+  return std::nullopt;
+}
+
+// one call of the ash as the server's timer keeps it (skymp::rules::AshCall)
+struct AshCallRow
+{
+  uint32_t atMs = 0;
+  skymp::rules::AshStep step = skymp::rules::AshStep::CriticalStage;
+  double number = 0.0;
+};
+
+// `calls` on `thrall`, at once, to every game listening to it but
+// `commander`'s (gone with its session; 0 for none): each the native
+// TurnToAsh calls (wire-rules ash::Step) with no sequence, SpSnippet::Serve,
+// the server's own word, which every client runs as it comes
+// (spSnippetService's takeSeq) and none keeps. `names` gets the calls'
+// names for the line. The number of games
+size_t SendAshCalls(MpActor& thrall, const std::vector<AshCallRow>& calls,
+                    uint32_t shader, uint32_t pile, uint32_t commander,
+                    std::string& names)
+{
+  using Arg = std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
+  SpSnippetObjectArgument victim;
+  victim.formId = thrall.GetFormId();
+  victim.type = "ObjectReference";
+  SpSnippetObjectArgument pileBase;
+  pileBase.formId = pile;
+  pileBase.type = "Form";
+  std::vector<MpActor*> games;
+  for (MpActor* listener : thrall.GetActorListeners()) {
+    if (listener && listener != &thrall &&
+        listener->GetFormId() != commander &&
+        listener->GetUserId() != Networking::InvalidUserId) {
+      games.push_back(listener);
+    }
+  }
+  for (const auto& call : calls) {
+    const char* cls = "Actor";
+    const char* fn = "SetCriticalStage";
+    uint32_t self = thrall.GetFormId();
+    std::vector<Arg> args;
+    switch (call.step) {
+      case skymp::rules::AshStep::CriticalStage:
+        args = { Arg(call.number) };
+        break;
+      case skymp::rules::AshStep::ShaderPlay:
+        cls = "EffectShader";
+        fn = "Play";
+        self = shader;
+        args = { Arg(victim), Arg(call.number) };
+        break;
+      case skymp::rules::AshStep::AlphaZero:
+        fn = "SetAlpha";
+        args = { Arg(0.0), Arg(true) };
+        break;
+      case skymp::rules::AshStep::AttachAshPile:
+        fn = "AttachAshPile";
+        args = { pile != 0 ? Arg(pileBase) : Arg(std::nullopt) };
+        break;
+      case skymp::rules::AshStep::ShaderStop:
+        cls = "EffectShader";
+        fn = "Stop";
+        self = shader;
+        args = { Arg(victim) };
+        break;
+      default:
+        continue;
+    }
+    SpSnippet snippet(cls, fn, args, self);
+    for (MpActor* game : games) {
+      snippet.Serve(game);
+    }
+    names += fmt::format("{}{}.{}", names.empty() ? "" : ", ", cls, fn);
+  }
+  return games.size();
+}
+}
+
+void MpActor::KillThrall(uint32_t commander)
+{
+  if (IsDead()) {
+    return;
+  }
+  WorldState* worldState = GetParent();
+  const uint32_t formId = GetFormId();
+  // the raise: the spell the record's Reanimate state names (its source),
+  // read ahead of the death, whose effects tick empties the record; the
+  // accepted hit's spell when the record names none
+  uint32_t raise = 0;
+  if (worldState && HasRunningEffects()) {
+    for (const auto& e :
+         EffectEntriesOf(ChangeForm(), worldState->espmFiles)) {
+      if (e.facts.kind == skymp::rules::EffectKind::Reanimate) {
+        raise = e.facts.source;
+        break;
+      }
+    }
+  }
+  if (raise == 0) {
+    raise = ReanimateAcceptedSpell();
+  }
+  std::optional<AshScriptRead> ash;
+  if (worldState && raise != 0) {
+    try {
+      ash = AshScriptOf(*worldState, raise);
+    } catch (std::exception& e) {
+      spdlog::warn("[verb:npc-fate] {:x}'s raise {:x}: its ash script "
+                   "unread, the body stays: {}",
+                   formId, raise, e.what());
+    }
+  }
+  Kill(nullptr);
+  if (!ash || !worldState) {
+    spdlog::info("[verb:npc-fate] {:x}'s body stays where it fell, to be "
+                 "raised again: its raise {:x} runs no ash script (ADR-060 "
+                 "as amended 2026-11-15)",
+                 formId, raise);
+    return;
+  }
+  const auto plan = skymp::rules::ash_plan(ash->properties);
+  // vanilla's TargetIsImmune (ReanimateAshPile's OnEffectStart): a thrall
+  // is a commanded actor by construction, so IsSummoned decides, the actor
+  // carrying the script's ActorTypeFamiliar or ActorTypeDaedra
+  for (const uint32_t keyword : { plan.familiar, plan.daedra }) {
+    if (ConditionFunctions::HasKeyword::ActorHasKeyword(*this, keyword)) {
+      spdlog::info("[verb:npc-fate] {:x}'s body stays: it carries {:x}, "
+                   "which its raise {:x}'s ash script (effect {:x}) holds "
+                   "immune (ADR-060 as amended 2026-11-15)",
+                   formId, keyword, raise, ash->effect);
+      return;
+    }
+  }
+  if (plan.calls.empty()) {
+    spdlog::info("[verb:npc-fate] {:x}'s body stays: its raise {:x}'s ash "
+                 "script (effect {:x}) sets AshPileCreated (ADR-060 as "
+                 "amended 2026-11-15)",
+                 formId, raise, ash->effect);
+    return;
+  }
+  // the calls by their moment, in TurnToAsh's order: the first at once, the
+  // later ones on the world's timer, each looking the body up again and
+  // played only on the death it followed (a body raised again, or dead
+  // anew, drops them)
+  std::vector<std::vector<AshCallRow>> moments;
+  for (const auto& c : plan.calls) {
+    if (moments.empty() || moments.back().front().atMs != c.at_ms) {
+      moments.emplace_back();
+    }
+    moments.back().push_back(AshCallRow{ c.at_ms, c.step, c.number });
+  }
+  const uint32_t shader = plan.shader;
+  const uint32_t pile = plan.pile;
+  const uint32_t effect = ash->effect;
+  const auto killedAt = std::chrono::steady_clock::now();
+  for (const auto& group : moments) {
+    const uint32_t atMs = group.front().atMs;
+    if (atMs == 0) {
+      std::string names;
+      const size_t games =
+        SendAshCalls(*this, group, shader, pile, commander, names);
+      spdlog::info("[verb:npc-fate] {:x} turns to ash (raise {:x}, effect "
+                   "{:x} runs ReanimateAshPile), at 0 ms: {} relayed to {} "
+                   "game(s) (ADR-060 as amended 2026-11-15)",
+                   formId, raise, effect, names, games);
+      continue;
+    }
+    worldState->SetTimer(std::chrono::milliseconds(atMs))
+      .Then([worldState, formId, raise, effect, shader, pile, commander,
+             killedAt, atMs, group](Viet::Void) {
+        auto& form = worldState->LookupFormByIdNoLoad(formId);
+        MpActor* actor = form ? form->AsActor() : nullptr;
+        const auto now = std::chrono::steady_clock::now();
+        std::optional<std::chrono::milliseconds> died;
+        if (actor) {
+          died = actor->DiedAgo(now);
+        }
+        if (!actor || !actor->IsDead() || !died ||
+            *died < std::chrono::duration_cast<std::chrono::milliseconds>(
+                      now - killedAt)) {
+          spdlog::info("[verb:npc-fate] {:x}'s ash at {} ms dropped: the "
+                       "body stood again or died anew",
+                       formId, atMs);
+          return;
+        }
+        std::string names;
+        const size_t games =
+          SendAshCalls(*actor, group, shader, pile, commander, names);
+        spdlog::info("[verb:npc-fate] {:x} turns to ash (raise {:x}, "
+                     "effect {:x} runs ReanimateAshPile), at {} ms: {} "
+                     "relayed to {} game(s) (ADR-060 as amended 2026-11-15)",
+                     formId, raise, effect, atMs, names, games);
+      });
+  }
 }
 
 std::vector<espm::Effects::Effect> MpActor::EffectsOf(WorldState* worldState,

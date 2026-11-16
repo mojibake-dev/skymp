@@ -908,9 +908,11 @@ mod tests {
     /// 0xff0008fd of SummonAtronachFlamePotent 0x4e940 by effect 0x4e945 of
     /// ConjureFlameAtronachRightHand 0x100e76, at Embershard's door landing
     /// in Tamriel 0x3c, 59.5 s of the effect's 60 left), 83-1 its end (the
-    /// local id alone), 83-2 a start naming no base, refused by the shape
-    /// from either side. 33-5 is the summon's create word, its ownLocal
-    /// naming that engine reference to its caster alone.
+    /// local id alone), 83-2 a start with a negative time left, refused by
+    /// the wire's own sanity from either side (the base, the effect and the
+    /// spell are the report's own words, recorded unvalidated, R2). 33-5 is
+    /// the summon's create word, its ownLocal naming that engine reference
+    /// to its caster alone.
     #[test]
     fn summon_fixtures_validate_as_named() {
         use wire_validate::{validate, validate_server, ClientGuard, Reject};

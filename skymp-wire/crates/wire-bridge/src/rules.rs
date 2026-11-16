@@ -1459,8 +1459,9 @@ mod ffi {
     }
 
     /// thuum tracker #84 (Summon 83, docs/verbs/summon.md): what the core
-    /// knows of a summon start report beside the report itself (wire-rules
-    /// summons::StartFacts, the rule's own list).
+    /// gathers of a start report beside the report itself (wire-rules
+    /// summons::StartFacts): the record's consistencies alone, R2 recorded
+    /// unvalidated (Eli, 2026-11-16: "This is not a competitive game").
     #[derive(Debug, Clone, Copy, PartialEq)]
     struct SummonFacts {
         /// The reporter's actor, the caster; 0 when it plays none.
@@ -1469,32 +1470,16 @@ mod ffi {
         local: u32,
         /// The reported base.
         base: u32,
-        /// The reported summon effect (an MGEF).
+        /// The reported summon effect, recorded for the log and the row.
         effect: u32,
-        /// The reported spell.
+        /// The reported spell (a learned one, a scroll's, a staff's),
+        /// recorded for the log and the row.
         spell: u32,
-        /// The caster's record holds the spell (its learned spells, or its
-        /// base's).
-        spell_known: bool,
-        /// The effect is one of the spell's effects.
-        effect_on_spell: bool,
-        /// The effect's archetype as its MGEF's DATA gives it; u32::MAX
-        /// when the effect is no MGEF the files hold.
-        archetype: u32,
-        /// The effect's associated form (its MGEF's DATA), global; 0 for
-        /// none.
-        associated: u32,
-        /// The base is an NPC_ record.
+        /// The base is an NPC_ record the files hold.
         base_is_npc: bool,
-        /// The largest record duration of the spell's entries of the effect
-        /// (EFIT), seconds.
-        record_s: f32,
-        /// The time the caster's engine reports left, seconds.
+        /// The time the caster's engine reports left, seconds; the backstop
+        /// timer's alone.
         remaining_s: f32,
-        /// The reported worldspace or cell is the caster's record's.
-        same_world: bool,
-        /// The reported place's distance from the caster's record, units.
-        distance: f32,
         /// The reported place is in a cell the server knows.
         in_cell: bool,
     }
@@ -1509,21 +1494,6 @@ mod ffi {
         /// The refusal's stable name, empty otherwise.
         name: String,
         /// Why, for the log; empty otherwise.
-        why: String,
-    }
-
-    /// The rule's word on a summon end report (wire-rules summons): the
-    /// server's actor to dispel (code 0), or E_SUMMON_UNKNOWN (code 1)
-    /// when the caster holds no live summon its engine numbers so.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct SummonEnd {
-        /// 0 an actor to dispel, 1 no live summon named.
-        code: u8,
-        /// The server's actor the end names, 0 when none.
-        actor: u32,
-        /// The refusal's stable name, empty when none.
-        name: String,
-        /// Why, for the log; empty when none.
         why: String,
     }
 
@@ -3594,8 +3564,9 @@ mod ffi {
         type Summons;
         /// No summon held.
         fn new_summons() -> Box<Summons>;
-        /// The rule's word on a start report, nothing recorded (rule 5's
-        /// bounds, each refusal its E_SUMMON_*).
+        /// The record's consistency of a start report, nothing recorded:
+        /// the caster, the engine's id, a base the server could place, a
+        /// cell it knows (R2 recorded unvalidated).
         fn summon_judge(self: &Summons, facts: &SummonFacts) -> SummonVerdict;
         /// The core placed `actor` for the accepted start `facts` at
         /// `now_ms`: held to its backstop (the reported time left plus 5
@@ -3604,8 +3575,9 @@ mod ffi {
         /// bound.
         fn summon_record(self: &mut Summons, facts: &SummonFacts, actor: u32, now_ms: u64) -> bool;
         /// The caster's end report of its summon `local`: the server's
-        /// actor to dispel, or E_SUMMON_UNKNOWN.
-        fn summon_end(self: &Summons, caster: u32, local: u32) -> SummonEnd;
+        /// actor to dispel, 0 when the record holds no live summon by that
+        /// id (folded).
+        fn summon_end(self: &Summons, caster: u32, local: u32) -> u32;
         /// The dispel of `actor` begins at `now_ms`, fading `fade_ms`: its
         /// row stays until the fade ends and `summon_tick` hands it to the
         /// core to delete. False when no live summon is `actor`.
@@ -4147,7 +4119,7 @@ mod ffi {
     }
 }
 
-pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, SummonDue, SummonEnd, SummonFacts, SummonRow, SummonVerdict, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord, ScriptProperty, AshStep, AshCall, AshPlan};
+pub use ffi::{CreatedVerdict, OwnHeadPartFacts, OwnHeadPartsFacts, OwnHeadPartsVerdict, PlayerOverlayRow, PlayerOwnFacts, PlayerOwnVerdict, QuestRunRow, QuestRunVerdict, QuestRunsLogin, QuestScopeAliasRow, ScriptPropertyRow, ScriptVarKeyRow, ScriptVarReport, ScriptVarRow, ScriptVarVerdict, RefStateVerdict, ScriptPlacementRow, ScriptRequestRow, ScriptSetOpen, StandingFaction, StandingRelation, StandingVerdict, AliasCreationRow, AliasFillEntry, AliasFillFacts, AliasFillVerdict, AliasMarkRow, QuestAliasRow, StreamerElection, WorldGlobalFacts, WorldGlobalValue, WorldGlobalsMerge, AvBase, CellHost, CellHostRow, CellFollowRow, AliasActorFill, CellMove, HostDecision, HostKind, ScriptArg, ScriptCallCode, ScriptCallFacts, ScriptCallSubject, ScriptCallVerdict, ScriptStateCode, ScriptStateFacts, ScriptStateVerdict, TriggerEntryCode, TriggerEntryFacts, TriggerEntryHeld, TriggerEntryVerdict, TriggerFiringCode, TriggerFiringFacts, TriggerFiringVerdict, ObjectAnimationCode, ObjectAnimationFacts, ObjectAnimationVerdict, GraphVariableKept, GraphVariableSlot, LookCallRow, ServedLookRow, HostedStateFacts, HostedStateVerdict, HostedValueFacts, HostedValueVerdict, PercentHold, AvChange, BondBreak, AvLegendary, AvMerge, AvSkill, AvSnapshot, BedFacts, BlockFacts, BlockSettings, CastCheck, CastClaim, CastFacts, CastHit, CastKind, ConeFacts, ConsoleDecision, DerivedParts, EffectApplied, EffectArrival, EffectEntry, EffectFacts, EffectKind, FavoriteEntry, FavoriteFacts, FavoriteKind, FightPair, FlagFacts, Flags, GameTime, DeathBlast, HeadshotCheck, HeadshotFacts, HostilityFacts, JumpCheck, LookAppearance, LookPartFacts, LookRef, LookStash, MarkerCandidate, MarkerChoice, MeleeFacts, LevelingCharacter, LevelingEvent, LevelingOutcome, LevelingSkill, LockActivationVerdict, LockReportVerdict, LockStateRow, DestructionRow, DestructionVerdict, PlacedCast, PlacementRefusal, PlacementRemoval, PlacementReport, PlacementReportVerdict, PlacementRequestRow, PlacementRow, PlayerGlobalEntry, PropReturn, PropSampleFacts, PropSampleVerdict, QuestStageEntry, RaceFacts, Regen, RestFacts, RestRefusal, ShotCheck, ShotClaim, ShotFacts, SneakMults, StaggerFacts, StaggerSettings, SummonDue, SummonFacts, SummonRow, SummonVerdict, PerkVerdict, TeleportLook, Verdict, VoiceFacts, VoiceRefusal, WeatherWord, ThrallRecord, ScriptProperty, AshStep, AshCall, AshPlan};
 
 fn verdict(v: wire_rules::Verdict) -> Verdict {
     Verdict { allowed: v.allowed, bound: v.bound }
@@ -6111,15 +6083,8 @@ fn summon_start_facts(f: &SummonFacts) -> summons::StartFacts {
         base: f.base,
         effect: f.effect,
         spell: f.spell,
-        spell_known: f.spell_known,
-        effect_on_spell: f.effect_on_spell,
-        archetype: f.archetype,
-        associated: f.associated,
         base_is_npc: f.base_is_npc,
-        record_s: f.record_s,
         remaining_s: f.remaining_s,
-        same_world: f.same_world,
-        distance: f.distance,
         in_cell: f.in_cell,
     }
 }
@@ -6140,11 +6105,8 @@ impl Summons {
         self.0.record(&summon_start_facts(facts), actor, now_ms)
     }
 
-    fn summon_end(&self, caster: u32, local: u32) -> SummonEnd {
-        match self.0.end(caster, local) {
-            Ok(actor) => SummonEnd { code: 0, actor, name: String::new(), why: String::new() },
-            Err(e) => SummonEnd { code: 1, actor: 0, name: e.code.name().to_owned(), why: e.why },
-        }
+    fn summon_end(&self, caster: u32, local: u32) -> u32 {
+        self.0.end(caster, local).unwrap_or(0)
     }
 
     fn summon_dispel(&mut self, actor: u32, now_ms: u64, fade_ms: u64) -> bool {

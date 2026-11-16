@@ -20,14 +20,18 @@ PartOne& GetPartOne();
 // reports the summon its summon effect placed (Summon 83: the local id, the
 // base, the effect and the spell, the place, the time left) and the server
 // places its own actor, which the caster's game simulates through the create
-// word's ownLocal bind while every other game draws a puppet. The forms are
-// the baseline's (x-summon-baseline 20261116-083744, lab/esm.py on sky-srv,
-// 2026-11-16): ConjureFlameAtronachRightHand 0x100e76 carries two perk-gated
-// summon effects, MGEF 0x1ceaa summoning NPC_ 0x204c0 without Elemental
-// Potency and MGEF 0x4e945 summoning NPC_ 0x4e940 (SummonAtronachFlamePotent)
-// with it, each EFIT 60 s, so the rule keys on the archetype and checks the
-// base against the effect's associated form. Tamriel is 0x3c; the two stand
-// at its origin, the summon 300 units ahead.
+// word's ownLocal bind while every other game draws a puppet. R2 recorded
+// unvalidated (Eli, 2026-11-16: "'The server checks that the caster has
+// learned the spell' This is an example of an unnecessary check. This is not
+// a competitive game."): the base, the effect and the spell are the report's
+// own words, recorded as told, and the rule keeps the record's consistencies
+// alone (the caster, its engine's id, a base the files hold, a cell it
+// knows). The forms are the baseline's (x-summon-baseline 20261116-083744,
+// lab/esm.py on sky-srv, 2026-11-16): ConjureFlameAtronachRightHand 0x100e76,
+// its potent effect MGEF 0x4e945 summoning NPC_ 0x4e940, the plain 0x1ceaa
+// summoning NPC_ 0x204c0; SCRL 0xa44a1 ConjureStormAtronachScroll and MISC
+// 0x12fe7 Basket01 by the same read. Tamriel is 0x3c; the two stand at its
+// origin, the summon 300 units ahead.
 
 namespace {
 constexpr uint32_t kCaster = 0xff000c81;
@@ -38,6 +42,8 @@ constexpr uint32_t kPlainAtronach = 0x204c0;
 constexpr uint32_t kPotentEffect = 0x4e945;
 constexpr uint32_t kPotentAtronach = 0x4e940;
 constexpr uint32_t kLocal = 0xff00_08fd;
+constexpr uint32_t kStormScroll = 0xa44a1; // SCRL ConjureStormAtronachScroll
+constexpr uint32_t kBasket = 0x12fe7;      // MISC Basket01
 
 uint64_t NowMs()
 {
@@ -139,53 +145,41 @@ std::vector<nlohmann::json> CreateWordsTo(PartOne& p, Networking::UserId user)
 }
 
 TEST_CASE("A summon report places the server's actor, binds its caster and "
-          "puppets the watcher; each broken bound is refused by name "
-          "(tracker #84)",
+          "puppets the watcher; each broken consistency is refused by name, "
+          "and a scroll's summon records like a learned spell's (tracker #84)",
           "[Summon][espm]")
 {
   PartOne& p = GetPartOne();
   Enter(p);
   SummonLog log;
 
-  // the bounds, each by its first name, nothing placed
-  const auto refused =
-    Start(kLocal + 1, kPotentAtronach, kPotentEffect, 59.5f, 300.f);
-  // the spell the record does not hold: Dead Thrall 0x7e8df, verified
-  // (x-thrall-dies-at-logout.yaml:88), unlearned by the caster
+  // the consistencies, each by its first name, nothing placed: a base that
+  // is no actor record the files hold (MISC 0x12fe7 Basket01, lab/esm.py on
+  // sky-srv), and a place in no cell the server knows (the basket's own id,
+  // which is no WRLD or CELL)
+  Report(p, Start(kLocal + 1, kBasket, kPotentEffect, 59.5f, 300.f));
   {
-    auto msg = refused;
-    msg.spellId = 0x7e8df;
+    auto msg = Start(kLocal + 1, kPotentAtronach, kPotentEffect, 59.5f, 300.f);
+    msg.worldOrCell = kBasket;
     Report(p, msg);
   }
-  // the effect not one of the spell's: 0x5deb4, a REFR
-  // (MS03JailSibbiMarker, lab/esm.py on sky-srv), no MGEF at all
-  Report(p, [&] {
-    auto msg = refused;
-    msg.effectId = 0x5deb4;
-    return msg;
-  }());
-  // the base not the effect's associated form
-  Report(p, Start(kLocal + 1, kPlainAtronach, kPotentEffect, 59.5f, 300.f));
-  // too far from the caster's record
-  Report(p, Start(kLocal + 1, kPotentAtronach, kPotentEffect, 59.5f, 9000.f));
-  // the time left past four times the record's 60 s
-  Report(p, Start(kLocal + 1, kPotentAtronach, kPotentEffect, 300.f, 300.f));
-  REQUIRE(log.Count("E_SUMMON_SPELL: ff000c81's record holds no spell 7e8df; "
-                    "nothing placed") == 1);
-  REQUIRE(log.Count("E_SUMMON_EFFECT: 5deb4 is none of spell 100e76's "
-                    "effects; nothing placed") == 1);
-  REQUIRE(log.Count("E_SUMMON_BASE: 4e945 summons 4e940, not the reported "
-                    "base 204c0; nothing placed") == 1);
-  REQUIRE(log.Count("E_SUMMON_FAR: the place stands 9000 units from "
-                    "ff000c81's record (bound 8192); nothing placed") == 1);
-  REQUIRE(log.Count("E_SUMMON_LONG") == 1);
+  REQUIRE(log.Count("E_SUMMON_BASE: the base 12fe7 is no actor record the "
+                    "files hold; nothing placed") == 1);
+  REQUIRE(log.Count("E_SUMMON_CELL: the place is in no cell the server's "
+                    "files hold; nothing placed") == 1);
   REQUIRE(CreateWordsTo(p, 0).empty());
   p.Messages().clear();
 
-  // the plain effect and its own base pass alike: the rule keys on the
-  // archetype, never on one base
+  // the learned spell's report and a scroll's record alike: R2 recorded
+  // unvalidated, the spell and the effect are the report's own words
+  // (SCRL 0xa44a1 ConjureStormAtronachScroll is never learned, and its
+  // effect rides unjudged)
   Report(p, Start(kLocal, kPotentAtronach, kPotentEffect, 59.5f, 300.f));
-  Report(p, Start(kLocal + 1, kPlainAtronach, kPlainEffect, 59.5f, 300.f));
+  {
+    auto msg = Start(kLocal + 1, kPlainAtronach, 0, 59.5f, 300.f);
+    msg.spellId = kStormScroll;
+    Report(p, msg);
+  }
   const auto bound = CreateWordsTo(p, 0);
   const auto puppet = CreateWordsTo(p, 1);
   REQUIRE(bound.size() == 2);
@@ -202,10 +196,7 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
     REQUIRE(puppet[i].value("baseRecordType", "") == "NPC_");
   }
 
-  // a third live summon and the same engine reference twice
-  Report(p, Start(kLocal + 2, kPotentAtronach, kPotentEffect, 59.5f, 300.f));
-  REQUIRE(log.Count("E_SUMMON_FULL: ff000c81 holds 2 live summons already "
-                    "(bound 2); nothing placed") == 1);
+  // the same engine reference twice: the record holds it
   Report(p, Start(kLocal, kPotentAtronach, kPotentEffect, 59.5f, 300.f));
   REQUIRE(log.Count("E_SUMMON_TWICE") == 1);
 
@@ -216,16 +207,25 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
     end.ended = true;
     Report(p, end);
   }
-  REQUIRE(log.Count("E_SUMMON_UNKNOWN: ff000c81 holds no live summon its "
-                    "engine numbers ff000906, folded") == 1);
+  REQUIRE(log.Count("ff000c81's engine reports its summon ff000906 ended; "
+                    "the record holds none live by that id, folded") == 1);
 
   Leave(p);
 }
 
-TEST_CASE("A summon's end dispels it: the kill reaches every game, the "
-          "fade's snippet the watcher's alone, the fade's end deletes the "
-          "actor (tracker #84)",
-          "[Summon][espm]")
+TEST_CASE(
+  "A summon's end dispels itTEST_CASE(" A
+    summon 's end dispels it: the kill reaches every game, the " "fade' s
+  "
+  "snippet the "
+  "watcher's "
+  "alone, the "
+  "fade's end "
+  "deletes the "
+  "actor "
+  "(tracker "
+  "#84)",
+  "[Summon][espm]")
 {
   PartOne& p = GetPartOne();
   Enter(p);

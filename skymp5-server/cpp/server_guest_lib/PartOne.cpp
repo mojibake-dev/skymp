@@ -4042,54 +4042,30 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
     "{:.0f}, {:.0f}) in {:x}, {:.1f} s left",
     caster.GetFormId(), msg.localId, msg.baseId, msg.effectId, msg.spellId,
     msg.pos[0], msg.pos[1], msg.pos[2], msg.worldOrCell, msg.remainingS);
-  // rule 5's bounds before anything is placed, judged by wire-rules
-  // summons over what the core reads here: the reporter's own player
-  // alone (the message names no actor), the spell its record holds (or
-  // its base's), the effect one of the spell's and a summon's (archetype
-  // 18, kSummonCreature, CommonLibSSE-NG include/RE/E/EffectArchetypes.h:28,
-  // read through the files), the base the effect's associated form and an
-  // NPC_, the place the caster's own worldspace or cell within 8192 units
-  // in a cell the files hold, the time left within four times the spell's
-  // record duration, two live at most
+  // the record's consistencies before anything is placed, R2 recorded
+  // unvalidated (Eli, 2026-11-16: "'The server checks that the caster has
+  // learned the spell' This is an example of an unnecessary check. This is
+  // not a competitive game."; the wire held the report's shape): the
+  // reporter's own player alone (the message names no actor), its engine's
+  // id naming no summon the record holds, a base the server could place (an
+  // actor record the files hold), and a cell it knows. The base, the effect
+  // and the spell are the report's own words, recorded as told; the time
+  // left is the backstop timer's alone
   skymp::rules::SummonFacts facts{};
   facts.caster = caster.GetFormId();
   facts.local = msg.localId;
   facts.base = msg.baseId;
   facts.effect = msg.effectId;
   facts.spell = msg.spellId;
-  facts.spell_known = caster.IsSpellLearned(msg.spellId);
   facts.remaining_s = msg.remainingS;
-  const NiPoint3& cpos = caster.GetPos();
-  facts.same_world =
-    caster.GetCellOrWorld().ToFormId(worldState.espmFiles) == msg.worldOrCell;
-  const float dx = msg.pos[0] - cpos.x;
-  const float dy = msg.pos[1] - cpos.y;
-  const float dz = msg.pos[2] - cpos.z;
-  facts.distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+  if (HasEspm()) {
+    const auto baseRec = GetEspm().GetBrowser().LookupById(msg.baseId).rec;
+    facts.base_is_npc = baseRec && baseRec->GetType() == espm::NPC_::kType;
+  }
   facts.in_cell =
     worldState
       .CellOf(msg.worldOrCell, NiPoint3{ msg.pos[0], msg.pos[1], msg.pos[2] })
       .has_value();
-  if (HasEspm()) {
-    for (const auto& effect : MpActor::EffectsOf(&worldState, msg.spellId)) {
-      if (effect.effectId == msg.effectId) {
-        facts.effect_on_spell = true;
-        facts.record_s =
-          std::max(facts.record_s, static_cast<float>(effect.duration));
-      }
-    }
-    const auto effectRec = GetEspm().GetBrowser().LookupById(msg.effectId).rec;
-    if (effectRec && effectRec->GetType() == espm::MGEF::kType) {
-      const auto mgef = espm::GetData<espm::MGEF>(msg.effectId, &worldState);
-      facts.archetype = static_cast<uint32_t>(mgef.data.effectType);
-      facts.associated = mgef.data.associatedItem;
-    } else {
-      // the rule's "no MGEF the files hold"
-      facts.archetype = std::numeric_limits<uint32_t>::max();
-    }
-    const auto baseRec = GetEspm().GetBrowser().LookupById(msg.baseId).rec;
-    facts.base_is_npc = baseRec && baseRec->GetType() == espm::NPC_::kType;
-  }
   const auto verdict = pImpl->summons->summon_judge(facts);
   if (verdict.code != 0) {
     // the rule's why names the ids; the head is the accepted line's
@@ -4134,18 +4110,21 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
 
 void PartOne::OnSummonEnd(MpActor& caster, const SummonMessage& msg)
 {
-  const auto end = pImpl->summons->summon_end(caster.GetFormId(), msg.localId);
-  if (end.code != 0) {
-    return spdlog::info("[verb:summon] {}: {}, folded (tracker #84)",
-                        std::string(end.name), std::string(end.why));
+  const uint32_t ended =
+    pImpl->summons->summon_end(caster.GetFormId(), msg.localId);
+  if (ended == 0) {
+    return spdlog::info("[verb:summon] {:x}'s engine reports its summon "
+                        "{:x} ended; the record holds none live by that id, "
+                        "folded (tracker #84)",
+                        caster.GetFormId(), msg.localId);
   }
-  const auto& form = worldState.LookupFormByIdNoLoad(end.actor);
+  const auto& form = worldState.LookupFormByIdNoLoad(ended);
   MpActor* summon = form ? form->AsActor() : nullptr;
   if (!summon) {
-    ForgetSummon(end.actor);
+    ForgetSummon(ended);
     return spdlog::warn("[verb:summon] {:x}'s summon {:x} ended: its actor "
                         "{:x} is gone already",
-                        caster.GetFormId(), msg.localId, end.actor);
+                        caster.GetFormId(), msg.localId, ended);
   }
   DispelSummon(*summon, "its effect's end, its engine's own word");
 }

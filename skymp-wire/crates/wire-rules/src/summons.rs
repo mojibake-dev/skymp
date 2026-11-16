@@ -1,75 +1,41 @@
 //! A player's conjured summon as an owned actor shared between games (thuum
-//! tracker #84, the verb `summon`; ADR-063: one owner, the caster's row;
-//! ADR-073 decision 6: a created reference is its creator's, its ends
-//! declared). The caster's engine spawns its summon later than the cast
-//! (MagicCaster's Update, no event names the actor), so its game polls its
-//! player's commanded actors and reports each new summon once (Summon,
-//! MsgType 83, `ended` false) and its end once (`ended` true). The server
-//! places its own actor of the reported base at the reported place, records
-//! it as the caster's (cells.rs `FollowKind::Summon`: the caster's game
-//! simulates it in any cell, every other game draws a puppet), and dispels it
-//! at the first of its four ends: the caster's end report (the effect's
-//! timer, or the engine's Finish after a death), a backstop past the
-//! reported time left, the caster's departure (cells.rs `SummonGone`) and a
-//! restart (swept at load).
+//! tracker #84, the verb `summon`; ADR-052 decision 3 as amended 2026-11-16;
+//! ADR-063: the caster's row owns it). The caster's engine spawns its summon
+//! later than the cast (no event names the actor), so its game reports each
+//! new summon once (Summon, MsgType 83, `ended` false) and its end once
+//! (`ended` true). The server places its own actor of the reported base at
+//! the reported place, records it as the caster's (cells.rs
+//! `FollowKind::Summon`: the caster's game simulates it in any cell, every
+//! other game draws a puppet), and dispels it at the first of its four ends:
+//! the caster's end report (the effect's timer, or the engine's Finish after
+//! a death), a backstop past the reported time left, the caster's departure
+//! (cells.rs `SummonGone`) and a restart (swept at load).
 //!
-//! The read behind it: x-summon-baseline 20261116-083744 (c1 cast
-//! ConjureFlameAtronachRightHand 0x100e76; its engine placed 0xff0008fd of
-//! base 0x4e940, disabled and deleted by 12 s; c2 drew nothing). The spell
-//! carries two summon effects gated on the Elemental Potency perk (MGEF
-//! 0x1ceaa summons NPC_ 0x204c0, MGEF 0x4e945 NPC_ 0x4e940; Skyrim.esm, thuum
-//! lab/esm.py on sky-srv, 2026-11-16: archetype 18 and those associated forms
-//! in each MGEF's DATA, each EFIT 60 s), so nothing keys on one base: the
-//! rule keys on the summon archetype and takes the base from the caster's
-//! report, checked against that effect's associated form.
-//!
-//! The rule, R2 for the summon's existence, place and life (the caster's
-//! engine computes; the server records within bounds, rule 5). A start is
-//! refused, by name, when it breaks the first of these:
+//! R2, recorded unvalidated (Eli, 2026-11-16 about 2:45 AM PST: "'The server
+//! checks that the caster has learned the spell' This is an example of an
+//! unnecessary check. This is not a competitive game."; CLAUDE.md rule 5's
+//! R2 branch, ADR-063: the server validates consistency only): the caster's
+//! engine computes the summon's base, its place, its count and its life; the
+//! server records what it is told. A start is refused, by name, only when it
+//! breaks the record's consistency:
 //! - the reporter plays an actor, which is the caster (the message names no
-//!   other actor) (`E_SUMMON_CASTER`), and its local id is not one of its
-//!   live summons already (`E_SUMMON_TWICE`);
-//! - the spell is one the caster's record holds (`E_SUMMON_SPELL`), the
-//!   effect is one of that spell's effects (`E_SUMMON_EFFECT`), its
-//!   archetype is the summon's ([`SUMMON_ARCHETYPE`], `E_SUMMON_ARCHETYPE`),
-//!   and its associated form is the reported base, an NPC_
-//!   (`E_SUMMON_BASE`);
-//! - the place is in the caster's record's worldspace or cell, within
-//!   [`MAX_DISTANCE`] of it (`E_SUMMON_FAR`), in a cell the server knows
-//!   (`E_SUMMON_CELL`);
-//! - the time left is no more than [`DURATION_SLACK`] times the effect's
-//!   record duration on the spell (`E_SUMMON_LONG`);
-//! - the caster holds fewer than [`MAX_LIVE`] live summons
-//!   (`E_SUMMON_FULL`).
+//!   other actor) (`E_SUMMON_CASTER`), and its local id names no summon the
+//!   record already holds (`E_SUMMON_TWICE`);
+//! - the base is an actor record the files hold, the only thing the server
+//!   can place (`E_SUMMON_BASE`);
+//! - the place is in a cell the server knows (`E_SUMMON_CELL`).
 //!
-//! An end names one of the caster's own live summons by its local id, else
-//! `E_SUMMON_UNKNOWN`. The table here holds each live summon until its
-//! dispel's fade ends; the core asks [`Summons::tick`] for the backstops due
-//! and the fades done.
+//! How many summons one caster holds, and for how long, its engine decides
+//! (a scroll's, a staff's, a mod's cast is recorded like a learned spell's:
+//! SCRL 0xa44a1 ConjureStormAtronachScroll, lab/esm.py on sky-srv,
+//! 2026-11-16); the reported time left sets the backstop timer alone. The
+//! end report of a local id the record does not hold folds, nothing named.
 
 use std::collections::HashMap;
 
-/// The summon archetype: EffectSetting::Archetype::kSummonCreature
-/// (CommonLibSSE-NG include/RE/E/EffectArchetypes.h:28), libespm
-/// MGEF::EffectType::SummonCreature; both summon effects of
-/// ConjureFlameAtronachRightHand carry it in their DATA (Skyrim.esm, lab/esm.py).
-pub const SUMMON_ARCHETYPE: u32 = 18;
-/// How many live summons one caster holds at once: the engine's own ceiling
-/// with the Twin Souls perk (the design's bound; a third start is refused).
-pub const MAX_LIVE: usize = 2;
-/// The farthest a reported summon may stand from its caster's record,
-/// units: two exterior cells' side, a bound that breaks nothing.
-pub const MAX_DISTANCE: f32 = 8192.0;
-/// How many times the effect's record duration the reported time left may
-/// be: perks and dual casting lengthen the engine's own timer past the
-/// record's, and four times is a bound that breaks nothing.
-pub const DURATION_SLACK: f32 = 4.0;
 /// How long past the reported time left the server dispels a summon whose
 /// end report never came, ms.
 pub const BACKSTOP_MS: u64 = 5_000;
-/// The first local id a seat's engine hands a reference it creates at run
-/// time.
-pub const LOCAL_FIRST: u32 = 0xff00_0000;
 
 /// Why a summon report is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,25 +44,10 @@ pub enum Code {
     Caster,
     /// The local id is one of the caster's live summons already.
     Twice,
-    /// The spell is not one the caster's record holds.
-    Spell,
-    /// The effect is not one of the spell's effects.
-    Effect,
-    /// The effect is no summon (its archetype is not [`SUMMON_ARCHETYPE`]).
-    Archetype,
-    /// The base is not the effect's associated form, or no NPC_.
+    /// The base is no actor record the files hold.
     Base,
-    /// The place is in another worldspace or cell than the caster's record,
-    /// or farther than [`MAX_DISTANCE`] from it.
-    Far,
     /// The place is in no cell the server knows.
     Cell,
-    /// The time left is past [`DURATION_SLACK`] times the record duration.
-    Long,
-    /// The caster holds [`MAX_LIVE`] live summons already.
-    Full,
-    /// An end names no live summon of the caster's.
-    Unknown,
 }
 
 impl Code {
@@ -106,15 +57,8 @@ impl Code {
         match self {
             Code::Caster => "E_SUMMON_CASTER",
             Code::Twice => "E_SUMMON_TWICE",
-            Code::Spell => "E_SUMMON_SPELL",
-            Code::Effect => "E_SUMMON_EFFECT",
-            Code::Archetype => "E_SUMMON_ARCHETYPE",
             Code::Base => "E_SUMMON_BASE",
-            Code::Far => "E_SUMMON_FAR",
             Code::Cell => "E_SUMMON_CELL",
-            Code::Long => "E_SUMMON_LONG",
-            Code::Full => "E_SUMMON_FULL",
-            Code::Unknown => "E_SUMMON_UNKNOWN",
         }
     }
 }
@@ -132,7 +76,9 @@ fn refuse<T>(code: Code, why: String) -> Result<T, Refused> {
     Err(Refused { code, why })
 }
 
-/// A start report and the facts the core read for it (rule 5's list).
+/// A start report and the facts the core read for it: what the record holds
+/// after it (the row's base, effect and spell are the report's own words,
+/// recorded as told).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct StartFacts {
     /// The reporter's actor, the caster; 0 when it plays none.
@@ -141,31 +87,16 @@ pub struct StartFacts {
     pub local: u32,
     /// The reported base.
     pub base: u32,
-    /// The reported summon effect (an MGEF).
+    /// The reported summon effect, recorded for the log and the row.
     pub effect: u32,
-    /// The reported spell.
+    /// The reported spell (a learned one, a scroll's, a staff's), recorded
+    /// for the log and the row.
     pub spell: u32,
-    /// The caster's record holds the spell (its learned spells, or its
-    /// base's).
-    pub spell_known: bool,
-    /// The effect is one of the spell's effects.
-    pub effect_on_spell: bool,
-    /// The effect's archetype as its MGEF's DATA gives it; `u32::MAX` when
-    /// the effect is no MGEF.
-    pub archetype: u32,
-    /// The effect's associated form (its MGEF's DATA), global; 0 for none.
-    pub associated: u32,
-    /// The base is an NPC_ record.
+    /// The base is an NPC_ record the files hold.
     pub base_is_npc: bool,
-    /// The largest record duration of the spell's entries of the effect
-    /// (EFIT), seconds.
-    pub record_s: f32,
-    /// The time the caster's engine reports left, seconds.
+    /// The time the caster's engine reports left, seconds; the backstop
+    /// timer's alone.
     pub remaining_s: f32,
-    /// The reported worldspace or cell is the caster's record's.
-    pub same_world: bool,
-    /// The reported place's distance from the caster's record, units.
-    pub distance: f32,
     /// The reported place is in a cell the server knows.
     pub in_cell: bool,
 }
@@ -179,11 +110,11 @@ pub struct Row {
     pub caster: u32,
     /// Its id in the caster's engine.
     pub local: u32,
-    /// Its base.
+    /// Its base, as reported.
     pub base: u32,
-    /// Its summon effect.
+    /// Its summon effect, as reported.
     pub effect: u32,
-    /// Its spell.
+    /// Its spell, as reported.
     pub spell: u32,
     /// When the backstop dispels it, on the core's monotonic clock, ms.
     pub backstop_ms: u64,
@@ -276,11 +207,12 @@ impl Summons {
             .map_or(0, |r| r.local)
     }
 
-    /// Rule 5's checks of a start report, in the module's order; nothing is
-    /// recorded.
+    /// The record's consistency of a start report, nothing recorded: the
+    /// reporter's own player, its engine's id naming no summon held, a base
+    /// the server could place, a cell it knows.
     ///
     /// # Errors
-    /// The first bound broken, by its code, with why.
+    /// The first consistency broken, by its code, with why.
     pub fn judge(&self, f: &StartFacts) -> Result<(), Refused> {
         if f.caster == 0 {
             return refuse(Code::Caster, "the sender plays no actor, so no caster stands behind the report".to_owned());
@@ -288,47 +220,11 @@ impl Summons {
         if let Some(actor) = self.actor_of(f.caster, f.local) {
             return refuse(Code::Twice, format!("{:x}'s engine reported its summon {:x} already, the server's {actor:x}", f.caster, f.local));
         }
-        if !f.spell_known {
-            return refuse(Code::Spell, format!("{:x}'s record holds no spell {:x}", f.caster, f.spell));
-        }
-        if !f.effect_on_spell {
-            return refuse(Code::Effect, format!("{:x} is none of spell {:x}'s effects", f.effect, f.spell));
-        }
-        if f.archetype != SUMMON_ARCHETYPE {
-            return refuse(
-                Code::Archetype,
-                if f.archetype == u32::MAX {
-                    format!("{:x} is no magic effect the files hold", f.effect)
-                } else {
-                    format!("{:x}'s archetype is {}, not the summon's {SUMMON_ARCHETYPE}", f.effect, f.archetype)
-                },
-            );
-        }
-        if f.associated != f.base {
-            return refuse(Code::Base, format!("{:x} summons {:x}, not the reported base {:x}", f.effect, f.associated, f.base));
-        }
         if !f.base_is_npc {
-            return refuse(Code::Base, format!("the base {:x} is no NPC_ record", f.base));
-        }
-        if !f.same_world {
-            return refuse(Code::Far, format!("the place is in another worldspace or cell than {:x}'s record", f.caster));
-        }
-        if !(0.0..=MAX_DISTANCE).contains(&f.distance) {
-            return refuse(Code::Far, format!("the place stands {:.0} units from {:x}'s record (bound {MAX_DISTANCE:.0})", f.distance, f.caster));
+            return refuse(Code::Base, format!("the base {:x} is no actor record the files hold", f.base));
         }
         if !f.in_cell {
             return refuse(Code::Cell, "the place is in no cell the server's files hold".to_owned());
-        }
-        let bound = f.record_s * DURATION_SLACK;
-        if !(f.remaining_s >= 0.0 && f.remaining_s <= bound) {
-            return refuse(
-                Code::Long,
-                format!("{:.1} s left is past {DURATION_SLACK} times {:x}'s record duration on spell {:x} ({:.1} s)", f.remaining_s, f.effect, f.spell, f.record_s),
-            );
-        }
-        let live = self.live_of(f.caster);
-        if live >= MAX_LIVE {
-            return refuse(Code::Full, format!("{:x} holds {live} live summons already (bound {MAX_LIVE})", f.caster));
         }
         Ok(())
     }
@@ -336,7 +232,7 @@ impl Summons {
     /// The core placed `actor` for the accepted start `f` at `now_ms`: held,
     /// its backstop at the reported time left plus [`BACKSTOP_MS`]. False,
     /// and nothing recorded, when the table holds `actor` or `f`'s local id
-    /// for its caster already, or the start breaks a bound (`judge`).
+    /// for its caster already, or the start breaks a consistency (`judge`).
     pub fn record(&mut self, f: &StartFacts, actor: u32, now_ms: u64) -> bool {
         if actor == 0 || self.rows.contains_key(&actor) || self.judge(f).is_err() {
             return false;
@@ -350,16 +246,11 @@ impl Summons {
     }
 
     /// `caster`'s end report of its summon `local`: the server's actor to
-    /// dispel.
-    ///
-    /// # Errors
-    /// `E_SUMMON_UNKNOWN` when `caster` holds no live summon by that id (never
-    /// reported, refused, or dispelled already).
-    pub fn end(&self, caster: u32, local: u32) -> Result<u32, Refused> {
-        match self.actor_of(caster, local) {
-            Some(actor) => Ok(actor),
-            None => refuse(Code::Unknown, format!("{:x} holds no live summon its engine numbers {local:x}", caster)),
-        }
+    /// dispel, `None` when its record holds no live summon by that id
+    /// (never reported, or dispelled already), folded.
+    #[must_use]
+    pub fn end(&self, caster: u32, local: u32) -> Option<u32> {
+        self.actor_of(caster, local)
     }
 
     /// The dispel of `actor` begins at `now_ms`: its row stays, fading,
@@ -411,15 +302,16 @@ mod tests {
     const ARIADNE: u32 = 0xff00_0002;
     // Skyrim.esm (lab/esm.py on sky-srv, 2026-11-16)
     const CONJURE_FLAME_ATRONACH: u32 = 0x100e76;
-    const SUMMON_FLAME_ATRONACH: u32 = 0x1ceaa;
     const SUMMON_FLAME_ATRONACH_POTENT: u32 = 0x4e945;
-    const ATRONACH: u32 = 0x204c0;
     const ATRONACH_POTENT: u32 = 0x4e940;
+    // SCRL 0xa44a1 ConjureStormAtronachScroll (lab/esm.py on sky-srv,
+    // 2026-11-16): a scroll's cast is recorded like a learned spell's
+    const CONJURE_STORM_ATRONACH_SCROLL: u32 = 0xa44a1;
     // x-summon-baseline 20261116-083744's engine id
     const LOCAL: u32 = 0xff00_08fd;
 
-    /// The baseline's cast, within every bound: rotfern's potent atronach
-    /// 300 units ahead with 59.5 s of the effect's 60 left.
+    /// The baseline's cast: rotfern's potent atronach 300 units ahead with
+    /// 59.5 s of the effect's 60 left.
     fn start() -> StartFacts {
         StartFacts {
             caster: ROTFERN,
@@ -427,15 +319,8 @@ mod tests {
             base: ATRONACH_POTENT,
             effect: SUMMON_FLAME_ATRONACH_POTENT,
             spell: CONJURE_FLAME_ATRONACH,
-            spell_known: true,
-            effect_on_spell: true,
-            archetype: SUMMON_ARCHETYPE,
-            associated: ATRONACH_POTENT,
             base_is_npc: true,
-            record_s: 60.0,
             remaining_s: 59.5,
-            same_world: true,
-            distance: 300.0,
             in_cell: true,
         }
     }
@@ -445,13 +330,9 @@ mod tests {
     }
 
     #[test]
-    fn a_summon_within_every_bound_is_placed_and_held_as_its_casters() {
+    fn a_summon_within_the_consistencies_is_placed_and_held_as_its_casters() {
         let mut s = Summons::new();
         assert_eq!(s.judge(&start()), Ok(()));
-        // the perk's other effect and its own base pass alike: the rule keys
-        // on the archetype, never on one base
-        let plain = StartFacts { base: ATRONACH, effect: SUMMON_FLAME_ATRONACH, associated: ATRONACH, local: LOCAL + 1, ..start() };
-        assert_eq!(s.judge(&plain), Ok(()));
         assert!(s.record(&start(), 0xff00_0c90, 1_000));
         assert_eq!(s.len(), 1);
         assert_eq!(s.live_of(ROTFERN), 1);
@@ -462,61 +343,70 @@ mod tests {
         assert_eq!(s.own_local(0xff00_0c90, ARIADNE), 0);
         assert_eq!(s.own_local(0xff00_0c91, ROTFERN), 0);
         let row = s.row(0xff00_0c90);
-        assert_eq!(row.map(|r| (r.base, r.effect, r.spell, r.backstop_ms)), Some((ATRONACH_POTENT, SUMMON_FLAME_ATRONACH_POTENT, CONJURE_FLAME_ATRONACH, 1_000 + 59_500 + BACKSTOP_MS)));
+        assert_eq!(
+            row.map(|r| (r.base, r.effect, r.spell, r.backstop_ms)),
+            Some((ATRONACH_POTENT, SUMMON_FLAME_ATRONACH_POTENT, CONJURE_FLAME_ATRONACH, 1_000 + 59_500 + BACKSTOP_MS))
+        );
         // a second actor for the same engine reference, or the same actor
         // twice, records nothing
         assert!(!s.record(&start(), 0xff00_0c91, 1_100));
-        assert!(!s.record(&plain, 0xff00_0c90, 1_100));
-        assert!(!s.record(&plain, 0, 1_100));
-        // the Twin Souls pair
-        assert!(s.record(&plain, 0xff00_0c91, 1_200));
-        assert_eq!(s.live_of(ROTFERN), 2);
+        assert!(!s.record(&start(), 0xff00_0c90, 1_100));
+        assert!(!s.record(&start(), 0, 1_100));
         // the other caster's numbers are its own
         let hers = StartFacts { caster: ARIADNE, ..start() };
         assert_eq!(s.judge(&hers), Ok(()));
     }
 
     #[test]
-    fn a_start_past_a_bound_is_refused_by_the_first_it_breaks() {
+    fn a_scrolls_summon_is_recorded_like_a_learned_spells() {
+        // R2 recorded unvalidated (Eli, 2026-11-16: "This is not a
+        // competitive game"): the spell and the effect are the report's own
+        // words, recorded for the log and the row, never judged; the storm
+        // atronach scroll's cast places and binds like the learned one's
+        let mut s = Summons::new();
+        let scroll = StartFacts {
+            spell: CONJURE_STORM_ATRONACH_SCROLL,
+            effect: 0,
+            ..start() };
+        assert_eq!(s.judge(&scroll), Ok(()));
+        assert!(s.record(&scroll, 0xff00_0c90, 1_000));
+        let row = s.row(0xff00_0c90);
+        assert_eq!(row.map(|r| (r.spell, r.effect)), Some((CONJURE_STORM_ATRONACH_SCROLL, 0)));
+        assert_eq!(s.own_local(0xff00_0c90, ROTFERN), LOCAL);
+        // a negative or non-finite time left still records: the backstop
+        // clamps it (ms_of), the record holds what it was told
+        let told = StartFacts { remaining_s: f32::NAN, local: LOCAL + 1, ..scroll };
+        assert!(s.record(&told, 0xff00_0c91, 1_000));
+        assert_eq!(s.row(0xff00_0c91).map(|r| r.backstop_ms), Some(1_000 + BACKSTOP_MS));
+        let told = StartFacts { remaining_s: -3.0, local: LOCAL + 2, ..scroll };
+        assert!(s.record(&told, 0xff00_0c92, 1_000));
+        assert_eq!(s.row(0xff00_0c92).map(|r| r.backstop_ms), Some(1_000 + BACKSTOP_MS));
+    }
+
+    #[test]
+    fn a_start_past_a_consistency_is_refused_by_the_first_it_breaks() {
         let mut s = Summons::new();
         let refused = |s: &Summons, f: StartFacts| code(s.judge(&f));
         assert_eq!(refused(&s, StartFacts { caster: 0, ..start() }), Some("E_SUMMON_CASTER"));
-        assert_eq!(refused(&s, StartFacts { spell_known: false, ..start() }), Some("E_SUMMON_SPELL"));
-        assert_eq!(refused(&s, StartFacts { effect_on_spell: false, ..start() }), Some("E_SUMMON_EFFECT"));
-        // a Reanimate effect (archetype 22) and an effect no MGEF holds
-        assert_eq!(refused(&s, StartFacts { archetype: 22, ..start() }), Some("E_SUMMON_ARCHETYPE"));
-        assert_eq!(refused(&s, StartFacts { archetype: u32::MAX, ..start() }), Some("E_SUMMON_ARCHETYPE"));
-        // the potent effect reported with the plain base, and a base that is
-        // no actor
-        assert_eq!(refused(&s, StartFacts { base: ATRONACH, ..start() }), Some("E_SUMMON_BASE"));
         assert_eq!(refused(&s, StartFacts { base_is_npc: false, ..start() }), Some("E_SUMMON_BASE"));
-        assert_eq!(refused(&s, StartFacts { same_world: false, ..start() }), Some("E_SUMMON_FAR"));
-        assert_eq!(refused(&s, StartFacts { distance: 8192.5, ..start() }), Some("E_SUMMON_FAR"));
-        assert_eq!(refused(&s, StartFacts { distance: f32::NAN, ..start() }), Some("E_SUMMON_FAR"));
-        assert_eq!(refused(&s, StartFacts { distance: 8192.0, ..start() }), None);
         assert_eq!(refused(&s, StartFacts { in_cell: false, ..start() }), Some("E_SUMMON_CELL"));
-        // four times the record's 60 s, and no further
-        assert_eq!(refused(&s, StartFacts { remaining_s: 240.0, ..start() }), None);
-        assert_eq!(refused(&s, StartFacts { remaining_s: 240.5, ..start() }), Some("E_SUMMON_LONG"));
-        assert_eq!(refused(&s, StartFacts { remaining_s: -1.0, ..start() }), Some("E_SUMMON_LONG"));
-        assert_eq!(refused(&s, StartFacts { remaining_s: f32::NAN, ..start() }), Some("E_SUMMON_LONG"));
-        assert_eq!(refused(&s, StartFacts { record_s: 0.0, remaining_s: 1.0, ..start() }), Some("E_SUMMON_LONG"));
-        // the order: the spell before the place before the time
-        assert_eq!(refused(&s, StartFacts { spell_known: false, distance: 9_000.0, remaining_s: 999.0, ..start() }), Some("E_SUMMON_SPELL"));
-        assert_eq!(refused(&s, StartFacts { distance: 9_000.0, remaining_s: 999.0, ..start() }), Some("E_SUMMON_FAR"));
-        // a third live summon, and the same engine reference twice
+        // the order: the caster, then the engine's id, then the base, then
+        // the cell
+        assert_eq!(refused(&s, StartFacts { caster: 0, base_is_npc: false, in_cell: false, ..start() }), Some("E_SUMMON_CASTER"));
         assert!(s.record(&start(), 0xff00_0c90, 0));
         assert_eq!(refused(&s, start()), Some("E_SUMMON_TWICE"));
-        assert!(s.record(&StartFacts { local: LOCAL + 1, ..start() }, 0xff00_0c91, 0));
-        assert_eq!(refused(&s, StartFacts { local: LOCAL + 2, ..start() }), Some("E_SUMMON_FULL"));
-        assert!(!s.record(&StartFacts { local: LOCAL + 2, ..start() }, 0xff00_0c92, 0));
+        assert_eq!(refused(&s, StartFacts { local: LOCAL + 1, base_is_npc: false, in_cell: false, ..start() }), Some("E_SUMMON_BASE"));
         // the why names the numbers
-        let why = s.judge(&StartFacts { local: LOCAL + 2, ..start() }).err().map(|e| e.why);
-        assert_eq!(why.as_deref(), Some("ff000001 holds 2 live summons already (bound 2)"));
-        let why = Summons::new().judge(&StartFacts { distance: 9_000.0, ..start() }).err().map(|e| e.why);
-        assert_eq!(why.as_deref(), Some("the place stands 9000 units from ff000001's record (bound 8192)"));
-        let why = Summons::new().judge(&StartFacts { base: ATRONACH, ..start() }).err().map(|e| e.why);
-        assert_eq!(why.as_deref(), Some("4e945 summons 4e940, not the reported base 204c0"));
+        let why = s.judge(&start()).err().map(|e| e.why);
+        assert_eq!(why.as_deref(), Some("ff000001's engine reported its summon ff0008fd already, the server's ff000c90"));
+        let why = Summons::new().judge(&StartFacts { base_is_npc: false, ..start() }).err().map(|e| e.why);
+        assert_eq!(why.as_deref(), Some("the base 4e940 is no actor record the files hold"));
+        // the spell, the effect, the distance and the time are never judged:
+        // a far place, an unknown spell, a wild time all record
+        let told = StartFacts { spell: 0, effect: 0, remaining_s: 9_999.0, ..StartFacts { local: LOCAL + 3, ..start() } };
+        assert_eq!(s.judge(&told), Ok(()));
+        assert!(s.record(&told, 0xff00_0c91, 0));
+        assert_eq!(s.live_of(ROTFERN), 2);
     }
 
     #[test]
@@ -524,16 +414,16 @@ mod tests {
         let mut s = Summons::new();
         assert!(s.record(&start(), 0xff00_0c90, 1_000));
         // another caster's end, or an id never reported, names nothing
-        assert_eq!(s.end(ARIADNE, LOCAL).err().map(|e| e.code), Some(Code::Unknown));
-        assert_eq!(s.end(ROTFERN, LOCAL + 1).err().map(|e| e.code), Some(Code::Unknown));
-        assert_eq!(s.end(ROTFERN, LOCAL), Ok(0xff00_0c90));
+        assert_eq!(s.end(ARIADNE, LOCAL), None);
+        assert_eq!(s.end(ROTFERN, LOCAL + 1), None);
+        assert_eq!(s.end(ROTFERN, LOCAL), Some(0xff00_0c90));
         // the dispel: fading for the GMST's 1.5 s, no longer live, no longer
         // the caster's to bind, a second dispel nothing
         assert!(s.dispel(0xff00_0c90, 2_000, 1_500));
         assert!(!s.dispel(0xff00_0c90, 2_100, 1_500));
         assert_eq!(s.live_of(ROTFERN), 0);
         assert_eq!(s.own_local(0xff00_0c90, ROTFERN), 0);
-        assert_eq!(s.end(ROTFERN, LOCAL).err().map(|e| e.code), Some(Code::Unknown));
+        assert_eq!(s.end(ROTFERN, LOCAL), None);
         assert_eq!(s.caster_of(0xff00_0c90), ROTFERN);
         // the engine's next summon by the same number is a new one
         assert_eq!(s.judge(&start()), Ok(()));

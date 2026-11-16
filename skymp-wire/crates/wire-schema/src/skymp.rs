@@ -3267,11 +3267,12 @@ wire_struct! {
     /// effect's timer, or the engine's Finish after its death), `ended`
     /// true, where `local_id` alone is read. Naming no actor, it is only
     /// ever the sender's own player's. Reason codes: `E_VAL_RANGE` (a local
-    /// id below 0xff000000; on a start a base, effect or spell of 0 or
-    /// 0xff000000 and up, or a negative time left), `E_VAL_NONFINITE`,
-    /// `E_VAL_RATE`. The rule's bounds (the spell the record holds, the
-    /// effect on it, the archetype, the associated base, the place, the
-    /// time, the live count) are wire-rules summons', each its `E_SUMMON_*`.
+    /// id below 0xff000000, or on a start a negative time left),
+    /// `E_VAL_NONFINITE`, `E_VAL_OUT_OF_WORLD`, `E_VAL_RATE`. The base, the
+    /// effect and the spell are the report's own words, recorded
+    /// unvalidated (R2, Eli, 2026-11-16: "This is not a competitive game");
+    /// the record's consistencies alone are wire-rules summons':
+    /// `E_SUMMON_CASTER`, `_TWICE`, `_BASE`, `_CELL`.
     pub struct Summon {
         /// `"t": 83`.
         #[serde(default)]

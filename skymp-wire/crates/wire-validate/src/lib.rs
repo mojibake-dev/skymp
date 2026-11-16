@@ -734,14 +734,16 @@ fn check_own_head_parts(m: &skymp::OwnHeadParts) -> Result<(), Reject> {
 }
 
 /// A player's summon report (thuum tracker #84, Summon 83, docs/verbs/
-/// summon.md), structural only: the local id an engine runtime reference
-/// (0xff000000 and up, the engine's own ids), and on a start (`ended`
-/// false) its base, effect and spell load-order forms (not 0, below
-/// 0xff000000), a place inside the world and a time left of at least 0; an
-/// end (`ended` true) is the local id alone, the server reading no other
-/// field. The place's bounds, the spell the record holds, the effect on
-/// it, the archetype, the associated base and the live count are the
-/// server's rule (wire-rules summons: `E_SUMMON_*`); the message names no
+/// summon.md), wire sanity only: the local id an engine runtime reference
+/// (0xff000000 and up, the engine's own ids), every float finite, a start's
+/// (`ended` false) place inside the world and its time left at least 0
+/// (the backstop timer's bound); an end (`ended` true) is the local id
+/// alone, the server reading no other field. The base, the effect and the
+/// spell are the report's own words, recorded unvalidated (R2, Eli,
+/// 2026-11-16: "This is not a competitive game"); the record's
+/// consistencies (the caster, the engine's id, a base the files hold, a
+/// cell it knows) are the server's rule (wire-rules summons:
+/// `E_SUMMON_CASTER`, `_TWICE`, `_BASE`, `_CELL`); the message names no
 /// actor, so it is only ever the sender's own player's summon.
 fn check_summon(m: &skymp::Summon) -> Result<(), Reject> {
     if m.local_id < PLAYER_FORMS {
@@ -758,8 +760,7 @@ fn check_summon(m: &skymp::Summon) -> Result<(), Reject> {
     if m.pos.iter().any(|v| v.abs() > WORLD_ABS_MAX) {
         return Err(Reject::OutOfWorld);
     }
-    let form = |id: u32| id != 0 && id < PLAYER_FORMS;
-    if !form(m.base_id) || !form(m.effect_id) || !form(m.spell_id) || !(0.0..).contains(&m.remaining_s) {
+    if !(0.0..).contains(&m.remaining_s) {
         return Err(Reject::Range);
     }
     Ok(())
@@ -3963,9 +3964,11 @@ mod tests {
         // the local id is the engine's own
         assert_eq!(validate_server(&start(0x8fd, 0x4e940, 59.5, camp)), Err(Reject::Range));
         assert_eq!(validate_server(&start(0, 0x4e940, 59.5, camp)), Err(Reject::Range));
-        // a start names its base and a time left, and stands in the world
-        assert_eq!(validate_server(&start(0xff00_08fd, 0, 59.5, camp)), Err(Reject::Range));
-        assert_eq!(validate_server(&start(0xff00_08fd, 0xff00_0000, 59.5, camp)), Err(Reject::Range));
+        // a start stands in the world with a time left of at least 0; its
+        // base, effect and spell are the report's own words, never judged
+        // here (the rule records them unvalidated)
+        assert_eq!(validate_server(&start(0xff00_08fd, 0, 59.5, camp)), Ok(()));
+        assert_eq!(validate_server(&start(0xff00_08fd, 0xff00_0000, 59.5, camp)), Ok(()));
         assert_eq!(validate_server(&start(0xff00_08fd, 0x4e940, -1.0, camp)), Err(Reject::Range));
         assert_eq!(validate_server(&start(0xff00_08fd, 0x4e940, f32::NAN, camp)), Err(Reject::NonFinite));
         assert_eq!(validate_server(&start(0xff00_08fd, 0x4e940, 59.5, [1.0e6 + 1.0, 0.0, 0.0])), Err(Reject::OutOfWorld));

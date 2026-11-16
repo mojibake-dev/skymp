@@ -2659,21 +2659,6 @@ void ApplyHostDecisions(PartOne& partOne,
         partOne.NoteCellHostDecision(PartOne::CellHostNote::Unhosted, d.cell);
         break;
       case skymp::rules::HostKind::ClaimEnded:
-      case skymp::rules::HostKind::SummonGone: {
-        // thuum tracker #84 (docs/verbs/summon.md, ADR-060 as amended
-        // 2026-11-15: a departure dispels what its player summoned): the
-        // summon dispels on every game but the leaver's, which is already
-        // gone; the dispel deletes the actor, so no word names a simulator
-        // for it
-        const auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
-        MpActor* summon = form ? form->AsActor() : nullptr;
-        if (summon) {
-          partOne.DispelSummon(*summon, "its caster's departure");
-        } else {
-          partOne.ForgetSummon(d.actor);
-        }
-        break;
-      }
       case skymp::rules::HostKind::ClaimGone: {
         // thuum docs/verbs/npc-talk.md (ADR-052, thuum ADR-073 decision 6):
         // a claim's last purpose ended (its lease, its release, its quest's
@@ -2723,6 +2708,22 @@ void ApplyHostDecisions(PartOne& partOne,
         }
         break;
       }
+      case skymp::rules::HostKind::SummonGone: {
+        // thuum tracker #84 (docs/verbs/summon.md, ADR-060 as amended
+        // 2026-11-15: a departure dispels what its player summoned): the
+        // summon dispels on every game but the leaver's, which is already
+        // gone; the dispel deletes the actor, so no word names a simulator
+        // for it
+        const auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
+        MpActor* summon = form ? form->AsActor() : nullptr;
+        if (summon) {
+          partOne.DispelSummon(*summon, "its caster's departure");
+        } else {
+          partOne.ForgetSummon(d.actor);
+        }
+        break;
+      }
+
       case skymp::rules::HostKind::ThrallExpired: {
         // thuum docs/verbs/npc-fate.md (ADR-060 as amended 2026-11-15, Eli's
         // executive decision: "thrall dies when player logs out"): a
@@ -4079,7 +4080,11 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
       { msg.pos[0], msg.pos[1], msg.pos[2] },
       { msg.rot[0], msg.rot[1], msg.rot[2] },
       FormDesc::FromFormId(msg.worldOrCell, worldState.espmFiles) },
-    true);
+    false);
+  // placed un-subscribed (PlaceScriptObject's shape): the word goes out
+  // only once the record holds the summon, so the bind rides it (a word
+  // of an un-recorded summon carries no ownLocal and the caster never
+  // binds; SummonTest :191's red, pipeline 6150)
   auto* summon = refr.AsActor();
   if (!summon) {
     // the judge held the base an NPC_, so PlaceAt made an actor; this
@@ -4103,6 +4108,8 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
     FormDesc::FromFormId(msg.baseId, worldState.espmFiles));
   pImpl->cells->summon_row(summon->GetFormId(), caster.GetFormId(),
                            worldState.CellOf(*summon).value_or(0), nowMs);
+  // the word now, with the bind on it (the record held, the row placed)
+  summon->ForceSubscriptionsUpdate();
   spdlog::info("[verb:summon] {} stands for {:.1f} s, its owner {:x}'s game "
                "simulating it through the bind (tracker #84)",
                head, msg.remainingS, caster.GetFormId());

@@ -7,9 +7,10 @@ import { MsgType } from "../../messages";
 // id alone, zeros elsewhere; the wire reads nothing else at an end,
 // wire-schema skymp.rs's Summon doc). Client to server, reliable, R2 (the
 // caster's engine computes its summon's place and life; the server records
-// within bounds). Naming no actor, it is only ever the sender's own player's
-// summon (summonService filters the platform's summonStart and summonEnd to
-// the player as the caster). rot is radians (the same doc: "which way the
+// within bounds). The caster is this game's own player (casterId 0) or,
+// since SCHEMA_VERSION 58 (tracker #106), an NPC this game simulates, named by
+// its server id (summonService reports a summon whose caster this game
+// owns). rot is radians (the same doc: "which way the
 // summon faces, radians"), this engine's angle reads being degrees.
 export interface SummonMessage {
     t: MsgType.Summon;
@@ -22,4 +23,5 @@ export interface SummonMessage {
     worldOrCell: number; // the worldspace or cell of the place; 0 at an end
     remainingS: number; // the seconds the engine reports left, at least 0; 0 at an end
     ended: boolean; // false: the start of the summon localId names; true: its end
+    casterId: number; // the caster's server id when it is an NPC this game simulates; 0 for this game's own player
 }

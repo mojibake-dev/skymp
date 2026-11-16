@@ -3,7 +3,9 @@ import { MsgType } from "../../messages";
 import { SummonMessage } from "../messages/summonMessage";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { SummonEndEvent, SummonStartEvent } from "skyrimPlatform";
+import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { HostService } from "./hostService";
 import { WorldCleanerService } from "./worldCleanerService";
 
 const TAG = "verb:summon";
@@ -21,9 +23,17 @@ const TAG = "verb:summon";
 // engine's forms directly as the magicEffectApply handler does
 // (hitService.ts:44-57).
 //
-// Only the local player's summons cross the wire: the event's casterId against
-// 0x14, the same own-player test as actionSyncService.ts:42 (NPC summons are
-// out of scope unless they share this path for free). A start goes once as
+// The summons this game owns cross the wire: the local player's (the event's
+// casterId against 0x14, the same own-player test as actionSyncService.ts:42)
+// and, since tracker #106, those of an NPC this game simulates (HostService
+// isMineLocal, the gate hitService.ts uses for a hosted aggressor; ADR-063: a
+// summon is its caster's owner's), the NPC named by its server id in the
+// report's casterId (SCHEMA_VERSION 58). The server takes an NPC's summon from
+// its host alone (ActionListener OnSummon). When this game stops simulating an
+// NPC whose summon it reported (a host change), it ends the summon itself:
+// the end report, and the refusal fallback's local dispel, so the summon
+// follows its caster's owner and no game keeps one its caster's new owner
+// never cast (the new owner's engine may cast again). A start goes once as
 // Summon 83, ended false, with the ids the event carried and the place read
 // from the summon actor itself (ObjectReferenceEx.getPos and getWorldOrCell,
 // the senders' WorldOrCell convention, objectReferenceEx.ts:10-22 and
@@ -75,7 +85,10 @@ const TAG = "verb:summon";
 //   the same elapsed). A start is held reportAfterUpdates updates; an end
 //   inside the hold drops it unreported, so no other seat draws a summon its
 //   caster's engine kept for a frame.
-type Live = { at: number; bound: boolean };
+// casterLocal and casterRemote: the caster in this engine (0x14 for the
+// player) and by its server id (0 for the player), for the end's report and
+// the owner check
+type Live = { at: number; bound: boolean; casterLocal: number; casterRemote: number };
 // A held start keeps plain numbers alone: an event's forms are Skyrim
 // Platform's pooled native objects, valid in their own event's frame only
 // (Sp3NativeValueCasts.cpp:40-52; x-summon 20261116-180439: the held event's
@@ -83,6 +96,8 @@ type Live = { at: number; bound: boolean };
 // and the Potent summon was never reported)
 type Held = {
     summonId: number;
+    casterLocal: number;
+    casterRemote: number;
     effectId: number;
     spellId: number;
     durationS: number;
@@ -130,7 +145,10 @@ export class SummonService extends ClientListener {
         }
         // every caster's summon is the engine's to delete
         this.guard(e.summonId);
-        if (e.casterId !== 0x14) {
+        // the player's own, or an NPC's this game simulates (tracker #106);
+        // any other caster's summon is its own owner's game's to report
+        const casterRemote = e.casterId === 0x14 ? 0 : this.npcOwnedHere(e.casterId);
+        if (casterRemote === undefined) {
             return;
         }
         // once: the platform raises a start once per summon (its live list),
@@ -141,6 +159,8 @@ export class SummonService extends ClientListener {
         }
         this.held.set(e.summonId, {
             summonId: e.summonId,
+            casterLocal: e.casterId,
+            casterRemote,
             effectId: e.effect.getFormID(),
             spellId: e.spell ? e.spell.getFormID() : 0,
             durationS: e.durationS,
@@ -155,7 +175,7 @@ export class SummonService extends ClientListener {
     private report(h: Held): void {
         const summon = this.sp.Actor.from(this.sp.Game.getFormEx(h.summonId));
         if (!summon || summon.isDeleted() || summon.isDead()) {
-            logLab(TAG, `the player's summon ${h.summonId.toString(16)} gone before its report: not reported`);
+            logLab(TAG, `${SummonService.whose(h.casterRemote)} summon ${h.summonId.toString(16)} gone before its report: not reported`);
             return;
         }
         const base = summon.getBaseObject();
@@ -178,6 +198,7 @@ export class SummonService extends ClientListener {
             // clamps), less the hold's own time
             remainingS: Math.max(h.durationS - h.elapsedS - (Date.now() - h.at) / 1000, 0),
             ended: false,
+            casterId: h.casterRemote,
         };
         if (this.live.size >= SummonService.liveMax) {
             const oldest = this.live.keys().next();
@@ -185,29 +206,39 @@ export class SummonService extends ClientListener {
                 this.live.delete(oldest.value);
             }
         }
-        this.live.set(h.summonId, { at: Date.now(), bound: false });
+        this.live.set(h.summonId, { at: Date.now(), bound: false, casterLocal: h.casterLocal, casterRemote: h.casterRemote });
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
-        logLab(TAG, `the player's summon ${h.summonId.toString(16)} (base ${message.baseId.toString(16)}, effect ${message.effectId.toString(16)}, spell ${message.spellId.toString(16)}) reported: at (${message.pos.map((v) => v.toFixed(0)).join(", ")}) in ${message.worldOrCell.toString(16)}, ${message.remainingS.toFixed(1)} s left`);
+        logLab(TAG, `${SummonService.whose(h.casterRemote)} summon ${h.summonId.toString(16)} (base ${message.baseId.toString(16)}, effect ${message.effectId.toString(16)}, spell ${message.spellId.toString(16)}) reported: at (${message.pos.map((v) => v.toFixed(0)).join(", ")}) in ${message.worldOrCell.toString(16)}, ${message.remainingS.toFixed(1)} s left`);
     }
 
     private onSummonEnd(e: SummonEndEvent): void {
-        if (!e || e.casterId !== 0x14) {
+        if (!e) {
             return;
         }
         // an end inside the start's hold: never reported, so nothing to end
         const held = this.held.get(e.summonId);
         if (held) {
             this.held.delete(e.summonId);
-            logLab(TAG, `the player's summon ${e.summonId.toString(16)} ended ${held.updates} update(s) after its start: neither reported`);
+            logLab(TAG, `${SummonService.whose(held.casterRemote)} summon ${e.summonId.toString(16)} ended ${held.updates} update(s) after its start: neither reported`);
             return;
         }
-        // the report carries the local id alone; the wire reads nothing else
-        // at an end (zeros elsewhere, wire-schema skymp.rs's Summon doc), and
-        // the server folds an end for no live summon
+        // the player's own end always goes (the server folds one for no live
+        // summon); an NPC's only when this game reported its start
+        const live = this.live.get(e.summonId);
+        if (e.casterId !== 0x14 && !live) {
+            return;
+        }
         this.live.delete(e.summonId);
+        this.sendEnd(e.summonId, live ? live.casterRemote : 0);
+    }
+
+    // the end's report carries the local id and the caster alone; the wire
+    // reads nothing else at an end (zeros elsewhere, wire-schema skymp.rs's
+    // Summon doc), and the server folds an end for no live summon
+    private sendEnd(summonId: number, casterRemote: number): void {
         const message: SummonMessage = {
             t: MsgType.Summon,
-            localId: e.summonId,
+            localId: summonId,
             baseId: 0,
             effectId: 0,
             spellId: 0,
@@ -216,9 +247,57 @@ export class SummonService extends ClientListener {
             worldOrCell: 0,
             remainingS: 0,
             ended: true,
+            casterId: casterRemote,
         };
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
-        logLab(TAG, `the player's summon ${e.summonId.toString(16)} ended: reported`);
+        logLab(TAG, `${SummonService.whose(casterRemote)} summon ${summonId.toString(16)} ended: reported`);
+    }
+
+    // the server id of an NPC caster this game simulates, or undefined when
+    // another game owns it (tracker #106); a throw reads as not owned here
+    private npcOwnedHere(casterLocal: number): number | undefined {
+        try {
+            if (!this.controller.lookupListener(HostService).isMineLocal(casterLocal)) {
+                return undefined;
+            }
+        } catch (err) {
+            logError(this, `the owner check of caster ${casterLocal.toString(16)} threw`, err);
+            return undefined;
+        }
+        const remote = localIdToRemoteId(casterLocal);
+        return remote !== 0 ? remote : undefined;
+    }
+
+    // the summons of NPCs this game no longer simulates (a host change, its
+    // caster's owner now another game's): each ends here, its report and its
+    // local dispel, once; read every ownerCheckMs, the NPC summons being few
+    private releaseLostOwners(now: number): void {
+        if (now - this.lastOwnerCheck < SummonService.ownerCheckMs) {
+            return;
+        }
+        this.lastOwnerCheck = now;
+        const lost: number[] = [];
+        this.live.forEach((live, localId) => {
+            if (live.casterRemote === 0) {
+                return;
+            }
+            if (this.npcOwnedHere(live.casterLocal) === undefined) {
+                lost.push(localId);
+            }
+        });
+        for (const localId of lost) {
+            const live = this.live.get(localId);
+            this.live.delete(localId);
+            if (!live) {
+                continue;
+            }
+            this.sendEnd(localId, live.casterRemote);
+            this.dispel(localId, `its caster ${live.casterRemote.toString(16)} no longer simulated here (a host change)`);
+        }
+    }
+
+    private static whose(casterRemote: number): string {
+        return casterRemote === 0 ? "the player's" : `NPC ${casterRemote.toString(16)}'s`;
     }
 
     // the refusal fallback (design step 5): a start the server has not
@@ -232,6 +311,7 @@ export class SummonService extends ClientListener {
             return;
         }
         const now = Date.now();
+        this.releaseLostOwners(now);
         const refused: number[] = [];
         this.live.forEach((live, localId) => {
             if (live.bound || now - live.at <= SummonService.bindWaitMs) {
@@ -241,17 +321,17 @@ export class SummonService extends ClientListener {
         });
         for (const localId of refused) {
             this.live.delete(localId);
-            this.dispel(localId);
+            this.dispel(localId, `refused (no bind in ${(SummonService.bindWaitMs / 1000).toFixed(0)} s)`);
         }
     }
 
     // the engine's own Finish look, as the design's step 5 spells it: kill
     // (no killer) if it lives, the alpha faded out, the reference deleted
     // after the fade GMST's seconds
-    private dispel(localId: number): void {
+    private dispel(localId: number, why: string): void {
         const actor = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
         if (!actor || actor.isDeleted()) {
-            logLab(TAG, `summon ${localId.toString(16)} refused (no bind in ${(SummonService.bindWaitMs / 1000).toFixed(0)} s): already gone, nothing to dispel`);
+            logLab(TAG, `summon ${localId.toString(16)} ${why}: already gone, nothing to dispel`);
             return;
         }
         if (!actor.isDead()) {
@@ -270,7 +350,7 @@ export class SummonService extends ClientListener {
             }
             again.delete();
         });
-        logLab(TAG, `summon ${localId.toString(16)} refused (no bind in ${(SummonService.bindWaitMs / 1000).toFixed(0)} s): dispelled locally (killed, faded, deleted in ${seconds.toFixed(1)} s)`);
+        logLab(TAG, `summon ${localId.toString(16)} ${why}: dispelled locally (killed, faded, deleted in ${seconds.toFixed(1)} s)`);
     }
 
     // the held starts, reported after their hold
@@ -295,8 +375,8 @@ export class SummonService extends ClientListener {
             try {
                 this.report(h);
             } catch (err) {
-                logError(this, `the player's summon ${id.toString(16)}: its report failed`, err);
-                logLab(TAG, `the player's summon ${id.toString(16)}: its report failed (${err}): not reported`);
+                logError(this, `${SummonService.whose(h.casterRemote)} summon ${id.toString(16)}: its report failed`, err);
+                logLab(TAG, `${SummonService.whose(h.casterRemote)} summon ${id.toString(16)}: its report failed (${err}): not reported`);
             }
         }
     }
@@ -346,6 +426,10 @@ export class SummonService extends ClientListener {
     private readonly held = new Map<number, Held>();
     // the summons guarded from the cleaner, by id, since when
     private readonly guarded = new Map<number, number>();
+    // the owner check's last read (releaseLostOwners)
+    private lastOwnerCheck = 0;
+    // the owner check's period: a host change is seconds apart
+    private static readonly ownerCheckMs = 1000;
     // the report's hold, in updates: the refused effect's summon ended one
     // frame after it appeared (x-summon-track 20261116-172548's trace)
     private static readonly reportAfterUpdates = 3;

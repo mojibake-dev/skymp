@@ -147,6 +147,15 @@ String Function SerializeScriptState(ObjectReference refr) global native
 String Function ApplyScriptState(ObjectReference refr, String scriptsJson) global native
 String Function SendScriptEvent(ObjectReference refr, String name, Bool unseenOnly) global native
 
+; thuum docs/verbs/traps.md "The graph state" (ADR-065 decision 2): a world
+; object's animation graph state as its engine saves it for a 3D unload, read
+; on its owner (a JSON string: formId, graph as lowercase hex, bytes; or
+; formId, refused), and a served one restored on this seat's copy through the
+; engine's own 3D-load restore (a JSON string: formId, applied, how, bytes; or
+; formId, applied false, retry, reason)
+String Function SerializeGraphState(ObjectReference refr) global native
+String Function ApplyGraphState(ObjectReference refr, String graphHex) global native
+
 ; thuum ADR-068 D-C2 A (docs/research/fifty-fixes-2026-11-07.md 1(b)): a
 ; relayed trigger entry, OnTriggerEnter or OnTriggerLeave sent to the
 ; trigger's scripts and relayed to its aliases as the engine's trigger sinks

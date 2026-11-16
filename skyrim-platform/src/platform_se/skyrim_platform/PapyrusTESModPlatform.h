@@ -242,6 +242,20 @@ RE::BSFixedString SendScriptEvent(IVM* vm, StackID stackId,
                                   RE::StaticFunctionTag*,
                                   RE::TESObjectREFR* refr,
                                   std::string_view name, bool unseenOnly);
+// thuum docs/verbs/traps.md "The graph state" (ADR-065 decision 2): a world
+// object's animation graph state as its engine saves it for a 3D unload, read
+// on its owner (a JSON string: formId, graph as lowercase hex, bytes; or
+// formId, refused), and a served one restored on this seat's copy through the
+// engine's own 3D-load restore (a JSON string: formId, applied, how, bytes;
+// or formId, applied false, retry, reason). GraphState.h holds the premises
+// and the engine functions, each HYPOTHESIS until x-graph-state
+RE::BSFixedString SerializeGraphState(IVM* vm, StackID stackId,
+                                      RE::StaticFunctionTag*,
+                                      RE::TESObjectREFR* refr);
+RE::BSFixedString ApplyGraphState(IVM* vm, StackID stackId,
+                                  RE::StaticFunctionTag*,
+                                  RE::TESObjectREFR* refr,
+                                  std::string_view graphHex);
 // thuum docs/DECISIONS.md ADR-068 D-C2 A (docs/research/
 // fifty-fixes-2026-11-07.md 1(b)): a relayed trigger entry, OnTriggerEnter
 // or OnTriggerLeave sent to the trigger's scripts and relayed to its aliases

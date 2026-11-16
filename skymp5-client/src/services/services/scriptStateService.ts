@@ -208,6 +208,7 @@ type Held = {
     reason: string;     // the platform's last refusal, for the give-up line
     viewTries: number;
     vars: GraphVar[];   // D-C3 A (PENDING ELI): the record's graph variables, each by its own seq
+    graph: string;      // thuum docs/verbs/traps.md "The graph state": the record's served graph state (lowercase hex), "" for none or once restored or dropped
 };
 
 // a grant waiting for its cell's records
@@ -247,6 +248,16 @@ const asNumber = (v: unknown): number | undefined => (typeof v === "number" && N
 // names once each, in their first order
 const unique = (names: string[]): string[] => names.filter((name, i) => names.indexOf(name) === i);
 const show = (n: number | undefined): string => (n === undefined ? "?" : String(n));
+// FNV-1a 32 over a string's UTF-16 code units: the graph state's send
+// baseline (its hex, ASCII alone), compared, never sent
+const fnvOfText = (text: string): number => {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h >>> 0;
+};
 
 // the platform's JSON into the wire's shapes, the wire's keys alone (the
 // read's lab-only names left out, an absent or null optional left absent);
@@ -735,6 +746,7 @@ export class ScriptStateService extends ClientListener {
             reason: "",
             viewTries: 0,
             vars: graph.vars,
+            graph: typeof m.graph === "string" ? m.graph : "",
         });
         if (view !== "") {
             this.views.set(m.formId, "pending");
@@ -764,6 +776,7 @@ export class ScriptStateService extends ClientListener {
         this.unplayed.clear();
         this.due.clear();
         this.lastSent.clear();
+        this.lastGraph.clear();
         this.known.clear();
         this.lastRead.clear();
         this.refused.clear();
@@ -781,6 +794,7 @@ export class ScriptStateService extends ClientListener {
             return;
         }
         this.lastSent.clear();
+        this.lastGraph.clear();
         this.due.clear();
     }
 
@@ -1067,14 +1081,39 @@ export class ScriptStateService extends ClientListener {
         // shown the object's last animation (playtest 49: "view Trigger01
         // current (seq 4)" was judged from a play before a teleport out and
         // back, the pillars at their default faces)
-        const replay = h.view !== "" && (last !== h.m.seq || !animations.shownHere(refr));
+        const viewReplay = h.view !== "" && (last !== h.m.seq || !animations.shownHere(refr));
+        // thuum docs/verbs/traps.md "The graph state": a served graph state is
+        // restored through the engine's own 3D-load restore in place of the
+        // view's replay (ApplyGraphState); one that waits for this 3D's graph
+        // is tried again at the view's turn, and one refused (or older than a
+        // relay this seat took) leaves the view to play as before
+        let graphText = "";
+        let graphRestored = false;
+        if (h.graph !== "" && last !== undefined && last > h.m.seq) {
+            graphText = `; graph state not restored, a relay past its seq ${h.m.seq} came (seq ${last})`;
+            h.graph = "";
+        } else if (h.graph !== "") {
+            const g = this.applyGraph(refr, h.graph);
+            if (g.applied) {
+                graphRestored = true;
+                graphText = `; graph state ${g.how} (${g.bytes} bytes)`;
+                this.setLastGraph(id, fnvOfText(h.graph));
+                h.graph = "";
+            } else if (g.retry) {
+                graphText = `; graph state waits (${g.reason})`;
+            } else {
+                graphText = `; graph state not restored (${g.reason})${h.view !== "" ? ", the view plays" : ""}`;
+                h.graph = "";
+            }
+        }
+        const replay = !graphRestored && (h.graph !== "" || viewReplay);
         snippets.raiseSeq(id, h.m.seq);
         // D-C3 A (PENDING ELI): the record's graph variables, each by its own
         // seq against the one kept here, set before the view plays (one with
         // no 3D here is kept and set at its load: a graph variable lives on
         // the 3D's graph)
         const graph = h.vars.length > 0 ? animations.applyRecordVariables(refr, h.vars) : undefined;
-        if (replay) {
+        if (replay && viewReplay) {
             // kept before it plays: a view that finds no 3D in its window
             // still plays at the reference's next 3D load
             animations.keepView(refr, h.view, h.m.seq);
@@ -1092,7 +1131,7 @@ export class ScriptStateService extends ClientListener {
         // census note); H-R4 reads stacks and hold, H-R6 the resolved and
         // seat-local counts
         const here = last === undefined ? "none here" : last === h.m.seq ? `${last} here, not on this 3D` : `${last} here`;
-        const viewText = h.view === "" ? "no view" : replay ? `view ${h.view} to play (seq ${h.m.seq}, ${here})` : `view ${h.view} current (seq ${h.m.seq})`;
+        const viewText = (h.view === "" ? "no view" : graphRestored ? `view ${h.view} not replayed, the graph state stands for it` : viewReplay ? `view ${h.view} to play (seq ${h.m.seq}, ${here})` : `view ${h.view} current (seq ${h.m.seq})`) + graphText;
         logLab(TAG, `script state ${hex} applied ${pass ? `at the grant of ${cell.toString(16)}` : "as a guest"}: stacks ${show(answer.stacksOnObject)}, hold ${show(answer.holdUs)} us; ${show(answer.resolved)} resolved, ${show(answer.none)} none, ${show(answer.seatLocal)} seat-local`);
         logLab(TAG, `script state ${hex}: ${resent}; ${viewText}${answer.refusedScripts > 0 ? `; ${answer.refusedScripts} of ${answer.scripts} script(s) refused` : ""}, +${now - h.receivedAt} ms`);
         if (graph !== undefined) {
@@ -1125,6 +1164,37 @@ export class ScriptStateService extends ClientListener {
         if (!refr.is3DLoaded()) {
             h.nextTryAt = now + VIEW_WAIT_MS;
             return false;
+        }
+        // thuum docs/verbs/traps.md "The graph state": a graph state that
+        // waited for this 3D's graph, tried again before the view
+        if (h.graph !== "") {
+            const g = this.applyGraph(refr, h.graph);
+            h.viewTries++;
+            if (g.applied) {
+                logLab(TAG, `script state ${id.toString(16)}: graph state ${g.how} (${g.bytes} bytes) at try ${h.viewTries}${h.view !== "" ? `, view ${h.view} not replayed` : ""}`);
+                this.setLastGraph(id, fnvOfText(h.graph));
+                h.graph = "";
+                if (cell !== 0) {
+                    this.grantApplied.set(id, cell);
+                }
+                this.finish(id, h);
+                return true;
+            }
+            if (g.retry && h.viewTries < VIEW_TRIES) {
+                h.nextTryAt = now + VIEW_RETRY_MS;
+                return false;
+            }
+            logLab(TAG, `script state ${id.toString(16)}: graph state not restored after ${h.viewTries} try(s) (${g.reason})${h.view !== "" ? `, view ${h.view} plays` : ""}`);
+            h.graph = "";
+            h.viewTries = 0;
+            if (h.view === "") {
+                if (cell !== 0) {
+                    this.grantApplied.set(id, cell);
+                }
+                this.finish(id, h);
+                return true;
+            }
+            this.controller.lookupListener(ObjectAnimationService).keepView(refr, h.view, h.m.seq);
         }
         h.viewTries++;
         // D-C3 A: the kept graph variables this 3D has not had go first
@@ -1387,19 +1457,30 @@ export class ScriptStateService extends ClientListener {
         if (!d.hop) {
             this.followHops(id, answer.scripts, cell, d.epoch, d.grace);
         }
-        if (answer.fnv === this.lastSent.get(id)) {
+        // thuum docs/verbs/traps.md "The graph state": the reference's
+        // animation graph as its engine saves it, beside the scripts; a graph
+        // that moved under unchanged scripts is a record to send too (its own
+        // baseline), and one the engine gave none for leaves the server's kept
+        // one standing
+        const graph = this.readGraph(refr);
+        const graphKey = graph !== undefined ? fnvOfText(graph) : undefined;
+        const graphMoved = graphKey !== undefined && graphKey !== this.lastGraph.get(id);
+        if (answer.fnv === this.lastSent.get(id) && !graphMoved) {
             this.unchanged++;
             return true;
         }
         // the form id is the game file's, the same on every seat (read() takes
         // nothing at 0xff000000 and up)
-        const message: ScriptStateMessage = { t: MsgType.ScriptState, epoch, formId: id, fnv1a: answer.fnv, scripts: answer.scripts };
+        const message: ScriptStateMessage = { t: MsgType.ScriptState, epoch, formId: id, fnv1a: answer.fnv, scripts: answer.scripts, ...(graph !== undefined ? { graph } : {}) };
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
         this.tokens -= 1;
         this.setLastSent(id, answer.fnv);
+        if (graphKey !== undefined) {
+            this.setLastGraph(id, graphKey);
+        }
         this.sent++;
         if (d.epoch !== 0 || d.grace || this.say(id, "sent", now)) {
-            logLab(TAG, `script state ${hex} sent: ${answer.scripts.length} script(s), ${answer.vars} variable(s), fnv ${answer.fnv.toString(16)}, epoch ${epoch}${d.epoch !== 0 ? " (the release read)" : d.grace ? " (the grace read)" : ""}${d.hop ? " (named by another record)" : ""}`);
+            logLab(TAG, `script state ${hex} sent: ${answer.scripts.length} script(s), ${answer.vars} variable(s), fnv ${answer.fnv.toString(16)}, epoch ${epoch}${graph !== undefined ? `, graph state ${graph.length / 2} bytes${graphMoved ? " (moved)" : ""}` : ""}${d.epoch !== 0 ? " (the release read)" : d.grace ? " (the grace read)" : ""}${d.hop ? " (named by another record)" : ""}`);
         }
         return true;
     }
@@ -1507,6 +1588,75 @@ export class ScriptStateService extends ClientListener {
             this.lastSent.clear();
         }
         this.lastSent.set(id, fnv);
+    }
+
+    private setLastGraph(id: number, key: number): void {
+        if (this.lastGraph.size >= LAST_SENT_MAX && !this.lastGraph.has(id)) {
+            this.lastGraph.clear();
+        }
+        this.lastGraph.set(id, key);
+    }
+
+    // thuum docs/verbs/traps.md "The graph state": the reference's graph state
+    // as its engine saves it for a 3D unload (TESModPlatform.SerializeGraphState,
+    // GraphState.cpp), lowercase hex of the engine's frame; undefined for a
+    // refusal (no 3D, nothing animated, a frame past the wire's cap: the
+    // platform logs each reason's first) or a platform without the native
+    private readGraph(refr: ObjectReference): string | undefined {
+        if (this.graphSerializeMissing) {
+            return undefined;
+        }
+        let raw: unknown;
+        try {
+            raw = this.sp.callNative("TESModPlatform", "SerializeGraphState", undefined, refr);
+        } catch (e) {
+            this.graphSerializeMissing = true;
+            logLab(TAG, `SerializeGraphState unavailable on this platform (${e}); records go without a graph state`);
+            return undefined;
+        }
+        if (typeof raw !== "string" || raw === "") {
+            return undefined;
+        }
+        try {
+            const o = JSON.parse(raw) as { graph?: unknown };
+            return typeof o.graph === "string" && o.graph !== "" ? o.graph : undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
+    // a served graph state restored on this seat's copy (TESModPlatform.
+    // ApplyGraphState: with its 3D through the engine's own 3D-load restore,
+    // with none held for its next load); retry for a moment's refusal (a 3D
+    // whose behavior graph is not built yet)
+    private applyGraph(refr: ObjectReference, hex: string): { applied: boolean; retry: boolean; how: string; bytes: number; reason: string } {
+        const no = (reason: string) => ({ applied: false, retry: false, how: "", bytes: 0, reason });
+        if (this.graphApplyMissing) {
+            return no("ApplyGraphState unavailable on this platform");
+        }
+        let raw: unknown;
+        try {
+            raw = this.sp.callNative("TESModPlatform", "ApplyGraphState", undefined, refr, hex);
+        } catch (e) {
+            this.graphApplyMissing = true;
+            logLab(TAG, `ApplyGraphState unavailable on this platform (${e}); served graph states leave the view to play`);
+            return no("ApplyGraphState unavailable on this platform");
+        }
+        if (typeof raw !== "string" || raw === "") {
+            return no("the native answered nothing (its throw is in the platform log)");
+        }
+        try {
+            const o = JSON.parse(raw) as { applied?: unknown; retry?: unknown; how?: unknown; bytes?: unknown; reason?: unknown };
+            return {
+                applied: o.applied === true,
+                retry: o.retry === true,
+                how: typeof o.how === "string" ? o.how : "",
+                bytes: typeof o.bytes === "number" ? o.bytes : 0,
+                reason: typeof o.reason === "string" ? o.reason : "",
+            };
+        } catch {
+            return no(`no JSON object (${raw.slice(0, 60)})`);
+        }
     }
 
     // a per-reference line at most once in LINE_EVERY_MS for its kind
@@ -1624,6 +1774,10 @@ export class ScriptStateService extends ClientListener {
     private readonly due = new Map<number, Due>();
     private readonly lastRead = new Map<number, number>();
     private readonly lastSent = new Map<number, number>();
+    // the graph state's send baseline beside the scripts' (fnvOfText of its hex)
+    private readonly lastGraph = new Map<number, number>();
+    private graphSerializeMissing = false;
+    private graphApplyMissing = false;
     private readonly known = new Map<number, number>();
     private readonly refused = new Map<number, number>();
     // the receiver's: the held records, the views standing for remoteServer,

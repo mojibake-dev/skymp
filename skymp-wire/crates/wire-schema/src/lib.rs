@@ -241,7 +241,17 @@ use bounded::{String, Vec};
 /// (D-PH1 A's reason: postcard writes one presence byte per Option, so a 54
 /// peer would misread every ScriptCall of a 55 client while the handshake
 /// passed).
-pub const SCHEMA_VERSION: u16 = 55;
+/// 56: ScriptState's and ScriptStateApply's optional `graph` (thuum
+/// docs/verbs/traps.md "The graph state", m4-graph-state c55f878e, its
+/// platform half on the playtest 53 drop): a world object's animation graph
+/// state as its owner's engine saves it for a 3D unload and a save, the
+/// engine's frame as lowercase hex; the server keeps the last one given and
+/// serves a record whose graph state moved at once to the reference's other
+/// listeners. Written for 50 on canon and merged after 55's tree, so it takes
+/// the next number, one number per shape (D-PH1 A's reason: postcard writes
+/// one presence byte per Option, so a 55 peer would misread every ScriptState
+/// of a 56 client while the handshake passed).
+pub const SCHEMA_VERSION: u16 = 56;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

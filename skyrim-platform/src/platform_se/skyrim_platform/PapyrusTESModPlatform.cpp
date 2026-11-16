@@ -5,6 +5,7 @@
 #include "ConsoleApi.h"
 #include "ExceptionPrinter.h"
 #include "FridaHooks.h"
+#include "GraphState.h"
 #include "ItemMenuRefresh.h"
 #include "NullPointerException.h"
 #include "QuestCause.h"
@@ -1825,6 +1826,25 @@ RE::BSFixedString TESModPlatform::ApplyScriptState(
   return RE::BSFixedString(ScriptState::Apply(refr, scriptsJson));
 }
 
+// thuum docs/verbs/traps.md "The graph state": the reference's animation
+// graph state on demand, through the engine's own save and restore
+// (GraphState.cpp holds the premises and the HYPOTHESIS list). String
+// returns, since callNative returns no object
+RE::BSFixedString TESModPlatform::SerializeGraphState(IVM* vm, StackID stackId,
+                                                      RE::StaticFunctionTag*,
+                                                      RE::TESObjectREFR* refr)
+{
+  return RE::BSFixedString(GraphState::Serialize(refr));
+}
+
+RE::BSFixedString TESModPlatform::ApplyGraphState(IVM* vm, StackID stackId,
+                                                  RE::StaticFunctionTag*,
+                                                  RE::TESObjectREFR* refr,
+                                                  std::string_view graphHex)
+{
+  return RE::BSFixedString(GraphState::Apply(refr, graphHex));
+}
+
 // a lifecycle event sent to the reference's scripts and relayed to its
 // aliases, under the platform's mark (ScriptState.cpp)
 RE::BSFixedString TESModPlatform::SendScriptEvent(IVM* vm, StackID stackId,
@@ -2288,6 +2308,18 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::BSFixedString, RE::StaticFunctionTag*,
                                      RE::TESObjectREFR*, std::string_view>(
       "ApplyScriptState", "TESModPlatform", ApplyScriptState));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(SerializeGraphState),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*>(
+      "SerializeGraphState", "TESModPlatform", SerializeGraphState));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ApplyGraphState),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*, std::string_view>(
+      "ApplyGraphState", "TESModPlatform", ApplyGraphState));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<

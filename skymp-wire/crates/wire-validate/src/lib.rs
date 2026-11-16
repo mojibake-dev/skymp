@@ -1882,24 +1882,73 @@ fn check_script_objects(form_id: u32, scripts: &[skymp::ScriptObjectState]) -> R
 }
 
 /// An owner's script record (thuum ADR-068 rung 3): every float finite, then
-/// the shape [`check_script_objects`] holds.
+/// the shape [`check_script_objects`] holds, and its graph state's frame
+/// ([`check_graph_state`]).
 fn check_script_state(m: &skymp::ScriptState) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
     }
-    check_script_objects(m.form_id, m.scripts.as_slice())
+    check_script_objects(m.form_id, m.scripts.as_slice())?;
+    check_graph_state(m.graph.as_deref())
 }
 
 /// The server's serve of a script record (thuum ADR-068 rung 3): the
-/// record's shape, and since SCHEMA_VERSION 40 its graph variables'
-/// ([`check_graph_vars`]); the transport refuses it from a client by
+/// record's shape, since SCHEMA_VERSION 40 its graph variables'
+/// ([`check_graph_vars`]) and its graph state's frame
+/// ([`check_graph_state`]); the transport refuses it from a client by
 /// direction.
 fn check_script_state_apply(m: &skymp::ScriptStateApply) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
     }
     check_script_objects(m.form_id, m.scripts.as_slice())?;
-    check_graph_vars(m.graph_vars.as_deref().unwrap_or_default())
+    check_graph_vars(m.graph_vars.as_deref().unwrap_or_default())?;
+    check_graph_state(m.graph.as_deref())
+}
+
+/// A record's graph state (thuum docs/verbs/traps.md "The graph state"):
+/// absent, or lowercase hex ([`decode_record_hex`]'s spelling, ChangeForm's)
+/// of one whole frame as [`graph_state_frame`] reads it. Every failure is
+/// `E_VAL_RANGE`, the record's own code. The data inside the frame is the
+/// owner's engine's and is never judged (R2, recorded unvalidated: the
+/// receiver's engine reads it, docs/verbs/traps.md's Known limits).
+fn check_graph_state(graph: Option<&str>) -> Result<(), Reject> {
+    let Some(hex) = graph else {
+        return Ok(());
+    };
+    let bytes = decode_record_hex(hex).map_err(|_| Reject::Range)?;
+    graph_state_frame(&bytes).map(|_| ()).ok_or(Reject::Range)
+}
+
+/// The frame a world object's graph state travels in, as the engine writes
+/// it for a 3D unload (thuum docs/verbs/traps.md "The graph state";
+/// BGSLoadGameSubBuffer::SaveAnimation, Address Library 1.6.1170 36015, its
+/// copy into the sub-buffer at 0x140625d00, read with Ghidra, HYPOTHESIS
+/// until x-graph-state reads a capture): a version byte, then the data's
+/// size as the engine's variable-width value (its low two bits the width
+/// code: 0 one byte, 1 two, 2 four, little-endian, the size the value
+/// shifted right by two; code 3 is no width the engine writes, 0x140601ab0),
+/// then exactly that many bytes of TESObjectREFR::SaveAnimation's data
+/// (20098). The size of the data, or `None` for bytes that are no whole
+/// frame or a frame with no data (the engine writes none for a size of 0).
+pub fn graph_state_frame(bytes: &[u8]) -> Option<usize> {
+    let (_version, rest) = bytes.split_first()?;
+    let code = rest.first()? & 3;
+    let (width, raw) = match code {
+        0 => (1, u32::from(*rest.first()?)),
+        1 => {
+            let b = rest.get(..2)?;
+            (2, u32::from(u16::from_le_bytes([*b.first()?, *b.get(1)?])))
+        }
+        2 => {
+            let b = rest.get(..4)?;
+            (4, u32::from_le_bytes([*b.first()?, *b.get(1)?, *b.get(2)?, *b.get(3)?]))
+        }
+        _ => return None,
+    };
+    let size = usize::try_from(raw.checked_shr(2)?).ok()?;
+    let data = rest.get(width..)?;
+    (size != 0 && data.len() == size).then_some(size)
 }
 
 /// A serve's graph variables (thuum D-C3 A, PENDING Eli): each with a name
@@ -5590,6 +5639,136 @@ mod graph_var_tests {
             prop_assert_eq!(validate_server(&m), if ok { Ok(()) } else { Err(Reject::Range) });
             let mut g = ClientGuard::default();
             let _ = validate(&m, &mut g, now);
+        }
+    }
+}
+
+// thuum docs/verbs/traps.md "The graph state": a record's graph state, the
+// engine's own frame of a 3D unload's saved animation, as hex
+#[cfg(test)]
+mod graph_state_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use wire_schema::cap;
+    use wire_schema::skymp::{ScriptObjectState, ScriptState, ScriptStateApply, ScriptVar};
+
+    // Bleak Falls Temple's first pillar 0xaa8cb (script_state_tests' stage)
+    const PILLAR: u32 = 0xaa8cb;
+
+    fn pillar_script() -> ScriptObjectState {
+        ScriptObjectState {
+            cls: "defaultPuzzlePillarScript".try_into().unwrap_or_default(),
+            state: "position02".try_into().unwrap_or_default(),
+            flags: 0x0b,
+            vars: vec![ScriptVar { k: 3, i: Some(2), ..Default::default() }].try_into().unwrap_or_default(),
+        }
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    // a frame of `data`: the version byte (illustrative: 0x4e, the form
+    // version the change forms carry; the validator never judges it) and the
+    // size at the width the engine picks for it (0x140601a60)
+    fn frame(data: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        let value = size.checked_shl(2).unwrap_or(0);
+        let mut out = vec![0x4e_u8];
+        if size < 0x40 {
+            out.push(u8::try_from(value).unwrap_or(0));
+        } else if size < 0x4000 {
+            out.extend_from_slice(&u16::try_from(value | 1).unwrap_or(0).to_le_bytes());
+        } else {
+            out.extend_from_slice(&(value | 2).to_le_bytes());
+        }
+        out.extend_from_slice(data);
+        out
+    }
+
+    fn report(graph: Option<&str>) -> Message {
+        Message::ScriptState(ScriptState {
+            epoch: 1,
+            form_id: PILLAR,
+            fnv1a: 0x5c1a_7e01,
+            scripts: vec![pillar_script()].try_into().unwrap_or_default(),
+            graph: graph.map(|g| g.try_into().unwrap_or_default()),
+            ..Default::default()
+        })
+    }
+
+    fn serve(graph: Option<&str>) -> Message {
+        Message::ScriptStateApply(ScriptStateApply {
+            form_id: PILLAR,
+            fnv1a: 0x5c1a_7e01,
+            seq: 3,
+            scripts: vec![pillar_script()].try_into().unwrap_or_default(),
+            graph: graph.map(|g| g.try_into().unwrap_or_default()),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_whole_frame_at_each_width_is_taken() {
+        // one byte of size (a graph-less object's data is a few bytes), two
+        // (a small graph's), four (past 16 KiB, past the wire's cap as hex,
+        // so read by the frame alone)
+        for len in [1_usize, 32, 63, 64, 0x3fff, 0x4000] {
+            let data = vec![0xa5_u8; len];
+            assert_eq!(graph_state_frame(&frame(&data)), Some(len), "{len}");
+        }
+        let small = hex(&frame(&[1, 1, 0, 0, 0]));
+        assert_eq!(validate_server(&report(Some(&small))), Ok(()));
+        assert_eq!(validate_server(&serve(Some(&small))), Ok(()));
+        let at_cap = hex(&frame(&vec![0_u8; cap::GRAPH_STATE.saturating_sub(3)]));
+        assert!(at_cap.len() <= cap::GRAPH_STATE_HEX);
+        assert_eq!(validate_server(&report(Some(&at_cap))), Ok(()));
+        // a record with no graph state is the record as before
+        assert_eq!(validate_server(&report(None)), Ok(()));
+        assert_eq!(validate_server(&serve(None)), Ok(()));
+    }
+
+    #[test]
+    fn a_frame_that_is_not_the_engines_is_refused() {
+        let good = frame(&[1, 2, 3, 4]);
+        // short or long by a byte, no size at all, nothing, an empty data
+        let mut short = good.clone();
+        short.pop();
+        let mut long = good.clone();
+        long.push(0);
+        let version_alone = vec![0x4e_u8];
+        for bad in [short, long, version_alone, vec![], frame(&[])] {
+            assert_eq!(graph_state_frame(&bad), None, "{bad:?}");
+            assert_eq!(validate_server(&report(Some(&hex(&bad)))), Err(Reject::Range), "{bad:?}");
+            assert_eq!(validate_server(&serve(Some(&hex(&bad)))), Err(Reject::Range), "{bad:?}");
+        }
+        // width code 3 is no width the engine writes
+        assert_eq!(graph_state_frame(&[0x4e, 0x13, 0, 0, 0, 0]), None);
+        // a two-byte size whose second byte is missing
+        assert_eq!(graph_state_frame(&[0x4e, 0x01]), None);
+        // hex the platform never writes: odd, upper case, not hex
+        let text = hex(&good);
+        let odd: String = text.chars().skip(1).collect();
+        for bad in [odd, text.to_uppercase(), text.replacen('0', "g", 1)] {
+            assert_eq!(validate_server(&report(Some(&bad))), Err(Reject::Range), "{bad}");
+        }
+    }
+
+    proptest! {
+        // no panic from any bytes, and a frame is taken exactly when its
+        // size value names the rest of it
+        #[test]
+        fn any_bytes_never_panic(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
+            let taken = graph_state_frame(&bytes);
+            if let Some(size) = taken {
+                prop_assert!(size > 0 && size < bytes.len());
+            }
+            let _ = validate_server(&report(Some(&hex(&bytes))));
+        }
+
+        #[test]
+        fn every_frame_the_engine_writes_is_taken(data in proptest::collection::vec(any::<u8>(), 1..512)) {
+            prop_assert_eq!(graph_state_frame(&frame(&data)), Some(data.len()));
         }
     }
 }

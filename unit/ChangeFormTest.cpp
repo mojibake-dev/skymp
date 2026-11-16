@@ -786,6 +786,25 @@ TEST_CASE("A script record survives a save and a load of the reference's "
           std::optional<ScriptStateRecord>(noView));
   REQUIRE(!viewlessLoaded.scriptState->event.has_value());
 
+  // thuum docs/verbs/traps.md "The graph state": a record's graph state is
+  // stored raw as the wire's hex and read back whole; the record above has
+  // none and writes no key, as a record written before the field reads none
+  REQUIRE(!kept.contains("graph"));
+  REQUIRE(!loaded.scriptState->graph.has_value());
+  MpChangeForm graphed;
+  graphed.recType = MpChangeForm::REFR;
+  ScriptStateRecord withGraph = record;
+  withGraph.graph =
+    "4e80010100000013005275696e7350757a7a6c6550696c6c617230312a0000000000";
+  graphed.scriptState = withGraph;
+  const nlohmann::json savedGraphed = MpChangeForm::ToJson(graphed);
+  REQUIRE(savedGraphed["scriptState"]["graph"] == *withGraph.graph);
+  const std::string graphedDump = savedGraphed.dump();
+  auto graphedElement = parser.parse(graphedDump).value();
+  const auto graphedLoaded = MpChangeForm::JsonToChangeForm(graphedElement);
+  REQUIRE(graphedLoaded.scriptState ==
+          std::optional<ScriptStateRecord>(withGraph));
+
   // a record written before the field: no key, read as none
   nlohmann::json older = MpChangeForm::ToJson(MpChangeForm());
   REQUIRE(!older.contains("scriptState"));

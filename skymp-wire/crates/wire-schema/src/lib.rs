@@ -241,7 +241,17 @@ use bounded::{String, Vec};
 /// (D-PH1 A's reason: postcard writes one presence byte per Option, so a 54
 /// peer would misread every ScriptCall of a 55 client while the handshake
 /// passed).
-pub const SCHEMA_VERSION: u16 = 55;
+/// 56: ScriptState's and ScriptStateApply's optional `graph` (thuum
+/// docs/verbs/traps.md "The graph state", m4-graph-state c55f878e, its
+/// platform half on the playtest 53 drop): a world object's animation graph
+/// state as its owner's engine saves it for a 3D unload and a save, the
+/// engine's frame as lowercase hex; the server keeps the last one given and
+/// serves a record whose graph state moved at once to the reference's other
+/// listeners. Written for 50 on canon and merged after 55's tree, so it takes
+/// the next number, one number per shape (D-PH1 A's reason: postcard writes
+/// one presence byte per Option, so a 55 peer would misread every ScriptState
+/// of a 56 client while the handshake passed).
+pub const SCHEMA_VERSION: u16 = 56;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -407,6 +417,20 @@ pub mod cap {
     /// many per reference, a new name past them replacing the oldest; the
     /// cobweb's script sets one (fToggleBlend). UNMEASURED.
     pub const GRAPH_VARS: usize = 16;
+    /// A world object's animation graph state as its owner's engine saves it
+    /// (thuum docs/verbs/traps.md "The graph state", ADR-065 decision 2):
+    /// the frame the engine's own BGSLoadGameSubBuffer::SaveAnimation
+    /// (Address Library 1.6.1170 36015) writes at a 3D unload, a version
+    /// byte, the data's size as the engine's variable-width value and
+    /// TESObjectREFR::SaveAnimation's data (20098, the bytes a save's
+    /// kAnimation chunk carries). UNMEASURED: no world object's capture is
+    /// read yet (x-graph-state v1 reads the sizes); a capture past it is not
+    /// sent and its rung 3 replay stands.
+    pub const GRAPH_STATE: usize = 8 * 1024;
+    /// The same frame as it travels: two lowercase hex characters a byte,
+    /// ChangeForm's spelling (the platform's SerializeGraphState hands it so
+    /// and the client forwards it as is).
+    pub const GRAPH_STATE_HEX: usize = 2 * GRAPH_STATE;
     /// World globals in one WorldGlobal (thuum ADR-068 rung 4): Skyrim.esm's
     /// GLOB records number in the hundreds and a second's diff moves a
     /// handful (UNMEASURED: x-world-globals-rate v1 reads the rate).
@@ -1315,6 +1339,12 @@ mod tests {
         (0..cap::GRAPH_VARS).map(|_| var()).collect::<alloc::vec::Vec<_>>().try_into().ok()
     }
 
+    /// A record's graph state at its cap (thuum docs/verbs/traps.md "The
+    /// graph state"): GRAPH_STATE_HEX characters.
+    fn graph_state_at_its_cap() -> Option<String<{ cap::GRAPH_STATE_HEX }>> {
+        "f".repeat(cap::GRAPH_STATE_HEX).try_into().ok()
+    }
+
     #[test]
     fn a_script_record_at_the_natives_answer_cap_fits_its_byte_cap() {
         let scripts = script_record_at_its_answer_cap();
@@ -1322,7 +1352,11 @@ mod tests {
         assert_eq!(scripts.len(), cap::SCRIPT_OBJECTS);
         assert!(scripts.iter().all(|s| s.vars.len() >= 24));
         assert_eq!(scripts.first().and_then(|s| s.vars.last()).and_then(|v| v.a.as_ref()).map(|a| a.len()), Some(cap::SCRIPT_ARRAY));
-        let state = Message::ScriptState(skymp::ScriptState { epoch: u32::MAX, form_id: 0xfeff_ffff, fnv1a: u32::MAX, scripts: scripts.clone(), ..Default::default() });
+        // with its graph state at its cap (docs/verbs/traps.md "The graph
+        // state"), the whole string, not a default left by a refused one
+        let graph = graph_state_at_its_cap();
+        assert_eq!(graph.as_ref().map(|g| g.len()), Some(cap::GRAPH_STATE_HEX));
+        let state = Message::ScriptState(skymp::ScriptState { epoch: u32::MAX, form_id: 0xfeff_ffff, fnv1a: u32::MAX, scripts: scripts.clone(), graph: graph.clone(), ..Default::default() });
         let bytes = postcard::to_allocvec(&state).unwrap_or_default();
         assert!(bytes.len() > 150 * KIB && bytes.len() <= 192 * KIB, "{}", bytes.len());
         // the serve with its graph variables at their cap too (thuum D-C3 A)
@@ -1335,6 +1369,7 @@ mod tests {
             event: Some("x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default()),
             scripts,
             graph_vars,
+            graph,
             ..Default::default()
         });
         let served = postcard::to_allocvec(&apply).unwrap_or_default();
@@ -1631,7 +1666,7 @@ mod tests {
             // (thuum ADR-068 rung 3), and a destruction report at its
             // longest: the reference a five-byte varint, the stage and both
             // flags (thuum D-S3)
-            Message::ScriptState(skymp::ScriptState { epoch: u32::MAX, form_id: 0xfeff_ffff, fnv1a: u32::MAX, scripts: script_record_at_its_answer_cap(), ..Default::default() }),
+            Message::ScriptState(skymp::ScriptState { epoch: u32::MAX, form_id: 0xfeff_ffff, fnv1a: u32::MAX, scripts: script_record_at_its_answer_cap(), graph: graph_state_at_its_cap(), ..Default::default() }),
             Message::ScriptStateApply(skymp::ScriptStateApply {
                 form_id: 0xfeff_ffff,
                 fnv1a: u32::MAX,
@@ -1639,6 +1674,7 @@ mod tests {
                 event: Some("x".repeat(cap::ANIM_EVENT).try_into().unwrap_or_default()),
                 scripts: script_record_at_its_answer_cap(),
                 graph_vars: graph_vars_at_their_cap(),
+                graph: graph_state_at_its_cap(),
                 ..Default::default()
             }),
             Message::DestructionStage(skymp::DestructionStage {

@@ -42,4 +42,10 @@ export interface ScriptStateApplyMessage {
     // D-C3 A (PENDING ELI): the reference's graph variables as kept at the
     // serve, at most 16; absent or null for none
     graphVars?: GraphVar[] | null;
+    // thuum docs/verbs/traps.md "The graph state" (SCHEMA_VERSION 56): the
+    // reference's animation graph state as the server keeps it from its
+    // owner's records, lowercase hex of the engine's frame; restored through
+    // TESModPlatform.ApplyGraphState in place of the view's replay; absent or
+    // null for none
+    graph?: string | null;
 }

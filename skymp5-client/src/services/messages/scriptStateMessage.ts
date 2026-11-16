@@ -25,4 +25,10 @@ export interface ScriptStateMessage {
     formId: number;   // the reference's form id, a game-file reference's (never 0, below 0xff000000)
     fnv1a: number;    // FNV-1a 32 over the platform's dump of the scripts (its lab-only names left out), the owner's compare baseline
     scripts: ScriptObjectState[];
+    // thuum docs/verbs/traps.md "The graph state" (SCHEMA_VERSION 56): the
+    // reference's animation graph state as its engine saves it for a 3D
+    // unload (TESModPlatform.SerializeGraphState: the engine's frame as
+    // lowercase hex, at most 8 KiB); absent when the engine gave none (no 3D,
+    // nothing animated), and the server keeps the last one given
+    graph?: string;
 }

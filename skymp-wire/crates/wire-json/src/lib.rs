@@ -982,6 +982,47 @@ mod tests {
         assert!(matches!(recognize(&null), Ok(Message::ScriptStateApply(a)) if a.event.is_none()));
     }
 
+    /// thuum docs/verbs/traps.md "The graph state": a record's `graph`, the
+    /// reference's animation graph as its owner's engine saved it, in the
+    /// engine's frame (a version byte, the size as its variable-width value,
+    /// the data) as lowercase hex. 76-2 is 76-0 with the pillar's graph
+    /// state, 76-3 the same with its last byte cut (the frame's size names a
+    /// byte that is not there, E_VAL_RANGE), 77-4 is 77-0 served with that
+    /// graph state. The bytes are illustrative, the frame the engine's: the
+    /// data is the leading flag, the graph count and the project name as
+    /// TESObjectREFR::SaveAnimation (20098) writes them, then its 0x2a and
+    /// the two biped flags; a capture carries the graph's own lists between
+    /// them (x-graph-state v1 reads one). The fixtures with no graph render
+    /// no key.
+    #[test]
+    fn graph_state_fixtures_validate_as_named() {
+        use wire_validate::{graph_state_frame, validate_server, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        let verdicts: [(&str, Result<(), Reject>); 3] = [("76-ScriptState-2.json", Ok(())), ("76-ScriptState-3.json", Err(Reject::Range)), ("77-ScriptStateApply-4.json", Ok(()))];
+        for (name, want) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), want, "{name}");
+        }
+        let graph = "4e80010100000013005275696e7350757a7a6c6550696c6c617230312a0000000000";
+        match recognize(&read("76-ScriptState-2.json")) {
+            Ok(Message::ScriptState(r)) => assert_eq!((r.form_id, r.graph.as_ref().map(|g| g.as_str())), (0xaa8cb, Some(graph))),
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("77-ScriptStateApply-4.json")) {
+            Ok(Message::ScriptStateApply(a)) => {
+                assert_eq!((a.form_id, a.seq, a.graph.as_ref().map(|g| g.as_str())), (0xaa8cb, 2, Some(graph)));
+                let bytes = a.graph.as_ref().map(|g| wire_validate::decode_record_hex(g.as_str())).and_then(Result::ok).unwrap_or_default();
+                assert_eq!(graph_state_frame(&bytes), Some(32));
+            }
+            other => panic!("{other:?}"),
+        }
+        for name in ["76-ScriptState-0.json", "77-ScriptStateApply-0.json", "77-ScriptStateApply-1.json", "77-ScriptStateApply-2.json"] {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(matches!(&m, Message::ScriptState(r) if r.graph.is_none()) || matches!(&m, Message::ScriptStateApply(a) if a.graph.is_none()), "{name}");
+            assert!(!render(&m).unwrap_or_default().contains("\"graph\""), "{name}: no graph state, no key");
+        }
+    }
+
     /// thuum D-W1 and D-C2 (SCHEMA_VERSION 40): the trigger entry's
     /// fixtures, shapes and refusals. 06-2 is c2's own player (0x14)
     /// entering Bleak Falls Temple's web 0x37281 (FXtriggerAmbFX on

@@ -21,7 +21,8 @@ PartOne& GetPartOne();
 // its engine read them at a quiescent point (ScriptState); the server judges
 // the epoch and the owner (wire-rules script_state), keeps the last record on
 // the reference with the object's sequence and its view (the reference's
-// lastAnimation then) and relays it to nobody; it serves the record right
+// lastAnimation then) and relays it to nobody unless its graph state moved
+// (docs/verbs/traps.md "The graph state"); it serves the record right
 // behind the reference's create word to a game that does not host the cell
 // and right ahead of HostGrant to the cell's new host; a release leaves the
 // old host's release read open while nobody hosts the cell, and the next
@@ -451,6 +452,86 @@ TEST_CASE("A game that subscribes to a recorded reference hears the record, "
   // the games listening when it was recorded hear nothing of it
   REQUIRE(SentTo<ScriptStateApplyMessage>(p, 0).empty());
   REQUIRE(SentTo<ScriptStateApplyMessage>(p, 1).empty());
+
+  DoDisconnect(p, 2);
+  p.DestroyActor(kLateActor);
+  Leave(p);
+}
+
+// thuum docs/verbs/traps.md "The graph state" (ADR-065 decision 2, ADR-063:
+// the server records and relays): the pillar's graph as its host's engine
+// saved it rides the host's record; the server keeps the last one given (a
+// record without one keeps it), serves a record whose graph state moved at
+// once to the pillar's other listeners and never to its owner, and serves
+// the kept one behind a late game's create word. The two frames are
+// wire-json's 76-2 fixture and the same with one data byte changed
+// (illustrative bytes, the engine's frame)
+TEST_CASE("A record's graph state is kept, the last one given, and a moved "
+          "one is served at once to the reference's other listeners",
+          "[ScriptState][espm]")
+{
+  const std::string side2 =
+    "4e80010100000013005275696e7350757a7a6c6550696c6c617230312a0000000000";
+  const std::string side3 =
+    "4e80010100000013005275696e7350757a7a6c6550696c6c617230322a0000000000";
+  PartOne& p = GetPartOne();
+  const uint32_t epoch = Enter(p);
+  auto& pillar = p.worldState.GetFormAt<MpObjectReference>(kPillar);
+
+  // a record with no graph state is kept with none and relayed to nobody
+  Report(p, 0, Record(epoch));
+  REQUIRE(pillar.GetScriptState().has_value());
+  REQUIRE(!pillar.GetScriptState()->graph.has_value());
+  REQUIRE(SentTo<ScriptStateApplyMessage>(p, 1).empty());
+
+  // the host's read with the pillar's graph: kept, and the guest beside it
+  // hears the record whole at once; the host, its owner, hears nothing
+  auto withGraph = Record(epoch);
+  withGraph.graph = side2;
+  {
+    LogCapture log;
+    Report(p, 0, withGraph);
+    REQUIRE(log.Count("[verb:scripts] script state aa8cb graph state moved "
+                      "(34 bytes, seq 0): served at once to") == 1);
+  }
+  REQUIRE(pillar.GetScriptState()->graph == std::optional<std::string>(side2));
+  auto served = SentTo<ScriptStateApplyMessage>(p, 1);
+  REQUIRE(served.size() == 1);
+  REQUIRE(served[0].formId == kPillar);
+  REQUIRE(served[0].graph == std::optional<std::string>(side2));
+  REQUIRE(served[0].scripts == withGraph.scripts);
+  REQUIRE(SentTo<ScriptStateApplyMessage>(p, 0).empty());
+  p.Messages().clear();
+
+  // the same graph state again moves nothing: kept, served to nobody
+  Report(p, 0, withGraph);
+  REQUIRE(SentTo<ScriptStateApplyMessage>(p, 1).empty());
+
+  // a read with no graph state (the host's 3D gone) keeps the last one
+  Report(p, 0, Record(epoch, kPillar, "position01", kFnvPosition01));
+  REQUIRE(pillar.GetScriptState()->scripts.front().state == "position01");
+  REQUIRE(pillar.GetScriptState()->graph == std::optional<std::string>(side2));
+  REQUIRE(SentTo<ScriptStateApplyMessage>(p, 1).empty());
+
+  // a moved one is served again, with the record it came in
+  auto moved = Record(epoch, kPillar, "position03");
+  moved.graph = side3;
+  Report(p, 0, moved);
+  served = SentTo<ScriptStateApplyMessage>(p, 1);
+  REQUIRE(served.size() == 1);
+  REQUIRE(served[0].graph == std::optional<std::string>(side3));
+  REQUIRE(served[0].scripts.front().state == "position03");
+  REQUIRE(SentTo<ScriptStateApplyMessage>(p, 0).empty());
+  p.Messages().clear();
+
+  // a late game hears the kept graph state behind the pillar's create word
+  DoConnect(p, 2);
+  p.CreateActor(kLateActor, pillar.GetPos() + NiPoint3{ 100.f, 0.f, 0.f }, 0,
+                kTemple);
+  p.SetUserActor(2, kLateActor);
+  const auto late = SentTo<ScriptStateApplyMessage>(p, 2);
+  REQUIRE(late.size() == 1);
+  REQUIRE(late[0].graph == std::optional<std::string>(side3));
 
   DoDisconnect(p, 2);
   p.DestroyActor(kLateActor);

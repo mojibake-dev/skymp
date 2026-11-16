@@ -3258,16 +3258,22 @@ wire_struct! {
 wire_struct! {
     /// MsgType 83, thuum's (tracker #84, docs/verbs/summon.md, ADR-052
     /// decision 3 as amended 2026-11-16, ADR-063: the caster's row owns its
-    /// summon): the summon a player's engine placed at a summon effect's
+    /// summon): the summon a game's engine placed at a summon effect's
     /// apply, and its end. Client to server, reliable, R2 (the caster's
     /// engine computes its summon's place and life; the server records
     /// within bounds): the caster's game raises summonStart (the platform's
     /// summon tracker, EventHandler.cpp) once the effect's commandedActor
     /// resolves and reports it here, `ended` false, and its end once (the
     /// effect's timer, or the engine's Finish after its death), `ended`
-    /// true, where `local_id` alone is read. Naming no actor, it is only
-    /// ever the sender's own player's. Reason codes: `E_VAL_RANGE` (a local
-    /// id below 0xff000000, or on a start a negative time left),
+    /// true, where `local_id` and `caster_id` alone are read. The caster is
+    /// the sender's own player (`caster_id` 0) or, since SCHEMA_VERSION 58
+    /// (tracker #106), an NPC the sender's game simulates, named by its
+    /// server id: the summon is its caster's owner's, so the NPC's host
+    /// reports it and the sender's game simulates the summon either way
+    /// (the server takes an NPC caster from its host alone, ActionListener
+    /// OnSummon, as it takes a hosted actor's cast). Reason codes:
+    /// `E_VAL_RANGE` (a local id below 0xff000000, or on a start a negative
+    /// time left),
     /// `E_VAL_NONFINITE`, `E_VAL_OUT_OF_WORLD`, `E_VAL_RATE`. The base, the
     /// effect and the spell are the report's own words, recorded
     /// unvalidated (R2, Eli, 2026-11-16: "This is not a competitive game");
@@ -3300,8 +3306,15 @@ wire_struct! {
         /// least 0; read on a start.
         pub remaining_s: f32,
         /// False: the start of the summon `local_id` names. True: its end,
-        /// the server reading the local id alone.
+        /// the server reading the local id and the caster alone.
         pub ended: bool,
+        /// The caster when it is not the sender's own player: an NPC the
+        /// sender's game simulates, by its server id (a load-order form, or
+        /// a server-made actor's 0xff000000 and up); 0 for the player's own
+        /// summon. Read on a start and an end; a report that lacks it reads
+        /// 0 (since SCHEMA_VERSION 58, tracker #106).
+        #[serde(default)]
+        pub caster_id: u32,
     }
 }
 

@@ -912,13 +912,17 @@ mod tests {
     /// the wire's own sanity from either side (the base, the effect and the
     /// spell are the report's own words, recorded unvalidated, R2). 33-5 is
     /// the summon's create word, its ownLocal naming that engine reference
-    /// to its caster alone.
+    /// to its caster alone. Since SCHEMA_VERSION 58 (tracker #106) each
+    /// carries `casterId`, 0 for the sender's own player; 83-3 is an NPC's
+    /// start as its host reports it (the server-made conjurer 0xff000002 of
+    /// x-npc-summon-rec's frame, its atronach 0xff0009c3 in the host's
+    /// engine, in Riverwood's yard), and a report without the field reads 0.
     #[test]
     fn summon_fixtures_validate_as_named() {
         use wire_validate::{validate, validate_server, ClientGuard, Reject};
         let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
         type Verdict = (&'static str, Result<(), Reject>);
-        let verdicts: [Verdict; 3] = [("83-Summon-0.json", Ok(())), ("83-Summon-1.json", Ok(())), ("83-Summon-2.json", Err(Reject::Range))];
+        let verdicts: [Verdict; 4] = [("83-Summon-0.json", Ok(())), ("83-Summon-1.json", Ok(())), ("83-Summon-2.json", Err(Reject::Range)), ("83-Summon-3.json", Ok(()))];
         for (name, verdict) in verdicts {
             let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert_eq!(validate_server(&m), verdict, "{name}");
@@ -932,7 +936,17 @@ mod tests {
             other => panic!("{other:?}"),
         }
         match recognize(&read("83-Summon-1.json")) {
-            Ok(Message::Summon(s)) => assert_eq!((s.local_id, s.ended, s.base_id), (0xff00_08fd, true, 0)),
+            Ok(Message::Summon(s)) => assert_eq!((s.local_id, s.ended, s.base_id, s.caster_id), (0xff00_08fd, true, 0, 0)),
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("83-Summon-3.json")) {
+            Ok(Message::Summon(s)) => assert_eq!((s.caster_id, s.local_id, s.base_id, s.ended), (0xff00_0002, 0xff00_09c3, 0x4e940, false)),
+            other => panic!("{other:?}"),
+        }
+        // a 57 client's report, the caster absent, reads the sender's player
+        let older = r#"{"t":83,"localId":4278192381,"baseId":321856,"effectId":321861,"spellId":1052278,"pos":[1.0,2.0,3.0],"rot":[0.0,0.0,0.0],"worldOrCell":60,"remainingS":59.5,"ended":false}"#;
+        match recognize(older) {
+            Ok(Message::Summon(s)) => assert_eq!(s.caster_id, 0),
             other => panic!("{other:?}"),
         }
         let word = recognize(&read("33-CreateActor-5.json")).unwrap_or_else(|e| panic!("33-CreateActor-5.json: {e}"));

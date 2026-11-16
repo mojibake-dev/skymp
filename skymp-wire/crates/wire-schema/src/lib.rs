@@ -263,7 +263,14 @@ use bounded::{String, Vec};
 /// postcard writes a struct's fields in order with one presence byte per
 /// Option, so a 56 peer would misread every CreateActor of a 57 server
 /// while the handshake passed).
-pub const SCHEMA_VERSION: u16 = 57;
+/// 58: Summon's `caster_id` (thuum tracker #106, docs/verbs/summon.md): an
+/// NPC's summon reported by the game that simulates the NPC, the caster
+/// named by its server id, 0 for the sender's own player as before. 57 has
+/// shipped (the playtest 53 drop, 00b30651's server image and Windows dist),
+/// so the field takes the next number (D-PH1 A's reason: postcard writes a
+/// struct's fields in order, so a 57 server would read a 58 client's Summon
+/// four bytes long while the handshake passed).
+pub const SCHEMA_VERSION: u16 = 58;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -1884,8 +1891,9 @@ mod tests {
         // thuum tracker #84 (SCHEMA_VERSION 57): the wire id, the local id,
         // the base, the effect and the spell at five-byte varints, the two
         // triple floats, the cell at a five-byte varint, the time and the
-        // flag; the baseline's report (x-summon-baseline 20261116-083744:
-        // rotfern's potent atronach) costs 45
+        // flag; since 58 (tracker #106) the caster at a five-byte varint
+        // last; the baseline's report (x-summon-baseline 20261116-083744:
+        // rotfern's potent atronach, its caster 0 at one byte) costs 46
         let full = Message::Summon(skymp::Summon {
             local_id: u32::MAX,
             base_id: u32::MAX,
@@ -1896,9 +1904,10 @@ mod tests {
             world_or_cell: u32::MAX,
             remaining_s: f32::MAX,
             ended: true,
+            caster_id: u32::MAX,
             ..Default::default()
         });
-        assert_eq!(postcard::to_allocvec(&full).map(|b| b.len()), Ok(55));
+        assert_eq!(postcard::to_allocvec(&full).map(|b| b.len()), Ok(60));
         assert_eq!(Message::max_len(full.wire_id()), Some(64));
         let baseline = Message::Summon(skymp::Summon {
             local_id: 0xff00_08fd,
@@ -1911,7 +1920,7 @@ mod tests {
             remaining_s: 59.5,
             ..Default::default()
         });
-        assert_eq!(postcard::to_allocvec(&baseline).map(|b| b.len()), Ok(45));
+        assert_eq!(postcard::to_allocvec(&baseline).map(|b| b.len()), Ok(46));
     }
 
     #[test]

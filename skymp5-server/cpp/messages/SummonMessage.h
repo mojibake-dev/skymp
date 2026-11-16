@@ -3,19 +3,21 @@
 #include "MsgType.h"
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <type_traits>
 
 // thuum tracker #84 (docs/verbs/summon.md, ADR-052 decision 3 as amended
 // 2026-11-16, ADR-063: the caster's row owns its summon): the summon a
 // player's engine placed at a summon effect's apply (ended false: its
 // runtime id, its base, the summon effect and the spell, its place and the
-// time the effect has left) and its end (ended true: the local id alone
-// read, the engine's own Finish after a death as its timer). Client to
-// server, reliable, R2: the message names no actor, so it is only ever the
-// sender's own player's; ActionListener::OnSummon asks wire-rules summons'
-// bounds (the spell the record holds, the effect on it, the archetype, the
-// associated base, the place, the time, the live count, each refusal an
-// E_SUMMON_*) and places the server's actor, which the caster's game
+// time the effect has left) and its end (ended true: the local id and the
+// caster alone read, the engine's own Finish after a death as its timer).
+// Client to server, reliable, R2: the caster is the sender's own player
+// (casterId 0 or absent) or, since SCHEMA_VERSION 58 (thuum tracker #106),
+// an NPC the sender's game simulates, by its server id; ActionListener::
+// OnSummon takes an NPC from its host alone (the summon is its caster's
+// owner's, ADR-063), asks wire-rules summons' consistencies (each refusal
+// an E_SUMMON_*) and places the server's actor, which the reporting game
 // simulates through its create word's ownLocal bind. The contract is
 // skymp-wire's (wire-schema skymp.rs, Summon, MsgType 83, wire id 91).
 struct SummonMessage : public MessageBase<SummonMessage>
@@ -35,7 +37,8 @@ struct SummonMessage : public MessageBase<SummonMessage>
       .Serialize("rot", rot)
       .Serialize("worldOrCell", worldOrCell)
       .Serialize("remainingS", remainingS)
-      .Serialize("ended", ended);
+      .Serialize("ended", ended)
+      .Serialize("casterId", casterId);
   }
 
   uint32_t localId = 0;  // the summon's id in the caster's engine, a
@@ -55,4 +58,9 @@ struct SummonMessage : public MessageBase<SummonMessage>
                                  // least 0; a start's word
   bool ended = false;            // false: the start of the summon localId
                                  // names. true: its end
+  // since SCHEMA_VERSION 58 (thuum tracker #106): the caster's server id when
+  // it is not the sender's own player (an NPC the sender's game simulates);
+  // 0 or absent for the player's own summon (a 57 report, a recorded
+  // session's, carries none)
+  std::optional<uint32_t> casterId;
 };

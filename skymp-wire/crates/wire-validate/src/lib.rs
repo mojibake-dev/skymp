@@ -320,9 +320,10 @@ pub struct ClientGuard {
     pub own_head_parts_budget: TokenBucket,
     /// Budget for a seat's summon reports (Summon, thuum tracker #84,
     /// docs/verbs/summon.md): a Twin Souls pair starts together and ends
-    /// together, so its two starts and its two ends at once, then 1 a
-    /// second (UNMEASURED; a cast is seconds apart, the rule caps the live
-    /// count at 2).
+    /// together, and since tracker #106 a host reports the summons of the
+    /// NPCs its game simulates beside its player's (a fight's conjurers
+    /// casting at its start), so 16 at once, then 4 a second (UNMEASURED; a
+    /// cast is seconds apart).
     pub summon_budget: TokenBucket,
 }
 
@@ -376,7 +377,7 @@ impl Default for ClientGuard {
             entry_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             script_variables_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             own_head_parts_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
-            summon_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
+            summon_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
         }
     }
 }
@@ -733,18 +734,21 @@ fn check_own_head_parts(m: &skymp::OwnHeadParts) -> Result<(), Reject> {
     Ok(())
 }
 
-/// A player's summon report (thuum tracker #84, Summon 83, docs/verbs/
+/// A game's summon report (thuum tracker #84, Summon 83, docs/verbs/
 /// summon.md), wire sanity only: the local id an engine runtime reference
 /// (0xff000000 and up, the engine's own ids), every float finite, a start's
 /// (`ended` false) place inside the world and its time left at least 0
-/// (the backstop timer's bound); an end (`ended` true) is the local id
-/// alone, the server reading no other field. The base, the effect and the
-/// spell are the report's own words, recorded unvalidated (R2, Eli,
-/// 2026-11-16: "This is not a competitive game"); the record's
-/// consistencies (the caster, the engine's id, a base the files hold, a
-/// cell it knows) are the server's rule (wire-rules summons:
-/// `E_SUMMON_CASTER`, `_TWICE`, `_BASE`, `_CELL`); the message names no
-/// actor, so it is only ever the sender's own player's summon.
+/// (the backstop timer's bound); an end (`ended` true) is the local id and
+/// the caster alone, the server reading no other field. The base, the
+/// effect and the spell are the report's own words, recorded unvalidated
+/// (R2, Eli, 2026-11-16: "This is not a competitive game"); the caster
+/// (`caster_id`, since SCHEMA_VERSION 58, tracker #106: 0 the sender's own
+/// player, else an NPC by its server id) is any id here, since who owns
+/// the caster is the server's to say (ActionListener OnSummon takes an NPC
+/// from its host alone); the record's consistencies (the caster, the
+/// engine's id, a base the files hold, a cell it knows) are the server's
+/// rule (wire-rules summons: `E_SUMMON_CASTER`, `_TWICE`, `_BASE`,
+/// `_CELL`).
 fn check_summon(m: &skymp::Summon) -> Result<(), Reject> {
     if m.local_id < PLAYER_FORMS {
         return Err(Reject::Range);
@@ -3981,16 +3985,43 @@ mod tests {
         let end = Message::Summon(Summon { local_id: 0x8fd, ended: true, ..Default::default() });
         assert_eq!(validate_server(&end), Err(Reject::Range));
         // the Twin Souls pair at once, then one a second
+        // tracker #106 (SCHEMA_VERSION 58): an NPC's summon its host reports
+        // names the NPC by its server id, a load-order form or a server-made
+        // actor's, on a start and an end alike; the id is never judged here
+        let npc = |caster| {
+            Message::Summon(Summon {
+                local_id: 0xff00_09c3,
+                base_id: 0x4e940,
+                effect_id: 0x4e945,
+                spell_id: 0x100e76,
+                pos: camp,
+                rot: [0.0, 0.0, 2.46],
+                world_or_cell: 0x3c,
+                remaining_s: 59.6,
+                ended: false,
+                caster_id: caster,
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&npc(0xff00_0002)), Ok(()));
+        assert_eq!(validate_server(&npc(0x35534)), Ok(()));
+        let npc_end = Message::Summon(Summon { local_id: 0xff00_09c3, ended: true, caster_id: 0xff00_0002, ..Default::default() });
+        assert_eq!(validate_server(&npc_end), Ok(()));
+        // the Twin Souls pair and a fight's conjurers at once, then four a
+        // second
         let mut guard = ClientGuard::default();
-        for _ in 0..4 {
+        for _ in 0..16 {
             assert_eq!(validate(&start(0xff00_08fd, 0x4e940, 59.5, camp), &mut guard, 1_000), Ok(()));
         }
         assert_eq!(validate(&start(0xff00_08fd, 0x4e940, 59.5, camp), &mut guard, 1_000), Err(Reject::Rate));
-        assert_eq!(validate(&start(0xff00_08fd, 0x4e940, 59.5, camp), &mut guard, 2_000), Ok(()));
+        for _ in 0..4 {
+            assert_eq!(validate(&start(0xff00_08fd, 0x4e940, 59.5, camp), &mut guard, 2_000), Ok(()));
+        }
+        assert_eq!(validate(&start(0xff00_08fd, 0x4e940, 59.5, camp), &mut guard, 2_000), Err(Reject::Rate));
         // a refused shape spends no token
         let mut fresh = ClientGuard::default();
         assert_eq!(validate(&start(0, 0x4e940, 59.5, camp), &mut fresh, 0), Err(Reject::Range));
-        assert_eq!(fresh.summon_budget.tokens, 4);
+        assert_eq!(fresh.summon_budget.tokens, 16);
     }
 
     #[test]

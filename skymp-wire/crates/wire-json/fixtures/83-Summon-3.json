@@ -1,0 +1,21 @@
+{
+  "baseId": 321856,
+  "casterId": 4278190082,
+  "effectId": 321861,
+  "ended": false,
+  "localId": 4278192579,
+  "pos": [
+    20541.0,
+    -46341.0,
+    -122.0
+  ],
+  "remainingS": 59.5,
+  "rot": [
+    0.0,
+    0.0,
+    250.0
+  ],
+  "spellId": 1052278,
+  "t": 83,
+  "worldOrCell": 60
+}

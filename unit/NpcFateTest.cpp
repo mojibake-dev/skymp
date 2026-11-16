@@ -2300,6 +2300,84 @@ TEST_CASE("A reanimate's accepted hit hands the body to the caster's seat "
     REQUIRE(created);
   }
 
+  // thuum tracker #106 (x-npc-raise-handoff-rec 20261116-233629): the
+  // server's ash reached a game whose own raise then took a command for a
+  // body that never stood (server.log:1642). The record keeps the games its
+  // ash reached for the death, each at its login (MpActor::NoteAshOn), and
+  // ClaimReanimated refuses a command there; a game the ash never reached,
+  // the leaver's next login among them, sees a plain corpse and commands as
+  // before
+  SECTION("by a player who is not the host: once the commander's disconnect "
+          "turns the body to ash on the host's game, the host's raise of it "
+          "commands nothing; the caster's next login, which drew no ash, "
+          "commands it again (tracker #106)")
+  {
+    Equipment eq;
+    eq.rightSpell = kReanimateCorpse;
+    caster.SetEquipment(eq);
+    host.SetEquipment(eq);
+    casts(1, kReanimateCorpse);
+    hits(1, kReanimateCorpse);
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == kCaster);
+    p.Messages().clear();
+    DoDisconnect(p, 1);
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+    REQUIRE_FALSE(AshSnippetsTo(p, 0, kPredator).empty());
+    // the ash's games for this death: the host's, which the calls reached,
+    // and the leaver's at its ended login, whose engine ran the effect
+    REQUIRE(body.IsAshOn(host, std::chrono::steady_clock::now()));
+    REQUIRE(body.IsAshOn(caster, std::chrono::steady_clock::now()));
+
+    // the host's raise of the ash: no command, the body the cell's
+    {
+      LogCapture log;
+      casts(0, kReanimateCorpse);
+      hits(0, kReanimateCorpse);
+      REQUIRE(log.Count("reanimate 65bd7 by ff000d35 on 85547: the body is "
+                        "ash on ff000d35's game since its death") == 1);
+      REQUIRE(log.Count("ff000d35 commands it") == 0);
+    }
+    REQUIRE(body.IsDead());
+    REQUIRE(p.CommanderOf(body) == 0);
+    REQUIRE(p.SimulatorOf(body) == kHost);
+
+    // the caster's next login loads a plain corpse (the ash kept nowhere on
+    // the wire) and its raise commands the body as any raise does; the
+    // shared cleanup below disconnects it again
+    DoConnect(p, 1);
+    p.SetUserActor(1, kCaster);
+    REQUIRE_FALSE(body.IsAshOn(caster, std::chrono::steady_clock::now()));
+    {
+      RawMessageData raw;
+      raw.userId = 1;
+      CellLoadedMessage loaded;
+      loaded.cell = kForestCell;
+      loaded.loaded = true;
+      p.GetActionListener().OnCellLoaded(raw, loaded);
+    }
+    {
+      LogCapture log;
+      casts(1, kReanimateCorpse);
+      hits(1, kReanimateCorpse);
+      REQUIRE(log.Count("reanimate 65bd7 by ff000d36 on 85547: ff000d36 "
+                        "commands it") == 1);
+    }
+    REQUIRE(p.CommanderOf(body) == kCaster);
+
+    // the ash is its death's alone: the body standing again holds none on
+    // the host's game, nor does its next death
+    standsOn(1);
+    REQUIRE_FALSE(body.IsDead());
+    REQUIRE_FALSE(body.IsAshOn(host, std::chrono::steady_clock::now()));
+    body.Kill(nullptr);
+    REQUIRE(body.IsDead());
+    REQUIRE_FALSE(body.IsAshOn(host, std::chrono::steady_clock::now()));
+  }
+
   SECTION("by a player who is not the host: a command its engine never stood "
           "ends at any other respawn, and the old commander's report of the "
           "living actor is a stranger's (E_DEATH_NOT_HOST)")

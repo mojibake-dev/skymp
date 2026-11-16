@@ -666,8 +666,22 @@ public:
   // ash::plan), unless the actor carries one of the script's immunity
   // keywords; any other raise (Dead Thrall's) leaves the body to be raised
   // again. The ash is the server's own word, sent with no sequence and kept
-  // nowhere. A dead actor is left alone
+  // nowhere on the wire; the record notes the games it reached (NoteAshOn).
+  // A dead actor is left alone
   void KillThrall(uint32_t commander);
+  // thuum tracker #106 (x-npc-raise-handoff-rec 20261116-233629): the games
+  // this body turned to ash on at its present death, each a player's actor
+  // at one login (LoginGeneration): those KillThrall's calls reached, at
+  // each of its moments, and that death's commander, whose own engine ends
+  // the effect (KillThrall's premise above, HYPOTHESIS). A game that loads
+  // the body later, a relog included, sees a plain corpse (wire-rules ash:
+  // one-shots), so the note names games, not the body. It lapses when the
+  // body stands again or dies anew, as the ash's own later moments do.
+  // ActionListener::ClaimReanimated reads it
+  void NoteAshOn(const MpActor& game,
+                 std::chrono::steady_clock::time_point killedAt);
+  bool IsAshOn(const MpActor& game,
+               std::chrono::steady_clock::time_point now) const;
   // The running buffs' sum on `av`: the temporary modifier the maximum and
   // the regeneration rates count
   float GetEffectModifier(espm::ActorValue av) const;

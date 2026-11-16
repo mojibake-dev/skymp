@@ -3490,7 +3490,9 @@ void PartOne::EndLostNpcThralls()
   // FollowKind::Commanded). Once another game runs the caster, the record
   // names two owners for one raise (the thrall's commander, the caster's
   // host), and the new host's engine holds no Reanimate effect of the
-  // commander's (HYPOTHESIS until x-npc-raise-handoff-rec reads it), so the
+  // commander's (HYPOTHESIS: x-npc-raise-handoff-rec 20261116-233629 ran
+  // with this rule, which ended the thrall 8 ms after the grant, before the
+  // new host's engine first reported it, so it stays unread), so the
   // thrall dies by the server's word, as at its commander's departure
   // (ThrallExpired): Dead Thrall's body stays, an ash raise turns to ash on
   // every game but the commander's, whose own engine ends the effect

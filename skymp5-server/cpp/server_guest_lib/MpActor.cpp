@@ -87,6 +87,11 @@ struct MpActor::Impl
   std::chrono::steady_clock::time_point reanimateAcceptedAt{};
   uint32_t reanimateSpell = 0;
   uint32_t reanimateCaster = 0;
+  // thuum tracker #106: the death the server's ash followed (KillThrall's
+  // kill) and the games it reached, each a player's form id and login
+  // generation (MpActor::NoteAshOn)
+  std::chrono::steady_clock::time_point ashKilledAt{};
+  std::vector<std::pair<uint32_t, uint32_t>> ashGames;
   bool deadStamped = false;
   uint32_t deadStampHost = 0;
   uint32_t deadStampLogin = 0;
@@ -3236,6 +3241,42 @@ uint32_t MpActor::ReanimateAcceptedSpell() const
   return pImpl->reanimateSpell;
 }
 
+void MpActor::NoteAshOn(const MpActor& game,
+                        std::chrono::steady_clock::time_point killedAt)
+{
+  if (pImpl->ashKilledAt != killedAt) {
+    pImpl->ashKilledAt = killedAt;
+    pImpl->ashGames.clear();
+  }
+  const std::pair<uint32_t, uint32_t> key{ game.GetFormId(),
+                                           game.LoginGeneration() };
+  auto& games = pImpl->ashGames;
+  if (std::find(games.begin(), games.end(), key) == games.end()) {
+    games.push_back(key);
+  }
+}
+
+bool MpActor::IsAshOn(const MpActor& game,
+                      std::chrono::steady_clock::time_point now) const
+{
+  if (!IsDead() ||
+      pImpl->ashKilledAt == std::chrono::steady_clock::time_point()) {
+    return false;
+  }
+  // the death the ash followed, read as KillThrall's later moments read it:
+  // a body raised again, or dead anew, holds no ash of that death
+  const auto died = DiedAgo(now);
+  if (!died ||
+      *died < std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - pImpl->ashKilledAt)) {
+    return false;
+  }
+  const std::pair<uint32_t, uint32_t> key{ game.GetFormId(),
+                                           game.LoginGeneration() };
+  const auto& games = pImpl->ashGames;
+  return std::find(games.begin(), games.end(), key) != games.end();
+}
+
 uint32_t MpActor::ReanimateAcceptedCaster() const
 {
   return pImpl->reanimateCaster;
@@ -4764,10 +4805,12 @@ struct AshCallRow
 // `commander`'s (gone with its session; 0 for none): each the native
 // TurnToAsh calls (wire-rules ash::Step) with no sequence, SpSnippet::Serve,
 // the server's own word, which every client runs as it comes
-// (spSnippetService's takeSeq) and none keeps. `names` gets the calls'
-// names for the line. The number of games
+// (spSnippetService's takeSeq) and none keeps; the record notes each game
+// for the death at `killedAt` (MpActor::NoteAshOn, tracker #106). `names`
+// gets the calls' names for the line. The number of games
 size_t SendAshCalls(MpActor& thrall, const std::vector<AshCallRow>& calls,
                     uint32_t shader, uint32_t pile, uint32_t commander,
+                    std::chrono::steady_clock::time_point killedAt,
                     std::string& names)
 {
   using Arg = std::optional<
@@ -4784,6 +4827,7 @@ size_t SendAshCalls(MpActor& thrall, const std::vector<AshCallRow>& calls,
         listener->GetFormId() != commander &&
         listener->GetUserId() != Networking::InvalidUserId) {
       games.push_back(listener);
+      thrall.NoteAshOn(*listener, killedAt);
     }
   }
   for (const auto& call : calls) {
@@ -4904,12 +4948,21 @@ void MpActor::KillThrall(uint32_t commander)
   const uint32_t pile = plan.pile;
   const uint32_t effect = ash->effect;
   const auto killedAt = std::chrono::steady_clock::now();
+  // the commander's own engine ends the effect and runs the script itself
+  // (this function's premise, MpActor.h; HYPOTHESIS), so its game draws the
+  // ash too, at its present login (NoteAshOn, tracker #106)
+  if (commander != 0) {
+    auto& commanderForm = worldState->LookupFormByIdNoLoad(commander);
+    if (MpActor* game = commanderForm ? commanderForm->AsActor() : nullptr) {
+      NoteAshOn(*game, killedAt);
+    }
+  }
   for (const auto& group : moments) {
     const uint32_t atMs = group.front().atMs;
     if (atMs == 0) {
       std::string names;
       const size_t games =
-        SendAshCalls(*this, group, shader, pile, commander, names);
+        SendAshCalls(*this, group, shader, pile, commander, killedAt, names);
       spdlog::info("[verb:npc-fate] {:x} turns to ash (raise {:x}, effect "
                    "{:x} runs ReanimateAshPile), at 0 ms: {} relayed to {} "
                    "game(s) (ADR-060 as amended 2026-11-15)",
@@ -4935,8 +4988,8 @@ void MpActor::KillThrall(uint32_t commander)
           return;
         }
         std::string names;
-        const size_t games =
-          SendAshCalls(*actor, group, shader, pile, commander, names);
+        const size_t games = SendAshCalls(*actor, group, shader, pile,
+                                          commander, killedAt, names);
         spdlog::info("[verb:npc-fate] {:x} turns to ash (raise {:x}, "
                      "effect {:x} runs ReanimateAshPile), at {} ms: {} "
                      "relayed to {} game(s) (ADR-060 as amended 2026-11-15)",

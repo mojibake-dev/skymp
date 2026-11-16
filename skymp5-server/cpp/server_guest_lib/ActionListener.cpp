@@ -12557,6 +12557,28 @@ void ActionListener::ClaimReanimated(
                  spell, caster.GetFormId(), body.GetFormId());
     return;
   }
+  // thuum tracker #106, the gate's own shape (no command stands where the
+  // record can take no Reanimate state): a body this server turned to ash
+  // at its present death on the commander's game takes no command there.
+  // x-npc-raise-handoff-rec 20261116-233629: the host change killed Hilde
+  // and the server's ash reached c1 (server.log:1579, :1584, :1636); c1's
+  // engine, running the necromancer now, raised her 2 s after the kill and
+  // the record took "ff000000 commands it" (:1642), naming a commander for
+  // 45 s of a body that never stood (c1's npc-state dead at 20 s and 45 s).
+  // The ash is the server's own word, so the record keeps whom it reached
+  // (MpActor::IsAshOn); a game that loads the body later, a relog included,
+  // sees a plain corpse and may raise it. HYPOTHESIS: the engine stands no
+  // body it has turned to ash (that run's stand never came, its hit landing
+  // before the ash's last moment, :1653)
+  if (body.IsAshOn(*commander, std::chrono::steady_clock::now())) {
+    spdlog::info("[verb:npc-fate] reanimate {:x} by {:x} on {:x}: the body "
+                 "is ash on {:x}'s game since its death (the server's ash, "
+                 "MpActor::KillThrall); no command, the body stays its "
+                 "cell's (tracker #106)",
+                 spell, caster.GetFormId(), body.GetFormId(),
+                 commander->GetFormId());
+    return;
+  }
   // no lease (Eli, 2026-11-12: "summons and resurrections should obey the
   // timers the level of spell"): the command lasts until the commander's
   // engine ends the effect, the thrall's death, which its seat reports

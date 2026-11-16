@@ -3289,7 +3289,9 @@ wire_struct! {
         /// Where the summon stands, the caster's own coordinates; read on a
         /// start.
         pub pos: [f32; 3],
-        /// Which way the summon faces, radians; read on a start.
+        /// Which way the summon faces, the engine's own GetAngle words in
+        /// degrees, as the movement family's rotations travel (the client
+        /// sends them raw); read on a start.
         pub rot: [f32; 3],
         /// The worldspace or cell of the place; read on a start.
         pub world_or_cell: u32,

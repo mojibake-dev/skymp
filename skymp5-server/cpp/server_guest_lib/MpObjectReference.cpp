@@ -2778,10 +2778,27 @@ void MpObjectReference::ProcessActivateNormal(
           actorActivator->GetActorToSendTo().SendToUser(msg, true);
         }
 
+        // where the activator stood, for the thralls that go with it
+        const uint32_t fromWorldOrCell =
+          activationSource.GetCellOrWorld().ToFormId(worldState->espmFiles);
+        const NiPoint3 fromPos = activationSource.GetPos();
+
         activationSource.SetCellOrWorldObsolete(
           FormDesc::FromFormId(teleportWorldOrCell, worldState->espmFiles));
         activationSource.SetPos({ pos[0], pos[1], pos[2] });
         activationSource.SetAngle({ rot[0], rot[1], rot[2] });
+
+        // thuum #48 leg D (ADR-060): a player's door is this teleport, never
+        // its engine's own door transit, which keeps a commanded actor with
+        // the player in single player; so the server takes the player's
+        // thralls through with it (PartOne::TakeThrallsThroughDoor)
+        if (actorActivator && actorActivator->IsCreatedAsPlayer() &&
+            worldState->commanderDoor) {
+          worldState->commanderDoor(
+            *actorActivator, GetFormId(), fromWorldOrCell, fromPos,
+            teleportWorldOrCell, NiPoint3{ pos[0], pos[1], pos[2] },
+            NiPoint3{ rot[0], rot[1], rot[2] });
+        }
       }
 
     } else {

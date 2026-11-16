@@ -1131,6 +1131,28 @@ public:
   // the player commanding `actor` (ADR-060), 0 when none: whose report of
   // the thrall's death is its effect's end
   uint32_t CommanderOf(const MpActor& actor) const;
+  // thuum #48 leg D (x-reanimate-claim v2.4 20261116-035932; ADR-060): a
+  // player's load door is the server's teleport (MpObjectReference's
+  // ProcessActivateNormal), so the engine's door transit, which keeps a
+  // commanded actor with the player in single player, never runs, and the
+  // player's game drops the thrall it left outside ("demote 13491: the
+  // engine had it at ... in 3c", c1 04:05:18.267). Every actor `commander`
+  // commands (CommanderOf), alive and standing in `fromWorldOrCell` within
+  // kThrallDoorReach of `fromPos`, goes through `door` with it: the
+  // command's row to the destination (MayMoveActor with the commander as
+  // the reporter, which a claim takes into any cell, ADR-052, so its
+  // simulator stays the commander there), then the record to the landing
+  // by MpActor::Teleport's three sets without its message (the actor has no
+  // game of its own: its old grid's games are told the move and dropped,
+  // and the landing's subscribe carries it to the commander's game, whose
+  // command upkeep asks the engine's command again). Which actors the
+  // engine keeps with the player through a door, and from how far, is
+  // HYPOTHESIS (unread); one exterior cell's span stands for it. The
+  // actors taken
+  std::vector<uint32_t> TakeThrallsThroughDoor(
+    MpActor& commander, uint32_t door, uint32_t fromWorldOrCell,
+    const NiPoint3& fromPos, uint32_t destWorldOrCell, const NiPoint3& destPos,
+    const NiPoint3& destRot);
   // any claim on `actor` ends (its death, or a respawn its simulator's
   // engine did not stand): the claimant it had, 0 for none; the cell's rule
   // names the simulator again and the word follows, with no keyframe

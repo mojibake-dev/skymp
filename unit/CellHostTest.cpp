@@ -2866,3 +2866,126 @@ TEST_CASE("mp host names the host of the caller's cell, its epoch and how "
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
 }
+
+// thuum #48 leg D (x-reanimate-claim v2.4 20261116-035932; ADR-060): a
+// player's load door is the server's teleport, so the engine's door transit,
+// which keeps a commanded actor with the player in single player, never ran
+// and c1's game dropped Sven outside ("demote 13491: the engine had it at
+// ... in 3c", c1 04:05:18.267), his record left in Tamriel. The door now
+// takes the player's thralls near it through with it, the command kept: its
+// row names the landing's cell and its simulator is the commander there. A
+// thrall beyond the reach and another player's thrall stay. The door is
+// Whiterun's gate WRDoorMainGate01 0x1b1f3 into Tamriel, the one
+// PartOne_ActivateTest drives, where Riverwood's night locks do not reach;
+// the thralls are game-file actors set beside it: Sven 0x13491 and Hilde
+// 0x35534 (Riverwood's, moved here) and Whiterun's cow
+TEST_CASE("A player's load door takes the thralls it commands near it "
+          "through with it, the command kept; a far one and another "
+          "player's stay",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kGate = 0x1b1f3;
+  constexpr uint32_t kSven = 0x13491;
+  constexpr uint32_t kHilde = 0x35534;
+  // Dead Thrall's record duration (a full thrall, ADR-060 as amended)
+  constexpr uint32_t kFullThrallS = 86'313'600;
+  // the gate's side in Whiterun and its landing in Tamriel
+  // (PartOne_ActivateTest, "Activate WRDoorMainGate01 in Whiterun")
+  const NiPoint3 kAtGate{ 19367.3379f, -7433.0698f, -3547.4492f };
+  const NiPoint3 kLanding{ 19243.53515625f, -7427.3427734375f,
+                           -3595.4052734375f };
+  auto& p = GetPartOne();
+  const bool npcWas = p.worldState.npcEnabled;
+  p.worldState.npcEnabled = true;
+
+  DoConnect(p, 0);
+  p.CreateActor(kC1, kAtGate, 0, kWhiterun);
+  p.SetUserActor(0, kC1);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  DoConnect(p, 1);
+  p.CreateActor(kC2, kAtGate + NiPoint3{ 200.f, 0.f, 0.f }, 0, kWhiterun);
+  p.SetUserActor(1, kC2);
+  auto& c2 = p.worldState.GetFormAt<MpActor>(kC2);
+
+  // a game-file actor set at `pos` in Whiterun's worldspace
+  const auto place = [&](uint32_t id, const NiPoint3& pos) -> MpActor& {
+    const auto& form = p.worldState.LookupFormById(id);
+    REQUIRE(form);
+    MpActor* actor = form->AsActor();
+    REQUIRE(actor);
+    actor->SetCellOrWorldObsolete(
+      FormDesc::FromFormId(kWhiterun, p.worldState.espmFiles));
+    actor->SetPos(pos);
+    return *actor;
+  };
+  auto& sven = place(kSven, kAtGate + NiPoint3{ 80.f, 60.f, 0.f });
+  auto& hilde = place(kHilde, kAtGate + NiPoint3{ 5000.f, 0.f, 0.f });
+  auto& cow = place(kCow, kAtGate + NiPoint3{ -80.f, 60.f, 0.f });
+  REQUIRE_FALSE(sven.IsDead());
+  const auto gateCell = p.worldState.CellOf(kWhiterun, kAtGate);
+  const auto farCell = p.worldState.CellOf(hilde);
+  REQUIRE(gateCell.has_value());
+  REQUIRE(farCell.has_value());
+  REQUIRE(*farCell != *gateCell);
+  CellLoaded(p, 0, *gateCell);
+  CellLoaded(p, 0, *farCell);
+  CellLoaded(p, 1, *gateCell);
+  REQUIRE(p.ClaimCommanded(c1, sven, kFullThrallS) ==
+          PartOne::ClaimVerdict::Granted);
+  REQUIRE(p.ClaimCommanded(c1, hilde, kFullThrallS) ==
+          PartOne::ClaimVerdict::Granted);
+  REQUIRE(p.ClaimCommanded(c2, cow, kFullThrallS) ==
+          PartOne::ClaimVerdict::Granted);
+  REQUIRE(p.CommanderOf(sven) == kC1);
+  REQUIRE(sven.GetListeners().count(&c2) == 1);
+  const NiPoint3 hildeWas = hilde.GetPos();
+  const NiPoint3 cowWas = cow.GetPos();
+
+  // c1 takes the gate
+  p.Messages().clear();
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::Activate },
+                            { "data",
+                              { { "caster", 0x14 },
+                                { "target", kGate },
+                                { "isSecondActivation", false } } } });
+  REQUIRE(c1.GetCellOrWorld() == FormDesc::Tamriel());
+
+  // the thrall beside it went through with it: the record at the landing,
+  // still commanded by c1, which simulates it there; its row names the
+  // landing's cell; c1's game sees it there and c2's no longer does
+  REQUIRE(sven.GetCellOrWorld() == FormDesc::Tamriel());
+  REQUIRE((sven.GetPos() - kLanding).Length() < 1.f);
+  REQUIRE(p.CommanderOf(sven) == kC1);
+  REQUIRE(p.SimulatorOf(sven) == kC1);
+  const auto landingCell = p.worldState.CellOf(kTamriel, kLanding);
+  REQUIRE(landingCell.has_value());
+  bool rowMoved = false;
+  for (const auto& row : p.GetFollows()) {
+    if (row.actor == kSven) {
+      rowMoved = row.player == kC1 && row.cell == *landingCell;
+    }
+  }
+  REQUIRE(rowMoved);
+  REQUIRE(sven.GetListeners().count(&c1) == 1);
+  REQUIRE(sven.GetListeners().count(&c2) == 0);
+
+  // the thrall beyond the reach and c2's thrall stay where they stood,
+  // their commands as they were
+  REQUIRE(hilde.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
+          kWhiterun);
+  REQUIRE((hilde.GetPos() - hildeWas).Length() < 1.f);
+  REQUIRE(p.CommanderOf(hilde) == kC1);
+  REQUIRE(cow.GetCellOrWorld().ToFormId(p.worldState.espmFiles) == kWhiterun);
+  REQUIRE((cow.GetPos() - cowWas).Length() < 1.f);
+  REQUIRE(p.CommanderOf(cow) == kC2);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kSven);
+  p.DestroyActor(kHilde);
+  p.DestroyActor(kCow);
+  p.worldState.npcEnabled = npcWas;
+}

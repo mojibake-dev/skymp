@@ -1611,6 +1611,14 @@ void PartOne::Init()
       WouldMoveActor(*host, actor, destWorldOrCell, destPos) !=
       MoveVerdict::Refuse;
   };
+  // and a player's door: its thralls go through with it (thuum #48 leg D)
+  worldState.commanderDoor =
+    [this](MpActor& commander, uint32_t door, uint32_t fromWorldOrCell,
+           const NiPoint3& fromPos, uint32_t destWorldOrCell,
+           const NiPoint3& destPos, const NiPoint3& destRot) {
+      TakeThrallsThroughDoor(commander, door, fromWorldOrCell, fromPos,
+                             destWorldOrCell, destPos, destRot);
+    };
   // thuum ADR-068 rung 4 (amendment B, read 8): the quest aliases' created
   // items a reference holds, put in at its attach, before its create word
   worldState.onAttach = [this](MpObjectReference& refr) {
@@ -3858,6 +3866,58 @@ PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,
 uint32_t PartOne::CommanderOf(const MpActor& actor) const
 {
   return pImpl->cells->commander_of(actor.GetFormId());
+}
+
+namespace {
+// how far from the door's user a thrall goes through with it (thuum #48 leg
+// D): one exterior cell's span, HYPOTHESIS for the engine's own (unread)
+constexpr float kThrallDoorReach = 4096.f;
+}
+
+std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
+  MpActor& commander, uint32_t door, uint32_t fromWorldOrCell,
+  const NiPoint3& fromPos, uint32_t destWorldOrCell, const NiPoint3& destPos,
+  const NiPoint3& destRot)
+{
+  std::vector<uint32_t> taken;
+  const uint32_t commanderId = commander.GetFormId();
+  for (const auto& row : GetFollows()) {
+    if (row.player != commanderId ||
+        pImpl->cells->commander_of(row.actor) != commanderId) {
+      continue;
+    }
+    const auto& form = worldState.LookupFormById(row.actor);
+    MpActor* thrall = form ? form->AsActor() : nullptr;
+    if (!thrall || thrall->IsDead() ||
+        thrall->GetCellOrWorld().ToFormId(worldState.espmFiles) !=
+          fromWorldOrCell ||
+        (thrall->GetPos() - fromPos).Length() > kThrallDoorReach) {
+      continue;
+    }
+    // the row first, the commander its reporter: a claim's report into any
+    // cell is taken and the row names the new cell (wire-rules cells.rs
+    // judge, may_move)
+    if (MayMoveActor(commander, *thrall, destWorldOrCell, destPos) !=
+        MoveVerdict::Accept) {
+      spdlog::info("[verb:npc-fate] {:x} stays at door {:x}: its commander "
+                   "{:x}'s move into {:x} was not taken",
+                   row.actor, door, commanderId, destWorldOrCell);
+      continue;
+    }
+    // MpActor::Teleport's three sets without its message (PartOne's
+    // sighting move's shape): the new grid, then the position subscribes it
+    thrall->SetCellOrWorldObsolete(
+      FormDesc::FromFormId(destWorldOrCell, worldState.espmFiles));
+    thrall->SetPos(destPos);
+    thrall->SetAngle(destRot);
+    taken.push_back(row.actor);
+    spdlog::info("[verb:npc-fate] {:x} goes through door {:x} with its "
+                 "commander {:x}: the record to ({:.0f}, {:.0f}, {:.0f}) in "
+                 "{:x}, the command with it, cell {:x} (ADR-060)",
+                 row.actor, door, commanderId, destPos.x, destPos.y, destPos.z,
+                 destWorldOrCell, worldState.CellOf(*thrall).value_or(0u));
+  }
+  return taken;
 }
 
 uint32_t PartOne::ReleaseAnyClaim(MpActor& actor)

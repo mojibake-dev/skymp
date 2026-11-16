@@ -360,6 +360,15 @@ public:
   std::function<bool(MpActor& actor, uint32_t destWorldOrCell,
                      const NiPoint3& destPos)>
     npcDoorVerdict;
+  // thuum #48 leg D (ADR-060): a player's load door, once the player's
+  // record moved: the thralls it commands go through with it
+  // (PartOne::TakeThrallsThroughDoor), installed by PartOne; none installed,
+  // none go
+  std::function<void(MpActor& commander, uint32_t door,
+                     uint32_t fromWorldOrCell, const NiPoint3& fromPos,
+                     uint32_t destWorldOrCell, const NiPoint3& destPos,
+                     const NiPoint3& destRot)>
+    commanderDoor;
   // thuum docs/verbs/leveling.md: the experience a skill's step from `level`
   // costs, from the AVIF table PartOne loads at AttachEspm; installed by
   // PartOne. A server set of a skill's base (the console's SetAV, a script's

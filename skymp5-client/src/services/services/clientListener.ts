@@ -600,12 +600,11 @@ declare module "skyrimPlatform" {
     function commandActor(refrId: number, on: boolean): boolean;
 
     // thuum docs/verbs/summon.md (tracker #84): the fork's Skyrim Platform
-    // keeps a summon effect (archetype kSummonCreature) from its apply and
-    // raises summonStart once, on an update task, when its actor has appeared
-    // (its SummonCreatureEffect's commandedActor resolved; every caster's),
-    // then summonEnd at the effect's remove, matched by the unique id kept
-    // since; a form the game no longer holds is null (the engine's Finish
-    // deletes the summon), its id kept. The published 2.8.0 typings name
+    // hooks SummonCreatureEffect's own Update and Finish and raises
+    // summonStart once, on an update task, when the effect's actor has
+    // appeared (every caster's), then summonEnd at the effect's Finish; a form
+    // the game no longer holds is null (the engine's Finish deletes the
+    // summon), its id kept. The published 2.8.0 typings name
     // neither event; these mirror the fork's Declarations.txt and the
     // generated skyrimPlatform.ts (its SummonStartEvent and SummonEndEvent,
     // lines 247-266)

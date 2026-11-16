@@ -391,6 +391,47 @@ void InstallCharacterAddTargetHook()
 }
 
 /**
+ * thuum #84 (a player's conjured atronach as an owned actor): the summon
+ * tracker's two seams, SummonCreatureEffect's own Update and Finish
+ * (CommonLibSSE-NG include/RE/S/SummonCreatureEffect.h:17, :28; ActiveEffect's
+ * slots 0x04 and 0x15, include/RE/A/ActiveEffect.h:66, :85) on its vtable,
+ * RE::VTABLE_SummonCreatureEffect[0] (include/RE/Offsets_VTABLE.h:1942, AE
+ * 206083; `just addr 206083` resolves it on 1.6.1170). The class overrides
+ * both, so the write touches summon effects alone. Update runs the engine's
+ * first (it places the summon, the design's static read, HYPOTHESIS until
+ * lab/frida/summon-track.js's rows), then the tracker, which raises
+ * summonStart once the actor is there; Finish runs the tracker first, while
+ * the summon still stands, then the engine's (which kills, fades and deletes
+ * it). Nothing here changes what the engine does.
+ */
+struct SummonCreatureEffectHooks
+{
+  static void Update(RE::SummonCreatureEffect* a_this, float a_delta)
+  {
+    update(a_this, a_delta);
+    EventHandler::OnSummonUpdate(a_this);
+  }
+
+  static void Finish(RE::SummonCreatureEffect* a_this)
+  {
+    EventHandler::OnSummonFinish(a_this);
+    finish(a_this);
+  }
+
+  static inline REL::Relocation<decltype(Update)> update;
+  static inline REL::Relocation<decltype(Finish)> finish;
+};
+
+void InstallSummonCreatureEffectHooks()
+{
+  REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_SummonCreatureEffect[0] };
+  SummonCreatureEffectHooks::update =
+    vtbl.write_vfunc(0x4, SummonCreatureEffectHooks::Update);
+  SummonCreatureEffectHooks::finish =
+    vtbl.write_vfunc(0x15, SummonCreatureEffectHooks::Finish);
+}
+
+/**
  * thuum train 52, Fix 1 (D-R1 C's leveled gap; the plan's section 1.3):
  * SkyrimScript::AddItemFunctor's operator(), the latent AddItem's body that
  * lands a leveled list's roll in the container (the trace x-additem-functor
@@ -759,6 +800,7 @@ void Hooks::Install()
   HookVirtualMachineBind();
   InstallPlayerAddTargetHook();
   InstallCharacterAddTargetHook();
+  InstallSummonCreatureEffectHooks();
   InstallPlayerHealthDamageHook();
   InstallHostedResurrectHook();
   InstallAddItemFunctorHook();

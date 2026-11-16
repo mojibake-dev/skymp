@@ -12,13 +12,13 @@ const TAG = "verb:summon";
 // to place for every other seat. The caster's engine computes the summon (its
 // effect, its place, its life; nothing else can), so the caster's game reports
 // it and the server records it within bounds (R2). The platform's summon
-// tracker raises summonStart once the summon effect's actor has appeared
-// (archetype kSummonCreature, filtered in native; skyrim-platform
-// src/platform_se/skyrim_platform/EventHandler.cpp:308) and summonEnd at the
-// effect's remove, matched by the unique id kept since (EventHandler.cpp:193);
-// both land as update tasks, so the handlers read the engine's forms directly
-// as the magicEffectApply handler does (hitService.ts:44-57, raised the same
-// way at EventHandler.cpp:1210).
+// tracker, on SummonCreatureEffect's own Update and Finish (skyrim-platform
+// src/platform_se/skyrim_platform/Hooks.cpp SummonCreatureEffectHooks, summon
+// effects alone), raises summonStart once the effect's actor has appeared
+// (EventHandler.cpp:176) and summonEnd at the effect's Finish
+// (EventHandler.cpp:217); both land as update tasks, so the handlers read the
+// engine's forms directly as the magicEffectApply handler does
+// (hitService.ts:44-57).
 //
 // Only the local player's summons cross the wire: the event's casterId against
 // 0x14, the same own-player test as actionSyncService.ts:42 (NPC summons are
@@ -51,7 +51,7 @@ const TAG = "verb:summon";
 //
 // The engine's own ceiling is two live summons a caster (the Twin Souls perk,
 // the design's step 4), and the platform's own live list holds 64
-// (EventHandler.cpp:88), so the live map here is bounded at the same 64: the
+// (EventHandler.cpp:62), so the live map here is bounded at the same 64: the
 // oldest goes first when it fills.
 type Live = { at: number; bound: boolean };
 
@@ -207,6 +207,6 @@ export class SummonService extends ClientListener {
     private readonly live = new Map<number, Live>();
     // the refusal fallback's window (design step 5: "no bind within 5 s")
     private static readonly bindWaitMs = 5000;
-    // the platform's own live ceiling (EventHandler.cpp:88)
+    // the platform's own live ceiling (EventHandler.cpp:62)
     private static readonly liveMax = 64;
 }

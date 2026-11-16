@@ -55,6 +55,11 @@ void EventManager::InitCustom()
   // D-A2 C): a Scene.Start or ForceStart this seat's own scripts called, the
   // seam's (ScriptNatives.cpp NoteSceneStart)
   manager->EmplaceEvent("sceneStart");
+  // thuum #84 (a player's conjured atronach as an owned actor): a summon
+  // effect's actor placed, and that effect's end (EventHandler.cpp's
+  // tracker, from SummonCreatureEffect's Update and Finish, Hooks.cpp)
+  manager->EmplaceEvent("summonStart");
+  manager->EmplaceEvent("summonEnd");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

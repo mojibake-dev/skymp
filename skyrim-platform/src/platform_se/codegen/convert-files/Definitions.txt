@@ -239,7 +239,7 @@ export interface ActiveEffectApplyRemoveEvent {
   target: ObjectReference
 }
 
-// thuum #84 (a player's conjured atronach as an owned actor): a summon effect (archetype kSummonCreature, 18) whose actor the engine has placed, raised once on the update after its SummonCreatureEffect::commandedActor resolves; the platform keeps the effect from its apply and finds it again each frame, up to 10 s, filtered in native. Every caster's; casterId and summonId the form ids read then, durationS and elapsedS the active effect's own
+// thuum #84 (a player's conjured atronach as an owned actor): a summon effect (archetype kSummonCreature, 18) whose actor the engine has placed, raised once, on an update task, from the first SummonCreatureEffect::Update after the actor appears (the effect's commandedActor, or the caster's commandedActors entry naming the effect); hooked in native on the effect's own vtable, so it runs for summon effects alone. Every caster's; casterId and summonId the form ids read then, durationS and elapsedS the active effect's own
 export interface SummonStartEvent {
   caster: Actor
   summon: Actor
@@ -251,7 +251,7 @@ export interface SummonStartEvent {
   elapsedS: number
 }
 
-// thuum #84: the remove of a summon effect that raised summonStart, matched by the effect's unique id kept since; a form the game no longer has is null (the engine's Finish deletes the summon), its id kept
+// thuum #84: the end of a summon effect that raised summonStart, from its SummonCreatureEffect::Finish before the engine's runs; a form the game no longer has is null (the engine's Finish deletes the summon), its id kept
 export interface SummonEndEvent {
   caster: Actor | null
   summon: Actor | null

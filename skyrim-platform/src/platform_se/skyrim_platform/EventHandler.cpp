@@ -10,8 +10,6 @@
 #include "TickHandler.h"
 
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -30,72 +28,43 @@ inline void SendEvent(const char* eventName, const Napi::Object& obj)
 
 namespace {
 // thuum #84 (a player's conjured atronach as an owned actor): the summon
-// tracker beside the active effect sink below. The engine announces a summon
-// effect's apply and remove (TESActiveEffectApplyRemoveEvent, CommonLibSSE-NG
-// include/RE/T/TESActiveEffectApplyRemoveEvent.h:9-20), but it places the
-// summoned actor later, in the effect's Update (the static read, HYPOTHESIS),
-// so the apply cannot name it. An apply whose effect has the archetype
-// kSummonCreature (include/RE/E/EffectArchetypes.h:28, read through
-// EffectSetting::GetArchetype, include/RE/E/EffectSetting.h:138) is kept here
-// as pending; each frame while any is pending (TickSummons, from the
-// platform's per-frame OnUpdate) the effect is found again in its target's
-// list by its unique id (ActiveEffect::usUniqueID, include/RE/A/
-// ActiveEffect.h:113) and, once its SummonCreatureEffect::commandedActor
-// (include/RE/S/SummonCreatureEffect.h:33) resolves to an actor, summonStart
-// is raised and the entry is kept as live; the remove of a live entry raises
-// summonEnd, matched by the kept id (at the remove the effect may be gone
-// from the list, so the sink's own lookup finds nothing). Filtered in native
-// (CLAUDE.md rule 9): only a summon effect is kept and only its start and end
-// cross into JS. Every caster is kept; the client decides whose summons it
-// reports. Both lists sit under one mutex: the sink runs on the engine's
-// event thread, the tick on the OnUpdate thread
-struct PendingSummon
-{
-  uint32_t casterId = 0;
-  uint32_t targetId = 0;
-  uint16_t uniqueId = 0;
-  uint32_t effectId = 0;
-  // the time waited, counted from tick to tick with each step capped
-  // (kSummonStepCapMs), so a paused game or a long frame does not use it up
-  uint64_t waitedMs = 0;
-};
-
+// tracker, run from SummonCreatureEffect's own Update and Finish (Hooks.cpp,
+// VTABLE_SummonCreatureEffect slots 0x04 and 0x15, CommonLibSSE-NG
+// include/RE/S/SummonCreatureEffect.h:17, :28). The engine places the
+// summoned actor in the effect's Update, after its Start (the design's static
+// read, HYPOTHESIS until lab/frida/summon-track.js's rows), so the first
+// Update that finds the actor raises summonStart and keeps the effect as
+// live, and the effect's Finish raises summonEnd for a live one, read before
+// the engine's Finish deletes the summon. The actor is the effect's own
+// commandedActor (SummonCreatureEffect.h:33) or, when that handle is empty,
+// the caster's commandedActors entry that names this effect
+// (MiddleHighProcessData.h:52-60, :147; AIProcess::middleHigh,
+// AIProcess.h:196; FateApi.cpp CommandEntryOf walks the same list). The apply
+// and remove event (TESActiveEffectApplyRemoveEvent) is not used:
+// 20261116-165603 placed an actor at c1's release and the tracker built on
+// that event logged nothing. Filtered in native (CLAUDE.md rule 9): the hooks
+// run for summon effects alone, a live effect costs one lookup a frame, and
+// only a start and an end cross into JS. Every caster's summons are raised;
+// the client decides whose it reports. The table sits under one mutex: an
+// effect's Update may run off the main thread
 struct LiveSummon
 {
-  uint32_t casterId = 0;
-  uint32_t targetId = 0;
+  const RE::ActiveEffect* effect = nullptr;
   uint16_t uniqueId = 0;
-  uint32_t effectId = 0;
-  uint32_t summonId = 0;
-};
-
-struct SummonStart
-{
   uint32_t casterId = 0;
   uint32_t summonId = 0;
   uint32_t effectId = 0;
-  uint32_t spellId = 0;
-  float durationS = 0.f;
-  float elapsedS = 0.f;
 };
 
-// a pending effect whose actor has not appeared in this long is dropped
-constexpr uint64_t kSummonWaitMs = 10000;
-constexpr uint64_t kSummonStepCapMs = 250;
-// bounds on both lists: a burst of applies, or removes the sink missed while
-// it was inactive, never grows them for good (the oldest goes first)
-constexpr size_t kSummonPendingMax = 16;
+// the bound on the table: an effect destroyed without its Finish (a load,
+// which empties the table besides) never grows it for good, the oldest
+// going first
 constexpr size_t kSummonLiveMax = 64;
 
 struct SummonTable
 {
   std::mutex m;
-  std::vector<PendingSummon> pending;
   std::vector<LiveSummon> live;
-  // the pending list's size, read by the tick without the lock
-  std::atomic<size_t> pendingCount{ 0 };
-  // the OnUpdate thread's own: the tick before this one
-  uint64_t lastTickMs = 0;
 };
 
 SummonTable& Summons()
@@ -104,92 +73,131 @@ SummonTable& Summons()
   return table;
 }
 
-uint64_t SummonNowMs()
-{
-  return static_cast<uint64_t>(
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now().time_since_epoch())
-      .count());
-}
-
-bool IsSummonEffect(RE::ActiveEffect* effect)
-{
-  const auto* base = effect ? effect->GetBaseObject() : nullptr;
-  return base &&
-    base->GetArchetype() == RE::EffectSetting::Archetype::kSummonCreature;
-}
-
 // a form for an event's field, or null where the game has none
 Napi::Value FormOrNull(Napi::Env env, RE::TESForm* form, const char* type)
 {
   return form ? CreateObject(env, type, static_cast<void*>(form)) : env.Null();
 }
 
-// the sink's apply of a summon effect: kept as pending once
-void NoteSummonApplied(uint32_t casterId, uint32_t targetId, uint16_t uniqueId,
-                       uint32_t effectId)
+bool SameEffect(const LiveSummon& live, const RE::ActiveEffect* effect)
 {
-  auto& t = Summons();
-  std::lock_guard l(t.m);
-  const auto same = [&](const auto& e) {
-    return e.targetId == targetId && e.uniqueId == uniqueId;
-  };
-  if (std::any_of(t.pending.begin(), t.pending.end(), same) ||
-      std::any_of(t.live.begin(), t.live.end(), same)) {
-    return;
-  }
-  if (t.pending.size() >= kSummonPendingMax) {
-    const auto& oldest = t.pending.front();
-    logger::warn("[verb:summon] pending summon effect {} on {:x} dropped: "
-                 "{} pending already",
-                 oldest.uniqueId, oldest.targetId, t.pending.size());
-    t.pending.erase(t.pending.begin());
-  }
-  PendingSummon p;
-  p.casterId = casterId;
-  p.targetId = targetId;
-  p.uniqueId = uniqueId;
-  p.effectId = effectId;
-  t.pending.push_back(p);
-  t.pendingCount.store(t.pending.size());
-  logger::info("[verb:summon] summon effect {} ({:x}) applied on {:x} by "
-               "{:x}: pending until its actor appears",
-               uniqueId, effectId, targetId, casterId);
+  return live.effect == effect && live.uniqueId == effect->usUniqueID;
 }
 
-// the sink's remove of any effect: a pending one is dropped, a live one
-// raises summonEnd
-void NoteSummonRemoved(uint32_t targetId, uint16_t uniqueId)
+// the actor the effect placed, or null while it has none
+RE::NiPointer<RE::Actor> SummonOf(RE::SummonCreatureEffect* effect,
+                                  RE::Actor* caster)
 {
-  auto& t = Summons();
-  LiveSummon ended;
-  bool wasLive = false;
-  {
-    std::lock_guard l(t.m);
-    const auto same = [&](const auto& e) {
-      return e.targetId == targetId && e.uniqueId == uniqueId;
-    };
-    const auto p = std::find_if(t.pending.begin(), t.pending.end(), same);
-    if (p != t.pending.end()) {
-      logger::info("[verb:summon] summon effect {} on {:x} removed before "
-                   "its actor appeared",
-                   uniqueId, targetId);
-      t.pending.erase(p);
-      t.pendingCount.store(t.pending.size());
-    }
-    const auto it = std::find_if(t.live.begin(), t.live.end(), same);
-    if (it != t.live.end()) {
-      ended = *it;
-      wasLive = true;
-      t.live.erase(it);
+  if (auto own = effect->commandedActor.get()) {
+    return own;
+  }
+  auto* process =
+    caster ? caster->GetActorRuntimeData().currentProcess : nullptr;
+  if (!process || !process->middleHigh) {
+    return nullptr;
+  }
+  for (const auto& entry : process->middleHigh->commandedActors) {
+    if (entry.activeEffect == effect) {
+      return entry.commandedActor.get();
     }
   }
-  if (!wasLive) {
+  return nullptr;
+}
+}
+
+void EventHandler::OnSummonUpdate(RE::SummonCreatureEffect* effect)
+{
+  if (!effect) {
     return;
   }
-  logger::info("[verb:summon] {:x}'s summon {:x} (effect {:x}): its effect {} "
-               "removed, summonEnd",
-               ended.casterId, ended.summonId, ended.effectId, uniqueId);
+  auto& t = Summons();
+  {
+    std::lock_guard l(t.m);
+    if (std::any_of(t.live.begin(), t.live.end(), [&](const LiveSummon& e) {
+          return SameEffect(e, effect);
+        })) {
+      return;
+    }
+  }
+  const auto caster = effect->GetCasterActor();
+  const auto summon = SummonOf(effect, caster.get());
+  if (!summon) {
+    return;
+  }
+  const auto* base = effect->GetBaseObject();
+  LiveSummon live;
+  live.effect = effect;
+  live.uniqueId = effect->usUniqueID;
+  live.casterId = caster ? caster->GetFormID() : 0;
+  live.summonId = summon->GetFormID();
+  live.effectId = base ? base->GetFormID() : 0;
+  const uint32_t spellId = effect->spell ? effect->spell->GetFormID() : 0;
+  const float durationS = effect->duration;
+  const float elapsedS = effect->elapsedSeconds;
+  {
+    std::lock_guard l(t.m);
+    if (std::any_of(t.live.begin(), t.live.end(), [&](const LiveSummon& e) {
+          return SameEffect(e, effect);
+        })) {
+      return;
+    }
+    if (t.live.size() >= kSummonLiveMax) {
+      t.live.erase(t.live.begin());
+    }
+    t.live.push_back(live);
+  }
+  logger::info("[verb:summon] {:x}'s summon {:x} (effect {:x}, spell {:x}, "
+               "unique id {}) placed, {:.1f} of {:.1f} s run: summonStart",
+               live.casterId, live.summonId, live.effectId, spellId,
+               live.uniqueId, elapsedS, durationS);
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [live, spellId, durationS, elapsedS](Napi::Env env) {
+      auto* caster = RE::TESForm::LookupByID<RE::Actor>(live.casterId);
+      auto* summon = RE::TESForm::LookupByID<RE::Actor>(live.summonId);
+      auto* effect = RE::TESForm::LookupByID<RE::EffectSetting>(live.effectId);
+      if (!caster || !summon || !effect) {
+        logger::warn("[verb:summon] summonStart for {:x}'s summon {:x} not "
+                     "raised: the caster {}, the summon {}, the effect {} "
+                     "found",
+                     live.casterId, live.summonId, caster != nullptr,
+                     summon != nullptr, effect != nullptr);
+        return;
+      }
+      auto* spell = spellId ? RE::TESForm::LookupByID(spellId) : nullptr;
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "caster", caster, "Actor");
+      AddObjProperty(&obj, "summon", summon, "Actor");
+      AddObjProperty(&obj, "effect", effect, "MagicEffect");
+      obj.Set("spell", FormOrNull(env, spell, "Form"));
+      AddObjProperty(&obj, "casterId", live.casterId);
+      AddObjProperty(&obj, "summonId", live.summonId);
+      AddObjProperty(&obj, "durationS", durationS);
+      AddObjProperty(&obj, "elapsedS", elapsedS);
+      SendEvent("summonStart", obj);
+    });
+}
+
+void EventHandler::OnSummonFinish(RE::SummonCreatureEffect* effect)
+{
+  if (!effect) {
+    return;
+  }
+  auto& t = Summons();
+  LiveSummon ended;
+  {
+    std::lock_guard l(t.m);
+    const auto it =
+      std::find_if(t.live.begin(), t.live.end(),
+                   [&](const LiveSummon& e) { return SameEffect(e, effect); });
+    if (it == t.live.end()) {
+      return;
+    }
+    ended = *it;
+    t.live.erase(it);
+  }
+  logger::info("[verb:summon] {:x}'s summon {:x} (effect {:x}, unique id "
+               "{}): its effect finishes, summonEnd",
+               ended.casterId, ended.summonId, ended.effectId, ended.uniqueId);
   SkyrimPlatform::GetSingleton()->AddUpdateTask([ended](Napi::Env env) {
     auto obj = Napi::Object::New(env);
     // a form the game no longer has is null (the engine's Finish deletes the
@@ -210,137 +218,11 @@ void NoteSummonRemoved(uint32_t targetId, uint16_t uniqueId)
   });
 }
 
-// the actor a pending summon effect placed, or null while it has none; false
-// when the effect is no longer in its target's list (or is no summon)
-bool FindPendingSummon(const PendingSummon& p, RE::Actor*& summon,
-                       SummonStart& start)
-{
-  summon = nullptr;
-  auto* target = RE::TESForm::LookupByID<RE::Actor>(p.targetId);
-  auto* magicTarget = target ? target->AsMagicTarget() : nullptr;
-  auto* list = magicTarget ? magicTarget->GetActiveEffectList() : nullptr;
-  if (!list) {
-    return false;
-  }
-  for (RE::ActiveEffect* eff : *list) {
-    if (!eff || eff->usUniqueID != p.uniqueId) {
-      continue;
-    }
-    // the RTTI's own cast (include/RE/RTTI.h:226), never a static cast on
-    // the archetype's word
-    auto* summonEffect = skyrim_cast<RE::SummonCreatureEffect*>(eff);
-    if (!summonEffect) {
-      return false;
-    }
-    auto handle = summonEffect->commandedActor.get();
-    summon = handle.get();
-    start.casterId = p.casterId;
-    start.summonId = summon ? summon->formID : 0;
-    start.effectId = p.effectId;
-    start.spellId = eff->spell ? eff->spell->formID : 0;
-    start.durationS = eff->duration;
-    start.elapsedS = eff->elapsedSeconds;
-    return true;
-  }
-  return false;
-}
-}
-
-void EventHandler::TickSummons()
-{
-  auto& t = Summons();
-  if (t.pendingCount.load() == 0) {
-    t.lastTickMs = 0;
-    return;
-  }
-  const uint64_t now = SummonNowMs();
-  const uint64_t step = t.lastTickMs == 0
-    ? 0
-    : std::min<uint64_t>(now - t.lastTickMs, kSummonStepCapMs);
-  t.lastTickMs = now;
-  std::vector<SummonStart> started;
-  {
-    std::lock_guard l(t.m);
-    for (auto it = t.pending.begin(); it != t.pending.end();) {
-      RE::Actor* summon = nullptr;
-      SummonStart start;
-      if (!FindPendingSummon(*it, summon, start)) {
-        logger::info("[verb:summon] pending summon effect {} on {:x}: no "
-                     "longer in its target's list, dropped",
-                     it->uniqueId, it->targetId);
-        it = t.pending.erase(it);
-        continue;
-      }
-      if (!summon) {
-        it->waitedMs += step;
-        if (it->waitedMs > kSummonWaitMs) {
-          logger::warn("[verb:summon] pending summon effect {} on {:x}: no "
-                       "actor after {} ms, dropped",
-                       it->uniqueId, it->targetId, it->waitedMs);
-          it = t.pending.erase(it);
-        } else {
-          ++it;
-        }
-        continue;
-      }
-      if (t.live.size() >= kSummonLiveMax) {
-        t.live.erase(t.live.begin());
-      }
-      LiveSummon live;
-      live.casterId = it->casterId;
-      live.targetId = it->targetId;
-      live.uniqueId = it->uniqueId;
-      live.effectId = it->effectId;
-      live.summonId = start.summonId;
-      t.live.push_back(live);
-      logger::info("[verb:summon] {:x}'s summon {:x} (effect {:x}, spell "
-                   "{:x}) appeared after {} ms, {:.1f} of {:.1f} s run: "
-                   "summonStart",
-                   start.casterId, start.summonId, start.effectId,
-                   start.spellId, it->waitedMs, start.elapsedS,
-                   start.durationS);
-      started.push_back(start);
-      it = t.pending.erase(it);
-    }
-    t.pendingCount.store(t.pending.size());
-  }
-  for (const auto& start : started) {
-    SkyrimPlatform::GetSingleton()->AddUpdateTask([start](Napi::Env env) {
-      auto* caster = RE::TESForm::LookupByID<RE::Actor>(start.casterId);
-      auto* summon = RE::TESForm::LookupByID<RE::Actor>(start.summonId);
-      auto* effect =
-        RE::TESForm::LookupByID<RE::EffectSetting>(start.effectId);
-      if (!caster || !summon || !effect) {
-        logger::warn("[verb:summon] summonStart for {:x}'s summon {:x} not "
-                     "raised: the caster {}, the summon {}, the effect {} "
-                     "found",
-                     start.casterId, start.summonId, caster != nullptr,
-                     summon != nullptr, effect != nullptr);
-        return;
-      }
-      auto* spell =
-        start.spellId ? RE::TESForm::LookupByID(start.spellId) : nullptr;
-      auto obj = Napi::Object::New(env);
-      AddObjProperty(&obj, "caster", caster, "Actor");
-      AddObjProperty(&obj, "summon", summon, "Actor");
-      AddObjProperty(&obj, "effect", effect, "MagicEffect");
-      obj.Set("spell", FormOrNull(env, spell, "Form"));
-      AddObjProperty(&obj, "casterId", start.casterId);
-      AddObjProperty(&obj, "summonId", start.summonId);
-      AddObjProperty(&obj, "durationS", start.durationS);
-      AddObjProperty(&obj, "elapsedS", start.elapsedS);
-      SendEvent("summonStart", obj);
-    });
-  }
-}
-
 void EventHandler::ClearSummons()
 {
   auto& t = Summons();
   std::lock_guard l(t.m);
-  t.pending.clear();
   t.live.clear();
-  t.pendingCount.store(0);
 }
 
 void EventHandler::SendSimpleEventOnUpdate(const char* eventName)
@@ -493,7 +375,6 @@ EventResult EventHandler::ProcessEvent(
   RE::Actor* targetActor =
     event->target.get() ? event->target.get()->As<RE::Actor>() : nullptr;
 
-  RE::ActiveEffect* found = nullptr;
   if (targetActor) {
     for (RE::ActiveEffect* eff :
          *targetActor->AsMagicTarget()->GetActiveEffectList()) {
@@ -502,23 +383,9 @@ EventResult EventHandler::ProcessEvent(
         effectData.baseMagicEffectId =
           baseMagicEffect ? baseMagicEffect->formID : 0;
         effectData.spellId = eff->spell ? eff->spell->formID : 0;
-        found = eff;
         break;
       }
     }
-  }
-
-  // thuum #84: the summon tracker (above) hears every apply of a summon
-  // effect and every remove, the remove before the return below, since the
-  // effect may be out of the list by then
-  if (effectData.isApplied) {
-    if (IsSummonEffect(found)) {
-      NoteSummonApplied(effectData.casterRefrId, effectData.targetRefrId,
-                        event->activeEffectUniqueID,
-                        effectData.baseMagicEffectId);
-    }
-  } else if (effectData.targetRefrId != 0) {
-    NoteSummonRemoved(effectData.targetRefrId, event->activeEffectUniqueID);
   }
 
   if (effectData.baseMagicEffectId == 0) {
@@ -526,15 +393,6 @@ EventResult EventHandler::ProcessEvent(
   }
 
   SkyrimPlatform::GetSingleton()->AddUpdateTask([effectData](Napi::Env env) {
-    // thuum #84: summonStart and summonEnd share this sink, so it is active
-    // when only they are listened to; an effect event nobody listens to
-    // costs no lookup and no object here
-    const char* eventName =
-      effectData.isApplied ? "effectStart" : "effectFinish";
-    if (EventManager::GetSingleton()->GetCallbackObjMap(eventName).empty()) {
-      return;
-    }
-
     auto obj = Napi::Object::New(env);
 
     auto baseMagicEffect =

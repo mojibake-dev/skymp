@@ -3625,6 +3625,22 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
   spdlog::info("[verb:appearance] {}: {}", head, what);
 }
 
+void ActionListener::OnSummon(const RawMessageData& rawMsgData,
+                              const SummonMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return spdlog::warn("OnSummon - no actor for user {}", rawMsgData.userId);
+  }
+  // the message names no actor, so it is only ever the sender's own
+  // player's (wire-validate held its shape; the rule holds the rest)
+  if (msg.ended) {
+    partOne.OnSummonEnd(*actor, msg);
+  } else {
+    partOne.OnSummonStart(*actor, msg);
+  }
+}
+
 void ActionListener::SendRaceMenuPreset(MpActor& actor)
 {
   auto preset = actor.GetRaceMenuPreset();

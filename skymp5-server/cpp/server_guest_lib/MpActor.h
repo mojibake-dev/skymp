@@ -398,6 +398,13 @@ public:
   // server-made actor at its spawn point) rolled anew (PartOne::
   // TickFateRespawns); a unique base stays dead, the engine's rule
   bool IsFateRespawned() const;
+  // thuum tracker #84 (docs/verbs/summon.md): a summon never respawns and
+  // never outlives the server that placed it; its end is its effect's own
+  // (the caster's engine reporting the dispel), the server's backstop
+  // behind it, and the load sweep takes its record (its placement's self a
+  // runtime form)
+  bool IsSummon() const;
+  void SetSummon();
   void ScheduleFateRespawn();
   void RespawnFated();
   // the engine's rule for a game-file base: essential never dies, protected

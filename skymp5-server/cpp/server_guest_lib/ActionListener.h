@@ -272,6 +272,18 @@ public:
   virtual void OnOwnHeadParts(const RawMessageData& rawMsgData,
                               const OwnHeadPartsMessage& msg);
 
+  // thuum tracker #84 (docs/verbs/summon.md, ADR-052 decision 3 as amended
+  // 2026-11-16, ADR-063: the caster's row owns its summon): the summon this
+  // sender's own engine placed at a summon effect's apply, and its end (its
+  // timer, or the engine's Finish after its death). The message names no
+  // actor, so it is only ever the sender's own player's: a start is judged
+  // by wire-rules summons' bounds and the server places its actor, which the
+  // caster's game simulates through the create word's ownLocal bind; an end
+  // dispels the summon on every game but the caster's (PartOne::OnSummonStart,
+  // PartOne::OnSummonEnd)
+  virtual void OnSummon(const RawMessageData& rawMsgData,
+                        const SummonMessage& msg);
+
   // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
   // reports (a reference that is no actor activating the reference whose
   // activation parents name it): recorded through Activate's own path, and

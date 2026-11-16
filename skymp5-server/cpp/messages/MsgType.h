@@ -142,5 +142,9 @@ enum class MsgType : uint8_t
   OwnHeadParts = 82,    // thuum D-53-8 B: the head parts a player's own game
                         // draws on its own player after its race changed,
                         // recorded as its look (R2)
+  Summon = 83,          // thuum tracker #84: the summon a player's engine
+                        // placed at a summon effect's apply, and its end
+                        // (docs/verbs/summon.md, R2: the caster's row owns
+                        // it)
   Max
 };

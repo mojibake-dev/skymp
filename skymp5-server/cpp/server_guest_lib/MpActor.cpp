@@ -72,6 +72,8 @@ struct MpActor::Impl
   uint32_t respawnTimerIndex = 0;
   bool isRespawning = false;
   bool placedDead = false;
+  // thuum tracker #84: a summon (PartOne::OnSummonStart)
+  bool isSummon = false;
   // ADR-050 decision 2: the server's number reached zero, the host's report
   // awaited (MpActor::BeginPendingDeath)
   bool pendingDeath = false;
@@ -2949,6 +2951,16 @@ void MpActor::RespawnWithDelay(bool shouldTeleport)
   // thuum docs/verbs/npc-fate.md (the deaths): a game-file actor's body keeps
   // to the engine's reset clock in game hours, never a wall delay; the
   // deadline lives on the record and PartOne's sweep ends it
+  // thuum tracker #84 (docs/verbs/summon.md): a summon never respawns;
+  // its end is its effect's own, its caster's engine reporting the dispel
+  // (the end report, or the engine's Finish after its death), the server's
+  // backstop behind it
+  if (pImpl->isSummon) {
+    spdlog::info("[verb:summon] {:x} died: no respawn scheduled, its "
+                 "effect's end dispels it (tracker #84)",
+                 GetFormId());
+    return;
+  }
   if (IsFateRespawned()) {
     ScheduleFateRespawn();
     return;
@@ -3092,6 +3104,16 @@ void MpActor::RebuildAndRespawn(bool shouldTeleport, bool rebuildAlways)
   }
 
   Respawn(shouldTeleport);
+}
+
+bool MpActor::IsSummon() const
+{
+  return pImpl->isSummon;
+}
+
+void MpActor::SetSummon()
+{
+  pImpl->isSummon = true;
 }
 
 bool MpActor::IsFateRespawned() const

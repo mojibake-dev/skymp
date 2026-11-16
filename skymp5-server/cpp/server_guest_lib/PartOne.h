@@ -1124,6 +1124,28 @@ public:
   // any claim on `actor` ends (its death, or a respawn its simulator's
   // engine did not stand): the claimant it had, 0 for none; the cell's rule
   // names the simulator again and the word follows, with no keyframe
+  // thuum tracker #84 (docs/verbs/summon.md, ADR-052 decision 3 as amended
+  // 2026-11-16, ADR-063: the caster's row owns its summon): `caster`'s game
+  // reports the summon its engine placed (its local id, base, effect, spell,
+  // place and the time left). Judged by wire-rules summons (each refusal an
+  // E_SUMMON_*); accepted, the server places its own actor of the base at
+  // the place, records the caster's Summon row, and the create word carries
+  // props.ownLocal to the caster alone (its game simulates the engine's own
+  // summon through the bind) and a puppet to every other game
+  void OnSummonStart(MpActor& caster, const struct SummonMessage& msg);
+  // the caster's report of its summon's end (its timer, or the engine's
+  // Finish after its death): the summon dispels on every game but the
+  // caster's, which saw its engine's own end
+  void OnSummonEnd(MpActor& caster, const struct SummonMessage& msg);
+  // the summon's dispel, all four ends' one shape (the end report, the
+  // backstop, the caster's departure, the restart's sweep): Kill if alive
+  // (its death reaches every game), Actor.SetAlpha(0.0, true) to every
+  // listening game but the caster's, then the delete after the fade's GMST
+  // seconds, which sends DestroyActor; the row and the record go with it
+  void DispelSummon(MpActor& summon, const char* reason);
+  // the summon `actor` is gone another way (its actor already deleted, a
+  // bad record): its table row and its cells row go, nothing else
+  void ForgetSummon(uint32_t actor);
   uint32_t ReleaseAnyClaim(MpActor& actor);
   // thuum docs/verbs/npc-fate.md (ADR-060): `actor` stands again by its
   // simulator's engine (ActionListener::OnHostedActorState's resurrection

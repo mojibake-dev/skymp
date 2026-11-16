@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "CreateActorMessage.h"
+#include "SummonMessage.h"
 #include "CustomPacketMessage.h"
 #include "DestroyActorMessage.h"
 #include "DestructionStageMessage.h"
@@ -54,6 +55,7 @@
 #include "libespm/FLST.h"
 #include "libespm/HDPT.h"
 #include "libespm/INFO.h"
+#include "libespm/GMST.h"
 #include "libespm/MGEF.h"
 #include "libespm/PROJ.h"
 #include "libespm/QUST.h"
@@ -409,6 +411,12 @@ struct PartOne::Impl
   // whose creator placedCasterByForm names too
   rust::Box<skymp::rules::CreatedRefs> created =
     skymp::rules::new_created_refs();
+
+  // the server's summons (thuum tracker #84, docs/verbs/summon.md; the
+  // rule is Rust's, ADR-020): each live summon by its server actor, its
+  // backstop (the reported time left plus 5 s) and its dispel's fade
+  rust::Box<skymp::rules::Summons> summons =
+    skymp::rules::new_summons();
 
   // thuum ADR-068 rung 4 (the created half): a unique actor's attached
   // reference by its base (an ALUA container, noted at its attach), and the
@@ -1902,6 +1910,20 @@ void PartOne::Init()
       message.baseRecordType = emitter->GetBaseType();
     }
 
+    // thuum tracker #84 (docs/verbs/summon.md): the summon's bind, its
+    // caster alone: the engine reference the caster's own game holds, so
+    // its view binds the engine's own summon instead of placing a copy
+    // (the client's FormView); every other listener's word carries none
+    // and its copy is a puppet
+    if (emitterAsActor) {
+      const uint32_t ownLocal = pImpl->summons->summon_own_local(
+        emitter->GetFormId(), listener->GetFormId());
+      if (ownLocal != 0) {
+        message.props.ownLocal = ownLocal;
+        message.baseRecordType = emitter->GetBaseType();
+      }
+    }
+
     // thuum ADR-068 rung 5 (D-T1 A): another player's figure wears that
     // player's race overlay, which never touches its change form
     // thuum #52 (wire-rules actor_looks): an actor's kept looks ride its
@@ -2634,6 +2656,21 @@ void ApplyHostDecisions(PartOne& partOne,
         partOne.NoteCellHostDecision(PartOne::CellHostNote::Unhosted, d.cell);
         break;
       case skymp::rules::HostKind::ClaimEnded:
+      case skymp::rules::HostKind::SummonGone: {
+        // thuum tracker #84 (docs/verbs/summon.md, ADR-060 as amended
+        // 2026-11-15: a departure dispels what its player summoned): the
+        // summon dispels on every game but the leaver's, which is already
+        // gone; the dispel deletes the actor, so no word names a simulator
+        // for it
+        const auto& form = partOne.worldState.LookupFormByIdNoLoad(d.actor);
+        MpActor* summon = form ? form->AsActor() : nullptr;
+        if (summon) {
+          partOne.DispelSummon(*summon, "its caster's departure");
+        } else {
+          partOne.ForgetSummon(d.actor);
+        }
+        break;
+      }
       case skymp::rules::HostKind::ClaimGone: {
         // thuum docs/verbs/npc-talk.md (ADR-052, thuum ADR-073 decision 6):
         // a claim's last purpose ended (its lease, its release, its quest's
@@ -3603,6 +3640,32 @@ void PartOne::TickCellHosts(uint64_t nowMs)
     }
   }
   ApplyHostDecisions(*this, pImpl->cells->tick(nowMs));
+
+  // thuum tracker #84 (docs/verbs/summon.md): the summons' clock, the
+  // backstops due dispelled, the fades done deleted
+  {
+    const auto due = pImpl->summons->summon_tick(nowMs);
+    for (const uint32_t id : due.backstops) {
+      const auto& form = worldState.LookupFormByIdNoLoad(id);
+      MpActor* summon = form ? form->AsActor() : nullptr;
+      if (summon) {
+        DispelSummon(*summon, "its backstop, its end report never came");
+      } else {
+        ForgetSummon(id);
+      }
+    }
+    for (const uint32_t id : due.faded) {
+      ForgetSummon(id);
+      const auto& form = worldState.LookupFormByIdNoLoad(id);
+      MpObjectReference* summon = form.get();
+      if (summon && !summon->IsDeleted()) {
+        summon->Delete();
+        spdlog::info("[verb:summon] {:x} deleted, its fade ended "
+                     "(tracker #84)",
+                     id);
+      }
+    }
+  }
 }
 
 skymp::rules::CellHost PartOne::GetCellHost(uint32_t cell) const
@@ -3962,6 +4025,179 @@ std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
                  destWorldOrCell, worldState.CellOf(*thrall).value_or(0u));
   }
   return taken;
+}
+
+// thuum tracker #84 (docs/verbs/summon.md): the fade's GMST, read from the
+// records (Skyrim.esm, lab/esm.py on sky-srv, 2026-11-16), never from
+// memory: fSummonedCreatureFadeOutSeconds, 1.5 s
+constexpr uint32_t kSummonFadeGmst = 0x0010a196;
+
+void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
+{
+  const std::string head = fmt::format(
+    "{:x}'s summon {:x} (base {:x}, effect {:x}, spell {:x}) at ({:.0f}, "
+    "{:.0f}, {:.0f}) in {:x}, {:.1f} s left",
+    caster.GetFormId(), msg.localId, msg.baseId, msg.effectId, msg.spellId,
+    msg.pos[0], msg.pos[1], msg.pos[2], msg.worldOrCell, msg.remainingS);
+  // rule 5's bounds before anything is placed, judged by wire-rules
+  // summons over what the core reads here: the reporter's own player
+  // alone (the message names no actor), the spell its record holds (or
+  // its base's), the effect one of the spell's and a summon's (archetype
+  // 18, kSummonCreature, CommonLibSSE-NG include/RE/E/EffectArchetypes.h:28,
+  // read through the files), the base the effect's associated form and an
+  // NPC_, the place the caster's own worldspace or cell within 8192 units
+  // in a cell the files hold, the time left within four times the spell's
+  // record duration, two live at most
+  skymp::rules::SummonFacts facts{};
+  facts.caster = caster.GetFormId();
+  facts.local = msg.localId;
+  facts.base = msg.baseId;
+  facts.effect = msg.effectId;
+  facts.spell = msg.spellId;
+  facts.spell_known = caster.IsSpellLearned(msg.spellId);
+  facts.remaining_s = msg.remainingS;
+  const NiPoint3& cpos = caster.GetPos();
+  facts.same_world =
+    caster.GetCellOrWorld().ToFormId(worldState.espmFiles) == msg.worldOrCell;
+  const float dx = msg.pos[0] - cpos.x;
+  const float dy = msg.pos[1] - cpos.y;
+  const float dz = msg.pos[2] - cpos.z;
+  facts.distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+  facts.in_cell = worldState
+                    .CellOf(msg.worldOrCell,
+                            NiPoint3{ msg.pos[0], msg.pos[1], msg.pos[2] })
+                    .has_value();
+  if (HasEspm()) {
+    for (const auto& effect : MpActor::EffectsOf(&worldState, msg.spellId)) {
+      if (effect.effectId == msg.effectId) {
+        facts.effect_on_spell = true;
+        facts.record_s =
+          std::max(facts.record_s, static_cast<float>(effect.duration));
+      }
+    }
+    const auto effectRec = GetEspm().GetBrowser().LookupById(msg.effectId).rec;
+    if (effectRec && effectRec->GetType() == espm::MGEF::kType) {
+      const auto mgef = espm::GetData<espm::MGEF>(msg.effectId, &worldState);
+      facts.archetype = static_cast<uint32_t>(mgef.data.effectType);
+      facts.associated = mgef.data.associatedItem;
+    } else {
+      // the rule's "no MGEF the files hold"
+      facts.archetype = std::numeric_limits<uint32_t>::max();
+    }
+    const auto baseRec = GetEspm().GetBrowser().LookupById(msg.baseId).rec;
+    facts.base_is_npc = baseRec && baseRec->GetType() == espm::NPC_::kType;
+  }
+  const auto verdict = pImpl->summons->summon_judge(facts);
+  if (verdict.code != 0) {
+    return spdlog::warn("[verb:summon] {}: {}; nothing placed (tracker #84)",
+                        std::string(verdict.name), head);
+  }
+  const auto lookup = GetEspm().GetBrowser().LookupById(msg.baseId);
+  auto& refr = PapyrusObjectReference::PlaceAt(
+    caster, lookup,
+    LocationalData{ { msg.pos[0], msg.pos[1], msg.pos[2] },
+                     { msg.rot[0], msg.rot[1], msg.rot[2] },
+                     FormDesc::FromFormId(msg.worldOrCell,
+                                           worldState.espmFiles) },
+    true);
+  auto* summon = refr.AsActor();
+  if (!summon) {
+    // the judge held the base an NPC_, so PlaceAt made an actor; this
+    // stands for the compiler's sake
+    refr.Delete();
+    return spdlog::warn("[verb:summon] E_SUMMON_BASE: {}: the placed {:x} "
+                        "is no actor",
+                        head, refr.GetFormId());
+  }
+  const uint64_t nowMs = SteadyNowMs();
+  if (!pImpl->summons->summon_record(facts, summon->GetFormId(), nowMs)) {
+    summon->Delete();
+    return spdlog::warn("[verb:summon] E_SUMMON_TWICE: {}; folded", head);
+  }
+  summon->SetSummon();
+  // the restart's sweep: a summon never outlives the server that placed
+  // it, its creator's engine references falling with its session
+  // (SweepCreatedAtLoad reads the placement's self, a runtime form)
+  summon->SetPlacedByScript(
+    FormDesc::FromFormId(caster.GetFormId(), worldState.espmFiles),
+    FormDesc::FromFormId(msg.baseId, worldState.espmFiles));
+  pImpl->cells->summon_row(summon->GetFormId(), caster.GetFormId(),
+                           worldState.CellOf(*summon).value_or(0), nowMs);
+  spdlog::info("[verb:summon] {} stands for {:.1f} s, its owner {:x}'s game "
+               "simulating it through the bind (tracker #84)",
+               head, msg.remainingS, caster.GetFormId());
+}
+
+void PartOne::OnSummonEnd(MpActor& caster, const SummonMessage& msg)
+{
+  const auto end =
+    pImpl->summons->summon_end(caster.GetFormId(), msg.localId);
+  if (end.code != 0) {
+    return spdlog::info("[verb:summon] {}: {:x}'s engine reports its summon "
+                        "{:x} ended; none live by that id, folded",
+                        std::string(end.name), caster.GetFormId(),
+                        msg.localId);
+  }
+  const auto& form = worldState.LookupFormByIdNoLoad(end.actor);
+  MpActor* summon = form ? form->AsActor() : nullptr;
+  if (!summon) {
+    ForgetSummon(end.actor);
+    return spdlog::warn("[verb:summon] {:x}'s summon {:x} ended: its actor "
+                        "{:x} is gone already",
+                        caster.GetFormId(), msg.localId, end.actor);
+  }
+  DispelSummon(*summon, "its effect's end, its engine's own word");
+}
+
+void PartOne::DispelSummon(MpActor& summon, const char* reason)
+{
+  const uint32_t id = summon.GetFormId();
+  const auto row = pImpl->summons->summon_row(id);
+  const uint32_t caster = row.caster;
+  const uint64_t nowMs = SteadyNowMs();
+  // the engine's own fade, the GMST read from the records (never from
+  // memory): fSummonedCreatureFadeOutSeconds (Skyrim.esm, lab/esm.py on
+  // sky-srv, 2026-11-16), 1.5 s
+  const float fadeS =
+    HasEspm() ? espm::GetData<espm::GMST>(kSummonFadeGmst, &worldState).value
+              : 1.5f;
+  if (!pImpl->summons->summon_dispel(
+        id, nowMs, static_cast<uint64_t>(fadeS * 1000.f))) {
+    return spdlog::info("[verb:summon] {:x} dispels ({}): its dispel runs "
+                        "already",
+                        id, reason);
+  }
+  spdlog::info("[verb:summon] {:x} dispels ({}), its fade {:.1f} s "
+               "(tracker #84)",
+               id, reason, fadeS);
+  // Kill reaches every game through the death state (no respawn: the
+  // summon's marker holds it); the alpha's fade on every listening game
+  // but the caster's, whose engine ran its own end (SendAshCalls' shape)
+  if (!summon.IsDead()) {
+    summon.Kill(nullptr);
+  }
+  if (caster != 0 && HasEspm()) {
+    using Arg =
+      std::optional<std::variant<bool, double, std::string,
+                                 SpSnippetObjectArgument>>;
+    const std::vector<Arg> args{ Arg(0.0), Arg(true) };
+    SpSnippet snippet("Actor", "SetAlpha", args, id);
+    for (MpActor* listener : summon.GetActorListeners()) {
+      if (listener && listener->GetFormId() != caster &&
+          listener->GetUserId() != Networking::InvalidUserId) {
+        snippet.Serve(listener);
+      }
+    }
+  }
+  // the row ends now; the actor and its record go at the fade's end, the
+  // summons' clock handing the faded to the delete
+  pImpl->cells->summon_row_end(id);
+}
+
+void PartOne::ForgetSummon(uint32_t actor)
+{
+  pImpl->summons->summon_forget(actor);
+  pImpl->cells->summon_row_end(actor);
 }
 
 uint32_t PartOne::ReleaseAnyClaim(MpActor& actor)

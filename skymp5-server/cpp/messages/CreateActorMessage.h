@@ -120,7 +120,8 @@ struct CreateActorMessageAdditionalProps
       .Serialize("restrictedRaces", restrictedRaces)
       .Serialize("permittedRaces", permittedRaces)
       .Serialize("overlay", overlay)
-      .Serialize("looks", looks);
+      .Serialize("looks", looks)
+      .Serialize("ownLocal", ownLocal);
   }
 
   std::optional<bool> isOpen;
@@ -176,6 +177,12 @@ struct CreateActorMessageAdditionalProps
   // not stopped (wire-rules actor_looks), on an actor's CreateActor to a
   // seat that does not simulate it; never on a player's own
   std::optional<std::vector<ServedLookProp>> looks;
+
+  // thuum tracker #84 (docs/verbs/summon.md, SCHEMA_VERSION 57): the engine
+  // reference the caster's own game holds for this summon, its runtime id
+  // (0xff000000 and up), on the summon's create word to its caster alone;
+  // absent for every other listener and every other form
+  std::optional<uint32_t> ownLocal;
 };
 
 struct CreateActorMessageMainProps

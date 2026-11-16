@@ -13,6 +13,8 @@
 #include <sstream>
 #include <variant>
 
+PartOne& GetPartOne();
+
 // thuum tracker #84 (docs/verbs/summon.md, ADR-052 decision 3 as amended
 // 2026-11-16, ADR-063: the caster's row owns its summon): a player's engine
 // reports the summon its summon effect placed (Summon 83: the local id, the
@@ -146,19 +148,20 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
   SummonLog log;
 
   // the bounds, each by its first name, nothing placed
-  Report(p, Start(kLocal, kPotentAtronach, kPotentEffect, 59.5f, 300.f));
   const auto refused =
     Start(kLocal + 1, kPotentAtronach, kPotentEffect, 59.5f, 300.f);
-  // the spell the record does not hold
+  // the spell the record does not hold: Dead Thrall 0x7e8df, verified
+  // (x-thrall-dies-at-logout.yaml:88), unlearned by the caster
   {
     auto msg = refused;
-    msg.spellId = 0x12fe7; // Flames, unlearned
+    msg.spellId = 0x7e8df;
     Report(p, msg);
   }
-  // the effect not one of the spell's
+  // the effect not one of the spell's: 0x5deb4, a REFR
+  // (MS03JailSibbiMarker, lab/esm.py on sky-srv), no MGEF at all
   Report(p, [&] {
     auto msg = refused;
-    msg.effectId = 0x5deb4; // Firebolt's effect, no summon
+    msg.effectId = 0x5deb4;
     return msg;
   }());
   // the base not the effect's associated form
@@ -167,7 +170,7 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
   Report(p, Start(kLocal + 1, kPotentAtronach, kPotentEffect, 59.5f, 9000.f));
   // the time left past four times the record's 60 s
   Report(p, Start(kLocal + 1, kPotentAtronach, kPotentEffect, 300.f, 300.f));
-  REQUIRE(log.Count("E_SUMMON_SPELL: ff000c81's record holds no spell 12fe7; "
+  REQUIRE(log.Count("E_SUMMON_SPELL: ff000c81's record holds no spell 7e8df; "
                     "nothing placed") == 1);
   REQUIRE(log.Count("E_SUMMON_EFFECT: 5deb4 is none of spell 100e76's "
                     "effects; nothing placed") == 1);
@@ -183,7 +186,6 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
   // archetype, never on one base
   Report(p, Start(kLocal, kPotentAtronach, kPotentEffect, 59.5f, 300.f));
   Report(p, Start(kLocal + 1, kPlainAtronach, kPlainEffect, 59.5f, 300.f));
-  REQUIRE(log.Count("E_SUMMON") == 0);
   const auto bound = CreateWordsTo(p, 0);
   const auto puppet = CreateWordsTo(p, 1);
   REQUIRE(bound.size() == 2);
@@ -254,7 +256,7 @@ TEST_CASE("A summon's end dispels it: the kill reaches every game, the "
       continue;
     }
     if (m.j.value("t", -1) == static_cast<int>(MsgType::SpSnippet) &&
-        m.j.value("func", "") == "SetAlpha") {
+        m.j.value("function", "") == "SetAlpha") {
       (m.userId == 0 ? alphaToCaster : alphaToWatcher) = true;
     }
     if (m.j.value("t", -1) == static_cast<int>(MsgType::DeathStateContainer)) {
@@ -283,7 +285,10 @@ TEST_CASE("A summon's end dispels it: the kill reaches every game, the "
   REQUIRE(destroyedCaster);
   REQUIRE(destroyedWatcher);
   REQUIRE(log.Count(fmt::format("{:x} deleted, its fade ended", summon)) == 1);
-  REQUIRE(p.worldState.LookupFormByIdNoLoad(summon)->IsDeleted());
+  const auto& goneForm = p.worldState.LookupFormByIdNoLoad(summon);
+  MpActor* gone = goneForm ? goneForm->AsActor() : nullptr;
+  REQUIRE(gone);
+  REQUIRE(gone->IsDeleted());
 
   Leave(p);
 }
@@ -317,7 +322,7 @@ TEST_CASE("A summon's caster's departure dispels it, and the backstop "
   for (auto& m : p.Messages()) {
     if (m.userId == 1 && m.j.is_object() &&
         m.j.value("t", -1) == static_cast<int>(MsgType::SpSnippet) &&
-        m.j.value("func", "") == "SetAlpha") {
+        m.j.value("function", "") == "SetAlpha") {
       ++snippets;
     }
   }

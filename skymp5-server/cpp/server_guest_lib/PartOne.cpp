@@ -3660,7 +3660,7 @@ void PartOne::TickCellHosts(uint64_t nowMs)
     for (const uint32_t id : due.faded) {
       ForgetSummon(id);
       const auto& form = worldState.LookupFormByIdNoLoad(id);
-      MpObjectReference* summon = form.get();
+      MpActor* summon = form ? form->AsActor() : nullptr;
       if (summon && !summon->IsDeleted()) {
         summon->Delete();
         spdlog::info("[verb:summon] {:x} deleted, its fade ended "
@@ -4092,8 +4092,9 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg)
   }
   const auto verdict = pImpl->summons->summon_judge(facts);
   if (verdict.code != 0) {
+    // the rule's why names the ids; the head is the accepted line's
     return spdlog::warn("[verb:summon] {}: {}; nothing placed (tracker #84)",
-                        std::string(verdict.name), head);
+                        std::string(verdict.name), std::string(verdict.why));
   }
   const auto lookup = GetEspm().GetBrowser().LookupById(msg.baseId);
   auto& refr = PapyrusObjectReference::PlaceAt(
@@ -4135,10 +4136,8 @@ void PartOne::OnSummonEnd(MpActor& caster, const SummonMessage& msg)
 {
   const auto end = pImpl->summons->summon_end(caster.GetFormId(), msg.localId);
   if (end.code != 0) {
-    return spdlog::info("[verb:summon] {}: {:x}'s engine reports its summon "
-                        "{:x} ended; none live by that id, folded",
-                        std::string(end.name), caster.GetFormId(),
-                        msg.localId);
+    return spdlog::info("[verb:summon] {}: {}, folded (tracker #84)",
+                        std::string(end.name), std::string(end.why));
   }
   const auto& form = worldState.LookupFormByIdNoLoad(end.actor);
   MpActor* summon = form ? form->AsActor() : nullptr;

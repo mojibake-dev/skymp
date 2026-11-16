@@ -3539,6 +3539,17 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
       std::string(verdict.name), head, std::string(verdict.why));
   }
 
+  // thuum #51: the look's parts the report could never name (a race list
+  // bars them, and the report names no part of their type) stay on the
+  // record and on the figure the other games draw (PartOne::OwnPartsKept)
+  const auto keptLine = [](size_t kept) {
+    return kept == 0
+      ? std::string()
+      : fmt::format("; {} head part(s) its race's list bars kept on it (the "
+                    "player's own, #51)",
+                    kept);
+  };
+
   // thuum D-53-11 (A): the overlay list's parts are held in memory as the
   // figure's, never on the change form. A login applies the change form's
   // look to the player's own base, so an overlay written there became the
@@ -3548,10 +3559,14 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
   // (PartOne::AppearanceForOthers, RaceMenuPresetForOthers); the player's own
   // game draws them already
   if (msg.overlay) {
-    if (!partOne.HoldOwnOverlayParts(actor->GetFormId(), msg.parts)) {
+    const std::vector<uint32_t> kept = partOne.OwnPartsKept(*look, msg.parts);
+    std::vector<uint32_t> held = msg.parts;
+    held.insert(held.end(), kept.begin(), kept.end());
+    const size_t heldCount = held.size();
+    if (!partOne.HoldOwnOverlayParts(actor->GetFormId(), std::move(held))) {
       return spdlog::info("[verb:appearance] {}: folded, its figure wears "
-                          "them already (D-53-11)",
-                          head);
+                          "them already (D-53-11){}",
+                          head, keptLine(kept.size()));
     }
     std::string what = "held in memory as its figure's, never on its change "
                        "form (D-53-11, R2)";
@@ -3562,8 +3577,9 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
     SendAppearanceToOthers(partOne, *actor, *look);
     what += fmt::format(", its look with their {} head part(s) sent to every "
                         "game that sees it",
-                        msg.parts.size());
-    return spdlog::info("[verb:appearance] {}: {}", head, what);
+                        heldCount);
+    return spdlog::info("[verb:appearance] {}: {}{}", head, what,
+                        keptLine(kept.size()));
   }
 
   // R2, the seat's word from its base list: the look wears exactly the
@@ -3577,8 +3593,8 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
   const auto recorded = partOne.RecordOwnHeadParts(*actor, msg.parts);
   if (!recorded.look && !recorded.preset && !ended) {
     return spdlog::info("[verb:appearance] {}: folded, its look wears them "
-                        "already (D-53-8 B)",
-                        head);
+                        "already (D-53-8 B){}",
+                        head, keptLine(recorded.keptOffList));
   }
   std::string what = recorded.look || recorded.preset
     ? "recorded on its look as its seat reported them (D-53-8 B, R2)"
@@ -3602,7 +3618,8 @@ void ActionListener::OnOwnHeadParts(const RawMessageData& rawMsgData,
                           now->headpartIds.size());
     }
   }
-  spdlog::info("[verb:appearance] {}: {}", head, what);
+  spdlog::info("[verb:appearance] {}: {}{}", head, what,
+               keptLine(recorded.keptOffList));
 }
 
 void ActionListener::SendRaceMenuPreset(MpActor& actor)

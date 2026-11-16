@@ -114,6 +114,17 @@ export class HostService extends ClientListener {
         return this.isMine(form, refr);
     }
 
+    // Whether another game's word holds the actor: its form in the world
+    // model with isHostedByOther true. False for an actor this game hosts,
+    // and for one the server took back from this game's reach (no form, no
+    // word at all: PuppetService.demoteOnLoss's case)
+    isOthersLocal(localId: number): boolean {
+        const remoteId = localIdToRemoteId(localId);
+        const world = this.controller.lookupListener(RemoteServer).getWorldModel();
+        const form = world.forms.find((f) => f !== undefined && f.refrId === remoteId);
+        return !!form && form.isHostedByOther === true;
+    }
+
     // The remote ids of the actors this game simulates, for the input
     // stream (sendInputsService): isMine's rule over the world model, the
     // player's own aside (an actor from the game files travels under its

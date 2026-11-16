@@ -318,6 +318,12 @@ pub struct ClientGuard {
     /// the engine's overlay list comes after it, so 4 at once, then 1 a
     /// second (UNMEASURED; a vampire's turn and its cure are minutes apart).
     pub own_head_parts_budget: TokenBucket,
+    /// Budget for a seat's summon reports (Summon, thuum tracker #84,
+    /// docs/verbs/summon.md): a Twin Souls pair starts together and ends
+    /// together, so its two starts and its two ends at once, then 1 a
+    /// second (UNMEASURED; a cast is seconds apart, the rule caps the live
+    /// count at 2).
+    pub summon_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -370,6 +376,7 @@ impl Default for ClientGuard {
             entry_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 4, last_refill_ms: 0 },
             script_variables_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             own_head_parts_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
+            summon_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
         }
     }
 }
@@ -726,6 +733,38 @@ fn check_own_head_parts(m: &skymp::OwnHeadParts) -> Result<(), Reject> {
     Ok(())
 }
 
+/// A player's summon report (thuum tracker #84, Summon 83, docs/verbs/
+/// summon.md), structural only: the local id an engine runtime reference
+/// (0xff000000 and up, the engine's own ids), and on a start (`ended`
+/// false) its base, effect and spell load-order forms (not 0, below
+/// 0xff000000), a place inside the world and a time left of at least 0; an
+/// end (`ended` true) is the local id alone, the server reading no other
+/// field. The place's bounds, the spell the record holds, the effect on
+/// it, the archetype, the associated base and the live count are the
+/// server's rule (wire-rules summons: `E_SUMMON_*`); the message names no
+/// actor, so it is only ever the sender's own player's summon.
+fn check_summon(m: &skymp::Summon) -> Result<(), Reject> {
+    if m.local_id < PLAYER_FORMS {
+        return Err(Reject::Range);
+    }
+    if m.ended {
+        // the server reads the local id alone on an end, so the fields it
+        // ignores pass as they stand
+        return Ok(());
+    }
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if m.pos.iter().any(|v| v.abs() > WORLD_ABS_MAX) {
+        return Err(Reject::OutOfWorld);
+    }
+    let form = |id: u32| id != 0 && id < PLAYER_FORMS;
+    if !form(m.base_id) || !form(m.effect_id) || !form(m.spell_id) || !(0.0..).contains(&m.remaining_s) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// UpdateAppearance (MsgType 4): its optional overlay is the server's word
 /// on another player's figure ([`check_race_overlay`]); a client's own look
 /// carries none ([`validate`]).
@@ -775,6 +814,18 @@ fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
     if let Some(caster) = m.props.placed_by {
         let placed_kind = m.base_record_type.as_ref().is_some_and(|t| PLACED_KINDS.contains(&t.as_str()));
         if caster == 0 || !placed_kind {
+            return Err(Reject::Range);
+        }
+    }
+    // thuum tracker #84 (SCHEMA_VERSION 57, docs/verbs/summon.md): the
+    // engine reference the caster's own game holds for this summon, on the
+    // summon's create word to its caster alone; a runtime id 0xff000000
+    // and up, and only on an NPC_ (the rule places an NPC_ base, so the
+    // pairing says a summon; `is_me` never carries one, a player's own
+    // create word is no summon's)
+    if let Some(local) = m.props.own_local {
+        let npc = m.base_record_type.as_ref().is_some_and(|t| t.as_str() == "NPC_");
+        if local < PLAYER_FORMS || !npc || m.is_me {
             return Err(Reject::Range);
         }
     }
@@ -2103,6 +2154,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
             take(&mut guard.script_variables_budget, now_ms)
         }
         Message::OwnHeadParts(_) => take(&mut guard.own_head_parts_budget, now_ms),
+        Message::Summon(_) => take(&mut guard.summon_budget, now_ms),
         // thuum ADR-068 rung 5 (D-T1 A): a seat sends its own look; a
         // figure's overlay is the server's word
         Message::UpdateAppearance(m) if m.overlay.is_some() => Err(Reject::Range),
@@ -2302,6 +2354,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::WorldGlobal(m) => check_world_global(m),
         Message::ScriptVariables(m) => check_script_variables(m),
         Message::OwnHeadParts(m) => check_own_head_parts(m),
+        Message::Summon(m) => check_summon(m),
         Message::CreateActor(m) => check_create_actor(m),
         Message::UpdateAppearance(m) => check_update_appearance(m),
         Message::SpSnippet(m) => check_sp_snippet(m),
@@ -3881,6 +3934,89 @@ mod tests {
         let mut fresh = ClientGuard::default();
         assert_eq!(validate(&report(0x88845, &[]), &mut fresh, 0), Err(Reject::Range));
         assert_eq!(fresh.own_head_parts_budget.tokens, 4);
+    }
+
+    #[test]
+    fn summon_reports_name_a_runtime_reference_and_a_place_and_are_rate_limited() {
+        // thuum tracker #84 (x-summon-baseline 20261116-083744): rotfern's
+        // potent atronach, its engine's id 0xff0008fd of
+        // SummonAtronachFlamePotent 0x4e940 by effect 0x4e945 of
+        // ConjureFlameAtronachRightHand 0x100e76, at Embershard's door
+        // landing in Tamriel 0x3c
+        use wire_schema::skymp::Summon;
+        let start = |local, base, remaining, pos: [f32; 3]| {
+            Message::Summon(Summon {
+                local_id: local,
+                base_id: base,
+                effect_id: 0x4e945,
+                spell_id: 0x100e76,
+                pos,
+                rot: [0.0, 0.0, 2.46],
+                world_or_cell: 0x3c,
+                remaining_s: remaining,
+                ended: false,
+                ..Default::default()
+            })
+        };
+        let camp = [8849.0, -58073.0, 1446.0];
+        assert_eq!(validate_server(&start(0xff00_08fd, 0x4e940, 59.5, camp)), Ok(()));
+        // the local id is the engine's own
+        assert_eq!(validate_server(&start(0x8fd, 0x4e940, 59.5, camp)), Err(Reject::Range));
+        assert_eq!(validate_server(&start(0, 0x4e940, 59.5, camp)), Err(Reject::Range));
+        // a start names its base and a time left, and stands in the world
+        assert_eq!(validate_server(&start(0xff00_08fd, 0, 59.5, camp)), Err(Reject::Range));
+        assert_eq!(validate_server(&start(0xff00_08fd, 0xff00_0000, 59.5, camp)), Err(Reject::Range));
+        assert_eq!(validate_server(&start(0xff00_08fd, 0x4e940, -1.0, camp)), Err(Reject::Range));
+        assert_eq!(validate_server(&start(0xff00_08fd, 0x4e940, f32::NAN, camp)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&start(0xff00_08fd, 0x4e940, 59.5, [1.0e6 + 1.0, 0.0, 0.0])), Err(Reject::OutOfWorld));
+        // an end is the local id alone: the fields the server ignores pass
+        // as they stand
+        let end = Message::Summon(Summon { local_id: 0xff00_08fd, ended: true, ..Default::default() });
+        assert_eq!(validate_server(&end), Ok(()));
+        let end = Message::Summon(Summon { local_id: 0xff00_08fd, base_id: 0, pos: [f32::NAN; 3], remaining_s: -1.0, ended: true, ..Default::default() });
+        assert_eq!(validate_server(&end), Ok(()));
+        let end = Message::Summon(Summon { local_id: 0x8fd, ended: true, ..Default::default() });
+        assert_eq!(validate_server(&end), Err(Reject::Range));
+        // the Twin Souls pair at once, then one a second
+        let mut guard = ClientGuard::default();
+        for _ in 0..4 {
+            assert_eq!(validate(&start(0xff00_08fd, 0x4e940, 59.5, camp), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&start(0xff00_08fd, 0x4e940, 59.5, camp), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&start(0xff00_08fd, 0x4e940, 59.5, camp), &mut guard, 2_000), Ok(()));
+        // a refused shape spends no token
+        let mut fresh = ClientGuard::default();
+        assert_eq!(validate(&start(0, 0x4e940, 59.5, camp), &mut fresh, 0), Err(Reject::Range));
+        assert_eq!(fresh.summon_budget.tokens, 4);
+    }
+
+    #[test]
+    fn a_summons_bind_pairs_a_runtime_id_with_an_npc_base_and_never_a_players_own_word() {
+        // thuum tracker #84 (SCHEMA_VERSION 57, docs/verbs/summon.md): the
+        // create word's ownLocal names the engine reference the caster's
+        // own game holds, on the summon's word to its caster alone
+        let bound = |local: Option<u32>, base_record_type: Option<&str>, is_me: bool| {
+            Message::CreateActor(skymp::CreateActor {
+                idx: 7,
+                is_me,
+                base_record_type: base_record_type.map(|t| t.try_into().unwrap_or_default()),
+                refr_id: Some(0xff00_0938),
+                base_id: Some(0x4e940),
+                props: skymp::CreateActorProps { own_local: local, ..Default::default() },
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&bound(Some(0xff00_08fd), Some("NPC_"), false)), Ok(()));
+        // a load-order id is no engine reference, and the pairing says a
+        // summon: an NPC_ base alone
+        assert_eq!(validate_server(&bound(Some(0x8fd), Some("NPC_"), false)), Err(Reject::Range));
+        assert_eq!(validate_server(&bound(Some(0xff00_08fd), Some("MSTT"), false)), Err(Reject::Range));
+        assert_eq!(validate_server(&bound(Some(0xff00_08fd), None, false)), Err(Reject::Range));
+        // a player's own create word is no summon's
+        assert_eq!(validate_server(&bound(Some(0xff00_08fd), Some("NPC_"), true)), Err(Reject::Range));
+        // absent, any base
+        assert_eq!(validate_server(&bound(None, Some("MSTT"), false)), Ok(()));
+        assert_eq!(validate_server(&bound(None, None, true)), Ok(()));
     }
 
     #[test]

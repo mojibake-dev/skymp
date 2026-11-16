@@ -132,6 +132,9 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     // 2026-11-14: the review of the client's 3D keep, eaa6ba47)
     ("CreateActorProps", "looks"),
     ("SpSnippet", "keep"),
+    // the summon's bind, its caster alone (SCHEMA_VERSION 57, thuum
+    // tracker #84, docs/verbs/summon.md)
+    ("CreateActorProps", "ownLocal"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

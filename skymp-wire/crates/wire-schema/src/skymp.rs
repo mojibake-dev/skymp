@@ -301,6 +301,16 @@ wire_struct! {
         /// player's own and never to the actor's simulator; absent when it
         /// keeps none.
         pub looks: Option<Vec<ServedLook, { cap::LOOKS }>>,
+        /// Since SCHEMA_VERSION 57 (thuum tracker #84, docs/verbs/summon.md,
+        /// ADR-052 decision 3 as amended 2026-11-16): the engine reference
+        /// the caster's own game holds for this summon, its runtime id
+        /// (0xff000000 and up). On the summon's create word to its caster
+        /// alone, so its view binds the engine's own summon instead of
+        /// placing a copy (the caster's engine simulates it, the engine's
+        /// own Finish deletes it); absent for every other listener, whose
+        /// copy is a puppet, and for every other form. Only with
+        /// `base_record_type` NPC_ (`E_VAL_RANGE`).
+        pub own_local: Option<u32>,
     }
 }
 
@@ -3242,6 +3252,53 @@ wire_struct! {
         /// The parts are the base's overlay list (else its base list), for
         /// the server's line; never judged.
         pub overlay: bool,
+    }
+}
+
+wire_struct! {
+    /// MsgType 83, thuum's (tracker #84, docs/verbs/summon.md, ADR-052
+    /// decision 3 as amended 2026-11-16, ADR-063: the caster's row owns its
+    /// summon): the summon a player's engine placed at a summon effect's
+    /// apply, and its end. Client to server, reliable, R2 (the caster's
+    /// engine computes its summon's place and life; the server records
+    /// within bounds): the caster's game raises summonStart (the platform's
+    /// summon tracker, EventHandler.cpp) once the effect's commandedActor
+    /// resolves and reports it here, `ended` false, and its end once (the
+    /// effect's timer, or the engine's Finish after its death), `ended`
+    /// true, where `local_id` alone is read. Naming no actor, it is only
+    /// ever the sender's own player's. Reason codes: `E_VAL_RANGE` (a local
+    /// id below 0xff000000; on a start a base, effect or spell of 0 or
+    /// 0xff000000 and up, or a negative time left), `E_VAL_NONFINITE`,
+    /// `E_VAL_RATE`. The rule's bounds (the spell the record holds, the
+    /// effect on it, the archetype, the associated base, the place, the
+    /// time, the live count) are wire-rules summons', each its `E_SUMMON_*`.
+    pub struct Summon {
+        /// `"t": 83`.
+        #[serde(default)]
+        pub t: MsgT<83>,
+        /// The summon's id in the caster's engine, a runtime id 0xff000000
+        /// and up; names the summon on a start and an end alike.
+        pub local_id: u32,
+        /// The summon's base, an NPC_ of the load order; read on a start.
+        pub base_id: u32,
+        /// The summon effect (an MGEF) of the spell that cast it; read on a
+        /// start.
+        pub effect_id: u32,
+        /// The spell as the caster's engine holds it; read on a start.
+        pub spell_id: u32,
+        /// Where the summon stands, the caster's own coordinates; read on a
+        /// start.
+        pub pos: [f32; 3],
+        /// Which way the summon faces, radians; read on a start.
+        pub rot: [f32; 3],
+        /// The worldspace or cell of the place; read on a start.
+        pub world_or_cell: u32,
+        /// The seconds the caster's engine reports left of the effect, at
+        /// least 0; read on a start.
+        pub remaining_s: f32,
+        /// False: the start of the summon `local_id` names. True: its end,
+        /// the server reading the local id alone.
+        pub ended: bool,
     }
 }
 

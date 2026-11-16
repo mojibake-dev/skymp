@@ -251,7 +251,19 @@ use bounded::{String, Vec};
 /// the next number, one number per shape (D-PH1 A's reason: postcard writes
 /// one presence byte per Option, so a 55 peer would misread every ScriptState
 /// of a 56 client while the handshake passed).
-pub const SCHEMA_VERSION: u16 = 56;
+/// 57: Summon (MsgType 83, wire id 91) and CreateActorProps' optional
+/// `own_local` (thuum tracker #84, docs/verbs/summon.md, ADR-052 decision 3
+/// as amended 2026-11-16, ADR-063: the caster's row owns its summon): a
+/// player's engine's summon reported at its summon effect's apply (its
+/// place, its base, the effect and the spell, the time left) and at its end,
+/// and the engine reference the summon's create word names to its caster
+/// alone, so the caster's view binds the engine's own summon instead of
+/// placing a copy (the summon is R2: the caster's engine simulates it, the
+/// server records within bounds). One number, one shape (D-PH1 A's reason:
+/// postcard writes a struct's fields in order with one presence byte per
+/// Option, so a 56 peer would misread every CreateActor of a 57 server
+/// while the handshake passed).
+pub const SCHEMA_VERSION: u16 = 57;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -819,6 +831,9 @@ pub enum Message {
     ScriptVariables(skymp::ScriptVariables),
     /// 90, MsgType 82 (thuum D-53-8 B). See [`skymp::OwnHeadParts`].
     OwnHeadParts(skymp::OwnHeadParts),
+    /// 91, MsgType 83 (thuum tracker #84, docs/verbs/summon.md). See
+    /// [`skymp::Summon`].
+    Summon(skymp::Summon),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -847,7 +862,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 91] = [
+const TABLE: [Row; 92] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -980,14 +995,18 @@ const TABLE: [Row; 91] = [
     // a race and 64 parts at five-byte varints, the count and the flag
     // (thuum D-53-8 B; 328 bytes at the longest, pinned by the size test)
     row("OwnHeadParts", 82, 512, C2S),
+    // the local id, the base, the effect and the spell at five-byte varints,
+    // the two triple floats, the cell, the time and the flag (thuum
+    // tracker #84; 55 bytes at the longest, pinned by the size test)
+    row("Summon", 83, 64, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 91;
-const _: () = assert!(TABLE.len() == 91, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 92;
+const _: () = assert!(TABLE.len() == 92, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -1103,6 +1122,7 @@ impl Message {
             Message::WorldGlobal(_) => 88,
             Message::ScriptVariables(_) => 89,
             Message::OwnHeadParts(_) => 90,
+            Message::Summon(_) => 91,
         }
     }
 
@@ -1153,6 +1173,7 @@ mod tests {
         assert_eq!(Message::WorldGlobal(skymp::WorldGlobal::default()).name(), "WorldGlobal");
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).name(), "ScriptVariables");
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).name(), "OwnHeadParts");
+        assert_eq!(Message::Summon(skymp::Summon::default()).name(), "Summon");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -1227,10 +1248,15 @@ mod tests {
         assert_eq!(name_of_msg_type(81), Some("ScriptVariables"));
         // D-53-8 B's one, after 81: wire id 90
         assert_eq!(name_of_msg_type(82), Some("OwnHeadParts"));
-        assert_eq!(name_of_msg_type(83), None);
+        // tracker #84's one, after 82: wire id 91
+        assert_eq!(name_of_msg_type(83), Some("Summon"));
+        assert_eq!(name_of_msg_type(84), None);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).wire_id(), 90);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).msg_type(), Some(82));
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).direction(), Direction::ClientToServer);
+        assert_eq!(Message::Summon(skymp::Summon::default()).wire_id(), 91);
+        assert_eq!(Message::Summon(skymp::Summon::default()).msg_type(), Some(83));
+        assert_eq!(Message::Summon(skymp::Summon::default()).direction(), Direction::ClientToServer);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).wire_id(), 89);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).msg_type(), Some(81));
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).direction(), Direction::Both);
@@ -1851,6 +1877,41 @@ mod tests {
         assert_eq!(postcard::to_allocvec(&ariadne).map(|b| b.len()), Ok(27));
         let over: Result<bounded::Vec<u32, { cap::HEADPARTS }>, _> = core::iter::repeat_n(1u32, cap::HEADPARTS + 1).collect::<alloc::vec::Vec<u32>>().try_into();
         assert!(over.is_err());
+    }
+
+    #[test]
+    fn summon_at_its_longest_fits_its_byte_cap() {
+        // thuum tracker #84 (SCHEMA_VERSION 57): the wire id, the local id,
+        // the base, the effect and the spell at five-byte varints, the two
+        // triple floats, the cell at a five-byte varint, the time and the
+        // flag; the baseline's report (x-summon-baseline 20261116-083744:
+        // rotfern's potent atronach) costs 45
+        let full = Message::Summon(skymp::Summon {
+            local_id: u32::MAX,
+            base_id: u32::MAX,
+            effect_id: u32::MAX,
+            spell_id: u32::MAX,
+            pos: [f32::MAX; 3],
+            rot: [f32::MAX; 3],
+            world_or_cell: u32::MAX,
+            remaining_s: f32::MAX,
+            ended: true,
+            ..Default::default()
+        });
+        assert_eq!(postcard::to_allocvec(&full).map(|b| b.len()), Ok(55));
+        assert_eq!(Message::max_len(full.wire_id()), Some(64));
+        let baseline = Message::Summon(skymp::Summon {
+            local_id: 0xff00_08fd,
+            base_id: 0x4e940,
+            effect_id: 0x4e945,
+            spell_id: 0x100e76,
+            pos: [8849.0, -58073.0, 1446.0],
+            rot: [0.0, 0.0, 2.46],
+            world_or_cell: 0x3c,
+            remaining_s: 59.5,
+            ..Default::default()
+        });
+        assert_eq!(postcard::to_allocvec(&baseline).map(|b| b.len()), Ok(45));
     }
 
     #[test]

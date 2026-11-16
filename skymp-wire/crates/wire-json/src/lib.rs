@@ -77,7 +77,7 @@ macro_rules! skymp_family {
             58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
             72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall,
             76 ScriptState, 77 ScriptStateApply, 78 DestructionStage, 79 AliasFill,
-            80 WorldGlobal, 81 ScriptVariables, 82 OwnHeadParts
+            80 WorldGlobal, 81 ScriptVariables, 82 OwnHeadParts, 83 Summon
         }
     };
 }
@@ -357,7 +357,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 82, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 83, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with
@@ -898,6 +898,48 @@ mod tests {
         }
         match recognize(&read("82-OwnHeadParts-0.json")) {
             Ok(Message::OwnHeadParts(o)) => assert_eq!((o.race, o.parts.len(), o.parts.get(2).copied(), o.overlay), (0x88845, 7, Some(0xee87f), true)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// thuum tracker #84 (SCHEMA_VERSION 57, docs/verbs/summon.md):
+    /// Summon 83. 83-0 is the baseline's start (x-summon-baseline
+    /// 20261116-083744: rotfern's potent atronach, its engine's id
+    /// 0xff0008fd of SummonAtronachFlamePotent 0x4e940 by effect 0x4e945 of
+    /// ConjureFlameAtronachRightHand 0x100e76, at Embershard's door landing
+    /// in Tamriel 0x3c, 59.5 s of the effect's 60 left), 83-1 its end (the
+    /// local id alone), 83-2 a start naming no base, refused by the shape
+    /// from either side. 33-5 is the summon's create word, its ownLocal
+    /// naming that engine reference to its caster alone.
+    #[test]
+    fn summon_fixtures_validate_as_named() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        type Verdict = (&'static str, Result<(), Reject>);
+        let verdicts: [Verdict; 3] = [("83-Summon-0.json", Ok(())), ("83-Summon-1.json", Ok(())), ("83-Summon-2.json", Err(Reject::Range))];
+        for (name, verdict) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), verdict, "{name}");
+            assert_eq!(validate(&m, &mut ClientGuard::default(), 0), verdict, "{name}");
+        }
+        match recognize(&read("83-Summon-0.json")) {
+            Ok(Message::Summon(s)) => assert_eq!(
+                (s.local_id, s.base_id, s.effect_id, s.spell_id, s.world_or_cell, s.remaining_s, s.ended),
+                (0xff00_08fd, 0x4e940, 0x4e945, 0x100e76, 0x3c, 59.5, false)
+            ),
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("83-Summon-1.json")) {
+            Ok(Message::Summon(s)) => assert_eq!((s.local_id, s.ended, s.base_id), (0xff00_08fd, true, 0)),
+            other => panic!("{other:?}"),
+        }
+        let word = recognize(&read("33-CreateActor-5.json")).unwrap_or_else(|e| panic!("33-CreateActor-5.json: {e}"));
+        assert_eq!(validate_server(&word), Ok(()));
+        match word {
+            Message::CreateActor(c) => assert_eq!(
+                (c.base_id, c.base_record_type.as_deref().map(str::to_string), c.props.own_local, c.is_me),
+                (Some(0x4e940), Some("NPC_".to_owned()), Some(0xff00_08fd), false)
+            ),
             other => panic!("{other:?}"),
         }
     }

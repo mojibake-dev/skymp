@@ -998,7 +998,7 @@ void ResurrectOnGameThread(uint32_t refrId, uint32_t tick, bool simulatedHere)
   // never simulates it, not for a frame (ADR-063): it comes up as the
   // puppet it is, the AI off and its activation blocked, and the pass then
   // flags it as before
-  const keptPuppet = !puppet && !simulatedHere && !actor->IsDead();
+  const bool keptPuppet = !puppet && !simulatedHere && !actor->IsDead();
   if (puppet || keptPuppet) {
     actor->EnableAI(false);
     actor->SetActivationBlocked(true);

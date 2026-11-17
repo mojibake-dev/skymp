@@ -1770,6 +1770,12 @@ fn check_script_call(m: &skymp::ScriptCall) -> Result<(), Reject> {
         check_placed(m, placed)?;
     }
     check_local_args(m)?;
+    // since SCHEMA_VERSION 61 (thuum tracker #117): an acting player is a
+    // player's actor by the server's id, never one of the sender's own
+    // numbers (0x14) or a game-file form
+    if m.acting.is_some_and(|a| a < PLAYER_FORMS) {
+        return Err(Reject::Range);
+    }
     Ok(())
 }
 
@@ -5284,6 +5290,16 @@ mod script_call_tests {
         assert_eq!(validate_server(&created(0xff00_08fa, "MoveTo", to_player.clone(), None, Some(1))), Err(Reject::Range));
         assert_eq!(validate_server(&created(0xff00_08fa, "MoveTo", to_player, None, Some(2))), Err(Reject::Range));
         assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { local_args: Some(4), ..play })), Err(Reject::Range));
+        // thuum tracker #117 (SCHEMA_VERSION 61): the keyhole's no-claw
+        // message skipped on the host for Ariadne (0xff000001), its acting
+        // player, is a shape; an acting player that is the sender's own
+        // number or a game-file form is not
+        let Message::ScriptCall(show) = call(0xb6441, "Message", "Show", vec![Some(SnippetArg::Number(0.0)); 9]) else {
+            return;
+        };
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { acting: Some(0xff00_0001), ..show.clone() })), Ok(()));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { acting: Some(0x14), ..show.clone() })), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ScriptCall(ScriptCall { acting: Some(0x4e2b9), ..show })), Err(Reject::Range));
     }
 
     #[test]

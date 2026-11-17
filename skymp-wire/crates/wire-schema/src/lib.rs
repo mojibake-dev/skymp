@@ -284,7 +284,12 @@ use bounded::{String, Vec};
 /// cell's host with the presser's recorded inventory, which the host's
 /// acting scope answers GetItemCount from. A new trailing field, so the
 /// number moves for D-PH1 A's reason.
-pub const SCHEMA_VERSION: u16 = 60;
+/// 61: ScriptCall's `acting` (thuum tracker #117's open half, playtest 54):
+/// a call the sender's seam skipped inside another player's acting scope
+/// because its row runs on the acting player's seat alone (Message.Show),
+/// reported with that player's server id for the server to relay to that
+/// player's game alone. A new trailing field, D-PH1 A's reason again.
+pub const SCHEMA_VERSION: u16 = 61;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -1502,6 +1507,7 @@ mod tests {
             landed: (0..cap::SCRIPT_CALL_LANDED).map(|_| ItemDelta { item: FormId(u32::MAX), count: i32::MIN }).collect::<alloc::vec::Vec<_>>().try_into().ok(),
             placed: Some(u32::MAX),
             local_args: Some(u16::MAX),
+            acting: Some(u32::MAX),
             ..Default::default()
         }
     }
@@ -1516,12 +1522,13 @@ mod tests {
         // 180,812 before SCHEMA_VERSION 44, then the landings' presence byte,
         // their two-byte length and 255 of ten bytes (the table's comment),
         // and since SCHEMA_VERSION 55 `placed` (a presence byte and five)
-        // and `local_args` (a presence byte and three)
-        assert_eq!(bytes.len(), 183_375);
+        // and `local_args` (a presence byte and three), and since
+        // SCHEMA_VERSION 61 `acting` (a presence byte and five, #117)
+        assert_eq!(bytes.len(), 183_381);
         assert!(bytes.len() <= Message::max_len(m.wire_id()).unwrap_or(0));
         // an absent landing costs its presence byte alone
         let plain = Message::ScriptCall(skymp::ScriptCall { landed: None, ..script_call_at_its_caps() });
-        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(180_823));
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(180_829));
         // a 256th landing fails at the bound, before any check
         let over: Result<bounded::Vec<ItemDelta, { cap::SCRIPT_CALL_LANDED }>, _> = (0..=cap::SCRIPT_CALL_LANDED).map(|_| ItemDelta { item: FormId(0xf), count: 1 }).collect::<alloc::vec::Vec<_>>().try_into();
         assert!(over.is_err());

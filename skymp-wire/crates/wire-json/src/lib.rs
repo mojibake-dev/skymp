@@ -457,7 +457,7 @@ mod tests {
     #[test]
     fn script_call_fixtures_validate_as_named() {
         use wire_validate::{validate_server, Reject};
-        let verdicts: [(&str, Result<(), Reject>); 9] = [
+        let verdicts: [(&str, Result<(), Reject>); 11] = [
             ("75-ScriptCall-0.json", Ok(())),
             ("75-ScriptCall-1.json", Ok(())),
             ("75-ScriptCall-2.json", Ok(())),
@@ -467,6 +467,13 @@ mod tests {
             ("75-ScriptCall-6.json", Ok(())),
             ("75-ScriptCall-7.json", Ok(())),
             ("75-ScriptCall-8.json", Ok(())),
+            // thuum tracker #117 (SCHEMA_VERSION 61): the Sanctum keyhole's
+            // no-claw message skipped on the host inside Ariadne's
+            // (0xff000001) acting scope, its MESG named illustratively
+            // (HallofStoriesNoObjMSGGolden 0xb6441, Skyrim.esm), and the same
+            // report naming the sender's own player as the acting one
+            ("75-ScriptCall-9.json", Ok(())),
+            ("75-ScriptCall-10.json", Err(Reject::Range)),
         ];
         for (name, want) in verdicts {
             let text = std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
@@ -475,6 +482,8 @@ mod tests {
             assert_eq!(validate_server(&m), want, "{name}");
             let landed = name == "75-ScriptCall-5.json";
             assert_eq!(render(&m).unwrap_or_default().contains("\"landed\""), landed, "{name}: `landed` renders only when carried");
+            let acting = name == "75-ScriptCall-9.json" || name == "75-ScriptCall-10.json";
+            assert_eq!(render(&m).unwrap_or_default().contains("\"acting\""), acting, "{name}: `acting` renders only when carried");
         }
         let text = std::fs::read_to_string(fixtures_dir().join("75-ScriptCall-5.json")).unwrap_or_default();
         match recognize(&text) {

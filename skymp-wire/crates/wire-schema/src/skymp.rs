@@ -2755,6 +2755,15 @@ wire_struct! {
         /// object argument of 0xff000000 and up stays what rung 5 made it, a
         /// player's figure by the server's id.
         pub local_args: Option<u16>,
+        /// Since SCHEMA_VERSION 61 (thuum tracker #117's open half): the
+        /// acting player, by the server's actor id (0xff000000 and up), of
+        /// the acting scope the call ran in on the sender, on a call whose
+        /// row runs on the acting player's seat alone (its scoped column
+        /// ActingSeatAlone, its audience the acting seat: Message.Show), which
+        /// the sender's seam skipped and the server relays to that player's
+        /// game alone (a guest's keyhole press run on the host shows its
+        /// message on the guest's screen); absent on every other call.
+        pub acting: Option<u32>,
     }
 }
 

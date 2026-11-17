@@ -67,7 +67,8 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
       .Serialize("latent", latent)
       .Serialize("landed", landed)
       .Serialize("placed", placed)
-      .Serialize("localArgs", localArgs);
+      .Serialize("localArgs", localArgs)
+      .Serialize("acting", acting);
   }
 
   // the subject's owner epoch the sender holds (the cell's host epoch;
@@ -96,4 +97,10 @@ struct ScriptCallMessage : public MessageBase<ScriptCallMessage>
   // reference by that id, which the server maps to its own copy
   std::optional<uint32_t> placed;
   std::optional<uint32_t> localArgs; // 16 bits on the wire (wire-schema)
+  // since SCHEMA_VERSION 61 (thuum tracker #117's open half): the acting
+  // player's server id of the scope the call ran in on the sender, on a call
+  // whose row runs on the acting player's seat alone (Message.Show), which
+  // the sender's seam skipped and the server relays to that player alone;
+  // absent on every other call
+  std::optional<uint32_t> acting;
 };

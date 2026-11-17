@@ -46,4 +46,9 @@ export interface ScriptCallMessage {
     // 0xff000000 and up stays a player's figure by its server id (rung 5)
     placed?: number;
     localArgs?: number;
+    // since SCHEMA_VERSION 61 (thuum tracker #117's open half): the acting
+    // player's server id of the scope this call ran in here, on a call whose
+    // row runs on the acting player's seat alone (Message.Show), which this
+    // seat's seam skipped and the server relays to that player's game alone
+    acting?: number;
 }

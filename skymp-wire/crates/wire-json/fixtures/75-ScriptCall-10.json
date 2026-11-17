@@ -1,0 +1,22 @@
+{
+  "acting": 20,
+  "args": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "caller": "HallofStoriesKeyholeScript",
+  "cls": "Message",
+  "epoch": 0,
+  "fn": "Show",
+  "handler": "onActivate",
+  "latent": true,
+  "selfId": 746561,
+  "t": 75
+}

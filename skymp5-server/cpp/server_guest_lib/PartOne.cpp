@@ -451,6 +451,16 @@ struct PartOne::Impl
   // the fights between players (thuum docs/verbs/hostility-sync.md, ADR-023)
   rust::Box<skymp::rules::Fights> fights = skymp::rules::new_fights();
   std::chrono::steady_clock::time_point lastFightsTick;
+  // playtest 53 #113 (Eli's design A): the thralls told to fight their
+  // commander's players' fight, by thrall: the commander, the other player
+  // and when it was last told (PartOne::KeepThrallsInFight)
+  struct ThrallInFight
+  {
+    uint32_t commander = 0;
+    uint32_t opponent = 0;
+    uint64_t toldMs = 0;
+  };
+  std::unordered_map<uint32_t, ThrallInFight> thrallsInFights;
   std::chrono::steady_clock::time_point lastFateRespawnsTick;
 
   // the cell host table (thuum docs/verbs/cell-host.md, ADR-035) and each
@@ -2479,6 +2489,13 @@ void PartOne::TickFights(uint64_t nowMs)
     MpActor* a = party(pair.a);
     MpActor* b = party(pair.b);
     if (!a || !b) {
+      // the one left stands down the thralls told to fight the one gone
+      if (a && played(*a)) {
+        StandDownThralls(*a, pair.b, true);
+      }
+      if (b && played(*b)) {
+        StandDownThralls(*b, pair.a, true);
+      }
       pImpl->fights->forget(a ? pair.b : pair.a);
       continue;
     }
@@ -2503,6 +2520,146 @@ void PartOne::TickFights(uint64_t nowMs)
       spdlog::info("PartOne::TickFights - hostility: the fight between {:x} "
                    "and {:x} is over ({}); the players' games are told",
                    pair.a, pair.b, apart ? "apart" : "a minute quiet");
+      // and, a players' fight, each player's thralls stand down with it
+      // (#113, design A); a fight with an NPC leaves them to their engine
+      if (played(*a) && played(*b)) {
+        StandDownThralls(*a, pair.b, false);
+        StandDownThralls(*b, pair.a, false);
+      }
+    } else if (played(*a) && played(*b)) {
+      KeepThrallsInFight(*a, *b, nowMs);
+    }
+  }
+}
+
+namespace {
+// a told thrall whose host's last state names no target is told again at
+// most this often: TickFights' own period, a policy of the server's, not an
+// engine number
+constexpr uint64_t kThrallRejoinMs = 1000;
+
+// `commander`'s living thralls its own game simulates, by the command rows
+// (wire-rules cells.rs FollowKind::Commanded), as EndLostNpcThralls reads
+// them
+std::vector<MpActor*> CommandedThralls(
+  PartOne& partOne, const std::vector<PartOne::CellFollowEntry>& rows,
+  uint32_t commander)
+{
+  std::vector<MpActor*> out;
+  for (const auto& row : rows) {
+    if (row.player != commander) {
+      continue;
+    }
+    auto& form = partOne.worldState.LookupFormByIdNoLoad(row.actor);
+    MpActor* thrall = form ? form->AsActor() : nullptr;
+    if (!thrall || thrall->IsDead() ||
+        partOne.CommanderOf(*thrall) != commander ||
+        partOne.SimulatorOf(*thrall) != commander) {
+      continue;
+    }
+    out.push_back(thrall);
+  }
+  return out;
+}
+
+SpSnippetObjectArgument ActorArgument(uint32_t formId)
+{
+  SpSnippetObjectArgument arg;
+  arg.formId = formId;
+  arg.type = "Actor";
+  return arg;
+}
+}
+
+void PartOne::KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs)
+{
+  // thuum playtest 53 #113 (Eli's design A): in the sitting rotfern's
+  // Reanimate Corpse thrall 29600 joined its commander's Flames on Ariadne
+  // (the server's "ff000000 hit ff000001, a fight begins" at 00:17:01.796Z,
+  // its state "target ff000001" at 02.300) and its engine stood it down
+  // about 5 s later (rotfern's console: Unequip, then target 0), while the
+  // record kept the players' fight until 00:18:02.480. One owner: the
+  // commander's game simulates the thrall, so that game is told, through
+  // the fight's own notice, Actor.StartCombat on the thrall aimed at the
+  // other player (its server id, which the client maps to its figure,
+  // spSnippetService.ts snippetIdToLocalId): once when the fight is seen
+  // standing, and again each kThrallRejoinMs while its host's last state
+  // (SetHostedState) names no target. A thrall fighting another enemy is
+  // left to its engine (R2). HYPOTHESIS until x-raise-guest-fight reads
+  // it: a StartCombat on the thrall holds the figure as its target, where
+  // the engine's follower dropped one that never fought back
+  const auto rows = GetFollows();
+  for (const auto& [commander, opponent] :
+       { std::pair<MpActor*, MpActor*>{ &a, &b },
+         std::pair<MpActor*, MpActor*>{ &b, &a } }) {
+    for (MpActor* thrall :
+         CommandedThralls(*this, rows, commander->GetFormId())) {
+      const uint32_t thrallId = thrall->GetFormId();
+      auto it = pImpl->thrallsInFights.find(thrallId);
+      const bool told = it != pImpl->thrallsInFights.end() &&
+        it->second.commander == commander->GetFormId() &&
+        it->second.opponent == opponent->GetFormId();
+      const uint32_t target = thrall->GetHostedCombatTarget();
+      if (told &&
+          (target != 0 || nowMs < it->second.toldMs + kThrallRejoinMs)) {
+        continue;
+      }
+      const std::vector<std::optional<
+        std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+        args{ ActorArgument(opponent->GetFormId()) };
+      SpSnippet("Actor", "StartCombat", args, thrallId)
+        .Execute(commander, SpSnippetMode::kNoReturnResult);
+      pImpl->thrallsInFights[thrallId] =
+        Impl::ThrallInFight{ commander->GetFormId(), opponent->GetFormId(),
+                             nowMs };
+      spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} {} "
+                   "its commander's fight with {:x}: Actor.StartCombat to "
+                   "its commander's game (playtest 53 #113, design A)",
+                   thrallId, commander->GetFormId(),
+                   told ? "rejoins (its host's last state names no target)"
+                        : "joins",
+                   opponent->GetFormId());
+    }
+  }
+}
+
+void PartOne::StandDownThralls(MpActor& commander, uint32_t opponent,
+                               bool toldOnly)
+{
+  // the fight's end: each thrall of the commander's that was told to fight
+  // the other player, or (unless `toldOnly`, the other party gone) whose
+  // host's last state names that player, gets Actor.StopCombat on its
+  // commander's game. HYPOTHESIS: the engine then sheathes and follows (the
+  // player's own notice is StopCombatAlarm on its figure,
+  // StopCombatOnClient)
+  const uint32_t commanderId = commander.GetFormId();
+  const auto rows = GetFollows();
+  for (MpActor* thrall : CommandedThralls(*this, rows, commanderId)) {
+    const uint32_t thrallId = thrall->GetFormId();
+    auto it = pImpl->thrallsInFights.find(thrallId);
+    const bool told = it != pImpl->thrallsInFights.end() &&
+      it->second.commander == commanderId && it->second.opponent == opponent;
+    if (!told && (toldOnly || thrall->GetHostedCombatTarget() != opponent)) {
+      continue;
+    }
+    const std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+      noArgs;
+    SpSnippet("Actor", "StopCombat", noArgs, thrallId)
+      .Execute(&commander, SpSnippetMode::kNoReturnResult);
+    spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} "
+                 "stands down with its commander's fight with {:x}: "
+                 "Actor.StopCombat to its commander's game (playtest 53 "
+                 "#113, design A)",
+                 thrallId, commanderId, opponent);
+  }
+  for (auto it = pImpl->thrallsInFights.begin();
+       it != pImpl->thrallsInFights.end();) {
+    if (it->second.commander == commanderId &&
+        it->second.opponent == opponent) {
+      it = pImpl->thrallsInFights.erase(it);
+    } else {
+      ++it;
     }
   }
 }

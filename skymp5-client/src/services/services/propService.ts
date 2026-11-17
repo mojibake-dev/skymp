@@ -133,6 +133,12 @@ const JUMP_UNITS = 256;
 // per prop, and a prop claimed is kept tracked that long, wherever it is, for
 // the word that answers it (physics rung 3, B5)
 const CLAIM_EVERY_MS = 2000;
+// thuum tracker #120 (playtest 53, Eli in the Moorside Inn: "im seeing items
+// kinda,,, jump around spontaneously"): a far item this seat's own engine
+// woke (wakeFar) is kept tracked while its engine reads it awake and this
+// long after, so its stream opens and its rest goes out (the rest waits
+// STREAM_HEARTBEAT_MS without an awake read), the host's wake A7 names
+const FAR_WAKE_KEEP_MS = 2 * STREAM_HEARTBEAT_MS;
 // Physics rung 3 (ADR-071 decision 4: the caster claims what its impact moved
 // in one PropClaim per impact): a cone raises a new impact number at each
 // HandleHits frame that pushed, so its events fold by cause for
@@ -251,6 +257,7 @@ type Prop = {
     keyframeDue: boolean;          // a word named another seat: the copy goes Keyframed before any of its samples
     lastAppliedLog: number;
     lastClaimAt: number;
+    farWake: boolean;              // tracked in place by wakeFar (past TRACK_RADIUS or the TRACK_MAX cap): kept while awake (#120)
     restAt: number;                // the render clock applied the stream's asleep sample then, for the Dynamic set after it (0 none)
     // physics rung 4, a body of parts followed (route K3, D-PH26 A: each part
     // stays a live Havok body the platform drives toward the stream): poses
@@ -1167,13 +1174,19 @@ export class PropService extends ClientListener {
                 }
             } else if (live && newest !== undefined) {
                 this.takeOver(prop, refr, newest, now);
-            } else if (prop.motionAsked !== MotionType.Dynamic) {
+            } else if (prop.motionAsked === undefined || !PropService.isDynamic(prop.motionAsked)) {
                 // D73: a body already Dynamic (a resting follower kicked or
                 // grabbed here, the claim granted) takes no motion set, so the
                 // hand's hold and the kick's motion carry on; a Keyframed one
                 // (claimed while another seat streamed it) goes Dynamic and may
                 // wake (x-prop-push v9 021439: a Dynamic body denied activation
-                // took no contact)
+                // took no contact). Dynamic is any of the engine's dynamic
+                // classes (isDynamic): an item tracked in place keeps the
+                // motion its engine reads, and clutter reads SphereInertia 2 or
+                // BoxInertia 3 (prop-physics.md's "layer 4 motion 2" contacts,
+                // playtest 49's "motion 3"), so the test against Dynamic 1
+                // alone set every such item Dynamic with the wake (#120;
+                // HYPOTHESIS: that wake reached its island's neighbours)
                 this.setMotion(prop, refr, MotionType.Dynamic, true);
             }
         }
@@ -2393,7 +2406,23 @@ export class PropService extends ClientListener {
         if (myId !== 0 && word !== undefined && word.player === myId) {
             return true;
         }
-        return prop.streaming || prop.held || this.followLive(prop, now) || (prop.lastClaimAt !== 0 && now - prop.lastClaimAt < CLAIM_EVERY_MS);
+        // thuum tracker #120: a far item this seat's engine woke (wakeFar),
+        // while that engine reads it awake (awakeAt, the update's read) and
+        // FAR_WAKE_KEEP_MS after, so it streams as the host's wake and rests on
+        // the wire. Untracked at the next rescan, it was tracked again by the
+        // one after, every rescan for as long as the engine read it awake:
+        // playtest 53's Moorside Inn 0x138ce, about twenty items each tracked
+        // in place and untracked 570 times on rotfern's host seat between
+        // 00:47 and 01:15Z (its pre-relaunch console's "tracked in place ...
+        // its engine woke it here, past TRACK_RADIUS" and "untracked: out of
+        // reach"), and the same loop on Ariadne's when she hosted, while the
+        // tankards in their islands (e00a0's, "knocked into e00a0's island")
+        // woke every few seconds with no touch (the server's "woken by its
+        // host" lines, 0 to 2 units each), nothing of the far ones ever going
+        // out
+        const farAwake = prop.farWake && now - prop.awakeAt < FAR_WAKE_KEEP_MS;
+        return prop.streaming || prop.held || farAwake || this.followLive(prop, now)
+            || (prop.lastClaimAt !== 0 && now - prop.lastClaimAt < CLAIM_EVERY_MS);
     }
 
     // whether the prop's reference stands with its 3D loaded in the player's
@@ -2436,6 +2465,12 @@ export class PropService extends ClientListener {
             }
             const prop = this.trackInPlace(refr, body.formId, body.motion as MotionType, "its engine woke it here, past TRACK_RADIUS");
             if (prop) {
+                // #120: kept while its engine has it awake (keptAnywhere), the
+                // read here its first; `far` holds the rows past the TRACK_MAX
+                // cap too, so a crowded room's clutter takes this path within
+                // TRACK_RADIUS (the inn's 164 placed items against 64)
+                prop.farWake = true;
+                prop.awakeAt = clockMs();
                 keep.add(refr);
                 woken += 1;
             }
@@ -3027,6 +3062,7 @@ export class PropService extends ClientListener {
             keyframeDue: false,
             lastAppliedLog: 0,
             lastClaimAt: 0,
+            farWake: false,
             restAt: 0,
             imposing: false,
             imposed: 0,

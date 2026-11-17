@@ -1557,6 +1557,22 @@ void MpObjectReference::RemoveItems(
     changeForm.inv.RemoveItems(entries);
   });
 
+  // thuum tracker #114 (playtest 53, Eli: "desynced bandit armor and some
+  // naked"): an NPC's worn set stays inside its inventory whatever removes
+  // the item (the server's console RemoveItem, a Papyrus RemoveItem on the
+  // server's VM, a drop), as a take from a body already kept it
+  // (TakeItemEvent, playtest 48's loot strip). 53's 29602 loaded naming
+  // 0x13913 and 0x1b3a2 worn with none held ("1 of 13913 leave, worn here 1;
+  // the record holds 0"), and the equipment word dressed a seat's copy in
+  // them. A player's worn set is its own game's report, and an inventory
+  // whose base container is not laid in yet is not the record's whole
+  if (auto actor = AsActor(); actor && !actor->IsCreatedAsPlayer() &&
+      ChangeForm().baseContainerAdded) {
+    for (const auto& entry : entries) {
+      actor->DropWornBeyondInventory(entry.baseId);
+    }
+  }
+
   if (target)
     target->AddItems(entries);
 

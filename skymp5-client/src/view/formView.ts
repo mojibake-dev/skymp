@@ -30,6 +30,7 @@ import { PuppetService } from "../services/services/puppetService";
 import { PropService } from "../services/services/propService";
 import { ActorFateService } from "../services/services/actorFateService";
 import { SummonService } from "../services/services/summonService";
+import { ChangeFormService } from "../services/services/changeFormService";
 
 // thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
 // (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)
@@ -1221,7 +1222,27 @@ export class FormView {
     if (model.equipment && !alreadyHosted && FormView.isNpcModel(model) &&
       FormView.streamSwitch("npcStreamHands") &&
       this.eqState.lastNumChanges !== model.equipment.numChanges) {
-      this.applyNpcWorn(refr, model.refrId ?? 0, model.equipment);
+      // thuum tracker #114 (playtest 53, Eli: "desynced bandit armor and
+      // some naked"): a dead copy this seat laid from its change-form record
+      // wears the record's look, ADR-065's (npc-fate.md: "A dead copy is
+      // neither re-rolled nor redressed (its look is the record's,
+      // ADR-065)"; "a corpse whose record stays dead keeps its look, the
+      // change-form record lays it"), so the worn word does not dress it
+      // again. The word ran after the lay on one seat alone: the 3D load's
+      // re-apply above follows the lay's reload of the body, so Ariadne's
+      // copy of 29602 was laid (s-c2-console.log:3302-3304) and then dressed
+      // in the word's hide helmet and studded cuirass (:3308), while
+      // rotfern's took the word before its lay (c1 console 00:02:01.350, the
+      // lay at .508) and kept the lay's bandit armor. One order on every
+      // seat: the lay last. A body with no laid record keeps the word's dress
+      const laid = Actor.from(refr)?.isDead() === true &&
+        SpApiInteractor.getControllerInstance().lookupListener(ChangeFormService).hasAppliedRecord(refr.getFormID());
+      if (laid) {
+        this.eqState.lastNumChanges = model.equipment.numChanges;
+        logLab("verb:npc-stream", `worn ${(model.refrId ?? 0).toString(16)} held: numChanges ${model.equipment.numChanges}, the body laid from its change-form record here wears the record's look (local ${refr.getFormID().toString(16)})`);
+      } else {
+        this.applyNpcWorn(refr, model.refrId ?? 0, model.equipment);
+      }
     }
     // thuum ADR-050 decision 3 (D29-C, 2026-10-26): a server-made copy this
     // game hosts is never dressed by this view (train-47's once-dress is

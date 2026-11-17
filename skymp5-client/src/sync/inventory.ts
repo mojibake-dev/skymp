@@ -562,8 +562,63 @@ export const applyInventory = (
 // change-form lay too), never left loose. `worn` is the record's equipment
 // as this seat holds it (the view's model); a piece the inventory no longer
 // covers dresses nothing. Each removal of an item this body wears here is
-// said, the lab's read of the rule (x-body-open-worn)
+// said, the lab's read of the rule (x-body-open-worn).
+// thuum tracker #114 (playtest 53, Eli: "desynced bandit armor and some
+// naked, armor flickering on search"): the match left the worn flag out but
+// still compared every other extra (extrasEqual), so a stack this body holds
+// whose extras the record's row lacks counted as another item. At 29602's
+// shut (server.log 00:05:15.793) rotfern's apply removed and re-added every
+// piece it held, IronWarhammer 0x13981, ArmorBanditHelmet 0x6f39e and
+// ArmorBanditCuirass3 0x10594f, each "-1, 100" then "1, 1" (the engine's
+// stacks carried ExtraHealth 100 from the corpse's change-form lay, the
+// record's none; c1 console 00:05:13.506), and the removal unworn them while
+// dressBody, given the record's own worn set, dressed 0 (the platform's
+// "0 worn piece(s) of the record's 5 dressed again", 16:05:13:563). So the
+// record's counts are laid onto the body's own stacks (bodyTarget): a stack
+// it holds stands for the record's row as far as the row's count goes, with
+// its own extras, the worn ones first, and only a count's surplus or deficit
+// moves, the rule above
 let bodyDressMissingSaid = false;
+const bodyTarget = (record: Inventory, held: Inventory): Inventory => {
+  const bases = new Set<number>();
+  record.entries.forEach((e) => bases.add(e.baseId));
+  held.entries.forEach((e) => bases.add(e.baseId));
+  const entries = new Array<Entry>();
+  bases.forEach((baseId) => {
+    let want = 0;
+    record.entries.forEach((e) => {
+      if (e.baseId === baseId) {
+        want += e.count;
+      }
+    });
+    // one target row per set of extras, the worn flags left out as the
+    // apply's match leaves them, so a worn stack and a loose one of the same
+    // extras meet one row
+    const take = (e: Entry) => {
+      if (want <= 0) {
+        return;
+      }
+      const n = Math.min(e.count, want);
+      const row: Entry = JSON.parse(JSON.stringify(e));
+      delete row.worn;
+      delete row.wornLeft;
+      row.count = n;
+      const same = entries.find((x) => x.baseId === baseId && extrasEqual(x, row));
+      if (same) {
+        same.count += n;
+      } else {
+        entries.push(row);
+      }
+      want -= n;
+    };
+    held.entries
+      .filter((e) => e.baseId === baseId)
+      .sort((a, b) => Number(!!b.worn || !!b.wornLeft) - Number(!!a.worn || !!a.wornLeft))
+      .forEach(take);
+    record.entries.filter((e) => e.baseId === baseId).forEach(take);
+  });
+  return { entries };
+};
 export const applyBodyInventory = (
   refr: ObjectReference,
   newInventory: Inventory,
@@ -575,8 +630,9 @@ export const applyBodyInventory = (
   newInventory.entries.forEach((e) => {
     record.set(e.baseId, (record.get(e.baseId) || 0) + e.count);
   });
+  const held = getInventory(refr);
   const here = new Map<number, { worn: number; loose: number }>();
-  getInventory(refr).entries.forEach((e) => {
+  held.entries.forEach((e) => {
     const row = here.get(e.baseId) || { worn: 0, loose: 0 };
     if (e.worn || e.wornLeft) {
       row.worn += e.count;
@@ -593,7 +649,7 @@ export const applyBodyInventory = (
     }
   });
 
-  const landed = applyInventory(refr, newInventory, false, true, false);
+  const landed = applyInventory(refr, bodyTarget(newInventory, held), false, true, false);
 
   // the platform's export, absent on an older dist
   if (typeof dressBody !== "function") {

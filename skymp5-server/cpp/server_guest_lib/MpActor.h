@@ -116,6 +116,11 @@ public:
   // (sync/equipment.ts applyEquipment: removeAllItems, then the worn alone),
   // which on a body would empty its loot
   void DropWornBeyondInventory(uint32_t baseId);
+  // thuum tracker #114: every worn entry beyond what the inventory holds
+  // dropped, DropWornBeyondInventory for each worn base: a record saved with
+  // a worn piece its inventory lacks (playtest 53's bodies, loaded so at the
+  // server's start) is brought inside it at its load (ApplyChangeForm)
+  void DropWornNotHeld();
 
   void SetHealthRespawnPercentage(float percentage);
   void SetMagickaRespawnPercentage(float percentage);

@@ -582,6 +582,19 @@ void MpActor::DropWornBeyondInventory(uint32_t baseId)
                GetFormId(), baseId, dropped, held);
 }
 
+void MpActor::DropWornNotHeld()
+{
+  std::set<uint32_t> bases;
+  for (const auto& entry : GetEquipment().inv.entries) {
+    if (entry.GetWorn() != Inventory::Worn::None) {
+      bases.insert(entry.baseId);
+    }
+  }
+  for (const uint32_t baseId : bases) {
+    DropWornBeyondInventory(baseId);
+  }
+}
+
 void MpActor::SetHealthRespawnPercentage(float percentage)
 {
   EditChangeForm([&](MpChangeForm& changeForm) {
@@ -1249,6 +1262,16 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
   newChangeForm.isDisabled ? Disable() : Enable();
   SetCellOrWorldObsolete(newChangeForm.worldOrCellDesc);
   SetPos(newChangeForm.position);
+
+  // thuum tracker #114: an NPC's record saved with a worn piece its
+  // inventory lacks (playtest 53's bodies: "1 of 13913 leave, worn here 1;
+  // the record holds 0", s-c2-console.log:4653-4654, the record loaded at
+  // 23:48:23) comes in with its worn set inside its inventory, so no seat
+  // is dressed in a piece the body does not hold. A record whose base
+  // container is not laid in yet holds no whole inventory to read against
+  if (!IsCreatedAsPlayer() && ChangeForm().baseContainerAdded) {
+    DropWornNotHeld();
+  }
 
   // thuum ADR-049 D-N1 A: the record is the world's state from here on
   pImpl->recordApplied = true;

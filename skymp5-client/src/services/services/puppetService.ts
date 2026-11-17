@@ -204,15 +204,21 @@ export class PuppetService extends ClientListener {
             // before the code changes it (the instrumented run on the parent):
             // where the engine had the copy, what it is placed from, and the
             // cell the record (the last sample this seat holds) names
+            // an actor the engine holds in a furniture is placed by it, never by
+            // the record (HostService.seatedBy, tracker #116: Arvel thrown out
+            // of his web at the promote)
+            const seat = HostService.seatedBy(ac);
             {
                 const eCell = refr ? ObjectReferenceEx.getWorldOrCell(refr) : 0;
                 const at = `(${ac.getPositionX().toFixed(0)}, ${ac.getPositionY().toFixed(0)}, ${ac.getPositionZ().toFixed(0)}) in ${eCell.toString(16)}`;
-                const from = last
+                const from = seat
+                    ? `seated here (${seat}), its furniture places it`
+                    : last
                     ? `placed from the last sample at (${last.pos[0].toFixed(0)}, ${last.pos[1].toFixed(0)}, ${last.pos[2].toFixed(0)}) in ${last.worldOrCell.toString(16)}`
                     : "no sample to place from, the engine's own stands";
                 logLab("verb:npc-handoff", `promote ${localId.toString(16)}: ${from}; the engine had it at ${at}`);
             }
-            if (last) {
+            if (last && !seat) {
                 // the record's last point and heading first: the relay stops
                 // at the grant (the native promote leaves the transform alone)
                 ac.setPosition(last.pos[0], last.pos[1], last.pos[2]);

@@ -686,6 +686,11 @@ void PartOne::SetUserActor(Networking::UserId userId, uint32_t actorFormId)
     // the login generation: a dead-sample stamp's witness names it, so a
     // relaunch or a reconnect is a new witness (MpActor::DeadStampGap)
     actor.SetLoginGeneration(++pImpl->loginSerial);
+    // thuum tracker #119: the looks a player's own engine runs on it are the
+    // login's game's to name (ActionListener::OnHostedActorState's own
+    // branch), so a new login starts with none recorded until its game's
+    // first read
+    actor.SetHostedEffects({});
 
     // The clock first, so the client knows the time before its own
     // CreateActor loads the save (thuum docs/verbs/time.md)

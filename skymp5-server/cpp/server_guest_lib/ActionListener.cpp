@@ -1186,6 +1186,44 @@ void ActionListener::OnHostedActorState(const RawMessageData& rawMsgData,
   }
   const auto now = std::chrono::steady_clock::now();
   if (msg.idx == myActor->GetIdx()) {
+    // thuum tracker #119 (playtest 53, Eli: "ariadne just died to sunlight
+    // ... i didn't see gold fire effect on her"): the effects a player's own
+    // engine runs on its player with a look are that engine's, as a host's
+    // are on its actor (docs/verbs/npc-puppet.md, Ownership; ADR-063): its
+    // game names the set and the server records it on the player (R2) and
+    // relays it reliable to the player's other listeners, whose figure of
+    // the player plays the looks (PuppetService), and serves it to a later
+    // subscriber (MpActor::SendHostedEffectsTo; HostedBy is null for a
+    // player). SunAffectsNPCVampires' burn is one: its ability's
+    // _SunBurningEffect carries FireCloakFXShader 0x2ACD8 (the mod's DATA,
+    // lab/esm.py), active on Ariadne's own engine, and no channel took it to
+    // rotfern's figure of her. The values stay the player's ChangeValues, so
+    // only the set is taken; a report without one stays dropped
+    if (msg.effects.has_value()) {
+      if (myActor->SetHostedEffects(*msg.effects)) {
+        std::vector<std::string> ids;
+        ids.reserve(msg.effects->size());
+        for (uint32_t id : *msg.effects) {
+          ids.push_back(fmt::format("{:x}", id));
+        }
+        spdlog::info("[verb:npc-puppet] effects {:x} by its own game: {} "
+                     "running ({}), recorded and relayed reliable to its "
+                     "other listeners (tracker #119)",
+                     myActor->GetFormId(), ids.size(),
+                     ids.empty() ? std::string("none")
+                                 : fmt::format("{}", fmt::join(ids, ", ")));
+      }
+      HostedActorStateMessage out = msg;
+      out.idx = myActor->GetIdx();
+      for (auto listener : myActor->GetActorListeners()) {
+        if (listener == myActor ||
+            listener->GetUserId() == Networking::InvalidUserId) {
+          continue;
+        }
+        listener->SendToUser(out, true);
+      }
+      return;
+    }
     static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
       lastOwn;
     auto& last = lastOwn[myActor->GetFormId()];

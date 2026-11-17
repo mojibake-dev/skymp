@@ -172,6 +172,10 @@ export class HostedStateService extends ClientListener {
             }
             logTrace(this, `state ${remoteId.toString(16)}: health ${sample.health.toFixed(3)} magicka ${sample.magicka.toFixed(3)} stamina ${sample.stamina.toFixed(3)} target ${sample.combatTarget.toString(16)} package ${sample.package.toString(16)} gaze ${sample.gazeTarget.toString(16)} slot ${sample.gazeSlot} emotion ${sample.emotionType} ${sample.emotionValue}${last ? "" : " (keyframe)"}`);
         }
+        // thuum tracker #119: this seat's own player, whose effects with a
+        // look its engine runs and draws, as a host's engine does its actors'
+        this.reportOwnEffects();
+        seen.add(0x14);
         // slice 5: the gaze and the face read on the game thread for the next
         // poll (one task; rule 9), into this seat's own table (own = true), so
         // a lab read (npc-state, its own table) never empties it (#56)
@@ -373,6 +377,56 @@ export class HostedStateService extends ClientListener {
         return unique;
     }
 
+    // thuum tracker #119 (playtest 53, Eli: "ariadne just died to sunlight
+    // ... i didn't see gold fire effect on her"): the player's own effects
+    // with a look are this engine's (ADR-063: a player's own state is its
+    // own game's), and no other channel names them: a cast's relay carries a
+    // cast's look, but an ability's effect that its conditions turn on, as
+    // SunAffectsNPCVampires' _SunBurningEffect with FireCloakFXShader 0x2ACD8
+    // below half Health (the mod's records, lab/esm.py), reached no other
+    // seat, so the figure of a burning vampire stood bare there. The same
+    // read as the hosted actors' (the poll's own table), sent on the first
+    // read and on a change, reliable, as a HostedActorState under the
+    // player's own idx, whose values the server leaves to ChangeValues and
+    // whose set it records and relays (ActionListener::OnHostedActorState's
+    // own branch); each other seat's figure of this player plays exactly it
+    // (PuppetService)
+    private reportOwnEffects(): void {
+        const effects = this.readEffects(0x14, 0x14);
+        if (effects === undefined) {
+            return;
+        }
+        const sent = this.lastOwnEffects;
+        if (HostedStateService.sameIds(effects, sent)) {
+            return;
+        }
+        const player = this.sp.Game.getPlayer();
+        if (!player) {
+            return;
+        }
+        const pct = (av: string) => {
+            const v = player.getActorValuePercentage(av);
+            return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0;
+        };
+        const message: MessageWithRefrId<HostedActorStateMessage> = {
+            t: MsgType.HostedActorState,
+            health: pct("health"),
+            magicka: pct("magicka"),
+            stamina: pct("stamina"),
+            combatTarget: 0,
+            package: 0,
+            gazeTarget: 0,
+            gazeSlot: 0,
+            emotionType: 0,
+            emotionValue: 0,
+            effects,
+            _refrId: undefined,
+        };
+        this.controller.emitter.emit("sendMessageWithRefrId", { message, reliability: "reliable" });
+        this.lastOwnEffects = effects;
+        logLab("verb:npc-puppet", `effects: this seat's own player: ${effects.length} running with a look (${effects.length ? effects.map((id) => id.toString(16)).join(", ") : "none"}), sent reliable${sent === undefined ? " (its first read here)" : ""} (tracker #119)`);
+    }
+
     private fellThrough(kind: string, first: string) {
         const n = (this.fallThrough.get(kind) ?? 0) + 1;
         this.fallThrough.set(kind, n);
@@ -401,6 +455,8 @@ export class HostedStateService extends ClientListener {
     private readonly lastSent = new Map<number, HostedStateSample>();
     // the running effects last sent per hosted actor (Ownership)
     private readonly lastEffects = new Map<number, number[]>();
+    // the player's own running effects with a look, last sent (#119)
+    private lastOwnEffects: number[] | undefined = undefined;
     private effectsReaderSaid = false;
     private readonly fallThrough = new Map<string, number>();
     // the wire's bound (wire-schema cap::MAGIC_EFFECTS)

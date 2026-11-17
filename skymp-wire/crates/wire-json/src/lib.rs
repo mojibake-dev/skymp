@@ -1119,7 +1119,7 @@ mod tests {
             ("06-Activate-3.json", Err(Reject::Range), Some(Err(Reject::Range))),
             ("70-RelayedActivation-2.json", Ok(()), None),
             ("70-RelayedActivation-3.json", Err(Reject::Range), None),
-            // thuum tracker #117 (SCHEMA_VERSION 59): Ariadne's press of the
+            // thuum tracker #117 (SCHEMA_VERSION 60): Ariadne's press of the
             // Sanctum keyhole 0x4e2b9 relayed to its host with her record
             // (the claw 0x39647, one stack), and the same record on an entry
             ("70-RelayedActivation-4.json", Ok(()), None),

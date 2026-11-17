@@ -15,7 +15,7 @@ export interface RelayedActivationMessage {
     // the target's scripts with the caster (the presser) as akActionRef
     // instead of activating; absent or null for an activation
     entry?: number | null;
-    // since SCHEMA_VERSION 59 (thuum tracker #117, Eli's design B): on a
+    // since SCHEMA_VERSION 60 (thuum tracker #117, Eli's design B): on a
     // player's press of a scripted world object, sent to the cell's host
     // alone, the presser's inventory as the server records it, which this
     // seat's acting scope answers the press's GetItemCount from (the

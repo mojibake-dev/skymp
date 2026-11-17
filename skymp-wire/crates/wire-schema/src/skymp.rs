@@ -2513,7 +2513,7 @@ wire_struct! {
         pub caster: u32,
         /// The trigger entry's event, 1 or 2; absent on an activation.
         pub entry: Option<u8>,
-        /// Since SCHEMA_VERSION 59 (thuum tracker #117, Eli's design B,
+        /// Since SCHEMA_VERSION 60 (thuum tracker #117, Eli's design B,
         /// 2026-11-16): on a player's press of a scripted world object,
         /// sent to the cell's host alone, the presser's inventory as the
         /// server records it (its one owner's, ADR-063), which the host's

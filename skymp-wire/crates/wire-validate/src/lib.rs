@@ -1267,7 +1267,7 @@ fn check_activate(m: &skymp::Activate) -> Result<(), Reject> {
 /// The server's relayed activation (docs/verbs/traps.md): a target and a
 /// caster, neither 0, and since SCHEMA_VERSION 40 (thuum D-C2) a trigger
 /// entry's event, absent or 1 or 2; the transport refuses it from a client
-/// by direction. Since SCHEMA_VERSION 59 (thuum tracker #117) a press's
+/// by direction. Since SCHEMA_VERSION 60 (thuum tracker #117) a press's
 /// presser inventory: on an activation alone (an entry carries none), each
 /// stack naming an item (a base id) and holding one at least, as the
 /// server's own record keeps a stack.
@@ -4242,7 +4242,7 @@ mod tests {
         for bad in [0u8, 3, u8::MAX] {
             assert_eq!(validate_server(&entry(Some(bad))), Err(Reject::Range), "{bad}");
         }
-        // thuum tracker #117 (SCHEMA_VERSION 59): Ariadne's press of the
+        // thuum tracker #117 (SCHEMA_VERSION 60): Ariadne's press of the
         // Sanctum keyhole 0x4e2b9 relayed to its host with her record, the
         // claw MS13GoldenClaw 0x39647 one stack; an empty record is a record;
         // a stack naming no item or holding none, and a record on an entry,

@@ -385,6 +385,39 @@ export class DeathService extends ClientListener {
     }
   };
 
+  // thuum playtest 53 (Eli: "raise animation looked wrong. (delayed, in the
+  // ground then snaps once up)"; lab/.cache/probes/x-raise-rise): a body's
+  // owner raises it through its engine's get-up, the default action
+  // ActionGetUp (lab/esm.py on 1.6.1170 Skyrim.esm: AACT 0xd1fdd, its idle
+  // NPCGetUp 0xfdc61 sending GetUpBegin), and its sampler reads the body dead
+  // until that get-up ends, 6.4 to 8.3 s after the hit (c2-console 01:12:06.033
+  // to :12.561 on 280a4; the reanimation proper runs at the get-up's end,
+  // docs/research/m3/re-resurrect-hook.md, HYPOTHESIS). A seat that does not
+  // own the body played none of it and stood its copy in one frame at the
+  // live word (resurrectActor above, the engine's Resurrect(true, true)). The
+  // owner's get-up, relayed as its action, is played here on the copy while
+  // it is still dead, as the owner's engine plays it, so the live word finds
+  // it up. iGetUpType goes to 1 first, never 0: the engine's GetUpEnd handler
+  // runs the reanimation proper for 0 (id 38820, which reads the commanding
+  // actor only the owner's effect holds), and 1 is what this client's other
+  // get-ups set (revertPredictedDeath, ressurectWithPushKill). HYPOTHESIS
+  // until x-raise-rise and Eli's eyes read it: that a dead copy's graph takes
+  // and plays the get-up (the owner's ReanimateEffect also sets the actor's
+  // kShouldAnimGraphUpdate, Actor.h:204, which nothing here sets), that type
+  // 1's get-up looks like the owner's, and that the copy stays up, still dead,
+  // until the live word. A raise whose effect ends before its get-up does (no
+  // live word) would leave the copy standing dead: unread
+  public playOwnerRise(actor: Actor): boolean {
+    const id = actor.getFormID();
+    if (this.isPlayer(actor) || !actor.isDead() || this.controller.lookupListener(HostService).isMineLocal(id)) {
+      return false;
+    }
+    actor.setAnimationVariableInt("iGetUpType", 1);
+    this.sp.Debug.sendAnimationEvent(actor, AnimationEventName.GetUpBegin);
+    logLab("verb:npc-fate", `rise ${id.toString(16)}: its owner's get-up played on this seat's dead copy (iGetUpType 1); the live word stands it after`);
+    return true;
+  }
+
   // a server-made NPC's copy, as remoteServer.ts's npcCopy reads the world
   // model: a form with an NPC base (never the players' 0x7) that is not this
   // player's own clone; a player's figure is not one

@@ -177,6 +177,13 @@ export class HostService extends ClientListener {
         }
     }
 
+    // Whether the actor's actions stream from here (markHosted's set): the
+    // native action entry reports its actions. JS state alone, so a hook's
+    // handler may ask (ActionSyncService's get-up hook)
+    isStreamedHere(localId: number): boolean {
+        return this.hostedActors.has(localId);
+    }
+
     isStreamEnabled(): boolean {
         return this.streamEnabled;
     }

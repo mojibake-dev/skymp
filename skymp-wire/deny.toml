@@ -8,6 +8,15 @@ targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-
 [advisories]
 version = 2
 yanked = "deny"
+# An "unmaintained" notice is not a vulnerability. Each entry names its use and
+# the way out.
+ignore = [
+  # chrono (RUSTSEC-2026-0543, published 2026-11-17, no safe upgrade): wire-rules
+  # uses it with default features off, no clock and no time zones, for RFC 3339
+  # epochs and the real-time mode's UTC calendar (crates/wire-rules/src/clock.rs).
+  # The way out is the `time` or `jiff` crate.
+  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; wire-rules uses no clock and no time zones" },
+]
 
 [licenses]
 version = 2

@@ -2385,6 +2385,7 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   size_t keptWorn = 0;
   size_t takenOff = 0;
   size_t displaced = 0;
+  size_t notHeld = 0;
   if (hosted) {
     for (const auto itemId : engineItems) {
       // the add's SetInventory goes to the actor's own user, which a hosted
@@ -2473,6 +2474,11 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         reportedWorn.push_back(entry.baseId);
       }
     }
+    // thuum tracker #114: a record entry stays worn only while the record
+    // holds the piece; one its inventory lost is no piece the copy can wear
+    // (the take's rule, MpActor::DropWornBeyondInventory), so a stale entry
+    // goes at its host's next report
+    const Inventory& held = actor->GetInventory();
     std::vector<Inventory::Entry> stays;
     for (const auto& entry : actor->GetEquipment().inv.entries) {
       if (entry.GetWorn() == Inventory::Worn::None ||
@@ -2485,6 +2491,10 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       }
       if (takesPlaceOf(entry)) {
         ++displaced;
+        continue;
+      }
+      if (!held.HasItem(entry.baseId)) {
+        ++notHeld;
         continue;
       }
       stays.push_back(entry);
@@ -2552,10 +2562,11 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spdlog::info("[verb:npc-stream] equipment {:x} by {:x}: {} worn, "
                  "right {:x} left {:x}, spells {:x} {:x}, numChanges {}; of "
                  "the record's worn {} kept (not yet worn in this host's "
-                 "reports), {} taken off by it, {} displaced",
+                 "reports), {} taken off by it, {} displaced, {} gone from "
+                 "its inventory",
                  actorFormId, myActor->GetFormId(), worn, right, left,
                  rightSpell, leftSpell, data.numChanges, keptWorn, takenOff,
-                 displaced);
+                 displaced, notHeld);
   }
 
   if (dropped) {

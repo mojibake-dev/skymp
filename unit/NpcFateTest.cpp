@@ -1373,9 +1373,11 @@ TEST_CASE("A hosted actor's worn set loses what its host took off and "
   {
     kHost = 0xff000d70,
     // Skyrim.esm: ArmorHideBoots, ArmorHideHelmet (BOD2 0x80 and 0x1002,
-    // lab/esm.py id on sky-srv, 2026-11-14)
+    // lab/esm.py id on sky-srv, 2026-11-14), ArmorStuddedCuirass (lab/esm.py
+    // id, 2026-11-16)
     kHideBoots = 0x13910,
-    kHideHelmet = 0x13913
+    kHideHelmet = 0x13913,
+    kStuddedCuirass = 0x1b3a2
   };
   auto& p = GetPartOne();
   p.worldState.npcEnabled = true;
@@ -1435,12 +1437,103 @@ TEST_CASE("A hosted actor's worn set loses what its host took off and "
   REQUIRE(Wearing(predator, kHideHelmet));
   REQUIRE(Wearing(predator, kHideBoots));
 
+  // tracker #114: a worn entry its inventory no longer holds (a record saved
+  // so, as playtest 53's bodies loaded) is not kept by a report that lacks
+  // it; the cuirass shares no slot with the reported pieces, so only the
+  // inventory's rule takes it off
+  Equipment stale = predator.GetEquipment();
+  stale.inv.entries.push_back(
+    Inventory::Entry(kStuddedCuirass, 1, kWornRight));
+  predator.SetEquipment(stale);
+  REQUIRE(Wearing(predator, kStuddedCuirass));
+  REQUIRE_FALSE(predator.GetInventory().HasItem(kStuddedCuirass));
+  Wears(p, predator, { kHideHelmet, kHideBoots }, 6);
+  REQUIRE_FALSE(Wearing(predator, kStuddedCuirass));
+  REQUIRE(Wearing(predator, kHideHelmet));
+  REQUIRE(Wearing(predator, kHideBoots));
+
   // the shared world: the predator's dress and inventory as found
   predator.SetEquipment(Equipment{});
   predator.RemoveItem(kHideHelmet, 1, nullptr);
   predator.RemoveItem(kHideBoots, 1, nullptr);
   DoDisconnect(p, 0);
   p.DestroyActor(kHost);
+}
+
+// thuum tracker #114 (playtest 53, Eli: "desynced bandit armor and some
+// naked"): 53's body 29602 loaded naming ArmorHideHelmet and
+// ArmorStuddedCuirass worn with neither held ("1 of 13913 leave, worn here 1;
+// the record holds 0"), and the equipment word dressed a seat's copy in
+// them. A take kept the worn set inside the inventory (the case above it);
+// every other removal of an NPC's item now does too
+// (MpObjectReference::RemoveItems), and a record loaded with a worn piece
+// its inventory lacks drops it (MpActor::DropWornNotHeld, ApplyChangeForm)
+TEST_CASE("An NPC's worn set stays inside its inventory: any removal drops "
+          "the worn entry it empties, and a record holding a worn piece its "
+          "inventory lacks drops it",
+          "[NpcFate][espm]")
+{
+  enum : uint32_t
+  {
+    kVisitor = 0xff000d44,
+    kHideBoots = 0x13910,
+    kHideHelmet = 0x13913
+  };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kVisitor, kForest, 0, kTamriel);
+  p.SetUserActor(0, kVisitor);
+  p.TickCellHosts(FateNowMs());
+  auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form);
+  MpActor* actor = form->AsActor();
+  REQUIRE(actor);
+  if (actor->IsDead()) {
+    actor->Respawn(false);
+  }
+  p.worldState.fateRespawnDue.erase(kPredator);
+  actor->Kill(nullptr);
+  REQUIRE(actor->IsDead());
+
+  // the record's dress, both pieces held (an AddItem lays the base container
+  // in, so the inventory is the record's whole); the counts are read back
+  actor->AddItem(kHideBoots, 1);
+  actor->AddItem(kHideHelmet, 1);
+  Equipment rolled;
+  rolled.numChanges = 4;
+  rolled.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  rolled.inv.entries.push_back(Inventory::Entry(kHideHelmet, 1, kWornRight));
+  actor->SetEquipment(rolled);
+  const auto boots = actor->GetInventory().GetItemCount(kHideBoots);
+  REQUIRE(boots >= 1);
+
+  // the console's and Papyrus's removal, no take: the boots' worn entry
+  // leaves with the last of them, the helmet stays worn, the counter stays
+  actor->RemoveItem(kHideBoots, boots, nullptr);
+  REQUIRE(actor->GetInventory().GetItemCount(kHideBoots) == 0);
+  REQUIRE_FALSE(Wearing(*actor, kHideBoots));
+  REQUIRE(Wearing(*actor, kHideHelmet));
+  REQUIRE(actor->GetEquipment().numChanges == 4);
+
+  // a record saved with the boots worn and none held: the load's pass drops
+  // them, the helmet stays
+  Equipment stale = actor->GetEquipment();
+  stale.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  actor->SetEquipment(stale);
+  REQUIRE(Wearing(*actor, kHideBoots));
+  actor->DropWornNotHeld();
+  REQUIRE_FALSE(Wearing(*actor, kHideBoots));
+  REQUIRE(Wearing(*actor, kHideHelmet));
+
+  // the shared world: the predator undressed, its helmets gone, alive
+  actor->SetEquipment(Equipment{});
+  actor->RemoveItem(kHideHelmet,
+                    actor->GetInventory().GetItemCount(kHideHelmet), nullptr);
+  actor->Respawn(false);
+  p.worldState.fateRespawnDue.erase(kPredator);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kVisitor);
 }
 
 // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any body";

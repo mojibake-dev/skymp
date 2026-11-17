@@ -10,6 +10,7 @@
 #include "TestUtils.hpp"
 #include "UpdateEquipmentMessage.h"
 #include "libespm/Loader.h"
+#include "libespm/SPEL.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
@@ -606,5 +607,77 @@ TEST_CASE("A hosted caster's cast relay reaches each other game once and "
 
   p.DestroyActor(kBystanderA);
   p.DestroyActor(kBystanderB);
+  Leave(p);
+}
+
+// thuum tracker #115 (playtest 53, Eli: "atronochs were shooting two
+// projectiles"): an aimed fire-and-forget spell's relay flies its bolt at the
+// victim in the victim's own game, which is the landing there, so the server
+// serves that game no DoCombatSpellApply (the engine launched a second bolt
+// from the caster's copy for it: playtest 53's c2-console.log:11154-11214
+// against server.log:3366-3378); a stream's relayed missiles follow the
+// copy's aim, so a stream keeps the delivery (playtest 51's drain)
+TEST_CASE("A hosted caster's aimed bolt that hits a player gets no landing "
+          "delivery in that player's game; a stream keeps one",
+          "[NpcCast][espm]")
+{
+  // Skyrim.esm (lab/esm.py on sky-srv, 2026-11-16): FlamesRightHand, SPIT
+  // concentration and aimed, one effect 0x13ca9
+  constexpr uint32_t kFlames = 0x000c969a;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& predator = Gather(p);
+  // the record itself: Firebolt is aimed and fire-and-forget, Flames a stream
+  const auto firebolt = espm::GetData<espm::SPEL>(kFirebolt, &p.worldState);
+  REQUIRE(firebolt.spellItem);
+  REQUIRE(firebolt.spellItem->castType == espm::SPEL::CastType::FireAndForget);
+  REQUIRE(firebolt.spellItem->delivery == espm::SPEL::Delivery::Aimed);
+  const auto flames = espm::GetData<espm::SPEL>(kFlames, &p.worldState);
+  REQUIRE(flames.spellItem);
+  REQUIRE(flames.spellItem->castType == espm::SPEL::CastType::Concentration);
+  REQUIRE(flames.spellItem->delivery == espm::SPEL::Delivery::Aimed);
+  // the landing snippets served to `user` since the last clear
+  const auto landings = [&](Networking::UserId user) {
+    size_t n = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() &&
+          m.j.value("t", -1) == static_cast<int>(MsgType::SpSnippet) &&
+          m.j.value("class", std::string()) == "Actor" &&
+          m.j.value("function", std::string()) == "DoCombatSpellApply") {
+        ++n;
+      }
+    }
+    return n;
+  };
+
+  SECTION("the bolt: its hit applies the record's numbers and serves no "
+          "landing")
+  {
+    Hands(p, predator, kFirebolt);
+    Cast(p, kFirebolt);
+    p.Messages().clear();
+    LogCapture log;
+    SpellHits(p, kFirebolt);
+    REQUIRE(Health(p) == Catch::Approx(0.9f));
+    REQUIRE(landings(1) == 0);
+    REQUIRE(landings(0) == 0);
+    REQUIRE(log.Count("85547's 12fd0 landed on ff000d21: no delivery, its "
+                      "relayed bolt is the landing in that game (tracker "
+                      "#115)") == 1);
+  }
+
+  SECTION("the stream: its first hit serves the landing to the victim's "
+          "game alone")
+  {
+    Hands(p, predator, kFlames);
+    Cast(p, kFlames);
+    p.Messages().clear();
+    LogCapture log;
+    SpellHits(p, kFlames);
+    REQUIRE(landings(1) == 1);
+    REQUIRE(landings(0) == 0);
+    REQUIRE(log.Count("85547's c969a landed on ff000d21: applied in its own "
+                      "game") == 1);
+  }
   Leave(p);
 }

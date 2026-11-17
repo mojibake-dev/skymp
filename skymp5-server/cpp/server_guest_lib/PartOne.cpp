@@ -2036,10 +2036,12 @@ void PartOne::Init()
     // placement has none, since every engine loads that placement and
     // settles it alike (havok-props.md E30), as an untouched container's
     // create word carries no inventory (VisitProperties). The client puts a
-    // game-file prop at its record only once a record has reached it, so it
-    // no longer drags an untouched item from its engine's rest to the file's
-    // pose at every approach. Never to the prop's live owner, whose body
-    // runs ahead of its record (the stale sample's rule, OnPropTransform)
+    // game-file prop at its record once a record has reached it, or when its
+    // copy rests farther from the file's pose than the load settle's bound
+    // (propService.ts's FILE_SETTLE_UNITS), so it no longer drags an
+    // untouched item from its engine's rest to the file's pose at every
+    // approach. Never to the prop's live owner, whose body runs ahead of its
+    // record (the stale sample's rule, OnPropTransform)
     if (!emitterAsActor && emitter->IsEspmForm() &&
         PropLiveOwner(*emitter) != listener->GetFormId() &&
         emitter->PoseRecorded()) {

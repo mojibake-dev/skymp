@@ -1340,6 +1340,12 @@ public:
   // record's position and angle under the prop's epoch, asleep while no live
   // row moves the prop, held as the row's grab. A clamp's sender gets it
   // unlimited, as the clamp's outcome; AnswerPropRecord sends it limited.
+  // Since thuum tracker #120 it also rides behind a game-file prop's create
+  // word, unlimited, once the record holds play (MpObjectReference::
+  // PoseRecorded; onSubscribe in Init), to every new listener but the prop's
+  // live owner; a game-file prop still at its REFR's placement gets none, and
+  // the client leaves its engine's settle of that placement where it rests
+  // (within propService.ts's FILE_SETTLE_UNITS).
   void SendPropRecord(Networking::UserId user, const MpObjectReference& prop);
   // thuum docs/verbs/npc-fate.md (the deaths): the bodies whose deadline
   // (fateDiedAt plus WorldState::FateRespawnHours()) the installed game

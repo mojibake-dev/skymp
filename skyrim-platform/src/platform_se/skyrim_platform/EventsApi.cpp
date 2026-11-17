@@ -11,6 +11,8 @@
 #include "ScopedTask.h"
 #include "SkyrimPlatform.h"
 #include "ThreadPoolWrapper.h"
+#include <sstream>
+#include <string>
 
 class EventsGlobalState
 {
@@ -26,6 +28,127 @@ public:
   std::shared_ptr<Hook> sendAnimationEvent;
   std::shared_ptr<Hook> sendPapyrusEvent;
 } g;
+
+namespace {
+// thuum #134 (playtest 54: "on('update'): Expected 'objectTypeInfo' to not
+// to be nullptr", 9,603 times in c1.log): a handler's error line names the
+// handler, so an error that repeats every frame says whose code it is.
+// skymp5-client's services all register through one shared controller whose
+// on is sp.on itself (spApiInteractor.ts), mostly as the same
+// `() => this.onUpdate()`, so a handler's name or source tells them apart
+// poorly; the JavaScript error's own stack does (V8 records it where the
+// Error is made, inside the native for a native's throw; the client bundle
+// is webpack's development mode, unminified, so its frames carry the class
+// and method). All of it is read after a handler threw: nothing is spent
+// when nothing throws, and nothing is suppressed or rate-limited (the count
+// of repeats is itself the read)
+
+// keeps maxLen characters of text, each run of whitespace read as one space
+std::string CompactText(const std::string& text, size_t maxLen)
+{
+  std::string out;
+  bool space = false;
+  for (const char c : text) {
+    if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+      space = !out.empty();
+      continue;
+    }
+    if (out.size() >= maxLen) {
+      out += "...";
+      break;
+    }
+    if (space) {
+      out += ' ';
+      space = false;
+    }
+    out += c;
+  }
+  return out;
+}
+
+// a V8 frame "X.y (C:\\...\\skymp5-client.js:12:3)" reads
+// "X.y (skymp5-client.js:12:3)", an anonymous one "skymp5-client.js:12:3"
+std::string ShortStackFrame(const std::string& frame)
+{
+  std::string name;
+  std::string location = frame;
+  const size_t open = frame.find(" (");
+  if (open != std::string::npos && frame.back() == ')') {
+    name = frame.substr(0, open);
+    location = frame.substr(open + 2, frame.size() - open - 3);
+  }
+  const size_t slash = location.find_last_of("\\/");
+  if (slash != std::string::npos) {
+    location = location.substr(slash + 1);
+  }
+  return name.empty() ? location : name + " (" + location + ")";
+}
+
+// the error's first maxFrames frames, innermost first, each joined to its
+// caller by " < "
+std::string JsStackFrames(Napi::Error& e, size_t maxFrames)
+{
+  try {
+    const Napi::Value stack = e.Get("stack");
+    if (!stack.IsString()) {
+      return "none";
+    }
+    std::istringstream lines(stack.As<Napi::String>().Utf8Value());
+    std::string line;
+    std::string out;
+    size_t n = 0;
+    while (n < maxFrames && std::getline(lines, line)) {
+      const size_t at = line.find_first_not_of(" \t");
+      if (at == std::string::npos || line.compare(at, 3, "at ") != 0) {
+        continue;
+      }
+      std::string frame = line.substr(at + 3);
+      if (!frame.empty() && frame.back() == '\r') {
+        frame.pop_back();
+      }
+      if (frame.empty()) {
+        continue;
+      }
+      out += (n++ ? " < " : "") + ShortStackFrame(frame);
+    }
+    return out.empty() ? "none" : out;
+  } catch (const std::exception& readError) {
+    return std::string("unread: ") + readError.what();
+  }
+}
+
+// the handler's own name, else the start of its source
+std::string HandlerLabel(const CallbackObject& cb)
+{
+  try {
+    const Napi::Function fn = cb.callback->Value().As<Napi::Function>();
+    const Napi::Value name = fn.Get("name");
+    if (name.IsString()) {
+      std::string s = name.As<Napi::String>().Utf8Value();
+      if (!s.empty()) {
+        return s;
+      }
+    }
+    return CompactText(fn.ToString().Utf8Value(), 48);
+  } catch (const std::exception& readError) {
+    return std::string("unread: ") + readError.what();
+  }
+}
+
+void LogHandlerError(const CallbackObject& cb, const char* eventName,
+                     const std::exception& e, const std::string& frames)
+{
+  const char* method = cb.runOnce ? "once" : "on";
+  std::string what = e.what();
+  logger::error("{}('{}'): {} [handler {}; stack {}]", method, eventName, what,
+                HandlerLabel(cb), frames);
+
+  // We still write to the game console as we were doing before spdlog
+  // integration. When I write something wrong when coding skymp5-client I
+  // expect to see errors in game console
+  ExceptionPrinter::Print(e);
+}
+}
 
 void EventsApi::SendEvent(const char* eventName,
                           const std::vector<Napi::Value>& arguments)
@@ -58,15 +181,12 @@ void EventsApi::SendEvent(const char* eventName,
     try {
       Napi::Function callback = cb.callback->Value().As<Napi::Function>();
       callback.Call(arguments);
+    } catch (Napi::Error& e) {
+      // a JavaScript throw (a native's C++ throw reaches here as one,
+      // NapiHelper::WrapCppExceptions): its stack names the code
+      LogHandlerError(cb, eventName, e, JsStackFrames(e, 6));
     } catch (const std::exception& e) {
-      const char* method = cb.runOnce ? "once" : "on";
-      std::string what = e.what();
-      logger::error("{}('{}'): {}", method, eventName, what);
-
-      // We still write to the game console as we were doing before spdlog
-      // integration. When I write something wrong when coding skymp5-client I
-      // expect to see errors in game console
-      ExceptionPrinter::Print(e);
+      LogHandlerError(cb, eventName, e, "none");
     }
   }
 

@@ -56,9 +56,10 @@ struct
 {
   std::unordered_set<uint32_t> ids;
   std::unordered_map<uint32_t, Puppets::Locomotion> locomotion;
-  // tracker #111: the engine's own locomotion of the actors this game
-  // simulates (Puppets::SetStepLocomotion)
-  std::unordered_map<uint32_t, Puppets::Locomotion> simulated;
+  // tracker #111: each actor's locomotion as its movement step left it, the
+  // engine's own for an actor this game simulates and the relay's feed for
+  // a puppet (Puppets::SetStepLocomotion)
+  std::unordered_map<uint32_t, Puppets::Locomotion> stepped;
   bool movementSampled = false;
   std::vector<uint32_t> highActors;
   std::recursive_mutex m;

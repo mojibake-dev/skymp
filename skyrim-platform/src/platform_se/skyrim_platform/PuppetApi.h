@@ -237,15 +237,19 @@ Napi::Value ReleaseScriptRecordPending(const Napi::CallbackInfo& info);
 // queued. No game call: true when stored
 Napi::Value SetScriptRecordTouches(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-stream.md (the voice slice): sayTopicInfo(actorFormId,
-// topicInfoFormId) makes a puppet say the host's line through the engine's
-// own say (Offsets::Voice::SayTopic with the info given, so the engine's
-// pick is skipped), queued to the game thread; sayTopicInfoResult answers
-// -1 while it waits, 0 for no actor, info or process, 1 when the line
+// topicInfoFormId, topicFormId?) makes a puppet say the host's line through
+// the engine's own say (Offsets::Voice::SayTopic with the info given, so the
+// engine's pick is skipped), queued to the game thread; sayTopicInfoResult
+// answers -1 while it waits, 0 for no actor or process, 1 when the line
 // started (the actor's sound callback state read 3 after the call), 2 when
 // the engine refused it (a line still ending, the process's dialogue state),
 // 3 when a line plays without the state byte (a live sound handle or a
 // running timer: the sound descriptor path), 4 when the engine deferred it
-// for a replay its AI update would run (a puppet's never comes)
+// for a replay its AI update would run (a puppet's never comes), 5 when the
+// engine judged it inaudible here. Tracker #123: an info this game does not
+// resolve is looked for through the relayed topic (its info array, then the
+// engine's pick with a null info); 6 when no line resolves here, 7 when the
+// engine's pick took another info of the topic (stopped and cleared)
 Napi::Value SayTopicInfo(const Napi::CallbackInfo& info);
 Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-stream.md (slice 5, the gaze and the face):

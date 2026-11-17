@@ -1926,11 +1926,100 @@ Napi::Value PuppetApi::SetScriptRecordTouches(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+namespace {
+// thuum tracker #123 (playtest 54, Eli: the Riverwood intro scene's voice
+// lines on the host's game alone, its animations on both): the guest asked
+// each of the scene's six relayed lines and this native answered 0 for every
+// one (c2-console.log 07:16:29Z to 07:16:52Z, "say 35534 info 954cc -> no
+// actor or info"; no "sayTopicInfo on" line in c2.log), while the same
+// puppet's greeting 4547c started at 07:18:01Z. Each refused line's topic is
+// a scene topic of DialogueRiverwoodIntroScene 0x954d9 (lab/esm.py: SNAM
+// SCEN, QNAM 954d9), a quest the guest had stopped with its own copy of the
+// scene. HYPOTHESIS (finding 34, playtest 37): a topic's infos are resident
+// only on a game whose engine brought that quest's dialogue up, so
+// LookupByID found no INFO here. The line is looked for in the form map
+// first, then in the relayed topic's own info array (CommonLibSSE-NG
+// TESTopic.h:171-172); a topic with no such info there is left to the
+// engine's pick (SayTopicInfo). HYPOTHESIS until x-riverwood-scene-voice
+// reads the guest's verdicts.
+struct SayLine
+{
+  RE::TESTopic* topic = nullptr;
+  RE::TESTopicInfo* info = nullptr;
+  const char* through = "nothing";
+};
+
+SayLine ResolveSayLine(uint32_t infoFormId, uint32_t topicFormId)
+{
+  SayLine line;
+  auto* found = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
+  if (found && found->parentTopic) {
+    line.topic = found->parentTopic;
+    line.info = found;
+    line.through = "the form map";
+    return line;
+  }
+  line.topic =
+    topicFormId ? RE::TESForm::LookupByID<RE::TESTopic>(topicFormId) : nullptr;
+  if (!line.topic) {
+    return line;
+  }
+  if (found) {
+    line.info = found;
+    line.through = "the form map, the relayed topic its parent";
+    return line;
+  }
+  if (line.topic->topicInfos) {
+    for (uint32_t i = 0; i < line.topic->numTopicInfos; ++i) {
+      auto* candidate = line.topic->topicInfos[i];
+      if (candidate && candidate->formID == infoFormId) {
+        line.info = candidate;
+        line.through = "the relayed topic's infos";
+        return line;
+      }
+    }
+  }
+  line.through = "the engine's pick from the relayed topic";
+  return line;
+}
+
+// what this game holds of a topic, for the lab's read of a line that did
+// not resolve: the infos its array lists and its quest's state (IsRunning,
+// TESQuest.cpp:47; the flag word, TESQuest.h:41 kHasDialogueData)
+std::string DescribeTopicHere(const RE::TESTopic* topic)
+{
+  if (!topic) {
+    return "the topic unresolved here";
+  }
+  uint32_t listed = 0;
+  if (topic->topicInfos) {
+    for (uint32_t i = 0; i < topic->numTopicInfos; ++i) {
+      if (topic->topicInfos[i]) {
+        ++listed;
+      }
+    }
+  }
+  const RE::TESQuest* quest = topic->ownerQuest;
+  return fmt::format(
+    "{} of {} info(s) listed{}, quest {:x} running {} flags {:x}", listed,
+    topic->numTopicInfos, topic->topicInfos ? "" : " (no array)",
+    quest ? quest->formID : 0u, quest ? quest->IsRunning() : false,
+    quest ? quest->data.flags.underlying() : 0u);
+}
+}
+
 Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
   const auto infoFormId =
     NapiHelper::ExtractUInt32(info[1], "topicInfoFormId");
+  // thuum tracker #123: the relayed line's topic (ActorSpeech's topic), the
+  // key when the info does not resolve on this game; 0 when absent (a
+  // two-argument caller)
+  const uint32_t topicFormId =
+    info.Length() >= 3 && !info[2].IsUndefined() && !info[2].IsNull()
+    ? NapiHelper::ExtractUInt32(info[2], "topicFormId")
+    : 0u;
   if (actorFormId == 0 || actorFormId == 0x14 || infoFormId == 0) {
     return Napi::Boolean::New(info.Env(), false);
   }
@@ -1939,12 +2028,29 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
     g_sayResult[actorFormId] = -1;
   }
   // the forms looked up on the game thread alone (setPuppet's reason)
-  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId,
-                                              infoFormId](Viet::Void) {
+  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId, infoFormId,
+                                              topicFormId](Viet::Void) {
     int result = 0;
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
-    auto* topicInfo = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
-    if (actor && topicInfo && topicInfo->parentTopic) {
+    // #123: the line through the form map, else the relayed topic (an info
+    // found in its array, or none: the engine's pick below)
+    const SayLine line = ResolveSayLine(infoFormId, topicFormId);
+    auto* topicInfo = line.info;
+    auto* topic = line.topic;
+    auto* processHere =
+      actor ? actor->GetActorRuntimeData().currentProcess : nullptr;
+    if (actor && processHere && !topic) {
+      // no topic for the line here: the lab's read names what resolved
+      // (#123)
+      result = 6;
+      logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} topic "
+                   "{:x} -> unresolved (no topic here: the info {}, the "
+                   "relayed topic {})",
+                   actorFormId, infoFormId, topicFormId,
+                   topicInfo ? "found with no parent" : "not found",
+                   topicFormId ? "not found" : "not given");
+    }
+    if (actor && topic) {
       auto& runtime = actor->GetActorRuntimeData();
       if (runtime.currentProcess) {
         const auto bitsBefore = runtime.boolBits.underlying();
@@ -1998,8 +2104,9 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         // raises a BEGIN per line on the host and the relay carries each, so
         // a say here would restart the item at its first line
         auto* highBefore = runtime.currentProcess->high;
-        const bool repeat = highBefore && highBefore->greetingPlayer &&
-          highBefore->greetTopic && highBefore->greetTopic->info == topicInfo;
+        const bool repeat = topicInfo && highBefore &&
+          highBefore->greetingPlayer && highBefore->greetTopic &&
+          highBefore->greetTopic->info == topicInfo;
         // thuum playtest 37 (2026-10-28, Faendal and Alvor): a line asked
         // while the last one still plays with no state byte (the sound
         // descriptor path: timer running, state -1) takes that path too and
@@ -2028,10 +2135,18 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
                                RE::Actor::BOOL_BITS::kVoiceFileDone);
           precleared = true;
         }
+        // #123: with no info resolved here the say carries the relayed topic
+        // and a null info, Papyrus Say's shape (the re-analyst's read,
+        // docs/research/m3/re-puppet-head-lips.md A: 56220 calls 39162 with
+        // (process, actor, topic, null, ...) and 39642 builds the item for
+        // the topic), so the engine picks the info; the item it builds is
+        // told from the one in place before the call. HYPOTHESIS: the
+        // engine's pick loads a topic's infos this game does not hold
+        auto* itemBefore = highBefore ? highBefore->greetTopic.get() : nullptr;
         const bool returned = repeat
           ? false
-          : say(runtime.currentProcess, actor, topicInfo->parentTopic,
-                topicInfo, false, false, false, false);
+          : say(runtime.currentProcess, actor, topic, topicInfo, false, false,
+                false, false);
         const int stateAfter = runtime.soundCallBackSet;
         // voice v2 (P7 v1 20261026-181119: the say started on every
         // creature puppet and was refused on a humanoid resident's with
@@ -2045,8 +2160,31 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         const float timerAfter = runtime.voiceTimer;
         const bool inFlight = high && high->greetingPlayer;
         const int lipAfter = lipState(high);
+        // #123: the info the engine's pick took (no info given), read from
+        // the item the say built (HighProcessData.h:298, DialogueItem.h:56)
+        auto* itemAfter = high ? high->greetTopic.get() : nullptr;
+        const RE::TESTopicInfo* picked =
+          !topicInfo && itemAfter && itemAfter != itemBefore ? itemAfter->info
+                                                             : nullptr;
         bool cleared = false;
-        if (stateAfter == 3) {
+        if (!topicInfo && !picked) {
+          // the engine built no item for the topic: no line here
+          result = 6;
+        } else if (!topicInfo && picked->formID != infoFormId) {
+          // another info of the topic: the host's line is not this one, so
+          // it is stopped and its item cleared the pre-clear's way above
+          result = 7;
+          if (high && high->soundHandles[0].IsValid()) {
+            high->soundHandles[0].Stop();
+          }
+          REL::Relocation<void (*)(RE::AIProcess*)> clearPicked{
+            Offsets::Voice::ClearGreetTopic
+          };
+          clearPicked(runtime.currentProcess);
+          runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
+                               RE::Actor::BOOL_BITS::kVoiceFileDone);
+          cleared = true;
+        } else if (stateAfter == 3) {
           result = 1;
         } else if (handleLive || timerAfter > 0.f) {
           result = 3;
@@ -2092,23 +2230,33 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
                        "the item in progress, left to its continuation",
                        actorFormId, infoFormId);
         }
-        logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
-                     "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {}, "
-                     "lip {}, 3D {}, axis distance {:.0f} before; returned "
-                     "{}, state {}, timer {:.2f}, handle {}, delay {:.2f}, in "
-                     "flight {}, lip {} after{}{})",
-                     actorFormId, infoFormId, topicInfo->parentTopic->formID,
-                     result == 1     ? "started"
-                       : result == 3 ? "played"
-                       : result == 5 ? "inaudible"
-                       : result == 4 ? "deferred"
-                                     : "refused",
-                     bitsBefore, timerBefore, stateBefore, lipBefore, has3D,
-                     axisDistance, returned, stateAfter, timerAfter,
-                     handleLive ? "live" : "none",
-                     high ? high->soundDelay : -2.f, inFlight, lipAfter,
-                     cleared ? ", item cleared" : "",
-                     precleared ? "; the line in flight stopped first" : "");
+        // #123: where the line was found here; for one said through the
+        // engine's pick, the info it took and what this game holds of the
+        // topic (the lab's read of an unresolved line)
+        const std::string through = topicInfo
+          ? fmt::format("; through {}", line.through)
+          : fmt::format("; through {}, picked {:x}; {}", line.through,
+                        picked ? picked->formID : 0u,
+                        DescribeTopicHere(topic));
+        logger::info(
+          "[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
+          "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {}, "
+          "lip {}, 3D {}, axis distance {:.0f} before; returned "
+          "{}, state {}, timer {:.2f}, handle {}, delay {:.2f}, in "
+          "flight {}, lip {} after{}{}{})",
+          actorFormId, infoFormId, topic->formID,
+          result == 1     ? "started"
+            : result == 3 ? "played"
+            : result == 5 ? "inaudible"
+            : result == 4 ? "deferred"
+            : result == 6 ? "unresolved"
+            : result == 7 ? "another info"
+                          : "refused",
+          bitsBefore, timerBefore, stateBefore, lipBefore, has3D, axisDistance,
+          returned, stateAfter, timerAfter, handleLive ? "live" : "none",
+          high ? high->soundDelay : -2.f, inFlight, lipAfter,
+          cleared ? ", item cleared" : "",
+          precleared ? "; the line in flight stopped first" : "", through);
       }
     }
     std::lock_guard<std::mutex> lock(g_sayResultMutex);

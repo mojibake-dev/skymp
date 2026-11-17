@@ -553,9 +553,12 @@ declare module "skyrimPlatform" {
     function releaseScriptRecordPending(formId: number): string;
     function setScriptRecordTouches(enabled: boolean): boolean;
     // the voice slice: a puppet says the host's line through the engine's
-    // own say with the info given; the result -1 pending, 0 none, 1 started,
-    // 2 refused, 3 played by the sound descriptor path (no state byte), 4 deferred
-    function sayTopicInfo(actorFormId: number, topicInfoFormId: number): boolean;
+    // own say with the info given; the result -1 pending, 0 no actor or
+    // process, 1 started, 2 refused, 3 played by the sound descriptor path
+    // (no state byte), 4 deferred, 5 inaudible, 6 unresolved here, 7 the
+    // engine's pick took another info (tracker #123: the topic, the third
+    // argument, is the key when the info does not resolve on this game)
+    function sayTopicInfo(actorFormId: number, topicInfoFormId: number, topicFormId?: number): boolean;
     function sayTopicInfoResult(actorFormId: number): number;
     // thuum docs/verbs/npc-fate.md (ADR-050 decision 2, deaths by the
     // engine): the server's cause applied through the engine's own damage

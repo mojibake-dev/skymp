@@ -30,7 +30,19 @@ import { logTrace } from '../../logging';
 // OnTrigger. The host hears no triggerEntry for its own cell's trigger and a
 // game that logs in inside hears no entry; both keep OnTrigger.
 //
-// Lines for the lab: "word wall <id> entered", "word wall <id> reported".
+// This game's own entry re-arms a wall (tracker #138, playtest 53): a draugr
+// standing in Bleak Falls Sanctum's sphere sent its trigger an enter at each
+// seat's cell load, OnTrigger reported this game's player from far off, the
+// server refused it for reach (E_WORDWALL_REACH), and the once-a-session
+// latch then skipped the player's real walk-in. An entry (triggerEntry, or
+// the platform's stock triggerEnter for the host's own walk-in) clears the
+// wall's latch and reports it on the first update at least a second later,
+// so the server's record of the player's position is inside the sphere too.
+// OnTrigger stays once a session, for a login or a teleport inside.
+//
+// Lines for the lab: "word wall <id> entered (<source>)", "word wall <id>
+// reported (<source>)", the source entry, triggerEnter (the two joined by +
+// when both told it) or OnTrigger.
 export class WordWallService extends ClientListener {
   constructor(
     private sp: Sp,
@@ -63,23 +75,75 @@ export class WordWallService extends ClientListener {
     try {
       this.controller.on('triggerEntry', (e) => {
         if (e.enter === true && e.presserId === 0x14 && typeof e.refrId === 'number') {
-          self.pending.add(e.refrId);
+          self.queueEntry(e.refrId, 'entry');
         }
       });
     } catch (e) {
       logTrace(this, `triggerEntry unavailable on this platform (${e}); OnTrigger alone`);
     }
+    // the platform's stock triggerEnter (TESTriggerEnterEvent, EventHandler.cpp,
+    // a tick task, so game calls are allowed): the player stepping into a word
+    // wall's trigger, the host's own walk-in included, which gets no
+    // triggerEntry. HYPOTHESIS until the probe (x-word-wall-npc): it fires on
+    // the host, with the trigger as target and the player as cause.
+    // Rule 9's cost, accepted: the client's first triggerEnter listener, so
+    // subscribing switches the platform's sink on (EventManager.cpp
+    // Subscribe), and every enter by any collidable into any trigger in this
+    // seat's loaded cells (other seats' figures, puppets, props: the presser
+    // rule's note, FridaHooks.cpp, HYPOTHESIS there) crosses into JS, a tick
+    // task with two lookups and two wrappers, all but the player's own
+    // dropped below. A stock event takes no native filter (no minSelfId,
+    // maxSelfId or eventPattern, as a hook does); an enter comes once a
+    // crossing, not twice every half second as OnTrigger (above) does
+    this.controller.on('triggerEnter', (e) => {
+      if (e.cause?.getFormID() !== 0x14) {
+        // the HYPOTHESIS's other half, said once: the player as the event's
+        // target and a wall trigger as its cause means the two fields are
+        // swapped, so one probe run tells "swapped" from "never fires here"
+        if (!self.swappedSaid && e.target?.getFormID() === 0x14) {
+          const cause = e.cause;
+          const causeBase = cause ? cause.getBaseObject() : null;
+          if (cause && causeBase && WordWallService.triggerBases.has(causeBase.getFormID())) {
+            self.swappedSaid = true;
+            logTrace(self, `triggerEnter with the player as target and wall ${cause.getFormID().toString(16)} as cause: fields swapped`);
+          }
+        }
+        return;
+      }
+      const base = e.target?.getBaseObject();
+      if (base && WordWallService.triggerBases.has(base.getFormID())) {
+        self.queueEntry(e.target.getFormID(), 'triggerEnter');
+      }
+    });
     this.controller.on('update', () => this.onUpdate());
   }
 
+  private swappedSaid = false;
+
+  private queueEntry(refrId: number, source: string) {
+    const queued = this.entries.get(refrId);
+    const sources = queued && !queued.source.includes(source) ? `${queued.source}+${source}` : source;
+    this.entries.set(refrId, { at: Date.now(), source: sources });
+  }
+
   private onUpdate() {
-    if (this.pending.size === 0) {
+    if (this.pending.size === 0 && this.entries.size === 0) {
       return;
     }
-    const entered: number[] = [];
-    this.pending.forEach((refrId) => entered.push(refrId));
+    const now = Date.now();
+    const entered: [number, string][] = [];
+    // an entry first: its wall's latch is cleared (a report refused for reach
+    // spent it) and the entry's report goes out, not a same-update OnTrigger's
+    this.entries.forEach((entry, refrId) => {
+      if (now - entry.at >= WordWallService.entrySettleMs) {
+        this.entries.delete(refrId);
+        this.reported.delete(refrId);
+        entered.push([refrId, entry.source]);
+      }
+    });
+    this.pending.forEach((refrId) => entered.push([refrId, 'OnTrigger']));
     this.pending.clear();
-    for (const refrId of entered) {
+    for (const [refrId, source] of entered) {
       if (this.reported.has(refrId)) {
         continue;
       }
@@ -88,18 +152,25 @@ export class WordWallService extends ClientListener {
       if (!base || !WordWallService.triggerBases.has(base.getFormID())) {
         continue;
       }
-      logTrace(this, `word wall ${refrId.toString(16)} entered`);
+      logTrace(this, `word wall ${refrId.toString(16)} entered (${source})`);
       this.reported.add(refrId);
       this.controller.emitter.emit('sendMessage', {
         message: { t: MsgType.WordWall, wall: refrId },
         reliability: 'reliable',
       });
-      logTrace(this, `word wall ${refrId.toString(16)} reported`);
+      logTrace(this, `word wall ${refrId.toString(16)} reported (${source})`);
     }
   }
 
   // the trigger references the hook noted, read on the next update
   private readonly pending = new Set<number>();
+  // this game's own entries, by trigger reference: when (Date.now()) and
+  // which sources told it, reported once entrySettleMs has passed
+  private readonly entries = new Map<number, { at: number; source: string }>();
+  // the wait after an entry before its report: the server checks the reach
+  // against its own record of the player's position, a movement update behind
+  // the engine's (the edge race, HYPOTHESIS until the probe)
+  private static readonly entrySettleMs = 1000;
   // the walls this game reported this session (the server's record is the
   // truth; a repeat teaches nothing there either)
   private readonly reported = new Set<number>();

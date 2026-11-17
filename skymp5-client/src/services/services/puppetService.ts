@@ -2,9 +2,10 @@ import { Actor, Art, CellAttachDetachEvent, CombatEvent, DeathEvent, EffectShade
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { HostedActorStateMessage } from "../messages/hostedActorStateMessage";
+import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { Movement } from "../../sync/movement";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
-import { localIdToRemoteId } from "../../view/worldViewMisc";
+import { localIdToRemoteId, remoteIdToLocalId, snippetIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
@@ -77,6 +78,9 @@ export class PuppetService extends ClientListener {
         this.controller.on("deathStart", (e) => this.onDeathStart(e));
         this.controller.on("update", () => this.onUpdate());
         this.controller.emitter.on("hostedActorStateMessage", (e) => this.onHostedState(e));
+        // thuum tracker #130: the server's end of a fight between this seat's
+        // player and an NPC another game hosts (reconcileAggro)
+        this.controller.emitter.on("spSnippetMessage", (e) => this.onStopCombatAlarm(e));
         // a create word starts the actor's record over here: the server
         // serves its recorded effects right behind it when it holds any
         // (MpActor::SendHostedEffectsTo), so a set kept from an earlier sight
@@ -84,6 +88,10 @@ export class PuppetService extends ClientListener {
         this.controller.emitter.on("createActorMessage", (e) => {
             if (e.message.refrId !== undefined) {
                 this.recordedEffects.delete(e.message.refrId);
+                // and its host's combat target with it (tracker #130): the
+                // host's next state names it again
+                this.relayedTargets.delete(e.message.refrId);
+                this.aggroHeld.delete(e.message.refrId);
             }
         });
     }
@@ -172,6 +180,9 @@ export class PuppetService extends ClientListener {
                 return;
             }
             if (flagged && now - since >= PuppetService.releaseGraceMs) {
+                // tracker #130: the release turns its AI on, so a combat this
+                // seat started on its player stops first
+                this.endAggro(localId, ac, "its release, no 3D here");
                 this.sp.releasePuppet(localId);
                 this.puppets.delete(localId);
                 // the release lifts the block natively (PuppetApi.cpp
@@ -186,6 +197,9 @@ export class PuppetService extends ClientListener {
         this.unloadedSince.delete(localId);
 
         if (word) {
+            // tracker #130: an actor this game hosts fights under its own
+            // engine, so a combat this seat started on it as a puppet stops
+            this.endAggro(localId, ac, flagged ? "its promote, this game hosts it now" : "this game hosts it");
             // thuum docs/verbs/npc-stream.md (ADR-050): the word says this
             // game simulates the actor: its actions stream from here (the
             // hosted set the action hook reads)
@@ -285,6 +299,8 @@ export class PuppetService extends ClientListener {
             this.showEffectLooks(localId, ac);
         }
         if (ac.isDead()) {
+            // tracker #130: a body fights nobody
+            this.endAggro(localId, ac, "its death");
             // thuum docs/verbs/npc-fate.md (the deaths, as revised by playtest
             // 37's findings 58 and 62): a dead NPC body is never a puppet, on
             // any seat. A body that died flagged (the server's word killed a
@@ -385,6 +401,9 @@ export class PuppetService extends ClientListener {
                 return;
             }
             this.puppets.add(localId);
+            // tracker #130: the demote's native StopCombatAndAlarmOnActor lands
+            // after this tick, so no aggro start runs before two tick counts
+            this.demotedAt.set(localId, this.tick);
             // non-owning-seat.md R1: the demote's side of the same read
             {
                 const eCell = refr ? ObjectReferenceEx.getWorldOrCell(refr) : 0;
@@ -399,6 +418,119 @@ export class PuppetService extends ClientListener {
             logTrace(this, `puppet ${localId.toString(16)}`);
         }
         this.stopLocalScene(localId, ac);
+        this.reconcileAggro(localId, ac, host);
+    }
+
+    // thuum tracker #130 (design A): an NPC another game hosts that fights
+    // this seat's player drew no combat from this seat's engine, since its
+    // puppet here has its AI off and H6 undoes any combat it enters, so this
+    // player's compass showed no enemy and the wait menu opened beside it.
+    // The host's combat target is R2: the host's engine reads it
+    // (HostedStateService), the server records it (SetHostedState) and
+    // relays the state to the actor's other listeners
+    // (ActionListener::OnHostedActorState). When that target is this seat's
+    // own player, by its server id (RemoteServer.getMyRemoteRefrId: a seat
+    // holds no view of its own player, so the view's id map never answers
+    // 0x14 for it), the puppet gets Papyrus StartCombat on the player and
+    // the aggro mark, and H6 keeps a marked puppet's combat on the player.
+    // The mark comes off, with StopCombat on the puppet, when the host's
+    // target turns to anyone else or to none, at the puppet's death, its
+    // release or its promote, when no other game hosts it any more (no relay
+    // would end it), and at the server's StopCombatAlarm for the pair
+    // (PartOne::TickFights' end, onStopCombatAlarm). That end, and an H6
+    // undo of a combat the engine turned on anyone else, hold the start
+    // until the host's target changes. The consequence in this engine is
+    // R3: never reported, nothing the server reads. A start waits two tick
+    // counts after a demote, whose native StopCombatAndAlarmOnActor lands
+    // after the tick (the dead block's rule, blockDeadBody). The relay is
+    // unreliable unless it carries effects: a lost change waits for the
+    // host's next one.
+    // HYPOTHESIS until a two-seat probe reads the guest's wait refusal: that
+    // StartCombat on a puppet with its AI off puts it on this seat's compass
+    // and gates the wait menu. The static read has both reading the combat
+    // groups that target the player (thuum ghidra/notes/hostility-1-7-104.md
+    // :43-70, the wait gate; :92-97, the compass), and Papyrus StartCombat
+    // makes no AI test (re-ai-puppet.md:181-187), but a-hostility proved the
+    // compass only for a player's figure, whose AI runs.
+    private reconcileAggro(localId: number, ac: Actor, host: HostService): void {
+        if (this.relayedTargets.size === 0 && this.aggro.size === 0) {
+            return;
+        }
+        const refrId = localIdToRemoteId(localId);
+        const target = refrId ? this.relayedTargets.get(refrId) ?? 0 : 0;
+        const marked = this.aggro.has(localId);
+        if (!target && !marked) {
+            return;
+        }
+        const me = this.controller.lookupListener(RemoteServer).getMyRemoteRefrId();
+        const why = me === 0 || target !== me
+            ? `its host's target is ${target ? target.toString(16) : "none"} now`
+            : this.aggroHeld.has(refrId)
+            ? "held until its host's target changes"
+            : !host.isOthersLocal(localId)
+            ? "no other game hosts it now"
+            : "";
+        if (why) {
+            this.endAggro(localId, ac, why);
+            return;
+        }
+        if (marked) {
+            return;
+        }
+        const demoted = this.demotedAt.get(localId);
+        if (demoted !== undefined) {
+            if (this.tick < demoted + 2) {
+                return;
+            }
+            this.demotedAt.delete(localId);
+        }
+        const player = this.sp.Game.getPlayer();
+        if (!player) {
+            return;
+        }
+        ac.startCombat(player);
+        this.aggro.add(localId);
+        logLab("verb:hostility-sync", `aggro: ${localId.toString(16)} starts combat on this seat's player: its host's target is ${me.toString(16)}, this seat's own (tracker #130)`);
+    }
+
+    // tracker #130: the aggro mark off, the puppet's combat stopped (no actor,
+    // or a caller whose own native stops it, passes null), one line
+    private endAggro(localId: number, ac: Actor | null, why: string): void {
+        if (!this.aggro.delete(localId)) {
+            return;
+        }
+        if (ac) {
+            ac.stopCombat();
+        }
+        logLab("verb:hostility-sync", `aggro: ${localId.toString(16)} stops its combat on this seat's player: ${why} (tracker #130)`);
+    }
+
+    // tracker #130: the server's end of the fight between this seat's player
+    // and an actor (PartOne::TickFights: Actor.StopCombatAlarm on the actor,
+    // sent to each player of the pair; the snippet itself runs through
+    // SpSnippetService). While the host's target still names this player the
+    // start is held until it changes; a marked puppet's combat stops on the
+    // next update (this is the message's context, no natives here)
+    private onStopCombatAlarm(event: ConnectionMessage<SpSnippetMessage>) {
+        const msg = event.message;
+        if (msg.class.toLowerCase() !== "actor" || msg.function.toLowerCase() !== "stopcombatalarm") {
+            return;
+        }
+        const localId = snippetIdToLocalId(msg.selfId);
+        if (!localId || localId === 0x14) {
+            return;
+        }
+        const refrId = localIdToRemoteId(localId);
+        const me = this.controller.lookupListener(RemoteServer).getMyRemoteRefrId();
+        if (refrId && me !== 0 && this.relayedTargets.get(refrId) === me) {
+            this.aggroHeld.add(refrId);
+        }
+        if (!this.aggro.has(localId)) {
+            return;
+        }
+        this.controller.once("update", () => {
+            this.endAggro(localId, this.sp.Actor.from(this.sp.Game.getFormEx(localId)), "the server ended the fight (StopCombatAlarm); held until its host's target changes");
+        });
     }
 
     // The poll: every actor in the engine's high-process list (a named
@@ -652,6 +784,7 @@ export class PuppetService extends ClientListener {
         if (localId === 0x14) {
             return;
         }
+        this.endAggro(localId, dying, "its death started here");
         this.blockDeadBody(localId, dying, "its death started here");
     }
 
@@ -665,19 +798,48 @@ export class PuppetService extends ClientListener {
     // to a seat that subscribes later. The last set per actor, by server id;
     // the actor's next pass (the view's update, the poll) plays it
     private onHostedState(event: ConnectionMessage<HostedActorStateMessage>) {
-        const effects = event.message.effects;
-        if (!Array.isArray(effects)) {
-            return;
-        }
         const remote = this.controller.lookupListener(RemoteServer);
         const i = remote.getIdManager().getId(event.message.idx);
         const form = i >= 0 ? remote.getWorldModel().forms[i] : undefined;
         const refrId = form ? form.refrId : undefined;
+        if (refrId) {
+            this.noteRelayedTarget(refrId, event.message.combatTarget, remote.getMyRemoteRefrId());
+        }
+        const effects = event.message.effects;
+        if (!Array.isArray(effects)) {
+            return;
+        }
         if (!refrId) {
             logTrace(this, `effects: no form here for idx ${event.message.idx}, the record's ${effects.length} effect(s) not kept`);
             return;
         }
         this.recordedEffects.set(refrId, effects.slice());
+    }
+
+    // tracker #130: the host's combat target per actor, by server id, kept
+    // while it names anyone (pure JavaScript: this is the message's
+    // context). Any change of it lifts a hold; a change to or from this
+    // seat's player asks the actor's pass on the next update (the view's
+    // update and the poll ask too), which starts or stops the aggro
+    private noteRelayedTarget(refrId: number, combatTarget: unknown, me: number): void {
+        const target = typeof combatTarget === "number" && Number.isFinite(combatTarget) ? combatTarget : 0;
+        const before = this.relayedTargets.get(refrId) ?? 0;
+        if (target === before) {
+            return;
+        }
+        if (target) {
+            this.relayedTargets.set(refrId, target);
+        } else {
+            this.relayedTargets.delete(refrId);
+        }
+        this.aggroHeld.delete(refrId);
+        if (me === 0 || (target !== me && before !== me)) {
+            return;
+        }
+        const localId = remoteIdToLocalId(refrId);
+        if (localId) {
+            this.controller.once("update", () => this.reconcile(localId));
+        }
     }
 
     // The record's looks on an actor this seat does not host: for each
@@ -806,6 +968,8 @@ export class PuppetService extends ClientListener {
     }
 
     private forget(localId: number) {
+        this.endAggro(localId, null, "no actor here");
+        this.demotedAt.delete(localId);
         this.puppets.delete(localId);
         this.effectLooks.delete(localId);
         this.attached.delete(localId);
@@ -848,7 +1012,13 @@ export class PuppetService extends ClientListener {
 
     // A puppet drafted into combat (a hit, a script's StartCombat; the AI bit
     // gates neither, re-ai-puppet.md:181-187): undone at the first event (H6)
-    // by the demote again, which is idempotent and stops the combat natively
+    // by the demote again, which is idempotent and stops the combat natively.
+    // Tracker #130's exception: a puppet with the aggro mark keeps a combat
+    // on this seat's player (the event's target, else the engine's combat
+    // target; one naming nobody is the mark's own StartCombat). One the
+    // engine turned on anyone else is undone as before, the mark cleared and
+    // the start held until the host's target changes, so the two never trade
+    // a combat every frame
     private onCombatState(e: CombatEvent) {
         if (!e.actor || !(e.isCombat || e.isSearching)) {
             return;
@@ -857,7 +1027,20 @@ export class PuppetService extends ClientListener {
         if (!this.sp.isPuppet(id)) {
             return;
         }
+        if (this.aggro.has(id)) {
+            const named = e.target ?? this.sp.Actor.from(e.actor)?.getCombatTarget() ?? null;
+            const target = named ? named.getFormID() : 0x14;
+            if (target === 0x14) {
+                return;
+            }
+            const refrId = localIdToRemoteId(id);
+            if (refrId) {
+                this.aggroHeld.add(refrId);
+            }
+            this.endAggro(id, null, `its engine turned it on ${target.toString(16)}, H6 undoes it; held until its host's target changes`);
+        }
         this.sp.setPuppet(id, true);
+        this.demotedAt.set(id, this.tick);
     }
 
     // A grant or a release reaches every actor as the server's word per actor
@@ -869,6 +1052,14 @@ export class PuppetService extends ClientListener {
     // be called in this context" 27 times).
 
     private readonly puppets = new Set<number>();
+    // tracker #130: the host's combat target per actor (by server id, none
+    // kept for none), the actors whose aggro start is held (by server id),
+    // the puppets this seat put in combat on its player (the aggro mark, by
+    // local id) and the tick of each puppet's last demote
+    private readonly relayedTargets = new Map<number, number>();
+    private readonly aggroHeld = new Set<number>();
+    private readonly aggro = new Set<number>();
+    private readonly demotedAt = new Map<number, number>();
     // Ownership: the host's recorded effect set per actor, by server id, and
     // the looks playing on each actor this seat does not host, by local id
     private readonly recordedEffects = new Map<number, number[]>();

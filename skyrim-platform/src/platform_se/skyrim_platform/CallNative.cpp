@@ -12,6 +12,7 @@
 #include <RE/B/BGSBaseAlias.h>
 #include <RE/B/BGSLocAlias.h>
 #include <RE/B/BGSRefAlias.h>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -731,7 +732,24 @@ CallNative::AnySafe CallNative::DynamicCast(const std::string& outputTypeName,
     RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> objInfoFormType;
     RE::VMTypeID formTypeId = (RE::VMTypeID)form->formType.get();
     site.form = form;
-    GetScriptObjectType(*vm, formTypeId, objInfoFormType, "form's type", site);
+    // thuum #134 (playtest 54: 9,609 "Expected 'objectTypeInfo' to not to be
+    // nullptr" on c1, every frame): a form whose own type has no script class
+    // (a reused runtime id that now names an explosion or a projectile, read
+    // by the lab driver's watch and by skymp5-client's cellAttach casts) can
+    // be no script class's instance, so from() answers None, as it does for a
+    // form of another class, instead of throwing out of the caller's handler
+    // every frame. An upcast (IsChildOf) never needed this lookup. Said once
+    // per form type; the source and target lookups above still throw
+    const bool formTypeScripted =
+      vm->GetScriptObjectType(formTypeId, objInfoFormType) && objInfoFormType;
+    if (!formTypeScripted) {
+      static std::array<std::atomic<bool>, 256> said{};
+      if (!said[static_cast<std::uint8_t>(form->GetFormType())].exchange(
+            true)) {
+        logger::info("[cast] {}: answered None",
+                     DescribeCast("form's type", formTypeId, site));
+      }
+    }
 
     const bool IsParentOf =
       IsInstanceOf(outTypeInfoPtr, fromTypeInfoPtr->GetName());
@@ -739,7 +757,7 @@ CallNative::AnySafe CallNative::DynamicCast(const std::string& outputTypeName,
       IsInstanceOf(fromTypeInfoPtr, outTypeInfoPtr->GetName());
 
     const bool IsFormHasNeedParent =
-      IsInstanceOf(objInfoFormType, outputTypeName.data());
+      formTypeScripted && IsInstanceOf(objInfoFormType, outputTypeName.data());
 
     if (IsChildOf || IsParentOf && IsFormHasNeedParent) {
 

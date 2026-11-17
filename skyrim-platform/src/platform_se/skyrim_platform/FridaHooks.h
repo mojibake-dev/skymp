@@ -3,9 +3,11 @@
 #include <RE/B/BSCoreTypes.h>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace RE {
 class Actor;
+class DialogueItem;
 }
 
 namespace RE::BSScript {
@@ -209,4 +211,36 @@ struct RelayedArrowScope
   RelayedArrowScope(const RelayedArrowScope&) = delete;
   RelayedArrowScope& operator=(const RelayedArrowScope&) = delete;
 };
+
+// thuum tracker #123 (playtest 55, the spoken-line read): every line the
+// engine's DialogueItem::SendTopicInfoEvent (Address Library 35225, the
+// fragment gate's hook below) sees for an actor speaker, recorded before the
+// gate decides, plus the lines this game's own code ends without the
+// engine's END (PuppetApi.cpp SayTopicInfo's pre-clear and its inaudible
+// branch). Per speaker the last 64 rows; at most 256 speakers, the least
+// recently written dropped first. One mutex; no engine call under it
+struct SpokenLine
+{
+  std::uint64_t epochMs = 0;       // the system clock, ms since the epoch
+  std::uint32_t infoId = 0;        // DialogueItem::info, 0 when none
+  std::uint32_t topicId = 0;       // DialogueItem::topic, 0 when none
+  std::uint32_t type = 0;          // kSpokenBegin, kSpokenEnd or kSpokenCut
+  std::uint32_t gated = 0;         // 1: the fragment gate dropped the event
+  std::uint32_t handleValid = 0;   // 1: soundHandles[0] held a sound id
+  std::int32_t responseIndex = -1; // currentResponse's place, -1 when none
+  float voiceTimerSec = 0.f;       // the Actor runtime voiceTimer
+};
+// a row's type: the engine's TESTopicInfoEvent types (0 BEGIN, 1 END), and
+// this game's own cut (2)
+inline constexpr std::uint32_t kSpokenBegin = 0;
+inline constexpr std::uint32_t kSpokenEnd = 1;
+inline constexpr std::uint32_t kSpokenCut = 2;
+// records one row for the speaker from the item (null for a row with no
+// item's fields). Reads fields only (no relocation call); nothing leaves it
+void RecordSpokenLine(RE::Actor* speaker, RE::DialogueItem* item,
+                      std::uint32_t type, bool gated) noexcept;
+// the speaker's rows with epochMs >= sinceMs, oldest first; a table read,
+// no game call, safe from any thread
+std::vector<SpokenLine> ReadSpokenLines(std::uint32_t speakerId,
+                                        std::uint64_t sinceMs);
 }

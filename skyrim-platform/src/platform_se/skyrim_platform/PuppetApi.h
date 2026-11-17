@@ -203,7 +203,8 @@ Napi::Value SetImpulseCauseRule(const Napi::CallbackInfo& info);
 // stored on the JS thread and laid on the parts by one drain on the main
 // thread: rest, or a part more than 64 units off, places every part
 // outright (a rest then drops the form), else every part is driven by
-// velocity toward its pose over its world's step; true when stored, false for
+// velocity toward its pose over the world's time since the form's last
+// drain (ImposeHorizonOf, thuum tracker #125); true when stored, false for
 // 0, the player's own id, no pose or more than 64, a value not a number, a
 // quaternion off unit length by more than 0.01, no SKSE task interface or a
 // full table. releaseBodies(formId), the form's stored poses dropped (a
@@ -237,15 +238,19 @@ Napi::Value ReleaseScriptRecordPending(const Napi::CallbackInfo& info);
 // queued. No game call: true when stored
 Napi::Value SetScriptRecordTouches(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-stream.md (the voice slice): sayTopicInfo(actorFormId,
-// topicInfoFormId) makes a puppet say the host's line through the engine's
-// own say (Offsets::Voice::SayTopic with the info given, so the engine's
-// pick is skipped), queued to the game thread; sayTopicInfoResult answers
-// -1 while it waits, 0 for no actor, info or process, 1 when the line
+// topicInfoFormId, topicFormId?) makes a puppet say the host's line through
+// the engine's own say (Offsets::Voice::SayTopic with the info given, so the
+// engine's pick is skipped), queued to the game thread; sayTopicInfoResult
+// answers -1 while it waits, 0 for no actor or process, 1 when the line
 // started (the actor's sound callback state read 3 after the call), 2 when
 // the engine refused it (a line still ending, the process's dialogue state),
 // 3 when a line plays without the state byte (a live sound handle or a
 // running timer: the sound descriptor path), 4 when the engine deferred it
-// for a replay its AI update would run (a puppet's never comes)
+// for a replay its AI update would run (a puppet's never comes), 5 when the
+// engine judged it inaudible here. Tracker #123: an info this game does not
+// resolve is looked for through the relayed topic (its info array, then the
+// engine's pick with a null info); 6 when no line resolves here, 7 when the
+// engine's pick took another info of the topic (stopped and cleared)
 Napi::Value SayTopicInfo(const Napi::CallbackInfo& info);
 Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-stream.md (slice 5, the gaze and the face):
@@ -265,6 +270,15 @@ Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 // seat's (tracker #56)
 Napi::Value PollHostedGaze(const Napi::CallbackInfo& info);
 Napi::Value HostedEffects(const Napi::CallbackInfo& info);
+// thuum tracker #123 (playtest 55, the spoken-line read):
+// spokenLines(actorFormId, sinceMs?) answers the speaker's rows from the
+// line store (FridaHooks.h SpokenLine; recorded at the engine's
+// SendTopicInfoEvent before the fragment gate decides, and at SayTopicInfo's
+// own cuts), oldest first, as [epochMs, infoId, topicId, type (0 BEGIN,
+// 1 END, 2 CUT), gated, handleValid, responseIndex, voiceTimerSec], only
+// rows with epochMs >= sinceMs; [] when none. A table read under its mutex,
+// no game call: safe from any JavaScript context
+Napi::Value SpokenLines(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-talk.md (ADR-052): activatePickRef() runs the
 // player's own activation of its crosshair pick on the game thread
 // (PlayerCharacter::ActivatePickRef, CommonLibSSE-NG PlayerCharacter.h:544),
@@ -467,6 +481,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "hostedEffects",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(HostedEffects)));
+  exports.Set(
+    "spokenLines",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SpokenLines)));
   exports.Set(
     "pollNodeRotation",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollNodeRotation)));

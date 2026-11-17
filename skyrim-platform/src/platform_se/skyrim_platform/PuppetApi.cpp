@@ -1533,6 +1533,10 @@ constexpr float kBodySnapUnits = 64.f;
 // F9: HYPOTHESIS until B5's read, 1/60 under decision 7's cap)
 constexpr float kImposeDtMin = 1.f / 240.f;
 constexpr float kImposeDtMax = 1.f / 30.f;
+// the drive's horizon (ImposeHorizonOf) at most this (UNMEASURED: a quarter
+// second, a hitch's frame; a longer gap is driven over this, which falls
+// short of the target and never passes it, and the next drain closes it)
+constexpr float kImposeHorizonMax = 0.25f;
 // a pose's quaternion off unit length by at most this, wire-validate's
 // PROP_QUAT_NORM_SLACK (skymp-wire crates/wire-validate/src/lib.rs:86)
 constexpr float kImposeQuatSlack = 0.01f;
@@ -1575,6 +1579,17 @@ bool g_imposeDrainSaid = false;
 std::unordered_set<uint32_t> g_imposeNo3DSaid;
 std::unordered_set<uint64_t> g_imposeSkipSaid;
 std::unordered_map<uint32_t, uint64_t> g_imposeSnapSaidMs;
+std::unordered_map<uint32_t, uint64_t> g_imposeHorizonSaidMs;
+
+// a held form's world clock at the drain that last drove or placed it
+// (ImposeClockOf), and Puppets::NowMs() then: the next drive's horizon is
+// the world's time between the two drains (ImposeHorizonOf)
+struct ImposeClock
+{
+  float clock = 0.f;
+  uint64_t atMs = 0;
+};
+std::unordered_map<uint32_t, ImposeClock> g_imposeClock;
 
 // a JS array of exactly n numbers into out; a value of another shape throws
 // as NapiHelper's extractors throw (ExtractNiPoint3's shape)
@@ -1607,6 +1622,50 @@ float ImposeStepOf(const RE::hkpRigidBody& body)
     return 0.f;
   }
   return std::clamp(raw, kImposeDtMin, kImposeDtMax);
+}
+
+// the part's world clock: its world's dynamicsStepInfo.stepInfo.endTime
+// (H/hkpWorld.h:193, H/hkStepInfo.h:11), the time the world's last step
+// reached (HYPOTHESIS, rule 2: that the engine's step sets it from the
+// world's running time, as Havok's own does); false with no world or a
+// value that is not a number
+bool ImposeClockOf(const RE::hkpRigidBody& body, float& out)
+{
+  const RE::hkpWorld* world = body.world;
+  if (!world) {
+    return false;
+  }
+  out = world->dynamicsStepInfo.stepInfo.endTime;
+  return std::isfinite(out);
+}
+
+// thuum tracker #125 (playtest 54, the Riverwood Trader's sign jumping on
+// the guest's screen): the drive's horizon. A drive sets a part's velocity
+// once a drain, one drain a frame, and the world integrates it on every
+// step until the next drain sets another, so the velocity that closes the
+// gap is the gap over the world's time between two drains, not over one
+// step: over one step, a frame of n steps carries the part n times the gap
+// (HYPOTHESIS: 54's guest drained about 28 times a second, c2-console.log
+// "908 frames imposed" over 07:21:48 to 07:22:20Z, against the 1/60 step
+// thuum ADR-071 decision 7 names, unread on its seats; its parts passed 64
+// units and were placed outright 12 or more times, c2.log 972 to 1009).
+// The horizon line below reads the steps a drain (the spec's F9): a horizon
+// equal to the step says the drive was never the cause.
+// The world's advance since this form's last drain, at least the step and
+// at most kImposeHorizonMax; the step alone (today's drive) on a form's
+// first drain, a clock older than kImposeStaleMs, a clock that went back or
+// stood (a paused world), or no clock
+float ImposeHorizonOf(float step, bool known, const ImposeClock& then,
+                      float clockNow, uint64_t nowMs)
+{
+  if (!(step > 0.f) || !known || nowMs - then.atMs > kImposeStaleMs) {
+    return step;
+  }
+  const float advance = clockNow - then.clock;
+  if (!std::isfinite(advance) || !(advance > step)) {
+    return step;
+  }
+  return std::min(advance, kImposeHorizonMax);
 }
 
 // one form's poses applied on the main thread; true when the form leaves the
@@ -1669,6 +1728,22 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
       farthestPart = i;
     }
   }
+  // the form's world clock now and at its last drain (#125), kept for the
+  // next drain's horizon whether this one places or drives
+  float clockNow = 0.f;
+  const bool ticking = ImposeClockOf(*walk.parts[0].havok, clockNow);
+  const uint64_t clockMs = Puppets::NowMs();
+  const auto last = g_imposeClock.find(formId);
+  const bool known = ticking && last != g_imposeClock.end();
+  const ImposeClock then = known ? last->second : ImposeClock{};
+  if (ticking) {
+    if (last == g_imposeClock.end() && g_imposeClock.size() > kImposeSaidMax) {
+      g_imposeClock.clear();
+    }
+    g_imposeClock[formId] = ImposeClock{ clockNow, clockMs };
+  } else if (last != g_imposeClock.end()) {
+    g_imposeClock.erase(last);
+  }
   const bool snap = farthest > kBodySnapUnits;
   if (entry.rest || snap) {
     for (uint32_t i = 0; i < n; ++i) {
@@ -1690,9 +1765,31 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
     }
     return entry.rest;
   }
+  float firstStep = 0.f;
+  float firstHorizon = 0.f;
   for (uint32_t i = 0; i < n; ++i) {
     const PropBodies::Body& part = walk.parts[i];
-    PropBodies::DriveBody(part, targets[i], ImposeStepOf(*part.havok));
+    const float step = ImposeStepOf(*part.havok);
+    const float horizon =
+      ImposeHorizonOf(step, known, then, clockNow, clockMs);
+    if (i == 0) {
+      firstStep = step;
+      firstHorizon = horizon;
+    }
+    PropBodies::DriveBody(part, targets[i], horizon);
+  }
+  // the horizon line (#125's read of the spec's F9: the world's steps a
+  // drain, horizon over step) at most once a second per form
+  if (g_imposeHorizonSaidMs.size() > kImposeSaidMax) {
+    g_imposeHorizonSaidMs.clear();
+  }
+  auto said = g_imposeHorizonSaidMs.find(formId);
+  if (said == g_imposeHorizonSaidMs.end() ||
+      clockMs - said->second >= kImposeSnapSayEveryMs) {
+    g_imposeHorizonSaidMs[formId] = clockMs;
+    logger::info("[verb:prop-physics] impose {:x} driven: horizon {:.4f} s, "
+                 "the world's step {:.4f} s, {:.1f} units off",
+                 formId, firstHorizon, firstStep, farthest);
   }
   return false;
 }
@@ -1744,6 +1841,9 @@ void DrainImpose()
     if (!stale && !ImposeOne(formId, entry, toHavok, toGameUnits)) {
       continue;
     }
+    // the form leaves the drive: its clock goes with it (#125), so a later
+    // follow's first drain drives over one step
+    g_imposeClock.erase(formId);
     std::lock_guard<std::mutex> lock(g_imposeMutex);
     const auto it = g_impose.find(formId);
     if (it != g_impose.end() && it->second.seq == entry.seq) {
@@ -1763,11 +1863,13 @@ void DrainImpose()
 // pose i on part i: with rest set, or a part more than 64 units from its
 // target, every part placed (PropBodies::PlaceBody; the snap said at most
 // once a second a form, line N6, and a rest dropping the form); otherwise
-// every part driven (PropBodies::DriveBody) over its world's step. A form
-// with no 3D is dropped (N3, once a form); a pose count that is not the
-// walk's part count is skipped (N2, once a (form, count, parts)). Refused,
-// false and nothing stored: 0, the player's own id, no pose, more than 64, a
-// value that is not a number, a quaternion off unit length by more than 0.01
+// every part driven (PropBodies::DriveBody) over the world's time since the
+// form's last drain (ImposeHorizonOf, #125; the horizon said at most once a
+// second a form). A form with no 3D is dropped (N3, once a form); a pose
+// count that is not the walk's part count is skipped (N2, once a (form,
+// count, parts)). Refused, false and nothing stored: 0, the player's own
+// id, no pose, more than 64, a value that is not a number, a quaternion off
+// unit length by more than 0.01
 // (wire-validate's PROP_QUAT_NORM_SLACK), no SKSE task interface, or a full
 // table (64 forms, said at the first and every hundredth). A pose of another
 // shape throws, as the platform's extractors throw
@@ -1926,11 +2028,100 @@ Napi::Value PuppetApi::SetScriptRecordTouches(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+namespace {
+// thuum tracker #123 (playtest 54, Eli: the Riverwood intro scene's voice
+// lines on the host's game alone, its animations on both): the guest asked
+// each of the scene's six relayed lines and this native answered 0 for every
+// one (c2-console.log 07:16:29Z to 07:16:52Z, "say 35534 info 954cc -> no
+// actor or info"; no "sayTopicInfo on" line in c2.log), while the same
+// puppet's greeting 4547c started at 07:18:01Z. Each refused line's topic is
+// a scene topic of DialogueRiverwoodIntroScene 0x954d9 (lab/esm.py: SNAM
+// SCEN, QNAM 954d9), a quest the guest had stopped with its own copy of the
+// scene. HYPOTHESIS (finding 34, playtest 37): a topic's infos are resident
+// only on a game whose engine brought that quest's dialogue up, so
+// LookupByID found no INFO here. The line is looked for in the form map
+// first, then in the relayed topic's own info array (CommonLibSSE-NG
+// TESTopic.h:171-172); a topic with no such info there is left to the
+// engine's pick (SayTopicInfo). HYPOTHESIS until x-riverwood-scene-voice
+// reads the guest's verdicts.
+struct SayLine
+{
+  RE::TESTopic* topic = nullptr;
+  RE::TESTopicInfo* info = nullptr;
+  const char* through = "nothing";
+};
+
+SayLine ResolveSayLine(uint32_t infoFormId, uint32_t topicFormId)
+{
+  SayLine line;
+  auto* found = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
+  if (found && found->parentTopic) {
+    line.topic = found->parentTopic;
+    line.info = found;
+    line.through = "the form map";
+    return line;
+  }
+  line.topic =
+    topicFormId ? RE::TESForm::LookupByID<RE::TESTopic>(topicFormId) : nullptr;
+  if (!line.topic) {
+    return line;
+  }
+  if (found) {
+    line.info = found;
+    line.through = "the form map, the relayed topic its parent";
+    return line;
+  }
+  if (line.topic->topicInfos) {
+    for (uint32_t i = 0; i < line.topic->numTopicInfos; ++i) {
+      auto* candidate = line.topic->topicInfos[i];
+      if (candidate && candidate->formID == infoFormId) {
+        line.info = candidate;
+        line.through = "the relayed topic's infos";
+        return line;
+      }
+    }
+  }
+  line.through = "the engine's pick from the relayed topic";
+  return line;
+}
+
+// what this game holds of a topic, for the lab's read of a line that did
+// not resolve: the infos its array lists and its quest's state (IsRunning,
+// TESQuest.cpp:47; the flag word, TESQuest.h:41 kHasDialogueData)
+std::string DescribeTopicHere(const RE::TESTopic* topic)
+{
+  if (!topic) {
+    return "the topic unresolved here";
+  }
+  uint32_t listed = 0;
+  if (topic->topicInfos) {
+    for (uint32_t i = 0; i < topic->numTopicInfos; ++i) {
+      if (topic->topicInfos[i]) {
+        ++listed;
+      }
+    }
+  }
+  const RE::TESQuest* quest = topic->ownerQuest;
+  return fmt::format(
+    "{} of {} info(s) listed{}, quest {:x} running {} flags {:x}", listed,
+    topic->numTopicInfos, topic->topicInfos ? "" : " (no array)",
+    quest ? quest->formID : 0u, quest ? quest->IsRunning() : false,
+    quest ? quest->data.flags.underlying() : 0u);
+}
+}
+
 Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
   const auto infoFormId =
     NapiHelper::ExtractUInt32(info[1], "topicInfoFormId");
+  // thuum tracker #123: the relayed line's topic (ActorSpeech's topic), the
+  // key when the info does not resolve on this game; 0 when absent (a
+  // two-argument caller)
+  const uint32_t topicFormId =
+    info.Length() >= 3 && !info[2].IsUndefined() && !info[2].IsNull()
+    ? NapiHelper::ExtractUInt32(info[2], "topicFormId")
+    : 0u;
   if (actorFormId == 0 || actorFormId == 0x14 || infoFormId == 0) {
     return Napi::Boolean::New(info.Env(), false);
   }
@@ -1939,12 +2130,29 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
     g_sayResult[actorFormId] = -1;
   }
   // the forms looked up on the game thread alone (setPuppet's reason)
-  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId,
-                                              infoFormId](Viet::Void) {
+  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId, infoFormId,
+                                              topicFormId](Viet::Void) {
     int result = 0;
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
-    auto* topicInfo = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
-    if (actor && topicInfo && topicInfo->parentTopic) {
+    // #123: the line through the form map, else the relayed topic (an info
+    // found in its array, or none: the engine's pick below)
+    const SayLine line = ResolveSayLine(infoFormId, topicFormId);
+    auto* topicInfo = line.info;
+    auto* topic = line.topic;
+    auto* processHere =
+      actor ? actor->GetActorRuntimeData().currentProcess : nullptr;
+    if (actor && processHere && !topic) {
+      // no topic for the line here: the lab's read names what resolved
+      // (#123)
+      result = 6;
+      logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} topic "
+                   "{:x} -> unresolved (no topic here: the info {}, the "
+                   "relayed topic {})",
+                   actorFormId, infoFormId, topicFormId,
+                   topicInfo ? "found with no parent" : "not found",
+                   topicFormId ? "not found" : "not given");
+    }
+    if (actor && topic) {
       auto& runtime = actor->GetActorRuntimeData();
       if (runtime.currentProcess) {
         const auto bitsBefore = runtime.boolBits.underlying();
@@ -1998,8 +2206,9 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         // raises a BEGIN per line on the host and the relay carries each, so
         // a say here would restart the item at its first line
         auto* highBefore = runtime.currentProcess->high;
-        const bool repeat = highBefore && highBefore->greetingPlayer &&
-          highBefore->greetTopic && highBefore->greetTopic->info == topicInfo;
+        const bool repeat = topicInfo && highBefore &&
+          highBefore->greetingPlayer && highBefore->greetTopic &&
+          highBefore->greetTopic->info == topicInfo;
         // thuum playtest 37 (2026-10-28, Faendal and Alvor): a line asked
         // while the last one still plays with no state byte (the sound
         // descriptor path: timer running, state -1) takes that path too and
@@ -2014,6 +2223,11 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         // The host's engine cuts any line for the next, so does this seat
         bool precleared = false;
         if (!repeat && highBefore && timerBefore > 0.f) {
+          // thuum tracker #123: the line in flight ends here, not by the
+          // engine's END, so the spoken-line read gets a CUT row for its
+          // item (read before the stop and the clear)
+          Frida::RecordSpokenLine(actor, highBefore->greetTopic.get(),
+                                  Frida::kSpokenCut, false);
           if (highBefore->soundHandles[0].IsValid()) {
             highBefore->soundHandles[0].Stop();
           }
@@ -2028,10 +2242,18 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
                                RE::Actor::BOOL_BITS::kVoiceFileDone);
           precleared = true;
         }
+        // #123: with no info resolved here the say carries the relayed topic
+        // and a null info, Papyrus Say's shape (the re-analyst's read,
+        // docs/research/m3/re-puppet-head-lips.md A: 56220 calls 39162 with
+        // (process, actor, topic, null, ...) and 39642 builds the item for
+        // the topic), so the engine picks the info; the item it builds is
+        // told from the one in place before the call. HYPOTHESIS: the
+        // engine's pick loads a topic's infos this game does not hold
+        auto* itemBefore = highBefore ? highBefore->greetTopic.get() : nullptr;
         const bool returned = repeat
           ? false
-          : say(runtime.currentProcess, actor, topicInfo->parentTopic,
-                topicInfo, false, false, false, false);
+          : say(runtime.currentProcess, actor, topic, topicInfo, false, false,
+                false, false);
         const int stateAfter = runtime.soundCallBackSet;
         // voice v2 (P7 v1 20261026-181119: the say started on every
         // creature puppet and was refused on a humanoid resident's with
@@ -2045,8 +2267,39 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         const float timerAfter = runtime.voiceTimer;
         const bool inFlight = high && high->greetingPlayer;
         const int lipAfter = lipState(high);
+        // #123: the info the engine's pick took (no info given), read from
+        // the item the say built (HighProcessData.h:298, DialogueItem.h:56)
+        auto* itemAfter = high ? high->greetTopic.get() : nullptr;
+        const RE::TESTopicInfo* picked =
+          !topicInfo && itemAfter && itemAfter != itemBefore ? itemAfter->info
+                                                             : nullptr;
         bool cleared = false;
-        if (stateAfter == 3) {
+        if (!topicInfo && !picked) {
+          // the engine built no item for the topic: no line here
+          result = 6;
+        } else if (!topicInfo && picked->formID != infoFormId) {
+          // another info of the topic: the host's line is not this one, so
+          // it is stopped and its item cleared the pre-clear's way above
+          result = 7;
+          // thuum tracker #123: the picked line's item is cleared here by
+          // ClearGreetTopic alone, which sends no END (the END paths 37544
+          // and 37741 send it, then call the clear: thuum docs/research/m3/
+          // re-puppet-head-lips.md:119-123): a CUT row for the spoken-line
+          // read, or the BEGIN its say raised reads as voiced until the
+          // speaker's next row (itemAfter is the picked item, read before
+          // the stop and the clear)
+          Frida::RecordSpokenLine(actor, itemAfter, Frida::kSpokenCut, false);
+          if (high && high->soundHandles[0].IsValid()) {
+            high->soundHandles[0].Stop();
+          }
+          REL::Relocation<void (*)(RE::AIProcess*)> clearPicked{
+            Offsets::Voice::ClearGreetTopic
+          };
+          clearPicked(runtime.currentProcess);
+          runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
+                               RE::Actor::BOOL_BITS::kVoiceFileDone);
+          cleared = true;
+        } else if (stateAfter == 3) {
           result = 1;
         } else if (handleLive || timerAfter > 0.f) {
           result = 3;
@@ -2061,6 +2314,11 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
           // clear it, so the mark never holds a later promote's greetings
           result = 5;
           if (high) {
+            // thuum tracker #123: the started item is cleared here, never
+            // reaching the engine's END: a CUT row for the spoken-line read
+            // (read before the clear)
+            Frida::RecordSpokenLine(actor, high->greetTopic.get(),
+                                    Frida::kSpokenCut, false);
             REL::Relocation<void (*)(RE::AIProcess*)> clearGreet{
               Offsets::Voice::ClearGreetTopic
             };
@@ -2092,23 +2350,33 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
                        "the item in progress, left to its continuation",
                        actorFormId, infoFormId);
         }
-        logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
-                     "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {}, "
-                     "lip {}, 3D {}, axis distance {:.0f} before; returned "
-                     "{}, state {}, timer {:.2f}, handle {}, delay {:.2f}, in "
-                     "flight {}, lip {} after{}{})",
-                     actorFormId, infoFormId, topicInfo->parentTopic->formID,
-                     result == 1     ? "started"
-                       : result == 3 ? "played"
-                       : result == 5 ? "inaudible"
-                       : result == 4 ? "deferred"
-                                     : "refused",
-                     bitsBefore, timerBefore, stateBefore, lipBefore, has3D,
-                     axisDistance, returned, stateAfter, timerAfter,
-                     handleLive ? "live" : "none",
-                     high ? high->soundDelay : -2.f, inFlight, lipAfter,
-                     cleared ? ", item cleared" : "",
-                     precleared ? "; the line in flight stopped first" : "");
+        // #123: where the line was found here; for one said through the
+        // engine's pick, the info it took and what this game holds of the
+        // topic (the lab's read of an unresolved line)
+        const std::string through = topicInfo
+          ? fmt::format("; through {}", line.through)
+          : fmt::format("; through {}, picked {:x}; {}", line.through,
+                        picked ? picked->formID : 0u,
+                        DescribeTopicHere(topic));
+        logger::info(
+          "[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
+          "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {}, "
+          "lip {}, 3D {}, axis distance {:.0f} before; returned "
+          "{}, state {}, timer {:.2f}, handle {}, delay {:.2f}, in "
+          "flight {}, lip {} after{}{}{})",
+          actorFormId, infoFormId, topic->formID,
+          result == 1     ? "started"
+            : result == 3 ? "played"
+            : result == 5 ? "inaudible"
+            : result == 4 ? "deferred"
+            : result == 6 ? "unresolved"
+            : result == 7 ? "another info"
+                          : "refused",
+          bitsBefore, timerBefore, stateBefore, lipBefore, has3D, axisDistance,
+          returned, stateAfter, timerAfter, handleLive ? "live" : "none",
+          high ? high->soundDelay : -2.f, inFlight, lipAfter,
+          cleared ? ", item cleared" : "",
+          precleared ? "; the line in flight stopped first" : "", through);
       }
     }
     std::lock_guard<std::mutex> lock(g_sayResultMutex);
@@ -2509,6 +2777,27 @@ Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
     for (auto& [drawnOnId, looks] : elsewhere) {
       const auto it = reads.find(drawnOnId);
       if (it == reads.end()) {
+        // a look drawn on a reference this poll does not read (a body before
+        // the grant reaches its commander's seat) is said once a (reference,
+        // first look), so the lab tells a dropped look from one never
+        // raised; at most 1024 said for the session. Said for the seat's own
+        // poll only (table 1, every hosted actor, the read its sends carry):
+        // another reader's poll (lab-driver's npc-state, one id into table
+        // 0) leaves out by design a body the seat's own poll reads, so its
+        // line would be false, and under the once-a-key rule it would hide
+        // the seat's own drop of that key for the session. One thread: this
+        // task runs on the game-thread queue alone. looks is never empty
+        // (each entry is made by a push_back in ReadEffectLooks)
+        static std::unordered_set<uint64_t> droppedSaid;
+        if (table == 1) {
+          const uint64_t key =
+            (static_cast<uint64_t>(drawnOnId) << 32) | looks.front();
+          if (droppedSaid.size() < 1024 && droppedSaid.insert(key).second) {
+            logger::info("[verb:npc-puppet] effects drawn on {:x}, not "
+                         "polled here: {} look(s), first {:x}, dropped",
+                         drawnOnId, looks.size(), looks.front());
+          }
+        }
         continue;
       }
       auto& effects = it->second.effects;
@@ -2742,6 +3031,40 @@ Napi::Value PuppetApi::HostedEffects(const Napi::CallbackInfo& info)
   auto res = Napi::Array::New(info.Env(), effects.size());
   for (uint32_t i = 0; i < effects.size(); ++i) {
     res.Set(i, Napi::Number::New(info.Env(), effects[i]));
+  }
+  return res;
+}
+
+Napi::Value PuppetApi::SpokenLines(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  // sinceMs: the system clock in ms (Date.now() on the same seat); absent,
+  // null, negative or not finite reads as 0, every row
+  std::uint64_t sinceMs = 0;
+  if (info.Length() >= 2 && !info[1].IsUndefined() && !info[1].IsNull()) {
+    const double since = NapiHelper::ExtractDouble(info[1], "sinceMs");
+    if (std::isfinite(since) && since > 0.0) {
+      sinceMs = static_cast<std::uint64_t>(std::min(since, 1.0e18));
+    }
+  }
+  // a table read under its mutex, no engine call (FridaHooks.cpp)
+  const std::vector<Frida::SpokenLine> rows =
+    Frida::ReadSpokenLines(actorFormId, sinceMs);
+  auto env = info.Env();
+  auto res = Napi::Array::New(env, rows.size());
+  for (uint32_t i = 0; i < rows.size(); ++i) {
+    const auto& row = rows[i];
+    auto cells = Napi::Array::New(env, 8);
+    cells.Set(uint32_t(0),
+              Napi::Number::New(env, static_cast<double>(row.epochMs)));
+    cells.Set(uint32_t(1), Napi::Number::New(env, row.infoId));
+    cells.Set(uint32_t(2), Napi::Number::New(env, row.topicId));
+    cells.Set(uint32_t(3), Napi::Number::New(env, row.type));
+    cells.Set(uint32_t(4), Napi::Number::New(env, row.gated));
+    cells.Set(uint32_t(5), Napi::Number::New(env, row.handleValid));
+    cells.Set(uint32_t(6), Napi::Number::New(env, row.responseIndex));
+    cells.Set(uint32_t(7), Napi::Number::New(env, row.voiceTimerSec));
+    res.Set(i, cells);
   }
   return res;
 }

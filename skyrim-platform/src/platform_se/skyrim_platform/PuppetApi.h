@@ -203,7 +203,8 @@ Napi::Value SetImpulseCauseRule(const Napi::CallbackInfo& info);
 // stored on the JS thread and laid on the parts by one drain on the main
 // thread: rest, or a part more than 64 units off, places every part
 // outright (a rest then drops the form), else every part is driven by
-// velocity toward its pose over its world's step; true when stored, false for
+// velocity toward its pose over the world's time since the form's last
+// drain (ImposeHorizonOf, thuum tracker #125); true when stored, false for
 // 0, the player's own id, no pose or more than 64, a value not a number, a
 // quaternion off unit length by more than 0.01, no SKSE task interface or a
 // full table. releaseBodies(formId), the form's stored poses dropped (a

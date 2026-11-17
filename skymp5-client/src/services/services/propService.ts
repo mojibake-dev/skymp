@@ -171,6 +171,19 @@ const APPLIED_LOG_MS = 10_000;
 const REST_DYNAMIC_MS = 300;
 // a jump's translate lands within this (the translate's speed is the distance over it), ms
 const JUMP_MS = 100;
+// thuum tracker #120: how far this engine's copy of a game-file item whose
+// record is still the game file's placement (fileRecord) may rest from that
+// placement and be left there by placeAtRecord. Past it the copy is put back
+// once, as before #120: the one correction for a copy moved here with no
+// record of the move (a puppet's walk into it, the plan's declared limit R6;
+// local physics on an untracked item; a move lost before a save). The
+// engine's own load settle runs 1.4 to 16.3 units (havok-props.md E34), an
+// unstreamed copy rested 15.8 from its record (E30), and 32 is E30's claim
+// bound on resting copies, so a put-back copy settles inside it and is not
+// put back again. Distance alone: a round body's settle rolls it through
+// any turn (the cabbages). HYPOTHESIS until placeAtRecord's lines give the
+// settle sizes on both seats
+const FILE_SETTLE_UNITS = 32;
 // ADR-068 D-S3 point 4 (a trap body by the seat whose firing moved it): the
 // trap verb's tag for the trap body lines; the firing's window, a body this
 // seat's script sets moving again within this long of its claim being the same
@@ -1054,9 +1067,9 @@ export class PropService extends ClientListener {
     // their records and their bodies 940 and 263 units off), and a body that
     // is Dynamic is set Keyframed before the keyframed translate, its motion
     // decided again REST_DYNAMIC_MS after the translate lands (landsAt). A
-    // game-file item whose record is still its file's placement is never
-    // placed (fileRecord, thuum tracker #120): this engine loaded that
-    // placement itself.
+    // game-file item whose record is still its file's placement is not
+    // placed while its copy rests within FILE_SETTLE_UNITS of it (fileRecord,
+    // thuum tracker #120): this engine loaded that placement itself.
     // HYPOTHESIS: that a translate moves a Keyframed body and its reference
     // together and leaves a Dynamic one (E21's mechanism; x-body-read v1's
     // leg B). The first track's "body" lines follow the placement
@@ -1079,8 +1092,10 @@ export class PropService extends ClientListener {
         // how far the copy stood from the record, said with the placement or
         // its skip (#120: the put-back's size was never logged; the line
         // stays inside the console's 128-byte cut, InGameConsolePrinter.cpp)
-        const off = `${ObjectReferenceEx.getDistance(read.pos, pose.pos).toFixed(1)} units and ${PropService.turnOf(read.rot, pose.rot).toFixed(1)} degrees`;
+        const distance = ObjectReferenceEx.getDistance(read.pos, pose.pos);
+        const off = `${distance.toFixed(1)} units and ${PropService.turnOf(read.rot, pose.rot).toFixed(1)} degrees`;
         const apart = PropService.apart(read, pose, SAMPLE_UNITS, SAMPLE_DEGREES);
+        const fileRecord = this.fileRecord(prop.refr);
         // thuum tracker #120: a game-file item whose record is still its
         // game file's placement (fileRecord) is left where this engine rests
         // it. Every engine loads that placement itself and settles it alike
@@ -1090,8 +1105,9 @@ export class PropService extends ClientListener {
         // settle off it again, was the jump on both seats. The reference
         // cannot tell the two apart: it follows the settle (havok-props.md
         // E34, cabbages' references 1.4 to 16.3 units below their records at
-        // load on both seats)
-        if (!apart || this.fileRecord(prop.refr)) {
+        // load on both seats). Only within FILE_SETTLE_UNITS: a copy farther
+        // off was moved here with no record of it and is put back once
+        if (!apart || (fileRecord && distance <= FILE_SETTLE_UNITS)) {
             if (apart) {
                 logTrace(this, `prop ${prop.refr.toString(16)} not placed: its record is the game file's, ${off} off`);
             }
@@ -1099,6 +1115,9 @@ export class PropService extends ClientListener {
             prop.placedAt = now;
             this.bodyTrack(prop, now);
             return;
+        }
+        if (fileRecord) {
+            logTrace(this, `prop ${prop.refr.toString(16)} put back: its record is the game file's, over ${FILE_SETTLE_UNITS} units off`);
         }
         prop.placing = true;
         const [x, y, z] = pose.pos;
@@ -1118,7 +1137,6 @@ export class PropService extends ClientListener {
             // H-P4: the placement by the engine's keyframed translate, the
             // collision moving with the node (a setPosition'd body flew at its
             // later Dynamic set, pass v10b 025124)
-            const distance = ObjectReferenceEx.getDistance(read.pos, pose.pos);
             const speed = Math.max(GLIDE_MIN_SPEED, distance / (JUMP_MS / 1000));
             const translate = (r: ObjectReference) => {
                 r.stopTranslation();
@@ -2788,7 +2806,11 @@ export class PropService extends ClientListener {
     // create word only once the record holds play (a seat's streamed move, a
     // script's, one persisted across a restart: PartOne's onSubscribe,
     // MpObjectReference::PoseRecorded), as it sends a container's inventory
-    // only once recorded
+    // only once recorded. So this client pairs with a server built with
+    // 40bec87b or later: against an older one no record follows any create
+    // word, and a moved item whose record lies within FILE_SETTLE_UNITS of
+    // its file placement draws at this engine's settle of that placement
+    // (farther, it is put back as before)
     private fileRecord(refr: number): boolean {
         const form = this.formOf(refr);
         if (form && form.movement) {

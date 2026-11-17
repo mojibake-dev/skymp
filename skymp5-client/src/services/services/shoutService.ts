@@ -106,6 +106,9 @@ export class ShoutService extends ClientListener {
         }
         // no game call in the event's context: the form is read on the update
         this.controller.once("update", () => {
+            // the release this fire ends, as it stood before the natives
+            // below (doneReading)
+            const at = this.releasedAt;
             const form = Game.getFormEx(e.sourceForm);
             const spell = form ? Spell.from(form) : null;
             logTrace(this, "voice fire: source", e.sourceForm.toString(16), spell ? "a spell" : form ? "not a spell" : "no form");
@@ -118,8 +121,7 @@ export class ShoutService extends ClientListener {
                 return;
             }
             this.report(spellId);
-            this.releasedAt = 0;
-            releaseHeld();
+            this.doneReading(at);
         });
     }
 
@@ -129,6 +131,7 @@ export class ShoutService extends ClientListener {
         }
         // no game call in the event's context: the shout is read on the update
         this.controller.once("update", () => {
+            const at = this.releasedAt;
             const player = Game.getPlayer();
             const shout = player ? player.getEquippedShout() : null;
             if (!shout || this.variationSpellOf(shout, e.spell) === null) {
@@ -139,8 +142,7 @@ export class ShoutService extends ClientListener {
             }
             logTrace(this, "shout reported from its launch:", e.spell.toString(16));
             this.report(e.spell);
-            this.releasedAt = 0;
-            releaseHeld();
+            this.doneReading(at);
         });
     }
 
@@ -148,36 +150,34 @@ export class ShoutService extends ClientListener {
         if (this.releasedAt === 0) {
             return;
         }
+        // the release this read is of, taken before any native (doneReading)
+        const at = this.releasedAt;
         try {
-            this.readRelease();
+            this.readRelease(at);
         } catch (err) {
             // a throw here used to drop the report silently, every frame
             logError(this, "E_SHOUT_REPORT", err);
-            this.releasedAt = 0;
-            releaseHeld();
+            this.doneReading(at);
         }
     }
 
-    private readRelease() {
+    private readRelease(at: number) {
         const player = Game.getPlayer();
         const shout = player ? player.getEquippedShout() : null;
         if (!player || !shout) {
-            this.releasedAt = 0;
-            releaseHeld();
+            this.doneReading(at);
             return;
         }
         const recovery = this.sp.callNative("Actor", "GetVoiceRecoveryTime", player) as number;
         if (!(recovery > 0)) {
-            if (Date.now() - this.releasedAt > ShoutService.readMs) {
-                this.releasedAt = 0;
+            if (Date.now() - at > ShoutService.readMs) {
                 if (!this.reportFromHeld(shout, "no voice recovery")) {
                     logError(this, "E_SHOUT_UNREAD: no voice recovery", ShoutService.readMs, "ms after the release of", shout.getFormID().toString(16), "and no hit of it held");
                 }
-                releaseHeld();
+                this.doneReading(at);
             }
             return;
         }
-        this.releasedAt = 0;
         const variation = this.variationOf(shout, player, recovery);
         // the typed binding first: with callNative's game object the report
         // traced and nothing was sent (b-shout 20261012-020313,
@@ -191,16 +191,35 @@ export class ShoutService extends ClientListener {
             if (!this.reportFromHeld(shout, `a recovery of ${recovery} s names no variation`)) {
                 logError(this, "E_SHOUT_UNREAD: a recovery of", recovery, "s names no variation of", shout.getFormID().toString(16), "and no hit of it held");
             }
-            releaseHeld();
+            this.doneReading(at);
             return;
         }
         logTrace(this, "shout", shout.getFormID().toString(16), "variation", variation, "recovery", recovery, "hits held", shoutGate.held.length);
         if (spell.getFormID() === shoutGate.reportedSpell && Date.now() - shoutGate.reportedAt <= ShoutService.fireReportWindowMs) {
-            releaseHeld(); // the launch reported it already
+            this.doneReading(at); // the launch reported it already
             return;
         }
         this.report(spell.getFormID());
+        this.doneReading(at);
+    }
+
+    // thuum tracker #129: the read of the release marked at `at` is done (a
+    // report made, or none to make): its held hits go, and its mark is
+    // cleared unless a newer exhale replaced it while the read's natives ran.
+    // The platform now serves a hook's leave inside a script function's
+    // wait, partway through an update (docs/skyrim_platform/events.md), where
+    // it used to wait for the update's end, so an exhale's leave can land
+    // mid-read; cleared after the natives, its mark and its gate were lost.
+    // A newer release keeps its mark for the next update's read and its gate
+    // stays armed, as when it landed after the read
+    private doneReading(at: number) {
+        if (this.releasedAt === at) {
+            this.releasedAt = 0;
+        }
         releaseHeld();
+        if (this.releasedAt !== 0) {
+            shoutGate.pending = true;
+        }
     }
 
     private report(spell: number) {

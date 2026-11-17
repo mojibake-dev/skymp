@@ -2281,6 +2281,14 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
           // another info of the topic: the host's line is not this one, so
           // it is stopped and its item cleared the pre-clear's way above
           result = 7;
+          // thuum tracker #123: the picked line's item is cleared here by
+          // ClearGreetTopic alone, which sends no END (the END paths 37544
+          // and 37741 send it, then call the clear: thuum docs/research/m3/
+          // re-puppet-head-lips.md:119-123): a CUT row for the spoken-line
+          // read, or the BEGIN its say raised reads as voiced until the
+          // speaker's next row (itemAfter is the picked item, read before
+          // the stop and the clear)
+          Frida::RecordSpokenLine(actor, itemAfter, Frida::kSpokenCut, false);
           if (high && high->soundHandles[0].IsValid()) {
             high->soundHandles[0].Stop();
           }

@@ -1,4 +1,5 @@
 #include "FridaHookHandler.h"
+#include "Hosted.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
 #include <cmath>
@@ -211,10 +212,47 @@ void QueueActorAnimationReplacement(RE::ProcessLists* lists, void* jobs)
 // precondition is the engine's: a controller and an attached cell (the
 // not-attached path never Moves). HYPOTHESIS until probe P1's trace;
 // fallback shape 4 in the verb doc.
+// thuum tracker #111: the locomotion fields as this frame's step left them,
+// stored for the getActorLocomotion export: for an actor this game simulates
+// its engine's own (sampled after the engine's step, what a host reports),
+// for a puppet the relay's feed as the branch below wrote it (what its
+// graph's Speed, Direction and TurnDelta channels poll, re-puppet-
+// locomotion.md: the watcher's half of the lab's read). In
+// setPuppetLocomotion's units: the move direction wrapped into
+// [0, 2 pi) and in degrees, the turn rate the negated rotationSpeed.z in
+// degrees per second (the puppet branch writes rotationSpeed.z =
+// -turnRateDeg in radians). A host's graph variables were the source before:
+// "Speed" for a game-file actor, "SpeedSampled" for a runtime one
+// (skymp5-client movementGet.ts); a flame atronach's SpeedSampled read 0
+// on its owner (playtest 53: its copy moved by the watcher's settle alone,
+// the receiver's path for a Standing record)
+void SampleStepLocomotion(RE::Actor& actor)
+{
+  auto* process = actor.GetActorRuntimeData().currentProcess;
+  auto* mh = process ? process->middleHigh : nullptr;
+  if (!mh) {
+    return;
+  }
+  constexpr float kRadToDeg = 57.29578f;
+  constexpr float kTwoPi = 6.2831853f;
+  float direction = std::fmod(mh->rotation.z, kTwoPi);
+  if (direction < 0.f) {
+    direction += kTwoPi;
+  }
+  Puppets::Locomotion sample;
+  sample.speed = mh->currentMovementSpeed;
+  sample.directionDeg = direction * kRadToDeg;
+  sample.turnRateDeg = -mh->rotationSpeed.z * kRadToDeg;
+  Puppets::SetStepLocomotion(actor.formID, sample);
+}
+
 void MovementStepReplacement(RE::Actor* actor, float delta)
 {
   if (!actor || !Puppets::Is(actor->formID)) {
     g_movementStepOriginal(actor, delta);
+    if (actor && Hosted::Is(actor->formID)) {
+      SampleStepLocomotion(*actor);
+    }
     return;
   }
   auto* cell = actor->GetParentCell();
@@ -264,6 +302,9 @@ void MovementStepReplacement(RE::Actor* actor, float delta)
       mh->rotationSpeed.z = -sample.turnRateDeg * kDegToRad;
     }
   }
+  // the fields as this frame left them, the relay's feed on a puppet: what
+  // its graph's channels poll, the watcher's half of the lab's read
+  SampleStepLocomotion(*actor);
 }
 }
 
@@ -281,6 +322,10 @@ void Puppets::InstallHooks()
     handler->Replace(Offsets::Hooks::ActorMovementStep.address(),
                      reinterpret_cast<void*>(&MovementStepReplacement),
                      reinterpret_cast<void**>(&g_movementStepOriginal));
+  // the simulated actors' locomotion is sampled inside the step's detour
+  // alone (tracker #111): without it getActorLocomotion answers null and the
+  // client keeps its graph reads
+  Puppets::SetMovementSampled(movement);
   logger::info("[verb:npc-puppet] detours installed: animation queue {}, "
                "movement step {}",
                animation, movement);

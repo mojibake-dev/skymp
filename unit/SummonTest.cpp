@@ -212,10 +212,19 @@ TEST_CASE("A summon report places the server's actor, binds its caster and "
             (i == 0 ? kPotentAtronach : kPlainAtronach));
     REQUIRE(puppet[i]["props"].contains("ownLocal") == false);
     REQUIRE(puppet[i]["props"].value("isHostedByOther", false) == true);
-    // the puppet's word names no record type, as no server-made actor's
-    // does (the client's copy path keys on the base, never the type; the
-    // caster's word alone carries NPC_, with the bind)
+    // tracker #111: the caster's word binds and names no arrival
+    REQUIRE(bound[i]["props"].contains("summonEffect") == false);
   }
+  // tracker #111 (wire-rules summons summon_effect): the watcher's word, sent
+  // as the record holds the summon, names the summon effect its copy plays
+  // the arrival art of, with the summon's NPC_ pairing; a report naming no
+  // effect (the scroll's 0) names none, and that word carries no record type,
+  // as no other server-made actor's does (the client's copy path keys on the
+  // base, never the type)
+  REQUIRE(puppet[0]["props"].value("summonEffect", 0u) == kPotentEffect);
+  REQUIRE(puppet[0].value("baseRecordType", "") == "NPC_");
+  REQUIRE(puppet[1]["props"].contains("summonEffect") == false);
+  REQUIRE(puppet[1].value("baseRecordType", "") == "");
 
   // the same engine reference twice: the record holds it
   Report(p, Start(kLocal, kPotentAtronach, kPotentEffect, 59.5f, 300.f));

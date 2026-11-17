@@ -121,7 +121,8 @@ struct CreateActorMessageAdditionalProps
       .Serialize("permittedRaces", permittedRaces)
       .Serialize("overlay", overlay)
       .Serialize("looks", looks)
-      .Serialize("ownLocal", ownLocal);
+      .Serialize("ownLocal", ownLocal)
+      .Serialize("summonEffect", summonEffect);
   }
 
   std::optional<bool> isOpen;
@@ -183,6 +184,14 @@ struct CreateActorMessageAdditionalProps
   // (0xff000000 and up), on the summon's create word to its caster alone;
   // absent for every other listener and every other form
   std::optional<uint32_t> ownLocal;
+
+  // thuum tracker #111 (docs/verbs/summon.md, SCHEMA_VERSION 59): the summon
+  // effect whose arrival this summon is, on its create word to every
+  // listener but its caster within the record's arrival window (wire-rules
+  // summons ARRIVAL_WORD_MS), so a watcher's copy plays the effect's own
+  // hit-effect art; absent for the caster, a later loader and every other
+  // form
+  std::optional<uint32_t> summonEffect;
 };
 
 struct CreateActorMessageMainProps

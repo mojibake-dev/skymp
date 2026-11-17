@@ -56,6 +56,10 @@ struct
 {
   std::unordered_set<uint32_t> ids;
   std::unordered_map<uint32_t, Puppets::Locomotion> locomotion;
+  // tracker #111: the engine's own locomotion of the actors this game
+  // simulates (Puppets::SetStepLocomotion)
+  std::unordered_map<uint32_t, Puppets::Locomotion> simulated;
+  bool movementSampled = false;
   std::vector<uint32_t> highActors;
   std::recursive_mutex m;
 } g_puppets;
@@ -253,6 +257,37 @@ bool Puppets::GetLocomotion(uint32_t formId, Locomotion& out)
   return true;
 }
 
+void Puppets::SetStepLocomotion(uint32_t formId, const Locomotion& sample)
+{
+  std::lock_guard l(g_puppets.m);
+  Locomotion stamped = sample;
+  stamped.stampMs = NowMs();
+  g_puppets.stepped[formId] = stamped;
+}
+
+bool Puppets::GetStepLocomotion(uint32_t formId, Locomotion& out)
+{
+  std::lock_guard l(g_puppets.m);
+  const auto it = g_puppets.stepped.find(formId);
+  if (it == g_puppets.stepped.end()) {
+    return false;
+  }
+  out = it->second;
+  return true;
+}
+
+void Puppets::SetMovementSampled(bool installed)
+{
+  std::lock_guard l(g_puppets.m);
+  g_puppets.movementSampled = installed;
+}
+
+bool Puppets::MovementSampled()
+{
+  std::lock_guard l(g_puppets.m);
+  return g_puppets.movementSampled;
+}
+
 void Puppets::SetHighActors(std::vector<uint32_t> ids)
 {
   std::lock_guard l(g_puppets.m);
@@ -359,6 +394,31 @@ Napi::Value PuppetApi::SetPuppetLocomotion(const Napi::CallbackInfo& info)
   sample.turnRateDeg = NapiHelper::ExtractFloat(info[3], "turnRateDeg");
   Puppets::SetLocomotion(actorFormId, sample);
   return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));
+}
+
+// getActorLocomotion(actorFormId): tracker #111, the locomotion fields as the
+// actor's last movement step left them (Puppets::GetStepLocomotion): an actor
+// this game simulates, its engine's own; a puppet, the relay's feed as the
+// detour wrote it. In setPuppetLocomotion's units, with ageMs since the
+// sample; read on the JS thread from the registry, no game call. null when
+// the detour is not installed or the actor was never sampled (neither hosted
+// nor a puppet here, or no step since it became one)
+Napi::Value PuppetApi::GetActorLocomotion(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  Puppets::Locomotion sample;
+  if (!Puppets::MovementSampled() ||
+      !Puppets::GetStepLocomotion(actorFormId, sample)) {
+    return info.Env().Null();
+  }
+  const uint64_t now = Puppets::NowMs();
+  const uint64_t age = now > sample.stampMs ? now - sample.stampMs : 0;
+  auto res = Napi::Object::New(info.Env());
+  res.Set("speed", Napi::Number::New(info.Env(), sample.speed));
+  res.Set("directionDeg", Napi::Number::New(info.Env(), sample.directionDeg));
+  res.Set("turnRateDeg", Napi::Number::New(info.Env(), sample.turnRateDeg));
+  res.Set("ageMs", Napi::Number::New(info.Env(), static_cast<double>(age)));
+  return res;
 }
 
 // thuum docs/verbs/npc-stream.md (ADR-050): the hosted set the action hook

@@ -917,6 +917,9 @@ mod tests {
     /// start as its host reports it (the server-made conjurer 0xff000002 of
     /// x-npc-summon-rec's frame, its atronach 0xff0009c3 in the host's
     /// engine, in Riverwood's yard), and a report without the field reads 0.
+    /// Since SCHEMA_VERSION 59 (tracker #111) 33-6 is the same summon's
+    /// create word to a watcher, its summonEffect naming the effect whose
+    /// arrival art the watcher's copy plays.
     #[test]
     fn summon_fixtures_validate_as_named() {
         use wire_validate::{validate, validate_server, ClientGuard, Reject};
@@ -955,6 +958,19 @@ mod tests {
             Message::CreateActor(c) => assert_eq!(
                 (c.base_id, c.base_record_type.as_deref().map(str::to_string), c.props.own_local, c.is_me),
                 (Some(0x4e940), Some("NPC_".to_owned()), Some(0xff00_08fd), false)
+            ),
+            other => panic!("{other:?}"),
+        }
+        // SCHEMA_VERSION 59 (tracker #111): 33-6 is the same summon's create
+        // word to a watcher, its summonEffect naming the effect whose
+        // arrival art the watcher's copy plays (0x4e945, the potent
+        // atronach's), with no bind
+        let watched = recognize(&read("33-CreateActor-6.json")).unwrap_or_else(|e| panic!("33-CreateActor-6.json: {e}"));
+        assert_eq!(validate_server(&watched), Ok(()));
+        match watched {
+            Message::CreateActor(c) => assert_eq!(
+                (c.base_id, c.base_record_type.as_deref().map(str::to_string), c.props.summon_effect, c.props.own_local, c.is_me),
+                (Some(0x4e940), Some("NPC_".to_owned()), Some(0x4e945), None, false)
             ),
             other => panic!("{other:?}"),
         }

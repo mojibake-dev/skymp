@@ -288,6 +288,11 @@ declare module "skyrimPlatform" {
     function isPuppet(actorFormId: number): boolean;
     function releasePuppet(actorFormId: number): boolean;
     function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
+    // tracker #111: the other end of those fields as the actor's last
+    // movement step left them, the engine's own for an actor this game
+    // simulates, the relay's feed for a puppet (null: no sample, or a
+    // platform without the step's detour)
+    function getActorLocomotion(actorFormId: number): { speed: number; directionDeg: number; turnRateDeg: number; ageMs: number } | null;
     function getHighProcessActors(): number[];
     // thuum docs/verbs/npc-stream.md (ADR-050): the hosted set the fork's
     // action hook reads (the server's word per actor, HostService), and the

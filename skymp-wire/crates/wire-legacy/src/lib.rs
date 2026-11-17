@@ -135,6 +135,9 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     // the summon's bind, its caster alone (SCHEMA_VERSION 57, thuum
     // tracker #84, docs/verbs/summon.md)
     ("CreateActorProps", "ownLocal"),
+    // the summon's arrival art for its watchers (SCHEMA_VERSION 59, thuum
+    // tracker #111, docs/verbs/summon.md)
+    ("CreateActorProps", "summonEffect"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

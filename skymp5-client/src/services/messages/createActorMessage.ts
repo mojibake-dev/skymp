@@ -108,4 +108,12 @@ export interface CreateActorMessageAdditionalProps {
     // copy. Absent on every other create word, the other games' copies of the
     // summon included
     ownLocal?: number;
+    // thuum docs/verbs/summon.md (tracker #111, SCHEMA_VERSION 59): on a
+    // summon's create word to every listener but its caster, within the
+    // record's arrival window, the summon effect (a load-order MGEF) whose
+    // arrival the copy is: FormView plays that effect's own hit-effect art on
+    // the copy at its create (the engine's SummonPlacementEffect draws the
+    // same art on the caster's game). Absent on the caster's word, which
+    // binds instead, and on a later loader's
+    summonEffect?: number;
 }

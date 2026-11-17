@@ -1,0 +1,25 @@
+{
+  "baseId": 321856,
+  "baseRecordType": "NPC_",
+  "customPropsJsonDumps": [],
+  "idx": 514,
+  "isMe": false,
+  "props": {
+    "summonEffect": 321861
+  },
+  "refrId": 4278193296,
+  "t": 33,
+  "transform": {
+    "pos": [
+      8849.0,
+      -58073.0,
+      1446.0
+    ],
+    "rot": [
+      0.0,
+      0.0,
+      90.0
+    ],
+    "worldOrCell": 60
+  }
+}

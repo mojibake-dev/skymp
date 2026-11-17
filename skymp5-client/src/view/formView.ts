@@ -85,6 +85,13 @@ export class FormView {
   // summon (a create word whose props carried ownLocal), so destroy() never
   // deletes or disables it
   private ownLocalBound = false;
+  // thuum docs/verbs/summon.md (tracker #111): a summon's copy whose create
+  // word named its summon effect (props.summonEffect, sent while it arrives,
+  // never to its caster) plays that effect's own hit-effect art once, at its
+  // first 3D; armed once per view, so a copy placed again (a cell change) is
+  // no second arrival
+  private arrival: { effect: number; until: number } | null = null;
+  private arrivalArmed = false;
 
   // thuum docs/verbs/npc-stream.md (slice 1 v2): two bisect switches for the
   // puppet side of the stream, on unless the settings file says false:
@@ -524,6 +531,10 @@ export class FormView {
         Actor.from(refr)?.setActorValue("attackDamageMult", 0);
       }
       this.refrId = (refr as ObjectReference).getFormID();
+      if (model.summonEffect && !this.arrivalArmed) {
+        this.arrivalArmed = true;
+        this.arrival = { effect: model.summonEffect, until: Date.now() + FormView.arrivalWaitMs };
+      }
     }
 
     if (!this.ready) {
@@ -543,6 +554,7 @@ export class FormView {
       }
       this.applyFigureMaxima(actor, model);
       this.applyAll(refr, model);
+      this.playArrival(refr);
 
       const gamemodeUpdateService = SpApiInteractor.getControllerInstance().lookupListener(GamemodeUpdateService);
       gamemodeUpdateService.updateNeighbor(refr, model, this.state);
@@ -675,6 +687,53 @@ export class FormView {
   // but the message's optional defaults to 0 and the wire carries it, so a
   // player arrives as baseId 0: read on 2026-10-22 from the clean world's
   // two records)
+  // thuum docs/verbs/summon.md (tracker #111; playtest 53, Eli: "they slide
+  // in from somewhere instead of the purple sphere effect"): the caster's
+  // engine draws a summon's arrival as a SummonPlacementEffect, a
+  // ReferenceEffect carrying the summon effect's art at the summon's place
+  // (CommonLibSSE-NG RE/S/SummonPlacementEffect.h); that art is the MGEF's
+  // hit-effect art (SummonTargetFX 0x3f811 on both flame atronach effects,
+  // Skyrim.esm DATA+96). A watcher's copy plays the same art through the
+  // engine's own TESObjectREFR::ApplyArtObject (TESModPlatform's native, the
+  // path PuppetService's effect looks use), once its 3D is there (the native
+  // answers false before) and within arrivalWaitMs of its placement, for
+  // arrivalArtSeconds. Never on a bound summon: the caster's word carries no
+  // summonEffect, and its own engine drew the arrival
+  private playArrival(refr: ObjectReference): void {
+    const arrival = this.arrival;
+    if (!arrival || this.ownLocalBound) {
+      return;
+    }
+    const remote = (this.remoteRefrId ?? 0).toString(16);
+    const local = refr.getFormID().toString(16);
+    if (Date.now() > arrival.until) {
+      this.arrival = null;
+      logLab("verb:summon", `${remote}'s copy ${local}: no 3D within ${FormView.arrivalWaitMs / 1000} s of its placement, its arrival art not played`);
+      return;
+    }
+    if (!refr.is3DLoaded()) {
+      return;
+    }
+    this.arrival = null;
+    const art = sp.MagicEffect.from(Game.getFormEx(arrival.effect))?.getHitEffectArt();
+    if (!art) {
+      logLab("verb:summon", `${remote}'s copy ${local}: its summon effect ${arrival.effect.toString(16)} names no hit-effect art in this load order; no arrival played`);
+      return;
+    }
+    const played = sp.callNative("TESModPlatform", "ApplyArtObject", undefined, Actor.from(refr), art, FormView.arrivalArtSeconds) === true;
+    logLab("verb:summon", `${remote}'s copy ${local} arrives: effect ${arrival.effect.toString(16)}'s art ${art.getFormID().toString(16)} played ${played} for ${FormView.arrivalArtSeconds} s`);
+  }
+
+  // how long a summon's copy waits for its 3D to play its arrival
+  // (the bind's own refusal window, SummonService.bindWaitMs)
+  private static readonly arrivalWaitMs = 5000;
+  // HYPOTHESIS, Eli's to see: how long the arrival art plays on a copy. The
+  // engine's SummonPlacementEffect ends when its art's own graph says so
+  // (its BSAnimationGraphEvent sink, SummonPlacementEffect.h); no read on
+  // file gives that length, so this is a bound chosen to cover a portal's
+  // open and close
+  private static readonly arrivalArtSeconds = 2.5;
+
   private static isNpcModel(model: FormModel): boolean {
     return !!model.baseId && model.baseId !== 0x7;
   }

@@ -6434,7 +6434,20 @@ void ActionListener::OnCreatedCall(MpActor& reporter,
             Networking::InvalidUserId) {
         continue;
       }
-      relay.Relay(listener, seq, 0);
+      // thuum tracker #120 (playtest 53, the Moorside Inn at 01:36:15Z): a
+      // one-shot (seq 0; a copy's calls number from 1, wire-rules created.rs
+      // `call`) goes with no sequence, as the server's own word, which every
+      // client takes as it comes (spSnippetService takeSeq). Sent as seq 0,
+      // it was one of the copy's numbered calls to the client, so rotfern's
+      // Fabricate Wall explosion, relayed between its anchor's MoveTo seq 1
+      // and seq 2, was dropped on Ariadne's seat as stale ("script call
+      // ff000003 ObjectReference.PlaceAtMe seq 0 dropped: at or below 1")
+      // and her screen never placed it
+      if (seq == 0) {
+        relay.Serve(listener);
+      } else {
+        relay.Relay(listener, seq, 0);
+      }
       ++relayed;
     }
     return relayed;

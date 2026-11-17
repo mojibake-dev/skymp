@@ -135,13 +135,16 @@ std::string HandlerLabel(const CallbackObject& cb)
   }
 }
 
+// handler and frames come from the caller: only the Napi::Error branch reads
+// them from V8 (HandlerLabel, JsStackFrames); this function makes no V8 call
 void LogHandlerError(const CallbackObject& cb, const char* eventName,
-                     const std::exception& e, const std::string& frames)
+                     const std::exception& e, const std::string& handler,
+                     const std::string& frames)
 {
   const char* method = cb.runOnce ? "once" : "on";
   std::string what = e.what();
   logger::error("{}('{}'): {} [handler {}; stack {}]", method, eventName, what,
-                HandlerLabel(cb), frames);
+                handler, frames);
 
   // We still write to the game console as we were doing before spdlog
   // integration. When I write something wrong when coding skymp5-client I
@@ -184,9 +187,15 @@ void EventsApi::SendEvent(const char* eventName,
     } catch (Napi::Error& e) {
       // a JavaScript throw (a native's C++ throw reaches here as one,
       // NapiHelper::WrapCppExceptions): its stack names the code
-      LogHandlerError(cb, eventName, e, JsStackFrames(e, 6));
+      LogHandlerError(cb, eventName, e, HandlerLabel(cb), JsStackFrames(e, 6));
     } catch (const std::exception& e) {
-      LogHandlerError(cb, eventName, e, "none");
+      // a C++ exception other than Napi::Error that reached here may have
+      // unwound through V8's frames and left the isolate's handler chain on a
+      // dead frame (the 2026-10-22 landing hang: a later JavaScript throw's
+      // unwind walked it forever), so this branch makes no V8 call at all:
+      // no handler name or source, no stack
+      LogHandlerError(cb, eventName, e, "unread (a C++ exception crossed V8)",
+                      "none");
     }
   }
 

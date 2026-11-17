@@ -5,6 +5,7 @@
 #include "GetWeightFromRecord.h"
 #include "Inventory.h"
 #include "LeveledListUtils.h"
+#include "LocationalDataUtils.h"
 #include "MathUtils.h"
 #include "MessageBase.h"
 #include "MpActor.h"
@@ -34,6 +35,7 @@
 #include <antigo/Context.h>
 #include <antigo/ResolvedContext.h>
 #include <cctype>
+#include <cmath>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -296,6 +298,40 @@ bool MpObjectReference::HasRecordedInventory() const
   // baseContainerAdded is set by every write of the record (SetInventory,
   // AddItem, AddItems, EnsureBaseContainerAdded), so it is the record's mark
   return GetBaseType() == "CONT" && ChangeForm().baseContainerAdded;
+}
+
+bool MpObjectReference::PoseRecorded() const
+{
+  // the record's own float rounding through a save and a load, far under
+  // any move a seat records (a sample's dead band is 2 units and 2 degrees,
+  // the client's SAMPLE_UNITS and SAMPLE_DEGREES)
+  constexpr float kUnits = 0.01f;
+  constexpr float kDegrees = 0.01f;
+  auto worldState = GetParent();
+  if (!worldState || !worldState->HasEspm() || !IsEspmForm()) {
+    return true;
+  }
+  const auto lookupRes =
+    worldState->GetEspm().GetBrowser().LookupById(GetFormId());
+  const auto refr = espm::Convert<espm::REFR>(lookupRes.rec);
+  if (!refr) {
+    return true;
+  }
+  const auto data = refr->GetData(worldState->GetEspmCache());
+  if (!data.loc) {
+    return true;
+  }
+  const NiPoint3& placed = LocationalDataUtils::GetPos(data.loc);
+  if ((GetPos() - placed).Length() > kUnits) {
+    return true;
+  }
+  // the turn compared within one turn (a script's SetAngle may stand past
+  // 360, the same angle; SendPropRecord's fmod)
+  const NiPoint3 turned = LocationalDataUtils::GetRot(data.loc);
+  const auto& angle = GetAngle();
+  return std::abs(std::remainder(angle.x - turned.x, 360.f)) > kDegrees ||
+    std::abs(std::remainder(angle.y - turned.y, 360.f)) > kDegrees ||
+    std::abs(std::remainder(angle.z - turned.z, 360.f)) > kDegrees;
 }
 
 const bool& MpObjectReference::IsHarvested() const

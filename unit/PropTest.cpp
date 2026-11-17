@@ -1,5 +1,6 @@
 #include "ActionListener.h"
 #include "ActivateMessage.h"
+#include "CreateActorMessage.h"
 #include "DestroyActorMessage.h"
 #include "DestructionStageMessage.h"
 #include "PropClaimMessage.h"
@@ -1916,6 +1917,97 @@ TEST_CASE("The server holds a movable static after its chunk loads, at its "
   REQUIRE(Listens(*sign, p.worldState.GetFormAt<MpActor>(kC1)));
   DoDisconnect(p, 0);
   p.DestroyActor(kC1);
+}
+
+// thuum tracker #120 (playtest 54, Eli: "Props jumped in riverwood. Items
+// near the blacksmiths forge."): an iron ingot on Riverwood's forge bench,
+// 0x17355, a REFR of IngotIron 0x5ace4 (a MISC) in Tamriel 0x3c, record
+// flags 0, no enable parent, no override in Update.esm or the three DLCs
+// (lab/esm.py ref on Skyrim.esm, 2026-11-17), whose position here is read
+// from its record, never typed
+constexpr uint32_t kForgeIngot = 0x17355;
+
+// a game-file prop's record rides behind its create word only once it holds
+// play (PoseRecorded, PartOne's onSubscribe): every engine loads the game
+// file's placement itself, so a seat is sent no record to put an untouched
+// item back at, and a moved one's record is the place its copy goes
+TEST_CASE("A game-file prop's create word comes alone while its record is "
+          "the game file's placement, and with its record at seq 0 behind "
+          "it once the record holds a move or a turn",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  const NiPoint3 placed = PlacedAt(p, kForgeIngot);
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kForgeIngot) == nullptr);
+  // where in the messages to `user` the first create word and the first
+  // record of the ingot stand, -1 for none, and how many records went
+  const auto createAt = [&](Networking::UserId user) {
+    int at = 0;
+    for (auto& m : p.Messages()) {
+      auto create = dynamic_cast<CreateActorMessage*>(m.message.get());
+      if (m.userId == user && create && create->refrId == kForgeIngot) {
+        return at;
+      }
+      ++at;
+    }
+    return -1;
+  };
+  const auto records = [&](Networking::UserId user) {
+    std::vector<std::pair<int, PropTransformMessage>> out;
+    int at = 0;
+    for (auto& m : p.Messages()) {
+      auto record = dynamic_cast<PropTransformMessage*>(m.message.get());
+      if (m.userId == user && record && record->refr == kForgeIngot) {
+        out.push_back({ at, *record });
+      }
+      ++at;
+    }
+    return out;
+  };
+
+  // c1's grid pass loads the ingot's chunk: its create word, no record
+  Player(p, 0, kC1, placed + NiPoint3{ 40.f, 0.f, 0.f });
+  REQUIRE(p.worldState.LookupFormByIdNoLoad(kForgeIngot) != nullptr);
+  auto& ingot = p.worldState.GetFormAt<MpObjectReference>(kForgeIngot);
+  REQUIRE(ingot.GetPos() == placed);
+  REQUIRE_FALSE(ingot.PoseRecorded());
+  REQUIRE(Listens(ingot, p.worldState.GetFormAt<MpActor>(kC1)));
+  REQUIRE(createAt(0) >= 0);
+  REQUIRE(records(0).empty());
+
+  // a recorded rest 12 units east (the record a seat's stream leaves), then
+  // c2's grid pass: its create word and the record behind it, at seq 0 and
+  // the moved place; c1, a listener all along, is sent no record by the move
+  const NiPoint3 moved = placed + NiPoint3{ 12.f, 0.f, 0.f };
+  ingot.SetPos(moved);
+  REQUIRE(ingot.PoseRecorded());
+  p.Messages().clear();
+  Player(p, 1, kC2, placed + NiPoint3{ 60.f, 0.f, 0.f });
+  REQUIRE(Listens(ingot, p.worldState.GetFormAt<MpActor>(kC2)));
+  const auto toC2 = records(1);
+  REQUIRE(toC2.size() == 1);
+  REQUIRE(toC2[0].second.seq == 0);
+  REQUIRE(toC2[0].second.pos[0] == moved.x);
+  REQUIRE(toC2[0].second.pos[1] == moved.y);
+  REQUIRE(toC2[0].second.pos[2] == moved.z);
+  REQUIRE(createAt(1) >= 0);
+  REQUIRE(createAt(1) < toC2[0].first);
+  REQUIRE(records(0).empty());
+
+  // back at the placement it holds no play; a whole turn more is the same
+  // angle, and five degrees of turn alone are play
+  ingot.SetPos(placed);
+  REQUIRE_FALSE(ingot.PoseRecorded());
+  const NiPoint3 angle = ingot.GetAngle();
+  ingot.SetAngle(angle + NiPoint3{ 0.f, 0.f, 360.f });
+  REQUIRE_FALSE(ingot.PoseRecorded());
+  ingot.SetAngle(angle + NiPoint3{ 0.f, 0.f, 5.f });
+  REQUIRE(ingot.PoseRecorded());
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
 }
 
 // physics rung 4 (D-PH9 A: the server admits a world body by any touch, as

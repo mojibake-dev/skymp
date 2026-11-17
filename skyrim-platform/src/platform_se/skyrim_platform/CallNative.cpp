@@ -629,17 +629,54 @@ bool IsInstanceOf(
   }
 };
 
+// thuum #134 (playtest 54: "on('update'): Expected 'objectTypeInfo' to not
+// to be nullptr", 9,603 times in c1.log, naming nothing): what a cast was
+// doing when the VM had no script type for a type id, as 8c3a0254 did for a
+// native's return. JS `<Class>.from(x)` reaches DynamicCast through sp3.js's
+// f.from (_sp3DynamicCast, Sp3Api.cpp) or the older dynamicCast export
+// (CallNativeApi.h), and its three type lookups below are this text's only
+// throw site. The form is set only once the object is known to be a form
+// (the Form branch): before that rawPtr may be an alias or an effect
+struct CastSite
+{
+  const char* fromClass = nullptr; // the pooled object's class
+  const char* toClass = nullptr;   // the class from() was asked for
+  const RE::TESForm* form = nullptr;
+};
+
+// built only when a lookup fails, so a cast that succeeds spends nothing
+std::string DescribeCast(const char* lookup, RE::VMTypeID vmTypeID,
+                         const CastSite& site)
+{
+  std::string s = fmt::format("{}.from({}", site.toClass ? site.toClass : "?",
+                              site.fromClass ? site.fromClass : "?");
+  if (site.form) {
+    const RE::FormType formType = site.form->GetFormType();
+    s += fmt::format(" form {:#010x}, form type {} {}", site.form->GetFormID(),
+                     static_cast<unsigned>(formType),
+                     RE::FormTypeToString(formType));
+  }
+  s +=
+    fmt::format("): no script type for the {} (type id {})", lookup, vmTypeID);
+  return s;
+}
+
 void GetScriptObjectType(
   VM& vm, RE::VMTypeID vmTypeID,
-  RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo>& objectTypeInfo)
+  RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo>& objectTypeInfo,
+  const char* lookup, const CastSite& site)
 {
   bool res = vm.GetScriptObjectType(vmTypeID, objectTypeInfo);
 
-  if (!objectTypeInfo)
-    throw NullPointerException("objectTypeInfo");
+  if (!objectTypeInfo) {
+    const std::string what =
+      "objectTypeInfo (" + DescribeCast(lookup, vmTypeID, site) + ")";
+    throw NullPointerException(what.c_str());
+  }
 
   if (!res)
-    throw std::runtime_error("GetScriptObjectType returned false");
+    throw std::runtime_error("GetScriptObjectType returned false (" +
+                             DescribeCast(lookup, vmTypeID, site) + ")");
 };
 
 }
@@ -680,8 +717,12 @@ CallNative::AnySafe CallNative::DynamicCast(const std::string& outputTypeName,
   RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> fromTypeInfoPtr;
   RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> outTypeInfoPtr;
 
-  GetScriptObjectType(*vm, fromTypeId, fromTypeInfoPtr);
-  GetScriptObjectType(*vm, outputTypeId, outTypeInfoPtr);
+  CastSite site;
+  site.fromClass = fromObjPtr->GetType();
+  site.toClass = outputTypeName.data();
+
+  GetScriptObjectType(*vm, fromTypeId, fromTypeInfoPtr, "source class", site);
+  GetScriptObjectType(*vm, outputTypeId, outTypeInfoPtr, "target class", site);
 
   if (IsInstanceOf(fromTypeInfoPtr, "Form")) {
 
@@ -689,7 +730,8 @@ CallNative::AnySafe CallNative::DynamicCast(const std::string& outputTypeName,
 
     RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> objInfoFormType;
     RE::VMTypeID formTypeId = (RE::VMTypeID)form->formType.get();
-    GetScriptObjectType(*vm, formTypeId, objInfoFormType);
+    site.form = form;
+    GetScriptObjectType(*vm, formTypeId, objInfoFormType, "form's type", site);
 
     const bool IsParentOf =
       IsInstanceOf(outTypeInfoPtr, fromTypeInfoPtr->GetName());

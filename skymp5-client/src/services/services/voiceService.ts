@@ -100,20 +100,27 @@ export class VoiceService extends ClientListener {
                 // engine still loads the cell, before the speaker is a puppet
                 // here; the line was dropped on this test. It waits arrivalMs
                 // for the puppet instead (TES3MP says a late line late)
-                this.arrivals.set(localId, { info: msg.info, since: Date.now() });
+                this.arrivals.set(localId, { info: msg.info, topic: msg.topic, since: Date.now() });
                 logTrace(this, `say ${localId.toString(16)} info ${msg.info.toString(16)} waits for the puppet`);
                 return;
             }
-            this.ask(localId, msg.info);
+            this.ask(localId, msg.info, msg.topic);
         });
     }
 
-    private ask(localId: number, info: number): boolean {
+    // thuum tracker #123 (playtest 54, Eli: the Riverwood intro scene's voice
+    // lines on the host's game alone): the guest's engine resolved none of the
+    // scene's infos, so the native answered 0 for each ("say 35534 info 954cc
+    // -> no actor or info", c2-console.log 07:16:29Z); the relayed topic goes
+    // with the info as the native's key when the info does not resolve here
+    // (its info array, then the engine's own pick). HYPOTHESIS until
+    // x-riverwood-scene-voice
+    private ask(localId: number, info: number, topic: number): boolean {
         const actor = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
         if (!actor || actor.isDead()) {
             return false;
         }
-        if (!this.sp.sayTopicInfo(localId, info)) {
+        if (!this.sp.sayTopicInfo(localId, info, topic)) {
             return false;
         }
         this.pending.set(localId, { info, since: Date.now() });
@@ -137,7 +144,7 @@ export class VoiceService extends ClientListener {
                 }
                 if (isPuppet(localId)) {
                     this.arrivals.delete(localId);
-                    this.ask(localId, line.info);
+                    this.ask(localId, line.info, line.topic);
                 }
             }
         }
@@ -148,7 +155,7 @@ export class VoiceService extends ClientListener {
         for (const [localId, ask] of Array.from(this.pending.entries())) {
             const result = this.sp.sayTopicInfoResult(localId);
             if (result >= 0) {
-                const word = result === 1 ? "started" : result === 3 ? "played" : result === 5 ? "inaudible" : result === 4 ? "deferred" : result === 2 ? "refused" : "no actor or info";
+                const word = VoiceService.verdicts[result] ?? "no actor, process or info";
                 logTrace(this, `say ${localId.toString(16)} info ${ask.info.toString(16)} -> ${word}`);
                 this.pending.delete(localId);
             } else if (now - ask.since > VoiceService.answerMs) {
@@ -166,7 +173,18 @@ export class VoiceService extends ClientListener {
     private readonly lastSpokeAt = new Map<number, number>();
     private readonly pending = new Map<number, { info: number; since: number }>();
     // lines that arrived before their speaker was a puppet here (a cell still loading)
-    private readonly arrivals = new Map<number, { info: number; since: number }>();
+    private readonly arrivals = new Map<number, { info: number; topic: number; since: number }>();
+    // the native's answers by code (PuppetApi.h's SayTopicInfo); 0, or an
+    // older platform's 0 for an info it did not resolve, is the default word
+    private static readonly verdicts: Record<number, string> = {
+        1: "started",
+        2: "refused",
+        3: "played",
+        4: "deferred",
+        5: "inaudible",
+        6: "unresolved",
+        7: "another info",
+    };
     private static readonly answerMs = 2000;
     private static readonly arrivalMs = 6000;
     private readonly enabled: boolean;

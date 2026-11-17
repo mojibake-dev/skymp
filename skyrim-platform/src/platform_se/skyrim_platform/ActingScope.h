@@ -3,7 +3,9 @@
 #include <RE/B/BSCoreTypes.h>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 // thuum docs/DECISIONS.md ADR-068 rung 5 (D-F1 C: every seat's VM applies
@@ -44,6 +46,13 @@ namespace ActingScope {
 constexpr int32_t kStart = -1;
 constexpr int32_t kStop = -2;
 constexpr int32_t kEntry = -3;
+// thuum tracker #117 (playtest 53: "only rotfern hosting was able to interact
+// with it"): a relayed activation, a guest's press of a scripted reference in
+// a cell this seat hosts (its subject the pressed reference), taken by
+// TESModPlatform.ArmActivation's arm before the client's own activate call,
+// so the reference's OnActivate reads Game.GetPlayer() as the presser's
+// figure (ScriptState.cpp ArmActivationImpl)
+constexpr int32_t kActivation = -4;
 
 // ARM_MS, UNMEASURED (HYPOTHESIS H-AP3: a stage's arm joins its fragment's
 // stack alone, one join per item, a word's every stack in the window;
@@ -69,6 +78,14 @@ struct Player
 {
   uint32_t figure = 0;
   uint32_t serverId = 0;
+  // thuum tracker #117 (Eli's design B): the acting player's inventory as
+  // the server records it, an item's base id to its count, carried in by a
+  // relayed press's request (setActingPlayer's items, stage kActivation;
+  // RelayedActivation's presserInventory), which the seam answers an item
+  // count on the figure from (ScriptNatives.cpp, the acting-inventory hook).
+  // Null when the request carried none: the count then runs on the figure as
+  // before. Shared, so a scope copied into its joined stacks copies no map
+  std::shared_ptr<const std::unordered_map<uint32_t, uint32_t>> items;
 };
 
 // a scope's root, what opened the chain it belongs to: kRelayed, a stage or

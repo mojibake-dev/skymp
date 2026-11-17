@@ -121,6 +121,21 @@ std::string Send(RE::TESObjectREFR* refr, std::string_view name,
 std::string SendTrigger(RE::TESObjectREFR* refr, std::string_view name,
                         RE::TESObjectREFR* actionRef);
 
+// ArmActivation(refr, actionRef): thuum tracker #117 (playtest 53's Sanctum
+// door, "only rotfern hosting was able to interact with it"): a guest's
+// press of a scripted reference, relayed to the cell's host, runs there for
+// the guest. When the client's activation request (setActingPlayer with stage
+// -4) names this presser as the acting player's figure, the reference's acting
+// scope (ActingScope.h) is armed for its own attached scripts, so the
+// OnActivate the client's activate call raises next reads Game.GetPlayer() as
+// the figure; no other presser arms it, and the activate stays the client's.
+// A JSON object as a string: { formId, armed, scripts, items (the count of
+// the record's items the request carried, #117's design B), reason }; refused
+// for a None reference or actionRef, an actor and a reference with no
+// attached script
+std::string ArmActivation(RE::TESObjectREFR* refr,
+                          RE::TESObjectREFR* actionRef);
+
 // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 1(c) and
 // 8(b); D-V1 B: every seat reports a listed condition-read variable it
 // changes; D-T2 B: a marked quest's scalar variables kept per player as

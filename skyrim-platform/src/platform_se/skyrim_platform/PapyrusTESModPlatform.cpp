@@ -1866,6 +1866,17 @@ RE::BSFixedString TESModPlatform::SendTriggerEvent(
   return RE::BSFixedString(ScriptState::SendTrigger(trigger, name, actionRef));
 }
 
+// thuum tracker #117: a guest's press of a scripted reference in a cell this
+// seat hosts, its acting scope armed for the guest's figure before the
+// client's own activate call (ScriptState.cpp ArmActivationImpl)
+RE::BSFixedString TESModPlatform::ArmActivation(IVM* vm, StackID stackId,
+                                                RE::StaticFunctionTag*,
+                                                RE::TESObjectREFR* refr,
+                                                RE::TESObjectREFR* actionRef)
+{
+  return RE::BSFixedString(ScriptState::ArmActivation(refr, actionRef));
+}
+
 // thuum ADR-068 D-W3 B: the presser rule's held entries whose presser is this
 // seat's now, replayed once each through SendTriggerEvent's body under the
 // platform's mark, at skymp5-client's update after the one that saw its own
@@ -2333,6 +2344,12 @@ bool TESModPlatform::Register(IVM* vm)
                                      RE::TESObjectREFR*, std::string_view,
                                      RE::TESObjectREFR*>(
       "SendTriggerEvent", "TESModPlatform", SendTriggerEvent));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(ArmActivation),
+                                     RE::BSFixedString, RE::StaticFunctionTag*,
+                                     RE::TESObjectREFR*, RE::TESObjectREFR*>(
+      "ArmActivation", "TESModPlatform", ArmActivation));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(ReplayHeldEntries),

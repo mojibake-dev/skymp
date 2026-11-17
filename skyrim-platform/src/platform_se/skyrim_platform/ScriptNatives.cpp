@@ -17,6 +17,7 @@
 #include "TrapFamily.h"
 #include "skymp_wire.h"
 #include <RE/A/Actor.h>
+#include <RE/B/BGSListForm.h>
 #include <RE/F/FormTypes.h>
 #include <RE/I/IFunction.h>
 #include <RE/I/IObjectHandlePolicy.h>
@@ -390,6 +391,9 @@ struct RowInfo
   // hook, None for every other row
   bool getPlayer = false;
   QuestRow quest = QuestRow::None;
+  // tracker #117 (Eli's design B): the acting-inventory hook
+  // (ObjectReference.GetItemCount)
+  bool itemCount = false;
   // PQ-3: the player-global hook (GlobalVariable.SetValue)
   bool globalSet = false;
   // train 52's Fix 2: the effect-helper hook (PlaceAtMe) and the
@@ -1522,6 +1526,11 @@ struct Marks
   // (SwapReturn), the scope beside it, and, when its line is due, the
   // calling script's names read before the original
   bool swapReturn = false;
+  // tracker #117 (Eli's design B): an item count on the acting player's
+  // figure answered from the scope's record once the original answers
+  // kCompleted (SwapCount), the counted item's form beside it
+  bool swapCount = false;
+  std::uint32_t countItem = 0;
   ActingScope::Scope scope{};
   bool line = false;
   std::string caller;
@@ -3329,6 +3338,39 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // is written over once the original returns (marks.swapReturn,
   // SwapReturn), counted " (acting)"
   if (native.kind == NativeKind::Local) {
+    // tracker #117 (Eli's design B, "go with b for 117"): inside another
+    // player's acting scope an item count on that player's figure is that
+    // player's, whose inventory has one owner (ADR-063) and whose figure
+    // here carries none; the record the relayed press carried in
+    // (ActingScope::Player::items, RelayedActivation's presserInventory)
+    // answers it once the original returns (SwapCount), counted
+    // " (acting)". Any other self, or a scope that carried no record, runs
+    // as before
+    if (scope && ActingScope::Swaps(*scope) && info.itemCount &&
+        scope->player.items && scope->player.figure != 0 && info.params > 0) {
+      const RE::BSScript::Object* self = ObjectOf(top->self);
+      const RE::VMHandle handle = self ? self->GetHandle() : 0;
+      if (self && IsPlainFormHandle(handle) &&
+          FormIdOfHandle(handle) == scope->player.figure) {
+        const std::uint32_t page = top->GetPageForFrame();
+        if (page == kNoPage) {
+          Count(row, kCountFrameMismatch);
+          return marks;
+        }
+        const CallArg item =
+          ReadArg(top->GetStackFrameVariable(0, page), info.types[0]);
+        marks.swapCount = true;
+        marks.countItem = item.kind == CallArg::Kind::Form ? item.formId : 0;
+        marks.scope = *scope;
+        marks.line =
+          ActingScope::LineDue(scope->seq, ActingScope::Line::kReturn);
+        if (marks.line) {
+          NameCaller(top->previousFrame, marks.caller, marks.handler);
+        }
+        Count(row, kCountActing);
+        return marks;
+      }
+    }
     if (scope && ActingScope::Swaps(*scope) && info.getPlayer) {
       marks.swapReturn = true;
       marks.scope = *scope;
@@ -3798,6 +3840,7 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
   }
   info.alias = columns.hook == SKYMP_NATIVE_HOOK_ALIAS_FILL;
   info.getPlayer = columns.hook == SKYMP_NATIVE_HOOK_ACTING_RETURN;
+  info.itemCount = columns.hook == SKYMP_NATIVE_HOOK_ACTING_INVENTORY;
   info.globalSet = columns.hook == SKYMP_NATIVE_HOOK_PLAYER_GLOBAL;
   info.placeAtMe = columns.hook == SKYMP_NATIVE_HOOK_EFFECT_HELPER;
   info.deletes = columns.hook == SKYMP_NATIVE_HOOK_HELPER_DELETE;
@@ -4374,6 +4417,59 @@ void SwapReturn(RE::BSScript::Stack& stack, const Marks& marks)
   }
 }
 
+// tracker #117's count swap (NativeCallReplacement, SwapReturn's contract
+// above): ObjectReference.GetItemCount's result on the acting player's figure
+// written over with the scope's record's count once the original answered
+// kCompleted. An item's count is its base id's in the record; a FormList's
+// is the sum over its forms (Papyrus GetItemCount's own rule for a list;
+// CommonLibSSE-NG include/RE/B/BGSListForm.h: forms and, by id,
+// scriptAddedTempForms), each form counted once; a None item counts 0. The
+// line names the count and the calling script and handler as OnCall read
+// them (HYPOTHESIS: the VM takes a native's Int from returnValue, as H-AP2
+// reads for GetPlayer's object)
+void SwapCount(RE::BSScript::Stack& stack, const Marks& marks)
+{
+  const auto& items = *marks.scope.player.items;
+  const auto countOf = [&items](std::uint32_t id) -> std::uint64_t {
+    const auto it = items.find(id);
+    return it != items.end() ? it->second : 0;
+  };
+  std::uint64_t count = 0;
+  if (marks.countItem != 0) {
+    const auto* list =
+      RE::TESForm::LookupByID<RE::BGSListForm>(marks.countItem);
+    if (!list) {
+      count = countOf(marks.countItem);
+    } else {
+      std::unordered_set<std::uint32_t> seen;
+      for (const RE::TESForm* form : list->forms) {
+        if (form && seen.insert(form->formID).second) {
+          count += countOf(form->formID);
+        }
+      }
+      if (list->scriptAddedTempForms) {
+        for (const RE::FormID id : *list->scriptAddedTempForms) {
+          if (seen.insert(id).second) {
+            count += countOf(id);
+          }
+        }
+      }
+    }
+  }
+  const auto answer = static_cast<std::int32_t>(
+    std::min<std::uint64_t>(count, static_cast<std::uint64_t>(INT32_MAX)));
+  stack.returnValue.SetSInt(answer);
+  if (!marks.line) {
+    return;
+  }
+  logger::info("[verb:quests] acting player {:x}'s record answered "
+               "ObjectReference.GetItemCount({:x}) = {} on its figure {:x}: "
+               "in {}.{}, stack {} (#117)",
+               marks.scope.player.serverId, marks.countItem, answer,
+               marks.scope.player.figure, marks.caller, marks.handler,
+               stack.stackID);
+}
+
 // train 52's Fix 2: a placeHelper call's result, the reference the original
 // placed, read from the stack's returnValue once it answered kCompleted
 // (Stack.h:79, SwapReturn's contract above; HYPOTHESIS H-EF2, x-effect-
@@ -4491,6 +4587,11 @@ RE::BSScript::IFunction::CallResult NativeCallReplacement(
   if (marks.swapReturn &&
       result == RE::BSScript::IFunction::CallResult::kCompleted && stack) {
     SwapReturn(*stack.get(), marks);
+  }
+  // #117's count swap: GetItemCount's own answer is in returnValue by now
+  if (marks.swapCount &&
+      result == RE::BSScript::IFunction::CallResult::kCompleted && stack) {
+    SwapCount(*stack.get(), marks);
   }
   // train 52's Fix 2: a helper's PlaceAtMe placed its reference by now
   if (marks.placeHelper &&

@@ -2513,6 +2513,15 @@ wire_struct! {
         pub caster: u32,
         /// The trigger entry's event, 1 or 2; absent on an activation.
         pub entry: Option<u8>,
+        /// Since SCHEMA_VERSION 59 (thuum tracker #117, Eli's design B,
+        /// 2026-11-16): on a player's press of a scripted world object,
+        /// sent to the cell's host alone, the presser's inventory as the
+        /// server records it (its one owner's, ADR-063), which the host's
+        /// acting scope answers the press's ObjectReference.GetItemCount
+        /// on the presser's figure from (the Sanctum keyhole's claw, a
+        /// figure carrying no inventory); absent on an entry, on a press by
+        /// no player and to every other game.
+        pub presser_inventory: Option<Inventory>,
     }
 }
 

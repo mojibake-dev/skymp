@@ -1,3 +1,4 @@
+import { Inventory } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 
 // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
@@ -14,4 +15,10 @@ export interface RelayedActivationMessage {
     // the target's scripts with the caster (the presser) as akActionRef
     // instead of activating; absent or null for an activation
     entry?: number | null;
+    // since SCHEMA_VERSION 59 (thuum tracker #117, Eli's design B): on a
+    // player's press of a scripted world object, sent to the cell's host
+    // alone, the presser's inventory as the server records it, which this
+    // seat's acting scope answers the press's GetItemCount from (the
+    // keyhole's claw; a figure carries no inventory); absent otherwise
+    presserInventory?: Inventory | null;
 }

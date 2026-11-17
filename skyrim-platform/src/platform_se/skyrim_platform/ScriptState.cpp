@@ -211,6 +211,7 @@ std::atomic<std::uint64_t> g_retryLines{ 0 };
 std::atomic<std::uint64_t> g_sendLines{ 0 };
 std::atomic<std::uint64_t> g_triggerSendLines{ 0 };
 std::atomic<std::uint64_t> g_triggerArmLines{ 0 };
+std::atomic<std::uint64_t> g_activationArmLines{ 0 };
 std::atomic<std::uint64_t> g_registrationLines{ 0 };
 std::atomic<std::uint64_t> g_varReadLines{ 0 };
 std::atomic<std::uint64_t> g_varWriteLines{ 0 };
@@ -1604,6 +1605,88 @@ std::string SendTriggerImpl(RE::TESObjectREFR* refr, std::string_view name,
   return DumpText(answer);
 }
 
+// thuum tracker #117 (playtest 53, Eli: "door animated and opened for both,
+// only rotfern hosting was able to interact with it"): a guest's press of a
+// scripted reference in a cell this seat hosts reaches this seat as a
+// relayed activation, which the client plays with the engine's own activate
+// call and the guest's figure as the activator (relayedActivationService.ts
+// play). The Bleak Falls Sanctum rings' HallofStoriesDiskScript and the
+// keyhole's HallofStoriesKeyholeScript take a press only when
+// `triggerRef == Game.GetPlayer()` (thuum lab/pex.py disasm on sky-srv: the
+// rings' [positionN].onActivate #2 to #5, vanilla sha1 c48bcf8a; the
+// keyhole's [mainState].onActivate #8 to #13, USSEP sha1 2f3fd268), so on
+// this seat the guest's figure never was this seat's player and the press
+// did nothing (server.log 00:32:16 to 00:32:20Z: every guest press relayed
+// to the host, no ring turned). The arm is SendTriggerImpl's own: the
+// client's activation request (setActingPlayer with stage
+// ActingScope::kActivation) naming this presser as the acting player's
+// figure, taken here, arms the reference's scope for ActingScope::kArmMs, its
+// joins capped at the reference's own attached scripts, the OnActivate
+// handlers the activate starts, so each handler's stack, rooted at the
+// reference's script, joins it at its first native call and reads
+// Game.GetPlayer() as the figure. Any other presser arms nothing. The
+// activate itself stays the client's (the engine's activation, the
+// reference's activate parents included). HYPOTHESIS: the engine's activate
+// raises OnActivate on a stack rooted at the reference's script within the
+// arm's window, as the trigger sinks do (H-AP7's shape)
+std::string ArmActivationImpl(RE::TESObjectREFR* refr,
+                              RE::TESObjectREFR* actionRef)
+{
+  const RE::FormID formId = refr ? refr->formID : 0;
+  const RE::FormID actionRefId = actionRef ? actionRef->formID : 0;
+  nlohmann::json answer = nlohmann::json::object();
+  answer["formId"] = formId;
+  answer["armed"] = false;
+  answer["scripts"] = 0;
+  answer["reason"] = "";
+  auto refuse = [&](const std::string& reason) {
+    answer["reason"] = reason;
+    if (LogThis(g_activationArmLines)) {
+      logger::info("[verb:traps] ArmActivation {:x} by {:x} not armed: {}",
+                   formId, actionRefId, reason);
+    }
+    return DumpText(answer);
+  };
+  if (!refr) {
+    return refuse("no reference");
+  }
+  if (!actionRef) {
+    return refuse("no actionRef (None)");
+  }
+  // an actor's scripts run where it is simulated (ADR-062), never by a relay
+  if (refr->GetFormType() == RE::FormType::ActorCharacter) {
+    return refuse("an actor");
+  }
+  EventTarget target;
+  std::string why;
+  const bool reachable = TargetOf(refr, target, why);
+  answer["scripts"] = target.scripts;
+  if (!reachable) {
+    return refuse(why);
+  }
+  const auto taken = ActingScope::Take(formId, ActingScope::kActivation);
+  if (!taken || taken->player.figure != actionRefId) {
+    return refuse("no activation request naming this presser");
+  }
+  const auto scope =
+    ActingScope::Arm(formId, taken->player, ActingScope::kArmMs,
+                     ActingScope::RootKind::kTrigger, target.scripts);
+  answer["armed"] = true;
+  answer["items"] = taken->player.items ? taken->player.items->size() : 0;
+  if (LogThis(g_activationArmLines)) {
+    logger::info("[verb:quests] ArmActivation {:x} by {:x}: the presser's "
+                 "scope armed for {} ms over {} script(s) (acting player "
+                 "{:x}, scope {}, {})",
+                 formId, actionRefId, ActingScope::kArmMs, target.scripts,
+                 taken->player.serverId, scope.seq,
+                 taken->player.items
+                   ? fmt::format("its record's {} item(s) carried (#117)",
+                                 taken->player.items->size())
+                   : std::string("no record carried"));
+  }
+  return DumpText(answer);
+}
+
 // thuum ADR-068 rung 5 (docs/research/rung5-quests-2026-11-09.md 1(c) and
 // 8(b); D-V1 B: every seat reports a listed variable it changes, the latest
 // write winning; D-T2 B: a marked quest's scalar variables travel as
@@ -2112,6 +2195,25 @@ std::string ScriptState::SendTrigger(RE::TESObjectREFR* refr,
   } catch (...) {
   }
   return ExceptionAnswer(formId, "sent", what.c_str());
+}
+
+std::string ScriptState::ArmActivation(RE::TESObjectREFR* refr,
+                                       RE::TESObjectREFR* actionRef)
+{
+  const std::uint32_t formId = refr ? refr->formID : 0u;
+  std::string what;
+  try {
+    return ArmActivationImpl(refr, actionRef);
+  } catch (const std::exception& e) {
+    what = e.what();
+  } catch (...) {
+    what = "a non-standard exception";
+  }
+  try {
+    logger::error("[verb:traps] ArmActivation {:x} threw: {}", formId, what);
+  } catch (...) {
+  }
+  return ExceptionAnswer(formId, "armed", what.c_str());
 }
 
 // rung 5's two natives (ReadScriptVariables, WriteScriptVariables): the

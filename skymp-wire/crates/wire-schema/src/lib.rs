@@ -279,6 +279,11 @@ use bounded::{String, Vec};
 /// takes the next number (D-PH1 A's reason: postcard writes a struct's fields
 /// in order with one presence byte per Option, so a 58 peer would misread
 /// every CreateActor of a 59 server while the handshake passed).
+/// 59: RelayedActivation's `presser_inventory` (thuum tracker #117, Eli's
+/// design B): a player's press of a scripted world object relayed to the
+/// cell's host with the presser's recorded inventory, which the host's
+/// acting scope answers GetItemCount from. A new trailing field, so the
+/// number moves for D-PH1 A's reason.
 pub const SCHEMA_VERSION: u16 = 59;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
@@ -975,7 +980,9 @@ const TABLE: [Row; 92] = [
     row("WordWall", 69, 8, C2S),
     // a target, a caster and the entry byte (thuum D-C2, SCHEMA_VERSION 40;
     // 13 bytes at the longest, pinned by wire_id_matches_postcard_variant_index)
-    row("RelayedActivation", 70, 24, S2C),
+    // since SCHEMA_VERSION 59 (thuum tracker #117) it may carry the
+    // presser's inventory, SetInventory's own shape, so SetInventory's cap
+    row("RelayedActivation", 70, 2 * MIB, S2C),
     row("ObjectAnimation", 71, 160, Both),
     // a record's hex body at its cap (128 KiB) plus every remap row at
     // five-byte varints and the scalars, with room (docs/verbs/change-form.md)
@@ -1976,21 +1983,24 @@ mod tests {
 
     #[test]
     fn an_entry_rides_inside_its_messages_byte_caps() {
-        // thuum D-C2 (SCHEMA_VERSION 40): the relay's longest is its wire
-        // id, two five-byte varints and the entry's presence and byte; the
-        // report's two ten-byte varints, the flag and the same two
+        // thuum D-C2 (SCHEMA_VERSION 40): the relay's longest entry is its
+        // wire id, two five-byte varints and the entry's presence and byte,
+        // and since SCHEMA_VERSION 59 (#117) the absent inventory's presence
+        // byte; the report's two ten-byte varints, the flag and the same two.
+        // The relay's cap is SetInventory's, for the presser's inventory
         let relay = Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, entry: Some(skymp::ENTRY_LEAVE), ..Default::default() });
-        assert_eq!(postcard::to_allocvec(&relay).map(|b| b.len()), Ok(13));
-        assert_eq!(Message::max_len(relay.wire_id()), Some(24));
+        assert_eq!(postcard::to_allocvec(&relay).map(|b| b.len()), Ok(14));
+        assert_eq!(Message::max_len(relay.wire_id()), Some(2 * MIB));
         let report = Message::Activate(skymp::Activate {
             data: skymp::ActivateData { caster: u64::MAX, target: u64::MAX, entry: Some(skymp::ENTRY_ENTER), ..Default::default() },
             ..Default::default()
         });
         assert_eq!(postcard::to_allocvec(&report).map(|b| b.len()), Ok(24));
         assert_eq!(Message::max_len(report.wire_id()), Some(64));
-        // an absent entry costs its presence byte alone
+        // an absent entry and an absent inventory cost their presence bytes
+        // alone
         let plain = Message::RelayedActivation(skymp::RelayedActivation { target: u32::MAX, caster: u32::MAX, ..Default::default() });
-        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(12));
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(13));
     }
 
     #[test]

@@ -300,10 +300,16 @@
 #define SKYMP_NATIVE_HOOK_SCENE_START 14
 
 /**
+ * Hook: an item count on the acting player's figure inside another's scope,
+ * answered from that player's record (thuum tracker #117).
+ */
+#define SKYMP_NATIVE_HOOK_ACTING_INVENTORY 15
+
+/**
  * The largest hook code: a row with a larger one is a table this build does
  * not read.
  */
-#define SKYMP_NATIVE_HOOK_LAST 14
+#define SKYMP_NATIVE_HOOK_LAST 15
 
 /**
  * The callback `Tick` calls once per event: packet type, content and its

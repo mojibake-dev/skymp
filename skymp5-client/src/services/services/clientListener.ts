@@ -306,9 +306,11 @@ declare module "skyrimPlatform" {
     // call (Hosted.h's idiom, safe from any context). setActingPlayer names it
     // for ttlMs (1 to 60000): stage 0 to 65535 a quest's stage, -1 its start,
     // -2 its stop, -3 a relayed trigger entry (questId then the trigger's form
-    // id, which SendTriggerEvent takes); figureLocalId the acting player's
+    // id, which SendTriggerEvent takes), -4 a relayed activation (questId then
+    // the pressed reference's form id, which ArmActivation takes; tracker
+    // #117); figureLocalId the acting player's
     // figure here, 0 when this seat holds none; serverId its server id; false,
-    // nothing stored, for a quest 0, a stage outside -3 to 65535, a serverId 0
+    // nothing stored, for a quest 0, a stage outside -4 to 65535, a serverId 0
     // or 0x14 as the figure. Inside that scope Game.GetPlayer answers the
     // figure. getActingPlayer answers the server id of the scope that
     // requested the pair here, 0 for none. setPlayerGlobals (PQ-3) names the
@@ -317,7 +319,10 @@ declare module "skyrimPlatform" {
     // GlobalVariable.SetValue on one is skipped here. The platform layer
     // writes the bodies on its own branch; an older platform has none, and
     // every use is guarded
-    function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number): boolean;
+    // since tracker #117 an activation's (-4) request may carry items, the
+    // presser's recorded inventory as [baseId, count, ...], which the scope
+    // answers GetItemCount on the figure from (Eli's design B)
+    function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number, items?: number[]): boolean;
     // train 53, V-scene (m4-train-53-platform b29ea207, Definitions.txt): a
     // relay's stage (0 to 65535), start (-1) or stop (-2) whose acting player
     // is this seat's own or unnamed, scoped at the relay with no swap; false,

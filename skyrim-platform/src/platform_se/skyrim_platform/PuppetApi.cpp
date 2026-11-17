@@ -453,13 +453,20 @@ Napi::Value PuppetApi::IsHosted(const Napi::CallbackInfo& info)
 // arming the quest's scope; a start (-1) or a stop (-2) is requested and
 // arms the quest's scope at once, for ActingScope::kArmMs; an entry (-3) is
 // a relayed trigger entry's, questId the trigger, taken by
-// TESModPlatform.SendTriggerEvent's arm for its server id. figureLocalId is
+// TESModPlatform.SendTriggerEvent's arm for its server id; an activation
+// (-4) a relayed press's, questId the pressed reference, taken by
+// TESModPlatform.ArmActivation's arm (tracker #117). figureLocalId is
 // the figure this seat holds for the acting player, 0 when it is absent here
 // (Game.GetPlayer answers None in the scope then); serverId its actor id as
 // the server names it; ttlMs the request's life. False, nothing stored, for
-// a quest 0, a stage outside -3 to 65535, a serverId 0, the player's own id
+// a quest 0, a stage outside -4 to 65535, a serverId 0, the player's own id
 // as the figure, or a ttl outside 1 to ActingScope::kMaxRequestMs. Logged
-// for the lab
+// for the lab. Since tracker #117 (Eli's design B) an activation's request
+// may carry a sixth argument, items: the acting player's inventory as the
+// server records it (RelayedActivation's presserInventory), a flat array of
+// base id and count pairs, at most kMaxItemStacks of them, each base and
+// count above 0; the scope answers an item count on the figure from it. False,
+// nothing stored, for items on any other stage or items of another shape
 Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
 {
   const auto questId = NapiHelper::ExtractUInt32(info[0], "questId");
@@ -467,7 +474,7 @@ Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
   const auto figure = NapiHelper::ExtractUInt32(info[2], "figureLocalId");
   const auto serverId = NapiHelper::ExtractUInt32(info[3], "serverId");
   const auto ttlMs = NapiHelper::ExtractUInt32(info[4], "ttlMs");
-  if (questId == 0 || stage < ActingScope::kEntry || stage > 0xFFFF ||
+  if (questId == 0 || stage < ActingScope::kActivation || stage > 0xFFFF ||
       serverId == 0 || figure == 0x14 || ttlMs == 0 ||
       ttlMs > ActingScope::kMaxRequestMs) {
     return Napi::Boolean::New(info.Env(), false);
@@ -475,12 +482,48 @@ Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
   ActingScope::Player player;
   player.figure = figure;
   player.serverId = serverId;
+  // the press's record (#117): the wire's own cap on an inventory's stacks
+  // (wire-schema cap::INVENTORY), the counts of one base summed as the
+  // record's GetItemCount sums them
+  constexpr uint32_t kMaxItemStacks = 4096;
+  const bool hasItems =
+    info.Length() > 5 && !info[5].IsUndefined() && !info[5].IsNull();
+  if (hasItems) {
+    if (stage != ActingScope::kActivation || !info[5].IsArray()) {
+      return Napi::Boolean::New(info.Env(), false);
+    }
+    const auto pairs = info[5].As<Napi::Array>();
+    const uint32_t n = pairs.Length();
+    if (n % 2 != 0 || n / 2 > kMaxItemStacks) {
+      return Napi::Boolean::New(info.Env(), false);
+    }
+    auto items = std::make_shared<std::unordered_map<uint32_t, uint32_t>>();
+    for (uint32_t i = 0; i < n; i += 2) {
+      const Napi::Value base = pairs.Get(i);
+      const Napi::Value count = pairs.Get(i + 1);
+      if (!base.IsNumber() || !count.IsNumber()) {
+        return Napi::Boolean::New(info.Env(), false);
+      }
+      const uint32_t baseId = base.As<Napi::Number>().Uint32Value();
+      const uint32_t stack = count.As<Napi::Number>().Uint32Value();
+      if (baseId == 0 || stack == 0) {
+        return Napi::Boolean::New(info.Env(), false);
+      }
+      uint32_t& held = (*items)[baseId];
+      held = stack > UINT32_MAX - held ? UINT32_MAX : held + stack;
+    }
+    player.items = std::move(items);
+  }
   // the scope's root (V-scene): a relayed stage or word is kRelayed, this
-  // seat not its cause seat; an entry's arm is SendTriggerEvent's, kTrigger
-  ActingScope::Request(
-    questId, stage, player, ttlMs, ActingScope::Origin::kRelayed,
-    stage == ActingScope::kEntry ? ActingScope::RootKind::kTrigger
-                                 : ActingScope::RootKind::kRelayed);
+  // seat not its cause seat; an entry's arm is SendTriggerEvent's and an
+  // activation's ArmActivation's, kTrigger (this seat runs the press for
+  // its presser and is the cause seat of what its script sets)
+  const bool pressed =
+    stage == ActingScope::kEntry || stage == ActingScope::kActivation;
+  ActingScope::Request(questId, stage, player, ttlMs,
+                       ActingScope::Origin::kRelayed,
+                       pressed ? ActingScope::RootKind::kTrigger
+                               : ActingScope::RootKind::kRelayed);
   const bool word =
     stage == ActingScope::kStart || stage == ActingScope::kStop;
   if (word) {
@@ -489,11 +532,14 @@ Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
   }
   const ActingScope::Counts counts = ActingScope::Count();
   logger::info(
-    "[verb:quests] setActingPlayer({:x}, {}, {:x}, {:x}, {}): {}; "
+    "[verb:quests] setActingPlayer({:x}, {}, {:x}, {:x}, {}): {}{}; "
     "{} request(s), {} arm(s), {} joined stack(s)",
     questId, stage, figure, serverId, ttlMs,
     word ? "requested and armed"
          : (figure == 0 ? "requested, the figure absent here" : "requested"),
+    player.items
+      ? fmt::format(", the record's {} item(s) carried", player.items->size())
+      : std::string(),
     counts.requests, counts.arms, counts.joined);
   return Napi::Boolean::New(info.Env(), true);
 }

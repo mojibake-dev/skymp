@@ -103,6 +103,19 @@ export class PuppetService extends ClientListener {
             return;
         }
         if (this.isFigure(localId)) {
+            // thuum tracker #119 (playtest 53, Eli: "ariadne just died to
+            // sunlight ... i didn't see gold fire effect on her"): a player's
+            // own game reports the effects with a look its engine runs on its
+            // player (HostedStateService.reportOwnEffects), the server records
+            // and relays them, and the figure plays exactly that set, as a
+            // puppet plays its host's (Ownership; R-V4's rule: only what the
+            // owner's engine holds active, so a burn its conditions keep off
+            // indoors shows nowhere). The figure is no puppet otherwise
+            if (ac.is3DLoaded()) {
+                this.showEffectLooks(localId, ac);
+            } else {
+                this.effectLooks.delete(localId);
+            }
             return;
         }
         // the fate's resurrect runs on the main thread, unordered against this

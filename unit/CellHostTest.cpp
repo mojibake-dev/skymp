@@ -1873,6 +1873,105 @@ TEST_CASE("The host's running effects are recorded, relayed reliable to the "
   p.DestroyActor(kC3);
 }
 
+// thuum tracker #119 (playtest 53, Eli: "ariadne just died to sunlight ... i
+// didn't see gold fire effect on her"): a player's own game names the effects
+// with a look its engine runs on its player, as a host does its actor's; the
+// server records the set on the player, relays it reliable to the player's
+// other games (never back), serves it to a game that subscribes later, keeps
+// dropping a report without a set (E_STATE_OWN: the values are ChangeValues'),
+// and starts every login with none. Uncompiled where it was written (the
+// server builds on sky-srv and in CI)
+TEST_CASE("A player's own running effects are recorded, relayed reliable to "
+          "its other games and served to a later one; a new login starts "
+          "with none",
+          "[CellHost][HostedState][HostedEffects]")
+{
+  auto& p = GetPartOne();
+  // SunAffectsNPCVampires' _SunBurningEffect at its light slot in the
+  // session's load order (fe01f, its quest fe01f800 on playtest 53's seat),
+  // and another (any ids serve: the record is the owner's word)
+  constexpr uint32_t kBurn = 0xfe01f802;
+  constexpr uint32_t kOther = 0x60da1;
+  const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
+  auto& c1 = Player(p, 0, kC1, kAt + NiPoint3{ 40.f, 0.f, 0.f });
+  auto& c2 = Player(p, 1, kC2, kAt + NiPoint3{ 60.f, 0.f, 0.f });
+  REQUIRE(c2.GetHostedEffects().empty());
+
+  // the states a user was sent for c2's player, with their reliability
+  const auto statesTo = [&](Networking::UserId user) {
+    std::vector<std::pair<HostedActorStateMessage, bool>> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId != user) {
+        continue;
+      }
+      if (auto typed = dynamic_cast<HostedActorStateMessage*>(m.message.get());
+          typed && typed->idx == c2.GetIdx()) {
+        out.emplace_back(*typed, m.reliable);
+      }
+    }
+    return out;
+  };
+
+  // c2's own report with its engine's read: recorded on its player, relayed
+  // reliable to c1 with the set, never back to c2
+  p.Messages().clear();
+  State(p, 1, kC2, 0.4f, 1.f, 1.f, 0, 0, 0, 0, 0, 0,
+        std::vector<uint32_t>{ kOther, kBurn });
+  REQUIRE(c2.GetHostedEffects() == std::vector<uint32_t>{ kOther, kBurn });
+  {
+    const auto toC1 = statesTo(0);
+    REQUIRE(toC1.size() == 1);
+    REQUIRE(toC1.front().second);
+    REQUIRE(toC1.front().first.effects.has_value());
+    REQUIRE(*toC1.front().first.effects ==
+            std::vector<uint32_t>{ kOther, kBurn });
+    REQUIRE(statesTo(1).empty());
+  }
+
+  // a report of its own with no set: dropped as before, the record kept,
+  // nothing relayed
+  p.Messages().clear();
+  State(p, 1, kC2, 0.4f, 1.f, 1.f, 0, 0);
+  REQUIRE(c2.GetHostedEffects() == std::vector<uint32_t>{ kOther, kBurn });
+  REQUIRE(statesTo(0).empty());
+
+  // the burn left the set (indoors, its conditions false on c2's engine):
+  // the record and the relay follow
+  p.Messages().clear();
+  State(p, 1, kC2, 0.4f, 1.f, 1.f, 0, 0, 0, 0, 0, 0,
+        std::vector<uint32_t>{ kOther });
+  REQUIRE(c2.GetHostedEffects() == std::vector<uint32_t>{ kOther });
+  REQUIRE(statesTo(0).size() == 1);
+  REQUIRE(statesTo(0).front().second);
+
+  // a game that subscribes later hears the record, reliable
+  p.Messages().clear();
+  Player(p, 2, kC3, kAt + NiPoint3{ 80.f, 0.f, 0.f });
+  {
+    const auto toC3 = statesTo(2);
+    REQUIRE(toC3.size() == 1);
+    REQUIRE(toC3.front().second);
+    REQUIRE(toC3.front().first.effects.has_value());
+    REQUIRE(*toC3.front().first.effects == std::vector<uint32_t>{ kOther });
+    REQUIRE(statesTo(1).empty());
+  }
+
+  // c2's next login starts with none recorded: nothing is served until its
+  // game's first read
+  DoDisconnect(p, 1);
+  DoConnect(p, 1);
+  p.SetUserActor(1, kC2);
+  REQUIRE(c2.GetHostedEffects().empty());
+  REQUIRE(c1.GetHostedEffects().empty());
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 2);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.DestroyActor(kC3);
+}
+
 // `user`'s equipment report for `actorId`: one worn item in the right hand
 // (thuum docs/verbs/npc-stream.md slice 3), no spells
 void Wear(PartOne& p, Networking::UserId user, uint32_t actorId,

@@ -1,5 +1,5 @@
 import { FormModel } from '../view/model';
-import { ObjectReference, Actor, TESModPlatform } from "skyrimPlatform";
+import { ObjectReference, Actor, TESModPlatform, getActorLocomotion } from "skyrimPlatform";
 import { NiPoint3, Movement, RunMode } from "./movement";
 import { ObjectReferenceEx } from '../extensions/objectReferenceEx';
 
@@ -31,12 +31,53 @@ class PlayerCharacterSpeedCalculator {
   private static lastPcWorldOrCell = 0;
 }
 
+// thuum tracker #111 (playtest 53, Eli: "they slide in from somewhere ...
+// and then they slide around and arent animated"): an actor this game
+// simulates reports its engine's own locomotion, the speed and move
+// direction its movement step left in MiddleHighProcessData, the fields the
+// watcher's Move detour writes on the puppet (the fork's Skyrim Platform
+// getActorLocomotion, PuppetHooks.cpp's sample beside its write): one rule
+// for a game-file actor, a server-made copy and a bound summon alike. The
+// graph's variables were the source before: "Speed" for a game-file actor
+// (x-npc-legs, docs/verbs/npc-puppet.md), "SpeedSampled" for any runtime id,
+// a summon's own among them (ff000c32 in playtest 53), and "Direction" for
+// the direction; getRunMode read Standing from a SpeedSampled of 0. No
+// creature in playtests 51 to 53's recorder traces carries a Speed or a
+// SpeedSampled series, every humanoid both (HYPOTHESIS: an atronach's graph
+// answers SpeedSampled 0, so its puppet was fed 0 and its record read
+// Standing, moved by the receiver's settle alone). null (a platform without
+// the step's detour, or no sample yet) keeps the graph reads below
+type EngineLocomotion = { speed: number; directionDeg: number; turnRateDeg: number; ageMs: number };
+const engineLocomotionOf = (refr: ObjectReference): EngineLocomotion | null => {
+  const id = refr.getFormID();
+  if (id === 0x14 || typeof getActorLocomotion !== "function") {
+    return null;
+  }
+  const sample = getActorLocomotion(id);
+  if (!sample) {
+    return null;
+  }
+  // a sample older than the step's cadence is a step that has not run (the
+  // actor left the high process): its engine moved it no further
+  if (sample.ageMs > ENGINE_SAMPLE_STALE_MS) {
+    return { speed: 0, directionDeg: 0, turnRateDeg: 0, ageMs: sample.ageMs };
+  }
+  return sample;
+};
+// the platform's own staleness for a puppet's fed sample (Puppets.h
+// kLocomotionStaleMs, 400)
+const ENGINE_SAMPLE_STALE_MS = 400;
+// the Speed channel's own threshold for moveStart and moveStop
+// (docs/research/m3/re-puppet-locomotion.md, the Speed poll's row: 5.0)
+const ENGINE_MOVE_THRESHOLD = 5;
+
 export const getMovement = (refr: ObjectReference, form?: FormModel): Movement => {
   const ac = Actor.from(refr);
+  const engine = engineLocomotionOf(refr);
 
   // It is running for ObjectReferences because Standing
   // Doesn't lead to translateTo call
-  const runMode = ac ? getRunMode(ac) : "Running";
+  const runMode = ac ? getRunMode(ac, engine) : "Running";
 
   let healthPercentage = ac && ac.getActorValuePercentage("health");
   if (ac && ac.isDead()) {
@@ -65,7 +106,9 @@ export const getMovement = (refr: ObjectReference, form?: FormModel): Movement =
   const pos = ObjectReferenceEx.getPos(refr);
 
   let speed;
-  if (refr.getFormID() !== 0x14 && refr.getFormID() < 0xff000000) {
+  if (engine) {
+    speed = engine.speed;
+  } else if (refr.getFormID() !== 0x14 && refr.getFormID() < 0xff000000) {
     // thuum docs/verbs/npc-puppet.md (x-npc-legs 20261022-202106 against the
     // host baseline 195031): an actor from the game files reports Speed, the
     // graph's own locomotion input (the movement controller's speed, about 80
@@ -96,7 +139,7 @@ export const getMovement = (refr: ObjectReference, form?: FormModel): Movement =
     rot: [refr.getAngleX(), refr.getAngleY(), refr.getAngleZ()],
     runMode: runMode,
     direction: runMode !== "Standing"
-      ? 360 * refr.getAnimationVariableFloat("Direction")
+      ? (engine ? engine.directionDeg : 360 * refr.getAnimationVariableFloat("Direction"))
       : 0,
     isInJumpState: !!(ac && ac.getAnimationVariableBool("bInJumpState")),
     isSneaking: !!(ac && isSneaking(ac)),
@@ -112,13 +155,15 @@ export const getMovement = (refr: ObjectReference, form?: FormModel): Movement =
 const isSneaking = (ac: Actor) =>
   ac.isSneaking() || ac.getAnimationVariableBool("IsSneaking");
 
-const getRunMode = (ac: Actor): RunMode => {
+const getRunMode = (ac: Actor, engine: EngineLocomotion | null): RunMode => {
   if (ac.isSprinting()) {
     return "Sprinting";
   }
 
-  const speed = ac.getAnimationVariableFloat("SpeedSampled");
-  if (!speed) {
+  // the engine's own speed where it was read (tracker #111, above), with the
+  // Speed channel's moveStart threshold; the graph's SpeedSampled otherwise
+  const speed = engine ? engine.speed : ac.getAnimationVariableFloat("SpeedSampled");
+  if (engine ? speed < ENGINE_MOVE_THRESHOLD : !speed) {
     return "Standing";
   }
 

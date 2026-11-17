@@ -25,6 +25,11 @@ Napi::Value ReleasePuppet(const Napi::CallbackInfo& info);
 // where the graph's Speed, Direction and TurnDelta channels read
 // (docs/research/m3/re-puppet-locomotion.md)
 Napi::Value SetPuppetLocomotion(const Napi::CallbackInfo& info);
+// getActorLocomotion(actorFormId): tracker #111, the other end of
+// setPuppetLocomotion's fields: an actor this game simulates, its engine's
+// own speed, move direction and turn rate as the movement step left them
+// (Puppets.h), {speed, directionDeg, turnRateDeg, ageMs} or null
+Napi::Value GetActorLocomotion(const Napi::CallbackInfo& info);
 // getHighProcessActors(): the engine's high-process actors by form id, the
 // game thread's latest snapshot (Puppets.h)
 Napi::Value GetHighProcessActors(const Napi::CallbackInfo& info);
@@ -354,6 +359,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("setPuppetLocomotion",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(SetPuppetLocomotion)));
+  exports.Set("getActorLocomotion",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(GetActorLocomotion)));
   exports.Set(
     "setHosted",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetHosted)));

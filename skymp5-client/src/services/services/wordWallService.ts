@@ -97,6 +97,17 @@ export class WordWallService extends ClientListener {
     // crossing, not twice every half second as OnTrigger (above) does
     this.controller.on('triggerEnter', (e) => {
       if (e.cause?.getFormID() !== 0x14) {
+        // the HYPOTHESIS's other half, said once: the player as the event's
+        // target and a wall trigger as its cause means the two fields are
+        // swapped, so one probe run tells "swapped" from "never fires here"
+        if (!self.swappedSaid && e.target?.getFormID() === 0x14) {
+          const cause = e.cause;
+          const causeBase = cause ? cause.getBaseObject() : null;
+          if (cause && causeBase && WordWallService.triggerBases.has(causeBase.getFormID())) {
+            self.swappedSaid = true;
+            logTrace(self, `triggerEnter with the player as target and wall ${cause.getFormID().toString(16)} as cause: fields swapped`);
+          }
+        }
         return;
       }
       const base = e.target?.getBaseObject();
@@ -106,6 +117,8 @@ export class WordWallService extends ClientListener {
     });
     this.controller.on('update', () => this.onUpdate());
   }
+
+  private swappedSaid = false;
 
   private queueEntry(refrId: number, source: string) {
     const queued = this.entries.get(refrId);

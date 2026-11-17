@@ -33,6 +33,10 @@ Napi::Value GetActorLocomotion(const Napi::CallbackInfo& info);
 // getHighProcessActors(): the engine's high-process actors by form id, the
 // game thread's latest snapshot (Puppets.h)
 Napi::Value GetHighProcessActors(const Napi::CallbackInfo& info);
+// getPackageDestinationCells(actorFormId): the cells the actor's running
+// package names as its location, the game thread's latest snapshot
+// (Puppets.h; tracker #121)
+Napi::Value GetPackageDestinationCells(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-stream.md (ADR-050): setHosted(actorFormId, hosted),
 // the server's word that this game simulates the actor (true) or not
 // (false), kept in the hosted set the hook on the engine's action entry
@@ -347,6 +351,10 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set("getHighProcessActors",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(GetHighProcessActors)));
+  exports.Set(
+    "getPackageDestinationCells",
+    Napi::Function::New(
+      env, NapiHelper::WrapCppExceptions(GetPackageDestinationCells)));
   exports.Set(
     "setPuppet",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetPuppet)));

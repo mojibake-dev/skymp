@@ -62,6 +62,8 @@ struct
   std::unordered_map<uint32_t, Puppets::Locomotion> stepped;
   bool movementSampled = false;
   std::vector<uint32_t> highActors;
+  // tracker #121: the package destination cells by actor (Puppets.h)
+  std::unordered_map<uint32_t, std::vector<uint32_t>> packageCells;
   std::recursive_mutex m;
 } g_puppets;
 
@@ -301,6 +303,21 @@ std::vector<uint32_t> Puppets::GetHighActors()
   return g_puppets.highActors;
 }
 
+void Puppets::SetPackageCells(
+  std::unordered_map<uint32_t, std::vector<uint32_t>> cells)
+{
+  std::lock_guard l(g_puppets.m);
+  g_puppets.packageCells = std::move(cells);
+}
+
+std::vector<uint32_t> Puppets::GetPackageCells(uint32_t formId)
+{
+  std::lock_guard l(g_puppets.m);
+  const auto it = g_puppets.packageCells.find(formId);
+  return it == g_puppets.packageCells.end() ? std::vector<uint32_t>{}
+                                            : it->second;
+}
+
 Napi::Value PuppetApi::SetPuppet(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
@@ -378,6 +395,24 @@ Napi::Value PuppetApi::GetHighProcessActors(const Napi::CallbackInfo& info)
   for (size_t i = 0; i < ids.size(); ++i) {
     res.Set(static_cast<uint32_t>(i),
             Napi::Number::New(info.Env(), static_cast<double>(ids[i])));
+  }
+  return res;
+}
+
+// getPackageDestinationCells(actorFormId): the cells the actor's running
+// package names as its location, as of the last "Actor animation" stage
+// (Puppets::GetPackageCells), read on the JS thread with no game call; empty
+// for an actor out of high process or a package that names none (tracker
+// #121, skymp5-client PuppetService's demote)
+Napi::Value PuppetApi::GetPackageDestinationCells(
+  const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const auto cells = Puppets::GetPackageCells(actorFormId);
+  auto res = Napi::Array::New(info.Env(), cells.size());
+  for (size_t i = 0; i < cells.size(); ++i) {
+    res.Set(static_cast<uint32_t>(i),
+            Napi::Number::New(info.Env(), static_cast<double>(cells[i])));
   }
   return res;
 }

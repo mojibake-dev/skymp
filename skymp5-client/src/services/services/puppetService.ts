@@ -361,6 +361,24 @@ export class PuppetService extends ClientListener {
         if (!has3D) {
             return;
         }
+        // thuum tracker #121 (ADR-035 point 8 as amended 2026-11-16, Eli's
+        // "go with b for 121"): the destination's host owns the arrival. An
+        // actor no game's word holds, whose running package heads for a cell
+        // this game hosts, keeps its AI on its way there across cells nobody
+        // hosts. Nothing reports it on the way (it is in no hosted cell of
+        // this game's, so neither the roster nor the hosted set names it,
+        // and a frozen cell stays unreported); once its engine has it in this
+        // game's cell the roster sights it, and the server takes the sighting
+        // from that cell's host (PartOne's rule: a record in a cell nobody
+        // hosts yields to the host of the cell the engine has it in). Playtest
+        // 53: Ariadne's engine walked Gorm 0x1aa69 out of the frozen Highmoon
+        // Hall at his supper hour, and this demote stopped him at its door
+        // ("demote 1aa69: the engine had it at (-38681, 63455, -13786) in 3c",
+        // c2-console 01:46:29Z). Bounded: another game's word, or a package
+        // that names no cell this game hosts, demotes as before
+        if (!flagged && this.headsForHostedCell(localId, host)) {
+            return;
+        }
         if (!flagged) {
             if (!this.sp.setPuppet(localId, true)) {
                 logError(this, `setPuppet(${localId.toString(16)}, true) found no actor`);
@@ -434,6 +452,30 @@ export class PuppetService extends ClientListener {
     // started is its own, and its claim of the actor promotes the actor here;
     // while that claim is unsent or unanswered the scene plays on
     // (SceneClaimService.holdsScene) and the poll asks again after it
+    // tracker #121: whether an actor no other game's word holds is walking
+    // to a cell this game hosts, by its running package's location (the
+    // platform's game-thread snapshot, getPackageDestinationCells), said once
+    // per actor and destination. An older platform without the export
+    // answers no, and the demote runs as before
+    private headsForHostedCell(localId: number, host: HostService): boolean {
+        if (host.isOthersLocal(localId) || typeof this.sp.getPackageDestinationCells !== "function") {
+            return false;
+        }
+        const cell = this.sp.getPackageDestinationCells(localId).find((c) => host.hostsCell(c));
+        if (cell === undefined) {
+            this.walkingHere.delete(localId);
+            return false;
+        }
+        if (this.walkingHere.get(localId) !== cell) {
+            this.walkingHere.set(localId, cell);
+            logLab("verb:npc-handoff", `keep ${localId.toString(16)} live: its package heads for cell ${cell.toString(16)}, which this game hosts; nothing reported until it stands there (tracker #121)`);
+        }
+        return true;
+    }
+
+    // tracker #121: the actors kept live on their way here, by destination
+    private readonly walkingHere = new Map<number, number>();
+
     private stopLocalScene(localId: number, ac: Actor): void {
         const scene = ac.getCurrentScene();
         if (!scene || !scene.isPlaying()) {

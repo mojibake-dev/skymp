@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 // thuum docs/verbs/npc-puppet.md (ADR-045): the actors this game shows as
@@ -67,6 +68,23 @@ bool MovementSampled();
 // with no saved record was loaded by nobody and ran live in both games).
 void SetHighActors(std::vector<uint32_t> ids);
 std::vector<uint32_t> GetHighActors();
+
+// thuum tracker #121 (playtest 53, Gorm frozen in Highmoon Hall; Eli's
+// "go with b for 121", ADR-035 point 8 as amended 2026-11-16): the cells
+// each high-process actor's running package names as its location, by
+// CommonLibSSE-NG's names (Actor::GetCurrentPackage, Actor.h:536;
+// TESPackage::packLoc and ::data, TESPackage.h:302-303;
+// TESCustomPackageData::data, the package's data list, and each
+// BGSPackageDataLocation's PackageLocation, PackageLocation.h), snapshotted
+// beside the high-process list on the game thread and read by the
+// getPackageDestinationCells export with no game call. A location near a
+// reference names that reference's cell, one in a cell names the cell; the
+// other kinds (an alias, the editor location, the actor itself) name
+// nothing. The destination's host keeps the actor live on its way there
+// (skymp5-client PuppetService)
+void SetPackageCells(
+  std::unordered_map<uint32_t, std::vector<uint32_t>> cells);
+std::vector<uint32_t> GetPackageCells(uint32_t formId);
 
 // the two detours (Frida Gum replacements through FridaHookHandler::Replace,
 // the DamageActor hook's shape), AE only (ADR-025's 1.6.1170)

@@ -2,7 +2,9 @@
 #include "Hosted.h"
 #include "Puppets.h"
 #include "game/Offsets.h"
+#include <algorithm>
 #include <cmath>
+#include <unordered_map>
 #include <vector>
 
 // thuum docs/verbs/npc-puppet.md, the two detours of the puppet shape (one AI
@@ -162,6 +164,63 @@ void DriveVoice(RE::Actor& actor)
   }
 }
 
+// thuum tracker #121 (Puppets.h's SetPackageCells): the cell a package
+// location names, by CommonLibSSE-NG's PackageLocation (PackageLocation.h:
+// locType, data): near a reference, that reference's cell (its handle
+// resolved here on the game thread); in a cell, the cell. Every other kind
+// names no cell here (0)
+uint32_t CellOfPackageLocation(const RE::PackageLocation* location)
+{
+  if (!location) {
+    return 0;
+  }
+  switch (location->locType.get()) {
+    case RE::PackageLocation::Type::kNearReference: {
+      const auto ref = location->data.refHandle.get();
+      const auto* cell = ref ? ref->GetParentCell() : nullptr;
+      return cell ? cell->formID : 0;
+    }
+    case RE::PackageLocation::Type::kInCell: {
+      const auto* form = location->data.object;
+      return form && form->Is(RE::FormType::Cell) ? form->formID : 0;
+    }
+    default:
+      return 0;
+  }
+}
+
+// the cells `actor`'s running package names: its own location (packLoc, a
+// pre-template package's) and every Location input of its data (a
+// template-built package's, TESCustomPackageData's list, the procedure's
+// inputs as the CK names them). HYPOTHESIS: BGSPackageDataLocation's
+// `pointer` sits where CommonLibSSE-NG's layout puts it (its offset is
+// marked unread there, BGSPackageDataPointerTemplate.h), so a Location
+// input reads its PackageLocation through it; x-gorm-inn reads the answer
+std::vector<uint32_t> PackageCellsOf(RE::Actor& actor)
+{
+  std::vector<uint32_t> cells;
+  const auto* package = actor.GetCurrentPackage();
+  if (!package) {
+    return cells;
+  }
+  const auto add = [&cells](uint32_t cell) {
+    if (cell != 0 &&
+        std::find(cells.begin(), cells.end(), cell) == cells.end()) {
+      cells.push_back(cell);
+    }
+  };
+  add(CellOfPackageLocation(package->packLoc));
+  if (auto* custom = skyrim_cast<RE::TESCustomPackageData*>(package->data)) {
+    for (std::uint16_t i = 0; i < custom->data.dataSize; ++i) {
+      auto* input = custom->data.data ? custom->data.data[i] : nullptr;
+      if (auto* location = skyrim_cast<RE::BGSPackageDataLocation*>(input)) {
+        add(CellOfPackageLocation(location->pointer));
+      }
+    }
+  }
+  return cells;
+}
+
 void QueueActorAnimationReplacement(RE::ProcessLists* lists, void* jobs)
 {
   g_queueActorAnimationOriginal(lists, jobs);
@@ -174,13 +233,19 @@ void QueueActorAnimationReplacement(RE::ProcessLists* lists, void* jobs)
   {
     std::vector<uint32_t> ids;
     ids.reserve(lists->highActorHandles.size());
+    std::unordered_map<uint32_t, std::vector<uint32_t>> packageCells;
     for (const auto& handle : lists->highActorHandles) {
       auto actor = handle.get();
       if (actor) {
         ids.push_back(actor->formID);
+        auto cells = PackageCellsOf(*actor);
+        if (!cells.empty()) {
+          packageCells.emplace(actor->formID, std::move(cells));
+        }
       }
     }
     Puppets::SetHighActors(std::move(ids));
+    Puppets::SetPackageCells(std::move(packageCells));
   }
   if (!jobs || Puppets::Count() == 0) {
     return;

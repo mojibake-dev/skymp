@@ -3200,3 +3200,96 @@ TEST_CASE("An NPC's thrall dies when another game runs its caster; the "
   p.DestroyActor(kC2);
   p.worldState.npcEnabled = npcWas;
 }
+
+// thuum tracker #121 (ADR-035 point 8 as amended 2026-11-16, Eli's "go with
+// b for 121"): the destination's host owns the arrival. A resident whose
+// record stands frozen in an interior nobody hosts (playtest 53: Gorm 0x1aa69
+// in Highmoon Hall 0x138cc while both players sat in the Moorside Inn
+// 0x138ce) is taken by the host of the cell its engine walked it into, from
+// that host's roster, the record following (the client keeps the walker's AI
+// on while its package heads there, PuppetService). A sighting of it on the
+// way, in a cell nobody hosts, is held for that cell's grant and the record
+// stays frozen; no game reports a frozen cell
+TEST_CASE("A resident frozen in an unhosted interior comes to the cell whose "
+          "host sights it there; a sighting on the way leaves it frozen",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kGorm = 0x1aa69;
+  constexpr uint32_t kHall = 0x138cc;
+  constexpr uint32_t kMoorside = 0x138ce;
+  // lab/esm.py on sky-srv (2026-11-16): GormREF at (-89, 1297, 1) in the
+  // hall; the inn's door landing (door 0x177af) and the supper package's
+  // marker 0xe006e at (1822, 197, 0) in the inn; the hall's outer door
+  // landing (door 0x173c6) on Morthal's street in Tamriel
+  const NiPoint3 kInHall{ -89.f, 1297.f, 1.f };
+  const NiPoint3 kInnLanding{ 1825.f, -533.f, 1.f };
+  const NiPoint3 kAtSupper{ 1822.f, 197.f, 0.f };
+  const NiPoint3 kStreet{ -38660.f, 63424.f, -13786.f };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kHall));
+  REQUIRE(p.worldState.IsInteriorCell(kMoorside));
+
+  // c2 stands in the inn and hosts it; nobody hosts the hall or the street
+  Player(p, 0, kC1, kHere);
+  DoConnect(p, 1);
+  p.CreateActor(kC2, kInnLanding, 0, kMoorside);
+  p.SetUserActor(1, kC2);
+  CellLoaded(p, 1, kMoorside);
+  REQUIRE(p.GetCellHost(kMoorside).player == kC2);
+  REQUIRE_FALSE(p.GetCellHost(kHall).hosted);
+  const auto street = p.worldState.CellOf(kTamriel, kStreet);
+  REQUIRE(street.has_value());
+  REQUIRE_FALSE(p.GetCellHost(*street).hosted);
+
+  // his record frozen in the hall
+  auto& form = p.worldState.LookupFormById(kGorm);
+  REQUIRE(form);
+  MpActor* gorm = form->AsActor();
+  REQUIRE(gorm);
+  gorm->SetCellOrWorldObsolete(
+    FormDesc::FromFormId(kHall, p.worldState.espmFiles));
+  gorm->SetPos(kInHall);
+  REQUIRE(p.worldState.CellOf(*gorm) == kHall);
+  REQUIRE(p.worldState.HostOf(*gorm) == nullptr);
+  p.Messages().clear();
+
+  const auto sighting = [&](Networking::UserId user, uint32_t worldOrCell,
+                            const NiPoint3& pos) {
+    DoMessage(p, user,
+              nlohmann::json{ { "t", MsgType::ActorSightings },
+                              { "sightings",
+                                nlohmann::json::array({ nlohmann::json{
+                                  { "refrId", kGorm },
+                                  { "worldOrCell", worldOrCell },
+                                  { "pos", { pos.x, pos.y, pos.z } },
+                                  { "rot", { 0.f, 0.f, 0.f } } } }) } });
+  };
+
+  // on the way, the street nobody hosts: held, the record frozen in the hall
+  sighting(1, kTamriel, kStreet);
+  REQUIRE(p.worldState.CellOf(*gorm) == kHall);
+  REQUIRE(p.worldState.HostOf(*gorm) == nullptr);
+  REQUIRE(SentTo<CreateActorMessage>(p, 1).empty());
+
+  // at supper: the inn's host's roster has him in the inn; the record follows
+  // and the inn's host simulates him, told so with its word
+  sighting(1, kMoorside, kAtSupper);
+  REQUIRE(p.worldState.CellOf(*gorm) == kMoorside);
+  REQUIRE(gorm->GetPos().y == Catch::Approx(kAtSupper.y));
+  REQUIRE(p.worldState.HostOf(*gorm) == &p.worldState.GetFormAt<MpActor>(kC2));
+  bool told = false;
+  for (auto& m : SentTo<CreateActorMessage>(p, 1)) {
+    if (m.refrId == kGorm) {
+      told = true;
+      REQUIRE(m.props.isHostedByOther == false);
+    }
+  }
+  REQUIRE(told);
+
+  p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}

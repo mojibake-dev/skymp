@@ -93,6 +93,16 @@ export class FormView {
   // no second arrival
   private arrival: { effect: number; until: number } | null = null;
   private arrivalArmed = false;
+  // thuum tracker #111 (playtest 54, Eli: the atronachs "still slide into
+  // place seemingly from the view of the observing party"): a copy this view
+  // just placed stands where the watcher's own player is (the spawn's
+  // placeAtMe; its SetPosition to the record before the Enable does not hold,
+  // c2-console 07:39:45.856 "demote ff000ed0: the engine had it at (-2804,
+  // -42985, 6154)" against the record's (-2752, -43623, 6146), server.log
+  // 07:39:48.194), and the first relayed sample, under jumpDistance, glided
+  // it over the gap. So the first apply after a spawn places the copy at its
+  // record, never glides it (Movement's `placed`, movementApply translateTo)
+  private placeOnFirstApply = false;
 
   // thuum docs/verbs/npc-stream.md (slice 1 v2): two bisect switches for the
   // puppet side of the stream, on unless the settings file says false:
@@ -492,6 +502,7 @@ export class FormView {
         this.overlayKey = "";
 
         this.ready = false;
+        this.placeOnFirstApply = true;
 
         let spawnPos;
         if (model.movement) {
@@ -555,7 +566,7 @@ export class FormView {
       }
       this.applyFigureMaxima(actor, model);
       this.applyAll(refr, model);
-      this.playArrival(refr);
+      this.playArrival(refr, model);
 
       const gamemodeUpdateService = SpApiInteractor.getControllerInstance().lookupListener(GamemodeUpdateService);
       gamemodeUpdateService.updateNeighbor(refr, model, this.state);
@@ -700,7 +711,7 @@ export class FormView {
   // answers false before) and within arrivalWaitMs of its placement, for
   // arrivalArtSeconds. Never on a bound summon: the caster's word carries no
   // summonEffect, and its own engine drew the arrival
-  private playArrival(refr: ObjectReference): void {
+  private playArrival(refr: ObjectReference, model: FormModel): void {
     const arrival = this.arrival;
     if (!arrival || this.ownLocalBound) {
       return;
@@ -709,10 +720,20 @@ export class FormView {
     const local = refr.getFormID().toString(16);
     if (Date.now() > arrival.until) {
       this.arrival = null;
-      logLab("verb:summon", `${remote}'s copy ${local}: no 3D within ${FormView.arrivalWaitMs / 1000} s of its placement, its arrival art not played`);
+      logLab("verb:summon", `${remote}'s copy ${local}: not at its record with its 3D within ${FormView.arrivalWaitMs / 1000} s of its placement, its arrival art not played`);
       return;
     }
     if (!refr.is3DLoaded()) {
+      return;
+    }
+    // tracker #111 (playtest 54): the art plays where the summon arrived, its
+    // record, so it waits for the copy's placed first apply (above) to land
+    // there; before it the copy stood at this game's own player, 303 and 640
+    // units off (c1-console 07:41:06.052, c2-console 07:39:45.856), and the
+    // sphere played at the player
+    const at = model.movement?.pos;
+    const off = at ? Math.hypot(refr.getPositionX() - at[0], refr.getPositionY() - at[1]) : 0;
+    if (off > FormView.arrivalNearUnits) {
       return;
     }
     this.arrival = null;
@@ -722,12 +743,16 @@ export class FormView {
       return;
     }
     const played = sp.callNative("TESModPlatform", "ApplyArtObject", undefined, Actor.from(refr), art, FormView.arrivalArtSeconds) === true;
-    logLab("verb:summon", `${remote}'s copy ${local} arrives: effect ${arrival.effect.toString(16)}'s art ${art.getFormID().toString(16)} played ${played} for ${FormView.arrivalArtSeconds} s`);
+    logLab("verb:summon", `${remote}'s copy ${local} arrives: effect ${arrival.effect.toString(16)}'s art ${art.getFormID().toString(16)} played ${played} for ${FormView.arrivalArtSeconds} s, ${off.toFixed(0)} units from its record`);
   }
 
   // how long a summon's copy waits for its 3D to play its arrival
   // (the bind's own refusal window, SummonService.bindWaitMs)
   private static readonly arrivalWaitMs = 5000;
+  // how near its record the copy stands before its arrival plays: the
+  // probe's own bound (x-summon-arrival), well inside the 303 and 640 units
+  // playtest 54's copies stood off
+  private static readonly arrivalNearUnits = 64;
   // HYPOTHESIS, Eli's to see: how long the arrival art plays on a copy. The
   // engine's SummonPlacementEffect ends when its art's own graph says so
   // (its BSAnimationGraphEvent sink, SummonPlacementEffect.h); no read on
@@ -1089,7 +1114,12 @@ export class FormView {
             return;
           }
           try {
-            applyMovement(refr, model.movement, !!model.isMyClone, puppet, settle);
+            // tracker #111: a copy's first apply after its spawn is placed at
+            // the record (placeOnFirstApply, above), a copy of the movement so
+            // the mark stays this apply's alone
+            const movement = this.placeOnFirstApply ? { ...model.movement, placed: true } : model.movement;
+            this.placeOnFirstApply = false;
+            applyMovement(refr, movement, !!model.isMyClone, puppet, settle);
           } catch (e) {
             if (e instanceof RespawnNeededError) {
               model.movement.isWeapDrawn = backup;

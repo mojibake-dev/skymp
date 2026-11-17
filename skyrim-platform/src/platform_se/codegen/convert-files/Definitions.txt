@@ -1878,6 +1878,8 @@ export declare function releasePuppet(actorFormId: number): boolean;
 export declare function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
 // thuum docs/verbs/npc-puppet.md (playtest 33): the form ids of the engine's high-process actors as of the last "Actor animation" stage, read with no game call; the roster's source and the demote poll's, where the cellAttach events name temporary references alone
 export declare function getHighProcessActors(): number[];
+// thuum tracker #121 (ADR-035 point 8 as amended 2026-11-16, Eli's "go with b for 121"): the cells the actor's running package names as its location (near a reference: that reference's cell; in a cell: the cell), as of the last "Actor animation" stage, read with no game call; empty for an actor out of high process or a package that names none. The destination's host keeps the actor live on its way there
+export declare function getPackageDestinationCells(actorFormId: number): number[];
 // thuum docs/verbs/npc-stream.md (ADR-050): the server's word that this game simulates the actor, kept in the hosted set the hook on the engine's action entry reads: a hosted actor's actions are reported (actionPerformed, actorId) and travel as UpdateAction under its own id; false for 0 and for the player's own id. Stored on the JS thread, no game call
 export declare function setHosted(actorFormId: number, hosted: boolean): boolean;
 export declare function isHosted(actorFormId: number): boolean;

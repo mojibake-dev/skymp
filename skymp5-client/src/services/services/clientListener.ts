@@ -289,6 +289,9 @@ declare module "skyrimPlatform" {
     function releasePuppet(actorFormId: number): boolean;
     function setPuppetLocomotion(actorFormId: number, speed: number, directionDeg: number, turnRateDeg: number): boolean;
     function getHighProcessActors(): number[];
+    // thuum tracker #121: the cells the actor's running package names as its
+    // location, the game thread's latest snapshot (PuppetService's demote)
+    function getPackageDestinationCells(actorFormId: number): number[];
     // thuum docs/verbs/npc-stream.md (ADR-050): the hosted set the fork's
     // action hook reads (the server's word per actor, HostService), and the
     // mark that the engine's action entry is open on an actor right now

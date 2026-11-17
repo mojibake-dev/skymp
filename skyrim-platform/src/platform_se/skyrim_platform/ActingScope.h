@@ -3,7 +3,9 @@
 #include <RE/B/BSCoreTypes.h>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 // thuum docs/DECISIONS.md ADR-068 rung 5 (D-F1 C: every seat's VM applies
@@ -76,6 +78,14 @@ struct Player
 {
   uint32_t figure = 0;
   uint32_t serverId = 0;
+  // thuum tracker #117 (Eli's design B): the acting player's inventory as
+  // the server records it, an item's base id to its count, carried in by a
+  // relayed press's request (setActingPlayer's items, stage kActivation;
+  // RelayedActivation's presserInventory), which the seam answers an item
+  // count on the figure from (ScriptNatives.cpp, the acting-inventory hook).
+  // Null when the request carried none: the count then runs on the figure as
+  // before. Shared, so a scope copied into its joined stacks copies no map
+  std::shared_ptr<const std::unordered_map<uint32_t, uint32_t>> items;
 };
 
 // a scope's root, what opened the chain it belongs to: kRelayed, a stage or

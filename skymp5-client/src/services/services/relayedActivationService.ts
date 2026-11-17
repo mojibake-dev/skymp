@@ -1,4 +1,4 @@
-import { ObjectReference } from 'skyrimPlatform';
+import { Inventory, ObjectReference } from 'skyrimPlatform';
 import { ClientListener, CombinedController, Sp } from './clientListener';
 import { ConnectionMessage } from '../events/connectionMessage';
 import { RelayedActivationMessage } from '../messages/relayedActivationMessage';
@@ -59,8 +59,9 @@ const describeTriggerSend = (raw: unknown, event: string): string => {
   return `${event} answered ${raw.slice(0, 40)}`;
 };
 
-// ArmActivation's answer for the line ({formId, armed, scripts, reason}):
-// "the presser's scope armed over <n> script(s)" or "not armed (<reason>)"
+// ArmActivation's answer for the line ({formId, armed, scripts, items,
+// reason}): "the presser's scope armed over <n> script(s)[, its record's <m>
+// item(s) carried]" or "not armed (<reason>)"
 const describeArm = (raw: unknown): string => {
   if (typeof raw !== 'string') {
     return `ArmActivation answered no string (${typeof raw})`;
@@ -70,7 +71,9 @@ const describeArm = (raw: unknown): string => {
     if (o && typeof o === 'object' && typeof o['armed'] === 'boolean') {
       if (o['armed']) {
         const scripts = o['scripts'];
-        return `the presser's scope armed over ${typeof scripts === 'number' ? scripts : '?'} script(s)`;
+        const items = o['items'];
+        const carried = typeof items === 'number' && items > 0 ? `, its record's ${items} item(s) carried` : '';
+        return `the presser's scope armed over ${typeof scripts === 'number' ? scripts : '?'} script(s)${carried}`;
       }
       const reason = o['reason'];
       return `not armed (${typeof reason === 'string' && reason !== '' ? reason : 'refused'})`;
@@ -79,6 +82,25 @@ const describeArm = (raw: unknown): string => {
     // the raw answer below
   }
   return `ArmActivation answered ${raw.slice(0, 40)}`;
+};
+
+// thuum tracker #117 (Eli's design B): the presser's recorded inventory, as
+// the server sent it with the press (RelayedActivation's presserInventory),
+// flattened to the base id and count pairs setActingPlayer's items take; the
+// platform sums a base's stacks and answers the press's GetItemCount on the
+// figure from them. undefined when the relay carried none (a press with no
+// record runs its count on the figure as before)
+const itemPairs = (inventory?: Inventory): number[] | undefined => {
+  if (!inventory || !Array.isArray(inventory.entries)) {
+    return undefined;
+  }
+  const pairs: number[] = [];
+  for (const e of inventory.entries) {
+    if (e && typeof e.baseId === 'number' && typeof e.count === 'number' && e.baseId > 0 && e.count > 0) {
+      pairs.push(e.baseId, e.count);
+    }
+  }
+  return pairs;
 };
 
 // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
@@ -128,9 +150,9 @@ export class RelayedActivationService extends ClientListener {
   }
 
   private onRelayed(e: ConnectionMessage<RelayedActivationMessage>) {
-    const { target, caster, entry } = e.message;
+    const { target, caster, entry, presserInventory } = e.message;
     if (entry === undefined || entry === null) {
-      this.controller.once('update', () => this.play(target, caster));
+      this.controller.once('update', () => this.play(target, caster, presserInventory ?? undefined));
       return;
     }
     if (entry !== 1 && entry !== 2) {
@@ -153,7 +175,7 @@ export class RelayedActivationService extends ClientListener {
     });
   }
 
-  private play(remoteTarget: number, remoteCaster: number) {
+  private play(remoteTarget: number, remoteCaster: number, presserInventory?: Inventory) {
     const target = ObjectReference.from(
       this.sp.Game.getFormEx(remoteIdToLocalId(remoteTarget)),
     );
@@ -165,7 +187,7 @@ export class RelayedActivationService extends ClientListener {
     }
     this.markPlayed(target.getFormID(), caster.getFormID());
     this.markRelayPlayed(target.getFormID());
-    this.armPressActing(target, caster, remoteCaster);
+    this.armPressActing(target, caster, remoteCaster, presserInventory);
     target.activate(caster, false);
     logTrace(
       this,
@@ -286,7 +308,7 @@ export class RelayedActivationService extends ClientListener {
   // plain activate there, its script the host's) and only for another
   // player's figure (PuppetService.isFigure: an NPC's copy is no player).
   // Said once on a platform without the export or the native
-  private armPressActing(target: ObjectReference, caster: ObjectReference, presserServerId: number) {
+  private armPressActing(target: ObjectReference, caster: ObjectReference, presserServerId: number, presserInventory?: Inventory) {
     if (this.activationArmMissing) {
       return;
     }
@@ -308,7 +330,7 @@ export class RelayedActivationService extends ClientListener {
       return;
     }
     try {
-      if (this.sp.setActingPlayer(target.getFormID(), ACTIVATION_SCOPE, presserLocalId, presserServerId, ACTIVATION_ACTING_TTL_MS) !== true) {
+      if (this.sp.setActingPlayer(target.getFormID(), ACTIVATION_SCOPE, presserLocalId, presserServerId, ACTIVATION_ACTING_TTL_MS, itemPairs(presserInventory)) !== true) {
         logLab(TAG, `${head}: the platform refused the activation's acting player (stage ${ACTIVATION_SCOPE}); its script reads this seat's own player`);
         return;
       }

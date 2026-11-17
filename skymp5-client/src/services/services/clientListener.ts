@@ -314,7 +314,10 @@ declare module "skyrimPlatform" {
     // GlobalVariable.SetValue on one is skipped here. The platform layer
     // writes the bodies on its own branch; an older platform has none, and
     // every use is guarded
-    function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number): boolean;
+    // since tracker #117 an activation's (-4) request may carry items, the
+    // presser's recorded inventory as [baseId, count, ...], which the scope
+    // answers GetItemCount on the figure from (Eli's design B)
+    function setActingPlayer(questId: number, stage: number, figureLocalId: number, serverId: number, ttlMs: number, items?: number[]): boolean;
     // train 53, V-scene (m4-train-53-platform b29ea207, Definitions.txt): a
     // relay's stage (0 to 65535), start (-1) or stop (-2) whose acting player
     // is this seat's own or unnamed, scoped at the relay with no swap; false,

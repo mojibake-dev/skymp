@@ -1672,12 +1672,17 @@ std::string ArmActivationImpl(RE::TESObjectREFR* refr,
     ActingScope::Arm(formId, taken->player, ActingScope::kArmMs,
                      ActingScope::RootKind::kTrigger, target.scripts);
   answer["armed"] = true;
+  answer["items"] = taken->player.items ? taken->player.items->size() : 0;
   if (LogThis(g_activationArmLines)) {
     logger::info("[verb:quests] ArmActivation {:x} by {:x}: the presser's "
                  "scope armed for {} ms over {} script(s) (acting player "
-                 "{:x}, scope {})",
+                 "{:x}, scope {}, {})",
                  formId, actionRefId, ActingScope::kArmMs, target.scripts,
-                 taken->player.serverId, scope.seq);
+                 taken->player.serverId, scope.seq,
+                 taken->player.items
+                   ? fmt::format("its record's {} item(s) carried (#117)",
+                                 taken->player.items->size())
+                   : std::string("no record carried"));
   }
   return DumpText(answer);
 }

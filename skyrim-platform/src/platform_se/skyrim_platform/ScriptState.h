@@ -129,9 +129,10 @@ std::string SendTrigger(RE::TESObjectREFR* refr, std::string_view name,
 // scope (ActingScope.h) is armed for its own attached scripts, so the
 // OnActivate the client's activate call raises next reads Game.GetPlayer() as
 // the figure; no other presser arms it, and the activate stays the client's.
-// A JSON object as a string: { formId, armed, scripts, reason }; refused for
-// a None reference or actionRef, an actor and a reference with no attached
-// script
+// A JSON object as a string: { formId, armed, scripts, items (the count of
+// the record's items the request carried, #117's design B), reason }; refused
+// for a None reference or actionRef, an actor and a reference with no
+// attached script
 std::string ArmActivation(RE::TESObjectREFR* refr,
                           RE::TESObjectREFR* actionRef);
 

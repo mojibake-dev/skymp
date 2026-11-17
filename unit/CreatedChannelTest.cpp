@@ -212,6 +212,10 @@ TEST_CASE("A spell's wall is the caster's: placed, moved, shown, risen and "
   REQUIRE(boom[0]["function"] == "PlaceAtMe");
   REQUIRE(boom[0]["selfId"] == copy);
   REQUIRE(log.Has("a one-shot, relayed to 1 game(s)"));
+  // thuum tracker #120: the one-shot carries no sequence, so the copy's
+  // numbered calls before it (the MoveTo's 1, the TranslateTo's 3 above)
+  // never make a receiver drop it as stale
+  REQUIRE((!boom[0].contains("seq") || boom[0]["seq"].is_null()));
 
   // Delete: the copy falls on every screen, unbound
   Report(p, 0, kWallLocal, "Delete", {});

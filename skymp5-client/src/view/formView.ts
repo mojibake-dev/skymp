@@ -21,7 +21,7 @@ import { PlayerCharacterDataHolder } from "./playerCharacterDataHolder";
 import { setActorValuePercentage } from "../sync/actorvalues";
 import { ModelApplyUtils } from "./modelApplyUtils";
 import { ContainerApplyQueue } from "./containerApplyQueue";
-import { localIdToRemoteId } from "./worldViewMisc";
+import { carriedActions, localIdToRemoteId } from "./worldViewMisc";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { WorldCleanerService } from "../services/services/worldCleanerService";
 import { GamemodeUpdateService } from "../services/services/gamemodeUpdateService";
@@ -31,6 +31,7 @@ import { PropService } from "../services/services/propService";
 import { ActorFateService } from "../services/services/actorFateService";
 import { SummonService } from "../services/services/summonService";
 import { ChangeFormService } from "../services/services/changeFormService";
+import { DeathService } from "../services/services/deathService";
 
 // thuum docs/verbs/cast-action.md: the want variable a hand's cast event names
 // (MRh_ the right hand's, MLh_ and the perk's DualMagic_ the left hand's actions)
@@ -1571,9 +1572,24 @@ export class FormView {
     // death Ragdoll played as an event beside the bind's own, two replays at
     // one re-entry)
     if (model.isDead === true && model.actionQueue && model.actionQueue.length > 0) {
-      const dropped = model.actionQueue.length;
-      model.actionQueue.splice(0, dropped);
-      logLab("verb:npc-fate", `${dropped} carried action(s) of the dead record ${this.refrId.toString(16)} dropped, not replayed (the record is dead)`);
+      const queue = model.actionQueue.splice(0, model.actionQueue.length);
+      // thuum playtest 53 (Eli: "raise animation looked wrong. (delayed, in
+      // the ground then snaps once up)"; lab/.cache/probes/x-raise-rise): a
+      // get-up that comes while the record is dead is its owner's raise, the
+      // engine's ActionGetUp at the hit (c2-console 01:12:06.033 "action d1fdd
+      // idle fdc61 GetUpBegin type 2 on 280a4"), the body reading dead on the
+      // owner until it ends. Dropped here with the rest, the copy lay until
+      // the live word stood it in one frame (c1-console 01:12:06.781 and
+      // :13.738). Played on the dead copy instead (DeathService.playOwnerRise);
+      // the create word's carried get-up (worldViewMisc.ts carriedActions) is
+      // dropped as before
+      const rise = queue.find((a) => !carriedActions.has(a) && a.eventName.toLowerCase() === "getupbegin");
+      const body = rise ? Actor.from(refr) : null;
+      const played = !!body && SpApiInteractor.getControllerInstance().lookupListener(DeathService).playOwnerRise(body);
+      const dropped = queue.length - (played ? 1 : 0);
+      if (dropped > 0) {
+        logLab("verb:npc-fate", `${dropped} carried action(s) of the dead record ${this.refrId.toString(16)} dropped, not replayed (the record is dead)`);
+      }
       return;
     }
     if (FormView.isNpcModel(model) && !FormView.streamSwitch("npcStreamActions")) {

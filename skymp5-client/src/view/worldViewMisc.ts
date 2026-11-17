@@ -3,6 +3,12 @@ import { WorldView } from "./worldView";
 import { SpApiInteractor } from '../services/spApiInteractor';
 import { RemoteServer } from "../services/services/remoteServer";
 
+// thuum playtest 53 (lab/.cache/probes/x-raise-rise): the actions a
+// CreateActor carried (its lastAction, remoteServer.ts), told apart from the
+// ones relayed live: formView.ts drops a dead record's carried get-up and
+// plays a live one, its owner's raise
+export const carriedActions = new WeakSet<object>();
+
 export const getViewFromStorage = (): WorldView | undefined => {
   const res = storage["view"] as WorldView;
   // can't use instanceof here because each hot reload creates a new class

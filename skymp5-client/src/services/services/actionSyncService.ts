@@ -5,6 +5,7 @@ import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { isMovementControllerEvent } from "../../sync/animation";
 import { logTrace } from "../../logging";
+import { HostService } from "./hostService";
 
 // thuum docs/verbs/cast-action.md: the figure plays the caster's actions.
 // The fork's Skyrim Platform reports every BGSAction the player's actor
@@ -32,11 +33,90 @@ const HAND_CAST_EVENT = /^(mrh_|mlh_|dualmagic)/i;
 
 export const isHandCastEvent = (animEventName: string): boolean => HAND_CAST_EVENT.test(animEventName);
 
+// thuum playtest 53 (lab/.cache/probes/x-raise-rise's header): a raise's
+// commander owns the body from the server's grant (ADR-060, ADR-063), but its
+// engine takes the get-up at the hit, a frame or so before the grant reaches
+// it, so the action entry's report (hosted actors alone) never saw it and the
+// other seats had no get-up to play (x-reanimate-one-cast-pair
+// 20261116-213049: trace-c1 GetUpBegin at 12311, trace-c2 none; c1.log
+// 13:33:54:039 setHosted(35534, true) after it). A get-up an actor's graph
+// takes while its actions do not stream from here is noted, and sent as the
+// owner's ActionGetUp once they do, if that comes within riseCarryMs and the
+// body still reads dead (its get-up still running). The action is
+// ActionGetUp (lab/esm.py on 1.6.1170 Skyrim.esm: AACT 0xd1fdd, the id the
+// owner's own report carries, c2-console 01:12:06.033); the idle goes as 0,
+// since the engine's pick was not seen here (the watcher plays the event, by
+// name, formView.ts)
+const ACTION_GET_UP = 0xd1fdd;
+
 export class ActionSyncService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         this.controller.on("actionPerformed", (e) => this.onActionPerformed(e));
+        this.hookRisesBeforeTheGrant();
+        this.controller.on("update", () => this.sendRisesAtTheGrant());
     }
+
+    // filtered in native to the one event (rule 9): every actor but the player
+    private hookRisesBeforeTheGrant(): void {
+        const taken = this.risesTaken;
+        const controller = this.controller;
+        this.sp.hooks.sendAnimationEvent.add({
+            enter: () => { },
+            leave: (ctx) => {
+                if (!ctx.animationSucceeded) {
+                    return;
+                }
+                // an actor streamed from here: the action entry reports it
+                if (controller.lookupListener(HostService).isStreamedHere(ctx.selfId)) {
+                    return;
+                }
+                taken.set(ctx.selfId, Date.now());
+            },
+        }, 0x15, 0xffffffff, "GetUpBegin");
+    }
+
+    private sendRisesAtTheGrant(): void {
+        if (this.risesTaken.size === 0) {
+            return;
+        }
+        const now = Date.now();
+        const hostService = this.controller.lookupListener(HostService);
+        this.risesTaken.forEach((at, localId) => {
+            if (now - at > ActionSyncService.riseCarryMs) {
+                this.risesTaken.delete(localId);
+                return;
+            }
+            if (!hostService.isStreamedHere(localId)) {
+                return;
+            }
+            this.risesTaken.delete(localId);
+            const actor = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
+            const remoteId = localIdToRemoteId(localId);
+            if (!actor || !actor.isDead() || !remoteId) {
+                return;
+            }
+            const message: MessageWithRefrId<UpdateActionMessage> = {
+                t: MsgType.UpdateAction,
+                action: ACTION_GET_UP,
+                idle: 0,
+                eventName: "GetUpBegin",
+                type: 2,
+                actorAnimationVariables: { booleans: [], floats: [], integers: [] },
+                _refrId: remoteId,
+            };
+            logTrace(this, `action ${ACTION_GET_UP.toString(16)} GetUpBegin on ${localId.toString(16)}: taken ${now - at} ms before its actions streamed from here, sent at the grant (its owner's raise)`);
+            this.controller.emitter.emit("sendMessageWithRefrId", {
+                message,
+                reliability: "reliable"
+            });
+        });
+    }
+
+    // the get-ups taken while the actor's actions did not stream from here, by
+    // local id, at the hook's time
+    private readonly risesTaken = new Map<number, number>();
+    private static readonly riseCarryMs = 2000;
 
     private onActionPerformed(e: { actorId: number; action: number; idle: number; eventName: string; type: number; variables: { booleans: ArrayBuffer; floats: ArrayBuffer; integers: ArrayBuffer } }) {
         const isPlayer = e.actorId === 0x14;

@@ -385,6 +385,60 @@ export class DeathService extends ClientListener {
     }
   };
 
+  // thuum playtest 53 (Eli: "raise animation looked wrong. (delayed, in the
+  // ground then snaps once up)"; lab/.cache/probes/x-raise-rise): a body's
+  // owner raises it through its engine's get-up, the default action
+  // ActionGetUp (lab/esm.py on 1.6.1170 Skyrim.esm: AACT 0xd1fdd, its idle
+  // NPCGetUp 0xfdc61 sending GetUpBegin), and its sampler reads the body dead
+  // until that get-up ends, 6.4 to 8.3 s after the hit (c2-console 01:12:06.033
+  // to :12.561 on 280a4; the reanimation proper runs at the get-up's end,
+  // docs/research/m3/re-resurrect-hook.md, HYPOTHESIS). A seat that does not
+  // own the body played none of it and stood its copy in one frame at the
+  // live word (resurrectActor above, the engine's Resurrect(true, true)). The
+  // owner's get-up, relayed as its action, is played here on the copy while
+  // it is still dead, as the owner's engine plays it, so the live word finds
+  // it up.
+  //
+  // The rise's kind is iGetUpType, which the owner's engine sets before its
+  // get-up: ReanimateEffect::Start (34750) writes 0 and performs ActionGetUp
+  // (docs/research/m3/re-resurrect-hook.md:48-54; lab/.cache/drafts/reanimate/
+  // return-to-caster-read.md:150), and the idle that answers, NPCGetUp
+  // 0xfdc61, carries no condition (lab/esm.py: its ENAM GetUpBegin, ANAM
+  // 0xd1fdd, no CTDA), so the variable alone picks the clip. v1 set 1 here, the
+  // value this client's other get-ups use, and Eli saw it (playtest 54,
+  // 07:35:39.751 c1-console "rise 29602 ... (iGetUpType 1)"): "the wrong
+  // standing animation (someone standing of their own accord, not the
+  // floating chest first into the air)". So the copy takes the owner's 0,
+  // and keeps it through the whole rise, as the owner's body does. v2 held it
+  // 1 s and set 1 again, and Eli saw the stand again (playtest 54, c1-console
+  // 07:53:00.855 "rise 39fe2 ... (iGetUpType 0, held 1000 ms)", 07:53:01.887
+  // "iGetUpType 1 after 1014 ms"): the graph reads the variable live, so the
+  // 1 swapped the float for the plain get-up (HYPOTHESIS, the read that fits).
+  // At the get-up's end the GetUpEnd handler (42880) runs the reanimation
+  // proper (38820) for the 0 on this copy too, as on the owner's body: its
+  // SetLifeState(kReanimate) stands the copy on this engine, where the live
+  // word's Resurrect cannot stand a placed corpse (Actor::Resurrect returns
+  // early on a Starts Dead reference, re-resurrect-hook.md; c2.log 23:52:08
+  // "resurrected 373a6 (... dead after true)", 120 retries). HYPOTHESIS until
+  // a watcher's raise reads it: that 38820 guards the commanding actor it
+  // reads ("it needs an AIProcess with a commanding actor", the static read)
+  // and does nothing worse on a copy with none than leave it standing for the
+  // live word. A raise whose effect ends before its get-up does (no live
+  // word) leaves the copy standing: unread
+  public playOwnerRise(actor: Actor): boolean {
+    const id = actor.getFormID();
+    if (this.isPlayer(actor) || !actor.isDead() || this.controller.lookupListener(HostService).isMineLocal(id)) {
+      return false;
+    }
+    actor.setAnimationVariableInt("iGetUpType", DeathService.RISE_KIND_REANIMATE);
+    this.sp.Debug.sendAnimationEvent(actor, AnimationEventName.GetUpBegin);
+    logLab("verb:npc-fate", `rise ${id.toString(16)}: its owner's get-up played on this seat's dead copy (iGetUpType ${DeathService.RISE_KIND_REANIMATE}, kept through the rise); the live word stands it after`);
+    return true;
+  }
+
+  // ReanimateEffect::Start's value (re-resurrect-hook.md:48-54)
+  private static readonly RISE_KIND_REANIMATE = 0;
+
   // a server-made NPC's copy, as remoteServer.ts's npcCopy reads the world
   // model: a form with an NPC base (never the players' 0x7) that is not this
   // player's own clone; a player's figure is not one

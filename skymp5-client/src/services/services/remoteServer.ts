@@ -66,6 +66,7 @@ import {
   remoteIdToLocalId,
   getLocalRefrIdOfIndex,
   localIdToRemoteId,
+  carriedActions,
 } from '../../view/worldViewMisc';
 import { TimeService } from './timeService';
 import { HostService } from './hostService';
@@ -1021,7 +1022,7 @@ export class RemoteServer extends ClientListener {
     // relayed one is replayed
     const last = (form as Record<string, unknown>)["lastAction"];
     if (!msg.isMe && msg.props?.isHostedByOther && RemoteServer.isLastAction(last)) {
-      form.actionQueue = [{
+      const carried: UpdateActionMessage = {
         t: MsgType.UpdateAction,
         idx: msg.idx,
         action: last.action,
@@ -1029,7 +1030,9 @@ export class RemoteServer extends ClientListener {
         eventName: last.eventName,
         type: last.type,
         actorAnimationVariables: last.actorAnimationVariables,
-      }];
+      };
+      carriedActions.add(carried);
+      form.actionQueue = [carried];
     }
 
     if (msg.isMe) {

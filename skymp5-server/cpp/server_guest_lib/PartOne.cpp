@@ -2517,6 +2517,32 @@ void PartOne::TickFights(uint64_t nowMs)
       if (played(*b)) {
         StopCombatOnClient(*b, pair.a);
       }
+      // pt53-112c, design D2: a fight between a player and an NPC another
+      // game hosts began both ways in that host's game
+      // (ActionListener::NotifyHostility), so it ends there both ways: its
+      // figure of the player stands down (StopCombatAlarm, the players'
+      // end) and the NPC stops its combat (Actor.StopCombat, #113's stand
+      // down)
+      const auto hostEnds = [&](MpActor& player, MpActor& npc) {
+        if (!played(player) || played(npc)) {
+          return;
+        }
+        MpActor* host = worldState.HostOf(npc);
+        if (!host || host == &player || !played(*host)) {
+          return;
+        }
+        StopCombatOnClient(*host, player.GetFormId());
+        const std::vector<std::optional<
+          std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+          noArgs;
+        SpSnippet("Actor", "StopCombat", noArgs, npc.GetFormId())
+          .Execute(host, SpSnippetMode::kNoReturnResult);
+        spdlog::info("PartOne::TickFights - hostility: {:x}'s host {:x} is "
+                     "told the end of its fight with {:x} (D2)",
+                     npc.GetFormId(), host->GetFormId(), player.GetFormId());
+      };
+      hostEnds(*a, *b);
+      hostEnds(*b, *a);
       spdlog::info("PartOne::TickFights - hostility: the fight between {:x} "
                    "and {:x} is over ({}); the players' games are told",
                    pair.a, pair.b, apart ? "apart" : "a minute quiet");

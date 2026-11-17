@@ -673,18 +673,55 @@ TEST_CASE("A player's hit on an NPC another game hosts tells the host's game "
     REQUIRE(log.Count("hit 85547, a fight begins; its host ff000d20's game "
                       "is told") == 1);
   }
+  // D2 (pt53-112c): both ways, the predator aimed at the attacker's figure
+  // and the figure (the attacker's server id its self) aimed at the predator
   const auto told = startCombatsTo(0);
-  REQUIRE(told.size() == 1);
+  REQUIRE(told.size() == 2);
   REQUIRE(told[0]["class"] == "Actor");
   REQUIRE(told[0]["selfId"] ==
           SpSnippet::MakeLongFormId(&p.worldState, kPredator));
   REQUIRE(told[0]["arguments"] ==
           nlohmann::json::array(
             { nlohmann::json{ { "formId", kOther }, { "type", "Actor" } } }));
+  REQUIRE(told[1]["class"] == "Actor");
+  REQUIRE(told[1]["selfId"] == kOther);
+  REQUIRE(told[1]["arguments"] ==
+          nlohmann::json::array({ nlohmann::json{ { "formId", kPredator },
+                                                  { "type", "Actor" } } }));
   REQUIRE(startCombatsTo(1).empty());
   REQUIRE(p.GetFights().between(kOther, kPredator));
 
-  // the same fight's next hit tells nothing
+  // D2: the fight's end, a minute quiet, reaches the host's game both ways:
+  // StopCombatAlarm on its figure of the attacker, StopCombat on the
+  // predator; the attacker's own game hears the players' end as before
+  p.Messages().clear();
+  {
+    LogCapture log;
+    p.TickFights(NowMs() + 61'000);
+    REQUIRE(log.Count("85547's host ff000d20 is told the end of its fight "
+                      "with ff000d21 (D2)") == 1);
+  }
+  p.Tick(); // snippets are deferred
+  const auto endsTo = [&](Networking::UserId user, const char* function) {
+    std::vector<nlohmann::json> out;
+    for (const auto& j : SentTo(p, user, MsgType::SpSnippet)) {
+      if (j.value("function", std::string{}) == function) {
+        out.push_back(j);
+      }
+    }
+    return out;
+  };
+  const auto alarms = endsTo(0, "StopCombatAlarm");
+  REQUIRE(alarms.size() == 1);
+  REQUIRE(alarms[0]["selfId"] == kOther);
+  const auto stops = endsTo(0, "StopCombat");
+  REQUIRE(stops.size() == 1);
+  REQUIRE(stops[0]["selfId"] ==
+          SpSnippet::MakeLongFormId(&p.worldState, kPredator));
+  REQUIRE_FALSE(p.GetFights().between(kOther, kPredator));
+
+  // a new fight, then its next hit tells nothing
+  swings(1, other);
   p.Messages().clear();
   swings(1, other);
   REQUIRE(startCombatsTo(0).empty());

@@ -12596,11 +12596,31 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
       attackerArgs{ attacker };
     SpSnippet("Actor", "StartCombat", attackerArgs, target.GetFormId())
       .Execute(host, SpSnippetMode::kNoReturnResult);
+    // pt53-112c, design D2 (staged for Eli's pick, the summon case of #112):
+    // the fight is made mutual in the host's engine, its figure of the
+    // attacker starting combat with the NPC too, so the attacker is the
+    // NPC's enemy as an NPC that struck it would be. x-npc-bolt-landing-v3
+    // 20261117-050130: the NPC's StartCombat alone left c1's summon with no
+    // target (c1-console.log:2279 to :2297). The figure's own combat is the
+    // ADR-023 notice's native on the same reference. HYPOTHESIS until
+    // x-summon-fights-back reads it: the engine's target selection keeps a
+    // target whose combat group targets the NPC (ghidra/notes/
+    // hostility-1-7-104.md: IsHostileToActor reads the combat group, 38571)
+    SpSnippetObjectArgument victim;
+    victim.formId = target.GetFormId();
+    victim.type = "Actor";
+    const std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+      victimArgs{ victim };
+    SpSnippet("Actor", "StartCombat", victimArgs, aggressor.GetFormId())
+      .Execute(host, SpSnippetMode::kNoReturnResult);
     spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, a "
                  "fight begins; its host {:x}'s game is told (the hit landed "
                  "on the attacker's own copy, which its host's engine never "
-                 "sees; playtest 53 #112)",
-                 aggressor.GetFormId(), target.GetFormId(), host->GetFormId());
+                 "sees; playtest 53 #112), both ways (its figure of {:x} "
+                 "fights it too, D2)",
+                 aggressor.GetFormId(), target.GetFormId(), host->GetFormId(),
+                 aggressor.GetFormId());
     return;
   }
   if (!facts.target_is_player || !facts.aggressor_is_player) {

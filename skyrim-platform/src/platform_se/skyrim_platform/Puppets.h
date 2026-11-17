@@ -41,18 +41,19 @@ bool GetLocomotion(uint32_t formId, Locomotion& out);
 
 // thuum tracker #111 (playtest 53, Eli: "they slide in from somewhere ...
 // and then they slide around and arent animated"): the other end of the
-// same fields. For an actor this game simulates (the hosted set, Hosted.h),
-// the engine's own locomotion as its movement step left it, read where the
-// Move detour writes a puppet's (MiddleHighProcessData currentMovementSpeed,
-// rotation.z, rotationSpeed.z) and in the same units as Locomotion. Sampled
-// on the game thread right after the engine's step (PuppetHooks.cpp), read
-// on the JS thread by the getActorLocomotion export, so a host reports what
-// its engine moved, whatever its graph's variables are named. stampMs is the
-// sample's time; false when the actor was never sampled. MovementSampled
-// says whether the movement-step detour is installed (AE only), with no
-// sample ever taken without it
-void SetSimulatedLocomotion(uint32_t formId, const Locomotion& sample);
-bool GetSimulatedLocomotion(uint32_t formId, Locomotion& out);
+// same fields, MiddleHighProcessData currentMovementSpeed, rotation.z and
+// rotationSpeed.z as this frame's movement step left them, in Locomotion's
+// units. For an actor this game simulates (the hosted set, Hosted.h) the
+// engine's own, sampled right after the engine's step, so a host reports
+// what its engine moved whatever its graph's variables are named; for a
+// puppet the relay's feed as the Move detour wrote it, what its graph's
+// channels poll (the lab's watcher read). Sampled on the game thread
+// (PuppetHooks.cpp), read on the JS thread by the getActorLocomotion export.
+// stampMs is the sample's time; false when the actor was never sampled.
+// MovementSampled says whether the movement-step detour is installed (AE
+// only), with no sample ever taken without it
+void SetStepLocomotion(uint32_t formId, const Locomotion& sample);
+bool GetStepLocomotion(uint32_t formId, Locomotion& out);
 void SetMovementSampled(bool installed);
 bool MovementSampled();
 

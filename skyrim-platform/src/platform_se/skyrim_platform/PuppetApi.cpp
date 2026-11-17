@@ -57,7 +57,7 @@ struct
   std::unordered_set<uint32_t> ids;
   std::unordered_map<uint32_t, Puppets::Locomotion> locomotion;
   // tracker #111: the engine's own locomotion of the actors this game
-  // simulates (Puppets::SetSimulatedLocomotion)
+  // simulates (Puppets::SetStepLocomotion)
   std::unordered_map<uint32_t, Puppets::Locomotion> simulated;
   bool movementSampled = false;
   std::vector<uint32_t> highActors;
@@ -257,19 +257,19 @@ bool Puppets::GetLocomotion(uint32_t formId, Locomotion& out)
   return true;
 }
 
-void Puppets::SetSimulatedLocomotion(uint32_t formId, const Locomotion& sample)
+void Puppets::SetStepLocomotion(uint32_t formId, const Locomotion& sample)
 {
   std::lock_guard l(g_puppets.m);
   Locomotion stamped = sample;
   stamped.stampMs = NowMs();
-  g_puppets.simulated[formId] = stamped;
+  g_puppets.stepped[formId] = stamped;
 }
 
-bool Puppets::GetSimulatedLocomotion(uint32_t formId, Locomotion& out)
+bool Puppets::GetStepLocomotion(uint32_t formId, Locomotion& out)
 {
   std::lock_guard l(g_puppets.m);
-  const auto it = g_puppets.simulated.find(formId);
-  if (it == g_puppets.simulated.end()) {
+  const auto it = g_puppets.stepped.find(formId);
+  if (it == g_puppets.stepped.end()) {
     return false;
   }
   out = it->second;
@@ -396,19 +396,19 @@ Napi::Value PuppetApi::SetPuppetLocomotion(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), Puppets::Is(actorFormId));
 }
 
-// getActorLocomotion(actorFormId): tracker #111, the engine's own
-// locomotion of an actor this game simulates as the movement-step detour
-// sampled it after the engine's step (Puppets::GetSimulatedLocomotion), in
-// setPuppetLocomotion's units, with ageMs since the sample; read on the JS
-// thread from the registry, no game call. null when the detour is not
-// installed or the actor was never sampled (an actor outside the hosted set,
-// or one whose step has not run since it joined it)
+// getActorLocomotion(actorFormId): tracker #111, the locomotion fields as the
+// actor's last movement step left them (Puppets::GetStepLocomotion): an actor
+// this game simulates, its engine's own; a puppet, the relay's feed as the
+// detour wrote it. In setPuppetLocomotion's units, with ageMs since the
+// sample; read on the JS thread from the registry, no game call. null when
+// the detour is not installed or the actor was never sampled (neither hosted
+// nor a puppet here, or no step since it became one)
 Napi::Value PuppetApi::GetActorLocomotion(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
   Puppets::Locomotion sample;
   if (!Puppets::MovementSampled() ||
-      !Puppets::GetSimulatedLocomotion(actorFormId, sample)) {
+      !Puppets::GetStepLocomotion(actorFormId, sample)) {
     return info.Env().Null();
   }
   const uint64_t now = Puppets::NowMs();

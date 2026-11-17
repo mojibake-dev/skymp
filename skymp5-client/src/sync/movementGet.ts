@@ -50,8 +50,11 @@ class PlayerCharacterSpeedCalculator {
 // on a creature (c2.log:2778: "graph project 'AtronachFlame' (variable set
 // of 75) is not the master behaviour: no variables read or written"), so
 // the traces' empty creature series are no read of the graph; the per-name
-// Papyrus read used here is unread for a creature's Speed. null (a platform
-// without the step's detour, or no sample yet) keeps the graph reads below
+// Papyrus read used here is unread for a creature's Speed. The export
+// answers a puppet too (the relay's feed as the detour wrote it); this game
+// samples only the actors it simulates and its player (sendInputsService),
+// so the answer here is the engine's own. null (a platform without the
+// step's detour, or no sample yet) keeps the graph reads below
 type EngineLocomotion = { speed: number; directionDeg: number; turnRateDeg: number; ageMs: number };
 const engineLocomotionOf = (refr: ObjectReference): EngineLocomotion | null => {
   const id = refr.getFormID();

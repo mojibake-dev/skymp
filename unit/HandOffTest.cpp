@@ -5,6 +5,7 @@
 #include <future>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -95,9 +96,10 @@ TEST_CASE("An ask the waiting JavaScript thread served is never run again in "
   // the JavaScript thread's wait ends once the ask has run, as a worker
   // whose native needed it would
   std::thread js([state, ticket] {
-    state->desk.WaitServing(
-      [&] { return ticket->done; },
-      [&](const HandOff::Ticket& t) { state->named.push_back(t.label); });
+    state->desk.WaitServing([&] { return ticket->done; },
+                            [&](const HandOff::Ticket& t) {
+                              state->named.push_back(std::string(t.label));
+                            });
     state->waited.set_value();
   });
   js.detach();
@@ -160,8 +162,98 @@ TEST_CASE("The serving mark stands inside a served task alone, on its thread",
   // the platform's other waited tasks (the tick, a console command) raise
   // the same mark (SkyrimPlatform::PushAndWait)
   {
-    HandOff::ServingScope serving;
+    HandOff::ServingScope serving("the tick or a console command");
     REQUIRE(HandOff::Serving());
   }
   REQUIRE_FALSE(HandOff::Serving());
+}
+
+TEST_CASE("The serving mark names the innermost waited task, for callNative's "
+          "refusal line",
+          "[HandOff]")
+{
+  REQUIRE(HandOff::ServingWhat() == nullptr);
+  HandOff::Desk desk;
+  std::string inside;
+  desk.Ask([&] { inside = HandOff::ServingWhat(); }, "ask", 0);
+  {
+    HandOff::ServingScope outer("the tick or a console command");
+    REQUIRE(std::string(HandOff::ServingWhat()) ==
+            "the tick or a console command");
+    // a served ask inside it names itself, and the outer name comes back
+    REQUIRE(desk.ServeOne());
+    REQUIRE(inside == "a hook's handler");
+    REQUIRE(std::string(HandOff::ServingWhat()) ==
+            "the tick or a console command");
+  }
+  REQUIRE(HandOff::ServingWhat() == nullptr);
+}
+
+TEST_CASE("A wait on the worker that serves nothing leaves the asks queued "
+          "and returns at the worker's signal",
+          "[HandOff]")
+{
+  struct State
+  {
+    HandOff::Desk desk;
+    bool workerDone = false;
+    std::atomic<int> runs{ 0 };
+    std::promise<void> waited;
+  };
+  auto state = std::make_shared<State>();
+  auto waited = state->waited.get_future();
+  state->desk.Ask([state] { ++state->runs; }, "sendAnimationEvent enter", 2);
+
+  // a caller that is not the JavaScript thread
+  // (SkyrimPlatform::PushToWorkerAndWait's WaitFor branch)
+  std::thread caller([state] {
+    state->desk.WaitFor([&] { return state->workerDone; });
+    state->waited.set_value();
+  });
+  caller.detach();
+  std::thread worker([state] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    state->desk.Signal([&] { state->workerDone = true; });
+  });
+  worker.detach();
+
+  REQUIRE(waited.wait_for(kTimeout) == std::future_status::ready);
+  REQUIRE(state->runs.load() == 0);
+  // the ask waits for the JavaScript thread's own turn
+  REQUIRE(state->desk.ServeOne());
+  REQUIRE(state->runs.load() == 1);
+}
+
+TEST_CASE("Each asker is answered on its own wake, whichever ask runs first",
+          "[HandOff]")
+{
+  struct State
+  {
+    HandOff::Desk desk;
+    std::shared_ptr<HandOff::Ticket> first, second;
+    std::promise<void> firstAnswered, secondAnswered;
+  };
+  auto state = std::make_shared<State>();
+  auto firstAnswered = state->firstAnswered.get_future();
+  auto secondAnswered = state->secondAnswered.get_future();
+  state->first = state->desk.Ask([] {}, "first", 1);
+  state->second = state->desk.Ask([] {}, "second", 2);
+  std::thread a([state] {
+    state->desk.Wait(state->first);
+    state->firstAnswered.set_value();
+  });
+  std::thread b([state] {
+    state->desk.Wait(state->second);
+    state->secondAnswered.set_value();
+  });
+  a.detach();
+  b.detach();
+
+  // the first turn answers the first asker alone
+  REQUIRE(state->desk.ServeOne());
+  REQUIRE(firstAnswered.wait_for(kTimeout) == std::future_status::ready);
+  REQUIRE(secondAnswered.wait_for(std::chrono::milliseconds(50)) ==
+          std::future_status::timeout);
+  REQUIRE(state->desk.ServeOne());
+  REQUIRE(secondAnswered.wait_for(kTimeout) == std::future_status::ready);
 }

@@ -47,36 +47,23 @@ thread_local bool t_jsThread = false;
 
 // the JavaScript thread alone (PushToWorkerAndWait): the first hand-off it
 // serves inside each native's wait, the lab's read of which path ran (a COC
-// reads "while it waited on Debug.CenterOnCell")
+// reads "while it waited on Debug.CenterOnCell"). Keyed by the native's
+// function, which the VM keeps for its life, so a served ask costs one set
+// lookup and the name is formatted only at its first
 void SayServed(const RE::BSScript::IFunction* fn,
                const HandOff::Ticket& ticket)
 {
-  static std::unordered_set<std::string> said;
+  static std::unordered_set<const RE::BSScript::IFunction*> said;
+  if (!said.insert(fn).second) {
+    return;
+  }
   const std::string native = fn
     ? fmt::format("{}.{}", fn->GetObjectTypeName().c_str(),
                   fn->GetName().c_str())
     : std::string("an unnamed native");
-  if (!said.insert(native).second) {
-    return;
-  }
   logger::info("[hand-off] the JavaScript thread served '{}' for thread {} "
                "while it waited on {} (thuum tracker #129; once per native)",
                ticket.label, ticket.thread, native);
-}
-
-// a native asked inside a task an engine thread waits on, refused (the
-// requirements' accessor below); the first refusal said once, the native's
-// own name in the error JavaScript gets
-void SayNativeRefused()
-{
-  static std::atomic<bool> said{ false };
-  if (!said.exchange(true)) {
-    logger::warn("[hand-off] a native called inside a task an engine thread "
-                 "waits on (a hook's handler, the tick, a console command) is "
-                 "refused as \"can't be called in this context\": it would "
-                 "wait on the engine while the engine waits on it (thuum "
-                 "tracker #129); said once");
-  }
 }
 }
 
@@ -316,16 +303,18 @@ private:
       // refuses "can't be called in this context" as it does outside the
       // update: a native there would wait on the worker while an engine
       // thread waits on this thread, the cycle's shape. Outside the update's
-      // window this is the refusal those tasks always met (the VM is set only
-      // inside main.cpp's OnUpdate); events.md's "Script functions are not
-      // available inside the enter and leave handlers"
+      // window the VM is unset already (it is set only inside main.cpp's
+      // OnUpdate) and those tasks meet that refusal as they always did; only
+      // a VM withheld here is marked, with the task it was withheld in, for
+      // callNative's line (CallNativeApi.cpp); events.md's "Script functions
+      // are not available inside the enter and leave handlers"
       auto getNativeCallRequirements =
         [this]() -> CallNativeApi::NativeCallRequirements {
-        if (HandOff::Serving()) {
-          SayNativeRefused();
+        if (HandOff::Serving() && nativeCallRequirements.vm) {
           CallNativeApi::NativeCallRequirements requirements =
             nativeCallRequirements;
           requirements.vm = nullptr;
+          requirements.withheldInside = HandOff::ServingWhat();
           return requirements;
         }
         return nativeCallRequirements;
@@ -525,7 +514,7 @@ void SkyrimPlatform::PushAndWait(const std::function<void(Napi::Env)>& f)
 {
   pImpl->pool.PushAndWait([this, f] {
     t_jsThread = true;
-    HandOff::ServingScope serving;
+    HandOff::ServingScope serving("the tick or a console command");
     auto engine = pImpl->commonExecutionListener->GetJsEngine();
     engine->AcquireEnvAndCall(f);
   });
@@ -600,15 +589,34 @@ void SkyrimPlatform::PushToWorkerAndWait(
   asio::post(
     pImpl->ioContext.get_executor(),
     std::bind(&Impl::RunInIOContext, pImpl, fPtr, stack, logger, vm, ret));
+  // the asks are the JavaScript thread's to run: every caller today is a
+  // Napi callback (CallNative.cpp, from callNative and the typed bindings),
+  // but a C++ caller on another thread would run the hooks' JavaScript
+  // there, so it waits without serving and is said once
+  if (!t_jsThread) {
+    static std::atomic<bool> said{ false };
+    if (!said.load(std::memory_order_relaxed) && !said.exchange(true)) {
+      logger::warn("[hand-off] {}.{} was asked of the worker from thread {}, "
+                   "not the JavaScript thread: it waits without serving the "
+                   "hooks' asks (thuum tracker #129); said once",
+                   fPtr ? fPtr->GetObjectTypeName().c_str() : "",
+                   fPtr ? fPtr->GetName().c_str() : "", GetCurrentThreadId());
+    }
+    pImpl->handOffs.WaitFor([this] { return pImpl->complete; });
+    return;
+  }
   // thuum tracker #129: the JavaScript thread waits on the worker and serves
   // every hook's ask queued meanwhile, as the worker serves this thread's
   // calls while it waits on the update (main.cpp's OnUpdate). The native may
   // wait on an engine thread whose hook asks this thread (a cell load's
-  // background 3D load playing a container's Close, the #129 dump), so a
-  // plain wait here closed the cycle. A served ask runs inside this call, at
-  // the update's native call site; the handlers keep to JavaScript state
-  // (they call no native: getNativeCallRequirements) and the client's defer
-  // their game work to the next update
+  // background 3D load playing a container's Close, the #129 dump read,
+  // HYPOTHESIS until a second dump or a Frida read of PlayAnimation's thread
+  // agrees: HandOff.h), so a plain wait here closed the cycle. A served ask
+  // runs inside this call, at the update's native call site, before the
+  // rest of the update: the handlers keep to JavaScript state (they call no
+  // native: getNativeCallRequirements), and state the update writes for a
+  // handler to read is read in the next update, not in the handler
+  // (docs/skyrim_platform/events.md)
   pImpl->handOffs.WaitServing(
     [this] { return pImpl->complete; },
     [&fPtr](const HandOff::Ticket& ticket) { SayServed(fPtr.get(), ticket); });

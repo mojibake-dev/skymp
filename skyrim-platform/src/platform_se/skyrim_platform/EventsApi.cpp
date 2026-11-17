@@ -97,6 +97,11 @@ void EventsApi::SendAnimationEventLeave(bool animationSucceeded) noexcept
   g.sendAnimationEvent->Leave(animationSucceeded);
 }
 
+void EventsApi::SkipAnimationEventEnter() noexcept
+{
+  g.sendAnimationEvent->SkipEnter();
+}
+
 void EventsApi::SendPapyrusEventEnter(uint32_t selfId,
                                       std::string& papyrusEventName) noexcept
 {

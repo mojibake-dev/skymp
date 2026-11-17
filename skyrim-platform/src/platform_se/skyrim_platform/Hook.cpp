@@ -1,48 +1,19 @@
 #include "Hook.h"
 #include "Handler.h"
+#include "HookPairing.h"
 #include "SkyrimPlatform.h"
 
-#include <iterator>
-#include <utility>
-#include <vector>
-
 namespace {
-// thuum tracker #129: an enter of a hook whose leave crosses too (the
-// animation hook) leaves one note on its thread, whether it crossed; the
-// leave takes the newest note of its hook and crosses only after an enter
-// that did. So the JavaScript side's per-thread state (inProgressThreads,
-// each handler's context) opens and closes in pairs whatever an enter
-// skipped: the native match's refusal, a hand-off declined, a caller's
-// early return (FridaHooks.cpp's enters return before Enter on a null
-// reference or an empty name, their leaves still call Leave)
-thread_local std::vector<std::pair<const Hook*, bool>> t_enters;
-
-void NoteEnter(const Hook* hook, bool crossed)
-{
-  // an enter whose leave never came (a throw through the hooked call)
-  // never grows the notes without bound
-  if (t_enters.size() >= 64) {
-    t_enters.clear();
-  }
-  t_enters.emplace_back(hook, crossed);
-}
-
-bool TakeEnter(const Hook* hook)
-{
-  for (auto it = t_enters.rbegin(); it != t_enters.rend(); ++it) {
-    if (it->first == hook) {
-      const bool crossed = it->second;
-      t_enters.erase(std::next(it).base());
-      return crossed;
-    }
-  }
-  return false;
-}
+// thuum tracker #129: the hooked thread's enter notes (HookPairing.h), one
+// per enter of a hook whose leave crosses too, taken by its leave
+thread_local HookPairing::EnterNotes t_enters;
 }
 
 Hook::Hook(std::string hookName_, std::string eventNameVariableName_,
            std::optional<std::string> succeededVariableName_)
   : hookName(hookName_)
+  , enterLabel(hookName_ + " enter")
+  , leaveLabel(hookName_ + " leave")
   , eventNameVariableName(eventNameVariableName_)
   , succeededVariableName(succeededVariableName_)
 {
@@ -112,7 +83,10 @@ void Hook::Enter(uint32_t selfId, std::string& eventName)
   // match there. A handler added between this test and the hand-off sees
   // the event's next sending, as one added a moment later would
   if (!AnyHandlerMatches(selfId, eventName)) {
-    if (!sparedSaid.exchange(true)) {
+    // a plain read first: the exchange's write only once, never a cache
+    // line bounced by every unmatched Papyrus event of every VM thread
+    if (!sparedSaid.load(std::memory_order_relaxed) &&
+        !sparedSaid.exchange(true)) {
       logger::info("[hook] '{}': an event no handler's filter (minSelfId, "
                    "maxSelfId, eventPattern) takes stays in native and never "
                    "crosses to the JavaScript thread (rule 9, thuum tracker "
@@ -120,7 +94,7 @@ void Hook::Enter(uint32_t selfId, std::string& eventName)
                    hookName);
     }
     if (!papyrus) {
-      NoteEnter(this, false);
+      t_enters.Note(this, false);
     }
     return;
   }
@@ -153,10 +127,17 @@ void Hook::Enter(uint32_t selfId, std::string& eventName)
   // JavaScript thread serves even while it waits on the worker
   // (SkyrimPlatform::HandOffAndWait, HandOff.h); declined only when asked on
   // the JavaScript thread itself, which would wait on itself
-  NoteEnter(
-    this,
-    SkyrimPlatform::GetSingleton()->HandOffAndWait(hookName + " enter", f));
+  t_enters.Note(this,
+                SkyrimPlatform::GetSingleton()->HandOffAndWait(enterLabel, f));
   addRemoveBlocker--;
+}
+
+void Hook::SkipEnter()
+{
+  if (hookName == "sendPapyrusEvent") {
+    return;
+  }
+  t_enters.Note(this, false);
 }
 
 void Hook::Leave(bool succeeded)
@@ -167,7 +148,7 @@ void Hook::Leave(bool succeeded)
 
   // thuum tracker #129: only the leave of an enter that crossed (the notes
   // above)
-  if (!TakeEnter(this)) {
+  if (!t_enters.Take(this)) {
     return;
   }
 
@@ -190,7 +171,7 @@ void Hook::Leave(bool succeeded)
   };
   // the enter crossed from this thread, so this is no JavaScript thread and
   // the hand-off is never declined; its answer is not needed
-  SkyrimPlatform::GetSingleton()->HandOffAndWait(hookName + " leave", f);
+  SkyrimPlatform::GetSingleton()->HandOffAndWait(leaveLabel, f);
   addRemoveBlocker--;
 }
 

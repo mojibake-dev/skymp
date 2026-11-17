@@ -2486,11 +2486,17 @@ void OnSendAnimationEventEnter(GumInvocationContext* ic)
   auto animEventName =
     (char**)gum_invocation_context_get_nth_argument(ic, argIdx);
 
-  if (!refr || !animEventName)
+  // thuum tracker #129 (HookPairing.h): the leave below reaches
+  // SendAnimationEventLeave after these two returns, so each leaves its
+  // enter's note, and a nested event's leave never takes an outer enter's
+  if (!refr || !animEventName) {
+    EventsApi::SkipAnimationEventEnter();
     return;
+  }
 
   std::string str = *animEventName;
   if (str == "") {
+    EventsApi::SkipAnimationEventEnter();
     return;
   }
   EventsApi::SendAnimationEventEnter(formId, str);
@@ -2599,11 +2605,15 @@ void OnPlayAnimationEnter(GumInvocationContext* ic)
   auto refr = reinterpret_cast<RE::TESObjectREFR*>(ic->cpu_context->rcx);
   auto toSeq = reinterpret_cast<RE::NiControllerSequence*>(
     gum_invocation_context_get_nth_argument(ic, 2));
+  // the graph hook's pairing (thuum tracker #129): the leave below reaches
+  // SendAnimationEventLeave after these returns too
   if (!refr || !toSeq) {
+    EventsApi::SkipAnimationEventEnter();
     return;
   }
   const char* name = toSeq->name.c_str();
   if (!name || !*name) {
+    EventsApi::SkipAnimationEventEnter();
     return;
   }
   std::string str = name;

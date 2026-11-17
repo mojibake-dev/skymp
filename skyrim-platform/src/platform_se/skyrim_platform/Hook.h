@@ -24,6 +24,12 @@ public:
 
   void Enter(uint32_t selfId, std::string& eventName);
 
+  // thuum tracker #129 (HookPairing.h): an enter its caller returned from
+  // before Enter (FridaHooks.cpp's null reference or empty name), whose
+  // leave still calls Leave: its note, not crossed, so that leave takes its
+  // own and never a nested outer enter's
+  void SkipEnter();
+
   void Leave(bool succeeded);
 
 private:
@@ -43,6 +49,10 @@ private:
   void HandleLeave(DWORD owningThread, bool succeeded, Napi::Env env);
 
   const std::string hookName;
+  // the hand-off's names for this hook's enter and leave
+  // (SkyrimPlatform::HandOffAndWait), built once, not per event
+  const std::string enterLabel;
+  const std::string leaveLabel;
   const std::string eventNameVariableName;
   const std::optional<std::string> succeededVariableName;
   std::set<DWORD> inProgressThreads;

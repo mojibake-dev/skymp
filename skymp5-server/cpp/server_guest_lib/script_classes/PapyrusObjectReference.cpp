@@ -284,10 +284,22 @@ VarValue PapyrusObjectReference::RemoveItem(
     runSkympHacks = true;
   }
 
+  // thuum tracker #143 (the x-body-worn-held-v4 canon read, 20261117-224632:
+  // the console's RemoveItem took Arvel's cuirass from his record and his
+  // host's game kept wearing it): on an NPC the server's removal runs on the
+  // engine that simulates it too, the count the call asked for (the engine
+  // removes what it holds, the record's rule), so that engine takes the
+  // piece off as the record did (MpObjectReference::RemoveItems)
+  MpActor* npc = selfRefr->AsActor();
+  MpActor* simulator = npc ? npc->HostedBy() : nullptr;
   for (auto itemId : formIds) {
     uint32_t maxCount = selfRefr->GetInventory().GetItemCount(itemId);
     uint32_t realCount = count > maxCount ? maxCount : count;
     selfRefr->RemoveItem(itemId, realCount, refrToAdd);
+    if (simulator && count > 0) {
+      npc->RemoveFromEngine(simulator, itemId, static_cast<uint32_t>(count),
+                            "the server's RemoveItem");
+    }
   }
 
   if (runSkympHacks) {
@@ -326,7 +338,20 @@ VarValue PapyrusObjectReference::RemoveAllItems(
     (void)abKeepOwnership;
     (void)abRemoveQuestItems;
 
+    // thuum tracker #143: on an NPC each row the record gives up is removed
+    // from its copy in its simulator's engine too (RemoveItem's rule); the
+    // record's rows alone, so nothing its engine holds beyond the record is
+    // touched
+    const Inventory removed = selfRefr->GetInventory();
     selfRefr->RemoveAllItems(targetRefr);
+    if (MpActor* npc = selfRefr->AsActor()) {
+      if (MpActor* simulator = npc->HostedBy()) {
+        for (const auto& entry : removed.entries) {
+          npc->RemoveFromEngine(simulator, entry.baseId, entry.count,
+                                "the server's RemoveAllItems");
+        }
+      }
+    }
   }
   return VarValue::None();
 }

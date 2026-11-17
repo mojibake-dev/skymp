@@ -2228,6 +2228,29 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     const auto rec = partOne.GetEspm().GetBrowser().LookupById(formId).rec;
     return rec && espm::utils::IsItem(rec->GetType());
   };
+  // a hosted actor's previous report from this connection
+  // (UserInfo::hostedWorn, sorted), the base of the worn set's deltas below
+  std::vector<uint32_t>* previous = nullptr;
+  if (hosted && partOne.serverState.IsConnected(rawMsgData.userId)) {
+    previous = &partOne.serverState.userInfo[rawMsgData.userId]
+                  ->hostedWorn[actorFormId];
+  }
+  const auto wasReported = [&](uint32_t baseId) {
+    return previous &&
+      std::binary_search(previous->begin(), previous->end(), baseId);
+  };
+  // thuum tracker #143 (the x-body-worn-held-v4 canon read, 20261117-224632):
+  // an item the record lacks that this connection's previous report wore as
+  // well is no item its engine took up since. The record lost it under that
+  // engine, by a removal of the server's (the console's RemoveItem on
+  // Arvel's cuirass; MpActor::RemoveFromEngine sends it to the engine) that
+  // this report was read before (in flight, or polled ahead of the snippet's
+  // update), so it leaves the report and is never added back (the delta
+  // rule the worn set already keeps: the wire carries what changed). Its
+  // engine is asked again to remove it below; the report's own list stays
+  // the connection's previous one, so a later report still wearing it is
+  // read the same way
+  std::vector<Inventory::Entry> staleItems;
 
   const auto& inventory = actor->GetInventory();
   {
@@ -2242,6 +2265,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         continue;
       }
       if (hosted && isItemRecord(it->baseId)) {
+        if (wasReported(it->baseId)) {
+          // what the record lost under this engine (tracker #143, above)
+          staleItems.push_back(*it);
+          it = entries.erase(it);
+          continue;
+        }
         // the simulator's engine's own item: the entry stays in the report
         // and is recorded below
         engineItems.push_back(it->baseId);
@@ -2366,13 +2395,16 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   // what stands is the record and the neighbours' picture: the bytes as
   // they came when nothing was dropped (SendToNeighbours), else the kept
   // report to the same audience (RelayToListeners': every listener with a
-  // user, the player's own echo kept)
-  if (dropped) {
+  // user, the player's own echo kept, a host's never sent back to it; a
+  // hosted report reaches here with nothing dropped but a stale item,
+  // tracker #143)
+  if (dropped || !staleItems.empty()) {
     UpdateEquipmentMessage relay;
     relay.idx = msg.idx;
     relay.data = kept;
     for (auto listener : actor->GetActorListeners()) {
-      if (listener->GetUserId() == Networking::InvalidUserId) {
+      if (listener->GetUserId() == Networking::InvalidUserId ||
+          (hosted && listener == myActor)) {
         continue;
       }
       listener->SendToUser(relay, true);
@@ -2415,17 +2447,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     // never shrinks the record, and every later change of the engine's (a
     // helmet taken off, a torch put away: oracle v4 190713 kept Torch01 25 s
     // after the host's actor let it go) does. The previous report is the
-    // connection's (UserInfo::hostedWorn), so a new host or a relaunched one
-    // starts with nothing taken off
-    std::vector<uint32_t>* previous = nullptr;
-    if (partOne.serverState.IsConnected(rawMsgData.userId)) {
-      previous = &partOne.serverState.userInfo[rawMsgData.userId]
-                    ->hostedWorn[actorFormId];
-    }
-    const auto wasReported = [&](uint32_t baseId) {
-      return previous &&
-        std::binary_search(previous->begin(), previous->end(), baseId);
-    };
+    // connection's (UserInfo::hostedWorn, read above as `previous`), so a
+    // new host or a relaunched one starts with nothing taken off
     WorldState* espmWorld = actor->GetParent();
     // an ARMO record's biped slots (its BOD2, else its BODT), none for any
     // other record
@@ -2473,6 +2496,10 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       if (entry.GetWorn() != Inventory::Worn::None) {
         reportedWorn.push_back(entry.baseId);
       }
+    }
+    // tracker #143: a stale item left the report, not the engine's list
+    for (const auto& entry : staleItems) {
+      reportedWorn.push_back(entry.baseId);
     }
     // thuum tracker #114: a record entry stays worn only while the record
     // holds the piece; one its inventory lost is no piece the copy can wear
@@ -2563,10 +2590,22 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
                  "right {:x} left {:x}, spells {:x} {:x}, numChanges {}; of "
                  "the record's worn {} kept (not yet worn in this host's "
                  "reports), {} taken off by it, {} displaced, {} gone from "
-                 "its inventory",
+                 "its inventory; {} the record lost under this engine left "
+                 "out",
                  actorFormId, myActor->GetFormId(), worn, right, left,
                  rightSpell, leftSpell, data.numChanges, keptWorn, takenOff,
-                 displaced, notHeld);
+                 displaced, notHeld, staleItems.size());
+    // tracker #143: the engine still wears what the record lost under it;
+    // it is asked again to remove it, one count per entry (its host's poll
+    // sends a count of one, hostedStateService.ts sendEquipment). Where the
+    // engine already ran the first removal and holds none, the call removes
+    // nothing (HYPOTHESIS until the lab: RemoveItem of an item a copy does
+    // not hold is a no-op); the record holds none either way
+    for (const auto& entry : staleItems) {
+      actor->RemoveFromEngine(myActor, entry.baseId, entry.count,
+                              "its host's report still wears what its "
+                              "record lost");
+    }
   }
 
   if (dropped) {

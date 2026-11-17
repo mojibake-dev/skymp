@@ -121,6 +121,21 @@ public:
   // a worn piece its inventory lacks (playtest 53's bodies, loaded so at the
   // server's start) is brought inside it at its load (ApplyChangeForm)
   void DropWornNotHeld();
+  // thuum tracker #143 (playtest 53, Eli: "desynced bandit armor and some
+  // naked"): `count` of `baseId` removed from this NPC's copy in `game`'s
+  // engine, the record's removal run there (ObjectReference.RemoveItem on
+  // the copy, silent, into no container; SpSnippet::Serve, the server's own
+  // word, which a game runs as it comes). The engine that simulates the
+  // actor owns what it wears (ADR-063), so a removal the server made from
+  // the record (the console's RemoveItem, a Papyrus RemoveItem or
+  // RemoveAllItems on the server's VM) is that engine's to run as well, and
+  // its own channels carry the result to every other seat: its hosted
+  // report (ActionListener::OnUpdateEquipment) and, for a body, the
+  // change-form record its contents' change makes (skymp5-client
+  // changeFormService). The record is not touched here. Nothing is sent for
+  // a player's actor, no game, or no count; true when sent
+  bool RemoveFromEngine(MpActor* game, uint32_t baseId, uint32_t count,
+                        const char* why);
 
   void SetHealthRespawnPercentage(float percentage);
   void SetMagickaRespawnPercentage(float percentage);

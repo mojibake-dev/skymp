@@ -595,6 +595,38 @@ void MpActor::DropWornNotHeld()
   }
 }
 
+bool MpActor::RemoveFromEngine(MpActor* game, uint32_t baseId, uint32_t count,
+                               const char* why)
+{
+  if (!game || count == 0 || baseId == 0 || IsCreatedAsPlayer() ||
+      game->GetUserId() == Networking::InvalidUserId) {
+    return false;
+  }
+  // the native's own arguments (akItemToRemove, aiCount, abSilent,
+  // akOtherContainer): silent, since the item is the NPC's and no player's
+  // notice; into no container, since a target's record is the server's to
+  // fill (MpObjectReference::RemoveItems adds it there and tells that
+  // target's own game). The self is the copy as the game numbers it (a
+  // game-file actor's long id resolves to its own reference there,
+  // skymp5-client worldViewMisc snippetIdToLocalId). HYPOTHESIS until the
+  // lab reads it: the engine takes a worn piece off as it leaves the copy,
+  // and raises its container-changed event, so a body's owner records the
+  // body again (changeFormService's "its contents changed")
+  using Arg = std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
+  SpSnippetObjectArgument item;
+  item.formId = baseId;
+  item.type = "Form";
+  const std::vector<Arg> args{ Arg(item), Arg(static_cast<double>(count)),
+                               Arg(true), Arg(std::nullopt) };
+  SpSnippet("ObjectReference", "RemoveItem", args, GetFormId()).Serve(game);
+  spdlog::info("[verb:npc-fate] {:x}'s {} of {:x} removed from its copy in "
+               "{:x}'s engine ({}); the record holds {} (tracker #143)",
+               GetFormId(), count, baseId, game->GetFormId(), why,
+               GetInventory().GetItemCount(baseId));
+  return true;
+}
+
 void MpActor::SetHealthRespawnPercentage(float percentage)
 {
   EditChangeForm([&](MpChangeForm& changeForm) {

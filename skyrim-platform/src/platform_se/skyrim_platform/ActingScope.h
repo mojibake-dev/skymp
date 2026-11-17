@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -153,6 +155,9 @@ struct Joined
   // the arm had joined its cap: the stack is left out of the scope (train
   // 53's review, correctness-2)
   bool capped = false;
+  // the arm names its event and the stack's root frame runs another
+  // function: neither joined nor counted (tracker #116, the arm's steal)
+  bool otherEvent = false;
 };
 
 // the steady clock in milliseconds (ScriptNatives.cpp's)
@@ -178,9 +183,18 @@ bool Requested();
 // entry's arm joins at most the trigger's own attached scripts' handlers
 // (rung 5's fresh review, note 9), and a taken stage request's arm its
 // fragment's own stack, one a passing item (train 53's review,
-// correctness-2); stage, a stage's arm's, lets Widen find it
+// correctness-2); stage, a stage's arm's, lets Widen find it. event, a
+// relayed trigger's or activation's arm's (OnTriggerEnter, OnTriggerLeave,
+// OnActivate), keeps its joins for the stacks whose root frame runs that
+// event's handler: any other stack rooted at the subject (its script's own
+// update loop resuming from a Utility.Wait inside the window) is neither
+// joined nor counted against maxJoins (tracker #116: playtest 53's web
+// trigger 0x106ae2, whose resumed onUpdate loop took the relayed enter's one
+// join and left its OnTriggerEnter out, rotfern's rec-c1.log:3446-3451).
+// Empty for a stage's or a word's arm, which joins as before
 Scope Arm(uint32_t subject, Player player, uint64_t ttlMs, RootKind root,
-          uint32_t maxJoins = 0, std::optional<int32_t> stage = std::nullopt);
+          uint32_t maxJoins = 0, std::optional<int32_t> stage = std::nullopt,
+          std::string event = {});
 // a later item's event of the stage that opened the subject's live capped
 // arm (H-AP8): the arm joins one stack more; false for none
 bool Widen(uint32_t subject, int32_t stage);
@@ -194,8 +208,12 @@ bool Any();
 std::optional<Scope> Of(RE::VMStackID stackId);
 // the stack joined to the scope armed for its root frame's subject, nothing
 // when no live arm names the subject, or a capped Joined (the stack left
-// out, nothing stored) when the arm has joined its cap
-std::optional<Joined> Join(RE::VMStackID stackId, uint32_t rootSubject);
+// out, nothing stored) when the arm has joined its cap, or an otherEvent
+// Joined (nothing stored, nothing counted) when the arm names an event and
+// rootFunction, the root frame's function, is another (case aside,
+// Papyrus's rule)
+std::optional<Joined> Join(RE::VMStackID stackId, uint32_t rootSubject,
+                           std::string_view rootFunction = {});
 
 // the lines a scope makes, each kind throttled on its own, so a scope's
 // joins and swaps never spend the first lines of its Game.GetPlayer returns

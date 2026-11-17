@@ -1,6 +1,7 @@
 #include "ActingScope.h"
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <mutex>
 #include <unordered_map>
@@ -28,6 +29,8 @@ struct ArmEntry
   // the stage whose taken request armed it (Widen's key), none for a word's
   // or a trigger's arm
   std::optional<int32_t> stage;
+  // the event whose handler's stacks it joins (Arm's event), empty for any
+  std::string event;
 };
 
 struct JoinedEntry
@@ -214,7 +217,8 @@ bool ActingScope::Requested()
 ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
                                     uint64_t ttlMs, RootKind root,
                                     uint32_t maxJoins,
-                                    std::optional<int32_t> stage)
+                                    std::optional<int32_t> stage,
+                                    std::string event)
 {
   const uint64_t now = NowMs();
   std::lock_guard l(g_scope.m);
@@ -232,6 +236,7 @@ ActingScope::Scope ActingScope::Arm(uint32_t subject, Player player,
   entry.joins = 0;
   entry.maxJoins = maxJoins;
   entry.stage = stage;
+  entry.event = std::move(event);
   StoreSizes();
   return entry.scope;
 }
@@ -281,8 +286,26 @@ std::optional<ActingScope::Scope> ActingScope::Of(RE::VMStackID stackId)
   return it->second.scope;
 }
 
-std::optional<ActingScope::Joined> ActingScope::Join(RE::VMStackID stackId,
-                                                     uint32_t rootSubject)
+namespace {
+// two Papyrus names alike, case aside (the VM's own rule for its names)
+bool SameName(std::string_view a, std::string_view b)
+{
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.size(); ++i) {
+    const auto x = static_cast<unsigned char>(a[i]);
+    const auto y = static_cast<unsigned char>(b[i]);
+    if (std::tolower(x) != std::tolower(y)) {
+      return false;
+    }
+  }
+  return true;
+}
+}
+
+std::optional<ActingScope::Joined> ActingScope::Join(
+  RE::VMStackID stackId, uint32_t rootSubject, std::string_view rootFunction)
 {
   if (!Armed() || rootSubject == 0) {
     return std::nullopt;
@@ -297,6 +320,10 @@ std::optional<ActingScope::Joined> ActingScope::Join(RE::VMStackID stackId,
     g_scope.arms.erase(arm);
     StoreSizes();
     return std::nullopt;
+  }
+  if (!arm->second.event.empty() &&
+      !SameName(arm->second.event, rootFunction)) {
+    return Joined{ arm->second.scope, arm->second.joins, false, true };
   }
   if (arm->second.maxJoins != 0 && arm->second.joins >= arm->second.maxJoins) {
     return Joined{ arm->second.scope, arm->second.joins, true };

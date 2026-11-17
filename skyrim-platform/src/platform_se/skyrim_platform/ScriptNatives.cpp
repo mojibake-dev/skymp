@@ -2270,9 +2270,28 @@ std::optional<ActingScope::Scope> ScopeOfCall(
       PlatformCall::IsLiveCallback(stack->callback.get())) {
     return std::nullopt;
   }
-  const std::uint32_t root = RootSubjectOf(stack);
-  const auto joined = ActingScope::Join(stack->stackID, root);
+  const RE::BSScript::StackFrame* rootFrame = RootFrameOf(stack);
+  const std::uint32_t root = SubjectOfFrame(rootFrame);
+  const RE::BSScript::IFunction* rootFn =
+    rootFrame ? rootFrame->owningFunction.get() : nullptr;
+  const std::string_view rootFunction =
+    rootFn ? std::string_view(rootFn->GetName().c_str()) : std::string_view();
+  const auto joined = ActingScope::Join(stack->stackID, root, rootFunction);
   if (!joined) {
+    return std::nullopt;
+  }
+  if (joined->otherEvent) {
+    // a stack rooted at a relayed event's subject that runs another
+    // function (tracker #116: the trigger's own update loop): not the
+    // handler the arm was made for, so no join and no count
+    if (ActingScope::LineDue(joined->scope.seq, ActingScope::Line::kRefuse)) {
+      logger::info("[verb:quests] stack {} rooted at {:x} runs {}, not the "
+                   "arm's event: neither joined nor counted ({})",
+                   stack->stackID, root,
+                   rootFunction.empty() ? std::string("no function")
+                                        : std::string(rootFunction),
+                   ScopeText(joined->scope));
+    }
     return std::nullopt;
   }
   if (joined->capped) {

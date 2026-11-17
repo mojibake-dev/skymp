@@ -1585,8 +1585,12 @@ std::string SendTriggerImpl(RE::TESObjectREFR* refr, std::string_view name,
       taken && taken->player.figure == actionRefId) {
     // its joins capped at the trigger's own attached scripts, the handlers
     // this send starts (rung 5's fresh review, note 9)
+    // its joins for the stacks that run this event's handler alone
+    // (tracker #116: a resumed update loop rooted at the trigger took the
+    // arm's join, rotfern's rec-c1.log:3446-3451)
     ActingScope::Arm(formId, taken->player, ActingScope::kArmMs,
-                     ActingScope::RootKind::kTrigger, target.scripts);
+                     ActingScope::RootKind::kTrigger, target.scripts,
+                     std::nullopt, std::string(event));
     if (LogThis(g_triggerArmLines)) {
       logger::info("[verb:quests] SendTriggerEvent {} to {:x} by {:x}: the "
                    "presser's scope armed for {} ms (acting player {:x})",
@@ -1668,9 +1672,13 @@ std::string ArmActivationImpl(RE::TESObjectREFR* refr,
   if (!taken || taken->player.figure != actionRefId) {
     return refuse("no activation request naming this presser");
   }
+  // its joins for the OnActivate handlers alone (tracker #116's steal: a
+  // stack the reference's script already runs, a loop resuming inside the
+  // window, never takes the press's join)
   const auto scope =
     ActingScope::Arm(formId, taken->player, ActingScope::kArmMs,
-                     ActingScope::RootKind::kTrigger, target.scripts);
+                     ActingScope::RootKind::kTrigger, target.scripts,
+                     std::nullopt, std::string("OnActivate"));
   answer["armed"] = true;
   answer["items"] = taken->player.items ? taken->player.items->size() : 0;
   if (LogThis(g_activationArmLines)) {

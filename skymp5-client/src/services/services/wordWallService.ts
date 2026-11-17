@@ -85,7 +85,16 @@ export class WordWallService extends ClientListener {
     // a tick task, so game calls are allowed): the player stepping into a word
     // wall's trigger, the host's own walk-in included, which gets no
     // triggerEntry. HYPOTHESIS until the probe (x-word-wall-npc): it fires on
-    // the host, with the trigger as target and the player as cause
+    // the host, with the trigger as target and the player as cause.
+    // Rule 9's cost, accepted: the client's first triggerEnter listener, so
+    // subscribing switches the platform's sink on (EventManager.cpp
+    // Subscribe), and every enter by any collidable into any trigger in this
+    // seat's loaded cells (other seats' figures, puppets, props: the presser
+    // rule's note, FridaHooks.cpp, HYPOTHESIS there) crosses into JS, a tick
+    // task with two lookups and two wrappers, all but the player's own
+    // dropped below. A stock event takes no native filter (no minSelfId,
+    // maxSelfId or eventPattern, as a hook does); an enter comes once a
+    // crossing, not twice every half second as OnTrigger (above) does
     this.controller.on('triggerEnter', (e) => {
       if (e.cause?.getFormID() !== 0x14) {
         return;

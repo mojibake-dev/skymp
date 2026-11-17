@@ -645,6 +645,11 @@ export class FormView {
         // its process lists) and deleted after, as the harvest path does
         // (modelApplyUtils) and the cleaner does
         if (refr) {
+          // the lab's line for this chain (tracker #106): the reference, its
+          // base, the server's id, and the cleaner's guards as they stand
+          // after the release above, before the engine is touched
+          const protection = SpApiInteractor.getControllerInstance().lookupListener(WorldCleanerService).getWcProtection(refrId);
+          logLab("form-view", `destroy ${refrId.toString(16)} (base ${(refr.getBaseObject()?.getFormID() ?? 0).toString(16)}, server ${(this.remoteRefrId ?? 0).toString(16)}): protection ${protection}, commanded ${ac ? ac.isCommandedActor() : false}; disable, then delete`);
           refr.disable(false).then(() => {
             const again = ObjectReference.from(Game.getFormEx(refrId));
             if (again && !again.isDeleted()) {

@@ -12431,7 +12431,16 @@ void ActionListener::PlayStagger(MpActor& aggressor, MpActor& target,
 // what IsHostileToActor reads for an effect between its two ends, and it
 // never held a creature, so an atronach's cloak burnt no player server-side
 // however long the two fought. The host's engine fights for its NPC by
-// itself (its AI is the host's, R2), so a hosted victim gets no notice.
+// itself (its AI is the host's, R2), but only against what it saw: a
+// player's hit on an NPC another game hosts lands on that player's own copy,
+// a puppet (AI off), and the host's engine never sees it (playtest 53's
+// #112, 2026-11-17 00:12:34Z: Ariadne's two sword hits on rotfern's
+// Reanimate Corpse thrall 29602, "a fight begins; no notice", server.log
+// :2197 to :2206, and the thrall never struck back; Eli: "doesn't respond to
+// hits from other player but does aggro once someone assaults the owner",
+// the owner's own notice being the players' below). So the host's game is
+// told as a victim player's is, its NPC starting combat with its figure of
+// the attacker; the host's own hit is its engine's already and tells nothing.
 void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
                                      std::chrono::steady_clock::time_point now)
 {
@@ -12456,12 +12465,43 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
                                nowMs)) {
     return;
   }
+  if (facts.aggressor_is_player && facts.target_is_hosted) {
+    // the NPC's own engine: its host's game, Actor.StartCombat on the NPC
+    // aimed at that game's figure of the attacker (the attacker's server id,
+    // which SpSnippet keeps for an argument; the client maps it to the
+    // figure, spSnippetService.ts deserializeArg). HYPOTHESIS until a probe
+    // reads it: the host's engine then fights the figure as it fights an
+    // attacker it saw (the players' notice's native, ADR-023)
+    MpActor* host = partOne.worldState.HostOf(target);
+    if (!host || host == &aggressor ||
+        partOne.serverState.UserByActor(host) == Networking::InvalidUserId) {
+      spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, "
+                   "a fight begins; no notice, its host's own engine saw "
+                   "the hit",
+                   aggressor.GetFormId(), target.GetFormId());
+      return;
+    }
+    SpSnippetObjectArgument attacker;
+    attacker.formId = aggressor.GetFormId();
+    attacker.type = "Actor";
+    const std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+      attackerArgs{ attacker };
+    SpSnippet("Actor", "StartCombat", attackerArgs, target.GetFormId())
+      .Execute(host, SpSnippetMode::kNoReturnResult);
+    spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, a "
+                 "fight begins; its host {:x}'s game is told (the hit landed "
+                 "on the attacker's own copy, which its host's engine never "
+                 "sees; playtest 53 #112)",
+                 aggressor.GetFormId(), target.GetFormId(), host->GetFormId());
+    return;
+  }
   if (!facts.target_is_player || !facts.aggressor_is_player) {
-    // the StartCombat notice stays between players (ADR-023): a hosted
-    // NPC's victim is its host engine's to fight, and a player's copy of a
-    // hosted creature has its AI off, so a StartCombat on it would do
-    // nothing the engine means; the server's rest refusal (in_fight) is
-    // what a player attacked by a hosted creature keeps
+    // the StartCombat notice to a player victim stays between players
+    // (ADR-023): a player's copy of a hosted creature has its AI off, so a
+    // StartCombat on it would do nothing the engine means; the server's
+    // rest refusal (in_fight) is what a player attacked by a hosted
+    // creature keeps
     spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, a "
                  "fight begins; no notice, the pair is not two players",
                  aggressor.GetFormId(), target.GetFormId());

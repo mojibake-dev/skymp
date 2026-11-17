@@ -6,6 +6,7 @@
 #include "HitMessage.h"
 #include "MsgType.h"
 #include "PlayerBowShotMessage.h"
+#include "SpSnippet.h"
 #include "SpellCastMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateEquipmentMessage.h"
@@ -606,5 +607,100 @@ TEST_CASE("A hosted caster's cast relay reaches each other game once and "
 
   p.DestroyActor(kBystanderA);
   p.DestroyActor(kBystanderB);
+  Leave(p);
+}
+
+// playtest 53's #112 (2026-11-17 00:12:34Z, server.log :2197 to :2206):
+// Ariadne's two sword hits on rotfern's Reanimate Corpse thrall began a fight
+// with no notice ("no notice, the pair is not two players"), and rotfern's
+// engine, which runs the thrall, never saw a hit: it landed on Ariadne's own
+// copy, a puppet. Eli: "doesn't respond to hits from other player but does
+// aggro once someone assaults the owner". The host's game is told now
+// (ActionListener::NotifyHostility): its NPC starts combat with its figure of
+// the attacker, once a fight, as a victim player's game is (ADR-023)
+TEST_CASE("A player's hit on an NPC another game hosts tells the host's game "
+          "once a fight to start its NPC's combat with the attacker; the "
+          "host's own hit tells nothing",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& predator = Gather(p);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  // in front of both players, who stand at the forest's spot facing north
+  // (HitTest's fight's frame), within a sword's reach
+  predator.SetPos(kForest + NiPoint3{ 0.f, 100.f, 0.f });
+  for (MpActor* player : { &host, &other }) {
+    player->AddItem(kIronSword, 1);
+    Equipment eq;
+    eq.inv.entries.push_back(Inventory::Entry(kIronSword, 1, kWorn));
+    player->SetEquipment(eq);
+  }
+  // `user`'s sword hit on the predator at full health, its cooldown past
+  const auto swings = [&](Networking::UserId user, MpActor& player) {
+    predator.SetPercentages(ActorValues{});
+    player.SetLastHitTime(
+      kPredator, std::chrono::steady_clock::now() - std::chrono::seconds(3));
+    RawMessageData raw;
+    raw.userId = user;
+    HitMessage hit;
+    hit.data.aggressor = 0x14;
+    hit.data.target = kPredator;
+    hit.data.source = kIronSword;
+    p.GetActionListener().OnHit(raw, hit);
+    p.Tick(); // snippets are deferred
+  };
+  // the StartCombat snippets `user` received since the last clear
+  const auto startCombatsTo = [&](Networking::UserId user) {
+    std::vector<nlohmann::json> out;
+    for (const auto& j : SentTo(p, user, MsgType::SpSnippet)) {
+      if (j.value("function", std::string{}) == "StartCombat") {
+        out.push_back(j);
+      }
+    }
+    return out;
+  };
+
+  // the other player's hit begins the fight: the host's game alone is told,
+  // the predator its self (a game-file actor's long id) and the attacker's
+  // server id its argument, which the host's client maps to its figure
+  p.Messages().clear();
+  {
+    LogCapture log;
+    swings(1, other);
+    REQUIRE(log.Count("hit 85547, a fight begins; its host ff000d20's game "
+                      "is told") == 1);
+  }
+  const auto told = startCombatsTo(0);
+  REQUIRE(told.size() == 1);
+  REQUIRE(told[0]["class"] == "Actor");
+  REQUIRE(told[0]["selfId"] ==
+          SpSnippet::MakeLongFormId(&p.worldState, kPredator));
+  REQUIRE(told[0]["arguments"] ==
+          nlohmann::json::array(
+            { nlohmann::json{ { "formId", kOther }, { "type", "Actor" } } }));
+  REQUIRE(startCombatsTo(1).empty());
+  REQUIRE(p.GetFights().between(kOther, kPredator));
+
+  // the same fight's next hit tells nothing
+  p.Messages().clear();
+  swings(1, other);
+  REQUIRE(startCombatsTo(0).empty());
+  REQUIRE(startCombatsTo(1).empty());
+
+  // the host's own hit on its NPC is its engine's already
+  p.GetFights().forget(kOther);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    swings(0, host);
+    REQUIRE(log.Count("no notice, its host's own engine saw the hit") == 1);
+  }
+  REQUIRE(startCombatsTo(0).empty());
+  REQUIRE(startCombatsTo(1).empty());
+
+  predator.SetPercentages(ActorValues{});
+  p.GetFights().forget(kHost);
   Leave(p);
 }

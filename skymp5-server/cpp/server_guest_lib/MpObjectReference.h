@@ -116,6 +116,18 @@ public:
   // (VisitProperties); an untouched container sends nothing, since both
   // engines hold the base's default
   bool HasRecordedInventory() const;
+  // thuum tracker #120 (playtest 54, Eli: "Props jumped in riverwood. Items
+  // near the blacksmiths forge."): whether the record's pose holds play (a
+  // seat's streamed move, a script's, one persisted across a restart): a
+  // game-file reference whose position or angle stands off its REFR's DATA,
+  // read as WorldState's AttachEspmRecord reads it. A game-file prop's
+  // record rides behind its create word only then (PartOne's onSubscribe);
+  // an untouched one's is the game file's placement, which every engine
+  // loads and settles itself, as HasRecordedInventory leaves an untouched
+  // container to the base's default. A server-made reference, or one with
+  // no REFR placement (an actor's ACHR among them), reads as recorded: its
+  // create word's pose is the one to keep
+  bool PoseRecorded() const;
   const bool& IsHarvested() const;
   const bool& IsOpen() const;
   const bool& IsDisabled() const;

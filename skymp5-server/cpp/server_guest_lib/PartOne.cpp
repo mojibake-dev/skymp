@@ -2027,6 +2027,27 @@ void PartOne::Init()
       }
     }
 
+    // thuum tracker #120 (playtest 54, Eli: "Props jumped in riverwood.
+    // Items near the blacksmiths forge."): a game-file reference whose
+    // record holds play (PoseRecorded: a seat's streamed move, a script's,
+    // one persisted across a restart) has its record answer ride behind its
+    // create word and its word, the place every seat already puts its copy
+    // at (ADR-071 decision 6); one whose record is still its game file's
+    // placement has none, since every engine loads that placement and
+    // settles it alike (havok-props.md E30), as an untouched container's
+    // create word carries no inventory (VisitProperties). The client puts a
+    // game-file prop at its record once a record has reached it, or when its
+    // copy rests farther from the file's pose than the load settle's bound
+    // (propService.ts's FILE_SETTLE_UNITS), so it no longer drags an
+    // untouched item from its engine's rest to the file's pose at every
+    // approach. Never to the prop's live owner, whose body runs ahead of its
+    // record (the stale sample's rule, OnPropTransform)
+    if (!emitterAsActor && emitter->IsEspmForm() &&
+        PropLiveOwner(*emitter) != listener->GetFormId() &&
+        emitter->PoseRecorded()) {
+      SendPropRecord(listenerUserId, *emitter);
+    }
+
     // the reference's records ride behind its create word on the same
     // ordered channel (ServeReferenceRecords: its destruction and ref state,
     // then its scripts' record for a game that does not host its cell)

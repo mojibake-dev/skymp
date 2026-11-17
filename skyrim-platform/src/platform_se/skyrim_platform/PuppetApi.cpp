@@ -2759,6 +2759,20 @@ Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
     for (auto& [drawnOnId, looks] : elsewhere) {
       const auto it = reads.find(drawnOnId);
       if (it == reads.end()) {
+        // a look drawn on a reference this poll does not read (a body before
+        // the grant reaches its commander's seat) is said once a (reference,
+        // first look), so the lab tells a dropped look from one never
+        // raised; at most 1024 said for the session. One thread: this task
+        // runs on the game-thread queue alone. looks is never empty (each
+        // entry is made by a push_back in ReadEffectLooks)
+        static std::unordered_set<uint64_t> droppedSaid;
+        const uint64_t key =
+          (static_cast<uint64_t>(drawnOnId) << 32) | looks.front();
+        if (droppedSaid.size() < 1024 && droppedSaid.insert(key).second) {
+          logger::info("[verb:npc-puppet] effects drawn on {:x}, not polled "
+                       "here: {} look(s), first {:x}, dropped",
+                       drawnOnId, looks.size(), looks.front());
+        }
         continue;
       }
       auto& effects = it->second.effects;

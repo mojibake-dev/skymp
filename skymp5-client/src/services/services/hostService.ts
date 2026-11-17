@@ -586,6 +586,14 @@ export class HostService extends ClientListener {
             this.runDeferred(remoteId, hold.deferred);
             return;
         }
+        // an actor this engine holds in a furniture is placed by it (seatedBy)
+        const seat = actor ? HostService.seatedBy(actor) : undefined;
+        if (seat) {
+            this.pendingPlacement.delete(remoteId);
+            logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: seated here after ${now - hold.since} ms (${seat}), the engine at ${engineAt}, the record at ${recordAt}; released unmoved, its furniture places it`);
+            this.runDeferred(remoteId, hold.deferred);
+            return;
+        }
         // the hold is the one mover while it stands (the view's gate defers to
         // it, formView): the first check leaves a frame for the word's apply,
         // the second asks, and an ask that did not land is repeated every
@@ -609,6 +617,40 @@ export class HostService extends ClientListener {
             logLab("verb:npc-handoff", `hold ${remoteId.toString(16)}: not placed after ${now - hold.since} ms (${asked}), the engine at ${engineAt}, the record at ${recordAt}; released on the timeout`);
             this.runDeferred(remoteId, hold.deferred);
         }
+    }
+
+    // thuum tracker #116 (playtest 53, Eli: "he wasn't doing the animations
+    // where he's stuck in the webs or the drop"): the furniture this engine
+    // holds `actor` in, said for the line (its reference, the sit state;
+    // Papyrus GetFurnitureReference, SKSE, and GetSitState: 2 wants to sit,
+    // 3 sitting), or undefined when it holds none. A furniture's actor is
+    // its furniture's to place: the package seats it at the cell's load, and
+    // the record's place, a point the engine never had it at, throws it out.
+    // Arvel 0x39655 loaded into his web, WebFurnitureMarker 0x46e90 at
+    // (3918, -3313, -1779) (Skyrim.esm, lab/esm.py cellrefs 0x371de), on
+    // both seats (playtest 53: c1-console.log:5175, c2-console.log:14163);
+    // the promote's setPosition and the hold's move took him 98 units off,
+    // to the record, which held his ACHR's own place (3822, -3336, -1779),
+    // and in the move's frame the engine performed ActionActivate 0x13009 with
+    // IdleForceDefaultState 0x86840 on him (c1-console.log:5511-5512; the
+    // same on x-bleak-scripts 20261107-211929, c1-console.log:1045-1215).
+    // Out of the furniture, the web's idles (IdleWebThrashShort, the
+    // trigger's SpiderWebAnimationsSCRIPT) and its exit (WebIdleExit,
+    // conditioned on Variable03 5, which MS13WebDestructibleSCRIPT sets at the
+    // web's destruction) had no web state to play in: isInFurniture read 0
+    // on both seats from 00:27:43 through his death (playtest 53's
+    // trace-c1-6 and trace-c2-6). A record a previous host sampled elsewhere
+    // loses to the seat as well: this engine's package seated the actor at
+    // the load and would seat it again (HYPOTHESIS, unread on the lab), so
+    // the furniture is this engine's own answer. HYPOTHESIS: a demoted
+    // actor keeps its furniture reference until the promote reads it
+    static seatedBy(actor: Actor): string | undefined {
+        const furniture = actor.getFurnitureReference();
+        const sit = actor.getSitState();
+        if (!furniture && sit !== 2 && sit !== 3) {
+            return undefined;
+        }
+        return `in furniture ${furniture ? furniture.getFormID().toString(16) : "none yet"}, sit state ${sit}`;
     }
 
     private readonly pendingPlacement = new Map<number, PendingPlacement>();

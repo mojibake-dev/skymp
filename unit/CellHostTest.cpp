@@ -3101,3 +3101,136 @@ TEST_CASE("An NPC's thrall dies when another game runs its caster; the "
   p.DestroyActor(kC2);
   p.worldState.npcEnabled = npcWas;
 }
+
+// thuum playtest 53 #113 (Eli's design A, 2026-11-17): a thrall fights the
+// other player for as long as its commander's fight with that player stands
+// on the record, then stands down with it. Its commander's game simulates it
+// (ClaimCommanded), so that game alone is told, through the fight's own
+// notices: Actor.StartCombat on the thrall aimed at the other player when the
+// fight is seen standing and again while its host's last state names no
+// target, Actor.StopCombat at the fight's end (PartOne::KeepThrallsInFight,
+// StandDownThralls)
+TEST_CASE("A thrall fights the other player while its commander's fight "
+          "stands, is told again while its host names no target, and stands "
+          "down with the fight",
+          "[CellHost]")
+{
+  constexpr uint32_t kThrall = 0xff000c1b;
+  // a command's record seconds, named for the lab alone (ClaimReanimated)
+  constexpr uint32_t kRecordS = 60;
+  auto& p = GetPartOne();
+  const bool npcWas = p.worldState.npcEnabled;
+  p.worldState.npcEnabled = true;
+  auto& c1 = Player(p, 0, kC1, kHere);
+  Player(p, 1, kC2, kHere + NiPoint3{ 100.f, 0.f, 0.f });
+  p.CreateActor(kThrall, kHere + NiPoint3{ 50.f, 50.f, 0.f }, 0, kTamriel);
+  auto& thrall = p.worldState.GetFormAt<MpActor>(kThrall);
+  thrall.SetPos(thrall.GetPos());
+  const auto cell = p.worldState.CellOf(thrall);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  CellLoaded(p, 1, *cell);
+  // c1's raise, as OnHit stamps it ahead of ClaimReanimated
+  thrall.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0, kC1);
+  REQUIRE(p.ClaimCommanded(c1, thrall, kRecordS) ==
+          PartOne::ClaimVerdict::Granted);
+  REQUIRE(p.CommanderOf(thrall) == kC1);
+  REQUIRE(p.SimulatorOf(thrall) == kC1);
+
+  // the snippets of `function` on the thrall `user` got since the last clear
+  const auto toldTo = [&](Networking::UserId user, const char* function) {
+    p.Tick(); // snippets are deferred
+    std::vector<nlohmann::json> out;
+    for (auto& m : p.Messages()) {
+      if (m.userId == user && m.j.is_object() &&
+          m.j.value("t", -1) == static_cast<int>(MsgType::SpSnippet) &&
+          m.j.value("function", std::string()) == function &&
+          m.j.value("selfId", uint64_t{ 0 }) == kThrall) {
+        out.push_back(m.j);
+      }
+    }
+    return out;
+  };
+  const auto tick = [&](uint64_t atMs) {
+    p.Messages().clear();
+    p.TickFights(atMs);
+  };
+
+  // no fight: nothing
+  const uint64_t t0 = NowMs();
+  tick(t0);
+  REQUIRE(toldTo(0, "StartCombat").empty());
+
+  // the players' fight begins (the record's hit, NotifyHostility): the
+  // commander's game is told its thrall fights c2, the other game nothing
+  REQUIRE(p.GetFights().hit(kC1, kC2, t0));
+  tick(t0 + 1'000);
+  const auto joined = toldTo(0, "StartCombat");
+  REQUIRE(joined.size() == 1);
+  REQUIRE(joined[0]["class"] == "Actor");
+  REQUIRE(joined[0]["arguments"] ==
+          nlohmann::json::array(
+            { nlohmann::json{ { "formId", kC2 }, { "type", "Actor" } } }));
+  REQUIRE(toldTo(1, "StartCombat").empty());
+
+  // its host's state names c2: nothing again
+  thrall.SetHostedState(kC2, 0);
+  tick(t0 + 3'000);
+  REQUIRE(toldTo(0, "StartCombat").empty());
+
+  // its engine stood it down (its host's state names no target): told
+  // again, then not within the period
+  thrall.SetHostedState(0, 0);
+  tick(t0 + 5'000);
+  REQUIRE(toldTo(0, "StartCombat").size() == 1);
+  tick(t0 + 5'500);
+  REQUIRE(toldTo(0, "StartCombat").empty());
+
+  // another enemy of its own: its engine's choice, nothing
+  thrall.SetHostedState(kC1 + 0x100, 0);
+  tick(t0 + 8'000);
+  REQUIRE(toldTo(0, "StartCombat").empty());
+
+  // a minute quiet: the fight ends, the players' games told as before and
+  // the thrall stands down on its commander's game alone
+  thrall.SetHostedState(kC2, 0);
+  tick(t0 + 61'000);
+  REQUIRE(!p.GetFights().between(kC1, kC2));
+  REQUIRE(toldTo(0, "StopCombat").size() == 1);
+  REQUIRE(toldTo(1, "StopCombat").empty());
+  // and nothing after it
+  tick(t0 + 63'000);
+  REQUIRE(toldTo(0, "StartCombat").empty());
+  REQUIRE(toldTo(0, "StopCombat").empty());
+
+  // a player's fight with an NPC tells the thrall nothing, at its start or
+  // its end: the thrall fighting that NPC is its engine's (R2)
+  constexpr uint32_t kFoe = 0xff000c1c;
+  p.CreateActor(kFoe, kHere + NiPoint3{ -60.f, 40.f, 0.f }, 0, kTamriel);
+  auto& foe = p.worldState.GetFormAt<MpActor>(kFoe);
+  foe.SetPos(foe.GetPos());
+  REQUIRE(p.worldState.HostOf(foe) == &c1);
+  thrall.SetHostedState(kFoe, 0);
+  REQUIRE(p.GetFights().hit(kC1, kFoe, t0 + 63'000));
+  tick(t0 + 64'000);
+  REQUIRE(toldTo(0, "StartCombat").empty());
+  tick(t0 + 125'000);
+  REQUIRE(!p.GetFights().between(kC1, kFoe));
+  REQUIRE(toldTo(0, "StopCombat").empty());
+
+  // a dead thrall is never told
+  REQUIRE(p.GetFights().hit(kC1, kC2, t0 + 126'000));
+  thrall.Kill(nullptr);
+  tick(t0 + 127'000);
+  REQUIRE(toldTo(0, "StartCombat").empty());
+
+  p.ReleaseAnyClaim(thrall);
+  p.GetFights().forget(kC1);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kFoe);
+  p.DestroyActor(kThrall);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.worldState.npcEnabled = npcWas;
+}

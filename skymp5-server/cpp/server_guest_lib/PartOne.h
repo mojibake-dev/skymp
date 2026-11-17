@@ -934,6 +934,16 @@ public:
   // players' games.
   skymp::rules::Fights& GetFights();
   void TickFights(uint64_t nowMs);
+  // thuum playtest 53 #113 (Eli's design A, 2026-11-17): a thrall fights
+  // the other player for as long as its commander's fight with that player
+  // stands on the record, then stands down with it. Its commander's game
+  // simulates it (ClaimCommanded), so TickFights tells that game, through
+  // the fight's own notices (Actor.StartCombat, Actor.StopCombat):
+  // KeepThrallsInFight on each tick of a players' fight that stands,
+  // StandDownThralls at its end (`toldOnly` when the other party is gone:
+  // only the thralls it told)
+  void KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs);
+  void StandDownThralls(MpActor& commander, uint32_t opponent, bool toldOnly);
 
   // thuum ADR-068 (the one seam): every reporter's script-call budget and
   // every subject's sequence (the rule and its state are Rust's, wire-rules

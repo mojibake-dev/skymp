@@ -6698,6 +6698,9 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   facts.sender = reporter->GetFormId();
   facts.self_id = msg.selfId;
   facts.epoch = msg.epoch;
+  // thuum tracker #117's open half (SCHEMA_VERSION 61): the acting player
+  // the report names, read by a row for the acting seat (Message.Show)
+  facts.acting = msg.acting.value_or(0);
   // no death recorded unless an actor's below
   facts.died_ago_ms = std::numeric_limits<uint64_t>::max();
   MpObjectReference* subject = nullptr;
@@ -7019,6 +7022,28 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
     }
     ++relayed;
   };
+  // audience 4 (thuum tracker #117's open half, playtest 54): a call the
+  // reporter's seam skipped inside another player's acting scope because its
+  // row runs on the acting player's seat alone (Message.Show: a guest's
+  // keyhole press runs on the host, and its no-claw message is the guest's
+  // to see). Served to that player's game alone, with no sequence (no
+  // receiver orders a message), kept nowhere; a player gone since is no one
+  if (verdict.audience == 4) {
+    const auto& form = partOne.worldState.LookupFormByIdNoLoad(facts.acting);
+    MpActor* acting = form ? form->AsActor() : nullptr;
+    if (acting && acting != reporter &&
+        partOne.serverState.UserByActor(acting) != Networking::InvalidUserId) {
+      relay.Serve(acting);
+      ++relayed;
+    }
+    spdlog::info("[verb:scripts] {:x} reports {}.{} on {:x} (from {}.{}), "
+                 "skipped there inside acting player {:x}'s scope: relayed "
+                 "to {} game(s), the acting player's alone, as {}.{} (#117)",
+                 reporter->GetFormId(), msg.cls, msg.fn, verdict.subject,
+                 msg.caller, msg.handler, facts.acting, relayed, relayCls,
+                 relayFn);
+    return;
+  }
   // audience 0: the subject's listeners (every action row's at rung 2); a
   // placement by its record has no reference of the server's to listen to,
   // so its listeners are the games that report its cell loaded

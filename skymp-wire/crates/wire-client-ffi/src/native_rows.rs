@@ -74,6 +74,8 @@ pub const SKYMP_NATIVE_AUDIENCE_EVERYONE: u8 = 1;
 pub const SKYMP_NATIVE_AUDIENCE_NOBODY: u8 = 2;
 /// Audience: the subject's cell's host alone.
 pub const SKYMP_NATIVE_AUDIENCE_HOST: u8 = 3;
+/// Audience: the acting player's own seat alone (thuum tracker #117).
+pub const SKYMP_NATIVE_AUDIENCE_ACTING: u8 = 4;
 
 /// Keep: nothing.
 pub const SKYMP_NATIVE_KEEP_NOTHING: u8 = 0;
@@ -247,6 +249,7 @@ fn audience_code(audience: Audience) -> u8 {
         Audience::Everyone => SKYMP_NATIVE_AUDIENCE_EVERYONE,
         Audience::Nobody => SKYMP_NATIVE_AUDIENCE_NOBODY,
         Audience::Host => SKYMP_NATIVE_AUDIENCE_HOST,
+        Audience::Acting => SKYMP_NATIVE_AUDIENCE_ACTING,
     }
 }
 
@@ -478,11 +481,16 @@ mod tests {
         for (cls, func) in [("Weather", "ReleaseOverride"), ("utility", "Wait"), ("Game", "GetPlayer")] {
             assert_eq!(scoped(cls, func), Some(SKYMP_NATIVE_SCOPED_RUNS), "{cls}.{func}");
         }
-        assert_eq!(
-            rows.iter().filter(|r| r.staged == 0 && r.scoped != SKYMP_NATIVE_SCOPED_RUNS).count(),
-            0,
-            "no live row is scoped to the acting seat"
-        );
+        // one live row is scoped to the acting seat (thuum tracker #117's
+        // open half): Message.Show, which the live seam skips inside another
+        // player's acting scope and reports for that player's seat, its
+        // audience the acting seat
+        let acting_live: Vec<(String, String, u8)> = rows
+            .iter()
+            .filter(|r| r.staged == 0 && r.scoped != SKYMP_NATIVE_SCOPED_RUNS)
+            .map(|r| (text(r.cls).to_owned(), text(r.func).to_owned(), r.audience))
+            .collect();
+        assert_eq!(acting_live, [("Message".to_owned(), "Show".to_owned(), SKYMP_NATIVE_AUDIENCE_ACTING)]);
         // the install line's relay words, as NativeRows.inc spelled them
         let relays: Vec<&str> = rows.iter().map(|r| text(r.relay)).collect();
         assert_eq!(

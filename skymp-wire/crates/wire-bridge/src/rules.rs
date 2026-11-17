@@ -1811,6 +1811,9 @@ mod ffi {
         /// The cause's quest is live for the reporter as the server holds
         /// it (PartOne::QuestCauseLive); false for every other row.
         cause_live: bool,
+        /// The acting player the report names (ScriptCall's `acting`, SCHEMA
+        /// 61, thuum tracker #117), the server's actor id; 0 for none.
+        acting: u32,
     }
 
     /// The rule's word on a reported script call.
@@ -1871,7 +1874,8 @@ mod ffi {
         relay_self: u32,
         /// Who hears it: 0 the subject's listeners, 1 every seat, 2 none, 3
         /// the subject's cell's host alone (a look's CreateDetectionEvent,
-        /// thuum ADR-068 D-W2 A).
+        /// thuum ADR-068 D-W2 A), 4 the acting player the report named alone
+        /// (thuum tracker #117: a call skipped for that player's seat).
         audience: u8,
         /// The call's graph event becomes the subject's lastAnimation.
         keep_last: bool,
@@ -6515,6 +6519,7 @@ impl ScriptCalls {
                 _ => natives::Cause::None,
             },
             cause_live: f.cause_live,
+            acting: f.acting,
         };
         let mut out = quiet_script_call();
         match self.0.owner(shaped, &facts) {
@@ -6531,6 +6536,7 @@ impl ScriptCalls {
                     natives::Audience::Everyone => 1,
                     natives::Audience::Nobody => 2,
                     natives::Audience::Host => 3,
+                    natives::Audience::Acting => 4,
                 };
                 out.keep_last = a.keep == natives::Keep::Last;
                 out.keep_var = a.variable_kind.unwrap_or(0);
@@ -8274,7 +8280,7 @@ mod tests {
         let notification = script_call_subject("Debug", "Notification", 0, &[text]);
         assert!(notification.row >= 52);
         assert_eq!(at.record, 0, "an action row keeps no record");
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false, acting: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[text, text], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.relay_self), (ScriptCallCode::Accepted, 0xaa8cb, 1, 0xaa8cb));
@@ -8322,7 +8328,7 @@ mod tests {
         let at = script_call_subject("ObjectReference", "AddToMap", 0x92496, &[flag]);
         assert!(at.row >= 0);
         assert_eq!((at.subject, at.record, at.look), (0x92496, 5, 0));
-        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0x92496, epoch: 0, subject_kind: 4, cell: 0, owner: 0, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: true, cause: 2, cause_live: true };
+        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0x92496, epoch: 0, subject_kind: 4, cell: 0, owner: 0, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: true, cause: 2, cause_live: true, acting: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[flag], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.record, v.keep_evidence, v.relay_fn.as_str()), (ScriptCallCode::Accepted, 0x92496, 0, 5, false, ""));
@@ -8358,7 +8364,7 @@ mod tests {
         let at = script_call_subject("ObjectReference", "ProcessTrapHit", 0x800a6, &args);
         assert!(at.row >= 0);
         assert_eq!(at.subject, 0x800a6);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x800a6, epoch: 3, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0xff00_0000, host_epoch: 3, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false, acting: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &args, &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x800a6, 0, true, false, 2));
@@ -8390,7 +8396,7 @@ mod tests {
         let at = script_call_subject("EffectShader", "Play", 0xd22fb, &[draugr, number]);
         assert!(at.row >= 0);
         assert_eq!((at.subject, at.record, at.look), (0x800a6, 0, 0));
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xd22fb, epoch: 0, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xd22fb, epoch: 0, subject_kind: 3, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false, acting: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[draugr, number], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.relay_self, v.audience), (ScriptCallCode::Accepted, 0x800a6, 1, 0xd22fb, 0));
@@ -8469,6 +8475,7 @@ mod tests {
             marker: false,
             cause: 0,
             cause_live: false,
+            acting: 0,
         };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[none], &facts, 0);
@@ -8685,7 +8692,7 @@ mod tests {
         let at = script_call_subject("Actor", "SetRace", 0x14, &[race]);
         assert!(at.row >= 0);
         assert_eq!((at.subject, at.record), (0x14, 4));
-        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0x14, epoch: 0, subject_kind: 3, cell: 0, owner: 0, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false };
+        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0x14, epoch: 0, subject_kind: 3, cell: 0, owner: 0, owner_epoch: 0, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false, acting: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[race], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.record, v.audience), (ScriptCallCode::Accepted, 0x14, 0, 4, 2));
@@ -8870,7 +8877,7 @@ mod tests {
         let at = script_call_subject("ObjectReference", "Disable", 0x1fc43, &[flag]);
         assert!(at.row >= 0);
         assert_eq!(at.subject, 0x1fc43);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x1fc43, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x1fc43, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false, acting: 0 };
         let mut s = new_script_calls();
         let v = s.judge(at.row, &[flag], &facts, 0);
         assert_eq!((v.code, v.subject, v.seq, v.record, v.keep_evidence, v.keep_last, v.audience), (ScriptCallCode::Accepted, 0x1fc43, 1, 1, false, false, 2));
@@ -9013,7 +9020,7 @@ mod tests {
         // of malformed calls is cut off by the rate
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false, acting: 0 };
         let mut s = new_script_calls();
         // a shape that holds names the subject whose facts the core gathers
         let shaped = s.shape(at.row, &[text], facts.sender, facts.self_id, 0);
@@ -9076,7 +9083,7 @@ mod tests {
         // the next relay runs on from there
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "PlayAnimation", 0xaa8cb, &[text]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0xaa8cb, epoch: 3, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false, acting: 0 };
         let mut calls = new_script_calls();
         assert_eq!(calls.seq_of(0xaa8cb), 0);
         calls.seed(0xaa8cb, 5);
@@ -9194,7 +9201,7 @@ mod tests {
         let float = ScriptArg { kind: 2, form_id: 0 };
         let text = ScriptArg { kind: 3, form_id: 0 };
         let at = script_call_subject("ObjectReference", "SetAnimationVariableFloat", 0x3758c, &[text, float]);
-        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x3758c, epoch: 1, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 1, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false };
+        let facts = ScriptCallFacts { sender: 0xff00_0000, self_id: 0x3758c, epoch: 1, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 1, host: 0, host_epoch: 0, firing: NO_FIRING, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false, acting: 0 };
         let mut calls = new_script_calls();
         let v = calls.judge(at.row, &[text, float], &facts, 0);
         assert_eq!((v.code, v.seq, v.keep_var, v.keep_last, v.relay_fn.as_str()), (ScriptCallCode::Accepted, 1, 4, false, "SetAnimationVariableFloat"));
@@ -9222,7 +9229,7 @@ mod tests {
         assert_eq!(script_call_subject("ObjectReference", "PlayAnimation", 0xb6d3f, &[text]).look, 1);
         assert_eq!(script_call_subject("ObjectReference", "SetOpen", 0xb6d3f, &[flag]).look, 0);
         let firing = TriggerFiringFacts { reporter: 0xff00_0001, cell: 0x371de, host: 0xff00_0000, loader: true, nearest: 40.0, trigger_size: 64.0 };
-        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0xb6d3f, epoch: 0, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false };
+        let facts = ScriptCallFacts { sender: 0xff00_0001, self_id: 0xb6d3f, epoch: 0, subject_kind: 1, cell: 0x371de, owner: 0xff00_0000, owner_epoch: 3, host: 0, host_epoch: 0, firing, dead: false, died_ago_ms: u64::MAX, reanimate_caster: 0, marker: false, cause: 0, cause_live: false, acting: 0 };
         let mut calls = new_script_calls();
         let v = calls.judge(motion.row, &[number, flag], &facts, 0);
         assert_eq!((v.code, v.look, v.seq, v.relay_self, v.relay_fn.as_str(), v.relay_args.as_slice()), (ScriptCallCode::Accepted, true, 1, 0xb6d3f, "SetMotionType", &[0u8, 1][..]));

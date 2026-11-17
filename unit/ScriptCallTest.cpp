@@ -1049,3 +1049,61 @@ TEST_CASE("A script call's figure argument is taken when it names a "
   REQUIRE(SnippetsTo(p, 0).empty());
   Leave(p);
 }
+
+// thuum tracker #117's open half (playtest 54, Eli: "fix that"): a guest's
+// press of the Sanctum keyhole runs on the host inside the guest's acting
+// scope, and its no-claw branch's Message.Show is the guest's to see. The
+// host's seam skips it and reports it with the guest as the acting player
+// (ScriptCall's acting, SCHEMA_VERSION 61); the server serves it to the
+// guest's game alone, as the same native on the message, with no sequence.
+// With no acting player, or the reporter's own, the row stays local: refused,
+// relayed to nobody. The message is HallofStoriesNoObjMSGGolden 0xb6441 (a
+// MESG of Skyrim.esm, lab/esm.py find, 2026-11-17), named illustratively
+TEST_CASE("A message the host's seam skipped inside a guest's acting scope "
+          "goes to the guest's game alone (tracker #117)",
+          "[ScriptCall][espm]")
+{
+  constexpr uint32_t kNoClawMessage = 0xb6441;
+  PartOne& p = GetPartOne();
+  const uint32_t epoch = EnterSanctum(p);
+  const auto show = [&](std::optional<uint32_t> acting) {
+    ScriptCallMessage msg;
+    msg.epoch = epoch;
+    msg.selfId = kNoClawMessage;
+    msg.cls = "Message";
+    msg.fn = "Show";
+    msg.args = std::vector<Arg>(9, Arg(0.0));
+    msg.caller = "HallofStoriesKeyholeScript";
+    msg.handler = "onActivate";
+    msg.latent = true;
+    msg.acting = acting;
+    RawMessageData raw;
+    raw.userId = 0;
+    p.GetActionListener().OnScriptCall(raw, msg);
+  };
+  {
+    LogCapture log;
+    show(kGuestActor);
+    REQUIRE(log.Count(fmt::format("skipped there inside acting player {:x}'s "
+                                  "scope: relayed to 1 game(s), the acting "
+                                  "player's alone, as Message.Show",
+                                  kGuestActor)) == 1);
+  }
+  const auto toGuest = SnippetsTo(p, 1);
+  REQUIRE(toGuest.size() == 1);
+  REQUIRE(toGuest[0]["class"] == "Message");
+  REQUIRE(toGuest[0]["function"] == "Show");
+  REQUIRE(toGuest[0]["arguments"].size() == 9);
+  REQUIRE(SnippetsTo(p, 0).empty());
+  // no acting player, or the reporter's own: the row stays local
+  for (const std::optional<uint32_t> acting :
+       { std::optional<uint32_t>(), std::optional<uint32_t>(kHostActor) }) {
+    p.Messages().clear();
+    LogCapture log;
+    show(acting);
+    REQUIRE(log.Count("E_SCRIPTCALL_ROW") == 1);
+    REQUIRE(SnippetsTo(p, 0).empty());
+    REQUIRE(SnippetsTo(p, 1).empty());
+  }
+  Leave(p);
+}

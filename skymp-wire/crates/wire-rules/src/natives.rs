@@ -226,6 +226,13 @@ pub enum Audience {
     /// (thuum ADR-068 D-W2 A: a trigger's CreateDetectionEvent during its
     /// firing, so a guest's bone alarm wakes the NPCs the host simulates).
     Host,
+    /// The acting player's own seat alone (thuum tracker #117's open half,
+    /// playtest 54): a call the reporter's seam skipped inside another
+    /// player's acting scope because its row runs on the acting player's
+    /// seat alone (Message.Show: a guest's keyhole press run on the host
+    /// shows its message on the guest's screen), relayed to the player the
+    /// report names (ScriptCall's `acting`, [`Facts::acting`]).
+    Acting,
 }
 
 /// What a receiver runs for an accepted call.
@@ -1089,6 +1096,11 @@ pub struct Facts {
     /// Enabled one it records no stop of; a quest the scope classes the
     /// player's (a quest marker's facts; false otherwise).
     pub cause_live: bool,
+    /// The acting player the report names (ScriptCall's `acting`, SCHEMA 61,
+    /// thuum tracker #117): the server's actor id of the player whose acting
+    /// scope the call ran in on the reporter, read by a row for the acting
+    /// seat ([`Audience::Acting`]); 0 for none.
+    pub acting: u32,
 }
 
 /// Why a reported call is refused.
@@ -1243,6 +1255,43 @@ enum Channel {
         /// The relay native's name.
         func: &'static str,
     },
+    /// A local row for the acting player's seat ([`Audience::Acting`],
+    /// [`Scoped::ActingSeatAlone`]): a call the reporter's seam skipped
+    /// inside another player's acting scope, relayed to that player alone
+    /// as this native (thuum tracker #117).
+    Acting {
+        /// The relay native's class.
+        cls: &'static str,
+        /// The relay native's name.
+        func: &'static str,
+    },
+}
+
+/// A call for the acting player's seat (thuum tracker #117's open half):
+/// the reporter's seam skipped it inside another player's acting scope, so
+/// it is relayed to that player alone, the report's `acting`, which must
+/// name a player's actor other than the reporter's (a scope never names its
+/// own seat's player; `E_SCRIPTCALL_ROW` otherwise). Its subject is the
+/// call's form (a Message, nobody's: its message is the acting player's to
+/// see), so no owner is asked, no sequence taken and nothing kept.
+fn acting_seat(row: Row, subject: u32, method_self: u32, cls: &'static str, func: &'static str, facts: &Facts) -> Verdict {
+    if facts.acting < 0xff00_0000 || facts.acting == facts.sender {
+        return refuse(Code::Row, format!("a call for the acting player's seat names no other player as acting (acting {:x}, reporter {:x})", facts.acting, facts.sender));
+    }
+    Verdict::Accept(Accept {
+        subject,
+        seq: 0,
+        relay_cls: cls,
+        relay_fn: func,
+        relay_args: row.relay_args(),
+        relay_self: if row.subject == Subject::Arg0Method { method_self } else if row.subject == Subject::SelfRef { subject } else { 0 },
+        audience: Audience::Acting,
+        keep: Keep::Nothing,
+        graph_event_arg: None,
+        variable_kind: None,
+        look: false,
+        figure_args: false,
+    })
 }
 
 /// The channel a call of `row` leaves by: an action row the table relays to
@@ -1284,6 +1333,17 @@ fn channel_of(row: &Row) -> Result<Channel, Refusal> {
                     Err(refusal(Code::Row, "an everyone row: every seat runs it (rung 5), never relayed as an action".to_owned()))
                 }
             };
+        }
+        // a local row stays its seat's, but one for the acting player's seat
+        // (thuum tracker #117: its scoped column ActingSeatAlone and its
+        // audience the acting seat, Message.Show) crosses to that player when
+        // a seam skipped it inside the player's acting scope; the owner step
+        // reads the report's acting player
+        Kind::Local if row.scoped == Scoped::ActingSeatAlone && row.audience == Audience::Acting => {
+            let Some((cls, func)) = row.relay_target() else {
+                return Err(refusal(Code::Row, "a row for the acting seat the table never relays".to_owned()));
+            };
+            return Ok(Channel::Acting { cls, func });
         }
         Kind::Local => return Err(refusal(Code::Row, "a local row: its consequence stays on its seat".to_owned())),
     }
@@ -1755,6 +1815,7 @@ impl ScriptCalls {
                     Err(refused) => Verdict::Refuse(refused),
                 };
             }
+            Channel::Acting { cls, func } => return acting_seat(row, subject, method_self, cls, func, facts),
             Channel::Look { cls, func } => {
                 // a look-only row: a trigger's own call on a world object
                 match facts.kind {
@@ -1938,7 +1999,7 @@ mod tests {
     const GUEST: u32 = 0xff00_0001;
 
     fn hosted(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0 }
     }
 
     fn accepted(v: &Verdict) -> Accept {
@@ -1978,6 +2039,30 @@ mod tests {
         // the sequence is per object: another subject starts at 1
         assert_eq!(accepted(&s.judge(row, &[Arg::String], &hosted(0xaa8cc), 20)).seq, 1);
         assert_eq!(s.seq_of(0xaa8cd), 0);
+    }
+
+    // thuum tracker #117's open half (playtest 54): the Sanctum keyhole's
+    // no-claw Message.Show, run on the host inside Ariadne's (GUEST) acting
+    // scope and skipped there, reported with her as the acting player: relayed
+    // to her seat alone as the same native, its self the message, no sequence
+    // and nothing kept. With no acting player, or the reporter's own, it is
+    // refused by its row, and outside that channel a local row stays local
+    #[test]
+    fn a_message_for_the_acting_player_is_relayed_to_that_player_alone() {
+        let mut s = ScriptCalls::default();
+        let show = row("Message", "Show");
+        let floats = [Arg::Number; 9];
+        // HallofStoriesNoObjMSGGolden 0xb6441 (Skyrim.esm), a form nobody owns
+        let message = Facts { self_id: 0xb6441, kind: SubjectKind::Unknown, acting: GUEST, ..hosted(0xb6441) };
+        let a = accepted(&s.judge(show, &floats, &message, 0));
+        assert_eq!((a.subject, a.seq, a.relay_self), (0xb6441, 0, 0xb6441));
+        assert_eq!((a.relay_cls, a.relay_fn, a.audience, a.keep), ("Message", "Show", Audience::Acting, Keep::Nothing));
+        assert_eq!(a.relay_args.len(), 9);
+        assert_eq!(code(&s.judge(show, &floats, &Facts { acting: 0, ..message }, 10)), Some(Code::Row));
+        assert_eq!(code(&s.judge(show, &floats, &Facts { acting: HOST, ..message }, 20)), Some(Code::Row));
+        assert_eq!(code(&s.judge(show, &floats, &Facts { acting: 0x14, ..message }, 30)), Some(Code::Row));
+        // any other local row stays local, an acting player named or not
+        assert_eq!(code(&s.judge(row("Game", "GetPlayer"), &[], &Facts { acting: GUEST, ..hosted(0x14) }, 40)), Some(Code::Row));
     }
 
     #[test]
@@ -2364,11 +2449,12 @@ mod tests {
         // seventh), then train 53's two scene starts (thuum ADR-073 step 4's
         // S4, the V-scene hook), AddToMap's quest marker (S6, D-NT4 A) and the
         // Undead FX build's eight look rows of an actor, and #117's
-        // GetItemCount (Eli's design B, its acting-inventory hook): "62 of
-        // 62 table rows bound". D-R1 C keeps the flip's AddItem and
-        // RemoveItem as the player's own inventory in place, so nine rows are
-        // the player's own, in player_own's order
-        assert_eq!(live().count(), 62);
+        // GetItemCount (Eli's design B, its acting-inventory hook) and its
+        // Message.Show for the acting seat: "63 of 63 table rows bound". D-R1
+        // C keeps the flip's AddItem and RemoveItem as the player's own
+        // inventory in place, so nine rows are the player's own, in
+        // player_own's order
+        assert_eq!(live().count(), 63);
         let own: Vec<(&str, &str)> = live().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func)).collect();
         assert_eq!(own, crate::player_own::rows().collect::<Vec<_>>());
         assert_eq!(own.len(), 9);
@@ -2447,6 +2533,12 @@ mod tests {
                 // reporter's own player for a player's own)
                 assert_eq!((r.kind, r.subject, r.audience, r.relay), (Kind::State, Subject::SelfRef, Audience::Nobody, Relay::Never), "{name}");
                 assert!(matches!(kind, RecordKind::RefState | RecordKind::Standing | RecordKind::Placement | RecordKind::PlayerOwn), "{name}");
+            } else if r.audience == Audience::Acting {
+                // a local row for the acting player's seat (thuum tracker
+                // #117: Message.Show) relays as itself to that player alone,
+                // kept nowhere, run there by the platform (no Papyrus stack
+                // waits on it)
+                assert_eq!((r.kind, r.scoped, r.relay, r.keep), (Kind::Local, Scoped::ActingSeatAlone, Relay::Same, Keep::Nothing), "{name}");
             } else {
                 assert_eq!((r.relay, r.keep), (Relay::Never, Keep::Nothing), "{name}");
             }
@@ -2583,8 +2675,8 @@ mod tests {
     #[test]
     fn every_native_has_a_row_found_by_the_index_and_a_staged_one_is_refused() {
         assert_eq!(TABLE.len(), 1410);
-        assert_eq!(TABLE.iter().filter(|r| r.staged).count(), 1348);
-        assert_eq!(TABLE.iter().position(|r| r.staged), Some(62));
+        assert_eq!(TABLE.iter().filter(|r| r.staged).count(), 1347);
+        assert_eq!(TABLE.iter().position(|r| r.staged), Some(63));
         assert_eq!(INDEX.len().checked_sub(1), Some(INDEX_MASK));
         assert!(INDEX.len() >= TABLE.len().saturating_mul(2) && INDEX.len().is_power_of_two());
         let mut longest = 0usize;
@@ -2623,7 +2715,7 @@ mod tests {
         // the live rows' latency is the dump's (the platform's install check
         // holds it against the VM's binding)
         let latent: Vec<String> = live().filter(|r| r.latent).map(|r| format!("{}.{}", r.cls, r.func)).collect();
-        assert_eq!(latent.len(), 13, "{latent:?}");
+        assert_eq!(latent.len(), 14, "{latent:?}");
     }
 
     // Bleak Falls Temple's ambush draugr 0x800a6, which the hanging blades
@@ -2643,7 +2735,7 @@ mod tests {
     // the draugr in the temple, simulated by the host (its cell's), the
     // reporter
     fn simulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0 }
     }
 
     #[test]
@@ -2869,7 +2961,7 @@ mod tests {
 
     // an actor nobody simulates, its cell's host at epoch 3 the reporter
     fn unsimulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0 }
     }
 
     #[test]

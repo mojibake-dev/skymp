@@ -1727,11 +1727,12 @@ mod tests {
             assert_eq!(generated, committed);
             assert_eq!(generated.line(), committed.line());
         }
-        // the sixty-two live rows first (#117's GetItemCount the last),
+        // the sixty-three live rows first (#117's GetItemCount and
+        // Message.Show the last),
         // every other native after them staged (S5), the dump's whole
         assert_eq!(table.len(), 1410);
-        assert_eq!(table.iter().position(|r| r.staged), Some(62));
-        assert!(table.iter().skip(62).all(|r| r.staged));
+        assert_eq!(table.iter().position(|r| r.staged), Some(63));
+        assert!(table.iter().skip(63).all(|r| r.staged));
         assert_eq!(index_of(&rows), natives::INDEX.to_vec());
         // every live row is a decided entry's, or a stopgap's whose only cell
         // is a hook naming its own deleting condition (the scene starts,

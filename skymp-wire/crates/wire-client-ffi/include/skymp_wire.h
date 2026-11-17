@@ -113,6 +113,11 @@
 #define SKYMP_NATIVE_AUDIENCE_HOST 3
 
 /**
+ * Audience: the acting player's own seat alone (thuum tracker #117).
+ */
+#define SKYMP_NATIVE_AUDIENCE_ACTING 4
+
+/**
  * Keep: nothing.
  */
 #define SKYMP_NATIVE_KEEP_NOTHING 0

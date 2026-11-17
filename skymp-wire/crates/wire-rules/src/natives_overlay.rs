@@ -19,6 +19,8 @@ const STATIC_ANIMATION: &str = "ADR-068 rung 2 (docs/research/scripts-one-system
 const VARIABLE: &str = "ADR-068 rung 2 (docs/research/scripts-one-system-2026-11-05.md 6.3): an action row, the cell's host's; its variable kept on its subject by the fifty fixes' D-C3 A (accepted by Eli 2026-11-07, thuum docs/DECISIONS.md:4953; docs/research/fifty-fixes-2026-11-07.md section 1(c))";
 /// Cited by ObjectReference.AddItem, ObjectReference.RemoveItem, ObjectReference.GetItemCount.
 const OWN_INVENTORY: &str = "Eli's D-R1 C (thuum docs/DECISIONS.md, rung 5's stage-eve words): the player's own inventory, its own seat's, kept as its own record";
+/// Cited by Message.Show.
+const ACTING_UI: &str = "thuum tracker #117's open half (playtest 54) and ADR-063: a message a script shows inside another player's acting scope is that player's to see, shown on that player's own game, never the seat that ran the script";
 /// Cited by ObjectReference.Enable, ObjectReference.EnableNoWait, ObjectReference.Disable, ObjectReference.DisableNoWait, ObjectReference.Delete.
 const REF_STATE: &str = "ADR-068 rung 4, amendment B (docs/research/rung4-state-rows-2026-11-07.md section 1(a)): the ref state's record, the cell's host's, never relayed as an action";
 /// Cited by ObjectReference.PlaceAtMe, ObjectReference.PlaceActorAtMe.
@@ -744,5 +746,23 @@ pub const OVERLAY: &[Entry] = &[
             "local: the seat's own read, answered inside another player's acting scope from that player's record (#117)",
         ],
         cells: &[Cell::Hook(Hook::ActingInventory)],
+    },
+    // thuum tracker #117's open half (playtest 54, Eli: "fix that"): a guest's
+    // press of the Sanctum keyhole runs on the host inside the guest's acting
+    // scope, and its no-claw branch's Message.Show (USSEP
+    // HallofStoriesKeyholeScript #51) ran on the host's VM, so the message
+    // landed on the host's screen. A message a script shows inside another
+    // player's acting scope is that player's: the host's seam skips it and
+    // reports it with the acting player (ScriptCall's acting, SCHEMA 61), and
+    // the server relays it to that player's game alone, which shows it.
+    // Appended so no earlier row's place moves
+    Entry {
+        native: "Message.Show",
+        class: Class::Decided { cites: ACTING_UI },
+        live: true,
+        note: &[
+            "local: the seat's own message, inside another player's acting scope skipped here and shown on that player's game (#117)",
+        ],
+        cells: &[Cell::Scoped(Scoped::ActingSeatAlone), Cell::Audience(Audience::Acting), Cell::Relay(Relay::Same)],
     },
 ];

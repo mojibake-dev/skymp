@@ -270,6 +270,15 @@ Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 // seat's (tracker #56)
 Napi::Value PollHostedGaze(const Napi::CallbackInfo& info);
 Napi::Value HostedEffects(const Napi::CallbackInfo& info);
+// thuum tracker #123 (playtest 55, the spoken-line read):
+// spokenLines(actorFormId, sinceMs?) answers the speaker's rows from the
+// line store (FridaHooks.h SpokenLine; recorded at the engine's
+// SendTopicInfoEvent before the fragment gate decides, and at SayTopicInfo's
+// own cuts), oldest first, as [epochMs, infoId, topicId, type (0 BEGIN,
+// 1 END, 2 CUT), gated, handleValid, responseIndex, voiceTimerSec], only
+// rows with epochMs >= sinceMs; [] when none. A table read under its mutex,
+// no game call: safe from any JavaScript context
+Napi::Value SpokenLines(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-talk.md (ADR-052): activatePickRef() runs the
 // player's own activation of its crosshair pick on the game thread
 // (PlayerCharacter::ActivatePickRef, CommonLibSSE-NG PlayerCharacter.h:544),
@@ -472,6 +481,9 @@ inline void Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "hostedEffects",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(HostedEffects)));
+  exports.Set(
+    "spokenLines",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(SpokenLines)));
   exports.Set(
     "pollNodeRotation",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(PollNodeRotation)));

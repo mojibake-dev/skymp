@@ -2223,6 +2223,11 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         // The host's engine cuts any line for the next, so does this seat
         bool precleared = false;
         if (!repeat && highBefore && timerBefore > 0.f) {
+          // thuum tracker #123: the line in flight ends here, not by the
+          // engine's END, so the spoken-line read gets a CUT row for its
+          // item (read before the stop and the clear)
+          Frida::RecordSpokenLine(actor, highBefore->greetTopic.get(),
+                                  Frida::kSpokenCut, false);
           if (highBefore->soundHandles[0].IsValid()) {
             highBefore->soundHandles[0].Stop();
           }
@@ -2301,6 +2306,11 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
           // clear it, so the mark never holds a later promote's greetings
           result = 5;
           if (high) {
+            // thuum tracker #123: the started item is cleared here, never
+            // reaching the engine's END: a CUT row for the spoken-line read
+            // (read before the clear)
+            Frida::RecordSpokenLine(actor, high->greetTopic.get(),
+                                    Frida::kSpokenCut, false);
             REL::Relocation<void (*)(RE::AIProcess*)> clearGreet{
               Offsets::Voice::ClearGreetTopic
             };
@@ -3006,6 +3016,40 @@ Napi::Value PuppetApi::HostedEffects(const Napi::CallbackInfo& info)
   auto res = Napi::Array::New(info.Env(), effects.size());
   for (uint32_t i = 0; i < effects.size(); ++i) {
     res.Set(i, Napi::Number::New(info.Env(), effects[i]));
+  }
+  return res;
+}
+
+Napi::Value PuppetApi::SpokenLines(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  // sinceMs: the system clock in ms (Date.now() on the same seat); absent,
+  // null, negative or not finite reads as 0, every row
+  std::uint64_t sinceMs = 0;
+  if (info.Length() >= 2 && !info[1].IsUndefined() && !info[1].IsNull()) {
+    const double since = NapiHelper::ExtractDouble(info[1], "sinceMs");
+    if (std::isfinite(since) && since > 0.0) {
+      sinceMs = static_cast<std::uint64_t>(std::min(since, 1.0e18));
+    }
+  }
+  // a table read under its mutex, no engine call (FridaHooks.cpp)
+  const std::vector<Frida::SpokenLine> rows =
+    Frida::ReadSpokenLines(actorFormId, sinceMs);
+  auto env = info.Env();
+  auto res = Napi::Array::New(env, rows.size());
+  for (uint32_t i = 0; i < rows.size(); ++i) {
+    const auto& row = rows[i];
+    auto cells = Napi::Array::New(env, 8);
+    cells.Set(uint32_t(0),
+              Napi::Number::New(env, static_cast<double>(row.epochMs)));
+    cells.Set(uint32_t(1), Napi::Number::New(env, row.infoId));
+    cells.Set(uint32_t(2), Napi::Number::New(env, row.topicId));
+    cells.Set(uint32_t(3), Napi::Number::New(env, row.type));
+    cells.Set(uint32_t(4), Napi::Number::New(env, row.gated));
+    cells.Set(uint32_t(5), Napi::Number::New(env, row.handleValid));
+    cells.Set(uint32_t(6), Napi::Number::New(env, row.responseIndex));
+    cells.Set(uint32_t(7), Napi::Number::New(env, row.voiceTimerSec));
+    res.Set(i, cells);
   }
   return res;
 }

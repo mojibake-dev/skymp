@@ -28,6 +28,7 @@
 #include <RE/B/BGSLocAlias.h>
 #include <RE/B/BGSRefAlias.h>
 #include <RE/B/BGSScene.h>
+#include <RE/B/BSSoundHandle.h>
 #include <RE/B/BSTEvent.h>
 #include <RE/B/bhkCharProxyController.h>
 #include <RE/B/bhkRigidBody.h>
@@ -48,12 +49,15 @@
 #include <RE/T/TESHavokUtilities.h>
 #include <RE/T/TESQuest.h>
 #include <RE/T/TESQuestStageEvent.h>
+#include <RE/T/TESTopic.h>
+#include <RE/T/TESTopicInfo.h>
 #include <RE/V/Variable.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <deque>
 #include <fmt/format.h>
 #include <fstream>
 #include <mutex>
@@ -3824,6 +3828,145 @@ void InstallUseSkillHook()
                "one skillUse per call");
 }
 
+// thuum tracker #123 (playtest 55, the spoken-line read; FridaHooks.h
+// SpokenLine): the rows by speaker. Written from whatever thread calls the
+// engine's 35225 (the VM thread inside our sayTopicInfo, the AI and scene
+// updates on a host, QueueActorAnimation's inside DriveVoice) and from
+// SayTopicInfo's game-thread task; read on the JavaScript thread
+// (PuppetApi.cpp SpokenLines). Under one mutex, which guards the table alone
+namespace {
+constexpr size_t kSpokenRowsMax = 64;
+constexpr size_t kSpokenSpeakersMax = 256;
+// the most responses walked for an item's current one (ResponseIndexOf)
+constexpr std::int32_t kSpokenResponsesMax = 64;
+
+struct SpokenSpeaker
+{
+  std::deque<Frida::SpokenLine> rows;
+  // the table's write count at this speaker's last row (the eviction's
+  // order: the least recently written goes first)
+  std::uint64_t lastWrite = 0;
+};
+
+struct SpokenTable
+{
+  std::mutex m;
+  std::unordered_map<std::uint32_t, SpokenSpeaker> speakers;
+  std::uint64_t writes = 0;
+};
+
+SpokenTable& Spoken()
+{
+  static SpokenTable table;
+  return table;
+}
+
+void KeepSpokenLine(std::uint32_t speakerId, const Frida::SpokenLine& row)
+{
+  auto& t = Spoken();
+  std::lock_guard<std::mutex> lock(t.m);
+  auto it = t.speakers.find(speakerId);
+  if (it == t.speakers.end()) {
+    if (t.speakers.size() >= kSpokenSpeakersMax) {
+      const auto oldest =
+        std::min_element(t.speakers.begin(), t.speakers.end(),
+                         [](const auto& a, const auto& b) {
+                           return a.second.lastWrite < b.second.lastWrite;
+                         });
+      t.speakers.erase(oldest);
+    }
+    it = t.speakers.try_emplace(speakerId).first;
+  }
+  auto& speaker = it->second;
+  if (speaker.rows.size() >= kSpokenRowsMax) {
+    speaker.rows.pop_front();
+  }
+  speaker.rows.push_back(row);
+  speaker.lastWrite = ++t.writes;
+}
+
+// the item's current response's place in its responses, -1 when none:
+// BSSimpleList's head node and its iterator's node are protected
+// (CommonLibSSE-NG include/RE/B/BSTList.h:150-153, :333), so the list is
+// walked through the public iterator (each ++ follows the node's next) and
+// each node's item address is compared with the current node's
+// (Node::item is public, :77; DialogueItem.h:54-55); at most
+// kSpokenResponsesMax steps
+std::int32_t ResponseIndexOf(RE::DialogueItem& item)
+{
+  const auto* current = item.currentResponse;
+  if (!current) {
+    return -1;
+  }
+  std::int32_t index = 0;
+  for (auto it = item.responses.begin();
+       it != item.responses.end() && index < kSpokenResponsesMax;
+       ++it, ++index) {
+    if (&(*it) == &current->item) {
+      return index;
+    }
+  }
+  return -1;
+}
+}
+
+void Frida::RecordSpokenLine(RE::Actor* speaker, RE::DialogueItem* item,
+                             std::uint32_t type, bool gated) noexcept
+{
+  // inside the engine's own frames (the 35225 hook): nothing may unwind
+  try {
+    if (!speaker) {
+      return;
+    }
+    SpokenLine row;
+    row.epochMs = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch())
+        .count());
+    row.type = type;
+    row.gated = gated ? 1u : 0u;
+    if (item) {
+      row.infoId = item->info ? item->info->formID : 0u;
+      row.topicId = item->topic ? item->topic->formID : 0u;
+      row.responseIndex = ResponseIndexOf(*item);
+    }
+    // field reads only, no relocation call (BSSoundHandle::IsValid and
+    // IsPlaying are the engine's): the voice handle's sound id
+    // (HighProcessData.h:282, BSSoundHandle.h:51) and the Actor runtime
+    // voiceTimer DriveVoice reads (Actor.h:656). The id can outlive its
+    // sound (nothing read here resets it after a line), hence the timer
+    // beside it
+    auto& runtime = speaker->GetActorRuntimeData();
+    row.voiceTimerSec = runtime.voiceTimer;
+    auto* high =
+      runtime.currentProcess ? runtime.currentProcess->high : nullptr;
+    row.handleValid =
+      high && high->soundHandles[0].soundID != RE::BSSoundHandle::kInvalidID
+      ? 1u
+      : 0u;
+    KeepSpokenLine(speaker->formID, row);
+  } catch (...) {
+  }
+}
+
+std::vector<Frida::SpokenLine> Frida::ReadSpokenLines(std::uint32_t speakerId,
+                                                      std::uint64_t sinceMs)
+{
+  std::vector<SpokenLine> out;
+  auto& t = Spoken();
+  std::lock_guard<std::mutex> lock(t.m);
+  const auto it = t.speakers.find(speakerId);
+  if (it == t.speakers.end()) {
+    return out;
+  }
+  for (const auto& row : it->second.rows) {
+    if (row.epochMs >= sinceMs) {
+      out.push_back(row);
+    }
+  }
+  return out;
+}
+
 // thuum docs/verbs/npc-stream.md (the voice slice), playtest 37 (2026-10-28,
 // Eli: "if i ask 'what do you have for sale' the trading menue is opened for
 // both people"): a relayed line a puppet says here runs its info's script
@@ -3848,32 +3991,39 @@ std::uint64_t SendTopicInfoEventReplacement(RE::DialogueItem* item,
 {
   if (item && item->speaker) {
     auto* speaker = item->speaker->As<RE::Actor>();
+    // the gate's verdict first, then the line recorded (thuum tracker #123,
+    // Frida::RecordSpokenLine) before either path: a dropped event's row
+    // carries gated 1
+    bool gated = false;
     if (speaker && Puppets::Is(speaker->formID)) {
       auto* process = speaker->GetActorRuntimeData().currentProcess;
       auto* high = process ? process->high : nullptr;
-      const bool talking = high && high->talkingToPC;
-      if (!talking) {
-        // one info line a minute per speaker, the rest counted (the game
-        // thread's own path, no lock)
-        static std::unordered_map<
-          std::uint32_t,
-          std::pair<std::chrono::steady_clock::time_point, std::uint32_t>>
-          dropped;
-        auto& [since, count] = dropped[speaker->formID];
-        ++count;
-        const auto now = std::chrono::steady_clock::now();
-        if (since == std::chrono::steady_clock::time_point() ||
-            now - since >= std::chrono::minutes(1)) {
-          logger::info("[verb:npc-stream] fragment gate: info {:x} type {} "
-                       "on puppet {:x} not sent to the VM (the watcher's "
-                       "say); {} dropped since the last line",
-                       item->info ? item->info->formID : 0u, type,
-                       speaker->formID, count);
-          since = now;
-          count = 0;
-        }
-        return 0;
+      gated = !(high && high->talkingToPC);
+    }
+    if (speaker) {
+      Frida::RecordSpokenLine(speaker, item, type, gated);
+    }
+    if (speaker && gated) {
+      // one info line a minute per speaker, the rest counted (the game
+      // thread's own path, no lock)
+      static std::unordered_map<
+        std::uint32_t,
+        std::pair<std::chrono::steady_clock::time_point, std::uint32_t>>
+        dropped;
+      auto& [since, count] = dropped[speaker->formID];
+      ++count;
+      const auto now = std::chrono::steady_clock::now();
+      if (since == std::chrono::steady_clock::time_point() ||
+          now - since >= std::chrono::minutes(1)) {
+        logger::info("[verb:npc-stream] fragment gate: info {:x} type {} "
+                     "on puppet {:x} not sent to the VM (the watcher's "
+                     "say); {} dropped since the last line",
+                     item->info ? item->info->formID : 0u, type,
+                     speaker->formID, count);
+        since = now;
+        count = 0;
       }
+      return 0;
     }
   }
   return g_sendTopicInfoEventOriginal(item, type, force);

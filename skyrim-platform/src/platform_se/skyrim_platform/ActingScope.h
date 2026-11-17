@@ -44,6 +44,13 @@ namespace ActingScope {
 constexpr int32_t kStart = -1;
 constexpr int32_t kStop = -2;
 constexpr int32_t kEntry = -3;
+// thuum tracker #117 (playtest 53: "only rotfern hosting was able to interact
+// with it"): a relayed activation, a guest's press of a scripted reference in
+// a cell this seat hosts (its subject the pressed reference), taken by
+// TESModPlatform.ArmActivation's arm before the client's own activate call,
+// so the reference's OnActivate reads Game.GetPlayer() as the presser's
+// figure (ScriptState.cpp ArmActivationImpl)
+constexpr int32_t kActivation = -4;
 
 // ARM_MS, UNMEASURED (HYPOTHESIS H-AP3: a stage's arm joins its fragment's
 // stack alone, one join per item, a word's every stack in the window;

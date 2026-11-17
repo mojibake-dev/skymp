@@ -393,11 +393,13 @@ Napi::Value PuppetApi::IsHosted(const Napi::CallbackInfo& info)
 // arming the quest's scope; a start (-1) or a stop (-2) is requested and
 // arms the quest's scope at once, for ActingScope::kArmMs; an entry (-3) is
 // a relayed trigger entry's, questId the trigger, taken by
-// TESModPlatform.SendTriggerEvent's arm for its server id. figureLocalId is
+// TESModPlatform.SendTriggerEvent's arm for its server id; an activation
+// (-4) a relayed press's, questId the pressed reference, taken by
+// TESModPlatform.ArmActivation's arm (tracker #117). figureLocalId is
 // the figure this seat holds for the acting player, 0 when it is absent here
 // (Game.GetPlayer answers None in the scope then); serverId its actor id as
 // the server names it; ttlMs the request's life. False, nothing stored, for
-// a quest 0, a stage outside -3 to 65535, a serverId 0, the player's own id
+// a quest 0, a stage outside -4 to 65535, a serverId 0, the player's own id
 // as the figure, or a ttl outside 1 to ActingScope::kMaxRequestMs. Logged
 // for the lab
 Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
@@ -407,7 +409,7 @@ Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
   const auto figure = NapiHelper::ExtractUInt32(info[2], "figureLocalId");
   const auto serverId = NapiHelper::ExtractUInt32(info[3], "serverId");
   const auto ttlMs = NapiHelper::ExtractUInt32(info[4], "ttlMs");
-  if (questId == 0 || stage < ActingScope::kEntry || stage > 0xFFFF ||
+  if (questId == 0 || stage < ActingScope::kActivation || stage > 0xFFFF ||
       serverId == 0 || figure == 0x14 || ttlMs == 0 ||
       ttlMs > ActingScope::kMaxRequestMs) {
     return Napi::Boolean::New(info.Env(), false);
@@ -416,11 +418,15 @@ Napi::Value PuppetApi::SetActingPlayer(const Napi::CallbackInfo& info)
   player.figure = figure;
   player.serverId = serverId;
   // the scope's root (V-scene): a relayed stage or word is kRelayed, this
-  // seat not its cause seat; an entry's arm is SendTriggerEvent's, kTrigger
-  ActingScope::Request(
-    questId, stage, player, ttlMs, ActingScope::Origin::kRelayed,
-    stage == ActingScope::kEntry ? ActingScope::RootKind::kTrigger
-                                 : ActingScope::RootKind::kRelayed);
+  // seat not its cause seat; an entry's arm is SendTriggerEvent's and an
+  // activation's ArmActivation's, kTrigger (this seat runs the press for
+  // its presser and is the cause seat of what its script sets)
+  const bool pressed =
+    stage == ActingScope::kEntry || stage == ActingScope::kActivation;
+  ActingScope::Request(questId, stage, player, ttlMs,
+                       ActingScope::Origin::kRelayed,
+                       pressed ? ActingScope::RootKind::kTrigger
+                               : ActingScope::RootKind::kRelayed);
   const bool word =
     stage == ActingScope::kStart || stage == ActingScope::kStop;
   if (word) {

@@ -5,6 +5,7 @@ import { RelayedActivationMessage } from '../messages/relayedActivationMessage';
 import { remoteIdToLocalId } from '../../view/worldViewMisc';
 import { logError, logLab, logTrace } from '../../logging';
 import { PuppetService } from './puppetService';
+import { HostService } from './hostService';
 import { RemoteServer } from './remoteServer';
 import { ScriptStateService } from './scriptStateService';
 
@@ -19,6 +20,13 @@ const PLAYER_ID = 0x14;
 // take it, ms (the send follows at once; the platform bounds a ttl at 60000)
 const ENTRY_SCOPE = -3;
 const ENTRY_ACTING_TTL_MS = 10000;
+// thuum tracker #117 (playtest 53's Sanctum door, Eli: "door animated and
+// opened for both, only rotfern hosting was able to interact with it"): the
+// stage setActingPlayer names a relayed activation by (its subject the
+// pressed reference), taken by the platform's TESModPlatform.ArmActivation
+// in the same update, before this seat's own activate call
+const ACTIVATION_SCOPE = -4;
+const ACTIVATION_ACTING_TTL_MS = 10000;
 // the players' actors (and the server's copies) are server ids from here up
 const FIRST_SERVER_ID = 0xff000000;
 
@@ -49,6 +57,28 @@ const describeTriggerSend = (raw: unknown, event: string): string => {
     // the raw answer below
   }
   return `${event} answered ${raw.slice(0, 40)}`;
+};
+
+// ArmActivation's answer for the line ({formId, armed, scripts, reason}):
+// "the presser's scope armed over <n> script(s)" or "not armed (<reason>)"
+const describeArm = (raw: unknown): string => {
+  if (typeof raw !== 'string') {
+    return `ArmActivation answered no string (${typeof raw})`;
+  }
+  try {
+    const o = JSON.parse(raw) as Record<string, unknown> | null;
+    if (o && typeof o === 'object' && typeof o['armed'] === 'boolean') {
+      if (o['armed']) {
+        const scripts = o['scripts'];
+        return `the presser's scope armed over ${typeof scripts === 'number' ? scripts : '?'} script(s)`;
+      }
+      const reason = o['reason'];
+      return `not armed (${typeof reason === 'string' && reason !== '' ? reason : 'refused'})`;
+    }
+  } catch (e) {
+    // the raw answer below
+  }
+  return `ArmActivation answered ${raw.slice(0, 40)}`;
 };
 
 // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
@@ -135,6 +165,7 @@ export class RelayedActivationService extends ClientListener {
     }
     this.markPlayed(target.getFormID(), caster.getFormID());
     this.markRelayPlayed(target.getFormID());
+    this.armPressActing(target, caster, remoteCaster);
     target.activate(caster, false);
     logTrace(
       this,
@@ -232,6 +263,75 @@ export class RelayedActivationService extends ClientListener {
     }
   }
 
+  // thuum tracker #117 (ADR-063: the cell's host owns its world objects'
+  // scripts; ADR-068 rung 5's acting scope): a guest's press of a scripted
+  // reference in a cell this seat hosts reaches here as a relayed activation
+  // with the guest's figure as the caster, and the engine's own activate
+  // below plays it. A script that takes a press only from the player
+  // (`akActionRef == Game.GetPlayer()`: the Sanctum rings'
+  // HallofStoriesDiskScript and its keyhole's HallofStoriesKeyholeScript,
+  // thuum lab/pex.py disasm of the winning copies; the census's 27 of 54
+  // Bleak Falls and Embershard world scripts that call GetPlayer,
+  // docs/research/scripts-one-system-2026-11-05.md section 8) took none of
+  // the guest's, so the guest's rings never turned (playtest 53's server.log
+  // 00:32:16 to 00:32:20Z: five guest presses relayed to the host, no ring
+  // animated). The press now runs for its presser, as a relayed trigger entry
+  // does (nameEntryActing): the activation's acting player named for the
+  // reference, then the platform's ArmActivation takes it and arms the
+  // reference's scope for its own attached scripts, so the OnActivate the
+  // activate raises reads Game.GetPlayer() as the figure (HYPOTHESIS: the
+  // engine raises it on a stack rooted at the reference's script within the
+  // arm's window). Only where this seat hosts the reference's cell (the
+  // owner's input; a host's own press relayed to a guest for render stays a
+  // plain activate there, its script the host's) and only for another
+  // player's figure (PuppetService.isFigure: an NPC's copy is no player).
+  // Said once on a platform without the export or the native
+  private armPressActing(target: ObjectReference, caster: ObjectReference, presserServerId: number) {
+    if (this.activationArmMissing) {
+      return;
+    }
+    const presserLocalId = caster.getFormID();
+    if (presserLocalId < FIRST_SERVER_ID || presserServerId < FIRST_SERVER_ID) {
+      return;
+    }
+    if (!this.controller.lookupListener(PuppetService).isFigure(presserLocalId)) {
+      return;
+    }
+    const cell = target.getParentCell()?.getFormID() ?? 0;
+    if (cell === 0 || !this.controller.lookupListener(HostService).hostsCell(cell)) {
+      return;
+    }
+    const head = `relayed activation ${target.getFormID().toString(16)} by ${presserServerId.toString(16)}`;
+    if (typeof this.sp.setActingPlayer !== 'function') {
+      this.activationArmMissing = true;
+      logLab(TAG, "setActingPlayer unavailable on this platform; a relayed press's script reads this seat's own player");
+      return;
+    }
+    try {
+      if (this.sp.setActingPlayer(target.getFormID(), ACTIVATION_SCOPE, presserLocalId, presserServerId, ACTIVATION_ACTING_TTL_MS) !== true) {
+        logLab(TAG, `${head}: the platform refused the activation's acting player (stage ${ACTIVATION_SCOPE}); its script reads this seat's own player`);
+        return;
+      }
+    } catch (e) {
+      logError(this, `setActingPlayer threw for the ${head}`, e);
+      return;
+    }
+    let raw: unknown;
+    try {
+      raw = this.sp.callNative('TESModPlatform', 'ArmActivation', undefined, target, caster);
+    } catch (e) {
+      const text = String(e);
+      if (text.indexOf('Native function not found') !== -1) {
+        this.activationArmMissing = true;
+        logLab(TAG, `ArmActivation unavailable on this platform (${text}); a relayed press's script reads this seat's own player`);
+        return;
+      }
+      logLab(TAG, `${head}: not armed, the native threw (${text.slice(0, 32)})`);
+      return;
+    }
+    logLab(TAG, `${head}: ${describeArm(raw)}`);
+  }
+
   // Whether a relay played the reference here within FIRED_MS (local id, as
   // the target of a played pair or of a relayed entry): the root rule's test
   // that a trigger's firing is a relay's consequence, not this seat's own
@@ -278,6 +378,7 @@ export class RelayedActivationService extends ClientListener {
   // the references a relay played here, until when (wasRelayPlayed)
   private readonly relayPlayed = new Map<number, number>();
   private sendTriggerMissing = false;
+  private activationArmMissing = false;
   // an older platform without setActingPlayer (rung 5)
   private actingMissing = false;
 }

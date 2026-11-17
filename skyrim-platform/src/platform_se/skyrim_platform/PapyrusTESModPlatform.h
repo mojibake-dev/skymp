@@ -266,6 +266,13 @@ RE::BSFixedString SendTriggerEvent(IVM* vm, StackID stackId,
                                    RE::TESObjectREFR* trigger,
                                    std::string_view name,
                                    RE::TESObjectREFR* actionRef);
+// thuum tracker #117: a guest's relayed press, the pressed reference's acting
+// scope armed for the presser's figure before the client's activate call
+// (a JSON string: formId, armed, scripts, reason; ScriptState.h)
+RE::BSFixedString ArmActivation(IVM* vm, StackID stackId,
+                                RE::StaticFunctionTag*,
+                                RE::TESObjectREFR* refr,
+                                RE::TESObjectREFR* actionRef);
 // thuum docs/DECISIONS.md ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's
 // held entries (an NPC's enter to a world trigger blanked at this seat's own
 // load, its owner undecided then) whose presser is this seat's now, with the

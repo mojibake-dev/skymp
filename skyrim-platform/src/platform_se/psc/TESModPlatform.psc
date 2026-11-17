@@ -164,6 +164,13 @@ String Function ApplyGraphState(ObjectReference refr, String graphHex) global na
 ; a None actionRef, an actor trigger and a reference with no attached script
 String Function SendTriggerEvent(ObjectReference trigger, String name, ObjectReference actionRef) global native
 
+; thuum tracker #117 (playtest 53's Sanctum door): a guest's press of a
+; scripted reference relayed to the cell's host, the reference's acting scope
+; armed for the guest's figure before the client's own activate call, when
+; the client's activation request (setActingPlayer with stage -4) names that
+; presser (a JSON string: formId, armed, scripts, reason)
+String Function ArmActivation(ObjectReference refr, ObjectReference actionRef) global native
+
 ; thuum ADR-068 D-W3 B (Eli 2026-11-10): the presser rule's held entries (an
 ; NPC's enter to a world trigger blanked at this seat's own load, its owner
 ; undecided then) whose presser is this seat's now, with the trigger in a

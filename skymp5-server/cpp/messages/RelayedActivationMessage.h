@@ -1,4 +1,5 @@
 #pragma once
+#include "../server_guest_lib/Inventory.h"
 #include "MessageBase.h"
 #include "MsgType.h"
 #include <cstdint>
@@ -29,7 +30,8 @@ struct RelayedActivationMessage : public MessageBase<RelayedActivationMessage>
     archive.Serialize("t", kMsgType)
       .Serialize("target", target)
       .Serialize("caster", caster)
-      .Serialize("entry", entry);
+      .Serialize("entry", entry)
+      .Serialize("presserInventory", presserInventory);
   }
 
   uint32_t target = 0; // the activated reference, never 0
@@ -37,4 +39,10 @@ struct RelayedActivationMessage : public MessageBase<RelayedActivationMessage>
   // 1 OnTriggerEnter, 2 OnTriggerLeave (a u8 on the wire); absent on an
   // activation
   std::optional<uint32_t> entry;
+  // since SCHEMA_VERSION 59 (thuum tracker #117, Eli's design B): on a
+  // player's press of a scripted world object, sent to the cell's host
+  // alone, the presser's inventory as the server records it, which the
+  // host's acting scope answers the press's GetItemCount from; absent on an
+  // entry, on a press by no player and to every other game
+  std::optional<Inventory> presserInventory;
 };

@@ -1256,10 +1256,18 @@ fn check_activate(m: &skymp::Activate) -> Result<(), Reject> {
 /// The server's relayed activation (docs/verbs/traps.md): a target and a
 /// caster, neither 0, and since SCHEMA_VERSION 40 (thuum D-C2) a trigger
 /// entry's event, absent or 1 or 2; the transport refuses it from a client
-/// by direction.
+/// by direction. Since SCHEMA_VERSION 59 (thuum tracker #117) a press's
+/// presser inventory: on an activation alone (an entry carries none), each
+/// stack naming an item (a base id) and holding one at least, as the
+/// server's own record keeps a stack.
 fn check_relayed_activation(m: &skymp::RelayedActivation) -> Result<(), Reject> {
     if m.target == 0 || m.caster == 0 || m.entry.is_some_and(|e| !is_entry_event(e)) {
         return Err(Reject::Range);
+    }
+    if let Some(inventory) = &m.presser_inventory {
+        if m.entry.is_some() || inventory.entries.iter().any(|e| e.base_id == 0 || e.count == 0) {
+            return Err(Reject::Range);
+        }
     }
     Ok(())
 }
@@ -4191,6 +4199,27 @@ mod tests {
         for bad in [0u8, 3, u8::MAX] {
             assert_eq!(validate_server(&entry(Some(bad))), Err(Reject::Range), "{bad}");
         }
+        // thuum tracker #117 (SCHEMA_VERSION 59): Ariadne's press of the
+        // Sanctum keyhole 0x4e2b9 relayed to its host with her record, the
+        // claw MS13GoldenClaw 0x39647 one stack; an empty record is a record;
+        // a stack naming no item or holding none, and a record on an entry,
+        // break the record's shape
+        use wire_schema::skymp::{Entry, Inventory};
+        let stack = |base_id, count| Entry { base_id, count, ..Default::default() };
+        let pressed = |entries: std::vec::Vec<Entry>, entry| {
+            Message::RelayedActivation(RelayedActivation {
+                target: 0x4e2b9,
+                caster: 0xff00_0001,
+                entry,
+                presser_inventory: Some(Inventory { entries: entries.try_into().unwrap_or_default() }),
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&pressed(vec![stack(0x39647, 1)], None)), Ok(()));
+        assert_eq!(validate_server(&pressed(vec![], None)), Ok(()));
+        assert_eq!(validate_server(&pressed(vec![stack(0, 1)], None)), Err(Reject::Range));
+        assert_eq!(validate_server(&pressed(vec![stack(0x39647, 0)], None)), Err(Reject::Range));
+        assert_eq!(validate_server(&pressed(vec![stack(0x39647, 1)], Some(1))), Err(Reject::Range));
     }
 
     #[test]

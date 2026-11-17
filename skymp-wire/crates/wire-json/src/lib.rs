@@ -1098,11 +1098,16 @@ mod tests {
         // the shape's verdict, and a client's (the relay is the server's,
         // which the transport refuses from a client by direction)
         type Verdict = (&'static str, Result<(), Reject>, Option<Result<(), Reject>>);
-        let verdicts: [Verdict; 4] = [
+        let verdicts: [Verdict; 6] = [
             ("06-Activate-2.json", Ok(()), Some(Ok(()))),
             ("06-Activate-3.json", Err(Reject::Range), Some(Err(Reject::Range))),
             ("70-RelayedActivation-2.json", Ok(()), None),
             ("70-RelayedActivation-3.json", Err(Reject::Range), None),
+            // thuum tracker #117 (SCHEMA_VERSION 59): Ariadne's press of the
+            // Sanctum keyhole 0x4e2b9 relayed to its host with her record
+            // (the claw 0x39647, one stack), and the same record on an entry
+            ("70-RelayedActivation-4.json", Ok(()), None),
+            ("70-RelayedActivation-5.json", Err(Reject::Range), None),
         ];
         for (name, shape, from_client) in verdicts {
             let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -1119,6 +1124,15 @@ mod tests {
         }
         match recognize(&read("70-RelayedActivation-2.json")) {
             Ok(Message::RelayedActivation(r)) => assert_eq!((r.target, r.caster, r.entry), (0x37281, 0xff00_0001, Some(skymp::ENTRY_ENTER))),
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("70-RelayedActivation-4.json")) {
+            Ok(Message::RelayedActivation(r)) => {
+                assert_eq!((r.target, r.caster, r.entry), (0x4e2b9, 0xff00_0001, None));
+                let stacks: std::vec::Vec<(u32, u32)> =
+                    r.presser_inventory.iter().flat_map(|i| i.entries.iter().map(|e| (e.base_id, e.count))).collect();
+                assert_eq!(stacks, [(0x39647, 1)]);
+            }
             other => panic!("{other:?}"),
         }
         for name in ["06-Activate-0.json", "06-Activate-1.json", "70-RelayedActivation-0.json", "70-RelayedActivation-1.json"] {

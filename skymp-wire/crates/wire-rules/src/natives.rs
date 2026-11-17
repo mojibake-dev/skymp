@@ -491,11 +491,16 @@ pub enum Hook {
     /// Scene.Start, ForceStart: counted and run inside a scope rooted at a
     /// relay (train 53's V-scene, ADR-073 D-A2 C).
     SceneStart,
+    /// ObjectReference.GetItemCount: on the acting player's figure inside
+    /// another player's acting scope, its answer the server's record of
+    /// that player's inventory, carried in by the relayed press (thuum
+    /// tracker #117, Eli's design B).
+    ActingInventory,
 }
 
 impl Hook {
     /// Every code, in the order of its number.
-    pub const ALL: [Hook; 15] = [
+    pub const ALL: [Hook; 16] = [
         Hook::None,
         Hook::DeathReport,
         Hook::TrapDestroyed,
@@ -511,6 +516,7 @@ impl Hook {
         Hook::HelperDelete,
         Hook::LeveledLanding,
         Hook::SceneStart,
+        Hook::ActingInventory,
     ];
 
     /// The code's number, skymp_wire.h's `SKYMP_NATIVE_HOOK_*`.
@@ -532,6 +538,7 @@ impl Hook {
             Hook::HelperDelete => 12,
             Hook::LeveledLanding => 13,
             Hook::SceneStart => 14,
+            Hook::ActingInventory => 15,
         }
     }
 
@@ -554,6 +561,7 @@ impl Hook {
             Hook::HelperDelete => "helper-delete",
             Hook::LeveledLanding => "leveled-landing",
             Hook::SceneStart => "scene-start",
+            Hook::ActingInventory => "acting-inventory",
         }
     }
 
@@ -565,7 +573,7 @@ impl Hook {
             Hook::None => "",
             Hook::DeathReport => "npc-fate.md",
             Hook::TrapDestroyed | Hook::TrapMotion | Hook::TrapImpulse => "traps.md",
-            Hook::AliasFill | Hook::ActingReturn | Hook::QuestStage | Hook::QuestStart | Hook::QuestStop | Hook::SceneStart => "quest-stage.md",
+            Hook::AliasFill | Hook::ActingReturn | Hook::QuestStage | Hook::QuestStart | Hook::QuestStop | Hook::SceneStart | Hook::ActingInventory => "quest-stage.md",
             Hook::PlayerGlobal => "player-globals.md",
             Hook::EffectHelper | Hook::HelperDelete => "second-hand.md",
             Hook::LeveledLanding => "papyrus-events.md",
@@ -593,6 +601,7 @@ impl Hook {
             Hook::HelperDelete => "ObjectReference.Delete on a local helper lets it go (train 52's Fix 2): the effect-helper hook's declared R3 set (decision 5 (a)), deleting with it",
             Hook::LeveledLanding => "ObjectReference.AddItem of a leveled list on the seat's own player is parked until its AddItemFunctor lands the roll (train 52's Fix 1, D-R1 C's leveled gap): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the player's inventory change form carries what landed); deletes when the player's inventory travels by its change form",
             Hook::SceneStart => "Scene.Start and ForceStart are counted and run inside a scope rooted at a relay (train 53's V-scene, ADR-073 D-A2 C): a stopgap (decision 5 (c)), replaced by step 5a's scene row (decision 6, D-L2 B: the starting seat, the stage's cause seat, claims the scene's actors); deletes at 5a's scene row",
+            Hook::ActingInventory => "ObjectReference.GetItemCount on the acting player's figure inside another player's acting scope answers the server's record of that player's inventory, carried in by the relayed press (thuum tracker #117, Eli's design B; ADR-063: one owner per inventory, no figure inventory): a stopgap (decision 5 (c)), replaced by step 7's observe point (decision 10: the player's inventory travels by its change form, every seat reading the one record); deletes when a figure's inventory reads take the player's record from that change form",
         }
     }
 }
@@ -2354,11 +2363,12 @@ mod tests {
         // and rung 5's seven player's own rows (D-E1 A's ChangeHeadPart the
         // seventh), then train 53's two scene starts (thuum ADR-073 step 4's
         // S4, the V-scene hook), AddToMap's quest marker (S6, D-NT4 A) and the
-        // Undead FX build's eight look rows of an actor: "61 of 61 table rows
-        // bound". D-R1 C keeps the flip's AddItem and
+        // Undead FX build's eight look rows of an actor, and #117's
+        // GetItemCount (Eli's design B, its acting-inventory hook): "62 of
+        // 62 table rows bound". D-R1 C keeps the flip's AddItem and
         // RemoveItem as the player's own inventory in place, so nine rows are
         // the player's own, in player_own's order
-        assert_eq!(live().count(), 61);
+        assert_eq!(live().count(), 62);
         let own: Vec<(&str, &str)> = live().filter(|r| r.keep == Keep::Record(RecordKind::PlayerOwn)).map(|r| (r.cls, r.func)).collect();
         assert_eq!(own, crate::player_own::rows().collect::<Vec<_>>());
         assert_eq!(own.len(), 9);
@@ -2486,6 +2496,7 @@ mod tests {
         assert_eq!(hooked(Hook::TrapImpulse), ["ObjectReference.ApplyHavokImpulse"]);
         assert_eq!(hooked(Hook::AliasFill), ["ReferenceAlias.ForceRefTo", "ReferenceAlias.Clear"]);
         assert_eq!(hooked(Hook::ActingReturn), ["Game.GetPlayer"]);
+        assert_eq!(hooked(Hook::ActingInventory), ["ObjectReference.GetItemCount"]);
         assert_eq!(hooked(Hook::QuestStage), ["Quest.SetCurrentStageID"]);
         assert_eq!(hooked(Hook::QuestStart), ["Quest.Start"]);
         assert_eq!(hooked(Hook::QuestStop), ["Quest.Stop"]);
@@ -2572,8 +2583,8 @@ mod tests {
     #[test]
     fn every_native_has_a_row_found_by_the_index_and_a_staged_one_is_refused() {
         assert_eq!(TABLE.len(), 1410);
-        assert_eq!(TABLE.iter().filter(|r| r.staged).count(), 1349);
-        assert_eq!(TABLE.iter().position(|r| r.staged), Some(61));
+        assert_eq!(TABLE.iter().filter(|r| r.staged).count(), 1348);
+        assert_eq!(TABLE.iter().position(|r| r.staged), Some(62));
         assert_eq!(INDEX.len().checked_sub(1), Some(INDEX_MASK));
         assert!(INDEX.len() >= TABLE.len().saturating_mul(2) && INDEX.len().is_power_of_two());
         let mut longest = 0usize;

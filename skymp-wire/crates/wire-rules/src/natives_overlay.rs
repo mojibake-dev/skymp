@@ -17,7 +17,7 @@ const ANIMATION: &str = "ADR-068 rung 2 (docs/research/scripts-one-system-2026-1
 const STATIC_ANIMATION: &str = "ADR-068 rung 2 (docs/research/scripts-one-system-2026-11-05.md 6.3): an action row on a static's first argument, the cell's host's";
 /// Cited by ObjectReference.SetAnimationVariableBool, ObjectReference.SetAnimationVariableInt, ObjectReference.SetAnimationVariableFloat.
 const VARIABLE: &str = "ADR-068 rung 2 (docs/research/scripts-one-system-2026-11-05.md 6.3): an action row, the cell's host's; its variable kept on its subject by the fifty fixes' D-C3 A (accepted by Eli 2026-11-07, thuum docs/DECISIONS.md:4953; docs/research/fifty-fixes-2026-11-07.md section 1(c))";
-/// Cited by ObjectReference.AddItem, ObjectReference.RemoveItem.
+/// Cited by ObjectReference.AddItem, ObjectReference.RemoveItem, ObjectReference.GetItemCount.
 const OWN_INVENTORY: &str = "Eli's D-R1 C (thuum docs/DECISIONS.md, rung 5's stage-eve words): the player's own inventory, its own seat's, kept as its own record";
 /// Cited by ObjectReference.Enable, ObjectReference.EnableNoWait, ObjectReference.Disable, ObjectReference.DisableNoWait, ObjectReference.Delete.
 const REF_STATE: &str = "ADR-068 rung 4, amendment B (docs/research/rung4-state-rows-2026-11-07.md section 1(a)): the ref state's record, the cell's host's, never relayed as an action";
@@ -728,5 +728,21 @@ pub const OVERLAY: &[Entry] = &[
         live: false,
         note: &[],
         cells: &[Cell::Kind(natives::Kind::Everyone), Cell::Owner(natives::Owner::Nobody), Cell::Audience(Audience::Everyone), Cell::Scoped(Scoped::Runs)],
+    },
+    // thuum tracker #117 (playtest 53's Sanctum door; Eli's design B, "go with
+    // b for 117"): the keyhole's HallofStoriesKeyholeScript counts the claw on
+    // Game.GetPlayer(), which inside a guest's relayed press is the guest's
+    // figure, and a figure carries no inventory (one owner per inventory,
+    // ADR-063). The press's scope carries the guest's record in, and this
+    // row's hook answers the count from it; appended so no earlier row's
+    // place moves
+    Entry {
+        native: "ObjectReference.GetItemCount",
+        class: Class::Decided { cites: OWN_INVENTORY },
+        live: true,
+        note: &[
+            "local: the seat's own read, answered inside another player's acting scope from that player's record (#117)",
+        ],
+        cells: &[Cell::Hook(Hook::ActingInventory)],
     },
 ];

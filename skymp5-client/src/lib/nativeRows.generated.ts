@@ -88,6 +88,7 @@ export const NATIVE_HOOKS: { readonly [native: string]: string } = {
   "ReferenceAlias.Clear": "alias-fill",
   "Scene.Start": "scene-start",
   "Scene.ForceStart": "scene-start",
+  "ObjectReference.GetItemCount": "acting-inventory",
 };
 
 // the rows kept as their subject's evidence (Keep::Evidence): sent from the

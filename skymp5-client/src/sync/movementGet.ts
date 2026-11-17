@@ -41,12 +41,17 @@ class PlayerCharacterSpeedCalculator {
 // graph's variables were the source before: "Speed" for a game-file actor
 // (x-npc-legs, docs/verbs/npc-puppet.md), "SpeedSampled" for any runtime id,
 // a summon's own among them (ff000c32 in playtest 53), and "Direction" for
-// the direction; getRunMode read Standing from a SpeedSampled of 0. No
-// creature in playtests 51 to 53's recorder traces carries a Speed or a
-// SpeedSampled series, every humanoid both (HYPOTHESIS: an atronach's graph
-// answers SpeedSampled 0, so its puppet was fed 0 and its record read
-// Standing, moved by the receiver's settle alone). null (a platform without
-// the step's detour, or no sample yet) keeps the graph reads below
+// the direction; getRunMode reads Standing from a SpeedSampled of 0. The
+// atronach's did read 0: Ariadne's copy ff000f49 of rotfern's ff000003 was
+// moved by the receiver's settle alone, seven "settle ff000f49" lines in
+// 30 s while it crossed about 380 units (playtest 53 c2 console :11002 to
+// :11269), a line movementApply prints for a Standing record only, and a
+// summon holds no furniture. The recorder's variable snapshot reads nothing
+// on a creature (c2.log:2778: "graph project 'AtronachFlame' (variable set
+// of 75) is not the master behaviour: no variables read or written"), so
+// the traces' empty creature series are no read of the graph; the per-name
+// Papyrus read used here is unread for a creature's Speed. null (a platform
+// without the step's detour, or no sample yet) keeps the graph reads below
 type EngineLocomotion = { speed: number; directionDeg: number; turnRateDeg: number; ageMs: number };
 const engineLocomotionOf = (refr: ObjectReference): EngineLocomotion | null => {
   const id = refr.getFormID();

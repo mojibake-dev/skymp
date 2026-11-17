@@ -221,8 +221,9 @@ void QueueActorAnimationReplacement(RE::ProcessLists* lists, void* jobs)
 // degrees per second (the puppet branch writes rotationSpeed.z =
 // -turnRateDeg in radians). A host's graph variables were the source before:
 // "Speed" for a game-file actor, "SpeedSampled" for a runtime one
-// (skymp5-client movementGet.ts), and no creature in playtests 51 to 53's
-// recorder traces carries either
+// (skymp5-client movementGet.ts); a flame atronach's SpeedSampled read 0
+// on its owner (playtest 53: its copy moved by the watcher's settle alone,
+// the receiver's path for a Standing record)
 void SampleSimulatedLocomotion(RE::Actor& actor)
 {
   auto* process = actor.GetActorRuntimeData().currentProcess;

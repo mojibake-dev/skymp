@@ -210,10 +210,22 @@ export class FormView {
     // npc-fate.md, the deaths: the body on a seat that was not listening at
     // the kill, and after the engine's own cell reset stood it up); a bound
     // summon is an engine reference the same way (this game's own engine
-    // placed it, thuum docs/verbs/summon.md #84)
+    // placed it, thuum docs/verbs/summon.md #84).
+    // thuum tracker #128 (playtest 54, Eli: the four bandits Auriel placed and
+    // killed in Bleak Falls Temple never showed on Ariadne's screen): a
+    // server-made NPC dead before this game heard of it was never placed
+    // here, since its create word carries isDead true (MpObjectReference.cpp
+    // VisitProperties) and the line below returned; c2 entered 371de at
+    // 08:22:30Z after all four had died under c1 and logged no copy of any.
+    // Such a copy is placed now and laid dead at its record by the bind kill
+    // (applyAll, placedDead): the game-file body's late-seat path, since a
+    // copy has no change-form record to lay it (changeFormService.ts, "Game-
+    // file actors alone in this slice"). A player's dead figure still waits
+    // for its respawn
     const ownLocal = model.ownLocal || 0;
     const engineReference = (!!model.refrId && model.refrId < 0xff000000) || ownLocal !== 0;
-    if (model.isDead && !engineReference) {
+    const deadNpcCopy = model.isDead === true && !engineReference && FormView.isServerNpcCopyModel(model);
+    if (model.isDead && !engineReference && !deadNpcCopy) {
       if (this.refrId === 0) {
         return;
       }
@@ -438,6 +450,12 @@ export class FormView {
 
         this.state = {};
         delete this.wasHostedByOther;
+        // tracker #128: a copy placed from a dead record is laid by the bind
+        // kill in applyAll and is never moved by the record's movement
+        this.placedDead = deadNpcCopy;
+        if (deadNpcCopy) {
+          logLab("verb:npc-fate", `copy ${(model.refrId ?? 0).toString(16)} placed from a dead record (tracker #128): laid at the record by the bind kill`);
+        }
         if (base.getType() !== FormType.NPC) {
           refr?.setAngle(
             model.movement?.rot[0] || 0,
@@ -626,6 +644,7 @@ export class FormView {
     })
 
     this.localImmortal = false;
+    this.placedDead = false;
     this.figureMaxima.clear();
     this.removeNickname();
   }
@@ -673,6 +692,10 @@ export class FormView {
   private deadCheckAt = 0;
   // the dead word applied at this 3D load (the bind), see the dead check
   private deadWordBound = false;
+  // tracker #128: the reference this view holds is a server-made NPC's copy
+  // placed from a dead record; the bind kill lays it and the record's
+  // movement never moves it, until the live word (a raise, a respawn)
+  private placedDead = false;
   // the node scales and texture sets applied to the 3D now loaded (false again when it goes)
   private nodeOverridesOn3D = false;
 
@@ -737,6 +760,13 @@ export class FormView {
 
   private static isNpcModel(model: FormModel): boolean {
     return !!model.baseId && model.baseId !== 0x7;
+  }
+
+  // a server-made NPC's copy, remoteServer.ts's npcCopy on the model: a
+  // runtime id, an NPC base (never the players' 0x7), not this player's clone
+  private static isServerNpcCopyModel(model: FormModel): boolean {
+    return typeof model.refrId === "number" && model.refrId >= 0xff000000 &&
+      FormView.isNpcModel(model) && model.isMyClone !== true;
   }
 
   // thuum docs/verbs/spell-placed-object.md and ADR-073 decision 13, the
@@ -925,6 +955,33 @@ export class FormView {
       }
     }
 
+    // thuum tracker #128: the bind kill above, for a server-made NPC's copy
+    // this view placed from a dead record (update's deadNpcCopy). The copy is
+    // moved to the record's spot while it is alive and killed silently at its
+    // first 3D load (deathService's killActor: KillSilent, the push that
+    // ragdolls it, PuppetService.blockDeadBody "the bind's silent kill"), on
+    // the host's seat and a watcher's alike, as a game-file body binds. Every
+    // later word is the copy's as before: the live word (a raise, a respawn)
+    // stands it up through remoteServer's isDead property and ends the flag.
+    // The cleaner never takes it: the spawn's modWcProtection holds it as it
+    // holds every copy (worldCleanerService.ts, the protection's skip).
+    // HYPOTHESIS until x-server-body-late reads it: that the create word's
+    // transform is the body's rest point (MpActor::SettleBody logs "body ...
+    // at rest at" from the record's own position, GetPos)
+    if (this.placedDead && model.isDead !== true) {
+      this.placedDead = false;
+    }
+    if (this.placedDead && loaded3D && !this.deadWordBound) {
+      this.deadWordBound = true;
+      const body = Actor.from(refr);
+      if (body && !body.isDead()) {
+        const simulatedHere = SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr);
+        const placed = this.placeAtDeadRecord(body, model);
+        logLab("verb:npc-fate", `dead record ${(model.refrId ?? 0).toString(16)} placed as copy ${this.refrId.toString(16)} on ${simulatedHere ? "this host's" : "a watcher's"} seat: ${placed}, killed silently at the bind (tracker #128)`);
+        SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true, silent: true });
+      }
+    }
+
     // thuum (playtest 37, 2026-10-28, Eli: "shouldn't be that hard to change
     // that to on cell load right?"): a container's inventory is the server's
     // record, in its CreateActor at the subscribe and in each change; a
@@ -1042,7 +1099,11 @@ export class FormView {
     // places the reference as before, and PropService keeps that record at
     // the last sample it saw
     const propPlaced = !isActor && SpApiInteractor.getControllerInstance().lookupListener(PropService).placesIt(this.refrId);
-    if (model.movement && !propPlaced) {
+    // tracker #128: a copy placed from a dead record takes no movement: the
+    // create word's movement says isDead false (remoteServer.ts builds it so),
+    // and movementApply's death word for a 0xff copy would stand the laid body
+    // up again; a body is never moved by its record (the bind kill placed it)
+    if (model.movement && !propPlaced && !this.placedDead) {
       const ac = Actor.from(refr);
       // (the re-host on a quiet figure is gone: the server elects a cell's
       // host and passes it on at its own grace, docs/verbs/cell-host.md)

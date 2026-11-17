@@ -91,7 +91,7 @@ export class PuppetService extends ClientListener {
                 // and its host's combat target with it (tracker #130): the
                 // host's next state names it again
                 this.relayedTargets.delete(e.message.refrId);
-                this.aggroHeld.delete(e.message.refrId);
+                this.aggroHeldUntil.delete(e.message.refrId);
             }
         });
     }
@@ -200,6 +200,10 @@ export class PuppetService extends ClientListener {
             // tracker #130: an actor this game hosts fights under its own
             // engine, so a combat this seat started on it as a puppet stops
             this.endAggro(localId, ac, flagged ? "its promote, this game hosts it now" : "this game hosts it");
+            // and the server relays its state to every listener but its host,
+            // so the last one this seat heard is no truth any more: a later
+            // demote waits for the next host's first state
+            this.forgetRelay(localId);
             // thuum docs/verbs/npc-stream.md (ADR-050): the word says this
             // game simulates the actor: its actions stream from here (the
             // hosted set the action hook reads)
@@ -299,8 +303,10 @@ export class PuppetService extends ClientListener {
             this.showEffectLooks(localId, ac);
         }
         if (ac.isDead()) {
-            // tracker #130: a body fights nobody
+            // tracker #130: a body fights nobody, and the host's target from
+            // before its death is forgotten (seesDeath)
             this.endAggro(localId, ac, "its death");
+            this.seesDeath(localId);
             // thuum docs/verbs/npc-fate.md (the deaths, as revised by playtest
             // 37's findings 58 and 62): a dead NPC body is never a puppet, on
             // any seat. A body that died flagged (the server's word killed a
@@ -370,6 +376,7 @@ export class PuppetService extends ClientListener {
         // 0.75 to 1.0 s into the second fall and froze the skeleton, and would
         // still have come 1.0 to 1.85 s into it with db0e19a5's clear)
         this.deadFlaggedSince.delete(localId);
+        this.deadSeen.delete(localId);
         // a body that stood up on a seat that does not host it: the demote
         // below blocks it as a puppet, so the dead block's mark is dropped
         // (a later death lays it again)
@@ -418,7 +425,7 @@ export class PuppetService extends ClientListener {
             logTrace(this, `puppet ${localId.toString(16)}`);
         }
         this.stopLocalScene(localId, ac);
-        this.reconcileAggro(localId, ac, host);
+        this.reconcileAggro(localId, ac, host, mine === undefined);
     }
 
     // thuum tracker #130 (design A): an NPC another game hosts that fights
@@ -432,50 +439,81 @@ export class PuppetService extends ClientListener {
     // own player, by its server id (RemoteServer.getMyRemoteRefrId: a seat
     // holds no view of its own player, so the view's id map never answers
     // 0x14 for it), the puppet gets Papyrus StartCombat on the player and
-    // the aggro mark, and H6 keeps a marked puppet's combat on the player.
+    // the aggro mark, and H6 leaves a marked puppet's combat alone.
     // The mark comes off, with StopCombat on the puppet, when the host's
     // target turns to anyone else or to none, at the puppet's death, its
-    // release or its promote, when no other game hosts it any more (no relay
-    // would end it), and at the server's StopCombatAlarm for the pair
-    // (PartOne::TickFights' end, onStopCombatAlarm). That end, and an H6
-    // undo of a combat the engine turned on anyone else, hold the start
-    // until the host's target changes. The consequence in this engine is
-    // R3: never reported, nothing the server reads. A start waits two tick
-    // counts after a demote, whose native StopCombatAndAlarmOnActor lands
-    // after the tick (the dead block's rule, blockDeadBody). The relay is
-    // unreliable unless it carries effects: a lost change waits for the
-    // host's next one.
-    // HYPOTHESIS until a two-seat probe reads the guest's wait refusal: that
+    // release or its promote, when no other game hosts it any more, and at
+    // the server's StopCombatAlarm for the pair (PartOne::TickFights' end,
+    // onStopCombatAlarm). It comes off with no stop when the puppet's engine
+    // ends the combat (the combat event) or holds none at a poll's pass:
+    // Papyrus StartCombat is a queued task that refuses a dead, processless
+    // or talking actor (re-ai-puppet.md:181-184). A new start then waits
+    // aggroRetryMs. The server's end holds a new start for aggroHoldMs: its
+    // D2 end stops the NPC's combat in its host's game as well, and that
+    // host's next state, not the target this seat heard before the end,
+    // says whether the NPC fights on. A start waits two tick counts after a
+    // demote, whose native StopCombatAndAlarmOnActor lands after the tick
+    // (the dead block's rule, blockDeadBody). The relay is unreliable unless
+    // it carries effects, and every state carries the target, so a lost
+    // change waits for the host's next state.
+    // The combat this seat's engine runs on the puppet is meant to be R3:
+    // this seat reports nothing of a puppet's combat. HYPOTHESIS until a
+    // two-seat probe reads it: that its effects stay on this seat. Actors
+    // this seat hosts (its player's follower, summon or thrall, the
+    // puppet's allies in a cell this seat hosts) may answer that combat
+    // under their own AI, and then their hits reach the server as R1 hits
+    // and their new targets as R2 states, the channels any fight of theirs
+    // takes. The probe counts those: hits on the puppet by actors this seat
+    // hosts, and any target they report that turns to this seat's player.
+    // HYPOTHESIS until the same probe reads this seat's wait refusal: that
     // StartCombat on a puppet with its AI off puts it on this seat's compass
     // and gates the wait menu. The static read has both reading the combat
     // groups that target the player (thuum ghidra/notes/hostility-1-7-104.md
     // :43-70, the wait gate; :92-97, the compass), and Papyrus StartCombat
     // makes no AI test (re-ai-puppet.md:181-187), but a-hostility proved the
     // compass only for a player's figure, whose AI runs.
-    private reconcileAggro(localId: number, ac: Actor, host: HostService): void {
+    private reconcileAggro(localId: number, ac: Actor, host: HostService, readEngine: boolean): void {
         if (this.relayedTargets.size === 0 && this.aggro.size === 0) {
             return;
         }
         const refrId = localIdToRemoteId(localId);
         const target = refrId ? this.relayedTargets.get(refrId) ?? 0 : 0;
-        const marked = this.aggro.has(localId);
-        if (!target && !marked) {
+        const started = this.aggro.get(localId);
+        if (!target && started === undefined) {
             return;
         }
         const me = this.controller.lookupListener(RemoteServer).getMyRemoteRefrId();
-        const why = me === 0 || target !== me
-            ? `its host's target is ${target ? target.toString(16) : "none"} now`
-            : this.aggroHeld.has(refrId)
-            ? "held until its host's target changes"
-            : !host.isOthersLocal(localId)
-            ? "no other game hosts it now"
-            : "";
+        let why = "";
+        if (me === 0 || target !== me) {
+            why = `its host's target is ${target ? target.toString(16) : "none"} now`;
+        } else if (!host.isOthersLocal(localId)) {
+            // no game's state of it reaches this seat now, so the last one is
+            // forgotten: the next host's first state names the target again
+            this.forgetRelay(localId);
+            why = "no other game hosts it now";
+        } else if (this.isAggroHeld(refrId)) {
+            why = `the server ended the fight (StopCombatAlarm); a new start held ${PuppetService.aggroHoldMs} ms for its host's next state`;
+        }
         if (why) {
             this.endAggro(localId, ac, why);
             return;
         }
-        if (marked) {
+        if (started !== undefined) {
+            // the poll's pass reads the engine, two tick counts after the
+            // start at the least (its task lands after the start's tick):
+            // isInCombat, the read a trace took true on a puppet a hit drafted
+            // (npc-puppet.md, H6's row)
+            if (readEngine && this.tick >= started + 2 && !ac.isInCombat()) {
+                this.endAggro(localId, null, "its engine holds no combat (the start refused, or ended with no event here)", true);
+            }
             return;
+        }
+        const retryAt = this.aggroRetryAt.get(localId);
+        if (retryAt !== undefined) {
+            if (Date.now() < retryAt) {
+                return;
+            }
+            this.aggroRetryAt.delete(localId);
         }
         const demoted = this.demotedAt.get(localId);
         if (demoted !== undefined) {
@@ -489,28 +527,75 @@ export class PuppetService extends ClientListener {
             return;
         }
         ac.startCombat(player);
-        this.aggro.add(localId);
+        this.aggro.set(localId, this.tick);
         logLab("verb:hostility-sync", `aggro: ${localId.toString(16)} starts combat on this seat's player: its host's target is ${me.toString(16)}, this seat's own (tracker #130)`);
     }
 
-    // tracker #130: the aggro mark off, the puppet's combat stopped (no actor,
-    // or a caller whose own native stops it, passes null), one line
-    private endAggro(localId: number, ac: Actor | null, why: string): void {
+    // tracker #130: the aggro mark off and the puppet's combat stopped, one
+    // line. Null for the actor stops nothing: no actor here, a caller whose
+    // own native stops the combat, or an engine that holds none. `retry`
+    // holds a new start for aggroRetryMs (an engine that dropped a start)
+    private endAggro(localId: number, ac: Actor | null, why: string, retry = false): void {
         if (!this.aggro.delete(localId)) {
             return;
         }
         if (ac) {
             ac.stopCombat();
         }
-        logLab("verb:hostility-sync", `aggro: ${localId.toString(16)} stops its combat on this seat's player: ${why} (tracker #130)`);
+        if (retry) {
+            this.aggroRetryAt.set(localId, Date.now() + PuppetService.aggroRetryMs);
+        }
+        logLab("verb:hostility-sync", `aggro: ${localId.toString(16)} stops its combat on this seat's player: ${why}${retry ? `; a new start no sooner than ${PuppetService.aggroRetryMs} ms on` : ""} (tracker #130)`);
+    }
+
+    // tracker #130: whether a new start on the actor (by server id) is held
+    // after the server's end; a hold past its time is dropped
+    private isAggroHeld(refrId: number): boolean {
+        const until = this.aggroHeldUntil.get(refrId);
+        if (until === undefined) {
+            return false;
+        }
+        if (Date.now() < until) {
+            return true;
+        }
+        this.aggroHeldUntil.delete(refrId);
+        return false;
+    }
+
+    // tracker #130: the relay of the actor's state to this seat has ended
+    // (this game hosts it, no game does, its record died), so its host's
+    // last target here is forgotten, and a hold with it
+    private forgetRelay(localId: number): void {
+        if (this.relayedTargets.size === 0 && this.aggroHeldUntil.size === 0) {
+            return;
+        }
+        const refrId = localIdToRemoteId(localId);
+        if (refrId) {
+            this.relayedTargets.delete(refrId);
+            this.aggroHeldUntil.delete(refrId);
+        }
+    }
+
+    // tracker #130: a death's first sight on this seat (its start here, or a
+    // pass that finds a body). The server relays no state of a dead record
+    // (ActionListener::OnHostedActorState's dead verdict), so the host's
+    // target from before the death is forgotten, once per death: a state
+    // that arrives while the body still lies here (the host's first after a
+    // stand-up) is kept for the body's stand-up on this seat
+    private seesDeath(localId: number): void {
+        if (this.deadSeen.has(localId)) {
+            return;
+        }
+        this.deadSeen.add(localId);
+        this.forgetRelay(localId);
     }
 
     // tracker #130: the server's end of the fight between this seat's player
     // and an actor (PartOne::TickFights: Actor.StopCombatAlarm on the actor,
     // sent to each player of the pair; the snippet itself runs through
-    // SpSnippetService). While the host's target still names this player the
-    // start is held until it changes; a marked puppet's combat stops on the
-    // next update (this is the message's context, no natives here)
+    // SpSnippetService). While the host's target still names this player a
+    // new start is held for aggroHoldMs; a marked puppet's combat stops on
+    // the next update (this is the message's context, no natives here)
     private onStopCombatAlarm(event: ConnectionMessage<SpSnippetMessage>) {
         const msg = event.message;
         if (msg.class.toLowerCase() !== "actor" || msg.function.toLowerCase() !== "stopcombatalarm") {
@@ -523,13 +608,13 @@ export class PuppetService extends ClientListener {
         const refrId = localIdToRemoteId(localId);
         const me = this.controller.lookupListener(RemoteServer).getMyRemoteRefrId();
         if (refrId && me !== 0 && this.relayedTargets.get(refrId) === me) {
-            this.aggroHeld.add(refrId);
+            this.aggroHeldUntil.set(refrId, Date.now() + PuppetService.aggroHoldMs);
         }
         if (!this.aggro.has(localId)) {
             return;
         }
         this.controller.once("update", () => {
-            this.endAggro(localId, this.sp.Actor.from(this.sp.Game.getFormEx(localId)), "the server ended the fight (StopCombatAlarm); held until its host's target changes");
+            this.endAggro(localId, this.sp.Actor.from(this.sp.Game.getFormEx(localId)), `the server ended the fight (StopCombatAlarm); a new start held ${PuppetService.aggroHoldMs} ms for its host's next state`);
         });
     }
 
@@ -785,6 +870,7 @@ export class PuppetService extends ClientListener {
             return;
         }
         this.endAggro(localId, dying, "its death started here");
+        this.seesDeath(localId);
         this.blockDeadBody(localId, dying, "its death started here");
     }
 
@@ -832,7 +918,7 @@ export class PuppetService extends ClientListener {
         } else {
             this.relayedTargets.delete(refrId);
         }
-        this.aggroHeld.delete(refrId);
+        this.aggroHeldUntil.delete(refrId);
         if (me === 0 || (target !== me && before !== me)) {
             return;
         }
@@ -969,7 +1055,9 @@ export class PuppetService extends ClientListener {
 
     private forget(localId: number) {
         this.endAggro(localId, null, "no actor here");
+        this.aggroRetryAt.delete(localId);
         this.demotedAt.delete(localId);
+        this.deadSeen.delete(localId);
         this.puppets.delete(localId);
         this.effectLooks.delete(localId);
         this.attached.delete(localId);
@@ -1013,31 +1101,34 @@ export class PuppetService extends ClientListener {
     // A puppet drafted into combat (a hit, a script's StartCombat; the AI bit
     // gates neither, re-ai-puppet.md:181-187): undone at the first event (H6)
     // by the demote again, which is idempotent and stops the combat natively.
-    // Tracker #130's exception: a puppet with the aggro mark keeps a combat
-    // on this seat's player (the event's target, else the engine's combat
-    // target; one naming nobody is the mark's own StartCombat). One the
-    // engine turned on anyone else is undone as before, the mark cleared and
-    // the start held until the host's target changes, so the two never trade
-    // a combat every frame
+    // Tracker #130's exception: a puppet with the aggro mark keeps its
+    // combat whatever target its engine picks. Target selection runs with
+    // the AI off and the combat behavior does not (re-ai-puppet.md:169-180,
+    // confirmed static there), so a summon or a follower of this seat's that
+    // engages the puppet may draw its target; that it never swings is the
+    // same note's HYPOTHESIS (:185-187). HYPOTHESIS: that the puppet then
+    // stays on this seat's compass and keeps the wait gate shut,
+    // since both read every combat group with the player among its targets
+    // (hostility-1-7-104.md:43-70, :92-97), not each member's own target.
+    // The end of a marked puppet's combat takes the mark off: its engine
+    // ended it, or the server's StopCombatAlarm did (reconcileAggro)
     private onCombatState(e: CombatEvent) {
-        if (!e.actor || !(e.isCombat || e.isSearching)) {
+        if (!e.actor) {
             return;
         }
         const id = e.actor.getFormID();
-        if (!this.sp.isPuppet(id)) {
+        if (!(e.isCombat || e.isSearching)) {
+            if (this.aggro.has(id)) {
+                // the server's end holds a new start itself; an end of the
+                // engine's own waits aggroRetryMs
+                const refrId = localIdToRemoteId(id);
+                const held = refrId !== 0 && this.isAggroHeld(refrId);
+                this.endAggro(id, null, held ? `the server's StopCombatAlarm ended it; a new start held ${PuppetService.aggroHoldMs} ms for its host's next state` : "its engine ended it", !held);
+            }
             return;
         }
-        if (this.aggro.has(id)) {
-            const named = e.target ?? this.sp.Actor.from(e.actor)?.getCombatTarget() ?? null;
-            const target = named ? named.getFormID() : 0x14;
-            if (target === 0x14) {
-                return;
-            }
-            const refrId = localIdToRemoteId(id);
-            if (refrId) {
-                this.aggroHeld.add(refrId);
-            }
-            this.endAggro(id, null, `its engine turned it on ${target.toString(16)}, H6 undoes it; held until its host's target changes`);
+        if (!this.sp.isPuppet(id) || this.aggro.has(id)) {
+            return;
         }
         this.sp.setPuppet(id, true);
         this.demotedAt.set(id, this.tick);
@@ -1053,13 +1144,17 @@ export class PuppetService extends ClientListener {
 
     private readonly puppets = new Set<number>();
     // tracker #130: the host's combat target per actor (by server id, none
-    // kept for none), the actors whose aggro start is held (by server id),
+    // kept for none); the moment a held start is free again (by server id);
     // the puppets this seat put in combat on its player (the aggro mark, by
-    // local id) and the tick of each puppet's last demote
+    // local id, with the tick of the start); the moment a puppet's next
+    // start is free after its engine dropped one; the tick of each puppet's
+    // last demote; the deaths this seat has seen (seesDeath)
     private readonly relayedTargets = new Map<number, number>();
-    private readonly aggroHeld = new Set<number>();
-    private readonly aggro = new Set<number>();
+    private readonly aggroHeldUntil = new Map<number, number>();
+    private readonly aggro = new Map<number, number>();
+    private readonly aggroRetryAt = new Map<number, number>();
     private readonly demotedAt = new Map<number, number>();
+    private readonly deadSeen = new Set<number>();
     // Ownership: the host's recorded effect set per actor, by server id, and
     // the looks playing on each actor this seat does not host, by local id
     private readonly recordedEffects = new Map<number, number[]>();
@@ -1088,6 +1183,13 @@ export class PuppetService extends ClientListener {
     // two polls: a 3D the late fate dropped comes back within it (train-47b
     // reloads it), and a walk out of reach is a release either way
     private static readonly releaseGraceMs = 4000;
+    // tracker #130, policies of this client's, not engine numbers: a start
+    // after the server's end waits one host poll (HostedStateService's
+    // 500 ms) and a second more for the host's own end to run and its state
+    // to come back; a start after the engine dropped one waits one poll
+    // here, the pass that reads the engine
+    private static readonly aggroHoldMs = 1500;
+    private static readonly aggroRetryMs = 2000;
     private readonly enabled: boolean;
     private readonly engineDeaths: boolean;
     private readonly effectLooksOn: boolean;

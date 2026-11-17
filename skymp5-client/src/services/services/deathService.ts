@@ -15,6 +15,7 @@ export class DeathService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
     controller.once("update", () => this.onceUpdate());
+    controller.on("update", () => this.releaseRiseKinds());
     controller.emitter.on("applyDeathStateEvent", (e) => this.onApplyDeathState(e));
     this.hookDisableKillMoves();
     this.hookDisableStagger();
@@ -397,26 +398,69 @@ export class DeathService extends ClientListener {
   // live word (resurrectActor above, the engine's Resurrect(true, true)). The
   // owner's get-up, relayed as its action, is played here on the copy while
   // it is still dead, as the owner's engine plays it, so the live word finds
-  // it up. iGetUpType goes to 1 first, never 0: the engine's GetUpEnd handler
-  // runs the reanimation proper for 0 (id 38820, which reads the commanding
-  // actor only the owner's effect holds), and 1 is what this client's other
-  // get-ups set (revertPredictedDeath, ressurectWithPushKill). HYPOTHESIS
-  // until x-raise-rise and Eli's eyes read it: that a dead copy's graph takes
-  // and plays the get-up (the owner's ReanimateEffect also sets the actor's
-  // kShouldAnimGraphUpdate, Actor.h:204, which nothing here sets), that type
-  // 1's get-up looks like the owner's, and that the copy stays up, still dead,
-  // until the live word. A raise whose effect ends before its get-up does (no
-  // live word) would leave the copy standing dead: unread
+  // it up.
+  //
+  // The rise's kind is iGetUpType, which the owner's engine sets before its
+  // get-up: ReanimateEffect::Start (34750) writes 0 and performs ActionGetUp
+  // (docs/research/m3/re-resurrect-hook.md:48-54; lab/.cache/drafts/reanimate/
+  // return-to-caster-read.md:150), and the idle that answers, NPCGetUp
+  // 0xfdc61, carries no condition (lab/esm.py: its ENAM GetUpBegin, ANAM
+  // 0xd1fdd, no CTDA), so the variable alone picks the clip. v1 set 1 here, the
+  // value this client's other get-ups use, and Eli saw it (playtest 54,
+  // 07:35:39.751 c1-console "rise 29602 ... (iGetUpType 1)"): "the wrong
+  // standing animation (someone standing of their own accord, not the
+  // floating chest first into the air)". So the copy takes the owner's 0. The
+  // GetUpEnd handler (42880) runs the reanimation proper (38820) for a 0 at
+  // the get-up's end, and 38820 reads a commanding actor that only the
+  // owner's effect sets; whether it survives a copy with none is unread. So
+  // the 0 is held RISE_KIND_HOLD_MS, past the clip's choice, and the copy's
+  // variable then goes back to v1's 1, with which the copy's rise ran without
+  // a fault (c1's game ran on after 07:35:46). HYPOTHESIS until Eli looks and x-raise-rise runs:
+  // that the graph picks the clip as the get-up starts and holds it (if it
+  // reads the variable live, the float turns into v1's stand after the
+  // hold); that 38820 on a copy is unsafe (an RE read of 38820 and 42880 on
+  // sky-re settles it, and the hold goes if it is safe). A raise whose effect
+  // ends before its get-up does (no live word) leaves the copy standing dead:
+  // unread
   public playOwnerRise(actor: Actor): boolean {
     const id = actor.getFormID();
     if (this.isPlayer(actor) || !actor.isDead() || this.controller.lookupListener(HostService).isMineLocal(id)) {
       return false;
     }
-    actor.setAnimationVariableInt("iGetUpType", 1);
+    actor.setAnimationVariableInt("iGetUpType", DeathService.RISE_KIND_REANIMATE);
     this.sp.Debug.sendAnimationEvent(actor, AnimationEventName.GetUpBegin);
-    logLab("verb:npc-fate", `rise ${id.toString(16)}: its owner's get-up played on this seat's dead copy (iGetUpType 1); the live word stands it after`);
+    this.risesHeld.set(id, Date.now());
+    logLab("verb:npc-fate", `rise ${id.toString(16)}: its owner's get-up played on this seat's dead copy (iGetUpType ${DeathService.RISE_KIND_REANIMATE}, held ${DeathService.RISE_KIND_HOLD_MS} ms); the live word stands it after`);
     return true;
   }
+
+  // a held rise's kind goes back to the plain get-up's once the clip runs
+  private releaseRiseKinds(): void {
+    if (this.risesHeld.size === 0) {
+      return;
+    }
+    const now = Date.now();
+    this.risesHeld.forEach((at, id) => {
+      if (now - at < DeathService.RISE_KIND_HOLD_MS) {
+        return;
+      }
+      this.risesHeld.delete(id);
+      const actor = Actor.from(this.sp.Game.getFormEx(id));
+      if (!actor) {
+        return;
+      }
+      actor.setAnimationVariableInt("iGetUpType", DeathService.RISE_KIND_PLAIN);
+      logLab("verb:npc-fate", `rise ${id.toString(16)}: iGetUpType ${DeathService.RISE_KIND_PLAIN} after ${now - at} ms (the copy's get-up end never runs the reanimation proper)`);
+    });
+  }
+
+  // the rises played on copies whose iGetUpType is held at the owner's, by
+  // local id, at the play
+  private readonly risesHeld = new Map<number, number>();
+  private static readonly RISE_KIND_REANIMATE = 0;
+  private static readonly RISE_KIND_PLAIN = 1;
+  // the shortest rise on file stood 6.26 s after its hit (lab-reanimate-two-hits)
+  private static readonly RISE_KIND_HOLD_MS = 1000;
 
   // a server-made NPC's copy, as remoteServer.ts's npcCopy reads the world
   // model: a form with an NPC base (never the players' 0x7) that is not this

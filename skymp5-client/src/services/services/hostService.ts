@@ -160,9 +160,45 @@ export class HostService extends ClientListener {
     // Skyrim Platform mirrors the word per actor (setHosted), so the hook on
     // the engine's action entry reports a hosted actor's actions beside the
     // player's; PuppetService calls this at every flip (live, puppet, lost,
-    // unloaded). Idempotent: a native call on a change alone.
+    // unloaded). Idempotent: a native call on a change alone, and on a split.
+    //
+    // thuum playtest 54 (Eli after hot load 2: "the AI of resurrected undead
+    // is broken"): this set and the platform's parted at a hot reload. c1's
+    // reloaded client resumed with 24 streamed actors (c1-console 07:50:03.874
+    // "resumed after a reload: ... 24 streamed actor(s)"), the platform's set
+    // lost them 0.4 s later (c1.log 23:50:04.322 "setHosted(373a6, false)",
+    // 375aa and 22 more), and they never came back while this set kept them:
+    // 375aa's host pass ran at its stand (c1-console 07:54:12.396 "body 375aa:
+    // stood up on its host's seat", which follows markHosted(true)) with no
+    // native call after it. So rotfern's raised 373a6 and 375aa, simulated on
+    // c1, streamed no action (no ActionSyncService line for either, where
+    // c2's 39fe2 streamed its turns, c2-console 07:53:09.568), and the
+    // platform refused their scripts as another seat's (c1.log 23:52:09.076
+    // "Actor.AddSpell on 373a6: skipped, not hosted here", every 30 s). What
+    // made the split is HYPOTHESIS (the reload's two instances, the stored
+    // view's and the new services'); the platform's own answer (isHosted) is
+    // read at most every nativeCheckMs per actor, and a split is set again
+    private nativeChecked = new Map<number, number>();
+    private static readonly nativeCheckMs = 2000;
+
+    private nativeSplit(localId: number, hosted: boolean): boolean {
+        const now = Date.now();
+        if (now - (this.nativeChecked.get(localId) ?? 0) < HostService.nativeCheckMs || typeof this.sp.isHosted !== "function") {
+            return false;
+        }
+        this.nativeChecked.set(localId, now);
+        if (this.sp.isHosted(localId) === hosted) {
+            return false;
+        }
+        logLab("verb:npc-stream", `${localId.toString(16)}: ${hosted ? "streamed" : "not streamed"} here by this client, the platform's set said otherwise; set again`);
+        return true;
+    }
+
     markHosted(localId: number, hosted: boolean): void {
-        if (!this.streamEnabled || localId === 0x14 || hosted === this.hostedActors.has(localId)) {
+        if (!this.streamEnabled || localId === 0x14) {
+            return;
+        }
+        if (hosted === this.hostedActors.has(localId) && !this.nativeSplit(localId, hosted)) {
             return;
         }
         if (hosted) {

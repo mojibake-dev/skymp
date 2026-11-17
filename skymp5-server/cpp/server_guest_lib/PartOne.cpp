@@ -1924,6 +1924,17 @@ void PartOne::Init()
         // stands on its cell (the design: isHostedByOther false, so the
         // caster's view is a hosted actor's, its AI on)
         message.props.isHostedByOther = false;
+      } else if (const uint32_t summonEffect = pImpl->summons->summon_effect(
+                   emitter->GetFormId(), listener->GetFormId(), SteadyNowMs());
+                 summonEffect != 0) {
+        // thuum tracker #111 (playtest 53, Eli: "they slide in from
+        // somewhere instead of the purple sphere effect"): every other
+        // listener's word, while the summon arrives (wire-rules summons
+        // ARRIVAL_WORD_MS), names the summon effect, so that game's copy
+        // plays the effect's own hit-effect art where the caster's engine
+        // draws its SummonPlacementEffect (the client's FormView)
+        message.props.summonEffect = summonEffect;
+        message.baseRecordType = emitter->GetBaseType();
       }
     }
 

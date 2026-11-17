@@ -37,6 +37,16 @@ use std::collections::HashMap;
 /// end report never came, ms.
 pub const BACKSTOP_MS: u64 = 5_000;
 
+/// How long after its record a summon's create word names its effect to
+/// the listeners that are not its caster (`summon_effect`, thuum tracker
+/// #111), ms: the record's own subscription pass, which the core runs right
+/// after the record (PartOne::OnSummonStart), with room for a listener the
+/// next grid pass adds. A watcher's copy created inside it plays the
+/// effect's arrival art; a later loader's copy stands plain, the summon
+/// having arrived before that game saw it. A policy bound, not an engine
+/// number.
+pub const ARRIVAL_WORD_MS: u64 = 3_000;
+
 /// Why a summon report is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Code {
@@ -120,6 +130,9 @@ pub struct Row {
     pub backstop_ms: u64,
     /// While its dispel fades: when the fade ends and the core deletes it.
     pub fading_until_ms: Option<u64>,
+    /// When the core recorded it, on its monotonic clock, ms: the start of
+    /// its arrival's word (`ARRIVAL_WORD_MS`).
+    pub recorded_ms: u64,
 }
 
 /// What the clock found due.
@@ -207,6 +220,24 @@ impl Summons {
             .map_or(0, |r| r.local)
     }
 
+    /// The create word's `summonEffect` for `listener` at `now_ms` (thuum
+    /// tracker #111): the summon effect of the live summon `actor`, whose
+    /// arrival art a watcher's copy plays, when `listener` is not its caster
+    /// (whose word binds its engine's own summon, `own_local`, and whose
+    /// engine draws the arrival itself) and the summon was recorded no more
+    /// than [`ARRIVAL_WORD_MS`] before; else 0 (none sent).
+    #[must_use]
+    pub fn summon_effect(&self, actor: u32, listener: u32, now_ms: u64) -> u32 {
+        self.rows
+            .get(&actor)
+            .filter(|r| {
+                r.fading_until_ms.is_none()
+                    && r.caster != listener
+                    && now_ms.saturating_sub(r.recorded_ms) <= ARRIVAL_WORD_MS
+            })
+            .map_or(0, |r| r.effect)
+    }
+
     /// The record's consistency of a start report, nothing recorded: the
     /// reporter's own player, its engine's id naming no summon held, a base
     /// the server could place, a cell it knows.
@@ -240,7 +271,17 @@ impl Summons {
         let backstop_ms = now_ms.saturating_add(ms_of(f.remaining_s)).saturating_add(BACKSTOP_MS);
         self.rows.insert(
             actor,
-            Row { actor, caster: f.caster, local: f.local, base: f.base, effect: f.effect, spell: f.spell, backstop_ms, fading_until_ms: None },
+            Row {
+                actor,
+                caster: f.caster,
+                local: f.local,
+                base: f.base,
+                effect: f.effect,
+                spell: f.spell,
+                backstop_ms,
+                fading_until_ms: None,
+                recorded_ms: now_ms,
+            },
         );
         true
     }
@@ -342,6 +383,14 @@ mod tests {
         assert_eq!(s.own_local(0xff00_0c90, ROTFERN), LOCAL);
         assert_eq!(s.own_local(0xff00_0c90, ARIADNE), 0);
         assert_eq!(s.own_local(0xff00_0c91, ROTFERN), 0);
+        // and its effect to every other listener while it arrives (#111):
+        // never to its caster, never for another actor, never past the
+        // arrival's word
+        assert_eq!(s.summon_effect(0xff00_0c90, ARIADNE, 1_000), SUMMON_FLAME_ATRONACH_POTENT);
+        assert_eq!(s.summon_effect(0xff00_0c90, ARIADNE, 1_000 + ARRIVAL_WORD_MS), SUMMON_FLAME_ATRONACH_POTENT);
+        assert_eq!(s.summon_effect(0xff00_0c90, ARIADNE, 1_000 + ARRIVAL_WORD_MS + 1), 0);
+        assert_eq!(s.summon_effect(0xff00_0c90, ROTFERN, 1_000), 0);
+        assert_eq!(s.summon_effect(0xff00_0c91, ARIADNE, 1_000), 0);
         let row = s.row(0xff00_0c90);
         assert_eq!(
             row.map(|r| (r.base, r.effect, r.spell, r.backstop_ms)),
@@ -423,6 +472,8 @@ mod tests {
         assert!(!s.dispel(0xff00_0c90, 2_100, 1_500));
         assert_eq!(s.live_of(ROTFERN), 0);
         assert_eq!(s.own_local(0xff00_0c90, ROTFERN), 0);
+        // and a fading summon arrives for nobody (#111)
+        assert_eq!(s.summon_effect(0xff00_0c90, ARIADNE, 2_100), 0);
         assert_eq!(s.end(ROTFERN, LOCAL), None);
         assert_eq!(s.caster_of(0xff00_0c90), ROTFERN);
         // the engine's next summon by the same number is a new one

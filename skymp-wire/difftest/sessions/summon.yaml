@@ -109,15 +109,15 @@ divergences:
     wire: 1
     reason: the scroll's summon's fate to its listener, as to c1
   - client: c2
-    msg: {t: 33, baseId: 321856, props: {isHostedByOther: true}}
+    msg: {t: 33, baseId: 321856, baseRecordType: NPC_, props: {isHostedByOther: true, summonEffect: 321861}}
     legacy: 0
     wire: 1
-    reason: the watcher's word carries no bind and no record type (a server-made actor's word names none, the client's copy path keying on the base), its copy a puppet the caster's game simulates
+    reason: the watcher's word carries no bind, its copy a puppet the caster's game simulates; sent as the record holds the summon, it names the summon effect (0x4e945) whose arrival art the copy plays, with the summon's NPC_ pairing (tracker #111, SCHEMA_VERSION 59, wire-rules summons ARRIVAL_WORD_MS)
   - client: c2
     msg: {t: 33, baseId: 132288, props: {isHostedByOther: true}}
     legacy: 0
     wire: 1
-    reason: the scroll's puppet word to the watcher, no bind on it, as the learned spell's
+    reason: the scroll's puppet word to the watcher, no bind on it, as the learned spell's; its report named no effect (0), so the word names none and carries no record type, as no other server-made actor's does
   - client: c2
     msg: {t: 7, refrId: 4278190084, propName: isDead}
     legacy: 0

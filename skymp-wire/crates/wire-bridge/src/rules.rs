@@ -3591,6 +3591,11 @@ mod ffi {
         /// The create word's ownLocal for `listener`: the local id when it
         /// is the caster of the live summon `actor`, else 0 (none sent).
         fn summon_own_local(self: &Summons, actor: u32, listener: u32) -> u32;
+        /// The create word's summonEffect for `listener` at `now_ms`
+        /// (thuum tracker #111): the summon effect of the live summon
+        /// `actor` when `listener` is not its caster and the summon was
+        /// recorded within the arrival's word, else 0 (none sent).
+        fn summon_effect(self: &Summons, actor: u32, listener: u32, now_ms: u64) -> u32;
         /// The row of `actor` (its actor 0 when none held), the core's log
         /// and create word.
         fn summon_row(self: &Summons, actor: u32) -> SummonRow;
@@ -6124,6 +6129,10 @@ impl Summons {
 
     fn summon_own_local(&self, actor: u32, listener: u32) -> u32 {
         self.0.own_local(actor, listener)
+    }
+
+    fn summon_effect(&self, actor: u32, listener: u32, now_ms: u64) -> u32 {
+        self.0.summon_effect(actor, listener, now_ms)
     }
 
     fn summon_row(&self, actor: u32) -> SummonRow {

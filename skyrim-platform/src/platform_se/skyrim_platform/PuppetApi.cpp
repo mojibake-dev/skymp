@@ -1533,6 +1533,10 @@ constexpr float kBodySnapUnits = 64.f;
 // F9: HYPOTHESIS until B5's read, 1/60 under decision 7's cap)
 constexpr float kImposeDtMin = 1.f / 240.f;
 constexpr float kImposeDtMax = 1.f / 30.f;
+// the drive's horizon (ImposeHorizonOf) at most this (UNMEASURED: a quarter
+// second, a hitch's frame; a longer gap is driven over this, which falls
+// short of the target and never passes it, and the next drain closes it)
+constexpr float kImposeHorizonMax = 0.25f;
 // a pose's quaternion off unit length by at most this, wire-validate's
 // PROP_QUAT_NORM_SLACK (skymp-wire crates/wire-validate/src/lib.rs:86)
 constexpr float kImposeQuatSlack = 0.01f;
@@ -1575,6 +1579,17 @@ bool g_imposeDrainSaid = false;
 std::unordered_set<uint32_t> g_imposeNo3DSaid;
 std::unordered_set<uint64_t> g_imposeSkipSaid;
 std::unordered_map<uint32_t, uint64_t> g_imposeSnapSaidMs;
+std::unordered_map<uint32_t, uint64_t> g_imposeHorizonSaidMs;
+
+// a held form's world clock at the drain that last drove or placed it
+// (ImposeClockOf), and Puppets::NowMs() then: the next drive's horizon is
+// the world's time between the two drains (ImposeHorizonOf)
+struct ImposeClock
+{
+  float clock = 0.f;
+  uint64_t atMs = 0;
+};
+std::unordered_map<uint32_t, ImposeClock> g_imposeClock;
 
 // a JS array of exactly n numbers into out; a value of another shape throws
 // as NapiHelper's extractors throw (ExtractNiPoint3's shape)
@@ -1607,6 +1622,50 @@ float ImposeStepOf(const RE::hkpRigidBody& body)
     return 0.f;
   }
   return std::clamp(raw, kImposeDtMin, kImposeDtMax);
+}
+
+// the part's world clock: its world's dynamicsStepInfo.stepInfo.endTime
+// (H/hkpWorld.h:193, H/hkStepInfo.h:11), the time the world's last step
+// reached (HYPOTHESIS, rule 2: that the engine's step sets it from the
+// world's running time, as Havok's own does); false with no world or a
+// value that is not a number
+bool ImposeClockOf(const RE::hkpRigidBody& body, float& out)
+{
+  const RE::hkpWorld* world = body.world;
+  if (!world) {
+    return false;
+  }
+  out = world->dynamicsStepInfo.stepInfo.endTime;
+  return std::isfinite(out);
+}
+
+// thuum tracker #125 (playtest 54, the Riverwood Trader's sign jumping on
+// the guest's screen): the drive's horizon. A drive sets a part's velocity
+// once a drain, one drain a frame, and the world integrates it on every
+// step until the next drain sets another, so the velocity that closes the
+// gap is the gap over the world's time between two drains, not over one
+// step: over one step, a frame of n steps carries the part n times the gap
+// (HYPOTHESIS: 54's guest drained about 28 times a second, c2-console.log
+// "908 frames imposed" over 07:21:48 to 07:22:20Z, against the 1/60 step
+// thuum ADR-071 decision 7 names, unread on its seats; its parts passed 64
+// units and were placed outright 12 or more times, c2.log 972 to 1009).
+// The horizon line below reads the steps a drain (the spec's F9): a horizon
+// equal to the step says the drive was never the cause.
+// The world's advance since this form's last drain, at least the step and
+// at most kImposeHorizonMax; the step alone (today's drive) on a form's
+// first drain, a clock older than kImposeStaleMs, a clock that went back or
+// stood (a paused world), or no clock
+float ImposeHorizonOf(float step, bool known, const ImposeClock& then,
+                      float clockNow, uint64_t nowMs)
+{
+  if (!(step > 0.f) || !known || nowMs - then.atMs > kImposeStaleMs) {
+    return step;
+  }
+  const float advance = clockNow - then.clock;
+  if (!std::isfinite(advance) || !(advance > step)) {
+    return step;
+  }
+  return std::min(advance, kImposeHorizonMax);
 }
 
 // one form's poses applied on the main thread; true when the form leaves the
@@ -1669,6 +1728,22 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
       farthestPart = i;
     }
   }
+  // the form's world clock now and at its last drain (#125), kept for the
+  // next drain's horizon whether this one places or drives
+  float clockNow = 0.f;
+  const bool ticking = ImposeClockOf(*walk.parts[0].havok, clockNow);
+  const uint64_t clockMs = Puppets::NowMs();
+  const auto last = g_imposeClock.find(formId);
+  const bool known = ticking && last != g_imposeClock.end();
+  const ImposeClock then = known ? last->second : ImposeClock{};
+  if (ticking) {
+    if (last == g_imposeClock.end() && g_imposeClock.size() > kImposeSaidMax) {
+      g_imposeClock.clear();
+    }
+    g_imposeClock[formId] = ImposeClock{ clockNow, clockMs };
+  } else if (last != g_imposeClock.end()) {
+    g_imposeClock.erase(last);
+  }
   const bool snap = farthest > kBodySnapUnits;
   if (entry.rest || snap) {
     for (uint32_t i = 0; i < n; ++i) {
@@ -1690,9 +1765,31 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
     }
     return entry.rest;
   }
+  float firstStep = 0.f;
+  float firstHorizon = 0.f;
   for (uint32_t i = 0; i < n; ++i) {
     const PropBodies::Body& part = walk.parts[i];
-    PropBodies::DriveBody(part, targets[i], ImposeStepOf(*part.havok));
+    const float step = ImposeStepOf(*part.havok);
+    const float horizon =
+      ImposeHorizonOf(step, known, then, clockNow, clockMs);
+    if (i == 0) {
+      firstStep = step;
+      firstHorizon = horizon;
+    }
+    PropBodies::DriveBody(part, targets[i], horizon);
+  }
+  // the horizon line (#125's read of the spec's F9: the world's steps a
+  // drain, horizon over step) at most once a second per form
+  if (g_imposeHorizonSaidMs.size() > kImposeSaidMax) {
+    g_imposeHorizonSaidMs.clear();
+  }
+  auto said = g_imposeHorizonSaidMs.find(formId);
+  if (said == g_imposeHorizonSaidMs.end() ||
+      clockMs - said->second >= kImposeSnapSayEveryMs) {
+    g_imposeHorizonSaidMs[formId] = clockMs;
+    logger::info("[verb:prop-physics] impose {:x} driven: horizon {:.4f} s, "
+                 "the world's step {:.4f} s, {:.1f} units off",
+                 formId, firstHorizon, firstStep, farthest);
   }
   return false;
 }
@@ -1744,6 +1841,9 @@ void DrainImpose()
     if (!stale && !ImposeOne(formId, entry, toHavok, toGameUnits)) {
       continue;
     }
+    // the form leaves the drive: its clock goes with it (#125), so a later
+    // follow's first drain drives over one step
+    g_imposeClock.erase(formId);
     std::lock_guard<std::mutex> lock(g_imposeMutex);
     const auto it = g_impose.find(formId);
     if (it != g_impose.end() && it->second.seq == entry.seq) {
@@ -1763,11 +1863,13 @@ void DrainImpose()
 // pose i on part i: with rest set, or a part more than 64 units from its
 // target, every part placed (PropBodies::PlaceBody; the snap said at most
 // once a second a form, line N6, and a rest dropping the form); otherwise
-// every part driven (PropBodies::DriveBody) over its world's step. A form
-// with no 3D is dropped (N3, once a form); a pose count that is not the
-// walk's part count is skipped (N2, once a (form, count, parts)). Refused,
-// false and nothing stored: 0, the player's own id, no pose, more than 64, a
-// value that is not a number, a quaternion off unit length by more than 0.01
+// every part driven (PropBodies::DriveBody) over the world's time since the
+// form's last drain (ImposeHorizonOf, #125; the horizon said at most once a
+// second a form). A form with no 3D is dropped (N3, once a form); a pose
+// count that is not the walk's part count is skipped (N2, once a (form,
+// count, parts)). Refused, false and nothing stored: 0, the player's own
+// id, no pose, more than 64, a value that is not a number, a quaternion off
+// unit length by more than 0.01
 // (wire-validate's PROP_QUAT_NORM_SLACK), no SKSE task interface, or a full
 // table (64 forms, said at the first and every hundredth). A pose of another
 // shape throws, as the platform's extractors throw

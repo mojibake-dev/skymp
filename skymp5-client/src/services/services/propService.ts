@@ -691,8 +691,12 @@ export class PropService extends ClientListener {
     // entry whose reference is unloaded or far is simply not found at a
     // rescan; the server's unsubscribe needs no handling here. Full, the
     // oldest entry kindOf already judged no row goes first, else the oldest
-    // (noteEngineRef)
-    private engineRefs = new Map<number, { baseId: number; pos: NiPoint3; rot: NiPoint3; worldOrCell: number }>();
+    // (noteEngineRef). recorded: a record has reached this seat since the
+    // create word (thuum tracker #120: the server's record answer rides
+    // behind a game-file prop's create word once its record holds play,
+    // PartOne's onSubscribe; or any sample since, recordSample), so the
+    // record is no longer the game file's placement (fileRecord)
+    private engineRefs = new Map<number, { baseId: number; pos: NiPoint3; rot: NiPoint3; worldOrCell: number; recorded: boolean }>();
     // the entries let go since the login, for the eviction's line
     private engineRefsLetGo = 0;
 
@@ -739,7 +743,8 @@ export class PropService extends ClientListener {
         const t = msg.transform;
         const pos: NiPoint3 = [t.pos[0], t.pos[1], t.pos[2]];
         const rot: NiPoint3 = [t.rot[0], t.rot[1], t.rot[2]];
-        this.engineRefs.set(refrId, { baseId: msg.baseId || 0, pos, rot, worldOrCell: t.worldOrCell });
+        // unrecorded until a record follows the create word (fileRecord)
+        this.engineRefs.set(refrId, { baseId: msg.baseId || 0, pos, rot, worldOrCell: t.worldOrCell, recorded: false });
         // ADR-068 D-S3 point 4: a trap body's create word brings the server's
         // record (after a restart, at a re-subscription): placed at it on the
         // next tick, unless this seat streams the body (its record is this
@@ -1048,7 +1053,10 @@ export class PropService extends ClientListener {
     // translate put-back two resting Dynamic cabbages' references stood at
     // their records and their bodies 940 and 263 units off), and a body that
     // is Dynamic is set Keyframed before the keyframed translate, its motion
-    // decided again REST_DYNAMIC_MS after the translate lands (landsAt).
+    // decided again REST_DYNAMIC_MS after the translate lands (landsAt). A
+    // game-file item whose record is still its file's placement is never
+    // placed (fileRecord, thuum tracker #120): this engine loaded that
+    // placement itself.
     // HYPOTHESIS: that a translate moves a Keyframed body and its reference
     // together and leaves a Dynamic one (E21's mechanism; x-body-read v1's
     // leg B). The first track's "body" lines follow the placement
@@ -1068,7 +1076,25 @@ export class PropService extends ClientListener {
         }
         const body = prop.loaded3D ? this.readBody(prop) : undefined;
         const read = body !== undefined ? body : PropService.read(refr);
-        if (!PropService.apart(read, pose, SAMPLE_UNITS, SAMPLE_DEGREES)) {
+        // how far the copy stood from the record, said with the placement or
+        // its skip (#120: the put-back's size was never logged; the line
+        // stays inside the console's 128-byte cut, InGameConsolePrinter.cpp)
+        const off = `${ObjectReferenceEx.getDistance(read.pos, pose.pos).toFixed(1)} units and ${PropService.turnOf(read.rot, pose.rot).toFixed(1)} degrees`;
+        const apart = PropService.apart(read, pose, SAMPLE_UNITS, SAMPLE_DEGREES);
+        // thuum tracker #120: a game-file item whose record is still its
+        // game file's placement (fileRecord) is left where this engine rests
+        // it. Every engine loads that placement itself and settles it alike
+        // (havok-props.md E30: the seats' load settles agree within 1.65
+        // units), the resting divergence D73 accepts; the put-back to the
+        // file's pose at each approach, then the Dynamic set and the engine's
+        // settle off it again, was the jump on both seats. The reference
+        // cannot tell the two apart: it follows the settle (havok-props.md
+        // E34, cabbages' references 1.4 to 16.3 units below their records at
+        // load on both seats)
+        if (!apart || this.fileRecord(prop.refr)) {
+            if (apart) {
+                logTrace(this, `prop ${prop.refr.toString(16)} not placed: its record is the game file's, ${off} off`);
+            }
             prop.placed = true;
             prop.placedAt = now;
             this.bodyTrack(prop, now);
@@ -1081,7 +1107,7 @@ export class PropService extends ClientListener {
             prop.placing = false;
             prop.placed = true;
             prop.placedAt = clockMs();
-            logTrace(this, `prop ${prop.refr.toString(16)} placed at its record${why}`);
+            logTrace(this, `prop ${prop.refr.toString(16)} placed at its record${why} from ${off} off`);
             if (prop.trap && placed) {
                 logLab(TRAP_TAG, `trap body ${prop.refr.toString(16)} placed at its recorded rest`);
             }
@@ -2750,7 +2776,26 @@ export class PropService extends ClientListener {
         if (rec) {
             rec.pos = [s.pos[0], s.pos[1], s.pos[2]];
             rec.rot = [s.rot[0], s.rot[1], s.rot[2]];
+            rec.recorded = true;
         }
+    }
+
+    // thuum tracker #120 (playtest 54, Eli: "Props jumped in riverwood.
+    // Items near the blacksmiths forge."): whether the prop's record is still
+    // its game file's placement: a game-file reference (no model, its record
+    // engineRefs') whose create word came with no record behind it and no
+    // sample since. The server sends a game-file prop's record behind its
+    // create word only once the record holds play (a seat's streamed move, a
+    // script's, one persisted across a restart: PartOne's onSubscribe,
+    // MpObjectReference::PoseRecorded), as it sends a container's inventory
+    // only once recorded
+    private fileRecord(refr: number): boolean {
+        const form = this.formOf(refr);
+        if (form && form.movement) {
+            return false;
+        }
+        const rec = this.engineRefs.get(refr);
+        return rec !== undefined && !rec.recorded;
     }
 
     // the record's pose in this seat's model: the view's model's, or for a
@@ -2832,10 +2877,7 @@ export class PropService extends ClientListener {
             return;
         }
         const ref = PropService.read(refr);
-        let turned = 0;
-        for (let i = 0; i < 3; ++i) {
-            turned = Math.max(turned, Math.abs(angleDelta(body.rot[i], ref.rot[i])));
-        }
+        const turned = PropService.turnOf(body.rot, ref.rot);
         const id = prop.refr.toString(16);
         const record = this.recordOf(prop.refr);
         const fromRecord = record ? `its record by ${ObjectReferenceEx.getDistance(body.pos, record.pos).toFixed(1)} units` : "no record known";
@@ -3012,6 +3054,15 @@ export class PropService extends ClientListener {
             pos: [b.pos[0], b.pos[1], b.pos[2]],
             quat: [b.quat[0], b.quat[1], b.quat[2], b.quat[3]],
         }));
+    }
+
+    // the largest turn between two Euler triples on any axis, degrees
+    private static turnOf(a: NiPoint3, b: NiPoint3): number {
+        let turned = 0;
+        for (let i = 0; i < 3; ++i) {
+            turned = Math.max(turned, Math.abs(angleDelta(a[i], b[i])));
+        }
+        return turned;
     }
 
     // whether two transforms differ past the thresholds (any axis of the turn)

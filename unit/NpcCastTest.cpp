@@ -825,3 +825,159 @@ TEST_CASE("A hosted caster's aimed bolt that hits a player gets no landing "
   }
   Leave(p);
 }
+
+namespace {
+// playtest 54 #126's cases: the predator commanded by the host (the raise
+// as OnHit stamps it ahead of ClaimReanimated, CellHostTest's shape), in
+// front of both players within a sword's reach, each player with a sword
+MpActor& HostsThrall(PartOne& p)
+{
+  auto& predator = Gather(p);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  predator.SetPos(kForest + NiPoint3{ 0.f, 100.f, 0.f });
+  for (MpActor* player : { &host, &other }) {
+    player->AddItem(kIronSword, 1);
+    Equipment eq;
+    eq.inv.entries.push_back(Inventory::Entry(kIronSword, 1, kWorn));
+    player->SetEquipment(eq);
+  }
+  predator.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0, kHost);
+  REQUIRE(p.ClaimCommanded(host, predator, 60) ==
+          PartOne::ClaimVerdict::Granted);
+  REQUIRE(p.CommanderOf(predator) == kHost);
+  REQUIRE(p.worldState.HostOf(predator) == &host);
+  p.Messages().clear();
+  return predator;
+}
+
+// the snippets of `function` sent to `user` since the last clear
+std::vector<nlohmann::json> SnippetsTo(PartOne& p, Networking::UserId user,
+                                       const char* function)
+{
+  std::vector<nlohmann::json> out;
+  for (const auto& j : SentTo(p, user, MsgType::SpSnippet)) {
+    if (j.value("function", std::string{}) == function) {
+      out.push_back(j);
+    }
+  }
+  return out;
+}
+
+void LeaveThrall(PartOne& p, MpActor& predator)
+{
+  predator.SetHostedState(0, 0);
+  predator.SetPercentages(ActorValues{});
+  p.ReleaseAnyClaim(predator);
+  p.GetFights().forget(kPredator);
+  p.GetFights().forget(kHost);
+  Leave(p);
+}
+}
+
+// playtest 54 #126 (2026-11-17 07:41Z): Ariadne's second atronach lost its
+// target in her game while its fight with rotfern stood, and rotfern's later
+// hits reached her game as damage alone, the pair already existing. A hit on
+// a summon or thrall whose host's state names no target tells the host the
+// fight again, both ways, at most once a second
+TEST_CASE("A hit on a thrall another game simulates, whose host's state "
+          "names no target, tells its host the fight again both ways, at "
+          "most once a second",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& predator = HostsThrall(p);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  const auto swings = [&] {
+    predator.SetPercentages(ActorValues{});
+    other.SetLastHitTime(
+      kPredator, std::chrono::steady_clock::now() - std::chrono::seconds(3));
+    RawMessageData raw;
+    raw.userId = 1;
+    HitMessage hit;
+    hit.data.aggressor = 0x14;
+    hit.data.target = kPredator;
+    hit.data.source = kIronSword;
+    p.GetActionListener().OnHit(raw, hit);
+    p.Tick(); // snippets are deferred
+  };
+
+  // the fight begins: the host is told both ways (D2)
+  swings();
+  REQUIRE(SnippetsTo(p, 0, "StartCombat").size() == 2);
+
+  // the host's state names the attacker: the next hit tells nothing
+  predator.SetHostedState(kOther, 0);
+  p.Messages().clear();
+  swings();
+  REQUIRE(SnippetsTo(p, 0, "StartCombat").empty());
+
+  // its state names no target: told again, both ways, the same two
+  predator.SetHostedState(0, 0);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    swings();
+    REQUIRE(log.Count("hit 85547 again and its host ff000d20's state names "
+                      "no target: told again, both ways") == 1);
+  }
+  const auto again = SnippetsTo(p, 0, "StartCombat");
+  REQUIRE(again.size() == 2);
+  REQUIRE(again[0]["selfId"] ==
+          SpSnippet::MakeLongFormId(&p.worldState, kPredator));
+  REQUIRE(again[1]["selfId"] == kOther);
+  REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+
+  // a second hit within the second: nothing
+  p.Messages().clear();
+  swings();
+  REQUIRE(SnippetsTo(p, 0, "StartCombat").empty());
+
+  LeaveThrall(p, predator);
+}
+
+// playtest 54 #126: the players' own fight ended a minute quiet at
+// 07:41:20.936 (server.log:5575) and stood rotfern's figure down in
+// Ariadne's game (StopCombatAlarm) while her atronach still fought him there.
+// A player's game keeps its figure of the other fighting, and its thralls in
+// their own fights, while a summon or thrall of its own still fights that
+// player
+TEST_CASE("The end of a players' fight leaves a player's figure of the other "
+          "fighting, and its thrall in its own fight, while that thrall still "
+          "fights the other player",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& predator = HostsThrall(p);
+  const uint64_t t = NowMs();
+  // the players' fight, a minute quiet by now; the thrall's own fight with
+  // the other player, just hit; the host's state names that player
+  REQUIRE(p.GetFights().hit(kHost, kOther, t - 61'000));
+  REQUIRE(p.GetFights().hit(kPredator, kOther, t));
+  predator.SetHostedState(kOther, 0);
+  p.Messages().clear();
+  {
+    LogCapture log;
+    p.TickFights(t);
+    REQUIRE(log.Count("ff000d20's figure of ff000d21 stays in the fight: a "
+                      "summon or thrall of ff000d20's still fights it") == 1);
+    REQUIRE(log.Count("thrall 85547 of ff000d20 stays in its own fight with "
+                      "ff000d21") == 1);
+  }
+  p.Tick(); // snippets are deferred
+  // the host's game stands nothing down; the other's game stands its figure
+  // of the host down as the players' end does
+  for (const auto& j : SnippetsTo(p, 0, "StopCombatAlarm")) {
+    REQUIRE(j["selfId"] != kOther);
+  }
+  REQUIRE(SnippetsTo(p, 0, "StopCombat").empty());
+  const auto otherEnds = SnippetsTo(p, 1, "StopCombatAlarm");
+  REQUIRE(otherEnds.size() == 1);
+  REQUIRE(otherEnds[0]["selfId"] == kHost);
+  REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+  REQUIRE(p.GetFights().between(kPredator, kOther));
+
+  LeaveThrall(p, predator);
+}

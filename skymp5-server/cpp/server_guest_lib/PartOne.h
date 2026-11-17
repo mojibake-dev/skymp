@@ -944,6 +944,11 @@ public:
   // only the thralls it told)
   void KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs);
   void StandDownThralls(MpActor& commander, uint32_t opponent, bool toldOnly);
+  // playtest 54 #126: whether a summon or thrall `owner`'s game simulates
+  // (IsSummon, or commanded by `owner`) has a live fight pair of its own with
+  // `opponent`; while it does, the end of `owner`'s other fights with
+  // `opponent` leaves `owner`'s figure of it fighting
+  bool MinionFights(uint32_t owner, uint32_t opponent);
 
   // thuum ADR-068 (the one seam): every reporter's script-call budget and
   // every subject's sequence (the rule and its state are Rust's, wire-rules

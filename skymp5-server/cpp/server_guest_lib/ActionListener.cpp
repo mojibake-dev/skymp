@@ -12527,6 +12527,48 @@ void ActionListener::PlayStagger(MpActor& aggressor, MpActor& target,
                aggressor.GetFormId(), what, target.GetFormId(), magnitude);
 }
 
+namespace {
+// playtest 54 #126: a summon or thrall whose host names no target is told
+// its fight again at most this often, a policy of the server's (TickFights'
+// own period, as #113's rejoin), not an engine number
+constexpr uint64_t kMinionRetellMs = 1000;
+}
+
+void ActionListener::TellHostOfFight(MpActor& aggressor, MpActor& target,
+                                     MpActor& host)
+{
+  // the NPC's own engine: `host`'s game, Actor.StartCombat on the NPC aimed
+  // at that game's figure of the attacker (the attacker's server id, which
+  // SpSnippet keeps for an argument; the client maps it to the figure,
+  // spSnippetService.ts deserializeArg)
+  SpSnippetObjectArgument attacker;
+  attacker.formId = aggressor.GetFormId();
+  attacker.type = "Actor";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    attackerArgs{ attacker };
+  SpSnippet("Actor", "StartCombat", attackerArgs, target.GetFormId())
+    .Execute(&host, SpSnippetMode::kNoReturnResult);
+  // pt53-112c, design D2 (staged for Eli's pick, the summon case of #112):
+  // the fight is made mutual in the host's engine, its figure of the
+  // attacker starting combat with the NPC too, so the attacker is the
+  // NPC's enemy as an NPC that struck it would be. x-npc-bolt-landing-v3
+  // 20261117-050130: the NPC's StartCombat alone left c1's summon with no
+  // target (c1-console.log:2279 to :2297). The figure's own combat is the
+  // ADR-023 notice's native on the same reference. HYPOTHESIS until
+  // x-summon-fights-back reads it: the engine's target selection keeps a
+  // target whose combat group targets the NPC (ghidra/notes/
+  // hostility-1-7-104.md: IsHostileToActor reads the combat group, 38571)
+  SpSnippetObjectArgument victim;
+  victim.formId = target.GetFormId();
+  victim.type = "Actor";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    victimArgs{ victim };
+  SpSnippet("Actor", "StartCombat", victimArgs, aggressor.GetFormId())
+    .Execute(&host, SpSnippetMode::kNoReturnResult);
+}
+
 // thuum docs/verbs/hostility-sync.md (ADR-023): the attacker's engine marks
 // the victim an enemy when its hit lands, but the victim's engine never sees
 // that hit. When a hit begins a fight (the Rust rule's fights table), the
@@ -12570,6 +12612,31 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
       .count());
   if (!partOne.GetFights().hit(aggressor.GetFormId(), target.GetFormId(),
                                nowMs)) {
+    // playtest 54 #126: a hit in a fight going on tells nothing, but a
+    // summon or thrall another game simulates can lose its target in that
+    // game while the pair stands (Ariadne's second atronach ff000004 read
+    // target 0 from 07:41:21 after the players' own fight ended at 20.936,
+    // server.log:5575, and rotfern's later hits reached c2 as damage alone).
+    // So when its host's state stream names no target (the "state <id> by
+    // <host>: ... target" reports, GetHostedCombatTarget), the host is told
+    // the fight again, both ways, at most once a second per actor
+    if (facts.aggressor_is_player && facts.target_is_hosted &&
+        (target.IsSummon() || partOne.CommanderOf(target) != 0) &&
+        target.GetHostedCombatTarget() == 0) {
+      MpActor* host = partOne.worldState.HostOf(target);
+      auto& last = minionRetellMs[target.GetFormId()];
+      if (host && host != &aggressor &&
+          partOne.serverState.UserByActor(host) != Networking::InvalidUserId &&
+          (last == 0 || nowMs >= last + kMinionRetellMs)) {
+        last = nowMs;
+        TellHostOfFight(aggressor, target, *host);
+        spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x} "
+                     "again and its host {:x}'s state names no target: told "
+                     "again, both ways (playtest 54 #126)",
+                     aggressor.GetFormId(), target.GetFormId(),
+                     host->GetFormId());
+      }
+    }
     return;
   }
   if (facts.aggressor_is_player && facts.target_is_hosted) {
@@ -12588,32 +12655,7 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
                    aggressor.GetFormId(), target.GetFormId());
       return;
     }
-    SpSnippetObjectArgument attacker;
-    attacker.formId = aggressor.GetFormId();
-    attacker.type = "Actor";
-    const std::vector<std::optional<
-      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-      attackerArgs{ attacker };
-    SpSnippet("Actor", "StartCombat", attackerArgs, target.GetFormId())
-      .Execute(host, SpSnippetMode::kNoReturnResult);
-    // pt53-112c, design D2 (staged for Eli's pick, the summon case of #112):
-    // the fight is made mutual in the host's engine, its figure of the
-    // attacker starting combat with the NPC too, so the attacker is the
-    // NPC's enemy as an NPC that struck it would be. x-npc-bolt-landing-v3
-    // 20261117-050130: the NPC's StartCombat alone left c1's summon with no
-    // target (c1-console.log:2279 to :2297). The figure's own combat is the
-    // ADR-023 notice's native on the same reference. HYPOTHESIS until
-    // x-summon-fights-back reads it: the engine's target selection keeps a
-    // target whose combat group targets the NPC (ghidra/notes/
-    // hostility-1-7-104.md: IsHostileToActor reads the combat group, 38571)
-    SpSnippetObjectArgument victim;
-    victim.formId = target.GetFormId();
-    victim.type = "Actor";
-    const std::vector<std::optional<
-      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-      victimArgs{ victim };
-    SpSnippet("Actor", "StartCombat", victimArgs, aggressor.GetFormId())
-      .Execute(host, SpSnippetMode::kNoReturnResult);
+    TellHostOfFight(aggressor, target, *host);
     spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, a "
                  "fight begins; its host {:x}'s game is told (the hit landed "
                  "on the attacker's own copy, which its host's engine never "

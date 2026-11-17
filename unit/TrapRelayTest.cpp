@@ -414,3 +414,58 @@ TEST_CASE("A player's activation of a scripted world object goes to the "
   REQUIRE(RelayedTo(p, 1).empty());
   Leave(p);
 }
+
+// thuum tracker #117 (playtest 53's Sanctum door; Eli's design B, "go with b
+// for 117"): the host's engine runs a guest's press for the guest inside its
+// acting scope, and the Sanctum keyhole's HallofStoriesKeyholeScript counts
+// the claw (MS13GoldenClaw 0x39647) on Game.GetPlayer(), the guest's figure
+// there, which carries no inventory. The press relayed to the cell's host
+// carries the guest's inventory as the server records it, which the scope
+// answers the count from; no other game gets it, and the host's own press
+// carries none (its engine counts its own player). The pillar stands in for
+// the keyhole: both are scripted ACTIs of a hosted cell, one relay path
+TEST_CASE("A player's press relayed to the cell's host carries the presser's "
+          "recorded inventory, and a press relayed to any other game none "
+          "(tracker #117)",
+          "[Traps][espm]")
+{
+  constexpr uint32_t kClaw = 0x39647;
+  PartOne& p = GetPartOne();
+  Enter(p);
+  p.worldState.GetFormAt<MpObjectReference>(kPillar);
+  Stand(p, kByThePillar);
+  auto& guest = p.worldState.GetFormAt<MpActor>(kGuestActor);
+  guest.AddItem(kClaw, 1);
+  REQUIRE(guest.GetInventory().GetItemCount(kClaw) == 1);
+  p.Messages().clear();
+  // the guest (user 1) presses: the host (user 0) gets the relay with the
+  // guest's record, the claw among it
+  {
+    LogCapture log;
+    Linked(p, 1, 0x14, kPillar);
+    REQUIRE(log.Count("relayed to 1 other game(s), the presser's record (") ==
+            1);
+  }
+  const auto toHost = RelayedTo(p, 0);
+  REQUIRE(toHost.size() == 1);
+  REQUIRE(toHost[0].caster == kGuestActor);
+  REQUIRE(toHost[0].presserInventory.has_value());
+  REQUIRE(toHost[0].presserInventory->GetItemCount(kClaw) == 1);
+  REQUIRE(toHost[0].presserInventory->entries.size() ==
+          guest.GetInventory().entries.size());
+  REQUIRE_FALSE(toHost[0].entry.has_value());
+  // the host's own press goes to the guest's engine with no record: the
+  // guest's game hosts nothing here, and the presser counts its own player
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Linked(p, 0, 0x14, kPillar);
+    REQUIRE(log.Count("the presser's record (") == 0);
+  }
+  const auto toGuest = RelayedTo(p, 1);
+  REQUIRE(toGuest.size() == 1);
+  REQUIRE(toGuest[0].caster == kHostActor);
+  REQUIRE_FALSE(toGuest[0].presserInventory.has_value());
+  guest.RemoveItem(kClaw, 1, nullptr);
+  Leave(p);
+}

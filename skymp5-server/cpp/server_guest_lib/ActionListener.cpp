@@ -7648,21 +7648,42 @@ void ActionListener::RelayActivationToHost(MpActor& player,
   RelayedActivationMessage relay;
   relay.target = target.GetFormId();
   relay.caster = player.GetFormId();
+  // thuum tracker #117 (Eli's design B, "go with b for 117"): the host's
+  // engine runs a guest's press for the guest inside its acting scope (the
+  // client's ArmActivation), and a script there that counts an item on
+  // Game.GetPlayer() reads the guest's figure, which carries no inventory
+  // (one owner per inventory, ADR-063). So the host's copy carries the
+  // presser's inventory as this server records it, the one owner's, which
+  // the scope answers GetItemCount from (the Sanctum keyhole's claw, playtest
+  // 53). The host's engine cannot ask the server mid-script, so the record
+  // travels with the press it serves; no other game gets it, and a host's own
+  // press sends it nowhere (the host's engine counts its own player)
+  RelayedActivationMessage hostRelay = relay;
+  hostRelay.presserInventory = player.GetInventory();
   size_t sent = 0;
+  bool toHost = false;
   for (auto listener : target.GetActorListeners()) {
     if (listener == &player) {
       continue;
     }
     if (partOne.serverState.UserByActor(listener) !=
         Networking::InvalidUserId) {
-      listener->SendToUser(relay, true);
+      if (listener->GetFormId() == host.player) {
+        listener->SendToUser(hostRelay, true);
+        toHost = true;
+      } else {
+        listener->SendToUser(relay, true);
+      }
       ++sent;
     }
   }
   spdlog::info(
     "[verb:traps] {:x} activates {:x} in cell {:x} (its host {:x}): "
-    "relayed to {} other game(s)",
-    player.GetFormId(), target.GetFormId(), *cell, host.player, sent);
+    "relayed to {} other game(s){}",
+    player.GetFormId(), target.GetFormId(), *cell, host.player, sent,
+    toHost ? fmt::format(", the presser's record ({} stack(s)) to its host",
+                         hostRelay.presserInventory->entries.size())
+           : std::string());
 }
 
 // thuum docs/verbs/traps.md (M4): a game reports its engine's linked

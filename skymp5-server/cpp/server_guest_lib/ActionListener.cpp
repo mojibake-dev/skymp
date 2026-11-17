@@ -12118,6 +12118,41 @@ void ActionListener::DeliverSpellLanding(MpActor& caster, MpActor& target,
       worldState && worldState->HostOf(caster) == &target) {
     return;
   }
+  // thuum tracker #115 (playtest 53, Eli: "atronochs were shooting two
+  // projectiles"): an aimed fire-and-forget spell's relay already flies its
+  // bolt at the victim in the victim's own game (RemoteServer's cast on the
+  // puppet, castSpellImmediate's projectile branch with the caster's launch,
+  // skyrim-platform MagicApi.cpp), and that bolt is the landing there. The
+  // engine's DoCombatSpellApply launches a second one from the caster: on
+  // Ariadne's seat each of the atronach's three hitting firebolts 0x7e882
+  // launched twice, the second within 10 ms of this function's delivery
+  // (playtest 53 c2-console.log:11154-11214 against server.log:3366-3378,
+  // c2's clock 2.99 s behind), and the two that missed launched once. Such
+  // a spell gets no delivery. HYPOTHESIS: the relayed bolt's hit on the
+  // victim's player runs that game's AddTarget, its numbers zeroed
+  // (skyrim-platform Hooks.cpp PlayerAddTarget) and its scripts run; a
+  // stream's relayed missiles follow the copy's aim instead, so a stream
+  // keeps the delivery (playtest 51's drain). A form that is no spell (a
+  // staff's enchantment) is never relayed as a cast (E_CAST_FORM) and keeps
+  // it too
+  if (WorldState* worldState = caster.GetParent(); worldState) {
+    try {
+      const auto record = espm::GetData<espm::SPEL>(spell, worldState);
+      if (record.spellItem &&
+          record.spellItem->castType == espm::SPEL::CastType::FireAndForget &&
+          record.spellItem->delivery == espm::SPEL::Delivery::Aimed) {
+        spdlog::info("[verb:magic-effects] {:x}'s {:x} landed on {:x}: no "
+                     "delivery, its relayed bolt is the landing in that "
+                     "game (tracker #115)",
+                     caster.GetFormId(), spell, target.GetFormId());
+        return;
+      }
+    } catch (const std::exception& e) {
+      spdlog::warn("[verb:magic-effects] {:x}'s {:x}: its record unread for "
+                   "the landing ({}); delivered as before",
+                   caster.GetFormId(), spell, e.what());
+    }
+  }
   const auto now = std::chrono::steady_clock::now();
   // contacts older than the window are forgotten (numidium's review N1)
   for (auto it = lastDelivery.begin(); it != lastDelivery.end();) {

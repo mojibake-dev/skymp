@@ -1046,6 +1046,11 @@ struct QueuedCall
   bool created = false;
   std::optional<std::uint32_t> placed;
   std::uint16_t localArgs = 0;
+  // thuum tracker #117's open half: a call of a row for the acting player's
+  // seat alone (Message.Show) skipped here inside that player's acting scope,
+  // raised as kind "acting" with that player's server id as `acting`, which
+  // the client reports for the server to serve to that player's game alone
+  std::optional<std::uint32_t> acting;
 };
 
 // this frame's batch: appended on the dispatching thread for a batched row
@@ -1123,6 +1128,7 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
                  call.touch       ? "touch"
                    : call.look    ? "look"
                    : call.created ? "created"
+                   : call.acting  ? "acting"
                                   : KindName(native.kind));
   AddObjProperty(&obj, "self", call.self);
   auto args = Napi::Array::New(env, call.argCount);
@@ -1143,6 +1149,9 @@ Napi::Object CallToJs(Napi::Env env, const QueuedCall& call)
   }
   if (call.localArgs != 0) {
     AddObjProperty(&obj, "localArgs", static_cast<int>(call.localArgs));
+  }
+  if (call.acting) {
+    AddObjProperty(&obj, "acting", *call.acting);
   }
   if (call.landed) {
     auto landed = Napi::Array::New(env, call.landed->size());
@@ -3338,6 +3347,42 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
   // is written over once the original returns (marks.swapReturn,
   // SwapReturn), counted " (acting)"
   if (native.kind == NativeKind::Local) {
+    // thuum tracker #117's open half (playtest 54, Eli: "fix that"): a row
+    // for the acting player's seat alone (its scoped column ActingSeatAlone:
+    // Message.Show) inside another player's acting scope is that player's. A
+    // guest's keyhole press runs on the host in the guest's scope (the
+    // client's ArmActivation), and its no-claw message ran on this VM, so it
+    // showed on the host's screen. Skipped here, the row's empty result
+    // returned (Show's button 0; a latent row completes at once), counted
+    // " (acting)", and queued as kind "acting" with that player's server id,
+    // which the client reports (ScriptCall's acting) and the server serves to
+    // that player's game alone (wire-rules natives' acting seat)
+    if (scope && ActingScope::Swaps(*scope) &&
+        native.columns.scoped == SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE) {
+      marks.skip = true;
+      marks.result = info.result;
+      Count(row, kCountActing);
+      const RE::BSScript::Object* selfObject = ObjectOf(top->self);
+      const RE::VMHandle handle = selfObject ? selfObject->GetHandle() : 0;
+      const std::uint32_t self =
+        selfObject && IsPlainFormHandle(handle) ? FormIdOfHandle(handle) : 0;
+      std::optional<QueuedCall> call = self != 0
+        ? CallFromFrame(row, info, stack, top, kNoPage, self)
+        : std::nullopt;
+      if (call) {
+        call->acting = scope->player.serverId;
+        QueueCall(std::move(*call));
+      }
+      if (ActingScope::LineDue(scope->seq, ActingScope::Line::kSkip)) {
+        logger::info("[verb:quests] {}.{} on {:x} skipped inside acting "
+                     "player {:x}'s scope, stack {}: {} (#117)",
+                     native.cls, native.fn, self, scope->player.serverId,
+                     stack->stackID,
+                     call ? "sent for that player's own game"
+                          : "no self to send, shown nowhere");
+      }
+      return marks;
+    }
     // tracker #117 (Eli's design B, "go with b for 117"): inside another
     // player's acting scope an item count on that player's figure is that
     // player's, whose inventory has one owner (ADR-063) and whose figure

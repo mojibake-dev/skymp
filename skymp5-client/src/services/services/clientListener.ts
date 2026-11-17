@@ -223,7 +223,7 @@ declare module "skyrimPlatform" {
     interface ScriptCall {
         cls: string;
         fn: string;
-        kind: "action" | "state" | "everyone" | "touch" | "look" | "created";
+        kind: "action" | "state" | "everyone" | "touch" | "look" | "created" | "acting";
         self: number;
         callerSelf?: number;
         args: (boolean | number | string | { formId: number } | null)[];
@@ -244,6 +244,12 @@ declare module "skyrimPlatform" {
         // name a created reference, bit i for argument i
         placed?: number;
         localArgs?: number;
+        // thuum tracker #117's open half: kind "acting" is a call of a row for
+        // the acting player's seat alone (Message.Show) that the platform
+        // skipped here inside another player's acting scope, acting that
+        // player's server id; reported for the server to serve to that
+        // player's game alone
+        acting?: number;
     }
     interface ScriptCallsEvent {
         calls: ScriptCall[];

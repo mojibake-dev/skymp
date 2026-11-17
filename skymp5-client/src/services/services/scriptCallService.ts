@@ -215,6 +215,12 @@ export class ScriptCallService extends ClientListener {
             if (call.kind === "created") {
                 this.queue({ call, record: false, key: undefined, dropped: false });
             }
+            // thuum tracker #117's open half (playtest 54): a message a script
+            // showed inside another player's acting scope (a guest's keyhole
+            // press run here) was skipped here; it goes to that player's game
+            if (call.kind === "acting") {
+                this.sendActing(call);
+            }
         }
     }
 
@@ -601,6 +607,49 @@ export class ScriptCallService extends ClientListener {
         return true;
     }
 
+    // thuum tracker #117's open half (wire-schema ScriptCall's acting,
+    // SCHEMA_VERSION 61): a call the platform skipped here inside another
+    // player's acting scope because its row runs on the acting player's seat
+    // alone (Message.Show), sent with that player's server id; the server's
+    // acting seat rule serves it to that player's game alone. Its self is a
+    // game-file form (the Message), sent as itself; the epoch is unread (no
+    // owner is asked). Sent at once, as the spell channel's calls are, and
+    // said once a minute
+    private sendActing(call: ScriptCall): void {
+        const acting = call.acting ?? 0;
+        if (acting < 0xff000000 || call.self === 0 || call.self >= 0xff000000) {
+            this.unsent++;
+            return;
+        }
+        const args: SpSnippetArgument[] = [];
+        for (const arg of call.args) {
+            const packed = this.toSnippetArgument(arg, false);
+            if (packed === undefined) {
+                this.argsUnmapped++;
+                return;
+            }
+            args.push(packed);
+        }
+        const message: ScriptCallMessage = {
+            t: MsgType.ScriptCall,
+            epoch: 0,
+            selfId: call.self,
+            cls: call.cls,
+            fn: call.fn,
+            args,
+            caller: call.caller,
+            handler: call.handler,
+            latent: call.latent,
+            acting,
+        };
+        this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
+        const now = Date.now();
+        if (now - this.actingSaidAt >= 60000) {
+            this.actingSaidAt = now;
+            logLab("verb:scripts", `${call.cls}.${call.fn} on ${call.self.toString(16)} from ${call.caller}.${call.handler} skipped here inside acting player ${acting.toString(16)}'s scope: sent for that player's own game (#117)`);
+        }
+    }
+
     // a form travels by its server id (the player's own actor as its figure's,
     // which the receiver's deserializeArg maps back) and the Papyrus type the
     // receiver casts it to: Actor, ObjectReference, Faction (the standing's
@@ -760,6 +809,8 @@ export class ScriptCallService extends ClientListener {
     private unsent = 0;
     // rung 5: calls not sent for a form argument with no server id
     private argsUnmapped = 0;
+    // when the acting seat's line was last said (sendActing, once a minute)
+    private actingSaidAt = 0;
     private hits: ScriptCall[] = [];
     private readonly lastHitAt = new Map<number, number>();
     private hitsSent = 0;

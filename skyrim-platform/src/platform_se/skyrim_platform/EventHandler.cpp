@@ -9,6 +9,10 @@
 #include "SkyrimPlatform.h"
 #include "TickHandler.h"
 
+#include <RE/B/BGSArtObject.h>
+#include <RE/S/SummonCreatureEffect.h>
+#include <RE/S/SummonPlacementEffect.h>
+
 #include <algorithm>
 #include <mutex>
 #include <unordered_map>
@@ -61,10 +65,19 @@ struct LiveSummon
 // going first
 constexpr size_t kSummonLiveMax = 64;
 
+// tracker #111: a placement already said (SayPlacement), by its effect and
+// its own address
+struct SaidPlacement
+{
+  const RE::ActiveEffect* effect = nullptr;
+  const RE::SummonPlacementEffect* placement = nullptr;
+};
+
 struct SummonTable
 {
   std::mutex m;
   std::vector<LiveSummon> live;
+  std::vector<SaidPlacement> placementsSaid;
 };
 
 SummonTable& Summons()
@@ -103,6 +116,53 @@ RE::NiPointer<RE::Actor> SummonOf(RE::SummonCreatureEffect* effect,
   }
   return nullptr;
 }
+
+// tracker #111 (the caster's side of a summon's arrival): the effect's
+// placement (SummonCreatureEffect::summonPlacementEffect, CommonLibSSE-NG
+// include/RE/S/SummonCreatureEffect.h:35), its arrival art
+// (SummonPlacementEffect::effectArt, include/RE/S/SummonPlacementEffect.h:46)
+// and its spot (location, :47), said once a placement: "[verb:summon]
+// placement by <caster>: art <art> at (<x>, <y>, <z>)". Read at every Update
+// ahead of the tracker's returns, since the placement may stand before the
+// summon does and past its summonStart. The member is a raw pointer, not a
+// NiPointer: it is read only when nonzero and dereferenced only at its first
+// sight (a pointer already said is compared, never read). HYPOTHESIS until a
+// run's rows: that 0xB0 is the placement on 1.6.1170 (CommonLib's layout,
+// beside commandedActor at 0xA8, which #84's runs read), and that the engine
+// nulls the pointer when the placement ends. The effect's Finish forgets its
+// placements said, so a later effect's placement at a reused address is said
+// again (OnSummonFinish)
+void SayPlacement(SummonTable& t, RE::SummonCreatureEffect* effect)
+{
+  const RE::SummonPlacementEffect* placement = effect->summonPlacementEffect;
+  if (!placement) {
+    return;
+  }
+  {
+    std::lock_guard l(t.m);
+    if (std::any_of(t.placementsSaid.begin(), t.placementsSaid.end(),
+                    [&](const SaidPlacement& said) {
+                      return said.effect == effect &&
+                        said.placement == placement;
+                    })) {
+      return;
+    }
+    if (t.placementsSaid.size() >= kSummonLiveMax) {
+      // full (only effects gone without their Finish fill it; a load clears
+      // it): left unsaid rather than evicting, since an evicted pair would
+      // be read again at its next sight and its pointer may be stale
+      return;
+    }
+    t.placementsSaid.push_back({ effect, placement });
+  }
+  const auto caster = effect->GetCasterActor();
+  const RE::BGSArtObject* art = placement->effectArt;
+  const RE::NiPoint3 at = placement->location;
+  logger::info("[verb:summon] placement by {:x}: art {:x} at ({:.1f}, "
+               "{:.1f}, {:.1f})",
+               caster ? caster->GetFormID() : 0u, art ? art->GetFormID() : 0u,
+               at.x, at.y, at.z);
+}
 }
 
 void EventHandler::OnSummonUpdate(RE::SummonCreatureEffect* effect)
@@ -111,6 +171,8 @@ void EventHandler::OnSummonUpdate(RE::SummonCreatureEffect* effect)
     return;
   }
   auto& t = Summons();
+  // tracker #111: the placement read ahead of both returns below
+  SayPlacement(t, effect);
   {
     std::lock_guard l(t.m);
     if (std::any_of(t.live.begin(), t.live.end(), [&](const LiveSummon& e) {
@@ -186,6 +248,13 @@ void EventHandler::OnSummonFinish(RE::SummonCreatureEffect* effect)
   LiveSummon ended;
   {
     std::lock_guard l(t.m);
+    // tracker #111: the effect's placements said go with it (SayPlacement)
+    t.placementsSaid.erase(std::remove_if(t.placementsSaid.begin(),
+                                          t.placementsSaid.end(),
+                                          [&](const SaidPlacement& said) {
+                                            return said.effect == effect;
+                                          }),
+                           t.placementsSaid.end());
     const auto it =
       std::find_if(t.live.begin(), t.live.end(),
                    [&](const LiveSummon& e) { return SameEffect(e, effect); });
@@ -223,6 +292,7 @@ void EventHandler::ClearSummons()
   auto& t = Summons();
   std::lock_guard l(t.m);
   t.live.clear();
+  t.placementsSaid.clear();
 }
 
 void EventHandler::SendSimpleEventOnUpdate(const char* eventName)

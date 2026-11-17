@@ -2385,7 +2385,27 @@ namespace {
 // (Skyrim.esm's AbFXAtronachFlame 0x60da1, a constant effect with a hit
 // effect art and no FX Persist, DATA flags 0x00200802 by lab/esm.py on
 // sky-srv, 2026-11-14, is drawn on the host for as long as it runs)
-std::vector<uint32_t> ReadEffectLooks(RE::Actor& actor)
+//
+// thuum playtest 54 (Eli: "the swirling particle affect was applied to
+// ariadne not the corpse"): an effect's look is drawn on its visuals target
+// (ActiveEffect::GetVisualsTarget, vfunc 03, include/RE/A/ActiveEffect.h:65:
+// the effect's own target's stats object), and a CommandEffect overrides the
+// slot (include/RE/C/CommandEffect.h:15) for the actor it commands
+// (commandedActor, :27). A raise's ReanimateEffect sits in its CASTER's
+// list: c2-console 07:35:41.005 "effects: this seat's own player: 1 running
+// with a look (96d0b)", gone at 07:36:43.631, the effect's 60 s; MGEF
+// 0x96d0b ReanimateFFAimed25 draws EFSH 0x75272 ReanimateFXShader and ARTO
+// 0x75271 ReanimateTargetFX (lab/esm.py). Read as the caster's, every other
+// seat drew the swirl on the caster's figure (c1-console 07:35:40.691
+// "effects: ff000e42 plays shader 75272", "plays art 75271"). So a look
+// drawn on another reference goes to `elsewhere` under that reference's id,
+// and the poll gives it to that actor's read (the body, which its commander's
+// seat hosts from the grant). HYPOTHESIS until a watcher shows the swirl on
+// the body: that the override answers the commanded actor (CommonLib names
+// the slot, not its body)
+std::vector<uint32_t> ReadEffectLooks(
+  RE::Actor& actor,
+  std::unordered_map<uint32_t, std::vector<uint32_t>>& elsewhere)
 {
   std::vector<uint32_t> out;
   auto* target = actor.AsMagicTarget();
@@ -2412,6 +2432,11 @@ std::vector<uint32_t> ReadEffectLooks(RE::Actor& actor)
     if (!stays) {
       continue;
     }
+    const RE::TESObjectREFR* drawnOn = effect->GetVisualsTarget();
+    if (drawnOn && drawnOn != &actor) {
+      elsewhere[drawnOn->formID].push_back(base->formID);
+      continue;
+    }
     out.push_back(base->formID);
   }
   std::sort(out.begin(), out.end());
@@ -2435,6 +2460,7 @@ Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
   // field reads per hosted actor per poll (rule 9)
   g_nativeCallRequirements.gameThrQ->AddTask([actorIds, table](Viet::Void) {
     std::unordered_map<uint32_t, HostedGazeRead> reads;
+    std::unordered_map<uint32_t, std::vector<uint32_t>> elsewhere;
     for (const auto id : actorIds) {
       auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
       if (!actor) {
@@ -2474,8 +2500,22 @@ Napi::Value PuppetApi::PollHostedGaze(const Napi::CallbackInfo& info)
           }
         }
       }
-      read.effects = ReadEffectLooks(*actor);
+      read.effects = ReadEffectLooks(*actor, elsewhere);
       reads[id] = std::move(read);
+    }
+    // the looks one polled actor's effects draw on another polled actor (a
+    // raise's on its body) join that actor's read; a reference this poll
+    // does not read is not this seat's to report
+    for (auto& [drawnOnId, looks] : elsewhere) {
+      const auto it = reads.find(drawnOnId);
+      if (it == reads.end()) {
+        continue;
+      }
+      auto& effects = it->second.effects;
+      effects.insert(effects.end(), looks.begin(), looks.end());
+      std::sort(effects.begin(), effects.end());
+      effects.erase(std::unique(effects.begin(), effects.end()),
+                    effects.end());
     }
     std::lock_guard<std::mutex> lock(g_gazeMutex);
     g_gaze[table].swap(reads);

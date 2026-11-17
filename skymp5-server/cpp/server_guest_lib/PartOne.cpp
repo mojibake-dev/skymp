@@ -2511,12 +2511,52 @@ void PartOne::TickFights(uint64_t nowMs)
     if (pImpl->fights->check(pair.a, pair.b, apart, nowMs)) {
       // a user's game is told the end; a hosted NPC's host engine ends its
       // own combat when it loses its target
+      // playtest 54 #126: a player's game keeps its figure of the other
+      // fighting while a summon or thrall of its own still fights that
+      // player (the players' end at 07:41:20.936, server.log:5575, stood
+      // rotfern's figure down on c2 and Ariadne's atronach lost its target)
+      const auto endOnClient = [&](MpActor& client, uint32_t other) {
+        if (MinionFights(client.GetFormId(), other)) {
+          spdlog::info("PartOne::TickFights - hostility: {:x}'s figure of "
+                       "{:x} stays in the fight: a summon or thrall of {:x}'s "
+                       "still fights it (playtest 54 #126)",
+                       client.GetFormId(), other, client.GetFormId());
+          return;
+        }
+        StopCombatOnClient(client, other);
+      };
       if (played(*a)) {
-        StopCombatOnClient(*a, pair.b);
+        endOnClient(*a, pair.b);
       }
       if (played(*b)) {
-        StopCombatOnClient(*b, pair.a);
+        endOnClient(*b, pair.a);
       }
+      // pt53-112c, design D2: a fight between a player and an NPC another
+      // game hosts began both ways in that host's game
+      // (ActionListener::NotifyHostility), so it ends there both ways: its
+      // figure of the player stands down (StopCombatAlarm, the players'
+      // end) and the NPC stops its combat (Actor.StopCombat, #113's stand
+      // down)
+      const auto hostEnds = [&](MpActor& player, MpActor& npc) {
+        if (!played(player) || played(npc)) {
+          return;
+        }
+        MpActor* host = worldState.HostOf(npc);
+        if (!host || host == &player || !played(*host)) {
+          return;
+        }
+        endOnClient(*host, player.GetFormId());
+        const std::vector<std::optional<
+          std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+          noArgs;
+        SpSnippet("Actor", "StopCombat", noArgs, npc.GetFormId())
+          .Execute(host, SpSnippetMode::kNoReturnResult);
+        spdlog::info("PartOne::TickFights - hostility: {:x}'s host {:x} is "
+                     "told the end of its fight with {:x} (D2)",
+                     npc.GetFormId(), host->GetFormId(), player.GetFormId());
+      };
+      hostEnds(*a, *b);
+      hostEnds(*b, *a);
       spdlog::info("PartOne::TickFights - hostility: the fight between {:x} "
                    "and {:x} is over ({}); the players' games are told",
                    pair.a, pair.b, apart ? "apart" : "a minute quiet");
@@ -2623,6 +2663,25 @@ void PartOne::KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs)
   }
 }
 
+bool PartOne::MinionFights(uint32_t owner, uint32_t opponent)
+{
+  for (const auto& pair : pImpl->fights->pairs()) {
+    const uint32_t other = pair.a == opponent ? pair.b
+      : pair.b == opponent                    ? pair.a
+                                              : 0;
+    if (other == 0) {
+      continue;
+    }
+    const auto& form = worldState.LookupFormByIdNoLoad(other);
+    MpActor* minion = form ? form->AsActor() : nullptr;
+    if (minion && !minion->IsDead() && SimulatorOf(*minion) == owner &&
+        (minion->IsSummon() || CommanderOf(*minion) == owner)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void PartOne::StandDownThralls(MpActor& commander, uint32_t opponent,
                                bool toldOnly)
 {
@@ -2640,6 +2699,14 @@ void PartOne::StandDownThralls(MpActor& commander, uint32_t opponent,
     const bool told = it != pImpl->thrallsInFights.end() &&
       it->second.commander == commanderId && it->second.opponent == opponent;
     if (!told && (toldOnly || thrall->GetHostedCombatTarget() != opponent)) {
+      continue;
+    }
+    // playtest 54 #126: a thrall in a fight of its own with the opponent
+    // stays in it
+    if (GetFights().between(thrallId, opponent)) {
+      spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} "
+                   "stays in its own fight with {:x} (playtest 54 #126)",
+                   thrallId, commanderId, opponent);
       continue;
     }
     const std::vector<std::optional<

@@ -559,6 +559,10 @@ private:
 
   void NotifyHostility(MpActor& aggressor, MpActor& target,
                        std::chrono::steady_clock::time_point now);
+  // pt53-112c (D2): `host`'s game starts the fight both ways, its NPC
+  // `target` aimed at its figure of `aggressor` and that figure aimed at the
+  // NPC (NotifyHostility's first tell and #126's re-tell)
+  void TellHostOfFight(MpActor& aggressor, MpActor& target, MpActor& host);
   // thuum docs/verbs/stagger.md: after a hit's damage, the stagger the
   // engine's rule gives it, played in the victim's game
   void NotifyStagger(MpActor& aggressor, MpActor& target,
@@ -634,6 +638,9 @@ private:
   // thuum docs/verbs/locks.md: when each player last reported on each lock
   // (monotonic ms), for the rule's gap
   std::map<std::pair<uint32_t, uint32_t>, uint64_t> lastLockReportMs;
+  // playtest 54 #126: when each summon or thrall's host was last told its
+  // fight again (monotonic ms), for NotifyHostility's once-a-second re-tell
+  std::unordered_map<uint32_t, uint64_t> minionRetellMs;
   // thuum ADR-073 decision 7: the engine writes' outcomes counted, each
   // said at its 1st, 2nd, 4th, 8th and so on: [0] folded, [1] recorded, [2]
   // refused as a non-owner's, [3] no such reference, [4] no lock fields

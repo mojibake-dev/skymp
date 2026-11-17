@@ -761,6 +761,64 @@ export class FormView {
   // open and close
   private static readonly arrivalArtSeconds = 2.5;
 
+  // thuum tracker #124 (playtest 54, Camilla out of the Riverwood Trader):
+  // the move docs/verbs/npc-handoff.md's Authority names for an engine
+  // reference in this view's RespawnNeededError branch, where it returned.
+  // applyMovement throws there for a record in this player's world or cell
+  // whose engine copy is not: in another world or cell, which update()'s
+  // gate moves once per record cell, or unloaded over a cell's width from
+  // the player while the record is within it (movementApply's
+  // teleportIfNeed). The gate compares the world or cell alone, so the
+  // second stood for good: c2 watched her inside the trader, the server's
+  // Teleport ahead of the unsubscribe moved c2's copy into Tamriel while c2
+  // had no exterior loaded, and after c2 walked out she had no 3D there,
+  // 45180 units off the player on an axis (c2.log 23:25:26
+  // sayTopicInfo), with no "moved 13488" line from the gate. Where the
+  // engine's MoveTo_Impl put her is HYPOTHESIS (the probe
+  // x-camilla-leaves-trader reads her on both seats). Here the copy whose
+  // engine world or cell is the record's (or none) is moved to the record,
+  // which stands where this game has the world loaded, at most once in
+  // farPlaceIntervalMs; never the actor's own simulator (the caller runs
+  // under !alreadyHosted, Rule A), a held actor (HostService's hold moves
+  // it), a body (D78 C), or a disabled or deleted reference
+  private placeEngineReferenceAtRecord(refr: ObjectReference, model: FormModel): void {
+    const m = model.movement;
+    if (!m || !FormView.npcHandoffEnabled() || Date.now() - this.farPlacedAt < FormView.farPlaceIntervalMs) {
+      return;
+    }
+    const ac = Actor.from(refr);
+    if (!ac || model.isDead === true || refr.isDisabled() || refr.isDeleted() || ac.isDead()) {
+      return;
+    }
+    const engineCell = ObjectReferenceEx.getWorldOrCell(refr);
+    if (engineCell !== 0 && engineCell !== m.worldOrCell) {
+      // another world or cell: the gate's
+      return;
+    }
+    if (SpApiInteractor.getControllerInstance().lookupListener(HostService).isHeld(this.refrId)) {
+      return;
+    }
+    const target = Game.getFormEx(m.worldOrCell);
+    if (!target) {
+      return;
+    }
+    this.farPlacedAt = Date.now();
+    const engineAt = `(${refr.getPositionX().toFixed(0)}, ${refr.getPositionY().toFixed(0)}, ${refr.getPositionZ().toFixed(0)}) in ${engineCell.toString(16)}, 3D ${refr.is3DLoaded()}`;
+    TESModPlatform.moveRefrToPosition(
+      refr,
+      Cell.from(target),
+      WorldSpace.from(target),
+      m.pos[0], m.pos[1], m.pos[2],
+      m.rot[0] * Math.PI / 180, m.rot[1] * Math.PI / 180, m.rot[2] * Math.PI / 180,
+    );
+    this.movedInto = m.worldOrCell;
+    logLab("verb:npc-handoff", `placed ${this.refrId.toString(16)} at its record (${m.pos[0].toFixed(0)}, ${m.pos[1].toFixed(0)}, ${m.pos[2].toFixed(0)}) in ${m.worldOrCell.toString(16)}: the engine had it at ${engineAt}, out of this player's reach`);
+  }
+  // at most one such placement per view in this window: the move is the
+  // engine's MoveTo_Impl, and the 3D it loads takes frames to answer
+  private farPlacedAt = 0;
+  private static readonly farPlaceIntervalMs = 2000;
+
   private static isNpcModel(model: FormModel): boolean {
     return !!model.baseId && model.baseId !== 0x7;
   }
@@ -1125,9 +1183,11 @@ export class FormView {
             if (e instanceof RespawnNeededError) {
               model.movement.isWeapDrawn = backup;
               if (this.refrId < 0xff000000) {
-                // an engine reference reported from another cell stands
-                // where it is until npc-handoff moves it (MoveTo); a copy
-                // respawns there as before
+                // an engine reference reported from another cell is moved
+                // by npc-handoff's gate in update(), and one its engine holds
+                // unloaded out of the player's reach is placed at its record
+                // here (tracker #124); a copy respawns there as before
+                this.placeEngineReferenceAtRecord(refr, model);
                 this.movState.lastNumChanges = +(model.numMovementChanges as number);
                 return;
               }

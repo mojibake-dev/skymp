@@ -2326,10 +2326,12 @@ void InstallDrawSheatheWeaponActorHook()
  * there: the hook reaches them through Hook.cpp's PushAndWait to the
  * JavaScript pool thread, the very thread that waits on that call
  * (SkyrimPlatform.cpp's PushToWorkerAndWait), so it would never return, the
- * reason the platform's mark returns first. So a furniture holder's event is
- * noted here, filtered in native (rule 9: a plain reference whose base is a
- * FURN, and no name pattern, the names being the engine's idle data's),
- * never reaches the handlers, and crosses after the call's leave as
+ * reason the platform's mark returns first (until thuum tracker #129, whose
+ * hand-off that thread serves while it waits; the mark's return now stands
+ * on D-S0-14 B's rule, OnSendAnimationEventEnter). So a furniture holder's
+ * event is noted here, filtered in native (rule 9: a plain reference whose
+ * base is a FURN, and no name pattern, the names being the engine's idle
+ * data's), never reaches the handlers, and crosses after the call's leave as
  * furnitureAnimation on the next tick (a tick task, propContact's shape).
  *
  * The enter and leave contract: every enter pushes one note on its thread
@@ -2467,7 +2469,11 @@ void OnSendAnimationEventEnter(GumInvocationContext* ic)
   // wait on the JavaScript thread that waits on this call (the furniture
   // branch's read 1; callNative's direct addItem and removeItem run on that
   // thread itself). Another thread's event reaches the handlers as any
-  // engine event does, its leave paired by the same thread's mark
+  // engine event does, its leave paired by the same thread's mark. Since
+  // thuum tracker #129 that wait would end (the JavaScript thread serves a
+  // hook's ask while it waits on the worker and declines one asked on
+  // itself: SkyrimPlatform::HandOffAndWait), so this return stands on
+  // D-S0-14 B's rule alone: the platform's own call's events are its own
   if (PlatformCall::Active()) {
     return;
   }
@@ -2570,6 +2576,14 @@ void InstallSendAnimationEventHook()
  * ObjectAnimationService's patterns and ranges) covers both; the sequence's
  * name is NiControllerSequence::name (include/RE/N/NiControllerSequence.h:87).
  * rcx this, rdx manager, r8 toSeq, r9 fromSeq.
+ * Not only a script's call reaches here: a reference's 3D load sets its
+ * open state and plays the sequence on the loading thread (thuum tracker
+ * #129's dump: the background process thread loading a container's 3D
+ * during a COC played its "Close" here, Address Library 14287 into 14297,
+ * the read's ids through lab/addr.py; HYPOTHESIS until a second dump or a
+ * Frida read of this entry's thread agrees), while the COC's native held
+ * the JavaScript thread. The hand-off is served then (HandOff.h), and a
+ * sequence no handler's filter takes never crosses (Hook.cpp).
  */
 void OnPlayAnimationEnter(GumInvocationContext* ic)
 {

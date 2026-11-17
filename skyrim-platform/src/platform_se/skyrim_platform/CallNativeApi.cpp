@@ -156,7 +156,9 @@ Napi::Value CallNativeImpl(
     // the worker's Scope or NativeFunctionBase::Call, so this Scope is what
     // tells the Papyrus gate the events it raises are the platform's, and
     // stands the animation hooks down here, where a handler's PushAndWait
-    // to this same thread would never return. A call the worker runs is
+    // to this same thread would never return (since thuum tracker #129 such
+    // an ask is declined, SkyrimPlatform::HandOffAndWait; the mark keeps
+    // D-S0-14 B's rule). A call the worker runs is
     // marked on the worker too (SkyrimPlatform.cpp). HYPOTHESIS: the engine
     // raises such a call's events synchronously inside it, on this thread
     PlatformCall::Scope platformCall;

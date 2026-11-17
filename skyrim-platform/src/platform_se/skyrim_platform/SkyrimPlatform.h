@@ -11,6 +11,11 @@ public:
   void AddUpdateTask(const std::function<void(Napi::Env env)>& f);
   void PushAndWait(const std::function<void(Napi::Env env)>& task);
   void Push(const std::function<void(Napi::Env env)>& task);
+  // thuum tracker #129 (HandOff.h): a hook's ask of the JavaScript thread,
+  // served even while that thread waits on the worker; false when declined
+  // (asked on the JavaScript thread itself)
+  bool HandOffAndWait(const std::string& label,
+                      const std::function<void(Napi::Env env)>& task);
   void PushToWorkerAndWait(
     RE::BSTSmartPointer<RE::BSScript::IFunction> fPtr,
     const RE::BSTSmartPointer<RE::BSScript::Stack>& stack,

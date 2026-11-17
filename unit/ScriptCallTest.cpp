@@ -1057,19 +1057,25 @@ TEST_CASE("A script call's figure argument is taken when it names a "
 // (ScriptCall's acting, SCHEMA_VERSION 61); the server serves it to the
 // guest's game alone, as the same native on the message, with no sequence.
 // With no acting player, or the reporter's own, the row stays local: refused,
-// relayed to nobody. The message is HallofStoriesNoObjMSGGolden 0xb6441 (a
-// MESG of Skyrim.esm, lab/esm.py find, 2026-11-17), named illustratively
+// relayed to nobody. Since Auriel's review only a notification crosses: a
+// message box (DNAM's Message Box flag) answers the host's script and stays
+// there, refused if reported. The notification is HallofStoriesNoObjMSGGolden
+// 0xb6441 (DNAM 0), the box MQ203PuzzleActivatorMessage 0x13146 (DNAM 1, two
+// buttons): MESGs of Skyrim.esm with no override in Update.esm or the three
+// DLCs (lab/esm.py, 2026-11-17), named illustratively
 TEST_CASE("A message the host's seam skipped inside a guest's acting scope "
-          "goes to the guest's game alone (tracker #117)",
+          "goes to the guest's game alone, a message box never (tracker #117)",
           "[ScriptCall][espm]")
 {
   constexpr uint32_t kNoClawMessage = 0xb6441;
+  constexpr uint32_t kPuzzleMessageBox = 0x13146;
   PartOne& p = GetPartOne();
   const uint32_t epoch = EnterSanctum(p);
-  const auto show = [&](std::optional<uint32_t> acting) {
+  const auto show = [&](std::optional<uint32_t> acting,
+                        uint32_t message = kNoClawMessage) {
     ScriptCallMessage msg;
     msg.epoch = epoch;
-    msg.selfId = kNoClawMessage;
+    msg.selfId = message;
     msg.cls = "Message";
     msg.fn = "Show";
     msg.args = std::vector<Arg>(9, Arg(0.0));
@@ -1095,15 +1101,37 @@ TEST_CASE("A message the host's seam skipped inside a guest's acting scope "
   REQUIRE(toGuest[0]["function"] == "Show");
   REQUIRE(toGuest[0]["arguments"].size() == 9);
   REQUIRE(SnippetsTo(p, 0).empty());
-  // no acting player, or the reporter's own: the row stays local
+  // no acting player, or the reporter's own: the row stays local, refused
+  // by its row (E_SCRIPTCALL_ROW, whose line is said once a minute per
+  // reporter and code, so the outcome is read: no relay, no snippet)
   for (const std::optional<uint32_t> acting :
        { std::optional<uint32_t>(), std::optional<uint32_t>(kHostActor) }) {
     p.Messages().clear();
     LogCapture log;
     show(acting);
-    REQUIRE(log.Count("E_SCRIPTCALL_ROW") == 1);
+    REQUIRE(log.Count("the acting player's alone") == 0);
     REQUIRE(SnippetsTo(p, 0).empty());
     REQUIRE(SnippetsTo(p, 1).empty());
+  }
+  // a message box reported for the guest: its answer is the host's
+  // script's, so it is refused by its row and sent to nobody (the host's
+  // seam never skips one; it shows and is answered there)
+  {
+    p.Messages().clear();
+    LogCapture log;
+    show(kGuestActor, kPuzzleMessageBox);
+    REQUIRE(log.Count("the acting player's alone") == 0);
+    REQUIRE(SnippetsTo(p, 0).empty());
+    REQUIRE(SnippetsTo(p, 1).empty());
+  }
+  // and the notification still crosses after them
+  {
+    p.Messages().clear();
+    LogCapture log;
+    show(kGuestActor);
+    REQUIRE(log.Count("the acting player's alone") == 1);
+    REQUIRE(SnippetsTo(p, 1).size() == 1);
+    REQUIRE(SnippetsTo(p, 0).empty());
   }
   Leave(p);
 }

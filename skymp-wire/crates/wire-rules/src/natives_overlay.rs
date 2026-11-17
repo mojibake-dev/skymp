@@ -20,7 +20,7 @@ const VARIABLE: &str = "ADR-068 rung 2 (docs/research/scripts-one-system-2026-11
 /// Cited by ObjectReference.AddItem, ObjectReference.RemoveItem, ObjectReference.GetItemCount.
 const OWN_INVENTORY: &str = "Eli's D-R1 C (thuum docs/DECISIONS.md, rung 5's stage-eve words): the player's own inventory, its own seat's, kept as its own record";
 /// Cited by Message.Show.
-const ACTING_UI: &str = "thuum tracker #117's open half (playtest 54) and ADR-063: a message a script shows inside another player's acting scope is that player's to see, shown on that player's own game, never the seat that ran the script";
+const ACTING_UI: &str = "thuum tracker #117's open half (playtest 54) and ADR-063: a notification a script shows inside another player's acting scope is that player's to see, shown on that player's own game; a message box (DNAM's Message Box flag) answers the script that showed it and stays on that seat (Auriel's review)";
 /// Cited by ObjectReference.Enable, ObjectReference.EnableNoWait, ObjectReference.Disable, ObjectReference.DisableNoWait, ObjectReference.Delete.
 const REF_STATE: &str = "ADR-068 rung 4, amendment B (docs/research/rung4-state-rows-2026-11-07.md section 1(a)): the ref state's record, the cell's host's, never relayed as an action";
 /// Cited by ObjectReference.PlaceAtMe, ObjectReference.PlaceActorAtMe.
@@ -761,7 +761,7 @@ pub const OVERLAY: &[Entry] = &[
         class: Class::Decided { cites: ACTING_UI },
         live: true,
         note: &[
-            "local: the seat's own message, inside another player's acting scope skipped here and shown on that player's game (#117)",
+            "local: the seat's own message; a notification inside another player's acting scope is skipped here and shown on that player's game, a message box shown and answered here (#117)",
         ],
         cells: &[Cell::Scoped(Scoped::ActingSeatAlone), Cell::Audience(Audience::Acting), Cell::Relay(Relay::Same)],
     },

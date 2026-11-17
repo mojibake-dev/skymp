@@ -18,6 +18,7 @@
 #include "skymp_wire.h"
 #include <RE/A/Actor.h>
 #include <RE/B/BGSListForm.h>
+#include <RE/B/BGSMessage.h>
 #include <RE/F/FormTypes.h>
 #include <RE/I/IFunction.h>
 #include <RE/I/IObjectHandlePolicy.h>
@@ -2175,6 +2176,30 @@ bool IsPlayersOwn(const RE::BSScript::Variable& v)
   return IsPlainFormHandle(handle) && FormIdOfHandle(handle) == 0x14;
 }
 
+// thuum tracker #117 (Auriel's review of pt53-117c): whether a call's self is
+// a message with the Message Box flag (CommonLibSSE-NG
+// include/RE/B/BGSMessage.h:23-26, BGSMessage::MessageFlag::kMessageBox, the
+// flags at DNAM :60, read from the engine's own form): its buttons answer the
+// script that showed it, so inside another player's acting scope it still
+// shows and is answered on this seat (carrying the acting player's answer
+// back is a later build); a notification (no flag) is the acting player's.
+// False for a self that is no plain form or no message
+bool IsMessageBox(const RE::BSScript::Variable& self)
+{
+  const RE::BSScript::Object* object = ObjectOf(self);
+  if (!object) {
+    return false;
+  }
+  const RE::VMHandle handle = object->GetHandle();
+  if (!IsPlainFormHandle(handle)) {
+    return false;
+  }
+  const auto* message =
+    RE::TESForm::LookupByID<RE::BGSMessage>(FormIdOfHandle(handle));
+  return message &&
+    message->flags.all(RE::BGSMessage::MessageFlag::kMessageBox);
+}
+
 // the acting player's figure as this seat holds it, null when it is absent
 // here (its local id 0, or an id the form table names no actor for)
 RE::Actor* FigureOf(const ActingScope::Player& player)
@@ -3356,9 +3381,13 @@ Marks OnCall(const RE::BSScript::IFunction* fn, RE::BSScript::Stack* stack)
     // returned (Show's button 0; a latent row completes at once), counted
     // " (acting)", and queued as kind "acting" with that player's server id,
     // which the client reports (ScriptCall's acting) and the server serves to
-    // that player's game alone (wire-rules natives' acting seat)
+    // that player's game alone (wire-rules natives' acting seat). A
+    // notification alone (Auriel's review): a message box's buttons answer
+    // this seat's script, so it shows and is answered here as before
+    // (IsMessageBox)
     if (scope && ActingScope::Swaps(*scope) &&
-        native.columns.scoped == SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE) {
+        native.columns.scoped == SKYMP_NATIVE_SCOPED_ACTING_SEAT_ALONE &&
+        !IsMessageBox(top->self)) {
       marks.skip = true;
       marks.result = info.result;
       Count(row, kCountActing);

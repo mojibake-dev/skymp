@@ -1101,6 +1101,12 @@ pub struct Facts {
     /// scope the call ran in on the reporter, read by a row for the acting
     /// seat ([`Audience::Acting`]); 0 for none.
     pub acting: u32,
+    /// The call's subject is a message with the Message Box flag (a MESG
+    /// whose DNAM has bit 0, read by the core from the winning record): its
+    /// buttons answer the script that showed it, so it stays on the seat that
+    /// ran the script (thuum tracker #117, Auriel's review); false for every
+    /// other subject.
+    pub message_box: bool,
 }
 
 /// Why a reported call is refused.
@@ -1277,6 +1283,12 @@ enum Channel {
 fn acting_seat(row: Row, subject: u32, method_self: u32, cls: &'static str, func: &'static str, facts: &Facts) -> Verdict {
     if facts.acting < 0xff00_0000 || facts.acting == facts.sender {
         return refuse(Code::Row, format!("a call for the acting player's seat names no other player as acting (acting {:x}, reporter {:x})", facts.acting, facts.sender));
+    }
+    // a message box's buttons answer the script that showed it, which runs on
+    // the reporter: it stays there, shown and answered (carrying the acting
+    // player's answer back is a later build); a notification alone crosses
+    if facts.message_box {
+        return refuse(Code::Row, format!("a message box ({subject:x}) answers the reporter's script: shown there, never sent to the acting player"));
     }
     Verdict::Accept(Accept {
         subject,
@@ -1999,7 +2011,7 @@ mod tests {
     const GUEST: u32 = 0xff00_0001;
 
     fn hosted(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::WorldObject, cell: TEMPLE, owner: HOST, owner_epoch: 3, host: 0, host_epoch: 0, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0, message_box: false }
     }
 
     fn accepted(v: &Verdict) -> Accept {
@@ -2061,6 +2073,13 @@ mod tests {
         assert_eq!(code(&s.judge(show, &floats, &Facts { acting: 0, ..message }, 10)), Some(Code::Row));
         assert_eq!(code(&s.judge(show, &floats, &Facts { acting: HOST, ..message }, 20)), Some(Code::Row));
         assert_eq!(code(&s.judge(show, &floats, &Facts { acting: 0x14, ..message }, 30)), Some(Code::Row));
+        // a message box with buttons (MQ203PuzzleActivatorMessage 0x13146,
+        // Skyrim.esm, DNAM bit 0, two ITXT) stays the reporter's: its answer
+        // is the reporter's script's, never sent to the acting player
+        let boxed = Facts { self_id: 0x13146, message_box: true, ..message };
+        let refused = s.judge(show, &floats, &boxed, 35);
+        assert_eq!(code(&refused), Some(Code::Row));
+        assert!(matches!(&refused, Verdict::Refuse(r) if r.why.starts_with("a message box (13146)")));
         // any other local row stays local, an acting player named or not
         assert_eq!(code(&s.judge(row("Game", "GetPlayer"), &[], &Facts { acting: GUEST, ..hosted(0x14) }, 40)), Some(Code::Row));
     }
@@ -2735,7 +2754,7 @@ mod tests {
     // the draugr in the temple, simulated by the host (its cell's), the
     // reporter
     fn simulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: HOST, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0, message_box: false }
     }
 
     #[test]
@@ -2961,7 +2980,7 @@ mod tests {
 
     // an actor nobody simulates, its cell's host at epoch 3 the reporter
     fn unsimulated(self_id: u32) -> Facts {
-        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0 }
+        Facts { sender: HOST, self_id, epoch: 3, kind: SubjectKind::Actor, cell: TEMPLE, owner: 0, owner_epoch: 0, host: HOST, host_epoch: 3, loader: false, nearest: None, subject_size: 0.0, dead: false, died_ago_ms: None, reanimate_caster: 0, marker: false, cause: Cause::None, cause_live: false, acting: 0, message_box: false }
     }
 
     #[test]

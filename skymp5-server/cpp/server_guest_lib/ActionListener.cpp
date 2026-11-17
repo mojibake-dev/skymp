@@ -25,6 +25,7 @@
 #include "libespm/GLOB.h"
 #include "libespm/GMST.h"
 #include "libespm/HDPT.h"
+#include "libespm/IterateFields.h"
 #include "libespm/LVLI.h"
 #include "libespm/NPC_.h"
 #include "libespm/ObjectBounds.h"
@@ -44,6 +45,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <limits>
@@ -6603,6 +6605,37 @@ void ActionListener::OnCreatedCall(MpActor& reporter,
                msg.handler, verdict.seq, relayed);
 }
 
+namespace {
+// thuum tracker #117 (Auriel's review of pt53-117c): whether `formId` is a
+// message with the Message Box flag, read from the winning record in the
+// load order (the browser's LookupById), never a list: a MESG whose DNAM's
+// bit 0 is set (UESP "Skyrim Mod:Mod File Format/MESG"; CommonLibSSE-NG
+// include/RE/B/BGSMessage.h:23-26, BGSMessage::MessageFlag::kMessageBox, the
+// flags at DNAM :60). False for any other form or an unread one
+bool IsMessageBox(WorldState& worldState, uint32_t formId)
+{
+  if (!worldState.HasEspm()) {
+    return false;
+  }
+  const auto lookup = worldState.GetEspm().GetBrowser().LookupById(formId);
+  if (!lookup.rec || lookup.rec->GetType() != "MESG") {
+    return false;
+  }
+  bool box = false;
+  espm::IterateFields_(
+    lookup.rec,
+    [&](const char* type, uint32_t size, const char* data) {
+      if (size >= sizeof(uint32_t) && !std::memcmp(type, "DNAM", 4)) {
+        uint32_t flags = 0;
+        std::memcpy(&flags, data, sizeof(flags));
+        box = (flags & 1u) != 0;
+      }
+    },
+    worldState.GetEspmCache());
+  return box;
+}
+}
+
 void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
                                   const ScriptCallMessage& msg)
 {
@@ -6701,6 +6734,11 @@ void ActionListener::OnScriptCall(const RawMessageData& rawMsgData,
   // thuum tracker #117's open half (SCHEMA_VERSION 61): the acting player
   // the report names, read by a row for the acting seat (Message.Show)
   facts.acting = msg.acting.value_or(0);
+  // a message box's buttons answer the reporter's script: a row for the
+  // acting seat leaves it on the reporter (Auriel's review); read only for a
+  // report that names an acting player
+  facts.message_box =
+    facts.acting != 0 && IsMessageBox(partOne.worldState, msg.selfId);
   // no death recorded unless an actor's below
   facts.died_ago_ms = std::numeric_limits<uint64_t>::max();
   MpObjectReference* subject = nullptr;

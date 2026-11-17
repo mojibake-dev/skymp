@@ -176,7 +176,7 @@ pub const TABLE: &[Row] = &[
     Row { cls: "Actor", func: "AttachAshPile", kind: Kind::Action, subject: Subject::SelfRef, owner: Owner::Asked, audience: Audience::Listeners, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, scoped: Scoped::Runs, params: &[Param::Object], hook: Hook::None, latent: false, staged: false },
     // local: the seat's own read, answered inside another player's acting scope from that player's record (#117)
     Row { cls: "ObjectReference", func: "GetItemCount", kind: Kind::Local, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Nobody, relay: Relay::Never, keep: Keep::Nothing, look: Look::Never, scoped: Scoped::Runs, params: &[Param::Object], hook: Hook::ActingInventory, latent: false, staged: false },
-    // local: the seat's own message, inside another player's acting scope skipped here and shown on that player's game (#117)
+    // local: the seat's own message; a notification inside another player's acting scope is skipped here and shown on that player's game, a message box shown and answered here (#117)
     Row { cls: "Message", func: "Show", kind: Kind::Local, subject: Subject::SelfRef, owner: Owner::Player, audience: Audience::Acting, relay: Relay::Same, keep: Keep::Nothing, look: Look::Never, scoped: Scoped::ActingSeatAlone, params: &[Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float, Param::Float], hook: Hook::None, latent: true, staged: false },
     // the derived rows, staged (thuum ADR-073 step 4's S5): every other
     // native of FunctionsDump.txt in the dump's order, its cells the rules'

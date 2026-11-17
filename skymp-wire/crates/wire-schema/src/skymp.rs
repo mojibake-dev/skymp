@@ -311,6 +311,18 @@ wire_struct! {
         /// copy is a puppet, and for every other form. Only with
         /// `base_record_type` NPC_ (`E_VAL_RANGE`).
         pub own_local: Option<u32>,
+        /// Since SCHEMA_VERSION 59 (thuum tracker #111, docs/verbs/summon.md;
+        /// playtest 53, Eli: "they slide in from somewhere instead of the
+        /// purple sphere effect"): the summon effect (a load-order MGEF)
+        /// whose arrival this server actor is, on the summon's create word
+        /// to every listener but its caster, whose engine draws its own
+        /// arrival and binds through `own_local`, and only within the
+        /// record's arrival window (wire-rules summons `ARRIVAL_WORD_MS`),
+        /// so a seat that saw the summon arrive plays the effect's own
+        /// hit-effect art on its copy and a later loader's copy stands
+        /// plain. Only with `base_record_type` NPC_, never beside
+        /// `own_local` and never on a player's own word (`E_VAL_RANGE`).
+        pub summon_effect: Option<u32>,
     }
 }
 

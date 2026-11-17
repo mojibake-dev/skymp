@@ -270,7 +270,16 @@ use bounded::{String, Vec};
 /// so the field takes the next number (D-PH1 A's reason: postcard writes a
 /// struct's fields in order, so a 57 server would read a 58 client's Summon
 /// four bytes long while the handshake passed).
-pub const SCHEMA_VERSION: u16 = 58;
+/// 59: CreateActorProps' optional `summon_effect` (thuum tracker #111,
+/// docs/verbs/summon.md; playtest 53, Eli: "they slide in from somewhere
+/// instead of the purple sphere effect"): the summon effect a watcher's copy
+/// of a summon plays the arrival art of, on its create word to every listener
+/// but the caster within the record's arrival window. 58 has shipped (the
+/// playtest 53 sitting's 5b5f9b15 client and 998ea29a server), so the field
+/// takes the next number (D-PH1 A's reason: postcard writes a struct's fields
+/// in order with one presence byte per Option, so a 58 peer would misread
+/// every CreateActor of a 59 server while the handshake passed).
+pub const SCHEMA_VERSION: u16 = 59;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

@@ -834,6 +834,17 @@ fn check_create_actor(m: &skymp::CreateActor) -> Result<(), Reject> {
             return Err(Reject::Range);
         }
     }
+    // thuum tracker #111 (SCHEMA_VERSION 59, docs/verbs/summon.md): the
+    // summon effect whose arrival a watcher's copy plays, a load-order MGEF,
+    // on the summon's create word to every listener but its caster: only on
+    // an NPC_ (the summon's own pairing), never beside the caster's bind and
+    // never on a player's own create word
+    if let Some(effect) = m.props.summon_effect {
+        let npc = m.base_record_type.as_ref().is_some_and(|t| t.as_str() == "NPC_");
+        if effect == 0 || effect >= PLAYER_FORMS || !npc || m.is_me || m.props.own_local.is_some() {
+            return Err(Reject::Range);
+        }
+    }
     // thuum docs/verbs/character-creation.md (the permit): the restricted
     // races and the ones this profile may wear travel together, on the
     // player's own CreateActor alone; no race id is 0 or repeated, and every
@@ -4051,6 +4062,38 @@ mod tests {
         // absent, any base
         assert_eq!(validate_server(&bound(None, Some("MSTT"), false)), Ok(()));
         assert_eq!(validate_server(&bound(None, None, true)), Ok(()));
+    }
+
+    #[test]
+    fn a_summons_arrival_names_a_load_order_effect_on_an_npc_base_for_its_watchers_alone() {
+        // thuum tracker #111 (SCHEMA_VERSION 59, docs/verbs/summon.md): the
+        // create word's summonEffect names the summon effect whose arrival a
+        // watcher's copy plays, never beside the caster's bind
+        let watched = |effect: Option<u32>, local: Option<u32>, base_record_type: Option<&str>, is_me: bool| {
+            Message::CreateActor(skymp::CreateActor {
+                idx: 7,
+                is_me,
+                base_record_type: base_record_type.map(|t| t.try_into().unwrap_or_default()),
+                refr_id: Some(0xff00_0938),
+                base_id: Some(0x4e940),
+                props: skymp::CreateActorProps { summon_effect: effect, own_local: local, ..Default::default() },
+                ..Default::default()
+            })
+        };
+        // PerkSummonFlameAtronachPotent 0x4e945 (Skyrim.esm), on an NPC_
+        assert_eq!(validate_server(&watched(Some(0x4e945), None, Some("NPC_"), false)), Ok(()));
+        // an effect is a load-order form: never 0 and never a runtime id
+        assert_eq!(validate_server(&watched(Some(0), None, Some("NPC_"), false)), Err(Reject::Range));
+        assert_eq!(validate_server(&watched(Some(0xff00_08fd), None, Some("NPC_"), false)), Err(Reject::Range));
+        // the summon's pairing: an NPC_ base alone
+        assert_eq!(validate_server(&watched(Some(0x4e945), None, Some("MSTT"), false)), Err(Reject::Range));
+        assert_eq!(validate_server(&watched(Some(0x4e945), None, None, false)), Err(Reject::Range));
+        // the caster's own word binds and draws its engine's own arrival
+        assert_eq!(validate_server(&watched(Some(0x4e945), Some(0xff00_08fd), Some("NPC_"), false)), Err(Reject::Range));
+        // a player's own create word is no summon's
+        assert_eq!(validate_server(&watched(Some(0x4e945), None, Some("NPC_"), true)), Err(Reject::Range));
+        // absent, as before
+        assert_eq!(validate_server(&watched(None, None, Some("NPC_"), false)), Ok(()));
     }
 
     #[test]

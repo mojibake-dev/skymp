@@ -757,6 +757,13 @@ void MpObjectReference::SetOpen(bool open)
                                GetInventory().ToJson().dump()),
         true);
     }
+    // thuum tracker #143: a fate the server's removal held while the body
+    // was open goes to every game at its shut, after the record above
+    if (!open) {
+      if (auto actor = AsActor()) {
+        actor->SendFateHeldForShut();
+      }
+    }
     // thuum docs/verbs/containers.md: the lab reads a container's state here,
     // a chest's and a corpse's alike (x-container-hold v2 002233: the body's
     // open never printed, the claim could not hold)
@@ -1468,6 +1475,9 @@ void MpObjectReference::SetInventory(const Inventory& inv)
     changeForm.baseContainerAdded = true;
     changeForm.inv = inv;
   });
+  if (auto actor = AsActor()) {
+    actor->ForgetRemovedByServer(inv.entries); // thuum tracker #143 (AddItem)
+  }
   SendInventoryUpdate();
 }
 

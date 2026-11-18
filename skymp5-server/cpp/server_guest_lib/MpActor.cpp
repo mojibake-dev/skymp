@@ -77,6 +77,9 @@ struct MpActor::Impl
   // thuum tracker #143: the bases the server's own removal took from the
   // record that it has not held since (MpActor::TellRemovalByServer)
   std::set<uint32_t> removedByServer;
+  // thuum tracker #143: the server's removal from a body a seat held open
+  // left its fate for the shut (MpActor::SendFateHeldForShut)
+  bool fateHeldForShut = false;
   // ADR-050 decision 2: the server's number reached zero, the host's report
   // awaited (MpActor::BeginPendingDeath)
   bool pendingDeath = false;
@@ -607,25 +610,45 @@ void MpActor::TellRemovalByServer(const std::vector<Inventory::Entry>& removed,
   }
   // the bases the record no longer holds: a hosted report wearing one,
   // while the record still lacks it, was read before its engine ran the
-  // fate below (ActionListener::OnUpdateEquipment leaves it out)
+  // fate below (ActionListener::OnUpdateEquipment leaves it out). Not for a
+  // server-made NPC (an id at or above 0xff000000, IsEspmForm false): each
+  // game keeps its fate by the remote id for the copy's next spawn and runs
+  // no late path on a copy it holds (skymp5-client actorFateService,
+  // ADR-050 decision 3), so its host's copy keeps the piece, and leaving
+  // the host's report out would take the piece from the watchers alone.
+  // Remembering nothing, its host's report adds the piece back to the
+  // record as the engine's own and every seat agrees, as before the
+  // removal (open in docs/verbs/npc-fate.md)
   const Inventory& held = GetInventory();
   size_t gone = 0;
-  for (const auto& entry : removed) {
-    if (entry.baseId != 0 && !held.HasItem(entry.baseId)) {
-      pImpl->removedByServer.insert(entry.baseId);
-      ++gone;
+  if (IsEspmForm()) {
+    for (const auto& entry : removed) {
+      if (entry.baseId != 0 && !held.HasItem(entry.baseId)) {
+        pImpl->removedByServer.insert(entry.baseId);
+        ++gone;
+      }
     }
   }
   // a body no one holds open: the shut's own send (SetOpen), the record to
-  // every listener, so a seat's view applies it at its next aim instead of
-  // a list an earlier shut left there (formView's body apply adds a missing
-  // count back, sync/inventory.ts applyBodyInventory). Never while open
-  // (ADR-067 decision 6: no seat sees the contents change under its menu);
-  // the shut sends it then
-  const bool body = IsCorpse() && !IsOpen();
+  // every listener with a user, so a seat's view applies it at its next aim
+  // instead of a list an earlier shut left there (formView's body apply
+  // adds a missing count back, sync/inventory.ts applyBodyInventory).
+  // Directly, as UpdateHoster's loop sends: SendMessageToActorListeners
+  // goes through GetActorToSendTo, which hands a listener with no user (the
+  // body itself, an NPC in reach) to its cell's host, so the host's game
+  // took one list per such listener. Never while open (ADR-067 decision 6:
+  // no seat sees the contents change under its menu); the shut sends it
+  const bool open = IsOpen();
+  const bool body = IsCorpse() && !open;
   if (body) {
-    SendMessageToActorListeners(
-      CreatePropertyMessage_(this, "inventory", held.ToJson().dump()), true);
+    const auto inventoryMessage =
+      CreatePropertyMessage_(this, "inventory", held.ToJson().dump());
+    for (auto listener : GetActorListeners()) {
+      if (listener->GetUserId() == Networking::InvalidUserId) {
+        continue;
+      }
+      listener->SendToUser(inventoryMessage, true);
+    }
   }
   // the fate again, the call a respawn makes (RespawnWithDelay): FateOf is
   // the record's worn list and rows, each game's table takes it, and a game
@@ -635,18 +658,43 @@ void MpActor::TellRemovalByServer(const std::vector<Inventory::Entry>& removed,
   // lab run reads it: the late path's reconcile takes the removed piece off
   // the copy on the host and on a watcher in reach alike. An NPC with no
   // fate level (never rolled, a record from before the fate) is in no
-  // game's table, and no game is told
+  // game's table, and no game is told. A body a seat holds open keeps its
+  // fate for the shut (SendFateHeldForShut, from SetOpen): the late path on
+  // the opener's seat would change the body's contents under its loot
+  // menu, the rule the inventory above keeps (ADR-067 decision 6); FateOf
+  // reads the record at the shut, a take made meanwhile included
   WorldState* worldState = GetParent();
   const bool fated =
     GetFateLevel().has_value() && worldState && worldState->onActorFate;
-  if (fated) {
+  const bool heldForShut = fated && open;
+  if (heldForShut) {
+    pImpl->fateHeldForShut = true;
+  } else if (fated) {
     worldState->onActorFate(*this);
   }
   spdlog::info("[verb:npc-fate] {:x}: the server's {} took {} row(s) from "
                "its record, {} base(s) it no longer holds; its fate sent "
-               "again to every game: {}; its inventory to its listeners: {} "
-               "(tracker #143)",
-               GetFormId(), why, removed.size(), gone, fated, body);
+               "again to every game: {}; its inventory to its listeners: {}; "
+               "its fate held for the body's shut: {} (tracker #143)",
+               GetFormId(), why, removed.size(), gone, fated && !heldForShut,
+               body, heldForShut);
+}
+
+void MpActor::SendFateHeldForShut()
+{
+  if (!pImpl->fateHeldForShut) {
+    return;
+  }
+  pImpl->fateHeldForShut = false;
+  WorldState* worldState = GetParent();
+  if (!GetFateLevel().has_value() || !worldState || !worldState->onActorFate) {
+    return;
+  }
+  worldState->onActorFate(*this);
+  spdlog::info("[verb:npc-fate] {:x}'s body shut: the fate the server's "
+               "removal held while it was open sent to every game (tracker "
+               "#143)",
+               GetFormId());
 }
 
 bool MpActor::RemovedByServer(uint32_t baseId) const
@@ -1317,6 +1365,10 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
     },
     Mode::NoRequestSave);
   ReapplyMagicEffects();
+  // thuum tracker #143: what the record laid in holds is no longer the
+  // server's removal (AddItem's rule; a load meets an empty set, the set
+  // being the session's)
+  ForgetRemovedByServer(GetInventory().entries);
 
   // a race menu the record keeps open is shown again at the login
   if (ChangeForm().isRaceMenuOpen) {

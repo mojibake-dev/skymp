@@ -131,19 +131,27 @@ public:
   // engine's actor), so each game's fate table matches the record and its
   // late path brings the copy's rows and worn set to it (skymp5-client
   // actorFateService, FateApi's reconcile); and, for a body no one holds
-  // open, the shut's own "inventory" property to its listeners, so no
-  // seat's view keeps a list from before the removal. Each base the record
-  // no longer holds is remembered as the server's removal until the record
-  // holds it again (RemovedByServer). A take is its taker's engine's and
-  // never comes here. Nothing for a player's actor, nothing removed, or a
-  // record whose base container is not laid in
+  // open, the shut's own "inventory" property to its listeners with a user,
+  // so no seat's view keeps a list from before the removal; a body a seat
+  // holds open gets neither until its shut (SendFateHeldForShut, ADR-067
+  // decision 6). Each base the record no longer holds is remembered as the
+  // server's removal until the record holds it again (RemovedByServer),
+  // except on a server-made NPC (an id at or above 0xff000000), whose seats
+  // run no late path on a copy they hold. A take is its taker's engine's
+  // and never comes here. Nothing for a player's actor, nothing removed, or
+  // a record whose base container is not laid in
   void TellRemovalByServer(const std::vector<Inventory::Entry>& removed,
                            const char* why);
+  // thuum tracker #143: the body's shut (MpObjectReference::SetOpen) sends
+  // the fate the server's removal held while a seat had it open, to every
+  // game, the host's included; nothing when no fate is held
+  void SendFateHeldForShut();
   // thuum tracker #143: whether the server's own removal took `baseId` from
   // this NPC's record and nothing has given the record one since; a hosted
   // report wearing it was read before its engine ran the fate
   bool RemovedByServer(uint32_t baseId) const;
-  // the record holds each of `added` again (MpObjectReference's adders)
+  // the record holds each of `added` again (MpObjectReference's adders and
+  // SetInventory, MpActor::ApplyChangeForm)
   void ForgetRemovedByServer(const std::vector<Inventory::Entry>& added);
 
   void SetHealthRespawnPercentage(float percentage);

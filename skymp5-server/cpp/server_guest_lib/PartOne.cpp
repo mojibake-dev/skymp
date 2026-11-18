@@ -3546,7 +3546,32 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
   }
   const auto standing = worldState.CellOf(*actor);
   if (standing && *standing == *cell) {
-    return; // already where the host's engine has it: the usual case, silent
+    // already where the host's engine has it: the usual case, silent. thuum
+    // tracker #162 (playtest 55, Eli: "weird scripting shit with draugr not
+    // standing up"): but a roster names only an actor its game holds no form
+    // for, and the grid serves a game the 3x3 squares around its own player
+    // alone, the grant's word going to the actors its game already hears
+    // (FlipHostedFlags). Ariadne hosted Bleak Falls Temple 0x371de standing
+    // two squares west of 0x380b3 and 0x380b5, so her game held no form for
+    // them and kept them AI-off puppets through trigger 0x38098's wake-up,
+    // which rotfern's step fired; her game took them seconds later, as she
+    // walked closer, and 0x380b3 never stood. The actor's own pass subscribes
+    // its simulator wherever it stands (D6's keep, ForceSubscriptionsUpdate),
+    // so the host's game gets the CreateActor with the word false within a
+    // roster, whatever the distance
+    if (worldState.HostOf(*actor) == &reporter &&
+        actor->GetListeners().count(&reporter) == 0) {
+      actor->ForceSubscriptionsUpdate();
+      if (actor->GetListeners().count(&reporter) == 0) {
+        return drop("its host hears nothing of it and its grid pass "
+                    "subscribed nothing");
+      }
+      spdlog::info("PartOne - npc-puppet: {:x}'s roster names {:x} in its "
+                   "cell {:x} at ({:.0f}, {:.0f}, {:.0f}), beyond its grid; "
+                   "subscribed to its host",
+                   reporter.GetFormId(), refrId, *cell, pos.x, pos.y, pos.z);
+    }
+    return;
   }
   if (MpActor* other = worldState.HostOf(*actor);
       other && other != &reporter) {

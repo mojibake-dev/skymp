@@ -5,6 +5,7 @@
 #include "ChangeValuesMessage.h"
 #include "ConsoleCommandMessage.h"
 #include "CreateActorMessage.h"
+#include "DestroyActorMessage.h"
 #include "HitMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
@@ -614,6 +615,180 @@ TEST_CASE("A host follows its actor into an unhosted cell its game loads, "
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
   p.DestroyActor(kWolf);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
+// thuum tracker #162 (playtest 55, Eli: "weird scripting shit with draugr not
+// standing up", "npc ai is soooo jank rn"): the grid serves a game the 3x3
+// squares around its own player, and a cell's host runs every actor of its
+// cell. Bleak Falls Temple 0x371de as Ariadne's game hosted it in 55 (both
+// seats' logs and c2's recorder): she stood at (3900, -3365), square (0, 0),
+// two squares west of the draugr 0x380b3 at its placement (8657, -5215,
+// -2055), square (2, -1) (TrapRelayTest's stage, lab/esm.py), while rotfern
+// pressed the trigger beside it, and her game held no form for the draugr,
+// so the wake-up met an AI-off puppet. The host's roster names an actor its
+// game holds no form for, and the server subscribes the host to it now
+// (PartOne::OnActorSighting); the host's own walk across a square line keeps
+// it (ForceSubscriptionsUpdate, D6's keep on the simulator's edge too),
+// which ends the second hall's flicker. The other player, beside the
+// draugr, is served by the grid alone
+TEST_CASE("A host two squares from an actor in its cell gets the actor's "
+          "CreateActor at one roster and keeps it across its own square "
+          "changes; the other player's listeners are the grid's",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kTemple = 0x371de;
+  constexpr uint32_t kDraugr = 0x380b3;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kTemple));
+
+  // the draugr loaded by its id (TrapRelayTest's shape) before any grant, as
+  // the record stood before Ariadne's game took the temple
+  auto& draugr = p.worldState.GetFormAt<MpActor>(kDraugr);
+  const NiPoint3 seat = draugr.GetPos();
+  // a grid square as the grid counts it (MpObjectReference.cpp's GetGridPos,
+  // truncated toward zero), and whether two points stand farther apart than
+  // the 3x3
+  const auto square = [](const NiPoint3& pos) {
+    return std::pair<int, int>{ static_cast<int16_t>(pos.x / 4096),
+                                static_cast<int16_t>(pos.y / 4096) };
+  };
+  const auto apart = [&](const NiPoint3& a, const NiPoint3& b) {
+    const auto sa = square(a);
+    const auto sb = square(b);
+    return std::abs(sa.first - sb.first) > 1 ||
+      std::abs(sa.second - sb.second) > 1;
+  };
+  REQUIRE(square(seat) == std::pair<int, int>{ 2, -1 });
+  // Ariadne's stand, square (0, 0); a step south across the y line, square
+  // (0, -1); and one square from the draugr, square (1, 0)
+  const NiPoint3 stand{ 3900.f, -3365.f, seat.z };
+  const NiPoint3 south{ 3900.f, -4300.f, seat.z };
+  const NiPoint3 oneOff{ 5000.f, -3365.f, seat.z };
+  REQUIRE(apart(stand, seat));
+  REQUIRE(apart(south, seat));
+  REQUIRE(square(south) != square(stand));
+  REQUIRE_FALSE(apart(oneOff, seat));
+  REQUIRE(square(oneOff) != square(stand));
+
+  // c1 at Ariadne's stand, c2 beside the draugr; c1's load grants it the
+  // temple, c2's gets nothing
+  DoConnect(p, 0);
+  p.CreateActor(kC1, stand, 0, kTemple);
+  p.SetUserActor(0, kC1);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  c1.ForceSubscriptionsUpdate();
+  DoConnect(p, 1);
+  p.CreateActor(kC2, seat + NiPoint3{ 80.f, 0.f, 0.f }, 0, kTemple);
+  p.SetUserActor(1, kC2);
+  auto& c2 = p.worldState.GetFormAt<MpActor>(kC2);
+  c2.ForceSubscriptionsUpdate();
+  CellLoaded(p, 0, kTemple);
+  CellLoaded(p, 1, kTemple);
+  REQUIRE(p.GetCellHost(kTemple).player == kC1);
+  REQUIRE(p.worldState.HostOf(draugr) == &c1);
+  REQUIRE(draugr.GetListeners().count(&c2) == 1);
+
+  // the draugr's CreateActors to `user` since the last clear, and its
+  // DestroyActors
+  const auto creates = [&](Networking::UserId user) {
+    std::vector<CreateActorMessage> out;
+    for (const auto& m : SentTo<CreateActorMessage>(p, user)) {
+      if (m.refrId == kDraugr) {
+        out.push_back(m);
+      }
+    }
+    return out;
+  };
+  const auto destroys = [&](Networking::UserId user) {
+    size_t n = 0;
+    for (const auto& m : SentTo<DestroyActorMessage>(p, user)) {
+      if (m.idx == draugr.GetIdx()) {
+        ++n;
+      }
+    }
+    return n;
+  };
+
+  SECTION("the first hall: the host's roster takes the draugr two squares "
+          "off, and the host's steps across a square line keep it")
+  {
+    // the grant's word went to the actors c1's game hears (FlipHostedFlags),
+    // never the draugr: c1's game holds no form for it
+    REQUIRE(draugr.GetListeners().count(&c1) == 0);
+    const std::set<MpObjectReference*> c2Was = c2.GetListeners();
+    const auto roster = [&] {
+      DoMessage(p, 0,
+                nlohmann::json{ { "t", MsgType::ActorSightings },
+                                { "sightings",
+                                  nlohmann::json::array({ nlohmann::json{
+                                    { "refrId", kDraugr },
+                                    { "worldOrCell", kTemple },
+                                    { "pos", { seat.x, seat.y, seat.z } },
+                                    { "rot", { 0.f, 0.f, 0.f } } } }) } });
+    };
+
+    // the roster names it where the record stands: c1 is subscribed and its
+    // game gets the CreateActor with the word false; the record stays where
+    // it stood and c2 hears nothing new
+    p.Messages().clear();
+    roster();
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    const auto toHost = creates(0);
+    REQUIRE(toHost.size() == 1);
+    REQUIRE(toHost[0].props.isHostedByOther == false);
+    REQUIRE((draugr.GetPos() - seat).Length() < 1.f);
+    REQUIRE(creates(1).empty());
+    REQUIRE(c2.GetListeners() == c2Was);
+
+    // a late roster that still names it: nothing more
+    p.Messages().clear();
+    roster();
+    REQUIRE(creates(0).empty());
+
+    // c1 steps south across the y line and back, the draugr two squares off
+    // at each stand: c1's game keeps it, with no DestroyActor and no second
+    // CreateActor, and c2's listeners are as the grid had them
+    p.Messages().clear();
+    c1.SetPos(south);
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    c1.SetPos(stand);
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    REQUIRE(destroys(0) == 0);
+    REQUIRE(creates(0).empty());
+    REQUIRE(c2.GetListeners() == c2Was);
+  }
+
+  SECTION("the second hall: a host one square off steps across a square "
+          "line to two squares off and back, and keeps the draugr its engine "
+          "runs")
+  {
+    // c1 one square from the draugr: the grid subscribes it, the word false
+    p.Messages().clear();
+    c1.SetPos(oneOff);
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    const auto toHost = creates(0);
+    REQUIRE(toHost.size() == 1);
+    REQUIRE(toHost[0].props.isHostedByOther == false);
+    // across the x line, two squares off, and back: kept, with no
+    // DestroyActor (each demote of the hall's flicker on the host followed
+    // one) and no second CreateActor (each promote followed one)
+    p.Messages().clear();
+    c1.SetPos(stand);
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    REQUIRE(destroys(0) == 0);
+    c1.SetPos(oneOff);
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    REQUIRE(creates(0).empty());
+    // the other player keeps the draugr by the grid, as before
+    REQUIRE(draugr.GetListeners().count(&c2) == 1);
+    REQUIRE(destroys(1) == 0);
+  }
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
 }

@@ -1337,6 +1337,29 @@ void MpObjectReference::ForceSubscriptionsUpdate()
     if (MpActor* simulator = worldState->HostOf(*this)) {
       now.insert(simulator);
     }
+    // thuum tracker #162 (playtest 55, Eli: "weird scripting shit with
+    // draugr not standing up"): and the simulator's own pass keeps every
+    // actor it simulates, since one subscription is both edges, as the prop
+    // keep below does. Ariadne hosted Bleak Falls Temple 0x371de standing on
+    // the y = -4096 line, and each of her steps across it unsubscribed
+    // 0x383ec, 0x383f7 and 0x383f8, which her engine ran: her game demoted
+    // each to an AI-off puppet at the DestroyActor and promoted it at the
+    // next CreateActor, seven flips in 25 s. A player's actor is its own
+    // game's (HostedBy answers nullptr for it), so a pair of players stands
+    // on the grid alone as before; only a listener the grid would drop is
+    // asked. The keep holds on the grid this pass reads alone: a door into
+    // another world or cell parts the pair as before, since a commander's
+    // thralls reach its game at the landing by that part and the create
+    // word after it (PartOne::TakeThrallsThroughDoor moves the record with
+    // no message, thuum #48 leg D)
+    for (MpObjectReference* listener : was) {
+      MpActor* other = listener->AsActor();
+      if (other && listener != this && now.count(listener) == 0 &&
+          other->GetCellOrWorld() == GetCellOrWorld() &&
+          other->HostedBy() == AsActor()) {
+        now.insert(listener);
+      }
+    }
   }
   // thuum docs/verbs/prop-physics.md (physics rung 3, D6's keep for a prop):
   // a live prop row's owner and the prop stay a pair where the grid would

@@ -122,20 +122,6 @@ const FOLLOW_DELAY_MAX_MS = (FOLLOW_SAMPLES_MAX - 2) * SEND_MIN_MS;
 // later and the delay covers its flight), and a word naming another seat
 // awaits that seat's first sample this long and the delay; D73's rest follows
 const FOLLOW_QUIET_MS = 2 * STREAM_HEARTBEAT_MS;
-// thuum tracker #125 (playtest 54: the sign outside the Riverwood Trader
-// jumps around for the guest when hit): a body of parts' follow leads its
-// parts in from where this seat's own parts stand to the stream's first
-// sample over this much of the render clock, ending at that sample
-// (imposeParts, the lead). The owner's first sample leaves after its push
-// has moved its parts: on the train 0e7c9701 c1's left 101 ms after its
-// push and on canon 105 ms (tracker #125 notes 3337 and 3291), 57.5 units
-// from c2's resting parts, and c2's first drain drove that gap over one world
-// step (c2.log:812 of run 20261118-032353). HYPOTHESIS: that the owner's push
-// to its first sample takes about the stream's own cadence, so over the lead
-// c2's parts move about as fast as the owner's did; an owner slower to its
-// first sample moves them faster here, never in one drain. A follow delay
-// under it enters the lead part way
-const FOLLOW_LEAD_MS = SEND_MIN_MS;
 // A segment the render clock entered late, or a target it already passed, is
 // covered in at least this long, so no glide is a one-frame teleport; a
 // translate's speed is never under GLIDE_MIN_SPEED; a target JUMP_UNITS or
@@ -225,6 +211,12 @@ type HandOff = { lin: NiPoint3; ang: NiPoint3; seq: number; ahead: number; due: 
 // (the stream's opening for an awake one, the rest's cause for an asleep one)
 type Due = { prop: Prop; body: Body; asleep: boolean; line: string | undefined };
 
+// a body of parts' lead (thuum tracker #125, imposeParts): this seat's own
+// parts as they stood at the follow's first update, none when that read had
+// nothing to lead from, and the render clock then (on the owner's clock, the
+// lead's start)
+type FollowLead = { from: FollowBone[]; atMs: number };
+
 // one tracked prop, by the server's id
 type Prop = {
     refr: number;        // the server's id, the wire's refr
@@ -277,19 +269,21 @@ type Prop = {
     // stays a live Havok body the platform drives toward the stream): poses
     // stored in the platform's table (imposeBodies, released at the follow's
     // end), the follow's frames imposed and skipped (a count mismatch, a
-    // refusal), whether the follow called the platform yet (its first call
-    // said), whether the stream's rest was imposed (rest true), and whether a
-    // sample's bones on a body this seat reads as one were said; lead, this
-    // seat's own parts as they stood at the follow's first update, the lead's
-    // start (thuum tracker #125, FOLLOW_LEAD_MS), undefined until that read
-    // and empty when it read none to lead from
+    // refusal), whether the follow's first pair or rest called the platform
+    // yet (that call said with its seat; the lead's calls before it are not),
+    // whether the stream's rest was imposed (rest true), and whether a
+    // sample's bones on a body this seat reads as one were said; lead, the
+    // lead's start (thuum tracker #125, imposeParts): this seat's own parts
+    // as they stood at the follow's first update and the render clock then,
+    // undefined until that read and with no parts when it read none to lead
+    // from
     imposing: boolean;
     imposed: number;
     imposeSkipped: number;
     imposeCalled: boolean;
     restImposed: boolean;
     bonesSaid: boolean;
-    lead: FollowBone[] | undefined;
+    lead: FollowLead | undefined;
     // the "body" lines (propBodyReadLog): their next read (0 none), and whether the first track's is asked
     bodyLogDue: number;
     bodyTracked: boolean;
@@ -355,6 +349,22 @@ const bounded = (v: NiPoint3, max: number): NiPoint3 => {
     }
     const k = (max * 0.999) / n;
     return [w[0] * k, w[1] * k, w[2] * k];
+};
+
+// a body part's read as a pose, its quaternion normalized: undefined when
+// any coordinate is not a number or lies past WORLD_ABS_MAX, or the
+// quaternion has no length or is not a number (the stream's test, bonesOf,
+// and the lead's, leadOf; thuum tracker #125)
+const poseOf = (b: PropBone): FollowBone | undefined => {
+    const n = Math.sqrt(b.quat[0] * b.quat[0] + b.quat[1] * b.quat[1] + b.quat[2] * b.quat[2] + b.quat[3] * b.quat[3]);
+    let pose = isFinite(n) && n > 0;
+    for (let k = 0; k < 3; ++k) {
+        pose = pose && isFinite(b.pos[k]) && Math.abs(b.pos[k]) <= WORLD_ABS_MAX;
+    }
+    if (!pose) {
+        return undefined;
+    }
+    return { pos: [b.pos[0], b.pos[1], b.pos[2]], quat: [b.quat[0] / n, b.quat[1] / n, b.quat[2] / n, b.quat[3] / n] };
 };
 
 // a triple for a lab line, one decimal each
@@ -467,8 +477,8 @@ const triple = (v: NiPoint3): string => `${v[0].toFixed(1)}, ${v[1].toFixed(1)},
 // sample's bones (bonesOf), and its follower's parts stay live Havok bodies
 // the platform drives toward the stream every update (route K3: imposeBodies,
 // imposeParts), led in at a follow's start from where they stand (thuum
-// tracker #125, FOLLOW_LEAD_MS), placed outright at the stream's rest, with
-// no reference-wide motion set ever (setMotion's guard:
+// tracker #125, imposeParts' lead), placed outright at the stream's rest,
+// with no reference-wide motion set ever (setMotion's guard:
 // TESObjectREFR::SetMotionType passes
 // a_arg2 true to the root's, which, HYPOTHESIS, recurses and would free the
 // Fixed anchor, risk H-T1). A watcher's own
@@ -1587,12 +1597,8 @@ export class PropService extends ClientListener {
         const bones: PropBone[] = [];
         for (let i = 0; i < read.length; ++i) {
             const b = read[i];
-            const n = Math.sqrt(b.quat[0] * b.quat[0] + b.quat[1] * b.quat[1] + b.quat[2] * b.quat[2] + b.quat[3] * b.quat[3]);
-            let pose = isFinite(n) && n > 0;
-            for (let k = 0; k < 3; ++k) {
-                pose = pose && isFinite(b.pos[k]) && Math.abs(b.pos[k]) <= WORLD_ABS_MAX;
-            }
-            if (!pose) {
+            const pose = poseOf(b);
+            if (pose === undefined) {
                 if (!prop.badBodySaid) {
                     prop.badBodySaid = true;
                     logError(this, `prop ${id}'s part ${i} read (${b.pos.join(", ")}) (${b.quat.join(", ")}) is no pose: not sent`);
@@ -1605,7 +1611,7 @@ export class PropService extends ClientListener {
                 this.noRow(prop, `its part ${i} past the wire's reach`);
                 return undefined;
             }
-            bones.push({ pos: [b.pos[0], b.pos[1], b.pos[2]], quat: [b.quat[0] / n, b.quat[1] / n, b.quat[2] / n, b.quat[3] / n] });
+            bones.push(pose);
         }
         return bones;
     }
@@ -1740,25 +1746,52 @@ export class PropService extends ClientListener {
     // loses it).
     // thuum tracker #125, the lead: before the first pair (the render clock
     // short of the stream's first sample) the parts go from where this
-    // seat's own stood at the follow's first update (leadOf) to that sample,
-    // over the last FOLLOW_LEAD_MS of the render clock before it, and are
-    // held where they stood until then. So the follow's first target is this
-    // seat's own rest, not the owner's pose a push already moved (run
-    // 20261118-032353: 57.5 units off, c2.log:812), and the drive's first
-    // drain, which drives over one world step (ImposeHorizonOf,
-    // PuppetApi.cpp:1658), finds no gap; the lead's drains then drive over the
-    // world's time between two drains. A follower's own parts rest where the
-    // owner's did before its push: its own push of another seat's cause is
-    // zeroed (c2.log:809), and the two engines drew every part 0.0 units
-    // apart at rest before the hit (that run's claim 4, step 120). With no
-    // read to lead from, nothing before the first pair
+    // seat's own stood at the follow's first update (leadOf) to that sample
+    // over all of the render clock's way to it from then (about
+    // FOLLOW_DELAY_MS less a frame at the default delay), timed on the render
+    // clock: alpha 0 at that update, which imposes the parts where they stand
+    // (the hold: the platform's first drain of a form drives over one world
+    // step, ImposeHorizonOf, PuppetApi.cpp:1658-1661, and its world clock is
+    // known from the next), and 1 at the sample. So the follow's first target
+    // is this seat's own rest, not the owner's pose a push already moved
+    // (run 20261118-032353-x-trader-sign-hit-v4: the first drain 57.5 units
+    // off, c2.log:812). The lead's length is what the delay leaves, not the
+    // owner's cadence: on the host's wake (A7) the server relays the woken
+    // sample at epoch E and then sends the word naming the host at E + 1
+    // (ActionListener.cpp's Woken case, :9304-9305 at 0e7c9701), the client's
+    // transport hands the reliable channels over before the unreliable one
+    // (wire-transport lib.rs:816-822, channels.rs:18), and feed drops a
+    // sample under the known epoch. In that run c2 counted 264 samples
+    // (c2-console.log:4106), c1's epoch 1 run alone (seq 264,
+    // c1-console.log:3380): c2's first sample was c1's second, sent at least
+    // SEND_MIN_MS after c1's first (33.794, c1-console.log:3065), so 200 ms
+    // or more past the push (33.693, c1.log:783), and a lead of the owner's
+    // cadence (100 ms, 6308e07b) played that swing at about twice c1's
+    // speed. Over the delay's way the lead is no faster than the owner was
+    // whenever the owner took at least that long to the first sample this
+    // seat kept, and slower where it took less (the woken sample kept: c1's
+    // first, about 100 ms in), so the parts start moving up to the delay
+    // ahead of the push on the render clock, never in one drain.
+    // HYPOTHESIS until the next stage run of x-trader-sign-hit-v4 reads them:
+    // (a) the hold's first drain finds no gap: c2's first horizon line, now
+    // at the hold ("impose 5161a driven: horizon ..., X units off"), X near
+    // 0; (b) this seat's parts stand where the owner's did before its push
+    // when the lead reads them: its own push of another seat's cause is
+    // zeroed (c2.log:809) and the two engines drew every part 0.0 units apart
+    // at rest before the hit (that run's step 120, claim 4), but nothing read
+    // them at the follow's first update. The lead's line ("led in from its
+    // own parts over <ms> ms, X units off the first sample") reads it: X near
+    // the 57.5 the first drain took whole before. A render clock already past
+    // the first sample at the follow's first update (a delay of 0), a read
+    // with no parts, another count or a part that is no pose leads nothing,
+    // as before the lead; a delay of a frame or two leads over what it leaves
     private imposeParts(prop: Prop, f: PropFollow, step: FollowStep) {
         if (!prop.loaded3D || prop.restAt !== 0) {
             return;
         }
         if (step.rested) {
             const rest = f.newest().bones;
-            if (rest.length === prop.parts && this.imposeBodies(prop, f, rest, true)) {
+            if (rest.length === prop.parts && this.imposeBodies(prop, f, rest, true, false)) {
                 prop.imposing = false;
                 prop.restImposed = true;
                 prop.imposed += 1;
@@ -1771,15 +1804,20 @@ export class PropService extends ClientListener {
         if (prop.lead === undefined) {
             // read once a follow, at its first update: a render clock already
             // past the first sample (a delay of 0) has nothing to lead
-            prop.lead = step.from === undefined ? this.leadOf(prop, f, step.target) : [];
+            prop.lead = step.from === undefined ? this.leadOf(prop, f, step) : { from: [], atMs: 0 };
         }
         let bones: FollowBone[] | undefined;
+        const lead = step.from === undefined;
         if (step.from !== undefined) {
             bones = lerpBones(step.from.bones, step.target.bones, step.alpha);
-        } else if (prop.lead.length > 0) {
-            // the target is the first sample and remainingMs the render
-            // clock's way to it; lerpBones holds alpha within 0 and 1
-            bones = lerpBones(prop.lead, step.target.bones, 1 - step.remainingMs / FOLLOW_LEAD_MS);
+        } else if (prop.lead.from.length > 0) {
+            // the render clock (remainingMs is the target's tMs less it) from
+            // the lead's start to the target, the stream's first sample: 0 at
+            // the lead's read, and its way there never 0 (the target is ahead
+            // of the render clock, which never steps back)
+            const renderMs = step.target.tMs - step.remainingMs;
+            const wayMs = step.target.tMs - prop.lead.atMs;
+            bones = lerpBones(prop.lead.from, step.target.bones, wayMs > 0 ? (renderMs - prop.lead.atMs) / wayMs : 1);
         } else {
             return;
         }
@@ -1787,7 +1825,7 @@ export class PropService extends ClientListener {
             prop.imposeSkipped += 1;
             return;
         }
-        if (this.imposeBodies(prop, f, bones, false)) {
+        if (this.imposeBodies(prop, f, bones, false, lead)) {
             prop.imposing = true;
             prop.imposed += 1;
         } else {
@@ -1796,32 +1834,45 @@ export class PropService extends ClientListener {
     }
 
     // thuum tracker #125: the lead's start (imposeParts), this seat's own
-    // parts read whole once (readBody) at a follow's first update; empty when
-    // the read has no parts, or a count other than this seat's class read and
-    // the first sample's (the impose would skip it). Said once a follow, with
-    // how far the farthest part stood from the first sample: the gap the lead
-    // covers, which the drive's first drain took whole before it
-    private leadOf(prop: Prop, f: PropFollow, first: FollowSample): FollowBone[] {
+    // parts read whole once (readBody) at a follow's first update, and the
+    // render clock then; no parts when the read has none, a count other than
+    // this seat's class read and the first sample's (the impose would skip
+    // it), or a part that is no pose (poseOf: the platform would refuse every
+    // hold frame). Said once a follow, with the lead's length and how far the
+    // farthest part stood from the first sample: the gap the lead covers,
+    // which the drive's first drain took whole before it
+    private leadOf(prop: Prop, f: PropFollow, step: FollowStep): FollowLead {
+        const id = prop.refr.toString(16);
+        const first = step.target;
+        const atMs = first.tMs - step.remainingMs;
         const body = this.readBody(prop);
         const read = body !== undefined && body.bones !== undefined ? body.bones : [];
         if (read.length === 0 || read.length !== prop.parts || read.length !== first.bones.length) {
-            return [];
+            return { from: [], atMs };
         }
         let farthest = 0;
-        const lead: FollowBone[] = [];
+        const from: FollowBone[] = [];
         for (let i = 0; i < read.length; ++i) {
-            const b = read[i];
-            farthest = Math.max(farthest, ObjectReferenceEx.getDistance(b.pos, first.bones[i].pos));
-            lead.push({ pos: [b.pos[0], b.pos[1], b.pos[2]], quat: [b.quat[0], b.quat[1], b.quat[2], b.quat[3]] });
+            const pose = poseOf(read[i]);
+            if (pose === undefined) {
+                logLab(TAG, `follow ${id} epoch ${f.epoch()}: its own part ${i} read no pose: not led in`);
+                return { from: [], atMs };
+            }
+            farthest = Math.max(farthest, ObjectReferenceEx.getDistance(pose.pos, first.bones[i].pos));
+            from.push(pose);
         }
-        logLab(TAG, `follow ${prop.refr.toString(16)} epoch ${f.epoch()}: led in from its own parts, ${farthest.toFixed(1)} units off the first sample`);
-        return lead;
+        logLab(TAG, `follow ${id} epoch ${f.epoch()}: led in from its own parts over ${step.remainingMs.toFixed(0)} ms, ${farthest.toFixed(1)} units off the first sample`);
+        return { from, atMs };
     }
 
-    // the platform's impose (imposeBodies), its first call of a follow said
-    // with the seat it follows; an older platform imposes nothing, said once
-    private imposeBodies(prop: Prop, f: PropFollow, bones: FollowBone[], rest: boolean): boolean {
-        if (!prop.imposeCalled) {
+    // the platform's impose (imposeBodies), the first call of a follow's pairs
+    // or rest said with the seat it follows, as before the lead (#125): the
+    // lead's calls (lead true) come before it, from the follow's first
+    // update, while an A7 wake's word may not have named the seat yet
+    // (propFollow's take sets it at the epoch rise; the probe's premise
+    // counts "from ff000000"); an older platform imposes nothing, said once
+    private imposeBodies(prop: Prop, f: PropFollow, bones: FollowBone[], rest: boolean, lead: boolean): boolean {
+        if (!lead && !prop.imposeCalled) {
             prop.imposeCalled = true;
             const seat = f.seat === undefined ? "unheard" : f.seat.toString(16);
             logLab(TAG, `impose ${prop.refr.toString(16)} from ${seat}: ${prop.parts} parts`);

@@ -639,7 +639,8 @@ void MpActor::TellRemovalByServer(const std::vector<Inventory::Entry>& removed,
   // took one list per such listener. Never while open (ADR-067 decision 6:
   // no seat sees the contents change under its menu); the shut sends it
   const bool open = IsOpen();
-  const bool body = IsCorpse() && !open;
+  const bool corpse = IsCorpse();
+  const bool body = corpse && !open;
   if (body) {
     const auto inventoryMessage =
       CreatePropertyMessage_(this, "inventory", held.ToJson().dump());
@@ -662,11 +663,16 @@ void MpActor::TellRemovalByServer(const std::vector<Inventory::Entry>& removed,
   // fate for the shut (SendFateHeldForShut, from SetOpen): the late path on
   // the opener's seat would change the body's contents under its loot
   // menu, the rule the inventory above keeps (ADR-067 decision 6); FateOf
-  // reads the record at the shut, a take made meanwhile included
+  // reads the record at the shut, a take made meanwhile included. Only a
+  // body is held: a living NPC can carry a stale isOpen (a body that stood
+  // up while open, through Respawn, which never shuts it), has no loot menu
+  // and is never shut, so holding its fate would keep the piece on the
+  // host's copy while RemovedByServer takes it from the watchers, #143 on
+  // the living path (the final review of de1afe52)
   WorldState* worldState = GetParent();
   const bool fated =
     GetFateLevel().has_value() && worldState && worldState->onActorFate;
-  const bool heldForShut = fated && open;
+  const bool heldForShut = fated && open && corpse;
   if (heldForShut) {
     pImpl->fateHeldForShut = true;
   } else if (fated) {

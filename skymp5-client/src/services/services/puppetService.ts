@@ -168,13 +168,33 @@ export class PuppetService extends ClientListener {
         // by this game's hand, the server's word kills it; an actor this game
         // simulates dies by its own engine from the server's cause (ADR-050
         // decision 2), or holds at zero too while npcEngineDamage is off
+        // thuum tracker #128: never armed again on a seat that holds at zero
+        // over a body the server's word killed. The record is "ended" once
+        // deathService.killActor has ended the hold for that word
+        // (deferredKillEnded, before its Kill or KillSilent), and stays so
+        // until the word stands the actor up (onResurrected) or a pass finds
+        // this seat simulating it (the clear below, where the old record's
+        // stale "armed" cleared: a raise this seat's engine took, #112, or a
+        // host's own Resurrect, never pass through onResurrected), so a
+        // later loss of the hosting arms the hold again as before. The record
+        // used to keep "armed" past the kill, which held a re-arm back only
+        // for an actor armed before its kill; one with no record at its kill
+        // would be armed by the same pass right after its queued kill
+        // (x-server-body-late-v3 20261118-030533's copy ff000df4, killed at
+        // its bind in the pass that also demoted it), if no earlier pass had.
+        // HYPOTHESIS, unread: that no earlier pass (a cell attach's) had
+        // armed that copy, and that the arm is what swallowed its kill
+        // (formView's dead check reads the kill back)
         const holdAtZero = !word || !loadedHere || !this.engineDeaths;
-        if (holdAtZero && !this.deferredArmed.has(localId)) {
+        const held = this.deferredKill.get(localId);
+        if (holdAtZero && held === undefined) {
             ac.startDeferredKill();
-            this.deferredArmed.add(localId);
-        } else if (!holdAtZero && this.deferredArmed.has(localId)) {
-            ac.endDeferredKill();
-            this.deferredArmed.delete(localId);
+            this.deferredKill.set(localId, "armed");
+        } else if (!holdAtZero && held !== undefined) {
+            if (held === "armed") {
+                ac.endDeferredKill();
+            }
+            this.deferredKill.delete(localId);
         }
 
         if (!loadedHere) {
@@ -823,7 +843,7 @@ export class PuppetService extends ClientListener {
     // body half-up: the release came into the SECOND fall with the clock
     // counting from the first death).
     onResurrected(localId: number): void {
-        this.deferredArmed.delete(localId);
+        this.deferredKill.delete(localId);
         // the fate's resurrect runs on the game's main thread at its next UI
         // drain, unordered against this tick since fork cc5c82b6 (FateApi.cpp
         // resurrectActor: a puppet blocked, a live actor that stood up
@@ -832,6 +852,22 @@ export class PuppetService extends ClientListener {
         // reconcile stands aside while the resurrect is in flight
         this.markLifted(localId);
         this.resurrectInFlightUntil.set(localId, Date.now() + PuppetService.resurrectInFlightMs);
+    }
+
+    // thuum tracker #128: deathService.killActor ended the actor's deferred
+    // kill for the server's word (endDeferredKill, then Kill or KillSilent),
+    // so the record says so ("ended", never "armed" past it) and no pass on
+    // a seat that holds at zero arms the hold again over the queued kill or
+    // on the body; the word's stand-up (onResurrected) or a pass that finds
+    // this seat simulating it clears it, and a later pass arms it as before.
+    // Never a player's figure: reconcile leaves a figure before the arm, so
+    // the record holds none (killActor's branch for an actor other than the
+    // local player reaches figures too)
+    deferredKillEnded(localId: number): void {
+        if (this.isFigure(localId)) {
+            return;
+        }
+        this.deferredKill.set(localId, "ended");
     }
 
     // ADR-067 decision 6 (the exclusive container hold; docs/private/
@@ -1090,7 +1126,7 @@ export class PuppetService extends ClientListener {
         this.puppets.delete(localId);
         this.effectLooks.delete(localId);
         this.attached.delete(localId);
-        this.deferredArmed.delete(localId);
+        this.deferredKill.delete(localId);
         this.unloadedSince.delete(localId);
         this.scenesStopped.delete(localId);
         this.deadFlaggedSince.delete(localId);
@@ -1192,7 +1228,11 @@ export class PuppetService extends ClientListener {
     // ADR-073 decision 7: recorded effects that are no MGEF here, counted
     private unresolvedEffects = 0;
     private readonly attached = new Set<number>();
-    private readonly deferredArmed = new Set<number>();
+    // the deferred kill's state per NPC, by local id, one record agreeing
+    // with the engine's: "armed" by reconcile, "ended" by the server's kill
+    // (deferredKillEnded), absent never armed, stood up by the word, or
+    // simulated here since (tracker #128)
+    private readonly deferredKill = new Map<number, "armed" | "ended">();
     // the moment a dead puppet was first seen dead here (the flag's settle)
     private readonly deadFlaggedSince = new Map<number, number>();
     private static readonly ragdollSettleMs = 4_000;

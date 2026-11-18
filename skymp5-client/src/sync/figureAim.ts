@@ -54,9 +54,10 @@ export const figureAimOffset = (figure: number): number | undefined => {
   if (!hands) {
     return undefined;
   }
+  // a Map's own order (the client builds for es5, no iterators)
   let newest: number | undefined = undefined;
-  for (const offset of hands.values()) {
+  hands.forEach((offset) => {
     newest = offset;
-  }
+  });
   return newest;
 };

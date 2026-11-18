@@ -3393,8 +3393,8 @@ TEST_CASE("A resident frozen in an unhosted interior walks through the street "
     p.Tick();
     size_t n = 0;
     for (auto& m : p.Messages()) {
-      if (m.userId != user || !m.j.is_object() ||
-          m.j.value("t", 0) != static_cast<int>(MsgType::SpSnippet) ||
+      if (m.userId != user || !m.j.is_object() || !m.j.contains("t") ||
+          m.j["t"] != static_cast<int>(MsgType::SpSnippet) ||
           m.j.value("class", std::string()) != "ObjectReference" ||
           m.j.value("function", std::string()) != "Activate") {
         continue;

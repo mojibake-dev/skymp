@@ -2163,10 +2163,15 @@ std::string DescribeTopicHere(const RE::TESTopic* topic)
 // one said as an error.
 //
 // While an ask is on the main thread, every ask that names a topic follows
-// it there, in the order asked (an ask waits while an earlier one waits),
-// and the count drops on gameThrQ as each say runs, so a later line never
-// plays before an earlier one and no topic's array is read on that thread
-// under a load.
+// it there, in the order asked, and the count drops on gameThrQ as each say
+// runs, so a later line never plays before an earlier one and no topic's
+// array is read on that thread under a load. An ask keeps its place in line
+// until its say has run on gameThrQ, and a later ask waits on the main
+// thread while an earlier one holds its place, so no load runs there beside
+// an earlier line's say (thuum tracker #123, the docs review of e7e9da677:
+// the place was given up when the say was posted, before it ran). A say
+// with no actor or no process here, which runs at once on gameThrQ whatever
+// is in line (QueueDialogueLoad), reads no topic (SayTopicInfo's speak).
 //
 // No info fragment runs on the guest: a puppet's line raises no
 // TESTopicInfoEvent while it is not talking to this player, whatever its
@@ -2188,9 +2193,11 @@ std::unordered_set<uint32_t> g_dialogueLoadTopics;
 // the asks gone to the main thread whose say has not run yet (dropped on
 // gameThrQ just before each say)
 std::atomic<int> g_dialogueLoadsQueued{ 0 };
-// each ask's place in line, and the places of the asks waiting now
+// each ask's place in line, and the places of the asks gone to the main
+// thread whose say has not run yet (taken on gameThrQ with the place, given
+// up there once the say has run, SayInLine)
 uint64_t g_dialogueAskSeq = 0;
-std::set<uint64_t> g_dialogueAsksWaiting;
+std::set<uint64_t> g_dialogueAsksInLine;
 
 // the ticks an ask waits on the main thread, each one gameThrQ drain and
 // then the main thread's UI drain, before its line is said with no load
@@ -2383,22 +2390,34 @@ struct DialogueAsk
   uint64_t seq = 0;
 };
 
-// the say posted back to gameThrQ, the ask's count dropped there just before
-// it, so an ask that thread takes after it sees it gone and one before it
-// follows it through the main thread
-void PostSay(const std::function<void()>& speak)
+// an ask's say on gameThrQ: the ask's count dropped just before it, so an
+// ask that thread takes after it sees it gone and one before it follows it
+// through the main thread; its place in line given up once the say has run,
+// a throw included, so no later ask's load runs on the main thread beside
+// it (thuum tracker #123; CommonLibSSE-NG SKSE/Impl/PCH.h:156 scope_exit)
+void SayInLine(uint64_t seq, const std::function<void()>& speak)
 {
-  g_nativeCallRequirements.gameThrQ->AddTask([speak](Viet::Void) {
-    g_dialogueLoadsQueued.fetch_sub(1);
-    speak();
-  });
+  g_dialogueLoadsQueued.fetch_sub(1);
+  const stl::scope_exit leave{ [seq]() noexcept {
+    std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+    g_dialogueAsksInLine.erase(seq);
+  } };
+  speak();
+}
+
+// the say posted back to gameThrQ
+void PostSay(uint64_t seq, const std::function<void()>& speak)
+{
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [seq, speak](Viet::Void) { SayInLine(seq, speak); });
 }
 
 // the main thread's task: the load when the line needs one, then the say
 // posted back to gameThrQ with no second wait (the ask's answer, still -1,
 // written there). The ask waits instead, asked again next tick, while a
 // quest's promote task is in flight and its line needs a load, or while an
-// ask before it waits; past kDialogueLoadMaxTicks it runs, with no load
+// earlier ask's say has not run; past kDialogueLoadMaxTicks it runs, with no
+// load while either holds
 void RunDialogueAsk(const DialogueAsk& ask, uint32_t tick,
                     const std::function<void()>& speak)
 {
@@ -2410,8 +2429,8 @@ void RunDialogueAsk(const DialogueAsk& ask, uint32_t tick,
     bool earlier = false;
     {
       std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
-      earlier = !g_dialogueAsksWaiting.empty() &&
-        *g_dialogueAsksWaiting.begin() < ask.seq;
+      earlier = !g_dialogueAsksInLine.empty() &&
+        *g_dialogueAsksInLine.begin() < ask.seq;
     }
     if ((promoting || earlier) && tick < kDialogueLoadMaxTicks) {
       if (tick == 0 && promoting) {
@@ -2426,23 +2445,15 @@ void RunDialogueAsk(const DialogueAsk& ask, uint32_t tick,
                      "tick up to {} (tracker #123)",
                      ask.actorFormId, ask.topicFormId, kDialogueLoadMaxTicks);
       }
-      {
-        std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
-        g_dialogueAsksWaiting.insert(ask.seq);
-      }
       // Viet::TaskQueue::Update moves its tasks out before it runs them
       // (viet/include/TaskQueue.h), so this runs on gameThrQ's next drain
-      // (WeaponAnimGuard.cpp's route), and from there the main thread's
+      // (WeaponAnimGuard.cpp's route), and from there the main thread's;
+      // an earlier ask's say, posted before this, runs on that drain first
       g_nativeCallRequirements.gameThrQ->AddTask(
         [ask, tick, speak](Viet::Void) {
           const auto* tasks = SKSE::GetTaskInterface();
           if (!tasks) {
-            {
-              std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
-              g_dialogueAsksWaiting.erase(ask.seq);
-            }
-            g_dialogueLoadsQueued.fetch_sub(1);
-            speak();
+            SayInLine(ask.seq, speak);
             return;
           }
           tasks->AddUITask(
@@ -2450,16 +2461,17 @@ void RunDialogueAsk(const DialogueAsk& ask, uint32_t tick,
         });
       return;
     }
-    {
-      std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
-      g_dialogueAsksWaiting.erase(ask.seq);
-    }
-    if (topic && promoting) {
+    if (topic && (promoting || earlier)) {
+      // past the bound: no load beside the engine's own or an earlier
+      // line's say (thuum tracker #123)
+      const std::string why = promoting
+        ? fmt::format("quest {:x}'s promote task still in flight",
+                      promoting->formID)
+        : std::string("an earlier line's say has not run");
       logger::warn("[verb:npc-stream] say {:x}: topic {:x}'s dialogue left "
-                   "unloaded: quest {:x}'s promote task still in flight "
-                   "after {} tick(s); the line is said without it (tracker "
-                   "#123)",
-                   ask.actorFormId, ask.topicFormId, promoting->formID, tick);
+                   "unloaded: {} after {} tick(s); the line is said without "
+                   "it (tracker #123)",
+                   ask.actorFormId, ask.topicFormId, why, tick);
     } else {
       if (tick > 0) {
         logger::info("[verb:npc-stream] say {:x}: topic {:x} ran on the "
@@ -2486,13 +2498,9 @@ void RunDialogueAsk(const DialogueAsk& ask, uint32_t tick,
                   "(tracker #123)",
                   ask.actorFormId, ask.topicFormId);
   }
-  // here on a run and on a throw, before or after the wait's queue: the ask
-  // leaves the line and its say goes back
-  {
-    std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
-    g_dialogueAsksWaiting.erase(ask.seq);
-  }
-  PostSay(speak);
+  // here on a run and on a throw, before or after the wait's queue: the say
+  // goes back, the ask holding its place in line until it has run there
+  PostSay(ask.seq, speak);
 }
 
 // gameThrQ's half: true when the say goes to the main thread first (an
@@ -2512,7 +2520,7 @@ bool QueueDialogueLoad(uint32_t actorFormId, uint32_t infoFormId,
     return false;
   }
   // an ask already on the main thread: this one follows it, whatever its
-  // line (the count drops on this thread, PostSay)
+  // line (the count drops on this thread, SayInLine)
   const bool behind = g_dialogueLoadsQueued.load() != 0;
   if (!behind) {
     const char* refusal = nullptr;
@@ -2539,6 +2547,7 @@ bool QueueDialogueLoad(uint32_t actorFormId, uint32_t infoFormId,
   {
     std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
     ask.seq = ++g_dialogueAskSeq;
+    g_dialogueAsksInLine.insert(ask.seq);
   }
   g_dialogueLoadsQueued.fetch_add(1);
   tasks->AddUITask([ask, speak]() { RunDialogueAsk(ask, 0, speak); });
@@ -2571,13 +2580,18 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
   const auto speak = [actorFormId, infoFormId, topicFormId]() {
     int result = 0;
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
-    // #123: the line through the form map, else the relayed topic (an info
-    // found in its array, or none: the engine's pick below)
-    const SayLine line = ResolveSayLine(infoFormId, topicFormId);
-    auto* topicInfo = line.info;
-    auto* topic = line.topic;
     auto* processHere =
       actor ? actor->GetActorRuntimeData().currentProcess : nullptr;
+    // #123: the line through the form map, else the relayed topic (an info
+    // found in its array, or none: the engine's pick below). With no actor
+    // or no process here nothing is said (the answer 0) and no topic is
+    // read: such a say runs at once on gameThrQ even while an ask's load
+    // grows a topic's array on the main thread (QueueDialogueLoad; thuum
+    // tracker #123, the docs review of e7e9da677)
+    const SayLine line =
+      processHere ? ResolveSayLine(infoFormId, topicFormId) : SayLine{};
+    auto* topicInfo = line.info;
+    auto* topic = line.topic;
     if (actor && processHere && !topic) {
       // no topic for the line here: the lab's read names what resolved
       // (#123)

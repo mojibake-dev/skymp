@@ -315,34 +315,74 @@ export class HostService extends ClientListener {
     }
 
     hostsPosition(world: number, x: number, y: number): boolean {
+        return this.squareAmong(this.hosted.keys(), world, x, y, false);
+    }
+
+    // Whether the grid square of (x, y) in the worldspace is one of the
+    // cells' squares (the platform's cellGridOf); a cell whose square is not
+    // read yet is asked for once and counts as `unread` says until it
+    // answers, and so does every cell without the platform's two natives
+    private squareAmong(cells: Iterable<number>, world: number, x: number, y: number, unread: boolean): boolean {
         if (typeof this.sp.cellGridOf !== "function" || typeof this.sp.pollCellGrids !== "function") {
-            return false;
+            return unread;
         }
         const gx = Math.floor(x / 4096);
         const gy = Math.floor(y / 4096);
-        const unread: number[] = [];
-        let hosts = false;
-        this.hosted.forEach((_epoch, cell) => {
+        const asks: number[] = [];
+        let found = false;
+        let unknown = false;
+        for (const cell of Array.from(cells)) {
             const grid = this.sp.cellGridOf(cell);
             if (grid === null) {
-                if (!this.gridAsked.has(cell)) {
+                unknown = true;
+                if (!this.gridAsked.has(cell) && asks.length < HostService.gridAsksMax) {
                     this.gridAsked.add(cell);
-                    unread.push(cell);
+                    asks.push(cell);
                 }
-                return;
+                continue;
             }
             if (grid.world === world && grid.x === gx && grid.y === gy) {
-                hosts = true;
+                found = true;
             }
-        });
-        if (unread.length > 0) {
-            this.sp.pollCellGrids(unread);
         }
-        return hosts;
+        if (asks.length > 0) {
+            this.sp.pollCellGrids(asks);
+        }
+        return found || (unknown && unread);
     }
 
-    // the hosted cells whose grid square was asked for (hostsPosition)
+    // the cells whose grid square was asked for (squareAmong: the hosted
+    // set's for hostsPosition, the loaded set's for watchesRef)
     private gridAsked = new Set<number>();
+    // pollCellGrids' ids per call, at most (its typing's 256)
+    private static readonly gridAsksMax = 256;
+
+    // thuum tracker #121, crossing (iii) (ActivationService.crossUnwatched):
+    // whether this game watches the cell a reference stands in, so a walker
+    // crossing there is seen here. True when it hosts that cell (hostsRef)
+    // or has it attached, read as the release rule reads it (cellAttachedFor:
+    // the player's own interior, another interior's Cell.isAttached, an
+    // exterior reference while the player stands in an interior or another
+    // worldspace in no attached cell). In the player's own worldspace an
+    // exterior reference is found by its grid square among the loaded set's,
+    // the cells this engine reports attached (a persistent reference's parent
+    // is the worldspace's persistent cell, so the square is read as hostsRef
+    // reads it); a loaded cell whose square is not read yet counts as
+    // watched until it answers. Where nothing can say, true: the block holds
+    watchesRef(ref: ObjectReference): boolean {
+        if (this.hostsRef(ref)) {
+            return true;
+        }
+        const attached = this.cellAttachedFor(ref);
+        if (attached !== undefined) {
+            return attached;
+        }
+        const world = ref.getWorldSpace();
+        if (!world || this.playerPlace() === null) {
+            return true;
+        }
+        return this.squareAmong(this.loaded, world.getFormID(), ref.getPositionX(), ref.getPositionY(), true);
+    }
 
     // thuum tracker #121 (ADR-051 decision 1: an actor whose cell is not
     // attached is simulated by nobody here and released to its schedule):

@@ -1,4 +1,4 @@
-import { ActivateEvent, Actor, TriggerEntryEvent } from "skyrimPlatform";
+import { ActivateEvent, Actor, ObjectReference, TriggerEntryEvent } from "skyrimPlatform";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
@@ -92,7 +92,9 @@ export class ActivationService extends ClientListener {
         // thuum tracker #121 (design B, the destination's host takes the
         // arrival): an NPC this engine walked to a load door whose far side
         // is a cell this game hosts, with no game's word holding it here
-        // (reportArrival); a hosted walker keeps D6's report below
+        // (reportArrival), or one whose two sides this game neither hosts
+        // nor has attached (crossUnwatched, ADR-051 decision 1's dark
+        // schedule); a hosted walker keeps D6's report below
         if (caster !== PLAYER_ID && this.reportArrival(e, caster, target)) {
           return;
         }
@@ -276,10 +278,11 @@ export class ActivationService extends ClientListener {
   // door per window (ARRIVAL_FIRST_MS, doubled after a report that brought no
   // snippet, up to ARRIVAL_MAX_MS); an event inside the window is taken and
   // dropped, so the branches below never report the same door for him. A
-  // door whose far side this game does not host goes to those branches as
-  // before: crossing a walker there unreported is cut for playtest 55 (the
-  // critic's finding 5). True when this branch took the event; an activate
-  // event's context, so the game reads are legal here
+  // door whose far side this game does not host is crossed here unreported
+  // when neither of its sides is watched here (crossUnwatched, crossing
+  // (iii)), and goes to those branches as before otherwise. True when this
+  // branch took the event; an activate event's context, so the game reads
+  // are legal here
   private reportArrival(e: ActivateEvent, caster: number, target: number): boolean {
     if (caster > LAST_GAME_FILE_ID || target > LAST_GAME_FILE_ID || typeof this.sp.linkedDoorOf !== "function") {
       return false;
@@ -309,8 +312,11 @@ export class ActivationService extends ClientListener {
       return false;
     }
     const far = this.sp.ObjectReference.from(this.sp.Game.getFormEx(pair));
-    if (!far || !host.hostsRef(far)) {
+    if (!far) {
       return false;
+    }
+    if (!host.hostsRef(far)) {
+      return this.crossUnwatched(e, caster, target, far, host);
     }
     const now = Date.now();
     const key = `${caster}:${target}`;
@@ -338,6 +344,67 @@ export class ActivationService extends ClientListener {
     });
     const cell = ObjectReferenceEx.getWorldOrCell(far);
     logLab("verb:npc-handoff", `door ${idOf(target)}: ${idOf(caster)} walks into ${cell.toString(16)}, which this game hosts; its arrival reported (tracker #121)`);
+    return true;
+  }
+
+  // thuum tracker #121, crossing (iii) (ADR-051 decision 1: an actor no game
+  // simulates walks his schedule in each engine's dark, and nothing of it is
+  // reported; here that schedule reaches its doors). Run 20261118-040503 (the
+  // stage of x-gorm-inn-v6-swap): c1, the inn's host, had bound the hall's
+  // own door 0x173c6 while inside, the block outlived the leave, and the
+  // door's far side is the street, which nobody hosts, so reportArrival's
+  // report never ran and Gorm stood in the hall. The walker has passed
+  // reportArrival's admission (from the game files, alive, no game's word
+  // here, this game's or another's, no puppet, a blocked Door with its link
+  // read) and the far side is no cell this game hosts. When this game watches
+  // neither side (HostService.watchesRef: hosts it, or has its cell attached
+  // as the release rule reads it, a persistent exterior door by its grid
+  // square), nobody here sees the crossing and our block refusing it is our
+  // accident, so the engine's own transit runs here: the door's Activate
+  // with the walker and default processing only (Papyrus's BlockActivation
+  // idiom, https://ck.uesp.net/wiki/Activate_-_ObjectReference; D6's reply,
+  // run on this seat). A side this game watches keeps the block, and the
+  // branches below run as before.
+  //
+  // One crossing per walker and door per ARRIVAL_FIRST_MS, in the arrival's
+  // map, marked before the call. The call is the platform's own direct call
+  // (SkyrimPlatform.cpp's worker under PlatformCall::Scope), so the ADR-062
+  // census counts it as "(platform)" (ScriptNatives::CountPlatformCall) and
+  // never raises it as a script's consequence, as for D6's snippet call;
+  // slice 1b leaves ObjectReference.Activate census-only (docs/NATIVES.md),
+  // and the seam's step for the platform's own comes before any verdict. The
+  // snippet's own Activate never comes here as a second crossing: a hosted
+  // walker (D6) and one another game holds (isOthersLocal) are refused at
+  // the admission, and an arrival's snippet runs at a far side this game
+  // hosts, reportArrival's window. HYPOTHESIS (the static read of
+  // ActivateRef 19796, lab/frida/lever-furn-trace.js and book-take.js):
+  // default processing only skips the TESActivateEvent, so this call raises
+  // no event here at all; if it does, the window drops it. HYPOTHESIS, as
+  // for the arrival: the call crosses a walker no seat runs at high process.
+  // True when this branch took the event, false for the branches below;
+  // the activate event is the platform's update task, so the call is legal
+  // here and never inside the engine's own ActivateRef
+  private crossUnwatched(e: ActivateEvent, caster: number, target: number, far: ObjectReference, host: HostService): boolean {
+    if (host.watchesRef(e.target) || host.watchesRef(far)) {
+      return false;
+    }
+    const now = Date.now();
+    const key = `${caster}:${target}`;
+    const last = this.arrivals.get(key);
+    if (last !== undefined && now - last.sentAt < ARRIVAL_FIRST_MS) {
+      return true;
+    }
+    if (this.arrivals.size >= ARRIVALS_MAX && !this.arrivals.has(key)) {
+      this.arrivals.clear();
+    }
+    // answered: no snippet is awaited for a crossing, so a later arrival
+    // report of this walker and door starts at the first window
+    this.arrivals.set(key, { sentAt: now, waitMs: ARRIVAL_FIRST_MS, answered: true });
+    const crossed = e.target.activate(e.caster, true);
+    logLab("verb:npc-handoff", `door ${idOf(target)}: ${idOf(caster)}'s schedule crosses here unreported (ADR-051 decision 1, tracker #121)`);
+    if (!crossed) {
+      logLab("verb:npc-handoff", `door ${idOf(target)}: its Activate for ${idOf(caster)} returned false (tracker #121)`);
+    }
     return true;
   }
 

@@ -63,7 +63,9 @@ import { logLab, logTrace } from "../../logging";
 // same poll's game-thread read (the platform's pollHostedGaze, read back by
 // hostedEffects) names the running effects whose look it keeps: active,
 // neither inactive (conditions false) nor dispelled, a hit shader or a hit
-// effect art, a constant effect or FX Persist (PuppetApi.cpp ReadEffectLooks).
+// effect art, a constant effect or FX Persist (PuppetApi.cpp ReadEffectLooks),
+// less the effects whose only look flashes: neither FX Persist nor a hit
+// effect art, as a disease's hit shader (readEffects, tracker #164).
 // The set rides the state as `effects` on the first report with the read and
 // whenever it changes (that report goes reliable), and is absent otherwise;
 // the server records it (R2) and relays it, and each watching seat plays the
@@ -366,6 +368,31 @@ export class HostedStateService extends ClientListener {
                 this.fellThrough("runtime", `${id.toString(16)} on ${remoteId.toString(16)} is a runtime form, which no other seat can resolve`);
                 continue;
             }
+            // thuum tracker #164 (playtest 55, Eli: "rotfern has a lingering
+            // particle effect on ariadnes screen from catching brain rot"): the
+            // platform's reader counts every constant effect with a look as a
+            // look that stays (PuppetApi.cpp ReadEffectLooks), but a hit
+            // shader stays only on an effect flagged FX Persist. A disease is
+            // a constant effect that runs until it is cured: Brain Rot's
+            // TrapDisDamageMagicka 0x10a251 has the HealFXS hit shader 0x12fd9,
+            // no hit effect art and FX Persist clear (lab/esm.py, 2026-11-18),
+            // so its once-only flash was sent as a look for as long as she
+            // carried it, and every watcher drew it with no end. An effect
+            // with neither FX Persist nor a hit effect art (a constant
+            // effect's hit art stays, AbFXAtronachFlame's case) is a flash,
+            // never sent. HYPOTHESIS until an engine read of the shaders on a
+            // reference: the host's engine plays such a shader once and lets
+            // it fade (the Creation Kit's reading of FX Persist; it rests on
+            // Eli's look). HYPOTHESIS: SKSE's IsEffectFlagSet tests the
+            // record's DATA flags word (its implementation is unread)
+            const mgef = this.sp.MagicEffect.from(this.sp.Game.getFormEx(id));
+            if (mgef && !mgef.isEffectFlagSet(HostedStateService.fxPersist) && !mgef.getHitEffectArt()) {
+                if (!this.flashSaid.has(id)) {
+                    this.flashSaid.add(id);
+                    logLab("verb:npc-puppet", `effects: ${id.toString(16)} on ${remoteId.toString(16)} has a look that only flashes (no FX Persist, no hit effect art), which no watcher keeps (falls through, said once per effect; tracker #164)`);
+                }
+                continue;
+            }
             ids.push(id);
         }
         ids.sort((a, b) => a - b);
@@ -459,6 +486,13 @@ export class HostedStateService extends ClientListener {
     private lastOwnEffects: number[] | undefined = undefined;
     private effectsReaderSaid = false;
     private readonly fallThrough = new Map<string, number>();
+    // the effects already said to only flash (#164), each said once
+    private readonly flashSaid = new Set<number>();
+    // MagicEffect.IsEffectFlagSet's FX Persist value: SKSE's MagicEffect.psc
+    // (lab/.cache/skse-1.6.1170/Data/Scripts/Source/MagicEffect.psc:19,
+    // "FXPersist 0x00001000"), the record's kFXPersist (CommonLibSSE-NG
+    // include/RE/E/EffectSetting.h:57, 1 << 12)
+    private static readonly fxPersist = 0x00001000;
     // the wire's bound (wire-schema cap::MAGIC_EFFECTS)
     private static readonly maxEffects = 32;
     // the engine's isDead at the last poll, per hosted actor (finding 54)

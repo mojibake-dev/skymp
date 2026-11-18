@@ -353,12 +353,15 @@ public:
   std::function<uint32_t(const MpActor& body, BodyWord word,
                          uint32_t simulator, uint64_t nowMs)>
     bodyWord;
-  // thuum docs/verbs/npc-handoff.md D6, the door: whether a hosted NPC may
-  // cross a teleport door into `destWorldOrCell` at `destPos` (PartOne's
-  // follow verdict for its simulator), installed by PartOne; none installed,
-  // every crossing is allowed
-  std::function<bool(MpActor& actor, uint32_t destWorldOrCell,
-                     const NiPoint3& destPos)>
+  // thuum docs/verbs/npc-handoff.md D6, the door, and tracker #121's
+  // arrival: whether `sender`'s game may walk a game-file NPC through a
+  // teleport door into `destWorldOrCell` at `destPos` (PartOne's move
+  // verdict for that sender: D6 asks it for the NPC's simulator, the
+  // arrival for a game that does not simulate the NPC;
+  // MpObjectReference::WalkThroughDoor), installed by PartOne; none
+  // installed, a simulator's crossing is allowed
+  std::function<bool(const MpActor& sender, MpActor& actor,
+                     uint32_t destWorldOrCell, const NiPoint3& destPos)>
     npcDoorVerdict;
   // thuum #48 leg D (ADR-060): a player's load door, once the player's
   // record moved: the thralls it commands go through with it

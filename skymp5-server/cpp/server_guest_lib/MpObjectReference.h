@@ -141,6 +141,39 @@ public:
                         bool defaultProcessingOnly = false,
                         bool isSecondActivation = false,
                         bool reportedByHost = false);
+  // A load door's far side as the game files place it (its XTEL): the
+  // destination door's cell or worldspace and the landing, its rotation in
+  // degrees. None for a reference whose base is no DOOR or that has no
+  // teleport; a teleport naming no destination door record throws, as the
+  // door's activation always did
+  struct DoorDestination
+  {
+    uint32_t worldOrCell = 0;
+    NiPoint3 pos;
+    NiPoint3 rot;
+  };
+  std::optional<DoorDestination> TeleportDestination() const;
+  // thuum docs/verbs/npc-handoff.md D6 and tracker #121: a game-file NPC's
+  // crossing of this load door, reported by `sender`'s game, is that game's
+  // engine's own transit (an SpSnippet of ObjectReference.Activate with
+  // default processing), never the server's teleport, judged first by the
+  // move verdict for `sender` (WorldState::npcDoorVerdict). Two reporters
+  // reach it: the walker's simulator (D6, from ProcessActivateNormal), and a
+  // game that does not simulate it (the arrival, from
+  // ActionListener::OnActivate), which the verdict admits only while no game
+  // simulates the walker and the far side is the sender's own cell. An
+  // arrival's refusal is a line once a minute per walker and door; its
+  // acceptance swings the door and is noted on the walker
+  // (MpActor::NoteDoorArrival), so the same game's second arrival is
+  // refused until the sighting moves the record, or for kDoorArrivalHoldMs.
+  // Returns false, doing nothing, when this is no load door.
+  bool WalkThroughDoor(MpActor& walker, MpActor* sender);
+  // how long an accepted arrival holds off that game's next one while the
+  // record stands where it stood: five of the roster's 2 s ticks
+  // (HostService.sightingsMs) for the sighting to move it; past it, a
+  // crossing its engine never made may be asked again. UNMEASURED
+  // placeholder
+  static constexpr uint64_t kDoorArrivalHoldMs = 10'000;
   // A FURN the engine lets the player sleep in (thuum docs/verbs/sleep.md)
   bool IsSleepFurniture() const;
   virtual void Disable();

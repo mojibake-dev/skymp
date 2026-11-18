@@ -37,6 +37,7 @@
 #include <map>
 #include <numeric>
 #include <optional>
+#include <unordered_map>
 
 #include "LockPromptMessage.h"
 #include "OpenContainerMessage.h"
@@ -2529,7 +2530,6 @@ void MpObjectReference::ProcessActivateNormal(
 
   auto worldState = GetParent();
   auto& loader = GetParent()->GetEspm();
-  auto& compressedFieldsCache = GetParent()->GetEspmCache();
 
   auto base = loader.GetBrowser().LookupById(GetBaseId());
   if (!base.rec || !GetBaseId()) {
@@ -2687,31 +2687,11 @@ void MpObjectReference::ProcessActivateNormal(
       Delete();
     }
   } else if (t == espm::DOOR::kType) {
-    auto lookupRes = loader.GetBrowser().LookupById(GetFormId());
-    auto refrRecord = espm::Convert<espm::REFR>(lookupRes.rec);
-    auto teleport = refrRecord->GetData(compressedFieldsCache).teleport;
-    if (teleport) {
+    if (const auto destination = TeleportDestination()) {
       if (!IsOpen()) {
         SetOpen(true);
         RequestReloot();
       }
-
-      auto destinationId = lookupRes.ToGlobalId(teleport->destinationDoor);
-      auto destination = loader.GetBrowser().LookupById(destinationId);
-      auto destinationRecord = espm::Convert<espm::REFR>(destination.rec);
-      if (!destinationRecord) {
-        throw std::runtime_error(
-          "No destination found for this teleport door");
-      }
-
-      auto teleportWorldOrCell = destination.ToGlobalId(
-        GetWorldOrCell(loader.GetBrowser(), destinationRecord));
-
-      static const auto kPi = std::acos(-1.f);
-      const auto& pos = teleport->pos;
-      const float rot[] = { teleport->rotRadians[0] / kPi * 180,
-                            teleport->rotRadians[1] / kPi * 180,
-                            teleport->rotRadians[2] / kPi * 180 };
 
       // a game-file actor a host reported for (never a runtime actor, a
       // script's activation or a player's: those keep the transit below;
@@ -2722,56 +2702,18 @@ void MpObjectReference::ProcessActivateNormal(
         ? actorActivator
         : nullptr;
       if (npcActivator) {
-        // thuum docs/verbs/npc-handoff.md D6, the door (x-handoff-door v3,
-        // 2026-10-23): a hosted NPC's door is its host engine's to walk
-        // through. The client blocks every door's activation and reports
-        // it, so without this reply the engine stood at the door while
-        // the record was teleported indoors by the branch below, the record
-        // left the host's grid, both seats demoted the actor, the roster
-        // brought the record back out and the loop ran every 4 s. Now the
-        // server judges the crossing (the move verdict: a cell nobody
-        // hosts is a follow; another live host's cell a pass since Eli's
-        // call of 2026-10-28, playtest 37, "let embry cross and hand him to
-        // the inn's host": the record moves with the host's report and the
-        // word flips to the destination's host, npc-handoff D9; a stranger's
-        // actor is refused; any actor's door since memo D54 B of the same
-        // day, a non-persistent resident's into her own house too) and asks
-        // the host's game to perform the activation for the actor
-        // (ObjectReference.Activate with default processing, the engine's
-        // own door transit); the record follows the host's next report
-        // through MayMoveActor. The door still swings for everyone.
-        const NiPoint3 destPos{ pos[0], pos[1], pos[2] };
-        const bool allowed = !worldState->npcDoorVerdict ||
-          worldState->npcDoorVerdict(*npcActivator, teleportWorldOrCell,
-                                     destPos);
-        MpActor* host = worldState->HostOf(*npcActivator);
-        if (allowed && host && host->IsCreatedAsPlayer()) {
-          SpSnippetObjectArgument walker;
-          walker.formId = npcActivator->GetFormId();
-          walker.type = "ObjectReference";
-          const std::vector<std::optional<
-            std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-            args{ walker, true };
-          SpSnippet("ObjectReference", "Activate", args, GetFormId())
-            .Execute(host, SpSnippetMode::kNoReturnResult);
-          spdlog::info("MpObjectReference::ProcessActivateNormal - "
-                       "npc-handoff: door {:x}: {:x}'s host {:x} walks it "
-                       "through to {:x}; the record follows its report",
-                       GetFormId(), npcActivator->GetFormId(),
-                       host->GetFormId(), teleportWorldOrCell);
-        } else {
-          spdlog::info("MpObjectReference::ProcessActivateNormal - "
-                       "npc-handoff: door {:x}: {:x} may not cross into {:x} "
-                       "({}); the actor stays",
-                       GetFormId(), npcActivator->GetFormId(),
-                       teleportWorldOrCell,
-                       allowed ? "no host to walk it" : "refused");
-        }
+        // thuum docs/verbs/npc-handoff.md D6, the door: its simulator's
+        // report, so its host's engine walks it through (WalkThroughDoor,
+        // the one door walk; the arrival of tracker #121 shares it)
+        WalkThroughDoor(*npcActivator, worldState->HostOf(*npcActivator));
       } else {
+        const uint32_t teleportWorldOrCell = destination->worldOrCell;
+        const NiPoint3& pos = destination->pos;
+        const NiPoint3& rot = destination->rot;
         TeleportMessage msg;
         msg.idx = activationSource.GetIdx();
-        std::copy(std::begin(pos), std::end(pos), msg.pos.begin());
-        std::copy(std::begin(rot), std::end(rot), msg.rot.begin());
+        msg.pos = { pos.x, pos.y, pos.z };
+        msg.rot = { rot.x, rot.y, rot.z };
         msg.worldOrCell = teleportWorldOrCell;
 
         if (actorActivator) {
@@ -2785,8 +2727,8 @@ void MpObjectReference::ProcessActivateNormal(
 
         activationSource.SetCellOrWorldObsolete(
           FormDesc::FromFormId(teleportWorldOrCell, worldState->espmFiles));
-        activationSource.SetPos({ pos[0], pos[1], pos[2] });
-        activationSource.SetAngle({ rot[0], rot[1], rot[2] });
+        activationSource.SetPos(pos);
+        activationSource.SetAngle(rot);
 
         // thuum #48 leg D (ADR-060): a player's door is this teleport, never
         // its engine's own door transit, which keeps a commanded actor with
@@ -2794,10 +2736,9 @@ void MpObjectReference::ProcessActivateNormal(
         // thralls through with it (PartOne::TakeThrallsThroughDoor)
         if (actorActivator && actorActivator->IsCreatedAsPlayer() &&
             worldState->commanderDoor) {
-          worldState->commanderDoor(
-            *actorActivator, GetFormId(), fromWorldOrCell, fromPos,
-            teleportWorldOrCell, NiPoint3{ pos[0], pos[1], pos[2] },
-            NiPoint3{ rot[0], rot[1], rot[2] });
+          worldState->commanderDoor(*actorActivator, GetFormId(),
+                                    fromWorldOrCell, fromPos,
+                                    teleportWorldOrCell, pos, rot);
         }
       }
 
@@ -2889,6 +2830,200 @@ void MpObjectReference::ProcessActivateNormal(
       this->occupant->AddEventSink(this->occupantDisableSink);
     }
   }
+}
+
+std::optional<MpObjectReference::DoorDestination>
+MpObjectReference::TeleportDestination() const
+{
+  auto worldState = GetParent();
+  if (!worldState || !worldState->HasEspm() || !GetBaseId()) {
+    return std::nullopt;
+  }
+  auto& loader = worldState->GetEspm();
+  auto& compressedFieldsCache = worldState->GetEspmCache();
+  const auto base = loader.GetBrowser().LookupById(GetBaseId());
+  if (!base.rec || base.rec->GetType() != espm::DOOR::kType) {
+    return std::nullopt;
+  }
+  auto lookupRes = loader.GetBrowser().LookupById(GetFormId());
+  auto refrRecord = espm::Convert<espm::REFR>(lookupRes.rec);
+  if (!refrRecord) {
+    return std::nullopt;
+  }
+  auto teleport = refrRecord->GetData(compressedFieldsCache).teleport;
+  if (!teleport) {
+    return std::nullopt;
+  }
+
+  auto destinationId = lookupRes.ToGlobalId(teleport->destinationDoor);
+  auto destination = loader.GetBrowser().LookupById(destinationId);
+  auto destinationRecord = espm::Convert<espm::REFR>(destination.rec);
+  if (!destinationRecord) {
+    throw std::runtime_error("No destination found for this teleport door");
+  }
+
+  static const auto kPi = std::acos(-1.f);
+  DoorDestination out;
+  out.worldOrCell = destination.ToGlobalId(
+    GetWorldOrCell(loader.GetBrowser(), destinationRecord));
+  out.pos = { teleport->pos[0], teleport->pos[1], teleport->pos[2] };
+  out.rot = { teleport->rotRadians[0] / kPi * 180,
+              teleport->rotRadians[1] / kPi * 180,
+              teleport->rotRadians[2] / kPi * 180 };
+  return out;
+}
+
+bool MpObjectReference::WalkThroughDoor(MpActor& walker, MpActor* sender)
+{
+  auto worldState = GetParent();
+  const auto destination = TeleportDestination();
+  if (!worldState || !destination) {
+    return false;
+  }
+  const uint32_t teleportWorldOrCell = destination->worldOrCell;
+  const NiPoint3& destPos = destination->pos;
+
+  // thuum docs/verbs/npc-handoff.md D6, the door (x-handoff-door v3,
+  // 2026-10-23): a hosted NPC's door is its host engine's to walk
+  // through. The client blocks every door's activation and reports
+  // it, so without this reply the engine stood at the door while
+  // the record was teleported indoors by the player's branch of
+  // ProcessActivateNormal, the record left the host's grid, both seats
+  // demoted the actor, the roster brought the record back out and the loop
+  // ran every 4 s. Now the server judges the crossing (the move verdict: a
+  // cell nobody hosts is a follow; another live host's cell a pass since
+  // Eli's call of 2026-10-28, playtest 37, "let embry cross and hand him to
+  // the inn's host": the record moves with the host's report and the
+  // word flips to the destination's host, npc-handoff D9; a stranger's
+  // actor is refused; any actor's door since memo D54 B of the same
+  // day, a non-persistent resident's into her own house too) and asks
+  // the host's game to perform the activation for the actor
+  // (ObjectReference.Activate with default processing, the engine's
+  // own door transit); the record follows the host's next report
+  // through MayMoveActor. The door still swings for everyone.
+  //
+  // thuum tracker #121 (playtest 55, Eli: "Wait for Gorm"; design B, the
+  // destination's host takes the arrival): the same walk for a walker the
+  // reporting game does not simulate. Gorm 0x1aa69's record stood frozen in
+  // Highmoon Hall 0x138cc, which nobody hosted, while c2's engine walked him
+  // in the dark to the Moorside Inn's street door 0x177af; the engine's
+  // ActivateRef 19796 (from the ActivateDoor handler 37878) returned false
+  // there on our client's kBlockActivate (tracker #121 note 3311, run
+  // 20261118-023818; HYPOTHESIS until the fixed build's trace), and no game
+  // reported him. The inn's host reports him now, and the verdict for it
+  // (cells.rs judge) accepts only while no game simulates him and the far
+  // side is its own cell; its engine walks him through, and the record
+  // follows its roster's sighting inside (PartOne's sighting rule), nothing
+  // recorded here. Anything else is a refusal line: another game's engine
+  // walks the real one, or nobody watches the far side. The door swings
+  // for an accepted arrival alone: a refused one is a copy's, which never
+  // simulates (ADR-063)
+  MpActor* simulator = worldState->HostOf(walker);
+  const bool arrival = simulator != sender;
+  const auto now = std::chrono::steady_clock::now();
+  const uint32_t recordWorldOrCell =
+    walker.GetCellOrWorld().ToFormId(worldState->espmFiles);
+
+  // an arrival's refusal, once a minute per walker and door (the map shape
+  // of PartOne's tellToMoveToRecord): a refused walker's copy waits at the
+  // door and its game reports it again
+  static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
+    arrivalRefusalsTold;
+  const auto refuseArrival = [&](const char* why) {
+    const uint64_t key =
+      (static_cast<uint64_t>(GetFormId()) << 32) | walker.GetFormId();
+    auto& last = arrivalRefusalsTold[key];
+    if (last != std::chrono::steady_clock::time_point{} &&
+        now - last < std::chrono::minutes(1)) {
+      return true;
+    }
+    last = now;
+    spdlog::info("MpObjectReference::WalkThroughDoor - npc-handoff: door "
+                 "{:x}: {:x} reports {:x}'s arrival into {:x}; refused ({}), "
+                 "its simulator {:x} (tracker #121)",
+                 GetFormId(), sender ? sender->GetFormId() : 0,
+                 walker.GetFormId(), teleportWorldOrCell, why,
+                 simulator ? simulator->GetFormId() : 0);
+    return true;
+  };
+
+  if (arrival) {
+    if (!sender) {
+      return refuseArrival("no game reports it");
+    }
+    if (walker.IsDead()) {
+      return refuseArrival("a body walks nowhere");
+    }
+    if (IsDisabled() || IsDeleted() || activationBlocked) {
+      return refuseArrival("the door takes nobody");
+    }
+    const auto asked = walker.GetDoorArrival();
+    if (asked && asked->sender == sender->GetFormId() &&
+        asked->worldOrCell == recordWorldOrCell &&
+        (asked->pos - walker.GetPos()).Length() < 1.f &&
+        now - asked->at < std::chrono::milliseconds(kDoorArrivalHoldMs)) {
+      return refuseArrival("its game was asked to walk it through already; "
+                           "the record waits for its sighting");
+    }
+  }
+
+  // the move verdict for the reporting game (PartOne's WouldMoveActor, the
+  // Rust cells judge): D6's for the simulator; for the arrival, Accept only
+  // while no game simulates the walker and the far side is the sender's own
+  // cell. None installed, a simulator's crossing is allowed as before, and an
+  // arrival, which the judge alone admits, is not
+  bool allowed = !arrival;
+  if (worldState->npcDoorVerdict) {
+    allowed = sender &&
+      worldState->npcDoorVerdict(*sender, walker, teleportWorldOrCell,
+                                 destPos);
+  }
+  if (allowed && sender && sender->IsCreatedAsPlayer()) {
+    if (arrival) {
+      if (!IsOpen()) {
+        SetOpen(true);
+        RequestReloot();
+      }
+      MpActor::DoorArrival asked;
+      asked.sender = sender->GetFormId();
+      asked.worldOrCell = recordWorldOrCell;
+      asked.pos = walker.GetPos();
+      asked.at = now;
+      walker.NoteDoorArrival(asked);
+    }
+    SpSnippetObjectArgument walkerArgument;
+    walkerArgument.formId = walker.GetFormId();
+    walkerArgument.type = "ObjectReference";
+    const std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+      args{ walkerArgument, true };
+    SpSnippet("ObjectReference", "Activate", args, GetFormId())
+      .Execute(sender, SpSnippetMode::kNoReturnResult);
+    if (arrival) {
+      spdlog::info("MpObjectReference::WalkThroughDoor - npc-handoff: door "
+                   "{:x}: {:x} walks into {:x} on {:x}'s report, no game "
+                   "simulating it, so that game walks it through (the "
+                   "arrival, tracker #121); the record stood in {:x} and "
+                   "follows its sighting",
+                   GetFormId(), walker.GetFormId(), teleportWorldOrCell,
+                   sender->GetFormId(), recordWorldOrCell);
+    } else {
+      spdlog::info("MpObjectReference::ProcessActivateNormal - "
+                   "npc-handoff: door {:x}: {:x}'s host {:x} walks it "
+                   "through to {:x}; the record follows its report",
+                   GetFormId(), walker.GetFormId(), sender->GetFormId(),
+                   teleportWorldOrCell);
+    }
+  } else if (arrival) {
+    refuseArrival(allowed ? "no game to walk it" : "the move verdict");
+  } else {
+    spdlog::info("MpObjectReference::ProcessActivateNormal - "
+                 "npc-handoff: door {:x}: {:x} may not cross into {:x} "
+                 "({}); the actor stays",
+                 GetFormId(), walker.GetFormId(), teleportWorldOrCell,
+                 allowed ? "no host to walk it" : "refused");
+  }
+  return true;
 }
 
 bool MpObjectReference::ProcessActivateSecond(

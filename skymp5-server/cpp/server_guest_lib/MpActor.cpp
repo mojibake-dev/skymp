@@ -87,6 +87,9 @@ struct MpActor::Impl
   std::chrono::steady_clock::time_point reanimateAcceptedAt{};
   uint32_t reanimateSpell = 0;
   uint32_t reanimateCaster = 0;
+  // thuum tracker #121: the last door arrival asked of a game for this
+  // actor (MpObjectReference::WalkThroughDoor)
+  std::optional<MpActor::DoorArrival> doorArrival;
   // thuum tracker #106: the death the server's ash followed (KillThrall's
   // kill) and the games it reached, each a player's form id and login
   // generation (MpActor::NoteAshOn)
@@ -3280,6 +3283,16 @@ bool MpActor::IsAshOn(const MpActor& game,
 uint32_t MpActor::ReanimateAcceptedCaster() const
 {
   return pImpl->reanimateCaster;
+}
+
+void MpActor::NoteDoorArrival(const DoorArrival& arrival)
+{
+  pImpl->doorArrival = arrival;
+}
+
+std::optional<MpActor::DoorArrival> MpActor::GetDoorArrival() const
+{
+  return pImpl->doorArrival;
 }
 
 std::optional<std::chrono::milliseconds> MpActor::ReanimateAcceptedAgo(

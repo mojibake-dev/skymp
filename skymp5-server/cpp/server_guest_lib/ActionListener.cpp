@@ -2846,6 +2846,26 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
       : nullptr;
     hosterId = host ? host->GetFormId() : 0;
     if (hosterId != ac->GetFormId()) {
+      // thuum tracker #121 (design B's door, the arrival): a game-file
+      // actor's load door reported by a game that does not simulate it. Its
+      // engine walked the actor there in the dark (an actor no game
+      // simulates, ADR-051 decision 1), and only that engine can take it
+      // through. The one door walk judges it (MpObjectReference::
+      // WalkThroughDoor, the Rust cells judge asked for this sender): the
+      // far side the sender's own cell while no game simulates the actor,
+      // the sender's engine walks it through; anything else a refusal line,
+      // never this throw, since a copy waiting at the door reports it again.
+      // Activate is skipped, its world check and the reach rule with it: the
+      // record stands frozen where the engine no longer has the actor
+      if (casterActor && !played && casterActor->GetFormId() < 0xff000000 &&
+          !msg.data.isSecondActivation) {
+        auto door = std::dynamic_pointer_cast<MpObjectReference>(
+          partOne.worldState.LookupFormById(
+            static_cast<uint32_t>(msg.data.target)));
+        if (door && door->WalkThroughDoor(*casterActor, ac)) {
+          return;
+        }
+      }
       std::stringstream ss;
       ss << std::hex << "Bad hoster is attached to caster 0x"
          << msg.data.caster << ", expected 0x" << ac->GetFormId()

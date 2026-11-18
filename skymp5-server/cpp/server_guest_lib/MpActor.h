@@ -456,6 +456,23 @@ public:
     std::chrono::steady_clock::time_point now) const;
   uint32_t ReanimateAcceptedSpell() const;
   uint32_t ReanimateAcceptedCaster() const;
+  // thuum tracker #121 (the arrival through a door,
+  // MpObjectReference::WalkThroughDoor): the game the server last asked to
+  // walk this actor through a load door while no game simulated it, where
+  // the record stood then and when. That game's second arrival of the actor
+  // is refused while the record stands there still, for at most
+  // MpObjectReference::kDoorArrivalHoldMs: its roster's sighting in the
+  // destination is what moves the record, and a late duplicate would put
+  // the walker back at the landing
+  struct DoorArrival
+  {
+    uint32_t sender = 0;
+    uint32_t worldOrCell = 0;
+    NiPoint3 pos;
+    std::chrono::steady_clock::time_point at{};
+  };
+  void NoteDoorArrival(const DoorArrival& arrival);
+  std::optional<DoorArrival> GetDoorArrival() const;
   // the host's round trip, the cast's flight on its engine and the sampler's
   // cadence, with room; a bound of the server's policy, not an engine number
   static constexpr uint64_t kReanimateWindowMs = 10'000;

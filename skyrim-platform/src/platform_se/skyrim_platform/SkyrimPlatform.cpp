@@ -596,7 +596,7 @@ void SkyrimPlatform::PushToWorkerAndWait(
   if (!t_jsThread) {
     static std::atomic<bool> said{ false };
     if (!said.load(std::memory_order_relaxed) && !said.exchange(true)) {
-      logger::warn("[hand-off] {}.{} was asked of the worker from thread {}, "
+      spdlog::warn("[hand-off] {}.{} was asked of the worker from thread {}, "
                    "not the JavaScript thread: it waits without serving the "
                    "hooks' asks (thuum tracker #129); said once",
                    fPtr ? fPtr->GetObjectTypeName().c_str() : "",

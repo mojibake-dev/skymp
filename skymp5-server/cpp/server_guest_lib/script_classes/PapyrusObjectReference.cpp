@@ -284,10 +284,22 @@ VarValue PapyrusObjectReference::RemoveItem(
     runSkympHacks = true;
   }
 
+  // thuum tracker #143 (the x-body-worn-held-v4 canon read, 20261117-224632:
+  // the console's RemoveItem took Arvel's cuirass from his record and his
+  // host's game kept wearing it): what the call took from an NPC's record
+  // is told to every game once, after the loop (MpActor::TellRemovalByServer:
+  // its fate again, and a body's inventory), a FormList's items in one word
+  std::vector<Inventory::Entry> removed;
   for (auto itemId : formIds) {
     uint32_t maxCount = selfRefr->GetInventory().GetItemCount(itemId);
     uint32_t realCount = count > maxCount ? maxCount : count;
     selfRefr->RemoveItem(itemId, realCount, refrToAdd);
+    if (realCount > 0) {
+      removed.push_back({ itemId, realCount });
+    }
+  }
+  if (MpActor* npc = selfRefr->AsActor()) {
+    npc->TellRemovalByServer(removed, "RemoveItem");
   }
 
   if (runSkympHacks) {
@@ -326,7 +338,13 @@ VarValue PapyrusObjectReference::RemoveAllItems(
     (void)abKeepOwnership;
     (void)abRemoveQuestItems;
 
+    // thuum tracker #143: what an NPC's record gave up is told to every game
+    // once (RemoveItem's rule above)
+    const Inventory removed = selfRefr->GetInventory();
     selfRefr->RemoveAllItems(targetRefr);
+    if (MpActor* npc = selfRefr->AsActor()) {
+      npc->TellRemovalByServer(removed.entries, "RemoveAllItems");
+    }
   }
   return VarValue::None();
 }

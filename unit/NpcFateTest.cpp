@@ -18,6 +18,7 @@
 #include "libespm/MGEF.h"
 #include "libespm/NPC_.h"
 #include "libespm/SPEL.h"
+#include "script_classes/PapyrusObjectReference.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
@@ -1373,9 +1374,11 @@ TEST_CASE("A hosted actor's worn set loses what its host took off and "
   {
     kHost = 0xff000d70,
     // Skyrim.esm: ArmorHideBoots, ArmorHideHelmet (BOD2 0x80 and 0x1002,
-    // lab/esm.py id on sky-srv, 2026-11-14)
+    // lab/esm.py id on sky-srv, 2026-11-14), ArmorStuddedCuirass (lab/esm.py
+    // id, 2026-11-16)
     kHideBoots = 0x13910,
-    kHideHelmet = 0x13913
+    kHideHelmet = 0x13913,
+    kStuddedCuirass = 0x1b3a2
   };
   auto& p = GetPartOne();
   p.worldState.npcEnabled = true;
@@ -1435,12 +1438,491 @@ TEST_CASE("A hosted actor's worn set loses what its host took off and "
   REQUIRE(Wearing(predator, kHideHelmet));
   REQUIRE(Wearing(predator, kHideBoots));
 
+  // tracker #114: a worn entry its inventory no longer holds (a record saved
+  // so, as playtest 53's bodies loaded) is not kept by a report that lacks
+  // it; the cuirass shares no slot with the reported pieces, so only the
+  // inventory's rule takes it off
+  Equipment stale = predator.GetEquipment();
+  stale.inv.entries.push_back(
+    Inventory::Entry(kStuddedCuirass, 1, kWornRight));
+  predator.SetEquipment(stale);
+  REQUIRE(Wearing(predator, kStuddedCuirass));
+  REQUIRE_FALSE(predator.GetInventory().HasItem(kStuddedCuirass));
+  Wears(p, predator, { kHideHelmet, kHideBoots }, 6);
+  REQUIRE_FALSE(Wearing(predator, kStuddedCuirass));
+  REQUIRE(Wearing(predator, kHideHelmet));
+  REQUIRE(Wearing(predator, kHideBoots));
+
   // the shared world: the predator's dress and inventory as found
   predator.SetEquipment(Equipment{});
   predator.RemoveItem(kHideHelmet, 1, nullptr);
   predator.RemoveItem(kHideBoots, 1, nullptr);
   DoDisconnect(p, 0);
   p.DestroyActor(kHost);
+}
+
+// thuum tracker #114 (playtest 53, Eli: "desynced bandit armor and some
+// naked"): 53's body 29602 loaded naming ArmorHideHelmet and
+// ArmorStuddedCuirass worn with neither held ("1 of 13913 leave, worn here 1;
+// the record holds 0"), and the equipment word dressed a seat's copy in
+// them. A take kept the worn set inside the inventory (the case above it);
+// every other removal of an NPC's item now does too
+// (MpObjectReference::RemoveItems), and a record loaded with a worn piece
+// its inventory lacks drops it (MpActor::DropWornNotHeld, ApplyChangeForm)
+TEST_CASE("An NPC's worn set stays inside its inventory: any removal drops "
+          "the worn entry it empties, and a record holding a worn piece its "
+          "inventory lacks drops it",
+          "[NpcFate][espm]")
+{
+  enum : uint32_t
+  {
+    kVisitor = 0xff000d44,
+    kHideBoots = 0x13910,
+    kHideHelmet = 0x13913
+  };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kVisitor, kForest, 0, kTamriel);
+  p.SetUserActor(0, kVisitor);
+  p.TickCellHosts(FateNowMs());
+  auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form);
+  MpActor* actor = form->AsActor();
+  REQUIRE(actor);
+  if (actor->IsDead()) {
+    actor->Respawn(false);
+  }
+  p.worldState.fateRespawnDue.erase(kPredator);
+  actor->Kill(nullptr);
+  REQUIRE(actor->IsDead());
+
+  // the record's dress, both pieces held (an AddItem lays the base container
+  // in, so the inventory is the record's whole); the counts are read back
+  actor->AddItem(kHideBoots, 1);
+  actor->AddItem(kHideHelmet, 1);
+  Equipment rolled;
+  rolled.numChanges = 4;
+  rolled.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  rolled.inv.entries.push_back(Inventory::Entry(kHideHelmet, 1, kWornRight));
+  actor->SetEquipment(rolled);
+  const auto boots = actor->GetInventory().GetItemCount(kHideBoots);
+  REQUIRE(boots >= 1);
+
+  // the console's and Papyrus's removal, no take: the boots' worn entry
+  // leaves with the last of them, the helmet stays worn, the counter stays
+  actor->RemoveItem(kHideBoots, boots, nullptr);
+  REQUIRE(actor->GetInventory().GetItemCount(kHideBoots) == 0);
+  REQUIRE_FALSE(Wearing(*actor, kHideBoots));
+  REQUIRE(Wearing(*actor, kHideHelmet));
+  REQUIRE(actor->GetEquipment().numChanges == 4);
+
+  // a record saved with the boots worn and none held: the load's pass drops
+  // them, the helmet stays
+  Equipment stale = actor->GetEquipment();
+  stale.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  actor->SetEquipment(stale);
+  REQUIRE(Wearing(*actor, kHideBoots));
+  actor->DropWornNotHeld();
+  REQUIRE_FALSE(Wearing(*actor, kHideBoots));
+  REQUIRE(Wearing(*actor, kHideHelmet));
+
+  // the shared world: the predator undressed, its helmets gone, alive
+  actor->SetEquipment(Equipment{});
+  actor->RemoveItem(kHideHelmet,
+                    actor->GetInventory().GetItemCount(kHideHelmet), nullptr);
+  actor->Respawn(false);
+  p.worldState.fateRespawnDue.erase(kPredator);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kVisitor);
+}
+
+// thuum tracker #143 (playtest 53, Eli: "desynced bandit armor and some
+// naked"; the x-body-worn-held-v4 canon read, 20261117-224632): the
+// console's RemoveItem took Arvel's cuirass from his record, and his host's
+// game, never told, kept wearing it while the late seat dressed from the
+// record without it. A removal the server makes from an NPC now sends its
+// fate again to every game, the host's included (MpActor::
+// TellRemovalByServer, the respawn's call: each game's table and late path
+// take the record's worn list and rows), one word per call, and a body no
+// one holds open sends its inventory to its listeners with a user, one list
+// each; a body a seat holds open sends both at its shut (ADR-067 decision
+// 6). A host's report wearing a piece the server removed (read before its
+// engine ran the fate, or a re-dress) is left out of the record and the
+// relay and never added back, until the record holds the piece again; a
+// piece the record lost any other way (a take) is the engine's own as
+// before (E_EQUIP_UNKNOWN_ITEM), and so is a server-made NPC's (a 0xff id,
+// whose seats run no late path on a copy they hold)
+TEST_CASE("A removal the server makes from an NPC sends its fate again to "
+          "every game, and a host's report still wearing the piece never "
+          "adds it back",
+          "[NpcFate][HostedEquipment][espm]")
+{
+  enum : uint32_t
+  {
+    kHost = 0xff000d90,
+    kOther = 0xff000d91,
+    kMade = 0xff000d92,
+    // Skyrim.esm: ArmorHideBoots, ArmorHideHelmet (BOD2 0x80 and 0x1002,
+    // lab/esm.py id on sky-srv, 2026-11-14)
+    kHideBoots = 0x13910,
+    kHideHelmet = 0x13913,
+    // EncBandit01Melee2HBerserkNordM, the dead server-made NPC case's base
+    kBanditBase = 0x3de6f
+  };
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  DoConnect(p, 0);
+  p.CreateActor(kHost, kForest, 0, kTamriel);
+  p.SetUserActor(0, kHost);
+  DoConnect(p, 1);
+  p.CreateActor(kOther, kForest + NiPoint3{ 200.f, 0.f, 0.f }, 0, kTamriel);
+  p.SetUserActor(1, kOther);
+  p.TickCellHosts(FateNowMs());
+  auto& form = p.worldState.LookupFormByIdNoLoad(kPredator);
+  REQUIRE(form);
+  MpActor* predatorPtr = form->AsActor();
+  REQUIRE(predatorPtr);
+  MpActor& predator = *predatorPtr;
+  if (predator.IsDead()) {
+    predator.Respawn(false);
+  }
+  p.worldState.fateRespawnDue.erase(kPredator);
+  // the premise: the predator is fated, as its create words to both games
+  // fate it (onActorSubscribe); rolled here if this world has not yet
+  if (!predator.GetFateLevel().has_value()) {
+    REQUIRE(predator.RollFateIfUnrolled(1));
+  }
+  REQUIRE(predator.GetFateLevel().has_value());
+  predator.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  HostGrants(p, 0, kForestCell);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  REQUIRE(p.worldState.HostOf(predator) == &host);
+  host.SetConsoleCommandsAllowedFlag(true);
+  const Inventory found = predator.GetInventory();
+  const Equipment foundDress = predator.GetEquipment();
+  REQUIRE(found.GetItemCount(kHideBoots) == 0);
+  REQUIRE(found.GetItemCount(kHideHelmet) == 0);
+  // the host's game and the other one
+  const std::vector<Networking::UserId> kBoth{ 0, 1 };
+
+  // the fates naming the predator sent to `user` since the last clear
+  const auto fatesTo = [&](Networking::UserId user) {
+    std::vector<ActorFateMessage::Fate> out;
+    for (const auto& msg : SentTo<ActorFateMessage>(p, user)) {
+      for (const auto& fate : msg.fates) {
+        if (fate.refrId == kPredator) {
+          out.push_back(fate);
+        }
+      }
+    }
+    return out;
+  };
+  const auto wornIn = [](const ActorFateMessage::Fate& fate, uint32_t baseId) {
+    return std::find(fate.worn.begin(), fate.worn.end(), baseId) !=
+      fate.worn.end();
+  };
+  const auto rowIn = [](const ActorFateMessage::Fate& fate, uint32_t baseId) {
+    return std::any_of(fate.inv.begin(), fate.inv.end(),
+                       [&](const ActorFateMessage::InvRow& row) {
+                         return row.baseId == baseId;
+                       });
+  };
+  // the predator's "inventory" properties sent to `user`, as lists
+  const auto inventoriesTo = [&](Networking::UserId user) {
+    std::vector<Inventory> out;
+    for (const auto& msg : SentTo<UpdatePropertyMessage>(p, user)) {
+      if (msg.idx == predator.GetIdx() && msg.propName == "inventory") {
+        out.push_back(
+          Inventory::FromJson(nlohmann::json::parse(msg.dataDump)));
+      }
+    }
+    return out;
+  };
+  const auto relayedTo = [&](Networking::UserId user) {
+    std::vector<UpdateEquipmentMessage> out;
+    for (const auto& m : SentTo<UpdateEquipmentMessage>(p, user)) {
+      if (m.idx == predator.GetIdx()) {
+        out.push_back(m);
+      }
+    }
+    return out;
+  };
+  const auto consoleRemoves = [&](uint32_t baseId) {
+    RawMessageData msgData;
+    msgData.userId = 0;
+    ConsoleCommandMessage cmd;
+    cmd.data.commandName = "RemoveItem";
+    cmd.data.args = { int64_t(kPredator), int64_t(baseId), int64_t(1) };
+    p.GetActionListener().OnConsoleCommand(msgData, cmd);
+  };
+
+  // the record's dress, both pieces held, and the host's engine wearing both
+  predator.AddItem(kHideHelmet, 1);
+  predator.AddItem(kHideBoots, 1);
+  Equipment rolled;
+  rolled.inv.entries.push_back(Inventory::Entry(kHideHelmet, 1, kWornRight));
+  rolled.inv.entries.push_back(Inventory::Entry(kHideBoots, 1, kWornRight));
+  predator.SetEquipment(rolled);
+  Wears(p, predator, { kHideHelmet, kHideBoots }, 1);
+  REQUIRE(Wearing(predator, kHideHelmet));
+
+  // the console's RemoveItem of the worn helmet (the probe's path, Papyrus
+  // RemoveItem on the server's VM): the record lets it go (#114's half),
+  // and both games, the host's included, get the fate again without it; a
+  // living NPC's inventory goes to no seat's view
+  p.Messages().clear();
+  {
+    LogCapture log;
+    consoleRemoves(kHideHelmet);
+    REQUIRE(log.Count("its fate sent again to every game: true; its "
+                      "inventory to its listeners: false") == 1);
+  }
+  REQUIRE(predator.GetInventory().GetItemCount(kHideHelmet) == 0);
+  REQUIRE_FALSE(Wearing(predator, kHideHelmet));
+  REQUIRE(Wearing(predator, kHideBoots));
+  REQUIRE(predator.RemovedByServer(kHideHelmet));
+  REQUIRE_FALSE(predator.RemovedByServer(kHideBoots));
+  for (const Networking::UserId user : kBoth) {
+    const auto fates = fatesTo(user);
+    REQUIRE(fates.size() == 1);
+    REQUIRE_FALSE(wornIn(fates[0], kHideHelmet));
+    REQUIRE_FALSE(rowIn(fates[0], kHideHelmet));
+    REQUIRE(wornIn(fates[0], kHideBoots));
+    REQUIRE(inventoriesTo(user).empty());
+  }
+
+  // the host's report read before its engine ran the fate still wears the
+  // helmet: it stays out of the record (no E_EQUIP_UNKNOWN_ITEM), the other
+  // game hears the report without it, nothing is echoed to the host and no
+  // fate is sent again (the one in its table stands)
+  p.Messages().clear();
+  {
+    LogCapture log;
+    Wears(p, predator, { kHideHelmet, kHideBoots }, 2);
+    REQUIRE(log.Count("E_EQUIP_UNKNOWN_ITEM") == 0);
+    REQUIRE(log.Count("E_EQUIP_REFUSED") == 0);
+    REQUIRE(log.Count("1 the server removed left out") == 1);
+  }
+  REQUIRE(predator.GetInventory().GetItemCount(kHideHelmet) == 0);
+  REQUIRE_FALSE(Wearing(predator, kHideHelmet));
+  REQUIRE(Wearing(predator, kHideBoots));
+  REQUIRE(predator.GetEquipment().numChanges == 2);
+  {
+    const auto relays = relayedTo(1);
+    REQUIRE(relays.size() == 1);
+    REQUIRE_FALSE(relays[0].data.inv.HasItem(kHideHelmet));
+    REQUIRE(relays[0].data.inv.HasItem(kHideBoots));
+  }
+  REQUIRE(relayedTo(0).empty());
+  REQUIRE(fatesTo(0).empty());
+  REQUIRE(fatesTo(1).empty());
+
+  // its engine let the helmet go, then dresses it again (a re-dress, or a
+  // new host's first report from a copy that still holds it): the record
+  // still lacks it, so it is left out again, whatever this connection's
+  // previous report wore
+  Wears(p, predator, { kHideBoots }, 3);
+  REQUIRE_FALSE(Wearing(predator, kHideHelmet));
+  {
+    LogCapture log;
+    Wears(p, predator, { kHideHelmet, kHideBoots }, 4);
+    REQUIRE(log.Count("E_EQUIP_UNKNOWN_ITEM") == 0);
+    REQUIRE(log.Count("1 the server removed left out") == 1);
+  }
+  REQUIRE(predator.GetInventory().GetItemCount(kHideHelmet) == 0);
+  REQUIRE_FALSE(Wearing(predator, kHideHelmet));
+
+  // the record holds a helmet again: no longer the server's removal, and
+  // the engine's helmet is the record's
+  predator.AddItem(kHideHelmet, 1);
+  REQUIRE_FALSE(predator.RemovedByServer(kHideHelmet));
+  {
+    LogCapture log;
+    Wears(p, predator, { kHideHelmet, kHideBoots }, 5);
+    REQUIRE(log.Count("E_EQUIP_UNKNOWN_ITEM") == 0);
+    REQUIRE(log.Count("0 the server removed left out") == 1);
+  }
+  REQUIRE(Wearing(predator, kHideHelmet));
+
+  // a removal that is no word of the server's (a take's own RemoveItems,
+  // TakeItemEvent) sends no fate, and the engine still wearing the piece
+  // is the engine's own as before: added back to the record
+  p.Messages().clear();
+  predator.RemoveItem(kHideHelmet, 1, nullptr);
+  REQUIRE(predator.GetInventory().GetItemCount(kHideHelmet) == 0);
+  REQUIRE_FALSE(predator.RemovedByServer(kHideHelmet));
+  REQUIRE(fatesTo(0).empty());
+  REQUIRE(fatesTo(1).empty());
+  {
+    LogCapture log;
+    Wears(p, predator, { kHideHelmet, kHideBoots }, 6);
+    REQUIRE(log.Count("E_EQUIP_UNKNOWN_ITEM") == 1);
+  }
+  REQUIRE(predator.GetInventory().GetItemCount(kHideHelmet) == 1);
+  REQUIRE(Wearing(predator, kHideHelmet));
+
+  // the server VM's RemoveAllItems: one fate to each game for every row
+  // the record gave up, naming none of them
+  p.Messages().clear();
+  PapyrusObjectReference().RemoveAllItems(
+    predator.ToVarValue(),
+    { VarValue::None(), VarValue(false), VarValue(false) });
+  REQUIRE(predator.GetInventory().IsEmpty());
+  REQUIRE(predator.RemovedByServer(kHideHelmet));
+  REQUIRE(predator.RemovedByServer(kHideBoots));
+  for (const Networking::UserId user : kBoth) {
+    const auto fates = fatesTo(user);
+    REQUIRE(fates.size() == 1);
+    REQUIRE(fates[0].worn.empty());
+    REQUIRE(fates[0].inv.empty());
+  }
+
+  // a body: the console's RemoveItem sends the fate again and, the body
+  // shut, its inventory to every listener without the piece, the boots
+  // still in it
+  predator.Kill(nullptr);
+  REQUIRE(predator.IsCorpse());
+  REQUIRE_FALSE(predator.IsOpen());
+  predator.AddItem(kHideHelmet, 1);
+  predator.AddItem(kHideBoots, 1);
+  REQUIRE_FALSE(predator.RemovedByServer(kHideHelmet));
+  REQUIRE_FALSE(predator.RemovedByServer(kHideBoots));
+  predator.SetEquipment(rolled);
+  p.Messages().clear();
+  consoleRemoves(kHideHelmet);
+  REQUIRE(predator.GetInventory().GetItemCount(kHideHelmet) == 0);
+  REQUIRE_FALSE(Wearing(predator, kHideHelmet));
+  REQUIRE(Wearing(predator, kHideBoots));
+  for (const Networking::UserId user : kBoth) {
+    const auto fates = fatesTo(user);
+    REQUIRE(fates.size() == 1);
+    REQUIRE_FALSE(wornIn(fates[0], kHideHelmet));
+    REQUIRE_FALSE(rowIn(fates[0], kHideHelmet));
+    REQUIRE(wornIn(fates[0], kHideBoots));
+    const auto lists = inventoriesTo(user);
+    REQUIRE(lists.size() == 1);
+    REQUIRE(lists[0].GetItemCount(kHideHelmet) == 0);
+    REQUIRE(lists[0].GetItemCount(kHideBoots) == 1);
+  }
+
+  // a body a seat holds open: the removal sends neither its fate nor its
+  // inventory, so no late path changes the contents under the opener's
+  // loot menu (ADR-067 decision 6); the shut sends the record's inventory
+  // (SetOpen's own send) and then the fate held, to both games
+  predator.AddItem(kHideHelmet, 1);
+  REQUIRE_FALSE(predator.RemovedByServer(kHideHelmet));
+  predator.SetEquipment(rolled);
+  predator.SetOpen(true);
+  REQUIRE(predator.IsOpen());
+  p.Messages().clear();
+  {
+    LogCapture log;
+    consoleRemoves(kHideHelmet);
+    REQUIRE(log.Count("its fate sent again to every game: false; its "
+                      "inventory to its listeners: false; its fate held for "
+                      "the body's shut: true") == 1);
+  }
+  REQUIRE(predator.GetInventory().GetItemCount(kHideHelmet) == 0);
+  REQUIRE(predator.RemovedByServer(kHideHelmet));
+  for (const Networking::UserId user : kBoth) {
+    REQUIRE(fatesTo(user).empty());
+    REQUIRE(inventoriesTo(user).empty());
+  }
+  p.Messages().clear();
+  {
+    LogCapture log;
+    predator.SetOpen(false);
+    REQUIRE(log.Count("body shut: the fate the server's removal held") == 1);
+  }
+  REQUIRE_FALSE(predator.IsOpen());
+  for (const Networking::UserId user : kBoth) {
+    const auto fates = fatesTo(user);
+    REQUIRE(fates.size() == 1);
+    REQUIRE_FALSE(wornIn(fates[0], kHideHelmet));
+    REQUIRE_FALSE(rowIn(fates[0], kHideHelmet));
+    REQUIRE(wornIn(fates[0], kHideBoots));
+    // SetOpen's shut sends through SendMessageToActorListeners, which may
+    // hand a listener with no user to the host: one list or more, each the
+    // record's
+    const auto lists = inventoriesTo(user);
+    REQUIRE_FALSE(lists.empty());
+    for (const auto& list : lists) {
+      REQUIRE(list.GetItemCount(kHideHelmet) == 0);
+      REQUIRE(list.GetItemCount(kHideBoots) == 1);
+    }
+  }
+  // the hold is spent: a later open and shut sends no fate
+  predator.SetOpen(true);
+  p.Messages().clear();
+  predator.SetOpen(false);
+  REQUIRE(fatesTo(0).empty());
+  REQUIRE(fatesTo(1).empty());
+
+  // a server-made NPC (a 0xff id; the dead server-made NPC case's idiom),
+  // hosted by user 0: its seats keep its fate by the remote id and run no
+  // late path on a copy they hold, so the removal remembers nothing and its
+  // host's report wearing the piece adds it back to the record as the
+  // engine's own; every seat agrees, as before the removal
+  MpChangeForm madeRecord;
+  madeRecord.recType = MpChangeForm::ACHR;
+  madeRecord.formDesc = FormDesc::FromFormId(kMade, p.worldState.espmFiles);
+  madeRecord.baseDesc =
+    FormDesc::FromFormId(kBanditBase, p.worldState.espmFiles);
+  madeRecord.worldOrCellDesc = FormDesc::Tamriel();
+  madeRecord.position = kForest + NiPoint3{ 150.f, 0.f, 0.f };
+  madeRecord.angle = { 0.f, 0.f, 0.f };
+  p.worldState.LoadChangeForm(madeRecord, p.CreateFormCallbacks());
+  p.worldState.LoadDeferredActors();
+  auto& madeForm = p.worldState.LookupFormByIdNoLoad(kMade);
+  REQUIRE(madeForm);
+  MpActor* made = madeForm->AsActor();
+  REQUIRE(made);
+  REQUIRE_FALSE(made->IsEspmForm());
+  REQUIRE_FALSE(made->IsCreatedAsPlayer());
+  p.worldState.fateRespawnDue.erase(kMade);
+  REQUIRE(p.worldState.HostOf(*made) == &host);
+  made->AddItem(kHideHelmet, 1);
+  const uint32_t madeHelmets = made->GetInventory().GetItemCount(kHideHelmet);
+  made->RemoveItem(kHideHelmet, madeHelmets, nullptr);
+  REQUIRE(made->GetInventory().GetItemCount(kHideHelmet) == 0);
+  {
+    LogCapture log;
+    made->TellRemovalByServer({ Inventory::Entry(kHideHelmet, madeHelmets) },
+                              "RemoveItem");
+    REQUIRE(log.Count("1 row(s) from its record, 0 base(s) it no longer "
+                      "holds") == 1);
+  }
+  REQUIRE_FALSE(made->RemovedByServer(kHideHelmet));
+  {
+    LogCapture log;
+    Wears(p, *made, { kHideHelmet }, 1);
+    REQUIRE(log.Count("E_EQUIP_UNKNOWN_ITEM") == 1);
+    REQUIRE(log.Count("0 the server removed left out") == 1);
+  }
+  REQUIRE(made->GetInventory().GetItemCount(kHideHelmet) == 1);
+  REQUIRE(Wearing(*made, kHideHelmet));
+  p.DestroyActor(kMade);
+
+  // the shared world: the predator alive, its dress and inventory as found,
+  // and no base remembered as the server's removal (every unit test shares
+  // one process, unit/CMakeLists.txt): each piece laid in again, then taken
+  // out by no word of the server's
+  predator.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kPredator);
+  predator.AddItem(kHideHelmet, 1);
+  predator.AddItem(kHideBoots, 1);
+  predator.RemoveAllItems();
+  if (!found.entries.empty()) {
+    predator.AddItems(found.entries);
+  }
+  predator.SetEquipment(foundDress);
+  REQUIRE_FALSE(predator.RemovedByServer(kHideHelmet));
+  REQUIRE_FALSE(predator.RemovedByServer(kHideBoots));
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kHost);
+  p.DestroyActor(kOther);
 }
 
 // thuum docs/verbs/npc-fate.md ("Reanimation is any player's, on any body";

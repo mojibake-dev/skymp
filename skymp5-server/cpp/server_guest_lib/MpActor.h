@@ -116,6 +116,43 @@ public:
   // (sync/equipment.ts applyEquipment: removeAllItems, then the worn alone),
   // which on a body would empty its loot
   void DropWornBeyondInventory(uint32_t baseId);
+  // thuum tracker #114: every worn entry beyond what the inventory holds
+  // dropped, DropWornBeyondInventory for each worn base: a record saved with
+  // a worn piece its inventory lacks (playtest 53's bodies, loaded so at the
+  // server's start) is brought inside it at its load (ApplyChangeForm)
+  void DropWornNotHeld();
+  // thuum tracker #143 (playtest 53, Eli: "desynced bandit armor and some
+  // naked"; the x-body-worn-held-v4 canon read, 20261117-224632): the
+  // server's own removal from this NPC's record (the console's RemoveItem,
+  // a Papyrus RemoveItem or RemoveAllItems on the server's VM), already
+  // made, told to every game through the channels that carry the record
+  // there. The fate again, to every game, the host's included, as a
+  // respawn sends it (ADR-046 decision 1: the record's worn list on every
+  // engine's actor), so each game's fate table matches the record and its
+  // late path brings the copy's rows and worn set to it (skymp5-client
+  // actorFateService, FateApi's reconcile); and, for a body no one holds
+  // open, the shut's own "inventory" property to its listeners with a user,
+  // so no seat's view keeps a list from before the removal; a body a seat
+  // holds open gets neither until its shut (SendFateHeldForShut, ADR-067
+  // decision 6). Each base the record no longer holds is remembered as the
+  // server's removal until the record holds it again (RemovedByServer),
+  // except on a server-made NPC (an id at or above 0xff000000), whose seats
+  // run no late path on a copy they hold. A take is its taker's engine's
+  // and never comes here. Nothing for a player's actor, nothing removed, or
+  // a record whose base container is not laid in
+  void TellRemovalByServer(const std::vector<Inventory::Entry>& removed,
+                           const char* why);
+  // thuum tracker #143: the body's shut (MpObjectReference::SetOpen) sends
+  // the fate the server's removal held while a seat had it open, to every
+  // game, the host's included; nothing when no fate is held
+  void SendFateHeldForShut();
+  // thuum tracker #143: whether the server's own removal took `baseId` from
+  // this NPC's record and nothing has given the record one since; a hosted
+  // report wearing it was read before its engine ran the fate
+  bool RemovedByServer(uint32_t baseId) const;
+  // the record holds each of `added` again (MpObjectReference's adders and
+  // SetInventory, MpActor::ApplyChangeForm)
+  void ForgetRemovedByServer(const std::vector<Inventory::Entry>& added);
 
   void SetHealthRespawnPercentage(float percentage);
   void SetMagickaRespawnPercentage(float percentage);

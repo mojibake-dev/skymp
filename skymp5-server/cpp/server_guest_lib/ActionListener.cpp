@@ -2069,10 +2069,11 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   // spells its base knows) and written to the actor's record (not the
   // sender's: an idx was resolved to the sender's own actor here, the latent
   // corruption cell-host noted). A refusal drops the report with one warn a
-  // minute per actor and sends the host nothing (Rule A: nothing writes to
-  // an actor the host's engine runs; SetInventory has no idx and would
-  // replace the host player's own inventory, and a snippet on an NPC runs
-  // nowhere)
+  // minute per actor and sends the host nothing (Rule A: the server writes
+  // to an actor the host's engine runs only through its declared
+  // exceptions, the death and the fate, ADR-046 decision 1, which a removal
+  // the server made rides, tracker #143; SetInventory has no idx and would
+  // replace the host player's own inventory)
   const bool hosted = msg.idx != myActor->GetIdx();
   MpActor* actor = hosted
     ? ActorUpdatableBy(msg.idx, rawMsgData.userId, MsgType::UpdateEquipment)
@@ -2228,6 +2229,17 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     const auto rec = partOne.GetEspm().GetBrowser().LookupById(formId).rec;
     return rec && espm::utils::IsItem(rec->GetType());
   };
+  // thuum tracker #143 (the x-body-worn-held-v4 canon read, 20261117-224632):
+  // an item the record lacks because the server's own removal took it (the
+  // console's RemoveItem on Arvel's cuirass; MpActor::RemovedByServer, until
+  // the record holds it again) is no item the engine took up. The report
+  // was read before its engine ran the fate the removal sent (in flight, or
+  // polled ahead of the late path), or by an engine whose copy still holds
+  // it (a new host's first report, a re-dress), so it leaves the report and
+  // the relay and is never added back; the fate already in that game's table
+  // brings its copy to the record. Any other item the record lacks is the
+  // engine's own as before (a take included)
+  std::vector<Inventory::Entry> staleItems;
 
   const auto& inventory = actor->GetInventory();
   {
@@ -2242,6 +2254,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         continue;
       }
       if (hosted && isItemRecord(it->baseId)) {
+        if (actor->RemovedByServer(it->baseId)) {
+          // the server's removal, its fate sent (tracker #143, above)
+          staleItems.push_back(*it);
+          it = entries.erase(it);
+          continue;
+        }
         // the simulator's engine's own item: the entry stays in the report
         // and is recorded below
         engineItems.push_back(it->baseId);
@@ -2337,9 +2355,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 
   if (dropped && hosted) {
     // the refusal as npc-stream's slice 3 has it: the record stands, nothing
-    // is sent to the host (SetInventory has no idx and would replace the
-    // host player's own inventory, a snippet on an NPC runs nowhere), one
-    // warn a minute per actor
+    // is sent to the host (Rule A, above: no correction from here; the fate
+    // is the record's word to its engine), one warn a minute per actor
     static std::unordered_map<
       uint32_t, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
       refusals;
@@ -2366,13 +2383,16 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   // what stands is the record and the neighbours' picture: the bytes as
   // they came when nothing was dropped (SendToNeighbours), else the kept
   // report to the same audience (RelayToListeners': every listener with a
-  // user, the player's own echo kept)
-  if (dropped) {
+  // user, the player's own echo kept, a host's never sent back to it; a
+  // hosted report reaches here with nothing dropped but a stale item,
+  // tracker #143)
+  if (dropped || !staleItems.empty()) {
     UpdateEquipmentMessage relay;
     relay.idx = msg.idx;
     relay.data = kept;
     for (auto listener : actor->GetActorListeners()) {
-      if (listener->GetUserId() == Networking::InvalidUserId) {
+      if (listener->GetUserId() == Networking::InvalidUserId ||
+          (hosted && listener == myActor)) {
         continue;
       }
       listener->SendToUser(relay, true);
@@ -2385,6 +2405,7 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   size_t keptWorn = 0;
   size_t takenOff = 0;
   size_t displaced = 0;
+  size_t notHeld = 0;
   if (hosted) {
     for (const auto itemId : engineItems) {
       // the add's SetInventory goes to the actor's own user, which a hosted
@@ -2473,6 +2494,11 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         reportedWorn.push_back(entry.baseId);
       }
     }
+    // thuum tracker #114: a record entry stays worn only while the record
+    // holds the piece; one its inventory lost is no piece the copy can wear
+    // (the take's rule, MpActor::DropWornBeyondInventory), so a stale entry
+    // goes at its host's next report
+    const Inventory& held = actor->GetInventory();
     std::vector<Inventory::Entry> stays;
     for (const auto& entry : actor->GetEquipment().inv.entries) {
       if (entry.GetWorn() == Inventory::Worn::None ||
@@ -2485,6 +2511,10 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       }
       if (takesPlaceOf(entry)) {
         ++displaced;
+        continue;
+      }
+      if (!held.HasItem(entry.baseId)) {
+        ++notHeld;
         continue;
       }
       stays.push_back(entry);
@@ -2552,10 +2582,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     spdlog::info("[verb:npc-stream] equipment {:x} by {:x}: {} worn, "
                  "right {:x} left {:x}, spells {:x} {:x}, numChanges {}; of "
                  "the record's worn {} kept (not yet worn in this host's "
-                 "reports), {} taken off by it, {} displaced",
+                 "reports), {} taken off by it, {} displaced, {} gone from "
+                 "its inventory; {} the server removed left out (its fate "
+                 "tells the engine)",
                  actorFormId, myActor->GetFormId(), worn, right, left,
                  rightSpell, leftSpell, data.numChanges, keptWorn, takenOff,
-                 displaced);
+                 displaced, notHeld, staleItems.size());
   }
 
   if (dropped) {

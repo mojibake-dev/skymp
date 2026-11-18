@@ -74,6 +74,12 @@ struct MpActor::Impl
   bool placedDead = false;
   // thuum tracker #84: a summon (PartOne::OnSummonStart)
   bool isSummon = false;
+  // thuum tracker #143: the bases the server's own removal took from the
+  // record that it has not held since (MpActor::TellRemovalByServer)
+  std::set<uint32_t> removedByServer;
+  // thuum tracker #143: the server's removal from a body a seat held open
+  // left its fate for the shut (MpActor::SendFateHeldForShut)
+  bool fateHeldForShut = false;
   // ADR-050 decision 2: the server's number reached zero, the host's report
   // awaited (MpActor::BeginPendingDeath)
   bool pendingDeath = false;
@@ -580,6 +586,140 @@ void MpActor::DropWornBeyondInventory(uint32_t baseId)
   spdlog::info("[verb:npc-fate] {:x}'s worn {:x} off its record's equipment: "
                "{} worn beyond the {} its inventory holds",
                GetFormId(), baseId, dropped, held);
+}
+
+void MpActor::DropWornNotHeld()
+{
+  std::set<uint32_t> bases;
+  for (const auto& entry : GetEquipment().inv.entries) {
+    if (entry.GetWorn() != Inventory::Worn::None) {
+      bases.insert(entry.baseId);
+    }
+  }
+  for (const uint32_t baseId : bases) {
+    DropWornBeyondInventory(baseId);
+  }
+}
+
+void MpActor::TellRemovalByServer(const std::vector<Inventory::Entry>& removed,
+                                  const char* why)
+{
+  if (IsCreatedAsPlayer() || removed.empty() ||
+      !ChangeForm().baseContainerAdded) {
+    return;
+  }
+  // the bases the record no longer holds: a hosted report wearing one,
+  // while the record still lacks it, was read before its engine ran the
+  // fate below (ActionListener::OnUpdateEquipment leaves it out). Not for a
+  // server-made NPC (an id at or above 0xff000000, IsEspmForm false): each
+  // game keeps its fate by the remote id for the copy's next spawn and runs
+  // no late path on a copy it holds (skymp5-client actorFateService,
+  // ADR-050 decision 3), so its host's copy keeps the piece, and leaving
+  // the host's report out would take the piece from the watchers alone.
+  // Remembering nothing, its host's report adds the piece back to the
+  // record as the engine's own and every seat agrees, as before the
+  // removal (open in docs/verbs/npc-fate.md)
+  const Inventory& held = GetInventory();
+  size_t gone = 0;
+  if (IsEspmForm()) {
+    for (const auto& entry : removed) {
+      if (entry.baseId != 0 && !held.HasItem(entry.baseId)) {
+        pImpl->removedByServer.insert(entry.baseId);
+        ++gone;
+      }
+    }
+  }
+  // a body no one holds open: the shut's own send (SetOpen), the record to
+  // every listener with a user, so a seat's view applies it at its next aim
+  // instead of a list an earlier shut left there (formView's body apply
+  // adds a missing count back, sync/inventory.ts applyBodyInventory).
+  // Directly, as UpdateHoster's loop sends: SendMessageToActorListeners
+  // goes through GetActorToSendTo, which hands a listener with no user (the
+  // body itself, an NPC in reach) to its cell's host, so the host's game
+  // took one list per such listener. Never while open (ADR-067 decision 6:
+  // no seat sees the contents change under its menu); the shut sends it
+  const bool open = IsOpen();
+  const bool corpse = IsCorpse();
+  const bool body = corpse && !open;
+  if (body) {
+    const auto inventoryMessage =
+      CreatePropertyMessage_(this, "inventory", held.ToJson().dump());
+    for (auto listener : GetActorListeners()) {
+      if (listener->GetUserId() == Networking::InvalidUserId) {
+        continue;
+      }
+      listener->SendToUser(inventoryMessage, true);
+    }
+  }
+  // the fate again, the call a respawn makes (RespawnWithDelay): FateOf is
+  // the record's worn list and rows, each game's table takes it, and a game
+  // whose key changed runs its late path on its copy, the host's included
+  // (a dead copy reconciles its rows and dresses the record's worn armor; a
+  // living one is reconciled and redressed, one pop). HYPOTHESIS until a
+  // lab run reads it: the late path's reconcile takes the removed piece off
+  // the copy on the host and on a watcher in reach alike. An NPC with no
+  // fate level (never rolled, a record from before the fate) is in no
+  // game's table, and no game is told. A body a seat holds open keeps its
+  // fate for the shut (SendFateHeldForShut, from SetOpen): the late path on
+  // the opener's seat would change the body's contents under its loot
+  // menu, the rule the inventory above keeps (ADR-067 decision 6); FateOf
+  // reads the record at the shut, a take made meanwhile included. Only a
+  // body is held: a living NPC can carry a stale isOpen (a body that stood
+  // up while open, through Respawn, which never shuts it), has no loot menu
+  // and is never shut, so holding its fate would keep the piece on the
+  // host's copy while RemovedByServer takes it from the watchers, #143 on
+  // the living path (the final review of de1afe52)
+  WorldState* worldState = GetParent();
+  const bool fated =
+    GetFateLevel().has_value() && worldState && worldState->onActorFate;
+  const bool heldForShut = fated && open && corpse;
+  if (heldForShut) {
+    pImpl->fateHeldForShut = true;
+  } else if (fated) {
+    worldState->onActorFate(*this);
+  }
+  spdlog::info("[verb:npc-fate] {:x}: the server's {} took {} row(s) from "
+               "its record, {} base(s) it no longer holds; its fate sent "
+               "again to every game: {}; its inventory to its listeners: {}; "
+               "its fate held for the body's shut: {} (tracker #143)",
+               GetFormId(), why, removed.size(), gone, fated && !heldForShut,
+               body, heldForShut);
+}
+
+void MpActor::SendFateHeldForShut()
+{
+  if (!pImpl->fateHeldForShut) {
+    return;
+  }
+  pImpl->fateHeldForShut = false;
+  WorldState* worldState = GetParent();
+  if (!GetFateLevel().has_value() || !worldState || !worldState->onActorFate) {
+    return;
+  }
+  worldState->onActorFate(*this);
+  spdlog::info("[verb:npc-fate] {:x}'s body shut: the fate the server's "
+               "removal held while it was open sent to every game (tracker "
+               "#143)",
+               GetFormId());
+}
+
+bool MpActor::RemovedByServer(uint32_t baseId) const
+{
+  return pImpl->removedByServer.count(baseId) > 0;
+}
+
+void MpActor::ForgetRemovedByServer(const std::vector<Inventory::Entry>& added)
+{
+  if (pImpl->removedByServer.empty()) {
+    return;
+  }
+  for (const auto& entry : added) {
+    if (entry.count > 0 && pImpl->removedByServer.erase(entry.baseId) > 0) {
+      spdlog::info("[verb:npc-fate] {:x}'s record holds {:x} again: no "
+                   "longer the server's removal (tracker #143)",
+                   GetFormId(), entry.baseId);
+    }
+  }
 }
 
 void MpActor::SetHealthRespawnPercentage(float percentage)
@@ -1231,6 +1371,10 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
     },
     Mode::NoRequestSave);
   ReapplyMagicEffects();
+  // thuum tracker #143: what the record laid in holds is no longer the
+  // server's removal (AddItem's rule; a load meets an empty set, the set
+  // being the session's)
+  ForgetRemovedByServer(GetInventory().entries);
 
   // a race menu the record keeps open is shown again at the login
   if (ChangeForm().isRaceMenuOpen) {
@@ -1249,6 +1393,16 @@ void MpActor::ApplyChangeForm(const MpChangeForm& newChangeForm)
   newChangeForm.isDisabled ? Disable() : Enable();
   SetCellOrWorldObsolete(newChangeForm.worldOrCellDesc);
   SetPos(newChangeForm.position);
+
+  // thuum tracker #114: an NPC's record saved with a worn piece its
+  // inventory lacks (playtest 53's bodies: "1 of 13913 leave, worn here 1;
+  // the record holds 0", s-c2-console.log:4653-4654, the record loaded at
+  // 23:48:23) comes in with its worn set inside its inventory, so no seat
+  // is dressed in a piece the body does not hold. A record whose base
+  // container is not laid in yet holds no whole inventory to read against
+  if (!IsCreatedAsPlayer() && ChangeForm().baseContainerAdded) {
+    DropWornNotHeld();
+  }
 
   // thuum ADR-049 D-N1 A: the record is the world's state from here on
   pImpl->recordApplied = true;

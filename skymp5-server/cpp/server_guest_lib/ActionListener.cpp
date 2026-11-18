@@ -2069,10 +2069,11 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   // spells its base knows) and written to the actor's record (not the
   // sender's: an idx was resolved to the sender's own actor here, the latent
   // corruption cell-host noted). A refusal drops the report with one warn a
-  // minute per actor and sends the host nothing (Rule A: nothing writes to
-  // an actor the host's engine runs; SetInventory has no idx and would
-  // replace the host player's own inventory, and a snippet on an NPC runs
-  // nowhere)
+  // minute per actor and sends the host nothing (Rule A: the server writes
+  // to an actor the host's engine runs only through its declared
+  // exceptions, the death and the fate, ADR-046 decision 1, which a removal
+  // the server made rides, tracker #143; SetInventory has no idx and would
+  // replace the host player's own inventory)
   const bool hosted = msg.idx != myActor->GetIdx();
   MpActor* actor = hosted
     ? ActorUpdatableBy(msg.idx, rawMsgData.userId, MsgType::UpdateEquipment)
@@ -2228,28 +2229,16 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     const auto rec = partOne.GetEspm().GetBrowser().LookupById(formId).rec;
     return rec && espm::utils::IsItem(rec->GetType());
   };
-  // a hosted actor's previous report from this connection
-  // (UserInfo::hostedWorn, sorted), the base of the worn set's deltas below
-  std::vector<uint32_t>* previous = nullptr;
-  if (hosted && partOne.serverState.IsConnected(rawMsgData.userId)) {
-    previous = &partOne.serverState.userInfo[rawMsgData.userId]
-                  ->hostedWorn[actorFormId];
-  }
-  const auto wasReported = [&](uint32_t baseId) {
-    return previous &&
-      std::binary_search(previous->begin(), previous->end(), baseId);
-  };
   // thuum tracker #143 (the x-body-worn-held-v4 canon read, 20261117-224632):
-  // an item the record lacks that this connection's previous report wore as
-  // well is no item its engine took up since. The record lost it under that
-  // engine, by a removal of the server's (the console's RemoveItem on
-  // Arvel's cuirass; MpActor::RemoveFromEngine sends it to the engine) that
-  // this report was read before (in flight, or polled ahead of the snippet's
-  // update), so it leaves the report and is never added back (the delta
-  // rule the worn set already keeps: the wire carries what changed). Its
-  // engine is asked again to remove it below; the report's own list stays
-  // the connection's previous one, so a later report still wearing it is
-  // read the same way
+  // an item the record lacks because the server's own removal took it (the
+  // console's RemoveItem on Arvel's cuirass; MpActor::RemovedByServer, until
+  // the record holds it again) is no item the engine took up. The report
+  // was read before its engine ran the fate the removal sent (in flight, or
+  // polled ahead of the late path), or by an engine whose copy still holds
+  // it (a new host's first report, a re-dress), so it leaves the report and
+  // the relay and is never added back; the fate already in that game's table
+  // brings its copy to the record. Any other item the record lacks is the
+  // engine's own as before (a take included)
   std::vector<Inventory::Entry> staleItems;
 
   const auto& inventory = actor->GetInventory();
@@ -2265,8 +2254,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         continue;
       }
       if (hosted && isItemRecord(it->baseId)) {
-        if (wasReported(it->baseId)) {
-          // what the record lost under this engine (tracker #143, above)
+        if (actor->RemovedByServer(it->baseId)) {
+          // the server's removal, its fate sent (tracker #143, above)
           staleItems.push_back(*it);
           it = entries.erase(it);
           continue;
@@ -2366,9 +2355,8 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
 
   if (dropped && hosted) {
     // the refusal as npc-stream's slice 3 has it: the record stands, nothing
-    // is sent to the host (SetInventory has no idx and would replace the
-    // host player's own inventory, a snippet on an NPC runs nowhere), one
-    // warn a minute per actor
+    // is sent to the host (Rule A, above: no correction from here; the fate
+    // is the record's word to its engine), one warn a minute per actor
     static std::unordered_map<
       uint32_t, std::pair<std::chrono::steady_clock::time_point, uint32_t>>
       refusals;
@@ -2447,8 +2435,17 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     // never shrinks the record, and every later change of the engine's (a
     // helmet taken off, a torch put away: oracle v4 190713 kept Torch01 25 s
     // after the host's actor let it go) does. The previous report is the
-    // connection's (UserInfo::hostedWorn, read above as `previous`), so a
-    // new host or a relaunched one starts with nothing taken off
+    // connection's (UserInfo::hostedWorn), so a new host or a relaunched one
+    // starts with nothing taken off
+    std::vector<uint32_t>* previous = nullptr;
+    if (partOne.serverState.IsConnected(rawMsgData.userId)) {
+      previous = &partOne.serverState.userInfo[rawMsgData.userId]
+                    ->hostedWorn[actorFormId];
+    }
+    const auto wasReported = [&](uint32_t baseId) {
+      return previous &&
+        std::binary_search(previous->begin(), previous->end(), baseId);
+    };
     WorldState* espmWorld = actor->GetParent();
     // an ARMO record's biped slots (its BOD2, else its BODT), none for any
     // other record
@@ -2496,10 +2493,6 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       if (entry.GetWorn() != Inventory::Worn::None) {
         reportedWorn.push_back(entry.baseId);
       }
-    }
-    // tracker #143: a stale item left the report, not the engine's list
-    for (const auto& entry : staleItems) {
-      reportedWorn.push_back(entry.baseId);
     }
     // thuum tracker #114: a record entry stays worn only while the record
     // holds the piece; one its inventory lost is no piece the copy can wear
@@ -2590,22 +2583,11 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
                  "right {:x} left {:x}, spells {:x} {:x}, numChanges {}; of "
                  "the record's worn {} kept (not yet worn in this host's "
                  "reports), {} taken off by it, {} displaced, {} gone from "
-                 "its inventory; {} the record lost under this engine left "
-                 "out",
+                 "its inventory; {} the server removed left out (its fate "
+                 "tells the engine)",
                  actorFormId, myActor->GetFormId(), worn, right, left,
                  rightSpell, leftSpell, data.numChanges, keptWorn, takenOff,
                  displaced, notHeld, staleItems.size());
-    // tracker #143: the engine still wears what the record lost under it;
-    // it is asked again to remove it, one count per entry (its host's poll
-    // sends a count of one, hostedStateService.ts sendEquipment). Where the
-    // engine already ran the first removal and holds none, the call removes
-    // nothing (HYPOTHESIS until the lab: RemoveItem of an item a copy does
-    // not hold is a no-op); the record holds none either way
-    for (const auto& entry : staleItems) {
-      actor->RemoveFromEngine(myActor, entry.baseId, entry.count,
-                              "its host's report still wears what its "
-                              "record lost");
-    }
   }
 
   if (dropped) {

@@ -74,6 +74,9 @@ struct MpActor::Impl
   bool placedDead = false;
   // thuum tracker #84: a summon (PartOne::OnSummonStart)
   bool isSummon = false;
+  // thuum tracker #143: the bases the server's own removal took from the
+  // record that it has not held since (MpActor::TellRemovalByServer)
+  std::set<uint32_t> removedByServer;
   // ADR-050 decision 2: the server's number reached zero, the host's report
   // awaited (MpActor::BeginPendingDeath)
   bool pendingDeath = false;
@@ -595,36 +598,74 @@ void MpActor::DropWornNotHeld()
   }
 }
 
-bool MpActor::RemoveFromEngine(MpActor* game, uint32_t baseId, uint32_t count,
-                               const char* why)
+void MpActor::TellRemovalByServer(const std::vector<Inventory::Entry>& removed,
+                                  const char* why)
 {
-  if (!game || count == 0 || baseId == 0 || IsCreatedAsPlayer() ||
-      game->GetUserId() == Networking::InvalidUserId) {
-    return false;
+  if (IsCreatedAsPlayer() || removed.empty() ||
+      !ChangeForm().baseContainerAdded) {
+    return;
   }
-  // the native's own arguments (akItemToRemove, aiCount, abSilent,
-  // akOtherContainer): silent, since the item is the NPC's and no player's
-  // notice; into no container, since a target's record is the server's to
-  // fill (MpObjectReference::RemoveItems adds it there and tells that
-  // target's own game). The self is the copy as the game numbers it (a
-  // game-file actor's long id resolves to its own reference there,
-  // skymp5-client worldViewMisc snippetIdToLocalId). HYPOTHESIS until the
-  // lab reads it: the engine takes a worn piece off as it leaves the copy,
-  // and raises its container-changed event, so a body's owner records the
-  // body again (changeFormService's "its contents changed")
-  using Arg = std::optional<
-    std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
-  SpSnippetObjectArgument item;
-  item.formId = baseId;
-  item.type = "Form";
-  const std::vector<Arg> args{ Arg(item), Arg(static_cast<double>(count)),
-                               Arg(true), Arg(std::nullopt) };
-  SpSnippet("ObjectReference", "RemoveItem", args, GetFormId()).Serve(game);
-  spdlog::info("[verb:npc-fate] {:x}'s {} of {:x} removed from its copy in "
-               "{:x}'s engine ({}); the record holds {} (tracker #143)",
-               GetFormId(), count, baseId, game->GetFormId(), why,
-               GetInventory().GetItemCount(baseId));
-  return true;
+  // the bases the record no longer holds: a hosted report wearing one,
+  // while the record still lacks it, was read before its engine ran the
+  // fate below (ActionListener::OnUpdateEquipment leaves it out)
+  const Inventory& held = GetInventory();
+  size_t gone = 0;
+  for (const auto& entry : removed) {
+    if (entry.baseId != 0 && !held.HasItem(entry.baseId)) {
+      pImpl->removedByServer.insert(entry.baseId);
+      ++gone;
+    }
+  }
+  // a body no one holds open: the shut's own send (SetOpen), the record to
+  // every listener, so a seat's view applies it at its next aim instead of
+  // a list an earlier shut left there (formView's body apply adds a missing
+  // count back, sync/inventory.ts applyBodyInventory). Never while open
+  // (ADR-067 decision 6: no seat sees the contents change under its menu);
+  // the shut sends it then
+  const bool body = IsCorpse() && !IsOpen();
+  if (body) {
+    SendMessageToActorListeners(
+      CreatePropertyMessage_(this, "inventory", held.ToJson().dump()), true);
+  }
+  // the fate again, the call a respawn makes (RespawnWithDelay): FateOf is
+  // the record's worn list and rows, each game's table takes it, and a game
+  // whose key changed runs its late path on its copy, the host's included
+  // (a dead copy reconciles its rows and dresses the record's worn armor; a
+  // living one is reconciled and redressed, one pop). HYPOTHESIS until a
+  // lab run reads it: the late path's reconcile takes the removed piece off
+  // the copy on the host and on a watcher in reach alike. An NPC with no
+  // fate level (never rolled, a record from before the fate) is in no
+  // game's table, and no game is told
+  WorldState* worldState = GetParent();
+  const bool fated =
+    GetFateLevel().has_value() && worldState && worldState->onActorFate;
+  if (fated) {
+    worldState->onActorFate(*this);
+  }
+  spdlog::info("[verb:npc-fate] {:x}: the server's {} took {} row(s) from "
+               "its record, {} base(s) it no longer holds; its fate sent "
+               "again to every game: {}; its inventory to its listeners: {} "
+               "(tracker #143)",
+               GetFormId(), why, removed.size(), gone, fated, body);
+}
+
+bool MpActor::RemovedByServer(uint32_t baseId) const
+{
+  return pImpl->removedByServer.count(baseId) > 0;
+}
+
+void MpActor::ForgetRemovedByServer(const std::vector<Inventory::Entry>& added)
+{
+  if (pImpl->removedByServer.empty()) {
+    return;
+  }
+  for (const auto& entry : added) {
+    if (entry.count > 0 && pImpl->removedByServer.erase(entry.baseId) > 0) {
+      spdlog::info("[verb:npc-fate] {:x}'s record holds {:x} again: no "
+                   "longer the server's removal (tracker #143)",
+                   GetFormId(), entry.baseId);
+    }
+  }
 }
 
 void MpActor::SetHealthRespawnPercentage(float percentage)

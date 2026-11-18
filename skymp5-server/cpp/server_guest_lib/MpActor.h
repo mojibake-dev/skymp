@@ -122,20 +122,29 @@ public:
   // server's start) is brought inside it at its load (ApplyChangeForm)
   void DropWornNotHeld();
   // thuum tracker #143 (playtest 53, Eli: "desynced bandit armor and some
-  // naked"): `count` of `baseId` removed from this NPC's copy in `game`'s
-  // engine, the record's removal run there (ObjectReference.RemoveItem on
-  // the copy, silent, into no container; SpSnippet::Serve, the server's own
-  // word, which a game runs as it comes). The engine that simulates the
-  // actor owns what it wears (ADR-063), so a removal the server made from
-  // the record (the console's RemoveItem, a Papyrus RemoveItem or
-  // RemoveAllItems on the server's VM) is that engine's to run as well, and
-  // its own channels carry the result to every other seat: its hosted
-  // report (ActionListener::OnUpdateEquipment) and, for a body, the
-  // change-form record its contents' change makes (skymp5-client
-  // changeFormService). The record is not touched here. Nothing is sent for
-  // a player's actor, no game, or no count; true when sent
-  bool RemoveFromEngine(MpActor* game, uint32_t baseId, uint32_t count,
-                        const char* why);
+  // naked"; the x-body-worn-held-v4 canon read, 20261117-224632): the
+  // server's own removal from this NPC's record (the console's RemoveItem,
+  // a Papyrus RemoveItem or RemoveAllItems on the server's VM), already
+  // made, told to every game through the channels that carry the record
+  // there. The fate again, to every game, the host's included, as a
+  // respawn sends it (ADR-046 decision 1: the record's worn list on every
+  // engine's actor), so each game's fate table matches the record and its
+  // late path brings the copy's rows and worn set to it (skymp5-client
+  // actorFateService, FateApi's reconcile); and, for a body no one holds
+  // open, the shut's own "inventory" property to its listeners, so no
+  // seat's view keeps a list from before the removal. Each base the record
+  // no longer holds is remembered as the server's removal until the record
+  // holds it again (RemovedByServer). A take is its taker's engine's and
+  // never comes here. Nothing for a player's actor, nothing removed, or a
+  // record whose base container is not laid in
+  void TellRemovalByServer(const std::vector<Inventory::Entry>& removed,
+                           const char* why);
+  // thuum tracker #143: whether the server's own removal took `baseId` from
+  // this NPC's record and nothing has given the record one since; a hosted
+  // report wearing it was read before its engine ran the fate
+  bool RemovedByServer(uint32_t baseId) const;
+  // the record holds each of `added` again (MpObjectReference's adders)
+  void ForgetRemovedByServer(const std::vector<Inventory::Entry>& added);
 
   void SetHealthRespawnPercentage(float percentage);
   void SetMagickaRespawnPercentage(float percentage);

@@ -1503,6 +1503,11 @@ void MpObjectReference::AddItem(uint32_t baseId, uint32_t count)
     changeForm.baseContainerAdded = true;
     changeForm.inv.AddItem(baseId, count);
   });
+  // thuum tracker #143: the record holds it again, so it is no longer the
+  // server's removal (MpActor::RemovedByServer)
+  if (auto actor = AsActor()) {
+    actor->ForgetRemovedByServer({ { baseId, count } });
+  }
   SendInventoryUpdate();
   SendItemAdded(*this, baseId, count);
 }
@@ -1517,6 +1522,9 @@ void MpObjectReference::AddPlainItems(
     changeForm.baseContainerAdded = true;
     changeForm.inv.AddPlainItems(entries);
   });
+  if (auto actor = AsActor()) {
+    actor->ForgetRemovedByServer(entries); // thuum tracker #143 (AddItem)
+  }
   SendInventoryUpdate();
   for (const auto& entry : entries) {
     SendItemAdded(*this, entry.baseId, entry.count);
@@ -1530,6 +1538,9 @@ void MpObjectReference::AddItems(const std::vector<Inventory::Entry>& entries)
       changeForm.baseContainerAdded = true;
       changeForm.inv.AddItems(entries);
     });
+    if (auto actor = AsActor()) {
+      actor->ForgetRemovedByServer(entries); // thuum tracker #143 (AddItem)
+    }
     SendInventoryUpdate();
   }
 

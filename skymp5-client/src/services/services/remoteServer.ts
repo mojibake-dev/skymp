@@ -1,7 +1,7 @@
 // @ts-expect-error (TODO: Remove in 2.10.0)
 import { callNative, settings, Actor, Form, FormType, MagicEffect, Menu, interruptCast, castSpellImmediate, placeAreaEffect, printConsole, applyAnimationVariablesToActor, getAnimationVariablesFromActor, ActorAnimationVariables } from 'skyrimPlatform';
 import * as sp from 'skyrimPlatform';
-import { figureAimHeading } from "../../sync/figureAim";
+import { holdFigureAimOffset, releaseFigureAimOffset } from "../../sync/figureAim";
 import { landsOnItsTarget } from "../../sync/spellDelivery";
 import {
   Armor,
@@ -1906,7 +1906,10 @@ export class RemoteServer extends ClientListener {
 
       if (msg.data.interruptCast) {
         interruptCast(ac.getFormID(), msg.data.castingSource, actorAnimationVariables);
-        figureAimHeading.delete(ac.getFormID());
+        // thuum tracker #165: this hand's alone (a dual hold's hands end
+        // apart: playtest 55's server log ended hand 0 at 22:58:07.935 UTC
+        // with hand 1 running on to 22:58:10.845)
+        releaseFigureAimOffset(ac.getFormID(), msg.data.castingSource);
         return;
       }
 
@@ -1929,10 +1932,17 @@ export class RemoteServer extends ClientListener {
         // server's instead: push.md); an aimed one keeps no target, so its
         // projectile follows the caster's relayed aim and hits only where
         // it flies
-        // thuum docs/verbs/spell-cast.md: the caster's aim heading, held on
-        // the figure while its hand's cast runs (sync/figureAim.ts)
+        // thuum docs/verbs/spell-cast.md: the caster's aim, held on the
+        // figure while its hand's cast runs (sync/figureAim.ts). thuum
+        // tracker #165: held as its offset from the caster's record heading
+        // (the world model's movement, angle Z in degrees; the figure's own
+        // angle Z when the record has none), so the view turns it with the
+        // record's heading of the moment
         if (msg.data.castingSource === 0 || msg.data.castingSource === 1) {
-          figureAimHeading.set(ac.getFormID(), msg.data.aimHeading);
+          const record = this.worldModel.forms.find((f) => f !== undefined && f.refrId === msg.data.caster);
+          const recordDegrees = record?.movement?.rot[2];
+          const headingDegrees = recordDegrees !== undefined && Number.isFinite(recordDegrees) ? recordDegrees : ac.getAngleZ();
+          holdFigureAimOffset(ac.getFormID(), msg.data.castingSource, msg.data.aimHeading, headingDegrees * Math.PI / 180);
         }
         const atPlayer = msg.data.target !== 0 && msg.data.target === this.worldModel.playerCharacterRefrId;
         const target = atPlayer && landsOnItsTarget(spell)

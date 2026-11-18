@@ -2006,6 +2006,519 @@ std::string DescribeTopicHere(const RE::TESTopic* topic)
     quest ? quest->formID : 0u, quest ? quest->IsRunning() : false,
     quest ? quest->data.flags.underlying() : 0u);
 }
+
+// thuum tracker #123, the stage's read (x-riverwood-scene-voice v3 run
+// 20261118-031740, the tracker's note 3335): on the guest the relayed topic
+// listed no info (numTopicInfos 0, a null array) and its quest 0x954d9 was
+// stopped (flags 0x100), so the engine's pick with a null info built no item
+// (result 6). The re-analyst's pyghidra read of 1.6.1170 on sky-re and its
+// skeptic pass (2026-11-17, HYPOTHESIS by rule 2): the engine destroys a
+// stopped quest's infos (the story teller's update 32487, then 25087, then
+// 25520 per topic) and loads them again only at the quest's start (25212,
+// the last step of its QueuedPromoteQuestTask, calls 25086) or at a save load
+// of a quest the story teller still lists (25084), so a guest whose copy of
+// the quest stopped holds no info of it. Such a line's quest dialogue is
+// loaded through the engine's own loader (Offsets::Voice::LoadQuestDialogue),
+// and the line is resolved again and said with its info given, the condition
+// pick skipped. The guard is the read's: the topic lists no info (the
+// loader's own filter, 25085), its quest is neither enabled nor starts
+// enabled (the loader returns at once on kStartsEnabled), and its promote
+// task is null (the engine's own load for the quest may still be running).
+// Once per topic.
+//
+// The load runs on the MAIN thread through SKSE's UI task queue (the fork's
+// route for engine work: SetBodyVelocity above, FateApi.cpp's
+// QueueFateTask), and the say is posted back to gameThrQ, where it already
+// works. gameThrQ drains inside the Papyrus OnUpdate native (main.cpp), and
+// the skeptic read that a second file's override of an info the first file
+// just made (USSEP's of 954d3 and 954c6) reloads it as an existing form,
+// releasing its handle through the VM's handle policy: a call into the VM
+// from a VM native, kept off that thread. The loader writes the engine's
+// "topic being loaded" global (401555) with no lock, as the engine's own IO
+// thread loads do, so a quest the engine loads at the same moment can take
+// one of these infos or give one; every info's parent on the quest's topics
+// is read after the load and a stray one said as an error. While a load is
+// queued every ask that names a topic waits behind it on the main thread, so
+// no topic's array is read on this thread under the load. HYPOTHESIS until
+// x-riverwood-scene-voice v4 reads the guest's lines
+std::mutex g_dialogueLoadMutex;
+// the topics whose quest's dialogue this game loaded for a line
+std::unordered_set<uint32_t> g_dialogueLoadTopics;
+// the main-thread tasks queued and not yet run
+std::atomic<int> g_dialogueLoadsQueued{ 0 };
+
+void SayOnGameThread(uint32_t actorFormId, uint32_t infoFormId,
+                     uint32_t topicFormId, bool mayLoad);
+
+// the thread a load ran on beside Main's (CommonLibSSE-NG Main.h:87
+// threadID), the witness the lab reads (FateApi.cpp's FateThreadNote)
+std::string SayThreadNote()
+{
+  const auto* main = RE::Main::GetSingleton();
+  return fmt::format("thread {} main {}",
+                     static_cast<uint32_t>(::GetCurrentThreadId()),
+                     main ? main->threadID : 0u);
+}
+
+// why a line's topic does not get its quest's dialogue loaded, or null when
+// the guard holds (CommonLibSSE-NG TESTopic.h:170 ownerQuest, :172
+// numTopicInfos; TESQuest.h:26 and :30 the flags, :263 data, :281
+// promoteTask)
+const char* DialogueLoadRefusal(const RE::TESTopic& topic)
+{
+  if (topic.numTopicInfos != 0) {
+    return "the topic lists infos";
+  }
+  const RE::TESQuest* quest = topic.ownerQuest;
+  if (!quest) {
+    return "the topic has no quest";
+  }
+  if (quest->data.flags.any(RE::QuestFlag::kEnabled,
+                            RE::QuestFlag::kStartsEnabled)) {
+    return "its quest is enabled or starts enabled";
+  }
+  if (quest->promoteTask) {
+    return "its quest's promote task is in flight";
+  }
+  return nullptr;
+}
+
+// a quest's topics and the infos they list, and how many of those name
+// another topic their parent (the race above, seen): the topic lists of
+// TESQuest.h:271-272, the branched ones by branch
+struct QuestInfoCount
+{
+  uint32_t topics = 0;
+  uint32_t infos = 0;
+  uint32_t strays = 0;
+};
+
+QuestInfoCount CountQuestInfos(const RE::TESQuest& quest)
+{
+  QuestInfoCount count;
+  const auto countTopic = [&count](const RE::TESTopic* topic) {
+    if (!topic) {
+      return;
+    }
+    ++count.topics;
+    if (!topic->topicInfos) {
+      return;
+    }
+    for (uint32_t i = 0; i < topic->numTopicInfos; ++i) {
+      const RE::TESTopicInfo* listed = topic->topicInfos[i];
+      if (!listed) {
+        continue;
+      }
+      ++count.infos;
+      if (listed->parentTopic != topic) {
+        ++count.strays;
+      }
+    }
+  };
+  for (const auto& list : quest.topics) {
+    for (const RE::TESTopic* topic : list) {
+      countTopic(topic);
+    }
+  }
+  for (const auto& branches : quest.branchedDialogue) {
+    for (const auto& entry : branches) {
+      if (entry.second) {
+        for (const RE::TESTopic* topic : *entry.second) {
+          countTopic(topic);
+        }
+      }
+    }
+  }
+  return count;
+}
+
+// the main thread's half: the line's topic gets its quest's dialogue loaded
+// when its info is still not in the form map, the guard still holds here
+// and this game never loaded it for the topic, with one line before the
+// call and one after; wanted is gameThrQ's guard passed (an ask queued only
+// behind another load says no refusal)
+void LoadDialogueForLine(uint32_t actorFormId, uint32_t infoFormId,
+                         uint32_t topicFormId, bool wanted)
+{
+  auto* found = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
+  if (found && found->parentTopic) {
+    return;
+  }
+  auto* topic = RE::TESForm::LookupByID<RE::TESTopic>(topicFormId);
+  if (!topic) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+    if (g_dialogueLoadTopics.count(topicFormId) != 0) {
+      return;
+    }
+  }
+  if (const char* refusal = DialogueLoadRefusal(*topic)) {
+    if (wanted) {
+      logger::info("[verb:npc-stream] say {:x}: topic {:x}'s dialogue not "
+                   "loaded on the main thread: {} ({}; tracker #123)",
+                   actorFormId, topicFormId, refusal,
+                   DescribeTopicHere(topic));
+    }
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+    g_dialogueLoadTopics.insert(topicFormId);
+  }
+  RE::TESQuest* quest = topic->ownerQuest;
+  logger::info("[verb:npc-stream] say {:x}: topic {:x} had 0 infos on this "
+               "game, its quest {:x} stopped (flags {:x}); loading its "
+               "dialogue ({}; tracker #123)",
+               actorFormId, topicFormId, quest->formID,
+               quest->data.flags.underlying(), SayThreadNote());
+  const auto start = std::chrono::steady_clock::now();
+  REL::Relocation<void (*)(RE::TESQuest*)> load{
+    Offsets::Voice::LoadQuestDialogue
+  };
+  load(quest);
+  const double ms = std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - start)
+                      .count();
+  bool listed = false;
+  if (topic->topicInfos) {
+    for (uint32_t i = 0; i < topic->numTopicInfos; ++i) {
+      const RE::TESTopicInfo* candidate = topic->topicInfos[i];
+      if (candidate && candidate->formID == infoFormId) {
+        listed = true;
+      }
+    }
+  }
+  const auto* mapped = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
+  const QuestInfoCount count = CountQuestInfos(*quest);
+  const std::string said = fmt::format(
+    "[verb:npc-stream] say {:x}: topic {:x} had 0 infos on this game, its "
+    "quest {:x} stopped; loaded its dialogue: {} infos in {:.1f} ms (the "
+    "line's info {:x} {} the form map and {} the topic's array; the quest's "
+    "{} topic(s) list {} info(s), {} naming another topic their parent; "
+    "tracker #123)",
+    actorFormId, topicFormId, quest->formID, topic->numTopicInfos, ms,
+    infoFormId, mapped ? "in" : "not in", listed ? "in" : "not in",
+    count.topics, count.infos, count.strays);
+  if (count.strays != 0) {
+    logger::error("{}", said);
+  } else {
+    logger::info("{}", said);
+  }
+}
+
+// the main thread's task: the load, then the say posted back to gameThrQ
+// with no second wait (the ask's answer, still -1, written there)
+void LoadDialogueThenSay(uint32_t actorFormId, uint32_t infoFormId,
+                         uint32_t topicFormId, bool wanted)
+{
+  try {
+    LoadDialogueForLine(actorFormId, infoFormId, topicFormId, wanted);
+  } catch (const std::exception& e) {
+    logger::error("[verb:npc-stream] say {:x}: the dialogue load for topic "
+                  "{:x} threw on the main thread: {} (tracker #123)",
+                  actorFormId, topicFormId, e.what());
+  }
+  g_dialogueLoadsQueued.fetch_sub(1);
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [actorFormId, infoFormId, topicFormId](Viet::Void) {
+      SayOnGameThread(actorFormId, infoFormId, topicFormId, false);
+    });
+}
+
+// gameThrQ's half: true when the say goes to the main thread first (a load
+// already queued, or the line's info not in the form map and its topic
+// passing the guard, never loaded here); the ask's answer stays -1 until
+// the say posted back writes it (voiceService.ts waits answerMs, 2000 ms)
+bool QueueDialogueLoad(uint32_t actorFormId, uint32_t infoFormId,
+                       uint32_t topicFormId)
+{
+  if (topicFormId == 0) {
+    return false;
+  }
+  // a load already queued: this ask waits behind it, whatever its line
+  const bool behind = g_dialogueLoadsQueued.load() != 0;
+  if (!behind) {
+    auto* found = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
+    if (found && found->parentTopic) {
+      return false;
+    }
+    auto* topic = RE::TESForm::LookupByID<RE::TESTopic>(topicFormId);
+    if (!topic || DialogueLoadRefusal(*topic) != nullptr) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+    if (g_dialogueLoadTopics.count(topicFormId) != 0) {
+      return false;
+    }
+  }
+  const auto* tasks = SKSE::GetTaskInterface();
+  if (!tasks) {
+    static bool said = false;
+    if (!said) {
+      said = true;
+      logger::warn("[verb:npc-stream] say {:x}: no SKSE task interface, so "
+                   "a stopped quest's dialogue is not loaded (tracker #123)",
+                   actorFormId);
+    }
+    return false;
+  }
+  g_dialogueLoadsQueued.fetch_add(1);
+  tasks->AddUITask([actorFormId, infoFormId, topicFormId, behind]() {
+    LoadDialogueThenSay(actorFormId, infoFormId, topicFormId, !behind);
+  });
+  return true;
+}
+
+// the say on the game thread, where gameThrQ drains and the forms are
+// looked up (setPuppet's reason); mayLoad is false for the say the main
+// thread posts back after a dialogue load (#123), so a line waits there
+// at most once
+void SayOnGameThread(uint32_t actorFormId, uint32_t infoFormId,
+                     uint32_t topicFormId, bool mayLoad)
+{
+  int result = 0;
+  auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+  auto* processHere =
+    actor ? actor->GetActorRuntimeData().currentProcess : nullptr;
+  // #123: a line whose info this game does not hold, of a stopped quest's
+  // topic, waits for that quest's dialogue to load on the main thread
+  // (QueueDialogueLoad above); the say posted back passes mayLoad false
+  if (mayLoad && processHere &&
+      QueueDialogueLoad(actorFormId, infoFormId, topicFormId)) {
+    return;
+  }
+  // #123: the line through the form map, else the relayed topic (an info
+  // found in its array, or none: the engine's pick below)
+  const SayLine line = ResolveSayLine(infoFormId, topicFormId);
+  auto* topicInfo = line.info;
+  auto* topic = line.topic;
+  if (actor && processHere && !topic) {
+    // no topic for the line here: the lab's read names what resolved
+    // (#123)
+    result = 6;
+    logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} topic "
+                 "{:x} -> unresolved (no topic here: the info {}, the "
+                 "relayed topic {})",
+                 actorFormId, infoFormId, topicFormId,
+                 topicInfo ? "found with no parent" : "not found",
+                 topicFormId ? "not found" : "not given");
+  }
+  if (actor && topic) {
+    auto& runtime = actor->GetActorRuntimeData();
+    if (runtime.currentProcess) {
+      const auto bitsBefore = runtime.boolBits.underlying();
+      const float timerBefore = runtime.voiceTimer;
+      const int stateBefore = runtime.soundCallBackSet;
+      REL::Relocation<SayTopicFn> say{ Offsets::Voice::SayTopic };
+      // Say's shape with the info given: the engine's own books, lip
+      // sync, talking idle and begin event; the end is the detour's
+      // (PuppetHooks.cpp DriveVoice) on a puppet
+      // the lip entry's load state before the call (voice v3; the
+      // re-analyst's read of 2026-10-26: HighProcessData's +0x3B8 is the
+      // current line's lip-sync resource entry, its +0xC word carrying
+      // the load state in bits 28 to 30: 1 or 2 queued or pending, 3 or
+      // 4 loaded, 0 or 5 absent or failed)
+      const auto lipState = [](RE::HighProcessData* high) -> int {
+        if (!high || !high->unk3B8) {
+          return -1;
+        }
+        const auto word = *reinterpret_cast<const uint32_t*>(
+          reinterpret_cast<const uint8_t*>(high->unk3B8) + 0xC);
+        return static_cast<int>((word >> 28) & 7u);
+      };
+      const int lipBefore = lipState(runtime.currentProcess->high);
+      // voice v4: the audibility terms SpeakSoundFunction tests before
+      // its lip branch (the re-analyst's read of P7 v3, 2026-10-26: a 3D
+      // on this seat, and the speaker within the dialogue output model's
+      // max distance of the listener on every axis unless talking to the
+      // player), read here as the player's distance per axis and the 3D
+      const bool has3D = actor->Get3D() != nullptr;
+      float axisDistance = -1.f;
+      if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+        const auto d = actor->GetPosition() - player->GetPosition();
+        axisDistance =
+          std::max({ std::fabs(d.x), std::fabs(d.y), std::fabs(d.z) });
+      }
+      // voice v3: the seventh flag FALSE selects the SYNCHRONOUS lip-file
+      // load inside SpeakSoundFunction (16256), so the line plays in this
+      // call with its lip sync. Say's own shape passes true, the
+      // asynchronous load, after which the engine plays nothing and
+      // marks the say in flight (greetingPlayer) for a replay on its next
+      // AI frame (39632 under UpdateAI), which an AI-off puppet never
+      // runs: P7 v1 20261026-181119, the humanoid resident's line
+      // refused while every creature's bark (no lip file, a synchronous
+      // miss) started. HYPOTHESIS until P7 v3
+      // voice v4: keepExtra false, the shape of the engine's own bark and
+      // player-dialogue callers (44673, 37541; only Papyrus Say passes
+      // true): no ExtraSayToTopicInfo is attached for a callback nothing
+      // on this seat consumes
+      // train 57: a relayed repeat of the item in progress is left to the
+      // puppet's own continuation (PuppetHooks.cpp DriveVoice): a bark
+      // raises a BEGIN per line on the host and the relay carries each, so
+      // a say here would restart the item at its first line
+      auto* highBefore = runtime.currentProcess->high;
+      const bool repeat = topicInfo && highBefore &&
+        highBefore->greetingPlayer && highBefore->greetTopic &&
+        highBefore->greetTopic->info == topicInfo;
+      // thuum playtest 37 (2026-10-28, Faendal and Alvor): a line asked
+      // while the last one still plays with no state byte (the sound
+      // descriptor path: timer running, state -1) takes that path too and
+      // plays with no lips (4540c, bccc6, 105384, each "played"); the host's
+      // own engine cuts a line for the next, so the one in flight is stopped
+      // and its item cleared here first, and this line starts through
+      // SpeakSoundFunction's lip branch. HYPOTHESIS until the probe.
+      // 2026-10-28 21:56Z (Eli: "on rotfern the rumors line doesnt make it
+      // to prisoner"): the rumor ca6da asked 1.7 s after the greeting 45447,
+      // a lip-path line still in flight (state 3), took the sound path too
+      // ("played", quiet 3D, no lips), since the pre-clear skipped state 3.
+      // The host's engine cuts any line for the next, so does this seat
+      bool precleared = false;
+      if (!repeat && highBefore && timerBefore > 0.f) {
+        if (highBefore->soundHandles[0].IsValid()) {
+          highBefore->soundHandles[0].Stop();
+        }
+        REL::Relocation<void (*)(RE::AIProcess*)> clearGreetBefore{
+          Offsets::Voice::ClearGreetTopic
+        };
+        clearGreetBefore(runtime.currentProcess);
+        // the stopped line's END never runs either: its done bits restored
+        // so this say passes the busy test (the same reason as the
+        // inaudible branch below)
+        runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
+                             RE::Actor::BOOL_BITS::kVoiceFileDone);
+        precleared = true;
+      }
+      // #123: with no info resolved here the say carries the relayed topic
+      // and a null info, Papyrus Say's shape (the re-analyst's read,
+      // docs/research/m3/re-puppet-head-lips.md A: 56220 calls 39162 with
+      // (process, actor, topic, null, ...) and 39642 builds the item for
+      // the topic), so the engine picks the info; the item it builds is
+      // told from the one in place before the call. The stage's run
+      // 20261118-031740 read that the pick loads nothing (a topic with no
+      // info built no item, result 6), so a stopped quest's line has its
+      // dialogue loaded first (QueueDialogueLoad above) and this is the
+      // fallback for a topic the load left empty
+      auto* itemBefore = highBefore ? highBefore->greetTopic.get() : nullptr;
+      const bool returned = repeat
+        ? false
+        : say(runtime.currentProcess, actor, topic, topicInfo, false, false,
+              false, false);
+      const int stateAfter = runtime.soundCallBackSet;
+      // voice v2 (P7 v1 20261026-181119: the say started on every
+      // creature puppet and was refused on a humanoid resident's with
+      // the same pre-state): the facts the engine's answer leaves
+      // behind, so the lab reads WHICH path refused or played. The state
+      // byte 3 is the SpeakSoundFunction path's mark; a line through the
+      // sound descriptor path (39771, the static read) sets no state
+      // byte but leaves a live handle or a running timer: "played"
+      auto* high = runtime.currentProcess->high;
+      const bool handleLive = high && high->soundHandles[0].IsValid();
+      const float timerAfter = runtime.voiceTimer;
+      const bool inFlight = high && high->greetingPlayer;
+      const int lipAfter = lipState(high);
+      // #123: the info the engine's pick took (no info given), read from
+      // the item the say built (HighProcessData.h:298, DialogueItem.h:56)
+      auto* itemAfter = high ? high->greetTopic.get() : nullptr;
+      const RE::TESTopicInfo* picked =
+        !topicInfo && itemAfter && itemAfter != itemBefore ? itemAfter->info
+                                                           : nullptr;
+      bool cleared = false;
+      if (!topicInfo && !picked) {
+        // the engine built no item for the topic: no line here
+        result = 6;
+      } else if (!topicInfo && picked->formID != infoFormId) {
+        // another info of the topic: the host's line is not this one, so
+        // it is stopped and its item cleared the pre-clear's way above
+        result = 7;
+        if (high && high->soundHandles[0].IsValid()) {
+          high->soundHandles[0].Stop();
+        }
+        REL::Relocation<void (*)(RE::AIProcess*)> clearPicked{
+          Offsets::Voice::ClearGreetTopic
+        };
+        clearPicked(runtime.currentProcess);
+        runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
+                             RE::Actor::BOOL_BITS::kVoiceFileDone);
+        cleared = true;
+      } else if (stateAfter == 3) {
+        result = 1;
+      } else if (handleLive || timerAfter > 0.f) {
+        result = 3;
+      } else if (inFlight) {
+        // voice v4: the start left the item in progress with nothing
+        // playing and no lip entry: SpeakSoundFunction's audibility gate
+        // (no 3D here, or the speaker outside the dialogue output model's
+        // range of this seat's listener) returned before the lip branch
+        // (P7 v3 200538, the resident 13482 "deferred": lip -1 before and
+        // after, the re-analyst's read). The engine's verdict for this
+        // seat is accepted and the item cleared the way its END paths
+        // clear it, so the mark never holds a later promote's greetings
+        result = 5;
+        if (high) {
+          REL::Relocation<void (*)(RE::AIProcess*)> clearGreet{
+            Offsets::Voice::ClearGreetTopic
+          };
+          clearGreet(runtime.currentProcess);
+          cleared = true;
+        }
+        // The engine's END restores the done bits; an inaudible start never
+        // reaches it: the voice-file start (39772) clears kVoiceFileDone
+        // after SpeakSoundFunction returned at its audibility gate with the
+        // timer at -1, and the item above is cleared by the engine's own
+        // ClearGreetTopic, which leaves the bits alone. So the next say on
+        // this puppet failed the busy test (37266: both done bits set and
+        // the timer at or below 0) and every later line answered "refused":
+        // one line heard, the rest never (playtests 43 and 44's F9; Eli,
+        // 2026-11-03: voice lines after the first one worked historically
+        // for everything but scripted scenes, and a scene's first line is
+        // the one most often inaudible, the guest far). Restored here as END
+        // would (Actor.h:166-167). HYPOTHESIS until say-verdict.js reads a
+        // started or played say after an inaudible one on the same puppet.
+        runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
+                             RE::Actor::BOOL_BITS::kVoiceFileDone);
+      } else {
+        result = 2;
+      }
+      if (repeat) {
+        result = 3; // played: the item is in progress here, its later
+                    // lines the continuation's
+        logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} is "
+                     "the item in progress, left to its continuation",
+                     actorFormId, infoFormId);
+      }
+      // #123: where the line was found here; for one said through the
+      // engine's pick, the info it took and what this game holds of the
+      // topic (the lab's read of an unresolved line)
+      const std::string through = topicInfo
+        ? fmt::format("; through {}", line.through)
+        : fmt::format("; through {}, picked {:x}; {}", line.through,
+                      picked ? picked->formID : 0u, DescribeTopicHere(topic));
+      logger::info(
+        "[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
+        "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {}, "
+        "lip {}, 3D {}, axis distance {:.0f} before; returned "
+        "{}, state {}, timer {:.2f}, handle {}, delay {:.2f}, in "
+        "flight {}, lip {} after{}{}{})",
+        actorFormId, infoFormId, topic->formID,
+        result == 1     ? "started"
+          : result == 3 ? "played"
+          : result == 5 ? "inaudible"
+          : result == 4 ? "deferred"
+          : result == 6 ? "unresolved"
+          : result == 7 ? "another info"
+                        : "refused",
+        bitsBefore, timerBefore, stateBefore, lipBefore, has3D, axisDistance,
+        returned, stateAfter, timerAfter, handleLive ? "live" : "none",
+        high ? high->soundDelay : -2.f, inFlight, lipAfter,
+        cleared ? ", item cleared" : "",
+        precleared ? "; the line in flight stopped first" : "", through);
+    }
+  }
+  std::lock_guard<std::mutex> lock(g_sayResultMutex);
+  g_sayResult[actorFormId] = result;
+}
 }
 
 Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
@@ -2028,240 +2541,10 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
     g_sayResult[actorFormId] = -1;
   }
   // the forms looked up on the game thread alone (setPuppet's reason)
-  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId, infoFormId,
-                                              topicFormId](Viet::Void) {
-    int result = 0;
-    auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
-    // #123: the line through the form map, else the relayed topic (an info
-    // found in its array, or none: the engine's pick below)
-    const SayLine line = ResolveSayLine(infoFormId, topicFormId);
-    auto* topicInfo = line.info;
-    auto* topic = line.topic;
-    auto* processHere =
-      actor ? actor->GetActorRuntimeData().currentProcess : nullptr;
-    if (actor && processHere && !topic) {
-      // no topic for the line here: the lab's read names what resolved
-      // (#123)
-      result = 6;
-      logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} topic "
-                   "{:x} -> unresolved (no topic here: the info {}, the "
-                   "relayed topic {})",
-                   actorFormId, infoFormId, topicFormId,
-                   topicInfo ? "found with no parent" : "not found",
-                   topicFormId ? "not found" : "not given");
-    }
-    if (actor && topic) {
-      auto& runtime = actor->GetActorRuntimeData();
-      if (runtime.currentProcess) {
-        const auto bitsBefore = runtime.boolBits.underlying();
-        const float timerBefore = runtime.voiceTimer;
-        const int stateBefore = runtime.soundCallBackSet;
-        REL::Relocation<SayTopicFn> say{ Offsets::Voice::SayTopic };
-        // Say's shape with the info given: the engine's own books, lip
-        // sync, talking idle and begin event; the end is the detour's
-        // (PuppetHooks.cpp DriveVoice) on a puppet
-        // the lip entry's load state before the call (voice v3; the
-        // re-analyst's read of 2026-10-26: HighProcessData's +0x3B8 is the
-        // current line's lip-sync resource entry, its +0xC word carrying
-        // the load state in bits 28 to 30: 1 or 2 queued or pending, 3 or
-        // 4 loaded, 0 or 5 absent or failed)
-        const auto lipState = [](RE::HighProcessData* high) -> int {
-          if (!high || !high->unk3B8) {
-            return -1;
-          }
-          const auto word = *reinterpret_cast<const uint32_t*>(
-            reinterpret_cast<const uint8_t*>(high->unk3B8) + 0xC);
-          return static_cast<int>((word >> 28) & 7u);
-        };
-        const int lipBefore = lipState(runtime.currentProcess->high);
-        // voice v4: the audibility terms SpeakSoundFunction tests before
-        // its lip branch (the re-analyst's read of P7 v3, 2026-10-26: a 3D
-        // on this seat, and the speaker within the dialogue output model's
-        // max distance of the listener on every axis unless talking to the
-        // player), read here as the player's distance per axis and the 3D
-        const bool has3D = actor->Get3D() != nullptr;
-        float axisDistance = -1.f;
-        if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-          const auto d = actor->GetPosition() - player->GetPosition();
-          axisDistance =
-            std::max({ std::fabs(d.x), std::fabs(d.y), std::fabs(d.z) });
-        }
-        // voice v3: the seventh flag FALSE selects the SYNCHRONOUS lip-file
-        // load inside SpeakSoundFunction (16256), so the line plays in this
-        // call with its lip sync. Say's own shape passes true, the
-        // asynchronous load, after which the engine plays nothing and
-        // marks the say in flight (greetingPlayer) for a replay on its next
-        // AI frame (39632 under UpdateAI), which an AI-off puppet never
-        // runs: P7 v1 20261026-181119, the humanoid resident's line
-        // refused while every creature's bark (no lip file, a synchronous
-        // miss) started. HYPOTHESIS until P7 v3
-        // voice v4: keepExtra false, the shape of the engine's own bark and
-        // player-dialogue callers (44673, 37541; only Papyrus Say passes
-        // true): no ExtraSayToTopicInfo is attached for a callback nothing
-        // on this seat consumes
-        // train 57: a relayed repeat of the item in progress is left to the
-        // puppet's own continuation (PuppetHooks.cpp DriveVoice): a bark
-        // raises a BEGIN per line on the host and the relay carries each, so
-        // a say here would restart the item at its first line
-        auto* highBefore = runtime.currentProcess->high;
-        const bool repeat = topicInfo && highBefore &&
-          highBefore->greetingPlayer && highBefore->greetTopic &&
-          highBefore->greetTopic->info == topicInfo;
-        // thuum playtest 37 (2026-10-28, Faendal and Alvor): a line asked
-        // while the last one still plays with no state byte (the sound
-        // descriptor path: timer running, state -1) takes that path too and
-        // plays with no lips (4540c, bccc6, 105384, each "played"); the host's
-        // own engine cuts a line for the next, so the one in flight is stopped
-        // and its item cleared here first, and this line starts through
-        // SpeakSoundFunction's lip branch. HYPOTHESIS until the probe.
-        // 2026-10-28 21:56Z (Eli: "on rotfern the rumors line doesnt make it
-        // to prisoner"): the rumor ca6da asked 1.7 s after the greeting 45447,
-        // a lip-path line still in flight (state 3), took the sound path too
-        // ("played", quiet 3D, no lips), since the pre-clear skipped state 3.
-        // The host's engine cuts any line for the next, so does this seat
-        bool precleared = false;
-        if (!repeat && highBefore && timerBefore > 0.f) {
-          if (highBefore->soundHandles[0].IsValid()) {
-            highBefore->soundHandles[0].Stop();
-          }
-          REL::Relocation<void (*)(RE::AIProcess*)> clearGreetBefore{
-            Offsets::Voice::ClearGreetTopic
-          };
-          clearGreetBefore(runtime.currentProcess);
-          // the stopped line's END never runs either: its done bits restored
-          // so this say passes the busy test (the same reason as the
-          // inaudible branch below)
-          runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
-                               RE::Actor::BOOL_BITS::kVoiceFileDone);
-          precleared = true;
-        }
-        // #123: with no info resolved here the say carries the relayed topic
-        // and a null info, Papyrus Say's shape (the re-analyst's read,
-        // docs/research/m3/re-puppet-head-lips.md A: 56220 calls 39162 with
-        // (process, actor, topic, null, ...) and 39642 builds the item for
-        // the topic), so the engine picks the info; the item it builds is
-        // told from the one in place before the call. HYPOTHESIS: the
-        // engine's pick loads a topic's infos this game does not hold
-        auto* itemBefore = highBefore ? highBefore->greetTopic.get() : nullptr;
-        const bool returned = repeat
-          ? false
-          : say(runtime.currentProcess, actor, topic, topicInfo, false, false,
-                false, false);
-        const int stateAfter = runtime.soundCallBackSet;
-        // voice v2 (P7 v1 20261026-181119: the say started on every
-        // creature puppet and was refused on a humanoid resident's with
-        // the same pre-state): the facts the engine's answer leaves
-        // behind, so the lab reads WHICH path refused or played. The state
-        // byte 3 is the SpeakSoundFunction path's mark; a line through the
-        // sound descriptor path (39771, the static read) sets no state
-        // byte but leaves a live handle or a running timer: "played"
-        auto* high = runtime.currentProcess->high;
-        const bool handleLive = high && high->soundHandles[0].IsValid();
-        const float timerAfter = runtime.voiceTimer;
-        const bool inFlight = high && high->greetingPlayer;
-        const int lipAfter = lipState(high);
-        // #123: the info the engine's pick took (no info given), read from
-        // the item the say built (HighProcessData.h:298, DialogueItem.h:56)
-        auto* itemAfter = high ? high->greetTopic.get() : nullptr;
-        const RE::TESTopicInfo* picked =
-          !topicInfo && itemAfter && itemAfter != itemBefore ? itemAfter->info
-                                                             : nullptr;
-        bool cleared = false;
-        if (!topicInfo && !picked) {
-          // the engine built no item for the topic: no line here
-          result = 6;
-        } else if (!topicInfo && picked->formID != infoFormId) {
-          // another info of the topic: the host's line is not this one, so
-          // it is stopped and its item cleared the pre-clear's way above
-          result = 7;
-          if (high && high->soundHandles[0].IsValid()) {
-            high->soundHandles[0].Stop();
-          }
-          REL::Relocation<void (*)(RE::AIProcess*)> clearPicked{
-            Offsets::Voice::ClearGreetTopic
-          };
-          clearPicked(runtime.currentProcess);
-          runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
-                               RE::Actor::BOOL_BITS::kVoiceFileDone);
-          cleared = true;
-        } else if (stateAfter == 3) {
-          result = 1;
-        } else if (handleLive || timerAfter > 0.f) {
-          result = 3;
-        } else if (inFlight) {
-          // voice v4: the start left the item in progress with nothing
-          // playing and no lip entry: SpeakSoundFunction's audibility gate
-          // (no 3D here, or the speaker outside the dialogue output model's
-          // range of this seat's listener) returned before the lip branch
-          // (P7 v3 200538, the resident 13482 "deferred": lip -1 before and
-          // after, the re-analyst's read). The engine's verdict for this
-          // seat is accepted and the item cleared the way its END paths
-          // clear it, so the mark never holds a later promote's greetings
-          result = 5;
-          if (high) {
-            REL::Relocation<void (*)(RE::AIProcess*)> clearGreet{
-              Offsets::Voice::ClearGreetTopic
-            };
-            clearGreet(runtime.currentProcess);
-            cleared = true;
-          }
-          // The engine's END restores the done bits; an inaudible start never
-          // reaches it: the voice-file start (39772) clears kVoiceFileDone
-          // after SpeakSoundFunction returned at its audibility gate with the
-          // timer at -1, and the item above is cleared by the engine's own
-          // ClearGreetTopic, which leaves the bits alone. So the next say on
-          // this puppet failed the busy test (37266: both done bits set and
-          // the timer at or below 0) and every later line answered "refused":
-          // one line heard, the rest never (playtests 43 and 44's F9; Eli,
-          // 2026-11-03: voice lines after the first one worked historically
-          // for everything but scripted scenes, and a scene's first line is
-          // the one most often inaudible, the guest far). Restored here as END
-          // would (Actor.h:166-167). HYPOTHESIS until say-verdict.js reads a
-          // started or played say after an inaudible one on the same puppet.
-          runtime.boolBits.set(RE::Actor::BOOL_BITS::kSoundFileDone,
-                               RE::Actor::BOOL_BITS::kVoiceFileDone);
-        } else {
-          result = 2;
-        }
-        if (repeat) {
-          result = 3; // played: the item is in progress here, its later
-                      // lines the continuation's
-          logger::info("[verb:npc-stream] sayTopicInfo on {:x}: info {:x} is "
-                       "the item in progress, left to its continuation",
-                       actorFormId, infoFormId);
-        }
-        // #123: where the line was found here; for one said through the
-        // engine's pick, the info it took and what this game holds of the
-        // topic (the lab's read of an unresolved line)
-        const std::string through = topicInfo
-          ? fmt::format("; through {}", line.through)
-          : fmt::format("; through {}, picked {:x}; {}", line.through,
-                        picked ? picked->formID : 0u,
-                        DescribeTopicHere(topic));
-        logger::info(
-          "[verb:npc-stream] sayTopicInfo on {:x}: info {:x} "
-          "topic {:x} -> {} (bits {:x}, timer {:.2f}, state {}, "
-          "lip {}, 3D {}, axis distance {:.0f} before; returned "
-          "{}, state {}, timer {:.2f}, handle {}, delay {:.2f}, in "
-          "flight {}, lip {} after{}{}{})",
-          actorFormId, infoFormId, topic->formID,
-          result == 1     ? "started"
-            : result == 3 ? "played"
-            : result == 5 ? "inaudible"
-            : result == 4 ? "deferred"
-            : result == 6 ? "unresolved"
-            : result == 7 ? "another info"
-                          : "refused",
-          bitsBefore, timerBefore, stateBefore, lipBefore, has3D, axisDistance,
-          returned, stateAfter, timerAfter, handleLive ? "live" : "none",
-          high ? high->soundDelay : -2.f, inFlight, lipAfter,
-          cleared ? ", item cleared" : "",
-          precleared ? "; the line in flight stopped first" : "", through);
-      }
-    }
-    std::lock_guard<std::mutex> lock(g_sayResultMutex);
-    g_sayResult[actorFormId] = result;
-  });
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [actorFormId, infoFormId, topicFormId](Viet::Void) {
+      SayOnGameThread(actorFormId, infoFormId, topicFormId, true);
+    });
   return Napi::Boolean::New(info.Env(), true);
 }
 

@@ -416,6 +416,15 @@ struct PartOne::Impl
   // rule is Rust's, ADR-020): each live summon by its server actor, its
   // backstop (the reported time left plus 5 s) and its dispel's fade
   rust::Box<skymp::rules::Summons> summons = skymp::rules::new_summons();
+  // the minions table (thuum tracker #160, ADR-077; PartOne::OwnerOf): each
+  // live summon a player cast, by its server actor, the player's actor.
+  // Written at OnSummonStart for a player's own report alone, never an
+  // NPC's (tracker #106: the summon row's caster is the reporting game's
+  // player for both, so it cannot say whose the summon is), and gone at the
+  // dispel or the forget; runtime only, as the summons are. A thrall's
+  // owner is its command row's (CommanderOf), which OwnerOf reads beside
+  // it. Tracker #167's unified summons and thralls builds on this table
+  std::unordered_map<uint32_t, uint32_t> minionOwners;
 
   // thuum ADR-068 rung 4 (the created half): a unique actor's attached
   // reference by its base (an ALUA container, noted at its attach), and the
@@ -4326,6 +4335,24 @@ uint32_t PartOne::CommanderOf(const MpActor& actor) const
   return pImpl->cells->commander_of(actor.GetFormId());
 }
 
+uint32_t PartOne::OwnerOf(const MpActor& minion) const
+{
+  // a summon: the minions table, a player's own summons alone
+  const auto summon = pImpl->minionOwners.find(minion.GetFormId());
+  if (summon != pImpl->minionOwners.end()) {
+    return summon->second;
+  }
+  // a thrall: its commander, unless its raise was an NPC's (tracker #106,
+  // TakeThrallsThroughDoor's test: the accepted caster 0 for a command no
+  // hit stamped)
+  const uint32_t commander = CommanderOf(minion);
+  const uint32_t caster = minion.ReanimateAcceptedCaster();
+  if (commander == 0 || (caster != 0 && caster != commander)) {
+    return 0;
+  }
+  return commander;
+}
+
 namespace {
 // how far from the door's user a thrall goes through with it (thuum #48 leg
 // D): one exterior cell's span, HYPOTHESIS for the engine's own (unread)
@@ -4468,6 +4495,12 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg,
     FormDesc::FromFormId(msg.baseId, worldState.espmFiles));
   pImpl->cells->summon_row(summon->GetFormId(), caster.GetFormId(),
                            worldState.CellOf(*summon).value_or(0), nowMs);
+  // thuum tracker #160 (ADR-077): a player's own summon is its player's
+  // minion; an NPC's is no player's (tracker #106), its host's player only
+  // simulating it, so the minions table leaves it out
+  if (!npc) {
+    pImpl->minionOwners[summon->GetFormId()] = caster.GetFormId();
+  }
   // the word now, with the bind on it (the record held, the row placed)
   summon->ForceSubscriptionsUpdate();
   spdlog::info("[verb:summon] {} stands for {:.1f} s, its owner {:x}'s game "
@@ -4506,6 +4539,9 @@ void PartOne::DispelSummon(MpActor& summon, const char* reason)
   const auto row = pImpl->summons->summon_row(id);
   const uint32_t caster = row.caster;
   const uint64_t nowMs = SteadyNowMs();
+  // a dispel ends the minion whatever its fade does (tracker #160): a hit
+  // on a fading summon starts no fight with its owner
+  pImpl->minionOwners.erase(id);
   // the engine's own fade, the GMST read from the records (never from
   // memory): fSummonedCreatureFadeOutSeconds (Skyrim.esm, lab/esm.py on
   // sky-srv, 2026-11-16), 1.5 s
@@ -4548,6 +4584,7 @@ void PartOne::ForgetSummon(uint32_t actor)
 {
   pImpl->summons->summon_forget(actor);
   pImpl->cells->summon_row_end(actor);
+  pImpl->minionOwners.erase(actor);
 }
 
 uint32_t PartOne::ReleaseAnyClaim(MpActor& actor)

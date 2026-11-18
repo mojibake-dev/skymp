@@ -12586,6 +12586,23 @@ namespace {
 // its fight again at most this often, a policy of the server's (TickFights'
 // own period, as #113's rejoin), not an engine number
 constexpr uint64_t kMinionRetellMs = 1000;
+
+// thuum ADR-023, the players' notice: `victim`'s game starts combat between
+// its figure of `aggressor` and its own player, Actor.StartCombat on the
+// attacker's server id (the client maps it to its figure) aimed at 0x14,
+// that client's player. A player struck (NotifyHostility's two players) and
+// a minion's owner (ADR-077, tracker #160) hear the same notice
+void TellPlayerOfFight(MpActor& aggressor, MpActor& victim)
+{
+  SpSnippetObjectArgument player;
+  player.formId = 0x14;
+  player.type = "Actor";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ player };
+  SpSnippet("Actor", "StartCombat", args, aggressor.GetFormId())
+    .Execute(&victim, SpSnippetMode::kNoReturnResult);
+}
 }
 
 void ActionListener::TellHostOfFight(MpActor& aggressor, MpActor& target,
@@ -12664,6 +12681,39 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
     std::chrono::duration_cast<std::chrono::milliseconds>(
       now.time_since_epoch())
       .count());
+  // thuum tracker #160 (playtest 55, Eli: "summoner wasn't 'looped in' to
+  // aggro"; ADR-077 decision 2: "if someone attacks your summon they should
+  // become hostile to you, and the summon should attack"): a player's hit on
+  // a summon or thrall another player owns (PartOne::OwnerOf) is a hit on
+  // that owner too. The fights table took the minion's pair alone, so the
+  // owner's game heard "the summon and the attacker fight" (TellHostOfFight)
+  // and never that the attacker is its player's enemy: its player stayed
+  // out of combat, no music and no compass dot (playtest 55, server.log
+  // :2707 and :2912 begin the pairs with the summons alone; :2878 and :3249
+  // end them). Now the pair (attacker, owner) is hit on every such hit, so
+  // it keeps the minion's own pair's quiet clock, and a hit that begins it
+  // sends the owner's game the players' notice; TickFights ends it as any
+  // players' fight. The minion's own fight goes on below as before. An NPC's
+  // summon or thrall is no player's (tracker #106), and one's own minion is
+  // one's own engine's
+  if (facts.aggressor_is_player && !facts.target_is_player) {
+    const uint32_t ownerId = partOne.OwnerOf(target);
+    if (ownerId != 0 && ownerId != aggressor.GetFormId()) {
+      const auto& ownerForm = partOne.worldState.LookupFormByIdNoLoad(ownerId);
+      MpActor* owner = ownerForm ? ownerForm->AsActor() : nullptr;
+      if (owner &&
+          partOne.serverState.UserByActor(owner) !=
+            Networking::InvalidUserId &&
+          partOne.GetFights().hit(aggressor.GetFormId(), ownerId, nowMs)) {
+        TellPlayerOfFight(aggressor, *owner);
+        spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, "
+                     "a summon or thrall of {:x}'s, and a fight with its "
+                     "owner begins; its owner's game is told (ADR-077, "
+                     "tracker #160)",
+                     aggressor.GetFormId(), target.GetFormId(), ownerId);
+      }
+    }
+  }
   if (!partOne.GetFights().hit(aggressor.GetFormId(), target.GetFormId(),
                                nowMs)) {
     // playtest 54 #126: a hit in a fight going on tells nothing, but a
@@ -12731,14 +12781,7 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
     return;
   }
 
-  SpSnippetObjectArgument player;
-  player.formId = 0x14;
-  player.type = "Actor";
-  const std::vector<std::optional<
-    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-    args{ player };
-  SpSnippet("Actor", "StartCombat", args, aggressor.GetFormId())
-    .Execute(&target, SpSnippetMode::kNoReturnResult);
+  TellPlayerOfFight(aggressor, target);
   spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, a "
                "fight begins; the victim's game is told",
                aggressor.GetFormId(), target.GetFormId());

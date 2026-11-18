@@ -320,7 +320,7 @@ export class HostService extends ClientListener {
 
     // Whether the grid square of (x, y) in the worldspace is one of the
     // cells' squares (the platform's cellGridOf); a cell whose square is not
-    // read yet is asked for once and counts as `unread` says until it
+    // read yet is asked for (gridAskDue) and counts as `unread` says until it
     // answers, and so does every cell without the platform's two natives
     private squareAmong(cells: Iterable<number>, world: number, x: number, y: number, unread: boolean): boolean {
         if (typeof this.sp.cellGridOf !== "function" || typeof this.sp.pollCellGrids !== "function") {
@@ -328,6 +328,7 @@ export class HostService extends ClientListener {
         }
         const gx = Math.floor(x / 4096);
         const gy = Math.floor(y / 4096);
+        const now = Date.now();
         const asks: number[] = [];
         let found = false;
         let unknown = false;
@@ -335,8 +336,7 @@ export class HostService extends ClientListener {
             const grid = this.sp.cellGridOf(cell);
             if (grid === null) {
                 unknown = true;
-                if (!this.gridAsked.has(cell) && asks.length < HostService.gridAsksMax) {
-                    this.gridAsked.add(cell);
+                if (asks.length < HostService.gridAsksMax && this.gridAskDue(cell, now)) {
                     asks.push(cell);
                 }
                 continue;
@@ -351,11 +351,39 @@ export class HostService extends ClientListener {
         return found || (unknown && unread);
     }
 
-    // the cells whose grid square was asked for (squareAmong: the hosted
-    // set's for hostsPosition, the loaded set's for watchesRef)
-    private gridAsked = new Set<number>();
+    // Whether a cell's grid square is due an ask, marked asked when it is:
+    // never asked, or asked gridAskAgainMs ago. The platform's map of read
+    // squares starts over whole past its kCellGridsMax (PuppetApi.cpp's
+    // PollCellGrids), so a square read once can read null again; asked once
+    // only, it stayed unread for the rest of the sitting, hostsPosition then
+    // reading a hosted persistent door as not hosted and watchesRef reading
+    // every exterior door in the player's worldspace as watched (thuum
+    // tracker #121, the reviews of ce94e7e61). A square still unread is asked
+    // again each gridAskAgainMs, no oftener; the asked map starts over at
+    // the platform's size
+    private gridAskDue(cell: number, now: number): boolean {
+        const askedAt = this.gridAsked.get(cell);
+        if (askedAt !== undefined && now - askedAt < HostService.gridAskAgainMs) {
+            return false;
+        }
+        if (askedAt === undefined && this.gridAsked.size >= HostService.gridAskedMax) {
+            this.gridAsked.clear();
+        }
+        this.gridAsked.set(cell, now);
+        return true;
+    }
+
+    // the cells whose grid square was asked for, with when (squareAmong: the
+    // hosted set's for hostsPosition, the loaded set's for watchesRef; a
+    // grant, onHostGrant)
+    private gridAsked = new Map<number, number>();
     // pollCellGrids' ids per call, at most (its typing's 256)
     private static readonly gridAsksMax = 256;
+    // an unread square's next ask, this long after its last at the soonest
+    private static readonly gridAskAgainMs = 5_000;
+    // the asked map's size, at most: the platform's kCellGridsMax
+    // (PuppetApi.cpp), past which its own map starts over
+    private static readonly gridAskedMax = 4096;
 
     // thuum tracker #121, crossing (iii) (ActivationService.crossUnwatched):
     // whether this game watches the cell a reference stands in, so a walker
@@ -904,9 +932,9 @@ export class HostService extends ClientListener {
         this.controller.emitter.emit("cellHostChanged", { cell, hosted: true });
         // thuum #63 and #47: the cell's grid square, for the references that
         // stand in it by position (hostsRef), read before LockService's
-        // re-check at the grant asks
-        if (!this.gridAsked.has(cell) && typeof this.sp.pollCellGrids === "function") {
-            this.gridAsked.add(cell);
+        // re-check at the grant asks (gridAskDue: again at a later grant, so
+        // a square the platform's map dropped is read again)
+        if (typeof this.sp.pollCellGrids === "function" && this.gridAskDue(cell, Date.now())) {
             this.sp.pollCellGrids([cell]);
         }
     }

@@ -285,9 +285,15 @@ inline REL::ID ClearGreetTopic(39334);
 // (TESTopic.h:172) is 0 (25085, 25121), and for each loaded file, the active
 // file last, reads each such topic's INFO records (25519, which sets the
 // engine's "topic being loaded" global 401555 with no lock). The engine's own
-// call ends a quest start's QueuedPromoteQuestTask (25212) on the IO thread;
-// PuppetApi.cpp's SayTopicInfo makes it on the main thread for a stopped
-// quest's line. HYPOTHESIS by rule 2 until x-riverwood-scene-voice v4.
+// call ends a quest start's QueuedPromoteQuestTask (25212), which the quest
+// start queues to the IOManager (the re-analyst's read of 25046 and 15321), so
+// on an IO thread: HYPOTHESIS until lab/frida/topic-load-trace.js's
+// promoteTask and loadDialogue rows name the thread (x-riverwood-scene-voice
+// v4's T1). PuppetApi.cpp's SayTopicInfo makes the call on the main thread
+// for a stopped quest's line, waiting while any quest's promote task is in
+// flight (the unlocked 401555; any overlap read by the same trace, v4's T3).
+// HYPOTHESIS by rule 2 until v4's recorded counts and the trace's say rows
+// read the guest's line.
 inline REL::ID LoadQuestDialogue(25086);
 }
 

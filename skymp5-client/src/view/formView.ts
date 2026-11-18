@@ -646,6 +646,18 @@ export class FormView {
     this.localImmortal = false;
     this.placedDead = false;
     this.placedDeadKills = 0;
+    this.placedDeadReadBack = false;
+    this.placedDeadDone = false;
+    // thuum tracker #128: a runtime reference goes with this destroy (the
+    // disable and delete above), so the dead check's bind state for it goes
+    // too, and the next copy this view places binds on its first frame with
+    // its 3D (a copy placed again after a cell leave logged the "again" line
+    // or waited out the old clock). A game-file reference outlives the
+    // destroy, and its bind state stays as its 3D left it, as before
+    if (refrId >= 0xff000000) {
+      this.deadWordBound = false;
+      this.deadCheckAt = 0;
+    }
     this.figureMaxima.clear();
     this.removeNickname();
   }
@@ -697,9 +709,18 @@ export class FormView {
   // placed from a dead record; the dead check's kill lays it and the record's
   // movement never moves it, until the live word (a raise, a respawn)
   private placedDead = false;
-  // tracker #128: the kills the dead check issued on that copy since its
-  // engine last read it dead (0: none waiting on a read-back)
+  // tracker #128: the kills the dead check issued on that copy in this 3D
+  // load, and whether the last one waits on its read-back
   private placedDeadKills = 0;
+  private placedDeadReadBack = false;
+  // tracker #128: the bind's job is done for this 3D load: this seat's
+  // engine read the copy dead, a raise holds it commanded, or the kills ran
+  // out; from then on its deaths and stand-ups are its word's, until a new
+  // 3D load binds it again
+  private placedDeadDone = false;
+  // tracker #128: the most kills the bind issues on one 3D load before it
+  // leaves the copy standing and says so (one each two-second check)
+  private static readonly placedDeadKillCap = 8;
   // the node scales and texture sets applied to the 3D now loaded (false again when it goes)
   private nodeOverridesOn3D = false;
 
@@ -914,6 +935,11 @@ export class FormView {
     // cell with dead records shows bodies on the host's seat
     if (!loaded3D) {
       this.deadWordBound = false;
+      // thuum tracker #128: a new 3D load is a new bind for a placed-dead
+      // copy (the engine's cell reset can stand a body up at a re-entry)
+      this.placedDeadKills = 0;
+      this.placedDeadReadBack = false;
+      this.placedDeadDone = false;
     }
     // thuum tracker #128: a copy placed from a dead record (update's
     // deadNpcCopy) keeps the flag until the live word (a raise, a respawn)
@@ -922,37 +948,54 @@ export class FormView {
     if (this.placedDead && model.isDead !== true) {
       this.placedDead = false;
       this.placedDeadKills = 0;
+      this.placedDeadReadBack = false;
+      this.placedDeadDone = false;
     }
     // thuum tracker #128 (x-server-body-late-v3 20261118-030533, claim 3 red:
     // c2's copy ff000df4 of the dead record ff000002 stood alive with its AI
     // off after its one bind kill, while c1's lay dead): a copy this view
-    // placed from a dead record takes the same dead rule as a game-file body,
-    // here, every two seconds, and not once. It was dead before this game
-    // heard of it, so it has no death to die by on any seat, the host's
-    // included: at each check that finds it alive with its 3D loaded it is
-    // moved to the record's spot and killed silently (deathService's
-    // killActor: KillSilent, the push that ragdolls it, PuppetService.
-    // blockDeadBody "the bind's silent kill"), the first time as the bind,
-    // again while the record says dead and the engine reads it alive. Each
-    // check after a kill reads isDead back and says whether the kill took.
-    // Kill and KillSilent only queue a task, and the actor is alive at the
-    // native's return (docs/research/adr062/papyrus-native-entries.md:73), so
-    // the read-back is the next check's, never the kill's own call.
+    // placed from a dead record takes the game-file body's dead rule, here,
+    // on the check's two-second clock: on the seat that simulates it the
+    // kill comes at the bind alone, and a later death or stand-up there is
+    // its own engine's (a raise, #112, through Hooks.cpp HostedResurrect);
+    // on a watcher the kill is issued again at each check that finds it
+    // alive while the record says dead. Bounded to the bind's job, laying
+    // the copy once per 3D load: the kills stop once this seat's engine
+    // reads it dead, once it reads commanded (a raise by this seat's own
+    // player lands on its copy before the server knows, Hooks.cpp
+    // CharacterAddTarget, and the record stays dead until the grant and
+    // the host's sample stand it up), and after placedDeadKillCap kills,
+    // with one line saying it was left standing. From then on its deaths
+    // and stand-ups are its word's, as before: the live word (a raise, a
+    // respawn) stands it up through remoteServer's isDead property. A new
+    // 3D load binds it again (the resets above). The bind itself does not
+    // wait out the clock: the first frame with its 3D enters the check.
+    // Each kill: moved to the record's spot and killed silently
+    // (deathService's killActor: KillSilent, the push that ragdolls it,
+    // PuppetService.blockDeadBody "the bind's silent kill"). Each check
+    // after a kill reads isDead back and says whether the kill took. Kill
+    // and KillSilent only queue a task, and the actor is alive at the
+    // native's return (docs/research/adr062/papyrus-native-entries.md:73),
+    // so the read-back is the next check's, never the kill's own call.
     // The order (the code read): the kill stays ahead of the reconcile below
-    // in the pass. The deferred kill the reconcile used to arm right after
-    // it is no longer armed on a body the server's word killed
-    // (PuppetService.deferredKillEnded, which killActor calls as it ends the
-    // hold), and the demote's AI-off lands on Skyrim Platform's game-thread
-    // queue after the tick (PuppetApi.cpp SetPuppet, then Demote) while the
-    // kill lands on the engine's task queue, so moving the call within the
-    // tick would not change which of those lands first. HYPOTHESIS, unread:
-    // which of the two swallowed the run's one kill (the deferred-kill arm
-    // after the queued kill, or the demote's AI-off and combat stop around
-    // it); and that a kill issued again on the demoted copy lands, as the
-    // game-file spider 3a1e1's did on the same seat, demoted 0.4 s before
-    // its bind kill. The read-back line says which kill took
+    // in the pass. The deferred kill the reconcile would arm right after it
+    // (if no earlier pass had) is never armed on a body the server's word
+    // killed on a seat that holds it at zero (PuppetService.
+    // deferredKillEnded, which killActor calls as it ends the hold), and
+    // the demote's AI-off lands on Skyrim Platform's game-thread queue after
+    // the tick (PuppetApi.cpp SetPuppet, then Demote) while the kill lands on
+    // the engine's task queue, so moving the call within the tick would not
+    // change which of those lands first. HYPOTHESIS, unread: which of the
+    // two swallowed the run's one kill (the deferred-kill arm after the
+    // queued kill, or the demote's AI-off and combat stop around it); that a
+    // kill issued again on the demoted copy lands, as the game-file spider
+    // 3a1e1's did on the same seat, demoted 0.4 s before its bind kill; and
+    // that a reanimated actor reads commanded from the effect's start
+    // (Actor::IsCommandedActor, the call worldCleanerService's skip makes).
+    // The read-back line says which kill took
     const deadRule = this.refrId < 0xff000000 || this.placedDead;
-    if (model.isDead !== undefined && this.refrId !== 0 && this.refrId !== 0x14 && deadRule && Date.now() >= this.deadCheckAt) {
+    const placedBind = this.placedDead && loaded3D && !this.deadWordBound;
+    if (model.isDead !== undefined && this.refrId !== 0 && this.refrId !== 0x14 && deadRule && (placedBind || Date.now() >= this.deadCheckAt)) {
       this.deadCheckAt = Date.now() + 2000;
       const body = Actor.from(refr);
       const want = !!model.isDead;
@@ -962,37 +1005,54 @@ export class FormView {
         this.deadWordBound = true;
       }
       if (this.placedDead) {
-        // placedDead holds only while the record says dead (cleared above)
-        const engineDead = body ? body.isDead() : false;
-        const recordId = (model.refrId ?? 0).toString(16);
-        const copyId = this.refrId.toString(16);
-        // the read-back, at each kill's next check with the 3D loaded (the
-        // kill is issued with it alone, so each read-back pairs with one):
-        // said once when the kill took, and at the first, second, fourth (and
-        // so on) check that finds the copy still alive, with the kill issued
-        // again then (ADR-073 decision 7's said-then-counted idiom; a check
-        // every two seconds)
-        let said = true;
-        if (body && loaded3D && this.placedDeadKills > 0) {
-          const n = this.placedDeadKills;
-          said = engineDead || (n & (n - 1)) === 0;
-          if (said) {
-            logLab("verb:npc-fate", `dead record ${recordId} copy ${copyId}: killed, isDead ${engineDead} (${n} kill(s) issued; tracker #128)`);
+        // placedDead holds only while the record says dead (cleared above);
+        // nothing is read or issued without the 3D (a kill is issued with it
+        // alone, so each read-back pairs with one kill of this 3D load)
+        if (body && loaded3D) {
+          const engineDead = body.isDead();
+          const recordId = (model.refrId ?? 0).toString(16);
+          const copyId = this.refrId.toString(16);
+          const seat = simulatedHere ? "this host's" : "a watcher's";
+          // the read-back of the last kill: said when the kill took, and at
+          // the first, second and fourth kill that did not (ADR-073 decision
+          // 7's said-then-counted idiom), the "again" line below with it;
+          // the cap's kill gets the one line that ends the retries
+          let said = false;
+          if (this.placedDeadReadBack) {
+            this.placedDeadReadBack = false;
+            const n = this.placedDeadKills;
+            if (engineDead) {
+              logLab("verb:npc-fate", `dead record ${recordId} copy ${copyId}: killed, isDead true (${n} kill(s) issued; tracker #128)`);
+            } else if (n >= FormView.placedDeadKillCap) {
+              this.placedDeadDone = true;
+              logLab("verb:npc-fate", `dead record ${recordId} copy ${copyId}: ${n} kills issued, still alive; left standing (tracker #128)`);
+            } else {
+              said = (n & (n - 1)) === 0;
+              if (said) {
+                logLab("verb:npc-fate", `dead record ${recordId} copy ${copyId}: killed, isDead false (${n} kill(s) issued; tracker #128)`);
+              }
+            }
           }
           if (engineDead) {
-            this.placedDeadKills = 0;
+            this.placedDeadDone = true;
           }
-        }
-        if (body && !engineDead && loaded3D) {
-          const placed = this.placeAtDeadRecord(body, model);
-          const seat = simulatedHere ? "this host's" : "a watcher's";
-          if (bind) {
-            logLab("verb:npc-fate", `dead record ${recordId} placed as copy ${copyId} on ${seat} seat: ${placed}, killed silently at the bind (tracker #128)`);
-          } else if (said) {
-            logLab("verb:npc-fate", `dead record ${recordId} copy ${copyId} alive at the dead check on ${seat} seat: ${placed}, killed silently again (tracker #128)`);
+          if (!this.placedDeadDone && (bind || !simulatedHere)) {
+            if (body.isCommandedActor()) {
+              // a raise holds it (HYPOTHESIS above): its stand-up is its word's
+              this.placedDeadDone = true;
+              logLab("verb:npc-fate", `dead record ${recordId} copy ${copyId} alive and commanded on ${seat} seat: no kill, its raise is its word's (tracker #128)`);
+            } else {
+              const placed = this.placeAtDeadRecord(body, model);
+              if (bind) {
+                logLab("verb:npc-fate", `dead record ${recordId} placed as copy ${copyId} on ${seat} seat: ${placed}, killed silently at the bind (tracker #128)`);
+              } else if (said) {
+                logLab("verb:npc-fate", `dead record ${recordId} copy ${copyId} alive at the dead check on ${seat} seat: ${placed}, killed silently again (tracker #128)`);
+              }
+              this.placedDeadKills++;
+              this.placedDeadReadBack = true;
+              SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true, silent: true });
+            }
           }
-          this.placedDeadKills++;
-          SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true, silent: true });
         }
       } else if (body && body.isDead() !== want && (!(simulatedHere && want) || (bind && want))) {
         if (bind && want) {

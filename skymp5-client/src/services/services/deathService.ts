@@ -257,11 +257,13 @@ export class DeathService extends ClientListener {
       this.restPuppetAtHost(actor);
       actor.endDeferredKill();
       // thuum tracker #128: the reconciler's record of the hold agrees with
-      // the engine's: ended for the server's word, so no pass arms it again
-      // over the kill queued below (x-server-body-late-v3 20261118-030533:
-      // the copy ff000df4 was killed at its bind, the same pass's reconcile
-      // could arm it right after, and it stood alive; which call swallowed
-      // the kill is HYPOTHESIS, formView's dead check reads it back)
+      // the engine's: ended for the server's word, so no pass on a seat that
+      // holds at zero arms it again over the kill queued below
+      // (x-server-body-late-v3 20261118-030533: the copy ff000df4 was killed
+      // at its bind, the same pass's reconcile could arm it right after, and
+      // it stood alive; which call swallowed the kill is HYPOTHESIS,
+      // formView's dead check reads it back). A figure is kept out of the
+      // record (deferredKillEnded)
       this.controller.lookupListener(PuppetService).deferredKillEnded(actor.getFormID());
       if (silent) {
         actor.killSilent(killer);

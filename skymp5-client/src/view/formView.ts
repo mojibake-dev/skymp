@@ -3,7 +3,7 @@ import { setDefaultAnimsDisabled, applyAnimation, allowAnimationOnce } from "../
 import { isHandCastEvent } from "../services/services/actionSyncService";
 // @ts-expect-error (TODO: Remove in 2.10.0)
 import { applyAnimationVariablesToActor, armActorFate, castReady, performAction, performActionResult, setActivateTextHidden, setActorAimHeading, setActorAimPitch } from "skyrimPlatform";
-import { figureAimHeading } from "../sync/figureAim";
+import { figureAimOffset } from "../sync/figureAim";
 import { Appearance, applyAppearance } from "../sync/appearance";
 import { applyRaceOverlay, parseRaceOverlay } from "../sync/raceOverlay";
 import { RaceOverlay } from "../services/messages/raceOverlay";
@@ -1431,12 +1431,16 @@ export class FormView {
         if (Number.isFinite(pitchDegrees) && Actor.from(refr)) {
           setActorAimPitch(refr.getFormID(), pitchDegrees * Math.PI / 180);
         }
-        // and its heading from its caster's relayed cast while one runs
-        // (sync/figureAim.ts; x-stream-aim 20261017-135526: the body's
-        // heading left a figure's missiles 2.75 degrees off)
-        const aimHeading = figureAimHeading.get(refr.getFormID());
-        if (aimHeading !== undefined && Number.isFinite(aimHeading) && Actor.from(refr)) {
-          setActorAimHeading(refr.getFormID(), aimHeading);
+        // and its heading while one of its hands' casts runs, from the same
+        // movement (angle Z, degrees) plus its caster's offset from the
+        // relayed cast (sync/figureAim.ts; x-stream-aim 20261017-135526: the
+        // body's heading alone left a figure's missiles 2.75 degrees off).
+        // thuum tracker #165 (playtest 55: the cast's start heading, held
+        // whole, left a turning figure's Flames facing the way it began)
+        const aimOffset = figureAimOffset(refr.getFormID());
+        const headingDegrees = model.movement.rot[2];
+        if (aimOffset !== undefined && Number.isFinite(headingDegrees) && Actor.from(refr)) {
+          setActorAimHeading(refr.getFormID(), headingDegrees * Math.PI / 180 + aimOffset);
         }
       }
 

@@ -23,9 +23,11 @@ import { SceneClaimService } from "./sceneClaimService";
 // idempotently from every event that could change an input (the view's
 // update, a cell attach or detach, the loss of a form, a resurrect, the
 // combat sink) and from one two-second poll. "Loaded here" is the cell's
-// attach or the 3D (ADR-051: an actor this engine does not load is released
-// to its schedule after a grace, so a 3D the late fate dropped for a moment
-// does not flip a loaded actor live, playtest 34's composition). The
+// attach or the 3D in a cell the engine has attached (ADR-051: an actor this
+// engine does not load is released to its schedule after a grace, so a 3D
+// the late fate dropped for a moment does not flip a loaded actor live,
+// playtest 34's composition; tracker #121: a 3D kept in the buffer of a
+// detached cell is no load). The
 // deferred kill is this service's too: every NPC this game shows holds at
 // zero until the server's word (train 52 moves the host's own to the engine).
 //
@@ -133,7 +135,18 @@ export class PuppetService extends ClientListener {
         const host = this.controller.lookupListener(HostService);
         const word = mine ?? host.isMineLocal(localId);
         const has3D = ac.is3DLoaded();
-        const loadedHere = has3D || this.attached.has(localId);
+        // thuum tracker #121 (ADR-051 decision 1's "its cell unattached";
+        // the critic's release rule): a 3D the engine keeps in its buffer for
+        // a cell it has detached is no load, so the copy is released to its
+        // schedule after the grace below instead of standing as a puppet
+        // with its AI off. Both x-gorm-inn-v4 reds (20261117-035309 and
+        // 20261117-052416, steps 20 and 26): c1 stood in the inn and held
+        // Gorm 0x1aa69 in Highmoon Hall 0x138cc with aiEnabled false and
+        // is3DLoaded true, so its engine never walked him; were c1 the inn's
+        // host, nobody would have taken him through the door. The cell's
+        // attachment is HostService's read (cellAttachedFor); where it cannot
+        // say (the player's own worldspace), the 3D decides as before
+        const loadedHere = this.attached.has(localId) || (has3D && host.cellAttachedFor(ac) !== false);
         const flagged = this.sp.isPuppet(localId);
         const now = Date.now();
         if (!has3D) {

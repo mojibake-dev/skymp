@@ -340,6 +340,39 @@ export class HostService extends ClientListener {
     // the hosted cells whose grid square was asked for (hostsPosition)
     private gridAsked = new Set<number>();
 
+    // thuum tracker #121 (ADR-051 decision 1: an actor whose cell is not
+    // attached is simulated by nobody here and released to its schedule):
+    // whether this engine has the cell a reference stands in attached, by the
+    // engine's own reads: true or false where they say, undefined where they
+    // cannot. An interior reference's parent is its own cell, read through
+    // Cell.isAttached, the read the loaded set polls each second (here at
+    // once, without the poll's second). An exterior reference while the
+    // player stands in an interior or in another worldspace is in no attached
+    // cell: the engine detaches the exterior grid at an interior's load and
+    // keeps its 3D in the buffer (b-npc-handoff-door-hosts 20261103-134832:
+    // c1's warm exit from the inn re-attached Riverwood's exterior with no
+    // event; playtest 53's "demote 1aa69 ... in 3c" came from c2 inside the
+    // inn). In the player's own worldspace the attached grid is the ini's
+    // (uGridsToLoad) and a persistent reference's parent is the worldspace's
+    // persistent cell, so the answer there is undefined and the caller keeps
+    // its own read. HYPOTHESIS until a role-swapped x-gorm-inn-v5: the hall's
+    // buffered cell answers isAttached false while the player stands in the
+    // inn (both v4 reds: c1 in the inn held Gorm in 0x138cc as a puppet with
+    // is3DLoaded true, 20261117-035309 and 20261117-052416)
+    cellAttachedFor(ref: ObjectReference): boolean | undefined {
+        const cell = ref.getParentCell();
+        if (cell && cell.isInterior()) {
+            return cell.isAttached();
+        }
+        const world = ref.getWorldSpace();
+        const player = this.sp.Game.getPlayer();
+        if (!world || !player) {
+            return undefined;
+        }
+        const playerWorld = player.getWorldSpace();
+        return playerWorld && playerWorld.getFormID() === world.getFormID() ? undefined : false;
+    }
+
     // thuum docs/verbs/change-form.md (ADR-065, Ownership): the epoch a
     // report of an actor's record carries, the host epoch this client holds
     // for the actor's cell (ADR-066's stamp): its parent cell's grant; for a

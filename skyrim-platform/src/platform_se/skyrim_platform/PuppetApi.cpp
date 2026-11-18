@@ -40,8 +40,10 @@
 #include <chrono>
 #include <cmath>
 #include <fmt/format.h>
+#include <functional>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -2108,6 +2110,440 @@ std::string DescribeTopicHere(const RE::TESTopic* topic)
     quest ? quest->formID : 0u, quest ? quest->IsRunning() : false,
     quest ? quest->data.flags.underlying() : 0u);
 }
+
+// thuum tracker #123, the stage's read (x-riverwood-scene-voice v3 run
+// 20261118-031740, the tracker's note 3335): on the guest the relayed topic
+// listed no info (numTopicInfos 0, a null array) and its quest 0x954d9 was
+// stopped (flags 0x100), so the engine's pick with a null info built no item
+// (result 6). The re-analyst's pyghidra read of 1.6.1170 on sky-re and its
+// skeptic pass (2026-11-17, HYPOTHESIS by rule 2): the engine destroys a
+// stopped quest's infos (the story teller's update 32487, then 25087, then
+// 25520 per topic) and loads them again only at the quest's start (25212,
+// the last step of its QueuedPromoteQuestTask, calls 25086) or at a save load
+// of a quest the story teller still lists (25084), so a guest whose copy of
+// the quest stopped holds no info of it. Such a line's quest dialogue is
+// loaded through the engine's own loader (Offsets::Voice::LoadQuestDialogue),
+// and the line is resolved again and said with its info given, the condition
+// pick skipped. The guard is the read's: the topic lists no info (the
+// loader's own filter, 25085); its quest is not enabled, not waiting on a
+// stage and does not start enabled (25088's mask 0x81, the engine's own test
+// before an unload, as CommonLib's IsStopped, TESQuest.cpp:57-60; the loader
+// returns at once on kStartsEnabled); and its promote task is null (the
+// engine's own load for the quest may still be running). A load that left
+// the topic empty is never tried again; one that listed infos may run again
+// after the engine unloads them.
+//
+// The load runs on the MAIN thread through SKSE's UI task queue (the fork's
+// route for engine work: SetBodyVelocity above, FateApi.cpp's
+// QueueFateTask), which runs on Main.threadID (CONFIRMED by x-corpse-record
+// v3 run 20261104-053639, ten applies of ten "thread 10472 main 10472",
+// thuum docs/LOG.md 2026-11-04), and the say is posted back to gameThrQ,
+// where it already works. gameThrQ drains inside the Papyrus OnUpdate native
+// (main.cpp), and the skeptic read that a second file's override of an info
+// the first file just made (USSEP's of 954d3 and 954c6) reloads it as an
+// existing form, releasing its handle through the VM's handle policy: a call
+// into the VM from a VM native, kept off that thread.
+//
+// The loader writes the engine's "topic being loaded" global (401555) with
+// no lock, and 25531 grows a topic's array with no lock, so an engine load
+// beside this one could take one of these infos, give one, or grow one
+// array from two threads. The platform review's xref read (pyghidra-mcp on
+// sky-re, 2026-11-17): 25519's code callers are 25084 (a save load) and
+// 25086, whose one code caller is 25212, the promote task's run. 25212
+// leaves the quest's promoteTask set (25086 is its last call), and 25083,
+// reached from the task's 25194, clears it (TESQuest.h:281, its +0x248, at
+// its end). So outside a save load every engine INFO load runs while some
+// quest's promoteTask is set, and this load waits while any quest's is
+// (PromotingQuest), asked again each tick up to kDialogueLoadMaxTicks; past
+// that the line is said with no load. HYPOTHESIS: the task is set before it
+// is queued (the skeptic's read of 25046), and no quest starts off the main
+// thread during this load (a Papyrus Start on the VM thread would open that
+// window); lab/frida/topic-load-trace.js's overlap rows read it. Every
+// info's parent on the quest's topics is read after the load and a stray
+// one said as an error.
+//
+// While an ask is on the main thread, every ask that names a topic follows
+// it there, in the order asked (an ask waits while an earlier one waits),
+// and the count drops on gameThrQ as each say runs, so a later line never
+// plays before an earlier one and no topic's array is read on that thread
+// under a load.
+//
+// No info fragment runs on the guest: a puppet's line raises no
+// TESTopicInfoEvent while it is not talking to this player, whatever its
+// quest (FridaHooks.cpp's SendTopicInfoEvent replacement, the fragment gate;
+// H-57a CONFIRMED at T4, playtest 37, thuum docs/LOG.md 2026-10-28), and
+// this scene's six infos carry no VMAD (the skeptic's read of the plugins).
+// An info of another quest that carries a VMAD, made on the main thread by
+// this load, may bind its script at load (HYPOTHESIS, not this scene). The
+// first main-thread load leaves the data handler's own TESFiles open (the
+// platform review's read of 25519 and TESFile::Duplicate: the main thread
+// gets the original file, opened with no close; HYPOTHESIS: harmless, as the
+// main thread's later readers seek it themselves). HYPOTHESIS until
+// x-riverwood-scene-voice v4 reads the guest's lines, and its trace the
+// threads
+std::mutex g_dialogueLoadMutex;
+// the topics whose quest's dialogue this game loaded for a line and found
+// still empty, never tried again
+std::unordered_set<uint32_t> g_dialogueLoadTopics;
+// the asks gone to the main thread whose say has not run yet (dropped on
+// gameThrQ just before each say)
+std::atomic<int> g_dialogueLoadsQueued{ 0 };
+// each ask's place in line, and the places of the asks waiting now
+uint64_t g_dialogueAskSeq = 0;
+std::set<uint64_t> g_dialogueAsksWaiting;
+
+// the ticks an ask waits on the main thread, each one gameThrQ drain and
+// then the main thread's UI drain, before its line is said with no load
+// (WeaponAnimGuard.h:71's bound, and its route)
+constexpr uint32_t kDialogueLoadMaxTicks = 120;
+
+// the thread a load ran on beside Main's (CommonLibSSE-NG Main.h:87
+// threadID), the witness the lab reads (FateApi.cpp's FateThreadNote)
+std::string SayThreadNote()
+{
+  const auto* main = RE::Main::GetSingleton();
+  return fmt::format("thread {} main {}",
+                     static_cast<uint32_t>(::GetCurrentThreadId()),
+                     main ? main->threadID : 0u);
+}
+
+// why a line's topic does not get its quest's dialogue loaded, or null when
+// the guard holds (CommonLibSSE-NG TESTopic.h:170 ownerQuest, :172
+// numTopicInfos; TESQuest.h:26, :30 and :33 the flags, :263 data, :281
+// promoteTask)
+const char* DialogueLoadRefusal(const RE::TESTopic& topic)
+{
+  if (topic.numTopicInfos != 0) {
+    return "the topic lists infos";
+  }
+  const RE::TESQuest* quest = topic.ownerQuest;
+  if (!quest) {
+    return "the topic has no quest";
+  }
+  if (quest->data.flags.any(RE::QuestFlag::kEnabled, RE::QuestFlag::kStageWait,
+                            RE::QuestFlag::kStartsEnabled)) {
+    return "its quest is enabled, waits on a stage or starts enabled";
+  }
+  if (quest->promoteTask) {
+    return "its quest's promote task is in flight";
+  }
+  return nullptr;
+}
+
+// a quest whose promote task is in flight, or null: while one is, the
+// engine's own dialogue load (25212's call of 25086) may be running on
+// another thread (the comment above g_dialogueLoadMutex; CommonLibSSE-NG
+// TESDataHandler.h:70 GetFormArray, TESQuest.h:281 promoteTask)
+const RE::TESQuest* PromotingQuest()
+{
+  auto* handler = RE::TESDataHandler::GetSingleton();
+  if (!handler) {
+    return nullptr;
+  }
+  for (const RE::TESQuest* quest : handler->GetFormArray<RE::TESQuest>()) {
+    if (quest && quest->promoteTask) {
+      return quest;
+    }
+  }
+  return nullptr;
+}
+
+// a quest's topics and the infos they list, and how many of those name
+// another topic their parent (the race above, seen): the topic lists of
+// TESQuest.h:271-272, the branched ones by branch
+struct QuestInfoCount
+{
+  uint32_t topics = 0;
+  uint32_t infos = 0;
+  uint32_t strays = 0;
+};
+
+QuestInfoCount CountQuestInfos(const RE::TESQuest& quest)
+{
+  QuestInfoCount count;
+  const auto countTopic = [&count](const RE::TESTopic* topic) {
+    if (!topic) {
+      return;
+    }
+    ++count.topics;
+    if (!topic->topicInfos) {
+      return;
+    }
+    for (uint32_t i = 0; i < topic->numTopicInfos; ++i) {
+      const RE::TESTopicInfo* listed = topic->topicInfos[i];
+      if (!listed) {
+        continue;
+      }
+      ++count.infos;
+      if (listed->parentTopic != topic) {
+        ++count.strays;
+      }
+    }
+  };
+  for (const auto& list : quest.topics) {
+    for (const RE::TESTopic* topic : list) {
+      countTopic(topic);
+    }
+  }
+  for (const auto& branches : quest.branchedDialogue) {
+    for (const auto& entry : branches) {
+      if (entry.second) {
+        for (const RE::TESTopic* topic : *entry.second) {
+          countTopic(topic);
+        }
+      }
+    }
+  }
+  return count;
+}
+
+// the line's topic when its quest's dialogue is to be loaded here, or null:
+// its info still not in the form map, the topic never found empty by a load
+// here and the guard holding; refusal is set when the guard failed
+RE::TESTopic* TopicToLoad(uint32_t infoFormId, uint32_t topicFormId,
+                          const char*& refusal)
+{
+  refusal = nullptr;
+  auto* found = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
+  if (found && found->parentTopic) {
+    return nullptr;
+  }
+  auto* topic = RE::TESForm::LookupByID<RE::TESTopic>(topicFormId);
+  if (!topic) {
+    return nullptr;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+    if (g_dialogueLoadTopics.count(topicFormId) != 0) {
+      return nullptr;
+    }
+  }
+  refusal = DialogueLoadRefusal(*topic);
+  return refusal ? nullptr : topic;
+}
+
+// the main thread's load for the line's topic, with one line before the
+// call and one after; a topic the load left empty is never tried again
+void LoadDialogueForLine(uint32_t actorFormId, uint32_t infoFormId,
+                         RE::TESTopic& topic)
+{
+  RE::TESQuest* quest = topic.ownerQuest;
+  logger::info("[verb:npc-stream] say {:x}: topic {:x} had 0 infos on this "
+               "game, its quest {:x} stopped (flags {:x}); loading its "
+               "dialogue ({}; tracker #123)",
+               actorFormId, topic.formID, quest->formID,
+               quest->data.flags.underlying(), SayThreadNote());
+  const auto start = std::chrono::steady_clock::now();
+  REL::Relocation<void (*)(RE::TESQuest*)> load{
+    Offsets::Voice::LoadQuestDialogue
+  };
+  load(quest);
+  const double ms = std::chrono::duration<double, std::milli>(
+                      std::chrono::steady_clock::now() - start)
+                      .count();
+  if (topic.numTopicInfos == 0) {
+    std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+    g_dialogueLoadTopics.insert(topic.formID);
+  }
+  bool listed = false;
+  if (topic.topicInfos) {
+    for (uint32_t i = 0; i < topic.numTopicInfos; ++i) {
+      const RE::TESTopicInfo* candidate = topic.topicInfos[i];
+      if (candidate && candidate->formID == infoFormId) {
+        listed = true;
+      }
+    }
+  }
+  const auto* mapped = RE::TESForm::LookupByID<RE::TESTopicInfo>(infoFormId);
+  const QuestInfoCount count = CountQuestInfos(*quest);
+  const std::string said = fmt::format(
+    "[verb:npc-stream] say {:x}: topic {:x} had 0 infos on this game, its "
+    "quest {:x} stopped; loaded its dialogue: {} infos in {:.1f} ms (the "
+    "line's info {:x} {} the form map and {} the topic's array; the quest's "
+    "{} topic(s) list {} info(s), {} naming another topic their parent; "
+    "tracker #123)",
+    actorFormId, topic.formID, quest->formID, topic.numTopicInfos, ms,
+    infoFormId, mapped ? "in" : "not in", listed ? "in" : "not in",
+    count.topics, count.infos, count.strays);
+  if (count.strays != 0) {
+    logger::error("{}", said);
+  } else {
+    logger::info("{}", said);
+  }
+}
+
+// an ask gone to the main thread: wanted is gameThrQ's guard passed (an ask
+// there only behind another says no refusal), seq its place in line
+struct DialogueAsk
+{
+  uint32_t actorFormId = 0;
+  uint32_t infoFormId = 0;
+  uint32_t topicFormId = 0;
+  bool wanted = false;
+  uint64_t seq = 0;
+};
+
+// the say posted back to gameThrQ, the ask's count dropped there just before
+// it, so an ask that thread takes after it sees it gone and one before it
+// follows it through the main thread
+void PostSay(const std::function<void()>& speak)
+{
+  g_nativeCallRequirements.gameThrQ->AddTask([speak](Viet::Void) {
+    g_dialogueLoadsQueued.fetch_sub(1);
+    speak();
+  });
+}
+
+// the main thread's task: the load when the line needs one, then the say
+// posted back to gameThrQ with no second wait (the ask's answer, still -1,
+// written there). The ask waits instead, asked again next tick, while a
+// quest's promote task is in flight and its line needs a load, or while an
+// ask before it waits; past kDialogueLoadMaxTicks it runs, with no load
+void RunDialogueAsk(const DialogueAsk& ask, uint32_t tick,
+                    const std::function<void()>& speak)
+{
+  try {
+    const char* refusal = nullptr;
+    RE::TESTopic* topic =
+      TopicToLoad(ask.infoFormId, ask.topicFormId, refusal);
+    const RE::TESQuest* promoting = topic ? PromotingQuest() : nullptr;
+    bool earlier = false;
+    {
+      std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+      earlier = !g_dialogueAsksWaiting.empty() &&
+        *g_dialogueAsksWaiting.begin() < ask.seq;
+    }
+    if ((promoting || earlier) && tick < kDialogueLoadMaxTicks) {
+      if (tick == 0 && promoting) {
+        logger::info("[verb:npc-stream] say {:x}: topic {:x} waits on the "
+                     "main thread: quest {:x}'s promote task is in flight; "
+                     "asked again each tick up to {} (tracker #123)",
+                     ask.actorFormId, ask.topicFormId, promoting->formID,
+                     kDialogueLoadMaxTicks);
+      } else if (tick == 0) {
+        logger::info("[verb:npc-stream] say {:x}: topic {:x} waits on the "
+                     "main thread behind an earlier line; asked again each "
+                     "tick up to {} (tracker #123)",
+                     ask.actorFormId, ask.topicFormId, kDialogueLoadMaxTicks);
+      }
+      {
+        std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+        g_dialogueAsksWaiting.insert(ask.seq);
+      }
+      // Viet::TaskQueue::Update moves its tasks out before it runs them
+      // (viet/include/TaskQueue.h), so this runs on gameThrQ's next drain
+      // (WeaponAnimGuard.cpp's route), and from there the main thread's
+      g_nativeCallRequirements.gameThrQ->AddTask(
+        [ask, tick, speak](Viet::Void) {
+          const auto* tasks = SKSE::GetTaskInterface();
+          if (!tasks) {
+            {
+              std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+              g_dialogueAsksWaiting.erase(ask.seq);
+            }
+            g_dialogueLoadsQueued.fetch_sub(1);
+            speak();
+            return;
+          }
+          tasks->AddUITask(
+            [ask, tick, speak]() { RunDialogueAsk(ask, tick + 1, speak); });
+        });
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+      g_dialogueAsksWaiting.erase(ask.seq);
+    }
+    if (topic && promoting) {
+      logger::warn("[verb:npc-stream] say {:x}: topic {:x}'s dialogue left "
+                   "unloaded: quest {:x}'s promote task still in flight "
+                   "after {} tick(s); the line is said without it (tracker "
+                   "#123)",
+                   ask.actorFormId, ask.topicFormId, promoting->formID, tick);
+    } else {
+      if (tick > 0) {
+        logger::info("[verb:npc-stream] say {:x}: topic {:x} ran on the "
+                     "main thread after {} tick(s) of waiting (tracker #123)",
+                     ask.actorFormId, ask.topicFormId, tick);
+      }
+      if (topic) {
+        LoadDialogueForLine(ask.actorFormId, ask.infoFormId, *topic);
+      } else if (refusal && ask.wanted) {
+        logger::info("[verb:npc-stream] say {:x}: topic {:x}'s dialogue not "
+                     "loaded on the main thread: {} ({}; tracker #123)",
+                     ask.actorFormId, ask.topicFormId, refusal,
+                     DescribeTopicHere(RE::TESForm::LookupByID<RE::TESTopic>(
+                       ask.topicFormId)));
+      }
+    }
+  } catch (const std::exception& e) {
+    logger::error("[verb:npc-stream] say {:x}: the dialogue load for topic "
+                  "{:x} threw on the main thread: {} (tracker #123)",
+                  ask.actorFormId, ask.topicFormId, e.what());
+  } catch (...) {
+    logger::error("[verb:npc-stream] say {:x}: the dialogue load for topic "
+                  "{:x} threw on the main thread: not a std::exception "
+                  "(tracker #123)",
+                  ask.actorFormId, ask.topicFormId);
+  }
+  // here on a run and on a throw, before or after the wait's queue: the ask
+  // leaves the line and its say goes back
+  {
+    std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+    g_dialogueAsksWaiting.erase(ask.seq);
+  }
+  PostSay(speak);
+}
+
+// gameThrQ's half: true when the say goes to the main thread first (an
+// actor with a process here, and an ask already there or the line's info
+// not in the form map and its topic passing the guard, never found empty
+// here); the ask's answer stays -1 until the say posted back writes it
+// (voiceService.ts waits answerMs, 2000 ms); false when the say runs now
+bool QueueDialogueLoad(uint32_t actorFormId, uint32_t infoFormId,
+                       uint32_t topicFormId,
+                       const std::function<void()>& speak)
+{
+  if (topicFormId == 0) {
+    return false;
+  }
+  auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+  if (!actor || !actor->GetActorRuntimeData().currentProcess) {
+    return false;
+  }
+  // an ask already on the main thread: this one follows it, whatever its
+  // line (the count drops on this thread, PostSay)
+  const bool behind = g_dialogueLoadsQueued.load() != 0;
+  if (!behind) {
+    const char* refusal = nullptr;
+    if (!TopicToLoad(infoFormId, topicFormId, refusal)) {
+      return false;
+    }
+  }
+  const auto* tasks = SKSE::GetTaskInterface();
+  if (!tasks) {
+    static bool said = false;
+    if (!said) {
+      said = true;
+      logger::warn("[verb:npc-stream] say {:x}: no SKSE task interface, so "
+                   "a stopped quest's dialogue is not loaded (tracker #123)",
+                   actorFormId);
+    }
+    return false;
+  }
+  DialogueAsk ask;
+  ask.actorFormId = actorFormId;
+  ask.infoFormId = infoFormId;
+  ask.topicFormId = topicFormId;
+  ask.wanted = !behind;
+  {
+    std::lock_guard<std::mutex> lock(g_dialogueLoadMutex);
+    ask.seq = ++g_dialogueAskSeq;
+  }
+  g_dialogueLoadsQueued.fetch_add(1);
+  tasks->AddUITask([ask, speak]() { RunDialogueAsk(ask, 0, speak); });
+  return true;
+}
 }
 
 Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
@@ -2129,9 +2565,10 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
     std::lock_guard<std::mutex> lock(g_sayResultMutex);
     g_sayResult[actorFormId] = -1;
   }
-  // the forms looked up on the game thread alone (setPuppet's reason)
-  g_nativeCallRequirements.gameThrQ->AddTask([actorFormId, infoFormId,
-                                              topicFormId](Viet::Void) {
+  // the forms looked up on the game thread alone (setPuppet's reason): the
+  // say, run by the task below or posted back by the main thread after a
+  // dialogue load (#123)
+  const auto speak = [actorFormId, infoFormId, topicFormId]() {
     int result = 0;
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
     // #123: the line through the form map, else the relayed topic (an info
@@ -2247,8 +2684,11 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
         // docs/research/m3/re-puppet-head-lips.md A: 56220 calls 39162 with
         // (process, actor, topic, null, ...) and 39642 builds the item for
         // the topic), so the engine picks the info; the item it builds is
-        // told from the one in place before the call. HYPOTHESIS: the
-        // engine's pick loads a topic's infos this game does not hold
+        // told from the one in place before the call. The stage's run
+        // 20261118-031740 read that the pick loads nothing (a topic with no
+        // info built no item, result 6), so a stopped quest's line has its
+        // dialogue loaded first (QueueDialogueLoad above) and this is the
+        // fallback for a topic the load left empty
         auto* itemBefore = highBefore ? highBefore->greetTopic.get() : nullptr;
         const bool returned = repeat
           ? false
@@ -2381,7 +2821,16 @@ Napi::Value PuppetApi::SayTopicInfo(const Napi::CallbackInfo& info)
     }
     std::lock_guard<std::mutex> lock(g_sayResultMutex);
     g_sayResult[actorFormId] = result;
-  });
+  };
+  // #123: a line whose info this game does not hold, of a stopped quest's
+  // topic, waits for that quest's dialogue to load on the main thread
+  // (QueueDialogueLoad above), which posts the say back to gameThrQ
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [actorFormId, infoFormId, topicFormId, speak](Viet::Void) {
+      if (!QueueDialogueLoad(actorFormId, infoFormId, topicFormId, speak)) {
+        speak();
+      }
+    });
   return Napi::Boolean::New(info.Env(), true);
 }
 

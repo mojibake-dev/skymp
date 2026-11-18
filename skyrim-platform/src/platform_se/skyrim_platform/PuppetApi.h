@@ -250,7 +250,12 @@ Napi::Value SetScriptRecordTouches(const Napi::CallbackInfo& info);
 // engine judged it inaudible here. Tracker #123: an info this game does not
 // resolve is looked for through the relayed topic (its info array, then the
 // engine's pick with a null info); 6 when no line resolves here, 7 when the
-// engine's pick took another info of the topic (stopped and cleared)
+// engine's pick took another info of the topic (stopped and cleared). A
+// topic listing no info whose quest is stopped first has that quest's
+// dialogue loaded on the main thread (Offsets::Voice::LoadQuestDialogue;
+// the load waits, bounded, while any quest's promote task is in flight, and
+// one that left the topic empty is not tried again), the answer -1 until
+// the say posted back to gameThrQ writes it
 Napi::Value SayTopicInfo(const Napi::CallbackInfo& info);
 Napi::Value SayTopicInfoResult(const Napi::CallbackInfo& info);
 // thuum docs/verbs/npc-stream.md (slice 5, the gaze and the face):

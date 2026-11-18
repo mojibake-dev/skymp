@@ -272,6 +272,29 @@ inline REL::ID UpdateVoiceTimer(37752);
 // CONFIRMED-STATIC). Voice v4 calls it after a start the engine judged
 // inaudible, so the mark never sticks on a puppet a handoff later promotes.
 inline REL::ID ClearGreetTopic(39334);
+// thuum tracker #123 (playtest 54: the Riverwood intro scene's lines heard on
+// the host's game alone): 25086, HYPOTHESIS name TESQuest::LoadDialogue,
+// `void (TESQuest*)`, one argument and no return (disassembly), the engine's
+// per-quest loader of dialogue INFOs. Not in CommonLibSSE-NG at b93280e8.
+// 1.6.1170's id by `just addr` (0x3d3310 on addrlib's
+// versionlib-1-6-1170-0.bin, the file REL::ID reads: CommonLibSSE-NG
+// include/REL/ID.h:316); the body by the re-analyst's pyghidra read of
+// SkyrimSE-1.6.1170.0.exe.unpacked.exe on sky-re and its skeptic pass
+// (2026-11-17, tracker #123): it returns at once for a quest that starts
+// enabled (TESQuest.h:30), collects the quest's topics whose numTopicInfos
+// (TESTopic.h:172) is 0 (25085, 25121), and for each loaded file, the active
+// file last, reads each such topic's INFO records (25519, which sets the
+// engine's "topic being loaded" global 401555 with no lock). The engine's own
+// call ends a quest start's QueuedPromoteQuestTask (25212), which the quest
+// start queues to the IOManager (the re-analyst's read of 25046 and 15321), so
+// on an IO thread: HYPOTHESIS until lab/frida/topic-load-trace.js's
+// promoteTask and loadDialogue rows name the thread (x-riverwood-scene-voice
+// v4's T1). PuppetApi.cpp's SayTopicInfo makes the call on the main thread
+// for a stopped quest's line, waiting while any quest's promote task is in
+// flight (the unlocked 401555; any overlap read by the same trace, v4's T3).
+// HYPOTHESIS by rule 2 until v4's recorded counts and the trace's say rows
+// read the guest's line.
+inline REL::ID LoadQuestDialogue(25086);
 }
 
 // thuum docs/verbs/npc-puppet.md: Actor::ClearKeepOffsetFromActor, not in

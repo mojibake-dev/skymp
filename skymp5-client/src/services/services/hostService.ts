@@ -62,6 +62,10 @@ export class HostService extends ClientListener {
             logTrace(this, "npcStream is off in settings: no hosted actor's actions are streamed");
         }
         this.controller.on("cellFullyLoaded", (e) => this.onCellFullyLoaded(e));
+        // the player's place is read again in each tick (cellAttachedFor; JS
+        // state alone here, so a reconcile earlier in the same tick has read
+        // the last tick's, a frame late at a cell change)
+        this.controller.on("update", () => { this.placeRead = undefined; });
         this.controller.on("update", () => this.onUpdate());
         this.controller.emitter.on("hostGrantMessage", (e) => this.onHostGrant(e));
         this.controller.emitter.on("hostReleaseMessage", (e) => this.onHostRelease(e));
@@ -358,20 +362,48 @@ export class HostService extends ClientListener {
     // its own read. HYPOTHESIS until a role-swapped x-gorm-inn-v5: the hall's
     // buffered cell answers isAttached false while the player stands in the
     // inn (both v4 reds: c1 in the inn held Gorm in 0x138cc as a puppet with
-    // is3DLoaded true, 20261117-035309 and 20261117-052416)
+    // is3DLoaded true, 20261117-035309 and 20261117-052416).
+    // The player's own interior counts as attached without the read: while it
+    // loads, its actors can have their 3D before the cell answers isAttached
+    // true, and a copy another seat hosts is demoted at its first 3D there as
+    // before (the review of ec5f9d07a). The player's place is read once per
+    // tick (playerPlace), since reconcile asks this for every NPC with a 3D
+    // on every view update
     cellAttachedFor(ref: ObjectReference): boolean | undefined {
-        const cell = ref.getParentCell();
-        if (cell && cell.isInterior()) {
-            return cell.isAttached();
-        }
-        const world = ref.getWorldSpace();
-        const player = this.sp.Game.getPlayer();
-        if (!world || !player) {
+        const place = this.playerPlace();
+        if (place === null) {
             return undefined;
         }
-        const playerWorld = player.getWorldSpace();
-        return playerWorld && playerWorld.getFormID() === world.getFormID() ? undefined : false;
+        const cell = ref.getParentCell();
+        if (cell && cell.isInterior()) {
+            return cell.getFormID() === place.cell || cell.isAttached();
+        }
+        const world = ref.getWorldSpace();
+        if (!world) {
+            return undefined;
+        }
+        return place.world !== 0 && place.world === world.getFormID() ? undefined : false;
     }
+
+    // the player's parent cell and worldspace (0 for none, as in an
+    // interior), read at the first ask of each tick; null with no player
+    private playerPlace(): { cell: number; world: number } | null {
+        if (this.placeRead === undefined) {
+            const player = this.sp.Game.getPlayer();
+            if (!player) {
+                this.placeRead = null;
+            } else {
+                const cell = player.getParentCell();
+                const world = player.getWorldSpace();
+                this.placeRead = { cell: cell ? cell.getFormID() : 0, world: world ? world.getFormID() : 0 };
+            }
+        }
+        return this.placeRead;
+    }
+
+    // the tick's read of the player's place (playerPlace), cleared at each
+    // update; undefined until the tick's first ask
+    private placeRead: { cell: number; world: number } | null | undefined = undefined;
 
     // thuum docs/verbs/change-form.md (ADR-065, Ownership): the epoch a
     // report of an actor's record carries, the host epoch this client holds

@@ -44,6 +44,8 @@ const HELD_AGAIN_MS = 61_000;
 // first at a snippet (UNMEASURED: the blocked package's period is unread)
 const ARRIVAL_FIRST_MS = 2_000;
 const ARRIVAL_MAX_MS = 32_000;
+// past this since its report, a walker and door's window is forgotten
+const ARRIVAL_STALE_MS = 2 * ARRIVAL_MAX_MS;
 // the walkers and doors with a window, at most (past it they start over)
 const ARRIVALS_MAX = 256;
 
@@ -254,13 +256,23 @@ export class ActivationService extends ClientListener {
   //
   // The walker: an actor from the game files, alive, no puppet (a puppet's
   // activations are its host's), and no game's word here: a word for this
-  // game is D6's report below, and a word for another game means that game's
-  // engine walks the real one, so nothing is sent (the critic's rate rule).
+  // game is D6's report below, and a word "hosted by other" sends nothing
+  // (the critic's rate rule). That word does not tell another game from
+  // nobody: the server sends isHostedByOther true to every listener of an
+  // actor no game simulates (MpObjectReference::UpdateHoster, PartOne's
+  // CreateActor props), so a seat that holds a form for a frozen walker never
+  // reports his arrival. Rare by the grid: the far side's host stands in the
+  // far cell, across the load door from the record, and so is no listener of
+  // it; the role-swapped x-gorm-inn-v5 reads what c1 holds for 0x1aa69.
   // The door: a Door whose activation is blocked, its load door link read
   // (pollLinkedDoors; a first meeting asks and lets the event go, and the
   // walker tries the door again after the engine's blocked package). The far
   // side's host is read as LockService reads it (HostService.hostsRef, by
-  // grid square for a persistent exterior door). One report per walker and
+  // grid square for a persistent exterior door; the server judges the XTEL
+  // landing's cell instead, so for an exterior far side whose door stands at
+  // a cell's edge the two can name different cells: a refused report, backed
+  // off, or a walker never reported, a known edge the inn's interior is
+  // clear of). One report per walker and
   // door per window (ARRIVAL_FIRST_MS, doubled after a report that brought no
   // snippet, up to ARRIVAL_MAX_MS); an event inside the window is taken and
   // dropped, so the branches below never report the same door for him. A
@@ -302,7 +314,10 @@ export class ActivationService extends ClientListener {
     }
     const now = Date.now();
     const key = `${caster}:${target}`;
-    const last = this.arrivals.get(key);
+    // an entry older than two of the last windows is of another visit, so
+    // the window starts again at the first (one old refusal costs no 32 s)
+    const kept = this.arrivals.get(key);
+    const last = kept !== undefined && now - kept.sentAt <= ARRIVAL_STALE_MS ? kept : undefined;
     if (last !== undefined && now - last.sentAt < last.waitMs) {
       return true;
     }

@@ -185,6 +185,19 @@ export class PuppetService extends ClientListener {
                 return;
             }
             if (flagged && now - since >= PuppetService.releaseGraceMs) {
+                if (has3D) {
+                    // tracker #121: a release that keeps its 3D (a cell this
+                    // engine detached and buffers) undoes the puppet's imposed
+                    // state as the promote below does (movementApply.ts holds
+                    // the relay's look-at and head tracking off on a puppet;
+                    // PuppetApi.cpp ReleasePuppet clears the block and the AI
+                    // alone), so a copy this seat later hosts from the buffer
+                    // carries none of it. Before the release rule every
+                    // release came with the 3D gone
+                    ac.clearLookAt();
+                    ac.setHeadTracking(true);
+                    ac.clearExpressionOverride();
+                }
                 this.sp.releasePuppet(localId);
                 this.puppets.delete(localId);
                 // the release lifts the block natively (PuppetApi.cpp
@@ -192,7 +205,8 @@ export class PuppetService extends ClientListener {
                 // schedule; a body comes back under the block at its next load
                 // here (ADR-067 decision 6)
                 this.markLifted(localId);
-                logTrace(this, `released ${localId.toString(16)}: no 3D here, left to its schedule (npc-handoff D11)`);
+                const why = has3D ? "its cell detached here, its 3D in the buffer (tracker #121)" : "no 3D here";
+                logTrace(this, `released ${localId.toString(16)}: ${why}, left to its schedule (npc-handoff D11)`);
             }
             return;
         }

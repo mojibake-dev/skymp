@@ -15,6 +15,11 @@ struct NativeCallRequirements
 
   IVM* vm = nullptr;
   StackID stackId = std::numeric_limits<StackID>::max();
+  // thuum tracker #129: set only when the platform withheld a VM it had,
+  // inside a task an engine thread waits on (SkyrimPlatform.cpp's
+  // getNativeCallRequirements): that task, named for callNative's refusal
+  // line (HandOff::ServingWhat)
+  const char* withheldInside = nullptr;
 
   std::shared_ptr<Viet::TaskQueue<Viet::Void>> gameThrQ;
   std::shared_ptr<Viet::TaskQueue<Napi::Env>> jsThrQ;

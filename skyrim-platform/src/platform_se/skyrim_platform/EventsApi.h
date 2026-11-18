@@ -16,6 +16,10 @@ void Clear();
 void SendAnimationEventEnter(uint32_t selfId,
                              std::string& animEventName) noexcept;
 void SendAnimationEventLeave(bool animationSucceeded) noexcept;
+// thuum tracker #129: an animation hook's enter that returned before
+// SendAnimationEventEnter while its leave still calls
+// SendAnimationEventLeave (Hook::SkipEnter)
+void SkipAnimationEventEnter() noexcept;
 void SendPapyrusEventEnter(uint32_t selfId,
                            std::string& papyrusEventName) noexcept;
 void SendPapyrusEventLeave() noexcept;

@@ -1,10 +1,19 @@
 #include "Hook.h"
 #include "Handler.h"
+#include "HookPairing.h"
 #include "SkyrimPlatform.h"
+
+namespace {
+// thuum tracker #129: the hooked thread's enter notes (HookPairing.h), one
+// per enter of a hook whose leave crosses too, taken by its leave
+thread_local HookPairing::EnterNotes t_enters;
+}
 
 Hook::Hook(std::string hookName_, std::string eventNameVariableName_,
            std::optional<std::string> succeededVariableName_)
   : hookName(hookName_)
+  , enterLabel(hookName_ + " enter")
+  , leaveLabel(hookName_ + " leave")
   , eventNameVariableName(eventNameVariableName_)
   , succeededVariableName(succeededVariableName_)
 {
@@ -27,6 +36,7 @@ uint32_t Hook::AddHandler(const std::shared_ptr<Handler>& handler)
   if (handlerDepth > 0) {
     throw std::runtime_error("Trying to add hook inside hook context");
   }
+  std::unique_lock<std::shared_mutex> lock(handlersMutex);
   handlers.emplace(hCounter, handler);
   return hCounter++;
 }
@@ -36,6 +46,7 @@ void Hook::RemoveHandler(const uint32_t& id)
   if (handlerDepth > 0) {
     throw std::runtime_error("Trying to remove hook inside hook context");
   }
+  std::unique_lock<std::shared_mutex> lock(handlersMutex);
   handlers.erase(id);
 }
 
@@ -44,25 +55,53 @@ std::string Hook::GetName() const
   return hookName;
 }
 
+bool Hook::AnyHandlerMatches(uint32_t selfId,
+                             const std::string& eventName) const
+{
+  std::shared_lock<std::shared_mutex> lock(handlersMutex);
+  for (const auto& hp : handlers) {
+    if (hp.second->Matches(selfId, eventName)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void Hook::Enter(uint32_t selfId, std::string& eventName)
 {
-  addRemoveBlocker++;
+  const bool papyrus = hookName == "sendPapyrusEvent";
+
+  // thuum tracker #129 (hard rule 9; events.md's "No JS is triggered until
+  // selfId in range found and event name matches"): the native match, made
+  // here on the hooked thread before any crossing, for both hooks. The
+  // Papyrus hook had it; the animation hook handed every event to the
+  // JavaScript thread and waited there, a match or not, and HandleEnter
+  // then called nobody. The test is HandleEnter's own (Handler::Matches:
+  // the id range, then the pattern by bytes, case and all), on the name as
+  // the engine sent it; a later handler sees a name an earlier one changed,
+  // and only a handler that matched can change it, so no match here is no
+  // match there. A handler added between this test and the hand-off sees
+  // the event's next sending, as one added a moment later would
+  if (!AnyHandlerMatches(selfId, eventName)) {
+    // a plain read first: the exchange's write only once, never a cache
+    // line bounced by every unmatched Papyrus event of every VM thread
+    if (!sparedSaid.load(std::memory_order_relaxed) &&
+        !sparedSaid.exchange(true)) {
+      logger::info("[hook] '{}': an event no handler's filter (minSelfId, "
+                   "maxSelfId, eventPattern) takes stays in native and never "
+                   "crosses to the JavaScript thread (rule 9, thuum tracker "
+                   "#129); said once",
+                   hookName);
+    }
+    if (!papyrus) {
+      t_enters.Note(this, false);
+    }
+    return;
+  }
+
   DWORD owningThread = GetCurrentThreadId();
 
-  if (hookName == "sendPapyrusEvent") {
-    // If there are no handlers, do not do g_taskQueue
-    bool anyMatch = false;
-    for (auto& hp : handlers) {
-      auto* h = hp.second.get();
-      if (h->Matches(selfId, eventName)) {
-        anyMatch = true;
-        break;
-      }
-    }
-    if (!anyMatch) {
-      return;
-    }
-
+  if (papyrus) {
     return SkyrimPlatform::GetSingleton()->AddUpdateTask(
       [this, owningThread, selfId, eventName](Napi::Env env) {
         std::string s = eventName;
@@ -70,6 +109,7 @@ void Hook::Enter(uint32_t selfId, std::string& eventName)
       });
   }
 
+  addRemoveBlocker++;
   auto f = [&](Napi::Env env) {
     try {
       if (inProgressThreads.count(owningThread))
@@ -83,18 +123,37 @@ void Hook::Enter(uint32_t selfId, std::string& eventName)
         [err](Napi::Env) { throw std::runtime_error(err); });
     }
   };
-  SkyrimPlatform::GetSingleton()->PushAndWait(f);
+  // thuum tracker #129: through the platform's hand-off, which the
+  // JavaScript thread serves even while it waits on the worker
+  // (SkyrimPlatform::HandOffAndWait, HandOff.h); declined only when asked on
+  // the JavaScript thread itself, which would wait on itself
+  t_enters.Note(this,
+                SkyrimPlatform::GetSingleton()->HandOffAndWait(enterLabel, f));
   addRemoveBlocker--;
+}
+
+void Hook::SkipEnter()
+{
+  if (hookName == "sendPapyrusEvent") {
+    return;
+  }
+  t_enters.Note(this, false);
 }
 
 void Hook::Leave(bool succeeded)
 {
-  addRemoveBlocker++;
-  DWORD owningThread = GetCurrentThreadId();
-
   if (hookName == "sendPapyrusEvent") {
     return;
   }
+
+  // thuum tracker #129: only the leave of an enter that crossed (the notes
+  // above)
+  if (!t_enters.Take(this)) {
+    return;
+  }
+
+  addRemoveBlocker++;
+  DWORD owningThread = GetCurrentThreadId();
 
   auto f = [&](Napi::Env env) {
     try {
@@ -110,7 +169,9 @@ void Hook::Leave(bool succeeded)
       });
     }
   };
-  SkyrimPlatform::GetSingleton()->PushAndWait(f);
+  // the enter crossed from this thread, so this is no JavaScript thread and
+  // the hand-off is never declined; its answer is not needed
+  SkyrimPlatform::GetSingleton()->HandOffAndWait(leaveLabel, f);
   addRemoveBlocker--;
 }
 

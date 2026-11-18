@@ -58,6 +58,8 @@ hooks.sendAnimationEvent.add({
 - `ctx` is the same object for calls to` enter` and `leave`.
 - `ctx.storage` is used to store data between calls to` enter` and `leave`.
 - Script functions are not available inside the `enter` and` leave` handlers.
+- `enter` and `leave` can run while a script function called from `update` waits for the engine: the JavaScript thread then serves the hooked engine thread, which may be one that function waits on (thuum tracker #129). Keep handlers to JavaScript state and do game work in `once("update", ...)`.
+- So a handler can run partway through an `update`, at any script function call in it, before the rest of that `update` has run: state the `update` (or a task it runs) writes after a script function call may not be written yet when the handler reads it. A handler that reads such state reads it in `once("update", ...)`, which runs after the whole current `update`, not in the handler itself.
 
 ## Advanced Hooking
 

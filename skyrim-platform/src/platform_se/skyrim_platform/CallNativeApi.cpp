@@ -10,7 +10,34 @@
 
 #include <spdlog/spdlog.h>
 
+#include <mutex>
+#include <string>
+#include <unordered_set>
+
 namespace {
+
+// thuum tracker #129: a native refused because the platform withheld the VM
+// inside a task an engine thread waits on (HandOff.h's rule), said once per
+// native with the task it was called in; a refusal outside the update, with
+// no VM to withhold, is the one such tasks always met and says nothing
+void SayWithheld(const std::string& className, const std::string& functionName,
+                 const char* inside)
+{
+  static std::mutex m;
+  static std::unordered_set<std::string> said;
+  const std::string native = className + "." + functionName;
+  {
+    std::lock_guard<std::mutex> lock(m);
+    if (!said.insert(native).second) {
+      return;
+    }
+  }
+  spdlog::warn("[hand-off] {} called inside {} is refused as \"can't be "
+               "called in this context\": an engine thread waits on that "
+               "task, and the native would wait on the engine (thuum tracker "
+               "#129); once per native",
+               native, inside);
+}
 
 template <class CallbackInfoLike>
 Napi::Value CallNativeImpl(
@@ -74,9 +101,13 @@ Napi::Value CallNativeImpl(
   }
 
   auto requirements = getNativeCallRequirements();
-  if (!requirements.vm)
+  if (!requirements.vm) {
+    if (requirements.withheldInside) {
+      SayWithheld(className, functionName, requirements.withheldInside);
+    }
     throw std::runtime_error('\'' + className + '.' + functionName +
                              "' can't be called in this context");
+  }
 
   CallNative::AnySafe nativeArgs[CallNative::g_maxArgs + 1];
   auto n =
@@ -156,7 +187,9 @@ Napi::Value CallNativeImpl(
     // the worker's Scope or NativeFunctionBase::Call, so this Scope is what
     // tells the Papyrus gate the events it raises are the platform's, and
     // stands the animation hooks down here, where a handler's PushAndWait
-    // to this same thread would never return. A call the worker runs is
+    // to this same thread would never return (since thuum tracker #129 such
+    // an ask is declined, SkyrimPlatform::HandOffAndWait; the mark keeps
+    // D-S0-14 B's rule). A call the worker runs is
     // marked on the worker too (SkyrimPlatform.cpp). HYPOTHESIS: the engine
     // raises such a call's events synchronously inside it, on this thread
     PlatformCall::Scope platformCall;

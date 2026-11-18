@@ -202,13 +202,28 @@ export class MagicSyncService extends ClientListener {
 
     private onSendAnimationEventLeave(ctx: { animEventName: string, animationSucceeded: boolean }) {
         const hand = this.handOfEquippedAnim(ctx.animEventName);
-        const cast = hand === null ? undefined : this.lastCastByHand.get(hand);
-        if (hand === null || !cast) {
+        if (hand === null) {
             return;
         }
-        this.lastCastByHand.delete(hand);
 
+        // thuum tracker #129: the hand's cast is read on the next update,
+        // not here. The platform now serves a hook's leave inside a script
+        // function's wait, partway through an update (events.md), where it
+        // used to wait for the update's end; onSpellCast runs in the update's
+        // tasks and sets lastCastByHand only after its own natives, so an end
+        // that landed in that window would find no cast and send no end (a
+        // figure that keeps casting on the other seats, the x-flames-stop
+        // symptom; HYPOTHESIS that a tapped cast's report and its end can
+        // share one update, as AnimationSource's note says a start and a
+        // release share a frame). The next update's read comes after every
+        // write of the update the leave landed in, as the old order's did,
+        // and the end goes on that same update, as before
         this.controller.once('update', () => {
+            const cast = this.lastCastByHand.get(hand);
+            if (!cast) {
+                return;
+            }
+            this.lastCastByHand.delete(hand);
             // a cast goes before its end: one still waiting for its launch
             // goes now, with the launch or without
             this.flushCasts(true);

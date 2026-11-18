@@ -1,11 +1,13 @@
-import { ActivateEvent, Actor, TriggerEntryEvent } from "skyrimPlatform";
+import { ActivateEvent, Actor, ObjectReference, TriggerEntryEvent } from "skyrimPlatform";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { getInventory } from "../../sync/inventory";
+import { ConnectionMessage } from "../events/connectionMessage";
+import { SpSnippetMessage } from "../messages/spSnippetMessage";
 
 // TODO: refactor this out
-import { isSyncedActorId, localIdToRemoteId } from "../../view/worldViewMisc";
+import { isSyncedActorId, localIdToRemoteId, snippetIdToLocalId } from "../../view/worldViewMisc";
 
 import { LastInvService } from "./lastInvService";
 import { HostService } from "./hostService";
@@ -34,11 +36,28 @@ const ENTRIES_PER_S = 4;
 // the expired go with their lines and a pair whose owner came by no counted
 // flip is read once more
 const HELD_AGAIN_MS = 61_000;
+// thuum tracker #121, the arrival's window per walker and door: one report
+// in the first, the roster's tick (HostService.sightingsMs), so the
+// snippet's own activation and the engine's blocked package retrying the
+// door land inside it; doubled after each report the server answered with no
+// snippet (a refusal sends nothing back), up to the last, and back to the
+// first at a snippet, which starts the window again (UNMEASURED: the blocked
+// package's period is unread). Crossing (iii) keeps its windows in the same
+// map, doubled the same way each time the walker is back at the door
+const ARRIVAL_FIRST_MS = 2_000;
+const ARRIVAL_MAX_MS = 32_000;
+// past this since its window began, a walker and door's window is forgotten
+const ARRIVAL_STALE_MS = 2 * ARRIVAL_MAX_MS;
+// the walkers and doors with a window, at most (past it they start over)
+const ARRIVALS_MAX = 256;
 
 export class ActivationService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         this.controller.on("activate", (e) => this.onActivate(e));
+        // thuum tracker #121: the server's answer to an arrival report, read
+        // off the snippet as it lands (JS state alone, a message's context)
+        this.controller.emitter.on("spSnippetMessage", (e) => this.onArrivalSnippet(e));
         this.presserRule = this.startPresserRule();
         this.startTriggerLook(this.presserRule);
         if (this.presserRule) {
@@ -69,6 +88,17 @@ export class ActivationService extends ClientListener {
         }
 
         if (!target || !caster) {
+          return;
+        }
+
+        // thuum tracker #121 (design B, the destination's host takes the
+        // arrival): an NPC this engine walked to a load door whose far side
+        // is a cell this game hosts, with no game's word holding it here
+        // (reportArrival), or one at a door whose two sides and own place
+        // this game neither hosts nor has attached (crossUnwatched, ADR-051
+        // decision 1's dark schedule); a hosted walker keeps D6's report
+        // below
+        if (caster !== PLAYER_ID && this.reportArrival(e, caster, target)) {
           return;
         }
 
@@ -207,6 +237,251 @@ export class ActivationService extends ClientListener {
 
         logTrace(this, `Sent activation for caster=`, caster.toString(16), `and target=`, target.toString(16));
     }
+
+  // thuum tracker #121 (playtest 55, Eli: "Wait for Gorm"; ADR-035 point 8's
+  // design B, the destination's host takes the arrival). Gorm 0x1aa69's
+  // record stood frozen in Highmoon Hall 0x138cc, which nobody hosted, while
+  // c2 hosted the Moorside Inn 0x138ce and its engine walked him in the dark
+  // (ADR-051 decision 1) to the inn's street door 0x177af. The engine's
+  // ActivateRef 19796 (from the ActivateDoor handler 37878) refused him there
+  // on the block every bound door carries (ObjectReferenceEx.dealWithRef's
+  // kBlockActivate, read by the trace of tracker #121 note 3311, run
+  // 20261118-023818 on c2, with him held in kMovementBlocked after it; the
+  // hall's door 0x173c6 carried no block and he crossed it), and this seat
+  // said nothing: no form held him, so
+  // the event went to the presser rule, which reports a door in a hosted
+  // cell alone. Now such a walker is reported as D6 reports a hosted one,
+  // and the server's one door walk judges the report for this game
+  // (MpObjectReference::WalkThroughDoor, the Rust cells judge): it accepts
+  // only while no game simulates him and the far side is this game's own
+  // cell, and then its snippet runs ObjectReference.Activate(walker, true)
+  // here, the engine's own transit through the block (Papyrus's
+  // BlockActivation idiom, D6's proven reply). HYPOTHESIS: that call crosses
+  // a walker no seat runs at high process, as it crossed D6's loaded ones.
+  //
+  // The walker: an actor from the game files, alive, no puppet (a puppet's
+  // activations are its host's), and no game's word here: a word for this
+  // game is D6's report below, and a word "hosted by other" sends nothing
+  // (the critic's rate rule). That word does not tell another game from
+  // nobody: the server sends isHostedByOther true to every listener of an
+  // actor no game simulates (MpObjectReference::UpdateHoster, PartOne's
+  // CreateActor props), so a seat that holds a form for a frozen walker never
+  // reports his arrival. Rare by the grid: the far side's host stands in the
+  // far cell, across the load door from the record, and so is no listener of
+  // it; the role-swapped x-gorm-inn-v5 reads what c1 holds for 0x1aa69.
+  // The door: a Door whose activation is blocked, its load door link read
+  // (pollLinkedDoors; a first meeting asks and lets the event go, and the
+  // walker tries the door again after the engine's blocked package). The far
+  // side's host is read as LockService reads it (HostService.hostsRef, by
+  // grid square for a persistent exterior door; the server judges the XTEL
+  // landing's cell instead, so for an exterior far side whose door stands at
+  // a cell's edge the two can name different cells: a refused report, backed
+  // off, or a walker never reported, a known edge the inn's interior is
+  // clear of). One report per walker and
+  // door per window (ARRIVAL_FIRST_MS, doubled after a report that brought no
+  // snippet, up to ARRIVAL_MAX_MS); an event inside the window is taken and
+  // dropped, so the branches below never report the same door for him. A
+  // door whose far side this game does not host is crossed here unreported
+  // when none of the walker's place and the door's two sides is watched here
+  // (crossUnwatched, crossing (iii)), and goes to those branches as before
+  // otherwise. True when this branch took the event; an activate event's
+  // context, so the game reads are legal here
+  private reportArrival(e: ActivateEvent, caster: number, target: number): boolean {
+    if (caster > LAST_GAME_FILE_ID || target > LAST_GAME_FILE_ID || typeof this.sp.linkedDoorOf !== "function") {
+      return false;
+    }
+    // the door first: most of an NPC's activations (a chair, a container)
+    // leave here, before the world model is searched for its word
+    const base = e.target.getBaseObject();
+    if (!base || base.getType() !== this.sp.FormType.Door || !e.target.isActivationBlocked()) {
+      return false;
+    }
+    const walker = this.sp.Actor.from(e.caster);
+    if (!walker || walker.isDead()) {
+      return false;
+    }
+    const host = this.controller.lookupListener(HostService);
+    if (host.isMineLocal(caster) || host.isOthersLocal(caster) || this.sp.isPuppet(caster)) {
+      return false;
+    }
+    const pair = this.sp.linkedDoorOf(target);
+    if (pair === null) {
+      if (typeof this.sp.pollLinkedDoors === "function") {
+        this.sp.pollLinkedDoors([target]);
+      }
+      return false;
+    }
+    if (pair === 0) {
+      return false;
+    }
+    const far = this.sp.ObjectReference.from(this.sp.Game.getFormEx(pair));
+    if (!far) {
+      return false;
+    }
+    if (!host.hostsRef(far)) {
+      return this.crossUnwatched(e, caster, target, walker, far, host);
+    }
+    const now = Date.now();
+    const key = `${caster}:${target}`;
+    // an entry older than two of the last windows is of another visit, so
+    // the window starts again at the first (one old refusal costs no 32 s)
+    const kept = this.arrivals.get(key);
+    const last = kept !== undefined && now - kept.sentAt <= ARRIVAL_STALE_MS ? kept : undefined;
+    // a crossing's window (crossUnwatched's, doubled while he comes back)
+    // holds a report back for the first window alone, enough for the
+    // crossing's own event: a far side this game hosts now is reported
+    const windowMs = last === undefined ? 0 : last.crossing ? Math.min(last.waitMs, ARRIVAL_FIRST_MS) : last.waitMs;
+    if (last !== undefined && now - last.sentAt < windowMs) {
+      return true;
+    }
+    const waitMs = last === undefined || last.answered ? ARRIVAL_FIRST_MS : Math.min(last.waitMs * 2, ARRIVAL_MAX_MS);
+    if (last !== undefined && !last.answered) {
+      logLab("verb:npc-handoff", `door ${idOf(target)}: ${idOf(caster)}'s last arrival report brought no snippet; reported again, the next after ${waitMs / 1000} s (tracker #121)`);
+    }
+    if (this.arrivals.size >= ARRIVALS_MAX && !this.arrivals.has(key)) {
+      this.arrivals.clear();
+    }
+    this.arrivals.set(key, { sentAt: now, waitMs, answered: false, crossing: false });
+    this.controller.emitter.emit("sendMessage", {
+        message: {
+            t: MsgType.Activate,
+            data: { caster, target, isSecondActivation: false }
+        },
+        reliability: "reliable"
+    });
+    const cell = ObjectReferenceEx.getWorldOrCell(far);
+    logLab("verb:npc-handoff", `door ${idOf(target)}: ${idOf(caster)} walks into ${cell.toString(16)}, which this game hosts; its arrival reported (tracker #121)`);
+    return true;
+  }
+
+  // thuum tracker #121, crossing (iii) (ADR-051 decision 1: an actor no game
+  // simulates walks his schedule in each engine's dark, and nothing of it is
+  // reported; here that schedule reaches its doors). The case it is for is a
+  // static read, HYPOTHESIS until x-gorm-inn-v6-swap runs on this branch's
+  // build: in that frame c1, the inn's host, stood in the hall first, so its
+  // client bound the hall's own door 0x173c6 with the block every bound Door
+  // carries (ObjectReferenceEx.dealWithRef; a Door is no kind
+  // liftsInHostedCell lifts), the block outlives the leave, and the door's
+  // far side is the street, which nobody hosts, so reportArrival does not
+  // cover it. Once the release rule (PuppetService) frees c1's copy in the
+  // hall's buffer, c1's engine walks him to that door and the block would
+  // refuse him there. Its stage run 20261118-040503 did not read this: it ran
+  // the train's build (m4-train-55 0e7c9701, none of this branch's commits),
+  // where c1 held him in 0x138cc as a puppet with his AI off (2 lines of
+  // "puppet 1aa69: AI off", none of "released 1aa69", c1's npc-state
+  // aiEnabled false, is3DLoaded true), so c1's engine never walked him and
+  // the block on 0x173c6 was never reached. The read that decides it: on
+  // this build, c1's release line for 1aa69 followed by "door 173c6: 1aa69's
+  // schedule crosses here unreported", or the door trace of note 3311
+  // (door-cross-trace.js) on c1 showing 0x173c6's activation by 0x1aa69 with
+  // the block set.
+  //
+  // The walker has passed reportArrival's admission (from the game files,
+  // alive, no game's word held here, this game's or another's, no puppet, a
+  // blocked Door with its link read) and the far side is no cell this game
+  // hosts. When this game watches none of the walker's own place, the door's
+  // and the far side's (HostService.watchesRef: hosts the cell, or has it
+  // attached as the release rule reads it, an exterior reference in the
+  // player's worldspace by its grid square among the loaded set's), nobody
+  // here sees the crossing and our block refusing it is our accident, so the
+  // engine's own transit runs here: the door's Activate with the walker and
+  // default processing only (Papyrus's BlockActivation idiom,
+  // https://ck.uesp.net/wiki/Activate_-_ObjectReference; D6's reply, run on
+  // this seat). Anything this game watches keeps the block, and the branches
+  // below run as before. A known edge: the far side is read at its door's
+  // square, while the walker lands at the door's XTEL landing, which at a
+  // loaded grid's edge can stand in a square this game renders; the same
+  // edge reportArrival names for hostsRef, beside an attached cell the
+  // loaded set lacks (the design's risk 6).
+  //
+  // The window: at most one call per walker and door per ARRIVAL_FIRST_MS,
+  // in the arrival's map, marked before the call. A walker back at the same
+  // door inside ARRIVAL_STALE_MS did not cross (a crossing that worked puts
+  // him on the far side, and a false return leaves him at the door), so the
+  // window doubles each time, up to ARRIVAL_MAX_MS, as an unanswered report's
+  // does; a crossing of this walker and door after a stale window starts at
+  // the first again. The crossing line is written only when the call returns
+  // true, so its count is the calls that took; a false return writes the
+  // "returned false" line alone.
+  //
+  // The census: the call is the platform's own direct call (SkyrimPlatform.cpp's
+  // worker under PlatformCall::Scope), so the ADR-062 census counts it as
+  // "(platform)" (ScriptNatives::CountPlatformCall) and never raises it as a
+  // script's consequence, as for D6's snippet call; slice 1b leaves
+  // ObjectReference.Activate census-only (docs/NATIVES.md), and the seam's
+  // step for the platform's own comes before any verdict. No second
+  // crossing: a hosted walker (D6) and one with another game's word held
+  // here (isOthersLocal) are refused at the admission; an arrival's snippet
+  // starts its entry's window again as it lands (onArrivalSnippet), so its
+  // own Activate lands inside a window whichever branch it reaches; and this
+  // call's own event, if it raises one, lands in this window. HYPOTHESIS (the
+  // static read of ActivateRef 19796, lab/frida/lever-furn-trace.js and
+  // book-take.js): default processing only skips the TESActivateEvent, so
+  // this call raises no event here at all. HYPOTHESIS, as for the arrival:
+  // the call crosses a walker no seat runs at high process. True when this
+  // branch took the event, false for the branches below; the activate event
+  // is the platform's update task, so the call is legal here and never
+  // inside the engine's own ActivateRef
+  private crossUnwatched(e: ActivateEvent, caster: number, target: number, walker: Actor, far: ObjectReference, host: HostService): boolean {
+    if (host.watchesRef(walker) || host.watchesRef(e.target) || host.watchesRef(far)) {
+      return false;
+    }
+    const now = Date.now();
+    const key = `${caster}:${target}`;
+    const kept = this.arrivals.get(key);
+    const last = kept !== undefined && now - kept.sentAt <= ARRIVAL_STALE_MS ? kept : undefined;
+    if (last !== undefined && now - last.sentAt < last.waitMs) {
+      return true;
+    }
+    // the last crossing of this walker and door, inside the stale window
+    const again = last !== undefined && last.crossing ? last : undefined;
+    const waitMs = again !== undefined ? Math.min(again.waitMs * 2, ARRIVAL_MAX_MS) : ARRIVAL_FIRST_MS;
+    if (again !== undefined) {
+      logLab("verb:npc-handoff", `door ${idOf(target)}: ${idOf(caster)} is back at it ${Math.round((now - again.sentAt) / 1000)} s after the last crossing; tried again, the next after ${waitMs / 1000} s (tracker #121)`);
+    }
+    if (this.arrivals.size >= ARRIVALS_MAX && !this.arrivals.has(key)) {
+      this.arrivals.clear();
+    }
+    // answered: no snippet is awaited for a crossing, so a later arrival
+    // report of this walker and door starts at the first window
+    this.arrivals.set(key, { sentAt: now, waitMs, answered: true, crossing: true });
+    const crossed = e.target.activate(e.caster, true);
+    if (crossed) {
+      logLab("verb:npc-handoff", `door ${idOf(target)}: ${idOf(caster)}'s schedule crosses here unreported (ADR-051 decision 1, tracker #121)`);
+    } else {
+      logLab("verb:npc-handoff", `door ${idOf(target)}: its Activate for ${idOf(caster)} returned false (tracker #121)`);
+    }
+    return true;
+  }
+
+  // the server's answer to an arrival report: D6's snippet
+  // (ObjectReference.Activate on the door, the walker and true as its
+  // arguments) marks the window answered, so the next report waits the first
+  // window again, and starts that window as it lands (sentAt now, waitMs the
+  // first): the snippet's own Activate, if it raises an event, lands inside
+  // a window in reportArrival and crossUnwatched alike, however late the
+  // snippet came (the review of ce94e7e61). A message's context: JS state
+  // alone, no game call
+  private onArrivalSnippet(event: ConnectionMessage<SpSnippetMessage>): void {
+    const msg = event.message;
+    if (this.arrivals.size === 0 || msg.class.toLowerCase() !== "objectreference" || msg.function.toLowerCase() !== "activate") {
+      return;
+    }
+    const arg = Array.isArray(msg.arguments) ? msg.arguments[0] : undefined;
+    const walkerId = arg !== null && typeof arg === "object" && typeof arg.formId === "number" ? snippetIdToLocalId(arg.formId) : 0;
+    const doorId = snippetIdToLocalId(msg.selfId);
+    if (!walkerId || !doorId) {
+      return;
+    }
+    const arrival = this.arrivals.get(`${walkerId}:${doorId}`);
+    if (arrival !== undefined && !arrival.answered) {
+      const now = Date.now();
+      logTrace(this, `door ${doorId.toString(16)}: the server walks ${walkerId.toString(16)} through here, its snippet in ${now - arrival.sentAt} ms (tracker #121)`);
+      arrival.answered = true;
+      arrival.sentAt = now;
+      arrival.waitMs = ARRIVAL_FIRST_MS;
+    }
+  }
 
   // thuum docs/DECISIONS.md D-W1 A (a trigger volume's entry is its presser's
   // owner's; docs/research/fifty-fixes-2026-11-07.md 1(d), the root rule).
@@ -581,6 +856,11 @@ export class ActivationService extends ClientListener {
   private heldAskAt = 0;
   private heldAgainAtMs = 0;
   private replayHeldMissing = false;
+  // thuum tracker #121: the arrival reports and crossings by walker and door
+  // ("<walker>:<door>", local ids), each with its window (from sentAt: the
+  // report's or the crossing's time, or the snippet's once one answers),
+  // whether a snippet answered it, and whether it is a crossing (iii)'s
+  private readonly arrivals = new Map<string, { sentAt: number; waitMs: number; answered: boolean; crossing: boolean }>();
 
 };
 

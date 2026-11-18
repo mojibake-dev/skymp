@@ -1640,17 +1640,19 @@ void PartOne::Init()
                                      bool sendRecord) {
     return ApplySkillBook(actor, skillAv, sendRecord);
   };
-  // and a hosted NPC's door (npc-handoff D6, and D9's pass through a door
-  // since 2026-10-28): the crossing judged by the move verdict for its
-  // simulator before the host's engine walks it
-  worldState.npcDoorVerdict = [this](MpActor& actor, uint32_t destWorldOrCell,
+  // and an NPC's door (npc-handoff D6, and D9's pass through a door since
+  // 2026-10-28; tracker #121's arrival): the crossing judged by the move
+  // verdict for the game that reported it, before that game's engine walks
+  // it. D6 asks for the NPC's simulator; the arrival for a game that does
+  // not simulate it, which the judge accepts only while nobody does and the
+  // far side is that game's own cell (cells.rs judge)
+  worldState.npcDoorVerdict = [this](const MpActor& sender, MpActor& actor,
+                                     uint32_t destWorldOrCell,
                                      const NiPoint3& destPos) {
     // a judgment, not a move: nothing recorded until the host's report
     // (x-handoff-door 20261024-001915 read a follow removed at the exit
     // door before the host lookup, hence a false "no host")
-    MpActor* host = worldState.HostOf(actor);
-    return host &&
-      WouldMoveActor(*host, actor, destWorldOrCell, destPos) !=
+    return WouldMoveActor(sender, actor, destWorldOrCell, destPos) !=
       MoveVerdict::Refuse;
   };
   // and a player's door: its thralls go through with it (thuum #48 leg D)

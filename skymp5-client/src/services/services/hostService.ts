@@ -62,6 +62,10 @@ export class HostService extends ClientListener {
             logTrace(this, "npcStream is off in settings: no hosted actor's actions are streamed");
         }
         this.controller.on("cellFullyLoaded", (e) => this.onCellFullyLoaded(e));
+        // the player's place is read again in each tick (cellAttachedFor; JS
+        // state alone here, so a reconcile earlier in the same tick has read
+        // the last tick's, a frame late at a cell change)
+        this.controller.on("update", () => { this.placeRead = undefined; });
         this.controller.on("update", () => this.onUpdate());
         this.controller.emitter.on("hostGrantMessage", (e) => this.onHostGrant(e));
         this.controller.emitter.on("hostReleaseMessage", (e) => this.onHostRelease(e));
@@ -354,34 +358,163 @@ export class HostService extends ClientListener {
     }
 
     hostsPosition(world: number, x: number, y: number): boolean {
+        return this.squareAmong(this.hosted.keys(), world, x, y, false);
+    }
+
+    // Whether the grid square of (x, y) in the worldspace is one of the
+    // cells' squares (the platform's cellGridOf); a cell whose square is not
+    // read yet is asked for (gridAskDue) and counts as `unread` says until it
+    // answers, and so does every cell without the platform's two natives
+    private squareAmong(cells: Iterable<number>, world: number, x: number, y: number, unread: boolean): boolean {
         if (typeof this.sp.cellGridOf !== "function" || typeof this.sp.pollCellGrids !== "function") {
-            return false;
+            return unread;
         }
         const gx = Math.floor(x / 4096);
         const gy = Math.floor(y / 4096);
-        const unread: number[] = [];
-        let hosts = false;
-        this.hosted.forEach((_epoch, cell) => {
+        const now = Date.now();
+        const asks: number[] = [];
+        let found = false;
+        let unknown = false;
+        for (const cell of Array.from(cells)) {
             const grid = this.sp.cellGridOf(cell);
             if (grid === null) {
-                if (!this.gridAsked.has(cell)) {
-                    this.gridAsked.add(cell);
-                    unread.push(cell);
+                unknown = true;
+                if (asks.length < HostService.gridAsksMax && this.gridAskDue(cell, now)) {
+                    asks.push(cell);
                 }
-                return;
+                continue;
             }
             if (grid.world === world && grid.x === gx && grid.y === gy) {
-                hosts = true;
+                found = true;
             }
-        });
-        if (unread.length > 0) {
-            this.sp.pollCellGrids(unread);
         }
-        return hosts;
+        if (asks.length > 0) {
+            this.sp.pollCellGrids(asks);
+        }
+        return found || (unknown && unread);
     }
 
-    // the hosted cells whose grid square was asked for (hostsPosition)
-    private gridAsked = new Set<number>();
+    // Whether a cell's grid square is due an ask, marked asked when it is:
+    // never asked, or asked gridAskAgainMs ago. The platform's map of read
+    // squares starts over whole past its kCellGridsMax (PuppetApi.cpp's
+    // PollCellGrids), so a square read once can read null again; asked once
+    // only, it stayed unread for the rest of the sitting, hostsPosition then
+    // reading a hosted persistent door as not hosted and watchesRef reading
+    // every exterior door in the player's worldspace as watched (thuum
+    // tracker #121, the reviews of ce94e7e61). A square still unread is asked
+    // again each gridAskAgainMs, no oftener; the asked map starts over at
+    // the platform's size
+    private gridAskDue(cell: number, now: number): boolean {
+        const askedAt = this.gridAsked.get(cell);
+        if (askedAt !== undefined && now - askedAt < HostService.gridAskAgainMs) {
+            return false;
+        }
+        if (askedAt === undefined && this.gridAsked.size >= HostService.gridAskedMax) {
+            this.gridAsked.clear();
+        }
+        this.gridAsked.set(cell, now);
+        return true;
+    }
+
+    // the cells whose grid square was asked for, with when (squareAmong: the
+    // hosted set's for hostsPosition, the loaded set's for watchesRef; a
+    // grant, onHostGrant)
+    private gridAsked = new Map<number, number>();
+    // pollCellGrids' ids per call, at most (its typing's 256)
+    private static readonly gridAsksMax = 256;
+    // an unread square's next ask, this long after its last at the soonest
+    private static readonly gridAskAgainMs = 5_000;
+    // the asked map's size, at most: the platform's kCellGridsMax
+    // (PuppetApi.cpp), past which its own map starts over
+    private static readonly gridAskedMax = 4096;
+
+    // thuum tracker #121, crossing (iii) (ActivationService.crossUnwatched):
+    // whether this game watches the cell a reference stands in, so a walker
+    // crossing there is seen here. True when it hosts that cell (hostsRef)
+    // or has it attached, read as the release rule reads it (cellAttachedFor:
+    // the player's own interior, another interior's Cell.isAttached, an
+    // exterior reference while the player stands in an interior or another
+    // worldspace in no attached cell). In the player's own worldspace an
+    // exterior reference is found by its grid square among the loaded set's,
+    // the cells this engine reports attached (a persistent reference's parent
+    // is the worldspace's persistent cell, so the square is read as hostsRef
+    // reads it); a loaded cell whose square is not read yet counts as
+    // watched until it answers. Where nothing can say, true: the block holds
+    watchesRef(ref: ObjectReference): boolean {
+        if (this.hostsRef(ref)) {
+            return true;
+        }
+        const attached = this.cellAttachedFor(ref);
+        if (attached !== undefined) {
+            return attached;
+        }
+        const world = ref.getWorldSpace();
+        if (!world || this.playerPlace() === null) {
+            return true;
+        }
+        return this.squareAmong(this.loaded, world.getFormID(), ref.getPositionX(), ref.getPositionY(), true);
+    }
+
+    // thuum tracker #121 (ADR-051 decision 1: an actor whose cell is not
+    // attached is simulated by nobody here and released to its schedule):
+    // whether this engine has the cell a reference stands in attached, by the
+    // engine's own reads: true or false where they say, undefined where they
+    // cannot. An interior reference's parent is its own cell, read through
+    // Cell.isAttached, the read the loaded set polls each second (here at
+    // once, without the poll's second). An exterior reference while the
+    // player stands in an interior or in another worldspace is in no attached
+    // cell: the engine detaches the exterior grid at an interior's load and
+    // keeps its 3D in the buffer (b-npc-handoff-door-hosts 20261103-134832:
+    // c1's warm exit from the inn re-attached Riverwood's exterior with no
+    // event; playtest 53's "demote 1aa69 ... in 3c" came from c2 inside the
+    // inn). In the player's own worldspace the attached grid is the ini's
+    // (uGridsToLoad) and a persistent reference's parent is the worldspace's
+    // persistent cell, so the answer there is undefined and the caller keeps
+    // its own read. HYPOTHESIS until a role-swapped x-gorm-inn-v5: the hall's
+    // buffered cell answers isAttached false while the player stands in the
+    // inn (both v4 reds: c1 in the inn held Gorm in 0x138cc as a puppet with
+    // is3DLoaded true, 20261117-035309 and 20261117-052416).
+    // The player's own interior counts as attached without the read: while it
+    // loads, its actors can have their 3D before the cell answers isAttached
+    // true, and a copy another seat hosts is demoted at its first 3D there as
+    // before (the review of ec5f9d07a). The player's place is read once per
+    // tick (playerPlace), since reconcile asks this for every NPC with a 3D
+    // on every view update
+    cellAttachedFor(ref: ObjectReference): boolean | undefined {
+        const place = this.playerPlace();
+        if (place === null) {
+            return undefined;
+        }
+        const cell = ref.getParentCell();
+        if (cell && cell.isInterior()) {
+            return cell.getFormID() === place.cell || cell.isAttached();
+        }
+        const world = ref.getWorldSpace();
+        if (!world) {
+            return undefined;
+        }
+        return place.world !== 0 && place.world === world.getFormID() ? undefined : false;
+    }
+
+    // the player's parent cell and worldspace (0 for none, as in an
+    // interior), read at the first ask of each tick; null with no player
+    private playerPlace(): { cell: number; world: number } | null {
+        if (this.placeRead === undefined) {
+            const player = this.sp.Game.getPlayer();
+            if (!player) {
+                this.placeRead = null;
+            } else {
+                const cell = player.getParentCell();
+                const world = player.getWorldSpace();
+                this.placeRead = { cell: cell ? cell.getFormID() : 0, world: world ? world.getFormID() : 0 };
+            }
+        }
+        return this.placeRead;
+    }
+
+    // the tick's read of the player's place (playerPlace), cleared at each
+    // update; undefined until the tick's first ask
+    private placeRead: { cell: number; world: number } | null | undefined = undefined;
 
     // thuum docs/verbs/change-form.md (ADR-065, Ownership): the epoch a
     // report of an actor's record carries, the host epoch this client holds
@@ -842,9 +975,9 @@ export class HostService extends ClientListener {
         this.controller.emitter.emit("cellHostChanged", { cell, hosted: true });
         // thuum #63 and #47: the cell's grid square, for the references that
         // stand in it by position (hostsRef), read before LockService's
-        // re-check at the grant asks
-        if (!this.gridAsked.has(cell) && typeof this.sp.pollCellGrids === "function") {
-            this.gridAsked.add(cell);
+        // re-check at the grant asks (gridAskDue: again at a later grant, so
+        // a square the platform's map dropped is read again)
+        if (typeof this.sp.pollCellGrids === "function" && this.gridAskDue(cell, Date.now())) {
             this.sp.pollCellGrids([cell]);
         }
     }

@@ -1871,6 +1871,51 @@ mod tests {
     }
 
     #[test]
+    fn a_door_reported_by_a_game_that_does_not_simulate_the_actor_is_accepted_only_into_its_own_cell_while_nobody_simulates_it() {
+        // thuum tracker #121 (playtest 55, the arrival through a door; design
+        // B, the destination's host takes the arrival): Gorm's record stands
+        // frozen in Highmoon Hall, which nobody hosts, and c2 hosts the
+        // Moorside Inn; c2's engine walked him in the dark to the inn's
+        // street door. The core asks this judge with the reporting game as
+        // the sender (PartOne::WouldMoveActor, MpObjectReference::
+        // WalkThroughDoor): the inn's host may take him in while nobody
+        // simulates him, and nobody else may
+        const HALL: u32 = 0x138cc;
+        const INN: u32 = 0x138ce;
+        const GORM: u32 = 0x1aa69;
+        let mut c = Cells::default();
+        c.reach(C2, &[INN], 0);
+        c.loaded(C2, INN, 1_000);
+        assert_eq!(c.host_of(INN), Some((C2, 1)));
+        assert_eq!(c.host_of(HALL), None);
+        assert_eq!(c.simulator_of(GORM, HALL), 0);
+        let arrival = CellMove { sender: C2, actor: GORM, origin: HALL, dest: INN, adjacent: false, door: true, edge_units: u32::MAX };
+        assert_eq!(c.judge(&arrival, 2_000), MoveVerdict::Accept);
+        // a judgment records nothing: no follow, and he stays nobody's until
+        // the inn host's roster sights him inside
+        assert_eq!(c.follows(), vec![]);
+        assert_eq!(c.simulator_of(GORM, HALL), 0);
+        // another seat's report of the same door, into a cell it does not host
+        assert_eq!(c.judge(&CellMove { sender: C1, ..arrival }, 2_000), MoveVerdict::Refuse);
+        // the hall hosted by another seat: that seat's engine walks the real
+        // one, so the inn's host is refused, and the simulator's own door
+        // into the inn is the pass as before (D9)
+        let mut d = Cells::default();
+        d.reach(C1, &[HALL], 0);
+        d.reach(C2, &[INN], 0);
+        d.loaded(C1, HALL, 1_000);
+        d.loaded(C2, INN, 1_000);
+        assert_eq!(d.simulator_of(GORM, HALL), C1);
+        assert_eq!(d.judge(&arrival, 2_000), MoveVerdict::Refuse);
+        assert_eq!(d.judge(&CellMove { sender: C1, ..arrival }, 2_000), MoveVerdict::Pass);
+        // the inn hosted by nobody: nobody watches the far side, refused
+        let mut e = Cells::default();
+        e.reach(C2, &[INN], 0);
+        assert_eq!(e.host_of(INN), None);
+        assert_eq!(e.judge(&arrival, 2_000), MoveVerdict::Refuse);
+    }
+
+    #[test]
     fn the_cold_starts_first_grants_pass_to_a_nearer_player_inside_the_dwell_and_stand_after_it() {
         // ADR-047 D10: after a restart two games reconnect 20 ms apart; the
         // cell each stands in goes to it, not to whoever reported first

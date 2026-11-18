@@ -813,7 +813,8 @@ TEST_CASE("A hosted actor's door into a cell another live host holds passes "
 
   // the door's pre-check admits the crossing (the refusal of playtest 37)
   REQUIRE(p.worldState.npcDoorVerdict);
-  REQUIRE(p.worldState.npcDoorVerdict(*hod, kInn, kInside));
+  REQUIRE(p.worldState.npcDoorVerdict(p.worldState.GetFormAt<MpActor>(kC1),
+                                      *hod, kInn, kInside));
 
   // c1's engine walked him through; its report from indoors passes him
   Move(p, 0, kHod, kInside, kInn);
@@ -874,7 +875,8 @@ TEST_CASE("A hosted actor's door into a cell another live host holds passes "
 
   // the exit by schedule: the inn's host walks him out into c1's square,
   // deep inside it, and c1 takes him back
-  REQUIRE(p.worldState.npcDoorVerdict(*hod, kTamriel, kOutside));
+  REQUIRE(p.worldState.npcDoorVerdict(p.worldState.GetFormAt<MpActor>(kC2),
+                                      *hod, kTamriel, kOutside));
   Move(p, 1, kHod, kOutside);
   REQUIRE(p.worldState.CellOf(*hod) == here);
   REQUIRE(p.SimulatorOf(*hod) == kC1);
@@ -936,7 +938,7 @@ TEST_CASE("A hosted non-persistent resident's door into an unhosted interior "
   // the door's pre-check admits her crossing into a house nobody hosts (the
   // refusal of D54), and records nothing
   REQUIRE(p.worldState.npcDoorVerdict);
-  REQUIRE(p.worldState.npcDoorVerdict(*hilde, kHouse, kInside));
+  REQUIRE(p.worldState.npcDoorVerdict(c1, *hilde, kHouse, kInside));
   REQUIRE(p.GetFollows().empty());
 
   // c1's engine walked her through; its report from indoors moves the
@@ -1037,7 +1039,8 @@ TEST_CASE("A hosted non-persistent resident's door into a cell another live "
   p.Messages().clear();
 
   // the door's pre-check admits her crossing into the hosted house
-  REQUIRE(p.worldState.npcDoorVerdict(*hilde, kHouse, kInside));
+  REQUIRE(p.worldState.npcDoorVerdict(p.worldState.GetFormAt<MpActor>(kC1),
+                                      *hilde, kHouse, kInside));
 
   // c1's engine walked her through; its report from indoors passes her to
   // the house's host: the record moves, no follow, the word both ways
@@ -1071,7 +1074,8 @@ TEST_CASE("A hosted non-persistent resident's door into a cell another live "
 
   // her morning: the house's host walks her out into c1's square, deep
   // inside it, and c1 takes her back
-  REQUIRE(p.worldState.npcDoorVerdict(*hilde, kTamriel, kOutside));
+  REQUIRE(p.worldState.npcDoorVerdict(p.worldState.GetFormAt<MpActor>(kC2),
+                                      *hilde, kTamriel, kOutside));
   Move(p, 1, kHilde, kOutside);
   REQUIRE(p.worldState.CellOf(*hilde) == here);
   REQUIRE(p.SimulatorOf(*hilde) == kC1);
@@ -3292,6 +3296,206 @@ TEST_CASE("A resident frozen in an unhosted interior comes to the cell whose "
   DoDisconnect(p, 1);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
+}
+
+// thuum tracker #121 (playtest 55, Eli: "Wait for Gorm"; design B, the
+// destination's host takes the arrival, read at the door): Gorm 0x1aa69's
+// record stood frozen in Highmoon Hall 0x138cc, which nobody hosted, while c2
+// hosted the Moorside Inn 0x138ce and its engine walked him in the dark to
+// the inn's street door 0x177af, where the engine's ActivateRef refused on
+// our client's activation block (confirmed by trace: tracker #121 note 3311,
+// run 20261118-023818 on c2) and no game reported him.
+// The inn's host reports him now, and the one door walk
+// (MpObjectReference::WalkThroughDoor) asks its game to walk him through
+// (D6's snippet, ObjectReference.Activate with default processing); nothing
+// is recorded until its roster sights him inside. A game that does not host
+// the inn is refused with a line, never the Bad hoster throw, before the
+// sighting and after it (another game simulating him then); the inn host's
+// second report before the sighting is refused, so a late duplicate never
+// puts him back at the landing; and once the sighting names the inn's host
+// his simulator, its report of the inn's door is D6's
+TEST_CASE("A resident frozen in an unhosted interior walks through the street "
+          "door into the inn on the inn host's report; another seat's report "
+          "of the same door is refused; a hosted resident's door keeps D6's "
+          "verdict",
+          "[CellHost][espm][Activate]")
+{
+  constexpr uint32_t kGorm = 0x1aa69;
+  constexpr uint32_t kHall = 0x138cc;
+  constexpr uint32_t kMoorside = 0x138ce;
+  // lab/esm.py door and ref on sky-srv (Skyrim.esm, 2026-11-17): the inn's
+  // street door 0x177af stands in Tamriel at (-40095, 65547, -13802) and
+  // teleports to the inn's door 0x1738c, at (1824, -576, 0) inside, with the
+  // landing (1825, -533, 1); 0x1738c teleports back out to (-40054, 65484,
+  // -13802); GormREF at (-89, 1297, 1) in the hall
+  constexpr uint32_t kStreetDoor = 0x177af;
+  constexpr uint32_t kInnDoor = 0x1738c;
+  const NiPoint3 kInHall{ -89.f, 1297.f, 1.f };
+  const NiPoint3 kInnLanding{ 1825.f, -533.f, 1.f };
+  const NiPoint3 kStreetLanding{ -40054.f, 65484.f, -13802.f };
+  const NiPoint3 kAtSupper{ 1822.f, 197.f, 0.f };
+  auto& p = GetPartOne();
+  const bool npcWas = p.worldState.npcEnabled;
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kHall));
+  REQUIRE(p.worldState.IsInteriorCell(kMoorside));
+
+  // the two doors as the game files place them
+  auto& streetDoor = p.worldState.GetFormAt<MpObjectReference>(kStreetDoor);
+  const auto into = streetDoor.TeleportDestination();
+  REQUIRE(into.has_value());
+  REQUIRE(into->worldOrCell == kMoorside);
+  REQUIRE((into->pos - kInnLanding).Length() < 1.f);
+  auto& innDoor = p.worldState.GetFormAt<MpObjectReference>(kInnDoor);
+  const auto out = innDoor.TeleportDestination();
+  REQUIRE(out.has_value());
+  REQUIRE(out->worldOrCell == kTamriel);
+  REQUIRE((out->pos - kStreetLanding).Length() < 1.f);
+  REQUIRE_FALSE(streetDoor.IsOpen());
+
+  // c2 stands in the inn and hosts it; nobody hosts the hall or the street
+  Player(p, 0, kC1, kHere);
+  DoConnect(p, 1);
+  p.CreateActor(kC2, kInnLanding, 0, kMoorside);
+  p.SetUserActor(1, kC2);
+  CellLoaded(p, 1, kMoorside);
+  REQUIRE(p.GetCellHost(kMoorside).player == kC2);
+  REQUIRE_FALSE(p.GetCellHost(kHall).hosted);
+  const auto street = p.worldState.CellOf(kTamriel, kStreetLanding);
+  REQUIRE(street.has_value());
+  REQUIRE_FALSE(p.GetCellHost(*street).hosted);
+
+  // his record frozen in the hall, no game simulating him
+  auto& form = p.worldState.LookupFormById(kGorm);
+  REQUIRE(form);
+  MpActor* gorm = form->AsActor();
+  REQUIRE(gorm);
+  gorm->SetCellOrWorldObsolete(
+    FormDesc::FromFormId(kHall, p.worldState.espmFiles));
+  gorm->SetPos(kInHall);
+  REQUIRE(p.worldState.CellOf(*gorm) == kHall);
+  REQUIRE(p.worldState.HostOf(*gorm) == nullptr);
+  p.Messages().clear();
+
+  // `user`'s report of Gorm activating `door`, as the client's door branch
+  // sends it (MsgType 6, the bytes D6 already sends)
+  const auto report = [&](Networking::UserId user, uint32_t door) {
+    DoMessage(p, user,
+              nlohmann::json{ { "t", MsgType::Activate },
+                              { "data",
+                                { { "caster", kGorm },
+                                  { "target", door },
+                                  { "isSecondActivation", false } } } });
+  };
+  // the door walks asked of `user`'s game since the last clear: D6's
+  // snippet, Gorm the activator with default processing only (snippets are
+  // deferred to the tick, SpSnippet.cpp)
+  const auto walksAskedOf = [&](Networking::UserId user) {
+    p.Tick();
+    size_t n = 0;
+    for (auto& m : p.Messages()) {
+      if (m.userId != user || !m.j.is_object() || !m.j.contains("t") ||
+          m.j["t"] != static_cast<int>(MsgType::SpSnippet) ||
+          m.j.value("class", std::string()) != "ObjectReference" ||
+          m.j.value("function", std::string()) != "Activate") {
+        continue;
+      }
+      const auto& args = m.j["arguments"];
+      REQUIRE(args.is_array());
+      REQUIRE(args.size() == 2);
+      REQUIRE(args[0]["formId"] == kGorm);
+      REQUIRE(args[1] == true);
+      ++n;
+    }
+    return n;
+  };
+  const auto followsGorm = [&] {
+    for (const auto& row : p.GetFollows()) {
+      if (row.actor == kGorm) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const auto sighting = [&](Networking::UserId user, uint32_t worldOrCell,
+                            const NiPoint3& pos) {
+    DoMessage(p, user,
+              nlohmann::json{ { "t", MsgType::ActorSightings },
+                              { "sightings",
+                                nlohmann::json::array({ nlohmann::json{
+                                  { "refrId", kGorm },
+                                  { "worldOrCell", worldOrCell },
+                                  { "pos", { pos.x, pos.y, pos.z } },
+                                  { "rot", { 0.f, 0.f, 0.f } } } }) } });
+  };
+
+  // c1, which does not host the inn, reports his copy at the street door:
+  // refused by the verdict for c1 (the inn is c2's), a line and no throw;
+  // nothing asked, the door shut, the record frozen
+  REQUIRE_NOTHROW(report(0, kStreetDoor));
+  REQUIRE(walksAskedOf(0) == 0);
+  REQUIRE(walksAskedOf(1) == 0);
+  REQUIRE_FALSE(streetDoor.IsOpen());
+  REQUIRE(p.worldState.CellOf(*gorm) == kHall);
+
+  // the inn's host reports him there: its game walks him through and the
+  // door swings; nothing recorded at the door, the record frozen in the hall,
+  // nobody's, no follow
+  p.Messages().clear();
+  REQUIRE_NOTHROW(report(1, kStreetDoor));
+  REQUIRE(walksAskedOf(1) == 1);
+  REQUIRE(walksAskedOf(0) == 0);
+  REQUIRE(streetDoor.IsOpen());
+  REQUIRE(p.worldState.CellOf(*gorm) == kHall);
+  REQUIRE((gorm->GetPos() - kInHall).Length() < 1.f);
+  REQUIRE(p.worldState.HostOf(*gorm) == nullptr);
+  REQUIRE_FALSE(followsGorm());
+
+  // its second report before the sighting (a late duplicate, or the event
+  // of the snippet's own call): refused, so he is never put back at the
+  // landing
+  p.Messages().clear();
+  REQUIRE_NOTHROW(report(1, kStreetDoor));
+  REQUIRE(walksAskedOf(1) == 0);
+
+  // c2's roster sights him inside: the record follows, c2 simulates him
+  sighting(1, kMoorside, kAtSupper);
+  REQUIRE(p.worldState.CellOf(*gorm) == kMoorside);
+  REQUIRE(gorm->GetPos().y == Catch::Approx(kAtSupper.y));
+  REQUIRE(p.worldState.HostOf(*gorm) == &p.worldState.GetFormAt<MpActor>(kC2));
+
+  // c1's copy at the street door now: another game simulates him, so the
+  // verdict refuses with a line, where this report met the Bad hoster throw
+  // before; the record where the sighting put it
+  p.Messages().clear();
+  REQUIRE_NOTHROW(report(0, kStreetDoor));
+  REQUIRE(walksAskedOf(0) == 0);
+  REQUIRE(walksAskedOf(1) == 0);
+  REQUIRE(p.worldState.CellOf(*gorm) == kMoorside);
+  REQUIRE(gorm->GetPos().y == Catch::Approx(kAtSupper.y));
+
+  // his simulator's report of the inn's door out to the street nobody
+  // hosts: D6's verdict (a follow), its game walks him through; the record
+  // stays inside until its report from the street
+  Move(p, 1, kGorm, kInnLanding, kMoorside);
+  REQUIRE((gorm->GetPos() - kInnLanding).Length() < 1.f);
+  p.Messages().clear();
+  REQUIRE_NOTHROW(report(1, kInnDoor));
+  REQUIRE(walksAskedOf(1) == 1);
+  REQUIRE(walksAskedOf(0) == 0);
+  REQUIRE(p.worldState.CellOf(*gorm) == kMoorside);
+  REQUIRE(p.worldState.HostOf(*gorm) == &p.worldState.GetFormAt<MpActor>(kC2));
+
+  // Gorm's record is left in the inn and his accepted arrival stays noted on
+  // him (MpActor::GetDoorArrival: the hall, for kDoorArrivalHoldMs) on this
+  // shared PartOne; a later case that puts him back in the hall and has a
+  // game report his arrival within that hold is refused by the guard
+  p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+  p.worldState.npcEnabled = npcWas;
 }
 
 // thuum playtest 53 #113 (Eli's design A, 2026-11-17): a thrall fights the

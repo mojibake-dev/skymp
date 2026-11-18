@@ -2855,8 +2855,10 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
       // far side the sender's own cell while no game simulates the actor,
       // the sender's engine walks it through; anything else a refusal line,
       // never this throw, since a copy waiting at the door reports it again.
-      // Activate is skipped, its world check and the reach rule with it: the
-      // record stands frozen where the engine no longer has the actor
+      // Activate's world check and the reach rule are skipped: the record
+      // stands frozen where the engine no longer has the actor. The rest of
+      // the door's activation (the gamemode's event, the linked activations,
+      // OnActivate) runs in WalkThroughDoor for an accepted arrival alone
       if (casterActor && !played && casterActor->GetFormId() < 0xff000000 &&
           !msg.data.isSecondActivation) {
         auto door = std::dynamic_pointer_cast<MpObjectReference>(

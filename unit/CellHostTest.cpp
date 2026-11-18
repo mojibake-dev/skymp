@@ -3303,8 +3303,8 @@ TEST_CASE("A resident frozen in an unhosted interior comes to the cell whose "
 // record stood frozen in Highmoon Hall 0x138cc, which nobody hosted, while c2
 // hosted the Moorside Inn 0x138ce and its engine walked him in the dark to
 // the inn's street door 0x177af, where the engine's ActivateRef refused on
-// our client's activation block (tracker #121 note 3311, run 20261118-023818
-// on c2; HYPOTHESIS until the fixed build's trace) and no game reported him.
+// our client's activation block (confirmed by trace: tracker #121 note 3311,
+// run 20261118-023818 on c2) and no game reported him.
 // The inn's host reports him now, and the one door walk
 // (MpObjectReference::WalkThroughDoor) asks its game to walk him through
 // (D6's snippet, ObjectReference.Activate with default processing); nothing
@@ -3335,6 +3335,7 @@ TEST_CASE("A resident frozen in an unhosted interior walks through the street "
   const NiPoint3 kStreetLanding{ -40054.f, 65484.f, -13802.f };
   const NiPoint3 kAtSupper{ 1822.f, 197.f, 0.f };
   auto& p = GetPartOne();
+  const bool npcWas = p.worldState.npcEnabled;
   p.worldState.npcEnabled = true;
   REQUIRE(p.worldState.IsInteriorCell(kHall));
   REQUIRE(p.worldState.IsInteriorCell(kMoorside));
@@ -3485,11 +3486,16 @@ TEST_CASE("A resident frozen in an unhosted interior walks through the street "
   REQUIRE(p.worldState.CellOf(*gorm) == kMoorside);
   REQUIRE(p.worldState.HostOf(*gorm) == &p.worldState.GetFormAt<MpActor>(kC2));
 
+  // Gorm's record is left in the inn and his accepted arrival stays noted on
+  // him (MpActor::GetDoorArrival: the hall, for kDoorArrivalHoldMs) on this
+  // shared PartOne; a later case that puts him back in the hall and has a
+  // game report his arrival within that hold is refused by the guard
   p.SweepHeldSightings(NowMs() + PartOne::kHeldSightingMs + 1);
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
+  p.worldState.npcEnabled = npcWas;
 }
 
 // thuum playtest 53 #113 (Eli's design A, 2026-11-17): a thrall fights the

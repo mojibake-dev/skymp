@@ -37,7 +37,8 @@
 #include <map>
 #include <numeric>
 #include <optional>
-#include <unordered_map>
+#include <string>
+#include <tuple>
 
 #include "LockPromptMessage.h"
 #include "OpenContainerMessage.h"
@@ -2908,31 +2909,39 @@ bool MpObjectReference::WalkThroughDoor(MpActor& walker, MpActor* sender)
   // Highmoon Hall 0x138cc, which nobody hosted, while c2's engine walked him
   // in the dark to the Moorside Inn's street door 0x177af; the engine's
   // ActivateRef 19796 (from the ActivateDoor handler 37878) returned false
-  // there on our client's kBlockActivate (tracker #121 note 3311, run
-  // 20261118-023818; HYPOTHESIS until the fixed build's trace), and no game
-  // reported him. The inn's host reports him now, and the verdict for it
-  // (cells.rs judge) accepts only while no game simulates him and the far
-  // side is its own cell; its engine walks him through, and the record
-  // follows its roster's sighting inside (PartOne's sighting rule), nothing
-  // recorded here. Anything else is a refusal line: another game's engine
-  // walks the real one, or nobody watches the far side. The door swings
-  // for an accepted arrival alone: a refused one is a copy's, which never
-  // simulates (ADR-063)
+  // there on our client's kBlockActivate (confirmed by trace: tracker #121
+  // note 3311, run 20261118-023818 on c2), and no game reported him. The
+  // inn's host reports him now, and the verdict for it (cells.rs judge)
+  // accepts only while no game simulates him and the far side is its own
+  // cell; its engine walks him through (HYPOTHESIS: D6's snippet crosses a
+  // walker that no seat runs at high process, as it crossed D6's loaded
+  // ones), and the record follows its roster's sighting inside (PartOne's
+  // sighting rule), nothing recorded here. Anything else is a refusal line:
+  // another game's engine walks the real one, or nobody watches the far
+  // side. An accepted arrival is the door's activation by the walker as D6's
+  // is (MpObjectReference::Activate): the gamemode's activate event may
+  // refuse it, and the door swings, its linked activations fire and its
+  // scripts hear OnActivate; a refused one does none of it, since it is a
+  // copy's report and a copy never simulates (ADR-063). Activate's world
+  // check and the reach rule are the two parts it skips: the record stands
+  // frozen where the engine no longer has the walker
   MpActor* simulator = worldState->HostOf(walker);
   const bool arrival = simulator != sender;
   const auto now = std::chrono::steady_clock::now();
   const uint32_t recordWorldOrCell =
     walker.GetCellOrWorld().ToFormId(worldState->espmFiles);
 
-  // an arrival's refusal, once a minute per walker and door (the map shape
-  // of PartOne's tellToMoveToRecord): a refused walker's copy waits at the
-  // door and its game reports it again
-  static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point>
+  // an arrival's refusal, once a minute per door, walker, reporting game and
+  // reason (the map shape of PartOne's tellToMoveToRecord): a refused
+  // walker's copy waits at the door and its game reports it again, and a
+  // lab read that counts the lines per seat or per reason sees each one
+  static std::map<std::tuple<uint32_t, uint32_t, uint32_t, std::string>,
+                  std::chrono::steady_clock::time_point>
     arrivalRefusalsTold;
-  const auto refuseArrival = [&](const char* why) {
-    const uint64_t key =
-      (static_cast<uint64_t>(GetFormId()) << 32) | walker.GetFormId();
-    auto& last = arrivalRefusalsTold[key];
+  const auto refuseArrival = [&](const std::string& why) {
+    auto& last = arrivalRefusalsTold[std::make_tuple(
+      GetFormId(), walker.GetFormId(), sender ? sender->GetFormId() : 0u,
+      why)];
     if (last != std::chrono::steady_clock::time_point{} &&
         now - last < std::chrono::minutes(1)) {
       return true;
@@ -2957,13 +2966,17 @@ bool MpObjectReference::WalkThroughDoor(MpActor& walker, MpActor* sender)
     if (IsDisabled() || IsDeleted() || activationBlocked) {
       return refuseArrival("the door takes nobody");
     }
+    // the walker's second arrival, from any game, while the record stands
+    // where it stood at the accepted one (the brief's guard, keyed on the
+    // walker alone), for at most kDoorArrivalHoldMs
     const auto asked = walker.GetDoorArrival();
-    if (asked && asked->sender == sender->GetFormId() &&
-        asked->worldOrCell == recordWorldOrCell &&
+    if (asked && asked->worldOrCell == recordWorldOrCell &&
         (asked->pos - walker.GetPos()).Length() < 1.f &&
         now - asked->at < std::chrono::milliseconds(kDoorArrivalHoldMs)) {
-      return refuseArrival("its game was asked to walk it through already; "
-                           "the record waits for its sighting");
+      return refuseArrival(
+        fmt::format("{:x} was asked to walk it through already; the record "
+                    "waits for its sighting",
+                    asked->sender));
     }
   }
 
@@ -2980,6 +2993,12 @@ bool MpObjectReference::WalkThroughDoor(MpActor& walker, MpActor* sender)
   }
   if (allowed && sender && sender->IsCreatedAsPlayer()) {
     if (arrival) {
+      // the gamemode hears the walker's activation of the door as it hears
+      // D6's (Activate), and may refuse it
+      ActivateEvent activateEvent(GetFormId(), walker.GetFormId());
+      if (!activateEvent.Fire(worldState)) {
+        return refuseArrival("the gamemode's activate event");
+      }
       if (!IsOpen()) {
         SetOpen(true);
         RequestReloot();
@@ -3007,6 +3026,12 @@ bool MpObjectReference::WalkThroughDoor(MpActor& walker, MpActor* sender)
                    "follows its sighting",
                    GetFormId(), walker.GetFormId(), teleportWorldOrCell,
                    sender->GetFormId(), recordWorldOrCell);
+      // and the rest of D6's activation (Activate after its
+      // ProcessActivateNormal): the door's linked activations, then its
+      // scripts' OnActivate with the walker as the activator
+      ActivateChilds();
+      auto activator = walker.ToVarValue();
+      SendPapyrusEvent("OnActivate", &activator, 1);
     } else {
       spdlog::info("MpObjectReference::ProcessActivateNormal - "
                    "npc-handoff: door {:x}: {:x}'s host {:x} walks it "

@@ -162,13 +162,16 @@ public:
   // game that does not simulate it (the arrival, from
   // ActionListener::OnActivate), which the verdict admits only while no game
   // simulates the walker and the far side is the sender's own cell. An
-  // arrival's refusal is a line once a minute per walker and door; its
-  // acceptance swings the door and is noted on the walker
-  // (MpActor::NoteDoorArrival), so the same game's second arrival is
-  // refused until the sighting moves the record, or for kDoorArrivalHoldMs.
-  // Returns false, doing nothing, when this is no load door.
+  // arrival's refusal is a line once a minute per door, walker, sender and
+  // reason; its acceptance is the door's activation as D6's is (the
+  // gamemode's activate event, which may refuse it, the door's swing, its
+  // linked activations and OnActivate) and is noted on the walker
+  // (MpActor::NoteDoorArrival), so a second arrival of the walker, from any
+  // game, is refused until the sighting moves the record, or for
+  // kDoorArrivalHoldMs. Returns false, doing nothing, when this is no load
+  // door.
   bool WalkThroughDoor(MpActor& walker, MpActor* sender);
-  // how long an accepted arrival holds off that game's next one while the
+  // how long an accepted arrival holds off the walker's next one while the
   // record stands where it stood: five of the roster's 2 s ticks
   // (HostService.sightingsMs) for the sighting to move it; past it, a
   // crossing its engine never made may be asked again. UNMEASURED

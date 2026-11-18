@@ -459,9 +459,9 @@ public:
   // thuum tracker #121 (the arrival through a door,
   // MpObjectReference::WalkThroughDoor): the game the server last asked to
   // walk this actor through a load door while no game simulated it, where
-  // the record stood then and when. That game's second arrival of the actor
-  // is refused while the record stands there still, for at most
-  // MpObjectReference::kDoorArrivalHoldMs: its roster's sighting in the
+  // the record stood then and when. A second arrival of the actor, from any
+  // game, is refused while the record stands there still, for at most
+  // MpObjectReference::kDoorArrivalHoldMs: the roster's sighting in the
   // destination is what moves the record, and a late duplicate would put
   // the walker back at the landing
   struct DoorArrival

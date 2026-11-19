@@ -911,8 +911,13 @@ TEST_CASE("A body's change form from the seat whose drag holds its row is "
   actor.Kill(nullptr);
   REQUIRE(actor.IsDead());
 
+  // the relay copies the sample's raw bytes to the other listener, so the
+  // message carries some (PropTest's '{}')
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
   RawMessageData raw;
   raw.userId = 1;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
   PropClaimMessage grab;
   grab.refrs = { kPredator };
   grab.touch = 1;

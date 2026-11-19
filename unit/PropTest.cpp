@@ -1239,8 +1239,7 @@ TEST_CASE("An impulse's claim loads nothing: a world body the chunks around "
     LogCapture log;
     Claim(p, 1, kTempleLamp, 3);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_UNKNOWN: ff000d02 claims "
-                      "prop 9b0fb by touch 3; no such reference, or an "
-                      "actor") == 1);
+                      "prop 9b0fb by touch 3; no such reference") == 1);
   }
   REQUIRE(p.worldState.LookupFormByIdNoLoad(kTempleLamp) == nullptr);
   REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
@@ -2274,12 +2273,14 @@ TEST_CASE("A server-made world object is no prop: a contact and an impulse "
     LogCapture log;
     Claim(p, 0, kPlacedWall, 0);
     Claim(p, 1, kPlacedWall, 3);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
-                      "prop ff000d17 by touch 0; neither an item nor a world "
-                      "body") == 1);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 claims "
-                      "prop ff000d17 by touch 3; neither an item nor a world "
-                      "body") == 1);
+    REQUIRE(
+      log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
+                "prop ff000d17 by touch 0; neither an item, a world body "
+                "nor a dead NPC's body") == 1);
+    REQUIRE(
+      log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 claims "
+                "prop ff000d17 by touch 3; neither an item, a world body "
+                "nor a dead NPC's body") == 1);
   }
   REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
@@ -2319,10 +2320,11 @@ TEST_CASE("A STAT attached by its record is no world body: a claim and a "
     Claim(p, 0, kMarker, 0);
     Sample(p, 1, kMarker, markerAt + NiPoint3{ 0.f, 0.f, -20.f }, false);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
-                      "prop 108a5c by touch 0; neither an item nor a world "
-                      "body") == 1);
+                      "prop 108a5c by touch 0; neither an item, a world body "
+                      "nor a dead NPC's body") == 1);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 moves prop "
-                      "108a5c; neither an item nor a world body") == 1);
+                      "108a5c; neither an item, a world body nor a dead NPC's "
+                      "body") == 1);
     DestructionStageMessage report;
     report.refr = kMarker;
     report.stage = 1;

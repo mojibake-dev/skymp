@@ -5375,7 +5375,11 @@ size_t PartOne::SendPropOwnerWord(uint32_t refr, uint32_t player,
       continue;
     }
     const auto userId = serverState.UserByActor(listener);
-    if (userId != Networking::InvalidUserId) {
+    // a game mid-departure hears nothing (physics rung 5: a thrall the
+    // departure kills is worded at its death, and its leaving commander is
+    // still its listener; the departure's own returns skip it by exceptActor)
+    if (userId != Networking::InvalidUserId &&
+        userId != serverState.disconnectingUserId) {
       GetSendTarget().Send(userId, word, true);
       ++told;
     }

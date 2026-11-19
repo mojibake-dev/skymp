@@ -25,12 +25,20 @@ const spellIdsOf = (actor: Actor): number[] => {
 
 // Removes the actor's added spells the server does not list and adds the
 // listed ones it lacks; returns what it changed and what it could not.
+// addOnly (thuum tracker #168): the login's second pass, a second after the
+// first, adds what did not stick and removes nothing. Its list is the
+// login's, so a spell the server or a script added in that second (the
+// V-turn lever's first AddSpell of b8780, playtest 55 c2-console
+// 23:40:58.251Z "44 listed, 1 removed" 0.3 s after "b8780 recorded"; the two
+// Apocalypse abilities WB_Manager_Script had just re-added, 23:42:58Z) is not
+// in it, and a remove there takes back what the record holds.
 export const syncSpells = (
   actor: Actor,
   serverSpellIds: Array<number>,
+  addOnly = false,
 ): { removed: number; added: number; missing: number[] } => {
   const wanted = new Set<number>(serverSpellIds);
-  const extra = spellIdsOf(actor).filter((id) => !wanted.has(id));
+  const extra = addOnly ? [] : spellIdsOf(actor).filter((id) => !wanted.has(id));
   let removed = 0;
   for (const id of extra) {
     const spell = Spell.from(Game.getFormEx(id));
@@ -56,7 +64,7 @@ export const syncSpells = (
     }
   }
   printConsole(
-    `syncSpells: ${serverSpellIds.length} listed, ${removed} removed, ${added} added, ${missing.length} missing` +
+    `syncSpells${addOnly ? ' (add-only pass)' : ''}: ${serverSpellIds.length} listed, ${removed} removed, ${added} added, ${missing.length} missing` +
       (missing.length
         ? ` (${missing.map((id) => id.toString(16)).join(' ')})`
         : ''),

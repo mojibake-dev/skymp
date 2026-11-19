@@ -620,6 +620,11 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     actor->SetPos(
       NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
       SetPosMode::CalledByUpdateMovement);
+    // thuum tracker #166: a player armed at a word wall walks on toward its
+    // word (nobody is armed, mostly: one lookup then)
+    if (isPlayersOwn && !wordWallArms.empty()) {
+      CheckWordWallArm(rawMsgData, *actor);
+    }
     // thuum docs/verbs/npc-fate.md (ADR-048's B): a game-file actor's
     // heights from its host's samples, a fall report's evidence
     if (actor->IsFateRespawned()) {
@@ -4975,6 +4980,32 @@ void ActionListener::OnPerkPick(const RawMessageData& rawMsgData,
   partOne.PickPerk(*actor, msg.perk);
 }
 
+namespace {
+// thuum tracker #166: the point a wall's word is taught at, the trigger
+// script's lookTargetWord01 (Bleak Falls Sanctum's 0x709d4, 173 units from
+// the wall 0x709d1: lab/esm.py, 2026-11-17). A mark is a marker the loader
+// does not hold, so its record's placement is read; a trigger that names
+// none, or one whose record is not placed, is measured from `near` (the
+// wall it names, else itself), as the reach is
+struct WordMark
+{
+  uint32_t ref = 0;
+  NiPoint3 pos;
+};
+
+WordMark WordMarkOf(WorldState& worldState, const PartOne::WordWall& wordWall,
+                    const MpObjectReference& near)
+{
+  if (wordWall.lookTarget != 0) {
+    if (const auto placement =
+          PlacementOfRecord(worldState, wordWall.lookTarget)) {
+      return WordMark{ wordWall.lookTarget, placement->pos };
+    }
+  }
+  return WordMark{ near.GetFormId(), near.GetPos() };
+}
+}
+
 // thuum docs/verbs/word-wall.md (M4): a player's game reports the word wall
 // trigger its engine fired. The wall's word is the trigger reference's own
 // (PartOne::WordOfWall), the player must stand within the activation reach of
@@ -5042,6 +5073,30 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
       return;
     }
   }
+  // thuum tracker #166 (playtest 55, both seats taught about 2,000 units
+  // out): the primitive is where the game starts the chant
+  // (WordWallTriggerBleakFallsScript.onTriggerEnter calls StartWordWall),
+  // not where it teaches: WordWallTriggerScript.StartFX teaches a player
+  // under innerRadius of lookTargetWord01 (the script read with lab/pex.py,
+  // 2026-11-17). A report from farther out arms the wall for the player and
+  // teaches nothing; its movement updates teach when it comes that close
+  // (CheckWordWallArm). One from a player who knows the word goes on to say
+  // so. Declared narrowing: the script's line of sight to the mark
+  // (isLooking) and its bound of 200 in combat are not read here
+  const auto mark = WordMarkOf(partOne.worldState, *wordWall, *near);
+  const float markDistance = (actor->GetPos() - mark.pos).Length();
+  const auto innerRadius = static_cast<float>(wordWall->innerRadius);
+  if (markDistance >= innerRadius &&
+      !actor->HasShoutEntry(MpActor::ShoutEntry::WordKnown, word)) {
+    wordWallArms[actor->GetFormId()] =
+      WordWallArm{ msg.wall, mark.ref, mark.pos, innerRadius };
+    spdlog::info("[verb:word-wall] {:x} armed at wall {:x}: {:.0f} units off "
+                 "the word's mark {:x}, taught under {:.0f}",
+                 actor->GetFormId(), msg.wall, markDistance, mark.ref,
+                 innerRadius);
+    return;
+  }
+  wordWallArms.erase(actor->GetFormId());
   const bool added = actor->RecordShoutEntry(
     MpActor::ShoutEntry::WordKnown,
     FormDesc::FromFormId(word, partOne.worldState.espmFiles));
@@ -5076,6 +5131,50 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
                  "recorded and sent (thuum tracker #138)",
                  actor->GetFormId(), msg.wall, word, *shout);
   }
+}
+
+void ActionListener::CheckWordWallArm(const RawMessageData& rawMsgData,
+                                      MpActor& actor)
+{
+  const auto it = wordWallArms.find(actor.GetFormId());
+  if (it == wordWallArms.end()) {
+    return;
+  }
+  const WordWallArm arm = it->second;
+  const auto& form = partOne.worldState.LookupFormById(arm.trigger);
+  const MpObjectReference* trigger =
+    form ? form->AsObjectReference() : nullptr;
+  // out of the chamber: the trigger's primitive when it has one, else its
+  // cell; coming back takes a new report, as the game's own entry does
+  if (!trigger || actor.GetCellOrWorld() != trigger->GetCellOrWorld() ||
+      (trigger->HasPrimitive() &&
+       !trigger->IsPointInsidePrimitive(actor.GetPos()))) {
+    wordWallArms.erase(it);
+    spdlog::info("[verb:word-wall] {:x} left wall {:x}'s trigger unarmed, "
+                 "no word taught",
+                 actor.GetFormId(), arm.trigger);
+    return;
+  }
+  const float distance = (actor.GetPos() - arm.markPos).Length();
+  if (distance >= arm.innerRadius) {
+    return;
+  }
+  // the report replayed, so one rule teaches (OnWordWall disarms then); the
+  // arm goes first, so a replay refused for any reason is not tried again
+  // on every step
+  wordWallArms.erase(it);
+  spdlog::info("[verb:word-wall] {:x} came {:.0f} units off wall {:x}'s word "
+               "mark {:x}, under {:.0f}: its armed report replayed",
+               actor.GetFormId(), distance, arm.trigger, arm.mark,
+               arm.innerRadius);
+  WordWallMessage replay;
+  replay.wall = arm.trigger;
+  OnWordWall(rawMsgData, replay);
+}
+
+void ActionListener::ForgetWordWallArm(uint32_t actorId)
+{
+  wordWallArms.erase(actorId);
 }
 
 void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,

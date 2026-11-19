@@ -160,6 +160,13 @@ public:
   // within reach of it, told back as the console's TeachWord is
   virtual void OnWordWall(const RawMessageData& rawMsgData,
                           const WordWallMessage& msg);
+  // thuum tracker #166: a player's own movement update at the word wall it
+  // stands armed at: under the script's innerRadius of the word's mark the
+  // report is replayed (OnWordWall teaches and disarms); outside the
+  // trigger's primitive or its cell the arm ends
+  void CheckWordWallArm(const RawMessageData& rawMsgData, MpActor& actor);
+  // the player's disconnect (PartOne): the arm ends with the connection
+  void ForgetWordWallArm(uint32_t actorId);
 
   // thuum docs/verbs/traps.md (ADR-059 decision 3): a world object's
   // animation event its owner reports (a game-file reference that is no
@@ -711,6 +718,18 @@ private:
   // sends it with the target the hit names, a new cast in the hand
   // replaces it, its stream's end drops it unsent
   std::map<std::pair<uint32_t, uint8_t>, SpellCastData> pendingCastRelays;
+  // thuum tracker #166: the word wall each player stands armed at, by actor
+  // form id: its report came from inside the trigger's primitive, farther
+  // than the script's innerRadius from the word's mark (the trigger, the
+  // mark's reference and point, and that radius, as OnWordWall read them)
+  struct WordWallArm
+  {
+    uint32_t trigger = 0;
+    uint32_t mark = 0;
+    NiPoint3 markPos;
+    float innerRadius = 0.f;
+  };
+  std::unordered_map<uint32_t, WordWallArm> wordWallArms;
 
   // TODO: inverse dependency
   std::shared_ptr<CraftService> craftService;

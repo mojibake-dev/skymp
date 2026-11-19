@@ -203,6 +203,7 @@ type HeldRecord = {
     lastAttemptAt: number;
     heldLogged: boolean;
     followLogged?: boolean; // physics rung 5: "held until this seat's follow of its stream rests" said
+    menuHeld?: boolean;    // the last attempt waited for this seat's open ContainerMenu (said once; holdMs paused)
     killedHereAt: number;  // deathService's kill of the copy, in flight (the task queue) or landed
     bindKill: boolean;     // that kill was the bind's (applies on the owner's own seat too)
     queuedAt: number;      // the apply queued to the main thread's task (ApplyChangeForm answered {queued}); 0 when none
@@ -524,6 +525,30 @@ export class ChangeFormService extends ClientListener {
             // the poll): its answer decides, no second attempt meanwhile
             return;
         }
+        // thuum tracker #175, Eli's third look (c2's crash at 14:44:57 PST
+        // 2026-11-19): a record laid while this seat's ContainerMenu is open
+        // rebuilds the body's inventory under the menu's item list and its 3D
+        // preview. c2 laid 39fe4's record under its open loot menu, and the
+        // next highlight change read freed memory in Inventory3DManager (frame
+        // 51758, lab/relids.tsv's UpdateMagic3D) half a second later.
+        // HYPOTHESIS: the apply frees the entries the open menu points at
+        // (docs/research/m3/re-corpse-menu-crash.md read the same Scaleform
+        // chain, a body's row freed by an inventory landing under its open
+        // loot menu). The record waits for the menu's close and the next pass
+        // lays it then; the hold's clock (holdMs) does not run out on a long
+        // loot. Ui.isMenuOpen reads the open loot menu on the seats under
+        // Skyrim Souls RE (remoteServer's corpse open saw it true at
+        // 14:44:56.469 on c2); the native's own premise (ChangeForm.cpp,
+        // ItemMenuRefresh::Shows) refuses a lay when the menu opened between
+        // this check and its task
+        if (this.sp.Ui.isMenuOpen("ContainerMenu")) {
+            if (!rec.menuHeld) {
+                rec.menuHeld = true;
+                logLab("verb:npc-fate", `corpse ${hex} record held while this seat's ContainerMenu is open`);
+            }
+            return;
+        }
+        rec.menuHeld = false;
         const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(rec.formId));
         const ac = refr ? this.sp.Actor.from(refr) : null;
         if (!refr || !ac) {
@@ -706,7 +731,7 @@ export class ChangeFormService extends ClientListener {
                 if (rec.applied || rec.queuedAt > 0) {
                     return;
                 }
-                if (now - rec.receivedAt >= ChangeFormService.holdMs) {
+                if (now - rec.receivedAt >= ChangeFormService.holdMs && !rec.menuHeld) {
                     this.records.delete(formId);
                     logLab("verb:npc-fate", `corpse ${formId.toString(16)} record dropped: held ${now - rec.receivedAt} ms, the copy never died here`);
                     return;

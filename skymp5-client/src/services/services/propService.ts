@@ -199,6 +199,12 @@ const JUMP_MS = 100;
 // any turn (the cabbages). HYPOTHESIS until placeAtRecord's lines give the
 // settle sizes on both seats
 const FILE_SETTLE_UNITS = 32;
+// thuum tracker #175, Eli's third look: how long a body of parts the host
+// default took from a follow that rested settles as the hand-off's, no wake
+// (flip, stream). The one settle measured, c1's copy of 39fe4 at 14:44:53 PST
+// 2026-11-19, read moving 0.24 s after the flip and at rest 1.68 s later (1.9
+// s in all); 3 s covers it with margin. UNMEASURED beyond that one
+const HANDOFF_SETTLE_MS = 3000;
 // ADR-068 D-S3 point 4 (a trap body by the seat whose firing moved it): the
 // trap verb's tag for the trap body lines; the firing's window, a body this
 // seat's script sets moving again within this long of its claim being the same
@@ -282,6 +288,10 @@ type Prop = {
     announce: boolean;             // a granted word named this seat: its first read goes out at once (see stream)
     restAgain: boolean;            // a word naming this seat overtook its rest: sent again if the body still rests (onOwner)
     handOff: HandOff | undefined;  // a take-over's velocities, handed once its placement landed
+    // a body of parts the host default took from a follow that rested (flip):
+    // its engine's settle after the drive let go is no wake until then (see
+    // stream); the pose it was handed, read in flip as the drive let go
+    handSettle: { pose: Pose & { bones?: PropBone[] }; until: number } | undefined;
     // the hand: this seat's engine holds the body (Game.getPlayerGrabbedRef named it at the update's read, readHolds)
     held: boolean;
     heldAt: number;                // when the hold began (the grab's claim went then)
@@ -371,6 +381,18 @@ type TrapBody = { localId: number; claimedAt: number; followed: boolean };
 // the shortest signed turn from heading b to heading a, in (-180, 180]
 // (sync/movementApply.ts's)
 const angleDelta = (a: number, b: number): number => ((((a - b + 180) % 360) + 360) % 360) - 180;
+
+// the farthest any part (the root, each bone of a body of parts) lies from
+// the same part of another pose, game units; the hand-off settle's line
+const partsMove = (a: Pose & { bones?: PropBone[] }, b: Pose & { bones?: PropBone[] }): number => {
+    let most = ObjectReferenceEx.getDistance(a.pos, b.pos);
+    if (a.bones !== undefined && b.bones !== undefined && a.bones.length === b.bones.length) {
+        for (let i = 0; i < a.bones.length; ++i) {
+            most = Math.max(most, ObjectReferenceEx.getDistance(a.bones[i].pos, b.bones[i].pos));
+        }
+    }
+    return most;
+};
 
 // The service's one clock, ms: Node's performance.now() where Skyrim
 // Platform's embedded Node exposes it (monotonic; HYPOTHESIS, the rung 2
@@ -1271,6 +1293,7 @@ export class PropService extends ClientListener {
             return; // the motion type is the 3D's; set when it loads
         }
         prop.handOff = undefined;
+        prop.handSettle = undefined;
         prop.restAt = 0;
         prop.restAgain = false;
         if (simulate) {
@@ -1294,6 +1317,21 @@ export class PropService extends ClientListener {
                 this.releaseImpose(prop);
                 if (live && newest !== undefined) {
                     logLab(TAG, `took over ${prop.refr.toString(16)} at seq ${newest.seq}: ${prop.parts} parts, released from the drive`);
+                } else if (!wake && newest !== undefined && newest.asleep) {
+                    // a follow that ended at its owner's rest, taken by the
+                    // host default: the settle after the drive's release is
+                    // the hand-off's (stream). Read here, as the drive lets
+                    // go: the update's read (readSimulated) ran before this
+                    // flip and named no body for it. A follow that went quiet
+                    // with no rest (its owner gone mid-drag) arms nothing: no
+                    // seat recorded where that body lies, so its settle streams
+                    const handed = this.readBody(prop);
+                    if (handed !== undefined) {
+                        prop.handSettle = {
+                            pose: { pos: handed.pos, rot: handed.rot, bones: handed.bones },
+                            until: now + HANDOFF_SETTLE_MS,
+                        };
+                    }
                 }
             } else if (live && newest !== undefined) {
                 this.takeOver(prop, refr, newest, now);
@@ -1565,6 +1603,42 @@ export class PropService extends ClientListener {
         }
         if (body.awake) {
             prop.awakeAt = now;
+        }
+        // thuum tracker #175, Eli's third look (c2's crash at 14:44:57 PST
+        // 2026-11-19): a body of parts this seat's host default took from a
+        // follow that rested (flip) settles under its own engine once the
+        // drive lets go. c1's copy of 39fe4 rested within 2.3 units of the
+        // stream's rest, then woke and streamed 1.7 s: a second stream and a
+        // second record for one drag, the record c2 laid under its open loot
+        // menu. That settle is the hand-off's, no wake: for HANDOFF_SETTLE_MS
+        // the baseline follows it while every part stays within
+        // FILE_SETTLE_UNITS of the pose the body was handed (read in flip),
+        // and it ends at the engine's rest. A hand or a move past that bound
+        // is a wake, streamed from the handed pose; past the window the
+        // stream's own rules apply from the baseline the settle left.
+        // HYPOTHESIS: a ragdoll's settle after the drive's release stays
+        // inside the items' settle bound (havok-props.md E34 and E30); the
+        // settle's line gives each one's largest part move
+        if (prop.handSettle !== undefined && now >= prop.handSettle.until) {
+            prop.handSettle = undefined;
+        }
+        if (prop.handSettle !== undefined) {
+            const handed = prop.handSettle.pose;
+            const within = !prop.held && !PropService.apart(body, handed, FILE_SETTLE_UNITS, 360)
+                && !(body.bones !== undefined
+                    && (handed.bones === undefined || bonesApart(body.bones, handed.bones, FILE_SETTLE_UNITS, 360)));
+            if (within && body.awake) {
+                prop.lastSent = { pos: body.pos, rot: body.rot, bones: body.bones };
+                return;
+            }
+            prop.handSettle = undefined;
+            if (within) {
+                prop.lastSent = { pos: body.pos, rot: body.rot, bones: body.bones };
+                logLab(TAG, `prop ${prop.refr.toString(16)}: the hand-off's settle rested here, ${partsMove(body, handed).toFixed(1)} units at most from the handed pose; no stream`);
+                return;
+            }
+            prop.lastSent = handed;
+            logLab(TAG, `prop ${prop.refr.toString(16)}: ${prop.held ? "a hand took it" : `moved ${partsMove(body, handed).toFixed(1)} units`} during the hand-off's settle; streamed from the handed pose`);
         }
         if (!prop.lastSent) {
             if (prop.announce) {
@@ -2799,6 +2873,7 @@ export class PropService extends ClientListener {
                     prop.loaded3D = false;
                     prop.lastSent = undefined;
                     prop.handOff = undefined;
+                    prop.handSettle = undefined;
                     prop.restAgain = false;
                     prop.bodyTracked = false;
                     prop.badBodySaid = false;
@@ -3684,6 +3759,7 @@ export class PropService extends ClientListener {
             announce: false,
             restAgain: false,
             handOff: undefined,
+            handSettle: undefined,
             held: false,
             heldAt: 0,
             holdLost: false,

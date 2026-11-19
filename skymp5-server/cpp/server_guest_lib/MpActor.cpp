@@ -201,10 +201,6 @@ struct MpActor::Impl
   // MpActor::kHeightWindow; a death report's evidence
   std::vector<std::pair<uint32_t, std::chrono::steady_clock::time_point>>
     hitsTaken;
-  // thuum tracker #131: the attacks the fight rule counted, by aggressor,
-  // newest last (MpActor::NoteAttackBy)
-  std::vector<std::pair<uint32_t, std::chrono::steady_clock::time_point>>
-    attacksTaken;
   std::deque<std::pair<std::chrono::steady_clock::time_point, float>> heights;
 
   // thuum docs/verbs/attributes.md: the percentages the server raised that
@@ -3789,32 +3785,6 @@ std::optional<std::chrono::milliseconds> MpActor::HitByAgo(
     }
   }
   return ago;
-}
-
-void MpActor::NoteAttackBy(uint32_t aggressorId,
-                           std::chrono::steady_clock::time_point now)
-{
-  auto& attacks = pImpl->attacksTaken;
-  attacks.erase(std::remove_if(attacks.begin(), attacks.end(),
-                               [&](const auto& attack) {
-                                 return attack.first == aggressorId;
-                               }),
-                attacks.end());
-  attacks.emplace_back(aggressorId, now);
-  if (attacks.size() > kAttacksKept) {
-    attacks.erase(attacks.begin());
-  }
-}
-
-std::optional<std::chrono::milliseconds> MpActor::AttackedByAgo(
-  uint32_t aggressorId, std::chrono::steady_clock::time_point now) const
-{
-  for (const auto& [by, at] : pImpl->attacksTaken) {
-    if (by == aggressorId) {
-      return std::chrono::duration_cast<std::chrono::milliseconds>(now - at);
-    }
-  }
-  return std::nullopt;
 }
 
 std::optional<uint32_t> MpActor::LastHitBy(

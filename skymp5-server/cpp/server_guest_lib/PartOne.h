@@ -943,9 +943,11 @@ public:
   // The fights going on (thuum docs/verbs/hostility-sync.md, ADR-023; the
   // rule and its state are Rust's, ADR-020): between two players, or since
   // 2026-10-28 a player and a hosted NPC (docs/verbs/npc-stream.md, H-53h).
-  // A counted hit begins or keeps one; TickFights ends those that went a
-  // minute without a hit or whose parties walked apart, and tells the
-  // players' games.
+  // A counted hit begins or keeps one, and a hit between two players' sides
+  // their pair too (thuum ADR-077 decision 4); TickFights ends those that
+  // went a minute without a hit or whose parties walked apart (two players'
+  // sides once no member of either has a pair with the other side
+  // standing), and tells the players' games.
   skymp::rules::Fights& GetFights();
   void TickFights(uint64_t nowMs);
   // thuum playtest 53 #113 (Eli's design A, 2026-11-17): a thrall fights
@@ -955,28 +957,32 @@ public:
   // the fight's own notices (Actor.StartCombat, Actor.StopCombat):
   // KeepThrallsInFight on each tick of a players' fight that stands,
   // StandDownThralls at its end (`toldOnly` when the other party is gone:
-  // only the thralls it told). A thrall with a fight pair of its own with
-  // the other player stays in it only where that player attacked it since
-  // its raise within a fight's quiet minute by `nowMs` (thuum tracker #131,
-  // ADR-077 decision 2; MpActor::AttackedByAgo), since its own swings keep
-  // the pair standing
+  // only the thralls it told; the thralls it sent Actor.StopCombat). Since
+  // thuum ADR-077 decision 4 (tracker #113, #131) the commander's fight is
+  // its side's: every hit between the two sides keeps the players' pair
+  // (ActionListener::NotifyHostility), so a thrall still fighting the other
+  // side keeps the fight on, and stands down only at its end, with every
+  // other member of its side. With three players a thrall is told into one
+  // of its commander's fights at a time, and stands down from none whose
+  // player its engine still fights while that fight stands
   void KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs);
-  void StandDownThralls(MpActor& commander, uint32_t opponent, bool toldOnly,
-                        uint64_t nowMs);
+  std::vector<uint32_t> StandDownThralls(MpActor& commander, uint32_t opponent,
+                                         bool toldOnly);
+  // thuum ADR-077 decision 4 (tracker #113, #131): whether `x`'s side and
+  // `y`'s (SideOf) are two players whose fight stands in the fights table.
+  // While it does, the end of one pair of theirs (a minion's own with the
+  // other side) is no end of their fight: TickFights keeps that end and
+  // tells it to every game it reaches, once, when their fight ends
+  bool SidesFight(MpActor& x, MpActor& y);
   // playtest 54 #126: whether a summon or thrall `owner`'s game simulates
-  // (IsSummon, or commanded by `owner`) has a live fight pair of its own with
-  // `opponent`, a thrall's only where `opponent` attacked it since its raise
-  // within a fight's quiet minute by `nowMs` (thuum tracker #131; a summon's
-  // whatever struck whom, ADR-077 decision 3); while one does, the end of
-  // `owner`'s other fights with `opponent` leaves `owner`'s figure of it
-  // fighting
-  bool MinionFights(uint32_t owner, uint32_t opponent, uint64_t nowMs);
-  // a fight's quiet window: wire-rules hostility.rs FIGHT_QUIET_MS, the
-  // minute without a hit that ends a pair, which the bridge does not carry
-  // (thuum tracker #131's copy, for StruckWithinQuiet); NpcCastTest's
-  // quiet-window case ties the two, reading the Rust table's end at this
-  // number. Its home is the bridge, as host_grace_ms() carries GRACE_MS
-  static constexpr uint64_t kFightQuietMs = 60'000;
+  // (IsSummon, or commanded by `owner`) that is on no player's side (an
+  // NPC's summon or raise, SideOf) has a fight pair of its own with
+  // `opponent`; while one does, the end of `owner`'s other fights with
+  // `opponent` leaves `owner`'s figure of it fighting, so the minion keeps
+  // its target in that game. A minion on a player's side fights its side's
+  // fight (SidesFight), which ends for every member at once (thuum ADR-077
+  // decision 4)
+  bool MinionFights(uint32_t owner, uint32_t opponent);
 
   // thuum ADR-068 (the one seam): every reporter's script-call budget and
   // every subject's sequence (the rule and its state are Rust's, wire-rules
@@ -1130,7 +1136,10 @@ public:
   // ADR-060's amendment of 2026-11-15 (Eli's executive decision: "thrall
   // dies when player logs out") no side of the departure either, every
   // thrall dying by the server's word at its commander's departure
-  // (wire-rules cells.rs gone, MpActor::KillThrall)
+  // (wire-rules cells.rs gone, MpActor::KillThrall). A grant on a dead body
+  // ends its fights without a notice (thuum ADR-077 decision 4: a raised
+  // body's side counts its strikes from the raise, and a dead actor's
+  // fights are over in every engine)
   ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor,
                               uint32_t recordSeconds);
   // thuum docs/verbs/npc-fate.md C4 (ADR-060's return; Eli, 2026-11-12:
@@ -1162,6 +1171,13 @@ public:
   // stopgap: tracker #167 reads a summon's owner from its row in the
   // summon rule (wire-rules summons.rs) and deletes the table
   uint32_t OwnerOf(const MpActor& minion) const;
+  // thuum ADR-077 decision 4 (tracker #113, #131): the player on whose side
+  // `actor` fights: itself when a user plays it, its owner (OwnerOf) when a
+  // user plays that owner, nullptr otherwise (an NPC, an NPC's summon or
+  // raise, a dead minion, a minion whose owner left). The one mapping from
+  // an actor to a side: NotifyHostility's hit between two sides and
+  // TickFights' ends of a sides' fight ask it
+  MpActor* SideOf(MpActor& actor);
   // thuum #48 leg D (x-reanimate-claim v2.4 20261116-035932; ADR-060): a
   // player's load door is the server's teleport (MpObjectReference's
   // ProcessActivateNormal), so the engine's door transit, which keeps a

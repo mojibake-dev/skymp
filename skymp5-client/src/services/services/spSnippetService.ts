@@ -10,6 +10,7 @@ import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { gameFileIdOfLongId, remoteIdToLocalId, snippetIdToLocalId } from '../../view/worldViewMisc';
 import { NATIVE_GRAPH_VAR_KINDS, NATIVE_LOOK_ONLY_FNS, NATIVE_LOOK_RELAYS } from "../../lib/nativeRows.generated";
 import { logError, logLab, logTrace } from "../../logging";
+import { noteSpellAddedSinceLogin } from "../../sync/spell";
 import { WorldView } from "../../view/worldView";
 
 // D-C3 A (PENDING ELI): the graph variable setters a relayed script call
@@ -128,9 +129,27 @@ export class SpSnippetService extends ClientListener {
     }
   }
 
+  // thuum tracker #168b: the server's Actor.AddSpell on this seat's own
+  // player (its self 0x14, or the player's server id, which the view maps to
+  // 0x14) is noted at its arrival, JS state alone, so the login's first spell
+  // pass never removes the spell it adds (sync/spell.ts)
+  private static noteOwnSpellAdd(msg: SpSnippetMessage): void {
+    if (msg.class.toLowerCase() !== "actor" || msg.function.toLowerCase() !== "addspell" || snippetIdToLocalId(msg.selfId) !== 0x14) {
+      return;
+    }
+    const spell = msg.arguments[0];
+    const formId = spell !== null && typeof spell === "object" ? (spell as { formId?: number }).formId : undefined;
+    if (typeof formId === "number") {
+      noteSpellAddedSinceLogin(snippetIdToLocalId(formId));
+    }
+  }
+
   private onSpSnippetMessage(event: ConnectionMessage<SpSnippetMessage>): void {
     const msg = event.message;
     const inOrder = this.takeSeq(msg);
+    if (inOrder) {
+      SpSnippetService.noteOwnSpellAdd(msg);
+    }
     // a kept look's seconds count from here (ObjectAnimationService's 3D keep)
     const arrived = Date.now();
 

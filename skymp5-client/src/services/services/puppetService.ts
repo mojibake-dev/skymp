@@ -1025,7 +1025,16 @@ export class PuppetService extends ClientListener {
                 }
                 continue;
             }
-            const shader = mgef.getHitShader();
+            // thuum tracker #164 (playtest 55, Eli: "rotfern has a lingering
+            // particle effect on ariadnes screen from catching brain rot"): a
+            // hit shader stays only on an effect flagged FX Persist, SKSE's
+            // FXPersist 0x00001000 (MagicEffect.psc). Brain Rot's
+            // TrapDisDamageMagicka (0x10a251) is a constant effect whose one
+            // look is the HealFXS shader without that flag, played here until
+            // stopped (-1) while its owner's engine ran it once (HYPOTHESIS,
+            // unread: nothing reads a shader on a reference). A constant
+            // effect's hit art stays as before
+            const shader = mgef.isEffectFlagSet(PuppetService.fxPersist) ? mgef.getHitShader() : null;
             if (shader) {
                 shaders.set(shader.getFormID(), shader);
             }
@@ -1225,6 +1234,9 @@ export class PuppetService extends ClientListener {
     private readonly recordedEffects = new Map<number, number[]>();
     private readonly effectLooks = new Map<number, EffectLooks>();
     private static readonly noEffects: number[] = [];
+    // MagicEffect.IsEffectFlagSet's FX Persist, SKSE's MagicEffect.psc
+    // (thuum tracker #164)
+    private static readonly fxPersist = 0x00001000;
     // ADR-073 decision 7: recorded effects that are no MGEF here, counted
     private unresolvedEffects = 0;
     private readonly attached = new Set<number>();

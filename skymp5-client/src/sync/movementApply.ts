@@ -5,6 +5,7 @@ import { Movement, RunMode, AnimationVariables, Transform, NiPoint3 } from "./mo
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { isKnockedDown } from "./knockState";
+import { logLab } from "../logging";
 
 const sqr = (x: number) => x * x;
 
@@ -283,18 +284,69 @@ const applySneaking = (ac: Actor, isSneaking: boolean) => {
 // second, once the relayed drawn flag began to expire)
 const weapDrawnAsked = new Map<number, { drawn: boolean; at: number }>();
 
-export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean): void => {
-  if (ac.isWeaponDrawn() === isWeapDrawn) {
+// thuum tracker #172 (playtest 55: rotfern came back into Ariadne's view with
+// her bow drawn and showed sheathed, and the draugr re-entered sheathed while
+// fighting; no line on file read the drawn state): each change of the wanted
+// state per actor is said once, the ask included or not, and the asks for one
+// state at the first and each power of two after (ADR-073 decision 7), so the
+// read tells the three cases apart: the check skipped it (the engine already
+// reports the state), the engine ignored it (the asks repeat), or the sample
+// said sheathed
+const weapDrawnSaid = new Map<number, { drawn: boolean; asks: number }>();
+
+const sayWeapDrawn = (ac: Actor, id: number, wanted: boolean, before: boolean, how: "skipped" | "asked" | "event"): void => {
+  const said = weapDrawnSaid.get(id);
+  const fresh = !said || said.drawn !== wanted;
+  const asks = (fresh || !said ? 0 : said.asks) + (how === "skipped" ? 0 : 1);
+  weapDrawnSaid.set(id, { drawn: wanted, asks });
+  if (!fresh && (how === "skipped" || (asks & (asks - 1)) !== 0)) {
     return;
   }
+  const state = (drawn: boolean) => (drawn ? "drawn" : "sheathed");
+  const what = how === "skipped" ? "not asked, the engine reports it already"
+    : how === "event" ? `asked as the graph event WeapEquip (${asks} for this state)`
+      : `asked through setWeaponDrawnMode (${asks} for this state)`;
+  logLab("verb:movement", `weap-drawn ${id.toString(16)}: wanted ${state(wanted)}, the engine before ${state(before)}, 3D ${ac.is3DLoaded()}: ${what} (thuum tracker #172)`);
+};
+
+export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean): void => {
+  const before = ac.isWeaponDrawn();
   const id = ac.getFormID();
+  if (before === isWeapDrawn) {
+    sayWeapDrawn(ac, id, isWeapDrawn, before, "skipped");
+    return;
+  }
   const last = weapDrawnAsked.get(id);
   const now = Date.now();
   if (last && last.drawn === isWeapDrawn && now - last.at < 1000) {
     return;
   }
   weapDrawnAsked.set(id, { drawn: isWeapDrawn, at: now });
+  sayWeapDrawn(ac, id, isWeapDrawn, before, "asked");
   TESModPlatform.setWeaponDrawnMode(ac, isWeapDrawn ? 1 : 0);
+};
+
+// thuum tracker #172: a figure's or a puppet's first 3D load forgets what was
+// asked of it and asks the record's state again, since an ask that reached
+// the engine before the 3D and its graph ran may have left the engine
+// reporting a state nothing shows (HYPOTHESIS, unread: the log above reads
+// it). A puppet's draw goes as the graph event its host's action sends,
+// WeapEquip (docs/verbs/npc-stream.md, the action stream's event names), the
+// route the action stream already plays a puppet's actions by, since a draw
+// through the native may never complete on an actor whose AI is off
+// (HYPOTHESIS, unread); its native ask then waits the usual second
+export const reaskWeapDrawn = (ac: Actor, isWeapDrawn: boolean, puppet: boolean): void => {
+  const id = ac.getFormID();
+  weapDrawnAsked.delete(id);
+  weapDrawnSaid.delete(id);
+  if (puppet && isWeapDrawn) {
+    const before = ac.isWeaponDrawn();
+    weapDrawnAsked.set(id, { drawn: true, at: Date.now() });
+    sayWeapDrawn(ac, id, true, before, "event");
+    Debug.sendAnimationEvent(ac, "WeapEquip");
+    return;
+  }
+  applyWeapDrawn(ac, isWeapDrawn);
 };
 
 // thuum docs/verbs/npc-puppet.md (x-npc-death 20261023-054215): the step

@@ -23,6 +23,26 @@ const spellIdsOf = (actor: Actor): number[] => {
   return ids;
 };
 
+// thuum tracker #168b (the review of fork ba243516c): the login's FIRST pass
+// also syncs against the login's list, one Utility.wait after the
+// CreateActor, so a spell added in that window (the server's Actor.AddSpell
+// snippet on this seat's own player, or a script's AddSpell on it that this
+// seat reported) was removed as one the server does not list. Every spell
+// added to the player since its CreateActor is kept here, noted by
+// SpSnippetService and ScriptCallService and cleared at the player's
+// CreateActor (remoteServer.ts), and no pass removes one of them.
+const addedSinceLogin = new Set<number>();
+
+export const resetSpellsAddedSinceLogin = (): void => {
+  addedSinceLogin.clear();
+};
+
+export const noteSpellAddedSinceLogin = (spellId: number): void => {
+  if (spellId !== 0) {
+    addedSinceLogin.add(spellId);
+  }
+};
+
 // Removes the actor's added spells the server does not list and adds the
 // listed ones it lacks; returns what it changed and what it could not.
 // addOnly (thuum tracker #168): the login's second pass, a second after the
@@ -38,7 +58,9 @@ export const syncSpells = (
   addOnly = false,
 ): { removed: number; added: number; missing: number[] } => {
   const wanted = new Set<number>(serverSpellIds);
-  const extra = addOnly ? [] : spellIdsOf(actor).filter((id) => !wanted.has(id));
+  const unlisted = addOnly ? [] : spellIdsOf(actor).filter((id) => !wanted.has(id));
+  const extra = unlisted.filter((id) => !addedSinceLogin.has(id));
+  const kept = unlisted.length - extra.length;
   let removed = 0;
   for (const id of extra) {
     const spell = Spell.from(Game.getFormEx(id));
@@ -67,7 +89,8 @@ export const syncSpells = (
     `syncSpells${addOnly ? ' (add-only pass)' : ''}: ${serverSpellIds.length} listed, ${removed} removed, ${added} added, ${missing.length} missing` +
       (missing.length
         ? ` (${missing.map((id) => id.toString(16)).join(' ')})`
-        : ''),
+        : '') +
+      (kept ? `, ${kept} kept, added since the login (thuum tracker #168b)` : ''),
   );
   return { removed, added, missing };
 };

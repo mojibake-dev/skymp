@@ -41,13 +41,17 @@
 # 2026-11-14), which takes the spawn's cell off the server's grid for c2 (ReachCells' 3x3 holds no cell of it) while
 # its game still reports it loaded: c2 hosts the cell out of reach and keeps its dialogue claim (only its own unload
 # would end that, ADR-052 decision 2, and c2 never reports one; the third-player T0 case keeps its claimant in the cell
-# for the same reason). Its grace arms at the next tick and at its end the cell passes to c1, loaded and in reach
-# (HostRelease {epoch 2} to c2, whose flip words nothing: its game sees no form of the cell; HostGrant {epoch 3} to
-# c1); the claim passes over the grant, so the flip names c2 for Lucan's copy (isHostedByOther true to c1, no
-# keyframe: c2's game no longer sees him) and c1 for Camilla's (her keyframe and "false" to c1). The move takes each
-# player out of the other's view (DestroyActor 25 both ways) and every form of the spawn out of c2's. At 25 s of its
-# own c2 releases Lucan's copy: the release finds the claim and the cell's rule names c1 (his keyframe to c1,
-# isHostedByOther false to c1). The lease (CLAIM_LEASE_MS, 120 s) outlasts every session and is T0's. c1 reports the
+# for the same reason). The move takes every form of the spawn out of c2's view but the three whose simulator c2 is
+# at that moment, which D6's keep holds at any distance (tracker #162, MpObjectReference::ForceSubscriptionsUpdate's
+# second edge, `HostOf(*other) == AsActor()`): Lucan's copy (c2's claim), Camilla's (its cell's host) and c1 (a player
+# with no row of its own, so its cell's host), both edges, so c1 keeps c2's figure too. Its grace arms at the next
+# tick and at its end the cell passes to c1, loaded and in reach (HostGrant {epoch 3} to c1, then HostRelease {epoch
+# 2} to c2, whose flip walks the two copies its game kept); the claim passes over the grant, so both flips name c2 for
+# Lucan's copy (his keyframe and "false" to c2, "true" to c1) and c1 for Camilla's (her keyframe and "false" to c1,
+# "true" to c2). Nothing parts the kept pairs after the grant (neither player moves again), so c2 hears its claim's
+# end, and c1's departure reaches c2 as a DestroyActor. At 25 s of its own c2 releases Lucan's copy: the release
+# finds the claim and the cell's rule names c1 (his keyframe to c1, isHostedByOther false to c1 and true to c2). The
+# lease (CLAIM_LEASE_MS, 120 s) outlasts every session and is T0's. c1 reports the
 # cell loaded again at 28 s (a repeat: nothing) and c2 at 30.5 s of its own, so each stays connected through the
 # other's last word and c2 outlives c1. The legacy server knows no `setpos` (upstream's console runs AddItem,
 # EquipItem, PlaceAtMe, Disable and Mp): there c2 stays at the spawn and outlives c1, whose departure the legacy
@@ -192,26 +196,15 @@ divergences:
     legacy: 0
     wire: 1
     reason: the grant to another player than the claimant, at the next epoch; c2's dialogue claim passes over it too, until c2's release
-  - client: c1
-    msg: {t: 25, idx: "refr:ff000003"}
-    legacy: 0
-    wire: 1
-    reason: c2 left c1's view at its setpos; on the legacy stack both stay at the spawn and c2 outlives c1
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0
     wire: 1
-    reason: c1 left c2's view at c2's setpos; c1's departure later reaches nobody who sees it (the legacy stack's RakNet timeout outlasts c2)
-  - client: c2
-    msg: {t: 25, idx: "refr:ff000004"}
-    legacy: 0
-    wire: 1
-    reason: Lucan's copy left c2's view at its setpos; the legacy server keeps c2 beside it
-  - client: c2
-    msg: {t: 25, idx: "refr:ff000005"}
-    legacy: 0
-    wire: 1
-    reason: Camilla's copy left c2's view at its setpos, as Lucan's
+    reason: >-
+      c1 leaves c2's view once, at c1's departure (the wire's graceful close): c2's setpos keeps c1, whose cell c2 then
+      hosts (D6's keep, tracker #162, MpObjectReference.cpp:1361-1368), and nothing parts them after; the legacy stack's
+      RakNet timeout outlasts c2. c1 hears no DestroyActor for c2 (the same keep, both edges), and Lucan's and Camilla's
+      copies stay in c2's view (HostOf c2 at the setpos: the claim's holder, the cell's host)
   - client: c2
     msg: {t: 25, idx: "refr:f321a"}
     legacy: 0
@@ -221,7 +214,7 @@ divergences:
     msg: {t: 2, idx: "refr:ff000004"}
     legacy: 0
     wire: 2
-    reason: Lucan's copy's record ahead of each word naming c1 for him, epoch 1's grant and c2's release (epoch 3's grant names c2, whose game no longer sees him, so no keyframe goes); a grant that dropped the claim, or a claim of c1's that took him, reads 3 (c1's claim granted)
+    reason: Lucan's copy's record ahead of each word naming c1 for him, epoch 1's grant and c2's release (both flips of the swap to epoch 3 name c2, and his keyframe goes to c2); a grant that dropped the claim, or a claim of c1's that took him, reads 3 (c1's claim granted)
   - client: c1
     msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
@@ -230,18 +223,27 @@ divergences:
   - client: c1
     msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
-    wire: 4
-    reason: c2 named for Lucan's copy at its claim, epoch 1's release, epoch 2's grant and epoch 3's grant passing over the claim; a dropped or a taken claim reads 3
+    wire: 5
+    reason: >-
+      c2 named for Lucan's copy at its claim, by both flips of the swap to epoch 2 and by both of the swap to epoch 3,
+      passing over the claim; the epoch-2 release's flip reaches him since #162 (D6's keep holds him in c2's view after
+      its setpos, MpObjectReference.cpp:1361-1368; FlipHostedFlags walks c2's emitters, PartOne.cpp:2886). A repeated
+      "true" to a game that already has it changes nothing (remoteServer.ts:1521, only a flip acts); a dropped or a
+      taken claim reads 3
   - client: c1
     msg: {t: 2, idx: "refr:ff000005"}
     legacy: 0
-    wire: 2
-    reason: Camilla's copy, with no row, follows the cell's host; her record ahead of each word naming c1, at epoch 1's grant and epoch 3's
+    wire: 3
+    reason: >-
+      Camilla's copy, with no row, follows the cell's host; her record ahead of each word naming c1, at epoch 1's grant
+      and by both flips of the swap to epoch 3 (the epoch-2 release's flip walks c2's emitters, which hold her since #162's
+      keep, and runs after the grant has named c1). The repeat lands on a copy c1 already runs, whose record no update
+      imposes (formView.ts:1328, `!alreadyHosted`)
   - client: c1
     msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
-    wire: 2
-    reason: c1 named for Camilla's copy at epoch 1's grant and epoch 3's
+    wire: 3
+    reason: c1 named for Camilla's copy at epoch 1's grant and by both flips of the swap to epoch 3 (#162's keep, as her keyframe); the second "false" changes nothing (remoteServer.ts:1521)
   - client: c1
     msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
@@ -250,18 +252,29 @@ divergences:
   - client: c2
     msg: {t: 2, idx: "refr:ff000004"}
     legacy: 0
-    wire: 3
-    reason: Lucan's copy's record ahead of each word naming c2 for him, its claim and both flips of the swap to epoch 2; FlipHostedFlags keys the claim's holder though its game runs him (ClaimActor and ClaimEnded skip that case), and with that skip this reads 1
+    wire: 5
+    reason: >-
+      Lucan's copy's record ahead of each word naming c2 for him, its claim, both flips of the swap to epoch 2 and both
+      of the swap to epoch 3 (since #162 D6's keep holds him in c2's view past its setpos, MpObjectReference.cpp:1361-1368,
+      so SendActorKeyframe's emitter test passes); FlipHostedFlags keys the claim's holder though its game runs him
+      (ClaimActor and ClaimEnded skip that case), and with that skip this reads 1. The client imposes no record on a
+      copy it runs (formView.ts:1328, `!alreadyHosted`), and in T2 the record is where he stands
   - client: c2
     msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
-    wire: 3
-    reason: c2 named for Lucan's copy at its claim and by both flips of the swap to epoch 2, which pass over the claim; c2 left the cell's view before epoch 3's grant and its release, so neither reaches it
+    wire: 5
+    reason: >-
+      c2 named for Lucan's copy at its claim, by both flips of the swap to epoch 2 and by both of the swap to epoch 3,
+      which pass over the claim; the last two reach c2 since #162's keep holds him in its view, and a repeated "false"
+      to the game already running him changes nothing (remoteServer.ts:1521, only a flip holds and places)
   - client: c2
     msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
-    wire: 1
-    reason: c1 named for Lucan's copy at epoch 1's grant, c2 then a visitor beside it
+    wire: 2
+    reason: >-
+      c1 named for Lucan's copy at epoch 1's grant, c2 then a visitor beside it, and at c2's release of its claim
+      (PartOne::ReleaseClaim's UpdateHoster, which reaches c2 since #162's keep holds him in its view): c2's game demotes
+      the copy it ran, as HostOf names c1
   - client: c2
     msg: {t: 2, idx: "refr:ff000005"}
     legacy: 0
@@ -271,17 +284,21 @@ divergences:
     msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "false"}
     legacy: 0
     wire: 2
-    reason: c2 named for Camilla's copy by both flips of the swap to epoch 2; c2 left the cell's view before epoch 3's
+    reason: c2 named for Camilla's copy by both flips of the swap to epoch 2
   - client: c2
     msg: {t: 7, refrId: 0xff000005, propName: isHostedByOther, dataDump: "true"}
     legacy: 0
-    wire: 1
-    reason: c1 named for Camilla's copy at epoch 1's grant, c2 then a visitor beside it
+    wire: 3
+    reason: >-
+      c1 named for Camilla's copy at epoch 1's grant, c2 then a visitor beside it, and by both flips of the swap to epoch
+      3, which reach c2 since #162's keep holds her in its view past its setpos (c2 hosted her cell then): the first
+      demotes the copy c2's game ran, as HostOf names c1; the second changes nothing (remoteServer.ts:1521)
   - client: c2
     msg: {t: 25}
     legacy: 0
     wire: 54
     reason: >-
       the rest of c2's DestroyActor words when its setpos off the map (409600) takes every form of the spawn's cell out of
-      its view, one per form (the clean world's spawn holds 54 beside the five declared above); the legacy stack sends none
-      for the console's setpos (T2 of m4-sitting-53 1713463d, 2026-11-15, the count read from that run)
+      its view but the three #162's keep holds, one per form (the clean world's spawn holds 54 beside the lock chest
+      and c1's figure declared above); the legacy stack sends none for the console's setpos (T2 of
+      m4-sitting-53 1713463d, 2026-11-15, the count read from that run; the same 54 at m4-train-55-s162-f2ebec2a)

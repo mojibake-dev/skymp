@@ -980,6 +980,42 @@ public:
   // other side) is no end of their fight: TickFights keeps that end and
   // tells it to every game it reaches, once, when their fight ends
   bool SidesFight(MpActor& x, MpActor& y);
+  // thuum ADR-077 decision 5 (Eli, 2026-11-18: "tolerated. we havent built
+  // a friends/faction/party thing yet though."): the living actor on neither
+  // side that a member of `x`'s side (SideOf) and a member of `y`'s each
+  // have a fight pair with, read from the fights table as TickFights reads
+  // it; 0 when the two sides fight no enemy in common. While one stands, a
+  // minion's stray hit on the other side is the engine's friendly fire
+  // (ActionListener's HitAcrossSides, CountFriendHit)
+  uint32_t SharedEnemyOf(MpActor& x, MpActor& y);
+  // thuum ADR-077 decision 5: `striker`'s hit on `struck` at `nowMs`,
+  // counted as the engine counts the player's hits on a friend in combat
+  // (the struck actor's ExtraFriendHits): the hits more than
+  // fFriendHitTimer old drop, this one counts unless the last one counted
+  // came within fFriendMinimumLastHitTime, and the hit is tolerated while
+  // the count is at most iFriendHitCombatAllowed (the masters' 4). No
+  // party system names an ally yet, so the ally count
+  // (iAllyHitCombatAllowed) waits for one. HYPOTHESIS until a lab read: the
+  // engine's count, window and spacing are a Ghidra read of 1406ba1d0 and
+  // its callees (1.6.1170). By choice, a minion's count borrows the rule
+  // for the PLAYER's hits on a friend; the engine's own rule for an NPC in
+  // its victim's combat group appears to count nothing (no assault at all,
+  // HYPOTHESIS, FUN_140803df0 unread)
+  struct FriendHitCount
+  {
+    bool tolerated = false;
+    int count = 0;
+    int allowed = 0;
+  };
+  FriendHitCount CountFriendHit(uint32_t striker, uint32_t struck,
+                                uint64_t nowMs);
+  // the friendly-fire window in seconds (fFriendHitTimer), for the log
+  static float FriendHitWindowSeconds();
+  // thuum ADR-077 decision 5: `actor`'s counted hits, as striker or struck,
+  // are forgotten (TickFights forgets those whose window passed or whose
+  // striker or struck is on no side any more: the minion gone, or a party
+  // left)
+  void ForgetFriendHits(uint32_t actor);
   // playtest 54 #126: whether a summon or thrall `owner`'s game simulates
   // (IsSummon, or commanded by `owner`) that is on no player's side (an
   // NPC's summon or raise, SideOf) has a fight pair of its own with

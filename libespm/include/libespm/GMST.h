@@ -51,6 +51,12 @@ public:
   // plugins carries either; thuum docs/verbs/npc-fate.md, the deaths)
   static constexpr uint32_t kIHoursToRespawnCell = 0x000D3646;
   static constexpr uint32_t kIHoursToRespawnCellCleared = 0x000D3647;
+  // The count of friendly hits the engine tolerates in combat, 4 in
+  // Skyrim.esm (thuum lab/esm.py find GMST Friend, Ally and Hit on the Mac's
+  // Skyrim.esm, Dawnguard.esm and Dragonborn.esm, 2026-11-18: the one
+  // friendly-hit setting the three set; Update.esm unread); the executable's
+  // other friendly-hit settings keep its defaults (thuum ADR-077 decision 5)
+  static constexpr uint32_t kIFriendHitCombatAllowed = 0x0001A23D;
 
   struct Data
   {

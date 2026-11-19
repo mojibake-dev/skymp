@@ -485,6 +485,11 @@ struct PartOne::Impl
   std::map<std::pair<uint32_t, uint32_t>,
            std::set<std::pair<uint32_t, uint32_t>>>
     sidesEnds;
+  // thuum ADR-077 decision 5: a minion's stray hits on the other side while
+  // both sides fight one enemy, by striker and struck: the steady times of
+  // the hits counted, as the engine's ExtraFriendHits holds the player's
+  // hits on the actor it lives on (PartOne::CountFriendHit)
+  std::map<std::pair<uint32_t, uint32_t>, std::vector<uint64_t>> friendHits;
   std::chrono::steady_clock::time_point lastFateRespawnsTick;
 
   // the cell host table (thuum docs/verbs/cell-host.md, ADR-035) and each
@@ -2541,6 +2546,23 @@ void PartOne::TickFights(uint64_t nowMs)
     const auto& form = worldState.LookupFormByIdNoLoad(formId);
     return form ? form->AsActor() : nullptr;
   };
+  // thuum ADR-077 decision 5: a stray hit's count is forgotten once its
+  // window passes, or once its striker or the struck is on no side (the
+  // minion gone, or a party left)
+  const auto windowMs =
+    static_cast<uint64_t>(FriendHitWindowSeconds() * 1000.f);
+  for (auto it = pImpl->friendHits.begin(); it != pImpl->friendHits.end();) {
+    MpActor* striker = actorOf(it->first.first);
+    MpActor* struck = actorOf(it->first.second);
+    const bool stale = it->second.empty() ||
+      (nowMs > it->second.back() && nowMs - it->second.back() > windowMs);
+    if (stale || !striker || !struck || !SideOf(*striker) ||
+        !SideOf(*struck)) {
+      it = pImpl->friendHits.erase(it);
+    } else {
+      ++it;
+    }
+  }
   const auto playersPair = [&](const skymp::rules::FightPair& pair) {
     MpActor* a = actorOf(pair.a);
     MpActor* b = actorOf(pair.b);
@@ -2947,6 +2969,126 @@ bool PartOne::SidesFight(MpActor& x, MpActor& y)
   MpActor* ySide = SideOf(y);
   return xSide && ySide && xSide != ySide &&
     GetFights().between(xSide->GetFormId(), ySide->GetFormId());
+}
+
+uint32_t PartOne::SharedEnemyOf(MpActor& x, MpActor& y)
+{
+  MpActor* xSide = SideOf(x);
+  MpActor* ySide = SideOf(y);
+  if (!xSide || !ySide || xSide == ySide) {
+    return 0;
+  }
+  const auto actorOf = [&](uint32_t formId) -> MpActor* {
+    const auto& form = worldState.LookupFormByIdNoLoad(formId);
+    return form ? form->AsActor() : nullptr;
+  };
+  // each side's enemies on neither side, from its members' pairs
+  std::set<uint32_t> xEnemies;
+  std::set<uint32_t> yEnemies;
+  for (const auto& pair : pImpl->fights->pairs()) {
+    MpActor* a = actorOf(pair.a);
+    MpActor* b = actorOf(pair.b);
+    if (!a || !b) {
+      continue;
+    }
+    MpActor* aSide = SideOf(*a);
+    MpActor* bSide = SideOf(*b);
+    const auto note = [&](MpActor* memberSide, MpActor& enemy,
+                          MpActor* enemySide) {
+      if (enemySide || enemy.IsDead()) {
+        return;
+      }
+      if (memberSide == xSide) {
+        xEnemies.insert(enemy.GetFormId());
+      } else if (memberSide == ySide) {
+        yEnemies.insert(enemy.GetFormId());
+      }
+    };
+    note(aSide, *b, bSide);
+    note(bSide, *a, aSide);
+  }
+  for (uint32_t enemy : xEnemies) {
+    if (yEnemies.count(enemy)) {
+      return enemy;
+    }
+  }
+  return 0;
+}
+
+namespace {
+// thuum ADR-077 decision 5: the engine's friendly-hit settings the masters
+// set none of keep the executable's defaults, read from its static Setting
+// objects (Ghidra on sky-re, the SkyrimSE 1.6.1170 program, 2026-11-18):
+// fFriendHitTimer 10.0 (the object at 141ffc400) and
+// fFriendMinimumLastHitTime 0.5 (141ffc418). lab/esm.py finds neither in
+// Skyrim.esm, Dawnguard.esm or Dragonborn.esm; Update.esm is unread. The
+// executable's iFriendHitCombatAllowed is 3 (141ffc430); the masters' 4
+// stands over it, and the 3 only in a world without them
+constexpr float kFriendHitTimerS = 10.f;
+constexpr float kFriendMinimumLastHitTimeS = 0.5f;
+constexpr int kCompiledFriendHitCombatAllowed = 3;
+// an allowed count past 999 is no limit to the engine: it clears its count
+// and tolerates every hit (HYPOTHESIS, the 1.6.1170 program's 1406ba1d0)
+constexpr int kFriendHitsUnlimited = 999;
+}
+
+float PartOne::FriendHitWindowSeconds()
+{
+  return kFriendHitTimerS;
+}
+
+// The engine's rule (HYPOTHESIS until a lab read, the 1.6.1170 program's
+// 1406ba1d0 and its callees 14015e760, 14017fb60, 14017fc40 and 14017fcb0;
+// CommonLibSSE-NG include/RE/E/ExtraFriendHits.h:22, the hits'
+// AITimeStamps): when the player hits an actor whose fight reaction to it
+// is ally or friend (include/RE/F/FightReactions.h:9-10), the hit is
+// counted on the struck actor, the count read against iAllyHit* or
+// iFriendHit*, the Combat one while the struck actor has a combat
+// controller (include/RE/A/Actor.h:669); an allowed count under 1 tolerates
+// nothing, and while the count is at most the allowed one, no combat begins
+PartOne::FriendHitCount PartOne::CountFriendHit(uint32_t striker,
+                                                uint32_t struck,
+                                                uint64_t nowMs)
+{
+  FriendHitCount result;
+  result.allowed = HasEspm()
+    ? espm::GetData<espm::GMST>(espm::GMST::kIFriendHitCombatAllowed,
+                                &worldState)
+        .intValue
+    : kCompiledFriendHitCombatAllowed;
+  if (result.allowed < 1) {
+    return result;
+  }
+  auto& hits = pImpl->friendHits[std::make_pair(striker, struck)];
+  if (result.allowed > kFriendHitsUnlimited) {
+    hits.clear();
+  }
+  const auto windowMs = static_cast<uint64_t>(kFriendHitTimerS * 1000.f);
+  const auto minimumMs =
+    static_cast<uint64_t>(kFriendMinimumLastHitTimeS * 1000.f);
+  hits.erase(std::remove_if(hits.begin(), hits.end(),
+                            [&](uint64_t at) {
+                              return nowMs > at && nowMs - at > windowMs;
+                            }),
+             hits.end());
+  if (hits.empty() ||
+      (nowMs >= hits.back() && nowMs - hits.back() >= minimumMs)) {
+    hits.push_back(nowMs);
+  }
+  result.count = static_cast<int>(hits.size());
+  result.tolerated = result.count <= result.allowed;
+  return result;
+}
+
+void PartOne::ForgetFriendHits(uint32_t actor)
+{
+  for (auto it = pImpl->friendHits.begin(); it != pImpl->friendHits.end();) {
+    if (it->first.first == actor || it->first.second == actor) {
+      it = pImpl->friendHits.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 bool PartOne::MinionFights(uint32_t owner, uint32_t opponent)

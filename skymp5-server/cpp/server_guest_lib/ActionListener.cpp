@@ -12766,18 +12766,61 @@ void TellPlayerOfFight(MpActor& aggressor, MpActor& victim)
 // that settles it: after turbo-srv, the owner seat's self.combat and the
 // attacker figure's combat target in the recorder trace, beside Eli's music
 // and compass dot
-void HitAcrossSides(PartOne& partOne, MpActor& aggressor, MpActor& target,
+//
+// thuum ADR-077 decision 5 (Eli, 2026-11-18 06:55 PM PST: "tolerated. we
+// havent built a friends/faction/party thing yet though."): while both
+// sides fight one enemy (PartOne::SharedEnemyOf) and no fight between them
+// stands, a minion's hit on the other player or that player's minion is a
+// stray one, tolerated as the engine tolerates the player's friendly fire
+// in combat (HYPOTHESIS until a lab read; PartOne::CountFriendHit: the
+// masters' iFriendHitCombatAllowed inside fFriendHitTimer): it begins no
+// pair and tells no game, and true is
+// returned so NotifyHostility stops. A hit past the allowed count begins
+// the sides' fight as decision 4 has it. A player's own hit is never a
+// stray one, and a standing sides' fight is kept by every hit as before.
+// No party system names an ally yet; when one is built, it decides who is
+// one and this reads it
+bool HitAcrossSides(PartOne& partOne, MpActor& aggressor, MpActor& target,
                     uint64_t nowMs)
 {
   MpActor* aggressorSide = partOne.SideOf(aggressor);
   MpActor* targetSide = partOne.SideOf(target);
   if (!aggressorSide || !targetSide || aggressorSide == targetSide ||
       (aggressorSide == &aggressor && targetSide == &target)) {
-    return;
+    return false;
+  }
+  if (aggressorSide != &aggressor &&
+      !partOne.GetFights().between(aggressorSide->GetFormId(),
+                                   targetSide->GetFormId())) {
+    const uint32_t enemy = partOne.SharedEnemyOf(aggressor, target);
+    if (enemy != 0) {
+      const auto hits = partOne.CountFriendHit(aggressor.GetFormId(),
+                                               target.GetFormId(), nowMs);
+      if (hits.tolerated) {
+        spdlog::info("ActionListener::OnWeaponHit - hostility: minion {:x}'s "
+                     "stray hit on {:x}, while the sides of {:x} and {:x} "
+                     "both fight {:x}, is tolerated: {} of {} allowed in {} "
+                     "s; no fight begins and no game is told (thuum ADR-077 "
+                     "decision 5)",
+                     aggressor.GetFormId(), target.GetFormId(),
+                     aggressorSide->GetFormId(), targetSide->GetFormId(),
+                     enemy, hits.count, hits.allowed,
+                     PartOne::FriendHitWindowSeconds());
+        return true;
+      }
+      spdlog::info("ActionListener::OnWeaponHit - hostility: minion {:x}'s "
+                   "hit on {:x}, while the sides of {:x} and {:x} both fight "
+                   "{:x}, is past the allowed count: {} of {} allowed in {} "
+                   "s (thuum ADR-077 decision 5)",
+                   aggressor.GetFormId(), target.GetFormId(),
+                   aggressorSide->GetFormId(), targetSide->GetFormId(), enemy,
+                   hits.count, hits.allowed,
+                   PartOne::FriendHitWindowSeconds());
+    }
   }
   if (!partOne.GetFights().hit(aggressorSide->GetFormId(),
                                targetSide->GetFormId(), nowMs)) {
-    return;
+    return false;
   }
   TellPlayerOfFight(*aggressorSide, *targetSide);
   TellPlayerOfFight(*targetSide, *aggressorSide);
@@ -12787,6 +12830,7 @@ void HitAcrossSides(PartOne& partOne, MpActor& aggressor, MpActor& target,
                "decision 4, tracker #160)",
                aggressor.GetFormId(), target.GetFormId(),
                aggressorSide->GetFormId(), targetSide->GetFormId());
+  return false;
 }
 }
 
@@ -12854,8 +12898,11 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
       now.time_since_epoch())
       .count());
   // thuum ADR-077 decision 4 (tracker #113, #131, #160): the two players'
-  // pair first, for any hit between their two sides
-  HitAcrossSides(partOne, aggressor, target, nowMs);
+  // pair first, for any hit between their two sides; a minion's stray hit
+  // while both sides fight one enemy begins nothing (decision 5)
+  if (HitAcrossSides(partOne, aggressor, target, nowMs)) {
+    return;
+  }
   skymp::rules::HostilityFacts facts{};
   facts.aggressor_is_player =
     partOne.serverState.UserByActor(&aggressor) != Networking::InvalidUserId;

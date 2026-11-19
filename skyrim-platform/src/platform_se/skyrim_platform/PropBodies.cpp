@@ -1,4 +1,5 @@
 #include "PropBodies.h"
+#include <RE/A/Actor.h>
 #include <RE/B/bhkNiCollisionObject.h>
 #include <RE/B/bhkWorld.h>
 #include <RE/H/hkQuaternion.h>
@@ -158,6 +159,27 @@ bool IsActorRoot(RE::NiAVObject& root)
   return ref && ref->GetFormType() == RE::FormType::ActorCharacter;
 }
 
+// thuum tracker #175 (Eli's second look: "it was embedded in a head on one
+// screen and a foot away on another", the dead 2H bandit's iron greatsword):
+// a dead actor's carried parts (its weapon's own 3D, not anim-targeted)
+// follow its bones in the walk, so the stream carries them too. They go
+// after every bone, so the bones keep one count and order on every seat, and
+// a copy that carries another count imposes the bones and whatever carried
+// parts both hold (the impose's prefix rule, PuppetApi.cpp). A living
+// actor's walk stays its bones alone: its drawn weapon rides the hand, which
+// a velocity drive would fight (a knocked actor's live body, rung 5's
+// live-body kind)
+bool IsDeadActorRoot(RE::NiAVObject& root)
+{
+  RE::TESObjectREFR* ref = root.GetUserData();
+  auto* actor = ref ? ref->As<RE::Actor>() : nullptr;
+  return actor && actor->IsDead();
+}
+
+// at most this many carried parts (UNMEASURED: a weapon and a shield, read
+// on one Nord bandit's one weapon)
+constexpr uint32_t kCarriedMax = 8;
+
 bool AnimTargeted(RE::NiAVObject& node)
 {
   auto* collision = node.collisionObject
@@ -172,6 +194,9 @@ void PropBodies::WalkBodies(RE::NiAVObject& root, Walk& out)
 {
   out = Walk{};
   const bool ragdollOnly = IsActorRoot(root);
+  const bool carries = ragdollOnly && IsDeadActorRoot(root);
+  Body carried[kCarriedMax];
+  uint32_t nCarried = 0;
   struct Entry
   {
     RE::NiAVObject* object;
@@ -206,6 +231,12 @@ void PropBodies::WalkBodies(RE::NiAVObject& root, Walk& out)
         } else {
           out.cut = true;
         }
+      } else if (IsPart(type) && carries) {
+        if (nCarried < kCarriedMax) {
+          carried[nCarried++] = body;
+        } else {
+          out.cut = true;
+        }
       }
     }
     RE::NiNode* node = object->AsNode();
@@ -226,6 +257,16 @@ void PropBodies::WalkBodies(RE::NiAVObject& root, Walk& out)
         break;
       }
       stack[top++] = { child, entry.depth + 1 };
+    }
+  }
+  if (ragdollOnly) {
+    out.bones = out.nParts;
+    for (uint32_t i = 0; i < nCarried; ++i) {
+      if (out.nParts < kPartsMax) {
+        out.parts[out.nParts++] = carried[i];
+      } else {
+        out.cut = true;
+      }
     }
   }
 }

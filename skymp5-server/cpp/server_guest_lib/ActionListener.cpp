@@ -313,18 +313,19 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // before this process or placed dead has no window and no row here
       // and keeps the host's samples as before (TODO: its rest at load,
       // with the prop claim)
-      // physics rung 5 (thuum tracker #175): a dead body whose prop row
-      // another seat holds live (its drag, its push) has that seat as its
-      // one writer, a body with no settle record too (one dead before this
-      // process, which the branch below never sees): every other report is
-      // refused, the host's settle samples of its own copy among them
-      const uint32_t bodyLiveOwner =
-        moved->IsDead() ? partOne.PropLiveOwner(*moved) : 0u;
+      // physics rung 5 (thuum tracker #175): a body whose prop row another
+      // seat holds live (its drag, its push, and a living actor's knock: the
+      // live-body kind) has that seat as its one writer, a dead body with no
+      // settle record too (one dead before this process, which the branch
+      // below never sees): every other report is refused, the host's settle
+      // samples of its own copy among them, and a knocked NPC's host's
+      // samples while the gripper or the shouter streams its ragdoll
+      const uint32_t bodyLiveOwner = partOne.PropLiveOwner(*moved);
       const bool bodyHeldElsewhere =
         bodyLiveOwner != 0 && bodyLiveOwner != myActor->GetFormId();
-      if (moved->IsDead() &&
-          (bodyHeldElsewhere ||
-           (moved->IsFateRespawned() && moved->HasBodySettle()))) {
+      if (bodyHeldElsewhere ||
+          (moved->IsDead() && moved->IsFateRespawned() &&
+           moved->HasBodySettle())) {
         const auto refuseBody = [&](const char* code, const std::string& why) {
           // the throttle per code, sender and body: a NOT_OWNER line must
           // not silence an AT_REST line seconds later, nor mix their counts
@@ -4592,8 +4593,19 @@ namespace {
 // streamed as any prop, with no tether (a corpse is carried off by design,
 // and its game-file position is where it stood alive). A living actor, a
 // player's and a server-made one (its id seat-local, change-form's read 4)
-// answer None. RefusePropPickup asks for an item alone, and the destruction
-// handler for a world body alone.
+// answer None as bodies. A live body (rung 5's live-body kind; thuum tracker
+// #175, Eli's second look: "the grip pulls a guy, but he's planking on
+// ariadnes screen", and #178, a shout on a player) is a living actor's
+// ragdoll while its engine holds it knocked (ActionKnockDown to ActionGetUp,
+// a grip or a shout): a game-file NPC's, claimed by the seat whose cause moved
+// it as a dead body is, or a player's, which its own game alone claims
+// (ADR-063: a player's own game owns its actor). Whether the actor is knocked
+// is the claimant's word, unvalidated (R2, rule 5): the server records the
+// row, refuses every other writer (OnUpdateMovement's one-writer rule), and
+// the owner's asleep sample at the get-up returns it to the host. A
+// server-made NPC answers None living or dead (its id is seat-local).
+// RefusePropPickup asks for an item alone, and the destruction handler for a
+// world body alone.
 // A world body is also the one kind whose destruction a seat's report
 // records (OnDestructionStage, E_DESTRUCTION_KIND; D-S3 point 3)
 enum class PropKind
@@ -4601,15 +4613,20 @@ enum class PropKind
   None,
   Item,
   WorldBody,
-  Body
+  Body,
+  LiveBody
 };
 
 PropKind PropKindOf(MpObjectReference& refr)
 {
   if (auto* actor = refr.AsActor()) {
-    const bool body = actor->IsDead() && refr.GetFormId() < 0xff000000 &&
-      actor->GetUserId() == Networking::InvalidUserId;
-    return body ? PropKind::Body : PropKind::None;
+    const bool player = actor->GetUserId() != Networking::InvalidUserId;
+    if (actor->IsDead()) {
+      const bool body = refr.GetFormId() < 0xff000000 && !player;
+      return body ? PropKind::Body : PropKind::None;
+    }
+    const bool live = player || refr.GetFormId() < 0xff000000;
+    return live ? PropKind::LiveBody : PropKind::None;
   }
   const auto& baseType = refr.GetBaseType();
   if (espm::utils::IsItem(espm::Type(baseType.c_str()))) {
@@ -4739,11 +4756,21 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     }
     // physics rung 4 (D-PH9 A): a world body by any touch, as an item; the
     // impulse-only gate of D-S3 point 4 retires with it. Rung 5: a dead
-    // NPC's body by any touch too (a drag's grab, a shout's impulse)
+    // NPC's body by any touch too (a drag's grab, a shout's impulse), and a
+    // knocked living actor's (the live-body kind), a player's by its own
+    // game alone
     const PropKind kind = PropKindOf(*prop);
     if (kind == PropKind::None) {
       return refuse("E_PROP_KIND",
-                    "neither an item, a world body nor a dead NPC's body");
+                    "neither an item, a world body nor an NPC's or a "
+                    "player's body");
+    }
+    const auto* propActor = prop->AsActor();
+    const bool self = prop == myActor;
+    if (kind == PropKind::LiveBody && propActor &&
+        propActor->GetUserId() != Networking::InvalidUserId && !self) {
+      return refuse("E_PROP_KIND",
+                    "a player's body, which its own game simulates (ADR-063)");
     }
     if (msg.touch > 3) {
       return refuse("E_PROP_RANGE", "a touch the contract does not name");
@@ -4751,7 +4778,7 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     // a game the server never sent the prop, or told it is gone, has no copy
     // to heal, so no word answers it (a claim racing an unsubscription reads
     // here too)
-    if (!IsPropListener(*prop, *myActor)) {
+    if (!self && !IsPropListener(*prop, *myActor)) {
       return refuse("E_PROP_UNSEEN",
                     "the claimant is no listener of the prop (its game was "
                     "never sent it, or was told it is gone)");
@@ -9290,7 +9317,8 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   const PropKind kind = PropKindOf(*prop);
   if (kind == PropKind::None) {
     return refuse("E_PROP_KIND",
-                  "neither an item, a world body nor a dead NPC's body");
+                  "neither an item, a world body nor an NPC's or a player's "
+                  "body");
   }
   // physics rung 2's bones: the parts of a body of several, a world body's
   // since rung 4 (D-PH10 A) and a dead actor's at rung 5; an item's body is

@@ -1513,6 +1513,14 @@ Napi::Value PuppetApi::GetBodyClass(const Napi::CallbackInfo& info)
   auto res = Napi::Object::New(info.Env());
   res.Set("bsx", Napi::Number::New(info.Env(), flags));
   res.Set("dynamic", Napi::Boolean::New(info.Env(), dynamic));
+  // thuum tracker #175: an actor's bones among parts (the first ones, its
+  // carried parts after them), and whether its engine holds it ragdolled now
+  // (Actor::IsInRagdollState, CommonLibSSE-NG include/RE/A/Actor.h:597; the
+  // knock of a living actor, rung 5's live-body kind)
+  auto* actor = refr->As<RE::Actor>();
+  res.Set("bones", Napi::Number::New(info.Env(), walk.bones));
+  res.Set("ragdoll",
+          Napi::Boolean::New(info.Env(), actor && actor->IsInRagdollState()));
   res.Set("bodies", Napi::Number::New(info.Env(), walk.bodies));
   res.Set("fixed", Napi::Number::New(info.Env(), walk.fixed));
   res.Set("parts", parts);
@@ -1695,7 +1703,12 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
     return entry.rest;
   }
   const auto n = static_cast<uint32_t>(entry.poses.size());
-  if (walk.cut || n != walk.nParts) {
+  // thuum tracker #175: an actor's poses may stop short of its walk's carried
+  // parts (another seat's copy carries fewer, PropBodies.cpp's WalkBodies):
+  // every bone and the carried parts both hold are imposed, the rest left to
+  // this engine
+  const bool prefix = walk.bones > 0 && n >= walk.bones && n < walk.nParts;
+  if (walk.cut || (n != walk.nParts && !prefix)) {
     // a pose for each part, in each seat's walk order, or none (E55; the
     // spec's F2): the counts both at most 64, so one key a (form, n, m)
     const uint64_t key = (static_cast<uint64_t>(formId) << 16) |

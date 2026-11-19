@@ -422,7 +422,10 @@ declare module "skyrimPlatform" {
     // verdict: not dynamic, no part or cut is no row; one body and none Fixed
     // is a whole world body (the items' route); otherwise a world body of
     // parts.length parts
-    interface BodyClass { bsx: number; dynamic: boolean; bodies: number; fixed: number; parts: BodyPart[]; cut: boolean }
+    // bones: an actor's ragdoll bones among parts (the first ones; a dead
+    // actor's carried parts after them), 0 for any other root; ragdoll:
+    // whether its engine holds an actor ragdolled now (thuum tracker #175)
+    interface BodyClass { bsx: number; dynamic: boolean; bodies: number; fixed: number; parts: BodyPart[]; cut: boolean; bones: number; ragdoll: boolean }
     // the class read on the JS thread (the root's BSX block, then the walk),
     // no task, no log of its own; null with no reference, no 3D or a faulted
     // walk (never cache a null)

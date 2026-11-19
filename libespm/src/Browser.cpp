@@ -21,6 +21,7 @@
 #include "libespm/RecordHeaderAccess.h"
 #include "libespm/RefrKey.h"
 #include "libespm/SCEN.h"
+#include "libespm/SHOU.h"
 #include "libespm/SMQN.h"
 #include "libespm/SPEL.h"
 #include "libespm/WRLD.h"
@@ -74,6 +75,9 @@ struct Browser::Impl
   // whose VMADs attach their fragment scripts, a quest marker's cause
   std::vector<const RecordHeader*> topicInfos;
   std::vector<const RecordHeader*> scenes;
+  // thuum tracker #138: the shouts, whose SNAMs name the words a wall
+  // teaches (PartOne's word-to-shout index)
+  std::vector<const RecordHeader*> shouts;
   std::vector<const RecordHeader*> cells;
 
   GroupStack grStack;
@@ -196,9 +200,13 @@ const std::vector<const RecordHeader*>& Browser::GetRecordsByType(
   if (!std::strcmp(type, espm::SCEN::kType)) {
     return pImpl->scenes;
   }
+  if (!std::strcmp(type, espm::SHOU::kType)) {
+    return pImpl->shouts;
+  }
   throw std::runtime_error("GetRecordsByType currently supports only REFR, "
                            "COBJ, KYWD, LCTN, FACT, QUST, WRLD, CELL, REGN, "
-                           "PERK, MGEF, SPEL, SMQN, INFO and SCEN records");
+                           "PERK, MGEF, SPEL, SMQN, INFO, SCEN and SHOU "
+                           "records");
 }
 
 const std::vector<const RecordHeader*>& Browser::GetRecordsAtPos(
@@ -347,6 +355,10 @@ bool Browser::ReadAny(const GroupStack* parentGrStack)
 
     if (utils::Is<espm::SCEN>(t)) {
       pImpl->scenes.push_back(recHeader);
+    }
+
+    if (utils::Is<espm::SHOU>(t)) {
+      pImpl->shouts.push_back(recHeader);
     }
 
     if (utils::Is<espm::NAVM>(t)) {

@@ -2341,13 +2341,17 @@ TEST_CASE("A STAT attached by its record is no world body: a claim and a "
   Leave(p);
 }
 
-// physics rung 4 leaves an actor off the stream, a dead one included: its
-// body's row is 5a's, told by the movement path (ActorDeathTest's body
-// cases), and rung 5 gives the prop stream a Body kind, which changes this
-// text. ActorDeathTest's fixture: the forest's leveled predator 0x85547
-// (NpcFateTest's ids), loaded by the arrival's fate pass
-TEST_CASE("A dead actor stays off the stream until rung 5: a claim and a "
-          "sample naming it are refused E_PROP_UNKNOWN",
+// physics rung 5 (ADR-071 decision 5; thuum tracker #175, playtest 56: "there
+// is ZERO syncing currently. nothing at all."): a dead NPC's body is a prop of
+// the Body kind. A touch claims it (a drag's grab here), the owner's samples
+// move the record and reach the other seat with no tether, and its rest
+// returns it to the cell's host with the word, as any prop's; a living actor
+// stays off the stream (E_PROP_KIND). ActorDeathTest's fixture: the forest's
+// leveled predator 0x85547 (NpcFateTest's ids), loaded by the arrival's fate
+// pass
+TEST_CASE("A dead NPC's body is a prop: a grab claims it, its samples move "
+          "the record and reach the other seat, and its rest returns it to "
+          "the host; a living actor is refused E_PROP_KIND",
           "[Prop][espm]")
 {
   constexpr uint32_t kPredator = 0x85547;
@@ -2364,25 +2368,69 @@ TEST_CASE("A dead actor stays off the stream until rung 5: a claim and a "
   if (body->IsDead()) {
     body->Respawn(false);
   }
+  p.Messages().clear();
+  {
+    // alive: no prop
+    LogCapture log;
+    Claim(p, 1, kPredator, 1);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 claims "
+                      "prop 85547 by touch 1; neither an item, a world body "
+                      "nor a dead NPC's body") == 1);
+  }
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
   body->Kill(nullptr);
   REQUIRE(body->IsDead());
   const NiPoint3 diedAt = body->GetPos();
   p.Messages().clear();
   {
     LogCapture log;
-    Claim(p, 0, kPredator, 0);
-    Sample(p, 1, kPredator, diedAt + NiPoint3{ 30.f, 0.f, 0.f }, false);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_UNKNOWN: ff000d01 claims "
-                      "prop 85547 by touch 0; no such reference, or an "
-                      "actor") == 1);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_UNKNOWN: ff000d02 moves "
-                      "prop 85547; no such reference, or an actor") == 1);
+    Claim(p, 1, kPredator, 1);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d02 claims prop 85547 by "
+                      "touch 1: granted") == 1);
   }
-  REQUIRE(body->GetPos() == diedAt);
-  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
-  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
-  REQUIRE(RelaysTo(p, 0).empty());
+  const auto granted = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(granted.size() == 1);
+  REQUIRE(granted[0].refr == kPredator);
+  REQUIRE(granted[0].player == kC2);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
+  REQUIRE(p.PropLiveOwner(*body) == kC2);
+  // the drag: the holder's samples move the record and reach the other seat
+  p.Messages().clear();
+  auto drag =
+    SampleOf(p, kPredator, diedAt + NiPoint3{ 30.f, 0.f, 0.f }, false);
+  drag.held = true;
+  p.GetActionListener().OnPropTransform(Raw(1), drag);
+  REQUIRE((body->GetPos() - (diedAt + NiPoint3{ 30.f, 0.f, 0.f })).Length() <
+          0.01f);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 0 });
+  REQUIRE(RelaysTo(p, 1).empty());
+  // the other seat's sample of a body it does not hold is refused
+  {
+    LogCapture log;
+    Sample(p, 0, kPredator, diedAt + NiPoint3{ 0.f, 30.f, 0.f }, false);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_NOT_OWNER: ff000d01 moves "
+                      "prop 85547") == 1);
+  }
+  REQUIRE((body->GetPos() - (diedAt + NiPoint3{ 30.f, 0.f, 0.f })).Length() <
+          0.01f);
+  // the release and the rest: the record keeps it, the host's again by word
+  p.Messages().clear();
+  Sample(p, 1, kPredator, diedAt + NiPoint3{ 40.f, 0.f, 0.f }, true);
+  REQUIRE((body->GetPos() - (diedAt + NiPoint3{ 40.f, 0.f, 0.f })).Length() <
+          0.01f);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 1 });
+  const auto returned = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(returned.size() == 1);
+  REQUIRE(returned[0].player == 0);
+  REQUIRE(p.PropLiveOwner(*body) == 0);
+  // the body stood again: no prop (the refusal's line is said once in 10 s
+  // per seat, and this seat's was said above, so the state reads it)
   body->Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);
+  p.Messages().clear();
+  Claim(p, 1, kPredator, 1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  REQUIRE(p.PropLiveOwner(*body) == 0);
   Leave(p);
 }

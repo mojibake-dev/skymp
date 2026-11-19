@@ -1653,10 +1653,28 @@ void PartOne::Init()
                                uint32_t simulator,
                                uint64_t nowMs) -> uint32_t {
     switch (word) {
-      case WorldState::BodyWord::Died:
-        return BodyDied(body, simulator, nowMs);
-      case WorldState::BodyWord::Rested:
-        return BodyRested(body);
+      case WorldState::BodyWord::Died: {
+        // physics rung 5 (thuum tracker #175): the death's row is worded as
+        // a grant (the simulator by id, or player 0 for nobody), so the seat
+        // whose settle window ends on its clock with the row still its own
+        // streams a later wake at the epoch the row stands at
+        const uint32_t epoch = BodyDied(body, simulator, nowMs);
+        if (epoch != 0) {
+          SendPropOwnerWord(body.GetFormId(), PropLiveOwner(body), epoch);
+        }
+        return epoch;
+      }
+      case WorldState::BodyWord::Rested: {
+        // physics rung 5 (thuum tracker #175): the rest's return is worded
+        // as any prop's (player 0, the host by default), so every seat holds
+        // the body's epoch for a later wake or claim; 5a's rest went unsaid,
+        // and a host's wake after it named a stale epoch
+        const uint32_t epoch = BodyRested(body);
+        if (epoch != 0) {
+          SendPropOwnerWord(body.GetFormId(), 0, epoch);
+        }
+        return epoch;
+      }
       case WorldState::BodyWord::Ended:
         return BodyEnded(body);
     }
@@ -2050,8 +2068,12 @@ void PartOne::Init()
     // word (the live owner, or 0 for the host by default), so a seat that
     // missed a return never keeps an older word, and it neither simulates
     // the prop as the host's default nor drops the stream as echoes; a prop
-    // with no word yet is the host's on every seat
-    if (!emitterAsActor) {
+    // with no word yet is the host's on every seat. Physics rung 5: a dead
+    // NPC's body is a prop too (thuum tracker #175)
+    const bool bodyProp = emitterAsActor && !isMe &&
+      emitterAsActor->IsDead() && emitter->GetFormId() < 0xff000000 &&
+      emitterAsActor->GetUserId() == Networking::InvalidUserId;
+    if (!emitterAsActor || bodyProp) {
       if (const uint32_t epoch = PropEpochOf(*emitter); epoch != 0) {
         PropOwnerMessage word;
         word.refr = emitter->GetFormId();

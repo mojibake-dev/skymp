@@ -1412,13 +1412,13 @@ public:
   // simulated the actor then, 0 for none) in the cell the body died in, awake
   // at a new epoch, or nobody's (its cell's host by default) for 0, for a
   // simulator no user plays (a departed host in its grace) or for one whose
-  // game has that cell unloaded. No word goes out at the
-  // death: the seats learn a body's owner from the cells rule's, as before
-  // (rung 5 words it). Returns the epoch.
+  // game has that cell unloaded. No word goes out from here: since physics
+  // rung 5 the bodyWord hook (Init) words the death and the rest to every
+  // listener, so each seat holds the body's epoch. Returns the epoch.
   uint32_t BodyDied(const MpActor& body, uint32_t simulator, uint64_t nowMs);
   // The dwell's rest (MpActor::NoteBodySample, never the settle window's
-  // end): a live row the host's again, asleep, at a new epoch, returned, with
-  // no word (as at the death); 0 when no live row stood.
+  // end): a live row the host's again, asleep, at a new epoch, returned (the
+  // bodyWord hook words it); 0 when no live row stood.
   uint32_t BodyRested(const MpActor& body);
   // The body stood again (Respawn's ClearBodyRest): its row gone and the
   // epoch up, returned (epochs outlive rows); 0 when no row stood.

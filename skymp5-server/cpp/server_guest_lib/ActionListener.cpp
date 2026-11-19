@@ -4569,22 +4569,31 @@ namespace {
 // server-made reference is no world body (DEF-4e: it has no game-file
 // position to be tethered to; WorldState.cpp's split of the ids at
 // 0xff000000), nor is a static (DEF-4f: D-PH9 A gives a STAT with a dynamic
-// model no row). An actor answers None: a dead actor's row is rung 5's
-// (Body; MpActor::IsDead), and the prop and destruction handlers refuse an
-// actor before they ask (RefusePropPickup asks for an item alone).
+// model no row). A body (physics rung 5, ADR-071 decision 5; thuum tracker
+// #175, playtest 56: "there is ZERO syncing currently. nothing at all.") is a
+// dead game-file actor no player plays: its ragdoll is a world body of parts
+// to every seat (its bones in the seat's walk order), claimed by a touch and
+// streamed as any prop, with no tether (a corpse is carried off by design,
+// and its game-file position is where it stood alive). A living actor, a
+// player's and a server-made one (its id seat-local, change-form's read 4)
+// answer None. RefusePropPickup asks for an item alone, and the destruction
+// handler for a world body alone.
 // A world body is also the one kind whose destruction a seat's report
 // records (OnDestructionStage, E_DESTRUCTION_KIND; D-S3 point 3)
 enum class PropKind
 {
   None,
   Item,
-  WorldBody
+  WorldBody,
+  Body
 };
 
 PropKind PropKindOf(MpObjectReference& refr)
 {
-  if (refr.AsActor()) {
-    return PropKind::None;
+  if (auto* actor = refr.AsActor()) {
+    const bool body = actor->IsDead() && refr.GetFormId() < 0xff000000 &&
+      actor->GetUserId() == Networking::InvalidUserId;
+    return body ? PropKind::Body : PropKind::None;
   }
   const auto& baseType = refr.GetBaseType();
   if (espm::utils::IsItem(espm::Type(baseType.c_str()))) {
@@ -4657,7 +4666,8 @@ bool PropRefusalLineDue(ServerState& serverState, Networking::UserId user,
 // sixteen props, each judged alone, its own verdict, word and line. The
 // gates, per reference: the reference a prop the server holds (an item, or
 // since physics rung 4 a world body by any touch, D-PH9 A's admission: the
-// server holds no class, PropKindOf; never an actor; E_PROP_KIND), a touch
+// server holds no class, PropKindOf; since physics rung 5 a dead NPC's
+// body, never a living actor; E_PROP_KIND), a touch
 // the contract names, the claimant a listener of the prop (E_PROP_UNSEEN:
 // the server's own record of which games it sent the prop), and the prop's
 // record in a cell (E_PROP_OUTSIDE: the cell is the rule's row key, never a
@@ -4708,14 +4718,16 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
           code, myActor->GetFormId(), refr, msg.touch, why);
       }
     };
-    if (!prop || prop->AsActor()) {
-      return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
+    if (!prop) {
+      return refuse("E_PROP_UNKNOWN", "no such reference");
     }
     // physics rung 4 (D-PH9 A): a world body by any touch, as an item; the
-    // impulse-only gate of D-S3 point 4 retires with it
+    // impulse-only gate of D-S3 point 4 retires with it. Rung 5: a dead
+    // NPC's body by any touch too (a drag's grab, a shout's impulse)
     const PropKind kind = PropKindOf(*prop);
     if (kind == PropKind::None) {
-      return refuse("E_PROP_KIND", "neither an item nor a world body");
+      return refuse("E_PROP_KIND",
+                    "neither an item, a world body nor a dead NPC's body");
     }
     if (msg.touch > 3) {
       return refuse("E_PROP_RANGE", "a touch the contract does not name");
@@ -9253,14 +9265,16 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   };
   const auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.refr);
   MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
-  if (!prop || prop->AsActor()) {
-    return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
+  if (!prop) {
+    return refuse("E_PROP_UNKNOWN", "no such reference");
   }
   // physics rung 4 (D-PH9 A): a world body's samples are judged as an
-  // item's from its first, its host's own wake included (DEF-4a)
+  // item's from its first, its host's own wake included (DEF-4a); rung 5's
+  // body (a dead NPC's ragdoll) as a world body's, with no tether
   const PropKind kind = PropKindOf(*prop);
   if (kind == PropKind::None) {
-    return refuse("E_PROP_KIND", "neither an item nor a world body");
+    return refuse("E_PROP_KIND",
+                  "neither an item, a world body nor a dead NPC's body");
   }
   // physics rung 2's bones: the parts of a body of several, a world body's
   // since rung 4 (D-PH10 A) and a dead actor's at rung 5; an item's body is
@@ -9580,8 +9594,17 @@ void ActionListener::OnChangeForm(const RawMessageData& rawMsgData,
            true);
     return;
   }
+  // physics rung 5 (ADR-071 decision 6: "ChangeForm 72 from a body's prop
+  // owner"; thuum tracker #175): a dead NPC's body records from the seat
+  // whose stream moved it, at the prop's epoch, as well as from its cell's
+  // host at the cell's. The owner sends the record before its asleep sample
+  // on the one reliable ordered channel, so the row is still its own here;
+  // a record after the return is the host's again
+  const bool bodyOwner = actor->IsDead() &&
+    partOne.PropLiveOwner(*actor) == sender->GetFormId() &&
+    msg.epoch == partOne.PropEpochOf(*actor);
   const auto host = partOne.GetCellHost(*cell);
-  if (!host.hosted || host.player != sender->GetFormId()) {
+  if (!bodyOwner && (!host.hosted || host.player != sender->GetFormId())) {
     refuse("E_CHANGEFORM_OWNER",
            host.hosted ? fmt::format("{:x} hosts cell {:x}, not the reporter",
                                      host.player, *cell)
@@ -9589,7 +9612,7 @@ void ActionListener::OnChangeForm(const RawMessageData& rawMsgData,
            true);
     return;
   }
-  if (msg.epoch != host.epoch) {
+  if (!bodyOwner && msg.epoch != host.epoch) {
     refuse("E_CHANGEFORM_EPOCH",
            fmt::format("cell {:x} stands at epoch {}, the report names {}",
                        *cell, host.epoch, msg.epoch),

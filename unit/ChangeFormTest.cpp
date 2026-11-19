@@ -5,6 +5,8 @@
 #include "ChangeFormMessage.h"
 #include "CreateActorMessage.h"
 #include "MsgType.h"
+#include "PropClaimMessage.h"
+#include "PropTransformMessage.h"
 #include "TestUtils.hpp"
 #include "wire_bridge_cxx/rules.h"
 #include <catch2/catch_all.hpp>
@@ -885,4 +887,69 @@ TEST_CASE("A host's change form for a body whose live row it holds is "
   actor.Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);
   Leave(p, 0, kHost);
+}
+
+// physics rung 5 (ADR-071 decision 6: "ChangeForm 72 from a body's prop
+// owner"; thuum tracker #175): the seat whose grab holds a dead NPC's row
+// records the body at the prop's epoch though it hosts no cell, the record
+// served to the host; a record at another epoch, and one after its rest
+// returned the row, is refused as any visitor's
+TEST_CASE("A body's change form from the seat whose drag holds its row is "
+          "recorded at the prop's epoch, and refused once the row returned",
+          "[ChangeForm][NpcFate][Prop][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& host = Arrive(p, 0, kHost);
+  Arrive(p, 1, kOther);
+  auto& actor = Standing(p, kPredator);
+  actor.SetPos(kForest + NiPoint3{ 100.f, 0.f, 0.f });
+  actor.SetChangeFormRecord(std::nullopt);
+  Host(p, 0, kForestCell);
+  REQUIRE(p.worldState.HostOf(actor) == &host);
+  const auto cellHost = p.GetCellHost(kForestCell);
+  actor.Kill(nullptr);
+  REQUIRE(actor.IsDead());
+
+  RawMessageData raw;
+  raw.userId = 1;
+  PropClaimMessage grab;
+  grab.refrs = { kPredator };
+  grab.touch = 1;
+  p.GetActionListener().OnPropClaim(raw, grab);
+  REQUIRE(p.PropLiveOwner(actor) == kOther);
+  const uint32_t epoch = p.PropEpochOf(actor);
+  REQUIRE(epoch != cellHost.epoch);
+
+  // the cell's epoch is no fence for a visitor, the row's is
+  p.Messages().clear();
+  Report(p, 1, Record(cellHost.epoch, kPredator, kRecordHex));
+  REQUIRE(!actor.GetChangeFormRecord().has_value());
+  Report(p, 1, Record(epoch, kPredator, kRecordHex));
+  const auto record = actor.GetChangeFormRecord();
+  REQUIRE(record.has_value());
+  REQUIRE(record->sender == kOther);
+  REQUIRE(record->epoch == epoch);
+  REQUIRE(SentTo<ChangeFormAckMessage>(p, 1).size() == 1);
+  REQUIRE(SentTo<ChangeFormApplyMessage>(p, 0).size() == 1);
+
+  // the rest returns the row: the drag's seat is a visitor again
+  PropTransformMessage rest;
+  rest.refr = kPredator;
+  rest.epoch = epoch;
+  rest.seq = 1;
+  rest.tMs = 100;
+  rest.pos = { kForest.x + 130.f, kForest.y, kForest.z };
+  rest.rot = { 0.f, 0.f, 0.f };
+  rest.asleep = true;
+  p.GetActionListener().OnPropTransform(raw, rest);
+  REQUIRE(p.PropLiveOwner(actor) == 0);
+  actor.SetChangeFormRecord(std::nullopt);
+  Report(p, 1, Record(p.PropEpochOf(actor), kPredator, kRecordHex));
+  REQUIRE(!actor.GetChangeFormRecord().has_value());
+
+  actor.Respawn(false);
+  p.worldState.fateRespawnDue.erase(kPredator);
+  Leave(p, 0, kHost);
+  Leave(p, 1, kOther);
 }

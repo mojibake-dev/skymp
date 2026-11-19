@@ -1015,13 +1015,32 @@ export class RemoteServer extends ClientListener {
       form.appearance = withOverlayRace(form.appearance, form.overlay);
     }
 
+    // thuum tracker #172: the create's movement said sheathed whatever the
+    // actor held (the hard-coded false above, upstream's), so a figure or
+    // puppet came into view sheathed until its first relayed sample. The
+    // server's recorded drawn flag rides the create as the property
+    // "isWeapDrawn" (a JSON bool, beside "lastAction"); a create without it
+    // keeps false
+    const createDrawn = (form as Record<string, unknown>)["isWeapDrawn"];
+    if (form.movement && typeof createDrawn === "boolean") {
+      form.movement.isWeapDrawn = createDrawn;
+    }
+
     // thuum docs/verbs/npc-stream.md (playtest 35, Hilde's tanning missing
     // on a seat that joined two minutes after it began): a hosted NPC's last
     // action rides its CreateActor as the custom property "lastAction", and
     // the puppet replays it once as the view's first action, the way a
-    // relayed one is replayed
+    // relayed one is replayed.
+    // thuum tracker #172 (playtest 55, c2 16:44:44 "npc-stream: first action
+    // Unequip on 39fe1 played as its event"): a carried sheathe on an actor
+    // whose first sample says drawn is dropped, never replayed, since it
+    // sheathed a draugr fighting with its weapon out
     const last = (form as Record<string, unknown>)["lastAction"];
-    if (!msg.isMe && msg.props?.isHostedByOther && RemoteServer.isLastAction(last)) {
+    const sheatheOnDrawn = RemoteServer.isLastAction(last) && form.movement?.isWeapDrawn === true &&
+      last.eventName.toLowerCase() === "unequip";
+    if (sheatheOnDrawn && !msg.isMe && msg.props?.isHostedByOther) {
+      logLab("verb:npc-stream", `${(msg.refrId ?? 0).toString(16)}: the create's carried Unequip dropped, its first sample says drawn (thuum tracker #172)`);
+    } else if (!msg.isMe && msg.props?.isHostedByOther && RemoteServer.isLastAction(last)) {
       const carried: UpdateActionMessage = {
         t: MsgType.UpdateAction,
         idx: msg.idx,

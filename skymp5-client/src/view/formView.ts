@@ -14,7 +14,7 @@ import * as sp from "skyrimPlatform";
 import { logLab, logTrace } from "../logging";
 import { FormModel } from "./model";
 import { UpdateActionMessage } from "../services/messages/updateActionMessage";
-import { applyMovement } from "../sync/movementApply";
+import { applyMovement, reaskWeapDrawn } from "../sync/movementApply";
 import { SpawnProcess } from "./spawnProcess";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { PlayerCharacterDataHolder } from "./playerCharacterDataHolder";
@@ -1399,6 +1399,27 @@ export class FormView {
       }
     }
 
+    // thuum tracker #172 (playtest 55: rotfern's figure came into Ariadne's
+    // view with the bow drawn and stood sheathed): the drawn state's first ask
+    // reached the new figure or puppet before its 3D, which the movement apply
+    // above does not wait for, and the ask is not repeated while the engine
+    // reports the state (HYPOTHESIS, unread). So at the first 3D load of each
+    // 3D a figure or puppet forgets what was asked of it and asks the record's
+    // state again, the fresh draw or sheathe flag above deciding as it does
+    // for the apply; a dead record draws nothing
+    const drawn3D = refr.is3DLoaded();
+    if (!drawn3D) {
+      this.weapDrawnOn3D = false;
+    } else if (!this.weapDrawnOn3D) {
+      this.weapDrawnOn3D = true;
+      const figure = this.refrId >= 0xff000000 && !puppet && !model.isMyClone;
+      const ac = Actor.from(refr);
+      if (ac && model.movement && !alreadyHosted && (figure || puppet) && model.isDead !== true && !this.placedDead) {
+        const wanted = forcedWeapDrawn === true || forcedWeapDrawn === false ? forcedWeapDrawn : model.movement.isWeapDrawn;
+        reaskWeapDrawn(ac, wanted, puppet);
+      }
+    }
+
     // thuum docs/verbs/npc-puppet.md Rule A: an actor this game hosts takes
     // no relayed event, pitch or action; its engine's are its own
     if (refr.is3DLoaded() && !alreadyHosted) {
@@ -1719,6 +1740,8 @@ export class FormView {
   private readonly wornDeferrals = new Map<string, number>();
   // whether this view saw the copy's 3D loaded at its last update
   private wornOn3D = false;
+  // the same for the drawn state's ask at a 3D load (thuum tracker #172)
+  private weapDrawnOn3D = false;
 
   // thuum docs/DECISIONS.md ADR-068 rung 5, D-T1 A (sync/raceOverlay.ts):
   // the overlay the model carries (its CreateActor's props, then each

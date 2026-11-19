@@ -16,12 +16,6 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   if (teleportIfNeed(refr, m)) {
     return;
   }
-  // a copy that follows another seat's live body is the stream's until its
-  // own knock ends (sync/knockState.ts, thuum tracker #175)
-  if (isFollowedDown(refr.getFormID())) {
-    return;
-  }
-
   // Z axis isn't useful here
   const acX = refr.getPositionX();
   const acY = refr.getPositionY();
@@ -112,7 +106,9 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
     // record through the engine's own load; nothing here moves a body (the
     // one-shot setPosition to the host's sample that stood here is gone)
     if (!ac.isDead()) {
-      applyPuppetPose(ac, m);
+      if (!isFollowedDown(ac.getFormID())) {
+        applyPuppetPose(ac, m);
+      }
     }
   } else {
     keepOffsetFromActor(ac, m);
@@ -505,6 +501,12 @@ const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): bool
 };
 
 const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
+  // a copy that follows another seat's live body is the stream's until its
+  // own knock ends (sync/knockState.ts, thuum tracker #175): no sample moves
+  // or turns it, while its health and death words still apply
+  if (isFollowedDown(refr.getFormID())) {
+    return;
+  }
   const knobs = movementKnobs();
   const leadId = refr.getFormID();
   const interval = trackArrival(leadId, settle);

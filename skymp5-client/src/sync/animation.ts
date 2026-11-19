@@ -16,7 +16,7 @@ import {
 } from "skyrimPlatform";
 import { Movement } from "./movement";
 import { applyWeapDrawn } from "./movementApply";
-import { clearKnockedDown, isKnockedDown, markKnockedDown } from "./knockState";
+import { clearKnockedDown, isFollowedDown, isKnockedDown, markKnockedDown } from "./knockState";
 import { isHandCastEvent } from "../services/services/actionSyncService";
 
 export enum AnimationEventName {
@@ -274,6 +274,13 @@ export class AnimationSource {
         // twice (P4's H1). The player keeps the name rule below: its melee
         // and voice events feed the server's AnimationSystem
         if (this.refrId !== 0x14 && isPerformingAction(this.refrId)) {
+          return;
+        }
+        // thuum tracker #175: a copy this game knocked in place to follow
+        // another seat's live body sends none of its knock (its Ragdoll, its
+        // get-up): another seat's relay would knock that seat's copy, the
+        // owner's own among them (the review of 312279ce8, finding 7)
+        if (isFollowedDown(this.refrId)) {
           return;
         }
 

@@ -40,7 +40,12 @@ const RESCAN_MS = 500;
 // (UNMEASURED: a zero-force knock lands within a frame or two, push.md's
 // x-push-flight)
 const LIVE_READ_MS = 250;
-const KNOCK_AGAIN_MS = 1000;
+const KNOCK_AGAIN_MS = 500;
+// ActionKnockDown (Skyrim.esm AACT 0xd1fdc, lab/esm.py on sky-srv,
+// 2026-11-19): KnockExplosion's action (the re-analyst's read of 39895), a
+// knock's edge as the action hook reports it for a hosted humanoid or the
+// player (a creature is not let into the action stream, FridaHooks.cpp)
+const ACTION_KNOCK_DOWN = 0xd1fdc;
 // A prop is tracked within this many units of the player, the nearest
 // TRACK_MAX of them (the contact-ready set), and at any distance while its 3D
 // is loaded in the player's world or cell when this seat owns it, follows its
@@ -340,7 +345,9 @@ type PropKind = "item" | "world" | "trap" | "none";
 // live with body, a living actor's knocked ragdoll (the live-body kind),
 // judged again at every read; noRowAt when the stream found it no row
 // (noRow), on this seat's clock
-type KindEntry = { refr: number; item: boolean; family?: boolean; world?: { parts: number } | null; trap?: boolean; body?: boolean; live?: boolean; noRowAt?: number };
+// bones with body, an actor's ragdoll bones among its parts (getBodyClass's
+// bones: the first ones, a dead actor's carried parts after them)
+type KindEntry = { refr: number; item: boolean; family?: boolean; world?: { parts: number } | null; trap?: boolean; body?: boolean; live?: boolean; bones?: number; judgedAt?: number; noRowAt?: number };
 
 // physics rung 5 (thuum tracker #175): how long a body the stream found no
 // row (noRow) stays one before kindOf judges it again. UNMEASURED: a few
@@ -560,6 +567,13 @@ export class PropService extends ClientListener {
         this.controller.on("propContact", (e) => this.onPropContact(e));
         this.controller.on("propImpulse", (e) => this.onPropImpulse(e));
         this.controller.on("containerChanged", (e) => this.onContainerChanged(e));
+        // the hook's context allows no game call: the knock is tracked at the
+        // next update (trackKnocks)
+        this.controller.on("actionPerformed", (e) => {
+            if (e.action === ACTION_KNOCK_DOWN) {
+                this.knocks.push(e.actorId);
+            }
+        });
         this.controller.on("update", () => this.onUpdate());
         logLab(TAG, `samples timed by ${CLOCK_NAME}`);
     }
@@ -945,6 +959,7 @@ export class PropService extends ClientListener {
         }
         if (this.props.size > 0) {
             this.readHolds(now);
+            this.trackKnocks(now);
         }
         if (this.contacts.length > 0) {
             this.claimContacts(now);
@@ -1468,23 +1483,54 @@ export class PropService extends ClientListener {
         // the animation's again, never asleep), so the owner's own engine read
         // upright sends the rest, which returns the row to the host as any
         // prop's, and the stream sends nothing more until a new knock
+        const word = this.owners.get(prop.refr);
+        const mine = word !== undefined && word.player !== 0 && word.player === this.myId();
         if (prop.live && now - prop.liveAt >= LIVE_READ_MS) {
             prop.liveAt = now;
             const c = this.bodyClass(prop.localId);
-            if (c !== null && c.ragdoll && prop.liveEnded) {
+            if (c !== null && prop.knockedAt !== 0) {
+                // a copy this seat knocked to follow: never streamed (its
+                // knock is no cause; the review of 312279ce8, finding 5),
+                // held until its own get-up
+                if (c.ragdoll) {
+                    markFollowedDown(prop.localId);
+                } else {
+                    prop.knockedAt = 0;
+                    clearFollowedDown(prop.localId);
+                }
+            } else if (c !== null && c.ragdoll && prop.liveEnded) {
                 prop.liveEnded = false;
                 prop.lastSent = undefined;
                 logLab(TAG, `live body ${prop.refr.toString(16)}: knocked again on this engine`);
             } else if (c !== null && !c.ragdoll && !prop.liveEnded) {
                 prop.liveEnded = true;
+                // sent whenever the row is this seat's (a grip's grab claim
+                // holds it before any sample: unsent, the row would hold the
+                // actor's host out for good, ADR-071's rows lapsing by no
+                // clock; the review of 6f43e78e8, finding 2), and for an open
+                // stream; a baseline alone opened nothing to rest
                 const up = read !== undefined ? read : this.readBody(prop);
-                if (up !== undefined && (prop.streaming || prop.lastSent !== undefined)) {
+                if (up !== undefined && (prop.streaming || mine)) {
                     this.due.push({ prop, body: up, asleep: true, line: "the get-up" });
                 }
                 logLab(TAG, `live body ${prop.refr.toString(16)}: up again on this engine, its rest sent`);
             }
         }
+        if (prop.live && prop.knockedAt !== 0) {
+            return;
+        }
         if (prop.live && prop.liveEnded) {
+            // a word that came after the get-up (a late grant, a rest the
+            // epoch overtook) is answered with the rest again (the review of
+            // 312279ce8, finding 8)
+            if (mine && (prop.restAgain || prop.announce)) {
+                prop.restAgain = false;
+                prop.announce = false;
+                const again = read !== undefined ? read : this.readBody(prop);
+                if (again !== undefined) {
+                    this.due.push({ prop, body: again, asleep: true, line: "the get-up, again" });
+                }
+            }
             return;
         }
         if (prop.handOff !== undefined) {
@@ -1711,6 +1757,14 @@ export class PropService extends ClientListener {
     private bonesOf(prop: Prop, body: Body): PropBone[] | undefined {
         const read = body.bones !== undefined ? body.bones : [];
         const id = prop.refr.toString(16);
+        // an actor's carried parts come and go after its bones (a death mid-
+        // knock adds them, a weapon let go takes one): a read with every bone
+        // streams at its own count (the review of 312279ce8, finding 3)
+        const k = this.kinds.get(prop.localId);
+        const actorBones = k !== undefined && k.refr === prop.refr && k.body === true ? (k.bones ?? 0) : 0;
+        if (read.length !== prop.parts && actorBones > 0 && read.length >= actorBones && read.length <= BONES_MAX) {
+            prop.parts = read.length;
+        }
         if (read.length !== prop.parts) {
             logLab(TAG, `prop ${id} read ${read.length} parts where its class has ${prop.parts}: no row`);
             this.noRow(prop, `${read.length} parts read where its class has ${prop.parts}`);
@@ -1830,8 +1884,14 @@ export class PropService extends ClientListener {
         const following = prop.imposing || this.followLive(prop, now);
         if (following && !c.ragdoll && now - prop.knockedAt >= KNOCK_AGAIN_MS) {
             prop.knockedAt = now;
+            // marked first: the knock's own events and actions are held from
+            // the relay (animation.ts, actionSyncService.ts)
+            markFollowedDown(prop.localId);
             ac.pushActorAway(ac, 0);
             logLab(TAG, `live body ${prop.refr.toString(16)}: this copy knocked in place to follow another seat's stream`);
+        }
+        if (!following && !c.ragdoll) {
+            prop.knockedAt = 0;
         }
         if (following || c.ragdoll) {
             markFollowedDown(prop.localId);
@@ -1953,8 +2013,8 @@ export class PropService extends ClientListener {
             return;
         }
         if (step.rested) {
-            const rest = f.newest().bones;
-            if (rest.length === prop.parts && this.imposeBodies(prop, f, rest, true, false)) {
+            const rest = this.posesFor(prop, f.newest().bones);
+            if (rest !== undefined && this.imposeBodies(prop, f, rest, true, false)) {
                 prop.imposing = false;
                 prop.restImposed = true;
                 prop.imposed += 1;
@@ -1984,16 +2044,34 @@ export class PropService extends ClientListener {
         } else {
             return;
         }
-        if (bones === undefined || bones.length !== prop.parts) {
+        const poses = bones !== undefined ? this.posesFor(prop, bones) : undefined;
+        if (poses === undefined) {
             prop.imposeSkipped += 1;
             return;
         }
-        if (this.imposeBodies(prop, f, bones, false, lead)) {
+        if (this.imposeBodies(prop, f, poses, false, lead)) {
             prop.imposing = true;
             prop.imposed += 1;
         } else {
             prop.imposeSkipped += 1;
         }
+    }
+
+    // the poses imposed on this seat's parts: one each, or for an actor's body
+    // (thuum tracker #175, a dead actor's carried parts after its bones) every
+    // bone and the carried parts both copies hold, the owner's copy carrying
+    // more or fewer than this one (the native drain's prefix rule); undefined
+    // when they cannot be laid
+    private posesFor(prop: Prop, poses: FollowBone[]): FollowBone[] | undefined {
+        if (poses.length === prop.parts) {
+            return poses;
+        }
+        const k = this.kinds.get(prop.localId);
+        const bones = k !== undefined && k.refr === prop.refr && k.body === true ? (k.bones ?? 0) : 0;
+        if (bones > 0 && poses.length >= bones) {
+            return poses.slice(0, Math.min(poses.length, prop.parts));
+        }
+        return undefined;
     }
 
     // thuum tracker #125: the lead's start (imposeParts), this seat's own
@@ -2192,6 +2270,41 @@ export class PropService extends ClientListener {
         }
     }
 
+    // physics rung 5's live-body kind (thuum tracker #175, #178): a knock's
+    // edge (ActionKnockDown) on a humanoid this seat hosts or its own player
+    // tracks the knocked actor at once, so its owner streams the knock from
+    // its first frames (the host by default; this seat's player its own
+    // body, claimed at its track); a grip's actor is readHolds', a shout's
+    // claimImpulses'. A copy this seat knocked to follow is its follow's
+    private trackKnocks(now: number) {
+        const knocks = this.knocks;
+        this.knocks = [];
+        for (const localId of knocks) {
+            if (localId === 0x14) {
+                this.trackOwnBody(now);
+            } else if (!this.byLocal.has(localId)) {
+                this.rowInPlace({ localId, formType: 0 }, now, "knocked here (ActionKnockDown)");
+            }
+        }
+    }
+
+    // thuum tracker #178 (a shout on a player): this seat's own player
+    // knocked is its own game's body to stream (ADR-063), claimed at its
+    // track (the server grants a player's body to its own game alone); the
+    // stream's get-up check ends it, its word or its claim keeps it tracked
+    // until then (keptAnywhere)
+    private trackOwnBody(now: number) {
+        const me = this.myId();
+        if (me === 0 || this.props.has(me) || this.kindOf(0x14, me) !== "world") {
+            return;
+        }
+        const own = this.trackInPlace(me, 0x14, undefined, "this seat's player is knocked");
+        if (own) {
+            own.trackedAt = 0;
+            this.claim(own, TOUCH_IMPULSE, now);
+        }
+    }
+
     // D-53-14: a hold's start wakes a resting Dynamic body. A body this seat
     // set Dynamic without a wake, or tracked in place at the engine's own
     // motion, can sleep under the hand: in x-held-pose 20261115-064118 leg A,
@@ -2277,6 +2390,9 @@ export class PropService extends ClientListener {
     // one prop's claim, PropClaim v2's list of one (an impact's bodies and an
     // island's go in one, claimMany)
     private claim(prop: Prop, touch: number, now: number) {
+        if (prop.live && prop.knockedAt !== 0) {
+            return; // a copy this seat knocked to follow (the review of 312279ce8, finding 5)
+        }
         prop.lastClaimAt = now;
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.PropClaim, refrs: [prop.refr], touch },
@@ -2289,7 +2405,10 @@ export class PropService extends ClientListener {
     // judged alone on the server, its own word or answer), a larger set in
     // several; `why` rides the line, "claim <ids> touch 3 (impact 2: cone,
     // cause 14)" or "(island of <id>)", one line a message
-    private claimMany(props: Prop[], touch: number, now: number, why: string) {
+    private claimMany(all: Prop[], touch: number, now: number, why: string) {
+        // a copy this seat knocked to follow is claimed by nothing (the review
+        // of 312279ce8, finding 5)
+        const props = all.filter((prop) => !(prop.live && prop.knockedAt !== 0));
         for (let i = 0; i < props.length; i += 16) {
             const batch = props.slice(i, i + 16);
             for (const prop of batch) {
@@ -2548,15 +2667,13 @@ export class PropService extends ClientListener {
             // prop, said without a native; a dead game-file NPC's is (physics
             // rung 5: its body, kindOfBody, the engine's own death deciding)
             const deadBody = form.isDead === true && form.refrId < 0xff000000;
-            // physics rung 5's live-body kind (thuum tracker #175): a living
-            // game-file NPC in reach is judged by its engine's ragdoll (a
-            // knock, a grip; kindOfBody's class read), and a tracked live body
-            // (a followed figure among them) is judged again while it is one
-            const liveNpc = !deadBody && form.isDead !== true && form.refrId < 0xff000000 && form.isHostedByOther !== undefined
-                && form.movement !== undefined
-                && ObjectReferenceEx.getDistance(playerPos, form.movement.pos) <= TRACK_RADIUS;
+            // physics rung 5's live-body kind (thuum tracker #175): a tracked
+            // live body (a followed figure among them) is judged again while
+            // it is one; a knock is tracked at its edge (trackKnocks,
+            // readHolds, claimImpulses), never by a class walk of every
+            // living actor here (the review of 312279ce8: its cost)
             const tracked = this.props.get(form.refrId);
-            if (!deadBody && !liveNpc && !(tracked !== undefined && tracked.live) && (form.appearance || form.isHostedByOther !== undefined)) {
+            if (!deadBody && !(tracked !== undefined && tracked.live) && (form.appearance || form.isHostedByOther !== undefined)) {
                 continue;
             }
             if (form.movement && playerWorldOrCell !== 0 && form.movement.worldOrCell !== playerWorldOrCell) {
@@ -2694,19 +2811,9 @@ export class PropService extends ClientListener {
                 }
             }
         }
-        // thuum tracker #178 (a shout on a player, the live-body kind): this
-        // seat's own player knocked is its own game's body to stream (ADR-063),
-        // claimed at its track (the server grants a player's body to its own
-        // game alone); the stream's get-up check ends it, and its word or its
-        // claim keeps it tracked until then (keptAnywhere)
-        const me = this.myId();
-        if (me !== 0 && !this.props.has(me) && this.kindOf(0x14, me) === "world") {
-            const own = this.trackInPlace(me, 0x14, undefined, "this seat's player is knocked");
-            if (own) {
-                own.trackedAt = 0;
-                this.claim(own, TOUCH_IMPULSE, now);
-            }
-        }
+        // the own player's knock missed at its edge (a knock the action hook
+        // did not report): read once a rescan
+        this.trackOwnBody(now);
         // physics rung 3 (B5): kept wherever it is, while its 3D is loaded in
         // the player's world or cell
         const myId = this.myId();
@@ -2869,6 +2976,9 @@ export class PropService extends ClientListener {
             const actor = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
             const retry = known.noRowAt !== undefined && clockMs() - known.noRowAt >= BODY_NO_ROW_MS;
             const live = known.live === true;
+            if (live && actor && !actor.isDead() && known.judgedAt !== undefined && clockMs() - known.judgedAt < LIVE_READ_MS) {
+                return this.withSettings(known);
+            }
             if (actor && actor.isDead() && !retry && !live) {
                 return this.withSettings(known);
             }
@@ -3017,7 +3127,7 @@ export class PropService extends ClientListener {
             verdict = dead ? `a dead body of ${c.parts.length} parts`
                 : `a live body of ${c.parts.length} parts (${c.ragdoll ? "knocked here" : "another seat's stream"})`;
         }
-        const entry = this.cacheKind(localId, refr, { item: false, world, body: true, live: !dead });
+        const entry = this.cacheKind(localId, refr, { item: false, world, body: true, live: !dead, bones: c.bones, judgedAt: clockMs() });
         if (dead || this.liveSaid.get(localId) !== verdict) {
             this.liveSaid.set(localId, verdict);
             this.sayClass(refr, ref, c, verdict);
@@ -3135,6 +3245,15 @@ export class PropService extends ClientListener {
         }
         if (fields.body !== undefined) {
             entry.body = fields.body;
+        }
+        if (fields.live !== undefined) {
+            entry.live = fields.live;
+        }
+        if (fields.bones !== undefined) {
+            entry.bones = fields.bones;
+        }
+        if (fields.judgedAt !== undefined) {
+            entry.judgedAt = fields.judgedAt;
         }
         if ("noRowAt" in fields) {
             entry.noRowAt = fields.noRowAt;
@@ -3892,6 +4011,8 @@ export class PropService extends ClientListener {
     private readBodiesSaid = false;
     // each local id's verdict, by the record it is bound to (KindEntry)
     private readonly kinds = new Map<number, KindEntry>();
+    // the actors the action hook named knocked since the last update
+    private knocks: number[] = [];
     // a live body's last class verdict said, by local id (kindOfBody)
     private readonly liveSaid = new Map<number, string>();
     // physics rung 4: getBodyClass and imposeBodies or releaseBodies missing

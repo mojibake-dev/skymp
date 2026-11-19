@@ -987,15 +987,6 @@ RE::NiAVObject* PropRootOf(RE::TESObjectREFR& refr)
   return refr.formID == 0x14 ? refr.Get3D(false) : refr.Get3D();
 }
 
-// and it is read only while it is knocked (Actor::IsInRagdollState,
-// include/RE/A/Actor.h:597) and alive: its own game's live-body stream
-// (rung 5's live-body kind), never as a prop otherwise
-bool OwnPlayerKnocked()
-{
-  auto* player = RE::PlayerCharacter::GetSingleton();
-  return player && !player->IsDead() && player->IsInRagdollState();
-}
-
 // one reference's body, false when the reference, its 3D
 // (TESObjectREFR::Get3D, T/TESObjectREFR.h:375), its cell's bhkWorld
 // (TESObjectCELL::GetbhkWorld, T/TESObjectCELL.h:197) or the rigid body is
@@ -1235,7 +1226,7 @@ const RE::hkpRigidBody* IslandBodyOf(const PropBodies::Walk& walk)
 bool ReadIslandOf(uint32_t formId, std::vector<BodyRef>& out)
 {
   auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
-  auto* root = refr ? refr->Get3D() : nullptr;
+  auto* root = refr ? PropRootOf(*refr) : nullptr;
   if (!root) {
     return false;
   }
@@ -1303,8 +1294,10 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
   answered.reserve(formIds.size());
   for (const auto formId : formIds) {
     BodyRead read;
-    const bool found = formId != 0 && (formId != 0x14 || OwnPlayerKnocked()) &&
-      ReadBody(formId, toGameUnits, read);
+    // the player's own body too (thuum tracker #178): the client reads it
+    // for its own game's live-body stream alone, its rest after its get-up or
+    // its death among it (the review of 312279ce8, finding 4)
+    const bool found = formId != 0 && ReadBody(formId, toGameUnits, read);
     if (found && islands && read.awake &&
         PropBodies::IsDynamicMotion(
           static_cast<RE::hkpMotion::MotionType>(read.motion))) {

@@ -2452,11 +2452,23 @@ TEST_CASE("A player's knocked body is its own game's alone: its own claim is "
   MpActor* c1 = form->AsActor();
   REQUIRE(c1 != nullptr);
   p.Messages().clear();
+  MpActor* c2 = p.worldState.LookupFormByIdNoLoad(kC2)->AsActor();
+  REQUIRE(c2 != nullptr);
   // the shouter's game claims the player it threw: refused (the refusal's
   // line is said once in 10 s per seat, so the state reads it)
   Claim(p, 1, kC1, 3);
   REQUIRE(p.PropLiveOwner(*c1) == 0);
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  // and neither seat's sample moves the other player's body, the cell's host
+  // among them (whichever seat hosts, one of the two is its sample)
+  const NiPoint3 c1At = c1->GetPos();
+  const NiPoint3 c2At = c2->GetPos();
+  Sample(p, 1, kC1, c1At + NiPoint3{ 50.f, 0.f, 0.f }, false);
+  Sample(p, 0, kC2, c2At + NiPoint3{ 50.f, 0.f, 0.f }, false);
+  REQUIRE(c1->GetPos() == c1At);
+  REQUIRE(c2->GetPos() == c2At);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  REQUIRE(p.PropLiveOwner(*c2) == 0);
   {
     LogCapture log;
     Claim(p, 0, kC1, 3);

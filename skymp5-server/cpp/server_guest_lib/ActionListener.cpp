@@ -4620,13 +4620,16 @@ enum class PropKind
 PropKind PropKindOf(MpObjectReference& refr)
 {
   if (auto* actor = refr.AsActor()) {
-    const bool player = actor->GetUserId() != Networking::InvalidUserId;
-    if (actor->IsDead()) {
-      const bool body = refr.GetFormId() < 0xff000000 && !player;
-      return body ? PropKind::Body : PropKind::None;
+    // a player's body is its own game's alive or dead (a death mid-knock
+    // keeps the row its own game's, whose rest returns it: the review of
+    // 6f43e78e8, finding 5)
+    if (actor->GetUserId() != Networking::InvalidUserId) {
+      return PropKind::LiveBody;
     }
-    const bool live = player || refr.GetFormId() < 0xff000000;
-    return live ? PropKind::LiveBody : PropKind::None;
+    if (refr.GetFormId() >= 0xff000000) {
+      return PropKind::None;
+    }
+    return actor->IsDead() ? PropKind::Body : PropKind::LiveBody;
   }
   const auto& baseType = refr.GetBaseType();
   if (espm::utils::IsItem(espm::Type(baseType.c_str()))) {
@@ -9323,6 +9326,16 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   // physics rung 2's bones: the parts of a body of several, a world body's
   // since rung 4 (D-PH10 A) and a dead actor's at rung 5; an item's body is
   // one part, so its sample with bones moves nothing and reaches nobody
+  // a player's body streams from its own game alone, as it is claimed: the
+  // cell's host, the owner of a prop with no live row, takes no other
+  // player's body (the review of 6f43e78e8, finding 1)
+  if (kind == PropKind::LiveBody && prop != myActor) {
+    const auto* propActor = prop->AsActor();
+    if (propActor && propActor->GetUserId() != Networking::InvalidUserId) {
+      return refuse("E_PROP_KIND",
+                    "a player's body, which its own game simulates (ADR-063)");
+    }
+  }
   if (!msg.bones.empty() && kind == PropKind::Item) {
     return refuse("E_PROP_KIND",
                   "a sample with bones on an item, whose body is one part");

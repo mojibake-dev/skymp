@@ -978,6 +978,24 @@ struct BodyRead
   std::vector<PropBodies::Pose> bones;
 };
 
+// thuum tracker #178 (a shout on a player): the player's own body is read
+// from its third-person 3D (TESObjectREFR::Get3D(false), CommonLibSSE-NG
+// include/RE/T/TESObjectREFR.h:376), the skeleton a knock ragdolls, whatever
+// the camera shows; every other reference's from its current 3D
+RE::NiAVObject* PropRootOf(RE::TESObjectREFR& refr)
+{
+  return refr.formID == 0x14 ? refr.Get3D(false) : refr.Get3D();
+}
+
+// and it is read only while it is knocked (Actor::IsInRagdollState,
+// include/RE/A/Actor.h:597) and alive: its own game's live-body stream
+// (rung 5's live-body kind), never as a prop otherwise
+bool OwnPlayerKnocked()
+{
+  auto* player = RE::PlayerCharacter::GetSingleton();
+  return player && !player->IsDead() && player->IsInRagdollState();
+}
+
 // one reference's body, false when the reference, its 3D
 // (TESObjectREFR::Get3D, T/TESObjectREFR.h:375), its cell's bhkWorld
 // (TESObjectCELL::GetbhkWorld, T/TESObjectCELL.h:197) or the rigid body is
@@ -1033,7 +1051,7 @@ struct BodyRead
 bool ReadBody(uint32_t formId, float toGameUnits, BodyRead& out)
 {
   auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
-  auto* root = refr ? refr->Get3D() : nullptr;
+  auto* root = refr ? PropRootOf(*refr) : nullptr;
   auto* cell = refr ? refr->GetParentCell() : nullptr;
   auto* world = cell ? cell->GetbhkWorld() : nullptr;
   if (!root || !world) {
@@ -1285,8 +1303,8 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
   answered.reserve(formIds.size());
   for (const auto formId : formIds) {
     BodyRead read;
-    const bool found =
-      formId != 0 && formId != 0x14 && ReadBody(formId, toGameUnits, read);
+    const bool found = formId != 0 && (formId != 0x14 || OwnPlayerKnocked()) &&
+      ReadBody(formId, toGameUnits, read);
     if (found && islands && read.awake &&
         PropBodies::IsDynamicMotion(
           static_cast<RE::hkpMotion::MotionType>(read.motion))) {
@@ -1483,7 +1501,7 @@ Napi::Value PuppetApi::GetBodyClass(const Napi::CallbackInfo& info)
   const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
   auto* refr =
     formId != 0 ? RE::TESForm::LookupByID<RE::TESObjectREFR>(formId) : nullptr;
-  auto* root = refr ? refr->Get3D() : nullptr;
+  auto* root = refr ? PropRootOf(*refr) : nullptr;
   if (!root) {
     return info.Env().Null();
   }

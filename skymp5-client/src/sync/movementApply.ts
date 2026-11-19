@@ -4,7 +4,7 @@ import { RespawnNeededError } from "../lib/errors";
 import { Movement, RunMode, AnimationVariables, Transform, NiPoint3 } from "./movement";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { SpApiInteractor } from "../services/spApiInteractor";
-import { isKnockedDown } from "./knockState";
+import { isFollowedDown, isKnockedDown } from "./knockState";
 import { logLab } from "../logging";
 
 const sqr = (x: number) => x * x;
@@ -14,6 +14,11 @@ const sqr = (x: number) => x * x;
 // the record from one unit; a fresh sample keeps the eight-unit deadband
 export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: boolean, puppet?: boolean, settle?: boolean): void => {
   if (teleportIfNeed(refr, m)) {
+    return;
+  }
+  // a copy that follows another seat's live body is the stream's until its
+  // own knock ends (sync/knockState.ts, thuum tracker #175)
+  if (isFollowedDown(refr.getFormID())) {
     return;
   }
 

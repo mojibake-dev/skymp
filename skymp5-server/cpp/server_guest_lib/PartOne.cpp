@@ -61,6 +61,7 @@
 #include "libespm/PROJ.h"
 #include "libespm/QUST.h"
 #include "libespm/SCEN.h"
+#include "libespm/SHOU.h"
 #include "libespm/SMQN.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
@@ -9295,6 +9296,96 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
     return std::nullopt;
   }
   return WordWall{ *word, wallRef };
+}
+
+namespace {
+// thuum tracker #138: every word of power a SHOU's variations name (its SNAM,
+// libespm SHOU::GetData), with that shout, both as global ids, read once per
+// set of game files (ScriptAttachmentIndexOf's shape: built whole before it
+// is kept). Each shout's winning record is read (GetDistinctRecordsByType
+// walks the load order from its last file), so a word two shouts name keeps
+// the shout of the later file
+const std::unordered_map<uint32_t, uint32_t>& ShoutOfWordIndexOf(
+  WorldState& worldState)
+{
+  static std::map<const espm::Loader*, std::unordered_map<uint32_t, uint32_t>>
+    g_index;
+  auto it = g_index.find(&worldState.GetEspm());
+  if (it != g_index.end()) {
+    return it->second;
+  }
+  std::unordered_map<uint32_t, uint32_t> index;
+  auto& cache = worldState.GetEspmCache();
+  for (const auto& lookup :
+       worldState.GetEspm().GetBrowser().GetDistinctRecordsByType(
+         espm::SHOU::kType)) {
+    const auto* shou = espm::Convert<espm::SHOU>(lookup.rec);
+    if (!shou) {
+      continue;
+    }
+    const uint32_t shout = lookup.ToGlobalId(lookup.rec->GetId());
+    const auto data = shou->GetData(cache);
+    for (uint32_t i = 0; i < data.count; ++i) {
+      if (data.variations[i].word != 0) {
+        index.emplace(lookup.ToGlobalId(data.variations[i].word), shout);
+      }
+    }
+  }
+  spdlog::info("[verb:word-wall] {} word(s) of power indexed to their shouts "
+               "(thuum tracker #138)",
+               index.size());
+  return g_index.emplace(&worldState.GetEspm(), std::move(index))
+    .first->second;
+}
+}
+
+std::optional<uint32_t> PartOne::ShoutOfWord(uint32_t word)
+{
+  if (!worldState.HasEspm()) {
+    return std::nullopt;
+  }
+  const auto& index = ShoutOfWordIndexOf(worldState);
+  const auto it = index.find(word);
+  if (it == index.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+std::optional<uint32_t> PartOne::RecordShoutOfWord(MpActor& actor,
+                                                   uint32_t word)
+{
+  const auto shout = ShoutOfWord(word);
+  if (!shout ||
+      !actor.RecordShoutEntry(
+        MpActor::ShoutEntry::Shout,
+        FormDesc::FromFormId(*shout, worldState.espmFiles))) {
+    return std::nullopt;
+  }
+  return shout;
+}
+
+size_t PartOne::RecordShoutsOfKnownWords(MpActor& actor)
+{
+  size_t recorded = 0;
+  const ShoutRecord record = actor.GetShoutRecord();
+  for (const auto& known : record.wordsKnown) {
+    uint32_t word = 0;
+    try {
+      word = known.ToFormId(worldState.espmFiles);
+    } catch (const std::exception&) {
+      // a word of a plugin this load order lacks: no shout here names it
+      continue;
+    }
+    if (const auto shout = RecordShoutOfWord(actor, word)) {
+      ++recorded;
+      spdlog::info("[verb:word-wall] {:x} knows word {:x} without its shout "
+                   "{:x}: the shout recorded at the login and sent with the "
+                   "record (thuum tracker #138)",
+                   actor.GetFormId(), word, *shout);
+    }
+  }
+  return recorded;
 }
 
 namespace {

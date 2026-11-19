@@ -1,6 +1,7 @@
 #include "ActionListener.h"
 #include "MsgType.h"
 #include "TestUtils.hpp"
+#include "libespm/SHOU.h"
 #include <catch2/catch_all.hpp>
 
 PartOne& GetPartOne();
@@ -22,6 +23,13 @@ constexpr uint32_t kTemple = 0x371de;
 constexpr uint32_t kTrigger = 0x709d2;
 constexpr uint32_t kWallItself = 0x709d1;
 constexpr uint32_t kWord = 0x13e22;
+// thuum tracker #138: the shout the word belongs to, UnrelentingForceShout
+// SHOU 0x13e07, its first word WOOP 0x13e22 (ShoutsTest.cpp's lab/esm.py
+// read of Skyrim.esm, 2026-10-10; read again with `lab/esm.py find
+// Skyrim.esm SHOU UnrelentingForce` on sky-srv, each SNAM[12]'s first four
+// bytes a word; EspmTest.cpp's "SHOU variations" reads the same SNAMs); the
+// case below reads it through the test's own espm before it relies on it
+constexpr uint32_t kShout = 0x13e07;
 const NiPoint3 kByTheTrigger{ -7601.f, -254.f, 674.f }; // 100 units off
 
 void Enter(PartOne& p, const NiPoint3& pos, uint32_t cell)
@@ -53,6 +61,23 @@ int TeachWordsTold(PartOne& p)
   for (auto& m : p.Messages()) {
     if (m.userId == 0 && m.j["t"] == MsgType::SpSnippet &&
         m.j["class"] == "Game" && m.j["function"] == "TeachWord") {
+      ++n;
+    }
+  }
+  return n;
+}
+
+// the Actor.AddShout snippets naming the shout sent to the reader (thuum
+// tracker #138)
+int ShoutsAddedTold(PartOne& p, uint32_t shout)
+{
+  p.Tick();
+  int n = 0;
+  for (auto& m : p.Messages()) {
+    if (m.userId == 0 && m.j["t"] == MsgType::SpSnippet &&
+        m.j["class"] == "Actor" && m.j["function"] == "AddShout" &&
+        m.j["arguments"].size() == 1 &&
+        m.j["arguments"][0]["formId"] == shout) {
       ++n;
     }
   }
@@ -122,5 +147,39 @@ TEST_CASE("A word wall report from afar, from another cell, naming the wall "
   ReportWall(p, kTrigger);
   REQUIRE_FALSE(visitor.HasShoutEntry(MpActor::ShoutEntry::WordKnown, kWord));
   REQUIRE(TeachWordsTold(p) == 0);
+  Leave(p);
+}
+
+TEST_CASE("A word learned at a wall records the shout it belongs to, and the "
+          "game is told both (thuum tracker #138)",
+          "[WordWall][espm]")
+{
+  PartOne& p = GetPartOne();
+  // the premise, read through the test's espm: the shout's first variation
+  // (its first SNAM) names the wall's word, and the index finds it there
+  const auto shou = p.worldState.GetEspm().GetBrowser().LookupById(kShout);
+  REQUIRE(shou.rec != nullptr);
+  const auto data = espm::GetData<espm::SHOU>(kShout, &p.worldState);
+  REQUIRE(data.count >= 1);
+  REQUIRE(shou.ToGlobalId(data.variations[0].word) == kWord);
+  REQUIRE(p.ShoutOfWord(kWord).value_or(0) == kShout);
+  REQUIRE_FALSE(p.ShoutOfWord(kWallItself).has_value());
+
+  Enter(p, kByTheTrigger, kSanctum);
+  auto& reader = p.worldState.GetFormAt<MpActor>(kReader);
+  REQUIRE_FALSE(reader.HasShoutEntry(MpActor::ShoutEntry::Shout, kShout));
+  ReportWall(p, kTrigger);
+  REQUIRE(reader.HasShoutEntry(MpActor::ShoutEntry::WordKnown, kWord));
+  REQUIRE(reader.HasShoutEntry(MpActor::ShoutEntry::Shout, kShout));
+  REQUIRE(reader.GetShoutRecord().shouts.size() == 1);
+  REQUIRE(ShoutsAddedTold(p, kShout) == 1);
+  REQUIRE(TeachWordsTold(p) == 1);
+  // the record as saved holds both, so a relaunch gives back both
+  REQUIRE(reader.GetChangeForm().shoutRecord.has_value());
+  REQUIRE(reader.GetChangeForm().shoutRecord->shouts.size() == 1);
+  // again: known already, nothing more recorded or told
+  ReportWall(p, kTrigger);
+  REQUIRE(reader.GetShoutRecord().shouts.size() == 1);
+  REQUIRE(ShoutsAddedTold(p, kShout) == 1);
   Leave(p);
 }

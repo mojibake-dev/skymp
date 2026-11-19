@@ -93,9 +93,24 @@ type PendingRecord = {
 // each step, so the host's and a guest's reports of one step do not double),
 // and only past what this seat knows (its own reports and the server's
 // records). A guest's report of a reference in a cell another seat hosts
-// reaches that host as a live relay, applied there by the receiver below, so
-// the host's own scripts answer the step (thuum tracker #161: a guest's break
-// of Arvel's web 1fc43 waited for the host's engine, which never saw it). The
+// reaches that host as a live relay, applied there by the receiver below
+// (thuum tracker #161: a guest's break of Arvel's web 1fc43 waited for the
+// host's engine, which never saw it). HYPOTHESIS, unread: the host's own
+// scripts answer the relay's climb (1fc43's MS13WebDestructibleSCRIPT); 54's
+// stage 15 came from the host's own break, not a relay. The read that settles
+// it compares both seats: the guest's "trap result 1fc43: stage 1 ...
+// reported", then the host's "applied from the record" and its MS13 stage 15
+// within a second. UNMEASURED for 1fc43 (its destruction data is unread): a
+// climb step that crosses two stages (0 to 2, the web's destroyed stage per
+// 55's host report, where the host's script can skip stage 15), or a hit from
+// the guest's figure landing during the climb, leaves the host a stage past
+// the record and the guest, and nothing reports it: a rise heard while this
+// seat applies or settles is dropped (report()), and an event raised inside
+// the platform's call never reaches JavaScript (FridaHooks.cpp
+// OnSendEventEnter's platform pass returns before
+// EventsApi::SendPapyrusEventEnter). The applied line names the stage reached
+// and an overshoot logs an error; whether an overshoot is reported, so the
+// world follows the host, is a later design call, not made here. The
 // receiver: a record ahead of this engine's copy applied with the engine's own
 // calls, DamageObject until the record's stage then SetDestroyed, which are
 // the platform's own calls (the seam tallies them "(platform)" and batches
@@ -103,7 +118,8 @@ type PendingRecord = {
 // subscriber, a restart) under the platform's apply blank (setRecordApplying:
 // the gate blanks every Papyrus event to the reference meanwhile), so a late
 // joiner's oil lamp never replays its fall, a live relay without it, so the
-// reference's own scripts answer the step as the reporter's did, its destroyed
+// reference's own scripts answer the step as the reporter's did (the
+// HYPOTHESIS above, unread for a live relay's climb), its destroyed
 // flag after FIRE_GRACE_MS so this seat's own copy fires first. Every form is
 // taken again by id after a wait (a wrapper lives one Papyrus update).
 //
@@ -113,7 +129,8 @@ type PendingRecord = {
 // <refr>: the record's destroyed waits <ms> ms for this seat's own copy",
 // "trap result <refr>: destroyed here before the record's wait ended", "trap
 // result <refr>: the record's destroyed applied after <ms> ms, this seat's own
-// copy unfired".
+// copy unfired"; the applied line's parenthesis goes on ", reached <k> after
+// <c> call(s))", the stage the climb reached and its DamageObject calls.
 export class TrapResultService extends ClientListener {
   constructor(
     private sp: Sp,
@@ -234,6 +251,8 @@ export class TrapResultService extends ClientListener {
       this.toReport.entries(),
     )) {
       // this seat's own apply of a record: the record's step, known already
+      // (a climb past it is dropped too, the class comment's UNMEASURED
+      // limit; thuum tracker #161)
       if (this.applying.has(localId) || this.settling.has(localId)) {
         this.toReport.delete(localId);
         continue;
@@ -244,9 +263,12 @@ export class TrapResultService extends ClientListener {
         this.toReport.delete(localId);
         continue;
       }
-      // no host test: a guest reports its engine's rise just as the cell's
-      // host does (traps.md D-S3; the server takes either, thuum tracker #161)
       const role = ObjectReferenceEx.trapRole(localId);
+
+      // no host test here: a guest reports its engine's rise just as the
+      // cell's host does (thuum docs/verbs/traps.md D-S3; the server takes
+      // either, thuum tracker #161)
+
       // a reference with no destruction data reads as stage 0, the game
       // files' state
       const stage = Math.max(0, refr.getCurrentDestructionStage());
@@ -392,12 +414,21 @@ export class TrapResultService extends ClientListener {
       }
       logLab(
         TAG,
-        `trap result ${id} applied from the record: stage ${rec.stage}, destroyed ${rec.destroyed} (here stage ${here})`,
+        `trap result ${id} applied from the record: stage ${rec.stage}, destroyed ${rec.destroyed} (here stage ${here}, reached ${stage} after ${calls} call(s))`,
       );
       if (stage < rec.stage) {
         logError(
           this,
           `trap result ${id}: the record's stage ${rec.stage} not reached, stage ${stage} after ${calls} DamageObject call(s)`,
+        );
+      } else if (calls > 0 && stage > rec.stage) {
+        // a step that crossed two stages, or a hit that landed during the
+        // climb (the class comment's UNMEASURED limit, thuum tracker #161):
+        // this seat stands past the record and reports nothing; whether it
+        // should is a later design call
+        logError(
+          this,
+          `trap result ${id}: the climb passed the record's stage ${rec.stage}: stage ${stage} after ${calls} DamageObject call(s)`,
         );
       }
     } finally {

@@ -3305,6 +3305,35 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
   REQUIRE(rowMoved);
   REQUIRE(sven.GetListeners().count(&c1) == 1);
   REQUIRE(sven.GetListeners().count(&c2) == 0);
+  // thuum tracker #162 (the review of its first build): the door into
+  // another world parts the pair, the keep's cellOrWorld guard, so c1's
+  // game gets a DestroyActor for the thrall at the gate and then its
+  // CreateActor at the landing, the word false (the thrall's own pass);
+  // without the guard c1's pass would keep it and neither would come
+  size_t destroyAt = 0;
+  size_t createAt = 0;
+  std::optional<CreateActorMessage> created;
+  for (size_t i = 0; i < p.Messages().size(); ++i) {
+    const auto& m = p.Messages()[i];
+    if (m.userId != 0) {
+      continue;
+    }
+    if (auto destroy = dynamic_cast<DestroyActorMessage*>(m.message.get());
+        destroy && destroy->idx == sven.GetIdx() && destroyAt == 0) {
+      destroyAt = i + 1;
+    }
+    if (auto create = dynamic_cast<CreateActorMessage*>(m.message.get());
+        create && create->refrId.value_or(0) == kSven) {
+      createAt = i + 1;
+      created = *create;
+    }
+  }
+  REQUIRE(destroyAt != 0);
+  REQUIRE(createAt > destroyAt);
+  REQUIRE(created.has_value());
+  REQUIRE(created->transform.pos[0] == Catch::Approx(kLanding.x));
+  REQUIRE(created->transform.pos[1] == Catch::Approx(kLanding.y));
+  REQUIRE(created->props.isHostedByOther == false);
 
   // the thrall beyond the reach and c2's thrall stay where they stood,
   // their commands as they were

@@ -427,8 +427,8 @@ struct PartOne::Impl
   // OwnerOf reads beside it. Its home is the summon rule (ADR-010, ADR-020):
   // tracker #167 puts an owner on wire-rules summons.rs's row (0 for an
   // NPC's summon, which OnSummonStart's `npc` names) and the bridge's
-  // SummonRow, reads
-  // OwnerOf from the live row, and deletes this table and its two erases
+  // SummonRow, reads OwnerOf from the live row, and deletes this table and
+  // its two erases
   std::unordered_map<uint32_t, uint32_t> minionOwners;
 
   // thuum ADR-068 rung 4 (the created half): a unique actor's attached

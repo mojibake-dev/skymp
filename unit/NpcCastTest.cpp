@@ -1464,7 +1464,7 @@ TEST_CASE("The fights table ends a pair at PartOne::kFightQuietMs without a "
           "hit, not a millisecond before",
           "[NpcCast]")
 {
-  auto& p = GetPartOne();
+  PartOne p;
   auto& fights = p.GetFights();
   REQUIRE(fights.hit(kBystanderA, kBystanderB, 1'000));
   REQUIRE_FALSE(fights.check(kBystanderA, kBystanderB, false,

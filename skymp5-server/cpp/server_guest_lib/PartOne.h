@@ -638,15 +638,35 @@ public:
   // thuum docs/verbs/word-wall.md (M4): what a wall trigger reference's
   // WordWallTriggerScript names (the reference's own properties over its
   // base's): the word it teaches (myWord01) and the wall itself (wordWall01,
-  // the reference the reach is measured to; 0 when the script names none)
+  // the reference the reach is measured to; 0 when the script names none).
+  // thuum tracker #166: the mark the word is taught at (lookTargetWord01, 0
+  // when the script names none) and the distance under which it is taught
+  // (innerRadius, the script's own 300 unless the reference sets an Int:
+  // WordWallTriggerScript.pex from Skyrim - Misc.bsa and USSEP's, lab/pex.py)
   struct WordWall
   {
     uint32_t word = 0;
     uint32_t wall = 0;
+    uint32_t lookTarget = 0;
+    int32_t innerRadius = 300;
   };
   // none for a reference that is no word wall trigger, or whose word is no
   // WOOP
   std::optional<WordWall> WordOfWall(const MpObjectReference& trigger);
+  // thuum tracker #138: the shout a word of power belongs to, the SHOU whose
+  // variations (its SNAM, the three words) name the word, from an index over
+  // the load order's SHOU records built at the first ask; none for a word no
+  // shout names or two or more shouts name (the index logs those once)
+  std::optional<uint32_t> ShoutOfWord(uint32_t word);
+  // thuum tracker #138: the word's shout into the actor's shout record when
+  // the record lacks it; the shout when it was recorded now, none when the
+  // record held it already or no shout names the word
+  std::optional<uint32_t> RecordShoutOfWord(MpActor& actor, uint32_t word);
+  // thuum tracker #138: the shout of every word the actor's record knows
+  // whose shout the record lacks, recorded (a record a word wall wrote
+  // before the wall recorded the shout heals at the next login), one log
+  // line per shout; how many it recorded
+  size_t RecordShoutsOfKnownWords(MpActor& actor);
   bool PickPerk(MpActor& actor, uint32_t perk);
   bool ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount);
   // a skill book's read (leveling.md, skill books): one level for the skill
@@ -929,9 +949,11 @@ public:
   // The fights going on (thuum docs/verbs/hostility-sync.md, ADR-023; the
   // rule and its state are Rust's, ADR-020): between two players, or since
   // 2026-10-28 a player and a hosted NPC (docs/verbs/npc-stream.md, H-53h).
-  // A counted hit begins or keeps one; TickFights ends those that went a
-  // minute without a hit or whose parties walked apart, and tells the
-  // players' games.
+  // A counted hit begins or keeps one, and a hit between two players' sides
+  // their pair too (thuum ADR-077 decision 4); TickFights ends those that
+  // went a minute without a hit or whose parties walked apart (two players'
+  // sides once no member of either has a pair with the other side
+  // standing), and tells the players' games.
   skymp::rules::Fights& GetFights();
   void TickFights(uint64_t nowMs);
   // thuum playtest 53 #113 (Eli's design A, 2026-11-17): a thrall fights
@@ -941,13 +963,31 @@ public:
   // the fight's own notices (Actor.StartCombat, Actor.StopCombat):
   // KeepThrallsInFight on each tick of a players' fight that stands,
   // StandDownThralls at its end (`toldOnly` when the other party is gone:
-  // only the thralls it told)
+  // only the thralls it told; the thralls it sent Actor.StopCombat). Since
+  // thuum ADR-077 decision 4 (tracker #113, #131) the commander's fight is
+  // its side's: every hit between the two sides keeps the players' pair
+  // (ActionListener::NotifyHostility), so a thrall still fighting the other
+  // side keeps the fight on, and stands down only at its end, with every
+  // other member of its side. With three players a thrall is told into one
+  // of its commander's fights at a time, and stands down from none whose
+  // player its engine still fights while that fight stands
   void KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs);
-  void StandDownThralls(MpActor& commander, uint32_t opponent, bool toldOnly);
+  std::vector<uint32_t> StandDownThralls(MpActor& commander, uint32_t opponent,
+                                         bool toldOnly);
+  // thuum ADR-077 decision 4 (tracker #113, #131): whether `x`'s side and
+  // `y`'s (SideOf) are two players whose fight stands in the fights table.
+  // While it does, the end of one pair of theirs (a minion's own with the
+  // other side) is no end of their fight: TickFights keeps that end and
+  // tells it to every game it reaches, once, when their fight ends
+  bool SidesFight(MpActor& x, MpActor& y);
   // playtest 54 #126: whether a summon or thrall `owner`'s game simulates
-  // (IsSummon, or commanded by `owner`) has a live fight pair of its own with
-  // `opponent`; while it does, the end of `owner`'s other fights with
-  // `opponent` leaves `owner`'s figure of it fighting
+  // (IsSummon, or commanded by `owner`) that is on no player's side (an
+  // NPC's summon or raise, SideOf) has a fight pair of its own with
+  // `opponent`; while one does, the end of `owner`'s other fights with
+  // `opponent` leaves `owner`'s figure of it fighting, so the minion keeps
+  // its target in that game. A minion on a player's side fights its side's
+  // fight (SidesFight), which ends for every member at once (thuum ADR-077
+  // decision 4)
   bool MinionFights(uint32_t owner, uint32_t opponent);
 
   // thuum ADR-068 (the one seam): every reporter's script-call budget and
@@ -1102,7 +1142,10 @@ public:
   // ADR-060's amendment of 2026-11-15 (Eli's executive decision: "thrall
   // dies when player logs out") no side of the departure either, every
   // thrall dying by the server's word at its commander's departure
-  // (wire-rules cells.rs gone, MpActor::KillThrall)
+  // (wire-rules cells.rs gone, MpActor::KillThrall). A grant on a dead body
+  // ends its fights without a notice (thuum ADR-077 decision 4: a raised
+  // body's side counts its strikes from the raise, and a dead actor's
+  // fights are over in every engine)
   ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor,
                               uint32_t recordSeconds);
   // thuum docs/verbs/npc-fate.md C4 (ADR-060's return; Eli, 2026-11-12:
@@ -1121,6 +1164,26 @@ public:
   // the player commanding `actor` (ADR-060), 0 when none: whose report of
   // the thrall's death is its effect's end
   uint32_t CommanderOf(const MpActor& actor) const;
+  // thuum tracker #160 (ADR-077: a player, their summons and their thralls
+  // are one side): the player who owns `minion`, 0 when no player does or
+  // the minion is dead. A minion is a player's summon (the minions table,
+  // written at OnSummonStart for a player's own report alone and gone at
+  // its dispel) or a player's thrall (CommanderOf, unless its raise's stamp
+  // names another caster: an NPC's raise, its host's command). An NPC's
+  // summon or thrall is no player's (tracker #106): the summon row and
+  // HostOf name its host's player, who simulates it and owns nothing of it.
+  // The one question every rule asks of a summon or thrall's owner
+  // (NotifyHostility first). The minions table is the live sprint's
+  // stopgap: tracker #167 reads a summon's owner from its row in the
+  // summon rule (wire-rules summons.rs) and deletes the table
+  uint32_t OwnerOf(const MpActor& minion) const;
+  // thuum ADR-077 decision 4 (tracker #113, #131): the player on whose side
+  // `actor` fights: itself when a user plays it, its owner (OwnerOf) when a
+  // user plays that owner, nullptr otherwise (an NPC, an NPC's summon or
+  // raise, a dead minion, a minion whose owner left). The one mapping from
+  // an actor to a side: NotifyHostility's hit between two sides and
+  // TickFights' ends of a sides' fight ask it
+  MpActor* SideOf(MpActor& actor);
   // thuum #48 leg D (x-reanimate-claim v2.4 20261116-035932; ADR-060): a
   // player's load door is the server's teleport (MpObjectReference's
   // ProcessActivateNormal), so the engine's door transit, which keeps a

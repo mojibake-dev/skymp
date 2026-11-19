@@ -8,6 +8,7 @@
 #include "PlayerBowShotMessage.h"
 #include "SpSnippet.h"
 #include "SpellCastMessage.h"
+#include "SummonMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateEquipmentMessage.h"
 #include "libespm/Loader.h"
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
+#include <fmt/format.h>
 #include <spdlog/sinks/ostream_sink.h>
 #include <sstream>
 
@@ -903,9 +905,32 @@ TEST_CASE("A hit on a thrall another game simulates, whose host's state "
     p.Tick(); // snippets are deferred
   };
 
-  // the fight begins: the host is told both ways (D2)
-  swings();
-  REQUIRE(SnippetsTo(p, 0, "StartCombat").size() == 2);
+  // the fight begins: the host is told both ways (D2), and, the thrall its
+  // own, it hears the players' notice as the owner too (tracker #160,
+  // ADR-077; #160's thrall case below reads which is which). The players'
+  // pair stands from that hit, so the case's first fights tick (a new
+  // PartOne's first Tick runs one) joins the thrall to its commander's
+  // fight (#113's design A), a StartCombat queued for the next Tick
+  {
+    LogCapture log;
+    swings();
+    INFO(log.oss.str());
+    REQUIRE(log.Count("thrall 85547 of ff000d20 joins its commander's fight "
+                      "with ff000d21") == 1);
+  }
+  REQUIRE(SnippetsTo(p, 0, "StartCombat").size() == 3);
+  // the join, drained: one StartCombat on the thrall aimed at the other
+  // player's figure, to the commander's game alone
+  p.Messages().clear();
+  p.Tick(); // snippets are deferred
+  const auto joined = SnippetsTo(p, 0, "StartCombat");
+  REQUIRE(joined.size() == 1);
+  REQUIRE(joined[0]["selfId"] ==
+          SpSnippet::MakeLongFormId(&p.worldState, kPredator));
+  REQUIRE(joined[0]["arguments"] ==
+          nlohmann::json::array(
+            { nlohmann::json{ { "formId", kOther }, { "type", "Actor" } } }));
+  REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
 
   // the host's state names the attacker: the next hit tells nothing
   predator.SetHostedState(kOther, 0);
@@ -937,47 +962,1052 @@ TEST_CASE("A hit on a thrall another game simulates, whose host's state "
   LeaveThrall(p, predator);
 }
 
-// playtest 54 #126: the players' own fight ended a minute quiet at
-// 07:41:20.936 (server.log:5575) and stood rotfern's figure down in
-// Ariadne's game (StopCombatAlarm) while her atronach still fought him there.
-// A player's game keeps its figure of the other fighting, and its thralls in
-// their own fights, while a summon or thrall of its own still fights that
-// player
-TEST_CASE("The end of a players' fight leaves a player's figure of the other "
-          "fighting, and its thrall in its own fight, while that thrall still "
-          "fights the other player",
+namespace {
+// thuum tracker #160's summon (SummonTest's forms, lab/esm.py on sky-srv,
+// 2026-11-16): ConjureFlameAtronachRightHand 0x100e76, its potent effect
+// MGEF 0x4e945 summoning NPC_ 0x4e940, the Potent Flame Atronach of
+// playtest 55's two fights (the seats' own engine read of its name,
+// trace-c1-2 and trace-c2-2); its engine's id, a runtime id as SummonTest's
+constexpr uint32_t kConjure = 0x00100e76;
+constexpr uint32_t kPotentEffect = 0x0004e945;
+constexpr uint32_t kPotentAtronach = 0x0004e940;
+constexpr uint32_t kSummonLocal = 0xff0008fd;
+
+// Gather's two players, each with a sword (HostsThrall's arming)
+void Armed(PartOne& p)
+{
+  Gather(p);
+  for (uint32_t id : { kHost, kOther }) {
+    auto& player = p.worldState.GetFormAt<MpActor>(id);
+    player.AddItem(kIronSword, 1);
+    Equipment eq;
+    eq.inv.entries.push_back(Inventory::Entry(kIronSword, 1, kWorn));
+    player.SetEquipment(eq);
+  }
+}
+
+// the host's game (user 0, or `user`'s) reports the summon its engine placed
+// in front of both players, within a sword's reach (the #112 case's spot):
+// its own player's, or with `npc` that of an NPC its game simulates
+// (OnSummon's casterId, tracker #106). The server's actor, read from the
+// bound create word (SummonTest's idiom)
+uint32_t Summoned(PartOne& p, uint32_t npc = 0, Networking::UserId user = 0)
+{
+  SummonMessage msg;
+  msg.localId = kSummonLocal;
+  msg.baseId = kPotentAtronach;
+  msg.effectId = kPotentEffect;
+  msg.spellId = kConjure;
+  const NiPoint3 at = kForest + NiPoint3{ 0.f, 100.f, 0.f };
+  msg.pos = { at.x, at.y, at.z };
+  msg.rot = { 0.f, 0.f, 0.f };
+  msg.worldOrCell = kTamriel;
+  msg.remainingS = 59.5f;
+  msg.ended = false;
+  if (npc != 0) {
+    msg.casterId = npc;
+  }
+  p.Messages().clear();
+  RawMessageData raw;
+  raw.userId = user;
+  p.GetActionListener().OnSummon(raw, msg);
+  uint32_t summon = 0;
+  for (const auto& j : SentTo(p, user, MsgType::CreateActor)) {
+    if (j.contains("props") &&
+        j["props"].value("ownLocal", 0u) == kSummonLocal) {
+      summon = static_cast<uint32_t>(j.value("refrId", 0ull));
+    }
+  }
+  REQUIRE(summon != 0);
+  REQUIRE(p.worldState.HostOf(p.worldState.GetFormAt<MpActor>(summon)) ==
+          &p.worldState.GetFormAt<MpActor>(user == 0 ? kHost : kOther));
+  p.Messages().clear();
+  return summon;
+}
+
+// `user`'s sword hit on `target` at full health, its cooldown past (the
+// #126 cases' swing), then the deferred snippets
+void Swings(PartOne& p, Networking::UserId user, uint32_t target)
+{
+  p.worldState.GetFormAt<MpActor>(target).SetPercentages(ActorValues{});
+  p.worldState.GetFormAt<MpActor>(user == 0 ? kHost : kOther)
+    .SetLastHitTime(
+      target, std::chrono::steady_clock::now() - std::chrono::seconds(3));
+  RawMessageData raw;
+  raw.userId = user;
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = target;
+  hit.data.source = kIronSword;
+  p.GetActionListener().OnHit(raw, hit);
+  p.Tick(); // snippets are deferred
+}
+
+// `user`'s game reports the bare-handed hit (Skyrim.esm's Unarmed 0x1f4,
+// HitTest's) of `aggressor`, an actor its game simulates, on `target`: the
+// target at full health, the cooldown past, then the deferred snippets. The
+// predator is a forest animal (LvlAnimalForestPredator, NpcFateTest's) and
+// the summon a flame atronach, so no humanoid reach or cone applies
+// (ActionListener's HumanoidNpc)
+void Strikes(PartOne& p, Networking::UserId user, uint32_t aggressor,
+             uint32_t target)
+{
+  p.worldState.GetFormAt<MpActor>(target).SetPercentages(ActorValues{});
+  p.worldState.GetFormAt<MpActor>(aggressor).SetLastHitTime(
+    target, std::chrono::steady_clock::now() - std::chrono::seconds(3));
+  RawMessageData raw;
+  raw.userId = user;
+  HitMessage hit;
+  hit.data.aggressor = aggressor;
+  hit.data.target = target;
+  hit.data.source = 0x1f4;
+  p.GetActionListener().OnHit(raw, hit);
+  p.Tick(); // snippets are deferred
+}
+
+// the snippets of `function` on `selfId` (a server id, its long form for a
+// game file's actor) `user`'s game got since the last clear
+size_t SnippetsOn(PartOne& p, Networking::UserId user, const char* function,
+                  uint32_t selfId)
+{
+  const uint64_t self = SpSnippet::MakeLongFormId(&p.worldState, selfId);
+  const auto all = SnippetsTo(p, user, function);
+  return static_cast<size_t>(
+    std::count_if(all.begin(), all.end(), [&](const nlohmann::json& j) {
+      return j.value("selfId", uint64_t{ 0 }) == self;
+    }));
+}
+
+// the players' notices (ADR-023) `user`'s game got since the last clear:
+// StartCombat on a figure, aimed at that game's own player (0x14)
+std::vector<nlohmann::json> PlayersNoticesTo(PartOne& p,
+                                             Networking::UserId user)
+{
+  const auto toPlayer = nlohmann::json::array(
+    { nlohmann::json{ { "formId", 0x14 }, { "type", "Actor" } } });
+  std::vector<nlohmann::json> out;
+  for (const auto& j : SnippetsTo(p, user, "StartCombat")) {
+    if (j.contains("arguments") && j["arguments"] == toPlayer) {
+      out.push_back(j);
+    }
+  }
+  return out;
+}
+
+// the line of a hit between the other player's side and the host's that
+// begins the two players' fight (ActionListener's HitAcrossSides, thuum
+// ADR-077 decision 4), and the words every such line carries
+constexpr const char* kOwnerTold =
+  "between the sides of ff000d21 and ff000d20: a fight between the two "
+  "players begins, and both games are told (thuum ADR-077 decision 4";
+constexpr const char* kSidesLine = "between the sides of";
+
+// TickFights' words for the pair of `x` and `y` (the fights table's order,
+// lower id first: a summon's server id may fall either side of a player's)
+std::string Between(uint32_t x, uint32_t y)
+{
+  return fmt::format("the fight between {:x} and {:x}", std::min(x, y),
+                     std::max(x, y));
+}
+}
+
+// thuum tracker #160 (playtest 55, Eli: "summoner wasn't 'looped in' to
+// aggro"; ADR-077 decision 2: "if someone attacks your summon they should
+// become hostile to you, and the summon should attack"): at 2:37 PM PST
+// rotfern hit Ariadne's atronach and at 2:39 PM the other way round, and
+// each time the server began the pair with the summon alone (server.log
+// :2707, :2912) and told the summoner's game only "the summon and the
+// attacker fight", so the summoner's player stayed out of combat. A
+// player's hit on another player's summon now begins a fight with its owner
+// too (PartOne::OwnerOf), and the owner's game hears the players' notice:
+// StartCombat on its figure of the attacker, aimed at its own player
+TEST_CASE("A player's hit on another player's summon begins a fight with its "
+          "owner too, whose game hears the players' notice once a fight; a "
+          "hit on one's own summon or an NPC's tells no owner (tracker #160, "
+          "ADR-077)",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Armed(p);
+
+  SECTION("another player's summon: the owner's game is told once, the "
+          "pair recorded beside the summon's own")
+  {
+    const uint32_t summon = Summoned(p);
+    REQUIRE(p.OwnerOf(p.worldState.GetFormAt<MpActor>(summon)) == kHost);
+    {
+      LogCapture log;
+      Swings(p, 1, summon);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(fmt::format("ff000d21 hit {:x}, {}", summon,
+                                    kOwnerTold)) == 1);
+      // the summon's own fight, as #112's D2 has it
+      REQUIRE(log.Count(fmt::format("ff000d21 hit {:x}, a fight begins; its "
+                                    "host ff000d20's game is told",
+                                    summon)) == 1);
+    }
+    const auto notices = PlayersNoticesTo(p, 0);
+    REQUIRE(notices.size() == 1);
+    REQUIRE(notices[0]["class"] == "Actor");
+    REQUIRE(notices[0]["selfId"] == kOther);
+    // the notice and D2's two (the summon at the attacker's figure, the
+    // figure at the summon); the attacker's game hears the players' notice
+    // of the owner, its figure of the owner at its own player, since
+    // neither engine saw a hit between the two players
+    REQUIRE(SnippetsTo(p, 0, "StartCombat").size() == 3);
+    const auto toAttacker = PlayersNoticesTo(p, 1);
+    REQUIRE(toAttacker.size() == 1);
+    REQUIRE(toAttacker[0]["selfId"] == kHost);
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").size() == 1);
+    REQUIRE(p.GetFights().between(kOther, kHost));
+    REQUIRE(p.GetFights().between(kOther, summon));
+
+    // the next hit, both fights going on: no notice again
+    p.Messages().clear();
+    {
+      LogCapture log;
+      Swings(p, 1, summon);
+      REQUIRE(log.Count(kOwnerTold) == 0);
+    }
+    REQUIRE(PlayersNoticesTo(p, 0).empty());
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+  }
+
+  // the pair is hit on every hit on the summon, so it keeps the summon's
+  // own quiet clock: an owner's fight 59 s quiet, which a TickFights 2 s on
+  // would end (hostility.rs FIGHT_QUIET_MS), stands after a hit on the
+  // summon, and that hit tells the owner nothing new
+  SECTION("another player's summon in the owner's standing fight: the hit "
+          "keeps the owner's pair, with no second notice")
+  {
+    const uint32_t summon = Summoned(p);
+    REQUIRE(p.GetFights().hit(kOther, kHost, NowMs() - 59'000));
+    Swings(p, 1, summon);
+    REQUIRE(PlayersNoticesTo(p, 0).empty());
+    REQUIRE(p.GetFights().between(kOther, summon));
+    p.TickFights(NowMs() + 2'000);
+    REQUIRE(p.GetFights().between(kOther, kHost));
+  }
+
+  // the fights table keeps no sides, so the owner's strike back, inside
+  // the standing pair, tells nobody: the attacker's game heard its notice
+  // of the owner at the summon's hit, or would never hear it
+  SECTION("another player's summon, then its owner strikes the attacker: "
+          "the attacker's game heard the owner's notice at the summon's hit, "
+          "and the strike tells nothing new")
+  {
+    const uint32_t summon = Summoned(p);
+    Swings(p, 1, summon);
+    const auto toAttacker = PlayersNoticesTo(p, 1);
+    REQUIRE(toAttacker.size() == 1);
+    REQUIRE(toAttacker[0]["selfId"] == kHost);
+    p.Messages().clear();
+    {
+      LogCapture log;
+      Swings(p, 0, kOther);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("a fight begins") == 0);
+    }
+    REQUIRE(PlayersNoticesTo(p, 0).empty());
+    REQUIRE(PlayersNoticesTo(p, 1).empty());
+    REQUIRE(p.GetFights().between(kOther, kHost));
+  }
+
+  // a dead summon is nobody's minion (PartOne::OwnerOf): a late swing on
+  // the body begins no fight with its owner, whose entry lasts to the end
+  // report or the backstop
+  SECTION("a dead summon: no owner's, no fight with its owner")
+  {
+    const uint32_t summon = Summoned(p);
+    auto& atronach = p.worldState.GetFormAt<MpActor>(summon);
+    atronach.Kill(nullptr);
+    REQUIRE(atronach.IsDead());
+    REQUIRE(p.OwnerOf(atronach) == 0);
+    {
+      LogCapture log;
+      Swings(p, 1, summon);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE(PlayersNoticesTo(p, 0).empty());
+    REQUIRE(PlayersNoticesTo(p, 1).empty());
+    REQUIRE_FALSE(p.GetFights().between(kOther, kHost));
+  }
+
+  SECTION("one's own summon: its own engine's, no notice")
+  {
+    const uint32_t summon = Summoned(p);
+    {
+      LogCapture log;
+      Swings(p, 0, summon);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("no notice, its host's own engine saw the hit") == 1);
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE(SnippetsTo(p, 0, "StartCombat").empty());
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+  }
+
+  // tracker #106: the predator's summon, its host's to report and simulate;
+  // the summon row's caster is the host's player, who owns nothing of it
+  SECTION("an NPC's summon: no player's, its host told the summon's fight "
+          "alone")
+  {
+    const uint32_t summon = Summoned(p, kPredator);
+    REQUIRE(p.OwnerOf(p.worldState.GetFormAt<MpActor>(summon)) == 0);
+    {
+      LogCapture log;
+      Swings(p, 1, summon);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(fmt::format("ff000d21 hit {:x}, a fight begins; its "
+                                    "host ff000d20's game is told",
+                                    summon)) == 1);
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE(PlayersNoticesTo(p, 0).empty());
+    REQUIRE(SnippetsTo(p, 0, "StartCombat").size() == 2);
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+    REQUIRE_FALSE(p.GetFights().between(kOther, kHost));
+  }
+
+  p.GetFights().forget(kHost);
+  Leave(p);
+}
+
+// tracker #160 for a thrall (ADR-077 decision 2 names both): the predator
+// commanded by the host (HostsThrall), its owner by its command row unless
+// its raise's stamp names an NPC caster (tracker #106, ClaimReanimated: a
+// hosted necromancer's raise makes its host's player the commander)
+TEST_CASE("A player's hit on another player's thrall begins a fight with its "
+          "commander too, whose game hears the players' notice; a hit on "
+          "one's own thrall or an NPC's raise tells no owner (tracker #160, "
+          "ADR-077)",
           "[NpcCast][espm]")
 {
   auto& p = GetPartOne();
   p.worldState.npcEnabled = true;
   auto& predator = HostsThrall(p);
-  const uint64_t t = NowMs();
-  // the players' fight, a minute quiet by now; the thrall's own fight with
-  // the other player, just hit; the host's state names that player
-  REQUIRE(p.GetFights().hit(kHost, kOther, t - 61'000));
-  REQUIRE(p.GetFights().hit(kPredator, kOther, t));
-  predator.SetHostedState(kOther, 0);
-  p.Messages().clear();
+
+  SECTION("another player's thrall: its commander's game is told, and the "
+          "thrall joins its commander's fight")
+  {
+    REQUIRE(p.OwnerOf(predator) == kHost);
+    {
+      LogCapture log;
+      Swings(p, 1, kPredator);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(fmt::format("ff000d21 hit 85547, {}", kOwnerTold)) ==
+              1);
+      // the players' pair stands from that hit, so the case's first fights
+      // tick runs design A on it (#113)
+      REQUIRE(log.Count("thrall 85547 of ff000d20 joins its commander's "
+                        "fight with ff000d21") == 1);
+    }
+    const auto notices = PlayersNoticesTo(p, 0);
+    REQUIRE(notices.size() == 1);
+    REQUIRE(notices[0]["selfId"] == kOther);
+    REQUIRE(SnippetsTo(p, 0, "StartCombat").size() == 3);
+    const auto toAttacker = PlayersNoticesTo(p, 1);
+    REQUIRE(toAttacker.size() == 1);
+    REQUIRE(toAttacker[0]["selfId"] == kHost);
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").size() == 1);
+    REQUIRE(p.GetFights().between(kOther, kHost));
+    REQUIRE(p.GetFights().between(kOther, kPredator));
+    // the join, drained: one StartCombat on the thrall aimed at the other
+    // player's figure, to the commander's game alone
+    p.Messages().clear();
+    p.Tick(); // snippets are deferred
+    const auto joined = SnippetsTo(p, 0, "StartCombat");
+    REQUIRE(joined.size() == 1);
+    REQUIRE(joined[0]["selfId"] ==
+            SpSnippet::MakeLongFormId(&p.worldState, kPredator));
+    REQUIRE(joined[0]["arguments"] ==
+            nlohmann::json::array({ nlohmann::json{ { "formId", kOther },
+                                                    { "type", "Actor" } } }));
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+  }
+
+  SECTION("one's own thrall: its own engine's, no notice")
+  {
+    {
+      LogCapture log;
+      Swings(p, 0, kPredator);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("no notice, its host's own engine saw the hit") == 1);
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE(SnippetsTo(p, 0, "StartCombat").empty());
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+  }
+
+  // the raise's stamp names an NPC caster (a bystander's server id; the
+  // command stays the host's, as ClaimReanimated grants an NPC's raise)
+  SECTION("an NPC's raise: its host's command, no player's thrall")
+  {
+    predator.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0,
+                                   kBystanderA);
+    REQUIRE(p.CommanderOf(predator) == kHost);
+    REQUIRE(p.OwnerOf(predator) == 0);
+    {
+      LogCapture log;
+      Swings(p, 1, kPredator);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("ff000d21 hit 85547, a fight begins; its host "
+                        "ff000d20's game is told") == 1);
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE(PlayersNoticesTo(p, 0).empty());
+    REQUIRE(SnippetsTo(p, 0, "StartCombat").size() == 2);
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+    REQUIRE_FALSE(p.GetFights().between(kOther, kHost));
+  }
+
+  LeaveThrall(p, predator);
+}
+
+// thuum ADR-077 decision 4 (2026-11-18, Eli, playtest 55: "definitionally
+// with a hostile thrall the fight COUDLN't end"; tracker #113, #131): a fight
+// between two players is a fight between their two sides, each player with
+// their summons and thralls (PartOne::SideOf). Every hit between the two
+// sides keeps the two players' pair (ActionListener's HitAcrossSides), so it
+// ends only when no member of either side has struck the other for the quiet
+// window (wire-rules hostility.rs FIGHT_QUIET_MS, a minute), and the two
+// sides stand apart only once no member's own fight with the other side
+// stands. A thrall still fighting the other side keeps the whole fight on
+// and stands down only at its end (#113's design A). Playtest 55's thrall
+// 373a6 hit Ariadne 24 times past the players' end (server.log 22:49:23.544
+// UTC, "stays in its own fight"): its swings kept its own pair alone then,
+// and keep the players' fight now. The thrall's strikes are its host's
+// reports (Strikes), the other player's its own game's (Swings)
+TEST_CASE("A fight between two players is between their sides: a thrall's "
+          "hits keep it on, it ends a minute after the last hit between the "
+          "sides, and the thrall stands down only then (thuum ADR-077 "
+          "decision 4)",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& predator = HostsThrall(p);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  // the sides: each player its own, the thrall its commander's
+  REQUIRE(p.SideOf(host) == &host);
+  REQUIRE(p.SideOf(other) == &other);
+  REQUIRE(p.SideOf(predator) == &host);
+
+  // the players' fight with its last hit between the two of them 50 s back,
+  // a minute quiet 10 s from now unless a hit between their sides keeps it
+  SECTION("the thrall's own swings at the other player keep the players' "
+          "fight on past the minute, and no game stands anything down")
+  {
+    const uint64_t t0 = NowMs();
+    REQUIRE(p.GetFights().hit(kHost, kOther, t0 - 50'000));
+    {
+      LogCapture log;
+      Strikes(p, 0, kPredator, kOther);
+      INFO(log.oss.str());
+      // inside the standing fight: nothing begins between the players
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE(p.GetFights().between(kPredator, kOther));
+    p.Tick(); // what the case's first fights tick queued
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(t0 + 30'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("is over") == 0);
+    }
+    p.Tick(); // snippets are deferred
+    REQUIRE(p.GetFights().between(kHost, kOther));
+    REQUIRE(SnippetsTo(p, 0, "StopCombatAlarm").empty());
+    REQUIRE(SnippetsTo(p, 0, "StopCombat").empty());
+    REQUIRE(SnippetsTo(p, 1, "StopCombatAlarm").empty());
+  }
+
+  SECTION("a thrall's strike on the other player begins the players' fight, "
+          "and both players' games hear it")
+  {
+    {
+      LogCapture log;
+      Strikes(p, 0, kPredator, kOther);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("85547 hit ff000d21, between the sides of ff000d20 "
+                        "and ff000d21: a fight between the two players "
+                        "begins") == 1);
+      // the thrall's own pair, a hosted actor's hit on a player
+      REQUIRE(log.Count("85547 hit ff000d21, a fight begins; no notice, the "
+                        "pair is not two players") == 1);
+    }
+    REQUIRE(p.GetFights().between(kHost, kOther));
+    REQUIRE(p.GetFights().between(kPredator, kOther));
+    // each game's figure of the other player, aimed at its own player
+    const auto toHost = PlayersNoticesTo(p, 0);
+    REQUIRE(toHost.size() == 1);
+    REQUIRE(toHost[0]["selfId"] == kOther);
+    const auto toOther = PlayersNoticesTo(p, 1);
+    REQUIRE(toOther.size() == 1);
+    REQUIRE(toOther[0]["selfId"] == kHost);
+  }
+
+  SECTION("a minute with no hit between the sides: the fight ends, the "
+          "thrall stands down with it, and every game hears the end")
+  {
+    const uint64_t before = NowMs();
+    Strikes(p, 0, kPredator, kOther);
+    const uint64_t struck = NowMs();
+    p.Tick(); // the join the case's first fights tick queued
+    // under a minute after the strike: the fight stands
+    p.TickFights(before + 55'000);
+    REQUIRE(p.GetFights().between(kHost, kOther));
+    p.Tick(); // the rejoin that tick queued
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(struck + 60'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over (a "
+                        "minute quiet)") == 1);
+      REQUIRE(log.Count("thrall 85547 of ff000d20 stands down with its "
+                        "commander's fight with ff000d21") == 1);
+      // the thrall's own pair, as quiet, ends with its sides' fight
+      REQUIRE(log.Count("the fight between 85547 and ff000d21 ends with its "
+                        "sides' fight; its games are told") == 1);
+      REQUIRE(log.Count("stays in the fight") == 0);
+      REQUIRE(log.Count("no game is told until that fight ends") == 0);
+    }
+    p.Tick(); // snippets are deferred
+    // the commander's game: its figure of the other player stands down and
+    // the thrall stops, once each: the players' end and D2's end of the
+    // thrall's own pair share the one, design A and D2 the other
+    REQUIRE(SnippetsOn(p, 0, "StopCombatAlarm", kOther) == 1);
+    REQUIRE(SnippetsOn(p, 0, "StopCombat", kPredator) == 1);
+    // the other player's game: its figures of the commander and the thrall
+    REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", kHost) == 1);
+    REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", kPredator) == 1);
+    REQUIRE(SnippetsTo(p, 1, "StopCombat").empty());
+    REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+    REQUIRE_FALSE(p.GetFights().between(kPredator, kOther));
+  }
+
+  // the other player's sword on the thrall begins the players' fight
+  // through it (tracker #160) and the thrall's own; then the commander walks
+  // 5000 units off (hostility.rs EXTERIOR_RANGE 3000) with the thrall beside
+  // the other player. The two players stand apart; their sides do not
+  SECTION("the commander walks off while its thrall fights beside the other "
+          "player: the fight stays on until the thrall's own fight ends, "
+          "then ends apart five seconds on (APART_MS)")
+  {
+    const uint64_t before = NowMs();
+    Swings(p, 1, kPredator);
+    REQUIRE(p.GetFights().between(kHost, kOther));
+    REQUIRE(p.GetFights().between(kPredator, kOther));
+    host.SetPos(kForest + NiPoint3{ 0.f, 5000.f, 0.f });
+    {
+      LogCapture log;
+      p.TickFights(before + 1'000);
+      p.TickFights(before + 7'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("is over") == 0);
+    }
+    REQUIRE(p.GetFights().between(kHost, kOther));
+
+    // the thrall follows its commander off: its own pair ends apart five
+    // seconds on, told to no game while its side's fight stands, and kept
+    // for that fight's end
+    predator.SetPos(kForest + NiPoint3{ 0.f, 5000.f, 0.f });
+    p.Tick(); // what the earlier ticks queued
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(before + 8'000);
+      p.TickFights(before + 13'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("the fight between 85547 and ff000d21 is over "
+                        "(apart) inside the fight between the sides of "
+                        "ff000d20 and ff000d21, which stands: no game is "
+                        "told until that fight ends") == 1);
+      REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over") ==
+              0);
+    }
+    p.Tick(); // snippets are deferred
+    REQUIRE(SnippetsTo(p, 0, "StopCombatAlarm").empty());
+    REQUIRE(SnippetsTo(p, 0, "StopCombat").empty());
+    REQUIRE(SnippetsTo(p, 1, "StopCombatAlarm").empty());
+    REQUIRE_FALSE(p.GetFights().between(kPredator, kOther));
+    REQUIRE(p.GetFights().between(kHost, kOther));
+
+    // the sides now stand apart: five seconds on, the players' fight ends
+    // apart, the thrall stands down with it, and the thrall's kept end is
+    // told: the other player's game stands its figure of the thrall down
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(before + 14'000);
+      p.TickFights(before + 19'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over "
+                        "(apart)") == 1);
+      REQUIRE(log.Count("thrall 85547 of ff000d20 stands down with its "
+                        "commander's fight with ff000d21") == 1);
+      REQUIRE(log.Count("the fight between 85547 and ff000d21 ends with its "
+                        "sides' fight; its games are told") == 1);
+    }
+    p.Tick(); // snippets are deferred
+    REQUIRE(SnippetsOn(p, 0, "StopCombatAlarm", kOther) == 1);
+    REQUIRE(SnippetsOn(p, 0, "StopCombat", kPredator) == 1);
+    REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", kHost) == 1);
+    REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", kPredator) == 1);
+    REQUIRE(SnippetsTo(p, 1, "StopCombat").empty());
+    REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+  }
+
+  LeaveThrall(p, predator);
+}
+
+// thuum ADR-077 decision 4 for summons (playtest 54 #126, tracker #131): a
+// summon fights in its side's fight as a thrall does. Its hits on the other
+// player or on that player's minion keep its owner's fight with that player
+// on, so its owner's figure of that player stays in the fight while it
+// fights (#126's keep, which its own pair alone kept before), and a minute
+// after the last hit between the sides the fight ends for every member. Two
+// minions are two NPCs, no pair of their own in the fights table
+// (hostility.rs counted): their hits keep the players' pair alone
+TEST_CASE("A summon's hits on the other player or on that player's summon "
+          "keep its owner's fight with that player on, and a first one "
+          "begins it (thuum ADR-077 decision 4)",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Armed(p);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  // the host's atronach, its game's report, and the other player's, its own
+  const uint32_t mine = Summoned(p);
+  const uint32_t theirs = Summoned(p, 0, 1);
+  REQUIRE(p.SideOf(p.worldState.GetFormAt<MpActor>(mine)) == &host);
+  REQUIRE(p.SideOf(p.worldState.GetFormAt<MpActor>(theirs)) == &other);
+
+  SECTION("the host's summon strikes the other player inside the players' "
+          "fight: it stays on past the minute, the host's figure of that "
+          "player in it, and a minute after the strike it ends for both")
+  {
+    const uint64_t t0 = NowMs();
+    REQUIRE(p.GetFights().hit(kHost, kOther, t0 - 50'000));
+    Strikes(p, 0, mine, kOther);
+    const uint64_t struck = NowMs();
+    REQUIRE(p.GetFights().between(mine, kOther));
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(t0 + 30'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("is over") == 0);
+    }
+    p.Tick(); // snippets are deferred
+    REQUIRE(p.GetFights().between(kHost, kOther));
+    REQUIRE(SnippetsTo(p, 0, "StopCombatAlarm").empty());
+    REQUIRE(SnippetsTo(p, 1, "StopCombatAlarm").empty());
+
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(struck + 60'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over (a "
+                        "minute quiet)") == 1);
+      REQUIRE(log.Count("stays in the fight") == 0);
+      // the summon's own pair, as quiet, ends with its sides' fight (D2)
+      REQUIRE(
+        log.Count(Between(mine, kOther) + " ends with its sides' fight") == 1);
+      REQUIRE(log.Count(fmt::format("{:x}'s host ff000d20 is told the end of "
+                                    "its fight with ff000d21 (D2)",
+                                    mine)) == 1);
+    }
+    p.Tick(); // snippets are deferred
+    // the owner's figure of the other player stands down once (the players'
+    // end and D2's end of the summon's own pair share it), and the summon
+    // stops (D2)
+    REQUIRE(SnippetsOn(p, 0, "StopCombatAlarm", kOther) == 1);
+    REQUIRE(SnippetsOn(p, 0, "StopCombat", mine) == 1);
+    REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", kHost) == 1);
+    REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", mine) == 1);
+    REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+    REQUIRE_FALSE(p.GetFights().between(mine, kOther));
+  }
+
+  // the review of a4d1c674b: the summon's own pair ends a minute after its
+  // strike while the players' later blows keep their fight on. That end is
+  // no end of the summon's fight, so no game hears it then; at the sides'
+  // end the summon stops (D2) and the other player's figure of it stands
+  // down, where before both notices were lost
+  SECTION("the host's summon strikes the other player, the players fight on "
+          "past its own pair's minute: that end is kept, and at the sides' "
+          "end the host's game stops the summon and the other's figure of it "
+          "stands down")
+  {
+    Strikes(p, 0, mine, kOther);
+    const uint64_t struck = NowMs();
+    REQUIRE(p.GetFights().between(kHost, kOther));
+    REQUIRE(p.GetFights().between(mine, kOther));
+    // the players' own blow 50 s on (a hit between them keeps their pair,
+    // ADR-023)
+    REQUIRE_FALSE(p.GetFights().hit(kHost, kOther, struck + 50'000));
+    p.Tick(); // what the strike queued
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(struck + 60'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(Between(mine, kOther) +
+                        " is over (a minute quiet) inside the fight between "
+                        "the sides of ff000d20 and ff000d21, which "
+                        "stands") == 1);
+      REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over") ==
+              0);
+    }
+    p.Tick(); // snippets are deferred
+    REQUIRE(SnippetsTo(p, 0, "StopCombatAlarm").empty());
+    REQUIRE(SnippetsTo(p, 0, "StopCombat").empty());
+    REQUIRE(SnippetsTo(p, 1, "StopCombatAlarm").empty());
+    REQUIRE_FALSE(p.GetFights().between(mine, kOther));
+    REQUIRE(p.GetFights().between(kHost, kOther));
+
+    // a minute after the players' last blow: the sides' fight ends, and
+    // every member's end with it
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(struck + 110'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over (a "
+                        "minute quiet)") == 1);
+      REQUIRE(
+        log.Count(Between(mine, kOther) + " ends with its sides' fight") == 1);
+    }
+    p.Tick(); // snippets are deferred
+    REQUIRE(SnippetsOn(p, 0, "StopCombatAlarm", kOther) == 1);
+    REQUIRE(SnippetsOn(p, 0, "StopCombat", mine) == 1);
+    REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", kHost) == 1);
+    REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", mine) == 1);
+    REQUIRE(SnippetsTo(p, 1, "StopCombat").empty());
+    REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+  }
+
+  SECTION("the host's summon strikes the other player's summon inside the "
+          "players' fight: it stays on past the minute, and the two summons "
+          "are no pair of their own")
+  {
+    const uint64_t t0 = NowMs();
+    REQUIRE(p.GetFights().hit(kHost, kOther, t0 - 50'000));
+    {
+      LogCapture log;
+      Strikes(p, 0, mine, theirs);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE_FALSE(p.GetFights().between(mine, theirs));
+    {
+      LogCapture log;
+      p.TickFights(t0 + 30'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("is over") == 0);
+    }
+    REQUIRE(p.GetFights().between(kHost, kOther));
+  }
+
+  SECTION("the other player's summon strikes the host's with no players' "
+          "fight: it begins, and both players' games hear it")
+  {
+    {
+      LogCapture log;
+      Strikes(p, 1, theirs, mine);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(fmt::format("{:x} hit {:x}, between the sides of "
+                                    "ff000d21 and ff000d20: a fight between "
+                                    "the two players begins",
+                                    theirs, mine)) == 1);
+    }
+    REQUIRE(p.GetFights().between(kHost, kOther));
+    REQUIRE_FALSE(p.GetFights().between(mine, theirs));
+    const auto toHost = PlayersNoticesTo(p, 0);
+    REQUIRE(toHost.size() == 1);
+    REQUIRE(toHost[0]["selfId"] == kOther);
+    const auto toOther = PlayersNoticesTo(p, 1);
+    REQUIRE(toOther.size() == 1);
+    REQUIRE(toOther[0]["selfId"] == kHost);
+  }
+
+  p.GetFights().forget(mine);
+  p.GetFights().forget(theirs);
+  p.GetFights().forget(kHost);
+  Leave(p);
+}
+
+// thuum ADR-077 decision 4: a player's own summons and thralls alone are on
+// its side (PartOne::SideOf, OwnerOf). An NPC's summon or raise its host's
+// game runs (tracker #106) is on no player's side: its hits on a player keep
+// no players' fight, and #113's design A sends no NPC's raise into one. Its
+// own fight with the other player still keeps its host's figure of that
+// player at the players' end, so it keeps its target in that game (#126's
+// keep, unchanged for a minion on no side)
+TEST_CASE("An NPC's summon or raise is on no player's side: its hits keep no "
+          "players' fight, and design A sends it into none (thuum ADR-077 "
+          "decision 4)",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+
+  SECTION("an NPC's summon: its hit on the other player keeps nothing, and "
+          "its own fight keeps its host's figure of that player at the "
+          "players' end")
+  {
+    Armed(p);
+    const uint32_t summon = Summoned(p, kPredator);
+    REQUIRE(p.SideOf(p.worldState.GetFormAt<MpActor>(summon)) == nullptr);
+    const uint64_t t0 = NowMs();
+    REQUIRE(p.GetFights().hit(kHost, kOther, t0 - 50'000));
+    {
+      LogCapture log;
+      Strikes(p, 0, summon, kOther);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE(p.GetFights().between(summon, kOther));
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(t0 + 30'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over (a "
+                        "minute quiet)") == 1);
+      REQUIRE(log.Count("ff000d20's figure of ff000d21 stays in the fight: a "
+                        "summon or thrall its game runs for an NPC still "
+                        "fights it") == 1);
+    }
+    p.Tick(); // snippets are deferred
+    REQUIRE(SnippetsOn(p, 0, "StopCombatAlarm", kOther) == 0);
+    REQUIRE(SnippetsOn(p, 1, "StopCombatAlarm", kHost) == 1);
+    REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+    REQUIRE(p.GetFights().between(summon, kOther));
+    p.GetFights().forget(summon);
+    p.GetFights().forget(kHost);
+    Leave(p);
+  }
+
+  // the raise's stamp names an NPC caster (a bystander's server id; the
+  // command stays the host's, as ClaimReanimated grants an NPC's raise)
+  SECTION("an NPC's raise its host's game commands: its hit on the other "
+          "player keeps nothing, and design A neither joins nor stands it "
+          "down")
+  {
+    auto& predator = HostsThrall(p);
+    predator.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0,
+                                   kBystanderA);
+    REQUIRE(p.CommanderOf(predator) == kHost);
+    REQUIRE(p.SideOf(predator) == nullptr);
+    // its engine fights the other player (its host's state), so design A
+    // would stand it down at the players' end whether or not it joined it
+    // (StandDownThralls: told, or its target the other player)
+    predator.SetHostedState(kOther, 0);
+    const uint64_t t0 = NowMs();
+    REQUIRE(p.GetFights().hit(kHost, kOther, t0 - 50'000));
+    {
+      LogCapture log;
+      Strikes(p, 0, kPredator, kOther);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE(p.GetFights().between(kPredator, kOther));
+    // a fights tick while the players' fight stands (the review of
+    // a4d1c674b: the Tick's own fights tick runs at most once a second of
+    // the wall clock, so it may not have run): design A joins no NPC's
+    // raise to it
+    {
+      LogCapture log;
+      p.TickFights(t0 + 1'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("is over") == 0);
+      REQUIRE(log.Count("joins its commander's fight") == 0);
+    }
+    p.Tick(); // snippets are deferred
+    REQUIRE(SnippetsOn(p, 0, "StartCombat", kPredator) == 0);
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(t0 + 30'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over (a "
+                        "minute quiet)") == 1);
+      REQUIRE(log.Count("ff000d20's figure of ff000d21 stays in the fight: a "
+                        "summon or thrall its game runs for an NPC still "
+                        "fights it") == 1);
+      REQUIRE(log.Count("stands down with its commander's fight") == 0);
+    }
+    p.Tick(); // snippets are deferred
+    REQUIRE(SnippetsOn(p, 0, "StopCombat", kPredator) == 0);
+    REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+    LeaveThrall(p, predator);
+  }
+}
+
+// thuum ADR-077 decision 4 (the review of a4d1c674b): a member's strike
+// counts from its membership. The other player's blow on an NPC the host
+// later raises was a living NPC's fight, and a dead actor's once it fell,
+// over in every engine, so the raise's command ends it without a notice
+// (PartOne::ClaimCommanded). It never holds the sides' fight on: walked
+// apart, the players' fight ends five seconds on (APART_MS), as it does
+// with no thrall
+TEST_CASE("The other player's blow on an NPC the host then raises is no "
+          "strike of the host's side: the raise ends the body's fights, and "
+          "the players' fight ends apart five seconds after they walk apart "
+          "(thuum ADR-077 decision 4)",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Armed(p);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& predator = p.worldState.GetFormAt<MpActor>(kPredator);
+  // in front of both players within a sword's reach (HostsThrall's spot)
+  predator.SetPos(kForest + NiPoint3{ 0.f, 100.f, 0.f });
+
+  // the other player's sword on the living NPC, on no player's side: their
+  // pair (D2's)
+  Swings(p, 1, kPredator);
+  REQUIRE(p.SideOf(predator) == nullptr);
+  REQUIRE(p.GetFights().between(kOther, kPredator));
+  // the two players' fight
+  const uint64_t t0 = NowMs();
+  REQUIRE(p.GetFights().hit(kHost, kOther, t0));
+
+  // the NPC dies, and the host raises it: the stamp OnHit gives the accepted
+  // hit, then ClaimReanimated's command on the body
+  predator.Kill(nullptr);
+  REQUIRE(predator.IsDead());
+  predator.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0, kHost);
   {
     LogCapture log;
-    p.TickFights(t);
-    REQUIRE(log.Count("ff000d20's figure of ff000d21 stays in the fight: a "
-                      "summon or thrall of ff000d20's still fights it") == 1);
-    REQUIRE(log.Count("thrall 85547 of ff000d20 stays in its own fight with "
-                      "ff000d21") == 1);
+    REQUIRE(p.ClaimCommanded(host, predator, 60) ==
+            PartOne::ClaimVerdict::Granted);
+    INFO(log.oss.str());
+    REQUIRE(log.Count("85547's fights before its raise end without a "
+                      "notice") == 1);
   }
-  p.Tick(); // snippets are deferred
-  // the host's game stands nothing down; the other's game stands its figure
-  // of the host down as the players' end does
-  for (const auto& j : SnippetsTo(p, 0, "StopCombatAlarm")) {
-    REQUIRE(j["selfId"] != kOther);
-  }
-  REQUIRE(SnippetsTo(p, 0, "StopCombat").empty());
-  const auto otherEnds = SnippetsTo(p, 1, "StopCombatAlarm");
-  REQUIRE(otherEnds.size() == 1);
-  REQUIRE(otherEnds[0]["selfId"] == kHost);
-  REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
-  REQUIRE(p.GetFights().between(kPredator, kOther));
+  REQUIRE_FALSE(p.GetFights().between(kOther, kPredator));
+  // its commander's engine stands it: on the host's side from here
+  p.ResurrectByHost(predator);
+  REQUIRE_FALSE(predator.IsDead());
+  REQUIRE(p.CommanderOf(predator) == kHost);
+  REQUIRE(p.SideOf(predator) == &host);
 
+  // the host walks 5000 units off (hostility.rs EXTERIOR_RANGE 3000), the
+  // thrall beside the other player: no member's strike holds the fight on
+  host.SetPos(kForest + NiPoint3{ 0.f, 5000.f, 0.f });
+  {
+    LogCapture log;
+    p.TickFights(t0 + 1'000);
+    p.TickFights(t0 + 6'000);
+    INFO(log.oss.str());
+    REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over "
+                      "(apart)") == 1);
+  }
+  REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+  LeaveThrall(p, predator);
+}
+
+namespace {
+// a third player's actor, which no other case here names
+constexpr uint32_t kThird = 0xff000d24;
+}
+
+// thuum ADR-077 decision 4 with three players (the review of a4d1c674b): a
+// thrall whose commander fights two players is told into one fight at a
+// time (two told fights overwrote its record each tick: two StartCombat a
+// second with alternating targets), and the end of one fight stands it down
+// only where its engine does not fight the other player, whose fight with
+// its commander stands ("it never stands down while it fights")
+TEST_CASE("A thrall whose commander fights two players is told into one "
+          "fight at a time, and the end of one stands it down only where its "
+          "engine does not fight the other player (thuum ADR-077 decision 4, "
+          "three players)",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  auto& predator = HostsThrall(p);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  // the third player, beside the other two
+  DoConnect(p, 2);
+  p.CreateActor(kThird, kForest, 0, kTamriel);
+  p.SetUserActor(2, kThird);
+  REQUIRE(p.worldState.HostOf(predator) == &host);
+  REQUIRE(p.SideOf(predator) == &host);
+  // its engine fights the other player (its host's state)
+  predator.SetHostedState(kOther, 0);
+  const uint64_t t0 = NowMs();
+  REQUIRE(p.GetFights().hit(kHost, kOther, t0));
+
+  SECTION("both fights standing: one StartCombat, at the first fight's "
+          "player, and none again while its engine fights that player")
+  {
+    REQUIRE(p.GetFights().hit(kHost, kThird, t0));
+    p.Messages().clear();
+    {
+      LogCapture log;
+      p.TickFights(t0 + 1'000);
+      p.TickFights(t0 + 3'000);
+      p.Tick(); // snippets are deferred
+      INFO(log.oss.str());
+      REQUIRE(log.Count("thrall 85547 of ff000d20 joins its commander's "
+                        "fight with ff000d21") == 1);
+      REQUIRE(log.Count("its commander's fight with ff000d24") == 0);
+    }
+    const auto told = SnippetsTo(p, 0, "StartCombat");
+    REQUIRE(told.size() == 1);
+    REQUIRE(told[0]["selfId"] ==
+            SpSnippet::MakeLongFormId(&p.worldState, kPredator));
+    REQUIRE(told[0]["arguments"] ==
+            nlohmann::json::array({ nlohmann::json{ { "formId", kOther },
+                                                    { "type", "Actor" } } }));
+  }
+
+  // no Tick between the two fights' ticks: the Tick's own fights tick at
+  // the wall clock's time would run design A on the third player's fight
+  // before the other's ends
+  SECTION("its engine turns on the third player as the fight with the other "
+          "ends: no StopCombat, and the third player's fight takes it")
+  {
+    // told into the fight with the other player, the one standing
+    p.TickFights(t0 + 1'000);
+    // the third player's fight begins later, and the thrall's engine turns
+    // on that player
+    REQUIRE(p.GetFights().hit(kHost, kThird, t0 + 50'000));
+    predator.SetHostedState(kThird, 0);
+    {
+      LogCapture log;
+      p.TickFights(t0 + 60'000);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("the fight between ff000d20 and ff000d21 is over (a "
+                        "minute quiet)") == 1);
+      REQUIRE(log.Count("thrall 85547 of ff000d20 stays in its commander's "
+                        "fight with ff000d24, which its engine fights, past "
+                        "the end of the fight with ff000d21") == 1);
+      REQUIRE(log.Count("stands down with its commander's fight") == 0);
+      // the third player's fight takes it (design A)
+      REQUIRE(log.Count("thrall 85547 of ff000d20 joins its commander's "
+                        "fight with ff000d24") == 1);
+    }
+    p.Tick(); // snippets are deferred
+    REQUIRE(SnippetsOn(p, 0, "StopCombat", kPredator) == 0);
+    REQUIRE(p.GetFights().between(kHost, kThird));
+  }
+
+  p.GetFights().forget(kThird);
+  DoDisconnect(p, 2);
+  p.DestroyActor(kThird);
   LeaveThrall(p, predator);
 }

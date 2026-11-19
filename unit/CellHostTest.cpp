@@ -5,6 +5,7 @@
 #include "ChangeValuesMessage.h"
 #include "ConsoleCommandMessage.h"
 #include "CreateActorMessage.h"
+#include "DestroyActorMessage.h"
 #include "HitMessage.h"
 #include "HostGrantMessage.h"
 #include "HostReleaseMessage.h"
@@ -97,9 +98,11 @@ void CellLoaded(PartOne& p, Networking::UserId user, uint32_t cell,
                             { "loaded", loaded } });
 }
 
-// `user`'s movement report for `actorId`, standing at `pos`
+// `user`'s movement report for `actorId`, standing at `pos`, its weapon
+// drawn when `weapDrawn`
 void Move(PartOne& p, Networking::UserId user, uint32_t actorId,
-          const NiPoint3& pos, uint32_t worldOrCell = kTamriel)
+          const NiPoint3& pos, uint32_t worldOrCell = kTamriel,
+          bool weapDrawn = false)
 {
   static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
   RawMessageData raw;
@@ -111,7 +114,7 @@ void Move(PartOne& p, Networking::UserId user, uint32_t actorId,
   msg.data.pos = { pos.x, pos.y, pos.z };
   msg.data.rot = { 0, 0, 0 };
   msg.data.isInJumpState = false;
-  msg.data.isWeapDrawn = false;
+  msg.data.isWeapDrawn = weapDrawn;
   msg.data.isBlocking = false;
   msg.data.worldOrCell = worldOrCell;
   msg.data.runMode = "Standing";
@@ -618,6 +621,222 @@ TEST_CASE("A host follows its actor into an unhosted cell its game loads, "
   p.DestroyActor(kC2);
 }
 
+// thuum tracker #162 (playtest 55, Eli: "weird scripting shit with draugr not
+// standing up", "npc ai is soooo jank rn"): the grid serves a game the 3x3
+// squares around its own player, and a cell's host runs every actor of its
+// cell. Bleak Falls Temple 0x371de as Ariadne's game hosted it in 55 (both
+// seats' logs and c2's recorder): she stood at (3900, -3365), square (0, 0),
+// two squares west of the draugr 0x380b3 at its placement (8657, -5215,
+// -2055), square (2, -1) (TrapRelayTest's stage, lab/esm.py), while rotfern
+// pressed the trigger beside it, and her game held no form for the draugr,
+// so the wake-up met an AI-off puppet. The host's roster names an actor its
+// game holds no form for, and the server subscribes the host to it now
+// (PartOne::OnActorSighting); the host's own walk across a square line keeps
+// it (ForceSubscriptionsUpdate, D6's keep on the simulator's edge too),
+// which ends the second hall's flicker. The other player, beside the
+// draugr, is the host's guest: its own step subscribes the host (D6's
+// insert, HostOf naming the cell's host for a player), and the host's steps
+// keep it by the same rule, so the draugr the host's engine runs keep a
+// figure of the guest to fight
+TEST_CASE("A host two squares from an actor in its cell gets the actor's "
+          "CreateActor at one roster and keeps it, and a guest of its cell "
+          "its step subscribed, across its own square changes",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kTemple = 0x371de;
+  constexpr uint32_t kDraugr = 0x380b3;
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  REQUIRE(p.worldState.IsInteriorCell(kTemple));
+
+  // the draugr loaded by its id (TrapRelayTest's shape) before any grant, as
+  // the record stood before Ariadne's game took the temple
+  auto& draugr = p.worldState.GetFormAt<MpActor>(kDraugr);
+  const NiPoint3 seat = draugr.GetPos();
+  // a grid square as the grid counts it (MpObjectReference.cpp's GetGridPos,
+  // truncated toward zero), and whether two points stand farther apart than
+  // the 3x3
+  const auto square = [](const NiPoint3& pos) {
+    return std::pair<int, int>{ static_cast<int16_t>(pos.x / 4096),
+                                static_cast<int16_t>(pos.y / 4096) };
+  };
+  const auto apart = [&](const NiPoint3& a, const NiPoint3& b) {
+    const auto sa = square(a);
+    const auto sb = square(b);
+    return std::abs(sa.first - sb.first) > 1 ||
+      std::abs(sa.second - sb.second) > 1;
+  };
+  REQUIRE(square(seat) == std::pair<int, int>{ 2, -1 });
+  // Ariadne's stand, square (0, 0); a step south across the y line, square
+  // (0, -1); and one square from the draugr, square (1, 0)
+  const NiPoint3 stand{ 3900.f, -3365.f, seat.z };
+  const NiPoint3 south{ 3900.f, -4300.f, seat.z };
+  const NiPoint3 oneOff{ 5000.f, -3365.f, seat.z };
+  REQUIRE(apart(stand, seat));
+  REQUIRE(apart(south, seat));
+  REQUIRE(square(south) != square(stand));
+  REQUIRE_FALSE(apart(oneOff, seat));
+  REQUIRE(square(oneOff) != square(stand));
+
+  // c1 at Ariadne's stand, c2 beside the draugr; c1's load grants it the
+  // temple, c2's gets nothing
+  DoConnect(p, 0);
+  p.CreateActor(kC1, stand, 0, kTemple);
+  p.SetUserActor(0, kC1);
+  auto& c1 = p.worldState.GetFormAt<MpActor>(kC1);
+  c1.ForceSubscriptionsUpdate();
+  DoConnect(p, 1);
+  p.CreateActor(kC2, seat + NiPoint3{ 80.f, 0.f, 0.f }, 0, kTemple);
+  p.SetUserActor(1, kC2);
+  auto& c2 = p.worldState.GetFormAt<MpActor>(kC2);
+  c2.ForceSubscriptionsUpdate();
+  CellLoaded(p, 0, kTemple);
+  CellLoaded(p, 1, kTemple);
+  REQUIRE(p.GetCellHost(kTemple).player == kC1);
+  REQUIRE(p.worldState.HostOf(draugr) == &c1);
+  REQUIRE(draugr.GetListeners().count(&c2) == 1);
+
+  // the draugr's CreateActors to `user` since the last clear, and its
+  // DestroyActors
+  const auto creates = [&](Networking::UserId user) {
+    std::vector<CreateActorMessage> out;
+    for (const auto& m : SentTo<CreateActorMessage>(p, user)) {
+      if (m.refrId == kDraugr) {
+        out.push_back(m);
+      }
+    }
+    return out;
+  };
+  const auto destroys = [&](Networking::UserId user) {
+    size_t n = 0;
+    for (const auto& m : SentTo<DestroyActorMessage>(p, user)) {
+      if (m.idx == draugr.GetIdx()) {
+        ++n;
+      }
+    }
+    return n;
+  };
+
+  SECTION("the first hall: the host's roster takes the draugr two squares "
+          "off, and the host's steps across a square line keep it")
+  {
+    // the grant's word went to the actors c1's game hears (FlipHostedFlags),
+    // never the draugr: c1's game holds no form for it
+    REQUIRE(draugr.GetListeners().count(&c1) == 0);
+    const std::set<MpObjectReference*> c2Was = c2.GetListeners();
+    const auto roster = [&] {
+      DoMessage(p, 0,
+                nlohmann::json{ { "t", MsgType::ActorSightings },
+                                { "sightings",
+                                  nlohmann::json::array({ nlohmann::json{
+                                    { "refrId", kDraugr },
+                                    { "worldOrCell", kTemple },
+                                    { "pos", { seat.x, seat.y, seat.z } },
+                                    { "rot", { 0.f, 0.f, 0.f } } } }) } });
+    };
+
+    // the roster names it where the record stands: c1 is subscribed and its
+    // game gets the CreateActor with the word false; the record stays where
+    // it stood and c2 hears nothing new
+    p.Messages().clear();
+    roster();
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    const auto toHost = creates(0);
+    REQUIRE(toHost.size() == 1);
+    REQUIRE(toHost[0].props.isHostedByOther == false);
+    REQUIRE((draugr.GetPos() - seat).Length() < 1.f);
+    REQUIRE(creates(1).empty());
+    REQUIRE(c2.GetListeners() == c2Was);
+
+    // a late roster that still names it: nothing more
+    p.Messages().clear();
+    roster();
+    REQUIRE(creates(0).empty());
+
+    // c1 steps south across the y line and back, the draugr two squares off
+    // at each stand: c1's game keeps it, with no DestroyActor and no second
+    // CreateActor, and c2's listeners are as the grid had them
+    p.Messages().clear();
+    c1.SetPos(south);
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    c1.SetPos(stand);
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    REQUIRE(destroys(0) == 0);
+    REQUIRE(creates(0).empty());
+    REQUIRE(c2.GetListeners() == c2Was);
+  }
+
+  SECTION("the second hall: a host one square off steps across a square "
+          "line to two squares off and back, and keeps the draugr its engine "
+          "runs")
+  {
+    // c1 one square from the draugr: the grid subscribes it, the word false
+    p.Messages().clear();
+    c1.SetPos(oneOff);
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    const auto toHost = creates(0);
+    REQUIRE(toHost.size() == 1);
+    REQUIRE(toHost[0].props.isHostedByOther == false);
+    // across the x line, two squares off, and back: kept, with no
+    // DestroyActor (each demote of the hall's flicker on the host followed
+    // one) and no second CreateActor (each promote followed one)
+    p.Messages().clear();
+    c1.SetPos(stand);
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    REQUIRE(destroys(0) == 0);
+    c1.SetPos(oneOff);
+    REQUIRE(draugr.GetListeners().count(&c1) == 1);
+    REQUIRE(creates(0).empty());
+    // the other player keeps the draugr by the grid, as before
+    REQUIRE(draugr.GetListeners().count(&c2) == 1);
+    REQUIRE(destroys(1) == 0);
+  }
+
+  // the review of tracker #162's first build: the guest's pass kept the
+  // host (D6's insert, HostOf) and the host's pass, asking HostedBy, dropped
+  // the guest at its next step, a DestroyActor each way, while the host's
+  // engine ran the draugr fighting beside the guest
+  SECTION("a guest beyond the host's grid: its own step subscribes the "
+          "host, and the host's steps across a square line keep it")
+  {
+    // the guest's step, square (2, -1) to (3, -1), the draugr still in its
+    // 3x3 and the host three squares off
+    const NiPoint3 guestStep{ 12400.f, seat.y, seat.z };
+    REQUIRE(square(guestStep) == std::pair<int, int>{ 3, -1 });
+    REQUIRE(apart(guestStep, stand));
+    REQUIRE(apart(guestStep, south));
+    REQUIRE(p.worldState.HostOf(c2) == &c1);
+    REQUIRE(c2.GetListeners().count(&c1) == 0);
+    c2.SetPos(guestStep);
+    REQUIRE(c2.GetListeners().count(&c1) == 1);
+    REQUIRE(c1.GetListeners().count(&c2) == 1);
+    // the DestroyActors for `actor` that went to `user` since the last clear
+    const auto destroyed = [&](Networking::UserId user, MpActor& actor) {
+      size_t n = 0;
+      for (const auto& m : SentTo<DestroyActorMessage>(p, user)) {
+        if (m.idx == actor.GetIdx()) {
+          ++n;
+        }
+      }
+      return n;
+    };
+    p.Messages().clear();
+    c1.SetPos(south);
+    REQUIRE(c2.GetListeners().count(&c1) == 1);
+    REQUIRE(c1.GetListeners().count(&c2) == 1);
+    c1.SetPos(stand);
+    REQUIRE(c2.GetListeners().count(&c1) == 1);
+    REQUIRE(c1.GetListeners().count(&c2) == 1);
+    REQUIRE(destroyed(0, c2) == 0);
+    REQUIRE(destroyed(1, c1) == 0);
+  }
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
 // thuum docs/verbs/npc-handoff.md (d), ADR-047 D9 (playtest 34, 2026-10-25:
 // a restart's cold start gave Sigrid's two cells to different players and
 // her shuttle between them was refused at every crossing, seven a second,
@@ -685,6 +904,80 @@ TEST_CASE("A late joiner's CreateActor carries the hosted actor's last "
     }
   }
   REQUIRE(carried);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kWolf);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
+TEST_CASE("A new listener's CreateActor carries the recorded drawn weapon of "
+          "a player and a hosted actor, a sheathed one's never",
+          "[CellHost]")
+{
+  // thuum tracker #172 (playtest 55): rotfern, her bow out, and the draugr
+  // she fought came back into Ariadne's view sheathed on Ariadne's screen.
+  // The record keeps the drawn flag from every movement sample; the create
+  // a new listener gets carries it as the custom property "isWeapDrawn"
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(here.has_value());
+  CellLoaded(p, 0, *here);
+  REQUIRE(p.GetCellHost(*here).player == kC1);
+  p.CreateActor(kWolf, kHere, 0, kTamriel);
+  auto& wolf = p.worldState.GetFormAt<MpActor>(kWolf);
+  wolf.SetPos(kHere);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+
+  // the player and the wolf its game hosts both draw: the record takes it
+  Move(p, 0, kC1, kHere, kTamriel, true);
+  Move(p, 0, kWolf, kHere, kTamriel, true);
+  REQUIRE(p.worldState.GetFormAt<MpActor>(kC1).IsWeaponDrawn());
+  REQUIRE(wolf.IsWeaponDrawn());
+
+  const auto drawnOf =
+    [](const CreateActorMessage& m) -> std::optional<nlohmann::json> {
+    for (const auto& entry : m.customPropsJsonDumps) {
+      if (entry.propName == "isWeapDrawn") {
+        return nlohmann::json::parse(entry.propValueJsonDump);
+      }
+    }
+    return std::nullopt;
+  };
+
+  // the second player arrives: its creates of both say drawn
+  p.Messages().clear();
+  Player(p, 1, kC2, kHere);
+  bool player = false, hosted = false;
+  for (const auto& m : SentTo<CreateActorMessage>(p, 1)) {
+    if (m.refrId == kC1 || m.refrId == kWolf) {
+      const auto drawn = drawnOf(m);
+      REQUIRE(drawn.has_value());
+      REQUIRE(*drawn == true);
+      if (m.refrId == kC1) {
+        player = true;
+      } else {
+        hosted = true;
+      }
+    }
+    if (m.refrId == kC2) {
+      // its own create: its own game's word, never carried
+      REQUIRE_FALSE(drawnOf(m).has_value());
+    }
+  }
+  REQUIRE(player);
+  REQUIRE(hosted);
+  // the first player's create of the newcomer, sheathed: none
+  bool newcomer = false;
+  for (const auto& m : SentTo<CreateActorMessage>(p, 0)) {
+    if (m.refrId == kC2) {
+      REQUIRE_FALSE(drawnOf(m).has_value());
+      newcomer = true;
+    }
+  }
+  REQUIRE(newcomer);
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);
@@ -3088,6 +3381,35 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
   REQUIRE(rowMoved);
   REQUIRE(sven.GetListeners().count(&c1) == 1);
   REQUIRE(sven.GetListeners().count(&c2) == 0);
+  // thuum tracker #162 (the review of its first build): the door into
+  // another world parts the pair, the keep's cellOrWorld guard, so c1's
+  // game gets a DestroyActor for the thrall at the gate and then its
+  // CreateActor at the landing, the word false (the thrall's own pass);
+  // without the guard c1's pass would keep it and neither would come
+  size_t destroyAt = 0;
+  size_t createAt = 0;
+  std::optional<CreateActorMessage> created;
+  for (size_t i = 0; i < p.Messages().size(); ++i) {
+    const auto& m = p.Messages()[i];
+    if (m.userId != 0) {
+      continue;
+    }
+    if (auto destroy = dynamic_cast<DestroyActorMessage*>(m.message.get());
+        destroy && destroy->idx == sven.GetIdx() && destroyAt == 0) {
+      destroyAt = i + 1;
+    }
+    if (auto create = dynamic_cast<CreateActorMessage*>(m.message.get());
+        create && create->refrId.value_or(0) == kSven) {
+      createAt = i + 1;
+      created = *create;
+    }
+  }
+  REQUIRE(destroyAt != 0);
+  REQUIRE(createAt > destroyAt);
+  REQUIRE(created.has_value());
+  REQUIRE(created->transform.pos[0] == Catch::Approx(kLanding.x));
+  REQUIRE(created->transform.pos[1] == Catch::Approx(kLanding.y));
+  REQUIRE(created->props.isHostedByOther == false);
 
   // the thrall beyond the reach and c2's thrall stay where they stood,
   // their commands as they were
@@ -3121,6 +3443,76 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
   p.DestroyActor(kHilde);
   p.DestroyActor(kCow);
   p.DestroyActor(kNpcRaised);
+  p.worldState.npcEnabled = npcWas;
+}
+
+// thuum tracker #162 (the review of its first build): D6's keep holds a
+// commander and its thrall a pair within one world or cell at any distance,
+// so a load door whose landing lies in the world or cell it leaves parts
+// nothing, and no create word would place the thrall at the landing in the
+// commander's game, whose engine still runs it where it stood. The door
+// sends the landing itself, a Teleport for the thrall's idx. The commander's
+// own move and the door's call are made here as the door's path makes them
+// (MpObjectReference's load door: the player's record first, then
+// PartOne::TakeThrallsThroughDoor), five squares across Tamriel
+TEST_CASE("A load door within one world sends the commander's game its "
+          "thrall's landing, the pair held through it",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kThrall = 0xff000c1d;
+  // a command's record seconds, named for the lab alone (ClaimReanimated)
+  constexpr uint32_t kRecordS = 60;
+  const NiPoint3 kLanding = kHere + NiPoint3{ 20480.f, 0.f, 0.f };
+  const NiPoint3 kFacing{ 0.f, 0.f, 90.f };
+  auto& p = GetPartOne();
+  const bool npcWas = p.worldState.npcEnabled;
+  p.worldState.npcEnabled = true;
+  auto& c1 = Player(p, 0, kC1, kHere);
+  c1.SetPos(kHere);
+  p.CreateActor(kThrall, kHere + NiPoint3{ 50.f, 50.f, 0.f }, 0, kTamriel);
+  auto& thrall = p.worldState.GetFormAt<MpActor>(kThrall);
+  thrall.SetPos(thrall.GetPos());
+  const auto cell = p.worldState.CellOf(thrall);
+  REQUIRE(cell.has_value());
+  REQUIRE(p.worldState.CellOf(kTamriel, kLanding).has_value());
+  CellLoaded(p, 0, *cell);
+  // c1's raise, as OnHit stamps it ahead of ClaimReanimated
+  thrall.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0, kC1);
+  REQUIRE(p.ClaimCommanded(c1, thrall, kRecordS) ==
+          PartOne::ClaimVerdict::Granted);
+  REQUIRE(p.SimulatorOf(thrall) == kC1);
+  REQUIRE(thrall.GetListeners().count(&c1) == 1);
+
+  // the player's record at the landing: the pair held, no DestroyActor
+  p.Messages().clear();
+  c1.SetPos(kLanding);
+  REQUIRE(thrall.GetListeners().count(&c1) == 1);
+  const auto taken = p.TakeThrallsThroughDoor(c1, 0, kTamriel, kHere, kTamriel,
+                                              kLanding, kFacing);
+  REQUIRE(taken == std::vector<uint32_t>{ kThrall });
+  REQUIRE((thrall.GetPos() - kLanding).Length() < 1.f);
+  REQUIRE(thrall.GetListeners().count(&c1) == 1);
+
+  // c1's game: the landing for the thrall's idx, and no DestroyActor or
+  // CreateActor for it
+  const auto landings = SentTo<TeleportMessage>(p, 0);
+  REQUIRE(landings.size() == 1);
+  REQUIRE(landings[0].idx == thrall.GetIdx());
+  REQUIRE(landings[0].pos[0] == Catch::Approx(kLanding.x));
+  REQUIRE(landings[0].pos[1] == Catch::Approx(kLanding.y));
+  REQUIRE(landings[0].rot[2] == Catch::Approx(kFacing.z));
+  REQUIRE(landings[0].worldOrCell == kTamriel);
+  for (const auto& m : SentTo<DestroyActorMessage>(p, 0)) {
+    REQUIRE(m.idx != thrall.GetIdx());
+  }
+  for (const auto& m : SentTo<CreateActorMessage>(p, 0)) {
+    REQUIRE(m.refrId.value_or(0) != kThrall);
+  }
+
+  p.ReleaseAnyClaim(thrall);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kThrall);
   p.worldState.npcEnabled = npcWas;
 }
 

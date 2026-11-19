@@ -13,6 +13,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -37,6 +38,7 @@
 #include "SetWeatherMessage.h"
 #include "SpellCastMessage.h"
 #include "SummonMessage.h"
+#include "TeleportMessage.h"
 #include "UpdateGameModeDataMessage.h"
 #include "UpdateMovementMessage.h"
 #include "WorldGlobalMessage.h"
@@ -60,6 +62,7 @@
 #include "libespm/PROJ.h"
 #include "libespm/QUST.h"
 #include "libespm/SCEN.h"
+#include "libespm/SHOU.h"
 #include "libespm/SMQN.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
@@ -416,6 +419,19 @@ struct PartOne::Impl
   // rule is Rust's, ADR-020): each live summon by its server actor, its
   // backstop (the reported time left plus 5 s) and its dispel's fade
   rust::Box<skymp::rules::Summons> summons = skymp::rules::new_summons();
+  // the minions table (thuum tracker #160, ADR-077; PartOne::OwnerOf), the
+  // live sprint's stopgap: each live summon a player cast, by its server
+  // actor, the player's actor. Written at OnSummonStart for a player's own
+  // report alone, never an NPC's (tracker #106: the summon row's caster is
+  // the reporting game's player for both, so it cannot say whose the
+  // summon is), and gone at the dispel or the forget; runtime only, as the
+  // summons are. A thrall's owner is its command row's (CommanderOf), which
+  // OwnerOf reads beside it. Its home is the summon rule (ADR-010, ADR-020):
+  // tracker #167 puts an owner on wire-rules summons.rs's row (0 for an
+  // NPC's summon, which OnSummonStart's `npc` names) and the bridge's
+  // SummonRow, reads OwnerOf from the live row, and deletes this table and
+  // its two erases
+  std::unordered_map<uint32_t, uint32_t> minionOwners;
 
   // thuum ADR-068 rung 4 (the created half): a unique actor's attached
   // reference by its base (an ALUA container, noted at its attach), and the
@@ -461,6 +477,14 @@ struct PartOne::Impl
     uint64_t toldMs = 0;
   };
   std::unordered_map<uint32_t, ThrallInFight> thrallsInFights;
+  // thuum ADR-077 decision 4 (tracker #113, #131): the members' own pairs
+  // with the other side that ended while their sides' fight stood, by the
+  // two players (lower id first). No game was told then; TickFights tells
+  // each once at the sides' end, or when a party of the players' pair is
+  // gone, and forgets the entry
+  std::map<std::pair<uint32_t, uint32_t>,
+           std::set<std::pair<uint32_t, uint32_t>>>
+    sidesEnds;
   std::chrono::steady_clock::time_point lastFateRespawnsTick;
 
   // the cell host table (thuum docs/verbs/cell-host.md, ADR-035) and each
@@ -1206,6 +1230,11 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           this_->ForgetHeldSightings(actor->GetFormId());
           this_->pImpl->lastSquareByPlayer.erase(actor->GetFormId());
           this_->pImpl->fatedSquares.erase(actor->GetFormId());
+          // thuum tracker #166: and the word wall it stood armed at
+          if (this_->pImpl->actionListener) {
+            this_->pImpl->actionListener->ForgetWordWallArm(
+              actor->GetFormId());
+          }
           // thuum ADR-068 rung 5: its quest words' churn counters go, and
           // its race overlay ends with the connection (D-T1 A: a relaunch
           // mid-form logs in as its own race)
@@ -2508,89 +2537,278 @@ void PartOne::TickFights(uint64_t nowMs)
       ? actor
       : nullptr;
   };
-  for (const auto& pair : pImpl->fights->pairs()) {
+  const auto actorOf = [&](uint32_t formId) -> MpActor* {
+    const auto& form = worldState.LookupFormByIdNoLoad(formId);
+    return form ? form->AsActor() : nullptr;
+  };
+  const auto playersPair = [&](const skymp::rules::FightPair& pair) {
+    MpActor* a = actorOf(pair.a);
+    MpActor* b = actorOf(pair.b);
+    return a && b && played(*a) && played(*b);
+  };
+  // whether two parties stand apart: in different cells or worlds, or
+  // farther than the engine's "enemies nearby" range where they are
+  const auto apartOf = [&](MpActor& x, MpActor& y) {
+    bool apart = true;
+    if (x.GetCellOrWorld() == y.GetCellOrWorld()) {
+      const auto cell = worldState.GetEspm().GetBrowser().LookupById(
+        x.GetCellOrWorld().ToFormId(worldState.espmFiles));
+      const bool interior =
+        cell.rec && cell.rec->GetType() == espm::CELL::kType;
+      apart = skymp::rules::hostility_apart((x.GetPos() - y.GetPos()).Length(),
+                                            interior);
+    }
+    return apart;
+  };
+  const auto keyOf = [](uint32_t x, uint32_t y) {
+    return std::make_pair(std::min(x, y), std::max(x, y));
+  };
+  // thuum ADR-077 decision 4 (tracker #113, #131): a fight between two
+  // players is a fight between their two sides (SideOf). A member's own pair
+  // has an end on each side and is not the two players' own; its key is the
+  // two players, lower id first. Any other pair has none
+  const auto sidesKey =
+    [&](uint32_t x,
+        uint32_t y) -> std::optional<std::pair<uint32_t, uint32_t>> {
+    MpActor* xActor = actorOf(x);
+    MpActor* yActor = actorOf(y);
+    MpActor* xSide = xActor ? SideOf(*xActor) : nullptr;
+    MpActor* ySide = yActor ? SideOf(*yActor) : nullptr;
+    if (!xSide || !ySide || xSide == ySide ||
+        (xSide == xActor && ySide == yActor)) {
+      return std::nullopt;
+    }
+    return keyOf(xSide->GetFormId(), ySide->GetFormId());
+  };
+  // the pairs of two players are measured first, so a member's own pair
+  // that ends in the same tick reads its sides' fight as this tick leaves it
+  const auto all = pImpl->fights->pairs();
+  std::vector<skymp::rules::FightPair> pairs;
+  for (const auto& pair : all) {
+    if (playersPair(pair)) {
+      pairs.push_back(pair);
+    }
+  }
+  for (const auto& pair : all) {
+    if (!playersPair(pair)) {
+      pairs.push_back(pair);
+    }
+  }
+  // the two sides of the players `a` and `b` stand apart only when the
+  // players do and no member's own pair with the other side stands (a
+  // minion's with the other player, or a player's with the other's minion;
+  // two minions are no pair, hostility.rs counted): a thrall fighting beside
+  // the other player keeps the fight on while its commander walks off, and
+  // its own pair ends on its own clock (a minute quiet, or its own walk
+  // apart)
+  const auto memberFightStands = [&](uint32_t a, uint32_t b) {
+    const auto key = keyOf(a, b);
+    for (const auto& member : pairs) {
+      if (GetFights().between(member.a, member.b) &&
+          sidesKey(member.a, member.b) == key) {
+        return true;
+      }
+    }
+    return false;
+  };
+  // what the ends of one tick's pair have told each game, so a notice two
+  // pairs of one sides' fight share reaches that game once: (the game's
+  // player, the figure) of each StopCombatAlarm and (the game's player, the
+  // minion) of each Actor.StopCombat
+  struct Told
+  {
+    std::set<std::pair<uint32_t, uint32_t>> alarms;
+    std::set<std::pair<uint32_t, uint32_t>> stops;
+  };
+  // a user's game is told the end; a hosted NPC's host engine ends its own
+  // combat when it loses its target. Thuum ADR-077 decision 4: while the
+  // game's side and the other's still fight, its figure stays in that fight
+  // (D2's end of a hosted NPC's fight inside it). Playtest 54 #126: a
+  // player's game keeps its figure of the other fighting while a summon or
+  // thrall its engine runs for an NPC still fights that player (the players'
+  // end at 07:41:20.936, server.log:5575, stood rotfern's figure down on c2
+  // and Ariadne's atronach lost its target); a player's own summon or thrall
+  // is in its side's fight, which keeps the players' pair
+  // (ActionListener::NotifyHostility)
+  const auto endOnClient = [&](MpActor& client, MpActor& other, Told& told) {
+    if (SidesFight(client, other)) {
+      spdlog::info("PartOne::TickFights - hostility: {:x}'s figure of {:x} "
+                   "stays in the fight: {:x}'s side and {:x}'s still fight "
+                   "(thuum ADR-077 decision 4)",
+                   client.GetFormId(), other.GetFormId(), client.GetFormId(),
+                   other.GetFormId());
+      return;
+    }
+    if (MinionFights(client.GetFormId(), other.GetFormId())) {
+      spdlog::info("PartOne::TickFights - hostility: {:x}'s figure of {:x} "
+                   "stays in the fight: a summon or thrall its game runs for "
+                   "an NPC still fights it (playtest 54 #126)",
+                   client.GetFormId(), other.GetFormId());
+      return;
+    }
+    if (told.alarms
+          .insert(std::make_pair(client.GetFormId(), other.GetFormId()))
+          .second) {
+      StopCombatOnClient(client, other.GetFormId());
+    }
+  };
+  // pt53-112c, design D2: a fight between a player and an NPC another game
+  // hosts began both ways in that host's game
+  // (ActionListener::NotifyHostility), so it ends there both ways: its
+  // figure of the player stands down (StopCombatAlarm, the players' end) and
+  // the NPC stops its combat (Actor.StopCombat, #113's stand down)
+  const auto hostEnds = [&](MpActor& player, MpActor& npc, Told& told) {
+    if (!played(player) || played(npc)) {
+      return;
+    }
+    MpActor* host = worldState.HostOf(npc);
+    if (!host || host == &player || !played(*host)) {
+      return;
+    }
+    endOnClient(*host, player, told);
+    if (!told.stops.insert(std::make_pair(host->GetFormId(), npc.GetFormId()))
+           .second) {
+      return;
+    }
+    const std::vector<std::optional<
+      std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+      noArgs;
+    SpSnippet("Actor", "StopCombat", noArgs, npc.GetFormId())
+      .Execute(host, SpSnippetMode::kNoReturnResult);
+    spdlog::info("PartOne::TickFights - hostility: {:x}'s host {:x} is told "
+                 "the end of its fight with {:x} (D2)",
+                 npc.GetFormId(), host->GetFormId(), player.GetFormId());
+  };
+  // the end of the pair `x` and `y` to every game it reaches
+  const auto tellEnd = [&](MpActor& x, MpActor& y, Told& told) {
+    if (played(x)) {
+      endOnClient(x, y, told);
+    }
+    if (played(y)) {
+      endOnClient(y, x, told);
+    }
+    hostEnds(x, y, told);
+    hostEnds(y, x, told);
+  };
+  // thuum ADR-077 decision 4 (tracker #113, #131): a member's own pair that
+  // ends with its sides' fight, or whose end was kept while that fight
+  // stood, told now where both its ends remain and its minion lives (a dead
+  // actor's fights are over in every engine)
+  const auto tellMember = [&](uint32_t x, uint32_t y, Told& told) {
+    MpActor* xActor = party(x);
+    MpActor* yActor = party(y);
+    if (!xActor || !yActor || (!played(*xActor) && xActor->IsDead()) ||
+        (!played(*yActor) && yActor->IsDead())) {
+      return;
+    }
+    spdlog::info("PartOne::TickFights - hostility: the fight between {:x} "
+                 "and {:x} ends with its sides' fight; its games are told "
+                 "(thuum ADR-077 decision 4)",
+                 x, y);
+    tellEnd(*xActor, *yActor, told);
+  };
+  // the members' ends kept for the sides' fight of the players in `key`
+  const auto takeKept = [&](const std::pair<uint32_t, uint32_t>& key) {
+    std::set<std::pair<uint32_t, uint32_t>> members;
+    const auto it = pImpl->sidesEnds.find(key);
+    if (it != pImpl->sidesEnds.end()) {
+      members = std::move(it->second);
+      pImpl->sidesEnds.erase(it);
+    }
+    return members;
+  };
+  // thuum ADR-077 decision 4 (tracker #113, #131): the fight between the
+  // sides of the players `a` and `b` is over, so it ends for every member at
+  // once. The members' own pairs still standing end with it (as quiet as it
+  // is, since every hit between the sides kept its pair; none stands at an
+  // apart end, memberFightStands), the ends kept while it stood are told
+  // now, and each player's thralls stand down (#113, design A). Each game
+  // hears each notice once: a thrall's StopCombat from design A, its
+  // commander's StopCombatAlarm on the other player from the players' end
+  const auto sidesEnd = [&](MpActor& a, MpActor& b, Told& told) {
+    const auto key = keyOf(a.GetFormId(), b.GetFormId());
+    auto members = takeKept(key);
+    for (const auto& member : pImpl->fights->pairs()) {
+      if (sidesKey(member.a, member.b) != key) {
+        continue;
+      }
+      MpActor* x = party(member.a);
+      MpActor* y = party(member.b);
+      if (x && y &&
+          pImpl->fights->check(member.a, member.b, apartOf(*x, *y), nowMs)) {
+        members.insert(std::make_pair(member.a, member.b));
+      }
+    }
+    for (uint32_t thrall : StandDownThralls(a, b.GetFormId(), false)) {
+      told.stops.insert(std::make_pair(a.GetFormId(), thrall));
+    }
+    for (uint32_t thrall : StandDownThralls(b, a.GetFormId(), false)) {
+      told.stops.insert(std::make_pair(b.GetFormId(), thrall));
+    }
+    for (const auto& member : members) {
+      tellMember(member.first, member.second, told);
+    }
+  };
+  for (const auto& pair : pairs) {
     MpActor* a = party(pair.a);
     MpActor* b = party(pair.b);
     if (!a || !b) {
-      // the one left stands down the thralls told to fight the one gone
+      // the one left stands down the thralls told to fight the one gone,
+      // and a players' pair's member ends kept while it stood are told
+      // where both ends of one remain (thuum ADR-077 decision 4)
+      Told told;
       if (a && played(*a)) {
-        StandDownThralls(*a, pair.b, true);
+        for (uint32_t thrall : StandDownThralls(*a, pair.b, true)) {
+          told.stops.insert(std::make_pair(pair.a, thrall));
+        }
       }
       if (b && played(*b)) {
-        StandDownThralls(*b, pair.a, true);
+        for (uint32_t thrall : StandDownThralls(*b, pair.a, true)) {
+          told.stops.insert(std::make_pair(pair.b, thrall));
+        }
+      }
+      for (const auto& member : takeKept(keyOf(pair.a, pair.b))) {
+        tellMember(member.first, member.second, told);
       }
       pImpl->fights->forget(a ? pair.b : pair.a);
       continue;
     }
-    bool apart = true;
-    if (a->GetCellOrWorld() == b->GetCellOrWorld()) {
-      const auto cell = worldState.GetEspm().GetBrowser().LookupById(
-        a->GetCellOrWorld().ToFormId(worldState.espmFiles));
-      const bool interior =
-        cell.rec && cell.rec->GetType() == espm::CELL::kType;
-      apart = skymp::rules::hostility_apart(
-        (a->GetPos() - b->GetPos()).Length(), interior);
+    bool apart = apartOf(*a, *b);
+    if (apart && played(*a) && played(*b) &&
+        memberFightStands(pair.a, pair.b)) {
+      apart = false;
     }
-    if (pImpl->fights->check(pair.a, pair.b, apart, nowMs)) {
-      // a user's game is told the end; a hosted NPC's host engine ends its
-      // own combat when it loses its target
-      // playtest 54 #126: a player's game keeps its figure of the other
-      // fighting while a summon or thrall of its own still fights that
-      // player (the players' end at 07:41:20.936, server.log:5575, stood
-      // rotfern's figure down on c2 and Ariadne's atronach lost its target)
-      const auto endOnClient = [&](MpActor& client, uint32_t other) {
-        if (MinionFights(client.GetFormId(), other)) {
-          spdlog::info("PartOne::TickFights - hostility: {:x}'s figure of "
-                       "{:x} stays in the fight: a summon or thrall of {:x}'s "
-                       "still fights it (playtest 54 #126)",
-                       client.GetFormId(), other, client.GetFormId());
-          return;
-        }
-        StopCombatOnClient(client, other);
-      };
-      if (played(*a)) {
-        endOnClient(*a, pair.b);
-      }
-      if (played(*b)) {
-        endOnClient(*b, pair.a);
-      }
-      // pt53-112c, design D2: a fight between a player and an NPC another
-      // game hosts began both ways in that host's game
-      // (ActionListener::NotifyHostility), so it ends there both ways: its
-      // figure of the player stands down (StopCombatAlarm, the players'
-      // end) and the NPC stops its combat (Actor.StopCombat, #113's stand
-      // down)
-      const auto hostEnds = [&](MpActor& player, MpActor& npc) {
-        if (!played(player) || played(npc)) {
-          return;
-        }
-        MpActor* host = worldState.HostOf(npc);
-        if (!host || host == &player || !played(*host)) {
-          return;
-        }
-        endOnClient(*host, player.GetFormId());
-        const std::vector<std::optional<
-          std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-          noArgs;
-        SpSnippet("Actor", "StopCombat", noArgs, npc.GetFormId())
-          .Execute(host, SpSnippetMode::kNoReturnResult);
-        spdlog::info("PartOne::TickFights - hostility: {:x}'s host {:x} is "
-                     "told the end of its fight with {:x} (D2)",
-                     npc.GetFormId(), host->GetFormId(), player.GetFormId());
-      };
-      hostEnds(*a, *b);
-      hostEnds(*b, *a);
-      spdlog::info("PartOne::TickFights - hostility: the fight between {:x} "
-                   "and {:x} is over ({}); the players' games are told",
-                   pair.a, pair.b, apart ? "apart" : "a minute quiet");
-      // and, a players' fight, each player's thralls stand down with it
-      // (#113, design A); a fight with an NPC leaves them to their engine
+    if (!pImpl->fights->check(pair.a, pair.b, apart, nowMs)) {
       if (played(*a) && played(*b)) {
-        StandDownThralls(*a, pair.b, false);
-        StandDownThralls(*b, pair.a, false);
+        KeepThrallsInFight(*a, *b, nowMs);
       }
-    } else if (played(*a) && played(*b)) {
-      KeepThrallsInFight(*a, *b, nowMs);
+      continue;
+    }
+    // thuum ADR-077 decision 4 (tracker #113, #131): a member's own pair
+    // that ends while its sides' fight stands is no end of its fight (a
+    // minion "never stands down while it fights"), so no game hears it now:
+    // its end is kept and told at the sides' end (sidesEnd), or when a
+    // party of the players' pair is gone
+    if (const auto key = sidesKey(pair.a, pair.b);
+        key && GetFights().between(key->first, key->second)) {
+      pImpl->sidesEnds[*key].insert(std::make_pair(pair.a, pair.b));
+      spdlog::info("PartOne::TickFights - hostility: the fight between {:x} "
+                   "and {:x} is over ({}) inside the fight between the sides "
+                   "of {:x} and {:x}, which stands: no game is told until "
+                   "that fight ends (thuum ADR-077 decision 4)",
+                   pair.a, pair.b, apart ? "apart" : "a minute quiet",
+                   key->first, key->second);
+      continue;
+    }
+    Told told;
+    tellEnd(*a, *b, told);
+    spdlog::info("PartOne::TickFights - hostility: the fight between {:x} "
+                 "and {:x} is over ({}); the players' games are told",
+                 pair.a, pair.b, apart ? "apart" : "a minute quiet");
+    // and, a players' fight, its sides' (a fight with an NPC leaves the
+    // thralls to their engine)
+    if (played(*a) && played(*b)) {
+      sidesEnd(*a, *b, told);
     }
   }
 }
@@ -2603,7 +2821,10 @@ constexpr uint64_t kThrallRejoinMs = 1000;
 
 // `commander`'s living thralls its own game simulates, by the command rows
 // (wire-rules cells.rs FollowKind::Commanded), as EndLostNpcThralls reads
-// them
+// them: its own alone (PartOne::OwnerOf), the thralls on its side (thuum
+// ADR-077 decision 4). An NPC's raise its game commands for the NPC
+// (tracker #106, ClaimReanimated) is on no player's side and fights no
+// players' fight
 std::vector<MpActor*> CommandedThralls(
   PartOne& partOne, const std::vector<PartOne::CellFollowEntry>& rows,
   uint32_t commander)
@@ -2617,10 +2838,35 @@ std::vector<MpActor*> CommandedThralls(
     MpActor* thrall = form ? form->AsActor() : nullptr;
     if (!thrall || thrall->IsDead() ||
         partOne.CommanderOf(*thrall) != commander ||
+        partOne.OwnerOf(*thrall) != commander ||
         partOne.SimulatorOf(*thrall) != commander) {
       continue;
     }
     out.push_back(thrall);
+  }
+  return out;
+}
+
+// the players whose fight with `player` stands in the fights table. Thuum
+// ADR-077 decision 4 (tracker #113, #131) with three players: design A
+// tells a thrall into one of its commander's fights at a time, and stands
+// it down from none whose player its engine still fights
+std::set<uint32_t> PlayersFighting(PartOne& partOne, uint32_t player)
+{
+  const auto played = [&](uint32_t formId) {
+    auto& form = partOne.worldState.LookupFormByIdNoLoad(formId);
+    MpActor* actor = form ? form->AsActor() : nullptr;
+    return actor &&
+      partOne.serverState.UserByActor(actor) != Networking::InvalidUserId;
+  };
+  std::set<uint32_t> out;
+  for (const auto& pair : partOne.GetFights().pairs()) {
+    const uint32_t other = pair.a == player ? pair.b
+      : pair.b == player                    ? pair.a
+                                            : 0;
+    if (other != 0 && played(other)) {
+      out.insert(other);
+    }
   }
   return out;
 }
@@ -2655,13 +2901,23 @@ void PartOne::KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs)
   for (const auto& [commander, opponent] :
        { std::pair<MpActor*, MpActor*>{ &a, &b },
          std::pair<MpActor*, MpActor*>{ &b, &a } }) {
-    for (MpActor* thrall :
-         CommandedThralls(*this, rows, commander->GetFormId())) {
+    const uint32_t commanderId = commander->GetFormId();
+    // thuum ADR-077 decision 4 (tracker #113, #131), three players: a
+    // thrall is told into one of its commander's fights at a time. One told
+    // into another that stands stays there, and that fight's tick keeps it
+    // (two told fights overwrote its record each tick, two StartCombat a
+    // second with alternating targets)
+    const auto fighting = PlayersFighting(*this, commanderId);
+    for (MpActor* thrall : CommandedThralls(*this, rows, commanderId)) {
       const uint32_t thrallId = thrall->GetFormId();
       auto it = pImpl->thrallsInFights.find(thrallId);
-      const bool told = it != pImpl->thrallsInFights.end() &&
-        it->second.commander == commander->GetFormId() &&
-        it->second.opponent == opponent->GetFormId();
+      const bool ofCommander = it != pImpl->thrallsInFights.end() &&
+        it->second.commander == commanderId;
+      const bool told =
+        ofCommander && it->second.opponent == opponent->GetFormId();
+      if (ofCommander && !told && fighting.count(it->second.opponent) != 0) {
+        continue;
+      }
       const uint32_t target = thrall->GetHostedCombatTarget();
       if (told &&
           (target != 0 || nowMs < it->second.toldMs + kThrallRejoinMs)) {
@@ -2673,17 +2929,24 @@ void PartOne::KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs)
       SpSnippet("Actor", "StartCombat", args, thrallId)
         .Execute(commander, SpSnippetMode::kNoReturnResult);
       pImpl->thrallsInFights[thrallId] =
-        Impl::ThrallInFight{ commander->GetFormId(), opponent->GetFormId(),
-                             nowMs };
+        Impl::ThrallInFight{ commanderId, opponent->GetFormId(), nowMs };
       spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} {} "
                    "its commander's fight with {:x}: Actor.StartCombat to "
                    "its commander's game (playtest 53 #113, design A)",
-                   thrallId, commander->GetFormId(),
+                   thrallId, commanderId,
                    told ? "rejoins (its host's last state names no target)"
                         : "joins",
                    opponent->GetFormId());
     }
   }
+}
+
+bool PartOne::SidesFight(MpActor& x, MpActor& y)
+{
+  MpActor* xSide = SideOf(x);
+  MpActor* ySide = SideOf(y);
+  return xSide && ySide && xSide != ySide &&
+    GetFights().between(xSide->GetFormId(), ySide->GetFormId());
 }
 
 bool PartOne::MinionFights(uint32_t owner, uint32_t opponent)
@@ -2697,16 +2960,23 @@ bool PartOne::MinionFights(uint32_t owner, uint32_t opponent)
     }
     const auto& form = worldState.LookupFormByIdNoLoad(other);
     MpActor* minion = form ? form->AsActor() : nullptr;
+    // thuum ADR-077 decision 4 (tracker #113, #131): a player's own summon
+    // or thrall fights in its side's fight, which ends for every member at
+    // once, so its own pair keeps no figure here; an NPC's summon or raise
+    // its game runs is on no side, and its own fight with the opponent is
+    // its own (#126's keep, unchanged for it)
     if (minion && !minion->IsDead() && SimulatorOf(*minion) == owner &&
-        (minion->IsSummon() || CommanderOf(*minion) == owner)) {
+        (minion->IsSummon() || CommanderOf(*minion) == owner) &&
+        !SideOf(*minion)) {
       return true;
     }
   }
   return false;
 }
 
-void PartOne::StandDownThralls(MpActor& commander, uint32_t opponent,
-                               bool toldOnly)
+std::vector<uint32_t> PartOne::StandDownThralls(MpActor& commander,
+                                                uint32_t opponent,
+                                                bool toldOnly)
 {
   // the fight's end: each thrall of the commander's that was told to fight
   // the other player, or (unless `toldOnly`, the other party gone) whose
@@ -2716,27 +2986,51 @@ void PartOne::StandDownThralls(MpActor& commander, uint32_t opponent,
   // StopCombatOnClient)
   const uint32_t commanderId = commander.GetFormId();
   const auto rows = GetFollows();
+  // its commander's other fights that stand (this one ended, or its party
+  // is gone): thuum ADR-077 decision 4, three players
+  const auto fighting = PlayersFighting(*this, commanderId);
+  std::vector<uint32_t> stood;
   for (MpActor* thrall : CommandedThralls(*this, rows, commanderId)) {
     const uint32_t thrallId = thrall->GetFormId();
     auto it = pImpl->thrallsInFights.find(thrallId);
     const bool told = it != pImpl->thrallsInFights.end() &&
       it->second.commander == commanderId && it->second.opponent == opponent;
-    if (!told && (toldOnly || thrall->GetHostedCombatTarget() != opponent)) {
+    const uint32_t target = thrall->GetHostedCombatTarget();
+    if (!told && (toldOnly || target != opponent)) {
       continue;
     }
-    // playtest 54 #126: a thrall in a fight of its own with the opponent
-    // stays in it
-    if (GetFights().between(thrallId, opponent)) {
+    // thuum ADR-077 decision 4 (tracker #113, #131: "never stands down
+    // while it fights"), three players: a thrall whose engine fights
+    // another player its commander's fight with stands is in that fight,
+    // and that fight's tick keeps it (KeepThrallsInFight)
+    if (target != 0 && target != opponent && fighting.count(target) != 0) {
       spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} "
-                   "stays in its own fight with {:x} (playtest 54 #126)",
-                   thrallId, commanderId, opponent);
+                   "stays in its commander's fight with {:x}, which its "
+                   "engine fights, past the end of the fight with {:x} "
+                   "(thuum ADR-077 decision 4)",
+                   thrallId, commanderId, target, opponent);
       continue;
     }
+    // thuum ADR-077 decision 4 (tracker #113, #131): its commander's fight
+    // is its side's, and every hit between the two sides kept it, its own
+    // swings and the opponent's on it included, so a thrall still fighting
+    // the opponent kept it on and stands down only here, with the rest of
+    // its side; a pair of its own with the opponent is quiet as long, or
+    // stood apart, and ends with it (TickFights' sidesEnd). HYPOTHESIS,
+    // unread: a thrall in a fight its own engine began (373a6 took Ariadne
+    // as its target by itself within a second) stands down at the one
+    // Actor.StopCombat below; if its engine fights on, its next hit on the
+    // other side begins the sides' fight again
+    // (ActionListener::NotifyHostility), so the record follows the engine
+    // either way. The read that settles it is its host's state stream
+    // (SetHostedState, GetHostedCombatTarget) naming no target within a few
+    // seconds of the StopCombat
     const std::vector<std::optional<
       std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
       noArgs;
     SpSnippet("Actor", "StopCombat", noArgs, thrallId)
       .Execute(&commander, SpSnippetMode::kNoReturnResult);
+    stood.push_back(thrallId);
     spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} "
                  "stands down with its commander's fight with {:x}: "
                  "Actor.StopCombat to its commander's game (playtest 53 "
@@ -2752,6 +3046,7 @@ void PartOne::StandDownThralls(MpActor& commander, uint32_t opponent,
       ++it;
     }
   }
+  return stood;
 }
 
 namespace {
@@ -3546,7 +3841,39 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
   }
   const auto standing = worldState.CellOf(*actor);
   if (standing && *standing == *cell) {
-    return; // already where the host's engine has it: the usual case, silent
+    // already where the host's engine has it: the usual case, silent. thuum
+    // tracker #162 (playtest 55, Eli: "weird scripting shit with draugr not
+    // standing up"): but a roster names only an actor its game holds no form
+    // for, and the grid serves a game the 3x3 squares around its own player
+    // alone, the grant's word going to the actors its game already hears
+    // (FlipHostedFlags). Ariadne hosted Bleak Falls Temple 0x371de standing
+    // two squares west of 0x380b3 and 0x380b5, so her game held no form for
+    // them and kept them AI-off puppets through trigger 0x38098's wake-up,
+    // which rotfern's step fired; her game took them seconds later, as she
+    // walked closer, and 0x380b3 never stood. The actor's own pass subscribes
+    // its simulator wherever it stands (D6's keep, ForceSubscriptionsUpdate),
+    // so the host's game gets the CreateActor with the word false within a
+    // roster, whatever the distance
+    if (worldState.HostOf(*actor) == &reporter &&
+        actor->GetListeners().count(&reporter) == 0) {
+      actor->ForceSubscriptionsUpdate();
+      if (actor->GetListeners().count(&reporter) == 0) {
+        return drop("its host hears nothing of it and its grid pass "
+                    "subscribed nothing");
+      }
+      // and every game that hears the actor hears the word now: the grant's
+      // flip reached only the actors the new host's game heard, so a
+      // follower whose follow the grant ended, still within the actor's
+      // 3x3, would keep its own "not hosted by other" while the host's
+      // engine took the actor up, two engines running it (ADR-063). The
+      // host hears its "false" a second time, which changes nothing
+      actor->UpdateHoster(reporter.GetFormId());
+      spdlog::info("PartOne - npc-puppet: {:x}'s roster names {:x} in its "
+                   "cell {:x} at ({:.0f}, {:.0f}, {:.0f}), beyond its grid; "
+                   "subscribed to its host",
+                   reporter.GetFormId(), refrId, *cell, pos.x, pos.y, pos.z);
+    }
+    return;
   }
   if (MpActor* other = worldState.HostOf(*actor);
       other && other != &reporter) {
@@ -4292,6 +4619,33 @@ PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,
   if (verdict == ClaimVerdict::Granted || verdict == ClaimVerdict::Reclaimed) {
     // the word to every listening game: the commander simulates it now
     actor.UpdateHoster(commander.GetFormId());
+    // thuum ADR-077 decision 4 (tracker #113, #131): a raised body joins its
+    // commander's side at its stand-up (SideOf), and a member's strike
+    // counts from then. Its fights before the raise were a dead actor's,
+    // over in every engine, so they end here without a notice, with any end
+    // of theirs TickFights kept for a sides' fight: the other player's
+    // killing blow is never a member's strike that holds the side's fight
+    // on past the players' walk apart, nor an end told at that fight's end
+    if (actor.IsDead()) {
+      const uint32_t id = actor.GetFormId();
+      if (pImpl->fights->in_fight(id)) {
+        pImpl->fights->forget(id);
+        spdlog::info("PartOne - hostility: {:x}'s fights before its raise "
+                     "end without a notice, a dead actor's (thuum ADR-077 "
+                     "decision 4)",
+                     id);
+      }
+      for (auto& entry : pImpl->sidesEnds) {
+        auto& members = entry.second;
+        for (auto it = members.begin(); it != members.end();) {
+          if (it->first == id || it->second == id) {
+            it = members.erase(it);
+          } else {
+            ++it;
+          }
+        }
+      }
+    }
   }
   return verdict;
 }
@@ -4299,6 +4653,51 @@ PartOne::ClaimVerdict PartOne::ClaimCommanded(MpActor& commander,
 uint32_t PartOne::CommanderOf(const MpActor& actor) const
 {
   return pImpl->cells->commander_of(actor.GetFormId());
+}
+
+uint32_t PartOne::OwnerOf(const MpActor& minion) const
+{
+  // a dead summon or thrall is nobody's minion: a late swing or a stream
+  // over the body starts no fight with its owner (a summon's entry lasts to
+  // its end report or its backstop; a thrall's command ends at its death)
+  if (minion.IsDead()) {
+    return 0;
+  }
+  // a summon: the minions table, a player's own summons alone
+  const auto summon = pImpl->minionOwners.find(minion.GetFormId());
+  if (summon != pImpl->minionOwners.end()) {
+    return summon->second;
+  }
+  // a thrall: its commander, unless its raise was an NPC's (tracker #106,
+  // TakeThrallsThroughDoor's test: the accepted caster 0 for a command no
+  // hit stamped)
+  const uint32_t commander = CommanderOf(minion);
+  const uint32_t caster = minion.ReanimateAcceptedCaster();
+  if (commander == 0 || (caster != 0 && caster != commander)) {
+    return 0;
+  }
+  return commander;
+}
+
+MpActor* PartOne::SideOf(MpActor& actor)
+{
+  // thuum ADR-077 decision 4 (tracker #113, #131): a player is its own side,
+  // a summon or thrall its owner's while a user plays that owner; anything
+  // else is on no player's side (a minion whose owner left included: its
+  // owner's fights left with it, TickFights' forget)
+  const auto played = [&](MpActor& a) {
+    return serverState.UserByActor(&a) != Networking::InvalidUserId;
+  };
+  if (played(actor)) {
+    return &actor;
+  }
+  const uint32_t ownerId = OwnerOf(actor);
+  if (ownerId == 0) {
+    return nullptr;
+  }
+  const auto& form = worldState.LookupFormByIdNoLoad(ownerId);
+  MpActor* owner = form ? form->AsActor() : nullptr;
+  return owner && played(*owner) ? owner : nullptr;
 }
 
 namespace {
@@ -4344,6 +4743,10 @@ std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
                    row.actor, door, commanderId, destWorldOrCell);
       continue;
     }
+    // whether the commander's game held the thrall through its own move
+    // (thuum tracker #162: D6's keep, both edges, holds a pair within one
+    // world or cell at any distance; a door into another parted them)
+    const bool heldThrough = thrall->GetListeners().count(&commander) != 0;
     // MpActor::Teleport's three sets without its message (PartOne's
     // sighting move's shape): the new grid, then the position subscribes it
     thrall->SetCellOrWorldObsolete(
@@ -4351,6 +4754,31 @@ std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
     thrall->SetPos(destPos);
     thrall->SetAngle(destRot);
     taken.push_back(row.actor);
+    // a door within one world or cell: the commander's game held the
+    // thrall throughout, so no create word places it at the landing, and
+    // its engine still runs it where it stood (the engine never takes a
+    // commanded actor through the player's teleport door, #48 leg D). The
+    // landing goes to that game as a Teleport for the thrall's idx, the
+    // viewer's word of npc-handoff D6 (remoteServer's onTeleportMessage,
+    // moveRefrToPosition). HYPOTHESIS until a door within one world is
+    // played with a thrall: the commander's engine runs it on from the
+    // landing; how many vanilla load doors land in their own world or cell
+    // is unread (lab/esm.py can count the XTEL doors that do)
+    if (heldThrough && thrall->GetListeners().count(&commander) != 0) {
+      const auto user = serverState.UserByActor(&commander);
+      if (user != Networking::InvalidUserId) {
+        TeleportMessage landing;
+        landing.idx = thrall->GetIdx();
+        landing.pos = { destPos.x, destPos.y, destPos.z };
+        landing.rot = { destRot.x, destRot.y, destRot.z };
+        landing.worldOrCell = destWorldOrCell;
+        GetSendTarget().Send(user, landing, true);
+        spdlog::info("[verb:npc-fate] {:x}'s commander {:x} held it through "
+                     "door {:x} within {:x}: its game is sent the landing "
+                     "(thuum tracker #162)",
+                     row.actor, commanderId, door, destWorldOrCell);
+      }
+    }
     spdlog::info("[verb:npc-fate] {:x} goes through door {:x} with its "
                  "commander {:x}: the record to ({:.0f}, {:.0f}, {:.0f}) in "
                  "{:x}, the command with it, cell {:x} (ADR-060)",
@@ -4443,6 +4871,13 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg,
     FormDesc::FromFormId(msg.baseId, worldState.espmFiles));
   pImpl->cells->summon_row(summon->GetFormId(), caster.GetFormId(),
                            worldState.CellOf(*summon).value_or(0), nowMs);
+  // thuum tracker #160 (ADR-077): a player's own summon is its player's
+  // minion; an NPC's is no player's (tracker #106), its host's player only
+  // simulating it, so the minions table leaves it out (the live sprint's
+  // stopgap; tracker #167 moves the owner onto the summon row)
+  if (!npc) {
+    pImpl->minionOwners[summon->GetFormId()] = caster.GetFormId();
+  }
   // the word now, with the bind on it (the record held, the row placed)
   summon->ForceSubscriptionsUpdate();
   spdlog::info("[verb:summon] {} stands for {:.1f} s, its owner {:x}'s game "
@@ -4481,6 +4916,9 @@ void PartOne::DispelSummon(MpActor& summon, const char* reason)
   const auto row = pImpl->summons->summon_row(id);
   const uint32_t caster = row.caster;
   const uint64_t nowMs = SteadyNowMs();
+  // a dispel ends the minion whatever its fade does (tracker #160): a hit
+  // on a fading summon starts no fight with its owner
+  pImpl->minionOwners.erase(id);
   // the engine's own fade, the GMST read from the records (never from
   // memory): fSummonedCreatureFadeOutSeconds (Skyrim.esm, lab/esm.py on
   // sky-srv, 2026-11-16), 1.5 s
@@ -4523,6 +4961,7 @@ void PartOne::ForgetSummon(uint32_t actor)
 {
   pImpl->summons->summon_forget(actor);
   pImpl->cells->summon_row_end(actor);
+  pImpl->minionOwners.erase(actor);
 }
 
 uint32_t PartOne::ReleaseAnyClaim(MpActor& actor)
@@ -9070,6 +9509,8 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
   auto& cache = worldState.GetEspmCache();
   std::optional<uint32_t> word;
   uint32_t wallRef = 0;
+  uint32_t lookTarget = 0;
+  int32_t innerRadius = WordWall{}.innerRadius;
   const auto read = [&](const espm::LookupResult& lookup) {
     if (!lookup.rec) {
       return;
@@ -9084,6 +9525,13 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
         continue;
       }
       for (const auto& property : script.properties) {
+        // thuum tracker #166: the teaching distance, where the record sets
+        // one (Bleak Falls Sanctum's 0x709d2 does not)
+        if (property.type == espm::Property::Type::Int &&
+            !Utils::stricmp(property.name.data(), "innerRadius")) {
+          innerRadius = property.value.integer;
+          continue;
+        }
         // the wall's word is the script's myWord01 (Skyrim.esm's trigger
         // references carry it with the wall's other eight properties, the
         // base ACTI's copy of the script the shared five: lab/esm.py's VMAD
@@ -9100,6 +9548,10 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
           // the trigger's own bounds are the chamber (WordWallTrigger's OBND
           // is a box of about 4,000 units a side)
           wallRef = lookup.ToGlobalId(property.value.formId);
+        } else if (!Utils::stricmp(property.name.data(), "lookTargetWord01")) {
+          // thuum tracker #166: the mark the script measures the player to
+          // (StartFX's innerRadius test); 0x709d2's is 0x709d4
+          lookTarget = lookup.ToGlobalId(property.value.formId);
         }
       }
     }
@@ -9115,7 +9567,135 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
   if (!lookup.rec || !(lookup.rec->GetType() == "WOOP")) {
     return std::nullopt;
   }
-  return WordWall{ *word, wallRef };
+  return WordWall{ *word, wallRef, lookTarget, innerRadius };
+}
+
+namespace {
+// thuum tracker #138: every word of power a SHOU's variations name (its SNAM,
+// libespm SHOU::GetData), with that shout, both as global ids, read once per
+// set of game files (ScriptAttachmentIndexOf's shape: built whole before it
+// is kept). Each shout's winning record is read (GetDistinctRecordsByType
+// walks the load order from its last file), and one the last file deletes
+// or marks ignored names nothing (TESShout's RecordFlags kDeleted 1 << 5 and
+// kIgnored 1 << 12, CommonLibSSE-NG include/RE/T/TESShout.h:28, :30, the
+// same two bits StoryIndexOf skips, so kStoryNodeSkipped's value).
+// A word kept names exactly one shout. A word two or more shouts name keeps
+// none, logged once with every shout that names it: no record field tells
+// the player's shout from a creature's. Read 2026-11-18 from the Mac's
+// copies in lab/.cache/game with lab/esm.py's walk over SHOU (Skyrim.esm,
+// Dawnguard.esm, Dragonborn.esm; Update.esm and HearthFires.esm not there):
+// MarkedforDeathShout 0x7097c and Dawnguard's six
+// DLC1DragonDrainVitalityShout02 to 07 all name the words 0x60297, 0x60298
+// and 0x60299 (MarkedforDeathShout and DLC1DragonDrainVitalityShout06 each
+// hold FULL, MDOB, DESC and three SNAM, nothing more); the words of 0x13e07,
+// 0x3f9ea and 0x32920 (the playtest 55 records' shouts) are each named by
+// one shout only
+const std::unordered_map<uint32_t, uint32_t>& ShoutOfWordIndexOf(
+  WorldState& worldState)
+{
+  static std::map<const espm::Loader*, std::unordered_map<uint32_t, uint32_t>>
+    g_index;
+  auto it = g_index.find(&worldState.GetEspm());
+  if (it != g_index.end()) {
+    return it->second;
+  }
+  // every distinct shout that names each word, in id order
+  std::map<uint32_t, std::set<uint32_t>> named;
+  auto& cache = worldState.GetEspmCache();
+  for (const auto& lookup :
+       worldState.GetEspm().GetBrowser().GetDistinctRecordsByType(
+         espm::SHOU::kType)) {
+    const auto* shou = espm::Convert<espm::SHOU>(lookup.rec);
+    if (!shou || (lookup.rec->GetFlags() & kStoryNodeSkipped) != 0) {
+      continue;
+    }
+    const uint32_t shout = lookup.ToGlobalId(lookup.rec->GetId());
+    const auto data = shou->GetData(cache);
+    for (uint32_t i = 0; i < data.count; ++i) {
+      if (data.variations[i].word != 0) {
+        named[lookup.ToGlobalId(data.variations[i].word)].insert(shout);
+      }
+    }
+  }
+  std::unordered_map<uint32_t, uint32_t> index;
+  size_t ambiguous = 0;
+  for (const auto& [word, shouts] : named) {
+    if (shouts.size() == 1) {
+      index.emplace(word, *shouts.begin());
+      continue;
+    }
+    ++ambiguous;
+    std::string names;
+    for (const uint32_t shout : shouts) {
+      names += fmt::format("{}{:x}", names.empty() ? "" : ", ", shout);
+    }
+    spdlog::info("[verb:word-wall] word {:x} is named by {} shouts ({}): no "
+                 "shout recorded for it (thuum tracker #138)",
+                 word, shouts.size(), names);
+  }
+  spdlog::info("[verb:word-wall] {} word(s) of power indexed to their shouts, "
+               "{} named by more than one shout and left out (thuum tracker "
+               "#138)",
+               index.size(), ambiguous);
+  return g_index.emplace(&worldState.GetEspm(), std::move(index))
+    .first->second;
+}
+}
+
+std::optional<uint32_t> PartOne::ShoutOfWord(uint32_t word)
+{
+  if (!worldState.HasEspm()) {
+    return std::nullopt;
+  }
+  const auto& index = ShoutOfWordIndexOf(worldState);
+  const auto it = index.find(word);
+  if (it == index.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+std::optional<uint32_t> PartOne::RecordShoutOfWord(MpActor& actor,
+                                                   uint32_t word)
+{
+  const auto shout = ShoutOfWord(word);
+  if (!shout ||
+      !actor.RecordShoutEntry(
+        MpActor::ShoutEntry::Shout,
+        FormDesc::FromFormId(*shout, worldState.espmFiles))) {
+    return std::nullopt;
+  }
+  return shout;
+}
+
+// A known divergence (thuum tracker #138's review): the pass cannot tell a
+// shout the record never held from one the player's own Papyrus RemoveShout
+// took off it (ActionListener.cpp's RecordPlayerOwn, the RemoveShout row's
+// ForgetShoutEntry, thuum ADR-068 rung 5), which leaves the shout's words
+// known; such a shout comes back at every login, where the engine's save
+// keeps it removed. Telling them apart needs a mark on the change form (a
+// schema change, rule 6), outside this fix
+size_t PartOne::RecordShoutsOfKnownWords(MpActor& actor)
+{
+  size_t recorded = 0;
+  const ShoutRecord record = actor.GetShoutRecord();
+  for (const auto& known : record.wordsKnown) {
+    uint32_t word = 0;
+    try {
+      word = known.ToFormId(worldState.espmFiles);
+    } catch (const std::exception&) {
+      // a word of a plugin this load order lacks: no shout here names it
+      continue;
+    }
+    if (const auto shout = RecordShoutOfWord(actor, word)) {
+      ++recorded;
+      spdlog::info("[verb:word-wall] {:x} knows word {:x} without its shout "
+                   "{:x}: the shout recorded at the login and sent with the "
+                   "record (thuum tracker #138)",
+                   actor.GetFormId(), word, *shout);
+    }
+  }
+  return recorded;
 }
 
 namespace {

@@ -253,6 +253,39 @@ TEST_CASE("After a login the server teaches the recorded shouts and words",
   Leave(p);
 }
 
+TEST_CASE("A login gives back the shout of a known word whose shout the "
+          "record lacks (thuum tracker #138)",
+          "[Shouts][WordWall][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p);
+  // a word wall's record from before #138 (playtest 55's records held the
+  // wall's word 13e22 with no shout for it): the word known, its shout
+  // missing
+  REQUIRE(ac.RecordShoutEntry(MpActor::ShoutEntry::WordKnown,
+                              FormDesc::FromString("13e22:Skyrim.esm")));
+  REQUIRE(!ac.HasShoutEntry(MpActor::ShoutEntry::Shout, kShout));
+
+  // the first movement after the login records the shout and sends it with
+  // the rest of the record; the word comes back silently, no re-learn
+  ac.SetMapMarkersPending(true);
+  p.Messages().clear();
+  Stand(p);
+  REQUIRE(ac.HasShoutEntry(MpActor::ShoutEntry::Shout, kShout));
+  REQUIRE(ac.GetShoutRecord().shouts.size() == 1);
+  REQUIRE(ac.GetChangeForm().shoutRecord->shouts.size() == 1);
+  const auto told = Told(p);
+  REQUIRE(Contains(told, "Actor.AddShout 13e07"));
+  REQUIRE(Contains(told, "Form.SetPlayerKnows 13e22"));
+  REQUIRE(!Contains(told, "Game.TeachWord 13e22"));
+
+  // again (the next login's pass): the record holds the shout, nothing
+  // recorded twice
+  REQUIRE(p.RecordShoutsOfKnownWords(ac) == 0);
+  REQUIRE(ac.GetShoutRecord().shouts.size() == 1);
+  Leave(p);
+}
+
 TEST_CASE("The change form keeps a player's shouts and words, and older "
           "records read as none",
           "[Shouts]")

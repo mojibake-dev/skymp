@@ -584,6 +584,10 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       SendFavorites(*actor);
       SendRaceMenuPreset(*actor);
       SendActorValues(*actor);
+      // thuum tracker #138: a known word's shout the record lacks (a word
+      // wall's word recorded before the wall recorded its shout) goes into
+      // the record first, so the record sent below gives it back
+      partOne.RecordShoutsOfKnownWords(*actor);
       SendShoutRecord(*actor);
     }
 
@@ -616,6 +620,11 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     actor->SetPos(
       NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
       SetPosMode::CalledByUpdateMovement);
+    // thuum tracker #166: a player armed at a word wall walks on toward its
+    // word (nobody is armed, mostly: one lookup then)
+    if (isPlayersOwn && !wordWallArms.empty()) {
+      CheckWordWallArm(rawMsgData, *actor);
+    }
     // thuum docs/verbs/npc-fate.md (ADR-048's B): a game-file actor's
     // heights from its host's samples, a fall report's evidence
     if (actor->IsFateRespawned()) {
@@ -4971,12 +4980,39 @@ void ActionListener::OnPerkPick(const RawMessageData& rawMsgData,
   partOne.PickPerk(*actor, msg.perk);
 }
 
+namespace {
+// thuum tracker #166: the point a wall's word is taught at, the trigger
+// script's lookTargetWord01 (Bleak Falls Sanctum's 0x709d4, 173 units from
+// the wall 0x709d1: lab/esm.py, 2026-11-17). A mark is a marker the loader
+// does not hold, so its record's placement is read; a trigger that names
+// none, or one whose record is not placed, is measured from `near` (the
+// wall it names, else itself), as the reach is
+struct WordMark
+{
+  uint32_t ref = 0;
+  NiPoint3 pos;
+};
+
+WordMark WordMarkOf(WorldState& worldState, const PartOne::WordWall& wordWall,
+                    const MpObjectReference& near)
+{
+  if (wordWall.lookTarget != 0) {
+    if (const auto placement =
+          PlacementOfRecord(worldState, wordWall.lookTarget)) {
+      return WordMark{ wordWall.lookTarget, placement->pos };
+    }
+  }
+  return WordMark{ near.GetFormId(), near.GetPos() };
+}
+}
+
 // thuum docs/verbs/word-wall.md (M4): a player's game reports the word wall
 // trigger its engine fired. The wall's word is the trigger reference's own
 // (PartOne::WordOfWall), the player must stand within the activation reach of
-// it in the same cell, and the word goes into the shout record once (R0), the
-// seat told as the console's TeachWord tells it; every refusal is logged by
-// name and nothing of a refused report lands.
+// it in the same cell, and the word goes into the shout record once (R0) with
+// the shout it belongs to (thuum tracker #138), the seat told as the
+// console's AddShout and TeachWord tell it; every refusal is logged by name
+// and nothing of a refused report lands.
 void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
                                 const WordWallMessage& msg)
 {
@@ -5037,12 +5073,52 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
       return;
     }
   }
+  // thuum tracker #166 (playtest 55, both seats taught about 2,000 units
+  // out): the primitive is where the game starts the chant
+  // (WordWallTriggerBleakFallsScript.onTriggerEnter calls StartWordWall),
+  // not where it teaches: WordWallTriggerScript.StartFX teaches a player
+  // under innerRadius of lookTargetWord01 (the script read with lab/pex.py,
+  // 2026-11-17). A report from farther out arms the wall for the player and
+  // teaches nothing; its movement updates teach when it comes that close
+  // (CheckWordWallArm). One from a player who knows the word goes on to say
+  // so. Declared narrowing: the script's line of sight to the mark
+  // (isLooking) and its bound of 200 in combat are not read here
+  const auto mark = WordMarkOf(partOne.worldState, *wordWall, *near);
+  const float markDistance = (actor->GetPos() - mark.pos).Length();
+  const auto innerRadius = static_cast<float>(wordWall->innerRadius);
+  if (markDistance >= innerRadius &&
+      !actor->HasShoutEntry(MpActor::ShoutEntry::WordKnown, word)) {
+    wordWallArms[actor->GetFormId()] =
+      WordWallArm{ msg.wall, mark.ref, mark.pos, innerRadius };
+    spdlog::info("[verb:word-wall] {:x} armed at wall {:x}: {:.0f} units off "
+                 "the word's mark {:x}, taught under {:.0f}",
+                 actor->GetFormId(), msg.wall, markDistance, mark.ref,
+                 innerRadius);
+    return;
+  }
+  wordWallArms.erase(actor->GetFormId());
   const bool added = actor->RecordShoutEntry(
     MpActor::ShoutEntry::WordKnown,
     FormDesc::FromFormId(word, partOne.worldState.espmFiles));
+  // thuum tracker #138: the word's shout goes into the record with it and
+  // the game is told as the console's AddShout tells it, shout before word
+  // as a login sends them (SendShoutRecord). Playtest 55 (Eli: "word didnt
+  // stay for rotfern"): the record held the wall's word without its shout,
+  // so a relaunch gave back a word with no shout to hold it. A word known
+  // already gets its missing shout here too (one taught this session by the
+  // console or a script, which record the word alone)
+  const auto shout = partOne.RecordShoutOfWord(*actor, word);
+  if (shout) {
+    SendShoutEntry(*actor, MpActor::ShoutEntry::Shout, *shout);
+  }
   if (!added) {
     spdlog::info("[verb:word-wall] {:x} at wall {:x}: word {:x} known already",
                  actor->GetFormId(), msg.wall, word);
+    if (shout) {
+      spdlog::info("[verb:word-wall] {:x} at wall {:x}: known word {:x}'s "
+                   "shout {:x} recorded and sent (thuum tracker #138)",
+                   actor->GetFormId(), msg.wall, word, *shout);
+    }
     return;
   }
   SendShoutEntry(*actor, MpActor::ShoutEntry::WordKnown, word);
@@ -5050,6 +5126,55 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
                "units off the wall {:x})",
                actor->GetFormId(), word, msg.wall, distance,
                near->GetFormId());
+  if (shout) {
+    spdlog::info("[verb:word-wall] {:x} at wall {:x}: word {:x}'s shout {:x} "
+                 "recorded and sent (thuum tracker #138)",
+                 actor->GetFormId(), msg.wall, word, *shout);
+  }
+}
+
+void ActionListener::CheckWordWallArm(const RawMessageData& rawMsgData,
+                                      MpActor& actor)
+{
+  const auto it = wordWallArms.find(actor.GetFormId());
+  if (it == wordWallArms.end()) {
+    return;
+  }
+  const WordWallArm arm = it->second;
+  const auto& form = partOne.worldState.LookupFormById(arm.trigger);
+  const MpObjectReference* trigger =
+    form ? form->AsObjectReference() : nullptr;
+  // out of the chamber: the trigger's primitive when it has one, else its
+  // cell; coming back takes a new report, as the game's own entry does
+  if (!trigger || actor.GetCellOrWorld() != trigger->GetCellOrWorld() ||
+      (trigger->HasPrimitive() &&
+       !trigger->IsPointInsidePrimitive(actor.GetPos()))) {
+    wordWallArms.erase(it);
+    spdlog::info("[verb:word-wall] {:x} left wall {:x}'s trigger unarmed, "
+                 "no word taught",
+                 actor.GetFormId(), arm.trigger);
+    return;
+  }
+  const float distance = (actor.GetPos() - arm.markPos).Length();
+  if (distance >= arm.innerRadius) {
+    return;
+  }
+  // the report replayed, so one rule teaches (OnWordWall disarms then); the
+  // arm goes first, so a replay refused for any reason is not tried again
+  // on every step
+  wordWallArms.erase(it);
+  spdlog::info("[verb:word-wall] {:x} came {:.0f} units off wall {:x}'s word "
+               "mark {:x}, under {:.0f}: its armed report replayed",
+               actor.GetFormId(), distance, arm.trigger, arm.mark,
+               arm.innerRadius);
+  WordWallMessage replay;
+  replay.wall = arm.trigger;
+  OnWordWall(rawMsgData, replay);
+}
+
+void ActionListener::ForgetWordWallArm(uint32_t actorId)
+{
+  wordWallArms.erase(actorId);
 }
 
 void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,
@@ -12586,6 +12711,83 @@ namespace {
 // its fight again at most this often, a policy of the server's (TickFights'
 // own period, as #113's rejoin), not an engine number
 constexpr uint64_t kMinionRetellMs = 1000;
+
+// thuum ADR-023, the players' notice: `victim`'s game starts combat between
+// its figure of `aggressor` and its own player, Actor.StartCombat on the
+// attacker's server id (the client maps it to its figure) aimed at 0x14,
+// that client's player. A player struck (NotifyHostility's two players) and
+// a minion's owner (ADR-077, tracker #160) hear the same notice
+void TellPlayerOfFight(MpActor& aggressor, MpActor& victim)
+{
+  SpSnippetObjectArgument player;
+  player.formId = 0x14;
+  player.type = "Actor";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ player };
+  SpSnippet("Actor", "StartCombat", args, aggressor.GetFormId())
+    .Execute(&victim, SpSnippetMode::kNoReturnResult);
+}
+
+// thuum ADR-077 decision 4 (2026-11-18, Eli, playtest 55: "definitionally
+// with a hostile thrall the fight COUDLN't end"; tracker #113, #131): a
+// fight between two players is a fight between their two sides, each player
+// with their summons and thralls (PartOne::SideOf, the one mapping). Every
+// hit between the two sides, player to player, minion to player, player to
+// minion and minion to minion, keeps the two players' pair in the fights
+// table, so their fight ends only when no member of either side has struck
+// the other for the quiet window (wire-rules hostility.rs FIGHT_QUIET_MS),
+// and a minion still fighting the other side keeps it on. The table keeps
+// actors' pairs and no sides (hostility.rs Fights), so the players' pair is
+// hit here, beside the actors' own pair NotifyHostility goes on to hit. A hit
+// between the two players themselves is their own pair, hit and told below
+// as ADR-023 has it. An NPC, an NPC's summon or raise (tracker #106), a dead
+// minion and a minion whose owner left are on no side, and a hit within one
+// side is its own engine's. Two minions are two NPCs, which the fight rule
+// never counts as a pair of their own (hostility.rs counted), so this runs
+// ahead of that rule.
+//
+// A pair begun here tells both players' games, since neither engine saw a
+// hit between the two players (ADR-023 tells one side only because the
+// attacker's engine saw its own hit): each game StartCombat on its figure of
+// the other player, aimed at its own player (tracker #160 for a player's hit
+// on a minion; the same notice since decision 4 for a minion's hit on a
+// player or on a minion). The pair is a players' fight from then on:
+// TickFights runs design A on it each tick (KeepThrallsInFight sends both
+// players' thralls at the other player), stands the thralls down at its end,
+// and the server refuses both players a wait until then (wire-rules rest.rs
+// in_fight). HYPOTHESIS, unread (tracker #160): on a player's first hit on a
+// minion the owner's game gets a second StartCombat on the same figure in the
+// same tick, D2's, aimed at the minion; whether the engine's StartCombat on
+// an actor already in combat (39359, ghidra/notes/hostility-1-7-104.md) adds
+// a target to its CombatGroup's targets (CommonLibSSE-NG
+// include/RE/C/CombatGroup.h) or replaces the first is unread; if it
+// replaces, D2's undoes the owner's notice on the owner's seat. The read
+// that settles it: after turbo-srv, the owner seat's self.combat and the
+// attacker figure's combat target in the recorder trace, beside Eli's music
+// and compass dot
+void HitAcrossSides(PartOne& partOne, MpActor& aggressor, MpActor& target,
+                    uint64_t nowMs)
+{
+  MpActor* aggressorSide = partOne.SideOf(aggressor);
+  MpActor* targetSide = partOne.SideOf(target);
+  if (!aggressorSide || !targetSide || aggressorSide == targetSide ||
+      (aggressorSide == &aggressor && targetSide == &target)) {
+    return;
+  }
+  if (!partOne.GetFights().hit(aggressorSide->GetFormId(),
+                               targetSide->GetFormId(), nowMs)) {
+    return;
+  }
+  TellPlayerOfFight(*aggressorSide, *targetSide);
+  TellPlayerOfFight(*targetSide, *aggressorSide);
+  spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, "
+               "between the sides of {:x} and {:x}: a fight between the two "
+               "players begins, and both games are told (thuum ADR-077 "
+               "decision 4, tracker #160)",
+               aggressor.GetFormId(), target.GetFormId(),
+               aggressorSide->GetFormId(), targetSide->GetFormId());
+}
 }
 
 void ActionListener::TellHostOfFight(MpActor& aggressor, MpActor& target,
@@ -12647,6 +12849,13 @@ void ActionListener::TellHostOfFight(MpActor& aggressor, MpActor& target,
 void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
                                      std::chrono::steady_clock::time_point now)
 {
+  const auto nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      now.time_since_epoch())
+      .count());
+  // thuum ADR-077 decision 4 (tracker #113, #131, #160): the two players'
+  // pair first, for any hit between their two sides
+  HitAcrossSides(partOne, aggressor, target, nowMs);
   skymp::rules::HostilityFacts facts{};
   facts.aggressor_is_player =
     partOne.serverState.UserByActor(&aggressor) != Networking::InvalidUserId;
@@ -12660,10 +12869,6 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
   if (!skymp::rules::hostility_counted(facts)) {
     return;
   }
-  const auto nowMs = static_cast<uint64_t>(
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-      now.time_since_epoch())
-      .count());
   if (!partOne.GetFights().hit(aggressor.GetFormId(), target.GetFormId(),
                                nowMs)) {
     // playtest 54 #126: a hit in a fight going on tells nothing, but a
@@ -12731,14 +12936,7 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
     return;
   }
 
-  SpSnippetObjectArgument player;
-  player.formId = 0x14;
-  player.type = "Actor";
-  const std::vector<std::optional<
-    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
-    args{ player };
-  SpSnippet("Actor", "StartCombat", args, aggressor.GetFormId())
-    .Execute(&target, SpSnippetMode::kNoReturnResult);
+  TellPlayerOfFight(aggressor, target);
   spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, a "
                "fight begins; the victim's game is told",
                aggressor.GetFormId(), target.GetFormId());

@@ -12603,6 +12603,66 @@ void TellPlayerOfFight(MpActor& aggressor, MpActor& victim)
   SpSnippet("Actor", "StartCombat", args, aggressor.GetFormId())
     .Execute(&victim, SpSnippetMode::kNoReturnResult);
 }
+
+// thuum ADR-077 decision 4 (2026-11-18, Eli, playtest 55: "definitionally
+// with a hostile thrall the fight COUDLN't end"; tracker #113, #131): a
+// fight between two players is a fight between their two sides, each player
+// with their summons and thralls (PartOne::SideOf, the one mapping). Every
+// hit between the two sides, player to player, minion to player, player to
+// minion and minion to minion, keeps the two players' pair in the fights
+// table, so their fight ends only when no member of either side has struck
+// the other for the quiet window (wire-rules hostility.rs FIGHT_QUIET_MS),
+// and a minion still fighting the other side keeps it on. The table keeps
+// actors' pairs and no sides (hostility.rs Fights), so the players' pair is
+// hit here, beside the actors' own pair NotifyHostility goes on to hit. A hit
+// between the two players themselves is their own pair, hit and told below
+// as ADR-023 has it. An NPC, an NPC's summon or raise (tracker #106), a dead
+// minion and a minion whose owner left are on no side, and a hit within one
+// side is its own engine's. Two minions are two NPCs, which the fight rule
+// never counts as a pair of their own (hostility.rs counted), so this runs
+// ahead of that rule.
+//
+// A pair begun here tells both players' games, since neither engine saw a
+// hit between the two players (ADR-023 tells one side only because the
+// attacker's engine saw its own hit): each game StartCombat on its figure of
+// the other player, aimed at its own player (tracker #160 for a player's hit
+// on a minion; the same notice since decision 4 for a minion's hit on a
+// player or on a minion). The pair is a players' fight from then on:
+// TickFights runs design A on it each tick (KeepThrallsInFight sends both
+// players' thralls at the other player), stands the thralls down at its end,
+// and the server refuses both players a wait until then (wire-rules rest.rs
+// in_fight). HYPOTHESIS, unread (tracker #160): on a player's first hit on a
+// minion the owner's game gets a second StartCombat on the same figure in the
+// same tick, D2's, aimed at the minion; whether the engine's StartCombat on
+// an actor already in combat (39359, ghidra/notes/hostility-1-7-104.md) adds
+// a target to its CombatGroup's targets (CommonLibSSE-NG
+// include/RE/C/CombatGroup.h) or replaces the first is unread; if it
+// replaces, D2's undoes the owner's notice on the owner's seat. The read
+// that settles it: after turbo-srv, the owner seat's self.combat and the
+// attacker figure's combat target in the recorder trace, beside Eli's music
+// and compass dot
+void HitAcrossSides(PartOne& partOne, MpActor& aggressor, MpActor& target,
+                    uint64_t nowMs)
+{
+  MpActor* aggressorSide = partOne.SideOf(aggressor);
+  MpActor* targetSide = partOne.SideOf(target);
+  if (!aggressorSide || !targetSide || aggressorSide == targetSide ||
+      (aggressorSide == &aggressor && targetSide == &target)) {
+    return;
+  }
+  if (!partOne.GetFights().hit(aggressorSide->GetFormId(),
+                               targetSide->GetFormId(), nowMs)) {
+    return;
+  }
+  TellPlayerOfFight(*aggressorSide, *targetSide);
+  TellPlayerOfFight(*targetSide, *aggressorSide);
+  spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, "
+               "between the sides of {:x} and {:x}: a fight between the two "
+               "players begins, and both games are told (thuum ADR-077 "
+               "decision 4, tracker #160)",
+               aggressor.GetFormId(), target.GetFormId(),
+               aggressorSide->GetFormId(), targetSide->GetFormId());
+}
 }
 
 void ActionListener::TellHostOfFight(MpActor& aggressor, MpActor& target,
@@ -12664,6 +12724,13 @@ void ActionListener::TellHostOfFight(MpActor& aggressor, MpActor& target,
 void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
                                      std::chrono::steady_clock::time_point now)
 {
+  const auto nowMs = static_cast<uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      now.time_since_epoch())
+      .count());
+  // thuum ADR-077 decision 4 (tracker #113, #131, #160): the two players'
+  // pair first, for any hit between their two sides
+  HitAcrossSides(partOne, aggressor, target, nowMs);
   skymp::rules::HostilityFacts facts{};
   facts.aggressor_is_player =
     partOne.serverState.UserByActor(&aggressor) != Networking::InvalidUserId;
@@ -12676,67 +12743,6 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
   facts.same_actor = &aggressor == &target;
   if (!skymp::rules::hostility_counted(facts)) {
     return;
-  }
-  // thuum tracker #131: the attack the fight rule counted, by aggressor,
-  // what PartOne's StruckWithinQuiet asks of a thrall at its commander's
-  // fight's end (NoteHitBy counts a heal's hit too, as a death's evidence)
-  target.NoteAttackBy(aggressor.GetFormId(), now);
-  const auto nowMs = static_cast<uint64_t>(
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-      now.time_since_epoch())
-      .count());
-  // thuum tracker #160 (playtest 55, Eli: "summoner wasn't 'looped in' to
-  // aggro"; ADR-077 decision 2: "if someone attacks your summon they should
-  // become hostile to you, and the summon should attack"): a player's hit on
-  // a summon or thrall another player owns (PartOne::OwnerOf) is a hit on
-  // that owner too. The fights table took the minion's pair alone, so the
-  // owner's game heard "the summon and the attacker fight" (TellHostOfFight)
-  // and never that the attacker is its player's enemy: its player stayed
-  // out of combat, no music and no compass dot (playtest 55, server.log
-  // :2707 and :2912 begin the pairs with the summons alone; :2878 and :3249
-  // end them). Now the pair (attacker, owner) is hit on every such hit, so
-  // it keeps the minion's own pair's quiet clock, and a hit that begins it
-  // tells both games, since neither engine saw a hit between the two
-  // players (ADR-023 tells one side only because the attacker's engine saw
-  // its own hit on its victim): the owner's game StartCombat on its figure
-  // of the attacker, and the attacker's game StartCombat on its figure of
-  // the owner, each aimed at that game's own player. The fights table keeps
-  // no sides, so a later hit by the owner on the attacker, inside the
-  // standing pair, tells nobody; the attacker's game had to hear it here.
-  // The pair is a players' fight from then on: TickFights runs design A on
-  // it each tick (KeepThrallsInFight sends both players' thralls at the
-  // other player, the attacker's at the owner too), stands the thralls
-  // down at its end, and the server refuses both players a wait until then
-  // (wire-rules rest.rs in_fight). The minion's own fight goes on below as
-  // before, so on the minion's first hit the owner's game gets a second
-  // StartCombat on the same figure in the same tick, D2's, aimed at the
-  // minion. HYPOTHESIS, unread: whether the engine's StartCombat on an
-  // actor already in combat (39359, ghidra/notes/hostility-1-7-104.md)
-  // adds a target to its CombatGroup's targets (CommonLibSSE-NG
-  // include/RE/C/CombatGroup.h) or replaces the first; if it replaces, D2's
-  // undoes the owner's notice on the owner's seat. The read that settles
-  // it: after turbo-srv, the owner seat's self.combat and the attacker
-  // figure's combat target in the recorder trace, beside Eli's music and
-  // compass dot. An NPC's summon or thrall is no player's (tracker #106),
-  // and one's own minion is one's own engine's
-  if (facts.aggressor_is_player && !facts.target_is_player) {
-    const uint32_t ownerId = partOne.OwnerOf(target);
-    if (ownerId != 0 && ownerId != aggressor.GetFormId()) {
-      const auto& ownerForm = partOne.worldState.LookupFormByIdNoLoad(ownerId);
-      MpActor* owner = ownerForm ? ownerForm->AsActor() : nullptr;
-      if (owner &&
-          partOne.serverState.UserByActor(owner) !=
-            Networking::InvalidUserId &&
-          partOne.GetFights().hit(aggressor.GetFormId(), ownerId, nowMs)) {
-        TellPlayerOfFight(aggressor, *owner);
-        TellPlayerOfFight(*owner, aggressor);
-        spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, "
-                     "a summon or thrall of {:x}'s, and a fight with its "
-                     "owner begins; its owner's game is told (ADR-077, "
-                     "tracker #160), and the attacker's game of its owner",
-                     aggressor.GetFormId(), target.GetFormId(), ownerId);
-      }
-    }
   }
   if (!partOne.GetFights().hit(aggressor.GetFormId(), target.GetFormId(),
                                nowMs)) {

@@ -2321,10 +2321,10 @@ TEST_CASE("A STAT attached by its record is no world body: a claim and a "
     Sample(p, 1, kMarker, markerAt + NiPoint3{ 0.f, 0.f, -20.f }, false);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
                       "prop 108a5c by touch 0; neither an item, a world body "
-                      "nor a dead NPC's body") == 1);
+                      "nor an NPC's or a player's body") == 1);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 moves prop "
-                      "108a5c; neither an item, a world body nor a dead NPC's "
-                      "body") == 1);
+                      "108a5c; neither an item, a world body nor an NPC's or a "
+                      "player's body") == 1);
     DestructionStageMessage report;
     report.refr = kMarker;
     report.stage = 1;

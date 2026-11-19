@@ -1916,6 +1916,9 @@ TEST_CASE("A knocked living NPC another seat claimed takes no movement from "
   rest.pos = { at.x, at.y, at.z };
   rest.rot = { 0.f, 0.f, 0.f };
   rest.asleep = true;
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
   p.GetActionListener().OnPropTransform(raw, rest);
   REQUIRE(p.PropLiveOwner(actor) == 0);
   MoveBody(p, 0, kPredator, at + NiPoint3{ 50.f, 0.f, 0.f });

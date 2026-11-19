@@ -907,9 +907,30 @@ TEST_CASE("A hit on a thrall another game simulates, whose host's state "
 
   // the fight begins: the host is told both ways (D2), and, the thrall its
   // own, it hears the players' notice as the owner too (tracker #160,
-  // ADR-077; #160's thrall case below reads which is which)
-  swings();
+  // ADR-077; #160's thrall case below reads which is which). The players'
+  // pair stands from that hit, so the case's first fights tick (a new
+  // PartOne's first Tick runs one) joins the thrall to its commander's
+  // fight (#113's design A), a StartCombat queued for the next Tick
+  {
+    LogCapture log;
+    swings();
+    INFO(log.oss.str());
+    REQUIRE(log.Count("thrall 85547 of ff000d20 joins its commander's fight "
+                      "with ff000d21") == 1);
+  }
   REQUIRE(SnippetsTo(p, 0, "StartCombat").size() == 3);
+  // the join, drained: one StartCombat on the thrall aimed at the other
+  // player's figure, to the commander's game alone
+  p.Messages().clear();
+  p.Tick(); // snippets are deferred
+  const auto joined = SnippetsTo(p, 0, "StartCombat");
+  REQUIRE(joined.size() == 1);
+  REQUIRE(joined[0]["selfId"] ==
+          SpSnippet::MakeLongFormId(&p.worldState, kPredator));
+  REQUIRE(joined[0]["arguments"] ==
+          nlohmann::json::array(
+            { nlohmann::json{ { "formId", kOther }, { "type", "Actor" } } }));
+  REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
 
   // the host's state names the attacker: the next hit tells nothing
   predator.SetHostedState(kOther, 0);
@@ -1199,9 +1220,14 @@ TEST_CASE("A player's hit on another player's summon begins a fight with its "
     REQUIRE(notices[0]["class"] == "Actor");
     REQUIRE(notices[0]["selfId"] == kOther);
     // the notice and D2's two (the summon at the attacker's figure, the
-    // figure at the summon); the attacker's game hears none
+    // figure at the summon); the attacker's game hears the players' notice
+    // of the owner, its figure of the owner at its own player, since
+    // neither engine saw a hit between the two players
     REQUIRE(SnippetsTo(p, 0, "StartCombat").size() == 3);
-    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+    const auto toAttacker = PlayersNoticesTo(p, 1);
+    REQUIRE(toAttacker.size() == 1);
+    REQUIRE(toAttacker[0]["selfId"] == kHost);
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").size() == 1);
     REQUIRE(p.GetFights().between(kOther, kHost));
     REQUIRE(p.GetFights().between(kOther, summon));
 
@@ -1230,6 +1256,51 @@ TEST_CASE("A player's hit on another player's summon begins a fight with its "
     REQUIRE(p.GetFights().between(kOther, summon));
     p.TickFights(NowMs() + 2'000);
     REQUIRE(p.GetFights().between(kOther, kHost));
+  }
+
+  // the fights table keeps no sides, so the owner's strike back, inside
+  // the standing pair, tells nobody: the attacker's game heard its notice
+  // of the owner at the summon's hit, or would never hear it
+  SECTION("another player's summon, then its owner strikes the attacker: "
+          "the attacker's game heard the owner's notice at the summon's hit, "
+          "and the strike tells nothing new")
+  {
+    const uint32_t summon = Summoned(p);
+    Swings(p, 1, summon);
+    const auto toAttacker = PlayersNoticesTo(p, 1);
+    REQUIRE(toAttacker.size() == 1);
+    REQUIRE(toAttacker[0]["selfId"] == kHost);
+    p.Messages().clear();
+    {
+      LogCapture log;
+      Swings(p, 0, kOther);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("a fight begins") == 0);
+    }
+    REQUIRE(PlayersNoticesTo(p, 0).empty());
+    REQUIRE(PlayersNoticesTo(p, 1).empty());
+    REQUIRE(p.GetFights().between(kOther, kHost));
+  }
+
+  // a dead summon is nobody's minion (PartOne::OwnerOf): a late swing on
+  // the body begins no fight with its owner, whose entry lasts to the end
+  // report or the backstop
+  SECTION("a dead summon: no owner's, no fight with its owner")
+  {
+    const uint32_t summon = Summoned(p);
+    auto& atronach = p.worldState.GetFormAt<MpActor>(summon);
+    atronach.Kill(nullptr);
+    REQUIRE(atronach.IsDead());
+    REQUIRE(p.OwnerOf(atronach) == 0);
+    {
+      LogCapture log;
+      Swings(p, 1, summon);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("a summon or thrall of") == 0);
+    }
+    REQUIRE(PlayersNoticesTo(p, 0).empty());
+    REQUIRE(PlayersNoticesTo(p, 1).empty());
+    REQUIRE_FALSE(p.GetFights().between(kOther, kHost));
   }
 
   SECTION("one's own summon: its own engine's, no notice")
@@ -1286,7 +1357,8 @@ TEST_CASE("A player's hit on another player's thrall begins a fight with its "
   p.worldState.npcEnabled = true;
   auto& predator = HostsThrall(p);
 
-  SECTION("another player's thrall: its commander's game is told")
+  SECTION("another player's thrall: its commander's game is told, and the "
+          "thrall joins its commander's fight")
   {
     REQUIRE(p.OwnerOf(predator) == kHost);
     {
@@ -1295,14 +1367,33 @@ TEST_CASE("A player's hit on another player's thrall begins a fight with its "
       INFO(log.oss.str());
       REQUIRE(log.Count(fmt::format("ff000d21 hit 85547, {}", kOwnerTold)) ==
               1);
+      // the players' pair stands from that hit, so the case's first fights
+      // tick runs design A on it (#113)
+      REQUIRE(log.Count("thrall 85547 of ff000d20 joins its commander's "
+                        "fight with ff000d21") == 1);
     }
     const auto notices = PlayersNoticesTo(p, 0);
     REQUIRE(notices.size() == 1);
     REQUIRE(notices[0]["selfId"] == kOther);
     REQUIRE(SnippetsTo(p, 0, "StartCombat").size() == 3);
-    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+    const auto toAttacker = PlayersNoticesTo(p, 1);
+    REQUIRE(toAttacker.size() == 1);
+    REQUIRE(toAttacker[0]["selfId"] == kHost);
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").size() == 1);
     REQUIRE(p.GetFights().between(kOther, kHost));
     REQUIRE(p.GetFights().between(kOther, kPredator));
+    // the join, drained: one StartCombat on the thrall aimed at the other
+    // player's figure, to the commander's game alone
+    p.Messages().clear();
+    p.Tick(); // snippets are deferred
+    const auto joined = SnippetsTo(p, 0, "StartCombat");
+    REQUIRE(joined.size() == 1);
+    REQUIRE(joined[0]["selfId"] ==
+            SpSnippet::MakeLongFormId(&p.worldState, kPredator));
+    REQUIRE(joined[0]["arguments"] ==
+            nlohmann::json::array({ nlohmann::json{ { "formId", kOther },
+                                                    { "type", "Actor" } } }));
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
   }
 
   SECTION("one's own thrall: its own engine's, no notice")

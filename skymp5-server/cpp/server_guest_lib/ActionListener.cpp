@@ -12692,10 +12692,29 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
   // :2707 and :2912 begin the pairs with the summons alone; :2878 and :3249
   // end them). Now the pair (attacker, owner) is hit on every such hit, so
   // it keeps the minion's own pair's quiet clock, and a hit that begins it
-  // sends the owner's game the players' notice; TickFights ends it as any
-  // players' fight. The minion's own fight goes on below as before. An NPC's
-  // summon or thrall is no player's (tracker #106), and one's own minion is
-  // one's own engine's
+  // tells both games, since neither engine saw a hit between the two
+  // players (ADR-023 tells one side only because the attacker's engine saw
+  // its own hit on its victim): the owner's game StartCombat on its figure
+  // of the attacker, and the attacker's game StartCombat on its figure of
+  // the owner, each aimed at that game's own player. The fights table keeps
+  // no sides, so a later hit by the owner on the attacker, inside the
+  // standing pair, tells nobody; the attacker's game had to hear it here.
+  // The pair is a players' fight from then on: TickFights runs design A on
+  // it each tick (KeepThrallsInFight sends both players' thralls at the
+  // other player, the attacker's at the owner too), stands the thralls
+  // down at its end, and the server refuses both players a wait until then
+  // (wire-rules rest.rs in_fight). The minion's own fight goes on below as
+  // before, so on the minion's first hit the owner's game gets a second
+  // StartCombat on the same figure in the same tick, D2's, aimed at the
+  // minion. HYPOTHESIS, unread: whether the engine's StartCombat on an
+  // actor already in combat (39359, ghidra/notes/hostility-1-7-104.md)
+  // adds a target to its CombatGroup's targets (CommonLibSSE-NG
+  // include/RE/C/CombatGroup.h) or replaces the first; if it replaces, D2's
+  // undoes the owner's notice on the owner's seat. The read that settles
+  // it: after turbo-srv, the owner seat's self.combat and the attacker
+  // figure's combat target in the recorder trace, beside Eli's music and
+  // compass dot. An NPC's summon or thrall is no player's (tracker #106),
+  // and one's own minion is one's own engine's
   if (facts.aggressor_is_player && !facts.target_is_player) {
     const uint32_t ownerId = partOne.OwnerOf(target);
     if (ownerId != 0 && ownerId != aggressor.GetFormId()) {
@@ -12706,10 +12725,11 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
             Networking::InvalidUserId &&
           partOne.GetFights().hit(aggressor.GetFormId(), ownerId, nowMs)) {
         TellPlayerOfFight(aggressor, *owner);
+        TellPlayerOfFight(*owner, aggressor);
         spdlog::info("ActionListener::OnWeaponHit - hostility: {:x} hit {:x}, "
                      "a summon or thrall of {:x}'s, and a fight with its "
                      "owner begins; its owner's game is told (ADR-077, "
-                     "tracker #160)",
+                     "tracker #160), and the attacker's game of its owner",
                      aggressor.GetFormId(), target.GetFormId(), ownerId);
       }
     }

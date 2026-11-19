@@ -1127,15 +1127,17 @@ public:
   // the thrall's death is its effect's end
   uint32_t CommanderOf(const MpActor& actor) const;
   // thuum tracker #160 (ADR-077: a player, their summons and their thralls
-  // are one side): the player who owns `minion`, 0 when no player does. A
-  // minion is a player's summon (the minions table, written at
-  // OnSummonStart for a player's own report alone and gone at its dispel)
-  // or a player's thrall (CommanderOf, unless its raise's stamp names
-  // another caster: an NPC's raise, its host's command). An NPC's summon or
-  // thrall is no player's (tracker #106): the summon row and HostOf name
-  // its host's player, who simulates it and owns nothing of it. The one
-  // owner every rule asks of a summon or thrall (NotifyHostility first);
-  // tracker #167's unified summons and thralls builds on it
+  // are one side): the player who owns `minion`, 0 when no player does or
+  // the minion is dead. A minion is a player's summon (the minions table,
+  // written at OnSummonStart for a player's own report alone and gone at
+  // its dispel) or a player's thrall (CommanderOf, unless its raise's stamp
+  // names another caster: an NPC's raise, its host's command). An NPC's
+  // summon or thrall is no player's (tracker #106): the summon row and
+  // HostOf name its host's player, who simulates it and owns nothing of it.
+  // The one question every rule asks of a summon or thrall's owner
+  // (NotifyHostility first). The minions table is the live sprint's
+  // stopgap: tracker #167 reads a summon's owner from its row in the
+  // summon rule (wire-rules summons.rs) and deletes the table
   uint32_t OwnerOf(const MpActor& minion) const;
   // thuum #48 leg D (x-reanimate-claim v2.4 20261116-035932; ADR-060): a
   // player's load door is the server's teleport (MpObjectReference's

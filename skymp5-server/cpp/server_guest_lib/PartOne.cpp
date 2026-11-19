@@ -417,14 +417,18 @@ struct PartOne::Impl
   // rule is Rust's, ADR-020): each live summon by its server actor, its
   // backstop (the reported time left plus 5 s) and its dispel's fade
   rust::Box<skymp::rules::Summons> summons = skymp::rules::new_summons();
-  // the minions table (thuum tracker #160, ADR-077; PartOne::OwnerOf): each
-  // live summon a player cast, by its server actor, the player's actor.
-  // Written at OnSummonStart for a player's own report alone, never an
-  // NPC's (tracker #106: the summon row's caster is the reporting game's
-  // player for both, so it cannot say whose the summon is), and gone at the
-  // dispel or the forget; runtime only, as the summons are. A thrall's
-  // owner is its command row's (CommanderOf), which OwnerOf reads beside
-  // it. Tracker #167's unified summons and thralls builds on this table
+  // the minions table (thuum tracker #160, ADR-077; PartOne::OwnerOf), the
+  // live sprint's stopgap: each live summon a player cast, by its server
+  // actor, the player's actor. Written at OnSummonStart for a player's own
+  // report alone, never an NPC's (tracker #106: the summon row's caster is
+  // the reporting game's player for both, so it cannot say whose the
+  // summon is), and gone at the dispel or the forget; runtime only, as the
+  // summons are. A thrall's owner is its command row's (CommanderOf), which
+  // OwnerOf reads beside it. Its home is the summon rule (ADR-010, ADR-020):
+  // tracker #167 puts an owner on wire-rules summons.rs's row (0 for an
+  // NPC's summon, which OnSummonStart's `npc` names) and the bridge's
+  // SummonRow, reads
+  // OwnerOf from the live row, and deletes this table and its two erases
   std::unordered_map<uint32_t, uint32_t> minionOwners;
 
   // thuum ADR-068 rung 4 (the created half): a unique actor's attached
@@ -4387,6 +4391,12 @@ uint32_t PartOne::CommanderOf(const MpActor& actor) const
 
 uint32_t PartOne::OwnerOf(const MpActor& minion) const
 {
+  // a dead summon or thrall is nobody's minion: a late swing or a stream
+  // over the body starts no fight with its owner (a summon's entry lasts to
+  // its end report or its backstop; a thrall's command ends at its death)
+  if (minion.IsDead()) {
+    return 0;
+  }
   // a summon: the minions table, a player's own summons alone
   const auto summon = pImpl->minionOwners.find(minion.GetFormId());
   if (summon != pImpl->minionOwners.end()) {
@@ -4576,7 +4586,8 @@ void PartOne::OnSummonStart(MpActor& caster, const SummonMessage& msg,
                            worldState.CellOf(*summon).value_or(0), nowMs);
   // thuum tracker #160 (ADR-077): a player's own summon is its player's
   // minion; an NPC's is no player's (tracker #106), its host's player only
-  // simulating it, so the minions table leaves it out
+  // simulating it, so the minions table leaves it out (the live sprint's
+  // stopgap; tracker #167 moves the owner onto the summon row)
   if (!npc) {
     pImpl->minionOwners[summon->GetFormId()] = caster.GetFormId();
   }

@@ -650,7 +650,7 @@ public:
   // thuum tracker #138: the shout a word of power belongs to, the SHOU whose
   // variations (its SNAM, the three words) name the word, from an index over
   // the load order's SHOU records built at the first ask; none for a word no
-  // shout names
+  // shout names or two or more shouts name (the index logs those once)
   std::optional<uint32_t> ShoutOfWord(uint32_t word);
   // thuum tracker #138: the word's shout into the actor's shout record when
   // the record lacks it; the shout when it was recorded now, none when the

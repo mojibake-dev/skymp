@@ -25,11 +25,25 @@ constexpr uint32_t kWallItself = 0x709d1;
 constexpr uint32_t kWord = 0x13e22;
 // thuum tracker #138: the shout the word belongs to, UnrelentingForceShout
 // SHOU 0x13e07, its first word WOOP 0x13e22 (ShoutsTest.cpp's lab/esm.py
-// read of Skyrim.esm, 2026-10-10; read again with `lab/esm.py find
+// read of Skyrim.esm, 2026-10-10; to read it again: `lab/esm.py find
 // Skyrim.esm SHOU UnrelentingForce` on sky-srv, each SNAM[12]'s first four
 // bytes a word; EspmTest.cpp's "SHOU variations" reads the same SNAMs); the
 // case below reads it through the test's own espm before it relies on it
 constexpr uint32_t kShout = 0x13e07;
+// the other shouts playtest 55's records hold (tracker #138: profile 1's
+// 3f9ea, profile 2's 32920): FireBreathShout 0x3f9ea (docs/verbs/shouts.md,
+// lab/esm.py 2026-10-10) and BecomeEtherealShout 0x32920
+// (docs/verbs/magic-effects.md's Become Ethereal row)
+constexpr uint32_t kFireBreath = 0x3f9ea;
+constexpr uint32_t kBecomeEthereal = 0x32920;
+// a word two shouts name (read 2026-11-18 with lab/esm.py's walk over SHOU
+// on the Mac's copies in lab/.cache/game; PartOne.cpp's ShoutOfWordIndexOf
+// cites it): MarkedforDeathShout 0x7097c's first word 0x60297 is also the
+// first word of Dawnguard's DLC1DragonDrainVitalityShout06, 0x02008442 in
+// the test's load order (Dawnguard.esm third, unit/main.cpp)
+constexpr uint32_t kMarkedForDeath = 0x7097c;
+constexpr uint32_t kDrainVitality06 = 0x02008442;
+constexpr uint32_t kSharedWord = 0x60297;
 const NiPoint3 kByTheTrigger{ -7601.f, -254.f, 674.f }; // 100 units off
 
 void Enter(PartOne& p, const NiPoint3& pos, uint32_t cell)
@@ -164,6 +178,21 @@ TEST_CASE("A word learned at a wall records the shout it belongs to, and the "
   REQUIRE(shou.ToGlobalId(data.variations[0].word) == kWord);
   REQUIRE(p.ShoutOfWord(kWord).value_or(0) == kShout);
   REQUIRE_FALSE(p.ShoutOfWord(kWallItself).has_value());
+  // and every word of each shout playtest 55's records hold maps back to
+  // that shout alone, so the login's pass records none but its own
+  for (const uint32_t shout : { kShout, kFireBreath, kBecomeEthereal }) {
+    CAPTURE(shout);
+    const auto lookup = p.worldState.GetEspm().GetBrowser().LookupById(shout);
+    REQUIRE(lookup.rec != nullptr);
+    const auto words = espm::GetData<espm::SHOU>(shout, &p.worldState);
+    REQUIRE(words.count == 3);
+    for (uint32_t i = 0; i < words.count; ++i) {
+      CAPTURE(i);
+      REQUIRE(words.variations[i].word != 0);
+      REQUIRE(p.ShoutOfWord(lookup.ToGlobalId(words.variations[i].word))
+                .value_or(0) == shout);
+    }
+  }
 
   Enter(p, kByTheTrigger, kSanctum);
   auto& reader = p.worldState.GetFormAt<MpActor>(kReader);
@@ -181,5 +210,46 @@ TEST_CASE("A word learned at a wall records the shout it belongs to, and the "
   ReportWall(p, kTrigger);
   REQUIRE(reader.GetShoutRecord().shouts.size() == 1);
   REQUIRE(ShoutsAddedTold(p, kShout) == 1);
+  Leave(p);
+}
+
+TEST_CASE("A word two shouts name maps to no shout (thuum tracker #138)",
+          "[WordWall][espm]")
+{
+  PartOne& p = GetPartOne();
+  // the premise, read through the test's espm: both shouts' first variation
+  // names the same word
+  for (const uint32_t shout : { kMarkedForDeath, kDrainVitality06 }) {
+    CAPTURE(shout);
+    const auto lookup = p.worldState.GetEspm().GetBrowser().LookupById(shout);
+    REQUIRE(lookup.rec != nullptr);
+    const auto words = espm::GetData<espm::SHOU>(shout, &p.worldState);
+    REQUIRE(words.count >= 1);
+    REQUIRE(lookup.ToGlobalId(words.variations[0].word) == kSharedWord);
+  }
+  // no record field tells the player's shout from a creature's, so the word
+  // keeps none: a login's pass or a wall records nothing for it
+  REQUIRE_FALSE(p.ShoutOfWord(kSharedWord).has_value());
+}
+
+TEST_CASE("A wall read of a word known without its shout records the shout "
+          "and tells only the shout (thuum tracker #138)",
+          "[WordWall][espm]")
+{
+  PartOne& p = GetPartOne();
+  Enter(p, kByTheTrigger, kSanctum);
+  auto& reader = p.worldState.GetFormAt<MpActor>(kReader);
+  // the word known with no shout, as the console's teachword or a script's
+  // Game.TeachWord records it during a session
+  REQUIRE(reader.RecordShoutEntry(
+    MpActor::ShoutEntry::WordKnown,
+    FormDesc::FromFormId(kWord, p.worldState.espmFiles)));
+  ReportWall(p, kTrigger);
+  REQUIRE(reader.HasShoutEntry(MpActor::ShoutEntry::Shout, kShout));
+  REQUIRE(reader.GetShoutRecord().wordsKnown.size() == 1);
+  REQUIRE(reader.GetShoutRecord().shouts.size() == 1);
+  REQUIRE(ShoutsAddedTold(p, kShout) == 1);
+  // the word was known already: the game is not taught it again
+  REQUIRE(TeachWordsTold(p) == 0);
   Leave(p);
 }

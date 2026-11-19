@@ -5045,19 +5045,26 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
   const bool added = actor->RecordShoutEntry(
     MpActor::ShoutEntry::WordKnown,
     FormDesc::FromFormId(word, partOne.worldState.espmFiles));
-  if (!added) {
-    spdlog::info("[verb:word-wall] {:x} at wall {:x}: word {:x} known already",
-                 actor->GetFormId(), msg.wall, word);
-    return;
-  }
   // thuum tracker #138: the word's shout goes into the record with it and
   // the game is told as the console's AddShout tells it, shout before word
   // as a login sends them (SendShoutRecord). Playtest 55 (Eli: "word didnt
   // stay for rotfern"): the record held the wall's word without its shout,
-  // so a relaunch gave back a word with no shout to hold it
+  // so a relaunch gave back a word with no shout to hold it. A word known
+  // already gets its missing shout here too (one taught this session by the
+  // console or a script, which record the word alone)
   const auto shout = partOne.RecordShoutOfWord(*actor, word);
   if (shout) {
     SendShoutEntry(*actor, MpActor::ShoutEntry::Shout, *shout);
+  }
+  if (!added) {
+    spdlog::info("[verb:word-wall] {:x} at wall {:x}: word {:x} known already",
+                 actor->GetFormId(), msg.wall, word);
+    if (shout) {
+      spdlog::info("[verb:word-wall] {:x} at wall {:x}: known word {:x}'s "
+                   "shout {:x} recorded and sent (thuum tracker #138)",
+                   actor->GetFormId(), msg.wall, word, *shout);
+    }
+    return;
   }
   SendShoutEntry(*actor, MpActor::ShoutEntry::WordKnown, word);
   spdlog::info("[verb:word-wall] {:x} learns word {:x} at wall {:x} ({:.0f} "

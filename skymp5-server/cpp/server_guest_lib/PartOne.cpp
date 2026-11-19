@@ -9303,8 +9303,21 @@ namespace {
 // libespm SHOU::GetData), with that shout, both as global ids, read once per
 // set of game files (ScriptAttachmentIndexOf's shape: built whole before it
 // is kept). Each shout's winning record is read (GetDistinctRecordsByType
-// walks the load order from its last file), so a word two shouts name keeps
-// the shout of the later file
+// walks the load order from its last file), and one the last file deletes
+// or marks ignored names nothing (TESShout's RecordFlags kDeleted 1 << 5 and
+// kIgnored 1 << 12, CommonLibSSE-NG include/RE/T/TESShout.h:28, :30, the
+// same two bits StoryIndexOf skips, so kStoryNodeSkipped's value).
+// A word kept names exactly one shout. A word two or more shouts name keeps
+// none, logged once with every shout that names it: no record field tells
+// the player's shout from a creature's. Read 2026-11-18 from the Mac's
+// copies in lab/.cache/game with lab/esm.py's walk over SHOU (Skyrim.esm,
+// Dawnguard.esm, Dragonborn.esm; Update.esm and HearthFires.esm not there):
+// MarkedforDeathShout 0x7097c and Dawnguard's six
+// DLC1DragonDrainVitalityShout02 to 07 all name the words 0x60297, 0x60298
+// and 0x60299 (MarkedforDeathShout and DLC1DragonDrainVitalityShout06 each
+// hold FULL, MDOB, DESC and three SNAM, nothing more); the words of 0x13e07,
+// 0x3f9ea and 0x32920 (the playtest 55 records' shouts) are each named by
+// one shout only
 const std::unordered_map<uint32_t, uint32_t>& ShoutOfWordIndexOf(
   WorldState& worldState)
 {
@@ -9314,26 +9327,44 @@ const std::unordered_map<uint32_t, uint32_t>& ShoutOfWordIndexOf(
   if (it != g_index.end()) {
     return it->second;
   }
-  std::unordered_map<uint32_t, uint32_t> index;
+  // every distinct shout that names each word, in id order
+  std::map<uint32_t, std::set<uint32_t>> named;
   auto& cache = worldState.GetEspmCache();
   for (const auto& lookup :
        worldState.GetEspm().GetBrowser().GetDistinctRecordsByType(
          espm::SHOU::kType)) {
     const auto* shou = espm::Convert<espm::SHOU>(lookup.rec);
-    if (!shou) {
+    if (!shou || (lookup.rec->GetFlags() & kStoryNodeSkipped) != 0) {
       continue;
     }
     const uint32_t shout = lookup.ToGlobalId(lookup.rec->GetId());
     const auto data = shou->GetData(cache);
     for (uint32_t i = 0; i < data.count; ++i) {
       if (data.variations[i].word != 0) {
-        index.emplace(lookup.ToGlobalId(data.variations[i].word), shout);
+        named[lookup.ToGlobalId(data.variations[i].word)].insert(shout);
       }
     }
   }
-  spdlog::info("[verb:word-wall] {} word(s) of power indexed to their shouts "
-               "(thuum tracker #138)",
-               index.size());
+  std::unordered_map<uint32_t, uint32_t> index;
+  size_t ambiguous = 0;
+  for (const auto& [word, shouts] : named) {
+    if (shouts.size() == 1) {
+      index.emplace(word, *shouts.begin());
+      continue;
+    }
+    ++ambiguous;
+    std::string names;
+    for (const uint32_t shout : shouts) {
+      names += fmt::format("{}{:x}", names.empty() ? "" : ", ", shout);
+    }
+    spdlog::info("[verb:word-wall] word {:x} is named by {} shouts ({}): no "
+                 "shout recorded for it (thuum tracker #138)",
+                 word, shouts.size(), names);
+  }
+  spdlog::info("[verb:word-wall] {} word(s) of power indexed to their shouts, "
+               "{} named by more than one shout and left out (thuum tracker "
+               "#138)",
+               index.size(), ambiguous);
   return g_index.emplace(&worldState.GetEspm(), std::move(index))
     .first->second;
 }
@@ -9365,6 +9396,13 @@ std::optional<uint32_t> PartOne::RecordShoutOfWord(MpActor& actor,
   return shout;
 }
 
+// A known divergence (thuum tracker #138's review): the pass cannot tell a
+// shout the record never held from one the player's own Papyrus RemoveShout
+// took off it (ActionListener.cpp's RecordPlayerOwn, the RemoveShout row's
+// ForgetShoutEntry, thuum ADR-068 rung 5), which leaves the shout's words
+// known; such a shout comes back at every login, where the engine's save
+// keeps it removed. Telling them apart needs a mark on the change form (a
+// schema change, rule 6), outside this fix
 size_t PartOne::RecordShoutsOfKnownWords(MpActor& actor)
 {
   size_t recorded = 0;

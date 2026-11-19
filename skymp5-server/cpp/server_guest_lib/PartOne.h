@@ -647,6 +647,20 @@ public:
   // none for a reference that is no word wall trigger, or whose word is no
   // WOOP
   std::optional<WordWall> WordOfWall(const MpObjectReference& trigger);
+  // thuum tracker #138: the shout a word of power belongs to, the SHOU whose
+  // variations (its SNAM, the three words) name the word, from an index over
+  // the load order's SHOU records built at the first ask; none for a word no
+  // shout names or two or more shouts name (the index logs those once)
+  std::optional<uint32_t> ShoutOfWord(uint32_t word);
+  // thuum tracker #138: the word's shout into the actor's shout record when
+  // the record lacks it; the shout when it was recorded now, none when the
+  // record held it already or no shout names the word
+  std::optional<uint32_t> RecordShoutOfWord(MpActor& actor, uint32_t word);
+  // thuum tracker #138: the shout of every word the actor's record knows
+  // whose shout the record lacks, recorded (a record a word wall wrote
+  // before the wall recorded the shout heals at the next login), one log
+  // line per shout; how many it recorded
+  size_t RecordShoutsOfKnownWords(MpActor& actor);
   bool PickPerk(MpActor& actor, uint32_t perk);
   bool ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount);
   // a skill book's read (leveling.md, skill books): one level for the skill

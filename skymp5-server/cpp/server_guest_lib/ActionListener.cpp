@@ -584,6 +584,10 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       SendFavorites(*actor);
       SendRaceMenuPreset(*actor);
       SendActorValues(*actor);
+      // thuum tracker #138: a known word's shout the record lacks (a word
+      // wall's word recorded before the wall recorded its shout) goes into
+      // the record first, so the record sent below gives it back
+      partOne.RecordShoutsOfKnownWords(*actor);
       SendShoutRecord(*actor);
     }
 
@@ -4974,9 +4978,10 @@ void ActionListener::OnPerkPick(const RawMessageData& rawMsgData,
 // thuum docs/verbs/word-wall.md (M4): a player's game reports the word wall
 // trigger its engine fired. The wall's word is the trigger reference's own
 // (PartOne::WordOfWall), the player must stand within the activation reach of
-// it in the same cell, and the word goes into the shout record once (R0), the
-// seat told as the console's TeachWord tells it; every refusal is logged by
-// name and nothing of a refused report lands.
+// it in the same cell, and the word goes into the shout record once (R0) with
+// the shout it belongs to (thuum tracker #138), the seat told as the
+// console's AddShout and TeachWord tell it; every refusal is logged by name
+// and nothing of a refused report lands.
 void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
                                 const WordWallMessage& msg)
 {
@@ -5040,9 +5045,25 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
   const bool added = actor->RecordShoutEntry(
     MpActor::ShoutEntry::WordKnown,
     FormDesc::FromFormId(word, partOne.worldState.espmFiles));
+  // thuum tracker #138: the word's shout goes into the record with it and
+  // the game is told as the console's AddShout tells it, shout before word
+  // as a login sends them (SendShoutRecord). Playtest 55 (Eli: "word didnt
+  // stay for rotfern"): the record held the wall's word without its shout,
+  // so a relaunch gave back a word with no shout to hold it. A word known
+  // already gets its missing shout here too (one taught this session by the
+  // console or a script, which record the word alone)
+  const auto shout = partOne.RecordShoutOfWord(*actor, word);
+  if (shout) {
+    SendShoutEntry(*actor, MpActor::ShoutEntry::Shout, *shout);
+  }
   if (!added) {
     spdlog::info("[verb:word-wall] {:x} at wall {:x}: word {:x} known already",
                  actor->GetFormId(), msg.wall, word);
+    if (shout) {
+      spdlog::info("[verb:word-wall] {:x} at wall {:x}: known word {:x}'s "
+                   "shout {:x} recorded and sent (thuum tracker #138)",
+                   actor->GetFormId(), msg.wall, word, *shout);
+    }
     return;
   }
   SendShoutEntry(*actor, MpActor::ShoutEntry::WordKnown, word);
@@ -5050,6 +5071,11 @@ void ActionListener::OnWordWall(const RawMessageData& rawMsgData,
                "units off the wall {:x})",
                actor->GetFormId(), word, msg.wall, distance,
                near->GetFormId());
+  if (shout) {
+    spdlog::info("[verb:word-wall] {:x} at wall {:x}: word {:x}'s shout {:x} "
+                 "recorded and sent (thuum tracker #138)",
+                 actor->GetFormId(), msg.wall, word, *shout);
+  }
 }
 
 void ActionListener::OnObjectAnimation(const RawMessageData& rawMsgData,

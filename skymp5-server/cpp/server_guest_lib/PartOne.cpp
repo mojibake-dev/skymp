@@ -61,6 +61,7 @@
 #include "libespm/PROJ.h"
 #include "libespm/QUST.h"
 #include "libespm/SCEN.h"
+#include "libespm/SHOU.h"
 #include "libespm/SMQN.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
@@ -9295,6 +9296,134 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
     return std::nullopt;
   }
   return WordWall{ *word, wallRef };
+}
+
+namespace {
+// thuum tracker #138: every word of power a SHOU's variations name (its SNAM,
+// libespm SHOU::GetData), with that shout, both as global ids, read once per
+// set of game files (ScriptAttachmentIndexOf's shape: built whole before it
+// is kept). Each shout's winning record is read (GetDistinctRecordsByType
+// walks the load order from its last file), and one the last file deletes
+// or marks ignored names nothing (TESShout's RecordFlags kDeleted 1 << 5 and
+// kIgnored 1 << 12, CommonLibSSE-NG include/RE/T/TESShout.h:28, :30, the
+// same two bits StoryIndexOf skips, so kStoryNodeSkipped's value).
+// A word kept names exactly one shout. A word two or more shouts name keeps
+// none, logged once with every shout that names it: no record field tells
+// the player's shout from a creature's. Read 2026-11-18 from the Mac's
+// copies in lab/.cache/game with lab/esm.py's walk over SHOU (Skyrim.esm,
+// Dawnguard.esm, Dragonborn.esm; Update.esm and HearthFires.esm not there):
+// MarkedforDeathShout 0x7097c and Dawnguard's six
+// DLC1DragonDrainVitalityShout02 to 07 all name the words 0x60297, 0x60298
+// and 0x60299 (MarkedforDeathShout and DLC1DragonDrainVitalityShout06 each
+// hold FULL, MDOB, DESC and three SNAM, nothing more); the words of 0x13e07,
+// 0x3f9ea and 0x32920 (the playtest 55 records' shouts) are each named by
+// one shout only
+const std::unordered_map<uint32_t, uint32_t>& ShoutOfWordIndexOf(
+  WorldState& worldState)
+{
+  static std::map<const espm::Loader*, std::unordered_map<uint32_t, uint32_t>>
+    g_index;
+  auto it = g_index.find(&worldState.GetEspm());
+  if (it != g_index.end()) {
+    return it->second;
+  }
+  // every distinct shout that names each word, in id order
+  std::map<uint32_t, std::set<uint32_t>> named;
+  auto& cache = worldState.GetEspmCache();
+  for (const auto& lookup :
+       worldState.GetEspm().GetBrowser().GetDistinctRecordsByType(
+         espm::SHOU::kType)) {
+    const auto* shou = espm::Convert<espm::SHOU>(lookup.rec);
+    if (!shou || (lookup.rec->GetFlags() & kStoryNodeSkipped) != 0) {
+      continue;
+    }
+    const uint32_t shout = lookup.ToGlobalId(lookup.rec->GetId());
+    const auto data = shou->GetData(cache);
+    for (uint32_t i = 0; i < data.count; ++i) {
+      if (data.variations[i].word != 0) {
+        named[lookup.ToGlobalId(data.variations[i].word)].insert(shout);
+      }
+    }
+  }
+  std::unordered_map<uint32_t, uint32_t> index;
+  size_t ambiguous = 0;
+  for (const auto& [word, shouts] : named) {
+    if (shouts.size() == 1) {
+      index.emplace(word, *shouts.begin());
+      continue;
+    }
+    ++ambiguous;
+    std::string names;
+    for (const uint32_t shout : shouts) {
+      names += fmt::format("{}{:x}", names.empty() ? "" : ", ", shout);
+    }
+    spdlog::info("[verb:word-wall] word {:x} is named by {} shouts ({}): no "
+                 "shout recorded for it (thuum tracker #138)",
+                 word, shouts.size(), names);
+  }
+  spdlog::info("[verb:word-wall] {} word(s) of power indexed to their shouts, "
+               "{} named by more than one shout and left out (thuum tracker "
+               "#138)",
+               index.size(), ambiguous);
+  return g_index.emplace(&worldState.GetEspm(), std::move(index))
+    .first->second;
+}
+}
+
+std::optional<uint32_t> PartOne::ShoutOfWord(uint32_t word)
+{
+  if (!worldState.HasEspm()) {
+    return std::nullopt;
+  }
+  const auto& index = ShoutOfWordIndexOf(worldState);
+  const auto it = index.find(word);
+  if (it == index.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+std::optional<uint32_t> PartOne::RecordShoutOfWord(MpActor& actor,
+                                                   uint32_t word)
+{
+  const auto shout = ShoutOfWord(word);
+  if (!shout ||
+      !actor.RecordShoutEntry(
+        MpActor::ShoutEntry::Shout,
+        FormDesc::FromFormId(*shout, worldState.espmFiles))) {
+    return std::nullopt;
+  }
+  return shout;
+}
+
+// A known divergence (thuum tracker #138's review): the pass cannot tell a
+// shout the record never held from one the player's own Papyrus RemoveShout
+// took off it (ActionListener.cpp's RecordPlayerOwn, the RemoveShout row's
+// ForgetShoutEntry, thuum ADR-068 rung 5), which leaves the shout's words
+// known; such a shout comes back at every login, where the engine's save
+// keeps it removed. Telling them apart needs a mark on the change form (a
+// schema change, rule 6), outside this fix
+size_t PartOne::RecordShoutsOfKnownWords(MpActor& actor)
+{
+  size_t recorded = 0;
+  const ShoutRecord record = actor.GetShoutRecord();
+  for (const auto& known : record.wordsKnown) {
+    uint32_t word = 0;
+    try {
+      word = known.ToFormId(worldState.espmFiles);
+    } catch (const std::exception&) {
+      // a word of a plugin this load order lacks: no shout here names it
+      continue;
+    }
+    if (const auto shout = RecordShoutOfWord(actor, word)) {
+      ++recorded;
+      spdlog::info("[verb:word-wall] {:x} knows word {:x} without its shout "
+                   "{:x}: the shout recorded at the login and sent with the "
+                   "record (thuum tracker #138)",
+                   actor.GetFormId(), word, *shout);
+    }
+  }
+  return recorded;
 }
 
 namespace {

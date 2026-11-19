@@ -2333,7 +2333,8 @@ export class PropService extends ClientListener {
     // engine's id and its base's FormType number, as a tracked row: an item
     // or a world body (kindOf, the event's FormType sparing the base's read),
     // or a trap body this seat knows (D-S3's, its firing's alone), tracked in
-    // place; undefined for a static, a ragdoll, a class no row takes, an
+    // place (a dead NPC's ragdoll is a world body since physics rung 5);
+    // undefined for a static, a living actor, a class no row takes, an
     // unloaded reference or one the server has no id for here
     private rowInPlace(r: Member, now: number, why: string): Prop | undefined {
         const refr = localIdToRemoteId(r.localId);
@@ -2832,10 +2833,13 @@ export class PropService extends ClientListener {
     // first (recordBodyRest). No BSX gate: an actor's root carries none of its
     // ragdoll's. A living actor is no row and is never cached (it may die), a
     // server-made copy neither (its id is seat-local, change-form's read 4).
-    // HYPOTHESIS (rule 2): that both seats walk the same parts in the same
-    // order (a weapon body on one seat alone skips the impose, which the
-    // platform says: "impose <id> skipped: <n> poses against <m> parts
-    // here"); that the drive holds a ragdoll's pose as it held the sign's
+    // The platform walks an actor's ragdoll bones alone (PropBodies.cpp's
+    // anim-targeted filter: a carried weapon's body, drawn on one seat and
+    // sheathed on the other, would change the count or the order), so both
+    // seats walk the race skeleton's bones in its scene order. HYPOTHESIS
+    // (rule 2): that the drive holds a ragdoll's pose as it held the sign's
+    // (the precedent, route K3); a count mismatch is still said ("impose <id>
+    // skipped: <n> poses against <m> parts here")
     private kindOfBody(localId: number, refr: number, ref: ObjectReference, actor: Actor): PropKind {
         if (refr >= 0xff000000 || localId === 0x14 || !actor.isDead() || !this.worldBodies() || !ref.is3DLoaded()) {
             return "none";

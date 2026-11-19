@@ -16,9 +16,11 @@
 // spec's F2, E55; a count mismatch imposes nothing). A part is a rigid body
 // whose motion type is not Invalid, Fixed or Character (CommonLibSSE-NG
 // include/RE/H/hkpMotion.h:26-38): the Riverwood Trader sign's boards on its
-// Fixed anchor, a dead actor's bones at rung 5. Plain data and engine field
-// reads alone, except DriveBody and PlaceBody, which write through
-// CommonLib's own bhkRigidBody calls and run on the main thread only.
+// Fixed anchor, a dead actor's ragdoll bones at rung 5 (under an actor's
+// root its anim-targeted bodies alone, never what it carries: WalkBodies).
+// Plain data and engine field reads alone, except DriveBody and PlaceBody,
+// which write through CommonLib's own bhkRigidBody calls and run on the main
+// thread only.
 namespace PropBodies {
 
 // a node's own Havok body (rung 2's PropBody, which also keeps the node now):

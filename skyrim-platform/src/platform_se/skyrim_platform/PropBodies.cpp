@@ -4,6 +4,7 @@
 #include <RE/H/hkQuaternion.h>
 #include <RE/H/hkVector4.h>
 #include <RE/N/NiNode.h>
+#include <RE/T/TESObjectREFR.h>
 #include <atomic>
 #include <cmath>
 #include <xmmintrin.h>
@@ -132,9 +133,45 @@ PropBodies::Body PropBodies::OwnBodyOf(RE::NiAVObject& node)
   return res;
 }
 
+namespace {
+// thuum tracker #175 (physics rung 5): an actor's 3D is its race skeleton's
+// ragdoll and what it carries, and a carried weapon's 3D brings a body of its
+// own ("Weapon  (00013989)", the 19th of 194559's Nord bandit, thuum
+// lab/.cache/drafts/physics/read-corpse-193821-194559.md:156-161). Which
+// weapon a copy carries, and whether drawn in the hand or sheathed, differs
+// between seats (thuum tracker #114, #172), so with it among the parts the two
+// walks could differ in count (the impose skipped) or, worse, in order at one
+// count (the drive laying a bone's pose on the weapon). An actor's parts are
+// therefore its ragdoll's bones alone: the bodies whose collision object is
+// anim-targeted (bhkNiCollisionObject::Flag::kAnimTargeted, CommonLibSSE-NG
+// include/RE/B/bhkNiCollisionObject.h:26), 18 of 19 on 193821 and 194559,
+// all but the weapon. Both seats then walk the same skeleton's bones in its
+// scene order whatever each copy carries. An actor's 3D root names its actor
+// (NiAVObject::GetUserData, N/NiAVObject.h:125, the impulse rule's owner read
+// too). HYPOTHESIS (rule 2): every creature skeleton's ragdoll bones carry the
+// flag, read on a Nord bandit alone; a skeleton whose bones do not walks no
+// part, which the client's class line says ("no row: a body with no moving
+// part")
+bool IsActorRoot(RE::NiAVObject& root)
+{
+  const RE::TESObjectREFR* ref = root.GetUserData();
+  return ref && ref->GetFormType() == RE::FormType::ActorCharacter;
+}
+
+bool AnimTargeted(RE::NiAVObject& node)
+{
+  auto* collision = node.collisionObject
+    ? node.collisionObject->AsBhkNiCollisionObject()
+    : nullptr;
+  return collision &&
+    collision->flags.all(RE::bhkNiCollisionObject::Flag::kAnimTargeted);
+}
+} // namespace
+
 void PropBodies::WalkBodies(RE::NiAVObject& root, Walk& out)
 {
   out = Walk{};
+  const bool ragdollOnly = IsActorRoot(root);
   struct Entry
   {
     RE::NiAVObject* object;
@@ -163,7 +200,7 @@ void PropBodies::WalkBodies(RE::NiAVObject& root, Walk& out)
       if (type == RE::hkpMotion::MotionType::kFixed) {
         ++out.fixed;
       }
-      if (IsPart(type)) {
+      if (IsPart(type) && (!ragdollOnly || AnimTargeted(*object))) {
         if (out.nParts < kPartsMax) {
           out.parts[out.nParts++] = body;
         } else {

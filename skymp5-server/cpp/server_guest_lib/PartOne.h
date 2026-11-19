@@ -943,17 +943,22 @@ public:
   // the fight's own notices (Actor.StartCombat, Actor.StopCombat):
   // KeepThrallsInFight on each tick of a players' fight that stands,
   // StandDownThralls at its end (`toldOnly` when the other party is gone:
-  // only the thralls it told). Since thuum ADR-077 decision 4 (tracker #113,
-  // #131) the commander's fight is its side's: every hit between the two
-  // sides keeps the players' pair (ActionListener::NotifyHostility), so a
-  // thrall still fighting the other side keeps the fight on, and stands down
-  // only at its end, with every other member of its side
+  // only the thralls it told; the thralls it sent Actor.StopCombat). Since
+  // thuum ADR-077 decision 4 (tracker #113, #131) the commander's fight is
+  // its side's: every hit between the two sides keeps the players' pair
+  // (ActionListener::NotifyHostility), so a thrall still fighting the other
+  // side keeps the fight on, and stands down only at its end, with every
+  // other member of its side. With three players a thrall is told into one
+  // of its commander's fights at a time, and stands down from none whose
+  // player its engine still fights while that fight stands
   void KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs);
-  void StandDownThralls(MpActor& commander, uint32_t opponent, bool toldOnly);
+  std::vector<uint32_t> StandDownThralls(MpActor& commander, uint32_t opponent,
+                                         bool toldOnly);
   // thuum ADR-077 decision 4 (tracker #113, #131): whether `x`'s side and
   // `y`'s (SideOf) are two players whose fight stands in the fights table.
   // While it does, the end of one pair of theirs (a minion's own with the
-  // other side) is no end of their fight: TickFights tells no game of it
+  // other side) is no end of their fight: TickFights keeps that end and
+  // tells it to every game it reaches, once, when their fight ends
   bool SidesFight(MpActor& x, MpActor& y);
   // playtest 54 #126: whether a summon or thrall `owner`'s game simulates
   // (IsSummon, or commanded by `owner`) that is on no player's side (an
@@ -1117,7 +1122,10 @@ public:
   // ADR-060's amendment of 2026-11-15 (Eli's executive decision: "thrall
   // dies when player logs out") no side of the departure either, every
   // thrall dying by the server's word at its commander's departure
-  // (wire-rules cells.rs gone, MpActor::KillThrall)
+  // (wire-rules cells.rs gone, MpActor::KillThrall). A grant on a dead body
+  // ends its fights without a notice (thuum ADR-077 decision 4: a raised
+  // body's side counts its strikes from the raise, and a dead actor's
+  // fights are over in every engine)
   ClaimVerdict ClaimCommanded(MpActor& commander, MpActor& actor,
                               uint32_t recordSeconds);
   // thuum docs/verbs/npc-fate.md C4 (ADR-060's return; Eli, 2026-11-12:

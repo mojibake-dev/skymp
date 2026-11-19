@@ -31,7 +31,7 @@ const spellIdsOf = (actor: Actor): number[] => {
 // V-turn lever's first AddSpell of b8780, playtest 55 c2-console
 // 23:40:58.251Z "44 listed, 1 removed" 0.3 s after "b8780 recorded"; the two
 // Apocalypse abilities WB_Manager_Script had just re-added, 23:42:58Z) is not
-// in it, and a remove there takes back what the record holds
+// in it, and a remove there takes back what the record holds.
 export const syncSpells = (
   actor: Actor,
   serverSpellIds: Array<number>,
@@ -64,7 +64,7 @@ export const syncSpells = (
     }
   }
   printConsole(
-    `syncSpells: ${serverSpellIds.length} listed, ${removed} removed, ${added} added, ${missing.length} missing` +
+    `syncSpells${addOnly ? ' (add-only pass)' : ''}: ${serverSpellIds.length} listed, ${removed} removed, ${added} added, ${missing.length} missing` +
       (missing.length
         ? ` (${missing.map((id) => id.toString(16)).join(' ')})`
         : ''),

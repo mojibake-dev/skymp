@@ -941,14 +941,19 @@ public:
   // the fight's own notices (Actor.StartCombat, Actor.StopCombat):
   // KeepThrallsInFight on each tick of a players' fight that stands,
   // StandDownThralls at its end (`toldOnly` when the other party is gone:
-  // only the thralls it told)
+  // only the thralls it told). A thrall with a fight pair of its own with
+  // the other player stays in it only where that player struck it within
+  // a fight's quiet minute by `nowMs` (thuum tracker #131, ADR-077 decision
+  // 2; MpActor::HitByAgo), since its own swings keep the pair standing
   void KeepThrallsInFight(MpActor& a, MpActor& b, uint64_t nowMs);
-  void StandDownThralls(MpActor& commander, uint32_t opponent, bool toldOnly);
+  void StandDownThralls(MpActor& commander, uint32_t opponent, bool toldOnly,
+                        uint64_t nowMs);
   // playtest 54 #126: whether a summon or thrall `owner`'s game simulates
   // (IsSummon, or commanded by `owner`) has a live fight pair of its own with
-  // `opponent`; while it does, the end of `owner`'s other fights with
-  // `opponent` leaves `owner`'s figure of it fighting
-  bool MinionFights(uint32_t owner, uint32_t opponent);
+  // `opponent` and `opponent` struck it within a fight's quiet minute by
+  // `nowMs` (thuum tracker #131); while it does, the end of `owner`'s other
+  // fights with `opponent` leaves `owner`'s figure of it fighting
+  bool MinionFights(uint32_t owner, uint32_t opponent, uint64_t nowMs);
 
   // thuum ADR-068 (the one seam): every reporter's script-call budget and
   // every subject's sequence (the rule and its state are Rust's, wire-rules

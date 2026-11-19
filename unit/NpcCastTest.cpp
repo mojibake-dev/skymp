@@ -11,6 +11,7 @@
 #include "SummonMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateEquipmentMessage.h"
+#include "libespm/GMST.h"
 #include "libespm/Loader.h"
 #include "libespm/SPEL.h"
 #include "wire_bridge_cxx/rules.h"
@@ -1743,6 +1744,191 @@ TEST_CASE("A summon's hits on the other player or on that player's summon "
   p.GetFights().forget(mine);
   p.GetFights().forget(theirs);
   p.GetFights().forget(kHost);
+  Leave(p);
+}
+
+namespace {
+// the line of a minion's stray hit the engine's rule tolerates
+// (ActionListener's HitAcrossSides, thuum ADR-077 decision 5): the host's
+// side's minion `minion` strikes `target` while both sides fight `enemy`
+std::string Tolerated(uint32_t minion, uint32_t target, uint32_t enemy,
+                      int count, int allowed)
+{
+  return fmt::format("minion {:x}'s stray hit on {:x}, while the sides of "
+                     "ff000d20 and ff000d21 both fight {:x}, is tolerated: "
+                     "{} of {} allowed in 10 s",
+                     minion, target, enemy, count, allowed);
+}
+}
+
+// thuum ADR-077 decision 5 (Eli, 2026-11-18 06:55 PM PST: "tolerated. we
+// havent built a friends/faction/party thing yet though."): while both
+// sides fight the same enemy, a minion's stray hit on the other player or
+// that player's minion begins no fight between the sides, as the engine
+// tolerates friendly fire in combat: up to iFriendHitCombatAllowed hits
+// (Skyrim.esm's 4) inside fFriendHitTimer (the executable's 10 s), a hit
+// within fFriendMinimumLastHitTime (0.5 s) of the last one counted counting
+// none (PartOne::CountFriendHit). Past that count, with no enemy in common,
+// or for a player's own hit, decision 4 stands. The predator (Gather's, the
+// host's game simulating it) is the enemy on neither side
+TEST_CASE("A minion's stray hit on the other side while both sides fight the "
+          "same enemy begins no fight, up to the engine's friendly-hit count "
+          "(thuum ADR-077 decision 5)",
+          "[NpcCast][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  Armed(p);
+  auto& host = p.worldState.GetFormAt<MpActor>(kHost);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  const uint32_t mine = Summoned(p);
+  const uint32_t theirs = Summoned(p, 0, 1);
+  REQUIRE(p.SideOf(p.worldState.GetFormAt<MpActor>(mine)) == &host);
+  REQUIRE(p.SideOf(p.worldState.GetFormAt<MpActor>(theirs)) == &other);
+  auto& predator = p.worldState.GetFormAt<MpActor>(kPredator);
+  REQUIRE(p.SideOf(predator) == nullptr);
+  static_cast<void>(p.GetFights().hit(kHost, kPredator, NowMs()));
+  static_cast<void>(p.GetFights().hit(kOther, kPredator, NowMs()));
+  REQUIRE(p.SharedEnemyOf(host, other) == kPredator);
+  // the load order's iFriendHitCombatAllowed, as the server reads it (4 in
+  // Skyrim.esm, thuum lab/esm.py 2026-11-18; Update.esm unread), within
+  // what the past-count case seeds a second apart inside the 10 s window
+  const int allowed = espm::GetData<espm::GMST>(
+                        espm::GMST::kIFriendHitCombatAllowed, &p.worldState)
+                        .intValue;
+  REQUIRE(allowed >= 1);
+  REQUIRE(allowed <= 9);
+  p.Messages().clear();
+
+  SECTION("the host's summon strikes the other player: tolerated, one of "
+          "the allowed count; no players' fight, no pair of its own, and "
+          "neither game is told")
+  {
+    {
+      LogCapture log;
+      Strikes(p, 0, mine, kOther);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(Tolerated(mine, kOther, kPredator, 1, allowed)) == 1);
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+    REQUIRE_FALSE(p.GetFights().between(mine, kOther));
+    REQUIRE(SnippetsTo(p, 0, "StartCombat").empty());
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+  }
+
+  SECTION("the host's summon strikes the other player past the allowed "
+          "count inside the window: the fight between the sides begins, "
+          "and both games are told")
+  {
+    // the allowed count's hits counted, a second apart, inside the window
+    const uint64_t t0 = NowMs();
+    for (int i = allowed; i > 0; --i) {
+      REQUIRE(
+        p.CountFriendHit(mine, kOther, t0 - static_cast<uint64_t>(i) * 1'000)
+          .tolerated);
+    }
+    {
+      LogCapture log;
+      Strikes(p, 0, mine, kOther);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(fmt::format("minion {:x}'s hit on ff000d21, while "
+                                    "the sides of ff000d20 and ff000d21 "
+                                    "both fight {:x}, is past the allowed "
+                                    "count: {} of {} allowed in 10 s",
+                                    mine, kPredator, allowed + 1, allowed)) ==
+              1);
+      REQUIRE(log.Count(fmt::format("{:x} hit ff000d21, between the sides "
+                                    "of ff000d20 and ff000d21: a fight "
+                                    "between the two players begins",
+                                    mine)) == 1);
+    }
+    REQUIRE(p.GetFights().between(kHost, kOther));
+    const auto toHost = PlayersNoticesTo(p, 0);
+    REQUIRE(toHost.size() == 1);
+    REQUIRE(toHost[0]["selfId"] == kOther);
+    const auto toOther = PlayersNoticesTo(p, 1);
+    REQUIRE(toOther.size() == 1);
+    REQUIRE(toOther[0]["selfId"] == kHost);
+  }
+
+  SECTION("the other player's fight with the enemy ends: the sides fight no "
+          "enemy in common, and the summon's next hit begins their fight "
+          "though its count is under the allowed one")
+  {
+    {
+      LogCapture log;
+      Strikes(p, 0, mine, kOther);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(Tolerated(mine, kOther, kPredator, 1, allowed)) == 1);
+    }
+    REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+    p.GetFights().forget(kOther);
+    REQUIRE(p.SharedEnemyOf(host, other) == 0);
+    {
+      LogCapture log;
+      Strikes(p, 0, mine, kOther);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("decision 5") == 0);
+      REQUIRE(log.Count(fmt::format("{:x} hit ff000d21, between the sides "
+                                    "of ff000d20 and ff000d21: a fight "
+                                    "between the two players begins",
+                                    mine)) == 1);
+    }
+    REQUIRE(p.GetFights().between(kHost, kOther));
+    REQUIRE(PlayersNoticesTo(p, 0).size() == 1);
+    REQUIRE(PlayersNoticesTo(p, 1).size() == 1);
+  }
+
+  SECTION("the other player strikes back at the host's summon after its "
+          "tolerated stray hit: a player's own hit begins the fight")
+  {
+    {
+      LogCapture log;
+      Strikes(p, 0, mine, kOther);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(Tolerated(mine, kOther, kPredator, 1, allowed)) == 1);
+    }
+    REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+    p.Messages().clear();
+    {
+      LogCapture log;
+      Swings(p, 1, mine);
+      INFO(log.oss.str());
+      REQUIRE(log.Count("decision 5") == 0);
+      REQUIRE(log.Count(
+                fmt::format("ff000d21 hit {:x}, {}", mine, kOwnerTold)) == 1);
+    }
+    REQUIRE(p.GetFights().between(kOther, kHost));
+    const auto toHost = PlayersNoticesTo(p, 0);
+    REQUIRE(toHost.size() == 1);
+    REQUIRE(toHost[0]["selfId"] == kOther);
+    const auto toOther = PlayersNoticesTo(p, 1);
+    REQUIRE(toOther.size() == 1);
+    REQUIRE(toOther[0]["selfId"] == kHost);
+  }
+
+  SECTION("the host's summon strikes the other player's summon: tolerated, "
+          "no players' fight, and neither game is told")
+  {
+    {
+      LogCapture log;
+      Strikes(p, 0, mine, theirs);
+      INFO(log.oss.str());
+      REQUIRE(log.Count(Tolerated(mine, theirs, kPredator, 1, allowed)) == 1);
+      REQUIRE(log.Count(kSidesLine) == 0);
+    }
+    REQUIRE_FALSE(p.GetFights().between(kHost, kOther));
+    REQUIRE(SnippetsTo(p, 0, "StartCombat").empty());
+    REQUIRE(SnippetsTo(p, 1, "StartCombat").empty());
+  }
+
+  p.ForgetFriendHits(mine);
+  p.ForgetFriendHits(theirs);
+  p.GetFights().forget(mine);
+  p.GetFights().forget(theirs);
+  p.GetFights().forget(kHost);
+  p.GetFights().forget(kPredator);
   Leave(p);
 }
 

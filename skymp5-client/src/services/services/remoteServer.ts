@@ -34,7 +34,7 @@ import { Inventory, applyInventory, ApplyInventoryReport, keepSurplus } from '..
 import { holdBook, releaseBook, heldBookBases } from '../../sync/bookHold';
 import { ContainerApplyQueue } from '../../view/containerApplyQueue';
 import { Movement } from '../../sync/movement';
-import { syncSpells } from '../../sync/spell';
+import { resetSpellsAddedSinceLogin, syncSpells } from '../../sync/spell';
 import { ModelApplyUtils } from '../../view/modelApplyUtils';
 import { FormModel, WorldModel } from '../../view/model';
 import { LoadGameService } from './loadGameService';
@@ -1118,6 +1118,12 @@ export class RemoteServer extends ClientListener {
         });
       }
     };
+
+    // thuum tracker #168b: the spells added to the player since this
+    // CreateActor, which the login's passes below never remove, start empty
+    if (msg.isMe) {
+      resetSpellsAddedSinceLogin();
+    }
 
     if (msg.isMe && msg.props && msg.props.learnedSpells) {
       const learnedSpells = msg.props.learnedSpells;

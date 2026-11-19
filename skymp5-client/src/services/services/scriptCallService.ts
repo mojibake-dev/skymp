@@ -15,6 +15,7 @@ import { PropService } from "./propService";
 import { holdPcInventoryBase } from "./remoteServer";
 import { ScriptStateService } from "./scriptStateService";
 import { TrapResultService } from "./trapResultService";
+import { noteSpellAddedSinceLogin } from "../../sync/spell";
 
 // thuum docs/DECISIONS.md ADR-068 (rung 2, the one seam; docs/research/
 // scripts-one-system-2026-11-05.md 6.2 to 6.4): the platform's one hook on the
@@ -170,6 +171,15 @@ export class ScriptCallService extends ClientListener {
             // native's spelling: a row the overlay gives a hook reaches its
             // reader with no change here
             const hook = ScriptCallService.hookOf(name);
+            // thuum tracker #168b: a script's AddSpell on this seat's own
+            // player is noted, so the login's first spell pass never removes
+            // it (sync/spell.ts)
+            if (call.self === 0x14 && name === "Actor.AddSpell") {
+                const spell = call.args[0];
+                if (spell !== null && typeof spell === "object") {
+                    noteSpellAddedSinceLogin(spell.formId);
+                }
+            }
             if (hook === "death-report") {
                 if (this.kills.size >= 64) {
                     this.kills.clear();

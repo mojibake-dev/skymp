@@ -995,7 +995,12 @@ public:
   // came within fFriendMinimumLastHitTime, and the hit is tolerated while
   // the count is at most iFriendHitCombatAllowed (the masters' 4). No
   // party system names an ally yet, so the ally count
-  // (iAllyHitCombatAllowed) waits for one
+  // (iAllyHitCombatAllowed) waits for one. HYPOTHESIS until a lab read: the
+  // engine's count, window and spacing are a Ghidra read of 1406ba1d0 and
+  // its callees (1.6.1170). By choice, a minion's count borrows the rule
+  // for the PLAYER's hits on a friend; the engine's own rule for an NPC in
+  // its victim's combat group appears to count nothing (no assault at all,
+  // HYPOTHESIS, FUN_140803df0 unread)
   struct FriendHitCount
   {
     bool tolerated = false;

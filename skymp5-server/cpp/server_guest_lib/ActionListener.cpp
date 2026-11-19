@@ -12771,9 +12771,10 @@ void TellPlayerOfFight(MpActor& aggressor, MpActor& victim)
 // havent built a friends/faction/party thing yet though."): while both
 // sides fight one enemy (PartOne::SharedEnemyOf) and no fight between them
 // stands, a minion's hit on the other player or that player's minion is a
-// stray one, tolerated as the engine tolerates friendly fire in combat
-// (PartOne::CountFriendHit: the masters' iFriendHitCombatAllowed inside
-// fFriendHitTimer): it begins no pair and tells no game, and true is
+// stray one, tolerated as the engine tolerates the player's friendly fire
+// in combat (HYPOTHESIS until a lab read; PartOne::CountFriendHit: the
+// masters' iFriendHitCombatAllowed inside fFriendHitTimer): it begins no
+// pair and tells no game, and true is
 // returned so NotifyHostility stops. A hit past the allowed count begins
 // the sides' fight as decision 4 has it. A player's own hit is never a
 // stray one, and a standing sides' fight is kept by every hit as before.

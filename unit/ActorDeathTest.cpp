@@ -209,9 +209,9 @@ TEST_CASE("A hosted NPC the record holds dead whose host samples it alive "
 // RELAUNCHED host (a clean quit, the Release gone while it was away, the
 // same id back) must sample the body dead again; a host that WALKED OFF
 // before its quit (the cell unhosted; the Release's flip reaches the body the
-// walk kept subscribed, tracker #162, and writes no stamp) the same; the
-// engine's death first (the host's zero on a still-alive record)
-// is that death's stamp; a bleedout's zero long before a later death is not;
+// walk kept subscribed, thuum tracker #162, and writes no stamp) the same;
+// the engine's death first (the host's zero on a still-alive record) is that
+// death's stamp; a bleedout's zero long before a later death is not;
 // the host's reliable death report is a stamp too
 
 static void BackdatePastGrace(MpActor& actor)
@@ -349,9 +349,9 @@ TEST_CASE("A host that walked off, quit and came back first must sample the "
   State(p, 0, kPredator, 0.f);
   REQUIRE(actor.IsDead());
   // the host walks off: the cell unhosted after the grace (the walk keeps
-  // the body it simulates subscribed, tracker #162, so the Release's flip
-  // reaches it, and a flip writes no stamp); then the quit, the grace again,
-  // the same id back
+  // the body it simulates subscribed, thuum tracker #162, so the Release's
+  // flip reaches it, and a flip writes no stamp); then the quit, the grace
+  // again, the same id back
   host->SetPos(kForest + NiPoint3{ 60000.f, 60000.f, 0.f });
   p.TickCellHosts(NowMs() + skymp::rules::host_grace_ms() + 2'000);
   Leave(p, 0, kHost);

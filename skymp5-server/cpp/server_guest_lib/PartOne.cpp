@@ -37,6 +37,7 @@
 #include "SetWeatherMessage.h"
 #include "SpellCastMessage.h"
 #include "SummonMessage.h"
+#include "TeleportMessage.h"
 #include "UpdateGameModeDataMessage.h"
 #include "UpdateMovementMessage.h"
 #include "WorldGlobalMessage.h"
@@ -3617,6 +3618,13 @@ void PartOne::OnActorSighting(MpActor& reporter, uint32_t refrId,
         return drop("its host hears nothing of it and its grid pass "
                     "subscribed nothing");
       }
+      // and every game that hears the actor hears the word now: the grant's
+      // flip reached only the actors the new host's game heard, so a
+      // follower whose follow the grant ended, still within the actor's
+      // 3x3, would keep its own "not hosted by other" while the host's
+      // engine took the actor up, two engines running it (ADR-063). The
+      // host hears its "false" a second time, which changes nothing
+      actor->UpdateHoster(reporter.GetFormId());
       spdlog::info("PartOne - npc-puppet: {:x}'s roster names {:x} in its "
                    "cell {:x} at ({:.0f}, {:.0f}, {:.0f}), beyond its grid; "
                    "subscribed to its host",
@@ -4438,6 +4446,10 @@ std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
                    row.actor, door, commanderId, destWorldOrCell);
       continue;
     }
+    // whether the commander's game held the thrall through its own move
+    // (thuum tracker #162: D6's keep, both edges, holds a pair within one
+    // world or cell at any distance; a door into another parted them)
+    const bool heldThrough = thrall->GetListeners().count(&commander) != 0;
     // MpActor::Teleport's three sets without its message (PartOne's
     // sighting move's shape): the new grid, then the position subscribes it
     thrall->SetCellOrWorldObsolete(
@@ -4445,6 +4457,31 @@ std::vector<uint32_t> PartOne::TakeThrallsThroughDoor(
     thrall->SetPos(destPos);
     thrall->SetAngle(destRot);
     taken.push_back(row.actor);
+    // a door within one world or cell: the commander's game held the
+    // thrall throughout, so no create word places it at the landing, and
+    // its engine still runs it where it stood (the engine never takes a
+    // commanded actor through the player's teleport door, #48 leg D). The
+    // landing goes to that game as a Teleport for the thrall's idx, the
+    // viewer's word of npc-handoff D6 (remoteServer's onTeleportMessage,
+    // moveRefrToPosition). HYPOTHESIS until a door within one world is
+    // played with a thrall: the commander's engine runs it on from the
+    // landing; how many vanilla load doors land in their own world or cell
+    // is unread (lab/esm.py can count the XTEL doors that do)
+    if (heldThrough && thrall->GetListeners().count(&commander) != 0) {
+      const auto user = serverState.UserByActor(&commander);
+      if (user != Networking::InvalidUserId) {
+        TeleportMessage landing;
+        landing.idx = thrall->GetIdx();
+        landing.pos = { destPos.x, destPos.y, destPos.z };
+        landing.rot = { destRot.x, destRot.y, destRot.z };
+        landing.worldOrCell = destWorldOrCell;
+        GetSendTarget().Send(user, landing, true);
+        spdlog::info("[verb:npc-fate] {:x}'s commander {:x} held it through "
+                     "door {:x} within {:x}: its game is sent the landing "
+                     "(thuum tracker #162)",
+                     row.actor, commanderId, door, destWorldOrCell);
+      }
+    }
     spdlog::info("[verb:npc-fate] {:x} goes through door {:x} with its "
                  "commander {:x}: the record to ({:.0f}, {:.0f}, {:.0f}) in "
                  "{:x}, the command with it, cell {:x} (ADR-060)",

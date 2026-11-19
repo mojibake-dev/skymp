@@ -632,10 +632,13 @@ TEST_CASE("A host follows its actor into an unhosted cell its game loads, "
 // (PartOne::OnActorSighting); the host's own walk across a square line keeps
 // it (ForceSubscriptionsUpdate, D6's keep on the simulator's edge too),
 // which ends the second hall's flicker. The other player, beside the
-// draugr, is served by the grid alone
+// draugr, is the host's guest: its own step subscribes the host (D6's
+// insert, HostOf naming the cell's host for a player), and the host's steps
+// keep it by the same rule, so the draugr the host's engine runs keep a
+// figure of the guest to fight
 TEST_CASE("A host two squares from an actor in its cell gets the actor's "
-          "CreateActor at one roster and keeps it across its own square "
-          "changes; the other player's listeners are the grid's",
+          "CreateActor at one roster and keeps it, and a guest of its cell "
+          "its step subscribed, across its own square changes",
           "[CellHost][espm]")
 {
   constexpr uint32_t kTemple = 0x371de;
@@ -785,6 +788,45 @@ TEST_CASE("A host two squares from an actor in its cell gets the actor's "
     // the other player keeps the draugr by the grid, as before
     REQUIRE(draugr.GetListeners().count(&c2) == 1);
     REQUIRE(destroys(1) == 0);
+  }
+
+  // the review of tracker #162's first build: the guest's pass kept the
+  // host (D6's insert, HostOf) and the host's pass, asking HostedBy, dropped
+  // the guest at its next step, a DestroyActor each way, while the host's
+  // engine ran the draugr fighting beside the guest
+  SECTION("a guest beyond the host's grid: its own step subscribes the "
+          "host, and the host's steps across a square line keep it")
+  {
+    // the guest's step, square (2, -1) to (3, -1), the draugr still in its
+    // 3x3 and the host three squares off
+    const NiPoint3 guestStep{ 12400.f, seat.y, seat.z };
+    REQUIRE(square(guestStep) == std::pair<int, int>{ 3, -1 });
+    REQUIRE(apart(guestStep, stand));
+    REQUIRE(apart(guestStep, south));
+    REQUIRE(p.worldState.HostOf(c2) == &c1);
+    REQUIRE(c2.GetListeners().count(&c1) == 0);
+    c2.SetPos(guestStep);
+    REQUIRE(c2.GetListeners().count(&c1) == 1);
+    REQUIRE(c1.GetListeners().count(&c2) == 1);
+    // the DestroyActors for `actor` that went to `user` since the last clear
+    const auto destroyed = [&](Networking::UserId user, MpActor& actor) {
+      size_t n = 0;
+      for (const auto& m : SentTo<DestroyActorMessage>(p, user)) {
+        if (m.idx == actor.GetIdx()) {
+          ++n;
+        }
+      }
+      return n;
+    };
+    p.Messages().clear();
+    c1.SetPos(south);
+    REQUIRE(c2.GetListeners().count(&c1) == 1);
+    REQUIRE(c1.GetListeners().count(&c2) == 1);
+    c1.SetPos(stand);
+    REQUIRE(c2.GetListeners().count(&c1) == 1);
+    REQUIRE(c1.GetListeners().count(&c2) == 1);
+    REQUIRE(destroyed(0, c2) == 0);
+    REQUIRE(destroyed(1, c1) == 0);
   }
 
   DoDisconnect(p, 0);
@@ -3296,6 +3338,76 @@ TEST_CASE("A player's load door takes the thralls it commands near it "
   p.DestroyActor(kHilde);
   p.DestroyActor(kCow);
   p.DestroyActor(kNpcRaised);
+  p.worldState.npcEnabled = npcWas;
+}
+
+// thuum tracker #162 (the review of its first build): D6's keep holds a
+// commander and its thrall a pair within one world or cell at any distance,
+// so a load door whose landing lies in the world or cell it leaves parts
+// nothing, and no create word would place the thrall at the landing in the
+// commander's game, whose engine still runs it where it stood. The door
+// sends the landing itself, a Teleport for the thrall's idx. The commander's
+// own move and the door's call are made here as the door's path makes them
+// (MpObjectReference's load door: the player's record first, then
+// PartOne::TakeThrallsThroughDoor), five squares across Tamriel
+TEST_CASE("A load door within one world sends the commander's game its "
+          "thrall's landing, the pair held through it",
+          "[CellHost][espm]")
+{
+  constexpr uint32_t kThrall = 0xff000c1d;
+  // a command's record seconds, named for the lab alone (ClaimReanimated)
+  constexpr uint32_t kRecordS = 60;
+  const NiPoint3 kLanding = kHere + NiPoint3{ 20480.f, 0.f, 0.f };
+  const NiPoint3 kFacing{ 0.f, 0.f, 90.f };
+  auto& p = GetPartOne();
+  const bool npcWas = p.worldState.npcEnabled;
+  p.worldState.npcEnabled = true;
+  auto& c1 = Player(p, 0, kC1, kHere);
+  c1.SetPos(kHere);
+  p.CreateActor(kThrall, kHere + NiPoint3{ 50.f, 50.f, 0.f }, 0, kTamriel);
+  auto& thrall = p.worldState.GetFormAt<MpActor>(kThrall);
+  thrall.SetPos(thrall.GetPos());
+  const auto cell = p.worldState.CellOf(thrall);
+  REQUIRE(cell.has_value());
+  REQUIRE(p.worldState.CellOf(kTamriel, kLanding).has_value());
+  CellLoaded(p, 0, *cell);
+  // c1's raise, as OnHit stamps it ahead of ClaimReanimated
+  thrall.NoteReanimateAccepted(std::chrono::steady_clock::now(), 0, kC1);
+  REQUIRE(p.ClaimCommanded(c1, thrall, kRecordS) ==
+          PartOne::ClaimVerdict::Granted);
+  REQUIRE(p.SimulatorOf(thrall) == kC1);
+  REQUIRE(thrall.GetListeners().count(&c1) == 1);
+
+  // the player's record at the landing: the pair held, no DestroyActor
+  p.Messages().clear();
+  c1.SetPos(kLanding);
+  REQUIRE(thrall.GetListeners().count(&c1) == 1);
+  const auto taken = p.TakeThrallsThroughDoor(c1, 0, kTamriel, kHere, kTamriel,
+                                              kLanding, kFacing);
+  REQUIRE(taken == std::vector<uint32_t>{ kThrall });
+  REQUIRE((thrall.GetPos() - kLanding).Length() < 1.f);
+  REQUIRE(thrall.GetListeners().count(&c1) == 1);
+
+  // c1's game: the landing for the thrall's idx, and no DestroyActor or
+  // CreateActor for it
+  const auto landings = SentTo<TeleportMessage>(p, 0);
+  REQUIRE(landings.size() == 1);
+  REQUIRE(landings[0].idx == thrall.GetIdx());
+  REQUIRE(landings[0].pos[0] == Catch::Approx(kLanding.x));
+  REQUIRE(landings[0].pos[1] == Catch::Approx(kLanding.y));
+  REQUIRE(landings[0].rot[2] == Catch::Approx(kFacing.z));
+  REQUIRE(landings[0].worldOrCell == kTamriel);
+  for (const auto& m : SentTo<DestroyActorMessage>(p, 0)) {
+    REQUIRE(m.idx != thrall.GetIdx());
+  }
+  for (const auto& m : SentTo<CreateActorMessage>(p, 0)) {
+    REQUIRE(m.refrId.value_or(0) != kThrall);
+  }
+
+  p.ReleaseAnyClaim(thrall);
+  DoDisconnect(p, 0);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kThrall);
   p.worldState.npcEnabled = npcWas;
 }
 

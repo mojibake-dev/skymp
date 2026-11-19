@@ -1338,26 +1338,34 @@ void MpObjectReference::ForceSubscriptionsUpdate()
       now.insert(simulator);
     }
     // thuum tracker #162 (playtest 55, Eli: "weird scripting shit with
-    // draugr not standing up"): and the simulator's own pass keeps every
-    // actor it simulates, since one subscription is both edges, as the prop
-    // keep below does. Ariadne hosted Bleak Falls Temple 0x371de standing on
-    // the y = -4096 line, and each of her steps across it unsubscribed
-    // 0x383ec, 0x383f7 and 0x383f8, which her engine ran: her game demoted
-    // each to an AI-off puppet at the DestroyActor and promoted it at the
-    // next CreateActor, seven flips in 25 s. A player's actor is its own
-    // game's (HostedBy answers nullptr for it), so a pair of players stands
-    // on the grid alone as before; only a listener the grid would drop is
-    // asked. The keep holds on the grid this pass reads alone: a door into
-    // another world or cell parts the pair as before, since a commander's
+    // draugr not standing up"): and the other edge, by the same rule: a
+    // played actor's own pass keeps every actor whose simulator it is where
+    // that actor stands (HostOf, the insert above read from the other
+    // side), since one subscription is both edges, as the prop keep below
+    // does. Ariadne hosted Bleak Falls Temple 0x371de standing on the y =
+    // -4096 line, and each of her steps across it unsubscribed 0x383ec,
+    // 0x383f7 and 0x383f8, which her engine ran: her game demoted each to
+    // an AI-off puppet at the DestroyActor and promoted it at the next
+    // CreateActor, seven flips in 25 s. A guest in the host's cell is kept
+    // too: HostOf answers the cell's host for a player with no row of its
+    // own (wire-rules cells.rs simulator_of), so the guest's pass keeps the
+    // host (above) and the host's pass keeps the guest, and the host's
+    // engine has a figure of the guest for the NPCs it runs to fight, the
+    // way a TES3MP cell's authority sees everyone in its cell. Only a game
+    // simulates, so only a played actor's pass asks, and only of a listener
+    // the grid would drop. The keep holds on the grid this pass reads alone:
+    // a door into another world or cell parts the pair, since a commander's
     // thralls reach its game at the landing by that part and the create
-    // word after it (PartOne::TakeThrallsThroughDoor moves the record with
-    // no message, thuum #48 leg D)
-    for (MpObjectReference* listener : was) {
-      MpActor* other = listener->AsActor();
-      if (other && listener != this && now.count(listener) == 0 &&
-          other->GetCellOrWorld() == GetCellOrWorld() &&
-          other->HostedBy() == AsActor()) {
-        now.insert(listener);
+    // word after it (PartOne::TakeThrallsThroughDoor, thuum #48 leg D; a
+    // door within one world or cell sends the landing itself)
+    if (AsActor()->GetUserId() != Networking::InvalidUserId) {
+      for (MpObjectReference* listener : was) {
+        MpActor* other = listener->AsActor();
+        if (other && listener != this && now.count(listener) == 0 &&
+            other->GetCellOrWorld() == GetCellOrWorld() &&
+            worldState->HostOf(*other) == AsActor()) {
+          now.insert(listener);
+        }
       }
     }
   }

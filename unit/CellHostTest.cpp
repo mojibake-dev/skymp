@@ -98,9 +98,11 @@ void CellLoaded(PartOne& p, Networking::UserId user, uint32_t cell,
                             { "loaded", loaded } });
 }
 
-// `user`'s movement report for `actorId`, standing at `pos`
+// `user`'s movement report for `actorId`, standing at `pos`, its weapon
+// drawn when `weapDrawn`
 void Move(PartOne& p, Networking::UserId user, uint32_t actorId,
-          const NiPoint3& pos, uint32_t worldOrCell = kTamriel)
+          const NiPoint3& pos, uint32_t worldOrCell = kTamriel,
+          bool weapDrawn = false)
 {
   static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
   RawMessageData raw;
@@ -112,7 +114,7 @@ void Move(PartOne& p, Networking::UserId user, uint32_t actorId,
   msg.data.pos = { pos.x, pos.y, pos.z };
   msg.data.rot = { 0, 0, 0 };
   msg.data.isInJumpState = false;
-  msg.data.isWeapDrawn = false;
+  msg.data.isWeapDrawn = weapDrawn;
   msg.data.isBlocking = false;
   msg.data.worldOrCell = worldOrCell;
   msg.data.runMode = "Standing";
@@ -902,6 +904,80 @@ TEST_CASE("A late joiner's CreateActor carries the hosted actor's last "
     }
   }
   REQUIRE(carried);
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kWolf);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
+TEST_CASE("A new listener's CreateActor carries the recorded drawn weapon of "
+          "a player and a hosted actor, a sheathed one's never",
+          "[CellHost]")
+{
+  // thuum tracker #172 (playtest 55): rotfern, her bow out, and the draugr
+  // she fought came back into Ariadne's view sheathed on Ariadne's screen.
+  // The record keeps the drawn flag from every movement sample; the create
+  // a new listener gets carries it as the custom property "isWeapDrawn"
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kHere);
+  const auto here = p.worldState.CellOf(kTamriel, kHere);
+  REQUIRE(here.has_value());
+  CellLoaded(p, 0, *here);
+  REQUIRE(p.GetCellHost(*here).player == kC1);
+  p.CreateActor(kWolf, kHere, 0, kTamriel);
+  auto& wolf = p.worldState.GetFormAt<MpActor>(kWolf);
+  wolf.SetPos(kHere);
+  REQUIRE(p.SimulatorOf(wolf) == kC1);
+
+  // the player and the wolf its game hosts both draw: the record takes it
+  Move(p, 0, kC1, kHere, kTamriel, true);
+  Move(p, 0, kWolf, kHere, kTamriel, true);
+  REQUIRE(p.worldState.GetFormAt<MpActor>(kC1).IsWeaponDrawn());
+  REQUIRE(wolf.IsWeaponDrawn());
+
+  const auto drawnOf =
+    [](const CreateActorMessage& m) -> std::optional<nlohmann::json> {
+    for (const auto& entry : m.customPropsJsonDumps) {
+      if (entry.propName == "isWeapDrawn") {
+        return nlohmann::json::parse(entry.propValueJsonDump);
+      }
+    }
+    return std::nullopt;
+  };
+
+  // the second player arrives: its creates of both say drawn
+  p.Messages().clear();
+  Player(p, 1, kC2, kHere);
+  bool player = false, hosted = false;
+  for (const auto& m : SentTo<CreateActorMessage>(p, 1)) {
+    if (m.refrId == kC1 || m.refrId == kWolf) {
+      const auto drawn = drawnOf(m);
+      REQUIRE(drawn.has_value());
+      REQUIRE(*drawn == true);
+      if (m.refrId == kC1) {
+        player = true;
+      } else {
+        hosted = true;
+      }
+    }
+    if (m.refrId == kC2) {
+      // its own create: its own game's word, never carried
+      REQUIRE_FALSE(drawnOf(m).has_value());
+    }
+  }
+  REQUIRE(player);
+  REQUIRE(hosted);
+  // the first player's create of the newcomer, sheathed: none
+  bool newcomer = false;
+  for (const auto& m : SentTo<CreateActorMessage>(p, 0)) {
+    if (m.refrId == kC2) {
+      REQUIRE_FALSE(drawnOf(m).has_value());
+      newcomer = true;
+    }
+  }
+  REQUIRE(newcomer);
 
   DoDisconnect(p, 0);
   DoDisconnect(p, 1);

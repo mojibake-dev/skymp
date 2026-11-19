@@ -1120,7 +1120,8 @@ export class RemoteServer extends ClientListener {
             Utility.wait(1).then(() => {
               const again = Game.getPlayer();
               if (again) {
-                const second = syncSpells(again, learnedSpells);
+                // thuum tracker #168: add-only, its list a second old
+                const second = syncSpells(again, learnedSpells, true);
                 if (second.added > 0 || second.missing.length > 0) {
                   logTrace(this, `player learnedSpells: second pass`, JSON.stringify(second));
                 }

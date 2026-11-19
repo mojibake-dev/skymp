@@ -8,7 +8,6 @@ import { ConnectionMessage } from '../events/connectionMessage';
 import { CreateActorMessage } from '../messages/createActorMessage';
 import { DestructionStageMessage } from '../messages/destructionStageMessage';
 import { ClientListener, CombinedController, Sp } from './clientListener';
-import { HostService } from './hostService';
 
 const TAG = 'verb:traps';
 // game-file references end where the server's copies begin; the validator
@@ -86,10 +85,17 @@ type PendingRecord = {
 // destruction stage's rise heard through Skyrim Platform's Papyrus event hook,
 // filtered in native to game-file references and OnDestructionStageChanged
 // alone (rule 9) and read on the next update (GetCurrentDestructionStage):
-// reported as DestructionStage when the reference is in the family (every
-// seat's engine runs it; the server keeps the first report of each step) or
-// stands in a cell this seat hosts (its scripts run here alone), and only past
-// what this seat knows (its own reports and the server's records). The
+// reported as DestructionStage by every seat whose engine reached the step,
+// the cell's host or a guest alike, a family reference or any other
+// destructible (thuum docs/verbs/traps.md D-S3, "reported by the seat that
+// caused it or saw it first"; the server's OnDestructionStage takes a report
+// from any game with the reference's cell loaded and keeps the first report of
+// each step, so the host's and a guest's reports of one step do not double),
+// and only past what this seat knows (its own reports and the server's
+// records). A guest's report of a reference in a cell another seat hosts
+// reaches that host as a live relay, applied there by the receiver below, so
+// the host's own scripts answer the step (thuum tracker #161: a guest's break
+// of Arvel's web 1fc43 waited for the host's engine, which never saw it). The
 // receiver: a record ahead of this engine's copy applied with the engine's own
 // calls, DamageObject until the record's stage then SetDestroyed, which are
 // the platform's own calls (the seam tallies them "(platform)" and batches
@@ -224,7 +230,6 @@ export class TrapResultService extends ClientListener {
 
   private report(now: number) {
     this.refill(now);
-    const host = this.controller.lookupListener(HostService);
     for (const [localId, setDestroyed] of Array.from(
       this.toReport.entries(),
     )) {
@@ -239,12 +244,9 @@ export class TrapResultService extends ClientListener {
         this.toReport.delete(localId);
         continue;
       }
+      // no host test: a guest reports its engine's rise just as the cell's
+      // host does (traps.md D-S3; the server takes either, thuum tracker #161)
       const role = ObjectReferenceEx.trapRole(localId);
-      if (!(role !== null && role.family) && !host.isHostedHere(refr)) {
-        // another seat hosts it and its scripts run there: the host reports
-        this.toReport.delete(localId);
-        continue;
-      }
       // a reference with no destruction data reads as stage 0, the game
       // files' state
       const stage = Math.max(0, refr.getCurrentDestructionStage());

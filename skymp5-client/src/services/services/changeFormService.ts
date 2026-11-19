@@ -267,8 +267,12 @@ export class ChangeFormService extends ClientListener {
     // the owner's trigger (sendInputsService, the at-rest moment of a dead
     // hosted actor): the body's own change form, serialized by the engine's
     // recipe and sent when it differs from the acked record. Runs in the
-    // update's context (the sender's tick), where the native is allowed
-    onBodyAtRest(remoteId: number, body: Actor, pos: NiPoint3, why: string = "at rest"): void {
+    // update's context (the sender's tick), where the native is allowed.
+    // propEpoch: physics rung 5's (PropService.recordBodyRest), the prop
+    // epoch of the body's row this seat streams, which the server takes from
+    // the row's owner in place of the cell's (ADR-071 decision 6); 0 for the
+    // cell's host epoch as before
+    onBodyAtRest(remoteId: number, body: Actor, pos: NiPoint3, why: string = "at rest", propEpoch: number = 0): void {
         const hex = remoteId.toString(16);
         if (remoteId >= 0xff000000) {
             logTrace(this, `changeform ${hex}: a server-made copy's record is not this slice's (game-file actors alone)`);
@@ -326,7 +330,7 @@ export class ChangeFormService extends ClientListener {
         };
         // the cell's host epoch this client holds for the actor's cell
         // (ADR-066's stamp; the verb doc's Ownership); none names it: held
-        const epoch = this.controller.lookupListener(HostService).epochForActor(body);
+        const epoch = propEpoch > 0 ? propEpoch : this.controller.lookupListener(HostService).epochForActor(body);
         if (epoch === 0) {
             this.pending.set(remoteId, { message, at, heldAt: now, sentAt: 0, tries: 0 });
             logLab("verb:npc-fate", `changeform ${hex} held: no hosted cell names the actor's; sent at the next grant (${rec.bodyHex.length / 2} bytes, fnv ${rec.fnv1a.toString(16)}, ${rec.remap.length} remap rows, ${at})`);

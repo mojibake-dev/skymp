@@ -1,4 +1,4 @@
-import { BodyClass, ContainerChangedEvent, FormType, MotionType, ObjectReference, PropContactEvent, PropImpulseEvent, ScriptCall } from "skyrimPlatform";
+import { Actor, BodyClass, ContainerChangedEvent, FormType, MotionType, ObjectReference, PropContactEvent, PropImpulseEvent, ScriptCall } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
@@ -12,8 +12,10 @@ import { FOLLOW_SAMPLES_MAX, FollowBone, FollowSample, FollowStep, PropFollow, b
 import { FormModel } from "../../view/model";
 import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
+import { ChangeFormService } from "./changeFormService";
 import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
+import { SendInputsService } from "./sendInputsService";
 
 const TAG = "verb:prop-physics";
 
@@ -306,8 +308,9 @@ type Prop = {
 
 // Physics rung 4 (kindOf): what a reference is to this service, by its base
 // and this seat's class read. "item" and "world" are rows, "trap" a trap
-// family reference (D-S3's own path), "none" no row. Rung 5 adds "body", a
-// dead actor (5a's bodyWord, WorldState.h)
+// family reference (D-S3's own path), "none" no row. Rung 5's body (a dead
+// game-file NPC's ragdoll, kindOfBody) answers "world": a world body of parts
+// to every path here, its entry marked body
 type PropKind = "item" | "world" | "trap" | "none";
 
 // one binding's verdict (kindOf, by local id and the record it is bound to):
@@ -315,8 +318,9 @@ type PropKind = "item" | "world" | "trap" | "none";
 // whole), null no row (a type, a server-made reference, a class no row
 // takes, a trap family's), undefined not judged; family a trap family
 // reference (kindOf's "trap"); trap D-S3's verdict on a family reference's
-// record (judgeTrapRecord: a body a firing moved before this session)
-type KindEntry = { refr: number; item: boolean; family?: boolean; world?: { parts: number } | null; trap?: boolean };
+// record (judgeTrapRecord: a body a firing moved before this session); body
+// a dead NPC's (physics rung 5, kindOfBody), judged again when it stands
+type KindEntry = { refr: number; item: boolean; family?: boolean; world?: { parts: number } | null; trap?: boolean; body?: boolean };
 
 // the server's last word on a prop: the player (0 the cell's host by
 // default) and its epoch, and when it came (a hold reads it against its own
@@ -1414,6 +1418,14 @@ export class PropService extends ClientListener {
     // body the update's read left out are read whole (readBody). Due samples
     // go out after the ticks, within the budget (sendDue)
     private stream(prop: Prop, refr: ObjectReference, now: number, read: Body | undefined) {
+        // physics rung 5 (thuum tracker #175): a body whose death fall this
+        // seat's settle still samples (sendInputsService, 5a's window) is the
+        // movement path's until that rest; the stream takes it from its first
+        // wake after, the baseline read then
+        if (this.isBody(prop) && this.controller.lookupListener(SendInputsService).bodySettling(prop.refr)) {
+            prop.lastSent = undefined;
+            return;
+        }
         if (prop.handOff !== undefined) {
             // a take-over's placement in flight: the stream starts from its hand-off
             if (now >= prop.handOff.due) {
@@ -1518,6 +1530,9 @@ export class PropService extends ClientListener {
         for (const d of due) {
             if (!d.asleep && this.budget < 1) {
                 break;
+            }
+            if (d.asleep && this.isBody(d.prop)) {
+                this.recordBodyRest(d.prop, d.body);
             }
             const seq = this.send(d.prop, d.body, d.asleep, now);
             const id = d.prop.refr.toString(16);
@@ -2373,8 +2388,9 @@ export class PropService extends ClientListener {
     }
 
     // The tracked set, from the view's references: every bound view whose
-    // record is no actor's and whose reference is a row (an item or, since
-    // physics rung 4, a world body: kindOf, read once per binding), and the
+    // record is no living actor's and whose reference is a row (an item or,
+    // since physics rung 4, a world body: kindOf, read once per binding; since
+    // rung 5 a dead NPC's body, kindOfBody), and the
     // game-file references the server subscribed this seat to (engineRefs),
     // in the player's world or cell, within TRACK_RADIUS; the nearest
     // TRACK_MAX are tracked, with the trap bodies and (physics rung 3, B5) the
@@ -2413,8 +2429,10 @@ export class PropService extends ClientListener {
                 continue;
             }
             // an actor's record (a figure's look, the word per NPC) is no
-            // prop, said without a native
-            if (form.appearance || form.isHostedByOther !== undefined) {
+            // prop, said without a native; a dead game-file NPC's is (physics
+            // rung 5: its body, kindOfBody, the engine's own death deciding)
+            const deadBody = form.isDead === true && form.refrId < 0xff000000;
+            if (!deadBody && (form.appearance || form.isHostedByOther !== undefined)) {
                 continue;
             }
             if (form.movement && playerWorldOrCell !== 0 && form.movement.worldOrCell !== playerWorldOrCell) {
@@ -2694,6 +2712,16 @@ export class PropService extends ClientListener {
     // unvalidated word (R2, rule 5), inside the server's bounds
     private kindOf(localId: number, refr: number, formType?: number): PropKind {
         const known = this.kinds.get(localId);
+        if (known !== undefined && known.refr === refr && known.body === true) {
+            // a body is a row while its engine has it dead: a raise or a
+            // respawn stands it up, and it is no prop from then
+            const actor = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
+            if (actor && actor.isDead()) {
+                return this.withSettings(known);
+            }
+            this.kinds.delete(localId);
+            return "none";
+        }
         if (known !== undefined && known.refr === refr && (known.item || known.world !== undefined)) {
             return this.withSettings(known);
         }
@@ -2713,6 +2741,10 @@ export class PropService extends ClientListener {
         if (FormTypeEx.isItem(type as FormType)) {
             this.cacheKind(localId, refr, { item: true, world: undefined });
             return "item";
+        }
+        const actor = this.sp.Actor.from(ref);
+        if (actor) {
+            return this.kindOfBody(localId, refr, ref, actor);
         }
         if (refr >= 0xff000000) {
             this.cacheKind(localId, refr, { item: false, world: null });
@@ -2763,6 +2795,71 @@ export class PropService extends ClientListener {
         const entry = this.cacheKind(localId, refr, { item: false, world });
         this.sayClass(refr, ref, c, verdict);
         return this.withSettings(entry);
+    }
+
+    // Physics rung 5 (ADR-071 decision 5, Eli's W6 "Block at rest, bones
+    // live"; thuum tracker #175, playtest 56: "there is ZERO syncing currently.
+    // nothing at all."): a dead game-file NPC's ragdoll is a world body of
+    // parts, its bones the platform's one walk of its 3D (PropBodies.h: "a
+    // dead actor's bones at rung 5"; x-body-impose 20261111-194559 walked a
+    // humanoid's 19 bodies). So a drag's grab and a shout's impulse claim it,
+    // its owner streams the bones, a follower drives its copy's bones toward
+    // them (imposeBodies) and the rest returns it to the host, all as the
+    // Riverwood Trader's sign; at the owner's rest its change-form record goes
+    // first (recordBodyRest). No BSX gate: an actor's root carries none of its
+    // ragdoll's. A living actor is no row and is never cached (it may die), a
+    // server-made copy neither (its id is seat-local, change-form's read 4).
+    // HYPOTHESIS (rule 2): that both seats walk the same parts in the same
+    // order (a weapon body on one seat alone skips the impose, which the
+    // platform says: "impose <id> skipped: <n> poses against <m> parts
+    // here"); that the drive holds a ragdoll's pose as it held the sign's
+    private kindOfBody(localId: number, refr: number, ref: ObjectReference, actor: Actor): PropKind {
+        if (refr >= 0xff000000 || localId === 0x14 || !actor.isDead() || !this.worldBodies() || !ref.is3DLoaded()) {
+            return "none";
+        }
+        const c = this.bodyClass(localId);
+        if (c === null) {
+            return "none";
+        }
+        let world: { parts: number } | null = null;
+        let verdict: string;
+        if (c.parts.length === 0) {
+            verdict = "no row: a body with no moving part";
+        } else if (c.cut || c.parts.length > BONES_MAX) {
+            verdict = "no row: a body past 64 parts";
+        } else if (!this.bodyParts()) {
+            verdict = "no row: parts off";
+        } else {
+            world = { parts: c.parts.length };
+            verdict = `a dead body of ${c.parts.length} parts`;
+        }
+        const entry = this.cacheKind(localId, refr, { item: false, world, body: true });
+        this.sayClass(refr, ref, c, verdict);
+        return this.withSettings(entry);
+    }
+
+    // whether the prop is a dead NPC's body (kindOfBody's entry)
+    private isBody(prop: Prop): boolean {
+        const k = this.kinds.get(prop.localId);
+        return k !== undefined && k.refr === prop.refr && k.body === true;
+    }
+
+    // Physics rung 5 (ADR-071 decisions 5 and 6, "Block at rest"): the
+    // owner records a body at its stream's rest, the engine's own save of the
+    // corpse (ChangeFormService.onBodyAtRest) under the prop's epoch, sent
+    // ahead of the asleep sample on the one reliable ordered channel, so the
+    // server takes it from the row's owner before the rest returns the row
+    // (OnChangeForm's bodyOwner). Every other seat lays its copy by it, and a
+    // reload, a login and a restart lay the body where the stream left it. A
+    // record identical to the acked one is not sent (onBodyAtRest)
+    private recordBodyRest(prop: Prop, body: Body) {
+        const actor = this.sp.Actor.from(this.sp.Game.getFormEx(prop.localId));
+        if (!actor || !actor.isDead()) {
+            return;
+        }
+        const word = this.owners.get(prop.refr);
+        const epoch = word ? word.epoch : 0;
+        this.controller.lookupListener(ChangeFormService).onBodyAtRest(prop.refr, actor, body.pos, "its stream's rest", epoch);
     }
 
     // a cached verdict under the two client settings: propWorldBodies false
@@ -2822,6 +2919,9 @@ export class PropService extends ClientListener {
         }
         if (fields.trap !== undefined) {
             entry.trap = fields.trap;
+        }
+        if (fields.body !== undefined) {
+            entry.body = fields.body;
         }
         this.kinds.set(localId, entry);
         return entry;

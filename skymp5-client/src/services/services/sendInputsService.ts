@@ -182,6 +182,14 @@ export class SendInputsService extends ClientListener {
         });
     }
 
+    // physics rung 5 (thuum tracker #175): whether this seat's death-fall
+    // settle still samples the body (5a's window, the bodies map below), so
+    // PropService's stream leaves it to the movement path until its rest
+    bodySettling(refrId: number): boolean {
+        const body = this.bodies.get(`${refrId}`);
+        return body !== undefined && !body.atRest;
+    }
+
     private sendMovement(_refrId?: number, form?: FormModel) {
         const owner = this.getInputOwner(_refrId);
         if (!owner) {

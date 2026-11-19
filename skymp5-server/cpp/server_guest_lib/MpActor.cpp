@@ -1005,6 +1005,22 @@ void MpActor::VisitProperties(CreateActorMessage& message,
     entry.propValueJsonDump = value.dump();
     message.customPropsJsonDumps.push_back(std::move(entry));
   }
+
+  // thuum tracker #172 (playtest 55: rotfern and her draugr came back into
+  // Ariadne's view and no one there had a weapon out): the record keeps
+  // _skymp_isWeapDrawn from every movement sample, but it reached another
+  // game only in relayed samples, and the client builds a create's movement
+  // sheathed. Another game's create of a living actor the record has drawn
+  // carries the custom property "isWeapDrawn" (true), on the same JSON-valued
+  // channel as lastAction (no wire row); a sheathed or dead one, and a
+  // player's own create, carry none, the client's default
+  if (mode == VisitPropertiesMode::OnlyPublic && IsWeaponDrawn() &&
+      !IsDead()) {
+    CustomPropsEntry entry;
+    entry.propName = "isWeapDrawn";
+    entry.propValueJsonDump = "true";
+    message.customPropsJsonDumps.push_back(std::move(entry));
+  }
 }
 
 void MpActor::Enable()

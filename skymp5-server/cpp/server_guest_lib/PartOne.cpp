@@ -1220,6 +1220,11 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
           this_->ForgetHeldSightings(actor->GetFormId());
           this_->pImpl->lastSquareByPlayer.erase(actor->GetFormId());
           this_->pImpl->fatedSquares.erase(actor->GetFormId());
+          // thuum tracker #166: and the word wall it stood armed at
+          if (this_->pImpl->actionListener) {
+            this_->pImpl->actionListener->ForgetWordWallArm(
+              actor->GetFormId());
+          }
           // thuum ADR-068 rung 5: its quest words' churn counters go, and
           // its race overlay ends with the connection (D-T1 A: a relaunch
           // mid-form logs in as its own race)
@@ -9249,6 +9254,8 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
   auto& cache = worldState.GetEspmCache();
   std::optional<uint32_t> word;
   uint32_t wallRef = 0;
+  uint32_t lookTarget = 0;
+  int32_t innerRadius = WordWall{}.innerRadius;
   const auto read = [&](const espm::LookupResult& lookup) {
     if (!lookup.rec) {
       return;
@@ -9263,6 +9270,13 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
         continue;
       }
       for (const auto& property : script.properties) {
+        // thuum tracker #166: the teaching distance, where the record sets
+        // one (Bleak Falls Sanctum's 0x709d2 does not)
+        if (property.type == espm::Property::Type::Int &&
+            !Utils::stricmp(property.name.data(), "innerRadius")) {
+          innerRadius = property.value.integer;
+          continue;
+        }
         // the wall's word is the script's myWord01 (Skyrim.esm's trigger
         // references carry it with the wall's other eight properties, the
         // base ACTI's copy of the script the shared five: lab/esm.py's VMAD
@@ -9279,6 +9293,10 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
           // the trigger's own bounds are the chamber (WordWallTrigger's OBND
           // is a box of about 4,000 units a side)
           wallRef = lookup.ToGlobalId(property.value.formId);
+        } else if (!Utils::stricmp(property.name.data(), "lookTargetWord01")) {
+          // thuum tracker #166: the mark the script measures the player to
+          // (StartFX's innerRadius test); 0x709d2's is 0x709d4
+          lookTarget = lookup.ToGlobalId(property.value.formId);
         }
       }
     }
@@ -9294,7 +9312,7 @@ std::optional<PartOne::WordWall> PartOne::WordOfWall(
   if (!lookup.rec || !(lookup.rec->GetType() == "WOOP")) {
     return std::nullopt;
   }
-  return WordWall{ *word, wallRef };
+  return WordWall{ *word, wallRef, lookTarget, innerRadius };
 }
 
 namespace {

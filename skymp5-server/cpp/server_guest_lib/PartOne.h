@@ -638,11 +638,17 @@ public:
   // thuum docs/verbs/word-wall.md (M4): what a wall trigger reference's
   // WordWallTriggerScript names (the reference's own properties over its
   // base's): the word it teaches (myWord01) and the wall itself (wordWall01,
-  // the reference the reach is measured to; 0 when the script names none)
+  // the reference the reach is measured to; 0 when the script names none).
+  // thuum tracker #166: the mark the word is taught at (lookTargetWord01, 0
+  // when the script names none) and the distance under which it is taught
+  // (innerRadius, the script's own 300 unless the reference sets an Int:
+  // WordWallTriggerScript.pex from Skyrim - Misc.bsa and USSEP's, lab/pex.py)
   struct WordWall
   {
     uint32_t word = 0;
     uint32_t wall = 0;
+    uint32_t lookTarget = 0;
+    int32_t innerRadius = 300;
   };
   // none for a reference that is no word wall trigger, or whose word is no
   // WOOP

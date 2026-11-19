@@ -12677,6 +12677,10 @@ void ActionListener::NotifyHostility(MpActor& aggressor, MpActor& target,
   if (!skymp::rules::hostility_counted(facts)) {
     return;
   }
+  // thuum tracker #131: the attack the fight rule counted, by aggressor,
+  // what PartOne's StruckWithinQuiet asks of a thrall at its commander's
+  // fight's end (NoteHitBy counts a heal's hit too, as a death's evidence)
+  target.NoteAttackBy(aggressor.GetFormId(), now);
   const auto nowMs = static_cast<uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
       now.time_since_epoch())

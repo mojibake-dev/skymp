@@ -464,6 +464,20 @@ public:
   // own number)
   std::optional<uint32_t> LastHitBy(std::chrono::steady_clock::time_point now,
                                     std::chrono::milliseconds window) const;
+  // thuum tracker #131 (the review of its first build): the attacks on this
+  // actor the fight rule counted, by aggressor, written by
+  // ActionListener::NotifyHostility after hostility_counted, which every
+  // weapon hit and every spell hit with a hostile effect held reaches.
+  // NoteHitBy above counts every hit, a heal's and a refused effect's too,
+  // as a death's evidence should; a fight asks this. One entry per
+  // aggressor, the newest kAttacksKept of them, the oldest evicted
+  void NoteAttackBy(uint32_t aggressorId,
+                    std::chrono::steady_clock::time_point now);
+  // how long since `aggressorId` last attacked this actor; nothing when the
+  // server counted no such attack, or evicted it
+  std::optional<std::chrono::milliseconds> AttackedByAgo(
+    uint32_t aggressorId, std::chrono::steady_clock::time_point now) const;
+  static constexpr size_t kAttacksKept = 32;
   void RecordHeight(float z, std::chrono::steady_clock::time_point now);
   // the highest sample within the window minus `z`; nothing without samples
   std::optional<float> DropTo(float z,

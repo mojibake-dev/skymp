@@ -2552,15 +2552,16 @@ void PartOne::TickFights(uint64_t nowMs)
       // fighting while a summon or thrall of its own still fights that
       // player (the players' end at 07:41:20.936, server.log:5575, stood
       // rotfern's figure down on c2 and Ariadne's atronach lost its target),
-      // but only for a minion the other player struck within the minute
+      // a thrall only where the other player struck it within the minute
       // (thuum tracker #131: a thrall's own swings kept rotfern's figure of
-      // Ariadne fighting on c1 past the players' end)
+      // Ariadne fighting on c1 past the players' end); a summon whatever
+      // struck whom (ADR-077 decision 3)
       const auto endOnClient = [&](MpActor& client, uint32_t other) {
         if (MinionFights(client.GetFormId(), other, nowMs)) {
           spdlog::info("PartOne::TickFights - hostility: {:x}'s figure of "
                        "{:x} stays in the fight: a summon or thrall of {:x}'s "
-                       "still fights it, struck by it within the minute "
-                       "(playtest 54 #126, tracker #131)",
+                       "still fights it (playtest 54 #126; a thrall only "
+                       "where it struck it within the minute, tracker #131)",
                        client.GetFormId(), other, client.GetFormId());
           return;
         }
@@ -2619,29 +2620,41 @@ namespace {
 // engine number
 constexpr uint64_t kThrallRejoinMs = 1000;
 
-// a fight's quiet window: wire-rules hostility.rs FIGHT_QUIET_MS (60 s), the
-// minute without a hit that ends a pair; the bridge does not carry the
-// constant, so it is named here once
-constexpr std::chrono::milliseconds kFightQuiet{ 60'000 };
+// a fight's quiet window, PartOne::kFightQuietMs (wire-rules hostility.rs
+// FIGHT_QUIET_MS's copy, which a T0 case ties to the Rust table's end)
+constexpr std::chrono::milliseconds kFightQuiet{ PartOne::kFightQuietMs };
 
 // thuum tracker #131 (playtest 55, Eli: "weird shit around hitting eachother
-// with thralls out"; #113's design A): whether `opponent` struck `minion`
-// within a fight's quiet window by TickFights' clock `nowMs`, from the hits
-// the server numbered on it, by aggressor (MpActor::HitByAgo). The fights
-// table keeps one last-hit time per pair and no aggressor (wire-rules
-// hostility.rs Fights), so a thrall's own swings at the other player keep
-// its pair standing: rotfern's thrall 373a6 hit Ariadne 24 times and fought
-// on past the players' end (server.log 22:49:23.544 UTC, "stays in its own
-// fight"), though she never touched it. A summon or thrall fights on past
-// its owner's fight only when that player attacked it (ADR-077 decision 2)
-bool StruckWithinQuiet(const MpActor& minion, uint32_t opponent,
+// with thralls out"; #113's design A): whether `opponent` attacked `thrall`
+// since its raise and within a fight's quiet window by TickFights' clock
+// `nowMs`, from the attacks the fight rule counted on it, by aggressor
+// (MpActor::AttackedByAgo, written by NotifyHostility: a heal or a refused
+// effect is no attack, and the killing blow on the body before its raise
+// is no attack on the thrall). The fights table keeps one last-hit time per
+// pair and no aggressor (wire-rules hostility.rs Fights), so a thrall's own
+// swings at the other player keep its pair standing: rotfern's thrall
+// 373a6 hit Ariadne 24 times and fought on past the players' end
+// (server.log 22:49:23.544 UTC, "stays in its own fight"), though she never
+// touched it. A thrall fights on past its commander's fight only when that
+// player attacked it (ADR-077 decision 2). The record keeps the newest
+// MpActor::kAttacksKept attackers: past that many others after the
+// opponent's last attack, the thrall stands down though attacked (a false
+// stand-down, never a false stay). A played commander's thrall reaches the
+// keep only at an apart end or a departure: every attack of the opponent's
+// on it hits the players' pair too (tracker #160, OwnerOf), so a quiet end
+// comes a minute after the last one
+bool StruckWithinQuiet(const MpActor& thrall, uint32_t opponent,
                        uint64_t nowMs)
 {
   const std::chrono::steady_clock::time_point now(
     std::chrono::duration_cast<std::chrono::steady_clock::duration>(
       std::chrono::milliseconds(static_cast<int64_t>(nowMs))));
-  const auto ago = minion.HitByAgo(opponent, now);
-  return ago.has_value() && *ago < kFightQuiet;
+  const auto ago = thrall.AttackedByAgo(opponent, now);
+  if (!ago || *ago >= kFightQuiet) {
+    return false;
+  }
+  const auto raised = thrall.ReanimateAcceptedAgo(now);
+  return !raised || *ago < *raised;
 }
 
 // `commander`'s living thralls its own game simulates, by the command rows
@@ -2740,11 +2753,17 @@ bool PartOne::MinionFights(uint32_t owner, uint32_t opponent, uint64_t nowMs)
     }
     const auto& form = worldState.LookupFormByIdNoLoad(other);
     MpActor* minion = form ? form->AsActor() : nullptr;
-    // thuum tracker #131: a pair that only the minion's own swings keep
-    // standing is no fight of the opponent's (StruckWithinQuiet)
+    // thuum tracker #131: a thrall's pair that only its own swings keep
+    // standing is no fight of the opponent's (StruckWithinQuiet). A summon
+    // keeps its owner's figure fighting while its own pair stands, struck
+    // or not (ADR-077 decision 3: "Nothing stops a summon from fighting";
+    // #113's stand-down is a thrall's alone): x-second-atronach's #126
+    // CLAIM reads the players' end with the other player's strike on the
+    // summon after it (v6, run 20261118-064558)
     if (minion && !minion->IsDead() && SimulatorOf(*minion) == owner &&
-        (minion->IsSummon() || CommanderOf(*minion) == owner) &&
-        StruckWithinQuiet(*minion, opponent, nowMs)) {
+        (minion->IsSummon() ||
+         (CommanderOf(*minion) == owner &&
+          StruckWithinQuiet(*minion, opponent, nowMs)))) {
       return true;
     }
   }
@@ -2771,9 +2790,17 @@ void PartOne::StandDownThralls(MpActor& commander, uint32_t opponent,
       continue;
     }
     // playtest 54 #126: a thrall in a fight of its own with the opponent
-    // stays in it, where the opponent struck it within the quiet window
-    // (thuum tracker #131, ADR-077 decision 2); a pair its own swings alone
-    // keep standing stands down with its commander's fight
+    // stays in it, where the opponent attacked it since its raise within
+    // the quiet window (thuum tracker #131, ADR-077 decision 2); a pair its
+    // own swings alone keep standing stands down with its commander's
+    // fight. For a played commander's thrall that keep comes at an apart
+    // end or a departure alone (StruckWithinQuiet). HYPOTHESIS, unread: a
+    // thrall in a fight its own engine began (373a6 took Ariadne as its
+    // target by itself within a second) stands down at the one
+    // Actor.StopCombat below. Its own pair stays in the fights table to its
+    // own quiet clock and nothing tells it again; the read that settles it
+    // is its host's state stream (SetHostedState, GetHostedCombatTarget)
+    // naming no target within a few seconds of the StopCombat
     if (GetFights().between(thrallId, opponent)) {
       if (StruckWithinQuiet(*thrall, opponent, nowMs)) {
         spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} "
@@ -2784,8 +2811,8 @@ void PartOne::StandDownThralls(MpActor& commander, uint32_t opponent,
       }
       spdlog::info("PartOne::TickFights - hostility: thrall {:x} of {:x} "
                    "has a fight of its own with {:x}, which has not struck "
-                   "it within the minute: it stands down with its "
-                   "commander's (tracker #131)",
+                   "it within the minute since its raise: it stands down "
+                   "with its commander's (tracker #131)",
                    thrallId, commanderId, opponent);
     }
     const std::vector<std::optional<

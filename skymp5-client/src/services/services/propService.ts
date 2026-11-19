@@ -319,8 +319,14 @@ type PropKind = "item" | "world" | "trap" | "none";
 // takes, a trap family's), undefined not judged; family a trap family
 // reference (kindOf's "trap"); trap D-S3's verdict on a family reference's
 // record (judgeTrapRecord: a body a firing moved before this session); body
-// a dead NPC's (physics rung 5, kindOfBody), judged again when it stands
-type KindEntry = { refr: number; item: boolean; family?: boolean; world?: { parts: number } | null; trap?: boolean; body?: boolean };
+// a dead NPC's (physics rung 5, kindOfBody), judged again when it stands;
+// noRowAt when the stream found it no row (noRow), on this seat's clock
+type KindEntry = { refr: number; item: boolean; family?: boolean; world?: { parts: number } | null; trap?: boolean; body?: boolean; noRowAt?: number };
+
+// physics rung 5 (thuum tracker #175): how long a body the stream found no
+// row (noRow) stays one before kindOf judges it again. UNMEASURED: a few
+// rescans, so a stable mismatch is said a few times a minute at most
+const BODY_NO_ROW_MS = 10_000;
 
 // the server's last word on a prop: the player (0 the cell's host by
 // default) and its epoch, and when it came (a hold reads it against its own
@@ -1420,10 +1426,17 @@ export class PropService extends ClientListener {
     private stream(prop: Prop, refr: ObjectReference, now: number, read: Body | undefined) {
         // physics rung 5 (thuum tracker #175): a body whose death fall this
         // seat's settle still samples (sendInputsService, 5a's window) is the
-        // movement path's until that rest; the stream takes it from its first
-        // wake after, the baseline read then
-        if (this.isBody(prop) && this.controller.lookupListener(SendInputsService).bodySettling(prop.refr)) {
+        // movement path's until that rest, the death word's grant included
+        // (its announce dropped: the settle is the death's stream, and an
+        // opening sample after it woke a resting body for nothing, the
+        // review of f50509d89, finding 5); the stream takes it from its first
+        // wake after, the baseline read then. A hand on it takes it at once:
+        // the settle hands it over (sendInputsService's streamsBody), since a
+        // dragged body never dwells and its settle samples move no view (the
+        // review's finding 3)
+        if (this.isBody(prop) && !prop.held && this.controller.lookupListener(SendInputsService).bodySettling(prop.refr)) {
             prop.lastSent = undefined;
+            prop.announce = false;
             return;
         }
         if (prop.handOff !== undefined) {
@@ -1531,9 +1544,6 @@ export class PropService extends ClientListener {
             if (!d.asleep && this.budget < 1) {
                 break;
             }
-            if (d.asleep && this.isBody(d.prop)) {
-                this.recordBodyRest(d.prop, d.body);
-            }
             const seq = this.send(d.prop, d.body, d.asleep, now);
             const id = d.prop.refr.toString(16);
             if (d.asleep) {
@@ -1600,6 +1610,11 @@ export class PropService extends ClientListener {
                 return 0;
             }
             bones = read !== undefined ? read : [];
+        }
+        // physics rung 5: a body's rest takes its record ahead of it, from
+        // every path a rest goes by (sendDue's, the untrack's final sample)
+        if (asleep && this.isBody(prop)) {
+            this.recordBodyRest(prop, body);
         }
         const word = this.owners.get(prop.refr);
         const epoch = word ? word.epoch : 0;
@@ -1677,10 +1692,13 @@ export class PropService extends ClientListener {
 
     // a prop this seat's stream found no row (bonesOf): its binding's verdict
     // cached so no rescan takes it again, and untracked after the update's
-    // sends (sendDue)
+    // sends (sendDue). A body's verdict is judged again after BODY_NO_ROW_MS
+    // (kindOf): its parts change with its 3D (a weapon body let go), and a
+    // part past the wire's reach comes back within it (the review of
+    // f50509d89, finding 2)
     private noRow(prop: Prop, why: string) {
         prop.dropRow = why;
-        this.cacheKind(prop.localId, prop.refr, { item: false, world: null });
+        this.cacheKind(prop.localId, prop.refr, { item: false, world: null, noRowAt: clockMs() });
     }
 
     // The follower: the stream followed rendered on its clock (one translate a
@@ -2711,16 +2729,21 @@ export class PropService extends ClientListener {
     // (ActionListener.cpp) is the wider side: the class is this seat's own
     // unvalidated word (R2, rule 5), inside the server's bounds
     private kindOf(localId: number, refr: number, formType?: number): PropKind {
-        const known = this.kinds.get(localId);
+        let known = this.kinds.get(localId);
         if (known !== undefined && known.refr === refr && known.body === true) {
             // a body is a row while its engine has it dead: a raise or a
-            // respawn stands it up, and it is no prop from then
+            // respawn stands it up, and it is no prop from then; a body the
+            // stream found no row is judged again after BODY_NO_ROW_MS
             const actor = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
-            if (actor && actor.isDead()) {
+            const retry = known.noRowAt !== undefined && clockMs() - known.noRowAt >= BODY_NO_ROW_MS;
+            if (actor && actor.isDead() && !retry) {
                 return this.withSettings(known);
             }
             this.kinds.delete(localId);
-            return "none";
+            if (!retry) {
+                return "none";
+            }
+            known = undefined;
         }
         if (known !== undefined && known.refr === refr && (known.item || known.world !== undefined)) {
             return this.withSettings(known);
@@ -2838,6 +2861,24 @@ export class PropService extends ClientListener {
         return this.withSettings(entry);
     }
 
+    // physics rung 5 (thuum tracker #175): whether this seat streams the
+    // body (a hand on it, or its stream open), so sendInputsService's death
+    // settle hands it over and samples it no more
+    streamsBody(refr: number): boolean {
+        const prop = this.props.get(refr);
+        return prop !== undefined && this.isBody(prop) && (prop.held || prop.streaming);
+    }
+
+    // and whether this seat follows another seat's stream of the body, so
+    // ChangeFormService lays its copy by the owner's record once the follow
+    // has rested, never under its tail (the record goes ahead of the owner's
+    // asleep sample and the follow renders FOLLOW_DELAY_MS behind; the review
+    // of f50509d89, finding 6)
+    followsBody(refr: number): boolean {
+        const prop = this.props.get(refr);
+        return prop !== undefined && this.isBody(prop) && (prop.imposing || this.followLive(prop, clockMs()));
+    }
+
     // whether the prop is a dead NPC's body (kindOfBody's entry)
     private isBody(prop: Prop): boolean {
         const k = this.kinds.get(prop.localId);
@@ -2922,6 +2963,9 @@ export class PropService extends ClientListener {
         }
         if (fields.body !== undefined) {
             entry.body = fields.body;
+        }
+        if ("noRowAt" in fields) {
+            entry.noRowAt = fields.noRowAt;
         }
         this.kinds.set(localId, entry);
         return entry;

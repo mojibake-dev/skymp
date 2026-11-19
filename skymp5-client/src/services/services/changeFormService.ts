@@ -9,6 +9,7 @@ import { ChangeFormMessage, ChangeFormRemapRow } from "../messages/changeFormMes
 import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
 import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 import { HostService } from "./hostService";
+import { PropService } from "./propService";
 import { RagdollService } from "./ragdollService";
 
 // thuum docs/verbs/change-form.md (ADR-065 for system 1: the save is the
@@ -201,6 +202,7 @@ type HeldRecord = {
     attempts: number;
     lastAttemptAt: number;
     heldLogged: boolean;
+    followLogged?: boolean; // physics rung 5: "held until this seat's follow of its stream rests" said
     killedHereAt: number;  // deathService's kill of the copy, in flight (the task queue) or landed
     bindKill: boolean;     // that kill was the bind's (applies on the owner's own seat too)
     queuedAt: number;      // the apply queued to the main thread's task (ApplyChangeForm answered {queued}); 0 when none
@@ -542,6 +544,16 @@ export class ChangeFormService extends ClientListener {
             // own record goes out from the rest
             this.records.delete(rec.formId);
             logTrace(this, `changeform ${hex}: the record dropped, this seat simulates the body`);
+            return;
+        }
+        // physics rung 5 (thuum tracker #175): a body this seat follows on the
+        // prop stream is laid by the record once the follow has rested,
+        // never under its tail (the poll tries it again)
+        if (this.controller.lookupListener(PropService).followsBody(rec.formId)) {
+            if (!rec.followLogged) {
+                rec.followLogged = true;
+                logLab("verb:npc-fate", `corpse ${hex} record held until this seat's follow of its stream rests`);
+            }
             return;
         }
         const now = Date.now();

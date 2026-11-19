@@ -23,6 +23,7 @@ import { RemoteServer } from "./remoteServer";
 import { HostService } from "./hostService";
 import { DeathService } from "./deathService";
 import { logError, logLab, logTrace } from "../../logging";
+import { PropService } from "./propService";
 import { ChangeFormService, CORPSE_REST_DWELL_MS, CORPSE_REST_MIN_MS, CORPSE_SETTLE_MS, corpseSamplesAgree } from "./changeFormService";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { Movement, NiPoint3 } from "../../sync/movement";
@@ -239,6 +240,21 @@ export class SendInputsService extends ClientListener {
                 this.bodies.delete(refrIdStr);
                 body = undefined;
                 logTrace(this, `body ${_refrId.toString(16)} alive again on this engine, its samples run as before`);
+            }
+            // physics rung 5 (thuum tracker #175): a body PropService streams
+            // (a hand on it, or its stream open) is the prop stream's: the
+            // settle hands it over and samples it no more, with no record of
+            // its own (the stream's rest records it), and a fresh grant's
+            // settle never starts under it (the review of f50509d89, finding
+            // 3: a drag never dwells, and its settle samples move no view)
+            if (_refrId !== undefined && owner.isDead() && this.controller.lookupListener(PropService).streamsBody(_refrId)) {
+                if (!body || !body.atRest) {
+                    const at = getMovement(owner, form);
+                    this.bodies.set(refrIdStr, { since: now, first: [at.pos[0], at.pos[1], at.pos[2]], last: at, anchor: at, anchorAt: now, atRest: true });
+                    logLab("verb:npc-fate", `body ${_refrId.toString(16)} handed to the prop stream (a hand or its open stream holds it): no settle samples from here`);
+                }
+                this.lastSendMovementMoment.set(refrIdStr, now);
+                return;
             }
             const data = getMovement(owner, form);
             let reliability: "unreliable" | "reliable" = "unreliable";

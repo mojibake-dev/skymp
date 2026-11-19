@@ -7,6 +7,7 @@
 #include "HitMessage.h"
 #include "HostedActorStateMessage.h"
 #include "MsgType.h"
+#include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateMovementMessage.h"
@@ -1874,5 +1875,37 @@ TEST_CASE("A host's report of a script's kill on an essential base is taken "
   REQUIRE(actor.IsDead());
 
   StandUp(p, actor);
+  Leave(p, 0, kHost);
+}
+
+// physics rung 5 (thuum tracker #175; the review of f50509d89, finding 4): a
+// body whose prop row another seat holds live (a grab mid-settle here) has
+// that seat as its one writer, so the host's settle sample of its own copy is
+// refused (E_PROP_NOT_OWNER) and moves nothing
+TEST_CASE("A body another seat's grab holds takes no settle sample from its "
+          "host",
+          "[ActorDeath][BodyRest][Prop][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  REQUIRE(p.PropLiveOwner(actor) == kHost);
+  const NiPoint3 at = actor.GetPos();
+
+  RawMessageData raw;
+  raw.userId = 1;
+  PropClaimMessage grab;
+  grab.refrs = { kPredator };
+  grab.touch = 1;
+  p.GetActionListener().OnPropClaim(raw, grab);
+  REQUIRE(p.PropLiveOwner(actor) == kOther);
+
+  MoveBody(p, 0, kPredator, at + NiPoint3{ 50.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == at);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
   Leave(p, 0, kHost);
 }

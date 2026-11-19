@@ -313,8 +313,18 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // before this process or placed dead has no window and no row here
       // and keeps the host's samples as before (TODO: its rest at load,
       // with the prop claim)
-      if (moved->IsDead() && moved->IsFateRespawned() &&
-          moved->HasBodySettle()) {
+      // physics rung 5 (thuum tracker #175): a dead body whose prop row
+      // another seat holds live (its drag, its push) has that seat as its
+      // one writer, a body with no settle record too (one dead before this
+      // process, which the branch below never sees): every other report is
+      // refused, the host's settle samples of its own copy among them
+      const uint32_t bodyLiveOwner =
+        moved->IsDead() ? partOne.PropLiveOwner(*moved) : 0u;
+      const bool bodyHeldElsewhere =
+        bodyLiveOwner != 0 && bodyLiveOwner != myActor->GetFormId();
+      if (moved->IsDead() &&
+          (bodyHeldElsewhere ||
+           (moved->IsFateRespawned() && moved->HasBodySettle()))) {
         const auto refuseBody = [&](const char* code, const std::string& why) {
           // the throttle per code, sender and body: a NOT_OWNER line must
           // not silence an AT_REST line seconds later, nor mix their counts
@@ -342,6 +352,12 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
             rawMsgData.userId, static_cast<uint8_t>(MsgType::UpdateMovement),
             false, true);
         };
+        if (bodyHeldElsewhere) {
+          refuseBody("E_PROP_NOT_OWNER",
+                     fmt::format("{:x} simulates it (its row's, a touch's)",
+                                 bodyLiveOwner));
+          return;
+        }
         // the window may have ended since the last sweep
         moved->SettleBodyIfDue(nowMs);
         if (moved->IsBodyAtRest()) {
@@ -9603,6 +9619,15 @@ void ActionListener::OnChangeForm(const RawMessageData& rawMsgData,
   const bool bodyOwner = actor->IsDead() &&
     partOne.PropLiveOwner(*actor) == sender->GetFormId() &&
     msg.epoch == partOne.PropEpochOf(*actor);
+  // and the one writer of a body another seat's row holds live is that
+  // seat: the host's own settle record of its copy is refused meanwhile
+  const uint32_t bodyLiveOwner =
+    actor->IsDead() ? partOne.PropLiveOwner(*actor) : 0u;
+  if (bodyLiveOwner != 0 && bodyLiveOwner != sender->GetFormId()) {
+    refuse("E_CHANGEFORM_OWNER",
+           fmt::format("{:x} holds the body's prop row", bodyLiveOwner), true);
+    return;
+  }
   const auto host = partOne.GetCellHost(*cell);
   if (!bodyOwner && (!host.hosted || host.player != sender->GetFormId())) {
     refuse("E_CHANGEFORM_OWNER",

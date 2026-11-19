@@ -926,6 +926,13 @@ TEST_CASE("A body's change form from the seat whose drag holds its row is "
   const uint32_t epoch = p.PropEpochOf(actor);
   REQUIRE(epoch != cellHost.epoch);
 
+  // the host's own record of its copy is refused while the drag holds the
+  // row (one writer, the review of f50509d89, finding 4)
+  p.Messages().clear();
+  Report(p, 0, Record(cellHost.epoch, kPredator, kRecordHex));
+  REQUIRE(!actor.GetChangeFormRecord().has_value());
+  REQUIRE(SentTo<ChangeFormAckMessage>(p, 0).empty());
+
   // the cell's epoch is no fence for a visitor, the row's is
   p.Messages().clear();
   Report(p, 1, Record(cellHost.epoch, kPredator, kRecordHex));

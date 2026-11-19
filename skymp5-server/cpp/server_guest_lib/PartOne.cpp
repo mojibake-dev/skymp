@@ -1652,6 +1652,14 @@ void PartOne::Init()
   worldState.bodyWord = [this](const MpActor& body, WorldState::BodyWord word,
                                uint32_t simulator,
                                uint64_t nowMs) -> uint32_t {
+    // physics rung 5 (thuum tracker #175): only a body that can be a prop is
+    // worded, a dead game-file actor no player plays (ActionListener's
+    // PropKindOf Body); a server-made one (a summon, a placed copy) keeps its
+    // row unsaid, as before rung 5, since no seat may claim or stream it (T2
+    // on 97881c14: the summon's and the thralls' words were difftest's
+    // undeclared divergences, tracker #175 note 3626)
+    const bool prop = body.GetFormId() < 0xff000000 &&
+      body.GetUserId() == Networking::InvalidUserId;
     switch (word) {
       case WorldState::BodyWord::Died: {
         // physics rung 5 (thuum tracker #175): the death's row is worded as
@@ -1659,7 +1667,7 @@ void PartOne::Init()
         // whose settle window ends on its clock with the row still its own
         // streams a later wake at the epoch the row stands at
         const uint32_t epoch = BodyDied(body, simulator, nowMs);
-        if (epoch != 0) {
+        if (prop && epoch != 0) {
           SendPropOwnerWord(body.GetFormId(), PropLiveOwner(body), epoch);
         }
         return epoch;
@@ -1670,7 +1678,7 @@ void PartOne::Init()
         // the body's epoch for a later wake or claim; 5a's rest went unsaid,
         // and a host's wake after it named a stale epoch
         const uint32_t epoch = BodyRested(body);
-        if (epoch != 0) {
+        if (prop && epoch != 0) {
           SendPropOwnerWord(body.GetFormId(), 0, epoch);
         }
         return epoch;

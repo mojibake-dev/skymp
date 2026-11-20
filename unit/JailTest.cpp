@@ -155,7 +155,11 @@ TEST_CASE("An arrest records the term on the shared clock, permits the jump "
   PartOne& p = GetPartOne();
   PinnedClock clock(p, 10.f);
   auto& prisoner = Arrive(p);
+  // the player's base may bring daggers of its own (pipeline 6414: one more
+  // than added), so the counts are read against the start
   prisoner.AddItem(kDagger, 3);
+  const uint32_t held = prisoner.GetInventory().GetItemCount(kDagger);
+  REQUIRE(held >= 3);
 
   // the sentence's bounds: the game's 1 to 7 days
   REQUIRE(p.OnArrest(prisoner, kFalkreath, 0) ==
@@ -192,7 +196,7 @@ TEST_CASE("An arrest records the term on the shared clock, permits the jump "
   REQUIRE(!prisoner.ArrestStripTakes(kMarker));
   auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
   chest.PutItem(prisoner, Inventory::Entry(kDagger, 2));
-  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == 1);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 2);
   REQUIRE(chest.GetInventory().GetItemCount(kDagger) >= 2);
   REQUIRE(prisoner.GetCrimeRecord().jail->belongings.GetItemCount(kDagger) ==
           2);
@@ -213,6 +217,8 @@ TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
   PinnedClock clock(p, 20.f);
   auto& prisoner = Arrive(p);
   prisoner.AddItem(kDagger, 2);
+  const uint32_t held = prisoner.GetInventory().GetItemCount(kDagger);
+  REQUIRE(held >= 2);
   REQUIRE(p.OnCrimeGold(prisoner, kFalkreath, 100, 0));
   // the same bounty again changes nothing
   REQUIRE(!p.OnCrimeGold(prisoner, kFalkreath, 100, 0));
@@ -223,7 +229,7 @@ TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
   auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
   const uint32_t inChestBefore = chest.GetInventory().GetItemCount(kDagger);
   chest.PutItem(prisoner, Inventory::Entry(kDagger, 2));
-  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == 0);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 2);
 
   // half a day in: still serving
   clock.Set(20.5f);
@@ -237,7 +243,7 @@ TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
   REQUIRE(!prisoner.GetCrimeRecord().jail);
   REQUIRE(!prisoner.GetCrimeRecord().Find(
     FormDesc::FromFormId(kFalkreath, p.worldState.espmFiles)));
-  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == 2);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held);
   REQUIRE(chest.GetInventory().GetItemCount(kDagger) == inChestBefore);
   REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
           kTamriel);

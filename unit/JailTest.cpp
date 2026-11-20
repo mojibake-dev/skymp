@@ -90,6 +90,7 @@ TEST_CASE("The change form keeps a player's bounty and jail term, and older "
   term.days = 7;
   term.releaseAt = 12.5;
   term.belongings.AddItems({ Inventory::Entry(kDagger, 2) });
+  term.arrived = true;
   record.jail = term;
   changeForm.crimeRecord = record;
 
@@ -258,6 +259,14 @@ TEST_CASE("An arrest records the term on the shared clock, permits the jump "
   REQUIRE(prisoner.GetInventory().GetItemCount(kRobes) == 1);
   Take(p, kDagger, 1, kBelongings);
   REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 2);
+  // the outfit is never part of the strip, and is created once a window:
+  // put back, or disposed of, it is not made again (the second review of
+  // cd890dbed, the mint loop)
+  Put(p, kRobes, 1, kStolenGoods);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kRobes) == 1);
+  prisoner.RemoveItem(kRobes, 1, nullptr);
+  Take(p, kRobes, 1, kStolenGoods);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kRobes) == 0);
 
   Leave(p);
 }
@@ -334,7 +343,13 @@ TEST_CASE("A prisoner out of its jail before its end escaped: the term ends, "
   const uint32_t inChest = chest.GetInventory().GetItemCount(kDagger);
   CloseWindow(prisoner);
 
-  // in the jail's cell: serving
+  // never seen in its jail yet (a slow load, a jump not made): not an
+  // escape, the term runs
+  REQUIRE(!p.EndTermIfEscaped(prisoner));
+  REQUIRE(prisoner.GetCrimeRecord().jail);
+  REQUIRE(!prisoner.GetCrimeRecord().jail->arrived);
+
+  // in the jail's cell: serving, its arrival noted
   const auto jail = p.JailOf(kFalkreath);
   REQUIRE(jail.has_value());
   LocationalData inside;
@@ -345,6 +360,7 @@ TEST_CASE("A prisoner out of its jail before its end escaped: the term ends, "
   prisoner.Teleport(inside);
   REQUIRE(!p.EndTermIfEscaped(prisoner));
   REQUIRE(prisoner.GetCrimeRecord().jail);
+  REQUIRE(prisoner.GetCrimeRecord().jail->arrived);
 
   // out in Falkreath before its end: escaped
   LocationalData outside;

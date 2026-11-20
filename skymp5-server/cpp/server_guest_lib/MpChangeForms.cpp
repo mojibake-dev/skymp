@@ -736,7 +736,8 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
       crime["jail"] = { { "faction", jail.faction.ToString() },
                         { "days", jail.days },
                         { "releaseAt", jail.releaseAt },
-                        { "belongings", jail.belongings.ToJson() } };
+                        { "belongings", jail.belongings.ToJson() },
+                        { "arrived", jail.arrived } };
     }
     res["crimeRecord"] = std::move(crime);
   }
@@ -1622,7 +1623,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     ReadEx(element, crimeRecord, &jTmp);
     static const JsonPointer crimeGold("crimeGold"), faction("faction"),
       violent("violent"), nonViolent("nonViolent"), jail("jail"), days("days"),
-      releaseAt("releaseAt"), belongings("belongings");
+      releaseAt("releaseAt"), belongings("belongings"), arrived("arrived");
     CrimeRecord record;
     std::vector<simdjson::dom::element> golds;
     ReadVector(jTmp, crimeGold, &golds);
@@ -1648,6 +1649,10 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       simdjson::dom::element belongingsTmp;
       ReadEx(jailTmp, belongings, &belongingsTmp);
       term.belongings = Inventory::FromJson(belongingsTmp);
+      if (jailTmp.at_pointer(arrived.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        ReadEx(jailTmp, arrived, &term.arrived);
+      }
       record.jail = std::move(term);
     }
     res.crimeRecord = std::move(record);

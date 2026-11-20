@@ -1936,6 +1936,15 @@ void MpActor::OpenArrestWindow(ArrestWindow window)
   pImpl->arrestWindow = std::move(window);
 }
 
+MpActor::ArrestWindow* MpActor::EditArrestWindow()
+{
+  if (!pImpl->arrestWindow ||
+      std::chrono::steady_clock::now() > pImpl->arrestWindow->until) {
+    return nullptr;
+  }
+  return &*pImpl->arrestWindow;
+}
+
 const MpActor::ArrestWindow* MpActor::GetArrestWindow() const
 {
   if (!pImpl->arrestWindow ||

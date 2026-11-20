@@ -48,10 +48,13 @@ struct JailTerm
   double releaseAt = 0; // the shared clock's daysPassed at which it ends
   Inventory belongings; // what the prisoner's game put into the faction's
                         // prisoner-belongings chest, given back at release
+  bool arrived = false; // the prisoner stood in its jail's cell since the
+                        // arrest; only then is leaving it an escape
 
   auto ToTuple() const
   {
-    return std::make_tuple(faction, days, releaseAt, belongings.ToJson());
+    return std::make_tuple(faction, days, releaseAt, belongings.ToJson(),
+                           arrived);
   }
 
   friend bool operator==(const JailTerm& lhs, const JailTerm& rhs)

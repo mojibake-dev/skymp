@@ -722,16 +722,19 @@ public:
   // placed at the jail marker by the server, its game told its bounty. The
   // check runs every second for the players in the world and at a login
   bool ReleaseIfServed(MpActor& prisoner);
-  // ADR-079.3: a prisoner out of its jail's cell before its end (the arrest's
-  // window closed) escaped: the term ends with its belongings left in the
-  // chest and its bounty as its game reports it; whether it ended one
+  // ADR-079.3: a prisoner out of its jail's cell before its end, once it has
+  // stood in it (the term's arrived, noted here) and the arrest's window
+  // closed, escaped: the term ends with its belongings left in the chest and
+  // its bounty as its game reports it; whether it ended one
   bool EndTermIfEscaped(MpActor& prisoner);
   // The arrest's strip as the prisoner's game reports it during the window:
   // a put into either of the faction's chests moves that exact stack from
   // the record into the prisoner-belongings chest (conservation: only what
-  // the record holds) and onto the term's belongings, whichever chest the
-  // client's inventory diff named; a take of a jail outfit item the record
-  // lacks creates it on the record once. Nothing is resynced into its game
+  // the record holds, never the jail outfit) and onto the term's belongings,
+  // whichever chest the client's inventory diff named; a take of a jail
+  // outfit item the record lacks creates it on the record once a window. A
+  // put is never refused back into its game (no refusal's resync); a take
+  // that creates nothing is resynced as any refused move
   bool OnArrestStripPut(MpActor& prisoner, const Inventory::Entry& entry);
   bool OnArrestStripTake(MpActor& prisoner, const Inventory::Entry& entry);
   // The player's bounty per hold, told to its game as the console's

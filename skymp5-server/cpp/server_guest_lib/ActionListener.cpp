@@ -3038,7 +3038,7 @@ void ActionListener::OnPutItem(const RawMessageData& rawMsgData,
   // engine strips in GoToPrison's own frame from wherever the player stood,
   // and the client's inventory diff names one chest for all of them, so the
   // reach is not asked and the chest named does not matter; the move is
-  // PartOne's, and nothing is resynced back into the prisoner's game
+  // PartOne's, and never refused back into the prisoner's game
   if (actor->ArrestStripTakes(ref.GetFormId())) {
     partOne.OnArrestStripPut(*actor, entry);
     return;
@@ -3083,7 +3083,9 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
   // engine made shows in the client's inventory diff as a take from the
   // chest the diff names): PartOne's, as the put above is
   if (actor->ArrestStripTakes(ref.GetFormId())) {
-    partOne.OnArrestStripTake(*actor, entry);
+    if (!partOne.OnArrestStripTake(*actor, entry)) {
+      ref.ResyncAfterRefusedMove(*actor);
+    }
     return;
   }
   if (!ContainerMoveWithinReach(*actor, ref, "take")) {

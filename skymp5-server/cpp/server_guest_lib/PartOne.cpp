@@ -10161,7 +10161,18 @@ bool PartOne::OnArrestStripPut(MpActor& prisoner,
                                const Inventory::Entry& entry)
 {
   const auto* window = prisoner.GetArrestWindow();
-  if (!window || window->belongingsChest == 0 || entry.count == 0) {
+  if (!window || window->belongingsChest == 0 || entry.count == 0 ||
+      !prisoner.GetCrimeRecord().jail) {
+    return false;
+  }
+  // the jail outfit is what the engine puts on after its strip, never part
+  // of it (the second review of cd890dbed: a minted robe put back and taken
+  // again would mint without end)
+  if (std::find(window->outfit.begin(), window->outfit.end(), entry.baseId) !=
+      window->outfit.end()) {
+    spdlog::warn("[verb:jail] E_ARREST_STRIP_OUTFIT: {:x}'s strip puts {} of "
+                 "{:x}, an item of its jail outfit; not moved",
+                 prisoner.GetFormId(), entry.count, entry.baseId);
     return false;
   }
   auto& form = worldState.LookupFormById(window->belongingsChest);
@@ -10208,13 +10219,16 @@ bool PartOne::OnArrestStripPut(MpActor& prisoner,
 bool PartOne::OnArrestStripTake(MpActor& prisoner,
                                 const Inventory::Entry& entry)
 {
-  const auto* window = prisoner.GetArrestWindow();
+  auto* window = prisoner.EditArrestWindow();
   if (!window) {
     return false;
   }
-  const bool outfit = std::find(window->outfit.begin(), window->outfit.end(),
-                                entry.baseId) != window->outfit.end();
-  if (!outfit || prisoner.GetInventory().GetItemCount(entry.baseId) > 0) {
+  const auto has = [](const std::vector<uint32_t>& list, uint32_t id) {
+    return std::find(list.begin(), list.end(), id) != list.end();
+  };
+  if (!has(window->outfit, entry.baseId) ||
+      has(window->minted, entry.baseId) ||
+      prisoner.GetInventory().GetItemCount(entry.baseId) > 0) {
     spdlog::debug("[verb:jail] {:x}'s take of {} of {:x} during its arrest: "
                   "no outfit item it lacks; not moved",
                   prisoner.GetFormId(), entry.count, entry.baseId);
@@ -10222,7 +10236,8 @@ bool PartOne::OnArrestStripTake(MpActor& prisoner,
   }
   // the jail outfit the engine made on the prisoner, which the client's
   // inventory diff reports as a take from the chest it names: created on
-  // the record once, never taken from the chest
+  // the record once a window, never taken from the chest
+  window->minted.push_back(entry.baseId);
   prisoner.AddItem(entry.baseId, 1);
   spdlog::info("[verb:jail] {:x} wears {:x} of its arrest's jail outfit, "
                "which its engine made; added to the record",
@@ -10280,6 +10295,17 @@ bool PartOne::EndTermIfEscaped(MpActor& prisoner)
   const uint32_t here =
     prisoner.GetCellOrWorld().ToFormId(worldState.espmFiles);
   if (here == jail->landingWorldOrCell) {
+    if (!record.jail->arrived) {
+      JailTerm term = *record.jail;
+      term.arrived = true;
+      prisoner.SetJailTerm(term);
+    }
+    return false;
+  }
+  // a prisoner never seen in its jail did not escape it (a slow load, a
+  // jump the engine never made): its term runs to its end, which places it
+  // at the marker (the second review of cd890dbed)
+  if (!record.jail->arrived) {
     return false;
   }
   // ADR-079.3: out of the jail before its end, by its own hand or a
@@ -10401,8 +10427,15 @@ void PartOne::TickJailsEverySecond()
         !actor->GetCrimeRecord().jail) {
       continue;
     }
-    if (!EndTermIfEscaped(*actor)) {
-      ReleaseIfServed(*actor);
+    try {
+      if (!EndTermIfEscaped(*actor)) {
+        ReleaseIfServed(*actor);
+      }
+    } catch (std::exception& e) {
+      // a faction or a chest the load order no longer holds (FormDesc's
+      // ToFormId throws): said, and the world's own tick goes on
+      spdlog::error("[verb:jail] {:x}'s term not checked: {}",
+                    actor->GetFormId(), e.what());
     }
   }
 }

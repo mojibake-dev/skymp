@@ -357,9 +357,13 @@ public:
     uint32_t evidenceChest = 0;   // the faction's stolen-goods chest (STOL)
     uint32_t belongingsChest = 0; // its prisoner-belongings chest (PLCN)
     std::vector<uint32_t> outfit; // the items of its jail outfit (JOUT)
+    std::vector<uint32_t> minted; // the outfit items created on the record
     std::chrono::steady_clock::time_point until{};
   };
   void OpenArrestWindow(ArrestWindow window);
+  // the open window, to note an outfit item created on the record (none when
+  // closed)
+  ArrestWindow* EditArrestWindow();
   // the window while it is open, else none
   const ArrestWindow* GetArrestWindow() const;
   // whether the open window names this container as one of the faction's

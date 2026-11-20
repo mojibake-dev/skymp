@@ -20,7 +20,10 @@ Napi::Value ReadCreatedForm(const Napi::CallbackInfo& info);
 // when this native made or read one before, else 0 with the engine's creator
 // queued on the main thread (a later call answers its form); -1 for a
 // definition no creator takes (a kind outside 0 to 3, no effects or more
-// than eight, an MGEF this engine does not hold, a creator that made none)
+// than eight, an MGEF this engine does not hold; a creator that made none
+// answers -1 for five seconds, then is asked again). Both natives zero the
+// magnitude, area or duration an MGEF's kNoMagnitude, kNoArea or kNoDuration
+// makes the engine's compare skip, before any key is built
 Napi::Value CreateCreatedForm(const Napi::CallbackInfo& info);
 // createdFormTemplate(kind): the game-file form the engine copies a created
 // form of `kind` from (BGSDefaultObjectManager's kBaseWeaponEnchantment,

@@ -1,6 +1,7 @@
 #include "InventoryApi.h"
 #include "CallNativeApi.h"
 #include "NullPointerException.h"
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -390,8 +391,40 @@ struct CreatedDef
   std::vector<CreatedEffectDef> effects;
 };
 
+// The engine's effect compare (the review of fec33b6f5..47e3ede74, finding
+// 4, read in Ghidra at 0x1401430f0: HYPOTHESIS until a lab read) skips the
+// magnitude of an MGEF flagged kNoMagnitude, the area of one flagged kNoArea
+// and the duration of one flagged kNoDuration (CommonLibSSE-NG
+// include/RE/E/EffectSetting.h:54-56), and compares conditions (a created
+// form has none) but not the cost. So a definition is normalized before any
+// key is built, on the way out (ReadCreatedForm) and on the way in
+// (CreateCreatedForm): each skipped field zeroed, so two definitions the
+// engine takes for one form are one on the wire, in the record and in every
+// cache. The MGEF is a game-file form, read on the calling thread
+// (LookupByID takes no lock at this CommonLib pin: HYPOTHESIS that a
+// game-file MGEF never moves under it); false when this game holds none
+bool NormalizeCreatedEffect(CreatedEffectDef& e,
+                            const RE::EffectSetting* setting)
+{
+  if (!setting) {
+    return false;
+  }
+  using Flag = RE::EffectSetting::EffectSettingData::Flag;
+  if (setting->data.flags.any(Flag::kNoMagnitude)) {
+    e.magnitude = 0.f;
+  }
+  if (setting->data.flags.any(Flag::kNoArea)) {
+    e.area = 0;
+  }
+  if (setting->data.flags.any(Flag::kNoDuration)) {
+    e.duration = 0;
+  }
+  return true;
+}
+
 // a definition's identity, the creators' own match: the kind and each
-// effect's MGEF, magnitude (its bits), area and duration, in order
+// effect's MGEF, magnitude (its bits), area and duration, in order, after
+// NormalizeCreatedEffect
 std::string CreatedKey(const CreatedDef& def)
 {
   std::string key = std::to_string(def.kind);
@@ -405,10 +438,19 @@ std::string CreatedKey(const CreatedDef& def)
 }
 
 std::mutex g_createdMutex;
-// definition key -> the local form made for it; -1 for one no creator took
-std::unordered_map<std::string, int64_t> g_createdForms;
+// definition key -> the local form made or read for it. Unbounded: a
+// session holds one entry per distinct created form its inventories name
+// (a few dozen; the review's finding 10), and each costs a key and an id. A
+// cached form the engine no longer holds (a load game clears its created
+// forms) is dropped at its next ask and made again
+std::unordered_map<std::string, RE::FormID> g_createdForms;
 std::unordered_set<std::string> g_createdQueued;
 std::unordered_set<RE::FormID> g_createdPinned;
+// definition key -> when its creator last made none: asked again after
+// kCreatedRetryMs, never refused for the session (the review's finding 5)
+std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+  g_createdFailed;
+constexpr auto kCreatedRetryMs = std::chrono::milliseconds(5000);
 
 // The manager's table that holds `item`: its kind, or nullopt. The caller
 // holds the manager's lock
@@ -560,52 +602,65 @@ RE::MagicItem* CreateOnMain(const CreatedDef& def)
 Napi::Value InventoryApi::ReadCreatedForm(const Napi::CallbackInfo& info)
 {
   const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  // LookupByID reads the form map unlocked at this CommonLib pin
+  // (HYPOTHESIS: a created form this engine's inventory names is not
+  // deleted in the window, the pin holding it once read); the manager's
+  // record and the form's effect list are read under the manager's lock,
+  // which the engine's creators and its reference steps take (the review of
+  // fec33b6f5..47e3ede74, finding 6)
   auto* item = CreatedMagicItem(RE::TESForm::LookupByID(formId));
-  if (!item) {
+  auto* manager = RE::BGSCreatedObjectManager::GetSingleton();
+  if (!item || !manager) {
     return info.Env().Null();
   }
-  std::optional<uint32_t> kind;
-  if (auto* manager = RE::BGSCreatedObjectManager::GetSingleton()) {
-    RE::BSSpinLockGuard guard(manager->lock);
-    kind = CreatedKindLocked(*manager, item);
-  }
-  if (!kind) {
-    return info.Env().Null();
-  }
-  auto effects = Napi::Array::New(info.Env());
-  uint32_t i = 0;
   CreatedDef def;
-  def.kind = *kind;
-  for (const auto* effect : item->effects) {
-    if (!effect || !effect->baseEffect) {
+  std::vector<const RE::EffectSetting*> settings;
+  {
+    RE::BSSpinLockGuard guard(manager->lock);
+    const auto kind = CreatedKindLocked(*manager, item);
+    if (!kind) {
       return info.Env().Null();
     }
-    CreatedEffectDef e;
-    e.mgef = effect->baseEffect->GetFormID();
-    e.magnitude = effect->effectItem.magnitude;
-    e.area = effect->effectItem.area;
-    e.duration = effect->effectItem.duration;
-    e.cost = effect->cost;
-    def.effects.push_back(e);
+    def.kind = *kind;
+    for (const auto* effect : item->effects) {
+      if (!effect || !effect->baseEffect) {
+        return info.Env().Null();
+      }
+      CreatedEffectDef e;
+      e.mgef = effect->baseEffect->GetFormID();
+      e.magnitude = effect->effectItem.magnitude;
+      e.area = effect->effectItem.area;
+      e.duration = effect->effectItem.duration;
+      e.cost = effect->cost;
+      def.effects.push_back(e);
+      settings.push_back(effect->baseEffect);
+    }
+  }
+  if (def.effects.empty()) {
+    return info.Env().Null();
+  }
+  auto effects = Napi::Array::New(info.Env(), def.effects.size());
+  for (uint32_t i = 0; i < def.effects.size(); ++i) {
+    auto& e = def.effects[i];
+    NormalizeCreatedEffect(e, settings[i]);
     auto jEffect = Napi::Object::New(info.Env());
     jEffect.Set("mgef", Napi::Number::New(info.Env(), e.mgef));
     jEffect.Set("magnitude", Napi::Number::New(info.Env(), e.magnitude));
     jEffect.Set("area", Napi::Number::New(info.Env(), e.area));
     jEffect.Set("duration", Napi::Number::New(info.Env(), e.duration));
     jEffect.Set("cost", Napi::Number::New(info.Env(), e.cost));
-    effects.Set(i++, jEffect);
-  }
-  if (def.effects.empty()) {
-    return info.Env().Null();
+    effects.Set(i, jEffect);
   }
   {
     // the crafter's own form answers its definition from now on
     std::lock_guard lock(g_createdMutex);
-    g_createdForms.emplace(CreatedKey(def), static_cast<int64_t>(formId));
+    const std::string key = CreatedKey(def);
+    g_createdForms.insert_or_assign(key, formId);
+    g_createdFailed.erase(key);
   }
   QueuePinCreated(formId);
   auto res = Napi::Object::New(info.Env());
-  res.Set("kind", Napi::Number::New(info.Env(), *kind));
+  res.Set("kind", Napi::Number::New(info.Env(), def.kind));
   res.Set("effects", effects);
   return res;
 }
@@ -631,7 +686,9 @@ Napi::Value InventoryApi::CreateCreatedForm(const Napi::CallbackInfo& info)
     effect.duration = NapiHelper::ExtractUInt32(e.Get("duration"), "duration");
     effect.cost = NapiHelper::ExtractFloat(e.Get("cost"), "cost");
     if (effect.mgef == 0 || effect.mgef > 0xFEFFFFFF ||
-        !std::isfinite(effect.magnitude) || !std::isfinite(effect.cost)) {
+        !std::isfinite(effect.magnitude) || !std::isfinite(effect.cost) ||
+        !NormalizeCreatedEffect(
+          effect, RE::TESForm::LookupByID<RE::EffectSetting>(effect.mgef))) {
       return Napi::Number::New(info.Env(), -1);
     }
     def.effects.push_back(effect);
@@ -640,7 +697,19 @@ Napi::Value InventoryApi::CreateCreatedForm(const Napi::CallbackInfo& info)
   {
     std::lock_guard lock(g_createdMutex);
     if (auto it = g_createdForms.find(key); it != g_createdForms.end()) {
-      return Napi::Number::New(info.Env(), static_cast<double>(it->second));
+      // a form a load game took away is made again (HYPOTHESIS: the load
+      // clears the created-object manager's forms)
+      if (CreatedMagicItem(RE::TESForm::LookupByID(it->second))) {
+        return Napi::Number::New(info.Env(), static_cast<double>(it->second));
+      }
+      g_createdPinned.erase(it->second);
+      g_createdForms.erase(it);
+    }
+    if (auto it = g_createdFailed.find(key); it != g_createdFailed.end()) {
+      if (std::chrono::steady_clock::now() - it->second < kCreatedRetryMs) {
+        return Napi::Number::New(info.Env(), -1);
+      }
+      g_createdFailed.erase(it);
     }
     if (!g_createdQueued.insert(key).second) {
       return Napi::Number::New(info.Env(), 0);
@@ -664,19 +733,22 @@ Napi::Value InventoryApi::CreateCreatedForm(const Napi::CallbackInfo& info)
     if (item) {
       PinCreatedOnMain(item);
     }
-    const int64_t answer =
-      item ? static_cast<int64_t>(item->GetFormID()) : int64_t{ -1 };
     {
       std::lock_guard lock(g_createdMutex);
       g_createdQueued.erase(key);
-      g_createdForms[key] = answer;
       if (item) {
+        g_createdForms.insert_or_assign(key, item->GetFormID());
         g_createdPinned.insert(item->GetFormID());
+      } else {
+        g_createdFailed.insert_or_assign(key,
+                                         std::chrono::steady_clock::now());
       }
     }
     logger::info("[verb:craft] createCreatedForm kind {} with {} effect(s): "
-                 "{:x}",
-                 def.kind, def.effects.size(), answer < 0 ? 0 : answer);
+                 "{}",
+                 def.kind, def.effects.size(),
+                 item ? fmt::format("{:x}", item->GetFormID())
+                      : std::string("none made, asked again in 5 s"));
   });
   return Napi::Number::New(info.Env(), 0);
 }

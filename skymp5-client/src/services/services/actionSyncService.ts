@@ -6,6 +6,7 @@ import { localIdToRemoteId } from "../../view/worldViewMisc";
 import { isMovementControllerEvent } from "../../sync/animation";
 import { logTrace } from "../../logging";
 import { HostService } from "./hostService";
+import { isFollowedDown } from "../../sync/knockState";
 
 // thuum docs/verbs/cast-action.md: the figure plays the caster's actions.
 // The fork's Skyrim Platform reports every BGSAction the player's actor
@@ -119,6 +120,11 @@ export class ActionSyncService extends ClientListener {
     private static readonly riseCarryMs = 2000;
 
     private onActionPerformed(e: { actorId: number; action: number; idle: number; eventName: string; type: number; variables: { booleans: ArrayBuffer; floats: ArrayBuffer; integers: ArrayBuffer } }) {
+        // thuum tracker #175: a copy this game knocked in place to follow
+        // another seat's live body performs its knock for its follow alone
+        if (isFollowedDown(e.actorId)) {
+            return;
+        }
         const isPlayer = e.actorId === 0x14;
         if (isPlayer && !isHandCastEvent(e.eventName)) {
             return;

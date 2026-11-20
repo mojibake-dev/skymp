@@ -1230,6 +1230,21 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
                          "listener(s)",
                          r.refr, actor->GetFormId(), r.epoch, told);
           }
+          // thuum tracker #179: and its own body's row, which another
+          // player's grip may hold (ADR-063's 2026-11-19 amendment): ended,
+          // so its game's next knock claims it afresh at its return (the
+          // review of 48959a563, finding 4: the row stayed the gripper's,
+          // grabbed, and refused the returning player's own knock E_PROP_HELD)
+          if (const uint32_t ownBody = actor->GetFormId();
+              this_->PropLiveOwner(*actor) != 0) {
+            const uint32_t epoch = this_->pImpl->props->prop_ended(ownBody);
+            const auto told =
+              this_->SendPropOwnerWord(ownBody, 0, epoch, ownBody);
+            spdlog::info("[verb:prop-physics] prop {:x}: its own player left "
+                         "while its row was live; ended at epoch {}; the word "
+                         "to {} listener(s)",
+                         ownBody, epoch, told);
+          }
           // and the sightings it held for a grant that never came (thuum
           // docs/verbs/npc-puppet.md, finding 66's hold)
           this_->ForgetHeldSightings(actor->GetFormId());
@@ -1652,11 +1667,37 @@ void PartOne::Init()
   worldState.bodyWord = [this](const MpActor& body, WorldState::BodyWord word,
                                uint32_t simulator,
                                uint64_t nowMs) -> uint32_t {
+    // physics rung 5 (thuum tracker #175): only a body that can be a prop is
+    // worded, a dead game-file actor no player plays (ActionListener's
+    // PropKindOf Body); a server-made one (a summon, a placed copy) keeps its
+    // row unsaid, as before rung 5, since no seat may claim or stream it (T2
+    // on 97881c14: the summon's and the thralls' words were difftest's
+    // undeclared divergences, tracker #175 note 3626)
+    const bool prop = body.GetFormId() < 0xff000000 &&
+      body.GetUserId() == Networking::InvalidUserId;
     switch (word) {
-      case WorldState::BodyWord::Died:
-        return BodyDied(body, simulator, nowMs);
-      case WorldState::BodyWord::Rested:
-        return BodyRested(body);
+      case WorldState::BodyWord::Died: {
+        // physics rung 5 (thuum tracker #175): the death's row is worded as
+        // a grant (the simulator by id, or player 0 for nobody), so the seat
+        // whose settle window ends on its clock with the row still its own
+        // streams a later wake at the epoch the row stands at
+        const uint32_t epoch = BodyDied(body, simulator, nowMs);
+        if (prop && epoch != 0) {
+          SendPropOwnerWord(body.GetFormId(), PropLiveOwner(body), epoch);
+        }
+        return epoch;
+      }
+      case WorldState::BodyWord::Rested: {
+        // physics rung 5 (thuum tracker #175): the rest's return is worded
+        // as any prop's (player 0, the host by default), so every seat holds
+        // the body's epoch for a later wake or claim; 5a's rest went unsaid,
+        // and a host's wake after it named a stale epoch
+        const uint32_t epoch = BodyRested(body);
+        if (prop && epoch != 0) {
+          SendPropOwnerWord(body.GetFormId(), 0, epoch);
+        }
+        return epoch;
+      }
       case WorldState::BodyWord::Ended:
         return BodyEnded(body);
     }
@@ -2050,8 +2091,12 @@ void PartOne::Init()
     // word (the live owner, or 0 for the host by default), so a seat that
     // missed a return never keeps an older word, and it neither simulates
     // the prop as the host's default nor drops the stream as echoes; a prop
-    // with no word yet is the host's on every seat
-    if (!emitterAsActor) {
+    // with no word yet is the host's on every seat. Physics rung 5: a dead
+    // NPC's body is a prop too (thuum tracker #175)
+    const bool bodyProp = emitterAsActor && !isMe &&
+      emitterAsActor->IsDead() && emitter->GetFormId() < 0xff000000 &&
+      emitterAsActor->GetUserId() == Networking::InvalidUserId;
+    if (!emitterAsActor || bodyProp) {
       if (const uint32_t epoch = PropEpochOf(*emitter); epoch != 0) {
         PropOwnerMessage word;
         word.refr = emitter->GetFormId();
@@ -5353,7 +5398,11 @@ size_t PartOne::SendPropOwnerWord(uint32_t refr, uint32_t player,
       continue;
     }
     const auto userId = serverState.UserByActor(listener);
-    if (userId != Networking::InvalidUserId) {
+    // a game mid-departure hears nothing (physics rung 5: a thrall the
+    // departure kills is worded at its death, and its leaving commander is
+    // still its listener; the departure's own returns skip it by exceptActor)
+    if (userId != Networking::InvalidUserId &&
+        userId != serverState.disconnectingUserId) {
       GetSendTarget().Send(userId, word, true);
       ++told;
     }
@@ -9328,8 +9377,8 @@ PartOne::VoiceCheck PartOne::Shout(uint32_t actorFormId,
       return VoiceCheck::NotAVariation;
     case skymp::rules::VoiceRefusal::WordLocked:
       return VoiceCheck::WordLocked;
-    case skymp::rules::VoiceRefusal::Recovering:
-      return VoiceCheck::Recovering;
+    case skymp::rules::VoiceRefusal::Early:
+      return VoiceCheck::Early;
     default:
       return VoiceCheck::NoShout;
   }

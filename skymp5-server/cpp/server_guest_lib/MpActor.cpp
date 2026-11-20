@@ -3859,19 +3859,25 @@ void MpActor::SettleBody(uint64_t nowMs, const char* why, bool returnsRow)
 
 void MpActor::ClearBodyRest()
 {
-  if (pImpl->bodyDiedAtMs == 0 && !pImpl->bodyAtRest) {
-    return;
+  const bool settled = pImpl->bodyDiedAtMs != 0 || pImpl->bodyAtRest;
+  if (settled) {
+    pImpl->bodyDiedAtMs = 0;
+    pImpl->bodyAtRest = false;
+    pImpl->bodyRestAtMs = 0;
+    pImpl->bodySamples = 0;
+    pImpl->bodyDwellSinceMs = 0;
   }
-  pImpl->bodyDiedAtMs = 0;
-  pImpl->bodyAtRest = false;
-  pImpl->bodyRestAtMs = 0;
-  pImpl->bodySamples = 0;
-  pImpl->bodyDwellSinceMs = 0;
   if (auto worldState = GetParent()) {
-    worldState->settlingBodies.erase(GetFormId());
+    if (settled) {
+      worldState->settlingBodies.erase(GetFormId());
+    }
     // physics rung 5a: a body that stands again is no body; its row goes
     // and the epoch rises, so a word or a sample under the dead tenure is
-    // stale and the next death starts above it
+    // stale and the next death starts above it. Said whether or not this
+    // process saw the death (a corpse dead before it has no settle record
+    // and may carry a drag's row, which the live-body kind's one-writer rule
+    // would hold against the standing actor's host: the review of 6f43e78e8,
+    // finding 6); with no row it ends nothing
     if (worldState->bodyWord) {
       worldState->bodyWord(*this, WorldState::BodyWord::Ended, 0, 0);
     }

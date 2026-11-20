@@ -422,7 +422,10 @@ declare module "skyrimPlatform" {
     // verdict: not dynamic, no part or cut is no row; one body and none Fixed
     // is a whole world body (the items' route); otherwise a world body of
     // parts.length parts
-    interface BodyClass { bsx: number; dynamic: boolean; bodies: number; fixed: number; parts: BodyPart[]; cut: boolean }
+    // bones: an actor's ragdoll bones among parts (the first ones; a dead
+    // actor's carried parts after them), 0 for any other root; ragdoll:
+    // whether its engine holds an actor ragdolled now (thuum tracker #175)
+    interface BodyClass { bsx: number; dynamic: boolean; bodies: number; fixed: number; parts: BodyPart[]; cut: boolean; bones: number; ragdoll: boolean }
     // the class read on the JS thread (the root's BSX block, then the walk),
     // no task, no log of its own; null with no reference, no 3D or a faulted
     // walk (never cache a null)
@@ -452,8 +455,10 @@ declare module "skyrimPlatform" {
     // take-over, a quiet stream, a follow's end); under K3 nothing else, the
     // parts' motion types never changed; true when poses were held, false
     // for 0, the player's own id or none held; a table operation on the JS
-    // thread, no game call
-    function releaseBodies(formId: number): boolean;
+    // thread, no game call. The get-up hold is lifted with it (thuum tracker
+    // #178); with place, a living ragdolled actor is first set there, then
+    // its hold lifted, in one task on the main thread
+    function releaseBodies(formId: number, place?: number[]): boolean;
     // D-PH9 A (the native kill switch): the contact hook's world-body switch,
     // off by default (rung 3's filter: layers 4 and 10 at any motion); on, the
     // player's contact with a body of a dynamic motion type on any layer

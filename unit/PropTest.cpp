@@ -1239,8 +1239,7 @@ TEST_CASE("An impulse's claim loads nothing: a world body the chunks around "
     LogCapture log;
     Claim(p, 1, kTempleLamp, 3);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_UNKNOWN: ff000d02 claims "
-                      "prop 9b0fb by touch 3; no such reference, or an "
-                      "actor") == 1);
+                      "prop 9b0fb by touch 3; no such reference") == 1);
   }
   REQUIRE(p.worldState.LookupFormByIdNoLoad(kTempleLamp) == nullptr);
   REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
@@ -2274,12 +2273,14 @@ TEST_CASE("A server-made world object is no prop: a contact and an impulse "
     LogCapture log;
     Claim(p, 0, kPlacedWall, 0);
     Claim(p, 1, kPlacedWall, 3);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
-                      "prop ff000d17 by touch 0; neither an item nor a world "
-                      "body") == 1);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 claims "
-                      "prop ff000d17 by touch 3; neither an item nor a world "
-                      "body") == 1);
+    REQUIRE(
+      log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
+                "prop ff000d17 by touch 0; neither an item, a world body "
+                "nor an NPC's or a player's body") == 1);
+    REQUIRE(
+      log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 claims "
+                "prop ff000d17 by touch 3; neither an item, a world body "
+                "nor an NPC's or a player's body") == 1);
   }
   REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
   REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
@@ -2319,10 +2320,12 @@ TEST_CASE("A STAT attached by its record is no world body: a claim and a "
     Claim(p, 0, kMarker, 0);
     Sample(p, 1, kMarker, markerAt + NiPoint3{ 0.f, 0.f, -20.f }, false);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d01 claims "
-                      "prop 108a5c by touch 0; neither an item nor a world "
-                      "body") == 1);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 moves prop "
-                      "108a5c; neither an item nor a world body") == 1);
+                      "prop 108a5c by touch 0; neither an item, a world body "
+                      "nor an NPC's or a player's body") == 1);
+    REQUIRE(
+      log.Count("[verb:prop-physics] E_PROP_KIND: ff000d02 moves prop "
+                "108a5c; neither an item, a world body nor an NPC's or a "
+                "player's body") == 1);
     DestructionStageMessage report;
     report.refr = kMarker;
     report.stage = 1;
@@ -2341,13 +2344,19 @@ TEST_CASE("A STAT attached by its record is no world body: a claim and a "
   Leave(p);
 }
 
-// physics rung 4 leaves an actor off the stream, a dead one included: its
-// body's row is 5a's, told by the movement path (ActorDeathTest's body
-// cases), and rung 5 gives the prop stream a Body kind, which changes this
-// text. ActorDeathTest's fixture: the forest's leveled predator 0x85547
-// (NpcFateTest's ids), loaded by the arrival's fate pass
-TEST_CASE("A dead actor stays off the stream until rung 5: a claim and a "
-          "sample naming it are refused E_PROP_UNKNOWN",
+// physics rung 5 (ADR-071 decision 5; thuum tracker #175, playtest 56: "there
+// is ZERO syncing currently. nothing at all."): a dead NPC's body is a prop of
+// the Body kind. A touch claims it (a drag's grab here), the owner's samples
+// move the record and reach the other seat with no tether, and its rest
+// returns it to the cell's host with the word, as any prop's; a knocked
+// living actor is a live body, claimed and returned alike (the live-body kind,
+// Eli's second look at #175). ActorDeathTest's fixture: the forest's
+// leveled predator 0x85547 (NpcFateTest's ids), loaded by the arrival's fate
+// pass
+TEST_CASE("A dead NPC's body is a prop: a grab claims it, its samples move "
+          "the record and reach the other seat, and its rest returns it to "
+          "the host; a knocked living NPC is a live body, claimed and "
+          "returned alike",
           "[Prop][espm]")
 {
   constexpr uint32_t kPredator = 0x85547;
@@ -2364,25 +2373,182 @@ TEST_CASE("A dead actor stays off the stream until rung 5: a claim and a "
   if (body->IsDead()) {
     body->Respawn(false);
   }
+  p.Messages().clear();
+  {
+    // alive and knocked (thuum tracker #175, the live-body kind): the seat
+    // whose cause moved it claims it, and its asleep sample at the get-up
+    // returns it to the host
+    LogCapture log;
+    Claim(p, 1, kPredator, 1);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d02 claims prop 85547 by "
+                      "touch 1: granted") == 1);
+  }
+  REQUIRE(p.PropLiveOwner(*body) == kC2);
+  Sample(p, 1, kPredator, body->GetPos(), true);
+  REQUIRE(p.PropLiveOwner(*body) == 0);
+  p.Messages().clear();
   body->Kill(nullptr);
   REQUIRE(body->IsDead());
   const NiPoint3 diedAt = body->GetPos();
   p.Messages().clear();
   {
     LogCapture log;
-    Claim(p, 0, kPredator, 0);
-    Sample(p, 1, kPredator, diedAt + NiPoint3{ 30.f, 0.f, 0.f }, false);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_UNKNOWN: ff000d01 claims "
-                      "prop 85547 by touch 0; no such reference, or an "
-                      "actor") == 1);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_UNKNOWN: ff000d02 moves "
-                      "prop 85547; no such reference, or an actor") == 1);
+    Claim(p, 1, kPredator, 1);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d02 claims prop 85547 by "
+                      "touch 1: granted") == 1);
   }
-  REQUIRE(body->GetPos() == diedAt);
-  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
-  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
-  REQUIRE(RelaysTo(p, 0).empty());
+  const auto granted = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(granted.size() == 1);
+  REQUIRE(granted[0].refr == kPredator);
+  REQUIRE(granted[0].player == kC2);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).size() == 1);
+  REQUIRE(p.PropLiveOwner(*body) == kC2);
+  // the drag: the holder's samples move the record and reach the other seat
+  p.Messages().clear();
+  auto drag =
+    SampleOf(p, kPredator, diedAt + NiPoint3{ 30.f, 0.f, 0.f }, false);
+  drag.held = true;
+  p.GetActionListener().OnPropTransform(Raw(1), drag);
+  REQUIRE((body->GetPos() - (diedAt + NiPoint3{ 30.f, 0.f, 0.f })).Length() <
+          0.01f);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 0 });
+  REQUIRE(RelaysTo(p, 1).empty());
+  // the other seat's sample of a body it does not hold is refused
+  {
+    LogCapture log;
+    Sample(p, 0, kPredator, diedAt + NiPoint3{ 0.f, 30.f, 0.f }, false);
+    REQUIRE(log.Count("[verb:prop-physics] E_PROP_NOT_OWNER: ff000d01 moves "
+                      "prop 85547") == 1);
+  }
+  REQUIRE((body->GetPos() - (diedAt + NiPoint3{ 30.f, 0.f, 0.f })).Length() <
+          0.01f);
+  // the release and the rest: the record keeps it, the host's again by word
+  p.Messages().clear();
+  Sample(p, 1, kPredator, diedAt + NiPoint3{ 40.f, 0.f, 0.f }, true);
+  REQUIRE((body->GetPos() - (diedAt + NiPoint3{ 40.f, 0.f, 0.f })).Length() <
+          0.01f);
+  REQUIRE(RelaysTo(p, 0) == std::vector<int>{ 1 });
+  const auto returned = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(returned.size() == 1);
+  REQUIRE(returned[0].player == 0);
+  REQUIRE(p.PropLiveOwner(*body) == 0);
   body->Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);
   Leave(p);
+}
+
+TEST_CASE("A player's knocked body is its own game's alone: its own claim is "
+          "granted and told to the other seat, another seat's refused, and "
+          "its asleep sample at the get-up returns it",
+          "[Prop][espm]")
+{
+  const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kForest);
+  Player(p, 1, kC2, kForest + NiPoint3{ 20.f, 0.f, 0.f });
+  p.TickCellHosts(NowMs());
+  const auto& form = p.worldState.LookupFormByIdNoLoad(kC1);
+  REQUIRE(form != nullptr);
+  MpActor* c1 = form->AsActor();
+  REQUIRE(c1 != nullptr);
+  p.Messages().clear();
+  MpActor* c2 = p.worldState.LookupFormByIdNoLoad(kC2)->AsActor();
+  REQUIRE(c2 != nullptr);
+  // the shouter's game claims the player it threw: refused (the refusal's
+  // line is said once in 10 s per seat, so the state reads it)
+  Claim(p, 1, kC1, 3);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
+  // and neither seat's sample moves the other player's body, the cell's host
+  // among them (whichever seat hosts, one of the two is its sample)
+  const NiPoint3 c1At = c1->GetPos();
+  const NiPoint3 c2At = c2->GetPos();
+  Sample(p, 1, kC1, c1At + NiPoint3{ 50.f, 0.f, 0.f }, false);
+  Sample(p, 0, kC2, c2At + NiPoint3{ 50.f, 0.f, 0.f }, false);
+  REQUIRE(c1->GetPos() == c1At);
+  REQUIRE(c2->GetPos() == c2At);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  REQUIRE(p.PropLiveOwner(*c2) == 0);
+  {
+    LogCapture log;
+    Claim(p, 0, kC1, 3);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d01 claims prop ff000d01 by "
+                      "touch 3: granted") == 1);
+  }
+  REQUIRE(p.PropLiveOwner(*c1) == kC1);
+  const auto words = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(words.size() == 1);
+  REQUIRE(words[0].refr == kC1);
+  REQUIRE(words[0].player == kC1);
+  Sample(p, 0, kC1, c1->GetPos(), true);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  Leave(p);
+}
+
+// thuum tracker #179 (ADR-063's 2026-11-19 amendment; Eli: "yeah go with
+// it"): a Vampiric Grip on another player is a hand, the engine's grab, so
+// the gripper's touch 1 makes the gripped player's body the gripper's for
+// the hold, and the gripped player's own game follows that stream; any other
+// touch of another player's body stays refused (its own game simulates its
+// knock, #178)
+TEST_CASE("Another player's grip holds a player's body: its grab is granted "
+          "and told to the gripped player's own game, its samples move the "
+          "body and reach that game, another touch stays refused, and the "
+          "gripper's rest returns the body",
+          "[Prop][espm]")
+{
+  const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kForest);
+  Player(p, 1, kC2, kForest + NiPoint3{ 20.f, 0.f, 0.f });
+  p.TickCellHosts(NowMs());
+  MpActor* c1 = p.worldState.LookupFormByIdNoLoad(kC1)->AsActor();
+  REQUIRE(c1 != nullptr);
+  p.Messages().clear();
+  // c2's impulse on c1 (a shout's): refused, as before
+  Claim(p, 1, kC1, 3);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  // c2's grip of c1: granted, and the word reaches c1's own game
+  {
+    LogCapture log;
+    Claim(p, 1, kC1, 1);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d02 claims prop ff000d01 by "
+                      "touch 1: granted") == 1);
+  }
+  REQUIRE(p.PropLiveOwner(*c1) == kC2);
+  const auto words = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(words.size() == 1);
+  REQUIRE(words[0].refr == kC1);
+  REQUIRE(words[0].player == kC2);
+  // the gripper's sample moves c1's body and reaches c1's own game
+  p.Messages().clear();
+  const NiPoint3 lifted = c1->GetPos() + NiPoint3{ 0.f, 30.f, 20.f };
+  Sample(p, 1, kC1, lifted, false);
+  REQUIRE(c1->GetPos() == lifted);
+  REQUIRE(RelaysTo(p, 0).size() == 1);
+  // c1's own game claims its body while the gripper streams it: refused
+  Claim(p, 0, kC1, 3);
+  REQUIRE(p.PropLiveOwner(*c1) == kC2);
+  // the gripper's rest (its copy's get-up) returns the body: player 0
+  p.Messages().clear();
+  Sample(p, 1, kC1, lifted, true);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  const auto back = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(back.size() == 1);
+  REQUIRE(back[0].player == 0);
+  // gripped again, the gripped player leaves mid-hold: its own body's row
+  // ends with the word to the gripper (the review of 48959a563, finding 4:
+  // the row stayed the gripper's and refused its own knock after a return)
+  Claim(p, 1, kC1, 1);
+  REQUIRE(p.PropLiveOwner(*c1) == kC2);
+  p.Messages().clear();
+  DoDisconnect(p, 0);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  const auto ended = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(ended.size() == 1);
+  REQUIRE(ended[0].refr == kC1);
+  REQUIRE(ended[0].player == 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
 }

@@ -2,9 +2,15 @@
 //! reports stands (R1 against the server's record, R0): the voice slot holds
 //! a shout the record has, the cast's spell is one of its variations, every
 //! word up to that variation is unlocked in the record (a two-word shout
-//! needs the first two words), and the player's last accepted shout's
-//! recovery has run out on the server's clock. An accepted shout starts the
-//! next recovery: the variation's recovery time times the shouter's
+//! needs the first two words). The recovery is the player's own game's
+//! (ADR-063, ownership, not permission; Eli, 2026-11-16: "This is not a
+//! competitive game"): its engine gates the voice, and its wait or sleep
+//! ends a recovery the server never sees end (thuum tracker #180: playtest
+//! 56's look 4, a shout after a rest the server refused, refused on the
+//! server's count and never relayed, so the other screen saw no throw). The
+//! server keeps its own count only to say where the two disagree: a shout
+//! inside it stands, Early. An accepted shout starts the next count: the
+//! variation's recovery time times the shouter's
 //! ShoutRecoveryMult, as the engine sets it (x-shout-probe3 20261011-221358
 //! read 20 and 45 for Unrelenting Force's two and three words at a
 //! ShoutRecoveryMult of 1). A recovery is a runtime timer, forgotten at a
@@ -17,8 +23,8 @@ use std::collections::HashMap;
 /// Dragonrend's three words, a few minutes).
 const MAX_RECOVERY_MS: f64 = 3_600_000.0;
 
-/// How much of the last recovery may be left when the next shout arrives,
-/// milliseconds. The server starts a recovery when a shout's report
+/// How much of the last recovery may be left when the next shout arrives
+/// before the server calls it Early, milliseconds. The server starts a recovery when a shout's report
 /// arrives, the shouter's game when it shouts, and the report goes out on
 /// the frames after the release, on the client's one ordered channel: an
 /// earlier report resent once arrives 300 ms late (wire-transport
@@ -44,7 +50,7 @@ pub struct VoiceFacts {
     pub recovery_mult: f32,
 }
 
-/// Why a shout was refused, or Accepted.
+/// Why a shout was refused, or Accepted (Early is accepted too).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoiceRefusal {
     /// The shout stands.
@@ -55,8 +61,9 @@ pub enum VoiceRefusal {
     NotAVariation,
     /// A word up to the variation is not unlocked in the record.
     WordLocked,
-    /// The last shout's recovery has not run out.
-    Recovering,
+    /// The shout stands, though the server's count of the last recovery has
+    /// not run out: the game's word on its own voice stands (tracker #180).
+    Early,
 }
 
 /// A recovery in milliseconds: the variation's seconds times the shouter's
@@ -79,8 +86,8 @@ pub struct Voices {
 }
 
 impl Voices {
-    /// The verdict on `actor`'s shout at `now_ms`; an accepted one starts
-    /// its recovery, a refused one leaves the last.
+    /// The verdict on `actor`'s shout at `now_ms`; an accepted one, Early
+    /// included, starts its recovery, a refused one leaves the last.
     pub fn shout(&mut self, actor: u32, f: &VoiceFacts, now_ms: u64) -> VoiceRefusal {
         if !f.shout_equipped {
             return VoiceRefusal::NoShout;
@@ -91,11 +98,9 @@ impl Voices {
         if !words.iter().all(|&u| u) {
             return VoiceRefusal::WordLocked;
         }
-        if self.recovery_left_ms(actor, now_ms) > RECOVERY_SKEW_MS {
-            return VoiceRefusal::Recovering;
-        }
+        let early = self.recovery_left_ms(actor, now_ms) > RECOVERY_SKEW_MS;
         self.recovered_at.insert(actor, now_ms.saturating_add(recovery_ms(f.recovery_s, f.recovery_mult)));
-        VoiceRefusal::Accepted
+        if early { VoiceRefusal::Early } else { VoiceRefusal::Accepted }
     }
 
     /// How long `actor`'s recovery runs from `now_ms` (0 when it has run out
@@ -153,16 +158,22 @@ mod tests {
     }
 
     #[test]
-    fn a_shout_inside_the_recovery_is_refused_and_leaves_it() {
+    fn a_shout_inside_the_recovery_stands_early_and_starts_its_own() {
+        // tracker #180: the game's wait ended the recovery the server still
+        // counts; the shout stands and the count starts again from it
         let mut v = Voices::default();
         assert_eq!(v.shout(ACTOR, &two_words(), 100_000), VoiceRefusal::Accepted);
-        assert_eq!(v.shout(ACTOR, &two_words(), 110_000), VoiceRefusal::Recovering);
         assert_eq!(v.recovery_left_ms(ACTOR, 110_000), 10_000);
+        assert_eq!(v.shout(ACTOR, &two_words(), 110_000), VoiceRefusal::Early);
+        assert_eq!(v.recovery_left_ms(ACTOR, 110_000), 20_000);
         // another player's voice is its own
         assert_eq!(v.shout(ACTOR + 1, &two_words(), 110_000), VoiceRefusal::Accepted);
-        // at the recovery's end the next stands
-        assert_eq!(v.shout(ACTOR, &two_words(), 120_000), VoiceRefusal::Accepted);
-        assert_eq!(v.recovery_left_ms(ACTOR, 120_000), 20_000);
+        // at the count's end the next is no longer early
+        assert_eq!(v.shout(ACTOR, &two_words(), 130_000), VoiceRefusal::Accepted);
+        assert_eq!(v.recovery_left_ms(ACTOR, 130_000), 20_000);
+        // the record still refuses what it does not hold, early or not
+        assert_eq!(v.shout(ACTOR, &VoiceFacts { variation: 2, ..two_words() }, 131_000), VoiceRefusal::WordLocked);
+        assert_eq!(v.recovery_left_ms(ACTOR, 131_000), 19_000);
     }
 
     #[test]
@@ -172,12 +183,10 @@ mod tests {
         let ethereal = VoiceFacts { variation: 0, recovery_s: 20.0, ..two_words() };
         assert_eq!(v.shout(ACTOR, &ethereal, 100_000), VoiceRefusal::Accepted);
         assert_eq!(v.shout(ACTOR, &ethereal, 119_982), VoiceRefusal::Accepted);
-        // the skew's edge, and past it
+        // the skew's edge, and past it: early, which stands
         assert_eq!(v.shout(ACTOR, &ethereal, 139_982 - RECOVERY_SKEW_MS), VoiceRefusal::Accepted);
         let edge = 139_982 - RECOVERY_SKEW_MS + 20_000 - RECOVERY_SKEW_MS - 1;
-        assert_eq!(v.shout(ACTOR, &ethereal, edge), VoiceRefusal::Recovering);
-        // a second early is still refused
-        assert_eq!(v.shout(ACTOR, &ethereal, edge - 600), VoiceRefusal::Recovering);
+        assert_eq!(v.shout(ACTOR, &ethereal, edge), VoiceRefusal::Early);
     }
 
     #[test]

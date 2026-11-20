@@ -83,6 +83,19 @@ bool SetImpulseCauseRule(bool on);
 // world-body contacts on" or "off". Threadsafe
 void SetWorldBodyContacts(bool on);
 
+// thuum tracker #178 and #175 (the shout design's step 3; the re-analyst's
+// static read of 2026-11-19): the get-up hold. A copy whose parts the drive
+// imposes from another seat's stream (PuppetApi's imposeBodies) never gets up
+// by its own engine's knock step while the stream lives: the get-up
+// (Address Library 40150, replaced in FridaHooks.cpp) returns at once for a
+// held form, and the knock step retries it every frame. HoldGetUp refreshes a
+// form's hold at each store (it lapses kGetUpHoldMs after the last, so a
+// stream that dies never strands a copy down); ReleaseGetUp lifts it at the
+// drive's release, the engine's next knock step then getting it up.
+// Threadsafe
+void HoldGetUp(uint32_t formId);
+void ReleaseGetUp(uint32_t formId);
+
 // thuum docs/DECISIONS.md ADR-073 decision 9 (D-L1 B, "ADR-068 decision 6
 // as written: every seat whose engine raises the event runs it"): the
 // Papyrus event gate's everyone pass on or off (OnSendEventEnter). On, an

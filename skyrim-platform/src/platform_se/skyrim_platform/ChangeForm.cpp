@@ -1,5 +1,6 @@
 #include "ChangeForm.h"
 #include "FridaHookHandler.h"
+#include "ItemMenuRefresh.h"
 #include "WeaponAnimGuard.h"
 #include "game/Offsets.h"
 
@@ -1188,6 +1189,17 @@ std::string ApplyImpl(RE::TESObjectREFR* refr, std::string_view bodyHex,
   result["onMainThread"] = p.onMainThread;
   if (!p.ok) {
     return refuse("premises", FailedNames(p));
+  }
+  // thuum tracker #175, Eli's third look (c2's crash at 14:44:57 PST
+  // 2026-11-19): a record laid under the body's own open loot menu rebuilds
+  // the inventory its rows point at, and the menu's next highlight read
+  // freed memory (Inventory3DManager, 51758; the Scaleform chain 82641 and
+  // 86467 of docs/research/m3/re-corpse-menu-crash.md, whose stale row came
+  // the same way). The client holds the record while a ContainerMenu is open
+  // (ChangeFormService.tryApply); this refuses the lay when the menu opened
+  // between that check and this task, and the client's poll holds it again
+  if (refr && ItemMenuRefresh::Shows(*refr)) {
+    return refuse("menu", "the body's own loot menu is open on this seat");
   }
   result["rootBefore"] = p.has3D;
   result["lifeStateBefore"] = p.lifeState;

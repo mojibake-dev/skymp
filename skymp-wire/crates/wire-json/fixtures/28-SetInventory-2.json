@@ -1,0 +1,59 @@
+{
+  "inventory": {
+    "entries": [
+      {
+        "baseId": 15,
+        "count": 120
+      },
+      {
+        "baseId": 256733,
+        "count": 2,
+        "createdBase": {
+          "effects": [
+            {
+              "area": 0,
+              "cost": 12.5,
+              "duration": 0,
+              "magnitude": 25.0,
+              "mgef": 256789
+            },
+            {
+              "area": 0,
+              "cost": 4.25,
+              "duration": 30,
+              "magnitude": 2.5,
+              "mgef": 256769
+            }
+          ],
+          "kind": 2
+        }
+      },
+      {
+        "baseId": 77495,
+        "chargePercent": 100.0,
+        "count": 1,
+        "createdEnchantment": {
+          "effects": [
+            {
+              "area": 0,
+              "cost": 32.0,
+              "duration": 1,
+              "magnitude": 10.0,
+              "mgef": 286810
+            }
+          ],
+          "kind": 0
+        },
+        "maxCharge": 1500.0,
+        "name": "Iron Sword of Embers",
+        "removeEnchantmentOnUnequip": false
+      },
+      {
+        "baseId": 77495,
+        "count": 1,
+        "health": 1.25
+      }
+    ]
+  },
+  "t": 28
+}

@@ -138,6 +138,19 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     // the summon's arrival art for its watchers (SCHEMA_VERSION 59, thuum
     // tracker #111, docs/verbs/summon.md)
     ("CreateActorProps", "summonEffect"),
+    // a created form by its definition: a stack's brewed potion or poison,
+    // its made enchantment, its brewed poison, and a drink's (SCHEMA_VERSION
+    // 61, thuum tracker #98)
+    ("Entry", "createdBase"),
+    ("Entry", "createdEnchantment"),
+    ("Entry", "createdPoison"),
+    ("PutItem", "createdBase"),
+    ("PutItem", "createdEnchantment"),
+    ("PutItem", "createdPoison"),
+    ("TakeItem", "createdBase"),
+    ("TakeItem", "createdEnchantment"),
+    ("TakeItem", "createdPoison"),
+    ("OnEquip", "createdBase"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

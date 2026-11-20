@@ -2073,8 +2073,6 @@ const char* VoiceRefusalCode(PartOne::VoiceCheck check)
       return "E_SHOUT_SPELL";
     case PartOne::VoiceCheck::WordLocked:
       return "E_SHOUT_WORD";
-    case PartOne::VoiceCheck::Recovering:
-      return "E_SHOUT_RECOVERY";
     default:
       return "accepted";
   }
@@ -12092,8 +12090,23 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
       shout && hand == 2 && caster == myActor) {
     const auto facts =
       VoiceFactsOf(*caster, *shout, spellCastData.spell, partOne.worldState);
+    // thuum tracker #180 (ADR-063, ownership, not permission): the voice's
+    // recovery is its player's own game's, whose engine gates the voice and
+    // whose wait or sleep ends a recovery the server's wall clock never sees
+    // end (playtest 56's look 4: a shout after a rest the server refused was
+    // refused here on that count, never relayed, and the other screen saw no
+    // throw). A shout inside the server's count stands; the count is said
+    // where it disagrees and starts again from this shout
+    const uint64_t countedMs =
+      partOne.VoiceRecoveryLeftMs(caster->GetFormId());
     const auto check = partOne.Shout(caster->GetFormId(), facts);
-    if (check != PartOne::VoiceCheck::Accepted) {
+    if (check == PartOne::VoiceCheck::Early) {
+      spdlog::info("ActionListener::OnSpellCast - {:x} shouts {:x} with spell "
+                   "{:x} with {:.1f} s of the server's count of its last "
+                   "recovery left; its game's word stands (tracker #180)",
+                   caster->GetFormId(), *shout, spellCastData.spell,
+                   countedMs / 1000.0);
+    } else if (check != PartOne::VoiceCheck::Accepted) {
       spdlog::warn("ActionListener::OnSpellCast - {}: {:x} shouts {:x} "
                    "with spell {:x} (variation {}, words unlocked {:#b}); "
                    "refused",

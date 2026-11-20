@@ -9362,8 +9362,8 @@ PartOne::VoiceCheck PartOne::Shout(uint32_t actorFormId,
       return VoiceCheck::NotAVariation;
     case skymp::rules::VoiceRefusal::WordLocked:
       return VoiceCheck::WordLocked;
-    case skymp::rules::VoiceRefusal::Recovering:
-      return VoiceCheck::Recovering;
+    case skymp::rules::VoiceRefusal::Early:
+      return VoiceCheck::Early;
     default:
       return VoiceCheck::NoShout;
   }

@@ -926,7 +926,8 @@ public:
     NoShout,       // the voice slot holds no shout the record has
     NotAVariation, // the spell is none of the shout's
     WordLocked,    // a word up to the variation is not unlocked
-    Recovering     // the last shout's recovery runs
+    Early // it stands, the server's count of the last recovery still running
+          // (thuum tracker #180: the voice is its player's game's)
   };
   VoiceCheck Shout(uint32_t actorFormId, const VoiceFacts& facts);
   // how long the actor's voice recovery runs, ms (0 when none)

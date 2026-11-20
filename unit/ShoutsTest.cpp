@@ -19,8 +19,9 @@ PartOne& GetPartOne();
 // after every login the server teaches it again (on the first movement).
 // A shout the player's game reports (a cast from the voice with the
 // variation's spell) stands when the record holds the shout and every word
-// up to the variation unlocked and the last shout's recovery has run out
-// (wire-rules shouts); an accepted one starts the next recovery, waits for
+// up to the variation unlocked (wire-rules shouts); the recovery is the
+// player's own game's (thuum tracker #180), so a shout inside the server's
+// count stands too; an accepted one starts the next count, waits for
 // its hits as a cast does, and reaches the neighbours' games as a cast (their
 // figure breathes it).
 // Skyrim.esm (thuum lab/esm.py, 2026-10-10): UnrelentingForceShout SHOU
@@ -86,16 +87,6 @@ void Shout(PartOne& p, uint32_t spell)
                           { { "booleans", nlohmann::json::array() },
                             { "floats", nlohmann::json::array() },
                             { "integers", nlohmann::json::array() } } } } } });
-}
-
-// how many casts anyone was sent since the last clear
-int RelayedCasts(PartOne& p)
-{
-  int n = 0;
-  for (auto& m : p.Messages()) {
-    n += m.j["t"] == MsgType::SpellCast;
-  }
-  return n;
 }
 
 // how many casts one user was sent since the last clear, each reliably and
@@ -312,8 +303,8 @@ TEST_CASE("The change form keeps a player's shouts and words, and older "
   REQUIRE(!MpChangeForm::JsonToChangeForm(olderElement).shoutRecord);
 }
 
-TEST_CASE("A shout the record holds stands once per recovery, waits for its "
-          "hit and reaches the neighbours",
+TEST_CASE("A shout the record holds stands, waits for its hit and reaches "
+          "the neighbours, inside the server's count of its recovery too",
           "[Shouts][espm]")
 {
   constexpr uint32_t kShouter = 0xff000ac0;
@@ -338,14 +329,17 @@ TEST_CASE("A shout the record holds stands once per recovery, waits for its "
   REQUIRE(p.ClaimCast(kShouter, kFus, kActor, { 0, 50, 0 }).check ==
           PartOne::CastCheck::Claimed);
 
-  // again at once, with a ShoutRecoveryMult (actor value 86) that would make
-  // its recovery 45 s: refused, the recovery left as it was
+  // again at once, with a ShoutRecoveryMult (actor value 86) that makes its
+  // recovery 45 s: its game let it go (tracker #180: a wait ended the
+  // recovery the server still counts), so it stands, reaches the neighbour,
+  // and the server's count starts again from it
   ActorValueRecord record;
   record.bases = { { 86, 3.f } };
   REQUIRE(ac.SetActorValueRecord(record));
   Shout(p, kFus);
-  REQUIRE(p.VoiceRecoveryLeftMs(kShouter) <= left);
-  REQUIRE(RelayedCasts(p) == 0);
+  REQUIRE(CastsTo(p, 1, kShouter) == 1);
+  REQUIRE(p.VoiceRecoveryLeftMs(kShouter) > 44000);
+  REQUIRE(p.VoiceRecoveryLeftMs(kShouter) <= 45000);
   p.DestroyActor(kNeighbour);
   DoDisconnect(p, 1);
   Leave(p, kShouter);

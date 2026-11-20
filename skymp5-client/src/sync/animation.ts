@@ -161,8 +161,34 @@ export const applyAnimation = (
   // its graph reached the GetUpStart handler (42879), which writes knockState
   // 6 with no 5 (c2's copy of rotfern, 1 to 6 at 00:45:10.778), and its
   // GetUpEnd queues 39897's 0; a relayed Ragdoll knocked it again in place.
-  // Consumed here, never replayed after the follow
+  // Consumed here, never replayed after the follow. The relay's own down and
+  // up flag (Variable10, movementApply's gate: below -999 holds the figure
+  // where it lies) still follows the owner's knock and get-up as below, so
+  // the copy moves again once its own get-up has come (the rerun
+  // 20261120-014429: a consumed GetUpBegin left it at -1000, the copy stood
+  // 498.6 units off its player for good and its relayed shout missed)
+  // Of the unguarded path's other side effects, a furniture exit's
+  // setCollision(true) is kept too, should a knock out of a chair relay one
+  // (unread whether it does); the rest must stay unset for a consumed event:
+  // the drawn state comes from every movement sample (applyWeapDrawn), and
+  // the idle and attack allow-lists, relayedKnocks and relayedStaggers are
+  // one-use passes for plays that did not happen (the review of this hunk)
   if (isFollowedDown(refr.getFormID())) {
+    const followed = Actor.from(refr);
+    if (actorGetUpAnimsLowerCase.find((x) => x === anim.animEventName.toLowerCase()) !== undefined) {
+      setCollision(refr.getFormID(), true);
+    }
+    if (followed && anim.animEventName === "Ragdoll") {
+      followed.setActorValue("Variable10", -1000);
+    } else if (anim.animEventName === "GetUpBegin") {
+      const refrId = refr.getFormID();
+      Utility.wait(1).then(() => {
+        const ac = Actor.from(Game.getFormEx(refrId));
+        if (ac) {
+          ac.setActorValue("Variable10", 1000);
+        }
+      });
+    }
     return;
   }
 

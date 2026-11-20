@@ -325,12 +325,28 @@ const sayWeapDrawn = (ac: Actor, id: number, wanted: boolean, before: boolean, h
 // where a fixed event name drew only humans. Creatures send no actions
 // (FridaHooks.cpp's action hook admits the master behaviour alone), so for
 // them this flag is the only draw a puppet gets (note 3645's read). The
-// native setWeaponDrawnMode stays the figures': it forces the state through
-// DrawWeaponMagicHands and holds it against the engine's own draw and sheathe
-// calls (FridaHooks.cpp's two DrawSheathe hooks), which on an AI-off creature
-// took seconds and left the weapon on its back (HYPOTHESIS, H1, unread)
+// native setWeaponDrawnMode stays the figures'. On a puppet it ran the same
+// ActionDraw through the same entry, inside DrawWeaponMagicHands (37279),
+// with that function's own state around it (the re-analyst's read of 1.6.1170
+// on sky-re, 2026-11-20, HYPOTHESIS from decompiler output): a refused action
+// leaves kWantToDraw, which only the AI update (off on a puppet) or the
+// get-up path retries, and from kWantToSheathe it sets kDrawn with no graph
+// event at all; its forced mode then rewrites later draw and sheathe calls
+// (FridaHooks.cpp's two DrawSheathe hooks). Here each ask the engine still
+// disagrees with performs the action again, and performEngineAction's log
+// line says whether the engine took it. The weapon reaches the hand only by
+// the graph's draw annotation (RightHandWeaponDrawHandler, 42824, gated by no
+// AI flag), so a taken draw that still leaves a draugr's arms out has its
+// cause past this call (its process level, the response map, the hand node),
+// unread
 const kActionDraw = 0x132af;
 const kActionSheath = 0x46baf;
+
+// this bundle laid by a client-hot onto a dist older than the export (the
+// review of 0cdb5f216): the call would throw out of the view's update and
+// stop the puppet's apply there, so a puppet falls back to the native and the
+// seat says once that it needs the dist (turbo-dist and a relaunch)
+let engineActionMissingSaid = false;
 
 export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean, puppet = false): void => {
   const before = ac.isWeaponDrawn();
@@ -339,20 +355,29 @@ export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean, puppet = false):
     sayWeapDrawn(ac, id, isWeapDrawn, before, "skipped");
     return;
   }
+  // a dead puppet is asked nothing (the review of 0cdb5f216): its body is the
+  // owner's change-form record's (applyMovement, above), and an action the
+  // engine refuses on a corpse would be asked again every second; read only
+  // here, past the skip, so the sample's apply costs no extra call
+  if (puppet && ac.isDead()) {
+    return;
+  }
   const last = weapDrawnAsked.get(id);
   const now = Date.now();
   if (last && last.drawn === isWeapDrawn && now - last.at < 1000) {
     return;
   }
-  askWeapDrawn(ac, id, isWeapDrawn, before, puppet, now);
-};
-
-const askWeapDrawn = (ac: Actor, id: number, isWeapDrawn: boolean, before: boolean, puppet: boolean, now: number): void => {
   weapDrawnAsked.set(id, { drawn: isWeapDrawn, at: now });
   if (puppet) {
-    sayWeapDrawn(ac, id, isWeapDrawn, before, "action");
-    performEngineAction(id, isWeapDrawn ? kActionDraw : kActionSheath);
-    return;
+    if (typeof performEngineAction === "function") {
+      sayWeapDrawn(ac, id, isWeapDrawn, before, "action");
+      performEngineAction(id, isWeapDrawn ? kActionDraw : kActionSheath);
+      return;
+    }
+    if (!engineActionMissingSaid) {
+      engineActionMissingSaid = true;
+      logLab("verb:movement", "weap-drawn: this dist has no performEngineAction, so puppets draw through setWeaponDrawnMode as before; tracker #172's build needs its dist (turbo-dist and a relaunch)");
+    }
   }
   sayWeapDrawn(ac, id, isWeapDrawn, before, "asked");
   TESModPlatform.setWeaponDrawnMode(ac, isWeapDrawn ? 1 : 0);
@@ -360,22 +385,14 @@ const askWeapDrawn = (ac: Actor, id: number, isWeapDrawn: boolean, before: boole
 
 // thuum tracker #172: a figure's or a puppet's first 3D load forgets what was
 // asked of it and asks the record's state again, since an ask that reached
-// the engine before the 3D and its graph ran may have left the engine
-// reporting a state nothing shows (HYPOTHESIS, unread: the log above reads
-// it). A puppet the record has drawn is asked to draw even when the engine
-// reports drawn already, for that reason; the entry's validators refuse a
-// draw the actor's state does not allow (HYPOTHESIS: the draw gate of 39002,
-// docs/verbs/cast-action.md's read of the entry), and the log line from
-// performEngineAction says taken or not. Anything else goes through
-// applyWeapDrawn's check
+// the engine before the 3D and its graph ran may have gone nowhere: the
+// engine's action entry answers false without a graph manager (docs/verbs/
+// cast-action.md's read of 38949, step 1), and the native's state may report
+// what nothing shows (HYPOTHESIS, unread: the log above reads it)
 export const reaskWeapDrawn = (ac: Actor, isWeapDrawn: boolean, puppet: boolean): void => {
   const id = ac.getFormID();
   weapDrawnAsked.delete(id);
   weapDrawnSaid.delete(id);
-  if (puppet && isWeapDrawn) {
-    askWeapDrawn(ac, id, true, ac.isWeaponDrawn(), true, Date.now());
-    return;
-  }
   applyWeapDrawn(ac, isWeapDrawn, puppet);
 };
 

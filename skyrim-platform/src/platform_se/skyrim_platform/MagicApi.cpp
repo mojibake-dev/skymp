@@ -321,13 +321,22 @@ bool PerformActionOnActor(RE::Actor& actor, RE::BGSAction& action,
 // (38949, Offsets::Hooks::PerformAction) with the event left empty: the entry
 // runs its validators and chooses the idle and its event from this actor's
 // own idle tree by the action and the idles' conditions, then notifies the
-// graph and keeps the ActorState books (docs/verbs/cast-action.md, the
-// entry's read on sky-re 2026-10-14). The data is DoAction's: unk20 2, flags
-// 0. Skyrim.esm hangs each race's draw and sheathe idles under ActionDraw
-// 0x132af and ActionSheath 0x46baf (lab/esm.py, 2026-11-20): WeapEquip and
-// Unequip for the humanoid master behaviour, weapEquip and weapUnequip for
-// the draugr's, the combat stance for a wolf's, so one call serves every
-// graph. The chosen event is logged, since the caller cannot name it
+// graph and runs its post step 39004 (docs/verbs/cast-action.md, the entry's
+// read on sky-re 2026-10-14; the books that read lists are sneak, block, bow
+// draw and the sync ints, so whether the weapon state moves before the
+// graph's draw annotation sets kDrawn is unread). The data is DoAction's:
+// unk20 2, flags 0. Skyrim.esm hangs each race's draw and sheathe idles under
+// ActionDraw 0x132af and ActionSheath 0x46baf (lab/esm.py, 2026-11-20):
+// WeapEquip and Unequip for the humanoid master behaviour, weapEquip and
+// weapUnequip for the draugr's, the combat stance for a wolf's, so one call
+// serves every graph. The chosen event is logged, since the caller cannot name
+// it: per actor and action at the first call, at each power of two after and
+// whenever the answer changes (ADR-073 decision 7's shape, as the client's
+// own line), since a disagreement the engine never settles is asked again
+// every second. The count lives on the game thread alone, where the queue
+// runs these calls
+std::unordered_map<uint64_t, std::pair<uint32_t, uint8_t>> g_engineActionSaid;
+
 bool PerformEngineActionOnActor(RE::Actor& actor, RE::BGSAction& action)
 {
   if (!REL::Module::IsAE()) {
@@ -339,11 +348,18 @@ bool PerformEngineActionOnActor(RE::Actor& actor, RE::BGSAction& action)
     return false;
   }
 
-  logger::info("[verb:movement] engine action {:x} on {:x}: the engine chose "
-               "idle {:x} event '{}' -> taken {} result {} (thuum tracker "
-               "#172)",
-               action.formID, actor.formID, out.idle, out.event, out.taken,
-               out.result);
+  auto& said = g_engineActionSaid[(static_cast<uint64_t>(actor.formID) << 32) |
+                                  action.formID];
+  const bool changed = said.first == 0 || said.second != out.taken;
+  ++said.first;
+  said.second = out.taken;
+  if (changed || (said.first & (said.first - 1)) == 0) {
+    logger::info("[verb:movement] engine action {:x} on {:x} (ask {}): the "
+                 "engine chose idle {:x} event '{}' -> taken {} result {} "
+                 "(thuum tracker #172)",
+                 action.formID, actor.formID, said.first, out.idle, out.event,
+                 out.taken, out.result);
+  }
   return out.taken != 0;
 }
 

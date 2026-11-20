@@ -1,6 +1,13 @@
 #include "InventoryApi.h"
 #include "CallNativeApi.h"
 #include "NullPointerException.h"
+#include <cmath>
+#include <cstring>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 extern CallNativeApi::NativeCallRequirements g_nativeCallRequirements;
 
@@ -341,6 +348,355 @@ Napi::Value InventoryApi::SetInventory(const Napi::CallbackInfo& info)
   return info.Env().Undefined();
 }
 
+// thuum tracker #98 (crafting; Eli's decision of 2026-11-16: relay the
+// crafter's record). The static read behind every engine claim below is
+// tracker #98 note 3924 (HYPOTHESIS until a lab read): the four creators of
+// BGSCreatedObjectManager (CommonLibSSE-NG include/RE/B/
+// BGSCreatedObjectManager.h; AddWeaponEnchantment and AddArmorEnchantment are
+// CommonLib's own, src/RE/B/BGSCreatedObjectManager.cpp:11-23; AddPotion
+// 36167 and AddPoison 36168 are not in CommonLib) each lock the manager and
+// hand back an existing form whose effects match (MGEF, magnitude, area,
+// duration; the cost not compared), else copy the default template into a new
+// form above 0xFEFFFFFF. The engine counts a created form's references
+// (CreatedMagicItemData::refCount) and deletes it at none: its own console
+// path (PlayerCreatePotion 22506) adds one per inventory unit and releases
+// the creator's slot, and a drink releases one. Our applies add units through
+// TESModPlatform.addItemEx, which counts none, so a drink could take the
+// count to none with units still held: every form this native makes or reads
+// is pinned for the session instead (kCreatedPin references added once, on
+// the main thread, under the manager's lock), which no session's drinks
+// spend. The creators run on the main thread (SKSE's UI task queue, as
+// ChangeForm.cpp's apply), never on this JS thread.
+namespace {
+constexpr uint32_t kCreatedWeaponEnchantment = 0;
+constexpr uint32_t kCreatedArmorEnchantment = 1;
+constexpr uint32_t kCreatedPotion = 2;
+constexpr uint32_t kCreatedPoison = 3;
+constexpr size_t kCreatedEffectsMax = 8; // wire-schema cap::CREATED_EFFECTS
+constexpr uint32_t kCreatedPin = 0x10000;
+
+struct CreatedEffectDef
+{
+  uint32_t mgef = 0;
+  float magnitude = 0.f;
+  uint32_t area = 0;
+  uint32_t duration = 0;
+  float cost = 0.f;
+};
+
+struct CreatedDef
+{
+  uint32_t kind = 0;
+  std::vector<CreatedEffectDef> effects;
+};
+
+// a definition's identity, the creators' own match: the kind and each
+// effect's MGEF, magnitude (its bits), area and duration, in order
+std::string CreatedKey(const CreatedDef& def)
+{
+  std::string key = std::to_string(def.kind);
+  for (const auto& e : def.effects) {
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(e.magnitude));
+    std::memcpy(&bits, &e.magnitude, sizeof(bits));
+    key += fmt::format("|{:x},{:x},{},{}", e.mgef, bits, e.area, e.duration);
+  }
+  return key;
+}
+
+std::mutex g_createdMutex;
+// definition key -> the local form made for it; -1 for one no creator took
+std::unordered_map<std::string, int64_t> g_createdForms;
+std::unordered_set<std::string> g_createdQueued;
+std::unordered_set<RE::FormID> g_createdPinned;
+
+// The manager's table that holds `item`: its kind, or nullopt. The caller
+// holds the manager's lock
+std::optional<uint32_t> CreatedKindLocked(RE::BGSCreatedObjectManager& manager,
+                                          const RE::MagicItem* item)
+{
+  for (const auto& data : manager.weaponEnchantments) {
+    if (data.magicItem == item) {
+      return kCreatedWeaponEnchantment;
+    }
+  }
+  for (const auto& data : manager.armorEnchantments) {
+    if (data.magicItem == item) {
+      return kCreatedArmorEnchantment;
+    }
+  }
+  for (const auto& entry : manager.potions) {
+    if (entry.second.magicItem == item) {
+      return kCreatedPotion;
+    }
+  }
+  for (const auto& entry : manager.poisons) {
+    if (entry.second.magicItem == item) {
+      return kCreatedPoison;
+    }
+  }
+  return std::nullopt;
+}
+
+RE::MagicItem* CreatedMagicItem(RE::TESForm* form)
+{
+  if (!form || form->GetFormID() <= 0xFEFFFFFF) {
+    return nullptr;
+  }
+  if (auto* potion = form->As<RE::AlchemyItem>()) {
+    return potion;
+  }
+  if (auto* enchantment = form->As<RE::EnchantmentItem>()) {
+    return enchantment;
+  }
+  return nullptr;
+}
+
+// Main thread: kCreatedPin references on the manager's record of `item`
+// (HYPOTHESIS: a reference held here keeps the engine from deleting the form
+// while this session runs)
+void PinCreatedOnMain(RE::MagicItem* item)
+{
+  auto* manager = RE::BGSCreatedObjectManager::GetSingleton();
+  if (!manager || !item) {
+    return;
+  }
+  RE::BSSpinLockGuard guard(manager->lock);
+  const auto pin = [&](RE::BGSCreatedObjectManager::CreatedMagicItemData& d) {
+    if (d.magicItem == item) {
+      d.refCount = d.refCount + kCreatedPin;
+      return true;
+    }
+    return false;
+  };
+  for (auto& data : manager->weaponEnchantments) {
+    if (pin(data)) {
+      return;
+    }
+  }
+  for (auto& data : manager->armorEnchantments) {
+    if (pin(data)) {
+      return;
+    }
+  }
+  for (auto& entry : manager->potions) {
+    if (pin(entry.second)) {
+      return;
+    }
+  }
+  for (auto& entry : manager->poisons) {
+    if (pin(entry.second)) {
+      return;
+    }
+  }
+}
+
+// Queues the pin of a form read on the JS thread, once a session
+void QueuePinCreated(RE::FormID formId)
+{
+  {
+    std::lock_guard lock(g_createdMutex);
+    if (!g_createdPinned.insert(formId).second) {
+      return;
+    }
+  }
+  if (auto* tasks = SKSE::GetTaskInterface()) {
+    tasks->AddUITask([formId]() {
+      PinCreatedOnMain(CreatedMagicItem(RE::TESForm::LookupByID(formId)));
+    });
+  }
+}
+
+// AddPotion and AddPoison as the static read gives them: the manager, the
+// slot the made form is written to (holding one reference) and the effect
+// list (HYPOTHESIS; the slot is read after the call, so a return value the
+// read did not name is never used)
+using AddAlchemyFn = void (*)(RE::BGSCreatedObjectManager*, RE::AlchemyItem**,
+                              RE::BSTArray<RE::Effect>&);
+
+// Main thread: the engine's creator of `def.kind` over `def`'s effects; the
+// form, or null
+RE::MagicItem* CreateOnMain(const CreatedDef& def)
+{
+  auto* manager = RE::BGSCreatedObjectManager::GetSingleton();
+  if (!manager) {
+    return nullptr;
+  }
+  RE::BSTArray<RE::Effect> effects;
+  for (const auto& e : def.effects) {
+    auto* setting = RE::TESForm::LookupByID<RE::EffectSetting>(e.mgef);
+    if (!setting) {
+      logger::warn("[verb:craft] createCreatedForm: {:x} is no magic effect "
+                   "of this game",
+                   e.mgef);
+      return nullptr;
+    }
+    auto& effect = effects.emplace_back();
+    effect.effectItem.magnitude = e.magnitude;
+    effect.effectItem.area = e.area;
+    effect.effectItem.duration = e.duration;
+    effect.baseEffect = setting;
+    effect.cost = e.cost;
+  }
+  switch (def.kind) {
+    case kCreatedWeaponEnchantment:
+      return manager->AddWeaponEnchantment(effects);
+    case kCreatedArmorEnchantment:
+      return manager->AddArmorEnchantment(effects);
+    case kCreatedPotion:
+    case kCreatedPoison: {
+      RE::AlchemyItem* slot = nullptr;
+      REL::Relocation<AddAlchemyFn> add{ REL::ID(
+        def.kind == kCreatedPotion ? 36167 : 36168) };
+      add(manager, &slot, effects);
+      return slot;
+    }
+    default:
+      return nullptr;
+  }
+}
+}
+
+Napi::Value InventoryApi::ReadCreatedForm(const Napi::CallbackInfo& info)
+{
+  const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
+  auto* item = CreatedMagicItem(RE::TESForm::LookupByID(formId));
+  if (!item) {
+    return info.Env().Null();
+  }
+  std::optional<uint32_t> kind;
+  if (auto* manager = RE::BGSCreatedObjectManager::GetSingleton()) {
+    RE::BSSpinLockGuard guard(manager->lock);
+    kind = CreatedKindLocked(*manager, item);
+  }
+  if (!kind) {
+    return info.Env().Null();
+  }
+  auto effects = Napi::Array::New(info.Env());
+  uint32_t i = 0;
+  CreatedDef def;
+  def.kind = *kind;
+  for (const auto* effect : item->effects) {
+    if (!effect || !effect->baseEffect) {
+      return info.Env().Null();
+    }
+    CreatedEffectDef e;
+    e.mgef = effect->baseEffect->GetFormID();
+    e.magnitude = effect->effectItem.magnitude;
+    e.area = effect->effectItem.area;
+    e.duration = effect->effectItem.duration;
+    e.cost = effect->cost;
+    def.effects.push_back(e);
+    auto jEffect = Napi::Object::New(info.Env());
+    jEffect.Set("mgef", Napi::Number::New(info.Env(), e.mgef));
+    jEffect.Set("magnitude", Napi::Number::New(info.Env(), e.magnitude));
+    jEffect.Set("area", Napi::Number::New(info.Env(), e.area));
+    jEffect.Set("duration", Napi::Number::New(info.Env(), e.duration));
+    jEffect.Set("cost", Napi::Number::New(info.Env(), e.cost));
+    effects.Set(i++, jEffect);
+  }
+  if (def.effects.empty()) {
+    return info.Env().Null();
+  }
+  {
+    // the crafter's own form answers its definition from now on
+    std::lock_guard lock(g_createdMutex);
+    g_createdForms.emplace(CreatedKey(def), static_cast<int64_t>(formId));
+  }
+  QueuePinCreated(formId);
+  auto res = Napi::Object::New(info.Env());
+  res.Set("kind", Napi::Number::New(info.Env(), *kind));
+  res.Set("effects", effects);
+  return res;
+}
+
+Napi::Value InventoryApi::CreateCreatedForm(const Napi::CallbackInfo& info)
+{
+  CreatedDef def;
+  def.kind = NapiHelper::ExtractUInt32(info[0], "kind");
+  const Napi::Array effects = NapiHelper::ExtractArray(info[1], "effects");
+  const uint32_t n = effects.Length();
+  if (def.kind > kCreatedPoison || n == 0 || n > kCreatedEffectsMax) {
+    return Napi::Number::New(info.Env(), -1);
+  }
+  for (uint32_t i = 0; i < n; ++i) {
+    const std::string name = fmt::format("effects[{}]", i);
+    const Napi::Object e =
+      NapiHelper::ExtractObject(effects.Get(i), name.data());
+    CreatedEffectDef effect;
+    effect.mgef = NapiHelper::ExtractUInt32(e.Get("mgef"), "mgef");
+    effect.magnitude =
+      NapiHelper::ExtractFloat(e.Get("magnitude"), "magnitude");
+    effect.area = NapiHelper::ExtractUInt32(e.Get("area"), "area");
+    effect.duration = NapiHelper::ExtractUInt32(e.Get("duration"), "duration");
+    effect.cost = NapiHelper::ExtractFloat(e.Get("cost"), "cost");
+    if (effect.mgef == 0 || effect.mgef > 0xFEFFFFFF ||
+        !std::isfinite(effect.magnitude) || !std::isfinite(effect.cost)) {
+      return Napi::Number::New(info.Env(), -1);
+    }
+    def.effects.push_back(effect);
+  }
+  const std::string key = CreatedKey(def);
+  {
+    std::lock_guard lock(g_createdMutex);
+    if (auto it = g_createdForms.find(key); it != g_createdForms.end()) {
+      return Napi::Number::New(info.Env(), static_cast<double>(it->second));
+    }
+    if (!g_createdQueued.insert(key).second) {
+      return Napi::Number::New(info.Env(), 0);
+    }
+  }
+  auto* tasks = SKSE::GetTaskInterface();
+  if (!tasks) {
+    std::lock_guard lock(g_createdMutex);
+    g_createdQueued.erase(key);
+    return Napi::Number::New(info.Env(), -1);
+  }
+  tasks->AddUITask([def, key]() {
+    RE::MagicItem* item = nullptr;
+    try {
+      item = CreateOnMain(def);
+    } catch (const std::exception& e) {
+      logger::error("[verb:craft] createCreatedForm threw on the main "
+                    "thread: {}",
+                    e.what());
+    }
+    if (item) {
+      PinCreatedOnMain(item);
+    }
+    const int64_t answer =
+      item ? static_cast<int64_t>(item->GetFormID()) : int64_t{ -1 };
+    {
+      std::lock_guard lock(g_createdMutex);
+      g_createdQueued.erase(key);
+      g_createdForms[key] = answer;
+      if (item) {
+        g_createdPinned.insert(item->GetFormID());
+      }
+    }
+    logger::info("[verb:craft] createCreatedForm kind {} with {} effect(s): "
+                 "{:x}",
+                 def.kind, def.effects.size(), answer < 0 ? 0 : answer);
+  });
+  return Napi::Number::New(info.Env(), 0);
+}
+
+Napi::Value InventoryApi::CreatedFormTemplate(const Napi::CallbackInfo& info)
+{
+  const auto kind = NapiHelper::ExtractUInt32(info[0], "kind");
+  auto* objects = RE::BGSDefaultObjectManager::GetSingleton();
+  if (!objects || kind > kCreatedPoison) {
+    return Napi::Number::New(info.Env(), 0);
+  }
+  constexpr RE::DEFAULT_OBJECT kTemplates[] = {
+    RE::DEFAULT_OBJECTS::kBaseWeaponEnchantment,
+    RE::DEFAULT_OBJECTS::kBaseArmorEnchantment,
+    RE::DEFAULT_OBJECTS::kBasePotion, RE::DEFAULT_OBJECTS::kBasePoison
+  };
+  const RE::TESForm* form = objects->GetObject(kTemplates[kind]);
+  return Napi::Number::New(info.Env(), form ? form->GetFormID() : 0);
+}
+
 void InventoryApi::Register(Napi::Env env, Napi::Object& exports)
 {
   exports.Set("getExtraContainerChanges",
@@ -352,4 +708,13 @@ void InventoryApi::Register(Napi::Env env, Napi::Object& exports)
   exports.Set(
     "setInventory",
     Napi::Function::New(env, NapiHelper::WrapCppExceptions(SetInventory)));
+  exports.Set(
+    "readCreatedForm",
+    Napi::Function::New(env, NapiHelper::WrapCppExceptions(ReadCreatedForm)));
+  exports.Set("createCreatedForm",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(CreateCreatedForm)));
+  exports.Set("createdFormTemplate",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(CreatedFormTemplate)));
 }

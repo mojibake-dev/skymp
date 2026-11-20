@@ -328,13 +328,14 @@ bool PerformActionOnActor(RE::Actor& actor, RE::BGSAction& action,
 // unk20 2, flags 0. Skyrim.esm hangs each race's draw and sheathe idles under
 // ActionDraw 0x132af and ActionSheath 0x46baf (lab/esm.py, 2026-11-20):
 // WeapEquip and Unequip for the humanoid master behaviour, weapEquip and
-// weapUnequip for the draugr's, the combat stance for a wolf's, so one call
-// serves every graph. The chosen event is logged, since the caller cannot name
-// it: per actor and action at the first call, at each power of two after and
-// whenever the answer changes (ADR-073 decision 7's shape, as the client's
-// own line), since a disagreement the engine never settles is asked again
-// every second. The count lives on the game thread alone, where the queue
-// runs these calls
+// weapUnequip for the draugr's (the same pooled strings, the game's string
+// pool being case-insensitive), the combat stance for a wolf's, another event
+// altogether, so one call serves every graph. The chosen event is logged,
+// since the caller cannot name it: per actor and action at the first call, at
+// each power of two after and whenever the answer changes (ADR-073 decision
+// 7's shape, as the client's own line), since a disagreement the engine never
+// settles is asked again every second. The count lives on the game thread
+// alone, where the queue runs these calls
 std::unordered_map<uint64_t, std::pair<uint32_t, uint8_t>> g_engineActionSaid;
 
 bool PerformEngineActionOnActor(RE::Actor& actor, RE::BGSAction& action)

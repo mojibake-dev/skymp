@@ -319,10 +319,12 @@ const sayWeapDrawn = (ac: Actor, id: number, wanted: boolean, before: boolean, h
 // (performEngineAction, MagicApi.cpp). The tree is per graph: the humanoid
 // master behaviour draws with WeapEquip and sheathes with Unequip
 // (DefaultDrawWeapon 0x89011, DefaultSheathe 0x46bb2), a draugr's graph with
-// weapEquip and weapUnequip (DraugrDraw 0x32d66, DraugrDefaultSheath 0x5ac75;
-// its behaviour file names no WeapEquip at all, Skyrim - Animations.bsa read
-// 2026-11-20), a wolf's with combatStanceStart. So one call fits every puppet,
-// where a fixed event name drew only humans. Creatures send no actions
+// weapEquip and weapUnequip (DraugrDraw 0x32d66, DraugrDefaultSheath 0x5ac75),
+// the same pooled strings, the game's string pool being case-insensitive
+// (x-puppet-draw-v2 20261120-115715: the engine's pick for a draugr reads
+// "WeapEquip"), and a wolf's or a bear's with combatStanceStart, another event
+// altogether. So one call fits every puppet, where a fixed event name fits
+// only the graphs that name it. Creatures send no actions
 // (FridaHooks.cpp's action hook admits the master behaviour alone), so for
 // them this flag is the only draw a puppet gets (note 3645's read). The
 // native setWeaponDrawnMode stays the figures'. On a puppet it ran the same
@@ -336,9 +338,11 @@ const sayWeapDrawn = (ac: Actor, id: number, wanted: boolean, before: boolean, h
 // disagrees with performs the action again, and performEngineAction's log
 // line says whether the engine took it. The weapon reaches the hand only by
 // the graph's draw annotation (RightHandWeaponDrawHandler, 42824, gated by no
-// AI flag), so a taken draw that still leaves a draugr's arms out has its
-// cause past this call (its process level, the response map, the hand node),
-// unread
+// AI flag). On this route the draw completes on a puppet draugr
+// (x-puppet-draw-v2's trace on the watching seat: the first ask refused while
+// the host's draugr left its sleep idle, the second taken, then the
+// annotation, the handler, the weapon to its node and kDrawn; docs/verbs/
+// npc-puppet.md's Dynamic plan, "THE TRACE'S READ")
 const kActionDraw = 0x132af;
 const kActionSheath = 0x46baf;
 

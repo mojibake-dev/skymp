@@ -1700,7 +1700,11 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
                float toGameUnits)
 {
   auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
-  auto* root = refr ? refr->Get3D() : nullptr;
+  // thuum tracker #179: the player's own body walks its third-person
+  // skeleton, the one a knock ragdolls and the stream reads (PropRootOf);
+  // its virtual Get3D2 returns the first-person root in first-person view
+  // (PlayerCharacter's 40462, the re-analyst's static read of 2026-11-19)
+  auto* root = refr ? PropRootOf(*refr) : nullptr;
   if (!root) {
     if (g_imposeNo3DSaid.size() > kImposeSaidMax) {
       g_imposeNo3DSaid.clear();
@@ -1945,9 +1949,13 @@ void DrainImpose()
 // form's last drain (ImposeHorizonOf, #125; the horizon said at most once a
 // second a form). A form with no 3D is dropped (N3, once a form); a pose
 // count that is not the walk's part count is skipped (N2, once a (form,
-// count, parts)). Refused, false and nothing stored: 0, the player's own
-// id, no pose, more than 64, a value that is not a number, a quaternion off
-// unit length by more than 0.01
+// count, parts)). Refused, false and nothing stored: 0, no pose, more than
+// 64, a value that is not a number, a quaternion off unit length by more than
+// 0.01. The player's own id is taken since thuum tracker #179 (ADR-063's
+// 2026-11-19 amendment): its body is its gripper's for a grip's hold, and
+// the client imposes the gripper's stream on it then alone (propService's
+// handed body), its root the third-person skeleton the stream reads
+// (PropRootOf)
 // (wire-validate's PROP_QUAT_NORM_SLACK), no SKSE task interface, or a full
 // table (64 forms, said at the first and every hundredth). A pose of another
 // shape throws, as the platform's extractors throw
@@ -1958,8 +1966,7 @@ Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
   const bool rest = NapiHelper::ExtractBoolean(info[2], "rest");
   const uint32_t n = bones.Length();
   const auto* tasks = SKSE::GetTaskInterface();
-  if (formId == 0 || formId == 0x14 || n == 0 || n > PropBodies::kPartsMax ||
-      !tasks) {
+  if (formId == 0 || n == 0 || n > PropBodies::kPartsMax || !tasks) {
     return Napi::Boolean::New(info.Env(), false);
   }
   std::vector<PropBodies::Pose> poses;
@@ -2043,7 +2050,8 @@ Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
 Napi::Value PuppetApi::ReleaseBodies(const Napi::CallbackInfo& info)
 {
   const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
-  if (formId == 0 || formId == 0x14) {
+  // the player's own id is taken since thuum tracker #179 (ImposeBodies)
+  if (formId == 0) {
     return Napi::Boolean::New(info.Env(), false);
   }
   bool held = false;

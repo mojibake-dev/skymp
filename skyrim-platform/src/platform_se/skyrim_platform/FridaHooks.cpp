@@ -3884,7 +3884,13 @@ void ActorGetUpReplacement(RE::Actor* actor, bool playAction)
 
 void Frida::HoldGetUp(uint32_t formId)
 {
-  if (formId == 0 || formId == 0x14) {
+  // the player's own get-up is held too since thuum tracker #179 (its body
+  // its gripper's for a grip's hold, PuppetApi's ImposeBodies): the player's
+  // knock step and get-up are the same 39896 and 40150 (the re-analyst's
+  // static read of 2026-11-19). HYPOTHESIS: while held, its game keeps the
+  // knock's bleedout camera and its 0.8 time slowdown, which the first get-up
+  // 40150 runs clears
+  if (formId == 0) {
     return;
   }
   const uint64_t now = NowMs();

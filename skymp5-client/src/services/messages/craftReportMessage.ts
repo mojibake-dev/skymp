@@ -14,6 +14,7 @@ import { Entry } from "../../sync/inventory";
 export interface CraftReportMessage {
     t: MsgType.CraftReport;
     workbench: number; // the bench as this game's view names it to the server
+    seq: number; // the report's number in this session, from 1; the server's answer (SetInventory's craftAck) names it
     lost: Entry[]; // the stacks that left the player's inventory
     gained: Entry[]; // the stacks that came into it
     learnedEnchantments: number[]; // the game-file enchantments the sitting taught

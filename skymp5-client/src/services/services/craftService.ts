@@ -125,6 +125,7 @@ export class CraftService extends ClientListener {
       const message: CraftReportMessage = {
         t: MsgType.CraftReport,
         workbench,
+        seq: ++this.seq,
         lost: lost.slice(i, i + craftRows),
         gained: gained.slice(i, i + craftRows),
         learnedEnchantments: i === 0 ? learned.slice(0, craftLearned) : [],
@@ -184,4 +185,6 @@ export class CraftService extends ClientListener {
   }
 
   private sitting: Sitting | undefined;
+  // the last report's number in this session (the server's answer names it)
+  private seq = 0;
 }

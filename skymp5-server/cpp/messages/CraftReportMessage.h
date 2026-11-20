@@ -27,12 +27,15 @@ struct CraftReportMessage : public MessageBase<CraftReportMessage>
   {
     archive.Serialize("t", kMsgType)
       .Serialize("workbench", workbench)
+      .Serialize("seq", seq)
       .Serialize("lost", lost)
       .Serialize("gained", gained)
       .Serialize("learnedEnchantments", learnedEnchantments);
   }
 
   uint32_t workbench = 0; // the bench, as the sender's view names it
+  uint32_t seq = 0; // the report's number in the sender's session, from 1;
+                    // the answer's SetInventory names it (craftAck)
   std::vector<Inventory::Entry> lost;
   std::vector<Inventory::Entry> gained;
   std::vector<uint32_t> learnedEnchantments;

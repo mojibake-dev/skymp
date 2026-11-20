@@ -295,7 +295,15 @@ use bounded::{String, Vec};
 /// postcard writes a struct's fields in order with one presence byte per
 /// Option, so a 60 peer would misread every inventory of a 61 server while
 /// the handshake passed).
-pub const SCHEMA_VERSION: u16 = 61;
+/// 62: CraftReport's `seq` and SetInventory's optional `craft_ack` (thuum
+/// tracker #98, the review of fec33b6f5..47e3ede74, finding 2): the
+/// server's answer to a crafting report names it, so the seat ends its hold
+/// on that answer and on no inventory sent before the report was read. CI
+/// pipeline 6420 built 61's images without them, so the shape takes the next
+/// number (D-PH1 A's reason: postcard writes a struct's fields in order, so
+/// a 61 peer would misread every SetInventory of a 62 server while the
+/// handshake passed).
+pub const SCHEMA_VERSION: u16 = 62;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -914,8 +922,18 @@ const fn row(name: &'static str, msg_type: u8, max_len: usize, direction: Direct
 use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
-/// with room to spare, from the capacities above; the transport's own
-/// per-direction cap (smaller from clients) applies on top.
+/// with room to spare, from the capacities above, where a size test pins
+/// it; the transport's own per-direction cap (smaller from clients) applies
+/// on top. The inventory-carrying messages are the exception, their caps
+/// below the product of their capacities: a stack at its caps is 871 bytes
+/// since SCHEMA_VERSION 61 (the name and three created forms at theirs), so
+/// cap::INVENTORY's 4096 such stacks would take 3.5 MB, past SetInventory's
+/// and RelayedActivation's 2 MiB, CreateActor's two inventories past every
+/// cap, and UpdateEquipment past the 256 KiB the transport takes from a
+/// client. No real inventory nears it (a merchant's chest holds hundreds of
+/// stacks of a few dozen bytes each), and a message past its cap is refused
+/// at its encode, whole, never truncated (thuum tracker #98, the review of
+/// fec33b6f5..47e3ede74, finding 8: the caps kept, this comment corrected).
 const TABLE: [Row; 93] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
@@ -1061,10 +1079,11 @@ const TABLE: [Row; 93] = [
     // the two triple floats, the cell, the time and the flag (thuum
     // tracker #84; 55 bytes at the longest, pinned by the size test)
     row("Summon", 83, 64, C2S),
-    // the bench, 64 lost and 64 gained stacks at their longest (871 bytes
+    // the bench and since SCHEMA_VERSION 62 the report's seq at five-byte
+    // varints, 64 lost and 64 gained stacks at their longest (871 bytes
     // each, three created forms at their caps beside the name's) and 128
     // learned enchantments at five-byte varints (thuum tracker #98;
-    // 112,138 bytes at the longest, pinned by the size test), under the
+    // 112,143 bytes at the longest, pinned by the size test), under the
     // 256 KiB the transport takes from a client
     row("CraftReport", 84, 112 * KIB, C2S),
 ];
@@ -2099,17 +2118,18 @@ mod tests {
     #[test]
     fn a_craft_report_at_its_caps_fits_its_byte_cap() {
         // thuum tracker #98 (SCHEMA_VERSION 61): the wire id, a five-byte
-        // bench, 64 stacks lost and 64 gained at their longest and 128
-        // learned enchantments at five-byte varints
+        // bench and (since 62) a five-byte seq, 64 stacks lost and 64 gained
+        // at their longest and 128 learned enchantments at five-byte varints
         let full = Message::CraftReport(skymp::CraftReport {
             workbench: u32::MAX,
+            seq: u32::MAX,
             lost: core::iter::repeat_n(entry_at_its_caps(), cap::CRAFT_ROWS).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
             gained: core::iter::repeat_n(entry_at_its_caps(), cap::CRAFT_ROWS).collect::<alloc::vec::Vec<_>>().try_into().unwrap_or_default(),
             learned_enchantments: core::iter::repeat_n(u32::MAX, cap::CRAFT_LEARNED).collect::<alloc::vec::Vec<u32>>().try_into().unwrap_or_default(),
             ..Default::default()
         });
         let full_len = postcard::to_allocvec(&full).map(|b| b.len());
-        assert_eq!(full_len, Ok(112_138));
+        assert_eq!(full_len, Ok(112_143));
         assert!(full_len.unwrap_or(usize::MAX) <= Message::max_len(full.wire_id()).unwrap_or(0));
         assert_eq!(Message::max_len(full.wire_id()), Some(112 * KIB));
         assert_eq!(full.name(), "CraftReport");
@@ -2119,6 +2139,7 @@ mod tests {
         // three-byte varint, two plain stacks lost, one created stack gained
         let brew = Message::CraftReport(skymp::CraftReport {
             workbench: 0x000b_e9a1,
+            seq: 1,
             lost: alloc::vec![
                 skymp::Entry { base_id: 0x0003_4cdd, count: 1, ..Default::default() },
                 skymp::Entry { base_id: 0x0006_bc02, count: 1, ..Default::default() },
@@ -2139,6 +2160,11 @@ mod tests {
             ..Default::default()
         });
         assert!(postcard::to_allocvec(&brew).map(|b| b.len()).unwrap_or(usize::MAX) < 128);
+        // the answer's ack costs its presence byte and the seq (62)
+        let answer = Message::SetInventory(skymp::SetInventory { craft_ack: Some(u32::MAX), ..Default::default() });
+        assert_eq!(postcard::to_allocvec(&answer).map(|b| b.len()), Ok(8));
+        let plain = Message::SetInventory(skymp::SetInventory::default());
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(3));
     }
 
     #[test]

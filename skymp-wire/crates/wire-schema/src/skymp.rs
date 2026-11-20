@@ -1482,6 +1482,12 @@ wire_struct! {
         pub t: MsgT<28>,
         /// The inventory.
         pub inventory: Inventory,
+        /// The `seq` of the player's CraftReport this inventory answers
+        /// (SCHEMA_VERSION 62, thuum tracker #98): the record after the
+        /// report was taken or refused, sent at once, so the seat applies
+        /// the answer and never an inventory the server sent before it read
+        /// the report. Absent on every other inventory.
+        pub craft_ack: Option<u32>,
     }
 }
 
@@ -3475,14 +3481,18 @@ wire_struct! {
     /// it) and keeps the learned enchantments on the player's record. Not
     /// idempotent: a resend whose `lost` is gone is refused whole. A sitting
     /// longer than one report's rows is sent as several, each standing
-    /// alone. Reason codes: `E_VAL_RANGE` (a count of 0, a session id or a
-    /// 0 form anywhere, a created form of an unknown kind or without
-    /// effects, nothing lost and nothing gained), `E_VAL_NONFINITE`,
-    /// `E_VAL_RATE`.
+    /// alone. Each report has its own `seq`, which the server's answer
+    /// names (SetInventory's `craft_ack`, SCHEMA_VERSION 62). Reason codes:
+    /// `E_VAL_RANGE` (a count of 0, a session id or a 0 form anywhere, a
+    /// created form of an unknown kind or without effects, nothing lost and
+    /// nothing gained, a `seq` of 0), `E_VAL_NONFINITE`, `E_VAL_RATE`.
     pub struct CraftReport {
         /// `"t": 84`.
         #[serde(default)]
         pub t: MsgT<84>,
+        /// The report's number in the sender's session, from 1 up; the
+        /// server's answer names it.
+        pub seq: u32,
         /// The bench the player sat at, as the sender's view names it (a
         /// game-file reference, or a server-made one).
         pub workbench: u32,

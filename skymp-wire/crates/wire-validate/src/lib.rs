@@ -862,7 +862,8 @@ fn check_moved_stack(s: &MovedStack, finite: bool) -> Result<(), Reject> {
     check_created_fields(s)
 }
 
-/// CraftReport (MsgType 84, thuum tracker #98): the bench a form, every
+/// CraftReport (MsgType 84, thuum tracker #98): the bench a form, a `seq`
+/// from 1 (the server's answer names it), every
 /// stack lost or gained a moved stack ([`check_moved_stack`]), something
 /// lost or gained, and every learned enchantment a game-file form. Whether
 /// the record holds the lost stacks, and whether an enchantment is one, is
@@ -872,7 +873,7 @@ fn check_craft_report(m: &skymp::CraftReport) -> Result<(), Reject> {
     if !finite {
         return Err(Reject::NonFinite);
     }
-    if m.workbench == 0 || (m.lost.is_empty() && m.gained.is_empty()) {
+    if m.workbench == 0 || m.seq == 0 || (m.lost.is_empty() && m.gained.is_empty()) {
         return Err(Reject::Range);
     }
     for e in m.lost.iter().chain(m.gained.iter()) {
@@ -4106,6 +4107,7 @@ mod tests {
         let report = |lost: Vec<Entry>, gained: Vec<Entry>, learned: Vec<u32>| {
             Message::CraftReport(CraftReport {
                 workbench: 0xbe9a1,
+                seq: 1,
                 lost: lost.try_into().unwrap_or_default(),
                 gained: gained.try_into().unwrap_or_default(),
                 learned_enchantments: learned.try_into().unwrap_or_default(),
@@ -4138,7 +4140,8 @@ mod tests {
             report(vec![], vec![], vec![]),
             report(vec![plain(0x1c4e6, 1)], vec![], vec![0xff00_0b02]),
             report(vec![plain(0x1c4e6, 1)], vec![], vec![0]),
-            Message::CraftReport(CraftReport { workbench: 0, gained: vec![potion.clone()].try_into().unwrap_or_default(), ..Default::default() }),
+            Message::CraftReport(CraftReport { workbench: 0, seq: 1, gained: vec![potion.clone()].try_into().unwrap_or_default(), ..Default::default() }),
+            Message::CraftReport(CraftReport { workbench: 0xbe9a1, seq: 0, gained: vec![potion.clone()].try_into().unwrap_or_default(), ..Default::default() }),
         ];
         for m in &range {
             assert_eq!(validate_server(m), Err(Reject::Range), "{m:?}");
@@ -4724,6 +4727,7 @@ mod tests {
                 .collect();
             let m = Message::CraftReport(CraftReport {
                 workbench: ids.first().copied().unwrap_or(0),
+                seq: counts.first().copied().unwrap_or(0),
                 lost: rows.clone().try_into().unwrap_or_default(),
                 gained: rows.try_into().unwrap_or_default(),
                 learned_enchantments: learned.clone().try_into().unwrap_or_default(),

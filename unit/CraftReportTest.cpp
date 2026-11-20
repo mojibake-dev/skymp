@@ -75,6 +75,7 @@ void Report(PartOne& p, std::vector<Inventory::Entry> lost,
   raw.userId = 0;
   CraftReportMessage msg;
   msg.workbench = kBench;
+  msg.seq = 1;
   msg.lost = std::move(lost);
   msg.gained = std::move(gained);
   msg.learnedEnchantments = std::move(learned);
@@ -165,6 +166,7 @@ TEST_CASE("CraftReport packet is parsed", "[CraftReport][espm]")
     Inventory().AddItems({ Potion(Heal(25.f)) }).ToJson()["entries"][0];
   nlohmann::json j{ { "t", MsgType::CraftReport },
                     { "workbench", kBench },
+                    { "seq", 7 },
                     { "lost",
                       { { { "baseId", kWheat }, { "count", 1 } },
                         { { "baseId", kOther }, { "count", 1 } } } },
@@ -180,6 +182,7 @@ TEST_CASE("CraftReport packet is parsed", "[CraftReport][espm]")
 
   REQUIRE(listener.userId == 122);
   REQUIRE(listener.msg.workbench == kBench);
+  REQUIRE(listener.msg.seq == 7);
   REQUIRE(listener.msg.lost.size() == 2);
   REQUIRE(listener.msg.gained.size() == 1);
   REQUIRE(listener.msg.gained[0].createdBase == Heal(25.f));

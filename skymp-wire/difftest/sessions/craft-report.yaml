@@ -1,0 +1,27 @@
+# difftest craft-report (thuum tracker #98, docs/verbs/crafting.md): c1 and c2 are new
+# characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see melee-reach), both at
+# the spawn. c1's starting kit holds one Iron Dagger (Skyrim.esm WEAP 0x0001397E, 80254; the
+# forge's m0-forge kit) and five of 0x0003EADD (256733; lab/esm.py), the rows a report names.
+# At 2 s c1 reports a temper (the dagger lost, the dagger at health 1.1 gained): the wire stack
+# records it (R2: the lost row was held) and sends c1 its inventory back. At 2.5 s c1 reports
+# a craft whose lost row it does not hold (a dagger at health 1.5): the wire stack refuses it
+# whole (E_CRAFT_NOT_HELD) and sends c1 its inventory back, unchanged. At 3 s c1 reports a
+# brew (one 0x3EADD lost, a created potion gained: its base the engine's potion template as
+# the client reads it, its definition two effects), recorded with its definition. The legacy
+# stack knows no CraftReport and answers nothing. c2 steps aside at 4 s so it outlives c1, as
+# in every session.
+id: craft-report
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 84, workbench: 780705, lost: [{baseId: 80254, count: 1}], gained: [{baseId: 80254, count: 1, health: 1.1}], learnedEnchantments: []}}
+  - {client: c1, at_ms: 2500, send: {t: 84, workbench: 780705, lost: [{baseId: 80254, count: 1, health: 1.5}], gained: [{baseId: 80254, count: 1, health: 1.6}], learnedEnchantments: []}}
+  - {client: c1, at_ms: 3000, send: {t: 84, workbench: 780705, lost: [{baseId: 256733, count: 1}], gained: [{baseId: 256733, count: 1, createdBase: {kind: 2, effects: [{mgef: 256789, magnitude: 25.0, area: 0, duration: 0, cost: 12.5}, {mgef: 256769, magnitude: 2.5, area: 0, duration: 30, cost: 4.25}]}}], learnedEnchantments: []}}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

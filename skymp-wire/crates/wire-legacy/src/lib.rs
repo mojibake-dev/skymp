@@ -151,6 +151,8 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     ("TakeItem", "createdEnchantment"),
     ("TakeItem", "createdPoison"),
     ("OnEquip", "createdBase"),
+    // the answer to a crafting report (SCHEMA_VERSION 62, thuum tracker #98)
+    ("SetInventory", "craftAck"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

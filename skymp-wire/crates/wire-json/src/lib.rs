@@ -1201,18 +1201,21 @@ mod tests {
     /// 84-3 a report that names a session's own id as a gained base, refused
     /// at the wire. 28-SetInventory-2 is the record's answer to a brew and an
     /// enchant, the rows the C++ core writes back; 08-PutItem-2 puts a
-    /// created potion in a container; 11-OnEquip-2 drinks one.
+    /// created potion in a container; 11-OnEquip-2 drinks one. Since
+    /// SCHEMA_VERSION 62 each report carries its seq (84-n's is n + 1), and
+    /// 28-SetInventory-3 is 28-2 as the answer to report 1 (its craftAck).
     #[test]
     fn craft_fixtures_validate_as_named() {
         use wire_validate::{validate, validate_server, ClientGuard, Reject};
         let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
         type Verdict = (&'static str, Result<(), Reject>);
-        let verdicts: [Verdict; 7] = [
+        let verdicts: [Verdict; 8] = [
             ("84-CraftReport-0.json", Ok(())),
             ("84-CraftReport-1.json", Ok(())),
             ("84-CraftReport-2.json", Ok(())),
             ("84-CraftReport-3.json", Err(Reject::Range)),
             ("28-SetInventory-2.json", Ok(())),
+            ("28-SetInventory-3.json", Ok(())),
             ("08-PutItem-2.json", Ok(())),
             ("11-OnEquip-2.json", Ok(())),
         ];
@@ -1223,11 +1226,15 @@ mod tests {
         }
         match recognize(&read("84-CraftReport-0.json")) {
             Ok(Message::CraftReport(c)) => {
-                assert_eq!((c.workbench, c.lost.len(), c.gained.len()), (0xbe9a1, 2, 1));
+                assert_eq!((c.workbench, c.seq, c.lost.len(), c.gained.len()), (0xbe9a1, 1, 2, 1));
                 let potion = c.gained.first().and_then(|e| e.created_base.clone()).unwrap_or_default();
                 assert_eq!(potion.kind, skymp::CREATED_POTION);
                 assert_eq!(potion.effects.iter().map(|e| (e.mgef, e.magnitude, e.duration)).collect::<Vec<_>>(), vec![(0x3eb15, 25.0, 0), (0x3eb01, 2.5, 30)]);
             }
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("28-SetInventory-3.json")) {
+            Ok(Message::SetInventory(s)) => assert_eq!((s.craft_ack, s.inventory.entries.len()), (Some(1), 4)),
             other => panic!("{other:?}"),
         }
         match recognize(&read("84-CraftReport-2.json")) {
@@ -1241,6 +1248,7 @@ mod tests {
             Ok(Message::SetInventory(s)) => {
                 let e = s.inventory.entries.first().cloned().unwrap_or_default();
                 assert!(e.created_base.is_none() && e.created_enchantment.is_none() && e.created_poison.is_none());
+                assert!(s.craft_ack.is_none());
             }
             other => panic!("{other:?}"),
         }

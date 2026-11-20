@@ -589,6 +589,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // the record first, so the record sent below gives it back
       partOne.RecordShoutsOfKnownWords(*actor);
       SendShoutRecord(*actor);
+      // thuum tracker #98: the enchantments it learned by disenchanting,
+      // known again (a relaunch's engine starts with none)
+      SendKnownEnchantments(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -3431,6 +3434,38 @@ void ActionListener::SendIngredientEffects(MpActor& actor)
   if (sent > 0) {
     spdlog::info("IngredientEffects: actor {:x} taught its {} effects after "
                  "a login",
+                 actor.GetFormId(), sent);
+  }
+}
+
+// thuum tracker #98: teach the player's recorded enchantments to its client's
+// engine, SKSE's Form.SetPlayerKnows(true) with the enchantment as self (the
+// known flag alone, CommonLibSSE-NG TESForm.h:349, as a disenchant sets it:
+// HYPOTHESIS, the static read of tracker #98 note 3924), one per enchantment;
+// ShoutSnippets.cpp's word known is the same call
+void ActionListener::SendKnownEnchantments(MpActor& actor)
+{
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    knows{ true };
+  size_t sent = 0;
+  for (const auto& enchantment : actor.GetKnownEnchantments()) {
+    uint32_t formId = 0;
+    try {
+      formId = enchantment.ToFormId(partOne.worldState.espmFiles);
+    } catch (std::exception& e) {
+      spdlog::warn("KnownEnchantments: actor {:x}'s {} is in no loaded "
+                   "plugin: {}",
+                   actor.GetFormId(), enchantment.ToString(), e.what());
+      continue;
+    }
+    SpSnippet("Form", "SetPlayerKnows", knows, formId)
+      .Execute(&actor, SpSnippetMode::kNoReturnResult);
+    ++sent;
+  }
+  if (sent > 0) {
+    spdlog::info("KnownEnchantments: actor {:x} taught its {} enchantments "
+                 "after a login",
                  actor.GetFormId(), sent);
   }
 }
@@ -10755,6 +10790,14 @@ void ActionListener::OnEquip(const RawMessageData& rawMsgData,
       std::to_string(rawMsgData.userId));
   }
 
+  // thuum tracker #98: a brewed potion or poison names its template and its
+  // definition; its stack is the record's row of that definition, and a
+  // template is no food
+  if (msg.createdBase) {
+    (void)actor->OnEquipCreated(msg.baseId, *msg.createdBase);
+    return;
+  }
+
   if (actor->OnEquip(msg.baseId)) {
     ApplySurvivalFood(*actor, msg.baseId);
   }
@@ -10772,6 +10815,12 @@ void ActionListener::OnConsoleCommand(const RawMessageData& rawMsgData,
     }
     ConsoleCommands::Execute(partOne, *me, msg.data.commandName, consoleArgs);
   }
+}
+
+void ActionListener::OnCraftReport(const RawMessageData& rawMsgData,
+                                   const CraftReportMessage& msg)
+{
+  craftService->OnCraftReport(rawMsgData, msg);
 }
 
 void ActionListener::OnCraftItem(const RawMessageData& rawMsgData,
@@ -12600,15 +12649,23 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   // as caster, and spends a dose; the attacker's game is told its inventory,
   // so its ExtraPoison agrees. HYPOTHESIS: the game spends a dose on a
   // blocked hit as well (unmeasured)
-  if (const auto poison =
-        ethereal ? std::nullopt : aggressor->SpendPoisonDose(hitData.source)) {
-    const auto effects = MpActor::EffectsOf(&partOne.worldState, *poison);
-    targetActor.ApplyEffects(*poison, effects, 1.f, aggressor->GetFormId(),
+  // thuum tracker #98: a brewed poison's mark runs its definition's
+  // effects, the weapon as their source (the record names no template for
+  // it)
+  std::optional<CreatedForm> brewed;
+  if (const auto poison = ethereal
+        ? std::nullopt
+        : aggressor->SpendPoisonDose(hitData.source, &brewed)) {
+    const uint32_t source = brewed ? hitData.source : *poison;
+    const auto effects = brewed
+      ? MpActor::EffectsOfCreated(*brewed)
+      : MpActor::EffectsOf(&partOne.worldState, *poison);
+    targetActor.ApplyEffects(source, effects, 1.f, aggressor->GetFormId(),
                              false);
-    spdlog::info("OnWeaponHit - {:x}'s {:x} carried poison {:x}: its effects "
-                 "run on {:x}, a dose spent",
+    spdlog::info("OnWeaponHit - {:x}'s {:x} carried poison {:x}{}: its "
+                 "effects run on {:x}, a dose spent",
                  aggressor->GetFormId(), hitData.source, *poison,
-                 targetActor.GetFormId());
+                 brewed ? " (brewed)" : "", targetActor.GetFormId());
   }
 
   // the engine's reaction skips a hit that killed, and one on an ethereal

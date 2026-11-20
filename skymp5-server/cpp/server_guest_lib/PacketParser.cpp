@@ -356,6 +356,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnSummon(rawMsgData, *message);
         return;
       }
+      case MsgType::CraftReport: {
+        auto message =
+          reinterpret_cast<CraftReportMessage*>(result->message.get());
+        actionListener.OnCraftReport(rawMsgData, *message);
+        return;
+      }
       default: {
         spdlog::error("PacketParser.cpp doesn't implement MsgType {}",
                       static_cast<int64_t>(result->msgType));

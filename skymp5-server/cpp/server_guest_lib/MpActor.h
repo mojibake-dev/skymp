@@ -221,9 +221,29 @@ public:
   // the poison, without such a weapon (bare hands and staves take none, as
   // the game refuses them), or with that weapon already poisoned
   bool ApplyPoison(uint32_t poisonId);
+  // ApplyPoison's work for one copy of a poison stack `spent` (a game-file
+  // poison's plain row, or since thuum tracker #98 a brewed poison's row,
+  // whose definition marks the weapon as createdPoison): the copy taken and
+  // one copy of the right hand's weapon marked, by ApplyPoison's rules
+  bool PoisonRightHandWeapon(const Inventory::Entry& spent);
   // The poison a copy of `weaponId` carries, one dose spent (the mark
-  // cleared at none); nullopt when no copy carries one
-  std::optional<uint32_t> SpendPoisonDose(uint32_t weaponId);
+  // cleared at none); nullopt when no copy carries one. Since thuum tracker
+  // #98, with `created` given, a copy marked with a brewed poison counts
+  // too: its definition is written there and 0 returned
+  std::optional<uint32_t> SpendPoisonDose(
+    uint32_t weaponId, std::optional<CreatedForm>* created = nullptr);
+  // thuum tracker #98: a brewed potion drunk or a brewed poison put on the
+  // right hand's weapon (OnEquip with its definition; `templateId` the
+  // game-file template its stack names): one copy of the record's stack of
+  // that definition taken, a potion's effects run from the stack's own
+  // definition through the effect rule (never the template's record), a
+  // poison marking the weapon (PoisonRightHandWeapon). False, nothing
+  // changed, without such a stack or a weapon that takes the poison
+  bool OnEquipCreated(uint32_t templateId, const CreatedForm& form);
+  // A created form's effects as the effect rule takes a record's (thuum
+  // tracker #98)
+  static std::vector<espm::Effects::Effect> EffectsOfCreated(
+    const CreatedForm& form);
 
   // TODO: consider removing the entire DestroyEventSink feature because it's
   // only used in unit tests
@@ -317,6 +337,11 @@ public:
   // when none), which a report must follow
   std::vector<IngredientEffects> GetIngredientEffects() const;
   bool RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask);
+  // thuum tracker #98: the game-file enchantments this player learned by
+  // disenchanting, kept in its change form; recording only adds, and
+  // returns whether anything changed
+  std::vector<FormDesc> GetKnownEnchantments() const;
+  bool RecordKnownEnchantment(const FormDesc& enchantment);
 
   // thuum docs/verbs/shouts.md: what the player knows of shouts, the
   // server's record (R0)

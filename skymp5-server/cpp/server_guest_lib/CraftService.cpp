@@ -1,6 +1,7 @@
 #include "CraftService.h"
 
 #include "ConditionsEvaluator.h"
+#include "CraftReportMessage.h"
 #include "MpActor.h"
 #include "PartOne.h"
 #include "RawMessageData.h"
@@ -274,4 +275,143 @@ bool CraftService::EvaluateCraftRecipeConditions(
     conditions, aggressor, target, callback);
 
   return evalRes_;
+}
+
+namespace {
+bool StandsFor(const Inventory::Entry& row, const Inventory::Entry& lost)
+{
+  return row.baseId == lost.baseId && row.health == lost.health &&
+    row.enchantmentId == lost.enchantmentId &&
+    row.maxCharge == lost.maxCharge &&
+    row.removeEnchantmentOnUnequip.value_or(false) ==
+    lost.removeEnchantmentOnUnequip.value_or(false) &&
+    row.soul == lost.soul && row.poisonId == lost.poisonId &&
+    SameCreated(row.createdBase, lost.createdBase) &&
+    SameCreated(row.createdEnchantment, lost.createdEnchantment) &&
+    SameCreated(row.createdPoison, lost.createdPoison);
+}
+}
+
+std::optional<std::vector<Inventory::Entry>> CraftService::HeldRows(
+  const Inventory& record, const std::vector<Inventory::Entry>& lost)
+{
+  std::vector<uint32_t> left(record.entries.size());
+  for (size_t i = 0; i < record.entries.size(); ++i) {
+    left[i] = record.entries[i].count;
+  }
+  std::vector<Inventory::Entry> rows;
+  for (const auto& stack : lost) {
+    uint32_t wanted = stack.count;
+    for (size_t i = 0; i < record.entries.size() && wanted > 0; ++i) {
+      if (left[i] == 0 || !StandsFor(record.entries[i], stack)) {
+        continue;
+      }
+      const uint32_t take = std::min(wanted, left[i]);
+      Inventory::Entry row = record.entries[i];
+      row.count = take;
+      rows.push_back(row);
+      left[i] -= take;
+      wanted -= take;
+    }
+    if (wanted > 0) {
+      return std::nullopt;
+    }
+  }
+  return rows;
+}
+
+void CraftService::OnCraftReport(const RawMessageData& rawMsgData,
+                                 const CraftReportMessage& msg)
+{
+  MpActor* me = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!me) {
+    return spdlog::warn("OnCraftReport - no actor for user {}",
+                        rawMsgData.userId);
+  }
+
+  // the worn flag is the seat's own, never the record's (OnPutItem's rule)
+  std::vector<Inventory::Entry> lost = msg.lost;
+  std::vector<Inventory::Entry> gained = msg.gained;
+  for (auto& stack : lost) {
+    stack.SetWorn(Inventory::Worn::None);
+  }
+  for (auto& stack : gained) {
+    stack.SetWorn(Inventory::Worn::None);
+  }
+
+  const auto rows = HeldRows(me->GetInventory(), lost);
+  if (!rows) {
+    spdlog::info("[verb:craft] E_CRAFT_NOT_HELD: user {} actor {:x} at "
+                 "{:x}: a lost stack the record does not hold, the sitting "
+                 "refused ({} stack(s) lost, {} gained); the record goes back",
+                 rawMsgData.userId, me->GetFormId(), msg.workbench,
+                 msg.lost.size(), msg.gained.size());
+    me->SendInventoryUpdate();
+    return;
+  }
+
+  try {
+    if (!rows->empty()) {
+      me->RemoveItems(*rows);
+    }
+    // R2: what the crafter's engine made, as it reported it (recorded
+    // unvalidated; a created form's effects are its menu's numbers)
+    if (!gained.empty()) {
+      me->AddItems(gained);
+    }
+  } catch (std::exception& e) {
+    spdlog::error("[verb:craft] E_CRAFT_APPLY: user {} actor {:x} at {:x}: "
+                  "{}",
+                  rawMsgData.userId, me->GetFormId(), msg.workbench, e.what());
+    me->SendInventoryUpdate();
+    return;
+  }
+
+  // a disenchant destroys a stack's item and teaches its game-file
+  // enchantment or that enchantment's base (HYPOTHESIS, the static read of
+  // tracker #98 note 3924). Which one the stack carried is the engine's: a
+  // weapon's or an armor's own record names it (libespm's WEAP reads no
+  // EITM), so the server holds each to an ENCH of the files and the sitting
+  // to a lost stack that can carry one, and records the rest unvalidated
+  size_t learned = 0;
+  if (!msg.learnedEnchantments.empty() && partOne.worldState.HasEspm()) {
+    auto& br = partOne.worldState.GetEspm().GetBrowser();
+    const auto typeOf = [&](uint32_t formId) {
+      const auto lookup = br.LookupById(formId);
+      return lookup.rec ? lookup.rec->GetType().ToString() : std::string();
+    };
+    const bool lostEnchantable =
+      std::any_of(lost.begin(), lost.end(), [&](const Inventory::Entry& e) {
+        if (e.enchantmentId) {
+          return true;
+        }
+        const auto type = typeOf(e.baseId);
+        return type == "WEAP" || type == "ARMO";
+      });
+    for (const uint32_t enchantment : msg.learnedEnchantments) {
+      if (typeOf(enchantment) != "ENCH") {
+        spdlog::info("[verb:craft] E_CRAFT_LEARNED_FORM: user {} actor {:x} "
+                     "learned {:x}, which is no enchantment of the files",
+                     rawMsgData.userId, me->GetFormId(), enchantment);
+        continue;
+      }
+      if (!lostEnchantable) {
+        spdlog::info("[verb:craft] E_CRAFT_LEARNED_NO_ITEM: user {} actor "
+                     "{:x} learned {:x} in a sitting that lost no "
+                     "enchantable stack",
+                     rawMsgData.userId, me->GetFormId(), enchantment);
+        continue;
+      }
+      if (me->RecordKnownEnchantment(
+            FormDesc::FromFormId(enchantment, partOne.worldState.espmFiles))) {
+        ++learned;
+      }
+    }
+  }
+
+  me->SendInventoryUpdate();
+  spdlog::info("[verb:craft] user {} actor {:x} at {:x}: {} stack(s) lost, "
+               "{} gained, {} enchantment(s) newly known",
+               rawMsgData.userId, me->GetFormId(), msg.workbench, lost.size(),
+               gained.size(), learned);
 }

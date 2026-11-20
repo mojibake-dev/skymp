@@ -451,6 +451,15 @@ public:
   virtual void OnCraftItem(const RawMessageData& rawMsgData,
                            const CraftItemMessage& msg);
 
+  // thuum tracker #98 (crafting; Eli's decision of 2026-11-16: relay the
+  // crafter's record): one sitting at a crafting bench as the sender's
+  // engine read it, R2 (CraftService::OnCraftReport): the lost stacks taken
+  // from the record when it holds every one (else nothing changes and the
+  // record goes back), the gained ones added as reported, the learned
+  // enchantments kept
+  virtual void OnCraftReport(const RawMessageData& rawMsgData,
+                             const CraftReportMessage& msg);
+
   virtual void OnHostAttempt(const RawMessageData& rawMsgData,
                              const HostMessage& msg);
 
@@ -553,6 +562,9 @@ private:
   // thuum docs/verbs/learned-effects.md: Ingredient.LearnEffect on its client
   // for each effect the player has learned
   void SendIngredientEffects(MpActor& actor);
+  // thuum tracker #98: Form.SetPlayerKnows(true) on its client for each
+  // enchantment the player learned by disenchanting
+  void SendKnownEnchantments(MpActor& actor);
   // thuum docs/verbs/favorites.md: the player's favorites, for its client's
   // engine to mark
   void SendFavorites(MpActor& actor);

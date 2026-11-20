@@ -258,6 +258,12 @@ public:
   // docs/verbs/player-globals.md); absent in older records, read as none
   std::optional<std::vector<PlayerGlobal>> playerGlobals;
 
+  // The game-file enchantments the player learned at the arcane enchanter
+  // by disenchanting (thuum tracker #98): the engine's known flag on each
+  // (TESForm::SetPlayerKnows, CommonLibSSE-NG TESForm.h:349), taught again
+  // after every login; absent in older records, read as none
+  std::optional<std::vector<FormDesc>> knownEnchantments;
+
   // The world's quest stages (thuum docs/verbs/quest-stage.md, ADR-056):
   // per quest the stages done, world-wide; absent in older records, read as
   // none. Lives on the world's journal reference (PartOne::WorldJournal, a
@@ -520,10 +526,10 @@ public:
       fateLevel, fateDiedAt, lastAnimation, graphVariables, setNodeTextureSet,
       setNodeScale, displayName, mapMarkers, ingredientEffects, favorites,
       raceMenuPreset, actorValueRecord, staffRank, runningEffects, shoutRecord,
-      playerGlobals, questStages, placedBySpell, lock, destruction,
-      changeFormRecord, scriptState, refStateSeq, crimeFaction, relationships,
-      placedByScript, aliasFills, worldGlobals, questRuns, scriptVariables,
-      unresolved);
+      playerGlobals, knownEnchantments, questStages, placedBySpell, lock,
+      destruction, changeFormRecord, scriptState, refStateSeq, crimeFaction,
+      relationships, placedByScript, aliasFills, worldGlobals, questRuns,
+      scriptVariables, unresolved);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

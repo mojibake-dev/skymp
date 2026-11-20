@@ -1225,6 +1225,16 @@ bool MpActor::ApplyPoison(uint32_t poisonId)
                  GetFormId(), poisonId);
     return false;
   }
+  return PoisonRightHandWeapon(Inventory::Entry(poisonId, 1));
+}
+
+bool MpActor::PoisonRightHandWeapon(const Inventory::Entry& spent)
+{
+  auto* worldState = GetParent();
+  if (!worldState) {
+    return false;
+  }
+  const uint32_t poisonId = spent.baseId;
 
   // the weapon worn in the right hand, as the player's game reported it
   std::optional<uint32_t> weaponId;
@@ -1246,9 +1256,11 @@ bool MpActor::ApplyPoison(uint32_t poisonId)
   const auto isWeapon = [&](const Inventory::Entry& e) {
     return e.baseId == *weaponId && e.count > 0;
   };
+  // a brewed poison's mark (thuum tracker #98) counts as a poison as well
   if (std::any_of(inv.entries.begin(), inv.entries.end(),
                   [&](const Inventory::Entry& e) {
-                    return isWeapon(e) && e.poisonId.has_value();
+                    return isWeapon(e) &&
+                      (e.poisonId.has_value() || e.createdPoison.has_value());
                   })) {
     spdlog::warn("MpActor::ApplyPoison {:x} - E_POISON_ALREADY: {:x} carries "
                  "a poison",
@@ -1269,7 +1281,13 @@ bool MpActor::ApplyPoison(uint32_t poisonId)
   // one copy to an entry of its own
   Inventory::Entry marked = *it;
   marked.count = 1;
-  marked.poisonId = poisonId;
+  if (spent.createdBase) {
+    // thuum tracker #98: a brewed poison marks the weapon by its definition
+    marked.createdPoison = spent.createdBase;
+    marked.poisonId.reset();
+  } else {
+    marked.poisonId = poisonId;
+  }
   marked.poisonCount = kPoisonDoses;
   if (it->count == 1) {
     *it = marked;
@@ -1277,27 +1295,39 @@ bool MpActor::ApplyPoison(uint32_t poisonId)
     it->count -= 1;
     inv.AddItems({ marked });
   }
-  inv.RemoveItems({ Inventory::Entry(poisonId, 1) });
+  Inventory::Entry one = spent;
+  one.count = 1;
+  inv.RemoveItems({ one });
   SetInventory(inv);
 
-  spdlog::info("MpActor::ApplyPoison {:x} - poison {:x} on {:x}, {} dose(s)",
-               GetFormId(), poisonId, *weaponId, kPoisonDoses);
+  spdlog::info("MpActor::ApplyPoison {:x} - poison {:x}{} on {:x}, {} "
+               "dose(s)",
+               GetFormId(), poisonId, spent.createdBase ? " (brewed)" : "",
+               *weaponId, kPoisonDoses);
   return true;
 }
 
-std::optional<uint32_t> MpActor::SpendPoisonDose(uint32_t weaponId)
+std::optional<uint32_t> MpActor::SpendPoisonDose(
+  uint32_t weaponId, std::optional<CreatedForm>* created)
 {
   Inventory inv = GetInventory();
   auto it = std::find_if(
     inv.entries.begin(), inv.entries.end(), [&](const Inventory::Entry& e) {
-      return e.baseId == weaponId && e.count > 0 && e.poisonId.has_value() &&
+      // thuum tracker #98: a brewed poison's mark counts when the caller
+      // takes its definition
+      const bool poisoned = e.poisonId.has_value() ||
+        (created != nullptr && e.createdPoison.has_value());
+      return e.baseId == weaponId && e.count > 0 && poisoned &&
         e.poisonCount.value_or(0) > 0;
     });
   if (it == inv.entries.end()) {
     return std::nullopt;
   }
 
-  const uint32_t poisonId = *it->poisonId;
+  const uint32_t poisonId = it->poisonId.value_or(0);
+  if (!it->poisonId && created != nullptr) {
+    *created = it->createdPoison;
+  }
   Inventory::Entry spent = *it;
   spent.count = 1;
   const uint32_t left = *it->poisonCount - 1;
@@ -1305,6 +1335,7 @@ std::optional<uint32_t> MpActor::SpendPoisonDose(uint32_t weaponId)
     spent.poisonCount = left;
   } else {
     spent.poisonId.reset();
+    spent.createdPoison.reset();
     spent.poisonCount.reset();
   }
   // a copy alone changes where it stands unless it rejoins a stack of its
@@ -1873,6 +1904,82 @@ bool MpActor::RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask)
     }
     effects.push_back(IngredientEffects{ ingredient, newMask });
   });
+  return true;
+}
+
+std::vector<FormDesc> MpActor::GetKnownEnchantments() const
+{
+  const auto& known = ChangeForm().knownEnchantments;
+  return known ? *known : std::vector<FormDesc>();
+}
+
+bool MpActor::RecordKnownEnchantment(const FormDesc& enchantment)
+{
+  const auto& known = ChangeForm().knownEnchantments;
+  if (known &&
+      std::find(known->begin(), known->end(), enchantment) != known->end()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.knownEnchantments) {
+      changeForm.knownEnchantments.emplace();
+    }
+    changeForm.knownEnchantments->push_back(enchantment);
+  });
+  return true;
+}
+
+std::vector<espm::Effects::Effect> MpActor::EffectsOfCreated(
+  const CreatedForm& form)
+{
+  std::vector<espm::Effects::Effect> effects;
+  effects.reserve(form.effects.size());
+  for (const auto& created : form.effects) {
+    espm::Effects::Effect effect;
+    effect.effectId = created.mgef;
+    effect.magnitude = created.magnitude;
+    effect.areaOfEffect = created.area;
+    effect.duration = created.duration;
+    effects.push_back(effect);
+  }
+  return effects;
+}
+
+bool MpActor::OnEquipCreated(uint32_t templateId, const CreatedForm& form)
+{
+  if (form.kind != CreatedForm::kPotion && form.kind != CreatedForm::kPoison) {
+    spdlog::warn("MpActor::OnEquipCreated {:x} - E_CREATED_KIND: kind {} of "
+                 "{:x} is no potion or poison",
+                 GetFormId(), form.kind, templateId);
+    return false;
+  }
+  const Inventory inv = GetInventory();
+  const auto it = std::find_if(
+    inv.entries.begin(), inv.entries.end(), [&](const Inventory::Entry& e) {
+      return e.baseId == templateId && e.count > 0 && e.createdBase &&
+        e.createdBase->SameAs(form);
+    });
+  if (it == inv.entries.end()) {
+    spdlog::warn("MpActor::OnEquipCreated {:x} - E_CREATED_NOT_HELD: no "
+                 "stack of {:x} with that definition ({} effect(s))",
+                 GetFormId(), templateId, form.effects.size());
+    return false;
+  }
+  const Inventory::Entry held = *it;
+  if (form.kind == CreatedForm::kPoison) {
+    return PoisonRightHandWeapon(held);
+  }
+  // the effects the record's stack holds, the crafter's engine's numbers
+  // (R2), run through the effect rule as a game-file potion's are
+  // (EatItemEvent), with the template as their source; the template's own
+  // record never runs
+  Inventory::Entry one = held;
+  one.count = 1;
+  RemoveItems({ one });
+  ApplyEffects(templateId, EffectsOfCreated(*held.createdBase), 1.f, 0, false);
+  spdlog::info("MpActor::OnEquipCreated {:x} - drank a brewed potion of {:x} "
+               "({} effect(s))",
+               GetFormId(), templateId, held.createdBase->effects.size());
   return true;
 }
 

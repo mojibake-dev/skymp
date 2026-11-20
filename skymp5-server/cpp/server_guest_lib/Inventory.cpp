@@ -78,13 +78,18 @@ bool Inventory::Entry::EqualExceptCount(const Inventory::Entry& other) const
 {
   // GetWorn() instead of direct comparison because of possible false vs
   // nullopt mismatch. Logically it should be the same
+  // thuum tracker #98: two stacks of created forms are one only when their
+  // definitions are (CreatedForm::SameAs, the engine's own match)
   return std::make_tuple(baseId, health, enchantmentId, maxCharge,
                          removeEnchantmentOnUnequip, chargePercent, name, soul,
                          poisonId, poisonCount, GetWorn()) ==
     std::make_tuple(other.baseId, other.health, other.enchantmentId,
                     other.maxCharge, other.removeEnchantmentOnUnequip,
                     other.chargePercent, other.name, other.soul,
-                    other.poisonId, other.poisonCount, other.GetWorn());
+                    other.poisonId, other.poisonCount, other.GetWorn()) &&
+    SameCreated(createdBase, other.createdBase) &&
+    SameCreated(createdEnchantment, other.createdEnchantment) &&
+    SameCreated(createdPoison, other.createdPoison);
 }
 
 Inventory& Inventory::AddItem(uint32_t baseId, uint32_t count)

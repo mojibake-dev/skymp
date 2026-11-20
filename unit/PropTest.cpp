@@ -2536,5 +2536,19 @@ TEST_CASE("Another player's grip holds a player's body: its grab is granted "
   const auto back = SentTo<PropOwnerMessage>(p, 0);
   REQUIRE(back.size() == 1);
   REQUIRE(back[0].player == 0);
-  Leave(p);
+  // gripped again, the gripped player leaves mid-hold: its own body's row
+  // ends with the word to the gripper (the review of 48959a563, finding 4:
+  // the row stayed the gripper's and refused its own knock after a return)
+  Claim(p, 1, kC1, 1);
+  REQUIRE(p.PropLiveOwner(*c1) == kC2);
+  p.Messages().clear();
+  DoDisconnect(p, 0);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  const auto ended = SentTo<PropOwnerMessage>(p, 1);
+  REQUIRE(ended.size() == 1);
+  REQUIRE(ended[0].refr == kC1);
+  REQUIRE(ended[0].player == 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
 }

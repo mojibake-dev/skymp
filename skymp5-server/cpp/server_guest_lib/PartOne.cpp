@@ -1230,6 +1230,21 @@ void PartOne::HandlePacket(void* partOneInstance, Networking::UserId userId,
                          "listener(s)",
                          r.refr, actor->GetFormId(), r.epoch, told);
           }
+          // thuum tracker #179: and its own body's row, which another
+          // player's grip may hold (ADR-063's 2026-11-19 amendment): ended,
+          // so its game's next knock claims it afresh at its return (the
+          // review of 48959a563, finding 4: the row stayed the gripper's,
+          // grabbed, and refused the returning player's own knock E_PROP_HELD)
+          if (const uint32_t ownBody = actor->GetFormId();
+              this_->PropLiveOwner(*actor) != 0) {
+            const uint32_t epoch = this_->pImpl->props->prop_ended(ownBody);
+            const auto told =
+              this_->SendPropOwnerWord(ownBody, 0, epoch, ownBody);
+            spdlog::info("[verb:prop-physics] prop {:x}: its own player left "
+                         "while its row was live; ended at epoch {}; the word "
+                         "to {} listener(s)",
+                         ownBody, epoch, told);
+          }
           // and the sightings it held for a grant that never came (thuum
           // docs/verbs/npc-puppet.md, finding 66's hold)
           this_->ForgetHeldSightings(actor->GetFormId());

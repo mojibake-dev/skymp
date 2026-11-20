@@ -634,9 +634,20 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       actor->SetCellOrWorldObsolete(newCellOrWorld);
     }
 
-    actor->SetPos(
-      NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
-      SetPosMode::CalledByUpdateMovement);
+    // thuum tracker #179 (ADR-063's 2026-11-19 amendment): a player's body
+    // another player's grip holds has that gripper's samples as its one
+    // writer (OnPropTransform) until the gripper's rest returns it; the
+    // player's own reports lag them by the follow's delay, so they move no
+    // record meanwhile (a throw's sample measured from a lagging record
+    // could pass the step allowance and be refused, the review of 48959a563,
+    // finding 7); its rotation and its relay stand
+    const uint32_t bodyHeldBy =
+      isPlayersOwn ? partOne.PropLiveOwner(*actor) : 0;
+    if (bodyHeldBy == 0 || bodyHeldBy == actor->GetFormId()) {
+      actor->SetPos(
+        NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
+        SetPosMode::CalledByUpdateMovement);
+    }
     // thuum tracker #166: a player armed at a word wall walks on toward its
     // word (nobody is armed, mostly: one lookup then)
     if (isPlayersOwn && !wordWallArms.empty()) {

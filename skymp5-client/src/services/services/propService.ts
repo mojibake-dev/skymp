@@ -1536,11 +1536,13 @@ export class PropService extends ClientListener {
                     prop.knockedAt = 0;
                     clearFollowedDown(prop.localId);
                 }
-            } else if (c !== null && c.ragdoll && prop.liveEnded) {
+            } else if (c !== null && (c.ragdoll || prop.held) && prop.liveEnded) {
                 prop.liveEnded = false;
                 prop.lastSent = undefined;
                 logLab(TAG, `live body ${prop.refr.toString(16)}: knocked again on this engine`);
-            } else if (c !== null && !c.ragdoll && !prop.liveEnded) {
+            } else if (c !== null && !c.ragdoll && !prop.held && !prop.liveEnded) {
+                // a living actor this seat's grab holds is down while held,
+                // whatever its knock reads (kindOfBody's gripped)
                 prop.liveEnded = true;
                 // sent whenever the row is this seat's (a grip's grab claim
                 // holds it before any sample: unsent, the row would hold the
@@ -2140,12 +2142,39 @@ export class PropService extends ClientListener {
         if (poses.length === prop.parts) {
             return poses;
         }
-        const k = this.kinds.get(prop.localId);
-        const bones = k !== undefined && k.refr === prop.refr && k.body === true ? (k.bones ?? 0) : 0;
+        const bones = this.actorBones(prop);
         if (bones > 0 && poses.length >= bones) {
             return poses.slice(0, Math.min(poses.length, prop.parts));
         }
         return undefined;
+    }
+
+    // an actor's body's ragdoll bones among its parts as this seat's class
+    // read them (the walk's first ones; a dead actor's carried parts after
+    // them, thuum tracker #175), 0 for any other body
+    private actorBones(prop: Prop): number {
+        const k = this.kinds.get(prop.localId);
+        return k !== undefined && k.refr === prop.refr && k.body === true ? (k.bones ?? 0) : 0;
+    }
+
+    // thuum tracker #175 (Eli's demo of 2026-11-19): how far the parts lie
+    // from their poses, the bones' farthest and the carried parts' apart, so
+    // a corpse whose weapon fell elsewhere reads its body's place, not the
+    // weapon's ("at rest within 125.4 units" on c1 was its part 18 alone)
+    private static partsApartText(bones: number, a: FollowBone[], b: { pos: NiPoint3 }[]): string {
+        let body = 0;
+        let carried = 0;
+        for (let i = 0; i < a.length && i < b.length; ++i) {
+            const d = ObjectReferenceEx.getDistance(a[i].pos, b[i].pos);
+            if (bones > 0 && i >= bones) {
+                carried = Math.max(carried, d);
+            } else {
+                body = Math.max(body, d);
+            }
+        }
+        return bones > 0 && a.length > bones
+            ? `${body.toFixed(1)} units (its bones; its carried parts ${carried.toFixed(1)})`
+            : `${body.toFixed(1)} units`;
     }
 
     // thuum tracker #125: the lead's start (imposeParts), this seat's own
@@ -2165,7 +2194,6 @@ export class PropService extends ClientListener {
         if (read.length === 0 || read.length !== prop.parts || read.length !== first.bones.length) {
             return { from: [], atMs };
         }
-        let farthest = 0;
         const from: FollowBone[] = [];
         for (let i = 0; i < read.length; ++i) {
             const pose = poseOf(read[i]);
@@ -2173,10 +2201,10 @@ export class PropService extends ClientListener {
                 logLab(TAG, `follow ${id} epoch ${f.epoch()}: its own part ${i} read no pose: not led in`);
                 return { from: [], atMs };
             }
-            farthest = Math.max(farthest, ObjectReferenceEx.getDistance(pose.pos, first.bones[i].pos));
             from.push(pose);
         }
-        logLab(TAG, `follow ${id} epoch ${f.epoch()}: led in from its own parts over ${step.remainingMs.toFixed(0)} ms, ${farthest.toFixed(1)} units off the first sample`);
+        const apart = PropService.partsApartText(this.actorBones(prop), from, first.bones);
+        logLab(TAG, `follow ${id} epoch ${f.epoch()}: led in from its own parts over ${step.remainingMs.toFixed(0)} ms, ${apart} off the first sample`);
         return { from, atMs };
     }
 
@@ -2206,13 +2234,17 @@ export class PropService extends ClientListener {
     // the drive let go (releaseBodies): the platform's poses for the form
     // dropped, so no later drain lays them on it (a follow's end, a
     // take-over, a rebind); a table operation, safe from any context
-    private releaseImpose(prop: Prop) {
-        if (!prop.imposing) {
+    private releaseImpose(prop: Prop, place?: number[]) {
+        // a follow whose rest the drive placed (imposeParts: imposing false,
+        // restImposed true) still holds its copy's get-up in the platform
+        // (thuum tracker #178, the review of the one-throw build, finding 1),
+        // so its end releases as an imposing one does
+        if (!prop.imposing && !prop.restImposed) {
             return;
         }
         prop.imposing = false;
         try {
-            this.sp.releaseBodies(prop.localId);
+            this.sp.releaseBodies(prop.localId, place);
         } catch (e) {
             if (!this.imposeSaid) {
                 this.imposeSaid = true;
@@ -2233,14 +2265,13 @@ export class PropService extends ClientListener {
         const rest = f.newest().bones;
         const body = this.readBody(prop);
         const read = body !== undefined && body.bones !== undefined ? body.bones : [];
-        if (read.length !== rest.length || read.length === 0) {
+        // a copy carrying one carried part more or fewer than the stream
+        // (posesFor's prefix) is read over the parts both hold
+        if (read.length === 0 || rest.length === 0) {
             return;
         }
-        let farthest = 0;
-        for (let i = 0; i < read.length; ++i) {
-            farthest = Math.max(farthest, ObjectReferenceEx.getDistance(read[i].pos, rest[i].pos));
-        }
-        logLab(TAG, `follow ${prop.refr.toString(16)} epoch ${f.epoch()}: ${prop.parts} parts at rest within ${farthest.toFixed(1)} units of the stream's rest`);
+        const apart = PropService.partsApartText(this.actorBones(prop), rest, read);
+        logLab(TAG, `follow ${prop.refr.toString(16)} epoch ${f.epoch()}: ${prop.parts} parts at rest within ${apart} of the stream's rest`);
     }
 
     // Whether another seat streams the prop awake as this seat sees it: the
@@ -2282,8 +2313,17 @@ export class PropService extends ClientListener {
         // physics rung 4: a body of parts' drive let go unless its rest
         // ended it (the platform drops a form at its rest's placement), and
         // its figures; no game call here (a record answer ends a follow in
-        // its message's handler)
-        this.releaseImpose(prop);
+        // its message's handler). Thuum tracker #178, the shout design's step
+        // 4 (b): a live body's copy, held down while the drive imposed its
+        // stream (the platform's get-up hold), is set where its owner stands,
+        // the stream's last sample's root when that sample is the owner's
+        // rest (its get-up, stream's "the get-up"), before the hold lifts and
+        // its engine stands it up; the get-up itself places no reference (the
+        // re-analyst's static read, H2)
+        const last = f.newest();
+        const place = prop.live && last !== undefined && last.asleep
+            ? [last.pos[0], last.pos[1], last.pos[2]] : undefined;
+        this.releaseImpose(prop, place);
         if (prop.parts > 0) {
             logLab(TAG, `follow ${id} epoch ${f.epoch()}: ${prop.parts} parts, ${prop.imposed} frames imposed, ${prop.imposeSkipped} skipped`);
         }
@@ -2323,13 +2363,36 @@ export class PropService extends ClientListener {
         // force 0): a live body, tracked here so the hold below claims it
         // whatever cell it stands in
         if (heldLocal !== 0 && !this.byLocal.has(heldLocal) && this.sp.Actor.from(grabbed) !== null) {
-            this.rowInPlace({ localId: heldLocal, formType: 0 }, now, "the engine's grab names it (a grip)");
+            const row = this.rowInPlace({ localId: heldLocal, formType: 0 }, now, "the engine's grab names it (a grip)", true);
+            if (row === undefined && this.gripSaid !== heldLocal) {
+                // a grip that makes no row, said once a grab (the demo's
+                // eight grips of 29613 left no line at all)
+                this.gripSaid = heldLocal;
+                const c = this.bodyClass(heldLocal);
+                logLab(TAG, `grip ${heldLocal.toString(16)}: the engine's grab names it, no row (${c === null ? "no body class" : `ragdoll ${c.ragdoll}, ${c.parts.length} parts`})`);
+            }
+        }
+        if (heldLocal === 0) {
+            this.gripSaid = 0;
         }
         const props = Array.from(this.props.values());
         const holds = (prop: Prop) => heldLocal !== 0 && prop.localId === heldLocal && !prop.trap;
         for (const prop of props) {
             if (prop.held && !holds(prop)) {
                 this.letGo(prop, now, "the engine's grab ended");
+            }
+            // thuum tracker #175: a living actor another seat hosts that
+            // this seat's grab holds takes no movement sample of its host's
+            // here (translateTo and the puppet's pose; knockState.ts's
+            // followed-down mark, renewed every update while held, lapsing
+            // 2 s after). A relayed action or animation event of its host's
+            // can still play on it until the host's follow of this seat's
+            // stream marks the host's own copy and its relays stop. Never on
+            // an actor this seat hosts: the mark also holds this seat's own
+            // relays of its actions (actionSyncService), which look 3's grip
+            // of 39fe2 kept (the review of the grip's delta, finding 1)
+            if (prop.live && holds(prop) && !this.controller.lookupListener(HostService).isMineLocal(prop.localId)) {
+                markFollowedDown(prop.localId);
             }
         }
         for (const prop of props) {
@@ -2625,13 +2688,13 @@ export class PropService extends ClientListener {
     // place (a dead NPC's ragdoll is a world body since physics rung 5);
     // undefined for a static, a living actor, a class no row takes, an
     // unloaded reference or one the server has no id for here
-    private rowInPlace(r: Member, now: number, why: string): Prop | undefined {
+    private rowInPlace(r: Member, now: number, why: string, gripped = false): Prop | undefined {
         const refr = localIdToRemoteId(r.localId);
         if (!refr) {
             return undefined;
         }
         if (!this.trapBodies.has(refr)) {
-            const kind = this.kindOf(r.localId, refr, r.formType);
+            const kind = this.kindOf(r.localId, refr, r.formType, false, gripped);
             if (kind !== "item" && kind !== "world") {
                 return undefined;
             }
@@ -2753,7 +2816,10 @@ export class PropService extends ClientListener {
             if (form.movement && playerWorldOrCell !== 0 && form.movement.worldOrCell !== playerWorldOrCell) {
                 continue;
             }
-            const kind = this.kindOf(localId, form.refrId);
+            // a grip held here is its gripper's live body whatever the
+            // copy's knock reads (kindOfBody's gripped; the review of the
+            // grip's delta, finding 3)
+            const kind = this.kindOf(localId, form.refrId, undefined, false, tracked !== undefined && tracked.held);
             if (kind !== "item" && kind !== "world") {
                 continue;
             }
@@ -3040,7 +3106,7 @@ export class PropService extends ClientListener {
     // relaunch-files change takes effect live. The server's PropKindOf
     // (ActionListener.cpp) is the wider side: the class is this seat's own
     // unvalidated word (R2, rule 5), inside the server's bounds
-    private kindOf(localId: number, refr: number, formType?: number, streamed = false): PropKind {
+    private kindOf(localId: number, refr: number, formType?: number, streamed = false, gripped = false): PropKind {
         let known = this.kinds.get(localId);
         if (known !== undefined && known.refr === refr && known.body === true) {
             // a body is a row while its engine has it dead: a raise or a
@@ -3085,7 +3151,7 @@ export class PropService extends ClientListener {
         }
         const actor = this.sp.Actor.from(ref);
         if (actor) {
-            return this.kindOfBody(localId, refr, ref, actor, streamed);
+            return this.kindOfBody(localId, refr, ref, actor, streamed, gripped);
         }
         if (refr >= 0xff000000) {
             this.cacheKind(localId, refr, { item: false, world: null });
@@ -3171,12 +3237,20 @@ export class PropService extends ClientListener {
     // this seat knocks in place to follow (follow). Never cached past a read
     // (it gets up, or dies and is a dead body); its class line is said when
     // its verdict changes
-    private kindOfBody(localId: number, refr: number, ref: ObjectReference, actor: Actor, streamed = false): PropKind {
+    private kindOfBody(localId: number, refr: number, ref: ObjectReference, actor: Actor, streamed = false, gripped = false): PropKind {
         if (!this.worldBodies() || !ref.is3DLoaded()) {
             return "none";
         }
         const dead = actor.isDead();
-        const followed = streamed || this.followedLive(refr);
+        // thuum tracker #175 (Eli's demo of 2026-11-19 on 6021f101: "i
+        // literally did grip a living body and it DID behave worse"): a grip
+        // this seat's engine holds is this seat's cause whatever the copy's
+        // knock reads (ADR-063, the toucher's), so a living actor its grab
+        // names is a live body to claim. Rotfern's eight grips of 29613, a
+        // bandit c2 hosted, made no row on c1 (no "a grip" line), and c2's
+        // engine kept 29613 shooting through them; look 3's working grip was
+        // of 39fe2 in c1's own hosted cell
+        const followed = streamed || gripped || this.followedLive(refr);
         if (dead ? (refr >= 0xff000000 || localId === 0x14) : (!followed && localId !== 0x14 && refr >= 0xff000000)) {
             return "none";
         }
@@ -3200,7 +3274,7 @@ export class PropService extends ClientListener {
         } else {
             world = { parts: c.parts.length };
             verdict = dead ? `a dead body of ${c.parts.length} parts`
-                : `a live body of ${c.parts.length} parts (${c.ragdoll ? "knocked here" : "another seat's stream"})`;
+                : `a live body of ${c.parts.length} parts (${c.ragdoll ? "knocked here" : gripped ? "gripped here" : "another seat's stream"})`;
         }
         const entry = this.cacheKind(localId, refr, { item: false, world, body: true, live: !dead, bones: c.bones, judgedAt: clockMs() });
         if (dead || this.liveSaid.get(localId) !== verdict) {
@@ -4096,6 +4170,9 @@ export class PropService extends ClientListener {
     // last told to the platform (applyWorldBodyContacts)
     private bodyClassSaid = false;
     private imposeSaid = false;
+    // thuum tracker #175: the grabbed actor whose grip made no row, said once
+    // a grab (readHolds)
+    private gripSaid = 0;
     private worldBodyContactsSent: boolean | undefined = undefined;
     private readonly echoSaid = new Set<number>();
     // the controller's contacts since the last update, by local id

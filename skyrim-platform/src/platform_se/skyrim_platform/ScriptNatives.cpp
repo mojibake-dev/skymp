@@ -396,6 +396,9 @@ struct RowInfo
   bool itemCount = false;
   // PQ-3: the player-global hook (GlobalVariable.SetValue)
   bool globalSet = false;
+  // thuum tracker #178: the push-figure hook (PushActorAway), the one hook on
+  // a staged row (OnStaged)
+  bool pushFigure = false;
   // train 52's Fix 2: the effect-helper hook (PlaceAtMe) and the
   // helper-delete hook (Delete)
   bool placeAtMe = false;
@@ -562,20 +565,44 @@ constexpr const char* kStagedRootName[kStagedRoots] = {
 
 // the staged calls counted before a verdict: a Local row's (a read, the VM's
 // own, the screen: R3, never sent), the platform's own, a frame not the
-// native's own, a subject that names no reference
+// native's own, a subject that names no reference; and the one staged hook's
+// skip, a push onto another player's figure (thuum tracker #178, OnStaged)
 enum StagedPlain : std::size_t
 {
   kStagedLocal,
   kStagedPlatform,
   kStagedFrame,
   kStagedUnresolved,
+  kStagedFigurePush,
   kStagedPlains
 };
 
 constexpr const char* kStagedPlainName[kStagedPlains] = {
   "staged local (R3, never sent)", "staged (platform)",
-  "staged (frame mismatch)", "staged (unresolved)"
+  "staged (frame mismatch)", "staged (unresolved)",
+  "staged skipped (a push onto a player's figure, #178)"
 };
+
+// thuum tracker #178: another player's figure on this seat, a dynamic form
+// id on base 0x7, the Player NPC record every player's actor is made from
+// (the server's MpActor::IsCreatedAsPlayer; the client's RaceMenuService
+// reads its figures "on base 7", playtest 56's third look). Not a dynamic
+// base: the engine swaps a leveled pick's clone in as an actor's base
+// (FateHooks.cpp, FateApi.cpp), so a server-made copy of a leveled NPC has
+// one (the review of the one-throw build's delta, finding 1). Declared limit:
+// a figure the client builds on an appearance-based base (formView.ts
+// getAppearanceBasedBase, a model naming no base) is missed, and its push
+// runs here as before. Two reads of the reference, no lock and no form table
+// (OnStaged's MUST 1)
+bool IsPlayerFigure(const RE::TESObjectREFR& ref)
+{
+  if (ref.formID < 0xFF000000 ||
+      ref.GetFormType() != RE::FormType::ActorCharacter) {
+    return false;
+  }
+  const RE::TESBoundObject* base = ref.GetBaseObject();
+  return base && base->formID == 0x7;
+}
 
 std::array<std::array<std::atomic<std::uint32_t>, kStagedRoots>,
            kStagedVerdicts>
@@ -2999,6 +3026,40 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
     CountStagedPlain(row, kStagedFrame);
     return marks;
   }
+  // thuum tracker #178 (Eli's third look of playtest 56's seat loop,
+  // 2026-11-19: "fusrohdah-ing another player is still suuuuuper janky and
+  // desynced. THAT one needs to be one to one"): the push-figure hook.
+  // VoicePushEffectScript's Caster.PushActorAway(Target, PushForce) threw the
+  // target's figure in the shouter's game (push.md's caster half) while the
+  // target's own game threw its player and streamed the body (the live-body
+  // kind): two simulations of one throw. A push onto another player's figure
+  // is skipped here, the body's empty result returned, counted, and the
+  // throw is its player's own game's alone (ADR-063), followed by its stream;
+  // an NPC target, this seat's own player and an argument that names no
+  // reference run as before. The target read through the VM's handle policy
+  // with no form table (RefOfObject's crossCheck off, MUST 1). The platform's
+  // own pushActorAway (CallNative.cpp, Offsets::PushActorAway) never reaches
+  // this seam, so a watcher's knock in place stands
+  if (info.pushFigure && info.params > 0) {
+    const std::uint32_t argPage = top->GetPageForFrame();
+    if (argPage != kNoPage) {
+      auto* vm = VM::GetSingleton();
+      auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
+      const RE::TESObjectREFR* target = RefOfObject(
+        policy, ObjectOf(top->GetStackFrameVariable(0, argPage)), false);
+      if (target && IsPlayerFigure(*target)) {
+        marks.skip = true;
+        marks.result = info.result;
+        CountStagedPlain(row, kStagedFigurePush);
+        logger::info("[verb:push] PushActorAway onto {:x}, another player's "
+                     "figure, skipped on this seat: the throw is its "
+                     "player's own game's, followed by its stream (thuum "
+                     "tracker #178)",
+                     target->formID);
+        return marks;
+      }
+    }
+  }
   // the acting player's seat alone (New 1), counted by its scope; its self
   // named by its handle's low 32 bits (SubjectOfFrame, no lookup) for its
   // kind's first line
@@ -3842,6 +3903,7 @@ void ReadRow(std::size_t row, const RE::BSScript::IFunction* function)
   info.getPlayer = columns.hook == SKYMP_NATIVE_HOOK_ACTING_RETURN;
   info.itemCount = columns.hook == SKYMP_NATIVE_HOOK_ACTING_INVENTORY;
   info.globalSet = columns.hook == SKYMP_NATIVE_HOOK_PLAYER_GLOBAL;
+  info.pushFigure = columns.hook == SKYMP_NATIVE_HOOK_PUSH_FIGURE;
   info.placeAtMe = columns.hook == SKYMP_NATIVE_HOOK_EFFECT_HELPER;
   info.deletes = columns.hook == SKYMP_NATIVE_HOOK_HELPER_DELETE;
   info.addItem = columns.hook == SKYMP_NATIVE_HOOK_LEVELED_LANDING;

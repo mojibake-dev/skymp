@@ -1600,6 +1600,9 @@ bool g_imposeDrainSaid = false;
 std::unordered_set<uint32_t> g_imposeNo3DSaid;
 std::unordered_set<uint64_t> g_imposeSkipSaid;
 std::unordered_map<uint32_t, uint64_t> g_imposeSnapSaidMs;
+// thuum tracker #175: the carried part placed alone, said at most once a
+// second per form as the snap line is
+std::unordered_map<uint32_t, uint64_t> g_imposeCarriedSaidMs;
 std::unordered_map<uint32_t, uint64_t> g_imposeHorizonSaidMs;
 
 // a held form's world clock at the drain that last drove or placed it
@@ -1734,9 +1737,23 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
     }
     return entry.rest;
   }
+  // thuum tracker #175 (Eli's demo of 2026-11-19 on 6021f101: "vampiric
+  // grip was more broken than before"): a dead actor's carried part, its
+  // weapon (PropBodies.h's Walk::bones), lay 65 to 126 units from the
+  // stream's on c1 ("impose 29602 placed: part 18 125.7 units off"), and the
+  // snap below placed every part outright for it: the corpse teleported each
+  // drain while its bones stood within a few units. The body's own snap reads
+  // its bones alone; a carried part past kBodySnapUnits is placed alone and
+  // the bones driven. A walk with no bones (a whole body, an item, a world
+  // body of parts) reads every part as before
+  const uint32_t bodyParts =
+    walk.bones > 0 ? std::min<uint32_t>(walk.bones, n) : n;
   PropBodies::Pose targets[PropBodies::kPartsMax];
+  std::array<bool, PropBodies::kPartsMax> carriedSnap{};
   float farthest = 0.f;
   uint32_t farthestPart = 0;
+  float carriedFarthest = 0.f;
+  uint32_t carriedFarthestPart = 0;
   for (uint32_t i = 0; i < n; ++i) {
     targets[i] = entry.poses[i];
     for (float& f : targets[i].pos) {
@@ -1749,9 +1766,17 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
       sq += d * d;
     }
     const float off = std::sqrt(sq) * toGameUnits;
-    if (off > farthest) {
-      farthest = off;
-      farthestPart = i;
+    if (i < bodyParts) {
+      if (off > farthest) {
+        farthest = off;
+        farthestPart = i;
+      }
+    } else {
+      carriedSnap[i] = off > kBodySnapUnits;
+      if (off > carriedFarthest) {
+        carriedFarthest = off;
+        carriedFarthestPart = i;
+      }
     }
   }
   // the form's world clock now and at its last drain (#125), kept for the
@@ -1793,8 +1818,14 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
   }
   float firstStep = 0.f;
   float firstHorizon = 0.f;
+  bool carriedPlaced = false;
   for (uint32_t i = 0; i < n; ++i) {
     const PropBodies::Body& part = walk.parts[i];
+    if (carriedSnap[i]) {
+      PropBodies::PlaceBody(part, targets[i]);
+      carriedPlaced = true;
+      continue;
+    }
     const float step = ImposeStepOf(*part.havok);
     const float horizon =
       ImposeHorizonOf(step, known, then, clockNow, clockMs);
@@ -1803,6 +1834,20 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
       firstHorizon = horizon;
     }
     PropBodies::DriveBody(part, targets[i], horizon);
+  }
+  if (carriedPlaced) {
+    if (g_imposeCarriedSaidMs.size() > kImposeSaidMax) {
+      g_imposeCarriedSaidMs.clear();
+    }
+    auto it = g_imposeCarriedSaidMs.find(formId);
+    if (it == g_imposeCarriedSaidMs.end() ||
+        clockMs - it->second >= kImposeSnapSayEveryMs) {
+      g_imposeCarriedSaidMs[formId] = clockMs;
+      logger::info("[verb:prop-physics] impose {:x}: carried part {} placed "
+                   "alone, {:.1f} units off; its bones driven, {:.1f} units "
+                   "off",
+                   formId, carriedFarthestPart, carriedFarthest, farthest);
+    }
   }
   // the horizon line (#125's read of the spec's F9: the world's steps a
   // drain, horizon over step) at most once a second per form
@@ -1813,9 +1858,16 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
   if (said == g_imposeHorizonSaidMs.end() ||
       clockMs - said->second >= kImposeSnapSayEveryMs) {
     g_imposeHorizonSaidMs[formId] = clockMs;
-    logger::info("[verb:prop-physics] impose {:x} driven: horizon {:.4f} s, "
-                 "the world's step {:.4f} s, {:.1f} units off",
-                 formId, firstHorizon, firstStep, farthest);
+    if (bodyParts < n) {
+      logger::info("[verb:prop-physics] impose {:x} driven: horizon {:.4f} "
+                   "s, the world's step {:.4f} s, {:.1f} units off (its "
+                   "bones; its carried parts {:.1f})",
+                   formId, firstHorizon, firstStep, farthest, carriedFarthest);
+    } else {
+      logger::info("[verb:prop-physics] impose {:x} driven: horizon {:.4f} "
+                   "s, the world's step {:.4f} s, {:.1f} units off",
+                   formId, firstHorizon, firstStep, farthest);
+    }
   }
   return false;
 }
@@ -1954,6 +2006,9 @@ Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
     entry.seq = ++g_imposeSeq;
     entry.storedMs = Puppets::NowMs();
   }
+  // thuum tracker #178 and #175: while the drive imposes another seat's
+  // stream, the copy's own engine never gets it up (FridaHooks.h, HoldGetUp)
+  Frida::HoldGetUp(formId);
   if (!g_imposeDrainQueued.exchange(true)) {
     tasks->AddUITask([]() {
       try {
@@ -1974,7 +2029,17 @@ Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
 // motion type. A later K4 or K1 (the build spec's section C) restores each
 // part's captured type here. True when poses were held; false for 0, the
 // player's own id or none held. A table operation on the JS thread, no game
-// call
+// call; the get-up hold (thuum tracker #178 and #175, FridaHooks.h) is lifted
+// with it. With place (game units, x y z), the shout design's step 4 (b):
+// a live actor's copy is first set where its stream's owner stands (its last
+// sample's root) by Actor::SetPosition with its character controller
+// (CommonLibSSE-NG include/RE/A/Actor.h:367, the engine's own setter, no
+// MoveTo; TESObjectREFR::SetPosition is MoveTo_Impl, src/RE/T/
+// TESObjectREFR.cpp:897-900), then its hold lifted, both in one task on the
+// main thread, so the engine stands it up there: the re-analyst's static read
+// found the get-up places no reference (40150 and knock state 5 set only the
+// heading; H2). HYPOTHESIS until the Frida trace: the setter moves a downed
+// actor's reference and controller and leaves its ragdoll whole
 Napi::Value PuppetApi::ReleaseBodies(const Napi::CallbackInfo& info)
 {
   const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
@@ -1986,6 +2051,42 @@ Napi::Value PuppetApi::ReleaseBodies(const Napi::CallbackInfo& info)
     std::lock_guard<std::mutex> lock(g_imposeMutex);
     held = g_impose.erase(formId) != 0;
   }
+  float place[3] = { 0.f, 0.f, 0.f };
+  bool placed =
+    info.Length() > 1 && !info[1].IsUndefined() && !info[1].IsNull();
+  if (placed) {
+    ExtractLanes(info[1], "place", place, 3);
+    for (float f : place) {
+      placed = placed && std::isfinite(f);
+    }
+  }
+  const auto* tasks = SKSE::GetTaskInterface();
+  if (!placed || !tasks) {
+    Frida::ReleaseGetUp(formId);
+    return Napi::Boolean::New(info.Env(), held);
+  }
+  const RE::NiPoint3 at(place[0], place[1], place[2]);
+  tasks->AddUITask([formId, at]() {
+    auto* actor = RE::TESForm::LookupByID<RE::Actor>(formId);
+    if (actor && !actor->IsDead() && actor->IsInRagdollState()) {
+      const RE::NiPoint3 from = actor->GetPosition();
+      actor->SetPosition(at, true);
+      logger::info("[verb:prop-physics] get-up of {:x}: set from ({:.0f}, "
+                   "{:.0f}, {:.0f}) to its stream's last root ({:.0f}, "
+                   "{:.0f}, {:.0f}), {:.1f} units, before its hold is "
+                   "lifted (thuum tracker #178, step 4 (b))",
+                   formId, from.x, from.y, from.z, at.x, at.y, at.z,
+                   from.GetDistance(at));
+    } else {
+      logger::info("[verb:prop-physics] get-up of {:x}: not set before its "
+                   "hold is lifted ({})",
+                   formId,
+                   !actor              ? "no actor"
+                     : actor->IsDead() ? "dead"
+                                       : "already up");
+    }
+    Frida::ReleaseGetUp(formId);
+  });
   return Napi::Boolean::New(info.Env(), held);
 }
 

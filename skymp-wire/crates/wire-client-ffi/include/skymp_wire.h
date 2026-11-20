@@ -306,10 +306,16 @@
 #define SKYMP_NATIVE_HOOK_ACTING_INVENTORY 15
 
 /**
+ * Hook: a push onto another player's figure, skipped on the caller's seat
+ * (thuum tracker #178).
+ */
+#define SKYMP_NATIVE_HOOK_PUSH_FIGURE 16
+
+/**
  * The largest hook code: a row with a larger one is a table this build does
  * not read.
  */
-#define SKYMP_NATIVE_HOOK_LAST 15
+#define SKYMP_NATIVE_HOOK_LAST 16
 
 /**
  * The callback `Tick` calls once per event: packet type, content and its

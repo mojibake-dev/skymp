@@ -2058,10 +2058,11 @@ void OnSendEventEnter(GumInvocationContext* ic)
   // so a consequence a record's script carries plays where it lands.
   // Unrelenting Force's throw is one: VoicePushEffectScript's OnEffectStart
   // calls Caster.PushActorAway(Target, PushForce). Borne, it throws the
-  // player in the player's own game; cast, it throws the target's figure
-  // in the shouter's game from the shouter's position, as the target's own
-  // game throws it (the movement relay stands down while the figure is
-  // down). The test is Frida::PlayersEffect's (above: the player the
+  // player in the player's own game; cast, its push onto another player's
+  // figure is skipped by the push-figure hook (ScriptNatives.cpp OnStaged,
+  // thuum tracker #178: the figure's throw is its player's own game's,
+  // followed on the live-body stream), while its other consequences run
+  // here as before. The test is Frida::PlayersEffect's (above: the player the
   // effect's target or its caster), which the seam asks too, so an effect's
   // script places its helpers wherever this gate lets it run (thuum train
   // 52's Fix 2). An effect between two figures stays blanked (A1's
@@ -3798,6 +3799,147 @@ void InstallDamageActorHook()
 }
 
 /**
+ * thuum tracker #178 and #175 (Eli's third look of playtest 56's seat loop,
+ * 2026-11-19: "vampiric grip MOSTLY works, even if a little jumpy";
+ * "fusrohdah-ing another player is still suuuuuper janky and desynced. THAT
+ * one needs to be one to one"): the get-up hold, the shout design's step 3.
+ * A follower's copy of another seat's knocked actor is knocked in place and
+ * its parts driven to the stream (PropService, PuppetApi's imposeBodies), and
+ * its own engine got it up mid-flight, so the client knocked it again: c2's
+ * copy of the gripped 39fe2 six times in 18 s, c1's of a shouted player three.
+ * The re-analyst's static read (pyghidra-mcp on sky-re, CONFIRMED BY STATIC
+ * READ, high): the knock step (39896, once a frame) calls the get-up 40150
+ * (Actor*, bool playAction) -> void (Ghidra 0x140723110, `just addr 40150`
+ * 0x723110 on 1.6.1170), directly or, when the task queue is in use, through
+ * a queued task that calls it later (Ghidra FUN_1407117f0; the review of the
+ * one-throw build), either way through this replacement, from knock state 1
+ * or 3 when the actor is alive, not
+ * underwater, not the player's grabbedObject, and its rest test (37689, the
+ * root's and a part's squared linear velocity under 0.025) passes or its 15
+ * s timer runs out; it zeroes that timer after the call, so a get-up that
+ * returns at once is asked again on the next frame and the knock state
+ * stands. Replaced through Gum as DamageActor is: a held form's get-up
+ * returns before any of its body runs (37336's fall damage, the controller
+ * probe, the ActionGetUp, knock state 5), every other actor's is the
+ * original. HYPOTHESIS the read raises (not traced): a drive that writes
+ * poses without velocities read "at rest" at once. The Frida plan (39896,
+ * 37689, 37336; lab/frida/shout-getup-trace.js) is the next read on Eli's
+ * word. Declared limits (the review): the knock step zeroes its own timer
+ * after a refused call, so a hold lifted with no owner's get-up behind it (a
+ * quiet stream, an untrack, a take-over) stands the copy up on its next
+ * frame; and a placing release's task may lift a hold a newer follow stored
+ * before it ran, the next store holding it again
+ */
+namespace {
+using ActorGetUpFn = void (*)(RE::Actor* actor, bool playAction);
+ActorGetUpFn g_actorGetUpOriginal = nullptr;
+
+// a store refreshes a form's hold; past this without one it lapses (a dead
+// stream, a follow that ended with no release): the follow's frames store
+// every update while its stream lives, as knockState's followedDownMs
+constexpr uint64_t kGetUpHoldMs = 2000;
+// forms held at once before the lapsed ones are swept (imposeBodies holds 64)
+constexpr std::size_t kGetUpHeldMax = 128;
+
+struct GetUpHold
+{
+  uint64_t storedMs = 0;
+  uint32_t refused = 0;
+};
+
+std::mutex g_getUpMutex;
+std::unordered_map<uint32_t, GetUpHold> g_getUpHeld;
+
+void ActorGetUpReplacement(RE::Actor* actor, bool playAction)
+{
+  if (actor) {
+    const uint32_t formId = actor->formID;
+    bool held = false;
+    uint32_t refused = 0;
+    {
+      std::lock_guard<std::mutex> lock(g_getUpMutex);
+      auto it = g_getUpHeld.find(formId);
+      if (it != g_getUpHeld.end()) {
+        if (NowMs() - it->second.storedMs <= kGetUpHoldMs) {
+          held = true;
+          refused = ++it->second.refused;
+        } else {
+          g_getUpHeld.erase(it);
+        }
+      }
+    }
+    if (held) {
+      if (refused == 1) {
+        logger::info("[verb:prop-physics] get-up of {:x} held: the drive "
+                     "imposes another seat's stream on it (thuum tracker "
+                     "#178)",
+                     formId);
+      }
+      return;
+    }
+  }
+  g_actorGetUpOriginal(actor, playAction);
+}
+}
+
+void Frida::HoldGetUp(uint32_t formId)
+{
+  if (formId == 0 || formId == 0x14) {
+    return;
+  }
+  const uint64_t now = NowMs();
+  std::lock_guard<std::mutex> lock(g_getUpMutex);
+  if (g_getUpHeld.count(formId) == 0 && g_getUpHeld.size() >= kGetUpHeldMax) {
+    for (auto it = g_getUpHeld.begin(); it != g_getUpHeld.end();) {
+      if (now - it->second.storedMs > kGetUpHoldMs) {
+        it = g_getUpHeld.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    if (g_getUpHeld.size() >= kGetUpHeldMax) {
+      return;
+    }
+  }
+  g_getUpHeld[formId].storedMs = now;
+}
+
+void Frida::ReleaseGetUp(uint32_t formId)
+{
+  uint32_t refused = 0;
+  bool was = false;
+  {
+    std::lock_guard<std::mutex> lock(g_getUpMutex);
+    auto it = g_getUpHeld.find(formId);
+    if (it != g_getUpHeld.end()) {
+      was = true;
+      refused = it->second.refused;
+      g_getUpHeld.erase(it);
+    }
+  }
+  if (was && refused > 0) {
+    logger::info("[verb:prop-physics] get-up of {:x} released after {} "
+                 "refusal(s): its engine's next knock step gets it up",
+                 formId, refused);
+  }
+}
+
+void InstallActorGetUpHook()
+{
+  if (!REL::Module::IsAE()) {
+    return;
+  }
+  const bool replaced = Frida::HookHandler::GetSingleton()->Replace(
+    Offsets::Hooks::ActorGetUp.address(),
+    reinterpret_cast<void*>(&ActorGetUpReplacement),
+    reinterpret_cast<void**>(&g_actorGetUpOriginal));
+  logger::info("[verb:prop-physics] get-up hold (40150) {}",
+               replaced ? "installed"
+                        : "NOT installed: a held copy gets up "
+                          "by its own engine");
+}
+
+/**
  * thuum docs/verbs/leveling.md (M5): the player's skill experience is the
  * server's. The engine's one funnel for it is PlayerCharacter::UseSkill
  * (game/Offsets.h UseSkill, 40488), called once per landed hit, cast or
@@ -5369,6 +5511,9 @@ void Frida::InstallHooks()
   InstallProjectileInitVelocityHook();
   InstallPlaceAreaEffectHook();
   InstallDamageActorHook();
+  // thuum tracker #178 and #175: a followed copy's get-up held while the
+  // drive imposes its stream
+  InstallActorGetUpHook();
   // thuum docs/verbs/leveling.md: the player's skill uses to JS
   InstallUseSkillHook();
   InstallSendTopicInfoEventHook();

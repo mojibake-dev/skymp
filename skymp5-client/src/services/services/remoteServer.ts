@@ -146,14 +146,57 @@ const pcInvKept = (now: number): Map<number, number> | undefined => {
 };
 
 let pcInvLastApply = 0;
-// thuum tracker #98: a crafting report's sitting changed this engine's
-// inventory ahead of the record, so the loop below holds its apply until the
-// server's answer to the report arrives (its SetInventory, which clears the
-// hold) or the hold runs out: the answer, never the copy from before the
-// sitting, is what lands. JS state alone
-let pcInvReplyHoldUntil = 0;
-export const holdPcInventoryForReply = (ms: number): void => {
-  pcInvReplyHoldUntil = Math.max(pcInvReplyHoldUntil, Date.now() + ms);
+// thuum tracker #98: a crafting sitting changes this engine's inventory
+// ahead of the record, so the loop below lays nothing from the sitting's
+// start to the server's answer (the review of fec33b6f5..47e3ede74,
+// findings 1, 2 and 11). The sitting's hold is set at the Crafting Menu's
+// open (CraftService.onMenuOpen) and kept past its close: Skyrim Platform
+// sends `update` before it runs the frame's queued tasks
+// (SkyrimPlatform.cpp:165-171, :482), and the menu's close is one of them
+// (EventHandler.cpp:2353), so the first update after the close would apply
+// the record from before the sitting before CraftService read the sitting's
+// end. The close turns it into the reply's hold, which only the answer to
+// the sitting's last report ends (SetInventory's craftAck, SCHEMA_VERSION
+// 62; an inventory the server sent before it read the report names none),
+// or its time; a sitting that reported nothing just ends it. A sitting whose
+// close never reached CraftService ends on its own sittingCloseGraceMs after
+// the first update that found the menu shut. JS state alone
+let pcInvSitting: { closedSeenMs?: number } | undefined;
+let pcInvReply: { awaitSeq: number; until: number } | undefined;
+const sittingCloseGraceMs = 2000;
+export const holdPcInventoryForSitting = (): void => {
+  pcInvSitting = {};
+};
+export const holdPcInventoryForReply = (seq: number, ms: number): void => {
+  pcInvSitting = undefined;
+  pcInvReply = { awaitSeq: seq, until: Date.now() + ms };
+};
+export const releasePcInventorySitting = (): void => {
+  pcInvSitting = undefined;
+};
+const craftHoldsApply = (now: number): boolean => {
+  if (pcInvSitting) {
+    if (Ui.isMenuOpen('Crafting Menu')) {
+      pcInvSitting.closedSeenMs = undefined;
+      return true;
+    }
+    if (pcInvSitting.closedSeenMs === undefined) {
+      pcInvSitting.closedSeenMs = now;
+    }
+    if (now - pcInvSitting.closedSeenMs < sittingCloseGraceMs) {
+      return true;
+    }
+    logLab('verb:craft', 'a crafting sitting whose close was never read; the record applies');
+    pcInvSitting = undefined;
+  }
+  if (pcInvReply) {
+    if (now < pcInvReply.until) {
+      return true;
+    }
+    logLab('verb:craft', `no answer to crafting report ${pcInvReply.awaitSeq} in time; the record applies`);
+    pcInvReply = undefined;
+  }
+  return false;
 };
 // thuum playtest 48 ("Rotfern had to re-equip her bow again", as in playtest
 // 34 and 38's finding 68): the equipment a login's wipe dressed the player
@@ -165,10 +208,10 @@ export const holdPcInventoryForReply = (ms: number): void => {
 let loginHands: { eq: Equipment; until: number } | undefined;
 const loginHandsMs = 10000;
 on('update', () => {
-  if (isBadMenuShown()) {
+  if (craftHoldsApply(Date.now())) {
     return;
   }
-  if (Date.now() < pcInvReplyHoldUntil) {
+  if (isBadMenuShown()) {
     return;
   }
   if (Date.now() - pcInvLastApply > 5000) {
@@ -306,9 +349,11 @@ export class RemoteServer extends ClientListener {
     const msg = event.message;
     once('update', () => {
       setPcInventory(msg.inventory);
-      // thuum tracker #98: the record's answer is here, a crafting report's
-      // included
-      pcInvReplyHoldUntil = 0;
+      // thuum tracker #98: the answer to the sitting's last report ends the
+      // reply's hold; any other inventory waits under it
+      if (pcInvReply && msg.craftAck !== undefined && msg.craftAck >= pcInvReply.awaitSeq) {
+        pcInvReply = undefined;
+      }
 
       let blocked = false;
 

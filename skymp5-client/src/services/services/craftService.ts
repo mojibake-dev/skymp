@@ -5,7 +5,7 @@ import { Armor, Enchantment, MenuCloseEvent, MenuOpenEvent, Weapon } from "skyri
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { Entry, Inventory, getDiff, getInventory } from "../../sync/inventory";
 import { isSessionId, toWireEntry } from "../../sync/createdForms";
-import { holdPcInventoryForReply } from "./remoteServer";
+import { holdPcInventoryForReply, holdPcInventoryForSitting, releasePcInventorySitting } from "./remoteServer";
 import { CraftReportMessage } from "../messages/craftReportMessage";
 import { MsgType } from "../../messages";
 import { logError, logLab } from "../../logging";
@@ -29,9 +29,9 @@ const craftingMenu = "Crafting Menu";
 const craftRows = 64;
 const craftLearned = 128;
 // how long the player's inventory apply waits for the record's answer to a
-// report (remoteServer.ts holdPcInventoryForReply); its SetInventory ends
-// the wait at once
-const replyHoldMs = 3000;
+// sitting's last report (remoteServer.ts holdPcInventoryForReply); the
+// answer (SetInventory naming the report's seq) ends the wait at once
+const replyHoldMs = 5000;
 
 interface Sitting {
   before: Inventory;
@@ -55,6 +55,9 @@ export class CraftService extends ClientListener {
     }
     const furniture = player.getFurnitureReference();
     this.sitting = { before: getInventory(player), furnitureId: furniture ? furniture.getFormID() : 0 };
+    // the record's applies wait from here to the sitting's answer (the
+    // review of fec33b6f5..47e3ede74, finding 1)
+    holdPcInventoryForSitting();
   }
 
   private onMenuClose(e: MenuCloseEvent) {
@@ -66,17 +69,24 @@ export class CraftService extends ClientListener {
     if (!sitting) {
       return;
     }
+    let lastSeq = 0;
     try {
-      this.report(sitting);
+      lastSeq = this.report(sitting);
     } catch (err) {
       logError(this, "the crafting report failed", err);
     }
+    if (lastSeq > 0) {
+      holdPcInventoryForReply(lastSeq, replyHoldMs);
+    } else {
+      releasePcInventorySitting();
+    }
   }
 
-  private report(sitting: Sitting) {
+  // the sitting's reports sent; the last one's seq, 0 for none
+  private report(sitting: Sitting): number {
     const player = this.sp.Game.getPlayer();
     if (!player) {
-      return;
+      return 0;
     }
     const after = getInventory(player);
     // the worn flag left out: an item worn across a temper or an enchant is
@@ -92,7 +102,7 @@ export class CraftService extends ClientListener {
     const lostLocal = diff.filter((e) => e.count < 0).map((e) => strip(e, -e.count));
     const gainedLocal = diff.filter((e) => e.count > 0).map((e) => strip(e, e.count));
     if (lostLocal.length === 0 && gainedLocal.length === 0) {
-      return;
+      return 0;
     }
 
     const learned = this.learnedEnchantments(lostLocal, gainedLocal);
@@ -116,11 +126,12 @@ export class CraftService extends ClientListener {
     const workbench = furnitureId ? localIdToRemoteId(furnitureId) || furnitureId : 0;
     if (!workbench) {
       logError(this, "a crafting sitting with no bench under the player; nothing reported, the record stands");
-      return;
+      return 0;
     }
 
     // a sitting past one report's rows goes as several, each standing alone
     let sent = 0;
+    let lastSeq = 0;
     for (let i = 0; i < Math.max(lost.length, gained.length); i += craftRows) {
       const message: CraftReportMessage = {
         t: MsgType.CraftReport,
@@ -135,11 +146,10 @@ export class CraftService extends ClientListener {
       }
       this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
       ++sent;
+      lastSeq = message.seq;
     }
-    if (sent > 0) {
-      holdPcInventoryForReply(replyHoldMs);
-    }
-    logLab("verb:craft", `bench ${workbench.toString(16)}: ${lost.length} stack(s) lost, ${gained.length} gained, ${learned.length} enchantment(s) known, in ${sent} report(s)`);
+    logLab("verb:craft", `bench ${workbench.toString(16)}: ${lost.length} stack(s) lost, ${gained.length} gained, ${learned.length} enchantment(s) known, in ${sent} report(s), the last ${lastSeq}`);
+    return lastSeq;
   }
 
   // A disenchant destroys an enchanted item, and the engine marks its

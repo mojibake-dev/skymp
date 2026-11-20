@@ -11,7 +11,8 @@ import {
 } from 'skyrimPlatform';
 
 import { logTrace } from '../logging';
-import { Entry, Inventory, getInventory, readWorn } from './inventory';
+import { Entry, Inventory, addItemExEntry, getInventory, readWorn } from './inventory';
+import { toLocalWornInventory } from './createdForms';
 
 export const enum SpellType {
   Left,
@@ -67,6 +68,12 @@ export interface Equipment {
   instantSpell?: number;
   numChanges: number;
 }
+
+// the extras a stack keeps between two reads (the ones the inventory's
+// match compares, the worn flag and the charge left aside)
+const hasLastingExtras = (e: Entry): boolean =>
+  e.health !== undefined || e.enchantmentId !== undefined || e.maxCharge !== undefined ||
+  e.soul !== undefined || e.poisonId !== undefined;
 
 const filterWorn = (inv: Inventory): Inventory => {
   return { entries: inv.entries.filter((x) => x.worn || x.wornLeft) };
@@ -464,9 +471,35 @@ export const applyEquipment = (ac: Actor, eq: Equipment, keepAlso: readonly numb
 
   ac.removeAllItems(null, false, true);
 
-  const newInventory = removeUnnecessaryExtra(filterWorn(eq.inv), ac.getFormID() === 0x14);
+  const isPlayer = ac.getFormID() === 0x14;
+  // thuum tracker #98 (the review of fec33b6f5..47e3ede74, finding 3): the
+  // record's worn rows in this engine's ids, a made enchantment's form made
+  // by its own creator (sync/createdForms.ts)
+  const newInventory = toLocalWornInventory(removeUnnecessaryExtra(filterWorn(eq.inv), isPlayer));
 
-  setInventory(ac.getFormID(), newInventory);
+  if (isPlayer) {
+    // setInventory lays a base and its worn flag alone (InventoryApi.cpp),
+    // so a worn row with lasting extras (a made enchantment, a temper, a
+    // poison) is dressed through addItemEx as the record has it: the
+    // inventory loop's next apply then finds the stack it holds, where a
+    // plain one was taken and the record's laid back unworn (the armor came
+    // off after every relaunch). A figure's rows stay plain, every extra
+    // unshown on a figure as before
+    const plain = newInventory.entries.filter((e) => !hasLastingExtras(e));
+    const extras = newInventory.entries.filter((e) => hasLastingExtras(e));
+    setInventory(ac.getFormID(), { entries: plain });
+    extras.forEach((e) => {
+      const form = Game.getFormEx(e.baseId);
+      if (form) {
+        addItemExEntry(ac, form, e, e.count);
+      }
+    });
+    if (extras.length > 0) {
+      ac.queueNiNodeUpdate();
+    }
+  } else {
+    setInventory(ac.getFormID(), newInventory);
+  }
 
   // finding 45: the player's hands, once setInventory's adds have landed,
   // as a pass after a login's wipe (applyPlayerHands above, playtest 48):

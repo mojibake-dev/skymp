@@ -403,9 +403,13 @@ export interface ApplyInventoryReport {
   pending?: boolean;
 }
 
-// thuum tracker #98: each reference's latest apply, so a retry after a
-// created form is made lands only while no newer inventory came for it
+// thuum tracker #98: each reference's latest apply while a retry for it
+// waits, so the retry lands only while no newer inventory came for it. The
+// number is one counter's for every apply, and an apply with nothing to wait
+// for drops its reference's entry, so the map holds the references with a
+// retry waiting alone (the review of fec33b6f5..47e3ede74, finding 10)
 const applyGenerations = new Map<number, number>();
+let applyCounter = 0;
 // updates a retry waits for the engine's creator (queued on the main thread
 // by createCreatedForm, answered within a frame or two: HYPOTHESIS), and the
 // tries before the apply stops waiting
@@ -442,6 +446,70 @@ const keptBy = (e: Entry, keep: ReadonlyMap<number, number>): boolean => {
   return (e.count < 0 && (sides & keepSurplus) !== 0) || (e.count > 0 && (sides & keepDeficit) !== 0);
 };
 
+// One TESModPlatform.addItemEx of `count` of the entry's form `f` with the
+// entry's extras as they are (its enchantment, charge, poison, soul, health,
+// the name the server records), after pushWornState when the entry is worn;
+// the caller queues the 3D update. Shared by applyInventory and, since thuum
+// tracker #98 (the review of fec33b6f5..47e3ede74, finding 3), the player's
+// login equipment (sync/equipment.ts applyEquipment), so a worn stack with
+// extras lands as the record has it and the inventory loop finds it so
+export const addItemExEntry = (refr: ObjectReference, f: Form, e: Entry, count: number): void => {
+  if (e.worn || e.wornLeft) {
+    TESModPlatform.pushWornState(!!e.worn, !!e.wornLeft);
+  }
+
+  const addItemExArgs: [
+    ObjectReference,
+    Form,
+    number,
+    number,
+    Enchantment | null,
+    number,
+    boolean,
+    number,
+    string,
+    number,
+    Potion | null,
+    number,
+  ] = [
+    refr,
+    f,
+    count,
+    e.health ? e.health : 1,
+    e.enchantmentId
+      ? Enchantment.from(Game.getFormEx(e.enchantmentId))
+      : null,
+    e.maxCharge ? e.maxCharge : 0,
+    !!e.removeEnchantmentOnUnequip,
+    e.chargePercent ? e.chargePercent : 0,
+    // Only a name the server records: any name makes addItemEx build an
+    // extra list (ExtraTextDisplayData, no ExtraCount) that the engine
+    // counts as one item, so 3 Wheat showed as "Wheat" and "Wheat (2)"
+    // (thuum playtest seven). extrasEqual ignores names, so the diff
+    // does not change.
+    e.name ? cropName(e.name) : "",
+    e.soul ? e.soul : 0,
+    e.poisonId ? Potion.from(Game.getFormEx(e.poisonId)) : null,
+    e.poisonCount ? e.poisonCount : 0
+  ];
+
+  const argsToPrint = addItemExArgs.map((arg) => {
+    if (arg instanceof ObjectReference) {
+      return `ObjectReference(${arg.getFormID().toString(16)})`;
+    } else if (arg instanceof Form) {
+      return `Form(${arg.getFormID().toString(16)})`;
+    } else {
+      return JSON.stringify(arg);
+    }
+  });
+
+  printConsole(
+    `TESModPlatform.addItemEx(${argsToPrint.join(", ")})`
+  );
+
+  TESModPlatform.addItemEx(...addItemExArgs);
+};
+
 // the retries an inventory has left while its created forms are made
 const createdTriesLeft = new WeakMap<Inventory, number>();
 
@@ -471,9 +539,13 @@ export const applyInventory = (
   // report's pending and comes back sooner, under its menu gate), so only
   // another reference's (a container's, a body's) retries here
   const refrId = refr.getFormID();
-  const generation = (applyGenerations.get(refrId) ?? 0) + 1;
-  applyGenerations.set(refrId, generation);
+  const generation = ++applyCounter;
   const local = toLocalInventory(newInventory);
+  if (local.pending && refrId !== 0x14) {
+    applyGenerations.set(refrId, generation);
+  } else {
+    applyGenerations.delete(refrId);
+  }
   if (local.pending) {
     if (report) {
       report.pending = true;
@@ -552,62 +624,10 @@ export const applyInventory = (
 
     for (let i = 0; i < absCount; ++i) {
       if (worn || wornLeft) {
-        TESModPlatform.pushWornState(!!worn, !!wornLeft);
         queueNiNodeUpdateNeeded = true;
       }
 
-      let addItemExArgs: [
-        ObjectReference,
-        Form,
-        number,
-        number,
-        Enchantment | null,
-        number,
-        boolean,
-        number,
-        string,
-        number,
-        Potion | null,
-        number,
-      ];
-
-      addItemExArgs = [
-        refr,
-        f,
-        oneStepCount,
-        e.health ? e.health : 1,
-        e.enchantmentId
-          ? Enchantment.from(Game.getFormEx(e.enchantmentId))
-          : null,
-        e.maxCharge ? e.maxCharge : 0,
-        !!e.removeEnchantmentOnUnequip,
-        e.chargePercent ? e.chargePercent : 0,
-        // Only a name the server records: any name makes addItemEx build an
-        // extra list (ExtraTextDisplayData, no ExtraCount) that the engine
-        // counts as one item, so 3 Wheat showed as "Wheat" and "Wheat (2)"
-        // (thuum playtest seven). extrasEqual ignores names, so the diff
-        // does not change.
-        e.name ? cropName(e.name) : "",
-        e.soul ? e.soul : 0,
-        e.poisonId ? Potion.from(Game.getFormEx(e.poisonId)) : null,
-        e.poisonCount ? e.poisonCount : 0
-      ];
-
-      const argsToPrint = addItemExArgs.map((arg) => {
-        if (arg instanceof ObjectReference) {
-          return `ObjectReference(${arg.getFormID().toString(16)})`;
-        } else if (arg instanceof Form) {
-          return `Form(${arg.getFormID().toString(16)})`;
-        } else {
-          return JSON.stringify(arg);
-        }
-      });
-
-      printConsole(
-        `TESModPlatform.addItemEx(${argsToPrint.join(", ")})`
-      );
-
-      TESModPlatform.addItemEx(...addItemExArgs);
+      addItemExEntry(refr, f, e, oneStepCount);
     }
 
     if (queueNiNodeUpdateNeeded) {

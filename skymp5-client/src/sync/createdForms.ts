@@ -1,4 +1,4 @@
-import { createCreatedForm, createdFormTemplate, readCreatedForm } from "skyrimPlatform";
+import { createCreatedForm, createdFormTemplate, on, readCreatedForm } from "skyrimPlatform";
 import type { Entry, Inventory } from "./inventory";
 import { logLab } from "../logging";
 
@@ -53,6 +53,14 @@ const localByKey = new Map<string, number>();
 const formByLocal = new Map<number, CreatedForm>();
 const templateByKind = new Map<number, number>();
 let platformMissingSaid = false;
+
+// a load game clears the engine's created forms (HYPOTHESIS, as the
+// platform's own cache assumes, InventoryApi.cpp), so the ids cached here
+// go with it; the platform makes each again at its next ask
+on("loadGame", () => {
+  localByKey.clear();
+  formByLocal.clear();
+});
 
 const remember = (localId: number, form: CreatedForm): void => {
   if (formByLocal.size >= cacheMax) {
@@ -250,4 +258,37 @@ export const toLocalInventory = (inventory: Inventory): LocalInventory => {
     }
   });
   return { inventory: { entries }, pending };
+};
+
+// thuum tracker #98 (the review of fec33b6f5..47e3ede74, finding 3): the
+// worn rows of an equipment in this engine's ids, for the dress at a login
+// and a figure's (sync/equipment.ts applyEquipment). A row whose created
+// form is still being made is dressed plain, its created fields and what
+// rides on them left off (the inventory loop lays the made form when it
+// lands); a brewed base that cannot land yet is left out
+export const toLocalWornInventory = (inventory: Inventory): Inventory => {
+  const entries: Entry[] = [];
+  inventory.entries.forEach((e) => {
+    const local = toLocalEntry(e);
+    if (local.entry) {
+      entries.push(local.entry);
+      return;
+    }
+    if (e.createdBase !== undefined) {
+      return;
+    }
+    const plain: Entry = JSON.parse(JSON.stringify(e));
+    if (plain.createdEnchantment !== undefined) {
+      delete plain.createdEnchantment;
+      delete plain.maxCharge;
+      delete plain.chargePercent;
+      delete plain.removeEnchantmentOnUnequip;
+    }
+    if (plain.createdPoison !== undefined) {
+      delete plain.createdPoison;
+      delete plain.poisonCount;
+    }
+    entries.push(plain);
+  });
+  return { entries };
 };

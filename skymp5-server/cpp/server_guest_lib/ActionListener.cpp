@@ -2254,11 +2254,6 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   // brings its copy to the record. Any other item the record lacks is the
   // engine's own as before (a take included)
   std::vector<Inventory::Entry> staleItems;
-  // thuum tracker #97, ADR-079: the jail outfit an arrest's engine made and
-  // put on its prisoner (playtest 32: refused and unequipped here, "resume
-  // naked", note 3702), the arrested player's own game's (ADR-063); taken
-  // while the arrest's window lists it, and added to the record below
-  std::vector<uint32_t> arrestOutfit;
 
   const auto& inventory = actor->GetInventory();
   {
@@ -2285,12 +2280,6 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         ++it;
         continue;
       }
-      if (!hosted && it->GetWorn() != Inventory::Worn::None &&
-          actor->ArrestOutfitTakes(it->baseId)) {
-        arrestOutfit.push_back(it->baseId);
-        ++it;
-        continue;
-      }
       spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
                    "equipment update: inventory does not contain item {:x}",
                    actorFormId, it->baseId);
@@ -2300,14 +2289,6 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       it = entries.erase(it);
       dropped = true;
     }
-  }
-  // the outfit's items enter the prisoner's record as its engine made them,
-  // so the worn set below holds them (the arrest's window, above)
-  for (const auto itemId : arrestOutfit) {
-    actor->AddItem(itemId, 1);
-    spdlog::info("[verb:jail] {:x} wears {:x} of its arrest's jail outfit, "
-                 "which its engine made; added to the record",
-                 actorFormId, itemId);
   }
 
   if (auto worldState = actor->GetParent()) {
@@ -3052,6 +3033,16 @@ void ActionListener::OnPutItem(const RawMessageData& rawMsgData,
     static_cast<const Inventory::ExtraData&>(msg);
   entry.SetWorn(Inventory::Worn::None);
 
+  // thuum tracker #97, ADR-079: an arrest's strip, the prisoner's own
+  // game's (ADR-063), reported as its moves into the faction's chests. The
+  // engine strips in GoToPrison's own frame from wherever the player stood,
+  // and the client's inventory diff names one chest for all of them, so the
+  // reach is not asked and the chest named does not matter; the move is
+  // PartOne's, and nothing is resynced back into the prisoner's game
+  if (actor->ArrestStripTakes(ref.GetFormId())) {
+    partOne.OnArrestStripPut(*actor, entry);
+    return;
+  }
   if (!ContainerMoveWithinReach(*actor, ref, "put")) {
     return;
   }
@@ -3088,6 +3079,13 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
   // its own engine's, never the container's
   entry.SetWorn(Inventory::Worn::None);
 
+  // thuum tracker #97: the arrest seen as a take (the jail outfit the
+  // engine made shows in the client's inventory diff as a take from the
+  // chest the diff names): PartOne's, as the put above is
+  if (actor->ArrestStripTakes(ref.GetFormId())) {
+    partOne.OnArrestStripTake(*actor, entry);
+    return;
+  }
   if (!ContainerMoveWithinReach(*actor, ref, "take")) {
     return;
   }

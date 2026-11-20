@@ -692,8 +692,9 @@ public:
   // The arrested player's own game's report (ADR-063): the faction that
   // jailed it and the sentence its engine set. Recorded as the player's jail
   // term, its end on the shared clock (ADR-021), with one jump to the
-  // faction's jail landing permitted and the strip and the outfit taken for
-  // the window's length. The sentence is the game's (bounty over
+  // faction's jail landing permitted and the arrest's window opened, in
+  // which its game's strip and jail outfit are taken (OnArrestStripPut,
+  // OnArrestStripTake). The sentence is the game's (bounty over
   // iCrimeDaysInPrisonMod, capped at iCrimeMaxNumberofDaysinJail); the
   // record bounds it to the cap, which no plugin of the lab's load order
   // overrides, so the exe's 7 (read on sky-re, tracker #97 note 3921)
@@ -721,6 +722,18 @@ public:
   // placed at the jail marker by the server, its game told its bounty. The
   // check runs every second for the players in the world and at a login
   bool ReleaseIfServed(MpActor& prisoner);
+  // ADR-079.3: a prisoner out of its jail's cell before its end (the arrest's
+  // window closed) escaped: the term ends with its belongings left in the
+  // chest and its bounty as its game reports it; whether it ended one
+  bool EndTermIfEscaped(MpActor& prisoner);
+  // The arrest's strip as the prisoner's game reports it during the window:
+  // a put into either of the faction's chests moves that exact stack from
+  // the record into the prisoner-belongings chest (conservation: only what
+  // the record holds) and onto the term's belongings, whichever chest the
+  // client's inventory diff named; a take of a jail outfit item the record
+  // lacks creates it on the record once. Nothing is resynced into its game
+  bool OnArrestStripPut(MpActor& prisoner, const Inventory::Entry& entry);
+  bool OnArrestStripTake(MpActor& prisoner, const Inventory::Entry& entry);
   // The player's bounty per hold, told to its game as the console's
   // Faction.SetCrimeGold and SetCrimeGoldViolent tell it (a login's); how
   // many holds

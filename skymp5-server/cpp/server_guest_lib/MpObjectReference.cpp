@@ -1147,20 +1147,9 @@ bool ContainerMoveByOccupant(MpActor& actor, MpObjectReference& container)
 
 void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 {
-  // thuum tracker #97, ADR-079: an arrest's strip is the arrested player's
-  // own game's (ADR-063). Its engine moves the prisoner's things into the
-  // faction's stolen-goods and prisoner-belongings chests from wherever it
-  // stood, with no chest open (the arrest path's read, tracker #97 note
-  // 3921; playtest 32's 111 moves refused here, note 3702), so while the
-  // arrest's window is open a move into one of those two chests skips the
-  // reach and the occupant; the record's own count below still holds it
-  // (conservation, R0)
-  const bool arrestStrip = ac.ArrestStripTakes(GetFormId());
-  if (!arrestStrip) {
-    CheckInteractionAbility(ac);
-    if (!ContainerMoveByOccupant(ac, *this)) {
-      return;
-    }
+  CheckInteractionAbility(ac);
+  if (!ContainerMoveByOccupant(ac, *this)) {
+    return;
   }
   // the take's twin (npc-fate.md 1c): a put of what the mover's record does
   // not hold is refused by name, no throw, the mover resynced
@@ -1180,19 +1169,6 @@ void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
   } catch (...) {
     ResyncAfterRefusedMove(ac);
     throw;
-  }
-  // what the strip put among the prisoner's belongings is its own, given
-  // back at its release (PartOne::ReleaseIfServed), never the chest's whole
-  // contents
-  if (arrestStrip) {
-    const auto* window = ac.GetArrestWindow();
-    const bool belongings = window && window->belongingsChest == GetFormId();
-    if (belongings) {
-      ac.AddJailBelonging(Inventory::Entry(e.baseId, e.count));
-    }
-    spdlog::debug("[verb:jail] {:x}'s arrest put {} of {:x} into {:x} ({})",
-                  ac.GetFormId(), e.count, e.baseId, GetFormId(),
-                  belongings ? "its belongings" : "the stolen goods");
   }
 }
 

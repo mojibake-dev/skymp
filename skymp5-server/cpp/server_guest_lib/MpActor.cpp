@@ -75,7 +75,8 @@ struct MpActor::Impl
   // thuum tracker #84: a summon (PartOne::OnSummonStart)
   bool isSummon = false;
   // thuum tracker #97 (ADR-079): the arrest its own game reported, while
-  // its strip and outfit are taken (MpActor::OpenArrestWindow)
+  // its game's report of the strip is taken as the server's own
+  // (MpActor::OpenArrestWindow)
   std::optional<MpActor::ArrestWindow> arrestWindow;
   // thuum tracker #143: the bases the server's own removal took from the
   // record that it has not held since (MpActor::TellRemovalByServer)
@@ -1841,6 +1842,11 @@ bool MpActor::TakeMapMarkersPending()
   return std::exchange(pImpl->mapMarkersPending, false);
 }
 
+bool MpActor::IsMapMarkersPending() const
+{
+  return pImpl->mapMarkersPending;
+}
+
 std::vector<IngredientEffects> MpActor::GetIngredientEffects() const
 {
   const auto& effects = ChangeForm().ingredientEffects;
@@ -1945,14 +1951,6 @@ bool MpActor::ArrestStripTakes(uint32_t containerId) const
   return window && containerId != 0 &&
     (containerId == window->evidenceChest ||
      containerId == window->belongingsChest);
-}
-
-bool MpActor::ArrestOutfitTakes(uint32_t baseId) const
-{
-  const auto* window = GetArrestWindow();
-  return window &&
-    std::find(window->outfit.begin(), window->outfit.end(), baseId) !=
-    window->outfit.end();
 }
 
 ShoutRecord MpActor::GetShoutRecord() const

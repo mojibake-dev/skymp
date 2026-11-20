@@ -10133,13 +10133,101 @@ PartOne::ArrestCheck PartOne::OnArrest(MpActor& prisoner, uint32_t faction,
 
   spdlog::info("[verb:jail] {:x} arrested by {:x} for {} days: released at "
                "day {:.3f} of the shared clock (now {:.3f}); one jump to "
-               "{:x} permitted, the strip into {:x} and {:x} and {} outfit "
-               "item(s) taken for {} s",
+               "{:x} permitted, its game's strip into {:x} or {:x} and {} "
+               "outfit item(s) taken for {} s",
                prisoner.GetFormId(), faction, days, term.releaseAt, now,
                jail->landingWorldOrCell, jail->evidenceChest,
                jail->belongingsChest, jail->outfit.size(),
                kArrestWindow.count());
   return ArrestCheck::Recorded;
+}
+
+namespace {
+// the count of a stack equal to the entry in every extra but the count
+// (Inventory::Entry::EqualExceptCount, the record's own matching rule)
+uint32_t CountExact(const Inventory& inventory, const Inventory::Entry& entry)
+{
+  uint32_t n = 0;
+  for (const auto& e : inventory.entries) {
+    if (e.EqualExceptCount(entry)) {
+      n += e.count;
+    }
+  }
+  return n;
+}
+}
+
+bool PartOne::OnArrestStripPut(MpActor& prisoner,
+                               const Inventory::Entry& entry)
+{
+  const auto* window = prisoner.GetArrestWindow();
+  if (!window || window->belongingsChest == 0 || entry.count == 0) {
+    return false;
+  }
+  auto& form = worldState.LookupFormById(window->belongingsChest);
+  MpObjectReference* chest = form ? form->AsObjectReference() : nullptr;
+  if (!chest) {
+    return false;
+  }
+  // the record's own stacks of it, worn or not (the engine unequips as it
+  // strips; the report carries no worn flag), taken as far as the put goes
+  std::vector<Inventory::Entry> removals;
+  uint32_t remaining = entry.count;
+  for (const auto& stack : prisoner.GetInventory().entries) {
+    Inventory::Entry probe = entry;
+    probe.SetWorn(stack.GetWorn());
+    if (remaining == 0 || !probe.EqualExceptCount(stack)) {
+      continue;
+    }
+    Inventory::Entry take = stack;
+    take.count = std::min(stack.count, remaining);
+    remaining -= take.count;
+    removals.push_back(take);
+  }
+  // conservation (R0): only what the record holds moves; a put it cannot
+  // cover is said and not sent back to the prisoner's game, whose engine
+  // made its strip already
+  if (remaining > 0) {
+    spdlog::warn("[verb:jail] E_ARREST_STRIP_NOT_HELD: {:x}'s strip puts {} "
+                 "of {:x}, {} more than its record holds; not moved",
+                 prisoner.GetFormId(), entry.count, entry.baseId, remaining);
+    return false;
+  }
+  Inventory::Entry laid = entry;
+  laid.SetWorn(Inventory::Worn::None);
+  prisoner.RemoveItems(removals);
+  chest->AddItems({ laid });
+  prisoner.AddJailBelonging(laid);
+  spdlog::debug("[verb:jail] {:x}'s strip: {} of {:x} into its belongings "
+                "{:x}",
+                prisoner.GetFormId(), entry.count, entry.baseId,
+                chest->GetFormId());
+  return true;
+}
+
+bool PartOne::OnArrestStripTake(MpActor& prisoner,
+                                const Inventory::Entry& entry)
+{
+  const auto* window = prisoner.GetArrestWindow();
+  if (!window) {
+    return false;
+  }
+  const bool outfit = std::find(window->outfit.begin(), window->outfit.end(),
+                                entry.baseId) != window->outfit.end();
+  if (!outfit || prisoner.GetInventory().GetItemCount(entry.baseId) > 0) {
+    spdlog::debug("[verb:jail] {:x}'s take of {} of {:x} during its arrest: "
+                  "no outfit item it lacks; not moved",
+                  prisoner.GetFormId(), entry.count, entry.baseId);
+    return false;
+  }
+  // the jail outfit the engine made on the prisoner, which the client's
+  // inventory diff reports as a take from the chest it names: created on
+  // the record once, never taken from the chest
+  prisoner.AddItem(entry.baseId, 1);
+  spdlog::info("[verb:jail] {:x} wears {:x} of its arrest's jail outfit, "
+               "which its engine made; added to the record",
+               prisoner.GetFormId(), entry.baseId);
+  return true;
 }
 
 bool PartOne::OnCrimeGold(MpActor& player, uint32_t faction, uint32_t violent,
@@ -10178,6 +10266,35 @@ void TellCrimeGold(MpActor& player, uint32_t faction, uint32_t violent,
 }
 }
 
+bool PartOne::EndTermIfEscaped(MpActor& prisoner)
+{
+  const auto record = prisoner.GetCrimeRecord();
+  if (!record.jail || prisoner.GetArrestWindow()) {
+    return false;
+  }
+  const uint32_t faction = record.jail->faction.ToFormId(worldState.espmFiles);
+  const auto jail = JailOf(faction);
+  if (!jail) {
+    return false;
+  }
+  const uint32_t here =
+    prisoner.GetCellOrWorld().ToFormId(worldState.espmFiles);
+  if (here == jail->landingWorldOrCell) {
+    return false;
+  }
+  // ADR-079.3: out of the jail before its end, by its own hand or a
+  // friend's. The term ends; its belongings stay in the chest for it to
+  // fetch, and its bounty is what its game reports (the escape's own
+  // included), never cleared here
+  prisoner.SetJailTerm(std::nullopt);
+  spdlog::info("[verb:jail] {:x} out of {:x}'s jail in {:x} before its end "
+               "at day {:.3f}: escaped, the term ended, its belongings left "
+               "in {:x}",
+               prisoner.GetFormId(), faction, here, record.jail->releaseAt,
+               jail->belongingsChest);
+  return true;
+}
+
 bool PartOne::ReleaseIfServed(MpActor& prisoner)
 {
   const auto record = prisoner.GetCrimeRecord();
@@ -10194,35 +10311,45 @@ bool PartOne::ReleaseIfServed(MpActor& prisoner)
   const uint32_t faction = term.faction.ToFormId(files);
   const auto jail = JailOf(faction);
 
-  // the prisoner's own belongings, from the chest's record as far as it
-  // still holds them (another prisoner's or a thief's take leaves less)
+  // the term ends first, so nothing below can leave it running
+  prisoner.SetJailTerm(std::nullopt);
+
+  // the prisoner's own belongings, each the exact stack its strip put (its
+  // extras included), from the chest's record as far as it still holds it
+  // (another's take leaves less; another prisoner's things of the same base
+  // and extras are indistinguishable from its own, the chest being one)
   size_t returned = 0;
   if (jail && jail->belongingsChest != 0) {
     auto& form = worldState.LookupFormById(jail->belongingsChest);
     if (MpObjectReference* chest =
           form ? form->AsObjectReference() : nullptr) {
-      std::vector<Inventory::Entry> back;
       for (const auto& entry : term.belongings.entries) {
-        const uint32_t held = chest->GetInventory().GetItemCount(entry.baseId);
-        const uint32_t count = std::min(held, entry.count);
-        if (count > 0) {
-          back.push_back(Inventory::Entry(entry.baseId, count));
-          returned += count;
+        const uint32_t count =
+          std::min(CountExact(chest->GetInventory(), entry), entry.count);
+        if (count == 0) {
+          continue;
         }
-      }
-      if (!back.empty()) {
-        chest->RemoveItems(back, &prisoner);
+        Inventory::Entry back = entry;
+        back.count = count;
+        try {
+          chest->RemoveItems({ back }, &prisoner);
+          returned += count;
+        } catch (std::exception& e) {
+          spdlog::warn("[verb:jail] {:x}'s release: {} of {:x} not given "
+                       "back ({})",
+                       prisoner.GetFormId(), count, entry.baseId, e.what());
+        }
       }
     }
   }
 
-  prisoner.SetJailTerm(std::nullopt);
   prisoner.SetCrimeGold(term.faction, 0, 0);
   TellCrimeGold(prisoner, faction, 0, 0);
   // the engine's own prison state on the prisoner's game (its prison faction
-  // and sentence, PlayerCharacter.h:685-686) cleared by the engine's own
-  // Papyrus global, Game.ClearPrison (docs/NATIVES.md:684), so its jail bed
-  // and its guards hold it a prisoner no longer
+  // and sentence, CommonLibSSE-NG PlayerCharacter.h:685-686) cleared by the
+  // engine's own Papyrus global, Game.ClearPrison (Game.psc; docs/NATIVES.md
+  // lists it as missing on the server's VM, so it runs in the game here), so
+  // its jail bed and its guards hold it a prisoner no longer
   const std::vector<std::optional<
     std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
     noArgs;
@@ -10267,7 +10394,14 @@ void PartOne::TickJailsEverySecond()
       continue;
     }
     MpActor* actor = serverState.ActorByUser(user);
-    if (actor && actor->GetCrimeRecord().jail) {
+    // a player still loading is released at its first movement instead
+    // (ActionListener::OnUpdateMovement's login pass), never before its game
+    // is in the world
+    if (!actor || actor->IsMapMarkersPending() ||
+        !actor->GetCrimeRecord().jail) {
+      continue;
+    }
+    if (!EndTermIfEscaped(*actor)) {
       ReleaseIfServed(*actor);
     }
   }

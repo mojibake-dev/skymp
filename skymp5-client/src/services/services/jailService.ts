@@ -24,8 +24,9 @@ const TAG = "verb:jail";
 //   non-violent gold as Papyrus reads them (Faction.GetCrimeGoldViolent and
 //   GetCrimeGoldNonViolent), when they differ from what this game last sent.
 //   The server's own tell at a login or a release (Faction.SetCrimeGold and
-//   SetCrimeGoldViolent) comes back through here with the values it holds,
-//   a no-op there.
+//   SetCrimeGoldViolent) comes back through here: its two calls raise two
+//   events, so the first may send a half-told pair for a moment, which the
+//   second corrects to the values the server holds.
 // - servePrisonTime (the platform's, the jail bed's serve, which never runs:
 //   ADR-079.2): the sentence is waited out on the shared clock, and the
 //   player is told how much of it is left as this game knows it.

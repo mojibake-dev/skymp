@@ -313,6 +313,9 @@ public:
   // show them.
   void SetMapMarkersPending(bool pending);
   bool TakeMapMarkersPending();
+  // whether the player logged in and has not moved yet (its first movement
+  // takes the flag, ActionListener::OnUpdateMovement)
+  bool IsMapMarkersPending() const;
   // thuum docs/verbs/learned-effects.md: the ingredient effects this player
   // learned, kept in its change form (recording only adds bits, and returns
   // whether anything changed), and the last ingredient it ate and when (0
@@ -344,10 +347,11 @@ public:
   bool AddJailBelonging(const Inventory::Entry& entry);
 
   // The moments of an arrest the player's own game reported (ADR-079,
-  // PartOne::OnArrest): its strip into the faction's two chests and its
-  // jail outfit are that game's own, taken by the server until the window
-  // closes. Not kept in the record: a relaunch mid-arrest has no strip left
-  // to take
+  // PartOne::OnArrest): until the window closes, the moves its game reports
+  // into or out of the faction's two chests are its engine's strip and jail
+  // outfit (PartOne::OnArrestStripPut, OnArrestStripTake), its own
+  // (ADR-063), never refused back into its game. Not kept in the record: a
+  // relaunch mid-arrest has no strip left to report
   struct ArrestWindow
   {
     uint32_t evidenceChest = 0;   // the faction's stolen-goods chest (STOL)
@@ -358,10 +362,9 @@ public:
   void OpenArrestWindow(ArrestWindow window);
   // the window while it is open, else none
   const ArrestWindow* GetArrestWindow() const;
-  // whether the open window takes a move of the player's into this container,
-  // or the player wearing this item
+  // whether the open window names this container as one of the faction's
+  // two chests
   bool ArrestStripTakes(uint32_t containerId) const;
-  bool ArrestOutfitTakes(uint32_t baseId) const;
   // Adds the form to the record's list; false when it was there already
   bool RecordShoutEntry(ShoutEntry kind, const FormDesc& form);
   // thuum ADR-068 rung 5 (a player's own RemoveShout): takes the form off

@@ -2,7 +2,9 @@
 #include "TestUtils.hpp"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
+#include <chrono>
 #include <functional>
+#include <optional>
 #include <simdjson.h>
 
 PartOne& GetPartOne();
@@ -148,8 +150,49 @@ TEST_CASE("A hold's jail is read from its crime faction's records",
   REQUIRE(!p.JailOf(kDagger).has_value());
 }
 
+namespace {
+void Arrest(PartOne& p, uint32_t faction, uint32_t days)
+{
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::Arrest },
+                            { "faction", faction },
+                            { "days", days } });
+}
+
+void Put(PartOne& p, uint32_t baseId, uint32_t count, uint32_t target,
+         std::optional<float> health = std::nullopt)
+{
+  nlohmann::json j{ { "t", MsgType::PutItem },
+                    { "baseId", baseId },
+                    { "count", count },
+                    { "target", target } };
+  if (health) {
+    j["health"] = *health;
+  }
+  DoMessage(p, 0, j);
+}
+
+void Take(PartOne& p, uint32_t baseId, uint32_t count, uint32_t target)
+{
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::TakeItem },
+                            { "baseId", baseId },
+                            { "count", count },
+                            { "target", target } });
+}
+
+// the arrest's window closed early (its 60 s are real time), as after the
+// prisoner's arrival in the jail
+void CloseWindow(MpActor& prisoner)
+{
+  MpActor::ArrestWindow closed;
+  closed.until = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+  prisoner.OpenArrestWindow(closed);
+}
+}
+
 TEST_CASE("An arrest records the term on the shared clock, permits the jump "
-          "to the hold's jail and takes the strip and the outfit",
+          "to the hold's jail and takes its game's strip and outfit",
           "[Jail][espm]")
 {
   PartOne& p = GetPartOne();
@@ -171,8 +214,15 @@ TEST_CASE("An arrest records the term on the shared clock, permits the jump "
   REQUIRE(!prisoner.GetCrimeRecord().jail);
   REQUIRE(!prisoner.GetArrestWindow());
 
-  REQUIRE(p.OnArrest(prisoner, kFalkreath, 7) ==
-          PartOne::ArrestCheck::Recorded);
+  // a put into the stolen-goods chest from the street before any arrest is
+  // out of reach, as any put
+  auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
+  const uint32_t inChest = chest.GetInventory().GetItemCount(kDagger);
+  Put(p, kDagger, 1, kStolenGoods);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held);
+
+  // the arrest's report, through the message
+  Arrest(p, kFalkreath, 7);
   const auto term = prisoner.GetCrimeRecord().jail;
   REQUIRE(term.has_value());
   REQUIRE(term->faction.ToFormId(p.worldState.espmFiles) == kFalkreath);
@@ -188,67 +238,125 @@ TEST_CASE("An arrest records the term on the shared clock, permits the jump "
   REQUIRE(p.CheckJump(kPrisoner, kJailCell, 0.f, 0.f) ==
           PartOne::JumpCheck::Landed);
 
-  // the strip: into the faction's belongings chest from the street, no
-  // chest open, recorded as the prisoner's own; a chest of another's is
-  // still out of reach
-  REQUIRE(prisoner.ArrestStripTakes(kBelongings));
-  REQUIRE(prisoner.ArrestStripTakes(kStolenGoods));
-  REQUIRE(!prisoner.ArrestStripTakes(kMarker));
-  auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
-  chest.PutItem(prisoner, Inventory::Entry(kDagger, 2));
+  // the strip from the street, named to the stolen-goods chest as the
+  // client's diff may name it: into the belongings chest, recorded as the
+  // prisoner's own, no reach asked
+  Put(p, kDagger, 2, kStolenGoods);
   REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 2);
-  REQUIRE(chest.GetInventory().GetItemCount(kDagger) >= 2);
+  REQUIRE(chest.GetInventory().GetItemCount(kDagger) == inChest + 2);
   REQUIRE(prisoner.GetCrimeRecord().jail->belongings.GetItemCount(kDagger) ==
           2);
+  // more than the record holds moves nothing
+  Put(p, kDagger, 50, kBelongings);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 2);
 
-  // the outfit: its items, none else
-  REQUIRE(prisoner.ArrestOutfitTakes(kRobes));
-  REQUIRE(prisoner.ArrestOutfitTakes(kBoots));
-  REQUIRE(!prisoner.ArrestOutfitTakes(kDagger));
+  // the outfit the engine made, seen as a take from the chest: created on the
+  // record once, never taken from the chest; anything else is not moved
+  Take(p, kRobes, 1, kStolenGoods);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kRobes) == 1);
+  Take(p, kRobes, 1, kStolenGoods);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kRobes) == 1);
+  Take(p, kDagger, 1, kBelongings);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 2);
 
   Leave(p);
 }
 
 TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
-          "gives back the prisoner's own belongings",
+          "gives back the prisoner's own belongings, extras and all",
           "[Jail][espm]")
 {
   PartOne& p = GetPartOne();
   PinnedClock clock(p, 20.f);
   auto& prisoner = Arrive(p);
   prisoner.AddItem(kDagger, 2);
+  Inventory::Entry tempered(kDagger, 1);
+  tempered.health = 1.1f;
+  prisoner.AddItems({ tempered });
   const uint32_t held = prisoner.GetInventory().GetItemCount(kDagger);
-  REQUIRE(held >= 2);
   REQUIRE(p.OnCrimeGold(prisoner, kFalkreath, 100, 0));
   // the same bounty again changes nothing
   REQUIRE(!p.OnCrimeGold(prisoner, kFalkreath, 100, 0));
   // a form that is no faction holds no bounty
   REQUIRE(!p.OnCrimeGold(prisoner, kDagger, 100, 0));
-  REQUIRE(p.OnArrest(prisoner, kFalkreath, 1) ==
-          PartOne::ArrestCheck::Recorded);
+  Arrest(p, kFalkreath, 1);
+  REQUIRE(prisoner.GetCrimeRecord().jail);
   auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
   const uint32_t inChestBefore = chest.GetInventory().GetItemCount(kDagger);
-  chest.PutItem(prisoner, Inventory::Entry(kDagger, 2));
-  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 2);
+  Put(p, kDagger, 2, kBelongings);
+  Put(p, kDagger, 1, kBelongings, 1.1f);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 3);
 
-  // half a day in: still serving
+  // half a day in: still serving, and the tick's escape check leaves a
+  // prisoner its window still holds
   clock.Set(20.5f);
   REQUIRE(!p.ReleaseIfServed(prisoner));
+  REQUIRE(!p.EndTermIfEscaped(prisoner));
   REQUIRE(prisoner.GetCrimeRecord().jail);
 
-  // the day passed on the shared clock: released, its two daggers back and
-  // no more, the hold's bounty cleared, placed at the jail marker
+  // the day passed on the shared clock: released, its three daggers back,
+  // the tempered one as it was, the hold's bounty cleared, placed at the
+  // jail marker
   clock.Set(21.01f);
   REQUIRE(p.ReleaseIfServed(prisoner));
   REQUIRE(!prisoner.GetCrimeRecord().jail);
   REQUIRE(!prisoner.GetCrimeRecord().Find(
     FormDesc::FromFormId(kFalkreath, p.worldState.espmFiles)));
   REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held);
+  bool temperedBack = false;
+  for (const auto& e : prisoner.GetInventory().entries) {
+    temperedBack |= e.EqualExceptCount(tempered);
+  }
+  REQUIRE(temperedBack);
   REQUIRE(chest.GetInventory().GetItemCount(kDagger) == inChestBefore);
+  const auto jail = p.JailOf(kFalkreath);
+  REQUIRE(jail.has_value());
   REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
-          kTamriel);
+          jail->markerWorldOrCell);
+  REQUIRE((prisoner.GetPos() - jail->markerPos).Length() < 1.f);
 
   // nothing left to release
+  REQUIRE(!p.ReleaseIfServed(prisoner));
+  Leave(p);
+}
+
+TEST_CASE("A prisoner out of its jail before its end escaped: the term ends, "
+          "its belongings stay in the chest",
+          "[Jail][espm]")
+{
+  PartOne& p = GetPartOne();
+  PinnedClock clock(p, 30.f);
+  auto& prisoner = Arrive(p);
+  prisoner.AddItem(kDagger, 1);
+  Arrest(p, kFalkreath, 3);
+  auto& chest = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
+  Put(p, kDagger, 1, kBelongings);
+  const uint32_t inChest = chest.GetInventory().GetItemCount(kDagger);
+  CloseWindow(prisoner);
+
+  // in the jail's cell: serving
+  const auto jail = p.JailOf(kFalkreath);
+  REQUIRE(jail.has_value());
+  LocationalData inside;
+  inside.pos = jail->landingPos;
+  inside.rot = jail->landingRot;
+  inside.cellOrWorldDesc =
+    FormDesc::FromFormId(jail->landingWorldOrCell, p.worldState.espmFiles);
+  prisoner.Teleport(inside);
+  REQUIRE(!p.EndTermIfEscaped(prisoner));
+  REQUIRE(prisoner.GetCrimeRecord().jail);
+
+  // out in Falkreath before its end: escaped
+  LocationalData outside;
+  outside.pos = kInFalkreath;
+  outside.cellOrWorldDesc =
+    FormDesc::FromFormId(kTamriel, p.worldState.espmFiles);
+  prisoner.Teleport(outside);
+  REQUIRE(p.EndTermIfEscaped(prisoner));
+  REQUIRE(!prisoner.GetCrimeRecord().jail);
+  REQUIRE(chest.GetInventory().GetItemCount(kDagger) == inChest);
+  // and a later end of the shared clock releases nothing
+  clock.Set(40.f);
   REQUIRE(!p.ReleaseIfServed(prisoner));
   Leave(p);
 }

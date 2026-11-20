@@ -4,6 +4,7 @@
 #include "Appearance.h"
 #include "ChangeFormApplyMessage.h"
 #include "ChangeFormRecord.h"
+#include "CrimeRecord.h"
 #include "Equipment.h"
 #include "Favorite.h"
 #include "GetBaseActorValues.h"
@@ -15,6 +16,7 @@
 #include "UpdateActionMessage.h"
 #include "libespm/espm.h"
 #include <array>
+#include <chrono>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -327,6 +329,39 @@ public:
     WordUnlocked
   };
   ShoutRecord GetShoutRecord() const;
+
+  // thuum tracker #97, ADR-079: the player's bounty per hold and its jail
+  // term, the server's record (R0, CrimeRecord.h)
+  CrimeRecord GetCrimeRecord() const;
+  // One hold's bounty as the player's own game holds it; false when the
+  // record held it already
+  bool SetCrimeGold(const FormDesc& faction, uint32_t violent,
+                    uint32_t nonViolent);
+  // Starts or ends the player's jail term
+  void SetJailTerm(std::optional<JailTerm> term);
+  // Adds to the jail term's belongings what the prisoner's game put into its
+  // faction's prisoner-belongings chest; false without a term
+  bool AddJailBelonging(const Inventory::Entry& entry);
+
+  // The moments of an arrest the player's own game reported (ADR-079,
+  // PartOne::OnArrest): its strip into the faction's two chests and its
+  // jail outfit are that game's own, taken by the server until the window
+  // closes. Not kept in the record: a relaunch mid-arrest has no strip left
+  // to take
+  struct ArrestWindow
+  {
+    uint32_t evidenceChest = 0;   // the faction's stolen-goods chest (STOL)
+    uint32_t belongingsChest = 0; // its prisoner-belongings chest (PLCN)
+    std::vector<uint32_t> outfit; // the items of its jail outfit (JOUT)
+    std::chrono::steady_clock::time_point until{};
+  };
+  void OpenArrestWindow(ArrestWindow window);
+  // the window while it is open, else none
+  const ArrestWindow* GetArrestWindow() const;
+  // whether the open window takes a move of the player's into this container,
+  // or the player wearing this item
+  bool ArrestStripTakes(uint32_t containerId) const;
+  bool ArrestOutfitTakes(uint32_t baseId) const;
   // Adds the form to the record's list; false when it was there already
   bool RecordShoutEntry(ShoutEntry kind, const FormDesc& form);
   // thuum ADR-068 rung 5 (a player's own RemoveShout): takes the form off

@@ -74,6 +74,9 @@ struct MpActor::Impl
   bool placedDead = false;
   // thuum tracker #84: a summon (PartOne::OnSummonStart)
   bool isSummon = false;
+  // thuum tracker #97 (ADR-079): the arrest its own game reported, while
+  // its strip and outfit are taken (MpActor::OpenArrestWindow)
+  std::optional<MpActor::ArrestWindow> arrestWindow;
   // thuum tracker #143: the bases the server's own removal took from the
   // record that it has not held since (MpActor::TellRemovalByServer)
   std::set<uint32_t> removedByServer;
@@ -1874,6 +1877,82 @@ bool MpActor::RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask)
     effects.push_back(IngredientEffects{ ingredient, newMask });
   });
   return true;
+}
+
+CrimeRecord MpActor::GetCrimeRecord() const
+{
+  const auto& record = ChangeForm().crimeRecord;
+  return record ? *record : CrimeRecord();
+}
+
+bool MpActor::SetCrimeGold(const FormDesc& faction, uint32_t violent,
+                           uint32_t nonViolent)
+{
+  const auto record = GetCrimeRecord();
+  const CrimeGold* held = record.Find(faction);
+  if ((held && held->violent == violent && held->nonViolent == nonViolent) ||
+      (!held && violent == 0 && nonViolent == 0)) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.crimeRecord) {
+      changeForm.crimeRecord.emplace();
+    }
+    changeForm.crimeRecord->Set(faction, violent, nonViolent);
+  });
+  return true;
+}
+
+void MpActor::SetJailTerm(std::optional<JailTerm> term)
+{
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.crimeRecord) {
+      changeForm.crimeRecord.emplace();
+    }
+    changeForm.crimeRecord->jail = std::move(term);
+  });
+}
+
+bool MpActor::AddJailBelonging(const Inventory::Entry& entry)
+{
+  const auto& record = ChangeForm().crimeRecord;
+  if (!record || !record->jail) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.crimeRecord->jail->belongings.AddItems({ entry });
+  });
+  return true;
+}
+
+void MpActor::OpenArrestWindow(ArrestWindow window)
+{
+  pImpl->arrestWindow = std::move(window);
+}
+
+const MpActor::ArrestWindow* MpActor::GetArrestWindow() const
+{
+  if (!pImpl->arrestWindow ||
+      std::chrono::steady_clock::now() > pImpl->arrestWindow->until) {
+    return nullptr;
+  }
+  return &*pImpl->arrestWindow;
+}
+
+bool MpActor::ArrestStripTakes(uint32_t containerId) const
+{
+  const auto* window = GetArrestWindow();
+  return window && containerId != 0 &&
+    (containerId == window->evidenceChest ||
+     containerId == window->belongingsChest);
+}
+
+bool MpActor::ArrestOutfitTakes(uint32_t baseId) const
+{
+  const auto* window = GetArrestWindow();
+  return window &&
+    std::find(window->outfit.begin(), window->outfit.end(), baseId) !=
+    window->outfit.end();
 }
 
 ShoutRecord MpActor::GetShoutRecord() const

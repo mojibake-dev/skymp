@@ -589,6 +589,11 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // the record first, so the record sent below gives it back
       partOne.RecordShoutsOfKnownWords(*actor);
       SendShoutRecord(*actor);
+      // thuum tracker #97, ADR-079: a sentence the shared clock ended while
+      // the player was away ends now (its belongings back, the marker), and
+      // its bounty per hold goes back to its game
+      partOne.ReleaseIfServed(*actor);
+      partOne.TellCrimeRecord(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -2249,6 +2254,11 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   // brings its copy to the record. Any other item the record lacks is the
   // engine's own as before (a take included)
   std::vector<Inventory::Entry> staleItems;
+  // thuum tracker #97, ADR-079: the jail outfit an arrest's engine made and
+  // put on its prisoner (playtest 32: refused and unequipped here, "resume
+  // naked", note 3702), the arrested player's own game's (ADR-063); taken
+  // while the arrest's window lists it, and added to the record below
+  std::vector<uint32_t> arrestOutfit;
 
   const auto& inventory = actor->GetInventory();
   {
@@ -2275,6 +2285,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         ++it;
         continue;
       }
+      if (!hosted && it->GetWorn() != Inventory::Worn::None &&
+          actor->ArrestOutfitTakes(it->baseId)) {
+        arrestOutfit.push_back(it->baseId);
+        ++it;
+        continue;
+      }
       spdlog::warn("ActionListener::OnUpdateEquipment {:x} - dropped from the "
                    "equipment update: inventory does not contain item {:x}",
                    actorFormId, it->baseId);
@@ -2284,6 +2300,14 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
       it = entries.erase(it);
       dropped = true;
     }
+  }
+  // the outfit's items enter the prisoner's record as its engine made them,
+  // so the worn set below holds them (the arrest's window, above)
+  for (const auto itemId : arrestOutfit) {
+    actor->AddItem(itemId, 1);
+    spdlog::info("[verb:jail] {:x} wears {:x} of its arrest's jail outfit, "
+                 "which its engine made; added to the record",
+                 actorFormId, itemId);
   }
 
   if (auto worldState = actor->GetParent()) {

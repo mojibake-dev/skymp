@@ -722,6 +722,25 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     };
   }
 
+  // thuum tracker #97, ADR-079; absent in older records, read as none
+  if (changeForm.crimeRecord.has_value() && !changeForm.crimeRecord->Empty()) {
+    auto gold = nlohmann::json::array();
+    for (const auto& g : changeForm.crimeRecord->crimeGold) {
+      gold.push_back({ { "faction", g.faction.ToString() },
+                       { "violent", g.violent },
+                       { "nonViolent", g.nonViolent } });
+    }
+    nlohmann::json crime = { { "crimeGold", std::move(gold) } };
+    if (changeForm.crimeRecord->jail.has_value()) {
+      const auto& jail = *changeForm.crimeRecord->jail;
+      crime["jail"] = { { "faction", jail.faction.ToString() },
+                        { "days", jail.days },
+                        { "releaseAt", jail.releaseAt },
+                        { "belongings", jail.belongings.ToJson() } };
+    }
+    res["crimeRecord"] = std::move(crime);
+  }
+
   // thuum docs/verbs/magic-effects.md; absent in older records, read as
   // none. A caster is written only when there is one, a server's first
   // player (0xff000000, "0") included (thuum docs/verbs/npc-fate.md C4): an
@@ -864,6 +883,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer mapMarkers("mapMarkers");
   static const JsonPointer ingredientEffects("ingredientEffects");
   static const JsonPointer shoutRecord("shoutRecord");
+  static const JsonPointer crimeRecord("crimeRecord");
   static const JsonPointer playerGlobals("playerGlobals");
   static const JsonPointer questStages("questStages");
   static const JsonPointer placedBySpell("placedBySpell");
@@ -1593,6 +1613,44 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     ReadVector(jTmp, wordsUnlocked, &data);
     record.wordsUnlocked = ToFormDescsArray(data);
     res.shoutRecord = record;
+  }
+
+  // thuum tracker #97, ADR-079: read only where present (rule 6's migration:
+  // an older record reads as none)
+  if (element.at_pointer(crimeRecord.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, crimeRecord, &jTmp);
+    static const JsonPointer crimeGold("crimeGold"), faction("faction"),
+      violent("violent"), nonViolent("nonViolent"), jail("jail"), days("days"),
+      releaseAt("releaseAt"), belongings("belongings");
+    CrimeRecord record;
+    std::vector<simdjson::dom::element> golds;
+    ReadVector(jTmp, crimeGold, &golds);
+    for (const auto& g : golds) {
+      CrimeGold entry;
+      const char* tmp;
+      ReadEx(g, faction, &tmp);
+      entry.faction = FormDesc::FromString(tmp);
+      ReadEx(g, violent, &entry.violent);
+      ReadEx(g, nonViolent, &entry.nonViolent);
+      record.crimeGold.push_back(std::move(entry));
+    }
+    if (jTmp.at_pointer(jail.GetData()).error() ==
+        simdjson::error_code::SUCCESS) {
+      simdjson::dom::element jailTmp;
+      ReadEx(jTmp, jail, &jailTmp);
+      JailTerm term;
+      const char* tmp;
+      ReadEx(jailTmp, faction, &tmp);
+      term.faction = FormDesc::FromString(tmp);
+      ReadEx(jailTmp, days, &term.days);
+      ReadEx(jailTmp, releaseAt, &term.releaseAt);
+      simdjson::dom::element belongingsTmp;
+      ReadEx(jailTmp, belongings, &belongingsTmp);
+      term.belongings = Inventory::FromJson(belongingsTmp);
+      record.jail = std::move(term);
+    }
+    res.crimeRecord = std::move(record);
   }
 
   if (element.at_pointer(runningEffects.GetData()).error() ==

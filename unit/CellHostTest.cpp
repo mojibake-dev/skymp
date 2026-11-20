@@ -2604,6 +2604,67 @@ TEST_CASE("A hosted actor's furniture use is its host's engine's: the server "
   p.DestroyActor(kC1);
 }
 
+// thuum tracker #172 (playtest 56's look 5; ADR-063, R2): the host's report
+// of its NPC's activation leaves the NPC's equipment as its host's own report
+// recorded it. Upstream's EquipBestWeapon ran here, stripped the worn weapon
+// and wore the inventory's best in the right hand alone with numChanges one
+// up, so each activation (a draugr's four of its alcove as it got up) sent
+// every copy a record its host never made
+TEST_CASE("A hosted actor's activation leaves its equipment record as its "
+          "host reported it",
+          "[CellHost][Equipment][espm]")
+{
+  auto& p = GetPartOne();
+  // the bench case's bed, a FURN the server loads, in Tamriel
+  constexpr uint32_t kBed = 0x000B3184;
+  constexpr uint32_t kSitter = 0xff000c05;
+  // Skyrim.esm DraugrGreatsword (WEAP, ETYP BothHands 0x13f45) and
+  // IronSword, both by lab/esm.py on sky-srv, 2026-11-20 (the sword is this
+  // file's kIronSword elsewhere)
+  constexpr uint32_t kGreatsword = 0x000236a5;
+  constexpr uint32_t kSword = 0x00012eb7;
+  const NiPoint3 kAtBed{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAtBed + NiPoint3{ 40.f, 0.f, 0.f });
+  p.CreateActor(kSitter, kAtBed + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& sitter = p.worldState.GetFormAt<MpActor>(kSitter);
+  sitter.SetPos(sitter.GetPos());
+  const auto cell = p.worldState.CellOf(sitter);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.worldState.HostOf(sitter) ==
+          &p.worldState.GetFormAt<MpActor>(kC1));
+
+  // the host's report: the greatsword worn, a sword it also carries
+  sitter.AddItem(kGreatsword, 1);
+  sitter.AddItem(kSword, 1);
+  Equipment reported;
+  Inventory::Entry worn;
+  worn.baseId = kGreatsword;
+  worn.count = 1;
+  worn.SetWorn(Inventory::Worn::Right);
+  reported.inv.AddItems({ worn });
+  reported.numChanges = 6;
+  sitter.SetEquipment(reported);
+  const Equipment before = sitter.GetEquipment();
+  REQUIRE(before.numChanges == 6);
+
+  // four activations of the furniture, as a draugr's alcove gave them
+  for (int i = 0; i < 4; ++i) {
+    DoMessage(p, 0,
+              nlohmann::json{ { "t", MsgType::Activate },
+                              { "data",
+                                { { "caster", kSitter },
+                                  { "target", kBed },
+                                  { "isSecondActivation", false } } } });
+  }
+  REQUIRE(sitter.GetEquipment() == before);
+  REQUIRE(sitter.GetEquipment().numChanges == 6);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kSitter);
+  p.DestroyActor(kC1);
+}
+
 // thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC another
 // game simulates, for a dialogue
 TEST_CASE("A guest's claim on a hosted NPC names the guest as the simulator "

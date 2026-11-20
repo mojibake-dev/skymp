@@ -3017,14 +3017,19 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (msg.data.caster == 0x14) {
     EndConcealment(partOne, *ac);
   }
-  if (hosterId) {
-    auto actor =
-      std::dynamic_pointer_cast<MpActor>(partOne.worldState.LookupFormById(
-        static_cast<uint32_t>(msg.data.caster)));
-    if (actor) {
-      actor->EquipBestWeapon();
-    }
-  }
+  // thuum tracker #172 (playtest 56's look 5, note 3990 and after; ADR-063:
+  // the engine that simulates an NPC owns what it wears, R2): a hosted
+  // actor's activation no longer re-picks its weapon here. Upstream's
+  // EquipBestWeapon rewrote the record (every worn weapon stripped, the
+  // inventory's highest-damage WEAP worn in the right hand alone, numChanges
+  // one up) on each activation its host reported, and every copy applied it:
+  // a draugr getting up out of its alcove (four activations of its
+  // CreatureAlcoveMarker, 800a7) gave four records of its two-handed
+  // greatsword worn right only while its host's engine held it in both
+  // hands, and the watching seat's copy went off, on and off and drew an
+  // empty hand. The host's own equipment report is the record; the fate
+  // roll and Init keep their EquipBestWeapon (MpActor.cpp), the server's own
+  // first dressing of an actor no engine has dressed yet
 }
 
 void ActionListener::OnPutItem(const RawMessageData& rawMsgData,

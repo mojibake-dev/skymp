@@ -7,6 +7,7 @@ import {
   Spell,
   Ui,
   Utility,
+  Weapon,
   setInventory,
 } from 'skyrimPlatform';
 
@@ -178,9 +179,31 @@ export const cannotDress = (ac: Actor): boolean => ac.isDeleted() || ac.isDisabl
 // differs from what the copy holds, their spells as a figure's. The rest of
 // the list (the biped slots: armor, a skin a script equipped, the quiver)
 // is the copy's own worn read (readWorn, the engine's worn flags) against
-// the list. The caller holds the guards (cannotDress, the copy's 3D, the
+// the list. A two-handed weapon (its record's ETYP the BothHands slot) is the
+// right hand's alone (thuum tracker #172): the engine reads it in both hands
+// (getEquippedObject 1 and 0, the host's report wearing it worn and wornLeft
+// at once), and a left-hand row for it unequipped the weapon from both hands
+// whenever a record named it in the right hand alone, so a puppet draugr's
+// greatsword went off, on and off and its draw found an empty hand (playtest
+// 56's look 5, 800a6). The caller holds the guards (cannotDress, the copy's 3D, the
 // update's context: FormView's applyNpcWorn). Returns the base ids it
 // equipped and took off, for the view's line.
+// Skyrim.esm EQUP 0x13f45 BothHands, the slot a two-handed weapon's record
+// names in its ETYP (its PNAM parents 0x13f43 LeftHand and 0x13f42
+// RightHand; lab/esm.py on sky-srv, 2026-11-20: DraugrGreatsword 0x236a5 and
+// DraugrBow 0x302ca both name it)
+const kBothHandsSlot = 0x13f45;
+
+// whether a weapon's own record names the BothHands slot (0 and a non-weapon
+// are not)
+const isBothHands = (baseId: number): boolean => {
+  if (!baseId) {
+    return false;
+  }
+  const slot = Weapon.from(Game.getFormEx(baseId))?.getEquipType();
+  return !!slot && slot.getFormID() === kBothHandsSlot;
+};
+
 export const applyWorn = (ac: Actor, eq: Equipment): { equipped: number[]; unequipped: number[] } => {
   const done = { equipped: new Array<number>(), unequipped: new Array<number>() };
   if (cannotDress(ac)) {
@@ -204,10 +227,18 @@ export const applyWorn = (ac: Actor, eq: Equipment): { equipped: number[]; unequ
       want.add(e.baseId);
     }
   }
+  // thuum tracker #172: a two-hander is one ask, in the right hand. The
+  // left row goes when the record's right is one (its wornLeft entry is the
+  // same weapon, and nothing else shares its hands), and a two-hander the
+  // copy holds is the right row's to keep or take off, never the left's too
+  const rightBoth = isBothHands(right);
+  const heldBoth = heldRight !== 0 && heldRight === heldLeft && isBothHands(heldRight);
   const handRows: Array<{ slot: number; current: number; baseId: number }> = [
     { slot: 1, current: heldRight, baseId: right },
-    { slot: 2, current: heldLeft, baseId: left },
   ];
+  if (!rightBoth) {
+    handRows.push({ slot: 2, current: heldBoth ? 0 : heldLeft, baseId: left });
+  }
   for (const hand of handRows) {
     if (hand.current === hand.baseId) {
       continue;

@@ -284,7 +284,11 @@ use bounded::{String, Vec};
 /// cell's host with the presser's recorded inventory, which the host's
 /// acting scope answers GetItemCount from. A new trailing field, so the
 /// number moves for D-PH1 A's reason.
-pub const SCHEMA_VERSION: u16 = 60;
+/// 61: Arrest and CrimeGold (thuum tracker #97, ADR-079,
+/// docs/verbs/jail.md): an arrest the arrested player's own game reports, and
+/// one hold's bounty as that game holds it; the term, its end on the shared
+/// clock and the bounty per hold are the server's record.
+pub const SCHEMA_VERSION: u16 = 61;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -855,6 +859,12 @@ pub enum Message {
     /// 91, MsgType 83 (thuum tracker #84, docs/verbs/summon.md). See
     /// [`skymp::Summon`].
     Summon(skymp::Summon),
+    /// 92, MsgType 84 (thuum tracker #97, docs/verbs/jail.md). See
+    /// [`skymp::Arrest`].
+    Arrest(skymp::Arrest),
+    /// 93, MsgType 85 (thuum tracker #97, docs/verbs/jail.md). See
+    /// [`skymp::CrimeGold`].
+    CrimeGold(skymp::CrimeGold),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -883,7 +893,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 92] = [
+const TABLE: [Row; 94] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -1022,14 +1032,18 @@ const TABLE: [Row; 92] = [
     // the two triple floats, the cell, the time and the flag (thuum
     // tracker #84; 55 bytes at the longest, pinned by the size test)
     row("Summon", 83, 64, C2S),
+    // a faction and a sentence at five-byte varints (thuum tracker #97)
+    row("Arrest", 84, 16, C2S),
+    // a faction and two sums at five-byte varints (thuum tracker #97)
+    row("CrimeGold", 85, 32, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 92;
-const _: () = assert!(TABLE.len() == 92, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 94;
+const _: () = assert!(TABLE.len() == 94, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -1146,6 +1160,8 @@ impl Message {
             Message::ScriptVariables(_) => 89,
             Message::OwnHeadParts(_) => 90,
             Message::Summon(_) => 91,
+            Message::Arrest(_) => 92,
+            Message::CrimeGold(_) => 93,
         }
     }
 
@@ -1197,6 +1213,8 @@ mod tests {
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).name(), "ScriptVariables");
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).name(), "OwnHeadParts");
         assert_eq!(Message::Summon(skymp::Summon::default()).name(), "Summon");
+        assert_eq!(Message::Arrest(skymp::Arrest::default()).name(), "Arrest");
+        assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).name(), "CrimeGold");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -1273,13 +1291,21 @@ mod tests {
         assert_eq!(name_of_msg_type(82), Some("OwnHeadParts"));
         // tracker #84's one, after 82: wire id 91
         assert_eq!(name_of_msg_type(83), Some("Summon"));
-        assert_eq!(name_of_msg_type(84), None);
+        assert_eq!(name_of_msg_type(84), Some("Arrest"));
+        assert_eq!(name_of_msg_type(85), Some("CrimeGold"));
+        assert_eq!(name_of_msg_type(86), None);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).wire_id(), 90);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).msg_type(), Some(82));
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).direction(), Direction::ClientToServer);
         assert_eq!(Message::Summon(skymp::Summon::default()).wire_id(), 91);
         assert_eq!(Message::Summon(skymp::Summon::default()).msg_type(), Some(83));
         assert_eq!(Message::Summon(skymp::Summon::default()).direction(), Direction::ClientToServer);
+        assert_eq!(Message::Arrest(skymp::Arrest::default()).wire_id(), 92);
+        assert_eq!(Message::Arrest(skymp::Arrest::default()).msg_type(), Some(84));
+        assert_eq!(Message::Arrest(skymp::Arrest::default()).direction(), Direction::ClientToServer);
+        assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).wire_id(), 93);
+        assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).msg_type(), Some(85));
+        assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).direction(), Direction::ClientToServer);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).wire_id(), 89);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).msg_type(), Some(81));
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).direction(), Direction::Both);
@@ -1660,6 +1686,9 @@ mod tests {
             Message::PerkPick(skymp::PerkPick { perk: u32::MAX, ..Default::default() }),
             // a word wall report (thuum docs/verbs/word-wall.md)
             Message::WordWall(skymp::WordWall { wall: u32::MAX, ..Default::default() }),
+            // an arrest and a bounty at their longest (thuum tracker #97)
+            Message::Arrest(skymp::Arrest { faction: u32::MAX, days: u32::MAX, ..Default::default() }),
+            Message::CrimeGold(skymp::CrimeGold { faction: u32::MAX, violent: u32::MAX, non_violent: u32::MAX, ..Default::default() }),
             // a linked activation relayed (thuum docs/verbs/traps.md), and
             // since SCHEMA_VERSION 40 an activation and its relay with the
             // entry byte at their longest (thuum D-C2: 24 and 13 bytes)

@@ -293,6 +293,14 @@ public:
   virtual void OnSummon(const RawMessageData& rawMsgData,
                         const SummonMessage& msg);
 
+  // thuum tracker #97, ADR-079 (docs/verbs/jail.md): the arrest a player's
+  // own game started, recorded as its jail term (PartOne::OnArrest), and one
+  // hold's bounty as that game holds it (PartOne::OnCrimeGold)
+  virtual void OnArrest(const RawMessageData& rawMsgData,
+                        const ArrestMessage& msg);
+  virtual void OnCrimeGold(const RawMessageData& rawMsgData,
+                           const CrimeGoldMessage& msg);
+
   // thuum docs/verbs/traps.md (M4): a linked activation the cell's host
   // reports (a reference that is no actor activating the reference whose
   // activation parents name it): recorded through Activate's own path, and

@@ -146,5 +146,11 @@ enum class MsgType : uint8_t
                         // placed at a summon effect's apply, and its end
                         // (docs/verbs/summon.md, R2: the caster's row owns
                         // it)
+  Arrest = 84,          // thuum tracker #97 (ADR-079): the arrest a
+                        // player's own game started, its jail term the
+                        // server's record (docs/verbs/jail.md)
+  CrimeGold = 85,       // thuum tracker #97 (D-G6 A): one hold's bounty as
+                        // the player's own game holds it, the server's
+                        // record (R0)
   Max
 };

@@ -8,6 +8,7 @@
 #include "ActorSpeechMessage.h"
 #include "ActorValuesMessage.h"
 #include "AliasFillMessage.h"
+#include "ArrestMessage.h"
 #include "ArrowShotMessage.h"
 #include "CellLoadedMessage.h"
 #include "ChangeFormAckMessage.h"
@@ -18,6 +19,7 @@
 #include "ConsoleOutputMessage.h"
 #include "CraftItemMessage.h"
 #include "CreateActorMessage.h"
+#include "CrimeGoldMessage.h"
 #include "CustomEventMessage.h"
 #include "CustomPacketMessage.h"
 #include "DamageCauseMessage.h"
@@ -166,4 +168,6 @@
   REGISTER_MESSAGE(WorldGlobalMessage)                                        \
   REGISTER_MESSAGE(ScriptVariablesMessage)                                    \
   REGISTER_MESSAGE(OwnHeadPartsMessage)                                       \
-  REGISTER_MESSAGE(SummonMessage)
+  REGISTER_MESSAGE(SummonMessage)                                             \
+  REGISTER_MESSAGE(ArrestMessage)                                             \
+  REGISTER_MESSAGE(CrimeGoldMessage)

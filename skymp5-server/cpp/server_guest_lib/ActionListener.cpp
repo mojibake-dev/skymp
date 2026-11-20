@@ -13166,3 +13166,29 @@ void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,
   args[6] = VarValue(hitData.isHitBlocked);  // abHitBlocked
   target->SendPapyrusEvent("OnHit", args.data(), args.size());
 }
+
+// thuum tracker #97, ADR-079 (docs/verbs/jail.md): the arrested player's own
+// game reports its arrest; the server records the term and takes the jump,
+// the strip and the outfit as that game's (ADR-063). Every refusal is logged
+// by name in PartOne::OnArrest and nothing of a refused report lands.
+void ActionListener::OnArrest(const RawMessageData& rawMsgData,
+                              const ArrestMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  partOne.OnArrest(*actor, msg.faction, msg.days);
+}
+
+// thuum tracker #97 (D-G6 A): one hold's bounty as the player's own game
+// holds it, the server's record (R0)
+void ActionListener::OnCrimeGold(const RawMessageData& rawMsgData,
+                                 const CrimeGoldMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  partOne.OnCrimeGold(*actor, msg.faction, msg.violent, msg.nonViolent);
+}

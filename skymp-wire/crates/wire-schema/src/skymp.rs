@@ -3340,6 +3340,52 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 84, thuum's (tracker #97, ADR-079, docs/verbs/jail.md): the
+    /// arrested player's own game reports its arrest as its engine starts it
+    /// (GoToPrison), before the strip's moves. Client to server, reliable.
+    /// The arrest is that game's (ADR-063): the server records the jail term,
+    /// its end on the shared clock (ADR-021), permits the one jump to the
+    /// faction's own jail landing (read from the faction's record, not from
+    /// this message) and takes the strip into the faction's two chests and
+    /// its jail outfit for the arrest's window. Safe to receive twice: a term
+    /// running keeps itself. Reason codes: `E_VAL_RANGE` (a faction of 0, a
+    /// sentence outside 1 to 7 days), `E_VAL_RATE`.
+    pub struct Arrest {
+        /// `"t": 84`.
+        #[serde(default)]
+        pub t: MsgT<84>,
+        /// The crime faction that jailed the player; never 0.
+        pub faction: u32,
+        /// The sentence the engine set, in game days: the hold's bounty over
+        /// iCrimeDaysInPrisonMod, 1 to iCrimeMaxNumberofDaysinJail (7, the
+        /// exe's, tracker #97 note 3921).
+        pub days: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 85, thuum's (tracker #97, ADR-079, D-G6 A): one hold's bounty
+    /// as the player's own game holds it (its engine's crime gold for the
+    /// faction, violent and non-violent, whole gold), sent when it changes.
+    /// Client to server, reliable. The record is the server's (R0), given
+    /// back at a login; a zero bounty clears the hold's. Safe to receive
+    /// twice: the same values change nothing. Reason codes: `E_VAL_RANGE` (a
+    /// faction of 0, a value past i32::MAX, the Papyrus int the server tells
+    /// it back as), `E_VAL_RATE`.
+    pub struct CrimeGold {
+        /// `"t": 85`.
+        #[serde(default)]
+        pub t: MsgT<85>,
+        /// The crime faction; never 0.
+        pub faction: u32,
+        /// The violent crime gold.
+        pub violent: u32,
+        /// The non-violent crime gold.
+        pub non_violent: u32,
+    }
+}
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

@@ -325,6 +325,15 @@ pub struct ClientGuard {
     /// casting at its start), so 16 at once, then 4 a second (UNMEASURED; a
     /// cast is seconds apart).
     pub summon_budget: TokenBucket,
+    /// Budget for a player's arrest reports (Arrest, thuum tracker #97,
+    /// docs/verbs/jail.md): one per arrest, minutes apart; 2 at once, then 1
+    /// a second (UNMEASURED).
+    pub arrest_budget: TokenBucket,
+    /// Budget for a player's bounty reports (CrimeGold, thuum tracker #97):
+    /// one per change of a hold's bounty; a fight in town raises an assault
+    /// and a murder and a pickpocket in seconds, a login's pass names every
+    /// hold, so 16 at once, then 4 a second (UNMEASURED).
+    pub crime_gold_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -378,6 +387,8 @@ impl Default for ClientGuard {
             script_variables_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             own_head_parts_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             summon_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
+            arrest_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
+            crime_gold_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
         }
     }
 }
@@ -765,6 +776,37 @@ fn check_summon(m: &skymp::Summon) -> Result<(), Reject> {
         return Err(Reject::OutOfWorld);
     }
     if !(0.0..).contains(&m.remaining_s) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// The game's longest sentence in days, iCrimeMaxNumberofDaysinJail: the
+/// exe's 7, which no plugin of the lab's load order sets (thuum tracker #97
+/// note 3921, the re-analyst's read on sky-re; PartOne::kMaxJailDays).
+const MAX_JAIL_DAYS: u32 = 7;
+
+/// The largest Papyrus int (Faction.SetCrimeGold takes one), as a bounty's
+/// bound.
+const PAPYRUS_INT_MAX: u32 = i32::MAX.unsigned_abs();
+
+/// A player's arrest report (thuum tracker #97, docs/verbs/jail.md), wire
+/// sanity only: a faction, never 0, and the game's sentence, 1 to 7 days.
+/// Whether the faction has a jail, and where, is the server's read of the
+/// records (PartOne::JailOf, `E_ARREST_NO_JAIL`).
+fn check_arrest(m: &skymp::Arrest) -> Result<(), Reject> {
+    if m.faction == 0 || m.days == 0 || m.days > MAX_JAIL_DAYS {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// A player's bounty report (thuum tracker #97): a faction, never 0, and two
+/// sums no larger than the Papyrus int the server tells them back as
+/// (Faction.SetCrimeGold, Faction.SetCrimeGoldViolent). Whether the faction
+/// is one is the server's read (`E_CRIME_GOLD_FACTION`).
+fn check_crime_gold(m: &skymp::CrimeGold) -> Result<(), Reject> {
+    if m.faction == 0 || m.violent > PAPYRUS_INT_MAX || m.non_violent > PAPYRUS_INT_MAX {
         return Err(Reject::Range);
     }
     Ok(())
@@ -2179,6 +2221,8 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         }
         Message::OwnHeadParts(_) => take(&mut guard.own_head_parts_budget, now_ms),
         Message::Summon(_) => take(&mut guard.summon_budget, now_ms),
+        Message::Arrest(_) => take(&mut guard.arrest_budget, now_ms),
+        Message::CrimeGold(_) => take(&mut guard.crime_gold_budget, now_ms),
         // thuum ADR-068 rung 5 (D-T1 A): a seat sends its own look; a
         // figure's overlay is the server's word
         Message::UpdateAppearance(m) if m.overlay.is_some() => Err(Reject::Range),
@@ -2379,6 +2423,8 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ScriptVariables(m) => check_script_variables(m),
         Message::OwnHeadParts(m) => check_own_head_parts(m),
         Message::Summon(m) => check_summon(m),
+        Message::Arrest(m) => check_arrest(m),
+        Message::CrimeGold(m) => check_crime_gold(m),
         Message::CreateActor(m) => check_create_actor(m),
         Message::UpdateAppearance(m) => check_update_appearance(m),
         Message::SpSnippet(m) => check_sp_snippet(m),
@@ -3916,6 +3962,41 @@ mod tests {
         assert_eq!(validate_server(&state(&[], 0)), Ok(()));
         assert_eq!(validate_server(&state(&[0xbabe4, 0x79343], 1)), Ok(()));
         assert_eq!(validate_server(&state(&[0xbabe4, 0], 1)), Err(Reject::Range));
+    }
+
+    /// thuum tracker #97: CrimeFactionFalkreath 0x28170, playtest 32's
+    /// arrest's faction (lab/esm.py, 2026-11-20)
+    #[test]
+    fn arrest_reports_name_a_faction_and_a_game_sentence_and_are_rate_limited() {
+        use wire_schema::skymp::Arrest;
+        let report = |faction, days| Message::Arrest(Arrest { faction, days, ..Default::default() });
+        assert_eq!(validate_server(&report(0x28170, 1)), Ok(()));
+        assert_eq!(validate_server(&report(0x28170, 7)), Ok(()));
+        assert_eq!(validate_server(&report(0x28170, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x28170, 8)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0, 3)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        assert_eq!(validate(&report(0x28170, 7), &mut guard, 1_000), Ok(()));
+        assert_eq!(validate(&report(0x28170, 7), &mut guard, 1_000), Ok(()));
+        assert_eq!(validate(&report(0x28170, 7), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&report(0x28170, 7), &mut guard, 2_000), Ok(()));
+    }
+
+    #[test]
+    fn crime_gold_reports_name_a_faction_and_papyrus_sized_sums() {
+        use wire_schema::skymp::CrimeGold;
+        let report = |faction, violent, non_violent| Message::CrimeGold(CrimeGold { faction, violent, non_violent, ..Default::default() });
+        assert_eq!(validate_server(&report(0x28170, 1000, 40)), Ok(()));
+        assert_eq!(validate_server(&report(0x28170, 0, 0)), Ok(()));
+        assert_eq!(validate_server(&report(0x28170, PAPYRUS_INT_MAX, PAPYRUS_INT_MAX)), Ok(()));
+        assert_eq!(validate_server(&report(0x28170, 2_147_483_648, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x28170, 0, u32::MAX)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0, 100, 0)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..16 {
+            assert_eq!(validate(&report(0x28170, 40, 0), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&report(0x28170, 40, 0), &mut guard, 1_000), Err(Reject::Rate));
     }
 
     #[test]

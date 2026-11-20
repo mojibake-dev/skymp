@@ -69,6 +69,8 @@ import { PerkStateMessage } from "./perkStateMessage";
 import { WordWallMessage } from "./wordWallMessage";
 import { OwnHeadPartsMessage } from "./ownHeadPartsMessage";
 import { SummonMessage } from "./summonMessage";
+import { ArrestMessage } from "./arrestMessage";
+import { CrimeGoldMessage } from "./crimeGoldMessage";
 import { RelayedActivationMessage } from "./relayedActivationMessage";
 import { ObjectAnimationMessage } from "./objectAnimationMessage";
 import { SkillUseMessage } from "./skillUseMessage";
@@ -160,6 +162,8 @@ export type AnyMessage = ActivateMessage
     | ScriptVariablesMessage
     | OwnHeadPartsMessage
     | SummonMessage
+    | ArrestMessage
+    | CrimeGoldMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

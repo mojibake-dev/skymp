@@ -22,8 +22,10 @@ import {
   FormType,
   Form,
   dressBody,
+  once,
 } from "skyrimPlatform";
 import { logLab } from "../logging";
+import { CreatedForm, isSessionId, sameCreated, toLocalInventory } from "./createdForms";
 
 export interface Extra {
   health?: number;
@@ -37,6 +39,14 @@ export interface Extra {
   poisonCount?: number;
   worn?: boolean;
   wornLeft?: boolean;
+  // thuum tracker #98 (sync/createdForms.ts): on the wire alone, a created
+  // form by its definition: the brewed potion or poison this stack is (then
+  // baseId is its game-file template), the item's made enchantment (no
+  // enchantmentId then), a brewed poison on the weapon (no poisonId then).
+  // An entry this engine reads names its own forms by id instead
+  createdBase?: CreatedForm;
+  createdEnchantment?: CreatedForm;
+  createdPoison?: CreatedForm;
 }
 
 export interface BasicEntry {
@@ -126,6 +136,10 @@ const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
     a.soul === b.soul &&
     a.poisonId === b.poisonId &&
     a.poisonCount === b.poisonCount &&
+    // thuum tracker #98: a wire entry's created forms by their definition
+    sameCreated(a.createdBase, b.createdBase) &&
+    sameCreated(a.createdEnchantment, b.createdEnchantment) &&
+    sameCreated(a.createdPoison, b.createdPoison) &&
     ((!!a.worn === !!b.worn && !!a.wornLeft === !!b.wornLeft) || ignoreWorn)
   );
 };
@@ -384,7 +398,36 @@ const resetBase = (refr: ObjectReference): void => {
 // "something changed"
 export interface ApplyInventoryReport {
   changed: Set<number>;
+  // thuum tracker #98: a created form the server's inventory names was
+  // still being made by this engine, so its stack waits for a later apply
+  pending?: boolean;
 }
+
+// thuum tracker #98: each reference's latest apply, so a retry after a
+// created form is made lands only while no newer inventory came for it
+const applyGenerations = new Map<number, number>();
+// updates a retry waits for the engine's creator (queued on the main thread
+// by createCreatedForm, answered within a frame or two: HYPOTHESIS), and the
+// tries before the apply stops waiting
+const createdRetryUpdates = 10;
+const createdRetries = 5;
+
+const retryAfterCreation = (refrId: number, generation: number, tries: number, apply: () => void): void => {
+  let left = createdRetryUpdates;
+  const wait = () => {
+    if (--left > 0) {
+      once("update", wait);
+      return;
+    }
+    if (applyGenerations.get(refrId) !== generation) {
+      return; // a newer inventory came; its own apply lands it
+    }
+    apply();
+  };
+  if (tries > 0) {
+    once("update", wait);
+  }
+};
 
 // thuum docs/DECISIONS.md D-R1 C: the bases an apply leaves as the engine
 // holds them (applyInventory's `keep`), each with the side it keeps, by
@@ -398,6 +441,9 @@ const keptBy = (e: Entry, keep: ReadonlyMap<number, number>): boolean => {
   const sides = keep.get(e.baseId) ?? 0;
   return (e.count < 0 && (sides & keepSurplus) !== 0) || (e.count > 0 && (sides & keepDeficit) !== 0);
 };
+
+// the retries an inventory has left while its created forms are made
+const createdTriesLeft = new WeakMap<Inventory, number>();
 
 export const applyInventory = (
   refr: ObjectReference,
@@ -416,8 +462,35 @@ export const applyInventory = (
   if (resetBaseFirst) {
     resetBase(refr);
   }
-  const diff = getDiff(newInventory, getInventory(refr), ignoreWorn).entries
-    .filter((e) => keep === undefined || !keptBy(e, keep));
+  // thuum tracker #98 (sync/createdForms.ts): the server's created forms in
+  // this engine's ids, made by its own creators where it holds none yet; a
+  // stack whose form is still being made waits, and meanwhile no stack of a
+  // form this engine made is taken away (it may be that one), then the apply
+  // runs again once the creator has answered, unless a newer inventory came.
+  // The player's own apply is its loop's (remoteServer.ts, which reads the
+  // report's pending and comes back sooner, under its menu gate), so only
+  // another reference's (a container's, a body's) retries here
+  const refrId = refr.getFormID();
+  const generation = (applyGenerations.get(refrId) ?? 0) + 1;
+  applyGenerations.set(refrId, generation);
+  const local = toLocalInventory(newInventory);
+  if (local.pending) {
+    if (report) {
+      report.pending = true;
+    }
+    const tries = refrId === 0x14 ? 0 : createdTriesLeft.get(newInventory) ?? createdRetries;
+    retryAfterCreation(refrId, generation, tries, () => {
+      const again = ObjectReference.from(Game.getFormEx(refrId));
+      if (again) {
+        createdTriesLeft.set(newInventory, tries - 1);
+        applyInventory(again, newInventory, enableCrashProtection, ignoreWorn, false, undefined, keep);
+      }
+    });
+  }
+  const createdHeld = (e: Entry) => isSessionId(e.baseId) || isSessionId(e.enchantmentId) || isSessionId(e.poisonId);
+  const diff = getDiff(local.inventory, getInventory(refr), ignoreWorn).entries
+    .filter((e) => keep === undefined || !keptBy(e, keep))
+    .filter((e) => !local.pending || e.count > 0 || !createdHeld(e));
 
   let res = true;
 

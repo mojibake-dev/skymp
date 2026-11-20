@@ -12,6 +12,8 @@ import { Actor, EquipEvent, FormType, PoisonAppliedEvent, settings } from "skyri
 import { getAppearance } from "../../sync/appearance";
 import { ActorValues, getActorValues } from "../../sync/actorvalues";
 import { getEquipment } from "../../sync/equipment";
+import { definitionOf, isSessionId, templateOf, toWireInventory } from "../../sync/createdForms";
+import { OnEquipMessage } from "../messages/onEquipMessage";
 import { SkympClient } from "./skympClient";
 import { MessageWithRefrId } from "../events/sendMessageWithRefrIdEvent";
 import { UpdateMovementMessage } from "../messages/updateMovementMessage";
@@ -74,10 +76,26 @@ export class SendInputsService extends ClientListener {
         // Otherwise, the server won't trigger spell learn, potion drink, ingredient eat and Papyrus scripts
         // thuum docs/verbs/magic-effects.md: reliable, since a lost one left
         // a potion drunk in this game that the server never consumed
-        this.controller.emitter.emit("sendMessage", {
-            message: { t: MsgType.OnEquip, baseId: event.baseObj.getFormID() },
-            reliability: "reliable"
-        });
+        this.sendOnEquip(event.baseObj.getFormID());
+    }
+
+    // thuum tracker #98: a brewed potion or poison crosses as its template and
+    // its definition (sync/createdForms.ts), never as this session's id; one
+    // whose definition this engine cannot read is not sent (the record keeps
+    // the stack, and the next apply gives it back)
+    private sendOnEquip(baseId: number) {
+        const message: OnEquipMessage = { t: MsgType.OnEquip, baseId };
+        if (isSessionId(baseId)) {
+            const form = definitionOf(baseId);
+            const template = form ? templateOf(form.kind) : 0;
+            if (!form || template <= 0) {
+                logLab("verb:craft", `an equip of session form ${baseId.toString(16)} with no definition this engine can read; not sent`);
+                return;
+            }
+            message.baseId = template;
+            message.createdBase = form;
+        }
+        this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
     }
 
     // thuum docs/verbs/poison.md: the game puts the poison on the right hand's
@@ -89,10 +107,7 @@ export class SendInputsService extends ClientListener {
             return;
         }
         this.equipmentChanged = true;
-        this.controller.emitter.emit("sendMessage", {
-            message: { t: MsgType.OnEquip, baseId: event.poison.getFormID() },
-            reliability: "reliable"
-        });
+        this.sendOnEquip(event.poison.getFormID());
     }
 
     private onUnequip(event: EquipEvent) {
@@ -440,6 +455,9 @@ export class SendInputsService extends ClientListener {
                 this.sp.Game.getPlayer() as Actor,
                 this.numEquipmentChanges,
             );
+            // thuum tracker #98: the wire's shape, a created form by its
+            // definition (sync/createdForms.ts)
+            eq.inv = toWireInventory(eq.inv);
             const message: MessageWithRefrId<UpdateEquipmentMessage> = {
                 t: MsgType.UpdateEquipment,
                 data: eq,

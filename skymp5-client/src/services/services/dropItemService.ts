@@ -4,7 +4,8 @@ import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { SweetTaffySweetCantDropService } from "./sweetTaffySweetCantDropService";
 import { WorldCleanerService } from "./worldCleanerService";
-import { logError, logTrace } from "../../logging";
+import { logError, logLab, logTrace } from "../../logging";
+import { isSessionId } from "../../sync/createdForms";
 
 export class DropItemService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -91,6 +92,14 @@ export class DropItemService extends ClientListener {
 
             if (!numFound) {
                 return logTrace(this, "Ignoring item drop as false positive");
+            }
+
+            // thuum tracker #98: DropItem names a base and a count alone, so a
+            // brewed potion or poison (this session's own form) cannot cross
+            // it; the drop is not sent, its engine copy is gone above, and the
+            // record's next apply gives the stack back (a known limit)
+            if (isSessionId(baseId)) {
+                return logLab("verb:craft", `a drop of session form ${baseId.toString(16)} is not sent (DropItem carries no definition); the record keeps the stack`);
             }
 
             const t = MsgType.DropItem;

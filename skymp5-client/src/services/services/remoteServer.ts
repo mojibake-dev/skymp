@@ -146,6 +146,15 @@ const pcInvKept = (now: number): Map<number, number> | undefined => {
 };
 
 let pcInvLastApply = 0;
+// thuum tracker #98: a crafting report's sitting changed this engine's
+// inventory ahead of the record, so the loop below holds its apply until the
+// server's answer to the report arrives (its SetInventory, which clears the
+// hold) or the hold runs out: the answer, never the copy from before the
+// sitting, is what lands. JS state alone
+let pcInvReplyHoldUntil = 0;
+export const holdPcInventoryForReply = (ms: number): void => {
+  pcInvReplyHoldUntil = Math.max(pcInvReplyHoldUntil, Date.now() + ms);
+};
 // thuum playtest 48 ("Rotfern had to re-equip her bow again", as in playtest
 // 34 and 38's finding 68): the equipment a login's wipe dressed the player
 // from (applyPcInv below), left for the hands pass after this loop's next
@@ -159,6 +168,9 @@ on('update', () => {
   if (isBadMenuShown()) {
     return;
   }
+  if (Date.now() < pcInvReplyHoldUntil) {
+    return;
+  }
   if (Date.now() - pcInvLastApply > 5000) {
     pcInvLastApply = Date.now();
     const pcInv = getPcInventory();
@@ -166,6 +178,11 @@ on('update', () => {
       const player = Game.getPlayer()!;
       const report: ApplyInventoryReport = { changed: new Set<number>() };
       applyInventory(player, pcInv, false, true, true, report, pcInvKept(Date.now()));
+      // thuum tracker #98: a created form the record names was still being
+      // made by this engine's creator; the next apply comes in half a second
+      if (report.pending) {
+        pcInvLastApply = Date.now() - 4500;
+      }
       // thuum playtest 38's finding 68 and playtest 48 (the first draw after
       // a relaunch's login nocked no arrow): a login wipes the player's
       // inventory and lays the equipment's worn rows (applyEquipment, twice:
@@ -289,6 +306,9 @@ export class RemoteServer extends ClientListener {
     const msg = event.message;
     once('update', () => {
       setPcInventory(msg.inventory);
+      // thuum tracker #98: the record's answer is here, a crafting report's
+      // included
+      pcInvReplyHoldUntil = 0;
 
       let blocked = false;
 

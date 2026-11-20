@@ -223,18 +223,72 @@ void PlaceRelayedDecal(const RE::ProjectileHandle& handle, uint32_t shooterId,
                origin.x, origin.y, origin.z);
 }
 
+// What one action on the stack came out as: whether an entry ran it (the
+// mediator was there), the entry's answer, and the event, idle and result the
+// data carried out
+struct StackActionOutcome
+{
+  bool ran = false;
+  uint8_t taken = 0;
+  std::string event;
+  uint32_t idle = 0;
+  int32_t result = 0;
+};
+
+// The one builder of an action's data for both entries below: the engine's
+// TESActionData (include/RE/T/TESActionData.h: ActionInput's source, target,
+// action and unk20, ActionOutput's animEvent and animObjIdle) built on this
+// stack as the engine's own SourceActionMap::DoAction (34202) builds its, the
+// vtable in place for the retry an entry makes through it, performed by
+// `entry`, (ActorMediator*, TESActionData*) -> taken, and its references
+// released after. An empty event and a null idle are left for an entry that
+// chooses them
+StackActionOutcome PerformOnStack(std::uintptr_t entry, RE::Actor& actor,
+                                  RE::BGSAction& action, RE::TESIdleForm* idle,
+                                  const std::string& eventName, uint32_t type)
+{
+  StackActionOutcome out;
+  using Perform_t = uint8_t (*)(void*, RE::TESActionData*);
+  REL::Relocation<void**> mediator{ Offsets::Actions::ActorMediatorSingleton };
+  void* self = *mediator;
+  if (!self) {
+    return out;
+  }
+
+  alignas(16) std::uint8_t storage[sizeof(RE::TESActionData)] = {};
+  auto* data = reinterpret_cast<RE::TESActionData*>(storage);
+  RE::stl::emplace_vtable<RE::TESActionData>(data);
+  data->source = RE::NiPointer<RE::TESObjectREFR>(&actor);
+  data->target = RE::NiPointer<RE::TESObjectREFR>(nullptr);
+  data->action = &action;
+  data->unk20 = type;
+  if (!eventName.empty()) {
+    data->animEvent = RE::BSFixedString(eventName.c_str());
+  }
+  data->animObjIdle = idle;
+
+  out.ran = true;
+  out.taken = reinterpret_cast<Perform_t>(entry)(self, data);
+  const char* event = data->animEvent.c_str();
+  out.event = event ? event : "";
+  out.idle = data->animObjIdle ? data->animObjIdle->formID : 0;
+  out.result = data->result;
+
+  data->source.reset();
+  data->target.reset();
+  data->animEvent = RE::BSFixedString();
+  data->targetAnimEvent = RE::BSFixedString();
+  return out;
+}
+
 // thuum docs/verbs/cast-action.md: a BGSAction performed on an actor with
 // the event and idle the caster's engine chose, through the mediator's entry
 // that performs a TESActionData as given (game/Offsets.h Actions; read on
 // sky-re 2026-10-14, HYPOTHESIS until the lab's trace: it sends the output's
 // event to the actor's graph and keeps the engine's books for it, with no
 // validation and no idle selection, where the first entry would choose the
-// idle again from this actor's own conditions). The data is CommonLibSSE-NG's
-// (include/RE/T/TESActionData.h: ActionInput's source, target, action and
-// unk20, ActionOutput's animEvent and animObjIdle), built on this stack as
-// the engine's own SourceActionMap::DoAction builds its, the vtable in place
-// for the retry the entry makes through it, its references released below.
-// The master-behavior variables the graph needs first are the caller's
+// idle again from this actor's own conditions). The master-behavior
+// variables the graph needs first are the caller's
 // (applyAnimationVariablesToActor, before this call).
 bool PerformActionOnActor(RE::Actor& actor, RE::BGSAction& action,
                           RE::TESIdleForm* idle, const std::string& eventName,
@@ -245,37 +299,52 @@ bool PerformActionOnActor(RE::Actor& actor, RE::BGSAction& action,
   if (!REL::Module::IsAE() || eventName.empty()) {
     return false;
   }
-  using PerformChosen_t = uint8_t (*)(void*, RE::TESActionData*);
-  REL::Relocation<PerformChosen_t> performChosen{
+  REL::Relocation<std::uintptr_t> performChosen{
     Offsets::Actions::PerformChosenAction
   };
-  REL::Relocation<void**> mediator{ Offsets::Actions::ActorMediatorSingleton };
-  void* self = *mediator;
-  if (!self) {
+  const auto out = PerformOnStack(performChosen.address(), actor, action, idle,
+                                  eventName, type);
+  if (!out.ran) {
     return false;
   }
-
-  alignas(16) std::uint8_t storage[sizeof(RE::TESActionData)] = {};
-  auto* data = reinterpret_cast<RE::TESActionData*>(storage);
-  RE::stl::emplace_vtable<RE::TESActionData>(data);
-  data->source = RE::NiPointer<RE::TESObjectREFR>(&actor);
-  data->target = RE::NiPointer<RE::TESObjectREFR>(nullptr);
-  data->action = &action;
-  data->unk20 = type;
-  data->animEvent = RE::BSFixedString(eventName.c_str());
-  data->animObjIdle = idle;
-
-  const uint8_t taken = performChosen(self, data);
 
   logger::info("[verb:cast-action] performAction on {:x}: action {:x} idle "
                "{:x} event '{}' type {} -> taken {} result {}",
                actor.formID, action.formID, idle ? idle->formID : 0, eventName,
-               type, taken, data->result);
-  data->source.reset();
-  data->target.reset();
-  data->animEvent = RE::BSFixedString();
-  data->targetAnimEvent = RE::BSFixedString();
-  return taken != 0;
+               type, out.taken, out.result);
+  return out.taken != 0;
+}
+
+// thuum tracker #172 (playtest 56: the draugr came back into view on the
+// other seat "running around with their arms out"): a BGSAction performed on
+// an actor as its own engine performs it, through ActorMediator::PerformAction
+// (38949, Offsets::Hooks::PerformAction) with the event left empty: the entry
+// runs its validators and chooses the idle and its event from this actor's
+// own idle tree by the action and the idles' conditions, then notifies the
+// graph and keeps the ActorState books (docs/verbs/cast-action.md, the
+// entry's read on sky-re 2026-10-14). The data is DoAction's: unk20 2, flags
+// 0. Skyrim.esm hangs each race's draw and sheathe idles under ActionDraw
+// 0x132af and ActionSheath 0x46baf (lab/esm.py, 2026-11-20): WeapEquip and
+// Unequip for the humanoid master behaviour, weapEquip and weapUnequip for
+// the draugr's, the combat stance for a wolf's, so one call serves every
+// graph. The chosen event is logged, since the caller cannot name it
+bool PerformEngineActionOnActor(RE::Actor& actor, RE::BGSAction& action)
+{
+  if (!REL::Module::IsAE()) {
+    return false;
+  }
+  const auto out = PerformOnStack(Offsets::Hooks::PerformAction.address(),
+                                  actor, action, nullptr, std::string(), 2);
+  if (!out.ran) {
+    return false;
+  }
+
+  logger::info("[verb:movement] engine action {:x} on {:x}: the engine chose "
+               "idle {:x} event '{}' -> taken {} result {} (thuum tracker "
+               "#172)",
+               action.formID, actor.formID, out.idle, out.event, out.taken,
+               out.result);
+  return out.taken != 0;
 }
 
 // Whether the actor's active graph is the humanoid master behaviour's, whose
@@ -667,6 +736,28 @@ Napi::Value MagicApi::PerformAction(const Napi::CallbackInfo& info)
   return Napi::Boolean::New(info.Env(), true);
 }
 
+// thuum tracker #172: queued to the game thread as performAction is (its
+// graph event reaches Skyrim Platform's sendAnimationEvent hook, which must
+// not be entered from inside a JS call, caff3e047). Its answer is the log
+// line above, not performActionResult, so a cast replay waiting on that
+// answer for the same actor never reads this call's
+Napi::Value MagicApi::PerformEngineAction(const Napi::CallbackInfo& info)
+{
+  const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
+  const auto actionFormId = NapiHelper::ExtractUInt32(info[1], "actionFormId");
+
+  g_nativeCallRequirements.gameThrQ->AddTask(
+    [actorFormId, actionFormId](Viet::Void) {
+      auto* pActor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
+      auto* pAction = RE::TESForm::LookupByID<RE::BGSAction>(actionFormId);
+      if (pActor && pAction) {
+        skymp::magic::details::PerformEngineActionOnActor(*pActor, *pAction);
+      }
+    });
+
+  return Napi::Boolean::New(info.Env(), true);
+}
+
 Napi::Value MagicApi::PerformActionResult(const Napi::CallbackInfo& info)
 {
   const auto actorFormId = NapiHelper::ExtractUInt32(info[0], "actorFormId");
@@ -870,6 +961,10 @@ void MagicApi::Register(Napi::Env env, Napi::Object& exports)
   exports.Set("performActionResult",
               Napi::Function::New(
                 env, NapiHelper::WrapCppExceptions(PerformActionResult)));
+
+  exports.Set("performEngineAction",
+              Napi::Function::New(
+                env, NapiHelper::WrapCppExceptions(PerformEngineAction)));
 
   exports.Set("setActorAimHeading",
               Napi::Function::New(

@@ -1,4 +1,6 @@
 import { ObjectReference, Actor, Game, TESModPlatform, Debug, setPuppetLocomotion, printConsole, settings } from "skyrimPlatform";
+// @ts-expect-error (TODO: Remove in 2.10.0)
+import { performEngineAction } from "skyrimPlatform";
 import { puppetGazeHeld } from "./puppetGaze";
 import { RespawnNeededError } from "../lib/errors";
 import { Movement, RunMode, AnimationVariables, Transform, NiPoint3 } from "./movement";
@@ -116,7 +118,7 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
   applySprinting(ac, m.runMode === "Sprinting");
   applyBlocking(ac, m);
   applySneaking(ac, m.isSneaking);
-  applyWeapDrawn(ac, m.isWeapDrawn);
+  applyWeapDrawn(ac, m.isWeapDrawn, !!puppet);
   applyHealthPercentage(ac, m.healthPercentage);
 
   // thuum docs/verbs/npc-fate.md, ADR-048's seam (death-path.md section 2):
@@ -294,7 +296,7 @@ const weapDrawnAsked = new Map<number, { drawn: boolean; at: number }>();
 // said sheathed
 const weapDrawnSaid = new Map<number, { drawn: boolean; asks: number }>();
 
-const sayWeapDrawn = (ac: Actor, id: number, wanted: boolean, before: boolean, how: "skipped" | "asked" | "event"): void => {
+const sayWeapDrawn = (ac: Actor, id: number, wanted: boolean, before: boolean, how: "skipped" | "asked" | "action"): void => {
   const said = weapDrawnSaid.get(id);
   const fresh = !said || said.drawn !== wanted;
   const asks = (fresh || !said ? 0 : said.asks) + (how === "skipped" ? 0 : 1);
@@ -304,12 +306,33 @@ const sayWeapDrawn = (ac: Actor, id: number, wanted: boolean, before: boolean, h
   }
   const state = (drawn: boolean) => (drawn ? "drawn" : "sheathed");
   const what = how === "skipped" ? "not asked, the engine reports it already"
-    : how === "event" ? `asked as the graph event WeapEquip (${asks} for this state)`
+    : how === "action" ? `asked as the engine's ${wanted ? "ActionDraw" : "ActionSheath"}, its own idle chosen (${asks} for this state)`
       : `asked through setWeaponDrawnMode (${asks} for this state)`;
   logLab("verb:movement", `weap-drawn ${id.toString(16)}: wanted ${state(wanted)}, the engine before ${state(before)}, 3D ${ac.is3DLoaded()}: ${what} (thuum tracker #172)`);
 };
 
-export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean): void => {
+// thuum tracker #172 (playtest 56, Eli: "rotfern had her bow, but the draugr
+// were running around with their arms out"): a puppet's draw and sheathe are
+// the engine's own actions, ActionDraw and ActionSheath (Skyrim.esm's AACT
+// 0x132af and 0x46baf, lab/esm.py on sky-srv 2026-11-20), performed through
+// the engine's entry that chooses the idle from the actor's own idle tree
+// (performEngineAction, MagicApi.cpp). The tree is per graph: the humanoid
+// master behaviour draws with WeapEquip and sheathes with Unequip
+// (DefaultDrawWeapon 0x89011, DefaultSheathe 0x46bb2), a draugr's graph with
+// weapEquip and weapUnequip (DraugrDraw 0x32d66, DraugrDefaultSheath 0x5ac75;
+// its behaviour file names no WeapEquip at all, Skyrim - Animations.bsa read
+// 2026-11-20), a wolf's with combatStanceStart. So one call fits every puppet,
+// where a fixed event name drew only humans. Creatures send no actions
+// (FridaHooks.cpp's action hook admits the master behaviour alone), so for
+// them this flag is the only draw a puppet gets (note 3645's read). The
+// native setWeaponDrawnMode stays the figures': it forces the state through
+// DrawWeaponMagicHands and holds it against the engine's own draw and sheathe
+// calls (FridaHooks.cpp's two DrawSheathe hooks), which on an AI-off creature
+// took seconds and left the weapon on its back (HYPOTHESIS, H1, unread)
+const kActionDraw = 0x132af;
+const kActionSheath = 0x46baf;
+
+export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean, puppet = false): void => {
   const before = ac.isWeaponDrawn();
   const id = ac.getFormID();
   if (before === isWeapDrawn) {
@@ -321,7 +344,16 @@ export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean): void => {
   if (last && last.drawn === isWeapDrawn && now - last.at < 1000) {
     return;
   }
+  askWeapDrawn(ac, id, isWeapDrawn, before, puppet, now);
+};
+
+const askWeapDrawn = (ac: Actor, id: number, isWeapDrawn: boolean, before: boolean, puppet: boolean, now: number): void => {
   weapDrawnAsked.set(id, { drawn: isWeapDrawn, at: now });
+  if (puppet) {
+    sayWeapDrawn(ac, id, isWeapDrawn, before, "action");
+    performEngineAction(id, isWeapDrawn ? kActionDraw : kActionSheath);
+    return;
+  }
   sayWeapDrawn(ac, id, isWeapDrawn, before, "asked");
   TESModPlatform.setWeaponDrawnMode(ac, isWeapDrawn ? 1 : 0);
 };
@@ -330,23 +362,21 @@ export const applyWeapDrawn = (ac: Actor, isWeapDrawn: boolean): void => {
 // asked of it and asks the record's state again, since an ask that reached
 // the engine before the 3D and its graph ran may have left the engine
 // reporting a state nothing shows (HYPOTHESIS, unread: the log above reads
-// it). A puppet's draw goes as the graph event its host's action sends,
-// WeapEquip (docs/verbs/npc-stream.md, the action stream's event names), the
-// route the action stream already plays a puppet's actions by, since a draw
-// through the native may never complete on an actor whose AI is off
-// (HYPOTHESIS, unread); its native ask then waits the usual second
+// it). A puppet the record has drawn is asked to draw even when the engine
+// reports drawn already, for that reason; the entry's validators refuse a
+// draw the actor's state does not allow (HYPOTHESIS: the draw gate of 39002,
+// docs/verbs/cast-action.md's read of the entry), and the log line from
+// performEngineAction says taken or not. Anything else goes through
+// applyWeapDrawn's check
 export const reaskWeapDrawn = (ac: Actor, isWeapDrawn: boolean, puppet: boolean): void => {
   const id = ac.getFormID();
   weapDrawnAsked.delete(id);
   weapDrawnSaid.delete(id);
   if (puppet && isWeapDrawn) {
-    const before = ac.isWeaponDrawn();
-    weapDrawnAsked.set(id, { drawn: true, at: Date.now() });
-    sayWeapDrawn(ac, id, true, before, "event");
-    Debug.sendAnimationEvent(ac, "WeapEquip");
+    askWeapDrawn(ac, id, true, ac.isWeaponDrawn(), true, Date.now());
     return;
   }
-  applyWeapDrawn(ac, isWeapDrawn);
+  applyWeapDrawn(ac, isWeapDrawn, puppet);
 };
 
 // thuum docs/verbs/npc-puppet.md (x-npc-death 20261023-054215): the step

@@ -144,10 +144,14 @@ const isIdle = (animEventName: string) => {
   );
 };
 
+// `puppet`: an NPC this game does not host (view/formView.ts), whose relayed
+// draw or sheathe goes as the engine's own action (thuum tracker #172,
+// sync/movementApply.ts)
 export const applyAnimation = (
   refr: ObjectReference,
   anim: Animation,
-  state: AnimationApplyState
+  state: AnimationApplyState,
+  puppet = false
 ): void => {
   if (state.lastNumChanges === anim.numChanges) {
     return;
@@ -171,14 +175,14 @@ export const applyAnimation = (
 
   if (anim.animEventName === "SkympFakeEquip") {
     if (ac) {
-      applyWeapDrawn(ac, true);
+      applyWeapDrawn(ac, true, puppet);
     }
     return;
   }
 
   if (anim.animEventName === "SkympFakeUnequip") {
     if (ac) {
-      applyWeapDrawn(ac, false);
+      applyWeapDrawn(ac, false, puppet);
     }
     return;
   }

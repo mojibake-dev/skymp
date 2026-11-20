@@ -1431,11 +1431,11 @@ export class FormView {
       const queued = model.animationQueue;
       if (queued && queued.length > 0) {
         for (const anim of queued) {
-          applyAnimation(refr, anim, this.animState);
+          applyAnimation(refr, anim, this.animState, puppet);
         }
         queued.splice(0, queued.length);
       } else if (model.animation) {
-        applyAnimation(refr, model.animation, this.animState);
+        applyAnimation(refr, model.animation, this.animState, puppet);
       }
       // Use them only once, for spawning actors with correct animations
       this.animState.useAnimOverrides = false;

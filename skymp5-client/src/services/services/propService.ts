@@ -336,6 +336,11 @@ type Prop = {
     liveAt: number;
     liveEnded: boolean;
     knockedAt: number;
+    // thuum tracker #179 (ADR-063's 2026-11-19 amendment): this seat's own
+    // player's body, taken from another player's stream while that player's
+    // grip holds it; followed (knocked in place, the drive, the get-up held),
+    // never streamed from here, and untracked once the word returns it (tick)
+    handed: boolean;
 };
 
 // Physics rung 4 (kindOf): what a reference is to this service, by its base
@@ -979,8 +984,15 @@ export class PropService extends ClientListener {
             this.lastRescan = now;
             this.rescan(now);
         }
-        if (this.props.size > 0) {
-            this.readHolds(now);
+        // thuum tracker #175 (playtest 56's look 4): the hand is read every
+        // update and a knock tracked whenever one is queued. Gated on a
+        // tracked prop, a grip on a living actor made no row while this seat
+        // tracked nothing: c1's three grips of 29602 (07:09:46 to 07:09:56Z,
+        // a bandit c2 hosted) fell in a tracked set empty since c1's teleport,
+        // and so did all thirteen grips of the demo of 11-19 (one engine read
+        // an update, Game.getPlayerGrabbedRef)
+        this.readHolds(now);
+        if (this.knocks.length > 0) {
             this.trackKnocks(now);
         }
         if (this.contacts.length > 0) {
@@ -1049,6 +1061,17 @@ export class PropService extends ClientListener {
         const restPending = prop.follow !== undefined && prop.follow.restPending();
         const simulate = myId !== 0 && owner === myId
             && (prop.simulating || (!restPending && (prop.restAt === 0 || now - prop.restAt >= REST_DYNAMIC_MS)));
+        // thuum tracker #179: this seat's own player handed to a gripper is
+        // its own game's again once the word returns it and the follow has
+        // rendered to the gripper's rest (or ended): untracked, which ends the
+        // follow (endFollow: set at the stream's last root, then the get-up
+        // hold lifted, #178 step 4 (b)), never a stream of its own get-up
+        // from here (the gripper's copy stood up already: a stream would
+        // knock it again to follow)
+        if (prop.handed && (simulate || (owner === myId && prop.follow === undefined))) {
+            this.untrack(prop, "the grip's hold ended: this seat's player is its own game's again");
+            return;
+        }
         // A6: a hand whose grab another seat's later word overrides (a double
         // grab lost, the server's Held answer naming the holder) lets go, so
         // no two hands move one prop (ADR-063 decision 3)
@@ -1120,7 +1143,13 @@ export class PropService extends ClientListener {
             // a word that names this seat is a touch granted: the body wakes
             // (a drop's copy may stand in the air, a passed prop mid-motion);
             // the host's default clutter rests until a contact wakes it
-            this.flip(prop, refr, simulate, simulate && named, now);
+            // thuum tracker #178's delay, B (look 4: 0.07 to 0.13 s from the
+            // knock edge to the first sample): this seat's own player knocked
+            // is its own game's at once (the server grants a player's body to
+            // its own game in the claim's millisecond), so its stream opens
+            // with the knock edge's own read rather than at the first move
+            // past the dead band
+            this.flip(prop, refr, simulate, simulate && (named || (prop.localId === 0x14 && !prop.handed)), now);
         } else if (loaded3D && prop.motionAsked === undefined) {
             this.setMotion(prop, refr, this.restMotion(prop, simulate, now), true);
         }
@@ -1147,8 +1176,12 @@ export class PropService extends ClientListener {
     private ownerOf(prop: Prop, myId: number): number {
         if (prop.localId === 0x14) {
             // this seat's own player's knocked body (the live-body kind): its
-            // own game alone simulates it (ADR-063), claimed at its track
-            return myId;
+            // own game simulates it (ADR-063), claimed at its track, except
+            // while another player's grip holds it (thuum tracker #179, the
+            // 2026-11-19 amendment): the word naming the gripper makes it the
+            // gripper's for the hold, until the gripper's rest returns it
+            const held = this.owners.get(prop.refr);
+            return held !== undefined && held.player !== 0 ? held.player : myId;
         }
         const word = this.owners.get(prop.refr);
         if (word && word.player !== 0) {
@@ -1961,13 +1994,21 @@ export class PropService extends ClientListener {
         if (following && !c.ragdoll && now - prop.knockedAt >= KNOCK_AGAIN_MS) {
             prop.knockedAt = now;
             // marked first: the knock's own events and actions are held from
-            // the relay (animation.ts, actionSyncService.ts)
-            markFollowedDown(prop.localId);
+            // the relay (animation.ts, actionSyncService.ts); this seat's own
+            // player handed to a gripper (#179) is never marked: its knock and
+            // get-up relay as its own, so the gripper's copy reads both the
+            // down and the up flag (ce286ddb2)
+            if (!prop.handed) {
+                markFollowedDown(prop.localId);
+            }
             ac.pushActorAway(ac, 0);
             logLab(TAG, `live body ${prop.refr.toString(16)}: this copy knocked in place to follow another seat's stream`);
         }
         if (!following && !c.ragdoll) {
             prop.knockedAt = 0;
+        }
+        if (prop.handed) {
+            return;
         }
         if (following || c.ragdoll) {
             markFollowedDown(prop.localId);
@@ -2391,7 +2432,15 @@ export class PropService extends ClientListener {
             // an actor this seat hosts: the mark also holds this seat's own
             // relays of its actions (actionSyncService), which look 3's grip
             // of 39fe2 kept (the review of the grip's delta, finding 1)
-            if (prop.live && holds(prop) && !this.controller.lookupListener(HostService).isMineLocal(prop.localId)) {
+            // A grip's release throws the actor (GrabActorEffect::Finish's
+            // KnockExplosion; the static read of 11-19, #175 note 3689) and
+            // this seat streams the throw until the engine stands it up, so
+            // the mark holds while the stream runs too: cleared at the let go,
+            // the copy's own movement settle pulled it 275 units back onto its
+            // player's spot 48 ms after the release (look 4, 07:09:12.430Z).
+            // Never this seat's own player: its events relay as its own
+            if (prop.live && prop.localId !== 0x14 && (holds(prop) || prop.streaming)
+                && !this.controller.lookupListener(HostService).isMineLocal(prop.localId)) {
                 markFollowedDown(prop.localId);
             }
         }
@@ -2468,9 +2517,11 @@ export class PropService extends ClientListener {
     private letGo(prop: Prop, now: number, why: string) {
         prop.held = false;
         // a gripped puppet's followed-down mark (readHolds) ends with the
-        // hold, so its host's relayed events play again at once; a copy this
-        // seat follows (knockedAt) keeps holdLiveCopy's
-        if (prop.live && prop.knockedAt === 0) {
+        // hold, so its host's relayed events play again at once, unless this
+        // seat still streams its throw (readHolds renews it until the stream's
+        // rest, then it lapses); a copy this seat follows (knockedAt) keeps
+        // holdLiveCopy's
+        if (prop.live && prop.knockedAt === 0 && !prop.streaming) {
             clearFollowedDown(prop.localId);
         }
         logLab(TAG, `prop ${prop.refr.toString(16)} let go: ${why}${prop.holdLost ? " (another seat's word had ended this hand's hold)" : ""}`);
@@ -2671,15 +2722,21 @@ export class PropService extends ClientListener {
         for (const w of waiting) {
             let prop = this.props.get(w.message.refr);
             if (!prop) {
-                const localId = remoteIdToLocalId(w.message.refr);
+                // thuum tracker #179: another player's stream of this seat's
+                // own player (a grip's hold) names it by its server id
+                const own = w.message.refr === this.myId();
+                const localId = own ? 0x14 : remoteIdToLocalId(w.message.refr);
                 const body = this.trapBodies.get(w.message.refr);
                 // an item's or a world body's stream (kindOf); a trap body is
                 // D-S3's, an unknown one taken at its word
                 const kind = localId && !body ? this.kindOf(localId, w.message.refr, undefined, true) : "none";
                 prop = !localId ? undefined
                     : body ? this.trackTrapBody(w.message.refr, body, w.at, false)
-                    : kind === "item" || kind === "world" ? this.trackInPlace(w.message.refr, localId, undefined, "its stream arrived")
+                    : kind === "item" || kind === "world" ? this.trackInPlace(w.message.refr, localId, undefined, own ? "another player's grip holds this seat's player" : "its stream arrived")
                     : undefined;
+                if (prop && own) {
+                    prop.handed = true;
+                }
             }
             if (prop) {
                 this.feed(prop, w.message, w.at, false);
@@ -3864,6 +3921,7 @@ export class PropService extends ClientListener {
             liveAt: 0,
             liveEnded: false,
             knockedAt: 0,
+            handed: false,
         };
     }
 

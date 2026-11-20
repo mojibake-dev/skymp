@@ -37,13 +37,21 @@ constexpr uint32_t kBoots = 0x0001b401;
 constexpr uint32_t kBootsEnchantment = 0x000ad484;
 constexpr uint32_t kSoulGem = 0x0002e4e3;
 
+// A player (user 0) at the origin holding nothing: a new character's base
+// container gives it a kit (five RestoreHealth01 0x3EADD and an Iron Dagger
+// among it, CI pipeline 6420's three red cases), which these cases would
+// count beside their own stacks, so the record is emptied first
+// (SetInventory marks the base container laid, so the kit never comes back)
 MpActor& Player(PartOne& p)
 {
   DoConnect(p, 0);
   p.CreateActor(kActor, { 0, 0, 0 }, 0, 0x3c);
   p.SetUserActor(0, kActor);
+  auto& ac = p.worldState.GetFormAt<MpActor>(kActor);
+  ac.SetInventory(Inventory());
+  REQUIRE(ac.GetInventory().entries.empty());
   p.Messages().clear();
-  return p.worldState.GetFormAt<MpActor>(kActor);
+  return ac;
 }
 
 void Leave(PartOne& p)
@@ -282,7 +290,9 @@ TEST_CASE("A temper and an enchant replace the plain item with the stack its "
   // made enchantment, its charge and its name in
   CreatedForm enchantment;
   enchantment.kind = CreatedForm::kWeaponEnchantment;
-  enchantment.effects = { CreatedEffect{ kHealMgef, 10.f, 0, 1, 32.f } };
+  // no duration: the heal MGEF's record flags NoDuration, so the record
+  // keeps a reported one zeroed (CraftService::NormalizeCreated, 7c5aaa3f0)
+  enchantment.effects = { CreatedEffect{ kHealMgef, 10.f, 0, 0, 32.f } };
   Inventory::Entry enchanted(kDagger, 1);
   enchanted.createdEnchantment = enchantment;
   enchanted.maxCharge = 1500.f;

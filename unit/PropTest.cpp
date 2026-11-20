@@ -2484,3 +2484,57 @@ TEST_CASE("A player's knocked body is its own game's alone: its own claim is "
   REQUIRE(p.PropLiveOwner(*c1) == 0);
   Leave(p);
 }
+
+// thuum tracker #179 (ADR-063's 2026-11-19 amendment; Eli: "yeah go with
+// it"): a Vampiric Grip on another player is a hand, the engine's grab, so
+// the gripper's touch 1 makes the gripped player's body the gripper's for
+// the hold, and the gripped player's own game follows that stream; any other
+// touch of another player's body stays refused (its own game simulates its
+// knock, #178)
+TEST_CASE("Another player's grip holds a player's body: its grab is granted "
+          "and told to the gripped player's own game, its samples move the "
+          "body and reach that game, another touch stays refused, and the "
+          "gripper's rest returns the body",
+          "[Prop][espm]")
+{
+  const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kForest);
+  Player(p, 1, kC2, kForest + NiPoint3{ 20.f, 0.f, 0.f });
+  p.TickCellHosts(NowMs());
+  MpActor* c1 = p.worldState.LookupFormByIdNoLoad(kC1)->AsActor();
+  REQUIRE(c1 != nullptr);
+  p.Messages().clear();
+  // c2's impulse on c1 (a shout's): refused, as before
+  Claim(p, 1, kC1, 3);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  // c2's grip of c1: granted, and the word reaches c1's own game
+  {
+    LogCapture log;
+    Claim(p, 1, kC1, 1);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d02 claims prop ff000d01 by "
+                      "touch 1: granted") == 1);
+  }
+  REQUIRE(p.PropLiveOwner(*c1) == kC2);
+  const auto words = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(words.size() == 1);
+  REQUIRE(words[0].refr == kC1);
+  REQUIRE(words[0].player == kC2);
+  // the gripper's sample moves c1's body and reaches c1's own game
+  p.Messages().clear();
+  const NiPoint3 lifted = c1->GetPos() + NiPoint3{ 0.f, 30.f, 20.f };
+  Sample(p, 1, kC1, lifted, false);
+  REQUIRE(c1->GetPos() == lifted);
+  REQUIRE(RelaysTo(p, 0).size() == 1);
+  // c1's own game claims its body while the gripper streams it: refused
+  Claim(p, 0, kC1, 3);
+  REQUIRE(p.PropLiveOwner(*c1) == kC2);
+  // the gripper's rest (its copy's get-up) returns the body: player 0
+  p.Messages().clear();
+  Sample(p, 1, kC1, lifted, true);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  const auto back = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(back.size() == 1);
+  REQUIRE(back[0].player == 0);
+  Leave(p);
+}

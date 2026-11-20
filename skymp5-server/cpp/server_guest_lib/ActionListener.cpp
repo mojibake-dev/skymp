@@ -4768,8 +4768,18 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     }
     const auto* propActor = prop->AsActor();
     const bool self = prop == myActor;
+    // thuum tracker #179 (ADR-063's 2026-11-19 amendment; Eli: "yeah go with
+    // it"): a player's body is its own game's, except in another player's
+    // grip, a hand (touch 1, the engine's grab: a Vampiric Grip names its
+    // actor as the gripper's grabbed object) whose hold makes it the
+    // gripper's until the gripper's rest returns it (A4's word, player 0);
+    // the gripped game follows that stream. Any other touch of another
+    // player's body (a contact, a drop, an impulse) stays refused: its own
+    // game simulates its knock (#178)
+    constexpr uint32_t kTouchGrab = 1;
     if (kind == PropKind::LiveBody && propActor &&
-        propActor->GetUserId() != Networking::InvalidUserId && !self) {
+        propActor->GetUserId() != Networking::InvalidUserId && !self &&
+        msg.touch != kTouchGrab) {
       return refuse("E_PROP_KIND",
                     "a player's body, which its own game simulates (ADR-063)");
     }
@@ -9326,8 +9336,11 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   // one part, so its sample with bones moves nothing and reaches nobody
   // a player's body streams from its own game alone, as it is claimed: the
   // cell's host, the owner of a prop with no live row, takes no other
-  // player's body (the review of 6f43e78e8, finding 1)
-  if (kind == PropKind::LiveBody && prop != myActor) {
+  // player's body (the review of 6f43e78e8, finding 1); a gripper's granted
+  // hold (thuum tracker #179, OnPropClaim's touch 1) is the live row that
+  // lets its samples through, until its rest returns the body
+  if (kind == PropKind::LiveBody && prop != myActor &&
+      partOne.PropLiveOwner(*prop) != myActor->GetFormId()) {
     const auto* propActor = prop->AsActor();
     if (propActor && propActor->GetUserId() != Networking::InvalidUserId) {
       return refuse("E_PROP_KIND",

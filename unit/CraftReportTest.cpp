@@ -214,6 +214,20 @@ TEST_CASE("A brew's ingredients leave the record and its potion arrives by "
   REQUIRE(Stacks(ac, kPotionTemplate).size() == 1);
   REQUIRE(Stacks(ac, kPotionTemplate)[0].count == 2);
 
+  // the heal MGEF's record flags NoDuration (EspmTest.cpp), so a duration
+  // reported on it is no part of the potion: the record keeps it zeroed and
+  // the stack is the same (the review's finding 4)
+  CreatedForm lasting = Heal(25.f);
+  lasting.effects[0].duration = 30;
+  Report(p, { Inventory::Entry(kWheat, 1), Inventory::Entry(kOther, 1) },
+         { Potion(lasting) }, {}, 4);
+  ac.AddItem(kWheat, 1);
+  ac.AddItem(kOther, 1);
+  REQUIRE(Stacks(ac, kPotionTemplate).size() == 1);
+  REQUIRE(Stacks(ac, kPotionTemplate)[0].count == 3);
+  REQUIRE(Stacks(ac, kPotionTemplate)[0].createdBase->effects[0].duration ==
+          0);
+
   // another magnitude is another potion, and never a plain template
   Report(p, { Inventory::Entry(kWheat, 1), Inventory::Entry(kOther, 1) },
          { Potion(Heal(30.f)) });

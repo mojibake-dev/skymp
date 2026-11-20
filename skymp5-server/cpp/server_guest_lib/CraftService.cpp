@@ -326,6 +326,39 @@ std::optional<std::vector<Inventory::Entry>> CraftService::HeldRows(
   return rows;
 }
 
+void CraftService::NormalizeCreated(WorldState& worldState,
+                                    Inventory::Entry& e)
+{
+  if (!worldState.HasEspm()) {
+    return;
+  }
+  const auto normalize = [&](std::optional<CreatedForm>& form) {
+    if (!form) {
+      return;
+    }
+    for (auto& effect : form->effects) {
+      espm::MGEF::DATA data;
+      try {
+        data = espm::GetData<espm::MGEF>(effect.mgef, &worldState).data;
+      } catch (std::exception&) {
+        continue; // no MGEF of the files: the record keeps it as reported
+      }
+      if (data.IsFlagSet(espm::MGEF::Flags::NoMagnitude)) {
+        effect.magnitude = 0.f;
+      }
+      if (data.IsFlagSet(espm::MGEF::Flags::NoArea)) {
+        effect.area = 0;
+      }
+      if (data.IsFlagSet(espm::MGEF::Flags::NoDuration)) {
+        effect.duration = 0;
+      }
+    }
+  };
+  normalize(e.createdBase);
+  normalize(e.createdEnchantment);
+  normalize(e.createdPoison);
+}
+
 namespace {
 // A stack as HeldRows compares it, for a refusal's line: the base, the count
 // and the lasting extras, a created form by its kind and effect count
@@ -390,9 +423,11 @@ void CraftService::OnCraftReport(const RawMessageData& rawMsgData,
   std::vector<Inventory::Entry> gained = msg.gained;
   for (auto& stack : lost) {
     stack.SetWorn(Inventory::Worn::None);
+    NormalizeCreated(partOne.worldState, stack);
   }
   for (auto& stack : gained) {
     stack.SetWorn(Inventory::Worn::None);
+    NormalizeCreated(partOne.worldState, stack);
   }
 
   size_t unheld = 0;

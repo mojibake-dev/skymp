@@ -6,6 +6,7 @@
 #include <vector>
 
 class PartOne;
+class WorldState;
 struct RawMessageData;
 class MpActor;
 struct CraftReportMessage;
@@ -40,6 +41,15 @@ public:
   // enchantment and its maximum charge, the soul, the poison); the charge
   // left, a poison's doses left and the name are the engine's of the moment
   // and the worn flag is the seat's, so none of them is compared
+  // public for CraftReportTest.cpp: the stack's created forms as the
+  // engine compares them (the review of fec33b6f5..47e3ede74, finding 4):
+  // an effect's magnitude, area or duration zeroed where its MGEF's record
+  // flags NoMagnitude, NoArea or NoDuration (libespm MGEF.h; the engine's
+  // compare skips them, HYPOTHESIS from the reviewer's read at 0x1401430f0).
+  // The platform's natives zero them at the source; this keeps a report from
+  // an older client from splitting one form into two rows
+  static void NormalizeCreated(WorldState& worldState, Inventory::Entry& e);
+
   // With `firstUnheld`, the index in `lost` of the first stack the record
   // does not hold is written there on a refusal
   static std::optional<std::vector<Inventory::Entry>> HeldRows(

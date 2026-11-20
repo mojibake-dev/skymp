@@ -10,8 +10,12 @@
 #include "TickHandler.h"
 
 #include <RE/B/BGSArtObject.h>
+#include <RE/G/GameSettingCollection.h>
+#include <RE/P/PlayerCharacter.h>
+#include <RE/S/Setting.h>
 #include <RE/S/SummonCreatureEffect.h>
 #include <RE/S/SummonPlacementEffect.h>
+#include <RE/T/TESFaction.h>
 
 #include <algorithm>
 #include <mutex>
@@ -3035,4 +3039,98 @@ EventResult EventHandler::ProcessEvent(
   });
 
   return EventResult::kContinue;
+}
+
+// thuum tracker #97, ADR-079 (docs/verbs/jail.md): the arrest is the arrested
+// player's own game's (ADR-063), reported before its engine strips and moves
+// the player (the strip's containerChanged events are update tasks raised
+// inside GoToPrison, after this one; HYPOTHESIS until a trace: the update
+// queue runs in order). The sentence is the engine's own rule as the arrest
+// path's static read has it (tracker #97 note 3921, GoToPrison 40655,
+// HYPOTHESIS from decompiler output): the faction's crime gold over the GMST
+// iCrimeDaysInPrisonMod, truncated, at least 1, at most the GMST
+// iCrimeMaxNumberofDaysinJail, both read from the game's settings here
+void EventHandler::OnArrest(RE::PlayerCharacter* player,
+                            RE::TESFaction* faction)
+{
+  if (!player || !faction) {
+    return;
+  }
+  auto* settings = RE::GameSettingCollection::GetSingleton();
+  auto* perDaySetting =
+    settings ? settings->GetSetting("iCrimeDaysInPrisonMod") : nullptr;
+  auto* maxSetting =
+    settings ? settings->GetSetting("iCrimeMaxNumberofDaysinJail") : nullptr;
+  const int32_t perDay = perDaySetting ? perDaySetting->GetSInt() : 0;
+  const int32_t maxDays = maxSetting ? maxSetting->GetSInt() : 0;
+  const uint32_t gold = player->GetCrimeGoldValue(faction);
+  uint32_t days = perDay > 0 ? gold / static_cast<uint32_t>(perDay) : 1;
+  if (days < 1) {
+    days = 1;
+  }
+  if (maxDays > 0 && days > static_cast<uint32_t>(maxDays)) {
+    days = static_cast<uint32_t>(maxDays);
+  }
+  const uint32_t factionId = faction->formID;
+  logger::info("[verb:jail] arrested by {:x}: {} crime gold over {} a day, "
+               "capped at {}: {} day(s)",
+               factionId, gold, perDay, maxDays, days);
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [factionId, days](Napi::Env env) {
+      auto* faction = RE::TESForm::LookupByID<RE::TESFaction>(factionId);
+      if (!faction) {
+        return;
+      }
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "faction", faction, "Faction");
+      AddObjProperty(&obj, "factionId", factionId);
+      AddObjProperty(&obj, "days", days);
+      SendEvent("arrest", obj);
+    });
+}
+
+// thuum tracker #97 (ADR-079.2): the bed's serve of the sentence would skip
+// its days on this game's clock alone (ServePrisonTime 40657 loops the sleep
+// step, the arrest path's read), which the shared clock never takes; it does
+// not run, and the scripts hear what was asked
+void EventHandler::OnServePrisonTime(RE::PlayerCharacter* player)
+{
+  if (!player) {
+    return;
+  }
+  const auto& data = player->GetPlayerRuntimeData();
+  const uint32_t factionId =
+    data.currentPrisonFaction ? data.currentPrisonFaction->formID : 0;
+  const uint32_t days =
+    data.jailSentence > 0 ? static_cast<uint32_t>(data.jailSentence) : 0;
+  logger::info("[verb:jail] the serve of {} day(s) for {:x} asked: not run, "
+               "the sentence runs on the shared clock (ADR-079)",
+               days, factionId);
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [factionId, days](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "factionId", factionId);
+      AddObjProperty(&obj, "days", days);
+      SendEvent("servePrisonTime", obj);
+    });
+}
+
+// thuum tracker #97 (D-G6 A): the player's crime gold for a faction changed
+// in this game's engine; the scripts read it and report it
+void EventHandler::OnCrimeGoldChanged(const RE::TESFaction* faction)
+{
+  if (!faction) {
+    return;
+  }
+  const uint32_t factionId = faction->formID;
+  SkyrimPlatform::GetSingleton()->AddUpdateTask([factionId](Napi::Env env) {
+    auto* faction = RE::TESForm::LookupByID<RE::TESFaction>(factionId);
+    if (!faction) {
+      return;
+    }
+    auto obj = Napi::Object::New(env);
+    AddObjProperty(&obj, "faction", faction, "Faction");
+    AddObjProperty(&obj, "factionId", factionId);
+    SendEvent("crimeGold", obj);
+  });
 }

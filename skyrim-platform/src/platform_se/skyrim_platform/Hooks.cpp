@@ -254,6 +254,106 @@ void InstallPlayerAddTargetHook()
 }
 
 /**
+ * thuum tracker #97, ADR-079 (Eli, 2026-11-20: "yes real jail time";
+ * docs/verbs/jail.md): the player's arrest is its own game's (ADR-063), and
+ * its sentence runs on the shared clock (ADR-021). PlayerCharacter's own
+ * virtuals, its primary vtable (VTABLE_PlayerCharacter[0], Address Library
+ * 208040 on 1.6.1170, the table the arrest path's read named its slots in,
+ * tracker #97 note 3921), slots from CommonLibSSE-NG include/RE/A/Actor.h:
+ * SetCrimeGoldValue 0xB5, ModCrimeGoldValue 0xB6, RemoveCrimeGoldValue 0xB7
+ * (:379-381), GoToPrison 0xB9 and ServePrisonTime 0xBA (:383-384), and
+ * include/RE/P/PlayerCharacter.h:538's ClearAllCrimeGold 0x12D.
+ * - GoToPrison: the arrest reported at its entry, a real jail only, before
+ *   the engine strips and moves the player (EventHandler::OnArrest);
+ * - ServePrisonTime: never run (ADR-079.2: its time skip is one player's),
+ *   what was asked reported (EventHandler::OnServePrisonTime);
+ * - the crime gold setters: each change reported after the engine's
+ *   (EventHandler::OnCrimeGoldChanged). HYPOTHESIS until a trace: the
+ *   engine's witnessed crimes reach these virtuals rather than writing the
+ *   player's crimeGoldMap themselves.
+ */
+struct PlayerGoToPrison
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
+                    bool a_removeInventory, bool a_realJail)
+  {
+    if (a_realJail) {
+      EventHandler::OnArrest(a_this, a_faction);
+    }
+    func(a_this, a_faction, a_removeInventory, a_realJail);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerServePrisonTime
+{
+  static void thunk(RE::PlayerCharacter* a_this)
+  {
+    EventHandler::OnServePrisonTime(a_this);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerSetCrimeGoldValue
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
+                    bool a_violent, std::uint32_t a_amount)
+  {
+    func(a_this, a_faction, a_violent, a_amount);
+    EventHandler::OnCrimeGoldChanged(a_faction);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerModCrimeGoldValue
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
+                    bool a_violent, std::int32_t a_amount)
+  {
+    func(a_this, a_faction, a_violent, a_amount);
+    EventHandler::OnCrimeGoldChanged(a_faction);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerRemoveCrimeGoldValue
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
+                    bool a_violent, std::int32_t a_amount)
+  {
+    func(a_this, a_faction, a_violent, a_amount);
+    EventHandler::OnCrimeGoldChanged(a_faction);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerClearAllCrimeGold
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction)
+  {
+    func(a_this, a_faction);
+    EventHandler::OnCrimeGoldChanged(a_faction);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void InstallPlayerPrisonHooks()
+{
+  REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[0] };
+  PlayerSetCrimeGoldValue::func =
+    vtbl.write_vfunc(0xB5, PlayerSetCrimeGoldValue::thunk);
+  PlayerModCrimeGoldValue::func =
+    vtbl.write_vfunc(0xB6, PlayerModCrimeGoldValue::thunk);
+  PlayerRemoveCrimeGoldValue::func =
+    vtbl.write_vfunc(0xB7, PlayerRemoveCrimeGoldValue::thunk);
+  PlayerGoToPrison::func = vtbl.write_vfunc(0xB9, PlayerGoToPrison::thunk);
+  PlayerServePrisonTime::func =
+    vtbl.write_vfunc(0xBA, PlayerServePrisonTime::thunk);
+  PlayerClearAllCrimeGold::func =
+    vtbl.write_vfunc(0x12D, PlayerClearAllCrimeGold::thunk);
+}
+
+/**
  * thuum docs/verbs/npc-fate.md (ADR-060: a thrall is its commander's game's
  * for the effect's life; ADR-063: one engine owns each piece of the world,
  * and a non-owner renders and never simulates), the reanimation look's D4 B
@@ -799,6 +899,7 @@ void Hooks::Install()
   InstallQuitDisconnectHook();
   HookVirtualMachineBind();
   InstallPlayerAddTargetHook();
+  InstallPlayerPrisonHooks();
   InstallCharacterAddTargetHook();
   InstallSummonCreatureEffectHooks();
   InstallPlayerHealthDamageHook();

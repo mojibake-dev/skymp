@@ -10219,6 +10219,15 @@ bool PartOne::ReleaseIfServed(MpActor& prisoner)
   prisoner.SetJailTerm(std::nullopt);
   prisoner.SetCrimeGold(term.faction, 0, 0);
   TellCrimeGold(prisoner, faction, 0, 0);
+  // the engine's own prison state on the prisoner's game (its prison faction
+  // and sentence, PlayerCharacter.h:685-686) cleared by the engine's own
+  // Papyrus global, Game.ClearPrison (docs/NATIVES.md:684), so its jail bed
+  // and its guards hold it a prisoner no longer
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    noArgs;
+  SpSnippet("Game", "ClearPrison", noArgs)
+    .Execute(&prisoner, SpSnippetMode::kNoReturnResult);
   if (jail) {
     LocationalData out;
     out.pos = jail->markerPos;

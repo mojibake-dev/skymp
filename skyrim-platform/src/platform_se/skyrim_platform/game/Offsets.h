@@ -65,6 +65,14 @@ inline REL::Relocation<std::uintptr_t> PerformAction{ REL::ID(38949) };
 // docs/research/re-37335-and-rune-landing.md). Not in CommonLibSSE-NG, the
 // SE id unread: AE only, as PerformAction.
 inline REL::Relocation<std::uintptr_t> DamageActor{ REL::ID(37335) };
+// thuum tracker #178 and #175: an actor's get-up from a knock, (Actor*,
+// bool playAction) -> void, called by the knock step (39896) from knock state
+// 1 or 3; it applies the fall damage (37336), probes the ground, fires
+// ActionGetUp when playAction and sets knock state 5. Address Library 40150
+// on 1.6.1170 (`just addr 40150` 0x723110; Ghidra 0x140723110 on sky-re, the
+// re-analyst's static read of 2026-11-19). Not in CommonLibSSE-NG, the SE id
+// unread: AE only, as DamageActor
+inline REL::Relocation<std::uintptr_t> ActorGetUp{ REL::ID(40150) };
 // thuum docs/verbs/leveling.md: the player's UseSkill, PlayerCharacter's
 // vtable slot 0xF7 (CommonLibSSE-NG include/RE/A/Actor.h:445; the same
 // address CommonLibSSE-NG's src/RE/P/PlayerCharacter.cpp:238-243 names

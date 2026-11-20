@@ -978,6 +978,15 @@ struct BodyRead
   std::vector<PropBodies::Pose> bones;
 };
 
+// thuum tracker #178 (a shout on a player): the player's own body is read
+// from its third-person 3D (TESObjectREFR::Get3D(false), CommonLibSSE-NG
+// include/RE/T/TESObjectREFR.h:376), the skeleton a knock ragdolls, whatever
+// the camera shows; every other reference's from its current 3D
+RE::NiAVObject* PropRootOf(RE::TESObjectREFR& refr)
+{
+  return refr.formID == 0x14 ? refr.Get3D(false) : refr.Get3D();
+}
+
 // one reference's body, false when the reference, its 3D
 // (TESObjectREFR::Get3D, T/TESObjectREFR.h:375), its cell's bhkWorld
 // (TESObjectCELL::GetbhkWorld, T/TESObjectCELL.h:197) or the rigid body is
@@ -1033,7 +1042,7 @@ struct BodyRead
 bool ReadBody(uint32_t formId, float toGameUnits, BodyRead& out)
 {
   auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
-  auto* root = refr ? refr->Get3D() : nullptr;
+  auto* root = refr ? PropRootOf(*refr) : nullptr;
   auto* cell = refr ? refr->GetParentCell() : nullptr;
   auto* world = cell ? cell->GetbhkWorld() : nullptr;
   if (!root || !world) {
@@ -1217,7 +1226,7 @@ const RE::hkpRigidBody* IslandBodyOf(const PropBodies::Walk& walk)
 bool ReadIslandOf(uint32_t formId, std::vector<BodyRef>& out)
 {
   auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
-  auto* root = refr ? refr->Get3D() : nullptr;
+  auto* root = refr ? PropRootOf(*refr) : nullptr;
   if (!root) {
     return false;
   }
@@ -1285,8 +1294,10 @@ Napi::Value PuppetApi::ReadBodies(const Napi::CallbackInfo& info)
   answered.reserve(formIds.size());
   for (const auto formId : formIds) {
     BodyRead read;
-    const bool found =
-      formId != 0 && formId != 0x14 && ReadBody(formId, toGameUnits, read);
+    // the player's own body too (thuum tracker #178): the client reads it
+    // for its own game's live-body stream alone, its rest after its get-up or
+    // its death among it (the review of 312279ce8, finding 4)
+    const bool found = formId != 0 && ReadBody(formId, toGameUnits, read);
     if (found && islands && read.awake &&
         PropBodies::IsDynamicMotion(
           static_cast<RE::hkpMotion::MotionType>(read.motion))) {
@@ -1483,7 +1494,7 @@ Napi::Value PuppetApi::GetBodyClass(const Napi::CallbackInfo& info)
   const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
   auto* refr =
     formId != 0 ? RE::TESForm::LookupByID<RE::TESObjectREFR>(formId) : nullptr;
-  auto* root = refr ? refr->Get3D() : nullptr;
+  auto* root = refr ? PropRootOf(*refr) : nullptr;
   if (!root) {
     return info.Env().Null();
   }
@@ -1513,6 +1524,14 @@ Napi::Value PuppetApi::GetBodyClass(const Napi::CallbackInfo& info)
   auto res = Napi::Object::New(info.Env());
   res.Set("bsx", Napi::Number::New(info.Env(), flags));
   res.Set("dynamic", Napi::Boolean::New(info.Env(), dynamic));
+  // thuum tracker #175: an actor's bones among parts (the first ones, its
+  // carried parts after them), and whether its engine holds it ragdolled now
+  // (Actor::IsInRagdollState, CommonLibSSE-NG include/RE/A/Actor.h:597; the
+  // knock of a living actor, rung 5's live-body kind)
+  auto* actor = refr->As<RE::Actor>();
+  res.Set("bones", Napi::Number::New(info.Env(), walk.bones));
+  res.Set("ragdoll",
+          Napi::Boolean::New(info.Env(), actor && actor->IsInRagdollState()));
   res.Set("bodies", Napi::Number::New(info.Env(), walk.bodies));
   res.Set("fixed", Napi::Number::New(info.Env(), walk.fixed));
   res.Set("parts", parts);
@@ -1581,6 +1600,9 @@ bool g_imposeDrainSaid = false;
 std::unordered_set<uint32_t> g_imposeNo3DSaid;
 std::unordered_set<uint64_t> g_imposeSkipSaid;
 std::unordered_map<uint32_t, uint64_t> g_imposeSnapSaidMs;
+// thuum tracker #175: the carried part placed alone, said at most once a
+// second per form as the snap line is
+std::unordered_map<uint32_t, uint64_t> g_imposeCarriedSaidMs;
 std::unordered_map<uint32_t, uint64_t> g_imposeHorizonSaidMs;
 
 // a held form's world clock at the drain that last drove or placed it
@@ -1678,7 +1700,11 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
                float toGameUnits)
 {
   auto* refr = RE::TESForm::LookupByID<RE::TESObjectREFR>(formId);
-  auto* root = refr ? refr->Get3D() : nullptr;
+  // thuum tracker #179: the player's own body walks its third-person
+  // skeleton, the one a knock ragdolls and the stream reads (PropRootOf);
+  // its virtual Get3D2 returns the first-person root in first-person view
+  // (PlayerCharacter's 40462, the re-analyst's static read of 2026-11-19)
+  auto* root = refr ? PropRootOf(*refr) : nullptr;
   if (!root) {
     if (g_imposeNo3DSaid.size() > kImposeSaidMax) {
       g_imposeNo3DSaid.clear();
@@ -1695,7 +1721,12 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
     return entry.rest;
   }
   const auto n = static_cast<uint32_t>(entry.poses.size());
-  if (walk.cut || n != walk.nParts) {
+  // thuum tracker #175: an actor's poses may stop short of its walk's carried
+  // parts (another seat's copy carries fewer, PropBodies.cpp's WalkBodies):
+  // every bone and the carried parts both hold are imposed, the rest left to
+  // this engine
+  const bool prefix = walk.bones > 0 && n >= walk.bones && n < walk.nParts;
+  if (walk.cut || (n != walk.nParts && !prefix)) {
     // a pose for each part, in each seat's walk order, or none (E55; the
     // spec's F2): the counts both at most 64, so one key a (form, n, m)
     const uint64_t key = (static_cast<uint64_t>(formId) << 16) |
@@ -1710,9 +1741,23 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
     }
     return entry.rest;
   }
+  // thuum tracker #175 (Eli's demo of 2026-11-19 on 6021f101: "vampiric
+  // grip was more broken than before"): a dead actor's carried part, its
+  // weapon (PropBodies.h's Walk::bones), lay 65 to 126 units from the
+  // stream's on c1 ("impose 29602 placed: part 18 125.7 units off"), and the
+  // snap below placed every part outright for it: the corpse teleported each
+  // drain while its bones stood within a few units. The body's own snap reads
+  // its bones alone; a carried part past kBodySnapUnits is placed alone and
+  // the bones driven. A walk with no bones (a whole body, an item, a world
+  // body of parts) reads every part as before
+  const uint32_t bodyParts =
+    walk.bones > 0 ? std::min<uint32_t>(walk.bones, n) : n;
   PropBodies::Pose targets[PropBodies::kPartsMax];
+  std::array<bool, PropBodies::kPartsMax> carriedSnap{};
   float farthest = 0.f;
   uint32_t farthestPart = 0;
+  float carriedFarthest = 0.f;
+  uint32_t carriedFarthestPart = 0;
   for (uint32_t i = 0; i < n; ++i) {
     targets[i] = entry.poses[i];
     for (float& f : targets[i].pos) {
@@ -1725,9 +1770,17 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
       sq += d * d;
     }
     const float off = std::sqrt(sq) * toGameUnits;
-    if (off > farthest) {
-      farthest = off;
-      farthestPart = i;
+    if (i < bodyParts) {
+      if (off > farthest) {
+        farthest = off;
+        farthestPart = i;
+      }
+    } else {
+      carriedSnap[i] = off > kBodySnapUnits;
+      if (off > carriedFarthest) {
+        carriedFarthest = off;
+        carriedFarthestPart = i;
+      }
     }
   }
   // the form's world clock now and at its last drain (#125), kept for the
@@ -1769,8 +1822,14 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
   }
   float firstStep = 0.f;
   float firstHorizon = 0.f;
+  bool carriedPlaced = false;
   for (uint32_t i = 0; i < n; ++i) {
     const PropBodies::Body& part = walk.parts[i];
+    if (carriedSnap[i]) {
+      PropBodies::PlaceBody(part, targets[i]);
+      carriedPlaced = true;
+      continue;
+    }
     const float step = ImposeStepOf(*part.havok);
     const float horizon =
       ImposeHorizonOf(step, known, then, clockNow, clockMs);
@@ -1779,6 +1838,20 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
       firstHorizon = horizon;
     }
     PropBodies::DriveBody(part, targets[i], horizon);
+  }
+  if (carriedPlaced) {
+    if (g_imposeCarriedSaidMs.size() > kImposeSaidMax) {
+      g_imposeCarriedSaidMs.clear();
+    }
+    auto it = g_imposeCarriedSaidMs.find(formId);
+    if (it == g_imposeCarriedSaidMs.end() ||
+        clockMs - it->second >= kImposeSnapSayEveryMs) {
+      g_imposeCarriedSaidMs[formId] = clockMs;
+      logger::info("[verb:prop-physics] impose {:x}: carried part {} placed "
+                   "alone, {:.1f} units off; its bones driven, {:.1f} units "
+                   "off",
+                   formId, carriedFarthestPart, carriedFarthest, farthest);
+    }
   }
   // the horizon line (#125's read of the spec's F9: the world's steps a
   // drain, horizon over step) at most once a second per form
@@ -1789,9 +1862,16 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
   if (said == g_imposeHorizonSaidMs.end() ||
       clockMs - said->second >= kImposeSnapSayEveryMs) {
     g_imposeHorizonSaidMs[formId] = clockMs;
-    logger::info("[verb:prop-physics] impose {:x} driven: horizon {:.4f} s, "
-                 "the world's step {:.4f} s, {:.1f} units off",
-                 formId, firstHorizon, firstStep, farthest);
+    if (bodyParts < n) {
+      logger::info("[verb:prop-physics] impose {:x} driven: horizon {:.4f} "
+                   "s, the world's step {:.4f} s, {:.1f} units off (its "
+                   "bones; its carried parts {:.1f})",
+                   formId, firstHorizon, firstStep, farthest, carriedFarthest);
+    } else {
+      logger::info("[verb:prop-physics] impose {:x} driven: horizon {:.4f} "
+                   "s, the world's step {:.4f} s, {:.1f} units off",
+                   formId, firstHorizon, firstStep, farthest);
+    }
   }
   return false;
 }
@@ -1869,9 +1949,13 @@ void DrainImpose()
 // form's last drain (ImposeHorizonOf, #125; the horizon said at most once a
 // second a form). A form with no 3D is dropped (N3, once a form); a pose
 // count that is not the walk's part count is skipped (N2, once a (form,
-// count, parts)). Refused, false and nothing stored: 0, the player's own
-// id, no pose, more than 64, a value that is not a number, a quaternion off
-// unit length by more than 0.01
+// count, parts)). Refused, false and nothing stored: 0, no pose, more than
+// 64, a value that is not a number, a quaternion off unit length by more than
+// 0.01. The player's own id is taken since thuum tracker #179 (ADR-063's
+// 2026-11-19 amendment): its body is its gripper's for a grip's hold, and
+// the client imposes the gripper's stream on it then alone (propService's
+// handed body), its root the third-person skeleton the stream reads
+// (PropRootOf)
 // (wire-validate's PROP_QUAT_NORM_SLACK), no SKSE task interface, or a full
 // table (64 forms, said at the first and every hundredth). A pose of another
 // shape throws, as the platform's extractors throw
@@ -1882,8 +1966,7 @@ Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
   const bool rest = NapiHelper::ExtractBoolean(info[2], "rest");
   const uint32_t n = bones.Length();
   const auto* tasks = SKSE::GetTaskInterface();
-  if (formId == 0 || formId == 0x14 || n == 0 || n > PropBodies::kPartsMax ||
-      !tasks) {
+  if (formId == 0 || n == 0 || n > PropBodies::kPartsMax || !tasks) {
     return Napi::Boolean::New(info.Env(), false);
   }
   std::vector<PropBodies::Pose> poses;
@@ -1930,6 +2013,9 @@ Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
     entry.seq = ++g_imposeSeq;
     entry.storedMs = Puppets::NowMs();
   }
+  // thuum tracker #178 and #175: while the drive imposes another seat's
+  // stream, the copy's own engine never gets it up (FridaHooks.h, HoldGetUp)
+  Frida::HoldGetUp(formId);
   if (!g_imposeDrainQueued.exchange(true)) {
     tasks->AddUITask([]() {
       try {
@@ -1950,11 +2036,22 @@ Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
 // motion type. A later K4 or K1 (the build spec's section C) restores each
 // part's captured type here. True when poses were held; false for 0, the
 // player's own id or none held. A table operation on the JS thread, no game
-// call
+// call; the get-up hold (thuum tracker #178 and #175, FridaHooks.h) is lifted
+// with it. With place (game units, x y z), the shout design's step 4 (b):
+// a live actor's copy is first set where its stream's owner stands (its last
+// sample's root) by Actor::SetPosition with its character controller
+// (CommonLibSSE-NG include/RE/A/Actor.h:367, the engine's own setter, no
+// MoveTo; TESObjectREFR::SetPosition is MoveTo_Impl, src/RE/T/
+// TESObjectREFR.cpp:897-900), then its hold lifted, both in one task on the
+// main thread, so the engine stands it up there: the re-analyst's static read
+// found the get-up places no reference (40150 and knock state 5 set only the
+// heading; H2). HYPOTHESIS until the Frida trace: the setter moves a downed
+// actor's reference and controller and leaves its ragdoll whole
 Napi::Value PuppetApi::ReleaseBodies(const Napi::CallbackInfo& info)
 {
   const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
-  if (formId == 0 || formId == 0x14) {
+  // the player's own id is taken since thuum tracker #179 (ImposeBodies)
+  if (formId == 0) {
     return Napi::Boolean::New(info.Env(), false);
   }
   bool held = false;
@@ -1962,6 +2059,42 @@ Napi::Value PuppetApi::ReleaseBodies(const Napi::CallbackInfo& info)
     std::lock_guard<std::mutex> lock(g_imposeMutex);
     held = g_impose.erase(formId) != 0;
   }
+  float place[3] = { 0.f, 0.f, 0.f };
+  bool placed =
+    info.Length() > 1 && !info[1].IsUndefined() && !info[1].IsNull();
+  if (placed) {
+    ExtractLanes(info[1], "place", place, 3);
+    for (float f : place) {
+      placed = placed && std::isfinite(f);
+    }
+  }
+  const auto* tasks = SKSE::GetTaskInterface();
+  if (!placed || !tasks) {
+    Frida::ReleaseGetUp(formId);
+    return Napi::Boolean::New(info.Env(), held);
+  }
+  const RE::NiPoint3 at(place[0], place[1], place[2]);
+  tasks->AddUITask([formId, at]() {
+    auto* actor = RE::TESForm::LookupByID<RE::Actor>(formId);
+    if (actor && !actor->IsDead() && actor->IsInRagdollState()) {
+      const RE::NiPoint3 from = actor->GetPosition();
+      actor->SetPosition(at, true);
+      logger::info("[verb:prop-physics] get-up of {:x}: set from ({:.0f}, "
+                   "{:.0f}, {:.0f}) to its stream's last root ({:.0f}, "
+                   "{:.0f}, {:.0f}), {:.1f} units, before its hold is "
+                   "lifted (thuum tracker #178, step 4 (b))",
+                   formId, from.x, from.y, from.z, at.x, at.y, at.z,
+                   from.GetDistance(at));
+    } else {
+      logger::info("[verb:prop-physics] get-up of {:x}: not set before its "
+                   "hold is lifted ({})",
+                   formId,
+                   !actor              ? "no actor"
+                     : actor->IsDead() ? "dead"
+                                       : "already up");
+    }
+    Frida::ReleaseGetUp(formId);
+  });
   return Napi::Boolean::New(info.Env(), held);
 }
 

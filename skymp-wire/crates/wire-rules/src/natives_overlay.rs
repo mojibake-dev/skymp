@@ -68,6 +68,11 @@ const ACTOR_LOOK: &str = "ADR-060's amendment of 2026-11-12 (the Undead FX build
 /// The five a watcher keeps (thuum #52).
 const ACTOR_LOOK_KEPT: &str = "ADR-060's amendment of 2026-11-12 and thuum #52 (the review of the client's 3D keep, eaa6ba47, findings 1 and 2): an actor's own look, its simulator's, relayed as the same native and kept as the actor's look (wire-rules actor_looks), served with its create word";
 
+/// thuum tracker #178's push onto another player's figure: its replacing rule.
+const PUSH_FIGURE: &str = "ADR-073 decision 6's owner asked of the pushed actor (the row's subject its target, Subject::Arg0Method): a player's figure answered by its player's seat (ADR-063), a knocked NPC by the seat whose cause moved it (the live-body kind's claim, thuum tracker #175)";
+/// Its deleting condition.
+const PUSH_FIGURE_DELETES: &str = "when owner_of answers a knock's cause seat and the row is unstaged with its target the subject";
+
 /// Every overlay entry: the live table's sixty-one rows in its order (rung
 /// 5's fifty, the two scene starts, AddToMap's quest marker, then the Undead
 /// FX build's eight look rows of an actor), then the derived rows' decided
@@ -744,5 +749,21 @@ pub const OVERLAY: &[Entry] = &[
             "local: the seat's own read, answered inside another player's acting scope from that player's record (#117)",
         ],
         cells: &[Cell::Hook(Hook::ActingInventory)],
+    },
+    // thuum tracker #178 (Eli's third look of playtest 56's seat loop,
+    // 2026-11-19: "fusrohdah-ing another player is still suuuuuper janky and
+    // desynced. THAT one needs to be one to one"): VoicePushEffectScript's
+    // Caster.PushActorAway(Target, PushForce) ran in the shouter's game on the
+    // target's figure (push.md's caster half) while the target's own game threw
+    // its player and streamed the body: two simulations of one throw. The
+    // shouter's push on a player's figure is skipped (OnStaged), the throw its
+    // own game's alone; an NPC target is pushed as before. A derived row's
+    // stopgap, so no live row's place moves
+    Entry {
+        native: "ObjectReference.PushActorAway",
+        class: Class::Stopgap { replaced_by: PUSH_FIGURE, deletes: PUSH_FIGURE_DELETES },
+        live: false,
+        note: &[],
+        cells: &[Cell::Hook(Hook::PushFigure)],
     },
 ];

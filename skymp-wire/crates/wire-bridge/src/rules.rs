@@ -1348,7 +1348,7 @@ mod ffi {
         recovery_mult: f32,
     }
 
-    /// Why a shout is refused, `Accepted` when it stands.
+    /// Why a shout is refused, `Accepted` or `Early` when it stands.
     #[derive(Debug)]
     enum VoiceRefusal {
         /// The shout stands.
@@ -1359,8 +1359,10 @@ mod ffi {
         NotAVariation,
         /// A word up to the variation is not unlocked in the record.
         WordLocked,
-        /// The last shout's recovery has not run out.
-        Recovering,
+        /// The shout stands, though the server's count of the last recovery
+        /// has not run out: the game's word on its own voice stands (thuum
+        /// tracker #180).
+        Early,
     }
 
     /// One attribute as the core's CropRegeneration takes it.
@@ -6026,7 +6028,7 @@ impl Voices {
             shouts::VoiceRefusal::NoShout => VoiceRefusal::NoShout,
             shouts::VoiceRefusal::NotAVariation => VoiceRefusal::NotAVariation,
             shouts::VoiceRefusal::WordLocked => VoiceRefusal::WordLocked,
-            shouts::VoiceRefusal::Recovering => VoiceRefusal::Recovering,
+            shouts::VoiceRefusal::Early => VoiceRefusal::Early,
         }
     }
 
@@ -8157,8 +8159,10 @@ mod tests {
         assert_eq!(v.shout(7, &VoiceFacts { shout_equipped: false, ..two }, 0), VoiceRefusal::NoShout);
         assert_eq!(v.shout(7, &two, 0), VoiceRefusal::Accepted);
         assert_eq!(v.recovery_left_ms(7, 5_000), 15_000);
-        assert_eq!(v.shout(7, &two, 5_000), VoiceRefusal::Recovering);
-        assert_eq!(v.shout(7, &two, 20_000), VoiceRefusal::Accepted);
+        // early stands and starts its own count, to 25 s
+        assert_eq!(v.shout(7, &two, 5_000), VoiceRefusal::Early);
+        assert_eq!(v.recovery_left_ms(7, 5_000), 20_000);
+        assert_eq!(v.shout(7, &two, 25_000), VoiceRefusal::Accepted);
     }
 
     #[test]

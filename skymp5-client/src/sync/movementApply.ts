@@ -201,7 +201,21 @@ const keepOffsetFromActor = (ac: Actor, m: Movement) => {
   // ones stay the planner's smooth turn. HYPOTHESIS until an entrance is
   // watched: that the entrance spin is this turn
   if (Math.abs(offsetAngle) >= 30) {
-    ac.setAngle(m.rot[0], m.rot[1], m.rot[2]);
+    // thuum tracker #178 (the trace 20261120-003650-x-shout-getup-trace and
+    // the re-analyst's static read of knockState's writers, 2026-11-19): a
+    // figure's copy following its player's knocked body takes no absolute
+    // turn. Papyrus SetAngle's body is TESObjectREFR::MoveTo_Impl (Address
+    // Library 56626), which for an actor calls 37313 and through it 39897,
+    // the knock's end: the ragdoll ended and knockState written 0, CONFIRMED
+    // BY STATIC READ. c1's copy of the shouted Ariadne went 1 to 0 thirteen
+    // times in 5 s between knock steps, each knocked in place again by the
+    // follow (the flop); c1.log's setAngle answer came 23 ms before the
+    // first. HYPOTHESIS until the next read: each was this turn on a
+    // tumbling body's heading. The keep-offset below still runs, with no
+    // angle, so no stale offset outlives the get-up (the review's finding 1)
+    if (!isFollowedDown(ac.getFormID())) {
+      ac.setAngle(m.rot[0], m.rot[1], m.rot[2]);
+    }
     offsetAngle = 0;
   }
 

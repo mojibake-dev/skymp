@@ -2467,6 +2467,12 @@ export class PropService extends ClientListener {
     // mid-stream is a sample due), and the rest's grace runs from here
     private letGo(prop: Prop, now: number, why: string) {
         prop.held = false;
+        // a gripped puppet's followed-down mark (readHolds) ends with the
+        // hold, so its host's relayed events play again at once; a copy this
+        // seat follows (knockedAt) keeps holdLiveCopy's
+        if (prop.live && prop.knockedAt === 0) {
+            clearFollowedDown(prop.localId);
+        }
         logLab(TAG, `prop ${prop.refr.toString(16)} let go: ${why}${prop.holdLost ? " (another seat's word had ended this hand's hold)" : ""}`);
         prop.awakeAt = now;
         prop.holdLost = false;

@@ -154,6 +154,18 @@ export const applyAnimation = (
   }
   state.lastNumChanges = anim.numChanges;
 
+  // thuum tracker #178 (the same trace and static read): a copy following
+  // another seat's knocked body takes none of its owner's relayed graph
+  // events. Its knock is the stream's and its get-up the follow's release
+  // (PropService, the platform's get-up hold): a relayed GetUpBegin sent to
+  // its graph reached the GetUpStart handler (42879), which writes knockState
+  // 6 with no 5 (c2's copy of rotfern, 1 to 6 at 00:45:10.778), and its
+  // GetUpEnd queues 39897's 0; a relayed Ragdoll knocked it again in place.
+  // Consumed here, never replayed after the follow
+  if (isFollowedDown(refr.getFormID())) {
+    return;
+  }
+
   if (state.useAnimOverrides) {
     const animOverride = animOverridesLowerCase[anim.animEventName.toLowerCase()];
     if (animOverride !== undefined) {

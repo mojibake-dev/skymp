@@ -40,8 +40,11 @@ public:
   // enchantment and its maximum charge, the soul, the poison); the charge
   // left, a poison's doses left and the name are the engine's of the moment
   // and the worn flag is the seat's, so none of them is compared
+  // With `firstUnheld`, the index in `lost` of the first stack the record
+  // does not hold is written there on a refusal
   static std::optional<std::vector<Inventory::Entry>> HeldRows(
-    const Inventory& record, const std::vector<Inventory::Entry>& lost);
+    const Inventory& record, const std::vector<Inventory::Entry>& lost,
+    size_t* firstUnheld = nullptr);
 
   // public for CraftTest.cpp
   bool RecipeItemsMatch(const espm::LookupResult& lookupRes,

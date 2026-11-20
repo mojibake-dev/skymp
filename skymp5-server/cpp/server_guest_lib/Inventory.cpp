@@ -198,10 +198,15 @@ Inventory& Inventory::RemoveItems(const std::vector<Entry>& entries)
   return *this;
 }
 
+// thuum tracker #98 (the review of fec33b6f5..47e3ede74, finding 9): a
+// stack of a brewed potion or poison names its game-file template as its
+// base, but holds no item of that base (the template is what the engine
+// copies a created form from), so the plain counts pass it by: a plain
+// OnEquip of the template never finds a created stack it cannot remove
 bool Inventory::HasItem(uint32_t baseId) const
 {
   for (auto& entry : entries) {
-    if (entry.baseId == baseId) {
+    if (entry.baseId == baseId && !entry.createdBase) {
       return true;
     }
   }
@@ -212,7 +217,7 @@ uint32_t Inventory::GetItemCount(uint32_t baseId) const
 {
   uint32_t sum = 0;
   for (auto& entry : entries) {
-    if (entry.baseId == baseId) {
+    if (entry.baseId == baseId && !entry.createdBase) {
       sum += entry.count;
     }
   }

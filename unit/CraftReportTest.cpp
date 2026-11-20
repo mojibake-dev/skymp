@@ -69,13 +69,13 @@ Inventory::Entry Potion(const CreatedForm& form, uint32_t count = 1)
 
 void Report(PartOne& p, std::vector<Inventory::Entry> lost,
             std::vector<Inventory::Entry> gained,
-            std::vector<uint32_t> learned = {})
+            std::vector<uint32_t> learned = {}, uint32_t seq = 1)
 {
   RawMessageData raw;
   raw.userId = 0;
   CraftReportMessage msg;
   msg.workbench = kBench;
-  msg.seq = 1;
+  msg.seq = seq;
   msg.lost = std::move(lost);
   msg.gained = std::move(gained);
   msg.learnedEnchantments = std::move(learned);
@@ -94,13 +94,14 @@ std::vector<Inventory::Entry> Stacks(MpActor& ac, uint32_t baseId)
   return out;
 }
 
-// The SetInventory messages user 0 received since the last clear
-size_t InventoriesSent(PartOne& p)
+// The answers to report `seq` user 0 received since the last clear: a
+// SetInventory naming it (craftAck, SCHEMA_VERSION 62), sent at once
+size_t AnswersSent(PartOne& p, uint32_t seq)
 {
-  p.Tick(); // the inventory word is deferred
   return std::count_if(
-    p.Messages().begin(), p.Messages().end(), [](PartOne::Message& m) {
-      return m.userId == 0 && m.j["t"] == MsgType::SetInventory;
+    p.Messages().begin(), p.Messages().end(), [&](PartOne::Message& m) {
+      return m.userId == 0 && m.j["t"] == MsgType::SetInventory &&
+        m.j.contains("craftAck") && m.j["craftAck"] == seq;
     });
 }
 
@@ -197,8 +198,10 @@ TEST_CASE("A brew's ingredients leave the record and its potion arrives by "
   ac.AddItem(kWheat, 3);
   ac.AddItem(kOther, 3);
 
+  p.Messages().clear();
   Report(p, { Inventory::Entry(kWheat, 1), Inventory::Entry(kOther, 1) },
-         { Potion(Heal(25.f)) });
+         { Potion(Heal(25.f)) }, {}, 3);
+  REQUIRE(AnswersSent(p, 3) == 1);
   REQUIRE(ac.GetInventory().GetItemCount(kWheat) == 2);
   REQUIRE(ac.GetInventory().GetItemCount(kOther) == 2);
   REQUIRE(Stacks(ac, kPotionTemplate).size() == 1);
@@ -220,6 +223,18 @@ TEST_CASE("A brew's ingredients leave the record and its potion arrives by "
   REQUIRE(stacks[1].count == 1);
   REQUIRE(ac.GetInventory().GetItemCount(kWheat) == 0);
   REQUIRE(!ac.GetInventory().entries.empty());
+
+  // a created stack holds no item of its template (the review's finding 9):
+  // the plain counts pass it by, and a plain equip of the template finds
+  // nothing to drink
+  REQUIRE(ac.GetInventory().GetItemCount(kPotionTemplate) == 0);
+  REQUIRE(!ac.GetInventory().HasItem(kPotionTemplate));
+  RawMessageData raw;
+  raw.userId = 0;
+  OnEquipMessage plain;
+  plain.baseId = kPotionTemplate;
+  p.GetActionListener().OnEquip(raw, plain);
+  REQUIRE(Stacks(ac, kPotionTemplate) == stacks);
 
   Leave(p);
 }
@@ -289,15 +304,24 @@ TEST_CASE("A report whose lost stack the record does not hold changes "
   const Inventory before = ac.GetInventory();
   p.Messages().clear();
 
-  // two where one is held, and a potion the record never had
-  Report(p, { Inventory::Entry(kWheat, 2) }, { Potion(Heal(25.f)) });
+  // two where one is held, and a potion the record never had: each answered
+  // by its own seq, the record unchanged
+  Report(p, { Inventory::Entry(kWheat, 2) }, { Potion(Heal(25.f)) }, {}, 7);
   REQUIRE(ac.GetInventory() == before);
-  REQUIRE(InventoriesSent(p) >= 1);
+  REQUIRE(AnswersSent(p, 7) == 1);
 
   p.Messages().clear();
-  Report(p, { Potion(Heal(25.f)) }, { Inventory::Entry(kWheat, 5) });
+  Report(p, { Potion(Heal(25.f)) }, { Inventory::Entry(kWheat, 5) }, {}, 8);
   REQUIRE(ac.GetInventory() == before);
-  REQUIRE(InventoriesSent(p) >= 1);
+  REQUIRE(AnswersSent(p, 8) == 1);
+  REQUIRE(AnswersSent(p, 7) == 0);
+
+  // the refusal names the first stack the record does not hold
+  size_t unheld = 99;
+  REQUIRE(!CraftService::HeldRows(
+    ac.GetInventory(),
+    { Inventory::Entry(kWheat, 1), Inventory::Entry(kWheat, 1) }, &unheld));
+  REQUIRE(unheld == 1);
 
   Leave(p);
 }

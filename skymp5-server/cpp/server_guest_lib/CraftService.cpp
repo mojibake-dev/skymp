@@ -5,6 +5,7 @@
 #include "MpActor.h"
 #include "PartOne.h"
 #include "RawMessageData.h"
+#include "SetInventoryMessage.h"
 #include "WorldState.h"
 #include "gamemode_events/CraftEvent.h"
 #include <algorithm>
@@ -293,14 +294,16 @@ bool StandsFor(const Inventory::Entry& row, const Inventory::Entry& lost)
 }
 
 std::optional<std::vector<Inventory::Entry>> CraftService::HeldRows(
-  const Inventory& record, const std::vector<Inventory::Entry>& lost)
+  const Inventory& record, const std::vector<Inventory::Entry>& lost,
+  size_t* firstUnheld)
 {
   std::vector<uint32_t> left(record.entries.size());
   for (size_t i = 0; i < record.entries.size(); ++i) {
     left[i] = record.entries[i].count;
   }
   std::vector<Inventory::Entry> rows;
-  for (const auto& stack : lost) {
+  for (size_t at = 0; at < lost.size(); ++at) {
+    const auto& stack = lost[at];
     uint32_t wanted = stack.count;
     for (size_t i = 0; i < record.entries.size() && wanted > 0; ++i) {
       if (left[i] == 0 || !StandsFor(record.entries[i], stack)) {
@@ -314,10 +317,63 @@ std::optional<std::vector<Inventory::Entry>> CraftService::HeldRows(
       wanted -= take;
     }
     if (wanted > 0) {
+      if (firstUnheld) {
+        *firstUnheld = at;
+      }
       return std::nullopt;
     }
   }
   return rows;
+}
+
+namespace {
+// A stack as HeldRows compares it, for a refusal's line: the base, the count
+// and the lasting extras, a created form by its kind and effect count
+std::string DescribeStack(const Inventory::Entry& e)
+{
+  std::string out = fmt::format("{:x} x{}", e.baseId, e.count);
+  if (e.health) {
+    out += fmt::format(" health {}", *e.health);
+  }
+  if (e.enchantmentId) {
+    out += fmt::format(" enchantment {:x}", *e.enchantmentId);
+  }
+  if (e.maxCharge) {
+    out += fmt::format(" maxCharge {}", *e.maxCharge);
+  }
+  if (e.removeEnchantmentOnUnequip.value_or(false)) {
+    out += " removeEnchantmentOnUnequip";
+  }
+  if (e.soul) {
+    out += fmt::format(" soul {}", static_cast<int>(*e.soul));
+  }
+  if (e.poisonId) {
+    out += fmt::format(" poison {:x}", *e.poisonId);
+  }
+  const auto created = [&](const char* what,
+                           const std::optional<CreatedForm>& form) {
+    if (form) {
+      out += fmt::format(" {} kind {} with {} effect(s)", what,
+                         static_cast<int>(form->kind), form->effects.size());
+    }
+  };
+  created("createdBase", e.createdBase);
+  created("createdEnchantment", e.createdEnchantment);
+  created("createdPoison", e.createdPoison);
+  return out;
+}
+
+// The record as the answer to report `seq` (SetInventory's craftAck,
+// SCHEMA_VERSION 62), sent at once: the seat ends its hold on it, never on an
+// inventory sent before the report was read. The deferred inventory word the
+// record's edits queued follows with the same rows
+void SendCraftAnswer(MpActor& me, uint32_t seq)
+{
+  SetInventoryMessage answer;
+  answer.inventory = me.GetInventory();
+  answer.craftAck = seq;
+  me.SendToUser(answer, true);
+}
 }
 
 void CraftService::OnCraftReport(const RawMessageData& rawMsgData,
@@ -339,14 +395,18 @@ void CraftService::OnCraftReport(const RawMessageData& rawMsgData,
     stack.SetWorn(Inventory::Worn::None);
   }
 
-  const auto rows = HeldRows(me->GetInventory(), lost);
+  size_t unheld = 0;
+  const auto rows = HeldRows(me->GetInventory(), lost, &unheld);
   if (!rows) {
-    spdlog::info("[verb:craft] E_CRAFT_NOT_HELD: user {} actor {:x} at "
-                 "{:x}: a lost stack the record does not hold, the sitting "
-                 "refused ({} stack(s) lost, {} gained); the record goes back",
-                 rawMsgData.userId, me->GetFormId(), msg.workbench,
-                 msg.lost.size(), msg.gained.size());
-    me->SendInventoryUpdate();
+    spdlog::info(
+      "[verb:craft] E_CRAFT_NOT_HELD: user {} actor {:x} at "
+      "{:x}, report {}: the record does not hold lost stack {} "
+      "({}), the sitting refused ({} stack(s) lost, {} gained); "
+      "the record goes back",
+      rawMsgData.userId, me->GetFormId(), msg.workbench, msg.seq, unheld,
+      unheld < lost.size() ? DescribeStack(lost[unheld]) : std::string("?"),
+      msg.lost.size(), msg.gained.size());
+    SendCraftAnswer(*me, msg.seq);
     return;
   }
 
@@ -360,10 +420,11 @@ void CraftService::OnCraftReport(const RawMessageData& rawMsgData,
       me->AddItems(gained);
     }
   } catch (std::exception& e) {
-    spdlog::error("[verb:craft] E_CRAFT_APPLY: user {} actor {:x} at {:x}: "
-                  "{}",
-                  rawMsgData.userId, me->GetFormId(), msg.workbench, e.what());
-    me->SendInventoryUpdate();
+    spdlog::error("[verb:craft] E_CRAFT_APPLY: user {} actor {:x} at {:x}, "
+                  "report {}: {}",
+                  rawMsgData.userId, me->GetFormId(), msg.workbench, msg.seq,
+                  e.what());
+    SendCraftAnswer(*me, msg.seq);
     return;
   }
 
@@ -409,9 +470,9 @@ void CraftService::OnCraftReport(const RawMessageData& rawMsgData,
     }
   }
 
-  me->SendInventoryUpdate();
-  spdlog::info("[verb:craft] user {} actor {:x} at {:x}: {} stack(s) lost, "
-               "{} gained, {} enchantment(s) newly known",
-               rawMsgData.userId, me->GetFormId(), msg.workbench, lost.size(),
-               gained.size(), learned);
+  SendCraftAnswer(*me, msg.seq);
+  spdlog::info("[verb:craft] user {} actor {:x} at {:x}, report {}: {} "
+               "stack(s) lost, {} gained, {} enchantment(s) newly known",
+               rawMsgData.userId, me->GetFormId(), msg.workbench, msg.seq,
+               lost.size(), gained.size(), learned);
 }

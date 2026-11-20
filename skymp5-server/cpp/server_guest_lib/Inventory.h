@@ -120,6 +120,8 @@ public:
   // AddItems' own rule
   Inventory& AddPlainItems(const std::vector<Entry>& entries);
   Inventory& RemoveItems(const std::vector<Entry>& entries);
+  // thuum tracker #98: a stack with a created base (CreatedForm.h) holds no
+  // item of its template base, so these two pass it by
   bool HasItem(uint32_t baseId) const;
   uint32_t GetItemCount(uint32_t baseId) const;
   uint32_t GetTotalItemCount() const;

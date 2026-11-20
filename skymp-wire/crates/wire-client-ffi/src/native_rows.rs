@@ -161,9 +161,12 @@ pub const SKYMP_NATIVE_HOOK_SCENE_START: u8 = 14;
 /// Hook: an item count on the acting player's figure inside another's scope,
 /// answered from that player's record (thuum tracker #117).
 pub const SKYMP_NATIVE_HOOK_ACTING_INVENTORY: u8 = 15;
+/// Hook: a push onto another player's figure, skipped on the caller's seat
+/// (thuum tracker #178).
+pub const SKYMP_NATIVE_HOOK_PUSH_FIGURE: u8 = 16;
 /// The largest hook code: a row with a larger one is a table this build does
 /// not read.
-pub const SKYMP_NATIVE_HOOK_LAST: u8 = 15;
+pub const SKYMP_NATIVE_HOOK_LAST: u8 = 16;
 
 /// One row of the table, every string NUL-terminated and valid for the
 /// process's life.
@@ -453,6 +456,7 @@ mod tests {
             SKYMP_NATIVE_HOOK_LEVELED_LANDING,
             SKYMP_NATIVE_HOOK_SCENE_START,
             SKYMP_NATIVE_HOOK_ACTING_INVENTORY,
+            SKYMP_NATIVE_HOOK_PUSH_FIGURE,
         ];
         assert_eq!(codes.map(usize::from), std::array::from_fn(|i| i));
         assert_eq!(Hook::ALL.map(Hook::code), codes);

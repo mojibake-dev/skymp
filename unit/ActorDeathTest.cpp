@@ -7,7 +7,9 @@
 #include "HitMessage.h"
 #include "HostedActorStateMessage.h"
 #include "MsgType.h"
+#include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
+#include "PropTransformMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateMovementMessage.h"
 #include "libespm/Loader.h"
@@ -1874,5 +1876,83 @@ TEST_CASE("A host's report of a script's kill on an essential base is taken "
   REQUIRE(actor.IsDead());
 
   StandUp(p, actor);
+  Leave(p, 0, kHost);
+}
+
+// physics rung 5 (thuum tracker #175; the review of f50509d89, finding 4): a
+// body whose prop row another seat holds live (a grab mid-settle here) has
+// that seat as its one writer, so the host's settle sample of its own copy is
+// refused (E_PROP_NOT_OWNER) and moves nothing
+TEST_CASE("A knocked living NPC another seat claimed takes no movement from "
+          "its host until that seat's asleep sample at the get-up returns it",
+          "[ActorDeath][Prop][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  REQUIRE_FALSE(actor.IsDead());
+  const NiPoint3 at = actor.GetPos();
+
+  // the gripper's claim (thuum tracker #175, the live-body kind)
+  RawMessageData raw;
+  raw.userId = 1;
+  PropClaimMessage grab;
+  grab.refrs = { kPredator };
+  grab.touch = 0;
+  p.GetActionListener().OnPropClaim(raw, grab);
+  REQUIRE(p.PropLiveOwner(actor) == kOther);
+
+  MoveBody(p, 0, kPredator, at + NiPoint3{ 50.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == at);
+
+  // the get-up: the claimant's asleep sample returns the row to the host,
+  // whose samples move the actor again
+  PropTransformMessage rest;
+  rest.refr = kPredator;
+  rest.epoch = p.PropEpochOf(actor);
+  rest.seq = 1;
+  rest.tMs = 100;
+  rest.pos = { at.x, at.y, at.z };
+  rest.rot = { 0.f, 0.f, 0.f };
+  rest.asleep = true;
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  p.GetActionListener().OnPropTransform(raw, rest);
+  REQUIRE(p.PropLiveOwner(actor) == 0);
+  MoveBody(p, 0, kPredator, at + NiPoint3{ 50.f, 0.f, 0.f });
+  REQUIRE((actor.GetPos() - (at + NiPoint3{ 50.f, 0.f, 0.f })).Length() <
+          0.01f);
+
+  Leave(p, 1, kOther);
+  Leave(p, 0, kHost);
+}
+
+TEST_CASE("A body another seat's grab holds takes no settle sample from its "
+          "host",
+          "[ActorDeath][BodyRest][Prop][espm]")
+{
+  auto& p = GetPartOne();
+  p.worldState.npcEnabled = true;
+  MpActor* host = nullptr;
+  auto& actor = HostedPredator(p, host, true);
+  actor.Kill(nullptr);
+  REQUIRE(p.PropLiveOwner(actor) == kHost);
+  const NiPoint3 at = actor.GetPos();
+
+  RawMessageData raw;
+  raw.userId = 1;
+  PropClaimMessage grab;
+  grab.refrs = { kPredator };
+  grab.touch = 1;
+  p.GetActionListener().OnPropClaim(raw, grab);
+  REQUIRE(p.PropLiveOwner(actor) == kOther);
+
+  MoveBody(p, 0, kPredator, at + NiPoint3{ 50.f, 0.f, 0.f });
+  REQUIRE(actor.GetPos() == at);
+
+  StandUp(p, actor);
+  Leave(p, 1, kOther);
   Leave(p, 0, kHost);
 }

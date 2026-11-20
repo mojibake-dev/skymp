@@ -9,6 +9,7 @@ import { ChangeFormMessage, ChangeFormRemapRow } from "../messages/changeFormMes
 import { ChangeFormAckMessage } from "../messages/changeFormAckMessage";
 import { ChangeFormApplyMessage } from "../messages/changeFormApplyMessage";
 import { HostService } from "./hostService";
+import { PropService } from "./propService";
 import { RagdollService } from "./ragdollService";
 
 // thuum docs/verbs/change-form.md (ADR-065 for system 1: the save is the
@@ -201,6 +202,8 @@ type HeldRecord = {
     attempts: number;
     lastAttemptAt: number;
     heldLogged: boolean;
+    followLogged?: boolean; // physics rung 5: "held until this seat's follow of its stream rests" said
+    menuHeld?: boolean;    // the last attempt waited for this seat's open ContainerMenu (said once; holdMs paused)
     killedHereAt: number;  // deathService's kill of the copy, in flight (the task queue) or landed
     bindKill: boolean;     // that kill was the bind's (applies on the owner's own seat too)
     queuedAt: number;      // the apply queued to the main thread's task (ApplyChangeForm answered {queued}); 0 when none
@@ -267,8 +270,12 @@ export class ChangeFormService extends ClientListener {
     // the owner's trigger (sendInputsService, the at-rest moment of a dead
     // hosted actor): the body's own change form, serialized by the engine's
     // recipe and sent when it differs from the acked record. Runs in the
-    // update's context (the sender's tick), where the native is allowed
-    onBodyAtRest(remoteId: number, body: Actor, pos: NiPoint3, why: string = "at rest"): void {
+    // update's context (the sender's tick), where the native is allowed.
+    // propEpoch: physics rung 5's (PropService.recordBodyRest), the prop
+    // epoch of the body's row this seat streams, which the server takes from
+    // the row's owner in place of the cell's (ADR-071 decision 6); 0 for the
+    // cell's host epoch as before
+    onBodyAtRest(remoteId: number, body: Actor, pos: NiPoint3, why: string = "at rest", propEpoch: number = 0): void {
         const hex = remoteId.toString(16);
         if (remoteId >= 0xff000000) {
             logTrace(this, `changeform ${hex}: a server-made copy's record is not this slice's (game-file actors alone)`);
@@ -326,7 +333,7 @@ export class ChangeFormService extends ClientListener {
         };
         // the cell's host epoch this client holds for the actor's cell
         // (ADR-066's stamp; the verb doc's Ownership); none names it: held
-        const epoch = this.controller.lookupListener(HostService).epochForActor(body);
+        const epoch = propEpoch > 0 ? propEpoch : this.controller.lookupListener(HostService).epochForActor(body);
         if (epoch === 0) {
             this.pending.set(remoteId, { message, at, heldAt: now, sentAt: 0, tries: 0 });
             logLab("verb:npc-fate", `changeform ${hex} held: no hosted cell names the actor's; sent at the next grant (${rec.bodyHex.length / 2} bytes, fnv ${rec.fnv1a.toString(16)}, ${rec.remap.length} remap rows, ${at})`);
@@ -518,6 +525,30 @@ export class ChangeFormService extends ClientListener {
             // the poll): its answer decides, no second attempt meanwhile
             return;
         }
+        // thuum tracker #175, Eli's third look (c2's crash at 14:44:57 PST
+        // 2026-11-19): a record laid while this seat's ContainerMenu is open
+        // rebuilds the body's inventory under the menu's item list and its 3D
+        // preview. c2 laid 39fe4's record under its open loot menu, and the
+        // next highlight change read freed memory in Inventory3DManager (frame
+        // 51758, lab/relids.tsv's UpdateMagic3D) half a second later.
+        // HYPOTHESIS: the apply frees the entries the open menu points at
+        // (docs/research/m3/re-corpse-menu-crash.md read the same Scaleform
+        // chain, a body's row freed by an inventory landing under its open
+        // loot menu). The record waits for the menu's close and the next pass
+        // lays it then; the hold's clock (holdMs) does not run out on a long
+        // loot. Ui.isMenuOpen reads the open loot menu on the seats under
+        // Skyrim Souls RE (remoteServer's corpse open saw it true at
+        // 14:44:56.469 on c2); the native's own premise (ChangeForm.cpp,
+        // ItemMenuRefresh::Shows) refuses a lay when the menu opened between
+        // this check and its task
+        if (this.sp.Ui.isMenuOpen("ContainerMenu")) {
+            if (!rec.menuHeld) {
+                rec.menuHeld = true;
+                logLab("verb:npc-fate", `corpse ${hex} record held while this seat's ContainerMenu is open`);
+            }
+            return;
+        }
+        rec.menuHeld = false;
         const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(rec.formId));
         const ac = refr ? this.sp.Actor.from(refr) : null;
         if (!refr || !ac) {
@@ -538,6 +569,16 @@ export class ChangeFormService extends ClientListener {
             // own record goes out from the rest
             this.records.delete(rec.formId);
             logTrace(this, `changeform ${hex}: the record dropped, this seat simulates the body`);
+            return;
+        }
+        // physics rung 5 (thuum tracker #175): a body this seat follows on the
+        // prop stream is laid by the record once the follow has rested,
+        // never under its tail (the poll tries it again)
+        if (this.controller.lookupListener(PropService).followsBody(rec.formId)) {
+            if (!rec.followLogged) {
+                rec.followLogged = true;
+                logLab("verb:npc-fate", `corpse ${hex} record held until this seat's follow of its stream rests`);
+            }
             return;
         }
         const now = Date.now();
@@ -690,7 +731,7 @@ export class ChangeFormService extends ClientListener {
                 if (rec.applied || rec.queuedAt > 0) {
                     return;
                 }
-                if (now - rec.receivedAt >= ChangeFormService.holdMs) {
+                if (now - rec.receivedAt >= ChangeFormService.holdMs && !rec.menuHeld) {
                     this.records.delete(formId);
                     logLab("verb:npc-fate", `corpse ${formId.toString(16)} record dropped: held ${now - rec.receivedAt} ms, the copy never died here`);
                     return;

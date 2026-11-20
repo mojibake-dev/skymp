@@ -16,7 +16,7 @@ import {
 } from "skyrimPlatform";
 import { Movement } from "./movement";
 import { applyWeapDrawn } from "./movementApply";
-import { clearKnockedDown, isKnockedDown, markKnockedDown } from "./knockState";
+import { clearKnockedDown, isFollowedDown, isKnockedDown, markKnockedDown } from "./knockState";
 import { isHandCastEvent } from "../services/services/actionSyncService";
 
 export enum AnimationEventName {
@@ -154,6 +154,44 @@ export const applyAnimation = (
   }
   state.lastNumChanges = anim.numChanges;
 
+  // thuum tracker #178 (the same trace and static read): a copy following
+  // another seat's knocked body takes none of its owner's relayed graph
+  // events. Its knock is the stream's and its get-up the follow's release
+  // (PropService, the platform's get-up hold): a relayed GetUpBegin sent to
+  // its graph reached the GetUpStart handler (42879), which writes knockState
+  // 6 with no 5 (c2's copy of rotfern, 1 to 6 at 00:45:10.778), and its
+  // GetUpEnd queues 39897's 0; a relayed Ragdoll knocked it again in place.
+  // Consumed here, never replayed after the follow. The relay's own down and
+  // up flag (Variable10, movementApply's gate: below -999 holds the figure
+  // where it lies) still follows the owner's knock and get-up as below, so
+  // the copy moves again once its own get-up has come (the rerun
+  // 20261120-014429: a consumed GetUpBegin left it at -1000, the copy stood
+  // 498.6 units off its player for good and its relayed shout missed)
+  // Of the unguarded path's other side effects, a furniture exit's
+  // setCollision(true) is kept too, should a knock out of a chair relay one
+  // (unread whether it does); the rest must stay unset for a consumed event:
+  // the drawn state comes from every movement sample (applyWeapDrawn), and
+  // the idle and attack allow-lists, relayedKnocks and relayedStaggers are
+  // one-use passes for plays that did not happen (the review of this hunk)
+  if (isFollowedDown(refr.getFormID())) {
+    const followed = Actor.from(refr);
+    if (actorGetUpAnimsLowerCase.find((x) => x === anim.animEventName.toLowerCase()) !== undefined) {
+      setCollision(refr.getFormID(), true);
+    }
+    if (followed && anim.animEventName === "Ragdoll") {
+      followed.setActorValue("Variable10", -1000);
+    } else if (anim.animEventName === "GetUpBegin") {
+      const refrId = refr.getFormID();
+      Utility.wait(1).then(() => {
+        const ac = Actor.from(Game.getFormEx(refrId));
+        if (ac) {
+          ac.setActorValue("Variable10", 1000);
+        }
+      });
+    }
+    return;
+  }
+
   if (state.useAnimOverrides) {
     const animOverride = animOverridesLowerCase[anim.animEventName.toLowerCase()];
     if (animOverride !== undefined) {
@@ -274,6 +312,13 @@ export class AnimationSource {
         // twice (P4's H1). The player keeps the name rule below: its melee
         // and voice events feed the server's AnimationSystem
         if (this.refrId !== 0x14 && isPerformingAction(this.refrId)) {
+          return;
+        }
+        // thuum tracker #175: a copy this game knocked in place to follow
+        // another seat's live body sends none of its knock (its Ragdoll, its
+        // get-up): another seat's relay would knock that seat's copy, the
+        // owner's own among them (the review of 312279ce8, finding 7)
+        if (isFollowedDown(this.refrId)) {
           return;
         }
 

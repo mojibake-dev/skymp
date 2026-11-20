@@ -24,3 +24,27 @@ export const isKnockedDown = (refrId: number): boolean => {
   const at = knockedDown.get(refrId);
   return at !== undefined && Date.now() - at <= knockDownMs;
 };
+
+// thuum tracker #175 (Eli's second look: "the grip pulls a guy, but he's
+// planking on ariadnes screen"; #178, a shout on a player): a copy this game
+// follows as another seat's live body (the knocked actor's ragdoll streamed
+// on the prop channel, PropService) is the stream's alone until its own
+// knock ends: no movement sample moves or turns it, since a sample of a
+// ragdolled actor carries the ragdoll's root and its tilt, which laid the
+// standing copy flat. PropService marks it at the follow and clears it once
+// the copy reads upright; forgotten after followedDownMs unrenewed
+const followedDown = new Map<number, number>();
+const followedDownMs = 2000;
+
+export const markFollowedDown = (refrId: number): void => {
+  followedDown.set(refrId, Date.now());
+};
+
+export const clearFollowedDown = (refrId: number): void => {
+  followedDown.delete(refrId);
+};
+
+export const isFollowedDown = (refrId: number): boolean => {
+  const at = followedDown.get(refrId);
+  return at !== undefined && Date.now() - at <= followedDownMs;
+};

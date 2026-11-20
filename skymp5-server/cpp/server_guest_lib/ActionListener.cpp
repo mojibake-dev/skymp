@@ -313,8 +313,19 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // before this process or placed dead has no window and no row here
       // and keeps the host's samples as before (TODO: its rest at load,
       // with the prop claim)
-      if (moved->IsDead() && moved->IsFateRespawned() &&
-          moved->HasBodySettle()) {
+      // physics rung 5 (thuum tracker #175): a body whose prop row another
+      // seat holds live (its drag, its push, and a living actor's knock: the
+      // live-body kind) has that seat as its one writer, a dead body with no
+      // settle record too (one dead before this process, which the branch
+      // below never sees): every other report is refused, the host's settle
+      // samples of its own copy among them, and a knocked NPC's host's
+      // samples while the gripper or the shouter streams its ragdoll
+      const uint32_t bodyLiveOwner = partOne.PropLiveOwner(*moved);
+      const bool bodyHeldElsewhere =
+        bodyLiveOwner != 0 && bodyLiveOwner != myActor->GetFormId();
+      if (bodyHeldElsewhere ||
+          (moved->IsDead() && moved->IsFateRespawned() &&
+           moved->HasBodySettle())) {
         const auto refuseBody = [&](const char* code, const std::string& why) {
           // the throttle per code, sender and body: a NOT_OWNER line must
           // not silence an AT_REST line seconds later, nor mix their counts
@@ -342,6 +353,12 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
             rawMsgData.userId, static_cast<uint8_t>(MsgType::UpdateMovement),
             false, true);
         };
+        if (bodyHeldElsewhere) {
+          refuseBody("E_PROP_NOT_OWNER",
+                     fmt::format("{:x} simulates it (its row's, a touch's)",
+                                 bodyLiveOwner));
+          return;
+        }
         // the window may have ended since the last sweep
         moved->SettleBodyIfDue(nowMs);
         if (moved->IsBodyAtRest()) {
@@ -622,9 +639,20 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       actor->SetCellOrWorldObsolete(newCellOrWorld);
     }
 
-    actor->SetPos(
-      NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
-      SetPosMode::CalledByUpdateMovement);
+    // thuum tracker #179 (ADR-063's 2026-11-19 amendment): a player's body
+    // another player's grip holds has that gripper's samples as its one
+    // writer (OnPropTransform) until the gripper's rest returns it; the
+    // player's own reports lag them by the follow's delay, so they move no
+    // record meanwhile (a throw's sample measured from a lagging record
+    // could pass the step allowance and be refused, the review of 48959a563,
+    // finding 7); its rotation and its relay stand
+    const uint32_t bodyHeldBy =
+      isPlayersOwn ? partOne.PropLiveOwner(*actor) : 0;
+    if (bodyHeldBy == 0 || bodyHeldBy == actor->GetFormId()) {
+      actor->SetPos(
+        NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
+        SetPosMode::CalledByUpdateMovement);
+    }
     // thuum tracker #166: a player armed at a word wall walks on toward its
     // word (nobody is armed, mostly: one lookup then)
     if (isPlayersOwn && !wordWallArms.empty()) {
@@ -2061,8 +2089,6 @@ const char* VoiceRefusalCode(PartOne::VoiceCheck check)
       return "E_SHOUT_SPELL";
     case PartOne::VoiceCheck::WordLocked:
       return "E_SHOUT_WORD";
-    case PartOne::VoiceCheck::Recovering:
-      return "E_SHOUT_RECOVERY";
     default:
       return "accepted";
   }
@@ -4593,22 +4619,50 @@ namespace {
 // server-made reference is no world body (DEF-4e: it has no game-file
 // position to be tethered to; WorldState.cpp's split of the ids at
 // 0xff000000), nor is a static (DEF-4f: D-PH9 A gives a STAT with a dynamic
-// model no row). An actor answers None: a dead actor's row is rung 5's
-// (Body; MpActor::IsDead), and the prop and destruction handlers refuse an
-// actor before they ask (RefusePropPickup asks for an item alone).
+// model no row). A body (physics rung 5, ADR-071 decision 5; thuum tracker
+// #175, playtest 56: "there is ZERO syncing currently. nothing at all.") is a
+// dead game-file actor no player plays: its ragdoll is a world body of parts
+// to every seat (its bones in the seat's walk order), claimed by a touch and
+// streamed as any prop, with no tether (a corpse is carried off by design,
+// and its game-file position is where it stood alive). A living actor, a
+// player's and a server-made one (its id seat-local, change-form's read 4)
+// answer None as bodies. A live body (rung 5's live-body kind; thuum tracker
+// #175, Eli's second look: "the grip pulls a guy, but he's planking on
+// ariadnes screen", and #178, a shout on a player) is a living actor's
+// ragdoll while its engine holds it knocked (ActionKnockDown to ActionGetUp,
+// a grip or a shout): a game-file NPC's, claimed by the seat whose cause moved
+// it as a dead body is, or a player's, which its own game alone claims
+// (ADR-063: a player's own game owns its actor). Whether the actor is knocked
+// is the claimant's word, unvalidated (R2, rule 5): the server records the
+// row, refuses every other writer (OnUpdateMovement's one-writer rule), and
+// the owner's asleep sample at the get-up returns it to the host. A
+// server-made NPC answers None living or dead (its id is seat-local).
+// RefusePropPickup asks for an item alone, and the destruction handler for a
+// world body alone.
 // A world body is also the one kind whose destruction a seat's report
 // records (OnDestructionStage, E_DESTRUCTION_KIND; D-S3 point 3)
 enum class PropKind
 {
   None,
   Item,
-  WorldBody
+  WorldBody,
+  Body,
+  LiveBody
 };
 
 PropKind PropKindOf(MpObjectReference& refr)
 {
-  if (refr.AsActor()) {
-    return PropKind::None;
+  if (auto* actor = refr.AsActor()) {
+    // a player's body is its own game's alive or dead (a death mid-knock
+    // keeps the row its own game's, whose rest returns it: the review of
+    // 6f43e78e8, finding 5)
+    if (actor->GetUserId() != Networking::InvalidUserId) {
+      return PropKind::LiveBody;
+    }
+    if (refr.GetFormId() >= 0xff000000) {
+      return PropKind::None;
+    }
+    return actor->IsDead() ? PropKind::Body : PropKind::LiveBody;
   }
   const auto& baseType = refr.GetBaseType();
   if (espm::utils::IsItem(espm::Type(baseType.c_str()))) {
@@ -4681,7 +4735,8 @@ bool PropRefusalLineDue(ServerState& serverState, Networking::UserId user,
 // sixteen props, each judged alone, its own verdict, word and line. The
 // gates, per reference: the reference a prop the server holds (an item, or
 // since physics rung 4 a world body by any touch, D-PH9 A's admission: the
-// server holds no class, PropKindOf; never an actor; E_PROP_KIND), a touch
+// server holds no class, PropKindOf; since physics rung 5 a dead NPC's
+// body, never a living actor; E_PROP_KIND), a touch
 // the contract names, the claimant a listener of the prop (E_PROP_UNSEEN:
 // the server's own record of which games it sent the prop), and the prop's
 // record in a cell (E_PROP_OUTSIDE: the cell is the rule's row key, never a
@@ -4732,14 +4787,36 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
           code, myActor->GetFormId(), refr, msg.touch, why);
       }
     };
-    if (!prop || prop->AsActor()) {
-      return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
+    if (!prop) {
+      return refuse("E_PROP_UNKNOWN", "no such reference");
     }
     // physics rung 4 (D-PH9 A): a world body by any touch, as an item; the
-    // impulse-only gate of D-S3 point 4 retires with it
+    // impulse-only gate of D-S3 point 4 retires with it. Rung 5: a dead
+    // NPC's body by any touch too (a drag's grab, a shout's impulse), and a
+    // knocked living actor's (the live-body kind), a player's by its own
+    // game alone
     const PropKind kind = PropKindOf(*prop);
     if (kind == PropKind::None) {
-      return refuse("E_PROP_KIND", "neither an item nor a world body");
+      return refuse("E_PROP_KIND",
+                    "neither an item, a world body nor an NPC's or a "
+                    "player's body");
+    }
+    const auto* propActor = prop->AsActor();
+    const bool self = prop == myActor;
+    // thuum tracker #179 (ADR-063's 2026-11-19 amendment; Eli: "yeah go with
+    // it"): a player's body is its own game's, except in another player's
+    // grip, a hand (touch 1, the engine's grab: a Vampiric Grip names its
+    // actor as the gripper's grabbed object) whose hold makes it the
+    // gripper's until the gripper's rest returns it (A4's word, player 0);
+    // the gripped game follows that stream. Any other touch of another
+    // player's body (a contact, a drop, an impulse) stays refused: its own
+    // game simulates its knock (#178)
+    constexpr uint32_t kTouchGrab = 1;
+    if (kind == PropKind::LiveBody && propActor &&
+        propActor->GetUserId() != Networking::InvalidUserId && !self &&
+        msg.touch != kTouchGrab) {
+      return refuse("E_PROP_KIND",
+                    "a player's body, which its own game simulates (ADR-063)");
     }
     if (msg.touch > 3) {
       return refuse("E_PROP_RANGE", "a touch the contract does not name");
@@ -4747,7 +4824,7 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     // a game the server never sent the prop, or told it is gone, has no copy
     // to heal, so no word answers it (a claim racing an unsubscription reads
     // here too)
-    if (!IsPropListener(*prop, *myActor)) {
+    if (!self && !IsPropListener(*prop, *myActor)) {
       return refuse("E_PROP_UNSEEN",
                     "the claimant is no listener of the prop (its game was "
                     "never sent it, or was told it is gone)");
@@ -9277,18 +9354,34 @@ void ActionListener::OnPropTransform(const RawMessageData& rawMsgData,
   };
   const auto& form = partOne.worldState.LookupFormByIdNoLoad(msg.refr);
   MpObjectReference* prop = form ? form->AsObjectReference() : nullptr;
-  if (!prop || prop->AsActor()) {
-    return refuse("E_PROP_UNKNOWN", "no such reference, or an actor");
+  if (!prop) {
+    return refuse("E_PROP_UNKNOWN", "no such reference");
   }
   // physics rung 4 (D-PH9 A): a world body's samples are judged as an
-  // item's from its first, its host's own wake included (DEF-4a)
+  // item's from its first, its host's own wake included (DEF-4a); rung 5's
+  // body (a dead NPC's ragdoll) as a world body's, with no tether
   const PropKind kind = PropKindOf(*prop);
   if (kind == PropKind::None) {
-    return refuse("E_PROP_KIND", "neither an item nor a world body");
+    return refuse("E_PROP_KIND",
+                  "neither an item, a world body nor an NPC's or a player's "
+                  "body");
   }
   // physics rung 2's bones: the parts of a body of several, a world body's
   // since rung 4 (D-PH10 A) and a dead actor's at rung 5; an item's body is
   // one part, so its sample with bones moves nothing and reaches nobody
+  // a player's body streams from its own game alone, as it is claimed: the
+  // cell's host, the owner of a prop with no live row, takes no other
+  // player's body (the review of 6f43e78e8, finding 1); a gripper's granted
+  // hold (thuum tracker #179, OnPropClaim's touch 1) is the live row that
+  // lets its samples through, until its rest returns the body
+  if (kind == PropKind::LiveBody && prop != myActor &&
+      partOne.PropLiveOwner(*prop) != myActor->GetFormId()) {
+    const auto* propActor = prop->AsActor();
+    if (propActor && propActor->GetUserId() != Networking::InvalidUserId) {
+      return refuse("E_PROP_KIND",
+                    "a player's body, which its own game simulates (ADR-063)");
+    }
+  }
   if (!msg.bones.empty() && kind == PropKind::Item) {
     return refuse("E_PROP_KIND",
                   "a sample with bones on an item, whose body is one part");
@@ -9604,8 +9697,26 @@ void ActionListener::OnChangeForm(const RawMessageData& rawMsgData,
            true);
     return;
   }
+  // physics rung 5 (ADR-071 decision 6: "ChangeForm 72 from a body's prop
+  // owner"; thuum tracker #175): a dead NPC's body records from the seat
+  // whose stream moved it, at the prop's epoch, as well as from its cell's
+  // host at the cell's. The owner sends the record before its asleep sample
+  // on the one reliable ordered channel, so the row is still its own here;
+  // a record after the return is the host's again
+  const bool bodyOwner = actor->IsDead() &&
+    partOne.PropLiveOwner(*actor) == sender->GetFormId() &&
+    msg.epoch == partOne.PropEpochOf(*actor);
+  // and the one writer of a body another seat's row holds live is that
+  // seat: the host's own settle record of its copy is refused meanwhile
+  const uint32_t bodyLiveOwner =
+    actor->IsDead() ? partOne.PropLiveOwner(*actor) : 0u;
+  if (bodyLiveOwner != 0 && bodyLiveOwner != sender->GetFormId()) {
+    refuse("E_CHANGEFORM_OWNER",
+           fmt::format("{:x} holds the body's prop row", bodyLiveOwner), true);
+    return;
+  }
   const auto host = partOne.GetCellHost(*cell);
-  if (!host.hosted || host.player != sender->GetFormId()) {
+  if (!bodyOwner && (!host.hosted || host.player != sender->GetFormId())) {
     refuse("E_CHANGEFORM_OWNER",
            host.hosted ? fmt::format("{:x} hosts cell {:x}, not the reporter",
                                      host.player, *cell)
@@ -9613,7 +9724,7 @@ void ActionListener::OnChangeForm(const RawMessageData& rawMsgData,
            true);
     return;
   }
-  if (msg.epoch != host.epoch) {
+  if (!bodyOwner && msg.epoch != host.epoch) {
     refuse("E_CHANGEFORM_EPOCH",
            fmt::format("cell {:x} stands at epoch {}, the report names {}",
                        *cell, host.epoch, msg.epoch),
@@ -12027,8 +12138,23 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
       shout && hand == 2 && caster == myActor) {
     const auto facts =
       VoiceFactsOf(*caster, *shout, spellCastData.spell, partOne.worldState);
+    // thuum tracker #180 (ADR-063, ownership, not permission): the voice's
+    // recovery is its player's own game's, whose engine gates the voice and
+    // whose wait or sleep ends a recovery the server's wall clock never sees
+    // end (playtest 56's look 4: a shout after a rest the server refused was
+    // refused here on that count, never relayed, and the other screen saw no
+    // throw). A shout inside the server's count stands; the count is said
+    // where it disagrees and starts again from this shout
+    const uint64_t countedMs =
+      partOne.VoiceRecoveryLeftMs(caster->GetFormId());
     const auto check = partOne.Shout(caster->GetFormId(), facts);
-    if (check != PartOne::VoiceCheck::Accepted) {
+    if (check == PartOne::VoiceCheck::Early) {
+      spdlog::info("ActionListener::OnSpellCast - {:x} shouts {:x} with spell "
+                   "{:x} with {:.1f} s of the server's count of its last "
+                   "recovery left; its game's word stands (tracker #180)",
+                   caster->GetFormId(), *shout, spellCastData.spell,
+                   countedMs / 1000.0);
+    } else if (check != PartOne::VoiceCheck::Accepted) {
       spdlog::warn("ActionListener::OnSpellCast - {}: {:x} shouts {:x} "
                    "with spell {:x} (variation {}, words unlocked {:#b}); "
                    "refused",

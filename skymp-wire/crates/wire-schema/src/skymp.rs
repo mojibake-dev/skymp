@@ -977,6 +977,10 @@ wire_struct! {
         pub created_enchantment: Option<CreatedForm>,
         /// The brewed poison on the weapon.
         pub created_poison: Option<CreatedForm>,
+        /// The dropped stack's owner (ExtraOwnership, the engine's stolen
+        /// mark) as the player's own game holds it (SCHEMA_VERSION 66): R2,
+        /// recorded; never 0.
+        pub owner_id: Option<u32>,
     }
 }
 

@@ -25,7 +25,8 @@ PartOne& GetPartOne();
 // Iron Dagger 0x1397E (PoisonTest.cpp), the Steel Plate Boots with fire
 // resist 0x1B401 and their enchantment EnchArmorResistFire03 0xAD484
 // (EspmTest.cpp); the second ingredient 0x34CDD is the one CraftTest.cpp's
-// Dragonborn recipe takes.
+// Dragonborn recipe takes; a stolen stack's owner is the crime faction
+// CrimeFactionFalkreath 0x28170 (ChangeFormMergedTest.cpp).
 
 namespace {
 constexpr uint32_t kActor = 0xff000c98;
@@ -38,6 +39,7 @@ constexpr uint32_t kDagger = 0x0001397e;
 constexpr uint32_t kBoots = 0x0001b401;
 constexpr uint32_t kBootsEnchantment = 0x000ad484;
 constexpr uint32_t kSoulGem = 0x0002e4e3;
+constexpr uint32_t kOwner = 0x00028170;
 
 // A player (user 0) at the origin holding nothing: a new character's base
 // container gives it a kit (five RestoreHealth01 0x3EADD and an Iron Dagger
@@ -599,6 +601,76 @@ TEST_CASE("A drop of extras the record does not hold is refused and changes "
   potionDrop.createdBase = Heal(31.f);
   p.GetActionListener().OnDropItem(raw, potionDrop);
   REQUIRE(DroppedCopy(p, kPotionTemplate) == 0);
+
+  Leave(p);
+}
+
+// A stolen copy and a clean one of the same item are told apart by their
+// owner: a drop or a craft takes the row with the reported stack's owner,
+// the dropped copy keeps that owner for its pickup, and a stack whose owner
+// the record does not hold is still taken from the rows it does
+TEST_CASE("A drop or a craft takes the stolen copy or the clean one it "
+          "names, and a dropped stolen copy comes back stolen at its pickup",
+          "[CraftReport][DropItemTest][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p);
+  Inventory::Entry stolenDagger(kDagger, 1);
+  stolenDagger.ownerId = kOwner;
+  ac.AddItems({ Inventory::Entry(kDagger, 1), stolenDagger });
+  REQUIRE(Stacks(ac, kDagger).size() == 2);
+  REQUIRE(!Stacks(ac, kDagger)[0].ownerId);
+
+  // the stolen dagger dropped: the clean one stays, the copy holds the
+  // stolen row
+  RawMessageData raw;
+  raw.userId = 0;
+  DropItemMessage stolenDrop;
+  stolenDrop.baseId = kDagger;
+  stolenDrop.count = 1;
+  stolenDrop.ownerId = kOwner;
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(raw, stolenDrop);
+  REQUIRE(Stacks(ac, kDagger).size() == 1);
+  REQUIRE(!Stacks(ac, kDagger)[0].ownerId);
+  const uint32_t copyId = DroppedCopy(p, kDagger);
+  REQUIRE(copyId != 0);
+  auto& copy = p.worldState.GetFormAt<MpObjectReference>(copyId);
+  REQUIRE(copy.GetInventory().entries.size() == 1);
+  REQUIRE(copy.GetInventory().entries[0].ownerId == kOwner);
+
+  // its pickup gives it back stolen, beside the clean one
+  copy.Activate(ac);
+  auto daggers = Stacks(ac, kDagger);
+  REQUIRE(daggers.size() == 2);
+  REQUIRE(!daggers[0].ownerId);
+  REQUIRE(daggers[1].ownerId == kOwner);
+
+  // the clean dagger dropped: the stolen one stays
+  DropItemMessage cleanDrop;
+  cleanDrop.baseId = kDagger;
+  cleanDrop.count = 1;
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(raw, cleanDrop);
+  daggers = Stacks(ac, kDagger);
+  REQUIRE(daggers.size() == 1);
+  REQUIRE(daggers[0].ownerId == kOwner);
+
+  // a clean drop where the record holds only the stolen copy still takes it
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(raw, cleanDrop);
+  REQUIRE(Stacks(ac, kDagger).empty());
+  REQUIRE(DroppedCopy(p, kDagger) != 0);
+
+  // a brew that used the stolen wheat leaves the clean wheat
+  Inventory::Entry stolenWheat(kWheat, 1);
+  stolenWheat.ownerId = kOwner;
+  ac.AddItems({ Inventory::Entry(kWheat, 1), stolenWheat });
+  Report(p, { stolenWheat }, { Potion(Heal(25.f)) });
+  const auto wheat = Stacks(ac, kWheat);
+  REQUIRE(wheat.size() == 1);
+  REQUIRE(wheat[0].count == 1);
+  REQUIRE(!wheat[0].ownerId);
 
   Leave(p);
 }

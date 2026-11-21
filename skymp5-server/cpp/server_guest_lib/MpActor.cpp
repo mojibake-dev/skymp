@@ -4327,9 +4327,10 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 
   // A drop of what the record does not hold is refused by name, no throw,
   // the dropper resynced, as a take or a put is. The drop names its stack
-  // with its extras and created forms, and the record's own rows that stand
-  // for it are the ones taken (CraftService::HeldRows, a craft report's
-  // match: the base, the created definitions and the lasting extras), so
+  // with its extras, created forms and owner, and the record's own rows
+  // that stand for it are the ones taken (CraftService::HeldRows, a craft
+  // report's match: the base, the created definitions and the lasting
+  // extras, rows with the stack's own owner first), so
   // RemoveItems is never handed a row the record lacks, which would throw
   const auto rows = CraftService::HeldRows(GetInventory(), { entry });
   if (!rows) {
@@ -4340,7 +4341,7 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
                  entry.createdBase ? " (a brewed potion or poison)"
                    : (entry.enchantmentId || entry.createdEnchantment ||
                       entry.health || entry.soul || entry.poisonId ||
-                      entry.createdPoison)
+                      entry.createdPoison || entry.ownerId)
                    ? " with extras"
                    : "",
                  entry.createdBase ? 0u : GetInventory().GetItemCount(baseId));
@@ -4400,15 +4401,15 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 
   placedObject->SetCount(count);
 
-  // A dropped stack's extras and created forms stay with its copy as the
-  // copy's own rows, given back whole at its pickup
+  // A dropped stack's extras, created forms and owner stay with its copy as
+  // the copy's own rows, given back whole at its pickup
   // (MpObjectReference::GivePickupItemsToActivationSource); the copy's change
   // form keeps them through a restart as any reference's rows
   const bool carries =
     std::any_of(rows->begin(), rows->end(), [](const Inventory::Entry& r) {
       return r.health || r.enchantmentId || r.maxCharge || r.soul ||
         r.poisonId || r.name || r.createdBase || r.createdEnchantment ||
-        r.createdPoison;
+        r.createdPoison || r.ownerId;
     });
   if (carries) {
     Inventory carried;

@@ -47,9 +47,12 @@ public:
   // the same base, created definitions and lasting extras (health, the
   // enchantment and its maximum charge, the soul, the poison); the charge
   // left, a poison's doses left and the name are the engine's of the moment
-  // and the worn flag is the client's, so none of them is compared. With
-  // `firstUnheld`, the index in `lost` of the first stack the record does
-  // not hold is written there on a refusal
+  // and the worn flag is the client's, so none of them is compared. Rows
+  // with the stack's own owner are taken first, then any other row that
+  // stands for it, so a stolen copy and a clean one of the same item are
+  // told apart where the record holds both. With `firstUnheld`, the index in
+  // `lost` of the first stack the record does not hold is written there on
+  // a refusal
   static std::optional<std::vector<Inventory::Entry>> HeldRows(
     const Inventory& record, const std::vector<Inventory::Entry>& lost,
     size_t* firstUnheld = nullptr);

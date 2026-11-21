@@ -12709,8 +12709,8 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   // VampireAbsorbHealthScript rolls Sanguinare Vampiris at OnEffectStart. An
   // aimed cast's relay carries no target, so the victim's game is told the
   // spell landed: the caster's figure applies it to that game's player,
-  // whose AddTarget zeroes its numbers (skyrim-platform Hooks.cpp
-  // PlayerAddTarget) and runs its scripts. Once a contact: a stream's hits
+  // whose EffectAdded zeroes its numbers (skyrim-platform Hooks.cpp
+  // PlayerEffectAdded) and runs its scripts. Once a contact: a stream's hits
   // within a second of the last delivery are the same contact (HYPOTHESIS:
   // the engine starts a concentration effect once a contact, not once a
   // hit; x-infection v1 reads it)
@@ -12749,12 +12749,12 @@ void ActionListener::DeliverSpellLanding(MpActor& caster, MpActor& target,
   // (playtest 53 c2-console.log:11154-11214 against server.log:3366-3378,
   // c2's clock 2.99 s behind), and the two that missed launched once. Such
   // a spell gets no delivery. HYPOTHESIS: the relayed bolt's hit on the
-  // victim's player runs that game's AddTarget, its numbers zeroed
-  // (skyrim-platform Hooks.cpp PlayerAddTarget) and its scripts run; a
-  // stream's relayed missiles follow the copy's aim instead, so a stream
-  // keeps the delivery (playtest 51's drain). A form that is no spell (a
-  // staff's enchantment) is never relayed as a cast (E_CAST_FORM) and keeps
-  // it too
+  // victim's player runs that game's AddTarget, its numbers zeroed at the
+  // effect's add (skyrim-platform Hooks.cpp PlayerEffectAdded) and its
+  // scripts run; a stream's relayed missiles follow the copy's aim instead,
+  // so a stream keeps the delivery (playtest 51's drain). A form that is no
+  // spell (a staff's enchantment) is never relayed as a cast (E_CAST_FORM)
+  // and keeps it too
   if (WorldState* worldState = caster.GetParent(); worldState) {
     try {
       const auto record = espm::GetData<espm::SPEL>(spell, worldState);
@@ -13007,9 +13007,11 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 // so the effect plays where the target is simulated. The aggressor's own game
 // ran the enchantment at its hit and is not told; a host that is the
 // aggressor's game is skipped the same way. Assumes a relayed cast on a
-// player lands with its Health number zeroed (Hooks.cpp PlayerAddTarget) and
-// its shader shown, and a host's engine number for an NPC is reconciled to
-// the server's record. A game-file enchanted weapon runs its record's own
+// player lands with its Health number zeroed and its shader shown (Hooks.cpp
+// PlayerEffectAdded), one effect with that game's engine add of the same hit
+// from the aggressor's figure (Hooks.cpp PlayerAddTarget::IsHitsSecondAdd),
+// and a host's engine number for an NPC is reconciled to the server's
+// record. A game-file enchanted weapon runs its record's own
 // enchantment (libespm WEAP's EITM) the same way
 void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
                                      const HitData& hitData)

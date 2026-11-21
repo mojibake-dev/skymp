@@ -10,7 +10,11 @@
 #include "ScriptNatives.h"
 #include "SkyrimPlatform.h"
 #include <RE/D/DelayFunctor.h>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <mutex>
+#include <vector>
 
 namespace hook::internal {
 
@@ -134,36 +138,34 @@ void InstallQuitDisconnectHook()
 }
 
 /**
- * thuum docs/verbs/magic-effects.md and docs/verbs/push.md (ADR-028, ADR-031):
- * while skymp5-client holds the server's values for the player
- * (TESModPlatform.SetPotionEffectsBlocked), the player's
- * MagicTarget::AddTarget (vfunc 01, CommonLibSSE-NG
- * include/RE/M/MagicTarget.h:78, called once per effect: AddTargetData's
- * caster, magic item and effect, :58-60) refuses the effects whose work is a
- * number the server computes, and nothing else:
- * - every effect of an alchemy item (a potion, a food, a poison: AlchemyItem's
- *   spell type is kAlchemy): the player's own drinks are the server's alone,
- *   and its effects stand alone (its ChangeValues, and the buffs its
- *   MagicEffects carries);
- * - an effect that another actor's spell, power, shout or scroll
- *   (include/RE/M/MagicSystem.h:60-80) lands on the player and that modifies
- *   Health, Magicka or Stamina is not refused but lands with its number
- *   zeroed, so its script still runs (playtest 51, the drain's infection;
- *   the thunk below): a value modifier archetype
- *   (include/RE/E/EffectArchetypes.h:10-44) by its primary or second actor
- *   value (include/RE/E/EffectSetting.h:89, :94). The server computes the
- *   damage one actor deals another and sends the percentages (ADR-028).
- * Every other effect of another actor's cast runs here as the engine plays
- * it (ADR-031: cut at the number, not the event). That includes its
- * stagger, its paralysis, its look, and its script: Unrelenting Force's
- * VoicePushEffectScript throws the player from the caster's figure. Until
- * 2026-10-14 skymp5-client dispelled a figure's whole spell from the player
- * at its hit, before the effects' first update, so their OnEffectStart was
- * never asked for and the push never ran (x-push2 20261014-143427 against
- * the solo x-push-solo 20261014-143127, lab/frida/push-trace.js). The
- * player's MagicTarget vtable is the fifth of PlayerCharacter's:
+ * While skymp5-client holds the server's values for the player
+ * (TESModPlatform.SetPotionEffectsBlocked), the server computes every number
+ * another actor deals the player, and the player's own game plays the rest of
+ * that actor's cast as the engine does: its effect, its shader and art, its
+ * stagger and paralysis, and its script (a vampire's drain rolls its disease
+ * at OnEffectStart; Unrelenting Force's VoicePushEffectScript throws the
+ * player from the caster's figure).
+ *
+ * The player's MagicTarget vtable is the fifth of PlayerCharacter's:
  * TESObjectREFR has four (VTABLE_TESObjectREFR) and Actor's MagicTarget base
- * follows them (include/RE/A/Actor.h:126), as VTABLE_Actor's ten count.
+ * follows them (CommonLibSSE-NG include/RE/A/Actor.h:126), as VTABLE_Actor's
+ * ten count. Two of its virtuals are replaced
+ * (include/RE/M/MagicTarget.h:78, :85):
+ * - AddTarget (01), called once per effect with its caster, magic item and
+ *   effect (AddTargetData, :56-67), refuses every effect of an alchemy item
+ *   (a potion, a food, a poison: spell type kAlchemy), the player's own
+ *   drinks being the server's alone, and lets one add through for each
+ *   enchanted weapon's hit on the player (PlayerAddTarget::IsHitsSecondAdd).
+ *   It passes AddTargetData's magnitude on as it came: the engine's AddTarget
+ *   (Address Library 38786) answers false for a fire damage enchantment's
+ *   effect handed a zero magnitude and adds nothing, shader and script
+ *   included;
+ * - EffectAdded (08) zeroes the added ActiveEffect's own magnitude
+ *   (include/RE/A/ActiveEffect.h:110) where another actor's cast lands an
+ *   effect on the player that modifies Health, Magicka or Stamina
+ *   (PlayerEffectAdded), so the effect runs whole with no number of its own.
+ *   HYPOTHESIS: EffectAdded runs before the effect's first update and its
+ *   start, so no part of the engine's number lands before the zero.
  */
 struct PlayerAddTarget
 {
@@ -173,6 +175,8 @@ struct PlayerAddTarget
       a_av == RE::ActorValue::kMagicka || a_av == RE::ActorValue::kStamina;
   }
 
+  // a value modifier archetype (include/RE/E/EffectArchetypes.h:10-44) by
+  // its primary or second actor value (include/RE/E/EffectSetting.h:89, :94)
   static bool ChangesServerValue(const RE::Effect* a_effect)
   {
     const auto mgef = a_effect ? a_effect->baseEffect : nullptr;
@@ -195,12 +199,10 @@ struct PlayerAddTarget
     }
   }
 
-  // thuum ADR-037 (docs/DECISIONS.md, proposed): a figure's enchantment
-  // counts as its cast too. An explosion a figure owns casts its EXPL's
-  // enchantment at the player through the figure's instant caster, an
-  // EnchantmentItem (the re-analyst on sky-re, 2026-10-17: the explosion
-  // pass 43849), and so does a figure's enchanted weapon on a hit; neither
-  // is the server's number (include/RE/M/MagicSystem.h:60-80 for the types)
+  // an actor's cast: a spell, power, shout or scroll, and an enchantment,
+  // whether its enchanted weapon's hit, its staff's or its explosion's (an
+  // explosion casts its EXPL's enchantment through the owner's instant
+  // caster); include/RE/M/MagicSystem.h:60-80 for the types
   static bool IsCast(const RE::MagicItem* a_item)
   {
     using SpellType = RE::MagicSystem::SpellType;
@@ -218,39 +220,164 @@ struct PlayerAddTarget
     }
   }
 
+  // One enchanted weapon's hit on the player reaches AddTarget twice: from
+  // the engine, as the attacker's figure's weapon hits the player in this
+  // game (through the weapon's hand), and from the server's relay of the hit
+  // the attacker's own game registered, which skymp5-client casts from the
+  // figure through its instant caster (castSpellImmediate; kInstant,
+  // include/RE/M/MagicSystem.h:23-29). Both carry the same caster, magic item
+  // and effect. The first add of an effect lands; an add from the other
+  // source within kHitPairWindow is the same hit's second and is refused, so
+  // one effect lands whichever arrives first. A pair closes at its second
+  // add, so the weapon's next hit opens a new one, and an add whose other
+  // half never comes (the figure's swing missing in this game, or a hit the
+  // server never relayed) lands alone. The window outlasts the gap between
+  // the two adds of one hit, each a server trip from the attacker's game,
+  // and the pairing keeps one effect a hit even where it spans two hits.
+  struct HitAdd
+  {
+    std::uint64_t id = 0;
+    RE::FormID caster = 0;
+    RE::FormID item = 0;
+    RE::FormID mgef = 0;
+    bool relayed = false;
+    std::chrono::steady_clock::time_point at;
+  };
+  static constexpr auto kHitPairWindow = std::chrono::milliseconds(1000);
+  static inline std::mutex hitAddsMutex;
+  static inline std::vector<HitAdd> hitAdds;
+  static inline std::uint64_t nextHitAdd = 0;
+  static inline std::atomic<std::uint32_t> secondAdds{ 0 };
+
+  // true when this add is the second of a hit whose first is held; else
+  // this add is held as its hit's first, under a_held, until it lands or
+  // ForgetHitAdd drops it
+  static bool IsHitsSecondAdd(const RE::Actor* a_caster,
+                              const RE::MagicTarget::AddTargetData& a_data,
+                              std::uint64_t& a_held)
+  {
+    const auto mgef = a_data.effect ? a_data.effect->baseEffect : nullptr;
+    if (!mgef) {
+      return false;
+    }
+    HitAdd add;
+    add.caster = a_caster->GetFormID();
+    add.item = a_data.magicItem->GetFormID();
+    add.mgef = mgef->GetFormID();
+    add.relayed =
+      a_data.castingSource == RE::MagicSystem::CastingSource::kInstant;
+    add.at = std::chrono::steady_clock::now();
+
+    std::lock_guard<std::mutex> lock(hitAddsMutex);
+    hitAdds.erase(std::remove_if(hitAdds.begin(), hitAdds.end(),
+                                 [&](const HitAdd& held) {
+                                   return add.at - held.at > kHitPairWindow;
+                                 }),
+                  hitAdds.end());
+    const auto first =
+      std::find_if(hitAdds.begin(), hitAdds.end(), [&](const HitAdd& held) {
+        return held.caster == add.caster && held.item == add.item &&
+          held.mgef == add.mgef && held.relayed != add.relayed;
+      });
+    if (first != hitAdds.end()) {
+      hitAdds.erase(first);
+      return true;
+    }
+    add.id = ++nextHitAdd;
+    a_held = add.id;
+    hitAdds.push_back(add);
+    return false;
+  }
+
+  // a held first add the engine refused, so the hit's other add may land
+  static void ForgetHitAdd(std::uint64_t a_held)
+  {
+    std::lock_guard<std::mutex> lock(hitAddsMutex);
+    hitAdds.erase(
+      std::remove_if(hitAdds.begin(), hitAdds.end(),
+                     [&](const HitAdd& held) { return held.id == a_held; }),
+      hitAdds.end());
+  }
+
   static bool thunk(RE::MagicTarget* a_this,
                     RE::MagicTarget::AddTargetData& a_data)
   {
-    if (TESModPlatform::ArePotionEffectsBlocked() && a_data.magicItem) {
-      if (a_data.magicItem->GetSpellType() ==
-          RE::MagicSystem::SpellType::kAlchemy) {
-        return false;
-      }
-      auto caster = a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
-      if (caster && !caster->IsPlayerRef() && IsCast(a_data.magicItem) &&
-          ChangesServerValue(a_data.effect)) {
-        // playtest 51 (Eli: "whatever does the drain needs to also be
-        // transmitting the infection chance"): the effect lands with its
-        // number zeroed (AddTargetData::magnitude +0x3C,
-        // include/RE/M/MagicTarget.h:64), so the server's number stays the
-        // only one (ADR-028) while the effect's own script runs here, in
-        // the player's own game (ADR-031): a vampire's drain's
-        // VampireAbsorbHealthScript rolls Sanguinare Vampiris at its
-        // OnEffectStart. Refusing it took the script along with the number.
-        // HYPOTHESIS until a run reads it: a zero-magnitude effect still
-        // starts and runs its script (x-infection v1)
-        a_data.magnitude = 0.f;
-      }
+    if (!TESModPlatform::ArePotionEffectsBlocked() || !a_data.magicItem) {
+      return func(a_this, a_data);
     }
-    return func(a_this, a_data);
+    using SpellType = RE::MagicSystem::SpellType;
+    const auto spellType = a_data.magicItem->GetSpellType();
+    if (spellType == SpellType::kAlchemy) {
+      return false;
+    }
+    auto caster = a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
+    if (spellType != SpellType::kEnchantment || !caster ||
+        caster->IsPlayerRef()) {
+      return func(a_this, a_data);
+    }
+    std::uint64_t held = 0;
+    if (IsHitsSecondAdd(caster, a_data, held)) {
+      const std::uint32_t n = ++secondAdds;
+      if ((n & (n - 1)) == 0) {
+        logger::info("[verb:magic-effects] an enchanted hit's second add on "
+                     "the player refused ({} so far; the latest {:x}'s "
+                     "{:x}, {})",
+                     n, caster->GetFormID(), a_data.magicItem->GetFormID(),
+                     a_data.castingSource ==
+                         RE::MagicSystem::CastingSource::kInstant
+                       ? "the relay's"
+                       : "the engine's");
+      }
+      return false;
+    }
+    const bool added = func(a_this, a_data);
+    if (!added && held) {
+      ForgetHitAdd(held);
+    }
+    return added;
   }
   static inline REL::Relocation<decltype(thunk)> func;
+};
+
+// The added effect's magnitude (ActiveEffect +0x78) is the number its
+// archetype works on the actor value with. Zeroed here, before the engine's
+// own EffectAdded runs, the effect keeps its shader, art, hit visuals and
+// script, and the server's number stays the only one. The caster is the
+// effect's own, its handle resolved (include/RE/A/ActiveEffect.h:93, :100),
+// so an effect added later than its AddTarget is judged the same way.
+struct PlayerEffectAdded
+{
+  static void thunk(RE::MagicTarget* a_this, RE::ActiveEffect* a_effect)
+  {
+    if (a_effect && a_effect->spell &&
+        TESModPlatform::ArePotionEffectsBlocked() &&
+        PlayerAddTarget::IsCast(a_effect->spell) &&
+        PlayerAddTarget::ChangesServerValue(a_effect->effect)) {
+      const auto caster = a_effect->GetCasterActor();
+      if (caster && !caster->IsPlayerRef()) {
+        a_effect->magnitude = 0.f;
+        const std::uint32_t n = ++zeroed;
+        if ((n & (n - 1)) == 0) {
+          const auto mgef = a_effect->GetBaseObject();
+          logger::info("[verb:magic-effects] another actor's effect on the "
+                       "player zeroed at its add ({} so far; the latest "
+                       "{:x}'s {:x}, effect {:x})",
+                       n, caster->GetFormID(), a_effect->spell->GetFormID(),
+                       mgef ? mgef->GetFormID() : 0);
+        }
+      }
+    }
+    func(a_this, a_effect);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+  static inline std::atomic<std::uint32_t> zeroed{ 0 };
 };
 
 void InstallPlayerAddTargetHook()
 {
   REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[4] };
   PlayerAddTarget::func = vtbl.write_vfunc(0x1, PlayerAddTarget::thunk);
+  PlayerEffectAdded::func = vtbl.write_vfunc(0x8, PlayerEffectAdded::thunk);
 }
 
 /**

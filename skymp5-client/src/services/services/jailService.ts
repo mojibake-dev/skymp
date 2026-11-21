@@ -6,6 +6,8 @@ import { CrimeGoldMessage } from "../messages/crimeGoldMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
 const TAG = "verb:jail";
+// Skyrim.esm GLOB TimeScale (timeService.ts's timeScaleId)
+const kTimeScaleId = 0x3a;
 
 // thuum tracker #97, ADR-079 (Eli, 2026-11-20: "yes real jail time";
 // docs/verbs/jail.md): this game's player's arrest is its own game's
@@ -89,11 +91,25 @@ export class JailService extends ClientListener {
         const left = this.releaseAt === undefined ? undefined : this.releaseAt - this.sp.Utility.getCurrentGameTime();
         if (left !== undefined && left > 0) {
             const hours = Math.ceil(left * 24);
-            this.sp.Debug.notification(`Your sentence is served in time, not in sleep: about ${hours} hour(s) left`);
+            this.sp.Debug.notification(`Your sentence is served in time, not in sleep: about ${hours} hour(s)${this.realTimeOf(left)} left`);
         } else {
             this.sp.Debug.notification("Your sentence is served in time, not in sleep");
         }
         logLab(TAG, `the bed's serve of ${e.days} day(s) for ${e.factionId.toString(16)} asked and not run (ADR-079.2, tracker #97)`);
+    }
+
+    // thuum tracker #97 (Eli, 2026-11-20, in his jail look: the time left in
+    // game time and real time): " (about N minutes)" for `days` of game time
+    // at this game's TimeScale (the global 0x3a, game seconds per real
+    // second, which TimeService sets from the server's SetGameTime, so the
+    // server's rate, never a constant); "" when the global reads no rate
+    private realTimeOf(days: number): string {
+        const timeScale = this.sp.GlobalVariable.from(this.sp.Game.getFormEx(kTimeScaleId))?.getValue() ?? 0;
+        if (!(timeScale > 0)) {
+            return "";
+        }
+        const minutes = Math.ceil((days * 24 * 60) / timeScale);
+        return minutes >= 120 ? ` (about ${Math.round(minutes / 60)} real hours)` : ` (about ${minutes} real minute(s))`;
     }
 
     // the bounty per faction last sent, so each change goes once

@@ -1,0 +1,19 @@
+{
+  "baseId": 80302,
+  "count": 1,
+  "createdEnchantment": {
+    "effects": [
+      {
+        "area": 0,
+        "cost": 30.0,
+        "duration": 1,
+        "magnitude": 10.0,
+        "mgef": 81179
+      }
+    ],
+    "kind": 0
+  },
+  "maxCharge": 2400.0,
+  "name": "test",
+  "t": 19
+}

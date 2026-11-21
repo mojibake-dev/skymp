@@ -2544,6 +2544,20 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
             created_enchantment: m.created_enchantment.as_ref(),
             created_poison: m.created_poison.as_ref(),
         }, all_finite(m)),
+        // thuum tracker #98 (SCHEMA_VERSION 63): a drop is a moved stack, its
+        // base the legacy u64 that must name a file form
+        Message::DropItem(m) => match u32::try_from(m.base_id) {
+            Ok(base_id) => check_moved_stack(&MovedStack {
+                base_id,
+                count: m.count,
+                enchantment_id: m.enchantment_id,
+                poison_id: m.poison_id,
+                created_base: m.created_base.as_ref(),
+                created_enchantment: m.created_enchantment.as_ref(),
+                created_poison: m.created_poison.as_ref(),
+            }, all_finite(m)),
+            Err(_) => Err(Reject::Range),
+        },
         Message::OnEquip(m) => check_on_equip(m),
         Message::UpdateEquipment(m) => check_update_equipment(m),
         Message::CreateActor(m) => check_create_actor(m),

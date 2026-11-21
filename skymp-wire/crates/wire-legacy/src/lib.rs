@@ -153,6 +153,19 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     ("OnEquip", "createdBase"),
     // the answer to a crafting report (SCHEMA_VERSION 62, thuum tracker #98)
     ("SetInventory", "craftAck"),
+    // a drop's extras and created forms (SCHEMA_VERSION 63, thuum tracker #98)
+    ("DropItem", "health"),
+    ("DropItem", "enchantmentId"),
+    ("DropItem", "maxCharge"),
+    ("DropItem", "removeEnchantmentOnUnequip"),
+    ("DropItem", "chargePercent"),
+    ("DropItem", "name"),
+    ("DropItem", "soul"),
+    ("DropItem", "poisonId"),
+    ("DropItem", "poisonCount"),
+    ("DropItem", "createdBase"),
+    ("DropItem", "createdEnchantment"),
+    ("DropItem", "createdPoison"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

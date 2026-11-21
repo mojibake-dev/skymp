@@ -1204,12 +1204,14 @@ mod tests {
     /// created potion in a container; 11-OnEquip-2 drinks one. Since
     /// SCHEMA_VERSION 62 each report carries its seq (84-n's is n + 1), and
     /// 28-SetInventory-3 is 28-2 as the answer to report 1 (its craftAck).
+    /// Since SCHEMA_VERSION 63, 19-DropItem-2 to -4 are drops (look 2's
+    /// "cannot drop").
     #[test]
     fn craft_fixtures_validate_as_named() {
         use wire_validate::{validate, validate_server, ClientGuard, Reject};
         let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
         type Verdict = (&'static str, Result<(), Reject>);
-        let verdicts: [Verdict; 8] = [
+        let verdicts: [Verdict; 11] = [
             ("84-CraftReport-0.json", Ok(())),
             ("84-CraftReport-1.json", Ok(())),
             ("84-CraftReport-2.json", Ok(())),
@@ -1218,6 +1220,12 @@ mod tests {
             ("28-SetInventory-3.json", Ok(())),
             ("08-PutItem-2.json", Ok(())),
             ("11-OnEquip-2.json", Ok(())),
+            // SCHEMA_VERSION 63: a dropped brew by its template and definition, a
+            // dropped weapon with its made enchantment, its charge and its name,
+            // and a drop naming a session's own id as its base, refused at the wire
+            ("19-DropItem-2.json", Ok(())),
+            ("19-DropItem-3.json", Ok(())),
+            ("19-DropItem-4.json", Err(Reject::Range)),
         ];
         for (name, verdict) in verdicts {
             let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));

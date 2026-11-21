@@ -303,7 +303,12 @@ use bounded::{String, Vec};
 /// number (D-PH1 A's reason: postcard writes a struct's fields in order, so
 /// a 61 peer would misread every SetInventory of a 62 server while the
 /// handshake passed).
-pub const SCHEMA_VERSION: u16 = 62;
+/// 63: DropItem carries the dropped stack's extras and its three created
+/// forms, as PutItem and TakeItem do (thuum tracker #98, Eli's look 2 of
+/// 3e8ab5acb: "cannot drop" a brew or an enchanted item; note 3920's agreed
+/// shape, "drops ... carry the item's extra data"). A 62 peer would misread
+/// every DropItem (D-PH1 A's reason).
+pub const SCHEMA_VERSION: u16 = 63;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -968,7 +973,9 @@ const TABLE: [Row; 93] = [
     row("ChangeValues", 16, 32, Both),
     row("OnHit", 17, 64, C2S),
     row("DeathStateContainer", 18, 66 * KIB, S2C),
-    row("DropItem", 19, 32, C2S),
+    // the base and the count, and since SCHEMA_VERSION 63 a put's extras and
+    // three created forms (pinned by the same test as PutItem's)
+    row("DropItem", 19, KIB, C2S),
     row("Teleport", 20, 64, S2C),
     row("OpenContainer", 21, 16, S2C),
     row("PlayerBowShot", 22, 64, C2S),
@@ -2079,6 +2086,27 @@ mod tests {
         });
         assert_eq!(postcard::to_allocvec(&put).map(|b| b.len()), Ok(877));
         assert_eq!(Message::max_len(put.wire_id()), Some(KIB));
+        // SCHEMA_VERSION 63: a drop at its longest, a put's fields with a u64
+        // base and no target or worn flags
+        let drop = Message::DropItem(skymp::DropItem {
+            base_id: u64::MAX,
+            count: u32::MAX,
+            health: e.health,
+            enchantment_id: e.enchantment_id,
+            max_charge: e.max_charge,
+            remove_enchantment_on_unequip: e.remove_enchantment_on_unequip,
+            charge_percent: e.charge_percent,
+            name: e.name.clone(),
+            soul: e.soul,
+            poison_id: e.poison_id,
+            poison_count: e.poison_count,
+            created_base: e.created_base.clone(),
+            created_enchantment: e.created_enchantment.clone(),
+            created_poison: e.created_poison.clone(),
+            ..Default::default()
+        });
+        assert!(postcard::to_allocvec(&drop).map(|b| b.len()).is_ok_and(|n| n <= KIB));
+        assert_eq!(Message::max_len(drop.wire_id()), Some(KIB));
         let take = Message::TakeItem(skymp::TakeItem {
             base_id: u32::MAX,
             count: u32::MAX,

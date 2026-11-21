@@ -940,6 +940,34 @@ wire_struct! {
         pub base_id: u64,
         /// How many.
         pub count: u32,
+        /// The dropped stack's extras, as [`PutItem`] carries them
+        /// (SCHEMA_VERSION 63, thuum tracker #98, look 2: an enchanted or
+        /// tempered item dropped as its plain base matched no row of the
+        /// record). Item health.
+        pub health: Option<f32>,
+        /// Enchantment form id.
+        pub enchantment_id: Option<u32>,
+        /// Enchantment charge maximum.
+        pub max_charge: Option<f32>,
+        /// Whether the enchantment goes when unequipped.
+        pub remove_enchantment_on_unequip: Option<bool>,
+        /// Charge left, percent.
+        pub charge_percent: Option<f32>,
+        /// Custom item name.
+        pub name: Option<String<{ cap::NAME }>>,
+        /// Soul gem fill level.
+        pub soul: Option<u8>,
+        /// Applied poison form id.
+        pub poison_id: Option<u32>,
+        /// Poison doses left.
+        pub poison_count: Option<u32>,
+        /// The brewed potion or poison dropped ([`Entry`]'s three created
+        /// fields): then `base_id` is the engine's template.
+        pub created_base: Option<CreatedForm>,
+        /// The item's own enchantment, made at the enchanter.
+        pub created_enchantment: Option<CreatedForm>,
+        /// The brewed poison on the weapon.
+        pub created_poison: Option<CreatedForm>,
     }
 }
 

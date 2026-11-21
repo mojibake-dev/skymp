@@ -10,7 +10,6 @@ import {
   ExtraCount,
   ExtraEnchantment,
   ExtraPoison,
-  ExtraOwnership,
   ExtraSoul,
   ExtraTextDisplayData,
   ExtraCharge,
@@ -23,6 +22,7 @@ import {
   FormType,
   Form,
   dressBody,
+  callNative,
 } from "skyrimPlatform";
 import { logLab } from "../logging";
 
@@ -192,16 +192,16 @@ const extractExtraData = (
       case "WornLeft":
         out.wornLeft = true;
         break;
-      case "Ownership": {
-        // thuum docs/verbs/jail.md (Stolen goods): the engine's stolen mark.
-        // Not on ammunition: addItemEx lays ammo with no extra list, so an
-        // arrow's owner could never be written back, and its record stays
-        // plain as before
-        const owner = (extra as ExtraOwnership).owner;
-        if (owner && !Ammo.from(item)) {
-          out.ownerId = owner;
-        }
-        break;
+    }
+    // thuum docs/verbs/jail.md (Stolen goods): the engine's stolen mark, an
+    // extra this fork's platform reads ({type: "Ownership", owner}), by name
+    // since the client types against the published platform package. Not on
+    // ammunition: addItemEx lays ammo with no extra list, so an arrow's owner
+    // could never be written back, and its record stays plain as before
+    if ((extra.type as string) === "Ownership") {
+      const owner = (extra as unknown as { owner?: number }).owner;
+      if (owner && !Ammo.from(item)) {
+        out.ownerId = owner;
       }
     }
   });
@@ -573,10 +573,11 @@ export const applyInventory = (
       });
 
       // thuum docs/verbs/jail.md (Stolen goods): the stack's owner, which
-      // the next addItemEx marks it with (pushWornState's shape)
+      // the next addItemEx marks it with (pushWornState's shape; this fork's
+      // native, called by name as the client's other TESModPlatform ones)
       const owner = e.ownerId ? Game.getFormEx(e.ownerId) : null;
       if (owner) {
-        TESModPlatform.pushOwner(owner);
+        callNative("TESModPlatform", "PushOwner", undefined, owner);
       }
 
       const ownerNote = owner ? ` owner ${owner.getFormID().toString(16)}` : "";

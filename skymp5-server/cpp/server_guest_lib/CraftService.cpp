@@ -301,22 +301,37 @@ std::optional<std::vector<Inventory::Entry>> CraftService::HeldRows(
   for (size_t i = 0; i < record.entries.size(); ++i) {
     left[i] = record.entries[i].count;
   }
-  std::vector<Inventory::Entry> rows;
+  std::vector<uint32_t> wanted(lost.size());
   for (size_t at = 0; at < lost.size(); ++at) {
-    const auto& stack = lost[at];
-    uint32_t wanted = stack.count;
-    for (size_t i = 0; i < record.entries.size() && wanted > 0; ++i) {
-      if (left[i] == 0 || !StandsFor(record.entries[i], stack)) {
-        continue;
+    wanted[at] = lost[at].count;
+  }
+  // The first pass takes only rows with the stack's own owner, for every
+  // stack, so a stolen copy is taken before a clean one of the same item
+  // and a clean copy before a stolen one; the second takes any row that
+  // stands for what is still wanted, so a stack whose owner the record does
+  // not hold is still taken from the rows it does
+  std::vector<Inventory::Entry> rows;
+  for (int pass = 0; pass < 2; ++pass) {
+    const bool sameOwner = pass == 0;
+    for (size_t at = 0; at < lost.size(); ++at) {
+      const auto& stack = lost[at];
+      for (size_t i = 0; i < record.entries.size() && wanted[at] > 0; ++i) {
+        const auto& held = record.entries[i];
+        if (left[i] == 0 || !StandsFor(held, stack) ||
+            (sameOwner && held.ownerId != stack.ownerId)) {
+          continue;
+        }
+        const uint32_t take = std::min(wanted[at], left[i]);
+        Inventory::Entry row = held;
+        row.count = take;
+        rows.push_back(row);
+        left[i] -= take;
+        wanted[at] -= take;
       }
-      const uint32_t take = std::min(wanted, left[i]);
-      Inventory::Entry row = record.entries[i];
-      row.count = take;
-      rows.push_back(row);
-      left[i] -= take;
-      wanted -= take;
     }
-    if (wanted > 0) {
+  }
+  for (size_t at = 0; at < lost.size(); ++at) {
+    if (wanted[at] > 0) {
       if (firstUnheld) {
         *firstUnheld = at;
       }
@@ -361,7 +376,8 @@ void CraftService::NormalizeCreated(WorldState& worldState,
 
 namespace {
 // A stack as HeldRows compares it, for a refusal's line: the base, the count
-// and the lasting extras, a created form by its kind and effect count
+// and the lasting extras, a created form by its kind and effect count, and
+// its owner
 std::string DescribeStack(const Inventory::Entry& e)
 {
   std::string out = fmt::format("{:x} x{}", e.baseId, e.count);
@@ -393,6 +409,9 @@ std::string DescribeStack(const Inventory::Entry& e)
   created("createdBase", e.createdBase);
   created("createdEnchantment", e.createdEnchantment);
   created("createdPoison", e.createdPoison);
+  if (e.ownerId) {
+    out += fmt::format(" owner {:x}", *e.ownerId);
+  }
   return out;
 }
 

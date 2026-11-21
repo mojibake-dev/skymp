@@ -10,8 +10,9 @@ import {
   setInventory,
 } from 'skyrimPlatform';
 
-import { logTrace } from '../logging';
-import { Entry, Inventory, getInventory, readWorn } from './inventory';
+import { logLab, logTrace } from '../logging';
+import { Entry, Inventory, addItemExEntry, getInventory, readWorn } from './inventory';
+import { toLocalWornInventory } from './createdForms';
 
 export const enum SpellType {
   Left,
@@ -67,6 +68,12 @@ export interface Equipment {
   instantSpell?: number;
   numChanges: number;
 }
+
+// the extras a stack keeps between two reads (the ones the inventory's
+// match compares, the worn flag and the charge left aside)
+const hasLastingExtras = (e: Entry): boolean =>
+  e.health !== undefined || e.enchantmentId !== undefined || e.maxCharge !== undefined ||
+  e.soul !== undefined || e.poisonId !== undefined;
 
 const filterWorn = (inv: Inventory): Inventory => {
   return { entries: inv.entries.filter((x) => x.worn || x.wornLeft) };
@@ -454,19 +461,67 @@ const equipPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe: boolean): vo
   }
 };
 
+// a figure's dress waiting on a made form, by the figure's id: since when (applyEquipment)
+const figureFormWaitSince = new Map<number, number>();
+const figureFormWaitMs = 5000;
+
 export const applyEquipment = (ac: Actor, eq: Equipment, keepAlso: readonly number[] = []): boolean => {
   if (cannotDress(ac)) {
     return false;
   }
+  const isPlayer = ac.getFormID() === 0x14;
+  // the record's worn rows in this engine's ids, a made enchantment's form
+  // made by its own creator (sync/createdForms.ts)
+  const worn = toLocalWornInventory(removeUnnecessaryExtra(filterWorn(eq.inv), isPlayer));
+  // A made form's creator answers a frame or more after the ask, and no
+  // inventory loop lays a figure's made form, so a figure whose worn row waits
+  // on its form keeps its dress and the apply answers false: FormView's next
+  // pass (formView.ts, lastNumChanges) dresses it with the form; past
+  // figureFormWaitMs it is dressed plain. The player's own dress at a login
+  // does not wait: its inventory loop lays the form when it lands
+  if (!isPlayer && worn.pending) {
+    const since = figureFormWaitSince.get(ac.getFormID());
+    if (since === undefined) {
+      figureFormWaitSince.set(ac.getFormID(), Date.now());
+      logLab("verb:craft", `figure ${ac.getFormID().toString(16)}'s dress waits for a made form`);
+      return false;
+    }
+    if (Date.now() - since < figureFormWaitMs) {
+      return false;
+    }
+  }
+  figureFormWaitSince.delete(ac.getFormID());
+  const newInventory = worn.inventory;
+
   ac.removeAllItems(null, false, true);
 
   ac.unequipAll();
 
   ac.removeAllItems(null, false, true);
 
-  const newInventory = removeUnnecessaryExtra(filterWorn(eq.inv), ac.getFormID() === 0x14);
-
-  setInventory(ac.getFormID(), newInventory);
+  // setInventory lays a base and its worn flag alone (InventoryApi.cpp), so
+  // a worn row with lasting extras (a made enchantment, a temper, a poison)
+  // is dressed through addItemEx as the record has it. On the player, the
+  // inventory loop's next apply then finds the stack it holds, where a plain
+  // one would be taken and the record's laid back unworn. A figure is dressed
+  // the same way, so another seat's enchanted weapon is worn with its
+  // enchantment (its charge full, as removeUnnecessaryExtra sets it) and a
+  // tempered one with its health
+  const plain = newInventory.entries.filter((e) => !hasLastingExtras(e));
+  const extras = newInventory.entries.filter((e) => hasLastingExtras(e));
+  setInventory(ac.getFormID(), { entries: plain });
+  extras.forEach((e) => {
+    const form = Game.getFormEx(e.baseId);
+    if (form) {
+      addItemExEntry(ac, form, e, e.count);
+    }
+  });
+  if (extras.length > 0) {
+    ac.queueNiNodeUpdate();
+  }
+  if (!isPlayer && extras.length > 0) {
+    logLab("verb:craft", `figure ${ac.getFormID().toString(16)} dressed with ${extras.length} worn row(s) carrying extras`);
+  }
 
   // finding 45: the player's hands, once setInventory's adds have landed,
   // as a pass after a login's wipe (applyPlayerHands above, playtest 48):

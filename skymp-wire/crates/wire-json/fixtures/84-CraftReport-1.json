@@ -1,0 +1,39 @@
+{
+  "gained": [
+    {
+      "baseId": 77495,
+      "chargePercent": 100.0,
+      "count": 1,
+      "createdEnchantment": {
+        "effects": [
+          {
+            "area": 0,
+            "cost": 32.0,
+            "duration": 1,
+            "magnitude": 10.0,
+            "mgef": 286810
+          }
+        ],
+        "kind": 0
+      },
+      "maxCharge": 1500.0,
+      "name": "Iron Sword of Embers",
+      "removeEnchantmentOnUnequip": false
+    }
+  ],
+  "learnedEnchantments": [],
+  "lost": [
+    {
+      "baseId": 77495,
+      "count": 1
+    },
+    {
+      "baseId": 189667,
+      "count": 1,
+      "soul": 3
+    }
+  ],
+  "seq": 2,
+  "t": 84,
+  "workbench": 765196
+}

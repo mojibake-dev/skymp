@@ -146,8 +146,11 @@ enum class MsgType : uint8_t
                         // placed at a summon effect's apply, and its end
                         // (docs/verbs/summon.md, R2: the caster's row owns
                         // it)
-  ReservedCraftReport = 84, // reserved for CraftReport; never sent
-  PushActor = 85,           // a script's push onto an actor another seat
-                            // simulates, reported for that simulator to throw
+  CraftReport = 84,     // one sitting at a crafting bench: its lost and
+                        // gained stacks and learned enchantments as the
+                        // crafter's engine read them (the server records
+                        // and relays the crafter's record)
+  PushActor = 85,       // a script's push onto an actor another seat
+                        // simulates, reported for that simulator to throw
   Max
 };

@@ -17,6 +17,7 @@
 #include "ConsoleCommandMessage.h"
 #include "ConsoleOutputMessage.h"
 #include "CraftItemMessage.h"
+#include "CraftReportMessage.h"
 #include "CreateActorMessage.h"
 #include "CustomEventMessage.h"
 #include "CustomPacketMessage.h"
@@ -57,7 +58,6 @@
 #include "QuestStageMessage.h"
 #include "RaceMenuPresetMessage.h"
 #include "RelayedActivationMessage.h"
-#include "ReservedCraftReportMessage.h"
 #include "RestIntentMessage.h"
 #include "ScriptCallMessage.h"
 #include "ScriptStateApplyMessage.h"
@@ -169,5 +169,5 @@
   REGISTER_MESSAGE(ScriptVariablesMessage)                                    \
   REGISTER_MESSAGE(OwnHeadPartsMessage)                                       \
   REGISTER_MESSAGE(SummonMessage)                                             \
-  REGISTER_MESSAGE(ReservedCraftReportMessage)                                \
+  REGISTER_MESSAGE(CraftReportMessage)                                        \
   REGISTER_MESSAGE(PushActorMessage)

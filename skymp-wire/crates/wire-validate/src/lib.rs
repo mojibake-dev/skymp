@@ -325,6 +325,11 @@ pub struct ClientGuard {
     /// casting at its start), so 16 at once, then 4 a second (UNMEASURED; a
     /// cast is seconds apart).
     pub summon_budget: TokenBucket,
+    /// Budget for a seat's crafting reports (CraftReport): one at each
+    /// crafting menu's close, a long sitting split into a few, and a player
+    /// hops between benches seconds apart, so 8 at once, then 2 a second
+    /// (UNMEASURED).
+    pub craft_budget: TokenBucket,
     /// Budget for a seat's reported pushes (PushActor): a shout's cone
     /// pushes every actor it names, so a few at once, refilled at a few a
     /// second (an estimate, not measured).
@@ -382,6 +387,7 @@ impl Default for ClientGuard {
             script_variables_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             own_head_parts_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             summon_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
+            craft_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             push_budget: TokenBucket { tokens: 12, capacity: 12, refill_per_s: 6, last_refill_ms: 0 },
         }
     }
@@ -572,7 +578,16 @@ fn check_update_action(m: &skymp::UpdateAction) -> Result<(), Reject> {
 /// bow shot does ([`check_launch`]).
 fn check_spell_cast(m: &skymp::SpellCast) -> Result<(), Reject> {
     let d = &m.data;
-    if !(d.spell != 0
+    // a cast names a spell, or (the server's enchanted-hit relay) a made
+    // enchantment by its definition with spell 0, never both
+    let names_its_form = match (&d.created_spell, d.spell) {
+        (None, spell) => spell != 0,
+        (Some(form), 0) => {
+            check_created_form(form, &[skymp::CREATED_WEAPON_ENCHANTMENT, skymp::CREATED_ARMOR_ENCHANTMENT]).is_ok()
+        }
+        (Some(_), _) => false,
+    };
+    if !(names_its_form
         && (0..=3).contains(&d.casting_source)
         && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&d.aim_angle))
     {
@@ -784,6 +799,143 @@ fn check_summon(m: &skymp::Summon) -> Result<(), Reject> {
     }
     if !(0.0..).contains(&m.remaining_s) {
         return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// One stack as the created-form checks read it: an [`skymp::Entry`], or a
+/// PutItem's, TakeItem's or DropItem's inline fields.
+struct MovedStack<'a> {
+    base_id: u32,
+    count: u32,
+    enchantment_id: Option<u32>,
+    poison_id: Option<u32>,
+    created_base: Option<&'a skymp::CreatedForm>,
+    created_enchantment: Option<&'a skymp::CreatedForm>,
+    created_poison: Option<&'a skymp::CreatedForm>,
+}
+
+impl<'a> From<&'a skymp::Entry> for MovedStack<'a> {
+    fn from(e: &'a skymp::Entry) -> Self {
+        MovedStack {
+            base_id: e.base_id,
+            count: e.count,
+            enchantment_id: e.enchantment_id,
+            poison_id: e.poison_id,
+            created_base: e.created_base.as_ref(),
+            created_enchantment: e.created_enchantment.as_ref(),
+            created_poison: e.created_poison.as_ref(),
+        }
+    }
+}
+
+/// A form the files hold: never 0, never a session's own (0xff000000 and
+/// up), which names nothing on any other game or after a relaunch.
+fn is_file_form(id: u32) -> bool {
+    id != 0 && id < PLAYER_FORMS
+}
+
+/// A created form's definition: a kind the engine's creators make, one
+/// effect at least (the cap bounds the rest at decode), each naming a
+/// game-file MGEF; its floats are finite (`all_finite`, at the message).
+/// `kinds` are the kinds the field it stands in may hold.
+fn check_created_form(form: &skymp::CreatedForm, kinds: &[u8]) -> Result<(), Reject> {
+    if !kinds.contains(&form.kind) || form.effects.is_empty() {
+        return Err(Reject::Range);
+    }
+    if form.effects.iter().any(|e| !is_file_form(e.mgef)) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// The created fields of one stack: a brewed potion or poison as its base,
+/// a made enchantment (a weapon's or an armor's) beside no enchantment id, a
+/// brewed poison on a weapon beside no poison id.
+fn check_created_fields(s: &MovedStack) -> Result<(), Reject> {
+    if let Some(f) = s.created_base {
+        check_created_form(f, &[skymp::CREATED_POTION, skymp::CREATED_POISON])?;
+    }
+    if let Some(f) = s.created_enchantment {
+        if s.enchantment_id.is_some() {
+            return Err(Reject::Range);
+        }
+        check_created_form(f, &[skymp::CREATED_WEAPON_ENCHANTMENT, skymp::CREATED_ARMOR_ENCHANTMENT])?;
+    }
+    if let Some(f) = s.created_poison {
+        if s.poison_id.is_some() {
+            return Err(Reject::Range);
+        }
+        check_created_form(f, &[skymp::CREATED_POISON])?;
+    }
+    Ok(())
+}
+
+/// A stack a seat moves (a craft's lost or gained stack, a put, a take, a
+/// drop): at least one item, its base and any enchantment or poison id a
+/// game-file form, never a session's own (no session-local id ever crosses
+/// the wire; a created form travels as its definition), and its created
+/// fields well formed. `finite` is the message's float check.
+fn check_moved_stack(s: &MovedStack, finite: bool) -> Result<(), Reject> {
+    if !finite {
+        return Err(Reject::NonFinite);
+    }
+    if s.count == 0 || !is_file_form(s.base_id) {
+        return Err(Reject::Range);
+    }
+    if s.enchantment_id.is_some_and(|id| !is_file_form(id)) || s.poison_id.is_some_and(|id| !is_file_form(id)) {
+        return Err(Reject::Range);
+    }
+    check_created_fields(s)
+}
+
+/// CraftReport (MsgType 84): the bench a form, a `seq` from 1 (the server's
+/// answer names it), every stack lost or gained a moved stack
+/// ([`check_moved_stack`]), something lost or gained, and every learned
+/// enchantment a game-file form. Whether the record holds the lost stacks,
+/// and whether an enchantment is one, is the server's.
+fn check_craft_report(m: &skymp::CraftReport) -> Result<(), Reject> {
+    let finite = all_finite(m);
+    if !finite {
+        return Err(Reject::NonFinite);
+    }
+    if m.workbench == 0 || m.seq == 0 || (m.lost.is_empty() && m.gained.is_empty()) {
+        return Err(Reject::Range);
+    }
+    for e in m.lost.iter().chain(m.gained.iter()) {
+        check_moved_stack(&MovedStack::from(e), finite)?;
+    }
+    if m.learned_enchantments.iter().any(|id| !is_file_form(*id)) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// OnEquip (MsgType 11): the base a game-file form, never a session's own (a
+/// brewed potion is drunk by its template and its definition), and a
+/// definition a potion's or a poison's.
+fn check_on_equip(m: &skymp::OnEquip) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    if !is_file_form(m.base_id) {
+        return Err(Reject::Range);
+    }
+    match &m.created_base {
+        Some(f) => check_created_form(f, &[skymp::CREATED_POTION, skymp::CREATED_POISON]),
+        None => Ok(()),
+    }
+}
+
+/// UpdateEquipment (MsgType 5): a stack's created fields well formed. Its
+/// ids are not held to the files here: a host reports an NPC's whole
+/// inventory as its engine holds it, and a refusal drops the whole report.
+fn check_update_equipment(m: &skymp::UpdateEquipment) -> Result<(), Reject> {
+    if !all_finite(m) {
+        return Err(Reject::NonFinite);
+    }
+    for e in m.data.inv.entries.iter() {
+        check_created_fields(&MovedStack::from(e))?;
     }
     Ok(())
 }
@@ -2076,6 +2228,13 @@ fn check_graph_vars(vars: &[skymp::GraphVar]) -> Result<(), Reject> {
 /// `Ok(())` means "well-formed and within rate"; ownership is checked later.
 pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(), Reject> {
     validate_server(msg)?;
+    // a seat's cast names a file form; a definition rides the server's
+    // enchanted-hit relay alone
+    if let Message::SpellCast(m) = msg {
+        if m.data.created_spell.is_some() {
+            return Err(Reject::Range);
+        }
+    }
     match msg {
         Message::Movement(m) => {
             if guard.movement_primed && m.seq <= guard.last_movement_seq {
@@ -2197,6 +2356,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         }
         Message::OwnHeadParts(_) => take(&mut guard.own_head_parts_budget, now_ms),
         Message::Summon(_) => take(&mut guard.summon_budget, now_ms),
+        Message::CraftReport(_) => take(&mut guard.craft_budget, now_ms),
         Message::PushActor(_) => take(&mut guard.push_budget, now_ms),
         // thuum ADR-068 rung 5 (D-T1 A): a seat sends its own look; a
         // figure's overlay is the server's word
@@ -2398,8 +2558,41 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ScriptVariables(m) => check_script_variables(m),
         Message::OwnHeadParts(m) => check_own_head_parts(m),
         Message::Summon(m) => check_summon(m),
-        // CraftReport's reserved id: never sent
-        Message::ReservedCraftReport(_) => Err(Reject::Range),
+        Message::CraftReport(m) => check_craft_report(m),
+        Message::PutItem(m) => check_moved_stack(&MovedStack {
+            base_id: m.base_id,
+            count: m.count,
+            enchantment_id: m.enchantment_id,
+            poison_id: m.poison_id,
+            created_base: m.created_base.as_ref(),
+            created_enchantment: m.created_enchantment.as_ref(),
+            created_poison: m.created_poison.as_ref(),
+        }, all_finite(m)),
+        Message::TakeItem(m) => check_moved_stack(&MovedStack {
+            base_id: m.base_id,
+            count: m.count,
+            enchantment_id: m.enchantment_id,
+            poison_id: m.poison_id,
+            created_base: m.created_base.as_ref(),
+            created_enchantment: m.created_enchantment.as_ref(),
+            created_poison: m.created_poison.as_ref(),
+        }, all_finite(m)),
+        // a drop is a moved stack, its base the legacy u64 that must name a
+        // file form
+        Message::DropItem(m) => match u32::try_from(m.base_id) {
+            Ok(base_id) => check_moved_stack(&MovedStack {
+                base_id,
+                count: m.count,
+                enchantment_id: m.enchantment_id,
+                poison_id: m.poison_id,
+                created_base: m.created_base.as_ref(),
+                created_enchantment: m.created_enchantment.as_ref(),
+                created_poison: m.created_poison.as_ref(),
+            }, all_finite(m)),
+            Err(_) => Err(Reject::Range),
+        },
+        Message::OnEquip(m) => check_on_equip(m),
+        Message::UpdateEquipment(m) => check_update_equipment(m),
         Message::PushActor(m) => check_push_actor(m),
         Message::CreateActor(m) => check_create_actor(m),
         Message::UpdateAppearance(m) => check_update_appearance(m),
@@ -2486,9 +2679,8 @@ mod tests {
     #[test]
     fn a_reported_push_names_two_actors_and_a_bounded_force() {
         // a pusher and a pushed actor that differ, a finite force from 0 to
-        // PUSH_FORCE_MAX; the shout's 15 passes, the budget lets a cone's
-        // handful through at once, and CraftReport's reserved id is never
-        // taken
+        // PUSH_FORCE_MAX; the shout's 15 passes, and the budget lets a cone's
+        // handful through at once
         let push = |caster: u32, target: u32, force: f32| Message::PushActor(skymp::PushActor { caster, target, force, ..Default::default() });
         assert_eq!(validate_server(&push(0xff000000, 0x39fe4, 15.0)), Ok(()));
         assert_eq!(validate_server(&push(0, 0x39fe4, 15.0)), Err(Reject::Range));
@@ -2497,7 +2689,6 @@ mod tests {
         assert_eq!(validate_server(&push(0xff000000, 0x39fe4, -1.0)), Err(Reject::Range));
         assert_eq!(validate_server(&push(0xff000000, 0x39fe4, skymp::PUSH_FORCE_MAX + 1.0)), Err(Reject::Range));
         assert_eq!(validate_server(&push(0xff000000, 0x39fe4, f32::NAN)), Err(Reject::NonFinite));
-        assert_eq!(validate_server(&Message::ReservedCraftReport(skymp::ReservedCraftReport::default())), Err(Reject::Range));
         let mut guard = ClientGuard::default();
         for i in 0..12 {
             assert_eq!(validate(&push(0xff000000, 0x39fe4 + i, 15.0), &mut guard, 0), Ok(()), "push {i}");
@@ -3009,6 +3200,31 @@ mod tests {
         // its relay, server to client, under the same rule
         assert_eq!(validate_server(&cast_launched(1234.5, -300.25, 96.0, 0.1)), Ok(()));
         assert_eq!(validate_server(&cast_launched(1234.5, -1.0e7, 96.0, 0.1)), Err(Reject::OutOfWorld));
+    }
+
+    #[test]
+    fn a_made_enchantment_rides_the_servers_hit_relay_alone() {
+        // the server's relay of an enchanted weapon's hit names a made
+        // enchantment by its definition with spell 0; a seat's own cast never
+        // carries one, and no cast names both
+        let fire = skymp::CreatedForm {
+            kind: skymp::CREATED_WEAPON_ENCHANTMENT,
+            effects: vec![skymp::CreatedEffect { mgef: 0x13cae, magnitude: 10.0, area: 0, duration: 1, cost: 30.0 }]
+                .try_into()
+                .unwrap_or_default(),
+        };
+        let relay = |spell: u32, created: Option<skymp::CreatedForm>| {
+            Message::SpellCast(skymp::SpellCast {
+                data: skymp::SpellCastData { spell, casting_source: 1, created_spell: created, ..Default::default() },
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&relay(0, Some(fire.clone()))), Ok(()));
+        assert_eq!(validate_server(&relay(0x12fd0, Some(fire.clone()))), Err(Reject::Range));
+        assert_eq!(validate_server(&relay(0, None)), Err(Reject::Range));
+        let potion = skymp::CreatedForm { kind: skymp::CREATED_POTION, ..fire.clone() };
+        assert_eq!(validate_server(&relay(0, Some(potion))), Err(Reject::Range));
+        assert_eq!(validate(&relay(0, Some(fire)), &mut ClientGuard::default(), 0), Err(Reject::Range));
     }
 
     #[test]
@@ -3962,6 +4178,100 @@ mod tests {
         assert_eq!(validate_server(&state(&[0xbabe4, 0], 1)), Err(Reject::Range));
     }
 
+    /// A crafting report and the created forms. Illustrative ids, none read
+    /// from the files: a brew, an enchant and a disenchant pass; each shape
+    /// rule broken once is E_VAL_RANGE (a session id as a base, an
+    /// enchantment or a poison, a count of 0, an unknown kind or a kind in
+    /// the wrong field, a form without effects, an MGEF of 0 or a session's,
+    /// a made enchantment beside an enchantment id, nothing moved, a bench of
+    /// 0, a learned session id), a NaN magnitude E_VAL_NONFINITE, and the
+    /// budget.
+    #[test]
+    fn craft_reports_move_file_forms_and_created_definitions_and_are_rate_limited() {
+        use wire_schema::skymp::{
+            CraftReport, CreatedEffect, CreatedForm, Entry, OnEquip, PutItem, TakeItem, UpdateEquipment, CREATED_ARMOR_ENCHANTMENT,
+            CREATED_POISON, CREATED_POTION, CREATED_WEAPON_ENCHANTMENT,
+        };
+        let form = |kind: u8, mgef: u32, magnitude: f32| CreatedForm {
+            kind,
+            effects: vec![CreatedEffect { mgef, magnitude, area: 0, duration: 30, cost: 4.25 }].try_into().unwrap_or_default(),
+        };
+        let plain = |base_id: u32, count: u32| Entry { base_id, count, ..Default::default() };
+        let report = |lost: Vec<Entry>, gained: Vec<Entry>, learned: Vec<u32>| {
+            Message::CraftReport(CraftReport {
+                workbench: 0xbe9a1,
+                seq: 1,
+                lost: lost.try_into().unwrap_or_default(),
+                gained: gained.try_into().unwrap_or_default(),
+                learned_enchantments: learned.try_into().unwrap_or_default(),
+                ..Default::default()
+            })
+        };
+        let potion = Entry { created_base: Some(form(CREATED_POTION, 0x3eb15, 25.0)), ..plain(0x3eadd, 1) };
+        let enchanted = Entry { created_enchantment: Some(form(CREATED_WEAPON_ENCHANTMENT, 0x4605a, 10.0)), max_charge: Some(1500.0), ..plain(0x12eb7, 1) };
+        let brew = report(vec![plain(0x34cdd, 1), plain(0x6bc02, 1)], vec![potion.clone()], vec![]);
+        let enchant = report(vec![plain(0x12eb7, 1), Entry { soul: Some(3), ..plain(0x2e4e3, 1) }], vec![enchanted.clone()], vec![]);
+        let disenchant = report(vec![plain(0x1c4e6, 1)], vec![], vec![0x4605a]);
+        let temper = report(vec![plain(0x12eb7, 1)], vec![Entry { health: Some(1.25), ..plain(0x12eb7, 1) }], vec![]);
+        for m in [&brew, &enchant, &disenchant, &temper] {
+            assert_eq!(validate_server(m), Ok(()), "{m:?}");
+        }
+        let range = [
+            report(vec![plain(0x34cdd, 1)], vec![plain(0xff00_0a01, 1)], vec![]),
+            report(vec![plain(0x34cdd, 0)], vec![potion.clone()], vec![]),
+            report(vec![plain(0, 1)], vec![potion.clone()], vec![]),
+            report(vec![Entry { enchantment_id: Some(0xff00_0b02), ..plain(0x12eb7, 1) }], vec![], vec![]),
+            report(vec![Entry { poison_id: Some(0xff00_0b03), ..plain(0x12eb7, 1) }], vec![], vec![]),
+            report(vec![], vec![Entry { created_base: Some(form(4, 0x3eb15, 25.0)), ..plain(0x3eadd, 1) }], vec![]),
+            report(vec![], vec![Entry { created_base: Some(form(CREATED_ARMOR_ENCHANTMENT, 0x3eb15, 25.0)), ..plain(0x3eadd, 1) }], vec![]),
+            report(vec![], vec![Entry { created_enchantment: Some(form(CREATED_POTION, 0x4605a, 10.0)), ..plain(0x12eb7, 1) }], vec![]),
+            report(vec![], vec![Entry { created_poison: Some(form(CREATED_POTION, 0x3eb15, 25.0)), ..plain(0x12eb7, 1) }], vec![]),
+            report(vec![], vec![Entry { created_base: Some(CreatedForm { kind: CREATED_POTION, ..Default::default() }), ..plain(0x3eadd, 1) }], vec![]),
+            report(vec![], vec![Entry { created_base: Some(form(CREATED_POTION, 0, 25.0)), ..plain(0x3eadd, 1) }], vec![]),
+            report(vec![], vec![Entry { created_base: Some(form(CREATED_POTION, 0xff00_0c04, 25.0)), ..plain(0x3eadd, 1) }], vec![]),
+            report(vec![], vec![Entry { enchantment_id: Some(0x4605a), ..enchanted.clone() }], vec![]),
+            report(vec![], vec![], vec![]),
+            report(vec![plain(0x1c4e6, 1)], vec![], vec![0xff00_0b02]),
+            report(vec![plain(0x1c4e6, 1)], vec![], vec![0]),
+            Message::CraftReport(CraftReport { workbench: 0, seq: 1, gained: vec![potion.clone()].try_into().unwrap_or_default(), ..Default::default() }),
+            Message::CraftReport(CraftReport { workbench: 0xbe9a1, seq: 0, gained: vec![potion.clone()].try_into().unwrap_or_default(), ..Default::default() }),
+        ];
+        for m in &range {
+            assert_eq!(validate_server(m), Err(Reject::Range), "{m:?}");
+        }
+        let nan = report(vec![], vec![Entry { created_base: Some(form(CREATED_POTION, 0x3eb15, f32::NAN)), ..plain(0x3eadd, 1) }], vec![]);
+        assert_eq!(validate_server(&nan), Err(Reject::NonFinite));
+        // a put, a take and a drink carry the same rules
+        let put = |base_id: u32, created_base: Option<CreatedForm>| Message::PutItem(PutItem { base_id, count: 1, target: 0x10e2d, created_base, ..Default::default() });
+        assert_eq!(validate_server(&put(0x3eadd, Some(form(CREATED_POTION, 0x3eb15, 25.0)))), Ok(()));
+        assert_eq!(validate_server(&put(0xff00_0a01, None)), Err(Reject::Range));
+        assert_eq!(validate_server(&put(0x3eadd, Some(form(CREATED_WEAPON_ENCHANTMENT, 0x3eb15, 25.0)))), Err(Reject::Range));
+        let take = Message::TakeItem(TakeItem { base_id: 0x12eb7, count: 1, target: 0x10e2d, created_poison: Some(form(CREATED_POISON, 0x3eb15, 25.0)), poison_count: Some(1), ..Default::default() });
+        assert_eq!(validate_server(&take), Ok(()));
+        let drink = |base_id: u32, created_base: Option<CreatedForm>| Message::OnEquip(OnEquip { base_id, created_base, ..Default::default() });
+        assert_eq!(validate_server(&drink(0x3eadd, None)), Ok(()));
+        assert_eq!(validate_server(&drink(0x3eadd, Some(form(CREATED_POISON, 0x3eb15, 25.0)))), Ok(()));
+        assert_eq!(validate_server(&drink(0xff00_0a01, None)), Err(Reject::Range));
+        assert_eq!(validate_server(&drink(0x3eadd, Some(form(CREATED_ARMOR_ENCHANTMENT, 0x3eb15, 25.0)))), Err(Reject::Range));
+        // an equipment report keeps its ids as its engine has them, its
+        // created fields held to their shape
+        let equipment = |e: Entry| {
+            let mut m = UpdateEquipment::default();
+            m.data.inv.entries = vec![e].try_into().unwrap_or_default();
+            Message::UpdateEquipment(m)
+        };
+        assert_eq!(validate_server(&equipment(plain(0xff00_0a01, 1))), Ok(()));
+        assert_eq!(validate_server(&equipment(enchanted.clone())), Ok(()));
+        assert_eq!(validate_server(&equipment(Entry { created_enchantment: Some(form(CREATED_POISON, 0x4605a, 10.0)), ..plain(0x12eb7, 1) })), Err(Reject::Range));
+        // the budget: eight at once, then two a second
+        let mut guard = ClientGuard::default();
+        for _ in 0..8 {
+            assert_eq!(validate(&brew, &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&brew, &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&brew, &mut guard, 1_500), Ok(()));
+    }
+
     #[test]
     fn word_wall_reports_name_a_wall_and_are_rate_limited() {
         use wire_schema::skymp::WordWall;
@@ -4480,6 +4790,48 @@ mod tests {
         fn hosted_never_panics(health in any::<f32>(), counts in proptest::collection::vec(any::<i32>(), 0..=cap::INVENTORY_DELTA)) {
             let mut g = ClientGuard::default();
             let _ = validate(&hosted(health, &counts), &mut g, 0);
+        }
+
+        /// A crafting report of any ids, counts, kinds and magnitudes is
+        /// judged without a panic, and one naming a session's id anywhere is
+        /// never taken.
+        #[test]
+        fn craft_report_never_panics(
+            ids in proptest::collection::vec(any::<u32>(), 1..=8),
+            counts in proptest::collection::vec(any::<u32>(), 1..=8),
+            kind in any::<u8>(),
+            magnitude in any::<f32>(),
+            learned in proptest::collection::vec(any::<u32>(), 0..=4),
+            now in any::<u64>(),
+        ) {
+            use wire_schema::skymp::{CraftReport, CreatedEffect, CreatedForm, Entry};
+            let rows: std::vec::Vec<Entry> = ids
+                .iter()
+                .zip(counts.iter().cycle())
+                .map(|(&base_id, &count)| Entry {
+                    base_id,
+                    count,
+                    created_base: Some(CreatedForm {
+                        kind,
+                        effects: vec![CreatedEffect { mgef: base_id, magnitude, area: 0, duration: 0, cost: 0.0 }].try_into().unwrap_or_default(),
+                    }),
+                    ..Default::default()
+                })
+                .collect();
+            let m = Message::CraftReport(CraftReport {
+                workbench: ids.first().copied().unwrap_or(0),
+                seq: counts.first().copied().unwrap_or(0),
+                lost: rows.clone().try_into().unwrap_or_default(),
+                gained: rows.try_into().unwrap_or_default(),
+                learned_enchantments: learned.clone().try_into().unwrap_or_default(),
+                ..Default::default()
+            });
+            let verdict = validate_server(&m);
+            if ids.iter().chain(learned.iter()).any(|&id| id >= 0xff00_0000) {
+                prop_assert!(verdict.is_err());
+            }
+            let mut g = ClientGuard::default();
+            let _ = validate(&m, &mut g, now);
         }
 
         #[test]

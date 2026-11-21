@@ -1,0 +1,47 @@
+# difftest craft-report: c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002
+# and 0xff000003: see melee-reach), both at the spawn. c1's starting kit holds one Iron Dagger
+# (Skyrim.esm WEAP 0x0001397E, 80254) and five of 0x0003EADD (256733), the rows a report
+# names. At 2 s c1 reports a temper (the dagger lost, the dagger at health 1.1 gained): the
+# wire stack records it (the lost row was held) and answers with c1's inventory carrying
+# craftAck 1 (each report's seq, SCHEMA_VERSION 62). At 2.5 s c1 reports a craft whose lost
+# row it does not hold (a dagger at health 1.5): the wire stack refuses it whole
+# (E_CRAFT_NOT_HELD, naming the dagger at 1.5) and answers with the inventory unchanged,
+# craftAck 2. At 3 s c1 reports a brew (one 0x3EADD lost, a created potion gained: its base
+# the engine's potion template as the client reads it, its definition two effects), recorded
+# with its definition, craftAck 3. The legacy stack knows no CraftReport and answers nothing.
+# c2 steps aside at 4 s so it outlives c1, as in every session.
+id: craft-report
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 84, seq: 1, workbench: 780705, lost: [{baseId: 80254, count: 1}], gained: [{baseId: 80254, count: 1, health: 1.1}], learnedEnchantments: []}}
+  - {client: c1, at_ms: 2500, send: {t: 84, seq: 2, workbench: 780705, lost: [{baseId: 80254, count: 1, health: 1.5}], gained: [{baseId: 80254, count: 1, health: 1.6}], learnedEnchantments: []}}
+  - {client: c1, at_ms: 3000, send: {t: 84, seq: 3, workbench: 780705, lost: [{baseId: 256733, count: 1}], gained: [{baseId: 256733, count: 1, createdBase: {kind: 2, effects: [{mgef: 256789, magnitude: 25.0, area: 0, duration: 0, cost: 12.5}, {mgef: 256769, magnitude: 2.5, area: 0, duration: 30, cost: 4.25}]}}], learnedEnchantments: []}}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c1
+    msg: {t: 28, craftAck: 1}
+    legacy: 0
+    wire: 1
+    reason: the temper taken (R2, the lost dagger held) and answered at once with the record, the dagger at health 1.1 (thuum tracker #98); the legacy server knows no CraftReport
+  - client: c1
+    msg: {t: 28, craftAck: 2}
+    legacy: 0
+    wire: 1
+    reason: the report whose lost dagger at health 1.5 the record lacks, refused whole (E_CRAFT_NOT_HELD) and answered with the record unchanged
+  - client: c1
+    msg: {t: 28, craftAck: 3}
+    legacy: 0
+    wire: 1
+    reason: the brew taken, one 0x3EADD gone and the created potion's row added with its definition (kind 2, two effects)
+  - client: c1
+    msg: {t: 28}
+    legacy: 0
+    wire: 2
+    reason: the record's own inventory update at each change taken, the temper's and the brew's, as any change to the player's inventory sends (a message is matched by the first declaration that covers it, so the three answers above take theirs first)
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

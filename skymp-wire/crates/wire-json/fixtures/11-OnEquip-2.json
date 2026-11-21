@@ -1,0 +1,23 @@
+{
+  "baseId": 256733,
+  "createdBase": {
+    "effects": [
+      {
+        "area": 0,
+        "cost": 12.5,
+        "duration": 0,
+        "magnitude": 25.0,
+        "mgef": 256789
+      },
+      {
+        "area": 0,
+        "cost": 4.25,
+        "duration": 30,
+        "magnitude": 2.5,
+        "mgef": 256769
+      }
+    ],
+    "kind": 2
+  },
+  "t": 11
+}

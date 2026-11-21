@@ -13,6 +13,8 @@ WEAP::Data WEAP::GetData(
     [&](const char* type, uint32_t dataSize, const char* data) {
       if (!std::memcmp(type, "DATA", 4)) {
         result.weapData = reinterpret_cast<const WeapData*>(data);
+      } else if (!std::memcmp(type, "EITM", 4) && dataSize >= 4) {
+        std::memcpy(&result.enchantmentFormId, data, sizeof(uint32_t));
       } else if (!std::memcmp(type, "DNAM", 4)) {
         result.weapDNAM = reinterpret_cast<const DNAM*>(data);
         constexpr uint32_t kStaggerOffset = 0x60;

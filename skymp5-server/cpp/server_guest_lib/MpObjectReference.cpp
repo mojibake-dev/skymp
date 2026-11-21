@@ -2520,6 +2520,20 @@ void MpObjectReference::GivePickupItemsToActivationSource(
   auto& compressedFieldsCache = GetParent()->GetEspmCache();
   auto t = base.rec->GetType();
 
+  // A dropped stack that carried extras or a created form keeps them as this
+  // copy's own rows (MpActor::DropItem), and its pickup gives those rows back
+  // as they were dropped: the enchanted weapon with its charge and name, the
+  // tempered one with its health, the brewed potion by its definition
+  if (espm::utils::IsItem(t) && !GetInventory().IsEmpty()) {
+    const auto rows = GetInventory().entries;
+    SetInventory(Inventory());
+    activationSource.AddItems(rows);
+    spdlog::info("[verb:craft] {:x} picks up {:x}: {} row(s) given back with "
+                 "their extras",
+                 activationSource.GetFormId(), GetFormId(), rows.size());
+    return;
+  }
+
   auto mapping = loader.GetBrowser().GetCombMapping(base.fileIdx);
   uint32_t resultItem = 0;
   if (espm::utils::Is<espm::TREE>(t)) {

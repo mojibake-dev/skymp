@@ -4,6 +4,7 @@ import { MsgType } from "../../messages";
 import { getPcInventory } from "./remoteServer";
 import { getInventory, getDiff, hasExtras, removeSimpleItemsAsManyAsPossible, sumInventories } from "../../sync/inventory";
 import { LastInvService } from "./lastInvService";
+import { toWireInventory } from "../../sync/createdForms";
 
 import { PutItemMessage } from "../messages/putItemMessage";
 import { TakeItemMessage } from "../messages/takeItemMessage";
@@ -30,7 +31,10 @@ export class ContainersService extends ClientListener {
                     lastInvService.lastInv = getPcInventory();
                 }
                 if (lastInvService.lastInv) {
-                    const newInv = getInventory(this.sp.Game.getPlayer() as Actor);
+                    // compared in the wire's shape, the record's own (lastInv
+                    // is the server's inventory), so a created form moves by
+                    // its definition (sync/createdForms.ts)
+                    const newInv = toWireInventory(getInventory(this.sp.Game.getPlayer() as Actor));
 
                     // It seems that 'ignoreWorn = false' fixes this:
                     // https://github.com/skyrim-multiplayer/issue-tracker/issues/43

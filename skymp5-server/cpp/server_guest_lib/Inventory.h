@@ -1,4 +1,5 @@
 #pragma once
+#include "CreatedForm.h"
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <simdjson.h>
@@ -44,7 +45,10 @@ public:
         .Serialize("poisonId", poisonId)
         .Serialize("poisonCount", poisonCount)
         .Serialize("worn", worn_)
-        .Serialize("wornLeft", wornLeft);
+        .Serialize("wornLeft", wornLeft)
+        .Serialize("createdBase", createdBase)
+        .Serialize("createdEnchantment", createdEnchantment)
+        .Serialize("createdPoison", createdPoison);
     }
 
     std::optional<float> health;
@@ -58,6 +62,14 @@ public:
     std::optional<uint32_t> poisonCount;
     std::optional<bool> worn_;
     std::optional<bool> wornLeft;
+    // CreatedForm.h: a brewed potion or poison this stack is (then baseId is
+    // the game-file template the engine copies it from), the item's own
+    // enchantment made at the enchanter (then enchantmentId is absent) and a
+    // brewed poison on the weapon (then poisonId is absent), each by its
+    // definition; absent in older records and messages, read as none
+    std::optional<CreatedForm> createdBase;
+    std::optional<CreatedForm> createdEnchantment;
+    std::optional<CreatedForm> createdPoison;
   };
 
   class Entry : public ExtraData
@@ -107,7 +119,12 @@ public:
   // AddItems' own rule
   Inventory& AddPlainItems(const std::vector<Entry>& entries);
   Inventory& RemoveItems(const std::vector<Entry>& entries);
+  // A stack with a created base (CreatedForm.h) holds no item of its
+  // template base, so these two pass it by
   bool HasItem(uint32_t baseId) const;
+  // A brewed potion's or poison's stack, named by its template base and its
+  // definition (CreatedForm::SameAs)
+  bool HasCreatedStack(uint32_t baseId, const CreatedForm& createdBase) const;
   uint32_t GetItemCount(uint32_t baseId) const;
   uint32_t GetTotalItemCount() const;
   bool IsEmpty() const;

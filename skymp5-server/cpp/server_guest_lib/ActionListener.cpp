@@ -606,6 +606,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // the record first, so the record sent below gives it back
       partOne.RecordShoutsOfKnownWords(*actor);
       SendShoutRecord(*actor);
+      // the enchantments it learned by disenchanting, known again (a
+      // relaunched engine starts with none)
+      SendKnownEnchantments(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -2277,13 +2280,25 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   std::vector<Inventory::Entry> staleItems;
 
   const auto& inventory = actor->GetInventory();
+  // A reported brewed potion or poison names its template base and its
+  // definition; the record's stack of it is found by that definition,
+  // normalized as a report's rows are (CraftService::NormalizeCreated), never
+  // by the plain base, which no plain count holds (Inventory::HasItem), or
+  // each equipment report while a brew is in the bag would erase its row and
+  // resend the whole inventory
+  const auto heldCreated = [&](const Inventory::Entry& reported) {
+    Inventory::Entry e = reported;
+    CraftService::NormalizeCreated(partOne.worldState, e);
+    return inventory.HasCreatedStack(e.baseId, *e.createdBase);
+  };
   {
     auto& entries = kept.inv.entries;
     for (auto it = entries.begin(); it != entries.end();) {
       // a hosted actor's report names what it wears; its engine's whole
       // inventory is npc-fate's record, not this message's
       if ((hosted && it->GetWorn() == Inventory::Worn::None) ||
-          inventory.HasItem(it->baseId) ||
+          (it->createdBase ? heldCreated(*it)
+                           : inventory.HasItem(it->baseId)) ||
           inOverlay(&RaceOverlay::items, it->baseId)) {
         ++it;
         continue;
@@ -3457,6 +3472,38 @@ void ActionListener::SendIngredientEffects(MpActor& actor)
   if (sent > 0) {
     spdlog::info("IngredientEffects: actor {:x} taught its {} effects after "
                  "a login",
+                 actor.GetFormId(), sent);
+  }
+}
+
+// Teach the player's recorded enchantments to its client's engine, SKSE's
+// Form.SetPlayerKnows(true) with the enchantment as self, one per
+// enchantment; assumes a disenchant sets only that known flag
+// (CommonLibSSE-NG TESForm.h:349). ShoutSnippets.cpp's word known is the same
+// call
+void ActionListener::SendKnownEnchantments(MpActor& actor)
+{
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    knows{ true };
+  size_t sent = 0;
+  for (const auto& enchantment : actor.GetKnownEnchantments()) {
+    uint32_t formId = 0;
+    try {
+      formId = enchantment.ToFormId(partOne.worldState.espmFiles);
+    } catch (std::exception& e) {
+      spdlog::warn("KnownEnchantments: actor {:x}'s {} is in no loaded "
+                   "plugin: {}",
+                   actor.GetFormId(), enchantment.ToString(), e.what());
+      continue;
+    }
+    SpSnippet("Form", "SetPlayerKnows", knows, formId)
+      .Execute(&actor, SpSnippetMode::kNoReturnResult);
+    ++sent;
+  }
+  if (sent > 0) {
+    spdlog::info("KnownEnchantments: actor {:x} taught its {} enchantments "
+                 "after a login",
                  actor.GetFormId(), sent);
   }
 }
@@ -10668,9 +10715,13 @@ void ActionListener::OnDropItem(const RawMessageData& rawMsgData,
                          ac->GetFormId());
   }
 
-  Inventory::Entry entry;
-  entry.baseId = baseId;
-  entry.count = msg.count;
+  // The drop names its stack with its extras and created forms, normalized
+  // as a craft report's rows are, so a brewed or enchanted item drops as the
+  // record holds it; the worn flags are not the drop's
+  Inventory::Entry entry(baseId, msg.count, msg);
+  entry.worn_.reset();
+  entry.wornLeft.reset();
+  CraftService::NormalizeCreated(partOne.worldState, entry);
 
   ac->DropItem(baseId, entry);
 }
@@ -10866,6 +10917,13 @@ void ActionListener::OnEquip(const RawMessageData& rawMsgData,
       std::to_string(rawMsgData.userId));
   }
 
+  // A brewed potion or poison names its template and its definition; its
+  // stack is the record's row of that definition, and a template is no food
+  if (msg.createdBase) {
+    (void)actor->OnEquipCreated(msg.baseId, *msg.createdBase);
+    return;
+  }
+
   if (actor->OnEquip(msg.baseId)) {
     ApplySurvivalFood(*actor, msg.baseId);
   }
@@ -10958,6 +11016,12 @@ void ActionListener::OnPushActor(const RawMessageData& rawMsgData,
                "host {:x}'s game throws it (D-PH5's amendment, tracker #175)",
                caster->GetFormId(), target->GetFormId(), msg.force,
                myActor->GetFormId(), host->GetFormId());
+}
+
+void ActionListener::OnCraftReport(const RawMessageData& rawMsgData,
+                                   const CraftReportMessage& msg)
+{
+  craftService->OnCraftReport(rawMsgData, msg);
 }
 
 void ActionListener::OnCraftItem(const RawMessageData& rawMsgData,
@@ -12226,7 +12290,48 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     return;
   }
 
-  if (equipment.IsSpellEquipped(spellCastData.spell) == false) {
+  // A staff's cast names the staff's enchantment, an ENCH no hand slot
+  // holds. It is the cast of the hand whose worn weapon in the caster's
+  // record is a staff (libespm WEAP DNAM's animType Staff) with the form an
+  // ENCH of the files: taken and relayed, recorded unvalidated, as the
+  // caster's game owns its cast. The form is held to an enchantment, not to
+  // the staff record's own EITM. The caster's platform sends a staff's cast
+  // with the staff's enchantment (EventHandler.cpp)
+  const bool staffCast = [&]() {
+    if (hand > 1 || !partOne.HasEspm()) {
+      return false;
+    }
+    const auto rec =
+      partOne.GetEspm().GetBrowser().LookupById(spellCastData.spell).rec;
+    if (!rec || rec->GetType() != espm::ENCH::kType) {
+      return false;
+    }
+    const auto wantWorn =
+      hand == 1 ? Inventory::Worn::Right : Inventory::Worn::Left;
+    for (const auto& e : equipment.inv.entries) {
+      if (e.GetWorn() != wantWorn) {
+        continue;
+      }
+      try {
+        const auto dnam =
+          espm::GetData<espm::WEAP>(e.baseId, &partOne.worldState).weapDNAM;
+        if (dnam && dnam->animType == espm::WEAP::AnimType::Staff) {
+          return true;
+        }
+      } catch (const std::exception&) {
+        // not a weapon of the files: no staff
+      }
+    }
+    return false;
+  }();
+  if (staffCast) {
+    spdlog::info("[verb:spell-cast] {:x} casts {:x} from the staff in its {} "
+                 "hand: taken unvalidated (R2) and relayed",
+                 caster->GetFormId(), spellCastData.spell,
+                 hand == 1 ? "right" : "left");
+  }
+
+  if (!staffCast && equipment.IsSpellEquipped(spellCastData.spell) == false) {
     if (caster == myActor) {
       spdlog::info("ActionListener::OnSpellCast - spell {0:x} not "
                    "found in equipment",
@@ -12796,20 +12901,30 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 
   NotifyHostility(*aggressor, targetActor, currentHitTime);
 
-  // thuum docs/verbs/poison.md: a poisoned weapon's hit runs the poison's
-  // effects on the target through the effect rule (ADR-028), the attacker
-  // as caster, and spends a dose; the attacker's game is told its inventory,
-  // so its ExtraPoison agrees. HYPOTHESIS: the game spends a dose on a
-  // blocked hit as well (unmeasured)
-  if (const auto poison =
-        ethereal ? std::nullopt : aggressor->SpendPoisonDose(hitData.source)) {
-    const auto effects = MpActor::EffectsOf(&partOne.worldState, *poison);
-    targetActor.ApplyEffects(*poison, effects, 1.f, aggressor->GetFormId(),
+  // A poisoned weapon's hit runs the poison's effects on the target through
+  // the effect rule, the attacker as caster, and spends a dose; the
+  // attacker's game is told its inventory, so its ExtraPoison agrees. Assumes
+  // the game spends a dose on a blocked hit as well. A brewed poison's mark
+  // runs its definition's effects, the weapon as their source (the record
+  // names no template for it)
+  std::optional<CreatedForm> brewed;
+  if (const auto poison = ethereal
+        ? std::nullopt
+        : aggressor->SpendPoisonDose(hitData.source, &brewed)) {
+    const uint32_t source = brewed ? hitData.source : *poison;
+    const auto effects = brewed
+      ? MpActor::EffectsOfCreated(*brewed)
+      : MpActor::EffectsOf(&partOne.worldState, *poison);
+    targetActor.ApplyEffects(source, effects, 1.f, aggressor->GetFormId(),
                              false);
-    spdlog::info("OnWeaponHit - {:x}'s {:x} carried poison {:x}: its effects "
-                 "run on {:x}, a dose spent",
+    spdlog::info("OnWeaponHit - {:x}'s {:x} carried poison {:x}{}: its "
+                 "effects run on {:x}, a dose spent",
                  aggressor->GetFormId(), hitData.source, *poison,
-                 targetActor.GetFormId());
+                 brewed ? " (brewed)" : "", targetActor.GetFormId());
+  }
+
+  if (!ethereal) {
+    RunEnchantedHit(*aggressor, targetActor, hitData);
   }
 
   // the engine's reaction skips a hit that killed, and one on an ethereal
@@ -12817,6 +12932,93 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   if (currentActorValues.healthPercentage > 0.f && !ethereal) {
     NotifyStagger(*aggressor, targetActor, hitData, damage > 0.f);
   }
+}
+
+// The weapon a hit names, worn in the aggressor's equipment with an
+// enchantment (a file ENCH by id, a made one by its definition), runs that
+// enchantment's effects on the target through the effect rule (as a poisoned
+// hit does above: the server's numbers, the aggressor as caster), and the
+// struck actor's own game is told to cast it from the aggressor's figure at
+// its target (SpellCast, the instant slot, a made enchantment by createdSpell
+// with spell 0): the victim's own game for a player, the host's for an NPC,
+// so the effect plays where the target is simulated. The aggressor's own game
+// ran the enchantment at its hit and is not told; a host that is the
+// aggressor's game is skipped the same way. Assumes a relayed cast on a
+// player lands with its Health number zeroed (Hooks.cpp PlayerAddTarget) and
+// its shader shown, and a host's engine number for an NPC is reconciled to
+// the server's record. A game-file enchanted weapon runs its record's own
+// enchantment (libespm WEAP's EITM) the same way
+void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
+                                     const HitData& hitData)
+{
+  const Equipment equipment = aggressor.GetEquipment();
+  const Inventory::Entry* weapon = nullptr;
+  for (const auto& e : equipment.inv.entries) {
+    if (e.baseId != hitData.source || e.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    if (!weapon || e.GetWorn() == Inventory::Worn::Right) {
+      weapon = &e;
+    }
+  }
+  if (!weapon) {
+    return;
+  }
+  // the stack's own enchantment (made at the enchanter, or a file one an
+  // enchanter put on it), else the weapon record's EITM (a game-file
+  // enchanted weapon; libespm WEAP, its id read in the record's own
+  // numbering)
+  std::optional<uint32_t> fileEnchantment = weapon->enchantmentId;
+  if (!weapon->createdEnchantment && !fileEnchantment && partOne.HasEspm()) {
+    const auto lookup =
+      partOne.GetEspm().GetBrowser().LookupById(hitData.source);
+    if (const auto weap = espm::Convert<espm::WEAP>(lookup.rec)) {
+      const uint32_t eitm =
+        weap->GetData(partOne.worldState.GetEspmCache()).enchantmentFormId;
+      if (eitm) {
+        fileEnchantment = lookup.ToGlobalId(eitm);
+      }
+    }
+  }
+  if (!weapon->createdEnchantment && !fileEnchantment) {
+    return;
+  }
+
+  const auto effects = weapon->createdEnchantment
+    ? MpActor::EffectsOfCreated(*weapon->createdEnchantment)
+    : MpActor::EffectsOf(&partOne.worldState, *fileEnchantment);
+  if (effects.empty()) {
+    return;
+  }
+  target.ApplyEffects(weapon->createdEnchantment ? hitData.source
+                                                 : *fileEnchantment,
+                      effects, 1.f, aggressor.GetFormId(), false);
+
+  MpActor* owner = nullptr;
+  if (partOne.serverState.UserByActor(&target) != Networking::InvalidUserId) {
+    owner = &target;
+  } else if (MpActor* host = target.HostedBy(); host && host != &aggressor) {
+    owner = host;
+  }
+  const bool told = owner && owner != &aggressor;
+  if (told) {
+    SpellCastMessage relay;
+    relay.data.caster = aggressor.GetFormId();
+    relay.data.target = target.GetFormId();
+    relay.data.spell = weapon->createdEnchantment ? 0u : *fileEnchantment;
+    relay.data.createdSpell = weapon->createdEnchantment;
+    relay.data.castingSource = 3;
+    owner->SendToUser(relay, true);
+  }
+  spdlog::info(
+    "[verb:magic-effects] {:x}'s hit with {:x} carried enchantment "
+    "{}: {} effect(s) run on {:x}{}",
+    aggressor.GetFormId(), hitData.source,
+    weapon->createdEnchantment ? std::string("(made at the enchanter)")
+                               : fmt::format("{:x}", *fileEnchantment),
+    effects.size(), target.GetFormId(),
+    told ? fmt::format(", its cast told to {:x}'s game", owner->GetFormId())
+         : std::string(", no other game to tell"));
 }
 
 // thuum docs/verbs/stagger.md: the stagger the engine's own rule gives the

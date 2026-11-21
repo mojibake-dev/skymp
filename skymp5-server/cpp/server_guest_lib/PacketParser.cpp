@@ -356,6 +356,12 @@ void PacketParser::TransformPacketIntoAction(Networking::UserId userId,
         actionListener.OnSummon(rawMsgData, *message);
         return;
       }
+      case MsgType::CraftReport: {
+        auto message =
+          reinterpret_cast<CraftReportMessage*>(result->message.get());
+        actionListener.OnCraftReport(rawMsgData, *message);
+        return;
+      }
       case MsgType::PushActor: {
         auto message =
           reinterpret_cast<PushActorMessage*>(result->message.get());

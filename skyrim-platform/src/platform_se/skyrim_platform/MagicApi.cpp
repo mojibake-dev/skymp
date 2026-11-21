@@ -16,6 +16,7 @@
 #include <RE/F/FixedStrings.h>
 #include <RE/M/MagicItemDataCollector.h>
 #include <RE/M/MaterialIDs.h>
+#include <RE/P/PlayerCharacter.h>
 #include <RE/T/TES.h>
 #include <RE/T/TESObjectCELL.h>
 #include <mutex>
@@ -347,7 +348,7 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
 
      animVars = skymp::magic::details::GetAnimationVariablesFromJSArg(
        NapiHelper::ExtractObject(info[6], "animationVariables"))](Viet::Void) {
-      auto* pSpell = RE::TESForm::LookupByID<RE::SpellItem>(spellFormId);
+      auto* pSpell = RE::TESForm::LookupByID<RE::MagicItem>(spellFormId);
 
       auto* pActor = RE::TESForm::LookupByID<RE::Actor>(actorFormId);
 
@@ -355,6 +356,11 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
         return;
       }
 
+      // A relayed staff's cast names its enchantment, a MagicItem that is no
+      // SpellItem, so the form is looked up as a MagicItem and its delivery
+      // read through MagicItem's own GetDelivery (CommonLibSSE-NG
+      // MagicItem.h:84; CastSpellImmediate takes a MagicItem,
+      // MagicCaster.h:46), which lets the type list below take Enchantment
       const auto t = pSpell->GetFormType();
 
       const bool isValidSpellType = t == RE::FormType::Spell ||
@@ -402,9 +408,25 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
       // the caster in the caster's (x-self-visuals: Invisibility, Oakflesh
       // and Candlelight drew nothing on the figure, the cast's target being
       // none); what it does to values stays the server's
-      if (pSpell->data.delivery == RE::MagicSystem::Delivery::kSelf) {
+      if (pSpell->GetDelivery() == RE::MagicSystem::Delivery::kSelf) {
         magicCaster->CastSpellImmediate(pSpell, false, pActor, 1.0f, false,
                                         0.0f, pActor);
+        return;
+      }
+
+      // A touch effect reaches its target by contact and has no projectile (a
+      // weapon enchantment's: Skyrim.esm MGEF 0x4605a EnchFireDamageFFContact,
+      // delivery Touch), so the launch below would carry nothing to the
+      // target. A touch cast at this game's own player is cast on it, as the
+      // self branch above casts on the actor (CommonLibSSE-NG
+      // MagicSystem.h:42 kTouch, MagicCaster.h:46); what it does to values
+      // stays the server's. Another target keeps the launch: an NPC this game
+      // does not host takes no effect of a figure's from here. Assumes the
+      // engine applies the effect to the player on this direct cast
+      if (pSpell->GetDelivery() == RE::MagicSystem::Delivery::kTouch &&
+          magicTarget && magicTarget == RE::PlayerCharacter::GetSingleton()) {
+        magicCaster->CastSpellImmediate(pSpell, false, magicTarget, 1.0f,
+                                        false, 0.0f, pActor);
         return;
       }
 
@@ -423,7 +445,7 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
         // every update; a flame or a beam re-aims from that aim every frame
         // either way. HYPOTHESIS until x-stream-aim
         const bool aimed =
-          pSpell->data.delivery == RE::MagicSystem::Delivery::kAimed;
+          pSpell->GetDelivery() == RE::MagicSystem::Delivery::kAimed;
         if (aimed) {
           magicCaster->desiredTarget.reset();
         }
@@ -464,7 +486,7 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
         // CastSpellImmediate places no target-location projectile on it
         origin = launch->origin;
         angles = launch->angles;
-      } else if (pSpell->data.delivery ==
+      } else if (pSpell->GetDelivery() ==
                  RE::MagicSystem::Delivery::kTargetLocation) {
         // TODO we need recalculate origin, cast ray from head to crosshair
         auto rotation = pActor->Get3D2()->world.rotate.entry;

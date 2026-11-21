@@ -71,6 +71,34 @@ const UnresolvedForm* FindUnresolved(
 
 constexpr const char* kEntryForms[] = { "baseId", "enchantmentId",
                                         "poisonId" };
+// An entry's created forms (CreatedForm.h); each effect's MGEF is a load
+// order form id, described and resolved as the entry's own ids are
+constexpr const char* kEntryCreated[] = { "createdBase", "createdEnchantment",
+                                          "createdPoison" };
+
+// The MGEF of every effect of an entry's created forms, each passed to
+// `visit` (the effect's "mgef" value); false as soon as `visit` refuses one
+template <class Visit>
+bool VisitCreatedEffects(nlohmann::json& entry, Visit visit)
+{
+  for (const char* key : kEntryCreated) {
+    auto form = entry.find(key);
+    if (form == entry.end() || !form->is_object()) {
+      continue;
+    }
+    auto effects = form->find("effects");
+    if (effects == form->end() || !effects->is_array()) {
+      continue;
+    }
+    for (auto& effect : *effects) {
+      auto mgef = effect.find("mgef");
+      if (mgef != effect.end() && !visit(key, *mgef)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
 constexpr const char* kSpellSlots[] = { "leftSpell", "rightSpell",
                                         "voiceSpell", "instantSpell" };
 
@@ -102,6 +130,25 @@ void DescribeInventory(nlohmann::json& inv, const EspmFileList& files,
           break;
         }
         *value = *desc;
+      }
+      if (described) {
+        described = VisitCreatedEffects(
+          entry, [&](const char* key, nlohmann::json& mgef) {
+            if (!mgef.is_number()) {
+              return true;
+            }
+            const uint32_t formId = mgef.get<uint32_t>();
+            const auto desc = Describe(formId, files);
+            if (!desc) {
+              spdlog::error("MpChangeForm::ToJson {} - {} entry's {} effect "
+                            "{:#x} belongs to no loaded plugin, dropping the "
+                            "entry",
+                            record, field, key, formId);
+              return false;
+            }
+            mgef = *desc;
+            return true;
+          });
       }
       if (described) {
         kept.push_back(std::move(entry));
@@ -143,6 +190,21 @@ void ResolveInventory(nlohmann::json& inv, const EspmFileList& files,
         break;
       }
       *value = *formId;
+    }
+    if (!missing) {
+      VisitCreatedEffects(resolved, [&](const char*, nlohmann::json& mgef) {
+        if (!mgef.is_string()) {
+          return true;
+        }
+        const FormDesc form = FormDesc::FromString(mgef.get<std::string>());
+        const auto formId = Resolve(form, files);
+        if (!formId) {
+          missing = form;
+          return false;
+        }
+        mgef = *formId;
+        return true;
+      });
     }
     if (missing) {
       unresolved.push_back(UnresolvedForm{ field, *missing, entry.dump() });
@@ -519,6 +581,12 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     res["ingredientEffects"] = { { "entries", effectsJson } };
   }
 
+  // absent in older records, read as none
+  if (changeForm.knownEnchantments.has_value() &&
+      !changeForm.knownEnchantments->empty()) {
+    res["knownEnchantments"] = ToStringArray(*changeForm.knownEnchantments);
+  }
+
   // thuum docs/verbs/player-globals.md; absent in older records, read as
   // none
   if (changeForm.playerGlobals.has_value() &&
@@ -865,6 +933,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer ingredientEffects("ingredientEffects");
   static const JsonPointer shoutRecord("shoutRecord");
   static const JsonPointer playerGlobals("playerGlobals");
+  static const JsonPointer knownEnchantments("knownEnchantments");
   static const JsonPointer questStages("questStages");
   static const JsonPointer placedBySpell("placedBySpell");
   static const JsonPointer lockLevel("lock/level");
@@ -1239,6 +1308,14 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
       effects[i].mask = static_cast<uint8_t>(maskTmp & 0x0f);
     }
     res.ingredientEffects = effects;
+  }
+
+  // a record without the key reads as none
+  if (element.at_pointer(knownEnchantments.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    std::vector<std::string> data;
+    ReadVector(element, knownEnchantments, &data);
+    res.knownEnchantments = ToFormDescsArray(data);
   }
 
   if (element.at_pointer(playerGlobals.GetData()).error() ==

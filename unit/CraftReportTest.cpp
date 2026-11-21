@@ -2,9 +2,11 @@
 #include "ActorValueRecord.h"
 #include "CraftReportMessage.h"
 #include "DropItemMessage.h"
+#include "HitMessage.h"
 #include "MpChangeForms.h"
 #include "OnEquipMessage.h"
 #include "PacketParser.h"
+#include "SpellCastMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateMovementMessage.h"
 #include <algorithm>
@@ -614,4 +616,84 @@ TEST_CASE("A record's brewed stack is held by its definition",
   REQUIRE(!inv.HasItem(kPotionTemplate));
   REQUIRE(inv.HasCreatedStack(kPotionTemplate, Heal(30.f)));
   REQUIRE(!inv.HasCreatedStack(kPotionTemplate, Heal(31.f)));
+}
+
+// thuum tracker #98 (Eli's look 2: "other player does not see fire"; note
+// 4020): a hit with a weapon worn with a made enchantment runs that
+// enchantment's effects on the target through the effect rule, and the struck
+// player's own game is told to cast it (SpellCast, the instant slot, spell 0,
+// the definition as createdSpell); the attacker's own game is not told
+TEST_CASE("An enchanted weapon's hit runs its made enchantment on the target "
+          "and tells the struck player's game",
+          "[CraftReport][espm]")
+{
+  constexpr uint32_t kAggressor = 0xff000c90;
+  constexpr uint32_t kTarget = 0xff000c91;
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  DoConnect(p, 1);
+  p.CreateActor(kAggressor, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, kAggressor);
+  p.CreateActor(kTarget, { 0, 100, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kTarget);
+  auto& aggressor = p.worldState.GetFormAt<MpActor>(kAggressor);
+  auto& target = p.worldState.GetFormAt<MpActor>(kTarget);
+  target.SetAngle({ 0.f, 0.f, 180.f });
+
+  CreatedForm made;
+  made.kind = CreatedForm::kWeaponEnchantment;
+  made.effects = { CreatedEffect{ kHealMgef, 1.f, 0, 5, 1.f } };
+  Inventory::ExtraData extras;
+  extras.createdEnchantment = made;
+  extras.maxCharge = 2400.f;
+  aggressor.SetInventory(Inventory());
+  aggressor.AddItems({ Inventory::Entry(kDagger, 1, extras) });
+  Inventory::ExtraData worn = extras;
+  worn.worn_ = true;
+  Equipment eq;
+  eq.inv.entries.push_back(Inventory::Entry(kDagger, 1, worn));
+  aggressor.SetEquipment(eq);
+  p.Messages().clear();
+
+  RawMessageData raw;
+  raw.userId = 0;
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = kTarget;
+  hit.data.source = kDagger;
+  p.GetActionListener().OnHit(raw, hit);
+
+  bool runs = false;
+  for (const auto& effect : target.GetRunningEffects()) {
+    if (effect.source == kDagger) {
+      runs = true;
+    }
+  }
+  REQUIRE(runs);
+
+  int toTarget = 0;
+  int toAggressor = 0;
+  for (auto& m : p.Messages()) {
+    auto* cast = dynamic_cast<SpellCastMessage*>(m.message.get());
+    if (!cast || !cast->data.createdSpell) {
+      continue;
+    }
+    if (m.userId == 1) {
+      ++toTarget;
+      REQUIRE(cast->data.spell == 0u);
+      REQUIRE(cast->data.caster == kAggressor);
+      REQUIRE(cast->data.target == kTarget);
+      REQUIRE(cast->data.castingSource == 3);
+      REQUIRE(cast->data.createdSpell->SameAs(made));
+    } else if (m.userId == 0) {
+      ++toAggressor;
+    }
+  }
+  REQUIRE(toTarget == 1);
+  REQUIRE(toAggressor == 0);
+
+  p.DestroyActor(kTarget);
+  p.DestroyActor(kAggressor);
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 0);
 }

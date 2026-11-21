@@ -12855,11 +12855,86 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
                  brewed ? " (brewed)" : "", targetActor.GetFormId());
   }
 
+  if (!ethereal) {
+    RunEnchantedHit(*aggressor, targetActor, hitData);
+  }
+
   // the engine's reaction skips a hit that killed, and one on an ethereal
   // target
   if (currentActorValues.healthPercentage > 0.f && !ethereal) {
     NotifyStagger(*aggressor, targetActor, hitData, damage > 0.f);
   }
+}
+
+// thuum tracker #98 (Eli's look 2: "other player does not see fire"; note
+// 4020): the weapon a hit names, worn in the aggressor's equipment with an
+// enchantment (a file ENCH by id, a made one by its definition), runs that
+// enchantment's effects on the target through the effect rule (ADR-028, a
+// poisoned hit's way above: the server's numbers, the aggressor as caster),
+// and the struck actor's own game is told to cast it from the aggressor's
+// figure at its target (SpellCast, the instant slot, a made enchantment by
+// createdSpell with spell 0): the victim's own game for a player, the host's
+// for an NPC, so the burn plays where the target is simulated. The
+// aggressor's own game ran the enchantment at its hit and is not told; a host
+// that is the aggressor's game is skipped the same way. HYPOTHESIS: a
+// relayed cast on a player lands with its Health number zeroed (Hooks.cpp
+// PlayerAddTarget) and its shader shown; a host's engine number for an NPC
+// is reconciled to the server's by npc-fate's top-up. A game-file weapon's
+// own enchantment (its WEAP's EITM, which libespm does not read) is not run
+// here
+void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
+                                     const HitData& hitData)
+{
+  const Equipment equipment = aggressor.GetEquipment();
+  const Inventory::Entry* weapon = nullptr;
+  for (const auto& e : equipment.inv.entries) {
+    if (e.baseId != hitData.source || e.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    if (!weapon || e.GetWorn() == Inventory::Worn::Right) {
+      weapon = &e;
+    }
+  }
+  if (!weapon || (!weapon->enchantmentId && !weapon->createdEnchantment)) {
+    return;
+  }
+
+  const auto effects = weapon->createdEnchantment
+    ? MpActor::EffectsOfCreated(*weapon->createdEnchantment)
+    : MpActor::EffectsOf(&partOne.worldState, *weapon->enchantmentId);
+  if (effects.empty()) {
+    return;
+  }
+  target.ApplyEffects(weapon->createdEnchantment ? hitData.source
+                                                 : *weapon->enchantmentId,
+                      effects, 1.f, aggressor.GetFormId(), false);
+
+  MpActor* owner = nullptr;
+  if (partOne.serverState.UserByActor(&target) != Networking::InvalidUserId) {
+    owner = &target;
+  } else if (MpActor* host = target.HostedBy(); host && host != &aggressor) {
+    owner = host;
+  }
+  const bool told = owner && owner != &aggressor;
+  if (told) {
+    SpellCastMessage relay;
+    relay.data.caster = aggressor.GetFormId();
+    relay.data.target = target.GetFormId();
+    relay.data.spell =
+      weapon->createdEnchantment ? 0u : *weapon->enchantmentId;
+    relay.data.createdSpell = weapon->createdEnchantment;
+    relay.data.castingSource = 3;
+    owner->SendToUser(relay, true);
+  }
+  spdlog::info(
+    "[verb:magic-effects] {:x}'s hit with {:x} carried enchantment "
+    "{}: {} effect(s) run on {:x}{}",
+    aggressor.GetFormId(), hitData.source,
+    weapon->createdEnchantment ? std::string("(made at the enchanter)")
+                               : fmt::format("{:x}", *weapon->enchantmentId),
+    effects.size(), target.GetFormId(),
+    told ? fmt::format(", its cast told to {:x}'s game", owner->GetFormId())
+         : std::string(", no other game to tell"));
 }
 
 // thuum docs/verbs/stagger.md: the stagger the engine's own rule gives the

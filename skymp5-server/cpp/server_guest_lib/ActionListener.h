@@ -584,6 +584,12 @@ private:
   void TellHostOfFight(MpActor& aggressor, MpActor& target, MpActor& host);
   // thuum docs/verbs/stagger.md: after a hit's damage, the stagger the
   // engine's rule gives it, played in the victim's game
+  // thuum tracker #98 (look 2: "other player does not see fire"): an
+  // enchanted weapon's hit, its enchantment's effects run on the target by
+  // the effect rule and its cast relayed to the struck actor's own game
+  void RunEnchantedHit(MpActor& aggressor, MpActor& target,
+                       const HitData& hitData);
+
   void NotifyStagger(MpActor& aggressor, MpActor& target,
                      const HitData& hitData, bool dealtDamage);
   // playtest 51's infection: the victim's own game applies another actor's

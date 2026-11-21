@@ -52,6 +52,7 @@
 #include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
 #include "PropTransformMessage.h"
+#include "PushActorMessage.h"
 #include "PutItemMessage.h"
 #include "QuestStageMessage.h"
 #include "RaceMenuPresetMessage.h"
@@ -167,3 +168,4 @@
   REGISTER_MESSAGE(ScriptVariablesMessage)                                    \
   REGISTER_MESSAGE(OwnHeadPartsMessage)                                       \
   REGISTER_MESSAGE(SummonMessage)
+REGISTER_MESSAGE(PushActorMessage)

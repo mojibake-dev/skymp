@@ -77,7 +77,8 @@ macro_rules! skymp_family {
             58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
             72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall,
             76 ScriptState, 77 ScriptStateApply, 78 DestructionStage, 79 AliasFill,
-            80 WorldGlobal, 81 ScriptVariables, 82 OwnHeadParts, 83 Summon
+            80 WorldGlobal, 81 ScriptVariables, 82 OwnHeadParts, 83 Summon,
+            84 ReservedCraftReport, 85 PushActor
         }
     };
 }
@@ -357,7 +358,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 83, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 85, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with

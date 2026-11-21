@@ -1,9 +1,10 @@
-import { Actor, BodyClass, ContainerChangedEvent, FormType, MotionType, ObjectReference, PropContactEvent, PropImpulseEvent, ScriptCall } from "skyrimPlatform";
+import { Actor, BodyClass, ContainerChangedEvent, FormType, MotionType, ObjectReference, PropContactEvent, PropImpulseEvent, PushReportedEvent, ScriptCall } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
 import { PropOwnerMessage } from "../messages/propOwnerMessage";
+import { PushActorMessage } from "../messages/pushActorMessage";
 import { PropBone, PropTransformMessage } from "../messages/propTransformMessage";
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
@@ -595,6 +596,7 @@ export class PropService extends ClientListener {
         this.controller.emitter.on("createActorMessage", (e) => this.onCreateActor(e));
         this.controller.on("propContact", (e) => this.onPropContact(e));
         this.controller.on("propImpulse", (e) => this.onPropImpulse(e));
+        this.controller.on("pushReported", (e) => this.onPushReported(e));
         this.controller.on("containerChanged", (e) => this.onContainerChanged(e));
         // the hook's context allows no game call: the knock is tracked at the
         // next update (trackKnocks)
@@ -2490,6 +2492,26 @@ export class PropService extends ClientListener {
     // its first frames (the host by default; this seat's player its own
     // body, claimed at its track); a grip's actor is readHolds', a shout's
     // claimImpulses'. A copy this seat knocked to follow is its follow's
+    // thuum tracker #175 (ADR-071 D-PH5's amendment, Eli's B: the NPC's host
+    // throws it; the shape recorded on #175): a script's PushActorAway in this
+    // game onto an actor another seat simulates was skipped by the platform's
+    // push hook (ScriptNatives.cpp) and is reported here, by server ids
+    // (0x14, this seat's player, as its own), so the server has that actor's
+    // host run the push with this seat's figure as self; this copy follows the
+    // host's stream (the live-body kind) and this seat's own impulse on it is
+    // zeroed in native code (FridaHooks.cpp's impulse rule)
+    private onPushReported(e: PushReportedEvent) {
+        const caster = localIdToRemoteId(e.caster, true);
+        const target = localIdToRemoteId(e.target);
+        if (!caster || !target) {
+            logLab(TAG, `push onto ${e.target.toString(16)} not reported: no server id for ${!caster ? `its caster ${e.caster.toString(16)}` : "it"}`);
+            return;
+        }
+        const message: PushActorMessage = { t: MsgType.PushActor, caster, target, force: e.force };
+        this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
+        logLab(TAG, `push onto ${e.target.toString(16)} (force ${e.force}) by ${e.caster.toString(16)} reported: its host throws it (tracker #175)`);
+    }
+
     private trackKnocks(now: number) {
         const knocks = this.knocks;
         this.knocks = [];

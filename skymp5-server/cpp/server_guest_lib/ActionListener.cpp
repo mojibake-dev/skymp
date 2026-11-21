@@ -2498,14 +2498,21 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
                                : 0u;
     };
     // the hand an entry holds: a shield is armor in the left hand, any other
-    // armor holds none, the rest the hand its flag names
+    // armor holds none, the rest the hand its flag names, a two-hander the
+    // right (MpActor::WornHand; thuum tracker #172)
     const auto handOf = [&](const Inventory::Entry& entry,
                             const std::optional<uint32_t>& slots) {
-      const auto worn = entry.GetWorn();
+      const auto worn =
+        espmWorld ? MpActor::WornHand(*espmWorld, entry) : entry.GetWorn();
       if (slots && worn != Inventory::Worn::Left) {
         return Inventory::Worn::None;
       }
       return worn;
+    };
+    // a two-hander fills both hands, so it and anything else in a hand take
+    // each other's place
+    const auto twoHanded = [&](const Inventory::Entry& entry) {
+      return espmWorld && MpActor::IsBothHandsWeapon(*espmWorld, entry.baseId);
     };
     const auto takesPlaceOf = [&](const Inventory::Entry& recordEntry) {
       const auto slots = armorSlots(recordEntry.baseId);
@@ -2515,9 +2522,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
           continue;
         }
         const auto reportedSlots = armorSlots(reported.baseId);
+        const auto reportedHand = handOf(reported, reportedSlots);
         if ((slots.value_or(0) & reportedSlots.value_or(0)) != 0 ||
             (hand != Inventory::Worn::None &&
-             hand == handOf(reported, reportedSlots))) {
+             reportedHand != Inventory::Worn::None &&
+             (hand == reportedHand || twoHanded(recordEntry) ||
+              twoHanded(reported)))) {
           return true;
         }
       }

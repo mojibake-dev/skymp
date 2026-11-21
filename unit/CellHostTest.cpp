@@ -2730,6 +2730,82 @@ TEST_CASE("A host-reported two-hander is the right hand's weapon to the "
   p.DestroyActor(kHolder);
 }
 
+// thuum tracker #172 (the second review of m4-172-equip): a host's report
+// of a two-hander takes the place of what the record wore in either hand,
+// the fate's right-hand pick and a left-hand piece alike, so no stale
+// one-hander stays worn beside it for GetEquippedWeapon's right hand
+TEST_CASE("A host's report of a two-hander takes the place of the record's "
+          "one-hander and its left-hand piece",
+          "[CellHost][HostedEquipment][espm]")
+{
+  auto& p = GetPartOne();
+  constexpr uint32_t kHolder = 0xff000c05;
+  // Skyrim.esm WEAP DraugrGreatsword (ETYP BothHands 0x13f45), IronSword
+  // and IronDagger (lab/esm.py; FavoritesTest's record scans)
+  constexpr uint32_t kGreatsword = 0x000236a5;
+  constexpr uint32_t kSword = 0x00012eb7;
+  constexpr uint32_t kDagger = 0x0001397e;
+  const NiPoint3 kAtBed{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAtBed + NiPoint3{ 40.f, 0.f, 0.f });
+  p.CreateActor(kHolder, kAtBed + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& holder = p.worldState.GetFormAt<MpActor>(kHolder);
+  holder.SetPos(holder.GetPos());
+  const auto cell = p.worldState.CellOf(holder);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.worldState.HostOf(holder) ==
+          &p.worldState.GetFormAt<MpActor>(kC1));
+  holder.AddItem(kGreatsword, 1);
+  holder.AddItem(kSword, 1);
+  holder.AddItem(kDagger, 1);
+
+  // the record before any report of this host's: the sword in the right
+  // hand (the fate's pick), the dagger in the left
+  Equipment recorded;
+  Inventory::Entry sword;
+  sword.baseId = kSword;
+  sword.count = 1;
+  sword.SetWorn(Inventory::Worn::Right);
+  Inventory::Entry dagger;
+  dagger.baseId = kDagger;
+  dagger.count = 1;
+  dagger.SetWorn(Inventory::Worn::Left);
+  recorded.inv.AddItems({ sword, dagger });
+  holder.SetEquipment(recorded);
+
+  // the host's report: the greatsword in both hands, one entry worn and
+  // wornLeft (its HostedStateService's shape)
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = 0;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateEquipmentMessage msg;
+  msg.idx = holder.GetIdx();
+  msg.data.numChanges = 1;
+  Inventory::Entry both;
+  both.baseId = kGreatsword;
+  both.count = 1;
+  both.SetWorn(Inventory::Worn::Right);
+  both.wornLeft = true;
+  msg.data.inv.entries.push_back(both);
+  p.GetActionListener().OnUpdateEquipment(raw, msg);
+
+  const auto weapons = holder.GetEquippedWeapon();
+  REQUIRE(weapons[1].has_value());
+  REQUIRE(weapons[1]->baseId == kGreatsword);
+  REQUIRE_FALSE(weapons[0].has_value());
+  for (const auto& entry : holder.GetEquipment().inv.entries) {
+    if (entry.baseId == kSword || entry.baseId == kDagger) {
+      REQUIRE(entry.GetWorn() == Inventory::Worn::None);
+    }
+  }
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kHolder);
+  p.DestroyActor(kC1);
+}
+
 // thuum docs/verbs/npc-talk.md (ADR-052): a player's claim on an NPC another
 // game simulates, for a dialogue
 TEST_CASE("A guest's claim on a hosted NPC names the guest as the simulator "

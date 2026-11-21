@@ -5820,28 +5820,36 @@ void MpActor::ApplyAttributeDeltas(const std::array<float, 3>& deltas,
   }
 }
 
-Inventory::Worn MpActor::WornHand(WorldState& worldState,
-                                  const Inventory::Entry& entry)
+bool MpActor::IsBothHandsWeapon(WorldState& worldState, uint32_t baseId)
 {
   // Skyrim.esm EQUP 0x13f45 BothHands, the slot a two-handed weapon's
   // record names in its ETYP (its PNAM parents 0x13f43 LeftHand and 0x13f42
   // RightHand; thuum lab/esm.py on sky-srv, 2026-11-20: DraugrGreatsword
   // 0x236a5 and DraugrBow 0x302ca name it)
   constexpr uint32_t kBothHandsSlot = 0x00013f45;
-  const auto worn = entry.GetWorn();
-  if (worn != Inventory::Worn::Left || !entry.worn_.value_or(false) ||
-      !worldState.HasEspm()) {
-    return worn;
+  if (baseId == 0 || !worldState.HasEspm()) {
+    return false;
   }
-  const auto res = worldState.GetEspm().GetBrowser().LookupById(entry.baseId);
+  const auto res = worldState.GetEspm().GetBrowser().LookupById(baseId);
   const auto* weap = espm::Convert<espm::WEAP>(res.rec);
   if (!weap) {
-    return worn;
+    return false;
   }
   const auto slot = weap->GetData(worldState.GetEspmCache()).equipSlotId;
-  return slot != 0 && res.ToGlobalId(slot) == kBothHandsSlot
-    ? Inventory::Worn::Right
-    : worn;
+  return slot != 0 && res.ToGlobalId(slot) == kBothHandsSlot;
+}
+
+Inventory::Worn MpActor::WornHand(WorldState& worldState,
+                                  const Inventory::Entry& entry)
+{
+  // a two-hander reported worn and wornLeft, or wornLeft alone, reads Left
+  // to GetWorn
+  const auto worn = entry.GetWorn();
+  if (worn != Inventory::Worn::Left ||
+      !IsBothHandsWeapon(worldState, entry.baseId)) {
+    return worn;
+  }
+  return Inventory::Worn::Right;
 }
 
 std::array<std::optional<Inventory::Entry>, 2> MpActor::GetEquippedWeapon()

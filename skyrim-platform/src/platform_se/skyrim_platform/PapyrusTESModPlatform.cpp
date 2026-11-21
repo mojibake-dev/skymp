@@ -671,6 +671,71 @@ RE::ExtraDataList* CreateExtraDataList()
 
   return extraList;
 }
+
+// thuum tracker #98 (look 2, note 4020; note 3920's agreed shape, "the 5 s
+// apply carry the item's extra data"): a removal names the container's own
+// stack of that object whose extras match the record's row. The engine's
+// RemoveItem takes an extra list by pointer, so a list built fresh for the
+// removal matched none of the container's and the removal took a plain copy
+// (the temper churn of look 1). The extras compared are the ones the client's
+// extrasEqual compares (sync/inventory.ts): health at one decimal, the
+// enchantment with its charge and unequip flag, the soul, the poison with its
+// doses; the charge left and the name are not compared. Read on the game
+// thread inside the task below (CommonLibSSE-NG InventoryChanges.h:63,
+// InventoryEntryData.h:59-60, ExtraHealth.h:24, ExtraEnchantment.h:25-27,
+// ExtraSoul.h:27, ExtraPoison.h:26-27)
+RE::ExtraDataList* FindStackExtraList(
+  RE::TESObjectREFR* refr, const RE::TESBoundObject* object, float health,
+  const RE::EnchantmentItem* enchantment, int32_t maxCharge,
+  bool removeEnchantmentOnUnequip, int32_t soul, const RE::AlchemyItem* poison,
+  int32_t poisonCount)
+{
+  auto changes = refr ? refr->GetInventoryChanges() : nullptr;
+  if (!changes || !changes->entryList) {
+    return nullptr;
+  }
+  const auto tenths = [](float h) {
+    return static_cast<int>(std::lround(h * 10.f));
+  };
+  const int wantHealth = health > 1.f ? tenths(health) : 10;
+  for (auto* entry : *changes->entryList) {
+    if (!entry || entry->object != object || !entry->extraLists) {
+      continue;
+    }
+    for (auto* list : *entry->extraLists) {
+      if (!list) {
+        continue;
+      }
+      const auto* h = list->GetByType<RE::ExtraHealth>();
+      if ((h ? tenths(h->health) : 10) != wantHealth) {
+        continue;
+      }
+      const auto* e = list->GetByType<RE::ExtraEnchantment>();
+      if ((e ? e->enchantment : nullptr) != enchantment) {
+        continue;
+      }
+      if (e &&
+          (static_cast<int32_t>(e->charge) != maxCharge ||
+           e->removeOnUnequip != removeEnchantmentOnUnequip)) {
+        continue;
+      }
+      const auto* s = list->GetByType<RE::ExtraSoul>();
+      if ((s ? static_cast<int32_t>(s->soul.underlying()) : 0) !=
+          (soul > 0 && soul <= 5 ? soul : 0)) {
+        continue;
+      }
+      const auto* p = list->GetByType<RE::ExtraPoison>();
+      if ((p ? p->poison : nullptr) != poison) {
+        continue;
+      }
+      if (p && static_cast<int32_t>(p->count) != poisonCount) {
+        continue;
+      }
+      return list;
+    }
+  }
+  return nullptr;
+}
 }
 
 void TESModPlatform::AddItemEx(
@@ -822,9 +887,31 @@ void TESModPlatform::AddItemEx(
       containerRefr->AddObjectToContainer(boundObject, optExtraList,
                                           countDelta, nullptr);
     } else if (countDelta < 0) {
+      // the container's own stack with these extras (FindStackExtraList,
+      // above); a row with extras the container no longer holds removes
+      // nothing, said once a second, and the next apply reads again
+      RE::ExtraDataList* own = nullptr;
+      if (optExtraList) {
+        own = FindStackExtraList(
+          containerRefr, boundObject, health, enchantment, maxCharge,
+          removeEnchantmentOnUnequip, soul, poison, poisonCount);
+        if (!own) {
+          static std::atomic<int64_t> s_lastMissMs{ 0 };
+          const int64_t nowMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now().time_since_epoch())
+              .count();
+          if (nowMs - s_lastMissMs.exchange(nowMs) >= 1000) {
+            logger::info("[verb:craft] removal of {} {:x} with extras from "
+                         "{:x}: no stack of the container's has them; "
+                         "nothing removed",
+                         -countDelta, boundObject->GetFormID(), refrId);
+          }
+          return;
+        }
+      }
       containerRefr->RemoveItem(boundObject, -countDelta,
-                                RE::ITEM_REMOVE_REASON::kRemove, optExtraList,
-                                nullptr);
+                                RE::ITEM_REMOVE_REASON::kRemove, own, nullptr);
     }
     // the engine's own word to an open item menu, after the change has
     // landed and from the thread that landed it (RemoveItem marks its object

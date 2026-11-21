@@ -2603,7 +2603,9 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     uint32_t left = 0;
     size_t worn = 0;
     for (auto& entry : kept.inv.entries) {
-      const auto w = entry.GetWorn();
+      // a two-hander, reported worn and wornLeft, reads as the right hand
+      // (thuum tracker #172, MpActor::WornHand)
+      const auto w = MpActor::WornHand(partOne.worldState, entry);
       if (w == Inventory::Worn::None) {
         continue;
       }
@@ -11316,21 +11318,17 @@ skymp::rules::StaggerSettings StaggerSettingsOf(WorldState& worldState)
   return s;
 }
 
-// The weapon worn in the actor's right hand, if any
+// The weapon worn in the actor's right hand, if any: MpActor's own hand read
+// (GetEquippedWeapon's right, a two-hander reported worn and wornLeft
+// included: thuum tracker #172, MpActor::WornHand)
 std::optional<espm::WEAP::Data> RightHandWeapon(const MpActor& actor,
                                                 WorldState& worldState)
 {
-  auto& browser = worldState.GetEspm().GetBrowser();
-  for (const auto& entry : actor.GetEquipment().inv.entries) {
-    if (entry.GetWorn() != Inventory::Worn::Right) {
-      continue;
-    }
-    const auto res = browser.LookupById(entry.baseId);
-    if (res.rec && res.rec->GetType() == espm::WEAP::kType) {
-      return espm::GetData<espm::WEAP>(entry.baseId, &worldState);
-    }
+  const auto right = actor.GetEquippedWeapon()[1];
+  if (!right) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  return espm::GetData<espm::WEAP>(right->baseId, &worldState);
 }
 
 // A drawn weapon's value against a stagger when its holder blocks without a

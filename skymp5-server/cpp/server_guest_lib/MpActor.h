@@ -64,6 +64,15 @@ public:
   std::string GetLastAnimEventAsJson() const;
   const Equipment& GetEquipment() const;
   std::array<std::optional<Inventory::Entry>, 2> GetEquippedWeapon() const;
+  // thuum tracker #172: the hand an equipment entry fills. A host reports a
+  // two-handed weapon it holds as one entry worn and wornLeft at once (its
+  // engine reads it in both hands), which Inventory::Entry::GetWorn reads as
+  // Left; a weapon whose record's ETYP is the BothHands slot fills the right
+  // hand (and the left with it) and reads Right here. Every other entry
+  // reads as GetWorn reads it: a shield, a torch, a left-hand one-hander
+  // keep Left
+  static Inventory::Worn WornHand(WorldState& worldState,
+                                  const Inventory::Entry& entry);
   std::array<std::optional<Inventory::Entry>, 2> GetEquippedScroll() const;
   std::array<std::optional<Inventory::Entry>, 2> GetEquippedLight() const;
   std::array<std::optional<Inventory::Entry>, 2> GetEquippedShield() const;

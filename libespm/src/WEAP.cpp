@@ -19,6 +19,9 @@ WEAP::Data WEAP::GetData(
         if (dataSize >= kStaggerOffset + sizeof(float)) {
           std::memcpy(&result.stagger, data + kStaggerOffset, sizeof(float));
         }
+      } else if (!std::memcmp(type, "ETYP", 4) &&
+                 dataSize >= sizeof(uint32_t)) {
+        std::memcpy(&result.equipSlotId, data, sizeof(uint32_t));
       }
     },
     compressedFieldsCache);

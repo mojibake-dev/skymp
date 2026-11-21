@@ -54,6 +54,10 @@ public:
     // lab/esm.py 2026-10-10), 0 when the field is shorter: an attack's
     // stagger scales with it (thuum docs/verbs/stagger.md)
     float stagger = 0.f;
+    // ETYP, the equip slot the weapon's record names (raw, in the record's
+    // own file's id space; LookupResult::ToGlobalId turns it global): thuum
+    // tracker #172, a BothHands weapon is held in both hands
+    uint32_t equipSlotId = 0;
   };
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;

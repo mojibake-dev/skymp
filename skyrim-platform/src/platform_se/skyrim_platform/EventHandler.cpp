@@ -1825,12 +1825,25 @@ EventResult EventHandler::ProcessEvent(
 
     auto* caster = RE::TESForm::LookupByID<RE::Actor>(casterId);
     auto* spell = RE::TESForm::LookupByID<RE::SpellItem>(spellId);
+    // thuum tracker #98 (look 2's staff at Tel Mithryn, note 4020): a staff's
+    // cast names the staff's enchantment, a MagicItem that is no SpellItem,
+    // so the SpellItem lookup above dropped every staff's cast here ("spell
+    // not a MagicItem") and no cast left the caster's game. Such a cast is
+    // the hand's that holds a staff whose own enchantment it is
+    // (CommonLibSSE-NG Actor.h:541 GetEquippedObject, TESObjectWEAP.h:253
+    // IsStaff, TESEnchantableForm.h:26 formEnchanting); a melee weapon's
+    // enchantment raises this event at its hits, which are no casts, and is
+    // dropped as before. HYPOTHESIS: a staff made at a staff enchanter is a
+    // game-file staff whose record names its enchantment (docs/verbs/
+    // crafting.md: staffs are ConstructibleObjectMenu recipes)
+    auto* enchantment =
+      spell ? nullptr : RE::TESForm::LookupByID<RE::EnchantmentItem>(spellId);
 
     if (!caster && casterId != 0) {
       return;
     }
 
-    if (!(spell && spell->IsMagicItem())) {
+    if (!((spell && spell->IsMagicItem()) || enchantment)) {
       spdlog::error(
         "ProcessEvent TESSpellCastEvent error! spell not a MagicItem");
       return;
@@ -1842,18 +1855,33 @@ EventResult EventHandler::ProcessEvent(
       return;
     }
 
+    const auto staffHolds = [&](bool leftHand) {
+      if (!enchantment) {
+        return false;
+      }
+      auto* held = caster->GetEquippedObject(leftHand);
+      auto* weapon = held ? held->As<RE::TESObjectWEAP>() : nullptr;
+      return weapon && weapon->IsStaff() &&
+        weapon->formEnchanting == enchantment;
+    };
+
     const bool isLeftHand =
-      caster->GetActorRuntimeData()
-        .selectedSpells[RE::Actor::SlotTypes::kLeftHand] == spell;
+      (spell &&
+       caster->GetActorRuntimeData()
+           .selectedSpells[RE::Actor::SlotTypes::kLeftHand] == spell) ||
+      staffHolds(true);
     const bool isRightHand =
+      (spell &&
+       caster->GetActorRuntimeData()
+           .selectedSpells[RE::Actor::SlotTypes::kRightHand] == spell) ||
+      staffHolds(false);
+    // a staff's cast has no spell, and an empty slot holds no spell either
+    const bool isVoise = spell &&
       caster->GetActorRuntimeData()
-        .selectedSpells[RE::Actor::SlotTypes::kRightHand] == spell;
-    const bool isVoise =
+          .selectedSpells[RE::Actor::SlotTypes::kUnknown] == spell;
+    const bool isInstant = spell &&
       caster->GetActorRuntimeData()
-        .selectedSpells[RE::Actor::SlotTypes::kUnknown] == spell;
-    const bool isInstant =
-      caster->GetActorRuntimeData()
-        .selectedSpells[RE::Actor::SlotTypes::kPowerOrShout] == spell;
+          .selectedSpells[RE::Actor::SlotTypes::kPowerOrShout] == spell;
 
     const bool isCastValid = isLeftHand || isRightHand || isVoise || isInstant;
 
@@ -1912,7 +1940,17 @@ EventResult EventHandler::ProcessEvent(
 
     AddObjProperty(&obj, "caster", caster, "Actor");
     AddObjProperty(&obj, "target", handleTarget, "ObjectReference");
-    AddObjProperty(&obj, "spell", spell, "Spell");
+    // a staff's cast goes as its enchantment's own Papyrus type, which has the
+    // effect reads the client's cast path asks of a spell (getNumEffects,
+    // getNthEffectMagicEffect, getNthEffectArea)
+    if (spell) {
+      AddObjProperty(&obj, "spell", spell, "Spell");
+    } else {
+      AddObjProperty(&obj, "spell", enchantment, "Enchantment");
+      spdlog::info("[verb:spell-cast] {:x} casts staff enchantment {:x} from "
+                   "its {} hand",
+                   casterId, spellId, isLeftHand ? "left" : "right");
+    }
     AddObjProperty(&obj, "isDualCasting", isDualCasting);
     AddObjProperty(&obj, "castingSource",
                    static_cast<uint32_t>(castingSource));

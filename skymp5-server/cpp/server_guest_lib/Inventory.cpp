@@ -213,6 +213,18 @@ bool Inventory::HasItem(uint32_t baseId) const
   return false;
 }
 
+bool Inventory::HasCreatedStack(uint32_t baseId,
+                                const CreatedForm& createdBase) const
+{
+  for (auto& entry : entries) {
+    if (entry.baseId == baseId && entry.createdBase &&
+        entry.createdBase->SameAs(createdBase)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 uint32_t Inventory::GetItemCount(uint32_t baseId) const
 {
   uint32_t sum = 0;

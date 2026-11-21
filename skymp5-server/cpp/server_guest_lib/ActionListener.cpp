@@ -2280,13 +2280,25 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   std::vector<Inventory::Entry> staleItems;
 
   const auto& inventory = actor->GetInventory();
+  // thuum tracker #98 (look 2, note 4020): the report's brewed potion or
+  // poison names its template base and its definition; the record's stack
+  // of it is found by that definition, normalized as a report's rows are
+  // (CraftService::NormalizeCreated), never by the plain base, which no plain
+  // count holds (Inventory::HasItem). Each equipment report while a brew was
+  // in the bag erased its row and resent the whole inventory
+  const auto heldCreated = [&](const Inventory::Entry& reported) {
+    Inventory::Entry e = reported;
+    CraftService::NormalizeCreated(partOne.worldState, e);
+    return inventory.HasCreatedStack(e.baseId, *e.createdBase);
+  };
   {
     auto& entries = kept.inv.entries;
     for (auto it = entries.begin(); it != entries.end();) {
       // a hosted actor's report names what it wears; its engine's whole
       // inventory is npc-fate's record, not this message's
       if ((hosted && it->GetWorn() == Inventory::Worn::None) ||
-          inventory.HasItem(it->baseId) ||
+          (it->createdBase ? heldCreated(*it)
+                           : inventory.HasItem(it->baseId)) ||
           inOverlay(&RaceOverlay::items, it->baseId)) {
         ++it;
         continue;
@@ -10703,9 +10715,14 @@ void ActionListener::OnDropItem(const RawMessageData& rawMsgData,
                          ac->GetFormId());
   }
 
-  Inventory::Entry entry;
-  entry.baseId = baseId;
-  entry.count = msg.count;
+  // thuum tracker #98 (SCHEMA_VERSION 63, Eli's look 2: "cannot drop" a brew
+  // or an enchanted item): the drop names its stack with its extras and
+  // created forms, normalized as a craft report's rows are; the worn flags
+  // are not the drop's
+  Inventory::Entry entry(baseId, msg.count, msg);
+  entry.worn_.reset();
+  entry.wornLeft.reset();
+  CraftService::NormalizeCreated(partOne.worldState, entry);
 
   ac->DropItem(baseId, entry);
 }

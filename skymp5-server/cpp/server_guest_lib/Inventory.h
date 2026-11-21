@@ -123,6 +123,9 @@ public:
   // thuum tracker #98: a stack with a created base (CreatedForm.h) holds no
   // item of its template base, so these two pass it by
   bool HasItem(uint32_t baseId) const;
+  // thuum tracker #98 (look 2, note 4020): a brewed potion's or poison's
+  // stack, named by its template base and its definition (SameCreated)
+  bool HasCreatedStack(uint32_t baseId, const CreatedForm& createdBase) const;
   uint32_t GetItemCount(uint32_t baseId) const;
   uint32_t GetTotalItemCount() const;
   bool IsEmpty() const;

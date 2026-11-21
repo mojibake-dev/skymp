@@ -1,6 +1,7 @@
 #include "ActionListener.h"
 #include "ActorValueRecord.h"
 #include "CraftReportMessage.h"
+#include "DropItemMessage.h"
 #include "MpChangeForms.h"
 #include "OnEquipMessage.h"
 #include "PacketParser.h"
@@ -491,4 +492,126 @@ TEST_CASE("A created effect's MGEF is stored by its plugin and crosses a load "
   REQUIRE(gone.inv.entries.empty());
   REQUIRE(gone.unresolved.size() == 1);
   REQUIRE(gone.unresolved[0].field == "inv");
+}
+
+namespace {
+// the reference the last drop placed: its create word names the base
+uint32_t DroppedCopy(PartOne& p, uint32_t baseId)
+{
+  uint32_t refrId = 0;
+  for (auto& m : p.Messages()) {
+    if (m.j["t"] == MsgType::CreateActor && m.j.contains("refrId") &&
+        m.j.contains("baseId") && m.j["baseId"] == baseId) {
+      refrId = m.j["refrId"].get<uint32_t>();
+    }
+  }
+  return refrId;
+}
+}
+
+// thuum tracker #98 (SCHEMA_VERSION 63, Eli's look 2 of 3e8ab5acb: "cannot
+// drop" a brew and an enchanted item; note 4020): a drop names its stack with
+// its extras and created forms, the record's own row for it is the one taken,
+// the dropped copy holds it, and the pickup gives it back whole
+TEST_CASE("A brewed potion and an enchanted dagger are dropped as their own "
+          "stacks and come back whole at their pickup",
+          "[CraftReport][DropItemTest][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p);
+  Inventory::Entry dagger(kDagger, 1);
+  dagger.enchantmentId = kBootsEnchantment;
+  dagger.maxCharge = 2400.f;
+  dagger.name = "test";
+  ac.AddItems({ Potion(Heal(30.f), 2), dagger });
+
+  RawMessageData raw;
+  raw.userId = 0;
+  DropItemMessage potionDrop;
+  potionDrop.baseId = kPotionTemplate;
+  potionDrop.count = 1;
+  potionDrop.createdBase = Heal(30.f);
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(raw, potionDrop);
+  REQUIRE(Stacks(ac, kPotionTemplate).size() == 1);
+  REQUIRE(Stacks(ac, kPotionTemplate)[0].count == 1);
+  const uint32_t potionCopyId = DroppedCopy(p, kPotionTemplate);
+  REQUIRE(potionCopyId != 0);
+  auto& potionCopy = p.worldState.GetFormAt<MpObjectReference>(potionCopyId);
+  REQUIRE(potionCopy.GetInventory().entries.size() == 1);
+  REQUIRE(potionCopy.GetInventory().entries[0].createdBase);
+  REQUIRE(
+    potionCopy.GetInventory().entries[0].createdBase->SameAs(Heal(30.f)));
+
+  DropItemMessage daggerDrop;
+  daggerDrop.baseId = kDagger;
+  daggerDrop.count = 1;
+  daggerDrop.enchantmentId = kBootsEnchantment;
+  daggerDrop.maxCharge = 2400.f;
+  daggerDrop.name = "test";
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(raw, daggerDrop);
+  REQUIRE(Stacks(ac, kDagger).empty());
+  const uint32_t daggerCopyId = DroppedCopy(p, kDagger);
+  REQUIRE(daggerCopyId != 0);
+  auto& daggerCopy = p.worldState.GetFormAt<MpObjectReference>(daggerCopyId);
+  REQUIRE(daggerCopy.GetInventory().entries.size() == 1);
+  REQUIRE(daggerCopy.GetInventory().entries[0].enchantmentId ==
+          kBootsEnchantment);
+
+  // the pickups give the rows back as they were dropped
+  daggerCopy.Activate(ac);
+  REQUIRE(Stacks(ac, kDagger).size() == 1);
+  REQUIRE(Stacks(ac, kDagger)[0].enchantmentId == kBootsEnchantment);
+  REQUIRE(Stacks(ac, kDagger)[0].maxCharge == 2400.f);
+  potionCopy.Activate(ac);
+  REQUIRE(Stacks(ac, kPotionTemplate).size() == 1);
+  REQUIRE(Stacks(ac, kPotionTemplate)[0].count == 2);
+  REQUIRE(Stacks(ac, kPotionTemplate)[0].createdBase->SameAs(Heal(30.f)));
+
+  Leave(p);
+}
+
+TEST_CASE("A drop of extras the record does not hold is refused and changes "
+          "nothing",
+          "[CraftReport][DropItemTest][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p);
+  ac.AddItems({ Inventory::Entry(kDagger, 1) });
+
+  RawMessageData raw;
+  raw.userId = 0;
+  DropItemMessage drop;
+  drop.baseId = kDagger;
+  drop.count = 1;
+  drop.enchantmentId = kBootsEnchantment;
+  drop.maxCharge = 2400.f;
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(raw, drop);
+  REQUIRE(Stacks(ac, kDagger).size() == 1);
+  REQUIRE(!Stacks(ac, kDagger)[0].enchantmentId);
+  REQUIRE(DroppedCopy(p, kDagger) == 0);
+
+  // and a brewed potion the record holds no stack of
+  DropItemMessage potionDrop;
+  potionDrop.baseId = kPotionTemplate;
+  potionDrop.count = 1;
+  potionDrop.createdBase = Heal(31.f);
+  p.GetActionListener().OnDropItem(raw, potionDrop);
+  REQUIRE(DroppedCopy(p, kPotionTemplate) == 0);
+
+  Leave(p);
+}
+
+// thuum tracker #98 (look 2, note 4020): an equipment report's brewed potion
+// is found by its definition, never by the plain template base
+TEST_CASE("A record's brewed stack is held by its definition",
+          "[CraftReport][espm]")
+{
+  Inventory inv;
+  inv.AddItems({ Potion(Heal(30.f), 1) });
+  REQUIRE(!inv.HasItem(kPotionTemplate));
+  REQUIRE(inv.HasCreatedStack(kPotionTemplate, Heal(30.f)));
+  REQUIRE(!inv.HasCreatedStack(kPotionTemplate, Heal(31.f)));
 }

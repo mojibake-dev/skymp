@@ -6,6 +6,7 @@
 #include "ChangeValuesMessage.h"
 #include "Condition.h"
 #include "ConditionsEvaluator.h"
+#include "CraftService.h"
 #include "CropRegeneration.h"
 #include "DamageCauseMessage.h"
 #include "EvaluateTemplate.h"
@@ -4242,12 +4243,25 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 
   // thuum docs/verbs/npc-fate.md (1c; the review of 7c3c9f79, finding 8): a
   // drop of what the record does not hold is refused by name, no throw, the
-  // dropper resynced, as a take or a put is
-  if (GetInventory().GetItemCount(baseId) < static_cast<uint32_t>(count)) {
-    spdlog::warn("[verb:containers] E_DROP_NOT_HELD: {:x} drops {} of {:x} "
-                 "but its record holds {}; refused, the dropper resynced",
+  // dropper resynced, as a take or a put is. Since SCHEMA_VERSION 63 (thuum
+  // tracker #98, Eli's look 2) the drop names its stack with its extras and
+  // created forms, and the record's own rows that stand for it are the ones
+  // taken (CraftService::HeldRows, a craft report's match: the base, the
+  // created definitions and the lasting extras): a plain row the record
+  // lacked made RemoveItems throw on look 2's enchanted dagger
+  const auto rows = CraftService::HeldRows(GetInventory(), { entry });
+  if (!rows) {
+    spdlog::warn("[verb:containers] E_DROP_NOT_HELD: {:x} drops {} of {:x}{} "
+                 "but its record holds {} such; refused, the dropper "
+                 "resynced",
                  GetFormId(), count, baseId,
-                 GetInventory().GetItemCount(baseId));
+                 entry.createdBase ? " (a brewed potion or poison)"
+                   : (entry.enchantmentId || entry.createdEnchantment ||
+                      entry.health || entry.soul || entry.poisonId ||
+                      entry.createdPoison)
+                   ? " with extras"
+                   : "",
+                 entry.createdBase ? 0u : GetInventory().GetItemCount(baseId));
     ResyncAfterRefusedMove(*this);
     return;
   }
@@ -4272,7 +4286,7 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
     lookupRes.rec->GetEditorId(worldState->GetEspmCache());
 
   spdlog::trace("MpActor::DropItem - dropping {}", editorId);
-  RemoveItems({ entry });
+  RemoveItems(*rows);
 
   // thuum docs/verbs/prop-physics.md (the drop's stream at T3, 2026-10-30): a
   // copy placed at the actor's own position wakes Dynamic inside the dropper's
@@ -4303,6 +4317,25 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
     &PapyrusObjectReference::PlaceAt(*this, lookupRes, dropPoint);
 
   placedObject->SetCount(count);
+
+  // thuum tracker #98 (SCHEMA_VERSION 63): a dropped stack's extras and
+  // created forms stay with its copy as the copy's own rows, given back whole
+  // at its pickup (MpObjectReference::GivePickupItemsToActivationSource); the
+  // copy's change form keeps them through a restart as any reference's rows
+  const bool carries =
+    std::any_of(rows->begin(), rows->end(), [](const Inventory::Entry& r) {
+      return r.health || r.enchantmentId || r.maxCharge || r.soul ||
+        r.poisonId || r.name || r.createdBase || r.createdEnchantment ||
+        r.createdPoison;
+    });
+  if (carries) {
+    Inventory carried;
+    carried.AddItems(*rows);
+    placedObject->SetInventory(carried);
+    spdlog::info("[verb:craft] {:x} drops {} of {:x} with its extras: copy "
+                 "{:x} holds them for its pickup",
+                 GetFormId(), count, baseId, placedObject->GetFormId());
+  }
 
   uint32_t droppedItemFormId = placedObject->GetFormId();
 

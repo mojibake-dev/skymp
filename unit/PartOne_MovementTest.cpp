@@ -183,9 +183,10 @@ TEST_CASE("A movement the server rejects reaches no neighbour", "[PartOne]")
 // game moving it, by a jump in its worldspace (fast travel, a carriage) or
 // into another cell (a jail, a Black Book's Apocrypha, a script's MoveTo),
 // is the record's: the sender is never sent back, the move reaches its
-// neighbour, placed there rather than glided
-TEST_CASE("A player's own step past its budget, jump and cell change are "
-          "recorded and relayed, never sent back",
+// neighbour, placed there rather than glided (the cell change through the
+// same path, with the master files loaded: ConsoleCommandTest)
+TEST_CASE("A player's own step past its budget and its jump are recorded "
+          "and relayed, never sent back",
           "[PartOne]")
 {
   PartOne partOne;
@@ -228,17 +229,4 @@ TEST_CASE("A player's own step past its budget, jump and cell change are "
   REQUIRE(count(0, MsgType::Teleport2) == 0);
   REQUIRE(count(1, MsgType::ActorJump) <= 1);
   REQUIRE(mover.GetPos() == NiPoint3{ 8001.f, -1.f, 1.f });
-
-  // into an interior cell (Bleak Falls Temple's id; this world loads no
-  // master file, so any cell id stands)
-  partOne.Messages().clear();
-  auto inside = jMovement;
-  inside["idx"] = 0;
-  inside["data"]["worldOrCell"] = 0x371de;
-  inside["data"]["pos"] = { 100.f, 200.f, 0.f };
-  DoMessage(partOne, 0, inside);
-  REQUIRE(count(0, MsgType::Teleport2) == 0);
-  REQUIRE(mover.GetCellOrWorld().ToFormId(partOne.worldState.espmFiles) ==
-          0x371de);
-  REQUIRE(mover.GetPos() == NiPoint3{ 100.f, 200.f, 0.f });
 }

@@ -56,10 +56,11 @@ TEST_CASE("A player's own jump of 4096 units or more is recorded, not sent "
 
 // thuum ADR-079 decision 7: the player's own game moving it into another cell
 // (a jail, a Black Book's Apocrypha, a script's MoveTo) is recorded, never
-// sent back; another game's actor moving cells without the cell-change rule
-// is still dropped, with nothing sent
+// sent back; a report into no cell the server knows breaks the world and is
+// dropped with nothing sent; another game's actor moving cells without the
+// cell-change rule is still dropped, with nothing sent
 TEST_CASE("A player's own move into another cell is recorded, not sent back, "
-          "and another game's actor's is dropped",
+          "and one into no cell, or another game's actor's, is dropped",
           "[MovementValidation]")
 {
   PartOne& partOne = GetPartOne();
@@ -71,13 +72,15 @@ TEST_CASE("A player's own move into another cell is recorded, not sent back, "
 
   auto& actor = partOne.worldState.GetFormAt<MpActor>(0xff000000);
   auto& npc = partOne.worldState.GetFormAt<MpActor>(0xff000001);
+  // Skyrim.esm's RiverwoodSleepingGiantInn, an interior cell (the COC
+  // case's, ConsoleCommandTest)
+  const auto inn = FormDesc::FromString("133c6:Skyrim.esm");
 
   partOne.Messages().clear();
   bool placed = false;
   bool res = MovementValidation::Validate(
     partOne, { 1, -1, 1 }, { 123, 111, 123 }, FormDesc::Tamriel(),
-    { 1, -1, 1 }, FormDesc::FromString("ffffff:Skyrim.esm"), 0, &actor,
-    { "Skyrim.esm" }, &placed);
+    { 1, -1, 1 }, inn, 0, &actor, { "Skyrim.esm" }, &placed);
   REQUIRE(res);
   REQUIRE(placed);
   REQUIRE(partOne.Messages().empty());
@@ -85,7 +88,13 @@ TEST_CASE("A player's own move into another cell is recorded, not sent back, "
   res = MovementValidation::Validate(partOne, { 1, -1, 1 }, { 123, 111, 123 },
                                      FormDesc::Tamriel(), { 1, -1, 1 },
                                      FormDesc::FromString("ffffff:Skyrim.esm"),
-                                     0, &npc, { "Skyrim.esm" });
+                                     0, &actor, { "Skyrim.esm" });
+  REQUIRE(!res);
+  REQUIRE(partOne.Messages().empty());
+
+  res = MovementValidation::Validate(partOne, { 1, -1, 1 }, { 123, 111, 123 },
+                                     FormDesc::Tamriel(), { 1, -1, 1 }, inn, 0,
+                                     &npc, { "Skyrim.esm" });
   REQUIRE(!res);
   REQUIRE(partOne.Messages().empty());
 }

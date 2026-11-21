@@ -40,6 +40,14 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
   // Not doing this to any NPCs at this moment, yet we might consider to
   const bool isMe = actor && partOne.serverState.ActorByUser(userId) == actor;
 
+  // a position that is no place (not finite) breaks the world: dropped,
+  // nothing sent back (the wire's own validate refuses it before here on the
+  // network path; this holds for the C++ callers)
+  if (!std::isfinite(newPos.x) || !std::isfinite(newPos.y) ||
+      !std::isfinite(newPos.z)) {
+    return false;
+  }
+
   // a move into another cell or worldspace, or a jump no step makes (4096
   // units or more: an exterior cell's side, wire-rules movement::CELL_SIDE)
   const bool jumped = currentCellOrWorld != newCellOrWorld ||
@@ -122,10 +130,12 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
         markPlaced();
         return true;
       case PartOne::JumpCheck::Waiting:
-        spdlog::info("MovementValidation: {:x} reported {:x} at ({:.0f}, "
-                     "{:.0f}) while its permitted jump waits; dropped",
-                     actor->GetFormId(), cellOrWorld, newPos.x, newPos.y);
-        return false;
+        // ADR-079 decision 7: a report elsewhere while the permit waits is
+        // the player's own game's move all the same (a loading screen's,
+        // with no cell, is dropped below); dropping every one froze the
+        // player on the other screens for the permit's 60 s (the review of
+        // m4-191-move, finding 4)
+        return std::nullopt;
       default:
         return std::nullopt;
     }
@@ -150,11 +160,26 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     // carriage, fast travel, a script's MoveTo), is never sent back: the
     // server records the move, and the other games place the figure there
     // instead of gliding it. What the server still holds for a player's own
-    // report: its own teleport's arrival and a jump it permitted, while they
-    // wait (a report from elsewhere is dropped, nothing sent back), and a
-    // bond's hold within the same cell (above). Another game's actor keeps
-    // the hosted rules (the cell-change rule above; dropped otherwise)
+    // report: its own teleport's arrival, while it waits (a report from
+    // elsewhere is dropped, nothing sent back), a report at no place or into
+    // no cell it knows (dropped, nothing sent back), and a bond's hold
+    // within the same cell (above). Another game's actor keeps the hosted
+    // rules (the cell-change rule above; dropped otherwise)
     if (isMe) {
+      // a report into no cell the server knows (worldOrCell 0, a loading
+      // screen's; a form that is no CELL or WRLD; an exterior square with no
+      // cell) breaks the world: dropped, nothing sent back (the review of
+      // m4-191-move, finding 2)
+      if (partOne.HasEspm() &&
+          !partOne.worldState.CellOf(newCellOrWorld.ToFormId(espmFiles),
+                                     newPos)) {
+        spdlog::info("[verb:movement] {:x} reported {:x} at ({:.0f}, {:.0f}, "
+                     "{:.0f}), no cell the server knows; dropped, not sent "
+                     "back",
+                     actor->GetFormId(), newCellOrWorld.ToFormId(espmFiles),
+                     newPos.x, newPos.y, newPos.z);
+        return false;
+      }
       spdlog::info("[verb:movement] {:x}'s own game moved it from {:x} at "
                    "({:.0f}, {:.0f}, {:.0f}) to {:x} at ({:.0f}, {:.0f}, "
                    "{:.0f}): recorded, not sent back (ADR-079 decision 7)",

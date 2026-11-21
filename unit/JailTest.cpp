@@ -296,7 +296,7 @@ TEST_CASE("An arrest records the term on the shared clock and takes its "
   Take(p, kDagger, 1, kBelongings);
   REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 2);
   // the outfit is never part of the strip, and is created once a window:
-  // put back, or disposed of, it is not made again (no mint loop)
+  // put back, or disposed of, it is not made again
   Put(p, kRobes, 1, kStolenGoods);
   REQUIRE(prisoner.GetInventory().GetItemCount(kRobes) == 1);
   prisoner.RemoveItem(kRobes, 1, nullptr);

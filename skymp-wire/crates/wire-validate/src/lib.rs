@@ -781,7 +781,7 @@ fn check_summon(m: &skymp::Summon) -> Result<(), Reject> {
 }
 
 /// The game's longest sentence in days, iCrimeMaxNumberofDaysinJail: the
-/// exe's 7, which no plugin of the load order overrides
+/// exe's 7; a plugin that raises that setting needs this raised with it
 /// (PartOne::kMaxJailDays).
 const MAX_JAIL_DAYS: u32 = 7;
 

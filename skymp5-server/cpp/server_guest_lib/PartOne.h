@@ -702,7 +702,8 @@ public:
   // its move into the jail is recorded as any own move). The sentence is the
   // game's (bounty over iCrimeDaysInPrisonMod, capped at
   // iCrimeMaxNumberofDaysinJail); the record bounds it to the cap, the exe's
-  // 7, which no plugin of the load order overrides
+  // 7, so a load order whose plugin raises that setting needs the bound raised
+  // with it
   enum class ArrestCheck
   {
     Recorded,

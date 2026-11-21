@@ -9,20 +9,19 @@ const TAG = "verb:jail";
 // Skyrim.esm GLOB TimeScale (timeService.ts's timeScaleId)
 const kTimeScaleId = 0x3a;
 
-// thuum tracker #97, ADR-079 (Eli, 2026-11-20: "yes real jail time";
-// docs/verbs/jail.md): this game's player's arrest is its own game's
-// (ADR-063), its sentence runs on the shared clock (ADR-021), and its bounty
-// per hold is the server's record (D-G6 A, R0).
+// This game's player's arrest is its own game's, its sentence runs on the
+// shared clock, and its bounty per hold is the server's record (R0).
 //
 // - arrest (the platform's, from PlayerCharacter::GoToPrison's entry, a real
 //   jail only, before the engine strips and moves the player; Hooks.cpp
-//   PlayerGoToPrison): Arrest 84 with the faction and the sentence the
-//   engine's own rule gives, so the server takes the jump into the faction's
-//   jail, the strip into its two chests and its jail outfit as this game's.
-//   It goes at once, ahead of the strip's containerChanged events, which the
-//   same update queue raises after it (HYPOTHESIS until a trace).
+//   PlayerGoToPrison): an Arrest with the faction and the sentence the
+//   engine's own rule gives, so the server takes the strip into the
+//   faction's two chests and its jail outfit as this game's. It goes at
+//   once, ahead of the strip's containerChanged events, which the same
+//   update queue raises after it (assumed from the queue's order, not yet
+//   traced).
 // - crimeGold (the platform's, after the engine changed the player's crime
-//   gold for a faction): CrimeGold 85 with the faction's violent and
+//   gold for a faction): a CrimeGold with the faction's violent and
 //   non-violent gold as Papyrus reads them (Faction.GetCrimeGoldViolent and
 //   GetCrimeGoldNonViolent), when they differ from what this game last sent.
 //   The server's own tell at a login or a release (Faction.SetCrimeGold and
@@ -30,19 +29,19 @@ const kTimeScaleId = 0x3a;
 //   events, so the first may send a half-told pair for a moment, which the
 //   second corrects to the values the server holds.
 // - servePrisonTime (the platform's, the jail bed's serve, which never runs:
-//   ADR-079.2): the sentence is waited out on the shared clock, and the
-//   player is told how much of it is left as this game knows it.
+//   its time skip would be this game's alone): the sentence is waited out on
+//   the shared clock, and the player is told how much of it is left as this
+//   game knows it.
 //
 // The release is the server's (PartOne::ReleaseIfServed: the prisoner's own
-// belongings back, the bounty cleared, the player placed at the jail marker,
-// the engine's prison state cleared through Game.ClearPrison), so nothing
-// here ends a sentence.
+// belongings back, the bounty cleared, the player placed outside the jail's
+// door, the engine's prison state cleared through Game.ClearPrison), so
+// nothing here ends a sentence.
 export class JailService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         // an older platform without the events refuses the subscription (the
-        // summon service's guard); no arrest or bounty is reported then, the
-        // pre-#97 behavior
+        // summon service's guard); no arrest or bounty is reported then
         try {
             this.controller.on("arrest", (e) => this.onArrest(e));
             this.controller.on("crimeGold", (e) => this.onCrimeGold(e));
@@ -98,11 +97,10 @@ export class JailService extends ClientListener {
         logLab(TAG, `the bed's serve of ${e.days} day(s) for ${e.factionId.toString(16)} asked and not run (ADR-079.2, tracker #97)`);
     }
 
-    // thuum tracker #97 (Eli, 2026-11-20, in his jail look: the time left in
-    // game time and real time): " (about N minutes)" for `days` of game time
-    // at this game's TimeScale (the global 0x3a, game seconds per real
-    // second, which TimeService sets from the server's SetGameTime, so the
-    // server's rate, never a constant); "" when the global reads no rate
+    // " (about N minutes)" for `days` of game time at this game's TimeScale
+    // (the global 0x3a, game seconds per real second, which TimeService sets
+    // from the server's SetGameTime, so the server's rate, never a constant);
+    // "" when the global reads no rate
     private realTimeOf(days: number): string {
         const timeScale = this.sp.GlobalVariable.from(this.sp.Game.getFormEx(kTimeScaleId))?.getValue() ?? 0;
         if (!(timeScale > 0)) {

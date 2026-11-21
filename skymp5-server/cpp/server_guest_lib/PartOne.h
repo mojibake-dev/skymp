@@ -668,13 +668,12 @@ public:
   // line per shout; how many it recorded
   size_t RecordShoutsOfKnownWords(MpActor& actor);
 
-  // thuum tracker #97, ADR-079 (Eli, 2026-11-20: "yes real jail time"):
-  // a hold's jail, read from its crime faction's own record (FACT's JAIL,
+  // A hold's jail, read from its crime faction's own record (FACT's JAIL,
   // STOL, PLCN and JOUT) and from its jail marker's door teleport. It is
   // data: every hold's faction names its own, one landing a hold, so two
-  // prisoners of a hold share its cell (ADR-079 item 4), and no list of
-  // holds or cells is kept here. None for a form that is no crime faction
-  // with a jail marker that teleports
+  // prisoners of a hold share its cell, and no list of holds or cells is
+  // kept here. None for a form that is no crime faction with a jail marker
+  // that teleports
   struct JailOfFaction
   {
     uint32_t marker = 0;            // the jail marker, outside the jail
@@ -685,10 +684,9 @@ public:
     NiPoint3 landingPos, landingRot;
     // the release's spot: the far side of the jail's door, the landing of
     // that door's own teleport (the engine's release, 40661, reads the
-    // marker's door's XTEL, not the marker: the re-analyst's read of
-    // 2026-11-20, confirmed by lab run 20261121-035453), the point itself,
-    // which the player's own move (40744) raises; the marker's own spot when
-    // the door has none
+    // marker's door's XTEL, not the marker), the point itself, which the
+    // player's own move (40744) raises; the marker's own spot when the door
+    // has none
     uint32_t releaseWorldOrCell = 0;
     NiPoint3 releasePos, releaseRot;
     uint32_t evidenceChest = 0;   // stolen goods
@@ -697,16 +695,14 @@ public:
   };
   std::optional<JailOfFaction> JailOf(uint32_t faction);
 
-  // The arrested player's own game's report (ADR-063): the faction that
-  // jailed it and the sentence its engine set. Recorded as the player's jail
-  // term, its end on the shared clock (ADR-021), and the arrest's window
-  // opened, in which its game's strip and jail outfit are taken (its move
-  // into the jail is recorded as any own move, ADR-079 decision 7;
-  // OnArrestStripPut,
-  // OnArrestStripTake). The sentence is the game's (bounty over
-  // iCrimeDaysInPrisonMod, capped at iCrimeMaxNumberofDaysinJail); the
-  // record bounds it to the cap, which no plugin of the lab's load order
-  // overrides, so the exe's 7 (read on sky-re, tracker #97 note 3921)
+  // The arrested player's own game's report: the faction that jailed it and
+  // the sentence its engine set. Recorded as the player's jail term, its end
+  // on the shared clock, and the arrest's window opened, in which its game's
+  // strip and jail outfit are taken (OnArrestStripPut, OnArrestStripTake;
+  // its move into the jail is recorded as any own move). The sentence is the
+  // game's (bounty over iCrimeDaysInPrisonMod, capped at
+  // iCrimeMaxNumberofDaysinJail); the record bounds it to the cap, the exe's
+  // 7, which no plugin of the load order overrides
   enum class ArrestCheck
   {
     Recorded,
@@ -718,9 +714,9 @@ public:
   static constexpr std::chrono::seconds kArrestWindow{ 60 };
   ArrestCheck OnArrest(MpActor& prisoner, uint32_t faction, uint32_t days);
 
-  // One hold's bounty as the player's own game holds it (R0 record, D-G6 A;
-  // its engine's crime reports are its own, ADR-063): recorded when the
-  // faction is a crime faction; whether it changed the record
+  // One hold's bounty as the player's own game holds it (R0 record; its
+  // engine's crime reports are its own): recorded when the faction is a
+  // crime faction; whether it changed the record
   bool OnCrimeGold(MpActor& player, uint32_t faction, uint32_t violent,
                    uint32_t nonViolent);
 
@@ -728,13 +724,13 @@ public:
   // its own belongings back from the faction's chest (the rows its strip
   // put there, never the chest's whole contents, which hold every prisoner
   // of the hold's), the term and the hold's bounty cleared, the player
-  // placed at the jail marker by the server, its game told its bounty. The
+  // placed at the release's spot by the server, its game told its bounty. The
   // check runs every second for the players in the world and at a login
   bool ReleaseIfServed(MpActor& prisoner);
-  // ADR-079.3: a prisoner out of its jail's cell before its end, once it has
-  // stood in it (the term's arrived, noted here) and the arrest's window
-  // closed, escaped: the term ends with its belongings left in the chest and
-  // its bounty as its game reports it; whether it ended one
+  // A prisoner out of its jail's cell before its end, once it has stood in
+  // it (the term's arrived, noted here) and the arrest's window closed,
+  // escaped: the term ends with its belongings left in the chest and its
+  // bounty as its game reports it; whether it ended one
   bool EndTermIfEscaped(MpActor& prisoner);
   // The arrest's strip as the prisoner's game reports it during the window:
   // a put into either of the faction's chests moves that exact stack from
@@ -742,15 +738,13 @@ public:
   // the record holds, never the jail outfit) and onto the term's belongings,
   // whichever chest the client's inventory diff named; a stack with an
   // owner, stolen, goes into the evidence chest instead and stays there at
-  // the release (the engine's walk sorts by the owner: Stolen goods in
-  // thuum docs/verbs/jail.md); a take of a jail
+  // the release (the engine's walk sorts by the owner); a take of a jail
   // outfit item the record lacks creates it on the record once a window. A
   // put is never refused back into its game (no refusal's resync); a take
   // that creates nothing is resynced as any refused move
   bool OnArrestStripPut(MpActor& prisoner, const Inventory::Entry& entry);
-  // thuum docs/verbs/jail.md (Stolen goods): the crime faction whose
-  // evidence chest (FACT's STOL) this container is, read from the load
-  // order's FACT records; 0 for any other container
+  // The crime faction whose evidence chest (FACT's STOL) this container is,
+  // read from the load order's FACT records; 0 for any other container
   uint32_t CrimeFactionOfEvidenceChest(uint32_t container);
   // The engine's confiscation (its walk 16120, at a fine paid with
   // removeStolen as at an arrest's strip): every stack its game marks with
@@ -1777,8 +1771,8 @@ private:
   void TickFightsEverySecond();
   void TickCellHostsEverySecond();
   void TickFateRespawnsEverySecond();
-  // thuum tracker #97: the release of every served sentence of a player in
-  // the world, once a second
+  // the release of every served sentence of a player in the world, once a
+  // second
   void TickJailsEverySecond();
   void TickBondsEverySecond();
   // thuum docs/verbs/spell-placed-object.md: the placements' clock from

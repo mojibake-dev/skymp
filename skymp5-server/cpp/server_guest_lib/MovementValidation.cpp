@@ -15,9 +15,8 @@
 namespace MovementValidation {
 
 namespace {
-// thuum ADR-079 decision 7: a player's step beyond its ground speed budget,
-// recorded, counted per actor and said at the first and each power of two
-// after (ADR-073 decision 7)
+// a player's step beyond its ground speed budget, recorded, counted per actor
+// and logged at the first and each power of two after
 std::unordered_map<uint32_t, uint64_t> g_overBudget;
 }
 
@@ -84,10 +83,10 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     // for a while after its swap; a report from elsewhere in the same cell is
     // the mod's own script undoing the server's swap, and the player is sent
     // back to where the server has it. This hold is the one place a player's
-    // own report is overridden (ADR-079 decision 7): the swap is the
-    // server's own move of two players at once, which the mod's script in
-    // one game would otherwise undo for both. A move into another cell or a
-    // jump is the player's game's own, recorded below
+    // own report is overridden: the swap is the server's own move of two
+    // players at once, which the mod's script in one game would otherwise
+    // undo for both. A move into another cell or a jump is the player's
+    // game's own, recorded below
     if (!jumped &&
         partOne.PinnedAway(actor->GetFormId(), cellOrWorld, newPos)) {
       spdlog::info("MovementValidation: {:x} reported ({:.0f}, {:.0f}) away "
@@ -130,11 +129,10 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
         markPlaced();
         return true;
       case PartOne::JumpCheck::Waiting:
-        // ADR-079 decision 7: a report elsewhere while the permit waits is
-        // the player's own game's move all the same (a loading screen's,
-        // with no cell, is dropped below); dropping every one froze the
-        // player on the other screens for the permit's 60 s (the review of
-        // m4-191-move, finding 4)
+        // a report elsewhere while the permit waits is the player's own
+        // game's move all the same (a loading screen's, with no cell, is
+        // dropped below); dropping every one would freeze the player on the
+        // other screens for the permit's 60 s
         return std::nullopt;
       default:
         return std::nullopt;
@@ -152,24 +150,20 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     if (const auto jump = permittedJump()) {
       return *jump;
     }
-    // thuum ADR-079 decision 7 (Eli, 2026-11-20, tracker #191: "the server
-    // snapping a player back when their own game moves them somewhere it
-    // didn't ... this is breaking too many things. i think the server should
-    // simply not do this."): the player's own game moving it into another
-    // cell or worldspace, or by a jump (a jail, a Black Book's Apocrypha, a
-    // carriage, fast travel, a script's MoveTo), is never sent back: the
-    // server records the move, and the other games place the figure there
-    // instead of gliding it. What the server still holds for a player's own
-    // report: its own teleport's arrival, while it waits (a report from
-    // elsewhere is dropped, nothing sent back), a report at no place or into
-    // no cell it knows (dropped, nothing sent back), and a bond's hold
-    // within the same cell (above). Another game's actor keeps the hosted
-    // rules (the cell-change rule above; dropped otherwise)
+    // the player's own game moving it into another cell or worldspace, or by
+    // a jump (a jail, a Black Book's Apocrypha, a carriage, fast travel, a
+    // script's MoveTo), is never sent back: the server records the move, and
+    // the other games place the figure there instead of gliding it. What the
+    // server still holds for a player's own report: its own teleport's
+    // arrival, while it waits (a report from elsewhere is dropped, nothing
+    // sent back), a report at no place or into no cell it knows (dropped,
+    // nothing sent back), and a bond's hold within the same cell (above).
+    // Another game's actor keeps the hosted rules (the cell-change rule
+    // above; dropped otherwise)
     if (isMe) {
       // a report into no cell the server knows (worldOrCell 0, a loading
       // screen's; a form that is no CELL or WRLD; an exterior square with no
-      // cell) breaks the world: dropped, nothing sent back (the review of
-      // m4-191-move, finding 2)
+      // cell) breaks the world: dropped, nothing sent back
       if (partOne.HasEspm() &&
           !partOne.worldState.CellOf(newCellOrWorld.ToFormId(espmFiles),
                                      newPos)) {
@@ -202,15 +196,13 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
       if (const auto jump = permittedJump()) {
         return *jump;
       }
-      // thuum ADR-079 decision 7: a step beyond the budget is the player's
-      // own game's move too (a script's MoveTo within the cell, a lag burst,
-      // Whirlwind Sprint), recorded; the server's disagreement is a logged
-      // line, never a send-back. A choice, not the decision's: the step is
-      // relayed alone, so the other games glide the figure there as
-      // movement (Skyrim's feel), where a move into another cell or
+      // a step beyond the budget is the player's own game's move too (a
+      // script's MoveTo within the cell, a lag burst, Whirlwind Sprint),
+      // recorded; the server's disagreement is a logged line, never a
+      // send-back. The step is relayed alone, so the other games glide the
+      // figure there as movement, where a move into another cell or
       // worldspace and the server's own jumps are placed (ActorJump);
-      // markPlaced() here would make it a snap (magna-ge, 2026-11-20, for
-      // Eli to flip)
+      // markPlaced() here would make it a snap
       const auto n = ++g_overBudget[actor->GetFormId()];
       if ((n & (n - 1)) == 0) {
         spdlog::warn("MovementValidation - E_MOVE_SPEED: {:x} moved {:.0f} "

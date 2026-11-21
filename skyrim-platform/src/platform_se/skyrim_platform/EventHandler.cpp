@@ -3041,15 +3041,14 @@ EventResult EventHandler::ProcessEvent(
   return EventResult::kContinue;
 }
 
-// thuum tracker #97, ADR-079 (docs/verbs/jail.md): the arrest is the arrested
-// player's own game's (ADR-063), reported before its engine strips and moves
-// the player (the strip's containerChanged events are update tasks raised
-// inside GoToPrison, after this one; HYPOTHESIS until a trace: the update
-// queue runs in order). The sentence is the engine's own rule as the arrest
-// path's static read has it (tracker #97 note 3921, GoToPrison 40655,
-// HYPOTHESIS from decompiler output): the faction's crime gold over the GMST
-// iCrimeDaysInPrisonMod, truncated, at least 1, at most the GMST
-// iCrimeMaxNumberofDaysinJail, both read from the game's settings here
+// The arrest is the arrested player's own game's, reported before its engine
+// strips and moves the player (the strip's containerChanged events are update
+// tasks raised inside GoToPrison, after this one, assuming the update queue
+// runs in order; not yet traced). The sentence is the engine's own rule as
+// read from the binary (GoToPrison 40655, a decompiler reading): the
+// faction's crime gold over the GMST iCrimeDaysInPrisonMod, truncated, at
+// least 1, at most the GMST iCrimeMaxNumberofDaysinJail, both read from the
+// game's settings here
 void EventHandler::OnArrest(RE::PlayerCharacter* player,
                             RE::TESFaction* faction)
 {
@@ -3089,10 +3088,9 @@ void EventHandler::OnArrest(RE::PlayerCharacter* player,
     });
 }
 
-// thuum tracker #97 (ADR-079.2): the bed's serve of the sentence would skip
-// its days on this game's clock alone (ServePrisonTime 40657 loops the sleep
-// step, the arrest path's read), which the shared clock never takes; it does
-// not run, and the scripts hear what was asked
+// The bed's serve of the sentence would skip its days on this game's clock
+// alone (ServePrisonTime 40657 loops the sleep step), which the shared clock
+// never takes; it does not run, and the scripts hear what was asked
 void EventHandler::OnServePrisonTime(RE::PlayerCharacter* player)
 {
   if (!player) {
@@ -3115,8 +3113,8 @@ void EventHandler::OnServePrisonTime(RE::PlayerCharacter* player)
     });
 }
 
-// thuum tracker #97 (D-G6 A): the player's crime gold for a faction changed
-// in this game's engine; the scripts read it and report it
+// The player's crime gold for a faction changed in this game's engine; the
+// scripts read it and report it
 void EventHandler::OnCrimeGoldChanged(const RE::TESFaction* faction)
 {
   if (!faction) {

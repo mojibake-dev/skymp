@@ -260,9 +260,9 @@ struct PartOne::Impl
   };
   std::unordered_map<uint32_t, std::vector<HeldSighting>> heldSightings;
 
-  // thuum docs/verbs/jail.md (Stolen goods): every crime faction's evidence
-  // chest (FACT's STOL) to its faction, read once from the load order's FACT
-  // records at the first ask (CrimeFactionOfEvidenceChest)
+  // every crime faction's evidence chest (FACT's STOL) to its faction, read
+  // once from the load order's FACT records at the first ask
+  // (CrimeFactionOfEvidenceChest)
   std::optional<std::unordered_map<uint32_t, uint32_t>> evidenceChests;
 
   // every player actor's ground speed budget (thuum
@@ -10056,11 +10056,9 @@ bool PartOne::PickPerk(MpActor& actor, uint32_t perk)
   return true;
 }
 
-// thuum tracker #97, ADR-079 (Eli, 2026-11-20: "yes real jail time"; the
-// arrest path's read, tracker #97 note 3921). Every value below is read from
-// the records: the faction's crime data and its jail marker's teleport
-// (Skyrim.esm, lab/esm.py 2026-11-20: CrimeFactionFalkreath 0x28170's JAIL
-// 0x3ef17, a REFR whose XTEL lands by door 0x3ef07 in the barracks jail;
+// Every value below is read from the records: the faction's crime data and
+// its jail marker's teleport (Skyrim.esm: CrimeFactionFalkreath 0x28170's
+// JAIL 0x3ef17, a REFR whose XTEL lands by door 0x3ef07 in the barracks jail;
 // Whiterun 0x267ea's 0x267e5, the Rift 0x2816b's 0x3ef58 the same shape)
 std::optional<PartOne::JailOfFaction> PartOne::JailOf(uint32_t faction)
 {
@@ -10120,19 +10118,16 @@ std::optional<PartOne::JailOfFaction> PartOne::JailOf(uint32_t faction)
                       teleport.rotRadians[1] / kPi * 180.f,
                       teleport.rotRadians[2] / kPi * 180.f };
 
-  // the release's spot (thuum tracker #97, Eli's jail look, 2026-11-20:
-  // "ariadne was dropped under the castle" at the marker's own spot): the
-  // engine's release (40661, called by ServePrisonTime 40657 and by PayFine
-  // 40659's queued goToJail) reads the marker's door (Whiterun's
-  // WhiterunPrisonMarker 0x267e4, in the jail) and that door's own XTEL,
-  // which lands outside beside the marker (0x267e5: (27064.6, 599.0,
-  // -1753.4) in WhiterunWorld, 166 units above the marker's own spot), in
-  // the cell or world of the door that XTEL names; its move (40744) raises
-  // the point 10 units and clamps it to the land outdoors. The server sends
-  // the XTEL point itself, as the engine's release fills it, and the
-  // player's own move raises it (lab run 20261121-035453, tracker #97 note
-  // 4056: the engine's release and the server's settled at the same spot to
-  // the tenth of a unit); the marker's spot when the door teleports nowhere
+  // the release's spot: the engine's release (40661, called by
+  // ServePrisonTime 40657 and by PayFine 40659's queued goToJail) reads the
+  // marker's door (Whiterun's WhiterunPrisonMarker 0x267e4, in the jail) and
+  // that door's own XTEL, which lands outside beside the marker (0x267e5:
+  // (27064.6, 599.0, -1753.4) in WhiterunWorld, 166 units above the marker's
+  // own spot), in the cell or world of the door that XTEL names; its move
+  // (40744) raises the point 10 units and clamps it to the land outdoors.
+  // The server sends the XTEL point itself, as the engine's release fills
+  // it, and the player's own move raises it; the marker's spot when the door
+  // teleports nowhere
   jail.releaseWorldOrCell = jail.markerWorldOrCell;
   jail.releasePos = jail.markerPos;
   jail.releaseRot = jail.markerRot;
@@ -10152,9 +10147,8 @@ std::optional<PartOne::JailOfFaction> PartOne::JailOf(uint32_t faction)
     }
   }
 
-  // the jail outfit's items as the record lists them (BeggarOutfit 0x28b60,
-  // ClothesBeggarRobes 0x13105 and ClothesBeggarBoots 0x13106, which
-  // playtest 32's game wore, tracker #97 note 3702)
+  // the jail outfit's items as the record lists them (BeggarOutfit 0x28b60:
+  // ClothesBeggarRobes 0x13105 and ClothesBeggarBoots 0x13106)
   if (data.jailOutfit != 0) {
     const auto outfitLookup =
       browser.LookupById(factionLookup.ToGlobalId(data.jailOutfit));
@@ -10203,8 +10197,7 @@ PartOne::ArrestCheck PartOne::OnArrest(MpActor& prisoner, uint32_t faction,
   prisoner.SetJailTerm(term);
 
   // the engine's move into the jail is the prisoner's own game's, recorded
-  // as any move its game makes (ADR-079 decision 7, tracker #191), so no
-  // jump is permitted here
+  // as any move its game makes, so no jump is permitted here
   MpActor::ArrestWindow window;
   window.evidenceChest = jail->evidenceChest;
   window.belongingsChest = jail->belongingsChest;
@@ -10348,8 +10341,7 @@ bool PartOne::OnArrestStripPut(MpActor& prisoner,
     return false;
   }
   // the jail outfit is what the engine puts on after its strip, never part
-  // of it (the second review of cd890dbed: a minted robe put back and taken
-  // again would mint without end)
+  // of it (a minted robe put back and taken again would mint without end)
   if (std::find(window->outfit.begin(), window->outfit.end(), entry.baseId) !=
       window->outfit.end()) {
     spdlog::warn("[verb:jail] E_ARREST_STRIP_OUTFIT: {:x}'s strip puts {} of "
@@ -10358,9 +10350,8 @@ bool PartOne::OnArrestStripPut(MpActor& prisoner,
     return false;
   }
   // the engine's walk (16120) sorts the strip by the stack's owner,
-  // whichever chest the client's diff names (thuum docs/verbs/jail.md,
-  // Stolen goods): a stolen stack into the evidence chest, kept there at
-  // the release, the rest into the belongings
+  // whichever chest the client's diff names: a stolen stack into the
+  // evidence chest, kept there at the release, the rest into the belongings
   const bool stolen = entry.ownerId.has_value() && window->evidenceChest != 0;
   auto& form = worldState.LookupFormById(stolen ? window->evidenceChest
                                                 : window->belongingsChest);
@@ -10485,12 +10476,12 @@ bool PartOne::EndTermIfEscaped(MpActor& prisoner)
   }
   // a prisoner never seen in its jail did not escape it (a slow load, a
   // jump the engine never made): its term runs to its end, which places it
-  // at the marker (the second review of cd890dbed)
+  // at the release's spot
   if (!record.jail->arrived) {
     return false;
   }
-  // ADR-079.3: out of the jail before its end, by its own hand or a
-  // friend's. The term ends; its belongings stay in the chest for it to
+  // out of the jail before its end, by its own hand or a friend's: an
+  // escape. The term ends; its belongings stay in the chest for it to
   // fetch, and its bounty is what its game reports (the escape's own
   // included), never cleared here
   prisoner.SetJailTerm(std::nullopt);
@@ -10554,9 +10545,9 @@ bool PartOne::ReleaseIfServed(MpActor& prisoner)
   TellCrimeGold(prisoner, faction, 0, 0);
   // the engine's own prison state on the prisoner's game (its prison faction
   // and sentence, CommonLibSSE-NG PlayerCharacter.h:685-686) cleared by the
-  // engine's own Papyrus global, Game.ClearPrison (Game.psc; docs/NATIVES.md
-  // lists it as missing on the server's VM, so it runs in the game here), so
-  // its jail bed and its guards hold it a prisoner no longer
+  // engine's own Papyrus global, Game.ClearPrison (Game.psc; the server's VM
+  // has no implementation of it, so it runs in the game here), so its jail
+  // bed and its guards hold it a prisoner no longer
   const std::vector<std::optional<
     std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
     noArgs;

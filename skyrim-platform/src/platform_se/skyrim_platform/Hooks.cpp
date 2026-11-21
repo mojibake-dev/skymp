@@ -254,21 +254,19 @@ void InstallPlayerAddTargetHook()
 }
 
 /**
- * thuum tracker #97, ADR-079 (Eli, 2026-11-20: "yes real jail time";
- * docs/verbs/jail.md): the player's arrest is its own game's (ADR-063), and
- * its sentence runs on the shared clock (ADR-021). PlayerCharacter's own
- * virtuals, its primary vtable (VTABLE_PlayerCharacter[0], Address Library
- * 208040 on 1.6.1170, the table the arrest path's read named its slots in,
- * tracker #97 note 3921), slots from CommonLibSSE-NG include/RE/A/Actor.h:
- * SetCrimeGoldValue 0xB5, ModCrimeGoldValue 0xB6, RemoveCrimeGoldValue 0xB7
- * (:379-381), GoToPrison 0xB9 and ServePrisonTime 0xBA (:383-384), and
+ * The player's arrest is its own game's, and its sentence runs on the shared
+ * clock. PlayerCharacter's own virtuals, its primary vtable
+ * (VTABLE_PlayerCharacter[0], Address Library 208040 on 1.6.1170), slots
+ * from CommonLibSSE-NG include/RE/A/Actor.h: SetCrimeGoldValue 0xB5,
+ * ModCrimeGoldValue 0xB6, RemoveCrimeGoldValue 0xB7 (:379-381), GoToPrison
+ * 0xB9 and ServePrisonTime 0xBA (:383-384), and
  * include/RE/P/PlayerCharacter.h:538's ClearAllCrimeGold 0x12D.
  * - GoToPrison: the arrest reported at its entry, a real jail only, before
  *   the engine strips and moves the player (EventHandler::OnArrest);
- * - ServePrisonTime: never run (ADR-079.2: its time skip is one player's),
+ * - ServePrisonTime: never run (its time skip would be one player's alone),
  *   what was asked reported (EventHandler::OnServePrisonTime);
  * - the crime gold setters: each change reported after the engine's
- *   (EventHandler::OnCrimeGoldChanged). HYPOTHESIS until a trace: the
+ *   (EventHandler::OnCrimeGoldChanged). Assumed, not yet traced: the
  *   engine's witnessed crimes reach these virtuals rather than writing the
  *   player's crimeGoldMap themselves.
  */

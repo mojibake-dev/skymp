@@ -118,9 +118,9 @@ public:
   // it), hooked in Hooks.cpp
   static void OnSummonUpdate(RE::SummonCreatureEffect* effect);
   static void OnSummonFinish(RE::SummonCreatureEffect* effect);
-  // thuum tracker #97 (ADR-079): from PlayerCharacter's GoToPrison (its
-  // entry, a real jail only), ServePrisonTime (which does not run) and the
-  // crime gold setters (after the engine's), hooked in Hooks.cpp
+  // from PlayerCharacter's GoToPrison (its entry, a real jail only),
+  // ServePrisonTime (which does not run) and the crime gold setters (after
+  // the engine's), hooked in Hooks.cpp
   static void OnArrest(RE::PlayerCharacter* player, RE::TESFaction* faction);
   static void OnServePrisonTime(RE::PlayerCharacter* player);
   static void OnCrimeGoldChanged(const RE::TESFaction* faction);

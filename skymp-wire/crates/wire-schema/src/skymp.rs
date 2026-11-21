@@ -127,8 +127,8 @@ wire_struct! {
         /// Worn in the left hand.
         pub worn_left: Option<bool>,
         /// The stack's owner (ExtraOwnership, the engine's stolen mark) as
-        /// the player's own game holds it (SCHEMA_VERSION 62; thuum
-        /// docs/verbs/jail.md, Stolen goods): R2, recorded; never 0.
+        /// the player's own game holds it (SCHEMA_VERSION 65): R2, recorded;
+        /// never 0.
         pub owner_id: Option<u32>,
     }
 }
@@ -622,8 +622,8 @@ wire_struct! {
         /// Worn in the left hand.
         pub worn_left: Option<bool>,
         /// The stack's owner (ExtraOwnership, the engine's stolen mark) as
-        /// the player's own game holds it (SCHEMA_VERSION 62; thuum
-        /// docs/verbs/jail.md, Stolen goods): R2, recorded; never 0.
+        /// the player's own game holds it (SCHEMA_VERSION 65): R2, recorded;
+        /// never 0.
         pub owner_id: Option<u32>,
     }
 }
@@ -664,8 +664,8 @@ wire_struct! {
         /// Worn in the left hand.
         pub worn_left: Option<bool>,
         /// The stack's owner (ExtraOwnership, the engine's stolen mark) as
-        /// the player's own game holds it (SCHEMA_VERSION 62; thuum
-        /// docs/verbs/jail.md, Stolen goods): R2, recorded; never 0.
+        /// the player's own game holds it (SCHEMA_VERSION 65): R2, recorded;
+        /// never 0.
         pub owner_id: Option<u32>,
     }
 }
@@ -3352,12 +3352,9 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 84, RESERVED (thuum tracker #175's id contract): the id thuum
-    /// tracker #98's CraftReport takes on fork branch m4-pt56-98 (wire id 92,
-    /// SCHEMA_VERSION 61 to 63), kept dead here so PushActor, the next id,
-    /// sits past it and the two branches never claim one id. Never sent; the
-    /// validator refuses it. Whichever branch merges to canon second replaces
-    /// this placeholder (CraftReport) or renumbers (PushActor).
+    /// MsgType 84, reserved: CraftReport's id (wire id 92), held by this
+    /// placeholder where CraftReport is not built, so the ids after it keep
+    /// their numbers. Never sent; the validator refuses it.
     pub struct ReservedCraftReport {
         /// `"t": 84`.
         #[serde(default)]
@@ -3366,12 +3363,9 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 85, RESERVED (the id contract at SCHEMA_VERSION's note): the id
-    /// thuum tracker #175's PushActor takes on fork branch
-    /// m4-pt56-175-npc-shout (wire id 93, SCHEMA_VERSION 64), kept dead here
-    /// so jail's Arrest and CrimeGold sit past it. Never sent; the validator
-    /// refuses it. Whichever branch merges to canon after the other replaces
-    /// this placeholder (PushActor) or renumbers (Arrest and CrimeGold).
+    /// MsgType 85, reserved: PushActor's id (wire id 93), held by this
+    /// placeholder where PushActor is not built, so the ids after it keep
+    /// their numbers. Never sent; the validator refuses it.
     pub struct ReservedPushActor {
         /// `"t": 85`.
         #[serde(default)]
@@ -3380,16 +3374,15 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 86, thuum's (tracker #97, ADR-079, docs/verbs/jail.md): the
-    /// arrested player's own game reports its arrest as its engine starts it
-    /// (GoToPrison), before the strip's moves. Client to server, reliable.
-    /// The arrest is that game's (ADR-063): the server records the jail term,
-    /// its end on the shared clock (ADR-021), permits the one jump to the
-    /// faction's own jail landing (read from the faction's record, not from
-    /// this message) and takes the strip into the faction's two chests and
-    /// its jail outfit for the arrest's window. Safe to receive twice: a term
-    /// running keeps itself. Reason codes: `E_VAL_RANGE` (a faction of 0, a
-    /// sentence outside 1 to 7 days), `E_VAL_RATE`.
+    /// MsgType 86: the arrested player's own game reports its arrest as its
+    /// engine starts it (GoToPrison), before the strip's moves. Client to
+    /// server, reliable. The arrest is that game's own: the server records
+    /// the jail term and its end on the shared clock, and takes the strip
+    /// into the faction's two chests and its jail outfit for the arrest's
+    /// window (the jail read from the faction's record, not from this
+    /// message). Safe to receive twice: a term running keeps itself. Reason
+    /// codes: `E_VAL_RANGE` (a faction of 0, a sentence outside 1 to 7
+    /// days), `E_VAL_RATE`.
     pub struct Arrest {
         /// `"t": 86`.
         #[serde(default)]
@@ -3397,16 +3390,16 @@ wire_struct! {
         /// The crime faction that jailed the player; never 0.
         pub faction: u32,
         /// The sentence the engine set, in game days: the hold's bounty over
-        /// iCrimeDaysInPrisonMod, 1 to iCrimeMaxNumberofDaysinJail (7, the
-        /// exe's, tracker #97 note 3921).
+        /// iCrimeDaysInPrisonMod, 1 to iCrimeMaxNumberofDaysinJail (the
+        /// exe's 7).
         pub days: u32,
     }
 }
 
 wire_struct! {
-    /// MsgType 87, thuum's (tracker #97, ADR-079, D-G6 A): one hold's bounty
-    /// as the player's own game holds it (its engine's crime gold for the
-    /// faction, violent and non-violent, whole gold), sent when it changes.
+    /// MsgType 87: one hold's bounty as the player's own game holds it (its
+    /// engine's crime gold for the faction, violent and non-violent, whole
+    /// gold), sent when it changes.
     /// Client to server, reliable. The record is the server's (R0), given
     /// back at a login; a zero bounty clears the hold's. Safe to receive
     /// twice: the same values change nothing. Reason codes: `E_VAL_RANGE` (a

@@ -6,16 +6,15 @@
 #include <tuple>
 #include <vector>
 
-// thuum tracker #97, ADR-079 (Eli, 2026-11-20: "yes real jail time"): a
-// player's standing with the law, kept per player as the engine keeps it.
+// A player's standing with the law, kept per player as the engine keeps it.
 // The engine holds crime gold per crime faction on the player itself, a
 // violent and a non-violent sum (CommonLibSSE-NG
 // include/RE/P/PlayerCharacter.h:169-178, the crimeGoldMap), so the bounty is
-// per player and per hold already; this is its server record (D-G6 A, R0),
-// given back at login. The jail term is the sentence the player's own game
-// set at its arrest (ADR-063), its end a time on the shared clock (ADR-021):
-// never skipped for one player. Stored as "crimeRecord"; a record without it
-// reads as none (rule 6's migration).
+// per player and per hold already; this is its server record (R0), given
+// back at login. The jail term is the sentence the player's own game set at
+// its arrest, its end a time on the shared clock: never skipped for one
+// player. Stored as "crimeRecord"; a record without it reads as none, so
+// older records load unchanged.
 
 // One hold's bounty on the player
 struct CrimeGold

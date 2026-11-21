@@ -293,9 +293,9 @@ public:
   virtual void OnSummon(const RawMessageData& rawMsgData,
                         const SummonMessage& msg);
 
-  // thuum tracker #97, ADR-079 (docs/verbs/jail.md): the arrest a player's
-  // own game started, recorded as its jail term (PartOne::OnArrest), and one
-  // hold's bounty as that game holds it (PartOne::OnCrimeGold)
+  // The arrest a player's own game started, recorded as its jail term
+  // (PartOne::OnArrest), and one hold's bounty as that game holds it
+  // (PartOne::OnCrimeGold)
   virtual void OnArrest(const RawMessageData& rawMsgData,
                         const ArrestMessage& msg);
   virtual void OnCrimeGold(const RawMessageData& rawMsgData,

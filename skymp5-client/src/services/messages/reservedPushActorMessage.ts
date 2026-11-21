@@ -1,8 +1,7 @@
 import { MsgType } from "../../messages";
 
-// The wire's id contract (wire-schema SCHEMA_VERSION's note): MsgType 85 is
-// thuum tracker #175's PushActor on fork branch m4-pt56-175-npc-shout, a dead
-// placeholder here (ReservedPushActorMessage.h's pair). Never sent.
+// MsgType 85, reserved for PushActor and never sent; the pair of
+// ReservedPushActorMessage.h.
 export interface ReservedPushActorMessage {
     t: MsgType.ReservedPushActor;
 }

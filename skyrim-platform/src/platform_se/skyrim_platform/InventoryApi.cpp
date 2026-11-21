@@ -69,8 +69,7 @@ Napi::Value ToJsValue(Napi::Env env, RE::ExtraPoison& extra)
   return res;
 }
 
-// thuum docs/verbs/jail.md (Stolen goods): the stack's owner, the engine's
-// stolen mark, as its form id (0 for none)
+// the stack's owner, the engine's stolen mark, as its form id (0 for none)
 Napi::Value ToJsValue(Napi::Env env, RE::ExtraOwnership& extra)
 {
   auto res = Napi::Object::New(env);

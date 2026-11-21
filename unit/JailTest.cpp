@@ -11,17 +11,15 @@
 
 PartOne& GetPartOne();
 
-// thuum tracker #97, ADR-079 (Eli, 2026-11-20: "yes real jail time"): a
-// player's bounty per hold and its jail term, the server's record; an
+// A player's bounty per hold and its jail term, the server's record; an
 // arrest the arrested player's own game reports. Falkreath's records
-// (Skyrim.esm through lab/esm.py on sky-srv, 2026-11-20): the crime faction
-// CrimeFactionFalkreath 0x28170 names its jail marker 0x3ef17 (JAIL), a REFR
-// in Tamriel 0x3c whose XTEL lands by door 0x3ef07, its stolen-goods chest
-// 0xef436 (STOL), its prisoner-belongings chest 0xef437 (PLCN) and the jail
-// outfit BeggarOutfit 0x28b60 (JOUT). Playtest 32's arrest there (tracker #97
-// note 3702): the chest stands in FalkreathBarracksJail 0xef324, the cell the
-// jail's teleport loaded, and the outfit put on was ClothesBeggarRobes
-// 0x13105 and ClothesBeggarBoots 0x13106.
+// (Skyrim.esm): the crime faction CrimeFactionFalkreath 0x28170 names its
+// jail marker 0x3ef17 (JAIL), a REFR in Tamriel 0x3c whose XTEL lands by door
+// 0x3ef07, its stolen-goods chest 0xef436 (STOL), its prisoner-belongings
+// chest 0xef437 (PLCN) and the jail outfit BeggarOutfit 0x28b60 (JOUT). The
+// chest stands in FalkreathBarracksJail 0xef324, the cell the jail's
+// teleport loads, and the outfit's items are ClothesBeggarRobes 0x13105 and
+// ClothesBeggarBoots 0x13106.
 namespace {
 constexpr uint32_t kPrisoner = 0xff000f97;
 constexpr uint32_t kFalkreath = 0x28170;
@@ -102,8 +100,8 @@ TEST_CASE("The change form keeps a player's bounty and jail term, and older "
   REQUIRE(MpChangeForm::JsonToChangeForm(element).crimeRecord ==
           changeForm.crimeRecord);
 
-  // rule 6's migration: a record from before the key reads as none, and a
-  // record with none writes no key
+  // the migration: a record from before the key reads as none, and a record
+  // with none writes no key
   nlohmann::json older = MpChangeForm::ToJson(MpChangeForm());
   REQUIRE(!older.contains("crimeRecord"));
   const std::string olderDump = older.dump();
@@ -142,9 +140,9 @@ TEST_CASE("A hold's jail is read from its crime faction's records",
   REQUIRE(jail->landingInterior);
   // the release's spot: the far side of the jail's door, door 0x3ef07's own
   // XTEL landing beside the marker in Tamriel at (-29493.3, -87831.3,
-  // -2979.68) (lab/esm.py on sky-srv, 2026-11-20), the point itself as the
-  // engine's release fills it (lab run 20261121-035453: the player's own
-  // move raises it), not the marker's own spot (-29478.1, -87742.2, -2961.7)
+  // -2979.68), the point itself as the engine's release fills it (the
+  // player's own move raises it), not the marker's own spot (-29478.1,
+  // -87742.2, -2961.7)
   REQUIRE(jail->releaseWorldOrCell == kTamriel);
   REQUIRE(
     (jail->releasePos - NiPoint3{ -29493.3f, -87831.3f, -2979.68f }).Length() <
@@ -236,8 +234,8 @@ TEST_CASE("An arrest records the term on the shared clock and takes its "
   PartOne& p = GetPartOne();
   PinnedClock clock(p, 10.f);
   auto& prisoner = Arrive(p);
-  // the player's base may bring daggers of its own (pipeline 6414: one more
-  // than added), so the counts are read against the start
+  // the player's base may bring daggers of its own, so the counts are read
+  // against the start
   prisoner.AddItem(kDagger, 3);
   const uint32_t held = prisoner.GetInventory().GetItemCount(kDagger);
   REQUIRE(held >= 3);
@@ -273,7 +271,7 @@ TEST_CASE("An arrest records the term on the shared clock and takes its "
   REQUIRE(prisoner.GetCrimeRecord().jail->days == 7);
 
   // the engine's move into the jail is the prisoner's own game's, recorded
-  // as any (ADR-079 decision 7): the arrest permits no jump of its own
+  // as any: the arrest permits no jump of its own
   REQUIRE(p.CheckJump(kPrisoner, kJailCell, 0.f, 0.f) ==
           PartOne::JumpCheck::NoPermit);
 
@@ -298,8 +296,7 @@ TEST_CASE("An arrest records the term on the shared clock and takes its "
   Take(p, kDagger, 1, kBelongings);
   REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held - 2);
   // the outfit is never part of the strip, and is created once a window:
-  // put back, or disposed of, it is not made again (the second review of
-  // cd890dbed, the mint loop)
+  // put back, or disposed of, it is not made again (no mint loop)
   Put(p, kRobes, 1, kStolenGoods);
   REQUIRE(prisoner.GetInventory().GetItemCount(kRobes) == 1);
   prisoner.RemoveItem(kRobes, 1, nullptr);
@@ -367,12 +364,10 @@ TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
   Leave(p);
 }
 
-// thuum tracker #97 (Eli's jail look, 2026-11-20): a prisoner whose sentence
-// the shared clock ended while it was away is released at its first movement
-// report after the login, and that report, sent from the jail's cell, must
-// not put the record back there: rotfern was released into Whiterun and
-// sent back into the jail's cell, the login pass's release run before the
-// report's own write overwrote it
+// A prisoner whose sentence ended while it was away is released at its first
+// movement report after the login. That report comes from the jail's cell, so
+// the release runs after the report's own position write, which would
+// otherwise put the record back in the cell.
 TEST_CASE("A sentence that ended while its prisoner was away releases it at "
           "its first report after the login, and the report from the cell "
           "leaves the record at the release's spot",
@@ -453,10 +448,9 @@ TEST_CASE("A prisoner out of its jail before its end escaped: the term ends, "
   Leave(p);
 }
 
-// thuum docs/verbs/jail.md (Stolen goods; Eli's jail look, 2026-11-20: "no
-// stolen goods were removed"): a stack's owner is the engine's stolen mark,
-// recorded from the player's own game. Its owner here is Falkreath's crime
-// faction 0x28170 (an owner is an NPC or a faction)
+// A stack's owner is the engine's stolen mark, recorded from the player's own
+// game. Its owner here is Falkreath's crime faction 0x28170 (an owner is an
+// NPC or a faction)
 TEST_CASE("A stack's owner keeps it a stack apart and survives the record's "
           "JSON, and an older record reads none",
           "[Jail]")
@@ -475,7 +469,7 @@ TEST_CASE("A stack's owner keeps it a stack apart and survives the record's "
   plain.AddItems({ Inventory::Entry(kDagger, 1) });
   REQUIRE(!plain.ToJson()["entries"][0].contains("ownerId"));
 
-  // rule 6's migration: a record from before the key reads as none
+  // the migration: a record from before the key reads as none
   const nlohmann::json olderEntry{ { "baseId", kDagger }, { "count", 1 } };
   const nlohmann::json older{ { "entries",
                                 nlohmann::json::array({ olderEntry }) } };
@@ -507,7 +501,7 @@ TEST_CASE("A reported stolen stack moves the record's unmarked copy when the "
   REQUIRE(inv.RecordedCopyOf(Inventory::Entry(kDagger, 1)) ==
           Inventory::Entry(kDagger, 1));
 
-  // more than either holds: the report, whose removal throws as before
+  // more than either holds: the report, whose removal throws
   Inventory::Entry many = stolen;
   many.count = 5;
   REQUIRE(inv.RecordedCopyOf(many) == many);

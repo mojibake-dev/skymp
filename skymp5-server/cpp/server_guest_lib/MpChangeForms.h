@@ -255,8 +255,8 @@ public:
   // none
   std::optional<ShoutRecord> shoutRecord;
 
-  // The player's bounty per hold and the jail term it serves (thuum tracker
-  // #97, ADR-079; CrimeRecord.h); absent in older records, read as none
+  // The player's bounty per hold and the jail term it serves
+  // (CrimeRecord.h); absent in older records, read as none
   std::optional<CrimeRecord> crimeRecord;
 
   // The global variables the player's game wrote for its player (thuum

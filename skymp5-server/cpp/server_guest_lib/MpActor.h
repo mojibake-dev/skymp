@@ -333,8 +333,8 @@ public:
   };
   ShoutRecord GetShoutRecord() const;
 
-  // thuum tracker #97, ADR-079: the player's bounty per hold and its jail
-  // term, the server's record (R0, CrimeRecord.h)
+  // the player's bounty per hold and its jail term, the server's record (R0,
+  // CrimeRecord.h)
   CrimeRecord GetCrimeRecord() const;
   // One hold's bounty as the player's own game holds it; false when the
   // record held it already
@@ -346,12 +346,12 @@ public:
   // faction's prisoner-belongings chest; false without a term
   bool AddJailBelonging(const Inventory::Entry& entry);
 
-  // The moments of an arrest the player's own game reported (ADR-079,
-  // PartOne::OnArrest): until the window closes, the moves its game reports
+  // The moments of an arrest the player's own game reported
+  // (PartOne::OnArrest): until the window closes, the moves its game reports
   // into or out of the faction's two chests are its engine's strip and jail
-  // outfit (PartOne::OnArrestStripPut, OnArrestStripTake), its own
-  // (ADR-063), never refused back into its game. Not kept in the record: a
-  // relaunch mid-arrest has no strip left to report
+  // outfit (PartOne::OnArrestStripPut, OnArrestStripTake), its own, never
+  // refused back into its game. Not kept in the record: a relaunch
+  // mid-arrest has no strip left to report
   struct ArrestWindow
   {
     uint32_t evidenceChest = 0;   // the faction's stolen-goods chest (STOL)

@@ -74,9 +74,8 @@ struct MpActor::Impl
   bool placedDead = false;
   // thuum tracker #84: a summon (PartOne::OnSummonStart)
   bool isSummon = false;
-  // thuum tracker #97 (ADR-079): the arrest its own game reported, while
-  // its game's report of the strip is taken as the server's own
-  // (MpActor::OpenArrestWindow)
+  // the arrest its own game reported, while its game's report of the strip
+  // is taken as the server's own (MpActor::OpenArrestWindow)
   std::optional<MpActor::ArrestWindow> arrestWindow;
   // thuum tracker #143: the bases the server's own removal took from the
   // record that it has not held since (MpActor::TellRemovalByServer)

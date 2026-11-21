@@ -722,7 +722,7 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     };
   }
 
-  // thuum tracker #97, ADR-079; absent in older records, read as none
+  // the crime record (CrimeRecord.h); absent in older records, read as none
   if (changeForm.crimeRecord.has_value() && !changeForm.crimeRecord->Empty()) {
     auto gold = nlohmann::json::array();
     for (const auto& g : changeForm.crimeRecord->crimeGold) {
@@ -1616,8 +1616,8 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     res.shoutRecord = record;
   }
 
-  // thuum tracker #97, ADR-079: read only where present (rule 6's migration:
-  // an older record reads as none)
+  // the crime record, read only where present: an older record reads as
+  // none
   if (element.at_pointer(crimeRecord.GetData()).error() ==
       simdjson::error_code::SUCCESS) {
     ReadEx(element, crimeRecord, &jTmp);

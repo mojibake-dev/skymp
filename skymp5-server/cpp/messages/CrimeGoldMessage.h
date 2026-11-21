@@ -4,10 +4,9 @@
 #include <cstdint>
 #include <type_traits>
 
-// thuum tracker #97, ADR-079, D-G6 A (docs/verbs/jail.md): one hold's bounty
-// as the player's own game holds it, sent when it changes. Client to server,
-// reliable. The record is the server's (R0), given back at a login
-// (PartOne::OnCrimeGold). The contract is skymp-wire's (wire-schema
+// One hold's bounty as the player's own game holds it, sent when it changes.
+// Client to server, reliable. The record is the server's (R0), given back at
+// a login (PartOne::OnCrimeGold). The contract is skymp-wire's (wire-schema
 // skymp.rs, CrimeGold, MsgType 87, wire id 95).
 struct CrimeGoldMessage : public MessageBase<CrimeGoldMessage>
 {

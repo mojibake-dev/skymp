@@ -284,27 +284,23 @@ use bounded::{String, Vec};
 /// cell's host with the presser's recorded inventory, which the host's
 /// acting scope answers GetItemCount from. A new trailing field, so the
 /// number moves for D-PH1 A's reason.
-/// 61 to 63: thuum tracker #98's on fork branch m4-pt56-98 (CraftReport at
-/// MsgType 84, wire id 92; created forms by their definition; DropItem's and
-/// SpellCast's extras), not on this branch: the id contract below keeps them
-/// apart.
-/// 64: thuum tracker #175's PushActor on fork branch m4-pt56-175-npc-shout
-/// (MsgType 85, wire id 93), not on this branch.
-/// 65: Arrest and CrimeGold (MsgType 86 and 87, wire ids 94 and 95; thuum
-/// tracker #97, ADR-079, docs/verbs/jail.md): an arrest the arrested
-/// player's own game reports, and one hold's bounty as that game holds it,
-/// the term, its end on the shared clock and the bounty per hold the
-/// server's record; and Entry's, PutItem's and TakeItem's optional
-/// `owner_id` (Stolen goods; Eli's jail look, 2026-11-20: "no stolen goods
-/// were removed"), a stack's owner, the engine's stolen mark, recorded from
-/// the player's own game so the engine's confiscation into a hold's
+/// 61 to 63: held for CraftReport (MsgType 84, wire id 92), created forms
+/// by their definition, and DropItem's and SpellCast's extras.
+/// 64: held for PushActor (MsgType 85, wire id 93).
+/// 65: Arrest and CrimeGold (MsgType 86 and 87, wire ids 94 and 95): an
+/// arrest the arrested player's own game reports, and one hold's bounty as
+/// that game holds it, the term, its end on the shared clock and the bounty
+/// per hold the server's record; and Entry's, PutItem's and TakeItem's
+/// optional `owner_id`, a stack's owner, the engine's stolen mark, recorded
+/// from the player's own game so the engine's confiscation into a hold's
 /// evidence chest moves it on the record too. MsgTypes 84 and 85 (wire ids
-/// 92 and 93) are reserved here for #98's CraftReport and #175's PushActor
-/// (skymp::ReservedCraftReport and skymp::ReservedPushActor, never sent).
-/// The id contract: m4-pt56-98 owns 84 / 92 and 61 to 63,
-/// m4-pt56-175-npc-shout 85 / 93 and 64, m4-97-jail 86 / 94, 87 / 95 and 65;
-/// whichever merges to canon after another replaces that one's placeholder
-/// or renumbers (magna-ge, 2026-11-20).
+/// 92 and 93) are held here by skymp::ReservedCraftReport and
+/// skymp::ReservedPushActor, never sent.
+/// Ids held for messages that are not on every branch yet: MsgType 84 (wire
+/// id 92) CraftReport, 85 (93) PushActor, 86 (94) Arrest and 87 (95)
+/// CrimeGold; schema versions 61 to 63 for CraftReport's shapes, 64 for
+/// PushActor and 65 for Arrest and CrimeGold. A branch without one of these
+/// messages holds its id with a never-sent Reserved placeholder.
 pub const SCHEMA_VERSION: u16 = 65;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
@@ -876,18 +872,15 @@ pub enum Message {
     /// 91, MsgType 83 (thuum tracker #84, docs/verbs/summon.md). See
     /// [`skymp::Summon`].
     Summon(skymp::Summon),
-    /// 92, MsgType 84, reserved for thuum tracker #98's CraftReport (fork
-    /// m4-pt56-98) and never sent. See [`skymp::ReservedCraftReport`].
+    /// 92, MsgType 84, reserved for CraftReport and never sent. See
+    /// [`skymp::ReservedCraftReport`].
     ReservedCraftReport(skymp::ReservedCraftReport),
-    /// 93, MsgType 85, reserved for thuum tracker #175's PushActor (fork
-    /// m4-pt56-175-npc-shout) and never sent. See
+    /// 93, MsgType 85, reserved for PushActor and never sent. See
     /// [`skymp::ReservedPushActor`].
     ReservedPushActor(skymp::ReservedPushActor),
-    /// 94, MsgType 86 (thuum tracker #97, docs/verbs/jail.md). See
-    /// [`skymp::Arrest`].
+    /// 94, MsgType 86. See [`skymp::Arrest`].
     Arrest(skymp::Arrest),
-    /// 95, MsgType 87 (thuum tracker #97, docs/verbs/jail.md). See
-    /// [`skymp::CrimeGold`].
+    /// 95, MsgType 87. See [`skymp::CrimeGold`].
     CrimeGold(skymp::CrimeGold),
 }
 
@@ -1056,15 +1049,13 @@ const TABLE: [Row; 96] = [
     // the two triple floats, the cell, the time and the flag (thuum
     // tracker #84; 55 bytes at the longest, pinned by the size test)
     row("Summon", 83, 64, C2S),
-    // reserved for thuum tracker #98's CraftReport (the id contract at
-    // SCHEMA_VERSION's note); never sent, the validator refuses it
+    // reserved for CraftReport; never sent, the validator refuses it
     row("ReservedCraftReport", 84, 16, C2S),
-    // reserved for thuum tracker #175's PushActor (the id contract at
-    // SCHEMA_VERSION's note); never sent, the validator refuses it
+    // reserved for PushActor; never sent, the validator refuses it
     row("ReservedPushActor", 85, 16, C2S),
-    // a faction and a sentence at five-byte varints (thuum tracker #97)
+    // a faction and a sentence at five-byte varints
     row("Arrest", 86, 16, C2S),
-    // a faction and two sums at five-byte varints (thuum tracker #97)
+    // a faction and two sums at five-byte varints
     row("CrimeGold", 87, 32, C2S),
 ];
 
@@ -1325,9 +1316,8 @@ mod tests {
         assert_eq!(name_of_msg_type(82), Some("OwnHeadParts"));
         // tracker #84's one, after 82: wire id 91
         assert_eq!(name_of_msg_type(83), Some("Summon"));
-        // the id contract: 84 and 85 reserved for tracker #98's CraftReport
-        // and tracker #175's PushActor, then tracker #97's two: wire ids 94
-        // and 95
+        // 84 and 85 reserved for CraftReport and PushActor, then Arrest and
+        // CrimeGold: wire ids 94 and 95
         assert_eq!(name_of_msg_type(84), Some("ReservedCraftReport"));
         assert_eq!(name_of_msg_type(85), Some("ReservedPushActor"));
         assert_eq!(name_of_msg_type(86), Some("Arrest"));
@@ -1727,7 +1717,7 @@ mod tests {
             Message::PerkPick(skymp::PerkPick { perk: u32::MAX, ..Default::default() }),
             // a word wall report (thuum docs/verbs/word-wall.md)
             Message::WordWall(skymp::WordWall { wall: u32::MAX, ..Default::default() }),
-            // an arrest and a bounty at their longest (thuum tracker #97)
+            // an arrest and a bounty at their longest
             Message::Arrest(skymp::Arrest { faction: u32::MAX, days: u32::MAX, ..Default::default() }),
             Message::CrimeGold(skymp::CrimeGold { faction: u32::MAX, violent: u32::MAX, non_violent: u32::MAX, ..Default::default() }),
             // a linked activation relayed (thuum docs/verbs/traps.md), and

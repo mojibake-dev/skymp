@@ -1,8 +1,7 @@
 import { MsgType } from "../../messages";
 
-// The wire's id contract (wire-schema SCHEMA_VERSION's note): MsgType 84 is
-// thuum tracker #98's CraftReport on fork branch m4-pt56-98, a dead
-// placeholder here (ReservedCraftReportMessage.h's pair). Never sent.
+// MsgType 84, reserved for CraftReport and never sent; the pair of
+// ReservedCraftReportMessage.h.
 export interface ReservedCraftReportMessage {
     t: MsgType.ReservedCraftReport;
 }

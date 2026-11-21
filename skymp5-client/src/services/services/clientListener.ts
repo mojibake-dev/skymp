@@ -653,12 +653,12 @@ declare module "skyrimPlatform" {
     function on(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle;
     function once(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle;
 
-    // thuum tracker #97 (ADR-079, docs/verbs/jail.md): the fork's Skyrim
-    // Platform hooks PlayerCharacter's own GoToPrison, ServePrisonTime and
-    // crime gold setters (Hooks.cpp InstallPlayerPrisonHooks) and raises these
-    // on update tasks; the published 2.8.0 typings name none of them. They
-    // mirror the fork's Definitions.txt and the generated skyrimPlatform.ts
-    // (ArrestEvent, ServePrisonTimeEvent, CrimeGoldEvent)
+    // The fork's Skyrim Platform hooks PlayerCharacter's own GoToPrison,
+    // ServePrisonTime and crime gold setters (Hooks.cpp
+    // InstallPlayerPrisonHooks) and raises these on update tasks; the
+    // published 2.8.0 typings name none of them. They mirror the fork's
+    // Definitions.txt and the generated skyrimPlatform.ts (ArrestEvent,
+    // ServePrisonTimeEvent, CrimeGoldEvent)
     interface ArrestEvent {
         faction: Faction;
         factionId: number;

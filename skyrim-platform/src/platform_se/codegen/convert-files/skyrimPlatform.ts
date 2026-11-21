@@ -269,20 +269,20 @@ export interface SummonEndEvent {
   summonId: number
 }
 
-// thuum tracker #97 (ADR-079): this game's player arrested, raised on an update task from PlayerCharacter::GoToPrison's entry (a real jail only), before the engine strips and moves the player, so it reaches scripts ahead of the strip's containerChanged events; days is the sentence by the engine's own rule (the faction's crime gold over the GMST iCrimeDaysInPrisonMod, at least 1, at most iCrimeMaxNumberofDaysinJail)
+// this game's player arrested, raised on an update task from PlayerCharacter::GoToPrison's entry (a real jail only), before the engine strips and moves the player, so it reaches scripts ahead of the strip's containerChanged events; days is the sentence by the engine's own rule (the faction's crime gold over the GMST iCrimeDaysInPrisonMod, at least 1, at most iCrimeMaxNumberofDaysinJail)
 export interface ArrestEvent {
   faction: Faction
   factionId: number
   days: number
 }
 
-// thuum tracker #97 (ADR-079.2): the player asked the jail's bed to serve the sentence; the engine's ServePrisonTime does not run (its time skip is one player's, which the shared clock never takes), so the sentence is waited out
+// the player asked the jail's bed to serve the sentence; the engine's ServePrisonTime does not run (its time skip is one player's, which the shared clock never takes), so the sentence is waited out
 export interface ServePrisonTimeEvent {
   factionId: number
   days: number
 }
 
-// thuum tracker #97 (D-G6 A): this game's player's crime gold for a faction changed (PlayerCharacter's SetCrimeGoldValue, ModCrimeGoldValue, RemoveCrimeGoldValue or ClearAllCrimeGold ran), raised on an update task after the engine's change; read the faction's crime gold to know it
+// this game's player's crime gold for a faction changed (PlayerCharacter's SetCrimeGoldValue, ModCrimeGoldValue, RemoveCrimeGoldValue or ClearAllCrimeGold ran), raised on an update task after the engine's change; read the faction's crime gold to know it
 export interface CrimeGoldEvent {
   faction: Faction
   factionId: number

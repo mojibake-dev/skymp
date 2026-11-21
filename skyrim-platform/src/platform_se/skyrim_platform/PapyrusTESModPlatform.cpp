@@ -643,10 +643,10 @@ void TESModPlatform::PushWornState(IVM* vm, StackID stackId,
   g_wornLeft = wornLeft;
 }
 
-// thuum docs/verbs/jail.md (Stolen goods; tracker #97): the owner the next
-// AddItemEx marks its stack with (an ExtraOwnership, the engine's stolen
-// mark: CommonLibSSE-NG include/RE/E/ExtraOwnership.h), PushWornState's
-// shape; that call takes it and clears it, whether it adds or returns early
+// the owner the next AddItemEx marks its stack with (an ExtraOwnership, the
+// engine's stolen mark: CommonLibSSE-NG include/RE/E/ExtraOwnership.h),
+// PushWornState's shape; that call takes it and clears it, whether it adds or
+// returns early
 namespace {
 thread_local RE::TESForm* g_owner = nullptr;
 }

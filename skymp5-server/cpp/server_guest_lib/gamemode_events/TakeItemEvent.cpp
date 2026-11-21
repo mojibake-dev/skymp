@@ -33,9 +33,9 @@ std::string TakeItemEvent::GetArgumentsJsonArray() const
 
 void TakeItemEvent::OnFireSuccess(WorldState*)
 {
-  // thuum docs/verbs/jail.md (Stolen goods): a take whose copy the taker's
-  // engine marked stolen moves the container's unowned stack, and the
-  // taker's copy carries the owner its game reported (R2, recorded)
+  // a take whose copy the taker's engine marked stolen moves the container's
+  // unowned stack, and the taker's copy carries the owner its game reported
+  // (R2, recorded)
   const auto recorded = sourceRefr->GetInventory().RecordedCopyOf(entry);
   if (recorded.ownerId == entry.ownerId) {
     sourceRefr->RemoveItems({ entry }, actor);

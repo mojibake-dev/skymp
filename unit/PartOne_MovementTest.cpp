@@ -136,11 +136,9 @@ TEST_CASE("UpdateMovement", "[PartOne]")
 
 TEST_CASE("A movement the server rejects reaches no neighbour", "[PartOne]")
 {
-  // thuum docs/verbs/validation.md, Movement: validate, then relay. Since
-  // ADR-079 decision 7 (tracker #191) a player's own move is never sent
-  // back; what the server still drops is a report sent before a teleport it
-  // made itself (docs/verbs/movement-speed.md, arrivals), with nothing sent
-  // back and nothing relayed
+  // Movement: validate, then relay. A player's own move is never sent back;
+  // what the server still drops is a report sent before a teleport it made
+  // itself (its arrival), with nothing sent back and nothing relayed
   PartOne partOne;
 
   for (int i = 0; i < 2; ++i) {
@@ -179,12 +177,11 @@ TEST_CASE("A movement the server rejects reaches no neighbour", "[PartOne]")
   REQUIRE(mover.GetPos() == NiPoint3{ 800.f, -1.f, 1.f });
 }
 
-// thuum ADR-079 decision 7 (Eli, 2026-11-20, tracker #191): the player's own
-// game moving it, by a jump in its worldspace (fast travel, a carriage) or
-// into another cell (a jail, a Black Book's Apocrypha, a script's MoveTo),
-// is the record's: the sender is never sent back, the move reaches its
-// neighbour, placed there rather than glided (the cell change through the
-// same path, with the master files loaded: ConsoleCommandTest)
+// The player's own game moving it, by a jump in its worldspace (fast travel,
+// a carriage) or into another cell (a jail, a Black Book's Apocrypha, a
+// script's MoveTo), is the record's: the sender is never sent back, the move
+// reaches its neighbour, placed there rather than glided (the cell change
+// through the same path, with the master files loaded: ConsoleCommandTest)
 TEST_CASE("A player's own step past its budget and its jump are recorded "
           "and relayed, never sent back",
           "[PartOne]")

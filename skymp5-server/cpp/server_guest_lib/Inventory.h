@@ -59,12 +59,11 @@ public:
     std::optional<uint32_t> poisonCount;
     std::optional<bool> worn_;
     std::optional<bool> wornLeft;
-    // thuum docs/verbs/jail.md (Stolen goods; tracker #97): the stack's
-    // owner as the player's own game holds it (ExtraOwnership's form, the
-    // engine's stolen mark), R2, recorded from that game's reports and never
-    // computed here. A stack with one is a stack apart (EqualExceptCount),
-    // as ExtraOwnership::IsNotEqual keeps it apart in the engine. An older
-    // record has none
+    // the stack's owner as the player's own game holds it (ExtraOwnership's
+    // form, the engine's stolen mark), R2, recorded from that game's reports
+    // and never computed here. A stack with one is a stack apart
+    // (EqualExceptCount), as ExtraOwnership::IsNotEqual keeps it apart in the
+    // engine. An older record has none
     std::optional<uint32_t> ownerId;
   };
 
@@ -116,13 +115,12 @@ public:
   Inventory& AddPlainItems(const std::vector<Entry>& entries);
   Inventory& RemoveItems(const std::vector<Entry>& entries);
   bool HasItem(uint32_t baseId) const;
-  // thuum docs/verbs/jail.md (Stolen goods): the record's own stack that a
-  // move its owner's game reported takes. The reported stack, when the
-  // record holds that many of it; else, for a report whose stack carries an
-  // owner the record never heard (a pickup's, a take from a shop's chest:
-  // the engine marks the taker's copy), the same stack with no owner, when
-  // the record holds that many of that; else the report, whose removal
-  // throws as before
+  // the record's own stack that a move its owner's game reported takes. The
+  // reported stack, when the record holds that many of it; else, for a
+  // report whose stack carries an owner the record never heard (a pickup's,
+  // a take from a shop's chest: the engine marks the taker's copy), the same
+  // stack with no owner, when the record holds that many of that; else the
+  // report, whose removal throws
   Entry RecordedCopyOf(const Entry& reported) const;
   uint32_t GetItemCount(uint32_t baseId) const;
   uint32_t GetTotalItemCount() const;

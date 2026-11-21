@@ -511,9 +511,8 @@ TEST_CASE("COC sends an admin's game to a cell the server knows and takes "
 
   // a report from the loading screen (no cell) is dropped, the player not
   // sent back; one far from Riverwood, in a cell Tamriel has, is the
-  // player's own game's move and recorded while the permit waits (ADR-079
-  // decision 7, tracker #191; it was dropped before); then the landing is
-  // taken
+  // player's own game's move and recorded while the permit waits; then the
+  // landing is taken
   p.Messages().clear();
   Report(p, ac, 0, { 0, 0, 0 });
   REQUIRE(ac.GetPos() == NiPoint3{ 0, 0, 0 });
@@ -527,8 +526,7 @@ TEST_CASE("COC sends an admin's game to a cell the server knows and takes "
   REQUIRE(sentBack() == 0);
 
   // that was the one jump the server permitted; the next, its permit spent,
-  // is the player's own game's move and recorded, never sent back (ADR-079
-  // decision 7, tracker #191; upstream sent it back)
+  // is the player's own game's move and recorded, never sent back
   Report(p, ac, 0x3c, { 0, 0, 0 });
   REQUIRE(sentBack() == 0);
   REQUIRE(ac.GetPos() == NiPoint3{ 0, 0, 0 });
@@ -745,11 +743,10 @@ TEST_CASE("mp racemenu opens the caller's own race menu by the server's word",
   DoDisconnect(p, 0);
 }
 
-// thuum ADR-079 decision 7 (Eli, 2026-11-20, tracker #191): a player's own
-// game moving it into an interior cell with no permit (a jail, a Black
-// Book's Apocrypha, a script's MoveTo) is recorded and never sent back; a
-// loading screen's report (no cell) is dropped, nothing sent back; and the
-// way out to Tamriel is recorded the same way
+// A player's own game moving it into an interior cell with no permit (a jail,
+// a Black Book's Apocrypha, a script's MoveTo) is recorded and never sent
+// back; a loading screen's report (no cell) is dropped, nothing sent back;
+// and the way out to Tamriel is recorded the same way
 TEST_CASE("A player's own move into an interior cell and out again is "
           "recorded, never sent back, and a report with no cell is dropped",
           "[ConsoleCommand][espm]")

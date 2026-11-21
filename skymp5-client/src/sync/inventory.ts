@@ -38,8 +38,8 @@ export interface Extra {
   poisonCount?: number;
   worn?: boolean;
   wornLeft?: boolean;
-  // thuum docs/verbs/jail.md (Stolen goods): the stack's owner, the engine's
-  // stolen mark (ExtraOwnership), as this game holds it
+  // the stack's owner, the engine's stolen mark (ExtraOwnership), as this
+  // game holds it
   ownerId?: number;
 }
 
@@ -193,11 +193,11 @@ const extractExtraData = (
         out.wornLeft = true;
         break;
     }
-    // thuum docs/verbs/jail.md (Stolen goods): the engine's stolen mark, an
-    // extra this fork's platform reads ({type: "Ownership", owner}), by name
-    // since the client types against the published platform package. Not on
-    // ammunition: addItemEx lays ammo with no extra list, so an arrow's owner
-    // could never be written back, and its record stays plain as before
+    // the engine's stolen mark, an extra this fork's platform reads
+    // ({type: "Ownership", owner}), by name since the client types against
+    // the published platform package. Not on ammunition: addItemEx lays ammo
+    // with no extra list, so an arrow's owner could never be written back,
+    // and its record stays plain
     if ((extra.type as string) === "Ownership") {
       const owner = (extra as unknown as { owner?: number }).owner;
       if (owner && !Ammo.from(item)) {
@@ -415,11 +415,11 @@ const keptBy = (e: Entry, keep: ReadonlyMap<number, number>): boolean => {
   return (e.count < 0 && (sides & keepSurplus) !== 0) || (e.count > 0 && (sides & keepDeficit) !== 0);
 };
 
-// thuum docs/verbs/jail.md (Stolen goods): the stolen mark is this game's own
-// (R2, the server records it and never clears it): a stack the record holds
-// unmarked where this game holds it marked (a pickup's, whose owner the record
-// never heard) keeps the game's mark, as many as the record holds, rather than
-// being swapped for a clean copy (a remove and an add the player would see)
+// The stolen mark is this game's own (R2, the server records it and never
+// clears it): a stack the record holds unmarked where this game holds it
+// marked (a pickup's, whose owner the record never heard) keeps the game's
+// mark, as many as the record holds, rather than being swapped for a clean
+// copy (a remove and an add the player would see)
 const keepOwners = (record: Inventory, game: Inventory, ignoreWorn: boolean): Inventory => {
   const out: Inventory = JSON.parse(JSON.stringify(record));
   game.entries.forEach((g) => {
@@ -572,9 +572,9 @@ export const applyInventory = (
         }
       });
 
-      // thuum docs/verbs/jail.md (Stolen goods): the stack's owner, which
-      // the next addItemEx marks it with (pushWornState's shape; this fork's
-      // native, called by name as the client's other TESModPlatform ones)
+      // the stack's owner, which the next addItemEx marks it with
+      // (pushWornState's shape; this fork's native, called by name as the
+      // client's other TESModPlatform ones)
       const owner = e.ownerId ? Game.getFormEx(e.ownerId) : null;
       if (owner) {
         callNative("TESModPlatform", "PushOwner", undefined, owner);

@@ -60,9 +60,9 @@ void EventManager::InitCustom()
   // tracker, from SummonCreatureEffect's Update and Finish, Hooks.cpp)
   manager->EmplaceEvent("summonStart");
   manager->EmplaceEvent("summonEnd");
-  // thuum tracker #97 (ADR-079): this game's player's arrest, its asked
-  // serve of the sentence (never run) and a change of its crime gold
-  // (EventHandler.cpp, from PlayerCharacter's own virtuals, Hooks.cpp)
+  // this game's player's arrest, its asked serve of the sentence (never run)
+  // and a change of its crime gold (EventHandler.cpp, from PlayerCharacter's
+  // own virtuals, Hooks.cpp)
   manager->EmplaceEvent("arrest");
   manager->EmplaceEvent("servePrisonTime");
   manager->EmplaceEvent("crimeGold");

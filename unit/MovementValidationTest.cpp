@@ -27,9 +27,8 @@ TEST_CASE("Returns true and sends nothing for normal movement",
   REQUIRE(partOne.Messages().empty());
 }
 
-// thuum ADR-079 decision 7 (Eli, 2026-11-20, tracker #191): the player's own
-// game moving it by a jump (4096 units or more) is recorded, never sent back,
-// and placed for the other games; upstream sent the player back
+// The player's own game moving it by a jump (4096 units or more) is recorded,
+// never sent back, and placed for the other games
 TEST_CASE("A player's own jump of 4096 units or more is recorded, not sent "
           "back, and placed",
           "[MovementValidation]")
@@ -54,11 +53,11 @@ TEST_CASE("A player's own jump of 4096 units or more is recorded, not sent "
   REQUIRE(partOne.Messages().empty());
 }
 
-// thuum ADR-079 decision 7: the player's own game moving it into another cell
-// (a jail, a Black Book's Apocrypha, a script's MoveTo) is recorded, never
-// sent back; a report into no cell the server knows breaks the world and is
-// dropped with nothing sent; another game's actor moving cells without the
-// cell-change rule is still dropped, with nothing sent
+// The player's own game moving it into another cell (a jail, a Black Book's
+// Apocrypha, a script's MoveTo) is recorded, never sent back; a report into
+// no cell the server knows breaks the world and is dropped with nothing sent;
+// another game's actor moving cells without the cell-change rule is still
+// dropped, with nothing sent
 TEST_CASE("A player's own move into another cell is recorded, not sent back, "
           "and one into no cell, or another game's actor's, is dropped",
           "[MovementValidation]")
@@ -103,10 +102,10 @@ TEST_CASE("A player beyond its ground speed budget is recorded, not sent back",
           "[MovementValidation]")
 {
   // thuum docs/verbs/movement-speed.md: two 1000 unit moves at once fit the
-  // 2048 unit burst, a third does not; since ADR-079 decision 7 (tracker
-  // #191) the third is the player's own game's move all the same, recorded
-  // with nothing sent back, and relayed alone (the other games glide it, not
-  // placed); another user's actor is not charged
+  // 2048 unit burst, a third does not; the third is the player's own game's
+  // move all the same, recorded with nothing sent back, and relayed alone
+  // (the other games glide it, not placed); another user's actor is not
+  // charged
   PartOne& partOne = GetPartOne();
 
   DoConnect(partOne, 0);

@@ -7,7 +7,10 @@
 # no Teleport2, the move relayed as the legacy server relayed it, c1 itself
 # included, and c2 told to place c1's figure there (ActorJump) instead of
 # gliding it. UpdateMovement compares exactly here (not as presence), so the
-# relayed jump counts on both stacks.
+# relayed jump counts on both stacks. The forms that leave and enter c1's
+# view at 5000 units east are the fixed stack's alone now (the legacy stack
+# sends c1 back): their counts are unread until the first T2 of tracker #191,
+# which settles them here.
 #
 # Timing (DIFFTEST_CLIENT_GAP_MS 1500): c2 joins before c1's jump and moves
 # once more after it, and c1 leaves first, so c2 also sees c1's departure the

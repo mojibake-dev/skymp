@@ -292,9 +292,13 @@ use bounded::{String, Vec};
 /// D-PH5's amendment): a script's push onto an actor another seat
 /// simulates, reported for its simulator to throw. MsgType 84 (wire id 92)
 /// is reserved for #98's CraftReport (skymp::ReservedCraftReport, never
-/// sent). The id contract: m4-pt56-98 owns 84 / 92 and 61 to 63, this
-/// branch 85 / 93 and 64; whichever merges to canon second replaces the
-/// placeholder or renumbers (magna-ge, 2026-11-20).
+/// sent).
+/// 65: thuum tracker #97's Arrest and CrimeGold on fork branch m4-97-jail
+/// (MsgType 86 and 87, wire ids 94 and 95), not on this branch.
+/// The id contract: m4-pt56-98 owns 84 / 92 and 61 to 63,
+/// m4-pt56-175-npc-shout 85 / 93 and 64, m4-97-jail 86 / 94, 87 / 95 and 65;
+/// whichever merges to canon after another replaces that one's placeholder
+/// or renumbers (magna-ge, 2026-11-20).
 pub const SCHEMA_VERSION: u16 = 64;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so

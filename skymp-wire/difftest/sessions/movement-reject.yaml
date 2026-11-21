@@ -1,10 +1,13 @@
 # difftest movement-reject (M1 validation, thuum docs/verbs/validation.md,
-# Movement): c1 sends one move the server must reject, a jump of 5000 units
-# (MovementValidation takes under 4096 per message), and both stacks snap c1
-# back with Teleport2. The legacy server relayed the rejected move to every
-# listener, c1 itself included, before validating it; the fixed server
-# validates first and relays nothing. UpdateMovement compares exactly here
-# (not as presence), so the relayed jump shows as a count.
+# Movement; ADR-079 decision 7, tracker #191): c1 sends one move the legacy
+# server rejects, a jump of 5000 units (MovementValidation took under 4096 per
+# message), and the legacy stack snaps c1 back with Teleport2. The fixed
+# server records a player's own jump (Eli, 2026-11-20: the server never sends
+# a player back for a move its own game made to another cell or by a jump):
+# no Teleport2, the move relayed as the legacy server relayed it, c1 itself
+# included, and c2 told to place c1's figure there (ActorJump) instead of
+# gliding it. UpdateMovement compares exactly here (not as presence), so the
+# relayed jump counts on both stacks.
 #
 # Timing (DIFFTEST_CLIENT_GAP_MS 1500): c2 joins before c1's jump and moves
 # once more after it, and c1 leaves first, so c2 also sees c1's departure the
@@ -20,15 +23,15 @@ steps:
   - {client: c2, at_ms: 2500, move: {dy: 60}}
 divergences:
   - client: c1
-    msg: {t: 2, idx: "refr:ff000002"}
+    msg: {t: 31}
     legacy: 1
     wire: 0
-    reason: the rejected jump echoed back to its sender; the fixed server validates before relaying
+    reason: the legacy server sends the jump back (Teleport2); the fixed server records a player's own jump (ADR-079 decision 7)
   - client: c2
-    msg: {t: 2, idx: "refr:ff000002"}
-    legacy: 1
-    wire: 0
-    reason: the rejected jump relayed to the neighbour; the fixed server validates before relaying
+    msg: {t: 46}
+    legacy: 0
+    wire: 1
+    reason: the fixed server tells the other game to place c1's figure at its recorded jump (ActorJump); the legacy server sent it back
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0

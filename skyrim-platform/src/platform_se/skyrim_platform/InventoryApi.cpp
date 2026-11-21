@@ -77,6 +77,16 @@ Napi::Value ToJsValue(Napi::Env env, RE::ExtraPoison& extra)
   return res;
 }
 
+// the stack's owner, the engine's stolen mark, as its form id (0 for none)
+Napi::Value ToJsValue(Napi::Env env, RE::ExtraOwnership& extra)
+{
+  auto res = Napi::Object::New(env);
+  res.Set("owner",
+          Napi::Number::New(env, (extra.owner ? extra.owner->formID : 0)));
+  res.Set("type", Napi::String::New(env, "Ownership"));
+  return res;
+}
+
 Napi::Value ToJsValue(Napi::Env env, RE::ExtraWorn& extra)
 {
   auto res = Napi::Object::New(env);
@@ -119,6 +129,9 @@ Napi::Value ToJsValue(Napi::Env env, RE::BSExtraData* extraData)
       case RE::ExtraDataType::kWornLeft:
         return ToJsValue(env,
                          *reinterpret_cast<RE::ExtraWornLeft*>(extraData));
+      case RE::ExtraDataType::kOwnership:
+        return ToJsValue(env,
+                         *reinterpret_cast<RE::ExtraOwnership*>(extraData));
     }
   }
   return env.Undefined();

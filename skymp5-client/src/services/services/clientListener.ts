@@ -675,6 +675,33 @@ declare module "skyrimPlatform" {
     function readCreatedForm(formId: number): { kind: number; effects: CreatedEffect[] } | null;
     function createCreatedForm(kind: number, effects: CreatedEffect[]): number;
     function createdFormTemplate(kind: number): number;
+
+    // The fork's Skyrim Platform hooks PlayerCharacter's own GoToPrison,
+    // ServePrisonTime and crime gold setters (Hooks.cpp
+    // InstallPlayerPrisonHooks) and raises these on update tasks; the
+    // published 2.8.0 typings name none of them. They mirror the fork's
+    // Definitions.txt and the generated skyrimPlatform.ts (ArrestEvent,
+    // ServePrisonTimeEvent, CrimeGoldEvent)
+    interface ArrestEvent {
+        faction: Faction;
+        factionId: number;
+        // the sentence by the engine's own rule, 1 to the GMST's cap
+        days: number;
+    }
+    interface ServePrisonTimeEvent {
+        factionId: number;
+        days: number;
+    }
+    interface CrimeGoldEvent {
+        faction: Faction;
+        factionId: number;
+    }
+    function on(eventName: 'arrest', callback: (event: ArrestEvent) => void): EventHandle;
+    function once(eventName: 'arrest', callback: (event: ArrestEvent) => void): EventHandle;
+    function on(eventName: 'servePrisonTime', callback: (event: ServePrisonTimeEvent) => void): EventHandle;
+    function once(eventName: 'servePrisonTime', callback: (event: ServePrisonTimeEvent) => void): EventHandle;
+    function on(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle;
+    function once(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

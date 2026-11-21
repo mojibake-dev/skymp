@@ -334,6 +334,14 @@ pub struct ClientGuard {
     /// pushes every actor it names, so a few at once, refilled at a few a
     /// second (an estimate, not measured).
     pub push_budget: TokenBucket,
+    /// Budget for a player's arrest reports (Arrest): one per arrest,
+    /// minutes apart; 2 at once, then 1 a second (UNMEASURED).
+    pub arrest_budget: TokenBucket,
+    /// Budget for a player's bounty reports (CrimeGold):
+    /// one per change of a hold's bounty; a fight in town raises an assault
+    /// and a murder and a pickpocket in seconds, a login's pass names every
+    /// hold, so 16 at once, then 4 a second (UNMEASURED).
+    pub crime_gold_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -389,6 +397,8 @@ impl Default for ClientGuard {
             summon_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
             craft_budget: TokenBucket { tokens: 8, capacity: 8, refill_per_s: 2, last_refill_ms: 0 },
             push_budget: TokenBucket { tokens: 12, capacity: 12, refill_per_s: 6, last_refill_ms: 0 },
+            arrest_budget: TokenBucket { tokens: 2, capacity: 2, refill_per_s: 1, last_refill_ms: 0 },
+            crime_gold_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
         }
     }
 }
@@ -803,7 +813,7 @@ fn check_summon(m: &skymp::Summon) -> Result<(), Reject> {
     Ok(())
 }
 
-/// One stack as the created-form checks read it: an [`skymp::Entry`], or a
+/// One stack as the moved-stack checks read it: an [`skymp::Entry`], or a
 /// PutItem's, TakeItem's or DropItem's inline fields.
 struct MovedStack<'a> {
     base_id: u32,
@@ -813,6 +823,7 @@ struct MovedStack<'a> {
     created_base: Option<&'a skymp::CreatedForm>,
     created_enchantment: Option<&'a skymp::CreatedForm>,
     created_poison: Option<&'a skymp::CreatedForm>,
+    owner_id: Option<u32>,
 }
 
 impl<'a> From<&'a skymp::Entry> for MovedStack<'a> {
@@ -825,6 +836,7 @@ impl<'a> From<&'a skymp::Entry> for MovedStack<'a> {
             created_base: e.created_base.as_ref(),
             created_enchantment: e.created_enchantment.as_ref(),
             created_poison: e.created_poison.as_ref(),
+            owner_id: e.owner_id,
         }
     }
 }
@@ -844,6 +856,36 @@ fn check_created_form(form: &skymp::CreatedForm, kinds: &[u8]) -> Result<(), Rej
         return Err(Reject::Range);
     }
     if form.effects.iter().any(|e| !is_file_form(e.mgef)) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// The game's longest sentence in days, iCrimeMaxNumberofDaysinJail: the
+/// exe's 7; a plugin that raises that setting needs this raised with it
+/// (PartOne::kMaxJailDays).
+const MAX_JAIL_DAYS: u32 = 7;
+
+/// The largest Papyrus int (Faction.SetCrimeGold takes one), as a bounty's
+/// bound.
+const PAPYRUS_INT_MAX: u32 = i32::MAX.unsigned_abs();
+
+/// The shared check every message without its own ends in: no NaN or
+/// infinity anywhere in it.
+fn finite(msg: &Message) -> Result<(), Reject> {
+    if all_finite(msg) {
+        Ok(())
+    } else {
+        Err(Reject::NonFinite)
+    }
+}
+
+/// A stack's owner (SCHEMA_VERSION 65): the form of the engine's stolen
+/// mark when present, never 0 (a client leaves the field out for none).
+/// Whose the item was is the player's own game's (R2); the server checks the
+/// shape only.
+fn check_owner(owner_id: Option<u32>) -> Result<(), Reject> {
+    if owner_id == Some(0) {
         return Err(Reject::Range);
     }
     Ok(())
@@ -874,8 +916,9 @@ fn check_created_fields(s: &MovedStack) -> Result<(), Reject> {
 /// A stack a seat moves (a craft's lost or gained stack, a put, a take, a
 /// drop): at least one item, its base and any enchantment or poison id a
 /// game-file form, never a session's own (no session-local id ever crosses
-/// the wire; a created form travels as its definition), and its created
-/// fields well formed. `finite` is the message's float check.
+/// the wire; a created form travels as its definition), its created
+/// fields well formed, and its owner, when present, a form
+/// ([`check_owner`]). `finite` is the message's float check.
 fn check_moved_stack(s: &MovedStack, finite: bool) -> Result<(), Reject> {
     if !finite {
         return Err(Reject::NonFinite);
@@ -886,6 +929,7 @@ fn check_moved_stack(s: &MovedStack, finite: bool) -> Result<(), Reject> {
     if s.enchantment_id.is_some_and(|id| !is_file_form(id)) || s.poison_id.is_some_and(|id| !is_file_form(id)) {
         return Err(Reject::Range);
     }
+    check_owner(s.owner_id)?;
     check_created_fields(s)
 }
 
@@ -911,6 +955,22 @@ fn check_craft_report(m: &skymp::CraftReport) -> Result<(), Reject> {
     Ok(())
 }
 
+/// [`check_owner`] for each stack of an inventory a client sends.
+fn check_owners(inv: &skymp::Inventory) -> Result<(), Reject> {
+    inv.entries.iter().try_for_each(|e| check_owner(e.owner_id))
+}
+
+/// A player's arrest report, wire sanity only: a faction, never 0, and the
+/// game's sentence, 1 to 7 days.
+/// Whether the faction has a jail, and where, is the server's read of the
+/// records (PartOne::JailOf, `E_ARREST_NO_JAIL`).
+fn check_arrest(m: &skymp::Arrest) -> Result<(), Reject> {
+    if m.faction == 0 || m.days == 0 || m.days > MAX_JAIL_DAYS {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
 /// OnEquip (MsgType 11): the base a game-file form, never a session's own (a
 /// brewed potion is drunk by its template and its definition), and a
 /// definition a potion's or a poison's.
@@ -927,15 +987,28 @@ fn check_on_equip(m: &skymp::OnEquip) -> Result<(), Reject> {
     }
 }
 
-/// UpdateEquipment (MsgType 5): a stack's created fields well formed. Its
-/// ids are not held to the files here: a host reports an NPC's whole
-/// inventory as its engine holds it, and a refusal drops the whole report.
+/// UpdateEquipment (MsgType 5): a stack's created fields well formed and
+/// its owner, when present, a form ([`check_owner`]). Its ids are not held
+/// to the files here: a host reports an NPC's whole inventory as its
+/// engine holds it, and a refusal drops the whole report.
 fn check_update_equipment(m: &skymp::UpdateEquipment) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
     }
     for e in m.data.inv.entries.iter() {
+        check_owner(e.owner_id)?;
         check_created_fields(&MovedStack::from(e))?;
+    }
+    Ok(())
+}
+
+/// A player's bounty report: a faction, never 0, and two sums no larger
+/// than the Papyrus int the server tells them back as (Faction.SetCrimeGold,
+/// Faction.SetCrimeGoldViolent). Whether the faction is one is the server's
+/// read (`E_CRIME_GOLD_FACTION`).
+fn check_crime_gold(m: &skymp::CrimeGold) -> Result<(), Reject> {
+    if m.faction == 0 || m.violent > PAPYRUS_INT_MAX || m.non_violent > PAPYRUS_INT_MAX {
+        return Err(Reject::Range);
     }
     Ok(())
 }
@@ -2358,6 +2431,8 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         Message::Summon(_) => take(&mut guard.summon_budget, now_ms),
         Message::CraftReport(_) => take(&mut guard.craft_budget, now_ms),
         Message::PushActor(_) => take(&mut guard.push_budget, now_ms),
+        Message::Arrest(_) => take(&mut guard.arrest_budget, now_ms),
+        Message::CrimeGold(_) => take(&mut guard.crime_gold_budget, now_ms),
         // thuum ADR-068 rung 5 (D-T1 A): a seat sends its own look; a
         // figure's overlay is the server's word
         Message::UpdateAppearance(m) if m.overlay.is_some() => Err(Reject::Range),
@@ -2567,6 +2642,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
             created_base: m.created_base.as_ref(),
             created_enchantment: m.created_enchantment.as_ref(),
             created_poison: m.created_poison.as_ref(),
+            owner_id: m.owner_id,
         }, all_finite(m)),
         Message::TakeItem(m) => check_moved_stack(&MovedStack {
             base_id: m.base_id,
@@ -2576,6 +2652,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
             created_base: m.created_base.as_ref(),
             created_enchantment: m.created_enchantment.as_ref(),
             created_poison: m.created_poison.as_ref(),
+            owner_id: m.owner_id,
         }, all_finite(m)),
         // a drop is a moved stack, its base the legacy u64 that must name a
         // file form
@@ -2588,12 +2665,16 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
                 created_base: m.created_base.as_ref(),
                 created_enchantment: m.created_enchantment.as_ref(),
                 created_poison: m.created_poison.as_ref(),
+                owner_id: None,
             }, all_finite(m)),
             Err(_) => Err(Reject::Range),
         },
         Message::OnEquip(m) => check_on_equip(m),
         Message::UpdateEquipment(m) => check_update_equipment(m),
         Message::PushActor(m) => check_push_actor(m),
+        Message::Arrest(m) => check_arrest(m),
+        Message::CrimeGold(m) => check_crime_gold(m),
+        Message::CraftItem(m) => check_owners(&m.data.craft_input_objects).and_then(|()| finite(msg)),
         Message::CreateActor(m) => check_create_actor(m),
         Message::UpdateAppearance(m) => check_update_appearance(m),
         Message::SpSnippet(m) => check_sp_snippet(m),
@@ -4270,6 +4351,67 @@ mod tests {
         }
         assert_eq!(validate(&brew, &mut guard, 1_000), Err(Reject::Rate));
         assert_eq!(validate(&brew, &mut guard, 1_500), Ok(()));
+    }
+
+    /// CrimeFactionFalkreath 0x28170 (Skyrim.esm), a crime faction with a
+    /// jail
+    #[test]
+    fn arrest_reports_name_a_faction_and_a_game_sentence_and_are_rate_limited() {
+        use wire_schema::skymp::Arrest;
+        let report = |faction, days| Message::Arrest(Arrest { faction, days, ..Default::default() });
+        assert_eq!(validate_server(&report(0x28170, 1)), Ok(()));
+        assert_eq!(validate_server(&report(0x28170, 7)), Ok(()));
+        assert_eq!(validate_server(&report(0x28170, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x28170, 8)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0, 3)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        assert_eq!(validate(&report(0x28170, 7), &mut guard, 1_000), Ok(()));
+        assert_eq!(validate(&report(0x28170, 7), &mut guard, 1_000), Ok(()));
+        assert_eq!(validate(&report(0x28170, 7), &mut guard, 1_000), Err(Reject::Rate));
+        assert_eq!(validate(&report(0x28170, 7), &mut guard, 2_000), Ok(()));
+    }
+
+    /// IronDagger 0x1397e put into Falkreath's evidence chest 0xef436, its
+    /// owner the faction 0x28170 (an owner is an NPC or a faction; the shape
+    /// alone is checked here), as unit/JailTest.cpp names them from
+    /// Skyrim.esm
+    #[test]
+    fn a_stacks_owner_is_a_form_never_zero() {
+        use wire_schema::skymp::{Entry, Equipment, Inventory, PutItem, TakeItem, UpdateEquipment};
+        let put = |owner_id| Message::PutItem(PutItem { base_id: 0x1397e, count: 1, target: 0xef436, owner_id, ..Default::default() });
+        let take = |owner_id| Message::TakeItem(TakeItem { base_id: 0x1397e, count: 1, target: 0xef436, owner_id, ..Default::default() });
+        assert_eq!(validate_server(&put(None)), Ok(()));
+        assert_eq!(validate_server(&put(Some(0x28170))), Ok(()));
+        assert_eq!(validate_server(&put(Some(0))), Err(Reject::Range));
+        assert_eq!(validate_server(&take(Some(0x28170))), Ok(()));
+        assert_eq!(validate_server(&take(Some(0))), Err(Reject::Range));
+        let worn = |owner_id| {
+            let mut inv = Inventory::default();
+            let _ = inv.entries.push(Entry { base_id: 0x1397e, count: 1, worn: Some(true), owner_id, ..Default::default() });
+            Message::UpdateEquipment(UpdateEquipment { data: Equipment { inv, ..Default::default() }, ..Default::default() })
+        };
+        assert_eq!(validate_server(&worn(Some(0x28170))), Ok(()));
+        assert_eq!(validate_server(&worn(Some(0))), Err(Reject::Range));
+        let mut nan = PutItem { base_id: 0x1397e, count: 1, target: 0xef436, owner_id: Some(0x28170), ..Default::default() };
+        nan.health = Some(f32::NAN);
+        assert_eq!(validate_server(&Message::PutItem(nan)), Err(Reject::NonFinite));
+    }
+
+    #[test]
+    fn crime_gold_reports_name_a_faction_and_papyrus_sized_sums() {
+        use wire_schema::skymp::CrimeGold;
+        let report = |faction, violent, non_violent| Message::CrimeGold(CrimeGold { faction, violent, non_violent, ..Default::default() });
+        assert_eq!(validate_server(&report(0x28170, 1000, 40)), Ok(()));
+        assert_eq!(validate_server(&report(0x28170, 0, 0)), Ok(()));
+        assert_eq!(validate_server(&report(0x28170, PAPYRUS_INT_MAX, PAPYRUS_INT_MAX)), Ok(()));
+        assert_eq!(validate_server(&report(0x28170, 2_147_483_648, 0)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0x28170, 0, u32::MAX)), Err(Reject::Range));
+        assert_eq!(validate_server(&report(0, 100, 0)), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for _ in 0..16 {
+            assert_eq!(validate(&report(0x28170, 40, 0), &mut guard, 1_000), Ok(()));
+        }
+        assert_eq!(validate(&report(0x28170, 40, 0), &mut guard, 1_000), Err(Reject::Rate));
     }
 
     #[test]

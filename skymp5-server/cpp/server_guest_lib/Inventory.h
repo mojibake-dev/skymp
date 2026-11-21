@@ -48,7 +48,8 @@ public:
         .Serialize("wornLeft", wornLeft)
         .Serialize("createdBase", createdBase)
         .Serialize("createdEnchantment", createdEnchantment)
-        .Serialize("createdPoison", createdPoison);
+        .Serialize("createdPoison", createdPoison)
+        .Serialize("ownerId", ownerId);
     }
 
     std::optional<float> health;
@@ -70,6 +71,12 @@ public:
     std::optional<CreatedForm> createdBase;
     std::optional<CreatedForm> createdEnchantment;
     std::optional<CreatedForm> createdPoison;
+    // the stack's owner as the player's own game holds it (ExtraOwnership's
+    // form, the engine's stolen mark), R2, recorded from that game's reports
+    // and never computed here. A stack with one is a stack apart
+    // (EqualExceptCount), as ExtraOwnership::IsNotEqual keeps it apart in the
+    // engine. An older record has none
+    std::optional<uint32_t> ownerId;
   };
 
   class Entry : public ExtraData
@@ -125,6 +132,13 @@ public:
   // A brewed potion's or poison's stack, named by its template base and its
   // definition (CreatedForm::SameAs)
   bool HasCreatedStack(uint32_t baseId, const CreatedForm& createdBase) const;
+  // the record's own stack that a move its owner's game reported takes. The
+  // reported stack, when the record holds that many of it; else, for a
+  // report whose stack carries an owner the record never heard (a pickup's,
+  // a take from a shop's chest: the engine marks the taker's copy), the same
+  // stack with no owner, when the record holds that many of that; else the
+  // report, whose removal throws
+  Entry RecordedCopyOf(const Entry& reported) const;
   uint32_t GetItemCount(uint32_t baseId) const;
   uint32_t GetTotalItemCount() const;
   bool IsEmpty() const;

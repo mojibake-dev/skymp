@@ -46,6 +46,7 @@
 #include "ActionListener.h"
 #include "FormCallbacks.h"
 #include "LeveledListUtils.h"
+#include "LocationalDataUtils.h"
 #include "MessageSerializerFactory.h"
 #include "OpenSSLSigner.h"
 #include "PacketParser.h"
@@ -54,18 +55,22 @@
 #include "libespm/AVIF.h"
 #include "libespm/CELL.h"
 #include "libespm/DIAL.h"
+#include "libespm/FACT.h"
 #include "libespm/FLST.h"
 #include "libespm/GMST.h"
 #include "libespm/HDPT.h"
 #include "libespm/INFO.h"
 #include "libespm/MGEF.h"
+#include "libespm/OTFT.h"
 #include "libespm/PROJ.h"
 #include "libespm/QUST.h"
+#include "libespm/REFR.h"
 #include "libespm/SCEN.h"
 #include "libespm/SHOU.h"
 #include "libespm/SMQN.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
+#include "libespm/Utils.h"
 #include "papyrus-vm/Utils.h"
 #include "script_classes/PapyrusObjectReference.h"
 #include <spdlog/fmt/fmt.h>
@@ -254,6 +259,11 @@ struct PartOne::Impl
     uint64_t heldAtMs = 0;
   };
   std::unordered_map<uint32_t, std::vector<HeldSighting>> heldSightings;
+
+  // every crime faction's evidence chest (FACT's STOL) to its faction, read
+  // once from the load order's FACT records at the first ask
+  // (CrimeFactionOfEvidenceChest)
+  std::optional<std::unordered_map<uint32_t, uint32_t>> evidenceChests;
 
   // every player actor's ground speed budget (thuum
   // docs/verbs/movement-speed.md; the rule is Rust's, ADR-020)
@@ -491,6 +501,7 @@ struct PartOne::Impl
   // hits on the actor it lives on (PartOne::CountFriendHit)
   std::map<std::pair<uint32_t, uint32_t>, std::vector<uint64_t>> friendHits;
   std::chrono::steady_clock::time_point lastFateRespawnsTick;
+  std::chrono::steady_clock::time_point lastJailsTick;
 
   // the cell host table (thuum docs/verbs/cell-host.md, ADR-035) and each
   // player's last grid square (worldOrCell, floor x, floor y), so its reach
@@ -670,6 +681,7 @@ void PartOne::Tick()
   TickPlacementsOften();
   TickCellHostsEverySecond();
   TickFateRespawnsEverySecond();
+  TickJailsEverySecond();
   worldState.Tick();
 }
 
@@ -10042,4 +10054,564 @@ bool PartOne::PickPerk(MpActor& actor, uint32_t perk)
                record->perks.size() + 1, actor.PerkPoints());
   actor.SendPerkState();
   return true;
+}
+
+// Every value below is read from the records: the faction's crime data and
+// its jail marker's teleport (Skyrim.esm: CrimeFactionFalkreath 0x28170's
+// JAIL 0x3ef17, a REFR whose XTEL lands by door 0x3ef07 in the barracks jail;
+// Whiterun 0x267ea's 0x267e5, the Rift 0x2816b's 0x3ef58 the same shape)
+std::optional<PartOne::JailOfFaction> PartOne::JailOf(uint32_t faction)
+{
+  if (!HasEspm()) {
+    return std::nullopt;
+  }
+  auto& browser = GetEspm().GetBrowser();
+  auto& cache = worldState.GetEspmCache();
+  const auto factionLookup = browser.LookupById(faction);
+  const auto* fact = espm::Convert<espm::FACT>(factionLookup.rec);
+  if (!fact) {
+    return std::nullopt;
+  }
+  const auto data = fact->GetData(cache);
+  if (data.prisonMarker == 0) {
+    return std::nullopt;
+  }
+  JailOfFaction jail;
+  jail.marker = factionLookup.ToGlobalId(data.prisonMarker);
+  jail.evidenceChest =
+    data.evidenceChest ? factionLookup.ToGlobalId(data.evidenceChest) : 0;
+  jail.belongingsChest = data.playerBelongingsChest
+    ? factionLookup.ToGlobalId(data.playerBelongingsChest)
+    : 0;
+
+  const auto markerLookup = browser.LookupById(jail.marker);
+  const auto* marker = espm::Convert<espm::REFR>(markerLookup.rec);
+  if (!marker) {
+    return std::nullopt;
+  }
+  const auto markerData = marker->GetData(cache);
+  if (!markerData.loc || !markerData.teleport ||
+      markerData.teleport->destinationDoor == 0) {
+    return std::nullopt;
+  }
+  jail.markerWorldOrCell =
+    LocationalDataUtils::GetWorldOrCell(browser, markerLookup);
+  jail.markerPos = LocationalDataUtils::GetPos(markerData.loc);
+  jail.markerRot = LocationalDataUtils::GetRot(markerData.loc);
+
+  // the landing: the teleport's point beside its destination door, in that
+  // door's cell (MpObjectReference::TeleportDestination's reading)
+  const auto doorLookup = browser.LookupById(
+    markerLookup.ToGlobalId(markerData.teleport->destinationDoor));
+  if (!espm::Convert<espm::REFR>(doorLookup.rec)) {
+    return std::nullopt;
+  }
+  jail.landingWorldOrCell =
+    LocationalDataUtils::GetWorldOrCell(browser, doorLookup);
+  const auto landingRec = browser.LookupById(jail.landingWorldOrCell).rec;
+  jail.landingInterior =
+    landingRec && landingRec->GetType() == espm::CELL::kType;
+  static const auto kPi = std::acos(-1.f);
+  const auto& teleport = *markerData.teleport;
+  jail.landingPos = { teleport.pos[0], teleport.pos[1], teleport.pos[2] };
+  jail.landingRot = { teleport.rotRadians[0] / kPi * 180.f,
+                      teleport.rotRadians[1] / kPi * 180.f,
+                      teleport.rotRadians[2] / kPi * 180.f };
+
+  // the release's spot: the engine's release (40661, called by
+  // ServePrisonTime 40657 and by PayFine 40659's queued goToJail) reads the
+  // marker's door (Whiterun's WhiterunPrisonMarker 0x267e4, in the jail) and
+  // that door's own XTEL, which lands outside beside the marker (0x267e5:
+  // (27064.6, 599.0, -1753.4) in WhiterunWorld, 166 units above the marker's
+  // own spot), in the cell or world of the door that XTEL names; its move
+  // (40744) raises the point 10 units and clamps it to the land outdoors.
+  // The server sends the XTEL point itself, as the engine's release fills
+  // it, and the player's own move raises it; the marker's spot when the door
+  // teleports nowhere
+  jail.releaseWorldOrCell = jail.markerWorldOrCell;
+  jail.releasePos = jail.markerPos;
+  jail.releaseRot = jail.markerRot;
+  const auto* door = espm::Convert<espm::REFR>(doorLookup.rec);
+  const auto doorData = door->GetData(cache);
+  if (doorData.teleport && doorData.teleport->destinationDoor != 0) {
+    const auto outLookup = browser.LookupById(
+      doorLookup.ToGlobalId(doorData.teleport->destinationDoor));
+    if (espm::Convert<espm::REFR>(outLookup.rec)) {
+      const auto& out = *doorData.teleport;
+      jail.releaseWorldOrCell =
+        LocationalDataUtils::GetWorldOrCell(browser, outLookup);
+      jail.releasePos = { out.pos[0], out.pos[1], out.pos[2] };
+      jail.releaseRot = { out.rotRadians[0] / kPi * 180.f,
+                          out.rotRadians[1] / kPi * 180.f,
+                          out.rotRadians[2] / kPi * 180.f };
+    }
+  }
+
+  // the jail outfit's items as the record lists them (BeggarOutfit 0x28b60:
+  // ClothesBeggarRobes 0x13105 and ClothesBeggarBoots 0x13106)
+  if (data.jailOutfit != 0) {
+    const auto outfitLookup =
+      browser.LookupById(factionLookup.ToGlobalId(data.jailOutfit));
+    if (const auto* otft = espm::Convert<espm::OTFT>(outfitLookup.rec)) {
+      const auto items = otft->GetData(cache);
+      for (uint32_t i = 0; i < items.count; ++i) {
+        jail.outfit.push_back(outfitLookup.ToGlobalId(items.formIds[i]));
+      }
+    }
+  }
+  return jail;
+}
+
+PartOne::ArrestCheck PartOne::OnArrest(MpActor& prisoner, uint32_t faction,
+                                       uint32_t days)
+{
+  const auto jail = JailOf(faction);
+  if (!jail) {
+    spdlog::warn("[verb:jail] E_ARREST_NO_JAIL: {:x} reported an arrest by "
+                 "{:x}, which names no jail marker that teleports; refused",
+                 prisoner.GetFormId(), faction);
+    return ArrestCheck::NoJail;
+  }
+  if (days == 0 || days > kMaxJailDays) {
+    spdlog::warn("[verb:jail] E_ARREST_SENTENCE: {:x} reported an arrest by "
+                 "{:x} for {} days, outside 1 to {}; refused",
+                 prisoner.GetFormId(), faction, days, kMaxJailDays);
+    return ArrestCheck::BadSentence;
+  }
+  const auto& files = worldState.espmFiles;
+  const auto record = prisoner.GetCrimeRecord();
+  if (record.jail) {
+    spdlog::info("[verb:jail] {:x} reported an arrest by {:x} while its term "
+                 "by {} runs; the term kept",
+                 prisoner.GetFormId(), faction,
+                 record.jail->faction.ToString());
+    return ArrestCheck::AlreadyJailed;
+  }
+
+  const float now =
+    worldState.gameTime ? worldState.gameTime().daysPassed : 0.f;
+  JailTerm term;
+  term.faction = FormDesc::FromFormId(faction, files);
+  term.days = days;
+  term.releaseAt = static_cast<double>(now) + days;
+  prisoner.SetJailTerm(term);
+
+  // the engine's move into the jail is the prisoner's own game's, recorded
+  // as any move its game makes, so no jump is permitted here
+  MpActor::ArrestWindow window;
+  window.evidenceChest = jail->evidenceChest;
+  window.belongingsChest = jail->belongingsChest;
+  window.outfit = jail->outfit;
+  window.until = std::chrono::steady_clock::now() + kArrestWindow;
+  prisoner.OpenArrestWindow(std::move(window));
+
+  spdlog::info("[verb:jail] {:x} arrested by {:x} for {} days: released at "
+               "day {:.3f} of the shared clock (now {:.3f}); its game's move "
+               "to {:x}, its strip into {:x} or {:x} and {} outfit item(s) "
+               "taken for {} s",
+               prisoner.GetFormId(), faction, days, term.releaseAt, now,
+               jail->landingWorldOrCell, jail->evidenceChest,
+               jail->belongingsChest, jail->outfit.size(),
+               kArrestWindow.count());
+  return ArrestCheck::Recorded;
+}
+
+namespace {
+// the count of a stack equal to the entry in every extra but the count
+// (Inventory::Entry::EqualExceptCount, the record's own matching rule)
+uint32_t CountExact(const Inventory& inventory, const Inventory::Entry& entry)
+{
+  uint32_t n = 0;
+  for (const auto& e : inventory.entries) {
+    if (e.EqualExceptCount(entry)) {
+      n += e.count;
+    }
+  }
+  return n;
+}
+}
+
+namespace {
+// the record's own stacks a strip's or a confiscation's put of the entry
+// takes, worn or not (the engine unequips as it strips; the report carries
+// no worn flag): the stacks equal to it first, then, for an entry with an
+// owner, the same stacks with none (the stolen mark the record never heard:
+// Inventory::RecordedCopyOf), taken as far as the put goes; none when the
+// record cannot cover it (conservation, R0)
+std::optional<std::vector<Inventory::Entry>> StrippedStacks(
+  const Inventory& inventory, const Inventory::Entry& entry)
+{
+  std::vector<Inventory::Entry> removals;
+  uint32_t remaining = entry.count;
+  const auto takeMatching = [&](const Inventory::Entry& wanted) {
+    for (const auto& stack : inventory.entries) {
+      Inventory::Entry probe = wanted;
+      probe.SetWorn(stack.GetWorn());
+      if (remaining == 0 || !probe.EqualExceptCount(stack)) {
+        continue;
+      }
+      Inventory::Entry take = stack;
+      take.count = std::min(stack.count, remaining);
+      remaining -= take.count;
+      removals.push_back(take);
+    }
+  };
+  takeMatching(entry);
+  if (remaining > 0 && entry.ownerId) {
+    Inventory::Entry unowned = entry;
+    unowned.ownerId.reset();
+    takeMatching(unowned);
+  }
+  if (remaining > 0) {
+    return std::nullopt;
+  }
+  return removals;
+}
+}
+
+uint32_t PartOne::CrimeFactionOfEvidenceChest(uint32_t container)
+{
+  if (!HasEspm()) {
+    return 0;
+  }
+  if (!pImpl->evidenceChests) {
+    auto& chests = pImpl->evidenceChests.emplace();
+    auto& browser = GetEspm().GetBrowser();
+    auto& cache = worldState.GetEspmCache();
+    const auto byFile = browser.GetRecordsByType("FACT");
+    for (size_t i = 0; i < byFile.size(); ++i) {
+      const auto* mapping = browser.GetCombMapping(i);
+      if (!mapping || !byFile[i]) {
+        continue;
+      }
+      for (const auto* rec : *byFile[i]) {
+        const auto* fact = espm::Convert<espm::FACT>(rec);
+        if (!fact) {
+          continue;
+        }
+        const auto data = fact->GetData(cache);
+        if (data.evidenceChest == 0) {
+          continue;
+        }
+        chests[espm::utils::GetMappedId(data.evidenceChest, *mapping)] =
+          espm::utils::GetMappedId(rec->GetId(), *mapping);
+      }
+    }
+    spdlog::info("[verb:jail] {} crime faction evidence chest(s) read from "
+                 "the load order's FACT records",
+                 chests.size());
+  }
+  const auto it = pImpl->evidenceChests->find(container);
+  return it == pImpl->evidenceChests->end() ? 0 : it->second;
+}
+
+bool PartOne::OnConfiscation(MpActor& player, MpObjectReference& chest,
+                             const Inventory::Entry& entry)
+{
+  if (!entry.ownerId || entry.count == 0) {
+    return false;
+  }
+  const auto removals = StrippedStacks(player.GetInventory(), entry);
+  if (!removals) {
+    spdlog::warn("[verb:jail] E_CONFISCATION_NOT_HELD: {:x}'s game puts {} "
+                 "of {:x} (owner {:x}) into the evidence chest {:x}, more "
+                 "than its record holds; not moved",
+                 player.GetFormId(), entry.count, entry.baseId, *entry.ownerId,
+                 chest.GetFormId());
+    return false;
+  }
+  Inventory::Entry laid = entry;
+  laid.SetWorn(Inventory::Worn::None);
+  player.RemoveItems(*removals);
+  chest.AddItems({ laid });
+  spdlog::info("[verb:jail] {:x}'s game confiscates {} of {:x} (owner {:x}) "
+               "into the evidence chest {:x} of {:x}",
+               player.GetFormId(), entry.count, entry.baseId, *entry.ownerId,
+               chest.GetFormId(),
+               CrimeFactionOfEvidenceChest(chest.GetFormId()));
+  return true;
+}
+
+bool PartOne::OnArrestStripPut(MpActor& prisoner,
+                               const Inventory::Entry& entry)
+{
+  const auto* window = prisoner.GetArrestWindow();
+  if (!window || window->belongingsChest == 0 || entry.count == 0 ||
+      !prisoner.GetCrimeRecord().jail) {
+    return false;
+  }
+  // the jail outfit is what the engine puts on after its strip, never part
+  // of it (a minted robe put back and taken again would mint without end)
+  if (std::find(window->outfit.begin(), window->outfit.end(), entry.baseId) !=
+      window->outfit.end()) {
+    spdlog::warn("[verb:jail] E_ARREST_STRIP_OUTFIT: {:x}'s strip puts {} of "
+                 "{:x}, an item of its jail outfit; not moved",
+                 prisoner.GetFormId(), entry.count, entry.baseId);
+    return false;
+  }
+  // the engine's walk (16120) sorts the strip by the stack's owner,
+  // whichever chest the client's diff names: a stolen stack into the
+  // evidence chest, kept there at the release, the rest into the belongings
+  const bool stolen = entry.ownerId.has_value() && window->evidenceChest != 0;
+  auto& form = worldState.LookupFormById(stolen ? window->evidenceChest
+                                                : window->belongingsChest);
+  MpObjectReference* chest = form ? form->AsObjectReference() : nullptr;
+  if (!chest) {
+    return false;
+  }
+  // conservation (R0): only what the record holds moves; a put it cannot
+  // cover is said and not sent back to the prisoner's game, whose engine
+  // made its strip already
+  const auto removals = StrippedStacks(prisoner.GetInventory(), entry);
+  if (!removals) {
+    spdlog::warn("[verb:jail] E_ARREST_STRIP_NOT_HELD: {:x}'s strip puts {} "
+                 "of {:x}, more than its record holds; not moved",
+                 prisoner.GetFormId(), entry.count, entry.baseId);
+    return false;
+  }
+  Inventory::Entry laid = entry;
+  laid.SetWorn(Inventory::Worn::None);
+  prisoner.RemoveItems(*removals);
+  chest->AddItems({ laid });
+  if (stolen) {
+    spdlog::info("[verb:jail] {:x}'s strip: {} of {:x} (owner {:x}), "
+                 "stolen, into the evidence chest {:x}",
+                 prisoner.GetFormId(), entry.count, entry.baseId,
+                 *entry.ownerId, chest->GetFormId());
+    return true;
+  }
+  prisoner.AddJailBelonging(laid);
+  spdlog::debug("[verb:jail] {:x}'s strip: {} of {:x} into its belongings "
+                "{:x}",
+                prisoner.GetFormId(), entry.count, entry.baseId,
+                chest->GetFormId());
+  return true;
+}
+
+bool PartOne::OnArrestStripTake(MpActor& prisoner,
+                                const Inventory::Entry& entry)
+{
+  auto* window = prisoner.EditArrestWindow();
+  if (!window) {
+    return false;
+  }
+  const auto has = [](const std::vector<uint32_t>& list, uint32_t id) {
+    return std::find(list.begin(), list.end(), id) != list.end();
+  };
+  if (!has(window->outfit, entry.baseId) ||
+      has(window->minted, entry.baseId) ||
+      prisoner.GetInventory().GetItemCount(entry.baseId) > 0) {
+    spdlog::debug("[verb:jail] {:x}'s take of {} of {:x} during its arrest: "
+                  "no outfit item it lacks; not moved",
+                  prisoner.GetFormId(), entry.count, entry.baseId);
+    return false;
+  }
+  // the jail outfit the engine made on the prisoner, which the client's
+  // inventory diff reports as a take from the chest it names: created on
+  // the record once a window, never taken from the chest
+  window->minted.push_back(entry.baseId);
+  prisoner.AddItem(entry.baseId, 1);
+  spdlog::info("[verb:jail] {:x} wears {:x} of its arrest's jail outfit, "
+               "which its engine made; added to the record",
+               prisoner.GetFormId(), entry.baseId);
+  return true;
+}
+
+bool PartOne::OnCrimeGold(MpActor& player, uint32_t faction, uint32_t violent,
+                          uint32_t nonViolent)
+{
+  if (!HasEspm() ||
+      !espm::Convert<espm::FACT>(
+        GetEspm().GetBrowser().LookupById(faction).rec)) {
+    spdlog::warn("[verb:jail] E_CRIME_GOLD_FACTION: {:x} reported crime gold "
+                 "for {:x}, which is no faction; refused",
+                 player.GetFormId(), faction);
+    return false;
+  }
+  const bool changed = player.SetCrimeGold(
+    FormDesc::FromFormId(faction, worldState.espmFiles), violent, nonViolent);
+  if (changed) {
+    spdlog::info("[verb:jail] {:x}'s bounty in {:x}: {} violent, {} "
+                 "non-violent",
+                 player.GetFormId(), faction, violent, nonViolent);
+  }
+  return changed;
+}
+
+namespace {
+void TellCrimeGold(MpActor& player, uint32_t faction, uint32_t violent,
+                   uint32_t nonViolent)
+{
+  using Arg = std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>;
+  const std::vector<Arg> nonViolentArgs{ static_cast<double>(nonViolent) };
+  const std::vector<Arg> violentArgs{ static_cast<double>(violent) };
+  SpSnippet("Faction", "SetCrimeGold", nonViolentArgs, faction)
+    .Execute(&player, SpSnippetMode::kNoReturnResult);
+  SpSnippet("Faction", "SetCrimeGoldViolent", violentArgs, faction)
+    .Execute(&player, SpSnippetMode::kNoReturnResult);
+}
+}
+
+bool PartOne::EndTermIfEscaped(MpActor& prisoner)
+{
+  const auto record = prisoner.GetCrimeRecord();
+  if (!record.jail || prisoner.GetArrestWindow()) {
+    return false;
+  }
+  const uint32_t faction = record.jail->faction.ToFormId(worldState.espmFiles);
+  const auto jail = JailOf(faction);
+  if (!jail) {
+    return false;
+  }
+  const uint32_t here =
+    prisoner.GetCellOrWorld().ToFormId(worldState.espmFiles);
+  if (here == jail->landingWorldOrCell) {
+    if (!record.jail->arrived) {
+      JailTerm term = *record.jail;
+      term.arrived = true;
+      prisoner.SetJailTerm(term);
+    }
+    return false;
+  }
+  // a prisoner never seen in its jail did not escape it (a slow load, a
+  // jump the engine never made): its term runs to its end, which places it
+  // at the release's spot
+  if (!record.jail->arrived) {
+    return false;
+  }
+  // out of the jail before its end, by its own hand or a friend's: an
+  // escape. The term ends; its belongings stay in the chest for it to
+  // fetch, and its bounty is what its game reports (the escape's own
+  // included), never cleared here
+  prisoner.SetJailTerm(std::nullopt);
+  spdlog::info("[verb:jail] {:x} out of {:x}'s jail in {:x} before its end "
+               "at day {:.3f}: escaped, the term ended, its belongings left "
+               "in {:x}",
+               prisoner.GetFormId(), faction, here, record.jail->releaseAt,
+               jail->belongingsChest);
+  return true;
+}
+
+bool PartOne::ReleaseIfServed(MpActor& prisoner)
+{
+  const auto record = prisoner.GetCrimeRecord();
+  if (!record.jail) {
+    return false;
+  }
+  const float now =
+    worldState.gameTime ? worldState.gameTime().daysPassed : 0.f;
+  if (static_cast<double>(now) < record.jail->releaseAt) {
+    return false;
+  }
+  const auto& files = worldState.espmFiles;
+  const JailTerm term = *record.jail;
+  const uint32_t faction = term.faction.ToFormId(files);
+  const auto jail = JailOf(faction);
+
+  // the term ends first, so nothing below can leave it running
+  prisoner.SetJailTerm(std::nullopt);
+
+  // the prisoner's own belongings, each the exact stack its strip put (its
+  // extras included), from the chest's record as far as it still holds it
+  // (another's take leaves less; another prisoner's things of the same base
+  // and extras are indistinguishable from its own, the chest being one)
+  size_t returned = 0;
+  if (jail && jail->belongingsChest != 0) {
+    auto& form = worldState.LookupFormById(jail->belongingsChest);
+    if (MpObjectReference* chest =
+          form ? form->AsObjectReference() : nullptr) {
+      for (const auto& entry : term.belongings.entries) {
+        const uint32_t count =
+          std::min(CountExact(chest->GetInventory(), entry), entry.count);
+        if (count == 0) {
+          continue;
+        }
+        Inventory::Entry back = entry;
+        back.count = count;
+        try {
+          chest->RemoveItems({ back }, &prisoner);
+          returned += count;
+        } catch (std::exception& e) {
+          spdlog::warn("[verb:jail] {:x}'s release: {} of {:x} not given "
+                       "back ({})",
+                       prisoner.GetFormId(), count, entry.baseId, e.what());
+        }
+      }
+    }
+  }
+
+  prisoner.SetCrimeGold(term.faction, 0, 0);
+  TellCrimeGold(prisoner, faction, 0, 0);
+  // the engine's own prison state on the prisoner's game (its prison faction
+  // and sentence, CommonLibSSE-NG PlayerCharacter.h:685-686) cleared by the
+  // engine's own Papyrus global, Game.ClearPrison (Game.psc; the server's VM
+  // has no implementation of it, so it runs in the game here), so its jail
+  // bed and its guards hold it a prisoner no longer
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    noArgs;
+  SpSnippet("Game", "ClearPrison", noArgs)
+    .Execute(&prisoner, SpSnippetMode::kNoReturnResult);
+  if (jail) {
+    LocationalData out;
+    out.pos = jail->releasePos;
+    out.rot = jail->releaseRot;
+    out.cellOrWorldDesc =
+      FormDesc::FromFormId(jail->releaseWorldOrCell, files);
+    prisoner.Teleport(out);
+  }
+  spdlog::info(
+    "[verb:jail] {:x} released by {:x} at day {:.3f} (its "
+    "sentence of {} days ended at {:.3f}): {} of its item(s) "
+    "given back, the hold's bounty cleared, placed outside the "
+    "jail's door by marker {:x}: {:x} at ({:.0f}, {:.0f}, {:.0f})",
+    prisoner.GetFormId(), faction, now, term.days, term.releaseAt, returned,
+    jail ? jail->marker : 0, jail ? jail->releaseWorldOrCell : 0,
+    jail ? jail->releasePos.x : 0.f, jail ? jail->releasePos.y : 0.f,
+    jail ? jail->releasePos.z : 0.f);
+  return true;
+}
+
+size_t PartOne::TellCrimeRecord(MpActor& player)
+{
+  const auto record = player.GetCrimeRecord();
+  for (const auto& gold : record.crimeGold) {
+    TellCrimeGold(player, gold.faction.ToFormId(worldState.espmFiles),
+                  gold.violent, gold.nonViolent);
+  }
+  return record.crimeGold.size();
+}
+
+void PartOne::TickJailsEverySecond()
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (now - pImpl->lastJailsTick < std::chrono::seconds(1)) {
+    return;
+  }
+  pImpl->lastJailsTick = now;
+  for (size_t i = 0, n = serverState.maxConnectedId; i <= n; ++i) {
+    const auto user = static_cast<Networking::UserId>(i);
+    if (!serverState.IsConnected(user)) {
+      continue;
+    }
+    MpActor* actor = serverState.ActorByUser(user);
+    // a player still loading is released at its first movement instead
+    // (ActionListener::OnUpdateMovement's login pass), never before its game
+    // is in the world
+    if (!actor || actor->IsMapMarkersPending() ||
+        !actor->GetCrimeRecord().jail) {
+      continue;
+    }
+    try {
+      if (!EndTermIfEscaped(*actor)) {
+        ReleaseIfServed(*actor);
+      }
+    } catch (std::exception& e) {
+      // a faction or a chest the load order no longer holds (FormDesc's
+      // ToFormId throws): said, and the world's own tick goes on
+      spdlog::error("[verb:jail] {:x}'s term not checked: {}",
+                    actor->GetFormId(), e.what());
+    }
+  }
 }

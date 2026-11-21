@@ -23,6 +23,7 @@ import {
   Form,
   dressBody,
   once,
+  callNative,
 } from "skyrimPlatform";
 import { logLab } from "../logging";
 import { CreatedForm, isSessionId, sameCreated, toLocalInventory } from "./createdForms";
@@ -47,6 +48,9 @@ export interface Extra {
   createdBase?: CreatedForm;
   createdEnchantment?: CreatedForm;
   createdPoison?: CreatedForm;
+  // the stack's owner, the engine's stolen mark (ExtraOwnership), as this
+  // game holds it
+  ownerId?: number;
 }
 
 export interface BasicEntry {
@@ -148,6 +152,7 @@ const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
     sameCreated(a.createdBase, b.createdBase) &&
     sameCreated(a.createdEnchantment, b.createdEnchantment) &&
     sameCreated(a.createdPoison, b.createdPoison) &&
+    a.ownerId === b.ownerId &&
     ((!!a.worn === !!b.worn && !!a.wornLeft === !!b.wornLeft) || ignoreWorn)
   );
 };
@@ -209,6 +214,17 @@ const extractExtraData = (
       case "WornLeft":
         out.wornLeft = true;
         break;
+    }
+    // the engine's stolen mark, an extra this fork's platform reads
+    // ({type: "Ownership", owner}), by name since the client types against
+    // the published platform package. Not on ammunition: addItemEx lays ammo
+    // with no extra list, so an arrow's owner could never be written back,
+    // and its record stays plain
+    if ((extra.type as string) === "Ownership") {
+      const owner = (extra as unknown as { owner?: number }).owner;
+      if (owner && !Ammo.from(item)) {
+        out.ownerId = owner;
+      }
     }
   });
 };
@@ -509,8 +525,17 @@ export const addItemExEntry = (refr: ObjectReference, f: Form, e: Entry, count: 
     }
   });
 
+  // the stack's owner, which the next addItemEx marks it with
+  // (pushWornState's shape; this fork's native, called by name as the
+  // client's other TESModPlatform ones)
+  const owner = e.ownerId ? Game.getFormEx(e.ownerId) : null;
+  if (owner) {
+    callNative("TESModPlatform", "PushOwner", undefined, owner);
+  }
+
+  const ownerNote = owner ? ` owner ${owner.getFormID().toString(16)}` : "";
   printConsole(
-    `TESModPlatform.addItemEx(${argsToPrint.join(", ")})`
+    `TESModPlatform.addItemEx(${argsToPrint.join(", ")})${ownerNote}`
   );
 
   TESModPlatform.addItemEx(...addItemExArgs);
@@ -518,6 +543,31 @@ export const addItemExEntry = (refr: ObjectReference, f: Form, e: Entry, count: 
 
 // the retries an inventory has left while its created forms are made
 const createdTriesLeft = new WeakMap<Inventory, number>();
+
+// The stolen mark is this game's own (R2, the server records it and never
+// clears it): a stack the record holds unmarked where this game holds it
+// marked (a pickup's, whose owner the record never heard) keeps the game's
+// mark, as many as the record holds, rather than being swapped for a clean
+// copy (a remove and an add the player would see)
+const keepOwners = (record: Inventory, game: Inventory, ignoreWorn: boolean): Inventory => {
+  const out: Inventory = JSON.parse(JSON.stringify(record));
+  game.entries.forEach((g) => {
+    if (!g.ownerId || out.entries.some((r) => r.baseId === g.baseId && extrasEqual(r, g, ignoreWorn))) {
+      return;
+    }
+    const unmarked: Entry = { ...g, ownerId: undefined };
+    const plain = out.entries.find(
+      (r) => r.baseId === g.baseId && !r.ownerId && extrasEqual(r, unmarked, ignoreWorn)
+    );
+    if (!plain) {
+      return;
+    }
+    const n = Math.min(plain.count, g.count);
+    plain.count -= n;
+    out.entries.push({ ...plain, count: n, ownerId: g.ownerId });
+  });
+  return { entries: out.entries.filter((e) => e.count > 0) };
+};
 
 export const applyInventory = (
   refr: ObjectReference,
@@ -566,7 +616,8 @@ export const applyInventory = (
     });
   }
   const createdHeld = (e: Entry) => isSessionId(e.baseId) || isSessionId(e.enchantmentId) || isSessionId(e.poisonId);
-  const diff = getDiff(local.inventory, getInventory(refr), ignoreWorn).entries
+  const current = getInventory(refr);
+  const diff = getDiff(keepOwners(local.inventory, current, ignoreWorn), current, ignoreWorn).entries
     .filter((e) => keep === undefined || !keptBy(e, keep))
     .filter((e) => !local.pending || e.count > 0 || !createdHeld(e));
 

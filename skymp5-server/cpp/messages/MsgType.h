@@ -152,5 +152,9 @@ enum class MsgType : uint8_t
                         // and relays the crafter's record)
   PushActor = 85,       // a script's push onto an actor another seat
                         // simulates, reported for that simulator to throw
+  Arrest = 86,          // the arrest a player's own game started, its
+                        // jail term the server's record
+  CrimeGold = 87,       // one hold's bounty as the player's own game
+                        // holds it, the server's record (R0)
   Max
 };

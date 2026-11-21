@@ -87,5 +87,7 @@ export enum MsgType {
   OwnHeadParts = 82, // thuum D-53-8 B (train 53's V-live): the head parts this game draws on its own player after its race changed (its base's overlay list where the engine answers HasOverlays, else its base list), recorded by the server as the player's look and sent to every other game that sees it (R2)
   Summon = 83, // the caster's report of its own summon's start and end (the platform's summonStart and summonEnd events, SummonService), the server placing its actor and row and answering the caster with the create word's ownLocal bind
   CraftReport = 84, // one sitting at a crafting bench, its lost and gained stacks and learned enchantments as this engine read them, a created form by its definition (CraftService, sync/createdForms.ts)
-  PushActor = 85 // a script's push in this game onto an actor another seat simulates, skipped here and reported, so its simulator throws it
+  PushActor = 85, // a script's push in this game onto an actor another seat simulates, skipped here and reported, so its simulator throws it
+  Arrest = 86, // the arrest this game's own engine started (GoToPrison), the faction and the sentence, before the strip's moves; the server records the jail term on the shared clock and takes the strip and the outfit as this game's
+  CrimeGold = 87 // one hold's bounty as this game holds it, when it changes; the server's record (R0), given back at a login
 }

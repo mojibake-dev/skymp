@@ -306,14 +306,15 @@ use bounded::{String, Vec};
 /// own game. A 62 peer would misread every DropItem and SpellCast.
 /// 64: PushActor (MsgType 85, wire id 93): a script's push onto an actor
 /// another seat simulates, reported for that actor's simulator to throw.
-/// 65: Arrest and CrimeGold (MsgType 86 and 87, wire ids 94 and 95), not
-/// built here.
-/// Ids held for messages that are not on every branch yet: MsgType 84 (wire
-/// id 92) CraftReport, 85 (93) PushActor, 86 (94) Arrest and 87 (95)
-/// CrimeGold; schema versions 61 to 63 for CraftReport's shapes, 64 for
-/// PushActor and 65 for Arrest and CrimeGold. A branch without one of these
-/// messages holds its id with a never-sent Reserved placeholder.
-pub const SCHEMA_VERSION: u16 = 64;
+/// 65: Arrest and CrimeGold (MsgType 86 and 87, wire ids 94 and 95): an
+/// arrest the arrested player's own game reports, and one hold's bounty as
+/// that game holds it, the term, its end on the shared clock and the bounty
+/// per hold the server's record; and Entry's, PutItem's and TakeItem's
+/// optional `owner_id`, a stack's owner, the engine's stolen mark, recorded
+/// from the player's own game so the engine's confiscation into a hold's
+/// evidence chest moves it on the record too.
+/// MsgTypes 84 to 87 (wire ids 92 to 95) are all built here; none is held.
+pub const SCHEMA_VERSION: u16 = 65;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -906,6 +907,10 @@ pub enum Message {
     CraftReport(skymp::CraftReport),
     /// 93, MsgType 85. See [`skymp::PushActor`].
     PushActor(skymp::PushActor),
+    /// 94, MsgType 86. See [`skymp::Arrest`].
+    Arrest(skymp::Arrest),
+    /// 95, MsgType 87. See [`skymp::CrimeGold`].
+    CrimeGold(skymp::CrimeGold),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -935,15 +940,15 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// with room to spare, from the capacities above, where a size test pins
 /// it; the transport's own per-direction cap (smaller from clients) applies
 /// on top. The inventory-carrying messages are the exception, their caps
-/// below the product of their capacities: a stack at its caps is 871 bytes
-/// since SCHEMA_VERSION 61 (the name and three created forms at theirs), so
-/// cap::INVENTORY's 4096 such stacks would take 3.5 MB, past SetInventory's
-/// and RelayedActivation's 2 MiB, CreateActor's two inventories past every
-/// cap, and UpdateEquipment past the 256 KiB the transport takes from a
-/// client. No real inventory nears it (a merchant's chest holds hundreds of
-/// stacks of a few dozen bytes each), and a message past its cap is refused
-/// at its encode, whole, never truncated.
-const TABLE: [Row; 94] = [
+/// below the product of their capacities: a stack at its caps is 877 bytes
+/// since SCHEMA_VERSION 65 (the name and three created forms at theirs, and
+/// the owner), so cap::INVENTORY's 4096 such stacks would take 3.6 MB, past
+/// SetInventory's and RelayedActivation's 2 MiB, CreateActor's two
+/// inventories past every cap, and UpdateEquipment past the 256 KiB the
+/// transport takes from a client. No real inventory nears it (a merchant's
+/// chest holds hundreds of stacks of a few dozen bytes each), and a message
+/// past its cap is refused at its encode, whole, never truncated.
+const TABLE: [Row; 96] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -1091,22 +1096,26 @@ const TABLE: [Row; 94] = [
     // tracker #84; 55 bytes at the longest, pinned by the size test)
     row("Summon", 83, 64, C2S),
     // the bench and since SCHEMA_VERSION 62 the report's seq at five-byte
-    // varints, 64 lost and 64 gained stacks at their longest (871 bytes
-    // each, three created forms at their caps beside the name's) and 128
-    // learned enchantments at five-byte varints (112,143 bytes at the
-    // longest, pinned by the size test), under the 256 KiB the transport
-    // takes from a client
+    // varints, 64 lost and 64 gained stacks at their longest (877 bytes
+    // each, three created forms at their caps beside the name's and the
+    // owner) and 128 learned enchantments at five-byte varints (112,911
+    // bytes at the longest, pinned by the size test), under the 256 KiB the
+    // transport takes from a client
     row("CraftReport", 84, 112 * KIB, C2S),
     // two ids at five-byte varints and the force (16 bytes at the longest)
     row("PushActor", 85, 32, C2S),
+    // a faction and a sentence at five-byte varints
+    row("Arrest", 86, 16, C2S),
+    // a faction and two sums at five-byte varints
+    row("CrimeGold", 87, 32, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 94;
-const _: () = assert!(TABLE.len() == 94, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 96;
+const _: () = assert!(TABLE.len() == 96, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -1225,6 +1234,8 @@ impl Message {
             Message::Summon(_) => 91,
             Message::CraftReport(_) => 92,
             Message::PushActor(_) => 93,
+            Message::Arrest(_) => 94,
+            Message::CrimeGold(_) => 95,
         }
     }
 
@@ -1277,6 +1288,8 @@ mod tests {
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).name(), "OwnHeadParts");
         assert_eq!(Message::Summon(skymp::Summon::default()).name(), "Summon");
         assert_eq!(Message::CraftReport(skymp::CraftReport::default()).name(), "CraftReport");
+        assert_eq!(Message::Arrest(skymp::Arrest::default()).name(), "Arrest");
+        assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).name(), "CrimeGold");
         assert_eq!(
             Message::CreateActor(skymp::CreateActor::default()).name(),
             "CreateActor"
@@ -1356,17 +1369,26 @@ mod tests {
         // CraftReport and PushActor, after 83: wire ids 92 and 93
         assert_eq!(name_of_msg_type(84), Some("CraftReport"));
         assert_eq!(name_of_msg_type(85), Some("PushActor"));
-        assert_eq!(name_of_msg_type(86), None);
         assert_eq!(Message::CraftReport(skymp::CraftReport::default()).wire_id(), 92);
         assert_eq!(Message::PushActor(skymp::PushActor::default()).wire_id(), 93);
         assert_eq!(Message::PushActor(skymp::PushActor::default()).name(), "PushActor");
         assert_eq!(Message::PushActor(skymp::PushActor::default()).direction(), Direction::ClientToServer);
+        // Arrest and CrimeGold, after 85: wire ids 94 and 95
+        assert_eq!(name_of_msg_type(86), Some("Arrest"));
+        assert_eq!(name_of_msg_type(87), Some("CrimeGold"));
+        assert_eq!(name_of_msg_type(88), None);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).wire_id(), 90);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).msg_type(), Some(82));
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).direction(), Direction::ClientToServer);
         assert_eq!(Message::Summon(skymp::Summon::default()).wire_id(), 91);
         assert_eq!(Message::Summon(skymp::Summon::default()).msg_type(), Some(83));
         assert_eq!(Message::Summon(skymp::Summon::default()).direction(), Direction::ClientToServer);
+        assert_eq!(Message::Arrest(skymp::Arrest::default()).wire_id(), 94);
+        assert_eq!(Message::Arrest(skymp::Arrest::default()).msg_type(), Some(86));
+        assert_eq!(Message::Arrest(skymp::Arrest::default()).direction(), Direction::ClientToServer);
+        assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).wire_id(), 95);
+        assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).msg_type(), Some(87));
+        assert_eq!(Message::CrimeGold(skymp::CrimeGold::default()).direction(), Direction::ClientToServer);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).wire_id(), 89);
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).msg_type(), Some(81));
         assert_eq!(Message::ScriptVariables(skymp::ScriptVariables::default()).direction(), Direction::Both);
@@ -1747,6 +1769,9 @@ mod tests {
             Message::PerkPick(skymp::PerkPick { perk: u32::MAX, ..Default::default() }),
             // a word wall report (thuum docs/verbs/word-wall.md)
             Message::WordWall(skymp::WordWall { wall: u32::MAX, ..Default::default() }),
+            // an arrest and a bounty at their longest
+            Message::Arrest(skymp::Arrest { faction: u32::MAX, days: u32::MAX, ..Default::default() }),
+            Message::CrimeGold(skymp::CrimeGold { faction: u32::MAX, violent: u32::MAX, non_violent: u32::MAX, ..Default::default() }),
             // a linked activation relayed (thuum docs/verbs/traps.md), and
             // since SCHEMA_VERSION 40 an activation and its relay with the
             // entry byte at their longest (thuum D-C2: 24 and 13 bytes)
@@ -2043,7 +2068,8 @@ mod tests {
     }
 
     /// A stack at its longest: every id a five-byte varint, every extra
-    /// carried, the name at its cap and the three created forms at theirs.
+    /// carried, the name at its cap, the three created forms at theirs and
+    /// the owner.
     fn entry_at_its_caps() -> skymp::Entry {
         skymp::Entry {
             base_id: u32::MAX,
@@ -2062,6 +2088,7 @@ mod tests {
             created_base: Some(created_form_at_its_caps()),
             created_enchantment: Some(created_form_at_its_caps()),
             created_poison: Some(created_form_at_its_caps()),
+            owner_id: Some(u32::MAX),
         }
     }
 
@@ -2070,11 +2097,12 @@ mod tests {
         // a created form at its caps is its kind, the count's byte and eight
         // effects of 23 bytes; a stack carries three behind their presence
         // bytes, so a put or a take at its longest is the wire id, the three
-        // ids, the extras with the name at its cap and the three forms
+        // ids, the extras with the name at its cap, the three forms and the
+        // owner (SCHEMA_VERSION 65)
         let form = created_form_at_its_caps();
         assert_eq!(postcard::to_allocvec(&form).map(|b| b.len()), Ok(186));
         let e = entry_at_its_caps();
-        assert_eq!(postcard::to_allocvec(&e).map(|b| b.len()), Ok(871));
+        assert_eq!(postcard::to_allocvec(&e).map(|b| b.len()), Ok(877));
         let put = Message::PutItem(skymp::PutItem {
             base_id: u32::MAX,
             count: u32::MAX,
@@ -2093,9 +2121,10 @@ mod tests {
             created_base: e.created_base.clone(),
             created_enchantment: e.created_enchantment.clone(),
             created_poison: e.created_poison.clone(),
+            owner_id: e.owner_id,
             ..Default::default()
         });
-        assert_eq!(postcard::to_allocvec(&put).map(|b| b.len()), Ok(877));
+        assert_eq!(postcard::to_allocvec(&put).map(|b| b.len()), Ok(883));
         assert_eq!(Message::max_len(put.wire_id()), Some(KIB));
         // SCHEMA_VERSION 63: a drop at its longest, a put's fields with a u64
         // base and no target or worn flags
@@ -2136,17 +2165,18 @@ mod tests {
             created_base: e.created_base.clone(),
             created_enchantment: e.created_enchantment.clone(),
             created_poison: e.created_poison.clone(),
+            owner_id: e.owner_id,
             ..Default::default()
         });
-        assert_eq!(postcard::to_allocvec(&take).map(|b| b.len()), Ok(877));
+        assert_eq!(postcard::to_allocvec(&take).map(|b| b.len()), Ok(883));
         assert_eq!(Message::max_len(take.wire_id()), Some(KIB));
         let drink = Message::OnEquip(skymp::OnEquip { base_id: u32::MAX, created_base: Some(form), ..Default::default() });
         assert_eq!(postcard::to_allocvec(&drink).map(|b| b.len()), Ok(193));
         assert_eq!(Message::max_len(drink.wire_id()), Some(256));
-        // a plain stack costs its three presence bytes alone, and a plain
-        // equip report one
+        // a plain stack costs the three forms' presence bytes and the
+        // owner's alone, and a plain equip report one
         let plain = skymp::Entry { base_id: 0x12eb7, count: 1, ..Default::default() };
-        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(18));
+        assert_eq!(postcard::to_allocvec(&plain).map(|b| b.len()), Ok(19));
         let equip = Message::OnEquip(skymp::OnEquip { base_id: 0x3eadd, ..Default::default() });
         assert_eq!(postcard::to_allocvec(&equip).map(|b| b.len()), Ok(5));
         let over: Result<bounded::Vec<skymp::CreatedEffect, { cap::CREATED_EFFECTS }>, _> =
@@ -2168,7 +2198,7 @@ mod tests {
             ..Default::default()
         });
         let full_len = postcard::to_allocvec(&full).map(|b| b.len());
-        assert_eq!(full_len, Ok(112_143));
+        assert_eq!(full_len, Ok(112_911));
         assert!(full_len.unwrap_or(usize::MAX) <= Message::max_len(full.wire_id()).unwrap_or(0));
         assert_eq!(Message::max_len(full.wire_id()), Some(112 * KIB));
         assert_eq!(full.name(), "CraftReport");

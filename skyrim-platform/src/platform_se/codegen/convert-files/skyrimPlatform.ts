@@ -89,7 +89,7 @@ export interface Win32 {
 export declare let win32: Win32
 
 export interface ExtraData {
-  type: 'Health' | 'Count' | 'Enchantment' | 'Charge' | 'TextDisplayData' | 'Soul' | 'Poison' | 'Worn' | 'WornLeft'
+  type: 'Health' | 'Count' | 'Enchantment' | 'Charge' | 'TextDisplayData' | 'Soul' | 'Poison' | 'Worn' | 'WornLeft' | 'Ownership'
 }
 export interface ExtraHealth extends ExtraData {
   type: 'Health'
@@ -127,6 +127,10 @@ export interface ExtraWorn extends ExtraData {
 }
 export interface ExtraWornLeft extends ExtraData {
   type: 'WornLeft'
+}
+export interface ExtraOwnership extends ExtraData {
+  type: 'Ownership'
+  owner: number
 }
 export type BaseExtraList = ExtraData[]
 export interface InventoryChangesEntry {
@@ -263,6 +267,25 @@ export interface SummonEndEvent {
   effect: MagicEffect | null
   casterId: number
   summonId: number
+}
+
+// this game's player arrested, raised on an update task from PlayerCharacter::GoToPrison's entry (a real jail only), before the engine strips and moves the player, so it reaches scripts ahead of the strip's containerChanged events; days is the sentence by the engine's own rule (the faction's crime gold over the GMST iCrimeDaysInPrisonMod, at least 1, at most iCrimeMaxNumberofDaysinJail)
+export interface ArrestEvent {
+  faction: Faction
+  factionId: number
+  days: number
+}
+
+// the player asked the jail's bed to serve the sentence; the engine's ServePrisonTime does not run (its time skip is one player's, which the shared clock never takes), so the sentence is waited out
+export interface ServePrisonTimeEvent {
+  factionId: number
+  days: number
+}
+
+// this game's player's crime gold for a faction changed (PlayerCharacter's SetCrimeGoldValue, ModCrimeGoldValue, RemoveCrimeGoldValue or ClearAllCrimeGold ran), raised on an update task after the engine's change; read the faction's crime gold to know it
+export interface CrimeGoldEvent {
+  faction: Faction
+  factionId: number
 }
 
 export interface MenuOpenEvent {
@@ -813,6 +836,15 @@ export declare function once(eventName: 'summonStart', callback: (event: SummonS
 
 export declare function on(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle
 export declare function once(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle
+
+export declare function on(eventName: 'arrest', callback: (event: ArrestEvent) => void): EventHandle
+export declare function once(eventName: 'arrest', callback: (event: ArrestEvent) => void): EventHandle
+
+export declare function on(eventName: 'servePrisonTime', callback: (event: ServePrisonTimeEvent) => void): EventHandle
+export declare function once(eventName: 'servePrisonTime', callback: (event: ServePrisonTimeEvent) => void): EventHandle
+
+export declare function on(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle
+export declare function once(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle
 
 export declare function on(eventName: 'menuOpen', callback: (event: MenuOpenEvent) => void): EventHandle
 export declare function once(eventName: 'menuOpen', callback: (event: MenuOpenEvent) => void): EventHandle
@@ -1847,6 +1879,7 @@ export interface Extra {
   poisonCount?: number;
   worn?: boolean;
   wornLeft?: boolean;
+  ownerId?: number;
 }
 
 export interface BasicEntry {
@@ -3678,6 +3711,7 @@ export declare class TESModPlatform extends PapyrusObject {
   static getSkinColor(base: ActorBase | null): ColorForm | null
   static isPlayerRunningEnabled(): boolean
   static moveRefrToPosition(refr: ObjectReference | null, cell: Cell | null, world: WorldSpace | null, posX: number, posY: number, posZ: number, rotX: number, rotY: number, rotZ: number): void
+  static pushOwner(owner: Form | null): void
   static pushTintMask(targetActor: Actor | null, type: number, argb: number, texturePath: string): void
   static pushWornState(worn: boolean, wornLeft: boolean): void
   static resetContainer(container: Form | null): void

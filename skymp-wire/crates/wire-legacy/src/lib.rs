@@ -168,6 +168,10 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     ("DropItem", "createdPoison"),
     // the enchanted-hit relay's made enchantment (SCHEMA_VERSION 63)
     ("SpellCastData", "createdSpell"),
+    // a stack's owner, the engine's stolen mark (SCHEMA_VERSION 65)
+    ("Entry", "ownerId"),
+    ("PutItem", "ownerId"),
+    ("TakeItem", "ownerId"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

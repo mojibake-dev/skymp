@@ -4,6 +4,7 @@
 #include "Appearance.h"
 #include "ChangeFormApplyMessage.h"
 #include "ChangeFormRecord.h"
+#include "CrimeRecord.h"
 #include "Equipment.h"
 #include "Favorite.h"
 #include "GetBaseActorValues.h"
@@ -15,6 +16,7 @@
 #include "UpdateActionMessage.h"
 #include "libespm/espm.h"
 #include <array>
+#include <chrono>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -340,6 +342,9 @@ public:
   // show them.
   void SetMapMarkersPending(bool pending);
   bool TakeMapMarkersPending();
+  // whether the player logged in and has not moved yet (its first movement
+  // takes the flag, ActionListener::OnUpdateMovement)
+  bool IsMapMarkersPending() const;
   // thuum docs/verbs/learned-effects.md: the ingredient effects this player
   // learned, kept in its change form (recording only adds bits, and returns
   // whether anything changed), and the last ingredient it ate and when (0
@@ -361,6 +366,43 @@ public:
     WordUnlocked
   };
   ShoutRecord GetShoutRecord() const;
+
+  // the player's bounty per hold and its jail term, the server's record (R0,
+  // CrimeRecord.h)
+  CrimeRecord GetCrimeRecord() const;
+  // One hold's bounty as the player's own game holds it; false when the
+  // record held it already
+  bool SetCrimeGold(const FormDesc& faction, uint32_t violent,
+                    uint32_t nonViolent);
+  // Starts or ends the player's jail term
+  void SetJailTerm(std::optional<JailTerm> term);
+  // Adds to the jail term's belongings what the prisoner's game put into its
+  // faction's prisoner-belongings chest; false without a term
+  bool AddJailBelonging(const Inventory::Entry& entry);
+
+  // The moments of an arrest the player's own game reported
+  // (PartOne::OnArrest): until the window closes, the moves its game reports
+  // into or out of the faction's two chests are its engine's strip and jail
+  // outfit (PartOne::OnArrestStripPut, OnArrestStripTake), its own, never
+  // refused back into its game. Not kept in the record: a relaunch
+  // mid-arrest has no strip left to report
+  struct ArrestWindow
+  {
+    uint32_t evidenceChest = 0;   // the faction's stolen-goods chest (STOL)
+    uint32_t belongingsChest = 0; // its prisoner-belongings chest (PLCN)
+    std::vector<uint32_t> outfit; // the items of its jail outfit (JOUT)
+    std::vector<uint32_t> minted; // the outfit items created on the record
+    std::chrono::steady_clock::time_point until{};
+  };
+  void OpenArrestWindow(ArrestWindow window);
+  // the open window, to note an outfit item created on the record (none when
+  // closed)
+  ArrestWindow* EditArrestWindow();
+  // the window while it is open, else none
+  const ArrestWindow* GetArrestWindow() const;
+  // whether the open window names this container as one of the faction's
+  // two chests
+  bool ArrestStripTakes(uint32_t containerId) const;
   // Adds the form to the record's list; false when it was there already
   bool RecordShoutEntry(ShoutEntry kind, const FormDesc& form);
   // thuum ADR-068 rung 5 (a player's own RemoveShout): takes the form off

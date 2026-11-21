@@ -1,0 +1,23 @@
+# difftest jail (thuum tracker #97, ADR-079, docs/verbs/jail.md): c1 reports
+# a bounty in Falkreath (CrimeGold, CrimeFactionFalkreath 0x28170 = 164208,
+# 40 violent) at 2 s, which the wire server records and answers with nothing,
+# then an arrest by PlayerFaction 0xdb1 (3505) at 2.5 s, a faction with no
+# jail marker, which the wire server refuses by name (E_ARREST_NO_JAIL) and
+# answers with nothing; the legacy server has neither message and drops both.
+# A recorded arrest's term, jump, strip and outfit, and the release on the
+# shared clock, are T0's (JailTest); the arrest in play is the seat loop's.
+# c2 steps aside at 4 s so it outlives c1, as in every session.
+id: jail
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c1, at_ms: 2000, send: {t: 87, faction: 164208, violent: 40, nonViolent: 0}, reliable: true}
+  - {client: c1, at_ms: 2500, send: {t: 86, faction: 3505, days: 3}, reliable: true}
+  - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

@@ -193,6 +193,10 @@ wire_struct! {
         pub created_enchantment: Option<CreatedForm>,
         /// The brewed poison on the weapon.
         pub created_poison: Option<CreatedForm>,
+        /// The stack's owner (ExtraOwnership, the engine's stolen mark) as
+        /// the player's own game holds it (SCHEMA_VERSION 65): R2, recorded;
+        /// never 0.
+        pub owner_id: Option<u32>,
     }
 }
 
@@ -691,6 +695,10 @@ wire_struct! {
         pub created_enchantment: Option<CreatedForm>,
         /// The brewed poison on the weapon.
         pub created_poison: Option<CreatedForm>,
+        /// The stack's owner (ExtraOwnership, the engine's stolen mark) as
+        /// the player's own game holds it (SCHEMA_VERSION 65): R2, recorded;
+        /// never 0.
+        pub owner_id: Option<u32>,
     }
 }
 
@@ -736,6 +744,10 @@ wire_struct! {
         pub created_enchantment: Option<CreatedForm>,
         /// The brewed poison on the weapon.
         pub created_poison: Option<CreatedForm>,
+        /// The stack's owner (ExtraOwnership, the engine's stolen mark) as
+        /// the player's own game holds it (SCHEMA_VERSION 65): R2, recorded;
+        /// never 0.
+        pub owner_id: Option<u32>,
     }
 }
 
@@ -3493,6 +3505,51 @@ wire_struct! {
 /// game script's (VoicePushEffectScript's 15), short of a throw that leaves
 /// the world.
 pub const PUSH_FORCE_MAX: f32 = 100.0;
+
+wire_struct! {
+    /// MsgType 86: the arrested player's own game reports its arrest as its
+    /// engine starts it (GoToPrison), before the strip's moves. Client to
+    /// server, reliable. The arrest is that game's own: the server records
+    /// the jail term and its end on the shared clock, and takes the strip
+    /// into the faction's two chests and its jail outfit for the arrest's
+    /// window (the jail read from the faction's record, not from this
+    /// message). Safe to receive twice: a term running keeps itself. Reason
+    /// codes: `E_VAL_RANGE` (a faction of 0, a sentence outside 1 to 7
+    /// days), `E_VAL_RATE`.
+    pub struct Arrest {
+        /// `"t": 86`.
+        #[serde(default)]
+        pub t: MsgT<86>,
+        /// The crime faction that jailed the player; never 0.
+        pub faction: u32,
+        /// The sentence the engine set, in game days: the hold's bounty over
+        /// iCrimeDaysInPrisonMod, 1 to iCrimeMaxNumberofDaysinJail (the
+        /// exe's 7).
+        pub days: u32,
+    }
+}
+
+wire_struct! {
+    /// MsgType 87: one hold's bounty as the player's own game holds it (its
+    /// engine's crime gold for the faction, violent and non-violent, whole
+    /// gold), sent when it changes.
+    /// Client to server, reliable. The record is the server's (R0), given
+    /// back at a login; a zero bounty clears the hold's. Safe to receive
+    /// twice: the same values change nothing. Reason codes: `E_VAL_RANGE` (a
+    /// faction of 0, a value past i32::MAX, the Papyrus int the server tells
+    /// it back as), `E_VAL_RATE`.
+    pub struct CrimeGold {
+        /// `"t": 87`.
+        #[serde(default)]
+        pub t: MsgT<87>,
+        /// The crime faction; never 0.
+        pub faction: u32,
+        /// The violent crime gold.
+        pub violent: u32,
+        /// The non-violent crime gold.
+        pub non_violent: u32,
+    }
+}
 
 wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and

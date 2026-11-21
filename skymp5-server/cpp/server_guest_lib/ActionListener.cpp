@@ -594,8 +594,12 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // (PartOne::SetUserActor, docs/verbs/player-globals.md): the client
     // holds them until its first in-game update, ahead of the scripts
     // that read them at their first check.
+    // the login's jail pass runs after this report's own write below, so the
+    // release's teleport is the record's last word
+    bool loginPass = false;
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
+      loginPass = true;
       SendMapMarkers(*actor);
       SendIngredientEffects(*actor);
       SendFavorites(*actor);
@@ -633,24 +637,35 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         actor->TellHostedByOther(*sender);
       }
     }
-    if (newCellOrWorld != actor->GetCellOrWorld()) {
-      actor->SetCellOrWorldObsolete(newCellOrWorld);
-    }
-
     // thuum tracker #179 (ADR-063's 2026-11-19 amendment): a player's body
     // another player's grip holds has that gripper's samples as its one
     // writer (OnPropTransform) until the gripper's rest returns it; the
     // player's own reports lag them by the follow's delay, so they move no
-    // record meanwhile (a throw's sample measured from a lagging record
-    // could pass the step allowance and be refused, the review of 48959a563,
-    // finding 7); its rotation and its relay stand
+    // record meanwhile, its cell no more than its position (a cell change
+    // alone would leave the record in one cell with another's coordinates,
+    // and a throw's sample measured from a lagging record could pass the
+    // step allowance and be refused); its rotation and its relay stand
     const uint32_t bodyHeldBy =
       isPlayersOwn ? partOne.PropLiveOwner(*actor) : 0;
-    if (bodyHeldBy == 0 || bodyHeldBy == actor->GetFormId()) {
+    const bool ownWriter = bodyHeldBy == 0 || bodyHeldBy == actor->GetFormId();
+    if (ownWriter && newCellOrWorld != actor->GetCellOrWorld()) {
+      actor->SetCellOrWorldObsolete(newCellOrWorld);
+    }
+    if (ownWriter) {
       actor->SetPos(
         NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
         SetPosMode::CalledByUpdateMovement);
     }
+    // at the first movement after a login, a sentence the shared clock ended
+    // while the player was away ends now (its belongings back, the release's
+    // spot), and its bounty per hold goes back to its game. After the
+    // report's own write above: the report comes from the jail's cell, and
+    // its write would otherwise overwrite the release's teleport
+    if (loginPass) {
+      partOne.ReleaseIfServed(*actor);
+      partOne.TellCrimeRecord(*actor);
+    }
+
     // thuum tracker #166: a player armed at a word wall walks on toward its
     // word (nobody is armed, mostly: one lookup then)
     if (isPlayersOwn && !wordWallArms.empty()) {
@@ -3093,6 +3108,25 @@ void ActionListener::OnPutItem(const RawMessageData& rawMsgData,
     static_cast<const Inventory::ExtraData&>(msg);
   entry.SetWorn(Inventory::Worn::None);
 
+  // an arrest's strip, the prisoner's own game's, reported as its moves into
+  // the faction's chests. The engine strips in GoToPrison's own frame from
+  // wherever the player stood, and the client's inventory diff names one
+  // chest for all of them, so the reach is not asked and the chest named does
+  // not matter; the move is PartOne's, and never refused back into the
+  // prisoner's game
+  if (actor->ArrestStripTakes(ref.GetFormId())) {
+    partOne.OnArrestStripPut(*actor, entry);
+    return;
+  }
+  // an owned stack's put into a crime faction's evidence chest is the
+  // engine's confiscation, made from wherever the player stood (a fine paid
+  // with removeStolen): PartOne's, no reach asked and never refused back
+  // into the player's game
+  if (entry.ownerId &&
+      partOne.CrimeFactionOfEvidenceChest(ref.GetFormId()) != 0) {
+    partOne.OnConfiscation(*actor, ref, entry);
+    return;
+  }
   if (!ContainerMoveWithinReach(*actor, ref, "put")) {
     return;
   }
@@ -3129,6 +3163,15 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
   // its own engine's, never the container's
   entry.SetWorn(Inventory::Worn::None);
 
+  // the arrest seen as a take (the jail outfit the engine made shows in the
+  // client's inventory diff as a take from the chest the diff names):
+  // PartOne's, as the put above is
+  if (actor->ArrestStripTakes(ref.GetFormId())) {
+    if (!partOne.OnArrestStripTake(*actor, entry)) {
+      ref.ResyncAfterRefusedMove(*actor);
+    }
+    return;
+  }
   if (!ContainerMoveWithinReach(*actor, ref, "take")) {
     return;
   }
@@ -13564,4 +13607,29 @@ void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,
   args[5] = VarValue(hitData.isBashAttack);  // abBashAttack
   args[6] = VarValue(hitData.isHitBlocked);  // abHitBlocked
   target->SendPapyrusEvent("OnHit", args.data(), args.size());
+}
+
+// The arrested player's own game reports its arrest; the server records the
+// term and takes the strip and the outfit as that game's. Every refusal is
+// logged by name in PartOne::OnArrest and nothing of a refused report lands.
+void ActionListener::OnArrest(const RawMessageData& rawMsgData,
+                              const ArrestMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  partOne.OnArrest(*actor, msg.faction, msg.days);
+}
+
+// One hold's bounty as the player's own game holds it, the server's record
+// (R0)
+void ActionListener::OnCrimeGold(const RawMessageData& rawMsgData,
+                                 const CrimeGoldMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  partOne.OnCrimeGold(*actor, msg.faction, msg.violent, msg.nonViolent);
 }

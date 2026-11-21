@@ -4,6 +4,7 @@
 #include "ActorValues.h"
 #include "Appearance.h"
 #include "ChangeFormRecord.h"
+#include "CrimeRecord.h"
 #include "DynamicFields.h"
 #include "Equipment.h"
 #include "Faction.h"
@@ -253,6 +254,10 @@ public:
   // unlocked (thuum docs/verbs/shouts.md); absent in older records, read as
   // none
   std::optional<ShoutRecord> shoutRecord;
+
+  // The player's bounty per hold and the jail term it serves
+  // (CrimeRecord.h); absent in older records, read as none
+  std::optional<CrimeRecord> crimeRecord;
 
   // The global variables the player's game wrote for its player (thuum
   // docs/verbs/player-globals.md); absent in older records, read as none
@@ -529,7 +534,7 @@ public:
       playerGlobals, knownEnchantments, questStages, placedBySpell, lock,
       destruction, changeFormRecord, scriptState, refStateSeq, crimeFaction,
       relationships, placedByScript, aliasFills, worldGlobals, questRuns,
-      scriptVariables, unresolved);
+      scriptVariables, unresolved, crimeRecord);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

@@ -10114,6 +10114,37 @@ std::optional<PartOne::JailOfFaction> PartOne::JailOf(uint32_t faction)
                       teleport.rotRadians[1] / kPi * 180.f,
                       teleport.rotRadians[2] / kPi * 180.f };
 
+  // the release's spot (thuum tracker #97, Eli's jail look, 2026-11-20:
+  // "ariadne was dropped under the castle" at the marker's own spot): the
+  // engine's release (40661, called by ServePrisonTime 40657 and by PayFine
+  // 40659's queued goToJail) reads the marker's door (Whiterun's
+  // WhiterunPrisonMarker 0x267e4, in the jail) and that door's own XTEL,
+  // which lands outside beside the marker (0x267e5: (27064.6, 599.0,
+  // -1753.4) in WhiterunWorld, 166 units above the marker's own spot), in
+  // the cell or world of the door that XTEL names; its move (40744) raises
+  // the point 10 units and clamps it to the land outdoors. HYPOTHESIS, the
+  // re-analyst's static read until a lab trace; the marker's spot when the
+  // door teleports nowhere
+  jail.releaseWorldOrCell = jail.markerWorldOrCell;
+  jail.releasePos = jail.markerPos;
+  jail.releaseRot = jail.markerRot;
+  const auto* door = espm::Convert<espm::REFR>(doorLookup.rec);
+  const auto doorData = door->GetData(cache);
+  if (doorData.teleport && doorData.teleport->destinationDoor != 0) {
+    const auto outLookup = browser.LookupById(
+      doorLookup.ToGlobalId(doorData.teleport->destinationDoor));
+    if (espm::Convert<espm::REFR>(outLookup.rec)) {
+      const auto& out = *doorData.teleport;
+      constexpr float kRaise = 10.f;
+      jail.releaseWorldOrCell =
+        LocationalDataUtils::GetWorldOrCell(browser, outLookup);
+      jail.releasePos = { out.pos[0], out.pos[1], out.pos[2] + kRaise };
+      jail.releaseRot = { out.rotRadians[0] / kPi * 180.f,
+                          out.rotRadians[1] / kPi * 180.f,
+                          out.rotRadians[2] / kPi * 180.f };
+    }
+  }
+
   // the jail outfit's items as the record lists them (BeggarOutfit 0x28b60,
   // ClothesBeggarRobes 0x13105 and ClothesBeggarBoots 0x13106, which
   // playtest 32's game wore, tracker #97 note 3702)
@@ -10432,17 +10463,21 @@ bool PartOne::ReleaseIfServed(MpActor& prisoner)
     .Execute(&prisoner, SpSnippetMode::kNoReturnResult);
   if (jail) {
     LocationalData out;
-    out.pos = jail->markerPos;
-    out.rot = jail->markerRot;
-    out.cellOrWorldDesc = FormDesc::FromFormId(jail->markerWorldOrCell, files);
+    out.pos = jail->releasePos;
+    out.rot = jail->releaseRot;
+    out.cellOrWorldDesc =
+      FormDesc::FromFormId(jail->releaseWorldOrCell, files);
     prisoner.Teleport(out);
   }
-  spdlog::info("[verb:jail] {:x} released by {:x} at day {:.3f} (its "
-               "sentence of {} days ended at {:.3f}): {} of its item(s) "
-               "given back, the hold's bounty cleared, placed at the marker "
-               "{:x}",
-               prisoner.GetFormId(), faction, now, term.days, term.releaseAt,
-               returned, jail ? jail->marker : 0);
+  spdlog::info(
+    "[verb:jail] {:x} released by {:x} at day {:.3f} (its "
+    "sentence of {} days ended at {:.3f}): {} of its item(s) "
+    "given back, the hold's bounty cleared, placed outside the "
+    "jail's door by marker {:x}: {:x} at ({:.0f}, {:.0f}, {:.0f})",
+    prisoner.GetFormId(), faction, now, term.days, term.releaseAt, returned,
+    jail ? jail->marker : 0, jail ? jail->releaseWorldOrCell : 0,
+    jail ? jail->releasePos.x : 0.f, jail ? jail->releasePos.y : 0.f,
+    jail ? jail->releasePos.z : 0.f);
   return true;
 }
 

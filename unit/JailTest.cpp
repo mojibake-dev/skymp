@@ -139,6 +139,16 @@ TEST_CASE("A hold's jail is read from its crime faction's records",
   REQUIRE(jail->markerWorldOrCell == kTamriel);
   REQUIRE(jail->landingWorldOrCell == kJailCell);
   REQUIRE(jail->landingInterior);
+  // the release's spot: the far side of the jail's door, door 0x3ef07's own
+  // XTEL landing beside the marker in Tamriel at (-29493.3, -87831.3,
+  // -2979.68) (lab/esm.py on sky-srv, 2026-11-20), raised 10 units as the
+  // engine's release move raises it (the re-analyst's read of 40661 and
+  // 40744), not the marker's own spot (-29478.1, -87742.2, -2961.7)
+  REQUIRE(jail->releaseWorldOrCell == kTamriel);
+  REQUIRE(
+    (jail->releasePos - NiPoint3{ -29493.3f, -87831.3f, -2969.68f }).Length() <
+    1.f);
+  REQUIRE((jail->releasePos - jail->markerPos).Length() > 50.f);
   REQUIRE(jail->evidenceChest == kStolenGoods);
   REQUIRE(jail->belongingsChest == kBelongings);
   REQUIRE(std::find(jail->outfit.begin(), jail->outfit.end(), kRobes) !=
@@ -326,8 +336,8 @@ TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
   REQUIRE(prisoner.GetCrimeRecord().jail);
 
   // the day passed on the shared clock: released, its three daggers back,
-  // the tempered one as it was, the hold's bounty cleared, placed at the
-  // jail marker
+  // the tempered one as it was, the hold's bounty cleared, placed outside
+  // the jail's door (the release's spot)
   clock.Set(21.01f);
   REQUIRE(p.ReleaseIfServed(prisoner));
   REQUIRE(!prisoner.GetCrimeRecord().jail);
@@ -343,8 +353,8 @@ TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
   const auto jail = p.JailOf(kFalkreath);
   REQUIRE(jail.has_value());
   REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
-          jail->markerWorldOrCell);
-  REQUIRE((prisoner.GetPos() - jail->markerPos).Length() < 1.f);
+          jail->releaseWorldOrCell);
+  REQUIRE((prisoner.GetPos() - jail->releasePos).Length() < 1.f);
 
   // nothing left to release
   REQUIRE(!p.ReleaseIfServed(prisoner));
@@ -359,7 +369,7 @@ TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
 // report's own write overwrote it
 TEST_CASE("A sentence that ended while its prisoner was away releases it at "
           "its first report after the login, and the report from the cell "
-          "leaves the record at the marker",
+          "leaves the record at the release's spot",
           "[Jail][espm]")
 {
   PartOne& p = GetPartOne();
@@ -384,8 +394,8 @@ TEST_CASE("A sentence that ended while its prisoner was away releases it at "
   Report(p, prisoner, jail->landingWorldOrCell, inCell);
   REQUIRE(!prisoner.GetCrimeRecord().jail);
   REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
-          jail->markerWorldOrCell);
-  REQUIRE((prisoner.GetPos() - jail->markerPos).Length() < 1.f);
+          jail->releaseWorldOrCell);
+  REQUIRE((prisoner.GetPos() - jail->releasePos).Length() < 1.f);
   Leave(p);
 }
 

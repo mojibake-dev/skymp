@@ -677,12 +677,19 @@ public:
   // with a jail marker that teleports
   struct JailOfFaction
   {
-    uint32_t marker = 0;             // the jail marker, outside the jail
-    uint32_t markerWorldOrCell = 0;  // where the marker stands: the
-    NiPoint3 markerPos, markerRot;   // release's spot
+    uint32_t marker = 0;            // the jail marker, outside the jail
+    uint32_t markerWorldOrCell = 0; // where the marker stands
+    NiPoint3 markerPos, markerRot;
     uint32_t landingWorldOrCell = 0; // where its teleport lands: the
     bool landingInterior = false;    // jail's cell
     NiPoint3 landingPos, landingRot;
+    // the release's spot: the far side of the jail's door, the landing of
+    // that door's own teleport (the engine's release, 40661, reads the
+    // marker's door's XTEL, not the marker; the re-analyst's read of
+    // 2026-11-20, HYPOTHESIS until a lab trace), raised 10 units as its move
+    // (40744) raises it; the marker's own spot when the door has none
+    uint32_t releaseWorldOrCell = 0;
+    NiPoint3 releasePos, releaseRot;
     uint32_t evidenceChest = 0;   // stolen goods
     uint32_t belongingsChest = 0; // the prisoner's belongings
     std::vector<uint32_t> outfit; // the jail outfit's items

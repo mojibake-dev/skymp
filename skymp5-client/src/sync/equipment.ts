@@ -7,6 +7,7 @@ import {
   Spell,
   Ui,
   Utility,
+  Weapon,
   setInventory,
 } from 'skyrimPlatform';
 
@@ -185,9 +186,30 @@ export const cannotDress = (ac: Actor): boolean => ac.isDeleted() || ac.isDisabl
 // differs from what the copy holds, their spells as a figure's. The rest of
 // the list (the biped slots: armor, a skin a script equipped, the quiver)
 // is the copy's own worn read (readWorn, the engine's worn flags) against
-// the list. The caller holds the guards (cannotDress, the copy's 3D, the
+// the list. A two-handed weapon (its record's ETYP the BothHands slot) is the
+// right hand's alone: the engine reads it in both hands (getEquippedObject 1
+// and 0, the host's report wearing it worn and wornLeft at once), and a
+// left-hand row for it would unequip the weapon from both hands whenever a
+// record names it in the right hand alone, so the copy's weapon would go off
+// and on again and its draw find an empty hand. The caller holds the guards
+// (cannotDress, the copy's 3D, the
 // update's context: FormView's applyNpcWorn). Returns the base ids it
 // equipped and took off, for the view's line.
+// Skyrim.esm EQUP 0x13f45 BothHands, the slot a two-handed weapon's record
+// names in its ETYP (its PNAM parents 0x13f43 LeftHand and 0x13f42
+// RightHand; DraugrGreatsword 0x236a5 and DraugrBow 0x302ca both name it)
+const kBothHandsSlot = 0x13f45;
+
+// whether a weapon's own record names the BothHands slot (0 and a non-weapon
+// are not)
+const isBothHands = (baseId: number): boolean => {
+  if (!baseId) {
+    return false;
+  }
+  const slot = Weapon.from(Game.getFormEx(baseId))?.getEquipType();
+  return !!slot && slot.getFormID() === kBothHandsSlot;
+};
+
 export const applyWorn = (ac: Actor, eq: Equipment): { equipped: number[]; unequipped: number[] } => {
   const done = { equipped: new Array<number>(), unequipped: new Array<number>() };
   if (cannotDress(ac)) {
@@ -211,10 +233,23 @@ export const applyWorn = (ac: Actor, eq: Equipment): { equipped: number[]; unequ
       want.add(e.baseId);
     }
   }
+  // a two-hander is one ask, in the right hand, whether the record names it
+  // worn (right) or, with no right, wornLeft alone (a host whose engine read
+  // it in the left hand only). Its left hand holds nothing else: anything the
+  // copy holds there besides it comes off (a left row asking for nothing). A
+  // two-hander the copy holds in both hands is the right row's to keep or
+  // take off, never the left's too
+  const twoHander = isBothHands(right) ? right : right === 0 && isBothHands(left) ? left : 0;
+  const heldBoth = heldRight !== 0 && heldRight === heldLeft && isBothHands(heldRight);
+  const leftNow = heldBoth ? 0 : heldLeft;
   const handRows: Array<{ slot: number; current: number; baseId: number }> = [
-    { slot: 1, current: heldRight, baseId: right },
-    { slot: 2, current: heldLeft, baseId: left },
+    { slot: 1, current: heldRight, baseId: twoHander || right },
   ];
+  if (!twoHander) {
+    handRows.push({ slot: 2, current: leftNow, baseId: left });
+  } else if (leftNow !== 0 && leftNow !== twoHander) {
+    handRows.push({ slot: 2, current: leftNow, baseId: 0 });
+  }
   for (const hand of handRows) {
     if (hand.current === hand.baseId) {
       continue;

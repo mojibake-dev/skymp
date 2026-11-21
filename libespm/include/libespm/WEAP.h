@@ -59,6 +59,10 @@ public:
     // weapon's hit runs it. Skyrim.esm's EnchIronSwordFire01 0x49BB8 names
     // 0x49BB7
     uint32_t enchantmentFormId = 0;
+    // ETYP, the equip slot the weapon's record names (raw, in the record's
+    // own file's id space; LookupResult::ToGlobalId turns it global), 0 when
+    // the record has none: a BothHands weapon is held in both hands
+    uint32_t equipSlotId = 0;
   };
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;

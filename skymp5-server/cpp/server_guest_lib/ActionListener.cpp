@@ -2512,15 +2512,30 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         : armo.bodt.present    ? armo.bodt.bodyPartFlags
                                : 0u;
     };
-    // the hand an entry holds: a shield is armor in the left hand, any other
-    // armor holds none, the rest the hand its flag names
+    // the hand an entry holds: a shield is armor in the left hand (by its
+    // flag, or by its shield slot, 0x200, for the outfit's dressing that
+    // flags every piece worn: MpObjectReference's outfit roll;
+    // GetEquippedShield's kBodShield), any other armor holds none, the rest
+    // the hand its flag names, a two-hander the right (MpActor::WornHand)
     const auto handOf = [&](const Inventory::Entry& entry,
                             const std::optional<uint32_t>& slots) {
-      const auto worn = entry.GetWorn();
-      if (slots && worn != Inventory::Worn::Left) {
-        return Inventory::Worn::None;
+      constexpr uint32_t kShieldSlot = 0x00000200;
+      const auto worn =
+        espmWorld ? MpActor::WornHand(*espmWorld, entry) : entry.GetWorn();
+      if (slots) {
+        if (worn == Inventory::Worn::None) {
+          return Inventory::Worn::None;
+        }
+        return worn == Inventory::Worn::Left || (*slots & kShieldSlot) != 0
+          ? Inventory::Worn::Left
+          : Inventory::Worn::None;
       }
       return worn;
+    };
+    // a two-hander fills both hands, so it and anything else in a hand take
+    // each other's place
+    const auto twoHanded = [&](const Inventory::Entry& entry) {
+      return espmWorld && MpActor::IsBothHandsWeapon(*espmWorld, entry.baseId);
     };
     const auto takesPlaceOf = [&](const Inventory::Entry& recordEntry) {
       const auto slots = armorSlots(recordEntry.baseId);
@@ -2530,9 +2545,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
           continue;
         }
         const auto reportedSlots = armorSlots(reported.baseId);
+        const auto reportedHand = handOf(reported, reportedSlots);
         if ((slots.value_or(0) & reportedSlots.value_or(0)) != 0 ||
             (hand != Inventory::Worn::None &&
-             hand == handOf(reported, reportedSlots))) {
+             reportedHand != Inventory::Worn::None &&
+             (hand == reportedHand || twoHanded(recordEntry) ||
+              twoHanded(reported)))) {
           return true;
         }
       }
@@ -2618,7 +2636,9 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     uint32_t left = 0;
     size_t worn = 0;
     for (auto& entry : kept.inv.entries) {
-      const auto w = entry.GetWorn();
+      // a two-hander, reported worn and wornLeft, reads as the right hand
+      // (MpActor::WornHand)
+      const auto w = MpActor::WornHand(partOne.worldState, entry);
       if (w == Inventory::Worn::None) {
         continue;
       }
@@ -3032,14 +3052,18 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (msg.data.caster == 0x14) {
     EndConcealment(partOne, *ac);
   }
-  if (hosterId) {
-    auto actor =
-      std::dynamic_pointer_cast<MpActor>(partOne.worldState.LookupFormById(
-        static_cast<uint32_t>(msg.data.caster)));
-    if (actor) {
-      actor->EquipBestWeapon();
-    }
-  }
+  // a hosted actor's activation leaves its equipment as its host reported
+  // it: the engine that simulates an NPC owns what it wears, and the host's
+  // own equipment report is the record. EquipBestWeapon here would rewrite
+  // the record on each activation the host reports (every worn weapon
+  // stripped, the inventory's highest-damage WEAP worn in the right hand
+  // alone, numChanges one up), and every copy would apply it: a two-hander
+  // the host's engine holds in both hands would be recorded in the right
+  // hand only, and a watching copy would take it off and on and draw an
+  // empty hand (a draugr rising from its alcove activates its
+  // CreatureAlcoveMarker four times). The fate roll and Init keep their
+  // EquipBestWeapon (MpActor.cpp), the server's own first dressing of an
+  // actor no engine has dressed yet
 }
 
 void ActionListener::OnPutItem(const RawMessageData& rawMsgData,
@@ -11450,21 +11474,17 @@ skymp::rules::StaggerSettings StaggerSettingsOf(WorldState& worldState)
   return s;
 }
 
-// The weapon worn in the actor's right hand, if any
+// The weapon worn in the actor's right hand, if any: MpActor's own hand read
+// (GetEquippedWeapon's right, a two-hander reported worn and wornLeft
+// included: MpActor::WornHand)
 std::optional<espm::WEAP::Data> RightHandWeapon(const MpActor& actor,
                                                 WorldState& worldState)
 {
-  auto& browser = worldState.GetEspm().GetBrowser();
-  for (const auto& entry : actor.GetEquipment().inv.entries) {
-    if (entry.GetWorn() != Inventory::Worn::Right) {
-      continue;
-    }
-    const auto res = browser.LookupById(entry.baseId);
-    if (res.rec && res.rec->GetType() == espm::WEAP::kType) {
-      return espm::GetData<espm::WEAP>(entry.baseId, &worldState);
-    }
+  const auto right = actor.GetEquippedWeapon()[1];
+  if (!right) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  return espm::GetData<espm::WEAP>(right->baseId, &worldState);
 }
 
 // A drawn weapon's value against a stagger when its holder blocks without a

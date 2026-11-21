@@ -1240,7 +1240,7 @@ bool MpActor::PoisonRightHandWeapon(const Inventory::Entry& spent)
   // the weapon worn in the right hand, as the player's game reported it
   std::optional<uint32_t> weaponId;
   for (const auto& entry : GetEquipment().inv.entries) {
-    if (entry.GetWorn() == Inventory::Worn::Right &&
+    if (WornHand(*worldState, entry) == Inventory::Worn::Right &&
         TakesPoison(*worldState, entry.baseId)) {
       weaponId = entry.baseId;
       break;
@@ -5957,22 +5957,56 @@ void MpActor::ApplyAttributeDeltas(const std::array<float, 3>& deltas,
   }
 }
 
+bool MpActor::IsBothHandsWeapon(WorldState& worldState, uint32_t baseId)
+{
+  // Skyrim.esm EQUP 0x13f45 BothHands, the slot a two-handed weapon's
+  // record names in its ETYP (its PNAM parents 0x13f43 LeftHand and 0x13f42
+  // RightHand; DraugrGreatsword 0x236a5 and DraugrBow 0x302ca name it)
+  constexpr uint32_t kBothHandsSlot = 0x00013f45;
+  if (baseId == 0 || !worldState.HasEspm()) {
+    return false;
+  }
+  const auto res = worldState.GetEspm().GetBrowser().LookupById(baseId);
+  const auto* weap = espm::Convert<espm::WEAP>(res.rec);
+  if (!weap) {
+    return false;
+  }
+  const auto slot = weap->GetData(worldState.GetEspmCache()).equipSlotId;
+  return slot != 0 && res.ToGlobalId(slot) == kBothHandsSlot;
+}
+
+Inventory::Worn MpActor::WornHand(WorldState& worldState,
+                                  const Inventory::Entry& entry)
+{
+  // a two-hander reported worn and wornLeft, or wornLeft alone, reads Left
+  // to GetWorn
+  const auto worn = entry.GetWorn();
+  if (worn != Inventory::Worn::Left ||
+      !IsBothHandsWeapon(worldState, entry.baseId)) {
+    return worn;
+  }
+  return Inventory::Worn::Right;
+}
+
 std::array<std::optional<Inventory::Entry>, 2> MpActor::GetEquippedWeapon()
   const
 {
   std::array<std::optional<Inventory::Entry>, 2> wornEntries;
-  // 0 -> left hand, 1 -> right hand
+  // 0 -> left hand, 1 -> right hand; a two-hander the right's (WornHand),
+  // once, so a sum over both hands (AnimationSystem::HandleAttackAnim's
+  // stamina) counts it once
   auto& espmBrowser = GetParent()->GetEspm().GetBrowser();
   for (const auto& entry : GetEquipment().inv.entries) {
-    if (entry.GetWorn() != Inventory::Worn::None) {
+    const auto hand = WornHand(*GetParent(), entry);
+    if (hand != Inventory::Worn::None) {
       espm::LookupResult res = espmBrowser.LookupById(entry.baseId);
       auto* record = espm::Convert<espm::WEAP>(res.rec);
       if (record) {
-        if (entry.GetWorn() == Inventory::Worn::Left) {
-          wornEntries[0] = std::move(entry);
+        if (hand == Inventory::Worn::Left) {
+          wornEntries[0] = entry;
         }
-        if (entry.GetWorn() == Inventory::Worn::Right) {
-          wornEntries[1] = std::move(entry);
+        if (hand == Inventory::Worn::Right) {
+          wornEntries[1] = entry;
         }
       }
     }

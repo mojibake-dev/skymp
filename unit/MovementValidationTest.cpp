@@ -105,7 +105,8 @@ TEST_CASE("A player beyond its ground speed budget is recorded, not sent back",
   // thuum docs/verbs/movement-speed.md: two 1000 unit moves at once fit the
   // 2048 unit burst, a third does not; since ADR-079 decision 7 (tracker
   // #191) the third is the player's own game's move all the same, recorded
-  // and placed with nothing sent back; another user's actor is not charged
+  // with nothing sent back, and relayed alone (the other games glide it, not
+  // placed); another user's actor is not charged
   PartOne& partOne = GetPartOne();
 
   DoConnect(partOne, 0);
@@ -129,7 +130,7 @@ TEST_CASE("A player beyond its ground speed budget is recorded, not sent back",
   REQUIRE(move(actor, &placed));
   REQUIRE(!placed);
   REQUIRE(move(actor, &placed));
-  REQUIRE(placed);
+  REQUIRE(!placed);
   REQUIRE(partOne.Messages().empty());
 
   partOne.Messages().clear();

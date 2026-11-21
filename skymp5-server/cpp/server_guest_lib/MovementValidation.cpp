@@ -203,9 +203,14 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
         return *jump;
       }
       // thuum ADR-079 decision 7: a step beyond the budget is the player's
-      // own game's move too (a script's MoveTo within the cell, a knockback
-      // the burst did not hold), recorded and placed for the other games; the
-      // server's disagreement is a logged line, never a send-back
+      // own game's move too (a script's MoveTo within the cell, a lag burst,
+      // Whirlwind Sprint), recorded; the server's disagreement is a logged
+      // line, never a send-back. A choice, not the decision's: the step is
+      // relayed alone, so the other games glide the figure there as
+      // movement (Skyrim's feel), where a move into another cell or
+      // worldspace and the server's own jumps are placed (ActorJump);
+      // markPlaced() here would make it a snap (magna-ge, 2026-11-20, for
+      // Eli to flip)
       const auto n = ++g_overBudget[actor->GetFormId()];
       if ((n & (n - 1)) == 0) {
         spdlog::warn("MovementValidation - E_MOVE_SPEED: {:x} moved {:.0f} "
@@ -213,7 +218,6 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
                      "sent back (ADR-079 decision 7; {} such step(s))",
                      actor->GetFormId(), ground, n);
       }
-      markPlaced();
       return true;
     }
     // thuum docs/verbs/cast-teleport.md, the look on other screens: a

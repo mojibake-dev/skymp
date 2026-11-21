@@ -209,7 +209,8 @@ TEST_CASE("A player's own step past its budget and its jump are recorded "
   };
 
   // a step of 3000 units within the cell: past the ground budget's burst
-  // (2048), short of a jump (a script's MoveTo)
+  // (2048), short of a jump (a script's MoveTo, a lag burst): recorded and
+  // relayed alone, so the neighbour glides it (no ActorJump)
   partOne.Messages().clear();
   auto step = jMovement;
   step["idx"] = 0;
@@ -217,7 +218,7 @@ TEST_CASE("A player's own step past its budget and its jump are recorded "
   DoMessage(partOne, 0, step);
   REQUIRE(count(0, MsgType::Teleport2) == 0);
   REQUIRE(count(1, MsgType::UpdateMovement) == 1);
-  REQUIRE(count(1, MsgType::ActorJump) == 1);
+  REQUIRE(count(1, MsgType::ActorJump) == 0);
   REQUIRE(mover.GetPos() == NiPoint3{ 3001.f, -1.f, 1.f });
 
   // a jump of 5000 units more in Tamriel

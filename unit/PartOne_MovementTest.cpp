@@ -148,13 +148,15 @@ TEST_CASE("A movement the server rejects reaches no neighbour", "[PartOne]")
     DoMessage(partOne, i, m);
   }
 
-  // User 0's actor jumps 5000 units in one message: MovementValidation
-  // rejects jumps of 4096 or more and snaps the sender back
+  // User 0's actor steps 3000 units within its cell in one message: past
+  // the ground speed budget's burst (2048, docs/verbs/movement-speed.md),
+  // short of a jump, so MovementValidation snaps the sender back (a jump of
+  // 4096 or more is recorded since ADR-079 decision 7: the case below)
   partOne.Messages().clear();
-  auto jump = jMovement;
-  jump["idx"] = 0;
-  jump["data"]["pos"] = { 5001.f, -1.f, 1.f };
-  DoMessage(partOne, 0, jump);
+  auto step = jMovement;
+  step["idx"] = 0;
+  step["data"]["pos"] = { 3001.f, -1.f, 1.f };
+  DoMessage(partOne, 0, step);
 
   bool relayed = false;
   bool snappedBack = false;
@@ -169,4 +171,57 @@ TEST_CASE("A movement the server rejects reaches no neighbour", "[PartOne]")
   }
   REQUIRE(snappedBack);
   REQUIRE_FALSE(relayed);
+}
+
+// thuum ADR-079 decision 7 (Eli, 2026-11-20, tracker #191): the player's own
+// game moving it, by a jump in its worldspace (fast travel, a carriage) or
+// into another cell (a jail, a Black Book's Apocrypha, a script's MoveTo),
+// is the record's: the sender is never sent back, the move reaches its
+// neighbour, placed there rather than glided
+TEST_CASE("A player's own jump and cell change are recorded and relayed, "
+          "never sent back",
+          "[PartOne]")
+{
+  PartOne partOne;
+
+  for (int i = 0; i < 2; ++i) {
+    DoConnect(partOne, i);
+    partOne.CreateActor(i + 0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+    partOne.SetUserActor(i, i + 0xff000ABC);
+    auto m = jMovement;
+    m["idx"] = i;
+    DoMessage(partOne, i, m);
+  }
+  auto& mover = partOne.worldState.GetFormAt<MpActor>(0xff000ABC);
+  const auto count = [&](Networking::UserId user, MsgType type) {
+    int n = 0;
+    for (auto& m : partOne.Messages()) {
+      n += m.userId == user && m.j.value("t", 0) == static_cast<int>(type);
+    }
+    return n;
+  };
+
+  // a jump of 5000 units in Tamriel
+  partOne.Messages().clear();
+  auto jump = jMovement;
+  jump["idx"] = 0;
+  jump["data"]["pos"] = { 5001.f, -1.f, 1.f };
+  DoMessage(partOne, 0, jump);
+  REQUIRE(count(0, MsgType::Teleport2) == 0);
+  REQUIRE(count(1, MsgType::UpdateMovement) == 1);
+  REQUIRE(count(1, MsgType::ActorJump) == 1);
+  REQUIRE(mover.GetPos() == NiPoint3{ 5001.f, -1.f, 1.f });
+
+  // into an interior cell (Bleak Falls Temple's id; this world loads no
+  // master file, so any cell id stands)
+  partOne.Messages().clear();
+  auto inside = jMovement;
+  inside["idx"] = 0;
+  inside["data"]["worldOrCell"] = 0x371de;
+  inside["data"]["pos"] = { 100.f, 200.f, 0.f };
+  DoMessage(partOne, 0, inside);
+  REQUIRE(count(0, MsgType::Teleport2) == 0);
+  REQUIRE(mover.GetCellOrWorld().ToFormId(partOne.worldState.espmFiles) ==
+          0x371de);
+  REQUIRE(mover.GetPos() == NiPoint3{ 100.f, 200.f, 0.f });
 }

@@ -521,10 +521,12 @@ TEST_CASE("COC sends an admin's game to a cell the server knows and takes "
   REQUIRE(ac.GetCellOrWorld() == FormDesc::Tamriel());
   REQUIRE(sentBack() == 0);
 
-  // that was the one jump: the next is sent back
+  // that was the one jump the server permitted; the next, its permit spent,
+  // is the player's own game's move and recorded, never sent back (ADR-079
+  // decision 7, tracker #191; upstream sent it back)
   Report(p, ac, 0x3c, { 0, 0, 0 });
-  REQUIRE(sentBack() == 1);
-  REQUIRE(ac.GetPos() == NiPoint3{ 18432, -47104, 500 });
+  REQUIRE(sentBack() == 0);
+  REQUIRE(ac.GetPos() == NiPoint3{ 0, 0, 0 });
 
   // the inn by the form id the game found for its name: the record moves
   // into the interior cell with the player

@@ -31,6 +31,11 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
   // Not doing this to any NPCs at this moment, yet we might consider to
   const bool isMe = actor && partOne.serverState.ActorByUser(userId) == actor;
 
+  // a move into another cell or worldspace, or a jump no step makes (4096
+  // units or more: an exterior cell's side, wire-rules movement::CELL_SIDE)
+  const bool jumped = currentCellOrWorld != newCellOrWorld ||
+    (currentPos - newPos).SqrLength() >= kSqrMaxDistance;
+
   const auto snapBack = [&] {
     if (isMe) {
       TeleportMessage2 msg;
@@ -59,10 +64,13 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
         break;
     }
     // thuum docs/verbs/shadowbond.md: a place the server holds the player at
-    // for a while after its swap; a report from elsewhere is a move the
-    // server did not author (the mod's own script), and the player is sent
-    // back to where the server has it
-    if (partOne.PinnedAway(actor->GetFormId(), cellOrWorld, newPos)) {
+    // for a while after its swap; a report from elsewhere in the same cell is
+    // a move the server did not author (the mod's own script), and the
+    // player is sent back to where the server has it. A move into another
+    // cell or a jump is the player's game's own, recorded below (ADR-079
+    // decision 7)
+    if (!jumped &&
+        partOne.PinnedAway(actor->GetFormId(), cellOrWorld, newPos)) {
       spdlog::info("MovementValidation: {:x} reported ({:.0f}, {:.0f}) away "
                    "from the place the server holds it at; sent back",
                    actor->GetFormId(), newPos.x, newPos.y);
@@ -119,10 +127,32 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     return true;
   }
 
-  if (currentCellOrWorld != newCellOrWorld ||
-      (currentPos - newPos).SqrLength() >= kSqrMaxDistance) {
+  if (jumped) {
     if (const auto jump = permittedJump()) {
       return *jump;
+    }
+    // thuum ADR-079 decision 7 (Eli, 2026-11-20, tracker #191: "this is
+    // breaking too many things. i think the server should simply not do
+    // this."): the player's own game moving it into another cell or
+    // worldspace, or by a jump (a jail, a Black Book's Apocrypha, a
+    // carriage, fast travel, a script's MoveTo), is never sent back: the
+    // server records the move, and the other games place the figure there
+    // instead of gliding it. What the server still holds for a player's own
+    // move (ADR-063, consistency): its own teleport's arrival and a jump it
+    // permitted while they wait (a report from elsewhere is dropped, never
+    // sent back), a bond's hold within the same cell, and the ground speed
+    // budget for a step within the same cell. A hosted actor's report keeps
+    // the cell-change rule above
+    if (isMe) {
+      spdlog::info("[verb:movement] {:x}'s own game moved it from {:x} at "
+                   "({:.0f}, {:.0f}, {:.0f}) to {:x} at ({:.0f}, {:.0f}, "
+                   "{:.0f}): recorded, not sent back (ADR-079 decision 7)",
+                   actor->GetFormId(), currentCellOrWorld.ToFormId(espmFiles),
+                   currentPos.x, currentPos.y, currentPos.z,
+                   newCellOrWorld.ToFormId(espmFiles), newPos.x, newPos.y,
+                   newPos.z);
+      markPlaced();
+      return true;
     }
     return snapBack();
   }

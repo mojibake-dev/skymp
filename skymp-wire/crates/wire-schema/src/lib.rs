@@ -311,6 +311,14 @@ use bounded::{String, Vec};
 /// server's relay of an enchanted weapon's hit names to the struck actor's
 /// own game (Eli's look 2: "other player does not see fire"). A 62 peer
 /// would misread every DropItem and SpellCast (D-PH1 A's reason).
+/// 64: thuum tracker #175's PushActor on fork branch m4-pt56-175-npc-shout
+/// (MsgType 85, wire id 93), not on this branch.
+/// 65: thuum tracker #97's Arrest and CrimeGold on fork branch m4-97-jail
+/// (MsgType 86 and 87, wire ids 94 and 95), not on this branch.
+/// The id contract: m4-pt56-98 owns 84 / 92 and 61 to 63,
+/// m4-pt56-175-npc-shout 85 / 93 and 64, m4-97-jail 86 / 94, 87 / 95 and 65;
+/// whichever merges to canon after another replaces that one's placeholder
+/// or renumbers (magna-ge, 2026-11-20).
 pub const SCHEMA_VERSION: u16 = 63;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so

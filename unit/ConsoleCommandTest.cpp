@@ -509,22 +509,29 @@ TEST_CASE("COC sends an admin's game to a cell the server knows and takes "
           std::vector<std::pair<std::string, bool>>{ { "coc done", false } });
   REQUIRE(sentTo() == std::vector<std::string>{ "Riverwood" });
 
-  // a report from the loading screen (no cell) and one far from Riverwood
-  // are dropped, the player not sent back; then the landing is taken
+  // a report from the loading screen (no cell) is dropped, the player not
+  // sent back; one far from Riverwood, in a cell Tamriel has, is the
+  // player's own game's move and recorded while the permit waits (ADR-079
+  // decision 7, tracker #191; it was dropped before); then the landing is
+  // taken
   p.Messages().clear();
   Report(p, ac, 0, { 0, 0, 0 });
+  REQUIRE(ac.GetPos() == NiPoint3{ 0, 0, 0 });
+  REQUIRE(p.worldState.CellOf(0x3c, { 100000, 100000, 0 }).has_value());
   Report(p, ac, 0x3c, { 100000, 100000, 0 });
   REQUIRE(sentBack() == 0);
-  REQUIRE(ac.GetPos() == NiPoint3{ 0, 0, 0 });
+  REQUIRE(ac.GetPos() == NiPoint3{ 100000, 100000, 0 });
   Report(p, ac, 0x3c, { 18432, -47104, 500 });
   REQUIRE(ac.GetPos() == NiPoint3{ 18432, -47104, 500 });
   REQUIRE(ac.GetCellOrWorld() == FormDesc::Tamriel());
   REQUIRE(sentBack() == 0);
 
-  // that was the one jump: the next is sent back
+  // that was the one jump the server permitted; the next, its permit spent,
+  // is the player's own game's move and recorded, never sent back (ADR-079
+  // decision 7, tracker #191; upstream sent it back)
   Report(p, ac, 0x3c, { 0, 0, 0 });
-  REQUIRE(sentBack() == 1);
-  REQUIRE(ac.GetPos() == NiPoint3{ 18432, -47104, 500 });
+  REQUIRE(sentBack() == 0);
+  REQUIRE(ac.GetPos() == NiPoint3{ 0, 0, 0 });
 
   // the inn by the form id the game found for its name: the record moves
   // into the interior cell with the player
@@ -734,6 +741,53 @@ TEST_CASE("mp racemenu opens the caller's own race menu by the server's word",
 
   ac.SetRaceMenuOpen(false);
   p.worldState.enableConsoleCommandsForAll = forAll;
+  p.DestroyActor(0xff000000);
+  DoDisconnect(p, 0);
+}
+
+// thuum ADR-079 decision 7 (Eli, 2026-11-20, tracker #191): a player's own
+// game moving it into an interior cell with no permit (a jail, a Black
+// Book's Apocrypha, a script's MoveTo) is recorded and never sent back; a
+// loading screen's report (no cell) is dropped, nothing sent back; and the
+// way out to Tamriel is recorded the same way
+TEST_CASE("A player's own move into an interior cell and out again is "
+          "recorded, never sent back, and a report with no cell is dropped",
+          "[ConsoleCommand][espm]")
+{
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, 0xff000000);
+  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
+  const auto& files = p.worldState.espmFiles;
+  const auto sentBack = [&] {
+    int n = 0;
+    for (auto& m : p.Messages()) {
+      n += m.userId == 0 && m.j["t"] == MsgType::Teleport2;
+    }
+    return n;
+  };
+
+  // the first report, where the player stands
+  Report(p, ac, 0x3c, { 0, 0, 0 });
+  p.Messages().clear();
+  // into the Sleeping Giant Inn (RiverwoodSleepingGiantInn 0x133c6, the COC
+  // case's interior), no permit
+  Report(p, ac, 0x133c6, { 10, 20, 30 });
+  REQUIRE(sentBack() == 0);
+  REQUIRE(ac.GetCellOrWorld().ToFormId(files) == 0x133c6);
+  REQUIRE(ac.GetPos() == NiPoint3{ 10, 20, 30 });
+  // a loading screen's report: no cell, dropped
+  Report(p, ac, 0, { 0, 0, 0 });
+  REQUIRE(sentBack() == 0);
+  REQUIRE(ac.GetCellOrWorld().ToFormId(files) == 0x133c6);
+  REQUIRE(ac.GetPos() == NiPoint3{ 10, 20, 30 });
+  // out to Riverwood in Tamriel
+  Report(p, ac, 0x3c, { 18432, -47104, 500 });
+  REQUIRE(sentBack() == 0);
+  REQUIRE(ac.GetCellOrWorld() == FormDesc::Tamriel());
+  REQUIRE(ac.GetPos() == NiPoint3{ 18432, -47104, 500 });
+
   p.DestroyActor(0xff000000);
   DoDisconnect(p, 0);
 }

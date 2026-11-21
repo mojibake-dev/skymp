@@ -635,20 +635,23 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         actor->TellHostedByOther(*sender);
       }
     }
-    if (newCellOrWorld != actor->GetCellOrWorld()) {
-      actor->SetCellOrWorldObsolete(newCellOrWorld);
-    }
-
     // thuum tracker #179 (ADR-063's 2026-11-19 amendment): a player's body
     // another player's grip holds has that gripper's samples as its one
     // writer (OnPropTransform) until the gripper's rest returns it; the
     // player's own reports lag them by the follow's delay, so they move no
-    // record meanwhile (a throw's sample measured from a lagging record
-    // could pass the step allowance and be refused, the review of 48959a563,
-    // finding 7); its rotation and its relay stand
+    // record meanwhile, its cell no more than its position (a cell change
+    // alone left the record in one cell with another's coordinates since
+    // ADR-079 decision 7 lets the report through, the review of m4-191-move,
+    // finding 3; a throw's sample measured from a lagging record could pass
+    // the step allowance and be refused, the review of 48959a563, finding
+    // 7); its rotation and its relay stand
     const uint32_t bodyHeldBy =
       isPlayersOwn ? partOne.PropLiveOwner(*actor) : 0;
-    if (bodyHeldBy == 0 || bodyHeldBy == actor->GetFormId()) {
+    const bool ownWriter = bodyHeldBy == 0 || bodyHeldBy == actor->GetFormId();
+    if (ownWriter && newCellOrWorld != actor->GetCellOrWorld()) {
+      actor->SetCellOrWorldObsolete(newCellOrWorld);
+    }
+    if (ownWriter) {
       actor->SetPos(
         NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
         SetPosMode::CalledByUpdateMovement);

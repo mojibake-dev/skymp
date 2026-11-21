@@ -5,7 +5,7 @@ import { MsgType } from "../../messages";
 // sent when it changes. Client to server, reliable. The record is the
 // server's (R0), told back at a login through Faction.SetCrimeGold and
 // SetCrimeGoldViolent. The contract is skymp-wire's (wire-schema skymp.rs,
-// CrimeGold, MsgType 85).
+// CrimeGold, MsgType 87).
 export interface CrimeGoldMessage {
     t: MsgType.CrimeGold;
     faction: number; // the crime faction, never 0

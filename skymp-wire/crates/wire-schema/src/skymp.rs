@@ -3352,7 +3352,35 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 84, thuum's (tracker #97, ADR-079, docs/verbs/jail.md): the
+    /// MsgType 84, RESERVED (thuum tracker #175's id contract): the id thuum
+    /// tracker #98's CraftReport takes on fork branch m4-pt56-98 (wire id 92,
+    /// SCHEMA_VERSION 61 to 63), kept dead here so PushActor, the next id,
+    /// sits past it and the two branches never claim one id. Never sent; the
+    /// validator refuses it. Whichever branch merges to canon second replaces
+    /// this placeholder (CraftReport) or renumbers (PushActor).
+    pub struct ReservedCraftReport {
+        /// `"t": 84`.
+        #[serde(default)]
+        pub t: MsgT<84>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 85, RESERVED (the id contract at SCHEMA_VERSION's note): the id
+    /// thuum tracker #175's PushActor takes on fork branch
+    /// m4-pt56-175-npc-shout (wire id 93, SCHEMA_VERSION 64), kept dead here
+    /// so jail's Arrest and CrimeGold sit past it. Never sent; the validator
+    /// refuses it. Whichever branch merges to canon after the other replaces
+    /// this placeholder (PushActor) or renumbers (Arrest and CrimeGold).
+    pub struct ReservedPushActor {
+        /// `"t": 85`.
+        #[serde(default)]
+        pub t: MsgT<85>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 86, thuum's (tracker #97, ADR-079, docs/verbs/jail.md): the
     /// arrested player's own game reports its arrest as its engine starts it
     /// (GoToPrison), before the strip's moves. Client to server, reliable.
     /// The arrest is that game's (ADR-063): the server records the jail term,
@@ -3363,9 +3391,9 @@ wire_struct! {
     /// running keeps itself. Reason codes: `E_VAL_RANGE` (a faction of 0, a
     /// sentence outside 1 to 7 days), `E_VAL_RATE`.
     pub struct Arrest {
-        /// `"t": 84`.
+        /// `"t": 86`.
         #[serde(default)]
-        pub t: MsgT<84>,
+        pub t: MsgT<86>,
         /// The crime faction that jailed the player; never 0.
         pub faction: u32,
         /// The sentence the engine set, in game days: the hold's bounty over
@@ -3376,7 +3404,7 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 85, thuum's (tracker #97, ADR-079, D-G6 A): one hold's bounty
+    /// MsgType 87, thuum's (tracker #97, ADR-079, D-G6 A): one hold's bounty
     /// as the player's own game holds it (its engine's crime gold for the
     /// faction, violent and non-violent, whole gold), sent when it changes.
     /// Client to server, reliable. The record is the server's (R0), given
@@ -3385,9 +3413,9 @@ wire_struct! {
     /// faction of 0, a value past i32::MAX, the Papyrus int the server tells
     /// it back as), `E_VAL_RATE`.
     pub struct CrimeGold {
-        /// `"t": 85`.
+        /// `"t": 87`.
         #[serde(default)]
-        pub t: MsgT<85>,
+        pub t: MsgT<87>,
         /// The crime faction; never 0.
         pub faction: u32,
         /// The violent crime gold.

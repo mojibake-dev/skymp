@@ -2449,6 +2449,10 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ScriptVariables(m) => check_script_variables(m),
         Message::OwnHeadParts(m) => check_own_head_parts(m),
         Message::Summon(m) => check_summon(m),
+        // the id contract's placeholders for tracker #98's CraftReport and
+        // tracker #175's PushActor: never sent
+        Message::ReservedCraftReport(_) => Err(Reject::Range),
+        Message::ReservedPushActor(_) => Err(Reject::Range),
         Message::Arrest(m) => check_arrest(m),
         Message::CrimeGold(m) => check_crime_gold(m),
         Message::PutItem(m) => check_owner(m.owner_id).and_then(|()| finite(msg)),
@@ -4005,6 +4009,9 @@ mod tests {
         assert_eq!(validate_server(&report(0x28170, 0)), Err(Reject::Range));
         assert_eq!(validate_server(&report(0x28170, 8)), Err(Reject::Range));
         assert_eq!(validate_server(&report(0, 3)), Err(Reject::Range));
+        // the id contract's placeholders are never sent
+        assert_eq!(validate_server(&Message::ReservedCraftReport(skymp::ReservedCraftReport::default())), Err(Reject::Range));
+        assert_eq!(validate_server(&Message::ReservedPushActor(skymp::ReservedPushActor::default())), Err(Reject::Range));
         let mut guard = ClientGuard::default();
         assert_eq!(validate(&report(0x28170, 7), &mut guard, 1_000), Ok(()));
         assert_eq!(validate(&report(0x28170, 7), &mut guard, 1_000), Ok(()));

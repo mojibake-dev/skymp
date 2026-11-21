@@ -8,7 +8,7 @@
 // as the player's own game holds it, sent when it changes. Client to server,
 // reliable. The record is the server's (R0), given back at a login
 // (PartOne::OnCrimeGold). The contract is skymp-wire's (wire-schema
-// skymp.rs, CrimeGold, MsgType 85, wire id 93).
+// skymp.rs, CrimeGold, MsgType 87, wire id 95).
 struct CrimeGoldMessage : public MessageBase<CrimeGoldMessage>
 {
   static constexpr auto kMsgType =

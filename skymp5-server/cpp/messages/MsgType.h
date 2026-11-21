@@ -146,11 +146,16 @@ enum class MsgType : uint8_t
                         // placed at a summon effect's apply, and its end
                         // (docs/verbs/summon.md, R2: the caster's row owns
                         // it)
-  Arrest = 84,          // thuum tracker #97 (ADR-079): the arrest a
-                        // player's own game started, its jail term the
-                        // server's record (docs/verbs/jail.md)
-  CrimeGold = 85,       // thuum tracker #97 (D-G6 A): one hold's bounty as
-                        // the player's own game holds it, the server's
-                        // record (R0)
+  ReservedCraftReport = 84, // the id contract (wire-schema SCHEMA_VERSION's
+                            // note): tracker #98's CraftReport on fork
+                            // m4-pt56-98; never sent here
+  ReservedPushActor = 85,   // the id contract: tracker #175's PushActor on
+                            // fork m4-pt56-175-npc-shout; never sent here
+  Arrest = 86,              // thuum tracker #97 (ADR-079): the arrest a
+                            // player's own game started, its jail term the
+                            // server's record (docs/verbs/jail.md)
+  CrimeGold = 87,           // thuum tracker #97 (D-G6 A): one hold's bounty as
+                            // the player's own game holds it, the server's
+                            // record (R0)
   Max
 };

@@ -78,7 +78,7 @@ macro_rules! skymp_family {
             72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall,
             76 ScriptState, 77 ScriptStateApply, 78 DestructionStage, 79 AliasFill,
             80 WorldGlobal, 81 ScriptVariables, 82 OwnHeadParts, 83 Summon,
-            84 Arrest, 85 CrimeGold
+            84 ReservedCraftReport, 85 ReservedPushActor, 86 Arrest, 87 CrimeGold
         }
     };
 }
@@ -358,7 +358,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 85, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 87, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with

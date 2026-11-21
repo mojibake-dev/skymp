@@ -12,8 +12,8 @@ clients:
   c1: {profile_id: 9}
   c2: {profile_id: 10}
 steps:
-  - {client: c1, at_ms: 2000, send: {t: 85, faction: 164208, violent: 40, nonViolent: 0}, reliable: true}
-  - {client: c1, at_ms: 2500, send: {t: 84, faction: 3505, days: 3}, reliable: true}
+  - {client: c1, at_ms: 2000, send: {t: 87, faction: 164208, violent: 40, nonViolent: 0}, reliable: true}
+  - {client: c1, at_ms: 2500, send: {t: 86, faction: 3505, days: 3}, reliable: true}
   - {client: c2, at_ms: 4000, move: {dx: 1, dy: 0}}
 divergences:
   - client: c2

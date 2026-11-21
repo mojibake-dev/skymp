@@ -10,7 +10,7 @@
 // (ADR-063): the server records the jail term, its end on the shared clock,
 // permits the one jump to the faction's own jail landing and takes the strip
 // and the outfit for the arrest's window (PartOne::OnArrest). The contract is
-// skymp-wire's (wire-schema skymp.rs, Arrest, MsgType 84, wire id 92).
+// skymp-wire's (wire-schema skymp.rs, Arrest, MsgType 86, wire id 94).
 struct ArrestMessage : public MessageBase<ArrestMessage>
 {
   static constexpr auto kMsgType =

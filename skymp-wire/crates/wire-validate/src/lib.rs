@@ -2665,7 +2665,7 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
                 created_base: m.created_base.as_ref(),
                 created_enchantment: m.created_enchantment.as_ref(),
                 created_poison: m.created_poison.as_ref(),
-                owner_id: None,
+                owner_id: m.owner_id,
             }, all_finite(m)),
             Err(_) => Err(Reject::Range),
         },
@@ -4377,7 +4377,7 @@ mod tests {
     /// Skyrim.esm
     #[test]
     fn a_stacks_owner_is_a_form_never_zero() {
-        use wire_schema::skymp::{Entry, Equipment, Inventory, PutItem, TakeItem, UpdateEquipment};
+        use wire_schema::skymp::{DropItem, Entry, Equipment, Inventory, PutItem, TakeItem, UpdateEquipment};
         let put = |owner_id| Message::PutItem(PutItem { base_id: 0x1397e, count: 1, target: 0xef436, owner_id, ..Default::default() });
         let take = |owner_id| Message::TakeItem(TakeItem { base_id: 0x1397e, count: 1, target: 0xef436, owner_id, ..Default::default() });
         assert_eq!(validate_server(&put(None)), Ok(()));
@@ -4385,6 +4385,10 @@ mod tests {
         assert_eq!(validate_server(&put(Some(0))), Err(Reject::Range));
         assert_eq!(validate_server(&take(Some(0x28170))), Ok(()));
         assert_eq!(validate_server(&take(Some(0))), Err(Reject::Range));
+        let drop = |owner_id| Message::DropItem(DropItem { base_id: 0x1397e, count: 1, owner_id, ..Default::default() });
+        assert_eq!(validate_server(&drop(None)), Ok(()));
+        assert_eq!(validate_server(&drop(Some(0x28170))), Ok(()));
+        assert_eq!(validate_server(&drop(Some(0))), Err(Reject::Range));
         let worn = |owner_id| {
             let mut inv = Inventory::default();
             let _ = inv.entries.push(Entry { base_id: 0x1397e, count: 1, worn: Some(true), owner_id, ..Default::default() });

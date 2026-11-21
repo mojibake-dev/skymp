@@ -1205,13 +1205,14 @@ mod tests {
     /// container; 11-OnEquip-2 drinks one. Since SCHEMA_VERSION 62 each report
     /// carries its seq (84-n's is n + 1), and 28-SetInventory-3 is 28-2 as the
     /// answer to report 1 (its craftAck). Since SCHEMA_VERSION 63,
-    /// 19-DropItem-2 to -4 are drops.
+    /// 19-DropItem-2 to -4 are drops. Since SCHEMA_VERSION 66,
+    /// 19-DropItem-5 is a drop of a stolen stack, its owner beside it.
     #[test]
     fn craft_fixtures_validate_as_named() {
         use wire_validate::{validate, validate_server, ClientGuard, Reject};
         let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
         type Verdict = (&'static str, Result<(), Reject>);
-        let verdicts: [Verdict; 11] = [
+        let verdicts: [Verdict; 12] = [
             ("84-CraftReport-0.json", Ok(())),
             ("84-CraftReport-1.json", Ok(())),
             ("84-CraftReport-2.json", Ok(())),
@@ -1226,6 +1227,9 @@ mod tests {
             ("19-DropItem-2.json", Ok(())),
             ("19-DropItem-3.json", Ok(())),
             ("19-DropItem-4.json", Err(Reject::Range)),
+            // SCHEMA_VERSION 66: a dropped stack of 0x1397e whose owner is
+            // the faction 0x28170
+            ("19-DropItem-5.json", Ok(())),
         ];
         for (name, verdict) in verdicts {
             let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));

@@ -172,6 +172,8 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     ("Entry", "ownerId"),
     ("PutItem", "ownerId"),
     ("TakeItem", "ownerId"),
+    // a dropped stack's owner (SCHEMA_VERSION 66)
+    ("DropItem", "ownerId"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

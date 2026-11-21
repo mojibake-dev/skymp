@@ -39,11 +39,11 @@ export interface Extra {
   poisonCount?: number;
   worn?: boolean;
   wornLeft?: boolean;
-  // thuum tracker #98 (sync/createdForms.ts): on the wire alone, a created
-  // form by its definition: the brewed potion or poison this stack is (then
-  // baseId is its game-file template), the item's made enchantment (no
-  // enchantmentId then), a brewed poison on the weapon (no poisonId then).
-  // An entry this engine reads names its own forms by id instead
+  // on the wire alone, a created form by its definition (sync/createdForms.ts):
+  // the brewed potion or poison this stack is (then baseId is its game-file
+  // template), the item's made enchantment (no enchantmentId then), a brewed
+  // poison on the weapon (no poisonId then). An entry this engine reads names
+  // its own forms by id instead
   createdBase?: CreatedForm;
   createdEnchantment?: CreatedForm;
   createdPoison?: CreatedForm;
@@ -125,12 +125,11 @@ const namesEqual = (a: Entry, b: Entry): boolean => {
   return false;
 };
 
-// thuum tracker #98 (look 2's temper, note 4020): the record holds an item's
-// health as the wire's f32 (Inventory.h, skymp.rs), so 1.1 comes back as
-// 1.100000023841858, while extractExtraData reads the engine's to one decimal.
-// Health is compared at that one decimal on both sides, so a tempered stack the
-// record holds is the stack the engine holds (=== removed and re-added the Fine
-// dagger at every 5 s apply, 103 times in look 2)
+// The record holds an item's health as the wire's f32 (Inventory.h,
+// skymp.rs), so 1.1 comes back as 1.100000023841858, while extractExtraData
+// reads the engine's to one decimal. Health is compared at that one decimal on
+// both sides, so a tempered stack the record holds is the stack the engine
+// holds, and an apply does not remove and re-add it
 const sameHealth = (x: number | undefined, y: number | undefined): boolean =>
   x === undefined || y === undefined ? x === y : Math.round(x * 10) === Math.round(y * 10);
 
@@ -145,7 +144,7 @@ const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
     a.soul === b.soul &&
     a.poisonId === b.poisonId &&
     a.poisonCount === b.poisonCount &&
-    // thuum tracker #98: a wire entry's created forms by their definition
+    // a wire entry's created forms by their definition
     sameCreated(a.createdBase, b.createdBase) &&
     sameCreated(a.createdEnchantment, b.createdEnchantment) &&
     sameCreated(a.createdPoison, b.createdPoison) &&
@@ -407,20 +406,20 @@ const resetBase = (refr: ObjectReference): void => {
 // "something changed"
 export interface ApplyInventoryReport {
   changed: Set<number>;
-  // thuum tracker #98: a created form the server's inventory names was
-  // still being made by this engine, so its stack waits for a later apply
+  // a created form the server's inventory names was still being made by
+  // this engine, so its stack waits for a later apply
   pending?: boolean;
 }
 
-// thuum tracker #98: each reference's latest apply while a retry for it
-// waits, so the retry lands only while no newer inventory came for it. The
-// number is one counter's for every apply, and an apply with nothing to wait
-// for drops its reference's entry, so the map holds the references with a
-// retry waiting alone (the review of fec33b6f5..47e3ede74, finding 10)
+// each reference's latest apply while a retry for it waits, so the retry
+// lands only while no newer inventory came for it. The number is one
+// counter's for every apply, and an apply with nothing to wait for drops its
+// reference's entry, so the map holds the references with a retry waiting
+// alone
 const applyGenerations = new Map<number, number>();
 let applyCounter = 0;
 // updates a retry waits for the engine's creator (queued on the main thread
-// by createCreatedForm, answered within a frame or two: HYPOTHESIS), and the
+// by createCreatedForm; assumes it answers within a frame or two), and the
 // tries before the apply stops waiting
 const createdRetryUpdates = 10;
 const createdRetries = 5;
@@ -458,8 +457,7 @@ const keptBy = (e: Entry, keep: ReadonlyMap<number, number>): boolean => {
 // One TESModPlatform.addItemEx of `count` of the entry's form `f` with the
 // entry's extras as they are (its enchantment, charge, poison, soul, health,
 // the name the server records), after pushWornState when the entry is worn;
-// the caller queues the 3D update. Shared by applyInventory and, since thuum
-// tracker #98 (the review of fec33b6f5..47e3ede74, finding 3), the player's
+// the caller queues the 3D update. Shared by applyInventory and the player's
 // login equipment (sync/equipment.ts applyEquipment), so a worn stack with
 // extras lands as the record has it and the inventory loop finds it so
 export const addItemExEntry = (refr: ObjectReference, f: Form, e: Entry, count: number): void => {
@@ -493,9 +491,8 @@ export const addItemExEntry = (refr: ObjectReference, f: Form, e: Entry, count: 
     e.chargePercent ? e.chargePercent : 0,
     // Only a name the server records: any name makes addItemEx build an
     // extra list (ExtraTextDisplayData, no ExtraCount) that the engine
-    // counts as one item, so 3 Wheat showed as "Wheat" and "Wheat (2)"
-    // (thuum playtest seven). extrasEqual ignores names, so the diff
-    // does not change.
+    // counts as one item, so 3 Wheat would show as "Wheat" and "Wheat (2)".
+    // extrasEqual ignores names, so the diff does not change.
     e.name ? cropName(e.name) : "",
     e.soul ? e.soul : 0,
     e.poisonId ? Potion.from(Game.getFormEx(e.poisonId)) : null,
@@ -539,14 +536,14 @@ export const applyInventory = (
   if (resetBaseFirst) {
     resetBase(refr);
   }
-  // thuum tracker #98 (sync/createdForms.ts): the server's created forms in
-  // this engine's ids, made by its own creators where it holds none yet; a
-  // stack whose form is still being made waits, and meanwhile no stack of a
-  // form this engine made is taken away (it may be that one), then the apply
-  // runs again once the creator has answered, unless a newer inventory came.
-  // The player's own apply is its loop's (remoteServer.ts, which reads the
-  // report's pending and comes back sooner, under its menu gate), so only
-  // another reference's (a container's, a body's) retries here
+  // the server's created forms in this engine's ids (sync/createdForms.ts),
+  // made by its own creators where it holds none yet; a stack whose form is
+  // still being made waits, and meanwhile no stack of a form this engine made
+  // is taken away (it may be that one), then the apply runs again once the
+  // creator has answered, unless a newer inventory came. The player's own apply
+  // is its loop's (remoteServer.ts, which reads the report's pending and comes
+  // back sooner, under its menu gate), so only another reference's (a
+  // container's, a body's) retries here
   const refrId = refr.getFormID();
   const generation = ++applyCounter;
   const local = toLocalInventory(newInventory);

@@ -19,7 +19,7 @@ struct OnEquipMessage : public MessageBase<OnEquipMessage>
   }
 
   uint32_t baseId = 0;
-  // thuum tracker #98: a brewed potion drunk or a brewed poison put on a
-  // weapon, by its definition; baseId is then its game-file template
+  // a brewed potion drunk or a brewed poison put on a weapon, by its
+  // definition; baseId is then its game-file template
   std::optional<CreatedForm> createdBase;
 };

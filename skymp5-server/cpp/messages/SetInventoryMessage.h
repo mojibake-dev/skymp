@@ -20,8 +20,8 @@ struct SetInventoryMessage : public MessageBase<SetInventoryMessage>
   }
 
   Inventory inventory;
-  // thuum tracker #98 (SCHEMA_VERSION 62): the seq of the CraftReport this
-  // inventory answers, the record after the report was taken or refused;
-  // absent on every other inventory
+  // SCHEMA_VERSION 62: the seq of the CraftReport this inventory answers,
+  // the record after the report was taken or refused; absent on every other
+  // inventory
   std::optional<uint32_t> craftAck;
 };

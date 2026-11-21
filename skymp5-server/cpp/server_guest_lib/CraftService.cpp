@@ -396,10 +396,10 @@ std::string DescribeStack(const Inventory::Entry& e)
   return out;
 }
 
-// The record as the answer to report `seq` (SetInventory's craftAck,
-// SCHEMA_VERSION 62), sent at once: the seat ends its hold on it, never on an
-// inventory sent before the report was read. The deferred inventory word the
-// record's edits queued follows with the same rows
+// The record as the answer to report `seq` (SetInventory's craftAck), sent at
+// once: the client ends its hold on it, never on an inventory sent before the
+// report was read. The deferred inventory message the record's edits queued
+// follows with the same rows
 void SendCraftAnswer(MpActor& me, uint32_t seq)
 {
   SetInventoryMessage answer;
@@ -418,7 +418,7 @@ void CraftService::OnCraftReport(const RawMessageData& rawMsgData,
                         rawMsgData.userId);
   }
 
-  // the worn flag is the seat's own, never the record's (OnPutItem's rule)
+  // the worn flag is the client's own, never the record's (OnPutItem's rule)
   std::vector<Inventory::Entry> lost = msg.lost;
   std::vector<Inventory::Entry> gained = msg.gained;
   for (auto& stack : lost) {
@@ -449,8 +449,8 @@ void CraftService::OnCraftReport(const RawMessageData& rawMsgData,
     if (!rows->empty()) {
       me->RemoveItems(*rows);
     }
-    // R2: what the crafter's engine made, as it reported it (recorded
-    // unvalidated; a created form's effects are its menu's numbers)
+    // what the crafter's engine made, as it reported it, recorded
+    // unvalidated (a created form's effects are its menu's numbers)
     if (!gained.empty()) {
       me->AddItems(gained);
     }
@@ -463,12 +463,11 @@ void CraftService::OnCraftReport(const RawMessageData& rawMsgData,
     return;
   }
 
-  // a disenchant destroys a stack's item and teaches its game-file
-  // enchantment or that enchantment's base (HYPOTHESIS, the static read of
-  // tracker #98 note 3924). Which one the stack carried is the engine's: a
-  // weapon's or an armor's own record names it (libespm's WEAP reads no
-  // EITM), so the server holds each to an ENCH of the files and the sitting
-  // to a lost stack that can carry one, and records the rest unvalidated
+  // assumes a disenchant destroys a stack's item and teaches its game-file
+  // enchantment or that enchantment's base. Which one the stack carried is
+  // the engine's, so the server holds each to an ENCH of the files and the
+  // sitting to a lost stack that can carry one, and records the rest
+  // unvalidated
   size_t learned = 0;
   if (!msg.learnedEnchantments.empty() && partOne.worldState.HasEspm()) {
     auto& br = partOne.worldState.GetEspm().GetBrowser();

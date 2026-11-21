@@ -1257,7 +1257,7 @@ bool MpActor::PoisonRightHandWeapon(const Inventory::Entry& spent)
   const auto isWeapon = [&](const Inventory::Entry& e) {
     return e.baseId == *weaponId && e.count > 0;
   };
-  // a brewed poison's mark (thuum tracker #98) counts as a poison as well
+  // a brewed poison's mark counts as a poison as well
   if (std::any_of(inv.entries.begin(), inv.entries.end(),
                   [&](const Inventory::Entry& e) {
                     return isWeapon(e) &&
@@ -1283,7 +1283,7 @@ bool MpActor::PoisonRightHandWeapon(const Inventory::Entry& spent)
   Inventory::Entry marked = *it;
   marked.count = 1;
   if (spent.createdBase) {
-    // thuum tracker #98: a brewed poison marks the weapon by its definition
+    // a brewed poison marks the weapon by its definition
     marked.createdPoison = spent.createdBase;
     marked.poisonId.reset();
   } else {
@@ -1314,8 +1314,7 @@ std::optional<uint32_t> MpActor::SpendPoisonDose(
   Inventory inv = GetInventory();
   auto it = std::find_if(
     inv.entries.begin(), inv.entries.end(), [&](const Inventory::Entry& e) {
-      // thuum tracker #98: a brewed poison's mark counts when the caller
-      // takes its definition
+      // a brewed poison's mark counts when the caller takes its definition
       const bool poisoned = e.poisonId.has_value() ||
         (created != nullptr && e.createdPoison.has_value());
       return e.baseId == weaponId && e.count > 0 && poisoned &&
@@ -1970,8 +1969,8 @@ bool MpActor::OnEquipCreated(uint32_t templateId, const CreatedForm& form)
   if (form.kind == CreatedForm::kPoison) {
     return PoisonRightHandWeapon(held);
   }
-  // the effects the record's stack holds, the crafter's engine's numbers
-  // (R2), run through the effect rule as a game-file potion's are
+  // the effects the record's stack holds, the crafter's engine's numbers,
+  // run through the effect rule as a game-file potion's are
   // (EatItemEvent), with the template as their source; the template's own
   // record never runs
   Inventory::Entry one = held;
@@ -4241,14 +4240,12 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 
   const int count = entry.count;
 
-  // thuum docs/verbs/npc-fate.md (1c; the review of 7c3c9f79, finding 8): a
-  // drop of what the record does not hold is refused by name, no throw, the
-  // dropper resynced, as a take or a put is. Since SCHEMA_VERSION 63 (thuum
-  // tracker #98, Eli's look 2) the drop names its stack with its extras and
-  // created forms, and the record's own rows that stand for it are the ones
-  // taken (CraftService::HeldRows, a craft report's match: the base, the
-  // created definitions and the lasting extras): a plain row the record
-  // lacked made RemoveItems throw on look 2's enchanted dagger
+  // A drop of what the record does not hold is refused by name, no throw,
+  // the dropper resynced, as a take or a put is. The drop names its stack
+  // with its extras and created forms, and the record's own rows that stand
+  // for it are the ones taken (CraftService::HeldRows, a craft report's
+  // match: the base, the created definitions and the lasting extras), so
+  // RemoveItems is never handed a row the record lacks, which would throw
   const auto rows = CraftService::HeldRows(GetInventory(), { entry });
   if (!rows) {
     spdlog::warn("[verb:containers] E_DROP_NOT_HELD: {:x} drops {} of {:x}{} "
@@ -4318,10 +4315,10 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 
   placedObject->SetCount(count);
 
-  // thuum tracker #98 (SCHEMA_VERSION 63): a dropped stack's extras and
-  // created forms stay with its copy as the copy's own rows, given back whole
-  // at its pickup (MpObjectReference::GivePickupItemsToActivationSource); the
-  // copy's change form keeps them through a restart as any reference's rows
+  // A dropped stack's extras and created forms stay with its copy as the
+  // copy's own rows, given back whole at its pickup
+  // (MpObjectReference::GivePickupItemsToActivationSource); the copy's change
+  // form keeps them through a restart as any reference's rows
   const bool carries =
     std::any_of(rows->begin(), rows->end(), [](const Inventory::Entry& r) {
       return r.health || r.enchantmentId || r.maxCharge || r.soul ||

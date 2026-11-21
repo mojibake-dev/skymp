@@ -8,9 +8,8 @@ Napi::Value GetExtraContainerChanges(const Napi::CallbackInfo& info);
 Napi::Value GetContainer(const Napi::CallbackInfo& info);
 Napi::Value SetInventory(const Napi::CallbackInfo& info);
 
-// thuum tracker #98 (crafting; Eli's decision of 2026-11-16: relay the
-// crafter's record): a form this engine made at runtime, for the wire and
-// back. readCreatedForm(formId): {kind, effects} for a created potion,
+// A form this engine made at runtime, for the wire and back.
+// readCreatedForm(formId): {kind, effects} for a created potion,
 // poison or enchantment (a form id above 0xFEFFFFFF the engine's
 // BGSCreatedObjectManager holds), kind 0 a weapon enchantment, 1 an armor
 // enchantment, 2 a potion, 3 a poison, each effect its MGEF's form id,

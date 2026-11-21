@@ -451,12 +451,10 @@ public:
   virtual void OnCraftItem(const RawMessageData& rawMsgData,
                            const CraftItemMessage& msg);
 
-  // thuum tracker #98 (crafting; Eli's decision of 2026-11-16: relay the
-  // crafter's record): one sitting at a crafting bench as the sender's
-  // engine read it, R2 (CraftService::OnCraftReport): the lost stacks taken
-  // from the record when it holds every one (else nothing changes and the
-  // record goes back), the gained ones added as reported, the learned
-  // enchantments kept
+  // One sitting at a crafting bench as the sender's engine read it
+  // (CraftService::OnCraftReport): the lost stacks taken from the record
+  // when it holds every one (else nothing changes and the record goes back),
+  // the gained ones added as reported, the learned enchantments kept
   virtual void OnCraftReport(const RawMessageData& rawMsgData,
                              const CraftReportMessage& msg);
 
@@ -562,8 +560,8 @@ private:
   // thuum docs/verbs/learned-effects.md: Ingredient.LearnEffect on its client
   // for each effect the player has learned
   void SendIngredientEffects(MpActor& actor);
-  // thuum tracker #98: Form.SetPlayerKnows(true) on its client for each
-  // enchantment the player learned by disenchanting
+  // Form.SetPlayerKnows(true) on its client for each enchantment the player
+  // learned by disenchanting
   void SendKnownEnchantments(MpActor& actor);
   // thuum docs/verbs/favorites.md: the player's favorites, for its client's
   // engine to mark
@@ -582,14 +580,14 @@ private:
   // `target` aimed at its figure of `aggressor` and that figure aimed at the
   // NPC (NotifyHostility's first tell and #126's re-tell)
   void TellHostOfFight(MpActor& aggressor, MpActor& target, MpActor& host);
-  // thuum docs/verbs/stagger.md: after a hit's damage, the stagger the
-  // engine's rule gives it, played in the victim's game
-  // thuum tracker #98 (look 2: "other player does not see fire"): an
-  // enchanted weapon's hit, its enchantment's effects run on the target by
-  // the effect rule and its cast relayed to the struck actor's own game
+  // An enchanted weapon's hit: its enchantment's effects run on the target
+  // by the effect rule, and its cast relayed to the struck actor's own game
+  // so that game draws the effect
   void RunEnchantedHit(MpActor& aggressor, MpActor& target,
                        const HitData& hitData);
 
+  // thuum docs/verbs/stagger.md: after a hit's damage, the stagger the
+  // engine's rule gives it, played in the victim's game
   void NotifyStagger(MpActor& aggressor, MpActor& target,
                      const HitData& hitData, bool dealtDamage);
   // playtest 51's infection: the victim's own game applies another actor's

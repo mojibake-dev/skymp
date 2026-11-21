@@ -1825,17 +1825,15 @@ EventResult EventHandler::ProcessEvent(
 
     auto* caster = RE::TESForm::LookupByID<RE::Actor>(casterId);
     auto* spell = RE::TESForm::LookupByID<RE::SpellItem>(spellId);
-    // thuum tracker #98 (look 2's staff at Tel Mithryn, note 4020): a staff's
-    // cast names the staff's enchantment, a MagicItem that is no SpellItem,
-    // so the SpellItem lookup above dropped every staff's cast here ("spell
-    // not a MagicItem") and no cast left the caster's game. Such a cast is
-    // the hand's that holds a staff whose own enchantment it is
+    // A staff's cast names the staff's enchantment, a MagicItem that is no
+    // SpellItem, so the SpellItem lookup above finds nothing for it. Such a
+    // cast is the hand's that holds a staff whose own enchantment it is
     // (CommonLibSSE-NG Actor.h:541 GetEquippedObject, TESObjectWEAP.h:253
     // IsStaff, TESEnchantableForm.h:26 formEnchanting); a melee weapon's
     // enchantment raises this event at its hits, which are no casts, and is
-    // dropped as before. HYPOTHESIS: a staff made at a staff enchanter is a
-    // game-file staff whose record names its enchantment (docs/verbs/
-    // crafting.md: staffs are ConstructibleObjectMenu recipes)
+    // dropped. Assumes a staff made at a staff enchanter is a game-file staff
+    // whose record names its enchantment (staffs are ConstructibleObjectMenu
+    // recipes)
     auto* enchantment =
       spell ? nullptr : RE::TESForm::LookupByID<RE::EnchantmentItem>(spellId);
 

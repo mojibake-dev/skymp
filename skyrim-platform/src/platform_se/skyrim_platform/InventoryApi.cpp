@@ -349,9 +349,8 @@ Napi::Value InventoryApi::SetInventory(const Napi::CallbackInfo& info)
   return info.Env().Undefined();
 }
 
-// thuum tracker #98 (crafting; Eli's decision of 2026-11-16: relay the
-// crafter's record). The static read behind every engine claim below is
-// tracker #98 note 3924 (HYPOTHESIS until a lab read): the four creators of
+// Forms the engine makes at runtime, read for the wire and made from it.
+// Assumed from a static read of the engine: the four creators of
 // BGSCreatedObjectManager (CommonLibSSE-NG include/RE/B/
 // BGSCreatedObjectManager.h; AddWeaponEnchantment and AddArmorEnchantment are
 // CommonLib's own, src/RE/B/BGSCreatedObjectManager.cpp:11-23; AddPotion
@@ -361,13 +360,13 @@ Napi::Value InventoryApi::SetInventory(const Napi::CallbackInfo& info)
 // form above 0xFEFFFFFF. The engine counts a created form's references
 // (CreatedMagicItemData::refCount) and deletes it at none: its own console
 // path (PlayerCreatePotion 22506) adds one per inventory unit and releases
-// the creator's slot, and a drink releases one. Our applies add units through
-// TESModPlatform.addItemEx, which counts none, so a drink could take the
-// count to none with units still held: every form this native makes or reads
-// is pinned for the session instead (kCreatedPin references added once, on
-// the main thread, under the manager's lock), which no session's drinks
+// the creator's slot, and a drink releases one. Units added through
+// TESModPlatform.addItemEx count none, so a drink could take the count to
+// none with units still held: every form this native makes or reads is
+// pinned for the session instead (kCreatedPin references added once, on the
+// main thread, under the manager's lock), more than a session's drinks
 // spend. The creators run on the main thread (SKSE's UI task queue, as
-// ChangeForm.cpp's apply), never on this JS thread.
+// ChangeForm.cpp's apply), never on the JS thread.
 namespace {
 constexpr uint32_t kCreatedWeaponEnchantment = 0;
 constexpr uint32_t kCreatedArmorEnchantment = 1;
@@ -391,17 +390,16 @@ struct CreatedDef
   std::vector<CreatedEffectDef> effects;
 };
 
-// The engine's effect compare (the review of fec33b6f5..47e3ede74, finding
-// 4, read in Ghidra at 0x1401430f0: HYPOTHESIS until a lab read) skips the
-// magnitude of an MGEF flagged kNoMagnitude, the area of one flagged kNoArea
-// and the duration of one flagged kNoDuration (CommonLibSSE-NG
-// include/RE/E/EffectSetting.h:54-56), and compares conditions (a created
-// form has none) but not the cost. So a definition is normalized before any
-// key is built, on the way out (ReadCreatedForm) and on the way in
-// (CreateCreatedForm): each skipped field zeroed, so two definitions the
-// engine takes for one form are one on the wire, in the record and in every
-// cache. The MGEF is a game-file form, read on the calling thread
-// (LookupByID takes no lock at this CommonLib pin: HYPOTHESIS that a
+// The engine's effect compare (0x1401430f0, assumed from a static read)
+// skips the magnitude of an MGEF flagged kNoMagnitude, the area of one
+// flagged kNoArea and the duration of one flagged kNoDuration
+// (CommonLibSSE-NG include/RE/E/EffectSetting.h:54-56), and compares
+// conditions (a created form has none) but not the cost. So a definition is
+// normalized before any key is built, on the way out (ReadCreatedForm) and
+// on the way in (CreateCreatedForm): each skipped field zeroed, so two
+// definitions the engine takes for one form are one on the wire, in the
+// record and in every cache. The MGEF is a game-file form, read on the
+// calling thread (LookupByID takes no lock at this CommonLib pin; assumes a
 // game-file MGEF never moves under it); false when this game holds none
 bool NormalizeCreatedEffect(CreatedEffectDef& e,
                             const RE::EffectSetting* setting)
@@ -439,15 +437,15 @@ std::string CreatedKey(const CreatedDef& def)
 
 std::mutex g_createdMutex;
 // definition key -> the local form made or read for it. Unbounded: a
-// session holds one entry per distinct created form its inventories name
-// (a few dozen; the review's finding 10), and each costs a key and an id. A
-// cached form the engine no longer holds (a load game clears its created
-// forms) is dropped at its next ask and made again
+// session holds one entry per distinct created form its inventories name (a
+// few dozen), and each costs a key and an id. A cached form the engine no
+// longer holds (a load game clears its created forms) is dropped at its next
+// ask and made again
 std::unordered_map<std::string, RE::FormID> g_createdForms;
 std::unordered_set<std::string> g_createdQueued;
 std::unordered_set<RE::FormID> g_createdPinned;
 // definition key -> when its creator last made none: asked again after
-// kCreatedRetryMs, never refused for the session (the review's finding 5)
+// kCreatedRetryMs, never refused for the session
 std::unordered_map<std::string, std::chrono::steady_clock::time_point>
   g_createdFailed;
 constexpr auto kCreatedRetryMs = std::chrono::milliseconds(5000);
@@ -495,7 +493,7 @@ RE::MagicItem* CreatedMagicItem(RE::TESForm* form)
 }
 
 // Main thread: kCreatedPin references on the manager's record of `item`
-// (HYPOTHESIS: a reference held here keeps the engine from deleting the form
+// (assumes a reference held here keeps the engine from deleting the form
 // while this session runs)
 void PinCreatedOnMain(RE::MagicItem* item)
 {
@@ -549,10 +547,10 @@ void QueuePinCreated(RE::FormID formId)
   }
 }
 
-// AddPotion and AddPoison as the static read gives them: the manager, the
-// slot the made form is written to (holding one reference) and the effect
-// list (HYPOTHESIS; the slot is read after the call, so a return value the
-// read did not name is never used)
+// AddPotion and AddPoison as a static read gives them (assumed): the
+// manager, the slot the made form is written to (holding one reference) and
+// the effect list; only the slot is read after the call, so a return value,
+// if any, is never used
 using AddAlchemyFn = void (*)(RE::BGSCreatedObjectManager*, RE::AlchemyItem**,
                               RE::BSTArray<RE::Effect>&);
 
@@ -602,12 +600,11 @@ RE::MagicItem* CreateOnMain(const CreatedDef& def)
 Napi::Value InventoryApi::ReadCreatedForm(const Napi::CallbackInfo& info)
 {
   const auto formId = NapiHelper::ExtractUInt32(info[0], "formId");
-  // LookupByID reads the form map unlocked at this CommonLib pin
-  // (HYPOTHESIS: a created form this engine's inventory names is not
-  // deleted in the window, the pin holding it once read); the manager's
-  // record and the form's effect list are read under the manager's lock,
-  // which the engine's creators and its reference steps take (the review of
-  // fec33b6f5..47e3ede74, finding 6)
+  // LookupByID reads the form map unlocked at this CommonLib pin (assumes a
+  // created form this engine's inventory names is not deleted in the window,
+  // the pin holding it once read); the manager's record and the form's effect
+  // list are read under the manager's lock, which the engine's creators and
+  // its reference steps take
   auto* item = CreatedMagicItem(RE::TESForm::LookupByID(formId));
   auto* manager = RE::BGSCreatedObjectManager::GetSingleton();
   if (!item || !manager) {
@@ -697,8 +694,8 @@ Napi::Value InventoryApi::CreateCreatedForm(const Napi::CallbackInfo& info)
   {
     std::lock_guard lock(g_createdMutex);
     if (auto it = g_createdForms.find(key); it != g_createdForms.end()) {
-      // a form a load game took away is made again (HYPOTHESIS: the load
-      // clears the created-object manager's forms)
+      // a form a load game took away is made again (assumes a load clears
+      // the created-object manager's forms)
       if (CreatedMagicItem(RE::TESForm::LookupByID(it->second))) {
         return Napi::Number::New(info.Env(), static_cast<double>(it->second));
       }

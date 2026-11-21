@@ -606,8 +606,8 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // the record first, so the record sent below gives it back
       partOne.RecordShoutsOfKnownWords(*actor);
       SendShoutRecord(*actor);
-      // thuum tracker #98: the enchantments it learned by disenchanting,
-      // known again (a relaunch's engine starts with none)
+      // the enchantments it learned by disenchanting, known again (a
+      // relaunched engine starts with none)
       SendKnownEnchantments(*actor);
     }
 
@@ -2280,12 +2280,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   std::vector<Inventory::Entry> staleItems;
 
   const auto& inventory = actor->GetInventory();
-  // thuum tracker #98 (look 2, note 4020): the report's brewed potion or
-  // poison names its template base and its definition; the record's stack
-  // of it is found by that definition, normalized as a report's rows are
-  // (CraftService::NormalizeCreated), never by the plain base, which no plain
-  // count holds (Inventory::HasItem). Each equipment report while a brew was
-  // in the bag erased its row and resent the whole inventory
+  // A reported brewed potion or poison names its template base and its
+  // definition; the record's stack of it is found by that definition,
+  // normalized as a report's rows are (CraftService::NormalizeCreated), never
+  // by the plain base, which no plain count holds (Inventory::HasItem), or
+  // each equipment report while a brew is in the bag would erase its row and
+  // resend the whole inventory
   const auto heldCreated = [&](const Inventory::Entry& reported) {
     Inventory::Entry e = reported;
     CraftService::NormalizeCreated(partOne.worldState, e);
@@ -3476,11 +3476,11 @@ void ActionListener::SendIngredientEffects(MpActor& actor)
   }
 }
 
-// thuum tracker #98: teach the player's recorded enchantments to its client's
-// engine, SKSE's Form.SetPlayerKnows(true) with the enchantment as self (the
-// known flag alone, CommonLibSSE-NG TESForm.h:349, as a disenchant sets it:
-// HYPOTHESIS, the static read of tracker #98 note 3924), one per enchantment;
-// ShoutSnippets.cpp's word known is the same call
+// Teach the player's recorded enchantments to its client's engine, SKSE's
+// Form.SetPlayerKnows(true) with the enchantment as self, one per
+// enchantment; assumes a disenchant sets only that known flag
+// (CommonLibSSE-NG TESForm.h:349). ShoutSnippets.cpp's word known is the same
+// call
 void ActionListener::SendKnownEnchantments(MpActor& actor)
 {
   const std::vector<std::optional<
@@ -10715,10 +10715,9 @@ void ActionListener::OnDropItem(const RawMessageData& rawMsgData,
                          ac->GetFormId());
   }
 
-  // thuum tracker #98 (SCHEMA_VERSION 63, Eli's look 2: "cannot drop" a brew
-  // or an enchanted item): the drop names its stack with its extras and
-  // created forms, normalized as a craft report's rows are; the worn flags
-  // are not the drop's
+  // The drop names its stack with its extras and created forms, normalized
+  // as a craft report's rows are, so a brewed or enchanted item drops as the
+  // record holds it; the worn flags are not the drop's
   Inventory::Entry entry(baseId, msg.count, msg);
   entry.worn_.reset();
   entry.wornLeft.reset();
@@ -10918,9 +10917,8 @@ void ActionListener::OnEquip(const RawMessageData& rawMsgData,
       std::to_string(rawMsgData.userId));
   }
 
-  // thuum tracker #98: a brewed potion or poison names its template and its
-  // definition; its stack is the record's row of that definition, and a
-  // template is no food
+  // A brewed potion or poison names its template and its definition; its
+  // stack is the record's row of that definition, and a template is no food
   if (msg.createdBase) {
     (void)actor->OnEquipCreated(msg.baseId, *msg.createdBase);
     return;
@@ -12217,16 +12215,13 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     return;
   }
 
-  // thuum tracker #98 (Eli's look 2 at Tel Mithryn: "other player does not
-  // see spell"; note 4020): a staff's cast names the staff's enchantment, an
-  // ENCH no hand slot holds. It is the cast of the hand whose worn weapon in
-  // the caster's record is a staff (libespm WEAP DNAM's animType Staff) with
-  // the form an ENCH of the files: taken and relayed, recorded unvalidated
-  // (R2, rule 5; ADR-063, the caster's game owns its cast). The staff's own
-  // enchantment is its record's EITM, which libespm's WEAP does not read,
-  // so the server holds the hand to a staff and the form to an enchantment.
-  // Before this the caster's platform never sent a staff's cast at all
-  // (EventHandler.cpp's SpellItem lookup), so no other game drew one
+  // A staff's cast names the staff's enchantment, an ENCH no hand slot
+  // holds. It is the cast of the hand whose worn weapon in the caster's
+  // record is a staff (libespm WEAP DNAM's animType Staff) with the form an
+  // ENCH of the files: taken and relayed, recorded unvalidated, as the
+  // caster's game owns its cast. The form is held to an enchantment, not to
+  // the staff record's own EITM. The caster's platform sends a staff's cast
+  // with the staff's enchantment (EventHandler.cpp)
   const bool staffCast = [&]() {
     if (hand > 1 || !partOne.HasEspm()) {
       return false;
@@ -12831,14 +12826,12 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 
   NotifyHostility(*aggressor, targetActor, currentHitTime);
 
-  // thuum docs/verbs/poison.md: a poisoned weapon's hit runs the poison's
-  // effects on the target through the effect rule (ADR-028), the attacker
-  // as caster, and spends a dose; the attacker's game is told its inventory,
-  // so its ExtraPoison agrees. HYPOTHESIS: the game spends a dose on a
-  // blocked hit as well (unmeasured)
-  // thuum tracker #98: a brewed poison's mark runs its definition's
-  // effects, the weapon as their source (the record names no template for
-  // it)
+  // A poisoned weapon's hit runs the poison's effects on the target through
+  // the effect rule, the attacker as caster, and spends a dose; the
+  // attacker's game is told its inventory, so its ExtraPoison agrees. Assumes
+  // the game spends a dose on a blocked hit as well. A brewed poison's mark
+  // runs its definition's effects, the weapon as their source (the record
+  // names no template for it)
   std::optional<CreatedForm> brewed;
   if (const auto poison = ethereal
         ? std::nullopt
@@ -12866,22 +12859,20 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   }
 }
 
-// thuum tracker #98 (Eli's look 2: "other player does not see fire"; note
-// 4020): the weapon a hit names, worn in the aggressor's equipment with an
+// The weapon a hit names, worn in the aggressor's equipment with an
 // enchantment (a file ENCH by id, a made one by its definition), runs that
-// enchantment's effects on the target through the effect rule (ADR-028, a
-// poisoned hit's way above: the server's numbers, the aggressor as caster),
-// and the struck actor's own game is told to cast it from the aggressor's
-// figure at its target (SpellCast, the instant slot, a made enchantment by
-// createdSpell with spell 0): the victim's own game for a player, the host's
-// for an NPC, so the burn plays where the target is simulated. The
-// aggressor's own game ran the enchantment at its hit and is not told; a host
-// that is the aggressor's game is skipped the same way. HYPOTHESIS: a
-// relayed cast on a player lands with its Health number zeroed (Hooks.cpp
-// PlayerAddTarget) and its shader shown; a host's engine number for an NPC
-// is reconciled to the server's by npc-fate's top-up. A game-file enchanted
-// weapon runs its record's own enchantment (libespm WEAP's EITM) the same
-// way
+// enchantment's effects on the target through the effect rule (as a poisoned
+// hit does above: the server's numbers, the aggressor as caster), and the
+// struck actor's own game is told to cast it from the aggressor's figure at
+// its target (SpellCast, the instant slot, a made enchantment by createdSpell
+// with spell 0): the victim's own game for a player, the host's for an NPC,
+// so the effect plays where the target is simulated. The aggressor's own game
+// ran the enchantment at its hit and is not told; a host that is the
+// aggressor's game is skipped the same way. Assumes a relayed cast on a
+// player lands with its Health number zeroed (Hooks.cpp PlayerAddTarget) and
+// its shader shown, and a host's engine number for an NPC is reconciled to
+// the server's record. A game-file enchanted weapon runs its record's own
+// enchantment (libespm WEAP's EITM) the same way
 void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
                                      const HitData& hitData)
 {
@@ -12900,8 +12891,8 @@ void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
   }
   // the stack's own enchantment (made at the enchanter, or a file one an
   // enchanter put on it), else the weapon record's EITM (a game-file
-  // enchanted weapon: the QA chest's Iron Sword of Burning; libespm WEAP,
-  // its id read in the record's own numbering)
+  // enchanted weapon; libespm WEAP, its id read in the record's own
+  // numbering)
   std::optional<uint32_t> fileEnchantment = weapon->enchantmentId;
   if (!weapon->createdEnchantment && !fileEnchantment && partOne.HasEspm()) {
     const auto lookup =

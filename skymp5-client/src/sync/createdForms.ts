@@ -2,18 +2,16 @@ import { createCreatedForm, createdFormTemplate, on, readCreatedForm } from "sky
 import type { Entry, Inventory } from "./inventory";
 import { logLab } from "../logging";
 
-// thuum tracker #98 (crafting; Eli's decision of 2026-11-16: relay the
-// crafter's record, TES3MP's RecordDynamic as prior art). A brewed potion or
-// poison and an enchantment made at the arcane enchanter are forms this
-// engine invents, ids above 0xFEFFFFFF that name nothing on another game or
-// after a relaunch, so the wire carries their definitions (wire-schema
-// skymp.rs CreatedForm, SCHEMA_VERSION 61) and this module is the one place
-// that turns this engine's form into a definition and a definition into
-// this engine's form: a cache first, the platform second (readCreatedForm,
+// A brewed potion or poison and an enchantment made at the arcane enchanter
+// are forms this engine invents, ids above 0xFEFFFFFF that name nothing on
+// another game or after a relaunch, so the wire carries their definitions
+// (wire-schema skymp.rs CreatedForm) and this module is the one place that
+// turns this engine's form into a definition and a definition into this
+// engine's form: a cache first, the platform second (readCreatedForm,
 // createCreatedForm and createdFormTemplate, InventoryApi.cpp). Every entry
 // this game sends goes through toWireEntry; every entry it applies goes
-// through toLocalEntry. The engine facts behind the platform's natives are
-// HYPOTHESIS (tracker #98 note 3924's static read).
+// through toLocalEntry. The engine behavior behind the platform's natives is
+// assumed from a static read (InventoryApi.cpp).
 
 export interface CreatedEffect {
   mgef: number;
@@ -54,9 +52,9 @@ const formByLocal = new Map<number, CreatedForm>();
 const templateByKind = new Map<number, number>();
 let platformMissingSaid = false;
 
-// a load game clears the engine's created forms (HYPOTHESIS, as the
-// platform's own cache assumes, InventoryApi.cpp), so the ids cached here
-// go with it; the platform makes each again at its next ask
+// a load game clears the engine's created forms (assumed, as the platform's
+// own cache assumes, InventoryApi.cpp), so the ids cached here go with it;
+// the platform makes each again at its next ask
 on("loadGame", () => {
   localByKey.clear();
   formByLocal.clear();
@@ -260,15 +258,14 @@ export const toLocalInventory = (inventory: Inventory): LocalInventory => {
   return { inventory: { entries }, pending };
 };
 
-// thuum tracker #98 (the review of fec33b6f5..47e3ede74, finding 3): the
-// worn rows of an equipment in this engine's ids, for the dress at a login
-// and a figure's (sync/equipment.ts applyEquipment). A row whose created
-// form is still being made is dressed plain, its created fields and what
-// rides on them left off (the inventory loop lays the made form when it
+// The worn rows of an equipment in this engine's ids, for the dress at a
+// login and a figure's (sync/equipment.ts applyEquipment). A row whose
+// created form is still being made is dressed plain, its created fields and
+// what rides on them left off (the inventory loop lays the made form when it
 // lands); a brewed base that cannot land yet is left out. `pending` when a
-// row was dressed plain or left out because its form is still being made
-// (x-craft-look-checks v1.7: a figure, which no inventory loop lays again,
-// waits for it instead; sync/equipment.ts applyEquipment)
+// row was dressed plain or left out because its form is still being made (a
+// figure, which no inventory loop lays again, waits for it instead;
+// sync/equipment.ts applyEquipment)
 export const toLocalWornInventory = (inventory: Inventory): LocalInventory => {
   const entries: Entry[] = [];
   let pending = false;

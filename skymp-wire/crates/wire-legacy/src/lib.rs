@@ -139,8 +139,8 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     // tracker #111, docs/verbs/summon.md)
     ("CreateActorProps", "summonEffect"),
     // a created form by its definition: a stack's brewed potion or poison,
-    // its made enchantment, its brewed poison, and a drink's (SCHEMA_VERSION
-    // 61, thuum tracker #98)
+    // its made enchantment, its brewed poison, and a drink's
+    // (SCHEMA_VERSION 61)
     ("Entry", "createdBase"),
     ("Entry", "createdEnchantment"),
     ("Entry", "createdPoison"),
@@ -151,9 +151,9 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     ("TakeItem", "createdEnchantment"),
     ("TakeItem", "createdPoison"),
     ("OnEquip", "createdBase"),
-    // the answer to a crafting report (SCHEMA_VERSION 62, thuum tracker #98)
+    // the answer to a crafting report (SCHEMA_VERSION 62)
     ("SetInventory", "craftAck"),
-    // a drop's extras and created forms (SCHEMA_VERSION 63, thuum tracker #98)
+    // a drop's extras and created forms (SCHEMA_VERSION 63)
     ("DropItem", "health"),
     ("DropItem", "enchantmentId"),
     ("DropItem", "maxCharge"),

@@ -71,8 +71,8 @@ const UnresolvedForm* FindUnresolved(
 
 constexpr const char* kEntryForms[] = { "baseId", "enchantmentId",
                                         "poisonId" };
-// thuum tracker #98 (CreatedForm.h): an entry's created forms, each effect's
-// MGEF a form of the order like the entry's own ids
+// An entry's created forms (CreatedForm.h); each effect's MGEF is a load
+// order form id, described and resolved as the entry's own ids are
 constexpr const char* kEntryCreated[] = { "createdBase", "createdEnchantment",
                                           "createdPoison" };
 
@@ -581,7 +581,7 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     res["ingredientEffects"] = { { "entries", effectsJson } };
   }
 
-  // thuum tracker #98; absent in older records, read as none
+  // absent in older records, read as none
   if (changeForm.knownEnchantments.has_value() &&
       !changeForm.knownEnchantments->empty()) {
     res["knownEnchantments"] = ToStringArray(*changeForm.knownEnchantments);
@@ -1310,7 +1310,7 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     res.ingredientEffects = effects;
   }
 
-  // thuum tracker #98: a record without the key reads as none
+  // a record without the key reads as none
   if (element.at_pointer(knownEnchantments.GetData()).error() ==
       simdjson::error_code::SUCCESS) {
     std::vector<std::string> data;

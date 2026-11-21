@@ -653,10 +653,9 @@ declare module "skyrimPlatform" {
     function on(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle;
     function once(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle;
 
-    // thuum tracker #98 (crafting): the fork's created-form natives
-    // (InventoryApi.cpp), which the published 2.8.0 typings lack; these
-    // mirror the fork's Definitions.txt and the generated skyrimPlatform.ts
-    // (sync/createdForms.ts is their one caller)
+    // skyrim-platform's created-form natives (InventoryApi.cpp), which the
+    // published 2.8.0 typings lack; these mirror its Definitions.txt and the
+    // generated skyrimPlatform.ts (sync/createdForms.ts is their one caller)
     interface CreatedEffect {
         mgef: number;
         magnitude: number;

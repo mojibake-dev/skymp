@@ -10,20 +10,18 @@ import { CraftReportMessage } from "../messages/craftReportMessage";
 import { MsgType } from "../../messages";
 import { logError, logLab } from "../../logging";
 
-// thuum tracker #98 (crafting; Eli's decision of 2026-11-16: relay the
-// crafter's record). Every bench (forge, smelter, tanning rack, grindstone,
-// workbench, cooking pot, alchemy lab, arcane enchanter, staff enchanter)
-// runs the engine's Crafting Menu (HYPOTHESIS for the staff enchanter: the
-// game's own menu name read from isBadMenuShown's list, sync/equipment.ts),
-// so one sitting is the span from its open to its close: this engine's
-// inventory read at both, the difference reported as CraftReport (MsgType
-// 84) with every stack in the wire's shape (sync/createdForms.ts: a brewed
-// potion or a made enchantment by its definition, read from the engine's own
-// form). The server takes the lost stacks from the record and adds the
-// gained ones as reported (R2), so the engine's own menu stays the whole
-// computation: recipes, tempering, brewing, enchanting and disenchanting
-// alike, and the legacy CraftItem (a recipe matched on the server, which
-// knew no brew, no enchant and no temper) is no longer sent.
+// Every bench (forge, smelter, tanning rack, grindstone, workbench, cooking
+// pot, alchemy lab, arcane enchanter, staff enchanter) runs the engine's
+// Crafting Menu (assumed for the staff enchanter: the game's own menu name read
+// from isBadMenuShown's list, sync/equipment.ts), so one sitting is the span
+// from its open to its close: this engine's inventory read at both, the
+// difference reported as CraftReport (MsgType 84) with every stack in the
+// wire's shape (sync/createdForms.ts: a brewed potion or a made enchantment by
+// its definition, read from the engine's own form). The server takes the lost
+// stacks from the record and adds the gained ones as reported, so the engine's
+// own menu stays the whole computation: recipes, tempering, brewing, enchanting
+// and disenchanting alike. The legacy CraftItem (a recipe matched on the
+// server, with no brew, enchant or temper) is not sent.
 const craftingMenu = "Crafting Menu";
 // wire-schema cap::CRAFT_ROWS and cap::CRAFT_LEARNED
 const craftRows = 64;
@@ -55,8 +53,7 @@ export class CraftService extends ClientListener {
     }
     const furniture = player.getFurnitureReference();
     this.sitting = { before: getInventory(player), furnitureId: furniture ? furniture.getFormID() : 0 };
-    // the record's applies wait from here to the sitting's answer (the
-    // review of fec33b6f5..47e3ede74, finding 1)
+    // the record's applies wait from here to the sitting's answer
     holdPcInventoryForSitting();
   }
 
@@ -152,15 +149,14 @@ export class CraftService extends ClientListener {
     return lastSeq;
   }
 
-  // A disenchant destroys an enchanted item, and the engine marks its
-  // game-file enchantment, or that enchantment's base, known (TESForm::
-  // SetPlayerKnows; HYPOTHESIS, the static read of tracker #98 note 3924).
-  // So for each lost stack whose item came back in no other shape (a temper
-  // or an enchant gains its base again), its enchantments are the item's
-  // own (ExtraEnchantment's, a game-file one) and its record's (a weapon's
-  // or an armor's EITM), each with its base enchantment, and the ones this
-  // engine now marks known are reported (one known before is a no-op on the
-  // server's record)
+  // A disenchant destroys an enchanted item, and the engine marks its game-file
+  // enchantment, or that enchantment's base, known (TESForm::SetPlayerKnows;
+  // assumed from a static read of the engine). So for each lost stack whose
+  // item came back in no other shape (a temper or an enchant gains its base
+  // again), its enchantments are the item's own (ExtraEnchantment's, a
+  // game-file one) and its record's (a weapon's or an armor's EITM), each with
+  // its base enchantment, and the ones this engine now marks known are reported
+  // (one known before is a no-op on the server's record)
   private learnedEnchantments(lost: Entry[], gained: Entry[]): number[] {
     const learned = new Set<number>();
     const consider = (enchantment: Enchantment | null) => {

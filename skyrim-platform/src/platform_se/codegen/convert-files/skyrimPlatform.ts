@@ -1859,7 +1859,7 @@ export interface ActorAnimationVariables {
 
 export declare function setInventory(formId: number, inventory: Inventory): void;
 
-// thuum tracker #98 (crafting; the crafter's record relayed): one effect of a form the engine made at runtime, its MGEF by form id and its magnitude, area, duration and cost in the engine's own units
+// One effect of a form the engine made at runtime, its MGEF by form id and its magnitude, area, duration and cost in the engine's own units
 export interface CreatedEffect {
   mgef: number
   magnitude: number
@@ -1867,11 +1867,11 @@ export interface CreatedEffect {
   duration: number
   cost: number
 }
-// thuum tracker #98: a form this engine made at runtime (a brewed potion or poison, a made enchantment; a form id above 0xFEFFFFFF the engine's created-object manager holds): kind 0 a weapon enchantment, 1 an armor enchantment, 2 a potion, 3 a poison, by the manager's table that holds it, and its effects; null for anything else. Read on the calling thread; the form is pinned for the session on the main thread
+// A form this engine made at runtime (a brewed potion or poison, a made enchantment; a form id above 0xFEFFFFFF the engine's created-object manager holds): kind 0 a weapon enchantment, 1 an armor enchantment, 2 a potion, 3 a poison, by the manager's table that holds it, and its effects; null for anything else. Read on the calling thread; the form is pinned for the session on the main thread
 export declare function readCreatedForm(formId: number): { kind: number; effects: CreatedEffect[] } | null;
-// thuum tracker #98: the local form of a created definition: its id when this native made or read one for it before, else 0 with the engine's creator for the kind queued on the main thread (a later call answers its form, pinned for the session); -1 for a definition no creator takes (a kind outside 0 to 3, no effects or more than eight, an MGEF this game does not hold; a creator that made none answers -1 for five seconds, then is asked again). Both this and readCreatedForm zero the magnitude, area or duration the engine's own compare skips for an MGEF flagged kNoMagnitude, kNoArea or kNoDuration
+// The local form of a created definition: its id when this native made or read one for it before, else 0 with the engine's creator for the kind queued on the main thread (a later call answers its form, pinned for the session); -1 for a definition no creator takes (a kind outside 0 to 3, no effects or more than eight, an MGEF this game does not hold; a creator that made none answers -1 for five seconds, then is asked again). Both this and readCreatedForm zero the magnitude, area or duration the engine's own compare skips for an MGEF flagged kNoMagnitude, kNoArea or kNoDuration
 export declare function createCreatedForm(kind: number, effects: CreatedEffect[]): number;
-// thuum tracker #98: the game-file form the engine copies a created form of the kind from (the default objects' base weapon enchantment, base armor enchantment, base potion, base poison), 0 for none
+// The game-file form the engine copies a created form of the kind from (the default objects' base weapon enchantment, base armor enchantment, base potion, base poison), 0 for none
 export declare function createdFormTemplate(kind: number): number;
 
 // thuum docs/verbs/spell-cast.md: with hasLaunch, a target-location spell is launched at the caster's own launch (the point its game picked, engine units) with its angles (radians), not from the figure

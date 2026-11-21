@@ -4,7 +4,7 @@ import { CreatedForm } from "../../sync/createdForms";
 export interface OnEquipMessage {
     t: MsgType.OnEquip,
     baseId: number,
-    // thuum tracker #98: a brewed potion drunk or a brewed poison put on a
-    // weapon, by its definition; baseId is then its game-file template
+    // a brewed potion drunk or a brewed poison put on a weapon, by its
+    // definition; baseId is then its game-file template
     createdBase?: CreatedForm
 }

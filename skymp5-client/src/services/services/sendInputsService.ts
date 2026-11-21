@@ -80,8 +80,8 @@ export class SendInputsService extends ClientListener {
         this.sendOnEquip(event.baseObj.getFormID());
     }
 
-    // thuum tracker #98: a brewed potion or poison crosses as its template and
-    // its definition (sync/createdForms.ts), never as this session's id; one
+    // a brewed potion or poison crosses as its template and its definition
+    // (sync/createdForms.ts), never as this session's id; one
     // whose definition this engine cannot read is not sent (the record keeps
     // the stack, and the next apply gives it back)
     private sendOnEquip(baseId: number) {
@@ -479,8 +479,8 @@ export class SendInputsService extends ClientListener {
                 this.sp.Game.getPlayer() as Actor,
                 this.numEquipmentChanges,
             );
-            // thuum tracker #98: the wire's shape, a created form by its
-            // definition (sync/createdForms.ts)
+            // the wire's shape, a created form by its definition
+            // (sync/createdForms.ts)
             eq.inv = toWireInventory(eq.inv);
             const message: MessageWithRefrId<UpdateEquipmentMessage> = {
                 t: MsgType.UpdateEquipment,

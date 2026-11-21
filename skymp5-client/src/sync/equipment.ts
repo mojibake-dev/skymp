@@ -470,19 +470,15 @@ export const applyEquipment = (ac: Actor, eq: Equipment, keepAlso: readonly numb
     return false;
   }
   const isPlayer = ac.getFormID() === 0x14;
-  // thuum tracker #98 (the review of fec33b6f5..47e3ede74, finding 3): the
-  // record's worn rows in this engine's ids, a made enchantment's form made
-  // by its own creator (sync/createdForms.ts)
+  // the record's worn rows in this engine's ids, a made enchantment's form
+  // made by its own creator (sync/createdForms.ts)
   const worn = toLocalWornInventory(removeUnnecessaryExtra(filterWorn(eq.inv), isPlayer));
-  // x-craft-look-checks v1.7 (20261121-053118): the other seat met c1's made
-  // enchantment first in its re-equip, the creator answered a frame later,
-  // and the figure was dressed plain and never again (no inventory loop lays
-  // a figure's made form), so c1's enchanted sword showed bare on c2. A
-  // figure whose worn row waits on its form keeps its dress and the apply
-  // answers false, so FormView's next pass (formView.ts, lastNumChanges)
-  // dresses it with the form; past figureFormWaitMs it is dressed plain as
-  // before. The player's own dress at a login is unchanged: its inventory
-  // loop lays the form when it lands
+  // A made form's creator answers a frame or more after the ask, and no
+  // inventory loop lays a figure's made form, so a figure whose worn row waits
+  // on its form keeps its dress and the apply answers false: FormView's next
+  // pass (formView.ts, lastNumChanges) dresses it with the form; past
+  // figureFormWaitMs it is dressed plain. The player's own dress at a login
+  // does not wait: its inventory loop lays the form when it lands
   if (!isPlayer && worn.pending) {
     const since = figureFormWaitSince.get(ac.getFormID());
     if (since === undefined) {
@@ -507,12 +503,10 @@ export const applyEquipment = (ac: Actor, eq: Equipment, keepAlso: readonly numb
   // a worn row with lasting extras (a made enchantment, a temper, a poison)
   // is dressed through addItemEx as the record has it. On the player, the
   // inventory loop's next apply then finds the stack it holds, where a plain
-  // one was taken and the record's laid back unworn (the armor came off after
-  // every relaunch). Since Eli's look 2 of #98 ("other player does not see
-  // fire"; note 4020) a figure is dressed the same way, so another seat's
-  // enchanted weapon is worn with its enchantment (its charge full, as
-  // removeUnnecessaryExtra sets it) and a tempered one with its health, where
-  // it was dressed with the base alone
+  // one would be taken and the record's laid back unworn. A figure is dressed
+  // the same way, so another seat's enchanted weapon is worn with its
+  // enchantment (its charge full, as removeUnnecessaryExtra sets it) and a
+  // tempered one with its health
   const plain = newInventory.entries.filter((e) => !hasLastingExtras(e));
   const extras = newInventory.entries.filter((e) => hasLastingExtras(e));
   setInventory(ac.getFormID(), { entries: plain });

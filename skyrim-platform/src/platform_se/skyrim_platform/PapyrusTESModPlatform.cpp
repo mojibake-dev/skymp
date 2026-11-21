@@ -672,15 +672,13 @@ RE::ExtraDataList* CreateExtraDataList()
   return extraList;
 }
 
-// thuum tracker #98 (look 2, note 4020; note 3920's agreed shape, "the 5 s
-// apply carry the item's extra data"): a removal names the container's own
-// stack of that object whose extras match the record's row. The engine's
-// RemoveItem takes an extra list by pointer, so a list built fresh for the
-// removal matched none of the container's and the removal took a plain copy
-// (the temper churn of look 1). The extras compared are the ones the client's
-// extrasEqual compares (sync/inventory.ts): health at one decimal, the
-// enchantment with its charge and unequip flag, the soul, the poison with its
-// doses; the charge left and the name are not compared. Read on the game
+// A removal names the container's own stack of that object whose extras match
+// the record's row. The engine's RemoveItem takes an extra list by pointer, so
+// a list built fresh for the removal would match none of the container's and
+// the removal would take a plain copy. The extras compared are the ones the
+// client's extrasEqual compares (sync/inventory.ts): health at one decimal,
+// the enchantment with its charge and unequip flag, the soul, the poison with
+// its doses; the charge left and the name are not compared. Read on the game
 // thread inside the task below (CommonLibSSE-NG InventoryChanges.h:63,
 // InventoryEntryData.h:59-60, ExtraHealth.h:24, ExtraEnchantment.h:25-27,
 // ExtraSoul.h:27, ExtraPoison.h:26-27)

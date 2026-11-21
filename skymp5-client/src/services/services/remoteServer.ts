@@ -148,19 +148,18 @@ const pcInvKept = (now: number): Map<number, number> | undefined => {
 };
 
 let pcInvLastApply = 0;
-// thuum tracker #98: a crafting sitting changes this engine's inventory
-// ahead of the record, so the loop below lays nothing from the sitting's
-// start to the server's answer (the review of fec33b6f5..47e3ede74,
-// findings 1, 2 and 11). The sitting's hold is set at the Crafting Menu's
-// open (CraftService.onMenuOpen) and kept past its close: Skyrim Platform
-// sends `update` before it runs the frame's queued tasks
+// A crafting sitting changes this engine's inventory ahead of the record, so
+// the loop below lays nothing from the sitting's start to the server's
+// answer. The sitting's hold is set at the Crafting Menu's open
+// (CraftService.onMenuOpen) and kept past its close: Skyrim Platform sends
+// `update` before it runs the frame's queued tasks
 // (SkyrimPlatform.cpp:165-171, :482), and the menu's close is one of them
 // (EventHandler.cpp:2353), so the first update after the close would apply
 // the record from before the sitting before CraftService read the sitting's
 // end. The close turns it into the reply's hold, which only the answer to
-// the sitting's last report ends (SetInventory's craftAck, SCHEMA_VERSION
-// 62; an inventory the server sent before it read the report names none),
-// or its time; a sitting that reported nothing just ends it. A sitting whose
+// the sitting's last report ends (SetInventory's craftAck; an inventory the
+// server sent before it read the report names none), or its time; a
+// sitting that reported nothing just ends it. A sitting whose
 // close never reached CraftService ends on its own sittingCloseGraceMs after
 // the first update that found the menu shut. JS state alone
 let pcInvSitting: { closedSeenMs?: number } | undefined;
@@ -223,8 +222,8 @@ on('update', () => {
       const player = Game.getPlayer()!;
       const report: ApplyInventoryReport = { changed: new Set<number>() };
       applyInventory(player, pcInv, false, true, true, report, pcInvKept(Date.now()));
-      // thuum tracker #98: a created form the record names was still being
-      // made by this engine's creator; the next apply comes in half a second
+      // a created form the record names was still being made by this
+      // engine's creator; the next apply comes in half a second
       if (report.pending) {
         pcInvLastApply = Date.now() - 4500;
       }
@@ -351,8 +350,8 @@ export class RemoteServer extends ClientListener {
     const msg = event.message;
     once('update', () => {
       setPcInventory(msg.inventory);
-      // thuum tracker #98: the answer to the sitting's last report ends the
-      // reply's hold; any other inventory waits under it
+      // the answer to the sitting's last report ends the reply's hold; any
+      // other inventory waits under it
       if (pcInvReply && msg.craftAck !== undefined && msg.craftAck >= pcInvReply.awaitSeq) {
         pcInvReply = undefined;
       }
@@ -2006,13 +2005,12 @@ export class RemoteServer extends ClientListener {
         return;
       }
 
-      // thuum docs/verbs/spell-cast.md: the spell the server relayed (it
-      // relays only a cast of a spell the caster has equipped), not what
-      // this game's figure holds by now, which its equipment's own message
-      // sets and can lag the cast. A target-location cast that carries its
-      // caster's launch is launched at the point the caster's game picked,
-      // with that launch's angles (castSpellImmediate's last six)
-      // thuum tracker #98 (look 2, note 4020): a relayed staff's cast names its
+      // The spell the server relayed (it relays only a cast of a spell the
+      // caster has equipped), not what this game's figure holds by now, which
+      // its equipment's own message sets and can lag the cast. A
+      // target-location cast that carries its caster's launch is launched at
+      // the point the caster's game picked, with that launch's angles
+      // (castSpellImmediate's last six). A relayed staff's cast names its
       // enchantment, a MagicItem no Spell.from takes, and the server's relay of
       // an enchanted weapon's hit names a made enchantment by its definition
       // (createdSpell, spell 0), the form this engine's creator made for it
@@ -2061,9 +2059,9 @@ export class RemoteServer extends ClientListener {
         // the launch's surface, when the cast carries one (the rune's glyph:
         // the observer's game places the caster's decal after its launch)
         const decal = msg.data.hasLaunch ? msg.data.decal : undefined;
-        // thuum tracker #98 (x-craft-look-checks v1.7): the server's relay of
-        // an enchanted hit (the instant hand, castingSource 3, an
-        // Enchantment) said, so a run reads whether it reached this game
+        // the server's relay of an enchanted hit (the instant hand,
+        // castingSource 3, an Enchantment) is logged, so the log shows whether
+        // it reached this game
         if (msg.data.castingSource === 3 && Enchantment.from(spellForm)) {
           logLab("verb:magic-effects", `an enchanted hit's cast ${spell.getFormID().toString(16)} by ${ac.getFormID().toString(16)} at ${target.toString(16)}${msg.data.createdSpell ? " (made at the enchanter)" : ""}`);
         }

@@ -146,9 +146,9 @@ enum class MsgType : uint8_t
                         // placed at a summon effect's apply, and its end
                         // (docs/verbs/summon.md, R2: the caster's row owns
                         // it)
-  CraftReport = 84,     // thuum tracker #98: one sitting at a crafting
-                        // bench, its lost and gained stacks and learned
-                        // enchantments as the crafter's engine read them
-                        // (R2, the crafter's record relayed)
+  CraftReport = 84,     // one sitting at a crafting bench: its lost and
+                        // gained stacks and learned enchantments as the
+                        // crafter's engine read them (the server records
+                        // and relays the crafter's record)
   Max
 };

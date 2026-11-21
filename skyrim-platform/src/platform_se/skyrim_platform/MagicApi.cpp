@@ -356,12 +356,11 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
         return;
       }
 
-      // thuum tracker #98 (look 2's staff, note 4020): a relayed staff's cast
-      // names its enchantment, a MagicItem that is no SpellItem, so the form
-      // is looked up as a MagicItem and its delivery read through MagicItem's
-      // own GetDelivery (CommonLibSSE-NG MagicItem.h:84; CastSpellImmediate
-      // takes a MagicItem, MagicCaster.h:46). The type list below always
-      // named Enchantment, which the SpellItem lookup above it never let by
+      // A relayed staff's cast names its enchantment, a MagicItem that is no
+      // SpellItem, so the form is looked up as a MagicItem and its delivery
+      // read through MagicItem's own GetDelivery (CommonLibSSE-NG
+      // MagicItem.h:84; CastSpellImmediate takes a MagicItem,
+      // MagicCaster.h:46), which lets the type list below take Enchantment
       const auto t = pSpell->GetFormType();
 
       const bool isValidSpellType = t == RE::FormType::Spell ||
@@ -415,18 +414,15 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
         return;
       }
 
-      // thuum tracker #98 (x-craft-look-checks v1.7, 20261121-053118): a
-      // touch effect reaches its target by contact and has no projectile (a
+      // A touch effect reaches its target by contact and has no projectile (a
       // weapon enchantment's: Skyrim.esm MGEF 0x4605a EnchFireDamageFFContact,
-      // delivery 1 by lab/esm.py), so the launch below carried nothing and
-      // the server's relay of an enchanted hit drew no fire on the struck
-      // player's game (has-effect false at six reads). A touch cast at this
-      // game's own player is cast on it, as the self branch above casts on
-      // the actor (CommonLibSSE-NG MagicSystem.h:42 kTouch, MagicCaster.h:46);
-      // what it does to values stays the server's (a figure's numbers on the
-      // player are refused, push.md). Another target keeps the launch: an NPC
-      // this game does not host takes no effect of a figure's from here.
-      // HYPOTHESIS until a run reads the effect on the struck player
+      // delivery Touch), so the launch below would carry nothing to the
+      // target. A touch cast at this game's own player is cast on it, as the
+      // self branch above casts on the actor (CommonLibSSE-NG
+      // MagicSystem.h:42 kTouch, MagicCaster.h:46); what it does to values
+      // stays the server's. Another target keeps the launch: an NPC this game
+      // does not host takes no effect of a figure's from here. Assumes the
+      // engine applies the effect to the player on this direct cast
       if (pSpell->GetDelivery() == RE::MagicSystem::Delivery::kTouch &&
           magicTarget && magicTarget == RE::PlayerCharacter::GetSingleton()) {
         magicCaster->CastSpellImmediate(pSpell, false, magicTarget, 1.0f,

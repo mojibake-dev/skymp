@@ -284,41 +284,34 @@ use bounded::{String, Vec};
 /// cell's host with the presser's recorded inventory, which the host's
 /// acting scope answers GetItemCount from. A new trailing field, so the
 /// number moves for D-PH1 A's reason.
-/// 61: CraftReport (MsgType 84, wire id 92) and the created forms (thuum
-/// tracker #98, crafting; Eli's decision of 2026-11-16: relay the crafter's
-/// record): Entry's, PutItem's and TakeItem's optional `created_base`,
-/// `created_enchantment` and `created_poison` and OnEquip's optional
-/// `created_base`, a brewed potion or poison or a made enchantment named by
-/// its definition, never by the crafting session's own id; and a crafting
-/// sitting's lost and gained stacks and learned enchantments, recorded as
-/// the crafter's engine read them. One number, one shape (D-PH1 A's reason:
-/// postcard writes a struct's fields in order with one presence byte per
-/// Option, so a 60 peer would misread every inventory of a 61 server while
-/// the handshake passed).
-/// 62: CraftReport's `seq` and SetInventory's optional `craft_ack` (thuum
-/// tracker #98, the review of fec33b6f5..47e3ede74, finding 2): the
+/// 61: CraftReport (MsgType 84, wire id 92) and the created forms: Entry's,
+/// PutItem's and TakeItem's optional `created_base`, `created_enchantment`
+/// and `created_poison` and OnEquip's optional `created_base`, a brewed
+/// potion or poison or a made enchantment named by its definition, never by
+/// the crafting session's own id; and a crafting sitting's lost and gained
+/// stacks and learned enchantments, recorded as the crafter's engine read
+/// them. One number, one shape: postcard writes a struct's fields in order
+/// with one presence byte per Option, so a 60 peer would misread every
+/// inventory of a 61 server while the handshake passed.
+/// 62: CraftReport's `seq` and SetInventory's optional `craft_ack`: the
 /// server's answer to a crafting report names it, so the seat ends its hold
-/// on that answer and on no inventory sent before the report was read. CI
-/// pipeline 6420 built 61's images without them, so the shape takes the next
-/// number (D-PH1 A's reason: postcard writes a struct's fields in order, so
-/// a 61 peer would misread every SetInventory of a 62 server while the
-/// handshake passed).
+/// on that answer and on no inventory sent before the report was read. A 61
+/// peer would misread every SetInventory of a 62 server while the handshake
+/// passed.
 /// 63: DropItem carries the dropped stack's extras and its three created
-/// forms, as PutItem and TakeItem do (thuum tracker #98, Eli's look 2 of
-/// 3e8ab5acb: "cannot drop" a brew or an enchanted item; note 3920's agreed
-/// shape, "drops ... carry the item's extra data"); and SpellCast's data
-/// carries `created_spell`, a made enchantment by its definition, which the
+/// forms, as PutItem and TakeItem do, so a dropped brew or enchanted item
+/// matches its row of the record; and SpellCast's data carries
+/// `created_spell`, a made enchantment by its definition, which the
 /// server's relay of an enchanted weapon's hit names to the struck actor's
-/// own game (Eli's look 2: "other player does not see fire"). A 62 peer
-/// would misread every DropItem and SpellCast (D-PH1 A's reason).
-/// 64: thuum tracker #175's PushActor on fork branch m4-pt56-175-npc-shout
-/// (MsgType 85, wire id 93), not on this branch.
-/// 65: thuum tracker #97's Arrest and CrimeGold on fork branch m4-97-jail
-/// (MsgType 86 and 87, wire ids 94 and 95), not on this branch.
-/// The id contract: m4-pt56-98 owns 84 / 92 and 61 to 63,
-/// m4-pt56-175-npc-shout 85 / 93 and 64, m4-97-jail 86 / 94, 87 / 95 and 65;
-/// whichever merges to canon after another replaces that one's placeholder
-/// or renumbers (magna-ge, 2026-11-20).
+/// own game. A 62 peer would misread every DropItem and SpellCast.
+/// 64: PushActor (MsgType 85, wire id 93), not on this branch.
+/// 65: Arrest and CrimeGold (MsgType 86 and 87, wire ids 94 and 95), not on
+/// this branch.
+/// Ids held for messages that are not on every branch yet: MsgType 84 (wire
+/// id 92) CraftReport, 85 (93) PushActor, 86 (94) Arrest and 87 (95)
+/// CrimeGold; schema versions 61 to 63 for CraftReport's shapes, 64 for
+/// PushActor and 65 for Arrest and CrimeGold. A branch without one of these
+/// messages holds its id with a never-sent Reserved placeholder.
 pub const SCHEMA_VERSION: u16 = 63;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
@@ -533,24 +526,23 @@ pub mod cap {
     /// the weapon (x-body-impose 20261111-194559, fitsIn64 true); creatures
     /// and multi-body world objects are unread, so 64 with room.
     pub const PROP_BONES: usize = 64;
-    /// Effects of one created form (thuum tracker #98): a brewed potion's
-    /// are the effects its ingredients share, and three ingredients of four
-    /// effects each share at most six (twelve slots, two to an effect); an
-    /// enchantment made at the enchanter joins at most two known
-    /// enchantments (the Extra Effect perk), each with its own list, whose
-    /// longest in the masters is unread (UNMEASURED). Eight holds a potion's
-    /// six and two enchantments of four; a form past it is not sent and its
-    /// stack stays the crafter's seat's alone.
+    /// Effects of one created form: a brewed potion's are the effects its
+    /// ingredients share, and three ingredients of four effects each share
+    /// at most six (twelve slots, two to an effect); an enchantment made at
+    /// the enchanter joins at most two known enchantments (the Extra Effect
+    /// perk), each with its own list, whose longest in the masters is unread
+    /// (UNMEASURED). Eight holds a potion's six and two enchantments of four;
+    /// a form past it is not sent and its stack stays the crafter's seat's
+    /// alone.
     pub const CREATED_EFFECTS: usize = 8;
-    /// Stacks one crafting report names on each side (thuum tracker #98):
-    /// a sitting's distinct inputs and products, a forge's or a lab's run of
-    /// several recipes; the client sends a longer sitting as several
-    /// reports, each standing alone.
+    /// Stacks one crafting report names on each side: a sitting's distinct
+    /// inputs and products, a forge's or a lab's run of several recipes; the
+    /// client sends a longer sitting as several reports, each standing alone.
     pub const CRAFT_ROWS: usize = 64;
     /// Enchantments one crafting report teaches: a disenchant destroys one
     /// stack's item and teaches its game-file enchantment or that
-    /// enchantment's base (the static read of tracker #98 note 3924), two
-    /// per lost stack at most.
+    /// enchantment's base, two per lost stack at most (assumes the engine's
+    /// disenchant teaches nothing more).
     pub const CRAFT_LEARNED: usize = 2 * CRAFT_ROWS;
     /// References one prop claim names (PropClaim v2): one for a touch, an
     /// impact's bodies for rung 3; the Riverwood cart's blast moved at most
@@ -909,8 +901,7 @@ pub enum Message {
     /// 91, MsgType 83 (thuum tracker #84, docs/verbs/summon.md). See
     /// [`skymp::Summon`].
     Summon(skymp::Summon),
-    /// 92, MsgType 84 (thuum tracker #98, crafting). See
-    /// [`skymp::CraftReport`].
+    /// 92, MsgType 84 (crafting). See [`skymp::CraftReport`].
     CraftReport(skymp::CraftReport),
 }
 
@@ -948,8 +939,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// cap, and UpdateEquipment past the 256 KiB the transport takes from a
 /// client. No real inventory nears it (a merchant's chest holds hundreds of
 /// stacks of a few dozen bytes each), and a message past its cap is refused
-/// at its encode, whole, never truncated (thuum tracker #98, the review of
-/// fec33b6f5..47e3ede74, finding 8: the caps kept, this comment corrected).
+/// at its encode, whole, never truncated.
 const TABLE: [Row; 93] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
@@ -968,8 +958,8 @@ const TABLE: [Row; 93] = [
     row("Activate", 6, 64, C2S),
     row("UpdateProperty", 7, 65 * KIB, S2C),
     // the stack's id, count and target, its extras with the name at its
-    // cap, and since SCHEMA_VERSION 61 (thuum tracker #98) three created
-    // forms at their caps (877 bytes at the longest, pinned by
+    // cap, and since SCHEMA_VERSION 61 three created forms at their caps
+    // (877 bytes at the longest, pinned by
     // a_stack_with_its_created_forms_fits_its_messages_byte_caps)
     row("PutItem", 8, KIB, C2S),
     row("TakeItem", 9, KIB, C2S),
@@ -1100,9 +1090,9 @@ const TABLE: [Row; 93] = [
     // the bench and since SCHEMA_VERSION 62 the report's seq at five-byte
     // varints, 64 lost and 64 gained stacks at their longest (871 bytes
     // each, three created forms at their caps beside the name's) and 128
-    // learned enchantments at five-byte varints (thuum tracker #98;
-    // 112,143 bytes at the longest, pinned by the size test), under the
-    // 256 KiB the transport takes from a client
+    // learned enchantments at five-byte varints (112,143 bytes at the
+    // longest, pinned by the size test), under the 256 KiB the transport
+    // takes from a client
     row("CraftReport", 84, 112 * KIB, C2S),
 ];
 
@@ -1357,7 +1347,7 @@ mod tests {
         assert_eq!(name_of_msg_type(82), Some("OwnHeadParts"));
         // tracker #84's one, after 82: wire id 91
         assert_eq!(name_of_msg_type(83), Some("Summon"));
-        // tracker #98's one, after 83: wire id 92
+        // CraftReport, after 83: wire id 92
         assert_eq!(name_of_msg_type(84), Some("CraftReport"));
         assert_eq!(name_of_msg_type(85), None);
         assert_eq!(Message::CraftReport(skymp::CraftReport::default()).wire_id(), 92);
@@ -2027,8 +2017,8 @@ mod tests {
         assert_eq!(postcard::to_allocvec(&baseline).map(|b| b.len()), Ok(46));
     }
 
-    /// A created form at its caps (thuum tracker #98): every effect's MGEF,
-    /// area and duration at five-byte varints, both floats carried.
+    /// A created form at its caps: every effect's MGEF, area and duration at
+    /// five-byte varints, both floats carried.
     fn created_form_at_its_caps() -> skymp::CreatedForm {
         skymp::CreatedForm {
             kind: skymp::CREATED_POISON,
@@ -2067,11 +2057,10 @@ mod tests {
 
     #[test]
     fn a_stack_with_its_created_forms_fits_its_messages_byte_caps() {
-        // thuum tracker #98 (SCHEMA_VERSION 61): a created form at its caps
-        // is its kind, the count's byte and eight effects of 23 bytes; a
-        // stack carries three behind their presence bytes, so a put or a
-        // take at its longest is the wire id, the three ids, the extras with
-        // the name at its cap and the three forms
+        // a created form at its caps is its kind, the count's byte and eight
+        // effects of 23 bytes; a stack carries three behind their presence
+        // bytes, so a put or a take at its longest is the wire id, the three
+        // ids, the extras with the name at its cap and the three forms
         let form = created_form_at_its_caps();
         assert_eq!(postcard::to_allocvec(&form).map(|b| b.len()), Ok(186));
         let e = entry_at_its_caps();
@@ -2157,9 +2146,9 @@ mod tests {
 
     #[test]
     fn a_craft_report_at_its_caps_fits_its_byte_cap() {
-        // thuum tracker #98 (SCHEMA_VERSION 61): the wire id, a five-byte
-        // bench and (since 62) a five-byte seq, 64 stacks lost and 64 gained
-        // at their longest and 128 learned enchantments at five-byte varints
+        // the wire id, a five-byte bench and (since SCHEMA_VERSION 62) a
+        // five-byte seq, 64 stacks lost and 64 gained at their longest and
+        // 128 learned enchantments at five-byte varints
         let full = Message::CraftReport(skymp::CraftReport {
             workbench: u32::MAX,
             seq: u32::MAX,

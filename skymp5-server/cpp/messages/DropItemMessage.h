@@ -4,10 +4,9 @@
 #include "MsgType.h"
 #include <type_traits>
 
-// thuum tracker #98 (SCHEMA_VERSION 63, Eli's look 2: "cannot drop" a brew or
-// an enchanted item): a drop names its stack with the extras and the created
-// forms a put carries (Inventory::ExtraData; the wire's DropItem has no worn
-// flags, so those read as none)
+// SCHEMA_VERSION 63: a drop names its stack with the extras and the created
+// forms a put carries (Inventory::ExtraData), so a brewed or enchanted item
+// can be dropped; the wire's DropItem has no worn flags, so those read as none
 struct DropItemMessage
   : public MessageBase<DropItemMessage>
   , public Inventory::ExtraData

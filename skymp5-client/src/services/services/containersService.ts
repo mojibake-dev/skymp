@@ -31,10 +31,9 @@ export class ContainersService extends ClientListener {
                     lastInvService.lastInv = getPcInventory();
                 }
                 if (lastInvService.lastInv) {
-                    // thuum tracker #98: compared in the wire's shape, the
-                    // record's own (lastInv is the server's inventory), so a
-                    // created form moves by its definition
-                    // (sync/createdForms.ts)
+                    // compared in the wire's shape, the record's own (lastInv
+                    // is the server's inventory), so a created form moves by
+                    // its definition (sync/createdForms.ts)
                     const newInv = toWireInventory(getInventory(this.sp.Game.getPlayer() as Actor));
 
                     // It seems that 'ignoreWorn = false' fixes this:

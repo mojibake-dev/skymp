@@ -2520,11 +2520,10 @@ void MpObjectReference::GivePickupItemsToActivationSource(
   auto& compressedFieldsCache = GetParent()->GetEspmCache();
   auto t = base.rec->GetType();
 
-  // thuum tracker #98 (SCHEMA_VERSION 63, Eli's look 2): a dropped stack that
-  // carried extras or a created form keeps them as this copy's own rows
-  // (MpActor::DropItem), and its pickup gives those rows back as they were
-  // dropped: the enchanted weapon with its charge and name, the tempered one
-  // with its health, the brewed potion by its definition
+  // A dropped stack that carried extras or a created form keeps them as this
+  // copy's own rows (MpActor::DropItem), and its pickup gives those rows back
+  // as they were dropped: the enchanted weapon with its charge and name, the
+  // tempered one with its health, the brewed potion by its definition
   if (espm::utils::IsItem(t) && !GetInventory().IsEmpty()) {
     const auto rows = GetInventory().entries;
     SetInventory(Inventory());

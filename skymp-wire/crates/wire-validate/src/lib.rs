@@ -325,10 +325,10 @@ pub struct ClientGuard {
     /// casting at its start), so 16 at once, then 4 a second (UNMEASURED; a
     /// cast is seconds apart).
     pub summon_budget: TokenBucket,
-    /// Budget for a seat's crafting reports (CraftReport, thuum tracker #98):
-    /// one at each crafting menu's close, a long sitting split into a few,
-    /// and a player hops between benches seconds apart, so 8 at once, then 2
-    /// a second (UNMEASURED).
+    /// Budget for a seat's crafting reports (CraftReport): one at each
+    /// crafting menu's close, a long sitting split into a few, and a player
+    /// hops between benches seconds apart, so 8 at once, then 2 a second
+    /// (UNMEASURED).
     pub craft_budget: TokenBucket,
 }
 
@@ -573,9 +573,8 @@ fn check_update_action(m: &skymp::UpdateAction) -> Result<(), Reject> {
 /// bow shot does ([`check_launch`]).
 fn check_spell_cast(m: &skymp::SpellCast) -> Result<(), Reject> {
     let d = &m.data;
-    // thuum tracker #98 (SCHEMA_VERSION 63): a cast names a spell, or (the
-    // server's enchanted-hit relay) a made enchantment by its definition with
-    // spell 0, never both
+    // a cast names a spell, or (the server's enchanted-hit relay) a made
+    // enchantment by its definition with spell 0, never both
     let names_its_form = match (&d.created_spell, d.spell) {
         (None, spell) => spell != 0,
         (Some(form), 0) => {
@@ -786,8 +785,8 @@ fn check_summon(m: &skymp::Summon) -> Result<(), Reject> {
     Ok(())
 }
 
-/// One stack as the created-form checks read it (thuum tracker #98): an
-/// [`skymp::Entry`], or a PutItem's or TakeItem's inline fields.
+/// One stack as the created-form checks read it: an [`skymp::Entry`], or a
+/// PutItem's, TakeItem's or DropItem's inline fields.
 struct MovedStack<'a> {
     base_id: u32,
     count: u32,
@@ -818,10 +817,10 @@ fn is_file_form(id: u32) -> bool {
     id != 0 && id < PLAYER_FORMS
 }
 
-/// A created form's definition (thuum tracker #98): a kind the engine's
-/// creators make, one effect at least (the cap bounds the rest at decode),
-/// each naming a game-file MGEF; its floats are finite (`all_finite`, at the
-/// message). `kinds` are the kinds the field it stands in may hold.
+/// A created form's definition: a kind the engine's creators make, one
+/// effect at least (the cap bounds the rest at decode), each naming a
+/// game-file MGEF; its floats are finite (`all_finite`, at the message).
+/// `kinds` are the kinds the field it stands in may hold.
 fn check_created_form(form: &skymp::CreatedForm, kinds: &[u8]) -> Result<(), Reject> {
     if !kinds.contains(&form.kind) || form.effects.is_empty() {
         return Err(Reject::Range);
@@ -854,11 +853,11 @@ fn check_created_fields(s: &MovedStack) -> Result<(), Reject> {
     Ok(())
 }
 
-/// A stack a seat moves (a craft's lost or gained stack, a put, a take;
-/// thuum tracker #98): at least one item, its base and any enchantment or
-/// poison id a game-file form, never a session's own (no session-local id
-/// ever crosses the wire; a created form travels as its definition), and
-/// its created fields well formed. `finite` is the message's float check.
+/// A stack a seat moves (a craft's lost or gained stack, a put, a take, a
+/// drop): at least one item, its base and any enchantment or poison id a
+/// game-file form, never a session's own (no session-local id ever crosses
+/// the wire; a created form travels as its definition), and its created
+/// fields well formed. `finite` is the message's float check.
 fn check_moved_stack(s: &MovedStack, finite: bool) -> Result<(), Reject> {
     if !finite {
         return Err(Reject::NonFinite);
@@ -872,12 +871,11 @@ fn check_moved_stack(s: &MovedStack, finite: bool) -> Result<(), Reject> {
     check_created_fields(s)
 }
 
-/// CraftReport (MsgType 84, thuum tracker #98): the bench a form, a `seq`
-/// from 1 (the server's answer names it), every
-/// stack lost or gained a moved stack ([`check_moved_stack`]), something
-/// lost or gained, and every learned enchantment a game-file form. Whether
-/// the record holds the lost stacks, and whether an enchantment is one, is
-/// the server's.
+/// CraftReport (MsgType 84): the bench a form, a `seq` from 1 (the server's
+/// answer names it), every stack lost or gained a moved stack
+/// ([`check_moved_stack`]), something lost or gained, and every learned
+/// enchantment a game-file form. Whether the record holds the lost stacks,
+/// and whether an enchantment is one, is the server's.
 fn check_craft_report(m: &skymp::CraftReport) -> Result<(), Reject> {
     let finite = all_finite(m);
     if !finite {
@@ -895,9 +893,9 @@ fn check_craft_report(m: &skymp::CraftReport) -> Result<(), Reject> {
     Ok(())
 }
 
-/// OnEquip (MsgType 11): the base a game-file form, never a session's own
-/// (thuum tracker #98: a brewed potion is drunk by its template and its
-/// definition), and a definition a potion's or a poison's.
+/// OnEquip (MsgType 11): the base a game-file form, never a session's own (a
+/// brewed potion is drunk by its template and its definition), and a
+/// definition a potion's or a poison's.
 fn check_on_equip(m: &skymp::OnEquip) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
@@ -911,10 +909,9 @@ fn check_on_equip(m: &skymp::OnEquip) -> Result<(), Reject> {
     }
 }
 
-/// UpdateEquipment (MsgType 5): a stack's created fields well formed (thuum
-/// tracker #98). Its ids are not held to the files here: a host reports an
-/// NPC's whole inventory as its engine holds it, and a refusal drops the
-/// whole report.
+/// UpdateEquipment (MsgType 5): a stack's created fields well formed. Its
+/// ids are not held to the files here: a host reports an NPC's whole
+/// inventory as its engine holds it, and a refusal drops the whole report.
 fn check_update_equipment(m: &skymp::UpdateEquipment) -> Result<(), Reject> {
     if !all_finite(m) {
         return Err(Reject::NonFinite);
@@ -2213,8 +2210,8 @@ fn check_graph_vars(vars: &[skymp::GraphVar]) -> Result<(), Reject> {
 /// `Ok(())` means "well-formed and within rate"; ownership is checked later.
 pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(), Reject> {
     validate_server(msg)?;
-    // thuum tracker #98 (SCHEMA_VERSION 63): a seat's cast names a file form;
-    // a definition rides the server's enchanted-hit relay alone
+    // a seat's cast names a file form; a definition rides the server's
+    // enchanted-hit relay alone
     if let Message::SpellCast(m) = msg {
         if m.data.created_spell.is_some() {
             return Err(Reject::Range);
@@ -2561,8 +2558,8 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
             created_enchantment: m.created_enchantment.as_ref(),
             created_poison: m.created_poison.as_ref(),
         }, all_finite(m)),
-        // thuum tracker #98 (SCHEMA_VERSION 63): a drop is a moved stack, its
-        // base the legacy u64 that must name a file form
+        // a drop is a moved stack, its base the legacy u64 that must name a
+        // file form
         Message::DropItem(m) => match u32::try_from(m.base_id) {
             Ok(base_id) => check_moved_stack(&MovedStack {
                 base_id,
@@ -3167,9 +3164,9 @@ mod tests {
 
     #[test]
     fn a_made_enchantment_rides_the_servers_hit_relay_alone() {
-        // thuum tracker #98 (SCHEMA_VERSION 63): the server's relay of an
-        // enchanted weapon's hit names a made enchantment by its definition with
-        // spell 0; a seat's own cast never carries one, and no cast names both
+        // the server's relay of an enchanted weapon's hit names a made
+        // enchantment by its definition with spell 0; a seat's own cast never
+        // carries one, and no cast names both
         let fire = skymp::CreatedForm {
             kind: skymp::CREATED_WEAPON_ENCHANTMENT,
             effects: vec![skymp::CreatedEffect { mgef: 0x13cae, magnitude: 10.0, area: 0, duration: 1, cost: 30.0 }]
@@ -4141,14 +4138,14 @@ mod tests {
         assert_eq!(validate_server(&state(&[0xbabe4, 0], 1)), Err(Reject::Range));
     }
 
-    /// thuum tracker #98 (SCHEMA_VERSION 61): a crafting report and the
-    /// created forms. Illustrative ids, none read from the files: a brew, an
-    /// enchant and a disenchant pass; each shape rule broken once is
-    /// E_VAL_RANGE (a session id as a base, an enchantment or a poison, a
-    /// count of 0, an unknown kind or a kind in the wrong field, a form
-    /// without effects, an MGEF of 0 or a session's, a made enchantment
-    /// beside an enchantment id, nothing moved, a bench of 0, a learned
-    /// session id), a NaN magnitude E_VAL_NONFINITE, and the budget.
+    /// A crafting report and the created forms. Illustrative ids, none read
+    /// from the files: a brew, an enchant and a disenchant pass; each shape
+    /// rule broken once is E_VAL_RANGE (a session id as a base, an
+    /// enchantment or a poison, a count of 0, an unknown kind or a kind in
+    /// the wrong field, a form without effects, an MGEF of 0 or a session's,
+    /// a made enchantment beside an enchantment id, nothing moved, a bench of
+    /// 0, a learned session id), a NaN magnitude E_VAL_NONFINITE, and the
+    /// budget.
     #[test]
     fn craft_reports_move_file_forms_and_created_definitions_and_are_rate_limited() {
         use wire_schema::skymp::{
@@ -4755,9 +4752,9 @@ mod tests {
             let _ = validate(&hosted(health, &counts), &mut g, 0);
         }
 
-        /// thuum tracker #98: a crafting report of any ids, counts, kinds
-        /// and magnitudes is judged without a panic, and one naming a
-        /// session's id anywhere is never taken.
+        /// A crafting report of any ids, counts, kinds and magnitudes is
+        /// judged without a panic, and one naming a session's id anywhere is
+        /// never taken.
         #[test]
         fn craft_report_never_panics(
             ids in proptest::collection::vec(any::<u32>(), 1..=8),

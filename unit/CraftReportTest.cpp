@@ -15,18 +15,17 @@
 
 PartOne& GetPartOne();
 
-// thuum tracker #98 (crafting; Eli's decision of 2026-11-16: relay the
-// crafter's record). A sitting at a crafting bench is reported as its
-// engine read the player's inventory at the menu's open and close: the
-// server takes the lost stacks when its record holds every one, adds the
-// gained ones as reported (a created form by its definition), keeps the
-// enchantments a disenchant taught and teaches them again after a login.
-// Ids from Skyrim.esm as the repo's own tests read them: Wheat 0x4B0BA
-// (LearnedEffectsTest.cpp), RestoreHealth01 0x3EADD and its heal MGEF
-// 0x3EB15 (MagicEffectsTest.cpp, EspmTest.cpp), the Iron Dagger 0x1397E
-// (PoisonTest.cpp), the Steel Plate Boots with fire resist 0x1B401 and their
-// enchantment EnchArmorResistFire03 0xAD484 (EspmTest.cpp); the second
-// ingredient 0x34CDD is the one CraftTest.cpp's Dragonborn recipe takes.
+// A sitting at a crafting bench is reported as its engine read the player's
+// inventory at the menu's open and close: the server takes the lost stacks
+// when its record holds every one, adds the gained ones as reported (a
+// created form by its definition), keeps the enchantments a disenchant taught
+// and teaches them again after a login. Ids from Skyrim.esm as the repo's own
+// tests read them: Wheat 0x4B0BA (LearnedEffectsTest.cpp), RestoreHealth01
+// 0x3EADD and its heal MGEF 0x3EB15 (MagicEffectsTest.cpp, EspmTest.cpp), the
+// Iron Dagger 0x1397E (PoisonTest.cpp), the Steel Plate Boots with fire
+// resist 0x1B401 and their enchantment EnchArmorResistFire03 0xAD484
+// (EspmTest.cpp); the second ingredient 0x34CDD is the one CraftTest.cpp's
+// Dragonborn recipe takes.
 
 namespace {
 constexpr uint32_t kActor = 0xff000c98;
@@ -42,9 +41,9 @@ constexpr uint32_t kSoulGem = 0x0002e4e3;
 
 // A player (user 0) at the origin holding nothing: a new character's base
 // container gives it a kit (five RestoreHealth01 0x3EADD and an Iron Dagger
-// among it, CI pipeline 6420's three red cases), which these cases would
-// count beside their own stacks, so the record is emptied first
-// (SetInventory marks the base container laid, so the kit never comes back)
+// among it), which these cases would count beside their own stacks, so the
+// record is emptied first (SetInventory marks the base container laid, so the
+// kit never comes back)
 MpActor& Player(PartOne& p)
 {
   DoConnect(p, 0);
@@ -106,7 +105,7 @@ std::vector<Inventory::Entry> Stacks(MpActor& ac, uint32_t baseId)
 }
 
 // The answers to report `seq` user 0 received since the last clear: a
-// SetInventory naming it (craftAck, SCHEMA_VERSION 62), sent at once
+// SetInventory naming it (craftAck), sent at once
 size_t AnswersSent(PartOne& p, uint32_t seq)
 {
   return std::count_if(
@@ -227,7 +226,7 @@ TEST_CASE("A brew's ingredients leave the record and its potion arrives by "
 
   // the heal MGEF's record flags NoDuration (EspmTest.cpp), so a duration
   // reported on it is no part of the potion: the record keeps it zeroed and
-  // the stack is the same (the review's finding 4)
+  // the stack is the same
   CreatedForm lasting = Heal(25.f);
   lasting.effects[0].duration = 30;
   Report(p, { Inventory::Entry(kWheat, 1), Inventory::Entry(kOther, 1) },
@@ -249,9 +248,8 @@ TEST_CASE("A brew's ingredients leave the record and its potion arrives by "
   REQUIRE(ac.GetInventory().GetItemCount(kWheat) == 0);
   REQUIRE(!ac.GetInventory().entries.empty());
 
-  // a created stack holds no item of its template (the review's finding 9):
-  // the plain counts pass it by, and a plain equip of the template finds
-  // nothing to drink
+  // a created stack holds no item of its template: the plain counts pass it
+  // by, and a plain equip of the template finds nothing to drink
   REQUIRE(ac.GetInventory().GetItemCount(kPotionTemplate) == 0);
   REQUIRE(!ac.GetInventory().HasItem(kPotionTemplate));
   RawMessageData raw;
@@ -276,7 +274,7 @@ TEST_CASE("A temper and an enchant replace the plain item with the stack its "
   ac.AddItems({ Inventory::Entry(kSoulGem, 1, filled) });
 
   // a temper: the plain dagger out, the dagger with its health in; the
-  // seat's worn flag never reaches the record
+  // reported worn flag never reaches the record
   Inventory::Entry worn(kDagger, 1);
   worn.SetWorn(Inventory::Worn::Right);
   Inventory::Entry tempered = worn;
@@ -294,7 +292,7 @@ TEST_CASE("A temper and an enchant replace the plain item with the stack its "
   CreatedForm enchantment;
   enchantment.kind = CreatedForm::kWeaponEnchantment;
   // no duration: the heal MGEF's record flags NoDuration, so the record
-  // keeps a reported one zeroed (CraftService::NormalizeCreated, 7c5aaa3f0)
+  // keeps a reported one zeroed (CraftService::NormalizeCreated)
   enchantment.effects = { CreatedEffect{ kHealMgef, 10.f, 0, 0, 32.f } };
   Inventory::Entry enchanted(kDagger, 1);
   enchanted.createdEnchantment = enchantment;
@@ -458,8 +456,8 @@ TEST_CASE("A created effect's MGEF is stored by its plugin and crosses a load "
           "order change (ADR-043)",
           "[CraftReport]")
 {
-  // FormDescWorldTest.cpp's orders: Apocalypse.esp at 03, then at 04 after a
-  // layer put Essentials.esp before it, then gone
+  // FormDescWorldTest.cpp's orders: Apocalypse.esp at 03, then at 04 with
+  // Essentials.esp before it, then gone
   const EspmFileList orderA(
     { "Skyrim.esm", "Update.esm", "rotfern.esp", "Apocalypse.esp" },
     { false, false, false, false });
@@ -497,7 +495,7 @@ TEST_CASE("A created effect's MGEF is stored by its plugin and crosses a load "
 }
 
 namespace {
-// the reference the last drop placed: its create word names the base
+// the reference the last drop placed: its CreateActor names the base
 uint32_t DroppedCopy(PartOne& p, uint32_t baseId)
 {
   uint32_t refrId = 0;
@@ -511,10 +509,9 @@ uint32_t DroppedCopy(PartOne& p, uint32_t baseId)
 }
 }
 
-// thuum tracker #98 (SCHEMA_VERSION 63, Eli's look 2 of 3e8ab5acb: "cannot
-// drop" a brew and an enchanted item; note 4020): a drop names its stack with
-// its extras and created forms, the record's own row for it is the one taken,
-// the dropped copy holds it, and the pickup gives it back whole
+// A drop names its stack with its extras and created forms, the record's own
+// row for it is the one taken, the dropped copy holds it, and the pickup
+// gives it back whole
 TEST_CASE("A brewed potion and an enchanted dagger are dropped as their own "
           "stacks and come back whole at their pickup",
           "[CraftReport][DropItemTest][espm]")
@@ -606,8 +603,8 @@ TEST_CASE("A drop of extras the record does not hold is refused and changes "
   Leave(p);
 }
 
-// thuum tracker #98 (look 2, note 4020): an equipment report's brewed potion
-// is found by its definition, never by the plain template base
+// An equipment report's brewed potion is found by its definition, never by
+// the plain template base
 TEST_CASE("A record's brewed stack is held by its definition",
           "[CraftReport][espm]")
 {
@@ -618,11 +615,10 @@ TEST_CASE("A record's brewed stack is held by its definition",
   REQUIRE(!inv.HasCreatedStack(kPotionTemplate, Heal(31.f)));
 }
 
-// thuum tracker #98 (Eli's look 2: "other player does not see fire"; note
-// 4020): a hit with a weapon worn with a made enchantment runs that
-// enchantment's effects on the target through the effect rule, and the struck
-// player's own game is told to cast it (SpellCast, the instant slot, spell 0,
-// the definition as createdSpell); the attacker's own game is not told
+// A hit with a weapon worn with a made enchantment runs that enchantment's
+// effects on the target through the effect rule, and the struck player's own
+// game is told to cast it (SpellCast, the instant slot, spell 0, the
+// definition as createdSpell); the attacker's own game is not told
 TEST_CASE("An enchanted weapon's hit runs its made enchantment on the target "
           "and tells the struck player's game",
           "[CraftReport][espm]")
@@ -642,8 +638,8 @@ TEST_CASE("An enchanted weapon's hit runs its made enchantment on the target "
 
   CreatedForm made;
   made.kind = CreatedForm::kWeaponEnchantment;
-  // EnchFireDamageFFContact 0x4605a, EnchWeaponFireDamage01's own effect
-  // (lab/esm.py, 2026-11-20): instant fire damage the effect rule numbers
+  // EnchFireDamageFFContact 0x4605a, EnchWeaponFireDamage01's own effect:
+  // instant fire damage the effect rule numbers
   constexpr uint32_t kFireDamageMgef = 0x0004605a;
   made.effects = { CreatedEffect{ kFireDamageMgef, 10.f, 0, 0, 30.f } };
   Inventory::ExtraData extras;
@@ -697,10 +693,9 @@ TEST_CASE("An enchanted weapon's hit runs its made enchantment on the target "
   DoDisconnect(p, 0);
 }
 
-// thuum tracker #98 (magna-ge on note 4020: the QA chest's Iron Sword of
-// Burning is the same mechanism): a game-file enchanted weapon's hit relays
-// its record's own enchantment (WEAP EITM: EnchIronSwordFire01 0x49BB8 names
-// 0x49BB7, EspmTest's WEAP case) to the struck player's game by its id
+// A game-file enchanted weapon's hit relays its record's own enchantment
+// (WEAP EITM: EnchIronSwordFire01 0x49BB8 names 0x49BB7, EspmTest's WEAP
+// case) to the struck player's game by its id
 TEST_CASE("A game-file enchanted weapon's hit relays its record's own "
           "enchantment to the struck player's game",
           "[CraftReport][espm]")

@@ -1192,20 +1192,19 @@ mod tests {
         }
     }
 
-    /// thuum tracker #98 (SCHEMA_VERSION 61): CraftReport 84 and the created
-    /// forms. The ids are illustrative, none read from the files: 84-0 is a
-    /// brew (two ingredients lost, a created potion gained under its
-    /// template), 84-1 an enchant (a plain weapon and a filled soul gem lost,
-    /// the weapon gained with its made enchantment, its charge and its name),
-    /// 84-2 a disenchant (an enchanted weapon lost, its enchantment learned),
-    /// 84-3 a report that names a session's own id as a gained base, refused
-    /// at the wire. 28-SetInventory-2 is the record's answer to a brew and an
-    /// enchant, the rows the C++ core writes back; 08-PutItem-2 puts a
-    /// created potion in a container; 11-OnEquip-2 drinks one. Since
-    /// SCHEMA_VERSION 62 each report carries its seq (84-n's is n + 1), and
-    /// 28-SetInventory-3 is 28-2 as the answer to report 1 (its craftAck).
-    /// Since SCHEMA_VERSION 63, 19-DropItem-2 to -4 are drops (look 2's
-    /// "cannot drop").
+    /// CraftReport 84 and the created forms (SCHEMA_VERSION 61). The ids are
+    /// illustrative, none read from the files: 84-0 is a brew (two
+    /// ingredients lost, a created potion gained under its template), 84-1 an
+    /// enchant (a plain weapon and a filled soul gem lost, the weapon gained
+    /// with its made enchantment, its charge and its name), 84-2 a disenchant
+    /// (an enchanted weapon lost, its enchantment learned), 84-3 a report that
+    /// names a session's own id as a gained base, refused at the wire.
+    /// 28-SetInventory-2 is the record's answer to a brew and an enchant, the
+    /// rows the C++ core writes back; 08-PutItem-2 puts a created potion in a
+    /// container; 11-OnEquip-2 drinks one. Since SCHEMA_VERSION 62 each report
+    /// carries its seq (84-n's is n + 1), and 28-SetInventory-3 is 28-2 as the
+    /// answer to report 1 (its craftAck). Since SCHEMA_VERSION 63,
+    /// 19-DropItem-2 to -4 are drops.
     #[test]
     fn craft_fixtures_validate_as_named() {
         use wire_validate::{validate, validate_server, ClientGuard, Reject};

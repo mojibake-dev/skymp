@@ -10,13 +10,11 @@ import { Entry, Inventory, getDiff, getInventory } from "../../sync/inventory";
 import { DropItemMessage } from "../messages/dropItemMessage";
 
 export class DropItemService extends ClientListener {
-    // thuum tracker #98 (SCHEMA_VERSION 63, Eli's look 2: "cannot drop" a brew
-    // or an enchanted item; note 3920's agreed shape, "drops ... carry the
-    // item's extra data"): the player's inventory as the InventoryMenu opened
-    // and after each drop since, so a drop names the stack that left with its
-    // extras and created forms (craftService's read: the inventory at two
-    // moments, the difference). No platform native reads a world reference's
-    // own extra list
+    // the player's inventory as the InventoryMenu opened and after each drop
+    // since, so a drop names the stack that left with its extras and created
+    // forms (craftService's read: the inventory at two moments, the
+    // difference). No platform native reads a world reference's own extra
+    // list
     private before: Inventory | null = null;
 
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -152,11 +150,10 @@ export class DropItemService extends ClientListener {
                 return logTrace(this, "Ignoring item drop as false positive");
             }
 
-            // thuum tracker #98 (SCHEMA_VERSION 63): the stacks that left, each
-            // with its extras and created forms; with no read of them (no
-            // InventoryMenu open seen), a game-file base goes plain as before,
-            // and a session's own form cannot go at all (its next apply gives
-            // it back)
+            // the stacks that left, each with its extras and created forms;
+            // with no read of them (no InventoryMenu open seen), a game-file
+            // base goes plain, and a session's own form cannot go at all (its
+            // next apply gives it back)
             const t = MsgType.DropItem;
             const count = e.numItems;
             const stacks = this.droppedStacks(baseId, count);

@@ -96,8 +96,8 @@ wire_struct! {
     }
 }
 
-/// A created form's kind (thuum tracker #98, the crafter's record): a weapon
-/// enchantment, the engine's BGSCreatedObjectManager AddWeaponEnchantment.
+/// A created form's kind: a weapon enchantment, the engine's
+/// BGSCreatedObjectManager AddWeaponEnchantment.
 pub const CREATED_WEAPON_ENCHANTMENT: u8 = 0;
 /// An armor enchantment (AddArmorEnchantment).
 pub const CREATED_ARMOR_ENCHANTMENT: u8 = 1;
@@ -107,14 +107,13 @@ pub const CREATED_POTION: u8 = 2;
 pub const CREATED_POISON: u8 = 3;
 
 wire_struct! {
-    /// One effect of a form the game made at runtime (thuum tracker #98), as
-    /// the crafting menu handed it to the engine's creator: final, its skill
-    /// and perks applied, so a receiver's engine builds the same form from it
-    /// as it stands. The field units are the engine's Effect (CommonLibSSE-NG
+    /// One effect of a form the game made at runtime, as the crafting menu
+    /// handed it to the engine's creator: final, its skill and perks applied,
+    /// so a receiver's engine builds the same form from it as it stands. The
+    /// field units are the engine's Effect (CommonLibSSE-NG
     /// include/RE/E/Effect.h: EffectItem's magnitude, area and duration, and
     /// the effect's cost) with its MGEF by form id; a created form carries no
-    /// conditions (HYPOTHESIS: the save's created-form chunk carries none,
-    /// the static read of tracker #98 note 3924).
+    /// conditions (assumes the save's created-form chunk carries none).
     pub struct CreatedEffect {
         /// The magic effect, a game-file MGEF form id (never 0, never a
         /// session's 0xff000000 and up).
@@ -126,21 +125,20 @@ wire_struct! {
         /// Duration, seconds.
         pub duration: u32,
         /// The effect's cost as the menu computed it, finite. Not part of a
-        /// stack's identity: the engine's creators reuse a form whose effects
-        /// match without comparing it (HYPOTHESIS, the same read).
+        /// stack's identity: assumes the engine's creators reuse a form whose
+        /// effects match without comparing it.
         pub cost: f32,
     }
 }
 
 wire_struct! {
-    /// A form the game made at runtime (thuum tracker #98, Eli's decision of
-    /// 2026-11-16: relay the crafter's record; TES3MP's RecordDynamic is the
-    /// prior art): a brewed potion or poison, or an enchantment made at the
-    /// arcane enchanter. Its id is the crafting engine's own (0xff000000 and
-    /// up) and means nothing on any other game or after a relaunch, so the
-    /// wire never names it: an entry carries its definition, and every game
-    /// that receives one builds the same form through its own engine's
-    /// creator, which hands back an existing form when one matches.
+    /// A form the game made at runtime: a brewed potion or poison, or an
+    /// enchantment made at the arcane enchanter. Its id is the crafting
+    /// engine's own (0xff000000 and up) and means nothing on any other game
+    /// or after a relaunch, so the wire never names it: an entry carries its
+    /// definition, and every game that receives one builds the same form
+    /// through its own engine's creator, which hands back an existing form
+    /// when one matches.
     pub struct CreatedForm {
         /// [`CREATED_WEAPON_ENCHANTMENT`], [`CREATED_ARMOR_ENCHANTMENT`],
         /// [`CREATED_POTION`] or [`CREATED_POISON`].
@@ -153,8 +151,8 @@ wire_struct! {
 wire_struct! {
     /// One inventory stack with its extra data (Inventory::Entry, whose
     /// ExtraData fields SkyMP writes inline, so they are inline here too).
-    /// Since SCHEMA_VERSION 61 (thuum tracker #98) a stack of a form the game
-    /// made at runtime names it by its definition: `created_base` for a
+    /// Since SCHEMA_VERSION 61 a stack of a form the game made at runtime
+    /// names it by its definition: `created_base` for a
     /// brewed potion or poison (then `base_id` is the game-file template the
     /// engine copies it from, BGSDefaultObjectManager's kBasePotion or
     /// kBasePoison as the sender's engine holds it), `created_enchantment`
@@ -686,8 +684,8 @@ wire_struct! {
         pub worn: Option<bool>,
         /// Worn in the left hand.
         pub worn_left: Option<bool>,
-        /// The brewed potion or poison moved (SCHEMA_VERSION 61, thuum
-        /// tracker #98; [`Entry`]'s three created fields).
+        /// The brewed potion or poison moved (SCHEMA_VERSION 61; [`Entry`]'s
+        /// three created fields).
         pub created_base: Option<CreatedForm>,
         /// The item's own enchantment, made at the enchanter.
         pub created_enchantment: Option<CreatedForm>,
@@ -731,8 +729,8 @@ wire_struct! {
         pub worn: Option<bool>,
         /// Worn in the left hand.
         pub worn_left: Option<bool>,
-        /// The brewed potion or poison moved (SCHEMA_VERSION 61, thuum
-        /// tracker #98; [`Entry`]'s three created fields).
+        /// The brewed potion or poison moved (SCHEMA_VERSION 61; [`Entry`]'s
+        /// three created fields).
         pub created_base: Option<CreatedForm>,
         /// The item's own enchantment, made at the enchanter.
         pub created_enchantment: Option<CreatedForm>,
@@ -765,9 +763,9 @@ wire_struct! {
         /// Item base form id; for a brewed potion or poison, the game-file
         /// template its definition names (SCHEMA_VERSION 61).
         pub base_id: u32,
-        /// The brewed potion or poison drunk or put on a weapon (thuum
-        /// tracker #98): its definition, so the server finds the stack and
-        /// runs the effects the crafter's engine made.
+        /// The brewed potion or poison drunk or put on a weapon: its
+        /// definition, so the server finds the stack and runs the effects the
+        /// crafter's engine made.
         pub created_base: Option<CreatedForm>,
     }
 }
@@ -941,9 +939,8 @@ wire_struct! {
         /// How many.
         pub count: u32,
         /// The dropped stack's extras, as [`PutItem`] carries them
-        /// (SCHEMA_VERSION 63, thuum tracker #98, look 2: an enchanted or
-        /// tempered item dropped as its plain base matched no row of the
-        /// record). Item health.
+        /// (SCHEMA_VERSION 63): an enchanted or tempered item dropped as its
+        /// plain base matches no row of the record. Item health.
         pub health: Option<f32>,
         /// Enchantment form id.
         pub enchantment_id: Option<u32>,
@@ -1375,9 +1372,8 @@ wire_struct! {
         /// `has_launch` (`E_VAL_RANGE` otherwise); absent for every other
         /// cast and for a sender that saw no decal.
         pub decal: Option<SpellDecal>,
-        /// thuum tracker #98 (SCHEMA_VERSION 63, Eli's look 2: "other player
-        /// does not see fire"): a weapon's or an armor's enchantment made at
-        /// the enchanter, by its definition, with `spell` 0. Server to client
+        /// A weapon's or an armor's enchantment made at the enchanter, by its
+        /// definition, with `spell` 0 (SCHEMA_VERSION 63). Server to client
         /// alone: the server's relay of an enchanted weapon's hit to the
         /// struck actor's own game, which casts the enchantment from the
         /// attacker's figure at its target as the engine's own hit does. A
@@ -1519,10 +1515,10 @@ wire_struct! {
         /// The inventory.
         pub inventory: Inventory,
         /// The `seq` of the player's CraftReport this inventory answers
-        /// (SCHEMA_VERSION 62, thuum tracker #98): the record after the
-        /// report was taken or refused, sent at once, so the seat applies
-        /// the answer and never an inventory the server sent before it read
-        /// the report. Absent on every other inventory.
+        /// (SCHEMA_VERSION 62): the record after the report was taken or
+        /// refused, sent at once, so the seat applies the answer and never an
+        /// inventory the server sent before it read the report. Absent on
+        /// every other inventory.
         pub craft_ack: Option<u32>,
     }
 }
@@ -3500,11 +3496,10 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 84, thuum's (tracker #98, crafting; Eli's decision of
-    /// 2026-11-16: relay the crafter's record). Client to server, reliable,
-    /// R2: what one sitting at a crafting bench did to the player's
-    /// inventory, as the crafting engine's own inventory read it at the
-    /// menu's open and its close. `lost` are the stacks that left (an
+    /// MsgType 84, crafting. Client to server, reliable: what one
+    /// sitting at a crafting bench did to the player's inventory, as the
+    /// crafting engine's own inventory read it at the menu's open and its
+    /// close. `lost` are the stacks that left (an
     /// ingredient, an ingot, a soul gem, the item before its temper or its
     /// enchant, a disenchanted item), `gained` the stacks that came (a
     /// potion, a forged or tempered or enchanted item), each in

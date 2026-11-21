@@ -258,10 +258,10 @@ public:
   // docs/verbs/player-globals.md); absent in older records, read as none
   std::optional<std::vector<PlayerGlobal>> playerGlobals;
 
-  // The game-file enchantments the player learned at the arcane enchanter
-  // by disenchanting (thuum tracker #98): the engine's known flag on each
-  // (TESForm::SetPlayerKnows, CommonLibSSE-NG TESForm.h:349), taught again
-  // after every login; absent in older records, read as none
+  // The game-file enchantments the player learned at the arcane enchanter by
+  // disenchanting: the engine's known flag on each (TESForm::SetPlayerKnows,
+  // CommonLibSSE-NG TESForm.h:349), taught again after every login; absent
+  // in older records, read as none
   std::optional<std::vector<FormDesc>> knownEnchantments;
 
   // The world's quest stages (thuum docs/verbs/quest-stage.md, ADR-056):

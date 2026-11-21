@@ -4,15 +4,13 @@
 #include <tuple>
 #include <vector>
 
-// thuum tracker #98 (crafting; Eli's decision of 2026-11-16: relay the
-// crafter's record, TES3MP's RecordDynamic as prior art): a form the game
-// made at runtime, a brewed potion or poison or an enchantment made at the
-// arcane enchanter, by its definition. Its id is the crafting engine's own
-// (0xff000000 and up) and names nothing on any other game or after a
-// relaunch, so the record and the wire carry the definition, and every game
-// that receives a stack builds the same form through its own engine's
-// creator. The contract is skymp-wire's (wire-schema skymp.rs, CreatedEffect
-// and CreatedForm, SCHEMA_VERSION 61).
+// A form the game made at runtime, a brewed potion or poison or an
+// enchantment made at the arcane enchanter, by its definition. Its id is the
+// crafting engine's own (0xff000000 and up) and names nothing on any other
+// game or after a relaunch, so the record and the wire carry the definition,
+// and every game that receives a stack builds the same form through its own
+// engine's creator. The contract is skymp-wire's (wire-schema skymp.rs,
+// CreatedEffect and CreatedForm, SCHEMA_VERSION 61).
 
 // One effect, in the engine's Effect units (CommonLibSSE-NG
 // include/RE/E/Effect.h): its MGEF by form id, magnitude, area, duration and
@@ -41,10 +39,9 @@ struct CreatedEffect
     return std::make_tuple(mgef, magnitude, area, duration, cost);
   }
 
-  // What makes two effects one: the engine's creators hand back an existing
-  // form when its effects match in MGEF, magnitude, area and duration, the
-  // cost not compared (HYPOTHESIS: the static read of tracker #98 note
-  // 3924, unconfirmed by a lab read)
+  // What makes two effects one: assumes the engine's creators hand back an
+  // existing form when its effects match in MGEF, magnitude, area and
+  // duration, the cost not compared
   auto IdentityTuple() const
   {
     return std::make_tuple(mgef, magnitude, area, duration);

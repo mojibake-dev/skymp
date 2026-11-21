@@ -78,8 +78,8 @@ bool Inventory::Entry::EqualExceptCount(const Inventory::Entry& other) const
 {
   // GetWorn() instead of direct comparison because of possible false vs
   // nullopt mismatch. Logically it should be the same
-  // thuum tracker #98: two stacks of created forms are one only when their
-  // definitions are (CreatedForm::SameAs, the engine's own match)
+  // Two stacks of created forms are one only when their definitions match
+  // (CreatedForm::SameAs, the engine's own match)
   return std::make_tuple(baseId, health, enchantmentId, maxCharge,
                          removeEnchantmentOnUnequip, chargePercent, name, soul,
                          poisonId, poisonCount, GetWorn()) ==
@@ -198,8 +198,7 @@ Inventory& Inventory::RemoveItems(const std::vector<Entry>& entries)
   return *this;
 }
 
-// thuum tracker #98 (the review of fec33b6f5..47e3ede74, finding 9): a
-// stack of a brewed potion or poison names its game-file template as its
+// A stack of a brewed potion or poison names its game-file template as its
 // base, but holds no item of that base (the template is what the engine
 // copies a created form from), so the plain counts pass it by: a plain
 // OnEquip of the template never finds a created stack it cannot remove

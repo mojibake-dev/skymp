@@ -12879,9 +12879,9 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 // that is the aggressor's game is skipped the same way. HYPOTHESIS: a
 // relayed cast on a player lands with its Health number zeroed (Hooks.cpp
 // PlayerAddTarget) and its shader shown; a host's engine number for an NPC
-// is reconciled to the server's by npc-fate's top-up. A game-file weapon's
-// own enchantment (its WEAP's EITM, which libespm does not read) is not run
-// here
+// is reconciled to the server's by npc-fate's top-up. A game-file enchanted
+// weapon runs its record's own enchantment (libespm WEAP's EITM) the same
+// way
 void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
                                      const HitData& hitData)
 {
@@ -12895,18 +12895,37 @@ void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
       weapon = &e;
     }
   }
-  if (!weapon || (!weapon->enchantmentId && !weapon->createdEnchantment)) {
+  if (!weapon) {
+    return;
+  }
+  // the stack's own enchantment (made at the enchanter, or a file one an
+  // enchanter put on it), else the weapon record's EITM (a game-file
+  // enchanted weapon: the QA chest's Iron Sword of Burning; libespm WEAP,
+  // its id read in the record's own numbering)
+  std::optional<uint32_t> fileEnchantment = weapon->enchantmentId;
+  if (!weapon->createdEnchantment && !fileEnchantment && partOne.HasEspm()) {
+    const auto lookup =
+      partOne.GetEspm().GetBrowser().LookupById(hitData.source);
+    if (const auto weap = espm::Convert<espm::WEAP>(lookup.rec)) {
+      const uint32_t eitm =
+        weap->GetData(partOne.worldState.GetEspmCache()).enchantmentFormId;
+      if (eitm) {
+        fileEnchantment = lookup.ToGlobalId(eitm);
+      }
+    }
+  }
+  if (!weapon->createdEnchantment && !fileEnchantment) {
     return;
   }
 
   const auto effects = weapon->createdEnchantment
     ? MpActor::EffectsOfCreated(*weapon->createdEnchantment)
-    : MpActor::EffectsOf(&partOne.worldState, *weapon->enchantmentId);
+    : MpActor::EffectsOf(&partOne.worldState, *fileEnchantment);
   if (effects.empty()) {
     return;
   }
   target.ApplyEffects(weapon->createdEnchantment ? hitData.source
-                                                 : *weapon->enchantmentId,
+                                                 : *fileEnchantment,
                       effects, 1.f, aggressor.GetFormId(), false);
 
   MpActor* owner = nullptr;
@@ -12920,8 +12939,7 @@ void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
     SpellCastMessage relay;
     relay.data.caster = aggressor.GetFormId();
     relay.data.target = target.GetFormId();
-    relay.data.spell =
-      weapon->createdEnchantment ? 0u : *weapon->enchantmentId;
+    relay.data.spell = weapon->createdEnchantment ? 0u : *fileEnchantment;
     relay.data.createdSpell = weapon->createdEnchantment;
     relay.data.castingSource = 3;
     owner->SendToUser(relay, true);
@@ -12931,7 +12949,7 @@ void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
     "{}: {} effect(s) run on {:x}{}",
     aggressor.GetFormId(), hitData.source,
     weapon->createdEnchantment ? std::string("(made at the enchanter)")
-                               : fmt::format("{:x}", *weapon->enchantmentId),
+                               : fmt::format("{:x}", *fileEnchantment),
     effects.size(), target.GetFormId(),
     told ? fmt::format(", its cast told to {:x}'s game", owner->GetFormId())
          : std::string(", no other game to tell"));

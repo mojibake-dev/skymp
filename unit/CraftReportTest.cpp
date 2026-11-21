@@ -697,3 +697,59 @@ TEST_CASE("An enchanted weapon's hit runs its made enchantment on the target "
   DoDisconnect(p, 1);
   DoDisconnect(p, 0);
 }
+
+// thuum tracker #98 (magna-ge on note 4020: the QA chest's Iron Sword of
+// Burning is the same mechanism): a game-file enchanted weapon's hit relays
+// its record's own enchantment (WEAP EITM: EnchIronSwordFire01 0x49BB8 names
+// 0x49BB7, EspmTest's WEAP case) to the struck player's game by its id
+TEST_CASE("A game-file enchanted weapon's hit relays its record's own "
+          "enchantment to the struck player's game",
+          "[CraftReport][espm]")
+{
+  constexpr uint32_t kAggressor = 0xff000c92;
+  constexpr uint32_t kTarget = 0xff000c93;
+  constexpr uint32_t kBurningSword = 0x00049bb8;
+  constexpr uint32_t kItsEnchantment = 0x00049bb7;
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  DoConnect(p, 1);
+  p.CreateActor(kAggressor, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(0, kAggressor);
+  p.CreateActor(kTarget, { 0, 100, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kTarget);
+  auto& aggressor = p.worldState.GetFormAt<MpActor>(kAggressor);
+  auto& target = p.worldState.GetFormAt<MpActor>(kTarget);
+  target.SetAngle({ 0.f, 0.f, 180.f });
+  aggressor.SetInventory(Inventory());
+  aggressor.AddItems({ Inventory::Entry(kBurningSword, 1) });
+  Inventory::ExtraData worn;
+  worn.worn_ = true;
+  Equipment eq;
+  eq.inv.entries.push_back(Inventory::Entry(kBurningSword, 1, worn));
+  aggressor.SetEquipment(eq);
+  p.Messages().clear();
+
+  RawMessageData raw;
+  raw.userId = 0;
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = kTarget;
+  hit.data.source = kBurningSword;
+  p.GetActionListener().OnHit(raw, hit);
+
+  int toTarget = 0;
+  for (auto& m : p.Messages()) {
+    auto* cast = dynamic_cast<SpellCastMessage*>(m.message.get());
+    if (cast && m.userId == 1 && cast->data.spell == kItsEnchantment) {
+      ++toTarget;
+      REQUIRE(!cast->data.createdSpell);
+      REQUIRE(cast->data.caster == kAggressor);
+    }
+  }
+  REQUIRE(toTarget == 1);
+
+  p.DestroyActor(kTarget);
+  p.DestroyActor(kAggressor);
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 0);
+}

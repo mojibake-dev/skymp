@@ -1,0 +1,89 @@
+# difftest push-actor (thuum tracker #175; ADR-071 D-PH5's amendment, option B: the NPC's host
+# throws it; PushActor, MsgType 85, SCHEMA_VERSION 64). c1 and c2 are new characters (profiles 9 and 10, actors
+# 0xff000002 and 0xff000003, see melee-reach), both at the spawn in Tamriel's exterior cell (32, -15), form 0xbbb1
+# (cell-host's read); c2 starts 1.5 s after c1, each client's times its own. T2 holds no game-file NPC (npc-lead's
+# note), so at 0.3 s of its own c2 places Lucan Valerius's base 0x1347a at its own position through the console's
+# PlaceAtMe, after both logins, so the copy is 0xff000004 on both stacks and both players listen to it from its
+# creation (npc-lead's idiom; this session's first draw, on fork 8d92144e7, had c1 place it before c2's login, the copy
+# took 0xff000003 and c2's actor 0xff000004, which swapped the valid push and the refused one). At 1 s of its own c2
+# reports the spawn's cell loaded: it hosts the cell (HostGrant {cell 0xbbb1, epoch 1}), so its game simulates the copy
+# (isHostedByOther false to c2 and true to c1). At 4 s c1 reports its own shout's push of the copy (PushActor {caster
+# 0xff000002, target 0xff000004, force 15}): the copy is c2's to simulate, so the wire stack has c2's game run
+# ObjectReference.PushActorAway(the copy, 15) with c1's figure as self (an SpSnippet to c2). At 4.5 s c1 reports a push
+# of c2's own actor: a player's throw is its own game's (E_PUSH_TARGET), refused, nothing sent. At 5 s c1 reports a
+# push of the copy with a force of 1000, past PUSH_FORCE_MAX: the validator refuses it, nothing sent. The legacy stack
+# knows no MsgType 85 and drops all three. c2 steps aside at 6 s of its own so it outlives c1, as in every session.
+#
+# A copy's fate and create word are declared as the wire's and the legacy server's halves, as npc-lead declares them.
+id: push-actor
+clients:
+  c1: {profile_id: 9}
+  c2: {profile_id: 10}
+steps:
+  - {client: c2, at_ms: 300, send: {t: 12, data: {t: 12, commandName: placeatme, args: [20, 0x1347a]}}, reliable: true}
+  - {client: c2, at_ms: 1000, send: {t: 47, cell: 0xbbb1, loaded: true}, reliable: true}
+  - {client: c1, at_ms: 4000, send: {t: 85, caster: 0xff000002, target: 0xff000004, force: 15.0}, reliable: true}
+  - {client: c1, at_ms: 4500, send: {t: 85, caster: 0xff000002, target: 0xff000003, force: 15.0}, reliable: true}
+  - {client: c1, at_ms: 5000, send: {t: 85, caster: 0xff000002, target: 0xff000004, force: 1000.0}, reliable: true}
+  - {client: c2, at_ms: 6000, move: {dx: 1, dy: 0}}
+divergences:
+  - client: c2
+    msg: {t: 41, text: "placeatme done", refused: false}
+    legacy: 0
+    wire: 1
+    reason: c2's placement, answered with a line (ConsoleCommands::Execute, thuum docs/verbs/console-commands.md); the legacy server runs upstream's PlaceAtMe and prints nothing back
+  - client: c1
+    msg: {t: 51, fates: [{refrId: 0xff000004}]}
+    legacy: 0
+    wire: 1
+    reason: Lucan's copy's fate ahead of its create word (ActorFate 51, the roll PlaceAt makes for a server-made NPC, thuum ADR-050 decision 3); the legacy server has none
+  - client: c1
+    msg: {t: 33, idx: "refr:ff000004", props: {isHostedByOther: true}}
+    legacy: 0
+    wire: 1
+    reason: Lucan's copy's create word, hosted by other on every screen while nobody hosts its cell (PartOne's onSubscribe, thuum docs/verbs/cell-host.md); upstream's carries no flag for an actor nobody hosts
+  - client: c1
+    msg: {t: 33, idx: "refr:ff000004"}
+    legacy: 1
+    wire: 0
+    reason: the same copy's create word as the legacy server's PlaceAtMe sends it; the wire's was set aside by the declaration above
+  - client: c2
+    msg: {t: 51, fates: [{refrId: 0xff000004}]}
+    legacy: 0
+    wire: 1
+    reason: Lucan's copy's fate ahead of its create word to its placer, as to c1
+  - client: c2
+    msg: {t: 33, idx: "refr:ff000004", props: {isHostedByOther: true}}
+    legacy: 0
+    wire: 1
+    reason: Lucan's copy's create word to its placer, hosted by other while nobody hosts its cell, as to c1
+  - client: c2
+    msg: {t: 33, idx: "refr:ff000004"}
+    legacy: 1
+    wire: 0
+    reason: the same copy's create word as the legacy server sends it; the wire's was set aside by the declaration above
+  - client: c2
+    msg: {t: 48, cell: 0xbbb1, epoch: 1}
+    legacy: 0
+    wire: 1
+    reason: the first loader in reach hosts the spawn's cell (HostGrant, thuum docs/verbs/cell-host.md), and so simulates the placed copy; the legacy server has no cell hosts
+  - client: c2
+    msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "false"}
+    legacy: 0
+    wire: 1
+    reason: c2 named for Lucan's copy at epoch 1's grant (MpObjectReference::UpdateHoster)
+  - client: c1
+    msg: {t: 7, refrId: 0xff000004, propName: isHostedByOther, dataDump: "true"}
+    legacy: 0
+    wire: 1
+    reason: c2 named for Lucan's copy at epoch 1's grant, told to the other player
+  - client: c2
+    msg: {t: 30, class: ObjectReference, function: PushActorAway, selfId: 0xff000002, arguments: [{formId: 0xff000004, type: Actor}, 15]}
+    legacy: 0
+    wire: 1
+    reason: c1's reported push of the copy c2 simulates, run in c2's game with c1's figure as self (thuum tracker #175); the push of c2's own actor and the force past PUSH_FORCE_MAX are refused and send nothing (a refusal let through stands as an undeclared line, its target or force not these); the legacy server knows no PushActor
+  - client: c2
+    msg: {t: 25, idx: "refr:ff000002"}
+    legacy: 0
+    wire: 1
+    reason: departure detection, graceful close on the wire against RakNet's timeout

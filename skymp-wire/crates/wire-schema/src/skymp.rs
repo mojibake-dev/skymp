@@ -3340,6 +3340,46 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// MsgType 84, reserved: CraftReport's id (wire id 92), held by this
+    /// placeholder where CraftReport is not built, so the ids after it keep
+    /// their numbers. Never sent; the validator refuses it.
+    pub struct ReservedCraftReport {
+        /// `"t": 84`.
+        #[serde(default)]
+        pub t: MsgT<84>,
+    }
+}
+
+wire_struct! {
+    /// MsgType 85. Client to server, reliable: a script's
+    /// ObjectReference.PushActorAway in the sender's game onto an actor
+    /// another seat simulates (a puppet there), skipped in the sender's game
+    /// and reported, so the actor's own simulator throws it. The script
+    /// itself keeps running on its caster's seat. The server checks
+    /// consistency only: the caster is the sender's own actor or one it
+    /// hosts, the target a live actor no player owns (`E_PUSH_TARGET`), the
+    /// force within bounds; then the target's host runs PushActorAway with
+    /// the caster's figure as self. Not idempotent: each is a throw.
+    pub struct PushActor {
+        /// `"t": 85`.
+        #[serde(default)]
+        pub t: MsgT<85>,
+        /// The pusher, the script's self, by its server id.
+        pub caster: u32,
+        /// The pushed actor, by its server id.
+        pub target: u32,
+        /// PushActorAway's force (VoicePushEffectScript's PushForce: 15 at
+        /// Unrelenting Force's third word), from 0 to [`PUSH_FORCE_MAX`].
+        pub force: f32,
+    }
+}
+
+/// The largest force a reported push carries (PushActor): well past any
+/// game script's (VoicePushEffectScript's 15), short of a throw that leaves
+/// the world.
+pub const PUSH_FORCE_MAX: f32 = 100.0;
+
+wire_struct! {
     /// One skill use (docs/verbs/leveling.md): the skill by its ActorValue and
     /// the action's base amount as the engine computed it.
     pub struct SkillUseEntry {

@@ -69,6 +69,7 @@ import { PerkStateMessage } from "./perkStateMessage";
 import { WordWallMessage } from "./wordWallMessage";
 import { OwnHeadPartsMessage } from "./ownHeadPartsMessage";
 import { SummonMessage } from "./summonMessage";
+import { PushActorMessage } from "./pushActorMessage";
 import { RelayedActivationMessage } from "./relayedActivationMessage";
 import { ObjectAnimationMessage } from "./objectAnimationMessage";
 import { SkillUseMessage } from "./skillUseMessage";
@@ -160,6 +161,7 @@ export type AnyMessage = ActivateMessage
     | ScriptVariablesMessage
     | OwnHeadPartsMessage
     | SummonMessage
+    | PushActorMessage
     | SpSnippetMessage
     | UpdateGamemodeDataMessage
     | UpdatePropertyMessage

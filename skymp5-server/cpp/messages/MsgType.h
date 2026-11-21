@@ -146,5 +146,8 @@ enum class MsgType : uint8_t
                         // placed at a summon effect's apply, and its end
                         // (docs/verbs/summon.md, R2: the caster's row owns
                         // it)
+  ReservedCraftReport = 84, // reserved for CraftReport; never sent
+  PushActor = 85,           // a script's push onto an actor another seat
+                            // simulates, reported for that simulator to throw
   Max
 };

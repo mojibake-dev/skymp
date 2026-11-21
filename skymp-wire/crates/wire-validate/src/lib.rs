@@ -325,6 +325,10 @@ pub struct ClientGuard {
     /// casting at its start), so 16 at once, then 4 a second (UNMEASURED; a
     /// cast is seconds apart).
     pub summon_budget: TokenBucket,
+    /// Budget for a seat's reported pushes (PushActor): a shout's cone
+    /// pushes every actor it names, so a few at once, refilled at a few a
+    /// second (an estimate, not measured).
+    pub push_budget: TokenBucket,
 }
 
 impl Default for ClientGuard {
@@ -378,6 +382,7 @@ impl Default for ClientGuard {
             script_variables_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             own_head_parts_budget: TokenBucket { tokens: 4, capacity: 4, refill_per_s: 1, last_refill_ms: 0 },
             summon_budget: TokenBucket { tokens: 16, capacity: 16, refill_per_s: 4, last_refill_ms: 0 },
+            push_budget: TokenBucket { tokens: 12, capacity: 12, refill_per_s: 6, last_refill_ms: 0 },
         }
     }
 }
@@ -730,6 +735,19 @@ fn check_own_head_parts(m: &skymp::OwnHeadParts) -> Result<(), Reject> {
         if !form(part) || parts.iter().take(i).any(|&earlier| earlier == part) {
             return Err(Reject::Range);
         }
+    }
+    Ok(())
+}
+
+/// PushActor (MsgType 85): a pusher and a pushed actor, two ids that
+/// differ, and a force from 0 to PUSH_FORCE_MAX. Whether the caster is the
+/// sender's and the target another seat's live NPC is the server's check.
+fn check_push_actor(m: &skymp::PushActor) -> Result<(), Reject> {
+    if !m.force.is_finite() {
+        return Err(Reject::NonFinite);
+    }
+    if m.caster == 0 || m.target == 0 || m.caster == m.target || !(0.0..=skymp::PUSH_FORCE_MAX).contains(&m.force) {
+        return Err(Reject::Range);
     }
     Ok(())
 }
@@ -2179,6 +2197,7 @@ pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(
         }
         Message::OwnHeadParts(_) => take(&mut guard.own_head_parts_budget, now_ms),
         Message::Summon(_) => take(&mut guard.summon_budget, now_ms),
+        Message::PushActor(_) => take(&mut guard.push_budget, now_ms),
         // thuum ADR-068 rung 5 (D-T1 A): a seat sends its own look; a
         // figure's overlay is the server's word
         Message::UpdateAppearance(m) if m.overlay.is_some() => Err(Reject::Range),
@@ -2379,6 +2398,9 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::ScriptVariables(m) => check_script_variables(m),
         Message::OwnHeadParts(m) => check_own_head_parts(m),
         Message::Summon(m) => check_summon(m),
+        // CraftReport's reserved id: never sent
+        Message::ReservedCraftReport(_) => Err(Reject::Range),
+        Message::PushActor(m) => check_push_actor(m),
         Message::CreateActor(m) => check_create_actor(m),
         Message::UpdateAppearance(m) => check_update_appearance(m),
         Message::SpSnippet(m) => check_sp_snippet(m),
@@ -2459,6 +2481,28 @@ mod tests {
             health,
             inventory_delta: inv,
         })
+    }
+
+    #[test]
+    fn a_reported_push_names_two_actors_and_a_bounded_force() {
+        // a pusher and a pushed actor that differ, a finite force from 0 to
+        // PUSH_FORCE_MAX; the shout's 15 passes, the budget lets a cone's
+        // handful through at once, and CraftReport's reserved id is never
+        // taken
+        let push = |caster: u32, target: u32, force: f32| Message::PushActor(skymp::PushActor { caster, target, force, ..Default::default() });
+        assert_eq!(validate_server(&push(0xff000000, 0x39fe4, 15.0)), Ok(()));
+        assert_eq!(validate_server(&push(0, 0x39fe4, 15.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&push(0xff000000, 0, 15.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&push(0x39fe4, 0x39fe4, 15.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&push(0xff000000, 0x39fe4, -1.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&push(0xff000000, 0x39fe4, skymp::PUSH_FORCE_MAX + 1.0)), Err(Reject::Range));
+        assert_eq!(validate_server(&push(0xff000000, 0x39fe4, f32::NAN)), Err(Reject::NonFinite));
+        assert_eq!(validate_server(&Message::ReservedCraftReport(skymp::ReservedCraftReport::default())), Err(Reject::Range));
+        let mut guard = ClientGuard::default();
+        for i in 0..12 {
+            assert_eq!(validate(&push(0xff000000, 0x39fe4 + i, 15.0), &mut guard, 0), Ok(()), "push {i}");
+        }
+        assert_eq!(validate(&push(0xff000000, 0x39fe4, 15.0), &mut guard, 0), Err(Reject::Rate));
     }
 
     #[test]

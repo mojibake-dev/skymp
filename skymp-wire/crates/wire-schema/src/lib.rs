@@ -284,7 +284,17 @@ use bounded::{String, Vec};
 /// cell's host with the presser's recorded inventory, which the host's
 /// acting scope answers GetItemCount from. A new trailing field, so the
 /// number moves for D-PH1 A's reason.
-pub const SCHEMA_VERSION: u16 = 60;
+/// 61 to 63: CraftReport's shapes, not built here (the held ids below).
+/// 64: PushActor (MsgType 85, wire id 93): a script's push onto an actor
+/// another seat simulates, reported for that actor's simulator to throw.
+/// 65: Arrest and CrimeGold (MsgType 86 and 87, wire ids 94 and 95), not
+/// built here.
+/// Ids held for messages that are not on every branch yet: MsgType 84 (wire
+/// id 92) CraftReport, 85 (93) PushActor, 86 (94) Arrest and 87 (95)
+/// CrimeGold; schema versions 61 to 63 for CraftReport's shapes, 64 for
+/// PushActor and 65 for Arrest and CrimeGold. A branch without one of these
+/// messages holds its id with a never-sent Reserved placeholder.
+pub const SCHEMA_VERSION: u16 = 64;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -855,6 +865,11 @@ pub enum Message {
     /// 91, MsgType 83 (thuum tracker #84, docs/verbs/summon.md). See
     /// [`skymp::Summon`].
     Summon(skymp::Summon),
+    /// 92, MsgType 84, reserved for CraftReport and never sent. See
+    /// [`skymp::ReservedCraftReport`].
+    ReservedCraftReport(skymp::ReservedCraftReport),
+    /// 93, MsgType 85. See [`skymp::PushActor`].
+    PushActor(skymp::PushActor),
 }
 
 /// One row per wire id: name, SkyMP MsgType (0 for the M0 family), the byte
@@ -883,7 +898,7 @@ use Direction::{Both, ClientToServer as C2S, ServerToClient as S2C};
 /// The table, indexed by wire id. Byte caps are the largest legal encoding
 /// with room to spare, from the capacities above; the transport's own
 /// per-direction cap (smaller from clients) applies on top.
-const TABLE: [Row; 92] = [
+const TABLE: [Row; 94] = [
     row("Hello", 0, 4 * KIB, C2S),
     row("Welcome", 0, 32, S2C),
     row("Refuse", 0, 8, S2C),
@@ -1022,14 +1037,18 @@ const TABLE: [Row; 92] = [
     // the two triple floats, the cell, the time and the flag (thuum
     // tracker #84; 55 bytes at the longest, pinned by the size test)
     row("Summon", 83, 64, C2S),
+    // reserved for CraftReport; never sent, the validator refuses it
+    row("ReservedCraftReport", 84, 16, C2S),
+    // two ids at five-byte varints and the force (16 bytes at the longest)
+    row("PushActor", 85, 32, C2S),
 ];
 
 /// Wire ids in use: one past the last variant.
 /// Wire ids in use: one past the last variant, the table's length (ActorJump
 /// at 54 found a stale 54 here, fuzz validate 2026-10-18; the assertion below
 /// pins the two together).
-pub const WIRE_IDS: u32 = 92;
-const _: () = assert!(TABLE.len() == 92, "WIRE_IDS is the table's length");
+pub const WIRE_IDS: u32 = 94;
+const _: () = assert!(TABLE.len() == 94, "WIRE_IDS is the table's length");
 
 /// The wire id of the first SkyMP variant; `wire id = MsgType + SKYMP_OFFSET`.
 pub const SKYMP_OFFSET: u32 = 8;
@@ -1146,6 +1165,8 @@ impl Message {
             Message::ScriptVariables(_) => 89,
             Message::OwnHeadParts(_) => 90,
             Message::Summon(_) => 91,
+            Message::ReservedCraftReport(_) => 92,
+            Message::PushActor(_) => 93,
         }
     }
 
@@ -1273,7 +1294,13 @@ mod tests {
         assert_eq!(name_of_msg_type(82), Some("OwnHeadParts"));
         // tracker #84's one, after 82: wire id 91
         assert_eq!(name_of_msg_type(83), Some("Summon"));
-        assert_eq!(name_of_msg_type(84), None);
+        // 84 reserved for CraftReport, then PushActor: wire ids 92 and 93
+        assert_eq!(name_of_msg_type(84), Some("ReservedCraftReport"));
+        assert_eq!(name_of_msg_type(85), Some("PushActor"));
+        assert_eq!(name_of_msg_type(86), None);
+        assert_eq!(Message::PushActor(skymp::PushActor::default()).wire_id(), 93);
+        assert_eq!(Message::PushActor(skymp::PushActor::default()).name(), "PushActor");
+        assert_eq!(Message::PushActor(skymp::PushActor::default()).direction(), Direction::ClientToServer);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).wire_id(), 90);
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).msg_type(), Some(82));
         assert_eq!(Message::OwnHeadParts(skymp::OwnHeadParts::default()).direction(), Direction::ClientToServer);

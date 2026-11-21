@@ -52,10 +52,12 @@
 #include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
 #include "PropTransformMessage.h"
+#include "PushActorMessage.h"
 #include "PutItemMessage.h"
 #include "QuestStageMessage.h"
 #include "RaceMenuPresetMessage.h"
 #include "RelayedActivationMessage.h"
+#include "ReservedCraftReportMessage.h"
 #include "RestIntentMessage.h"
 #include "ScriptCallMessage.h"
 #include "ScriptStateApplyMessage.h"
@@ -166,4 +168,6 @@
   REGISTER_MESSAGE(WorldGlobalMessage)                                        \
   REGISTER_MESSAGE(ScriptVariablesMessage)                                    \
   REGISTER_MESSAGE(OwnHeadPartsMessage)                                       \
-  REGISTER_MESSAGE(SummonMessage)
+  REGISTER_MESSAGE(SummonMessage)                                             \
+  REGISTER_MESSAGE(ReservedCraftReportMessage)                                \
+  REGISTER_MESSAGE(PushActorMessage)

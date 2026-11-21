@@ -183,6 +183,15 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle;
     function once(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle;
+    // a script's push onto a puppet, skipped by the platform and reported
+    // (PushReportedEvent, Definitions.txt)
+    interface PushReportedEvent {
+        caster: number;
+        target: number;
+        force: number;
+    }
+    function on(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle;
+    function once(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle;
 
     // thuum docs/verbs/leveling.md (M5): the player's UseSkill (the fork's hook on
     // PlayerCharacter's vtable slot 0xF7, Address Library 40488), raised on the next

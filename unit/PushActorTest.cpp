@@ -65,6 +65,9 @@ void Push(PartOne& p, Networking::UserId user, uint32_t caster,
   msg.target = target;
   msg.force = force;
   p.GetActionListener().OnPushActor(raw, msg);
+  // SpSnippet::Execute sends deferred (SendToUserDeferred): the snippet
+  // reaches the messages at the next tick, as DropItemTest's drop does
+  p.Tick();
 }
 
 // the PushActorAway snippets user `to` was sent since the last clear

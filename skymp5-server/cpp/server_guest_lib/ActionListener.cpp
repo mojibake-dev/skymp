@@ -2499,10 +2499,9 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     };
     // the hand an entry holds: a shield is armor in the left hand (by its
     // flag, or by its shield slot, 0x200, for the outfit's dressing that
-    // flags every piece worn: MpObjectReference's outfit roll; GetEquipped
-    // Shield's kBodShield), any other armor holds none, the rest the hand its
-    // flag names, a two-hander the right (MpActor::WornHand; thuum tracker
-    // #172)
+    // flags every piece worn: MpObjectReference's outfit roll;
+    // GetEquippedShield's kBodShield), any other armor holds none, the rest
+    // the hand its flag names, a two-hander the right (MpActor::WornHand)
     const auto handOf = [&](const Inventory::Entry& entry,
                             const std::optional<uint32_t>& slots) {
       constexpr uint32_t kShieldSlot = 0x00000200;
@@ -2623,7 +2622,7 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     size_t worn = 0;
     for (auto& entry : kept.inv.entries) {
       // a two-hander, reported worn and wornLeft, reads as the right hand
-      // (thuum tracker #172, MpActor::WornHand)
+      // (MpActor::WornHand)
       const auto w = MpActor::WornHand(partOne.worldState, entry);
       if (w == Inventory::Worn::None) {
         continue;
@@ -3038,19 +3037,18 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (msg.data.caster == 0x14) {
     EndConcealment(partOne, *ac);
   }
-  // thuum tracker #172 (playtest 56's look 5, note 3990 and after; ADR-063:
-  // the engine that simulates an NPC owns what it wears, R2): a hosted
-  // actor's activation no longer re-picks its weapon here. Upstream's
-  // EquipBestWeapon rewrote the record (every worn weapon stripped, the
-  // inventory's highest-damage WEAP worn in the right hand alone, numChanges
-  // one up) on each activation its host reported, and every copy applied it:
-  // a draugr getting up out of its alcove (four activations of its
-  // CreatureAlcoveMarker, 800a7) gave four records of its two-handed
-  // greatsword worn right only while its host's engine held it in both
-  // hands, and the watching seat's copy went off, on and off and drew an
-  // empty hand. The host's own equipment report is the record; the fate
-  // roll and Init keep their EquipBestWeapon (MpActor.cpp), the server's own
-  // first dressing of an actor no engine has dressed yet
+  // a hosted actor's activation leaves its equipment as its host reported
+  // it: the engine that simulates an NPC owns what it wears, and the host's
+  // own equipment report is the record. EquipBestWeapon here would rewrite
+  // the record on each activation the host reports (every worn weapon
+  // stripped, the inventory's highest-damage WEAP worn in the right hand
+  // alone, numChanges one up), and every copy would apply it: a two-hander
+  // the host's engine holds in both hands would be recorded in the right
+  // hand only, and a watching copy would take it off and on and draw an
+  // empty hand (a draugr rising from its alcove activates its
+  // CreatureAlcoveMarker four times). The fate roll and Init keep their
+  // EquipBestWeapon (MpActor.cpp), the server's own first dressing of an
+  // actor no engine has dressed yet
 }
 
 void ActionListener::OnPutItem(const RawMessageData& rawMsgData,
@@ -11339,7 +11337,7 @@ skymp::rules::StaggerSettings StaggerSettingsOf(WorldState& worldState)
 
 // The weapon worn in the actor's right hand, if any: MpActor's own hand read
 // (GetEquippedWeapon's right, a two-hander reported worn and wornLeft
-// included: thuum tracker #172, MpActor::WornHand)
+// included: MpActor::WornHand)
 std::optional<espm::WEAP::Data> RightHandWeapon(const MpActor& actor,
                                                 WorldState& worldState)
 {

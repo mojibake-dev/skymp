@@ -5824,8 +5824,7 @@ bool MpActor::IsBothHandsWeapon(WorldState& worldState, uint32_t baseId)
 {
   // Skyrim.esm EQUP 0x13f45 BothHands, the slot a two-handed weapon's
   // record names in its ETYP (its PNAM parents 0x13f43 LeftHand and 0x13f42
-  // RightHand; thuum lab/esm.py on sky-srv, 2026-11-20: DraugrGreatsword
-  // 0x236a5 and DraugrBow 0x302ca name it)
+  // RightHand; DraugrGreatsword 0x236a5 and DraugrBow 0x302ca name it)
   constexpr uint32_t kBothHandsSlot = 0x00013f45;
   if (baseId == 0 || !worldState.HasEspm()) {
     return false;
@@ -5858,7 +5857,7 @@ std::array<std::optional<Inventory::Entry>, 2> MpActor::GetEquippedWeapon()
   std::array<std::optional<Inventory::Entry>, 2> wornEntries;
   // 0 -> left hand, 1 -> right hand; a two-hander the right's (WornHand),
   // once, so a sum over both hands (AnimationSystem::HandleAttackAnim's
-  // stamina) counts it once, as before
+  // stamina) counts it once
   auto& espmBrowser = GetParent()->GetEspm().GetBrowser();
   for (const auto& entry : GetEquipment().inv.entries) {
     const auto hand = WornHand(*GetParent(), entry);

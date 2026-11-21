@@ -2605,12 +2605,11 @@ TEST_CASE("A hosted actor's furniture use is its host's engine's: the server "
   p.DestroyActor(kC1);
 }
 
-// thuum tracker #172 (playtest 56's look 5; ADR-063, R2): the host's report
-// of its NPC's activation leaves the NPC's equipment as its host's own report
-// recorded it. Upstream's EquipBestWeapon ran here, stripped the worn weapon
-// and wore the inventory's best in the right hand alone with numChanges one
-// up, so each activation (a draugr's four of its alcove as it got up) sent
-// every copy a record its host never made
+// the host's report of its NPC's activation leaves the NPC's equipment as
+// its host's own report recorded it. An EquipBestWeapon on the activation
+// would strip the worn weapon and wear the inventory's best in the right hand
+// alone with numChanges one up, so each activation (a draugr rising from its
+// alcove gives four) would send every copy a record its host never made
 TEST_CASE("A hosted actor's activation leaves its equipment record as its "
           "host reported it",
           "[CellHost][Equipment][espm]")
@@ -2620,8 +2619,7 @@ TEST_CASE("A hosted actor's activation leaves its equipment record as its "
   constexpr uint32_t kBed = 0x000B3184;
   constexpr uint32_t kSitter = 0xff000c05;
   // Skyrim.esm DraugrGreatsword (WEAP, ETYP BothHands 0x13f45) and
-  // IronSword, both by lab/esm.py on sky-srv, 2026-11-20 (the sword is this
-  // file's kIronSword elsewhere)
+  // IronSword (the sword is this file's kIronSword elsewhere)
   constexpr uint32_t kGreatsword = 0x000236a5;
   constexpr uint32_t kSword = 0x00012eb7;
   const NiPoint3 kAtBed{ 117786.f, -81400.f, 10997.f };
@@ -2651,7 +2649,7 @@ TEST_CASE("A hosted actor's activation leaves its equipment record as its "
   const Equipment before = sitter.GetEquipment();
   REQUIRE(before.numChanges == 6);
 
-  // four activations of the furniture, as a draugr's alcove gave them
+  // four activations of the furniture, as a draugr's alcove gives them
   for (int i = 0; i < 4; ++i) {
     DoMessage(p, 0,
               nlohmann::json{ { "t", MsgType::Activate },
@@ -2668,13 +2666,12 @@ TEST_CASE("A hosted actor's activation leaves its equipment record as its "
   p.DestroyActor(kC1);
 }
 
-// thuum tracker #172 (the review of m4-172-equip): a host reports a
-// two-hander it holds as one entry worn and wornLeft (its engine reads it in
-// both hands), which Inventory::Entry::GetWorn reads as Left; with the
-// server's right-only rewrite gone, the server's right-hand reads take it by
-// its record's ETYP (MpActor::WornHand: GetEquippedWeapon, which
-// ActionListener's RightHandWeapon and GetEquippedItemType read), and a real
-// left-hand weapon stays the left hand's
+// a host reports a two-hander it holds as one entry worn and wornLeft (its
+// engine reads it in both hands), which Inventory::Entry::GetWorn reads as
+// Left; the server's right-hand reads take it by its record's ETYP
+// (MpActor::WornHand: GetEquippedWeapon, which ActionListener's
+// RightHandWeapon and GetEquippedItemType read), and a real left-hand weapon
+// stays the left hand's
 TEST_CASE("A host-reported two-hander is the right hand's weapon to the "
           "server's reads, and a left-hand one-hander stays left",
           "[CellHost][Equipment][espm]")
@@ -2682,7 +2679,7 @@ TEST_CASE("A host-reported two-hander is the right hand's weapon to the "
   auto& p = GetPartOne();
   constexpr uint32_t kHolder = 0xff000c05;
   // Skyrim.esm WEAP DraugrGreatsword (ETYP BothHands 0x13f45) and
-  // IronDagger, by lab/esm.py and FavoritesTest's record scans
+  // IronDagger (FavoritesTest's kIronDagger)
   constexpr uint32_t kGreatsword = 0x000236a5;
   constexpr uint32_t kDagger = 0x0001397e;
   const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
@@ -2730,8 +2727,7 @@ TEST_CASE("A host-reported two-hander is the right hand's weapon to the "
   p.DestroyActor(kHolder);
 }
 
-// thuum tracker #172 (the second and third reviews of m4-172-equip): a
-// host's report of a two-hander takes the place of what the record wore in
+// a host's report of a two-hander takes the place of what the record wore in
 // either hand, the fate's right-hand pick, a left-hand piece and an outfit
 // shield flagged worn alike, so no stale one-hander stays worn beside it for
 // GetEquippedWeapon's right hand and no shield for a copy to dress over it
@@ -2742,12 +2738,11 @@ TEST_CASE("A host's report of a two-hander takes the place of the record's "
   auto& p = GetPartOne();
   constexpr uint32_t kHolder = 0xff000c05;
   // Skyrim.esm WEAP DraugrGreatsword (ETYP BothHands 0x13f45), IronSword
-  // and IronDagger (lab/esm.py; FavoritesTest's record scans)
+  // and IronDagger (this file's kIronSword and FavoritesTest's kIronDagger)
   constexpr uint32_t kGreatsword = 0x000236a5;
   constexpr uint32_t kSword = 0x00012eb7;
   constexpr uint32_t kDagger = 0x0001397e;
-  // Skyrim.esm ARMO ArmorIronShield, BOD2 0x200 the shield slot (lab/esm.py
-  // on sky-srv, 2026-11-20)
+  // Skyrim.esm ARMO ArmorIronShield, BOD2 0x200 the shield slot
   constexpr uint32_t kShield = 0x00012eb6;
   const NiPoint3 kAtBed{ 117786.f, -81400.f, 10997.f };
   Player(p, 0, kC1, kAtBed + NiPoint3{ 40.f, 0.f, 0.f });

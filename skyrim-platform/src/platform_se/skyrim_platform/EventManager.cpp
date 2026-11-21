@@ -60,6 +60,9 @@ void EventManager::InitCustom()
   // tracker, from SummonCreatureEffect's Update and Finish, Hooks.cpp)
   manager->EmplaceEvent("summonStart");
   manager->EmplaceEvent("summonEnd");
+  // a script's PushActorAway onto an actor another seat simulates, skipped
+  // in this game and reported for that actor's simulator (ScriptNatives.cpp)
+  manager->EmplaceEvent("pushReported");
   // this game's player's arrest, its asked serve of the sentence (never run)
   // and a change of its crime gold (EventHandler.cpp, from PlayerCharacter's
   // own virtuals, Hooks.cpp)

@@ -3,6 +3,7 @@ import { callNative, settings, Actor, Form, FormType, MagicEffect, Menu, interru
 import * as sp from 'skyrimPlatform';
 import { holdFigureAimOffset, releaseFigureAimOffset } from "../../sync/figureAim";
 import { landsOnItsTarget } from "../../sync/spellDelivery";
+import { localIdOf } from "../../sync/createdForms";
 import {
   Armor,
   Cell,
@@ -15,6 +16,7 @@ import {
   on, // TODO: use this.controller.on instead
   once, // TODO: use this.controller.once instead
   Spell,
+  Enchantment,
   storage, // TODO: use this.sp.storage instead
   MenuOpenEvent,
   MenuCloseEvent,
@@ -2010,7 +2012,24 @@ export class RemoteServer extends ClientListener {
       // sets and can lag the cast. A target-location cast that carries its
       // caster's launch is launched at the point the caster's game picked,
       // with that launch's angles (castSpellImmediate's last six)
-      const spell = Spell.from(Game.getFormEx(msg.data.spell));
+      // thuum tracker #98 (look 2, note 4020): a relayed staff's cast names its
+      // enchantment, a MagicItem no Spell.from takes, and the server's relay of
+      // an enchanted weapon's hit names a made enchantment by its definition
+      // (createdSpell, spell 0), the form this engine's creator made for it
+      // (sync/createdForms.ts; the figure's dressed weapon made it already).
+      // Both cast as a spell does: castSpellImmediate takes any MagicItem, and
+      // the reads below are an Enchantment's too (getNumEffects,
+      // getNthEffectMagicEffect, getNthEffectArea)
+      let spellId = msg.data.spell;
+      if (msg.data.createdSpell) {
+        spellId = localIdOf(msg.data.createdSpell);
+        if (spellId <= 0) {
+          logTrace(this, `relayed cast of a made enchantment for ${msg.data.caster.toString(16)}: ${spellId === 0 ? "its form still being made" : "no form for its definition"}, dropped`);
+          return;
+        }
+      }
+      const spellForm = Game.getFormEx(spellId);
+      const spell = (Spell.from(spellForm) || Enchantment.from(spellForm)) as Spell | null;
       if (spell) {
         // thuum docs/verbs/spell-cast.md (the class pass's target-actor
         // spells, x-class-target 20261018-012152): a relayed cast at this

@@ -642,7 +642,10 @@ TEST_CASE("An enchanted weapon's hit runs its made enchantment on the target "
 
   CreatedForm made;
   made.kind = CreatedForm::kWeaponEnchantment;
-  made.effects = { CreatedEffect{ kHealMgef, 1.f, 0, 5, 1.f } };
+  // EnchFireDamageFFContact 0x4605a, EnchWeaponFireDamage01's own effect
+  // (lab/esm.py, 2026-11-20): instant fire damage the effect rule numbers
+  constexpr uint32_t kFireDamageMgef = 0x0004605a;
+  made.effects = { CreatedEffect{ kFireDamageMgef, 10.f, 0, 0, 30.f } };
   Inventory::ExtraData extras;
   extras.createdEnchantment = made;
   extras.maxCharge = 2400.f;
@@ -663,13 +666,9 @@ TEST_CASE("An enchanted weapon's hit runs its made enchantment on the target "
   hit.data.source = kDagger;
   p.GetActionListener().OnHit(raw, hit);
 
-  bool runs = false;
-  for (const auto& effect : target.GetRunningEffects()) {
-    if (effect.source == kDagger) {
-      runs = true;
-    }
-  }
-  REQUIRE(runs);
+  // the blade's own 25 on a base of 100 leaves 0.75; the enchantment's fire,
+  // run by the effect rule, takes more
+  REQUIRE(target.GetChangeForm().actorValues.healthPercentage < 0.75f);
 
   int toTarget = 0;
   int toAggressor = 0;

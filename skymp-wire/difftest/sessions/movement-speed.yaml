@@ -5,13 +5,13 @@
 # speed budget (2048 units, refilled at 660 a second): the first two fit, the
 # third does not (448 left plus a few ms of refill), and neither do the two
 # after it. Since decision 7 (Eli, 2026-11-20: a player's own move is never
-# sent back) the fixed server takes those three too, logs the disagreement
-# (E_MOVE_SPEED, once and at each power of two) and tells c2 to place c1's
-# figure at each (ActorJump) instead of gliding it. So both stacks take and
-# relay all five and c1 reaches 4000 units north on both, the forms near the
-# spawn leaving its view the same way (2026-10-03's nineteen); the three
-# placements are the fixed server's alone. UpdateMovement compares exactly
-# here (not as presence).
+# sent back) the fixed server takes those three too and logs the
+# disagreement (E_MOVE_SPEED, once and at each power of two); it relays them
+# alone, so c2 glides c1's figure as movement (no ActorJump: magna-ge's
+# choice for Skyrim's feel, 2026-11-20). So both stacks take and relay all
+# five and c1 reaches 4000 units north on both, the forms near the spawn
+# leaving its view the same way (2026-10-03's nineteen). UpdateMovement
+# compares exactly here (not as presence).
 #
 # Timing (DIFFTEST_CLIENT_GAP_MS 1500) as movement-reject: c2 joins before
 # c1's moves and outlives c1, so c2 also sees c1's departure the way smoke
@@ -30,11 +30,6 @@ steps:
   - {client: c2, at_ms: 0, move: {dx: 30}}
   - {client: c2, at_ms: 2500, move: {dx: 60}}
 divergences:
-  - client: c2
-    msg: {t: 46}
-    legacy: 0
-    wire: 3
-    reason: the three moves beyond c1's ground speed budget, taken on both stacks since ADR-079 decision 7, placed for the neighbour by the fixed server (ActorJump)
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0

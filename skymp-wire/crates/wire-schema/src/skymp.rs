@@ -1375,6 +1375,14 @@ wire_struct! {
         /// `has_launch` (`E_VAL_RANGE` otherwise); absent for every other
         /// cast and for a sender that saw no decal.
         pub decal: Option<SpellDecal>,
+        /// thuum tracker #98 (SCHEMA_VERSION 63, Eli's look 2: "other player
+        /// does not see fire"): a weapon's or an armor's enchantment made at
+        /// the enchanter, by its definition, with `spell` 0. Server to client
+        /// alone: the server's relay of an enchanted weapon's hit to the
+        /// struck actor's own game, which casts the enchantment from the
+        /// attacker's figure at its target as the engine's own hit does. A
+        /// seat's cast names a file form (`E_VAL_RANGE`).
+        pub created_spell: Option<CreatedForm>,
     }
 }
 

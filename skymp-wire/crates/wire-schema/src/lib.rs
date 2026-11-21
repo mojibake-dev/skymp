@@ -306,8 +306,11 @@ use bounded::{String, Vec};
 /// 63: DropItem carries the dropped stack's extras and its three created
 /// forms, as PutItem and TakeItem do (thuum tracker #98, Eli's look 2 of
 /// 3e8ab5acb: "cannot drop" a brew or an enchanted item; note 3920's agreed
-/// shape, "drops ... carry the item's extra data"). A 62 peer would misread
-/// every DropItem (D-PH1 A's reason).
+/// shape, "drops ... carry the item's extra data"); and SpellCast's data
+/// carries `created_spell`, a made enchantment by its definition, which the
+/// server's relay of an enchanted weapon's hit names to the struck actor's
+/// own game (Eli's look 2: "other player does not see fire"). A 62 peer
+/// would misread every DropItem and SpellCast (D-PH1 A's reason).
 pub const SCHEMA_VERSION: u16 = 63;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
@@ -1935,6 +1938,7 @@ mod tests {
                         integers: alloc::vec![u8::MAX; cap::ANIM_VARS].try_into().unwrap_or_default(),
                     },
                     decal: Some(skymp::SpellDecal { normal_x: f32::MAX, normal_y: f32::MAX, normal_z: f32::MAX, material_id: u32::MAX }),
+                    created_spell: Some(created_form_at_its_caps()),
                 },
                 ..Default::default()
             }),

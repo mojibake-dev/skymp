@@ -573,7 +573,17 @@ fn check_update_action(m: &skymp::UpdateAction) -> Result<(), Reject> {
 /// bow shot does ([`check_launch`]).
 fn check_spell_cast(m: &skymp::SpellCast) -> Result<(), Reject> {
     let d = &m.data;
-    if !(d.spell != 0
+    // thuum tracker #98 (SCHEMA_VERSION 63): a cast names a spell, or (the
+    // server's enchanted-hit relay) a made enchantment by its definition with
+    // spell 0, never both
+    let names_its_form = match (&d.created_spell, d.spell) {
+        (None, spell) => spell != 0,
+        (Some(form), 0) => {
+            check_created_form(form, &[skymp::CREATED_WEAPON_ENCHANTMENT, skymp::CREATED_ARMOR_ENCHANTMENT]).is_ok()
+        }
+        (Some(_), _) => false,
+    };
+    if !(names_its_form
         && (0..=3).contains(&d.casting_source)
         && (-core::f32::consts::FRAC_PI_2..=core::f32::consts::FRAC_PI_2).contains(&d.aim_angle))
     {
@@ -2203,6 +2213,13 @@ fn check_graph_vars(vars: &[skymp::GraphVar]) -> Result<(), Reject> {
 /// `Ok(())` means "well-formed and within rate"; ownership is checked later.
 pub fn validate(msg: &Message, guard: &mut ClientGuard, now_ms: u64) -> Result<(), Reject> {
     validate_server(msg)?;
+    // thuum tracker #98 (SCHEMA_VERSION 63): a seat's cast names a file form;
+    // a definition rides the server's enchanted-hit relay alone
+    if let Message::SpellCast(m) = msg {
+        if m.data.created_spell.is_some() {
+            return Err(Reject::Range);
+        }
+    }
     match msg {
         Message::Movement(m) => {
             if guard.movement_primed && m.seq <= guard.last_movement_seq {
@@ -3146,6 +3163,31 @@ mod tests {
         // its relay, server to client, under the same rule
         assert_eq!(validate_server(&cast_launched(1234.5, -300.25, 96.0, 0.1)), Ok(()));
         assert_eq!(validate_server(&cast_launched(1234.5, -1.0e7, 96.0, 0.1)), Err(Reject::OutOfWorld));
+    }
+
+    #[test]
+    fn a_made_enchantment_rides_the_servers_hit_relay_alone() {
+        // thuum tracker #98 (SCHEMA_VERSION 63): the server's relay of an
+        // enchanted weapon's hit names a made enchantment by its definition with
+        // spell 0; a seat's own cast never carries one, and no cast names both
+        let fire = skymp::CreatedForm {
+            kind: skymp::CREATED_WEAPON_ENCHANTMENT,
+            effects: vec![skymp::CreatedEffect { mgef: 0x13cae, magnitude: 10.0, area: 0, duration: 1, cost: 30.0 }]
+                .try_into()
+                .unwrap_or_default(),
+        };
+        let relay = |spell: u32, created: Option<skymp::CreatedForm>| {
+            Message::SpellCast(skymp::SpellCast {
+                data: skymp::SpellCastData { spell, casting_source: 1, created_spell: created, ..Default::default() },
+                ..Default::default()
+            })
+        };
+        assert_eq!(validate_server(&relay(0, Some(fire.clone()))), Ok(()));
+        assert_eq!(validate_server(&relay(0x12fd0, Some(fire.clone()))), Err(Reject::Range));
+        assert_eq!(validate_server(&relay(0, None)), Err(Reject::Range));
+        let potion = skymp::CreatedForm { kind: skymp::CREATED_POTION, ..fire.clone() };
+        assert_eq!(validate_server(&relay(0, Some(potion))), Err(Reject::Range));
+        assert_eq!(validate(&relay(0, Some(fire)), &mut ClientGuard::default(), 0), Err(Reject::Range));
     }
 
     #[test]

@@ -173,7 +173,8 @@ void Arrest(PartOne& p, uint32_t faction, uint32_t days)
 }
 
 void Put(PartOne& p, uint32_t baseId, uint32_t count, uint32_t target,
-         std::optional<float> health = std::nullopt)
+         std::optional<float> health = std::nullopt,
+         std::optional<uint32_t> owner = std::nullopt)
 {
   nlohmann::json j{ { "t", MsgType::PutItem },
                     { "baseId", baseId },
@@ -181,6 +182,9 @@ void Put(PartOne& p, uint32_t baseId, uint32_t count, uint32_t target,
                     { "target", target } };
   if (health) {
     j["health"] = *health;
+  }
+  if (owner) {
+    j["ownerId"] = *owner;
   }
   DoMessage(p, 0, j);
 }
@@ -446,5 +450,155 @@ TEST_CASE("A prisoner out of its jail before its end escaped: the term ends, "
   // and a later end of the shared clock releases nothing
   clock.Set(40.f);
   REQUIRE(!p.ReleaseIfServed(prisoner));
+  Leave(p);
+}
+
+// thuum docs/verbs/jail.md (Stolen goods; Eli's jail look, 2026-11-20: "no
+// stolen goods were removed"): a stack's owner is the engine's stolen mark,
+// recorded from the player's own game. Its owner here is Falkreath's crime
+// faction 0x28170 (an owner is an NPC or a faction)
+TEST_CASE("A stack's owner keeps it a stack apart and survives the record's "
+          "JSON, and an older record reads none",
+          "[Jail]")
+{
+  Inventory inv;
+  Inventory::Entry stolen(kDagger, 1);
+  stolen.ownerId = kFalkreath;
+  inv.AddItems({ Inventory::Entry(kDagger, 2), stolen });
+  REQUIRE(inv.entries.size() == 2);
+
+  simdjson::dom::parser parser;
+  const std::string dump = inv.ToJson().dump();
+  REQUIRE(Inventory::FromJson(parser.parse(dump).value()) == inv);
+  // a stack with none writes no key
+  Inventory plain;
+  plain.AddItems({ Inventory::Entry(kDagger, 1) });
+  REQUIRE(!plain.ToJson()["entries"][0].contains("ownerId"));
+
+  // rule 6's migration: a record from before the key reads as none
+  const nlohmann::json olderEntry{ { "baseId", kDagger }, { "count", 1 } };
+  const nlohmann::json older{ { "entries",
+                                nlohmann::json::array({ olderEntry }) } };
+  const auto olderInv = Inventory::FromJson(older);
+  REQUIRE(olderInv.entries.size() == 1);
+  REQUIRE(!olderInv.entries[0].ownerId);
+}
+
+TEST_CASE("A reported stolen stack moves the record's unmarked copy when the "
+          "record never heard its owner",
+          "[Jail]")
+{
+  Inventory inv;
+  inv.AddItems({ Inventory::Entry(kDagger, 2) });
+  Inventory::Entry stolen(kDagger, 1);
+  stolen.ownerId = kFalkreath;
+
+  // a pickup's or a shop chest's take: the record holds it unmarked
+  const auto unmarked = inv.RecordedCopyOf(stolen);
+  REQUIRE(!unmarked.ownerId);
+  REQUIRE(unmarked.count == 1);
+  REQUIRE(unmarked.EqualExceptCount(Inventory::Entry(kDagger, 1)));
+
+  // the record holds it marked: the marked stack
+  inv.AddItems({ stolen });
+  REQUIRE(inv.RecordedCopyOf(stolen).ownerId == kFalkreath);
+
+  // a plain report is itself
+  REQUIRE(inv.RecordedCopyOf(Inventory::Entry(kDagger, 1)) ==
+          Inventory::Entry(kDagger, 1));
+
+  // more than either holds: the report, whose removal throws as before
+  Inventory::Entry many = stolen;
+  many.count = 5;
+  REQUIRE(inv.RecordedCopyOf(many) == many);
+}
+
+TEST_CASE("An arrest's strip puts a stolen stack into the evidence chest, "
+          "whichever chest its diff names, and the release keeps it there",
+          "[Jail][espm]")
+{
+  PartOne& p = GetPartOne();
+  PinnedClock clock(p, 40.f);
+  auto& prisoner = Arrive(p);
+  const uint32_t held = prisoner.GetInventory().GetItemCount(kDagger);
+  prisoner.AddItem(kDagger, 1);
+  Inventory::Entry stolen(kDagger, 1);
+  stolen.ownerId = kFalkreath;
+  prisoner.AddItems({ stolen });
+  auto& evidence = p.worldState.GetFormAt<MpObjectReference>(kStolenGoods);
+  auto& belongings = p.worldState.GetFormAt<MpObjectReference>(kBelongings);
+  const uint32_t inEvidence = evidence.GetInventory().GetItemCount(kDagger);
+  const uint32_t inBelongings =
+    belongings.GetInventory().GetItemCount(kDagger);
+
+  Arrest(p, kFalkreath, 1);
+  REQUIRE(prisoner.GetCrimeRecord().jail);
+  // the strip's diff names one chest for all its moves: here the
+  // belongings chest for both, the engine's walk (16120) sorting by owner
+  Put(p, kDagger, 1, kBelongings, std::nullopt, kFalkreath);
+  Put(p, kDagger, 1, kBelongings);
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held);
+  REQUIRE(evidence.GetInventory().GetItemCount(kDagger) == inEvidence + 1);
+  REQUIRE(belongings.GetInventory().GetItemCount(kDagger) == inBelongings + 1);
+  REQUIRE(prisoner.GetCrimeRecord().jail->belongings.GetItemCount(kDagger) ==
+          1);
+  bool marked = false;
+  for (const auto& e : evidence.GetInventory().entries) {
+    marked |= e.EqualExceptCount(stolen);
+  }
+  REQUIRE(marked);
+
+  // served: the plain dagger back, the stolen one kept in the evidence chest
+  clock.Set(41.01f);
+  REQUIRE(p.ReleaseIfServed(prisoner));
+  REQUIRE(prisoner.GetInventory().GetItemCount(kDagger) == held + 1);
+  for (const auto& e : prisoner.GetInventory().entries) {
+    REQUIRE(!e.ownerId);
+  }
+  REQUIRE(evidence.GetInventory().GetItemCount(kDagger) == inEvidence + 1);
+  Leave(p);
+}
+
+TEST_CASE("A fine's confiscation: an owned stack's put into a hold's evidence "
+          "chest is taken from the street, marked on the record or not, and "
+          "an unowned one is any put",
+          "[Jail][espm]")
+{
+  PartOne& p = GetPartOne();
+  auto& player = Arrive(p);
+  // the evidence chests are read from the FACT records, no hold named
+  REQUIRE(p.CrimeFactionOfEvidenceChest(kStolenGoods) == kFalkreath);
+  REQUIRE(p.CrimeFactionOfEvidenceChest(kBelongings) == 0);
+  REQUIRE(p.CrimeFactionOfEvidenceChest(kDagger) == 0);
+
+  const uint32_t held = player.GetInventory().GetItemCount(kDagger);
+  Inventory::Entry stolen(kDagger, 1);
+  stolen.ownerId = kFalkreath;
+  player.AddItems({ stolen });
+  // a pickup's: its game marked it, the record never heard the owner
+  player.AddItem(kDagger, 1);
+  auto& evidence = p.worldState.GetFormAt<MpObjectReference>(kStolenGoods);
+  const uint32_t inEvidence = evidence.GetInventory().GetItemCount(kDagger);
+
+  // no arrest, no window: the engine's walk at a fine paid with removeStolen
+  Put(p, kDagger, 1, kStolenGoods, std::nullopt, kFalkreath);
+  Put(p, kDagger, 1, kStolenGoods, std::nullopt, kFalkreath);
+  REQUIRE(player.GetInventory().GetItemCount(kDagger) == held);
+  REQUIRE(evidence.GetInventory().GetItemCount(kDagger) == inEvidence + 2);
+  for (const auto& e : evidence.GetInventory().entries) {
+    if (e.baseId == kDagger && e.ownerId) {
+      REQUIRE(*e.ownerId == kFalkreath);
+    }
+  }
+  // more than the record holds moves nothing (conservation)
+  Put(p, kDagger, 50, kStolenGoods, std::nullopt, kFalkreath);
+  REQUIRE(player.GetInventory().GetItemCount(kDagger) == held);
+
+  // an unowned put into the evidence chest from the street is any put: out
+  // of reach
+  player.AddItem(kDagger, 1);
+  Put(p, kDagger, 1, kStolenGoods);
+  REQUIRE(player.GetInventory().GetItemCount(kDagger) == held + 1);
+  REQUIRE(evidence.GetInventory().GetItemCount(kDagger) == inEvidence + 2);
   Leave(p);
 }

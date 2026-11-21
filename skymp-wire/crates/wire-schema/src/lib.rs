@@ -288,7 +288,13 @@ use bounded::{String, Vec};
 /// docs/verbs/jail.md): an arrest the arrested player's own game reports, and
 /// one hold's bounty as that game holds it; the term, its end on the shared
 /// clock and the bounty per hold are the server's record.
-pub const SCHEMA_VERSION: u16 = 61;
+/// 62: Entry's, PutItem's and TakeItem's optional `owner_id` (thuum tracker
+/// #97, docs/verbs/jail.md, Stolen goods; Eli's jail look, 2026-11-20: "no
+/// stolen goods were removed"): a stack's owner, the engine's stolen mark,
+/// recorded from the player's own game so the engine's confiscation into a
+/// hold's evidence chest moves it on the record too. A new trailing field
+/// in three structs, so the number moves for D-PH1 A's reason.
+pub const SCHEMA_VERSION: u16 = 62;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.

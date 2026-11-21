@@ -740,11 +740,29 @@ public:
   // a put into either of the faction's chests moves that exact stack from
   // the record into the prisoner-belongings chest (conservation: only what
   // the record holds, never the jail outfit) and onto the term's belongings,
-  // whichever chest the client's inventory diff named; a take of a jail
+  // whichever chest the client's inventory diff named; a stack with an
+  // owner, stolen, goes into the evidence chest instead and stays there at
+  // the release (the engine's walk sorts by the owner: Stolen goods in
+  // thuum docs/verbs/jail.md); a take of a jail
   // outfit item the record lacks creates it on the record once a window. A
   // put is never refused back into its game (no refusal's resync); a take
   // that creates nothing is resynced as any refused move
   bool OnArrestStripPut(MpActor& prisoner, const Inventory::Entry& entry);
+  // thuum docs/verbs/jail.md (Stolen goods): the crime faction whose
+  // evidence chest (FACT's STOL) this container is, read from the load
+  // order's FACT records; 0 for any other container
+  uint32_t CrimeFactionOfEvidenceChest(uint32_t container);
+  // The engine's confiscation (its walk 16120, at a fine paid with
+  // removeStolen as at an arrest's strip): every stack its game marks with
+  // an owner moves into the faction's evidence chest, from wherever the
+  // player stands. A put of an owned stack into an evidence chest moves the
+  // record's own stack there (marked or not, Inventory::RecordedCopyOf),
+  // with the owner the player's game reported, no reach asked;
+  // conservation stays (only what the record holds moves), and a put it
+  // cannot cover is said and not sent back into the game, whose engine
+  // moved it already. Whether it moved
+  bool OnConfiscation(MpActor& player, MpObjectReference& chest,
+                      const Inventory::Entry& entry);
   bool OnArrestStripTake(MpActor& prisoner, const Inventory::Entry& entry);
   // The player's bounty per hold, told to its game as the console's
   // Faction.SetCrimeGold and SetCrimeGoldViolent tell it (a login's); how

@@ -138,6 +138,11 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     // the summon's arrival art for its watchers (SCHEMA_VERSION 59, thuum
     // tracker #111, docs/verbs/summon.md)
     ("CreateActorProps", "summonEffect"),
+    // a stack's owner, the engine's stolen mark (SCHEMA_VERSION 62, thuum
+    // tracker #97, docs/verbs/jail.md, Stolen goods)
+    ("Entry", "ownerId"),
+    ("PutItem", "ownerId"),
+    ("TakeItem", "ownerId"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

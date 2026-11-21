@@ -10,6 +10,7 @@ import {
   ExtraCount,
   ExtraEnchantment,
   ExtraPoison,
+  ExtraOwnership,
   ExtraSoul,
   ExtraTextDisplayData,
   ExtraCharge,
@@ -37,6 +38,9 @@ export interface Extra {
   poisonCount?: number;
   worn?: boolean;
   wornLeft?: boolean;
+  // thuum docs/verbs/jail.md (Stolen goods): the stack's owner, the engine's
+  // stolen mark (ExtraOwnership), as this game holds it
+  ownerId?: number;
 }
 
 export interface BasicEntry {
@@ -126,6 +130,7 @@ const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
     a.soul === b.soul &&
     a.poisonId === b.poisonId &&
     a.poisonCount === b.poisonCount &&
+    a.ownerId === b.ownerId &&
     ((!!a.worn === !!b.worn && !!a.wornLeft === !!b.wornLeft) || ignoreWorn)
   );
 };
@@ -187,6 +192,17 @@ const extractExtraData = (
       case "WornLeft":
         out.wornLeft = true;
         break;
+      case "Ownership": {
+        // thuum docs/verbs/jail.md (Stolen goods): the engine's stolen mark.
+        // Not on ammunition: addItemEx lays ammo with no extra list, so an
+        // arrow's owner could never be written back, and its record stays
+        // plain as before
+        const owner = (extra as ExtraOwnership).owner;
+        if (owner && !Ammo.from(item)) {
+          out.ownerId = owner;
+        }
+        break;
+      }
     }
   });
 };
@@ -399,6 +415,31 @@ const keptBy = (e: Entry, keep: ReadonlyMap<number, number>): boolean => {
   return (e.count < 0 && (sides & keepSurplus) !== 0) || (e.count > 0 && (sides & keepDeficit) !== 0);
 };
 
+// thuum docs/verbs/jail.md (Stolen goods): the stolen mark is this game's own
+// (R2, the server records it and never clears it): a stack the record holds
+// unmarked where this game holds it marked (a pickup's, whose owner the record
+// never heard) keeps the game's mark, as many as the record holds, rather than
+// being swapped for a clean copy (a remove and an add the player would see)
+const keepOwners = (record: Inventory, game: Inventory, ignoreWorn: boolean): Inventory => {
+  const out: Inventory = JSON.parse(JSON.stringify(record));
+  game.entries.forEach((g) => {
+    if (!g.ownerId || out.entries.some((r) => r.baseId === g.baseId && extrasEqual(r, g, ignoreWorn))) {
+      return;
+    }
+    const unmarked: Entry = { ...g, ownerId: undefined };
+    const plain = out.entries.find(
+      (r) => r.baseId === g.baseId && !r.ownerId && extrasEqual(r, unmarked, ignoreWorn)
+    );
+    if (!plain) {
+      return;
+    }
+    const n = Math.min(plain.count, g.count);
+    plain.count -= n;
+    out.entries.push({ ...plain, count: n, ownerId: g.ownerId });
+  });
+  return { entries: out.entries.filter((e) => e.count > 0) };
+};
+
 export const applyInventory = (
   refr: ObjectReference,
   newInventory: Inventory,
@@ -416,7 +457,8 @@ export const applyInventory = (
   if (resetBaseFirst) {
     resetBase(refr);
   }
-  const diff = getDiff(newInventory, getInventory(refr), ignoreWorn).entries
+  const current = getInventory(refr);
+  const diff = getDiff(keepOwners(newInventory, current, ignoreWorn), current, ignoreWorn).entries
     .filter((e) => keep === undefined || !keptBy(e, keep));
 
   let res = true;
@@ -530,8 +572,16 @@ export const applyInventory = (
         }
       });
 
+      // thuum docs/verbs/jail.md (Stolen goods): the stack's owner, which
+      // the next addItemEx marks it with (pushWornState's shape)
+      const owner = e.ownerId ? Game.getFormEx(e.ownerId) : null;
+      if (owner) {
+        TESModPlatform.pushOwner(owner);
+      }
+
+      const ownerNote = owner ? ` owner ${owner.getFormID().toString(16)}` : "";
       printConsole(
-        `TESModPlatform.addItemEx(${argsToPrint.join(", ")})`
+        `TESModPlatform.addItemEx(${argsToPrint.join(", ")})${ownerNote}`
       );
 
       TESModPlatform.addItemEx(...addItemExArgs);

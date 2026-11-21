@@ -89,7 +89,7 @@ export interface Win32 {
 export declare let win32: Win32
 
 export interface ExtraData {
-  type: 'Health' | 'Count' | 'Enchantment' | 'Charge' | 'TextDisplayData' | 'Soul' | 'Poison' | 'Worn' | 'WornLeft'
+  type: 'Health' | 'Count' | 'Enchantment' | 'Charge' | 'TextDisplayData' | 'Soul' | 'Poison' | 'Worn' | 'WornLeft' | 'Ownership'
 }
 export interface ExtraHealth extends ExtraData {
   type: 'Health'
@@ -127,6 +127,10 @@ export interface ExtraWorn extends ExtraData {
 }
 export interface ExtraWornLeft extends ExtraData {
   type: 'WornLeft'
+}
+export interface ExtraOwnership extends ExtraData {
+  type: 'Ownership'
+  owner: number
 }
 export type BaseExtraList = ExtraData[]
 export interface InventoryChangesEntry {
@@ -1866,6 +1870,7 @@ export interface Extra {
   poisonCount?: number;
   worn?: boolean;
   wornLeft?: boolean;
+  ownerId?: number;
 }
 
 export interface BasicEntry {
@@ -3682,6 +3687,7 @@ export declare class TESModPlatform extends PapyrusObject {
   static getSkinColor(base: ActorBase | null): ColorForm | null
   static isPlayerRunningEnabled(): boolean
   static moveRefrToPosition(refr: ObjectReference | null, cell: Cell | null, world: WorldSpace | null, posX: number, posY: number, posZ: number, rotX: number, rotY: number, rotZ: number): void
+  static pushOwner(owner: Form | null): void
   static pushTintMask(targetActor: Actor | null, type: number, argb: number, texturePath: string): void
   static pushWornState(worn: boolean, wornLeft: boolean): void
   static resetContainer(container: Form | null): void

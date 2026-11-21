@@ -32,6 +32,16 @@ std::string PutItemEvent::GetArgumentsJsonArray() const
 
 void PutItemEvent::OnFireSuccess(WorldState*)
 {
-  std::vector<Inventory::Entry> entries = { entry };
-  actor->RemoveItems(entries, sourceRefr);
+  // thuum docs/verbs/jail.md (Stolen goods): the take's twin, for a stolen
+  // stack the putter's record holds unmarked (a pickup the record never
+  // heard the owner of): its unowned stack moves, and the container's copy
+  // carries the owner the putter's game reported
+  const auto recorded = actor->GetInventory().RecordedCopyOf(entry);
+  if (recorded.ownerId == entry.ownerId) {
+    std::vector<Inventory::Entry> entries = { entry };
+    actor->RemoveItems(entries, sourceRefr);
+  } else {
+    actor->RemoveItems({ recorded });
+    sourceRefr->AddItems({ entry });
+  }
 }

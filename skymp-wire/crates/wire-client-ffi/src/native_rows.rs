@@ -23,7 +23,7 @@ use crate::{guard, log};
 /// plugin whose table holds another count binds no row there. The compiler
 /// checks it against the table; after natives-gen changes the count, set it
 /// here and run `just wire-header`.
-pub const SKYMP_NATIVE_ROWS: usize = 1410;
+pub const SKYMP_NATIVE_ROWS: usize = 1411;
 const _: () = assert!(
     SKYMP_NATIVE_ROWS == TABLE.len(),
     "SKYMP_NATIVE_ROWS is wire-rules' TABLE.len()"

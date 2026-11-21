@@ -80,11 +80,12 @@ bool Inventory::Entry::EqualExceptCount(const Inventory::Entry& other) const
   // nullopt mismatch. Logically it should be the same
   return std::make_tuple(baseId, health, enchantmentId, maxCharge,
                          removeEnchantmentOnUnequip, chargePercent, name, soul,
-                         poisonId, poisonCount, GetWorn()) ==
+                         poisonId, poisonCount, GetWorn(), ownerId) ==
     std::make_tuple(other.baseId, other.health, other.enchantmentId,
                     other.maxCharge, other.removeEnchantmentOnUnequip,
                     other.chargePercent, other.name, other.soul,
-                    other.poisonId, other.poisonCount, other.GetWorn());
+                    other.poisonId, other.poisonCount, other.GetWorn(),
+                    other.ownerId);
 }
 
 Inventory& Inventory::AddItem(uint32_t baseId, uint32_t count)
@@ -191,6 +192,25 @@ Inventory& Inventory::RemoveItems(const std::vector<Entry>& entries)
 
   *this = copy;
   return *this;
+}
+
+Inventory::Entry Inventory::RecordedCopyOf(const Entry& reported) const
+{
+  const auto held = [this](const Entry& probe) {
+    uint32_t n = 0;
+    for (const auto& e : entries) {
+      if (e.EqualExceptCount(probe)) {
+        n += e.count;
+      }
+    }
+    return n;
+  };
+  if (!reported.ownerId || held(reported) >= reported.count) {
+    return reported;
+  }
+  Entry unowned = reported;
+  unowned.ownerId.reset();
+  return held(unowned) >= reported.count ? unowned : reported;
 }
 
 bool Inventory::HasItem(uint32_t baseId) const

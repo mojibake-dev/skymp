@@ -3084,6 +3084,15 @@ void ActionListener::OnPutItem(const RawMessageData& rawMsgData,
     partOne.OnArrestStripPut(*actor, entry);
     return;
   }
+  // thuum docs/verbs/jail.md (Stolen goods): an owned stack's put into a
+  // crime faction's evidence chest is the engine's confiscation, made from
+  // wherever the player stood (a fine paid with removeStolen): PartOne's,
+  // no reach asked and never refused back into the player's game
+  if (entry.ownerId &&
+      partOne.CrimeFactionOfEvidenceChest(ref.GetFormId()) != 0) {
+    partOne.OnConfiscation(*actor, ref, entry);
+    return;
+  }
   if (!ContainerMoveWithinReach(*actor, ref, "put")) {
     return;
   }

@@ -75,6 +75,11 @@ void PushTintMask(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
 void PushWornState(IVM* vm, StackID stackId, RE::StaticFunctionTag*, bool worn,
                    bool wornLeft);
 
+// the owner the next AddItemEx marks its stack with (thuum docs/verbs/jail.md,
+// Stolen goods)
+void PushOwner(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
+               RE::TESForm* owner);
+
 void AddItemEx(IVM* vm, StackID stackId, RE::StaticFunctionTag*,
                RE::TESObjectREFR* containerRefr, RE::TESForm* item,
                int32_t countDelta, float health,

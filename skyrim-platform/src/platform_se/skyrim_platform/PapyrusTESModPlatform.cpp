@@ -19,6 +19,7 @@
 #include <RE/B/BSPointerHandle.h>
 #include <RE/C/Calendar.h>
 #include <RE/E/ExtraHotkey.h>
+#include <RE/E/ExtraOwnership.h>
 #include <RE/I/InventoryChanges.h>
 #include <RE/I/InventoryEntryData.h>
 #include <RE/M/MagicFavorites.h>
@@ -642,6 +643,20 @@ void TESModPlatform::PushWornState(IVM* vm, StackID stackId,
   g_wornLeft = wornLeft;
 }
 
+// thuum docs/verbs/jail.md (Stolen goods; tracker #97): the owner the next
+// AddItemEx marks its stack with (an ExtraOwnership, the engine's stolen
+// mark: CommonLibSSE-NG include/RE/E/ExtraOwnership.h), PushWornState's
+// shape; that call takes it and clears it, whether it adds or returns early
+namespace {
+thread_local RE::TESForm* g_owner = nullptr;
+}
+
+void TESModPlatform::PushOwner(IVM* vm, StackID stackId,
+                               RE::StaticFunctionTag*, RE::TESForm* owner)
+{
+  g_owner = owner;
+}
+
 namespace {
 RE::ExtraDataList* CreateExtraDataList()
 {
@@ -681,6 +696,10 @@ void TESModPlatform::AddItemEx(
   FixedString textDisplayData, int32_t soul, RE::AlchemyItem* poison,
   int32_t poisonCount)
 {
+  // the owner PushOwner named, for this call alone
+  RE::TESForm* const owner = g_owner;
+  g_owner = nullptr;
+
   auto markType = [](RE::BaseExtraList::PresenceBitfield* presence,
                      uint32_t type, bool bCleared) {
     uint32_t index = (type >> 3);
@@ -747,7 +766,7 @@ void TESModPlatform::AddItemEx(
 
   if (health > 1 || enchantment || chargePercent > 0 ||
       strlen(textDisplayData.data()) > 0 || (soul > 0 && soul <= 5) ||
-      poison) {
+      poison || owner) {
     extraList = CreateExtraDataList();
 
     auto extraList_ = reinterpret_cast<void*>(extraList);
@@ -807,6 +826,15 @@ void TESModPlatform::AddItemEx(
         ::new (extra) RE::ExtraPoison(poison, poisonCount);
         addExtra(extraList_, static_cast<uint32_t>(RE::ExtraDataType::kPoison),
                  extra);
+      }
+    }
+
+    if (owner) {
+      auto extra = RE::malloc<RE::ExtraOwnership>();
+      if (extra) {
+        ::new (extra) RE::ExtraOwnership(owner);
+        addExtra(extraList_,
+                 static_cast<uint32_t>(RE::ExtraDataType::kOwnership), extra);
       }
     }
   }
@@ -2156,6 +2184,11 @@ bool TESModPlatform::Register(IVM* vm)
     new RE::BSScript::NativeFunction<true, decltype(PushWornState), void,
                                      RE::StaticFunctionTag*, bool, bool>(
       "PushWornState", "TESModPlatform", PushWornState));
+
+  vm->BindNativeMethod(
+    new RE::BSScript::NativeFunction<true, decltype(PushOwner), void,
+                                     RE::StaticFunctionTag*, RE::TESForm*>(
+      "PushOwner", "TESModPlatform", PushOwner));
 
   vm->BindNativeMethod(
     new RE::BSScript::NativeFunction<true, decltype(ResetContainer), void,

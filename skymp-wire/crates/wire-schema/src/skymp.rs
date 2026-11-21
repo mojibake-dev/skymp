@@ -126,6 +126,10 @@ wire_struct! {
         pub worn: Option<bool>,
         /// Worn in the left hand.
         pub worn_left: Option<bool>,
+        /// The stack's owner (ExtraOwnership, the engine's stolen mark) as
+        /// the player's own game holds it (SCHEMA_VERSION 62; thuum
+        /// docs/verbs/jail.md, Stolen goods): R2, recorded; never 0.
+        pub owner_id: Option<u32>,
     }
 }
 
@@ -617,6 +621,10 @@ wire_struct! {
         pub worn: Option<bool>,
         /// Worn in the left hand.
         pub worn_left: Option<bool>,
+        /// The stack's owner (ExtraOwnership, the engine's stolen mark) as
+        /// the player's own game holds it (SCHEMA_VERSION 62; thuum
+        /// docs/verbs/jail.md, Stolen goods): R2, recorded; never 0.
+        pub owner_id: Option<u32>,
     }
 }
 
@@ -655,6 +663,10 @@ wire_struct! {
         pub worn: Option<bool>,
         /// Worn in the left hand.
         pub worn_left: Option<bool>,
+        /// The stack's owner (ExtraOwnership, the engine's stolen mark) as
+        /// the player's own game holds it (SCHEMA_VERSION 62; thuum
+        /// docs/verbs/jail.md, Stolen goods): R2, recorded; never 0.
+        pub owner_id: Option<u32>,
     }
 }
 

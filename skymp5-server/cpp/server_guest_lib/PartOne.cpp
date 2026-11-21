@@ -70,6 +70,7 @@
 #include "libespm/SMQN.h"
 #include "libespm/SPEL.h"
 #include "libespm/ScriptData.h"
+#include "libespm/Utils.h"
 #include "papyrus-vm/Utils.h"
 #include "script_classes/PapyrusObjectReference.h"
 #include <spdlog/fmt/fmt.h>
@@ -258,6 +259,11 @@ struct PartOne::Impl
     uint64_t heldAtMs = 0;
   };
   std::unordered_map<uint32_t, std::vector<HeldSighting>> heldSightings;
+
+  // thuum docs/verbs/jail.md (Stolen goods): every crime faction's evidence
+  // chest (FACT's STOL) to its faction, read once from the load order's FACT
+  // records at the first ask (CrimeFactionOfEvidenceChest)
+  std::optional<std::unordered_map<uint32_t, uint32_t>> evidenceChests;
 
   // every player actor's ground speed budget (thuum
   // docs/verbs/movement-speed.md; the rule is Rust's, ADR-020)
@@ -10232,6 +10238,107 @@ uint32_t CountExact(const Inventory& inventory, const Inventory::Entry& entry)
 }
 }
 
+namespace {
+// the record's own stacks a strip's or a confiscation's put of the entry
+// takes, worn or not (the engine unequips as it strips; the report carries
+// no worn flag): the stacks equal to it first, then, for an entry with an
+// owner, the same stacks with none (the stolen mark the record never heard:
+// Inventory::RecordedCopyOf), taken as far as the put goes; none when the
+// record cannot cover it (conservation, R0)
+std::optional<std::vector<Inventory::Entry>> StrippedStacks(
+  const Inventory& inventory, const Inventory::Entry& entry)
+{
+  std::vector<Inventory::Entry> removals;
+  uint32_t remaining = entry.count;
+  const auto takeMatching = [&](const Inventory::Entry& wanted) {
+    for (const auto& stack : inventory.entries) {
+      Inventory::Entry probe = wanted;
+      probe.SetWorn(stack.GetWorn());
+      if (remaining == 0 || !probe.EqualExceptCount(stack)) {
+        continue;
+      }
+      Inventory::Entry take = stack;
+      take.count = std::min(stack.count, remaining);
+      remaining -= take.count;
+      removals.push_back(take);
+    }
+  };
+  takeMatching(entry);
+  if (remaining > 0 && entry.ownerId) {
+    Inventory::Entry unowned = entry;
+    unowned.ownerId.reset();
+    takeMatching(unowned);
+  }
+  if (remaining > 0) {
+    return std::nullopt;
+  }
+  return removals;
+}
+}
+
+uint32_t PartOne::CrimeFactionOfEvidenceChest(uint32_t container)
+{
+  if (!HasEspm()) {
+    return 0;
+  }
+  if (!pImpl->evidenceChests) {
+    auto& chests = pImpl->evidenceChests.emplace();
+    auto& browser = GetEspm().GetBrowser();
+    auto& cache = worldState.GetEspmCache();
+    const auto byFile = browser.GetRecordsByType("FACT");
+    for (size_t i = 0; i < byFile.size(); ++i) {
+      const auto* mapping = browser.GetCombMapping(i);
+      if (!mapping || !byFile[i]) {
+        continue;
+      }
+      for (const auto* rec : *byFile[i]) {
+        const auto* fact = espm::Convert<espm::FACT>(rec);
+        if (!fact) {
+          continue;
+        }
+        const auto data = fact->GetData(cache);
+        if (data.evidenceChest == 0) {
+          continue;
+        }
+        chests[espm::utils::GetMappedId(data.evidenceChest, *mapping)] =
+          espm::utils::GetMappedId(rec->GetId(), *mapping);
+      }
+    }
+    spdlog::info("[verb:jail] {} crime faction evidence chest(s) read from "
+                 "the load order's FACT records",
+                 chests.size());
+  }
+  const auto it = pImpl->evidenceChests->find(container);
+  return it == pImpl->evidenceChests->end() ? 0 : it->second;
+}
+
+bool PartOne::OnConfiscation(MpActor& player, MpObjectReference& chest,
+                             const Inventory::Entry& entry)
+{
+  if (!entry.ownerId || entry.count == 0) {
+    return false;
+  }
+  const auto removals = StrippedStacks(player.GetInventory(), entry);
+  if (!removals) {
+    spdlog::warn("[verb:jail] E_CONFISCATION_NOT_HELD: {:x}'s game puts {} "
+                 "of {:x} (owner {:x}) into the evidence chest {:x}, more "
+                 "than its record holds; not moved",
+                 player.GetFormId(), entry.count, entry.baseId, *entry.ownerId,
+                 chest.GetFormId());
+    return false;
+  }
+  Inventory::Entry laid = entry;
+  laid.SetWorn(Inventory::Worn::None);
+  player.RemoveItems(*removals);
+  chest.AddItems({ laid });
+  spdlog::info("[verb:jail] {:x}'s game confiscates {} of {:x} (owner {:x}) "
+               "into the evidence chest {:x} of {:x}",
+               player.GetFormId(), entry.count, entry.baseId, *entry.ownerId,
+               chest.GetFormId(),
+               CrimeFactionOfEvidenceChest(chest.GetFormId()));
+  return true;
+}
+
 bool PartOne::OnArrestStripPut(MpActor& prisoner,
                                const Inventory::Entry& entry)
 {
@@ -10250,39 +10357,38 @@ bool PartOne::OnArrestStripPut(MpActor& prisoner,
                  prisoner.GetFormId(), entry.count, entry.baseId);
     return false;
   }
-  auto& form = worldState.LookupFormById(window->belongingsChest);
+  // the engine's walk (16120) sorts the strip by the stack's owner,
+  // whichever chest the client's diff names (thuum docs/verbs/jail.md,
+  // Stolen goods): a stolen stack into the evidence chest, kept there at
+  // the release, the rest into the belongings
+  const bool stolen = entry.ownerId.has_value() && window->evidenceChest != 0;
+  auto& form = worldState.LookupFormById(stolen ? window->evidenceChest
+                                                : window->belongingsChest);
   MpObjectReference* chest = form ? form->AsObjectReference() : nullptr;
   if (!chest) {
     return false;
   }
-  // the record's own stacks of it, worn or not (the engine unequips as it
-  // strips; the report carries no worn flag), taken as far as the put goes
-  std::vector<Inventory::Entry> removals;
-  uint32_t remaining = entry.count;
-  for (const auto& stack : prisoner.GetInventory().entries) {
-    Inventory::Entry probe = entry;
-    probe.SetWorn(stack.GetWorn());
-    if (remaining == 0 || !probe.EqualExceptCount(stack)) {
-      continue;
-    }
-    Inventory::Entry take = stack;
-    take.count = std::min(stack.count, remaining);
-    remaining -= take.count;
-    removals.push_back(take);
-  }
   // conservation (R0): only what the record holds moves; a put it cannot
   // cover is said and not sent back to the prisoner's game, whose engine
   // made its strip already
-  if (remaining > 0) {
+  const auto removals = StrippedStacks(prisoner.GetInventory(), entry);
+  if (!removals) {
     spdlog::warn("[verb:jail] E_ARREST_STRIP_NOT_HELD: {:x}'s strip puts {} "
-                 "of {:x}, {} more than its record holds; not moved",
-                 prisoner.GetFormId(), entry.count, entry.baseId, remaining);
+                 "of {:x}, more than its record holds; not moved",
+                 prisoner.GetFormId(), entry.count, entry.baseId);
     return false;
   }
   Inventory::Entry laid = entry;
   laid.SetWorn(Inventory::Worn::None);
-  prisoner.RemoveItems(removals);
+  prisoner.RemoveItems(*removals);
   chest->AddItems({ laid });
+  if (stolen) {
+    spdlog::info("[verb:jail] {:x}'s strip: {} of {:x} (owner {:x}), "
+                 "stolen, into the evidence chest {:x}",
+                 prisoner.GetFormId(), entry.count, entry.baseId,
+                 *entry.ownerId, chest->GetFormId());
+    return true;
+  }
   prisoner.AddJailBelonging(laid);
   spdlog::debug("[verb:jail] {:x}'s strip: {} of {:x} into its belongings "
                 "{:x}",

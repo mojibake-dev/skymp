@@ -1536,8 +1536,8 @@ mod tests {
     #[test]
     fn the_dump_holds_its_natives_and_never_an_offset() {
         let d = dump();
-        assert_eq!(d.natives().len(), 1410);
-        assert_eq!(d.natives().iter().filter(|n| n.is_static).count(), 301);
+        assert_eq!(d.natives().len(), 1411);
+        assert_eq!(d.natives().iter().filter(|n| n.is_static).count(), 302);
         assert_eq!(d.natives().iter().filter(|n| n.latent).count(), 48);
         // the reader keeps no offset: Native has no field for one
         let n = d
@@ -1696,8 +1696,8 @@ mod tests {
         // Undead FX build's four Actor look rows (SetEyeTexture, SetAlpha,
         // SetCriticalStage, AttachAshPile) actions, and the two placements
         // state rows
-        assert_eq!(kinds(&|r| r.derived.cells.kind), [800, 344, 239, 22, 5]);
-        assert_eq!(kinds(&|r| r.cells.kind), [801, 338, 241, 27, 3]);
+        assert_eq!(kinds(&|r| r.derived.cells.kind), [800, 345, 239, 22, 5]);
+        assert_eq!(kinds(&|r| r.cells.kind), [801, 339, 241, 27, 3]);
         let by_rule: Vec<(&str, usize)> = rule_counts(&g)
             .iter()
             .map(|(r, n, _)| (r.code(), *n))
@@ -1709,7 +1709,7 @@ mod tests {
                 ("K2", 127),
                 ("K3", 29),
                 ("K4", 22),
-                ("K5", 134),
+                ("K5", 135),
                 ("K6", 5),
                 ("K7", 239),
                 ("K8", 210)
@@ -1729,7 +1729,7 @@ mod tests {
         }
         // the sixty-two live rows first (#117's GetItemCount the last),
         // every other native after them staged (S5), the dump's whole
-        assert_eq!(table.len(), 1410);
+        assert_eq!(table.len(), 1411);
         assert_eq!(table.iter().position(|r| r.staged), Some(62));
         assert!(table.iter().skip(62).all(|r| r.staged));
         assert_eq!(index_of(&rows), natives::INDEX.to_vec());
@@ -2006,7 +2006,7 @@ mod tests {
         // the weather runs where its script runs until step 3's record
         assert_eq!(row("Weather.ReleaseOverride").cells.scoped, Scoped::Runs);
         let tsv = tsv(&g);
-        assert_eq!(tsv.lines().count(), 1411);
+        assert_eq!(tsv.lines().count(), 1412);
         assert_eq!(tsv.lines().next(), Some(TSV_HEADER));
         assert!(tsv
             .lines()

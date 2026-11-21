@@ -790,6 +790,32 @@ const MAX_JAIL_DAYS: u32 = 7;
 /// bound.
 const PAPYRUS_INT_MAX: u32 = i32::MAX.unsigned_abs();
 
+/// The shared check every message without its own ends in: no NaN or
+/// infinity anywhere in it.
+fn finite(msg: &Message) -> Result<(), Reject> {
+    if all_finite(msg) {
+        Ok(())
+    } else {
+        Err(Reject::NonFinite)
+    }
+}
+
+/// A stack's owner (thuum docs/verbs/jail.md, Stolen goods; SCHEMA_VERSION
+/// 62): the form of the engine's stolen mark when present, never 0 (a
+/// client leaves the field out for none). Whose the item was is the
+/// player's own game's (R2); the server checks the shape only.
+fn check_owner(owner_id: Option<u32>) -> Result<(), Reject> {
+    if owner_id == Some(0) {
+        return Err(Reject::Range);
+    }
+    Ok(())
+}
+
+/// [`check_owner`] for each stack of an inventory a client sends.
+fn check_owners(inv: &skymp::Inventory) -> Result<(), Reject> {
+    inv.entries.iter().try_for_each(|e| check_owner(e.owner_id))
+}
+
 /// A player's arrest report (thuum tracker #97, docs/verbs/jail.md), wire
 /// sanity only: a faction, never 0, and the game's sentence, 1 to 7 days.
 /// Whether the faction has a jail, and where, is the server's read of the
@@ -2425,6 +2451,10 @@ pub fn validate_server(msg: &Message) -> Result<(), Reject> {
         Message::Summon(m) => check_summon(m),
         Message::Arrest(m) => check_arrest(m),
         Message::CrimeGold(m) => check_crime_gold(m),
+        Message::PutItem(m) => check_owner(m.owner_id).and_then(|()| finite(msg)),
+        Message::TakeItem(m) => check_owner(m.owner_id).and_then(|()| finite(msg)),
+        Message::UpdateEquipment(m) => check_owners(&m.data.inv).and_then(|()| finite(msg)),
+        Message::CraftItem(m) => check_owners(&m.data.craft_input_objects).and_then(|()| finite(msg)),
         Message::CreateActor(m) => check_create_actor(m),
         Message::UpdateAppearance(m) => check_update_appearance(m),
         Message::SpSnippet(m) => check_sp_snippet(m),
@@ -3980,6 +4010,32 @@ mod tests {
         assert_eq!(validate(&report(0x28170, 7), &mut guard, 1_000), Ok(()));
         assert_eq!(validate(&report(0x28170, 7), &mut guard, 1_000), Err(Reject::Rate));
         assert_eq!(validate(&report(0x28170, 7), &mut guard, 2_000), Ok(()));
+    }
+
+    /// thuum docs/verbs/jail.md (Stolen goods): IronDagger 0x1397e put into
+    /// Falkreath's evidence chest 0xef436, its owner the faction 0x28170 (an
+    /// owner is an NPC or a faction; the shape alone is checked here), as
+    /// unit/JailTest.cpp names them from Skyrim.esm
+    #[test]
+    fn a_stacks_owner_is_a_form_never_zero() {
+        use wire_schema::skymp::{Entry, Equipment, Inventory, PutItem, TakeItem, UpdateEquipment};
+        let put = |owner_id| Message::PutItem(PutItem { base_id: 0x1397e, count: 1, target: 0xef436, owner_id, ..Default::default() });
+        let take = |owner_id| Message::TakeItem(TakeItem { base_id: 0x1397e, count: 1, target: 0xef436, owner_id, ..Default::default() });
+        assert_eq!(validate_server(&put(None)), Ok(()));
+        assert_eq!(validate_server(&put(Some(0x28170))), Ok(()));
+        assert_eq!(validate_server(&put(Some(0))), Err(Reject::Range));
+        assert_eq!(validate_server(&take(Some(0x28170))), Ok(()));
+        assert_eq!(validate_server(&take(Some(0))), Err(Reject::Range));
+        let worn = |owner_id| {
+            let mut inv = Inventory::default();
+            let _ = inv.entries.push(Entry { base_id: 0x1397e, count: 1, worn: Some(true), owner_id, ..Default::default() });
+            Message::UpdateEquipment(UpdateEquipment { data: Equipment { inv, ..Default::default() }, ..Default::default() })
+        };
+        assert_eq!(validate_server(&worn(Some(0x28170))), Ok(()));
+        assert_eq!(validate_server(&worn(Some(0))), Err(Reject::Range));
+        let mut nan = PutItem { base_id: 0x1397e, count: 1, target: 0xef436, owner_id: Some(0x28170), ..Default::default() };
+        nan.health = Some(f32::NAN);
+        assert_eq!(validate_server(&Message::PutItem(nan)), Err(Reject::NonFinite));
     }
 
     #[test]

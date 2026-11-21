@@ -12217,7 +12217,51 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     return;
   }
 
-  if (equipment.IsSpellEquipped(spellCastData.spell) == false) {
+  // thuum tracker #98 (Eli's look 2 at Tel Mithryn: "other player does not
+  // see spell"; note 4020): a staff's cast names the staff's enchantment, an
+  // ENCH no hand slot holds. It is the cast of the hand whose worn weapon in
+  // the caster's record is a staff (libespm WEAP DNAM's animType Staff) with
+  // the form an ENCH of the files: taken and relayed, recorded unvalidated
+  // (R2, rule 5; ADR-063, the caster's game owns its cast). The staff's own
+  // enchantment is its record's EITM, which libespm's WEAP does not read,
+  // so the server holds the hand to a staff and the form to an enchantment.
+  // Before this the caster's platform never sent a staff's cast at all
+  // (EventHandler.cpp's SpellItem lookup), so no other game drew one
+  const bool staffCast = [&]() {
+    if (hand > 1 || !partOne.HasEspm()) {
+      return false;
+    }
+    const auto rec =
+      partOne.GetEspm().GetBrowser().LookupById(spellCastData.spell).rec;
+    if (!rec || rec->GetType() != espm::ENCH::kType) {
+      return false;
+    }
+    const auto wantWorn =
+      hand == 1 ? Inventory::Worn::Right : Inventory::Worn::Left;
+    for (const auto& e : equipment.inv.entries) {
+      if (e.GetWorn() != wantWorn) {
+        continue;
+      }
+      try {
+        const auto dnam =
+          espm::GetData<espm::WEAP>(e.baseId, &partOne.worldState).weapDNAM;
+        if (dnam && dnam->animType == espm::WEAP::AnimType::Staff) {
+          return true;
+        }
+      } catch (const std::exception&) {
+        // not a weapon of the files: no staff
+      }
+    }
+    return false;
+  }();
+  if (staffCast) {
+    spdlog::info("[verb:spell-cast] {:x} casts {:x} from the staff in its {} "
+                 "hand: taken unvalidated (R2) and relayed",
+                 caster->GetFormId(), spellCastData.spell,
+                 hand == 1 ? "right" : "left");
+  }
+
+  if (!staffCast && equipment.IsSpellEquipped(spellCastData.spell) == false) {
     if (caster == myActor) {
       spdlog::info("ActionListener::OnSpellCast - spell {0:x} not "
                    "found in equipment",

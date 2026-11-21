@@ -1,17 +1,15 @@
-# difftest craft-report (thuum tracker #98, docs/verbs/crafting.md): c1 and c2 are new
-# characters (profiles 9 and 10, actors 0xff000002 and 0xff000003: see melee-reach), both at
-# the spawn. c1's starting kit holds one Iron Dagger (Skyrim.esm WEAP 0x0001397E, 80254; the
-# forge's m0-forge kit) and five of 0x0003EADD (256733; lab/esm.py), the rows a report names.
-# At 2 s c1 reports a temper (the dagger lost, the dagger at health 1.1 gained): the wire stack
-# records it (R2: the lost row was held) and answers with c1's inventory carrying craftAck 1
-# (each report's seq, SCHEMA_VERSION 62). At 2.5 s c1 reports
-# a craft whose lost row it does not hold (a dagger at health 1.5): the wire stack refuses it
-# whole (E_CRAFT_NOT_HELD, naming the dagger at 1.5) and answers with the inventory unchanged,
-# craftAck 2. At 3 s c1 reports a
-# brew (one 0x3EADD lost, a created potion gained: its base the engine's potion template as
-# the client reads it, its definition two effects), recorded with its definition, craftAck 3. The legacy
-# stack knows no CraftReport and answers nothing. c2 steps aside at 4 s so it outlives c1, as
-# in every session.
+# difftest craft-report: c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002
+# and 0xff000003: see melee-reach), both at the spawn. c1's starting kit holds one Iron Dagger
+# (Skyrim.esm WEAP 0x0001397E, 80254) and five of 0x0003EADD (256733), the rows a report
+# names. At 2 s c1 reports a temper (the dagger lost, the dagger at health 1.1 gained): the
+# wire stack records it (the lost row was held) and answers with c1's inventory carrying
+# craftAck 1 (each report's seq, SCHEMA_VERSION 62). At 2.5 s c1 reports a craft whose lost
+# row it does not hold (a dagger at health 1.5): the wire stack refuses it whole
+# (E_CRAFT_NOT_HELD, naming the dagger at 1.5) and answers with the inventory unchanged,
+# craftAck 2. At 3 s c1 reports a brew (one 0x3EADD lost, a created potion gained: its base
+# the engine's potion template as the client reads it, its definition two effects), recorded
+# with its definition, craftAck 3. The legacy stack knows no CraftReport and answers nothing.
+# c2 steps aside at 4 s so it outlives c1, as in every session.
 id: craft-report
 clients:
   c1: {profile_id: 9}

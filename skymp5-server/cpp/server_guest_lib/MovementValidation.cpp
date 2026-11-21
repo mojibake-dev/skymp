@@ -5,12 +5,21 @@
 #include "PartOne.h"
 #include "TeleportMessage2.h"
 #include <cmath>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <spdlog/spdlog.h>
 #include <string>
+#include <unordered_map>
 
 namespace MovementValidation {
+
+namespace {
+// thuum ADR-079 decision 7: a player's step beyond its ground speed budget,
+// recorded, counted per actor and said at the first and each power of two
+// after (ADR-073 decision 7)
+std::unordered_map<uint32_t, uint64_t> g_overBudget;
+}
 
 bool Validate(PartOne& partOne, const NiPoint3& currentPos,
               const NiPoint3& currentRot, const FormDesc& currentCellOrWorld,
@@ -65,10 +74,12 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     }
     // thuum docs/verbs/shadowbond.md: a place the server holds the player at
     // for a while after its swap; a report from elsewhere in the same cell is
-    // a move the server did not author (the mod's own script), and the
-    // player is sent back to where the server has it. A move into another
-    // cell or a jump is the player's game's own, recorded below (ADR-079
-    // decision 7)
+    // the mod's own script undoing the server's swap, and the player is sent
+    // back to where the server has it. This hold is the one place a player's
+    // own report is overridden (ADR-079 decision 7): the swap is the
+    // server's own move of two players at once, which the mod's script in
+    // one game would otherwise undo for both. A move into another cell or a
+    // jump is the player's game's own, recorded below
     if (!jumped &&
         partOne.PinnedAway(actor->GetFormId(), cellOrWorld, newPos)) {
       spdlog::info("MovementValidation: {:x} reported ({:.0f}, {:.0f}) away "
@@ -131,18 +142,18 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
     if (const auto jump = permittedJump()) {
       return *jump;
     }
-    // thuum ADR-079 decision 7 (Eli, 2026-11-20, tracker #191: "this is
-    // breaking too many things. i think the server should simply not do
-    // this."): the player's own game moving it into another cell or
-    // worldspace, or by a jump (a jail, a Black Book's Apocrypha, a
+    // thuum ADR-079 decision 7 (Eli, 2026-11-20, tracker #191: "the server
+    // snapping a player back when their own game moves them somewhere it
+    // didn't ... this is breaking too many things. i think the server should
+    // simply not do this."): the player's own game moving it into another
+    // cell or worldspace, or by a jump (a jail, a Black Book's Apocrypha, a
     // carriage, fast travel, a script's MoveTo), is never sent back: the
     // server records the move, and the other games place the figure there
     // instead of gliding it. What the server still holds for a player's own
-    // move (ADR-063, consistency): its own teleport's arrival and a jump it
-    // permitted while they wait (a report from elsewhere is dropped, never
-    // sent back), a bond's hold within the same cell, and the ground speed
-    // budget for a step within the same cell. A hosted actor's report keeps
-    // the cell-change rule above
+    // report: its own teleport's arrival and a jump it permitted, while they
+    // wait (a report from elsewhere is dropped, nothing sent back), and a
+    // bond's hold within the same cell (above). Another game's actor keeps
+    // the hosted rules (the cell-change rule above; dropped otherwise)
     if (isMe) {
       spdlog::info("[verb:movement] {:x}'s own game moved it from {:x} at "
                    "({:.0f}, {:.0f}, {:.0f}) to {:x} at ({:.0f}, {:.0f}, "
@@ -166,10 +177,19 @@ bool Validate(PartOne& partOne, const NiPoint3& currentPos,
       if (const auto jump = permittedJump()) {
         return *jump;
       }
-      spdlog::warn("MovementValidation - E_MOVE_SPEED: {:x} moved {:.0f} "
-                   "units over the ground beyond its budget; snapped back",
-                   actor->GetFormId(), ground);
-      return snapBack();
+      // thuum ADR-079 decision 7: a step beyond the budget is the player's
+      // own game's move too (a script's MoveTo within the cell, a knockback
+      // the burst did not hold), recorded and placed for the other games; the
+      // server's disagreement is a logged line, never a send-back
+      const auto n = ++g_overBudget[actor->GetFormId()];
+      if ((n & (n - 1)) == 0) {
+        spdlog::warn("MovementValidation - E_MOVE_SPEED: {:x} moved {:.0f} "
+                     "units over the ground beyond its budget; recorded, not "
+                     "sent back (ADR-079 decision 7; {} such step(s))",
+                     actor->GetFormId(), ground, n);
+      }
+      markPlaced();
+      return true;
     }
     // thuum docs/verbs/cast-teleport.md, the look on other screens: a
     // teleport's landing the budget takes never reaches the jump's permit

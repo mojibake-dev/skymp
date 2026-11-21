@@ -90,11 +90,13 @@ TEST_CASE("A player's own move into another cell is recorded, not sent back, "
   REQUIRE(partOne.Messages().empty());
 }
 
-TEST_CASE("A player beyond its ground speed budget is sent back",
+TEST_CASE("A player beyond its ground speed budget is recorded, not sent back",
           "[MovementValidation]")
 {
   // thuum docs/verbs/movement-speed.md: two 1000 unit moves at once fit the
-  // 2048 unit burst, a third does not; another user's actor is not charged
+  // 2048 unit burst, a third does not; since ADR-079 decision 7 (tracker
+  // #191) the third is the player's own game's move all the same, recorded
+  // and placed with nothing sent back; another user's actor is not charged
   PartOne& partOne = GetPartOne();
 
   DoConnect(partOne, 0);
@@ -105,20 +107,21 @@ TEST_CASE("A player beyond its ground speed budget is sent back",
   auto& actor = partOne.worldState.GetFormAt<MpActor>(0xff000000);
   auto& npc = partOne.worldState.GetFormAt<MpActor>(0xff000001);
 
-  const auto move = [&](MpActor& who) {
+  const auto move = [&](MpActor& who, bool* placed = nullptr) {
     return MovementValidation::Validate(
       partOne, { 0, 0, 0 }, { 0, 0, 0 }, FormDesc::Tamriel(), { 1000, 0, 50 },
-      FormDesc::Tamriel(), 0, &who, { "Skyrim.esm" });
+      FormDesc::Tamriel(), 0, &who, { "Skyrim.esm" }, placed);
   };
 
   partOne.Messages().clear();
-  REQUIRE(move(actor));
-  REQUIRE(move(actor));
+  bool placed = false;
+  REQUIRE(move(actor, &placed));
+  REQUIRE(!placed);
+  REQUIRE(move(actor, &placed));
+  REQUIRE(!placed);
+  REQUIRE(move(actor, &placed));
+  REQUIRE(placed);
   REQUIRE(partOne.Messages().empty());
-  REQUIRE(!move(actor));
-  REQUIRE(partOne.Messages().size() == 1);
-  REQUIRE(partOne.Messages()[0].j["t"] ==
-          static_cast<int>(MsgType::Teleport2));
 
   partOne.Messages().clear();
   for (int i = 0; i < 5; ++i) {

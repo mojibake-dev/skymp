@@ -203,10 +203,12 @@ TEST_CASE("A cast teleport's jump is taken once within its reach, and its "
   REQUIRE(caster.GetPos() == NiPoint3{ 2500, 0, 0 });
   REQUIRE(SentBack(p) == 0);
 
-  // that was the one jump: the next is sent back
+  // that was the one jump the cast permits; the next is the caster's own
+  // game's move, recorded and never sent back (ADR-079 decision 7, tracker
+  // #191; it was sent back before)
   Report(p, caster, { 5000, 0, 0 });
-  REQUIRE(SentBack(p) == 1);
-  REQUIRE(caster.GetPos() == NiPoint3{ 2500, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  REQUIRE(caster.GetPos() == NiPoint3{ 5000, 0, 0 });
   Leave(p);
 }
 
@@ -237,15 +239,16 @@ TEST_CASE("A return (reach 0, relayed) is taken back where it was cast, "
   REQUIRE(caster.GetPos() == NiPoint3{ 0, 0, 0 });
   REQUIRE(SentBack(p) == 0);
 
-  // that was the one return: the next jump is sent back
+  // that was the one return; the next jump is the caster's own game's move,
+  // recorded and never sent back (ADR-079 decision 7, tracker #191)
   Report(p, caster, { 1500, 0, 0 });
-  REQUIRE(SentBack(p) == 1);
-  REQUIRE(caster.GetPos() == NiPoint3{ 0, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  REQUIRE(caster.GetPos() == NiPoint3{ 1500, 0, 0 });
   Leave(p);
 }
 
-TEST_CASE("A spell the server names no teleport permits no jump, and its "
-          "cast is relayed",
+TEST_CASE("A spell the server names no teleport permits no jump, its cast is "
+          "relayed, and the caster's own jump is recorded",
           "[CastTeleport][espm]")
 {
   PartOne& p = GetPartOne();
@@ -257,13 +260,15 @@ TEST_CASE("A spell the server names no teleport permits no jump, and its "
   Cast(p);
   REQUIRE(Relayed(p));
 
+  // no permit: the jump is the caster's own game's move all the same,
+  // recorded and never sent back (ADR-079 decision 7, tracker #191)
   Report(p, caster, { 2500, 0, 0 });
-  REQUIRE(SentBack(p) == 1);
-  REQUIRE(caster.GetPos() == NiPoint3{ 0, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  REQUIRE(caster.GetPos() == NiPoint3{ 2500, 0, 0 });
   Leave(p);
 }
 
-TEST_CASE("A cast teleport's jump beyond its reach is sent back",
+TEST_CASE("A cast teleport's jump beyond its reach is recorded, not sent back",
           "[CastTeleport][espm]")
 {
   PartOne& p = GetPartOne();
@@ -273,10 +278,12 @@ TEST_CASE("A cast teleport's jump beyond its reach is sent back",
   p.Messages().clear();
 
   Cast(p);
-  // 2500 units: beyond 1000 and the slack, and beyond the budget's burst
+  // 2500 units: beyond 1000 and the slack, and beyond the budget's burst:
+  // no permitted jump, the caster's own game's move, recorded and never
+  // sent back (ADR-079 decision 7, tracker #191)
   Report(p, caster, { 2500, 0, 0 });
-  REQUIRE(SentBack(p) == 1);
-  REQUIRE(caster.GetPos() == NiPoint3{ 0, 0, 0 });
+  REQUIRE(SentBack(p) == 0);
+  REQUIRE(caster.GetPos() == NiPoint3{ 2500, 0, 0 });
   Leave(p);
 }
 

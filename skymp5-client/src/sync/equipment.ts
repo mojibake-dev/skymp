@@ -227,17 +227,22 @@ export const applyWorn = (ac: Actor, eq: Equipment): { equipped: number[]; unequ
       want.add(e.baseId);
     }
   }
-  // thuum tracker #172: a two-hander is one ask, in the right hand. The
-  // left row goes when the record's right is one (its wornLeft entry is the
-  // same weapon, and nothing else shares its hands), and a two-hander the
-  // copy holds is the right row's to keep or take off, never the left's too
-  const rightBoth = isBothHands(right);
+  // thuum tracker #172: a two-hander is one ask, in the right hand, whether
+  // the record names it worn (right) or, with no right, wornLeft alone (a
+  // host whose engine read it in the left hand only). Its left hand holds
+  // nothing else: anything the copy holds there besides it comes off (the
+  // old left row's own take-off). A two-hander the copy holds in both hands
+  // is the right row's to keep or take off, never the left's too
+  const twoHander = isBothHands(right) ? right : right === 0 && isBothHands(left) ? left : 0;
   const heldBoth = heldRight !== 0 && heldRight === heldLeft && isBothHands(heldRight);
+  const leftNow = heldBoth ? 0 : heldLeft;
   const handRows: Array<{ slot: number; current: number; baseId: number }> = [
-    { slot: 1, current: heldRight, baseId: right },
+    { slot: 1, current: heldRight, baseId: twoHander || right },
   ];
-  if (!rightBoth) {
-    handRows.push({ slot: 2, current: heldBoth ? 0 : heldLeft, baseId: left });
+  if (!twoHander) {
+    handRows.push({ slot: 2, current: leftNow, baseId: left });
+  } else if (leftNow !== 0 && leftNow !== twoHander) {
+    handRows.push({ slot: 2, current: leftNow, baseId: 0 });
   }
   for (const hand of handRows) {
     if (hand.current === hand.baseId) {

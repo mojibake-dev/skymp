@@ -2634,7 +2634,8 @@ TEST_CASE("A hosted actor's activation leaves its equipment record as its "
   REQUIRE(p.worldState.HostOf(sitter) ==
           &p.worldState.GetFormAt<MpActor>(kC1));
 
-  // the host's report: the greatsword worn, a sword it also carries
+  // the host's report as its HostedStateService makes it: the greatsword,
+  // read in both hands, one entry worn and wornLeft; a sword it also carries
   sitter.AddItem(kGreatsword, 1);
   sitter.AddItem(kSword, 1);
   Equipment reported;
@@ -2642,6 +2643,7 @@ TEST_CASE("A hosted actor's activation leaves its equipment record as its "
   worn.baseId = kGreatsword;
   worn.count = 1;
   worn.SetWorn(Inventory::Worn::Right);
+  worn.wornLeft = true;
   reported.inv.AddItems({ worn });
   reported.numChanges = 6;
   sitter.SetEquipment(reported);

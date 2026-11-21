@@ -5129,6 +5129,52 @@ void NoteImpulseRef(ImpulseFrame& frame, const RE::TESObjectREFR* refr)
     { refrId, base ? static_cast<uint32_t>(base->GetFormType()) : 0u });
 }
 
+// thuum tracker #175 (ADR-071 D-PH5's amendment, Eli's B: "go with B for the
+// npc shout": a living NPC knocked by another seat's shout is thrown by its
+// host, every other screen follows the host's stream; props and world
+// objects keep the rule). Two exceptions to the rule, by the pushed body's
+// reference, read where the call names it (26004's rigid body, 26005's node):
+// another seat's push on a living actor this seat simulates (Hosted.h
+// SimulatedHere) is applied, its throw this seat's engine's; this seat's own
+// push on a living puppet copy (Puppets.h, another seat's NPC) is zeroed, the
+// copy following its host's stream. Each counted, its line once a second
+const RE::Actor* LivingActorOf(const RE::TESObjectREFR* refr)
+{
+  if (!refr || refr->GetFormType() != RE::FormType::ActorCharacter) {
+    return nullptr;
+  }
+  const auto* actor = static_cast<const RE::Actor*>(refr);
+  return actor->IsDead() ? nullptr : actor;
+}
+
+std::atomic<uint64_t> g_hostedPushesTaken{ 0 };
+std::atomic<uint64_t> g_puppetPushesZeroed{ 0 };
+std::atomic<int64_t> g_pushExceptionLineMs{ 0 };
+
+void SayPushException(bool taken, uint32_t refrId, uint32_t causeId)
+{
+  const auto n = taken ? ++g_hostedPushesTaken : ++g_puppetPushesZeroed;
+  const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  if (nowMs - g_pushExceptionLineMs.exchange(nowMs) < 1000) {
+    return;
+  }
+  if (taken) {
+    logger::info("[verb:prop-physics] impulse applied on {:x}, a living NPC "
+                 "this seat hosts, though cause {:x} is another seat's: its "
+                 "throw is its host's (D-PH5's amendment, tracker #175; {} so "
+                 "far)",
+                 refrId, causeId, n);
+  } else {
+    logger::info("[verb:prop-physics] impulse zeroed on {:x}, a puppet copy "
+                 "of another seat's NPC, though cause {:x} is this seat's: "
+                 "its host throws it, this copy follows (tracker #175; {} so "
+                 "far)",
+                 refrId, causeId, n);
+  }
+}
+
 float ScaleImpulseReplacement(float a_inputForce, RE::bhkRigidBody* a_body,
                               bool a_factorMass)
 {
@@ -5141,17 +5187,31 @@ float ScaleImpulseReplacement(float a_inputForce, RE::bhkRigidBody* a_body,
     return g_scaleImpulseOriginal(a_inputForce, a_body, a_factorMass);
   }
   CountFrameImpulse(*frame, false);
+  // the rigid body bhkRefObject refers to (B/bhkRefObject.h:26), an
+  // hkpEntity whose collidable names its reference
+  const RE::TESObjectREFR* bodyRef = nullptr;
+  if (a_body) {
+    const auto* havok =
+      static_cast<const RE::hkpRigidBody*>(a_body->referencedObject.get());
+    bodyRef = havok ? havok->GetUserData() : nullptr;
+  }
+  const RE::Actor* living = LivingActorOf(bodyRef);
   if (frame->owner == CauseOwner::kOther) {
+    if (!living || !Hosted::SimulatedHere(living->formID)) {
+      return 0.f;
+    }
+    SayPushException(true, living->formID, frame->causeId);
+    return g_scaleImpulseOriginal(a_inputForce, a_body, a_factorMass);
+  }
+  if (frame->owner == CauseOwner::kThisSeat && living &&
+      Puppets::Is(living->formID)) {
+    SayPushException(false, living->formID, frame->causeId);
     return 0.f;
   }
   const float force =
     g_scaleImpulseOriginal(a_inputForce, a_body, a_factorMass);
-  if (frame->owner == CauseOwner::kThisSeat && a_body) {
-    // the rigid body bhkRefObject refers to (B/bhkRefObject.h:26), an
-    // hkpEntity whose collidable names its reference
-    const auto* havok =
-      static_cast<const RE::hkpRigidBody*>(a_body->referencedObject.get());
-    NoteImpulseRef(*frame, havok ? havok->GetUserData() : nullptr);
+  if (frame->owner == CauseOwner::kThisSeat) {
+    NoteImpulseRef(*frame, bodyRef);
   }
   return force;
 }
@@ -5173,12 +5233,25 @@ void ExplosionImpulseReplacement(RE::NiAVObject* a_obj3D, RE::hkVector4& a_pos,
     return;
   }
   CountFrameImpulse(*frame, true);
+  const RE::TESObjectREFR* bodyRef =
+    a_obj3D ? a_obj3D->GetUserData() : nullptr;
+  const RE::Actor* living = LivingActorOf(bodyRef);
   if (frame->owner == CauseOwner::kOther) {
+    if (!living || !Hosted::SimulatedHere(living->formID)) {
+      return;
+    }
+    SayPushException(true, living->formID, frame->causeId);
+    g_explosionImpulseOriginal(a_obj3D, a_pos, a_force, a_hitData);
+    return;
+  }
+  if (frame->owner == CauseOwner::kThisSeat && living &&
+      Puppets::Is(living->formID)) {
+    SayPushException(false, living->formID, frame->causeId);
     return;
   }
   g_explosionImpulseOriginal(a_obj3D, a_pos, a_force, a_hitData);
-  if (frame->owner == CauseOwner::kThisSeat && a_obj3D) {
-    NoteImpulseRef(*frame, a_obj3D->GetUserData());
+  if (frame->owner == CauseOwner::kThisSeat) {
+    NoteImpulseRef(*frame, bodyRef);
   }
 }
 static_assert(

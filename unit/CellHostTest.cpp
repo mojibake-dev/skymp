@@ -2730,12 +2730,13 @@ TEST_CASE("A host-reported two-hander is the right hand's weapon to the "
   p.DestroyActor(kHolder);
 }
 
-// thuum tracker #172 (the second review of m4-172-equip): a host's report
-// of a two-hander takes the place of what the record wore in either hand,
-// the fate's right-hand pick and a left-hand piece alike, so no stale
-// one-hander stays worn beside it for GetEquippedWeapon's right hand
+// thuum tracker #172 (the second and third reviews of m4-172-equip): a
+// host's report of a two-hander takes the place of what the record wore in
+// either hand, the fate's right-hand pick, a left-hand piece and an outfit
+// shield flagged worn alike, so no stale one-hander stays worn beside it for
+// GetEquippedWeapon's right hand and no shield for a copy to dress over it
 TEST_CASE("A host's report of a two-hander takes the place of the record's "
-          "one-hander and its left-hand piece",
+          "one-hander, its left-hand piece and its outfit shield",
           "[CellHost][HostedEquipment][espm]")
 {
   auto& p = GetPartOne();
@@ -2745,6 +2746,9 @@ TEST_CASE("A host's report of a two-hander takes the place of the record's "
   constexpr uint32_t kGreatsword = 0x000236a5;
   constexpr uint32_t kSword = 0x00012eb7;
   constexpr uint32_t kDagger = 0x0001397e;
+  // Skyrim.esm ARMO ArmorIronShield, BOD2 0x200 the shield slot (lab/esm.py
+  // on sky-srv, 2026-11-20)
+  constexpr uint32_t kShield = 0x00012eb6;
   const NiPoint3 kAtBed{ 117786.f, -81400.f, 10997.f };
   Player(p, 0, kC1, kAtBed + NiPoint3{ 40.f, 0.f, 0.f });
   p.CreateActor(kHolder, kAtBed + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
@@ -2758,9 +2762,11 @@ TEST_CASE("A host's report of a two-hander takes the place of the record's "
   holder.AddItem(kGreatsword, 1);
   holder.AddItem(kSword, 1);
   holder.AddItem(kDagger, 1);
+  holder.AddItem(kShield, 1);
 
   // the record before any report of this host's: the sword in the right
-  // hand (the fate's pick), the dagger in the left
+  // hand (the fate's pick), the dagger in the left, the outfit's shield
+  // flagged worn as the outfit roll flags every piece
   Equipment recorded;
   Inventory::Entry sword;
   sword.baseId = kSword;
@@ -2770,7 +2776,11 @@ TEST_CASE("A host's report of a two-hander takes the place of the record's "
   dagger.baseId = kDagger;
   dagger.count = 1;
   dagger.SetWorn(Inventory::Worn::Left);
-  recorded.inv.AddItems({ sword, dagger });
+  Inventory::Entry shield;
+  shield.baseId = kShield;
+  shield.count = 1;
+  shield.SetWorn(Inventory::Worn::Right);
+  recorded.inv.AddItems({ sword, dagger, shield });
   holder.SetEquipment(recorded);
 
   // the host's report: the greatsword in both hands, one entry worn and
@@ -2796,7 +2806,8 @@ TEST_CASE("A host's report of a two-hander takes the place of the record's "
   REQUIRE(weapons[1]->baseId == kGreatsword);
   REQUIRE_FALSE(weapons[0].has_value());
   for (const auto& entry : holder.GetEquipment().inv.entries) {
-    if (entry.baseId == kSword || entry.baseId == kDagger) {
+    if (entry.baseId == kSword || entry.baseId == kDagger ||
+        entry.baseId == kShield) {
       REQUIRE(entry.GetWorn() == Inventory::Worn::None);
     }
   }

@@ -2497,15 +2497,24 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         : armo.bodt.present    ? armo.bodt.bodyPartFlags
                                : 0u;
     };
-    // the hand an entry holds: a shield is armor in the left hand, any other
-    // armor holds none, the rest the hand its flag names, a two-hander the
-    // right (MpActor::WornHand; thuum tracker #172)
+    // the hand an entry holds: a shield is armor in the left hand (by its
+    // flag, or by its shield slot, 0x200, for the outfit's dressing that
+    // flags every piece worn: MpObjectReference's outfit roll; GetEquipped
+    // Shield's kBodShield), any other armor holds none, the rest the hand its
+    // flag names, a two-hander the right (MpActor::WornHand; thuum tracker
+    // #172)
     const auto handOf = [&](const Inventory::Entry& entry,
                             const std::optional<uint32_t>& slots) {
+      constexpr uint32_t kShieldSlot = 0x00000200;
       const auto worn =
         espmWorld ? MpActor::WornHand(*espmWorld, entry) : entry.GetWorn();
-      if (slots && worn != Inventory::Worn::Left) {
-        return Inventory::Worn::None;
+      if (slots) {
+        if (worn == Inventory::Worn::None) {
+          return Inventory::Worn::None;
+        }
+        return worn == Inventory::Worn::Left || (*slots & kShieldSlot) != 0
+          ? Inventory::Worn::Left
+          : Inventory::Worn::None;
       }
       return worn;
     };

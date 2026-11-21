@@ -10,7 +10,7 @@ import {
   setInventory,
 } from 'skyrimPlatform';
 
-import { logTrace } from '../logging';
+import { logLab, logTrace } from '../logging';
 import { Entry, Inventory, addItemExEntry, getInventory, readWorn } from './inventory';
 import { toLocalWornInventory } from './createdForms';
 
@@ -477,28 +477,30 @@ export const applyEquipment = (ac: Actor, eq: Equipment, keepAlso: readonly numb
   // by its own creator (sync/createdForms.ts)
   const newInventory = toLocalWornInventory(removeUnnecessaryExtra(filterWorn(eq.inv), isPlayer));
 
-  if (isPlayer) {
-    // setInventory lays a base and its worn flag alone (InventoryApi.cpp),
-    // so a worn row with lasting extras (a made enchantment, a temper, a
-    // poison) is dressed through addItemEx as the record has it: the
-    // inventory loop's next apply then finds the stack it holds, where a
-    // plain one was taken and the record's laid back unworn (the armor came
-    // off after every relaunch). A figure's rows stay plain, every extra
-    // unshown on a figure as before
-    const plain = newInventory.entries.filter((e) => !hasLastingExtras(e));
-    const extras = newInventory.entries.filter((e) => hasLastingExtras(e));
-    setInventory(ac.getFormID(), { entries: plain });
-    extras.forEach((e) => {
-      const form = Game.getFormEx(e.baseId);
-      if (form) {
-        addItemExEntry(ac, form, e, e.count);
-      }
-    });
-    if (extras.length > 0) {
-      ac.queueNiNodeUpdate();
+  // setInventory lays a base and its worn flag alone (InventoryApi.cpp), so
+  // a worn row with lasting extras (a made enchantment, a temper, a poison)
+  // is dressed through addItemEx as the record has it. On the player, the
+  // inventory loop's next apply then finds the stack it holds, where a plain
+  // one was taken and the record's laid back unworn (the armor came off after
+  // every relaunch). Since Eli's look 2 of #98 ("other player does not see
+  // fire"; note 4020) a figure is dressed the same way, so another seat's
+  // enchanted weapon is worn with its enchantment (its charge full, as
+  // removeUnnecessaryExtra sets it) and a tempered one with its health, where
+  // it was dressed with the base alone
+  const plain = newInventory.entries.filter((e) => !hasLastingExtras(e));
+  const extras = newInventory.entries.filter((e) => hasLastingExtras(e));
+  setInventory(ac.getFormID(), { entries: plain });
+  extras.forEach((e) => {
+    const form = Game.getFormEx(e.baseId);
+    if (form) {
+      addItemExEntry(ac, form, e, e.count);
     }
-  } else {
-    setInventory(ac.getFormID(), newInventory);
+  });
+  if (extras.length > 0) {
+    ac.queueNiNodeUpdate();
+  }
+  if (!isPlayer && extras.length > 0) {
+    logLab("verb:craft", `figure ${ac.getFormID().toString(16)} dressed with ${extras.length} worn row(s) carrying extras`);
   }
 
   // finding 45: the player's hands, once setInventory's adds have landed,

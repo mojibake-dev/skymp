@@ -125,9 +125,18 @@ const namesEqual = (a: Entry, b: Entry): boolean => {
   return false;
 };
 
+// thuum tracker #98 (look 2's temper, note 4020): the record holds an item's
+// health as the wire's f32 (Inventory.h, skymp.rs), so 1.1 comes back as
+// 1.100000023841858, while extractExtraData reads the engine's to one decimal.
+// Health is compared at that one decimal on both sides, so a tempered stack the
+// record holds is the stack the engine holds (=== removed and re-added the Fine
+// dagger at every 5 s apply, 103 times in look 2)
+const sameHealth = (x: number | undefined, y: number | undefined): boolean =>
+  x === undefined || y === undefined ? x === y : Math.round(x * 10) === Math.round(y * 10);
+
 const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
   return (
-    a.health === b.health &&
+    sameHealth(a.health, b.health) &&
     a.enchantmentId === b.enchantmentId &&
     a.maxCharge === b.maxCharge &&
     !!a.removeEnchantmentOnUnequip === !!b.removeEnchantmentOnUnequip &&

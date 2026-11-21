@@ -1,16 +1,74 @@
-import { Actor, ContainerChangedEvent } from "skyrimPlatform";
+import { Actor, ContainerChangedEvent, MenuOpenEvent } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 
 import { MsgType } from "../../messages";
 import { SweetTaffySweetCantDropService } from "./sweetTaffySweetCantDropService";
 import { WorldCleanerService } from "./worldCleanerService";
 import { logError, logLab, logTrace } from "../../logging";
-import { isSessionId } from "../../sync/createdForms";
+import { isSessionId, toWireEntry } from "../../sync/createdForms";
+import { Entry, Inventory, getDiff, getInventory } from "../../sync/inventory";
+import { DropItemMessage } from "../messages/dropItemMessage";
 
 export class DropItemService extends ClientListener {
+    // thuum tracker #98 (SCHEMA_VERSION 63, Eli's look 2: "cannot drop" a brew
+    // or an enchanted item; note 3920's agreed shape, "drops ... carry the
+    // item's extra data"): the player's inventory as the InventoryMenu opened
+    // and after each drop since, so a drop names the stack that left with its
+    // extras and created forms (craftService's read: the inventory at two
+    // moments, the difference). No platform native reads a world reference's
+    // own extra list
+    private before: Inventory | null = null;
+
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         controller.on('containerChanged', (e) => this.onContainerChanged(e));
+        controller.on('menuOpen', (e) => this.onMenuOpen(e));
+    }
+
+    private onMenuOpen(e: MenuOpenEvent) {
+        if (e.name !== "InventoryMenu") {
+            return;
+        }
+        const player = this.sp.Game.getPlayer();
+        this.before = player ? getInventory(player) : null;
+    }
+
+    // the stacks of baseId that left the player's inventory since `before`,
+    // each with its extras (the worn flags dropped: a drop is not worn), in
+    // the wire's ids (toWireEntry: a brewed potion by its template and
+    // definition, a made enchantment by its definition); refreshes `before`
+    private droppedStacks(baseId: number, count: number): Entry[] {
+        const player = this.sp.Game.getPlayer();
+        if (!player) {
+            return [];
+        }
+        const after = getInventory(player);
+        const before = this.before;
+        this.before = after;
+        if (!before) {
+            return [];
+        }
+        const out: Entry[] = [];
+        let left = count;
+        getDiff(after, before, true).entries
+            .filter((d) => d.baseId === baseId && d.count < 0)
+            .forEach((d) => {
+                if (left <= 0) {
+                    return;
+                }
+                const row: Entry = JSON.parse(JSON.stringify(d));
+                row.count = Math.min(-d.count, left);
+                left -= row.count;
+                delete row.worn;
+                delete row.wornLeft;
+                const wire = toWireEntry(row);
+                if (wire) {
+                    out.push(wire);
+                } else {
+                    logLab("verb:craft", `a dropped stack of ${baseId.toString(16)} has no definition this engine can read; not sent`);
+                }
+            });
+        return out;
     }
 
     private onContainerChanged(e: ContainerChangedEvent) {
@@ -94,21 +152,29 @@ export class DropItemService extends ClientListener {
                 return logTrace(this, "Ignoring item drop as false positive");
             }
 
-            // thuum tracker #98: DropItem names a base and a count alone, so a
-            // brewed potion or poison (this session's own form) cannot cross
-            // it; the drop is not sent, its engine copy is gone above, and the
-            // record's next apply gives the stack back (a known limit)
-            if (isSessionId(baseId)) {
-                return logLab("verb:craft", `a drop of session form ${baseId.toString(16)} is not sent (DropItem carries no definition); the record keeps the stack`);
-            }
-
+            // thuum tracker #98 (SCHEMA_VERSION 63): the stacks that left, each
+            // with its extras and created forms; with no read of them (no
+            // InventoryMenu open seen), a game-file base goes plain as before,
+            // and a session's own form cannot go at all (its next apply gives
+            // it back)
             const t = MsgType.DropItem;
             const count = e.numItems;
-            this.controller.emitter.emit("sendMessage", {
-                message: {
-                    t, baseId, count,
-                },
-                reliability: "reliable"
+            const stacks = this.droppedStacks(baseId, count);
+            if (stacks.length === 0) {
+                if (isSessionId(baseId)) {
+                    return logLab("verb:craft", `a drop of session form ${baseId.toString(16)} with no read of its stack is not sent; the record keeps it`);
+                }
+                stacks.push({ baseId, count });
+            }
+            stacks.forEach((stack) => {
+                const message: DropItemMessage = { ...stack, t, baseId: stack.baseId, count: stack.count };
+                if (stack.createdBase || stack.createdEnchantment || stack.health || stack.enchantmentId) {
+                    logLab("verb:craft", `a drop of ${stack.count} ${stack.baseId.toString(16)} sent with its extras${stack.createdBase ? " (a brewed form by its definition)" : ""}`);
+                }
+                this.controller.emitter.emit("sendMessage", {
+                    message,
+                    reliability: "reliable"
+                });
             });
         }
     }

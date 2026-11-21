@@ -16,6 +16,7 @@
 #include <RE/F/FixedStrings.h>
 #include <RE/M/MagicItemDataCollector.h>
 #include <RE/M/MaterialIDs.h>
+#include <RE/P/PlayerCharacter.h>
 #include <RE/T/TES.h>
 #include <RE/T/TESObjectCELL.h>
 #include <mutex>
@@ -411,6 +412,25 @@ Napi::Value MagicApi::CastSpellImmediate(const Napi::CallbackInfo& info)
       if (pSpell->GetDelivery() == RE::MagicSystem::Delivery::kSelf) {
         magicCaster->CastSpellImmediate(pSpell, false, pActor, 1.0f, false,
                                         0.0f, pActor);
+        return;
+      }
+
+      // thuum tracker #98 (x-craft-look-checks v1.7, 20261121-053118): a
+      // touch effect reaches its target by contact and has no projectile (a
+      // weapon enchantment's: Skyrim.esm MGEF 0x4605a EnchFireDamageFFContact,
+      // delivery 1 by lab/esm.py), so the launch below carried nothing and
+      // the server's relay of an enchanted hit drew no fire on the struck
+      // player's game (has-effect false at six reads). A touch cast at this
+      // game's own player is cast on it, as the self branch above casts on
+      // the actor (CommonLibSSE-NG MagicSystem.h:42 kTouch, MagicCaster.h:46);
+      // what it does to values stays the server's (a figure's numbers on the
+      // player are refused, push.md). Another target keeps the launch: an NPC
+      // this game does not host takes no effect of a figure's from here.
+      // HYPOTHESIS until a run reads the effect on the struck player
+      if (pSpell->GetDelivery() == RE::MagicSystem::Delivery::kTouch &&
+          magicTarget && magicTarget == RE::PlayerCharacter::GetSingleton()) {
+        magicCaster->CastSpellImmediate(pSpell, false, magicTarget, 1.0f,
+                                        false, 0.0f, pActor);
         return;
       }
 

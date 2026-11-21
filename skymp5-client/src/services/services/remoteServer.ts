@@ -2061,6 +2061,12 @@ export class RemoteServer extends ClientListener {
         // the launch's surface, when the cast carries one (the rune's glyph:
         // the observer's game places the caster's decal after its launch)
         const decal = msg.data.hasLaunch ? msg.data.decal : undefined;
+        // thuum tracker #98 (x-craft-look-checks v1.7): the server's relay of
+        // an enchanted hit (the instant hand, castingSource 3, an
+        // Enchantment) said, so a run reads whether it reached this game
+        if (msg.data.castingSource === 3 && Enchantment.from(spellForm)) {
+          logLab("verb:magic-effects", `an enchanted hit's cast ${spell.getFormID().toString(16)} by ${ac.getFormID().toString(16)} at ${target.toString(16)}${msg.data.createdSpell ? " (made at the enchanter)" : ""}`);
+        }
         castSpellImmediate(ac.getFormID(), msg.data.castingSource, spell.getFormID(), target,
           msg.data.aimAngle, msg.data.aimHeading, actorAnimationVariables,
           msg.data.hasLaunch, msg.data.originX, msg.data.originY, msg.data.originZ, msg.data.launchAngleX, msg.data.launchAngleZ,

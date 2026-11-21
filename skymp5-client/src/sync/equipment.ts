@@ -461,21 +461,47 @@ const equipPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe: boolean): vo
   }
 };
 
+// a figure's dress waiting on a made form, by the figure's id: since when (applyEquipment)
+const figureFormWaitSince = new Map<number, number>();
+const figureFormWaitMs = 5000;
+
 export const applyEquipment = (ac: Actor, eq: Equipment, keepAlso: readonly number[] = []): boolean => {
   if (cannotDress(ac)) {
     return false;
   }
+  const isPlayer = ac.getFormID() === 0x14;
+  // thuum tracker #98 (the review of fec33b6f5..47e3ede74, finding 3): the
+  // record's worn rows in this engine's ids, a made enchantment's form made
+  // by its own creator (sync/createdForms.ts)
+  const worn = toLocalWornInventory(removeUnnecessaryExtra(filterWorn(eq.inv), isPlayer));
+  // x-craft-look-checks v1.7 (20261121-053118): the other seat met c1's made
+  // enchantment first in its re-equip, the creator answered a frame later,
+  // and the figure was dressed plain and never again (no inventory loop lays
+  // a figure's made form), so c1's enchanted sword showed bare on c2. A
+  // figure whose worn row waits on its form keeps its dress and the apply
+  // answers false, so FormView's next pass (formView.ts, lastNumChanges)
+  // dresses it with the form; past figureFormWaitMs it is dressed plain as
+  // before. The player's own dress at a login is unchanged: its inventory
+  // loop lays the form when it lands
+  if (!isPlayer && worn.pending) {
+    const since = figureFormWaitSince.get(ac.getFormID());
+    if (since === undefined) {
+      figureFormWaitSince.set(ac.getFormID(), Date.now());
+      logLab("verb:craft", `figure ${ac.getFormID().toString(16)}'s dress waits for a made form`);
+      return false;
+    }
+    if (Date.now() - since < figureFormWaitMs) {
+      return false;
+    }
+  }
+  figureFormWaitSince.delete(ac.getFormID());
+  const newInventory = worn.inventory;
+
   ac.removeAllItems(null, false, true);
 
   ac.unequipAll();
 
   ac.removeAllItems(null, false, true);
-
-  const isPlayer = ac.getFormID() === 0x14;
-  // thuum tracker #98 (the review of fec33b6f5..47e3ede74, finding 3): the
-  // record's worn rows in this engine's ids, a made enchantment's form made
-  // by its own creator (sync/createdForms.ts)
-  const newInventory = toLocalWornInventory(removeUnnecessaryExtra(filterWorn(eq.inv), isPlayer));
 
   // setInventory lays a base and its worn flag alone (InventoryApi.cpp), so
   // a worn row with lasting extras (a made enchantment, a temper, a poison)

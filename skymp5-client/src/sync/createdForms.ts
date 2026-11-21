@@ -265,15 +265,20 @@ export const toLocalInventory = (inventory: Inventory): LocalInventory => {
 // and a figure's (sync/equipment.ts applyEquipment). A row whose created
 // form is still being made is dressed plain, its created fields and what
 // rides on them left off (the inventory loop lays the made form when it
-// lands); a brewed base that cannot land yet is left out
-export const toLocalWornInventory = (inventory: Inventory): Inventory => {
+// lands); a brewed base that cannot land yet is left out. `pending` when a
+// row was dressed plain or left out because its form is still being made
+// (x-craft-look-checks v1.7: a figure, which no inventory loop lays again,
+// waits for it instead; sync/equipment.ts applyEquipment)
+export const toLocalWornInventory = (inventory: Inventory): LocalInventory => {
   const entries: Entry[] = [];
+  let pending = false;
   inventory.entries.forEach((e) => {
     const local = toLocalEntry(e);
     if (local.entry) {
       entries.push(local.entry);
       return;
     }
+    pending = pending || local.pending;
     if (e.createdBase !== undefined) {
       return;
     }
@@ -290,5 +295,5 @@ export const toLocalWornInventory = (inventory: Inventory): Inventory => {
     }
     entries.push(plain);
   });
-  return { entries };
+  return { inventory: { entries }, pending };
 };

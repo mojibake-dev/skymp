@@ -10885,6 +10885,84 @@ void ActionListener::OnConsoleCommand(const RawMessageData& rawMsgData,
   }
 }
 
+// thuum tracker #175 (ADR-071 D-PH5's amendment, Eli's B: "go with B for the
+// npc shout", the NPC's host throws it; the shape, magna-ge's choice recorded
+// on #175: the script stays its caster's seat's, ADR-068 decision 6, and the
+// push it causes goes to the pushed actor's own simulator). The sender's game
+// skipped a script's PushActorAway onto an actor it does not simulate (a
+// puppet there: skyrim-platform ScriptNatives.cpp's push hook) and reported
+// it. Consistency alone is checked (ADR-063: the server validates two owners,
+// conservation and bounds that break the world): the caster is the sender's
+// own actor or one it hosts (E_PUSH_CASTER); the target a live actor no
+// player owns, its host some other seat (E_PUSH_TARGET, E_PUSH_HOST); the two
+// in one cell or worldspace within kPushReach (E_PUSH_FAR); the force bounded
+// by the wire (PUSH_FORCE_MAX). Then the target's host runs
+// ObjectReference.PushActorAway(target, force) with the caster's figure as
+// self (an SpSnippet, DeliverSpellLanding's shape), its engine's own throw,
+// which its live-body stream carries to every other screen
+void ActionListener::OnPushActor(const RawMessageData& rawMsgData,
+                                 const PushActorMessage& msg)
+{
+  constexpr float kPushReach = 10000.f;
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
+    return;
+  }
+  auto& worldState = partOne.worldState;
+  auto* caster = msg.caster == myActor->GetFormId()
+    ? myActor
+    : dynamic_cast<MpActor*>(worldState.LookupFormById(msg.caster).get());
+  if (!caster ||
+      (caster != myActor && worldState.HostOf(*caster) != myActor)) {
+    spdlog::warn("[verb:push] E_PUSH_CASTER: {:x} reports a push by {:x}, "
+                 "neither its own actor nor one it hosts; refused",
+                 myActor->GetFormId(), msg.caster);
+    return;
+  }
+  auto* target =
+    dynamic_cast<MpActor*>(worldState.LookupFormById(msg.target).get());
+  if (!target || target->IsDead() ||
+      partOne.serverState.UserByActor(target) != Networking::InvalidUserId) {
+    spdlog::warn("[verb:push] E_PUSH_TARGET: {:x} reports {:x} pushing "
+                 "{:x}, which is no live actor or is a player's (a player's "
+                 "throw is its own game's); refused",
+                 myActor->GetFormId(), caster->GetFormId(), msg.target);
+    return;
+  }
+  MpActor* host = target->HostedBy();
+  if (!host || host == myActor) {
+    spdlog::warn("[verb:push] E_PUSH_HOST: {:x} reports {:x} pushing {:x}, "
+                 "which {}; refused",
+                 myActor->GetFormId(), caster->GetFormId(),
+                 target->GetFormId(),
+                 host ? "its own game simulates" : "no game simulates");
+    return;
+  }
+  const auto& a = caster->GetPos();
+  const auto& b = target->GetPos();
+  const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+  if (!(caster->GetCellOrWorld() == target->GetCellOrWorld()) ||
+      dx * dx + dy * dy + dz * dz > kPushReach * kPushReach) {
+    spdlog::warn("[verb:push] E_PUSH_FAR: {:x} reports {:x} pushing {:x}, "
+                 "not within {} units in one cell or worldspace; refused",
+                 myActor->GetFormId(), caster->GetFormId(),
+                 target->GetFormId(), kPushReach);
+    return;
+  }
+  SpSnippetObjectArgument pushed;
+  pushed.formId = target->GetFormId();
+  pushed.type = "Actor";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ pushed, static_cast<double>(msg.force) };
+  SpSnippet("ObjectReference", "PushActorAway", args, caster->GetFormId())
+    .Execute(host, SpSnippetMode::kNoReturnResult);
+  spdlog::info("[verb:push] {:x} pushes {:x} (force {}) in {:x}'s game: its "
+               "host {:x}'s game throws it (D-PH5's amendment, tracker #175)",
+               caster->GetFormId(), target->GetFormId(), msg.force,
+               myActor->GetFormId(), host->GetFormId());
+}
+
 void ActionListener::OnCraftItem(const RawMessageData& rawMsgData,
                                  const CraftItemMessage& msg)
 {

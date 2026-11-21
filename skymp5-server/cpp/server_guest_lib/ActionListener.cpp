@@ -594,8 +594,13 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // (PartOne::SetUserActor, docs/verbs/player-globals.md): the client
     // holds them until its first in-game update, ahead of the scripts
     // that read them at their first check.
+    // thuum tracker #97 (Eli's jail look, 2026-11-20): the login's jail pass
+    // runs after this report's own write below, so the release's teleport is
+    // the record's last word
+    bool loginPass = false;
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
+      loginPass = true;
       SendMapMarkers(*actor);
       SendIngredientEffects(*actor);
       SendFavorites(*actor);
@@ -606,11 +611,6 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // the record first, so the record sent below gives it back
       partOne.RecordShoutsOfKnownWords(*actor);
       SendShoutRecord(*actor);
-      // thuum tracker #97, ADR-079: a sentence the shared clock ended while
-      // the player was away ends now (its belongings back, the marker), and
-      // its bounty per hold goes back to its game
-      partOne.ReleaseIfServed(*actor);
-      partOne.TellCrimeRecord(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -653,6 +653,18 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
         SetPosMode::CalledByUpdateMovement);
     }
+    // thuum tracker #97, ADR-079: at the first movement after a login, a
+    // sentence the shared clock ended while the player was away ends now
+    // (its belongings back, the marker), and its bounty per hold goes back
+    // to its game. After the report's own write above: run before it, the
+    // release's teleport was overwritten by this very report's cell and
+    // place (Eli's jail look, 2026-11-20: rotfern released into Whiterun and
+    // sent back into the jail's cell, c1 01:38:33 to 01:38:39 UTC)
+    if (loginPass) {
+      partOne.ReleaseIfServed(*actor);
+      partOne.TellCrimeRecord(*actor);
+    }
+
     // thuum tracker #166: a player armed at a word wall walks on toward its
     // word (nobody is armed, mostly: one lookup then)
     if (isPlayersOwn && !wordWallArms.empty()) {

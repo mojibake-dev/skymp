@@ -1,5 +1,6 @@
 #include "MpChangeForms.h"
 #include "TestUtils.hpp"
+#include "UpdateMovementMessage.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <chrono>
@@ -182,6 +183,27 @@ void Take(PartOne& p, uint32_t baseId, uint32_t count, uint32_t target)
                             { "target", target } });
 }
 
+// the prisoner's game's movement report from a place (ConsoleCommandTest's
+// Report)
+void Report(PartOne& p, MpActor& me, uint32_t worldOrCell, const NiPoint3& pos)
+{
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = 0;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateMovementMessage msg;
+  msg.idx = me.GetIdx();
+  msg.data.pos = { pos.x, pos.y, pos.z };
+  msg.data.rot = { 0, 0, 0 };
+  msg.data.isInJumpState = false;
+  msg.data.isWeapDrawn = false;
+  msg.data.isBlocking = false;
+  msg.data.worldOrCell = worldOrCell;
+  msg.data.runMode = "Standing";
+  p.GetActionListener().OnUpdateMovement(raw, msg);
+}
+
 // the arrest's window closed early (its 60 s are real time), as after the
 // prisoner's arrival in the jail
 void CloseWindow(MpActor& prisoner)
@@ -326,6 +348,44 @@ TEST_CASE("A sentence ends when the shared clock passes it, never before, and "
 
   // nothing left to release
   REQUIRE(!p.ReleaseIfServed(prisoner));
+  Leave(p);
+}
+
+// thuum tracker #97 (Eli's jail look, 2026-11-20): a prisoner whose sentence
+// the shared clock ended while it was away is released at its first movement
+// report after the login, and that report, sent from the jail's cell, must
+// not put the record back there: rotfern was released into Whiterun and
+// sent back into the jail's cell, the login pass's release run before the
+// report's own write overwrote it
+TEST_CASE("A sentence that ended while its prisoner was away releases it at "
+          "its first report after the login, and the report from the cell "
+          "leaves the record at the marker",
+          "[Jail][espm]")
+{
+  PartOne& p = GetPartOne();
+  PinnedClock clock(p, 20.f);
+  auto& prisoner = Arrive(p);
+  Arrest(p, kFalkreath, 1);
+  REQUIRE(prisoner.GetCrimeRecord().jail);
+  const auto jail = p.JailOf(kFalkreath);
+  REQUIRE(jail.has_value());
+  // the arrest's jump into the jail's cell (the login's first report, the
+  // sentence not yet over)
+  Report(p, prisoner, jail->landingWorldOrCell, jail->landingPos);
+  REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
+          jail->landingWorldOrCell);
+  REQUIRE(prisoner.GetCrimeRecord().jail);
+
+  // away past the sentence's end; the next login marks its first movement
+  // pass as SetUserActor does, and its game reports from the cell
+  clock.Set(21.01f);
+  prisoner.SetMapMarkersPending(true);
+  const NiPoint3 inCell = jail->landingPos + NiPoint3{ 10.f, 0.f, 0.f };
+  Report(p, prisoner, jail->landingWorldOrCell, inCell);
+  REQUIRE(!prisoner.GetCrimeRecord().jail);
+  REQUIRE(prisoner.GetCellOrWorld().ToFormId(p.worldState.espmFiles) ==
+          jail->markerWorldOrCell);
+  REQUIRE((prisoner.GetPos() - jail->markerPos).Length() < 1.f);
   Leave(p);
 }
 

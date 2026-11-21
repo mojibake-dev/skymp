@@ -142,12 +142,12 @@ TEST_CASE("A hold's jail is read from its crime faction's records",
   REQUIRE(jail->landingInterior);
   // the release's spot: the far side of the jail's door, door 0x3ef07's own
   // XTEL landing beside the marker in Tamriel at (-29493.3, -87831.3,
-  // -2979.68) (lab/esm.py on sky-srv, 2026-11-20), raised 10 units as the
-  // engine's release move raises it (the re-analyst's read of 40661 and
-  // 40744), not the marker's own spot (-29478.1, -87742.2, -2961.7)
+  // -2979.68) (lab/esm.py on sky-srv, 2026-11-20), the point itself as the
+  // engine's release fills it (lab run 20261121-035453: the player's own
+  // move raises it), not the marker's own spot (-29478.1, -87742.2, -2961.7)
   REQUIRE(jail->releaseWorldOrCell == kTamriel);
   REQUIRE(
-    (jail->releasePos - NiPoint3{ -29493.3f, -87831.3f, -2969.68f }).Length() <
+    (jail->releasePos - NiPoint3{ -29493.3f, -87831.3f, -2979.68f }).Length() <
     1.f);
   REQUIRE((jail->releasePos - jail->markerPos).Length() > 50.f);
   REQUIRE(jail->evidenceChest == kStolenGoods);
@@ -225,8 +225,8 @@ void CloseWindow(MpActor& prisoner)
 }
 }
 
-TEST_CASE("An arrest records the term on the shared clock, permits the jump "
-          "to the hold's jail and takes its game's strip and outfit",
+TEST_CASE("An arrest records the term on the shared clock and takes its "
+          "game's strip and outfit, its move into the hold's jail its own",
           "[Jail][espm]")
 {
   PartOne& p = GetPartOne();
@@ -268,9 +268,10 @@ TEST_CASE("An arrest records the term on the shared clock, permits the jump "
           PartOne::ArrestCheck::AlreadyJailed);
   REQUIRE(prisoner.GetCrimeRecord().jail->days == 7);
 
-  // the engine's move into the jail is the one jump permitted
+  // the engine's move into the jail is the prisoner's own game's, recorded
+  // as any (ADR-079 decision 7): the arrest permits no jump of its own
   REQUIRE(p.CheckJump(kPrisoner, kJailCell, 0.f, 0.f) ==
-          PartOne::JumpCheck::Landed);
+          PartOne::JumpCheck::NoPermit);
 
   // the strip from the street, named to the stolen-goods chest as the
   // client's diff may name it: into the belongings chest, recorded as the

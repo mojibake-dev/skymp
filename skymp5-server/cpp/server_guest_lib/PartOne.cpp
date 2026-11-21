@@ -10122,9 +10122,11 @@ std::optional<PartOne::JailOfFaction> PartOne::JailOf(uint32_t faction)
   // which lands outside beside the marker (0x267e5: (27064.6, 599.0,
   // -1753.4) in WhiterunWorld, 166 units above the marker's own spot), in
   // the cell or world of the door that XTEL names; its move (40744) raises
-  // the point 10 units and clamps it to the land outdoors. HYPOTHESIS, the
-  // re-analyst's static read until a lab trace; the marker's spot when the
-  // door teleports nowhere
+  // the point 10 units and clamps it to the land outdoors. The server sends
+  // the XTEL point itself, as the engine's release fills it, and the
+  // player's own move raises it (lab run 20261121-035453, tracker #97 note
+  // 4056: the engine's release and the server's settled at the same spot to
+  // the tenth of a unit); the marker's spot when the door teleports nowhere
   jail.releaseWorldOrCell = jail.markerWorldOrCell;
   jail.releasePos = jail.markerPos;
   jail.releaseRot = jail.markerRot;
@@ -10135,10 +10137,9 @@ std::optional<PartOne::JailOfFaction> PartOne::JailOf(uint32_t faction)
       doorLookup.ToGlobalId(doorData.teleport->destinationDoor));
     if (espm::Convert<espm::REFR>(outLookup.rec)) {
       const auto& out = *doorData.teleport;
-      constexpr float kRaise = 10.f;
       jail.releaseWorldOrCell =
         LocationalDataUtils::GetWorldOrCell(browser, outLookup);
-      jail.releasePos = { out.pos[0], out.pos[1], out.pos[2] + kRaise };
+      jail.releasePos = { out.pos[0], out.pos[1], out.pos[2] };
       jail.releaseRot = { out.rotRadians[0] / kPi * 180.f,
                           out.rotRadians[1] / kPi * 180.f,
                           out.rotRadians[2] / kPi * 180.f };
@@ -10195,15 +10196,9 @@ PartOne::ArrestCheck PartOne::OnArrest(MpActor& prisoner, uint32_t faction,
   term.releaseAt = static_cast<double>(now) + days;
   prisoner.SetJailTerm(term);
 
-  // the engine's move into the jail is the prisoner's own game's: one jump
-  // to the faction's landing, for the permit's wait (MovementValidation)
-  if (jail->landingInterior) {
-    PermitJump(prisoner.GetFormId(), jail->landingWorldOrCell);
-  } else {
-    PermitJump(prisoner.GetFormId(), jail->landingWorldOrCell,
-               static_cast<int16_t>(std::floor(jail->landingPos.x / 4096.f)),
-               static_cast<int16_t>(std::floor(jail->landingPos.y / 4096.f)));
-  }
+  // the engine's move into the jail is the prisoner's own game's, recorded
+  // as any move its game makes (ADR-079 decision 7, tracker #191), so no
+  // jump is permitted here
   MpActor::ArrestWindow window;
   window.evidenceChest = jail->evidenceChest;
   window.belongingsChest = jail->belongingsChest;
@@ -10212,9 +10207,9 @@ PartOne::ArrestCheck PartOne::OnArrest(MpActor& prisoner, uint32_t faction,
   prisoner.OpenArrestWindow(std::move(window));
 
   spdlog::info("[verb:jail] {:x} arrested by {:x} for {} days: released at "
-               "day {:.3f} of the shared clock (now {:.3f}); one jump to "
-               "{:x} permitted, its game's strip into {:x} or {:x} and {} "
-               "outfit item(s) taken for {} s",
+               "day {:.3f} of the shared clock (now {:.3f}); its game's move "
+               "to {:x}, its strip into {:x} or {:x} and {} outfit item(s) "
+               "taken for {} s",
                prisoner.GetFormId(), faction, days, term.releaseAt, now,
                jail->landingWorldOrCell, jail->evidenceChest,
                jail->belongingsChest, jail->outfit.size(),

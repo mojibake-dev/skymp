@@ -685,9 +685,10 @@ public:
     NiPoint3 landingPos, landingRot;
     // the release's spot: the far side of the jail's door, the landing of
     // that door's own teleport (the engine's release, 40661, reads the
-    // marker's door's XTEL, not the marker; the re-analyst's read of
-    // 2026-11-20, HYPOTHESIS until a lab trace), raised 10 units as its move
-    // (40744) raises it; the marker's own spot when the door has none
+    // marker's door's XTEL, not the marker: the re-analyst's read of
+    // 2026-11-20, confirmed by lab run 20261121-035453), the point itself,
+    // which the player's own move (40744) raises; the marker's own spot when
+    // the door has none
     uint32_t releaseWorldOrCell = 0;
     NiPoint3 releasePos, releaseRot;
     uint32_t evidenceChest = 0;   // stolen goods
@@ -698,9 +699,10 @@ public:
 
   // The arrested player's own game's report (ADR-063): the faction that
   // jailed it and the sentence its engine set. Recorded as the player's jail
-  // term, its end on the shared clock (ADR-021), with one jump to the
-  // faction's jail landing permitted and the arrest's window opened, in
-  // which its game's strip and jail outfit are taken (OnArrestStripPut,
+  // term, its end on the shared clock (ADR-021), and the arrest's window
+  // opened, in which its game's strip and jail outfit are taken (its move
+  // into the jail is recorded as any own move, ADR-079 decision 7;
+  // OnArrestStripPut,
   // OnArrestStripTake). The sentence is the game's (bounty over
   // iCrimeDaysInPrisonMod, capped at iCrimeMaxNumberofDaysinJail); the
   // record bounds it to the cap, which no plugin of the lab's load order

@@ -167,5 +167,5 @@
   REGISTER_MESSAGE(WorldGlobalMessage)                                        \
   REGISTER_MESSAGE(ScriptVariablesMessage)                                    \
   REGISTER_MESSAGE(OwnHeadPartsMessage)                                       \
-  REGISTER_MESSAGE(SummonMessage)
-REGISTER_MESSAGE(PushActorMessage)
+  REGISTER_MESSAGE(SummonMessage)                                             \
+  REGISTER_MESSAGE(PushActorMessage)

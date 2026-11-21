@@ -54,6 +54,12 @@ public:
     // lab/esm.py 2026-10-10), 0 when the field is shorter: an attack's
     // stagger scales with it (thuum docs/verbs/stagger.md)
     float stagger = 0.f;
+    // EITM, the weapon's own enchantment in the plugin's own numbering (an
+    // ENCH; ARMO's read, ARMO.cpp), 0 for none: a game-file enchanted
+    // weapon's hit runs it (thuum tracker #98, the enchanted hit).
+    // Skyrim.esm's EnchIronSwordFire01 0x49BB8 names 0x49BB7 (thuum
+    // lab/esm.py, 2026-11-20)
+    uint32_t enchantmentFormId = 0;
   };
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;

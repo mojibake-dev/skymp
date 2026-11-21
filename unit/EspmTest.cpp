@@ -560,6 +560,19 @@ TEST_CASE("GMST parsing", "[espm]")
       .value == 2.5f);
 }
 
+// thuum tracker #98 (the enchanted hit): a weapon's own enchantment is its
+// record's EITM, as an armor's is (ARMO parsing below); Skyrim.esm's
+// EnchIronSwordFire01 0x49BB8 names 0x49BB7 (thuum lab/esm.py, 2026-11-20)
+// and the plain Iron Dagger 0x1397E none
+TEST_CASE("WEAP parsing reads the weapon's own enchantment", "[espm]")
+{
+  MyEspmProvider provider;
+  REQUIRE(espm::GetData<espm::WEAP>(0x49bb8, &provider).enchantmentFormId ==
+          0x49bb7);
+  REQUIRE(espm::GetData<espm::WEAP>(0x1397e, &provider).enchantmentFormId ==
+          0);
+}
+
 TEST_CASE("ARMO parsing", "[espm]")
 {
   MyEspmProvider provider;

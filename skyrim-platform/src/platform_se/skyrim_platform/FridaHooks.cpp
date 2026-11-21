@@ -5129,15 +5129,14 @@ void NoteImpulseRef(ImpulseFrame& frame, const RE::TESObjectREFR* refr)
     { refrId, base ? static_cast<uint32_t>(base->GetFormType()) : 0u });
 }
 
-// thuum tracker #175 (ADR-071 D-PH5's amendment, Eli's B: "go with B for the
-// npc shout": a living NPC knocked by another seat's shout is thrown by its
-// host, every other screen follows the host's stream; props and world
-// objects keep the rule). Two exceptions to the rule, by the pushed body's
-// reference, read where the call names it (26004's rigid body, 26005's node):
-// another seat's push on a living actor this seat simulates (Hosted.h
-// SimulatedHere) is applied, its throw this seat's engine's; this seat's own
-// push on a living puppet copy (Puppets.h, another seat's NPC) is zeroed, the
-// copy following its host's stream. Each counted, its line once a second
+// A living NPC is thrown by the engine that simulates it, and every other
+// screen follows that host's stream; props and world objects keep the rule.
+// So two exceptions to it, by the pushed body's reference, read where the
+// call names it (26004's rigid body, 26005's node): another seat's push on a
+// living actor this seat simulates (Hosted.h SimulatedHere) is applied, its
+// throw this seat's engine's; this seat's own push on a living puppet copy
+// (Puppets.h, another seat's NPC) is zeroed, the copy following its host's
+// stream. Each is counted, its line at most once a second
 const RE::Actor* LivingActorOf(const RE::TESObjectREFR* refr)
 {
   if (!refr || refr->GetFormType() != RE::FormType::ActorCharacter) {

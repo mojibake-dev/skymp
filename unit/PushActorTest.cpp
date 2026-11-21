@@ -9,13 +9,11 @@
 
 PartOne& GetPartOne();
 
-// thuum tracker #175 (ADR-071 D-PH5's amendment, Eli's B: "go with B for the
-// npc shout", the NPC's host throws it): a script's push in the sender's game
-// onto an actor another seat simulates is reported (PushActor), checked for
-// consistency alone and run by that actor's host, PushActorAway with the
-// caster's figure as self. The hosting idiom is ActorDeathTest.cpp's (a seat's
-// CellLoaded makes it the cell's host past the grace); the actor is its
-// predator 0x85547 in the same forest cell.
+// A script's push in the sender's game onto an actor another seat simulates
+// is reported (PushActor), checked for consistency alone and run by that
+// actor's host, PushActorAway with the caster's figure as self. The hosting
+// idiom is ActorDeathTest.cpp's (a seat's CellLoaded makes it the cell's host
+// past the grace); the actor is its predator 0x85547 in the same forest cell.
 
 namespace {
 constexpr uint32_t kTamriel = 0x3c;

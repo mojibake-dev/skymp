@@ -10885,18 +10885,15 @@ void ActionListener::OnConsoleCommand(const RawMessageData& rawMsgData,
   }
 }
 
-// thuum tracker #175 (ADR-071 D-PH5's amendment, Eli's B: "go with B for the
-// npc shout", the NPC's host throws it; the shape, magna-ge's choice recorded
-// on #175: the script stays its caster's seat's, ADR-068 decision 6, and the
-// push it causes goes to the pushed actor's own simulator). The sender's game
-// skipped a script's PushActorAway onto an actor it does not simulate (a
-// puppet there: skyrim-platform ScriptNatives.cpp's push hook) and reported
-// it. Consistency alone is checked (ADR-063: the server validates two owners,
-// conservation and bounds that break the world): the caster is the sender's
-// own actor or one it hosts (E_PUSH_CASTER); the target a live actor no
-// player owns, its host some other seat (E_PUSH_TARGET, E_PUSH_HOST); the two
-// in one cell or worldspace within kPushReach (E_PUSH_FAR); the force bounded
-// by the wire (PUSH_FORCE_MAX). Then the target's host runs
+// The sender's game skipped a script's PushActorAway onto an actor it does
+// not simulate (a puppet there: skyrim-platform ScriptNatives.cpp's push
+// hook) and reported it; the script keeps running on the caster's seat, and
+// the push goes to the pushed actor's own simulator. Consistency alone is
+// checked: the caster is the sender's own actor or one it hosts
+// (E_PUSH_CASTER); the target a live actor no player owns, its host some
+// other seat (E_PUSH_TARGET, E_PUSH_HOST); the two in one cell or worldspace
+// within kPushReach (E_PUSH_FAR); the force bounded by the wire
+// (PUSH_FORCE_MAX). Then the target's host runs
 // ObjectReference.PushActorAway(target, force) with the caster's figure as
 // self (an SpSnippet, DeliverSpellLanding's shape), its engine's own throw,
 // which its live-body stream carries to every other screen

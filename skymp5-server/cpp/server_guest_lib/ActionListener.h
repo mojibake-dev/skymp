@@ -451,11 +451,11 @@ public:
   virtual void OnCraftItem(const RawMessageData& rawMsgData,
                            const CraftItemMessage& msg);
 
-  // thuum tracker #175 (ADR-071 D-PH5's amendment): a script's push in the
-  // sender's game onto an actor another seat simulates, skipped there and
-  // reported; consistency checked (the caster the sender's or one it hosts,
-  // the target a live actor no player owns, the force bounded), then the
-  // target's host runs PushActorAway with the caster's figure as self
+  // a script's push in the sender's game onto an actor another seat
+  // simulates, skipped there and reported; consistency checked (the caster
+  // the sender's or one it hosts, the target a live actor no player owns, the
+  // force bounded), then the target's host runs PushActorAway with the
+  // caster's figure as self
   virtual void OnPushActor(const RawMessageData& rawMsgData,
                            const PushActorMessage& msg);
 

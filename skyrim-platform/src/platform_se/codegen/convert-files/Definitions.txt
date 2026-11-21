@@ -381,7 +381,7 @@ export interface PropImpulseEvent {
   refrs: BodyRef[];
 }
 
-// thuum tracker #175 (ADR-071 D-PH5's amendment, Eli's B: the NPC's host throws it): a script's ObjectReference.PushActorAway in this game onto an actor another seat simulates (a puppet here), skipped by the platform's push hook (ScriptNatives.cpp, beside its skip of a player's figure) and raised on the next tick for the client to report (PushActor), so that actor's own simulator throws it. caster: the push's self (the script's caller, 0x14 this seat's own player); target: the pushed puppet; force: PushActorAway's force as the VM held it. No game call in its handler
+// A script's ObjectReference.PushActorAway in this game onto an actor another seat simulates (a puppet here), skipped by the platform's push hook (ScriptNatives.cpp, beside its skip of a player's figure) and raised on the next tick for the client to report (PushActor), so that actor's own simulator throws it. caster: the push's self (the script's caller, 0x14 this seat's own player); target: the pushed puppet; force: PushActorAway's force as the VM held it. No game call in its handler
 export interface PushReportedEvent {
   caster: number;
   target: number;

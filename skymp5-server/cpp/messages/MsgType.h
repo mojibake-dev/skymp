@@ -146,11 +146,8 @@ enum class MsgType : uint8_t
                         // placed at a summon effect's apply, and its end
                         // (docs/verbs/summon.md, R2: the caster's row owns
                         // it)
-  ReservedCraftReport = 84, // the id contract (wire-schema SCHEMA_VERSION's
-                            // note): tracker #98's CraftReport on fork
-                            // m4-pt56-98; never sent here
-  PushActor = 85,           // thuum tracker #175 (D-PH5's amendment): a
-                            // script's push onto an actor another seat
+  ReservedCraftReport = 84, // reserved for CraftReport; never sent
+  PushActor = 85,           // a script's push onto an actor another seat
                             // simulates, reported for that simulator to throw
   Max
 };

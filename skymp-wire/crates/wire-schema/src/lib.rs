@@ -284,21 +284,16 @@ use bounded::{String, Vec};
 /// cell's host with the presser's recorded inventory, which the host's
 /// acting scope answers GetItemCount from. A new trailing field, so the
 /// number moves for D-PH1 A's reason.
-/// 61 to 63: thuum tracker #98's on fork branch m4-pt56-98 (CraftReport at
-/// MsgType 84, wire id 92; created forms by their definition; DropItem's and
-/// SpellCast's extras), not on this branch: the id contract below keeps them
-/// apart.
-/// 64: PushActor (MsgType 85, wire id 93; thuum tracker #175, ADR-071
-/// D-PH5's amendment): a script's push onto an actor another seat
-/// simulates, reported for its simulator to throw. MsgType 84 (wire id 92)
-/// is reserved for #98's CraftReport (skymp::ReservedCraftReport, never
-/// sent).
-/// 65: thuum tracker #97's Arrest and CrimeGold on fork branch m4-97-jail
-/// (MsgType 86 and 87, wire ids 94 and 95), not on this branch.
-/// The id contract: m4-pt56-98 owns 84 / 92 and 61 to 63,
-/// m4-pt56-175-npc-shout 85 / 93 and 64, m4-97-jail 86 / 94, 87 / 95 and 65;
-/// whichever merges to canon after another replaces that one's placeholder
-/// or renumbers (magna-ge, 2026-11-20).
+/// 61 to 63: CraftReport's shapes, not built here (the held ids below).
+/// 64: PushActor (MsgType 85, wire id 93): a script's push onto an actor
+/// another seat simulates, reported for that actor's simulator to throw.
+/// 65: Arrest and CrimeGold (MsgType 86 and 87, wire ids 94 and 95), not
+/// built here.
+/// Ids held for messages that are not on every branch yet: MsgType 84 (wire
+/// id 92) CraftReport, 85 (93) PushActor, 86 (94) Arrest and 87 (95)
+/// CrimeGold; schema versions 61 to 63 for CraftReport's shapes, 64 for
+/// PushActor and 65 for Arrest and CrimeGold. A branch without one of these
+/// messages holds its id with a never-sent Reserved placeholder.
 pub const SCHEMA_VERSION: u16 = 64;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
@@ -870,11 +865,10 @@ pub enum Message {
     /// 91, MsgType 83 (thuum tracker #84, docs/verbs/summon.md). See
     /// [`skymp::Summon`].
     Summon(skymp::Summon),
-    /// 92, MsgType 84, reserved for thuum tracker #98's CraftReport (fork
-    /// m4-pt56-98) and never sent. See [`skymp::ReservedCraftReport`].
+    /// 92, MsgType 84, reserved for CraftReport and never sent. See
+    /// [`skymp::ReservedCraftReport`].
     ReservedCraftReport(skymp::ReservedCraftReport),
-    /// 93, MsgType 85 (thuum tracker #175, the NPC's host throws it). See
-    /// [`skymp::PushActor`].
+    /// 93, MsgType 85. See [`skymp::PushActor`].
     PushActor(skymp::PushActor),
 }
 
@@ -1043,11 +1037,9 @@ const TABLE: [Row; 94] = [
     // the two triple floats, the cell, the time and the flag (thuum
     // tracker #84; 55 bytes at the longest, pinned by the size test)
     row("Summon", 83, 64, C2S),
-    // reserved for thuum tracker #98's CraftReport (the id contract at
-    // SCHEMA_VERSION's note); never sent, the validator refuses it
+    // reserved for CraftReport; never sent, the validator refuses it
     row("ReservedCraftReport", 84, 16, C2S),
-    // two ids at five-byte varints and the force (thuum tracker #175; 16
-    // bytes at the longest)
+    // two ids at five-byte varints and the force (16 bytes at the longest)
     row("PushActor", 85, 32, C2S),
 ];
 
@@ -1302,8 +1294,7 @@ mod tests {
         assert_eq!(name_of_msg_type(82), Some("OwnHeadParts"));
         // tracker #84's one, after 82: wire id 91
         assert_eq!(name_of_msg_type(83), Some("Summon"));
-        // the id contract: 84 reserved for tracker #98's CraftReport, then
-        // tracker #175's one: wire ids 92 and 93
+        // 84 reserved for CraftReport, then PushActor: wire ids 92 and 93
         assert_eq!(name_of_msg_type(84), Some("ReservedCraftReport"));
         assert_eq!(name_of_msg_type(85), Some("PushActor"));
         assert_eq!(name_of_msg_type(86), None);

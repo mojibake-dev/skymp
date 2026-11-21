@@ -3340,12 +3340,9 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 84, RESERVED (thuum tracker #175's id contract): the id thuum
-    /// tracker #98's CraftReport takes on fork branch m4-pt56-98 (wire id 92,
-    /// SCHEMA_VERSION 61 to 63), kept dead here so PushActor, the next id,
-    /// sits past it and the two branches never claim one id. Never sent; the
-    /// validator refuses it. Whichever branch merges to canon second replaces
-    /// this placeholder (CraftReport) or renumbers (PushActor).
+    /// MsgType 84, reserved: CraftReport's id (wire id 92), held by this
+    /// placeholder where CraftReport is not built, so the ids after it keep
+    /// their numbers. Never sent; the validator refuses it.
     pub struct ReservedCraftReport {
         /// `"t": 84`.
         #[serde(default)]
@@ -3354,17 +3351,15 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// MsgType 85 (thuum tracker #175; ADR-071 D-PH5's amendment, Eli's B:
-    /// "go with B for the npc shout", the NPC's host throws it). Client to
-    /// server, reliable: a script's ObjectReference.PushActorAway in the
-    /// sender's game onto an actor another seat simulates (a puppet there),
-    /// skipped in the sender's game and reported, so the actor's own
-    /// simulator throws it. The script stays its caster's seat's (ADR-068
-    /// decision 6). The server checks consistency only: the caster is the
-    /// sender's own actor or one it hosts, the target a live actor no player
-    /// owns (`E_PUSH_TARGET`), the force within bounds; then the target's
-    /// host runs PushActorAway with the caster's figure as self. Not
-    /// idempotent: each is a throw.
+    /// MsgType 85. Client to server, reliable: a script's
+    /// ObjectReference.PushActorAway in the sender's game onto an actor
+    /// another seat simulates (a puppet there), skipped in the sender's game
+    /// and reported, so the actor's own simulator throws it. The script
+    /// itself keeps running on its caster's seat. The server checks
+    /// consistency only: the caster is the sender's own actor or one it
+    /// hosts, the target a live actor no player owns (`E_PUSH_TARGET`), the
+    /// force within bounds; then the target's host runs PushActorAway with
+    /// the caster's figure as self. Not idempotent: each is a throw.
     pub struct PushActor {
         /// `"t": 85`.
         #[serde(default)]

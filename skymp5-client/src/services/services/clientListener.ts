@@ -183,8 +183,8 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle;
     function once(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle;
-    // thuum tracker #175: a script's push onto a puppet, skipped by the
-    // platform and reported (PushReportedEvent, Definitions.txt)
+    // a script's push onto a puppet, skipped by the platform and reported
+    // (PushReportedEvent, Definitions.txt)
     interface PushReportedEvent {
         caster: number;
         target: number;

@@ -1,18 +1,18 @@
-# difftest push-actor (thuum tracker #175; ADR-071 D-PH5's amendment, option B: the NPC's host
-# throws it; PushActor, MsgType 85, SCHEMA_VERSION 64). c1 and c2 are new characters (profiles 9 and 10, actors
-# 0xff000002 and 0xff000003, see melee-reach), both at the spawn in Tamriel's exterior cell (32, -15), form 0xbbb1
-# (cell-host's read); c2 starts 1.5 s after c1, each client's times its own. T2 holds no game-file NPC (npc-lead's
-# note), so at 0.3 s of its own c2 places Lucan Valerius's base 0x1347a at its own position through the console's
-# PlaceAtMe, after both logins, so the copy is 0xff000004 on both stacks and both players listen to it from its
-# creation (npc-lead's idiom; this session's first draw, on fork 8d92144e7, had c1 place it before c2's login, the copy
-# took 0xff000003 and c2's actor 0xff000004, which swapped the valid push and the refused one). At 1 s of its own c2
-# reports the spawn's cell loaded: it hosts the cell (HostGrant {cell 0xbbb1, epoch 1}), so its game simulates the copy
-# (isHostedByOther false to c2 and true to c1). At 4 s c1 reports its own shout's push of the copy (PushActor {caster
-# 0xff000002, target 0xff000004, force 15}): the copy is c2's to simulate, so the wire stack has c2's game run
-# ObjectReference.PushActorAway(the copy, 15) with c1's figure as self (an SpSnippet to c2). At 4.5 s c1 reports a push
-# of c2's own actor: a player's throw is its own game's (E_PUSH_TARGET), refused, nothing sent. At 5 s c1 reports a
-# push of the copy with a force of 1000, past PUSH_FORCE_MAX: the validator refuses it, nothing sent. The legacy stack
-# knows no MsgType 85 and drops all three. c2 steps aside at 6 s of its own so it outlives c1, as in every session.
+# difftest push-actor (PushActor, MsgType 85, SCHEMA_VERSION 64: a script's push onto an NPC another seat simulates,
+# reported so the NPC's host throws it). c1 and c2 are new characters (profiles 9 and 10, actors 0xff000002 and
+# 0xff000003, see melee-reach), both at the spawn in Tamriel's exterior cell (32, -15), form 0xbbb1 (cell-host's read);
+# c2 starts 1.5 s after c1, each client's times its own. T2 holds no game-file NPC (npc-lead's note), so at 0.3 s of its
+# own c2 places Lucan Valerius's base 0x1347a at its own position through the console's PlaceAtMe, after both logins, so
+# the copy is 0xff000004 on both stacks and both players listen to it from its creation (npc-lead's idiom; placed before
+# c2's login, the copy would take 0xff000003 and c2's actor 0xff000004, swapping the valid push and the refused one). At
+# 1 s of its own c2 reports the spawn's cell loaded: it hosts the cell (HostGrant {cell 0xbbb1, epoch 1}), so its game
+# simulates the copy (isHostedByOther false to c2 and true to c1). At 4 s c1 reports its own shout's push of the copy
+# (PushActor {caster 0xff000002, target 0xff000004, force 15}): the copy is c2's to simulate, so the wire stack has c2's
+# game run ObjectReference.PushActorAway(the copy, 15) with c1's figure as self (an SpSnippet to c2). At 4.5 s c1
+# reports a push of c2's own actor: a player's throw is its own game's (E_PUSH_TARGET), refused, nothing sent. At 5 s c1
+# reports a push of the copy with a force of 1000, past PUSH_FORCE_MAX: the validator refuses it, nothing sent. The
+# legacy stack knows no MsgType 85 and drops all three. c2 steps aside at 6 s of its own so it outlives c1, as in every
+# session.
 #
 # A copy's fate and create word are declared as the wire's and the legacy server's halves, as npc-lead declares them.
 id: push-actor

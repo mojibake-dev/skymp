@@ -3,13 +3,10 @@
 #include "MsgType.h"
 #include <type_traits>
 
-// The wire's id contract (wire-schema SCHEMA_VERSION's note, thuum tracker
-// #175): MsgType 84 is thuum tracker #98's CraftReport on fork branch
-// m4-pt56-98, kept here as a dead placeholder so PushActor (85) sits past it.
-// Never sent: the validator refuses it before the core sees it, and the core
-// handles no MsgType 84 (PacketParser.cpp). Read and written back for the
-// wire's fixture contract (unit/WireJsonContractTest.cpp). Whichever branch
-// merges to canon second replaces it with CraftReportMessage or renumbers.
+// MsgType 84, held for CraftReport where it is not built, so the ids after it
+// keep their numbers. Never sent: the validator refuses it and the core
+// handles no MsgType 84 (PacketParser.cpp). Serialized only for the wire's
+// fixture contract (unit/WireJsonContractTest.cpp).
 struct ReservedCraftReportMessage
   : public MessageBase<ReservedCraftReportMessage>
 {

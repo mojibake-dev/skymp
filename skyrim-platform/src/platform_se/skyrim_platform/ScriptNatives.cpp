@@ -3058,16 +3058,15 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
                      target->formID);
         return marks;
       }
-      // thuum tracker #175 (ADR-071 D-PH5's amendment, Eli's B: the NPC's
-      // host throws it; magna-ge's shape recorded on #175): a push onto an
-      // actor another seat simulates (a puppet here, Puppets.h) is skipped
-      // here as a figure's is, and reported: the script stays this seat's
-      // (ADR-068 decision 6), the throw goes to the actor's own simulator
-      // (the client's PushActor, the server's OnPushActor), and this copy
-      // follows its stream. The pusher is the frame's self (SubjectOfFrame,
-      // no lookup), the force its second argument as the VM holds it
-      // (CommonLibSSE-NG V/Variable.h:53-65). Without the platform's tick the
-      // report is lost and nothing throws: a lost line, never a double throw
+      // a push onto an actor another seat simulates (a puppet here,
+      // Puppets.h) is skipped here as a figure's is, and reported: the script
+      // keeps running on this seat, the throw goes to the actor's own
+      // simulator (the client's PushActor, the server's OnPushActor), and
+      // this copy follows its stream. The pusher is the frame's self
+      // (SubjectOfFrame, no lookup), the force its second argument as the VM
+      // holds it (CommonLibSSE-NG V/Variable.h:53-65). Without the platform's
+      // tick the report is lost and nothing throws: a lost line, never a
+      // double throw
       if (target && Puppets::Is(target->formID)) {
         float force = 0.f;
         const auto& forceVar = top->GetStackFrameVariable(1, argPage);

@@ -2486,20 +2486,13 @@ export class PropService extends ClientListener {
         }
     }
 
-    // physics rung 5's live-body kind (thuum tracker #175, #178): a knock's
-    // edge (ActionKnockDown) on a humanoid this seat hosts or its own player
-    // tracks the knocked actor at once, so its owner streams the knock from
-    // its first frames (the host by default; this seat's player its own
-    // body, claimed at its track); a grip's actor is readHolds', a shout's
-    // claimImpulses'. A copy this seat knocked to follow is its follow's
-    // thuum tracker #175 (ADR-071 D-PH5's amendment, Eli's B: the NPC's host
-    // throws it; the shape recorded on #175): a script's PushActorAway in this
-    // game onto an actor another seat simulates was skipped by the platform's
-    // push hook (ScriptNatives.cpp) and is reported here, by server ids
-    // (0x14, this seat's player, as its own), so the server has that actor's
-    // host run the push with this seat's figure as self; this copy follows the
-    // host's stream (the live-body kind) and this seat's own impulse on it is
-    // zeroed in native code (FridaHooks.cpp's impulse rule)
+    // a script's PushActorAway in this game onto an actor another seat
+    // simulates, skipped by the platform's push hook (ScriptNatives.cpp), is
+    // reported here by server ids (0x14, this seat's player, as its own), so
+    // the server has that actor's host run the push with this seat's figure
+    // as self; this copy follows the host's stream (the live-body kind), and
+    // this seat's own impulse on it is zeroed in native code (FridaHooks.cpp's
+    // impulse rule)
     private onPushReported(e: PushReportedEvent) {
         const caster = localIdToRemoteId(e.caster, true);
         const target = localIdToRemoteId(e.target);
@@ -2512,6 +2505,12 @@ export class PropService extends ClientListener {
         logLab(TAG, `push onto ${e.target.toString(16)} (force ${e.force}) by ${e.caster.toString(16)} reported: its host throws it (tracker #175)`);
     }
 
+    // physics rung 5's live-body kind (thuum tracker #175, #178): a knock's
+    // edge (ActionKnockDown) on a humanoid this seat hosts or its own player
+    // tracks the knocked actor at once, so its owner streams the knock from
+    // its first frames (the host by default; this seat's player its own
+    // body, claimed at its track); a grip's actor is readHolds', a shout's
+    // claimImpulses'. A copy this seat knocked to follow is its follow's
     private trackKnocks(now: number) {
         const knocks = this.knocks;
         this.knocks = [];

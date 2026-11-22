@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const packageInfo = require('./package.json')
 const WebpackShellPluginNext = require('webpack-shell-plugin-next');
+const webpack = require('webpack');
+const { execSync } = require('child_process');
 const { getFips } = require('crypto');
 
 // Configure webpack output file folder and file name
@@ -59,6 +61,21 @@ if (process.env['DEPLOY_PLUGIN']?.includes('true')) {
         zipCommand = `cp "${outputFile}" "${localPluginsFolder}" && npm run zip:cli -- "${zipFile}" "${localPluginFiles}" && rm -rf "${localPlatformFolder}"`
     plugins.push(new WebpackShellPluginNext({ onBuildEnd: { scripts: [zipCommand] } }))
 }
+
+// The commit this bundle is built from, written into it as a literal
+// (src/sync/buildCommit.ts's marker) so a tool reads it from the file and the
+// client says it at its start: git's HEAD here, with "-dirty" when the
+// client's tree differs from it, else the CI job's commit, else none
+const clientCommit = () => {
+    const git = (args) => execSync(`git ${args}`, { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    try {
+        const sha = git('rev-parse HEAD');
+        return git('status --porcelain -- .') === '' ? sha : `${sha}-dirty`;
+    } catch (e) {
+        return process.env['CI_COMMIT_SHA'] || '';
+    }
+};
+plugins.push(new webpack.DefinePlugin({ __SKYMP_CLIENT_BUILD__: JSON.stringify(`skymp5-client-commit:${clientCommit()}`) }));
 
 module.exports = {
     target: "node",

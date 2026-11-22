@@ -12,7 +12,11 @@ export interface BuildCommit {
 
 // the marker's commit, or undefined when it names none (a build with no git)
 export function commitOf(marker: string | undefined): BuildCommit | undefined {
-    return undefined;
+    if (marker === undefined || !marker.startsWith(BUILD_MARKER)) {
+        return undefined;
+    }
+    const m = /^([0-9a-f]{40})(-dirty)?$/.exec(marker.slice(BUILD_MARKER.length));
+    return m ? { sha: m[1], dirty: m[2] !== undefined } : undefined;
 }
 
 // the client's line at its start

@@ -4,6 +4,7 @@
 #include "ActorValues.h"
 #include "Appearance.h"
 #include "ChangeFormRecord.h"
+#include "CrimeRecord.h"
 #include "DynamicFields.h"
 #include "Equipment.h"
 #include "Faction.h"
@@ -254,9 +255,19 @@ public:
   // none
   std::optional<ShoutRecord> shoutRecord;
 
+  // The player's bounty per hold and the jail term it serves
+  // (CrimeRecord.h); absent in older records, read as none
+  std::optional<CrimeRecord> crimeRecord;
+
   // The global variables the player's game wrote for its player (thuum
   // docs/verbs/player-globals.md); absent in older records, read as none
   std::optional<std::vector<PlayerGlobal>> playerGlobals;
+
+  // The game-file enchantments the player learned at the arcane enchanter by
+  // disenchanting: the engine's known flag on each (TESForm::SetPlayerKnows,
+  // CommonLibSSE-NG TESForm.h:349), taught again after every login; absent
+  // in older records, read as none
+  std::optional<std::vector<FormDesc>> knownEnchantments;
 
   // The world's quest stages (thuum docs/verbs/quest-stage.md, ADR-056):
   // per quest the stages done, world-wide; absent in older records, read as
@@ -520,10 +531,10 @@ public:
       fateLevel, fateDiedAt, lastAnimation, graphVariables, setNodeTextureSet,
       setNodeScale, displayName, mapMarkers, ingredientEffects, favorites,
       raceMenuPreset, actorValueRecord, staffRank, runningEffects, shoutRecord,
-      playerGlobals, questStages, placedBySpell, lock, destruction,
-      changeFormRecord, scriptState, refStateSeq, crimeFaction, relationships,
-      placedByScript, aliasFills, worldGlobals, questRuns, scriptVariables,
-      unresolved);
+      playerGlobals, knownEnchantments, questStages, placedBySpell, lock,
+      destruction, changeFormRecord, scriptState, refStateSeq, crimeFaction,
+      relationships, placedByScript, aliasFills, worldGlobals, questRuns,
+      scriptVariables, unresolved, crimeRecord);
   }
 
   // The record boundary (thuum docs/DECISIONS.md ADR-043; the map

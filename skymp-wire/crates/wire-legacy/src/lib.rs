@@ -138,6 +138,44 @@ const LEGACY_ABSENT: &[(&str, &str)] = &[
     // the summon's arrival art for its watchers (SCHEMA_VERSION 59, thuum
     // tracker #111, docs/verbs/summon.md)
     ("CreateActorProps", "summonEffect"),
+    // a created form by its definition: a stack's brewed potion or poison,
+    // its made enchantment, its brewed poison, and a drink's
+    // (SCHEMA_VERSION 61)
+    ("Entry", "createdBase"),
+    ("Entry", "createdEnchantment"),
+    ("Entry", "createdPoison"),
+    ("PutItem", "createdBase"),
+    ("PutItem", "createdEnchantment"),
+    ("PutItem", "createdPoison"),
+    ("TakeItem", "createdBase"),
+    ("TakeItem", "createdEnchantment"),
+    ("TakeItem", "createdPoison"),
+    ("OnEquip", "createdBase"),
+    // the answer to a crafting report (SCHEMA_VERSION 62)
+    ("SetInventory", "craftAck"),
+    // a drop's extras and created forms (SCHEMA_VERSION 63)
+    ("DropItem", "health"),
+    ("DropItem", "enchantmentId"),
+    ("DropItem", "maxCharge"),
+    ("DropItem", "removeEnchantmentOnUnequip"),
+    ("DropItem", "chargePercent"),
+    ("DropItem", "name"),
+    ("DropItem", "soul"),
+    ("DropItem", "poisonId"),
+    ("DropItem", "poisonCount"),
+    ("DropItem", "createdBase"),
+    ("DropItem", "createdEnchantment"),
+    ("DropItem", "createdPoison"),
+    // the enchanted-hit relay's made enchantment (SCHEMA_VERSION 63)
+    ("SpellCastData", "createdSpell"),
+    // a stack's owner, the engine's stolen mark (SCHEMA_VERSION 65)
+    ("Entry", "ownerId"),
+    ("PutItem", "ownerId"),
+    ("TakeItem", "ownerId"),
+    // a dropped stack's owner (SCHEMA_VERSION 66)
+    ("DropItem", "ownerId"),
+    // a fine's gold (SCHEMA_VERSION 67)
+    ("CrimeGold", "paidGold"),
 ];
 
 /// The deserializer for a field in LEGACY_ABSENT: an optional reads as none,

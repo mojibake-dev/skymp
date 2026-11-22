@@ -4,6 +4,7 @@
 #include "Appearance.h"
 #include "ChangeFormApplyMessage.h"
 #include "ChangeFormRecord.h"
+#include "CrimeRecord.h"
 #include "Equipment.h"
 #include "Favorite.h"
 #include "GetBaseActorValues.h"
@@ -15,6 +16,7 @@
 #include "UpdateActionMessage.h"
 #include "libespm/espm.h"
 #include <array>
+#include <chrono>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -64,6 +66,16 @@ public:
   std::string GetLastAnimEventAsJson() const;
   const Equipment& GetEquipment() const;
   std::array<std::optional<Inventory::Entry>, 2> GetEquippedWeapon() const;
+  // the hand an equipment entry fills. A host reports a two-handed weapon it
+  // holds as one entry worn and wornLeft at once (its engine reads it in
+  // both hands), or wornLeft alone, which Inventory::Entry::GetWorn reads as
+  // Left; a weapon whose record's ETYP is the BothHands slot
+  // (IsBothHandsWeapon) fills the right hand (and the left with it) and
+  // reads Right here. Every other entry reads as GetWorn reads it: a shield,
+  // a torch, a left-hand one-hander keep Left
+  static Inventory::Worn WornHand(WorldState& worldState,
+                                  const Inventory::Entry& entry);
+  static bool IsBothHandsWeapon(WorldState& worldState, uint32_t baseId);
   std::array<std::optional<Inventory::Entry>, 2> GetEquippedScroll() const;
   std::array<std::optional<Inventory::Entry>, 2> GetEquippedLight() const;
   std::array<std::optional<Inventory::Entry>, 2> GetEquippedShield() const;
@@ -221,9 +233,28 @@ public:
   // the poison, without such a weapon (bare hands and staves take none, as
   // the game refuses them), or with that weapon already poisoned
   bool ApplyPoison(uint32_t poisonId);
+  // ApplyPoison's work for one copy of a poison stack `spent` (a game-file
+  // poison's plain row, or a brewed poison's row, whose definition marks the
+  // weapon as createdPoison): the copy taken and one copy of the right hand's
+  // weapon marked, by ApplyPoison's rules
+  bool PoisonRightHandWeapon(const Inventory::Entry& spent);
   // The poison a copy of `weaponId` carries, one dose spent (the mark
-  // cleared at none); nullopt when no copy carries one
-  std::optional<uint32_t> SpendPoisonDose(uint32_t weaponId);
+  // cleared at none); nullopt when no copy carries one. With `created`
+  // given, a copy marked with a brewed poison counts too: its definition is
+  // written there and 0 returned
+  std::optional<uint32_t> SpendPoisonDose(
+    uint32_t weaponId, std::optional<CreatedForm>* created = nullptr);
+  // A brewed potion drunk or a brewed poison put on the right hand's weapon
+  // (OnEquip with its definition; `templateId` the game-file template its
+  // stack names): one copy of the record's stack of that definition taken, a
+  // potion's effects run from the stack's own definition through the effect
+  // rule (never the template's record), a poison marking the weapon
+  // (PoisonRightHandWeapon). False, nothing changed, without such a stack or
+  // a weapon that takes the poison
+  bool OnEquipCreated(uint32_t templateId, const CreatedForm& form);
+  // A created form's effects as the effect rule takes a record's
+  static std::vector<espm::Effects::Effect> EffectsOfCreated(
+    const CreatedForm& form);
 
   // TODO: consider removing the entire DestroyEventSink feature because it's
   // only used in unit tests
@@ -311,12 +342,20 @@ public:
   // show them.
   void SetMapMarkersPending(bool pending);
   bool TakeMapMarkersPending();
+  // whether the player logged in and has not moved yet (its first movement
+  // takes the flag, ActionListener::OnUpdateMovement)
+  bool IsMapMarkersPending() const;
   // thuum docs/verbs/learned-effects.md: the ingredient effects this player
   // learned, kept in its change form (recording only adds bits, and returns
   // whether anything changed), and the last ingredient it ate and when (0
   // when none), which a report must follow
   std::vector<IngredientEffects> GetIngredientEffects() const;
   bool RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask);
+  // The game-file enchantments this player learned by disenchanting, kept
+  // in its change form; recording only adds, and returns whether anything
+  // changed
+  std::vector<FormDesc> GetKnownEnchantments() const;
+  bool RecordKnownEnchantment(const FormDesc& enchantment);
 
   // thuum docs/verbs/shouts.md: what the player knows of shouts, the
   // server's record (R0)
@@ -327,6 +366,43 @@ public:
     WordUnlocked
   };
   ShoutRecord GetShoutRecord() const;
+
+  // the player's bounty per hold and its jail term, the server's record (R0,
+  // CrimeRecord.h)
+  CrimeRecord GetCrimeRecord() const;
+  // One hold's bounty as the player's own game holds it; false when the
+  // record held it already
+  bool SetCrimeGold(const FormDesc& faction, uint32_t violent,
+                    uint32_t nonViolent);
+  // Starts or ends the player's jail term
+  void SetJailTerm(std::optional<JailTerm> term);
+  // Adds to the jail term's belongings what the prisoner's game put into its
+  // faction's prisoner-belongings chest; false without a term
+  bool AddJailBelonging(const Inventory::Entry& entry);
+
+  // The moments of an arrest the player's own game reported
+  // (PartOne::OnArrest): until the window closes, the moves its game reports
+  // into or out of the faction's two chests are its engine's strip and jail
+  // outfit (PartOne::OnArrestStripPut, OnArrestStripTake), its own, never
+  // refused back into its game. Not kept in the record: a relaunch
+  // mid-arrest has no strip left to report
+  struct ArrestWindow
+  {
+    uint32_t evidenceChest = 0;   // the faction's stolen-goods chest (STOL)
+    uint32_t belongingsChest = 0; // its prisoner-belongings chest (PLCN)
+    std::vector<uint32_t> outfit; // the items of its jail outfit (JOUT)
+    std::vector<uint32_t> minted; // the outfit items created on the record
+    std::chrono::steady_clock::time_point until{};
+  };
+  void OpenArrestWindow(ArrestWindow window);
+  // the open window, to note an outfit item created on the record (none when
+  // closed)
+  ArrestWindow* EditArrestWindow();
+  // the window while it is open, else none
+  const ArrestWindow* GetArrestWindow() const;
+  // whether the open window names this container as one of the faction's
+  // two chests
+  bool ArrestStripTakes(uint32_t containerId) const;
   // Adds the form to the record's list; false when it was there already
   bool RecordShoutEntry(ShoutEntry kind, const FormDesc& form);
   // thuum ADR-068 rung 5 (a player's own RemoveShout): takes the form off

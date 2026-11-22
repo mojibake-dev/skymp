@@ -13,6 +13,8 @@ import { LastInvService } from "./lastInvService";
 import { HostService } from "./hostService";
 import { FIRED_MS, RelayedActivationService } from "./relayedActivationService";
 import { logError, logLab, logTrace } from "../../logging";
+import { notePickupAsked } from "../../sync/bookHold";
+import { FormTypeEx } from "../../extensions/formTypeEx";
 
 // a reference as the lab's lines name it: its server id (a game-file
 // reference's own), else this engine's
@@ -225,6 +227,17 @@ export class ActivationService extends ClientListener {
         if (openState === OpenState.Opening || openState === OpenState.Closing) {
             logTrace(this, "Ignoring activation of door because it's already opening or closing");
             return;
+        }
+
+        // the player's own activation of a game-file item asks the server for
+        // its pickup, which this game's engine runs on the server's grant: the
+        // reference and its base are noted here, in the activation's game
+        // context, and become a hold when the grant arrives
+        // (containersService), so a refused activation never holds
+        const targetBase = e.target.getBaseObject();
+        const localTarget = e.target.getFormID();
+        if (e.caster && e.caster.getFormID() === 0x14 && targetBase && FormTypeEx.isItem(targetBase.getType()) && localTarget < 0xff000000) {
+            notePickupAsked(localTarget, targetBase.getFormID(), Date.now());
         }
 
         this.controller.emitter.emit("sendMessage", {

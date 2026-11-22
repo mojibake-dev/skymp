@@ -3058,6 +3058,44 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
                      target->formID);
         return marks;
       }
+      // a push onto an actor another seat simulates (a puppet here,
+      // Puppets.h) is skipped here as a figure's is, and reported: the script
+      // keeps running on this seat, the throw goes to the actor's own
+      // simulator (the client's PushActor, the server's OnPushActor), and
+      // this copy follows its stream. The pusher is the frame's self
+      // (SubjectOfFrame, no lookup), the force its second argument as the VM
+      // holds it (CommonLibSSE-NG V/Variable.h:53-65). Without the platform's
+      // tick the report is lost and nothing throws: a lost line, never a
+      // double throw
+      if (target && Puppets::Is(target->formID)) {
+        float force = 0.f;
+        const auto& forceVar = top->GetStackFrameVariable(1, argPage);
+        if (forceVar.IsFloat()) {
+          force = forceVar.GetFloat();
+        } else if (forceVar.IsInt()) {
+          force = static_cast<float>(forceVar.GetSInt());
+        }
+        const std::uint32_t caster = SubjectOfFrame(top);
+        const std::uint32_t pushed = target->formID;
+        marks.skip = true;
+        marks.result = info.result;
+        CountStagedPlain(row, kStagedFigurePush);
+        logger::info("[verb:push] PushActorAway onto {:x} (force {}) by {:x}, "
+                     "an actor another seat simulates (a puppet here), "
+                     "skipped on this seat and reported: its host throws it "
+                     "(thuum tracker #175)",
+                     pushed, force, caster);
+        if (auto* platform = SkyrimPlatform::GetSingleton()) {
+          platform->AddTickTask([caster, pushed, force](Napi::Env env) {
+            auto obj = Napi::Object::New(env);
+            AddObjProperty(&obj, "caster", caster);
+            AddObjProperty(&obj, "target", pushed);
+            AddObjProperty(&obj, "force", force);
+            EventsApi::SendEvent("pushReported", { obj });
+          });
+        }
+        return marks;
+      }
     }
   }
   // the acting player's seat alone (New 1), counted by its scope; its self

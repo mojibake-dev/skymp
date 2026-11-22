@@ -1,6 +1,7 @@
 #include "LeveledListUtils.h"
 #include "EvaluateTemplate.h"
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <random>
 #include <set>
@@ -222,6 +223,57 @@ void ReachInto(const espm::CombineBrowser& br, const espm::LookupResult& list,
     }
   }
 }
+}
+
+namespace {
+constexpr uint64_t kMostCap = std::numeric_limits<uint32_t>::max();
+
+// MostOf's walk over one list, `path` the lists above it
+uint64_t MostOfInto(const espm::CombineBrowser& br,
+                    const espm::LookupResult& list, uint32_t baseId,
+                    size_t depth, std::vector<uint32_t>& path)
+{
+  espm::CompressedFieldsCache cache;
+  const auto* leveled =
+    reinterpret_cast<const espm::LeveledListBase*>(list.rec);
+  const auto data = leveled->GetData(cache);
+  const bool useAll =
+    (data.leveledItemFlags & espm::LeveledListBase::UseAll) != 0;
+  uint64_t most = 0;
+  for (size_t i = 0; i < data.numEntries; ++i) {
+    const uint32_t formId = list.ToGlobalId(data.entries[i].formId);
+    const uint64_t count = data.entries[i].count;
+    uint64_t gives = 0;
+    if (formId == baseId) {
+      gives = 1;
+    } else {
+      const auto entry = br.LookupById(formId);
+      if (entry.rec && IsLeveledType(entry) &&
+          depth < LeveledListUtils::kReachDepth &&
+          std::find(path.begin(), path.end(), formId) == path.end()) {
+        path.push_back(formId);
+        gives = MostOfInto(br, entry, baseId, depth + 1, path);
+        path.pop_back();
+      }
+    }
+    const uint64_t entryMost = std::min(gives * count, kMostCap);
+    most = useAll ? std::min(most + entryMost, kMostCap)
+                  : std::max(most, entryMost);
+  }
+  return most;
+}
+}
+
+uint32_t LeveledListUtils::MostOf(const espm::CombineBrowser& br,
+                                  const espm::LookupResult& lookupRes,
+                                  uint32_t baseId)
+{
+  if (!lookupRes.rec || !IsLeveledType(lookupRes)) {
+    return 0;
+  }
+  std::vector<uint32_t> path = { lookupRes.ToGlobalId(
+    lookupRes.rec->GetId()) };
+  return static_cast<uint32_t>(MostOfInto(br, lookupRes, baseId, 0, path));
 }
 
 std::vector<uint32_t> LeveledListUtils::Reach(

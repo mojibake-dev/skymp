@@ -1,0 +1,33 @@
+#pragma once
+#include "MessageBase.h"
+#include "MsgType.h"
+#include <cstdint>
+#include <optional>
+#include <type_traits>
+
+// One hold's bounty as the player's own game holds it, sent when it changes.
+// Client to server, reliable. The record is the server's (R0), given back at
+// a login (PartOne::OnCrimeGold). The contract is skymp-wire's (wire-schema
+// skymp.rs, CrimeGold, MsgType 87, wire id 95).
+struct CrimeGoldMessage : public MessageBase<CrimeGoldMessage>
+{
+  static constexpr auto kMsgType =
+    std::integral_constant<char, static_cast<char>(MsgType::CrimeGold)>{};
+
+  template <class Archive>
+  void Serialize(Archive& archive)
+  {
+    archive.Serialize("t", kMsgType)
+      .Serialize("faction", faction)
+      .Serialize("violent", violent)
+      .Serialize("nonViolent", nonViolent)
+      .Serialize("paidGold", paidGold);
+  }
+
+  uint32_t faction = 0;    // the crime faction, never 0
+  uint32_t violent = 0;    // its violent crime gold
+  uint32_t nonViolent = 0; // its non-violent crime gold
+  // the gold the player's own engine paid as it set this bounty, its fine;
+  // never 0 (SCHEMA_VERSION 67)
+  std::optional<uint32_t> paidGold;
+};

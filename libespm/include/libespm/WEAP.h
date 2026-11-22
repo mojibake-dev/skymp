@@ -54,6 +54,15 @@ public:
     // lab/esm.py 2026-10-10), 0 when the field is shorter: an attack's
     // stagger scales with it (thuum docs/verbs/stagger.md)
     float stagger = 0.f;
+    // EITM, the weapon's own enchantment in the plugin's own numbering (an
+    // ENCH, read as ARMO.cpp reads it), 0 for none: a game-file enchanted
+    // weapon's hit runs it. Skyrim.esm's EnchIronSwordFire01 0x49BB8 names
+    // 0x49BB7
+    uint32_t enchantmentFormId = 0;
+    // ETYP, the equip slot the weapon's record names (raw, in the record's
+    // own file's id space; LookupResult::ToGlobalId turns it global), 0 when
+    // the record has none: a BothHands weapon is held in both hands
+    uint32_t equipSlotId = 0;
   };
 
   Data GetData(CompressedFieldsCache& compressedFieldsCache) const noexcept;

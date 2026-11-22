@@ -89,7 +89,7 @@ export interface Win32 {
 export declare let win32: Win32
 
 export interface ExtraData {
-  type: 'Health' | 'Count' | 'Enchantment' | 'Charge' | 'TextDisplayData' | 'Soul' | 'Poison' | 'Worn' | 'WornLeft'
+  type: 'Health' | 'Count' | 'Enchantment' | 'Charge' | 'TextDisplayData' | 'Soul' | 'Poison' | 'Worn' | 'WornLeft' | 'Ownership'
 }
 export interface ExtraHealth extends ExtraData {
   type: 'Health'
@@ -127,6 +127,10 @@ export interface ExtraWorn extends ExtraData {
 }
 export interface ExtraWornLeft extends ExtraData {
   type: 'WornLeft'
+}
+export interface ExtraOwnership extends ExtraData {
+  type: 'Ownership'
+  owner: number
 }
 export type BaseExtraList = ExtraData[]
 export interface InventoryChangesEntry {
@@ -265,6 +269,35 @@ export interface SummonEndEvent {
   summonId: number
 }
 
+// this game's player arrested, raised on an update task from PlayerCharacter::GoToPrison's entry (a real jail only), before the engine strips and moves the player, so it reaches scripts ahead of the strip's containerChanged events; days is the sentence by the engine's own rule (the faction's crime gold over the GMST iCrimeDaysInPrisonMod, at least 1, at most iCrimeMaxNumberofDaysinJail)
+export interface ArrestEvent {
+  faction: Faction
+  factionId: number
+  days: number
+}
+
+// the player asked the jail's bed to serve the sentence; the engine's ServePrisonTime does not run (its time skip is one player's, which the shared clock never takes), so the sentence is waited out
+export interface ServePrisonTimeEvent {
+  factionId: number
+  days: number
+}
+
+// this game's player's crime gold for a faction changed (PlayerCharacter's SetCrimeGoldValue, ModCrimeGoldValue, RemoveCrimeGoldValue or ClearAllCrimeGold ran), raised on an update task after the engine's change; read the faction's crime gold to know it
+export interface CrimeGoldEvent {
+  faction: Faction
+  factionId: number
+  // the gold the engine's PayFine took from the player, on the one event that follows a paid fine
+  paidGold?: number
+}
+
+// this game's player's engine picked a world reference up (PlayerCharacter's PickUpObject: an activation's default processing, the Book Menu's Take), raised on an update task after the move: the reference, the base and count the player's inventory gained, and the owner the engine marked the stack with, 0 for none
+export interface PickUpObjectEvent {
+  refId: number
+  baseId: number
+  count: number
+  ownerId: number
+}
+
 export interface MenuOpenEvent {
   name: string
 }
@@ -384,6 +417,13 @@ export interface PropImpulseEvent {
   kind: 'explosion' | 'impacts' | 'cone';
   cause: number;
   refrs: BodyRef[];
+}
+
+// A script's ObjectReference.PushActorAway in this game onto an actor another seat simulates (a puppet here), skipped by the platform's push hook (ScriptNatives.cpp, beside its skip of a player's figure) and raised on the next tick for the client to report (PushActor), so that actor's own simulator throws it. caster: the push's self (the script's caller, 0x14 this seat's own player); target: the pushed puppet; force: PushActorAway's force as the VM held it. No game call in its handler
+export interface PushReportedEvent {
+  caster: number;
+  target: number;
+  force: number;
 }
 
 // thuum docs/verbs/leveling.md (M5): the player's UseSkill (the fork's hook on PlayerCharacter's vtable slot 0xF7, Address Library 40488), raised on the next tick once per landed hit, cast or craft: the skill as its actor value (CommonLibSSE-NG include/RE/A/ActorValues.h, 6 One-handed to 23 Enchanting), the action's base amount (the weapon's base damage for a melee hit) and the source form's id (0 for none). No game call in its handler
@@ -807,6 +847,18 @@ export declare function once(eventName: 'summonStart', callback: (event: SummonS
 export declare function on(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle
 export declare function once(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle
 
+export declare function on(eventName: 'arrest', callback: (event: ArrestEvent) => void): EventHandle
+export declare function once(eventName: 'arrest', callback: (event: ArrestEvent) => void): EventHandle
+
+export declare function on(eventName: 'servePrisonTime', callback: (event: ServePrisonTimeEvent) => void): EventHandle
+export declare function once(eventName: 'servePrisonTime', callback: (event: ServePrisonTimeEvent) => void): EventHandle
+
+export declare function on(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle
+export declare function once(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle
+
+export declare function on(eventName: 'pickUpObject', callback: (event: PickUpObjectEvent) => void): EventHandle
+export declare function once(eventName: 'pickUpObject', callback: (event: PickUpObjectEvent) => void): EventHandle
+
 export declare function on(eventName: 'menuOpen', callback: (event: MenuOpenEvent) => void): EventHandle
 export declare function once(eventName: 'menuOpen', callback: (event: MenuOpenEvent) => void): EventHandle
 
@@ -852,6 +904,8 @@ export declare function on(eventName: 'propContact', callback: (event: PropConta
 export declare function once(eventName: 'propContact', callback: (event: PropContactEvent) => void): EventHandle
 export declare function on(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle
 export declare function once(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle
+export declare function on(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle
+export declare function once(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle
 export declare function on(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 export declare function once(eventName: 'skillUse', callback: (event: SkillUseEvent) => void): EventHandle
 export declare function on(eventName: 'scriptCalls', callback: (event: ScriptCallsEvent) => void): EventHandle
@@ -1838,6 +1892,7 @@ export interface Extra {
   poisonCount?: number;
   worn?: boolean;
   wornLeft?: boolean;
+  ownerId?: number;
 }
 
 export interface BasicEntry {
@@ -1858,6 +1913,21 @@ export interface ActorAnimationVariables {
 }
 
 export declare function setInventory(formId: number, inventory: Inventory): void;
+
+// One effect of a form the engine made at runtime, its MGEF by form id and its magnitude, area, duration and cost in the engine's own units
+export interface CreatedEffect {
+  mgef: number
+  magnitude: number
+  area: number
+  duration: number
+  cost: number
+}
+// A form this engine made at runtime (a brewed potion or poison, a made enchantment; a form id above 0xFEFFFFFF the engine's created-object manager holds): kind 0 a weapon enchantment, 1 an armor enchantment, 2 a potion, 3 a poison, by the manager's table that holds it, and its effects; null for anything else. Read on the calling thread; the form is pinned for the session on the main thread
+export declare function readCreatedForm(formId: number): { kind: number; effects: CreatedEffect[] } | null;
+// The local form of a created definition: its id when this native made or read one for it before, else 0 with the engine's creator for the kind queued on the main thread (a later call answers its form, pinned for the session); -1 for a definition no creator takes (a kind outside 0 to 3, no effects or more than eight, an MGEF this game does not hold; a creator that made none answers -1 for five seconds, then is asked again). Both this and readCreatedForm zero the magnitude, area or duration the engine's own compare skips for an MGEF flagged kNoMagnitude, kNoArea or kNoDuration
+export declare function createCreatedForm(kind: number, effects: CreatedEffect[]): number;
+// The game-file form the engine copies a created form of the kind from (the default objects' base weapon enchantment, base armor enchantment, base potion, base poison), 0 for none
+export declare function createdFormTemplate(kind: number): number;
 
 // thuum docs/verbs/spell-cast.md: with hasLaunch, a target-location spell is launched at the caster's own launch (the point its game picked, engine units) with its angles (radians), not from the figure
 export declare function castSpellImmediate(actorCasterFormId: number, castingSource: SpellType, formIdSpell: number, formIdTarget: number, aimAngle: number, aimHeading: number, animationVariables: ActorAnimationVariables, hasLaunch?: boolean, originX?: number, originY?: number, originZ?: number, launchAngleX?: number, launchAngleZ?: number, hasDecal?: boolean, decalNormalX?: number, decalNormalY?: number, decalNormalZ?: number, decalMaterialId?: number): void;
@@ -3656,6 +3726,7 @@ export declare class TESModPlatform extends PapyrusObject {
   static getSkinColor(base: ActorBase | null): ColorForm | null
   static isPlayerRunningEnabled(): boolean
   static moveRefrToPosition(refr: ObjectReference | null, cell: Cell | null, world: WorldSpace | null, posX: number, posY: number, posZ: number, rotX: number, rotY: number, rotZ: number): void
+  static pushOwner(owner: Form | null): void
   static pushTintMask(targetActor: Actor | null, type: number, argb: number, texturePath: string): void
   static pushWornState(worn: boolean, wornLeft: boolean): void
   static resetContainer(container: Form | null): void

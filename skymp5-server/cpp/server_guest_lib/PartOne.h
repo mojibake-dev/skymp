@@ -667,6 +667,106 @@ public:
   // before the wall recorded the shout heals at the next login), one log
   // line per shout; how many it recorded
   size_t RecordShoutsOfKnownWords(MpActor& actor);
+
+  // A hold's jail, read from its crime faction's own record (FACT's JAIL,
+  // STOL, PLCN and JOUT) and from its jail marker's door teleport. It is
+  // data: every hold's faction names its own, one landing a hold, so two
+  // prisoners of a hold share its cell, and no list of holds or cells is
+  // kept here. None for a form that is no crime faction with a jail marker
+  // that teleports
+  struct JailOfFaction
+  {
+    uint32_t marker = 0;            // the jail marker, outside the jail
+    uint32_t markerWorldOrCell = 0; // where the marker stands
+    NiPoint3 markerPos, markerRot;
+    uint32_t landingWorldOrCell = 0; // where its teleport lands: the
+    bool landingInterior = false;    // jail's cell
+    NiPoint3 landingPos, landingRot;
+    // the release's spot: the far side of the jail's door, the landing of
+    // that door's own teleport (the engine's release, 40661, reads the
+    // marker's door's XTEL, not the marker), the point itself, which the
+    // player's own move (40744) raises; the marker's own spot when the door
+    // has none
+    uint32_t releaseWorldOrCell = 0;
+    NiPoint3 releasePos, releaseRot;
+    uint32_t evidenceChest = 0;   // stolen goods
+    uint32_t belongingsChest = 0; // the prisoner's belongings
+    std::vector<uint32_t> outfit; // the jail outfit's items
+  };
+  std::optional<JailOfFaction> JailOf(uint32_t faction);
+
+  // The arrested player's own game's report: the faction that jailed it and
+  // the sentence its engine set. Recorded as the player's jail term, its end
+  // on the shared clock, and the arrest's window opened, in which its game's
+  // strip and jail outfit are taken (OnArrestStripPut, OnArrestStripTake;
+  // its move into the jail is recorded as any own move). The sentence is the
+  // game's (bounty over iCrimeDaysInPrisonMod, capped at
+  // iCrimeMaxNumberofDaysinJail); the record bounds it to the cap, the exe's
+  // 7, so a load order whose plugin raises that setting needs the bound raised
+  // with it
+  enum class ArrestCheck
+  {
+    Recorded,
+    NoJail,       // the faction names no jail that teleports
+    BadSentence,  // 0 days, or past the cap
+    AlreadyJailed // a term runs; the report is the engine's again
+  };
+  static constexpr uint32_t kMaxJailDays = 7;
+  static constexpr std::chrono::seconds kArrestWindow{ 60 };
+  ArrestCheck OnArrest(MpActor& prisoner, uint32_t faction, uint32_t days);
+
+  // One hold's bounty as the player's own game holds it (R0 record; its
+  // engine's crime reports are its own): recorded when the faction is a
+  // crime faction; whether it changed the record. paidGold is the gold the
+  // player's engine paid as it set this bounty, its fine: R1, taken off the
+  // record when it is at most the bounty recorded before this report and the
+  // gold the record holds, else refused (E_FINE_GOLD)
+  bool OnCrimeGold(MpActor& player, uint32_t faction, uint32_t violent,
+                   uint32_t nonViolent,
+                   std::optional<uint32_t> paidGold = std::nullopt);
+
+  // The release of a prisoner whose sentence's end the shared clock passed:
+  // its own belongings back from the faction's chest (the rows its strip
+  // put there, never the chest's whole contents, which hold every prisoner
+  // of the hold's), the term and the hold's bounty cleared, the player
+  // placed at the release's spot by the server, its game told its bounty. The
+  // check runs every second for the players in the world and at a login
+  bool ReleaseIfServed(MpActor& prisoner);
+  // A prisoner out of its jail's cell before its end, once it has stood in
+  // it (the term's arrived, noted here) and the arrest's window closed,
+  // escaped: the term ends with its belongings left in the chest and its
+  // bounty as its game reports it; whether it ended one
+  bool EndTermIfEscaped(MpActor& prisoner);
+  // The arrest's strip as the prisoner's game reports it during the window:
+  // a put into either of the faction's chests moves that exact stack from
+  // the record into the prisoner-belongings chest (conservation: only what
+  // the record holds, never the jail outfit) and onto the term's belongings,
+  // whichever chest the client's inventory diff named; a stack with an
+  // owner, stolen, goes into the evidence chest instead and stays there at
+  // the release (the engine's walk sorts by the owner); a take of a jail
+  // outfit item the record lacks creates it on the record once a window. A
+  // put is never refused back into its game (no refusal's resync); a take
+  // that creates nothing is resynced as any refused move
+  bool OnArrestStripPut(MpActor& prisoner, const Inventory::Entry& entry);
+  // The crime faction whose evidence chest (FACT's STOL) this container is,
+  // read from the load order's FACT records; 0 for any other container
+  uint32_t CrimeFactionOfEvidenceChest(uint32_t container);
+  // The engine's confiscation (its walk 16120, at a fine paid with
+  // removeStolen as at an arrest's strip): every stack its game marks with
+  // an owner moves into the faction's evidence chest, from wherever the
+  // player stands. A put of an owned stack into an evidence chest moves the
+  // record's own stack there (marked or not, Inventory::RecordedCopyOf),
+  // with the owner the player's game reported, no reach asked;
+  // conservation stays (only what the record holds moves), and a put it
+  // cannot cover is said and not sent back into the game, whose engine
+  // moved it already. Whether it moved
+  bool OnConfiscation(MpActor& player, MpObjectReference& chest,
+                      const Inventory::Entry& entry);
+  bool OnArrestStripTake(MpActor& prisoner, const Inventory::Entry& entry);
+  // The player's bounty per hold, told to its game as the console's
+  // Faction.SetCrimeGold and SetCrimeGoldViolent tell it (a login's); how
+  // many holds
+  size_t TellCrimeRecord(MpActor& player);
   bool PickPerk(MpActor& actor, uint32_t perk);
   bool ApplySkillUse(MpActor& actor, uint8_t skillAv, float amount);
   // a skill book's read (leveling.md, skill books): one level for the skill
@@ -1676,6 +1776,9 @@ private:
   void TickFightsEverySecond();
   void TickCellHostsEverySecond();
   void TickFateRespawnsEverySecond();
+  // the release of every served sentence of a player in the world, once a
+  // second
+  void TickJailsEverySecond();
   void TickBondsEverySecond();
   // thuum docs/verbs/spell-placed-object.md: the placements' clock from
   // Tick; one object placed (0 when it could not be), a set's forms deleted

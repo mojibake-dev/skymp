@@ -26,6 +26,10 @@ export interface BookHold {
 const holds = new Map<number, BookHold>();
 const holdsMax = 16;
 
+// how long a world item's pickup holds its reference and base: from the
+// player's activation, through the server's grant and the engine's take, to
+// the server's echo of the record (the grant lasts as long)
+export const PICKUP_HOLD_MS = 10000;
 export const holdBook = (localId: number, baseId: number, until: number, why: string): void => {
   holds.delete(localId);
   if (holds.size >= holdsMax) {
@@ -62,4 +66,63 @@ export const heldBookBases = (now: number): number[] => {
     bases.push(held.baseId);
   });
   return bases;
+};
+// a player's activation of a game-file item, asked of the server and not yet
+// granted: its reference and base, read in the activation's own game context,
+// and when it was asked; bounded, the oldest going first
+const asked = new Map<number, { baseId: number; at: number }>();
+const askedMax = 16;
+export const notePickupAsked = (localId: number, baseId: number, now: number): void => {
+  asked.delete(localId);
+  if (asked.size >= askedMax) {
+    const oldest = asked.keys().next();
+    if (!oldest.done) {
+      asked.delete(oldest.value);
+    }
+  }
+  asked.set(localId, { baseId, at: now });
+};
+
+// the server's grant of `localId` to this game (its Activate(player, true)
+// snippet, JS state alone): the asked pickup becomes a hold of its reference
+// for PICKUP_HOLD_MS; false when nothing was asked of it or the ask lapsed,
+// so a refused activation never holds
+export const grantPickup = (localId: number, now: number): boolean => {
+  const ask = asked.get(localId);
+  asked.delete(localId);
+  if (ask === undefined || now - ask.at > PICKUP_HOLD_MS) {
+    return false;
+  }
+  holdBook(localId, ask.baseId, now + PICKUP_HOLD_MS, "its pickup's grant");
+  return true;
+};
+
+// the one entry a pickup reports out of the player's inventory difference
+// (the record less the game: a gain is a negative count): the gain of the
+// base the engine added, counted as that add at most; undefined for none.
+// Every other difference is left to its own path
+export const pickupTakeEntry = <E extends { baseId: number; count: number }>(diff: E[], baseId: number, numItems: number): E | undefined => {
+  const entry = diff.find((e) => e.baseId === baseId && e.count < 0);
+  if (entry === undefined) {
+    return undefined;
+  }
+  const count = Math.min(-entry.count, Math.max(1, Math.floor(numItems)));
+  return { ...entry, count: -count };
+};
+
+// the take a pickup reports (the platform's pickUpObject event): the base
+// and count the player's inventory gained and the owner the engine marked
+// the stack with (0 for none), with the stack's other extras taken from the
+// player's inventory difference against the record when it holds a gain of
+// that base (pickupTakeEntry); a positive count, the event's
+export const pickupTake = <E extends { baseId: number; count: number; ownerId?: number }>(
+  diff: E[],
+  e: { baseId: number; count: number; ownerId: number },
+): E | { baseId: number; count: number; ownerId?: number } => {
+  const gain = pickupTakeEntry(diff, e.baseId, e.count);
+  const take: { baseId: number; count: number; ownerId?: number } = gain !== undefined ? { ...gain, count: e.count } : { baseId: e.baseId, count: e.count };
+  if (e.ownerId) {
+    take.ownerId = e.ownerId;
+  }
+  return take;
 };

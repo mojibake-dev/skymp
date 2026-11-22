@@ -11,6 +11,7 @@ import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, app
 import { RespawnNeededError } from "../lib/errors";
 import { applyBodyInventory } from "../sync/inventory";
 import { distanceBetween, LastWritten, movementApplyDue, Timed } from "../sync/frameCost";
+import { farMovementMs, nearUnits } from "../sync/movementSettings";
 import * as sp from "skyrimPlatform";
 import { logLab, logTrace } from "../logging";
 import { FormModel } from "./model";
@@ -720,29 +721,6 @@ export class FormView {
   private static sameAngle(a: number, b: number): boolean {
     return Math.abs(a - b) < 1e-4;
   }
-  // skymp5-client.movement.nearUnits (default 2048) and farMovementMs
-  // (default 500): a view farther from the player than nearUnits applies a
-  // new movement no more often than farMovementMs
-  private static movementSetting(key: string, fallback: number, least: number): number {
-    const s = sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
-    const movement = s && typeof s["movement"] === "object" && s["movement"] ? s["movement"] as Record<string, unknown> : {};
-    const v = movement[key];
-    return typeof v === "number" && Number.isFinite(v) && v >= least ? v : fallback;
-  }
-  private static nearUnitsCache: number | undefined;
-  private static farMovementCache: number | undefined;
-  static nearUnits(): number {
-    if (FormView.nearUnitsCache === undefined) {
-      FormView.nearUnitsCache = FormView.movementSetting("nearUnits", 2048, 0);
-    }
-    return FormView.nearUnitsCache;
-  }
-  static farMovementMs(): number {
-    if (FormView.farMovementCache === undefined) {
-      FormView.farMovementCache = FormView.movementSetting("farMovementMs", 500, 0);
-    }
-    return FormView.farMovementCache;
-  }
   // the record's lock last applied to the reference ("" none applied yet)
   private lastLockKey = "";
 
@@ -1366,9 +1344,9 @@ export class FormView {
       if (movementApplyDue({
         changed: +(model.numMovementChanges as number) !== this.movState.lastNumChanges,
         distance: distanceBetween(model.movement.pos, PlayerCharacterDataHolder.getPos()),
-        nearUnits: FormView.nearUnits(),
+        nearUnits: nearUnits(),
         sinceLastApplyMs: Date.now() - this.movState.lastApply,
-        farRateMs: FormView.farMovementMs(),
+        farRateMs: farMovementMs(),
         reassertMs: 2000,
       })) {
         // the periodic re-apply of an unchanged record settles a displaced

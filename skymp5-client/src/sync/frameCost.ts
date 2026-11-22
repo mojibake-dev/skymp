@@ -3,7 +3,7 @@
 // decide, from JS state alone, which calls a frame makes.
 
 // The hosted actors whose movement is sampled this frame: each due once its
-// last sample is older than the send rate (one never sampled is due at
+// last sample is older than its own rate (one never sampled is due at
 // once), the longest waiting first, at most `budget` a frame. A slow frame
 // samples no more actors than a fast one, so the sampling no longer slows
 // the frame it is in.
@@ -11,7 +11,7 @@ export const dueSamples = (
   ids: ReadonlyArray<number>,
   lastSent: (id: number) => number | undefined,
   now: number,
-  rateMs: number,
+  rateMs: (id: number) => number,
   budget: number,
 ): number[] => {
   const due: { id: number; waited: number }[] = [];
@@ -19,7 +19,7 @@ export const dueSamples = (
     const last = lastSent(id);
     if (last === undefined) {
       due.push({ id, waited: Infinity });
-    } else if (now - last > rateMs) {
+    } else if (now - last > rateMs(id)) {
       due.push({ id, waited: now - last });
     }
   }
@@ -46,6 +46,29 @@ export const movementApplyDue = (input: {
     return false;
   }
   return !(input.distance > input.nearUnits) || input.sinceLastApplyMs >= input.farRateMs;
+};
+
+// A hosted actor's sample rate: the send rate while another player is within
+// `nearUnits` of its last sample or it was in combat then (the server checks
+// its hits against the record), the far rate otherwise, since no other game
+// draws it near and the server's record only has to stay roughly current
+export const hostedSampleRateMs = (input: {
+  last: { pos: ReadonlyArray<number>; worldOrCell: number; inCombat: boolean } | undefined;
+  others: ReadonlyArray<{ pos: ReadonlyArray<number>; worldOrCell: number }>;
+  nearUnits: number;
+  sendRateMs: number;
+  farRateMs: number;
+}): number => {
+  const last = input.last;
+  if (!last || last.inCombat) {
+    return input.sendRateMs;
+  }
+  for (const other of input.others) {
+    if (other.worldOrCell === last.worldOrCell && !(distanceBetween(last.pos, other.pos) > input.nearUnits)) {
+      return input.sendRateMs;
+    }
+  }
+  return Math.max(input.sendRateMs, input.farRateMs);
 };
 
 // The distance in the x-y plane and height from `a` to `b`; Infinity when

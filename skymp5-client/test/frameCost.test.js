@@ -3,7 +3,7 @@
 // (yarn test).
 "use strict";
 const assert = require("assert");
-const { dueSamples, movementApplyDue, distanceBetween, Timed, LastWritten } = require("../build/test/frameCost.js");
+const { dueSamples, movementApplyDue, distanceBetween, hostedSampleRateMs, Timed, LastWritten } = require("../build/test/frameCost.js");
 
 const cases = [];
 const test = (name, fn) => cases.push([name, fn]);
@@ -14,7 +14,7 @@ test("45 hosted actors due at once are sampled 8 a frame, each within 6 frames",
   let now = 1000000;
   const sampledAt = new Map();
   for (let frame = 0; frame < 6; frame += 1) {
-    const due = dueSamples(ids, (id) => last.get(id), now, 130, 8);
+    const due = dueSamples(ids, (id) => last.get(id), now, () => 130, 8);
     assert.ok(due.length <= 8);
     for (const id of due) {
       last.set(id, now);
@@ -32,8 +32,27 @@ test("45 hosted actors due at once are sampled 8 a frame, each within 6 frames",
 
 test("an actor sampled within the send rate is not due; the longest waiting goes first", () => {
   const last = new Map([[1, 1000], [2, 700], [3, 990]]);
-  assert.deepStrictEqual(dueSamples([1, 2, 3], (id) => last.get(id), 1100, 130, 8), [2]);
-  assert.deepStrictEqual(dueSamples([1, 2, 3, 4], (id) => last.get(id), 1200, 130, 2), [4, 2]);
+  assert.deepStrictEqual(dueSamples([1, 2, 3], (id) => last.get(id), 1100, () => 130, 8), [2]);
+  assert.deepStrictEqual(dueSamples([1, 2, 3, 4], (id) => last.get(id), 1200, () => 130, 2), [4, 2]);
+  // each actor at its own rate: 2 waits 400 ms, due at 130 but not at 500
+  assert.deepStrictEqual(dueSamples([1, 2], (id) => last.get(id), 1100, (id) => (id === 2 ? 500 : 130), 8), []);
+});
+
+test("a hosted actor no other player is near is sampled at the far rate; near one, or in combat, at the send rate", () => {
+  const base = { nearUnits: 2048, sendRateMs: 130, farRateMs: 500 };
+  const at = (x, inCombat = false, worldOrCell = 0x3c) => ({ pos: [x, 0, 0], worldOrCell, inCombat });
+  // the other player stands 300 units off: the send rate
+  assert.strictEqual(hostedSampleRateMs({ ...base, last: at(0), others: [{ pos: [300, 0, 0], worldOrCell: 0x3c }] }), 130);
+  // the other player is 5000 units off: the far rate
+  assert.strictEqual(hostedSampleRateMs({ ...base, last: at(0), others: [{ pos: [5000, 0, 0], worldOrCell: 0x3c }] }), 500);
+  // the other player is near in another world or cell: the far rate
+  assert.strictEqual(hostedSampleRateMs({ ...base, last: at(0), others: [{ pos: [300, 0, 0], worldOrCell: 0x1a26f }] }), 500);
+  // no other player at all: the far rate
+  assert.strictEqual(hostedSampleRateMs({ ...base, last: at(0), others: [] }), 500);
+  // in combat at its last sample, no other player near: the send rate
+  assert.strictEqual(hostedSampleRateMs({ ...base, last: at(0, true), others: [] }), 130);
+  // never sampled: the send rate
+  assert.strictEqual(hostedSampleRateMs({ ...base, last: undefined, others: [] }), 130);
 });
 
 test("a new movement near the player applies at once; one far away at the far rate; any view at the reassert", () => {

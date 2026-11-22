@@ -29,7 +29,8 @@ import { PropService } from "./propService";
 import { ChangeFormService, CORPSE_REST_DWELL_MS, CORPSE_REST_MIN_MS, CORPSE_SETTLE_MS, corpseSamplesAgree } from "./changeFormService";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { Movement, NiPoint3 } from "../../sync/movement";
-import { dueSamples } from "../../sync/frameCost";
+import { dueSamples, hostedSampleRateMs } from "../../sync/frameCost";
+import { farMovementMs, nearUnits } from "../../sync/movementSettings";
 
 const playerFormId = 0x14;
 
@@ -171,7 +172,18 @@ export class SendInputsService extends ClientListener {
         // the hosted actors whose movement is sampled this frame, at most
         // hostedSamplesPerFrame and the longest waiting first
         // (sync/frameCost.ts); the player's own at its send rate as before
-        const dueMovement = new Set<number>(dueSamples(hosted as number[], (id) => this.lastSendMovementMoment.get(`${id}`), Date.now(), SendInputsService.sendRateMs(), SendInputsService.hostedSamplesPerFrame()));
+        // and each at the far rate while no other player is near its last
+        // sample and it was out of combat then (sync/frameCost.ts
+        // hostedSampleRateMs)
+        const others = SendInputsService.otherPlayers(this.controller.lookupListener(RemoteServer).getWorldModel());
+        const rateOf = (id: number) => hostedSampleRateMs({
+            last: this.lastHostedSample.get(id),
+            others,
+            nearUnits: nearUnits(),
+            sendRateMs: SendInputsService.sendRateMs(),
+            farRateMs: farMovementMs(),
+        });
+        const dueMovement = new Set<number>(dueSamples(hosted as number[], (id) => this.lastSendMovementMoment.get(`${id}`), Date.now(), rateOf, SendInputsService.hostedSamplesPerFrame()));
         targets.forEach((target) => {
             // thuum playtest 45 (2026-11-04): a native throwing inside one
             // target's sends ("Expected 'objectTypeInfo' to not to be
@@ -279,6 +291,9 @@ export class SendInputsService extends ClientListener {
                 return;
             }
             const data = getMovement(owner, form);
+            if (_refrId !== undefined) {
+                this.lastHostedSample.set(_refrId, { pos: data.pos, worldOrCell: data.worldOrCell, inCombat: data.lookAt !== undefined });
+            }
             let reliability: "unreliable" | "reliable" = "unreliable";
             if (_refrId !== undefined) {
                 if (!owner.isDead()) {
@@ -542,6 +557,25 @@ export class SendInputsService extends ClientListener {
     }
 
     private lastSendMovementMoment = new Map<string, number>();
+    // each hosted actor's last sample's place and combat, for its rate
+    private lastHostedSample = new Map<number, { pos: NiPoint3; worldOrCell: number; inCombat: boolean }>();
+
+    // the other players' figures in the world model, where their last
+    // movement put them (a figure: no base, the player base, or 0, as
+    // PuppetService.isFigure reads it)
+    private static otherPlayers(world: WorldModel): { pos: NiPoint3; worldOrCell: number }[] {
+        const out: { pos: NiPoint3; worldOrCell: number }[] = [];
+        for (let i = 0; i < world.forms.length; ++i) {
+            const f = world.forms[i];
+            if (!f || i === world.playerCharacterFormIdx || f.isMyClone === true || !f.movement) {
+                continue;
+            }
+            if (!f.baseId || f.baseId === 0x7) {
+                out.push({ pos: f.movement.pos, worldOrCell: f.movement.worldOrCell });
+            }
+        }
+        return out;
+    }
     // a target's send fault said once in this window (playtest 45's per-frame throw)
     private static readonly sendFaultSayMs = 10_000;
     private sendFaultSaidAt = new Map<string, number>();

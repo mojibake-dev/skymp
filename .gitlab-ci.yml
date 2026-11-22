@@ -13,6 +13,14 @@ variables:
   RUST_CI_IMAGE: thuum/rust-ci:latest
   FUZZ_SECONDS: "120"
 
+# A step that fetches from the network runs under ci/net-retry.sh (ci/net-retry.ps1 on Windows): a failure whose
+# last lines carry a fetch's own message (ci/net-failures.txt: Docker Hub, git from GitHub, vcpkg, cargo) exits 75,
+# and the job runs again, twice at most. Any other failure keeps its own exit code and is never retried.
+default:
+  retry:
+    max: 2
+    exit_codes: [75]
+
 # Build the Rust CI image on the runner host's daemon; persists across jobs
 # (pull policy if-not-present). Runs on every wire change: with the layers
 # cached on the host it takes seconds, and the wire jobs below need it to
@@ -25,7 +33,7 @@ rust-image:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - changes: [skymp-wire/**/*]
   script:
-    - docker build -t "$RUST_CI_IMAGE" skymp-wire/ci
+    - ci/net-retry.sh docker build -t "$RUST_CI_IMAGE" skymp-wire/ci
 
 .wire:
   tags: [sky]
@@ -41,6 +49,7 @@ rust-image:
     CARGO_HOME: $CI_PROJECT_DIR/.cargo
   before_script:
     - cd skymp-wire
+    - net() { ../ci/net-retry.sh "$@"; }
 
 # The gate CLAUDE.md calls `just wire-test`: tests, clippy with the deny set,
 # cargo-deny, and the committed C header must match a fresh cbindgen run.
@@ -48,9 +57,9 @@ wire-test:
   extends: .wire
   stage: wire
   script:
-    - cargo test --workspace --all-features
-    - cargo clippy --workspace --all-targets --all-features -- -D warnings
-    - cargo deny check
+    - net cargo test --workspace --all-features
+    - net cargo clippy --workspace --all-targets --all-features -- -D warnings
+    - net cargo deny check
     - (cd crates/wire-client-ffi && cbindgen --config cbindgen.toml --crate wire-client-ffi --output /tmp/skymp_wire.h && diff -u include/skymp_wire.h /tmp/skymp_wire.h)
 
 # A Linux difftest binary plus the session files, for sky-srv: `just test-proto`
@@ -65,7 +74,7 @@ difftest-build:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - changes: [skymp-wire/**/*, .gitlab-ci.yml]
   script:
-    - cargo build --release -p difftest
+    - net cargo build --release -p difftest
     - mkdir -p ../difftest-dist && cp target/release/difftest ../difftest-dist/ && cp -r difftest/sessions ../difftest-dist/
   artifacts:
     name: difftest-$CI_COMMIT_SHORT_SHA
@@ -83,7 +92,7 @@ wire-fuzz:
   variables:
     FUZZ_TARGETS: "codec_decode validate transport_ingest json_recognize"
   script:
-    - cargo +nightly fuzz build
+    - net cargo +nightly fuzz build
     - |
       rc=0; pids=""
       for t in $FUZZ_TARGETS; do
@@ -140,7 +149,7 @@ server-build:
     # Tagged by branch: parity is what sky-srv's compose runs; a port branch
     # (m1-wire) ships beside it as skymp-server:m1-wire and never replaces it.
     - TAG="$CI_COMMIT_REF_SLUG"
-    - docker build -f ci/server.Dockerfile --build-arg "VCPKG_URL=$VCPKG_URL" --build-arg "VCPKG_COMMIT=$VCPKG_COMMIT" -t "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" .
+    - ci/net-retry.sh docker build -f ci/server.Dockerfile --build-arg "VCPKG_URL=$VCPKG_URL" --build-arg "VCPKG_COMMIT=$VCPKG_COMMIT" -t "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" .
     - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "skymp-server:$TAG"
     # Ship to the sky-ci registry sky-srv pulls from (10.10.70.12:5000).
     - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "localhost:5000/skymp-server:$TAG-$CI_COMMIT_SHORT_SHA"
@@ -183,14 +192,15 @@ client-build:
       foreach ($f in 'Skyrim.esm', 'Update.esm', 'Dawnguard.esm', 'HearthFires.esm', 'Dragonborn.esm') {
         Invoke-WebRequest -UseBasicParsing -Uri "$env:SKYRIM_DATA_URL/$f" -OutFile "skyrim_data_files/$f"
       }
-    - Push-Location skymp5-client; yarn --frozen-lockfile; if ($LASTEXITCODE) { exit 1 }; yarn build; if ($LASTEXITCODE) { exit 1 }; Pop-Location
-    - .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+    # each fetching step under ci/net-retry.ps1, whose exit code passes on (75 for a network failure)
+    - Push-Location skymp5-client; & ../ci/net-retry.ps1 yarn --frozen-lockfile; if ($LASTEXITCODE) { exit $LASTEXITCODE }; yarn build; if ($LASTEXITCODE) { exit $LASTEXITCODE }; Pop-Location
+    - '& ci/net-retry.ps1 .\vcpkg\bootstrap-vcpkg.bat -disableMetrics; if ($LASTEXITCODE) { exit $LASTEXITCODE }'
     - |
-      cmake -B build -G "Visual Studio 17 2022" -A x64 "-DVCPKG_ROOT=$PWD/vcpkg" -DUNIT_DATA_DIR=skyrim_data_files -DDOWNLOAD_SKYRIM_DATA=OFF `
+      & ci/net-retry.ps1 cmake -B build -G "Visual Studio 17 2022" -A x64 "-DVCPKG_ROOT=$PWD/vcpkg" -DUNIT_DATA_DIR=skyrim_data_files -DDOWNLOAD_SKYRIM_DATA=OFF `
         -DBUILD_NODEJS=OFF -DBUILD_FRONT=OFF -DPREPARE_NEXUS_ARCHIVES=OFF -DCMAKE_BUILD_TYPE=Release `
         -DSKYRIM_VR=OFF -DCPPCOV_PATH=OFF
-      if ($LASTEXITCODE) { exit 1 }
-    - cmake --build build --config Release; if ($LASTEXITCODE) { exit 1 }
+      if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    - '& ci/net-retry.ps1 cmake --build build --config Release; if ($LASTEXITCODE) { exit $LASTEXITCODE }'
   artifacts:
     name: dist
     paths: [build/dist]

@@ -1,0 +1,17 @@
+failed to resolve source metadata for docker\.io
+failed to fetch anonymous token
+auth\.docker\.io/token
+toomanyrequests
+TLS handshake timeout
+net/http: request canceled
+dial tcp [^ ]+: i/o timeout
+Failed to connect to github\.com
+unable to access 'https://github\.com/
+Could not resolve host
+Temporary failure in name resolution
+Downloading vcpkg\.exe failed
+Failed to download from mirror set
+error: RPC failed
+fatal: early EOF
+spurious network error
+failed to download from `https://static\.crates\.io

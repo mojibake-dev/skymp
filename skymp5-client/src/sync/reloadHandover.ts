@@ -13,7 +13,7 @@ export type Teardown = "model" | "world" | "reload";
 // held live here (formView.ts destroy). A reload's teardown hands its forms
 // to the incoming view and loses none.
 export function teardownLoses(why: Teardown): boolean {
-    return true;
+    return why !== "reload";
 }
 
 // The actors the incoming client's restored hosted set holds that the
@@ -22,5 +22,5 @@ export function teardownLoses(why: Teardown): boolean {
 // restored one keeps them. Set again, and taken live again, once those
 // demotes have run.
 export function lostAtReload(restored: Iterable<number>, platformHosts: (id: number) => boolean): number[] {
-    return [];
+    return Array.from(restored).filter((id) => !platformHosts(id));
 }

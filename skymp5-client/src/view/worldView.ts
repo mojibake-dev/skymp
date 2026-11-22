@@ -7,6 +7,8 @@ import { ClientListener, CombinedController, Sp } from '../services/services/cli
 import { logTrace } from "../logging";
 import { SinglePlayerService } from "../services/services/singlePlayerService";
 import { RemoteServer } from "../services/services/remoteServer";
+import { PuppetService } from "../services/services/puppetService";
+import { teardownLoses } from "../sync/reloadHandover";
 
 export class WorldView extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
@@ -39,9 +41,11 @@ export class WorldView extends ClientListener {
     this.state.formViews.syncFormView(model, !!showMe);
   }
 
+  // a reload's teardown of the kept view (onceUpdate): its forms pass to the
+  // incoming view, so none is a loss and no actor is demoted
   destroy() {
-    this.state.formViews.resize(0);
-    this.state.cloneFormViews.resize(0); // Recenrly added, not tested if it's needed
+    this.state.formViews.resize(0, teardownLoses("reload"));
+    this.state.cloneFormViews.resize(0, teardownLoses("reload")); // Recenrly added, not tested if it's needed
     this.state = this.makeEmptyState();
   }
 
@@ -64,6 +68,14 @@ export class WorldView extends ClientListener {
       this.oldView.destroy();
       this.oldView = undefined;
       logTrace(this, 'Previous View destroyed');
+      // the kept view runs the outgoing bundle's code, which may still destroy
+      // its views as lost and so demote through the outgoing client's own
+      // services (formView.ts destroy queues those for the next update); the
+      // update after that, the incoming half of the hand-over takes back what
+      // they let go (reloadHandover.ts lostAtReload)
+      this.controller.once("update", () => this.controller.once("update", () => {
+        this.controller.lookupListener(PuppetService).afterReload();
+      }));
     }
     this.waitGameTimeAndAllowFormViewUpdate(1.0);
   }
@@ -77,8 +89,8 @@ export class WorldView extends ClientListener {
     if (state.pcWorldOrCell !== pcWorldOrCell) {
       if (state.pcWorldOrCell) {
         logTrace(this, 'Reset all form views');
-        state.formViews.resize(0);
-        state.cloneFormViews.resize(0);
+        state.formViews.resize(0, teardownLoses("world"));
+        state.cloneFormViews.resize(0, teardownLoses("world"));
       }
       state.pcWorldOrCell = pcWorldOrCell;
     }

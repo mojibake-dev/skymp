@@ -1,4 +1,5 @@
 import { Actor, Cell, CellAttachDetachEvent, CellFullyLoadedEvent, Game, ObjectReference, TESModPlatform, WorldSpace } from "skyrimPlatform";
+import { lostAtReload } from "../../sync/reloadHandover";
 import { MsgType } from "../../messages";
 import { logError, logLab, logTrace } from "../../logging";
 import { ConnectionMessage } from "../events/connectionMessage";
@@ -215,6 +216,29 @@ export class HostService extends ClientListener {
         } else if (hosted) {
             this.noteOwnerFlip();
         }
+    }
+
+    // The incoming half of a reload's hand-over (reloadHandover.ts): each
+    // actor the restored set holds that the platform's set lost (the outgoing
+    // client's teardown demoting through its own services) is set again; the
+    // ids, for PuppetService to take live again
+    setLostHostedAgain(): number[] {
+        if (!this.streamEnabled || typeof this.sp.isHosted !== "function") {
+            return [];
+        }
+        const lost = lostAtReload(this.hostedActors, (id) => this.sp.isHosted(id));
+        const now = Date.now();
+        for (const id of lost) {
+            if (!this.sp.setHosted(id, true)) {
+                logError(this, `setHosted(${id.toString(16)}, true) refused`);
+            }
+            this.nativeChecked.set(id, now);
+        }
+        if (lost.length > 0) {
+            this.noteOwnerFlip();
+            logLab("verb:npc-stream", `after the reload: ${lost.length} of ${this.hostedActors.size} hosted actor(s) the outgoing client's teardown let go, set again`);
+        }
+        return lost;
     }
 
     // Whether the actor's actions stream from here (markHosted's set): the

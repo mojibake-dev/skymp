@@ -3,6 +3,7 @@ import { FormModel, WorldModel } from "./model";
 import { NiPoint3 } from "../sync/movement";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { GamemodeUpdateService } from "../services/services/gamemodeUpdateService";
+import { teardownLoses } from "../sync/reloadHandover";
 
 export class FormViewArray {
   updateForm(form: FormModel, i: number) {
@@ -24,9 +25,11 @@ export class FormViewArray {
     this.formViews[i] = undefined;
   }
 
-  resize(newSize: number) {
+  // `lost`: whether the views let go are a loss (reloadHandover.ts
+  // teardownLoses), a form the model no longer holds by default
+  resize(newSize: number, lost = teardownLoses("model")) {
     if (this.formViews.length > newSize) {
-      this.formViews.slice(newSize).forEach((v) => v && v.destroy(true));
+      this.formViews.slice(newSize).forEach((v) => v && v.destroy(lost));
     }
     this.formViews.length = newSize;
   }

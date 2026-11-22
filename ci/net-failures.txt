@@ -1,0 +1,11 @@
+failed to fetch anonymous token
+auth\.docker\.io/token
+failed to resolve source metadata for docker\.io
+toomanyrequests
+TLS handshake timeout
+Downloading vcpkg\.exe failed
+failed to fetch advisory database
+Failed to connect to github\.com
+unable to access 'https://github\.com/
+Could not resolve host
+Temporary failure in name resolution

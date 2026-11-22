@@ -10089,8 +10089,18 @@ ActionListener::ActivationSeenNear(
 }
 
 void ActionListener::OnActorDeath(const RawMessageData& rawMsgData,
-                                  const ActorDeathMessage& msg)
+                                  const ActorDeathMessage& reported)
 {
+  // A dying actor named as its own killer is no killer: such a report is read
+  // as naming none (its cause, a hit, read as unnamed), so the evidence for an
+  // unnamed cause (a trap beside the body, a fall, an activation) decides it.
+  ActorDeathMessage msg = reported;
+  if (msg.killer != 0 && msg.killer == msg.refrId) {
+    msg.killer = 0;
+    if (msg.cause == 4) {
+      msg.cause = 0;
+    }
+  }
   MpActor* reporter = partOne.serverState.ActorByUser(rawMsgData.userId);
   if (!reporter) {
     spdlog::warn("ActionListener::OnActorDeath - user {} has no actor; its "

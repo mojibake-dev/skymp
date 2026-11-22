@@ -36,6 +36,7 @@
 #include <antigo/ResolvedContext.h>
 #include <cctype>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -2668,27 +2669,51 @@ bool MpObjectReference::GrantPickupToEngine(
   return true;
 }
 
+espm::LookupResult MpObjectReference::LeveledPlacementList() const
+{
+  auto& br = GetParent()->GetEspm().GetBrowser();
+  const auto refrLookup = br.LookupById(GetFormId());
+  auto refrRecord = espm::Convert<espm::REFR>(refrLookup.rec);
+  if (!refrRecord) {
+    return espm::LookupResult();
+  }
+  const auto data = refrRecord->GetData(GetParent()->GetEspmCache());
+  if (!data.leveledItemBaseId) {
+    return espm::LookupResult();
+  }
+  auto mapping = br.GetCombMapping(refrLookup.fileIdx);
+  const uint32_t listId =
+    espm::utils::GetMappedId(data.leveledItemBaseId, *mapping);
+  return br.LookupById(listId);
+}
+
 bool MpObjectReference::StandsForItem(uint32_t itemBaseId) const
 {
   if (itemBaseId != 0 && itemBaseId == GetBaseId()) {
     return true;
   }
-  auto& br = GetParent()->GetEspm().GetBrowser();
-  const auto refrLookup = br.LookupById(GetFormId());
-  auto refrRecord = espm::Convert<espm::REFR>(refrLookup.rec);
-  if (!refrRecord) {
+  const auto listLookup = LeveledPlacementList();
+  if (!listLookup.rec) {
     return false;
   }
-  const auto data = refrRecord->GetData(GetParent()->GetEspmCache());
-  if (!data.leveledItemBaseId) {
-    return false;
-  }
-  auto mapping = br.GetCombMapping(refrLookup.fileIdx);
-  const uint32_t listId =
-    espm::utils::GetMappedId(data.leveledItemBaseId, *mapping);
-  const auto listLookup = br.LookupById(listId);
-  const auto rolls = LeveledListUtils::Reach(br, listLookup);
+  const auto rolls =
+    LeveledListUtils::Reach(GetParent()->GetEspm().GetBrowser(), listLookup);
   return std::find(rolls.begin(), rolls.end(), itemBaseId) != rolls.end();
+}
+
+uint32_t MpObjectReference::PickupMost(uint32_t itemBaseId) const
+{
+  const uint32_t held = PickupCount();
+  const auto listLookup = LeveledPlacementList();
+  if (!listLookup.rec) {
+    return held;
+  }
+  const uint32_t roll = LeveledListUtils::MostOf(
+    GetParent()->GetEspm().GetBrowser(), listLookup, itemBaseId);
+  const uint64_t most =
+    static_cast<uint64_t>(held) * std::max<uint64_t>(1, roll);
+  return static_cast<uint32_t>(
+    std::min<uint64_t>(most, std::numeric_limits<uint32_t>::max()));
 }
 
 // The taker's report of its engine's pickup (TakeItem from this reference):
@@ -2711,7 +2736,8 @@ void MpObjectReference::TakeByEngine(MpActor& ac, const Inventory::Entry& e)
     return refuse("E_PICKUP_TAKEN", "the reference is taken already");
   }
   const bool granted = GetPickupGrantee() == ac.GetFormId() ||
-    (ac.GetOpenBook() != 0 && ac.GetOpenBook() == GetFormId());
+    (GetPickupGrantee() == 0 && ac.GetOpenBook() != 0 &&
+     ac.GetOpenBook() == GetFormId());
   if (!granted) {
     return refuse("E_PICKUP_NOT_GRANTED",
                   "no grant of it to this taker stands");
@@ -2722,7 +2748,7 @@ void MpObjectReference::TakeByEngine(MpActor& ac, const Inventory::Entry& e)
                               "its leveled list",
                               GetBaseId()));
   }
-  const uint32_t most = PickupCount();
+  const uint32_t most = PickupMost(e.baseId);
   if (e.count == 0 || e.count > most) {
     return refuse("E_PICKUP_COUNT",
                   fmt::format("the reference holds {}", most));
@@ -2934,9 +2960,28 @@ void MpObjectReference::ProcessActivateNormal(
       actorActivator->ReadBookAtOpen(GetBaseId());
       return;
     }
-    spdlog::info("[verb:books] {:x} takes book {:x} (base {:x}) from its "
-                 "Book Menu",
-                 actorActivator->GetFormId(), GetFormId(), GetBaseId());
+    // the Take is that game's own engine's pickup in its Book Menu, the
+    // owner test and the stolen mark with it (PlayerCharacter::PickUpObject),
+    // so the record is that engine's report (TakeByEngine), never a copy
+    // given here. The open, which this activation ends, becomes a grant of
+    // the book to its reader for as long as a pickup's, and the report is
+    // recorded against it. A grant another reader's Take holds already is
+    // that reader's: this game's Book Menu took a copy the record will not
+    // hold, so its inventory goes back for it to drop
+    const uint32_t grantee = GetPickupGrantee();
+    if (grantee != 0 && grantee != actorActivator->GetFormId()) {
+      actorActivator->SendInventoryUpdate();
+      return spdlog::info("[verb:books] {:x} takes book {:x} from its Book "
+                          "Menu; it is granted to {:x}, whose Take came "
+                          "first; its inventory sent back",
+                          actorActivator->GetFormId(), GetFormId(), grantee);
+    }
+    pickupGrantee = actorActivator->GetFormId();
+    pickupGrantUntil = std::chrono::steady_clock::now() + kPickupGrant;
+    return spdlog::info("[verb:books] {:x} takes book {:x} (base {:x}) from "
+                        "its Book Menu; granted to its own engine's pickup, "
+                        "the record waits for its report",
+                        actorActivator->GetFormId(), GetFormId(), GetBaseId());
   }
 
   if (pickable && !IsHarvested()) {

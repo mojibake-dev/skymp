@@ -585,7 +585,7 @@ export class FormView {
         this.localImmortal = true;
       }
       this.applyFigureMaxima(actor, model);
-      this.applyAll(refr, model);
+      this.applyAll(refr, model, actor);
       this.playArrival(refr, model);
 
       const gamemodeUpdateService = SpApiInteractor.getControllerInstance().lookupListener(GamemodeUpdateService);
@@ -712,6 +712,8 @@ export class FormView {
   private readonly aimPitchWrite = new LastWritten<number>();
   private readonly aimHeadingWrite = new LastWritten<number>();
   private readonly engineCell = new Timed<number>();
+  private readonly invisible = new Timed<boolean>();
+  private static readonly invisibleMs = 250;
   private static readonly reassertMs = 1000;
   private static readonly reconcileMs = 250;
   private static readonly engineCellMs = 250;
@@ -963,7 +965,9 @@ export class FormView {
     }
   }
 
-  private applyAll(refr: ObjectReference, model: FormModel) {
+  // `refrActor`: Actor.from(refr), read once by update for the frame; `refr`
+  // is the reference looked up by this.refrId, so this.refrId is its form id
+  private applyAll(refr: ObjectReference, model: FormModel, refrActor: Actor | null) {
     let forcedWeapDrawn: boolean | null = null;
 
     // the crosshair's reference applies its harvested and open state at once,
@@ -983,7 +987,6 @@ export class FormView {
     // across Riverwood, the engine disabling them back, flapping actors and
     // hitching. The server's word on an actor's disabled state comes by its
     // property message, never from here.
-    const refrActor = Actor.from(refr);
     const isActor = refrActor !== null;
     if (!isActor && now - this.lastHarvestedApply > 666 && (atCrosshair || this.harvestedWrite.due(!!model.isHarvested, now, FormView.reassertMs))) {
       this.lastHarvestedApply = now;
@@ -1014,7 +1017,10 @@ export class FormView {
     // change's load, an interior's late 3D) comes up without. They go on again
     // at every 3D load, not once per view; the player's own actor has the same
     // in nodeOverridesService
+    // the 3D's state read once per apply, and again only after a movement
+    // apply that may have moved the reference across a load
     const loaded3D = refr.is3DLoaded();
+    let loaded3DNow = loaded3D;
     if (loaded3D && !this.nodeOverridesOn3D) {
       this.nodeOverridesOn3D = true;
       ModelApplyUtils.applyModelNodeScale(refr, model.setNodeScale);
@@ -1334,7 +1340,7 @@ export class FormView {
     // the service's own events and poll reconcile at once; this per-frame
     // call reconciles when the host's word changes and every reconcileMs
     if (FormView.isNpcModel(model) && this.reconcileWrite.due(alreadyHosted, now, FormView.reconcileMs)) {
-      SpApiInteractor.getControllerInstance().lookupListener(PuppetService).reconcile(refr.getFormID(), alreadyHosted, model.movement);
+      SpApiInteractor.getControllerInstance().lookupListener(PuppetService).reconcile(this.refrId, alreadyHosted, model.movement);
     }
 
     // thuum docs/verbs/prop-physics.md (ADR-058): a prop PropService tracks
@@ -1408,6 +1414,7 @@ export class FormView {
             const movement = this.placeOnFirstApply ? { ...model.movement, placed: true } : model.movement;
             this.placeOnFirstApply = false;
             applyMovement(refr, movement, !!model.isMyClone, puppet, settle);
+            loaded3DNow = refr.is3DLoaded();
           } catch (e) {
             if (e instanceof RespawnNeededError) {
               model.movement.isWeapDrawn = backup;
@@ -1440,7 +1447,7 @@ export class FormView {
           // old pinned the host's own copy with a keep-offset on itself);
           // the weapon-drawn override is lifted once, as the old host
           // attempt did
-          if (ac && ac.is3DLoaded() && !this.hostedHereApplied) {
+          if (ac && loaded3D && !this.hostedHereApplied) {
             this.hostedHereApplied = true;
             TESModPlatform.setWeaponDrawnMode(ac, -1);
           }
@@ -1456,7 +1463,7 @@ export class FormView {
     // 3D a figure or puppet forgets what was asked of it and asks the record's
     // state again, the fresh draw or sheathe flag above deciding as it does
     // for the apply; a dead record draws nothing
-    const drawn3D = refr.is3DLoaded();
+    const drawn3D = loaded3DNow;
     if (!drawn3D) {
       this.weapDrawnOn3D = false;
     } else if (!this.weapDrawnOn3D) {
@@ -1471,7 +1478,7 @@ export class FormView {
 
     // thuum docs/verbs/npc-puppet.md Rule A: an actor this game hosts takes
     // no relayed event, pitch or action; its engine's are its own
-    if (refr.is3DLoaded() && !alreadyHosted) {
+    if (drawn3D && !alreadyHosted) {
       // thuum docs/verbs/spell-cast.md: every relayed event since the last
       // update, oldest first, as the sender's graph took them (applyAnimation
       // skips one it has played by its numChanges); the newest alone when
@@ -1499,7 +1506,7 @@ export class FormView {
       if (model.movement && !model.isMyClone && model.isHostedByOther) {
         const pitchDegrees = model.movement.rot[0];
         if (Number.isFinite(pitchDegrees) && refrActor && this.aimPitchWrite.due(pitchDegrees, now, FormView.reassertMs, FormView.sameAngle)) {
-          setActorAimPitch(refr.getFormID(), pitchDegrees * Math.PI / 180);
+          setActorAimPitch(this.refrId, pitchDegrees * Math.PI / 180);
         }
         // and its heading while one of its hands' casts runs, from the same
         // movement (angle Z, degrees) plus its caster's offset from the
@@ -1507,10 +1514,10 @@ export class FormView {
         // body's heading alone left a figure's missiles 2.75 degrees off).
         // thuum tracker #165 (playtest 55: the cast's start heading, held
         // whole, left a turning figure's Flames facing the way it began)
-        const aimOffset = figureAimOffset(refr.getFormID());
+        const aimOffset = figureAimOffset(this.refrId);
         const headingDegrees = model.movement.rot[2];
         if (aimOffset !== undefined && Number.isFinite(headingDegrees) && refrActor && this.aimHeadingWrite.due(headingDegrees * Math.PI / 180 + aimOffset, now, FormView.reassertMs, FormView.sameAngle)) {
-          setActorAimHeading(refr.getFormID(), headingDegrees * Math.PI / 180 + aimOffset);
+          setActorAimHeading(this.refrId, headingDegrees * Math.PI / 180 + aimOffset);
         }
       }
 
@@ -1640,7 +1647,7 @@ export class FormView {
     // invisible figure's crosshair prompt is hidden with its name, set only
     // when its invisibility changes
     if (refrActor) {
-      const invisible = FormView.isInvisible(refr);
+      const invisible = this.invisibleRead(refrActor, now);
       if (invisible !== this.activateTextHidden) {
         this.activateTextHidden = invisible;
         setActivateTextHidden(refr.getFormID(), invisible);
@@ -1655,7 +1662,7 @@ export class FormView {
         && playerActor.getDistance(refr) <= maxNicknameDrawDistance
         && playerActor.hasLOS(refr)
         && !this.isSweetHidePerson(refr)
-        && !FormView.isInvisible(refr);
+        && !(refrActor ? this.invisibleRead(refrActor, now) : FormView.isInvisible(refr));
       if (isVisibleByPlayer) {
         const headScreenPos = worldPointToScreenPoint([
           NetImmerse.getNodeWorldPositionX(refr, headPart, false),
@@ -1696,6 +1703,11 @@ export class FormView {
   // Self cast), and the effect raises its Invisibility actor value
   // (CommonLibSSE-NG include/RE/I/InvisibilityEffect.h, a value modifier;
   // kInvisibility, include/RE/A/ActorValues.h:62)
+  // an actor's invisibility, read from the engine at most every invisibleMs
+  private invisibleRead(actor: Actor, now: number): boolean {
+    return this.invisible.get(now, FormView.invisibleMs, () => actor.getActorValue("Invisibility") > 0);
+  }
+
   private static isInvisible(refr: ObjectReference): boolean {
     const actor = Actor.from(refr);
     return !!actor && actor.getActorValue("Invisibility") > 0;

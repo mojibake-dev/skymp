@@ -72,11 +72,16 @@ difftest-build:
     paths: [difftest-dist/]
     expire_in: 30 days
 
-# Bounded fuzzing per push; the nightly schedule sets FUZZ_SECONDS to an hour.
-# One job runs the four targets side by side on the runner's four cores: as a
-# four-job matrix on the one `sky` slot they ran one after another and were
-# half of every wire pipeline (608 of 1,180 s, measured 2026-10-13). A crash
-# leaves its input under fuzz/artifacts and that target's log as job artifacts.
+# Bounded fuzzing per push, FUZZ_SECONDS a target. One job builds the targets
+# once and runs them one after another, so the job holds one target's memory
+# at a time: side by side the four held about 2.1 GB resident at once (each
+# 0.4 to 0.7 GB in two minutes), a third of sky-ci's VM, beside a server
+# build's unit tests. libFuzzer's -rss_limit_mb is no cap for that: a target
+# past it stops and reports an out-of-memory crash. The cost is time: four
+# FUZZ_SECONDS in a row where side by side took one. The job prints each
+# target's last resident set (libFuzzer's rss) and its cgroup's memory.peak,
+# which counts the page cache and the build too. A crash leaves its input
+# under fuzz/artifacts and that target's log as job artifacts.
 wire-fuzz:
   extends: .wire
   stage: wire
@@ -85,13 +90,16 @@ wire-fuzz:
   script:
     - cargo +nightly fuzz build
     - |
-      rc=0; pids=""
+      rc=0
       for t in $FUZZ_TARGETS; do
-        cargo +nightly fuzz run "$t" -- -max_total_time="$FUZZ_SECONDS" > "fuzz-$t.log" 2>&1 &
-        pids="$pids $!"
+        cargo +nightly fuzz run "$t" -- -max_total_time="$FUZZ_SECONDS" > "fuzz-$t.log" 2>&1 || rc=1
+        echo "== $t"; tail -n 6 "fuzz-$t.log"
+        # libFuzzer's own last status line names the target's resident set, which grows as it runs
+        echo "wire-fuzz: $t's last resident set: $(grep -o 'rss: [0-9]*Mb' "fuzz-$t.log" | tail -n 1)"
       done
-      for p in $pids; do wait "$p" || rc=1; done
-      for t in $FUZZ_TARGETS; do echo "== $t"; tail -n 6 "fuzz-$t.log"; done
+      if [ -r /sys/fs/cgroup/memory.peak ]; then
+        echo "wire-fuzz: the job's cgroup peak $(( $(cat /sys/fs/cgroup/memory.peak) / 1048576 )) MB (memory.peak: its processes and the page cache it filled, the build's included)"
+      fi
       exit $rc
   artifacts:
     when: on_failure

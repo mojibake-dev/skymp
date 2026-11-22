@@ -10,6 +10,7 @@ import { RaceOverlay } from "../services/messages/raceOverlay";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyWorn, cannotDress, Equipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { applyBodyInventory } from "../sync/inventory";
+import { distanceBetween, LastWritten, movementApplyDue, Timed } from "../sync/frameCost";
 import * as sp from "skyrimPlatform";
 import { logLab, logTrace } from "../logging";
 import { FormModel } from "./model";
@@ -165,7 +166,7 @@ export class FormView {
         }
         if (FormView.npcHandoffEnabled() && this.movedInto !== model.movement.worldOrCell) {
           const refr = ObjectReference.from(Game.getFormEx(this.refrId));
-          const engineCell = refr ? ObjectReferenceEx.getWorldOrCell(refr) : 0;
+          const engineCell = refr ? this.engineCell.get(Date.now(), FormView.engineCellMs, () => ObjectReferenceEx.getWorldOrCell(refr)) : 0;
           const target = Game.getFormEx(model.movement.worldOrCell);
           // never the actor's own simulator: the host's engine is the truth
           // and the host never hears its own reports, so its model lags the
@@ -244,7 +245,7 @@ export class FormView {
 
     // Players with different worldOrCell should be invisible
     if (model.movement) {
-      const worldOrCell = ObjectReferenceEx.getWorldOrCell(Game.getPlayer() as Actor);
+      const worldOrCell = PlayerCharacterDataHolder.getWorldOrCell();
       if (
         worldOrCell !== 0 &&
         model.movement.worldOrCell !== worldOrCell
@@ -703,6 +704,43 @@ export class FormView {
 
   private lastHarvestedApply = 0;
   private lastOpenApply = 0;
+  // engine writes made only when their value changes or at a reassert, and
+  // an engine read kept a while (sync/frameCost.ts)
+  private readonly harvestedWrite = new LastWritten<boolean>();
+  private readonly openWrite = new LastWritten<boolean>();
+  private readonly reconcileWrite = new LastWritten<boolean>();
+  private readonly aimPitchWrite = new LastWritten<number>();
+  private readonly aimHeadingWrite = new LastWritten<number>();
+  private readonly engineCell = new Timed<number>();
+  private static readonly reassertMs = 1000;
+  private static readonly reconcileMs = 250;
+  private static readonly engineCellMs = 250;
+  private static sameAngle(a: number, b: number): boolean {
+    return Math.abs(a - b) < 1e-4;
+  }
+  // skymp5-client.movement.nearUnits (default 2048) and farMovementMs
+  // (default 500): a view farther from the player than nearUnits applies a
+  // new movement no more often than farMovementMs
+  private static movementSetting(key: string, fallback: number, least: number): number {
+    const s = sp.settings["skymp5-client"] as Record<string, unknown> | undefined;
+    const movement = s && typeof s["movement"] === "object" && s["movement"] ? s["movement"] as Record<string, unknown> : {};
+    const v = movement[key];
+    return typeof v === "number" && Number.isFinite(v) && v >= least ? v : fallback;
+  }
+  private static nearUnitsCache: number | undefined;
+  private static farMovementCache: number | undefined;
+  static nearUnits(): number {
+    if (FormView.nearUnitsCache === undefined) {
+      FormView.nearUnitsCache = FormView.movementSetting("nearUnits", 2048, 0);
+    }
+    return FormView.nearUnitsCache;
+  }
+  static farMovementMs(): number {
+    if (FormView.farMovementCache === undefined) {
+      FormView.farMovementCache = FormView.movementSetting("farMovementMs", 500, 0);
+    }
+    return FormView.farMovementCache;
+  }
   // the record's lock last applied to the reference ("" none applied yet)
   private lastLockKey = "";
 
@@ -928,7 +966,10 @@ export class FormView {
   private applyAll(refr: ObjectReference, model: FormModel) {
     let forcedWeapDrawn: boolean | null = null;
 
-    if (PlayerCharacterDataHolder.getCrosshairRefId() === this.refrId) {
+    // the crosshair's reference applies its harvested and open state at once,
+    // its value changed or not
+    const atCrosshair = PlayerCharacterDataHolder.getCrosshairRefId() === this.refrId;
+    if (atCrosshair) {
       this.lastHarvestedApply = 0;
       this.lastOpenApply = 0;
     }
@@ -942,12 +983,13 @@ export class FormView {
     // across Riverwood, the engine disabling them back, flapping actors and
     // hitching. The server's word on an actor's disabled state comes by its
     // property message, never from here.
-    const isActor = Actor.from(refr) !== null;
-    if (!isActor && now - this.lastHarvestedApply > 666) {
+    const refrActor = Actor.from(refr);
+    const isActor = refrActor !== null;
+    if (!isActor && now - this.lastHarvestedApply > 666 && (atCrosshair || this.harvestedWrite.due(!!model.isHarvested, now, FormView.reassertMs))) {
       this.lastHarvestedApply = now;
       ModelApplyUtils.applyModelIsHarvested(refr, !!model.isHarvested);
     }
-    if (!isActor && now - this.lastOpenApply > 133) {
+    if (!isActor && now - this.lastOpenApply > 133 && (atCrosshair || this.openWrite.due(!!model.isOpen, now, FormView.reassertMs))) {
       this.lastOpenApply = now;
       ModelApplyUtils.applyModelIsOpen(refr, !!model.isOpen);
     }
@@ -1086,7 +1128,7 @@ export class FormView {
     const placedBind = this.placedDead && loaded3D && !this.deadWordBound;
     if (model.isDead !== undefined && this.refrId !== 0 && this.refrId !== 0x14 && deadRule && (placedBind || Date.now() >= this.deadCheckAt)) {
       this.deadCheckAt = Date.now() + 2000;
-      const body = Actor.from(refr);
+      const body = refrActor;
       const want = !!model.isDead;
       const simulatedHere = SpApiInteractor.getControllerInstance().lookupListener(HostService).isMine(model, refr);
       const bind = loaded3D && !this.deadWordBound;
@@ -1225,7 +1267,7 @@ export class FormView {
       // necromancer ff00000a's menu got no list laid under it; the shape is
       // remoteServer.ts's npcCopy (an NPC base, never the players' 0x7, not
       // this player's own clone)
-      const asActor = Actor.from(refr);
+      const asActor = refrActor;
       const npcCopy = FormView.isNpcModel(model) && model.isMyClone !== true;
       const deadBody = !!asActor && (this.refrId < 0xff000000 || npcCopy) && asActor.isDead();
       if (!asActor || deadBody) {
@@ -1289,7 +1331,9 @@ export class FormView {
     // (the server's word, loaded here, dead, kind) and applies it, here on
     // every update and from the service's own events and poll
     const puppet = !alreadyHosted && FormView.isNpcModel(model);
-    if (FormView.isNpcModel(model)) {
+    // the service's own events and poll reconcile at once; this per-frame
+    // call reconciles when the host's word changes and every reconcileMs
+    if (FormView.isNpcModel(model) && this.reconcileWrite.due(alreadyHosted, now, FormView.reconcileMs)) {
       SpApiInteractor.getControllerInstance().lookupListener(PuppetService).reconcile(refr.getFormID(), alreadyHosted, model.movement);
     }
 
@@ -1307,15 +1351,20 @@ export class FormView {
     // and movementApply's death word for a 0xff copy would stand the laid body
     // up again; a body is never moved by its record (the bind kill placed it)
     if (model.movement && !propPlaced && !this.placedDead) {
-      const ac = Actor.from(refr);
+      const ac = refrActor;
       // (the re-host on a quiet figure is gone: the server elects a cell's
       // host and passes it on at its own grace, docs/verbs/cell-host.md)
 
-      if (
-        +(model.numMovementChanges as number) !==
-        this.movState.lastNumChanges ||
-        Date.now() - this.movState.lastApply > 2000
-      ) {
+      // a new movement near the player lands at once, a far one at the far
+      // rate, and any view again after the reassert (sync/frameCost.ts)
+      if (movementApplyDue({
+        changed: +(model.numMovementChanges as number) !== this.movState.lastNumChanges,
+        distance: distanceBetween(model.movement.pos, PlayerCharacterDataHolder.getPos()),
+        nearUnits: FormView.nearUnits(),
+        sinceLastApplyMs: Date.now() - this.movState.lastApply,
+        farRateMs: FormView.farMovementMs(),
+        reassertMs: 2000,
+      })) {
         // the periodic re-apply of an unchanged record settles a displaced
         // standing figure or puppet (movementApply's deadband; the stagger
         // push left under eight units, b-duel on train-33)
@@ -1413,7 +1462,7 @@ export class FormView {
     } else if (!this.weapDrawnOn3D) {
       this.weapDrawnOn3D = true;
       const figure = this.refrId >= 0xff000000 && !puppet && !model.isMyClone;
-      const ac = Actor.from(refr);
+      const ac = refrActor;
       if (ac && model.movement && !alreadyHosted && (figure || puppet) && model.isDead !== true && !this.placedDead) {
         const wanted = forcedWeapDrawn === true || forcedWeapDrawn === false ? forcedWeapDrawn : model.movement.isWeapDrawn;
         reaskWeapDrawn(ac, wanted, puppet);
@@ -1449,7 +1498,7 @@ export class FormView {
       // takes its pitch from the movement (angle X, degrees, down positive)
       if (model.movement && !model.isMyClone && model.isHostedByOther) {
         const pitchDegrees = model.movement.rot[0];
-        if (Number.isFinite(pitchDegrees) && Actor.from(refr)) {
+        if (Number.isFinite(pitchDegrees) && refrActor && this.aimPitchWrite.due(pitchDegrees, now, FormView.reassertMs, FormView.sameAngle)) {
           setActorAimPitch(refr.getFormID(), pitchDegrees * Math.PI / 180);
         }
         // and its heading while one of its hands' casts runs, from the same
@@ -1460,7 +1509,7 @@ export class FormView {
         // whole, left a turning figure's Flames facing the way it began)
         const aimOffset = figureAimOffset(refr.getFormID());
         const headingDegrees = model.movement.rot[2];
-        if (aimOffset !== undefined && Number.isFinite(headingDegrees) && Actor.from(refr)) {
+        if (aimOffset !== undefined && Number.isFinite(headingDegrees) && refrActor && this.aimHeadingWrite.due(headingDegrees * Math.PI / 180 + aimOffset, now, FormView.reassertMs, FormView.sameAngle)) {
           setActorAimHeading(refr.getFormID(), headingDegrees * Math.PI / 180 + aimOffset);
         }
       }
@@ -1470,7 +1519,7 @@ export class FormView {
 
 
     if (model.appearance) {
-      const actor = Actor.from(refr);
+      const actor = refrActor;
       if (actor && !PlayerCharacterDataHolder.isInJumpState()) {
         if (PlayerCharacterDataHolder.getWorldOrCell()) {
           if (
@@ -1531,7 +1580,7 @@ export class FormView {
       // rotfern's took the word before its lay (c1 console 00:02:01.350, the
       // lay at .508) and kept the lay's bandit armor. One order on every
       // seat: the lay last. A body with no laid record keeps the word's dress
-      const laid = Actor.from(refr)?.isDead() === true &&
+      const laid = refrActor?.isDead() === true &&
         SpApiInteractor.getControllerInstance().lookupListener(ChangeFormService).hasAppliedRecord(refr.getFormID());
       if (laid) {
         this.eqState.lastNumChanges = model.equipment.numChanges;
@@ -1550,7 +1599,7 @@ export class FormView {
       // Papyrus calls per figure) beside the apply's own strip
       if (this.spawnMoment > 0 && Date.now() - this.spellSweepAt > 10000) {
         this.spellSweepAt = Date.now();
-        const figure = Actor.from(refr);
+        const figure = refrActor;
         if (figure && !cannotDress(figure) && figure.is3DLoaded() && isFigureBase(figure)) {
           const removed = keepOnlyServerSpells(figure, model.equipment, FormView.overlaySpells(model));
           if (removed > 0) {
@@ -1559,7 +1608,7 @@ export class FormView {
         }
       }
       if (this.eqState.lastNumChanges !== model.equipment.numChanges) {
-        const ac = Actor.from(refr);
+        const ac = refrActor;
         // If we do not block inventory here, we will be able to reproduce the bug:
         // 1. Place ~90 bots and force them to reequip iron swords to the left hand (rate should be ~50ms)
         // 2. Open your inventory and reequip different items fast
@@ -1590,7 +1639,7 @@ export class FormView {
     // thuum docs/verbs/self-cast.md (playtest twenty: "yes hide it"): an
     // invisible figure's crosshair prompt is hidden with its name, set only
     // when its invisibility changes
-    if (Actor.from(refr)) {
+    if (refrActor) {
       const invisible = FormView.isInvisible(refr);
       if (invisible !== this.activateTextHidden) {
         this.activateTextHidden = invisible;

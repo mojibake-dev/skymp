@@ -29,6 +29,7 @@ import { PropService } from "./propService";
 import { ChangeFormService, CORPSE_REST_DWELL_MS, CORPSE_REST_MIN_MS, CORPSE_SETTLE_MS, corpseSamplesAgree } from "./changeFormService";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { Movement, NiPoint3 } from "../../sync/movement";
+import { dueSamples } from "../../sync/frameCost";
 
 const playerFormId = 0x14;
 
@@ -167,6 +168,10 @@ export class SendInputsService extends ClientListener {
             return;
         }
 
+        // the hosted actors whose movement is sampled this frame, at most
+        // hostedSamplesPerFrame and the longest waiting first
+        // (sync/frameCost.ts); the player's own at its send rate as before
+        const dueMovement = new Set<number>(dueSamples(hosted as number[], (id) => this.lastSendMovementMoment.get(`${id}`), Date.now(), SendInputsService.sendRateMs(), SendInputsService.hostedSamplesPerFrame()));
         targets.forEach((target) => {
             // thuum playtest 45 (2026-11-04): a native throwing inside one
             // target's sends ("Expected 'objectTypeInfo' to not to be
@@ -179,7 +184,9 @@ export class SendInputsService extends ClientListener {
             // (CallNative.cpp names the class and the form type)
             try {
                 const targetFormModel = target ? this.getForm(target, world) : this.getForm(undefined, world);
-                this.sendMovement(target, targetFormModel);
+                if (target === undefined || dueMovement.has(target as unknown as number)) {
+                    this.sendMovement(target, targetFormModel);
+                }
                 this.sendAnimation(target);
                 this.sendAppearance(target);
                 this.sendEquipment(target);
@@ -322,6 +329,18 @@ export class SendInputsService extends ClientListener {
         return SendInputsService.sendRateCache;
     }
     private static sendRateCache: number | undefined;
+    // skymp5-client.movement.hostedSamplesPerFrame (default 8): the most
+    // hosted actors whose movement one frame samples
+    private static hostedSamplesPerFrame(): number {
+        if (SendInputsService.hostedSamplesCache === undefined) {
+            const s = this.settingsOf();
+            const movement = s && typeof s["movement"] === "object" && s["movement"] ? s["movement"] as Record<string, unknown> : {};
+            const v = movement["hostedSamplesPerFrame"];
+            SendInputsService.hostedSamplesCache = typeof v === "number" && Number.isFinite(v) && v >= 1 ? Math.floor(v) : 8;
+        }
+        return SendInputsService.hostedSamplesCache;
+    }
+    private static hostedSamplesCache: number | undefined;
     private static settingsOf(): Record<string, unknown> | undefined {
         return settings["skymp5-client"] as Record<string, unknown> | undefined;
     }

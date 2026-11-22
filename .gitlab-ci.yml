@@ -190,7 +190,9 @@ client-build:
         -DBUILD_NODEJS=OFF -DBUILD_FRONT=OFF -DPREPARE_NEXUS_ARCHIVES=OFF -DCMAKE_BUILD_TYPE=Release `
         -DSKYRIM_VR=OFF -DCPPCOV_PATH=OFF
       if ($LASTEXITCODE) { exit 1 }
-    - cmake --build build --config Release; if ($LASTEXITCODE) { exit 1 }
+    # the client's own targets, all of build/dist/client: Skyrim Platform (its libraries and their copy into the
+    # dist), client-deps' files and the client bundle; the server and its unit tests are server-build's, on Linux
+    - cmake --build build --config Release --target skyrim-platform client-deps skymp5-client; if ($LASTEXITCODE) { exit 1 }
   artifacts:
     name: dist
     paths: [build/dist]

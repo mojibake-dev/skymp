@@ -2305,7 +2305,7 @@ export class PropService extends ClientListener {
     // the drive let go (releaseBodies): the platform's poses for the form
     // dropped, so no later drain lays them on it (a follow's end, a
     // take-over, a rebind); a table operation, safe from any context
-    private releaseImpose(prop: Prop, place?: number[]) {
+    private releaseImpose(prop: Prop, place?: number[], apex?: number) {
         // a follow whose rest the drive placed (imposeParts: imposing false,
         // restImposed true) still holds its copy's get-up in the platform
         // (thuum tracker #178, the review of the one-throw build, finding 1),
@@ -2315,7 +2315,7 @@ export class PropService extends ClientListener {
         }
         prop.imposing = false;
         try {
-            this.sp.releaseBodies(prop.localId, place);
+            this.sp.releaseBodies(prop.localId, place, apex);
         } catch (e) {
             if (!this.imposeSaid) {
                 this.imposeSaid = true;
@@ -2394,7 +2394,10 @@ export class PropService extends ClientListener {
         const last = f.newest();
         const place = prop.live && last !== undefined && last.asleep
             ? [last.pos[0], last.pos[1], last.pos[2]] : undefined;
-        this.releaseImpose(prop, place);
+        // and the flight's apex with it, so the copy's own get-up counts the
+        // fall the stream flew (the engine reads its character controller's
+        // fall start; a copy set in place never rose)
+        this.releaseImpose(prop, place, place !== undefined ? f.apex() : undefined);
         if (prop.parts > 0) {
             logLab(TAG, `follow ${id} epoch ${f.epoch()}: ${prop.parts} parts, ${prop.imposed} frames imposed, ${prop.imposeSkipped} skipped`);
         }

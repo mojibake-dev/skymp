@@ -1,4 +1,5 @@
 import { NiPoint3 } from "./movement";
+import { FlightApex } from "./flightApex";
 
 // thuum docs/verbs/prop-physics.md (ADR-071 decision 3, physics rung 2): one
 // stream of a prop another seat simulates, as the follower renders it. A pure
@@ -236,6 +237,7 @@ export class PropFollow {
             if (buf.length > FOLLOW_SAMPLES_MAX) {
                 buf.shift();
             }
+            this.flight.note(s.pos[2], s.held);
             return true;
         }
         // reordered in flight: kept while the render clock has not reached it
@@ -247,6 +249,11 @@ export class PropFollow {
             --i;
         }
         buf.splice(i, 0, s);
+        // a height counts in any order; a hold only in order (a late held
+        // sample would start the apex over after the grip let go)
+        if (!s.held) {
+            this.flight.note(s.pos[2], false);
+        }
         return true;
     }
 
@@ -308,6 +315,12 @@ export class PropFollow {
         return this.newest().epoch;
     }
 
+    // the highest root the stream reached since its grab let go (FlightApex),
+    // in game units, or undefined
+    apex(): number | undefined {
+        return this.flight.apex();
+    }
+
     // a translate the copy took toward a target: the largest kept, a jump
     // counted
     noteStep(units: number, jumped: boolean): void {
@@ -356,6 +369,7 @@ export class PropFollow {
     largestStep = 0;
     // the samples by epoch then sequence, from the pair the render clock is in
     private readonly buffer: FollowSample[] = [];
+    private readonly flight = new FlightApex();
     private readonly firstEpoch: number;
     private readonly offsets: number[] = [];
     private offsetMs = 0;

@@ -14,6 +14,8 @@
 #include <RE/A/ActivateHandler.h>
 #include <RE/A/ActiveEffect.h>
 #include <RE/B/BSXFlags.h>
+#include <RE/B/bhkCharacterController.h>
+#include <RE/B/bhkWorld.h>
 #include <RE/C/Calendar.h>
 #include <RE/C/ContainerMenu.h>
 #include <RE/C/CrosshairPickData.h>
@@ -41,6 +43,7 @@
 #include <cmath>
 #include <fmt/format.h>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -2073,8 +2076,21 @@ Napi::Value PuppetApi::ReleaseBodies(const Napi::CallbackInfo& info)
     Frida::ReleaseGetUp(formId);
     return Napi::Boolean::New(info.Env(), held);
   }
+  // With apex (game units, the flight's highest root since its grab let
+  // go): the copy was set in place, never flown, so its character
+  // controller's fall start (bhkCharacterController::fallStartHeight,
+  // include/RE/B/bhkCharacterController.h:125, Havok units) is set from the
+  // apex after the placement, and the engine's own get-up counts the fall
+  // from it. HYPOTHESIS (static read): the get-up's first call, 37336, deals
+  // the fall from that field against the controller's height and zeroes it
+  // after; a placement writes no fall start
+  const float apex =
+    info.Length() > 2 && !info[2].IsUndefined() && !info[2].IsNull()
+    ? NapiHelper::ExtractFloat(info[2], "apex")
+    : std::numeric_limits<float>::quiet_NaN();
+  const bool flew = std::isfinite(apex);
   const RE::NiPoint3 at(place[0], place[1], place[2]);
-  tasks->AddUITask([formId, at]() {
+  tasks->AddUITask([formId, at, flew, apex]() {
     auto* actor = RE::TESForm::LookupByID<RE::Actor>(formId);
     if (actor && !actor->IsDead() && actor->IsInRagdollState()) {
       const RE::NiPoint3 from = actor->GetPosition();
@@ -2085,6 +2101,24 @@ Napi::Value PuppetApi::ReleaseBodies(const Napi::CallbackInfo& info)
                    "lifted (thuum tracker #178, step 4 (b))",
                    formId, from.x, from.y, from.z, at.x, at.y, at.z,
                    from.GetDistance(at));
+      // Actor::GetCharController (include/RE/A/Actor.h:531),
+      // bhkWorld::GetWorldScale (include/RE/B/bhkWorld.h:42): game units to
+      // Havok's
+      auto* controller = flew ? actor->GetCharController() : nullptr;
+      if (controller && apex > at.z) {
+        const float before = controller->fallStartHeight;
+        controller->fallStartHeight = apex * RE::bhkWorld::GetWorldScale();
+        logger::info("[verb:prop-physics] get-up of {:x}: fall start from the "
+                     "flight's apex {:.0f}, {:.0f} units above its landing "
+                     "(the controller held {:.3f}, now {:.3f})",
+                     formId, apex, apex - at.z, before,
+                     controller->fallStartHeight);
+      } else if (flew) {
+        logger::info("[verb:prop-physics] get-up of {:x}: no fall start set "
+                     "(apex {:.0f}, landing {:.0f}{})",
+                     formId, apex, at.z,
+                     controller ? "" : ", no character controller");
+      }
     } else {
       logger::info("[verb:prop-physics] get-up of {:x}: not set before its "
                    "hold is lifted ({})",

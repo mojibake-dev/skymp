@@ -466,8 +466,10 @@ declare module "skyrimPlatform" {
     // for 0, the player's own id or none held; a table operation on the JS
     // thread, no game call. The get-up hold is lifted with it (thuum tracker
     // #178); with place, a living ragdolled actor is first set there, then
-    // its hold lifted, in one task on the main thread
-    function releaseBodies(formId: number, place?: number[]): boolean;
+    // its hold lifted, in one task on the main thread; with apex too (game
+    // units, the flight's highest root), its character controller's fall
+    // start is set from it between the two, so its own get-up counts the fall
+    function releaseBodies(formId: number, place?: number[], apex?: number): boolean;
     // D-PH9 A (the native kill switch): the contact hook's world-body switch,
     // off by default (rung 3's filter: layers 4 and 10 at any motion); on, the
     // player's contact with a body of a dynamic motion type on any layer

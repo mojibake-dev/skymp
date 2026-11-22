@@ -47,6 +47,19 @@ constexpr uint32_t kSong = 0x10544b;
 constexpr uint32_t kSongBase = 0xed03d;
 const NiPoint3 kOnTheRug{ 1060.f, -722.f, 0.f };
 
+// REFR 0x636b9 in cell 0x169fe (Skyrim.esm) at (-568.3, -570.8, 22.3): a
+// leveled bundle of arrows, its NAME the placeholder DummyArrow 0x6a0bf, its
+// XLIB LItemArrowsAll 0x68839, no XCNT, XOWN 0xb2037. LItemArrowsAll (LVLF
+// 0x03, no UseAll) gives 12 of one nested list per entry: BaseArrowIron75
+// 0x37c0d, LVLF 0x02, one entry of IronArrow 0x1397d, so one roll gives 12
+// iron arrows at most. No override of these in Update.esm or the DLCs
+constexpr uint32_t kArrowCell = 0x169fe;
+constexpr uint32_t kArrows = 0x636b9;
+constexpr uint32_t kDummyArrow = 0x6a0bf;
+constexpr uint32_t kIronArrow = 0x1397d;
+constexpr uint32_t kArrowsOwner = 0xb2037;
+const NiPoint3 kBesideTheArrows{ -520.f, -571.f, 0.f };
+
 constexpr uint32_t kTaker = 0xff000e01;
 constexpr uint32_t kOther = 0xff000e02;
 
@@ -360,6 +373,157 @@ TEST_CASE("A book's Take, the Book Menu's own pickup, is recorded against the "
   REQUIRE(reader.GetOpenBook() == 0);
   REQUIRE(reader.GetInventory().GetItemCount(kSongBase) == 1);
   REQUIRE_FALSE(SentTo<SetInventoryMessage>(p, 0).empty());
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kTaker);
+}
+
+TEST_CASE("A book's Take reaching the server before its engine's report "
+          "grants the book to its reader: nothing is given, and the report "
+          "is recorded against the grant with its owner",
+          "[PickupGrant][Books][espm]")
+{
+  auto& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(kTaker, kOnTheRug, 0, kInn);
+  p.SetUserActor(0, kTaker);
+  auto& reader = p.worldState.GetFormAt<MpActor>(kTaker);
+  reader.RemoveAllItems();
+  auto& book = p.worldState.GetFormAt<MpObjectReference>(kSong);
+  REQUIRE_FALSE(book.IsHarvested());
+
+  PickUp(p, 0, kSong);
+  p.Tick();
+  REQUIRE(reader.GetOpenBook() == kSong);
+
+  // the menu's close sends the Take first: the open ends into a grant, no
+  // copy given
+  {
+    LogCapture log;
+    PickUp(p, 0, kSong);
+    p.Tick();
+    REQUIRE(log.Count("[verb:books] ff000e01 takes book 10544b (base ed03d) "
+                      "from its Book Menu; granted to its own engine's "
+                      "pickup, the record waits for its report") == 1);
+  }
+  REQUIRE(reader.GetOpenBook() == 0);
+  REQUIRE(book.GetPickupGrantee() == kTaker);
+  REQUIRE_FALSE(book.IsHarvested());
+  REQUIRE(reader.GetInventory().GetItemCount(kSongBase) == 0);
+
+  // the engine's report: recorded with the stack's owner, once
+  Take(p, 0, kSong, kSongBase, 1, kAlvorsFaction);
+  REQUIRE(OwnedCount(reader, kSongBase, kAlvorsFaction) == 1);
+  REQUIRE(reader.GetInventory().GetItemCount(kSongBase) == 1);
+  REQUIRE(book.IsHarvested());
+  REQUIRE(book.GetPickupGrantee() == 0);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kTaker);
+}
+
+TEST_CASE("Two readers of one book: the first Take wins; the other's Take "
+          "sends its inventory back and its report, open or not, is refused",
+          "[PickupGrant][Books][espm]")
+{
+  auto& p = GetPartOne();
+  DoConnect(p, 0);
+  DoConnect(p, 1);
+  p.CreateActor(kTaker, kOnTheRug, 0, kInn);
+  p.SetUserActor(0, kTaker);
+  p.CreateActor(kOther, kOnTheRug + NiPoint3{ 0.f, -40.f, 0.f }, 0, kInn);
+  p.SetUserActor(1, kOther);
+  auto& reader = p.worldState.GetFormAt<MpActor>(kTaker);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  reader.RemoveAllItems();
+  other.RemoveAllItems();
+  auto& book = p.worldState.GetFormAt<MpObjectReference>(kSong);
+  REQUIRE_FALSE(book.IsHarvested());
+
+  PickUp(p, 0, kSong);
+  PickUp(p, 1, kSong);
+  p.Tick();
+  REQUIRE(reader.GetOpenBook() == kSong);
+  REQUIRE(other.GetOpenBook() == kSong);
+
+  // the first Take: granted to the reader
+  PickUp(p, 0, kSong);
+  p.Tick();
+  REQUIRE(book.GetPickupGrantee() == kTaker);
+
+  // the other's report while its open stands: refused, the grant the
+  // reader's
+  {
+    LogCapture log;
+    Take(p, 1, kSong, kSongBase, 1, kAlvorsFaction);
+    REQUIRE(log.Count("[verb:pickup] E_PICKUP_NOT_GRANTED: ff000e02 reports "
+                      "its pickup of 10544b (1 of ed03d); no grant of it to "
+                      "this taker stands; refused, the taker resynced") == 1);
+  }
+  REQUIRE(other.GetInventory().GetItemCount(kSongBase) == 0);
+  REQUIRE(book.GetPickupGrantee() == kTaker);
+
+  // the other's Take: its inventory sent back, the grant kept
+  p.Messages().clear();
+  {
+    LogCapture log;
+    PickUp(p, 1, kSong);
+    p.Tick();
+    REQUIRE(log.Count("[verb:books] ff000e02 takes book 10544b from its Book "
+                      "Menu; it is granted to ff000e01, whose Take came "
+                      "first; its inventory sent back") == 1);
+  }
+  REQUIRE_FALSE(SentTo<SetInventoryMessage>(p, 1).empty());
+  REQUIRE(other.GetOpenBook() == 0);
+  REQUIRE(book.GetPickupGrantee() == kTaker);
+  REQUIRE_FALSE(book.IsHarvested());
+
+  // the reader's report: recorded
+  Take(p, 0, kSong, kSongBase, 1, kAlvorsFaction);
+  REQUIRE(OwnedCount(reader, kSongBase, kAlvorsFaction) == 1);
+  REQUIRE(other.GetInventory().GetItemCount(kSongBase) == 0);
+  REQUIRE(book.IsHarvested());
+
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kTaker);
+  p.DestroyActor(kOther);
+}
+
+TEST_CASE("A leveled bundle with no XCNT takes as many as one roll of its "
+          "list can give: 12 iron arrows recorded, 13 refused",
+          "[PickupGrant][espm]")
+{
+  auto& p = GetPartOne();
+  DoConnect(p, 0);
+  p.CreateActor(kTaker, kBesideTheArrows, 0, kArrowCell);
+  p.SetUserActor(0, kTaker);
+  auto& taker = p.worldState.GetFormAt<MpActor>(kTaker);
+  taker.RemoveAllItems();
+  auto& arrows = p.worldState.GetFormAt<MpObjectReference>(kArrows);
+  REQUIRE(arrows.GetBaseId() == kDummyArrow);
+  REQUIRE(arrows.PickupMost(kIronArrow) == 12);
+  REQUIRE(arrows.PickupMost(kDummyArrow) == 1);
+
+  PickUp(p, 0, kArrows);
+  REQUIRE(arrows.GetPickupGrantee() == kTaker);
+
+  // more than one roll can give: refused, the grant standing
+  {
+    LogCapture log;
+    Take(p, 0, kArrows, kIronArrow, 13, kArrowsOwner);
+    REQUIRE(log.Count("[verb:pickup] E_PICKUP_COUNT: ff000e01 reports its "
+                      "pickup of 636b9 (13 of 1397d); the reference holds "
+                      "12; refused, the taker resynced") == 1);
+  }
+  REQUIRE(taker.GetInventory().GetItemCount(kIronArrow) == 0);
+  REQUIRE_FALSE(arrows.IsHarvested());
+  REQUIRE(arrows.GetPickupGrantee() == kTaker);
+
+  // the roll's most: recorded
+  Take(p, 0, kArrows, kIronArrow, 12, kArrowsOwner);
+  REQUIRE(OwnedCount(taker, kIronArrow, kArrowsOwner) == 12);
+  REQUIRE(arrows.IsHarvested());
 
   DoDisconnect(p, 0);
   p.DestroyActor(kTaker);

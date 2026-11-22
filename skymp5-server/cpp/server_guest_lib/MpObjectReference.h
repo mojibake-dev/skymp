@@ -335,6 +335,10 @@ public:
   // this reference is granted to, 0 for none or a lapsed grant
   // (GrantPickupToEngine, TakeByEngine)
   uint32_t GetPickupGrantee() const;
+  // the most of `itemBaseId` a take of this placement can add: its count,
+  // times the most one roll of its leveled item list (XLIB) can give of that
+  // base when it has one
+  uint32_t PickupMost(uint32_t itemBaseId) const;
   // how long a grant waits for its taker's report before another taker's
   // activation may be granted it
   static constexpr std::chrono::milliseconds kPickupGrant{ 10000 };
@@ -534,6 +538,9 @@ private:
   // the items this placement holds: its count (XCNT, or the change form's),
   // one at least
   uint32_t PickupCount() const;
+  // this placement's leveled item list (XLIB) as the browser finds it; no
+  // record for a placement with none
+  espm::LookupResult LeveledPlacementList() const;
   void ActivateChilds();
   // thuum docs/verbs/containers.md (ADR-067 decision 6): a container's or a
   // corpse's holder, one at a time (memo D52's shared set of playtest 37,

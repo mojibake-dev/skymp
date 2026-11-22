@@ -46,6 +46,16 @@ public:
   static std::vector<uint32_t> Reach(const espm::CombineBrowser& br,
                                      const espm::LookupResult& lookupRes);
 
+  // the most of `baseId` one roll of the list can give, whatever the
+  // player's level or the chance of none: an entry gives its count times
+  // what its form gives (one for the base itself, a nested list's own most,
+  // followed to kReachDepth levels below the list; a list already on the
+  // walk's path gives nothing, so a cycle ends); under the list's UseAll flag
+  // its entries' sum, else its largest entry's. 0 for a form that is no
+  // leveled list or cannot give that base; at most UINT32_MAX
+  static uint32_t MostOf(const espm::CombineBrowser& br,
+                         const espm::LookupResult& lookupRes, uint32_t baseId);
+
 private:
   static const espm::NPC_* ConvertToNpc(
     const espm::LookupResult& lookupResult);

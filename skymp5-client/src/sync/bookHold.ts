@@ -26,6 +26,10 @@ export interface BookHold {
 const holds = new Map<number, BookHold>();
 const holdsMax = 16;
 
+// how long a world item's pickup holds its reference and base: from the
+// player's activation, through the server's grant and the engine's take, to
+// the server's echo of the record (the grant lasts as long)
+export const PICKUP_HOLD_MS = 10000;
 export const holdBook = (localId: number, baseId: number, until: number, why: string): void => {
   holds.delete(localId);
   if (holds.size >= holdsMax) {
@@ -62,4 +66,23 @@ export const heldBookBases = (now: number): number[] => {
     bases.push(held.baseId);
   });
   return bases;
+};
+// the reference a take of `baseId` into the player's inventory is this game's
+// own: the newest hold still running at `now` of that base, else the newest
+// hold of any base (a leveled placement's engine may add the item it rolled
+// under another base than the one the reference was read with); undefined
+// for none
+export const heldReferenceFor = (baseId: number, now: number): number | undefined => {
+  let sameBase: number | undefined;
+  let newest: number | undefined;
+  holds.forEach((held, localId) => {
+    if (held.until <= now) {
+      return;
+    }
+    newest = localId;
+    if (held.baseId === baseId) {
+      sameBase = localId;
+    }
+  });
+  return sameBase ?? newest;
 };

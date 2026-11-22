@@ -10418,7 +10418,8 @@ bool PartOne::OnArrestStripTake(MpActor& prisoner,
 }
 
 bool PartOne::OnCrimeGold(MpActor& player, uint32_t faction, uint32_t violent,
-                          uint32_t nonViolent)
+                          uint32_t nonViolent,
+                          std::optional<uint32_t> paidGold)
 {
   if (!HasEspm() ||
       !espm::Convert<espm::FACT>(
@@ -10428,8 +10429,35 @@ bool PartOne::OnCrimeGold(MpActor& player, uint32_t faction, uint32_t violent,
                  player.GetFormId(), faction);
     return false;
   }
-  const bool changed = player.SetCrimeGold(
-    FormDesc::FromFormId(faction, worldState.espmFiles), violent, nonViolent);
+  const auto factionDesc = FormDesc::FromFormId(faction, worldState.espmFiles);
+  // The engine's fine (PayFine) removes the player's gold with no
+  // destination container, so nothing else tells the record. The payment is
+  // judged against the bounty recorded before this report sets the new one:
+  // a fine pays the whole bounty and a bribe part of it, so the gold is at
+  // most the bounty and at most what the record holds. An accepted payment
+  // leaves the record and is never handed back; a refused one changes
+  // nothing but the bounty
+  if (paidGold) {
+    // Skyrim.esm's MISC Gold001
+    constexpr uint32_t kGold001 = 0x0000000f;
+    const auto record = player.GetCrimeRecord();
+    const CrimeGold* held = record.Find(factionDesc);
+    const uint64_t bounty =
+      held ? static_cast<uint64_t>(held->violent) + held->nonViolent : 0;
+    const uint32_t goldHeld = player.GetInventory().GetItemCount(kGold001);
+    if (*paidGold > bounty || *paidGold > goldHeld) {
+      spdlog::warn("[verb:jail] E_FINE_GOLD: {:x} reports {} gold paid to "
+                   "{:x}, whose recorded bounty is {} and record holds {} "
+                   "gold; refused",
+                   player.GetFormId(), *paidGold, faction, bounty, goldHeld);
+    } else {
+      player.RemoveItem(kGold001, *paidGold, nullptr);
+      spdlog::info("[verb:jail] {:x} pays {} gold to {:x} (its bounty there "
+                   "{}): the gold leaves the record",
+                   player.GetFormId(), *paidGold, faction, bounty);
+    }
+  }
+  const bool changed = player.SetCrimeGold(factionDesc, violent, nonViolent);
   if (changed) {
     spdlog::info("[verb:jail] {:x}'s bounty in {:x}: {} violent, {} "
                  "non-violent",

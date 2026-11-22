@@ -1004,10 +1004,15 @@ fn check_update_equipment(m: &skymp::UpdateEquipment) -> Result<(), Reject> {
 
 /// A player's bounty report: a faction, never 0, and two sums no larger
 /// than the Papyrus int the server tells them back as (Faction.SetCrimeGold,
-/// Faction.SetCrimeGoldViolent). Whether the faction is one is the server's
-/// read (`E_CRIME_GOLD_FACTION`).
+/// Faction.SetCrimeGoldViolent), and the gold paid with it, never 0 and no
+/// larger either. Whether the faction is one, and whether the payment is
+/// within its recorded bounty and the record's gold, are the server's reads
+/// (`E_CRIME_GOLD_FACTION`, `E_FINE_GOLD`).
 fn check_crime_gold(m: &skymp::CrimeGold) -> Result<(), Reject> {
     if m.faction == 0 || m.violent > PAPYRUS_INT_MAX || m.non_violent > PAPYRUS_INT_MAX {
+        return Err(Reject::Range);
+    }
+    if m.paid_gold.is_some_and(|gold| gold == 0 || gold > PAPYRUS_INT_MAX) {
         return Err(Reject::Range);
     }
     Ok(())
@@ -4411,6 +4416,13 @@ mod tests {
         assert_eq!(validate_server(&report(0x28170, 2_147_483_648, 0)), Err(Reject::Range));
         assert_eq!(validate_server(&report(0x28170, 0, u32::MAX)), Err(Reject::Range));
         assert_eq!(validate_server(&report(0, 100, 0)), Err(Reject::Range));
+        // a fine's gold: never 0, at most a Papyrus int
+        let paid = |paid_gold| Message::CrimeGold(CrimeGold { faction: 0x267ea, paid_gold, ..Default::default() });
+        assert_eq!(validate_server(&paid(None)), Ok(()));
+        assert_eq!(validate_server(&paid(Some(40))), Ok(()));
+        assert_eq!(validate_server(&paid(Some(PAPYRUS_INT_MAX))), Ok(()));
+        assert_eq!(validate_server(&paid(Some(0))), Err(Reject::Range));
+        assert_eq!(validate_server(&paid(Some(2_147_483_648))), Err(Reject::Range));
         let mut guard = ClientGuard::default();
         for _ in 0..16 {
             assert_eq!(validate(&report(0x28170, 40, 0), &mut guard, 1_000), Ok(()));

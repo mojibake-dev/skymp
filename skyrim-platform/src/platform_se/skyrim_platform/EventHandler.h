@@ -1,5 +1,6 @@
 #pragma once
 #include "EventUtils.h"
+#include <cstdint>
 
 using EventResult = RE::BSEventNotifyControl;
 
@@ -124,6 +125,12 @@ public:
   static void OnArrest(RE::PlayerCharacter* player, RE::TESFaction* faction);
   static void OnServePrisonTime(RE::PlayerCharacter* player);
   static void OnCrimeGoldChanged(const RE::TESFaction* faction);
+  // the engine's fine (PayFine): its own crime gold change is held back
+  // while it runs, and one crimeGold event follows it carrying the gold it
+  // took from the player (OnFinePaid)
+  static void OnFineBegin(const RE::TESFaction* faction);
+  static void OnFinePaid(const RE::TESFaction* faction,
+                         std::uint32_t paidGold);
   // thuum #84: the tracker's table emptied at a load or a new game (its
   // effects are the old world's)
   static void ClearSummons();

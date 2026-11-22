@@ -3552,6 +3552,11 @@ wire_struct! {
         pub violent: u32,
         /// The non-violent crime gold.
         pub non_violent: u32,
+        /// The gold the player's own engine paid as it set this bounty, its
+        /// fine (PayFine), measured from the player's gold around the call
+        /// (SCHEMA_VERSION 67): R1, at most the faction's recorded bounty
+        /// and the gold the record holds; never 0.
+        pub paid_gold: Option<u32>,
     }
 }
 

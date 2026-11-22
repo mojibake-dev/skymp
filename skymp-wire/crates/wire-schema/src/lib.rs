@@ -317,8 +317,11 @@ use bounded::{String, Vec};
 /// record takes the copy the player's own game dropped, a stolen one or a
 /// clean one of the same item beside it. A 65 peer would misread every
 /// DropItem.
+/// 67: CrimeGold's optional `paid_gold`, the gold the player's own engine
+/// paid as it set the bounty (a fine), so the record pays it too. A 66 peer
+/// would misread every CrimeGold.
 /// MsgTypes 84 to 87 (wire ids 92 to 95) are all built here; none is held.
-pub const SCHEMA_VERSION: u16 = 66;
+pub const SCHEMA_VERSION: u16 = 67;
 
 /// Capacities. Strings are in UTF-8 bytes, sequences in elements. Named so
 /// the reason for each number is greppable.
@@ -1111,7 +1114,7 @@ const TABLE: [Row; 96] = [
     row("PushActor", 85, 32, C2S),
     // a faction and a sentence at five-byte varints
     row("Arrest", 86, 16, C2S),
-    // a faction and two sums at five-byte varints
+    // a faction, two sums and the paid gold at five-byte varints
     row("CrimeGold", 87, 32, C2S),
 ];
 
@@ -1776,7 +1779,7 @@ mod tests {
             Message::WordWall(skymp::WordWall { wall: u32::MAX, ..Default::default() }),
             // an arrest and a bounty at their longest
             Message::Arrest(skymp::Arrest { faction: u32::MAX, days: u32::MAX, ..Default::default() }),
-            Message::CrimeGold(skymp::CrimeGold { faction: u32::MAX, violent: u32::MAX, non_violent: u32::MAX, ..Default::default() }),
+            Message::CrimeGold(skymp::CrimeGold { faction: u32::MAX, violent: u32::MAX, non_violent: u32::MAX, paid_gold: Some(u32::MAX), ..Default::default() }),
             // a linked activation relayed (thuum docs/verbs/traps.md), and
             // since SCHEMA_VERSION 40 an activation and its relay with the
             // entry byte at their longest (thuum D-C2: 24 and 13 bytes)

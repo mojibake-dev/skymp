@@ -717,9 +717,13 @@ public:
 
   // One hold's bounty as the player's own game holds it (R0 record; its
   // engine's crime reports are its own): recorded when the faction is a
-  // crime faction; whether it changed the record
+  // crime faction; whether it changed the record. paidGold is the gold the
+  // player's engine paid as it set this bounty, its fine: R1, taken off the
+  // record when it is at most the bounty recorded before this report and the
+  // gold the record holds, else refused (E_FINE_GOLD)
   bool OnCrimeGold(MpActor& player, uint32_t faction, uint32_t violent,
-                   uint32_t nonViolent);
+                   uint32_t nonViolent,
+                   std::optional<uint32_t> paidGold = std::nullopt);
 
   // The release of a prisoner whose sentence's end the shared clock passed:
   // its own belongings back from the faction's chest (the rows its strip

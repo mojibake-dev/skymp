@@ -9,19 +9,39 @@ import { toWireInventory } from "../../sync/createdForms";
 import { PutItemMessage } from "../messages/putItemMessage";
 import { TakeItemMessage } from "../messages/takeItemMessage";
 import { SweetTaffySweetCantDropService } from "./sweetTaffySweetCantDropService";
-import { localIdToRemoteId } from "../../view/worldViewMisc";
-import { holdBook } from "../../sync/bookHold";
+import { localIdToRemoteId, snippetIdToLocalId } from "../../view/worldViewMisc";
+import { grantPickup, holdBook, pickupTakeEntry, PICKUP_HOLD_MS, takeHeldReference } from "../../sync/bookHold";
 import { logLab } from "../../logging";
-
-// how long a pickup's base is held against the player inventory apply, from
-// the engine's take until the server's echo of it (the server's grant lasts as
-// long)
-const PICKUP_HOLD_MS = 10000;
+import { ConnectionMessage } from "../events/connectionMessage";
+import { SpSnippetMessage } from "../messages/spSnippetMessage";
 
 export class ContainersService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         controller.on('containerChanged', (e) => this.onContainerChanged(e));
+        controller.emitter.on("spSnippetMessage", (e) => this.onGrantSnippet(e));
+    }
+
+    // the server's grant of a pickup to this game: its
+    // ObjectReference.Activate snippet on the item with this player and true,
+    // after which this game's engine runs the pickup. The asked pickup
+    // (activationService) becomes a hold of that one reference. A message's
+    // context: JS state alone, no game call
+    private onGrantSnippet(event: ConnectionMessage<SpSnippetMessage>): void {
+        const msg = event.message;
+        if (msg.class.toLowerCase() !== "objectreference" || msg.function.toLowerCase() !== "activate") {
+            return;
+        }
+        const args = Array.isArray(msg.arguments) ? msg.arguments : [];
+        const taker = args[0];
+        const takerId = taker !== null && typeof taker === "object" && typeof taker.formId === "number" ? snippetIdToLocalId(taker.formId) : 0;
+        if (takerId !== 0x14 || args[1] !== true) {
+            return;
+        }
+        const localId = snippetIdToLocalId(msg.selfId);
+        if (localId && grantPickup(localId, Date.now())) {
+            logLab("verb:pickup", `reference ${localId.toString(16)} granted to this game: its engine's pickup runs`);
+        }
     }
 
     private onContainerChanged(e: ContainerChangedEvent) {
@@ -30,13 +50,23 @@ export class ContainersService extends ClientListener {
         // a pickup: this game's engine took a world item into its player's
         // inventory (the server's grant ran its activation's default
         // processing, or the Book Menu's Take ran the pickup), so the event
-        // names no old container and carries the reference taken. It is
-        // reported as a take from that reference with the stack the engine
-        // added, its owner, the stolen mark, with it; the base is held
-        // against the inventory apply until the server's echo
-        const pickedUp = !e.oldContainer && !!e.newContainer && e.newContainer.getFormID() === 0x14 && !!e.reference;
+        // names no old container and comes with a reference. That reference
+        // is not the one taken (it can name another form, or one already
+        // gone, its id alone left as referenceId), so it only tells an add
+        // from a reference from an inventory add of the server's. The
+        // reference taken is this game's own hold of what it is taking (a
+        // granted pickup, a book's open), the oldest of the base the engine
+        // added, named once. It is reported as one take from that reference:
+        // the stack the engine added, its owner, the stolen mark, with it,
+        // and no other difference; the base is held against the inventory
+        // apply until the server's echo
+        const fromReference = !!e.reference || ((e as unknown as { referenceId?: number }).referenceId ?? 0) !== 0;
+        const takenId = !e.oldContainer && !!e.newContainer && e.newContainer.getFormID() === 0x14 && fromReference && e.baseObj
+            ? (takeHeldReference(e.baseObj.getFormID(), Date.now()) ?? 0)
+            : 0;
+        const pickedUp = takenId !== 0;
         if (pickedUp) {
-            holdBook(e.reference.getFormID(), e.baseObj.getFormID(), Date.now() + PICKUP_HOLD_MS, "its pickup until the server's echo");
+            holdBook(takenId, e.baseObj.getFormID(), Date.now() + PICKUP_HOLD_MS, "its pickup until the server's echo");
         }
         if ((e.oldContainer && e.newContainer) || pickedUp) {
             if (
@@ -66,7 +96,9 @@ export class ContainersService extends ClientListener {
                     for (let i = 0; i < diff.entries.length; ++i) {
                         printConsole(`[${i}] ${JSON.stringify(diff.entries[i])}`);
                     }
-                    const msgs = diff.entries
+                    const reported = pickedUp ? pickupTakeEntry(diff.entries, e.baseObj.getFormID(), e.numItems) : undefined;
+                    const entries = pickedUp ? (reported ? [reported] : []) : diff.entries;
+                    const msgs = entries
                         .filter((entry) =>
                             // TODO: review this condition, seems to be incorrect
                             entry.count > 0
@@ -80,13 +112,13 @@ export class ContainersService extends ClientListener {
                                 ...entryCopy,
                                 t: entry.count > 0 ? MsgType.PutItem : MsgType.TakeItem,
                                 target: pickedUp
-                                    ? localIdToRemoteId(e.reference.getFormID())
+                                    ? localIdToRemoteId(takenId)
                                     : e.oldContainer.getFormID() === 0x14
                                         ? localIdToRemoteId(e.newContainer.getFormID())
                                         : localIdToRemoteId(e.oldContainer.getFormID())
                             };
                             if (pickedUp) {
-                                logLab("verb:pickup", `reference ${e.reference.getFormID().toString(16)} taken by this game's engine: ${Math.abs(entry.count)} of ${entry.baseId.toString(16)}${entry.ownerId ? `, owner ${entry.ownerId.toString(16)}` : ""}, reported as a take`);
+                                logLab("verb:pickup", `reference ${takenId.toString(16)} taken by this game's engine: ${Math.abs(entry.count)} of ${entry.baseId.toString(16)}${entry.ownerId ? `, owner ${entry.ownerId.toString(16)}` : ""}, reported as a take`);
                             }
                             msg.count = Math.abs(msg.count);
                             if (this.sp.Game.getFormEx(entry.baseId)?.getName() === msg.name) {
@@ -99,6 +131,17 @@ export class ContainersService extends ClientListener {
                         message: msg,
                         reliability: "reliable"
                     }));
+
+                    // a pickup's one take advances the baseline by its stack,
+                    // extras and all, so it is never sent again; every other
+                    // difference is left as it stands
+                    if (pickedUp) {
+                        if (reported) {
+                            const add = { entries: [{ ...reported, count: -reported.count }] };
+                            lastInvService.lastInv = sumInventories(lastInvService.lastInv, add);
+                        }
+                        return;
+                    }
 
                     // Prevent emitting 1,2,3,4,5 changes when taking/putting 5 potions one by one
                     // This code makes it 1,1,1,1,1 but works only for extra-less items

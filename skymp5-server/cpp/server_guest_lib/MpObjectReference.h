@@ -331,6 +331,13 @@ public:
   // (Activate runs the pickup alone, thuum D-53-10)
   bool IsBookTakeBy(const MpObjectReference& activationSource,
                     bool reportedByHost) const;
+  // a player's pickup of a game-file item runs in its own engine: the taker
+  // this reference is granted to, 0 for none or a lapsed grant
+  // (GrantPickupToEngine, TakeByEngine)
+  uint32_t GetPickupGrantee() const;
+  // how long a grant waits for its taker's report before another taker's
+  // activation may be granted it
+  static constexpr std::chrono::milliseconds kPickupGrant{ 10000 };
   void SetRelootTime(std::chrono::system_clock::duration newRelootTime);
   void SetChanceNoneOverride(uint8_t chanceNone);
   void SetCellOrWorld(const FormDesc& worldOrCell);
@@ -513,6 +520,20 @@ private:
   bool ProcessActivateSecond(MpObjectReference& activationSource);
   void GivePickupItemsToActivationSource(MpObjectReference& activationSource,
                                          const espm::LookupResult& base);
+  // a player's activation of a game-file item: granted to that taker, whose
+  // game is told to run the activation's default processing, the engine's
+  // own pickup; true when the activation is answered here (granted, or
+  // refused for another taker's grant)
+  bool GrantPickupToEngine(MpObjectReference& activationSource, espm::Type t,
+                           bool reportedByHost);
+  // the granted taker's report of what its engine's pickup added
+  void TakeByEngine(MpActor& ac, const Inventory::Entry& e);
+  // whether a taken item of `itemBaseId` is this reference's: its base, or
+  // a base its leveled item list (XLIB) can roll
+  bool StandsForItem(uint32_t itemBaseId) const;
+  // the items this placement holds: its count (XCNT, or the change form's),
+  // one at least
+  uint32_t PickupCount() const;
   void ActivateChilds();
   // thuum docs/verbs/containers.md (ADR-067 decision 6): a container's or a
   // corpse's holder, one at a time (memo D52's shared set of playtest 37,
@@ -555,6 +576,8 @@ private:
   std::optional<std::chrono::system_clock::duration> relootTimeOverride;
   std::unique_ptr<uint8_t> chanceNoneOverride;
   bool activationBlocked = false;
+  uint32_t pickupGrantee = 0;
+  std::chrono::steady_clock::time_point pickupGrantUntil{};
 
   struct Impl;
   std::shared_ptr<Impl> pImpl;

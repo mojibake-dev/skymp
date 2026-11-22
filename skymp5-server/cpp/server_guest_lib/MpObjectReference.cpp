@@ -1175,6 +1175,15 @@ void MpObjectReference::PutItem(MpActor& ac, const Inventory::Entry& e)
 void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 {
   CheckInteractionAbility(ac);
+  // a game-file item placed in the world is taken by its taker's engine
+  // (GrantPickupToEngine); a take from it is that engine's report
+  if (IsEspmForm() && GetParent() && GetParent()->HasEspm()) {
+    const auto base =
+      GetParent()->GetEspm().GetBrowser().LookupById(GetBaseId());
+    if (base.rec && espm::utils::IsItem(base.rec->GetType())) {
+      return TakeByEngine(ac, e);
+    }
+  }
   if (!ContainerMoveByOccupant(ac, *this)) {
     return;
   }
@@ -2573,21 +2582,162 @@ void MpObjectReference::GivePickupItemsToActivationSource(
       activationSource.AddItem(p.first, p.second);
     }
   } else {
-    auto refrRecord = espm::Convert<espm::REFR>(
-      loader.GetBrowser().LookupById(GetFormId()).rec);
-
-    uint32_t countRecord =
-      refrRecord ? refrRecord->GetData(compressedFieldsCache).count : 1;
-
-    uint32_t countChangeForm = ChangeForm().count;
-
-    constexpr uint32_t kCountDefault = 1;
-
-    uint32_t resultingCount =
-      std::max(kCountDefault, std::max(countRecord, countChangeForm));
-
-    activationSource.AddItem(resultItem, resultingCount);
+    activationSource.AddItem(resultItem, PickupCount());
   }
+}
+
+uint32_t MpObjectReference::PickupCount() const
+{
+  auto& loader = GetParent()->GetEspm();
+  auto& compressedFieldsCache = GetParent()->GetEspmCache();
+  auto refrRecord =
+    espm::Convert<espm::REFR>(loader.GetBrowser().LookupById(GetFormId()).rec);
+
+  uint32_t countRecord =
+    refrRecord ? refrRecord->GetData(compressedFieldsCache).count : 1;
+
+  uint32_t countChangeForm = ChangeForm().count;
+
+  constexpr uint32_t kCountDefault = 1;
+
+  return std::max(kCountDefault, std::max(countRecord, countChangeForm));
+}
+
+uint32_t MpObjectReference::GetPickupGrantee() const
+{
+  return std::chrono::steady_clock::now() < pickupGrantUntil ? pickupGrantee
+                                                             : 0;
+}
+
+// A player's pickup of a game-file item is its own engine's: the owner test,
+// the steal alarm and its witnesses, the stolen mark and the move into the
+// inventory all run inside the player's PickUpObject (CommonLibSSE-NG
+// include/RE/A/Actor.h:402, slot 0CC), reached from the item's Activate
+// (TESBoundObject slot 37). The item's activation is blocked on every seat,
+// so the server answers the player's activation: it grants the reference to
+// that one taker and tells its game to run the activation's default
+// processing, which passes the block (ObjectReference.Activate with
+// abDefaultProcessingOnly, as a door's walk-through does). The take is
+// recorded from the taker's report of what its engine added (TakeByEngine).
+// While the grant stands, any other player's activation is refused, so no
+// second engine runs a pickup of it. Not granted: a readable book, which
+// reaches here only at its Take (its open answers earlier), the Book Menu's
+// own pickup, whose grant is the open (IsBookReadBy; TakeByEngine reads the
+// open); a server-made copy, whose rows are the record's
+// (GivePickupItemsToActivationSource); an actor no user plays.
+bool MpObjectReference::GrantPickupToEngine(
+  MpObjectReference& activationSource, espm::Type t, bool reportedByHost)
+{
+  auto actor = activationSource.AsActor();
+  if (!actor || reportedByHost ||
+      actor->GetUserId() == Networking::InvalidUserId || !IsEspmForm() ||
+      !espm::utils::IsItem(t) ||
+      IsBookReadBy(activationSource, reportedByHost)) {
+    return false;
+  }
+  const uint32_t grantee = GetPickupGrantee();
+  if (grantee != 0 && grantee != actor->GetFormId()) {
+    spdlog::info("[verb:pickup] E_PICKUP_GRANTED: {:x} picks up {:x}; it is "
+                 "granted to {:x}, whose own engine's pickup is under way; "
+                 "refused",
+                 actor->GetFormId(), GetFormId(), grantee);
+    return true;
+  }
+  if (grantee != 0) {
+    // the taker's own activation again before its report: one grant, one
+    // pickup, so its game is not told twice
+    spdlog::info("[verb:pickup] {:x} picks up {:x} again; its grant stands, "
+                 "its report awaited",
+                 actor->GetFormId(), GetFormId());
+    return true;
+  }
+  pickupGrantee = actor->GetFormId();
+  pickupGrantUntil = std::chrono::steady_clock::now() + kPickupGrant;
+
+  SpSnippetObjectArgument takerArgument;
+  takerArgument.formId = actor->GetFormId();
+  takerArgument.type = "ObjectReference";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ takerArgument, true };
+  SpSnippet("ObjectReference", "Activate", args, GetFormId())
+    .Execute(actor, SpSnippetMode::kNoReturnResult);
+  spdlog::info("[verb:pickup] {:x} picks up {:x} (base {:x}): granted, its "
+               "own engine's pickup runs; the record waits for its report",
+               actor->GetFormId(), GetFormId(), GetBaseId());
+  return true;
+}
+
+bool MpObjectReference::StandsForItem(uint32_t itemBaseId) const
+{
+  if (itemBaseId != 0 && itemBaseId == GetBaseId()) {
+    return true;
+  }
+  auto& br = GetParent()->GetEspm().GetBrowser();
+  const auto refrLookup = br.LookupById(GetFormId());
+  auto refrRecord = espm::Convert<espm::REFR>(refrLookup.rec);
+  if (!refrRecord) {
+    return false;
+  }
+  const auto data = refrRecord->GetData(GetParent()->GetEspmCache());
+  if (!data.leveledItemBaseId) {
+    return false;
+  }
+  auto mapping = br.GetCombMapping(refrLookup.fileIdx);
+  const uint32_t listId =
+    espm::utils::GetMappedId(data.leveledItemBaseId, *mapping);
+  const auto listLookup = br.LookupById(listId);
+  const auto rolls = LeveledListUtils::Reach(br, listLookup);
+  return std::find(rolls.begin(), rolls.end(), itemBaseId) != rolls.end();
+}
+
+// The taker's report of its engine's pickup (TakeItem from this reference):
+// R1, the taker's engine computes the take and the server validates that it
+// was granted (the item's grant, or a book's open: the Book Menu's Take is
+// that engine's pickup), that the reference is still placed, that the base
+// is the reference's own or one its leveled list can roll, and that the
+// count is within what it holds. The stack's owner, the engine's stolen
+// mark, is recorded as reported, unvalidated, as a container take's is.
+// A refused report resends the taker its own inventory.
+void MpObjectReference::TakeByEngine(MpActor& ac, const Inventory::Entry& e)
+{
+  const auto refuse = [&](const char* code, const std::string& why) {
+    spdlog::warn("[verb:pickup] {}: {:x} reports its pickup of {:x} ({} of "
+                 "{:x}); {}; refused, the taker resynced",
+                 code, ac.GetFormId(), GetFormId(), e.count, e.baseId, why);
+    ResyncAfterRefusedMove(ac);
+  };
+  if (IsHarvested() || IsDisabled() || IsDeleted()) {
+    return refuse("E_PICKUP_TAKEN", "the reference is taken already");
+  }
+  const bool granted = GetPickupGrantee() == ac.GetFormId() ||
+    (ac.GetOpenBook() != 0 && ac.GetOpenBook() == GetFormId());
+  if (!granted) {
+    return refuse("E_PICKUP_NOT_GRANTED",
+                  "no grant of it to this taker stands");
+  }
+  if (!StandsForItem(e.baseId)) {
+    return refuse("E_PICKUP_BASE",
+                  fmt::format("the reference stands for {:x} or a roll of "
+                              "its leveled list",
+                              GetBaseId()));
+  }
+  const uint32_t most = PickupCount();
+  if (e.count == 0 || e.count > most) {
+    return refuse("E_PICKUP_COUNT",
+                  fmt::format("the reference holds {}", most));
+  }
+  pickupGrantee = 0;
+  pickupGrantUntil = {};
+  ac.AddItems({ e });
+  SendItemAdded(ac, e.baseId, e.count);
+  SetHarvested(true);
+  RequestReloot();
+  spdlog::info("[verb:pickup] {:x} picks up {:x}: {} of {:x}{} recorded from "
+               "its own engine's pickup",
+               ac.GetFormId(), GetFormId(), e.count, e.baseId,
+               e.ownerId ? fmt::format(", owner {:x}", *e.ownerId)
+                         : std::string());
 }
 
 bool MpObjectReference::IsCorpse()
@@ -2790,6 +2940,9 @@ void MpObjectReference::ProcessActivateNormal(
   }
 
   if (pickable && !IsHarvested()) {
+    if (GrantPickupToEngine(activationSource, t, reportedByHost)) {
+      return;
+    }
     GivePickupItemsToActivationSource(activationSource, base);
     SetHarvested(true);
     RequestReloot();

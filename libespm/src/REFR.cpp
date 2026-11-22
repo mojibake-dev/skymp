@@ -48,6 +48,10 @@ REFR::Data REFR::GetData(
         }
       } else if (!std::memcmp(type, "XOWN", 4)) {
         result.ownerFaction = *reinterpret_cast<const uint32_t*>(data);
+      } else if (!std::memcmp(type, "XLIB", 4)) {
+        [[likely]] if (dataSize >= 4) {
+          result.leveledItemBaseId = *reinterpret_cast<const uint32_t*>(data);
+        }
       } else if (!std::memcmp(type, "XESP", 4)) {
         [[likely]] if (dataSize >= 8) {
           result.enableParentId = *reinterpret_cast<const uint32_t*>(data);

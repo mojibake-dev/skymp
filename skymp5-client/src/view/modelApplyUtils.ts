@@ -162,6 +162,14 @@ export class ModelApplyUtils {
         // 666 ms on a form view (formView.ts), undoing a host's scripted
         // Disable of a door or an activator; a reference's engine state is
         // the server's DestructionStage word (RefStateService)
+        // an item this game's engine took is in a container, its player's
+        // inventory, so it has no parent cell (the book close's "gone" test,
+        // remoteServer.ts): its world copy is gone already, and the reference
+        // itself, a persistent one such as a quest item, is never disabled
+        // or deleted in there
+        if (isHarvested && !refr.getParentCell()) {
+          return;
+        }
         const wasHarvested = refr.isDisabled();
         if (isHarvested != wasHarvested) {
           if (isHarvested) {

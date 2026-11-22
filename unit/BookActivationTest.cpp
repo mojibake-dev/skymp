@@ -417,8 +417,9 @@ TEST_CASE("A disconnect forgets the player's open book",
   p.DestroyActor(kReader);
 }
 
-TEST_CASE("A player's activation of a spell tome picks it up at once, as the "
-          "engine does",
+TEST_CASE("A player's activation of a spell tome is its own engine's pickup "
+          "at once, as the engine does: granted, then recorded from its "
+          "game's report",
           "[Books][PartOne][espm]")
 {
   auto& p = GetPartOne();
@@ -434,6 +435,16 @@ TEST_CASE("A player's activation of a spell tome picks it up at once, as the "
 
   ActivateAsPlayer(p, 0, kTome);
   REQUIRE(OpensSentTo(p, 0, kTome) == 0);
+  REQUIRE(tome.GetPickupGrantee() == kReader);
+  REQUIRE(!tome.IsHarvested());
+  REQUIRE(reader.GetInventory().GetItemCount(kTomeBase) == 0);
+  p.Messages().clear();
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::TakeItem },
+                            { "baseId", kTomeBase },
+                            { "count", 1 },
+                            { "target", kTome } });
+  p.Tick();
   REQUIRE(InventorySentTo(p, 0));
   REQUIRE(tome.IsHarvested());
   REQUIRE(reader.GetInventory().GetItemCount(kTomeBase) == 1);

@@ -78,6 +78,10 @@ RUN if [ ! -f vcpkg/scripts/buildsystems/vcpkg.cmake ]; then \
 # m2-formdesc-world's world/load-order.json, thuum ADR-043, server-build 9323;
 # a test server's runtime files still belong in run_integration_test.cmake's
 # step 5).
+# The build and its tests are one step: a cache mount's lock is held for one
+# RUN, so a second step would take the shared tree again after another
+# branch's build may have had it, and test that branch's binaries. The dist is
+# copied out before the tests, which run servers inside it.
 RUN --mount=type=cache,id=skymp-server-build,target=/src/build,mode=0777,sharing=locked \
     --mount=type=cache,id=skymp-cargo-registry,target=/opt/rust/cargo/registry,mode=0777,sharing=locked \
     --mount=type=cache,id=skymp-ccache,target=/opt/ccache,mode=0777,sharing=locked \
@@ -89,9 +93,8 @@ RUN --mount=type=cache,id=skymp-server-build,target=/src/build,mode=0777,sharing
       -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
  && ./build.sh --build \
  && ccache -s \
- && rm -rf /src/dist-server && cp -a build/dist/server /src/dist-server
-RUN --mount=type=cache,id=skymp-server-build,target=/src/build,mode=0777,sharing=locked \
-    if [ -f skyrim_data_files/Skyrim.esm ]; then \
+ && rm -rf /src/dist-server && cp -a build/dist/server /src/dist-server \
+ && if [ -f skyrim_data_files/Skyrim.esm ]; then \
       cd build && CI=true ctest --verbose; \
     else echo "no skyrim_data_files/Skyrim.esm: ctest skipped"; fi
 

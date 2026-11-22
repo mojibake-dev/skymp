@@ -19,6 +19,7 @@
 #include "UpdateMovementMessage.h"
 #include "UpdatePropertyMessage.h"
 #include "libespm/Loader.h"
+#include "libespm/WEAP.h"
 #include "wire_bridge_cxx/rules.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
@@ -2601,6 +2602,213 @@ TEST_CASE("A hosted actor's furniture use is its host's engine's: the server "
 
   DoDisconnect(p, 0);
   p.DestroyActor(kSitter);
+  p.DestroyActor(kC1);
+}
+
+// the host's report of its NPC's activation leaves the NPC's equipment as
+// its host's own report recorded it. An EquipBestWeapon on the activation
+// would strip the worn weapon and wear the inventory's best in the right hand
+// alone with numChanges one up, so each activation (a draugr rising from its
+// alcove gives four) would send every copy a record its host never made
+TEST_CASE("A hosted actor's activation leaves its equipment record as its "
+          "host reported it",
+          "[CellHost][Equipment][espm]")
+{
+  auto& p = GetPartOne();
+  // the bench case's bed, a FURN the server loads, in Tamriel
+  constexpr uint32_t kBed = 0x000B3184;
+  constexpr uint32_t kSitter = 0xff000c05;
+  // Skyrim.esm DraugrGreatsword (WEAP, ETYP BothHands 0x13f45) and
+  // IronSword (the sword is this file's kIronSword elsewhere)
+  constexpr uint32_t kGreatsword = 0x000236a5;
+  constexpr uint32_t kSword = 0x00012eb7;
+  const NiPoint3 kAtBed{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAtBed + NiPoint3{ 40.f, 0.f, 0.f });
+  p.CreateActor(kSitter, kAtBed + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& sitter = p.worldState.GetFormAt<MpActor>(kSitter);
+  sitter.SetPos(sitter.GetPos());
+  const auto cell = p.worldState.CellOf(sitter);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.worldState.HostOf(sitter) ==
+          &p.worldState.GetFormAt<MpActor>(kC1));
+
+  // the host's report as its HostedStateService makes it: the greatsword,
+  // read in both hands, one entry worn and wornLeft; a sword it also carries
+  sitter.AddItem(kGreatsword, 1);
+  sitter.AddItem(kSword, 1);
+  Equipment reported;
+  Inventory::Entry worn;
+  worn.baseId = kGreatsword;
+  worn.count = 1;
+  worn.SetWorn(Inventory::Worn::Right);
+  worn.wornLeft = true;
+  reported.inv.AddItems({ worn });
+  reported.numChanges = 6;
+  sitter.SetEquipment(reported);
+  const Equipment before = sitter.GetEquipment();
+  REQUIRE(before.numChanges == 6);
+
+  // four activations of the furniture, as a draugr's alcove gives them
+  for (int i = 0; i < 4; ++i) {
+    DoMessage(p, 0,
+              nlohmann::json{ { "t", MsgType::Activate },
+                              { "data",
+                                { { "caster", kSitter },
+                                  { "target", kBed },
+                                  { "isSecondActivation", false } } } });
+  }
+  REQUIRE(sitter.GetEquipment() == before);
+  REQUIRE(sitter.GetEquipment().numChanges == 6);
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kSitter);
+  p.DestroyActor(kC1);
+}
+
+// a host reports a two-hander it holds as one entry worn and wornLeft (its
+// engine reads it in both hands), which Inventory::Entry::GetWorn reads as
+// Left; the server's right-hand reads take it by its record's ETYP
+// (MpActor::WornHand: GetEquippedWeapon, which ActionListener's
+// RightHandWeapon and GetEquippedItemType read), and a real left-hand weapon
+// stays the left hand's
+TEST_CASE("A host-reported two-hander is the right hand's weapon to the "
+          "server's reads, and a left-hand one-hander stays left",
+          "[CellHost][Equipment][espm]")
+{
+  auto& p = GetPartOne();
+  constexpr uint32_t kHolder = 0xff000c05;
+  // Skyrim.esm WEAP DraugrGreatsword (ETYP BothHands 0x13f45) and
+  // IronDagger (FavoritesTest's kIronDagger)
+  constexpr uint32_t kGreatsword = 0x000236a5;
+  constexpr uint32_t kDagger = 0x0001397e;
+  const NiPoint3 kAt{ 117786.f, -81400.f, 10997.f };
+  p.CreateActor(kHolder, kAt, 0, kTamriel);
+  auto& holder = p.worldState.GetFormAt<MpActor>(kHolder);
+  holder.AddItem(kGreatsword, 1);
+  holder.AddItem(kDagger, 1);
+
+  // the host's report: the greatsword in both hands
+  Equipment twoHanded;
+  Inventory::Entry both;
+  both.baseId = kGreatsword;
+  both.count = 1;
+  both.SetWorn(Inventory::Worn::Right);
+  both.wornLeft = true;
+  REQUIRE(both.GetWorn() == Inventory::Worn::Left);
+  twoHanded.inv.AddItems({ both });
+  holder.SetEquipment(twoHanded);
+  REQUIRE(MpActor::WornHand(p.worldState, both) == Inventory::Worn::Right);
+  auto weapons = holder.GetEquippedWeapon();
+  REQUIRE(weapons[1].has_value());
+  REQUIRE(weapons[1]->baseId == kGreatsword);
+  REQUIRE_FALSE(weapons[0].has_value());
+  // ActionListener's RightHandWeapon (the drawn-weapon stagger value's)
+  // reads this right hand
+  const auto right =
+    espm::GetData<espm::WEAP>(weapons[1]->baseId, &p.worldState);
+  REQUIRE(right.weapDNAM);
+  REQUIRE(right.weapDNAM->animType == espm::WEAP::AnimType::TwoHandSword);
+
+  // a dagger in the left hand alone: the left hand's, no right-hand weapon
+  Equipment leftHand;
+  Inventory::Entry left;
+  left.baseId = kDagger;
+  left.count = 1;
+  left.SetWorn(Inventory::Worn::Left);
+  leftHand.inv.AddItems({ left });
+  holder.SetEquipment(leftHand);
+  REQUIRE(MpActor::WornHand(p.worldState, left) == Inventory::Worn::Left);
+  weapons = holder.GetEquippedWeapon();
+  REQUIRE(weapons[0].has_value());
+  REQUIRE(weapons[0]->baseId == kDagger);
+  REQUIRE_FALSE(weapons[1].has_value());
+
+  p.DestroyActor(kHolder);
+}
+
+// a host's report of a two-hander takes the place of what the record wore in
+// either hand, the fate's right-hand pick, a left-hand piece and an outfit
+// shield flagged worn alike, so no stale one-hander stays worn beside it for
+// GetEquippedWeapon's right hand and no shield for a copy to dress over it
+TEST_CASE("A host's report of a two-hander takes the place of the record's "
+          "one-hander, its left-hand piece and its outfit shield",
+          "[CellHost][HostedEquipment][espm]")
+{
+  auto& p = GetPartOne();
+  constexpr uint32_t kHolder = 0xff000c05;
+  // Skyrim.esm WEAP DraugrGreatsword (ETYP BothHands 0x13f45), IronSword
+  // and IronDagger (this file's kIronSword and FavoritesTest's kIronDagger)
+  constexpr uint32_t kGreatsword = 0x000236a5;
+  constexpr uint32_t kSword = 0x00012eb7;
+  constexpr uint32_t kDagger = 0x0001397e;
+  // Skyrim.esm ARMO ArmorIronShield, BOD2 0x200 the shield slot
+  constexpr uint32_t kShield = 0x00012eb6;
+  const NiPoint3 kAtBed{ 117786.f, -81400.f, 10997.f };
+  Player(p, 0, kC1, kAtBed + NiPoint3{ 40.f, 0.f, 0.f });
+  p.CreateActor(kHolder, kAtBed + NiPoint3{ 30.f, 0.f, 0.f }, 0, kTamriel);
+  auto& holder = p.worldState.GetFormAt<MpActor>(kHolder);
+  holder.SetPos(holder.GetPos());
+  const auto cell = p.worldState.CellOf(holder);
+  REQUIRE(cell.has_value());
+  CellLoaded(p, 0, *cell);
+  REQUIRE(p.worldState.HostOf(holder) ==
+          &p.worldState.GetFormAt<MpActor>(kC1));
+  holder.AddItem(kGreatsword, 1);
+  holder.AddItem(kSword, 1);
+  holder.AddItem(kDagger, 1);
+  holder.AddItem(kShield, 1);
+
+  // the record before any report of this host's: the sword in the right
+  // hand (the fate's pick), the dagger in the left, the outfit's shield
+  // flagged worn as the outfit roll flags every piece
+  Equipment recorded;
+  Inventory::Entry sword;
+  sword.baseId = kSword;
+  sword.count = 1;
+  sword.SetWorn(Inventory::Worn::Right);
+  Inventory::Entry dagger;
+  dagger.baseId = kDagger;
+  dagger.count = 1;
+  dagger.SetWorn(Inventory::Worn::Left);
+  Inventory::Entry shield;
+  shield.baseId = kShield;
+  shield.count = 1;
+  shield.SetWorn(Inventory::Worn::Right);
+  recorded.inv.AddItems({ sword, dagger, shield });
+  holder.SetEquipment(recorded);
+
+  // the host's report: the greatsword in both hands, one entry worn and
+  // wornLeft (its HostedStateService's shape)
+  static uint8_t unparsed[] = { Networking::MinPacketId, '{', '}' };
+  RawMessageData raw;
+  raw.userId = 0;
+  raw.unparsed = unparsed;
+  raw.unparsedLength = sizeof(unparsed);
+  UpdateEquipmentMessage msg;
+  msg.idx = holder.GetIdx();
+  msg.data.numChanges = 1;
+  Inventory::Entry both;
+  both.baseId = kGreatsword;
+  both.count = 1;
+  both.SetWorn(Inventory::Worn::Right);
+  both.wornLeft = true;
+  msg.data.inv.entries.push_back(both);
+  p.GetActionListener().OnUpdateEquipment(raw, msg);
+
+  const auto weapons = holder.GetEquippedWeapon();
+  REQUIRE(weapons[1].has_value());
+  REQUIRE(weapons[1]->baseId == kGreatsword);
+  REQUIRE_FALSE(weapons[0].has_value());
+  for (const auto& entry : holder.GetEquipment().inv.entries) {
+    if (entry.baseId == kSword || entry.baseId == kDagger ||
+        entry.baseId == kShield) {
+      REQUIRE(entry.GetWorn() == Inventory::Worn::None);
+    }
+  }
+
+  DoDisconnect(p, 0);
+  p.DestroyActor(kHolder);
   p.DestroyActor(kC1);
 }
 

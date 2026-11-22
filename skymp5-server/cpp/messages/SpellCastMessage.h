@@ -1,4 +1,5 @@
 #pragma once
+#include "../server_guest_lib/CreatedForm.h"
 #include "MessageBase.h"
 #include "MsgType.h"
 #include <optional>
@@ -65,7 +66,8 @@ struct SpellCastMsgData
       .Serialize("launchAngleX", launchAngleX)
       .Serialize("launchAngleZ", launchAngleZ)
       .Serialize("actorAnimationVariables", actorAnimationVariables)
-      .Serialize("decal", decal);
+      .Serialize("decal", decal)
+      .Serialize("createdSpell", createdSpell);
   }
 
   uint32_t caster = 0;
@@ -91,6 +93,11 @@ struct SpellCastMsgData
   ActorAnimationVariables actorAnimationVariables;
   // the launch's surface (above); absent for every cast without one
   std::optional<SpellCastDecal> decal;
+  // SCHEMA_VERSION 63: a made weapon or armor enchantment by its definition,
+  // with spell 0, in the server's relay of an enchanted weapon's hit to the
+  // struck actor's own game (ActionListener::RunEnchantedHit), so that
+  // game runs the effect; a client's cast never carries one (wire-validate)
+  std::optional<CreatedForm> createdSpell;
 };
 
 struct SpellCastMessage : public MessageBase<SpellCastMessage>

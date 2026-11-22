@@ -490,8 +490,8 @@ TEST_CASE("A world skill book's open raises its skill once, the record going "
 }
 
 TEST_CASE("A skill book read from the inventory raises nothing when a world "
-          "copy of it is opened; the copy's Take sends the record and takes "
-          "the book",
+          "copy of it is opened; the copy's Take sends the record, and its "
+          "engine's report takes the book",
           "[Leveling][Books][espm]")
 {
   PartOne& p = GetPartOne();
@@ -515,7 +515,8 @@ TEST_CASE("A skill book read from the inventory raises nothing when a world "
   REQUIRE(log.Count(kAgainAtOpen) == 1);
   REQUIRE(log.Count(kRaisedAtOpen) == 0);
 
-  // the Take: the record at the open's end, the book into the bag
+  // the Take: the record at the open's end, the book granted to the
+  // reader's engine, whose report puts it in the bag
   p.Messages().clear();
   ActivateBook(p, kWorldOneHandedBook);
   REQUIRE(OpensSent(p, kWorldOneHandedBook) == 0);
@@ -523,9 +524,17 @@ TEST_CASE("A skill book read from the inventory raises nothing when a world "
   REQUIRE(sent.size() == 1);
   REQUIRE(sent[0].skills[0].level == 16.f);
   REQUIRE(log.Count(kRecordAtEnd) == 1);
+  REQUIRE(!book.IsHarvested());
+  REQUIRE(book.GetPickupGrantee() == ac.GetFormId());
+  REQUIRE(ac.GetOpenBook() == 0);
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::TakeItem },
+                            { "baseId", kOneHandedBook },
+                            { "count", 1 },
+                            { "target", kWorldOneHandedBook } });
+  p.Tick();
   REQUIRE(book.IsHarvested());
   REQUIRE(ac.GetInventory().GetItemCount(kOneHandedBook) == 2);
-  REQUIRE(ac.GetOpenBook() == 0);
   REQUIRE(ac.GetActorValueRecord()->skills[0].level == 16.f);
 
   Leave(p, kActor);

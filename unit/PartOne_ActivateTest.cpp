@@ -971,6 +971,19 @@ TEST_CASE("Activate torch", "[espm][PartOne]")
                               { { "caster", 0x14 },
                                 { "target", refrId },
                                 { "isSecondActivation", false } } } });
+  partOne.Tick();
+
+  // a player's pickup of a game-file item is its own engine's: the activation
+  // grants it, and the record follows the game's report of the take
+  REQUIRE(!ref.IsHarvested());
+  REQUIRE(ref.GetPickupGrantee() == 0xff000000);
+  REQUIRE(ac.GetInventory().GetTotalItemCount() == 0);
+  partOne.Messages().clear();
+  DoMessage(partOne, 0,
+            nlohmann::json{ { "t", MsgType::TakeItem },
+                            { "baseId", torchBaseId },
+                            { "count", 1 },
+                            { "target", refrId } });
 
   partOne.Tick(); // send deferred inventory update messages
 

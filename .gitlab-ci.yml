@@ -183,7 +183,7 @@ client-build:
       foreach ($f in 'Skyrim.esm', 'Update.esm', 'Dawnguard.esm', 'HearthFires.esm', 'Dragonborn.esm') {
         Invoke-WebRequest -UseBasicParsing -Uri "$env:SKYRIM_DATA_URL/$f" -OutFile "skyrim_data_files/$f"
       }
-    - Push-Location skymp5-client; yarn --frozen-lockfile; if ($LASTEXITCODE) { exit 1 }; yarn build; if ($LASTEXITCODE) { exit 1 }; Pop-Location
+    - Push-Location skymp5-client; yarn --frozen-lockfile; if ($LASTEXITCODE) { exit 1 }; yarn build; if ($LASTEXITCODE) { exit 1 }; yarn test; if ($LASTEXITCODE) { exit 1 }; Pop-Location
     - .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
     - |
       cmake -B build -G "Visual Studio 17 2022" -A x64 "-DVCPKG_ROOT=$PWD/vcpkg" -DUNIT_DATA_DIR=skyrim_data_files -DDOWNLOAD_SKYRIM_DATA=OFF `

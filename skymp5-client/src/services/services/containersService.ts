@@ -1,19 +1,89 @@
-import { Actor, ContainerChangedEvent, printConsole } from "skyrimPlatform";
+import { Actor, ContainerChangedEvent, PickUpObjectEvent, printConsole } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { MsgType } from "../../messages";
 import { getPcInventory } from "./remoteServer";
 import { getInventory, getDiff, hasExtras, removeSimpleItemsAsManyAsPossible, sumInventories } from "../../sync/inventory";
 import { LastInvService } from "./lastInvService";
+import { toWireInventory } from "../../sync/createdForms";
 
 import { PutItemMessage } from "../messages/putItemMessage";
 import { TakeItemMessage } from "../messages/takeItemMessage";
 import { SweetTaffySweetCantDropService } from "./sweetTaffySweetCantDropService";
-import { localIdToRemoteId } from "../../view/worldViewMisc";
+import { localIdToRemoteId, snippetIdToLocalId } from "../../view/worldViewMisc";
+import { grantPickup, holdBook, PICKUP_HOLD_MS, pickupTake } from "../../sync/bookHold";
+import { logLab } from "../../logging";
+import { ConnectionMessage } from "../events/connectionMessage";
+import { SpSnippetMessage } from "../messages/spSnippetMessage";
 
 export class ContainersService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
         super();
         controller.on('containerChanged', (e) => this.onContainerChanged(e));
+        controller.on('pickUpObject', (e) => this.onPickUpObject(e));
+        controller.emitter.on("spSnippetMessage", (e) => this.onGrantSnippet(e));
+    }
+
+    // the server's grant of a pickup to this game: its
+    // ObjectReference.Activate snippet on the item with this player and true,
+    // after which this game's engine runs the pickup. The asked pickup
+    // (activationService) becomes a hold of that one reference. A message's
+    // context: JS state alone, no game call
+    private onGrantSnippet(event: ConnectionMessage<SpSnippetMessage>): void {
+        const msg = event.message;
+        if (msg.class.toLowerCase() !== "objectreference" || msg.function.toLowerCase() !== "activate") {
+            return;
+        }
+        const args = Array.isArray(msg.arguments) ? msg.arguments : [];
+        const taker = args[0];
+        const takerId = taker !== null && typeof taker === "object" && typeof taker.formId === "number" ? snippetIdToLocalId(taker.formId) : 0;
+        if (takerId !== 0x14 || args[1] !== true) {
+            return;
+        }
+        const localId = snippetIdToLocalId(msg.selfId);
+        if (localId && grantPickup(localId, Date.now())) {
+            logLab("verb:pickup", `reference ${localId.toString(16)} granted to this game: its engine's pickup runs`);
+        }
+    }
+
+    // this game's engine picked a world reference up (the platform's
+    // pickUpObject, from PlayerCharacter's PickUpObject: the server's grant
+    // ran the activation's default processing, or the Book Menu's Take ran
+    // it). It is reported as one take from that reference: the base and
+    // count the player's inventory gained and the owner the engine marked the
+    // stack with, the stack's other extras read from the player's inventory
+    // against the record (lastInv). The base is held against the inventory
+    // apply until the server's echo, and the record's baseline advances by
+    // the take, so it is never sent again
+    private onPickUpObject(e: PickUpObjectEvent): void {
+        if (!e.refId || !e.baseId || !(e.count > 0)) {
+            return;
+        }
+        holdBook(e.refId, e.baseId, Date.now() + PICKUP_HOLD_MS, "its pickup until the server's echo");
+        const lastInvService = this.controller.lookupListener(LastInvService);
+        if (!lastInvService.lastInv) {
+            lastInvService.lastInv = getPcInventory();
+        }
+        const player = this.sp.Game.getPlayer();
+        const diff = lastInvService.lastInv && player
+            ? getDiff(lastInvService.lastInv, toWireInventory(getInventory(player as Actor)), false).entries
+            : [];
+        const take = pickupTake(diff, e);
+        const msg: TakeItemMessage = {
+            ...JSON.parse(JSON.stringify(take)) as typeof take,
+            t: MsgType.TakeItem,
+            target: localIdToRemoteId(e.refId),
+        };
+        if (msg.name !== undefined && this.sp.Game.getFormEx(take.baseId)?.getName() === msg.name) {
+            delete msg.name;
+        }
+        this.controller.emitter.emit("sendMessage", {
+            message: msg,
+            reliability: "reliable"
+        });
+        logLab("verb:pickup", `reference ${e.refId.toString(16)} taken by this game's engine: ${take.count} of ${take.baseId.toString(16)}${take.ownerId ? `, owner ${take.ownerId.toString(16)}` : ""}, reported as a take`);
+        if (lastInvService.lastInv) {
+            lastInvService.lastInv = sumInventories(lastInvService.lastInv, { entries: [take] });
+        }
     }
 
     private onContainerChanged(e: ContainerChangedEvent) {
@@ -30,7 +100,10 @@ export class ContainersService extends ClientListener {
                     lastInvService.lastInv = getPcInventory();
                 }
                 if (lastInvService.lastInv) {
-                    const newInv = getInventory(this.sp.Game.getPlayer() as Actor);
+                    // compared in the wire's shape, the record's own (lastInv
+                    // is the server's inventory), so a created form moves by
+                    // its definition (sync/createdForms.ts)
+                    const newInv = toWireInventory(getInventory(this.sp.Game.getPlayer() as Actor));
 
                     // It seems that 'ignoreWorn = false' fixes this:
                     // https://github.com/skyrim-multiplayer/issue-tracker/issues/43

@@ -121,6 +121,10 @@ public:
     uint32_t linkedRefKeywordId = 0;
     uint32_t linkedRefId = 0;
     uint32_t ownerFaction = 0;
+    // XLIB: the leveled list a leveled item placement rolls its item from
+    // (its NAME a placeholder base); zero when the record has none. UESP,
+    // Skyrim mod file format, REFR XLIB.
+    uint32_t leveledItemBaseId = 0;
 
     // XESP: the enable parent (a reference whose enabled state this one
     // follows; flag 1 takes the opposite state, flag 2 pops in). Zero when

@@ -136,7 +136,9 @@ TEST_CASE("UpdateMovement", "[PartOne]")
 
 TEST_CASE("A movement the server rejects reaches no neighbour", "[PartOne]")
 {
-  // thuum docs/verbs/validation.md, Movement: validate, then relay
+  // Movement: validate, then relay. A player's own move is never sent back;
+  // what the server still drops is a report sent before a teleport it made
+  // itself (its arrival), with nothing sent back and nothing relayed
   PartOne partOne;
 
   for (int i = 0; i < 2; ++i) {
@@ -147,14 +149,17 @@ TEST_CASE("A movement the server rejects reaches no neighbour", "[PartOne]")
     m["idx"] = i;
     DoMessage(partOne, i, m);
   }
+  auto& mover = partOne.worldState.GetFormAt<MpActor>(0xff000ABC);
 
-  // User 0's actor jumps 5000 units in one message: MovementValidation
-  // rejects jumps of 4096 or more and snaps the sender back
+  // the server moves user 0's actor 800 units east; its game's next report
+  // comes from where it stood before
+  mover.Teleport(
+    LocationalData{ { 800.f, -1.f, 1.f }, { 0, 0, 0 }, FormDesc::Tamriel() });
   partOne.Messages().clear();
-  auto jump = jMovement;
-  jump["idx"] = 0;
-  jump["data"]["pos"] = { 5001.f, -1.f, 1.f };
-  DoMessage(partOne, 0, jump);
+  auto stale = jMovement;
+  stale["idx"] = 0;
+  stale["data"]["pos"] = { 10.f, -1.f, 1.f };
+  DoMessage(partOne, 0, stale);
 
   bool relayed = false;
   bool snappedBack = false;
@@ -167,6 +172,59 @@ TEST_CASE("A movement the server rejects reaches no neighbour", "[PartOne]")
       snappedBack = true;
     }
   }
-  REQUIRE(snappedBack);
+  REQUIRE_FALSE(snappedBack);
   REQUIRE_FALSE(relayed);
+  REQUIRE(mover.GetPos() == NiPoint3{ 800.f, -1.f, 1.f });
+}
+
+// The player's own game moving it, by a jump in its worldspace (fast travel,
+// a carriage) or into another cell (a jail, a Black Book's Apocrypha, a
+// script's MoveTo), is the record's: the sender is never sent back, the move
+// reaches its neighbour, placed there rather than glided (the cell change
+// through the same path, with the master files loaded: ConsoleCommandTest)
+TEST_CASE("A player's own step past its budget and its jump are recorded "
+          "and relayed, never sent back",
+          "[PartOne]")
+{
+  PartOne partOne;
+
+  for (int i = 0; i < 2; ++i) {
+    DoConnect(partOne, i);
+    partOne.CreateActor(i + 0xff000ABC, { 1.f, 2.f, 3.f }, 180.f, 0x3c);
+    partOne.SetUserActor(i, i + 0xff000ABC);
+    auto m = jMovement;
+    m["idx"] = i;
+    DoMessage(partOne, i, m);
+  }
+  auto& mover = partOne.worldState.GetFormAt<MpActor>(0xff000ABC);
+  const auto count = [&](Networking::UserId user, MsgType type) {
+    int n = 0;
+    for (auto& m : partOne.Messages()) {
+      n += m.userId == user && m.j.value("t", 0) == static_cast<int>(type);
+    }
+    return n;
+  };
+
+  // a step of 3000 units within the cell: past the ground budget's burst
+  // (2048), short of a jump (a script's MoveTo, a lag burst): recorded and
+  // relayed alone, so the neighbour glides it (no ActorJump)
+  partOne.Messages().clear();
+  auto step = jMovement;
+  step["idx"] = 0;
+  step["data"]["pos"] = { 3001.f, -1.f, 1.f };
+  DoMessage(partOne, 0, step);
+  REQUIRE(count(0, MsgType::Teleport2) == 0);
+  REQUIRE(count(1, MsgType::UpdateMovement) == 1);
+  REQUIRE(count(1, MsgType::ActorJump) == 0);
+  REQUIRE(mover.GetPos() == NiPoint3{ 3001.f, -1.f, 1.f });
+
+  // a jump of 5000 units more in Tamriel
+  partOne.Messages().clear();
+  auto jump = jMovement;
+  jump["idx"] = 0;
+  jump["data"]["pos"] = { 8001.f, -1.f, 1.f };
+  DoMessage(partOne, 0, jump);
+  REQUIRE(count(0, MsgType::Teleport2) == 0);
+  REQUIRE(count(1, MsgType::ActorJump) <= 1);
+  REQUIRE(mover.GetPos() == NiPoint3{ 8001.f, -1.f, 1.f });
 }

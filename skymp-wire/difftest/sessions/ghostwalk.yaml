@@ -8,11 +8,11 @@
 # apocalypse's layer, so 0x0C00AAE8, 201370344, the same in every client's),
 # and both stacks load the plugin. At 1.5 s c1 adds itself the spell
 # (AddSpell, an admin's) and at 2 s reports it in its right hand, as in
-# teleports. At 2.5 s c1 moves 3000 units north with no cast: the wire stack
-# sends it back (Teleport2: beyond the 2048-unit ground budget, no permit),
-# the legacy stack takes it; at 3 s c1 reports from the spawn again, which
-# both stacks take (the wire stack holds c1 there already, the legacy stack
-# takes a move under 4096). At 3.5 s c1 casts Ghostwalk (SpellCast, Self, the
+# teleports. (Until ADR-079 decision 7, tracker #191, a move at 2.5 s, 3000
+# units north with no cast, showed the wire stack sending it back, and a
+# report from the spawn at 3 s brought the legacy stack's c1 back; a
+# player's own move is never sent back now, so both steps are gone.) At
+# 3.5 s c1 casts Ghostwalk (SpellCast, Self, the
 # right hand): the wire stack records the cast at the spawn, permits the
 # return and relays the cast (relay true: c2's game would make c1's figure
 # invisible); the legacy stack relays nothing, the spell in no slot of c1's.
@@ -33,8 +33,6 @@ clients:
 steps:
   - {client: c1, at_ms: 1500, send: {t: 12, data: {t: 12, commandName: addspell, args: [20, 201370344]}}}
   - {client: c1, at_ms: 2000, send: {t: 5, idx: "{{idx}}", data: {inv: {entries: []}, rightSpell: 201370344, numChanges: 1}}}
-  - {client: c1, at_ms: 2500, move: {dy: 3000}}
-  - {client: c1, at_ms: 3000, move: {dy: 0}}
   - {client: c1, at_ms: 3500, send: {t: 23, data: {caster: 20, target: 0, spell: 201370344, isDualCasting: false, interruptCast: false, castingSource: 1, aimAngle: 0, aimHeading: 0, hasLaunch: false, originX: 0, originY: 0, originZ: 0, launchAngleX: 0, launchAngleZ: 0, actorAnimationVariables: {booleans: [], floats: [], integers: []}}}}
   - {client: c1, at_ms: 4500, move: {dy: 700}}
   - {client: c1, at_ms: 6000, move: {dy: 1400}}
@@ -79,11 +77,6 @@ divergences:
     legacy: 1
     wire: 0
     reason: the legacy stack's refusal of the spell sends c1 its inventory again (upstream #2665)
-  - client: c1
-    msg: {t: 31}
-    legacy: 0
-    wire: 1
-    reason: the move with no cast goes beyond c1's ground budget and the wire stack sends it back (Teleport2); the return after the cast is the permitted jump and stands; the legacy stack takes both
   - client: c2
     msg: {t: 23, data: {caster: 4278190082, spell: 201370344, castingSource: 1}}
     legacy: 0

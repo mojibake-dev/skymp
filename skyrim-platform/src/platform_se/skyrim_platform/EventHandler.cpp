@@ -10,8 +10,12 @@
 #include "TickHandler.h"
 
 #include <RE/B/BGSArtObject.h>
+#include <RE/G/GameSettingCollection.h>
+#include <RE/P/PlayerCharacter.h>
+#include <RE/S/Setting.h>
 #include <RE/S/SummonCreatureEffect.h>
 #include <RE/S/SummonPlacementEffect.h>
+#include <RE/T/TESFaction.h>
 
 #include <algorithm>
 #include <mutex>
@@ -1825,12 +1829,23 @@ EventResult EventHandler::ProcessEvent(
 
     auto* caster = RE::TESForm::LookupByID<RE::Actor>(casterId);
     auto* spell = RE::TESForm::LookupByID<RE::SpellItem>(spellId);
+    // A staff's cast names the staff's enchantment, a MagicItem that is no
+    // SpellItem, so the SpellItem lookup above finds nothing for it. Such a
+    // cast is the hand's that holds a staff whose own enchantment it is
+    // (CommonLibSSE-NG Actor.h:541 GetEquippedObject, TESObjectWEAP.h:253
+    // IsStaff, TESEnchantableForm.h:26 formEnchanting); a melee weapon's
+    // enchantment raises this event at its hits, which are no casts, and is
+    // dropped. Assumes a staff made at a staff enchanter is a game-file staff
+    // whose record names its enchantment (staffs are ConstructibleObjectMenu
+    // recipes)
+    auto* enchantment =
+      spell ? nullptr : RE::TESForm::LookupByID<RE::EnchantmentItem>(spellId);
 
     if (!caster && casterId != 0) {
       return;
     }
 
-    if (!(spell && spell->IsMagicItem())) {
+    if (!((spell && spell->IsMagicItem()) || enchantment)) {
       spdlog::error(
         "ProcessEvent TESSpellCastEvent error! spell not a MagicItem");
       return;
@@ -1842,18 +1857,33 @@ EventResult EventHandler::ProcessEvent(
       return;
     }
 
+    const auto staffHolds = [&](bool leftHand) {
+      if (!enchantment) {
+        return false;
+      }
+      auto* held = caster->GetEquippedObject(leftHand);
+      auto* weapon = held ? held->As<RE::TESObjectWEAP>() : nullptr;
+      return weapon && weapon->IsStaff() &&
+        weapon->formEnchanting == enchantment;
+    };
+
     const bool isLeftHand =
-      caster->GetActorRuntimeData()
-        .selectedSpells[RE::Actor::SlotTypes::kLeftHand] == spell;
+      (spell &&
+       caster->GetActorRuntimeData()
+           .selectedSpells[RE::Actor::SlotTypes::kLeftHand] == spell) ||
+      staffHolds(true);
     const bool isRightHand =
+      (spell &&
+       caster->GetActorRuntimeData()
+           .selectedSpells[RE::Actor::SlotTypes::kRightHand] == spell) ||
+      staffHolds(false);
+    // a staff's cast has no spell, and an empty slot holds no spell either
+    const bool isVoise = spell &&
       caster->GetActorRuntimeData()
-        .selectedSpells[RE::Actor::SlotTypes::kRightHand] == spell;
-    const bool isVoise =
+          .selectedSpells[RE::Actor::SlotTypes::kUnknown] == spell;
+    const bool isInstant = spell &&
       caster->GetActorRuntimeData()
-        .selectedSpells[RE::Actor::SlotTypes::kUnknown] == spell;
-    const bool isInstant =
-      caster->GetActorRuntimeData()
-        .selectedSpells[RE::Actor::SlotTypes::kPowerOrShout] == spell;
+          .selectedSpells[RE::Actor::SlotTypes::kPowerOrShout] == spell;
 
     const bool isCastValid = isLeftHand || isRightHand || isVoise || isInstant;
 
@@ -1912,7 +1942,17 @@ EventResult EventHandler::ProcessEvent(
 
     AddObjProperty(&obj, "caster", caster, "Actor");
     AddObjProperty(&obj, "target", handleTarget, "ObjectReference");
-    AddObjProperty(&obj, "spell", spell, "Spell");
+    // a staff's cast goes as its enchantment's own Papyrus type, which has the
+    // effect reads the client's cast path asks of a spell (getNumEffects,
+    // getNthEffectMagicEffect, getNthEffectArea)
+    if (spell) {
+      AddObjProperty(&obj, "spell", spell, "Spell");
+    } else {
+      AddObjProperty(&obj, "spell", enchantment, "Enchantment");
+      spdlog::info("[verb:spell-cast] {:x} casts staff enchantment {:x} from "
+                   "its {} hand",
+                   casterId, spellId, isLeftHand ? "left" : "right");
+    }
     AddObjProperty(&obj, "isDualCasting", isDualCasting);
     AddObjProperty(&obj, "castingSource",
                    static_cast<uint32_t>(castingSource));
@@ -3035,4 +3075,150 @@ EventResult EventHandler::ProcessEvent(
   });
 
   return EventResult::kContinue;
+}
+
+// The arrest is the arrested player's own game's, reported before its engine
+// strips and moves the player (the strip's containerChanged events are update
+// tasks raised inside GoToPrison, after this one, assuming the update queue
+// runs in order; not yet traced). The sentence is the engine's own rule as
+// read from the binary (GoToPrison 40655, a decompiler reading): the
+// faction's crime gold over the GMST iCrimeDaysInPrisonMod, truncated, at
+// least 1, at most the GMST iCrimeMaxNumberofDaysinJail, both read from the
+// game's settings here
+void EventHandler::OnArrest(RE::PlayerCharacter* player,
+                            RE::TESFaction* faction)
+{
+  if (!player || !faction) {
+    return;
+  }
+  auto* settings = RE::GameSettingCollection::GetSingleton();
+  auto* perDaySetting =
+    settings ? settings->GetSetting("iCrimeDaysInPrisonMod") : nullptr;
+  auto* maxSetting =
+    settings ? settings->GetSetting("iCrimeMaxNumberofDaysinJail") : nullptr;
+  const int32_t perDay = perDaySetting ? perDaySetting->GetSInt() : 0;
+  const int32_t maxDays = maxSetting ? maxSetting->GetSInt() : 0;
+  const uint32_t gold = player->GetCrimeGoldValue(faction);
+  uint32_t days = perDay > 0 ? gold / static_cast<uint32_t>(perDay) : 1;
+  if (days < 1) {
+    days = 1;
+  }
+  if (maxDays > 0 && days > static_cast<uint32_t>(maxDays)) {
+    days = static_cast<uint32_t>(maxDays);
+  }
+  const uint32_t factionId = faction->formID;
+  logger::info("[verb:jail] arrested by {:x}: {} crime gold over {} a day, "
+               "capped at {}: {} day(s)",
+               factionId, gold, perDay, maxDays, days);
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [factionId, days](Napi::Env env) {
+      auto* faction = RE::TESForm::LookupByID<RE::TESFaction>(factionId);
+      if (!faction) {
+        return;
+      }
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "faction", faction, "Faction");
+      AddObjProperty(&obj, "factionId", factionId);
+      AddObjProperty(&obj, "days", days);
+      SendEvent("arrest", obj);
+    });
+}
+
+// The bed's serve of the sentence would skip its days on this game's clock
+// alone (ServePrisonTime 40657 loops the sleep step), which the shared clock
+// never takes; it does not run, and the scripts hear what was asked
+void EventHandler::OnServePrisonTime(RE::PlayerCharacter* player)
+{
+  if (!player) {
+    return;
+  }
+  const auto& data = player->GetPlayerRuntimeData();
+  const uint32_t factionId =
+    data.currentPrisonFaction ? data.currentPrisonFaction->formID : 0;
+  const uint32_t days =
+    data.jailSentence > 0 ? static_cast<uint32_t>(data.jailSentence) : 0;
+  logger::info("[verb:jail] the serve of {} day(s) for {:x} asked: not run, "
+               "the sentence runs on the shared clock (ADR-079)",
+               days, factionId);
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [factionId, days](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "factionId", factionId);
+      AddObjProperty(&obj, "days", days);
+      SendEvent("servePrisonTime", obj);
+    });
+}
+
+namespace {
+// the faction whose fine the engine's PayFine is paying on this thread, or
+// none: the crime gold change it makes is its fine's, reported once after it
+thread_local const RE::TESFaction* finePaying = nullptr;
+
+void SendCrimeGold(uint32_t factionId, uint32_t paidGold)
+{
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [factionId, paidGold](Napi::Env env) {
+      auto* faction = RE::TESForm::LookupByID<RE::TESFaction>(factionId);
+      if (!faction) {
+        return;
+      }
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "faction", faction, "Faction");
+      AddObjProperty(&obj, "factionId", factionId);
+      if (paidGold > 0) {
+        AddObjProperty(&obj, "paidGold", paidGold);
+      }
+      SendEvent("crimeGold", obj);
+    });
+}
+}
+
+// The player's crime gold for a faction changed in this game's engine; the
+// scripts read it and report it
+void EventHandler::OnCrimeGoldChanged(const RE::TESFaction* faction)
+{
+  if (!faction || faction == finePaying) {
+    return;
+  }
+  SendCrimeGold(faction->formID, 0);
+}
+
+void EventHandler::OnFineBegin(const RE::TESFaction* faction)
+{
+  finePaying = faction;
+}
+
+// The engine's fine is paid: the faction's crime gold as it now stands, and
+// the gold PayFine took from the player (its gold before the call less its
+// gold after), which the engine removes with no destination container
+void EventHandler::OnFinePaid(const RE::TESFaction* faction,
+                              std::uint32_t paidGold)
+{
+  finePaying = nullptr;
+  if (!faction) {
+    return;
+  }
+  SendCrimeGold(faction->formID, paidGold);
+}
+
+// The player's engine picked a world reference up (PlayerCharacter's
+// PickUpObject): the reference, the base and count its inventory gained,
+// and the owner the engine marked the stack with, 0 for none; raised on an
+// update task after the engine's move, by ids alone, since the reference
+// may be gone by then
+void EventHandler::OnPickUpObject(std::uint32_t refId, std::uint32_t baseId,
+                                  std::uint32_t count, std::uint32_t ownerId)
+{
+  logger::info("[verb:pickup] PickUpObject of {:x}: {} of {:x} into the "
+               "player's inventory, owner {:x}",
+               refId, count, baseId, ownerId);
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [refId, baseId, count, ownerId](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "refId", refId);
+      AddObjProperty(&obj, "baseId", baseId);
+      AddObjProperty(&obj, "count", count);
+      AddObjProperty(&obj, "ownerId", ownerId);
+      SendEvent("pickUpObject", obj);
+    });
 }

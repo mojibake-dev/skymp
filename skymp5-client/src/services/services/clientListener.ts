@@ -183,6 +183,15 @@ declare module "skyrimPlatform" {
     }
     function on(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle;
     function once(eventName: 'propImpulse', callback: (event: PropImpulseEvent) => void): EventHandle;
+    // a script's push onto a puppet, skipped by the platform and reported
+    // (PushReportedEvent, Definitions.txt)
+    interface PushReportedEvent {
+        caster: number;
+        target: number;
+        force: number;
+    }
+    function on(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle;
+    function once(eventName: 'pushReported', callback: (event: PushReportedEvent) => void): EventHandle;
 
     // thuum docs/verbs/leveling.md (M5): the player's UseSkill (the fork's hook on
     // PlayerCharacter's vtable slot 0xF7, Address Library 40488), raised on the next
@@ -652,6 +661,58 @@ declare module "skyrimPlatform" {
     function once(eventName: 'summonStart', callback: (event: SummonStartEvent) => void): EventHandle;
     function on(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle;
     function once(eventName: 'summonEnd', callback: (event: SummonEndEvent) => void): EventHandle;
+
+    // skyrim-platform's created-form natives (InventoryApi.cpp), which the
+    // published 2.8.0 typings lack; these mirror its Definitions.txt and the
+    // generated skyrimPlatform.ts (sync/createdForms.ts is their one caller)
+    interface CreatedEffect {
+        mgef: number;
+        magnitude: number;
+        area: number;
+        duration: number;
+        cost: number;
+    }
+    function readCreatedForm(formId: number): { kind: number; effects: CreatedEffect[] } | null;
+    function createCreatedForm(kind: number, effects: CreatedEffect[]): number;
+    function createdFormTemplate(kind: number): number;
+
+    // The fork's Skyrim Platform hooks PlayerCharacter's own GoToPrison,
+    // ServePrisonTime and crime gold setters (Hooks.cpp
+    // InstallPlayerPrisonHooks) and raises these on update tasks; the
+    // published 2.8.0 typings name none of them. They mirror the fork's
+    // Definitions.txt and the generated skyrimPlatform.ts (ArrestEvent,
+    // ServePrisonTimeEvent, CrimeGoldEvent)
+    interface ArrestEvent {
+        faction: Faction;
+        factionId: number;
+        // the sentence by the engine's own rule, 1 to the GMST's cap
+        days: number;
+    }
+    interface ServePrisonTimeEvent {
+        factionId: number;
+        days: number;
+    }
+    interface CrimeGoldEvent {
+        faction: Faction;
+        factionId: number;
+        paidGold?: number;
+    }
+    // PlayerCharacter's PickUpObject: the reference, the base and count the
+    // player's inventory gained, the owner marked on the stack (0 for none)
+    interface PickUpObjectEvent {
+        refId: number;
+        baseId: number;
+        count: number;
+        ownerId: number;
+    }
+    function on(eventName: 'arrest', callback: (event: ArrestEvent) => void): EventHandle;
+    function once(eventName: 'arrest', callback: (event: ArrestEvent) => void): EventHandle;
+    function on(eventName: 'servePrisonTime', callback: (event: ServePrisonTimeEvent) => void): EventHandle;
+    function once(eventName: 'servePrisonTime', callback: (event: ServePrisonTimeEvent) => void): EventHandle;
+    function on(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle;
+    function once(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle;
+    function on(eventName: 'pickUpObject', callback: (event: PickUpObjectEvent) => void): EventHandle;
+    function once(eventName: 'pickUpObject', callback: (event: PickUpObjectEvent) => void): EventHandle;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

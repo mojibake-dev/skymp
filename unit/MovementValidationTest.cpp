@@ -27,7 +27,10 @@ TEST_CASE("Returns true and sends nothing for normal movement",
   REQUIRE(partOne.Messages().empty());
 }
 
-TEST_CASE("Returns false and sends teleport packet when moving too fast",
+// The player's own game moving it by a jump (4096 units or more) is recorded,
+// never sent back, and placed for the other games
+TEST_CASE("A player's own jump of 4096 units or more is recorded, not sent "
+          "back, and placed",
           "[MovementValidation]")
 {
   PartOne& partOne = GetPartOne();
@@ -40,52 +43,69 @@ TEST_CASE("Returns false and sends teleport packet when moving too fast",
 
   partOne.Messages().clear();
   float maxLegalMove = 4096.f;
+  bool placed = false;
   bool res = MovementValidation::Validate(
     partOne, { 1, -1, 1 }, { 123, 111, 123 }, FormDesc::Tamriel(),
     NiPoint3{ 1, -1, 1 } + NiPoint3{ maxLegalMove + 1.f, 0, 0 },
-    FormDesc::Tamriel(), 0, &actor, { "Skyrim.esm" });
-  REQUIRE(!res);
-  REQUIRE(partOne.Messages().size() == 1);
-  REQUIRE(partOne.Messages()[0].j ==
-          nlohmann::json{ { "t", static_cast<int>(MsgType::Teleport2) },
-                          { "pos", { 1, -1, 1 } },
-                          { "rot", { 123, 111, 123 } },
-                          { "worldOrCell", 0x3c } });
-  REQUIRE(partOne.Messages()[0].userId == 0);
+    FormDesc::Tamriel(), 0, &actor, { "Skyrim.esm" }, &placed);
+  REQUIRE(res);
+  REQUIRE(placed);
+  REQUIRE(partOne.Messages().empty());
 }
 
-TEST_CASE(
-  "Returns false and sends teleport packet when moving between locations",
-  "[MovementValidation]")
+// The player's own game moving it into another cell (a jail, a Black Book's
+// Apocrypha, a script's MoveTo) is recorded, never sent back; a report into
+// no cell the server knows breaks the world and is dropped with nothing sent;
+// another game's actor moving cells without the cell-change rule is still
+// dropped, with nothing sent
+TEST_CASE("A player's own move into another cell is recorded, not sent back, "
+          "and one into no cell, or another game's actor's, is dropped",
+          "[MovementValidation]")
 {
   PartOne& partOne = GetPartOne();
 
   DoConnect(partOne, 0);
   partOne.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
   partOne.SetUserActor(0, 0xff000000);
+  partOne.CreateActor(0xff000001, { 0, 0, 0 }, 0, 0x3c);
 
   auto& actor = partOne.worldState.GetFormAt<MpActor>(0xff000000);
+  auto& npc = partOne.worldState.GetFormAt<MpActor>(0xff000001);
+  // Skyrim.esm's RiverwoodSleepingGiantInn, an interior cell (the COC
+  // case's, ConsoleCommandTest)
+  const auto inn = FormDesc::FromString("133c6:Skyrim.esm");
 
   partOne.Messages().clear();
+  bool placed = false;
   bool res = MovementValidation::Validate(
     partOne, { 1, -1, 1 }, { 123, 111, 123 }, FormDesc::Tamriel(),
-    { 1, -1, 1 }, FormDesc::FromString("ffffff:Skyrim.esm"), 0, &actor,
-    { "Skyrim.esm" });
+    { 1, -1, 1 }, inn, 0, &actor, { "Skyrim.esm" }, &placed);
+  REQUIRE(res);
+  REQUIRE(placed);
+  REQUIRE(partOne.Messages().empty());
+
+  res = MovementValidation::Validate(partOne, { 1, -1, 1 }, { 123, 111, 123 },
+                                     FormDesc::Tamriel(), { 1, -1, 1 },
+                                     FormDesc::FromString("ffffff:Skyrim.esm"),
+                                     0, &actor, { "Skyrim.esm" });
   REQUIRE(!res);
-  REQUIRE(partOne.Messages().size() == 1);
-  REQUIRE(partOne.Messages()[0].j ==
-          nlohmann::json{ { "t", static_cast<int>(MsgType::Teleport2) },
-                          { "pos", { 1, -1, 1 } },
-                          { "rot", { 123, 111, 123 } },
-                          { "worldOrCell", 0x3c } });
-  REQUIRE(partOne.Messages()[0].userId == 0);
+  REQUIRE(partOne.Messages().empty());
+
+  res = MovementValidation::Validate(partOne, { 1, -1, 1 }, { 123, 111, 123 },
+                                     FormDesc::Tamriel(), { 1, -1, 1 }, inn, 0,
+                                     &npc, { "Skyrim.esm" });
+  REQUIRE(!res);
+  REQUIRE(partOne.Messages().empty());
 }
 
-TEST_CASE("A player beyond its ground speed budget is sent back",
+TEST_CASE("A player beyond its ground speed budget is recorded, not sent back",
           "[MovementValidation]")
 {
   // thuum docs/verbs/movement-speed.md: two 1000 unit moves at once fit the
-  // 2048 unit burst, a third does not; another user's actor is not charged
+  // 2048 unit burst, a third does not; the third is the player's own game's
+  // move all the same, recorded with nothing sent back, and relayed alone
+  // (the other games glide it, not placed); another user's actor is not
+  // charged
   PartOne& partOne = GetPartOne();
 
   DoConnect(partOne, 0);
@@ -96,20 +116,21 @@ TEST_CASE("A player beyond its ground speed budget is sent back",
   auto& actor = partOne.worldState.GetFormAt<MpActor>(0xff000000);
   auto& npc = partOne.worldState.GetFormAt<MpActor>(0xff000001);
 
-  const auto move = [&](MpActor& who) {
+  const auto move = [&](MpActor& who, bool* placed = nullptr) {
     return MovementValidation::Validate(
       partOne, { 0, 0, 0 }, { 0, 0, 0 }, FormDesc::Tamriel(), { 1000, 0, 50 },
-      FormDesc::Tamriel(), 0, &who, { "Skyrim.esm" });
+      FormDesc::Tamriel(), 0, &who, { "Skyrim.esm" }, placed);
   };
 
   partOne.Messages().clear();
-  REQUIRE(move(actor));
-  REQUIRE(move(actor));
+  bool placed = false;
+  REQUIRE(move(actor, &placed));
+  REQUIRE(!placed);
+  REQUIRE(move(actor, &placed));
+  REQUIRE(!placed);
+  REQUIRE(move(actor, &placed));
+  REQUIRE(!placed);
   REQUIRE(partOne.Messages().empty());
-  REQUIRE(!move(actor));
-  REQUIRE(partOne.Messages().size() == 1);
-  REQUIRE(partOne.Messages()[0].j["t"] ==
-          static_cast<int>(MsgType::Teleport2));
 
   partOne.Messages().clear();
   for (int i = 0; i < 5; ++i) {

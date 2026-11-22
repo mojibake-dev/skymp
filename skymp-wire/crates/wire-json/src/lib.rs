@@ -77,7 +77,8 @@ macro_rules! skymp_family {
             58 PropTransform, 59 PropClaim, 60 PropOwner, 61 PlacedRequest, 62 PlacedReport, 63 SkillUse, 64 LockReport, 65 LockPrompt, 66 SetWeather, 67 PerkPick, 68 PerkState, 69 WordWall, 70 RelayedActivation, 71 ObjectAnimation,
             72 ChangeForm, 73 ChangeFormAck, 74 ChangeFormApply, 75 ScriptCall,
             76 ScriptState, 77 ScriptStateApply, 78 DestructionStage, 79 AliasFill,
-            80 WorldGlobal, 81 ScriptVariables, 82 OwnHeadParts, 83 Summon
+            80 WorldGlobal, 81 ScriptVariables, 82 OwnHeadParts, 83 Summon,
+            84 CraftReport, 85 PushActor, 86 Arrest, 87 CrimeGold
         }
     };
 }
@@ -357,7 +358,7 @@ mod tests {
             n += 1;
         }
         assert!(n >= 90, "{n} fixtures");
-        assert_eq!(types.len(), 83, "every SkyMP type has fixtures");
+        assert_eq!(types.len(), 87, "every SkyMP type has fixtures");
     }
 
     /// Writes the fixtures: two per SkyMP type, from arbitrary values with
@@ -1190,6 +1191,80 @@ mod tests {
             assert!(matches!(&m, Message::ScriptStateApply(a) if a.graph_vars.is_none()), "{name}");
             assert!(!render(&m).unwrap_or_default().contains("\"graphVars\""), "{name}: no variables, no key");
         }
+    }
+
+    /// CraftReport 84 and the created forms (SCHEMA_VERSION 61). The ids are
+    /// illustrative, none read from the files: 84-0 is a brew (two
+    /// ingredients lost, a created potion gained under its template), 84-1 an
+    /// enchant (a plain weapon and a filled soul gem lost, the weapon gained
+    /// with its made enchantment, its charge and its name), 84-2 a disenchant
+    /// (an enchanted weapon lost, its enchantment learned), 84-3 a report that
+    /// names a session's own id as a gained base, refused at the wire.
+    /// 28-SetInventory-2 is the record's answer to a brew and an enchant, the
+    /// rows the C++ core writes back; 08-PutItem-2 puts a created potion in a
+    /// container; 11-OnEquip-2 drinks one. Since SCHEMA_VERSION 62 each report
+    /// carries its seq (84-n's is n + 1), and 28-SetInventory-3 is 28-2 as the
+    /// answer to report 1 (its craftAck). Since SCHEMA_VERSION 63,
+    /// 19-DropItem-2 to -4 are drops. Since SCHEMA_VERSION 66,
+    /// 19-DropItem-5 is a drop of a stolen stack, its owner beside it.
+    #[test]
+    fn craft_fixtures_validate_as_named() {
+        use wire_validate::{validate, validate_server, ClientGuard, Reject};
+        let read = |name: &str| std::fs::read_to_string(fixtures_dir().join(name)).unwrap_or_default();
+        type Verdict = (&'static str, Result<(), Reject>);
+        let verdicts: [Verdict; 12] = [
+            ("84-CraftReport-0.json", Ok(())),
+            ("84-CraftReport-1.json", Ok(())),
+            ("84-CraftReport-2.json", Ok(())),
+            ("84-CraftReport-3.json", Err(Reject::Range)),
+            ("28-SetInventory-2.json", Ok(())),
+            ("28-SetInventory-3.json", Ok(())),
+            ("08-PutItem-2.json", Ok(())),
+            ("11-OnEquip-2.json", Ok(())),
+            // SCHEMA_VERSION 63: a dropped brew by its template and definition, a
+            // dropped weapon with its made enchantment, its charge and its name,
+            // and a drop naming a session's own id as its base, refused at the wire
+            ("19-DropItem-2.json", Ok(())),
+            ("19-DropItem-3.json", Ok(())),
+            ("19-DropItem-4.json", Err(Reject::Range)),
+            // SCHEMA_VERSION 66: a dropped stack of 0x1397e whose owner is
+            // the faction 0x28170
+            ("19-DropItem-5.json", Ok(())),
+        ];
+        for (name, verdict) in verdicts {
+            let m = recognize(&read(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(validate_server(&m), verdict, "{name}");
+            assert_eq!(validate(&m, &mut ClientGuard::default(), 0), verdict, "{name}");
+        }
+        match recognize(&read("84-CraftReport-0.json")) {
+            Ok(Message::CraftReport(c)) => {
+                assert_eq!((c.workbench, c.seq, c.lost.len(), c.gained.len()), (0xbe9a1, 1, 2, 1));
+                let potion = c.gained.first().and_then(|e| e.created_base.clone()).unwrap_or_default();
+                assert_eq!(potion.kind, skymp::CREATED_POTION);
+                assert_eq!(potion.effects.iter().map(|e| (e.mgef, e.magnitude, e.duration)).collect::<Vec<_>>(), vec![(0x3eb15, 25.0, 0), (0x3eb01, 2.5, 30)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("28-SetInventory-3.json")) {
+            Ok(Message::SetInventory(s)) => assert_eq!((s.craft_ack, s.inventory.entries.len()), (Some(1), 4)),
+            other => panic!("{other:?}"),
+        }
+        match recognize(&read("84-CraftReport-2.json")) {
+            Ok(Message::CraftReport(c)) => assert_eq!((c.gained.len(), c.learned_enchantments.to_vec()), (0, vec![0x4605a])),
+            other => panic!("{other:?}"),
+        }
+        // a stack without the created keys (a 60 peer's, every recorded
+        // session's) reads them as none, and renders none back
+        let older = r#"{"t":28,"inventory":{"entries":[{"baseId":77495,"count":1,"health":1.5}]}}"#;
+        match recognize(older) {
+            Ok(Message::SetInventory(s)) => {
+                let e = s.inventory.entries.first().cloned().unwrap_or_default();
+                assert!(e.created_base.is_none() && e.created_enchantment.is_none() && e.created_poison.is_none());
+                assert!(s.craft_ack.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!render(&recognize(older).unwrap_or_else(|e| panic!("{e}"))).unwrap_or_default().contains("created"));
     }
 
     #[test]

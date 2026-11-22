@@ -160,7 +160,7 @@ export class HitService extends ClientListener {
 
             // a figure's own hit is its player's to report; what its spell
             // does to this game's player is the server's number and the
-            // engine's everything else (Skyrim Platform's PlayerAddTarget
+            // engine's everything else (Skyrim Platform's PlayerEffectAdded
             // hook, Hooks.cpp; thuum docs/verbs/push.md)
             if (!alreadyHosted) {
               return;

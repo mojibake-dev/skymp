@@ -12,9 +12,10 @@ PartOne& GetPartOne();
 // A script's push in the sender's game onto an actor another seat simulates
 // is reported (PushActor), checked for consistency alone and run by that
 // actor's host, PushActorAway with the caster's figure as self. The push
-// rides on a hit: a cast of the caster's must have claimed one on the target. The hosting
-// idiom is ActorDeathTest.cpp's (a seat's CellLoaded makes it the cell's host
-// past the grace); the actor is its predator 0x85547 in the same forest cell.
+// rides on a hit: a cast of the caster's must have claimed one on the target.
+// The hosting idiom is ActorDeathTest.cpp's (a seat's CellLoaded makes it the
+// cell's host past the grace); the actor is its predator 0x85547 in the same
+// forest cell.
 
 namespace {
 constexpr uint32_t kTamriel = 0x3c;

@@ -9204,9 +9204,9 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
       // its range, so its other targets claim the cast that long after its
       // first (wire-rules casts::CastFacts::cone_ms)
       if (proj.IsCone() && proj.speed > 0.f && proj.range > 0.f) {
-        facts.cone_ms = std::max(
-          facts.cone_ms,
-          static_cast<uint64_t>(proj.range / proj.speed * 1000.f));
+        facts.cone_ms =
+          std::max(facts.cone_ms,
+                   static_cast<uint64_t>(proj.range / proj.speed * 1000.f));
       }
       // thuum docs/verbs/spell-cast.md (train-27): a rune's projectile is a
       // placed trigger whose hit comes when an actor walks into it, minutes

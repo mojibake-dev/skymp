@@ -780,6 +780,22 @@ export class PropService extends ClientListener {
                 prop.restAgain = true;
             }
         }
+        // a word naming this seat for a dead body (the death's) puts the
+        // engine's own body in place (trackedInPlace): one the rescan
+        // tracked moments ago drops its grace, never put back at its record,
+        // and one not tracked yet is looked for at the next update
+        if (mine) {
+            const known = this.props.get(m.refr);
+            if (known === undefined) {
+                this.lastRescan = 0;
+            } else if (known.trackedAt !== 0 && trackedInPlace(known.live, this.isDeadBody(known.localId, known.refr), true)) {
+                known.trackedAt = 0;
+                if (!known.placed && !known.placing) {
+                    known.placed = true;
+                    known.placedAt = clockMs();
+                }
+            }
+        }
         // thuum tracker #178's delay, B (look 4: 0.07 to 0.13 s from the
         // knock edge to the first sample): the grant of this seat's own
         // knocked player opens its stream with the next read, the first
@@ -3027,9 +3043,8 @@ export class PropService extends ClientListener {
                 }
             } else if (!prop) {
                 prop = PropService.newProp(c.refr, c.localId, c.formIdx, c.cell, c.distance, now, c.world, c.parts);
-                const k = this.kinds.get(c.localId);
-                const live = k?.live === true;
-                if (trackedInPlace(live, k !== undefined && k.body === true && !k.live, this.namesMe(c.refr))) {
+                const live = this.kinds.get(c.localId)?.live === true;
+                if (trackedInPlace(live, this.isDeadBody(c.localId, c.refr), this.namesMe(c.refr))) {
                     // the engine's own body in place (bodyStream.ts
                     // trackedInPlace): where its engine has it, never put
                     // back at its record, and no grace
@@ -3446,6 +3461,13 @@ export class PropService extends ClientListener {
     followsBody(refr: number): boolean {
         const prop = this.props.get(refr);
         return prop !== undefined && this.isBody(prop) && (prop.imposing || this.followLive(prop, clockMs()));
+    }
+
+    // whether the reference is a dead NPC's body, not a knocked live one
+    // (kindOfBody's entry)
+    private isDeadBody(localId: number, refr: number): boolean {
+        const k = this.kinds.get(localId);
+        return k !== undefined && k.refr === refr && k.body === true && !k.live;
     }
 
     // whether the prop is a dead NPC's body (kindOfBody's entry)

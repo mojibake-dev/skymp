@@ -6,7 +6,7 @@
   "scripts": {
     "build": "webpack",
     "watch": "webpack -w",
-    "test": "tsc src/sync/bookHold.ts src/sync/latestPerKey.ts --outDir build/test --module commonjs --target es2019 --strict && node test/bookHold.test.js && node test/latestPerKey.test.js"
+    "test": "tsc src/sync/bookHold.ts src/sync/latestPerKey.ts src/sync/baseline.ts --outDir build/test --module commonjs --target es2019 --strict && node test/bookHold.test.js && node test/latestPerKey.test.js && node test/baseline.test.js"
   },
   "devDependencies": {
     "bestzip": "^2.2.0",

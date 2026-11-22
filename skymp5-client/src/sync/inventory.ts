@@ -161,6 +161,10 @@ export const hasExtras = (e: Entry): boolean => {
   return !extrasEqual(e, { baseId: 0, count: 0 });
 };
 
+// two stacks of one base with the same extras, worn flags included: getDiff's
+// match with ignoreWorn false
+export const sameStack = (a: Entry, b: Entry): boolean => a.baseId === b.baseId && extrasEqual(a, b, false);
+
 const extractExtraData = (
   refr: ObjectReference,
   extraList: BaseExtraList | null,

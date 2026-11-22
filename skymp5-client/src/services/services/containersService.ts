@@ -10,6 +10,13 @@ import { PutItemMessage } from "../messages/putItemMessage";
 import { TakeItemMessage } from "../messages/takeItemMessage";
 import { SweetTaffySweetCantDropService } from "./sweetTaffySweetCantDropService";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
+import { holdBook } from "../../sync/bookHold";
+import { logLab } from "../../logging";
+
+// how long a pickup's base is held against the player inventory apply, from
+// the engine's take until the server's echo of it (the server's grant lasts as
+// long)
+const PICKUP_HOLD_MS = 10000;
 
 export class ContainersService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -20,8 +27,20 @@ export class ContainersService extends ClientListener {
     private onContainerChanged(e: ContainerChangedEvent) {
         const sweetCantDropService = this.controller.lookupListener(SweetTaffySweetCantDropService);
 
-        if (e.oldContainer && e.newContainer) {
+        // a pickup: this game's engine took a world item into its player's
+        // inventory (the server's grant ran its activation's default
+        // processing, or the Book Menu's Take ran the pickup), so the event
+        // names no old container and carries the reference taken. It is
+        // reported as a take from that reference with the stack the engine
+        // added, its owner, the stolen mark, with it; the base is held
+        // against the inventory apply until the server's echo
+        const pickedUp = !e.oldContainer && !!e.newContainer && e.newContainer.getFormID() === 0x14 && !!e.reference;
+        if (pickedUp) {
+            holdBook(e.reference.getFormID(), e.baseObj.getFormID(), Date.now() + PICKUP_HOLD_MS, "its pickup until the server's echo");
+        }
+        if ((e.oldContainer && e.newContainer) || pickedUp) {
             if (
+                pickedUp ||
                 e.oldContainer.getFormID() === 0x14 ||
                 e.newContainer.getFormID() === 0x14
             ) {
@@ -60,10 +79,15 @@ export class ContainersService extends ClientListener {
                             const msg: PutItemMessage | TakeItemMessage = {
                                 ...entryCopy,
                                 t: entry.count > 0 ? MsgType.PutItem : MsgType.TakeItem,
-                                target: e.oldContainer.getFormID() === 0x14
-                                    ? localIdToRemoteId(e.newContainer.getFormID())
-                                    : localIdToRemoteId(e.oldContainer.getFormID())
+                                target: pickedUp
+                                    ? localIdToRemoteId(e.reference.getFormID())
+                                    : e.oldContainer.getFormID() === 0x14
+                                        ? localIdToRemoteId(e.newContainer.getFormID())
+                                        : localIdToRemoteId(e.oldContainer.getFormID())
                             };
+                            if (pickedUp) {
+                                logLab("verb:pickup", `reference ${e.reference.getFormID().toString(16)} taken by this game's engine: ${Math.abs(entry.count)} of ${entry.baseId.toString(16)}${entry.ownerId ? `, owner ${entry.ownerId.toString(16)}` : ""}, reported as a take`);
+                            }
                             msg.count = Math.abs(msg.count);
                             if (this.sp.Game.getFormEx(entry.baseId)?.getName() === msg.name) {
                                 delete msg.name;

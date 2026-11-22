@@ -1,8 +1,10 @@
 #include "ActionListener.h"
 #include "ActivateMessage.h"
+#include "ActorValueRecord.h"
 #include "CreateActorMessage.h"
 #include "DestroyActorMessage.h"
 #include "DestructionStageMessage.h"
+#include "HitMessage.h"
 #include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
 #include "PropTransformMessage.h"
@@ -2551,4 +2553,102 @@ TEST_CASE("Another player's grip holds a player's body: its grab is granted "
   DoDisconnect(p, 1);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
+}
+
+// Dawnguard.esm: the Vampire Lord's grip, DLC1nVampireBloodyGripSpell
+// 0x0200E7D2, is a concentration spell whose cloak effect
+// DLC1nVampireBloodyGripCloakEffect 0x0200E7D7 reaches DLC1VampireGripDmg
+// 0x0200E7DA, an Absorb Health of 5 a second whose effect 0x0200E7E8 holds
+// one condition, GetActorValue(Grabbed) == 1: the engine's mark on the actor
+// a grab holds, set only in the gripper's game
+namespace {
+constexpr uint32_t kGripSpell = 0x0200e7d2;
+constexpr uint32_t kGripDmg = 0x0200e7da;
+
+// two players in the forest, `gripped` with a recorded base health of 250
+// and the gripper with the grip in its right hand, cast
+MpActor& GripPair(PartOne& p, uint32_t gripped, uint32_t gripper)
+{
+  const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+  auto& body = Player(p, 0, gripped, kForest);
+  auto& hands = Player(p, 1, gripper, kForest + NiPoint3{ 20.f, 0.f, 0.f });
+  p.TickCellHosts(NowMs());
+  ActorValueRecord record;
+  record.bases = { { 24, 250.f } };
+  REQUIRE(body.SetActorValueRecord(record));
+  Equipment eq;
+  eq.rightSpell = kGripSpell;
+  hands.SetEquipment(eq);
+  DoMessage(
+    p, 1,
+    nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
+                    { "data",
+                      { { "caster", 0x14 },
+                        { "target", 0 },
+                        { "spell", kGripSpell },
+                        { "isDualCasting", false },
+                        { "interruptCast", false },
+                        { "castingSource", 1 },
+                        { "aimAngle", 0.f },
+                        { "aimHeading", 0.f },
+                        { "hasLaunch", false },
+                        { "originX", 0.f },
+                        { "originY", 0.f },
+                        { "originZ", 0.f },
+                        { "launchAngleX", 0.f },
+                        { "launchAngleZ", 0.f },
+                        { "actorAnimationVariables",
+                          { { "booleans", nlohmann::json::array() },
+                            { "floats", nlohmann::json::array() },
+                            { "integers", nlohmann::json::array() } } } } } });
+  return body;
+}
+
+// the gripper's game's report of the grip's drain on `gripped`
+void GripDrains(PartOne& p, uint32_t gripped)
+{
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = gripped;
+  hit.data.source = kGripDmg;
+  p.GetActionListener().OnHit(Raw(1), hit);
+}
+
+void GripLeave(PartOne& p, uint32_t gripped, uint32_t gripper)
+{
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 0);
+  p.DestroyActor(gripped);
+  p.DestroyActor(gripper);
+}
+}
+
+TEST_CASE("A grip's drain takes health from the body its grab holds",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  auto& body = GripPair(p, kC1, kC2);
+  Claim(p, 1, kC1, 1);
+  REQUIRE(p.PropLiveOwner(body) == kC2);
+  GripDrains(p, kC1);
+  // the first report counts one cadence, half a second: 2.5 of 250
+  REQUIRE(body.GetChangeForm().actorValues.healthPercentage ==
+          Catch::Approx(0.99f));
+  GripLeave(p, kC1, kC2);
+}
+
+TEST_CASE("A grip's drain takes nothing from a body its grab let go",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  auto& body = GripPair(p, kC3, kC4);
+  Claim(p, 1, kC3, 1);
+  REQUIRE(p.PropLiveOwner(body) == kC4);
+  // the gripper's rest (its copy's get-up) returns the body
+  Sample(p, 1, kC3, body.GetPos(), true);
+  REQUIRE(p.PropLiveOwner(body) == 0);
+  GripDrains(p, kC3);
+  REQUIRE(body.GetChangeForm().actorValues.healthPercentage ==
+          Catch::Approx(1.f));
+  GripLeave(p, kC3, kC4);
 }

@@ -13,7 +13,7 @@ import { LastInvService } from "./lastInvService";
 import { HostService } from "./hostService";
 import { FIRED_MS, RelayedActivationService } from "./relayedActivationService";
 import { logError, logLab, logTrace } from "../../logging";
-import { holdBook, PICKUP_HOLD_MS } from "../../sync/bookHold";
+import { notePickupAsked } from "../../sync/bookHold";
 import { FormTypeEx } from "../../extensions/formTypeEx";
 
 // a reference as the lab's lines name it: its server id (a game-file
@@ -230,14 +230,14 @@ export class ActivationService extends ClientListener {
         }
 
         // the player's own activation of a game-file item asks the server for
-        // its pickup, which this game's engine then runs on the server's grant:
-        // the reference and its base are held from here, so the take the
-        // engine adds is reported from this reference (containersService) and
-        // its base is kept against the inventory apply until the server's echo
+        // its pickup, which this game's engine runs on the server's grant: the
+        // reference and its base are noted here, in the activation's game
+        // context, and become a hold when the grant arrives
+        // (containersService), so a refused activation never holds
         const targetBase = e.target.getBaseObject();
         const localTarget = e.target.getFormID();
         if (e.caster && e.caster.getFormID() === 0x14 && targetBase && FormTypeEx.isItem(targetBase.getType()) && localTarget < 0xff000000) {
-            holdBook(localTarget, targetBase.getFormID(), Date.now() + PICKUP_HOLD_MS, "its pickup's grant");
+            notePickupAsked(localTarget, targetBase.getFormID(), Date.now());
         }
 
         this.controller.emitter.emit("sendMessage", {

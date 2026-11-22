@@ -596,3 +596,60 @@ TEST_CASE("A fine's confiscation: an owned stack's put into a hold's evidence "
   REQUIRE(evidence.GetInventory().GetItemCount(kDagger) == inEvidence + 2);
   Leave(p);
 }
+
+TEST_CASE("A fine's gold leaves the record: the gold the player's engine "
+          "paid as it set the bounty, at most the bounty recorded before and "
+          "the gold the record holds; a bribe pays part of it the same way, "
+          "and more than either is refused with the bounty still set",
+          "[Jail][espm]")
+{
+  // Skyrim.esm's MISC Gold001
+  constexpr uint32_t kGold001 = 0x0000000f;
+  PartOne& p = GetPartOne();
+  auto& player = Arrive(p);
+  const auto falkreath =
+    FormDesc::FromFormId(kFalkreath, p.worldState.espmFiles);
+  const auto gold = [&] {
+    return player.GetInventory().GetItemCount(kGold001);
+  };
+  const auto bounty = [&] {
+    const auto record = player.GetCrimeRecord();
+    const CrimeGold* held = record.Find(falkreath);
+    return held ? held->violent + held->nonViolent : 0u;
+  };
+  player.AddItem(kGold001, 140);
+  const uint32_t start = gold();
+
+  // a fine: the whole bounty, in the game's own message
+  REQUIRE(p.OnCrimeGold(player, kFalkreath, 0, 40));
+  REQUIRE(bounty() == 40);
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::CrimeGold },
+                            { "faction", kFalkreath },
+                            { "violent", 0 },
+                            { "nonViolent", 0 },
+                            { "paidGold", 40 } });
+  REQUIRE(gold() == start - 40);
+  REQUIRE(bounty() == 0);
+
+  // a bribe: part of the bounty
+  REQUIRE(p.OnCrimeGold(player, kFalkreath, 0, 40));
+  p.OnCrimeGold(player, kFalkreath, 0, 0, 20);
+  REQUIRE(gold() == start - 60);
+  REQUIRE(bounty() == 0);
+
+  // more than the bounty recorded before the report: refused, the bounty
+  // the game reports still recorded
+  REQUIRE(p.OnCrimeGold(player, kFalkreath, 0, 10));
+  p.OnCrimeGold(player, kFalkreath, 0, 0, 11);
+  REQUIRE(gold() == start - 60);
+  REQUIRE(bounty() == 0);
+
+  // more than the record's gold: refused
+  REQUIRE(p.OnCrimeGold(player, kFalkreath, 1000, 0));
+  p.OnCrimeGold(player, kFalkreath, 0, 0, start);
+  REQUIRE(gold() == start - 60);
+  REQUIRE(bounty() == 0);
+
+  Leave(p);
+}

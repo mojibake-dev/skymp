@@ -71,8 +71,12 @@ export class JailService extends ClientListener {
         }
         const violent = Math.max(0, Math.floor(faction.getCrimeGoldViolent()));
         const nonViolent = Math.max(0, Math.floor(faction.getCrimeGoldNonViolent()));
+        // the engine's fine (PayFine) carries the gold it took from the
+        // player, which the engine removes with no destination container, so
+        // the record pays it too (the platform's crimeGold event, paidGold)
+        const paidGold = Math.max(0, Math.floor((e as unknown as { paidGold?: number }).paidGold ?? 0));
         const last = this.sent.get(e.factionId);
-        if (last && last.violent === violent && last.nonViolent === nonViolent) {
+        if (paidGold === 0 && last && last.violent === violent && last.nonViolent === nonViolent) {
             return;
         }
         this.sent.set(e.factionId, { violent, nonViolent });
@@ -81,9 +85,10 @@ export class JailService extends ClientListener {
             faction: e.factionId,
             violent,
             nonViolent,
+            ...(paidGold > 0 ? { paidGold } : {}),
         };
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
-        logLab(TAG, `bounty in ${e.factionId.toString(16)}: ${violent} violent, ${nonViolent} non-violent; CrimeGold sent (tracker #97)`);
+        logLab(TAG, `bounty in ${e.factionId.toString(16)}: ${violent} violent, ${nonViolent} non-violent${paidGold > 0 ? `, ${paidGold} gold paid` : ""}; CrimeGold sent`);
     }
 
     private onServePrisonTime(e: ServePrisonTimeEvent): void {

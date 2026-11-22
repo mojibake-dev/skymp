@@ -13633,5 +13633,6 @@ void ActionListener::OnCrimeGold(const RawMessageData& rawMsgData,
   if (!actor) {
     return;
   }
-  partOne.OnCrimeGold(*actor, msg.faction, msg.violent, msg.nonViolent);
+  partOne.OnCrimeGold(*actor, msg.faction, msg.violent, msg.nonViolent,
+                      msg.paidGold);
 }

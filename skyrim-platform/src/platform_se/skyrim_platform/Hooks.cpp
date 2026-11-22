@@ -395,7 +395,11 @@ void InstallPlayerAddTargetHook()
  * - the crime gold setters: each change reported after the engine's
  *   (EventHandler::OnCrimeGoldChanged). Assumed, not yet traced: the
  *   engine's witnessed crimes reach these virtuals rather than writing the
- *   player's crimeGoldMap themselves.
+ *   player's crimeGoldMap themselves;
+ * - PayFine 0xBB (:385): the fine's crime gold change reported once after
+ *   it with the gold it took from the player, measured around the call
+ *   (Actor::GetGoldAmount, :545), since the engine removes that gold with no
+ *   destination container (EventHandler::OnFineBegin, OnFinePaid).
  */
 struct PlayerGoToPrison
 {
@@ -452,6 +456,24 @@ struct PlayerRemoveCrimeGoldValue
   static inline REL::Relocation<decltype(thunk)> func;
 };
 
+struct PlayerPayFine
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
+                    bool a_goToJail, bool a_removeStolenItems)
+  {
+    const std::int32_t goldBefore = a_this->GetGoldAmount();
+    EventHandler::OnFineBegin(a_faction);
+    func(a_this, a_faction, a_goToJail, a_removeStolenItems);
+    const std::int32_t goldAfter = a_this->GetGoldAmount();
+    EventHandler::OnFinePaid(
+      a_faction,
+      goldBefore > goldAfter
+        ? static_cast<std::uint32_t>(goldBefore - goldAfter)
+        : 0);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
 struct PlayerClearAllCrimeGold
 {
   static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction)
@@ -476,6 +498,7 @@ void InstallPlayerPrisonHooks()
     vtbl.write_vfunc(0xBA, PlayerServePrisonTime::thunk);
   PlayerClearAllCrimeGold::func =
     vtbl.write_vfunc(0x12D, PlayerClearAllCrimeGold::thunk);
+  PlayerPayFine::func = vtbl.write_vfunc(0xBB, PlayerPayFine::thunk);
 }
 
 /**

@@ -3151,22 +3151,54 @@ void EventHandler::OnServePrisonTime(RE::PlayerCharacter* player)
     });
 }
 
+namespace {
+// the faction whose fine the engine's PayFine is paying on this thread, or
+// none: the crime gold change it makes is its fine's, reported once after it
+thread_local const RE::TESFaction* finePaying = nullptr;
+
+void SendCrimeGold(uint32_t factionId, uint32_t paidGold)
+{
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [factionId, paidGold](Napi::Env env) {
+      auto* faction = RE::TESForm::LookupByID<RE::TESFaction>(factionId);
+      if (!faction) {
+        return;
+      }
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "faction", faction, "Faction");
+      AddObjProperty(&obj, "factionId", factionId);
+      if (paidGold > 0) {
+        AddObjProperty(&obj, "paidGold", paidGold);
+      }
+      SendEvent("crimeGold", obj);
+    });
+}
+}
+
 // The player's crime gold for a faction changed in this game's engine; the
 // scripts read it and report it
 void EventHandler::OnCrimeGoldChanged(const RE::TESFaction* faction)
 {
+  if (!faction || faction == finePaying) {
+    return;
+  }
+  SendCrimeGold(faction->formID, 0);
+}
+
+void EventHandler::OnFineBegin(const RE::TESFaction* faction)
+{
+  finePaying = faction;
+}
+
+// The engine's fine is paid: the faction's crime gold as it now stands, and
+// the gold PayFine took from the player (its gold before the call less its
+// gold after), which the engine removes with no destination container
+void EventHandler::OnFinePaid(const RE::TESFaction* faction,
+                              std::uint32_t paidGold)
+{
+  finePaying = nullptr;
   if (!faction) {
     return;
   }
-  const uint32_t factionId = faction->formID;
-  SkyrimPlatform::GetSingleton()->AddUpdateTask([factionId](Napi::Env env) {
-    auto* faction = RE::TESForm::LookupByID<RE::TESFaction>(factionId);
-    if (!faction) {
-      return;
-    }
-    auto obj = Napi::Object::New(env);
-    AddObjProperty(&obj, "faction", faction, "Faction");
-    AddObjProperty(&obj, "factionId", factionId);
-    SendEvent("crimeGold", obj);
-  });
+  SendCrimeGold(faction->formID, paidGold);
 }

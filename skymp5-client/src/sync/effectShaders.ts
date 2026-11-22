@@ -19,13 +19,22 @@ export interface ShaderPass {
   shown: Set<number>;
 }
 
-// Each effect's shader plays for its seconds; a shader shown before and no
-// longer named is stopped.
+// Each effect's shader plays for its seconds, unless this game's engine runs
+// the effect on the actor and draws the shader itself: a second play is a
+// second shader (the art pass's rule). A shader this game played and the
+// engine now draws is left to run, not stopped under it; a shader shown
+// before and no longer named is stopped.
 export function shaderPass(effects: ShaderEffect[], before: Set<number>): ShaderPass {
   const play: Array<{ shader: number; seconds: number }> = [];
   const shown = new Set<number>();
   for (const effect of effects) {
     if (!effect.shader) {
+      continue;
+    }
+    if (effect.engineRuns) {
+      if (before.has(effect.shader)) {
+        shown.add(effect.shader);
+      }
       continue;
     }
     shown.add(effect.shader);

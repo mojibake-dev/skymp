@@ -69,6 +69,9 @@ void EventManager::InitCustom()
   manager->EmplaceEvent("arrest");
   manager->EmplaceEvent("servePrisonTime");
   manager->EmplaceEvent("crimeGold");
+  // this game's player's pickup of a world reference, from PlayerCharacter's
+  // own PickUpObject (EventHandler.cpp, hooked in Hooks.cpp)
+  manager->EmplaceEvent("pickUpObject");
   manager->EmplaceEvent("ipcMessage");
 
   // skse messages

@@ -19,6 +19,7 @@
 #include <simdjson.h>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include "CreateActorMessage.h"
@@ -305,8 +306,11 @@ public:
   void TakeItem(MpActor& actor, const Inventory::Entry& entry);
   // thuum docs/verbs/containers.md: a mover whose put or take the server
   // refused (a reach, a missing item, no hold on the container) hears both
-  // inventories again
+  // inventories again, once for a burst of refusals: while neither record
+  // has changed since its last resync to that mover, within
+  // kResyncRepeatWindow, nothing is sent again
   void ResyncAfterRefusedMove(MpActor& ac);
+  static constexpr std::chrono::milliseconds kResyncRepeatWindow{ 500 };
   // the container's holder (ADR-067 decision 6: one at a time; memo D52's
   // set kept), read by the tests and released by a player's disconnect
   // (PartOne; docs/verbs/containers.md)
@@ -585,6 +589,15 @@ private:
   bool activationBlocked = false;
   uint32_t pickupGrantee = 0;
   std::chrono::steady_clock::time_point pickupGrantUntil{};
+  // the last refused move's resync to each mover: both records as sent, and
+  // when (ResyncAfterRefusedMove)
+  struct ResyncSent
+  {
+    std::string own;
+    std::string container;
+    std::chrono::steady_clock::time_point at{};
+  };
+  std::unordered_map<uint32_t, ResyncSent> resyncSent;
 
   struct Impl;
   std::shared_ptr<Impl> pImpl;

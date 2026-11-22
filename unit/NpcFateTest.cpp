@@ -659,6 +659,36 @@ TEST_CASE("A dead game-file actor is a container to the player beside it",
     REQUIRE(bodySent);
   }
 
+  // a burst of refused takes on records that have not changed (a take-all's
+  // stacks, each reported again by every later event of the burst): the
+  // resync goes once
+  const auto bodySends = [&] {
+    size_t n = 0;
+    for (const auto& msg : SentTo<UpdatePropertyMessage>(p, 0)) {
+      if (msg.idx == actor->GetIdx() && msg.propName == "inventory") {
+        ++n;
+      }
+    }
+    return n;
+  };
+  const size_t ownSends = SentOfType(p, 0, MsgType::SetInventory);
+  const size_t bodySendsBefore = bodySends();
+  for (int i = 0; i < 5; ++i) {
+    REQUIRE_NOTHROW(actor->TakeItem(looter, bow));
+  }
+  REQUIRE(SentOfType(p, 0, MsgType::SetInventory) == ownSends);
+  REQUIRE(bodySends() == bodySendsBefore);
+  REQUIRE(looter.GetInventory().GetItemCount(kLongBow) == looterBows);
+  REQUIRE(actor->GetInventory().GetItemCount(kLongBow) == corpseBows);
+
+  // a record changed between two refusals: the next refusal resyncs again
+  looter.AddItem(kGold, 1);
+  const size_t ownSendsChanged = SentOfType(p, 0, MsgType::SetInventory);
+  const size_t bodySendsChanged = bodySends();
+  REQUIRE_NOTHROW(actor->TakeItem(looter, bow));
+  REQUIRE(SentOfType(p, 0, MsgType::SetInventory) == ownSendsChanged + 1);
+  REQUIRE(bodySends() == bodySendsChanged + 1);
+
   actor->Respawn(false);
   p.worldState.fateRespawnDue.erase(kPredator);
   DoDisconnect(p, 0);

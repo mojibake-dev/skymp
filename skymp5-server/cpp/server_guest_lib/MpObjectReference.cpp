@@ -1222,22 +1222,38 @@ void MpObjectReference::TakeItem(MpActor& ac, const Inventory::Entry& e)
 // reverts both before anything equips
 void MpObjectReference::ResyncAfterRefusedMove(MpActor& ac)
 {
-  // sent at once, not deferred: the engine's own move is already done and
-  // the next frame may equip the phantom (pipeline 3580's T0 read the
-  // deferred SetInventory nowhere)
-  SetInventoryMessage own;
-  own.inventory = ac.GetInventory();
-  ac.SendToUser(own, true);
   // a living actor's inventory is its owner's alone (VisitProperties sends
   // it in mode All only); only a container's or a corpse's record is the
   // mover's to hear, else a forged move naming another player within reach
   // would read that player's inventory (rule 5; the hold's fresh review)
-  if (baseType != "CONT" && !IsCorpse()) {
+  const bool containerToo = baseType == "CONT" || IsCorpse();
+  std::string own = ac.GetInventory().ToJson().dump();
+  std::string container =
+    containerToo ? GetInventory().ToJson().dump() : std::string();
+  // a burst of refusals (one per stack a game's take-all reported, each
+  // reported again by every later event of the burst) resyncs once: the
+  // mover already heard both records as they stand
+  const auto now = std::chrono::steady_clock::now();
+  auto& last = resyncSent[ac.GetFormId()];
+  if (last.at != std::chrono::steady_clock::time_point{} &&
+      now - last.at < kResyncRepeatWindow && last.own == own &&
+      last.container == container) {
+    return;
+  }
+  last.at = now;
+  last.own = std::move(own);
+  last.container = std::move(container);
+  // sent at once, not deferred: the engine's own move is already done and
+  // the next frame may equip the phantom (pipeline 3580's T0 read the
+  // deferred SetInventory nowhere)
+  SetInventoryMessage ownMsg;
+  ownMsg.inventory = ac.GetInventory();
+  ac.SendToUser(ownMsg, true);
+  if (!containerToo) {
     return;
   }
   ac.GetActorToSendTo().SendToUser(
-    CreatePropertyMessage_(this, "inventory", GetInventory().ToJson().dump()),
-    true);
+    CreatePropertyMessage_(this, "inventory", last.container), true);
 }
 
 // thuum docs/verbs/containers.md (ADR-067 decision 6, Eli after playtest 43:

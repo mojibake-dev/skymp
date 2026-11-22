@@ -9,6 +9,7 @@
 #include "SpellCastMessage.h"
 #include "TestUtils.hpp"
 #include "UpdateMovementMessage.h"
+#include "save_storages/AsyncSaveStorage.h"
 #include <algorithm>
 #include <catch2/catch_all.hpp>
 #include <simdjson.h>
@@ -27,6 +28,15 @@ PartOne& GetPartOne();
 // (EspmTest.cpp); the second ingredient 0x34CDD is the one CraftTest.cpp's
 // Dragonborn recipe takes; a stolen stack's owner is the crime faction
 // CrimeFactionFalkreath 0x28170 (ChangeFormMergedTest.cpp).
+
+// SaveStorageTest.cpp's helpers: a file-backed save storage under unit/data
+// and a synchronous upsert into it
+std::shared_ptr<
+  Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>>
+MakeSaveStorageFile();
+void UpsertSync(
+  Viet::ISaveStorage<MpChangeForm, FormDesc, std::vector<FormDesc>>& st,
+  std::vector<std::optional<MpChangeForm>> changeForms);
 
 namespace {
 constexpr uint32_t kActor = 0xff000c98;
@@ -818,4 +828,81 @@ TEST_CASE("A game-file enchanted weapon's hit relays its record's own "
   p.DestroyActor(kAggressor);
   DoDisconnect(p, 1);
   DoDisconnect(p, 0);
+}
+
+// A crafted item lying on the ground at a restart: the dropped copy holds its
+// stack's rows in its own change form, so the save keeps them
+TEST_CASE("A tempered dagger's and a brewed potion's dropped copies survive a "
+          "restart with their rows, and their pickups give the rows back",
+          "[CraftReport][DropItemTest][espm]")
+{
+  PartOne& running = GetPartOne();
+  auto& ac = Player(running);
+  Inventory::Entry dagger(kDagger, 1);
+  dagger.health = 1.1f;
+  ac.AddItems({ dagger, Potion(Heal(30.f), 1) });
+
+  RawMessageData raw;
+  raw.userId = 0;
+  DropItemMessage daggerDrop;
+  daggerDrop.baseId = kDagger;
+  daggerDrop.count = 1;
+  daggerDrop.health = 1.1f;
+  running.GetActionListener().OnDropItem(raw, daggerDrop);
+  DropItemMessage potionDrop;
+  potionDrop.baseId = kPotionTemplate;
+  potionDrop.count = 1;
+  potionDrop.createdBase = Heal(30.f);
+  running.GetActionListener().OnDropItem(raw, potionDrop);
+  REQUIRE(ac.GetInventory().entries.empty());
+  const uint32_t daggerCopyId = DroppedCopy(running, kDagger);
+  const uint32_t potionCopyId = DroppedCopy(running, kPotionTemplate);
+  REQUIRE(daggerCopyId != 0);
+  REQUIRE(potionCopyId != 0);
+
+  // the record as the save writes it: the actor's and the copies'
+  MpChangeForm savedActor = ac.GetChangeForm();
+  savedActor.profileId = 7; // a player character, as the save marks one
+  const MpChangeForm savedDagger =
+    running.worldState.GetFormAt<MpObjectReference>(daggerCopyId)
+      .GetChangeForm();
+  const MpChangeForm savedPotion =
+    running.worldState.GetFormAt<MpObjectReference>(potionCopyId)
+      .GetChangeForm();
+  Leave(running);
+
+  // the restarted server reads the save as AttachSaveStorage does
+  auto storage = MakeSaveStorageFile();
+  UpsertSync(*storage, { savedActor, savedDagger, savedPotion });
+  PartOne& restarted = GetPartOne();
+  restarted.SetPropsPersist(true);
+  restarted.AttachSaveStorage(storage);
+  auto& daggerCopy =
+    restarted.worldState.GetFormAt<MpObjectReference>(daggerCopyId);
+  auto& potionCopy =
+    restarted.worldState.GetFormAt<MpObjectReference>(potionCopyId);
+  REQUIRE(daggerCopy.GetInventory().entries.size() == 1);
+  REQUIRE(daggerCopy.GetInventory().entries[0].health == 1.1f);
+  REQUIRE(potionCopy.GetInventory().entries.size() == 1);
+  REQUIRE(potionCopy.GetInventory().entries[0].createdBase);
+  REQUIRE(
+    potionCopy.GetInventory().entries[0].createdBase->SameAs(Heal(30.f)));
+
+  // the player logs in to its restored actor (the loader disables a player
+  // character, the login enables it) and picks both up
+  auto& loaded = restarted.worldState.GetFormAt<MpActor>(kActor);
+  loaded.Enable();
+  DoConnect(restarted, 0);
+  restarted.SetUserActor(0, kActor);
+  restarted.Tick();
+  daggerCopy.Activate(loaded);
+  potionCopy.Activate(loaded);
+  REQUIRE(Stacks(loaded, kDagger).size() == 1);
+  REQUIRE(Stacks(loaded, kDagger)[0].health == 1.1f);
+  REQUIRE(Stacks(loaded, kPotionTemplate).size() == 1);
+  REQUIRE(Stacks(loaded, kPotionTemplate)[0].createdBase);
+  REQUIRE(Stacks(loaded, kPotionTemplate)[0].createdBase->SameAs(Heal(30.f)));
+
+  restarted.DestroyActor(kActor);
+  DoDisconnect(restarted, 0);
 }

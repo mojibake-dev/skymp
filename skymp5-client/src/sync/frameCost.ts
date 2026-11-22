@@ -122,15 +122,26 @@ export class LastWritten<V> {
 // each frame's share its part of the pass for the time since the frame
 // before, at most `maxShare`, so no frame pays for the whole set.
 export class RefSweep {
-  private lastPass: number | undefined = undefined;
+  private pass: number[] = [];
+  private at = 0;
+  private last: number | undefined = undefined;
 
   constructor(private readonly passMs: number, private readonly maxShare: number) {}
 
+  // the ids this frame reads; `ids` is asked for the set only when a pass
+  // begins, so an id added during a pass is read in the next one, and the
+  // caller skips an id gone since its pass began
   next(ids: () => Iterable<number>, now: number): number[] {
-    if (this.lastPass !== undefined && now - this.lastPass < this.passMs) {
-      return [];
+    if (this.at >= this.pass.length) {
+      this.pass = Array.from(ids());
+      this.at = 0;
     }
-    this.lastPass = now;
-    return Array.from(ids());
+    // the first frame has no frame before it: one id, as any frame's least share
+    const since = this.last === undefined ? 0 : Math.max(0, now - this.last);
+    this.last = now;
+    const share = Math.min(this.maxShare, Math.max(1, Math.ceil(this.pass.length * since / this.passMs)));
+    const slice = this.pass.slice(this.at, this.at + share);
+    this.at += slice.length;
+    return slice;
   }
 }

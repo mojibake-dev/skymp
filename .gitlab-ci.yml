@@ -171,12 +171,39 @@ client-build:
     GIT_DEPTH: "1"
     VCPKG_BINARY_SOURCES: "clear;files,D:/vcpkg-bincache,readwrite"
     VCPKG_FEATURE_FLAGS: "manifests"
+  # A branch's push builds the client only when the branch changes, against canon, a file the build reads: the
+  # client, Skyrim Platform and client-deps, the libraries the platform links (papyrus-vm, savefile, viet,
+  # serialization), skymp-wire (skyrim-platform depends on MpClientPlugin.dll, wire-client-ffi's cdylib), every
+  # project's CMake files (the configure reads them all), vcpkg and its ports, and this file. compare_to keeps a
+  # new branch's first push from counting every file as changed. A pipeline started by hand or by the API builds
+  # the client whatever it changes.
   rules:
     - if: $CLIENT_BUILD_WINDOWS != "1"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "parity"
+    - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/ && $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/
     - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/
+      changes:
+        paths:
+          - .gitlab-ci.yml
+          - .gitmodules
+          - vcpkg
+          - vcpkg.json
+          - overlay_ports/**/*
+          - overlay_triplets/**/*
+          - "**/CMakeLists.txt"
+          - "**/*.cmake"
+          - cmake/**/*
+          - skymp5-client/**/*
+          - skyrim-platform/**/*
+          - client-deps/**/*
+          - skymp-wire/**/*
+          - papyrus-vm/**/*
+          - savefile/**/*
+          - viet/**/*
+          - serialization/**/*
+        compare_to: refs/heads/canon
   script:
     - New-Item -ItemType Directory -Force D:/vcpkg-bincache, skyrim_data_files | Out-Null
     - |
@@ -190,7 +217,9 @@ client-build:
         -DBUILD_NODEJS=OFF -DBUILD_FRONT=OFF -DPREPARE_NEXUS_ARCHIVES=OFF -DCMAKE_BUILD_TYPE=Release `
         -DSKYRIM_VR=OFF -DCPPCOV_PATH=OFF
       if ($LASTEXITCODE) { exit 1 }
-    - cmake --build build --config Release; if ($LASTEXITCODE) { exit 1 }
+    # the client's own targets, all of build/dist/client: Skyrim Platform (its libraries and their copy into the
+    # dist), client-deps' files and the client bundle; the server and its unit tests are server-build's, on Linux
+    - cmake --build build --config Release --target skyrim-platform client-deps skymp5-client; if ($LASTEXITCODE) { exit 1 }
   artifacts:
     name: dist
     paths: [build/dist]

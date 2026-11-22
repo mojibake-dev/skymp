@@ -39,6 +39,14 @@ inputs:
     description: "Set to true if building for Emscripten"
     required: false
     default: "false"
+  BUILD_TARGETS:
+    description: "The CMake targets to build, space-separated; empty builds every target"
+    required: false
+    default: ""
+  RUN_TESTS:
+    description: "Set to false to skip ctest and the OpenCppCoverage install it uses"
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:  
@@ -88,7 +96,7 @@ runs:
       shell: powershell
 
     - name: Check and install OpenCppCoverage using github-script
-      if: runner.os == 'Windows'
+      if: ${{ runner.os == 'Windows' && inputs.RUN_TESTS == 'true' }}
       uses: actions/github-script@v6
       with:
         script: |
@@ -322,7 +330,7 @@ runs:
           console.log("!!! BEFORE BUILD !!!")
     - name: Build
       # Build your program with the given configuration
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} ${{ inputs.BUILD_TARGETS != '' && format('--target {0}', inputs.BUILD_TARGETS) || '' }}
       shell: powershell
     - name: AFTER BUILD
       uses: actions/github-script@v6
@@ -358,6 +366,7 @@ runs:
           fs.writeFileSync(outFilePath, JSON.stringify(res, null, 2));
 
     - name: Test
+      if: ${{ inputs.RUN_TESTS == 'true' }}
       working-directory: ${{github.workspace}}/build
       # Execute tests defined by the CMake configuration.  
       # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail

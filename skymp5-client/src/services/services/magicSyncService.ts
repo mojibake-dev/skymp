@@ -8,6 +8,7 @@ import { ClientListener, CombinedController, Sp } from './clientListener';
 import { HostService } from './hostService';
 import { logLab, logTrace } from '../../logging';
 import { landsOnItsTarget } from "../../sync/spellDelivery";
+import { gripTrace, hex, isWatchedSpell } from "./gripTrace";
 
 import { MsgType } from "../../messages";
 import { noSpellLaunch, SpellCastMsgData, SpellCastMessage } from "../messages/spellCastMessage";
@@ -127,12 +128,23 @@ export class MagicSyncService extends ClientListener {
         // refused each as a cast this player may not make; only the player's
         // own and its hosted actors' go out
         const casterId = event.caster.getFormID();
+        const traced = isWatchedSpell(event.spell ? event.spell.getFormID() : 0);
+        const tracedSpell = traced && event.spell ? hex(event.spell.getFormID()) : "";
+        if (traced) {
+            gripTrace(`cast event ${tracedSpell}`, `caster ${hex(casterId)}, player ${hex(this.playerId)}`);
+        }
         if (casterId !== this.playerId && !this.isHostedByMe(casterId)) {
+            if (traced) {
+                gripTrace(`cast dropped ${tracedSpell}`, `caster ${hex(casterId)} is neither the player nor hosted here`);
+            }
             return;
         }
         const isInterruptCast = false;
 
         const msg: SpellCastMsgData = this.getSpellCastEventData(event, isInterruptCast);
+        if (traced) {
+            gripTrace(`cast message ${tracedSpell}`, `spell ${hex(msg.spell)}, hand ${msg.castingSource}, target ${hex(msg.target)}, projectile wait ${casterId === this.playerId && (MagicSyncService.launchesAtTargetLocation(event.spell) || MagicSyncService.launchesAProjectile(event.spell))}`);
+        }
 
         // thuum docs/verbs/spell-cast.md: the player's own target-location
         // cast waits a few updates for its launch when the engine's launch
@@ -221,6 +233,14 @@ export class MagicSyncService extends ClientListener {
         this.controller.once('update', () => {
             const cast = this.lastCastByHand.get(hand);
             if (!cast) {
+                try {
+                    const inHand = Game.getPlayer()?.getEquippedSpell(hand);
+                    if (inHand && isWatchedSpell(inHand.getFormID())) {
+                        gripTrace(`end lost ${hex(inHand.getFormID())}`, `${ctx.animEventName} left hand ${hand} with no cast recorded for it`);
+                    }
+                } catch (err) {
+                    gripTrace("end check failed", String(err));
+                }
                 return;
             }
             this.lastCastByHand.delete(hand);
@@ -244,6 +264,9 @@ export class MagicSyncService extends ClientListener {
     }
 
     private sendCast(msg: SpellCastMsgData) {
+        if (isWatchedSpell(msg.spell)) {
+            gripTrace(`cast sent ${hex(msg.spell)} ${msg.interruptCast ? "end" : "start"}`, `hand ${msg.castingSource}, caster ${hex(msg.caster)}`);
+        }
         this.controller.emitter.emit("sendMessage", {
             message: { t: MsgType.SpellCast, data: msg },
             reliability: "reliable"

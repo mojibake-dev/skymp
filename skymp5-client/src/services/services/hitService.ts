@@ -8,6 +8,7 @@ import { MagicSyncService } from "./magicSyncService";
 import { MsgType } from "../../messages";
 import { Hit } from "../messages/hitMessage";
 import { shoutGate } from "./shoutService";
+import { gripTrace, hex, isWatchedSpell } from "./gripTrace";
 
 export class HitService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -43,11 +44,22 @@ export class HitService extends ClientListener {
     }
 
     private onEffectApplied(e: { activeEffect?: ActiveMagicEffect; effect: MagicEffect; spell?: Form | null; caster: ObjectReference; target: ObjectReference }) {
+        const tracedId = e.spell ? e.spell.getFormID() : 0;
+        const traced = isWatchedSpell(tracedId);
+        if (traced) {
+            gripTrace(`apply event ${hex(tracedId)}`, `caster ${hex(e.caster?.getFormID())}, target ${hex(e.target?.getFormID())}, effect ${hex(e.effect?.getFormID())}`);
+        }
         if (!e.caster || !e.target || !e.effect || e.caster.getFormID() !== 0x14) {
+            if (traced) {
+                gripTrace(`apply dropped ${hex(tracedId)}`, "no caster, target or effect, or the caster is not the player");
+            }
             return;
         }
         const targetId = e.target.getFormID();
         if (targetId === 0x14 || !isSyncedActorId(targetId)) {
+            if (traced) {
+                gripTrace(`apply dropped ${hex(tracedId)}`, `target ${hex(targetId)} is the player or no synced actor`);
+            }
             return; // a figure or a server actor only (an actor from the game files included, npc-puppet), never the player itself
         }
         this.appliedOn.set(targetId, this.frame);
@@ -57,12 +69,18 @@ export class HitService extends ClientListener {
         // when it gave none
         const spell = e.spell ? e.spell.getFormID() : this.spellInHandWith(e.effect.getFormID());
         if (!spell) {
+            if (e.effect.getFormID() === 0x0200E7E8) {
+                gripTrace("apply dropped 200e7e8", `the cloak's effect on ${hex(targetId)} came with no spell and no spell in hand carries it`);
+            }
             return;
         }
         const key = `${targetId}:${spell}`;
         const sentAt = this.magicSent.get(key);
         const now = Date.now();
         if (sentAt !== undefined && now - sentAt <= HitService.dedupMs) {
+            if (traced) {
+                gripTrace(`apply dropped ${hex(tracedId)}`, `reported for target ${hex(targetId)} ${now - sentAt} ms ago`);
+            }
             return;
         }
         this.magicSent.set(key, now);
@@ -105,13 +123,25 @@ export class HitService extends ClientListener {
     // the player's spell hit: behind a pending shout's report, then two
     // updates behind its cast (self-cast.md)
     private sendSpellHit(spell: number, data: Hit) {
-        const send = () => this.controller.emitter.emit("sendMessage", {
-            message: { t: MsgType.OnHit, data },
-            reliability: "reliable"
-        });
+        const traced = isWatchedSpell(spell);
+        const send = () => {
+            if (traced) {
+                gripTrace(`hit sent ${hex(spell)}`, `aggressor ${hex(data.aggressor)}, target ${hex(data.target)}`);
+            }
+            this.controller.emitter.emit("sendMessage", {
+                message: { t: MsgType.OnHit, data },
+                reliability: "reliable"
+            });
+        };
         if (shoutGate.pending) {
+            if (traced) {
+                gripTrace(`hit held ${hex(spell)}`, `behind a pending shout's report, ${shoutGate.held.length} held before it`);
+            }
             shoutGate.held.push({ spell, send });
             return;
+        }
+        if (traced) {
+            gripTrace(`hit queued ${hex(spell)}`, `${HitService.spellHitDelayUpdates} updates, ${this.due.length} due before it`);
         }
         shoutGate.reportFromHit(spell, "no release seen");
         this.due.push({ frame: this.frame + HitService.spellHitDelayUpdates, send });
@@ -148,10 +178,23 @@ export class HitService extends ClientListener {
         // TODO: add more logging in case of 'return'
         // TODO: allow non-weapon sources
         const aggressor = e.aggressor.getFormID();
+        const tracedId = e.source ? e.source.getFormID() : 0;
+        const traced = isWatchedSpell(tracedId);
+        const drop = (why: string) => {
+            if (traced) {
+                gripTrace(`hit dropped ${hex(tracedId)}`, why);
+            }
+        };
+        if (traced) {
+            gripTrace(`hit event ${hex(tracedId)}`, `aggressor ${hex(aggressor)}, target ${hex(e.target?.getFormID())}`);
+        }
         // thuum docs/verbs/npc-puppet.md: a server actor is a 0xff copy or
         // figure, or an actor from the game files the server sent (its own
         // id in the world model); any other engine actor's hit is nobody's
-        if (aggressor !== 0x14 && !isSyncedActorId(aggressor)) return;
+        if (aggressor !== 0x14 && !isSyncedActorId(aggressor)) {
+            drop(`aggressor ${hex(aggressor)} is no synced actor`);
+            return;
+        }
 
         if (aggressor !== 0x14) {
             // thuum docs/verbs/cell-host.md: an actor this game hosts (its
@@ -163,6 +206,7 @@ export class HitService extends ClientListener {
             // engine's everything else (Skyrim Platform's PlayerEffectAdded
             // hook, Hooks.cpp; thuum docs/verbs/push.md)
             if (!alreadyHosted) {
+              drop(`aggressor ${hex(aggressor)} is not hosted here`);
               return;
             }
         }
@@ -189,14 +233,17 @@ export class HitService extends ClientListener {
                 this.abortedHitLogged = true;
                 printConsole(`hitService: a hit's form call aborted (aggressor ${aggressor.toString(16)}): ${String(err)}`);
             }
+            drop(`a form call aborted: ${String(err)}`);
             return;
         }
 
         if (type === FormType.Static || type === FormType.MovableStatic) {
+            drop(`the target's base is a static (type ${type})`);
             return;
         }
 
         if (!isWeapon && !isSpell && !isScroll) {
+            drop("the source is no weapon, spell or scroll");
             return;
         }
 
@@ -224,6 +271,7 @@ export class HitService extends ClientListener {
             this.magicHitLastMs.set(key, now);
             if (last !== undefined && now - last <= HitService.doubleMs) {
                 this.magicHitLastMs.delete(key); // the pair is spent; a third copy is a new hit
+                drop(`the engine's double, ${now - last} ms after the last`);
                 return;
             }
         }
@@ -249,11 +297,15 @@ export class HitService extends ClientListener {
             const sentAt = this.magicSent.get(key);
             const now = Date.now();
             if (sentAt !== undefined && now - sentAt <= HitService.dedupMs) {
+                drop(`the apply reported it ${now - sentAt} ms ago`);
                 return;
             }
             this.magicSent.set(key, now);
             this.sendSpellHit(e.source.getFormID(), data);
             return;
+        }
+        if (traced) {
+            gripTrace(`hit on another path ${hex(tracedId)}`, `aggressor ${hex(aggressor)}, isSpell ${!!isSpell}, isScroll ${!!isScroll}`);
         }
         if (isWeapon && aggressor === 0x14 && e.source.getFormID() === HitService.kUnarmed) {
             this.heldUnarmed.push({ frame: this.frame, target: e.target.getFormID(), send });

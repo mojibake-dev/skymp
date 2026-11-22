@@ -7,6 +7,7 @@ import { AnyMessage } from "../messages/anyMessage";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { RemoteServer } from "./remoteServer";
 import { SendRawMessageEvent } from "../events/sendRawMessageEvent";
+import { gripTrace, hex, isWatchedSpell } from "./gripTrace";
 
 export class NetworkingService extends ClientListener {
   private wrongPlayerSlotLogged = false;
@@ -20,7 +21,21 @@ export class NetworkingService extends ClientListener {
   }
 
   private onSendMessage(e: SendMessageEvent<AnyMessage>) {
-    this.sp.mpClientPlugin.send(JSON.stringify(e.message), this.isReliable(e.reliability));
+    const m = e.message as { t?: number; data?: { spell?: number; source?: number; interruptCast?: boolean; target?: number } };
+    const watchedId = m.t === MsgType.SpellCast ? m.data?.spell : m.t === MsgType.OnHit ? m.data?.source : undefined;
+    const traced = isWatchedSpell(watchedId);
+    const json = JSON.stringify(e.message);
+    if (traced) {
+      gripTrace(`native send ${m.t === MsgType.SpellCast ? "cast" : "hit"} ${hex(watchedId)}`, `${json.length} bytes, connected ${this.sp.mpClientPlugin.isConnected()}, target ${hex(m.data?.target)}`);
+    }
+    try {
+      this.sp.mpClientPlugin.send(json, this.isReliable(e.reliability));
+    } catch (err) {
+      if (traced) {
+        gripTrace(`native send threw ${hex(watchedId)}`, String(err));
+      }
+      throw err;
+    }
   }
 
   private onSendRawMessage(e: SendRawMessageEvent) {

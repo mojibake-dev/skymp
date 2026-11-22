@@ -4414,7 +4414,7 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   if (carries) {
     Inventory carried;
     carried.AddItems(*rows);
-    placedObject->SetInventory(carried);
+    placedObject->SetCarriedRows(carried);
     spdlog::info("[verb:craft] {:x} drops {} of {:x} with its extras: copy "
                  "{:x} holds them for its pickup",
                  GetFormId(), count, baseId, placedObject->GetFormId());

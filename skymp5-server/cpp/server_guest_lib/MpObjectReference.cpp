@@ -303,6 +303,13 @@ bool MpObjectReference::CarriesItemRows() const
     !GetInventory().IsEmpty();
 }
 
+void MpObjectReference::SetCarriedRows(const Inventory& rows)
+{
+  SetInventory(rows);
+  SendMessageToActorListeners(
+    CreatePropertyMessage_(this, "inventory", rows.ToJson().dump()), true);
+}
+
 bool MpObjectReference::HasRecordedInventory() const
 {
   // baseContainerAdded is set by every write of the record (SetInventory,

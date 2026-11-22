@@ -3,7 +3,7 @@
 // (yarn test).
 "use strict";
 const assert = require("assert");
-const { dueSamples, movementApplyDue, distanceBetween, hostedSampleRateMs, Timed, LastWritten } = require("../build/test/frameCost.js");
+const { dueSamples, movementApplyDue, distanceBetween, hostedSampleRateMs, Timed, LastWritten, RefSweep } = require("../build/test/frameCost.js");
 
 const cases = [];
 const test = (name, fn) => cases.push([name, fn]);
@@ -90,6 +90,64 @@ test("an engine write of an unchanged value is skipped until its reassert", () =
   assert.strictEqual(pitch.due(0.5, 0, 1000, near), true);
   assert.strictEqual(pitch.due(0.50001, 16, 1000, near), false);
   assert.strictEqual(pitch.due(0.6, 32, 1000, near), true);
+});
+
+// frames of `dtMs` over the sweep: each frame's ids, and the first frame each id was read
+const sweep = (s, ids, frames, dtMs, start = 0) => {
+  const reads = [];
+  const first = new Map();
+  for (let f = 0; f < frames; f += 1) {
+    const slice = s.next(() => ids, start + f * dtMs);
+    reads.push(slice);
+    for (const id of slice) {
+      if (!first.has(id)) {
+        first.set(id, f);
+      }
+    }
+  }
+  return { reads, first };
+};
+
+test("1024 engine refs at 60 fps: no frame reads more than 64, and every ref is read within one 500 ms pass", () => {
+  const ids = Array.from({ length: 1024 }, (_, i) => 0x10000 + i);
+  const { reads, first } = sweep(new RefSweep(500, 64), ids, 40, 1000 / 60);
+  for (const slice of reads) {
+    assert.ok(slice.length <= 64, `a frame read ${slice.length}`);
+  }
+  assert.strictEqual(first.size, 1024);
+  for (const f of first.values()) {
+    assert.ok(f * (1000 / 60) <= 500 + 1000 / 60, `a ref first read at frame ${f}`);
+  }
+});
+
+test("a slow frame reads no more than its share; a pass still ends", () => {
+  const ids = Array.from({ length: 1024 }, (_, i) => i + 1);
+  const { reads, first } = sweep(new RefSweep(500, 64), ids, 20, 200);
+  assert.ok(reads.every((slice) => slice.length <= 64));
+  assert.strictEqual(first.size, 1024);
+});
+
+test("a few refs are spread too: 10 refs at 60 fps, at most one a frame, all within the pass", () => {
+  const ids = Array.from({ length: 10 }, (_, i) => i + 1);
+  const { reads, first } = sweep(new RefSweep(500, 64), ids, 31, 1000 / 60);
+  assert.ok(reads.every((slice) => slice.length <= 1));
+  assert.strictEqual(first.size, 10);
+});
+
+test("a ref added during a pass is read in the next one; an empty set reads nothing", () => {
+  const s = new RefSweep(500, 64);
+  const ids = Array.from({ length: 300 }, (_, i) => i + 1);
+  const seen = new Set();
+  let t = 0;
+  for (let f = 0; f < 5; f += 1, t += 1000 / 60) {
+    s.next(() => ids, t).forEach((id) => seen.add(id));
+  }
+  ids.push(9999);
+  for (let f = 0; f < 70; f += 1, t += 1000 / 60) {
+    s.next(() => ids, t).forEach((id) => seen.add(id));
+  }
+  assert.ok(seen.has(9999));
+  assert.deepStrictEqual(new RefSweep(500, 64).next(() => [], 0), []);
 });
 
 let failed = 0;

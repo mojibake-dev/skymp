@@ -116,3 +116,21 @@ export class LastWritten<V> {
     return true;
   }
 }
+
+// A sweep over a set of ids that reads each of them once every `passMs`, a
+// share of them a frame: a pass is the set as it stood when the pass began,
+// each frame's share its part of the pass for the time since the frame
+// before, at most `maxShare`, so no frame pays for the whole set.
+export class RefSweep {
+  private lastPass: number | undefined = undefined;
+
+  constructor(private readonly passMs: number, private readonly maxShare: number) {}
+
+  next(ids: () => Iterable<number>, now: number): number[] {
+    if (this.lastPass !== undefined && now - this.lastPass < this.passMs) {
+      return [];
+    }
+    this.lastPass = now;
+    return Array.from(ids());
+  }
+}

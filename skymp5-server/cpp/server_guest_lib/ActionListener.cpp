@@ -13008,10 +13008,12 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 // ran the enchantment at its hit and is not told; a host that is the
 // aggressor's game is skipped the same way. Assumes a relayed cast on a
 // player lands with its Health number zeroed and its shader shown (Hooks.cpp
-// PlayerEffectAdded), one effect with that game's engine add of the same hit
-// from the aggressor's figure (Hooks.cpp PlayerAddTarget::IsHitsSecondAdd),
-// and a host's engine number for an NPC is reconciled to the server's
-// record. A game-file enchanted weapon runs its record's own
+// PlayerEffectAdded), that the cast lands on an NPC its host simulates
+// (MagicApi.cpp castSpellImmediate's touch branch), that on either it makes
+// one effect with that game's engine add of the same hit from the
+// aggressor's figure (Hooks.cpp EnchantedHitAdds), and that a host's engine
+// number for an NPC is reconciled to the server's record. A game-file
+// enchanted weapon runs its record's own
 // enchantment (libespm WEAP's EITM) the same way
 void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
                                      const HitData& hitData)

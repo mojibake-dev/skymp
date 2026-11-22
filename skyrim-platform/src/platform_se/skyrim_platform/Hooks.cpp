@@ -138,6 +138,121 @@ void InstallQuitDisconnectHook()
 }
 
 /**
+ * One enchanted weapon's hit on an actor reaches that actor's AddTarget twice
+ * in the game that runs it (the struck player's own, an NPC's host): from the
+ * engine, as the attacker's figure's weapon hits the actor in this game
+ * (through the weapon's hand), and from the server's relay of the hit the
+ * attacker's own game registered, which skymp5-client casts from the figure
+ * through its instant caster (castSpellImmediate; kInstant,
+ * include/RE/M/MagicSystem.h:23-29). Both carry the same caster, magic item
+ * and effect. The first add of an effect on a target lands; an add from the
+ * other source within kHitPairWindow is the same hit's second and is
+ * refused, so one effect lands whichever arrives first. A pair closes at its
+ * second add, so the weapon's next hit opens a new one, and an add whose
+ * other half never comes (the figure's swing missing in this game, or a hit
+ * the server never relayed) lands alone. The window outlasts the gap between
+ * the two adds of one hit, each a server trip from the attacker's game, and
+ * the pairing keeps one effect a hit even where it spans two hits. A first
+ * add the engine refuses is dropped from the pairing, so its other half can
+ * land.
+ */
+struct EnchantedHitAdds
+{
+  struct HitAdd
+  {
+    std::uint64_t id = 0;
+    RE::FormID target = 0;
+    RE::FormID caster = 0;
+    RE::FormID item = 0;
+    RE::FormID mgef = 0;
+    bool relayed = false;
+    std::chrono::steady_clock::time_point at;
+  };
+  static constexpr auto kHitPairWindow = std::chrono::milliseconds(1000);
+  static inline std::mutex heldMutex;
+  static inline std::vector<HitAdd> held;
+  static inline std::uint64_t nextId = 0;
+  static inline std::atomic<std::uint32_t> secondAdds{ 0 };
+
+  // true when this add is the second of a hit whose first is held; else
+  // this add is held as its hit's first, under a_id, until it lands or
+  // Forget drops it
+  static bool IsSecond(RE::FormID a_target, const RE::Actor& a_caster,
+                       const RE::MagicTarget::AddTargetData& a_data,
+                       std::uint64_t& a_id)
+  {
+    const auto mgef = a_data.effect ? a_data.effect->baseEffect : nullptr;
+    if (!mgef) {
+      return false;
+    }
+    HitAdd add;
+    add.target = a_target;
+    add.caster = a_caster.GetFormID();
+    add.item = a_data.magicItem->GetFormID();
+    add.mgef = mgef->GetFormID();
+    add.relayed =
+      a_data.castingSource == RE::MagicSystem::CastingSource::kInstant;
+    add.at = std::chrono::steady_clock::now();
+
+    std::lock_guard<std::mutex> lock(heldMutex);
+    held.erase(std::remove_if(held.begin(), held.end(),
+                              [&](const HitAdd& h) {
+                                return add.at - h.at > kHitPairWindow;
+                              }),
+               held.end());
+    const auto first =
+      std::find_if(held.begin(), held.end(), [&](const HitAdd& h) {
+        return h.target == add.target && h.caster == add.caster &&
+          h.item == add.item && h.mgef == add.mgef && h.relayed != add.relayed;
+      });
+    if (first != held.end()) {
+      held.erase(first);
+      return true;
+    }
+    add.id = ++nextId;
+    a_id = add.id;
+    held.push_back(add);
+    return false;
+  }
+
+  static void Forget(std::uint64_t a_id)
+  {
+    std::lock_guard<std::mutex> lock(heldMutex);
+    held.erase(std::remove_if(held.begin(), held.end(),
+                              [&](const HitAdd& h) { return h.id == a_id; }),
+               held.end());
+  }
+
+  // the add through the pairing: a hit's second refused, else the engine's
+  // own AddTarget (a_func), a refused first forgotten
+  template <class Func>
+  static bool Add(RE::MagicTarget* a_this,
+                  RE::MagicTarget::AddTargetData& a_data,
+                  const RE::Actor& a_caster, RE::FormID a_target, Func& a_func)
+  {
+    std::uint64_t id = 0;
+    if (IsSecond(a_target, a_caster, a_data, id)) {
+      const std::uint32_t n = ++secondAdds;
+      if ((n & (n - 1)) == 0) {
+        logger::info(
+          "[verb:magic-effects] an enchanted hit's second add on "
+          "{:x} refused ({} so far; the latest {:x}'s {:x}, {})",
+          a_target, n, a_caster.GetFormID(), a_data.magicItem->GetFormID(),
+          a_data.castingSource == RE::MagicSystem::CastingSource::kInstant
+            ? "the relay's"
+            : "the engine's");
+      }
+      return false;
+    }
+    const bool added = a_func(a_this, a_data);
+    if (!added && id) {
+      Forget(id);
+    }
+    return added;
+  }
+};
+
+/**
  * While skymp5-client holds the server's values for the player
  * (TESModPlatform.SetPotionEffectsBlocked), the server computes every number
  * another actor deals the player, and the player's own game plays the rest of
@@ -155,7 +270,7 @@ void InstallQuitDisconnectHook()
  *   effect (AddTargetData, :56-67), refuses every effect of an alchemy item
  *   (a potion, a food, a poison: spell type kAlchemy), the player's own
  *   drinks being the server's alone, and lets one add through for each
- *   enchanted weapon's hit on the player (PlayerAddTarget::IsHitsSecondAdd).
+ *   enchanted weapon's hit on the player (EnchantedHitAdds).
  *   It passes AddTargetData's magnitude on as it came: the engine's AddTarget
  *   (Address Library 38786) answers false for a fire damage enchantment's
  *   effect handed a zero magnitude and adds nothing, shader and script
@@ -164,8 +279,8 @@ void InstallQuitDisconnectHook()
  *   (include/RE/A/ActiveEffect.h:110) where another actor's cast lands an
  *   effect on the player that modifies Health, Magicka or Stamina
  *   (PlayerEffectAdded), so the effect runs whole with no number of its own.
- *   HYPOTHESIS: EffectAdded runs before the effect's first update and its
- *   start, so no part of the engine's number lands before the zero.
+ *   EffectAdded runs inside AddTarget, before the effect's start and its
+ *   first update, so none of the engine's number lands from the add on.
  */
 struct PlayerAddTarget
 {
@@ -220,85 +335,6 @@ struct PlayerAddTarget
     }
   }
 
-  // One enchanted weapon's hit on the player reaches AddTarget twice: from
-  // the engine, as the attacker's figure's weapon hits the player in this
-  // game (through the weapon's hand), and from the server's relay of the hit
-  // the attacker's own game registered, which skymp5-client casts from the
-  // figure through its instant caster (castSpellImmediate; kInstant,
-  // include/RE/M/MagicSystem.h:23-29). Both carry the same caster, magic item
-  // and effect. The first add of an effect lands; an add from the other
-  // source within kHitPairWindow is the same hit's second and is refused, so
-  // one effect lands whichever arrives first. A pair closes at its second
-  // add, so the weapon's next hit opens a new one, and an add whose other
-  // half never comes (the figure's swing missing in this game, or a hit the
-  // server never relayed) lands alone. The window outlasts the gap between
-  // the two adds of one hit, each a server trip from the attacker's game,
-  // and the pairing keeps one effect a hit even where it spans two hits.
-  struct HitAdd
-  {
-    std::uint64_t id = 0;
-    RE::FormID caster = 0;
-    RE::FormID item = 0;
-    RE::FormID mgef = 0;
-    bool relayed = false;
-    std::chrono::steady_clock::time_point at;
-  };
-  static constexpr auto kHitPairWindow = std::chrono::milliseconds(1000);
-  static inline std::mutex hitAddsMutex;
-  static inline std::vector<HitAdd> hitAdds;
-  static inline std::uint64_t nextHitAdd = 0;
-  static inline std::atomic<std::uint32_t> secondAdds{ 0 };
-
-  // true when this add is the second of a hit whose first is held; else
-  // this add is held as its hit's first, under a_held, until it lands or
-  // ForgetHitAdd drops it
-  static bool IsHitsSecondAdd(const RE::Actor* a_caster,
-                              const RE::MagicTarget::AddTargetData& a_data,
-                              std::uint64_t& a_held)
-  {
-    const auto mgef = a_data.effect ? a_data.effect->baseEffect : nullptr;
-    if (!mgef) {
-      return false;
-    }
-    HitAdd add;
-    add.caster = a_caster->GetFormID();
-    add.item = a_data.magicItem->GetFormID();
-    add.mgef = mgef->GetFormID();
-    add.relayed =
-      a_data.castingSource == RE::MagicSystem::CastingSource::kInstant;
-    add.at = std::chrono::steady_clock::now();
-
-    std::lock_guard<std::mutex> lock(hitAddsMutex);
-    hitAdds.erase(std::remove_if(hitAdds.begin(), hitAdds.end(),
-                                 [&](const HitAdd& held) {
-                                   return add.at - held.at > kHitPairWindow;
-                                 }),
-                  hitAdds.end());
-    const auto first =
-      std::find_if(hitAdds.begin(), hitAdds.end(), [&](const HitAdd& held) {
-        return held.caster == add.caster && held.item == add.item &&
-          held.mgef == add.mgef && held.relayed != add.relayed;
-      });
-    if (first != hitAdds.end()) {
-      hitAdds.erase(first);
-      return true;
-    }
-    add.id = ++nextHitAdd;
-    a_held = add.id;
-    hitAdds.push_back(add);
-    return false;
-  }
-
-  // a held first add the engine refused, so the hit's other add may land
-  static void ForgetHitAdd(std::uint64_t a_held)
-  {
-    std::lock_guard<std::mutex> lock(hitAddsMutex);
-    hitAdds.erase(
-      std::remove_if(hitAdds.begin(), hitAdds.end(),
-                     [&](const HitAdd& held) { return held.id == a_held; }),
-      hitAdds.end());
-  }
-
   static bool thunk(RE::MagicTarget* a_this,
                     RE::MagicTarget::AddTargetData& a_data)
   {
@@ -315,26 +351,7 @@ struct PlayerAddTarget
         caster->IsPlayerRef()) {
       return func(a_this, a_data);
     }
-    std::uint64_t held = 0;
-    if (IsHitsSecondAdd(caster, a_data, held)) {
-      const std::uint32_t n = ++secondAdds;
-      if ((n & (n - 1)) == 0) {
-        logger::info("[verb:magic-effects] an enchanted hit's second add on "
-                     "the player refused ({} so far; the latest {:x}'s "
-                     "{:x}, {})",
-                     n, caster->GetFormID(), a_data.magicItem->GetFormID(),
-                     a_data.castingSource ==
-                         RE::MagicSystem::CastingSource::kInstant
-                       ? "the relay's"
-                       : "the engine's");
-      }
-      return false;
-    }
-    const bool added = func(a_this, a_data);
-    if (!added && held) {
-      ForgetHitAdd(held);
-    }
-    return added;
+    return EnchantedHitAdds::Add(a_this, a_data, *caster, 0x14, func);
   }
   static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -573,12 +590,34 @@ struct CharacterAddTarget
     return RE::EffectSetting::Archetype::kNone;
   }
 
+  // Another actor's enchantment landing on an actor this game simulates
+  // goes through the pairing (EnchantedHitAdds): the server tells an
+  // enchanted hit on an NPC to its host's game alone, so the host's copy is
+  // where the engine's add and the relay's meet
+  static bool Unowned(RE::MagicTarget* a_this,
+                      RE::MagicTarget::AddTargetData& a_data)
+  {
+    if (!TESModPlatform::ArePotionEffectsBlocked() || !a_data.magicItem ||
+        a_data.magicItem->GetSpellType() !=
+          RE::MagicSystem::SpellType::kEnchantment) {
+      return func(a_this, a_data);
+    }
+    const auto caster =
+      a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
+    const auto body = a_this ? a_this->GetTargetStatsObject() : nullptr;
+    if (!caster || caster->IsPlayerRef() || !body || caster == body ||
+        !Hosted::SimulatedHere(body->formID)) {
+      return func(a_this, a_data);
+    }
+    return EnchantedHitAdds::Add(a_this, a_data, *caster, body->formID, func);
+  }
+
   static bool thunk(RE::MagicTarget* a_this,
                     RE::MagicTarget::AddTargetData& a_data)
   {
     const auto owned = Owned(a_data.magicItem, a_data.effect);
     if (owned == RE::EffectSetting::Archetype::kNone) {
-      return func(a_this, a_data);
+      return Unowned(a_this, a_data);
     }
     const auto caster =
       a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;

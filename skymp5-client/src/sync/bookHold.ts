@@ -69,20 +69,23 @@ export const heldBookBases = (now: number): number[] => {
 };
 // the reference a take of `baseId` into the player's inventory is this game's
 // own: the newest hold still running at `now` of that base, else the newest
-// hold of any base (a leveled placement's engine may add the item it rolled
-// under another base than the one the reference was read with); undefined
-// for none
+// pickup's hold of any base, one with an end (a leveled placement's engine may
+// add the item it rolled under another base than the one the reference was
+// read with); an open book's hold, which has no end, is matched by its base
+// alone, so no other add is ever named a take from a book; undefined for none
 export const heldReferenceFor = (baseId: number, now: number): number | undefined => {
   let sameBase: number | undefined;
-  let newest: number | undefined;
+  let newestPickup: number | undefined;
   holds.forEach((held, localId) => {
     if (held.until <= now) {
       return;
     }
-    newest = localId;
+    if (Number.isFinite(held.until)) {
+      newestPickup = localId;
+    }
     if (held.baseId === baseId) {
       sameBase = localId;
     }
   });
-  return sameBase ?? newest;
+  return sameBase ?? newestPickup;
 };

@@ -2088,7 +2088,8 @@ export class RemoteServer extends ClientListener {
 
   // a relayed cast or end this game did not perform, by kind (cast or end,
   // and why: no actor here, or its actor one this game hosts, finding 53's
-  // return, once said once per caster and never counted): said in full at
+  // return, once said once per caster and never counted), in the lab's log
+  // so a run reads which return took a relay: said in full at
   // a kind's first, naming that message's caster and spell, and then as the
   // kind's count at its 2nd, 4th, 8th and so on (thuum ADR-073 decision 7:
   // once per kind with one subject, then counted; the review of
@@ -2103,7 +2104,7 @@ export class RemoteServer extends ClientListener {
       return;
     }
     const head = `relayed ${what} ${spell.toString(16)} for ${caster.toString(16)}: ${why}, dropped`;
-    logTrace(this, n === 1 ? head : `${head} (${n} relayed ${what}s dropped as ${why} so far)`);
+    logLab("verb:magic-effects", n === 1 ? head : `${head} (${n} relayed ${what}s dropped as ${why} so far)`);
   }
 
   // A spell with a target-location effect that has an area and no

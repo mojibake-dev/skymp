@@ -1,5 +1,9 @@
 import { createCreatedForm, createdFormTemplate, on, readCreatedForm } from "skyrimPlatform";
-import type { Entry, Inventory } from "./inventory";
+import type { Entry, Inventory } from "./inventoryDiff";
+import { createdKey, sameCreated } from "./createdFormKey";
+import type { CreatedEffect, CreatedForm } from "./createdFormKey";
+export { createdKey, sameCreated } from "./createdFormKey";
+export type { CreatedEffect, CreatedForm } from "./createdFormKey";
 import { logLab } from "../logging";
 
 // A brewed potion or poison and an enchantment made at the arcane enchanter
@@ -13,19 +17,6 @@ import { logLab } from "../logging";
 // through toLocalEntry. The engine behavior behind the platform's natives is
 // assumed from a static read (InventoryApi.cpp).
 
-export interface CreatedEffect {
-  mgef: number;
-  magnitude: number;
-  area: number;
-  duration: number;
-  cost: number;
-}
-
-export interface CreatedForm {
-  kind: number;
-  effects: CreatedEffect[];
-}
-
 // the kinds, the wire's CREATED_* constants
 export const createdWeaponEnchantment = 0;
 export const createdArmorEnchantment = 1;
@@ -34,16 +25,6 @@ export const createdPoison = 3;
 
 // an id this engine made at runtime, never sent (the validator refuses one)
 export const isSessionId = (id: number | undefined): boolean => id !== undefined && id > 0xfeffffff;
-
-// A definition's identity, the engine's creators' own match: the kind and
-// each effect's MGEF, magnitude (as the engine's f32 holds it, so the
-// server's shorter spelling of the same float matches), area and duration,
-// in order; the cost is not compared
-export const createdKey = (form: CreatedForm): string =>
-  `${form.kind}|${form.effects.map((e) => `${e.mgef}:${Math.fround(e.magnitude)}:${e.area}:${e.duration}`).join(";")}`;
-
-export const sameCreated = (a: CreatedForm | undefined, b: CreatedForm | undefined): boolean =>
-  a === undefined || b === undefined ? a === b : createdKey(a) === createdKey(b);
 
 // bounded caches: a session makes a few dozen at most
 const cacheMax = 1024;

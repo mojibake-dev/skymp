@@ -26,45 +26,11 @@ import {
   callNative,
 } from "skyrimPlatform";
 import { logLab } from "../logging";
-import { CreatedForm, isSessionId, sameCreated, toLocalInventory } from "./createdForms";
+import { isSessionId, toLocalInventory } from "./createdForms";
+import { Entry, Inventory, extrasEqual, hasExtras, getDiff } from "./inventoryDiff";
+export { hasExtras, getDiff } from "./inventoryDiff";
+export type { Extra, BasicEntry, Entry, Inventory } from "./inventoryDiff";
 
-export interface Extra {
-  health?: number;
-  enchantmentId?: number;
-  maxCharge?: number;
-  removeEnchantmentOnUnequip?: boolean;
-  chargePercent?: number;
-  name?: string;
-  soul?: 0 | 1 | 2 | 3 | 4 | 5;
-  poisonId?: number;
-  poisonCount?: number;
-  worn?: boolean;
-  wornLeft?: boolean;
-  // on the wire alone, a created form by its definition (sync/createdForms.ts):
-  // the brewed potion or poison this stack is (then baseId is its game-file
-  // template), the item's made enchantment (no enchantmentId then), a brewed
-  // poison on the weapon (no poisonId then). An entry this engine reads names
-  // its own forms by id instead
-  createdBase?: CreatedForm;
-  createdEnchantment?: CreatedForm;
-  createdPoison?: CreatedForm;
-  // the stack's owner, the engine's stolen mark (ExtraOwnership), as this
-  // game holds it
-  ownerId?: number;
-}
-
-export interface BasicEntry {
-  baseId: number;
-  count: number;
-}
-
-export type Entry = BasicEntry & Extra;
-
-export interface Inventory {
-  entries: Entry[];
-}
-
-// 'loxsword (Legendary)' => 'loxsword'
 const getRealName = (s?: string): string => {
   if (!s) {
     return s as string;
@@ -127,38 +93,6 @@ const namesEqual = (a: Entry, b: Entry): boolean => {
   }
 
   return false;
-};
-
-// The record holds an item's health as the wire's f32 (Inventory.h,
-// skymp.rs), so 1.1 comes back as 1.100000023841858, while extractExtraData
-// reads the engine's to one decimal. Health is compared at that one decimal on
-// both sides, so a tempered stack the record holds is the stack the engine
-// holds, and an apply does not remove and re-add it
-const sameHealth = (x: number | undefined, y: number | undefined): boolean =>
-  x === undefined || y === undefined ? x === y : Math.round(x * 10) === Math.round(y * 10);
-
-const extrasEqual = (a: Entry, b: Entry, ignoreWorn = false) => {
-  return (
-    sameHealth(a.health, b.health) &&
-    a.enchantmentId === b.enchantmentId &&
-    a.maxCharge === b.maxCharge &&
-    !!a.removeEnchantmentOnUnequip === !!b.removeEnchantmentOnUnequip &&
-    //a.chargePercent === b.chargePercent &&
-    //namesEqual(a, b) &&
-    a.soul === b.soul &&
-    a.poisonId === b.poisonId &&
-    a.poisonCount === b.poisonCount &&
-    // a wire entry's created forms by their definition
-    sameCreated(a.createdBase, b.createdBase) &&
-    sameCreated(a.createdEnchantment, b.createdEnchantment) &&
-    sameCreated(a.createdPoison, b.createdPoison) &&
-    a.ownerId === b.ownerId &&
-    ((!!a.worn === !!b.worn && !!a.wornLeft === !!b.wornLeft) || ignoreWorn)
-  );
-};
-
-export const hasExtras = (e: Entry): boolean => {
-  return !extrasEqual(e, { baseId: 0, count: 0 });
 };
 
 const extractExtraData = (
@@ -347,29 +281,6 @@ export const removeSimpleItemsAsManyAsPossible = (
 
   res.entries = res.entries.filter((e) => e.count > 0);
   return res;
-};
-
-export const getDiff = (
-  lhs: Inventory,
-  rhs: Inventory,
-  ignoreWorn: boolean
-): Inventory => {
-  const lhsCopy: Inventory = JSON.parse(JSON.stringify(lhs));
-  const rhsCopy: Inventory = JSON.parse(JSON.stringify(rhs));
-
-  rhsCopy.entries.forEach((e) => {
-    const sameFromLeft = lhsCopy.entries.find(
-      (x) => x.baseId === e.baseId && extrasEqual(x, e, ignoreWorn)
-    );
-    if (sameFromLeft) {
-      sameFromLeft.count -= e.count;
-    } else {
-      lhsCopy.entries.push(e);
-      lhsCopy.entries[lhsCopy.entries.length - 1].count *= -1;
-    }
-  });
-
-  return { entries: lhsCopy.entries.filter((x) => x.count !== 0) };
 };
 
 export const getInventory = (refr: ObjectReference): Inventory => {

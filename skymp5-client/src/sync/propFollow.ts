@@ -1,4 +1,4 @@
-import { NiPoint3 } from "./movement";
+import { NiPoint3 } from "./point";
 
 // thuum docs/verbs/prop-physics.md (ADR-071 decision 3, physics rung 2): one
 // stream of a prop another seat simulates, as the follower renders it. A pure

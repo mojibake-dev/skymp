@@ -10,7 +10,11 @@
 #include "ScriptNatives.h"
 #include "SkyrimPlatform.h"
 #include <RE/D/DelayFunctor.h>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <mutex>
+#include <vector>
 
 namespace hook::internal {
 
@@ -134,36 +138,149 @@ void InstallQuitDisconnectHook()
 }
 
 /**
- * thuum docs/verbs/magic-effects.md and docs/verbs/push.md (ADR-028, ADR-031):
- * while skymp5-client holds the server's values for the player
- * (TESModPlatform.SetPotionEffectsBlocked), the player's
- * MagicTarget::AddTarget (vfunc 01, CommonLibSSE-NG
- * include/RE/M/MagicTarget.h:78, called once per effect: AddTargetData's
- * caster, magic item and effect, :58-60) refuses the effects whose work is a
- * number the server computes, and nothing else:
- * - every effect of an alchemy item (a potion, a food, a poison: AlchemyItem's
- *   spell type is kAlchemy): the player's own drinks are the server's alone,
- *   and its effects stand alone (its ChangeValues, and the buffs its
- *   MagicEffects carries);
- * - an effect that another actor's spell, power, shout or scroll
- *   (include/RE/M/MagicSystem.h:60-80) lands on the player and that modifies
- *   Health, Magicka or Stamina is not refused but lands with its number
- *   zeroed, so its script still runs (playtest 51, the drain's infection;
- *   the thunk below): a value modifier archetype
- *   (include/RE/E/EffectArchetypes.h:10-44) by its primary or second actor
- *   value (include/RE/E/EffectSetting.h:89, :94). The server computes the
- *   damage one actor deals another and sends the percentages (ADR-028).
- * Every other effect of another actor's cast runs here as the engine plays
- * it (ADR-031: cut at the number, not the event). That includes its
- * stagger, its paralysis, its look, and its script: Unrelenting Force's
- * VoicePushEffectScript throws the player from the caster's figure. Until
- * 2026-10-14 skymp5-client dispelled a figure's whole spell from the player
- * at its hit, before the effects' first update, so their OnEffectStart was
- * never asked for and the push never ran (x-push2 20261014-143427 against
- * the solo x-push-solo 20261014-143127, lab/frida/push-trace.js). The
- * player's MagicTarget vtable is the fifth of PlayerCharacter's:
+ * One enchanted weapon's hit on an actor reaches that actor's AddTarget twice
+ * in the game that runs it (the struck player's own, an NPC's host): from the
+ * engine, as the attacker's figure's weapon hits the actor in this game
+ * (through the weapon's hand), and from the server's relay of the hit the
+ * attacker's own game registered, which skymp5-client casts from the figure
+ * through its instant caster (castSpellImmediate; kInstant,
+ * include/RE/M/MagicSystem.h:23-29). Both carry the same caster, magic item
+ * and effect. The first add of an effect on a target lands; an add from the
+ * other source within kHitPairWindow is the same hit's second and is
+ * refused, so one effect lands whichever arrives first. A pair closes at its
+ * second add, so the weapon's next hit opens a new one, and an add whose
+ * other half never comes (the figure's swing missing in this game, or a hit
+ * the server never relayed) lands alone. The window outlasts the gap between
+ * the two adds of one hit, each a server trip from the attacker's game, and
+ * the pairing keeps one effect a hit even where it spans two hits. A first
+ * add the engine refuses is dropped from the pairing, so its other half can
+ * land.
+ */
+struct EnchantedHitAdds
+{
+  struct HitAdd
+  {
+    std::uint64_t id = 0;
+    RE::FormID target = 0;
+    RE::FormID caster = 0;
+    RE::FormID item = 0;
+    RE::FormID mgef = 0;
+    bool relayed = false;
+    std::chrono::steady_clock::time_point at;
+  };
+  static constexpr auto kHitPairWindow = std::chrono::milliseconds(1000);
+  static inline std::mutex heldMutex;
+  static inline std::vector<HitAdd> held;
+  static inline std::uint64_t nextId = 0;
+  static inline std::atomic<std::uint32_t> secondAdds{ 0 };
+
+  // true when this add is the second of a hit whose first is held; else
+  // this add is held as its hit's first, under a_id, until it lands or
+  // Forget drops it
+  static bool IsSecond(RE::FormID a_target, const RE::Actor& a_caster,
+                       const RE::MagicTarget::AddTargetData& a_data,
+                       std::uint64_t& a_id)
+  {
+    const auto mgef = a_data.effect ? a_data.effect->baseEffect : nullptr;
+    if (!mgef) {
+      return false;
+    }
+    HitAdd add;
+    add.target = a_target;
+    add.caster = a_caster.GetFormID();
+    add.item = a_data.magicItem->GetFormID();
+    add.mgef = mgef->GetFormID();
+    add.relayed =
+      a_data.castingSource == RE::MagicSystem::CastingSource::kInstant;
+    add.at = std::chrono::steady_clock::now();
+
+    std::lock_guard<std::mutex> lock(heldMutex);
+    held.erase(std::remove_if(held.begin(), held.end(),
+                              [&](const HitAdd& h) {
+                                return add.at - h.at > kHitPairWindow;
+                              }),
+               held.end());
+    const auto first =
+      std::find_if(held.begin(), held.end(), [&](const HitAdd& h) {
+        return h.target == add.target && h.caster == add.caster &&
+          h.item == add.item && h.mgef == add.mgef && h.relayed != add.relayed;
+      });
+    if (first != held.end()) {
+      held.erase(first);
+      return true;
+    }
+    add.id = ++nextId;
+    a_id = add.id;
+    held.push_back(add);
+    return false;
+  }
+
+  static void Forget(std::uint64_t a_id)
+  {
+    std::lock_guard<std::mutex> lock(heldMutex);
+    held.erase(std::remove_if(held.begin(), held.end(),
+                              [&](const HitAdd& h) { return h.id == a_id; }),
+               held.end());
+  }
+
+  // the add through the pairing: a hit's second refused, else the engine's
+  // own AddTarget (a_func), a refused first forgotten
+  template <class Func>
+  static bool Add(RE::MagicTarget* a_this,
+                  RE::MagicTarget::AddTargetData& a_data,
+                  const RE::Actor& a_caster, RE::FormID a_target, Func& a_func)
+  {
+    std::uint64_t id = 0;
+    if (IsSecond(a_target, a_caster, a_data, id)) {
+      const std::uint32_t n = ++secondAdds;
+      if ((n & (n - 1)) == 0) {
+        logger::info(
+          "[verb:magic-effects] an enchanted hit's second add on "
+          "{:x} refused ({} so far; the latest {:x}'s {:x}, {})",
+          a_target, n, a_caster.GetFormID(), a_data.magicItem->GetFormID(),
+          a_data.castingSource == RE::MagicSystem::CastingSource::kInstant
+            ? "the relay's"
+            : "the engine's");
+      }
+      return false;
+    }
+    const bool added = a_func(a_this, a_data);
+    if (!added && id) {
+      Forget(id);
+    }
+    return added;
+  }
+};
+
+/**
+ * While skymp5-client holds the server's values for the player
+ * (TESModPlatform.SetPotionEffectsBlocked), the server computes every number
+ * another actor deals the player, and the player's own game plays the rest of
+ * that actor's cast as the engine does: its effect, its shader and art, its
+ * stagger and paralysis, and its script (a vampire's drain rolls its disease
+ * at OnEffectStart; Unrelenting Force's VoicePushEffectScript throws the
+ * player from the caster's figure).
+ *
+ * The player's MagicTarget vtable is the fifth of PlayerCharacter's:
  * TESObjectREFR has four (VTABLE_TESObjectREFR) and Actor's MagicTarget base
- * follows them (include/RE/A/Actor.h:126), as VTABLE_Actor's ten count.
+ * follows them (CommonLibSSE-NG include/RE/A/Actor.h:126), as VTABLE_Actor's
+ * ten count. Two of its virtuals are replaced
+ * (include/RE/M/MagicTarget.h:78, :85):
+ * - AddTarget (01), called once per effect with its caster, magic item and
+ *   effect (AddTargetData, :56-67), refuses every effect of an alchemy item
+ *   (a potion, a food, a poison: spell type kAlchemy), the player's own
+ *   drinks being the server's alone, and lets one add through for each
+ *   enchanted weapon's hit on the player (EnchantedHitAdds).
+ *   It passes AddTargetData's magnitude on as it came: the engine's AddTarget
+ *   (Address Library 38786) answers false for a fire damage enchantment's
+ *   effect handed a zero magnitude and adds nothing, shader and script
+ *   included;
+ * - EffectAdded (08) zeroes the added ActiveEffect's own magnitude
+ *   (include/RE/A/ActiveEffect.h:110) where another actor's cast lands an
+ *   effect on the player that modifies Health, Magicka or Stamina
+ *   (PlayerEffectAdded), so the effect runs whole with no number of its own.
+ *   EffectAdded runs inside AddTarget, before the effect's start and its
+ *   first update, so none of the engine's number lands from the add on.
  */
 struct PlayerAddTarget
 {
@@ -173,6 +290,8 @@ struct PlayerAddTarget
       a_av == RE::ActorValue::kMagicka || a_av == RE::ActorValue::kStamina;
   }
 
+  // a value modifier archetype (include/RE/E/EffectArchetypes.h:10-44) by
+  // its primary or second actor value (include/RE/E/EffectSetting.h:89, :94)
   static bool ChangesServerValue(const RE::Effect* a_effect)
   {
     const auto mgef = a_effect ? a_effect->baseEffect : nullptr;
@@ -195,12 +314,10 @@ struct PlayerAddTarget
     }
   }
 
-  // thuum ADR-037 (docs/DECISIONS.md, proposed): a figure's enchantment
-  // counts as its cast too. An explosion a figure owns casts its EXPL's
-  // enchantment at the player through the figure's instant caster, an
-  // EnchantmentItem (the re-analyst on sky-re, 2026-10-17: the explosion
-  // pass 43849), and so does a figure's enchanted weapon on a hit; neither
-  // is the server's number (include/RE/M/MagicSystem.h:60-80 for the types)
+  // an actor's cast: a spell, power, shout or scroll, and an enchantment,
+  // whether its enchanted weapon's hit, its staff's or its explosion's (an
+  // explosion casts its EXPL's enchantment through the owner's instant
+  // caster); include/RE/M/MagicSystem.h:60-80 for the types
   static bool IsCast(const RE::MagicItem* a_item)
   {
     using SpellType = RE::MagicSystem::SpellType;
@@ -221,36 +338,273 @@ struct PlayerAddTarget
   static bool thunk(RE::MagicTarget* a_this,
                     RE::MagicTarget::AddTargetData& a_data)
   {
-    if (TESModPlatform::ArePotionEffectsBlocked() && a_data.magicItem) {
-      if (a_data.magicItem->GetSpellType() ==
-          RE::MagicSystem::SpellType::kAlchemy) {
-        return false;
-      }
-      auto caster = a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
-      if (caster && !caster->IsPlayerRef() && IsCast(a_data.magicItem) &&
-          ChangesServerValue(a_data.effect)) {
-        // playtest 51 (Eli: "whatever does the drain needs to also be
-        // transmitting the infection chance"): the effect lands with its
-        // number zeroed (AddTargetData::magnitude +0x3C,
-        // include/RE/M/MagicTarget.h:64), so the server's number stays the
-        // only one (ADR-028) while the effect's own script runs here, in
-        // the player's own game (ADR-031): a vampire's drain's
-        // VampireAbsorbHealthScript rolls Sanguinare Vampiris at its
-        // OnEffectStart. Refusing it took the script along with the number.
-        // HYPOTHESIS until a run reads it: a zero-magnitude effect still
-        // starts and runs its script (x-infection v1)
-        a_data.magnitude = 0.f;
-      }
+    if (!TESModPlatform::ArePotionEffectsBlocked() || !a_data.magicItem) {
+      return func(a_this, a_data);
     }
-    return func(a_this, a_data);
+    using SpellType = RE::MagicSystem::SpellType;
+    const auto spellType = a_data.magicItem->GetSpellType();
+    if (spellType == SpellType::kAlchemy) {
+      return false;
+    }
+    auto caster = a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
+    if (spellType != SpellType::kEnchantment || !caster ||
+        caster->IsPlayerRef()) {
+      return func(a_this, a_data);
+    }
+    return EnchantedHitAdds::Add(a_this, a_data, *caster, 0x14, func);
   }
   static inline REL::Relocation<decltype(thunk)> func;
+};
+
+// The added effect's magnitude (ActiveEffect +0x78) is the number its
+// archetype works on the actor value with. Zeroed here, before the engine's
+// own EffectAdded runs, the effect keeps its shader, art, hit visuals and
+// script, and the server's number stays the only one. The caster is the
+// effect's own, its handle resolved (include/RE/A/ActiveEffect.h:93, :100),
+// so an effect added later than its AddTarget is judged the same way.
+struct PlayerEffectAdded
+{
+  static void thunk(RE::MagicTarget* a_this, RE::ActiveEffect* a_effect)
+  {
+    if (a_effect && a_effect->spell &&
+        TESModPlatform::ArePotionEffectsBlocked() &&
+        PlayerAddTarget::IsCast(a_effect->spell) &&
+        PlayerAddTarget::ChangesServerValue(a_effect->effect)) {
+      const auto caster = a_effect->GetCasterActor();
+      if (caster && !caster->IsPlayerRef()) {
+        a_effect->magnitude = 0.f;
+        const std::uint32_t n = ++zeroed;
+        if ((n & (n - 1)) == 0) {
+          const auto mgef = a_effect->GetBaseObject();
+          logger::info("[verb:magic-effects] another actor's effect on the "
+                       "player zeroed at its add ({} so far; the latest "
+                       "{:x}'s {:x}, effect {:x})",
+                       n, caster->GetFormID(), a_effect->spell->GetFormID(),
+                       mgef ? mgef->GetFormID() : 0);
+        }
+      }
+    }
+    func(a_this, a_effect);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+  static inline std::atomic<std::uint32_t> zeroed{ 0 };
 };
 
 void InstallPlayerAddTargetHook()
 {
   REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[4] };
   PlayerAddTarget::func = vtbl.write_vfunc(0x1, PlayerAddTarget::thunk);
+  PlayerEffectAdded::func = vtbl.write_vfunc(0x8, PlayerEffectAdded::thunk);
+}
+
+/**
+ * The player's arrest is its own game's, and its sentence runs on the shared
+ * clock. PlayerCharacter's own virtuals, its primary vtable
+ * (VTABLE_PlayerCharacter[0], Address Library 208040 on 1.6.1170), slots
+ * from CommonLibSSE-NG include/RE/A/Actor.h: SetCrimeGoldValue 0xB5,
+ * ModCrimeGoldValue 0xB6, RemoveCrimeGoldValue 0xB7 (:379-381), GoToPrison
+ * 0xB9 and ServePrisonTime 0xBA (:383-384), and
+ * include/RE/P/PlayerCharacter.h:538's ClearAllCrimeGold 0x12D, and
+ * PickUpObject 0xCC (Actor.h:402).
+ * - GoToPrison: the arrest reported at its entry, a real jail only, before
+ *   the engine strips and moves the player (EventHandler::OnArrest);
+ * - ServePrisonTime: never run (its time skip would be one player's alone),
+ *   what was asked reported (EventHandler::OnServePrisonTime);
+ * - the crime gold setters: each change reported after the engine's
+ *   (EventHandler::OnCrimeGoldChanged). Assumed, not yet traced: the
+ *   engine's witnessed crimes reach these virtuals rather than writing the
+ *   player's crimeGoldMap themselves;
+ * - PayFine 0xBB (:385): the fine's crime gold change reported once after
+ *   it with the gold it took from the player, measured around the call as
+ *   the player's count of the gold form (GoldHeld), since the engine removes
+ *   that gold with no destination container (EventHandler::OnFineBegin,
+ *   OnFinePaid);
+ * - PickUpObject 0xCC: the engine's own pickup of a world reference into
+ *   the player's inventory (an activation's default processing, the Book
+ *   Menu's Take), its owner test, steal alarm and stolen mark inside it,
+ *   reported once after it with what the player's inventory gained
+ *   (EventHandler::OnPickUpObject).
+ */
+struct PlayerGoToPrison
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
+                    bool a_removeInventory, bool a_realJail)
+  {
+    if (a_realJail) {
+      EventHandler::OnArrest(a_this, a_faction);
+    }
+    func(a_this, a_faction, a_removeInventory, a_realJail);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerServePrisonTime
+{
+  static void thunk(RE::PlayerCharacter* a_this)
+  {
+    EventHandler::OnServePrisonTime(a_this);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerSetCrimeGoldValue
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
+                    bool a_violent, std::uint32_t a_amount)
+  {
+    func(a_this, a_faction, a_violent, a_amount);
+    EventHandler::OnCrimeGoldChanged(a_faction);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerModCrimeGoldValue
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
+                    bool a_violent, std::int32_t a_amount)
+  {
+    func(a_this, a_faction, a_violent, a_amount);
+    EventHandler::OnCrimeGoldChanged(a_faction);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerRemoveCrimeGoldValue
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
+                    bool a_violent, std::int32_t a_amount)
+  {
+    func(a_this, a_faction, a_violent, a_amount);
+    EventHandler::OnCrimeGoldChanged(a_faction);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+namespace {
+// The player's count of the gold form (TESForm::IsGold, formID 0xF,
+// include/RE/T/TESForm.h:327), from its inventory counts
+// (TESObjectREFR::GetInventoryCounts, include/RE/T/TESObjectREFR.h:404).
+// Not Actor::GetGoldAmount: it finds the gold form through
+// BGSDefaultObjectManager::GetObject(DefaultObjectID), which indexes through
+// the first default object's pointer instead of the objects array
+// (src/RE/B/BGSDefaultObjectManager.cpp:34; the array is inline at +0x20,
+// include/RE/B/BGSDefaultObjectManager.h:1073) and reads an invalid address
+std::int32_t GoldHeld(RE::PlayerCharacter* a_player)
+{
+  std::int32_t gold = 0;
+  for (const auto& entry : a_player->GetInventoryCounts(
+         [](RE::TESBoundObject& a_object) { return a_object.IsGold(); })) {
+    gold += entry.second;
+  }
+  return gold;
+}
+}
+
+struct PlayerPayFine
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
+                    bool a_goToJail, bool a_removeStolenItems)
+  {
+    const std::int32_t goldBefore = GoldHeld(a_this);
+    EventHandler::OnFineBegin(a_faction);
+    func(a_this, a_faction, a_goToJail, a_removeStolenItems);
+    const std::int32_t goldAfter = GoldHeld(a_this);
+    EventHandler::OnFinePaid(
+      a_faction,
+      goldBefore > goldAfter
+        ? static_cast<std::uint32_t>(goldBefore - goldAfter)
+        : 0);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+// The reference's id and the owner the engine marks a taken stack with are
+// read before the call, the way PickUpObject reads them (IsAnOwner with the
+// faction and no owner required, then GetOwner: include/RE/T/TESObjectREFR.h
+// :440, :412), since the reference may be gone after it. The base and count
+// are what the player's inventory gained across the call: the reference's
+// own base (GetBaseObject, the object PickUpObject moves) when it rose, else
+// the one base that rose. A call that gained nothing raises nothing
+struct PlayerPickUpObject
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESObjectREFR* a_object,
+                    std::int32_t a_count, bool a_arg3, bool a_playSound)
+  {
+    if (!a_object) {
+      return func(a_this, a_object, a_count, a_arg3, a_playSound);
+    }
+    const std::uint32_t refId = a_object->GetFormID();
+    const RE::TESBoundObject* refBase = a_object->GetBaseObject();
+    const RE::TESForm* owner = a_object->IsAnOwner(a_this, true, false)
+      ? nullptr
+      : a_object->GetOwner();
+    const std::uint32_t ownerId = owner ? owner->GetFormID() : 0;
+    const auto before = a_this->GetInventoryCounts();
+
+    func(a_this, a_object, a_count, a_arg3, a_playSound);
+
+    const auto after = a_this->GetInventoryCounts();
+    const RE::TESBoundObject* gainedBase = nullptr;
+    std::int32_t gained = 0;
+    std::size_t basesGained = 0;
+    for (const auto& [object, count] : after) {
+      const auto was = before.find(object);
+      const std::int32_t rise =
+        count - (was != before.end() ? was->second : 0);
+      if (rise <= 0) {
+        continue;
+      }
+      ++basesGained;
+      if (object == refBase || gainedBase == nullptr) {
+        gainedBase = object;
+        gained = rise;
+      }
+      if (object == refBase) {
+        basesGained = 1;
+        break;
+      }
+    }
+    if (!gainedBase) {
+      return;
+    }
+    if (basesGained > 1) {
+      logger::info("[verb:pickup] PickUpObject of {:x}: {} bases rose and "
+                   "none is its own base; nothing reported",
+                   refId, basesGained);
+      return;
+    }
+    EventHandler::OnPickUpObject(refId, gainedBase->GetFormID(),
+                                 static_cast<std::uint32_t>(gained), ownerId);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct PlayerClearAllCrimeGold
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction)
+  {
+    func(a_this, a_faction);
+    EventHandler::OnCrimeGoldChanged(a_faction);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+void InstallPlayerPrisonHooks()
+{
+  REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_PlayerCharacter[0] };
+  PlayerSetCrimeGoldValue::func =
+    vtbl.write_vfunc(0xB5, PlayerSetCrimeGoldValue::thunk);
+  PlayerModCrimeGoldValue::func =
+    vtbl.write_vfunc(0xB6, PlayerModCrimeGoldValue::thunk);
+  PlayerRemoveCrimeGoldValue::func =
+    vtbl.write_vfunc(0xB7, PlayerRemoveCrimeGoldValue::thunk);
+  PlayerGoToPrison::func = vtbl.write_vfunc(0xB9, PlayerGoToPrison::thunk);
+  PlayerServePrisonTime::func =
+    vtbl.write_vfunc(0xBA, PlayerServePrisonTime::thunk);
+  PlayerClearAllCrimeGold::func =
+    vtbl.write_vfunc(0x12D, PlayerClearAllCrimeGold::thunk);
+  PlayerPayFine::func = vtbl.write_vfunc(0xBB, PlayerPayFine::thunk);
+  PlayerPickUpObject::func = vtbl.write_vfunc(0xCC, PlayerPickUpObject::thunk);
 }
 
 /**
@@ -348,12 +702,34 @@ struct CharacterAddTarget
     return RE::EffectSetting::Archetype::kNone;
   }
 
+  // Another actor's enchantment landing on an actor this game simulates
+  // goes through the pairing (EnchantedHitAdds): the server tells an
+  // enchanted hit on an NPC to its host's game alone, so the host's copy is
+  // where the engine's add and the relay's meet
+  static bool Unowned(RE::MagicTarget* a_this,
+                      RE::MagicTarget::AddTargetData& a_data)
+  {
+    if (!TESModPlatform::ArePotionEffectsBlocked() || !a_data.magicItem ||
+        a_data.magicItem->GetSpellType() !=
+          RE::MagicSystem::SpellType::kEnchantment) {
+      return func(a_this, a_data);
+    }
+    const auto caster =
+      a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
+    const auto body = a_this ? a_this->GetTargetStatsObject() : nullptr;
+    if (!caster || caster->IsPlayerRef() || !body || caster == body ||
+        !Hosted::SimulatedHere(body->formID)) {
+      return func(a_this, a_data);
+    }
+    return EnchantedHitAdds::Add(a_this, a_data, *caster, body->formID, func);
+  }
+
   static bool thunk(RE::MagicTarget* a_this,
                     RE::MagicTarget::AddTargetData& a_data)
   {
     const auto owned = Owned(a_data.magicItem, a_data.effect);
     if (owned == RE::EffectSetting::Archetype::kNone) {
-      return func(a_this, a_data);
+      return Unowned(a_this, a_data);
     }
     const auto caster =
       a_data.caster ? a_data.caster->As<RE::Actor>() : nullptr;
@@ -799,6 +1175,7 @@ void Hooks::Install()
   InstallQuitDisconnectHook();
   HookVirtualMachineBind();
   InstallPlayerAddTargetHook();
+  InstallPlayerPrisonHooks();
   InstallCharacterAddTargetHook();
   InstallSummonCreatureEffectHooks();
   InstallPlayerHealthDamageHook();

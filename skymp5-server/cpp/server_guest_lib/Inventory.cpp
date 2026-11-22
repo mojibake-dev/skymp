@@ -78,13 +78,19 @@ bool Inventory::Entry::EqualExceptCount(const Inventory::Entry& other) const
 {
   // GetWorn() instead of direct comparison because of possible false vs
   // nullopt mismatch. Logically it should be the same
+  // Two stacks of created forms are one only when their definitions match
+  // (CreatedForm::SameAs, the engine's own match)
   return std::make_tuple(baseId, health, enchantmentId, maxCharge,
                          removeEnchantmentOnUnequip, chargePercent, name, soul,
-                         poisonId, poisonCount, GetWorn()) ==
+                         poisonId, poisonCount, GetWorn(), ownerId) ==
     std::make_tuple(other.baseId, other.health, other.enchantmentId,
                     other.maxCharge, other.removeEnchantmentOnUnequip,
                     other.chargePercent, other.name, other.soul,
-                    other.poisonId, other.poisonCount, other.GetWorn());
+                    other.poisonId, other.poisonCount, other.GetWorn(),
+                    other.ownerId) &&
+    SameCreated(createdBase, other.createdBase) &&
+    SameCreated(createdEnchantment, other.createdEnchantment) &&
+    SameCreated(createdPoison, other.createdPoison);
 }
 
 Inventory& Inventory::AddItem(uint32_t baseId, uint32_t count)
@@ -193,10 +199,45 @@ Inventory& Inventory::RemoveItems(const std::vector<Entry>& entries)
   return *this;
 }
 
+Inventory::Entry Inventory::RecordedCopyOf(const Entry& reported) const
+{
+  const auto held = [this](const Entry& probe) {
+    uint32_t n = 0;
+    for (const auto& e : entries) {
+      if (e.EqualExceptCount(probe)) {
+        n += e.count;
+      }
+    }
+    return n;
+  };
+  if (!reported.ownerId || held(reported) >= reported.count) {
+    return reported;
+  }
+  Entry unowned = reported;
+  unowned.ownerId.reset();
+  return held(unowned) >= reported.count ? unowned : reported;
+}
+
+// A stack of a brewed potion or poison names its game-file template as its
+// base, but holds no item of that base (the template is what the engine
+// copies a created form from), so the plain counts pass it by: a plain
+// OnEquip of the template never finds a created stack it cannot remove
 bool Inventory::HasItem(uint32_t baseId) const
 {
   for (auto& entry : entries) {
-    if (entry.baseId == baseId) {
+    if (entry.baseId == baseId && !entry.createdBase) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool Inventory::HasCreatedStack(uint32_t baseId,
+                                const CreatedForm& createdBase) const
+{
+  for (auto& entry : entries) {
+    if (entry.baseId == baseId && entry.createdBase &&
+        entry.createdBase->SameAs(createdBase)) {
       return true;
     }
   }
@@ -207,7 +248,7 @@ uint32_t Inventory::GetItemCount(uint32_t baseId) const
 {
   uint32_t sum = 0;
   for (auto& entry : entries) {
-    if (entry.baseId == baseId) {
+    if (entry.baseId == baseId && !entry.createdBase) {
       sum += entry.count;
     }
   }

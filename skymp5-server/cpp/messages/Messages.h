@@ -8,6 +8,7 @@
 #include "ActorSpeechMessage.h"
 #include "ActorValuesMessage.h"
 #include "AliasFillMessage.h"
+#include "ArrestMessage.h"
 #include "ArrowShotMessage.h"
 #include "CellLoadedMessage.h"
 #include "ChangeFormAckMessage.h"
@@ -17,7 +18,9 @@
 #include "ConsoleCommandMessage.h"
 #include "ConsoleOutputMessage.h"
 #include "CraftItemMessage.h"
+#include "CraftReportMessage.h"
 #include "CreateActorMessage.h"
+#include "CrimeGoldMessage.h"
 #include "CustomEventMessage.h"
 #include "CustomPacketMessage.h"
 #include "DamageCauseMessage.h"
@@ -52,6 +55,7 @@
 #include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
 #include "PropTransformMessage.h"
+#include "PushActorMessage.h"
 #include "PutItemMessage.h"
 #include "QuestStageMessage.h"
 #include "RaceMenuPresetMessage.h"
@@ -166,4 +170,8 @@
   REGISTER_MESSAGE(WorldGlobalMessage)                                        \
   REGISTER_MESSAGE(ScriptVariablesMessage)                                    \
   REGISTER_MESSAGE(OwnHeadPartsMessage)                                       \
-  REGISTER_MESSAGE(SummonMessage)
+  REGISTER_MESSAGE(SummonMessage)                                             \
+  REGISTER_MESSAGE(CraftReportMessage)                                        \
+  REGISTER_MESSAGE(PushActorMessage)                                          \
+  REGISTER_MESSAGE(ArrestMessage)                                             \
+  REGISTER_MESSAGE(CrimeGoldMessage)

@@ -60,6 +60,19 @@ void ActivateAsPlayer(PartOne& p, Networking::UserId user, uint32_t target,
   p.Tick(); // the deferred inventory
 }
 
+// the player's game reports its engine's pickup of `target` (the Book Menu's
+// Take): one of `baseId`
+void TakeAsPlayer(PartOne& p, Networking::UserId user, uint32_t target,
+                  uint32_t baseId)
+{
+  DoMessage(p, user,
+            nlohmann::json{ { "t", MsgType::TakeItem },
+                            { "baseId", baseId },
+                            { "count", 1 },
+                            { "target", target } });
+  p.Tick();
+}
+
 // the open: the reply that makes the player's game activate the reference
 size_t OpensSentTo(PartOne& p, Networking::UserId user, uint32_t target)
 {
@@ -168,7 +181,8 @@ struct LogCapture
 }
 
 TEST_CASE("A player's activation of a world book opens it in its own game "
-          "and takes nothing; its next activation of that book takes it",
+          "and takes nothing; its next activation of that book, the Take, "
+          "grants it to that game's engine, whose report takes it",
           "[Books][PartOne][espm]")
 {
   auto& p = GetPartOne();
@@ -184,14 +198,22 @@ TEST_CASE("A player's activation of a world book opens it in its own game "
   REQUIRE(reader.GetInventory().GetItemCount(kWatcherBase) == 0);
   REQUIRE(reader.GetOpenBook() == kWatcher);
 
-  // the Take: the pickup as it always was, and no second open
+  // the Take: no second open and no copy given; the open ends and the book
+  // is granted to its reader's engine
   p.Messages().clear();
   ActivateAsPlayer(p, 0, kWatcher);
   REQUIRE(OpensSentTo(p, 0, kWatcher) == 0);
+  REQUIRE(!book.IsHarvested());
+  REQUIRE(book.GetPickupGrantee() == kReader);
+  REQUIRE(reader.GetInventory().GetItemCount(kWatcherBase) == 0);
+  REQUIRE(reader.GetOpenBook() == 0);
+
+  // its engine's report: recorded
+  TakeAsPlayer(p, 0, kWatcher, kWatcherBase);
   REQUIRE(InventorySentTo(p, 0));
   REQUIRE(book.IsHarvested());
+  REQUIRE(book.GetPickupGrantee() == 0);
   REQUIRE(reader.GetInventory().GetItemCount(kWatcherBase) == 1);
-  REQUIRE(reader.GetOpenBook() == 0);
 
   // taken: nothing to open and nothing more to take
   p.Messages().clear();
@@ -243,6 +265,8 @@ TEST_CASE("A book's Take fires no activation of its own: the gamemode sees "
   REQUIRE(activations->count[kWatcher] == 1);
 
   ActivateAsPlayer(p, 0, kWatcher);
+  REQUIRE(!book.IsHarvested());
+  TakeAsPlayer(p, 0, kWatcher, kWatcherBase);
   REQUIRE(book.IsHarvested());
   REQUIRE(reader.GetInventory().GetItemCount(kWatcherBase) == 1);
   REQUIRE(activations->count[kWatcher] == 1);
@@ -324,6 +348,9 @@ TEST_CASE("Two players read one book: the first take wins and the other's "
   REQUIRE(!book.IsHarvested());
 
   ActivateAsPlayer(p, 1, kWatcher);
+  REQUIRE(!book.IsHarvested());
+  REQUIRE(book.GetPickupGrantee() == kOther);
+  TakeAsPlayer(p, 1, kWatcher, kWatcherBase);
   REQUIRE(book.IsHarvested());
   REQUIRE(other.GetInventory().GetItemCount(kWatcherBase) == 1);
 
@@ -417,8 +444,9 @@ TEST_CASE("A disconnect forgets the player's open book",
   p.DestroyActor(kReader);
 }
 
-TEST_CASE("A player's activation of a spell tome picks it up at once, as the "
-          "engine does",
+TEST_CASE("A player's activation of a spell tome is its own engine's pickup "
+          "at once, as the engine does: granted, then recorded from its "
+          "game's report",
           "[Books][PartOne][espm]")
 {
   auto& p = GetPartOne();
@@ -434,6 +462,16 @@ TEST_CASE("A player's activation of a spell tome picks it up at once, as the "
 
   ActivateAsPlayer(p, 0, kTome);
   REQUIRE(OpensSentTo(p, 0, kTome) == 0);
+  REQUIRE(tome.GetPickupGrantee() == kReader);
+  REQUIRE(!tome.IsHarvested());
+  REQUIRE(reader.GetInventory().GetItemCount(kTomeBase) == 0);
+  p.Messages().clear();
+  DoMessage(p, 0,
+            nlohmann::json{ { "t", MsgType::TakeItem },
+                            { "baseId", kTomeBase },
+                            { "count", 1 },
+                            { "target", kTome } });
+  p.Tick();
   REQUIRE(InventorySentTo(p, 0));
   REQUIRE(tome.IsHarvested());
   REQUIRE(reader.GetInventory().GetItemCount(kTomeBase) == 1);

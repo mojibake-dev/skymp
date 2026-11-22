@@ -6,6 +6,7 @@
 #include "ChangeValuesMessage.h"
 #include "Condition.h"
 #include "ConditionsEvaluator.h"
+#include "CraftService.h"
 #include "CropRegeneration.h"
 #include "DamageCauseMessage.h"
 #include "EvaluateTemplate.h"
@@ -74,6 +75,9 @@ struct MpActor::Impl
   bool placedDead = false;
   // thuum tracker #84: a summon (PartOne::OnSummonStart)
   bool isSummon = false;
+  // the arrest its own game reported, while its game's report of the strip
+  // is taken as the server's own (MpActor::OpenArrestWindow)
+  std::optional<MpActor::ArrestWindow> arrestWindow;
   // thuum tracker #143: the bases the server's own removal took from the
   // record that it has not held since (MpActor::TellRemovalByServer)
   std::set<uint32_t> removedByServer;
@@ -1225,11 +1229,21 @@ bool MpActor::ApplyPoison(uint32_t poisonId)
                  GetFormId(), poisonId);
     return false;
   }
+  return PoisonRightHandWeapon(Inventory::Entry(poisonId, 1));
+}
+
+bool MpActor::PoisonRightHandWeapon(const Inventory::Entry& spent)
+{
+  auto* worldState = GetParent();
+  if (!worldState) {
+    return false;
+  }
+  const uint32_t poisonId = spent.baseId;
 
   // the weapon worn in the right hand, as the player's game reported it
   std::optional<uint32_t> weaponId;
   for (const auto& entry : GetEquipment().inv.entries) {
-    if (entry.GetWorn() == Inventory::Worn::Right &&
+    if (WornHand(*worldState, entry) == Inventory::Worn::Right &&
         TakesPoison(*worldState, entry.baseId)) {
       weaponId = entry.baseId;
       break;
@@ -1246,9 +1260,11 @@ bool MpActor::ApplyPoison(uint32_t poisonId)
   const auto isWeapon = [&](const Inventory::Entry& e) {
     return e.baseId == *weaponId && e.count > 0;
   };
+  // a brewed poison's mark counts as a poison as well
   if (std::any_of(inv.entries.begin(), inv.entries.end(),
                   [&](const Inventory::Entry& e) {
-                    return isWeapon(e) && e.poisonId.has_value();
+                    return isWeapon(e) &&
+                      (e.poisonId.has_value() || e.createdPoison.has_value());
                   })) {
     spdlog::warn("MpActor::ApplyPoison {:x} - E_POISON_ALREADY: {:x} carries "
                  "a poison",
@@ -1269,7 +1285,13 @@ bool MpActor::ApplyPoison(uint32_t poisonId)
   // one copy to an entry of its own
   Inventory::Entry marked = *it;
   marked.count = 1;
-  marked.poisonId = poisonId;
+  if (spent.createdBase) {
+    // a brewed poison marks the weapon by its definition
+    marked.createdPoison = spent.createdBase;
+    marked.poisonId.reset();
+  } else {
+    marked.poisonId = poisonId;
+  }
   marked.poisonCount = kPoisonDoses;
   if (it->count == 1) {
     *it = marked;
@@ -1277,27 +1299,38 @@ bool MpActor::ApplyPoison(uint32_t poisonId)
     it->count -= 1;
     inv.AddItems({ marked });
   }
-  inv.RemoveItems({ Inventory::Entry(poisonId, 1) });
+  Inventory::Entry one = spent;
+  one.count = 1;
+  inv.RemoveItems({ one });
   SetInventory(inv);
 
-  spdlog::info("MpActor::ApplyPoison {:x} - poison {:x} on {:x}, {} dose(s)",
-               GetFormId(), poisonId, *weaponId, kPoisonDoses);
+  spdlog::info("MpActor::ApplyPoison {:x} - poison {:x}{} on {:x}, {} "
+               "dose(s)",
+               GetFormId(), poisonId, spent.createdBase ? " (brewed)" : "",
+               *weaponId, kPoisonDoses);
   return true;
 }
 
-std::optional<uint32_t> MpActor::SpendPoisonDose(uint32_t weaponId)
+std::optional<uint32_t> MpActor::SpendPoisonDose(
+  uint32_t weaponId, std::optional<CreatedForm>* created)
 {
   Inventory inv = GetInventory();
   auto it = std::find_if(
     inv.entries.begin(), inv.entries.end(), [&](const Inventory::Entry& e) {
-      return e.baseId == weaponId && e.count > 0 && e.poisonId.has_value() &&
+      // a brewed poison's mark counts when the caller takes its definition
+      const bool poisoned = e.poisonId.has_value() ||
+        (created != nullptr && e.createdPoison.has_value());
+      return e.baseId == weaponId && e.count > 0 && poisoned &&
         e.poisonCount.value_or(0) > 0;
     });
   if (it == inv.entries.end()) {
     return std::nullopt;
   }
 
-  const uint32_t poisonId = *it->poisonId;
+  const uint32_t poisonId = it->poisonId.value_or(0);
+  if (!it->poisonId && created != nullptr) {
+    *created = it->createdPoison;
+  }
   Inventory::Entry spent = *it;
   spent.count = 1;
   const uint32_t left = *it->poisonCount - 1;
@@ -1305,6 +1338,7 @@ std::optional<uint32_t> MpActor::SpendPoisonDose(uint32_t weaponId)
     spent.poisonCount = left;
   } else {
     spent.poisonId.reset();
+    spent.createdPoison.reset();
     spent.poisonCount.reset();
   }
   // a copy alone changes where it stands unless it rejoins a stack of its
@@ -1838,6 +1872,11 @@ bool MpActor::TakeMapMarkersPending()
   return std::exchange(pImpl->mapMarkersPending, false);
 }
 
+bool MpActor::IsMapMarkersPending() const
+{
+  return pImpl->mapMarkersPending;
+}
+
 std::vector<IngredientEffects> MpActor::GetIngredientEffects() const
 {
   const auto& effects = ChangeForm().ingredientEffects;
@@ -1874,6 +1913,159 @@ bool MpActor::RecordIngredientEffects(const FormDesc& ingredient, uint8_t mask)
     effects.push_back(IngredientEffects{ ingredient, newMask });
   });
   return true;
+}
+
+std::vector<FormDesc> MpActor::GetKnownEnchantments() const
+{
+  const auto& known = ChangeForm().knownEnchantments;
+  return known ? *known : std::vector<FormDesc>();
+}
+
+bool MpActor::RecordKnownEnchantment(const FormDesc& enchantment)
+{
+  const auto& known = ChangeForm().knownEnchantments;
+  if (known &&
+      std::find(known->begin(), known->end(), enchantment) != known->end()) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.knownEnchantments) {
+      changeForm.knownEnchantments.emplace();
+    }
+    changeForm.knownEnchantments->push_back(enchantment);
+  });
+  return true;
+}
+
+CrimeRecord MpActor::GetCrimeRecord() const
+{
+  const auto& record = ChangeForm().crimeRecord;
+  return record ? *record : CrimeRecord();
+}
+
+bool MpActor::SetCrimeGold(const FormDesc& faction, uint32_t violent,
+                           uint32_t nonViolent)
+{
+  const auto record = GetCrimeRecord();
+  const CrimeGold* held = record.Find(faction);
+  if ((held && held->violent == violent && held->nonViolent == nonViolent) ||
+      (!held && violent == 0 && nonViolent == 0)) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.crimeRecord) {
+      changeForm.crimeRecord.emplace();
+    }
+    changeForm.crimeRecord->Set(faction, violent, nonViolent);
+  });
+  return true;
+}
+
+std::vector<espm::Effects::Effect> MpActor::EffectsOfCreated(
+  const CreatedForm& form)
+{
+  std::vector<espm::Effects::Effect> effects;
+  effects.reserve(form.effects.size());
+  for (const auto& created : form.effects) {
+    espm::Effects::Effect effect;
+    effect.effectId = created.mgef;
+    effect.magnitude = created.magnitude;
+    effect.areaOfEffect = created.area;
+    effect.duration = created.duration;
+    effects.push_back(effect);
+  }
+  return effects;
+}
+
+bool MpActor::OnEquipCreated(uint32_t templateId, const CreatedForm& form)
+{
+  if (form.kind != CreatedForm::kPotion && form.kind != CreatedForm::kPoison) {
+    spdlog::warn("MpActor::OnEquipCreated {:x} - E_CREATED_KIND: kind {} of "
+                 "{:x} is no potion or poison",
+                 GetFormId(), form.kind, templateId);
+    return false;
+  }
+  const Inventory inv = GetInventory();
+  const auto it = std::find_if(
+    inv.entries.begin(), inv.entries.end(), [&](const Inventory::Entry& e) {
+      return e.baseId == templateId && e.count > 0 && e.createdBase &&
+        e.createdBase->SameAs(form);
+    });
+  if (it == inv.entries.end()) {
+    spdlog::warn("MpActor::OnEquipCreated {:x} - E_CREATED_NOT_HELD: no "
+                 "stack of {:x} with that definition ({} effect(s))",
+                 GetFormId(), templateId, form.effects.size());
+    return false;
+  }
+  const Inventory::Entry held = *it;
+  if (form.kind == CreatedForm::kPoison) {
+    return PoisonRightHandWeapon(held);
+  }
+  // the effects the record's stack holds, the crafter's engine's numbers,
+  // run through the effect rule as a game-file potion's are
+  // (EatItemEvent), with the template as their source; the template's own
+  // record never runs
+  Inventory::Entry one = held;
+  one.count = 1;
+  RemoveItems({ one });
+  ApplyEffects(templateId, EffectsOfCreated(*held.createdBase), 1.f, 0, false);
+  spdlog::info("MpActor::OnEquipCreated {:x} - drank a brewed potion of {:x} "
+               "({} effect(s))",
+               GetFormId(), templateId, held.createdBase->effects.size());
+  return true;
+}
+
+void MpActor::SetJailTerm(std::optional<JailTerm> term)
+{
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    if (!changeForm.crimeRecord) {
+      changeForm.crimeRecord.emplace();
+    }
+    changeForm.crimeRecord->jail = std::move(term);
+  });
+}
+
+bool MpActor::AddJailBelonging(const Inventory::Entry& entry)
+{
+  const auto& record = ChangeForm().crimeRecord;
+  if (!record || !record->jail) {
+    return false;
+  }
+  EditChangeForm([&](MpChangeForm& changeForm) {
+    changeForm.crimeRecord->jail->belongings.AddItems({ entry });
+  });
+  return true;
+}
+
+void MpActor::OpenArrestWindow(ArrestWindow window)
+{
+  pImpl->arrestWindow = std::move(window);
+}
+
+MpActor::ArrestWindow* MpActor::EditArrestWindow()
+{
+  if (!pImpl->arrestWindow ||
+      std::chrono::steady_clock::now() > pImpl->arrestWindow->until) {
+    return nullptr;
+  }
+  return &*pImpl->arrestWindow;
+}
+
+const MpActor::ArrestWindow* MpActor::GetArrestWindow() const
+{
+  if (!pImpl->arrestWindow ||
+      std::chrono::steady_clock::now() > pImpl->arrestWindow->until) {
+    return nullptr;
+  }
+  return &*pImpl->arrestWindow;
+}
+
+bool MpActor::ArrestStripTakes(uint32_t containerId) const
+{
+  const auto* window = GetArrestWindow();
+  return window && containerId != 0 &&
+    (containerId == window->evidenceChest ||
+     containerId == window->belongingsChest);
 }
 
 ShoutRecord MpActor::GetShoutRecord() const
@@ -4133,14 +4325,26 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
 
   const int count = entry.count;
 
-  // thuum docs/verbs/npc-fate.md (1c; the review of 7c3c9f79, finding 8): a
-  // drop of what the record does not hold is refused by name, no throw, the
-  // dropper resynced, as a take or a put is
-  if (GetInventory().GetItemCount(baseId) < static_cast<uint32_t>(count)) {
-    spdlog::warn("[verb:containers] E_DROP_NOT_HELD: {:x} drops {} of {:x} "
-                 "but its record holds {}; refused, the dropper resynced",
+  // A drop of what the record does not hold is refused by name, no throw,
+  // the dropper resynced, as a take or a put is. The drop names its stack
+  // with its extras, created forms and owner, and the record's own rows
+  // that stand for it are the ones taken (CraftService::HeldRows, a craft
+  // report's match: the base, the created definitions and the lasting
+  // extras, rows with the stack's own owner first), so
+  // RemoveItems is never handed a row the record lacks, which would throw
+  const auto rows = CraftService::HeldRows(GetInventory(), { entry });
+  if (!rows) {
+    spdlog::warn("[verb:containers] E_DROP_NOT_HELD: {:x} drops {} of {:x}{} "
+                 "but its record holds {} such; refused, the dropper "
+                 "resynced",
                  GetFormId(), count, baseId,
-                 GetInventory().GetItemCount(baseId));
+                 entry.createdBase ? " (a brewed potion or poison)"
+                   : (entry.enchantmentId || entry.createdEnchantment ||
+                      entry.health || entry.soul || entry.poisonId ||
+                      entry.createdPoison || entry.ownerId)
+                   ? " with extras"
+                   : "",
+                 entry.createdBase ? 0u : GetInventory().GetItemCount(baseId));
     ResyncAfterRefusedMove(*this);
     return;
   }
@@ -4165,7 +4369,7 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
     lookupRes.rec->GetEditorId(worldState->GetEspmCache());
 
   spdlog::trace("MpActor::DropItem - dropping {}", editorId);
-  RemoveItems({ entry });
+  RemoveItems(*rows);
 
   // thuum docs/verbs/prop-physics.md (the drop's stream at T3, 2026-10-30): a
   // copy placed at the actor's own position wakes Dynamic inside the dropper's
@@ -4196,6 +4400,25 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
     &PapyrusObjectReference::PlaceAt(*this, lookupRes, dropPoint);
 
   placedObject->SetCount(count);
+
+  // A dropped stack's extras, created forms and owner stay with its copy as
+  // the copy's own rows, given back whole at its pickup
+  // (MpObjectReference::GivePickupItemsToActivationSource); the copy's change
+  // form keeps them through a restart as any reference's rows
+  const bool carries =
+    std::any_of(rows->begin(), rows->end(), [](const Inventory::Entry& r) {
+      return r.health || r.enchantmentId || r.maxCharge || r.soul ||
+        r.poisonId || r.name || r.createdBase || r.createdEnchantment ||
+        r.createdPoison || r.ownerId;
+    });
+  if (carries) {
+    Inventory carried;
+    carried.AddItems(*rows);
+    placedObject->SetInventory(carried);
+    spdlog::info("[verb:craft] {:x} drops {} of {:x} with its extras: copy "
+                 "{:x} holds them for its pickup",
+                 GetFormId(), count, baseId, placedObject->GetFormId());
+  }
 
   uint32_t droppedItemFormId = placedObject->GetFormId();
 
@@ -5820,22 +6043,56 @@ void MpActor::ApplyAttributeDeltas(const std::array<float, 3>& deltas,
   }
 }
 
+bool MpActor::IsBothHandsWeapon(WorldState& worldState, uint32_t baseId)
+{
+  // Skyrim.esm EQUP 0x13f45 BothHands, the slot a two-handed weapon's
+  // record names in its ETYP (its PNAM parents 0x13f43 LeftHand and 0x13f42
+  // RightHand; DraugrGreatsword 0x236a5 and DraugrBow 0x302ca name it)
+  constexpr uint32_t kBothHandsSlot = 0x00013f45;
+  if (baseId == 0 || !worldState.HasEspm()) {
+    return false;
+  }
+  const auto res = worldState.GetEspm().GetBrowser().LookupById(baseId);
+  const auto* weap = espm::Convert<espm::WEAP>(res.rec);
+  if (!weap) {
+    return false;
+  }
+  const auto slot = weap->GetData(worldState.GetEspmCache()).equipSlotId;
+  return slot != 0 && res.ToGlobalId(slot) == kBothHandsSlot;
+}
+
+Inventory::Worn MpActor::WornHand(WorldState& worldState,
+                                  const Inventory::Entry& entry)
+{
+  // a two-hander reported worn and wornLeft, or wornLeft alone, reads Left
+  // to GetWorn
+  const auto worn = entry.GetWorn();
+  if (worn != Inventory::Worn::Left ||
+      !IsBothHandsWeapon(worldState, entry.baseId)) {
+    return worn;
+  }
+  return Inventory::Worn::Right;
+}
+
 std::array<std::optional<Inventory::Entry>, 2> MpActor::GetEquippedWeapon()
   const
 {
   std::array<std::optional<Inventory::Entry>, 2> wornEntries;
-  // 0 -> left hand, 1 -> right hand
+  // 0 -> left hand, 1 -> right hand; a two-hander the right's (WornHand),
+  // once, so a sum over both hands (AnimationSystem::HandleAttackAnim's
+  // stamina) counts it once
   auto& espmBrowser = GetParent()->GetEspm().GetBrowser();
   for (const auto& entry : GetEquipment().inv.entries) {
-    if (entry.GetWorn() != Inventory::Worn::None) {
+    const auto hand = WornHand(*GetParent(), entry);
+    if (hand != Inventory::Worn::None) {
       espm::LookupResult res = espmBrowser.LookupById(entry.baseId);
       auto* record = espm::Convert<espm::WEAP>(res.rec);
       if (record) {
-        if (entry.GetWorn() == Inventory::Worn::Left) {
-          wornEntries[0] = std::move(entry);
+        if (hand == Inventory::Worn::Left) {
+          wornEntries[0] = entry;
         }
-        if (entry.GetWorn() == Inventory::Worn::Right) {
-          wornEntries[1] = std::move(entry);
+        if (hand == Inventory::Worn::Right) {
+          wornEntries[1] = entry;
         }
       }
     }

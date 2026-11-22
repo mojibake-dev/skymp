@@ -146,5 +146,15 @@ enum class MsgType : uint8_t
                         // placed at a summon effect's apply, and its end
                         // (docs/verbs/summon.md, R2: the caster's row owns
                         // it)
+  CraftReport = 84,     // one sitting at a crafting bench: its lost and
+                        // gained stacks and learned enchantments as the
+                        // crafter's engine read them (the server records
+                        // and relays the crafter's record)
+  PushActor = 85,       // a script's push onto an actor another seat
+                        // simulates, reported for that simulator to throw
+  Arrest = 86,          // the arrest a player's own game started, its
+                        // jail term the server's record
+  CrimeGold = 87,       // one hold's bounty as the player's own game
+                        // holds it, the server's record (R0)
   Max
 };

@@ -2596,8 +2596,8 @@ mod tests {
     // and refused by its row until its batch unstages
     #[test]
     fn every_native_has_a_row_found_by_the_index_and_a_staged_one_is_refused() {
-        assert_eq!(TABLE.len(), 1410);
-        assert_eq!(TABLE.iter().filter(|r| r.staged).count(), 1348);
+        assert_eq!(TABLE.len(), 1411);
+        assert_eq!(TABLE.iter().filter(|r| r.staged).count(), 1349);
         assert_eq!(TABLE.iter().position(|r| r.staged), Some(62));
         assert_eq!(INDEX.len().checked_sub(1), Some(INDEX_MASK));
         assert!(INDEX.len() >= TABLE.len().saturating_mul(2) && INDEX.len().is_power_of_two());

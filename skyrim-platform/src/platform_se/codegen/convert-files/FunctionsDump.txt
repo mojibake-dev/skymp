@@ -21673,6 +21673,24 @@
                 {
                     "arguments": [
                         {
+                            "name": "owner",
+                            "type": {
+                                "objectTypeName": "Form",
+                                "rawType": "Object"
+                            }
+                        }
+                    ],
+                    "isLatent": false,
+                    "name": "PushOwner",
+                    "offset": "0",
+                    "returnType": {
+                        "rawType": "None"
+                    },
+                    "useLongSignature": false
+                },
+                {
+                    "arguments": [
+                        {
                             "name": "targetActor",
                             "type": {
                                 "objectTypeName": "Actor",

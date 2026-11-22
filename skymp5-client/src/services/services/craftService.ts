@@ -1,73 +1,196 @@
 // TODO: refactor this out
 import { localIdToRemoteId } from "../../view/worldViewMisc";
 
-import { Actor, ContainerChangedEvent } from "skyrimPlatform";
+import { Armor, Enchantment, MenuCloseEvent, MenuOpenEvent, Weapon } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
-import { Inventory } from "../../sync/inventory";
+import { Entry, Inventory, getDiff, getInventory } from "../../sync/inventory";
+import { isSessionId, toWireEntry } from "../../sync/createdForms";
+import { holdPcInventoryForReply, holdPcInventoryForSitting, releasePcInventorySitting } from "./remoteServer";
+import { CraftReportMessage } from "../messages/craftReportMessage";
 import { MsgType } from "../../messages";
-import { logTrace, logError } from "../../logging";
+import { logError, logLab } from "../../logging";
 
-type FurnitureId = number;
+// Every bench (forge, smelter, tanning rack, grindstone, workbench, cooking
+// pot, alchemy lab, arcane enchanter, staff enchanter) runs the engine's
+// Crafting Menu (assumed for the staff enchanter: the game's own menu name read
+// from isBadMenuShown's list, sync/equipment.ts), so one sitting is the span
+// from its open to its close: this engine's inventory read at both, the
+// difference reported as CraftReport (MsgType 84) with every stack in the
+// wire's shape (sync/createdForms.ts: a brewed potion or a made enchantment by
+// its definition, read from the engine's own form). The server takes the lost
+// stacks from the record and adds the gained ones as reported, so the engine's
+// own menu stays the whole computation: recipes, tempering, brewing, enchanting
+// and disenchanting alike. The legacy CraftItem (a recipe matched on the
+// server, with no brew, enchant or temper) is not sent.
+const craftingMenu = "Crafting Menu";
+// wire-schema cap::CRAFT_ROWS and cap::CRAFT_LEARNED
+const craftRows = 64;
+const craftLearned = 128;
+// how long the player's inventory apply waits for the record's answer to a
+// sitting's last report (remoteServer.ts holdPcInventoryForReply); the
+// answer (SetInventory naming the report's seq) ends the wait at once
+const replyHoldMs = 5000;
+
+interface Sitting {
+  before: Inventory;
+  furnitureId: number;
+}
 
 export class CraftService extends ClientListener {
-    constructor(private sp: Sp, private controller: CombinedController) {
-        super();
-        controller.on('containerChanged', (e) => this.onContainerChanged(e));
+  constructor(private sp: Sp, private controller: CombinedController) {
+    super();
+    controller.on("menuOpen", (e) => this.onMenuOpen(e));
+    controller.on("menuClose", (e) => this.onMenuClose(e));
+  }
+
+  private onMenuOpen(e: MenuOpenEvent) {
+    if (e.name !== craftingMenu) {
+      return;
+    }
+    const player = this.sp.Game.getPlayer();
+    if (!player) {
+      return;
+    }
+    const furniture = player.getFurnitureReference();
+    this.sitting = { before: getInventory(player), furnitureId: furniture ? furniture.getFormID() : 0 };
+    // the record's applies wait from here to the sitting's answer
+    holdPcInventoryForSitting();
+  }
+
+  private onMenuClose(e: MenuCloseEvent) {
+    if (e.name !== craftingMenu) {
+      return;
+    }
+    const sitting = this.sitting;
+    this.sitting = undefined;
+    if (!sitting) {
+      return;
+    }
+    let lastSeq = 0;
+    try {
+      lastSeq = this.report(sitting);
+    } catch (err) {
+      logError(this, "the crafting report failed", err);
+    }
+    if (lastSeq > 0) {
+      holdPcInventoryForReply(lastSeq, replyHoldMs);
+    } else {
+      releasePcInventorySitting();
+    }
+  }
+
+  // the sitting's reports sent; the last one's seq, 0 for none
+  private report(sitting: Sitting): number {
+    const player = this.sp.Game.getPlayer();
+    if (!player) {
+      return 0;
+    }
+    const after = getInventory(player);
+    // the worn flag left out: an item worn across a temper or an enchant is
+    // the same stack, and the record's rows carry none
+    const diff = getDiff(after, sitting.before, true).entries;
+    const strip = (e: Entry, count: number): Entry => {
+      const row: Entry = JSON.parse(JSON.stringify(e));
+      row.count = count;
+      delete row.worn;
+      delete row.wornLeft;
+      return row;
+    };
+    const lostLocal = diff.filter((e) => e.count < 0).map((e) => strip(e, -e.count));
+    const gainedLocal = diff.filter((e) => e.count > 0).map((e) => strip(e, e.count));
+    if (lostLocal.length === 0 && gainedLocal.length === 0) {
+      return 0;
     }
 
-    private onContainerChanged(e: ContainerChangedEvent) {
-        const oldContainerId = e.oldContainer ? e.oldContainer.getFormID() : 0;
-        const newContainerId = e.newContainer ? e.newContainer.getFormID() : 0;
-        const baseObjId = e.baseObj ? e.baseObj.getFormID() : 0;
-        if (oldContainerId !== 0x14 && newContainerId !== 0x14) {
-          return;
+    const learned = this.learnedEnchantments(lostLocal, gainedLocal);
+
+    const toWire = (rows: Entry[], side: string): Entry[] => {
+      const out: Entry[] = [];
+      rows.forEach((row) => {
+        const wire = toWireEntry(row);
+        if (wire) {
+          out.push(wire);
+        } else {
+          logLab("verb:craft", `a ${side} stack of ${row.baseId.toString(16)} has no definition this engine can read; left out of the report`);
         }
+      });
+      return out;
+    };
+    const lost = toWire(lostLocal, "lost");
+    const gained = toWire(gainedLocal, "gained");
 
-        const furnitureRef = (this.sp.Game.getPlayer() as Actor).getFurnitureReference();
-        if (!furnitureRef) {
-          return;
-        }
-
-        const furnitureId = furnitureRef.getFormID();
-
-        if (oldContainerId === 0x14 && newContainerId === 0) {
-            let craftInputObjects = this.furnitureStreak.get(furnitureId);
-            if (!craftInputObjects) {
-                craftInputObjects = { entries: [] };
-            }
-            craftInputObjects.entries.push({
-                baseId: baseObjId,
-                count: e.numItems,
-            });
-            this.furnitureStreak.set(furnitureId, craftInputObjects);
-            logTrace(this,
-                `Adding baseObjId`, baseObjId.toString(16), `numItems`, e.numItems, `to craft`,
-            );
-        } else if (oldContainerId === 0 && newContainerId === 0x14) {
-            logTrace(this, 'Finishing craft');
-            const craftInputObjects = this.furnitureStreak.get(furnitureId);
-            if (craftInputObjects && craftInputObjects.entries.length) {
-                this.furnitureStreak.delete(furnitureId);
-                const workbench = localIdToRemoteId(furnitureId);
-                if (!workbench) {
-                    logError(this, `localIdToRemoteId returned 0 for furnitureId`, furnitureId);
-                    return;
-                }
-
-                const resultObjectId = baseObjId;
-
-                logTrace(this, `Sending craft workbench`, workbench, `resultObjectId`, resultObjectId, `craftInputObjects`, JSON.stringify(craftInputObjects.entries));
-
-                this.controller.emitter.emit("sendMessage", {
-                    message: {
-                        t: MsgType.CraftItem,
-                        data: { workbench, craftInputObjects, resultObjectId },
-                    },
-                    reliability: "reliable"
-                });
-            }
-        }
+    const furnitureId = sitting.furnitureId;
+    const workbench = furnitureId ? localIdToRemoteId(furnitureId) || furnitureId : 0;
+    if (!workbench) {
+      logError(this, "a crafting sitting with no bench under the player; nothing reported, the record stands");
+      return 0;
     }
 
-    private furnitureStreak = new Map<FurnitureId, Inventory>();
+    // a sitting past one report's rows goes as several, each standing alone
+    let sent = 0;
+    let lastSeq = 0;
+    for (let i = 0; i < Math.max(lost.length, gained.length); i += craftRows) {
+      const message: CraftReportMessage = {
+        t: MsgType.CraftReport,
+        workbench,
+        seq: ++this.seq,
+        lost: lost.slice(i, i + craftRows),
+        gained: gained.slice(i, i + craftRows),
+        learnedEnchantments: i === 0 ? learned.slice(0, craftLearned) : [],
+      };
+      if (message.lost.length === 0 && message.gained.length === 0) {
+        continue;
+      }
+      this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
+      ++sent;
+      lastSeq = message.seq;
+    }
+    logLab("verb:craft", `bench ${workbench.toString(16)}: ${lost.length} stack(s) lost, ${gained.length} gained, ${learned.length} enchantment(s) known, in ${sent} report(s), the last ${lastSeq}`);
+    return lastSeq;
+  }
+
+  // A disenchant destroys an enchanted item, and the engine marks its game-file
+  // enchantment, or that enchantment's base, known (TESForm::SetPlayerKnows;
+  // assumed from a static read of the engine). So for each lost stack whose
+  // item came back in no other shape (a temper or an enchant gains its base
+  // again), its enchantments are the item's own (ExtraEnchantment's, a
+  // game-file one) and its record's (a weapon's or an armor's EITM), each with
+  // its base enchantment, and the ones this engine now marks known are reported
+  // (one known before is a no-op on the server's record)
+  private learnedEnchantments(lost: Entry[], gained: Entry[]): number[] {
+    const learned = new Set<number>();
+    const consider = (enchantment: Enchantment | null) => {
+      if (!enchantment) {
+        return;
+      }
+      const id = enchantment.getFormID();
+      if (!isSessionId(id) && enchantment.playerKnows()) {
+        learned.add(id);
+      }
+    };
+    lost.forEach((row) => {
+      if (gained.some((g) => g.baseId === row.baseId)) {
+        return;
+      }
+      const candidates: Array<Enchantment | null> = [];
+      if (row.enchantmentId !== undefined && !isSessionId(row.enchantmentId)) {
+        candidates.push(Enchantment.from(this.sp.Game.getFormEx(row.enchantmentId)));
+      }
+      const item = this.sp.Game.getFormEx(row.baseId);
+      const weapon = Weapon.from(item);
+      const armor = Armor.from(item);
+      candidates.push(weapon ? weapon.getEnchantment() : armor ? armor.getEnchantment() : null);
+      candidates.forEach((enchantment) => {
+        consider(enchantment);
+        consider(enchantment ? enchantment.getBaseEnchantment() : null);
+      });
+    });
+    const out: number[] = [];
+    learned.forEach((id) => out.push(id));
+    return out;
+  }
+
+  private sitting: Sitting | undefined;
+  // the last report's number in this session (the server's answer names it)
+  private seq = 0;
 }

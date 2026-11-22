@@ -594,8 +594,12 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
     // (PartOne::SetUserActor, docs/verbs/player-globals.md): the client
     // holds them until its first in-game update, ahead of the scripts
     // that read them at their first check.
+    // the login's jail pass runs after this report's own write below, so the
+    // release's teleport is the record's last word
+    bool loginPass = false;
     if (actor == partOne.serverState.ActorByUser(rawMsgData.userId) &&
         actor->TakeMapMarkersPending()) {
+      loginPass = true;
       SendMapMarkers(*actor);
       SendIngredientEffects(*actor);
       SendFavorites(*actor);
@@ -606,6 +610,9 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
       // the record first, so the record sent below gives it back
       partOne.RecordShoutsOfKnownWords(*actor);
       SendShoutRecord(*actor);
+      // the enchantments it learned by disenchanting, known again (a
+      // relaunched engine starts with none)
+      SendKnownEnchantments(*actor);
     }
 
     if (!msg.data.isBlocking) {
@@ -630,24 +637,35 @@ void ActionListener::OnUpdateMovement(const RawMessageData& rawMsgData,
         actor->TellHostedByOther(*sender);
       }
     }
-    if (newCellOrWorld != actor->GetCellOrWorld()) {
-      actor->SetCellOrWorldObsolete(newCellOrWorld);
-    }
-
     // thuum tracker #179 (ADR-063's 2026-11-19 amendment): a player's body
     // another player's grip holds has that gripper's samples as its one
     // writer (OnPropTransform) until the gripper's rest returns it; the
     // player's own reports lag them by the follow's delay, so they move no
-    // record meanwhile (a throw's sample measured from a lagging record
-    // could pass the step allowance and be refused, the review of 48959a563,
-    // finding 7); its rotation and its relay stand
+    // record meanwhile, its cell no more than its position (a cell change
+    // alone would leave the record in one cell with another's coordinates,
+    // and a throw's sample measured from a lagging record could pass the
+    // step allowance and be refused); its rotation and its relay stand
     const uint32_t bodyHeldBy =
       isPlayersOwn ? partOne.PropLiveOwner(*actor) : 0;
-    if (bodyHeldBy == 0 || bodyHeldBy == actor->GetFormId()) {
+    const bool ownWriter = bodyHeldBy == 0 || bodyHeldBy == actor->GetFormId();
+    if (ownWriter && newCellOrWorld != actor->GetCellOrWorld()) {
+      actor->SetCellOrWorldObsolete(newCellOrWorld);
+    }
+    if (ownWriter) {
       actor->SetPos(
         NiPoint3{ msg.data.pos[0], msg.data.pos[1], msg.data.pos[2] },
         SetPosMode::CalledByUpdateMovement);
     }
+    // at the first movement after a login, a sentence the shared clock ended
+    // while the player was away ends now (its belongings back, the release's
+    // spot), and its bounty per hold goes back to its game. After the
+    // report's own write above: the report comes from the jail's cell, and
+    // its write would otherwise overwrite the release's teleport
+    if (loginPass) {
+      partOne.ReleaseIfServed(*actor);
+      partOne.TellCrimeRecord(*actor);
+    }
+
     // thuum tracker #166: a player armed at a word wall walks on toward its
     // word (nobody is armed, mostly: one lookup then)
     if (isPlayersOwn && !wordWallArms.empty()) {
@@ -2277,13 +2295,25 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
   std::vector<Inventory::Entry> staleItems;
 
   const auto& inventory = actor->GetInventory();
+  // A reported brewed potion or poison names its template base and its
+  // definition; the record's stack of it is found by that definition,
+  // normalized as a report's rows are (CraftService::NormalizeCreated), never
+  // by the plain base, which no plain count holds (Inventory::HasItem), or
+  // each equipment report while a brew is in the bag would erase its row and
+  // resend the whole inventory
+  const auto heldCreated = [&](const Inventory::Entry& reported) {
+    Inventory::Entry e = reported;
+    CraftService::NormalizeCreated(partOne.worldState, e);
+    return inventory.HasCreatedStack(e.baseId, *e.createdBase);
+  };
   {
     auto& entries = kept.inv.entries;
     for (auto it = entries.begin(); it != entries.end();) {
       // a hosted actor's report names what it wears; its engine's whole
       // inventory is npc-fate's record, not this message's
       if ((hosted && it->GetWorn() == Inventory::Worn::None) ||
-          inventory.HasItem(it->baseId) ||
+          (it->createdBase ? heldCreated(*it)
+                           : inventory.HasItem(it->baseId)) ||
           inOverlay(&RaceOverlay::items, it->baseId)) {
         ++it;
         continue;
@@ -2497,15 +2527,30 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
         : armo.bodt.present    ? armo.bodt.bodyPartFlags
                                : 0u;
     };
-    // the hand an entry holds: a shield is armor in the left hand, any other
-    // armor holds none, the rest the hand its flag names
+    // the hand an entry holds: a shield is armor in the left hand (by its
+    // flag, or by its shield slot, 0x200, for the outfit's dressing that
+    // flags every piece worn: MpObjectReference's outfit roll;
+    // GetEquippedShield's kBodShield), any other armor holds none, the rest
+    // the hand its flag names, a two-hander the right (MpActor::WornHand)
     const auto handOf = [&](const Inventory::Entry& entry,
                             const std::optional<uint32_t>& slots) {
-      const auto worn = entry.GetWorn();
-      if (slots && worn != Inventory::Worn::Left) {
-        return Inventory::Worn::None;
+      constexpr uint32_t kShieldSlot = 0x00000200;
+      const auto worn =
+        espmWorld ? MpActor::WornHand(*espmWorld, entry) : entry.GetWorn();
+      if (slots) {
+        if (worn == Inventory::Worn::None) {
+          return Inventory::Worn::None;
+        }
+        return worn == Inventory::Worn::Left || (*slots & kShieldSlot) != 0
+          ? Inventory::Worn::Left
+          : Inventory::Worn::None;
       }
       return worn;
+    };
+    // a two-hander fills both hands, so it and anything else in a hand take
+    // each other's place
+    const auto twoHanded = [&](const Inventory::Entry& entry) {
+      return espmWorld && MpActor::IsBothHandsWeapon(*espmWorld, entry.baseId);
     };
     const auto takesPlaceOf = [&](const Inventory::Entry& recordEntry) {
       const auto slots = armorSlots(recordEntry.baseId);
@@ -2515,9 +2560,12 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
           continue;
         }
         const auto reportedSlots = armorSlots(reported.baseId);
+        const auto reportedHand = handOf(reported, reportedSlots);
         if ((slots.value_or(0) & reportedSlots.value_or(0)) != 0 ||
             (hand != Inventory::Worn::None &&
-             hand == handOf(reported, reportedSlots))) {
+             reportedHand != Inventory::Worn::None &&
+             (hand == reportedHand || twoHanded(recordEntry) ||
+              twoHanded(reported)))) {
           return true;
         }
       }
@@ -2603,7 +2651,9 @@ void ActionListener::OnUpdateEquipment(const RawMessageData& rawMsgData,
     uint32_t left = 0;
     size_t worn = 0;
     for (auto& entry : kept.inv.entries) {
-      const auto w = entry.GetWorn();
+      // a two-hander, reported worn and wornLeft, reads as the right hand
+      // (MpActor::WornHand)
+      const auto w = MpActor::WornHand(partOne.worldState, entry);
       if (w == Inventory::Worn::None) {
         continue;
       }
@@ -3017,14 +3067,18 @@ void ActionListener::OnActivate(const RawMessageData& rawMsgData,
   if (msg.data.caster == 0x14) {
     EndConcealment(partOne, *ac);
   }
-  if (hosterId) {
-    auto actor =
-      std::dynamic_pointer_cast<MpActor>(partOne.worldState.LookupFormById(
-        static_cast<uint32_t>(msg.data.caster)));
-    if (actor) {
-      actor->EquipBestWeapon();
-    }
-  }
+  // a hosted actor's activation leaves its equipment as its host reported
+  // it: the engine that simulates an NPC owns what it wears, and the host's
+  // own equipment report is the record. EquipBestWeapon here would rewrite
+  // the record on each activation the host reports (every worn weapon
+  // stripped, the inventory's highest-damage WEAP worn in the right hand
+  // alone, numChanges one up), and every copy would apply it: a two-hander
+  // the host's engine holds in both hands would be recorded in the right
+  // hand only, and a watching copy would take it off and on and draw an
+  // empty hand (a draugr rising from its alcove activates its
+  // CreatureAlcoveMarker four times). The fate roll and Init keep their
+  // EquipBestWeapon (MpActor.cpp), the server's own first dressing of an
+  // actor no engine has dressed yet
 }
 
 void ActionListener::OnPutItem(const RawMessageData& rawMsgData,
@@ -3054,6 +3108,25 @@ void ActionListener::OnPutItem(const RawMessageData& rawMsgData,
     static_cast<const Inventory::ExtraData&>(msg);
   entry.SetWorn(Inventory::Worn::None);
 
+  // an arrest's strip, the prisoner's own game's, reported as its moves into
+  // the faction's chests. The engine strips in GoToPrison's own frame from
+  // wherever the player stood, and the client's inventory diff names one
+  // chest for all of them, so the reach is not asked and the chest named does
+  // not matter; the move is PartOne's, and never refused back into the
+  // prisoner's game
+  if (actor->ArrestStripTakes(ref.GetFormId())) {
+    partOne.OnArrestStripPut(*actor, entry);
+    return;
+  }
+  // an owned stack's put into a crime faction's evidence chest is the
+  // engine's confiscation, made from wherever the player stood (a fine paid
+  // with removeStolen): PartOne's, no reach asked and never refused back
+  // into the player's game
+  if (entry.ownerId &&
+      partOne.CrimeFactionOfEvidenceChest(ref.GetFormId()) != 0) {
+    partOne.OnConfiscation(*actor, ref, entry);
+    return;
+  }
   if (!ContainerMoveWithinReach(*actor, ref, "put")) {
     return;
   }
@@ -3090,6 +3163,15 @@ void ActionListener::OnTakeItem(const RawMessageData& rawMsgData,
   // its own engine's, never the container's
   entry.SetWorn(Inventory::Worn::None);
 
+  // the arrest seen as a take (the jail outfit the engine made shows in the
+  // client's inventory diff as a take from the chest the diff names):
+  // PartOne's, as the put above is
+  if (actor->ArrestStripTakes(ref.GetFormId())) {
+    if (!partOne.OnArrestStripTake(*actor, entry)) {
+      ref.ResyncAfterRefusedMove(*actor);
+    }
+    return;
+  }
   if (!ContainerMoveWithinReach(*actor, ref, "take")) {
     return;
   }
@@ -3457,6 +3539,38 @@ void ActionListener::SendIngredientEffects(MpActor& actor)
   if (sent > 0) {
     spdlog::info("IngredientEffects: actor {:x} taught its {} effects after "
                  "a login",
+                 actor.GetFormId(), sent);
+  }
+}
+
+// Teach the player's recorded enchantments to its client's engine, SKSE's
+// Form.SetPlayerKnows(true) with the enchantment as self, one per
+// enchantment; assumes a disenchant sets only that known flag
+// (CommonLibSSE-NG TESForm.h:349). ShoutSnippets.cpp's word known is the same
+// call
+void ActionListener::SendKnownEnchantments(MpActor& actor)
+{
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    knows{ true };
+  size_t sent = 0;
+  for (const auto& enchantment : actor.GetKnownEnchantments()) {
+    uint32_t formId = 0;
+    try {
+      formId = enchantment.ToFormId(partOne.worldState.espmFiles);
+    } catch (std::exception& e) {
+      spdlog::warn("KnownEnchantments: actor {:x}'s {} is in no loaded "
+                   "plugin: {}",
+                   actor.GetFormId(), enchantment.ToString(), e.what());
+      continue;
+    }
+    SpSnippet("Form", "SetPlayerKnows", knows, formId)
+      .Execute(&actor, SpSnippetMode::kNoReturnResult);
+    ++sent;
+  }
+  if (sent > 0) {
+    spdlog::info("KnownEnchantments: actor {:x} taught its {} enchantments "
+                 "after a login",
                  actor.GetFormId(), sent);
   }
 }
@@ -10668,9 +10782,13 @@ void ActionListener::OnDropItem(const RawMessageData& rawMsgData,
                          ac->GetFormId());
   }
 
-  Inventory::Entry entry;
-  entry.baseId = baseId;
-  entry.count = msg.count;
+  // The drop names its stack with its extras and created forms, normalized
+  // as a craft report's rows are, so a brewed or enchanted item drops as the
+  // record holds it; the worn flags are not the drop's
+  Inventory::Entry entry(baseId, msg.count, msg);
+  entry.worn_.reset();
+  entry.wornLeft.reset();
+  CraftService::NormalizeCreated(partOne.worldState, entry);
 
   ac->DropItem(baseId, entry);
 }
@@ -10866,6 +10984,13 @@ void ActionListener::OnEquip(const RawMessageData& rawMsgData,
       std::to_string(rawMsgData.userId));
   }
 
+  // A brewed potion or poison names its template and its definition; its
+  // stack is the record's row of that definition, and a template is no food
+  if (msg.createdBase) {
+    (void)actor->OnEquipCreated(msg.baseId, *msg.createdBase);
+    return;
+  }
+
   if (actor->OnEquip(msg.baseId)) {
     ApplySurvivalFood(*actor, msg.baseId);
   }
@@ -10883,6 +11008,87 @@ void ActionListener::OnConsoleCommand(const RawMessageData& rawMsgData,
     }
     ConsoleCommands::Execute(partOne, *me, msg.data.commandName, consoleArgs);
   }
+}
+
+// The sender's game skipped a script's PushActorAway onto an actor it does
+// not simulate (a puppet there: skyrim-platform ScriptNatives.cpp's push
+// hook) and reported it; the script keeps running on the caster's seat, and
+// the push goes to the pushed actor's own simulator. Consistency alone is
+// checked: the caster is the sender's own actor or one it hosts
+// (E_PUSH_CASTER); the target a live actor no player owns, its host some
+// other seat (E_PUSH_TARGET, E_PUSH_HOST); the two in one cell or worldspace
+// within kPushReach (E_PUSH_FAR); the force bounded by the wire
+// (PUSH_FORCE_MAX). Then the target's host runs
+// ObjectReference.PushActorAway(target, force) with the caster's figure as
+// self (an SpSnippet, DeliverSpellLanding's shape), its engine's own throw,
+// which its live-body stream carries to every other screen
+void ActionListener::OnPushActor(const RawMessageData& rawMsgData,
+                                 const PushActorMessage& msg)
+{
+  constexpr float kPushReach = 10000.f;
+  MpActor* myActor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!myActor) {
+    return;
+  }
+  auto& worldState = partOne.worldState;
+  auto* caster = msg.caster == myActor->GetFormId()
+    ? myActor
+    : dynamic_cast<MpActor*>(worldState.LookupFormById(msg.caster).get());
+  if (!caster ||
+      (caster != myActor && worldState.HostOf(*caster) != myActor)) {
+    spdlog::warn("[verb:push] E_PUSH_CASTER: {:x} reports a push by {:x}, "
+                 "neither its own actor nor one it hosts; refused",
+                 myActor->GetFormId(), msg.caster);
+    return;
+  }
+  auto* target =
+    dynamic_cast<MpActor*>(worldState.LookupFormById(msg.target).get());
+  if (!target || target->IsDead() ||
+      partOne.serverState.UserByActor(target) != Networking::InvalidUserId) {
+    spdlog::warn("[verb:push] E_PUSH_TARGET: {:x} reports {:x} pushing "
+                 "{:x}, which is no live actor or is a player's (a player's "
+                 "throw is its own game's); refused",
+                 myActor->GetFormId(), caster->GetFormId(), msg.target);
+    return;
+  }
+  MpActor* host = target->HostedBy();
+  if (!host || host == myActor) {
+    spdlog::warn("[verb:push] E_PUSH_HOST: {:x} reports {:x} pushing {:x}, "
+                 "which {}; refused",
+                 myActor->GetFormId(), caster->GetFormId(),
+                 target->GetFormId(),
+                 host ? "its own game simulates" : "no game simulates");
+    return;
+  }
+  const auto& a = caster->GetPos();
+  const auto& b = target->GetPos();
+  const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+  if (!(caster->GetCellOrWorld() == target->GetCellOrWorld()) ||
+      dx * dx + dy * dy + dz * dz > kPushReach * kPushReach) {
+    spdlog::warn("[verb:push] E_PUSH_FAR: {:x} reports {:x} pushing {:x}, "
+                 "not within {} units in one cell or worldspace; refused",
+                 myActor->GetFormId(), caster->GetFormId(),
+                 target->GetFormId(), kPushReach);
+    return;
+  }
+  SpSnippetObjectArgument pushed;
+  pushed.formId = target->GetFormId();
+  pushed.type = "Actor";
+  const std::vector<std::optional<
+    std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+    args{ pushed, static_cast<double>(msg.force) };
+  SpSnippet("ObjectReference", "PushActorAway", args, caster->GetFormId())
+    .Execute(host, SpSnippetMode::kNoReturnResult);
+  spdlog::info("[verb:push] {:x} pushes {:x} (force {}) in {:x}'s game: its "
+               "host {:x}'s game throws it (D-PH5's amendment, tracker #175)",
+               caster->GetFormId(), target->GetFormId(), msg.force,
+               myActor->GetFormId(), host->GetFormId());
+}
+
+void ActionListener::OnCraftReport(const RawMessageData& rawMsgData,
+                                   const CraftReportMessage& msg)
+{
+  craftService->OnCraftReport(rawMsgData, msg);
 }
 
 void ActionListener::OnCraftItem(const RawMessageData& rawMsgData,
@@ -11311,21 +11517,17 @@ skymp::rules::StaggerSettings StaggerSettingsOf(WorldState& worldState)
   return s;
 }
 
-// The weapon worn in the actor's right hand, if any
+// The weapon worn in the actor's right hand, if any: MpActor's own hand read
+// (GetEquippedWeapon's right, a two-hander reported worn and wornLeft
+// included: MpActor::WornHand)
 std::optional<espm::WEAP::Data> RightHandWeapon(const MpActor& actor,
                                                 WorldState& worldState)
 {
-  auto& browser = worldState.GetEspm().GetBrowser();
-  for (const auto& entry : actor.GetEquipment().inv.entries) {
-    if (entry.GetWorn() != Inventory::Worn::Right) {
-      continue;
-    }
-    const auto res = browser.LookupById(entry.baseId);
-    if (res.rec && res.rec->GetType() == espm::WEAP::kType) {
-      return espm::GetData<espm::WEAP>(entry.baseId, &worldState);
-    }
+  const auto right = actor.GetEquippedWeapon()[1];
+  if (!right) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  return espm::GetData<espm::WEAP>(right->baseId, &worldState);
 }
 
 // A drawn weapon's value against a stagger when its holder blocks without a
@@ -12151,7 +12353,48 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     return;
   }
 
-  if (equipment.IsSpellEquipped(spellCastData.spell) == false) {
+  // A staff's cast names the staff's enchantment, an ENCH no hand slot
+  // holds. It is the cast of the hand whose worn weapon in the caster's
+  // record is a staff (libespm WEAP DNAM's animType Staff) with the form an
+  // ENCH of the files: taken and relayed, recorded unvalidated, as the
+  // caster's game owns its cast. The form is held to an enchantment, not to
+  // the staff record's own EITM. The caster's platform sends a staff's cast
+  // with the staff's enchantment (EventHandler.cpp)
+  const bool staffCast = [&]() {
+    if (hand > 1 || !partOne.HasEspm()) {
+      return false;
+    }
+    const auto rec =
+      partOne.GetEspm().GetBrowser().LookupById(spellCastData.spell).rec;
+    if (!rec || rec->GetType() != espm::ENCH::kType) {
+      return false;
+    }
+    const auto wantWorn =
+      hand == 1 ? Inventory::Worn::Right : Inventory::Worn::Left;
+    for (const auto& e : equipment.inv.entries) {
+      if (e.GetWorn() != wantWorn) {
+        continue;
+      }
+      try {
+        const auto dnam =
+          espm::GetData<espm::WEAP>(e.baseId, &partOne.worldState).weapDNAM;
+        if (dnam && dnam->animType == espm::WEAP::AnimType::Staff) {
+          return true;
+        }
+      } catch (const std::exception&) {
+        // not a weapon of the files: no staff
+      }
+    }
+    return false;
+  }();
+  if (staffCast) {
+    spdlog::info("[verb:spell-cast] {:x} casts {:x} from the staff in its {} "
+                 "hand: taken unvalidated (R2) and relayed",
+                 caster->GetFormId(), spellCastData.spell,
+                 hand == 1 ? "right" : "left");
+  }
+
+  if (!staffCast && equipment.IsSpellEquipped(spellCastData.spell) == false) {
     if (caster == myActor) {
       spdlog::info("ActionListener::OnSpellCast - spell {0:x} not "
                    "found in equipment",
@@ -12466,8 +12709,8 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   // VampireAbsorbHealthScript rolls Sanguinare Vampiris at OnEffectStart. An
   // aimed cast's relay carries no target, so the victim's game is told the
   // spell landed: the caster's figure applies it to that game's player,
-  // whose AddTarget zeroes its numbers (skyrim-platform Hooks.cpp
-  // PlayerAddTarget) and runs its scripts. Once a contact: a stream's hits
+  // whose EffectAdded zeroes its numbers (skyrim-platform Hooks.cpp
+  // PlayerEffectAdded) and runs its scripts. Once a contact: a stream's hits
   // within a second of the last delivery are the same contact (HYPOTHESIS:
   // the engine starts a concentration effect once a contact, not once a
   // hit; x-infection v1 reads it)
@@ -12506,12 +12749,12 @@ void ActionListener::DeliverSpellLanding(MpActor& caster, MpActor& target,
   // (playtest 53 c2-console.log:11154-11214 against server.log:3366-3378,
   // c2's clock 2.99 s behind), and the two that missed launched once. Such
   // a spell gets no delivery. HYPOTHESIS: the relayed bolt's hit on the
-  // victim's player runs that game's AddTarget, its numbers zeroed
-  // (skyrim-platform Hooks.cpp PlayerAddTarget) and its scripts run; a
-  // stream's relayed missiles follow the copy's aim instead, so a stream
-  // keeps the delivery (playtest 51's drain). A form that is no spell (a
-  // staff's enchantment) is never relayed as a cast (E_CAST_FORM) and keeps
-  // it too
+  // victim's player runs that game's AddTarget, its numbers zeroed at the
+  // effect's add (skyrim-platform Hooks.cpp PlayerEffectAdded) and its
+  // scripts run; a stream's relayed missiles follow the copy's aim instead,
+  // so a stream keeps the delivery (playtest 51's drain). A form that is no
+  // spell (a staff's enchantment) is never relayed as a cast (E_CAST_FORM)
+  // and keeps it too
   if (WorldState* worldState = caster.GetParent(); worldState) {
     try {
       const auto record = espm::GetData<espm::SPEL>(spell, worldState);
@@ -12721,20 +12964,30 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
 
   NotifyHostility(*aggressor, targetActor, currentHitTime);
 
-  // thuum docs/verbs/poison.md: a poisoned weapon's hit runs the poison's
-  // effects on the target through the effect rule (ADR-028), the attacker
-  // as caster, and spends a dose; the attacker's game is told its inventory,
-  // so its ExtraPoison agrees. HYPOTHESIS: the game spends a dose on a
-  // blocked hit as well (unmeasured)
-  if (const auto poison =
-        ethereal ? std::nullopt : aggressor->SpendPoisonDose(hitData.source)) {
-    const auto effects = MpActor::EffectsOf(&partOne.worldState, *poison);
-    targetActor.ApplyEffects(*poison, effects, 1.f, aggressor->GetFormId(),
+  // A poisoned weapon's hit runs the poison's effects on the target through
+  // the effect rule, the attacker as caster, and spends a dose; the
+  // attacker's game is told its inventory, so its ExtraPoison agrees. Assumes
+  // the game spends a dose on a blocked hit as well. A brewed poison's mark
+  // runs its definition's effects, the weapon as their source (the record
+  // names no template for it)
+  std::optional<CreatedForm> brewed;
+  if (const auto poison = ethereal
+        ? std::nullopt
+        : aggressor->SpendPoisonDose(hitData.source, &brewed)) {
+    const uint32_t source = brewed ? hitData.source : *poison;
+    const auto effects = brewed
+      ? MpActor::EffectsOfCreated(*brewed)
+      : MpActor::EffectsOf(&partOne.worldState, *poison);
+    targetActor.ApplyEffects(source, effects, 1.f, aggressor->GetFormId(),
                              false);
-    spdlog::info("OnWeaponHit - {:x}'s {:x} carried poison {:x}: its effects "
-                 "run on {:x}, a dose spent",
+    spdlog::info("OnWeaponHit - {:x}'s {:x} carried poison {:x}{}: its "
+                 "effects run on {:x}, a dose spent",
                  aggressor->GetFormId(), hitData.source, *poison,
-                 targetActor.GetFormId());
+                 brewed ? " (brewed)" : "", targetActor.GetFormId());
+  }
+
+  if (!ethereal) {
+    RunEnchantedHit(*aggressor, targetActor, hitData);
   }
 
   // the engine's reaction skips a hit that killed, and one on an ethereal
@@ -12742,6 +12995,97 @@ void ActionListener::OnWeaponHit(MpActor* aggressor,
   if (currentActorValues.healthPercentage > 0.f && !ethereal) {
     NotifyStagger(*aggressor, targetActor, hitData, damage > 0.f);
   }
+}
+
+// The weapon a hit names, worn in the aggressor's equipment with an
+// enchantment (a file ENCH by id, a made one by its definition), runs that
+// enchantment's effects on the target through the effect rule (as a poisoned
+// hit does above: the server's numbers, the aggressor as caster), and the
+// struck actor's own game is told to cast it from the aggressor's figure at
+// its target (SpellCast, the instant slot, a made enchantment by createdSpell
+// with spell 0): the victim's own game for a player, the host's for an NPC,
+// so the effect plays where the target is simulated. The aggressor's own game
+// ran the enchantment at its hit and is not told; a host that is the
+// aggressor's game is skipped the same way. Assumes a relayed cast on a
+// player lands with its Health number zeroed and its shader shown (Hooks.cpp
+// PlayerEffectAdded), that the cast lands on an NPC its host simulates
+// (MagicApi.cpp castSpellImmediate's touch branch), that on either it makes
+// one effect with that game's engine add of the same hit from the
+// aggressor's figure (Hooks.cpp EnchantedHitAdds), and that a host's engine
+// number for an NPC is reconciled to the server's record. A game-file
+// enchanted weapon runs its record's own
+// enchantment (libespm WEAP's EITM) the same way
+void ActionListener::RunEnchantedHit(MpActor& aggressor, MpActor& target,
+                                     const HitData& hitData)
+{
+  const Equipment equipment = aggressor.GetEquipment();
+  const Inventory::Entry* weapon = nullptr;
+  for (const auto& e : equipment.inv.entries) {
+    if (e.baseId != hitData.source || e.GetWorn() == Inventory::Worn::None) {
+      continue;
+    }
+    if (!weapon || e.GetWorn() == Inventory::Worn::Right) {
+      weapon = &e;
+    }
+  }
+  if (!weapon) {
+    return;
+  }
+  // the stack's own enchantment (made at the enchanter, or a file one an
+  // enchanter put on it), else the weapon record's EITM (a game-file
+  // enchanted weapon; libespm WEAP, its id read in the record's own
+  // numbering)
+  std::optional<uint32_t> fileEnchantment = weapon->enchantmentId;
+  if (!weapon->createdEnchantment && !fileEnchantment && partOne.HasEspm()) {
+    const auto lookup =
+      partOne.GetEspm().GetBrowser().LookupById(hitData.source);
+    if (const auto weap = espm::Convert<espm::WEAP>(lookup.rec)) {
+      const uint32_t eitm =
+        weap->GetData(partOne.worldState.GetEspmCache()).enchantmentFormId;
+      if (eitm) {
+        fileEnchantment = lookup.ToGlobalId(eitm);
+      }
+    }
+  }
+  if (!weapon->createdEnchantment && !fileEnchantment) {
+    return;
+  }
+
+  const auto effects = weapon->createdEnchantment
+    ? MpActor::EffectsOfCreated(*weapon->createdEnchantment)
+    : MpActor::EffectsOf(&partOne.worldState, *fileEnchantment);
+  if (effects.empty()) {
+    return;
+  }
+  target.ApplyEffects(weapon->createdEnchantment ? hitData.source
+                                                 : *fileEnchantment,
+                      effects, 1.f, aggressor.GetFormId(), false);
+
+  MpActor* owner = nullptr;
+  if (partOne.serverState.UserByActor(&target) != Networking::InvalidUserId) {
+    owner = &target;
+  } else if (MpActor* host = target.HostedBy(); host && host != &aggressor) {
+    owner = host;
+  }
+  const bool told = owner && owner != &aggressor;
+  if (told) {
+    SpellCastMessage relay;
+    relay.data.caster = aggressor.GetFormId();
+    relay.data.target = target.GetFormId();
+    relay.data.spell = weapon->createdEnchantment ? 0u : *fileEnchantment;
+    relay.data.createdSpell = weapon->createdEnchantment;
+    relay.data.castingSource = 3;
+    owner->SendToUser(relay, true);
+  }
+  spdlog::info(
+    "[verb:magic-effects] {:x}'s hit with {:x} carried enchantment "
+    "{}: {} effect(s) run on {:x}{}",
+    aggressor.GetFormId(), hitData.source,
+    weapon->createdEnchantment ? std::string("(made at the enchanter)")
+                               : fmt::format("{:x}", *fileEnchantment),
+    effects.size(), target.GetFormId(),
+    told ? fmt::format(", its cast told to {:x}'s game", owner->GetFormId())
+         : std::string(", no other game to tell"));
 }
 
 // thuum docs/verbs/stagger.md: the stagger the engine's own rule gives the
@@ -13267,4 +13611,30 @@ void ActionListener::SendPapyrusOnHitEvent(MpActor* aggressor,
   args[5] = VarValue(hitData.isBashAttack);  // abBashAttack
   args[6] = VarValue(hitData.isHitBlocked);  // abHitBlocked
   target->SendPapyrusEvent("OnHit", args.data(), args.size());
+}
+
+// The arrested player's own game reports its arrest; the server records the
+// term and takes the strip and the outfit as that game's. Every refusal is
+// logged by name in PartOne::OnArrest and nothing of a refused report lands.
+void ActionListener::OnArrest(const RawMessageData& rawMsgData,
+                              const ArrestMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  partOne.OnArrest(*actor, msg.faction, msg.days);
+}
+
+// One hold's bounty as the player's own game holds it, the server's record
+// (R0)
+void ActionListener::OnCrimeGold(const RawMessageData& rawMsgData,
+                                 const CrimeGoldMessage& msg)
+{
+  MpActor* actor = partOne.serverState.ActorByUser(rawMsgData.userId);
+  if (!actor) {
+    return;
+  }
+  partOne.OnCrimeGold(*actor, msg.faction, msg.violent, msg.nonViolent,
+                      msg.paidGold);
 }

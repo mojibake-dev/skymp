@@ -7,11 +7,13 @@ import {
   Spell,
   Ui,
   Utility,
+  Weapon,
   setInventory,
 } from 'skyrimPlatform';
 
-import { logTrace } from '../logging';
-import { Entry, Inventory, getInventory, readWorn } from './inventory';
+import { logLab, logTrace } from '../logging';
+import { Entry, Inventory, addItemExEntry, getInventory, readWorn } from './inventory';
+import { toLocalWornInventory } from './createdForms';
 
 export const enum SpellType {
   Left,
@@ -67,6 +69,12 @@ export interface Equipment {
   instantSpell?: number;
   numChanges: number;
 }
+
+// the extras a stack keeps between two reads (the ones the inventory's
+// match compares, the worn flag and the charge left aside)
+const hasLastingExtras = (e: Entry): boolean =>
+  e.health !== undefined || e.enchantmentId !== undefined || e.maxCharge !== undefined ||
+  e.soul !== undefined || e.poisonId !== undefined;
 
 const filterWorn = (inv: Inventory): Inventory => {
   return { entries: inv.entries.filter((x) => x.worn || x.wornLeft) };
@@ -178,9 +186,30 @@ export const cannotDress = (ac: Actor): boolean => ac.isDeleted() || ac.isDisabl
 // differs from what the copy holds, their spells as a figure's. The rest of
 // the list (the biped slots: armor, a skin a script equipped, the quiver)
 // is the copy's own worn read (readWorn, the engine's worn flags) against
-// the list. The caller holds the guards (cannotDress, the copy's 3D, the
+// the list. A two-handed weapon (its record's ETYP the BothHands slot) is the
+// right hand's alone: the engine reads it in both hands (getEquippedObject 1
+// and 0, the host's report wearing it worn and wornLeft at once), and a
+// left-hand row for it would unequip the weapon from both hands whenever a
+// record names it in the right hand alone, so the copy's weapon would go off
+// and on again and its draw find an empty hand. The caller holds the guards
+// (cannotDress, the copy's 3D, the
 // update's context: FormView's applyNpcWorn). Returns the base ids it
 // equipped and took off, for the view's line.
+// Skyrim.esm EQUP 0x13f45 BothHands, the slot a two-handed weapon's record
+// names in its ETYP (its PNAM parents 0x13f43 LeftHand and 0x13f42
+// RightHand; DraugrGreatsword 0x236a5 and DraugrBow 0x302ca both name it)
+const kBothHandsSlot = 0x13f45;
+
+// whether a weapon's own record names the BothHands slot (0 and a non-weapon
+// are not)
+const isBothHands = (baseId: number): boolean => {
+  if (!baseId) {
+    return false;
+  }
+  const slot = Weapon.from(Game.getFormEx(baseId))?.getEquipType();
+  return !!slot && slot.getFormID() === kBothHandsSlot;
+};
+
 export const applyWorn = (ac: Actor, eq: Equipment): { equipped: number[]; unequipped: number[] } => {
   const done = { equipped: new Array<number>(), unequipped: new Array<number>() };
   if (cannotDress(ac)) {
@@ -204,10 +233,23 @@ export const applyWorn = (ac: Actor, eq: Equipment): { equipped: number[]; unequ
       want.add(e.baseId);
     }
   }
+  // a two-hander is one ask, in the right hand, whether the record names it
+  // worn (right) or, with no right, wornLeft alone (a host whose engine read
+  // it in the left hand only). Its left hand holds nothing else: anything the
+  // copy holds there besides it comes off (a left row asking for nothing). A
+  // two-hander the copy holds in both hands is the right row's to keep or
+  // take off, never the left's too
+  const twoHander = isBothHands(right) ? right : right === 0 && isBothHands(left) ? left : 0;
+  const heldBoth = heldRight !== 0 && heldRight === heldLeft && isBothHands(heldRight);
+  const leftNow = heldBoth ? 0 : heldLeft;
   const handRows: Array<{ slot: number; current: number; baseId: number }> = [
-    { slot: 1, current: heldRight, baseId: right },
-    { slot: 2, current: heldLeft, baseId: left },
+    { slot: 1, current: heldRight, baseId: twoHander || right },
   ];
+  if (!twoHander) {
+    handRows.push({ slot: 2, current: leftNow, baseId: left });
+  } else if (leftNow !== 0 && leftNow !== twoHander) {
+    handRows.push({ slot: 2, current: leftNow, baseId: 0 });
+  }
   for (const hand of handRows) {
     if (hand.current === hand.baseId) {
       continue;
@@ -454,19 +496,67 @@ const equipPlayerHands = (ac: Actor, eq: Equipment, afterLoginWipe: boolean): vo
   }
 };
 
+// a figure's dress waiting on a made form, by the figure's id: since when (applyEquipment)
+const figureFormWaitSince = new Map<number, number>();
+const figureFormWaitMs = 5000;
+
 export const applyEquipment = (ac: Actor, eq: Equipment, keepAlso: readonly number[] = []): boolean => {
   if (cannotDress(ac)) {
     return false;
   }
+  const isPlayer = ac.getFormID() === 0x14;
+  // the record's worn rows in this engine's ids, a made enchantment's form
+  // made by its own creator (sync/createdForms.ts)
+  const worn = toLocalWornInventory(removeUnnecessaryExtra(filterWorn(eq.inv), isPlayer));
+  // A made form's creator answers a frame or more after the ask, and no
+  // inventory loop lays a figure's made form, so a figure whose worn row waits
+  // on its form keeps its dress and the apply answers false: FormView's next
+  // pass (formView.ts, lastNumChanges) dresses it with the form; past
+  // figureFormWaitMs it is dressed plain. The player's own dress at a login
+  // does not wait: its inventory loop lays the form when it lands
+  if (!isPlayer && worn.pending) {
+    const since = figureFormWaitSince.get(ac.getFormID());
+    if (since === undefined) {
+      figureFormWaitSince.set(ac.getFormID(), Date.now());
+      logLab("verb:craft", `figure ${ac.getFormID().toString(16)}'s dress waits for a made form`);
+      return false;
+    }
+    if (Date.now() - since < figureFormWaitMs) {
+      return false;
+    }
+  }
+  figureFormWaitSince.delete(ac.getFormID());
+  const newInventory = worn.inventory;
+
   ac.removeAllItems(null, false, true);
 
   ac.unequipAll();
 
   ac.removeAllItems(null, false, true);
 
-  const newInventory = removeUnnecessaryExtra(filterWorn(eq.inv), ac.getFormID() === 0x14);
-
-  setInventory(ac.getFormID(), newInventory);
+  // setInventory lays a base and its worn flag alone (InventoryApi.cpp), so
+  // a worn row with lasting extras (a made enchantment, a temper, a poison)
+  // is dressed through addItemEx as the record has it. On the player, the
+  // inventory loop's next apply then finds the stack it holds, where a plain
+  // one would be taken and the record's laid back unworn. A figure is dressed
+  // the same way, so another seat's enchanted weapon is worn with its
+  // enchantment (its charge full, as removeUnnecessaryExtra sets it) and a
+  // tempered one with its health
+  const plain = newInventory.entries.filter((e) => !hasLastingExtras(e));
+  const extras = newInventory.entries.filter((e) => hasLastingExtras(e));
+  setInventory(ac.getFormID(), { entries: plain });
+  extras.forEach((e) => {
+    const form = Game.getFormEx(e.baseId);
+    if (form) {
+      addItemExEntry(ac, form, e, e.count);
+    }
+  });
+  if (extras.length > 0) {
+    ac.queueNiNodeUpdate();
+  }
+  if (!isPlayer && extras.length > 0) {
+    logLab("verb:craft", `figure ${ac.getFormID().toString(16)} dressed with ${extras.length} worn row(s) carrying extras`);
+  }
 
   // finding 45: the player's hands, once setInventory's adds have landed,
   // as a pass after a login's wipe (applyPlayerHands above, playtest 48):

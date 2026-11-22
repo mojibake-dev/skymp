@@ -1,0 +1,15 @@
+{
+  "gained": [],
+  "learnedEnchantments": [
+    286810
+  ],
+  "lost": [
+    {
+      "baseId": 115942,
+      "count": 1
+    }
+  ],
+  "seq": 3,
+  "t": 84,
+  "workbench": 765196
+}

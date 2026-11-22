@@ -1,4 +1,5 @@
 import { MsgType } from "../../messages";
+import { CreatedForm } from "../../sync/createdForms";
 
 export interface SpellCastMsgData {
     caster: number
@@ -33,6 +34,10 @@ export interface SpellCastMsgData {
     // (castSpellImmediate's last five arguments). Only with hasLaunch;
     // absent for every other cast
     decal?: SpellCastDecal
+    // the server's relay of an enchanted weapon's hit names a made
+    // enchantment by its definition, with spell 0; a seat's own cast never
+    // carries one
+    createdSpell?: CreatedForm
 }
 
 export interface SpellCastDecal {

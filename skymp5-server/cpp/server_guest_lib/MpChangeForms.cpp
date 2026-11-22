@@ -71,6 +71,34 @@ const UnresolvedForm* FindUnresolved(
 
 constexpr const char* kEntryForms[] = { "baseId", "enchantmentId",
                                         "poisonId" };
+// An entry's created forms (CreatedForm.h); each effect's MGEF is a load
+// order form id, described and resolved as the entry's own ids are
+constexpr const char* kEntryCreated[] = { "createdBase", "createdEnchantment",
+                                          "createdPoison" };
+
+// The MGEF of every effect of an entry's created forms, each passed to
+// `visit` (the effect's "mgef" value); false as soon as `visit` refuses one
+template <class Visit>
+bool VisitCreatedEffects(nlohmann::json& entry, Visit visit)
+{
+  for (const char* key : kEntryCreated) {
+    auto form = entry.find(key);
+    if (form == entry.end() || !form->is_object()) {
+      continue;
+    }
+    auto effects = form->find("effects");
+    if (effects == form->end() || !effects->is_array()) {
+      continue;
+    }
+    for (auto& effect : *effects) {
+      auto mgef = effect.find("mgef");
+      if (mgef != effect.end() && !visit(key, *mgef)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
 constexpr const char* kSpellSlots[] = { "leftSpell", "rightSpell",
                                         "voiceSpell", "instantSpell" };
 
@@ -102,6 +130,25 @@ void DescribeInventory(nlohmann::json& inv, const EspmFileList& files,
           break;
         }
         *value = *desc;
+      }
+      if (described) {
+        described = VisitCreatedEffects(
+          entry, [&](const char* key, nlohmann::json& mgef) {
+            if (!mgef.is_number()) {
+              return true;
+            }
+            const uint32_t formId = mgef.get<uint32_t>();
+            const auto desc = Describe(formId, files);
+            if (!desc) {
+              spdlog::error("MpChangeForm::ToJson {} - {} entry's {} effect "
+                            "{:#x} belongs to no loaded plugin, dropping the "
+                            "entry",
+                            record, field, key, formId);
+              return false;
+            }
+            mgef = *desc;
+            return true;
+          });
       }
       if (described) {
         kept.push_back(std::move(entry));
@@ -143,6 +190,21 @@ void ResolveInventory(nlohmann::json& inv, const EspmFileList& files,
         break;
       }
       *value = *formId;
+    }
+    if (!missing) {
+      VisitCreatedEffects(resolved, [&](const char*, nlohmann::json& mgef) {
+        if (!mgef.is_string()) {
+          return true;
+        }
+        const FormDesc form = FormDesc::FromString(mgef.get<std::string>());
+        const auto formId = Resolve(form, files);
+        if (!formId) {
+          missing = form;
+          return false;
+        }
+        mgef = *formId;
+        return true;
+      });
     }
     if (missing) {
       unresolved.push_back(UnresolvedForm{ field, *missing, entry.dump() });
@@ -519,6 +581,12 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     res["ingredientEffects"] = { { "entries", effectsJson } };
   }
 
+  // absent in older records, read as none
+  if (changeForm.knownEnchantments.has_value() &&
+      !changeForm.knownEnchantments->empty()) {
+    res["knownEnchantments"] = ToStringArray(*changeForm.knownEnchantments);
+  }
+
   // thuum docs/verbs/player-globals.md; absent in older records, read as
   // none
   if (changeForm.playerGlobals.has_value() &&
@@ -722,6 +790,26 @@ nlohmann::json MpChangeForm::ToJson(const MpChangeForm& changeForm,
     };
   }
 
+  // the crime record (CrimeRecord.h); absent in older records, read as none
+  if (changeForm.crimeRecord.has_value() && !changeForm.crimeRecord->Empty()) {
+    auto gold = nlohmann::json::array();
+    for (const auto& g : changeForm.crimeRecord->crimeGold) {
+      gold.push_back({ { "faction", g.faction.ToString() },
+                       { "violent", g.violent },
+                       { "nonViolent", g.nonViolent } });
+    }
+    nlohmann::json crime = { { "crimeGold", std::move(gold) } };
+    if (changeForm.crimeRecord->jail.has_value()) {
+      const auto& jail = *changeForm.crimeRecord->jail;
+      crime["jail"] = { { "faction", jail.faction.ToString() },
+                        { "days", jail.days },
+                        { "releaseAt", jail.releaseAt },
+                        { "belongings", jail.belongings.ToJson() },
+                        { "arrived", jail.arrived } };
+    }
+    res["crimeRecord"] = std::move(crime);
+  }
+
   // thuum docs/verbs/magic-effects.md; absent in older records, read as
   // none. A caster is written only when there is one, a server's first
   // player (0xff000000, "0") included (thuum docs/verbs/npc-fate.md C4): an
@@ -864,7 +952,9 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
   static const JsonPointer mapMarkers("mapMarkers");
   static const JsonPointer ingredientEffects("ingredientEffects");
   static const JsonPointer shoutRecord("shoutRecord");
+  static const JsonPointer crimeRecord("crimeRecord");
   static const JsonPointer playerGlobals("playerGlobals");
+  static const JsonPointer knownEnchantments("knownEnchantments");
   static const JsonPointer questStages("questStages");
   static const JsonPointer placedBySpell("placedBySpell");
   static const JsonPointer lockLevel("lock/level");
@@ -1241,6 +1331,14 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     res.ingredientEffects = effects;
   }
 
+  // a record without the key reads as none
+  if (element.at_pointer(knownEnchantments.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    std::vector<std::string> data;
+    ReadVector(element, knownEnchantments, &data);
+    res.knownEnchantments = ToFormDescsArray(data);
+  }
+
   if (element.at_pointer(playerGlobals.GetData()).error() ==
       simdjson::error_code::SUCCESS) {
     ReadEx(element, playerGlobals, &jTmp);
@@ -1593,6 +1691,48 @@ MpChangeForm MpChangeForm::JsonToChangeForm(simdjson::dom::element& element,
     ReadVector(jTmp, wordsUnlocked, &data);
     record.wordsUnlocked = ToFormDescsArray(data);
     res.shoutRecord = record;
+  }
+
+  // the crime record, read only where present: an older record reads as
+  // none
+  if (element.at_pointer(crimeRecord.GetData()).error() ==
+      simdjson::error_code::SUCCESS) {
+    ReadEx(element, crimeRecord, &jTmp);
+    static const JsonPointer crimeGold("crimeGold"), faction("faction"),
+      violent("violent"), nonViolent("nonViolent"), jail("jail"), days("days"),
+      releaseAt("releaseAt"), belongings("belongings"), arrived("arrived");
+    CrimeRecord record;
+    std::vector<simdjson::dom::element> golds;
+    ReadVector(jTmp, crimeGold, &golds);
+    for (const auto& g : golds) {
+      CrimeGold entry;
+      const char* tmp;
+      ReadEx(g, faction, &tmp);
+      entry.faction = FormDesc::FromString(tmp);
+      ReadEx(g, violent, &entry.violent);
+      ReadEx(g, nonViolent, &entry.nonViolent);
+      record.crimeGold.push_back(std::move(entry));
+    }
+    if (jTmp.at_pointer(jail.GetData()).error() ==
+        simdjson::error_code::SUCCESS) {
+      simdjson::dom::element jailTmp;
+      ReadEx(jTmp, jail, &jailTmp);
+      JailTerm term;
+      const char* tmp;
+      ReadEx(jailTmp, faction, &tmp);
+      term.faction = FormDesc::FromString(tmp);
+      ReadEx(jailTmp, days, &term.days);
+      ReadEx(jailTmp, releaseAt, &term.releaseAt);
+      simdjson::dom::element belongingsTmp;
+      ReadEx(jailTmp, belongings, &belongingsTmp);
+      term.belongings = Inventory::FromJson(belongingsTmp);
+      if (jailTmp.at_pointer(arrived.GetData()).error() ==
+          simdjson::error_code::SUCCESS) {
+        ReadEx(jailTmp, arrived, &term.arrived);
+      }
+      record.jail = std::move(term);
+    }
+    res.crimeRecord = std::move(record);
   }
 
   if (element.at_pointer(runningEffects.GetData()).error() ==

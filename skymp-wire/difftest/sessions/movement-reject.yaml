@@ -1,10 +1,16 @@
 # difftest movement-reject (M1 validation, thuum docs/verbs/validation.md,
-# Movement): c1 sends one move the server must reject, a jump of 5000 units
-# (MovementValidation takes under 4096 per message), and both stacks snap c1
-# back with Teleport2. The legacy server relayed the rejected move to every
-# listener, c1 itself included, before validating it; the fixed server
-# validates first and relays nothing. UpdateMovement compares exactly here
-# (not as presence), so the relayed jump shows as a count.
+# Movement; ADR-079 decision 7, tracker #191): c1 sends one move the legacy
+# server rejects, a jump of 5000 units (MovementValidation took under 4096 per
+# message), and the legacy stack snaps c1 back with Teleport2. The fixed
+# server records a player's own jump (Eli, 2026-11-20: the server never sends
+# a player back for a move its own game made to another cell or by a jump):
+# no Teleport2, the move relayed as the legacy server relayed it, c1 itself
+# included, and c2 told to place c1's figure there (ActorJump) instead of
+# gliding it. UpdateMovement compares exactly here (not as presence), so the
+# relayed jump counts on both stacks. The forms that leave and enter c1's
+# view at 5000 units east are the fixed stack's alone now (the legacy stack
+# sends c1 back): eleven leave it and twenty-three enter it, read from the
+# first T2 of tracker #191 (m4-191-move be9ecc58, 2026-11-20).
 #
 # Timing (DIFFTEST_CLIENT_GAP_MS 1500): c2 joins before c1's jump and moves
 # once more after it, and c1 leaves first, so c2 also sees c1's departure the
@@ -20,15 +26,135 @@ steps:
   - {client: c2, at_ms: 2500, move: {dy: 60}}
 divergences:
   - client: c1
-    msg: {t: 2, idx: "refr:ff000002"}
+    msg: {t: 31}
     legacy: 1
     wire: 0
-    reason: the rejected jump echoed back to its sender; the fixed server validates before relaying
+    reason: the legacy server sends the jump back (Teleport2); the fixed server records a player's own jump (ADR-079 decision 7)
+  - client: c1
+    msg: {t: 25}
+    legacy: 0
+    wire: 11
+    reason: on the fixed server c1 stands 5000 units east after its recorded jump and eleven forms near the spawn leave its view; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 1107647}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 1107649}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 1107648}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 1107650}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 318901}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 318903}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 318904}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 318930}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 465711}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 465712}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 465713}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 465714}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 930563}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 465941}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 466027}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 466028}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 738520}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 930133}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 465929}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 465935}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 930131}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 930561}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
+  - client: c1
+    msg: {t: 33, refrId: 931869}
+    legacy: 0
+    wire: 1
+    reason: a form near where the fixed server records c1's jump; the legacy server sent c1 back
   - client: c2
-    msg: {t: 2, idx: "refr:ff000002"}
-    legacy: 1
-    wire: 0
-    reason: the rejected jump relayed to the neighbour; the fixed server validates before relaying
+    msg: {t: 46}
+    legacy: 0
+    wire: 1
+    reason: the fixed server tells the other game to place c1's figure at its recorded jump (ActorJump); the legacy server sent it back
   - client: c2
     msg: {t: 25, idx: "refr:ff000002"}
     legacy: 0

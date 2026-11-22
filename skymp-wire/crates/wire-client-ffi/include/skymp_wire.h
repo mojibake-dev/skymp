@@ -15,7 +15,7 @@
  * checks it against the table; after natives-gen changes the count, set it
  * here and run `just wire-header`.
  */
-#define SKYMP_NATIVE_ROWS 1410
+#define SKYMP_NATIVE_ROWS 1411
 
 /**
  * A row's parameters: at most twelve, the dump's longest list (the

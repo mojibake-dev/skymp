@@ -131,6 +131,10 @@ public:
   static void OnFineBegin(const RE::TESFaction* faction);
   static void OnFinePaid(const RE::TESFaction* faction,
                          std::uint32_t paidGold);
+  // the player's engine picked a world reference up (PickUpObject, hooked
+  // in Hooks.cpp): one pickUpObject event with what its inventory gained
+  static void OnPickUpObject(std::uint32_t refId, std::uint32_t baseId,
+                             std::uint32_t count, std::uint32_t ownerId);
   // thuum #84: the tracker's table emptied at a load or a new game (its
   // effects are the old world's)
   static void ClearSummons();

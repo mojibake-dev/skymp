@@ -404,7 +404,8 @@ void InstallPlayerAddTargetHook()
  * from CommonLibSSE-NG include/RE/A/Actor.h: SetCrimeGoldValue 0xB5,
  * ModCrimeGoldValue 0xB6, RemoveCrimeGoldValue 0xB7 (:379-381), GoToPrison
  * 0xB9 and ServePrisonTime 0xBA (:383-384), and
- * include/RE/P/PlayerCharacter.h:538's ClearAllCrimeGold 0x12D.
+ * include/RE/P/PlayerCharacter.h:538's ClearAllCrimeGold 0x12D, and
+ * PickUpObject 0xCC (Actor.h:402).
  * - GoToPrison: the arrest reported at its entry, a real jail only, before
  *   the engine strips and moves the player (EventHandler::OnArrest);
  * - ServePrisonTime: never run (its time skip would be one player's alone),
@@ -414,9 +415,15 @@ void InstallPlayerAddTargetHook()
  *   engine's witnessed crimes reach these virtuals rather than writing the
  *   player's crimeGoldMap themselves;
  * - PayFine 0xBB (:385): the fine's crime gold change reported once after
- *   it with the gold it took from the player, measured around the call
- *   (Actor::GetGoldAmount, :545), since the engine removes that gold with no
- *   destination container (EventHandler::OnFineBegin, OnFinePaid).
+ *   it with the gold it took from the player, measured around the call as
+ *   the player's count of the gold form (GoldHeld), since the engine removes
+ *   that gold with no destination container (EventHandler::OnFineBegin,
+ *   OnFinePaid);
+ * - PickUpObject 0xCC: the engine's own pickup of a world reference into
+ *   the player's inventory (an activation's default processing, the Book
+ *   Menu's Take), its owner test, steal alarm and stolen mark inside it,
+ *   reported once after it with what the player's inventory gained
+ *   (EventHandler::OnPickUpObject).
  */
 struct PlayerGoToPrison
 {
@@ -473,20 +480,101 @@ struct PlayerRemoveCrimeGoldValue
   static inline REL::Relocation<decltype(thunk)> func;
 };
 
+namespace {
+// The player's count of the gold form (TESForm::IsGold, formID 0xF,
+// include/RE/T/TESForm.h:327), from its inventory counts
+// (TESObjectREFR::GetInventoryCounts, include/RE/T/TESObjectREFR.h:404).
+// Not Actor::GetGoldAmount: it finds the gold form through
+// BGSDefaultObjectManager::GetObject(DefaultObjectID), which indexes through
+// the first default object's pointer instead of the objects array
+// (src/RE/B/BGSDefaultObjectManager.cpp:34; the array is inline at +0x20,
+// include/RE/B/BGSDefaultObjectManager.h:1073) and reads an invalid address
+std::int32_t GoldHeld(RE::PlayerCharacter* a_player)
+{
+  std::int32_t gold = 0;
+  for (const auto& entry : a_player->GetInventoryCounts(
+         [](RE::TESBoundObject& a_object) { return a_object.IsGold(); })) {
+    gold += entry.second;
+  }
+  return gold;
+}
+}
+
 struct PlayerPayFine
 {
   static void thunk(RE::PlayerCharacter* a_this, RE::TESFaction* a_faction,
                     bool a_goToJail, bool a_removeStolenItems)
   {
-    const std::int32_t goldBefore = a_this->GetGoldAmount();
+    const std::int32_t goldBefore = GoldHeld(a_this);
     EventHandler::OnFineBegin(a_faction);
     func(a_this, a_faction, a_goToJail, a_removeStolenItems);
-    const std::int32_t goldAfter = a_this->GetGoldAmount();
+    const std::int32_t goldAfter = GoldHeld(a_this);
     EventHandler::OnFinePaid(
       a_faction,
       goldBefore > goldAfter
         ? static_cast<std::uint32_t>(goldBefore - goldAfter)
         : 0);
+  }
+  static inline REL::Relocation<decltype(thunk)> func;
+};
+
+// The reference's id and the owner the engine marks a taken stack with are
+// read before the call, the way PickUpObject reads them (IsAnOwner with the
+// faction and no owner required, then GetOwner: include/RE/T/TESObjectREFR.h
+// :440, :412), since the reference may be gone after it. The base and count
+// are what the player's inventory gained across the call: the reference's
+// own base (GetBaseObject, the object PickUpObject moves) when it rose, else
+// the one base that rose. A call that gained nothing raises nothing
+struct PlayerPickUpObject
+{
+  static void thunk(RE::PlayerCharacter* a_this, RE::TESObjectREFR* a_object,
+                    std::int32_t a_count, bool a_arg3, bool a_playSound)
+  {
+    if (!a_object) {
+      return func(a_this, a_object, a_count, a_arg3, a_playSound);
+    }
+    const std::uint32_t refId = a_object->GetFormID();
+    const RE::TESBoundObject* refBase = a_object->GetBaseObject();
+    const RE::TESForm* owner = a_object->IsAnOwner(a_this, true, false)
+      ? nullptr
+      : a_object->GetOwner();
+    const std::uint32_t ownerId = owner ? owner->GetFormID() : 0;
+    const auto before = a_this->GetInventoryCounts();
+
+    func(a_this, a_object, a_count, a_arg3, a_playSound);
+
+    const auto after = a_this->GetInventoryCounts();
+    const RE::TESBoundObject* gainedBase = nullptr;
+    std::int32_t gained = 0;
+    std::size_t basesGained = 0;
+    for (const auto& [object, count] : after) {
+      const auto was = before.find(object);
+      const std::int32_t rise =
+        count - (was != before.end() ? was->second : 0);
+      if (rise <= 0) {
+        continue;
+      }
+      ++basesGained;
+      if (object == refBase || gainedBase == nullptr) {
+        gainedBase = object;
+        gained = rise;
+      }
+      if (object == refBase) {
+        basesGained = 1;
+        break;
+      }
+    }
+    if (!gainedBase) {
+      return;
+    }
+    if (basesGained > 1) {
+      logger::info("[verb:pickup] PickUpObject of {:x}: {} bases rose and "
+                   "none is its own base; nothing reported",
+                   refId, basesGained);
+      return;
+    }
+    EventHandler::OnPickUpObject(refId, gainedBase->GetFormID(),
+                                 static_cast<std::uint32_t>(gained), ownerId);
   }
   static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -516,6 +604,7 @@ void InstallPlayerPrisonHooks()
   PlayerClearAllCrimeGold::func =
     vtbl.write_vfunc(0x12D, PlayerClearAllCrimeGold::thunk);
   PlayerPayFine::func = vtbl.write_vfunc(0xBB, PlayerPayFine::thunk);
+  PlayerPickUpObject::func = vtbl.write_vfunc(0xCC, PlayerPickUpObject::thunk);
 }
 
 /**

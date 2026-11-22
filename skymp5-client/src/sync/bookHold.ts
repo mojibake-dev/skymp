@@ -19,9 +19,6 @@ export interface BookHold {
   why: string;
   // the view's line for this hold, once
   viewLogged: boolean;
-  // a take was named by this hold: its base stays held until its end, but
-  // it names no other take
-  taken?: boolean;
 }
 
 // by the reference's local id; bounded, the oldest hold going first (the map
@@ -34,9 +31,6 @@ const holdsMax = 16;
 // the server's echo of the record (the grant lasts as long)
 export const PICKUP_HOLD_MS = 10000;
 export const holdBook = (localId: number, baseId: number, until: number, why: string): void => {
-  // a hold held again for the server's echo keeps its take
-  const before = holds.get(localId);
-  const taken = before !== undefined && before.taken === true && before.baseId === baseId ? true : undefined;
   holds.delete(localId);
   if (holds.size >= holdsMax) {
     const oldest = holds.keys().next();
@@ -44,7 +38,7 @@ export const holdBook = (localId: number, baseId: number, until: number, why: st
       holds.delete(oldest.value);
     }
   }
-  holds.set(localId, { baseId, until, why, viewLogged: false, taken });
+  holds.set(localId, { baseId, until, why, viewLogged: false });
 };
 
 export const releaseBook = (localId: number): void => {
@@ -103,37 +97,6 @@ export const grantPickup = (localId: number, now: number): boolean => {
   return true;
 };
 
-// the reference a take of `baseId` into the player's inventory is this
-// game's own, named once: the oldest hold still running at `now` of that base
-// that named no take yet, else the oldest such pickup's hold of any base, one
-// with an end (a leveled placement's engine may add the item it rolled under
-// another base than the one the reference was read with; an open book's
-// hold, which has no end, is matched by its base alone). The hold is marked
-// taken; undefined for none
-export const takeHeldReference = (baseId: number, now: number): number | undefined => {
-  let sameBase: number | undefined;
-  let oldestPickup: number | undefined;
-  holds.forEach((held, localId) => {
-    if (held.until <= now || held.taken === true) {
-      return;
-    }
-    if (sameBase === undefined && held.baseId === baseId) {
-      sameBase = localId;
-    }
-    if (oldestPickup === undefined && Number.isFinite(held.until)) {
-      oldestPickup = localId;
-    }
-  });
-  const named = sameBase ?? oldestPickup;
-  if (named !== undefined) {
-    const held = holds.get(named);
-    if (held !== undefined) {
-      held.taken = true;
-    }
-  }
-  return named;
-};
-
 // the one entry a pickup reports out of the player's inventory difference
 // (the record less the game: a gain is a negative count): the gain of the
 // base the engine added, counted as that add at most; undefined for none.
@@ -145,4 +108,21 @@ export const pickupTakeEntry = <E extends { baseId: number; count: number }>(dif
   }
   const count = Math.min(-entry.count, Math.max(1, Math.floor(numItems)));
   return { ...entry, count: -count };
+};
+
+// the take a pickup reports (the platform's pickUpObject event): the base
+// and count the player's inventory gained and the owner the engine marked
+// the stack with (0 for none), with the stack's other extras taken from the
+// player's inventory difference against the record when it holds a gain of
+// that base (pickupTakeEntry); a positive count, the event's
+export const pickupTake = <E extends { baseId: number; count: number; ownerId?: number }>(
+  diff: E[],
+  e: { baseId: number; count: number; ownerId: number },
+): E | { baseId: number; count: number; ownerId?: number } => {
+  const gain = pickupTakeEntry(diff, e.baseId, e.count);
+  const take: { baseId: number; count: number; ownerId?: number } = gain !== undefined ? { ...gain, count: e.count } : { baseId: e.baseId, count: e.count };
+  if (e.ownerId) {
+    take.ownerId = e.ownerId;
+  }
+  return take;
 };

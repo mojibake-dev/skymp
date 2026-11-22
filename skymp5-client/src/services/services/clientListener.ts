@@ -695,6 +695,15 @@ declare module "skyrimPlatform" {
     interface CrimeGoldEvent {
         faction: Faction;
         factionId: number;
+        paidGold?: number;
+    }
+    // PlayerCharacter's PickUpObject: the reference, the base and count the
+    // player's inventory gained, the owner marked on the stack (0 for none)
+    interface PickUpObjectEvent {
+        refId: number;
+        baseId: number;
+        count: number;
+        ownerId: number;
     }
     function on(eventName: 'arrest', callback: (event: ArrestEvent) => void): EventHandle;
     function once(eventName: 'arrest', callback: (event: ArrestEvent) => void): EventHandle;
@@ -702,6 +711,8 @@ declare module "skyrimPlatform" {
     function once(eventName: 'servePrisonTime', callback: (event: ServePrisonTimeEvent) => void): EventHandle;
     function on(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle;
     function once(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle;
+    function on(eventName: 'pickUpObject', callback: (event: PickUpObjectEvent) => void): EventHandle;
+    function once(eventName: 'pickUpObject', callback: (event: PickUpObjectEvent) => void): EventHandle;
 }
 
 export type Sp = Omit<typeof sp, "on" | "once">;

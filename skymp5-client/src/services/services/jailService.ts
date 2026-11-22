@@ -74,7 +74,7 @@ export class JailService extends ClientListener {
         // the engine's fine (PayFine) carries the gold it took from the
         // player, which the engine removes with no destination container, so
         // the record pays it too (the platform's crimeGold event, paidGold)
-        const paidGold = Math.max(0, Math.floor((e as unknown as { paidGold?: number }).paidGold ?? 0));
+        const paidGold = Math.max(0, Math.floor(e.paidGold ?? 0));
         const last = this.sent.get(e.factionId);
         if (paidGold === 0 && last && last.violent === violent && last.nonViolent === nonViolent) {
             return;

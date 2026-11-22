@@ -683,12 +683,11 @@ EventResult EventHandler::ProcessEvent(
       auto contFormNew =
         RE::TESForm::LookupByID<RE::TESObjectREFR>(newContainerId);
       auto baseObjForm = RE::TESForm::LookupByID(baseObjId);
-      // The event's reference handle can name a form that is gone by this
-      // update (a world reference the engine's pickup deleted after the
-      // move): the event still goes out, the reference empty and the handle's
-      // id kept as referenceId, so a nonzero id marks an add that came with a
-      // reference
       auto reference = RE::TESForm::LookupByID<RE::TESObjectREFR>(refrId);
+
+      if (!reference && refrId != 0) {
+        return;
+      }
 
       if (!contFormOld && oldContainerId != 0) {
         return;
@@ -708,7 +707,6 @@ EventResult EventHandler::ProcessEvent(
       AddObjProperty(&obj, "numItems", itemCount);
       AddObjProperty(&obj, "uniqueID", uniqueID);
       AddObjProperty(&obj, "reference", reference, "ObjectReference");
-      AddObjProperty(&obj, "referenceId", static_cast<uint32_t>(refrId));
 
       SendEvent("containerChanged", obj);
     });
@@ -3201,4 +3199,26 @@ void EventHandler::OnFinePaid(const RE::TESFaction* faction,
     return;
   }
   SendCrimeGold(faction->formID, paidGold);
+}
+
+// The player's engine picked a world reference up (PlayerCharacter's
+// PickUpObject): the reference, the base and count its inventory gained,
+// and the owner the engine marked the stack with, 0 for none; raised on an
+// update task after the engine's move, by ids alone, since the reference
+// may be gone by then
+void EventHandler::OnPickUpObject(std::uint32_t refId, std::uint32_t baseId,
+                                  std::uint32_t count, std::uint32_t ownerId)
+{
+  logger::info("[verb:pickup] PickUpObject of {:x}: {} of {:x} into the "
+               "player's inventory, owner {:x}",
+               refId, count, baseId, ownerId);
+  SkyrimPlatform::GetSingleton()->AddUpdateTask(
+    [refId, baseId, count, ownerId](Napi::Env env) {
+      auto obj = Napi::Object::New(env);
+      AddObjProperty(&obj, "refId", refId);
+      AddObjProperty(&obj, "baseId", baseId);
+      AddObjProperty(&obj, "count", count);
+      AddObjProperty(&obj, "ownerId", ownerId);
+      SendEvent("pickUpObject", obj);
+    });
 }

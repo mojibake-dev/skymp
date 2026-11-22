@@ -281,6 +281,16 @@ export interface ServePrisonTimeEvent {
 export interface CrimeGoldEvent {
   faction: Faction
   factionId: number
+  // the gold the engine's PayFine took from the player, on the one event that follows a paid fine
+  paidGold?: number
+}
+
+// this game's player's engine picked a world reference up (PlayerCharacter's PickUpObject: an activation's default processing, the Book Menu's Take), raised on an update task after the move: the reference, the base and count the player's inventory gained, and the owner the engine marked the stack with, 0 for none
+export interface PickUpObjectEvent {
+  refId: number
+  baseId: number
+  count: number
+  ownerId: number
 }
 
 export interface MenuOpenEvent {
@@ -840,6 +850,9 @@ export declare function once(eventName: 'servePrisonTime', callback: (event: Ser
 
 export declare function on(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle
 export declare function once(eventName: 'crimeGold', callback: (event: CrimeGoldEvent) => void): EventHandle
+
+export declare function on(eventName: 'pickUpObject', callback: (event: PickUpObjectEvent) => void): EventHandle
+export declare function once(eventName: 'pickUpObject', callback: (event: PickUpObjectEvent) => void): EventHandle
 
 export declare function on(eventName: 'menuOpen', callback: (event: MenuOpenEvent) => void): EventHandle
 export declare function once(eventName: 'menuOpen', callback: (event: MenuOpenEvent) => void): EventHandle

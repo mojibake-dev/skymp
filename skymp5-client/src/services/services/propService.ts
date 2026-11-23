@@ -17,7 +17,7 @@ import { NiPoint3 } from "../../sync/movement";
 import { FOLLOW_SAMPLES_MAX, FollowBone, FollowBoneVelocity, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones, segmentVelocities } from "../../sync/propFollow";
 import { simulatorOf } from "../../sync/propOwner";
 import { bodyHasNoRow } from "../../sync/bodyRow";
-import { forceWatchVerdict } from "../../sync/forceWatch";
+import { ForceWatch, ForcedRead } from "../../sync/forceWatch";
 import { isFigureBase } from "../../sync/equipment";
 import { FormModel } from "../../view/model";
 import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
@@ -1045,8 +1045,10 @@ export class PropService extends ClientListener {
         this.readHolds(now);
         if (this.knocks.length > 0) {
             this.trackKnocks(now);
-            this.watchForced(now);
         }
+        // every update, ungated: a shout that reaches only the other player's
+        // figure queues no knock and no impulse for any step above to run on
+        this.watchForced(now);
         if (this.contacts.length > 0) {
             this.claimContacts(now);
         }
@@ -2638,12 +2640,12 @@ export class PropService extends ClientListener {
     // A figure this seat's own player's spell reached (sync/forceWatch.ts):
     // its ids alone here, read at the next update
     private onForceReach(e: { caster?: ObjectReference | null; target?: ObjectReference | null }) {
-        if (!e.caster || !e.target || e.caster.getFormID() !== 0x14) {
+        if (!e.caster || !e.target) {
             return;
         }
         const target = e.target.getFormID();
-        if (target >= 0xff000000) {
-            this.forceWatch.set(target, clockMs());
+        if (this.forced.reach(e.caster.getFormID(), target, clockMs())) {
+            logLab(TAG, `figure ${target.toString(16)}: this seat's player's spell reached it; watched 2 s for its knock`);
         }
     }
 
@@ -2652,33 +2654,41 @@ export class PropService extends ClientListener {
     // (its body pushed here, bodyRow.ts) claimed by touch 3, which the server
     // grants on this seat's hit it took (OnPropClaim's ClaimedHit)
     private watchForced(now: number) {
-        if (this.forceWatch.size === 0) {
+        if (this.forced.size === 0) {
             return;
         }
         const myId = this.myId();
-        this.forceWatch.forEach((since, localId) => {
-            const refr = localIdToRemoteId(localId);
-            const ac = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
-            if (!refr || !ac || !isFigureBase(ac)) {
-                this.forceWatch.delete(localId);
-                return;
+        for (const o of this.forced.update(now, (localId) => this.readForced(localId))) {
+            const id = o.localId.toString(16);
+            if (o.verdict === "drop") {
+                logLab(TAG, `figure ${id}: off the watch (${o.why})`);
+                continue;
             }
-            const tracked = this.props.has(refr);
-            const c = tracked ? null : this.bodyClass(localId);
-            const verdict = forceWatchVerdict({ since, now, ragdoll: c !== null && c.ragdoll, tracked });
-            if (verdict === "wait") {
-                return;
+            const row = this.rowOrRefusal({ localId: o.localId, formType: 0 }, now, "knocked here by this seat's push", false, true);
+            if (typeof row === "string") {
+                logLab(TAG, `figure ${id}: knocked by this seat's push, no row: ${row}`);
+            } else if (myId === 0) {
+                logLab(TAG, `figure ${id}: knocked by this seat's push, not claimed: this seat has no server id yet`);
+            } else if (this.ownedHere(row, myId)) {
+                logLab(TAG, `prop ${row.refr.toString(16)}: another player's figure this seat's push knocked, already this seat's`);
+            } else {
+                this.claim(row, TOUCH_IMPULSE, now);
+                logLab(TAG, `prop ${row.refr.toString(16)}: another player's figure this seat's push knocked; claimed by touch 3`);
             }
-            this.forceWatch.delete(localId);
-            if (verdict !== "claim") {
-                return;
-            }
-            const prop = this.rowInPlace({ localId, formType: 0 }, now, "knocked here by this seat's push", false, true);
-            if (prop && myId !== 0 && !this.ownedHere(prop, myId)) {
-                this.claim(prop, TOUCH_IMPULSE, now);
-                logLab(TAG, `prop ${prop.refr.toString(16)}: another player's figure this seat's push knocked; claimed by touch 3`);
-            }
-        });
+        }
+    }
+
+    // a watched figure as forceWatch reads it: null when its local id maps to
+    // no remote id or no actor of a figure's base
+    private readForced(localId: number): ForcedRead | null {
+        const refr = localIdToRemoteId(localId);
+        const ac = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
+        if (!refr || !ac || !isFigureBase(ac)) {
+            return null;
+        }
+        const tracked = this.props.has(refr);
+        const c = tracked ? null : this.bodyClass(localId);
+        return { figure: true, tracked, ragdoll: c !== null && c.ragdoll };
     }
 
     private trackKnocks(now: number) {
@@ -4597,7 +4607,7 @@ export class PropService extends ClientListener {
     // the actors the action hook named knocked since the last update
     private knocks: number[] = [];
     // figures this seat's own player's spell reached, by local id, since when (watchForced)
-    private readonly forceWatch = new Map<number, number>();
+    private readonly forced = new ForceWatch();
     // a live body's last class verdict said, by local id (kindOfBody)
     private readonly liveSaid = new Map<number, string>();
     // physics rung 4: getBodyClass and imposeBodies or releaseBodies missing

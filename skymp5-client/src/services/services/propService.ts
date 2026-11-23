@@ -15,6 +15,7 @@ import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
 import { FOLLOW_SAMPLES_MAX, FollowBone, FollowBoneVelocity, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones, segmentVelocities } from "../../sync/propFollow";
 import { simulatorOf } from "../../sync/propOwner";
+import { bodyHasNoRow } from "../../sync/bodyRow";
 import { FormModel } from "../../view/model";
 import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -2752,7 +2753,9 @@ export class PropService extends ClientListener {
             const claims: Prop[] = [];
             let rows = 0;
             for (const r of batch.refs) {
-                const prop = this.rowInPlace(r, now, "pushed by this seat's impulse");
+                // this seat's own player's push threw it (cause 0x14): a figure's
+                // body too is a row then, its throw this seat's (bodyRow.ts)
+                const prop = this.rowInPlace(r, now, "pushed by this seat's impulse", false, batch.cause === 0x14);
                 if (!prop) {
                     continue;
                 }
@@ -2849,21 +2852,22 @@ export class PropService extends ClientListener {
     // place (a dead NPC's ragdoll is a world body since physics rung 5);
     // undefined for a static, a living actor, a class no row takes, an
     // unloaded reference or one the server has no id for here
-    private rowInPlace(r: Member, now: number, why: string, gripped = false): Prop | undefined {
-        const row = this.rowOrRefusal(r, now, why, gripped);
+    private rowInPlace(r: Member, now: number, why: string, gripped = false, pushed = false): Prop | undefined {
+        const row = this.rowOrRefusal(r, now, why, gripped, pushed);
         return typeof row === "string" ? undefined : row;
     }
 
     // rowInPlace's row, or the check that refused one (gripRow.ts's
     // RowRefusal); gripped, the player's own grab names the body
-    // (placeRefusal's place read skipped)
-    private rowOrRefusal(r: Member, now: number, why: string, gripped: boolean): Prop | RowRefusal {
+    // (placeRefusal's place read skipped); pushed, this seat's own impulse
+    // pushed it
+    private rowOrRefusal(r: Member, now: number, why: string, gripped: boolean, pushed = false): Prop | RowRefusal {
         const refr = localIdToRemoteId(r.localId);
         if (!refr) {
             return "no remote id";
         }
         if (!this.trapBodies.has(refr)) {
-            const kind = this.kindOf(r.localId, refr, r.formType, false, gripped);
+            const kind = this.kindOf(r.localId, refr, r.formType, false, gripped, pushed);
             if (kind !== "item" && kind !== "world") {
                 return "no row kind";
             }
@@ -3329,7 +3333,7 @@ export class PropService extends ClientListener {
     // relaunch-files change takes effect live. The server's PropKindOf
     // (ActionListener.cpp) is the wider side: the class is this seat's own
     // unvalidated word (R2, rule 5), inside the server's bounds
-    private kindOf(localId: number, refr: number, formType?: number, streamed = false, gripped = false): PropKind {
+    private kindOf(localId: number, refr: number, formType?: number, streamed = false, gripped = false, pushed = false): PropKind {
         let known = this.kinds.get(localId);
         if (known !== undefined && known.refr === refr && known.body === true) {
             // a body is a row while its engine has it dead: a raise or a
@@ -3374,7 +3378,7 @@ export class PropService extends ClientListener {
         }
         const actor = this.sp.Actor.from(ref);
         if (actor) {
-            return this.kindOfBody(localId, refr, ref, actor, streamed, gripped);
+            return this.kindOfBody(localId, refr, ref, actor, streamed, gripped, pushed);
         }
         if (refr >= 0xff000000) {
             this.cacheKind(localId, refr, { item: false, world: null });
@@ -3460,7 +3464,7 @@ export class PropService extends ClientListener {
     // this seat knocks in place to follow (follow). Never cached past a read
     // (it gets up, or dies and is a dead body); its class line is said when
     // its verdict changes
-    private kindOfBody(localId: number, refr: number, ref: ObjectReference, actor: Actor, streamed = false, gripped = false): PropKind {
+    private kindOfBody(localId: number, refr: number, ref: ObjectReference, actor: Actor, streamed = false, gripped = false, pushed = false): PropKind {
         if (!this.worldBodies() || !ref.is3DLoaded()) {
             return "none";
         }
@@ -3474,14 +3478,14 @@ export class PropService extends ClientListener {
         // engine kept 29613 shooting through them; look 3's working grip was
         // of 39fe2 in c1's own hosted cell
         const followed = streamed || gripped || this.followedLive(refr);
-        if (dead ? (refr >= 0xff000000 || localId === 0x14) : (!followed && localId !== 0x14 && refr >= 0xff000000)) {
+        if (bodyHasNoRow({ dead, own: localId === 0x14, serverMade: refr >= 0xff000000, followed, pushedHere: pushed })) {
             return "none";
         }
         const c = this.bodyClass(localId);
         if (c === null) {
             return "none";
         }
-        if (!dead && !followed && !c.ragdoll) {
+        if (!dead && !followed && !pushed && !c.ragdoll) {
             // a standing actor: no row, nothing cached (it may fall)
             this.liveSaid.delete(localId);
             return "none";
@@ -3497,7 +3501,7 @@ export class PropService extends ClientListener {
         } else {
             world = { parts: c.parts.length };
             verdict = dead ? `a dead body of ${c.parts.length} parts`
-                : `a live body of ${c.parts.length} parts (${c.ragdoll ? "knocked here" : gripped ? "gripped here" : "another seat's stream"})`;
+                : `a live body of ${c.parts.length} parts (${c.ragdoll ? "knocked here" : gripped ? "gripped here" : pushed ? "pushed here" : "another seat's stream"})`;
         }
         const entry = this.cacheKind(localId, refr, { item: false, world, body: true, live: !dead, bones: c.bones, judgedAt: clockMs() });
         if (dead || this.liveSaid.get(localId) !== verdict) {

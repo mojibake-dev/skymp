@@ -11,7 +11,7 @@ import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { RefSweep } from "../../sync/frameCost";
 import { boneAnchor } from "../../sync/boneAnchor";
 import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
-import { noRowEntry } from "../../sync/kindCache";
+import { liveNoRowHeld, noRowEntry } from "../../sync/kindCache";
 import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
 import { FOLLOW_SAMPLES_MAX, FollowBone, FollowBoneVelocity, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones, segmentVelocities } from "../../sync/propFollow";
@@ -383,6 +383,12 @@ type KindEntry = { refr: number; item: boolean; family?: boolean; world?: { part
 // row (noRow) stays one before kindOf judges it again. UNMEASURED: a few
 // rescans, so a stable mismatch is said a few times a minute at most
 const BODY_NO_ROW_MS = 10_000;
+// how long a living actor's body the stream found no row stays none before
+// it is judged again (sync/kindCache.ts liveNoRowHeld): long enough that a
+// figure torn past the wire's reach is not tracked and dropped every frame
+// its grab names it, short enough that a grip of a thrown figure whole again
+// after its landing holds. UNMEASURED
+const LIVE_NO_ROW_MS = 2_000;
 
 // the server's last word on a prop: the player (0 the cell's host by
 // default) and its epoch, and when it came (a hold reads it against its own
@@ -1958,11 +1964,9 @@ export class PropService extends ClientListener {
     // f50509d89, finding 2)
     private noRow(prop: Prop, why: string) {
         prop.dropRow = why;
-        // a living actor's body caches no verdict (sync/kindCache.ts)
-        const entry = noRowEntry(prop.live, clockMs());
-        if (entry !== undefined) {
-            this.cacheKind(prop.localId, prop.refr, { item: false, ...entry });
-        }
+        // a living actor's verdict carries the live-body marks and holds for
+        // the retry window (sync/kindCache.ts)
+        this.cacheKind(prop.localId, prop.refr, { item: false, ...noRowEntry(prop.live, clockMs()) });
     }
 
     // The follower: the stream followed rendered on its clock (one translate a
@@ -3356,6 +3360,11 @@ export class PropService extends ClientListener {
             const actor = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
             const retry = known.noRowAt !== undefined && clockMs() - known.noRowAt >= BODY_NO_ROW_MS;
             const live = known.live === true;
+            // a living actor the stream found no row stays none for
+            // LIVE_NO_ROW_MS, then is judged again (sync/kindCache.ts)
+            if (live && actor && !actor.isDead() && liveNoRowHeld(known.noRowAt, clockMs(), LIVE_NO_ROW_MS)) {
+                return "none";
+            }
             if (live && actor && !actor.isDead() && known.judgedAt !== undefined && clockMs() - known.judgedAt < LIVE_READ_MS) {
                 return this.withSettings(known);
             }

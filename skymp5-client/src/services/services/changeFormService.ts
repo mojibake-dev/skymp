@@ -573,6 +573,12 @@ export class ChangeFormService extends ClientListener {
             }
             return;
         }
+        if (pass === "no-3d") {
+            // the native refuses a lay on a body with no 3D and counts the
+            // try; the poll asks again once it loads
+            logTrace(this, `changeform ${hex}: its copy has no 3D here, the record waits`);
+            return;
+        }
         if (pass !== "lay" || !refr) {
             return;
         }
@@ -688,6 +694,7 @@ export class ChangeFormService extends ClientListener {
             bind: bind || rec.bindKill,
             simulatesHere: this.controller.lookupListener(HostService).isMineLocal(rec.formId),
             followed: this.controller.lookupListener(PropService).followsBody(rec.formId),
+            has3D: !!ac && ac.is3DLoaded(),
         };
     }
 

@@ -28,6 +28,9 @@ export interface CorpseFacts {
     // this seat follows the body on the prop stream and the follow has not
     // rested
     followed: boolean;
+    // the copy's 3D is loaded here: the native lays a record only on a body
+    // with its 3D (ChangeForm.cpp's premise "3D present")
+    has3D: boolean;
 }
 
 export type CorpsePass =
@@ -39,7 +42,8 @@ export type CorpsePass =
     | "no-actor"   // held: no actor form here yet
     | "kill"       // held until the copy dies here
     | "simulated"  // dropped: this seat simulates the body, its engine's state stands
-    | "follow";    // held until the follow rests
+    | "follow"     // held until the follow rests
+    | "no-3d";     // held until the copy's 3D loads
 
 export function corpsePass(f: CorpseFacts): CorpsePass {
     // the reconcile removes and adds the body's stacks (RemoveItem,

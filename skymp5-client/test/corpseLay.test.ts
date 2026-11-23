@@ -14,6 +14,7 @@ const facts = (over: Partial<CorpseFacts>): CorpseFacts => Object.assign({
   bind: false,
   simulatesHere: false,
   followed: false,
+  has3D: true,
 }, over);
 
 test("a record on a dead copy another seat simulates is laid", () => {
@@ -65,4 +66,9 @@ test("an apply in flight and the lever hold the record", () => {
 
 test("no actor form here holds the record", () => {
   assert.strictEqual(corpsePass(facts({ actor: false, dead: false })), "no-actor");
+});
+
+test("a record whose dead copy has no 3D here waits for it, never laid without it", () => {
+  assert.strictEqual(corpsePass(facts({ has3D: false })), "no-3d");
+  assert.strictEqual(corpsePass(facts({ has3D: true })), "lay");
 });

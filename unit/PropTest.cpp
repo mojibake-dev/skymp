@@ -2552,3 +2552,64 @@ TEST_CASE("Another player's grip holds a player's body: its grab is granted "
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);
 }
+
+// A player's shout throws another player the grip's way: the shouter's own
+// game throws its copy, so its impulse (touch 3) on the player its shout hit
+// makes the body the shouter's for the flight, once the server took that hit
+// (PartOne::ClaimedHit); the thrown player's own game follows that stream,
+// and the shouter's rest returns the body. An impulse with no hit taken stays
+// refused
+TEST_CASE("A player's shout throws another player's body: the shouter's "
+          "impulse is granted once its hit on that player is taken, told to "
+          "the thrown player's own game, its samples move the body, and its "
+          "rest returns it",
+          "[Prop][espm]")
+{
+  // VoiceUnrelentingForce1 (Skyrim.esm), the shout's first word's spell
+  constexpr uint32_t kFus = 0x00013e09;
+  const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kForest);
+  Player(p, 1, kC2, kForest + NiPoint3{ 200.f, 0.f, 0.f });
+  p.TickCellHosts(NowMs());
+  MpActor* c1 = p.worldState.LookupFormByIdNoLoad(kC1)->AsActor();
+  REQUIRE(c1 != nullptr);
+  p.Messages().clear();
+  // c2's impulse on c1 with no hit of its shout's taken: refused
+  Claim(p, 1, kC1, 3);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  // c2's shout hits c1, the server takes the hit: c2's impulse is granted
+  p.StartCast(kC2, kFus, 2, kForest + NiPoint3{ 200.f, 0.f, 0.f });
+  REQUIRE(p.ClaimCast(kC2, kFus, kC1, c1->GetPos()).check ==
+          PartOne::CastCheck::Claimed);
+  {
+    LogCapture log;
+    Claim(p, 1, kC1, 3);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d02 claims prop ff000d01 by "
+                      "touch 3: granted") == 1);
+  }
+  REQUIRE(p.PropLiveOwner(*c1) == kC2);
+  const auto words = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(words.size() == 1);
+  REQUIRE(words[0].refr == kC1);
+  REQUIRE(words[0].player == kC2);
+  // the shouter's sample moves c1's body and reaches c1's own game
+  p.Messages().clear();
+  const NiPoint3 thrown = c1->GetPos() + NiPoint3{ -60.f, 0.f, 25.f };
+  Sample(p, 1, kC1, thrown, false);
+  REQUIRE(c1->GetPos() == thrown);
+  REQUIRE(RelaysTo(p, 0).size() == 1);
+  // the shouter's rest returns the body: player 0, which c1's own game reads
+  // as its own
+  p.Messages().clear();
+  Sample(p, 1, kC1, thrown, true);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  const auto back = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(back.size() == 1);
+  REQUIRE(back[0].player == 0);
+  DoDisconnect(p, 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}

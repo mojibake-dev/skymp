@@ -69,7 +69,7 @@ const ACTOR_LOOK: &str = "ADR-060's amendment of 2026-11-12 (the Undead FX build
 const ACTOR_LOOK_KEPT: &str = "ADR-060's amendment of 2026-11-12 and thuum #52 (the review of the client's 3D keep, eaa6ba47, findings 1 and 2): an actor's own look, its simulator's, relayed as the same native and kept as the actor's look (wire-rules actor_looks), served with its create word";
 
 /// thuum tracker #178's push onto another player's figure: its replacing rule.
-const PUSH_FIGURE: &str = "ADR-073 decision 6's owner asked of the pushed actor (the row's subject its target, Subject::Arg0Method): a player's figure answered by its player's seat (ADR-063), a knocked NPC by the seat whose cause moved it (the live-body kind's claim, thuum tracker #175)";
+const PUSH_FIGURE: &str = "ADR-073 decision 6's owner asked of the pushed actor (the row's subject its target, Subject::Arg0Method): a player's figure answered by its pusher's seat for the throw, a knocked NPC by the seat whose cause moved it (the live-body kind's claim)";
 /// Its deleting condition.
 const PUSH_FIGURE_DELETES: &str = "when owner_of answers a knock's cause seat and the row is unstaged with its target the subject";
 

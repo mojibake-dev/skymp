@@ -1,4 +1,5 @@
 #include "ScriptNatives.h"
+#include "PushRoute.h"
 #include "ActingScope.h"
 #include "CallNativeApi.h"
 #include "EventsApi.h"
@@ -580,7 +581,7 @@ enum StagedPlain : std::size_t
 constexpr const char* kStagedPlainName[kStagedPlains] = {
   "staged local (R3, never sent)", "staged (platform)",
   "staged (frame mismatch)", "staged (unresolved)",
-  "staged skipped (a push onto a player's figure, #178)"
+  "staged skipped (a push its pusher's own game throws)"
 };
 
 // thuum tracker #178: another player's figure on this seat, a dynamic form
@@ -3026,20 +3027,21 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
     CountStagedPlain(row, kStagedFrame);
     return marks;
   }
-  // thuum tracker #178 (Eli's third look of playtest 56's seat loop,
-  // 2026-11-19: "fusrohdah-ing another player is still suuuuuper janky and
-  // desynced. THAT one needs to be one to one"): the push-figure hook.
-  // VoicePushEffectScript's Caster.PushActorAway(Target, PushForce) threw the
-  // target's figure in the shouter's game (push.md's caster half) while the
-  // target's own game threw its player and streamed the body (the live-body
-  // kind): two simulations of one throw. A push onto another player's figure
-  // is skipped here, the body's empty result returned, counted, and the
-  // throw is its player's own game's alone (ADR-063), followed by its stream;
-  // an NPC target, this seat's own player and an argument that names no
-  // reference run as before. The target read through the VM's handle policy
-  // with no form table (RefOfObject's crossCheck off, MUST 1). The platform's
-  // own pushActorAway (CallNative.cpp, Offsets::PushActorAway) never reaches
-  // this seam, so a watcher's knock in place stands
+  // The push-figure hook: where VoicePushEffectScript's
+  // Caster.PushActorAway(Target, PushForce) and any other script's push runs
+  // (PushRoute.h). A player's body is its pusher's for the throw, as it is its
+  // gripper's for a grip: the pusher's own game throws its copy of the pushed
+  // player, its impulse claims the body for the flight (PropService), and the
+  // pushed player's own game follows that stream until the body's rest hands
+  // it back. So the push onto another player's figure runs on the game whose
+  // own player pushes and is skipped on any other, the push onto this game's
+  // own player by another player's figure is skipped, a push onto a puppet is
+  // skipped and reported (below), and the rest run as before. A skipped push
+  // returns the body's empty result, counted. The target and the pusher read
+  // through the VM's handle policy with no form table (RefOfObject's
+  // crossCheck off, MUST 1). The platform's own pushActorAway (CallNative.cpp,
+  // Offsets::PushActorAway) never reaches this seam, so a watcher's knock in
+  // place stands
   if (info.pushFigure && info.params > 0) {
     const std::uint32_t argPage = top->GetPageForFrame();
     if (argPage != kNoPage) {
@@ -3047,16 +3049,30 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
       auto* policy = vm ? vm->GetObjectHandlePolicy() : nullptr;
       const RE::TESObjectREFR* target = RefOfObject(
         policy, ObjectOf(top->GetStackFrameVariable(0, argPage)), false);
-      if (target && IsPlayerFigure(*target)) {
+      const RE::TESObjectREFR* pusher =
+        RefOfObject(policy, ObjectOf(top->self), false);
+      PushRoute::Facts facts;
+      facts.pusherIsOwnPlayer = pusher && pusher->formID == 0x14;
+      facts.pusherIsPlayerFigure = pusher && IsPlayerFigure(*pusher);
+      facts.targetIsOwnPlayer = target && target->formID == 0x14;
+      facts.targetIsPlayerFigure = target && IsPlayerFigure(*target);
+      facts.targetIsPuppet = target && Puppets::Is(target->formID);
+      const PushRoute::Route route = PushRoute::Of(facts);
+      if (target && route == PushRoute::Route::kSkip) {
         marks.skip = true;
         marks.result = info.result;
         CountStagedPlain(row, kStagedFigurePush);
-        logger::info("[verb:push] PushActorAway onto {:x}, another player's "
-                     "figure, skipped on this seat: the throw is its "
-                     "player's own game's, followed by its stream (thuum "
-                     "tracker #178)",
-                     target->formID);
+        logger::info("[verb:push] PushActorAway onto {:x} by {:x}, skipped on "
+                     "this seat: the pusher's own game throws it, and this "
+                     "copy follows its stream",
+                     target->formID, pusher ? pusher->formID : 0);
         return marks;
+      }
+      if (target && facts.targetIsPlayerFigure) {
+        logger::info("[verb:push] PushActorAway onto {:x}, another player's "
+                     "figure, runs on this seat: its throw is this seat's, "
+                     "the body claimed by its impulse",
+                     target->formID);
       }
       // a push onto an actor another seat simulates (a puppet here,
       // Puppets.h) is skipped here as a figure's is, and reported: the script
@@ -3067,7 +3083,7 @@ Marks OnStaged(std::size_t row, const RowInfo& info,
       // holds it (CommonLibSSE-NG V/Variable.h:53-65). Without the platform's
       // tick the report is lost and nothing throws: a lost line, never a
       // double throw
-      if (target && Puppets::Is(target->formID)) {
+      if (target && route == PushRoute::Route::kSkipAndReport) {
         float force = 0.f;
         const auto& forceVar = top->GetStackFrameVariable(1, argPage);
         if (forceVar.IsFloat()) {

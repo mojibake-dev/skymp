@@ -4893,18 +4893,24 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     }
     const auto* propActor = prop->AsActor();
     const bool self = prop == myActor;
-    // thuum tracker #179 (ADR-063's 2026-11-19 amendment; Eli: "yeah go with
-    // it"): a player's body is its own game's, except in another player's
-    // grip, a hand (touch 1, the engine's grab: a Vampiric Grip names its
-    // actor as the gripper's grabbed object) whose hold makes it the
-    // gripper's until the gripper's rest returns it (A4's word, player 0);
-    // the gripped game follows that stream. Any other touch of another
-    // player's body (a contact, a drop, an impulse) stays refused: its own
-    // game simulates its knock (#178)
+    // A player's body is its own game's, except in another player's grip or
+    // throw. A grip is a hand (touch 1, the engine's grab: a Vampiric Grip
+    // names its actor as the gripper's grabbed object); a throw is the
+    // pusher's impulse (touch 3) on a player its cast hit, the hit the
+    // server took (PartOne::ClaimedHit, the cast still in its window), since
+    // the pusher's own game throws its copy of that player (the push-figure
+    // hook, PushRoute.h). Either makes the body the claimant's until its rest
+    // returns it (A4's word, player 0), and the player's own game follows
+    // that stream. Any other touch of another player's body (a contact, a
+    // drop, an impulse with no hit taken) stays refused: its own game
+    // simulates its knock
     constexpr uint32_t kTouchGrab = 1;
+    constexpr uint32_t kTouchImpulse = 3;
     if (kind == PropKind::LiveBody && propActor &&
         propActor->GetUserId() != Networking::InvalidUserId && !self &&
-        msg.touch != kTouchGrab) {
+        msg.touch != kTouchGrab &&
+        !(msg.touch == kTouchImpulse &&
+          partOne.ClaimedHit(myActor->GetFormId(), prop->GetFormId()))) {
       return refuse("E_PROP_KIND",
                     "a player's body, which its own game simulates (ADR-063)");
     }

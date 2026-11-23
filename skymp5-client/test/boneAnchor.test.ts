@@ -1,7 +1,7 @@
 // The place a body of parts' sample is anchored at (src/sync/boneAnchor.ts), JS state alone.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { Point, boneAnchor } from "../src/sync/boneAnchor";
+import { Point, boneAnchor, partsPast } from "../src/sync/boneAnchor";
 
 const REACH = 512;
 const root: Point = [0, 0, 0];
@@ -31,4 +31,17 @@ test("a body whose parts lie past reach of its first part too is no row, the par
   assert.ok("past" in a);
   assert.strictEqual(a.past, 2);
   assert.strictEqual(Math.round(a.reach), 590);
+});
+
+test("a torn body's line names every part past reach of its first part, with its distance from that part and from the root", () => {
+  // the COM (part 0) held 560 units behind, the rest of the ragdoll flown on together near its root
+  const torn: Point[] = [[0, 0, 0], [10, 0, 0], [20, 0, 0], [560, 0, 0], [570, 10, 0]];
+  const root: Point = [565, 0, 0];
+  const past = partsPast(root, torn, 512);
+  assert.deepStrictEqual(past.map((p) => p.index), [3, 4]);
+  assert.strictEqual(Math.round(past[0].fromFirst), 560);
+  assert.strictEqual(Math.round(past[0].fromRoot), 5);
+  assert.strictEqual(Math.round(past[1].fromFirst), 570);
+  // a whole body has none
+  assert.deepStrictEqual(partsPast([0, 0, 0], [[0, 0, 0], [30, 0, 0]], 512), []);
 });

@@ -1139,7 +1139,6 @@ export class PropService extends ClientListener {
         // nothing (the review's finding 6)
         if (prop.handed && word !== undefined && word.at > prop.handedAt && (word.player === 0 || word.player === myId)
             && (prop.follow === undefined || (!restPending && (prop.restAt === 0 || now - prop.restAt >= REST_DYNAMIC_MS)))) {
-            this.ownHandedBack = true;
             this.untrack(prop, "the grip's hold ended: this seat's player is its own game's again");
             return;
         }
@@ -3863,6 +3862,13 @@ export class PropService extends ClientListener {
             // the hand-back (or any end of this seat's own body's row): its
             // movement goes out again, from where the follow's end set it
             clearOwnHanded();
+            // a handed row's end, by the hand-back's word or by the rescan
+            // before the follow's rest has rendered, leaves the player down
+            // until the lifted get-up hold stands it up: no claim of it until
+            // it reads upright once (trackOwnBody)
+            if (prop.handed) {
+                this.ownHandedBack = true;
+            }
         }
         if (this.byLocal.get(prop.localId) === prop.refr) {
             this.byLocal.delete(prop.localId);

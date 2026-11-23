@@ -9,6 +9,8 @@ import { PropBone, PropTransformMessage } from "../messages/propTransformMessage
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { RefSweep } from "../../sync/frameCost";
+import { boneAnchor } from "../../sync/boneAnchor";
+import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
 import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
 import { FOLLOW_SAMPLES_MAX, FollowBone, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones } from "../../sync/propFollow";
@@ -288,6 +290,7 @@ type Prop = {
     // the simulator's side
     lastSent: (Pose & { bones?: PropBone[] }) | undefined; // the last sample out, or the first read as a baseline (a body of parts with its bones)
     dropRow: string | undefined;   // the stream found it no row (bonesOf, L3 or L4): untracked after the update's sends, why
+    boneAnchored: boolean;   // this stream's samples are anchored at its first part (bonesOf, boneAnchor), until its rest
     lastSendAt: number;
     sentHeld: boolean;             // the last sample out said held
     awakeAt: number;               // the engine last read the body awake (or the stream opened, or a hand let go)
@@ -1824,7 +1827,7 @@ export class PropService extends ClientListener {
     // returns the row (a world body takes a sample with no bones); so do a
     // rest with a part that is no pose and the untrack's final sample
     private send(prop: Prop, body: Body, asleep: boolean, now: number): number {
-        const pos = body.pos;
+        let pos: NiPoint3 = body.pos;
         const rot: NiPoint3 = [body.rot[0] % 360, body.rot[1] % 360, body.rot[2] % 360];
         for (let i = 0; i < 3; ++i) {
             if (!isFinite(pos[i]) || Math.abs(pos[i]) > WORLD_ABS_MAX || !isFinite(rot[i])) {
@@ -1841,7 +1844,14 @@ export class PropService extends ClientListener {
             if (read === undefined && !asleep) {
                 return 0;
             }
-            bones = read !== undefined ? read : [];
+            bones = read !== undefined ? read.bones : [];
+            if (read !== undefined) {
+                pos = read.pos;
+            }
+        }
+        if (asleep) {
+            // a rest ends the stream, and the next one anchors at its root again
+            prop.boneAnchored = false;
         }
         // physics rung 5: a body's rest takes its record ahead of it, from
         // every path a rest goes by (sendDue's, the untrack's final sample)
@@ -1884,15 +1894,18 @@ export class PropService extends ClientListener {
 
     // Physics rung 4 (D-PH10 A): a body of parts' poses for its sample, in
     // the platform's walk order, each checked as the wire's validator checks
-    // a bone (wire-validate lib.rs check_prop_transform): a count other than
-    // this seat's class read (a walk past 64 parts reads none) or a part past
-    // the wire's 512 from the sample's pos (its root's) makes the prop no row
-    // here, its binding's verdict cached and the prop untracked after the
-    // update's sends (sendDue), said once; a value that is not a number, a
-    // place outside the world or a quaternion of no length is no sample (not
-    // sent), said once. Each quaternion goes normalized, inside the wire's
-    // 0.01 (wire-validate lib.rs:86)
-    private bonesOf(prop: Prop, body: Body): PropBone[] | undefined {
+    // a bone (wire-validate lib.rs check_prop_transform), with the sample's
+    // pos they are measured from (boneAnchor: the root's, or the first part's
+    // once a part lies past the wire's 512 from the root, a long throw's
+    // ragdoll flown from its reference, said once a stream): a count other
+    // than this seat's class read (a walk past 64 parts reads none) or a part
+    // past the wire's 512 from both makes the prop no row here, its binding's
+    // verdict cached and the prop untracked after the update's sends
+    // (sendDue), said once; a value that is not a number, a place outside the
+    // world or a quaternion of no length is no sample (not sent), said once.
+    // Each quaternion goes normalized, inside the wire's 0.01 (wire-validate
+    // lib.rs:86)
+    private bonesOf(prop: Prop, body: Body): { bones: PropBone[]; pos: NiPoint3 } | undefined {
         const read = body.bones !== undefined ? body.bones : [];
         const id = prop.refr.toString(16);
         // an actor's carried parts come and go after its bones (a death mid-
@@ -1919,15 +1932,19 @@ export class PropService extends ClientListener {
                 }
                 return undefined;
             }
-            const reach = ObjectReferenceEx.getDistance(b.pos, body.pos);
-            if (reach > BONE_REACH_UNITS) {
-                logLab(TAG, `prop ${id}'s part ${i} lies ${reach.toFixed(1)} units from its reference, past the wire's ${BONE_REACH_UNITS}: no row`);
-                this.noRow(prop, `its part ${i} past the wire's reach`);
-                return undefined;
-            }
             bones.push(pose);
         }
-        return bones;
+        const anchor = boneAnchor(body.pos, bones.map((b) => b.pos), BONE_REACH_UNITS, prop.boneAnchored);
+        if ("past" in anchor) {
+            logLab(TAG, `prop ${id}'s part ${anchor.past} lies ${anchor.reach.toFixed(1)} units from its first part, past the wire's ${BONE_REACH_UNITS}: no row`);
+            this.noRow(prop, `its part ${anchor.past} past the wire's reach`);
+            return undefined;
+        }
+        if (anchor.atPart && !prop.boneAnchored) {
+            logLab(TAG, `prop ${id}: its parts lie past the wire's ${BONE_REACH_UNITS} from its reference (by ${ObjectReferenceEx.getDistance(anchor.pos, body.pos).toFixed(1)} units at its first part), anchored at its first part`);
+        }
+        prop.boneAnchored = anchor.atPart;
+        return { bones, pos: anchor.pos };
     }
 
     // a prop this seat's stream found no row (bonesOf): its binding's verdict
@@ -2438,17 +2455,19 @@ export class PropService extends ClientListener {
         // force 0): a live body, tracked here so the hold below claims it
         // whatever cell it stands in
         if (heldLocal !== 0 && !this.byLocal.has(heldLocal) && this.sp.Actor.from(grabbed) !== null) {
-            const row = this.rowInPlace({ localId: heldLocal, formType: 0 }, now, "the engine's grab names it (a grip)", true);
-            if (row === undefined && this.gripSaid !== heldLocal) {
-                // a grip that makes no row, said once a grab (the demo's
-                // eight grips of 29613 left no line at all)
+            const row = this.rowOrRefusal({ localId: heldLocal, formType: 0 }, now, "the engine's grab names it (a grip)", true);
+            if (typeof row === "string" && this.gripSaid !== heldLocal) {
+                // a grip that makes no row, said once a grab with the check
+                // that refused it (the demo's eight grips of 29613 left no
+                // line at all)
                 this.gripSaid = heldLocal;
                 const c = this.bodyClass(heldLocal);
-                logLab(TAG, `grip ${heldLocal.toString(16)}: the engine's grab names it, no row (${c === null ? "no body class" : `ragdoll ${c.ragdoll}, ${c.parts.length} parts`})`);
+                logLab(TAG, `grip ${heldLocal.toString(16)}: the engine's grab names it, no row: ${row} (${c === null ? "no body class" : `ragdoll ${c.ragdoll}, ${c.parts.length} parts`})`);
             }
         }
         if (heldLocal === 0) {
             this.gripSaid = 0;
+            this.gripApartSaid = 0;
         }
         const props = Array.from(this.props.values());
         const holds = (prop: Prop) => heldLocal !== 0 && prop.localId === heldLocal && !prop.trap;
@@ -2821,14 +2840,22 @@ export class PropService extends ClientListener {
     // undefined for a static, a living actor, a class no row takes, an
     // unloaded reference or one the server has no id for here
     private rowInPlace(r: Member, now: number, why: string, gripped = false): Prop | undefined {
+        const row = this.rowOrRefusal(r, now, why, gripped);
+        return typeof row === "string" ? undefined : row;
+    }
+
+    // rowInPlace's row, or the check that refused one (gripRow.ts's
+    // RowRefusal); gripped, the player's own grab names the body
+    // (placeRefusal's place read skipped)
+    private rowOrRefusal(r: Member, now: number, why: string, gripped: boolean): Prop | RowRefusal {
         const refr = localIdToRemoteId(r.localId);
         if (!refr) {
-            return undefined;
+            return "no remote id";
         }
         if (!this.trapBodies.has(refr)) {
             const kind = this.kindOf(r.localId, refr, r.formType, false, gripped);
             if (kind !== "item" && kind !== "world") {
-                return undefined;
+                return "no row kind";
             }
         }
         const known = this.props.get(refr);
@@ -2845,11 +2872,11 @@ export class PropService extends ClientListener {
         }
         const body = this.trapBodies.get(refr);
         if (body) {
-            return this.trackTrapBody(refr, body, now, false);
+            return this.trackTrapBody(refr, body, now, false) ?? "no trap row";
         }
         // a pushed or knocked body is Dynamic (a Keyframed one takes no push,
         // havok-props.md E27; an island's members are its dynamic ones)
-        return this.trackInPlace(refr, r.localId, MotionType.Dynamic, why);
+        return this.placeInPlace(refr, r.localId, MotionType.Dynamic, why, gripped);
     }
 
     // A prop tracked where its engine has it (physics rung 3, B5): the
@@ -2859,14 +2886,31 @@ export class PropService extends ClientListener {
     // body's as read (undefined: the tick sets it, D73), a world body's class
     // as kindOf cached it. Undefined when the reference is not loaded here
     private trackInPlace(refr: number, localId: number, motion: MotionType | undefined, why: string): Prop | undefined {
+        const prop = this.placeInPlace(refr, localId, motion, why, false);
+        return typeof prop === "string" ? undefined : prop;
+    }
+
+    // trackInPlace's prop, or the check that refused it (placeRefusal); a
+    // grip's body whose world or cell reads other than the player's says
+    // both, once a grab
+    private placeInPlace(refr: number, localId: number, motion: MotionType | undefined, why: string, gripped: boolean): Prop | PlaceRefusal {
         const ref = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
         const player = this.sp.Game.getPlayer();
-        if (!ref || !player || !ref.is3DLoaded()) {
-            return undefined;
+        if (!ref || !player) {
+            return "not loaded";
         }
-        const worldOrCell = ObjectReferenceEx.getWorldOrCell(player);
-        if (worldOrCell !== 0 && ObjectReferenceEx.getWorldOrCell(ref) !== worldOrCell) {
-            return undefined;
+        // an unloaded reference's place is never read (placeRefusal refuses
+        // it first)
+        const loaded3D = ref.is3DLoaded();
+        const worldOrCell = loaded3D ? ObjectReferenceEx.getWorldOrCell(player) : 0;
+        const refWorldOrCell = loaded3D ? ObjectReferenceEx.getWorldOrCell(ref) : 0;
+        const refused = placeRefusal({ loaded3D, playerWorldOrCell: worldOrCell, refWorldOrCell, gripped });
+        if (refused !== undefined) {
+            return refused;
+        }
+        if (gripped && worldOrCell !== 0 && refWorldOrCell !== worldOrCell && this.gripApartSaid !== localId) {
+            this.gripApartSaid = localId;
+            logLab(TAG, `grip ${localId.toString(16)}: its world or cell reads ${refWorldOrCell.toString(16)} against the player's ${worldOrCell.toString(16)}, tracked at the grab`);
         }
         const now = clockMs();
         const distance = ObjectReferenceEx.getDistance(ObjectReferenceEx.getPos(player), ObjectReferenceEx.getPos(ref));
@@ -3995,6 +4039,7 @@ export class PropService extends ClientListener {
             parts,
             lastSent: undefined,
             dropRow: undefined,
+            boneAnchored: false,
             lastSendAt: 0,
             sentHeld: false,
             awakeAt: 0,
@@ -4344,6 +4389,9 @@ export class PropService extends ClientListener {
     // thuum tracker #175: the grabbed actor whose grip made no row, said once
     // a grab (readHolds)
     private gripSaid = 0;
+    // a grip's body tracked though its world or cell read other than the
+    // player's, said once a grab (placeInPlace)
+    private gripApartSaid = 0;
     // thuum tracker #179: this seat's player was handed back by a grip's hold
     // and has not read upright since (trackOwnBody)
     private ownHandedBack = false;

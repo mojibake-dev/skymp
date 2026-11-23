@@ -1,4 +1,4 @@
-import { NiPoint3 } from "./movement";
+import { NiPoint3 } from "./point";
 
 // thuum docs/verbs/prop-physics.md (ADR-071 decision 3, physics rung 2): one
 // stream of a prop another seat simulates, as the follower renders it. A pure
@@ -85,6 +85,63 @@ export const FOLLOW_OFFSET_SAMPLES = 16;
 export const seqNewer = (a: number, b: number): boolean => {
     const d = (((a - b) % 65536) + 65536) % 65536;
     return d >= 1 && d <= 32767;
+};
+
+// One part's velocity through a stream's segment, fed forward by the
+// platform's drive (imposeBodies): lin game units a second, ang radians a
+// second about a world axis
+export type FollowBoneVelocity = { lin: NiPoint3; ang: NiPoint3 };
+
+// A segment whose part moves faster than this is a jump, not motion: the
+// wire's cap on a sample's speed (wire-validate's PROP_MAX_LIN_UNITS_PER_S,
+// skymp-wire crates/wire-validate/src/lib.rs:76), so a teleport between two
+// samples feeds nothing forward
+export const SEGMENT_LIN_MAX_UNITS_PER_S = 6000;
+
+// Each part's velocity from sample a to sample b on the owner's clock: the
+// position's change over the segment's time, and the turn q_b conj(q_a), the
+// short way round, as its axis times its angle over that time (the drive's
+// own reading of a turn, PropBodies::DriveBody). Both samples are ones the
+// follower already holds on either side of its render clock, so nothing is
+// predicted. Undefined, and nothing fed forward, for a segment of no time,
+// two different part counts, no parts, or a part past
+// SEGMENT_LIN_MAX_UNITS_PER_S; a still segment answers zeros, so a body at
+// rest is driven as with no feed
+export const segmentVelocities = (a: FollowSample, b: FollowSample): FollowBoneVelocity[] | undefined => {
+    const dtMs = b.tMs - a.tMs;
+    if (!(dtMs > 0) || a.bones.length !== b.bones.length || a.bones.length === 0) {
+        return undefined;
+    }
+    const dt = dtMs / 1000;
+    const out: FollowBoneVelocity[] = [];
+    for (let i = 0; i < a.bones.length; ++i) {
+        const p = a.bones[i];
+        const q = b.bones[i];
+        const lin: NiPoint3 = [(q.pos[0] - p.pos[0]) / dt, (q.pos[1] - p.pos[1]) / dt, (q.pos[2] - p.pos[2]) / dt];
+        const speed = Math.sqrt(lin[0] * lin[0] + lin[1] * lin[1] + lin[2] * lin[2]);
+        if (!(speed <= SEGMENT_LIN_MAX_UNITS_PER_S)) {
+            return undefined;
+        }
+        // e = q_b * conj(q_a), the Hamilton product, lanes x, y, z, w
+        const [ax, ay, az, aw] = [-p.quat[0], -p.quat[1], -p.quat[2], p.quat[3]];
+        const [bx, by, bz, bw] = q.quat;
+        let ex = bw * ax + bx * aw + by * az - bz * ay;
+        let ey = bw * ay - bx * az + by * aw + bz * ax;
+        let ez = bw * az + bx * ay - by * ax + bz * aw;
+        let ew = bw * aw - bx * ax - by * ay - bz * az;
+        if (ew < 0) {
+            [ex, ey, ez, ew] = [-ex, -ey, -ez, -ew];
+        }
+        const sv = Math.sqrt(ex * ex + ey * ey + ez * ez);
+        // under a millionth the angle's own limit, 2 over dt (DriveBody's)
+        const k = sv > 1e-6 ? (2 * Math.atan2(sv, ew)) / (sv * dt) : 2 / dt;
+        const ang: NiPoint3 = [ex * k, ey * k, ez * k];
+        if (![...lin, ...ang].every((v) => isFinite(v))) {
+            return undefined;
+        }
+        out.push({ lin, ang });
+    }
+    return out;
 };
 
 // Physics rung 4 (D-PH10 A, the follower's impose): the parts' poses between

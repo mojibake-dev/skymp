@@ -1,7 +1,7 @@
 // The per-frame work's bounds (src/sync/frameCost.ts), JS state alone.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { dueSamples, movementApplyDue, distanceBetween, hostedSampleRateMs, Timed, LastWritten, RefSweep } from "../src/sync/frameCost";
+import { dueSamples, movementApplyDue, distanceBetween, hostedSampleRateMs, Timed, LastWritten, RefSweep, appliedClock } from "../src/sync/frameCost";
 
 test("45 hosted actors due at once are sampled 8 a frame, each within 6 frames", () => {
   const ids = Array.from({ length: 45 }, (_, i) => 0x1000 + i);
@@ -143,4 +143,36 @@ test("a ref added during a pass is read in the next one; an empty set reads noth
   }
   assert.ok(seen.has(9999));
   assert.deepStrictEqual(new RefSweep(500, 64).next(() => [], 0), []);
+});
+
+test("views made in one frame never all fall due in one frame at the far rate", () => {
+  const ids = Array.from({ length: 40 }, (_, i) => 0x1a600 + i * 7);
+  const last = new Map<number, number>();
+  const dt = 1000 / 60;
+  let most = 0;
+  for (let f = 0; f < 120; f += 1) {
+    const now = 1000000 + f * dt;
+    let due = 0;
+    for (const id of ids) {
+      const at = last.get(id);
+      if (at === undefined || movementApplyDue({ changed: true, distance: 5000, nearUnits: 2048, sinceLastApplyMs: now - at,
+        farRateMs: 500, reassertMs: 2000 })) {
+        if (at !== undefined) {
+          due += 1;
+        }
+        last.set(id, appliedClock(now, at === undefined, id, 500));
+      }
+    }
+    most = Math.max(most, due);
+  }
+  assert.ok(most <= ids.length / 4, `${most} of ${ids.length} views fell due in one frame`);
+});
+
+test("a view's first clock is offset within the far rate, the same for the same id, and later ones are the apply's", () => {
+  for (const id of [0x14, 0x1a600, 0xff000e41]) {
+    const first = appliedClock(10000, true, id, 500);
+    assert.ok(first <= 10000 && first > 10000 - 500, `${id.toString(16)}: ${first}`);
+    assert.strictEqual(appliedClock(10000, true, id, 500), first);
+    assert.strictEqual(appliedClock(10000, false, id, 500), 10000);
+  }
 });

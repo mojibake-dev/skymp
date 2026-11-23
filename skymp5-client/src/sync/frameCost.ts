@@ -145,3 +145,9 @@ export class RefSweep {
     return slice;
   }
 }
+
+// The time a view's far-apply clock counts from after an apply at `now`
+// (movementApplyDue's sinceLastApplyMs), for the view `id`.
+export const appliedClock = (now: number, firstApply: boolean, id: number, farRateMs: number): number => {
+  return now;
+};

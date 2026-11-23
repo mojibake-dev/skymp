@@ -11,6 +11,7 @@ import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { RefSweep } from "../../sync/frameCost";
 import { boneAnchor } from "../../sync/boneAnchor";
 import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
+import { noRowEntry } from "../../sync/kindCache";
 import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
 import { FOLLOW_SAMPLES_MAX, FollowBone, FollowBoneVelocity, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones, segmentVelocities } from "../../sync/propFollow";
@@ -1956,7 +1957,11 @@ export class PropService extends ClientListener {
     // f50509d89, finding 2)
     private noRow(prop: Prop, why: string) {
         prop.dropRow = why;
-        this.cacheKind(prop.localId, prop.refr, { item: false, world: null, noRowAt: clockMs() });
+        // a living actor's body caches no verdict (sync/kindCache.ts)
+        const entry = noRowEntry(prop.live, clockMs());
+        if (entry !== undefined) {
+            this.cacheKind(prop.localId, prop.refr, { item: false, ...entry });
+        }
     }
 
     // The follower: the stream followed rendered on its clock (one translate a

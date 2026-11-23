@@ -1,7 +1,7 @@
 // Which parts of a live body the engine drives (src/sync/drivenParts.ts), JS state alone.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { placeUndriven, skeletonKey, undrivenIn } from "../src/sync/drivenParts";
+import { pastReachStep, placeUndriven, skeletonKey, undrivenIn, UNDRIVEN_WAIT_MS } from "../src/sync/drivenParts";
 
 // a beast's ragdoll, knocked: the COM and legs dynamic, the tail keyframed
 const knocked = [
@@ -37,4 +37,14 @@ test("with no undriven part known every part is sent as read", () => {
 
 test("a skeleton is its parts' names in walk order", () => {
   assert.strictEqual(skeletonKey(knocked.slice(0, 2)), "NPC COM [COM ]|NPC L Thigh [LThg]");
+});
+
+test("a grip's first sample past reach, its skeleton not yet learned, waits for the ragdoll's read", () => {
+  assert.strictEqual(pastReachStep(false, 0), "wait");
+  assert.strictEqual(pastReachStep(false, UNDRIVEN_WAIT_MS - 1), "wait");
+});
+
+test("past the wait, or with the skeleton learned, a part still past reach drops the row", () => {
+  assert.strictEqual(pastReachStep(false, UNDRIVEN_WAIT_MS), "drop");
+  assert.strictEqual(pastReachStep(true, 0), "drop");
 });

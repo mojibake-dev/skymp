@@ -39,3 +39,13 @@ export const placeUndriven = (positions: readonly number[][], undriven: Readonly
     const first = positions[0];
     return positions.map((p, i) => (undriven.has(i) && first !== undefined ? [first[0], first[1], first[2]] : [p[0], p[1], p[2]]));
 };
+
+// a body's sample with a part past the wire's reach, before its skeleton's
+// undriven parts are known: a grip's first frames read every part keyframed,
+// and the ragdoll shows its dynamic parts moments later, so the sample waits
+// for that read, up to UNDRIVEN_WAIT_MS, rather than drop the row
+export const UNDRIVEN_WAIT_MS = 1000;
+export type PastReachStep = "wait" | "drop";
+export const pastReachStep = (learned: boolean, waitedMs: number): PastReachStep => {
+    return "drop";
+};

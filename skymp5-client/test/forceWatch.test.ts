@@ -50,6 +50,18 @@ test("an actor this seat hosts (a draugr, whose graph queues no knock edge) is a
     [{ localId: 0x380b3, verdict: "track" }]);
 });
 
+test("the server's relayed push onto an actor this seat hosts is tracked once knocked, and one onto an actor it doesn't host is dropped", () => {
+  const w = new ForceWatch();
+  assert.equal(w.relayed(0xe9986, 1000), true);
+  assert.equal(w.relayed(0x29602, 1000), true);
+  assert.equal(w.relayed(PLAYER, 1000), false);
+  const read = (localId: number): ForcedRead => ({ figure: false, hosted: localId === 0xe9986, tracked: false, ragdoll: true });
+  assert.deepEqual(w.update(1100, read), [
+    { localId: 0xe9986, verdict: "track" },
+    { localId: 0x29602, verdict: "drop", why: "a relayed push onto an actor this seat does not host" },
+  ]);
+});
+
 test("a game-file actor another seat hosts is dropped at its first read, never tracked here", () => {
   const w = new ForceWatch();
   w.reach(PLAYER, 0x29602, 1000);

@@ -41,7 +41,9 @@ export type ForcedOutcome =
 // queues no knock and no bracketed impulse for any other step of the update
 // to run on (the push's own impulse runs outside every bracket).
 export class ForceWatch {
-  private readonly watched = new Map<number, number>();
+  // by local id: since when, and whether the server's relayed push (not this
+  // seat's own spell) put it here
+  private readonly watched = new Map<number, { since: number; relayed: boolean }>();
 
   get size(): number {
     return this.watched.size;
@@ -55,17 +57,30 @@ export class ForceWatch {
     if (caster !== 0x14 || target === 0x14 || this.watched.has(target)) {
       return false;
     }
-    this.watched.set(target, now);
+    this.watched.set(target, { since: now, relayed: false });
+    return true;
+  }
+
+  // the server's relayed push (another seat's push onto an actor this seat's
+  // game runs, OnPushActor's PushActorAway snippet): watched for this seat to
+  // track once its engine reads it knocked, never to claim, since the push is
+  // another seat's
+  relayed(target: number, now: number): boolean {
+    if (target === 0 || target === 0x14 || this.watched.has(target)) {
+      return false;
+    }
+    this.watched.set(target, { since: now, relayed: true });
     return true;
   }
 
   update(now: number, read: (localId: number) => ForcedRead | null): ForcedOutcome[] {
     const out: ForcedOutcome[] = [];
-    this.watched.forEach((since, localId) => {
+    this.watched.forEach(({ since, relayed }, localId) => {
       const r = read(localId);
-      if (r === null || (!r.figure && !r.hosted)) {
+      if (r === null || (!r.figure && !r.hosted) || (relayed && !r.hosted)) {
         this.watched.delete(localId);
-        out.push({ localId, verdict: "drop", why: r === null ? "no actor" : "neither another player's figure nor this seat's" });
+        out.push({ localId, verdict: "drop", why: r === null ? "no actor"
+          : relayed ? "a relayed push onto an actor this seat does not host" : "neither another player's figure nor this seat's" });
         return;
       }
       const verdict = forceWatchVerdict({ since, now, ragdoll: r.ragdoll, tracked: r.tracked });

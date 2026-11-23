@@ -22,7 +22,7 @@ const anything: any = new Proxy(function () {
 });
 // the platform's storage holds the world view, which maps the figure's local id to its server id
 const storage: Record<string, unknown> = {
-  view: { getRemoteRefrId: (localId: number) => (localId === FIGURE ? FIGURE_REMOTE + 0x100000000 : 0) },
+  view: { getRemoteRefrId: (localId: number) => (localId === FIGURE ? FIGURE_REMOTE + 0x100000000 : 0), getLocalRefrId: () => 0 },
 };
 const platform = new Proxy({ storage }, { get: (t, k) => (k in t ? (t as any)[k] : anything) });
 
@@ -48,9 +48,10 @@ const sp: any = new Proxy({
 
 const service = () => {
   const handlers: Record<string, (e?: unknown) => void> = {};
+  const messages: Record<string, (e?: unknown) => void> = {};
   const controller: any = {
     on: (name: string, fn: (e?: unknown) => void) => { handlers[name] = fn; },
-    emitter: { on: () => {}, emit: () => {} },
+    emitter: { on: (name: string, fn: (e?: unknown) => void) => { messages[name] = fn; }, emit: () => {} },
   };
   const s: any = new PropService(sp, controller);
   const claims: Array<{ refr: number; touch: number }> = [];
@@ -72,7 +73,7 @@ const service = () => {
   s.rowOrRefusal = rowFor;
   s.hostsHere = (localId: number) => localId === DRAUGR;
   s.claim = (prop: { refr: number }, touch: number) => { claims.push({ refr: prop.refr, touch }); };
-  return { handlers, claims, rows, s };
+  return { handlers, messages, claims, rows, s };
 };
 
 const shoutReaches = (handlers: Record<string, (e?: unknown) => void>) =>
@@ -98,6 +99,17 @@ test("a shout that also knocks an NPC this seat hosts (a knock queued) claims th
 test("a shout that reaches a draugr this seat hosts makes its body a row once its engine reads it knocked, with no knock queued and no claim", () => {
   const { handlers, claims, rows } = service();
   handlers.magicEffectApply({ caster: { getFormID: () => PLAYER }, target: { getFormID: () => DRAUGR } });
+  handlers.update();
+  assert.deepEqual(rows, [{ localId: DRAUGR, pushed: true }]);
+  assert.deepEqual(claims, []);
+});
+
+test("the server's relayed push onto a draugr this seat hosts (another seat's shout) makes its body a row once its engine reads it knocked", () => {
+  const { handlers, messages, claims, rows } = service();
+  // the snippet OnPushActor sends the host: ObjectReference.PushActorAway on the caster, the target a game-file actor by
+  // its long id (SpSnippet::MakeLongFormId)
+  messages.spSnippetMessage({ message: { class: "ObjectReference", function: "PushActorAway", selfId: FIGURE_REMOTE,
+    arguments: [{ formId: DRAUGR + 0x100000000, type: "Actor" }, 15], snippetIdx: 1 } });
   handlers.update();
   assert.deepEqual(rows, [{ localId: DRAUGR, pushed: true }]);
   assert.deepEqual(claims, []);

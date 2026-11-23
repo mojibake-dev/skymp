@@ -5,6 +5,7 @@ import { ConnectionMessage } from "../events/connectionMessage";
 import { CreateActorMessage } from "../messages/createActorMessage";
 import { PropOwnerMessage } from "../messages/propOwnerMessage";
 import { PushActorMessage } from "../messages/pushActorMessage";
+import { SpSnippetMessage } from "../messages/spSnippetMessage";
 import { PropBone, PropTransformMessage } from "../messages/propTransformMessage";
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
@@ -20,7 +21,7 @@ import { bodyHasNoRow } from "../../sync/bodyRow";
 import { ForceWatch, ForcedRead } from "../../sync/forceWatch";
 import { isFigureBase } from "../../sync/equipment";
 import { FormModel } from "../../view/model";
-import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
+import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId, snippetIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { ChangeFormService } from "./changeFormService";
 import { HostService } from "./hostService";
@@ -623,6 +624,7 @@ export class PropService extends ClientListener {
         this.controller.on("propImpulse", (e) => this.onPropImpulse(e));
         this.controller.on("pushReported", (e) => this.onPushReported(e));
         this.controller.on("magicEffectApply", (e) => this.onForceReach(e));
+        this.controller.emitter.on("spSnippetMessage", (e) => this.onRelayedPush(e));
         this.controller.on("containerChanged", (e) => this.onContainerChanged(e));
         // the hook's context allows no game call: the knock is tracked at the
         // next update (trackKnocks)
@@ -2636,6 +2638,24 @@ export class PropService extends ClientListener {
         const target = e.target.getFormID();
         if (this.forced.reach(e.caster.getFormID(), target, clockMs())) {
             logLab(TAG, `actor ${target.toString(16)}: this seat's player's spell reached it; watched 2 s for its knock`);
+        }
+    }
+
+    // The server's relayed push onto an actor this seat's game runs (OnPushActor
+    // sends the host ObjectReference.PushActorAway, the pushed actor its first
+    // argument): the actor joins the forced watch, JS state alone in the
+    // message's context, and is tracked once its engine reads it knocked. A
+    // creature's graph queues no knock edge, and the push's impulse runs
+    // outside every bracket, so without it the host never streams the throw
+    private onRelayedPush(e: ConnectionMessage<SpSnippetMessage>) {
+        const m = e.message;
+        if (m.class.toLowerCase() !== "objectreference" || m.function.toLowerCase() !== "pushactoraway") {
+            return;
+        }
+        const arg = m.arguments[0] as { formId?: number } | null;
+        const target = arg && typeof arg.formId === "number" ? snippetIdToLocalId(arg.formId) : 0;
+        if (this.forced.relayed(target, clockMs())) {
+            logLab(TAG, `actor ${target.toString(16)}: the server's relayed push reached it; watched 2 s for its knock`);
         }
     }
 

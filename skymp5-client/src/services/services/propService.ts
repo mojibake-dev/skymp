@@ -9,7 +9,7 @@ import { PropBone, PropTransformMessage } from "../messages/propTransformMessage
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { RefSweep } from "../../sync/frameCost";
-import { boneAnchor } from "../../sync/boneAnchor";
+import { boneAnchor, partsPast } from "../../sync/boneAnchor";
 import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
 import { liveNoRowHeld, noRowEntry } from "../../sync/kindCache";
 import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
@@ -1945,6 +1945,15 @@ export class PropService extends ClientListener {
         const anchor = boneAnchor(body.pos, bones.map((b) => b.pos), BONE_REACH_UNITS, prop.boneAnchored);
         if ("past" in anchor) {
             logLab(TAG, `prop ${id}'s part ${anchor.past} lies ${anchor.reach.toFixed(1)} units from its first part, past the wire's ${BONE_REACH_UNITS}: no row`);
+            // which bone the torn body holds apart: its first part's distance
+            // from the root, then each part past reach of the first part as
+            // index fromFirst/fromRoot, six a line (the console cuts a line at
+            // 128 bytes)
+            const past = partsPast(body.pos, bones.map((b) => b.pos), BONE_REACH_UNITS);
+            logLab(TAG, `prop ${id} torn: part 0 ${ObjectReferenceEx.getDistance(bones[0].pos, body.pos).toFixed(0)} from its root, ${past.length} of ${bones.length} parts past reach of it`);
+            for (let i = 0; i < past.length; i += 6) {
+                logLab(TAG, `prop ${id} torn: ${past.slice(i, i + 6).map((p) => `${p.index} ${p.fromFirst.toFixed(0)}/${p.fromRoot.toFixed(0)}`).join(", ")}`);
+            }
             this.noRow(prop, `its part ${anchor.past} past the wire's reach`);
             return undefined;
         }

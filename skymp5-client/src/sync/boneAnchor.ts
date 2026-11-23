@@ -39,3 +39,22 @@ export const boneAnchor = (rootPos: Point, parts: Point[], reachMax: number, atP
   }
   return { pos: [first[0], first[1], first[2]], atPart: true };
 };
+
+// The parts of a body past reach of its first part (the anchor of last
+// resort), each with its distance from the first part and from the body's
+// root, for the line that says which bone a torn body holds apart
+export type PartPast = { index: number; fromFirst: number; fromRoot: number };
+
+export const partsPast = (rootPos: Point, parts: Point[], reachMax: number): PartPast[] => {
+  const out: PartPast[] = [];
+  if (parts.length === 0) {
+    return out;
+  }
+  for (let i = 0; i < parts.length; ++i) {
+    const fromFirst = distance(parts[i], parts[0]);
+    if (fromFirst > reachMax) {
+      out.push({ index: i, fromFirst, fromRoot: distance(parts[i], rootPos) });
+    }
+  }
+  return out;
+};

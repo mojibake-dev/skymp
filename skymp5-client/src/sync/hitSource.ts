@@ -23,5 +23,8 @@ export const hitSourceKind = (source: {
   if (source.scroll) {
     return "scroll";
   }
+  if (source.enchantment !== 0 && source.staffEnchantments.indexOf(source.enchantment) >= 0) {
+    return "staff";
+  }
   return "none";
 };

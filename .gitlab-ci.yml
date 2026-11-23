@@ -36,15 +36,17 @@ net-retry-test:
     - sh ci/net-retry.test.sh
 
 # Build the Rust CI image on the runner host's daemon; persists across jobs
-# (pull policy if-not-present). Runs on every wire change: with the layers
-# cached on the host it takes seconds, and the wire jobs below need it to
-# exist before they start (a missing image is a runner configuration error).
+# (pull policy if-not-present). Runs on every wire change and every canon push:
+# with the layers cached on the host it takes seconds, and the wire jobs below
+# need it to exist before they start (a missing image is a runner configuration
+# error).
 rust-image:
   stage: image
   tags: [sky]
   image: docker:27
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == "canon"
     - changes: [skymp-wire/**/*]
   script:
     - docker build -t "$RUST_CI_IMAGE" skymp-wire/ci
@@ -70,6 +72,11 @@ rust-image:
 wire-test:
   extends: .wire
   stage: wire
+  # every canon push as merged, beside the wire changes .wire runs on
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == "canon"
+    - changes: [skymp-wire/**/*]
   script:
     - cargo test --workspace --all-features
     - cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -134,7 +141,8 @@ wire-fuzz:
 # misc/github_env_linux) so nothing of vcpkg is rebuilt. T0 runs inside the
 # build when the master .esm files are present; without them the build says
 # so and skips ctest. Runs on merge requests, parity pushes outside
-# skymp-wire, and the schedule.
+# skymp-wire, every canon push (each merge judged as merged), a milestone
+# branch's every push, and the schedule.
 server-build:
   stage: server
   tags: [sky]
@@ -144,6 +152,7 @@ server-build:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "canon"
     - if: $CI_COMMIT_BRANCH == "parity"
       changes:
         - "**/*"

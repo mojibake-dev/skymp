@@ -55,11 +55,15 @@
 #include "libespm/AVIF.h"
 #include "libespm/CELL.h"
 #include "libespm/DIAL.h"
+#include "libespm/ENCH.h"
 #include "libespm/FACT.h"
 #include "libespm/FLST.h"
 #include "libespm/GMST.h"
+#include "libespm/HAZD.h"
 #include "libespm/HDPT.h"
 #include "libespm/INFO.h"
+#include "libespm/IPCT.h"
+#include "libespm/IPDS.h"
 #include "libespm/MGEF.h"
 #include "libespm/OTFT.h"
 #include "libespm/PROJ.h"
@@ -9081,6 +9085,113 @@ constexpr uint64_t kHazardWindowMs = 600'000;
 // masters, so each is mapped through the record that names it
 constexpr int kReachDepth = 3;
 
+// a cast's own record, a spell's (SPEL) or a staff's enchantment's (ENCH,
+// the cast an equipped staff makes): whether it is one, whether it is cast
+// by concentration (SPIT's or ENIT's cast type), and its effects, each by
+// its MGEF id inside the record with its area and duration
+struct CastRecord
+{
+  struct Effect
+  {
+    uint32_t formId = 0;
+    uint32_t area = 0;
+    uint32_t duration = 0;
+  };
+  bool found = false;
+  bool concentration = false;
+  std::vector<Effect> effects;
+};
+
+CastRecord CastRecordOf(WorldState& worldState, uint32_t spell)
+{
+  CastRecord out;
+  const auto lookup = worldState.GetEspm().GetBrowser().LookupById(spell);
+  if (!lookup.rec) {
+    return out;
+  }
+  if (lookup.rec->GetType() == espm::SPEL::kType) {
+    const auto data = espm::GetData<espm::SPEL>(spell, &worldState);
+    out.found = true;
+    out.concentration = data.spellItem &&
+      data.spellItem->castType == espm::SPEL::CastType::Concentration;
+    for (const auto& effect : data.effects) {
+      out.effects.push_back(
+        { effect.effectFormId,
+          effect.effectItem ? effect.effectItem->areaOfEffect : 0u,
+          effect.effectItem ? effect.effectItem->duration : 0u });
+    }
+  } else if (lookup.rec->GetType() == espm::ENCH::kType) {
+    const auto data = espm::GetData<espm::ENCH>(spell, &worldState);
+    out.found = true;
+    out.concentration = data.castType == espm::ENCH::kCastConcentration;
+    for (const auto& effect : data.effects) {
+      out.effects.push_back(
+        { effect.effectId, effect.areaOfEffect, effect.duration });
+    }
+  }
+  return out;
+}
+
+// the hazards an effect's hits place, as global ids with their lifetime
+// (seconds): its impact data set's impacts' hazards (MGEF DATA 0x64, IPDS
+// PNAM, IPCT NAM2, HAZD DATA; Flames' fire on the ground, whose
+// HazardFireSpell hits whoever stands in it), each id mapped through the
+// record that names it
+struct PlacedHazard
+{
+  uint32_t spell = 0;
+  float lifetime = 0.f;
+};
+
+std::vector<PlacedHazard> HazardsOf(WorldState& worldState, uint32_t mgefId)
+{
+  std::vector<PlacedHazard> out;
+  auto& browser = worldState.GetEspm().GetBrowser();
+  const auto mgefLookup = browser.LookupById(mgefId);
+  if (!mgefLookup.rec || mgefLookup.rec->GetType() != espm::MGEF::kType) {
+    return out;
+  }
+  const auto mgef = espm::GetData<espm::MGEF>(mgefId, &worldState);
+  if (mgef.data.impactDataSet == 0) {
+    return out;
+  }
+  const uint32_t setId = mgefLookup.ToGlobalId(mgef.data.impactDataSet);
+  const auto setLookup = browser.LookupById(setId);
+  if (!setLookup.rec || setLookup.rec->GetType() != espm::IPDS::kType) {
+    return out;
+  }
+  std::vector<uint32_t> hazards;
+  for (const uint32_t impact :
+       espm::GetData<espm::IPDS>(setId, &worldState).impacts) {
+    const uint32_t impactId = setLookup.ToGlobalId(impact);
+    const auto impactLookup = browser.LookupById(impactId);
+    if (!impactLookup.rec ||
+        impactLookup.rec->GetType() != espm::IPCT::kType) {
+      continue;
+    }
+    const uint32_t hazard =
+      espm::GetData<espm::IPCT>(impactId, &worldState).hazard;
+    if (hazard == 0) {
+      continue;
+    }
+    const uint32_t hazardId = impactLookup.ToGlobalId(hazard);
+    if (std::find(hazards.begin(), hazards.end(), hazardId) != hazards.end()) {
+      continue;
+    }
+    hazards.push_back(hazardId);
+    const auto hazardLookup = browser.LookupById(hazardId);
+    if (!hazardLookup.rec ||
+        hazardLookup.rec->GetType() != espm::HAZD::kType) {
+      continue;
+    }
+    const auto data = espm::GetData<espm::HAZD>(hazardId, &worldState);
+    if (data.spell != 0) {
+      out.push_back({ hazardLookup.ToGlobalId(data.spell), data.lifetime });
+    }
+  }
+  return out;
+}
+
 std::vector<uint32_t> ReachedSpells(WorldState& worldState, uint32_t spell)
 {
   std::vector<uint32_t> reached;
@@ -9093,16 +9204,15 @@ std::vector<uint32_t> ReachedSpells(WorldState& worldState, uint32_t spell)
     std::vector<uint32_t> next;
     for (const uint32_t from : frontier) {
       const auto spellLookup = browser.LookupById(from);
-      if (!spellLookup.rec ||
-          spellLookup.rec->GetType() != espm::SPEL::kType) {
+      const auto record = CastRecordOf(worldState, from);
+      if (!record.found) {
         continue;
       }
-      const auto data = espm::GetData<espm::SPEL>(from, &worldState);
-      for (const auto& effect : data.effects) {
-        if (effect.effectFormId == 0) {
+      for (const auto& effect : record.effects) {
+        if (effect.formId == 0) {
           continue;
         }
-        const uint32_t mgefId = spellLookup.ToGlobalId(effect.effectFormId);
+        const uint32_t mgefId = spellLookup.ToGlobalId(effect.formId);
         const auto mgefLookup = browser.LookupById(mgefId);
         if (!mgefLookup.rec) {
           continue;
@@ -9122,6 +9232,10 @@ std::vector<uint32_t> ReachedSpells(WorldState& worldState, uint32_t spell)
               named.push_back(mgefLookup.ToGlobalId(property.value.formId));
             }
           }
+        }
+        // the spells of the hazards its hits place (HazardsOf)
+        for (const auto& hazard : HazardsOf(worldState, mgefId)) {
+          named.push_back(hazard.spell);
         }
         for (const uint32_t id : named) {
           if (std::find(seen.begin(), seen.end(), id) != seen.end()) {
@@ -9160,9 +9274,13 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
   facts.y = from.y;
   facts.z = from.z;
   try {
-    const auto data = espm::GetData<espm::SPEL>(spell, &worldState);
-    if (data.spellItem &&
-        data.spellItem->castType == espm::SPEL::CastType::Concentration) {
+    // a spell's records, or a staff's enchantment's (CastRecordOf)
+    const auto data = CastRecordOf(worldState, spell);
+    if (!data.found) {
+      throw std::runtime_error(
+        fmt::format("{:#x} is no spell and no staff's enchantment", spell));
+    }
+    if (data.concentration) {
       facts.kind = skymp::rules::CastKind::Concentration;
     }
     // an id inside a record counts against that file's masters, so a
@@ -9178,17 +9296,20 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
     // delivery 1 or 3, libespm MGEF::DATA::delivery), lands where no aim
     // decides; its relay waits for its first hit, which names the target
     bool landsOnTarget = !data.effects.empty();
+    // the longest a hazard its hits place lasts (HazardsOf), seconds
+    float hazardS = 0.f;
     for (const auto& effect : data.effects) {
-      if (effect.effectItem && effect.effectItem->areaOfEffect > 0) {
+      if (effect.area > 0) {
         facts.area = true;
       }
-      if (effect.effectItem) {
-        longestS = std::max(longestS, effect.effectItem->duration);
-      }
-      if (effect.effectFormId == 0) {
+      longestS = std::max(longestS, effect.duration);
+      if (effect.formId == 0) {
         continue;
       }
-      const uint32_t mgefId = spellLookup.ToGlobalId(effect.effectFormId);
+      const uint32_t mgefId = spellLookup.ToGlobalId(effect.formId);
+      for (const auto& hazard : HazardsOf(worldState, mgefId)) {
+        hazardS = std::max(hazardS, hazard.lifetime);
+      }
       const auto mgef = espm::GetData<espm::MGEF>(mgefId, &worldState);
       if (mgef.data.delivery != 1 && mgef.data.delivery != 3) {
         landsOnTarget = false;
@@ -9217,16 +9338,20 @@ skymp::rules::CastFacts CastFactsFor(WorldState& worldState, uint32_t spell,
     // for how long their hits may claim it (the wire-rules floor is the
     // bolt window; a concentration cast's open stream extends it)
     facts.linger_ms = static_cast<uint64_t>(longestS) * 1000;
+    // a hazard the cast's hits place casts its spell on whoever stands in it
+    // for as long as it lasts, and that spell's hits claim this cast
+    // (ReachedSpells); a stream's hazards are placed until its end, so they
+    // count from the cast's start on the cast's own window too
+    if (std::isfinite(hazardS) && hazardS > 0.f) {
+      facts.linger_ms =
+        std::max(facts.linger_ms, static_cast<uint64_t>(hazardS * 1000.f));
+    }
     // and which of them are concentration spells, counted by their time
     // (a cloak's applied spell is one: Skyrim.esm's FlameCloakDmg 0x2B385)
     const auto reached = ReachedSpells(worldState, spell);
     for (size_t i = 0; i < reached.size() && i < facts.reached.size(); ++i) {
       facts.reached[i] = reached[i];
-      const auto reachedData =
-        espm::GetData<espm::SPEL>(reached[i], &worldState);
-      if (reachedData.spellItem &&
-          reachedData.spellItem->castType ==
-            espm::SPEL::CastType::Concentration) {
+      if (CastRecordOf(worldState, reached[i]).concentration) {
         facts.reached_concentration |= static_cast<uint8_t>(1u << i);
       }
     }

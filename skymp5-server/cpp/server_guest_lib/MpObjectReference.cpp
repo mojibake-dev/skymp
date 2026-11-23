@@ -296,6 +296,20 @@ const Inventory& MpObjectReference::GetInventory() const
   return ChangeForm().inv;
 }
 
+bool MpObjectReference::CarriesItemRows() const
+{
+  const std::string& type = GetBaseType();
+  return type.size() == 4 && espm::utils::IsItem(espm::Type(type.c_str())) &&
+    !GetInventory().IsEmpty();
+}
+
+void MpObjectReference::SetCarriedRows(const Inventory& rows)
+{
+  SetInventory(rows);
+  SendMessageToActorListeners(
+    CreatePropertyMessage_(this, "inventory", rows.ToJson().dump()), true);
+}
+
 bool MpObjectReference::HasRecordedInventory() const
 {
   // baseContainerAdded is set by every write of the record (SetInventory,
@@ -490,7 +504,7 @@ void MpObjectReference::VisitProperties(CreateActorMessage& message,
   // all (both engines hold the base's default). The opener's and the
   // occupants' sends (memo D52) stay as they are.
   if ((mode == VisitPropertiesMode::All && !GetInventory().IsEmpty()) ||
-      HasRecordedInventory()) {
+      HasRecordedInventory() || CarriesItemRows()) {
     message.props.inventory = GetInventory();
   }
 

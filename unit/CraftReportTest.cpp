@@ -26,7 +26,8 @@ PartOne& GetPartOne();
 // resist 0x1B401 and their enchantment EnchArmorResistFire03 0xAD484
 // (EspmTest.cpp); the second ingredient 0x34CDD is the one CraftTest.cpp's
 // Dragonborn recipe takes; a stolen stack's owner is the crime faction
-// CrimeFactionFalkreath 0x28170 (ChangeFormMergedTest.cpp).
+// CrimeFactionFalkreath 0x28170 (ChangeFormMergedTest.cpp); the Staff of
+// Flames 0x4DEE0, its enchantment in its own record (SpellCastTest.cpp).
 
 namespace {
 constexpr uint32_t kActor = 0xff000c98;
@@ -40,6 +41,7 @@ constexpr uint32_t kBoots = 0x0001b401;
 constexpr uint32_t kBootsEnchantment = 0x000ad484;
 constexpr uint32_t kSoulGem = 0x0002e4e3;
 constexpr uint32_t kOwner = 0x00028170;
+constexpr uint32_t kStaffFlames = 0x0004dee0;
 
 // A player (user 0) at the origin holding nothing: a new character's base
 // container gives it a kit (five RestoreHealth01 0x3EADD and an Iron Dagger
@@ -570,6 +572,149 @@ TEST_CASE("A brewed potion and an enchanted dagger are dropped as their own "
   REQUIRE(Stacks(ac, kPotionTemplate)[0].count == 2);
   REQUIRE(Stacks(ac, kPotionTemplate)[0].createdBase->SameAs(Heal(30.f)));
 
+  Leave(p);
+}
+
+// A tempered stack's copy shows the stack to every game: the dropper and a
+// player beside it hear the copy's row, the health with it, when the copy
+// takes it, a player who loads the copy later hears it in its create word, and
+// the pickup gives the row back
+TEST_CASE("A tempered dagger's dropped copy carries its health to every game "
+          "that holds it or loads it later, and its pickup gives the tempered "
+          "row back",
+          "[CraftReport][DropItemTest][espm]")
+{
+  constexpr uint32_t kWatcher = 0xff000c99;
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p);
+  DoConnect(p, 1);
+  p.CreateActor(kWatcher, { 0, 200, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kWatcher);
+  auto& watcher = p.worldState.GetFormAt<MpActor>(kWatcher);
+  watcher.SetInventory(Inventory());
+  Inventory::Entry dagger(kDagger, 1);
+  dagger.health = 1.1f;
+  ac.AddItems({ dagger });
+
+  RawMessageData raw;
+  raw.userId = 0;
+  DropItemMessage drop;
+  drop.baseId = kDagger;
+  drop.count = 1;
+  drop.health = 1.1f;
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(raw, drop);
+  REQUIRE(Stacks(ac, kDagger).empty());
+  const uint32_t copyId = DroppedCopy(p, kDagger);
+  REQUIRE(copyId != 0);
+  auto& copy = p.worldState.GetFormAt<MpObjectReference>(copyId);
+  REQUIRE(copy.GetInventory().entries.size() == 1);
+  REQUIRE(copy.GetInventory().entries[0].health == 1.1f);
+
+  // each game that holds the copy hears its row, the health with it
+  const std::string rows = copy.GetInventory().ToJson().dump();
+  for (const Networking::UserId user :
+       { Networking::UserId{ 0 }, Networking::UserId{ 1 } }) {
+    const auto it = std::find_if(
+      p.Messages().begin(), p.Messages().end(), [&](PartOne::Message& m) {
+        return m.userId == user && m.j["t"] == MsgType::UpdateProperty &&
+          m.j["idx"] == copy.GetIdx() && m.j["propName"] == "inventory";
+      });
+    REQUIRE(it != p.Messages().end());
+    REQUIRE(it->j["dataDump"] == rows);
+  }
+
+  // a game that loads the copy later hears the row in its create word
+  constexpr uint32_t kLater = 0xff000c9a;
+  DoConnect(p, 2);
+  p.Messages().clear();
+  p.CreateActor(kLater, { 0, 300, 0 }, 0, 0x3c);
+  p.SetUserActor(2, kLater);
+  const auto later = std::find_if(
+    p.Messages().begin(), p.Messages().end(), [&](PartOne::Message& m) {
+      return m.userId == 2 && m.j["t"] == MsgType::CreateActor &&
+        m.j.contains("idx") && m.j["idx"] == copy.GetIdx();
+    });
+  REQUIRE(later != p.Messages().end());
+  REQUIRE(later->j["props"].contains("inventory"));
+  REQUIRE(later->j["props"]["inventory"] == copy.GetInventory().ToJson());
+  p.DestroyActor(kLater);
+  DoDisconnect(p, 2);
+
+  // the other player's pickup gives the tempered row back
+  copy.Activate(watcher);
+  REQUIRE(Stacks(watcher, kDagger).size() == 1);
+  REQUIRE(Stacks(watcher, kDagger)[0].health == 1.1f);
+
+  p.DestroyActor(kWatcher);
+  DoDisconnect(p, 1);
+  Leave(p);
+}
+
+// A staff's charge left is its engine's of the moment (ExtraCharge's charge,
+// RE/E/ExtraCharge.h: a charge, not a percent), so the record's row holds
+// none and the drop reports it: the copy keeps it as its own row, every game
+// that holds the copy hears it, and the other player's pickup gives the staff
+// back with that charge. The charge's checks are CHECKs, so a failing run
+// still removes both players before the next case
+TEST_CASE("A staff dropped with part of its charge left keeps that charge on "
+          "its copy and comes back with it at the other player's pickup",
+          "[CraftReport][DropItemTest][espm]")
+{
+  constexpr uint32_t kWatcher = 0xff000c99;
+  constexpr float kChargeLeft = 185.f;
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p);
+  DoConnect(p, 1);
+  p.CreateActor(kWatcher, { 0, 200, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kWatcher);
+  auto& watcher = p.worldState.GetFormAt<MpActor>(kWatcher);
+  watcher.SetInventory(Inventory());
+  ac.AddItems({ Inventory::Entry(kStaffFlames, 1) });
+
+  RawMessageData raw;
+  raw.userId = 0;
+  DropItemMessage drop;
+  drop.baseId = kStaffFlames;
+  drop.count = 1;
+  drop.chargePercent = kChargeLeft;
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(raw, drop);
+  REQUIRE(Stacks(ac, kStaffFlames).empty());
+  const uint32_t copyId = DroppedCopy(p, kStaffFlames);
+  REQUIRE(copyId != 0);
+  auto& copy = p.worldState.GetFormAt<MpObjectReference>(copyId);
+  const auto& rows = copy.GetInventory().entries;
+  CHECK(rows.size() == 1);
+  CHECK((rows.size() == 1 && rows[0].chargePercent == kChargeLeft));
+
+  // each game that holds the copy hears its row, the charge with it
+  for (const Networking::UserId user :
+       { Networking::UserId{ 0 }, Networking::UserId{ 1 } }) {
+    const auto it = std::find_if(
+      p.Messages().begin(), p.Messages().end(), [&](PartOne::Message& m) {
+        return m.userId == user && m.j["t"] == MsgType::UpdateProperty &&
+          m.j["idx"] == copy.GetIdx() && m.j["propName"] == "inventory";
+      });
+    CHECK(it != p.Messages().end());
+    if (it != p.Messages().end()) {
+      auto heard = nlohmann::json::parse(it->j["dataDump"].get<std::string>());
+      CHECK(heard == copy.GetInventory().ToJson());
+      CHECK(heard["entries"].size() == 1);
+      CHECK((heard["entries"].size() == 1 &&
+             heard["entries"][0]["chargePercent"] == kChargeLeft));
+    }
+  }
+
+  // the other player's pickup gives the staff back with the charge it had
+  // left
+  copy.Activate(watcher);
+  const auto picked = Stacks(watcher, kStaffFlames);
+  REQUIRE(picked.size() == 1);
+  CHECK(picked[0].chargePercent == kChargeLeft);
+
+  p.DestroyActor(kWatcher);
+  DoDisconnect(p, 1);
   Leave(p);
 }
 

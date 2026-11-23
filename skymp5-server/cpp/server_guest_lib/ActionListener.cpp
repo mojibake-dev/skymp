@@ -22,6 +22,7 @@
 #include "libespm/ACHR.h"
 #include "libespm/ALCH.h"
 #include "libespm/Convert.h"
+#include "libespm/ENCH.h"
 #include "libespm/GLOB.h"
 #include "libespm/GMST.h"
 #include "libespm/HDPT.h"
@@ -1970,11 +1971,45 @@ void EndConcealment(PartOne& partOne, MpActor& actor, uint32_t castSpell = 0)
   }
 }
 
+// whether a worn weapon in the hand `want` names (Inventory::Worn Right or
+// Left) is a staff (libespm WEAP DNAM's animType Staff), the hand a staff's
+// cast and its hits come from
+static bool HoldsStaff(const Equipment& equipment, WorldState& worldState,
+                       Inventory::Worn want)
+{
+  for (const auto& e : equipment.inv.entries) {
+    if (e.GetWorn() != want) {
+      continue;
+    }
+    try {
+      const auto dnam =
+        espm::GetData<espm::WEAP>(e.baseId, &worldState).weapDNAM;
+      if (dnam && dnam->animType == espm::WEAP::AnimType::Staff) {
+        return true;
+      }
+    } catch (const std::exception&) {
+      // not a weapon of the files: no staff
+    }
+  }
+  return false;
+}
+
+// whether a cast's id names a spell (SPEL) in the records
+static bool IsSpellRecord(WorldState& worldState, uint32_t spellId)
+{
+  const auto lookup = worldState.GetEspm().GetBrowser().LookupById(spellId);
+  return lookup.rec && lookup.rec->GetType() == espm::SPEL::kType;
+}
+
 // thuum docs/verbs/self-cast.md: a fire-and-forget spell of Self delivery
 // (a shout's included) runs its effects on its caster on the server, as a
 // drink's do: the server holds them and their time, every game sees them
 void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
 {
+  // a staff's cast names its enchantment (ENCH), never a Self spell
+  if (!IsSpellRecord(worldState, spellId)) {
+    return;
+  }
   try {
     const auto spell = espm::GetData<espm::SPEL>(spellId, &worldState);
     if (!spell.spellItem ||
@@ -2027,6 +2062,9 @@ void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
 // animation's) ends nothing, its effects run their recorded time
 void EndSelfStream(WorldState& worldState, MpActor& caster, uint32_t spellId)
 {
+  if (!IsSpellRecord(worldState, spellId)) {
+    return;
+  }
   try {
     const auto spell = espm::GetData<espm::SPEL>(spellId, &worldState);
     if (!spell.spellItem ||
@@ -4985,12 +5023,12 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
 // pickable branch), and a grab the engine refuses in its own frame ends in
 // such a pickup at the key's release (havok-props.md E16 and E28): in
 // x-moving-press 20261112-082448 c1's key-up deleted the ingot c2 was
-// moving. The rule (wire-rules props) reads the claim's rows for a touch that
-// is no grab: a prop another player holds is taken by nothing (E_PROP_HELD),
-// one another seat streams awake by a grab alone (E_PROP_MOVING); the
-// picker's own row and a prop at rest, stalled or unclaimed are taken as
-// before. A refused pickup does nothing else: the reference stands for every
-// seat, nothing reaches the picker's inventory, and its game hears the
+// moving. The rule (wire-rules props) reads the claim's rows: a prop another
+// player holds is taken by nothing (E_PROP_HELD); any other is taken, one
+// another seat streams awake included, as the engine takes a moving item
+// into the picker's hand (a hand-off: the deletion ends that stream for
+// every seat). A refused pickup does nothing else: the reference stands for
+// every seat, nothing reaches the picker's inventory, and its game hears the
 // current word, once per prop per second (A5). The picker is the reporting
 // game's player, the id the rows name, a hosted caster's pickup its host's.
 bool ActionListener::RefusePropPickup(const RawMessageData& rawMsgData,
@@ -5011,10 +5049,6 @@ bool ActionListener::RefusePropPickup(const RawMessageData& rawMsgData,
       return false;
     case PartOne::PropPickupVerdict::Held:
       return refuse("E_PROP_HELD", "another player holds it grabbed");
-    case PartOne::PropPickupVerdict::Moving:
-      return refuse("E_PROP_MOVING",
-                    "another seat streams it awake: a pickup takes a prop at "
-                    "rest, a grab takes it at once");
   }
   return false;
 }
@@ -11832,8 +11866,11 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   auto sourceInEspm =
     partOne.GetEspm().GetBrowser().LookupById(hitData.source);
 
-  const bool isSourceSpell =
-    sourceInEspm.rec && sourceInEspm.rec->GetType() == espm::SPEL::kType;
+  // a staff's hit names its enchantment (ENCH, the cast the staff makes),
+  // claimed against that cast as a spell's hit is
+  const bool isSourceSpell = sourceInEspm.rec &&
+    (sourceInEspm.rec->GetType() == espm::SPEL::kType ||
+     sourceInEspm.rec->GetType() == espm::ENCH::kType);
 
   const auto equipment = aggressor->GetEquipment();
 
@@ -11845,11 +11882,18 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   // server's record); one its casts do not cover falls to the reach rule
   // below (a cloak's damage), which refuses it when nothing reaches
   const bool hostedSpellHit = isSourceSpell && aggressor != myActor;
+  // a staff's hit names its enchantment, which no spell slot holds: it
+  // claims the cast the staff made, as an equipped spell's hit does
+  // (HoldsStaff, OnSpellCast's staff rule)
+  const bool staffHit = sourceInEspm.rec &&
+    sourceInEspm.rec->GetType() == espm::ENCH::kType &&
+    (HoldsStaff(equipment, partOne.worldState, Inventory::Worn::Right) ||
+     HoldsStaff(equipment, partOne.worldState, Inventory::Worn::Left));
   bool castClaimed = false;
   if (isSourceSpell &&
       (equipment.IsSpellEquipped(hitData.source) ||
        IsVoiceVariation(equipment, hitData.source, partOne.worldState) ||
-       hostedSpellHit)) {
+       hostedSpellHit || staffHit)) {
     // thuum docs/verbs/spell-cast.md: a spell hits only as a cast the server
     // recorded: a fire-and-forget cast once (an area spell's targets once
     // each), a stream by the time it held its target. A hosted actor's casts
@@ -12369,23 +12413,9 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     if (!rec || rec->GetType() != espm::ENCH::kType) {
       return false;
     }
-    const auto wantWorn =
-      hand == 1 ? Inventory::Worn::Right : Inventory::Worn::Left;
-    for (const auto& e : equipment.inv.entries) {
-      if (e.GetWorn() != wantWorn) {
-        continue;
-      }
-      try {
-        const auto dnam =
-          espm::GetData<espm::WEAP>(e.baseId, &partOne.worldState).weapDNAM;
-        if (dnam && dnam->animType == espm::WEAP::AnimType::Staff) {
-          return true;
-        }
-      } catch (const std::exception&) {
-        // not a weapon of the files: no staff
-      }
-    }
-    return false;
+    return HoldsStaff(equipment, partOne.worldState,
+                      hand == 1 ? Inventory::Worn::Right
+                                : Inventory::Worn::Left);
   }();
   if (staffCast) {
     spdlog::info("[verb:spell-cast] {:x} casts {:x} from the staff in its {} "
@@ -12580,10 +12610,16 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   std::vector<espm::Effects::Effect> effects;
   bool stream = false;
   try {
-    const auto spell =
-      espm::GetData<espm::SPEL>(hitData.source, &partOne.worldState);
-    stream = spell.spellItem &&
-      spell.spellItem->castType == espm::SPEL::CastType::Concentration;
+    // a spell's cast type (SPIT), or a staff's enchantment's (ENIT)
+    if (IsSpellRecord(partOne.worldState, hitData.source)) {
+      const auto spell =
+        espm::GetData<espm::SPEL>(hitData.source, &partOne.worldState);
+      stream = spell.spellItem &&
+        spell.spellItem->castType == espm::SPEL::CastType::Concentration;
+    } else {
+      stream = espm::GetData<espm::ENCH>(hitData.source, &partOne.worldState)
+                 .castType == espm::ENCH::kCastConcentration;
+    }
     effects = MpActor::EffectsOf(&partOne.worldState, hitData.source);
   } catch (std::exception& e) {
     spdlog::warn("OnSpellHit - spell {:x}: {}", hitData.source, e.what());

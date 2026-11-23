@@ -1,6 +1,10 @@
 #include "TestUtils.hpp"
 #include <catch2/catch_all.hpp>
 #include <chrono>
+#include <memory>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
+#include <sstream>
 #include <thread>
 
 #include "ActionListener.h"
@@ -136,6 +140,44 @@ void Leave(PartOne& p)
   DoDisconnect(p, 1);
   DoDisconnect(p, 0);
 }
+
+// the caster's right hand holding a staff, its equipment's worn weapon (the
+// server takes a staff's cast from the hand whose worn weapon is a staff)
+void WearStaff(PartOne& p, uint32_t staff)
+{
+  Equipment eq;
+  Inventory::Entry entry(staff, 1);
+  entry.SetWorn(Inventory::Worn::Right);
+  eq.inv.entries.push_back(entry);
+  p.worldState.GetFormAt<MpActor>(kCaster).SetEquipment(eq);
+}
+
+// the default logger's lines at info and above while the guard lives
+// (PartOneTest's shape), restored at its end
+struct LogCapture
+{
+  std::shared_ptr<spdlog::logger> old = spdlog::default_logger();
+  std::ostringstream oss;
+  LogCapture()
+  {
+    auto sink = std::make_shared<spdlog::sinks::ostream_sink_mt>(oss);
+    auto logger = std::make_shared<spdlog::logger>("spell-cast-test", sink);
+    logger->set_pattern("%v");
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+  }
+  ~LogCapture() { spdlog::set_default_logger(old); }
+  size_t Count(const std::string& line) const
+  {
+    const std::string log = oss.str();
+    size_t n = 0;
+    for (auto at = log.find(line); at != std::string::npos;
+         at = log.find(line, at + line.size())) {
+      ++n;
+    }
+    return n;
+  }
+};
 }
 
 TEST_CASE("A spell hit without a recorded cast changes nothing",
@@ -350,6 +392,62 @@ TEST_CASE("A stream counts the time it held its target, and one report past "
   REQUIRE(afterLast >= afterTick - 8.f / 250.f);
   SpellHits(p, kFlames);
   REQUIRE(Health(p) == Catch::Approx(afterLast));
+  Leave(p);
+}
+
+// An equipped staff casts its enchantment, and its projectile's hit names
+// that enchantment. Skyrim.esm (thuum lab/esm.py): the Staff of Flames' is
+// StaffEnchFlames 0x4DEDA (ENCH, ENIT cast type 2, a concentration spray, its
+// one effect FireDamageConcAimed 8 a second), whose impact set's hazards
+// (FireLgShortHazard and kin) cast HazardFireSpell 0x153BD on whoever stands
+// in the fire it leaves
+TEST_CASE("A staff's flames on the other player burn as the staff's cast",
+          "[SpellCast][espm]")
+{
+  constexpr uint32_t kStaffEnchFlames = 0x0004deda;
+  constexpr uint32_t kStaffFlames = 0x0004dee0;
+  PartOne& p = GetPartOne();
+  Duel(p, 0);
+  WearStaff(p, kStaffFlames);
+
+  Cast(p, kStaffEnchFlames, false);
+  std::this_thread::sleep_for(120ms);
+  {
+    LogCapture log;
+    SpellHits(p, kStaffEnchFlames);
+    // claimed against the staff's cast as an equipped spell's hit is, and
+    // run on the target (OnSpellHit's line)
+    REQUIRE(log.Count("E_SPELL_NO_CAST") == 0);
+    REQUIRE(log.Count("is hit by 4deda spell") == 1);
+  }
+  // 8 a second for 0.12 s to 0.25 s, as a Flames stream counts its time
+  const float afterTick = Health(p);
+  REQUIRE(afterTick <= 1.f - 0.9f / 250.f);
+  REQUIRE(afterTick >= 1.f - 2.05f / 250.f);
+  Cast(p, kStaffEnchFlames, true);
+  Leave(p);
+}
+
+TEST_CASE("The fire a staff's flames leave on the ground burns the other "
+          "player as the staff's cast",
+          "[SpellCast][espm]")
+{
+  constexpr uint32_t kStaffEnchFlames = 0x0004deda;
+  constexpr uint32_t kHazardFireSpell = 0x000153bd;
+  constexpr uint32_t kStaffFlames = 0x0004dee0;
+  PartOne& p = GetPartOne();
+  Duel(p, 0);
+  WearStaff(p, kStaffFlames);
+
+  Cast(p, kStaffEnchFlames, false);
+  std::this_thread::sleep_for(60ms);
+  {
+    LogCapture log;
+    SpellHits(p, kHazardFireSpell);
+    REQUIRE(log.Count("E_SPELL_NO_CAST") == 0);
+    REQUIRE(log.Count("claimed as a spell its cast reaches") == 1);
+  }
+  Cast(p, kStaffEnchFlames, true);
   Leave(p);
 }
 

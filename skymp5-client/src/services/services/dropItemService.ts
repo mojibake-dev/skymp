@@ -5,6 +5,7 @@ import { MsgType } from "../../messages";
 import { SweetTaffySweetCantDropService } from "./sweetTaffySweetCantDropService";
 import { WorldCleanerService } from "./worldCleanerService";
 import { logError, logLab, logTrace } from "../../logging";
+import { dropCharge } from "../../sync/dropCharge";
 import { isSessionId, toWireEntry } from "../../sync/createdForms";
 import { Entry, Inventory, getDiff, getInventory } from "../../sync/inventory";
 import { DropItemMessage } from "../messages/dropItemMessage";
@@ -110,6 +111,10 @@ export class DropItemService extends ClientListener {
             }
 
             let numFound = 0;
+            // the charge the engine's own dropped reference holds, read before
+            // it goes (sync/dropCharge.ts)
+            let charge: number | undefined;
+            let chargeRead = "";
 
             const worldCleanerService = this.controller.lookupListener(WorldCleanerService);
 
@@ -119,6 +124,12 @@ export class DropItemService extends ClientListener {
                     const refrId = ref.getFormID();
 
                     if (worldCleanerService.getWcProtection(refrId) === 0) {
+                        if (chargeRead === "") {
+                            const left = ref.getItemCharge();
+                            const full = ref.getItemMaxCharge();
+                            chargeRead = full > 0 ? `${left.toFixed(0)} of ${full.toFixed(0)}` : "none";
+                            charge = dropCharge(left, full);
+                        }
                         // thuum ADR-071 W3 (Eli, "Fix the drop", 2026-11-11): the
                         // engine's own dropped copy is disabled, then deleted once
                         // the disable has run on a wrapper taken again (the
@@ -163,7 +174,13 @@ export class DropItemService extends ClientListener {
                 }
                 stacks.push({ baseId, count });
             }
+            if (chargeRead !== "" && chargeRead !== "none") {
+                logLab("verb:craft", `a drop of ${baseId.toString(16)}: its charge ${chargeRead} from the engine's dropped reference`);
+            }
             stacks.forEach((stack) => {
+                if (charge !== undefined && stack.baseId === baseId) {
+                    stack.chargePercent = charge;
+                }
                 const message: DropItemMessage = { ...stack, t, baseId: stack.baseId, count: stack.count };
                 if (stack.createdBase || stack.createdEnchantment || stack.health || stack.enchantmentId) {
                     logLab("verb:craft", `a drop of ${stack.count} ${stack.baseId.toString(16)} sent with its extras${stack.createdBase ? " (a brewed form by its definition)" : ""}`);

@@ -1224,10 +1224,15 @@ export class FormView {
     // stack's rows, never a container's contents: it shows their temper
     // (sync/itemReference.ts), and nothing is laid into it
     if (model.inventory && !isActor && refr.getBaseObject()?.getType() !== FormType.Container) {
-      const look = itemReferenceLook(model.inventory.entries, refr.getBaseObject()?.getFormID() ?? 0);
+      const base = refr.getBaseObject();
+      const look = itemReferenceLook(model.inventory.entries, base?.getFormID() ?? 0, base?.getName() ?? "");
       if (look.health !== undefined) {
         refr.setItemHealthPercent(look.health);
         logLab("verb:craft", `item copy ${this.refrId.toString(16)}: its stack's health ${look.health} shown`);
+      }
+      if (look.name !== undefined) {
+        refr.setDisplayName(look.name, true);
+        logLab("verb:craft", `item copy ${this.refrId.toString(16)}: its stack's name shown`);
       }
       model.inventory = undefined;
     }

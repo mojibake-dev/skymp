@@ -8,5 +8,5 @@
 // carries the reference; a standing figure keeps its glide. JS state alone.
 
 export const translationStopDue = (wasDown: boolean, down: boolean): boolean => {
-    return false;
+    return down && !wasDown;
 };

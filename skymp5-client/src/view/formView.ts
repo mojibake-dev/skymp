@@ -31,6 +31,7 @@ import { HostService } from "../services/services/hostService";
 import { PuppetService } from "../services/services/puppetService";
 import { PropService } from "../services/services/propService";
 import { recordMovesIt } from "../sync/bodyPlace";
+import { translationStopDue } from "../sync/translationStop";
 import { ActorFateService } from "../services/services/actorFateService";
 import { SummonService } from "../services/services/summonService";
 import { ChangeFormService } from "../services/services/changeFormService";
@@ -1335,6 +1336,19 @@ export class FormView {
     // (sync/bodyPlace.ts)
     const propService = SpApiInteractor.getControllerInstance().lookupListener(PropService);
     const propPlaced = !recordMovesIt({ isActor, tracked: propService.placesIt(this.refrId), ...(isActor ? propService.liveBodyPlaced(this.refrId) : { held: false, streaming: false, followedLive: false }) });
+    // another player's figure whose body goes down here (its engine's
+    // ragdoll, this seat's grip or stream, a stream it follows) has the
+    // record's glide still running under it stopped once, so the engine's
+    // ragdoll carries the reference and the body's keyframed parts (a tail)
+    // with it (sync/translationStop.ts)
+    if (isActor && this.refrId >= 0xff000000 && !puppet && !model.isMyClone) {
+      const down = propPlaced || sp.getBodyClass(this.refrId)?.ragdoll === true;
+      if (translationStopDue(this.movState.down, down)) {
+        refr.stopTranslation();
+        logLab("verb:movement", `figure ${this.refrId.toString(16)}: its record's glide stopped as its body went down here`);
+      }
+      this.movState.down = down;
+    }
     // tracker #128: a copy placed from a dead record takes no movement: the
     // create word's movement says isDead false (remoteServer.ts builds it so),
     // and movementApply's death word for a 0xff copy would stand the laid body
@@ -2147,6 +2161,8 @@ export class FormView {
     lastApply: 0,
     lastRehost: 0,
     everApplied: false,
+    // the figure's body down here at the last pass (sync/translationStop.ts)
+    down: false,
   };
   private appearanceState = this.getDefaultAppearanceState();
   private eqState = this.getDefaultEquipState();

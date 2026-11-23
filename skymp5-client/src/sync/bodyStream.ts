@@ -15,14 +15,17 @@ export interface DeadBodyFacts {
 }
 
 // the prop stream carries the body: the death settle hands it over and
-// samples it no more, and the stream's rest records it
+// samples it no more, and the stream's rest records it. The death's word
+// names the seat that simulated the actor, so its fall streams from the
+// word, root and bones, as a live body's knock does
 export function streamCarries(f: DeadBodyFacts): boolean {
-    return f.held || f.streaming;
+    return f.held || f.streaming || f.named;
 }
 
 // a prop the rescan tracks for the first time is the engine's own body in
 // place, with no copy being spawned and so no grace before its first tick:
-// a knocked live body (its knock's first second is its flight)
+// a knocked live body, and a dead body whose word names this seat (each
+// one's first second is its flight or its fall)
 export function trackedInPlace(live: boolean, deadBody: boolean, named: boolean): boolean {
-    return live;
+    return live || (deadBody && named);
 }

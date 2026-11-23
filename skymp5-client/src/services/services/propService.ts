@@ -12,6 +12,7 @@ import { RefSweep } from "../../sync/frameCost";
 import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
 import { FOLLOW_SAMPLES_MAX, FollowBone, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones } from "../../sync/propFollow";
+import { simulatorOf } from "../../sync/propOwner";
 import { FormModel } from "../../view/model";
 import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -1203,28 +1204,19 @@ export class PropService extends ClientListener {
         }
     }
 
-    // Who simulates the prop as this seat reads the table (A1: by the
-    // server's word alone): the player the last word named; with no word, or a
-    // word naming nobody (player 0, the host by default), the cell's host,
-    // this seat when it hosts the prop's cell and 0 (another seat's, or
-    // nobody's: an unhosted cell's prop freezes) otherwise. No lease, no
-    // silence and no presence test here: each of those demoted an owner the
-    // server still named (playtest 41)
+    // Who simulates the prop as this seat reads the table (sync/propOwner.ts).
+    // A player's live body is this seat's own player's, or another player's
+    // figure: a live body whose server id is a server-made one is a player's
+    // alone, since the server makes no row for a server-made NPC (PropKindOf)
+    // and kindOf takes such an actor living only while a stream is followed
     private ownerOf(prop: Prop, myId: number): number {
-        if (prop.localId === 0x14) {
-            // this seat's own player's knocked body (the live-body kind): its
-            // own game simulates it (ADR-063), claimed at its track, except
-            // while another player's grip holds it (thuum tracker #179, the
-            // 2026-11-19 amendment): the word naming the gripper makes it the
-            // gripper's for the hold, until the gripper's rest returns it
-            const held = this.owners.get(prop.refr);
-            return held !== undefined && held.player !== 0 ? held.player : myId;
-        }
-        const word = this.owners.get(prop.refr);
-        if (word && word.player !== 0) {
-            return word.player;
-        }
-        return this.controller.lookupListener(HostService).hostsCell(prop.cell) ? myId : 0;
+        const body = prop.localId === 0x14 ? myId : prop.live && prop.refr >= 0xff000000 ? prop.refr : 0;
+        return simulatorOf({
+            body,
+            word: this.owners.get(prop.refr)?.player,
+            myId,
+            hostsCell: this.controller.lookupListener(HostService).hostsCell(prop.cell),
+        });
     }
 
     // The record's transform (CreateActor's, or the last sample recorded

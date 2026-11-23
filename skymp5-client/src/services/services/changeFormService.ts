@@ -2,6 +2,7 @@ import { Actor, ContainerChangedEvent } from "skyrimPlatform";
 import { MsgType } from "../../messages";
 import { logLab, logTrace } from "../../logging";
 import { NiPoint3 } from "../../sync/movement";
+import { CorpseFacts, HOLD_MS, corpsePass, outlivesHold } from "../../sync/corpseLay";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { ConnectionMessage } from "../events/connectionMessage";
@@ -199,6 +200,7 @@ type HeldRecord = {
     receivedAt: number;
     applied: boolean;      // the apply is over: the native took it (laid) or this gave up on it
     laid: boolean;         // the native laid the body (applied true alone can be a give-up)
+    reconcileOwed: boolean; // laid, and the laid body's inventory reconcile has not run yet
     attempts: number;
     lastAttemptAt: number;
     heldLogged: boolean;
@@ -481,15 +483,16 @@ export class ChangeFormService extends ClientListener {
     // the record held, the apply queued to the next update
     private hold(m: ChangeFormApplyMessage, fnv: number): void {
         if (this.records.size >= ChangeFormService.maxRecords && !this.records.has(m.formId)) {
-            // Map iteration is insertion order: the oldest applied record goes
+            // Map iteration is insertion order: the oldest applied record goes,
+            // never one whose reconcile is still owed
             for (const [id, old] of Array.from(this.records.entries())) {
-                if (old.applied) {
+                if (old.applied && !old.reconcileOwed) {
                     this.records.delete(id);
                     break;
                 }
             }
         }
-        this.records.set(m.formId, { formId: m.formId, formType: m.formType, flags: m.flags, version: m.version, body: m.body, remap: m.remap, fnv, receivedAt: Date.now(), applied: false, laid: false, queuedAt: 0, queuedWhen: "", attempts: 0, lastAttemptAt: 0, heldLogged: false, killedHereAt: 0, bindKill: false });
+        this.records.set(m.formId, { formId: m.formId, formType: m.formType, flags: m.flags, version: m.version, body: m.body, remap: m.remap, fnv, receivedAt: Date.now(), applied: false, laid: false, reconcileOwed: false, queuedAt: 0, queuedWhen: "", attempts: 0, lastAttemptAt: 0, heldLogged: false, killedHereAt: 0, bindKill: false });
         this.controller.once("update", () => {
             const rec = this.records.get(m.formId);
             if (rec && !rec.applied && rec.fnv === fnv) {
@@ -513,35 +516,28 @@ export class ChangeFormService extends ClientListener {
     // the pass for a bind kill, which applies on the owner's seat too
     private tryApply(rec: HeldRecord, when: string, bind: boolean): void {
         const hex = rec.formId.toString(16);
-        if (ChangeFormService.watcherApplyOff) {
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(rec.formId));
+        const ac = refr ? this.sp.Actor.from(refr) : null;
+        // the choice is corpsePass's (src/sync/corpseLay.ts); this logs it
+        // and lays the record
+        const pass = corpsePass(this.factsOf(rec, ac, bind));
+        if (pass === "off") {
             if (!rec.heldLogged) {
                 rec.heldLogged = true;
                 logLab("verb:npc-fate", `corpse ${hex} record held, the watcher apply is off on this build`);
             }
             return;
         }
-        if (rec.queuedAt > 0) {
+        if (pass === "queued") {
             // an apply is in flight on the main thread (onKilledHere's call,
             // the poll): its answer decides, no second attempt meanwhile
             return;
         }
-        // thuum tracker #175, Eli's third look (c2's crash at 14:44:57 PST
-        // 2026-11-19): a record laid while this seat's ContainerMenu is open
-        // rebuilds the body's inventory under the menu's item list and its 3D
-        // preview. c2 laid 39fe4's record under its open loot menu, and the
-        // next highlight change read freed memory in Inventory3DManager (frame
-        // 51758, lab/relids.tsv's UpdateMagic3D) half a second later.
-        // HYPOTHESIS: the apply frees the entries the open menu points at
-        // (docs/research/m3/re-corpse-menu-crash.md read the same Scaleform
-        // chain, a body's row freed by an inventory landing under its open
-        // loot menu). The record waits for the menu's close and the next pass
-        // lays it then; the hold's clock (holdMs) does not run out on a long
-        // loot. Ui.isMenuOpen reads the open loot menu on the seats under
-        // Skyrim Souls RE (remoteServer's corpse open saw it true at
-        // 14:44:56.469 on c2); the native's own premise (ChangeForm.cpp,
-        // ItemMenuRefresh::Shows) refuses a lay when the menu opened between
-        // this check and its task
-        if (this.sp.Ui.isMenuOpen("ContainerMenu")) {
+        if (pass === "menu") {
+            // the poll's clock does not run the hold out meanwhile
+            // (outlivesHold); the native refuses a lay whose task finds the
+            // body's own loot menu opened after this check (ChangeForm.cpp,
+            // ItemMenuRefresh::Shows)
             if (!rec.menuHeld) {
                 rec.menuHeld = true;
                 logLab("verb:npc-fate", `corpse ${hex} record held while this seat's ContainerMenu is open`);
@@ -549,36 +545,35 @@ export class ChangeFormService extends ClientListener {
             return;
         }
         rec.menuHeld = false;
-        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(rec.formId));
-        const ac = refr ? this.sp.Actor.from(refr) : null;
-        if (!refr || !ac) {
+        if (pass === "no-actor") {
             // a game-file actor's form is always here; nothing else is this
             // slice's
             logTrace(this, `changeform ${hex}: no actor form here, the record waits`);
             return;
         }
-        if (!ac.isDead()) {
+        if (pass === "kill") {
             if (!rec.heldLogged && rec.killedHereAt === 0) {
                 rec.heldLogged = true;
                 logLab("verb:npc-fate", `corpse ${hex} record held until the kill`);
             }
             return;
         }
-        if (!bind && !rec.bindKill && this.controller.lookupListener(HostService).isMineLocal(rec.formId)) {
-            // this seat simulates the body and its engine's state stands; its
-            // own record goes out from the rest
+        if (pass === "simulated") {
+            // this seat's engine's state stands; its own record goes out from
+            // the rest
             this.records.delete(rec.formId);
             logTrace(this, `changeform ${hex}: the record dropped, this seat simulates the body`);
             return;
         }
-        // physics rung 5 (thuum tracker #175): a body this seat follows on the
-        // prop stream is laid by the record once the follow has rested,
-        // never under its tail (the poll tries it again)
-        if (this.controller.lookupListener(PropService).followsBody(rec.formId)) {
+        if (pass === "follow") {
+            // the poll tries it again
             if (!rec.followLogged) {
                 rec.followLogged = true;
                 logLab("verb:npc-fate", `corpse ${hex} record held until this seat's follow of its stream rests`);
             }
+            return;
+        }
+        if (pass !== "lay" || !refr) {
             return;
         }
         const now = Date.now();
@@ -641,24 +636,59 @@ export class ChangeFormService extends ClientListener {
         }
         rec.applied = true;
         rec.laid = true;
-        // thuum #48: the lay finished the body's death (the platform's
-        // KillImmediate after the lay) and nothing put its ragdoll back, so the
-        // corpse took no hit or aimed spell on this seat (x-reanimate-claim
-        // 20261115-100741: c2's copy died by the apply, not a Teleport)
+        // the lay finished the body's death (the platform's KillImmediate
+        // after the lay) and nothing puts its ragdoll back, so without this
+        // the corpse takes no hit or aimed spell on this seat
         this.controller.lookupListener(RagdollService).restoreCorpseRagdoll(rec.formId, "laid from its record");
-        // thuum docs/verbs/npc-fate.md ("canon-4's merge review", finding 1):
-        // the record carries the owner's at-rest inventory (kInventory) and the
-        // lay just imposed it, over the fate's reconcile of the server's rows;
-        // the body's container contents are the server's (R0), so the fate's
-        // native runs once more after the lay: on a dead copy it reconciles
-        // the inventory alone and leaves the laid body as it is
+        logLab("verb:npc-fate", `corpse ${hex} applied from the record: fnv ${rec.fnv.toString(16)}, ${rec.remap.length} rows remapped; patched fnv ${result.fnvPatched.toString(16)}, ${when}, ${now - rec.receivedAt} ms after the record came; ${result.detail}`);
+        rec.reconcileOwed = true;
+        this.tryReconcile(rec);
+    }
+
+    // the record carries the owner's at-rest inventory (kInventory) and the
+    // lay imposed it, over the server's rows for the body's contents (R0), so
+    // the fate's native runs once more after the lay: on a dead copy it
+    // reconciles the inventory alone and leaves the laid body as it is
+    // (FateApi.cpp, RerollOnGameThread). Tried at the lay's answer and on
+    // every update until it runs
+    private tryReconcile(rec: HeldRecord): void {
+        const hex = rec.formId.toString(16);
+        const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(rec.formId));
+        const ac = refr ? this.sp.Actor.from(refr) : null;
+        const pass = corpsePass(this.factsOf(rec, ac, rec.bindKill));
+        if (pass === "menu") {
+            if (!rec.menuHeld) {
+                rec.menuHeld = true;
+                logLab("verb:npc-fate", `corpse ${hex}: the reconcile after the lay held while this seat's ContainerMenu is open`);
+            }
+            return;
+        }
+        rec.menuHeld = false;
+        if (pass !== "reconcile") {
+            return;
+        }
+        rec.reconcileOwed = false;
         try {
             const reconciled = this.sp.rerollActor(rec.formId);
             logLab("verb:npc-fate", `corpse ${hex}: the record's inventory reconciled after the lay (${reconciled ? "queued" : "refused: no fate here"})`);
         } catch (e) {
             logLab("verb:npc-fate", `corpse ${hex}: no reconcile after the lay, the native is missing on this platform (${e})`);
         }
-        logLab("verb:npc-fate", `corpse ${hex} applied from the record: fnv ${rec.fnv.toString(16)}, ${rec.remap.length} rows remapped; patched fnv ${result.fnvPatched.toString(16)}, ${when}, ${now - rec.receivedAt} ms after the record came; ${result.detail}`);
+    }
+
+    // what corpsePass reads, from the engine and the services
+    private factsOf(rec: HeldRecord, ac: Actor | null, bind: boolean): CorpseFacts {
+        return {
+            applyOff: ChangeFormService.watcherApplyOff,
+            queued: rec.queuedAt > 0,
+            reconcileOwed: rec.reconcileOwed,
+            menuOpen: this.sp.Ui.isMenuOpen("ContainerMenu"),
+            actor: !!ac,
+            dead: !!ac && ac.isDead(),
+            bind: bind || rec.bindKill,
+            simulatesHere: this.controller.lookupListener(HostService).isMineLocal(rec.formId),
+            followed: this.controller.lookupListener(PropService).followsBody(rec.formId),
+        };
     }
 
     // every update while an apply is queued: the main thread's answer, read
@@ -720,6 +750,11 @@ export class ChangeFormService extends ClientListener {
                 }
             });
             this.records.forEach((rec) => {
+                if (rec.reconcileOwed) {
+                    this.tryReconcile(rec);
+                }
+            });
+            this.records.forEach((rec) => {
                 if (!rec.applied && rec.attempts === 0 && rec.killedHereAt > 0 && now - rec.killedHereAt < ChangeFormService.killLandsMs) {
                     this.tryApply(rec, "as the kill landed", rec.bindKill);
                 }
@@ -731,7 +766,7 @@ export class ChangeFormService extends ClientListener {
                 if (rec.applied || rec.queuedAt > 0) {
                     return;
                 }
-                if (now - rec.receivedAt >= ChangeFormService.holdMs && !rec.menuHeld) {
+                if (outlivesHold(now - rec.receivedAt, rec.menuHeld === true)) {
                     this.records.delete(formId);
                     logLab("verb:npc-fate", `corpse ${formId.toString(16)} record dropped: held ${now - rec.receivedAt} ms, the copy never died here`);
                     return;
@@ -760,7 +795,7 @@ export class ChangeFormService extends ClientListener {
     private lastPoll = 0;
     private lastResend = 0;
     private static readonly pollMs = 2000;
-    private static readonly holdMs = 120_000;
+    private static readonly holdMs = HOLD_MS;
     private static readonly maxAttempts = 5;
     private static readonly maxRecords = 128;
     private static readonly killLandsMs = 3000;

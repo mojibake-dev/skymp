@@ -6,6 +6,7 @@ import { getObjectReference, localIdToRemoteId, remoteIdToLocalId } from "../../
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
+import { ShaderEffect, shaderPass } from "../../sync/effectShaders";
 
 // thuum docs/verbs/magic-effects.md: the effects the server runs on an actor
 // show on this screen, and the server's are the player's only ones. The
@@ -89,24 +90,28 @@ export class MagicEffectsService extends ClientListener {
         }
         const key = refr.getFormID();
         const before = this.shown.get(key) ?? new Set<number>();
-        const now = new Set<number>();
+        const actor = Actor.from(refr);
+        const effects: ShaderEffect[] = [];
         for (const effect of msg.effects) {
             const mgef = MagicEffect.from(Game.getFormEx(effect.effect));
             if (!mgef) {
                 continue;
             }
             const shader = mgef.getHitShader();
-            if (shader) {
-                now.add(shader.getFormID());
-                shader.play(refr, MagicEffectsService.secondsOf(effect.remaining));
-            }
+            effects.push({
+                shader: shader ? shader.getFormID() : 0,
+                engineRuns: !!(actor && actor.hasMagicEffect(mgef)),
+                seconds: MagicEffectsService.secondsOf(effect.remaining),
+            });
         }
-        before.forEach((shaderId) => {
-            if (!now.has(shaderId)) {
-                EffectShader.from(Game.getFormEx(shaderId))?.stop(refr);
-            }
-        });
-        this.shown.set(key, now);
+        const pass = shaderPass(effects, before);
+        for (const { shader, seconds } of pass.play) {
+            EffectShader.from(Game.getFormEx(shader))?.play(refr, seconds);
+        }
+        for (const shader of pass.stop) {
+            EffectShader.from(Game.getFormEx(shader))?.stop(refr);
+        }
+        this.shown.set(key, pass.shown);
         // the art pass, for another's actor a second update later: the server
         // sends a self spell's MagicEffects before it relays the cast
         // (ActionListener's OnSpellCast), and each message waits its own

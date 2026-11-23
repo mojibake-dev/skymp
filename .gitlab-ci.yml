@@ -13,16 +13,40 @@ variables:
   RUST_CI_IMAGE: thuum/rust-ci:latest
   FUZZ_SECONDS: "120"
 
+# A failed fetch runs again by the stock levers where they exist: cargo's own retries (CARGO_NET_RETRY on the wire
+# jobs) and PowerShell's (-MaximumRetryCount on the master files). The fetches with none, BuildKit's Docker Hub token
+# and metadata (server-build), cargo-deny's advisory database (wire-test) and vcpkg's bootstrap download
+# (client-build), run under ci/net-retry.sh or ci/net-retry.ps1: a failure whose last lines carry the fetch's own
+# message (ci/net-failures.txt) exits 75, and the job runs again, twice at most. Any other failure keeps its own exit
+# code and is never retried.
+default:
+  retry:
+    max: 2
+    exit_codes: [75]
+
+# ci/net-retry.sh's own exits (ci/net-retry.test.sh), in the image server-build's wrapped step runs in
+net-retry-test:
+  stage: image
+  tags: [sky]
+  image: docker:27
+  rules:
+    - if: $CI_PIPELINE_SOURCE =~ /^(api|web|schedule)$/
+    - changes: [ci/net-retry.sh, ci/net-retry.test.sh, ci/net-failures.txt]
+  script:
+    - sh ci/net-retry.test.sh
+
 # Build the Rust CI image on the runner host's daemon; persists across jobs
-# (pull policy if-not-present). Runs on every wire change: with the layers
-# cached on the host it takes seconds, and the wire jobs below need it to
-# exist before they start (a missing image is a runner configuration error).
+# (pull policy if-not-present). Runs on every wire change and every canon push:
+# with the layers cached on the host it takes seconds, and the wire jobs below
+# need it to exist before they start (a missing image is a runner configuration
+# error).
 rust-image:
   stage: image
   tags: [sky]
   image: docker:27
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == "canon"
     - changes: [skymp-wire/**/*]
   script:
     - docker build -t "$RUST_CI_IMAGE" skymp-wire/ci
@@ -39,6 +63,7 @@ rust-image:
     paths: [skymp-wire/target/, .cargo/registry/]
   variables:
     CARGO_HOME: $CI_PROJECT_DIR/.cargo
+    CARGO_NET_RETRY: "5"
   before_script:
     - cd skymp-wire
 
@@ -47,10 +72,15 @@ rust-image:
 wire-test:
   extends: .wire
   stage: wire
+  # every canon push as merged, beside the wire changes .wire runs on
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == "canon"
+    - changes: [skymp-wire/**/*]
   script:
     - cargo test --workspace --all-features
     - cargo clippy --workspace --all-targets --all-features -- -D warnings
-    - cargo deny check
+    - ../ci/net-retry.sh cargo deny check
     - (cd crates/wire-client-ffi && cbindgen --config cbindgen.toml --crate wire-client-ffi --output /tmp/skymp_wire.h && diff -u include/skymp_wire.h /tmp/skymp_wire.h)
 
 # A Linux difftest binary plus the session files, for sky-srv: `just test-proto`
@@ -72,11 +102,16 @@ difftest-build:
     paths: [difftest-dist/]
     expire_in: 30 days
 
-# Bounded fuzzing per push; the nightly schedule sets FUZZ_SECONDS to an hour.
-# One job runs the four targets side by side on the runner's four cores: as a
-# four-job matrix on the one `sky` slot they ran one after another and were
-# half of every wire pipeline (608 of 1,180 s, measured 2026-10-13). A crash
-# leaves its input under fuzz/artifacts and that target's log as job artifacts.
+# Bounded fuzzing per push, FUZZ_SECONDS a target. One job builds the targets
+# once and runs them one after another, so the job holds one target's memory
+# at a time: side by side the four held about 2.1 GB resident at once (each
+# 0.4 to 0.7 GB in two minutes), a third of sky-ci's VM, beside a server
+# build's unit tests. libFuzzer's -rss_limit_mb is no cap for that: a target
+# past it stops and reports an out-of-memory crash. The cost is time: four
+# FUZZ_SECONDS in a row where side by side took one. The job prints each
+# target's last resident set (libFuzzer's rss) and its cgroup's memory.peak,
+# which counts the page cache and the build too. A crash leaves its input
+# under fuzz/artifacts and that target's log as job artifacts.
 wire-fuzz:
   extends: .wire
   stage: wire
@@ -85,13 +120,16 @@ wire-fuzz:
   script:
     - cargo +nightly fuzz build
     - |
-      rc=0; pids=""
+      rc=0
       for t in $FUZZ_TARGETS; do
-        cargo +nightly fuzz run "$t" -- -max_total_time="$FUZZ_SECONDS" > "fuzz-$t.log" 2>&1 &
-        pids="$pids $!"
+        cargo +nightly fuzz run "$t" -- -max_total_time="$FUZZ_SECONDS" > "fuzz-$t.log" 2>&1 || rc=1
+        echo "== $t"; tail -n 6 "fuzz-$t.log"
+        # libFuzzer's own last status line names the target's resident set, which grows as it runs
+        echo "wire-fuzz: $t's last resident set: $(grep -o 'rss: [0-9]*Mb' "fuzz-$t.log" | tail -n 1)"
       done
-      for p in $pids; do wait "$p" || rc=1; done
-      for t in $FUZZ_TARGETS; do echo "== $t"; tail -n 6 "fuzz-$t.log"; done
+      if [ -r /sys/fs/cgroup/memory.peak ]; then
+        echo "wire-fuzz: the job's cgroup peak $(( $(cat /sys/fs/cgroup/memory.peak) / 1048576 )) MB (memory.peak: its processes and the page cache it filled, the build's included)"
+      fi
       exit $rc
   artifacts:
     when: on_failure
@@ -103,7 +141,8 @@ wire-fuzz:
 # misc/github_env_linux) so nothing of vcpkg is rebuilt. T0 runs inside the
 # build when the master .esm files are present; without them the build says
 # so and skips ctest. Runs on merge requests, parity pushes outside
-# skymp-wire, and the schedule.
+# skymp-wire, every canon push (each merge judged as merged), a milestone
+# branch's every push, and the schedule.
 server-build:
   stage: server
   tags: [sky]
@@ -113,6 +152,7 @@ server-build:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "canon"
     - if: $CI_COMMIT_BRANCH == "parity"
       changes:
         - "**/*"
@@ -140,7 +180,7 @@ server-build:
     # Tagged by branch: parity is what sky-srv's compose runs; a port branch
     # (m1-wire) ships beside it as skymp-server:m1-wire and never replaces it.
     - TAG="$CI_COMMIT_REF_SLUG"
-    - docker build -f ci/server.Dockerfile --build-arg "VCPKG_URL=$VCPKG_URL" --build-arg "VCPKG_COMMIT=$VCPKG_COMMIT" -t "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" .
+    - ci/net-retry.sh docker build -f ci/server.Dockerfile --build-arg "VCPKG_URL=$VCPKG_URL" --build-arg "VCPKG_COMMIT=$VCPKG_COMMIT" -t "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" .
     - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "skymp-server:$TAG"
     # Ship to the sky-ci registry sky-srv pulls from (10.10.70.12:5000).
     - docker tag "skymp-server:$TAG-$CI_COMMIT_SHORT_SHA" "localhost:5000/skymp-server:$TAG-$CI_COMMIT_SHORT_SHA"
@@ -171,20 +211,49 @@ client-build:
     GIT_DEPTH: "1"
     VCPKG_BINARY_SOURCES: "clear;files,D:/vcpkg-bincache,readwrite"
     VCPKG_FEATURE_FLAGS: "manifests"
+  # A branch's push builds the client only when the branch changes, against canon, a file the build reads: the
+  # client, Skyrim Platform and client-deps, the libraries the platform links (papyrus-vm, savefile, viet,
+  # serialization), skymp-wire (skyrim-platform depends on MpClientPlugin.dll, wire-client-ffi's cdylib), every
+  # project's CMake files (the configure reads them all), vcpkg and its ports, and this file. compare_to keeps a
+  # new branch's first push from counting every file as changed. A pipeline started by hand or by the API builds
+  # the client whatever it changes.
   rules:
     - if: $CLIENT_BUILD_WINDOWS != "1"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "parity"
+    - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/ && $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/
     - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/
+      changes:
+        paths:
+          - .gitlab-ci.yml
+          - .gitmodules
+          - vcpkg
+          - vcpkg.json
+          - overlay_ports/**/*
+          - overlay_triplets/**/*
+          - "**/CMakeLists.txt"
+          - "**/*.cmake"
+          - cmake/**/*
+          - skymp5-client/**/*
+          - skyrim-platform/**/*
+          - client-deps/**/*
+          - skymp-wire/**/*
+          - papyrus-vm/**/*
+          - savefile/**/*
+          - viet/**/*
+          - serialization/**/*
+        compare_to: refs/heads/canon
   script:
     - New-Item -ItemType Directory -Force D:/vcpkg-bincache, skyrim_data_files | Out-Null
+    # ci/net-retry.ps1's own exits (ci/net-retry.test.ps1), on the host its wrapped step runs on
+    - '& ci/net-retry.test.ps1; if ($LASTEXITCODE) { exit 1 }'
     - |
       foreach ($f in 'Skyrim.esm', 'Update.esm', 'Dawnguard.esm', 'HearthFires.esm', 'Dragonborn.esm') {
-        Invoke-WebRequest -UseBasicParsing -Uri "$env:SKYRIM_DATA_URL/$f" -OutFile "skyrim_data_files/$f"
+        Invoke-WebRequest -UseBasicParsing -MaximumRetryCount 5 -RetryIntervalSec 10 -Uri "$env:SKYRIM_DATA_URL/$f" -OutFile "skyrim_data_files/$f"
       }
     - Push-Location skymp5-client; yarn --frozen-lockfile; if ($LASTEXITCODE) { exit 1 }; yarn build; if ($LASTEXITCODE) { exit 1 }; yarn test; if ($LASTEXITCODE) { exit 1 }; Pop-Location
-    - .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+    - '& ci/net-retry.ps1 .\vcpkg\bootstrap-vcpkg.bat -disableMetrics; if ($LASTEXITCODE) { exit $LASTEXITCODE }'
     - |
       cmake -B build -G "Visual Studio 17 2022" -A x64 "-DVCPKG_ROOT=$PWD/vcpkg" -DUNIT_DATA_DIR=skyrim_data_files -DDOWNLOAD_SKYRIM_DATA=OFF `
         -DBUILD_NODEJS=OFF -DBUILD_FRONT=OFF -DPREPARE_NEXUS_ARCHIVES=OFF -DCMAKE_BUILD_TYPE=Release `

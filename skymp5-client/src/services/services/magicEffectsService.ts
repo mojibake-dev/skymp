@@ -6,6 +6,7 @@ import { getObjectReference, localIdToRemoteId, remoteIdToLocalId } from "../../
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
+import { effectsShown, noLongerShown, ServerEffect, shownAfter } from "../../sync/effectsShown";
 
 // thuum docs/verbs/magic-effects.md: the effects the server runs on an actor
 // show on this screen, and the server's are the player's only ones. The
@@ -88,38 +89,19 @@ export class MagicEffectsService extends ClientListener {
             return;
         }
         const key = refr.getFormID();
-        const before = this.shown.get(key) ?? new Set<number>();
-        const now = new Set<number>();
-        for (const effect of msg.effects) {
-            const mgef = MagicEffect.from(Game.getFormEx(effect.effect));
-            if (!mgef) {
-                continue;
-            }
-            const shader = mgef.getHitShader();
-            if (shader) {
-                now.add(shader.getFormID());
-                shader.play(refr, MagicEffectsService.secondsOf(effect.remaining));
-            }
-        }
-        before.forEach((shaderId) => {
-            if (!now.has(shaderId)) {
-                EffectShader.from(Game.getFormEx(shaderId))?.stop(refr);
-            }
-        });
-        this.shown.set(key, now);
-        // the art pass, for another's actor a second update later: the server
-        // sends a self spell's MagicEffects before it relays the cast
+        // the look pass, for another's actor a second update later: the
+        // server sends a self spell's MagicEffects before it relays the cast
         // (ActionListener's OnSpellCast), and each message waits its own
         // update, so the engine's own effect of the record, which draws its
-        // own art, may land on a player's figure only after this one (the
-        // platform review of 3a31c05a, F3)
+        // own shader and art, may land on a player's figure only after this
+        // one
         if (own) {
-            this.artPass(refr, msg);
+            this.lookPass(refr, msg);
         } else {
             this.controller.once("update", () => {
                 const later = ObjectReference.from(Game.getFormEx(key));
                 if (later) {
-                    this.artPass(later, msg);
+                    this.lookPass(later, msg);
                 }
             });
         }
@@ -139,28 +121,47 @@ export class MagicEffectsService extends ClientListener {
         return remaining > 0 ? remaining : MagicEffectsService.shownOnceSeconds;
     }
 
-    // each effect's hit art, unless the engine runs an effect of its record
-    // on the actor here and draws the art itself: a second art is a second
-    // model (a reanimated body's raise is its commander's engine's alone,
-    // Hooks.cpp CharacterAddTarget, so a watcher draws the record's); an art
-    // two effects share shows for the longer, no end the longest
-    private artPass(refr: ObjectReference, msg: MagicEffectsMessage) {
+    // each effect's hit shader and hit art, unless the engine runs an effect
+    // of its record on the actor here and draws them itself: a second draw
+    // stacks a second shader or model over the engine's (an attacker's own
+    // engine adds its enchanted hit to the actor it struck, and the server's
+    // record of that hit reaches this game too; a reanimated body's raise is
+    // its commander's engine's alone, Hooks.cpp CharacterAddTarget, so a
+    // watcher draws the record's). sync/effectsShown.ts decides
+    private lookPass(refr: ObjectReference, msg: MagicEffectsMessage) {
         const actor = Actor.from(refr);
-        const arts = new Map<number, ArtShown>();
+        const effects: ServerEffect[] = [];
         for (const effect of msg.effects) {
             const mgef = MagicEffect.from(Game.getFormEx(effect.effect));
             if (!mgef) {
                 continue;
             }
+            const shader = mgef.getHitShader();
             const art = mgef.getHitEffectArt();
-            if (art && !(actor && actor.hasMagicEffect(mgef))) {
-                const seconds = MagicEffectsService.secondsOf(effect.remaining);
-                const artId = art.getFormID();
-                const shownFor = arts.get(artId);
-                const longer = !shownFor ? seconds : shownFor.seconds < 0 || seconds < 0 ? -1 : Math.max(shownFor.seconds, seconds);
-                arts.set(artId, { art, seconds: longer });
-            }
+            effects.push({
+                shader: shader ? shader.getFormID() : 0,
+                art: art ? art.getFormID() : 0,
+                seconds: MagicEffectsService.secondsOf(effect.remaining),
+                engineRuns: !!(actor && actor.hasMagicEffect(mgef)),
+            });
         }
+        const shown = effectsShown(effects);
+        const key = refr.getFormID();
+        shown.shaders.forEach((seconds, shaderId) => {
+            EffectShader.from(Game.getFormEx(shaderId))?.play(refr, seconds);
+        });
+        const shownBefore = this.shown.get(key) ?? new Set<number>();
+        for (const shaderId of noLongerShown(shownBefore, shown.shaders, shown.engineShaders)) {
+            EffectShader.from(Game.getFormEx(shaderId))?.stop(refr);
+        }
+        this.shown.set(key, shownAfter(shownBefore, shown.shaders, shown.engineShaders));
+        const arts = new Map<number, ArtShown>();
+        shown.arts.forEach((seconds, artId) => {
+            const art = Art.from(Game.getFormEx(artId));
+            if (art) {
+                arts.set(artId, { art, seconds });
+            }
+        });
         this.showArts(refr, arts);
     }
 

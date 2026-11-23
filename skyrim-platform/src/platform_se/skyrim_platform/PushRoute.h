@@ -23,11 +23,16 @@ enum class Route
 
 struct Facts
 {
-  bool pusherIsOwnPlayer = false;    // the frame's self is this game's player
-  bool pusherIsPlayerFigure = false; // the frame's self is another player's figure
-  bool targetIsOwnPlayer = false;    // the target is this game's player
-  bool targetIsPlayerFigure = false; // the target is another player's figure
-  bool targetIsPuppet = false;       // the target is an actor another seat simulates
+  // the frame's self is this game's player
+  bool pusherIsOwnPlayer = false;
+  // the frame's self is another player's figure
+  bool pusherIsPlayerFigure = false;
+  // the target is this game's player
+  bool targetIsOwnPlayer = false;
+  // the target is another player's figure
+  bool targetIsPlayerFigure = false;
+  // the target is an actor another seat simulates (a puppet)
+  bool targetIsPuppet = false;
 };
 
 inline Route Of(const Facts& f)

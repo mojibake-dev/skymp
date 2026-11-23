@@ -1051,6 +1051,9 @@ export class PropService extends ClientListener {
         // every update, ungated: a shout that reaches only the other player's
         // figure queues no knock and no impulse for any step above to run on
         this.watchForced(now);
+        if (this.relayedPlaces.length > 0) {
+            this.sayRelayedPlaces();
+        }
         if (this.contacts.length > 0) {
             this.claimContacts(now);
         }
@@ -2656,6 +2659,29 @@ export class PropService extends ClientListener {
         const target = arg && typeof arg.formId === "number" ? snippetIdToLocalId(arg.formId) : 0;
         if (this.forced.relayed(target, clockMs())) {
             logLab(TAG, `actor ${target.toString(16)}: the server's relayed push reached it; watched 2 s for its knock`);
+            // the push's source is its self, the pusher's copy here: read at the
+            // next update beside the target, the throw's line on this seat
+            this.relayedPlaces.push({ pusher: snippetIdToLocalId(m.selfId), target });
+        }
+    }
+
+    // each relayed push's pusher and target as this seat's engine places them,
+    // once, at the update after the push arrived (PushActorAway throws its
+    // target along the line from its self)
+    private sayRelayedPlaces() {
+        const places = this.relayedPlaces;
+        this.relayedPlaces = [];
+        const at = (id: number) => {
+            const r = id ? this.sp.ObjectReference.from(this.sp.Game.getFormEx(id)) : null;
+            return r ? [r.getPositionX(), r.getPositionY(), r.getPositionZ()] : null;
+        };
+        for (const { pusher, target } of places) {
+            const p = at(pusher);
+            const t = at(target);
+            const where = (v: number[] | null) => (v ? `(${v.map((n) => Math.round(n)).join(", ")})` : "none");
+            const apart = p && t ? `, ${Math.round(Math.hypot(t[0] - p[0], t[1] - p[1]))} across, ${Math.round(t[2] - p[2])} up` : "";
+            // under the console's 128 bytes: the pusher's place, then the target's
+            logLab(TAG, `relayed ${target.toString(16)} by ${pusher.toString(16)}: from ${where(p)} to ${where(t)}${apart}`);
         }
     }
 
@@ -2678,10 +2704,10 @@ export class PropService extends ClientListener {
                 // the host's body by name (the server's word at its first
                 // sample), so no claim: the knock edge's own path
                 // (trackKnocks), for a graph that queues no knock edge
-                const hosted = this.rowOrRefusal({ localId: o.localId, formType: 0 }, now, "knocked here by this seat's player's spell", false, true);
+                const hosted = this.rowOrRefusal({ localId: o.localId, formType: 0 }, now, "knocked here by a push", false, true);
                 logLab(TAG, typeof hosted === "string"
-                    ? `actor ${id}: this seat hosts it, knocked by this seat's player's spell, no row: ${hosted}`
-                    : `prop ${hosted.refr.toString(16)}: an actor this seat hosts, knocked by this seat's player's spell; tracked`);
+                    ? `actor ${id}: this seat hosts it, knocked by a push, no row: ${hosted}`
+                    : `prop ${hosted.refr.toString(16)}: an actor this seat hosts, knocked by a push; tracked`);
                 continue;
             }
             const row = this.rowOrRefusal({ localId: o.localId, formType: 0 }, now, "knocked here by this seat's push", false, true);
@@ -4634,6 +4660,8 @@ export class PropService extends ClientListener {
     private knocks: number[] = [];
     // figures this seat's own player's spell reached, by local id, since when (watchForced)
     private readonly forced = new ForceWatch();
+    // relayed pushes waiting for their places' line (sayRelayedPlaces)
+    private relayedPlaces: Array<{ pusher: number; target: number }> = [];
     // a live body's last class verdict said, by local id (kindOfBody)
     private readonly liveSaid = new Map<number, string>();
     // physics rung 4: getBodyClass and imposeBodies or releaseBodies missing

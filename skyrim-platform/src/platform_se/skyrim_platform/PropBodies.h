@@ -132,6 +132,15 @@ struct Pose
   float quat[4] = { 0.f, 0.f, 0.f, 1.f };
 };
 
+// a part's velocity fed forward into DriveBody: lin its origin's linear
+// velocity in Havok's units a second, ang its angular velocity in radians a
+// second about a world axis; zero for no feedforward
+struct Feed
+{
+  float lin[3] = { 0.f, 0.f, 0.f };
+  float ang[3] = { 0.f, 0.f, 0.f };
+};
+
 // the body's pose by field reads, rung 2's shape, under no lock: pos
 // motion.motionState.transform.translation (H/hkpEntity.h:99,
 // H/hkpMotion.h:82, H/hkMotionState.h:14, H/hkTransform.h:12; 194559 read it
@@ -166,8 +175,23 @@ Pose PoseOf(const RE::hkpRigidBody& body);
 // mass's and its angular velocity is in the world's frame. Accessible:
 // Fiedler, "Physics in 3D", gafferongames.com, 2004; foundational: Baraff,
 // "Rigid Body Simulation", SIGGRAPH 97 course notes. A dt or a target that
-// is not a number writes nothing
-void DriveBody(const Body& body, const Pose& target, float dt);
+// is not a number writes nothing.
+// With feed, the command is feed's velocity plus that correction: v = v_ff +
+// omega_ff x R(q_target) com + (c_target - c_now) / dt and omega = omega_ff +
+// the error's omega, so a part steered toward a moving target travels with it
+// and closes the gap, where the correction alone reaches the target only
+// where it stood when the step began (feedforward plus feedback: accessible,
+// "Feed forward (control)", Wikipedia; foundational: Astrom and Murray,
+// "Feedback Systems", Princeton University Press, 2008, ch. 8). A zero feed
+// commands the correction alone, the same floats as with no feed
+void DriveBody(const Body& body, const Pose& target, float dt,
+               const Feed& feed = Feed{});
+
+// the pose seconds later along feed: pos plus lin times seconds, the rotation
+// turned by ang times seconds about its world axis (the unit quaternion of
+// that turn applied before it, as DriveBody's error reads a turn), in
+// Havok's units as feed's
+Pose Advanced(const Pose& pose, const Feed& feed, float seconds);
 
 // the body put on the target outright, target in Havok's units:
 // bhkRigidBody::SetRotation then SetPosition (B/bhkRigidBody.h:44 and :43,

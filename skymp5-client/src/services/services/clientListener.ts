@@ -458,8 +458,14 @@ declare module "skyrimPlatform" {
     // the first drain logs "impose drain on thread <tid>, Main's <tid>". True
     // when stored; false for 0, the player's own id, no pose, more than 64, a
     // value not a number, a quat off unit length by more than 0.01, or 64
-    // forms already held; a bone of another shape throws
-    function imposeBodies(formId: number, bones: BodyBone[], rest: boolean): boolean;
+    // forms already held; a bone of another shape throws. With velocities,
+    // one a bone, each driven part's target moves on by its velocity for the
+    // time between the store and the drain, and the drive adds the velocity
+    // to its correction (feedforward); another count, a value not a number,
+    // or a speed past 6000 game units or 1000 radians a second refuses the
+    // store. A platform before the argument ignores it
+    interface BodyVelocity { lin: number[]; ang: number[] }
+    function imposeBodies(formId: number, bones: BodyBone[], rest: boolean, velocities?: BodyVelocity[] | null): boolean;
     // the form's stored poses dropped, so the drain lays no more on it (a
     // take-over, a quiet stream, a follow's end); under K3 nothing else, the
     // parts' motion types never changed; true when poses were held, false

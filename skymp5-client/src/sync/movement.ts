@@ -1,4 +1,6 @@
-export type NiPoint3 = [number, number, number];
+import { NiPoint3 } from "./point";
+
+export { NiPoint3 };
 
 export interface Transform {
   worldOrCell: number;

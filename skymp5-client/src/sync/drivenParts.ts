@@ -83,8 +83,8 @@ export class UndrivenSkeletons {
             return undefined;
         }
         const known = this.bySkeleton.get(key);
-        const next = new Set(found);
-        if (known !== undefined && known.size === next.size && found.every((i) => known.has(i))) {
+        const next = learnedUndriven(known, found);
+        if (known !== undefined && known.size === next.size) {
             return undefined;
         }
         this.bySkeleton.set(key, next);
@@ -121,10 +121,23 @@ const placed = (positions: readonly Point[], undriven: ReadonlySet<number> | und
         : positions.map((p) => [p[0], p[1], p[2]] as Point);
 
 export const sampleStep = (s: PartsSample): SampleStep => {
-    const positions = placed(s.positions, s.known);
-    const anchor = boneAnchor(s.root, positions, s.reach, s.anchored);
+    let positions = placed(s.positions, s.known);
+    let anchor = boneAnchor(s.root, positions, s.reach, s.anchored);
+    let pastSince = s.pastSince;
+    if ("past" in anchor && s.known === undefined) {
+        const learned = s.learnNow();
+        if (learned !== undefined && learned.size > 0) {
+            positions = placed(positions, learned);
+            anchor = boneAnchor(s.root, positions, s.reach, s.anchored);
+        } else {
+            pastSince = pastSince === 0 ? s.now : pastSince;
+            if (pastReachStep(false, s.now - pastSince) === "wait") {
+                return { step: "wait", pastSince };
+            }
+        }
+    }
     if ("past" in anchor) {
-        return { step: "drop", positions, past: anchor.past, reach: anchor.reach, pastSince: s.pastSince };
+        return { step: "drop", positions, past: anchor.past, reach: anchor.reach, pastSince };
     }
     return { step: "send", positions, pos: anchor.pos, atPart: anchor.atPart, pastSince: 0 };
 };

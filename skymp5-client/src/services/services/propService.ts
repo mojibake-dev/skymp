@@ -19,6 +19,7 @@ import { ChangeFormService } from "./changeFormService";
 import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
 import { SendInputsService } from "./sendInputsService";
+import { ownBodyKeptForTheirWord } from "../../sync/ownBodyKept";
 
 const TAG = "verb:prop-physics";
 
@@ -3159,6 +3160,12 @@ export class PropService extends ClientListener {
     private keptAnywhere(prop: Prop, myId: number, now: number): boolean {
         const word = this.owners.get(prop.refr);
         if (myId !== 0 && word !== undefined && word.player === myId) {
+            return true;
+        }
+        // this seat's player under another seat's word (a grip's or a throw's
+        // row) stays followed until a newer word hands it back, however still
+        // the grip holds it (sync/ownBodyKept.ts)
+        if (ownBodyKeptForTheirWord({ ownPlayer: prop.localId === 0x14, wordPlayer: word !== undefined ? word.player : 0, myId })) {
             return true;
         }
         // thuum tracker #120: a far item this seat's engine woke (wakeFar),

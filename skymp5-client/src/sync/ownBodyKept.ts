@@ -16,5 +16,5 @@ export interface OwnBodyFacts {
 }
 
 export const ownBodyKeptForTheirWord = (f: OwnBodyFacts): boolean => {
-    return false;
+    return f.ownPlayer && f.myId !== 0 && f.wordPlayer !== 0 && f.wordPlayer !== f.myId;
 };

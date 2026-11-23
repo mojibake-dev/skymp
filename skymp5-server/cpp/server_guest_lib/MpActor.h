@@ -749,10 +749,16 @@ public:
   // seconds at its magnitude a second, the record's own duration set aside:
   // a Self concentration cast's stream (thuum docs/verbs/self-cast.md,
   // train-31)
+  // `reached` marks a stream's hit of a spell the caster's cast reaches
+  // through its records (a cloak's spell): no figure streams it, so each of
+  // its effects is shown once to every game that sees this actor before its
+  // conditions are asked, since they can name state only the caster's game
+  // holds (whom it grips); the conditions still gate the numbers
   void ApplyEffects(uint32_t source,
                     const std::vector<espm::Effects::Effect>& effects,
                     float scale, uint32_t caster, bool stream,
-                    bool dualCast = false, float streamSeconds = 0.f);
+                    bool dualCast = false, float streamSeconds = 0.f,
+                    bool reached = false);
   // Runs the actor's effects for `dtSeconds` of the server's wall clock
   // (WorldState's effects tick; at a load, the time since the record's); a
   // death ends them all, every game told with the emptied set

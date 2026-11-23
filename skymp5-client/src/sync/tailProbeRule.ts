@@ -20,5 +20,6 @@ export interface TailProbeFacts {
 }
 
 export const tailProbeLogs = (f: TailProbeFacts): boolean => {
-    return false;
+    return f.kind === "setPosition" || f.moves < TAIL_FIRST_MOVES
+        || f.after - f.before > TAIL_OPEN_UNITS || f.after > TAIL_FAR_UNITS;
 };

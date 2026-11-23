@@ -1,4 +1,4 @@
-import { ObjectReference, Actor, Game, TESModPlatform, Debug, setPuppetLocomotion, printConsole, settings, getBodyClass } from "skyrimPlatform";
+import { ObjectReference, Actor, Game, TESModPlatform, Debug, setPuppetLocomotion, printConsole, settings, getBodyClass, readBodies, once } from "skyrimPlatform";
 import { puppetGazeHeld } from "./puppetGaze";
 import { RespawnNeededError } from "../lib/errors";
 import { Movement, RunMode, AnimationVariables, Transform, NiPoint3 } from "./movement";
@@ -6,6 +6,7 @@ import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { isFollowedDown, isKnockedDown } from "./knockState";
 import { recordDown } from "./recordDown";
+import { tailProbeLogs } from "./tailProbeRule";
 import { logLab } from "../logging";
 
 const sqr = (x: number) => x * x;
@@ -663,7 +664,11 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false, figure 
       lastSent.set(refrId, [gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]]);
       // thuum docs/verbs/cast-teleport.md (the teleport snap): a report the
       // server vouched for as a jump (ActorJump) places at any distance
-      if (distance > knobs.jumpDistance || m.placed) {
+      const teleport = distance > knobs.jumpDistance || m.placed;
+      if (figure) {
+        probeTail(refrId0, teleport ? "setPosition" : "translateTo", distance);
+      }
+      if (teleport) {
         refr.setPosition(gTempTargetPos[0], gTempTargetPos[1], gTempTargetPos[2]);
         refr.setAngle(m.rot[0], m.rot[1], m.rot[2]);
         return;
@@ -680,6 +685,52 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false, figure 
       );
     }
   }
+};
+
+// The tail probe: for a figure whose body has a tail (a part named
+// TailBone01), its tail bone's distance from the figure's reference (the
+// actor's own place), and its COM body's, read right before a record move and
+// two frames after, the lines sync/tailProbeRule.ts picks ("[verb:movement]
+// tail <id> <kind> <d> units: tail <before> to <after>, COM <before> to
+// <after> from its reference"). A read: nothing moves for it
+const tailIndex = new Map<number, number>();
+const tailMoves = new Map<number, number>();
+const tailFromRef = (refrId: number): { tail: number; com: number } | undefined => {
+  let index = tailIndex.get(refrId);
+  if (index === undefined) {
+    const c = getBodyClass(refrId);
+    if (c === null) {
+      return undefined;
+    }
+    index = c.parts.findIndex((p) => p.node.indexOf("TailBone01") >= 0);
+    tailIndex.set(refrId, index);
+  }
+  if (index < 0) {
+    return undefined;
+  }
+  const body = readBodies([refrId], true)[0];
+  const bone = body && body.bones ? body.bones[index] : undefined;
+  const ref = ObjectReference.from(Game.getFormEx(refrId));
+  if (!body || !bone || !ref) {
+    return undefined;
+  }
+  const at: NiPoint3 = [ref.getPositionX(), ref.getPositionY(), ref.getPositionZ()];
+  const from = (p: number[]) => Math.hypot(p[0] - at[0], p[1] - at[1], p[2] - at[2]);
+  return { tail: from(bone.pos), com: from(body.pos) };
+};
+const probeTail = (refrId: number, kind: "setPosition" | "translateTo", distance: number): void => {
+  const before = tailFromRef(refrId);
+  if (before === undefined) {
+    return;
+  }
+  const moves = tailMoves.get(refrId) ?? 0;
+  tailMoves.set(refrId, moves + 1);
+  once("update", () => once("update", () => {
+    const after = tailFromRef(refrId);
+    if (after !== undefined && tailProbeLogs({ kind, before: before.tail, after: after.tail, moves })) {
+      logLab("verb:movement", `tail ${refrId.toString(16)} ${kind} ${distance.toFixed(0)} units: tail ${before.tail.toFixed(0)} to ${after.tail.toFixed(0)}, COM ${before.com.toFixed(0)} to ${after.com.toFixed(0)} from its reference`);
+    }
+  }));
 };
 
 const teleportIfNeed = (refr: ObjectReference, m: Transform) => {

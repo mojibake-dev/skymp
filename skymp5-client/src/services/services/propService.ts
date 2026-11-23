@@ -3515,6 +3515,18 @@ export class PropService extends ClientListener {
     // physics rung 5 (thuum tracker #175): whether this seat streams the
     // body (a hand on it, or its stream open), so sendInputsService's death
     // settle hands it over and samples it no more
+    bodyOwnedElsewhere(localId: number): boolean {
+        // whether another seat's stream owns the knocked body of an actor this
+        // seat's engine holds (a grip's or a throw's row this seat follows):
+        // PuppetService holds this seat's copy as a puppet for the follow
+        const refr = localIdToRemoteId(localId);
+        if (!refr) {
+            return false;
+        }
+        const prop = this.props.get(refr);
+        return prop !== undefined && prop.live && this.followedLive(refr);
+    }
+
     streamsBody(refr: number): boolean {
         const prop = this.props.get(refr);
         return prop !== undefined && this.isBody(prop) && (prop.held || prop.streaming);

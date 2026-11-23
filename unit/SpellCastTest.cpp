@@ -415,7 +415,10 @@ TEST_CASE("A staff's flames on the other player burn as the staff's cast",
   {
     LogCapture log;
     SpellHits(p, kStaffEnchFlames);
-    REQUIRE(log.Count("claimed as a spell its cast reaches") == 1);
+    // claimed against the staff's cast as an equipped spell's hit is, and
+    // run on the target (OnSpellHit's line)
+    REQUIRE(log.Count("E_SPELL_NO_CAST") == 0);
+    REQUIRE(log.Count("is hit by 4deda spell") == 1);
   }
   // 8 a second for 0.12 s to 0.25 s, as a Flames stream counts its time
   const float afterTick = Health(p);

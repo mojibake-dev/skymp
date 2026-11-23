@@ -8,6 +8,7 @@ import { PushActorMessage } from "../messages/pushActorMessage";
 import { PropBone, PropTransformMessage } from "../messages/propTransformMessage";
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
+import { RefSweep } from "../../sync/frameCost";
 import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
 import { FOLLOW_SAMPLES_MAX, FollowBone, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones } from "../../sync/propFollow";
@@ -56,6 +57,10 @@ const TRACK_RADIUS = 1024;
 const TRACK_MAX = 64;
 // game-file references the server subscribed this seat to, remembered from their CreateActor (see engineRefs)
 const ENGINE_REFS_MAX = 1024;
+// the most engineRefs one frame reads for the rescan (sweepEngineRefs): a
+// pass over all of them takes RESCAN_MS, its share a frame for the frame's
+// time, so a frame pays for a part of the set, never all of it
+const ENGINE_SWEEP_MAX = 64;
 // Physics rung 4 (ADR-071, D-PH10 A, a world body's parts as bones): the
 // most a sample carries (wire-schema lib.rs:360, cap::PROP_BONES), how far
 // one may lie from the sample's pos (wire-validate lib.rs:83,
@@ -830,6 +835,12 @@ export class PropService extends ClientListener {
     private engineRefs = new Map<number, { baseId: number; pos: NiPoint3; rot: NiPoint3; worldOrCell: number; recorded: boolean }>();
     // the entries let go since the login, for the eviction's line
     private engineRefsLetGo = 0;
+    // each engineRefs entry's last read for the rescan (sweepEngineRefs): past
+    // TRACK_RADIUS (far), or its distance, cell and world body; none for an
+    // entry outside the player's world or cell, of another kind, or with no
+    // reference here
+    private readonly engineReads = new Map<number, { far: boolean; distance: number; cell: number; world: boolean; parts: number }>();
+    private readonly engineSweep = new RefSweep(RESCAN_MS, ENGINE_SWEEP_MAX);
 
     private onCreateActor(e: ConnectionMessage<CreateActorMessage>) {
         if (!e.message.isMe) {
@@ -998,6 +1009,7 @@ export class PropService extends ClientListener {
         if (this.streamsUntracked.length > 0) {
             this.trackStreams();
         }
+        this.sweepEngineRefs(now);
         if (now - this.lastRescan >= RESCAN_MS) {
             this.lastRescan = now;
             this.rescan(now);
@@ -2896,6 +2908,55 @@ export class PropService extends ClientListener {
     // TRACK_MAX are tracked, with the trap bodies and (physics rung 3, B5) the
     // props kept at any distance (keptAnywhere) and the far items this seat's
     // own engine woke in a cell it hosts (wakeFar); the rest let go
+    // A frame's share of engineRefs read for the rescan (RefSweep): each entry
+    // in the player's world or cell of an item's or a world body's kind, its
+    // reference's distance from the player and, within TRACK_RADIUS, its cell
+    // and world body; one of another kind is judged as a trap's record (no
+    // row, but perhaps a trap body a firing moved before this session, which
+    // the rescan's trap loop takes). Every entry
+    // is read once a pass, a pass taking RESCAN_MS, so the rescan's view of
+    // them is at most a pass old, as it was one rescan old before
+    private sweepEngineRefs(now: number) {
+        if (this.engineRefs.size === 0 && this.engineReads.size === 0) {
+            return;
+        }
+        const slice = this.engineSweep.next(() => this.engineRefs.keys(), now);
+        if (slice.length === 0) {
+            return;
+        }
+        const player = this.sp.Game.getPlayer();
+        if (!player) {
+            return;
+        }
+        const playerPos = ObjectReferenceEx.getPos(player);
+        const playerWorldOrCell = ObjectReferenceEx.getWorldOrCell(player);
+        for (const refrId of slice) {
+            this.engineReads.delete(refrId);
+            const rec = this.engineRefs.get(refrId);
+            if (!rec || (playerWorldOrCell !== 0 && rec.worldOrCell !== playerWorldOrCell)) {
+                continue;
+            }
+            const kind = this.kindOf(refrId, refrId);
+            if (kind !== "item" && kind !== "world") {
+                this.judgeTrapRecord(refrId, rec);
+                continue;
+            }
+            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(refrId));
+            if (!refr) {
+                continue;
+            }
+            const distance = ObjectReferenceEx.getDistance(playerPos, ObjectReferenceEx.getPos(refr));
+            if (distance > TRACK_RADIUS) {
+                this.engineReads.set(refrId, { far: true, distance, cell: 0, world: false, parts: 0 });
+                continue;
+            }
+            const cell = refr.getParentCell();
+            const body = this.worldOf(refrId, refrId);
+            this.engineReads.set(refrId, { far: false, distance, cell: cell ? cell.getFormID() : 0, world: body !== undefined,
+                parts: body !== undefined ? body.parts : 0 });
+        }
+    }
+
     private rescan(now: number) {
         const view = getViewFromStorage();
         const player = this.sp.Game.getPlayer();
@@ -2966,35 +3027,23 @@ export class PropService extends ClientListener {
                 world: body !== undefined, parts: body !== undefined ? body.parts : 0 });
         }
         // the game-file references the server subscribed this seat to (no
-        // view, no model: engineRefs), its items and world bodies
-        this.engineRefs.forEach((rec, refrId) => {
+        // view, no model: engineRefs), its items and world bodies, by their
+        // reads spread over the frames (sweepEngineRefs)
+        this.engineReads.forEach((read, refrId) => {
+            const rec = this.engineRefs.get(refrId);
+            if (!rec || (playerWorldOrCell !== 0 && rec.worldOrCell !== playerWorldOrCell)) {
+                this.engineReads.delete(refrId);
+                return;
+            }
             if (found.some((c) => c.refr === refrId)) {
                 return;
             }
-            if (playerWorldOrCell !== 0 && rec.worldOrCell !== playerWorldOrCell) {
-                return;
-            }
-            const kind = this.kindOf(refrId, refrId);
-            if (kind !== "item" && kind !== "world") {
-                // ADR-068 D-S3 point 4: no row, but perhaps a trap body a
-                // firing moved before this session (the trap bodies' loop
-                // below takes it)
-                this.judgeTrapRecord(refrId, rec);
-                return;
-            }
-            const refr = this.sp.ObjectReference.from(this.sp.Game.getFormEx(refrId));
-            if (!refr) {
-                return;
-            }
-            const distance = ObjectReferenceEx.getDistance(playerPos, ObjectReferenceEx.getPos(refr));
-            if (distance > TRACK_RADIUS) {
+            if (read.far) {
                 far.push(refrId);
                 return;
             }
-            const cell = refr.getParentCell();
-            const body = this.worldOf(refrId, refrId);
-            found.push({ refr: refrId, localId: refrId, formIdx: -1, distance, cell: cell ? cell.getFormID() : 0, baseId: rec.baseId,
-                world: body !== undefined, parts: body !== undefined ? body.parts : 0 });
+            found.push({ refr: refrId, localId: refrId, formIdx: -1, distance: read.distance, cell: read.cell, baseId: rec.baseId,
+                world: read.world, parts: read.parts });
         });
         found.sort((a, b) => a.distance - b.distance);
         const chosen = found.slice(0, TRACK_MAX);

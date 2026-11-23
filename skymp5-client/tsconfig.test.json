@@ -1,0 +1,18 @@
+// yarn test: every test/**/*.test.ts, compiled with the modules it imports
+// into build/test and run there by Node's own test runner (node --test finds
+// test/*.test.js under its working directory). No skyrimPlatform path is
+// mapped, so a test reaches pure modules alone: one that imports the
+// platform does not compile.
+{
+  "compilerOptions": {
+    "target": "es2019",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "types": ["node"],
+    "rootDir": ".",
+    "outDir": "build/test"
+  },
+  "include": ["test/**/*.test.ts"]
+}

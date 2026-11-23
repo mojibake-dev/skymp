@@ -55,13 +55,27 @@ export function effectsShown(effects: ServerEffect[]): EffectsShown {
 }
 
 // the shaders this game drew before and draws no more, to stop; one whose
-// effect the engine here now runs is left to run out its seconds, since a
-// stop on the actor could end the engine's own draw of it as well
+// effect the engine here now runs is not stopped while it runs, since a stop
+// on the actor would end the engine's own draw of it as well
 export function noLongerShown(before: Set<number>, now: Map<number, number>, engineShaders: Set<number>): number[] {
     const out: number[] = [];
     before.forEach((id) => {
         if (!now.has(id) && !engineShaders.has(id)) {
             out.push(id);
+        }
+    });
+    return out;
+}
+
+// the shaders this game counts as its own draw after the pass, the next
+// pass's `before`: those it draws now, and those it drew before whose effect
+// the engine here now runs, kept so the pass that finds the server's set no
+// longer naming the effect stops them (noLongerShown)
+export function shownAfter(before: Set<number>, now: Map<number, number>, engineShaders: Set<number>): Set<number> {
+    const out = new Set<number>(now.keys());
+    before.forEach((id) => {
+        if (engineShaders.has(id)) {
+            out.add(id);
         }
     });
     return out;

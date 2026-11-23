@@ -6,7 +6,7 @@ import { getObjectReference, localIdToRemoteId, remoteIdToLocalId } from "../../
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
-import { effectsShown, noLongerShown, ServerEffect } from "../../sync/effectsShown";
+import { effectsShown, noLongerShown, ServerEffect, shownAfter } from "../../sync/effectsShown";
 
 // thuum docs/verbs/magic-effects.md: the effects the server runs on an actor
 // show on this screen, and the server's are the player's only ones. The
@@ -150,10 +150,11 @@ export class MagicEffectsService extends ClientListener {
         shown.shaders.forEach((seconds, shaderId) => {
             EffectShader.from(Game.getFormEx(shaderId))?.play(refr, seconds);
         });
-        for (const shaderId of noLongerShown(this.shown.get(key) ?? new Set<number>(), shown.shaders, shown.engineShaders)) {
+        const shownBefore = this.shown.get(key) ?? new Set<number>();
+        for (const shaderId of noLongerShown(shownBefore, shown.shaders, shown.engineShaders)) {
             EffectShader.from(Game.getFormEx(shaderId))?.stop(refr);
         }
-        this.shown.set(key, new Set<number>(shown.shaders.keys()));
+        this.shown.set(key, shownAfter(shownBefore, shown.shaders, shown.engineShaders));
         const arts = new Map<number, ArtShown>();
         shown.arts.forEach((seconds, artId) => {
             const art = Art.from(Game.getFormEx(artId));

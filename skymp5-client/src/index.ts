@@ -4,6 +4,8 @@ import {
   once
 } from "skyrimPlatform";
 import { SkympClient } from "./services/services/skympClient";
+import { logLab } from "./logging";
+import { buildLine } from "./sync/buildCommit";
 
 import * as sp from "skyrimPlatform";
 
@@ -108,7 +110,11 @@ once("update", () => {
   Utility.setINIFloat("fAutoVanityModeDelay:Camera", 3600);
 });
 
+// the build's marker (webpack.config.js's DefinePlugin)
+declare const __SKYMP_CLIENT_BUILD__: string;
+
 const main = () => {
+  logLab("build", buildLine(typeof __SKYMP_CLIENT_BUILD__ === "string" ? __SKYMP_CLIENT_BUILD__ : undefined));
   try {
     const controller = SpApiInteractor.getControllerInstance();
 

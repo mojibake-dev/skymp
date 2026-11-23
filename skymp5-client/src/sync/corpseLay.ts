@@ -78,6 +78,11 @@ export function corpsePass(f: CorpseFacts): CorpsePass {
     if (f.followed) {
         return "follow";
     }
+    // the native lays a record only on a body with its 3D: with none, the
+    // record waits rather than spend a try on a refusal
+    if (!f.has3D) {
+        return "no-3d";
+    }
     return "lay";
 }
 

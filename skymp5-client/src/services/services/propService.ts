@@ -13,7 +13,7 @@ import { boneAnchor } from "../../sync/boneAnchor";
 import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
 import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
-import { FOLLOW_SAMPLES_MAX, FollowBone, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones } from "../../sync/propFollow";
+import { FOLLOW_SAMPLES_MAX, FollowBone, FollowBoneVelocity, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones, segmentVelocities } from "../../sync/propFollow";
 import { FormModel } from "../../view/model";
 import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -2220,7 +2220,14 @@ export class PropService extends ClientListener {
             prop.imposeSkipped += 1;
             return;
         }
-        if (this.imposeBodies(prop, f, poses, false, lead)) {
+        // the segment's own velocities, fed forward by the drive, so a fast
+        // part keeps pace with its stream instead of trailing it by a drain
+        // (none in the lead, whose way is this seat's own, or on a dry frame,
+        // whose pair is one sample); a body carrying fewer parts than the
+        // stream takes the same prefix as its poses
+        const velocities = step.from !== undefined ? segmentVelocities(step.from, step.target) : undefined;
+        const fed = velocities !== undefined && velocities.length >= poses.length ? velocities.slice(0, poses.length) : undefined;
+        if (this.imposeBodies(prop, f, poses, false, lead, fed)) {
             prop.imposing = true;
             prop.imposed += 1;
         } else {
@@ -2309,7 +2316,7 @@ export class PropService extends ClientListener {
     // update, while an A7 wake's word may not have named the seat yet
     // (propFollow's take sets it at the epoch rise; the probe's premise
     // counts "from ff000000"); an older platform imposes nothing, said once
-    private imposeBodies(prop: Prop, f: PropFollow, bones: FollowBone[], rest: boolean, lead: boolean): boolean {
+    private imposeBodies(prop: Prop, f: PropFollow, bones: FollowBone[], rest: boolean, lead: boolean, velocities?: FollowBoneVelocity[]): boolean {
         // this seat's own player is driven only while a grip hands it to
         // another (#179; the platform takes 0x14 since 1d2b7bdec)
         if (prop.localId === 0x14 && !prop.handed) {
@@ -2321,7 +2328,7 @@ export class PropService extends ClientListener {
             logLab(TAG, `impose ${prop.refr.toString(16)} from ${seat}: ${prop.parts} parts`);
         }
         try {
-            return this.sp.imposeBodies(prop.localId, bones, rest);
+            return velocities !== undefined ? this.sp.imposeBodies(prop.localId, bones, rest, velocities) : this.sp.imposeBodies(prop.localId, bones, rest);
         } catch (e) {
             if (!this.imposeSaid) {
                 this.imposeSaid = true;

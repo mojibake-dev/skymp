@@ -316,7 +316,8 @@ PropBodies::Pose PropBodies::PoseOf(const RE::hkpRigidBody& body)
   return pose;
 }
 
-void PropBodies::DriveBody(const Body& body, const Pose& target, float dt)
+void PropBodies::DriveBody(const Body& body, const Pose& target, float dt,
+                           const Feed& feed)
 {
   if (!body.rigid || !body.havok || !std::isfinite(dt) || !(dt > 0.f) ||
       !FinitePose(target)) {
@@ -333,10 +334,17 @@ void PropBodies::DriveBody(const Body& body, const Pose& target, float dt)
   // local centre turned by its rotation
   const Vec rNow = Rotate(qNow, com);
   const Vec rTarget = Rotate(qTarget, com);
+  // the target's centre of mass moves with its origin and turns about it:
+  // the origin's fed velocity plus the fed turn's swing of the centre
+  const Vec feedAng{ feed.ang[0], feed.ang[1], feed.ang[2] };
+  const Vec swing = Cross(feedAng, rTarget);
   const Vec lin =
-    Clamped({ (target.pos[0] + rTarget.x - now.pos[0] - rNow.x) / dt,
-              (target.pos[1] + rTarget.y - now.pos[1] - rNow.y) / dt,
-              (target.pos[2] + rTarget.z - now.pos[2] - rNow.z) / dt },
+    Clamped({ feed.lin[0] + swing.x +
+                (target.pos[0] + rTarget.x - now.pos[0] - rNow.x) / dt,
+              feed.lin[1] + swing.y +
+                (target.pos[1] + rTarget.y - now.pos[1] - rNow.y) / dt,
+              feed.lin[2] + swing.z +
+                (target.pos[2] + rTarget.z - now.pos[2] - rNow.z) / dt },
             kDriveLinMaxUnits * RE::bhkWorld::GetWorldScale());
   // the turn left to make, the short way round
   Quat e = Mul(qTarget, Conj(qNow));
@@ -347,12 +355,48 @@ void PropBodies::DriveBody(const Body& body, const Pose& target, float dt)
   // the axis times the angle over dt; below a millionth of the vector part
   // the angle's own limit, 2 s / w with w about 1
   const float k = s > 1e-6f ? 2.f * std::atan2(s, e.w) / (s * dt) : 2.f / dt;
-  const Vec ang = Clamped({ e.x * k, e.y * k, e.z * k }, kDriveAngMax);
+  const Vec ang =
+    Clamped({ feedAng.x + e.x * k, feedAng.y + e.y * k, feedAng.z + e.z * k },
+            kDriveAngMax);
   if (!Finite(lin) || !Finite(ang)) {
     return;
   }
   body.rigid->SetLinearVelocity(RE::hkVector4(lin.x, lin.y, lin.z, 0.f));
   body.rigid->SetAngularVelocity(RE::hkVector4(ang.x, ang.y, ang.z, 0.f));
+}
+
+PropBodies::Pose PropBodies::Advanced(const Pose& pose, const Feed& feed,
+                                      float seconds)
+{
+  Pose out = pose;
+  if (!std::isfinite(seconds) || !(seconds > 0.f)) {
+    return out;
+  }
+  for (size_t i = 0; i < 3; ++i) {
+    out.pos[i] = pose.pos[i] + feed.lin[i] * seconds;
+  }
+  // the turn of ang over seconds: angle |ang| t about ang's axis, as the
+  // unit quaternion (sin(angle / 2) axis, cos(angle / 2)); under a
+  // millionth of a radian the rotation is left as it is
+  const Vec spin{ feed.ang[0] * seconds, feed.ang[1] * seconds,
+                  feed.ang[2] * seconds };
+  const float angle = Length(spin);
+  if (!std::isfinite(angle) || !(angle > 1e-6f)) {
+    return out;
+  }
+  const float s = std::sin(0.5f * angle) / angle;
+  const Quat turn{ spin.x * s, spin.y * s, spin.z * s,
+                   std::cos(0.5f * angle) };
+  const Quat q = Mul(turn, QuatOf(pose));
+  const float n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  if (!std::isfinite(n) || !(n > 0.f)) {
+    return out;
+  }
+  out.quat[0] = q.x / n;
+  out.quat[1] = q.y / n;
+  out.quat[2] = q.z / n;
+  out.quat[3] = q.w / n;
+  return out;
 }
 
 void PropBodies::PlaceBody(const Body& body, const Pose& target)

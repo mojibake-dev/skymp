@@ -1561,6 +1561,12 @@ constexpr float kImposeHorizonMax = 0.25f;
 // a pose's quaternion off unit length by at most this, wire-validate's
 // PROP_QUAT_NORM_SLACK (skymp-wire crates/wire-validate/src/lib.rs:86)
 constexpr float kImposeQuatSlack = 0.01f;
+// a fed velocity at most this, game units a second and radians a second:
+// wire-validate's PROP_MAX_LIN_UNITS_PER_S and PROP_MAX_ANG_RAD_PER_S
+// (skymp-wire crates/wire-validate/src/lib.rs:76 and :79), the most a sample
+// may carry and the drive's own caps (PropBodies.cpp)
+constexpr float kImposeFeedLinMax = 6000.f;
+constexpr float kImposeFeedAngMax = 1000.f;
 // the snap line at most once a second per form
 constexpr uint64_t kImposeSnapSayEveryMs = 1000;
 // the drain's said-once sets, cleared past this size
@@ -1577,6 +1583,10 @@ constexpr uint64_t kImposeStaleMs = 1000;
 struct ImposeEntry
 {
   std::vector<PropBodies::Pose> poses;
+  // each part's velocity through the stream's segment, fed forward by the
+  // drive (lin in game units a second until the drain converts it), one a
+  // pose, or none
+  std::vector<PropBodies::Feed> feeds;
   bool rest = false;
   uint64_t seq = 0;
   // Puppets::NowMs() at the store (kImposeStaleMs)
@@ -1604,6 +1614,14 @@ std::unordered_map<uint32_t, uint64_t> g_imposeSnapSaidMs;
 // second per form as the snap line is
 std::unordered_map<uint32_t, uint64_t> g_imposeCarriedSaidMs;
 std::unordered_map<uint32_t, uint64_t> g_imposeHorizonSaidMs;
+// since a form's last horizon line: its parts' largest gap at a drain, game
+// units, and its fastest fed part, game units a second
+struct ImposeSecond
+{
+  float gap = 0.f;
+  float feed = 0.f;
+};
+std::unordered_map<uint32_t, ImposeSecond> g_imposeSecond;
 
 // a held form's world clock at the drain that last drove or placed it
 // (ImposeClockOf), and Puppets::NowMs() then: the next drive's horizon is
@@ -1799,6 +1817,12 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
   } else if (last != g_imposeClock.end()) {
     g_imposeClock.erase(last);
   }
+  if (g_imposeSecond.size() > kImposeSaidMax &&
+      g_imposeSecond.count(formId) == 0) {
+    g_imposeSecond.clear();
+  }
+  ImposeSecond& second = g_imposeSecond[formId];
+  second.gap = std::max(second.gap, farthest);
   const bool snap = farthest > kBodySnapUnits;
   if (entry.rest || snap) {
     for (uint32_t i = 0; i < n; ++i) {
@@ -1823,6 +1847,16 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
   float firstStep = 0.f;
   float firstHorizon = 0.f;
   bool carriedPlaced = false;
+  // the poses were the stream's at their store, so a fed part's target moves
+  // on by its velocity for the store's age before the drive aims at it
+  const bool fed = entry.feeds.size() == n;
+  // (signed: a store stamped after this drain's clock reads as none)
+  const int64_t storedAgoMs =
+    static_cast<int64_t>(clockMs) - static_cast<int64_t>(entry.storedMs);
+  const float storeAge = fed
+    ? std::clamp(static_cast<float>(storedAgoMs) / 1000.f, 0.f,
+                 kImposeHorizonMax)
+    : 0.f;
   for (uint32_t i = 0; i < n; ++i) {
     const PropBodies::Body& part = walk.parts[i];
     if (carriedSnap[i]) {
@@ -1837,7 +1871,21 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
       firstStep = step;
       firstHorizon = horizon;
     }
-    PropBodies::DriveBody(part, targets[i], horizon);
+    PropBodies::Feed feed;
+    if (fed) {
+      const PropBodies::Feed& given = entry.feeds[i];
+      float sq = 0.f;
+      for (size_t c = 0; c < 3; ++c) {
+        feed.lin[c] = given.lin[c] * toHavok;
+        feed.ang[c] = given.ang[c];
+        sq += given.lin[c] * given.lin[c];
+      }
+      second.feed = std::max(second.feed, std::sqrt(sq));
+    }
+    PropBodies::DriveBody(
+      part,
+      fed ? PropBodies::Advanced(targets[i], feed, storeAge) : targets[i],
+      horizon, feed);
   }
   if (carriedPlaced) {
     if (g_imposeCarriedSaidMs.size() > kImposeSaidMax) {
@@ -1862,15 +1910,23 @@ bool ImposeOne(uint32_t formId, const ImposeEntry& entry, float toHavok,
   if (said == g_imposeHorizonSaidMs.end() ||
       clockMs - said->second >= kImposeSnapSayEveryMs) {
     g_imposeHorizonSaidMs[formId] = clockMs;
+    // the second's largest gap, a snap's included, and its fastest fed part
+    // (0: nothing fed forward) since the last line, then counted afresh
+    const std::string since = fmt::format(
+      "; since the last line at most {:.1f} units off, fed forward at up to "
+      "{:.0f} units a second",
+      second.gap, second.feed);
+    second = ImposeSecond{};
     if (bodyParts < n) {
       logger::info("[verb:prop-physics] impose {:x} driven: horizon {:.4f} "
                    "s, the world's step {:.4f} s, {:.1f} units off (its "
-                   "bones; its carried parts {:.1f})",
-                   formId, firstHorizon, firstStep, farthest, carriedFarthest);
+                   "bones; its carried parts {:.1f}){}",
+                   formId, firstHorizon, firstStep, farthest, carriedFarthest,
+                   since);
     } else {
       logger::info("[verb:prop-physics] impose {:x} driven: horizon {:.4f} "
-                   "s, the world's step {:.4f} s, {:.1f} units off",
-                   formId, firstHorizon, firstStep, farthest);
+                   "s, the world's step {:.4f} s, {:.1f} units off{}",
+                   formId, firstHorizon, firstStep, farthest, since);
     }
   }
   return false;
@@ -1924,8 +1980,10 @@ void DrainImpose()
       continue;
     }
     // the form leaves the drive: its clock goes with it (#125), so a later
-    // follow's first drain drives over one step
+    // follow's first drain drives over one step, and so does its second's
+    // count
     g_imposeClock.erase(formId);
+    g_imposeSecond.erase(formId);
     std::lock_guard<std::mutex> lock(g_imposeMutex);
     const auto it = g_impose.find(formId);
     if (it != g_impose.end() && it->second.seq == entry.seq) {
@@ -1995,6 +2053,40 @@ Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
     }
     poses.push_back(pose);
   }
+  // the parts' velocities through the stream's segment, fed forward by the
+  // drain: one {lin, ang} a bone, lin game units a second and ang radians a
+  // second about a world axis, or none (absent, undefined or null). Another
+  // count, a value that is not a number, or a speed past the wire's caps
+  // refuses the store
+  std::vector<PropBodies::Feed> feeds;
+  if (info.Length() > 3 && !info[3].IsUndefined() && !info[3].IsNull()) {
+    const auto velocities = NapiHelper::ExtractArray(info[3], "velocities");
+    if (velocities.Length() != n) {
+      return Napi::Boolean::New(info.Env(), false);
+    }
+    feeds.reserve(n);
+    for (uint32_t i = 0; i < n; ++i) {
+      const std::string name = "velocities[" + std::to_string(i) + "]";
+      auto velocity =
+        NapiHelper::ExtractObject(velocities.Get(i), name.c_str());
+      PropBodies::Feed feed;
+      ExtractLanes(velocity.Get("lin"), name + ".lin", feed.lin, 3);
+      ExtractLanes(velocity.Get("ang"), name + ".ang", feed.ang, 3);
+      float lin = 0.f;
+      float ang = 0.f;
+      for (size_t c = 0; c < 3; ++c) {
+        lin += feed.lin[c] * feed.lin[c];
+        ang += feed.ang[c] * feed.ang[c];
+      }
+      lin = std::sqrt(lin);
+      ang = std::sqrt(ang);
+      if (!std::isfinite(lin) || !std::isfinite(ang) ||
+          lin > kImposeFeedLinMax || ang > kImposeFeedAngMax) {
+        return Napi::Boolean::New(info.Env(), false);
+      }
+      feeds.push_back(feed);
+    }
+  }
   {
     std::lock_guard<std::mutex> lock(g_imposeMutex);
     if (g_impose.count(formId) == 0 && g_impose.size() >= kImposeRefsMax) {
@@ -2009,6 +2101,7 @@ Napi::Value PuppetApi::ImposeBodies(const Napi::CallbackInfo& info)
     }
     auto& entry = g_impose[formId];
     entry.poses = std::move(poses);
+    entry.feeds = std::move(feeds);
     entry.rest = rest;
     entry.seq = ++g_imposeSeq;
     entry.storedMs = Puppets::NowMs();

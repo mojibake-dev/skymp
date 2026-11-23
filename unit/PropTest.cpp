@@ -625,12 +625,13 @@ TEST_CASE("A player holds one prop at a time: its grab of a second prop is "
   Leave(p);
 }
 
-TEST_CASE("A pickup is a hand-off: a player's pickup of a prop another "
-          "seat streams awake takes it, the item in the picker's inventory and "
-          "the server-made reference deleted for both seats; a pickup of one "
-          "another player holds is refused E_PROP_HELD and answered with the "
-          "word; the owner's own pickup and a resting prop's are taken as before",
-          "[Prop][espm]")
+TEST_CASE(
+  "A pickup is a hand-off: a player's pickup of a prop another "
+  "seat streams awake takes it, the item in the picker's inventory and "
+  "the server-made reference deleted for both seats; a pickup of one "
+  "another player holds is refused E_PROP_HELD and answered with the "
+  "word; the owner's own pickup and a resting prop's are taken as before",
+  "[Prop][espm]")
 {
   // a dropped staff its dropper's game streamed awake refused every pickup
   // of the other player's (E_PROP_MOVING); the engine takes a moving item

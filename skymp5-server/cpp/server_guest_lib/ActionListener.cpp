@@ -5023,12 +5023,12 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
 // pickable branch), and a grab the engine refuses in its own frame ends in
 // such a pickup at the key's release (havok-props.md E16 and E28): in
 // x-moving-press 20261112-082448 c1's key-up deleted the ingot c2 was
-// moving. The rule (wire-rules props) reads the claim's rows for a touch that
-// is no grab: a prop another player holds is taken by nothing (E_PROP_HELD),
-// one another seat streams awake by a grab alone (E_PROP_MOVING); the
-// picker's own row and a prop at rest, stalled or unclaimed are taken as
-// before. A refused pickup does nothing else: the reference stands for every
-// seat, nothing reaches the picker's inventory, and its game hears the
+// moving. The rule (wire-rules props) reads the claim's rows: a prop another
+// player holds is taken by nothing (E_PROP_HELD); any other is taken, one
+// another seat streams awake included, as the engine takes a moving item
+// into the picker's hand (a hand-off: the deletion ends that stream for
+// every seat). A refused pickup does nothing else: the reference stands for
+// every seat, nothing reaches the picker's inventory, and its game hears the
 // current word, once per prop per second (A5). The picker is the reporting
 // game's player, the id the rows name, a hosted caster's pickup its host's.
 bool ActionListener::RefusePropPickup(const RawMessageData& rawMsgData,
@@ -5049,10 +5049,6 @@ bool ActionListener::RefusePropPickup(const RawMessageData& rawMsgData,
       return false;
     case PartOne::PropPickupVerdict::Held:
       return refuse("E_PROP_HELD", "another player holds it grabbed");
-    case PartOne::PropPickupVerdict::Moving:
-      return refuse("E_PROP_MOVING",
-                    "another seat streams it awake: a pickup takes a prop at "
-                    "rest, a grab takes it at once");
   }
   return false;
 }

@@ -5227,8 +5227,8 @@ PartOne::PropClaimVerdict PartOne::ClaimProp(const MpActor& claimant,
 PartOne::PropPickupVerdict PartOne::PropPickup(
   const MpActor& picker, const MpObjectReference& prop) const
 {
-  const auto code = pImpl->props->pickup_prop(
-    prop.GetFormId(), picker.GetFormId(), SteadyNowMs());
+  const auto code =
+    pImpl->props->pickup_prop(prop.GetFormId(), picker.GetFormId());
   return static_cast<PropPickupVerdict>(code);
 }
 

@@ -290,8 +290,8 @@ pub enum ClaimVerdict {
     Away,
 }
 
-/// The answer to a pickup (ADR-071 decision 2's table: a pickup is a take,
-/// so it reads the claim's rows for a touch that is no grab).
+/// The answer to a pickup: a hand-off, as the engine takes a moving item into
+/// the picker's hand; only another player's hold refuses it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickupVerdict {
     /// Nothing refuses it: the picker's own row, or a prop at rest, stalled
@@ -300,10 +300,6 @@ pub enum PickupVerdict {
     /// Another player holds the prop grabbed (A2: nothing beats a grab);
     /// nothing changes.
     Held,
-    /// Another seat streams the prop awake inside the moving window (A3: a
-    /// grab alone takes a moving prop, and a pickup is no grab); nothing
-    /// changes, the picker's copy stays on the stream.
-    Moving,
 }
 
 /// The answer to a simulator's transform (ADR-058 decision 2; A4, A7; ADR-071
@@ -599,22 +595,20 @@ impl Props {
         ClaimVerdict::Granted(epoch)
     }
 
-    /// `player` picks `refr` up at `now_ms`: its activation of the item
+    /// `player` picks `refr` up: its activation of the item
     /// reference, which gives the item and deletes a server-made reference
     /// for every seat, the release of a grab the engine refused in its own
     /// frame among them (thuum docs/engine/havok-props.md E16 and E28). A
-    /// pickup is a take (ADR-071 decision 2's table), read off the claim's
-    /// rows for a touch that is no grab: another player's hold refuses it
-    /// (Held), another seat's awake stream inside the moving window refuses
-    /// it (Moving), and the picker's own row and a prop at rest, stalled or
-    /// unclaimed are taken. It changes no row and asks no unload state (Away
+    /// pickup is a hand-off, read off the claim's rows: another player's hold
+    /// refuses it (Held); anything else is taken, another seat's awake stream
+    /// included, as the engine takes a moving item into the picker's hand,
+    /// and the reference's deletion ends that stream for every seat. It changes no row and asks no unload state (Away
     /// refuses a late grant, and a pickup grants nothing).
     #[must_use]
-    pub fn pickup(&self, refr: u32, player: u32, now_ms: u64) -> PickupVerdict {
+    pub fn pickup(&self, refr: u32, player: u32) -> PickupVerdict {
         match self.rows.get(&refr) {
             Some(row) if row.owner == player => PickupVerdict::Taken,
             Some(row) if row.live() && row.grabbed => PickupVerdict::Held,
-            Some(row) if row.moving(now_ms) => PickupVerdict::Moving,
             _ => PickupVerdict::Taken,
         }
     }
@@ -1052,27 +1046,27 @@ mod tests {
         // dropper streamed awake refused every pickup of the other player's); the picker's own row, a stalled
         // stream and a resting prop are taken; no verdict changes a row
         let mut p = Props::default();
-        assert_eq!(p.pickup(BASKET, C1, 500), PickupVerdict::Taken);
+        assert_eq!(p.pickup(BASKET, C1), PickupVerdict::Taken);
         // c2 holds it: another seat's pickup is refused, ten minutes on too (no clock ends a hold); c2's own is taken
         assert_eq!(p.claim(BASKET, C2, CELL, touch::GRAB, 1_000), ClaimVerdict::Granted(1));
-        assert_eq!(p.pickup(BASKET, C1, 1_100), PickupVerdict::Held);
-        assert_eq!(p.pickup(BASKET, C2, 1_100), PickupVerdict::Taken);
-        assert_eq!(p.pickup(BASKET, C3, 601_000), PickupVerdict::Held);
+        assert_eq!(p.pickup(BASKET, C1), PickupVerdict::Held);
+        assert_eq!(p.pickup(BASKET, C2), PickupVerdict::Taken);
+        assert_eq!(p.pickup(BASKET, C3), PickupVerdict::Held);
         // the release: the fall c2 streams awake is taken by another seat's pickup, inside the moving window from its
         // last sample and past it
         assert_eq!(p.claim(BASKET, C2, CELL, touch::DROP, 601_100), ClaimVerdict::Same);
         assert_eq!(p.sample(BASKET, C2, CELL, C1, false, 10.0, 601_200), TransformVerdict::Accepted);
-        assert_eq!(p.pickup(BASKET, C1, 601_300), PickupVerdict::Taken);
-        assert_eq!(p.pickup(BASKET, C2, 601_300), PickupVerdict::Taken);
-        assert_eq!(p.pickup(BASKET, C1, 601_200 + PROP_MOVING_MS - 1), PickupVerdict::Taken);
-        assert_eq!(p.pickup(BASKET, C1, 601_200 + PROP_MOVING_MS), PickupVerdict::Taken);
+        assert_eq!(p.pickup(BASKET, C1), PickupVerdict::Taken);
+        assert_eq!(p.pickup(BASKET, C2), PickupVerdict::Taken);
+        assert_eq!(p.pickup(BASKET, C1), PickupVerdict::Taken);
+        assert_eq!(p.pickup(BASKET, C1), PickupVerdict::Taken);
         // nothing above moved the row
         assert_eq!(p.live_owner(BASKET), C2);
         assert_eq!(p.epoch_of(BASKET), 1);
         // the rest returns it to the host: anyone's pickup is taken
         assert_eq!(p.sample(BASKET, C2, CELL, C1, true, 10.0, 603_000), TransformVerdict::Returned(2));
-        assert_eq!(p.pickup(BASKET, C1, 603_100), PickupVerdict::Taken);
-        assert_eq!(p.pickup(BASKET, C3, 603_100), PickupVerdict::Taken);
+        assert_eq!(p.pickup(BASKET, C1), PickupVerdict::Taken);
+        assert_eq!(p.pickup(BASKET, C3), PickupVerdict::Taken);
     }
 
     #[test]
@@ -2282,7 +2276,7 @@ mod tests {
             for (seat, what, asleep, held, epoch_at, gap) in ops {
                 now = now.saturating_add(gap);
                 let player = seats.get(seat).copied().unwrap_or(C1);
-                let picked = p.pickup(BASKET, player, now);
+                let picked = p.pickup(BASKET, player);
                 if what == touch::CONTACT {
                     let read = match p.claim(BASKET, player, CELL, touch::CONTACT, now) {
                         ClaimVerdict::Held => PickupVerdict::Held,

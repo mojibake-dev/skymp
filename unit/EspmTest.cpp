@@ -621,6 +621,34 @@ TEST_CASE("ARMO parsing", "[espm]")
   }
 }
 
+// Skyrim.esm, read with thuum lab/esm.py: the Staff of Flames' enchantment,
+// its effect's impact set, one of the set's impacts, that impact's hazard
+// and the hazard's spell
+TEST_CASE("A staff's enchantment and the hazard its flames leave are read "
+          "from the records",
+          "[espm]")
+{
+  MyEspmProvider provider;
+  // StaffEnchFlames
+  const auto ench = espm::GetData<espm::ENCH>(0x4DEDA, &provider);
+  REQUIRE(ench.castType == espm::ENCH::kCastConcentration);
+  REQUIRE(ench.delivery == 2);
+  REQUIRE(ench.enchantType == espm::ENCH::kStaffEnchantment);
+  REQUIRE(ench.effects.size() == 1);
+  REQUIRE(ench.effects[0].effectId == 0x13CA9);
+  // FireDamageConcAimed's impact set, MAGFlames01ImpactSet
+  REQUIRE(espm::GetData<espm::MGEF>(0x13CA9, &provider).data.impactDataSet ==
+          0x26113);
+  const auto impacts = espm::GetData<espm::IPDS>(0x26113, &provider).impacts;
+  REQUIRE(std::find(impacts.begin(), impacts.end(), 0x3E077u) !=
+          impacts.end());
+  // MAGFlamesImpactLS01 places FireLgShortHazard
+  REQUIRE(espm::GetData<espm::IPCT>(0x3E077, &provider).hazard == 0x3E076);
+  const auto hazard = espm::GetData<espm::HAZD>(0x3E076, &provider);
+  REQUIRE(hazard.spell == 0x153BD); // HazardFireSpell
+  REQUIRE(hazard.lifetime == Catch::Approx(2.f));
+}
+
 TEST_CASE("ENCH and effects parsing", "[espm]")
 {
   MyEspmProvider provider;

@@ -50,6 +50,10 @@ MGEF::Data MGEF::GetData(
           std::memcpy(&result.data.hitEffectArt, data + 0x60,
                       sizeof(result.data.hitEffectArt));
         }
+        if (size >= 0x68) {
+          std::memcpy(&result.data.impactDataSet, data + 0x64,
+                      sizeof(result.data.impactDataSet));
+        }
         if (size >= 0x58) {
           std::memcpy(&result.data.castingType, data + 0x50,
                       sizeof(result.data.castingType));

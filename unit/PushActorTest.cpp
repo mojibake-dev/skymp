@@ -11,9 +11,11 @@ PartOne& GetPartOne();
 
 // A script's push in the sender's game onto an actor another seat simulates
 // is reported (PushActor), checked for consistency alone and run by that
-// actor's host, PushActorAway with the caster's figure as self. The hosting
-// idiom is ActorDeathTest.cpp's (a seat's CellLoaded makes it the cell's host
-// past the grace); the actor is its predator 0x85547 in the same forest cell.
+// actor's host, PushActorAway with the caster's figure as self. The push
+// rides on a hit: a cast of the caster's must have claimed one on the target.
+// The hosting idiom is ActorDeathTest.cpp's (a seat's CellLoaded makes it the
+// cell's host past the grace); the actor is its predator 0x85547 in the same
+// forest cell.
 
 namespace {
 constexpr uint32_t kTamriel = 0x3c;
@@ -22,6 +24,8 @@ constexpr uint32_t kHost = 0xff000e07;
 constexpr uint32_t kNpc = 0x85547;
 constexpr uint32_t kForestCell = 0x9810;
 const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+// Unrelenting Force's first word's spell, VoiceUnrelentingForce1 (Skyrim.esm)
+constexpr uint32_t kFus = 0x00013e09;
 
 uint64_t NowMs()
 {
@@ -104,6 +108,15 @@ TEST_CASE("A reported push onto an NPC another seat hosts is run by that host "
   Host(p, 1, kForestCell);
   REQUIRE(p.worldState.HostOf(*npc) == &host);
 
+  // no hit of the shouter's on the NPC behind it: refused
+  p.Messages().clear();
+  Push(p, 0, kShouter, kNpc, 15.f);
+  REQUIRE(PushSnippetsTo(p, 1, kShouter) == 0);
+
+  // its shout's hit on the NPC, claimed: the push runs on the host
+  p.StartCast(kShouter, kFus, 2, kForest);
+  REQUIRE(p.ClaimCast(kShouter, kFus, kNpc, npc->GetPos()).check ==
+          PartOne::CastCheck::Claimed);
   p.Messages().clear();
   Push(p, 0, kShouter, kNpc, 15.f);
   REQUIRE(PushSnippetsTo(p, 1, kShouter) == 1);

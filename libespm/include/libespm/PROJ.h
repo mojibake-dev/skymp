@@ -36,6 +36,10 @@ public:
 
     static constexpr uint16_t kFlagExplosion = 0x0002;
     static constexpr uint16_t kFlagAltTrigger = 0x0004;
+    static constexpr uint16_t kTypeCone = 0x0010;
+
+    // a cone strikes every actor inside it as it spreads to its range
+    [[nodiscard]] bool IsCone() const { return (type & kTypeCone) != 0; }
 
     // a placed trigger that waits for an actor: its hit comes long after
     // its cast

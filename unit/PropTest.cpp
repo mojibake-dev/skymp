@@ -627,16 +627,17 @@ TEST_CASE("A player holds one prop at a time: its grab of a second prop is "
   Leave(p);
 }
 
-TEST_CASE("A pickup is a take: a player's pickup of a prop another player "
-          "holds is refused E_PROP_HELD and of one another seat streams awake "
-          "E_PROP_MOVING, each answered with the word, the prop standing for "
-          "both seats; the owner's own pickup and a resting prop's are taken "
-          "as before",
+TEST_CASE("A pickup is a hand-off: a player's pickup of a prop another "
+          "seat streams awake takes it, the item in the picker's inventory and "
+          "the server-made reference deleted for both seats; a pickup of one "
+          "another player holds is refused E_PROP_HELD and answered with the "
+          "word; the owner's own pickup and a resting prop's are taken as before",
           "[Prop][espm]")
 {
-  // a grab the engine refuses in its own frame ends in a pickup at the key's
-  // release (havok-props.md E16 and E28), and the pickup deleted a prop
-  // another seat was moving, for every seat (x-moving-press 20261112-082448)
+  // a dropped staff its dropper's game streamed awake refused every pickup
+  // of the other player's (E_PROP_MOVING); the engine takes a moving item
+  // into the picker's hand, and so does the server: the toucher's prop is
+  // the picker's from the pickup
   constexpr uint32_t kTub = 0xff000d0b;
   auto& p = GetPartOne();
   auto w = Enter(p);
@@ -653,45 +654,32 @@ TEST_CASE("A pickup is a take: a player's pickup of a prop another player "
   REQUIRE(p.PropLiveOwner(tub) == kC2);
   p.Messages().clear();
 
-  // c1 picks up each: refused, logged and answered with c2's word, and
-  // nothing else happens for either seat
+  // c1 picks up each: the held basket is refused, logged and answered with
+  // c2's word; the tub c2 streams awake is c1's, given and deleted for both
   {
     LogCapture log;
     PickUp(p, 0, kBasket);
     PickUp(p, 0, kTub);
     REQUIRE(log.Count("[verb:prop-physics] E_PROP_HELD: ff000d01 picks up "
                       "prop ff000d03; another player holds it grabbed") == 1);
-    REQUIRE(log.Count("[verb:prop-physics] E_PROP_MOVING: ff000d01 picks up "
-                      "prop ff000d0b; another seat streams it awake: a pickup "
-                      "takes a prop at rest, a grab takes it at once") == 1);
-    REQUIRE(log.Count("Deleting 0xff item") == 0);
+    REQUIRE(log.Count("E_PROP_MOVING") == 0);
   }
-  for (auto* prop : { &w.prop, &tub }) {
-    REQUIRE_FALSE(prop->IsDeleted());
-    REQUIRE_FALSE(prop->IsHarvested());
-    REQUIRE(Listens(*prop, c1));
-    REQUIRE(Listens(*prop, c2));
-    REQUIRE(p.PropLiveOwner(*prop) == kC2);
-    REQUIRE(p.PropEpochOf(*prop) == 1);
-  }
-  REQUIRE(c1.GetInventory().GetItemCount(kBucket01) == 0);
-  const auto answered = SentTo<PropOwnerMessage>(p, 0);
-  REQUIRE(answered.size() == 2);
-  REQUIRE(answered[0].refr == kBasket);
-  REQUIRE(answered[1].refr == kTub);
-  for (const auto& word : answered) {
-    REQUIRE(word.player == kC2);
-    REQUIRE(word.epoch == 1);
-  }
-  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
-
-  // c2's pickup of the tub it streams is its own row's, taken as before: the
-  // item in its inventory, the server-made reference deleted for both seats
-  PickUp(p, 1, kTub);
+  REQUIRE_FALSE(w.prop.IsDeleted());
+  REQUIRE(Listens(w.prop, c1));
+  REQUIRE(Listens(w.prop, c2));
+  REQUIRE(p.PropLiveOwner(w.prop) == kC2);
+  REQUIRE(p.PropEpochOf(w.prop) == 1);
   REQUIRE(tub.IsDeleted());
   REQUIRE_FALSE(Listens(tub, c1));
   REQUIRE_FALSE(Listens(tub, c2));
-  REQUIRE(c2.GetInventory().GetItemCount(kBucket01) == 1);
+  REQUIRE(c1.GetInventory().GetItemCount(kBucket01) == 1);
+  REQUIRE(c2.GetInventory().GetItemCount(kBucket01) == 0);
+  const auto answered = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(answered.size() == 1);
+  REQUIRE(answered[0].refr == kBasket);
+  REQUIRE(answered[0].player == kC2);
+  REQUIRE(answered[0].epoch == 1);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 1).empty());
 
   // c2 lets the basket go and it rests, the host's again: c1's pickup of the
   // resting prop is taken
@@ -700,7 +688,7 @@ TEST_CASE("A pickup is a take: a player's pickup of a prop another player "
   REQUIRE(p.PropLiveOwner(w.prop) == 0);
   PickUp(p, 0, kBasket);
   REQUIRE(w.prop.IsDeleted());
-  REQUIRE(c1.GetInventory().GetItemCount(kBucket01) == 1);
+  REQUIRE(c1.GetInventory().GetItemCount(kBucket01) == 2);
   Leave(p);
 }
 

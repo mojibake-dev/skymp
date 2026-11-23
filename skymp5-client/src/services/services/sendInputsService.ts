@@ -30,6 +30,7 @@ import { ChangeFormService, CORPSE_REST_DWELL_MS, CORPSE_REST_MIN_MS, CORPSE_SET
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { Movement, NiPoint3 } from "../../sync/movement";
 import { dueSamples, hostedSampleRateMs } from "../../sync/frameCost";
+import { isOwnHanded } from "../../sync/knockState";
 import { farMovementMs, nearUnits } from "../../sync/movementSettings";
 
 const playerFormId = 0x14;
@@ -202,7 +203,11 @@ export class SendInputsService extends ClientListener {
                     return;
                 }
                 const targetFormModel = target ? this.getForm(target, world) : this.getForm(undefined, world);
-                if (target === undefined || dueMovement.has(target as unknown as number)) {
+                // this seat's own player under another player's force (a grip's
+                // hold, a throw's flight): the forcer's stream is its record, so
+                // no movement of its own goes out until the hand-back
+                // (knockState's own-handed mark, PropService)
+                if ((target === undefined && !isOwnHanded()) || (target !== undefined && dueMovement.has(target as unknown as number))) {
                     this.sendMovement(target, targetFormModel);
                 }
                 this.sendAnimation(target);

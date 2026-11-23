@@ -118,6 +118,11 @@ public:
     // concentration, 3 scroll); both 0 when the record is too short
     uint32_t castingType = 0;
     uint32_t delivery = 0;
+    // the impact data set (IPDS) its hits place, DATA 0x64 (the same UESP
+    // layout; thuum lab/esm.py on the lab's masters: FireDamageConcAimed
+    // 0x13CA9 names MAGFlames01ImpactSet 0x26113 there), 0 for none or when
+    // the record is too short
+    uint32_t impactDataSet = 0;
     // thuum docs/verbs/magic-effects.md (train-30, resistance): the actor
     // value that resists the effect, DATA 0x10 (UESP "Skyrim Mod:Mod File
     // Format/MGEF": "ResistanceAV, Resistance skill index (generally 39-45)

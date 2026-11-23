@@ -116,6 +116,14 @@ public:
   // (VisitProperties); an untouched container sends nothing, since both
   // engines hold the base's default
   bool HasRecordedInventory() const;
+  // an item's world reference that holds its own stack's rows, the extras of
+  // a dropped stack (MpActor::DropItem): public as a container's record is,
+  // so every game whose grid loads the reference shows the stack as it was
+  bool CarriesItemRows() const;
+  // a dropped stack's rows given to its world copy, told to every game that
+  // already holds the copy (a later one hears them at its subscribe,
+  // CarriesItemRows)
+  void SetCarriedRows(const Inventory& rows);
   // thuum tracker #120 (playtest 54, Eli: "Props jumped in riverwood. Items
   // near the blacksmiths forge."): whether the record's pose holds play (a
   // seat's streamed move, a script's, one persisted across a restart): a

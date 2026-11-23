@@ -573,6 +573,82 @@ TEST_CASE("A brewed potion and an enchanted dagger are dropped as their own "
   Leave(p);
 }
 
+// A tempered stack's copy shows the stack to every game: the dropper and a
+// player beside it hear the copy's row, the health with it, when the copy
+// takes it, a player who loads the copy later hears it in its create word, and
+// the pickup gives the row back
+TEST_CASE("A tempered dagger's dropped copy carries its health to every game "
+          "that holds it or loads it later, and its pickup gives the tempered "
+          "row back",
+          "[CraftReport][DropItemTest][espm]")
+{
+  constexpr uint32_t kWatcher = 0xff000c99;
+  PartOne& p = GetPartOne();
+  auto& ac = Player(p);
+  DoConnect(p, 1);
+  p.CreateActor(kWatcher, { 0, 200, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kWatcher);
+  auto& watcher = p.worldState.GetFormAt<MpActor>(kWatcher);
+  watcher.SetInventory(Inventory());
+  Inventory::Entry dagger(kDagger, 1);
+  dagger.health = 1.1f;
+  ac.AddItems({ dagger });
+
+  RawMessageData raw;
+  raw.userId = 0;
+  DropItemMessage drop;
+  drop.baseId = kDagger;
+  drop.count = 1;
+  drop.health = 1.1f;
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(raw, drop);
+  REQUIRE(Stacks(ac, kDagger).empty());
+  const uint32_t copyId = DroppedCopy(p, kDagger);
+  REQUIRE(copyId != 0);
+  auto& copy = p.worldState.GetFormAt<MpObjectReference>(copyId);
+  REQUIRE(copy.GetInventory().entries.size() == 1);
+  REQUIRE(copy.GetInventory().entries[0].health == 1.1f);
+
+  // each game that holds the copy hears its row, the health with it
+  const std::string rows = copy.GetInventory().ToJson().dump();
+  for (const Networking::UserId user :
+       { Networking::UserId{ 0 }, Networking::UserId{ 1 } }) {
+    const auto it = std::find_if(
+      p.Messages().begin(), p.Messages().end(), [&](PartOne::Message& m) {
+        return m.userId == user && m.j["t"] == MsgType::UpdateProperty &&
+          m.j["idx"] == copy.GetIdx() && m.j["propName"] == "inventory";
+      });
+    REQUIRE(it != p.Messages().end());
+    REQUIRE(it->j["dataDump"] == rows);
+  }
+
+  // a game that loads the copy later hears the row in its create word
+  constexpr uint32_t kLater = 0xff000c9a;
+  DoConnect(p, 2);
+  p.Messages().clear();
+  p.CreateActor(kLater, { 0, 300, 0 }, 0, 0x3c);
+  p.SetUserActor(2, kLater);
+  const auto later = std::find_if(
+    p.Messages().begin(), p.Messages().end(), [&](PartOne::Message& m) {
+      return m.userId == 2 && m.j["t"] == MsgType::CreateActor &&
+        m.j.contains("idx") && m.j["idx"] == copy.GetIdx();
+    });
+  REQUIRE(later != p.Messages().end());
+  REQUIRE(later->j["props"].contains("inventory"));
+  REQUIRE(later->j["props"]["inventory"] == copy.GetInventory().ToJson());
+  p.DestroyActor(kLater);
+  DoDisconnect(p, 2);
+
+  // the other player's pickup gives the tempered row back
+  copy.Activate(watcher);
+  REQUIRE(Stacks(watcher, kDagger).size() == 1);
+  REQUIRE(Stacks(watcher, kDagger)[0].health == 1.1f);
+
+  p.DestroyActor(kWatcher);
+  DoDisconnect(p, 1);
+  Leave(p);
+}
+
 TEST_CASE("A drop of extras the record does not hold is refused and changes "
           "nothing",
           "[CraftReport][DropItemTest][espm]")

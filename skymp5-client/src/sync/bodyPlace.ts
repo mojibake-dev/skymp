@@ -35,6 +35,17 @@ export interface AfterHand {
     changes: number;
 }
 
-export const recordAfterHand = (_h: AfterHand): { holds: boolean; heldAt: number | undefined } => {
+export const recordAfterHand = (h: AfterHand): { holds: boolean; heldAt: number | undefined } => {
+    // while the hold places it, the hold decides
+    if (h.placedNow) {
+        return { holds: false, heldAt: undefined };
+    }
+    // the hold's end keeps the record count it ended at, and a record that
+    // changes after it (the body's own game's or host's next sample) moves
+    // the body again
+    const heldAt = h.placedBefore ? h.changes : h.heldAt;
+    if (heldAt !== undefined && h.changes === heldAt) {
+        return { holds: true, heldAt };
+    }
     return { holds: false, heldAt: undefined };
 };

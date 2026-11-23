@@ -31,7 +31,7 @@ import { GamemodeUpdateService } from "../services/services/gamemodeUpdateServic
 import { HostService } from "../services/services/hostService";
 import { PuppetService } from "../services/services/puppetService";
 import { PropService } from "../services/services/propService";
-import { recordMovesIt } from "../sync/bodyPlace";
+import { recordAfterHand, recordMovesIt } from "../sync/bodyPlace";
 import { ActorFateService } from "../services/services/actorFateService";
 import { SummonService } from "../services/services/summonService";
 import { ChangeFormService } from "../services/services/changeFormService";
@@ -1355,7 +1355,23 @@ export class FormView {
     // record's root placed under a grab pulls its parts apart
     // (sync/bodyPlace.ts)
     const propService = SpApiInteractor.getControllerInstance().lookupListener(PropService);
-    const propPlaced = !recordMovesIt({ isActor, tracked: propService.placesIt(this.refrId), ...(isActor ? propService.liveBodyPlaced(this.refrId) : { held: false, streaming: false, followedLive: false }) });
+    const placedNow = !recordMovesIt({ isActor, tracked: propService.placesIt(this.refrId), ...(isActor ? propService.liveBodyPlaced(this.refrId) : { held: false, streaming: false, followedLive: false }) });
+    // an actor's live body whose hold just ended stays where the hold left it
+    // until its record changes: the record it carries from before the hold
+    // (its own game or host sent none while held) would pull it back to where
+    // the hold took it (sync/bodyPlace.ts recordAfterHand)
+    const afterHand = isActor
+      ? recordAfterHand({ placedBefore: this.movState.placedByHold, placedNow, heldAt: this.movState.handChanges, changes: +(model.numMovementChanges as number) })
+      : { holds: false, heldAt: undefined };
+    if (afterHand.holds && this.movState.handChanges === undefined) {
+      logLab("verb:movement", `figure ${this.refrId.toString(16)}: its hold ended; its record from before the hold is kept off it until the record changes`);
+    }
+    if (!afterHand.holds && this.movState.handChanges !== undefined) {
+      logLab("verb:movement", `figure ${this.refrId.toString(16)}: its record changed after the hold; it moves by its record again`);
+    }
+    this.movState.placedByHold = placedNow;
+    this.movState.handChanges = afterHand.heldAt;
+    const propPlaced = placedNow || afterHand.holds;
     // tracker #128: a copy placed from a dead record takes no movement: the
     // create word's movement says isDead false (remoteServer.ts builds it so),
     // and movementApply's death word for a 0xff copy would stand the laid body
@@ -2168,6 +2184,10 @@ export class FormView {
     lastApply: 0,
     lastRehost: 0,
     everApplied: false,
+    // recordAfterHand's state: whether a hold placed the body last frame, and
+    // the record count its end is kept off at
+    placedByHold: false,
+    handChanges: undefined as number | undefined,
   };
   private appearanceState = this.getDefaultAppearanceState();
   private eqState = this.getDefaultEquipState();

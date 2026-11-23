@@ -4404,20 +4404,38 @@ void MpActor::DropItem(const uint32_t baseId, const Inventory::Entry& entry)
   // A dropped stack's extras, created forms and owner stay with its copy as
   // the copy's own rows, given back whole at its pickup
   // (MpObjectReference::GivePickupItemsToActivationSource); the copy's change
-  // form keeps them through a restart as any reference's rows
-  const bool carries =
-    std::any_of(rows->begin(), rows->end(), [](const Inventory::Entry& r) {
-      return r.health || r.enchantmentId || r.maxCharge || r.soul ||
-        r.poisonId || r.name || r.createdBase || r.createdEnchantment ||
-        r.createdPoison || r.ownerId;
+  // form keeps them through a restart as any reference's rows. The charge an
+  // enchanted item has left is its engine's of the moment (ExtraCharge,
+  // RE/E/ExtraCharge.h), which the record's rows do not hold and HeldRows
+  // does not compare: the drop reports it, and the copy's rows take it as
+  // reported, unvalidated. A report of no charge, or of none above 0, leaves
+  // the rows as the record holds them, as TESModPlatform's AddItemEx makes an
+  // ExtraCharge only from a charge above 0
+  std::vector<Inventory::Entry> carriedRows = *rows;
+  const bool reportsCharge = entry.chargePercent &&
+    std::isfinite(*entry.chargePercent) && *entry.chargePercent > 0.f;
+  if (reportsCharge) {
+    for (auto& r : carriedRows) {
+      r.chargePercent = entry.chargePercent;
+    }
+  }
+  const bool carries = std::any_of(
+    carriedRows.begin(), carriedRows.end(), [](const Inventory::Entry& r) {
+      return r.health || r.enchantmentId || r.maxCharge || r.chargePercent ||
+        r.soul || r.poisonId || r.name || r.createdBase ||
+        r.createdEnchantment || r.createdPoison || r.ownerId;
     });
   if (carries) {
     Inventory carried;
-    carried.AddItems(*rows);
+    carried.AddItems(carriedRows);
     placedObject->SetCarriedRows(carried);
-    spdlog::info("[verb:craft] {:x} drops {} of {:x} with its extras: copy "
+    spdlog::info("[verb:craft] {:x} drops {} of {:x} with its extras{}: copy "
                  "{:x} holds them for its pickup",
-                 GetFormId(), count, baseId, placedObject->GetFormId());
+                 GetFormId(), count, baseId,
+                 reportsCharge
+                   ? fmt::format(" (charge {} left)", *entry.chargePercent)
+                   : std::string(),
+                 placedObject->GetFormId());
   }
 
   uint32_t droppedItemFormId = placedObject->GetFormId();

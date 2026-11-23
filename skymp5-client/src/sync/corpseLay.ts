@@ -42,8 +42,11 @@ export type CorpsePass =
     | "follow";    // held until the follow rests
 
 export function corpsePass(f: CorpseFacts): CorpsePass {
+    // the reconcile removes and adds the body's stacks (RemoveItem,
+    // AddObjectToContainer) and posts no refresh to an open item menu, the
+    // lay's hazard: it waits for the close as the lay does
     if (f.reconcileOwed) {
-        return "reconcile";
+        return f.menuOpen ? "menu" : "reconcile";
     }
     if (f.applyOff) {
         return "off";

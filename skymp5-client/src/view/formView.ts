@@ -10,7 +10,7 @@ import { RaceOverlay } from "../services/messages/raceOverlay";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyWorn, cannotDress, Equipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { applyBodyInventory } from "../sync/inventory";
-import { distanceBetween, LastWritten, movementApplyDue, Timed } from "../sync/frameCost";
+import { appliedClock, distanceBetween, LastWritten, movementApplyDue, Timed } from "../sync/frameCost";
 import { farMovementMs, nearUnits } from "../sync/movementSettings";
 import * as sp from "skyrimPlatform";
 import { logLab, logTrace } from "../logging";
@@ -1353,7 +1353,9 @@ export class FormView {
         // standing figure or puppet (movementApply's deadband; the stagger
         // push left under eight units, b-duel on train-33)
         const settle = +(model.numMovementChanges as number) === this.movState.lastNumChanges;
-        this.movState.lastApply = Date.now();
+        // the first apply's clock is offset by the view's id, so views made in
+        // one frame fall due spread over the far rate (sync/frameCost.ts)
+        this.movState.lastApply = appliedClock(Date.now(), this.movState.lastApply === 0, this.refrId, farMovementMs());
         if (!settle) {
           this.movState.quietSince = Date.now();
           this.movState.quietCleared = false;

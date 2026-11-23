@@ -81,7 +81,12 @@ RUN if [ ! -f vcpkg/scripts/buildsystems/vcpkg.cmake ]; then \
 # The build and its tests are one step: a cache mount's lock is held for one
 # RUN, so a second step would take the shared tree again after another
 # branch's build may have had it, and test that branch's binaries. The dist is
-# copied out before the tests, which run servers inside it.
+# copied out before the tests, which run servers inside it. BuildKit keeps 2 MiB
+# of a step's log, and the servers' own info, debug and trace lines are about
+# 95% of ctest's verbose output, so the step prints the rest: each test's line,
+# Catch2's results with every failed assertion and its expansion, the warnings
+# and errors, and the totals. The step's status is ctest's, so a failed test
+# fails it and is never cached.
 RUN --mount=type=cache,id=skymp-server-build,target=/src/build,mode=0777,sharing=locked \
     --mount=type=cache,id=skymp-cargo-registry,target=/opt/rust/cargo/registry,mode=0777,sharing=locked \
     --mount=type=cache,id=skymp-ccache,target=/opt/ccache,mode=0777,sharing=locked \
@@ -95,7 +100,10 @@ RUN --mount=type=cache,id=skymp-server-build,target=/src/build,mode=0777,sharing
  && ccache -s \
  && rm -rf /src/dist-server && cp -a build/dist/server /src/dist-server \
  && if [ -f skyrim_data_files/Skyrim.esm ]; then \
-      cd build && CI=true ctest --verbose; \
+      cd build && { CI=true ctest --verbose > /tmp/ctest.log 2>&1; echo $? > /tmp/ctest.rc; }; \
+      grep -v -E '\] \[(info|debug|trace)\] ' /tmp/ctest.log; \
+      echo "ctest: $(grep -c -E '\] \[(info|debug|trace)\] ' /tmp/ctest.log) info, debug and trace line(s) not shown"; \
+      (exit "$(cat /tmp/ctest.rc)"); \
     else echo "no skyrim_data_files/Skyrim.esm: ctest skipped"; fi
 
 FROM ${RUNTIME_IMAGE} AS skymp-server

@@ -1,7 +1,8 @@
 //! Spell casts and their hits (thuum docs/verbs/spell-cast.md, M2). A spell
 //! hit on an actor counts only when it claims a cast the server recorded for
-//! that caster and spell. A fire-and-forget cast covers its first hit, and an
-//! area spell's other targets within the splash window; a concentration cast
+//! that caster and spell. A fire-and-forget cast covers its first hit, an
+//! area spell's other targets within the splash window, and a cone's other
+//! targets over the cone's flight to its range; a concentration cast
 //! covers every hit while it is open, each counted by the time since the
 //! cast's last counted hit, so its damage follows the time the stream held a
 //! target and not how often the caster's game reports it (five reports a
@@ -100,6 +101,14 @@ pub struct CastFacts {
     pub kind: CastKind,
     /// Whether the spell hits an area (its costliest effect's area above 0).
     pub area: bool,
+    /// How long the cast's cone sweeps on after its first hit, milliseconds:
+    /// a cone projectile's flight to its range (PROJ type 0x10, its range
+    /// over its speed, read from the records by the caller), 0 for a cast
+    /// with no cone. A cone strikes each actor inside it as it reaches them,
+    /// the nearest first, so its targets' hits arrive over its flight and
+    /// not in one splash: each claims the cast once, MAX_SPLASH_TARGETS at
+    /// most.
+    pub cone_ms: u64,
     /// How far from the caster its hit can be, units: its projectile's
     /// range, read from the records by the caller.
     pub reach: f32,
@@ -238,6 +247,16 @@ struct ActorCasts {
 #[derive(Debug, Default)]
 pub struct Casts {
     per_actor: HashMap<u32, ActorCasts>,
+}
+
+/// How long after a cast's first hit its other targets may claim it,
+/// milliseconds: an area spell's splash, a cone's flight (never shorter than
+/// the splash, for the reports' own spread), the longer of the two; 0 for a
+/// cast that covers one target.
+fn spread_ms(facts: &CastFacts) -> u64 {
+    let splash = if facts.area { SPLASH_MS } else { 0 };
+    let cone = if facts.cone_ms > 0 { facts.cone_ms.max(SPLASH_MS) } else { 0 };
+    splash.max(cone)
 }
 
 fn finite(facts: &CastFacts) -> bool {
@@ -382,8 +401,9 @@ impl Casts {
     /// the target, both working, and its hit reports do not say which hand,
     /// thuum docs/verbs/spell-cast.md, x-dual-stack); otherwise the newest
     /// fire-and-forget cast of that spell that can still take a hit (unused,
-    /// or an area cast's further target within SPLASH_MS of its first) and
-    /// whose reach covers the target, once per target.
+    /// or a further target of an area cast within SPLASH_MS of its first or
+    /// of a cone within its cone's flight) and whose reach covers the
+    /// target, once per target.
     pub fn claim(&mut self, actor: u32, hit: CastHit, now_ms: u64) -> CastCheck {
         let CastHit { spell, target, x, y, z } = hit;
         let Some(casts) = self.per_actor.get_mut(&actor) else {
@@ -446,8 +466,9 @@ impl Casts {
             let available = match cast.first_hit_ms {
                 None => true,
                 Some(first) => {
-                    cast.facts.area
-                        && now_ms.saturating_sub(first) <= SPLASH_MS
+                    let spread_ms = spread_ms(&cast.facts);
+                    spread_ms > 0
+                        && now_ms.saturating_sub(first) <= spread_ms
                         && cast.hits < MAX_SPLASH_TARGETS
                         && !cast.targets.iter().take(cast.hits).any(|t| *t == target)
                 }
@@ -472,6 +493,21 @@ impl Casts {
         } else {
             CastCheck::NoCast
         }
+    }
+
+    /// Whether one of `actor`'s fire-and-forget casts, still inside its
+    /// window, claimed a hit on `target`: the hit a consequence of it (a
+    /// script's push from the effect that hit put on the target) rests on.
+    /// A stream's hits and a reached spell's are not kept per target here,
+    /// so they name nothing.
+    #[must_use]
+    pub fn claimed_on(&self, actor: u32, target: u32, now_ms: u64) -> bool {
+        self.per_actor.get(&actor).is_some_and(|casts| {
+            casts.released.iter().any(|c| {
+                now_ms.saturating_sub(c.at_ms) <= c.facts.hazard_ms.max(CAST_WINDOW_MS)
+                    && c.targets.iter().take(c.hits).any(|t| *t == target)
+            })
+        })
     }
 
     /// A hit by `actor` at `now_ms` with a spell none of its casts is of
@@ -553,7 +589,7 @@ mod tests {
     }
 
     fn cast(spell: u32, hand: u8, kind: CastKind, area: bool) -> CastFacts {
-        CastFacts { spell, hand, kind, area, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0, reached: [0; MAX_REACHED], linger_ms: 0, reached_concentration: 0, lands_on_target: false, hazard_ms: 0, dual: false }
+        CastFacts { spell, hand, kind, area, cone_ms: 0, reach: 1_000.0, x: 0.0, y: 0.0, z: 0.0, reached: [0; MAX_REACHED], linger_ms: 0, reached_concentration: 0, lands_on_target: false, hazard_ms: 0, dual: false }
     }
 
     // labels, not records: a cloak spell and its proc, a bolt and its proc
@@ -683,6 +719,45 @@ mod tests {
         // the same target again, and a target after the splash window
         assert_eq!(c.claim(1, hit(BALL, 3, 120.0, 0.0, 0.0), 560), CastCheck::NoCast);
         assert_eq!(c.claim(1, hit(BALL, 4, 130.0, 0.0, 0.0), 700), CastCheck::NoCast);
+    }
+
+    #[test]
+    fn a_cone_covers_its_other_targets_once_each_over_its_flight() {
+        // Unrelenting Force's last word: VoicePushProjectile03, a cone of
+        // range 10000 at speed 1536 (Skyrim.esm), 6510 ms to its range; its
+        // spell's effects carry no area
+        let mut c = Casts::default();
+        c.start(1, CastFacts { cone_ms: 6_510, ..cast(BALL, 2, CastKind::FireAndForget, false) }, 0);
+        assert_eq!(c.claim(1, hit(BALL, 2, 300.0, 0.0, 0.0), 200), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
+        // a second target the cone reached 212 ms later, past the splash window
+        assert_eq!(c.claim(1, hit(BALL, 3, 625.0, 0.0, 0.0), 412), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
+        // the same target again, and a target after the cone's flight
+        assert_eq!(c.claim(1, hit(BALL, 3, 625.0, 0.0, 0.0), 500), CastCheck::NoCast);
+        assert_eq!(c.claim(1, hit(BALL, 4, 650.0, 0.0, 0.0), 200 + 6_511), CastCheck::NoCast);
+    }
+
+    #[test]
+    fn a_short_cone_still_takes_the_splash_window() {
+        let mut c = Casts::default();
+        c.start(1, CastFacts { cone_ms: 20, ..cast(BALL, 2, CastKind::FireAndForget, false) }, 0);
+        assert_eq!(c.claim(1, hit(BALL, 2, 30.0, 0.0, 0.0), 10), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
+        assert_eq!(c.claim(1, hit(BALL, 3, 40.0, 0.0, 0.0), 10 + SPLASH_MS), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
+    }
+
+    #[test]
+    fn a_claimed_hit_is_named_for_its_target_and_nothing_else() {
+        let mut c = Casts::default();
+        assert!(!c.claimed_on(1, 2, 0));
+        c.start(1, cast(BOLT, 1, CastKind::FireAndForget, false), 0);
+        // a cast with no hit yet names nobody
+        assert!(!c.claimed_on(1, 2, 10));
+        assert_eq!(c.claim(1, hit(BOLT, 2, 100.0, 0.0, 0.0), 50), CastCheck::Claimed { scale: 1.0, relay: false, dual: false });
+        assert!(c.claimed_on(1, 2, 60));
+        // another target, another caster
+        assert!(!c.claimed_on(1, 3, 60));
+        assert!(!c.claimed_on(2, 2, 60));
+        // past the cast's window
+        assert!(!c.claimed_on(1, 2, CAST_WINDOW_MS + 1));
     }
 
     #[test]

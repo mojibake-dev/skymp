@@ -1,8 +1,10 @@
 #include "ActionListener.h"
 #include "ActivateMessage.h"
+#include "ActorValueRecord.h"
 #include "CreateActorMessage.h"
 #include "DestroyActorMessage.h"
 #include "DestructionStageMessage.h"
+#include "HitMessage.h"
 #include "PropClaimMessage.h"
 #include "PropOwnerMessage.h"
 #include "PropTransformMessage.h"
@@ -2537,6 +2539,165 @@ TEST_CASE("Another player's grip holds a player's body: its grab is granted "
   REQUIRE(ended.size() == 1);
   REQUIRE(ended[0].refr == kC1);
   REQUIRE(ended[0].player == 0);
+  DoDisconnect(p, 1);
+  p.DestroyActor(kC1);
+  p.DestroyActor(kC2);
+}
+
+// Dawnguard.esm: the Vampire Lord's grip, DLC1nVampireBloodyGripSpell
+// 0x0200E7D2, is a concentration spell whose cloak effect
+// DLC1nVampireBloodyGripCloakEffect 0x0200E7D7 reaches DLC1VampireGripDmg
+// 0x0200E7DA, an Absorb Health of 5 a second whose effect 0x0200E7E8 holds
+// one condition, GetActorValue(Grabbed) == 1: the engine's mark on the actor
+// a grab holds, set only in the gripper's game
+namespace {
+constexpr uint32_t kGripSpell = 0x0200e7d2;
+constexpr uint32_t kGripDmg = 0x0200e7da;
+
+// two players in the forest, `gripped` with a recorded base health of 250
+// and the gripper with the grip in its right hand, cast
+MpActor& GripPair(PartOne& p, uint32_t gripped, uint32_t gripper)
+{
+  const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+  auto& body = Player(p, 0, gripped, kForest);
+  auto& hands = Player(p, 1, gripper, kForest + NiPoint3{ 20.f, 0.f, 0.f });
+  p.TickCellHosts(NowMs());
+  ActorValueRecord record;
+  record.bases = { { 24, 250.f } };
+  REQUIRE(body.SetActorValueRecord(record));
+  Equipment eq;
+  eq.rightSpell = kGripSpell;
+  hands.SetEquipment(eq);
+  DoMessage(
+    p, 1,
+    nlohmann::json{ { "t", static_cast<int>(MsgType::SpellCast) },
+                    { "data",
+                      { { "caster", 0x14 },
+                        { "target", 0 },
+                        { "spell", kGripSpell },
+                        { "isDualCasting", false },
+                        { "interruptCast", false },
+                        { "castingSource", 1 },
+                        { "aimAngle", 0.f },
+                        { "aimHeading", 0.f },
+                        { "hasLaunch", false },
+                        { "originX", 0.f },
+                        { "originY", 0.f },
+                        { "originZ", 0.f },
+                        { "launchAngleX", 0.f },
+                        { "launchAngleZ", 0.f },
+                        { "actorAnimationVariables",
+                          { { "booleans", nlohmann::json::array() },
+                            { "floats", nlohmann::json::array() },
+                            { "integers", nlohmann::json::array() } } } } } });
+  return body;
+}
+
+// the gripper's game's report of the grip's drain on `gripped`
+void GripDrains(PartOne& p, uint32_t gripped)
+{
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = gripped;
+  hit.data.source = kGripDmg;
+  p.GetActionListener().OnHit(Raw(1), hit);
+}
+
+void GripLeave(PartOne& p, uint32_t gripped, uint32_t gripper)
+{
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 0);
+  p.DestroyActor(gripped);
+  p.DestroyActor(gripper);
+}
+}
+
+TEST_CASE("A grip's drain takes health from the body its grab holds",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  auto& body = GripPair(p, kC1, kC2);
+  Claim(p, 1, kC1, 1);
+  REQUIRE(p.PropLiveOwner(body) == kC2);
+  GripDrains(p, kC1);
+  // the first report counts one cadence, half a second: 2.5 of 250
+  REQUIRE(body.GetChangeForm().actorValues.healthPercentage ==
+          Catch::Approx(0.99f));
+  GripLeave(p, kC1, kC2);
+}
+
+TEST_CASE("A grip's drain takes nothing from a body its grab let go",
+          "[Prop][espm]")
+{
+  auto& p = GetPartOne();
+  auto& body = GripPair(p, kC3, kC4);
+  Claim(p, 1, kC3, 1);
+  REQUIRE(p.PropLiveOwner(body) == kC4);
+  // the gripper's rest (its copy's get-up) returns the body
+  Sample(p, 1, kC3, body.GetPos(), true);
+  REQUIRE(p.PropLiveOwner(body) == 0);
+  GripDrains(p, kC3);
+  REQUIRE(body.GetChangeForm().actorValues.healthPercentage ==
+          Catch::Approx(1.f));
+  GripLeave(p, kC3, kC4);
+}
+
+// A player's shout throws another player the grip's way: the shouter's own
+// game throws its copy, so its impulse (touch 3) on the player its shout hit
+// makes the body the shouter's for the flight, once the server took that hit
+// (PartOne::ClaimedHit); the thrown player's own game follows that stream,
+// and the shouter's rest returns the body. An impulse with no hit taken stays
+// refused
+TEST_CASE("A player's shout throws another player's body: the shouter's "
+          "impulse is granted once its hit on that player is taken, told to "
+          "the thrown player's own game, its samples move the body, and its "
+          "rest returns it",
+          "[Prop][espm]")
+{
+  // VoiceUnrelentingForce1 (Skyrim.esm), the shout's first word's spell
+  constexpr uint32_t kFus = 0x00013e09;
+  const NiPoint3 kForest{ 123000.f, -80000.f, 10705.f };
+  auto& p = GetPartOne();
+  Player(p, 0, kC1, kForest);
+  Player(p, 1, kC2, kForest + NiPoint3{ 200.f, 0.f, 0.f });
+  p.TickCellHosts(NowMs());
+  MpActor* c1 = p.worldState.LookupFormByIdNoLoad(kC1)->AsActor();
+  REQUIRE(c1 != nullptr);
+  p.Messages().clear();
+  // c2's impulse on c1 with no hit of its shout's taken: refused
+  Claim(p, 1, kC1, 3);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  REQUIRE(SentTo<PropOwnerMessage>(p, 0).empty());
+  // c2's shout hits c1, the server takes the hit: c2's impulse is granted
+  p.StartCast(kC2, kFus, 2, kForest + NiPoint3{ 200.f, 0.f, 0.f });
+  REQUIRE(p.ClaimCast(kC2, kFus, kC1, c1->GetPos()).check ==
+          PartOne::CastCheck::Claimed);
+  {
+    LogCapture log;
+    Claim(p, 1, kC1, 3);
+    REQUIRE(log.Count("[verb:prop-physics] ff000d02 claims prop ff000d01 by "
+                      "touch 3: granted") == 1);
+  }
+  REQUIRE(p.PropLiveOwner(*c1) == kC2);
+  const auto words = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(words.size() == 1);
+  REQUIRE(words[0].refr == kC1);
+  REQUIRE(words[0].player == kC2);
+  // the shouter's sample moves c1's body and reaches c1's own game
+  p.Messages().clear();
+  const NiPoint3 thrown = c1->GetPos() + NiPoint3{ -60.f, 0.f, 25.f };
+  Sample(p, 1, kC1, thrown, false);
+  REQUIRE(c1->GetPos() == thrown);
+  REQUIRE(RelaysTo(p, 0).size() == 1);
+  // the shouter's rest returns the body: player 0, which c1's own game reads
+  // as its own
+  p.Messages().clear();
+  Sample(p, 1, kC1, thrown, true);
+  REQUIRE(p.PropLiveOwner(*c1) == 0);
+  const auto back = SentTo<PropOwnerMessage>(p, 0);
+  REQUIRE(back.size() == 1);
+  REQUIRE(back[0].player == 0);
+  DoDisconnect(p, 0);
   DoDisconnect(p, 1);
   p.DestroyActor(kC1);
   p.DestroyActor(kC2);

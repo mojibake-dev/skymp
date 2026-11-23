@@ -333,6 +333,11 @@ public:
   // keeps that owner and the prop a pair where the grid would part them, as
   // it keeps an actor's simulator (D6); none installed, the grid alone
   std::function<uint32_t(uint32_t refr)> propLiveOwnerOf;
+  // and whether a grab holds a body: its live row's grab, from the prop
+  // table (wire-rules props' held); installed by PartOne. The condition
+  // GetActorValue(Grabbed) reads it, since the engine sets that mark only in
+  // the grabber's game, whose stream the row follows
+  std::function<bool(uint32_t refr)> propHeldOf;
   // thuum docs/verbs/npc-fate.md ("The body's rest"; physics rung 5a, ADR-071
   // decision 5: a dead actor's row is owned by the death's simulator): a
   // body's word to the prop table (wire-rules props), from MpActor's settle.

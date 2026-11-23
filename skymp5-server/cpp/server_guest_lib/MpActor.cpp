@@ -5590,7 +5590,7 @@ bool MpActor::EffectConditionsHold(WorldState* worldState,
 void MpActor::ApplyEffects(uint32_t source,
                            const std::vector<espm::Effects::Effect>& effects,
                            float scale, uint32_t caster, bool stream,
-                           bool dualCast, float streamSeconds)
+                           bool dualCast, float streamSeconds, bool reached)
 {
   WorldState* worldState = GetParent();
   if (!worldState || IsDead()) {
@@ -5613,7 +5613,20 @@ void MpActor::ApplyEffects(uint32_t source,
   std::array<float, 3> deltas{};
   std::array<bool, 3> touched{};
   OtherDeltas others;
+  const bool showReached = reached && stream;
   for (const auto& effect : effects) {
+    if (showReached) {
+      // the caster's game applied it to report the hit, so every game shows
+      // it whatever the conditions read here
+      if (const auto shown = EffectFactsOf(worldState, source, effect)) {
+        MagicEffectsMessage::Effect once;
+        once.effect = shown->effect;
+        once.source = source;
+        once.magnitude = shown->magnitude * scale;
+        once.caster = caster;
+        shownOnce.push_back(once);
+      }
+    }
     if (casterActor) {
       if (!EffectConditionsHold(worldState, effect, source, *this,
                                 *casterActor, dualCast)) {

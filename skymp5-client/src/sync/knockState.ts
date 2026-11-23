@@ -48,3 +48,24 @@ export const isFollowedDown = (refrId: number): boolean => {
   const at = followedDown.get(refrId);
   return at !== undefined && Date.now() - at <= followedDownMs;
 };
+
+// This game's own player's body under another player's force (a grip's hold
+// or a throw's flight whose stream this game follows, PropService's handed
+// own player): the forcing player's game is the body's only simulator, its
+// stream the body's record, so this game sends no movement of its own player
+// until the hand-back word. PropService marks it while a word names another
+// player for the body and clears it at the hand-back; forgotten after
+// ownHandedMs unrenewed, so a lost clear stops no movement for long
+let ownHandedAt: number | undefined;
+const ownHandedMs = 2000;
+
+export const markOwnHanded = (now: number = Date.now()): void => {
+  ownHandedAt = now;
+};
+
+export const clearOwnHanded = (): void => {
+  ownHandedAt = undefined;
+};
+
+export const isOwnHanded = (now: number = Date.now()): boolean =>
+  ownHandedAt !== undefined && now - ownHandedAt <= ownHandedMs;

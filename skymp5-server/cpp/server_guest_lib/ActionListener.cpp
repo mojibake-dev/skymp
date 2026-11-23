@@ -4931,18 +4931,24 @@ void ActionListener::OnPropClaim(const RawMessageData& rawMsgData,
     }
     const auto* propActor = prop->AsActor();
     const bool self = prop == myActor;
-    // thuum tracker #179 (ADR-063's 2026-11-19 amendment; Eli: "yeah go with
-    // it"): a player's body is its own game's, except in another player's
-    // grip, a hand (touch 1, the engine's grab: a Vampiric Grip names its
-    // actor as the gripper's grabbed object) whose hold makes it the
-    // gripper's until the gripper's rest returns it (A4's word, player 0);
-    // the gripped game follows that stream. Any other touch of another
-    // player's body (a contact, a drop, an impulse) stays refused: its own
-    // game simulates its knock (#178)
+    // A player's body is its own game's, except in another player's grip or
+    // throw. A grip is a hand (touch 1, the engine's grab: a Vampiric Grip
+    // names its actor as the gripper's grabbed object); a throw is the
+    // pusher's impulse (touch 3) on a player its cast hit, the hit the
+    // server took (PartOne::ClaimedHit, the cast still in its window), since
+    // the pusher's own game throws its copy of that player (the push-figure
+    // hook, PushRoute.h). Either makes the body the claimant's until its rest
+    // returns it (A4's word, player 0), and the player's own game follows
+    // that stream. Any other touch of another player's body (a contact, a
+    // drop, an impulse with no hit taken) stays refused: its own game
+    // simulates its knock
     constexpr uint32_t kTouchGrab = 1;
+    constexpr uint32_t kTouchImpulse = 3;
     if (kind == PropKind::LiveBody && propActor &&
         propActor->GetUserId() != Networking::InvalidUserId && !self &&
-        msg.touch != kTouchGrab) {
+        msg.touch != kTouchGrab &&
+        !(msg.touch == kTouchImpulse &&
+          partOne.ClaimedHit(myActor->GetFormId(), prop->GetFormId()))) {
       return refuse("E_PROP_KIND",
                     "a player's body, which its own game simulates (ADR-063)");
     }
@@ -11050,8 +11056,11 @@ void ActionListener::OnConsoleCommand(const RawMessageData& rawMsgData,
 // the push goes to the pushed actor's own simulator. Consistency alone is
 // checked: the caster is the sender's own actor or one it hosts
 // (E_PUSH_CASTER); the target a live actor no player owns, its host some
-// other seat (E_PUSH_TARGET, E_PUSH_HOST); the two in one cell or worldspace
-// within kPushReach (E_PUSH_FAR); the force bounded by the wire
+// other seat (E_PUSH_TARGET, E_PUSH_HOST); a hit of the caster's on the
+// target that a cast of its claimed, still within the cast's window, since a
+// script pushes from the effect that hit put on the target, and a hit the
+// server refused puts none there (E_PUSH_NO_HIT); the two in one cell or
+// worldspace within kPushReach (E_PUSH_FAR); the force bounded by the wire
 // (PUSH_FORCE_MAX). Then the target's host runs
 // ObjectReference.PushActorAway(target, force) with the caster's figure as
 // self (an SpSnippet, DeliverSpellLanding's shape), its engine's own throw,
@@ -11092,6 +11101,14 @@ void ActionListener::OnPushActor(const RawMessageData& rawMsgData,
                  myActor->GetFormId(), caster->GetFormId(),
                  target->GetFormId(),
                  host ? "its own game simulates" : "no game simulates");
+    return;
+  }
+  if (!partOne.ClaimedHit(caster->GetFormId(), target->GetFormId())) {
+    spdlog::warn("[verb:push] E_PUSH_NO_HIT: {:x} reports {:x} pushing {:x} "
+                 "with no hit of the caster's on it that the server took; "
+                 "refused",
+                 myActor->GetFormId(), caster->GetFormId(),
+                 target->GetFormId());
     return;
   }
   const auto& a = caster->GetPos();
@@ -12049,7 +12066,7 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
                  "claimed as a spell its cast reaches",
                  aggressor->GetFormId(), targetRef->GetFormId(),
                  hitData.source);
-    OnSpellHit(aggressor, targetRef, hitData, claim.scale, claim.dual);
+    OnSpellHit(aggressor, targetRef, hitData, claim.scale, claim.dual, true);
     return;
   }
 
@@ -12593,7 +12610,7 @@ bool MovesServerValue(WorldState* worldState,
 void ActionListener::OnSpellHit(MpActor* aggressor,
                                 MpObjectReference* targetRef,
                                 const HitData& hitData, float magnitudeScale,
-                                bool dualCast)
+                                bool dualCast, bool reached)
 {
   SendPapyrusOnHitEvent(aggressor, targetRef, hitData);
 
@@ -12650,7 +12667,8 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
                               effects);
   }
   targetActorPtr->ApplyEffects(hitData.source, effects, scale,
-                               aggressor->GetFormId(), stream, dualCast);
+                               aggressor->GetFormId(), stream, dualCast, 0.f,
+                               reached);
   // thuum docs/verbs/npc-fate.md (ADR-048's B): the hit the server
   // numbered, a death report's evidence (a self cast is no hit taken)
   if (aggressor != targetActorPtr) {

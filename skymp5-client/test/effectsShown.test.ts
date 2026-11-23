@@ -67,3 +67,35 @@ test("an effect with no shader and no art draws nothing and stops nothing", () =
   assert.strictEqual(shown.arts.size, 0);
   assert.deepStrictEqual(noLongerShown(new Set(), shown.shaders, shown.engineShaders), []);
 });
+
+// the grip's cloak swirl, the effect a gripped body carries while held
+const SWIRL = 0xdc209;
+
+test("the gripper's game, whose engine runs the cloak's effect on the gripped figure, draws no second swirl", () => {
+  const shown = effectsShown([{ shader: SWIRL, art: 0, seconds: 1, engineRuns: true }]);
+  assert.strictEqual(shown.shaders.size, 0);
+  assert.deepStrictEqual(noLongerShown(new Set(), shown.shaders, shown.engineShaders), []);
+});
+
+test("the gripped player's own game, whose engine never got the effect, draws the swirl for the server's seconds", () => {
+  const shown = effectsShown([{ shader: SWIRL, art: 0, seconds: 1, engineRuns: false }]);
+  assert.deepStrictEqual([...shown.shaders], [[SWIRL, 1]]);
+  assert.ok(shownAfter(new Set(), shown.shaders, shown.engineShaders).has(SWIRL));
+});
+
+test("a swirl this game drew stays while the engine runs the effect, and stops once the server's set drops it", () => {
+  const first = effectsShown([{ shader: SWIRL, art: 0, seconds: 1, engineRuns: false }]);
+  const drawn = shownAfter(new Set(), first.shaders, first.engineShaders);
+  const engineNow = effectsShown([{ shader: SWIRL, art: 0, seconds: 1, engineRuns: true }]);
+  assert.strictEqual(engineNow.shaders.size, 0);
+  assert.deepStrictEqual(noLongerShown(drawn, engineNow.shaders, engineNow.engineShaders), []);
+  const kept = shownAfter(drawn, engineNow.shaders, engineNow.engineShaders);
+  const dropped = effectsShown([]);
+  assert.deepStrictEqual(noLongerShown(kept, dropped.shaders, dropped.engineShaders), [SWIRL]);
+});
+
+test("an effect with no shader draws nothing, and a swirl drawn before it stops", () => {
+  const shown = effectsShown([{ shader: 0, art: 0, seconds: 1, engineRuns: false }]);
+  assert.strictEqual(shown.shaders.size, 0);
+  assert.deepStrictEqual(noLongerShown(new Set([SWIRL]), shown.shaders, shown.engineShaders), [SWIRL]);
+});

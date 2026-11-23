@@ -31,6 +31,7 @@ import { GamemodeUpdateService } from "../services/services/gamemodeUpdateServic
 import { HostService } from "../services/services/hostService";
 import { PuppetService } from "../services/services/puppetService";
 import { PropService } from "../services/services/propService";
+import { recordMovesIt } from "../sync/bodyPlace";
 import { ActorFateService } from "../services/services/actorFateService";
 import { SummonService } from "../services/services/summonService";
 import { ChangeFormService } from "../services/services/changeFormService";
@@ -1350,7 +1351,11 @@ export class FormView {
     // own physics. Untracked (out of reach, the switch off), the record
     // places the reference as before, and PropService keeps that record at
     // the last sample it saw
-    const propPlaced = !isActor && SpApiInteractor.getControllerInstance().lookupListener(PropService).placesIt(this.refrId);
+    // An actor's live body a grip or a stream places is the same: the
+    // record's root placed under a grab pulls its parts apart
+    // (sync/bodyPlace.ts)
+    const propService = SpApiInteractor.getControllerInstance().lookupListener(PropService);
+    const propPlaced = !recordMovesIt({ isActor, tracked: propService.placesIt(this.refrId), ...(isActor ? propService.liveBodyPlaced(this.refrId) : { held: false, streaming: false, followedLive: false }) });
     // tracker #128: a copy placed from a dead record takes no movement: the
     // create word's movement says isDead false (remoteServer.ts builds it so),
     // and movementApply's death word for a 0xff copy would stand the laid body

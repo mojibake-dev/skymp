@@ -13,5 +13,11 @@ export interface DressedRow {
 
 // the base ids to equip after the dress, each once
 export const toEquipAfterDress = (rows: readonly DressedRow[], isEquipped: (baseId: number) => boolean): number[] => {
-    return [];
+    const out: number[] = [];
+    for (const r of rows) {
+        if ((r.worn || r.wornLeft) && r.baseId !== 0 && out.indexOf(r.baseId) < 0 && !isEquipped(r.baseId)) {
+            out.push(r.baseId);
+        }
+    }
+    return out;
 };

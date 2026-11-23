@@ -14,6 +14,7 @@ import {
 import { logLab, logTrace } from '../logging';
 import { Entry, Inventory, addItemExEntry, getInventory, readWorn } from './inventory';
 import { toLocalWornInventory } from './createdForms';
+import { toEquipAfterDress } from "./wornDress";
 
 export const enum SpellType {
   Left,
@@ -556,6 +557,30 @@ export const applyEquipment = (ac: Actor, eq: Equipment, keepAlso: readonly numb
   }
   if (!isPlayer && extras.length > 0) {
     logLab("verb:craft", `figure ${ac.getFormID().toString(16)} dressed with ${extras.length} worn row(s) carrying extras`);
+  }
+  // AddItemEx equips a worn row only for a weapon, a shield-like piece or
+  // ammunition, so a worn armor row with extras (a tempered helmet) lands
+  // unworn: once the adds have landed, the engine's own equip puts on each
+  // worn row the actor holds but does not wear (sync/wornDress.ts)
+  if (extras.length > 0) {
+    const dressedId = ac.getFormID();
+    Utility.wait(0.1).then(() => {
+      const again = Actor.from(Game.getFormEx(dressedId));
+      if (!again) {
+        return;
+      }
+      const isEquipped = (baseId: number) => {
+        const f = Game.getFormEx(baseId);
+        return !!f && again.isEquipped(f);
+      };
+      for (const baseId of toEquipAfterDress(extras, isEquipped)) {
+        const f = Game.getFormEx(baseId);
+        if (f && again.getItemCount(f) > 0) {
+          again.equipItemEx(f, 0, false, false);
+          logLab("verb:craft", `${dressedId.toString(16)}: worn ${baseId.toString(16)} with extras equipped after its add`);
+        }
+      }
+    });
   }
 
   // finding 45: the player's hands, once setInventory's adds have landed,

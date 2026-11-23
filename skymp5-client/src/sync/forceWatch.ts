@@ -21,16 +21,25 @@ export const forceWatchVerdict = (f: { since: number; now: number; ragdoll: bool
   return f.now - f.since > WATCH_MS ? "drop" : "wait";
 };
 
-// What PropService reads of a watched figure at an update: null when its local
-// id names no remote id or no actor of a figure's base any more
-export type ForcedRead = { figure: boolean; tracked: boolean; ragdoll: boolean };
+// What PropService reads of a watched actor at an update: null when its local
+// id names no remote id or no actor any more. figure: another player's figure
+// (its knock is this seat's push's, the push-figure hook); hosted: an actor
+// this seat's game runs, whatever its graph (a creature's queues no knock
+// edge, since the action hook admits the master behaviour's graph alone)
+export type ForcedRead = { figure: boolean; hosted: boolean; tracked: boolean; ragdoll: boolean };
 
-export type ForcedOutcome = { localId: number; verdict: "claim" } | { localId: number; verdict: "drop"; why: string };
+// claim: another player's figure, claimed by touch 3; track: an actor this
+// seat hosts, its body a row this seat streams as the host's
+export type ForcedOutcome =
+  | { localId: number; verdict: "claim" }
+  | { localId: number; verdict: "track" }
+  | { localId: number; verdict: "drop"; why: string };
 
 // The watch itself, as PropService drives it: reach() from magicEffectApply,
 // update() from every update. Nothing else gates it, since a shout that
-// reaches only the other player's figure queues no knock and no impulse for
-// any other step of the update to run on.
+// reaches only the other player's figure, or a creature this seat hosts,
+// queues no knock and no bracketed impulse for any other step of the update
+// to run on (the push's own impulse runs outside every bracket).
 export class ForceWatch {
   private readonly watched = new Map<number, number>();
 
@@ -39,10 +48,11 @@ export class ForceWatch {
   }
 
   // a spell's effect applied: watched when this seat's own player (0x14) cast
-  // it on a server-made figure (a local id at 0xff000000 or past), from its
-  // first reach (a shout's effects each apply)
+  // it on another actor, from its first reach (a shout's effects each apply);
+  // the update's read says whether it is a figure, one this seat hosts, or
+  // neither
   reach(caster: number, target: number, now: number): boolean {
-    if (caster !== 0x14 || target < 0xff000000 || this.watched.has(target)) {
+    if (caster !== 0x14 || target === 0x14 || this.watched.has(target)) {
       return false;
     }
     this.watched.set(target, now);
@@ -53,9 +63,9 @@ export class ForceWatch {
     const out: ForcedOutcome[] = [];
     this.watched.forEach((since, localId) => {
       const r = read(localId);
-      if (r === null || !r.figure) {
+      if (r === null || (!r.figure && !r.hosted)) {
         this.watched.delete(localId);
-        out.push({ localId, verdict: "drop", why: "no figure" });
+        out.push({ localId, verdict: "drop", why: r === null ? "no actor" : "neither another player's figure nor this seat's" });
         return;
       }
       const verdict = forceWatchVerdict({ since, now, ragdoll: r.ragdoll, tracked: r.tracked });
@@ -63,7 +73,11 @@ export class ForceWatch {
         return;
       }
       this.watched.delete(localId);
-      out.push(verdict === "claim" ? { localId, verdict } : { localId, verdict, why: r.tracked ? "already a row" : "never knocked" });
+      if (verdict === "claim") {
+        out.push({ localId, verdict: r.figure ? "claim" : "track" });
+      } else {
+        out.push({ localId, verdict, why: r.tracked ? "already a row" : "never knocked" });
+      }
     });
     return out;
   }

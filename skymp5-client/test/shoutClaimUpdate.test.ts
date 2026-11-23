@@ -37,9 +37,13 @@ require.cache["skyrimPlatform"] = { id: "skyrimPlatform", filename: "skyrimPlatf
 const { PropService } = require("../src/services/services/propService") as { PropService: typeof PropServiceClass };
 
 const figureActor = { getBaseObject: () => ({ getFormID: () => 0x7 }), getFormID: () => FIGURE, isDead: () => false };
+// a draugr this seat hosts (a game-file actor whose graph is no humanoid's, so the action hook queues no knock for it)
+const DRAUGR = 0x380b3;
+const draugrActor = { getBaseObject: () => ({ getFormID: () => 0x4a59a }), getFormID: () => DRAUGR, isDead: () => false };
+const actors: Record<number, unknown> = { [FIGURE]: figureActor, [DRAUGR]: draugrActor };
 const sp: any = new Proxy({
-  Actor: { from: (f: unknown) => (f === figureActor ? figureActor : null) },
-  Game: { getFormEx: (id: number) => (id === FIGURE ? figureActor : null), getPlayer: () => null },
+  Actor: { from: (f: unknown) => (f === figureActor || f === draugrActor ? f : null) },
+  Game: { getFormEx: (id: number) => actors[id] ?? null, getPlayer: () => null },
 }, { get: (t, k) => (k in t ? (t as any)[k] : anything) });
 
 const service = () => {
@@ -57,12 +61,18 @@ const service = () => {
   s.enabled = () => true;
   s.myId = () => 7;
   s.ownedHere = () => false;
-  s.bodyClass = (localId: number) => (localId === FIGURE ? { ragdoll: true, parts: [0], bones: [], cut: false } : null);
-  const row = { refr: FIGURE_REMOTE, localId: FIGURE };
-  s.rowInPlace = () => row;
-  s.rowOrRefusal = () => row;
+  s.bodyClass = (localId: number) => (localId === FIGURE || localId === DRAUGR ? { ragdoll: true, parts: [0], bones: [], cut: false } : null);
+  // the rows made, by local id, and whether this seat's push made them (rowInPlace's and rowOrRefusal's last argument)
+  const rows: Array<{ localId: number; pushed: boolean }> = [];
+  const rowFor = (r: { localId: number }, _now: number, _why: string, _gripped?: boolean, pushed?: boolean) => {
+    rows.push({ localId: r.localId, pushed: pushed === true });
+    return { refr: r.localId === FIGURE ? FIGURE_REMOTE : r.localId, localId: r.localId };
+  };
+  s.rowInPlace = rowFor;
+  s.rowOrRefusal = rowFor;
+  s.hostsHere = (localId: number) => localId === DRAUGR;
   s.claim = (prop: { refr: number }, touch: number) => { claims.push({ refr: prop.refr, touch }); };
-  return { handlers, claims, s };
+  return { handlers, claims, rows, s };
 };
 
 const shoutReaches = (handlers: Record<string, (e?: unknown) => void>) =>
@@ -83,6 +93,14 @@ test("a shout that also knocks an NPC this seat hosts (a knock queued) claims th
   s.knocks.push(0x29602);
   handlers.update();
   assert.deepEqual(claims, [{ refr: FIGURE_REMOTE, touch: 3 }]);
+});
+
+test("a shout that reaches a draugr this seat hosts makes its body a row once its engine reads it knocked, with no knock queued and no claim", () => {
+  const { handlers, claims, rows } = service();
+  handlers.magicEffectApply({ caster: { getFormID: () => PLAYER }, target: { getFormID: () => DRAUGR } });
+  handlers.update();
+  assert.deepEqual(rows, [{ localId: DRAUGR, pushed: true }]);
+  assert.deepEqual(claims, []);
 });
 
 test("another seat's shout on the figure is not this seat's to claim", () => {

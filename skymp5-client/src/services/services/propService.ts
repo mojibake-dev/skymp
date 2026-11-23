@@ -2635,7 +2635,7 @@ export class PropService extends ClientListener {
         }
         const target = e.target.getFormID();
         if (this.forced.reach(e.caster.getFormID(), target, clockMs())) {
-            logLab(TAG, `figure ${target.toString(16)}: this seat's player's spell reached it; watched 2 s for its knock`);
+            logLab(TAG, `actor ${target.toString(16)}: this seat's player's spell reached it; watched 2 s for its knock`);
         }
     }
 
@@ -2651,7 +2651,17 @@ export class PropService extends ClientListener {
         for (const o of this.forced.update(now, (localId) => this.readForced(localId))) {
             const id = o.localId.toString(16);
             if (o.verdict === "drop") {
-                logLab(TAG, `figure ${id}: off the watch (${o.why})`);
+                logLab(TAG, `actor ${id}: off the watch (${o.why})`);
+                continue;
+            }
+            if (o.verdict === "track") {
+                // the host's body by name (the server's word at its first
+                // sample), so no claim: the knock edge's own path
+                // (trackKnocks), for a graph that queues no knock edge
+                const hosted = this.rowOrRefusal({ localId: o.localId, formType: 0 }, now, "knocked here by this seat's player's spell", false, true);
+                logLab(TAG, typeof hosted === "string"
+                    ? `actor ${id}: this seat hosts it, knocked by this seat's player's spell, no row: ${hosted}`
+                    : `prop ${hosted.refr.toString(16)}: an actor this seat hosts, knocked by this seat's player's spell; tracked`);
                 continue;
             }
             const row = this.rowOrRefusal({ localId: o.localId, formType: 0 }, now, "knocked here by this seat's push", false, true);
@@ -2668,17 +2678,25 @@ export class PropService extends ClientListener {
         }
     }
 
-    // a watched figure as forceWatch reads it: null when its local id maps to
-    // no remote id or no actor of a figure's base
+    // a watched actor as forceWatch reads it: null when its local id maps to
+    // no remote id or no actor; its body read only when it is a figure or one
+    // this seat hosts
     private readForced(localId: number): ForcedRead | null {
         const refr = localIdToRemoteId(localId);
         const ac = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
-        if (!refr || !ac || !isFigureBase(ac)) {
+        if (!refr || !ac) {
             return null;
         }
+        const figure = isFigureBase(ac);
+        const hosted = !figure && this.hostsHere(localId);
         const tracked = this.props.has(refr);
-        const c = tracked ? null : this.bodyClass(localId);
-        return { figure: true, tracked, ragdoll: c !== null && c.ragdoll };
+        const c = tracked || (!figure && !hosted) ? null : this.bodyClass(localId);
+        return { figure, hosted, tracked, ragdoll: c !== null && c.ragdoll };
+    }
+
+    // whether this seat's game runs the actor (HostService's word)
+    private hostsHere(localId: number): boolean {
+        return this.controller.lookupListener(HostService).isMineLocal(localId);
     }
 
     private trackKnocks(now: number) {

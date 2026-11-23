@@ -17,6 +17,8 @@ import { NiPoint3 } from "../../sync/movement";
 import { FOLLOW_SAMPLES_MAX, FollowBone, FollowBoneVelocity, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones, segmentVelocities } from "../../sync/propFollow";
 import { simulatorOf } from "../../sync/propOwner";
 import { bodyHasNoRow } from "../../sync/bodyRow";
+import { forceWatchVerdict } from "../../sync/forceWatch";
+import { isFigureBase } from "../../sync/equipment";
 import { FormModel } from "../../view/model";
 import { getViewFromStorage, localIdToRemoteId, remoteIdToLocalId } from "../../view/worldViewMisc";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
@@ -615,6 +617,7 @@ export class PropService extends ClientListener {
         this.controller.on("propContact", (e) => this.onPropContact(e));
         this.controller.on("propImpulse", (e) => this.onPropImpulse(e));
         this.controller.on("pushReported", (e) => this.onPushReported(e));
+        this.controller.on("magicEffectApply", (e) => this.onForceReach(e));
         this.controller.on("containerChanged", (e) => this.onContainerChanged(e));
         // the hook's context allows no game call: the knock is tracked at the
         // next update (trackKnocks)
@@ -1037,6 +1040,7 @@ export class PropService extends ClientListener {
         this.readHolds(now);
         if (this.knocks.length > 0) {
             this.trackKnocks(now);
+            this.watchForced(now);
         }
         if (this.contacts.length > 0) {
             this.claimContacts(now);
@@ -2573,6 +2577,52 @@ export class PropService extends ClientListener {
     // its first frames (the host by default; this seat's player its own
     // body, claimed at its track); a grip's actor is readHolds', a shout's
     // claimImpulses'. A copy this seat knocked to follow is its follow's
+    // A figure this seat's own player's spell reached (sync/forceWatch.ts):
+    // its ids alone here, read at the next update
+    private onForceReach(e: { caster?: ObjectReference | null; target?: ObjectReference | null }) {
+        if (!e.caster || !e.target || e.caster.getFormID() !== 0x14) {
+            return;
+        }
+        const target = e.target.getFormID();
+        if (target >= 0xff000000) {
+            this.forceWatch.set(target, clockMs());
+        }
+    }
+
+    // The watched figures: one another player's, its engine reading it
+    // ragdolled within the window, is this seat's push's throw, so it is a row
+    // (its body pushed here, bodyRow.ts) claimed by touch 3, which the server
+    // grants on this seat's hit it took (OnPropClaim's ClaimedHit)
+    private watchForced(now: number) {
+        if (this.forceWatch.size === 0) {
+            return;
+        }
+        const myId = this.myId();
+        this.forceWatch.forEach((since, localId) => {
+            const refr = localIdToRemoteId(localId);
+            const ac = this.sp.Actor.from(this.sp.Game.getFormEx(localId));
+            if (!refr || !ac || !isFigureBase(ac)) {
+                this.forceWatch.delete(localId);
+                return;
+            }
+            const tracked = this.props.has(refr);
+            const c = tracked ? null : this.bodyClass(localId);
+            const verdict = forceWatchVerdict({ since, now, ragdoll: c !== null && c.ragdoll, tracked });
+            if (verdict === "wait") {
+                return;
+            }
+            this.forceWatch.delete(localId);
+            if (verdict !== "claim") {
+                return;
+            }
+            const prop = this.rowInPlace({ localId, formType: 0 }, now, "knocked here by this seat's push", false, true);
+            if (prop && myId !== 0 && !this.ownedHere(prop, myId)) {
+                this.claim(prop, TOUCH_IMPULSE, now);
+                logLab(TAG, `prop ${prop.refr.toString(16)}: another player's figure this seat's push knocked; claimed by touch 3`);
+            }
+        });
+    }
+
     private trackKnocks(now: number) {
         const knocks = this.knocks;
         this.knocks = [];
@@ -4462,6 +4512,8 @@ export class PropService extends ClientListener {
     private readonly kinds = new Map<number, KindEntry>();
     // the actors the action hook named knocked since the last update
     private knocks: number[] = [];
+    // figures this seat's own player's spell reached, by local id, since when (watchForced)
+    private readonly forceWatch = new Map<number, number>();
     // a live body's last class verdict said, by local id (kindOfBody)
     private readonly liveSaid = new Map<number, string>();
     // physics rung 4: getBodyClass and imposeBodies or releaseBodies missing

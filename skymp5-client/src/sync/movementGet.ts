@@ -82,13 +82,16 @@ const ENGINE_MOVE_THRESHOLD = 5;
 export const getMovement = (refr: ObjectReference, form?: FormModel): Movement => {
   const ac = Actor.from(refr);
   const engine = engineLocomotionOf(refr);
+  // each engine value read once per sample
+  const id = refr.getFormID();
+  const dead = !!(ac && ac.isDead());
 
   // It is running for ObjectReferences because Standing
   // Doesn't lead to translateTo call
   const runMode = ac ? getRunMode(ac, engine) : "Running";
 
   let healthPercentage = ac && ac.getActorValuePercentage("health");
-  if (ac && ac.isDead()) {
+  if (dead) {
     healthPercentage = 0;
   }
   // thuum docs/verbs/npc-puppet.md (x-npc-death 20261023-054215): under the
@@ -100,7 +103,7 @@ export const getMovement = (refr: ObjectReference, form?: FormModel): Movement =
   }
 
   let lookAt: undefined | NiPoint3 = undefined;
-  if (refr.getFormID() !== 0x14) {
+  if (id !== 0x14) {
     const combatTarget = ac?.getCombatTarget();
     if (combatTarget) {
       lookAt = [
@@ -116,7 +119,7 @@ export const getMovement = (refr: ObjectReference, form?: FormModel): Movement =
   let speed;
   if (engine) {
     speed = engine.speed;
-  } else if (refr.getFormID() !== 0x14 && refr.getFormID() < 0xff000000) {
+  } else if (id !== 0x14 && id < 0xff000000) {
     // thuum docs/verbs/npc-puppet.md (x-npc-legs 20261022-202106 against the
     // host baseline 195031): an actor from the game files reports Speed, the
     // graph's own locomotion input (the movement controller's speed, about 80
@@ -124,7 +127,7 @@ export const getMovement = (refr: ObjectReference, form?: FormModel): Movement =
     // natively; SpeedSampled runs 1.3 to 1.5 times higher and blended the
     // puppets toward a jog
     speed = refr.getAnimationVariableFloat("Speed");
-  } else if (refr.getFormID() !== 0x14) {
+  } else if (id !== 0x14) {
     speed = refr.getAnimationVariableFloat("SpeedSampled");
   } else {
     // Real players often run into the wall.
@@ -153,7 +156,7 @@ export const getMovement = (refr: ObjectReference, form?: FormModel): Movement =
     isSneaking: !!(ac && isSneaking(ac)),
     isBlocking: !!(ac && ac.getAnimationVariableBool("IsBlocking")),
     isWeapDrawn: !!(ac && ac.isWeaponDrawn()),
-    isDead: (form?.isDead ?? false) || !!(ac && ac.isDead()),
+    isDead: (form?.isDead ?? false) || dead,
     healthPercentage: healthPercentage || 0,
     lookAt,
     speed

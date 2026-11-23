@@ -6,7 +6,7 @@
   "scripts": {
     "build": "webpack",
     "watch": "webpack -w",
-    "test": "tsc src/sync/bookHold.ts src/sync/propFollow.ts --outDir build/test --module commonjs --target es2019 --strict && node test/bookHold.test.js && node test/propFollow.test.js"
+    "test": "node -e \"require('fs').rmSync('build/test', { recursive: true, force: true })\" && tsc -p tsconfig.test.json && cd build/test && node --test"
   },
   "devDependencies": {
     "bestzip": "^2.2.0",

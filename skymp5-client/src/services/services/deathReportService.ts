@@ -110,6 +110,7 @@ export class DeathReportService extends ClientListener {
             pos: [actor.getPositionX(), actor.getPositionY(), actor.getPositionZ()],
         };
         this.controller.emitter.emit("sendMessage", { message, reliability: "reliable" });
+        this.controller.lookupListener(DeathService).markOwnDeath(actor.getFormID());
         logLab("verb:npc-fate", `death report: ${refrId.toString(16)} died in this game by ${how}, killer ${killer.toString(16)}, cause ${cause}, sent`);
     }
 

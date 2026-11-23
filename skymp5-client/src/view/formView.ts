@@ -17,6 +17,7 @@ import { logLab, logTrace } from "../logging";
 import { FormModel } from "./model";
 import { UpdateActionMessage } from "../services/messages/updateActionMessage";
 import { applyMovement, reaskWeapDrawn } from "../sync/movementApply";
+import { deadCheckAsk } from "../sync/deadCheck";
 import { SpawnProcess } from "./spawnProcess";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { PlayerCharacterDataHolder } from "./playerCharacterDataHolder";
@@ -756,6 +757,11 @@ export class FormView {
   // tracker #128: the most kills the bind issues on one 3D load before it
   // leaves the copy standing and says so (one each two-second check)
   private static readonly placedDeadKillCap = 8;
+  // the longest the dead check holds back a stand-up of a body this host's
+  // engine killed and reported, waiting for the server's word on the death
+  // (sync/deadCheck.ts): the word comes back within a round trip, and a
+  // refused report gets none, so the record's alive word stands it up after
+  private static readonly ownDeathWordWaitMs = 3000;
   // the node scales and texture sets applied to the 3D now loaded (false again when it goes)
   private nodeOverridesOn3D = false;
 
@@ -1169,8 +1175,13 @@ export class FormView {
             }
           }
         }
-      } else if (body && body.isDead() !== want && (!(simulatedHere && want) || (bind && want))) {
-        if (bind && want) {
+      } else if (body) {
+        const ownDeathMsAgo = SpApiInteractor.getControllerInstance().lookupListener(DeathService).ownDeathMsAgo(this.refrId, Date.now());
+        const ask = deadCheckAsk({ engineDead: body.isDead(), want, simulatedHere, bind, ownDeathMsAgo, wordWaitMs: FormView.ownDeathWordWaitMs });
+        if (ask === "none" && !want && simulatedHere && ownDeathMsAgo !== undefined) {
+          logLab("verb:npc-fate", `dead check ${this.refrId.toString(16)}: this host's death report waits for the server's word (${ownDeathMsAgo} ms); the body stays down`);
+        }
+        if (ask === "bindKill") {
           // playtest 37 (3i lay, Eli: "they stay down but i hear a death
           // sound and they are in different places if killed when someone
           // else enters the cell"): the bind kill was the engine's full
@@ -1198,7 +1209,7 @@ export class FormView {
           const placed = this.placeAtDeadRecord(body, model);
           logLab("verb:npc-fate", `dead record ${this.refrId.toString(16)} loaded alive on ${simulatedHere ? "this host's" : "a watcher's"} seat: ${placed}, killed silently at the bind`);
           SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: true, silent: true });
-        } else {
+        } else if (ask === "kill" || ask === "standUp") {
           SpApiInteractor.getControllerInstance().emitter.emit("applyDeathStateEvent", { actor: body, isDead: want });
         }
       }

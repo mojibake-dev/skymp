@@ -47,5 +47,5 @@ export const placeUndriven = (positions: readonly number[][], undriven: Readonly
 export const UNDRIVEN_WAIT_MS = 1000;
 export type PastReachStep = "wait" | "drop";
 export const pastReachStep = (learned: boolean, waitedMs: number): PastReachStep => {
-    return "drop";
+    return !learned && waitedMs < UNDRIVEN_WAIT_MS ? "wait" : "drop";
 };

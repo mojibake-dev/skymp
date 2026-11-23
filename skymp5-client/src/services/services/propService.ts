@@ -25,7 +25,7 @@ import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
 import { SendInputsService } from "./sendInputsService";
 import { ownBodyKeptForTheirWord } from "../../sync/ownBodyKept";
-import { placeUndriven, skeletonKey, undrivenIn } from "../../sync/drivenParts";
+import { pastReachStep, placeUndriven, skeletonKey, undrivenIn } from "../../sync/drivenParts";
 
 const TAG = "verb:prop-physics";
 
@@ -356,6 +356,10 @@ type Prop = {
     // never streamed from here, and untracked once a word newer than the hand
     // returns it (tick); handedAt, when this seat learned of the hand
     handed: boolean;
+    // since when a sample found a part past reach before the skeleton's
+    // undriven parts were known, 0 for none (bonesOf; sync/drivenParts.ts)
+    pastSince: number;
+    pastWaitSaid: boolean;
     handedAt: number;
 };
 
@@ -1959,7 +1963,37 @@ export class PropService extends ClientListener {
                 bones[i] = { ...bones[i], pos: [pos[0], pos[1], pos[2]] };
             });
         }
-        const anchor = boneAnchor(body.pos, bones.map((b) => b.pos), BONE_REACH_UNITS, prop.boneAnchored);
+        let anchor = boneAnchor(body.pos, bones.map((b) => b.pos), BONE_REACH_UNITS, prop.boneAnchored);
+        // a part past reach before the skeleton's undriven parts are known (a
+        // grip's first frames read every part keyframed): a class read now
+        // may teach them; else the sample waits for the ragdoll's read, up to
+        // UNDRIVEN_WAIT_MS, rather than drop the row (sync/drivenParts.ts)
+        const skeleton = this.skeletonOf.get(prop.localId) ?? "";
+        if ("past" in anchor && !this.undrivenBySkeleton.has(skeleton)) {
+            this.bodyClass(prop.localId);
+            const learnedNow = this.undrivenBySkeleton.get(this.skeletonOf.get(prop.localId) ?? "");
+            if (learnedNow !== undefined && learnedNow.size > 0) {
+                placeUndriven(bones.map((b) => b.pos), learnedNow).forEach((pos, i) => {
+                    bones[i] = { ...bones[i], pos: [pos[0], pos[1], pos[2]] };
+                });
+                anchor = boneAnchor(body.pos, bones.map((b) => b.pos), BONE_REACH_UNITS, prop.boneAnchored);
+            } else {
+                const now = clockMs();
+                if (prop.pastSince === 0) {
+                    prop.pastSince = now;
+                }
+                if (pastReachStep(false, now - prop.pastSince) === "wait") {
+                    if (!prop.pastWaitSaid) {
+                        prop.pastWaitSaid = true;
+                        logLab(TAG, `prop ${id}: a part past reach before its skeleton's undriven parts are known; the sample waits for its ragdoll's read`);
+                    }
+                    return undefined;
+                }
+            }
+        }
+        if (!("past" in anchor)) {
+            prop.pastSince = 0;
+        }
         if ("past" in anchor) {
             logLab(TAG, `prop ${id}'s part ${anchor.past} lies ${anchor.reach.toFixed(1)} units from its first part, past the wire's ${BONE_REACH_UNITS}: no row`);
             // which bone the torn body holds apart: its first part's distance
@@ -4203,6 +4237,8 @@ export class PropService extends ClientListener {
             liveEnded: false,
             knockedAt: 0,
             handed: false,
+            pastSince: 0,
+            pastWaitSaid: false,
             handedAt: 0,
         };
     }

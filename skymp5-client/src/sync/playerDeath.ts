@@ -16,5 +16,5 @@ export interface PlayerDeathFacts {
 
 // "wait" while the killmove plays, "die" to apply the death now
 export function playerDeathStep(f: PlayerDeathFacts): "wait" | "die" {
-    return "die";
+    return f.inKillMove && f.waitedMs < f.maxWaitMs ? "wait" : "die";
 }

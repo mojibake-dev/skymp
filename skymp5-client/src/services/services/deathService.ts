@@ -10,11 +10,13 @@ import { ChangeFormService } from "./changeFormService";
 import { RemoteServer } from "./remoteServer";
 import { HostService } from "./hostService";
 import { localIdToRemoteId } from "../../view/worldViewMisc";
+import { playerDeathStep } from "../../sync/playerDeath";
 
 export class DeathService extends ClientListener {
   constructor(private sp: Sp, private controller: CombinedController) {
     super();
     controller.once("update", () => this.onceUpdate());
+    controller.on("update", () => this.onUpdate());
     controller.emitter.on("applyDeathStateEvent", (e) => this.onApplyDeathState(e));
     this.hookDisableKillMoves();
     this.hookDisableStagger();
@@ -23,6 +25,35 @@ export class DeathService extends ClientListener {
 
   public isBusy() {
     return this.playerDead || this.busyForOtherReasonsCounter > 0;
+  }
+
+  // a death word that came during an engine killmove on the player, applied
+  // once the killmove ends (sync/playerDeath.ts)
+  private onUpdate() {
+    if (this.playerDeathSince === undefined) {
+      return;
+    }
+    const player = this.sp.Game.getPlayer();
+    if (!player) {
+      return;
+    }
+    const waitedMs = Date.now() - this.playerDeathSince;
+    if (playerDeathStep({ inKillMove: player.isInKillMove(), waitedMs, maxWaitMs: DeathService.killMoveWaitMs }) === "wait") {
+      return;
+    }
+    this.playerDeathSince = undefined;
+    logLab("verb:death", `own death applied ${waitedMs} ms after its word, once the engine's killmove on the player ended`);
+    this.applyPlayerDeath(player);
+  }
+
+  // the client's own death of its player: every animation event on the player
+  // blocked but Ragdoll, the player held in place and pushed into a ragdoll
+  private applyPlayerDeath(actor: Actor): void {
+    this.busyForOtherReasonsCounter++;
+    this.sp.Utility.wait(7.5).then(() => this.busyForOtherReasonsCounter--);
+    this.allowedPlayerAnimations = [];
+    actor.setDontMove(true);
+    this.killWithPush(actor);
   }
 
   private onceUpdate() {
@@ -236,11 +267,17 @@ export class DeathService extends ClientListener {
   private killActor = (actor: Actor, killer: Actor | null = null, silent = false): void => {
     if (this.isPlayer(actor) === true) {
       this.playerDead = true;
-      this.busyForOtherReasonsCounter++;
-      this.sp.Utility.wait(7.5).then(() => this.busyForOtherReasonsCounter--);
-      this.allowedPlayerAnimations = [];
-      actor.setDontMove(true);
-      this.killWithPush(actor);
+      // an engine killmove on the player plays whole: its paired animation's
+      // events would be blocked and its body pushed mid-pose (onUpdate
+      // applies the death once it ends)
+      if (playerDeathStep({ inKillMove: actor.isInKillMove(), waitedMs: 0, maxWaitMs: DeathService.killMoveWaitMs }) === "wait") {
+        if (this.playerDeathSince === undefined) {
+          this.playerDeathSince = Date.now();
+          logLab("verb:death", "own death word during the engine's killmove on the player: held until it ends");
+        }
+        return;
+      }
+      this.applyPlayerDeath(actor);
     } else {
       if (actor.getFormID() < 0xff000000) {
         // thuum docs/verbs/npc-fate.md (ADR-048's B): the kill below fires
@@ -340,6 +377,8 @@ export class DeathService extends ClientListener {
 
   private resurrectActor = (actor: Actor): void => {
     if (this.isPlayer(actor) === true) {
+      // a death held for a killmove is over with the stand-up
+      this.playerDeathSince = undefined;
       this.playerDead = false;
       this.busyForOtherReasonsCounter++;
       this.sp.Utility.wait(7.5).then(() => this.busyForOtherReasonsCounter--);
@@ -491,6 +530,9 @@ export class DeathService extends ClientListener {
   private readonly playerActorId = 0x14;
 
   private playerDead = false;
+  // when a death word held for an engine killmove on the player came
+  private playerDeathSince: number | undefined = undefined;
+  private static readonly killMoveWaitMs = 10000;
   // the stand-ups queued to the game thread and not yet seen landed, by actor
   private resurrectQueuedAt = new Map<number, number>();
   private static readonly RESURRECT_INFLIGHT_MS = 2000;

@@ -1,10 +1,11 @@
-import { ObjectReference, Actor, Game, TESModPlatform, Debug, setPuppetLocomotion, printConsole, settings } from "skyrimPlatform";
+import { ObjectReference, Actor, Game, TESModPlatform, Debug, setPuppetLocomotion, printConsole, settings, getBodyClass } from "skyrimPlatform";
 import { puppetGazeHeld } from "./puppetGaze";
 import { RespawnNeededError } from "../lib/errors";
 import { Movement, RunMode, AnimationVariables, Transform, NiPoint3 } from "./movement";
 import { ObjectReferenceEx } from "../extensions/objectReferenceEx";
 import { SpApiInteractor } from "../services/spApiInteractor";
 import { isFollowedDown, isKnockedDown } from "./knockState";
+import { recordDown } from "./recordDown";
 import { logLab } from "../logging";
 
 const sqr = (x: number) => x * x;
@@ -25,7 +26,11 @@ export const applyMovement = (refr: ObjectReference, m: Movement, isMyClone?: bo
     SpApiInteractor.getControllerInstance().emitter.emit("newLocalLagValueCalculated", { lagUnitsNoZ });
   }
 
-  translateTo(refr, m, settle === true);
+  // another player's figure: neither this seat's clone nor a puppet, a
+  // server-made actor this seat does not host (the view applies no record to
+  // a hosted one)
+  const figure = isMyClone !== true && puppet !== true && refr.getFormID() >= 0xff000000;
+  translateTo(refr, m, settle === true, figure);
 
   const ac = Actor.from(refr);
   if (!ac) {
@@ -514,7 +519,7 @@ const isStaleAfterPop = (refrId: number, real: NiPoint3, target: NiPoint3): bool
   return ObjectReferenceEx.getDistance(target, pop.from) < ObjectReferenceEx.getDistance(target, pop.pos);
 };
 
-const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
+const translateTo = (refr: ObjectReference, m: Movement, settle = false, figure = false) => {
   // a copy that follows another seat's live body is the stream's until its
   // own knock ends (sync/knockState.ts, thuum tracker #175): no sample moves
   // or turns it, while its health and death words still apply
@@ -630,15 +635,24 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false) => {
     if (actor && actor.isDead()) {
       return;
     }
+    // down: by its player's relayed Ragdoll (Variable10), by this game's own
+    // knock until its get-up (sync/knockState.ts, the push's flight), or, for
+    // another player's figure, by any ragdoll its engine holds here (a grab's
+    // or a throw's, no knock marked): its stream or its rest places it, and
+    // the record resumes after its get-up (sync/recordDown.ts). Read before
+    // the settle line, so a down copy logs none
+    if (actor) {
+      const relayedRagdoll = actor.getActorValue("Variable10") < -999;
+      const knockedDown = isKnockedDown(refrId0);
+      const ragdollHere = figure && !relayedRagdoll && !knockedDown && getBodyClass(refrId0)?.ragdoll === true;
+      if (recordDown({ relayedRagdoll, knockedDown, figure, ragdollHere })) {
+        return;
+      }
+    }
     if (m.runMode === "Standing" && offBy > deadband && deadband === knobs.deadbandStill) {
       // the settle, on the in-game console (rare: a standing figure or puppet
       // found off its still record); the watch's track is the lab's read
       printConsole(`settle ${refrId0.toString(16)}: ${offBy.toFixed(1)} units from (${refrRealPos[0].toFixed(0)}, ${refrRealPos[1].toFixed(0)}) to (${gTempTargetPos[0].toFixed(0)}, ${gTempTargetPos[1].toFixed(0)})`);
-    }
-    // down: by its player's relayed Ragdoll (Variable10), or by this game's
-    // own knock until its get-up (sync/knockState.ts, the push's flight)
-    if (actor && (actor.getActorValue("Variable10") < -999 || isKnockedDown(refr.getFormID()))) {
-      return;
     }
 
     if (!actor || !actor.isDead()) {

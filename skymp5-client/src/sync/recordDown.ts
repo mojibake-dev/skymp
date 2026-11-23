@@ -18,5 +18,5 @@ export interface RecordDownFacts {
 }
 
 export const recordDown = (f: RecordDownFacts): boolean => {
-    return f.relayedRagdoll || f.knockedDown;
+    return f.relayedRagdoll || f.knockedDown || (f.figure && f.ragdollHere);
 };

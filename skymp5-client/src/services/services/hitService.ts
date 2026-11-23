@@ -1,13 +1,15 @@
 // TODO: refactor this out
 import { isSyncedActorId, localIdToRemoteId } from "../../view/worldViewMisc";
 
-import { ActiveMagicEffect, Form, FormType, Game, HitEvent, MagicEffect, ObjectReference, Scroll, Spell, Weapon, printConsole, storage } from "skyrimPlatform";
+import { Actor, ActiveMagicEffect, Form, FormType, Game, HitEvent, MagicEffect, ObjectReference, Scroll, Spell, Weapon, WeaponType, printConsole, storage } from "skyrimPlatform";
 import { ClientListener, CombinedController, Sp } from "./clientListener";
 import { HostService } from "./hostService";
 import { MagicSyncService } from "./magicSyncService";
 import { MsgType } from "../../messages";
 import { Hit } from "../messages/hitMessage";
 import { shoutGate } from "./shoutService";
+import { hitSourceKind } from "../../sync/hitSource";
+import { logLab } from "../../logging";
 
 export class HitService extends ClientListener {
     constructor(private sp: Sp, private controller: CombinedController) {
@@ -178,12 +180,20 @@ export class HitService extends ClientListener {
         let isWeapon: Weapon | null = null;
         let isSpell: Spell | null = null;
         let isScroll: Scroll | null = null;
+        let enchantment = 0;
+        let staffEnchantments: number[] = [];
         try {
             const base = e.target.getBaseObject();
             type = base?.getType();
             isWeapon = this.sp.Weapon.from(e.source);
             isSpell = isWeapon ? null : this.sp.Spell.from(e.source);
             isScroll = isWeapon || isSpell ? null : this.sp.Scroll.from(e.source);
+            // a staff's projectile names the staff's enchantment
+            // (sync/hitSource.ts), read only for a source none of the three
+            if (!isWeapon && !isSpell && !isScroll && e.source && this.sp.Enchantment.from(e.source)) {
+                enchantment = e.source.getFormID();
+                staffEnchantments = HitService.staffEnchantmentsOf(this.sp.Actor.from(e.aggressor));
+            }
         } catch (err) {
             if (!this.abortedHitLogged) {
                 this.abortedHitLogged = true;
@@ -196,8 +206,19 @@ export class HitService extends ClientListener {
             return;
         }
 
-        if (!isWeapon && !isSpell && !isScroll) {
+        const kind = hitSourceKind({ weapon: !!isWeapon, spell: !!isSpell, scroll: !!isScroll, enchantment, staffEnchantments });
+        if (kind === "none") {
+            // a source no rule reports, said once a source so a look shows it
+            const source = e.source ? e.source.getFormID() : 0;
+            if (source !== 0 && !this.unreportedSaid.has(source)) {
+                this.unreportedSaid.add(source);
+                logLab("verb:spell-cast", `a hit of ${aggressor.toString(16)}'s with source ${source.toString(16)} is no weapon, spell, scroll or held staff's enchantment: not reported`);
+            }
             return;
+        }
+        if (kind === "staff" && !this.staffSaid.has(enchantment)) {
+            this.staffSaid.add(enchantment);
+            logLab("verb:spell-cast", `a staff's hit of ${aggressor.toString(16)}'s, its enchantment ${enchantment.toString(16)}: reported as its cast's`);
         }
 
         // thuum docs/verbs/spell-cast.md: a magic hit comes twice in a frame
@@ -217,7 +238,7 @@ export class HitService extends ClientListener {
         // where they read as the engine's double and were dropped before any
         // send. They are measured in time now: the engine's double is 0 to
         // 2 ms apart, a stream's ticks never under 100 ms
-        if (isSpell || isScroll) {
+        if (isSpell || isScroll || kind === "staff") {
             const key = `${e.aggressor.getFormID()}:${e.target.getFormID()}:${e.source.getFormID()}`;
             const now = Date.now();
             const last = this.magicHitLastMs.get(key);
@@ -323,5 +344,26 @@ export class HitService extends ClientListener {
     private appliedOn = new Map<number, number>();
     private heldUnarmed: Array<{ frame: number; target: number; send: () => void }> = [];
     private abortedHitLogged = false;
+    // the sources said once each (onHit): a staff's enchantment reported, a
+    // source no rule reports
+    private staffSaid = new Set<number>();
+    private unreportedSaid = new Set<number>();
+
+    // the enchantments of the staffs in an actor's two hands (0 for a hand
+    // with none)
+    private static staffEnchantmentsOf(actor: Actor | null): number[] {
+        if (!actor) {
+            return [];
+        }
+        const out: number[] = [];
+        for (const left of [false, true]) {
+            const weapon = actor.getEquippedWeapon(left);
+            if (weapon && weapon.getWeaponType() === WeaponType.Staff) {
+                const ench = weapon.getEnchantment();
+                out.push(ench ? ench.getFormID() : 0);
+            }
+        }
+        return out;
+    }
     private magicHitLastMs = new Map<string, number>();
 }

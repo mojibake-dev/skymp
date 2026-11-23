@@ -26,6 +26,7 @@ import {
   callNative,
 } from "skyrimPlatform";
 import { logLab } from "../logging";
+import { ownName } from "./itemName";
 import { CreatedForm, isSessionId, sameCreated, toLocalInventory } from "./createdForms";
 
 export interface Extra {
@@ -227,6 +228,14 @@ const extractExtraData = (
       }
     }
   });
+  // the name the stack keeps as its own (sync/itemName.ts): a tempered
+  // stack's engine label is left to the engine, and its base's name is none
+  const own = ownName(out.name, out.health, item ? item.getName() : "");
+  if (own === undefined) {
+    delete out.name;
+  } else {
+    out.name = own;
+  }
 };
 
 const squash = (inv: Inventory): Inventory => {
@@ -509,7 +518,10 @@ export const addItemExEntry = (refr: ObjectReference, f: Form, e: Entry, count: 
     // extra list (ExtraTextDisplayData, no ExtraCount) that the engine
     // counts as one item, so 3 Wheat would show as "Wheat" and "Wheat (2)".
     // extrasEqual ignores names, so the diff does not change.
-    e.name ? cropName(e.name) : "",
+    // the stack's own name alone: the engine adds a tempered stack's label
+    // from its health (sync/itemName.ts), so a record that holds the label
+    // too would show it twice
+    cropName(ownName(e.name, e.health, f.getName()) ?? ""),
     e.soul ? e.soul : 0,
     e.poisonId ? Potion.from(Game.getFormEx(e.poisonId)) : null,
     e.poisonCount ? e.poisonCount : 0

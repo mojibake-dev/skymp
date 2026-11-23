@@ -22,6 +22,7 @@
 #include "libespm/ACHR.h"
 #include "libespm/ALCH.h"
 #include "libespm/Convert.h"
+#include "libespm/ENCH.h"
 #include "libespm/GLOB.h"
 #include "libespm/GMST.h"
 #include "libespm/HDPT.h"
@@ -1970,11 +1971,22 @@ void EndConcealment(PartOne& partOne, MpActor& actor, uint32_t castSpell = 0)
   }
 }
 
+// whether a cast's id names a spell (SPEL) in the records
+static bool IsSpellRecord(WorldState& worldState, uint32_t spellId)
+{
+  const auto lookup = worldState.GetEspm().GetBrowser().LookupById(spellId);
+  return lookup.rec && lookup.rec->GetType() == espm::SPEL::kType;
+}
+
 // thuum docs/verbs/self-cast.md: a fire-and-forget spell of Self delivery
 // (a shout's included) runs its effects on its caster on the server, as a
 // drink's do: the server holds them and their time, every game sees them
 void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
 {
+  // a staff's cast names its enchantment (ENCH), never a Self spell
+  if (!IsSpellRecord(worldState, spellId)) {
+    return;
+  }
   try {
     const auto spell = espm::GetData<espm::SPEL>(spellId, &worldState);
     if (!spell.spellItem ||
@@ -2027,6 +2039,9 @@ void RunSelfSpell(WorldState& worldState, MpActor& caster, uint32_t spellId)
 // animation's) ends nothing, its effects run their recorded time
 void EndSelfStream(WorldState& worldState, MpActor& caster, uint32_t spellId)
 {
+  if (!IsSpellRecord(worldState, spellId)) {
+    return;
+  }
   try {
     const auto spell = espm::GetData<espm::SPEL>(spellId, &worldState);
     if (!spell.spellItem ||
@@ -11849,8 +11864,11 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   auto sourceInEspm =
     partOne.GetEspm().GetBrowser().LookupById(hitData.source);
 
-  const bool isSourceSpell =
-    sourceInEspm.rec && sourceInEspm.rec->GetType() == espm::SPEL::kType;
+  // a staff's hit names its enchantment (ENCH, the cast the staff makes),
+  // claimed against that cast as a spell's hit is
+  const bool isSourceSpell = sourceInEspm.rec &&
+    (sourceInEspm.rec->GetType() == espm::SPEL::kType ||
+     sourceInEspm.rec->GetType() == espm::ENCH::kType);
 
   const auto equipment = aggressor->GetEquipment();
 
@@ -12597,10 +12615,16 @@ void ActionListener::OnSpellHit(MpActor* aggressor,
   std::vector<espm::Effects::Effect> effects;
   bool stream = false;
   try {
-    const auto spell =
-      espm::GetData<espm::SPEL>(hitData.source, &partOne.worldState);
-    stream = spell.spellItem &&
-      spell.spellItem->castType == espm::SPEL::CastType::Concentration;
+    // a spell's cast type (SPIT), or a staff's enchantment's (ENIT)
+    if (IsSpellRecord(partOne.worldState, hitData.source)) {
+      const auto spell =
+        espm::GetData<espm::SPEL>(hitData.source, &partOne.worldState);
+      stream = spell.spellItem &&
+        spell.spellItem->castType == espm::SPEL::CastType::Concentration;
+    } else {
+      stream = espm::GetData<espm::ENCH>(hitData.source, &partOne.worldState)
+                 .castType == espm::ENCH::kCastConcentration;
+    }
     effects = MpActor::EffectsOf(&partOne.worldState, hitData.source);
   } catch (std::exception& e) {
     spdlog::warn("OnSpellHit - spell {:x}: {}", hitData.source, e.what());

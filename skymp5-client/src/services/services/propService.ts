@@ -9,7 +9,7 @@ import { PropBone, PropTransformMessage } from "../messages/propTransformMessage
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { RefSweep } from "../../sync/frameCost";
-import { boneAnchor, partsPast } from "../../sync/boneAnchor";
+import { partsPast } from "../../sync/boneAnchor";
 import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
 import { liveNoRowHeld, noRowEntry } from "../../sync/kindCache";
 import { clearFollowedDown, clearOwnHanded, markFollowedDown, markOwnHanded } from "../../sync/knockState";
@@ -27,7 +27,7 @@ import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
 import { SendInputsService } from "./sendInputsService";
 import { ownBodyKeptForTheirWord } from "../../sync/ownBodyKept";
-import { learnedUndriven, pastReachStep, placeUndriven, skeletonKey, undrivenIn } from "../../sync/drivenParts";
+import { UndrivenSkeletons, sampleStep } from "../../sync/drivenParts";
 
 const TAG = "verb:prop-physics";
 
@@ -1961,46 +1961,37 @@ export class PropService extends ClientListener {
             bones.push(pose);
         }
         // a part the engine does not drive is sent at part 0's place, inside
-        // the wire's reach (sync/drivenParts.ts)
-        const undriven = this.undrivenBySkeleton.get(this.skeletonOf.get(prop.localId) ?? "");
-        if (undriven !== undefined && undriven.size > 0) {
-            const placed = placeUndriven(bones.map((b) => b.pos), undriven);
-            placed.forEach((pos, i) => {
-                bones[i] = { ...bones[i], pos: [pos[0], pos[1], pos[2]] };
-            });
-        }
-        let anchor = boneAnchor(body.pos, bones.map((b) => b.pos), BONE_REACH_UNITS, prop.boneAnchored);
-        // a part past reach before the skeleton's undriven parts are known (a
-        // grip's first frames read every part keyframed): a class read now
-        // may teach them; else the sample waits for the ragdoll's read, up to
-        // UNDRIVEN_WAIT_MS, rather than drop the row (sync/drivenParts.ts)
-        const skeleton = this.skeletonOf.get(prop.localId) ?? "";
-        if ("past" in anchor && !this.undrivenBySkeleton.has(skeleton)) {
-            this.bodyClass(prop.localId);
-            const learnedNow = this.undrivenBySkeleton.get(this.skeletonOf.get(prop.localId) ?? "");
-            if (learnedNow !== undefined && learnedNow.size > 0) {
-                placeUndriven(bones.map((b) => b.pos), learnedNow).forEach((pos, i) => {
-                    bones[i] = { ...bones[i], pos: [pos[0], pos[1], pos[2]] };
-                });
-                anchor = boneAnchor(body.pos, bones.map((b) => b.pos), BONE_REACH_UNITS, prop.boneAnchored);
-            } else {
-                const now = clockMs();
-                if (prop.pastSince === 0) {
-                    prop.pastSince = now;
-                }
-                if (pastReachStep(false, now - prop.pastSince) === "wait") {
-                    if (!prop.pastWaitSaid) {
-                        prop.pastWaitSaid = true;
-                        logLab(TAG, `prop ${id}: a part past reach before its skeleton's undriven parts are known; the sample waits for its ragdoll's read`);
-                    }
-                    return undefined;
-                }
+        // the wire's reach; a part past reach before the skeleton's undriven
+        // parts are known (a grip's first frames read every part keyframed)
+        // reads the class now, or waits for the ragdoll's read up to
+        // UNDRIVEN_WAIT_MS, rather than drop the row (sync/drivenParts.ts
+        // sampleStep)
+        const step = sampleStep({
+            root: body.pos,
+            positions: bones.map((b) => b.pos),
+            anchored: prop.boneAnchored,
+            known: this.undriven.of(prop.localId),
+            learnNow: () => {
+                this.bodyClass(prop.localId);
+                return this.undriven.of(prop.localId);
+            },
+            pastSince: prop.pastSince,
+            now: clockMs(),
+            reach: BONE_REACH_UNITS,
+        });
+        prop.pastSince = step.pastSince;
+        if (step.step === "wait") {
+            if (!prop.pastWaitSaid) {
+                prop.pastWaitSaid = true;
+                logLab(TAG, `prop ${id}: a part past reach before its skeleton's undriven parts are known; the sample waits for its ragdoll's read`);
             }
+            return undefined;
         }
-        if (!("past" in anchor)) {
-            prop.pastSince = 0;
-        }
-        if ("past" in anchor) {
+        step.positions.forEach((pos, i) => {
+            bones[i] = { ...bones[i], pos: [pos[0], pos[1], pos[2]] };
+        });
+        if (step.step === "drop") {
+            const anchor = step;
             logLab(TAG, `prop ${id}'s part ${anchor.past} lies ${anchor.reach.toFixed(1)} units from its first part, past the wire's ${BONE_REACH_UNITS}: no row`);
             // which bone the torn body holds apart: its first part's distance
             // from the reference's own place (an actor's read body is its COM,
@@ -2017,11 +2008,11 @@ export class PropService extends ClientListener {
             this.noRow(prop, `its part ${anchor.past} past the wire's reach`);
             return undefined;
         }
-        if (anchor.atPart && !prop.boneAnchored) {
-            logLab(TAG, `prop ${id}: its parts lie past the wire's ${BONE_REACH_UNITS} from its reference (by ${ObjectReferenceEx.getDistance(anchor.pos, body.pos).toFixed(1)} units at its first part), anchored at its first part`);
+        if (step.atPart && !prop.boneAnchored) {
+            logLab(TAG, `prop ${id}: its parts lie past the wire's ${BONE_REACH_UNITS} from its reference (by ${ObjectReferenceEx.getDistance(step.pos, body.pos).toFixed(1)} units at its first part), anchored at its first part`);
         }
-        prop.boneAnchored = anchor.atPart;
-        return { bones, pos: anchor.pos };
+        prop.boneAnchored = step.atPart;
+        return { bones, pos: step.pos };
     }
 
     // a prop this seat's stream found no row (bonesOf): its binding's verdict
@@ -2401,7 +2392,7 @@ export class PropService extends ClientListener {
         // a part this engine does not drive is imposed where this engine
         // already has it, at rest, so the impose never moves it
         // (sync/drivenParts.ts)
-        const undriven = this.undrivenBySkeleton.get(this.skeletonOf.get(prop.localId) ?? "");
+        const undriven = this.undriven.of(prop.localId);
         if (undriven !== undefined && undriven.size > 0) {
             const own = this.readBodies([prop.localId], true)[0];
             const ownBones = own !== undefined ? own.bones : undefined;
@@ -3844,19 +3835,10 @@ export class PropService extends ClientListener {
     // read of that skeleton (a hold's, a standing body's) sends them at part
     // 0's place (sync/drivenParts.ts)
     private learnDriven(localId: number, c: BodyClass) {
-        const key = skeletonKey(c.parts);
-        this.skeletonOf.set(localId, key);
-        const found = undrivenIn(c.parts, c.ragdoll);
-        if (found === undefined) {
-            return;
+        const next = this.undriven.learn(localId, c.parts, c.ragdoll);
+        if (next !== undefined) {
+            logLab(TAG, `skeleton of ${c.parts.length} parts (${localId.toString(16)}'s ragdoll): ${next.size} undriven, ${Array.from(next).sort((a, b) => a - b).join(" ")}`);
         }
-        const known = this.undrivenBySkeleton.get(key);
-        const next = learnedUndriven(known, found);
-        if (known !== undefined && known.size === next.size) {
-            return;
-        }
-        this.undrivenBySkeleton.set(key, next);
-        logLab(TAG, `skeleton of ${c.parts.length} parts (${localId.toString(16)}'s ragdoll): ${next.size} undriven, ${Array.from(next).sort((a, b) => a - b).join(" ")}`);
     }
 
     // the class line, once per binding (kindOf): the root's BSX flags, their
@@ -4614,9 +4596,8 @@ export class PropService extends ClientListener {
     // from this platform, said once each; the world-body contact switch as
     // last told to the platform (applyWorldBodyContacts)
     // the undriven parts by skeleton, and each reference's last skeleton
-    // (learnDriven)
-    private undrivenBySkeleton = new Map<string, Set<number>>();
-    private skeletonOf = new Map<number, string>();
+    // (learnDriven, sync/drivenParts.ts)
+    private readonly undriven = new UndrivenSkeletons();
     private bodyClassSaid = false;
     private imposeSaid = false;
     // thuum tracker #175: the grabbed actor whose grip made no row, said once

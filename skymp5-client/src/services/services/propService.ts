@@ -8,6 +8,7 @@ import { PushActorMessage } from "../messages/pushActorMessage";
 import { PropBone, PropTransformMessage } from "../messages/propTransformMessage";
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
+import { DeadBodyFacts, streamCarries, trackedInPlace } from "../../sync/bodyStream";
 import { RefSweep } from "../../sync/frameCost";
 import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
@@ -1571,17 +1572,13 @@ export class PropService extends ClientListener {
     // body the update's read left out are read whole (readBody). Due samples
     // go out after the ticks, within the budget (sendDue)
     private stream(prop: Prop, refr: ObjectReference, now: number, read: Body | undefined) {
-        // physics rung 5 (thuum tracker #175): a body whose death fall this
-        // seat's settle still samples (sendInputsService, 5a's window) is the
-        // movement path's until that rest, the death word's grant included
-        // (its announce dropped: the settle is the death's stream, and an
-        // opening sample after it woke a resting body for nothing, the
-        // review of f50509d89, finding 5); the stream takes it from its first
-        // wake after, the baseline read then. A hand on it takes it at once:
-        // the settle hands it over (sendInputsService's streamsBody), since a
-        // dragged body never dwells and its settle samples move no view (the
-        // review's finding 3)
-        if (this.isBody(prop) && !prop.held && this.controller.lookupListener(SendInputsService).bodySettling(prop.refr)) {
+        // a body whose death fall this seat's settle still samples
+        // (sendInputsService's window) is the settle's until that rest
+        // unless the stream carries it (bodyStream.ts streamCarries); the
+        // settle hands such a body over at its next sample (streamsBody).
+        // Left to the settle, its announce is dropped and the stream takes
+        // it from its first wake after, the baseline read then
+        if (this.isBody(prop) && !streamCarries(this.deadBodyFacts(prop)) && this.controller.lookupListener(SendInputsService).bodySettling(prop.refr)) {
             prop.lastSent = undefined;
             prop.announce = false;
             return;
@@ -3079,11 +3076,13 @@ export class PropService extends ClientListener {
                 }
             } else if (!prop) {
                 prop = PropService.newProp(c.refr, c.localId, c.formIdx, c.cell, c.distance, now, c.world, c.parts);
-                if (this.kinds.get(c.localId)?.live === true) {
-                    // a knocked actor is where its engine has it (never put
-                    // back at its record), and its knock's first second is
-                    // its flight: no grace (thuum tracker #175)
-                    prop.live = true;
+                const k = this.kinds.get(c.localId);
+                const live = k?.live === true;
+                if (trackedInPlace(live, k !== undefined && k.body === true && !k.live, this.namesMe(c.refr))) {
+                    // the engine's own body in place (bodyStream.ts
+                    // trackedInPlace): where its engine has it, never put
+                    // back at its record, and no grace
+                    prop.live = live;
                     prop.placed = true;
                     prop.placedAt = now;
                     prop.loaded3D = true;
@@ -3469,12 +3468,23 @@ export class PropService extends ClientListener {
         return prop !== undefined && (prop.imposing || this.followLive(prop, clockMs()));
     }
 
-    // physics rung 5 (thuum tracker #175): whether this seat streams the
-    // body (a hand on it, or its stream open), so sendInputsService's death
-    // settle hands it over and samples it no more
+    // whether this seat's prop stream carries the body (bodyStream.ts
+    // streamCarries), so sendInputsService's death settle hands it over and
+    // samples it no more
     streamsBody(refr: number): boolean {
         const prop = this.props.get(refr);
-        return prop !== undefined && this.isBody(prop) && (prop.held || prop.streaming);
+        return prop !== undefined && this.isBody(prop) && streamCarries(this.deadBodyFacts(prop));
+    }
+
+    // what streamCarries reads of a tracked body
+    private deadBodyFacts(prop: Prop): DeadBodyFacts {
+        return { held: prop.held, streaming: prop.streaming, named: this.namesMe(prop.refr) };
+    }
+
+    // the prop row's word names this seat
+    private namesMe(refr: number): boolean {
+        const word = this.owners.get(refr);
+        return word !== undefined && word.player !== 0 && word.player === this.myId();
     }
 
     // and whether this seat follows another seat's stream of the body, so

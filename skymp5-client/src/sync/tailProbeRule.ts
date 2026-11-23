@@ -1,5 +1,5 @@
 // Which of a figure's record moves the tail probe logs (movementApply's
-// translateTo): the distance of the figure's first tail bone from its root,
+// translateTo): the distance of the figure's first tail bone from its reference,
 // read just before a record move and two frames after. Every teleport
 // (setPosition), the first moves after the figure is made, and a glide
 // (translateTo) that opens the tail by more than TAIL_OPEN_UNITS or leaves

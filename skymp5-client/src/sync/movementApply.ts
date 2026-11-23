@@ -688,13 +688,14 @@ const translateTo = (refr: ObjectReference, m: Movement, settle = false, figure 
 };
 
 // The tail probe: for a figure whose body has a tail (a part named
-// TailBone01), its tail bone's distance from the body's root, read right
-// before a record move and two frames after, the lines sync/tailProbeRule.ts
-// picks ("[verb:movement] tail <id> <kind> <d> units: <before> to <after>
-// from its root"). A read: nothing moves for it
+// TailBone01), its tail bone's distance from the figure's reference (the
+// actor's own place), and its COM body's, read right before a record move and
+// two frames after, the lines sync/tailProbeRule.ts picks ("[verb:movement]
+// tail <id> <kind> <d> units: tail <before> to <after>, COM <before> to
+// <after> from its reference"). A read: nothing moves for it
 const tailIndex = new Map<number, number>();
 const tailMoves = new Map<number, number>();
-const tailFromRoot = (refrId: number): number | undefined => {
+const tailFromRef = (refrId: number): { tail: number; com: number } | undefined => {
   let index = tailIndex.get(refrId);
   if (index === undefined) {
     const c = getBodyClass(refrId);
@@ -709,22 +710,25 @@ const tailFromRoot = (refrId: number): number | undefined => {
   }
   const body = readBodies([refrId], true)[0];
   const bone = body && body.bones ? body.bones[index] : undefined;
-  if (!body || !bone) {
+  const ref = ObjectReference.from(Game.getFormEx(refrId));
+  if (!body || !bone || !ref) {
     return undefined;
   }
-  return Math.hypot(bone.pos[0] - body.pos[0], bone.pos[1] - body.pos[1], bone.pos[2] - body.pos[2]);
+  const at: NiPoint3 = [ref.getPositionX(), ref.getPositionY(), ref.getPositionZ()];
+  const from = (p: number[]) => Math.hypot(p[0] - at[0], p[1] - at[1], p[2] - at[2]);
+  return { tail: from(bone.pos), com: from(body.pos) };
 };
 const probeTail = (refrId: number, kind: "setPosition" | "translateTo", distance: number): void => {
-  const before = tailFromRoot(refrId);
+  const before = tailFromRef(refrId);
   if (before === undefined) {
     return;
   }
   const moves = tailMoves.get(refrId) ?? 0;
   tailMoves.set(refrId, moves + 1);
   once("update", () => once("update", () => {
-    const after = tailFromRoot(refrId);
-    if (after !== undefined && tailProbeLogs({ kind, before, after, moves })) {
-      logLab("verb:movement", `tail ${refrId.toString(16)} ${kind} ${distance.toFixed(0)} units: ${before.toFixed(0)} to ${after.toFixed(0)} from its root`);
+    const after = tailFromRef(refrId);
+    if (after !== undefined && tailProbeLogs({ kind, before: before.tail, after: after.tail, moves })) {
+      logLab("verb:movement", `tail ${refrId.toString(16)} ${kind} ${distance.toFixed(0)} units: tail ${before.tail.toFixed(0)} to ${after.tail.toFixed(0)}, COM ${before.com.toFixed(0)} to ${after.com.toFixed(0)} from its reference`);
     }
   }));
 };

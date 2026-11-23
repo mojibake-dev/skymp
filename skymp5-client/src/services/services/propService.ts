@@ -11,7 +11,7 @@ import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { RefSweep } from "../../sync/frameCost";
 import { boneAnchor } from "../../sync/boneAnchor";
 import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
-import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
+import { clearFollowedDown, clearOwnHanded, markFollowedDown, markOwnHanded } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
 import { FOLLOW_SAMPLES_MAX, FollowBone, FollowBoneVelocity, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones, segmentVelocities } from "../../sync/propFollow";
 import { simulatorOf } from "../../sync/propOwner";
@@ -1103,6 +1103,12 @@ export class PropService extends ClientListener {
             prop.handed = true;
             prop.handedAt = now;
             logLab(TAG, `prop ${prop.refr.toString(16)}: another player's grip holds this seat's player (${word.player.toString(16)}, epoch ${word.epoch}); followed`);
+        }
+        // while the hand holds, the forcing player's stream is this seat's
+        // player's record: no movement of its own goes out (knockState's
+        // own-handed mark, read by SendInputsService)
+        if (prop.localId === 0x14 && prop.handed) {
+            markOwnHanded();
         }
         // and it is its own game's again on a word newer than the hand that
         // names nobody or this seat, once the follow rendered to the
@@ -3683,6 +3689,11 @@ export class PropService extends ClientListener {
     private untrack(prop: Prop, why: string) {
         this.props.delete(prop.refr);
         clearFollowedDown(prop.localId);
+        if (prop.localId === 0x14) {
+            // the hand-back (or any end of this seat's own body's row): its
+            // movement goes out again, from where the follow's end set it
+            clearOwnHanded();
+        }
         if (this.byLocal.get(prop.localId) === prop.refr) {
             this.byLocal.delete(prop.localId);
         }

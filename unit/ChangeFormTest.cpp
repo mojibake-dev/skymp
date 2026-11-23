@@ -872,8 +872,9 @@ TEST_CASE("An accepted raise drops the body's held change-form record, so a "
   // a game that arrives later hears the actor's create word and no record
   p.Messages().clear();
   Arrive(p, 2, kLate);
-  REQUIRE(IndexOf<CreateActorMessage>(
-            p, 2, [](const CreateActorMessage& m) { return m.refrId == kPredator; }) >= 0);
+  REQUIRE(IndexOf<CreateActorMessage>(p, 2, [](const CreateActorMessage& m) {
+            return m.refrId == kPredator;
+          }) >= 0);
   REQUIRE(SentTo<ChangeFormApplyMessage>(p, 2).empty());
 
   Leave(p, 0, kHost);

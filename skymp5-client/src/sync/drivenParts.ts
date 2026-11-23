@@ -54,5 +54,7 @@ export const pastReachStep = (learned: boolean, waitedMs: number): PastReachStep
 // among dynamic parts stays undriven (a later read with every part dynamic,
 // the impose's or a settle's, proves nothing about the engine's driver)
 export const learnedUndriven = (known: ReadonlySet<number> | undefined, found: readonly number[]): Set<number> => {
-    return new Set(found);
+    const out = new Set<number>(known !== undefined ? known : []);
+    found.forEach((i) => out.add(i));
+    return out;
 };

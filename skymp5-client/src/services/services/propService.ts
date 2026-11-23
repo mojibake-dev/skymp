@@ -25,7 +25,7 @@ import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
 import { SendInputsService } from "./sendInputsService";
 import { ownBodyKeptForTheirWord } from "../../sync/ownBodyKept";
-import { pastReachStep, placeUndriven, skeletonKey, undrivenIn } from "../../sync/drivenParts";
+import { learnedUndriven, pastReachStep, placeUndriven, skeletonKey, undrivenIn } from "../../sync/drivenParts";
 
 const TAG = "verb:prop-physics";
 
@@ -3791,11 +3791,12 @@ export class PropService extends ClientListener {
             return;
         }
         const known = this.undrivenBySkeleton.get(key);
-        if (known !== undefined && known.size === found.length && found.every((i) => known.has(i))) {
+        const next = learnedUndriven(known, found);
+        if (known !== undefined && known.size === next.size) {
             return;
         }
-        this.undrivenBySkeleton.set(key, new Set(found));
-        logLab(TAG, `skeleton of ${c.parts.length} parts (${localId.toString(16)}'s ragdoll): ${found.length} undriven, ${found.join(" ")}`);
+        this.undrivenBySkeleton.set(key, next);
+        logLab(TAG, `skeleton of ${c.parts.length} parts (${localId.toString(16)}'s ragdoll): ${next.size} undriven, ${Array.from(next).sort((a, b) => a - b).join(" ")}`);
     }
 
     // the class line, once per binding (kindOf): the root's BSX flags, their

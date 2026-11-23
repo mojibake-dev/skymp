@@ -765,6 +765,102 @@ TEST_CASE("An enchanted weapon's hit runs its made enchantment on the target "
   DoDisconnect(p, 0);
 }
 
+TEST_CASE("A made-enchanted weapon one player drops is the other player's "
+          "at its pickup, its enchantment by its definition, and the other "
+          "player's hit with it runs that enchantment on the maker",
+          "[CraftReport][DropItemTest][espm]")
+{
+  constexpr uint32_t kMaker = 0xff000c94;
+  constexpr uint32_t kOther = 0xff000c95;
+  PartOne& p = GetPartOne();
+  DoConnect(p, 0);
+  DoConnect(p, 1);
+  p.CreateActor(kMaker, { 0, 100, 0 }, 0, 0x3c);
+  p.SetUserActor(0, kMaker);
+  p.CreateActor(kOther, { 0, 0, 0 }, 0, 0x3c);
+  p.SetUserActor(1, kOther);
+  auto& maker = p.worldState.GetFormAt<MpActor>(kMaker);
+  auto& other = p.worldState.GetFormAt<MpActor>(kOther);
+  maker.SetAngle({ 0.f, 0.f, 180.f });
+
+  CreatedForm made;
+  made.kind = CreatedForm::kWeaponEnchantment;
+  // EnchFireDamageFFContact 0x4605a, as the maker's own hit case above
+  constexpr uint32_t kFireDamageMgef = 0x0004605a;
+  made.effects = { CreatedEffect{ kFireDamageMgef, 10.f, 0, 0, 30.f } };
+  Inventory::ExtraData extras;
+  extras.createdEnchantment = made;
+  extras.maxCharge = 2400.f;
+  maker.SetInventory(Inventory());
+  maker.AddItems({ Inventory::Entry(kDagger, 1, extras) });
+  other.SetInventory(Inventory());
+
+  RawMessageData makerRaw;
+  makerRaw.userId = 0;
+  DropItemMessage drop;
+  drop.baseId = kDagger;
+  drop.count = 1;
+  drop.createdEnchantment = made;
+  drop.maxCharge = 2400.f;
+  p.Messages().clear();
+  p.GetActionListener().OnDropItem(makerRaw, drop);
+  REQUIRE(Stacks(maker, kDagger).empty());
+  const uint32_t copyId = DroppedCopy(p, kDagger);
+  REQUIRE(copyId != 0);
+  auto& copy = p.worldState.GetFormAt<MpObjectReference>(copyId);
+
+  // the other player's pickup: the dagger with its made enchantment
+  copy.Activate(other);
+  REQUIRE(Stacks(other, kDagger).size() == 1);
+  REQUIRE(Stacks(other, kDagger)[0].createdEnchantment);
+  REQUIRE(Stacks(other, kDagger)[0].createdEnchantment->SameAs(made));
+  REQUIRE(Stacks(other, kDagger)[0].maxCharge == 2400.f);
+
+  // equipped, and the other player's hit on the maker
+  Inventory::ExtraData worn = extras;
+  worn.worn_ = true;
+  Equipment eq;
+  eq.inv.entries.push_back(Inventory::Entry(kDagger, 1, worn));
+  other.SetEquipment(eq);
+  p.Messages().clear();
+
+  RawMessageData otherRaw;
+  otherRaw.userId = 1;
+  HitMessage hit;
+  hit.data.aggressor = 0x14;
+  hit.data.target = kMaker;
+  hit.data.source = kDagger;
+  p.GetActionListener().OnHit(otherRaw, hit);
+
+  // the blade's own 25 on a base of 100 leaves 0.75; the enchantment's fire
+  // takes more
+  REQUIRE(maker.GetChangeForm().actorValues.healthPercentage < 0.75f);
+
+  int toMaker = 0;
+  int toOther = 0;
+  for (auto& m : p.Messages()) {
+    auto* cast = dynamic_cast<SpellCastMessage*>(m.message.get());
+    if (!cast || !cast->data.createdSpell) {
+      continue;
+    }
+    if (m.userId == 0) {
+      ++toMaker;
+      REQUIRE(cast->data.caster == kOther);
+      REQUIRE(cast->data.target == kMaker);
+      REQUIRE(cast->data.createdSpell->SameAs(made));
+    } else if (m.userId == 1) {
+      ++toOther;
+    }
+  }
+  REQUIRE(toMaker == 1);
+  REQUIRE(toOther == 0);
+
+  p.DestroyActor(kOther);
+  p.DestroyActor(kMaker);
+  DoDisconnect(p, 1);
+  DoDisconnect(p, 0);
+}
+
 // A game-file enchanted weapon's hit relays its record's own enchantment
 // (WEAP EITM: EnchIronSwordFire01 0x49BB8 names 0x49BB7, EspmTest's WEAP
 // case) to the struck player's game by its id

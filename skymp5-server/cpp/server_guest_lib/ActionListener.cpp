@@ -1971,6 +1971,29 @@ void EndConcealment(PartOne& partOne, MpActor& actor, uint32_t castSpell = 0)
   }
 }
 
+// whether a worn weapon in the hand `want` names (Inventory::Worn Right or
+// Left) is a staff (libespm WEAP DNAM's animType Staff), the hand a staff's
+// cast and its hits come from
+static bool HoldsStaff(const Equipment& equipment, WorldState& worldState,
+                       Inventory::Worn want)
+{
+  for (const auto& e : equipment.inv.entries) {
+    if (e.GetWorn() != want) {
+      continue;
+    }
+    try {
+      const auto dnam =
+        espm::GetData<espm::WEAP>(e.baseId, &worldState).weapDNAM;
+      if (dnam && dnam->animType == espm::WEAP::AnimType::Staff) {
+        return true;
+      }
+    } catch (const std::exception&) {
+      // not a weapon of the files: no staff
+    }
+  }
+  return false;
+}
+
 // whether a cast's id names a spell (SPEL) in the records
 static bool IsSpellRecord(WorldState& worldState, uint32_t spellId)
 {
@@ -11880,11 +11903,18 @@ void ActionListener::OnHit(const RawMessageData& rawMsgData,
   // server's record); one its casts do not cover falls to the reach rule
   // below (a cloak's damage), which refuses it when nothing reaches
   const bool hostedSpellHit = isSourceSpell && aggressor != myActor;
+  // a staff's hit names its enchantment, which no spell slot holds: it
+  // claims the cast the staff made, as an equipped spell's hit does
+  // (HoldsStaff, OnSpellCast's staff rule)
+  const bool staffHit = sourceInEspm.rec &&
+    sourceInEspm.rec->GetType() == espm::ENCH::kType &&
+    (HoldsStaff(equipment, partOne.worldState, Inventory::Worn::Right) ||
+     HoldsStaff(equipment, partOne.worldState, Inventory::Worn::Left));
   bool castClaimed = false;
   if (isSourceSpell &&
       (equipment.IsSpellEquipped(hitData.source) ||
        IsVoiceVariation(equipment, hitData.source, partOne.worldState) ||
-       hostedSpellHit)) {
+       hostedSpellHit || staffHit)) {
     // thuum docs/verbs/spell-cast.md: a spell hits only as a cast the server
     // recorded: a fire-and-forget cast once (an area spell's targets once
     // each), a stream by the time it held its target. A hosted actor's casts
@@ -12404,23 +12434,9 @@ void ActionListener::OnSpellCast(const RawMessageData& rawMsgData,
     if (!rec || rec->GetType() != espm::ENCH::kType) {
       return false;
     }
-    const auto wantWorn =
-      hand == 1 ? Inventory::Worn::Right : Inventory::Worn::Left;
-    for (const auto& e : equipment.inv.entries) {
-      if (e.GetWorn() != wantWorn) {
-        continue;
-      }
-      try {
-        const auto dnam =
-          espm::GetData<espm::WEAP>(e.baseId, &partOne.worldState).weapDNAM;
-        if (dnam && dnam->animType == espm::WEAP::AnimType::Staff) {
-          return true;
-        }
-      } catch (const std::exception&) {
-        // not a weapon of the files: no staff
-      }
-    }
-    return false;
+    return HoldsStaff(equipment, partOne.worldState,
+                      hand == 1 ? Inventory::Worn::Right
+                                : Inventory::Worn::Left);
   }();
   if (staffCast) {
     spdlog::info("[verb:spell-cast] {:x} casts {:x} from the staff in its {} "

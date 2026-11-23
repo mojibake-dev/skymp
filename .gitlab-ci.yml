@@ -141,8 +141,9 @@ wire-fuzz:
 # misc/github_env_linux) so nothing of vcpkg is rebuilt. T0 runs inside the
 # build when the master .esm files are present; without them the build says
 # so and skips ctest. Runs on merge requests, parity pushes outside
-# skymp-wire, every canon push (each merge judged as merged), a milestone
-# branch's every push, and the schedule.
+# skymp-wire, every canon push (each merge judged as merged), the schedule, a
+# milestone branch's pipeline started by the API, by hand or by a trigger, and
+# a milestone branch's push that changes, against canon, a file the build reads.
 server-build:
   stage: server
   tags: [sky]
@@ -157,9 +158,49 @@ server-build:
       changes:
         - "**/*"
         - "!skymp-wire/**/*"
-    # a milestone's branches (m1-*, m2-*, ...) build the server with the
-    # wire on every push (the M2 ones had only their wire jobs, 2026-10-09)
+    - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/ && $CI_PIPELINE_SOURCE =~ /^(api|web|trigger)$/
+    # A milestone branch's push builds the server (with the wire) when the branch changes, against canon, a file the
+    # image or its ctest reads: the server and the libraries it links (papyrus-vm, libespm, savefile, serialization,
+    # viet, skymp-wire), the compiled Papyrus scripts it ships (skymp5-scripts), the unit tests and what they read
+    # from outside unit/ (.clang-format among their sources, unit/CMakeLists.txt's TEMPLATE_ESS_PATH, the three
+    # Skyrim Platform headers unit/ includes; lab/tools/fork-lint.sh checks the list against unit/),
+    # every project's CMake files (the configure reads them all), vcpkg and its ports, the build's own scripts and
+    # Dockerfile, the deps image's pin (misc/), and this file. The Linux build also compiles the client and Skyrim
+    # Platform, which client-build builds too; only build/dist/server goes into the image. compare_to keeps a new
+    # branch's first push from counting every file as changed.
     - if: $CI_COMMIT_BRANCH =~ /^m[0-9]+-/
+      changes:
+        paths:
+          - .gitlab-ci.yml
+          - .gitmodules
+          - .dockerignore
+          - .clang-format
+          - vcpkg
+          - vcpkg.json
+          - overlay_ports/**/*
+          - overlay_triplets/**/*
+          - "**/CMakeLists.txt"
+          - "**/*.cmake"
+          - cmake/**/*
+          - build.sh
+          - ci/server.Dockerfile
+          - ci/net-retry.sh
+          - ci/net-failures.txt
+          - misc/**/*
+          - skymp5-server/**/*
+          - skymp-wire/**/*
+          - papyrus-vm/**/*
+          - libespm/**/*
+          - savefile/**/*
+          - serialization/**/*
+          - viet/**/*
+          - skymp5-scripts/**/*
+          - unit/**/*
+          - skyrim-platform/src/platform_se/skyrim_platform/assets/template.ess
+          - skyrim-platform/src/platform_se/skyrim_platform/PlatformCall.h
+          - skyrim-platform/src/platform_se/skyrim_platform/HookPairing.h
+          - skyrim-platform/src/platform_se/skyrim_platform/HandOff.h
+        compare_to: refs/heads/canon
   script:
     - |
       if [ -n "${SKYRIM_DATA_URL:-}" ]; then

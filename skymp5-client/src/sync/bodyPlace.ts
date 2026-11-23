@@ -18,5 +18,5 @@ export interface BodyPlaceFacts {
 }
 
 export const recordMovesIt = (f: BodyPlaceFacts): boolean => {
-    return f.isActor ? true : !f.tracked;
+    return f.isActor ? !(f.held || f.streaming || f.followedLive) : !f.tracked;
 };

@@ -3472,6 +3472,19 @@ export class PropService extends ClientListener {
     // physics rung 5 (thuum tracker #175): whether this seat streams the
     // body (a hand on it, or its stream open), so sendInputsService's death
     // settle hands it over and samples it no more
+    // an actor's live body as a grip or a stream places it here: this seat's
+    // hand on it, its stream open, or another seat's live stream its copy
+    // follows (sync/bodyPlace.ts; the view takes no movement from the
+    // record for it)
+    liveBodyPlaced(localId: number): { held: boolean; streaming: boolean; followedLive: boolean } {
+        const refr = localIdToRemoteId(localId);
+        const prop = refr ? this.props.get(refr) : undefined;
+        if (!prop || !prop.live) {
+            return { held: false, streaming: false, followedLive: false };
+        }
+        return { held: !!prop.held, streaming: !!prop.streaming, followedLive: this.followedLive(refr) };
+    }
+
     streamsBody(refr: number): boolean {
         const prop = this.props.get(refr);
         return prop !== undefined && this.isBody(prop) && (prop.held || prop.streaming);

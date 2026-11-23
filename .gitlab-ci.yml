@@ -24,6 +24,10 @@ default:
     max: 2
     exit_codes: [75]
 
+# The image and wire jobs below run on a branch when the branch changes, against canon, a file they read
+# (compare_to keeps a new branch's first push from counting every file as changed, and a later push from forgetting
+# what an earlier one changed); on canon, as merged where a rule forces them, else when the push changes one.
+
 # ci/net-retry.sh's own exits (ci/net-retry.test.sh), in the image server-build's wrapped step runs in
 net-retry-test:
   stage: image
@@ -31,7 +35,11 @@ net-retry-test:
   image: docker:27
   rules:
     - if: $CI_PIPELINE_SOURCE =~ /^(api|web|schedule)$/
-    - changes: [ci/net-retry.sh, ci/net-retry.test.sh, ci/net-failures.txt]
+    - if: $CI_COMMIT_BRANCH == "canon"
+      changes: [ci/net-retry.sh, ci/net-retry.test.sh, ci/net-failures.txt]
+    - changes:
+        paths: [ci/net-retry.sh, ci/net-retry.test.sh, ci/net-failures.txt]
+        compare_to: refs/heads/canon
   script:
     - sh ci/net-retry.test.sh
 
@@ -47,7 +55,9 @@ rust-image:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_COMMIT_BRANCH == "canon"
-    - changes: [skymp-wire/**/*]
+    - changes:
+        paths: [skymp-wire/**/*]
+        compare_to: refs/heads/canon
   script:
     - docker build -t "$RUST_CI_IMAGE" skymp-wire/ci
 
@@ -57,7 +67,11 @@ rust-image:
   needs: [rust-image]
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
-    - changes: [skymp-wire/**/*]
+    - if: $CI_COMMIT_BRANCH == "canon"
+      changes: [skymp-wire/**/*]
+    - changes:
+        paths: [skymp-wire/**/*]
+        compare_to: refs/heads/canon
   cache:
     key: wire-cargo
     paths: [skymp-wire/target/, .cargo/registry/]
@@ -76,7 +90,9 @@ wire-test:
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_COMMIT_BRANCH == "canon"
-    - changes: [skymp-wire/**/*]
+    - changes:
+        paths: [skymp-wire/**/*]
+        compare_to: refs/heads/canon
   script:
     - cargo test --workspace --all-features
     - cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -93,7 +109,11 @@ difftest-build:
   needs: [{ job: rust-image, optional: true }]
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
-    - changes: [skymp-wire/**/*, .gitlab-ci.yml]
+    - if: $CI_COMMIT_BRANCH == "canon"
+      changes: [skymp-wire/**/*, .gitlab-ci.yml]
+    - changes:
+        paths: [skymp-wire/**/*, .gitlab-ci.yml]
+        compare_to: refs/heads/canon
   script:
     - cargo build --release -p difftest
     - mkdir -p ../difftest-dist && cp target/release/difftest ../difftest-dist/ && cp -r difftest/sessions ../difftest-dist/

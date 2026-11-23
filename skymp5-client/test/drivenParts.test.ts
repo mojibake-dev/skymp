@@ -1,7 +1,7 @@
 // Which parts of a live body the engine drives (src/sync/drivenParts.ts), JS state alone.
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
-import { pastReachStep, placeUndriven, skeletonKey, undrivenIn, UNDRIVEN_WAIT_MS } from "../src/sync/drivenParts";
+import { learnedUndriven, pastReachStep, placeUndriven, skeletonKey, undrivenIn, UNDRIVEN_WAIT_MS } from "../src/sync/drivenParts";
 
 // a beast's ragdoll, knocked: the COM and legs dynamic, the tail keyframed
 const knocked = [
@@ -47,4 +47,13 @@ test("a grip's first sample past reach, its skeleton not yet learned, waits for 
 test("past the wait, or with the skeleton learned, a part still past reach drops the row", () => {
   assert.strictEqual(pastReachStep(false, UNDRIVEN_WAIT_MS), "drop");
   assert.strictEqual(pastReachStep(true, 0), "drop");
+});
+
+test("a later read with every part dynamic keeps the skeleton's undriven parts", () => {
+  assert.deepStrictEqual([...learnedUndriven(new Set([7, 8, 9, 10, 11]), [])].sort((a, b) => a - b), [7, 8, 9, 10, 11]);
+});
+
+test("a read that finds another undriven part adds it", () => {
+  assert.deepStrictEqual([...learnedUndriven(new Set([7, 8]), [8, 9])].sort((a, b) => a - b), [7, 8, 9]);
+  assert.deepStrictEqual([...learnedUndriven(undefined, [3])], [3]);
 });

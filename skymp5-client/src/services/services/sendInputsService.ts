@@ -195,6 +195,12 @@ export class SendInputsService extends ClientListener {
             // goes on; the fault itself is read from the platform's line
             // (CallNative.cpp names the class and the form type)
             try {
+                // a hosted actor held as a puppet while another seat's stream
+                // owns its body (PuppetService) sends nothing: the owner's
+                // stream moves it, and the server refuses its moves from here
+                if (target !== undefined && this.sp.isPuppet(worldViewMisc.remoteIdToLocalId(target as unknown as number))) {
+                    return;
+                }
                 const targetFormModel = target ? this.getForm(target, world) : this.getForm(undefined, world);
                 if (target === undefined || dueMovement.has(target as unknown as number)) {
                     this.sendMovement(target, targetFormModel);

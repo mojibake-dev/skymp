@@ -10,6 +10,7 @@ import { RaceOverlay } from "../services/messages/raceOverlay";
 import { isBadMenuShown, applyEquipment, isFigureBase, keepOnlyServerSpells, applyWorn, cannotDress, Equipment } from "../sync/equipment";
 import { RespawnNeededError } from "../lib/errors";
 import { applyBodyInventory } from "../sync/inventory";
+import { itemReferenceLook } from "../sync/itemReference";
 import { distanceBetween, LastWritten, movementApplyDue, Timed } from "../sync/frameCost";
 import { farMovementMs, nearUnits } from "../sync/movementSettings";
 import * as sp from "skyrimPlatform";
@@ -1220,6 +1221,26 @@ export class FormView {
     // crosshair label are right before any open. The crosshair-gated apply
     // below keeps the body (an actor's inventory, under the OpenContainer
     // that follows it) and the live chest
+    // an item's world reference (a dropped stack's copy) holds its own
+    // stack's rows, never a container's contents: it shows their temper
+    // (sync/itemReference.ts), and nothing is laid into it
+    if (model.inventory && !isActor && refr.getBaseObject()?.getType() !== FormType.Container) {
+      const base = refr.getBaseObject();
+      const look = itemReferenceLook(model.inventory.entries, base?.getFormID() ?? 0, base?.getName() ?? "");
+      if (look.health !== undefined) {
+        refr.setItemHealthPercent(look.health);
+        logLab("verb:craft", `item copy ${this.refrId.toString(16)}: its stack's health ${look.health} shown`);
+      }
+      if (look.name !== undefined) {
+        refr.setDisplayName(look.name, true);
+        logLab("verb:craft", `item copy ${this.refrId.toString(16)}: its stack's name shown`);
+      }
+      if (look.charge !== undefined) {
+        refr.setItemCharge(look.charge);
+        logLab("verb:craft", `item copy ${this.refrId.toString(16)}: its stack's charge ${look.charge} shown`);
+      }
+      model.inventory = undefined;
+    }
     if (model.inventory && !isActor && PlayerCharacterDataHolder.getCrosshairRefId() !== this.refrId) {
       ContainerApplyQueue.enqueue(this.refrId, model.inventory);
       model.inventory = undefined;

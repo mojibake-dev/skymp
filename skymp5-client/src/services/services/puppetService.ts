@@ -814,6 +814,16 @@ export class PuppetService extends ClientListener {
         return form.isMyClone === true || !form.baseId || form.baseId === 0x7;
     }
 
+    // After a hot reload, once the outgoing client's teardown has run its
+    // demotes: each actor the restored hosted set holds that the platform's
+    // set lost is set again (HostService.setLostHostedAgain) and reconciled,
+    // so a puppet flag the outgoing client put on it is lifted now rather
+    // than at the next poll
+    afterReload(): void {
+        const lost = this.controller.lookupListener(HostService).setLostHostedAgain();
+        lost.forEach((id) => this.reconcile(id));
+    }
+
     // The view's two words of before, kept for their callers: a puppet
     // unless the word says otherwise, live by the word.
     ensurePuppet(refr: ObjectReference): void {

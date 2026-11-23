@@ -9,6 +9,7 @@ import { PropBone, PropTransformMessage } from "../messages/propTransformMessage
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { RefSweep } from "../../sync/frameCost";
+import { boneAnchor } from "../../sync/boneAnchor";
 import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
 import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
@@ -288,6 +289,7 @@ type Prop = {
     // the simulator's side
     lastSent: (Pose & { bones?: PropBone[] }) | undefined; // the last sample out, or the first read as a baseline (a body of parts with its bones)
     dropRow: string | undefined;   // the stream found it no row (bonesOf, L3 or L4): untracked after the update's sends, why
+    boneAnchored: boolean;   // this stream's samples are anchored at its first part (bonesOf, boneAnchor), until its rest
     lastSendAt: number;
     sentHeld: boolean;             // the last sample out said held
     awakeAt: number;               // the engine last read the body awake (or the stream opened, or a hand let go)
@@ -1833,7 +1835,7 @@ export class PropService extends ClientListener {
     // returns the row (a world body takes a sample with no bones); so do a
     // rest with a part that is no pose and the untrack's final sample
     private send(prop: Prop, body: Body, asleep: boolean, now: number): number {
-        const pos = body.pos;
+        let pos: NiPoint3 = body.pos;
         const rot: NiPoint3 = [body.rot[0] % 360, body.rot[1] % 360, body.rot[2] % 360];
         for (let i = 0; i < 3; ++i) {
             if (!isFinite(pos[i]) || Math.abs(pos[i]) > WORLD_ABS_MAX || !isFinite(rot[i])) {
@@ -1850,7 +1852,14 @@ export class PropService extends ClientListener {
             if (read === undefined && !asleep) {
                 return 0;
             }
-            bones = read !== undefined ? read : [];
+            bones = read !== undefined ? read.bones : [];
+            if (read !== undefined) {
+                pos = read.pos;
+            }
+        }
+        if (asleep) {
+            // a rest ends the stream, and the next one anchors at its root again
+            prop.boneAnchored = false;
         }
         // physics rung 5: a body's rest takes its record ahead of it, from
         // every path a rest goes by (sendDue's, the untrack's final sample)
@@ -1893,15 +1902,18 @@ export class PropService extends ClientListener {
 
     // Physics rung 4 (D-PH10 A): a body of parts' poses for its sample, in
     // the platform's walk order, each checked as the wire's validator checks
-    // a bone (wire-validate lib.rs check_prop_transform): a count other than
-    // this seat's class read (a walk past 64 parts reads none) or a part past
-    // the wire's 512 from the sample's pos (its root's) makes the prop no row
-    // here, its binding's verdict cached and the prop untracked after the
-    // update's sends (sendDue), said once; a value that is not a number, a
-    // place outside the world or a quaternion of no length is no sample (not
-    // sent), said once. Each quaternion goes normalized, inside the wire's
-    // 0.01 (wire-validate lib.rs:86)
-    private bonesOf(prop: Prop, body: Body): PropBone[] | undefined {
+    // a bone (wire-validate lib.rs check_prop_transform), with the sample's
+    // pos they are measured from (boneAnchor: the root's, or the first part's
+    // once a part lies past the wire's 512 from the root, a long throw's
+    // ragdoll flown from its reference, said once a stream): a count other
+    // than this seat's class read (a walk past 64 parts reads none) or a part
+    // past the wire's 512 from both makes the prop no row here, its binding's
+    // verdict cached and the prop untracked after the update's sends
+    // (sendDue), said once; a value that is not a number, a place outside the
+    // world or a quaternion of no length is no sample (not sent), said once.
+    // Each quaternion goes normalized, inside the wire's 0.01 (wire-validate
+    // lib.rs:86)
+    private bonesOf(prop: Prop, body: Body): { bones: PropBone[]; pos: NiPoint3 } | undefined {
         const read = body.bones !== undefined ? body.bones : [];
         const id = prop.refr.toString(16);
         // an actor's carried parts come and go after its bones (a death mid-
@@ -1928,15 +1940,19 @@ export class PropService extends ClientListener {
                 }
                 return undefined;
             }
-            const reach = ObjectReferenceEx.getDistance(b.pos, body.pos);
-            if (reach > BONE_REACH_UNITS) {
-                logLab(TAG, `prop ${id}'s part ${i} lies ${reach.toFixed(1)} units from its reference, past the wire's ${BONE_REACH_UNITS}: no row`);
-                this.noRow(prop, `its part ${i} past the wire's reach`);
-                return undefined;
-            }
             bones.push(pose);
         }
-        return bones;
+        const anchor = boneAnchor(body.pos, bones.map((b) => b.pos), BONE_REACH_UNITS, prop.boneAnchored);
+        if ("past" in anchor) {
+            logLab(TAG, `prop ${id}'s part ${anchor.past} lies ${anchor.reach.toFixed(1)} units from its first part, past the wire's ${BONE_REACH_UNITS}: no row`);
+            this.noRow(prop, `its part ${anchor.past} past the wire's reach`);
+            return undefined;
+        }
+        if (anchor.atPart && !prop.boneAnchored) {
+            logLab(TAG, `prop ${id}: its parts lie past the wire's ${BONE_REACH_UNITS} from its reference (by ${ObjectReferenceEx.getDistance(anchor.pos, body.pos).toFixed(1)} units at its first part), anchored at its first part`);
+        }
+        prop.boneAnchored = anchor.atPart;
+        return { bones, pos: anchor.pos };
     }
 
     // a prop this seat's stream found no row (bonesOf): its binding's verdict
@@ -4031,6 +4047,7 @@ export class PropService extends ClientListener {
             parts,
             lastSent: undefined,
             dropRow: undefined,
+            boneAnchored: false,
             lastSendAt: 0,
             sentHeld: false,
             awakeAt: 0,

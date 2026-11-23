@@ -25,6 +25,7 @@ import { HostService } from "./hostService";
 import { RemoteServer } from "./remoteServer";
 import { SendInputsService } from "./sendInputsService";
 import { ownBodyKeptForTheirWord } from "../../sync/ownBodyKept";
+import { placeUndriven, skeletonKey, undrivenIn } from "../../sync/drivenParts";
 
 const TAG = "verb:prop-physics";
 
@@ -1949,6 +1950,15 @@ export class PropService extends ClientListener {
             }
             bones.push(pose);
         }
+        // a part the engine does not drive is sent at part 0's place, inside
+        // the wire's reach (sync/drivenParts.ts)
+        const undriven = this.undrivenBySkeleton.get(this.skeletonOf.get(prop.localId) ?? "");
+        if (undriven !== undefined && undriven.size > 0) {
+            const placed = placeUndriven(bones.map((b) => b.pos), undriven);
+            placed.forEach((pos, i) => {
+                bones[i] = { ...bones[i], pos: [pos[0], pos[1], pos[2]] };
+            });
+        }
         const anchor = boneAnchor(body.pos, bones.map((b) => b.pos), BONE_REACH_UNITS, prop.boneAnchored);
         if ("past" in anchor) {
             logLab(TAG, `prop ${id}'s part ${anchor.past} lies ${anchor.reach.toFixed(1)} units from its first part, past the wire's ${BONE_REACH_UNITS}: no row`);
@@ -2347,6 +2357,20 @@ export class PropService extends ClientListener {
             prop.imposeCalled = true;
             const seat = f.seat === undefined ? "unheard" : f.seat.toString(16);
             logLab(TAG, `impose ${prop.refr.toString(16)} from ${seat}: ${prop.parts} parts`);
+        }
+        // a part this engine does not drive is imposed where this engine
+        // already has it, at rest, so the impose never moves it
+        // (sync/drivenParts.ts)
+        const undriven = this.undrivenBySkeleton.get(this.skeletonOf.get(prop.localId) ?? "");
+        if (undriven !== undefined && undriven.size > 0) {
+            const own = this.readBodies([prop.localId], true)[0];
+            const ownBones = own !== undefined ? own.bones : undefined;
+            if (ownBones !== undefined && ownBones.length === bones.length) {
+                bones = bones.map((b, i) => (undriven.has(i) ? { pos: [ownBones[i].pos[0], ownBones[i].pos[1], ownBones[i].pos[2]], quat: ownBones[i].quat } : b));
+                if (velocities !== undefined) {
+                    velocities = velocities.map((v, i) => (undriven.has(i) ? { lin: [0, 0, 0], ang: [0, 0, 0] } : v));
+                }
+            }
         }
         try {
             return velocities !== undefined ? this.sp.imposeBodies(prop.localId, bones, rest, velocities) : this.sp.imposeBodies(prop.localId, bones, rest);
@@ -3707,7 +3731,11 @@ export class PropService extends ClientListener {
     // said once
     private bodyClass(localId: number): BodyClass | null {
         try {
-            return this.sp.getBodyClass(localId);
+            const c = this.sp.getBodyClass(localId);
+            if (c !== null) {
+                this.learnDriven(localId, c);
+            }
+            return c;
         } catch (e) {
             if (!this.bodyClassSaid) {
                 this.bodyClassSaid = true;
@@ -3715,6 +3743,25 @@ export class PropService extends ClientListener {
             }
             return null;
         }
+    }
+
+    // the parts a ragdolled read shows the engine does not drive (keyframed
+    // while the others are dynamic), kept for the read's skeleton, so a later
+    // read of that skeleton (a hold's, a standing body's) sends them at part
+    // 0's place (sync/drivenParts.ts)
+    private learnDriven(localId: number, c: BodyClass) {
+        const key = skeletonKey(c.parts);
+        this.skeletonOf.set(localId, key);
+        const found = undrivenIn(c.parts, c.ragdoll);
+        if (found === undefined) {
+            return;
+        }
+        const known = this.undrivenBySkeleton.get(key);
+        if (known !== undefined && known.size === found.length && found.every((i) => known.has(i))) {
+            return;
+        }
+        this.undrivenBySkeleton.set(key, new Set(found));
+        logLab(TAG, `skeleton of ${c.parts.length} parts (${localId.toString(16)}'s ragdoll): ${found.length} undriven, ${found.join(" ")}`);
     }
 
     // the class line, once per binding (kindOf): the root's BSX flags, their
@@ -4467,6 +4514,10 @@ export class PropService extends ClientListener {
     // physics rung 4: getBodyClass and imposeBodies or releaseBodies missing
     // from this platform, said once each; the world-body contact switch as
     // last told to the platform (applyWorldBodyContacts)
+    // the undriven parts by skeleton, and each reference's last skeleton
+    // (learnDriven)
+    private undrivenBySkeleton = new Map<string, Set<number>>();
+    private skeletonOf = new Map<number, string>();
     private bodyClassSaid = false;
     private imposeSaid = false;
     // thuum tracker #175: the grabbed actor whose grip made no row, said once

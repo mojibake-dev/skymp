@@ -11016,8 +11016,11 @@ void ActionListener::OnConsoleCommand(const RawMessageData& rawMsgData,
 // the push goes to the pushed actor's own simulator. Consistency alone is
 // checked: the caster is the sender's own actor or one it hosts
 // (E_PUSH_CASTER); the target a live actor no player owns, its host some
-// other seat (E_PUSH_TARGET, E_PUSH_HOST); the two in one cell or worldspace
-// within kPushReach (E_PUSH_FAR); the force bounded by the wire
+// other seat (E_PUSH_TARGET, E_PUSH_HOST); a hit of the caster's on the
+// target that a cast of its claimed, still within the cast's window, since a
+// script pushes from the effect that hit put on the target, and a hit the
+// server refused puts none there (E_PUSH_NO_HIT); the two in one cell or
+// worldspace within kPushReach (E_PUSH_FAR); the force bounded by the wire
 // (PUSH_FORCE_MAX). Then the target's host runs
 // ObjectReference.PushActorAway(target, force) with the caster's figure as
 // self (an SpSnippet, DeliverSpellLanding's shape), its engine's own throw,
@@ -11058,6 +11061,14 @@ void ActionListener::OnPushActor(const RawMessageData& rawMsgData,
                  myActor->GetFormId(), caster->GetFormId(),
                  target->GetFormId(),
                  host ? "its own game simulates" : "no game simulates");
+    return;
+  }
+  if (!partOne.ClaimedHit(caster->GetFormId(), target->GetFormId())) {
+    spdlog::warn("[verb:push] E_PUSH_NO_HIT: {:x} reports {:x} pushing {:x} "
+                 "with no hit of the caster's on it that the server took; "
+                 "refused",
+                 myActor->GetFormId(), caster->GetFormId(),
+                 target->GetFormId());
     return;
   }
   const auto& a = caster->GetPos();

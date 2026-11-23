@@ -993,6 +993,9 @@ public:
   // a spell hit by the actor on `target` standing at `at`
   CastClaim ClaimCast(uint32_t actorFormId, uint32_t spell, uint32_t target,
                       const NiPoint3& at);
+  // whether one of the actor's casts, still within its window, claimed a
+  // hit on `target` (wire-rules casts::Casts::claimed_on)
+  bool ClaimedHit(uint32_t actorFormId, uint32_t target);
   // thuum docs/verbs/second-hand.md: a hit by a spell none of the actor's
   // casts is of, claimed against a recorded cast whose records reach it
   // (a cloak's spell, a spell its effects' scripts name), judged from where

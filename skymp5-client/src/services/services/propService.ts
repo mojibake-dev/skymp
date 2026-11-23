@@ -9,6 +9,7 @@ import { PropBone, PropTransformMessage } from "../messages/propTransformMessage
 import { FormTypeEx } from "../../extensions/formTypeEx";
 import { ObjectReferenceEx } from "../../extensions/objectReferenceEx";
 import { RefSweep } from "../../sync/frameCost";
+import { PlaceRefusal, RowRefusal, placeRefusal } from "../../sync/gripRow";
 import { clearFollowedDown, markFollowedDown } from "../../sync/knockState";
 import { NiPoint3 } from "../../sync/movement";
 import { FOLLOW_SAMPLES_MAX, FollowBone, FollowSample, FollowStep, PropFollow, bonesApart, lerpBones } from "../../sync/propFollow";
@@ -2446,17 +2447,19 @@ export class PropService extends ClientListener {
         // force 0): a live body, tracked here so the hold below claims it
         // whatever cell it stands in
         if (heldLocal !== 0 && !this.byLocal.has(heldLocal) && this.sp.Actor.from(grabbed) !== null) {
-            const row = this.rowInPlace({ localId: heldLocal, formType: 0 }, now, "the engine's grab names it (a grip)", true);
-            if (row === undefined && this.gripSaid !== heldLocal) {
-                // a grip that makes no row, said once a grab (the demo's
-                // eight grips of 29613 left no line at all)
+            const row = this.rowOrRefusal({ localId: heldLocal, formType: 0 }, now, "the engine's grab names it (a grip)", true);
+            if (typeof row === "string" && this.gripSaid !== heldLocal) {
+                // a grip that makes no row, said once a grab with the check
+                // that refused it (the demo's eight grips of 29613 left no
+                // line at all)
                 this.gripSaid = heldLocal;
                 const c = this.bodyClass(heldLocal);
-                logLab(TAG, `grip ${heldLocal.toString(16)}: the engine's grab names it, no row (${c === null ? "no body class" : `ragdoll ${c.ragdoll}, ${c.parts.length} parts`})`);
+                logLab(TAG, `grip ${heldLocal.toString(16)}: the engine's grab names it, no row: ${row} (${c === null ? "no body class" : `ragdoll ${c.ragdoll}, ${c.parts.length} parts`})`);
             }
         }
         if (heldLocal === 0) {
             this.gripSaid = 0;
+            this.gripApartSaid = 0;
         }
         const props = Array.from(this.props.values());
         const holds = (prop: Prop) => heldLocal !== 0 && prop.localId === heldLocal && !prop.trap;
@@ -2829,14 +2832,22 @@ export class PropService extends ClientListener {
     // undefined for a static, a living actor, a class no row takes, an
     // unloaded reference or one the server has no id for here
     private rowInPlace(r: Member, now: number, why: string, gripped = false): Prop | undefined {
+        const row = this.rowOrRefusal(r, now, why, gripped);
+        return typeof row === "string" ? undefined : row;
+    }
+
+    // rowInPlace's row, or the check that refused one (gripRow.ts's
+    // RowRefusal); gripped, the player's own grab names the body
+    // (placeRefusal's place read skipped)
+    private rowOrRefusal(r: Member, now: number, why: string, gripped: boolean): Prop | RowRefusal {
         const refr = localIdToRemoteId(r.localId);
         if (!refr) {
-            return undefined;
+            return "no remote id";
         }
         if (!this.trapBodies.has(refr)) {
             const kind = this.kindOf(r.localId, refr, r.formType, false, gripped);
             if (kind !== "item" && kind !== "world") {
-                return undefined;
+                return "no row kind";
             }
         }
         const known = this.props.get(refr);
@@ -2853,11 +2864,11 @@ export class PropService extends ClientListener {
         }
         const body = this.trapBodies.get(refr);
         if (body) {
-            return this.trackTrapBody(refr, body, now, false);
+            return this.trackTrapBody(refr, body, now, false) ?? "no trap row";
         }
         // a pushed or knocked body is Dynamic (a Keyframed one takes no push,
         // havok-props.md E27; an island's members are its dynamic ones)
-        return this.trackInPlace(refr, r.localId, MotionType.Dynamic, why);
+        return this.placeInPlace(refr, r.localId, MotionType.Dynamic, why, gripped);
     }
 
     // A prop tracked where its engine has it (physics rung 3, B5): the
@@ -2867,14 +2878,31 @@ export class PropService extends ClientListener {
     // body's as read (undefined: the tick sets it, D73), a world body's class
     // as kindOf cached it. Undefined when the reference is not loaded here
     private trackInPlace(refr: number, localId: number, motion: MotionType | undefined, why: string): Prop | undefined {
+        const prop = this.placeInPlace(refr, localId, motion, why, false);
+        return typeof prop === "string" ? undefined : prop;
+    }
+
+    // trackInPlace's prop, or the check that refused it (placeRefusal); a
+    // grip's body whose world or cell reads other than the player's says
+    // both, once a grab
+    private placeInPlace(refr: number, localId: number, motion: MotionType | undefined, why: string, gripped: boolean): Prop | PlaceRefusal {
         const ref = this.sp.ObjectReference.from(this.sp.Game.getFormEx(localId));
         const player = this.sp.Game.getPlayer();
-        if (!ref || !player || !ref.is3DLoaded()) {
-            return undefined;
+        if (!ref || !player) {
+            return "not loaded";
         }
-        const worldOrCell = ObjectReferenceEx.getWorldOrCell(player);
-        if (worldOrCell !== 0 && ObjectReferenceEx.getWorldOrCell(ref) !== worldOrCell) {
-            return undefined;
+        // an unloaded reference's place is never read (placeRefusal refuses
+        // it first)
+        const loaded3D = ref.is3DLoaded();
+        const worldOrCell = loaded3D ? ObjectReferenceEx.getWorldOrCell(player) : 0;
+        const refWorldOrCell = loaded3D ? ObjectReferenceEx.getWorldOrCell(ref) : 0;
+        const refused = placeRefusal({ loaded3D, playerWorldOrCell: worldOrCell, refWorldOrCell, gripped });
+        if (refused !== undefined) {
+            return refused;
+        }
+        if (gripped && worldOrCell !== 0 && refWorldOrCell !== worldOrCell && this.gripApartSaid !== localId) {
+            this.gripApartSaid = localId;
+            logLab(TAG, `grip ${localId.toString(16)}: its world or cell reads ${refWorldOrCell.toString(16)} against the player's ${worldOrCell.toString(16)}, tracked at the grab`);
         }
         const now = clockMs();
         const distance = ObjectReferenceEx.getDistance(ObjectReferenceEx.getPos(player), ObjectReferenceEx.getPos(ref));
@@ -4352,6 +4380,9 @@ export class PropService extends ClientListener {
     // thuum tracker #175: the grabbed actor whose grip made no row, said once
     // a grab (readHolds)
     private gripSaid = 0;
+    // a grip's body tracked though its world or cell read other than the
+    // player's, said once a grab (placeInPlace)
+    private gripApartSaid = 0;
     // thuum tracker #179: this seat's player was handed back by a grip's hold
     // and has not read upright since (trackOwnBody)
     private ownHandedBack = false;

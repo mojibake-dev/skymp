@@ -1429,10 +1429,7 @@ public:
   {
     Taken,
     // another player holds the prop grabbed
-    Held,
-    // another seat streams the prop awake, and a grab alone takes a moving
-    // prop
-    Moving
+    Held
   };
   PropPickupVerdict PropPickup(const MpActor& picker,
                                const MpObjectReference& prop) const;

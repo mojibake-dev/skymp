@@ -41,8 +41,9 @@ export const boneAnchor = (rootPos: Point, parts: Point[], reachMax: number, atP
 };
 
 // The parts of a body past reach of its first part (the anchor of last
-// resort), each with its distance from the first part and from the body's
-// root, for the line that says which bone a torn body holds apart
+// resort), each with its distance from the first part and from a given place
+// (the reference's own, which an actor's read body, its COM, is not), for the
+// line that says which bone a torn body holds apart
 export type PartPast = { index: number; fromFirst: number; fromRoot: number };
 
 export const partsPast = (rootPos: Point, parts: Point[], reachMax: number): PartPast[] => {
